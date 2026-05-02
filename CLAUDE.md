@@ -89,7 +89,7 @@ silkroadai/
 - [x] D2 — Prisma schema 完成(User / LiteLLMKey / RechargeLog 三张新表)✅
 - [x] D3 — LiteLLM client 烟雾测试通过 ✅
 - [x] D4-5 — 替换 admin-auth + user/route 的 Sub2API 老调用 ✅ (R3 决策:订阅 stub,UI 留壳)
-- [ ] D6-7 — 注册接口端到端跑通
+- [x] D6-7 — 注册接口端到端跑通 ✅ (W1 完成 🎉)
 
 ---
 

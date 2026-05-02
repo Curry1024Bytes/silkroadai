@@ -66,11 +66,19 @@ async function callLiteLLM<T>(
     try { data = text ? JSON.parse(text) : null; } catch { data = text; }
 
     if (!res.ok) {
-        const msg = (data as { detail?: string; error?: string } | null)?.detail
-            ?? (data as { error?: string } | null)?.error
-            ?? text
-            ?? res.statusText;
-        throw new LiteLLMApiError(res.status, `${method} ${path}`, data, String(msg));
+        const detail = (data as { detail?: unknown } | null)?.detail;
+        const errField = (data as { error?: unknown } | null)?.error;
+        // LiteLLM frequently returns `detail` as a list of pydantic
+        // validation issues. JSON-stringify so the message stays readable
+        // instead of `[object Object]`.
+        const stringify = (v: unknown): string =>
+            typeof v === 'string' ? v : JSON.stringify(v);
+        const msg = detail !== undefined
+            ? stringify(detail)
+            : errField !== undefined
+              ? stringify(errField)
+              : text || res.statusText;
+        throw new LiteLLMApiError(res.status, `${method} ${path}`, data, msg);
     }
     return data as T;
 }
@@ -140,8 +148,11 @@ export async function createUser(args: {
     user_email: string;
     user_alias?: string;
     max_budget?: number;
-    user_role?: 'customer' | 'internal_user';
+    user_role?: 'internal_user' | 'internal_user_viewer';
 }): Promise<{ user_id: string; user_email: string }> {
+    // LiteLLM 1.82.6 LitellmUserRoles enum: proxy_admin | proxy_admin_viewer
+    // | internal_user | internal_user_viewer. Portal customers map to
+    // `internal_user` (key/budget owner with no admin endpoints).
     const result = await callLiteLLM<{ user_id: string; user_email: string }>(
         'POST',
         '/user/new',
@@ -149,7 +160,7 @@ export async function createUser(args: {
             user_email: args.user_email,
             user_alias: args.user_alias,
             max_budget: args.max_budget,
-            user_role: args.user_role || 'customer',
+            user_role: args.user_role || 'internal_user',
             auto_create_key: false,
         },
     );
@@ -359,7 +370,7 @@ export async function provisionNewCustomer(args: {
     const user = await createUser({
         user_email: args.email,
         user_alias: args.portal_user_id,
-        user_role: 'customer',
+        user_role: 'internal_user',
     });
 
     // 2. 给 user 创建第一个 Key
