@@ -1,116 +1,82 @@
-# Silk Road AI Portal Bootstrap Pack
+# Silk Road AI — B3 路线 Bootstrap 包
 
-> 给 `yexioy/silkroadai`(从 `touwaeriol/sub2apipay` fork)项目的启动套件。
-> 包含改造路线图、setup 脚本、新数据库 schema、LiteLLM client 第一版、第一周任务卡。
+> 决策日期:2026-05-02
+> 取代:`litellm-portal-bootstrap/`(W1 完成,归档)
 
 ---
 
-## 包含的文件
+## 路线总览
+
+**B3 = new-api 后端 + silkroadai 前端继续用 + Chat UI**
+
+详见 `docs/PROJECT-PLAN-B3.md`。
+
+## 你今天就能做的事(W2 D1)
+
+```bash
+# 1. 在 Mac 上把脚本上传到 VPS
+cd ~/Documents/"silk road ai"/b3-bootstrap
+scp scripts/deploy-new-api.sh root@23.27.113.88:/tmp/
+
+# 2. SSH 到 VPS 跑
+ssh root@23.27.113.88
+bash /tmp/deploy-new-api.sh
+
+# 3. 等脚本提示完成,然后:
+#    - 立即把 /tmp/new-api-credentials.txt 内容存 1Password
+#    - 删掉这个文件:rm /tmp/new-api-credentials.txt
+#    - 去 Namecheap 加 admin.silkroadai.io 的 A 记录(指向 23.27.113.88)
+#    - 等 5-15 分钟 DNS 生效
+#    - 浏览器打开 https://admin.silkroadai.io 用 root 密码登录
+```
+
+## 包内容
 
 ```
-litellm-portal-bootstrap/
+b3-bootstrap/
 ├── README.md                          ← 本文件
-├── CLAUDE.md                          ← ⭐ Claude Code 项目上下文(必拷到 fork 根目录)
 ├── docs/
-│   ├── PROJECT-PLAN.md                ← 完整改造路线图(三阶段,3-6 周)
-│   └── WEEK1-CHECKLIST.md             ← 第一周每天具体任务(D1-D7)
+│   ├── PROJECT-PLAN-B3.md             ← 完整 6 周路线图
+│   ├── WEEK2-CHECKLIST.md             ← W2 D3-D7 day-by-day 任务卡
+│   └── SILKROADAI-README-NEW.md       ← silkroadai 仓库新 README(W2 D7 替换)
 ├── scripts/
-│   ├── 01-rename-project.sh           ← 项目重命名(sub2apipay → silkroadai-portal)
-│   └── 02-local-dev-setup.sh          ← 本地 Mac 开发环境一键 setup
-├── src/lib/litellm/
-│   └── client.ts                      ← LiteLLM Admin API 客户端封装
+│   └── deploy-new-api.sh              ← VPS 部署 new-api 一键脚本(D1)
+├── src/lib/newapi/
+│   └── client.ts                      ← new-api admin API 完整 TypeScript 封装
 └── prisma/
-    └── schema.diff.prisma             ← 新增 User、LiteLLMKey、RechargeLog 三张表的 Prisma 模型
+    └── schema-b3.diff.prisma          ← W2 D4 schema 改造指引
 ```
 
----
+## 与 W1 工作的关系
 
-## 怎么用
+W1 完成的 7 个 commit 在 silkroadai repo 主分支保留。B3 路线在此基础上演进:
+- 70% W1 代码可复用(JWT auth、易支付集成、订单流程、Prisma 框架)
+- 30% 重写(LiteLLM client → new-api client、schema 微调、register 逻辑改造)
 
-### 步骤 1:Clone 你的 fork 到本地 Mac
+W1 路径不浪费,作为基础设施继续用。
 
-```bash
-cd ~/Code      # 或你常用的代码目录
-git clone git@github.com:yexioy/silkroadai.git
-cd silkroadai
-```
+## 为什么改路线
 
-### 步骤 2:把 bootstrap 拷进去作为辅助
+W1 完成后,用户列了 13 项核心需求,Cowork 评估发现其中 8 项是 to-C SaaS 标配,
+new-api 已经全部实现且活跃维护(25.4K stars, 791 commits / 4 个月)。
+继续 LiteLLM Portal 等于重新发明 new-api,B3 借用 new-api 后端 + 自写前端
+是工时和品牌差异化的最优解(Topology B3,详见 PROJECT-PLAN-B3.md)。
 
-```bash
-cp -r ~/Documents/"silk road ai"/litellm-portal-bootstrap ./_bootstrap
-```
+## 关键技术决策
 
-### 步骤 3:跑重命名脚本
+1. **不修改 new-api 源码** — 保护 AGPL 不触发,法律最稳
+2. **silkroadai 仓库继续用** — W1 工作 70% 可复用,从已有基础推进
+3. **Chat UI 用 fork LibreChat** — MIT 协议,品牌差异化空间大
+4. **LiteLLM 暂留** — W2 D3 验证 new-api 完全可用前不关停,作 fallback
 
-```bash
-bash _bootstrap/scripts/01-rename-project.sh
-```
+## 下一步
 
-### 步骤 4:按照 WEEK1-CHECKLIST 一天天推进
-
-打开 `_bootstrap/docs/WEEK1-CHECKLIST.md`,按 D1-D7 逐天执行。
-
----
-
-## 整体路线图速览
-
-| 阶段 | 周数 | 核心任务 | 输出 |
-|---|---|---|---|
-| **阶段 1** | W1 | 项目脚手架 + 数据库 + LiteLLM client | `pnpm dev` 跑起来,注册 API 端到端通 |
-| **阶段 2** | W2-3 | 用户系统(注册/登录/邮箱)+ 充值流程 | 一个客户能完整走完"注册→充值→拿 Key"流程 |
-| **阶段 3** | W4-6 | 客户后台 + 服务条款 + 部署 + 灰度 | portal.silkroadai.io 上线,5-10 个种子客户 |
-
-详见 `docs/PROJECT-PLAN.md`。
-
----
-
-## 关键设计决策
-
-1. **架构 A**:LiteLLM 一字不改(避免 Fork 维护负担),Portal 在前面套一层
-2. **Portal 是 LiteLLM 的"客户层"**:注册/支付/Key 管理/余额展示都在 Portal
-3. **每客户一 Key 模式(模式 X)**:每个 portal user 对应 LiteLLM 一个 user + 一个 default key
-4. **Portal 有自己的 User 表**(原 Sub2ApiPay 没有)
-5. **充值 → max_budget**:Portal 维护累计充值,每次充值后 PUT `max_budget = SUM(recharges)` 到 LiteLLM
-6. **复用所有支付逻辑**:easypay / wxpay / alipay / stripe 完全保留
-
----
-
-## 关键技术 gotcha 提醒(开发时务必注意)
-
-1. **`/key/update` 的 max_budget 是替换不是增加** — 必须算累计充值再 PUT
-2. **LiteLLM 缓存 key state 60 秒** — 充值后立即调一次 `/key/info` 强制刷新
-3. **流式请求会小额超支** — UI 显示余额 `clamp(0, max - spend)`
-4. **退款让 max_budget < spend** → 同步 reset_spend 政策
-5. **时区 UTC** — 客户端时间转 UTC 再查 spend logs
-
-详见 `docs/PROJECT-PLAN.md`「关键技术 gotcha 速查」。
-
----
-
-## 还没解决的问题(待后续处理)
-
-1. **Sub2API admin key 没有"无限额度"** — 需要写 cron 监控告警
-2. **LiteLLM master key 已泄露** — 必须先 rotate 才能上生产
-3. **LiteLLM UI 主题色还是紫色** — 上线前可以补一个 sed CSS hex 替换
-
----
-
-## 文件之间的关系
-
-```
-开发起点:scripts/01-rename-project.sh (一次性运行)
-              ↓
-开发参考:docs/WEEK1-CHECKLIST.md (每天看一次)
-              ↓
-代码模板:src/lib/litellm/client.ts (复制到 fork 里)
-              ↓
-DB 模板:prisma/schema.diff.prisma (合并到 fork 的 schema.prisma)
-              ↓
-战略参考:docs/PROJECT-PLAN.md (大方向不清楚时看)
-```
+1. 用户:跑 deploy-new-api.sh,部署 new-api 到 VPS
+2. 用户:在 admin.silkroadai.io 配置全部上游渠道
+3. Cowork 帮你:生成 W2 D4-D7 的详细 checklist + new-api client.ts 模板 + Prisma schema 调整 diff
+4. Claude Code 接手:在 silkroadai 仓库执行 W2 D4-D7 改造
 
 ---
 
 **版本**: 1.0
-**生成时间**: 2026-05-01
+**生成时间**: 2026-05-02
