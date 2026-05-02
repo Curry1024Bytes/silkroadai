@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { defineConfig } from 'vitest/config';
 import path from 'path';
 
@@ -6,6 +7,7 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     exclude: ['**/node_modules/**', '**/third-party/**', '**/vendor/**'],
+    setupFiles: ['dotenv/config'],
   },
   resolve: {
     alias: {

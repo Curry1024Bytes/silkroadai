@@ -1,306 +1,400 @@
-import { getEnv } from '@/lib/config';
-import { getSystemConfig } from '@/lib/system-config';
-import type { Sub2ApiUser, Sub2ApiRedeemCode, Sub2ApiGroup, Sub2ApiSubscription } from './types';
+/**
+ * Silk Road AI Portal — LiteLLM Admin API Client
+ * ================================================
+ *
+ * 替换原 src/lib/sub2api/client.ts
+ *
+ * 所有方法都用 LITELLM_MASTER_KEY 调 LiteLLM Admin API。
+ * 设计参考 LiteLLM 1.82.6 的端点定义,见:
+ *   https://github.com/BerriAI/litellm/blob/main/litellm/proxy/management_endpoints/key_management_endpoints.py
+ *
+ * 使用前请确保 .env 里设置了:
+ *   LITELLM_BASE_URL=http://localhost:4000
+ *   LITELLM_MASTER_KEY=sk-master-xxx
+ */
 
-const DEFAULT_TIMEOUT_MS = 10_000;
-const RECHARGE_TIMEOUT_MS = 30_000;
-const RECHARGE_MAX_ATTEMPTS = 2;
+import { z } from 'zod';
 
-async function getHeaders(idempotencyKey?: string): Promise<Record<string, string>> {
-  const dbValue = await getSystemConfig('LITELLM_MASTER_KEY');
-  const apiKey = dbValue?.trim() || getEnv().LITELLM_MASTER_KEY;
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    'x-api-key': apiKey,
-  };
-  if (idempotencyKey) {
-    headers['Idempotency-Key'] = idempotencyKey;
-  }
-  return headers;
+// ============================================
+// 配置 + 工具
+// ============================================
+
+const LITELLM_BASE_URL = process.env.LITELLM_BASE_URL || 'http://localhost:4000';
+const LITELLM_MASTER_KEY = process.env.LITELLM_MASTER_KEY;
+
+if (!LITELLM_MASTER_KEY) {
+    throw new Error('Missing required env var: LITELLM_MASTER_KEY');
 }
 
-function isRetryableFetchError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  return error.name === 'TimeoutError' || error.name === 'AbortError' || error.name === 'TypeError';
-}
-
-export async function getCurrentUserByToken(token: string): Promise<Sub2ApiUser> {
-  const env = getEnv();
-  const response = await fetch(`${env.LITELLM_BASE_URL}/api/v1/auth/me`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
-    signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
-  });
-
-  if (!response.ok) {
-    throw new Error(`Failed to get current user: ${response.status}`);
-  }
-
-  const data = await response.json();
-  return data.data as Sub2ApiUser;
-}
-
-export async function getUser(userId: number): Promise<Sub2ApiUser> {
-  const env = getEnv();
-  const response = await fetch(`${env.LITELLM_BASE_URL}/api/v1/admin/users/${userId}`, {
-    headers: await getHeaders(),
-    signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
-  });
-
-  if (!response.ok) {
-    if (response.status === 404) throw new Error('USER_NOT_FOUND');
-    throw new Error(`Failed to get user: ${response.status}`);
-  }
-
-  const data = await response.json();
-  return data.data as Sub2ApiUser;
-}
-
-export async function createAndRedeem(
-  code: string,
-  value: number,
-  userId: number,
-  notes: string,
-  options?: { type?: 'balance' | 'subscription'; groupId?: number; validityDays?: number },
-): Promise<Sub2ApiRedeemCode> {
-  const env = getEnv();
-  const url = `${env.LITELLM_BASE_URL}/api/v1/admin/redeem-codes/create-and-redeem`;
-  const body = JSON.stringify({
-    code,
-    type: options?.type ?? 'balance',
-    value,
-    user_id: userId,
-    notes,
-    ...(options?.type === 'subscription' && {
-      group_id: options.groupId,
-      validity_days: options.validityDays,
-    }),
-  });
-
-  let lastError: unknown;
-
-  for (let attempt = 1; attempt <= RECHARGE_MAX_ATTEMPTS; attempt += 1) {
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: await getHeaders(`sub2apipay:recharge:${code}`),
-        body,
-        signal: AbortSignal.timeout(RECHARGE_TIMEOUT_MS),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(`Recharge failed (${response.status}): ${JSON.stringify(errorData)}`);
-      }
-
-      const data = await response.json();
-      return data.redeem_code as Sub2ApiRedeemCode;
-    } catch (error) {
-      lastError = error;
-      if (attempt >= RECHARGE_MAX_ATTEMPTS || !isRetryableFetchError(error)) {
-        throw error;
-      }
-      console.warn(`Sub2API createAndRedeem attempt ${attempt} timed out, retrying...`);
+class LiteLLMApiError extends Error {
+    constructor(
+        public status: number,
+        public endpoint: string,
+        public payload: unknown,
+        message: string,
+    ) {
+        super(`LiteLLM API ${endpoint} ${status}: ${message}`);
+        this.name = 'LiteLLMApiError';
     }
-  }
-
-  throw lastError instanceof Error ? lastError : new Error('Recharge failed');
 }
 
-// ── 分组 API ──
+async function callLiteLLM<T>(
+    method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
+    path: string,
+    body?: unknown,
+    queryParams?: Record<string, string | number | undefined>,
+): Promise<T> {
+    const url = new URL(path, LITELLM_BASE_URL);
+    if (queryParams) {
+        for (const [k, v] of Object.entries(queryParams)) {
+            if (v !== undefined) url.searchParams.set(k, String(v));
+        }
+    }
 
-export async function getAllGroups(): Promise<Sub2ApiGroup[]> {
-  const env = getEnv();
-  const response = await fetch(`${env.LITELLM_BASE_URL}/api/v1/admin/groups/all`, {
-    headers: await getHeaders(),
-    signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
-  });
+    const init: RequestInit = {
+        method,
+        headers: {
+            'Authorization': `Bearer ${LITELLM_MASTER_KEY}`,
+            'Content-Type': 'application/json',
+        },
+    };
+    if (body !== undefined) init.body = JSON.stringify(body);
 
-  if (!response.ok) {
-    throw new Error(`Failed to get groups: ${response.status}`);
-  }
+    const res = await fetch(url, init);
+    const text = await res.text();
+    let data: unknown = null;
+    try { data = text ? JSON.parse(text) : null; } catch { data = text; }
 
-  const data = await response.json();
-  return (data.data ?? []) as Sub2ApiGroup[];
+    if (!res.ok) {
+        const msg = (data as { detail?: string; error?: string } | null)?.detail
+            ?? (data as { error?: string } | null)?.error
+            ?? text
+            ?? res.statusText;
+        throw new LiteLLMApiError(res.status, `${method} ${path}`, data, String(msg));
+    }
+    return data as T;
 }
 
-export async function getGroup(groupId: number): Promise<Sub2ApiGroup | null> {
-  const env = getEnv();
-  const response = await fetch(`${env.LITELLM_BASE_URL}/api/v1/admin/groups/${groupId}`, {
-    headers: await getHeaders(),
-    signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
-  });
+// ============================================
+// 类型(基于 LiteLLM 1.82.6 schema)
+// ============================================
 
-  if (!response.ok) {
-    if (response.status === 404) return null;
-    throw new Error(`Failed to get group ${groupId}: ${response.status}`);
-  }
+export const LiteLLMUserSchema = z.object({
+    user_id: z.string(),
+    user_email: z.string().nullable().optional(),
+    user_alias: z.string().nullable().optional(),
+    user_role: z.string().nullable().optional(),
+    max_budget: z.number().nullable().optional(),
+    spend: z.number().optional(),
+    created_at: z.string().optional(),
+    updated_at: z.string().optional(),
+});
+export type LiteLLMUser = z.infer<typeof LiteLLMUserSchema>;
 
-  const data = await response.json();
-  return data.data as Sub2ApiGroup;
+export const LiteLLMKeySchema = z.object({
+    key_name: z.string().optional(),
+    key_alias: z.string().nullable().optional(),
+    user_id: z.string().nullable().optional(),
+    spend: z.number().default(0),
+    max_budget: z.number().nullable().optional(),
+    soft_budget: z.number().nullable().optional(),
+    expires: z.string().nullable().optional(),
+    models: z.array(z.string()).default([]),
+    metadata: z.record(z.string(), z.unknown()).nullable().optional(),
+    created_at: z.string().optional(),
+    updated_at: z.string().optional(),
+});
+export type LiteLLMKey = z.infer<typeof LiteLLMKeySchema>;
+
+export interface GenerateKeyResponse extends LiteLLMKey {
+    key: string;          // 完整的 sk-xxx,只在创建时返回一次
+    expires: string | null;
+    user_id: string | null;
 }
 
-// ── 订阅 API ──
-
-export async function assignSubscription(
-  userId: number,
-  groupId: number,
-  validityDays: number,
-  notes?: string,
-  idempotencyKey?: string,
-): Promise<Sub2ApiSubscription> {
-  const env = getEnv();
-  const response = await fetch(`${env.LITELLM_BASE_URL}/api/v1/admin/subscriptions/assign`, {
-    method: 'POST',
-    headers: await getHeaders(idempotencyKey),
-    body: JSON.stringify({
-      user_id: userId,
-      group_id: groupId,
-      validity_days: validityDays,
-      notes: notes || `Sub2ApiPay subscription order`,
-    }),
-    signal: AbortSignal.timeout(RECHARGE_TIMEOUT_MS),
-  });
-
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    throw new Error(`Assign subscription failed (${response.status}): ${JSON.stringify(errorData)}`);
-  }
-
-  const data = await response.json();
-  return data.data as Sub2ApiSubscription;
+export interface SpendLogEntry {
+    request_id: string;
+    api_key: string;
+    model: string;
+    spend: number;
+    total_tokens: number;
+    prompt_tokens: number;
+    completion_tokens: number;
+    startTime: string;     // UTC
+    endTime: string;       // UTC
+    user: string | null;
+    metadata: Record<string, unknown>;
 }
 
-export async function getUserSubscriptions(userId: number): Promise<Sub2ApiSubscription[]> {
-  const env = getEnv();
-  const response = await fetch(`${env.LITELLM_BASE_URL}/api/v1/admin/users/${userId}/subscriptions`, {
-    headers: await getHeaders(),
-    signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
-  });
+// ============================================
+// 用户管理
+// ============================================
 
-  if (!response.ok) {
-    if (response.status === 404) return [];
-    throw new Error(`Failed to get user subscriptions: ${response.status}`);
-  }
-
-  const data = await response.json();
-  return (data.data ?? []) as Sub2ApiSubscription[];
+/**
+ * 创建一个新的 LiteLLM user(对应 portal 注册流程的最后一步)
+ *
+ * 注意:auto_create_key 默认是 true,这里关掉,我们让 portal 显式调 generateKey
+ * 因为 portal 想自己控制 key 的 alias 和 max_budget
+ */
+export async function createUser(args: {
+    user_email: string;
+    user_alias?: string;
+    max_budget?: number;
+    user_role?: 'customer' | 'internal_user';
+}): Promise<{ user_id: string; user_email: string }> {
+    const result = await callLiteLLM<{ user_id: string; user_email: string }>(
+        'POST',
+        '/user/new',
+        {
+            user_email: args.user_email,
+            user_alias: args.user_alias,
+            max_budget: args.max_budget,
+            user_role: args.user_role || 'customer',
+            auto_create_key: false,
+        },
+    );
+    return { user_id: result.user_id, user_email: result.user_email };
 }
 
-export async function extendSubscription(subscriptionId: number, days: number, idempotencyKey?: string): Promise<void> {
-  const env = getEnv();
-  const response = await fetch(`${env.LITELLM_BASE_URL}/api/v1/admin/subscriptions/${subscriptionId}/extend`, {
-    method: 'POST',
-    headers: await getHeaders(idempotencyKey),
-    body: JSON.stringify({ days }),
-    signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
-  });
-
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    throw new Error(`Extend subscription failed (${response.status}): ${JSON.stringify(errorData)}`);
-  }
+/**
+ * 查询 LiteLLM user 信息(包括所有 keys)
+ */
+export async function getUserInfo(user_id: string): Promise<{
+    user_info: LiteLLMUser;
+    keys: LiteLLMKey[];
+}> {
+    return await callLiteLLM('GET', '/user/info', undefined, { user_id });
 }
 
-// ── 余额 API ──
+// ============================================
+// Key 管理(核心)
+// ============================================
 
-export async function subtractBalance(
-  userId: number,
-  amount: number,
-  notes: string,
-  idempotencyKey: string,
-): Promise<void> {
-  const env = getEnv();
-  const response = await fetch(`${env.LITELLM_BASE_URL}/api/v1/admin/users/${userId}/balance`, {
-    method: 'POST',
-    headers: await getHeaders(idempotencyKey),
-    body: JSON.stringify({
-      operation: 'subtract',
-      balance: amount,
-      notes,
-    }),
-    signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
-  });
-
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    throw new Error(`Subtract balance failed (${response.status}): ${JSON.stringify(errorData)}`);
-  }
+/**
+ * 给一个 user 生成新的 Virtual Key
+ *
+ * 返回值里的 `key` 字段是完整的 sk-xxx,只这一次返回,之后只能拿 key_name(hash)
+ * Portal 必须在数据库里立即保存这个 key 给客户看
+ */
+export async function generateKey(args: {
+    user_id: string;
+    key_alias?: string;
+    max_budget?: number;
+    models?: string[];          // 空数组 = 所有模型
+    metadata?: Record<string, unknown>;
+}): Promise<GenerateKeyResponse> {
+    return await callLiteLLM<GenerateKeyResponse>(
+        'POST',
+        '/key/generate',
+        {
+            user_id: args.user_id,
+            key_alias: args.key_alias,
+            max_budget: args.max_budget,
+            models: args.models ?? [],
+            metadata: args.metadata,
+        },
+    );
 }
 
-// ── 用户搜索 API ──
-
-export async function searchUsers(
-  keyword: string,
-): Promise<{ id: number; email: string; username: string; notes?: string }[]> {
-  const env = getEnv();
-  const response = await fetch(
-    `${env.LITELLM_BASE_URL}/api/v1/admin/users?search=${encodeURIComponent(keyword)}&page=1&page_size=30`,
-    {
-      headers: await getHeaders(),
-      signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
-    },
-  );
-
-  if (!response.ok) {
-    throw new Error(`Failed to search users: ${response.status}`);
-  }
-
-  const data = await response.json();
-  const paginated = data.data ?? {};
-  return (paginated.items ?? []) as { id: number; email: string; username: string; notes?: string }[];
+/**
+ * 更新 Key 的 max_budget
+ *
+ * ⚠️ 重要:LiteLLM 的 max_budget 是 REPLACE 不是 ADD!
+ * 充值流程必须:
+ *   1. Portal 维护 recharge_logs,算 newMax = SUM(amount) 累计总充值
+ *   2. 调本函数 PUT 这个总值
+ *   3. 充值后立刻调 getKeyInfo 强制刷新 LiteLLM 缓存(否则 60 秒内余额可能不生效)
+ */
+export async function updateKeyBudget(args: {
+    key: string;                // 完整的 sk-xxx
+    max_budget: number;          // 替换为这个总值
+}): Promise<LiteLLMKey> {
+    const result = await callLiteLLM<LiteLLMKey>(
+        'POST',
+        '/key/update',
+        { key: args.key, max_budget: args.max_budget },
+    );
+    // 强制刷新缓存
+    await getKeyInfo(args.key).catch(() => {/* ignore */});
+    return result;
 }
 
-export async function listSubscriptions(params?: {
-  user_id?: number;
-  group_id?: number;
-  status?: string;
-  page?: number;
-  page_size?: number;
-}): Promise<{ subscriptions: Sub2ApiSubscription[]; total: number; page: number; page_size: number }> {
-  const env = getEnv();
-  const qs = new URLSearchParams();
-  if (params?.user_id != null) qs.set('user_id', String(params.user_id));
-  if (params?.group_id != null) qs.set('group_id', String(params.group_id));
-  if (params?.status) qs.set('status', params.status);
-  if (params?.page != null) qs.set('page', String(params.page));
-  if (params?.page_size != null) qs.set('page_size', String(params.page_size));
-
-  const response = await fetch(`${env.LITELLM_BASE_URL}/api/v1/admin/subscriptions?${qs}`, {
-    headers: await getHeaders(),
-    signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
-  });
-
-  if (!response.ok) {
-    throw new Error(`Failed to list subscriptions: ${response.status}`);
-  }
-
-  const data = await response.json();
-  const paginated = data.data ?? {};
-  return {
-    subscriptions: (paginated.items ?? []) as Sub2ApiSubscription[],
-    total: paginated.total ?? 0,
-    page: paginated.page ?? 1,
-    page_size: paginated.page_size ?? 50,
-  };
+/**
+ * 查 Key 详情(spend、max_budget 等)
+ *
+ * 同时会触发 LiteLLM 把这个 key 的状态从 DB 重新加载到内存缓存
+ */
+export async function getKeyInfo(key: string): Promise<{
+    info: LiteLLMKey;
+}> {
+    return await callLiteLLM('GET', '/key/info', undefined, { key });
 }
 
-export async function addBalance(userId: number, amount: number, notes: string, idempotencyKey: string): Promise<void> {
-  const env = getEnv();
-  const response = await fetch(`${env.LITELLM_BASE_URL}/api/v1/admin/users/${userId}/balance`, {
-    method: 'POST',
-    headers: await getHeaders(idempotencyKey),
-    body: JSON.stringify({
-      operation: 'add',
-      balance: amount,
-      notes,
-    }),
-    signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
-  });
+/**
+ * 列出某 user 的所有 keys(支持分页)
+ */
+export async function listKeys(args: {
+    user_id?: string;
+    page?: number;
+    size?: number;
+    sort_by?: 'created_at' | 'spend' | 'updated_at';
+    sort_order?: 'asc' | 'desc';
+    return_full_object?: boolean;
+}): Promise<{
+    keys: LiteLLMKey[];
+    total_count: number;
+    current_page: number;
+    total_pages: number;
+}> {
+    return await callLiteLLM(
+        'GET',
+        '/key/list',
+        undefined,
+        {
+            user_id: args.user_id,
+            page: args.page ?? 1,
+            size: args.size ?? 20,
+            sort_by: args.sort_by ?? 'created_at',
+            sort_order: args.sort_order ?? 'desc',
+            return_full_object: String(args.return_full_object ?? true),
+        },
+    );
+}
 
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    throw new Error(`Add balance failed (${response.status}): ${JSON.stringify(errorData)}`);
-  }
+/**
+ * 删除一个或多个 key
+ */
+export async function deleteKeys(keys: string[]): Promise<{ deleted_keys: string[] }> {
+    return await callLiteLLM('POST', '/key/delete', { keys });
+}
+
+/**
+ * 重置 Key 的 spend 到 0
+ *
+ * 只在退款 / 客户主动请求 reset 时用!
+ * 平时不要调,会让用量曲线断层。
+ */
+export async function resetKeySpend(key: string): Promise<{ key: string; spend: number }> {
+    // 路径里的 key 需要 URL encode
+    return await callLiteLLM('POST', `/key/${encodeURIComponent(key)}/reset_spend`, { reset_to: 0 });
+}
+
+// ============================================
+// Spend / 用量查询
+// ============================================
+
+/**
+ * 查询某个 key 在某段时间的消费日志
+ *
+ * 时间是 UTC,格式 YYYY-MM-DD HH:MM:SS
+ * Portal 客户端时间要转 UTC 再调
+ */
+export async function getSpendLogs(args: {
+    api_key?: string;
+    user_id?: string;
+    start_date: string;           // "YYYY-MM-DD HH:MM:SS" UTC
+    end_date: string;             // 同上
+    page?: number;
+    page_size?: number;
+}): Promise<{
+    logs: SpendLogEntry[];
+    total: number;
+    page: number;
+    page_size: number;
+}> {
+    return await callLiteLLM('GET', '/spend/logs/v2', undefined, {
+        api_key: args.api_key,
+        user_id: args.user_id,
+        start_date: args.start_date,
+        end_date: args.end_date,
+        page: args.page ?? 1,
+        page_size: args.page_size ?? 50,
+    });
+}
+
+// ============================================
+// 健康检查 + 模型列表(给 portal 前端用)
+// ============================================
+
+/**
+ * 拿当前 LiteLLM 配置的所有可用模型
+ */
+export async function listModels(): Promise<{
+    data: Array<{ id: string; object: string; created: number; owned_by: string }>;
+}> {
+    return await callLiteLLM('GET', '/v1/models');
+}
+
+/**
+ * Liveness 检查(给 cron 监控用)
+ */
+export async function checkLiteLLMHealth(): Promise<{ status: string }> {
+    return await callLiteLLM('GET', '/health/liveliness');
+}
+
+// ============================================
+// Portal 业务封装(高层 API)
+// ============================================
+
+/**
+ * Portal 高层封装:为新注册的客户做"开户 + 发首个 Key"
+ *
+ * 流程:
+ *   1. 在 LiteLLM 创建 user
+ *   2. 给该 user 生成第一个 Key(模式 X:每客户一 Key)
+ *   3. 返回 { litellm_user_id, litellm_key, key_alias }
+ *
+ * Portal 要把这三个字段存到自己的 users + litellm_keys 表
+ */
+export async function provisionNewCustomer(args: {
+    portal_user_id: string;       // Portal 自己的 user UUID
+    email: string;
+    initial_max_budget?: number;  // 默认 0
+}): Promise<{
+    litellm_user_id: string;
+    litellm_key: string;
+    key_alias: string;
+}> {
+    // 1. 创建 LiteLLM user
+    const user = await createUser({
+        user_email: args.email,
+        user_alias: args.portal_user_id,
+        user_role: 'customer',
+    });
+
+    // 2. 给 user 创建第一个 Key
+    const keyAlias = `default-${args.portal_user_id.slice(0, 8)}`;
+    const key = await generateKey({
+        user_id: user.user_id,
+        key_alias: keyAlias,
+        max_budget: args.initial_max_budget ?? 0,
+        models: [],   // 所有模型
+        metadata: { portal_user_id: args.portal_user_id, type: 'default' },
+    });
+
+    return {
+        litellm_user_id: user.user_id,
+        litellm_key: key.key,
+        key_alias: keyAlias,
+    };
+}
+
+/**
+ * Portal 高层封装:充值入账
+ *
+ * 流程:
+ *   1. Portal 在自己的 recharge_logs 加一条记录
+ *   2. 算出该 key 的累计充值总额(SUM)
+ *   3. 调 LiteLLM updateKeyBudget 把 max_budget 设为这个总值
+ *
+ * 调用方负责事务管理 — 这个函数只做 LiteLLM 那边的写入
+ */
+export async function applyRecharge(args: {
+    litellm_key: string;
+    new_total_max_budget: number;  // 该 key 的累计充值总额(由 portal 算)
+}): Promise<LiteLLMKey> {
+    return await updateKeyBudget({
+        key: args.litellm_key,
+        max_budget: args.new_total_max_budget,
+    });
 }
