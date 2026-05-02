@@ -18,6 +18,8 @@
     "@prisma/adapter-pg": "7.4.1",
     "@prisma/client": "^7.4.2",
     "@stripe/stripe-js": "^8.9.0",
+    "bcryptjs": "^3.0.3",
+    "jose": "^6.2.3",
     "next": "16.1.6",
     "pg": "^8.19.0",
     "qrcode": "^1.5.4",
