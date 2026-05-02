@@ -9,7 +9,7 @@
 
 - **名字**: Silk Road AI Portal (silkroadai-portal)
 - **GitHub**: https://github.com/yexioy/silkroadai
-- **角色**: LiteLLM 客户层(Customer Portal)
+- **角色**: new-api 客户层(Customer Portal)— W2 D3 已切到 B3 路线
 - **来源**: Fork 自 [touwaeriol/sub2apipay](https://github.com/touwaeriol/sub2apipay)(已归档)
 - **目标域名**: portal.silkroadai.io
 
@@ -17,15 +17,19 @@
 
 ## 项目核心定位 — **必读**
 
-这是一个**给 LiteLLM 套客户层**的项目。LiteLLM 本身**一个字不改**,我们只在前面套一层:
+这是一个**给 new-api 套客户层**的项目。new-api 本身**一个字不改**(AGPL),我们只在前面套一层:
 - 客户在 portal 注册 / 登录 / 充值 / 拿 API Key / 看用量
-- portal 在背后调 LiteLLM Admin API 创建 Virtual Key + 设 max_budget + 拉 spend
-- LiteLLM 是模型路由后端,客户感知不到它的存在
+- portal 在背后调 new-api Admin API:创建 user → login as user → rotate access_token → create token → 拿 sk-xxx
+- 充值 = 调 `POST /api/user/manage` `add_quota` 给 user(**user.quota 是单点预算门**,token 永远 unlimited_quota)
+- new-api 是模型路由后端(117 个模型,跨 SiliconFlow / Anthropic / OpenAI / Sub2API 等),客户感知不到它的存在
+
+**历史**:W1 走 LiteLLM 路线(15 个模型)。W2 D3 用户决定切到 B3:new-api 后端 + 自写前端 + Chat UI。LiteLLM 客户端代码现在保留在 `src/lib/litellm.archive/` 作 W1 参考,`src/lib/litellm/client.ts` 是 thin shim 让老 routes 编译。详见 `_bootstrap/docs/PROJECT-PLAN-B3.md`。
 
 **禁止做的事**:
-- ❌ 不要建议 fork 或修改 LiteLLM 源码
-- ❌ 不要在 portal 里实现"模型路由"逻辑(LiteLLM 已经做了)
-- ❌ 不要尝试调 SiliconFlow / Anthropic / OpenAI 上游(走 LiteLLM)
+- ❌ 不要建议 fork 或修改 new-api 源码(AGPL,改了就要开源全部)
+- ❌ 不要在 portal 里实现"模型路由"逻辑(new-api 已经做了)
+- ❌ 不要尝试调 SiliconFlow / Anthropic / OpenAI 上游(走 new-api)
+- ❌ 不要再调 LiteLLM(W3 D1 在 VPS 关停)— 任何 `@/lib/litellm/client` import 都是 R3 stub,不是真后端
 
 ---
 
@@ -104,20 +108,29 @@ silkroadai/
 
 ---
 
-## 核心 API 调用(LiteLLM Admin API,全部免费版可用)
+## 核心 API 调用(new-api Admin API)
 
-| 操作 | 函数 | LiteLLM 端点 |
+| 操作 | 函数 | new-api 端点 |
 |---|---|---|
-| 注册时建 LiteLLM user | `createUser` | `POST /user/new` |
-| 给 user 发 Key | `generateKey` | `POST /key/generate` |
-| 充值后调 max_budget | `updateKeyBudget` | `POST /key/update` |
-| 查 Key 详情(余额) | `getKeyInfo` | `GET /key/info` |
-| 列出 user 的 Key | `listKeys` | `GET /key/list` |
-| 删 Key | `deleteKeys` | `POST /key/delete` |
-| 退款 reset spend | `resetKeySpend` | `POST /key/{key}/reset_spend` |
-| 查用量日志 | `getSpendLogs` | `GET /spend/logs/v2` |
+| 注册时建 new-api user(admin) | `createUser` | `POST /api/user/` |
+| 反查 user / 拿登录 cookie | `loginAsUser`(内部) | `POST /api/user/login` |
+| Rotate 出客户 access_token | (用 cookie 调 call) | `GET /api/user/token` ⚠️ **是 rotate 不是 read** |
+| 给 user 创建 token | `createTokenForCustomer` | `POST /api/token/` (act-as customer) |
+| 拿 token 真实 key | `getTokenKey` | `POST /api/token/{id}/key` (返回 `{key:"sk-..."}`) |
+| 列出客户的 tokens | `listTokensForCustomer` | `GET /api/token/?p=&page_size=` (act-as) |
+| 充值入账 | `addQuota` / `applyTopup` | `POST /api/user/manage` `action=add_quota` |
+| 查用户余额(quota) | `getUser` | `GET /api/user/{id}` |
+| 查用量日志 | `queryLogs` | `GET /api/log/` (filter by **username** 不是 user_id) |
+| 列出可用模型 | `listAvailableModels` | `GET /api/channel/models_enabled` |
+| 高层封装:开通新客户 | `provisionNewCustomer` | 6 步内部串联(W2 D6 验证) |
 
-封装在 `src/lib/litellm/client.ts`。看那里就是 source of truth。
+封装在 `src/lib/newapi/client.ts`。看那里就是 source of truth。
+
+**双 header 认证**(每个请求都要):
+- `Authorization: <access_token>`(不带 `Bearer` 前缀,**新代码不要再用 admin token 调 per-user endpoint**)
+- `New-Api-User: <int_user_id>`(必填,缺了一律 401)
+
+`provisionNewCustomer` 的 6 步流程见 `src/lib/newapi/client.ts` 头部注释 + gotcha #10。
 
 ---
 
@@ -143,6 +156,48 @@ LiteLLM 所有时间字段都是 UTC。客户端展示时再转用户时区,不�
 ### 6. 别用 `user.max_budget`
 LiteLLM 同时支持 user-level 和 key-level 预算。我们只用 key-level(更灵活,客户后续可能多 key)。**`user.max_budget` 永远 null**。
 
+> ⚠️ 上面 #1-#6 是 W1 LiteLLM 时代的遗留(已停用,W2 D3 切到 new-api)。
+> 现在 portal 调 new-api,看下面 #9-#13(B3 W2 D6 实测踩到的坑)。
+
+### 9. new-api `display_name` 20 字符上限(不是 50)
+**症状**:`POST /api/user/` 返回 `422 Field validation for 'DisplayName' failed on the 'max' tag`。
+**真实行为**:`display_name` max **20**(bootstrap 文档说 max 50,错的);`email` 字段才是 max 50。
+**解决**:`display_name` 用 username(`c-{8字符}` 必然 ≤20),邮箱仍走 `email` 字段。
+**修复 commit**:`ad401af` (W2 D6) — `_bootstrap/src/lib/newapi/client.ts` 文档不准。
+
+### 10. `PUT /api/user/` 不能给客户改 `access_token`
+**症状**:PUT 返回 `{success:true}` 看似成功,但立刻 `GET /api/user/{id}` 拿回 `access_token: null`。任何用这个 access_token 的后续操作 → 401 Unauthorized。
+**真实行为**:`PUT /api/user/` **静默丢弃** `access_token` 字段,doc 没说。其他字段(group/role/quota)是真改的,所以错觉很强。
+**解决**:不能 admin 改,要让客户自己 rotate:
+1. `POST /api/user/login` 用 portal 持有的 username+password → 拿 session cookie + user.id
+2. `GET /api/user/token` 带 cookie + `New-Api-User: <user.id>` → 返回新生成的 access_token
+3. portal 把这个 access_token 存 DB,以后 act-as 该客户用
+**修复 commit**:`ad401af` (W2 D6) — 见 `provisionNewCustomer` 重写后的 6 步流程。
+
+### 11. `POST /api/token/{id}/key` 返回 `{key: "sk-..."}` 不是裸字符串
+**症状**:把返回值当 string 存进 `newapi_token_value String @unique` → Prisma 写入抛 type error,或者存进去后所有后续 `.slice` 调用炸。
+**真实行为**:envelope 里 `data: { key: "sk-..." }`,需要 `.key` 解包。
+**解决**:`getTokenKey` 在 client 层 unwrap,返回内层字符串。
+**修复 commit**:`ad401af` (W2 D6) — `client.ts:getTokenKey` 改 `Promise<{key:string}>` 后 `return result.key`。
+
+### 12. `unlimited_quota=false + remain_quota=0` 的 token 直接拒绝调用
+**症状**:刚创建的 token 调 `/v1/chat/completions` → `Invalid token`(误导,看起来像 auth 错)。
+**真实行为**:new-api 把 `remain_quota=0` 视为"已耗尽",**在 token 验证阶段就拒**,根本没到上游模型。
+**解决**:portal 创建的 token 永远设 `unlimited_quota: true`。预算关由 `user.quota` 单点控制(W4 充值流入账走 `add_quota` 加给 user)。Token 不再做第二道独立预算门。
+**架构影响**:**充值 = `add_quota` 给 user,token 不动**。这条要在 W4 充值改造时记牢。
+**修复 commit**:`ad401af` (W2 D6) — `provisionNewCustomer` 默认 `unlimited_quota: true`。
+
+### 13. ⚠️⚠️⚠️ `GET /api/user/token` 是 **rotate** 不是 read
+**最危险的一条**。这个端点不是"拿当前 token",是"重新生成并使旧的失效"。
+**症状**:你以为是无副作用的 GET,顺手调一下 → portal 用的 admin token 立即失效 → 整套 portal 调不通 new-api → 全线 502。
+**真实行为**:每次 GET 都 rotate,旧值作废。doc 没明说。
+**解决**:
+- 永远不调 `GET /api/user/token`,除非你**主动**想 rotate。
+- portal `.env` 里的 `NEWAPI_ADMIN_TOKEN` **完全人工管理**:在 1Password,不要从 API 拿。
+- 客户的 access_token 我们也只在 `provisionNewCustomer` 里 rotate **一次**(注册时),之后存 DB,后续 act-as 都用 DB 里的值,不再调这个端点。
+**W3 runbook 必读**:任何运维操作前先确认是否会触发 rotate。如果 admin token 真的丢了,流程是"在 admin.silkroadai.io UI 重新生成 → 写回 .env → 重启 dev/prod"(不要从 API 试图重新拿)。
+**修复 commit**:`ad401af` (W2 D6) — 在 `_bootstrap/src/lib/newapi/client.ts` 的注释里也标了。
+
 ---
 
 ## 不要做的事(避免误改)
@@ -150,10 +205,12 @@ LiteLLM 同时支持 user-level 和 key-level 预算。我们只用 key-level(�
 - ❌ 不要改 `src/lib/easy-pay/`、`src/lib/wxpay/`、`src/lib/alipay/`、`src/lib/stripe/` — 支付层是从 Sub2ApiPay 继承的,稳定可靠,改了就要重测全部支付链路
 - ❌ 不要改 `src/lib/order/{fee,status,timeout,code-gen,limits}.ts` — 订单工具函数,继承,不动
 - ❌ 不要改 `src/app/api/easy-pay/notify/route.ts` 的 webhook 框架 — 只改它内部 `handlePaymentNotify` 调用的下游函数
-- ❌ 不要把 LITELLM_MASTER_KEY hardcode 进任何代码,只能在 .env 里
-- ❌ 不要在测试里调真实的 LiteLLM API(除了 smoke test),用 mock
+- ❌ 不要把 `NEWAPI_ADMIN_TOKEN` 或 `PORTAL_JWT_SECRET` hardcode 进任何代码,只能在 .env 里
+- ❌ 不要在测试里调真实的 new-api(除了 `src/lib/newapi/__tests__/client.smoke.test.ts`),用 mock
 - ❌ 不要直接写 SQL,所有数据库操作走 Prisma
-- ❌ 不要建议改 LiteLLM 源码
+- ❌ 不要建议改 new-api 源码(AGPL)
+- ❌ 不要从 API rotate `NEWAPI_ADMIN_TOKEN`(`GET /api/user/token` 是 rotate,会让 .env 当前值失效)— 见 gotcha #13
+- ❌ 不要尝试 admin 直接给客户改 access_token(PUT 静默丢)— 见 gotcha #10
 
 ---
 
@@ -187,7 +244,9 @@ pnpm prisma migrate reset                       # ⚠️ 危险:清库重建
 # 测试
 pnpm vitest                                     # watch 模式
 pnpm vitest run                                 # 单次
-pnpm vitest run src/lib/litellm                 # 跑某目录
+pnpm vitest run src/lib/newapi                  # 跑某目录(B3 之后)
+# 真实 new-api 烟雾测试需要 SSH 隧道:
+ssh -fN -L 3000:localhost:3000 -o ServerAliveInterval=60 vps
 
 # Lint + 类型检查
 pnpm tsc --noEmit
@@ -208,8 +267,13 @@ ssh root@23.27.113.88 "cd /opt/silkroad-portal && git pull && docker compose up 
 ```bash
 DATABASE_URL="postgresql://portal:devpass123@localhost:5433/silkroadai_portal_dev"
 
-LITELLM_BASE_URL="http://localhost:4000"          # 本地用 SSH 隧道转发
-LITELLM_MASTER_KEY="sk-master-真实-key"           # 找 .ssh/silkroadai-secrets
+# new-api 后端(B3 主链路)— 本地通过 SSH 隧道:
+#   ssh -fN -L 3000:localhost:3000 -o ServerAliveInterval=60 vps
+NEWAPI_BASE_URL="http://localhost:3000"
+NEWAPI_ADMIN_TOKEN="<在 admin.silkroadai.io 个人设置生成,1Password 存档>"
+NEWAPI_ADMIN_USER_ID=1                            # root 通常是 1
+NEWAPI_QUOTA_PER_USD=500000                       # 1 USD = 500k quota(new-api 默认)
+USD_TO_CNY_RATE=7.2
 
 PORTAL_JWT_SECRET="本地随便生成 64 字节 hex"
 ADMIN_TOKEN="本地随便生成 32 字节 hex"
@@ -218,16 +282,17 @@ NEXT_PUBLIC_APP_URL="http://localhost:3002"
 APP_PORT=3002
 ```
 
-完整列表见 `.env.example`。
+完整列表见 `.env.example`。LiteLLM 时代的 `LITELLM_*` 变量保留作 fallback,W3 D1 关停后可删。
 
 ---
 
 ## 项目外部依赖说明
 
-- **LiteLLM**: 部署在 VPS 23.27.113.88:4000,本地通过 SSH 隧道访问
-- **Sub2API**: 部署在 VPS,LiteLLM 内部用它转发闭源模型(portal 不直接调)
+- **new-api**: 部署在 VPS 23.27.113.88:3000(admin.silkroadai.io),本地通过 SSH 隧道访问
+- **LiteLLM**: 部署在 VPS 23.27.113.88:4000(W3 D1 计划关停),作 fallback 保留
+- **Sub2API**: 部署在 VPS,作为 new-api 的一个 Custom 渠道上游(portal 不直接调)
 - **易支付**: 公开网关,需要 PID/KEY,callback 必须公网可达
-- **QQ SMTP**: 邮件验证用
+- **QQ SMTP**: 邮件验证用(W3 启用)
 
 ---
 

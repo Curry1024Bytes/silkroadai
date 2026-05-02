@@ -1,9 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
 import { getCurrentUser } from '@/lib/auth/session';
-import { getKeyInfo } from '@/lib/litellm/client';
+import { getUser, quotaToCny, quotaToUsd } from '@/lib/newapi/client';
 import { resolveLocale } from '@/lib/locale';
 
+/**
+ * GET /api/user
+ *
+ * Returns the current portal user + their new-api tokens (cached) + a live
+ * quota snapshot pulled from new-api (`getUser` admin call). Live pull is
+ * cheap (one HTTP) and gives the customer the truth on every page load
+ * without us having to maintain a sync cron.
+ */
 export async function GET(request: NextRequest) {
     const locale = resolveLocale(request.nextUrl.searchParams.get('lang'));
 
@@ -15,41 +23,49 @@ export async function GET(request: NextRequest) {
         );
     }
 
-    const keys = await prisma.liteLLMKey.findMany({
+    const tokens = await prisma.newApiToken.findMany({
         where: { user_id: user.id, status: 'active' },
         orderBy: { created_at: 'asc' },
     });
 
-    // Pull live spend from LiteLLM in parallel; fall back to cached_spend on error
-    // so the portal stays usable if LiteLLM is briefly down.
-    const live = await Promise.all(
-        keys.map(async (k) => {
-            try {
-                const info = await getKeyInfo(k.litellm_key);
-                return { id: k.id, spend: Number(info.info.spend ?? k.cached_spend) };
-            } catch (err) {
-                console.warn(`[user/route] getKeyInfo failed for key ${k.id}:`, err);
-                return { id: k.id, spend: Number(k.cached_spend) };
-            }
-        }),
-    );
-    const spendById = new Map(live.map((x) => [x.id, x.spend]));
+    // Pull live quota for the user from new-api. If new-api is briefly
+    // down, fall back to the cached values on the User row.
+    let liveQuota: { remain: bigint; used: bigint } | null = null;
+    if (user.newapi_user_id !== null && user.newapi_user_id !== undefined) {
+        try {
+            const u = await getUser(user.newapi_user_id);
+            liveQuota = {
+                remain: BigInt(u.quota),
+                used: BigInt(u.used_quota),
+            };
+        } catch (err) {
+            console.warn(
+                `[user/route] new-api getUser failed for ${user.newapi_user_id}, falling back to cache:`,
+                err,
+            );
+        }
+    }
 
-    const keysOut = keys.map((k) => {
-        const spend = spendById.get(k.id) ?? Number(k.cached_spend);
-        const maxBudget = Number(k.max_budget);
-        return {
-            id: k.id,
-            key_alias: k.key_alias,
-            max_budget: maxBudget,
-            spend,
-            balance: Math.max(0, maxBudget - spend),
-            status: k.status,
-            models: k.models,
-        };
-    });
+    const remainQuota: bigint =
+        liveQuota?.remain ?? user.newapi_quota_cache ?? BigInt(0);
+    const usedQuota: bigint =
+        liveQuota?.used ?? user.newapi_used_quota_cache ?? BigInt(0);
 
-    const total_balance = keysOut.reduce((sum, k) => sum + k.balance, 0);
+    const tokensOut = tokens.map((t) => ({
+        id: t.id,
+        key_alias: t.key_alias,
+        newapi_token_id: t.newapi_token_id,
+        // Token rows in DB hold the full sk-... value — useful for the customer
+        // to copy on first display. We don't mask here; client UI should redact.
+        newapi_token_value: t.newapi_token_value,
+        cached_remain_quota: t.cached_remain_quota?.toString() ?? null,
+        cached_used_quota: t.cached_used_quota?.toString() ?? null,
+        last_synced_at: t.last_synced_at,
+        model_limits_enabled: t.model_limits_enabled,
+        model_limits: t.model_limits,
+        status: t.status,
+        created_at: t.created_at,
+    }));
 
     return NextResponse.json({
         portal_user: {
@@ -60,9 +76,18 @@ export async function GET(request: NextRequest) {
             email_verified: user.email_verified,
             locale: user.locale,
             status: user.status,
+            newapi_user_id: user.newapi_user_id,
+            newapi_username: user.newapi_username,
             created_at: user.created_at,
         },
-        keys: keysOut,
-        total_balance,
+        tokens: tokensOut,
+        // BigInt is not JSON-serializable by default; expose as string + decimals.
+        quota: {
+            remain_raw: remainQuota.toString(),
+            used_raw: usedQuota.toString(),
+            remain_usd: quotaToUsd(Number(remainQuota)),
+            remain_cny: quotaToCny(Number(remainQuota)),
+            live: liveQuota !== null,
+        },
     });
 }

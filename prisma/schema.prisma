@@ -7,20 +7,20 @@ datasource db {
 }
 
 model Order {
-  id           String      @id @default(cuid())
-  user_id      String?     @db.Uuid
-  user         User?       @relation(fields: [user_id], references: [id])
-  key_id       String?     @db.Uuid
-  key          LiteLLMKey? @relation(fields: [key_id], references: [id])
-  userEmail    String?     @map("user_email")
-  userName     String?     @map("user_name")
-  userNotes    String?     @map("user_notes")
-  amount       Decimal     @db.Decimal(10, 2)
-  payAmount    Decimal?    @map("pay_amount") @db.Decimal(10, 2)
-  feeRate      Decimal?    @map("fee_rate") @db.Decimal(5, 4)
-  rechargeCode String      @unique @map("recharge_code")
-  status       OrderStatus @default(PENDING)
-  paymentType  String      @map("payment_type")
+  id           String       @id @default(cuid())
+  user_id      String?      @db.Uuid
+  user         User?        @relation(fields: [user_id], references: [id])
+  key_id       String?      @db.Uuid
+  key          NewApiToken? @relation(fields: [key_id], references: [id])
+  userEmail    String?      @map("user_email")
+  userName     String?      @map("user_name")
+  userNotes    String?      @map("user_notes")
+  amount       Decimal      @db.Decimal(10, 2)
+  payAmount    Decimal?     @map("pay_amount") @db.Decimal(10, 2)
+  feeRate      Decimal?     @map("fee_rate") @db.Decimal(5, 4)
+  rechargeCode String       @unique @map("recharge_code")
+  status       OrderStatus  @default(PENDING)
+  paymentType  String       @map("payment_type")
 
   paymentTradeNo String? @map("payment_trade_no")
   payUrl         String? @map("pay_url")
@@ -170,8 +170,10 @@ model PaymentProviderInstance {
 }
 
 // ============================================
-// Silk Road AI Portal — W1 D2 新增
+// Silk Road AI Portal — B3 路线 (W2 D4)
 // ============================================
+// 后端从 LiteLLM 切到 new-api。User / Key / RechargeLog / Order 关系
+// 全部指向 new-api 的 user/token 模型。
 
 // ── Portal 自有用户表 ──
 model User {
@@ -190,11 +192,20 @@ model User {
   locale                 String     @default("zh-CN") @db.VarChar(10)
   status                 UserStatus @default(active)
 
-  // 关联到 LiteLLM 后端的 user(在 LiteLLM users 表里)
-  litellm_user_id String? @unique
+  // ── new-api 后端关联 ──
+  // newapi_user.id 是 int(不是 UUID)
+  newapi_user_id          Int?      @unique
+  // new-api 那边的 username,日志查询接口需要 username 而不是 id
+  newapi_username         String?   @unique
+  // 32-字符 secret;portal 用它 act-as 该客户调 /api/token/* 等 per-user endpoint
+  newapi_access_token     String?
+  // 余额缓存(raw quota,不是 USD/CNY);实时数据从 new-api 拉
+  newapi_quota_cache      BigInt?
+  newapi_used_quota_cache BigInt?
+  newapi_cached_at        DateTime?
 
   // 关系
-  keys      LiteLLMKey[]
+  keys      NewApiToken[]
   orders    Order[]
   recharges RechargeLog[]
 
@@ -212,25 +223,26 @@ enum UserStatus {
   banned
 }
 
-// ── LiteLLM Virtual Key ──
-model LiteLLMKey {
+// ── new-api Token(原 LiteLLMKey)──
+model NewApiToken {
   id      String @id @default(uuid()) @db.Uuid
   user_id String @db.Uuid
   user    User   @relation(fields: [user_id], references: [id], onDelete: Cascade)
 
-  // LiteLLM 那边的 key(完整 sk-xxx,只在创建时拿到一次)
-  litellm_key String @unique
-  key_alias   String
+  // new-api 那边的 token(完整 sk-xxx,只在创建时拿到一次)
+  newapi_token_id    Int    @unique
+  newapi_token_value String @unique
+  // 客户给 key 起的名字 = new-api 的 token.name
+  key_alias          String
 
-  // 当前总额度(= 累计充值)
-  max_budget Decimal @default(0) @db.Decimal(12, 4)
+  // 缓存(实时数据从 new-api 拉,这里只是 portal 显示用)
+  cached_remain_quota BigInt?
+  cached_used_quota   BigInt?
+  last_synced_at      DateTime?
 
-  // 缓存的当前 spend(从 LiteLLM 拉)
-  cached_spend   Decimal   @default(0) @db.Decimal(12, 4)
-  last_synced_at DateTime?
-
-  // 可访问的模型(空数组 = 所有)
-  models String[] @default([])
+  // 模型限制(冗余存,真实约束在 new-api 那边)
+  model_limits_enabled Boolean  @default(false)
+  model_limits         String[] @default([])
 
   status KeyStatus @default(active)
 
@@ -241,8 +253,8 @@ model LiteLLMKey {
   updated_at DateTime @updatedAt
 
   @@index([user_id])
-  @@index([litellm_key])
-  @@map("litellm_keys")
+  @@index([newapi_token_id])
+  @@map("newapi_tokens")
 }
 
 enum KeyStatus {
@@ -253,17 +265,23 @@ enum KeyStatus {
 
 // ── 充值流水(审计 + 累计计算)──
 model RechargeLog {
-  id       String     @id @default(uuid()) @db.Uuid
-  user_id  String     @db.Uuid
-  user     User       @relation(fields: [user_id], references: [id])
-  key_id   String     @db.Uuid
-  key      LiteLLMKey @relation(fields: [key_id], references: [id])
+  id       String       @id @default(uuid()) @db.Uuid
+  user_id  String       @db.Uuid
+  user     User         @relation(fields: [user_id], references: [id])
+  key_id   String?      @db.Uuid
+  key      NewApiToken? @relation(fields: [key_id], references: [id])
   order_id String?
-  order    Order?     @relation(fields: [order_id], references: [id])
+  order    Order?       @relation(fields: [order_id], references: [id])
 
   amount         Decimal @db.Decimal(12, 4)
   balance_before Decimal @db.Decimal(12, 4)
   balance_after  Decimal @db.Decimal(12, 4)
+
+  // ── new-api 审计冗余 ──
+  // 充给 new-api 的 raw quota 增量(对应 amount 经汇率换算)
+  newapi_quota_added BigInt?
+  // 充值落到哪个 new-api user(冗余:RechargeLog.user.newapi_user_id 也能拿到)
+  newapi_user_id     Int?
 
   // 充值类型
   source RechargeSource @default(payment)

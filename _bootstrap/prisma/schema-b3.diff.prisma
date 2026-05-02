@@ -1,0 +1,128 @@
+// ============================================
+// Silk Road AI Portal — Prisma Schema 改造(B3 路线)
+// ============================================
+//
+// 这是 W2 D4 要做的 schema 调整。
+//
+// 改动概要:
+//   - User 表:加 newapi_user_id (int) + newapi_access_token (secret) + newapi_username
+//             删除 litellm_user_id
+//   - LiteLLMKey 表 → 改名为 NewApiToken,字段重组
+//   - RechargeLog 表:基本保留,加 newapi_quota_added 字段做审计
+//
+// 跑 migration:
+//   pnpm prisma migrate dev --name b3_switch_to_newapi
+//
+
+// ============================================
+// User 表的改动
+// ============================================
+//
+// 在 User model 里:
+//
+//   - 删除字段:
+//       litellm_user_id  String?  @unique
+//
+//   - 新增字段:
+//       newapi_user_id        Int?     @unique     // new-api 那边的 user.id (int 不是 UUID)
+//       newapi_username       String?  @unique     // new-api 那边的 username,日志查询用
+//       newapi_access_token   String?              // 32 字符 secret,portal 用它 act-as 该客户
+//       newapi_quota_cache    BigInt?              // 余额缓存 (raw quota, 不是 USD/CNY)
+//       newapi_used_quota_cache BigInt?            // 累计已用 quota 缓存
+//       newapi_cached_at      DateTime?            // 上次缓存时间(决定要不要刷)
+//
+//   - keys 关系改名:
+//       keys NewApiToken[]    // 原 keys LiteLLMKey[]
+
+
+// ============================================
+// LiteLLMKey 表 → NewApiToken
+// ============================================
+//
+// 重命名 model + 调字段。如果 W1 已经有 LiteLLMKey 表 + 数据,
+// 我们用 prisma migrate 的 @map 优雅处理:
+//
+// model NewApiToken {
+//   id                String       @id @default(uuid()) @db.Uuid
+//   user_id           String       @db.Uuid
+//   user              User         @relation(fields: [user_id], references: [id], onDelete: Cascade)
+//
+//   // new-api 那边的字段
+//   newapi_token_id   Int          @unique           // /api/token/{id} 用这个
+//   newapi_token_value String      @unique           // 完整 sk-xxx,只在创建时拿到一次
+//   key_alias         String                          // 客户给 key 起的名字 = new-api 的 token.name
+//
+//   // 缓存(实时数据从 new-api 拉,这里只是 portal 显示用)
+//   cached_remain_quota BigInt?                       // raw quota
+//   cached_used_quota   BigInt?
+//   last_synced_at      DateTime?
+//
+//   // 模型限制(冗余存,真实约束在 new-api 那边)
+//   model_limits_enabled Boolean   @default(false)
+//   model_limits         String[]  @default([])
+//
+//   status            KeyStatus    @default(active)
+//   recharges         RechargeLog[]
+//
+//   created_at        DateTime     @default(now())
+//   updated_at        DateTime     @updatedAt
+//
+//   @@index([user_id])
+//   @@index([newapi_token_id])
+//   @@map("newapi_tokens")          // 表名:newapi_tokens
+// }
+
+// ============================================
+// RechargeLog 表的改动
+// ============================================
+//
+// model RechargeLog {
+//   ... 现有字段保留 ...
+//
+//   - 新增:
+//     newapi_quota_added BigInt              // raw quota,加给 new-api 的额度(对应 amount)
+//     newapi_user_id     Int                 // 充给哪个 new-api user(冗余审计)
+//
+//   - key_id 改成关联 NewApiToken:
+//     key_id            String?  @db.Uuid
+//     key               NewApiToken? @relation(fields: [key_id], references: [id])
+// }
+
+// ============================================
+// Order 表的改动
+// ============================================
+//
+// model Order {
+//   ... 现有字段保留(user_id 已经是 UUID) ...
+//
+//   - 把 LiteLLMKey 关系改成 NewApiToken:
+//     key_id     String?       @db.Uuid
+//     key        NewApiToken?  @relation(fields: [key_id], references: [id])
+// }
+
+// ============================================
+// 完整的迁移步骤
+// ============================================
+//
+// 1. 先备份当前 dev 数据库:
+//    docker exec silkroad-portal-pg pg_dump -U portal silkroadai_portal_dev > /tmp/portal-pre-b3.sql
+//
+// 2. 编辑 prisma/schema.prisma,按上面注释做改动:
+//    - User model:删 litellm_user_id,加 5 个 newapi_* 字段,改 keys 关系
+//    - LiteLLMKey model → 改名为 NewApiToken,字段重组(详见上面)
+//    - RechargeLog model:加 2 个新字段,key_id 关系换 model
+//    - Order model:key_id 关系换 model
+//
+// 3. 跑 migration:
+//    pnpm prisma migrate dev --name b3_switch_to_newapi
+//
+// 4. 跑 generate:
+//    pnpm prisma generate
+//
+// 5. 验证:
+//    docker exec silkroad-portal-pg psql -U portal -d silkroadai_portal_dev -c "\d users"
+//    docker exec silkroad-portal-pg psql -U portal -d silkroadai_portal_dev -c "\d newapi_tokens"
+//    应该看到新字段 + 老 LiteLLMKey 表已删
+//
+// 注意:dev DB 之前 D7 注册的测试用户会丢(因为 LiteLLMKey 表删了)
+// 这没关系,我们 D6 会重新跑端到端测试创建新用户

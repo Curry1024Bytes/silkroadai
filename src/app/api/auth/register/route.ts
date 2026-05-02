@@ -3,7 +3,12 @@ import { z } from 'zod';
 import { hash } from 'bcryptjs';
 import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
-import { provisionNewCustomer } from '@/lib/litellm/client';
+import {
+    provisionNewCustomer,
+    deleteUser as deleteNewApiUser,
+    searchUser as searchNewApiUser,
+    type ProvisionedCustomer,
+} from '@/lib/newapi/client';
 import { signSession, setSessionCookie } from '@/lib/auth/session';
 
 // bcrypt is a Node-native dep (and prisma adapter-pg too) — pin runtime so
@@ -17,6 +22,33 @@ const RegisterSchema = z.object({
     password: z.string().min(8).max(128),
     nickname: z.string().trim().max(64).optional(),
 });
+
+/**
+ * Best-effort cleanup of any new-api user that may have been created before
+ * provisionNewCustomer threw. provisionNewCustomer is a 6-step flow; if step 1
+ * (createUser) failed, nothing exists and search returns nothing. If step 2-6
+ * failed, the new-api user exists with the deterministic `c-{portal_uuid8}`
+ * username and we need to delete it (this also disposes any token created
+ * in step 4 since deleteUser is a soft-delete that disables the user record).
+ */
+async function cleanupOrphanNewApiUser(portalUserId: string, contextEmail: string): Promise<void> {
+    const username = `c-${portalUserId.slice(0, 8)}`;
+    try {
+        const search = await searchNewApiUser(username, 1, 5);
+        const orphan = search.items.find((u) => u.username === username);
+        if (orphan) {
+            await deleteNewApiUser(orphan.id);
+            console.warn(
+                `[register] cleaned orphan new-api user id=${orphan.id} username=${username} after provision failure for ${contextEmail}`,
+            );
+        }
+    } catch (err) {
+        console.error(
+            `[register] orphan new-api cleanup failed for ${contextEmail} (username=${username}):`,
+            err,
+        );
+    }
+}
 
 export async function POST(req: NextRequest) {
     let body: unknown;
@@ -57,62 +89,83 @@ export async function POST(req: NextRequest) {
             },
         });
     } catch (err) {
-        // unique-violation race (someone registered between findUnique and create)
+        // Unique-violation race (someone registered between findUnique and create)
         if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
             return NextResponse.json({ error: 'email_already_registered' }, { status: 409 });
         }
         throw err;
     }
 
-    let provisioned;
+    let provisioned: ProvisionedCustomer;
     try {
         provisioned = await provisionNewCustomer({
             portal_user_id: user.id,
             email: user.email,
-            initial_max_budget: 0,
+            initial_quota: 0,
         });
-    } catch (err) {
-        // LiteLLM down or rejected — roll back portal user so the account can
-        // be re-attempted with the same email.
+    } catch (provisionErr) {
+        // The 6-step flow failed somewhere. Step 1 failure leaves nothing
+        // on new-api; step 2-6 failures leave a half-built user that we
+        // must delete to keep the username slot free and ops dashboards clean.
+        await cleanupOrphanNewApiUser(user.id, email);
         await prisma.user.delete({ where: { id: user.id } }).catch((deleteErr) => {
             console.error(
-                `[register] LiteLLM provision failed AND portal rollback failed for user ${user.id}:`,
+                `[register] new-api provision failed AND portal rollback failed for user ${user.id}:`,
                 deleteErr,
             );
         });
-        console.error(`[register] LiteLLM provisionNewCustomer failed for ${email}:`, err);
+        console.error(`[register] provisionNewCustomer failed for ${email}:`, provisionErr);
         return NextResponse.json(
             { error: 'provisioning_failed', message: 'Account provisioning failed, please retry' },
             { status: 502 },
         );
     }
 
-    // Persist the LiteLLM linkage. If either of these fails the portal user
-    // exists without a key — orphan-cleanup is a W2 task. Logged loudly so
-    // ops can spot it.
+    // Persist the new-api linkage on portal side. If this fails, the new-api
+    // user + token already exist — we must clean them up too, otherwise next
+    // attempt with the same email/portal_user_id collides on
+    // newapi_username unique constraint.
     try {
         await prisma.$transaction([
             prisma.user.update({
                 where: { id: user.id },
-                data: { litellm_user_id: provisioned.litellm_user_id },
+                data: {
+                    newapi_user_id: provisioned.newapi_user_id,
+                    newapi_username: provisioned.newapi_username,
+                    newapi_access_token: provisioned.newapi_access_token,
+                },
             }),
-            prisma.liteLLMKey.create({
+            prisma.newApiToken.create({
                 data: {
                     user_id: user.id,
-                    litellm_key: provisioned.litellm_key,
-                    key_alias: provisioned.key_alias,
-                    max_budget: 0,
-                    cached_spend: 0,
+                    newapi_token_id: provisioned.newapi_token_id,
+                    newapi_token_value: provisioned.newapi_token_value,
+                    key_alias: `default-${user.id.slice(0, 8)}`,
                 },
             }),
         ]);
-    } catch (err) {
+    } catch (linkageErr) {
+        const tokenPreview = typeof provisioned.newapi_token_value === 'string'
+            ? `${provisioned.newapi_token_value.slice(0, 12)}...`
+            : `<${typeof provisioned.newapi_token_value}>`;
         console.error(
-            `[register] LiteLLM provisioning succeeded for ${user.id} (key=${provisioned.litellm_key.slice(0, 12)}...) but persisting linkage failed — manual reconciliation needed:`,
-            err,
+            `[register] new-api provision succeeded for ${user.id} ` +
+                `(newapi_user_id=${provisioned.newapi_user_id}, ` +
+                `token=${tokenPreview}) ` +
+                `but persisting linkage failed — rolling back both sides:`,
+            linkageErr,
+        );
+        // Cascade-clean: delete new-api user (soft delete; token disposed),
+        // then delete portal user. If either cleanup throws, log loudly so
+        // ops can reconcile manually — at least we tried.
+        await deleteNewApiUser(provisioned.newapi_user_id).catch((err) =>
+            console.error(`[register] new-api user cleanup failed for ${provisioned.newapi_user_id}:`, err),
+        );
+        await prisma.user.delete({ where: { id: user.id } }).catch((err) =>
+            console.error(`[register] portal user cleanup failed for ${user.id}:`, err),
         );
         return NextResponse.json(
-            { error: 'persistence_failed', message: 'Account created but key linkage failed, contact support' },
+            { error: 'persistence_failed', message: 'Account creation failed, please retry' },
             { status: 500 },
         );
     }
@@ -122,6 +175,8 @@ export async function POST(req: NextRequest) {
     const res = NextResponse.json({
         user_id: user.id,
         token,
+        newapi_user_id: provisioned.newapi_user_id,
+        newapi_token_value: provisioned.newapi_token_value,
         portal_user: {
             id: user.id,
             email: user.email,
