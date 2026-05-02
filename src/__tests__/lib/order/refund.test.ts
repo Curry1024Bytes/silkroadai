@@ -28,7 +28,7 @@ const mockAddBalance = vi.fn();
 const mockGetUserSubscriptions = vi.fn();
 const mockExtendSubscription = vi.fn();
 
-vi.mock('@/lib/sub2api/client', () => ({
+vi.mock('@/lib/litellm/client', () => ({
   getUser: (...args: unknown[]) => mockGetUser(...args),
   subtractBalance: (...args: unknown[]) => mockSubtractBalance(...args),
   addBalance: (...args: unknown[]) => mockAddBalance(...args),

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyAdminToken, unauthorizedResponse } from '@/lib/admin-auth';
-import { getUserSubscriptions, getUser, listSubscriptions } from '@/lib/sub2api/client';
+import { getUserSubscriptions, getUser, listSubscriptions } from '@/lib/litellm/client';
 
 export async function GET(request: NextRequest) {
   if (!(await verifyAdminToken(request))) return unauthorizedResponse(request);

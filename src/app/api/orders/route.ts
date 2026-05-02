@@ -4,7 +4,7 @@ import { createOrder } from '@/lib/order/service';
 import { getEnv } from '@/lib/config';
 import { paymentRegistry } from '@/lib/payment';
 import { getEnabledPaymentTypes } from '@/lib/payment/resolve-enabled-types';
-import { getCurrentUserByToken } from '@/lib/sub2api/client';
+import { getCurrentUserByToken } from '@/lib/litellm/client';
 import { handleApiError } from '@/lib/utils/api';
 import { getSystemConfigs } from '@/lib/system-config';
 

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { queryMethodLimits } from '@/lib/order/limits';
 import { ensureDBProviders, paymentRegistry } from '@/lib/payment';
 import { getNextBizDayStartUTC } from '@/lib/time/biz-day';
-import { getCurrentUserByToken } from '@/lib/sub2api/client';
+import { getCurrentUserByToken } from '@/lib/litellm/client';
 
 /**
  * GET /api/limits?token=xxx

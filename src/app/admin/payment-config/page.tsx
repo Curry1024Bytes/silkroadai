@@ -326,7 +326,7 @@ function PaymentConfigContent() {
         if (c.key === 'DAILY_RECHARGE_LIMIT') setRcDailyLimit(c.value);
         if (c.key === 'ORDER_TIMEOUT_MINUTES') setRcOrderTimeout(c.value);
         if (c.key === 'LOAD_BALANCE_STRATEGY') setRcLoadBalanceStrategy(c.value || 'round-robin');
-        if (c.key === 'SUB2API_ADMIN_API_KEY') setRcSub2apiKey(/\*{4,}/.test(c.value) ? '' : c.value);
+        if (c.key === 'LITELLM_MASTER_KEY') setRcSub2apiKey(/\*{4,}/.test(c.value) ? '' : c.value);
         if (c.key === 'DEFAULT_DEDUCT_BALANCE') setRcAutoRefundEnabled(c.value === 'true');
       }
       setRcOverrideEnv(hasOverride);
@@ -622,7 +622,7 @@ function PaymentConfigContent() {
                     label: '最多可存在支付中订单',
                   },
                   {
-                    key: 'SUB2API_ADMIN_API_KEY',
+                    key: 'LITELLM_MASTER_KEY',
                     value: rcSub2apiKey,
                     group: 'connection',
                     label: 'Sub2API Admin API Key',

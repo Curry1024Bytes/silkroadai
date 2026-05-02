@@ -2,8 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('@/lib/config', () => ({
   getEnv: () => ({
-    SUB2API_BASE_URL: 'https://test.sub2api.com',
-    SUB2API_ADMIN_API_KEY: 'admin-testkey123',
+    LITELLM_BASE_URL: 'https://test.sub2api.com',
+    LITELLM_MASTER_KEY: 'admin-testkey123',
   }),
 }));
 
@@ -11,7 +11,7 @@ vi.mock('@/lib/system-config', () => ({
   getSystemConfig: () => Promise.resolve(undefined),
 }));
 
-import { listSubscriptions } from '@/lib/sub2api/client';
+import { listSubscriptions } from '@/lib/litellm/client';
 
 describe('listSubscriptions', () => {
   beforeEach(() => {

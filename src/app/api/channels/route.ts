@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
-import { getCurrentUserByToken } from '@/lib/sub2api/client';
-import { getGroup } from '@/lib/sub2api/client';
+import { getCurrentUserByToken } from '@/lib/litellm/client';
+import { getGroup } from '@/lib/litellm/client';
 
 export async function GET(request: NextRequest) {
   const token = request.nextUrl.searchParams.get('token')?.trim();

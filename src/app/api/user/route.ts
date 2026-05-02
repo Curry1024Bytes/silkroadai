@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getCurrentUserByToken } from '@/lib/sub2api/client';
+import { getCurrentUserByToken } from '@/lib/litellm/client';
 import { getEnv } from '@/lib/config';
 import { queryMethodLimits } from '@/lib/order/limits';
 import { ensureDBProviders, paymentRegistry } from '@/lib/payment';

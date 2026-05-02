@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { cancelOrder } from '@/lib/order/service';
-import { getCurrentUserByToken } from '@/lib/sub2api/client';
+import { getCurrentUserByToken } from '@/lib/litellm/client';
 import { handleApiError } from '@/lib/utils/api';
 
 const cancelSchema = z.object({

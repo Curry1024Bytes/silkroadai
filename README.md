@@ -1,4 +1,4 @@
-# Sub2ApiPay
+# Silk Road AI Portal
 
 > **⚠️ 本项目已归档（Archived）**
 >
@@ -10,7 +10,7 @@
 
 **语言 / Language**: 中文（当前）｜ [English](./README.en.md)
 
-Sub2ApiPay 是为 [Sub2API](https://sub2api.com) 平台构建的自托管支付网关。支持 **EasyPay 易支付聚合**、**支付宝官方**、**微信官方**和 **Stripe** 四种支付渠道，提供按量充值与套餐订阅两种计费模式，支付成功后自动调用 Sub2API 管理接口完成到账，无需人工干预。
+Silk Road AI Portal 是为 [Sub2API](https://sub2api.com) 平台构建的自托管支付网关。支持 **EasyPay 易支付聚合**、**支付宝官方**、**微信官方**和 **Stripe** 四种支付渠道，提供按量充值与套餐订阅两种计费模式，支付成功后自动调用 Sub2API 管理接口完成到账，无需人工干预。
 
 ---
 
@@ -74,11 +74,11 @@ Sub2ApiPay 是为 [Sub2API](https://sub2api.com) 平台构建的自托管支付�
 无需本地安装 Node.js 或 pnpm，服务器上只需 Docker。
 
 ```bash
-mkdir -p /opt/sub2apipay && cd /opt/sub2apipay
+mkdir -p /opt/silkroadai-portal && cd /opt/silkroadai-portal
 
 # 下载 Compose 文件和环境变量模板
-curl -O https://raw.githubusercontent.com/touwaeriol/sub2apipay/main/docker-compose.hub.yml
-curl -O https://raw.githubusercontent.com/touwaeriol/sub2apipay/main/.env.example
+curl -O https://raw.githubusercontent.com/touwaeriol/silkroadai-portal/main/docker-compose.hub.yml
+curl -O https://raw.githubusercontent.com/touwaeriol/silkroadai-portal/main/.env.example
 cp .env.example .env
 
 # 填写必填环境变量
@@ -91,8 +91,8 @@ docker compose -f docker-compose.hub.yml up -d
 ### 从源码构建
 
 ```bash
-git clone https://github.com/touwaeriol/sub2apipay.git
-cd sub2apipay
+git clone https://github.com/touwaeriol/silkroadai-portal.git
+cd silkroadai-portal
 cp .env.example .env
 nano .env
 docker compose up -d --build
@@ -263,7 +263,7 @@ PAYMENT_PROVIDERS=alipay,wxpay,stripe
 docker compose -f docker-compose.hub.yml up -d
 ```
 
-镜像：[`touwaeriol/sub2apipay:latest`](https://hub.docker.com/r/touwaeriol/sub2apipay)
+镜像：[`touwaeriol/silkroadai-portal:latest`](https://hub.docker.com/r/touwaeriol/silkroadai-portal)
 
 ### 方案二：Docker Hub 镜像 + 外部数据库
 
@@ -283,8 +283,8 @@ docker compose -f docker-compose.app.yml up -d
 ```bash
 # 在构建服务器上
 docker compose build
-docker tag sub2apipay-app:latest touwaeriol/sub2apipay:latest
-docker push touwaeriol/sub2apipay:latest
+docker tag silkroadai-portal-app:latest touwaeriol/silkroadai-portal:latest
+docker push touwaeriol/silkroadai-portal:latest
 
 # 在部署服务器上
 docker compose -f docker-compose.hub.yml pull

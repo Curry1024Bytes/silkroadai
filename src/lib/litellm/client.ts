@@ -7,8 +7,8 @@ const RECHARGE_TIMEOUT_MS = 30_000;
 const RECHARGE_MAX_ATTEMPTS = 2;
 
 async function getHeaders(idempotencyKey?: string): Promise<Record<string, string>> {
-  const dbValue = await getSystemConfig('SUB2API_ADMIN_API_KEY');
-  const apiKey = dbValue?.trim() || getEnv().SUB2API_ADMIN_API_KEY;
+  const dbValue = await getSystemConfig('LITELLM_MASTER_KEY');
+  const apiKey = dbValue?.trim() || getEnv().LITELLM_MASTER_KEY;
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'x-api-key': apiKey,
@@ -26,7 +26,7 @@ function isRetryableFetchError(error: unknown): boolean {
 
 export async function getCurrentUserByToken(token: string): Promise<Sub2ApiUser> {
   const env = getEnv();
-  const response = await fetch(`${env.SUB2API_BASE_URL}/api/v1/auth/me`, {
+  const response = await fetch(`${env.LITELLM_BASE_URL}/api/v1/auth/me`, {
     headers: {
       Authorization: `Bearer ${token}`,
     },
@@ -43,7 +43,7 @@ export async function getCurrentUserByToken(token: string): Promise<Sub2ApiUser>
 
 export async function getUser(userId: number): Promise<Sub2ApiUser> {
   const env = getEnv();
-  const response = await fetch(`${env.SUB2API_BASE_URL}/api/v1/admin/users/${userId}`, {
+  const response = await fetch(`${env.LITELLM_BASE_URL}/api/v1/admin/users/${userId}`, {
     headers: await getHeaders(),
     signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
   });
@@ -65,7 +65,7 @@ export async function createAndRedeem(
   options?: { type?: 'balance' | 'subscription'; groupId?: number; validityDays?: number },
 ): Promise<Sub2ApiRedeemCode> {
   const env = getEnv();
-  const url = `${env.SUB2API_BASE_URL}/api/v1/admin/redeem-codes/create-and-redeem`;
+  const url = `${env.LITELLM_BASE_URL}/api/v1/admin/redeem-codes/create-and-redeem`;
   const body = JSON.stringify({
     code,
     type: options?.type ?? 'balance',
@@ -112,7 +112,7 @@ export async function createAndRedeem(
 
 export async function getAllGroups(): Promise<Sub2ApiGroup[]> {
   const env = getEnv();
-  const response = await fetch(`${env.SUB2API_BASE_URL}/api/v1/admin/groups/all`, {
+  const response = await fetch(`${env.LITELLM_BASE_URL}/api/v1/admin/groups/all`, {
     headers: await getHeaders(),
     signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
   });
@@ -127,7 +127,7 @@ export async function getAllGroups(): Promise<Sub2ApiGroup[]> {
 
 export async function getGroup(groupId: number): Promise<Sub2ApiGroup | null> {
   const env = getEnv();
-  const response = await fetch(`${env.SUB2API_BASE_URL}/api/v1/admin/groups/${groupId}`, {
+  const response = await fetch(`${env.LITELLM_BASE_URL}/api/v1/admin/groups/${groupId}`, {
     headers: await getHeaders(),
     signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
   });
@@ -151,7 +151,7 @@ export async function assignSubscription(
   idempotencyKey?: string,
 ): Promise<Sub2ApiSubscription> {
   const env = getEnv();
-  const response = await fetch(`${env.SUB2API_BASE_URL}/api/v1/admin/subscriptions/assign`, {
+  const response = await fetch(`${env.LITELLM_BASE_URL}/api/v1/admin/subscriptions/assign`, {
     method: 'POST',
     headers: await getHeaders(idempotencyKey),
     body: JSON.stringify({
@@ -174,7 +174,7 @@ export async function assignSubscription(
 
 export async function getUserSubscriptions(userId: number): Promise<Sub2ApiSubscription[]> {
   const env = getEnv();
-  const response = await fetch(`${env.SUB2API_BASE_URL}/api/v1/admin/users/${userId}/subscriptions`, {
+  const response = await fetch(`${env.LITELLM_BASE_URL}/api/v1/admin/users/${userId}/subscriptions`, {
     headers: await getHeaders(),
     signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
   });
@@ -190,7 +190,7 @@ export async function getUserSubscriptions(userId: number): Promise<Sub2ApiSubsc
 
 export async function extendSubscription(subscriptionId: number, days: number, idempotencyKey?: string): Promise<void> {
   const env = getEnv();
-  const response = await fetch(`${env.SUB2API_BASE_URL}/api/v1/admin/subscriptions/${subscriptionId}/extend`, {
+  const response = await fetch(`${env.LITELLM_BASE_URL}/api/v1/admin/subscriptions/${subscriptionId}/extend`, {
     method: 'POST',
     headers: await getHeaders(idempotencyKey),
     body: JSON.stringify({ days }),
@@ -212,7 +212,7 @@ export async function subtractBalance(
   idempotencyKey: string,
 ): Promise<void> {
   const env = getEnv();
-  const response = await fetch(`${env.SUB2API_BASE_URL}/api/v1/admin/users/${userId}/balance`, {
+  const response = await fetch(`${env.LITELLM_BASE_URL}/api/v1/admin/users/${userId}/balance`, {
     method: 'POST',
     headers: await getHeaders(idempotencyKey),
     body: JSON.stringify({
@@ -236,7 +236,7 @@ export async function searchUsers(
 ): Promise<{ id: number; email: string; username: string; notes?: string }[]> {
   const env = getEnv();
   const response = await fetch(
-    `${env.SUB2API_BASE_URL}/api/v1/admin/users?search=${encodeURIComponent(keyword)}&page=1&page_size=30`,
+    `${env.LITELLM_BASE_URL}/api/v1/admin/users?search=${encodeURIComponent(keyword)}&page=1&page_size=30`,
     {
       headers: await getHeaders(),
       signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
@@ -267,7 +267,7 @@ export async function listSubscriptions(params?: {
   if (params?.page != null) qs.set('page', String(params.page));
   if (params?.page_size != null) qs.set('page_size', String(params.page_size));
 
-  const response = await fetch(`${env.SUB2API_BASE_URL}/api/v1/admin/subscriptions?${qs}`, {
+  const response = await fetch(`${env.LITELLM_BASE_URL}/api/v1/admin/subscriptions?${qs}`, {
     headers: await getHeaders(),
     signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
   });
@@ -288,7 +288,7 @@ export async function listSubscriptions(params?: {
 
 export async function addBalance(userId: number, amount: number, notes: string, idempotencyKey: string): Promise<void> {
   const env = getEnv();
-  const response = await fetch(`${env.SUB2API_BASE_URL}/api/v1/admin/users/${userId}/balance`, {
+  const response = await fetch(`${env.LITELLM_BASE_URL}/api/v1/admin/users/${userId}/balance`, {
     method: 'POST',
     headers: await getHeaders(idempotencyKey),
     body: JSON.stringify({

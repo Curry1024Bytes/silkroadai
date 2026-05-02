@@ -3,7 +3,7 @@ import { NextRequest } from 'next/server';
 
 const mockGetCurrentUserByToken = vi.fn();
 
-vi.mock('@/lib/sub2api/client', () => ({
+vi.mock('@/lib/litellm/client', () => ({
   getCurrentUserByToken: (...args: unknown[]) => mockGetCurrentUserByToken(...args),
 }));
 

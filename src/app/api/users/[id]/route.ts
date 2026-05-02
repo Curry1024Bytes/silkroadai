@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getUser, getCurrentUserByToken } from '@/lib/sub2api/client';
+import { getUser, getCurrentUserByToken } from '@/lib/litellm/client';
 
 // 仅返回用户是否存在，不暴露私隐信息（用户名/邮箱/余额需 token 验证）
 export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {

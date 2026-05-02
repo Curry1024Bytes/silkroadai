@@ -52,7 +52,7 @@ describe('GET /api/admin/config', () => {
 
   it('returns configs with sensitive values masked', async () => {
     mockGetAllSystemConfigs.mockResolvedValue([
-      { key: 'SUB2API_ADMIN_API_KEY', value: 'my-super-secret-key-12345', group: 'general', label: null },
+      { key: 'LITELLM_MASTER_KEY', value: 'my-super-secret-key-12345', group: 'general', label: null },
       { key: 'RECHARGE_MIN_AMOUNT', value: '10', group: 'general', label: null },
     ]);
 
@@ -60,7 +60,7 @@ describe('GET /api/admin/config', () => {
     const data = await res.json();
 
     expect(res.status).toBe(200);
-    // SUB2API_ADMIN_API_KEY contains "KEY" → sensitive → masked
+    // LITELLM_MASTER_KEY contains "KEY" → sensitive → masked
     expect(data.configs[0].value).toBe('*********************2345');
     expect(data.configs[0].value).not.toBe('my-super-secret-key-12345');
     // RECHARGE_MIN_AMOUNT → not sensitive → not masked
@@ -164,7 +164,7 @@ describe('PUT /api/admin/config', () => {
     const res = await PUT(
       createRequest('PUT', {
         configs: [
-          { key: 'SUB2API_ADMIN_API_KEY', value: '********************2345' },
+          { key: 'LITELLM_MASTER_KEY', value: '********************2345' },
           { key: 'RECHARGE_MIN_AMOUNT', value: '10' },
         ],
       }),
@@ -180,13 +180,13 @@ describe('PUT /api/admin/config', () => {
   it('passes through actual (non-masked) sensitive values', async () => {
     const res = await PUT(
       createRequest('PUT', {
-        configs: [{ key: 'SUB2API_ADMIN_API_KEY', value: 'new-real-api-key' }],
+        configs: [{ key: 'LITELLM_MASTER_KEY', value: 'new-real-api-key' }],
       }),
     );
 
     expect(res.status).toBe(200);
     expect(mockSetSystemConfigs).toHaveBeenCalledWith([
-      expect.objectContaining({ key: 'SUB2API_ADMIN_API_KEY', value: 'new-real-api-key' }),
+      expect.objectContaining({ key: 'LITELLM_MASTER_KEY', value: 'new-real-api-key' }),
     ]);
   });
 

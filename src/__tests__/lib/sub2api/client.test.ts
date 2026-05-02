@@ -4,8 +4,8 @@ const mockGetSystemConfig = vi.fn();
 
 vi.mock('@/lib/config', () => ({
   getEnv: () => ({
-    SUB2API_BASE_URL: 'https://test.sub2api.com',
-    SUB2API_ADMIN_API_KEY: 'admin-testkey123',
+    LITELLM_BASE_URL: 'https://test.sub2api.com',
+    LITELLM_MASTER_KEY: 'admin-testkey123',
   }),
 }));
 
@@ -24,7 +24,7 @@ import {
   getGroup,
   getUserSubscriptions,
   extendSubscription,
-} from '@/lib/sub2api/client';
+} from '@/lib/litellm/client';
 
 describe('Sub2API Client', () => {
   beforeEach(() => {

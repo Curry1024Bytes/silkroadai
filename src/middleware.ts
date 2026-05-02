@@ -4,8 +4,8 @@ import type { NextRequest } from 'next/server';
 export function middleware(request: NextRequest) {
   const response = NextResponse.next();
 
-  // 自动从 SUB2API_BASE_URL 提取 origin，允许 Sub2API 主站 iframe 嵌入
-  const sub2apiUrl = process.env.SUB2API_BASE_URL || '';
+  // 自动从 LITELLM_BASE_URL 提取 origin，允许 Sub2API 主站 iframe 嵌入
+  const sub2apiUrl = process.env.LITELLM_BASE_URL || '';
   const extraOrigins = process.env.IFRAME_ALLOW_ORIGINS || '';
 
   // 检查是否包含通配符 *

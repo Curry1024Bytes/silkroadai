@@ -17,7 +17,7 @@ async function isSub2ApiAdmin(token: string): Promise<boolean> {
     const env = getEnv();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);
-    const response = await fetch(`${env.SUB2API_BASE_URL}/api/v1/auth/me`, {
+    const response = await fetch(`${env.LITELLM_BASE_URL}/api/v1/auth/me`, {
       headers: { Authorization: `Bearer ${token}` },
       signal: controller.signal,
     });

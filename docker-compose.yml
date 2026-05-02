@@ -5,7 +5,7 @@ services:
       - '${APP_PORT:-3001}:3000'
     env_file: .env
     environment:
-      - DATABASE_URL=postgresql://sub2apipay:${DB_PASSWORD:-password}@db:5432/sub2apipay
+      - DATABASE_URL=postgresql://silkroadai-portal:${DB_PASSWORD:-password}@db:5432/silkroadai-portal
       - HOSTNAME=0.0.0.0
     depends_on:
       db:
@@ -18,13 +18,13 @@ services:
   db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: sub2apipay
+      POSTGRES_USER: silkroadai-portal
       POSTGRES_PASSWORD: ${DB_PASSWORD:-password}
-      POSTGRES_DB: sub2apipay
+      POSTGRES_DB: silkroadai-portal
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U sub2apipay']
+      test: ['CMD-SHELL', 'pg_isready -U silkroadai-portal']
       interval: 5s
       timeout: 5s
       retries: 10

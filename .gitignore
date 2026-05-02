@@ -45,3 +45,6 @@ next-env.d.ts
 
 # Claude Code project instructions (contains sensitive deployment info)
 CLAUDE.md
+
+# Claude Code per-user workspace (worktrees, plans, etc.)
+.claude/

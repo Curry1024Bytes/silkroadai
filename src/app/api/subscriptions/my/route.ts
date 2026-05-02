@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getCurrentUserByToken, getUserSubscriptions, getAllGroups } from '@/lib/sub2api/client';
+import { getCurrentUserByToken, getUserSubscriptions, getAllGroups } from '@/lib/litellm/client';
 
 export async function GET(request: NextRequest) {
   const token = request.nextUrl.searchParams.get('token')?.trim();

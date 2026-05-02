@@ -7,7 +7,7 @@ const mockGetSystemConfig = vi.fn();
 const mockQueryMethodLimits = vi.fn();
 const mockGetSupportedTypes = vi.fn();
 
-vi.mock('@/lib/sub2api/client', () => ({
+vi.mock('@/lib/litellm/client', () => ({
   getCurrentUserByToken: (...args: unknown[]) => mockGetCurrentUserByToken(...args),
   getUser: (...args: unknown[]) => mockGetUser(...args),
 }));
