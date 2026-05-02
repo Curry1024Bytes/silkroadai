@@ -11,6 +11,7 @@ model Order {
   user_id      String?     @db.Uuid
   user         User?       @relation(fields: [user_id], references: [id])
   key_id       String?     @db.Uuid
+  key          LiteLLMKey? @relation(fields: [key_id], references: [id])
   userEmail    String?     @map("user_email")
   userName     String?     @map("user_name")
   userNotes    String?     @map("user_notes")
@@ -233,6 +234,7 @@ model LiteLLMKey {
 
   status KeyStatus @default(active)
 
+  orders    Order[]
   recharges RechargeLog[]
 
   created_at DateTime @default(now())
