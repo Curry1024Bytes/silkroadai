@@ -33,7 +33,7 @@ function message(locale: Locale, zh: string, en: string): string {
 }
 
 export interface CreateOrderInput {
-  userId: number;
+  user_id: string | null;
   amount: number;
   paymentType: PaymentType;
   clientIp: string;
@@ -139,7 +139,7 @@ export async function createOrder(input: CreateOrderInput): Promise<CreateOrderR
     input.amount = Number(plan.price);
   }
 
-  const user = await getUser(input.userId);
+  const user = await getUser(input.user_id);
   if (user.status !== 'active') {
     throw new OrderError('USER_INACTIVE', message(locale, '用户账号已被禁用', 'User account is disabled'), 422);
   }
@@ -185,7 +185,7 @@ export async function createOrder(input: CreateOrderInput): Promise<CreateOrderR
     const recentCancelCount = await prisma.auditLog.count({
       where: {
         action: 'ORDER_CANCELLED',
-        operator: `user:${input.userId}`,
+        operator: `user:${input.user_id}`,
         createdAt: { gte: windowStart },
       },
     });
@@ -211,7 +211,7 @@ export async function createOrder(input: CreateOrderInput): Promise<CreateOrderR
         const earliest = await prisma.auditLog.findFirst({
           where: {
             action: 'ORDER_CANCELLED',
-            operator: `user:${input.userId}`,
+            operator: `user:${input.user_id}`,
             createdAt: { gte: windowStart },
           },
           orderBy: { createdAt: 'asc' },
@@ -260,7 +260,7 @@ export async function createOrder(input: CreateOrderInput): Promise<CreateOrderR
   const order = await prisma.$transaction(async (tx) => {
     // 待支付订单数限制
     const pendingCount = await tx.order.count({
-      where: { userId: input.userId, status: ORDER_STATUS.PENDING },
+      where: { user_id: input.user_id, status: ORDER_STATUS.PENDING },
     });
     if (pendingCount >= maxPendingOrders) {
       throw new OrderError(
@@ -278,13 +278,13 @@ export async function createOrder(input: CreateOrderInput): Promise<CreateOrderR
     if (maxDailyRechargeAmount > 0) {
       const dailyAgg = await tx.order.aggregate({
         where: {
-          userId: input.userId,
+          user_id: input.user_id,
           status: { in: [ORDER_STATUS.PAID, ORDER_STATUS.RECHARGING, ORDER_STATUS.COMPLETED] },
           paidAt: { gte: todayStart },
         },
         _sum: { amount: true },
       });
-      const alreadyPaid = Number(dailyAgg._sum.amount ?? 0);
+      const alreadyPaid = Number(dailyAgg._sum?.amount ?? 0);
       if (alreadyPaid + input.amount > maxDailyRechargeAmount) {
         const remaining = Math.max(0, maxDailyRechargeAmount - alreadyPaid);
         throw new OrderError(
@@ -333,7 +333,7 @@ export async function createOrder(input: CreateOrderInput): Promise<CreateOrderR
 
     const created = await tx.order.create({
       data: {
-        userId: input.userId,
+        user_id: input.user_id,
         userEmail: user.email,
         userName: user.username,
         userNotes: user.notes || null,
@@ -404,8 +404,8 @@ export async function createOrder(input: CreateOrderInput): Promise<CreateOrderR
       }
     }
 
-    const statusAccessToken = createOrderStatusAccessToken(order.id, input.userId);
-    const orderResultUrl = buildOrderResultUrl(env.NEXT_PUBLIC_APP_URL, order.id, input.userId);
+    const statusAccessToken = createOrderStatusAccessToken(order.id, input.user_id);
+    const orderResultUrl = buildOrderResultUrl(env.NEXT_PUBLIC_APP_URL, order.id, input.user_id);
 
     // 只有 easypay 从外部传入 notifyUrl，return_url 统一回到带访问令牌的结果页
     let notifyUrl: string | undefined;
@@ -462,7 +462,7 @@ export async function createOrder(input: CreateOrderInput): Promise<CreateOrderR
         orderId: order.id,
         action: 'ORDER_CREATED',
         detail: JSON.stringify({
-          userId: input.userId,
+          user_id: input.user_id,
           amount: input.amount,
           paymentType: input.paymentType,
           orderType,
@@ -472,7 +472,7 @@ export async function createOrder(input: CreateOrderInput): Promise<CreateOrderR
             groupId: subscriptionPlan.groupId,
           }),
         }),
-        operator: `user:${input.userId}`,
+        operator: `user:${input.user_id}`,
       },
     });
 
@@ -527,7 +527,7 @@ export type CancelOutcome = 'cancelled' | 'already_paid';
 
 /**
  * 核心取消逻辑 — 所有取消路径共用。
- * 调用前由 caller 负责权限校验（userId / admin 身份）。
+ * 调用前由 caller 负责权限校验（user_id / admin 身份）。
  */
 export async function cancelOrderCore(options: {
   orderId: string;
@@ -603,14 +603,14 @@ export async function cancelOrderCore(options: {
   return 'cancelled';
 }
 
-export async function cancelOrder(orderId: string, userId: number, locale: Locale = 'zh'): Promise<CancelOutcome> {
+export async function cancelOrder(orderId: string, user_id: string | null, locale: Locale = 'zh'): Promise<CancelOutcome> {
   const order = await prisma.order.findUnique({
     where: { id: orderId },
-    select: { id: true, userId: true, status: true, paymentTradeNo: true, paymentType: true, providerInstanceId: true },
+    select: { id: true, user_id: true, status: true, paymentTradeNo: true, paymentType: true, providerInstanceId: true },
   });
 
   if (!order) throw new OrderError('NOT_FOUND', message(locale, '订单不存在', 'Order not found'), 404);
-  if (order.userId !== userId) throw new OrderError('FORBIDDEN', message(locale, '无权操作该订单', 'Forbidden'), 403);
+  if (order.user_id !== user_id) throw new OrderError('FORBIDDEN', message(locale, '无权操作该订单', 'Forbidden'), 403);
   if (order.status !== ORDER_STATUS.PENDING)
     throw new OrderError('INVALID_STATUS', message(locale, '订单当前状态不可取消', 'Order cannot be cancelled'), 400);
 
@@ -620,7 +620,7 @@ export async function cancelOrder(orderId: string, userId: number, locale: Local
     paymentType: order.paymentType,
     providerInstanceId: order.providerInstanceId,
     finalStatus: ORDER_STATUS.CANCELLED,
-    operator: `user:${userId}`,
+    operator: `user:${user_id}`,
     auditDetail: message(locale, '用户取消订单', 'User cancelled order'),
   });
 }
@@ -851,7 +851,7 @@ export async function executeSubscriptionFulfillment(orderId: string): Promise<v
     let fulfillMethod: 'renew' | 'new' = 'new';
     let renewedSubscriptionId: number | undefined;
 
-    const userSubs = await getUserSubscriptions(order.userId);
+    const userSubs = await getUserSubscriptions(order.user_id);
     const activeSub = userSubs.find((s) => s.group_id === order.subscriptionGroupId && s.status === 'active');
 
     if (activeSub) {
@@ -876,7 +876,7 @@ export async function executeSubscriptionFulfillment(orderId: string): Promise<v
     await createAndRedeem(
       order.rechargeCode,
       Number(order.amount),
-      order.userId,
+      order.user_id,
       `sub2apipay subscription order:${orderId}`,
       {
         type: 'subscription',
@@ -959,7 +959,7 @@ export async function executeRecharge(orderId: string): Promise<void> {
     await createAndRedeem(
       order.rechargeCode,
       Number(order.amount),
-      order.userId,
+      order.user_id,
       `sub2apipay recharge order:${orderId}`,
     );
 
@@ -1121,7 +1121,7 @@ export async function retryRecharge(orderId: string, locale: Locale = 'zh'): Pro
 
 export interface RefundRequestInput {
   orderId: string;
-  userId: number;
+  user_id: string | null;
   amount: number;
   reason?: string;
   locale?: Locale;
@@ -1131,7 +1131,7 @@ export async function requestRefund(input: RefundRequestInput): Promise<{ succes
   const locale = input.locale ?? 'zh';
   const order = await prisma.order.findUnique({ where: { id: input.orderId } });
   if (!order) throw new OrderError('NOT_FOUND', message(locale, '订单不存在', 'Order not found'), 404);
-  if (order.userId !== input.userId) {
+  if (order.user_id !== input.user_id) {
     throw new OrderError('FORBIDDEN', message(locale, '无权申请该订单退款', 'Forbidden'), 403);
   }
   if (order.orderType !== 'balance') {
@@ -1167,7 +1167,7 @@ export async function requestRefund(input: RefundRequestInput): Promise<{ succes
     );
   }
 
-  const user = await getUser(order.userId);
+  const user = await getUser(order.user_id);
   if (user.balance < refundAmount) {
     throw new OrderError(
       'BALANCE_NOT_ENOUGH',
@@ -1179,12 +1179,15 @@ export async function requestRefund(input: RefundRequestInput): Promise<{ succes
   const normalizedReason = input.reason?.trim() || null;
 
   const updated = await prisma.order.updateMany({
-    where: { id: input.orderId, userId: input.userId, status: ORDER_STATUS.COMPLETED, orderType: 'balance' },
+    where: { id: input.orderId, user_id: input.user_id, status: ORDER_STATUS.COMPLETED, orderType: 'balance' },
     data: {
       status: ORDER_STATUS.REFUND_REQUESTED,
       refundRequestedAt: new Date(),
       refundRequestReason: normalizedReason,
-      refundRequestedBy: input.userId,
+      // refundRequestedBy is still Int? in schema (legacy from Sub2API);
+      // portal user_id is now a UUID string. Audit trail of who requested
+      // is captured in the auditLog `requestedBy` JSON detail below.
+      refundRequestedBy: null,
       refundAmount: new Prisma.Decimal(refundAmount.toFixed(2)),
     },
   });
@@ -1204,9 +1207,9 @@ export async function requestRefund(input: RefundRequestInput): Promise<{ succes
       detail: JSON.stringify({
         amount: refundAmount,
         reason: normalizedReason,
-        requestedBy: input.userId,
+        requestedBy: input.user_id,
       }),
-      operator: `user:${input.userId}`,
+      operator: `user:${input.user_id}`,
     },
   });
 
@@ -1246,7 +1249,7 @@ interface DeductionPlan {
 /** 查询用户余额/订阅信息，计算扣减量。返回 DeductionPlan 或提前返回的 RefundResult。 */
 async function prepareDeduction(
   order: {
-    userId: number;
+    user_id: string | null;
     orderType: string | null;
     amount: Prisma.Decimal;
     subscriptionGroupId: number | null;
@@ -1266,7 +1269,7 @@ async function prepareDeduction(
       return { type: 'subscription', balanceAmount: 0, subscriptionDays: 0, subscriptionId: null };
     }
     try {
-      const userSubs = await getUserSubscriptions(order.userId);
+      const userSubs = await getUserSubscriptions(order.user_id);
       const activeSub = userSubs.find((s) => s.group_id === order.subscriptionGroupId && s.status === 'active');
       if (!activeSub) {
         return { type: 'subscription', balanceAmount: 0, subscriptionDays: 0, subscriptionId: null };
@@ -1295,7 +1298,7 @@ async function prepareDeduction(
 
   // 余额订单
   try {
-    const user = await getUser(order.userId);
+    const user = await getUser(order.user_id);
     return {
       type: 'balance',
       balanceAmount: Math.min(rechargeAmount, user.balance),
@@ -1319,13 +1322,13 @@ function isDeductionPlan(v: DeductionPlan | RefundResult): v is DeductionPlan {
 }
 
 /** 执行扣减（先扣后退的"扣"步骤） */
-async function executeDeduction(orderId: string, userId: number, plan: DeductionPlan): Promise<void> {
+async function executeDeduction(orderId: string, user_id: string | null, plan: DeductionPlan): Promise<void> {
   const ts = Date.now();
   if (plan.type === 'subscription' && plan.subscriptionId && plan.subscriptionDays > 0) {
     await extendSubscription(plan.subscriptionId, -plan.subscriptionDays, `sub2apipay:refund-sub:${orderId}:${ts}`);
   } else if (plan.type === 'balance' && plan.balanceAmount > 0) {
     await subtractBalance(
-      userId,
+      user_id,
       plan.balanceAmount,
       `sub2apipay refund order:${orderId}`,
       `sub2apipay:refund:${orderId}:${ts}`,
@@ -1336,7 +1339,7 @@ async function executeDeduction(orderId: string, userId: number, plan: Deduction
 /** 回滚已扣减的余额/订阅。返回 true 表示回滚成功，false 表示回滚也失败。 */
 async function rollbackDeduction(
   orderId: string,
-  userId: number,
+  user_id: string | null,
   plan: DeductionPlan,
   gatewayError: unknown,
 ): Promise<boolean> {
@@ -1372,7 +1375,7 @@ async function rollbackDeduction(
   if (plan.type === 'balance' && plan.balanceAmount > 0) {
     try {
       await addBalance(
-        userId,
+        user_id,
         plan.balanceAmount,
         `sub2apipay refund rollback order:${orderId}`,
         `sub2apipay:refund-rollback:${orderId}:${ts}`,
@@ -1472,7 +1475,7 @@ export async function processRefund(input: RefundInput): Promise<RefundResult> {
 
   try {
     // 3. 执行扣减（安全方向：先扣后退）
-    await executeDeduction(order.id, order.userId, plan);
+    await executeDeduction(order.id, order.user_id, plan);
 
     // 4. 调用支付网关退款
     if (order.paymentTradeNo) {
@@ -1498,7 +1501,7 @@ export async function processRefund(input: RefundInput): Promise<RefundResult> {
         });
       } catch (gatewayError) {
         // 网关退款失败 — 回滚扣减
-        const rollbackOk = await rollbackDeduction(input.orderId, order.userId, plan, gatewayError);
+        const rollbackOk = await rollbackDeduction(input.orderId, order.user_id, plan, gatewayError);
 
         if (rollbackOk) {
           // 回滚成功 — 恢复原状态，返回失败结果（不 throw）

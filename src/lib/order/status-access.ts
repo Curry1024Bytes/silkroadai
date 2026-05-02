@@ -11,17 +11,28 @@ function deriveKey(): string {
   return crypto.createHmac('sha256', getEnv().ADMIN_TOKEN).update('order-status-access-key').digest('hex');
 }
 
-function buildSignature(orderId: string, userId: number, expiresAt: number): string {
+// userId may be a Sub2API legacy int (0/positive number) OR a portal UUID
+// string after the W1 D2 schema rename. The HMAC payload encodes whatever
+// we got verbatim and the verify side compares strings, so any encoding
+// works as long as the two sides agree.
+type UserIdLike = string | number | null | undefined;
+
+function normalizeUserId(userId: UserIdLike): string {
+  if (userId === null || userId === undefined) return '0';
+  return String(userId);
+}
+
+function buildSignature(orderId: string, userId: string, expiresAt: number): string {
   return crypto
     .createHmac('sha256', deriveKey())
     .update(`${ORDER_STATUS_ACCESS_PURPOSE}:${orderId}:${userId}:${expiresAt}`)
     .digest('base64url');
 }
 
-/** 生成格式: {expiresAt}.{userId}.{signature} */
-export function createOrderStatusAccessToken(orderId: string, userId?: number): string {
+/** Token format: `{expiresAt}.{userId}.{signature}` (userId may be string or number) */
+export function createOrderStatusAccessToken(orderId: string, userId?: UserIdLike): string {
   const expiresAt = Date.now() + TOKEN_TTL_MS;
-  const uid = userId ?? 0;
+  const uid = normalizeUserId(userId);
   const sig = buildSignature(orderId, uid, expiresAt);
   return `${expiresAt}.${uid}.${sig}`;
 }
@@ -32,11 +43,10 @@ export function verifyOrderStatusAccessToken(orderId: string, token: string | nu
   const parts = token.split('.');
   if (parts.length !== 3) return false;
 
-  const [expiresAtStr, userIdStr, sig] = parts;
+  const [expiresAtStr, userId, sig] = parts;
   const expiresAt = Number(expiresAtStr);
-  const userId = Number(userIdStr);
 
-  if (!Number.isFinite(expiresAt) || !Number.isFinite(userId)) return false;
+  if (!Number.isFinite(expiresAt)) return false;
 
   // 检查过期
   if (Date.now() > expiresAt) return false;
@@ -52,7 +62,7 @@ export function verifyOrderStatusAccessToken(orderId: string, token: string | nu
   return crypto.timingSafeEqual(expectedBuffer, receivedBuffer);
 }
 
-export function buildOrderResultUrl(appUrl: string, orderId: string, userId?: number): string {
+export function buildOrderResultUrl(appUrl: string, orderId: string, userId?: UserIdLike): string {
   const url = new URL('/pay/result', appUrl);
   url.searchParams.set('order_id', orderId);
   url.searchParams.set(ORDER_STATUS_ACCESS_QUERY_KEY, createOrderStatusAccessToken(orderId, userId));

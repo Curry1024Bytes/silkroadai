@@ -18,10 +18,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: '缺少 token 参数' }, { status: 400 });
     }
 
-    let userId: number;
+    let userId: string | null;
     try {
       const user = await getCurrentUserByToken(parsed.data.token);
-      userId = user.id;
+      userId = user?.id ?? null;
     } catch {
       return NextResponse.json({ error: '登录态已失效，无法取消订单' }, { status: 401 });
     }

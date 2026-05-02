@@ -43,10 +43,10 @@ export async function POST(request: NextRequest) {
     const { token, amount, payment_type, src_host, src_url, is_mobile, order_type, plan_id } = parsed.data;
 
     // 通过 token 解析用户身份
-    let userId: number;
+    let userId: string | null;
     try {
       const user = await getCurrentUserByToken(token);
-      userId = user.id;
+      userId = user?.id ?? null;
     } catch {
       return NextResponse.json({ error: '无效的 token，请重新登录', code: 'INVALID_TOKEN' }, { status: 401 });
     }
@@ -76,7 +76,7 @@ export async function POST(request: NextRequest) {
       request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || request.headers.get('x-real-ip') || '127.0.0.1';
 
     const result = await createOrder({
-      userId,
+      user_id: userId,
       amount,
       paymentType: payment_type,
       clientIp,

@@ -25,7 +25,7 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const where = { userId: user.id };
+    const where = { user_id: user.id };
 
     const [orders, total, statusGroups] = await Promise.all([
       prisma.order.findMany({
@@ -49,10 +49,10 @@ export async function GET(request: NextRequest) {
         },
       }),
       prisma.order.count({ where }),
-      prisma.order.groupBy({ by: ['status'], where, _count: true }),
+      prisma.order.groupBy({ by: ['status'], where, _count: { _all: true } }),
     ]);
 
-    const sc = Object.fromEntries(statusGroups.map((g) => [g.status, g._count]));
+    const sc = Object.fromEntries(statusGroups.map((g) => [g.status, g._count._all]));
 
     // 批量查询订单关联实例的退款开关
     const instanceIds = [...new Set(orders.map((o) => o.providerInstanceId).filter(Boolean))] as string[];

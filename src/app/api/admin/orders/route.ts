@@ -20,10 +20,7 @@ export async function GET(request: NextRequest) {
   if (orderType && (orderType === 'balance' || orderType === 'subscription')) where.orderType = orderType;
 
   if (userId) {
-    const parsedUserId = Number(userId);
-    if (Number.isFinite(parsedUserId)) {
-      where.userId = parsedUserId;
-    }
+    where.user_id = userId;
   }
 
   if (dateFrom || dateTo) {
@@ -58,7 +55,7 @@ export async function GET(request: NextRequest) {
       take: pageSize,
       select: {
         id: true,
-        userId: true,
+        user_id: true,
         userName: true,
         userEmail: true,
         userNotes: true,

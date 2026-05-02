@@ -31,7 +31,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { id } = await params;
     const result = await requestRefund({
       orderId: id,
-      userId: user.id,
+      user_id: user.id,
       amount: parsed.data.amount,
       reason: parsed.data.reason,
       locale,

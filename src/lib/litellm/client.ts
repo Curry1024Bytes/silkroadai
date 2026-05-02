@@ -398,3 +398,86 @@ export async function applyRecharge(args: {
         max_budget: args.new_total_max_budget,
     });
 }
+
+// ============================================
+// Deprecated: Sub2ApiPay legacy compatibility stubs (W1 D5, R3 decision)
+// ============================================
+//
+// User decision R3: subscription-related UI/API routes are kept compiling
+// but functionally inert until the product team revisits monthly plans.
+//
+// These stubs let the legacy route handlers and order/service deduction
+// path keep type-checking. Returning null/[] (or throwing) at runtime
+// means: the deprecated code paths gracefully degrade rather than crash
+// with "function is not exported" at module load.
+//
+// Return types are intentionally typed as `any` so existing callers that
+// destructure subscription / user shapes (.group_id, .balance, .name,
+// .platform, ...) compile without forcing us to either re-derive the old
+// Sub2API DTOs or annotate every call site. New code MUST NOT import any
+// of these — use the typed LiteLLM Admin API helpers above instead.
+//
+// Removal plan: when subscription functionality is decided, delete the
+// stubs and either implement real LiteLLM-backed versions or rip out the
+// dependent routes entirely. Search call sites with:
+//   grep -rE "(getCurrentUserByToken|getUser|getUserSubscriptions|listSubscriptions|getAllGroups|getGroup|searchUsers|createAndRedeem|subtractBalance|addBalance|extendSubscription)" src --include="*.ts" --include="*.tsx"
+// ============================================
+
+/* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars */
+
+/** @deprecated R3 stub — portal sessions go through src/lib/auth/session.ts now. */
+export async function getCurrentUserByToken(_token: string): Promise<any> {
+    return null;
+}
+
+/** @deprecated R3 stub — use prisma.user.findUnique for portal users. */
+export async function getUser(_userId: string | number | null): Promise<any> {
+    return null;
+}
+
+/** @deprecated R3 stub — subscription model is on hold (R3). */
+export async function getUserSubscriptions(_userId: string | number | null): Promise<any[]> {
+    return [];
+}
+
+/** @deprecated R3 stub — subscription model is on hold (R3). */
+export async function listSubscriptions(_args?: any): Promise<any> {
+    return { items: [], total: 0, page: 1, page_size: 50 };
+}
+
+/** @deprecated R3 stub — group/channel UI shows "no data" until R3 revisits. */
+export async function getAllGroups(): Promise<any[]> {
+    return [];
+}
+
+/** @deprecated R3 stub — group/channel UI shows "no data" until R3 revisits. */
+export async function getGroup(_groupId: string | number): Promise<any> {
+    return null;
+}
+
+/** @deprecated R3 stub — admin user search disabled while subscription is on hold. */
+export async function searchUsers(_query: string): Promise<any[]> {
+    return [];
+}
+
+/** @deprecated R3 stub — recharge flow now goes through applyRecharge / updateKeyBudget. */
+export async function createAndRedeem(..._args: unknown[]): Promise<never> {
+    throw new Error('createAndRedeem is deprecated — use applyRecharge in the new flow');
+}
+
+/** @deprecated R3 stub — balance manipulation belongs to the LiteLLM key, not a separate user balance. */
+export async function subtractBalance(..._args: unknown[]): Promise<never> {
+    throw new Error('subtractBalance is deprecated — LiteLLM tracks spend per key');
+}
+
+/** @deprecated R3 stub — balance manipulation belongs to the LiteLLM key, not a separate user balance. */
+export async function addBalance(..._args: unknown[]): Promise<never> {
+    throw new Error('addBalance is deprecated — use applyRecharge in the new flow');
+}
+
+/** @deprecated R3 stub — subscription extension on hold (R3). */
+export async function extendSubscription(..._args: unknown[]): Promise<never> {
+    throw new Error('extendSubscription is deprecated — subscriptions are on hold (R3)');
+}
+
+/* eslint-enable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars */
