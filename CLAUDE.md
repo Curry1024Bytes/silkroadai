@@ -87,13 +87,27 @@ silkroadai/
 
 ## 当前进度(实时更新)
 
-⚠️ **每次 commit 时,如果完成了 WEEK1-CHECKLIST 里的某天,请更新这个区域**
+⚠️ **每次 commit 时,如果完成了 WEEK1-CHECKLIST 或 WEEK2-CHECKLIST 里的某天,请更新这个区域**
 
+### W1(LiteLLM 路线,已归档)
 - [x] D1 — 项目重命名 + dev server 跑起来 ✅
 - [x] D2 — Prisma schema 完成(User / LiteLLMKey / RechargeLog 三张新表)✅
 - [x] D3 — LiteLLM client 烟雾测试通过 ✅
 - [x] D4-5 — 替换 admin-auth + user/route 的 Sub2API 老调用 ✅ (R3 决策:订阅 stub,UI 留壳)
 - [x] D6-7 — 注册接口端到端跑通 ✅ (W1 完成 🎉)
+
+### W2(B3 路线 — new-api 切换,已合并)
+- [x] D1-D2 — VPS 部署 new-api + 配置上游渠道 ✅ (在 VPS 上完成)
+- [x] D3 — _bootstrap 切到 B3 包 + 新分支 `feat/b3-newapi-switch` ✅
+- [x] D4 — Prisma schema 切到 new-api 集成 ✅ (LiteLLMKey → NewApiToken)
+- [x] D5 — `src/lib/newapi/client.ts` + 烟雾测试通过(117 模型) ✅
+- [x] D6 — 注册接口切 new-api,端到端跑通(deepseek-v4-flash 真实调用) ✅
+- [x] D7 — README + CLAUDE.md 更新 + push + PR ✅
+- [x] **W2 PR #1 merged at `6c4b422`(2026-05-02)** 🎉
+
+### W3(Auth 完善 + LiteLLM 关停)
+- [x] D1 — VPS 收尾(2026-05-02):LiteLLM 容器停 + Caddy `api.silkroadai.io` 切到 new-api `:3000` + 3 个渠道配齐(SiliconFlow OpenAI / sub2api-claude Anthropic / sub2api-openai OpenAI)+ 117 模型可调 ✅
+- [ ] D2-D7 — portal e2e 验证 + login / forgot password + Google / GitHub OAuth ⏳
 
 ---
 
@@ -198,6 +212,19 @@ LiteLLM 同时支持 user-level 和 key-level 预算。我们只用 key-level(�
 **W3 runbook 必读**:任何运维操作前先确认是否会触发 rotate。如果 admin token 真的丢了,流程是"在 admin.silkroadai.io UI 重新生成 → 写回 .env → 重启 dev/prod"(不要从 API 试图重新拿)。
 **修复 commit**:`ad401af` (W2 D6) — 在 `_bootstrap/src/lib/newapi/client.ts` 的注释里也标了。
 
+### 14. 一个上游多种 API 格式 → 必须配多个渠道
+**症状**:同一上游(比如 sub2api)既能调 Claude 又能调 GPT,只配一个 Anthropic Claude 渠道时,GPT 调用 → `404 server_error`(模型不存在/上游路径不对)。
+**真实行为**:new-api 的"渠道类型"决定它对该上游用哪种请求格式:
+- `Anthropic Claude` type → `POST /v1/messages`(Claude 原生格式)
+- `OpenAI` type → `POST /v1/chat/completions`(OpenAI 兼容格式)
+一个渠道只能一种类型,所以同上游有多种格式的 endpoint 时必须建多个渠道。
+**解决**:同 base URL + 同 key 配两个渠道,types 不同,每个渠道的 model list 各列对应模型。
+**实例**(W3 D1 落地):
+- `sub2api`(Anthropic Claude type)— `claude-opus-4-7` / `claude-sonnet-4-6` / etc
+- `sub2api-openai`(OpenAI type)— `gpt-5.4` / `gpt-5.4-pro` / `codex` / `gpt-image-2`
+- `SiliconFlow`(OpenAI type)— 余下的开源模型(deepseek/qwen/glm/kimi/...)
+**修复 commit**:运维操作,无 portal commit;在 admin.silkroadai.io UI 配置。
+
 ---
 
 ## 不要做的事(避免误改)
@@ -289,7 +316,7 @@ APP_PORT=3002
 ## 项目外部依赖说明
 
 - **new-api**: 部署在 VPS 23.27.113.88:3000(admin.silkroadai.io),本地通过 SSH 隧道访问
-- **LiteLLM**: 部署在 VPS 23.27.113.88:4000(W3 D1 计划关停),作 fallback 保留
+- ~~**LiteLLM**~~ — Stopped at W3 D1 (2026-05-02), container deprecated, config archived
 - **Sub2API**: 部署在 VPS,作为 new-api 的一个 Custom 渠道上游(portal 不直接调)
 - **易支付**: 公开网关,需要 PID/KEY,callback 必须公网可达
 - **QQ SMTP**: 邮件验证用(W3 启用)
