@@ -107,7 +107,9 @@ silkroadai/
 
 ### W3(Auth 完善 + LiteLLM 关停)
 - [x] D1 — VPS 收尾(2026-05-02):LiteLLM 容器停 + Caddy `api.silkroadai.io` 切到 new-api `:3000` + 3 个渠道配齐(SiliconFlow OpenAI / sub2api-claude Anthropic / sub2api-openai OpenAI)+ 117 模型可调 ✅
-- [ ] D2-D7 — portal e2e 验证 + login / forgot password + Google / GitHub OAuth ⏳
+- [x] D2 — portal e2e 验证 ✅(2026-05-03,见 `docs/W3-D2-VERIFICATION.md`)— 注册 → sk-xxx → 三格式真实模型调用 → 用量回查全链路 200
+- [ ] D2 后置 / D3 前置 blocker — 修 SiliconFlow 短名 model_mapping(F1:`deepseek-v4-flash` 503,canonical 名通)⏳
+- [ ] D3-D7 — login / forgot password / 邮箱验证 + Google / GitHub OAuth ⏳
 
 ---
 
@@ -224,6 +226,16 @@ LiteLLM 同时支持 user-level 和 key-level 预算。我们只用 key-level(�
 - `sub2api-openai`(OpenAI type)— `gpt-5.4` / `gpt-5.4-pro` / `codex` / `gpt-image-2`
 - `SiliconFlow`(OpenAI type)— 余下的开源模型(deepseek/qwen/glm/kimi/...)
 **修复 commit**:运维操作,无 portal commit;在 admin.silkroadai.io UI 配置。
+
+### 15. 渠道 model_mapping 短名在渠道编辑/扩容后可能失效
+**症状**:从 ai.silkroadai.io 调用 `deepseek-v4-flash`(W1 时代用过的短名)→ `503 no available channel for model X under group default`。canonical 名 `deepseek-ai/DeepSeek-V4-Flash` 同样的 sk-xxx 通。
+**真实行为**:new-api 渠道的 `model_mapping` 字段是个 JSON,把客户传来的 model name 在路由前 transform 成 canonical。这个字段在 channel 编辑、PUT 不带它时,**可能被静默清掉**;也可能在 SiliconFlow 上游模型清单大幅扩容(W3 D1 后 117 → 291)时被覆盖。
+**影响**:任何 W1 时代公开过的短名,客户/前端/SDK/文档示例还在用 → 静默 503,看不到投诉但流量在掉。
+**解决**:
+- 任何渠道改动后,跑全 W1 短名清单(`deepseek-v4-flash` 等)的回归 e2e
+- `model_mapping` 字段在 admin UI 编辑 channel 时必须确认还在
+- 长期:portal 后台测试覆盖加入「短名清单回归」step
+**首次发现**:W3 D2 Batch B(2026-05-03),`docs/W3-D2-VERIFICATION.md` F1。修复在 Batch D。
 
 ---
 
@@ -344,5 +356,5 @@ APP_PORT=3002
 
 ---
 
-**版本**: 1.0
-**最后更新**: 2026-05-01
+**版本**: 1.1
+**最后更新**: 2026-05-03
