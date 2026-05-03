@@ -15,6 +15,14 @@ import {
   getUserSubscriptions,
   extendSubscription,
 } from '@/lib/litellm/client';
+// new-api 充值入账 (W4-1 D1) — 替换 createAndRedeem stub。
+// 仅 executeRecharge 改造,createOrder/refund/subscription 仍走 litellm shim
+// (R3 stub 路径,W4-1 D1 brief 范围外,见 docs/W4-1-D1*)。
+import {
+  applyTopup as newapiApplyTopup,
+  getUser as newapiGetUser,
+  cnyToQuota,
+} from '@/lib/newapi/client';
 import { computeValidityDays, type ValidityUnit } from '@/lib/subscription-utils';
 import { Prisma } from '@prisma/client';
 import { deriveOrderState, isRefundStatus } from './status';
@@ -54,6 +62,9 @@ export interface CreateOrderResult {
   status: string;
   paymentType: PaymentType;
   userName: string;
+  /** Portal users no longer track balance locally — quota lives on new-api.
+   *  Field kept on the result for backward-compat with admin orders UI; W4-1
+   *  D2 sets it to 0 and the route handler strips it before responding. */
   userBalance: number;
   payUrl?: string | null;
   qrCode?: string | null;
@@ -139,10 +150,46 @@ export async function createOrder(input: CreateOrderInput): Promise<CreateOrderR
     input.amount = Number(plan.price);
   }
 
-  const user = await getUser(input.user_id);
-  if (user.status !== 'active') {
-    throw new OrderError('USER_INACTIVE', message(locale, '用户账号已被禁用', 'User account is disabled'), 422);
+  // W4-1 D2: portal user lookup goes through prisma now (was litellm.getUser
+  // stub which returned null and crashed on `.status`). litellm.getUser is
+  // still imported for legacy callers (refund / subscription flows — out of
+  // W4-1 scope) but the recharge path is portal-native here.
+  if (!input.user_id) {
+    throw new OrderError(
+      'AUTH_REQUIRED',
+      message(locale, '请先登录后再发起充值', 'Please log in to recharge'),
+      401,
+    );
   }
+  const portalUser = await prisma.user.findUnique({
+    where: { id: input.user_id },
+    select: { id: true, email: true, nickname: true, status: true },
+  });
+  if (!portalUser) {
+    throw new OrderError(
+      'USER_NOT_FOUND',
+      message(locale, '用户不存在', 'User not found'),
+      404,
+    );
+  }
+  if (portalUser.status !== 'active') {
+    throw new OrderError(
+      'USER_INACTIVE',
+      message(locale, '用户账号已被禁用', 'User account is disabled'),
+      403,
+    );
+  }
+  // 适配 Order schema 上仍存在的 W1 sub2apipay 旧字段(userEmail/userName/
+  // userNotes 都是 String?,for admin orders UI 展示)。Portal 没有 username/
+  // notes,nickname 优先,缺则用 email 本地部分。
+  const userDisplayName = portalUser.nickname || portalUser.email.split('@')[0];
+  const user = {
+    email: portalUser.email,
+    username: userDisplayName,
+    notes: null as string | null,
+    balance: 0,
+    status: portalUser.status,
+  };
 
   // ── 取消频率限制：超限后禁止创建新订单 ──
   const rateLimitConfigs = await getSystemConfigs([
@@ -930,6 +977,25 @@ export async function executeSubscriptionFulfillment(orderId: string): Promise<v
   }
 }
 
+/**
+ * 余额充值履约（W4-1 D1 改造）
+ *
+ * Order.status 上的 CAS lock(PAID/FAILED → RECHARGING → COMPLETED)是
+ * 主 idempotency 守门 — 易支付重复回调时,第二个 webhook 进 lock 时 count==0
+ * 提前 return,不会重复入账。
+ *
+ * 二级防御:进入 lock 后再 findFirst RechargeLog by (order_id,
+ * source='payment')。如果存在,说明上一轮已经成功调过 new-api 但写
+ * Order.status=COMPLETED 之前 crash 了 — 复用已有 RechargeLog,
+ * 直接 finalize order,不重复 add_quota。
+ *
+ * 与 W1 LiteLLM 时代的差异(gotcha #1 / #12):
+ *   - 不调 createAndRedeem(W1 sub2apipay 兑换码模式,已废弃)
+ *   - 不动 token(W1 修改 max_budget;new-api 永远 unlimited_quota=true)
+ *   - 充值 = POST /api/user/manage action=add_quota,语义是「增量」
+ *     (与 LiteLLM /key/update max_budget 的「替换」语义相反)
+ *   - amount 是 CNY,服务器侧用 cnyToQuota 换算 raw quota
+ */
 export async function executeRecharge(orderId: string): Promise<void> {
   const order = await prisma.order.findUnique({ where: { id: orderId } });
   if (!order) {
@@ -944,45 +1010,146 @@ export async function executeRecharge(orderId: string): Promise<void> {
   if (order.status !== ORDER_STATUS.PAID && order.status !== ORDER_STATUS.FAILED) {
     throw new OrderError('INVALID_STATUS', `Order cannot recharge in status ${order.status}`, 400);
   }
-
-  // 原子 CAS：将状态从 PAID/FAILED → RECHARGING，防止并发竞态
-  const lockResult = await prisma.order.updateMany({
-    where: { id: orderId, status: { in: [ORDER_STATUS.PAID, ORDER_STATUS.FAILED] } },
-    data: { status: ORDER_STATUS.RECHARGING },
-  });
-  if (lockResult.count === 0) {
-    // 另一个并发请求已经在处理
-    return;
-  }
-
-  try {
-    await createAndRedeem(
-      order.rechargeCode,
-      Number(order.amount),
-      order.user_id,
-      `sub2apipay recharge order:${orderId}`,
-    );
-
-    await prisma.order.updateMany({
-      where: { id: orderId, status: ORDER_STATUS.RECHARGING },
-      data: { status: ORDER_STATUS.COMPLETED, completedAt: new Date() },
-    });
-
-    await prisma.auditLog.create({
-      data: {
-        orderId,
-        action: 'RECHARGE_SUCCESS',
-        detail: JSON.stringify({ rechargeCode: order.rechargeCode, amount: Number(order.amount) }),
-        operator: 'system',
-      },
-    });
-  } catch (error) {
+  if (!order.user_id) {
+    // Order 创建时必须有 user_id；防御性检查 — 没有 portal user 就找不到
+    // 对应的 new-api user,直接 FAILED。
     await prisma.order.update({
       where: { id: orderId },
       data: {
         status: ORDER_STATUS.FAILED,
         failedAt: new Date(),
-        failedReason: error instanceof Error ? error.message : String(error),
+        failedReason: 'order has no user_id (cannot route to new-api)',
+      },
+    });
+    throw new OrderError('INVALID_STATUS', 'Order has no user_id', 400);
+  }
+
+  // 原子 CAS:将状态从 PAID/FAILED → RECHARGING,防止并发竞态。
+  const lockResult = await prisma.order.updateMany({
+    where: { id: orderId, status: { in: [ORDER_STATUS.PAID, ORDER_STATUS.FAILED] } },
+    data: { status: ORDER_STATUS.RECHARGING },
+  });
+  if (lockResult.count === 0) {
+    // 另一个并发请求已经在处理 — 让它继续,本调用直接返回。
+    return;
+  }
+
+  const cnyAmount = Number(order.amount);
+
+  try {
+    // 二级 idempotency 守门:RechargeLog 查重(支持上一轮 add_quota 成功
+    // 但 Order.status=COMPLETED 写入前 crash 的尾部场景)。
+    const existingLog = await prisma.rechargeLog.findFirst({
+      where: { order_id: orderId, source: 'payment' },
+      select: { id: true, balance_after: true },
+    });
+    if (existingLog) {
+      console.warn(
+        `[executeRecharge] order ${orderId} already has RechargeLog ${existingLog.id} — finalizing without re-charging new-api`,
+      );
+      await prisma.order.updateMany({
+        where: { id: orderId, status: ORDER_STATUS.RECHARGING },
+        data: { status: ORDER_STATUS.COMPLETED, completedAt: new Date() },
+      });
+      return;
+    }
+
+    // 取 portal user 拿 new-api 关联。RechargeLog.user_id 是 portal UUID,
+    // 但充值要打到 new-api 的 int user id。这两个 ID 在 register/oauth
+    // provisionNewCustomer 时建立映射(User.newapi_user_id)。
+    const portalUser = await prisma.user.findUnique({
+      where: { id: order.user_id },
+      select: { id: true, newapi_user_id: true },
+    });
+    if (!portalUser) {
+      throw new Error(`portal user ${order.user_id} not found`);
+    }
+    if (portalUser.newapi_user_id == null) {
+      throw new Error(
+        `portal user ${order.user_id} has no newapi_user_id (provisionNewCustomer never ran or rolled back)`,
+      );
+    }
+    const newapiUserId = portalUser.newapi_user_id;
+
+    // 读 balance_before(quota,raw 单位)。new-api 的 quota 字段就是预算总额,
+    // applyTopup 是增量。失败可容忍 — 用 0 占位,审计准确性次于入账成功率。
+    let balanceBefore: number;
+    try {
+      const u = await newapiGetUser(newapiUserId);
+      balanceBefore = u.quota;
+    } catch (err) {
+      console.warn(
+        `[executeRecharge] getUser(${newapiUserId}) before topup failed (continuing with 0 baseline):`,
+        err,
+      );
+      balanceBefore = 0;
+    }
+
+    // 调 new-api 加 quota(action=add_quota,语义增量,见 gotcha #12)。
+    await newapiApplyTopup({ newapi_user_id: newapiUserId, cnyAmount });
+
+    // applyTopup 成功 — 算预期 quotaDelta + 读 balance_after 做审计。
+    // balance_after 也用 try/catch 兜底,因为入账已经成功,审计不应阻塞 finalize。
+    const quotaDelta = cnyToQuota(cnyAmount);
+    let balanceAfter: number;
+    try {
+      const u = await newapiGetUser(newapiUserId);
+      balanceAfter = u.quota;
+    } catch (err) {
+      console.warn(
+        `[executeRecharge] getUser(${newapiUserId}) after topup failed (using before+delta):`,
+        err,
+      );
+      balanceAfter = balanceBefore + quotaDelta;
+    }
+
+    // 写 RechargeLog + finalize order + audit log,事务保护(任一步失败回滚,
+    // 下次重试 webhook 会复用 RechargeLog 二级 idempotency 路径)。
+    await prisma.$transaction([
+      prisma.rechargeLog.create({
+        data: {
+          user_id: order.user_id,
+          order_id: orderId,
+          amount: new Prisma.Decimal(cnyAmount.toFixed(4)),
+          balance_before: new Prisma.Decimal(balanceBefore),
+          balance_after: new Prisma.Decimal(balanceAfter),
+          newapi_quota_added: BigInt(quotaDelta),
+          newapi_user_id: newapiUserId,
+          source: 'payment',
+          note: `recharge order:${orderId}`,
+        },
+      }),
+      prisma.order.updateMany({
+        where: { id: orderId, status: ORDER_STATUS.RECHARGING },
+        data: { status: ORDER_STATUS.COMPLETED, completedAt: new Date() },
+      }),
+      prisma.auditLog.create({
+        data: {
+          orderId,
+          action: 'RECHARGE_SUCCESS',
+          detail: JSON.stringify({
+            cnyAmount,
+            quotaDelta,
+            newapiUserId,
+            balanceBefore,
+            balanceAfter,
+          }),
+          operator: 'system',
+        },
+      }),
+    ]);
+  } catch (error) {
+    // 不写 RechargeLog 失败行(schema 没 status/error_msg 字段)。失败信息
+    // 记在 Order.failedReason + AuditLog,与现有 RECHARGE_FAILED 流一致。
+    // NewApiError.message already includes "new-api {endpoint} {status}: ..."
+    // so plain `error.message` is sufficient for both NewApiError and other Error.
+    const reason = error instanceof Error ? error.message : String(error);
+    await prisma.order.update({
+      where: { id: orderId },
+      data: {
+        status: ORDER_STATUS.FAILED,
+        failedAt: new Date(),
+        failedReason: reason,
       },
     });
 
@@ -990,7 +1157,7 @@ export async function executeRecharge(orderId: string): Promise<void> {
       data: {
         orderId,
         action: 'RECHARGE_FAILED',
-        detail: error instanceof Error ? error.message : String(error),
+        detail: reason,
         operator: 'system',
       },
     });

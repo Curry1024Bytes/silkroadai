@@ -115,6 +115,11 @@ silkroadai/
 - [x] D6 — Google OAuth(OIDC)✅(2026-05-02,见 `docs/W3-D6-GOOGLE-OAUTH-VERIFICATION.md`)— `GET /api/auth/oauth/google/{start,callback}` + 新表 `oauth_accounts(provider, provider_account_id)` unique + `User.password_hash` 改 nullable;DIY with `jose`(零新依赖,不引 `openid-client`);state CSRF + S256 PKCE 双 cookie;5-branch email 冲突策略(login / link-verified / bootstrap-unverified / fresh-signup-with-provision-rollback / sub-conflict);15 单测 PASS,348 全套 PASS,**真实浏览器 smoke 待用户跑**(F4)
 - [x] D7 — GitHub OAuth(原生 OAuth2)✅(2026-05-02,见 `docs/W3-D7-GITHUB-OAUTH-VERIFICATION.md`)— `GET /api/auth/oauth/github/{start,callback}` 复用 D6 的 `oauth_accounts` 表(`provider='github'`);**纯 fetch 实现,零新依赖**(没 id_token / 没 PKCE);state CSRF cookie 单守门;email 走 `/user/emails` 挑 `primary && verified`,无则拒;5-branch 冲突逻辑抽出共用 helper `src/lib/auth/oauth/account-link.ts`,GitHub callback 调用之,**Google callback 暂未改造**(D7 brief 不动 google,F1 sweep 留 W4-W5);39 新单测 + 全套 389/390 PASS / **0 fail**;**真实浏览器 smoke 待用户跑**
 
+### W4-1(充值流改造 — portal-internal /pay + new-api add_quota)
+- [x] D1 — `executeRecharge` 切 new-api `applyTopup` ✅(2026-05-03)— 删 W1 LiteLLM `createAndRedeem` stub(W3 D6 起会 throw deprecation,导致每个支付成功的 order 都 PAID→FAILED);CAS lock(PAID/FAILED → RECHARGING → COMPLETED)做主 idempotency,RechargeLog `findFirst` by `(order_id, source='payment')` 做二级 dedup(防"上轮 add_quota 成功但 status flip 前 crash");balance_before/after 用 `getUser(newapi_user_id).quota` 读,失败 fallback before+delta;9 新 `execute-recharge.test.ts` PASS
+- [x] D2 — `createOrder` + `/api/orders` cookie auth + portal `/pay` `/login` 页 ✅(2026-05-03)— `createOrder` 切 `prisma.user.findUnique`(替 litellm shim getUser);新错误码 `AUTH_REQUIRED` 401 / `USER_NOT_FOUND` 404 / `USER_INACTIVE` 403(banned/disabled);`/api/orders` POST 改 cookie session(`getCurrentUser(req)`)删 `token` 字段;新 `/pay/page.tsx` server component 守门 + `/pay/pay-form.tsx` 5-tier(¥10/30/100/300/1000)+ custom amount + provider radio + window.location 跳网关;新 `/login/page.tsx` + `/login/login-form.tsx` 邮箱密码 + Google + GitHub 三选一(白名单 next 防 open-redirect);W1 1160 行 `/pay/page.tsx` 重命名 `page.legacy.tsx`(Next 自动忽略,留 reference);`src/app/page.tsx` forward 全 query(原仅 lang,影响 OAuth `?oauth_error=` 穿透);20 新单测(create-order auth 5 + /api/orders POST 6 + pay/login UI SSR smoke 9)
+- [x] D3 — 集成测 + Google sweep + 易支付 sig alert ✅(2026-05-04,见 `docs/W4-1-RECHARGE-VERIFICATION.md`)— 5 集成测 `recharge-flow.test.ts`(happy / duplicate / defensive dedup / sig fail / applyTopup throw),用 `vi.hoisted()` + 内存 prisma mock + 真签名验证(`generateSign` 测试 pkey);Google callback refactored 改用共用 `linkOrCreateOAuthUser` helper(335→138 行,删 createUserFromGoogle + inline 5-branch),与 GitHub callback 走同一 code path,**D6 全套 15/15 仍 PASS 证明行为等价**;易支付 `verifyNotification` 失败现 `console.warn('[easy-pay/notify] signature verification failed', { instId, out_trade_no, pid, signPrefix })` + body `'success'`(silent ignore + ops 信号,W6 接 Sentry);全套 vitest **43 files / 423 PASS / 1 skip / 0 fail**;**真实易支付沙箱 ¥10 smoke 待用户跑**
+
 ---
 
 ## 关键架构决策(决策已定,不要重新讨论)
@@ -387,5 +392,5 @@ APP_PORT=3002
 
 ---
 
-**版本**: 1.6
-**最后更新**: 2026-05-02
+**版本**: 1.7
+**最后更新**: 2026-05-04
