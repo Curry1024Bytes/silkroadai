@@ -110,7 +110,8 @@ silkroadai/
 - [x] D2 — portal e2e 验证 ✅(2026-05-03,见 `docs/W3-D2-VERIFICATION.md`)— 注册 → sk-xxx → 三格式真实模型调用 → 用量回查全链路 200
 - [x] D2.5 — SiliconFlow 短名 model_mapping 修复 ✅(2026-05-03,见 `scripts/rebuild-channel-model-mapping.ts` + gotcha #15 修复段)
 - [x] D3 — login 端点上线 ✅(2026-05-03,见 `docs/W3-D3-LOGIN-VERIFICATION.md`)— `POST /api/auth/login` cookie session(JWT httpOnly SameSite=Lax 7d)+ apiKey 在 response,timing 防御 + banned 拒绝;6/6 单测 + 4 e2e 状态码全对 + cookie 反解 + apiKey 真打 ai.silkroadai.io 200
-- [ ] D4-D7 — forgot password / 邮箱验证 + Google / GitHub OAuth ⏳
+- [x] D4 — forgot password + reset password ✅(2026-05-03,见 `docs/W3-D4-FORGOT-PASSWORD-VERIFICATION.md`)— `POST /api/auth/{forgot,reset}-password` + 独立 `PasswordResetToken` 表 + 邮件基础设施 `src/lib/email/*` + JWT `session_token_version` 踢登机制 + `/reset-password` UI 页;14 单测 + 6 jwt 单测 + 7 真实 e2e PASS;**SMTP 凭据 535 Login fail 是 D5 前置 blocker**(F1,用户去 admin.exmail.qq.com 重新生成授权码)
+- [ ] D5-D7 — 邮箱验证 + Google / GitHub OAuth ⏳
 
 ---
 
@@ -241,6 +242,13 @@ LiteLLM 同时支持 user-level 和 key-level 预算。我们只用 key-level(�
 **额外发现(W3 D2.5 实测,gotcha #15 的延伸)**:`model_mapping` 仅做"上游 forward 时的名字翻译",**不影响路由匹配**。要让 portal 客户能用短名调用,**短名必须同时出现在 `channel.models` 字段里**(路由器按字面查找),否则 503 `no available channel`。脚本已经把短名 append 到 `models`。
 **Tier 优先级**(SiliconFlow 多变体的同短名冲突):`Pro/X` > `vendor/X` > `LoRA/X`。Pro 默认胜出(客户充的是真金白银,free tier 限速会变成 cryptic 错误)。
 
+### 16. 改密 / token version 机制 — verifySession 每次多 1 DB read
+**现状**:为支持"改密即时踢登所有设备",jwt payload 带 `tv` 字段(= `User.session_token_version` 当时快照),`getCurrentUser` 内每次多查一次 User 表读 `session_token_version` 比对,不等返回 `null`。`signSession(userId)` 也内部读一次 User 表把当前 tv 写进 payload。
+**触发 tv++ 的事件**:reset-password endpoint(W3 D4)、未来主动 logout-all-devices endpoint。
+**影响**:Auth 热路径每请求 +1 DB read(getCurrentUser 本来就要查 user,等于 select 多一字段,几乎零额外成本;signSession 是写路径不在热路径)。目前无 cache。
+**缓解(W4-W5)**:redis 缓存 `User.session_token_version`,失效策略 = bcrypt rehash(reset password)/ 主动 logout 时主动 bust。
+**首次发现**:W3 D4 引入(本特性),`docs/W3-D4-FORGOT-PASSWORD-VERIFICATION.md` F4。
+
 ---
 
 ## 不要做的事(避免误改)
@@ -296,6 +304,11 @@ pnpm tsx scripts/rebuild-channel-model-mapping.ts <channel_id>           # dry-r
 pnpm tsx scripts/rebuild-channel-model-mapping.ts <channel_id> --apply   # 实际 PUT
 # 任何渠道编辑(admin UI 改 models / key / config)或上游扩容后必须跑一次,
 # 否则 W1 时代客户用过的短名(deepseek-v4-flash 等)会静默 503
+
+# 邮件 e2e debug 模式(W3 D4 forgot-password / W3 D5 邮箱验证用)
+EMAIL_DEBUG_LOG=/tmp/mail-debug.log pnpm dev
+# 然后 forgot-password 调用后,resetUrl(含裸 token)会 append 到 /tmp/mail-debug.log
+# 让 e2e 脚本能拿到 token(DB 只存 sha256 hash,不可恢复)。prod 永远不要 set 这个 env
 
 # Lint + 类型检查
 pnpm tsc --noEmit
@@ -366,5 +379,5 @@ APP_PORT=3002
 
 ---
 
-**版本**: 1.2
+**版本**: 1.3
 **最后更新**: 2026-05-03

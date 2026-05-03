@@ -205,9 +205,15 @@ model User {
   newapi_cached_at        DateTime?
 
   // 关系
-  keys      NewApiToken[]
-  orders    Order[]
-  recharges RechargeLog[]
+  keys                  NewApiToken[]
+  orders                Order[]
+  recharges             RechargeLog[]
+  password_reset_tokens PasswordResetToken[]
+
+  // ── session 失效控制 ──
+  // JWT payload 带 tv = session_token_version。verifySession 时如果 token tv
+  // 与当前 user 这个值不等就拒。改密 / 主动登出全设备时自增,等价于踢登。
+  session_token_version Int @default(1)
 
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
@@ -261,6 +267,23 @@ enum KeyStatus {
   active
   disabled
   expired
+}
+
+// ── 密码重置 token(W3 D4) ──
+// 不存裸 token,存 sha256(token);邮件里发裸 token,DB 只存 hash。
+// W1 D2 在 User 表上预留的 reset_password_token / reset_password_expires
+// 字段是从 sub2apipay 时代继承下来的 scaffolding,从未实装,W4+ 清理时移除。
+model PasswordResetToken {
+  id         String    @id @default(uuid()) @db.Uuid
+  user_id    String    @db.Uuid
+  user       User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  token_hash String    @unique
+  expires_at DateTime
+  used_at    DateTime?
+  created_at DateTime  @default(now())
+
+  @@index([user_id, used_at])
+  @@map("password_reset_tokens")
 }
 
 // ── 充值流水(审计 + 累计计算)──
