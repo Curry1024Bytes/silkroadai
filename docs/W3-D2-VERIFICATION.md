@@ -46,6 +46,7 @@ LiteLLM 在 W3 D1(2026-05-02 晚)关停后,portal 注册 → new-api 拿 sk-xxx 
   - (b) 前端 / 文档全切到 canonical 名,接受短名失效 — 客户面破坏性,不推荐
   - (c) portal 层做名称映射 — 脏(把上游知识泄到 portal),不推荐
 - **行动**:Batch D(D3 前置 blocker)走 (a),并跑全 W1 短名清单回归。
+- **Resolution**:Batch D(2026-05-03,本 PR)用 `scripts/rebuild-channel-model-mapping.ts --apply` 重建 SiliconFlow 渠道 mapping,实测 deepseek-v4-flash 等 88 个短名全部 200。详见本 PR 描述。
 
 ### F2 [P3 / 跟踪] `/api/log/?username=` filter 返回 0
 
@@ -65,12 +66,14 @@ LiteLLM 在 W3 D1(2026-05-02 晚)关停后,portal 注册 → new-api 拿 sk-xxx 
 - W3 D2 这一轮没新增 warning。
 - **行动**:W4 / W5 客户后台 + LibreChat 改造时一并清。
 
-### F5 [info / 情境变化] SiliconFlow 渠道 117 → 291 模型
+### F5 [info / 情境变化] SiliconFlow 渠道扩容,全渠道聚合模型规模显著上升
 
-- W3 D1 后 SiliconFlow 模型扩到 291,新增 GPT-4o / o1 / o3 / o4-mini / sora-2 / dall-e / whisper / tts / embedding 等大量 OpenAI 系 + 多模态 + audio + embedding 模型。
-- silkroadai-project-memory.md 里写的「117 模型」需要在下次更新时改成 291。
-- **UX 后果**:客户从 portal 选 model 时面对 291 个选项会混乱,而且 `zai-org/*` `deepseek-ai/*` `netease-youdao/*` 等带斜线的厂商前缀混排不友好 — 模型选择 UI 在 W3 D6-D7 OAuth 后或 W5 LibreChat fork 时务必按厂商 / 类型(chat/image/audio/embedding)分组。
-- **行动**:不阻塞 D2/D3。在 W4-W5 设计客户后台 + Chat UI 模型选择器时纳入。
+- **W3 D1 后实测**(Batch B 初测 + Batch D 复测):SiliconFlow 单渠道 canonical 模型数 **102**,新增大量 OpenAI 系 + 多模态 + audio + embedding(GPT-4o / o1 / o3 / o4-mini / sora-2 / dall-e / whisper / tts / embedding)。
+- **Batch D 在 SiliconFlow 渠道补完短名 mapping 后**,该渠道 `channel.models` 扩到 **190**(102 canonical + 88 短名 alias)。
+- **全渠道 `/api/channel/models_enabled` 聚合**:Batch B 实测 ~291,Batch D 短名补完后 ~379(SiliconFlow 192 + sub2api Anthropic + sub2api-openai)。
+- silkroadai-project-memory.md 里 W2 收尾时写的 "117 模型" 已经过时,工作区文件下次更新要对齐到上面的真实数字。
+- **UX 后果**(更尖锐):客户从 portal 选 model 时面对近 380 个选项,且 `zai-org/*` `deepseek-ai/*` `netease-youdao/*` 等带斜线的厂商前缀 + 88 个短名混排会非常乱 — 模型选择 UI 在 W3 D6-D7 OAuth 后或 W5 LibreChat fork 时**必须**按厂商 / 类型(chat/image/audio/embedding/short-alias)分组 + 搜索框,否则前端会卡 + 客户找不到模型。
+- **行动**:不阻塞 D2/D3。在 W4-W5 设计客户后台 + Chat UI 模型选择器时强制纳入。
 
 ## 测试遗留资源
 
