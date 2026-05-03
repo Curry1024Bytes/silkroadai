@@ -108,7 +108,7 @@ silkroadai/
 ### W3(Auth 完善 + LiteLLM 关停)
 - [x] D1 — VPS 收尾(2026-05-02):LiteLLM 容器停 + Caddy `api.silkroadai.io` 切到 new-api `:3000` + 3 个渠道配齐(SiliconFlow OpenAI / sub2api-claude Anthropic / sub2api-openai OpenAI)+ 117 模型可调 ✅
 - [x] D2 — portal e2e 验证 ✅(2026-05-03,见 `docs/W3-D2-VERIFICATION.md`)— 注册 → sk-xxx → 三格式真实模型调用 → 用量回查全链路 200
-- [ ] D2 后置 / D3 前置 blocker — 修 SiliconFlow 短名 model_mapping(F1:`deepseek-v4-flash` 503,canonical 名通)⏳
+- [x] D2.5 — SiliconFlow 短名 model_mapping 修复 ✅(2026-05-03,见 `scripts/rebuild-channel-model-mapping.ts` + gotcha #15 修复段)
 - [ ] D3-D7 — login / forgot password / 邮箱验证 + Google / GitHub OAuth ⏳
 
 ---
@@ -235,7 +235,10 @@ LiteLLM 同时支持 user-level 和 key-level 预算。我们只用 key-level(�
 - 任何渠道改动后,跑全 W1 短名清单(`deepseek-v4-flash` 等)的回归 e2e
 - `model_mapping` 字段在 admin UI 编辑 channel 时必须确认还在
 - 长期:portal 后台测试覆盖加入「短名清单回归」step
-**首次发现**:W3 D2 Batch B(2026-05-03),`docs/W3-D2-VERIFICATION.md` F1。修复在 Batch D。
+**首次发现**:W3 D2 Batch B(2026-05-03),`docs/W3-D2-VERIFICATION.md` F1。
+**修复**:W3 D2.5 Batch D(2026-05-03)用 `scripts/rebuild-channel-model-mapping.ts` 重建 SiliconFlow 渠道 model_mapping。该脚本可复用 — 任何渠道编辑或上游扩容后跑一次 `pnpm tsx scripts/rebuild-channel-model-mapping.ts <channel_id> --apply` 即可。
+**额外发现(W3 D2.5 实测,gotcha #15 的延伸)**:`model_mapping` 仅做"上游 forward 时的名字翻译",**不影响路由匹配**。要让 portal 客户能用短名调用,**短名必须同时出现在 `channel.models` 字段里**(路由器按字面查找),否则 503 `no available channel`。脚本已经把短名 append 到 `models`。
+**Tier 优先级**(SiliconFlow 多变体的同短名冲突):`Pro/X` > `vendor/X` > `LoRA/X`。Pro 默认胜出(客户充的是真金白银,free tier 限速会变成 cryptic 错误)。
 
 ---
 
@@ -286,6 +289,12 @@ pnpm vitest run                                 # 单次
 pnpm vitest run src/lib/newapi                  # 跑某目录(B3 之后)
 # 真实 new-api 烟雾测试需要 SSH 隧道:
 ssh -fN -L 3000:localhost:3000 -o ServerAliveInterval=60 vps
+
+# 渠道 model_mapping 重建(防 gotcha #15 回归)
+pnpm tsx scripts/rebuild-channel-model-mapping.ts <channel_id>           # dry-run 看 diff
+pnpm tsx scripts/rebuild-channel-model-mapping.ts <channel_id> --apply   # 实际 PUT
+# 任何渠道编辑(admin UI 改 models / key / config)或上游扩容后必须跑一次,
+# 否则 W1 时代客户用过的短名(deepseek-v4-flash 等)会静默 503
 
 # Lint + 类型检查
 pnpm tsc --noEmit
