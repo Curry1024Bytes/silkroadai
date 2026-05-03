@@ -110,8 +110,9 @@ silkroadai/
 - [x] D2 — portal e2e 验证 ✅(2026-05-03,见 `docs/W3-D2-VERIFICATION.md`)— 注册 → sk-xxx → 三格式真实模型调用 → 用量回查全链路 200
 - [x] D2.5 — SiliconFlow 短名 model_mapping 修复 ✅(2026-05-03,见 `scripts/rebuild-channel-model-mapping.ts` + gotcha #15 修复段)
 - [x] D3 — login 端点上线 ✅(2026-05-03,见 `docs/W3-D3-LOGIN-VERIFICATION.md`)— `POST /api/auth/login` cookie session(JWT httpOnly SameSite=Lax 7d)+ apiKey 在 response,timing 防御 + banned 拒绝;6/6 单测 + 4 e2e 状态码全对 + cookie 反解 + apiKey 真打 ai.silkroadai.io 200
-- [x] D4 — forgot password + reset password ✅(2026-05-03,见 `docs/W3-D4-FORGOT-PASSWORD-VERIFICATION.md`)— `POST /api/auth/{forgot,reset}-password` + 独立 `PasswordResetToken` 表 + 邮件基础设施 `src/lib/email/*` + JWT `session_token_version` 踢登机制 + `/reset-password` UI 页;14 单测 + 6 jwt 单测 + 7 真实 e2e PASS;**SMTP 凭据 535 Login fail 是 D5 前置 blocker**(F1,用户去 admin.exmail.qq.com 重新生成授权码)
-- [ ] D5-D7 — 邮箱验证 + Google / GitHub OAuth ⏳
+- [x] D4 — forgot password + reset password ✅(2026-05-03,见 `docs/W3-D4-FORGOT-PASSWORD-VERIFICATION.md`)— `POST /api/auth/{forgot,reset}-password` + 独立 `PasswordResetToken` 表 + 邮件基础设施 `src/lib/email/*` + JWT `session_token_version` 踢登机制 + `/reset-password` UI 页;14 单测 + 6 jwt 单测 + 7 真实 e2e PASS;SMTP 凭据 F1 已修(SMTP_HOST 配错成个人 QQ 邮箱,改成 `smtp.exmail.qq.com` + verify=true + 真实送达 1226627765@qq.com 收到)
+- [x] D5 — register 邮箱验证(soft-block)✅(2026-05-03,见 `docs/W3-D5-EMAIL-VERIFICATION-VERIFICATION.md`)— `POST /api/auth/{verify-email,resend-verification}` + 独立 `EmailVerificationToken` 表 + register 注册时异步发邮件 + `/verify-email?token=` UI 页(自动 POST + StrictMode 防双消)+ User 加 `email_verified_at` 时间戳;同 migration 一并 drop W1 sub2apipay 4 个 stale 字段 + backfill 已有 user 视为已验证;21 新单测 + 6 真实 e2e 步骤 PASS;login 未改,**敏感操作 enforcement 留 W4 客户后台**
+- [ ] D6-D7 — Google OAuth(OIDC)+ GitHub OAuth(原生)⏳
 
 ---
 
@@ -379,5 +380,5 @@ APP_PORT=3002
 
 ---
 
-**版本**: 1.3
+**版本**: 1.4
 **最后更新**: 2026-05-03

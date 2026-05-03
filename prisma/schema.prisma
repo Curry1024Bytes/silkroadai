@@ -177,20 +177,20 @@ model PaymentProviderInstance {
 
 // ── Portal 自有用户表 ──
 model User {
-  id                     String     @id @default(uuid()) @db.Uuid
-  email                  String     @unique
-  password_hash          String
-  email_verified         Boolean    @default(false)
-  email_verify_token     String?
-  email_verify_expires   DateTime?
-  reset_password_token   String?
-  reset_password_expires DateTime?
-  nickname               String?
-  avatar_url             String?
-  last_login_at          DateTime?
-  last_login_ip          String?
-  locale                 String     @default("zh-CN") @db.VarChar(10)
-  status                 UserStatus @default(active)
+  id                String     @id @default(uuid()) @db.Uuid
+  email             String     @unique
+  password_hash     String
+  // Boolean kept for backward-compat with login / user routes that already
+  // read `user.email_verified`. New writes always update both fields together.
+  email_verified    Boolean    @default(false)
+  // Source of truth for "did we verify, and when". null = not verified yet.
+  email_verified_at DateTime?
+  nickname          String?
+  avatar_url        String?
+  last_login_at     DateTime?
+  last_login_ip     String?
+  locale            String     @default("zh-CN") @db.VarChar(10)
+  status            UserStatus @default(active)
 
   // ── new-api 后端关联 ──
   // newapi_user.id 是 int(不是 UUID)
@@ -205,10 +205,11 @@ model User {
   newapi_cached_at        DateTime?
 
   // 关系
-  keys                  NewApiToken[]
-  orders                Order[]
-  recharges             RechargeLog[]
-  password_reset_tokens PasswordResetToken[]
+  keys                      NewApiToken[]
+  orders                    Order[]
+  recharges                 RechargeLog[]
+  password_reset_tokens     PasswordResetToken[]
+  email_verification_tokens EmailVerificationToken[]
 
   // ── session 失效控制 ──
   // JWT payload 带 tv = session_token_version。verifySession 时如果 token tv
@@ -271,8 +272,6 @@ enum KeyStatus {
 
 // ── 密码重置 token(W3 D4) ──
 // 不存裸 token,存 sha256(token);邮件里发裸 token,DB 只存 hash。
-// W1 D2 在 User 表上预留的 reset_password_token / reset_password_expires
-// 字段是从 sub2apipay 时代继承下来的 scaffolding,从未实装,W4+ 清理时移除。
 model PasswordResetToken {
   id         String    @id @default(uuid()) @db.Uuid
   user_id    String    @db.Uuid
@@ -284,6 +283,22 @@ model PasswordResetToken {
 
   @@index([user_id, used_at])
   @@map("password_reset_tokens")
+}
+
+// ── 邮箱验证 token(W3 D5) ──
+// 完全镜像 PasswordResetToken 设计。Token 24h 过期(reset 1h,verification 24h —
+// 客户首次注册到点验证邮件可能延迟)。User.email_verified_at = null = 未验证。
+model EmailVerificationToken {
+  id         String    @id @default(uuid()) @db.Uuid
+  user_id    String    @db.Uuid
+  user       User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  token_hash String    @unique
+  expires_at DateTime
+  used_at    DateTime?
+  created_at DateTime  @default(now())
+
+  @@index([user_id, used_at])
+  @@map("email_verification_tokens")
 }
 
 // ── 充值流水(审计 + 累计计算)──
