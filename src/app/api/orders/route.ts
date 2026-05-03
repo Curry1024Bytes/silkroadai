@@ -2,14 +2,19 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createOrder } from '@/lib/order/service';
 import { getEnv } from '@/lib/config';
-import { paymentRegistry } from '@/lib/payment';
 import { getEnabledPaymentTypes } from '@/lib/payment/resolve-enabled-types';
-import { getCurrentUserByToken } from '@/lib/litellm/client';
+import { getCurrentUser } from '@/lib/auth/session';
 import { handleApiError } from '@/lib/utils/api';
 import { getSystemConfigs } from '@/lib/system-config';
 
+// prisma + bcrypt are Node-native; pin runtime so Next doesn't try to put
+// this on the Edge.
+export const runtime = 'nodejs';
+
+// W4-1 D2: dropped `token` field — auth comes from the silkroad_session
+// cookie set during login / OAuth callback. Old W1 callers (Sub2API iframe)
+// passed a litellm token here; that path is gone.
 const createOrderSchema = z.object({
-  token: z.string().min(1),
   amount: z.number().positive().max(99999999.99),
   payment_type: z.string().min(1),
   src_host: z.string().max(253).optional(),
@@ -40,16 +45,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '参数错误', details: parsed.error.flatten().fieldErrors }, { status: 400 });
     }
 
-    const { token, amount, payment_type, src_host, src_url, is_mobile, order_type, plan_id } = parsed.data;
+    const { amount, payment_type, src_host, src_url, is_mobile, order_type, plan_id } = parsed.data;
 
-    // 通过 token 解析用户身份
-    let userId: string | null;
-    try {
-      const user = await getCurrentUserByToken(token);
-      userId = user?.id ?? null;
-    } catch {
-      return NextResponse.json({ error: '无效的 token，请重新登录', code: 'INVALID_TOKEN' }, { status: 401 });
+    // Cookie-based session lookup (set by login / OAuth callback).
+    const sessionUser = await getCurrentUser(request);
+    if (!sessionUser) {
+      return NextResponse.json({ error: '请先登录', code: 'AUTH_REQUIRED' }, { status: 401 });
     }
+    const userId: string = sessionUser.id;
 
     // 订阅订单跳过金额范围校验（价格由服务端套餐决定）
     if (order_type !== 'subscription') {
