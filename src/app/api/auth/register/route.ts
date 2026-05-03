@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { hash } from 'bcryptjs';
+import { randomBytes, createHash } from 'crypto';
 import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import {
@@ -10,6 +11,14 @@ import {
     type ProvisionedCustomer,
 } from '@/lib/newapi/client';
 import { signSession, setSessionCookie } from '@/lib/auth/session';
+import { sendVerificationEmail } from '@/lib/email/send';
+
+const VERIFICATION_TOKEN_TTL_HOURS = 24;
+const VERIFICATION_TOKEN_BYTES = 32;
+
+function hashVerificationToken(rawToken: string): string {
+    return createHash('sha256').update(rawToken).digest('hex');
+}
 
 // bcrypt is a Node-native dep (and prisma adapter-pg too) — pin runtime so
 // Next doesn't try to put this on the Edge.
@@ -167,6 +176,40 @@ export async function POST(req: NextRequest) {
         return NextResponse.json(
             { error: 'persistence_failed', message: 'Account creation failed, please retry' },
             { status: 500 },
+        );
+    }
+
+    // Issue an email-verification token + fire off the verification email.
+    // Failures here don't roll back registration — the customer can request a
+    // resend from /api/auth/resend-verification. Logged loudly so ops notice.
+    try {
+        const rawToken = randomBytes(VERIFICATION_TOKEN_BYTES).toString('hex');
+        const tokenHash = hashVerificationToken(rawToken);
+        const expiresAt = new Date(Date.now() + VERIFICATION_TOKEN_TTL_HOURS * 60 * 60 * 1000);
+
+        await prisma.emailVerificationToken.create({
+            data: { user_id: user.id, token_hash: tokenHash, expires_at: expiresAt },
+        });
+
+        const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3002';
+        const verifyUrl = `${appUrl}/verify-email?token=${rawToken}`;
+
+        try {
+            await sendVerificationEmail({
+                to: user.email,
+                verifyUrl,
+                expiresInHours: VERIFICATION_TOKEN_TTL_HOURS,
+            });
+        } catch (mailErr) {
+            console.warn(
+                `[register] verification mail send failed for ${user.email} (token row stays valid):`,
+                mailErr,
+            );
+        }
+    } catch (tokenErr) {
+        console.error(
+            `[register] verification token creation failed for ${user.id} — user is registered but won't get verify email until they hit /resend-verification:`,
+            tokenErr,
         );
     }
 

@@ -8,6 +8,7 @@ const mockUserCreate = vi.fn();
 const mockUserUpdate = vi.fn();
 const mockUserDelete = vi.fn();
 const mockTokenCreate = vi.fn();
+const mockEmailVerificationTokenCreate = vi.fn();
 const mockTransaction = vi.fn();
 
 vi.mock('@/lib/db', () => ({
@@ -21,6 +22,9 @@ vi.mock('@/lib/db', () => ({
         newApiToken: {
             create: (...args: unknown[]) => mockTokenCreate(...args),
         },
+        emailVerificationToken: {
+            create: (...args: unknown[]) => mockEmailVerificationTokenCreate(...args),
+        },
         $transaction: (...args: unknown[]) => mockTransaction(...args),
     },
 }));
@@ -32,6 +36,11 @@ vi.mock('@/lib/newapi/client', () => ({
     provisionNewCustomer: (...args: unknown[]) => mockProvision(...args),
     deleteUser: (...args: unknown[]) => mockDeleteNewApiUser(...args),
     searchUser: (...args: unknown[]) => mockSearchNewApiUser(...args),
+}));
+
+const mockSendVerificationEmail = vi.fn();
+vi.mock('@/lib/email/send', () => ({
+    sendVerificationEmail: (...args: unknown[]) => mockSendVerificationEmail(...args),
 }));
 
 // session.ts uses real signSession; .env from vitest setup provides
@@ -53,6 +62,14 @@ const NEWAPI_USER_ID = 42;
 beforeEach(() => {
     vi.clearAllMocks();
     mockTransaction.mockImplementation(async (ops: unknown[]) => Promise.all(ops));
+    // Default: verification token + email succeed silently. Tests that care
+    // override these.
+    mockEmailVerificationTokenCreate.mockResolvedValue({ id: 'verif-tok-1' });
+    mockSendVerificationEmail.mockResolvedValue({
+        messageId: '<test@example>',
+        accepted: ['ok'],
+        rejected: [],
+    });
 });
 
 describe('POST /api/auth/register (new-api)', () => {
@@ -111,6 +128,66 @@ describe('POST /api/auth/register (new-api)', () => {
         // no rollback paths invoked
         expect(mockUserDelete).not.toHaveBeenCalled();
         expect(mockDeleteNewApiUser).not.toHaveBeenCalled();
+
+        // W3 D5: verification token created + verification email sent.
+        // Response carries email_verified:false (Boolean default for new user).
+        expect(body.portal_user.email_verified).toBe(false);
+        expect(mockEmailVerificationTokenCreate).toHaveBeenCalledTimes(1);
+        const tokenArgs = mockEmailVerificationTokenCreate.mock.calls[0][0] as {
+            data: { user_id: string; token_hash: string; expires_at: Date };
+        };
+        expect(tokenArgs.data.user_id).toBe(PORTAL_USER_ID);
+        expect(tokenArgs.data.token_hash).toMatch(/^[a-f0-9]{64}$/);
+        // 24h TTL — at least 23h in the future
+        expect(tokenArgs.data.expires_at.getTime()).toBeGreaterThan(Date.now() + 23 * 60 * 60 * 1000);
+        expect(mockSendVerificationEmail).toHaveBeenCalledTimes(1);
+        const mailArgs = mockSendVerificationEmail.mock.calls[0][0] as {
+            to: string;
+            verifyUrl: string;
+            expiresInHours: number;
+        };
+        expect(mailArgs.to).toBe('happy@silkroadai.io');
+        expect(mailArgs.verifyUrl).toMatch(/\/verify-email\?token=[a-f0-9]{64}$/);
+        expect(mailArgs.expiresInHours).toBe(24);
+    });
+
+    it('happy path even when verification email fails: registration still 200', async () => {
+        // Simulates SMTP outage during register. The logical contract is the
+        // user is registered + has a session — they can request resend later.
+        mockUserFindUnique.mockImplementation((args: { where: { email?: string; id?: string } }) => {
+            if (args.where.id === PORTAL_USER_ID) return Promise.resolve({ session_token_version: 1 });
+            return Promise.resolve(null);
+        });
+        mockUserCreate.mockResolvedValue({
+            id: PORTAL_USER_ID,
+            email: 'smtpdown@silkroadai.io',
+            nickname: null,
+            email_verified: false,
+            locale: 'zh-CN',
+            status: 'active',
+            created_at: new Date(),
+        });
+        mockProvision.mockResolvedValue({
+            newapi_user_id: 99,
+            newapi_username: 'c-aaaaaaaa',
+            newapi_access_token: 'a'.repeat(32),
+            newapi_token_id: 7,
+            newapi_token_value: 'sk-test-stmpdown-key',
+        });
+        mockSendVerificationEmail.mockRejectedValue(new Error('SMTP unavailable'));
+
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const res = await POST(makeReq({ email: 'smtpdown@silkroadai.io', password: 'goodpass123' }));
+        const body = await res.json();
+
+        expect(res.status).toBe(200);
+        expect(body.user_id).toBe(PORTAL_USER_ID);
+        expect(body.token).toMatch(/^eyJ/);
+        // token row was still created (resend can use a fresh one later, but
+        // the existing one stays valid until throttle expires)
+        expect(mockEmailVerificationTokenCreate).toHaveBeenCalledTimes(1);
+        expect(warnSpy).toHaveBeenCalled();
+        warnSpy.mockRestore();
     });
 
     it('returns 409 when email already registered', async () => {

@@ -1,5 +1,5 @@
 import { getMailer } from './client';
-import { passwordResetTemplate } from './templates';
+import { passwordResetTemplate, emailVerificationTemplate, type EmailContent } from './templates';
 
 export interface SendResult {
     messageId: string;
@@ -8,21 +8,20 @@ export interface SendResult {
 }
 
 /**
- * Append the to-address + resetUrl to a debug log file when
- * EMAIL_DEBUG_LOG is set. Used by e2e scripts to extract the raw token
- * (which is otherwise only stored sha256-hashed in DB). Failure to write
- * the debug log is logged but doesn't affect the outer call. The branch
- * is hard-gated by the env var, so prod (where it's never set) pays no
- * cost beyond a single `if`.
+ * Append the to-address + URL to a debug log file when EMAIL_DEBUG_LOG is
+ * set. Used by e2e scripts to extract the raw token (which is otherwise only
+ * stored sha256-hashed in DB). Failure to write the debug log is logged but
+ * doesn't affect the outer call. The branch is hard-gated by the env var, so
+ * prod (where it's never set) pays no cost beyond a single `if`.
  */
-async function appendDebugLog(toAddress: string, resetUrl: string): Promise<void> {
+async function appendDebugLog(toAddress: string, url: string): Promise<void> {
     const path = process.env.EMAIL_DEBUG_LOG;
     if (!path) return;
     try {
         const fs = await import('node:fs/promises');
         await fs.appendFile(
             path,
-            `${new Date().toISOString()}\t${toAddress}\t${resetUrl}\n`,
+            `${new Date().toISOString()}\t${toAddress}\t${url}\n`,
             'utf-8',
         );
     } catch (e) {
@@ -30,14 +29,18 @@ async function appendDebugLog(toAddress: string, resetUrl: string): Promise<void
     }
 }
 
-export async function sendPasswordResetEmail(opts: {
+/**
+ * Internal helper — render template, send via SMTP, append debug log even on
+ * SMTP failure (so e2e can extract the token without a working mail server),
+ * then re-throw the SMTP error. Returns null only when SMTP succeeded but the
+ * upstream lib returned no info (defensive).
+ */
+async function sendTemplated(opts: {
     to: string;
-    resetUrl: string;
-    expiresInMinutes: number;
+    debugUrl: string; // url to append to debug log (raw token visible here)
+    content: EmailContent;
 }): Promise<SendResult | null> {
-    const { subject, text, html } = passwordResetTemplate(opts.resetUrl, opts.expiresInMinutes);
     const from = process.env.SMTP_FROM || process.env.SMTP_USER!;
-
     let info: Awaited<ReturnType<ReturnType<typeof getMailer>['sendMail']>> | null = null;
     let sendErr: unknown = null;
 
@@ -45,18 +48,15 @@ export async function sendPasswordResetEmail(opts: {
         info = await getMailer().sendMail({
             from: `"Silk Road AI" <${from}>`,
             to: opts.to,
-            subject,
-            text,
-            html,
+            subject: opts.content.subject,
+            text: opts.content.text,
+            html: opts.content.html,
         });
     } catch (e) {
         sendErr = e;
     }
 
-    // Always append debug log even on send failure — e2e scripts need the
-    // resetUrl to extract the token, which is otherwise unrecoverable
-    // (DB stores sha256(token), not the raw value).
-    await appendDebugLog(opts.to, opts.resetUrl);
+    await appendDebugLog(opts.to, opts.debugUrl);
 
     if (sendErr) throw sendErr;
     if (!info) return null;
@@ -65,4 +65,28 @@ export async function sendPasswordResetEmail(opts: {
         accepted: info.accepted as SendResult['accepted'],
         rejected: info.rejected as SendResult['rejected'],
     };
+}
+
+export async function sendPasswordResetEmail(opts: {
+    to: string;
+    resetUrl: string;
+    expiresInMinutes: number;
+}): Promise<SendResult | null> {
+    return sendTemplated({
+        to: opts.to,
+        debugUrl: opts.resetUrl,
+        content: passwordResetTemplate(opts.resetUrl, opts.expiresInMinutes),
+    });
+}
+
+export async function sendVerificationEmail(opts: {
+    to: string;
+    verifyUrl: string;
+    expiresInHours: number;
+}): Promise<SendResult | null> {
+    return sendTemplated({
+        to: opts.to,
+        debugUrl: opts.verifyUrl,
+        content: emailVerificationTemplate(opts.verifyUrl, opts.expiresInHours),
+    });
 }
