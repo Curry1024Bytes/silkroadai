@@ -112,7 +112,8 @@ silkroadai/
 - [x] D3 — login 端点上线 ✅(2026-05-03,见 `docs/W3-D3-LOGIN-VERIFICATION.md`)— `POST /api/auth/login` cookie session(JWT httpOnly SameSite=Lax 7d)+ apiKey 在 response,timing 防御 + banned 拒绝;6/6 单测 + 4 e2e 状态码全对 + cookie 反解 + apiKey 真打 ai.silkroadai.io 200
 - [x] D4 — forgot password + reset password ✅(2026-05-03,见 `docs/W3-D4-FORGOT-PASSWORD-VERIFICATION.md`)— `POST /api/auth/{forgot,reset}-password` + 独立 `PasswordResetToken` 表 + 邮件基础设施 `src/lib/email/*` + JWT `session_token_version` 踢登机制 + `/reset-password` UI 页;14 单测 + 6 jwt 单测 + 7 真实 e2e PASS;SMTP 凭据 F1 已修(SMTP_HOST 配错成个人 QQ 邮箱,改成 `smtp.exmail.qq.com` + verify=true + 真实送达 1226627765@qq.com 收到)
 - [x] D5 — register 邮箱验证(soft-block)✅(2026-05-03,见 `docs/W3-D5-EMAIL-VERIFICATION-VERIFICATION.md`)— `POST /api/auth/{verify-email,resend-verification}` + 独立 `EmailVerificationToken` 表 + register 注册时异步发邮件 + `/verify-email?token=` UI 页(自动 POST + StrictMode 防双消)+ User 加 `email_verified_at` 时间戳;同 migration 一并 drop W1 sub2apipay 4 个 stale 字段 + backfill 已有 user 视为已验证;21 新单测 + 6 真实 e2e 步骤 PASS;login 未改,**敏感操作 enforcement 留 W4 客户后台**
-- [ ] D6-D7 — Google OAuth(OIDC)+ GitHub OAuth(原生)⏳
+- [x] D6 — Google OAuth(OIDC)✅(2026-05-02,见 `docs/W3-D6-GOOGLE-OAUTH-VERIFICATION.md`)— `GET /api/auth/oauth/google/{start,callback}` + 新表 `oauth_accounts(provider, provider_account_id)` unique + `User.password_hash` 改 nullable;DIY with `jose`(零新依赖,不引 `openid-client`);state CSRF + S256 PKCE 双 cookie;5-branch email 冲突策略(login / link-verified / bootstrap-unverified / fresh-signup-with-provision-rollback / sub-conflict);15 单测 PASS,348 全套 PASS,**真实浏览器 smoke 待用户跑**(F4)
+- [ ] D7 — GitHub OAuth(原生 OAuth2)⏳
 
 ---
 
@@ -250,6 +251,12 @@ LiteLLM 同时支持 user-level 和 key-level 预算。我们只用 key-level(�
 **缓解(W4-W5)**:redis 缓存 `User.session_token_version`,失效策略 = bcrypt rehash(reset password)/ 主动 logout 时主动 bust。
 **首次发现**:W3 D4 引入(本特性),`docs/W3-D4-FORGOT-PASSWORD-VERIFICATION.md` F4。
 
+### 17. OAuth `state` / `pkce` cookie 必须在 callback 出口清掉(成功 + 失败两条路都清)
+**现状**:`/api/auth/oauth/google/start` 写两个短命 httpOnly cookie:`oauth_google_state`(CSRF 校验)+ `oauth_google_pkce`(PKCE code_verifier),maxAge=600s。`/api/auth/oauth/google/callback` 在 **每条**返回路径(success / state mismatch / google_denied / id_token 错误 / provision 失败)都通过 `buildResponse() → clearOAuthCookies()` 把两个 cookie 设回 maxAge=0。
+**为什么重要**:这两个值是单次使用的安全凭据。如果失败路径忘清,攻击者诱导受害者再次访问 callback URL 时还能拿到旧 verifier,放大 CSRF / replay 窗口。
+**正确写法**:任何新 OAuth provider 的 callback 都走"集中出口函数"模式 — 成功失败都 return 同一个 helper 构造的 response,helper 内 unconditionally 清 cookie。**不要**只在 happy path 末尾清。
+**首次发现**:W3 D6 引入(本特性),`docs/W3-D6-GOOGLE-OAUTH-VERIFICATION.md` F3。
+
 ---
 
 ## 不要做的事(避免误改)
@@ -380,5 +387,5 @@ APP_PORT=3002
 
 ---
 
-**版本**: 1.4
-**最后更新**: 2026-05-03
+**版本**: 1.5
+**最后更新**: 2026-05-02

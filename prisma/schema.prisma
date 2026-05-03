@@ -179,7 +179,9 @@ model PaymentProviderInstance {
 model User {
   id                String     @id @default(uuid()) @db.Uuid
   email             String     @unique
-  password_hash     String
+  // Nullable since W3 D6: OAuth-only users have no password until they
+  // separately set one via the forgot-password flow.
+  password_hash     String?
   // Boolean kept for backward-compat with login / user routes that already
   // read `user.email_verified`. New writes always update both fields together.
   email_verified    Boolean    @default(false)
@@ -210,6 +212,7 @@ model User {
   recharges                 RechargeLog[]
   password_reset_tokens     PasswordResetToken[]
   email_verification_tokens EmailVerificationToken[]
+  oauth_accounts            OAuthAccount[]
 
   // ── session 失效控制 ──
   // JWT payload 带 tv = session_token_version。verifySession 时如果 token tv
@@ -299,6 +302,23 @@ model EmailVerificationToken {
 
   @@index([user_id, used_at])
   @@map("email_verification_tokens")
+}
+
+// ── OAuth 账户绑定(W3 D6 起)──
+// 一个 portal user 可有多个 oauth_account(google + github + 未来),通过
+// (provider, provider_account_id) 唯一标识上游账号。OAuth-only user 的
+// User.password_hash 是 null。
+model OAuthAccount {
+  id                  String   @id @default(uuid()) @db.Uuid
+  user_id             String   @db.Uuid
+  user                User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  provider            String   @db.VarChar(32)
+  provider_account_id String   @db.VarChar(255)
+  created_at          DateTime @default(now())
+
+  @@unique([provider, provider_account_id])
+  @@index([user_id])
+  @@map("oauth_accounts")
 }
 
 // ── 充值流水(审计 + 累计计算)──
