@@ -109,7 +109,8 @@ silkroadai/
 - [x] D1 — VPS 收尾(2026-05-02):LiteLLM 容器停 + Caddy `api.silkroadai.io` 切到 new-api `:3000` + 3 个渠道配齐(SiliconFlow OpenAI / sub2api-claude Anthropic / sub2api-openai OpenAI)+ 117 模型可调 ✅
 - [x] D2 — portal e2e 验证 ✅(2026-05-03,见 `docs/W3-D2-VERIFICATION.md`)— 注册 → sk-xxx → 三格式真实模型调用 → 用量回查全链路 200
 - [x] D2.5 — SiliconFlow 短名 model_mapping 修复 ✅(2026-05-03,见 `scripts/rebuild-channel-model-mapping.ts` + gotcha #15 修复段)
-- [ ] D3-D7 — login / forgot password / 邮箱验证 + Google / GitHub OAuth ⏳
+- [x] D3 — login 端点上线 ✅(2026-05-03,见 `docs/W3-D3-LOGIN-VERIFICATION.md`)— `POST /api/auth/login` cookie session(JWT httpOnly SameSite=Lax 7d)+ apiKey 在 response,timing 防御 + banned 拒绝;6/6 单测 + 4 e2e 状态码全对 + cookie 反解 + apiKey 真打 ai.silkroadai.io 200
+- [ ] D4-D7 — forgot password / 邮箱验证 + Google / GitHub OAuth ⏳
 
 ---
 
@@ -365,5 +366,5 @@ APP_PORT=3002
 
 ---
 
-**版本**: 1.1
+**版本**: 1.2
 **最后更新**: 2026-05-03
