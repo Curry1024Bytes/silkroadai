@@ -1,0 +1,119 @@
+'use client';
+
+import { useState, type FormEvent } from 'react';
+
+export function ResetPasswordForm({ token }: { token: string }) {
+    const [pw1, setPw1] = useState('');
+    const [pw2, setPw2] = useState('');
+    const [submitting, setSubmitting] = useState(false);
+    const [result, setResult] = useState<{ ok: boolean; msg: string } | null>(null);
+
+    async function onSubmit(e: FormEvent) {
+        e.preventDefault();
+        setResult(null);
+        if (pw1.length < 8) {
+            setResult({ ok: false, msg: '密码至少 8 位' });
+            return;
+        }
+        if (pw1 !== pw2) {
+            setResult({ ok: false, msg: '两次输入的密码不一致' });
+            return;
+        }
+        setSubmitting(true);
+        try {
+            const r = await fetch('/api/auth/reset-password', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ token, newPassword: pw1 }),
+            });
+            const data = await r.json().catch(() => ({}));
+            if (r.ok) {
+                setResult({ ok: true, msg: '密码已重置,请使用新密码登录。' });
+            } else {
+                const msg =
+                    data?.error === 'invalid_or_expired_token'
+                        ? '链接已失效或已使用,请重新申请重置邮件。'
+                        : '重置失败,请稍后重试。';
+                setResult({ ok: false, msg });
+            }
+        } catch {
+            setResult({ ok: false, msg: '网络错误,请稍后重试。' });
+        } finally {
+            setSubmitting(false);
+        }
+    }
+
+    if (result?.ok) {
+        return (
+            <div>
+                <p style={{ color: '#1a8a4a' }}>{result.msg}</p>
+                <p>
+                    <a href="/login" style={{ color: '#0a1535' }}>
+                        前往登录
+                    </a>
+                </p>
+            </div>
+        );
+    }
+
+    return (
+        <form onSubmit={onSubmit}>
+            <label style={{ display: 'block', marginBottom: 12 }}>
+                <span style={{ fontSize: 13, color: '#5a6478' }}>新密码(至少 8 位)</span>
+                <input
+                    type="password"
+                    value={pw1}
+                    onChange={(e) => setPw1(e.target.value)}
+                    required
+                    minLength={8}
+                    maxLength={128}
+                    style={{
+                        width: '100%',
+                        padding: '8px 10px',
+                        marginTop: 4,
+                        border: '1px solid #d5dae3',
+                        borderRadius: 4,
+                        fontSize: 14,
+                    }}
+                />
+            </label>
+            <label style={{ display: 'block', marginBottom: 16 }}>
+                <span style={{ fontSize: 13, color: '#5a6478' }}>重复新密码</span>
+                <input
+                    type="password"
+                    value={pw2}
+                    onChange={(e) => setPw2(e.target.value)}
+                    required
+                    minLength={8}
+                    maxLength={128}
+                    style={{
+                        width: '100%',
+                        padding: '8px 10px',
+                        marginTop: 4,
+                        border: '1px solid #d5dae3',
+                        borderRadius: 4,
+                        fontSize: 14,
+                    }}
+                />
+            </label>
+            {result && !result.ok && (
+                <p style={{ color: '#c44', fontSize: 13, marginBottom: 12 }}>{result.msg}</p>
+            )}
+            <button
+                type="submit"
+                disabled={submitting}
+                style={{
+                    background: '#0a1535',
+                    color: '#fff',
+                    padding: '10px 20px',
+                    border: 'none',
+                    borderRadius: 4,
+                    cursor: submitting ? 'wait' : 'pointer',
+                    fontSize: 14,
+                }}
+            >
+                {submitting ? '提交中…' : '提交'}
+            </button>
+        </form>
+    );
+}

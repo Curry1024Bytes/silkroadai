@@ -57,7 +57,14 @@ beforeEach(() => {
 
 describe('POST /api/auth/register (new-api)', () => {
     it('happy path: creates user, provisions new-api, returns token + sk-key', async () => {
-        mockUserFindUnique.mockResolvedValue(null);
+        // findUnique gets called twice in this flow: once for "is email taken"
+        // (where: { email }) → null, and once by session.ts:signSession for
+        // session_token_version (where: { id }) → user shape.
+        mockUserFindUnique.mockImplementation((args: { where: { email?: string; id?: string } }) => {
+            if (args.where.email) return Promise.resolve(null);
+            if (args.where.id === PORTAL_USER_ID) return Promise.resolve({ session_token_version: 1 });
+            return Promise.resolve(null);
+        });
         mockUserCreate.mockResolvedValue({
             id: PORTAL_USER_ID,
             email: 'happy@silkroadai.io',

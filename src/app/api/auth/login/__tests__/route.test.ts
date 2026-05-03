@@ -44,23 +44,34 @@ beforeEach(() => {
 
 describe('POST /api/auth/login', () => {
     it('200 + cookie + apiKey when credentials match', async () => {
-        mockUserFindUnique.mockResolvedValue({
-            id: PORTAL_USER_ID,
-            email: 'happy@silkroadai.io',
-            password_hash: '$2a$12$realhashstoredinDB',
-            nickname: 'Happy',
-            email_verified: true,
-            locale: 'zh-CN',
-            status: 'active',
-            newapi_user_id: 8,
-            newapi_username: 'c-aaaaaaaa',
-            keys: [
-                {
-                    id: 'kkkkkkkk-1111-4222-8333-444444444444',
-                    newapi_token_value: 'sk-test-real-token-abc123',
-                    status: 'active',
-                },
-            ],
+        // findUnique gets called twice in this flow: once by the route
+        // (where: { email }, include: { keys }) → user with keys, and once by
+        // session.ts:signSession (where: { id }, select: { session_token_version })
+        // → just the version field. Branch the mock so both callers get a
+        // shape that matches their query.
+        mockUserFindUnique.mockImplementation((args: { where: { email?: string; id?: string } }) => {
+            if (args.where.id === PORTAL_USER_ID) {
+                return Promise.resolve({ session_token_version: 1 });
+            }
+            return Promise.resolve({
+                id: PORTAL_USER_ID,
+                email: 'happy@silkroadai.io',
+                password_hash: '$2a$12$realhashstoredinDB',
+                nickname: 'Happy',
+                email_verified: true,
+                locale: 'zh-CN',
+                status: 'active',
+                newapi_user_id: 8,
+                newapi_username: 'c-aaaaaaaa',
+                session_token_version: 1,
+                keys: [
+                    {
+                        id: 'kkkkkkkk-1111-4222-8333-444444444444',
+                        newapi_token_value: 'sk-test-real-token-abc123',
+                        status: 'active',
+                    },
+                ],
+            });
         });
         mockCompare.mockResolvedValue(true);
 
