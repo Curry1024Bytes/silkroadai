@@ -18,14 +18,17 @@ const PKCE_COOKIE = 'oauth_google_pkce';
 const PROVIDER = 'google';
 
 /**
- * Build the post-flow redirect. On success we land on `/` with the session
- * cookie attached; on failure we land on `/?oauth_error=<code>` so the
- * homepage can surface a banner. We always clear the state + pkce cookies on
- * the way out (they are single-use, exposing them to a second callback would
- * widen the CSRF window — see CLAUDE.md gotcha #17).
+ * Build the post-flow redirect. On success we land on `/dashboard` (the
+ * authenticated client portal landing — W4-2 D7 amend). On failure we land
+ * on `/?oauth_error=<code>` so the homepage's query forwarder (src/app/
+ * page.tsx) carries the code through to /pay → /login banner. We always
+ * clear the state + pkce cookies on the way out (they are single-use,
+ * exposing them to a second callback would widen the CSRF window — see
+ * CLAUDE.md gotcha #17).
  */
 function buildResponse(reqUrl: string, opts: { error?: string } = {}): NextResponse {
-    const base = new URL('/', reqUrl);
+    const path = opts.error ? '/' : '/dashboard';
+    const base = new URL(path, reqUrl);
     if (opts.error) base.searchParams.set('oauth_error', opts.error);
     const res = NextResponse.redirect(base, { status: 302 });
     clearOAuthCookies(res);

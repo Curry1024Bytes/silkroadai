@@ -17,13 +17,15 @@ const STATE_COOKIE = 'oauth_github_state';
 const PROVIDER = 'github';
 
 /**
- * Build the post-flow redirect. On success we land on `/` with the session
- * cookie attached; on failure we land on `/?oauth_error=<code>` so the
- * homepage can surface a banner. The state cookie is single-use — see
- * CLAUDE.md gotcha #17 for why we clear it on every exit path.
+ * Build the post-flow redirect. On success we land on `/dashboard` (the
+ * authenticated client portal landing — W4-2 D7 amend). On failure we land
+ * on `/?oauth_error=<code>` so the homepage's query forwarder carries the
+ * code through to /pay → /login banner. The state cookie is single-use —
+ * see CLAUDE.md gotcha #17 for why we clear it on every exit path.
  */
 function buildResponse(reqUrl: string, opts: { error?: string } = {}): NextResponse {
-    const base = new URL('/', reqUrl);
+    const path = opts.error ? '/' : '/dashboard';
+    const base = new URL(path, reqUrl);
     if (opts.error) base.searchParams.set('oauth_error', opts.error);
     const res = NextResponse.redirect(base, { status: 302 });
     clearOAuthCookies(res);

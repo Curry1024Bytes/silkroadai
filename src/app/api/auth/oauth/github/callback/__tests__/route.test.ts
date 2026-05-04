@@ -169,7 +169,7 @@ describe('GET /api/auth/oauth/github/callback', () => {
         );
 
         expect(res.status).toBe(302);
-        expect(res.headers.get('location')).toBe('http://localhost/');
+        expect(res.headers.get('location')).toBe('http://localhost/dashboard');
         // helper called with provider='github' + stringified id + lowercased email
         expect(mockLinkOrCreate).toHaveBeenCalledWith({
             provider: 'github',
