@@ -189,7 +189,7 @@ describe('GET /api/auth/oauth/google/callback', () => {
         );
 
         expect(res.status).toBe(302);
-        expect(res.headers.get('location')).toBe('http://localhost/');
+        expect(res.headers.get('location')).toBe('http://localhost/dashboard');
         // session cookie set + oauth cookies cleared
         const cookies = res.headers.getSetCookie();
         expect(cookies.some((c) => c.startsWith('silkroad_session='))).toBe(true);
@@ -220,7 +220,7 @@ describe('GET /api/auth/oauth/google/callback', () => {
         );
 
         expect(res.status).toBe(302);
-        expect(res.headers.get('location')).toBe('http://localhost/');
+        expect(res.headers.get('location')).toBe('http://localhost/dashboard');
         // oauth_account row created with the right (provider, sub, user)
         expect(mockOAuthCreate).toHaveBeenCalledWith(
             expect.objectContaining({

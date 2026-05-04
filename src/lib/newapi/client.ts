@@ -434,10 +434,16 @@ export async function deleteToken(
 /**
  * 查询用量日志
  *
- * ⚠️ filter 是 username (string) 不是 user_id!
- * portal 要在 users 表里维护 username 字段或缓存 id→username
+ * ⚠️ Filter preference:**use `user_id` (int) — `username` filter has been
+ * empirically observed returning 0 results even when matching logs exist
+ * (W3 D2 F2 finding). Both params are forwarded to new-api so callers can
+ * still pick username explicitly, but portal default is user_id.
+ *
+ * @param user_id    new-api int user id(preferred filter)
+ * @param username   string username(legacy / debug — likely buggy upstream)
  */
 export async function queryLogs(args: {
+    user_id?: number;
     username?: string;
     type?: 0 | 1 | 2 | 3 | 4 | 5 | 6;
     start_timestamp?: number;
@@ -450,6 +456,7 @@ export async function queryLogs(args: {
     return await call('GET', '/api/log/', undefined, {
         p: args.page ?? 1,
         page_size: args.page_size ?? 50,
+        user_id: args.user_id,
         username: args.username,
         type: args.type,
         start_timestamp: args.start_timestamp,

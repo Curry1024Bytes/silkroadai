@@ -1,9 +1,14 @@
 /**
  * Minimal portal login UI. Server component verifies that the visitor isn't
- * already logged in (in which case we send them on to /pay or wherever they
- * came from), then mounts the client form. Mirrors the visual style of
- * /reset-password and /verify-email — inline-style, brand color #0a1535,
- * no Tailwind classes (those pages don't use any either).
+ * already logged in (in which case we send them on to /dashboard or wherever
+ * the next= param requested), then mounts the client form. Mirrors the
+ * visual style of /reset-password and /verify-email — inline-style, brand
+ * color #0a1535, no Tailwind classes.
+ *
+ * W4-2 D7 amend: default landing flipped from /pay → /dashboard now that the
+ * authenticated route group exists. /pay still works (legitimate `next=`
+ * targets are honored as long as they pass safeNext) — only the *default*
+ * fallback changed.
  */
 import { Suspense } from 'react';
 import { redirect } from 'next/navigation';
@@ -27,11 +32,11 @@ async function getSessionUser() {
 
 /** Whitelist of safe internal `next` redirect targets — refuse anything that
  *  smells like an open redirect. Same rule we'd want to apply to OAuth's
- *  state cookie carrying a return path in a future patch. */
+ *  state cookie carrying a return path in a future patch (W6 scope). */
 function safeNext(raw: string | undefined): string {
-    if (!raw) return '/pay';
-    if (!raw.startsWith('/')) return '/pay';
-    if (raw.startsWith('//')) return '/pay'; // protocol-relative URL
+    if (!raw) return '/dashboard';
+    if (!raw.startsWith('/')) return '/dashboard';
+    if (raw.startsWith('//')) return '/dashboard'; // protocol-relative URL
     return raw;
 }
 
@@ -41,7 +46,7 @@ export default async function LoginPage({
     searchParams?: Promise<Record<string, string | string[] | undefined>>;
 }) {
     const params = (await searchParams) ?? {};
-    const next = typeof params.next === 'string' ? safeNext(params.next) : '/pay';
+    const next = typeof params.next === 'string' ? safeNext(params.next) : '/dashboard';
     const oauthError = typeof params.oauth_error === 'string' ? params.oauth_error : null;
 
     const user = await getSessionUser();

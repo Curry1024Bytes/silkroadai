@@ -1103,8 +1103,13 @@ export async function executeRecharge(orderId: string): Promise<void> {
       balanceAfter = balanceBefore + quotaDelta;
     }
 
-    // 写 RechargeLog + finalize order + audit log,事务保护(任一步失败回滚,
-    // 下次重试 webhook 会复用 RechargeLog 二级 idempotency 路径)。
+    // 写 RechargeLog + finalize order + audit log + bust portal quota cache,
+    // 事务保护(任一步失败回滚,下次重试 webhook 会复用 RechargeLog 二级
+    // idempotency 路径)。
+    //
+    // Cache bust(W4-2 D6):applyTopup 已经把 raw quota 涨到 new-api 那边,
+    // 但 portal Prisma 上的 newapi_quota_cache 还是旧值。null 三个字段让
+    // 下一次 /balance 渲染走 live fetch,看到最新余额。
     await prisma.$transaction([
       prisma.rechargeLog.create({
         data: {
@@ -1135,6 +1140,14 @@ export async function executeRecharge(orderId: string): Promise<void> {
             balanceAfter,
           }),
           operator: 'system',
+        },
+      }),
+      prisma.user.update({
+        where: { id: order.user_id },
+        data: {
+          newapi_quota_cache: null,
+          newapi_used_quota_cache: null,
+          newapi_cached_at: null,
         },
       }),
     ]);
