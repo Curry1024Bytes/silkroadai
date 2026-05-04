@@ -14,6 +14,7 @@ const mockOrderFindUnique = vi.fn();
 const mockOrderUpdate = vi.fn();
 const mockOrderUpdateMany = vi.fn();
 const mockUserFindUnique = vi.fn();
+const mockUserUpdate = vi.fn();
 const mockRechargeLogFindFirst = vi.fn();
 const mockRechargeLogCreate = vi.fn();
 const mockAuditLogCreate = vi.fn();
@@ -28,6 +29,7 @@ vi.mock('@/lib/db', () => ({
     },
     user: {
       findUnique: (...args: unknown[]) => mockUserFindUnique(...args),
+      update: (...args: unknown[]) => mockUserUpdate(...args),
     },
     rechargeLog: {
       findFirst: (...args: unknown[]) => mockRechargeLogFindFirst(...args),
@@ -79,6 +81,7 @@ beforeEach(() => {
   // CAS lock succeeds by default (count=1 means PAID/FAILED → RECHARGING worked)
   mockOrderUpdateMany.mockResolvedValue({ count: 1 });
   mockOrderUpdate.mockResolvedValue({});
+  mockUserUpdate.mockResolvedValue({});
   mockRechargeLogCreate.mockResolvedValue({ id: 'rl-1' });
   mockAuditLogCreate.mockResolvedValue({});
 });
@@ -139,6 +142,18 @@ describe('executeRecharge — happy path', () => {
     // No FAILED side effects
     expect(mockOrderUpdate).not.toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ status: 'FAILED' }) }),
+    );
+    // W4-2 D6 cache bust: success-path transaction nullifies the three
+    // newapi_quota_cache columns so the next /balance render forces live.
+    expect(mockUserUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: PORTAL_USER_ID },
+        data: expect.objectContaining({
+          newapi_quota_cache: null,
+          newapi_used_quota_cache: null,
+          newapi_cached_at: null,
+        }),
+      }),
     );
   });
 

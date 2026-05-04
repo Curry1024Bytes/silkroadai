@@ -1,0 +1,49 @@
+'use client';
+
+import { useState } from 'react';
+
+/**
+ * Logout button. POSTs /api/auth/logout (clears the silkroad_session cookie
+ * server-side, doesn't bump session_token_version — see W3 D4 gotcha #16:
+ * full device-kick is reserved for password reset). On success we hard-nav
+ * to /login so any cached client state is dropped.
+ */
+export function LogoutButton() {
+    const [loggingOut, setLoggingOut] = useState(false);
+
+    async function handleLogout() {
+        if (loggingOut) return;
+        setLoggingOut(true);
+        try {
+            await fetch('/api/auth/logout', {
+                method: 'POST',
+                credentials: 'same-origin',
+            });
+        } catch {
+            // Even on network failure we still want to bounce the user out
+            // of the authenticated UI — they think they're logged out, the
+            // cookie may still linger but server will reject anyway.
+        }
+        window.location.href = '/login';
+    }
+
+    return (
+        <button
+            type="button"
+            onClick={handleLogout}
+            disabled={loggingOut}
+            style={{
+                background: 'transparent',
+                border: '1px solid rgba(255,255,255,0.3)',
+                color: '#fff',
+                padding: '6px 14px',
+                borderRadius: 4,
+                fontSize: 13,
+                cursor: loggingOut ? 'not-allowed' : 'pointer',
+                opacity: loggingOut ? 0.6 : 1,
+            }}
+        >
+            {loggingOut ? '退出中…' : '退出'}
+        </button>
+    );
+}

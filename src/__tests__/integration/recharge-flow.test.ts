@@ -153,6 +153,10 @@ const { mockPrismaImpl } = vi.hoisted(() => {
     user: {
       findUnique: (args: { where: { id: string } }) =>
         Promise.resolve(getState().users.get(args.where.id) ?? null),
+      // W4-2 D6 cache bust: executeRecharge's commit transaction now
+      // nullifies newapi_quota_cache fields. We don't track them in the
+      // integration state model — just accept the write and return.
+      update: (_args: unknown) => Promise.resolve({}),
     },
     rechargeLog: {
       findFirst: (args: { where: { order_id: string; source: string } }) => {

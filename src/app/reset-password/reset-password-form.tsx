@@ -1,15 +1,21 @@
 'use client';
 
-import { useState, type FormEvent } from 'react';
+import { useRef, useState, type FormEvent } from 'react';
 
 export function ResetPasswordForm({ token }: { token: string }) {
     const [pw1, setPw1] = useState('');
     const [pw2, setPw2] = useState('');
     const [submitting, setSubmitting] = useState(false);
     const [result, setResult] = useState<{ ok: boolean; msg: string } | null>(null);
+    // W4-2 D7 sweep — synchronous guard against the React 19 + double-click
+    // race where two onSubmit invocations both observe submitting=false
+    // before the first state update commits. Mirrors the firedRef pattern
+    // in /verify-email's auto-fire runner (W3 D5).
+    const fired = useRef(false);
 
     async function onSubmit(e: FormEvent) {
         e.preventDefault();
+        if (fired.current) return;
         setResult(null);
         if (pw1.length < 8) {
             setResult({ ok: false, msg: '密码至少 8 位' });
@@ -19,6 +25,7 @@ export function ResetPasswordForm({ token }: { token: string }) {
             setResult({ ok: false, msg: '两次输入的密码不一致' });
             return;
         }
+        fired.current = true;
         setSubmitting(true);
         try {
             const r = await fetch('/api/auth/reset-password', {
@@ -35,9 +42,14 @@ export function ResetPasswordForm({ token }: { token: string }) {
                         ? '链接已失效或已使用,请重新申请重置邮件。'
                         : '重置失败,请稍后重试。';
                 setResult({ ok: false, msg });
+                // Allow user to retry on transient/server error (validation
+                // errors don't get here — they returned early above without
+                // setting fired).
+                fired.current = false;
             }
         } catch {
             setResult({ ok: false, msg: '网络错误,请稍后重试。' });
+            fired.current = false;
         } finally {
             setSubmitting(false);
         }
