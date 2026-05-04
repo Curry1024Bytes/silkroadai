@@ -91,7 +91,11 @@ import { REDIRECT_PAYMENT_TYPES } from '@/lib/constants';
 import type { CreatePaymentRequest } from '@/lib/payment/types';
 
 // ============================================================
-// Helper: simulate shouldAutoRedirect logic from PaymentQRCode
+// Helper: spec-pin for "given createPayment output, should the UI auto-redirect?"
+// W5 D2 deleted the PaymentQRCode component (W1 sub2apipay legacy). The
+// provider tests below still use this helper to assert the post-create UI
+// behavior contract — when the new W4-1 D2 PayForm or a future replacement
+// surface their own redirect logic, they should match this spec.
 // ============================================================
 
 function shouldAutoRedirect(opts: {
@@ -503,167 +507,6 @@ describe('Payment Flow - PC/Mobile, QR/Redirect', () => {
     });
   });
 
-  // ----------------------------------------------------------
-  // shouldAutoRedirect logic (PaymentQRCode component)
-  // ----------------------------------------------------------
-
-  describe('shouldAutoRedirect (PaymentQRCode logic)', () => {
-    it('PC + qrCode + payUrl => false (show QR code, do not redirect)', () => {
-      expect(
-        shouldAutoRedirect({
-          expired: false,
-          paymentType: 'alipay',
-          payUrl: 'https://example.com/pay',
-          qrCode: 'https://qr.alipay.com/xxx',
-          isMobile: false,
-        }),
-      ).toBe(false);
-    });
-
-    it('PC + payUrl only (no qrCode) => true (redirect)', () => {
-      expect(
-        shouldAutoRedirect({
-          expired: false,
-          paymentType: 'alipay_direct',
-          payUrl: 'https://openapi.alipay.com/gateway.do?...',
-          qrCode: undefined,
-          isMobile: false,
-        }),
-      ).toBe(true);
-    });
-
-    it('PC + payUrl + empty qrCode string => true (redirect)', () => {
-      expect(
-        shouldAutoRedirect({
-          expired: false,
-          paymentType: 'alipay_direct',
-          payUrl: 'https://openapi.alipay.com/gateway.do?...',
-          qrCode: '',
-          isMobile: false,
-        }),
-      ).toBe(true);
-    });
-
-    it('PC + payUrl + null qrCode => true (redirect)', () => {
-      expect(
-        shouldAutoRedirect({
-          expired: false,
-          paymentType: 'alipay_direct',
-          payUrl: 'https://openapi.alipay.com/gateway.do?...',
-          qrCode: null,
-          isMobile: false,
-        }),
-      ).toBe(true);
-    });
-
-    it('Mobile + payUrl => true (redirect)', () => {
-      expect(
-        shouldAutoRedirect({
-          expired: false,
-          paymentType: 'wxpay_direct',
-          payUrl: 'https://wx.tenpay.com/...',
-          qrCode: undefined,
-          isMobile: true,
-        }),
-      ).toBe(true);
-    });
-
-    it('Mobile + payUrl + qrCode => true (redirect, mobile always prefers payUrl)', () => {
-      expect(
-        shouldAutoRedirect({
-          expired: false,
-          paymentType: 'alipay',
-          payUrl: 'https://easypay.example.com/pay/xxx',
-          qrCode: 'https://qr.alipay.com/xxx',
-          isMobile: true,
-        }),
-      ).toBe(true);
-    });
-
-    it('Mobile + qrCode only (no payUrl) => false (show QR code)', () => {
-      expect(
-        shouldAutoRedirect({
-          expired: false,
-          paymentType: 'wxpay_direct',
-          payUrl: undefined,
-          qrCode: 'weixin://wxpay/bizpayurl?pr=xxx',
-          isMobile: true,
-        }),
-      ).toBe(false);
-    });
-
-    it('Stripe => false (never redirect, uses Payment Element)', () => {
-      expect(
-        shouldAutoRedirect({
-          expired: false,
-          paymentType: 'stripe',
-          payUrl: 'https://checkout.stripe.com/xxx',
-          qrCode: undefined,
-          isMobile: false,
-        }),
-      ).toBe(false);
-    });
-
-    it('Stripe on mobile => false (still no redirect)', () => {
-      expect(
-        shouldAutoRedirect({
-          expired: false,
-          paymentType: 'stripe',
-          payUrl: 'https://checkout.stripe.com/xxx',
-          qrCode: undefined,
-          isMobile: true,
-        }),
-      ).toBe(false);
-    });
-
-    it('Expired order => false (never redirect expired orders)', () => {
-      expect(
-        shouldAutoRedirect({
-          expired: true,
-          paymentType: 'alipay',
-          payUrl: 'https://example.com/pay',
-          qrCode: undefined,
-          isMobile: true,
-        }),
-      ).toBe(false);
-    });
-
-    it('No payUrl at all => false (nothing to redirect to)', () => {
-      expect(
-        shouldAutoRedirect({
-          expired: false,
-          paymentType: 'alipay',
-          payUrl: undefined,
-          qrCode: undefined,
-          isMobile: true,
-        }),
-      ).toBe(false);
-    });
-
-    it('Empty payUrl string => false (treated as falsy)', () => {
-      expect(
-        shouldAutoRedirect({
-          expired: false,
-          paymentType: 'alipay',
-          payUrl: '',
-          qrCode: undefined,
-          isMobile: true,
-        }),
-      ).toBe(false);
-    });
-
-    it('Null payUrl => false (treated as falsy)', () => {
-      expect(
-        shouldAutoRedirect({
-          expired: false,
-          paymentType: 'alipay',
-          payUrl: null,
-          qrCode: undefined,
-          isMobile: true,
-        }),
-      ).toBe(false);
-    });
-  });
 
   // ----------------------------------------------------------
   // Utility function tests
