@@ -1,7 +1,12 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { quotaToCny } from '@/lib/newapi/client';
+// IMPORTANT: import pure quota helpers from the side-effect-free module.
+// `@/lib/newapi/client` carries `import 'server-only'` + a runtime
+// admin-env check that crashes the browser bundle (W6 D4 → W6 D5 prod
+// regression). Anything imported by a 'use client' component MUST come
+// from `quota-units` or another client-safe module.
+import { quotaToCny } from '@/lib/newapi/quota-units';
 
 export interface KeyRow {
     id: string;

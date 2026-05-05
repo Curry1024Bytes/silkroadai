@@ -22,6 +22,7 @@
  *     filtering on older builds (see `queryLogs` doc). Callers MUST
  *     post-filter — `getTokenUsageWithCache` does so unconditionally.
  */
+import 'server-only';
 import { prisma } from '@/lib/db';
 import { queryLogs } from './client';
 

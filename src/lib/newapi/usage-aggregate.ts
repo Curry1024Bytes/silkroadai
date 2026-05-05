@@ -21,6 +21,7 @@
  * No new endpoint — both /dashboard and /usage call the helper directly
  * from their server components.
  */
+import 'server-only';
 import * as Sentry from '@sentry/nextjs';
 import { prisma } from '@/lib/db';
 import { queryLogs } from './client';

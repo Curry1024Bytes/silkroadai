@@ -20,6 +20,7 @@
  *     elapses. That's an accepted UX gap — the customer can hard-refresh
  *     to force-bust, or wait at most a minute.
  */
+import 'server-only';
 import { prisma } from '@/lib/db';
 import { getUser as newapiGetUser } from './client';
 
