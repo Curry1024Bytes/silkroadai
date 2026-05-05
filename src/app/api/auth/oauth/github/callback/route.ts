@@ -22,10 +22,27 @@ const PROVIDER = 'github';
  * on `/?oauth_error=<code>` so the homepage's query forwarder carries the
  * code through to /pay → /login banner. The state cookie is single-use —
  * see CLAUDE.md gotcha #17 for why we clear it on every exit path.
+ *
+ * W5 D3 fix-up: prefer APP_URL (or its NEXT_PUBLIC_APP_URL fallback) over
+ * reqUrl for the redirect base.
+ *
+ * Two-layer reasoning:
+ *   1. Behind a reverse proxy, Next.js 16 standalone constructs
+ *      `request.url` from the container's HOSTNAME env (=0.0.0.0 in our
+ *      docker setup), not the proxy's Host header. Naive `new URL(path,
+ *      reqUrl)` in prod yields `https://0.0.0.0:3002/dashboard?…`.
+ *   2. NEXT_PUBLIC_-prefixed env vars are inlined into the build at
+ *      `next build` time (Next.js does this so SSR + CSR see the same
+ *      value). Changing NEXT_PUBLIC_APP_URL on the running container has
+ *      no effect on server-side reads. So we read APP_URL first (a plain
+ *      runtime env var, picked up live from docker-compose env_file) and
+ *      fall back to NEXT_PUBLIC_APP_URL (matches build-time value) and
+ *      finally to reqUrl (keeps unit tests + non-proxied dev green).
  */
 function buildResponse(reqUrl: string, opts: { error?: string } = {}): NextResponse {
     const path = opts.error ? '/' : '/dashboard';
-    const base = new URL(path, reqUrl);
+    const appUrl = process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || reqUrl;
+    const base = new URL(path, appUrl);
     if (opts.error) base.searchParams.set('oauth_error', opts.error);
     const res = NextResponse.redirect(base, { status: 302 });
     clearOAuthCookies(res);

@@ -96,6 +96,11 @@ beforeEach(() => {
     process.env.GOOGLE_OAUTH_CLIENT_ID = 'cid.apps.googleusercontent.com';
     process.env.GOOGLE_OAUTH_CLIENT_SECRET = 'csecret';
     process.env.GOOGLE_OAUTH_REDIRECT_URI = 'http://localhost:3002/api/auth/oauth/google/callback';
+    // Ensure tests run against the request.url-based fallback path. The
+    // dedicated "redirect base env precedence" test sets these explicitly.
+    // Local .env may have them set to a prod URL; clear here.
+    delete process.env.APP_URL;
+    delete process.env.NEXT_PUBLIC_APP_URL;
 
     mockTransaction.mockImplementation(async (ops: unknown[]) => Promise.all(ops));
     // last_login_at update + signSession DB read default
@@ -396,5 +401,63 @@ describe('GET /api/auth/oauth/google/callback', () => {
         expect(res.status).toBe(302);
         expect(res.headers.get('location')).toContain('oauth_error=account_disabled');
         expect(res.headers.getSetCookie().some((c) => c.startsWith('silkroad_session='))).toBe(false);
+    });
+
+    it('W5 D3 fix-up: NEXT_PUBLIC_APP_URL is used as redirect base instead of request.url', async () => {
+        // Behind reverse proxy in prod, request.url carries the container's
+        // bind addr (0.0.0.0:3002) not the public hostname; the env var
+        // pins the right base.
+        process.env.NEXT_PUBLIC_APP_URL = 'https://portal.silkroadai.io';
+
+        // Success path → /dashboard
+        mockExchange.mockResolvedValue({ id_token: 'idtoken', access_token: 'a', expires_in: 3600, scope: '', token_type: 'Bearer' });
+        mockVerify.mockResolvedValue(happyClaims());
+        mockOAuthFindUnique.mockResolvedValue({
+            user: { id: PORTAL_USER_ID, status: 'active', email: 'happy@example.com' },
+        });
+        mockUserFindUnique.mockResolvedValue({ session_token_version: 1 });
+
+        const okRes = await GET(
+            makeReq({
+                query: { code: 'authcode', state: 'good' },
+                cookies: { oauth_google_state: 'good', oauth_google_pkce: 'verifier' },
+            }),
+        );
+        expect(okRes.headers.get('location')).toBe('https://portal.silkroadai.io/dashboard');
+
+        // Failure path → /?oauth_error=...
+        const failRes = await GET(
+            makeReq({ query: { code: 'c', state: 'qstate' } /* no cookies */ }),
+        );
+        expect(failRes.headers.get('location')).toBe(
+            'https://portal.silkroadai.io/?oauth_error=state_mismatch',
+        );
+    });
+
+    it('W5 D3 fix-up #3: APP_URL takes priority over NEXT_PUBLIC_APP_URL', async () => {
+        // NEXT_PUBLIC_APP_URL is inlined at build time so a runtime change to
+        // it has no effect on server-side reads. APP_URL is a plain runtime
+        // var that wins. Both set → APP_URL wins.
+        process.env.APP_URL = 'https://runtime.example.com';
+        process.env.NEXT_PUBLIC_APP_URL = 'https://build-time.example.com';
+
+        const res = await GET(
+            makeReq({ query: { code: 'c', state: 'qstate' } /* no cookies */ }),
+        );
+        expect(res.headers.get('location')).toBe(
+            'https://runtime.example.com/?oauth_error=state_mismatch',
+        );
+    });
+
+    it('W5 D3 fix-up #3: APP_URL alone (NEXT_PUBLIC_APP_URL unset) works', async () => {
+        process.env.APP_URL = 'https://only-runtime.example.com';
+        // NEXT_PUBLIC_APP_URL stays deleted (beforeEach)
+
+        const res = await GET(
+            makeReq({ query: { code: 'c', state: 'qstate' } /* no cookies */ }),
+        );
+        expect(res.headers.get('location')).toBe(
+            'https://only-runtime.example.com/?oauth_error=state_mismatch',
+        );
     });
 });

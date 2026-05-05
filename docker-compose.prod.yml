@@ -1,15 +1,71 @@
+#
+# Silk Road AI Portal — production stack
+#
+# Two services:
+#   1. portal — Next.js app (built from local Dockerfile)
+#   2. portal-postgres — Postgres 16 (named volume for durability)
+#
+# The portal container reaches new-api (running on the VPS host, NOT in this
+# compose stack) via host.docker.internal:3000. extra_hosts maps that name
+# to the host gateway IP on Linux Docker.
+#
+# Caddy on the host (system service) terminates SSL for
+# https://portal.silkroadai.io and reverse-proxies to localhost:3002, which
+# docker-compose binds to portal:3002.
+#
+# Required project-level .env keys for compose interpolation:
+#   POSTGRES_PASSWORD=<password from DATABASE_URL>
+# (POSTGRES_USER and POSTGRES_DB are hardcoded below — they're not secrets.)
+#
+# All app secrets (DATABASE_URL, NEWAPI_*, PORTAL_JWT_SECRET, SMTP_*, etc)
+# come in via env_file at portal service runtime — NOT propagated to
+# postgres which only sees POSTGRES_*.
+
 services:
-  app:
-    image: touwaeriol/sub2apipay:${IMAGE_TAG:-latest}
-    container_name: sub2apipay
+  portal:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: silkroadai-portal
     ports:
-      - '8087:3000'
+      - '3002:3002'
     env_file: .env
+    extra_hosts:
+      # Linux Docker doesn't auto-add host.docker.internal; this maps it to
+      # the gateway so portal can reach new-api on the VPS host port 3000.
+      - 'host.docker.internal:host-gateway'
+    depends_on:
+      portal-postgres:
+        condition: service_healthy
     networks:
-      - sub2api-network
+      - silkroadai-portal-net
     restart: unless-stopped
 
+  portal-postgres:
+    image: postgres:16-alpine
+    container_name: silkroadai-portal-db
+    environment:
+      POSTGRES_USER: portal
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: silkroadai_portal_prod
+    volumes:
+      - portal_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U portal -d silkroadai_portal_prod']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    # No port published to host — only the portal container reaches it via
+    # the silkroadai-portal-net network. Reduces attack surface.
+    networks:
+      - silkroadai-portal-net
+    restart: unless-stopped
+
+volumes:
+  portal_pg_data:
+    name: silkroadai-portal-pg-data
+
 networks:
-  sub2api-network:
-    external: true
-    name: sub2api-star_sub2api-network
+  silkroadai-portal-net:
+    name: silkroadai-portal-net
+    driver: bridge
