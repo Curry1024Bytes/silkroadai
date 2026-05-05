@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
+import * as Sentry from '@sentry/nextjs';
 import { z } from 'zod';
 import { compare } from 'bcryptjs';
 import { prisma } from '@/lib/db';
 import { signSession, setSessionCookie } from '@/lib/auth/session';
+import { extractClientIP } from '@/lib/auth/extract-ip';
 
 // bcryptjs + prisma adapter-pg are Node-native; pin runtime so Next doesn't
 // try to put this on the Edge.
@@ -22,6 +24,20 @@ const LoginSchema = z.object({
 });
 
 export async function POST(req: NextRequest) {
+    try {
+        return await handleLogin(req);
+    } catch (err) {
+        // W5 D4: zod / 401 paths return early WITHOUT throwing — they don't
+        // reach here. Anything that throws is genuinely unexpected (DB
+        // outage, bcrypt crash, etc) — Sentry it then re-throw so Next.js
+        // returns its standard 500. We don't return a custom error body
+        // because we don't want to leak internal details.
+        Sentry.captureException(err, { tags: { area: 'login' } });
+        throw err;
+    }
+}
+
+async function handleLogin(req: NextRequest) {
     let body: unknown;
     try {
         body = await req.json();
@@ -63,12 +79,17 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'invalid_credentials' }, { status: 401 });
     }
 
-    // Best-effort last_login_at touch. We don't capture the IP yet (would need
-    // proxy header trust config) — that's a follow-up.
+    // Best-effort last_login_at + last_login_ip touch (W5 D4: ip captured
+    // from x-forwarded-for / x-real-ip set by host Caddy). Fire-and-forget
+    // — failure here doesn't block the login response.
+    const ip = extractClientIP(req);
     prisma.user
-        .update({ where: { id: user.id }, data: { last_login_at: new Date() } })
+        .update({
+            where: { id: user.id },
+            data: { last_login_at: new Date(), last_login_ip: ip },
+        })
         .catch((err) => {
-            console.warn(`[login] last_login_at update failed for ${user.id}:`, err);
+            console.warn(`[login] last_login_at/ip update failed for ${user.id}:`, err);
         });
 
     const sessionToken = await signSession(user.id);

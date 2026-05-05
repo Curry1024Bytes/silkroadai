@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import * as Sentry from '@sentry/nextjs';
 import { prisma } from '@/lib/db';
 import {
     exchangeCodeForToken,
@@ -8,6 +9,7 @@ import {
 } from '@/lib/auth/oauth/github';
 import { linkOrCreateOAuthUser } from '@/lib/auth/oauth/account-link';
 import { signSession, setSessionCookie } from '@/lib/auth/session';
+import { extractClientIP } from '@/lib/auth/extract-ip';
 
 // Uses prisma + Node fetch — pin runtime so Next doesn't try to put this on
 // the Edge.
@@ -113,6 +115,10 @@ export async function GET(req: NextRequest) {
             return buildResponse(req.url, { error: err.code });
         }
         console.error('[oauth/github/callback] unexpected token/identity failure:', err);
+        // W5 D4: GitHubOAuthError is "expected" (sig fail / email not verified
+        // / etc) — surface to user, no alert. Anything else is a real ops
+        // problem (network / GitHub API outage / etc) — Sentry it.
+        Sentry.captureException(err, { tags: { area: 'oauth-github-callback' } });
         return buildResponse(req.url, { error: 'oauth_failed' });
     }
 
@@ -123,16 +129,28 @@ export async function GET(req: NextRequest) {
         nameHint,
     });
     if (!outcome.ok) {
+        // W5 D4: provisioning_failed = new-api flake / our rollback failed.
+        // account_disabled (banned) and link_conflict (suspected attack) →
+        // not ops alerts.
+        if (outcome.error === 'provisioning_failed') {
+            Sentry.captureException(
+                new Error(`oauth-github: provisionNewCustomer failed for email=${email}`),
+                { tags: { area: 'oauth-github-provision' } },
+            );
+        }
         return buildResponse(req.url, { error: outcome.error });
     }
 
-    // Touch last_login_at, fire-and-forget. Same pattern as login route /
-    // google callback.
+    // Touch last_login_at + last_login_ip, fire-and-forget (W5 D4: ip).
+    const ip = extractClientIP(req);
     prisma.user
-        .update({ where: { id: outcome.userId }, data: { last_login_at: new Date() } })
+        .update({
+            where: { id: outcome.userId },
+            data: { last_login_at: new Date(), last_login_ip: ip },
+        })
         .catch((err) => {
             console.warn(
-                `[oauth/github/callback] last_login_at update failed for ${outcome.userId}:`,
+                `[oauth/github/callback] last_login update failed for ${outcome.userId}:`,
                 err,
             );
         });

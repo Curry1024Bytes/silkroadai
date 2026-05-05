@@ -102,11 +102,58 @@ describe('POST /api/auth/login', () => {
         expect(bodyStr).not.toMatch(/password/);
         expect(bodyStr).not.toMatch(/access_token/);
 
-        // last_login_at touched
+        // last_login_at touched (W5 D4: last_login_ip too — null in this
+        // test because the mock NextRequest doesn't set proxy headers)
         expect(mockUserUpdate).toHaveBeenCalledWith(
             expect.objectContaining({
                 where: { id: PORTAL_USER_ID },
-                data: expect.objectContaining({ last_login_at: expect.any(Date) }),
+                data: expect.objectContaining({
+                    last_login_at: expect.any(Date),
+                    last_login_ip: null,
+                }),
+            }),
+        );
+    });
+
+    it('writes last_login_ip from x-forwarded-for on success (W5 D4)', async () => {
+        // Same happy-path mock setup as the prior test, just adding a
+        // proxy header to verify the IP makes it into the prisma update.
+        mockUserFindUnique.mockImplementation((args: { where: { email?: string; id?: string } }) => {
+            if (args.where.id === PORTAL_USER_ID) {
+                return Promise.resolve({ session_token_version: 1 });
+            }
+            return Promise.resolve({
+                id: PORTAL_USER_ID,
+                email: 'happy@silkroadai.io',
+                password_hash: '$2a$12$realhashstoredinDB',
+                nickname: 'Happy',
+                email_verified: true,
+                locale: 'zh-CN',
+                status: 'active',
+                newapi_user_id: 8,
+                newapi_username: 'c-aaaaaaaa',
+                session_token_version: 1,
+                keys: [],
+            });
+        });
+        mockCompare.mockResolvedValue(true);
+
+        const req = new NextRequest('http://localhost/api/auth/login', {
+            method: 'POST',
+            headers: {
+                'content-type': 'application/json',
+                'x-forwarded-for': '203.0.113.7, 10.0.0.1',
+            },
+            body: JSON.stringify({ email: 'happy@silkroadai.io', password: 'goodpass123' }),
+        });
+        await POST(req);
+
+        expect(mockUserUpdate).toHaveBeenCalledWith(
+            expect.objectContaining({
+                data: expect.objectContaining({
+                    last_login_at: expect.any(Date),
+                    last_login_ip: '203.0.113.7',
+                }),
             }),
         );
     });
