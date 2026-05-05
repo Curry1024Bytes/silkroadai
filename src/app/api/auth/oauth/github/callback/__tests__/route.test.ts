@@ -72,6 +72,10 @@ beforeEach(() => {
     process.env.GITHUB_OAUTH_CLIENT_ID = 'gh-cid';
     process.env.GITHUB_OAUTH_CLIENT_SECRET = 'gh-csecret';
     process.env.GITHUB_OAUTH_REDIRECT_URI = 'http://localhost:3002/api/auth/oauth/github/callback';
+    // Ensure tests run against the request.url-based fallback path. The
+    // dedicated "NEXT_PUBLIC_APP_URL is used as redirect base" test sets it
+    // explicitly. Local .env may have it set to a prod URL; clear here.
+    delete process.env.NEXT_PUBLIC_APP_URL;
     // signSession's user lookup default
     mockUserFindUnique.mockResolvedValue({ session_token_version: 1 });
     mockUserUpdate.mockResolvedValue({});
@@ -236,5 +240,34 @@ describe('GET /api/auth/oauth/github/callback', () => {
             }),
         );
         expect(res.headers.get('location')).toContain('oauth_error=provisioning_failed');
+    });
+
+    it('W5 D3 fix-up: NEXT_PUBLIC_APP_URL is used as redirect base instead of request.url', async () => {
+        // Behind reverse proxy in prod, request.url carries the container's
+        // bind addr (0.0.0.0:3002) not the public hostname; the env var
+        // pins the right base.
+        process.env.NEXT_PUBLIC_APP_URL = 'https://portal.silkroadai.io';
+
+        // Success path → /dashboard
+        mockExchange.mockResolvedValue({ access_token: 'gho_xxx', token_type: 'bearer', scope: 'read:user user:email' });
+        mockFetchUser.mockResolvedValue({ id: 12345, login: 'octocat', name: 'The Octocat', avatar_url: null });
+        mockFetchEmail.mockResolvedValue('octo@example.com');
+        mockLinkOrCreate.mockResolvedValue({ ok: true, userId: PORTAL_USER_ID, branch: 1 });
+
+        const okRes = await GET(
+            makeReq({
+                query: { code: 'c', state: 'good' },
+                cookies: { oauth_github_state: 'good' },
+            }),
+        );
+        expect(okRes.headers.get('location')).toBe('https://portal.silkroadai.io/dashboard');
+
+        // Failure path → /?oauth_error=...
+        const failRes = await GET(
+            makeReq({ query: { code: 'c', state: 'qstate' } /* no cookies */ }),
+        );
+        expect(failRes.headers.get('location')).toBe(
+            'https://portal.silkroadai.io/?oauth_error=state_mismatch',
+        );
     });
 });

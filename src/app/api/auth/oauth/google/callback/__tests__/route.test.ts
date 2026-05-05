@@ -96,6 +96,10 @@ beforeEach(() => {
     process.env.GOOGLE_OAUTH_CLIENT_ID = 'cid.apps.googleusercontent.com';
     process.env.GOOGLE_OAUTH_CLIENT_SECRET = 'csecret';
     process.env.GOOGLE_OAUTH_REDIRECT_URI = 'http://localhost:3002/api/auth/oauth/google/callback';
+    // Ensure tests run against the request.url-based fallback path. The
+    // dedicated "NEXT_PUBLIC_APP_URL is used as redirect base" test sets it
+    // explicitly. Local .env may have it set to a prod URL; clear here.
+    delete process.env.NEXT_PUBLIC_APP_URL;
 
     mockTransaction.mockImplementation(async (ops: unknown[]) => Promise.all(ops));
     // last_login_at update + signSession DB read default
@@ -396,5 +400,36 @@ describe('GET /api/auth/oauth/google/callback', () => {
         expect(res.status).toBe(302);
         expect(res.headers.get('location')).toContain('oauth_error=account_disabled');
         expect(res.headers.getSetCookie().some((c) => c.startsWith('silkroad_session='))).toBe(false);
+    });
+
+    it('W5 D3 fix-up: NEXT_PUBLIC_APP_URL is used as redirect base instead of request.url', async () => {
+        // Behind reverse proxy in prod, request.url carries the container's
+        // bind addr (0.0.0.0:3002) not the public hostname; the env var
+        // pins the right base.
+        process.env.NEXT_PUBLIC_APP_URL = 'https://portal.silkroadai.io';
+
+        // Success path → /dashboard
+        mockExchange.mockResolvedValue({ id_token: 'idtoken', access_token: 'a', expires_in: 3600, scope: '', token_type: 'Bearer' });
+        mockVerify.mockResolvedValue(happyClaims());
+        mockOAuthFindUnique.mockResolvedValue({
+            user: { id: PORTAL_USER_ID, status: 'active', email: 'happy@example.com' },
+        });
+        mockUserFindUnique.mockResolvedValue({ session_token_version: 1 });
+
+        const okRes = await GET(
+            makeReq({
+                query: { code: 'authcode', state: 'good' },
+                cookies: { oauth_google_state: 'good', oauth_google_pkce: 'verifier' },
+            }),
+        );
+        expect(okRes.headers.get('location')).toBe('https://portal.silkroadai.io/dashboard');
+
+        // Failure path → /?oauth_error=...
+        const failRes = await GET(
+            makeReq({ query: { code: 'c', state: 'qstate' } /* no cookies */ }),
+        );
+        expect(failRes.headers.get('location')).toBe(
+            'https://portal.silkroadai.io/?oauth_error=state_mismatch',
+        );
     });
 });
