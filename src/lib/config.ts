@@ -10,8 +10,13 @@ const optionalTrimmedString = z.preprocess((value) => {
 const envSchema = z.object({
   DATABASE_URL: z.string().min(1),
 
-  LITELLM_BASE_URL: z.string().url(),
-  LITELLM_MASTER_KEY: z.string().min(1),
+  // W3 D1 decommissioned LiteLLM in favor of new-api. These two were left
+  // .required for "fallback / 排查" usage that never materialized; in W5 D3
+  // prod env they're absent and the app refused to boot. Now optional;
+  // any leftover code reading them gets `undefined` and should be deleted
+  // in a future sweep.
+  LITELLM_BASE_URL: z.string().url().optional(),
+  LITELLM_MASTER_KEY: z.string().min(1).optional(),
 
   // ── 支付服务商（显式声明启用哪些服务商，逗号分隔：easypay, alipay, wxpay, stripe） ──
   PAYMENT_PROVIDERS: z
