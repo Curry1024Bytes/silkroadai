@@ -219,6 +219,12 @@ model User {
   // 与当前 user 这个值不等就拒。改密 / 主动登出全设备时自增,等价于踢登。
   session_token_version Int @default(1)
 
+  // ── 首充福利(W6 D1)──
+  // false = 此 user 还没拿过首充 20% bonus,下次 recharge 成功时触发并 flip
+  // 为 true(同事务内 CAS lock,防同 user 并发双发)。executeRecharge 失败
+  // 回滚事务时此字段不会被永久锁,用户下次仍可拿首充 bonus。
+  first_recharge_bonus_granted Boolean @default(false)
+
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
@@ -338,6 +344,10 @@ model RechargeLog {
   // ── new-api 审计冗余 ──
   // 充给 new-api 的 raw quota 增量(对应 amount 经汇率换算)
   newapi_quota_added BigInt?
+  // 首充 20% bonus 中 bonus 部分占了多少 raw quota(W6 D1)。
+  // newapi_quota_added 是「主 + bonus」的总和,bonus_quota_added 是其中的
+  // bonus 子项,审计可以反查首充福利发了多少。非首充行恒为 0。
+  bonus_quota_added  BigInt? @default(0)
   // 充值落到哪个 new-api user(冗余:RechargeLog.user.newapi_user_id 也能拿到)
   newapi_user_id     Int?
 

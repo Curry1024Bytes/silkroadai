@@ -13,6 +13,7 @@ import { NextRequest } from 'next/server';
 import { getCurrentUser } from '@/lib/auth/session';
 import { getEnabledPaymentTypes } from '@/lib/payment/resolve-enabled-types';
 import { PayForm } from './pay-form';
+import { FirstRechargeBonusBanner } from './first-recharge-bonus-banner';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: '充值 — Silk Road AI' };
@@ -85,6 +86,11 @@ export default async function PayPage({
                 <p style={{ fontSize: 13, color: '#5a6478', margin: '0 0 20px' }}>
                     登录账户:<strong>{user.email}</strong>
                 </p>
+                {/* W6 D1: 首充 20% bonus 横幅。only render 给还没拿过 bonus 的
+                 *  user — 字段在 getCurrentUser 返回的 User 上(随 schema 自动
+                 *  包含)。banner 仅 UI 提示,真正的入账与 race-safe 防护在
+                 *  executeRecharge 的事务内 CAS lock,不依赖 banner 状态。 */}
+                {user.first_recharge_bonus_granted === false && <FirstRechargeBonusBanner />}
                 <PayForm enabledPaymentTypes={enabledTypes} />
             </div>
         </main>

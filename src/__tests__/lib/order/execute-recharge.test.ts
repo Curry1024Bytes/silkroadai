@@ -1,10 +1,9 @@
 /**
- * W4-1 D1 — executeRecharge unit tests.
+ * W4-1 D1 + W6 D1 — executeRecharge unit tests.
  *
  * Covers the happy path + idempotency + failure modes for the new-api
- * applyTopup-based recharge introduced in W4-1 D1. The legacy LiteLLM stub
- * (`createAndRedeem`) used to throw deprecation, so before this batch every
- * order silently FAIL'd.
+ * applyTopup-based recharge introduced in W4-1 D1, plus the W6 D1 first-
+ * recharge 20% bonus (CAS lock + interactive transaction rollback).
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Prisma } from '@prisma/client';
@@ -15,10 +14,35 @@ const mockOrderUpdate = vi.fn();
 const mockOrderUpdateMany = vi.fn();
 const mockUserFindUnique = vi.fn();
 const mockUserUpdate = vi.fn();
+const mockUserUpdateMany = vi.fn();
 const mockRechargeLogFindFirst = vi.fn();
 const mockRechargeLogCreate = vi.fn();
 const mockAuditLogCreate = vi.fn();
 const mockTransaction = vi.fn();
+
+// W6 D1: $transaction now uses the interactive-callback form. The mock
+// passes a `tx` argument that re-uses the same per-method mock fns so
+// the assertions inside each test still work (we don't care which surface
+// the call came in on — just the shape of the args).
+const txProxy = {
+  order: {
+    findUnique: (...args: unknown[]) => mockOrderFindUnique(...args),
+    update: (...args: unknown[]) => mockOrderUpdate(...args),
+    updateMany: (...args: unknown[]) => mockOrderUpdateMany(...args),
+  },
+  user: {
+    findUnique: (...args: unknown[]) => mockUserFindUnique(...args),
+    update: (...args: unknown[]) => mockUserUpdate(...args),
+    updateMany: (...args: unknown[]) => mockUserUpdateMany(...args),
+  },
+  rechargeLog: {
+    findFirst: (...args: unknown[]) => mockRechargeLogFindFirst(...args),
+    create: (...args: unknown[]) => mockRechargeLogCreate(...args),
+  },
+  auditLog: {
+    create: (...args: unknown[]) => mockAuditLogCreate(...args),
+  },
+};
 
 vi.mock('@/lib/db', () => ({
   prisma: {
@@ -30,6 +54,7 @@ vi.mock('@/lib/db', () => ({
     user: {
       findUnique: (...args: unknown[]) => mockUserFindUnique(...args),
       update: (...args: unknown[]) => mockUserUpdate(...args),
+      updateMany: (...args: unknown[]) => mockUserUpdateMany(...args),
     },
     rechargeLog: {
       findFirst: (...args: unknown[]) => mockRechargeLogFindFirst(...args),
@@ -52,7 +77,7 @@ vi.mock('@/lib/newapi/client', () => ({
   cnyToQuota: (cny: number) => Math.round((cny / 7.2) * 500_000),
 }));
 
-import { executeRecharge, OrderError } from '@/lib/order/service';
+import { executeRecharge, OrderError, FIRST_RECHARGE_BONUS_RATE } from '@/lib/order/service';
 
 const ORDER_ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 const PORTAL_USER_ID = 'ffffffff-eeee-4ddd-8ccc-bbbbbbbbbbbb';
@@ -72,16 +97,34 @@ function pendingOrder(overrides: Partial<Record<string, unknown>> = {}) {
   };
 }
 
+function userRow(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    id: PORTAL_USER_ID,
+    newapi_user_id: NEWAPI_USER_ID,
+    // W6 D1 default: user has NOT yet claimed first-recharge bonus.
+    // Most happy-path tests want bonus ON (first-time recharge).
+    first_recharge_bonus_granted: false,
+    ...overrides,
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
-  // Default: $transaction runs the array of promises in order. Real Prisma
-  // wraps them in a single round-trip; for unit tests Promise.all is fine
-  // because the individual mocks don't assume isolation.
-  mockTransaction.mockImplementation(async (ops: unknown[]) => Promise.all(ops));
+  // W6 D1: $transaction now supports both array form (legacy) and
+  // interactive-callback form. The recharge path uses callback form.
+  mockTransaction.mockImplementation(async (arg: unknown) => {
+    if (typeof arg === 'function') {
+      return await (arg as (tx: typeof txProxy) => Promise<unknown>)(txProxy);
+    }
+    return Promise.all(arg as unknown[]);
+  });
   // CAS lock succeeds by default (count=1 means PAID/FAILED → RECHARGING worked)
   mockOrderUpdateMany.mockResolvedValue({ count: 1 });
   mockOrderUpdate.mockResolvedValue({});
   mockUserUpdate.mockResolvedValue({});
+  // W6 D1 default: bonus CAS-claim succeeds (first-time recharge eligible).
+  // Tests that simulate "bonus already used" override this to count=0.
+  mockUserUpdateMany.mockResolvedValue({ count: 1 });
   mockRechargeLogCreate.mockResolvedValue({ id: 'rl-1' });
   mockAuditLogCreate.mockResolvedValue({});
 });
@@ -89,7 +132,9 @@ beforeEach(() => {
 describe('executeRecharge — happy path', () => {
   it('200 CNY → applyTopup called once + RechargeLog success row + order COMPLETED', async () => {
     mockOrderFindUnique.mockResolvedValue(pendingOrder({ amount: new Prisma.Decimal('200.00') }));
-    mockUserFindUnique.mockResolvedValue({ id: PORTAL_USER_ID, newapi_user_id: NEWAPI_USER_ID });
+    // Existing baseline test: user was already granted bonus previously
+    // (e.g. legacy fixture) → no bonus expected this round.
+    mockUserFindUnique.mockResolvedValue(userRow({ first_recharge_bonus_granted: true }));
     mockRechargeLogFindFirst.mockResolvedValue(null); // no prior recharge for this order
     // before topup quota = 100_000, after = 100_000 + cnyToQuota(200)
     const beforeQuota = 100_000;
@@ -101,20 +146,23 @@ describe('executeRecharge — happy path', () => {
 
     await executeRecharge(ORDER_ID);
 
-    // CAS lock: PAID/FAILED → RECHARGING
+    // CAS lock: PAID/FAILED → RECHARGING (still happens outside the tx)
     expect(mockOrderUpdateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: ORDER_ID, status: { in: ['PAID', 'FAILED'] } },
         data: { status: 'RECHARGING' },
       }),
     );
-    // applyTopup invoked exactly once with newapi_user_id + cnyAmount
+    // applyTopup invoked exactly once with newapi_user_id + cnyAmount + bonus=0
     expect(mockApplyTopup).toHaveBeenCalledTimes(1);
     expect(mockApplyTopup).toHaveBeenCalledWith({
       newapi_user_id: NEWAPI_USER_ID,
       cnyAmount: 200,
+      extraBonusQuota: 0,
     });
-    // RechargeLog written with correct shape
+    // No bonus CAS-claim attempted (peek already saw granted=true)
+    expect(mockUserUpdateMany).not.toHaveBeenCalled();
+    // RechargeLog written with newapi_quota_added=mainQuota, bonus_quota_added=0
     expect(mockRechargeLogCreate).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -123,6 +171,7 @@ describe('executeRecharge — happy path', () => {
           newapi_user_id: NEWAPI_USER_ID,
           source: 'payment',
           newapi_quota_added: BigInt(Math.round((200 / 7.2) * 500_000)),
+          bonus_quota_added: BigInt(0),
         }),
       }),
     );
@@ -159,7 +208,7 @@ describe('executeRecharge — happy path', () => {
 
   it('balance_after read failure falls back to before+delta (audit ok, finalize ok)', async () => {
     mockOrderFindUnique.mockResolvedValue(pendingOrder({ amount: new Prisma.Decimal('72.00') }));
-    mockUserFindUnique.mockResolvedValue({ id: PORTAL_USER_ID, newapi_user_id: NEWAPI_USER_ID });
+    mockUserFindUnique.mockResolvedValue(userRow({ first_recharge_bonus_granted: true }));
     mockRechargeLogFindFirst.mockResolvedValue(null);
     mockNewapiGetUser
       .mockResolvedValueOnce({ id: NEWAPI_USER_ID, quota: 50_000 }) // before ok
@@ -172,6 +221,155 @@ describe('executeRecharge — happy path', () => {
     expect(mockApplyTopup).toHaveBeenCalledTimes(1);
     expect(mockRechargeLogCreate).toHaveBeenCalledTimes(1);
     expect(mockTransaction).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('executeRecharge — first-recharge bonus (W6 D1)', () => {
+  const cnyAmount = 100;
+  const mainQuota = Math.round((cnyAmount / 7.2) * 500_000);
+  const expectedBonus = Math.floor(mainQuota * FIRST_RECHARGE_BONUS_RATE);
+
+  it('first recharge → 20% bonus added, granted flipped, RechargeLog records bonus', async () => {
+    mockOrderFindUnique.mockResolvedValue(pendingOrder({ amount: new Prisma.Decimal('100.00') }));
+    // Eligible: granted=false
+    mockUserFindUnique.mockResolvedValue(userRow({ first_recharge_bonus_granted: false }));
+    mockRechargeLogFindFirst.mockResolvedValue(null);
+    mockNewapiGetUser
+      .mockResolvedValueOnce({ id: NEWAPI_USER_ID, quota: 0 })
+      .mockResolvedValueOnce({ id: NEWAPI_USER_ID, quota: mainQuota + expectedBonus });
+    mockApplyTopup.mockResolvedValue(undefined);
+    mockUserUpdateMany.mockResolvedValue({ count: 1 }); // CAS-claim wins
+
+    await executeRecharge(ORDER_ID);
+
+    // CAS-claim issued the predicate-update inside the tx
+    expect(mockUserUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: PORTAL_USER_ID, first_recharge_bonus_granted: false },
+        data: { first_recharge_bonus_granted: true },
+      }),
+    );
+    // applyTopup called with extraBonusQuota = floor(mainQuota * 0.20)
+    expect(mockApplyTopup).toHaveBeenCalledWith({
+      newapi_user_id: NEWAPI_USER_ID,
+      cnyAmount,
+      extraBonusQuota: expectedBonus,
+    });
+    // RechargeLog row records main+bonus total in newapi_quota_added,
+    // bonus subset in bonus_quota_added.
+    expect(mockRechargeLogCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          newapi_quota_added: BigInt(mainQuota + expectedBonus),
+          bonus_quota_added: BigInt(expectedBonus),
+        }),
+      }),
+    );
+    // Audit log captures bonus details
+    expect(mockAuditLogCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          action: 'RECHARGE_SUCCESS',
+          detail: expect.stringContaining('"firstRechargeBonus":true'),
+        }),
+      }),
+    );
+  });
+
+  it('second recharge (already granted) → no bonus, no CAS-claim attempted', async () => {
+    mockOrderFindUnique.mockResolvedValue(pendingOrder({ amount: new Prisma.Decimal('100.00') }));
+    mockUserFindUnique.mockResolvedValue(userRow({ first_recharge_bonus_granted: true }));
+    mockRechargeLogFindFirst.mockResolvedValue(null);
+    mockNewapiGetUser
+      .mockResolvedValueOnce({ id: NEWAPI_USER_ID, quota: mainQuota * 2 })
+      .mockResolvedValueOnce({ id: NEWAPI_USER_ID, quota: mainQuota * 3 });
+    mockApplyTopup.mockResolvedValue(undefined);
+
+    await executeRecharge(ORDER_ID);
+
+    // No CAS-claim because peek already showed granted=true (data self-heal)
+    expect(mockUserUpdateMany).not.toHaveBeenCalled();
+    expect(mockApplyTopup).toHaveBeenCalledWith({
+      newapi_user_id: NEWAPI_USER_ID,
+      cnyAmount,
+      extraBonusQuota: 0,
+    });
+    expect(mockRechargeLogCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          bonus_quota_added: BigInt(0),
+          newapi_quota_added: BigInt(mainQuota),
+        }),
+      }),
+    );
+  });
+
+  it('parallel race: peek says eligible but CAS-claim count=0 (sibling order won) → no bonus, no throw', async () => {
+    // Simulates: two paid orders for the same user arrive simultaneously.
+    // Both peek granted=false outside the tx. Order A's tx runs first,
+    // its updateMany flips granted→true (count=1). Order B's tx blocks on
+    // the row lock, then re-reads granted=true at tx-time, predicate fails,
+    // count=0. Order B should still succeed but skip the bonus.
+    mockOrderFindUnique.mockResolvedValue(pendingOrder({ amount: new Prisma.Decimal('100.00') }));
+    mockUserFindUnique.mockResolvedValue(userRow({ first_recharge_bonus_granted: false }));
+    mockRechargeLogFindFirst.mockResolvedValue(null);
+    mockNewapiGetUser
+      .mockResolvedValueOnce({ id: NEWAPI_USER_ID, quota: 0 })
+      .mockResolvedValueOnce({ id: NEWAPI_USER_ID, quota: mainQuota });
+    mockApplyTopup.mockResolvedValue(undefined);
+    mockUserUpdateMany.mockResolvedValue({ count: 0 }); // sibling order won the race
+
+    await executeRecharge(ORDER_ID);
+
+    // CAS-claim WAS attempted (peek showed eligible)
+    expect(mockUserUpdateMany).toHaveBeenCalledTimes(1);
+    // But bonus stays 0 because count=0
+    expect(mockApplyTopup).toHaveBeenCalledWith({
+      newapi_user_id: NEWAPI_USER_ID,
+      cnyAmount,
+      extraBonusQuota: 0,
+    });
+    expect(mockRechargeLogCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ bonus_quota_added: BigInt(0) }),
+      }),
+    );
+    // Recharge still finalizes — no FAILED writeback
+    expect(mockOrderUpdate).not.toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: 'FAILED' }) }),
+    );
+  });
+
+  it('applyTopup throws inside tx → tx rolls back (no RechargeLog write) → order FAILED', async () => {
+    // The interactive transaction throws on applyTopup failure. Postgres
+    // rolls back the bonus claim too — we can't directly observe the
+    // rollback in mocks, but we CAN observe that no RechargeLog was
+    // written and that the outer catch ran the FAILED writeback.
+    mockOrderFindUnique.mockResolvedValue(pendingOrder({ amount: new Prisma.Decimal('100.00') }));
+    mockUserFindUnique.mockResolvedValue(userRow({ first_recharge_bonus_granted: false }));
+    mockRechargeLogFindFirst.mockResolvedValue(null);
+    mockNewapiGetUser.mockResolvedValueOnce({ id: NEWAPI_USER_ID, quota: 0 });
+    mockApplyTopup.mockRejectedValue(new Error('new-api 502'));
+    mockUserUpdateMany.mockResolvedValue({ count: 1 }); // claim staged
+
+    await expect(executeRecharge(ORDER_ID)).rejects.toThrow('new-api 502');
+
+    // CAS-claim ran (and would be rolled back by Postgres on real DB)
+    expect(mockUserUpdateMany).toHaveBeenCalledTimes(1);
+    // applyTopup threw, so RechargeLog never got written
+    expect(mockRechargeLogCreate).not.toHaveBeenCalled();
+    // Outer catch wrote FAILED + audit
+    expect(mockOrderUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: ORDER_ID },
+        data: expect.objectContaining({ status: 'FAILED', failedReason: 'new-api 502' }),
+      }),
+    );
+    expect(mockAuditLogCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ action: 'RECHARGE_FAILED' }),
+      }),
+    );
   });
 });
 
@@ -206,7 +404,7 @@ describe('executeRecharge — idempotency', () => {
     // RechargeLog, but crashed before order.status → COMPLETED. Webhook
     // retried, CAS locked again, this defensive check finds the row.
     mockOrderFindUnique.mockResolvedValue(pendingOrder({ status: 'FAILED' }));
-    mockUserFindUnique.mockResolvedValue({ id: PORTAL_USER_ID, newapi_user_id: NEWAPI_USER_ID });
+    mockUserFindUnique.mockResolvedValue(userRow({ first_recharge_bonus_granted: true }));
     mockRechargeLogFindFirst.mockResolvedValue({
       id: 'rl-prior',
       balance_after: new Prisma.Decimal('100000'),
@@ -230,7 +428,7 @@ describe('executeRecharge — idempotency', () => {
 describe('executeRecharge — failure modes', () => {
   it('applyTopup throws → order FAILED + RECHARGE_FAILED audit + rethrows', async () => {
     mockOrderFindUnique.mockResolvedValue(pendingOrder({ amount: new Prisma.Decimal('50.00') }));
-    mockUserFindUnique.mockResolvedValue({ id: PORTAL_USER_ID, newapi_user_id: NEWAPI_USER_ID });
+    mockUserFindUnique.mockResolvedValue(userRow({ first_recharge_bonus_granted: true }));
     mockRechargeLogFindFirst.mockResolvedValue(null);
     mockNewapiGetUser.mockResolvedValue({ id: NEWAPI_USER_ID, quota: 0 });
     mockApplyTopup.mockRejectedValue(new Error('new-api 502'));
@@ -264,7 +462,7 @@ describe('executeRecharge — failure modes', () => {
 
   it('portal user has no newapi_user_id (legacy / un-provisioned) → FAILED + thrown', async () => {
     mockOrderFindUnique.mockResolvedValue(pendingOrder());
-    mockUserFindUnique.mockResolvedValue({ id: PORTAL_USER_ID, newapi_user_id: null });
+    mockUserFindUnique.mockResolvedValue(userRow({ newapi_user_id: null }));
     mockRechargeLogFindFirst.mockResolvedValue(null);
 
     await expect(executeRecharge(ORDER_ID)).rejects.toThrow(/newapi_user_id/);
