@@ -1,3 +1,4 @@
+import * as Sentry from '@sentry/nextjs';
 import { getMailer } from './client';
 import { passwordResetTemplate, emailVerificationTemplate, type EmailContent } from './templates';
 
@@ -54,6 +55,10 @@ async function sendTemplated(opts: {
         });
     } catch (e) {
         sendErr = e;
+        // W5 D4: ship to Sentry so SMTP outages get an alert. No-op when
+        // SENTRY_DSN unset. We DON'T tag the recipient address (PII) —
+        // just the area + the underlying error message.
+        Sentry.captureException(e, { tags: { area: 'email-send' } });
     }
 
     await appendDebugLog(opts.to, opts.debugUrl);

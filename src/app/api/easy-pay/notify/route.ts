@@ -1,4 +1,5 @@
 import { NextRequest } from 'next/server';
+import * as Sentry from '@sentry/nextjs';
 import { handlePaymentNotify } from '@/lib/order/service';
 import { ensureDBProviders, paymentRegistry } from '@/lib/payment';
 import type { PaymentType, PaymentProvider } from '@/lib/payment';
@@ -53,16 +54,22 @@ export async function GET(request: NextRequest) {
       if (msg.includes('signature verification failed')) {
         const sp = request.nextUrl.searchParams;
         const sigStr = sp.get('sign') || '';
-        console.warn(
+        const meta = {
+          instId: instId ?? null,
+          out_trade_no: sp.get('out_trade_no') || null,
+          pid: sp.get('pid') || null,
+          // Truncated prefix so logs aren't useful for replay; full sig
+          // would let an operator forge later if log access leaks.
+          signPrefix: sigStr ? `${sigStr.slice(0, 6)}...` : null,
+        };
+        console.warn('[easy-pay/notify] signature verification failed', meta);
+        // W5 D4: surface to Sentry with severity=warning. captureMessage
+        // (not Exception) because this is "untrusted input rejected", not a
+        // bug in our code. Dedupe by tag so a spam wave of fakes shows as
+        // one alert with rising count, not one alert per attempt.
+        Sentry.captureMessage(
           '[easy-pay/notify] signature verification failed',
-          {
-            instId: instId ?? null,
-            out_trade_no: sp.get('out_trade_no') || null,
-            pid: sp.get('pid') || null,
-            // Truncated prefix so logs aren't useful for replay; full sig
-            // would let an operator forge later if log access leaks.
-            signPrefix: sigStr ? `${sigStr.slice(0, 6)}...` : null,
-          },
+          { level: 'warning', tags: { area: 'easy-pay-sig-fail' }, extra: meta },
         );
         return new Response('success', { headers: { 'Content-Type': 'text/plain' } });
       }

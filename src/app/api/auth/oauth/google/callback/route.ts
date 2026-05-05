@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import * as Sentry from '@sentry/nextjs';
 import { prisma } from '@/lib/db';
 import {
     exchangeCodeForTokens,
@@ -8,6 +9,7 @@ import {
 } from '@/lib/auth/oauth/google';
 import { linkOrCreateOAuthUser } from '@/lib/auth/oauth/account-link';
 import { signSession, setSessionCookie } from '@/lib/auth/session';
+import { extractClientIP } from '@/lib/auth/extract-ip';
 
 // Uses prisma + jose + Node fetch — pin runtime so Next doesn't try to put
 // this on the Edge.
@@ -123,6 +125,10 @@ export async function GET(req: NextRequest) {
             return buildResponse(req.url, { error: err.code });
         }
         console.error('[oauth/google/callback] unexpected token/verify failure:', err);
+        // W5 D4: GoogleOAuthError is "expected" (bad code, expired id_token,
+        // etc — surface to user, no alert). Anything else slipping through is
+        // a real problem (jose lib bug, network, etc) — Sentry it.
+        Sentry.captureException(err, { tags: { area: 'oauth-google-callback' } });
         return buildResponse(req.url, { error: 'oauth_failed' });
     }
 
@@ -137,15 +143,30 @@ export async function GET(req: NextRequest) {
         nameHint: claims.name,
     });
     if (!outcome.ok) {
+        // W5 D4: provisioning_failed is operational (new-api flake or our
+        // rollback path failed) → Sentry. account_disabled is banned-user
+        // login attempt; link_conflict is "different portal user already
+        // owns this oauth identity" (suspected attack) — neither is an
+        // ops alert.
+        if (outcome.error === 'provisioning_failed') {
+            Sentry.captureException(
+                new Error(`oauth-google: provisionNewCustomer failed for email=${claims.email}`),
+                { tags: { area: 'oauth-google-provision' } },
+            );
+        }
         return buildResponse(req.url, { error: outcome.error });
     }
     const userId = outcome.userId;
 
-    // Touch last_login_at, fire-and-forget. Same pattern as login route.
+    // Touch last_login_at + last_login_ip, fire-and-forget (W5 D4: ip).
+    const ip = extractClientIP(req);
     prisma.user
-        .update({ where: { id: userId }, data: { last_login_at: new Date() } })
+        .update({
+            where: { id: userId },
+            data: { last_login_at: new Date(), last_login_ip: ip },
+        })
         .catch((err) => {
-            console.warn(`[oauth/google/callback] last_login_at update failed for ${userId}:`, err);
+            console.warn(`[oauth/google/callback] last_login update failed for ${userId}:`, err);
         });
 
     const sessionToken = await signSession(userId);
