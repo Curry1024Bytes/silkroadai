@@ -450,6 +450,12 @@ export async function queryLogs(args: {
     end_timestamp?: number;
     model_name?: string;
     token_name?: string;
+    /** W6 D4: forwarded as `token_id` query param so new-api can filter
+     *  upstream when supported. Callers MUST also post-filter by
+     *  `log.token_id === token_id` because (a) older new-api builds
+     *  silently ignore unknown query params, (b) `token_name` is not
+     *  unique across renamed tokens. */
+    token_id?: number;
     page?: number;
     page_size?: number;
 }): Promise<{ items: NewApiUsageLog[]; total: number }> {
@@ -463,6 +469,7 @@ export async function queryLogs(args: {
         end_timestamp: args.end_timestamp,
         model_name: args.model_name,
         token_name: args.token_name,
+        token_id: args.token_id,
     });
 }
 

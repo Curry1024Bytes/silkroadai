@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { quotaToCny } from '@/lib/newapi/client';
 
 export interface KeyRow {
     id: string;
@@ -8,6 +9,13 @@ export interface KeyRow {
     masked_key: string;
     /** ISO timestamp string. */
     created_at: string;
+    /** W6 D4: cumulative quota consumed by this key (raw quota units;
+     *  caller converts to CNY for display). null = usage fetch failed
+     *  or user has no new-api linkage. */
+    used_quota: number | null;
+    /** ISO timestamp of the most recent log entry attributable to this
+     *  key, or null if it has never been used. */
+    last_used_at: string | null;
 }
 
 /** Mirror of the server-side mask helper. Used when we receive a freshly
@@ -17,15 +25,34 @@ function maskKey(value: string): string {
     return `${value.slice(0, 7)}****${value.slice(-4)}`;
 }
 
-/** Brief: max 5 keys per user. Constant lives client-side too so the UI can
- *  disable the "create" button without a roundtrip; server enforces the
- *  same limit (POST /api/portal/keys returns 400 if exceeded). */
-const MAX_TOKENS_PER_USER = 5;
+/** Brief: max 10 keys per user (W6 D4 — bumped from 5). Constant lives
+ *  client-side too so the UI can disable the "create" button without a
+ *  roundtrip; server enforces the same limit (POST /api/portal/keys
+ *  returns 400 if exceeded). */
+const MAX_TOKENS_PER_USER = 10;
 
 /** How long to expose a freshly-revealed sk- before re-masking it. Defends
  *  against shoulder-surfing / forgotten browser tab scenarios. */
 const REVEAL_AUTOHIDE_MS = 10_000;
 const COPIED_TOAST_MS = 2_000;
+
+/** Render `last_used_at` as a friendly Chinese relative-time string.
+ *  Returns null sentinel for "never used" so callers can phrase it in
+ *  context (e.g. "从未调用"). */
+function formatLastUsed(iso: string | null): string {
+    if (!iso) return '从未调用';
+    const then = new Date(iso).getTime();
+    if (Number.isNaN(then)) return '—';
+    const now = Date.now();
+    const diffSec = Math.max(0, Math.floor((now - then) / 1000));
+    if (diffSec < 60) return '刚刚';
+    const diffMin = Math.floor(diffSec / 60);
+    if (diffMin < 60) return `${diffMin} 分钟前`;
+    const diffHr = Math.floor(diffMin / 60);
+    if (diffHr < 24) return `${diffHr} 小时前`;
+    const diffDay = Math.floor(diffHr / 24);
+    return `${diffDay} 天前`;
+}
 
 /** State of the per-row "displayed key" — either the real sk- (showing) or
  *  null (showing the masked form). */
@@ -207,6 +234,9 @@ export function KeysList({ initialRows }: { initialRows: KeyRow[] }) {
                 key_alias: data.key_alias,
                 masked_key: maskKey(data.key),
                 created_at: data.created_at,
+                // Brand-new key — no usage yet by definition.
+                used_quota: 0,
+                last_used_at: null,
             };
             setRows((prev) => [...prev, newRow]);
             // Auto-reveal the brand-new key so the customer can copy it
@@ -275,7 +305,7 @@ export function KeysList({ initialRows }: { initialRows: KeyRow[] }) {
                     <div style={{ flex: 1 }}>
                         <input
                             type="text"
-                            placeholder="为 Key 起个名字(例如 production / 测试 / mobile-app)"
+                            placeholder="例如 prod-openai / test-claude / dev-mobile"
                             value={create.alias}
                             onChange={(e) =>
                                 setCreate((prev) => ({ ...prev, alias: e.target.value, error: null }))
@@ -291,6 +321,17 @@ export function KeysList({ initialRows }: { initialRows: KeyRow[] }) {
                                 boxSizing: 'border-box',
                             }}
                         />
+                        <p
+                            style={{
+                                margin: '6px 0 0',
+                                fontSize: 11,
+                                color: '#8a92a4',
+                            }}
+                        >
+                            建议格式{' '}
+                            <code style={{ fontSize: 11 }}>env-purpose</code> —
+                            方便区分不同环境与用途。
+                        </p>
                         {create.error && (
                             <p style={{ margin: '6px 0 0', color: '#c44', fontSize: 12 }}>{create.error}</p>
                         )}
@@ -386,7 +427,30 @@ export function KeysList({ initialRows }: { initialRows: KeyRow[] }) {
                                             color: revealed ? '#0a1535' : '#5a6478',
                                         }}
                                     >
-                                        {revealed ?? row.masked_key}
+                                        <div>{revealed ?? row.masked_key}</div>
+                                        {/* W6 D4: per-key usage subline. Shown grey/small so
+                                         *  it never competes with the masked sk-. Renders
+                                         *  null state ("从未调用") explicitly so customers
+                                         *  see the key exists but isn't being hit. */}
+                                        <div
+                                            style={{
+                                                fontFamily: '-apple-system, sans-serif',
+                                                fontSize: 11,
+                                                color: '#8a92a4',
+                                                marginTop: 4,
+                                                fontVariantNumeric: 'tabular-nums',
+                                            }}
+                                        >
+                                            {row.used_quota === null ? (
+                                                <span>用量数据暂不可用</span>
+                                            ) : (
+                                                <>
+                                                    累计 ¥{quotaToCny(row.used_quota).toFixed(2)}
+                                                    <span style={{ margin: '0 6px' }}>·</span>
+                                                    最近调用 {formatLastUsed(row.last_used_at)}
+                                                </>
+                                            )}
+                                        </div>
                                     </td>
                                     <td style={{ ...tableCellStyle, color: '#5a6478' }}>
                                         {new Date(row.created_at).toLocaleString('zh-CN')}

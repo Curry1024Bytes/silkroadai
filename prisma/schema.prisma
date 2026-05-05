@@ -262,8 +262,13 @@ model NewApiToken {
   key_alias          String
 
   // 缓存(实时数据从 new-api 拉,这里只是 portal 显示用)
+  // W6 D4: cached_used_quota 改为非 nullable + default 0,新增 cached_used_at
+  // 作为 60s TTL 阈值。原 cached_remain_quota / last_synced_at 保留为 W2 D4
+  // legacy(目前只被 /api/user/route.ts 投影,无写路径)— 将来如果 quota-cache
+  // 重构再清理。
   cached_remain_quota BigInt?
-  cached_used_quota   BigInt?
+  cached_used_quota   BigInt    @default(0)
+  cached_used_at      DateTime?
   last_synced_at      DateTime?
 
   // 模型限制(冗余存,真实约束在 new-api 那边)
