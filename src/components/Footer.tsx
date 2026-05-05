@@ -36,6 +36,9 @@ export function Footer() {
             }}
         >
             <nav style={{ display: 'flex', gap: 16 }}>
+                <Link href="/models" style={linkStyle}>
+                    模型清单
+                </Link>
                 <Link href="/terms" style={linkStyle}>
                     服务条款
                 </Link>
