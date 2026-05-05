@@ -43,10 +43,17 @@ export class EasyPayProvider implements PaymentProvider {
       this.instanceConfig,
     );
 
+    // W5 D6: zpayz returns two QR-related fields:
+    //   - `qrcode`: raw QR data (e.g. "weixin://wxpay/bizpayurl?pr=…" or
+    //     "https://qr.alipay.com/…") — needs a QR-render lib for <img>
+    //   - `img`:    pre-rendered PNG URL (zpayz-hosted) — directly usable
+    //               as <img src=…>
+    // Prefer `img` so the portal /pay/qr page can <img src=qrCode/> with
+    // no extra dep. Fall back to `qrcode` if `img` is missing.
     return {
       tradeNo: result.trade_no,
       payUrl: (request.isMobile && result.payurl2) || result.payurl,
-      qrCode: result.qrcode,
+      qrCode: result.img || result.qrcode,
     };
   }
 

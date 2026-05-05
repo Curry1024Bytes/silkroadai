@@ -20,6 +20,10 @@ interface OrderResponse {
     payUrl?: string | null;
     qrCode?: string | null;
     clientSecret?: string | null;
+    provider?: string;
+    /** Token-of-bearer access to GET /api/orders/[id]?t=… for status
+     *  polling on the QR page. Issued by createOrder, single-purpose. */
+    statusAccessToken?: string;
     [key: string]: unknown;
 }
 
@@ -64,14 +68,23 @@ export function PayForm({ enabledPaymentTypes }: { enabledPaymentTypes: string[]
                 return;
             }
             const data = (await r.json()) as OrderResponse;
+            // W5 D6: easypay returns a QR image URL — zpayz `qrcode`/`img`
+            // shortlinks (qr.alipay.com / weixin://wxpay) fail when redirected
+            // on PC (browser opens an app-download landing). Show inline
+            // QR + poll status instead.
+            if (data.qrCode) {
+                const params = new URLSearchParams({ orderId: data.orderId });
+                if (data.statusAccessToken) params.set('t', data.statusAccessToken);
+                window.location.href = `/pay/qr?${params.toString()}`;
+                return;
+            }
             if (data.payUrl) {
-                // Redirect to gateway. Submit button's spinner covers the
-                // brief flicker before navigation completes.
+                // Redirect to gateway (alipay_direct mobile / stripe).
                 window.location.href = data.payUrl;
                 return;
             }
-            // No payUrl — Stripe popup / QR-only flows handled by the
-            // existing /pay/[orderId] subroute. Send the user there.
+            // No qrCode and no payUrl — fall back to the legacy short-link
+            // route (W4 alipay_direct mobile QR landing).
             if (data.orderId) {
                 window.location.href = `/pay/${encodeURIComponent(data.orderId)}`;
                 return;

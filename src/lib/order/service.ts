@@ -69,6 +69,10 @@ export interface CreateOrderResult {
   payUrl?: string | null;
   qrCode?: string | null;
   clientSecret?: string | null;
+  /** Which payment provider routed this order (W5 D6: front-end uses
+   *  this to decide between QR-display (easypay) and direct redirect
+   *  (alipay_direct / stripe). */
+  provider?: string;
   expiresAt: Date;
   statusAccessToken: string;
 }
@@ -535,6 +539,9 @@ export async function createOrder(input: CreateOrderInput): Promise<CreateOrderR
       payUrl: paymentResult.payUrl,
       qrCode: paymentResult.qrCode,
       clientSecret: paymentResult.clientSecret,
+      // W5 D6: front-end branches on this — easypay returns QR (display
+      // inline), alipay_direct / stripe return payUrl (redirect / popup).
+      provider: actualProvider.providerKey,
       expiresAt,
       statusAccessToken,
     };
