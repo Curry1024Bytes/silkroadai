@@ -55,6 +55,7 @@ interface RechargeLogRow {
   balance_before: Prisma.Decimal;
   balance_after: Prisma.Decimal;
   newapi_quota_added: bigint;
+  bonus_quota_added: bigint;
   newapi_user_id: number;
   source: string;
   note: string | null;
@@ -71,7 +72,19 @@ function freshState() {
     orders: new Map<string, OrderRow>(),
     rechargeLogs: [] as RechargeLogRow[],
     auditLogs: [] as AuditLogRow[],
-    users: new Map<string, { id: string; newapi_user_id: number | null; status: string; email: string }>(),
+    users: new Map<
+      string,
+      {
+        id: string;
+        newapi_user_id: number | null;
+        status: string;
+        email: string;
+        // W6 D1: tracks whether the user has claimed their first-recharge bonus.
+        // Default for new fixtures is `false` (eligible) so happy-path tests
+        // exercise the bonus branch end-to-end.
+        first_recharge_bonus_granted: boolean;
+      }
+    >(),
   };
 }
 type State = ReturnType<typeof freshState>;
@@ -93,7 +106,16 @@ const { mockPrismaImpl } = vi.hoisted(() => {
     orders: Map<string, OrderRow>;
     rechargeLogs: RechargeLogRow[];
     auditLogs: AuditLogRow[];
-    users: Map<string, { id: string; newapi_user_id: number | null; status: string; email: string }>;
+    users: Map<
+      string,
+      {
+        id: string;
+        newapi_user_id: number | null;
+        status: string;
+        email: string;
+        first_recharge_bonus_granted: boolean;
+      }
+    >;
   };
   type OrderRow = {
     id: string;
@@ -118,6 +140,7 @@ const { mockPrismaImpl } = vi.hoisted(() => {
     balance_before: import('@prisma/client').Prisma.Decimal;
     balance_after: import('@prisma/client').Prisma.Decimal;
     newapi_quota_added: bigint;
+    bonus_quota_added: bigint;
     newapi_user_id: number;
     source: string;
     note: string | null;
@@ -157,6 +180,26 @@ const { mockPrismaImpl } = vi.hoisted(() => {
       // nullifies newapi_quota_cache fields. We don't track them in the
       // integration state model — just accept the write and return.
       update: (_args: unknown) => Promise.resolve({}),
+      // W6 D1: bonus CAS-claim. Honors the WHERE predicate
+      // {id, first_recharge_bonus_granted: false} — only flips the column
+      // (and returns count=1) if it's currently false. Mirrors Postgres
+      // READ COMMITTED behavior for the predicate-update.
+      updateMany: (args: {
+        where: { id: string; first_recharge_bonus_granted?: boolean };
+        data: { first_recharge_bonus_granted?: boolean };
+      }) => {
+        const cur = getState().users.get(args.where.id);
+        if (!cur) return Promise.resolve({ count: 0 });
+        if (
+          args.where.first_recharge_bonus_granted !== undefined &&
+          cur.first_recharge_bonus_granted !== args.where.first_recharge_bonus_granted
+        ) {
+          return Promise.resolve({ count: 0 });
+        }
+        const next = { ...cur, ...args.data };
+        getState().users.set(cur.id, next);
+        return Promise.resolve({ count: 1 });
+      },
     },
     rechargeLog: {
       findFirst: (args: { where: { order_id: string; source: string } }) => {
@@ -177,10 +220,22 @@ const { mockPrismaImpl } = vi.hoisted(() => {
         return Promise.resolve(args.data);
       },
     },
-    // executeRecharge wraps the finalize step in $transaction. We treat the
-    // array of ops as a unit and execute sequentially; real Prisma uses a
-    // single roundtrip but for unit tests the ordering is what matters.
-    $transaction: (ops: unknown[]) => Promise.all(ops as Promise<unknown>[]),
+    // executeRecharge wraps its finalize step in $transaction. W6 D1 switches
+    // to interactive-callback form (so applyTopup throwing rolls back the
+    // bonus CAS-claim atomically). The mock supports both forms:
+    //   - callback: invoke the fn with the top-level prisma proxy as `tx`,
+    //     and propagate throws so the integration test can observe rollback
+    //     side-effects (or absence thereof).
+    //   - array: legacy code paths still using the array form get Promise.all.
+    // Second arg `{timeout, maxWait}` is intentionally not consumed — the
+    // mock executes synchronously so the timeout settings don't affect
+    // behavior. Real Prisma uses them; tests don't need to assert on them.
+    $transaction: (arg: unknown): Promise<unknown> => {
+      if (typeof arg === 'function') {
+        return Promise.resolve((arg as (tx: typeof impl) => Promise<unknown>)(impl));
+      }
+      return Promise.all(arg as Promise<unknown>[]);
+    },
   };
   return { mockPrismaImpl: impl };
 });
@@ -259,7 +314,10 @@ function makeNotifyReq(opts: Parameters<typeof buildNotifyUrl>[0] = {}): NextReq
   return new NextRequest(buildNotifyUrl(opts), { method: 'GET' });
 }
 
-function seedPaidOrder(amount = CNY_AMOUNT) {
+function seedPaidOrder(
+  amount = CNY_AMOUNT,
+  opts: { first_recharge_bonus_granted?: boolean } = {},
+) {
   const row: OrderRow = {
     id: ORDER_ID,
     user_id: PORTAL_USER_ID,
@@ -281,6 +339,10 @@ function seedPaidOrder(amount = CNY_AMOUNT) {
     email: 'happy@silkroadai.io',
     newapi_user_id: NEWAPI_USER_ID,
     status: 'active',
+    // W6 D1: integration default is "already granted" so legacy assertions
+    // (single applyTopup call with cnyAmount only) keep passing. Bonus
+    // path is exercised explicitly in the dedicated W6 happy-path test.
+    first_recharge_bonus_granted: opts.first_recharge_bonus_granted ?? true,
   });
 }
 
@@ -310,11 +372,13 @@ describe('Recharge integration: easy-pay notify → executeRecharge', () => {
 
     expect(body).toBe('success');
 
-    // applyTopup called once with the right shape
+    // applyTopup called once with the right shape (no bonus — seed defaults
+    // to already-granted; bonus path covered in dedicated W6 D1 test below).
     expect(mockApplyTopup).toHaveBeenCalledTimes(1);
     expect(mockApplyTopup).toHaveBeenCalledWith({
       newapi_user_id: NEWAPI_USER_ID,
       cnyAmount: CNY_AMOUNT,
+      extraBonusQuota: 0,
     });
 
     // RechargeLog written
@@ -324,6 +388,7 @@ describe('Recharge integration: easy-pay notify → executeRecharge', () => {
     expect(log.order_id).toBe(ORDER_ID);
     expect(log.source).toBe('payment');
     expect(log.newapi_user_id).toBe(NEWAPI_USER_ID);
+    expect(log.bonus_quota_added).toBe(BigInt(0));
 
     // Order finalized
     const finalOrder = state.orders.get(ORDER_ID)!;
@@ -347,6 +412,7 @@ describe('Recharge integration: easy-pay notify → executeRecharge', () => {
       balance_before: new Prisma.Decimal(0),
       balance_after: new Prisma.Decimal(694444),
       newapi_quota_added: BigInt(694444),
+      bonus_quota_added: BigInt(0),
       newapi_user_id: NEWAPI_USER_ID,
       source: 'payment',
       note: null,
@@ -375,6 +441,7 @@ describe('Recharge integration: easy-pay notify → executeRecharge', () => {
       balance_before: new Prisma.Decimal(0),
       balance_after: new Prisma.Decimal(694444),
       newapi_quota_added: BigInt(694444),
+      bonus_quota_added: BigInt(0),
       newapi_user_id: NEWAPI_USER_ID,
       source: 'payment',
       note: null,
@@ -429,5 +496,39 @@ describe('Recharge integration: easy-pay notify → executeRecharge', () => {
     expect(state.rechargeLogs).toHaveLength(0);
     // RECHARGE_FAILED audit captured
     expect(state.auditLogs.find((a) => a.action === 'RECHARGE_FAILED')).toBeDefined();
+  });
+
+  it('W6 D1 first-recharge bonus: granted=false → bonus added + flag flipped to true + bonus_quota_added recorded', async () => {
+    // Eligible user — bonus path should fire end-to-end through the
+    // /notify route (sig verify → confirmPayment → executeRecharge → CAS
+    // claim → applyTopup with bonus → RechargeLog with bonus_quota_added).
+    seedPaidOrder(CNY_AMOUNT, { first_recharge_bonus_granted: false });
+    const mainQuota = Math.round((CNY_AMOUNT / 7.2) * 500_000);
+    const expectedBonus = Math.floor(mainQuota * 0.2);
+    mockNewapiGetUser
+      .mockResolvedValueOnce({ id: NEWAPI_USER_ID, quota: 0 })
+      .mockResolvedValueOnce({ id: NEWAPI_USER_ID, quota: mainQuota + expectedBonus });
+    mockApplyTopup.mockResolvedValue(undefined);
+
+    const res = await easyPayNotifyGET(makeNotifyReq());
+    expect(await res.text()).toBe('success');
+
+    // applyTopup got the bonus baked in
+    expect(mockApplyTopup).toHaveBeenCalledWith({
+      newapi_user_id: NEWAPI_USER_ID,
+      cnyAmount: CNY_AMOUNT,
+      extraBonusQuota: expectedBonus,
+    });
+    // RechargeLog records the split: total = main+bonus, bonus = subset
+    expect(state.rechargeLogs).toHaveLength(1);
+    expect(state.rechargeLogs[0].newapi_quota_added).toBe(BigInt(mainQuota + expectedBonus));
+    expect(state.rechargeLogs[0].bonus_quota_added).toBe(BigInt(expectedBonus));
+    // Flag flipped to true so the next recharge for this user won't bonus
+    expect(state.users.get(PORTAL_USER_ID)!.first_recharge_bonus_granted).toBe(true);
+    // Order finalized COMPLETED
+    expect(state.orders.get(ORDER_ID)!.status).toBe('COMPLETED');
+    // Audit detail mentions firstRechargeBonus:true for ops grep
+    const successAudit = state.auditLogs.find((a) => a.action === 'RECHARGE_SUCCESS');
+    expect(successAudit?.detail).toContain('"firstRechargeBonus":true');
   });
 });

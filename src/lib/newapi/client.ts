@@ -607,11 +607,19 @@ export async function provisionNewCustomer(args: {
 export async function applyTopup(args: {
     newapi_user_id: number;
     cnyAmount: number;
+    /**
+     * W6 D1: 额外的 bonus quota(raw,不经汇率换算)。
+     * 主 quota = cnyToQuota(cnyAmount),total = main + extraBonusQuota,
+     * 一次 addQuota(add) 调用一并入账。首充 20% 福利就走这个参数;
+     * 非首充时 caller 不传(默认 0,行为与改动前一致)。
+     */
+    extraBonusQuota?: number;
 }): Promise<void> {
-    const quotaDelta = cnyToQuota(args.cnyAmount);
+    const mainQuota = cnyToQuota(args.cnyAmount);
+    const bonus = args.extraBonusQuota ?? 0;
     await addQuota({
         userId: args.newapi_user_id,
-        quotaDelta,
+        quotaDelta: mainQuota + bonus,
         mode: 'add',
     });
 }
