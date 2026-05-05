@@ -97,8 +97,9 @@ beforeEach(() => {
     process.env.GOOGLE_OAUTH_CLIENT_SECRET = 'csecret';
     process.env.GOOGLE_OAUTH_REDIRECT_URI = 'http://localhost:3002/api/auth/oauth/google/callback';
     // Ensure tests run against the request.url-based fallback path. The
-    // dedicated "NEXT_PUBLIC_APP_URL is used as redirect base" test sets it
-    // explicitly. Local .env may have it set to a prod URL; clear here.
+    // dedicated "redirect base env precedence" test sets these explicitly.
+    // Local .env may have them set to a prod URL; clear here.
+    delete process.env.APP_URL;
     delete process.env.NEXT_PUBLIC_APP_URL;
 
     mockTransaction.mockImplementation(async (ops: unknown[]) => Promise.all(ops));
@@ -430,6 +431,33 @@ describe('GET /api/auth/oauth/google/callback', () => {
         );
         expect(failRes.headers.get('location')).toBe(
             'https://portal.silkroadai.io/?oauth_error=state_mismatch',
+        );
+    });
+
+    it('W5 D3 fix-up #3: APP_URL takes priority over NEXT_PUBLIC_APP_URL', async () => {
+        // NEXT_PUBLIC_APP_URL is inlined at build time so a runtime change to
+        // it has no effect on server-side reads. APP_URL is a plain runtime
+        // var that wins. Both set → APP_URL wins.
+        process.env.APP_URL = 'https://runtime.example.com';
+        process.env.NEXT_PUBLIC_APP_URL = 'https://build-time.example.com';
+
+        const res = await GET(
+            makeReq({ query: { code: 'c', state: 'qstate' } /* no cookies */ }),
+        );
+        expect(res.headers.get('location')).toBe(
+            'https://runtime.example.com/?oauth_error=state_mismatch',
+        );
+    });
+
+    it('W5 D3 fix-up #3: APP_URL alone (NEXT_PUBLIC_APP_URL unset) works', async () => {
+        process.env.APP_URL = 'https://only-runtime.example.com';
+        // NEXT_PUBLIC_APP_URL stays deleted (beforeEach)
+
+        const res = await GET(
+            makeReq({ query: { code: 'c', state: 'qstate' } /* no cookies */ }),
+        );
+        expect(res.headers.get('location')).toBe(
+            'https://only-runtime.example.com/?oauth_error=state_mismatch',
         );
     });
 });
