@@ -213,6 +213,7 @@ model User {
   password_reset_tokens     PasswordResetToken[]
   email_verification_tokens EmailVerificationToken[]
   oauth_accounts            OAuthAccount[]
+  usage_aggregate_cache     UsageAggregateCache[]
 
   // ── session 失效控制 ──
   // JWT payload 带 tv = session_token_version。verifySession 时如果 token tv
@@ -385,4 +386,26 @@ enum RechargeSource {
   refund // 退款(负数)
   promo // 推广奖励
   adjustment // 余额调整
+}
+
+// ── 用量聚合缓存(W6 D5)──
+// /dashboard 和 /usage 都需要按时间窗口聚合 new-api log 表(分页 1-50 页 ×
+// 每页 1000 条 = 50k 条)。一次 fetch 慢(2-5s),5min TTL 复用结果。
+//
+// payload JSON 结构:{ totalUsedQuota: number, totalCalls: number,
+//   byModel: [{ model: string, calls: number, quota: number }] }(quota 已是
+// 数字,不会越 INT 上限,因为 new-api log.quota 也是 int)。
+//
+// PK = (user_id, period) — 同一 user 每个 period 唯一一行;period 串行枚举
+// 'last_7_days' | 'last_30_days' | 'last_month' | 'all_time'(以及 /usage
+// 页对应的 '7d' | '30d' | 'all',与 aggregator UsagePeriod 类型保持一致)。
+model UsageAggregateCache {
+  user_id     String   @db.Uuid
+  period      String
+  payload     Json
+  computed_at DateTime
+  user        User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@id([user_id, period])
+  @@map("usage_aggregate_cache")
 }

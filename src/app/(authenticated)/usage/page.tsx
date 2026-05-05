@@ -25,6 +25,7 @@ import {
     quotaToCny,
     type NewApiUsageLog,
 } from '@/lib/newapi/client';
+import { getUsageAggregate } from '@/lib/newapi/usage-aggregate';
 import { PeriodTabs } from './period-tabs';
 import { parsePeriod, periodToRange, type UsagePeriod } from './period';
 
@@ -33,6 +34,14 @@ export const metadata = { title: '用量 — Silk Road AI' };
 
 const RECENT_LIMIT = 50;
 const TOP_MODELS = 5;
+/**
+ * W6 D5: how many recent rows we still pull through queryLogs for the
+ * "最近调用" table. The aggregate (totals + by-model top-5) now comes
+ * from the cached aggregator, so this fetch is purely for the table —
+ * 50 rows is plenty for the last-N-calls UI and doesn't depend on the
+ * aggregator being fresh.
+ */
+const RECENT_FETCH_PAGE_SIZE = 50;
 
 async function getSessionUser() {
     const h = await headers();
@@ -44,36 +53,12 @@ async function getSessionUser() {
     return getCurrentUser(req);
 }
 
-interface ModelAgg {
-    model: string;
-    calls: number;
-    quota: number;
-}
-
-function aggregate(logs: NewApiUsageLog[]): {
-    totalCalls: number;
-    totalQuota: number;
-    byModel: ModelAgg[];
-} {
-    let totalCalls = 0;
-    let totalQuota = 0;
-    const perModel = new Map<string, ModelAgg>();
-    for (const log of logs) {
-        // type=2 = consume; defensively filter so manage/refund noise doesn't
-        // pollute the customer's "what did I call" view (queryLogs upstream
-        // also accepts type=2 but we re-filter just in case).
-        if (log.type !== 2) continue;
-        totalCalls += 1;
-        totalQuota += log.quota;
-        const key = log.model_name || '<unknown>';
-        const slot = perModel.get(key) ?? { model: key, calls: 0, quota: 0 };
-        slot.calls += 1;
-        slot.quota += log.quota;
-        perModel.set(key, slot);
-    }
-    const byModel = [...perModel.values()].sort((a, b) => b.quota - a.quota).slice(0, TOP_MODELS);
-    return { totalCalls, totalQuota, byModel };
-}
+// W6 D5 sweep: the previous client-side aggregate(logs) helper has been
+// replaced by `getUsageAggregate` in `src/lib/newapi/usage-aggregate.ts`.
+// That helper paginates the full window (up to 50 pages × 1000 rows) and
+// caches the rolled-up payload for 5 minutes — closing the W3 D2 F3
+// long-tail gap where users with > 200 logs/window saw under-counted
+// totals from the page_size=200 single-fetch.
 
 const cardStyle: React.CSSProperties = {
     background: '#fff',
@@ -109,30 +94,60 @@ export default async function UsagePage({
     const period: UsagePeriod = parsePeriod(params.period);
     const range = periodToRange(period);
 
-    let allLogs: NewApiUsageLog[] = [];
+    let aggSnap: Awaited<ReturnType<typeof getUsageAggregate>> | null = null;
+    let recentLogs: NewApiUsageLog[] = [];
     let queryErr: string | null = null;
     if (user.newapi_user_id == null) {
         queryErr = 'account_not_provisioned';
     } else {
-        try {
-            // type=2 = consume calls only (excludes topup / manage rows)
-            const r = await queryLogs({
+        // Two parallel fetches: the aggregator (cached, totals + top-5) and
+        // a small `queryLogs` slice for the recent-50 table. The two are
+        // independent — if the aggregator falls back to stale data, we
+        // can still show fresh recent rows; if the recent-50 fetch fails
+        // we still have totals.
+        const [aggSettled, recentSettled] = await Promise.allSettled([
+            getUsageAggregate({
+                portalUserId: user.id,
+                newapiUserId: user.newapi_user_id,
+                period,
+            }),
+            queryLogs({
                 user_id: user.newapi_user_id,
                 type: 2,
-                start_timestamp: range.start || undefined, // 0 = all-time, omit param
+                start_timestamp: range.start || undefined,
                 end_timestamp: range.end,
                 page: 1,
-                page_size: 200, // grab enough for top-5 + recent-50; new-api pagination enforced
-            });
-            allLogs = r.items;
-        } catch (err) {
-            queryErr = err instanceof Error ? err.message : String(err);
-            console.warn(`[usage] queryLogs failed for user ${user.id}:`, err);
+                page_size: RECENT_FETCH_PAGE_SIZE,
+            }),
+        ]);
+
+        if (aggSettled.status === 'fulfilled') {
+            aggSnap = aggSettled.value;
+        } else {
+            queryErr =
+                aggSettled.reason instanceof Error
+                    ? aggSettled.reason.message
+                    : String(aggSettled.reason);
+            console.warn(`[usage] getUsageAggregate failed for user ${user.id}:`, aggSettled.reason);
+        }
+
+        if (recentSettled.status === 'fulfilled') {
+            recentLogs = recentSettled.value.items;
+        } else {
+            // Recent-50 failure is non-fatal — fall through with empty list.
+            console.warn(`[usage] recent queryLogs failed for user ${user.id}:`, recentSettled.reason);
         }
     }
 
-    const agg = aggregate(allLogs);
-    const recent = allLogs
+    const agg = aggSnap
+        ? {
+              totalCalls: aggSnap.totalCalls,
+              totalQuota: aggSnap.totalUsedQuota,
+              byModel: aggSnap.byModel.slice(0, TOP_MODELS),
+          }
+        : { totalCalls: 0, totalQuota: 0, byModel: [] as Array<{ model: string; calls: number; quota: number }> };
+
+    const recent = recentLogs
         .filter((l) => l.type === 2)
         .sort((a, b) => b.created_at - a.created_at)
         .slice(0, RECENT_LIMIT);
