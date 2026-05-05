@@ -1,6 +1,11 @@
 import * as Sentry from '@sentry/nextjs';
 import { getMailer } from './client';
-import { passwordResetTemplate, emailVerificationTemplate, type EmailContent } from './templates';
+import {
+    passwordResetTemplate,
+    emailVerificationTemplate,
+    balanceAlertTemplate,
+    type EmailContent,
+} from './templates';
 
 export interface SendResult {
     messageId: string;
@@ -93,5 +98,33 @@ export async function sendVerificationEmail(opts: {
         to: opts.to,
         debugUrl: opts.verifyUrl,
         content: emailVerificationTemplate(opts.verifyUrl, opts.expiresInHours),
+    });
+}
+
+/**
+ * W6 D2 — balance-low retention alert.
+ *
+ * Sent by BalanceAlertScheduler when a user's quota falls at-or-below their
+ * configured threshold. SMTP failures are still captured to Sentry via the
+ * shared `sendTemplated` helper. There's no security-sensitive token in the
+ * URLs here; the EMAIL_DEBUG_LOG entry is informational only (lets ops grep
+ * which alerts went out without standing up an SMTP catch).
+ */
+export async function sendBalanceAlertEmail(opts: {
+    to: string;
+    remainCny: number;
+    thresholdCny: number;
+    topupUrl: string;
+    settingsUrl: string;
+}): Promise<SendResult | null> {
+    return sendTemplated({
+        to: opts.to,
+        debugUrl: opts.topupUrl,
+        content: balanceAlertTemplate({
+            remainCny: opts.remainCny,
+            thresholdCny: opts.thresholdCny,
+            topupUrl: opts.topupUrl,
+            settingsUrl: opts.settingsUrl,
+        }),
     });
 }

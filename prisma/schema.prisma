@@ -225,6 +225,16 @@ model User {
   // 回滚事务时此字段不会被永久锁,用户下次仍可拿首充 bonus。
   first_recharge_bonus_granted Boolean @default(false)
 
+  // ── 余额低提醒(W6 D2)──
+  // threshold_cny:用户在 /balance 页配置的提醒阈值(CNY)。0 = 关闭提醒,
+  //   范围 [0, 1000]。BalanceAlertScheduler 每 1h 扫一次,余额 ≤ 阈值 → 发邮件。
+  // last_sent_at:最近一次提醒邮件发送时间。null = 从未发过 / 最近一次充值
+  //   后被 reset 清空。同一用户 24h 内只发一次提醒(防爆邮)。
+  //   executeRecharge 成功事务中会清为 null,使下次余额低时立即可触发,不
+  //   等 24h cooldown(用户充完了又快花完属于真实风险信号)。
+  balance_alert_threshold_cny Decimal?  @default(10.00) @db.Decimal(8, 2)
+  balance_alert_last_sent_at  DateTime?
+
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 

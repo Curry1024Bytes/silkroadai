@@ -20,6 +20,7 @@ import { getCurrentUser } from '@/lib/auth/session';
 import { prisma } from '@/lib/db';
 import { getQuotaWithCache, type QuotaSnapshot } from '@/lib/newapi/quota-cache';
 import { quotaToCny, quotaToUsd } from '@/lib/newapi/client';
+import { BalanceAlertForm } from './balance-alert-form';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: '余额 — Silk Road AI' };
@@ -190,6 +191,19 @@ export default async function BalancePage() {
                     </article>
                 </div>
             )}
+
+            {/* W6 D2: balance alert threshold settings. Renders between the
+             *  cards and the recharge history so it's visible without
+             *  scrolling. The Decimal column comes back from Prisma as
+             *  Prisma.Decimal — Number() handles it; null defaults to 10
+             *  (matches the schema default). */}
+            <BalanceAlertForm
+                initialThreshold={
+                    user.balance_alert_threshold_cny != null
+                        ? Number(user.balance_alert_threshold_cny)
+                        : 10
+                }
+            />
 
             <h2 style={{ margin: '0 0 12px', fontSize: 16, color: '#0a1535' }}>充值流水</h2>
             {history.length === 0 ? (
