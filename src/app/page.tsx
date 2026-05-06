@@ -11,14 +11,11 @@
  * rather than swallowing it. (Pre-W7 we forwarded the query string to
  * `/pay`; now the user lands here, sees the error, and chooses where to
  * go from the visible CTAs.)
- *
- * Logo: <Logo /> from `feat/brand-logo-assets` (PR #23) is not yet merged.
- * The header / footer use a styled text wordmark — drop-in for the SVG
- * component when PR #23 lands. See TODO(brand-logo) below.
  */
 import type { Metadata } from 'next';
 import { Inter } from 'next/font/google';
 import Link from 'next/link';
+import { Logo } from '@/components/brand/Logo';
 import { isPromoActive } from '@/lib/promo';
 
 const inter = Inter({
@@ -140,14 +137,11 @@ function Header() {
                     gap: 16,
                 }}
             >
-                <Link
-                    href="/"
-                    aria-label="Silk Road AI"
-                    style={{ textDecoration: 'none', color: 'var(--color-navy)' }}
-                >
-                    {/* TODO(brand-logo): swap to <Logo variant="primary" size={28} /> once PR #23 lands. */}
-                    <Wordmark size={20} />
-                </Link>
+                {/* `Logo` wraps in `<Link href="/">` itself (default `linkHome={true}`).
+                 *  Use `primary-flat` because at 28px the gradient on `primary` aliases
+                 *  on small screens; per the asset cheatsheet the flat variant is the
+                 *  recommended pick below 48px. */}
+                <Logo variant="primary-flat" size={28} />
                 <nav style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                     <Link
                         href="/login"
@@ -177,25 +171,6 @@ function Header() {
                 </nav>
             </div>
         </header>
-    );
-}
-
-function Wordmark({ size = 20 }: { size?: number }) {
-    return (
-        <span
-            style={{
-                fontSize: size,
-                fontWeight: 700,
-                letterSpacing: -0.2,
-                background:
-                    'linear-gradient(90deg, var(--color-navy) 0%, var(--color-brand-accent) 120%)',
-                WebkitBackgroundClip: 'text',
-                WebkitTextFillColor: 'transparent',
-                backgroundClip: 'text',
-            }}
-        >
-            Silk Road AI
-        </span>
     );
 }
 
