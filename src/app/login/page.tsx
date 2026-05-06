@@ -15,6 +15,7 @@ import { redirect } from 'next/navigation';
 import { headers } from 'next/headers';
 import { NextRequest } from 'next/server';
 import { getCurrentUser } from '@/lib/auth/session';
+import { Logo } from '@/components/brand/Logo';
 import { LoginForm } from './login-form';
 
 export const dynamic = 'force-dynamic';
@@ -76,8 +77,10 @@ export default async function LoginPage({
                 }}
             >
                 <header style={{ marginBottom: 24 }}>
-                    <h1 style={{ margin: 0, fontSize: 18, color: '#0a1535' }}>Silk Road AI</h1>
-                    <p style={{ margin: '4px 0 0', fontSize: 12, color: '#5a6478' }}>
+                    {/* Light card → primary (gradient). Tagline retained as
+                     *  page chrome below the logo. */}
+                    <Logo variant="primary" size={28} />
+                    <p style={{ margin: '6px 0 0', fontSize: 12, color: '#5a6478' }}>
                         Connecting Global Intelligence.
                     </p>
                 </header>

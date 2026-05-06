@@ -10,6 +10,7 @@
  * year at render time.
  */
 import Link from 'next/link';
+import { Logo } from '@/components/brand/Logo';
 
 const linkStyle: React.CSSProperties = {
     color: '#5a6478',
@@ -59,7 +60,14 @@ export function Footer() {
                     </a>
                 </span>
             </div>
-            <div>© {year} Silk Road AI</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                {/* Footer is on a white background → primary-flat (avoids
+                 *  gradient aliasing at this small render size). Brief:
+                 *  footer size=20. linkHome=true (the default) so the
+                 *  logo doubles as a "back home" affordance. */}
+                <Logo variant="primary-flat" size={20} />
+                <span>© {year}</span>
+            </div>
         </footer>
     );
 }

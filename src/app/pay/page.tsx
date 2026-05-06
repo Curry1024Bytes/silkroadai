@@ -12,6 +12,7 @@ import { headers } from 'next/headers';
 import { NextRequest } from 'next/server';
 import { getCurrentUser } from '@/lib/auth/session';
 import { getEnabledPaymentTypes } from '@/lib/payment/resolve-enabled-types';
+import { Logo } from '@/components/brand/Logo';
 import { PayForm } from './pay-form';
 import { FirstRechargeBonusBanner } from './first-recharge-bonus-banner';
 
@@ -77,8 +78,8 @@ export default async function PayPage({
                 }}
             >
                 <header style={{ marginBottom: 24 }}>
-                    <h1 style={{ margin: 0, fontSize: 18, color: '#0a1535' }}>Silk Road AI</h1>
-                    <p style={{ margin: '4px 0 0', fontSize: 12, color: '#5a6478' }}>
+                    <Logo variant="primary" size={28} />
+                    <p style={{ margin: '6px 0 0', fontSize: 12, color: '#5a6478' }}>
                         Connecting Global Intelligence.
                     </p>
                 </header>
