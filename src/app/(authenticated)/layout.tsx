@@ -18,6 +18,7 @@ import { redirect } from 'next/navigation';
 import { headers } from 'next/headers';
 import { NextRequest } from 'next/server';
 import { getCurrentUser } from '@/lib/auth/session';
+import { Logo } from '@/components/brand/Logo';
 import { Sidebar } from './sidebar';
 import { LogoutButton } from './logout-button';
 import { UnverifiedBanner } from './unverified-banner';
@@ -85,7 +86,9 @@ export default async function AuthenticatedLayout({
                 }}
             >
                 <div>
-                    <h1 style={{ margin: 0, fontSize: 18 }}>Silk Road AI</h1>
+                    {/* Header sits on #0a1535 navy → inverse variant (sky-blue
+                     *  curve + white wordmark). size=28 per brief. */}
+                    <Logo variant="inverse" size={28} />
                     <p style={{ margin: '2px 0 0', fontSize: 11, opacity: 0.7 }}>
                         Connecting Global Intelligence.
                     </p>

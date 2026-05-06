@@ -27,9 +27,24 @@ describe('<Footer />', () => {
         const html = renderToString(<Footer />);
         const year = new Date().getFullYear();
         // React 19 inserts <!-- --> between adjacent text nodes when one
-        // is a literal and one is interpolated, so match the year as a
-        // standalone token rather than asserting a contiguous substring.
-        expect(html).toMatch(new RegExp(`©\\s*(?:<!-- -->)?\\s*${year}\\s*(?:<!-- -->)?\\s*Silk Road AI`));
+        // is a literal and one is interpolated. The brand-logo PR moved
+        // "Silk Road AI" out of plain text into the <Logo /> component
+        // (rendered as an <img alt="Silk Road AI">), so the copyright
+        // line now reads `© 2026` standalone with the brandmark adjacent.
+        expect(html).toMatch(new RegExp(`©\\s*(?:<!-- -->)?\\s*${year}`));
+    });
+
+    it('renders the Silk Road AI brandmark via <Logo />', () => {
+        const html = renderToString(<Footer />);
+        // Logo component renders <img alt="Silk Road AI" wrapped in
+        // <a href="/"> with aria-label. React's SSR sorts attributes
+        // alphabetically (aria-label before href), so the assertions
+        // check each attribute independently rather than mandating an
+        // order on the same element.
+        expect(html).toMatch(/<img[^>]*alt="Silk Road AI"/);
+        const linkOpen = html.match(/<a\b[^>]*\baria-label="Silk Road AI"[^>]*>/);
+        expect(linkOpen, 'expected an <a> with aria-label="Silk Road AI"').not.toBeNull();
+        expect(linkOpen![0]).toContain('href="/"');
     });
 
     it('uses the secondary text color (#5a6478) for the body / nav links', () => {

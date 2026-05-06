@@ -1,4 +1,5 @@
 import { Suspense } from 'react';
+import { Logo } from '@/components/brand/Logo';
 import { ResetPasswordForm } from './reset-password-form';
 
 export const metadata = { title: '重置密码 — Silk Road AI' };
@@ -30,8 +31,8 @@ export default function ResetPasswordPage({
                 }}
             >
                 <header style={{ marginBottom: 24 }}>
-                    <h1 style={{ margin: 0, fontSize: 18, color: '#0a1535' }}>Silk Road AI</h1>
-                    <p style={{ margin: '4px 0 0', fontSize: 12, color: '#5a6478' }}>
+                    <Logo variant="primary" size={28} />
+                    <p style={{ margin: '6px 0 0', fontSize: 12, color: '#5a6478' }}>
                         Connecting Global Intelligence.
                     </p>
                 </header>
