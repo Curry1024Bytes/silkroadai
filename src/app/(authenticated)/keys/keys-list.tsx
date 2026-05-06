@@ -7,6 +7,11 @@ import { useEffect, useMemo, useState } from 'react';
 // regression). Anything imported by a 'use client' component MUST come
 // from `quota-units` or another client-safe module.
 import { quotaToCny } from '@/lib/newapi/quota-units';
+import { Button } from '@/components/ui/Button';
+import { Card } from '@/components/ui/Card';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { FormError } from '@/components/ui/FormError';
+import { Input } from '@/components/ui/Input';
 
 export interface KeyRow {
     id: string;
@@ -70,21 +75,6 @@ interface CreateState {
     submitting: boolean;
     error: string | null;
 }
-
-const tableHeaderStyle: React.CSSProperties = {
-    textAlign: 'left',
-    padding: '8px 12px',
-    fontSize: 12,
-    color: '#5a6478',
-    background: '#f5f7fa',
-    borderBottom: '1px solid #e5e8ee',
-};
-const tableCellStyle: React.CSSProperties = {
-    padding: '10px 12px',
-    fontSize: 13,
-    borderBottom: '1px solid #e5e8ee',
-    color: '#1a2540',
-};
 
 export function KeysList({ initialRows }: { initialRows: KeyRow[] }) {
     const [rows, setRows] = useState<KeyRow[]>(initialRows);
@@ -260,11 +250,19 @@ export function KeysList({ initialRows }: { initialRows: KeyRow[] }) {
     const tableHeader = useMemo(
         () => (
             <thead>
-                <tr>
-                    <th style={tableHeaderStyle}>别名</th>
-                    <th style={tableHeaderStyle}>API Key</th>
-                    <th style={tableHeaderStyle}>创建时间</th>
-                    <th style={{ ...tableHeaderStyle, textAlign: 'right' }}>操作</th>
+                <tr className="bg-paper-muted text-muted-ink">
+                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                        别名
+                    </th>
+                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                        API Key
+                    </th>
+                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                        创建时间
+                    </th>
+                    <th className="text-right px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                        操作
+                    </th>
                 </tr>
             </thead>
         ),
@@ -273,250 +271,161 @@ export function KeysList({ initialRows }: { initialRows: KeyRow[] }) {
 
     return (
         <div>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
-                <button
+            <div className="flex justify-end mb-3">
+                <Button
                     type="button"
+                    variant="primary"
+                    size="sm"
                     onClick={() => setCreate({ open: true, alias: '', submitting: false, error: null })}
                     disabled={atLimit || create.open}
                     title={atLimit ? `已达上限 (${MAX_TOKENS_PER_USER})` : ''}
-                    style={{
-                        background: atLimit ? '#a8aebc' : '#0a1535',
-                        color: '#fff',
-                        border: 'none',
-                        borderRadius: 4,
-                        padding: '8px 16px',
-                        fontSize: 13,
-                        cursor: atLimit ? 'not-allowed' : 'pointer',
-                    }}
                 >
                     {atLimit ? `已达上限 (${MAX_TOKENS_PER_USER})` : '+ 创建新 Key'}
-                </button>
+                </Button>
             </div>
 
             {create.open && (
-                <form
-                    onSubmit={handleCreate}
-                    style={{
-                        background: '#fff',
-                        border: '1px solid #e5e8ee',
-                        borderRadius: 6,
-                        padding: 16,
-                        marginBottom: 16,
-                        display: 'flex',
-                        gap: 8,
-                        alignItems: 'flex-start',
-                    }}
-                >
-                    <div style={{ flex: 1 }}>
-                        <input
-                            type="text"
-                            placeholder="例如 prod-openai / test-claude / dev-mobile"
-                            value={create.alias}
-                            onChange={(e) =>
-                                setCreate((prev) => ({ ...prev, alias: e.target.value, error: null }))
-                            }
-                            maxLength={50}
-                            autoFocus
-                            style={{
-                                width: '100%',
-                                padding: '8px 10px',
-                                border: '1px solid #e5e8ee',
-                                borderRadius: 4,
-                                fontSize: 13,
-                                boxSizing: 'border-box',
-                            }}
-                        />
-                        <p
-                            style={{
-                                margin: '6px 0 0',
-                                fontSize: 11,
-                                color: '#8a92a4',
-                            }}
+                <Card className="p-4 mb-4">
+                    <form onSubmit={handleCreate} className="flex gap-2 items-start">
+                        <div className="flex-1">
+                            <Input
+                                type="text"
+                                placeholder="例如 prod-openai / test-claude / dev-mobile"
+                                value={create.alias}
+                                onChange={(e) =>
+                                    setCreate((prev) => ({ ...prev, alias: e.target.value, error: null }))
+                                }
+                                maxLength={50}
+                                autoFocus
+                                error={!!create.error}
+                                className="text-sm"
+                            />
+                            <p className="m-0 mt-1.5 text-xs text-minor-ink">
+                                建议格式 <code className="font-mono text-xs">env-purpose</code> —
+                                方便区分不同环境与用途。
+                            </p>
+                            <FormError>{create.error}</FormError>
+                        </div>
+                        <Button
+                            type="submit"
+                            variant="primary"
+                            size="sm"
+                            loading={create.submitting}
+                            disabled={create.submitting || !create.alias.trim()}
                         >
-                            建议格式{' '}
-                            <code style={{ fontSize: 11 }}>env-purpose</code> —
-                            方便区分不同环境与用途。
-                        </p>
-                        {create.error && (
-                            <p style={{ margin: '6px 0 0', color: '#c44', fontSize: 12 }}>{create.error}</p>
-                        )}
-                    </div>
-                    <button
-                        type="submit"
-                        disabled={create.submitting || !create.alias.trim()}
-                        style={{
-                            background: create.submitting ? '#a8aebc' : '#0a1535',
-                            color: '#fff',
-                            border: 'none',
-                            borderRadius: 4,
-                            padding: '8px 14px',
-                            fontSize: 13,
-                            cursor: create.submitting ? 'not-allowed' : 'pointer',
-                        }}
-                    >
-                        {create.submitting ? '创建中…' : '创建'}
-                    </button>
-                    <button
-                        type="button"
-                        onClick={() => setCreate({ open: false, alias: '', submitting: false, error: null })}
-                        disabled={create.submitting}
-                        style={{
-                            background: '#fff',
-                            color: '#5a6478',
-                            border: '1px solid #e5e8ee',
-                            borderRadius: 4,
-                            padding: '8px 14px',
-                            fontSize: 13,
-                            cursor: create.submitting ? 'not-allowed' : 'pointer',
-                        }}
-                    >
-                        取消
-                    </button>
-                </form>
+                            {create.submitting ? '创建中…' : '创建'}
+                        </Button>
+                        <Button
+                            type="button"
+                            variant="secondary"
+                            size="sm"
+                            onClick={() => setCreate({ open: false, alias: '', submitting: false, error: null })}
+                            disabled={create.submitting}
+                        >
+                            取消
+                        </Button>
+                    </form>
+                </Card>
             )}
 
-            {globalError && (
-                <p
-                    style={{
-                        color: '#c44',
-                        background: '#fdecea',
-                        border: '1px solid #f0c6c2',
-                        padding: '8px 12px',
-                        borderRadius: 4,
-                        margin: '0 0 12px',
-                        fontSize: 13,
-                    }}
-                >
-                    {globalError}
-                </p>
-            )}
+            {globalError ? (
+                <div className="mb-3">
+                    <FormError severity="banner">{globalError}</FormError>
+                </div>
+            ) : null}
 
             {rows.length === 0 ? (
-                <div
-                    style={{
-                        background: '#fff',
-                        border: '1px dashed #e5e8ee',
-                        borderRadius: 6,
-                        padding: 32,
-                        textAlign: 'center',
-                        color: '#8a92a4',
-                        fontSize: 13,
-                    }}
-                >
-                    暂无 API Key,点击右上角「+ 创建新 Key」开始。
-                </div>
+                <Card>
+                    <EmptyState
+                        title="还没有 API Key"
+                        body={
+                            <>
+                                创建第一个 key 即可调用 Silk Road AI。点击右上角{' '}
+                                <code className="font-mono text-xs">+ 创建新 Key</code> 开始。
+                            </>
+                        }
+                    />
+                </Card>
             ) : (
-                <table
-                    style={{
-                        width: '100%',
-                        background: '#fff',
-                        border: '1px solid #e5e8ee',
-                        borderRadius: 6,
-                        borderCollapse: 'collapse',
-                        overflow: 'hidden',
-                    }}
-                >
-                    {tableHeader}
-                    <tbody>
-                        {rows.map((row) => {
-                            const revealed = reveal[row.id];
-                            const showCopied = copied[row.id];
-                            const busy = busyId === row.id;
-                            return (
-                                <tr key={row.id}>
-                                    <td style={tableCellStyle}>{row.key_alias}</td>
-                                    <td
-                                        style={{
-                                            ...tableCellStyle,
-                                            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-                                            color: revealed ? '#0a1535' : '#5a6478',
-                                        }}
-                                    >
-                                        <div>{revealed ?? row.masked_key}</div>
-                                        {/* W6 D4: per-key usage subline. Shown grey/small so
-                                         *  it never competes with the masked sk-. Renders
-                                         *  null state ("从未调用") explicitly so customers
-                                         *  see the key exists but isn't being hit. */}
-                                        <div
-                                            style={{
-                                                fontFamily: '-apple-system, sans-serif',
-                                                fontSize: 11,
-                                                color: '#8a92a4',
-                                                marginTop: 4,
-                                                fontVariantNumeric: 'tabular-nums',
-                                            }}
-                                        >
-                                            {row.used_quota === null ? (
-                                                <span>用量数据暂不可用</span>
-                                            ) : (
-                                                <>
-                                                    累计 ¥{quotaToCny(row.used_quota).toFixed(2)}
-                                                    <span style={{ margin: '0 6px' }}>·</span>
-                                                    最近调用 {formatLastUsed(row.last_used_at)}
-                                                </>
-                                            )}
-                                        </div>
-                                    </td>
-                                    <td style={{ ...tableCellStyle, color: '#5a6478' }}>
-                                        {new Date(row.created_at).toLocaleString('zh-CN')}
-                                    </td>
-                                    <td
-                                        style={{
-                                            ...tableCellStyle,
-                                            textAlign: 'right',
-                                            display: 'flex',
-                                            gap: 6,
-                                            justifyContent: 'flex-end',
-                                        }}
-                                    >
-                                        <button
-                                            type="button"
-                                            onClick={() => handleReveal(row.id)}
-                                            disabled={busy || !!revealed}
-                                            style={actionButtonStyle(busy || !!revealed)}
-                                        >
-                                            {revealed ? '已显示' : '显示'}
-                                        </button>
-                                        <button
-                                            type="button"
-                                            onClick={() => handleCopy(row.id)}
-                                            disabled={busy}
-                                            style={actionButtonStyle(busy)}
-                                        >
-                                            {showCopied ? '已复制 ✓' : '复制'}
-                                        </button>
-                                        <button
-                                            type="button"
-                                            onClick={() => handleRevoke(row.id)}
-                                            disabled={busy}
-                                            style={{
-                                                ...actionButtonStyle(busy),
-                                                color: '#c44',
-                                                borderColor: '#f0c6c2',
-                                            }}
-                                        >
-                                            撤销
-                                        </button>
-                                    </td>
-                                </tr>
-                            );
-                        })}
-                    </tbody>
-                </table>
+                <Card className="overflow-hidden">
+                    <table className="w-full border-collapse">
+                        {tableHeader}
+                        <tbody>
+                            {rows.map((row, idx) => {
+                                const revealed = reveal[row.id];
+                                const showCopied = copied[row.id];
+                                const busy = busyId === row.id;
+                                const isLast = idx === rows.length - 1;
+                                const cell = `px-4 py-3 text-sm text-ink ${isLast ? '' : 'border-b border-brand-border'}`;
+                                return (
+                                    <tr key={row.id}>
+                                        <td className={cell}>{row.key_alias}</td>
+                                        <td className={cell}>
+                                            <div
+                                                className={[
+                                                    'font-mono',
+                                                    revealed ? 'text-navy' : 'text-muted-ink',
+                                                ].join(' ')}
+                                            >
+                                                {revealed ?? row.masked_key}
+                                            </div>
+                                            {/* W6 D4: per-key usage subline. Grey/small so it never
+                                             *  competes with the masked sk-. Renders null state
+                                             *  ("从未调用") explicitly so customers see the key exists
+                                             *  but isn't being hit. */}
+                                            <div className="mt-1 text-xs text-minor-ink tabular-nums">
+                                                {row.used_quota === null ? (
+                                                    <span>用量数据暂不可用</span>
+                                                ) : (
+                                                    <>
+                                                        累计 ¥{quotaToCny(row.used_quota).toFixed(2)}
+                                                        <span className="mx-1.5">·</span>
+                                                        最近调用 {formatLastUsed(row.last_used_at)}
+                                                    </>
+                                                )}
+                                            </div>
+                                        </td>
+                                        <td className={`${cell} text-muted-ink`}>
+                                            {new Date(row.created_at).toLocaleString('zh-CN')}
+                                        </td>
+                                        <td className={`${cell} text-right`}>
+                                            <span className="inline-flex gap-1.5 justify-end">
+                                                <Button
+                                                    type="button"
+                                                    variant="secondary"
+                                                    size="sm"
+                                                    onClick={() => handleReveal(row.id)}
+                                                    disabled={busy || !!revealed}
+                                                >
+                                                    {revealed ? '已显示' : '显示'}
+                                                </Button>
+                                                <Button
+                                                    type="button"
+                                                    variant="secondary"
+                                                    size="sm"
+                                                    onClick={() => handleCopy(row.id)}
+                                                    disabled={busy}
+                                                >
+                                                    {showCopied ? '已复制 ✓' : '复制'}
+                                                </Button>
+                                                <Button
+                                                    type="button"
+                                                    variant="danger"
+                                                    size="sm"
+                                                    onClick={() => handleRevoke(row.id)}
+                                                    disabled={busy}
+                                                >
+                                                    撤销
+                                                </Button>
+                                            </span>
+                                        </td>
+                                    </tr>
+                                );
+                            })}
+                        </tbody>
+                    </table>
+                </Card>
             )}
         </div>
     );
-}
-
-function actionButtonStyle(disabled: boolean): React.CSSProperties {
-    return {
-        background: '#fff',
-        color: '#1a2540',
-        border: '1px solid #e5e8ee',
-        borderRadius: 4,
-        padding: '4px 10px',
-        fontSize: 12,
-        cursor: disabled ? 'not-allowed' : 'pointer',
-        opacity: disabled ? 0.6 : 1,
-    };
 }

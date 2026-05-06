@@ -37,8 +37,8 @@ describe('<Sidebar />', () => {
         expect(html).toContain('API Keys');
         expect(html).toContain('余额');
         expect(html).toContain('用量');
-        // Bottom-pinned 充值 button
-        expect(html).toContain('>充值<');
+        // Bottom-pinned 充值 CTA — the W7 P2 redesign prefixed it with "+"
+        expect(html).toContain('充值');
         // Hrefs present
         expect(html).toMatch(/href="\/dashboard"/);
         expect(html).toMatch(/href="\/keys"/);
@@ -84,8 +84,11 @@ describe('<UnverifiedBanner />', () => {
         expect(html).toContain('邮箱未验证');
         expect(html).toContain('重发验证邮件');
         // Yellow tones for the unverified soft-block (not red — we're
-        // reminding, not blocking)
-        expect(html).toMatch(/background:#fff8e1/);
+        // reminding, not blocking). W7 P2 swapped the inline #fff8e1 hex
+        // for the design-system `bg-status-warning-bg` class, which maps
+        // to the same warm-amber tint.
+        expect(html).toContain('bg-status-warning-bg');
+        expect(html).toContain('text-status-warning-text');
     });
 });
 

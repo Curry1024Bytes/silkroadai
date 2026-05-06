@@ -6,6 +6,9 @@
  * The form itself is a client component for interactivity (tier picker +
  * provider radio + submit button posts JSON to /api/orders, which redirects
  * to the gateway via window.location).
+ *
+ * W7 P2 visual: paper backdrop + Card, mirroring /login. Tier buttons +
+ * provider radio cards in `pay-form.tsx` use design tokens.
  */
 import { redirect } from 'next/navigation';
 import { headers } from 'next/headers';
@@ -13,6 +16,7 @@ import { NextRequest } from 'next/server';
 import { getCurrentUser } from '@/lib/auth/session';
 import { getEnabledPaymentTypes } from '@/lib/payment/resolve-enabled-types';
 import { Logo } from '@/components/brand/Logo';
+import { Card } from '@/components/ui/Card';
 import { PayForm } from './pay-form';
 import { FirstRechargeBonusBanner } from './first-recharge-bonus-banner';
 
@@ -58,42 +62,23 @@ export default async function PayPage({
     }
 
     return (
-        <main
-            style={{
-                minHeight: '100vh',
-                background: '#f5f7fa',
-                padding: 24,
-                display: 'flex',
-                justifyContent: 'center',
-            }}
-        >
-            <div
-                style={{
-                    maxWidth: 480,
-                    width: '100%',
-                    background: '#fff',
-                    padding: 32,
-                    borderRadius: 8,
-                    boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
-                }}
-            >
-                <header style={{ marginBottom: 24 }}>
-                    <Logo variant="primary" size={28} />
-                    <p style={{ margin: '6px 0 0', fontSize: 12, color: '#5a6478' }}>
-                        Connecting Global Intelligence.
-                    </p>
+        <main className="min-h-screen bg-paper px-4 py-8 flex justify-center">
+            <Card className="w-full max-w-lg p-8">
+                <header className="mb-6 flex items-center gap-3">
+                    <Logo variant="primary-flat" size={28} />
+                    <p className="m-0 text-xs text-minor-ink">Connecting Global Intelligence.</p>
                 </header>
-                <h2 style={{ fontSize: 16, color: '#0a1535', margin: '0 0 16px' }}>账户充值</h2>
-                <p style={{ fontSize: 13, color: '#5a6478', margin: '0 0 20px' }}>
-                    登录账户:<strong>{user.email}</strong>
+                <h2 className="m-0 mb-4 text-base font-semibold text-navy">账户充值</h2>
+                <p className="m-0 mb-5 text-sm text-muted-ink">
+                    登录账户:<strong className="text-navy">{user.email}</strong>
                 </p>
                 {/* W6 D1: 首充 20% bonus 横幅。only render 给还没拿过 bonus 的
-                 *  user — 字段在 getCurrentUser 返回的 User 上(随 schema 自动
-                 *  包含)。banner 仅 UI 提示,真正的入账与 race-safe 防护在
-                 *  executeRecharge 的事务内 CAS lock,不依赖 banner 状态。 */}
+                 *  user — 字段在 getCurrentUser 返回的 User 上。banner 仅 UI 提示,
+                 *  真正的入账与 race-safe 防护在 executeRecharge 的事务内 CAS
+                 *  lock,不依赖 banner 状态。 */}
                 {user.first_recharge_bonus_granted === false && <FirstRechargeBonusBanner />}
                 <PayForm enabledPaymentTypes={enabledTypes} />
-            </div>
+            </Card>
         </main>
     );
 }

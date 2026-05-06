@@ -7,26 +7,29 @@
  * interactive Prisma transaction); this banner is UI hint only and has
  * no behavioral coupling — hiding/showing it incorrectly does not allow
  * a user to claim the bonus twice or skip it.
+ *
+ * W7 P2: warm gold-tinted banner using the design system's brand-accent
+ * left rail (matches the landing-page promo banner aesthetic).
  */
 export function FirstRechargeBonusBanner() {
     return (
         <div
             role="note"
             data-testid="first-recharge-bonus-banner"
-            style={{
-                background: '#fff8e1',
-                border: '1px solid #f0d785',
-                color: '#7a5d00',
-                padding: '10px 14px',
-                borderRadius: 4,
-                marginBottom: 16,
-                fontSize: 13,
-                lineHeight: 1.5,
-            }}
+            className={[
+                'mb-4 px-4 py-3 rounded-lg text-sm leading-snug',
+                'bg-paper-muted border-l-[3px] border-brand-accent',
+                'flex items-center gap-3 text-ink',
+            ].join(' ')}
         >
-            <strong>🎁 首充福利</strong>
-            <span style={{ marginLeft: 8 }}>
-                额外赠送 20% bonus 仅限您第一次充值,机会只此一次
+            <span className="text-brand-accent text-base" aria-hidden="true">
+                🎁
+            </span>
+            <span>
+                <strong className="text-navy">首充福利</strong>
+                <span className="ml-2 text-muted-ink">
+                    额外赠送 20% bonus,机会只此一次
+                </span>
             </span>
         </div>
     );

@@ -1,6 +1,8 @@
 'use client';
 
 import { useState } from 'react';
+import { Button } from '@/components/ui/Button';
+import { FormError } from '@/components/ui/FormError';
 
 /**
  * Soft-block reminder shown when User.email_verified=false (W3 D5 decision —
@@ -43,46 +45,27 @@ export function UnverifiedBanner() {
     return (
         <div
             role="alert"
-            style={{
-                background: '#fff8e1',
-                border: '1px solid #f0d785',
-                color: '#7a5d00',
-                padding: '10px 14px',
-                borderRadius: 4,
-                marginBottom: 16,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: 12,
-                fontSize: 13,
-            }}
+            className={[
+                'rounded-lg mb-4 px-4 py-3 text-sm flex items-center justify-between gap-3 flex-wrap',
+                'bg-status-warning-bg border border-status-warning-border text-status-warning-text',
+            ].join(' ')}
         >
             <span>邮箱未验证,部分功能受限。</span>
-            <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span className="flex items-center gap-2">
                 {status === 'sent' && (
-                    <span style={{ color: '#1a8a4a' }}>验证邮件已发送,请查收 ✓</span>
+                    <span className="text-status-success-text">验证邮件已发送,请查收 ✓</span>
                 )}
-                {status === 'error' && errMsg && (
-                    <span style={{ color: '#c44' }}>{errMsg}</span>
-                )}
+                {status === 'error' && errMsg ? <FormError>{errMsg}</FormError> : null}
                 {status !== 'sent' && (
-                    <button
+                    <Button
                         type="button"
+                        variant="secondary"
+                        size="sm"
                         onClick={handleResend}
-                        disabled={status === 'sending'}
-                        style={{
-                            background: '#7a5d00',
-                            color: '#fff',
-                            border: 'none',
-                            padding: '6px 12px',
-                            borderRadius: 4,
-                            fontSize: 12,
-                            cursor: status === 'sending' ? 'not-allowed' : 'pointer',
-                            opacity: status === 'sending' ? 0.6 : 1,
-                        }}
+                        loading={status === 'sending'}
                     >
                         {status === 'sending' ? '发送中…' : '重发验证邮件'}
-                    </button>
+                    </Button>
                 )}
             </span>
         </div>

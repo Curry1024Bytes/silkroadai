@@ -1,5 +1,15 @@
 'use client';
 
+/**
+ * Authenticated nav. Desktop ≥ 768px: vertical 200px panel on the left.
+ * Mobile <768px: horizontal scrollable strip below the header (the
+ * authenticated layout flips to flex-col on mobile, so this nav lives in
+ * the sidebar slot but visually renders horizontally).
+ *
+ * Active item gets a brand-accent left-border (desktop) or bottom-border
+ * (mobile) plus a paper-muted background. Other items are quiet, with a
+ * brand-accent text shift on hover.
+ */
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
@@ -16,42 +26,46 @@ const NAV: NavItem[] = [
     { href: '/models', label: '模型清单' },
 ];
 
-const SIDEBAR_WIDTH = 200;
-
 export function Sidebar() {
     const pathname = usePathname();
 
     return (
         <nav
-            style={{
-                width: SIDEBAR_WIDTH,
-                minWidth: SIDEBAR_WIDTH,
-                background: '#fff',
-                borderRight: '1px solid #e5e8ee',
-                padding: '16px 0',
-                display: 'flex',
-                flexDirection: 'column',
-                justifyContent: 'space-between',
-            }}
+            className={[
+                // Mobile: horizontal scroll strip under the header.
+                'border-b border-brand-border bg-surface overflow-x-auto',
+                // Desktop: vertical panel.
+                'md:w-[200px] md:min-w-[200px] md:border-b-0 md:border-r md:overflow-x-visible',
+                'md:flex md:flex-col md:justify-between',
+                'py-2 md:py-4',
+            ].join(' ')}
+            aria-label="客户后台导航"
         >
-            <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+            <ul
+                className={[
+                    'list-none p-0 m-0 flex flex-row md:flex-col gap-0.5 px-2 md:px-0',
+                ].join(' ')}
+            >
                 {NAV.map((item) => {
                     const active = pathname === item.href;
                     return (
                         <li key={item.href}>
                             <Link
                                 href={item.href}
-                                style={{
-                                    display: 'block',
-                                    padding: '10px 20px',
-                                    color: active ? '#0a1535' : '#5a6478',
-                                    background: active ? '#f0f2f8' : 'transparent',
-                                    borderLeft: active ? '3px solid #0a1535' : '3px solid transparent',
-                                    fontWeight: active ? 600 : 400,
-                                    fontSize: 14,
-                                    textDecoration: 'none',
-                                }}
                                 aria-current={active ? 'page' : undefined}
+                                className={[
+                                    'block whitespace-nowrap text-sm no-underline',
+                                    'px-4 md:px-5 py-2 md:py-2.5',
+                                    'transition-colors duration-150 ease-brand',
+                                    'border-l-[3px] border-transparent',
+                                    active
+                                        ? 'text-navy font-semibold bg-paper-muted md:border-l-brand-accent'
+                                        : 'text-muted-ink hover:text-navy hover:bg-paper-muted/60',
+                                    // Mobile uses a bottom-border affordance instead of left.
+                                    active
+                                        ? 'border-b-2 md:border-b-0 border-b-brand-accent md:border-b-transparent'
+                                        : 'border-b-2 border-b-transparent',
+                                ].join(' ')}
                             >
                                 {item.label}
                             </Link>
@@ -60,21 +74,16 @@ export function Sidebar() {
                 })}
             </ul>
 
-            <div style={{ padding: '0 16px 16px' }}>
+            <div className="hidden md:block px-4 pb-2">
                 <Link
                     href="/pay"
-                    style={{
-                        display: 'block',
-                        textAlign: 'center',
-                        padding: '10px 0',
-                        background: '#0a1535',
-                        color: '#fff',
-                        borderRadius: 4,
-                        fontSize: 14,
-                        textDecoration: 'none',
-                    }}
+                    className={[
+                        'block text-center px-4 py-2.5 text-sm font-medium no-underline',
+                        'rounded-lg bg-navy text-paper hover:bg-navy-strong',
+                        'transition-colors duration-150 ease-brand',
+                    ].join(' ')}
                 >
-                    充值
+                    + 充值
                 </Link>
             </div>
         </nav>

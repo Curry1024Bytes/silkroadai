@@ -1,14 +1,17 @@
 /**
  * Minimal portal login UI. Server component verifies that the visitor isn't
  * already logged in (in which case we send them on to /dashboard or wherever
- * the next= param requested), then mounts the client form. Mirrors the
- * visual style of /reset-password and /verify-email — inline-style, brand
- * color #0a1535, no Tailwind classes.
+ * the next= param requested), then mounts the client form.
  *
  * W4-2 D7 amend: default landing flipped from /pay → /dashboard now that the
  * authenticated route group exists. /pay still works (legitimate `next=`
  * targets are honored as long as they pass safeNext) — only the *default*
  * fallback changed.
+ *
+ * W7 P2 visual rebrand: warm-paper backdrop + brand-accent left rail on the
+ * card matches the landing page so the auth handoff is continuous. Form
+ * primitives (Input / Label / Button / FormError) are imported from
+ * `@/components/ui/`.
  */
 import { Suspense } from 'react';
 import { redirect } from 'next/navigation';
@@ -16,6 +19,8 @@ import { headers } from 'next/headers';
 import { NextRequest } from 'next/server';
 import { getCurrentUser } from '@/lib/auth/session';
 import { Logo } from '@/components/brand/Logo';
+import { Card } from '@/components/ui/Card';
+import { FormError } from '@/components/ui/FormError';
 import { LoginForm } from './login-form';
 
 export const dynamic = 'force-dynamic';
@@ -41,6 +46,15 @@ function safeNext(raw: string | undefined): string {
     return raw;
 }
 
+const FRIENDLY_OAUTH_ERROR: Record<string, string> = {
+    google_denied: 'Google 登录被取消,请重试。',
+    github_denied: 'GitHub 登录被取消,请重试。',
+    google_invalid: 'Google 登录失败 — 请重试,或使用邮箱密码登录。',
+    github_invalid: 'GitHub 登录失败 — 请重试,或使用邮箱密码登录。',
+    oauth_state_mismatch: '登录会话已过期,请重新登录。',
+    oauth_provider_error: '第三方登录服务暂不可达,请稍后重试。',
+};
+
 export default async function LoginPage({
     searchParams,
 }: {
@@ -55,54 +69,28 @@ export default async function LoginPage({
         redirect(next);
     }
 
+    const oauthMessage = oauthError
+        ? (FRIENDLY_OAUTH_ERROR[oauthError] ??
+            `OAuth 登录失败:${oauthError.length > 60 ? oauthError.slice(0, 60) + '…' : oauthError}`)
+        : null;
+
     return (
-        <main
-            style={{
-                minHeight: '100vh',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                background: '#f5f7fa',
-                padding: 24,
-            }}
-        >
-            <div
-                style={{
-                    maxWidth: 420,
-                    width: '100%',
-                    background: '#fff',
-                    padding: 32,
-                    borderRadius: 8,
-                    boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
-                }}
-            >
-                <header style={{ marginBottom: 24 }}>
-                    {/* Light card → primary (gradient). Tagline retained as
-                     *  page chrome below the logo. */}
-                    <Logo variant="primary" size={28} />
-                    <p style={{ margin: '6px 0 0', fontSize: 12, color: '#5a6478' }}>
-                        Connecting Global Intelligence.
-                    </p>
+        <main className="min-h-screen flex items-center justify-center bg-paper px-4 py-10">
+            <Card className="w-full max-w-md p-8">
+                <header className="mb-6 flex items-center gap-3">
+                    <Logo variant="primary-flat" size={28} />
+                    <p className="m-0 text-xs text-minor-ink">Connecting Global Intelligence.</p>
                 </header>
-                <h2 style={{ fontSize: 16, color: '#0a1535', margin: '0 0 16px' }}>登录</h2>
-                {oauthError && (
-                    <p
-                        style={{
-                            color: '#c44',
-                            fontSize: 13,
-                            background: '#fdecea',
-                            padding: '8px 12px',
-                            borderRadius: 4,
-                            margin: '0 0 16px',
-                        }}
-                    >
-                        OAuth 登录失败:{oauthError}
-                    </p>
-                )}
-                <Suspense fallback={<p>加载中…</p>}>
+                <h2 className="m-0 mb-4 text-base font-semibold text-navy">登录</h2>
+                {oauthMessage ? (
+                    <div className="mb-4">
+                        <FormError severity="banner">{oauthMessage}</FormError>
+                    </div>
+                ) : null}
+                <Suspense fallback={<p className="text-sm text-muted-ink">加载中…</p>}>
                     <LoginForm next={next} />
                 </Suspense>
-            </div>
+            </Card>
         </main>
     );
 }

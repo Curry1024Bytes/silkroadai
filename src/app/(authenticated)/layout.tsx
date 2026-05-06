@@ -12,6 +12,13 @@
  * URL stays `/dashboard` not `/(authenticated)/dashboard`. We picked this
  * over a `/portal/*` prefix so a future portal.silkroadai.io subdomain split
  * doesn't require URL rewrites.
+ *
+ * W7 P2 visual rebrand
+ * --------------------
+ * Header switched from filled-navy bar (#0a1535) to a paper-aligned
+ * surface with a brand-border separator + primary-flat logo, matching the
+ * landing page chrome. Mobile (<768px): sidebar collapses below the
+ * header into a horizontal nav strip via the `Sidebar` component itself.
  */
 import type { ReactNode } from 'react';
 import { redirect } from 'next/navigation';
@@ -65,51 +72,34 @@ export default async function AuthenticatedLayout({
     const showUnverifiedBanner = !user.email_verified;
 
     return (
-        <div
-            style={{
-                minHeight: '100vh',
-                background: '#f5f7fa',
-                color: '#1a2540',
-                display: 'flex',
-                flexDirection: 'column',
-            }}
-        >
-            <header
-                style={{
-                    background: '#0a1535',
-                    color: '#fff',
-                    padding: '14px 24px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    boxShadow: '0 1px 4px rgba(0,0,0,0.08)',
-                }}
-            >
-                <div>
-                    {/* Header sits on #0a1535 navy → inverse variant (sky-blue
-                     *  curve + white wordmark). size=28 per brief. */}
-                    <Logo variant="inverse" size={28} />
-                    <p style={{ margin: '2px 0 0', fontSize: 11, opacity: 0.7 }}>
-                        Connecting Global Intelligence.
-                    </p>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                    <span style={{ fontSize: 13, opacity: 0.85 }}>{user.email}</span>
-                    <LogoutButton />
+        <div className="min-h-screen flex flex-col bg-paper text-ink">
+            <header className="bg-paper border-b border-brand-border sticky top-0 z-40">
+                <div className="flex items-center justify-between gap-4 px-6 py-3.5">
+                    <div className="flex items-center gap-3">
+                        <Logo variant="primary-flat" size={28} />
+                        <p className="hidden md:block m-0 text-xs text-minor-ink">
+                            Connecting Global Intelligence.
+                        </p>
+                    </div>
+                    <div className="flex items-center gap-3">
+                        <span
+                            className="hidden sm:inline text-sm text-muted-ink truncate max-w-[200px]"
+                            title={user.email}
+                        >
+                            {user.email}
+                        </span>
+                        <LogoutButton />
+                    </div>
                 </div>
             </header>
 
-            <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
+            <div className="flex flex-1 min-h-0 flex-col md:flex-row">
                 <Sidebar />
-                <main
-                    style={{
-                        flex: 1,
-                        padding: 24,
-                        overflowY: 'auto',
-                    }}
-                >
-                    {showUnverifiedBanner && <UnverifiedBanner />}
-                    {children}
+                <main className="flex-1 px-4 sm:px-6 py-6 overflow-y-auto">
+                    <div className="max-w-5xl mx-auto">
+                        {showUnverifiedBanner && <UnverifiedBanner />}
+                        {children}
+                    </div>
                 </main>
             </div>
         </div>

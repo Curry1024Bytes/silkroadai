@@ -93,7 +93,11 @@ describe('<FirstRechargeBonusBanner /> SSR (W6 D1)', () => {
         expect(html).toContain('20% bonus');
         // role="note" surface for accessibility / future RTL queries
         expect(html).toMatch(/role="note"/);
-        // Yellow soft-block styling mirrors W4-2 UnverifiedBanner
-        expect(html).toContain('#fff8e1');
+        // W7 P2 swapped the inline #fff8e1 hex for the design-system warm
+        // banner: paper-muted background + brand-accent left rail. The
+        // emoji surface (🎁) must still render.
+        expect(html).toContain('bg-paper-muted');
+        expect(html).toContain('border-brand-accent');
+        expect(html).toContain('🎁');
     });
 });

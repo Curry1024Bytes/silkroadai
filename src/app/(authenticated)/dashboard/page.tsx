@@ -11,7 +11,8 @@
  *
  * All four data fetches run in parallel via `Promise.allSettled` — if one
  * fails (e.g. new-api blip on the all-time aggregate), the others still
- * render. Per-card error states are inline.
+ * render. Per-card error states are inline (re-cast as <EmptyState> in W7
+ * P2 so they read as intentional empties rather than UI bugs).
  */
 import { headers } from 'next/headers';
 import { NextRequest } from 'next/server';
@@ -20,6 +21,7 @@ import { getCurrentUser } from '@/lib/auth/session';
 import { getQuotaWithCache } from '@/lib/newapi/quota-cache';
 import { getUsageAggregate } from '@/lib/newapi/usage-aggregate';
 import { quotaToCny, quotaToUsd } from '@/lib/newapi/client';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: '概览 — Silk Road AI' };
@@ -33,54 +35,6 @@ async function getSessionUser() {
     });
     return getCurrentUser(req);
 }
-
-const cardStyle: React.CSSProperties = {
-    background: '#fff',
-    border: '1px solid #e5e8ee',
-    borderRadius: 6,
-    padding: 20,
-    boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
-};
-
-const cardLabelStyle: React.CSSProperties = {
-    margin: '0 0 6px',
-    fontSize: 12,
-    color: '#5a6478',
-};
-
-const bigNumberStyle: React.CSSProperties = {
-    margin: 0,
-    fontSize: 28,
-    color: '#0a1535',
-    fontWeight: 600,
-    fontVariantNumeric: 'tabular-nums',
-};
-
-const subtleStyle: React.CSSProperties = {
-    margin: '6px 0 0',
-    fontSize: 11,
-    color: '#8a92a4',
-    fontVariantNumeric: 'tabular-nums',
-};
-
-const emptyDataStyle: React.CSSProperties = {
-    margin: 0,
-    fontSize: 13,
-    color: '#8a92a4',
-};
-
-const quickLinkStyle: React.CSSProperties = {
-    flex: '1 1 140px',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 4,
-    padding: '14px 16px',
-    background: '#fff',
-    border: '1px solid #e5e8ee',
-    borderRadius: 6,
-    textDecoration: 'none',
-    color: '#0a1535',
-};
 
 interface QuickLink {
     href: string;
@@ -155,147 +109,140 @@ export default async function DashboardPage() {
 
     return (
         <section>
-            <h1 style={{ margin: '0 0 8px', fontSize: 22, color: '#0a1535' }}>
+            <h1 className="m-0 mb-2 text-2xl font-semibold text-navy">
                 欢迎,{user.nickname || user.email.split('@')[0]}
             </h1>
-            <p style={{ margin: '0 0 24px', fontSize: 13, color: '#5a6478' }}>
+            <p className="m-0 mb-6 text-sm text-muted-ink">
                 这是您的客户后台。在这里管理 API Keys、查看余额与用量。
             </p>
 
-            <div
-                style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
-                    gap: 16,
-                    marginBottom: 28,
-                }}
-            >
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
                 {/* Card 1: Current balance */}
-                <article style={cardStyle}>
-                    <p style={cardLabelStyle}>当前余额</p>
-                    {balance ? (
-                        <>
-                            <p style={bigNumberStyle}>
-                                ¥{quotaToCny(balance.remain_quota).toFixed(2)}
-                            </p>
-                            <p style={subtleStyle}>
-                                ≈ ${quotaToUsd(balance.remain_quota).toFixed(4)} USD
-                                {balance.source === 'fallback' && ' · 数据稍滞后'}
-                            </p>
-                        </>
-                    ) : (
-                        <p style={emptyDataStyle}>暂无数据</p>
-                    )}
-                </article>
+                <Card as="article">
+                    <CardHeader>
+                        <CardTitle as="h3" className="text-sm font-medium text-muted-ink">
+                            当前余额
+                        </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                        {balance ? (
+                            <>
+                                <p className="m-0 text-3xl font-semibold text-navy tabular-nums">
+                                    ¥{quotaToCny(balance.remain_quota).toFixed(2)}
+                                </p>
+                                <p className="mt-1.5 m-0 text-xs text-minor-ink tabular-nums">
+                                    ≈ ${quotaToUsd(balance.remain_quota).toFixed(4)} USD
+                                    {balance.source === 'fallback' && ' · 数据稍滞后'}
+                                </p>
+                            </>
+                        ) : (
+                            <p className="m-0 text-sm text-minor-ink">暂无数据</p>
+                        )}
+                    </CardContent>
+                </Card>
 
                 {/* Card 2: Last calendar month spend */}
-                <article style={cardStyle}>
-                    <p style={cardLabelStyle}>上月消费</p>
-                    {lastMonth ? (
-                        <>
-                            <p style={bigNumberStyle}>
-                                ¥{quotaToCny(lastMonth.totalUsedQuota).toFixed(2)}
-                            </p>
-                            <p style={subtleStyle}>
-                                {lastMonth.totalCalls.toLocaleString('en-US')} 次调用
-                                {lastMonth.source === 'fallback' && ' · 数据稍滞后'}
-                            </p>
-                        </>
-                    ) : (
-                        <p style={emptyDataStyle}>暂无数据</p>
-                    )}
-                </article>
+                <Card as="article">
+                    <CardHeader>
+                        <CardTitle as="h3" className="text-sm font-medium text-muted-ink">
+                            上月消费
+                        </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                        {lastMonth ? (
+                            <>
+                                <p className="m-0 text-3xl font-semibold text-navy tabular-nums">
+                                    ¥{quotaToCny(lastMonth.totalUsedQuota).toFixed(2)}
+                                </p>
+                                <p className="mt-1.5 m-0 text-xs text-minor-ink tabular-nums">
+                                    {lastMonth.totalCalls.toLocaleString('en-US')} 次调用
+                                    {lastMonth.source === 'fallback' && ' · 数据稍滞后'}
+                                </p>
+                            </>
+                        ) : (
+                            <p className="m-0 text-sm text-minor-ink">暂无数据</p>
+                        )}
+                    </CardContent>
+                </Card>
 
                 {/* Card 3: All-time call count */}
-                <article style={cardStyle}>
-                    <p style={cardLabelStyle}>累计调用次数</p>
-                    {allTime ? (
-                        <>
-                            <p style={bigNumberStyle}>
-                                {allTime.totalCalls.toLocaleString('en-US')}
-                            </p>
-                            <p style={subtleStyle}>
-                                共消费 ¥{quotaToCny(allTime.totalUsedQuota).toFixed(2)}
-                                {allTime.source === 'fallback' && ' · 数据稍滞后'}
-                            </p>
-                        </>
-                    ) : (
-                        <p style={emptyDataStyle}>暂无数据</p>
-                    )}
-                </article>
+                <Card as="article">
+                    <CardHeader>
+                        <CardTitle as="h3" className="text-sm font-medium text-muted-ink">
+                            累计调用次数
+                        </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                        {allTime ? (
+                            <>
+                                <p className="m-0 text-3xl font-semibold text-navy tabular-nums">
+                                    {allTime.totalCalls.toLocaleString('en-US')}
+                                </p>
+                                <p className="mt-1.5 m-0 text-xs text-minor-ink tabular-nums">
+                                    共消费 ¥{quotaToCny(allTime.totalUsedQuota).toFixed(2)}
+                                    {allTime.source === 'fallback' && ' · 数据稍滞后'}
+                                </p>
+                            </>
+                        ) : (
+                            <p className="m-0 text-sm text-minor-ink">暂无数据</p>
+                        )}
+                    </CardContent>
+                </Card>
 
                 {/* Card 4: Top 3 models in last 30 days */}
-                <article style={cardStyle}>
-                    <p style={cardLabelStyle}>最常用模型 · 近 30 天</p>
-                    {top3 && top3.byModel.length > 0 ? (
-                        <ul
-                            style={{
-                                margin: '6px 0 0',
-                                padding: 0,
-                                listStyle: 'none',
-                                display: 'flex',
-                                flexDirection: 'column',
-                                gap: 6,
-                            }}
-                        >
-                            {top3.byModel.slice(0, 3).map((m) => {
-                                const pct = top3.totalUsedQuota
-                                    ? (m.quota / top3.totalUsedQuota) * 100
-                                    : 0;
-                                return (
-                                    <li
-                                        key={m.model}
-                                        style={{
-                                            display: 'flex',
-                                            justifyContent: 'space-between',
-                                            gap: 8,
-                                            fontSize: 12,
-                                            color: '#1a2540',
-                                        }}
-                                    >
-                                        <span
-                                            style={{
-                                                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-                                                overflow: 'hidden',
-                                                textOverflow: 'ellipsis',
-                                                whiteSpace: 'nowrap',
-                                                flex: 1,
-                                            }}
-                                            title={m.model}
+                <Card as="article">
+                    <CardHeader>
+                        <CardTitle as="h3" className="text-sm font-medium text-muted-ink">
+                            最常用模型 · 近 30 天
+                        </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                        {top3 && top3.byModel.length > 0 ? (
+                            <ul className="m-0 mt-1.5 p-0 list-none flex flex-col gap-1.5">
+                                {top3.byModel.slice(0, 3).map((m) => {
+                                    const pct = top3.totalUsedQuota
+                                        ? (m.quota / top3.totalUsedQuota) * 100
+                                        : 0;
+                                    return (
+                                        <li
+                                            key={m.model}
+                                            className="flex justify-between gap-2 text-xs text-ink"
                                         >
-                                            {m.model}
-                                        </span>
-                                        <span
-                                            style={{
-                                                color: '#5a6478',
-                                                fontVariantNumeric: 'tabular-nums',
-                                                whiteSpace: 'nowrap',
-                                            }}
-                                        >
-                                            {m.calls} 次 · {pct.toFixed(0)}%
-                                        </span>
-                                    </li>
-                                );
-                            })}
-                        </ul>
-                    ) : (
-                        <p style={emptyDataStyle}>暂无调用</p>
-                    )}
-                </article>
+                                            <span
+                                                className="font-mono overflow-hidden text-ellipsis whitespace-nowrap flex-1"
+                                                title={m.model}
+                                            >
+                                                {m.model}
+                                            </span>
+                                            <span className="text-muted-ink tabular-nums whitespace-nowrap">
+                                                {m.calls} 次 · {pct.toFixed(0)}%
+                                            </span>
+                                        </li>
+                                    );
+                                })}
+                            </ul>
+                        ) : (
+                            <p className="m-0 text-sm text-minor-ink">暂无调用</p>
+                        )}
+                    </CardContent>
+                </Card>
             </div>
 
-            <h2 style={{ margin: '0 0 12px', fontSize: 16, color: '#0a1535' }}>快速操作</h2>
-            <nav
-                style={{
-                    display: 'flex',
-                    flexWrap: 'wrap',
-                    gap: 12,
-                }}
-            >
+            <h2 className="m-0 mb-3 text-base font-semibold text-navy">快速操作</h2>
+            <nav className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                 {QUICK_LINKS.map((link) => (
-                    <Link key={link.href} href={link.href} style={quickLinkStyle}>
-                        <span style={{ fontSize: 14, fontWeight: 600 }}>{link.label}</span>
-                        <span style={{ fontSize: 12, color: '#5a6478' }}>{link.desc}</span>
+                    <Link
+                        key={link.href}
+                        href={link.href}
+                        className={[
+                            'block bg-surface border border-brand-border rounded-xl shadow-card',
+                            'no-underline px-4 py-3.5',
+                            'hover:border-brand-accent hover:shadow-card-strong',
+                            'transition-all duration-150 ease-brand',
+                        ].join(' ')}
+                    >
+                        <span className="block text-sm font-semibold text-navy">{link.label}</span>
+                        <span className="block mt-0.5 text-xs text-muted-ink">{link.desc}</span>
                     </Link>
                 ))}
             </nav>

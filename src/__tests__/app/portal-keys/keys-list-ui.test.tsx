@@ -36,10 +36,15 @@ const SAMPLE_ROWS: KeyRow[] = [
 describe('<KeysList /> SSR smoke', () => {
     it('renders empty-state hint when initialRows is []', () => {
         const html = renderToString(<KeysList initialRows={[]} />);
-        expect(html).toContain('暂无 API Key');
-        // Create button present + enabled (no row count yet)
+        // W7 P2: empty-state copy moved into the <EmptyState> primitive.
+        // Title + body together; the title is the primary affordance.
+        expect(html).toContain('还没有 API Key');
         expect(html).toContain('+ 创建新 Key');
-        expect(html).not.toMatch(/<button[^>]*disabled[^>]*>\+ 创建新 Key/);
+        // Create button present + enabled (no row count yet). Tighten the
+        // regex to the actual HTML `disabled=""` attribute since the new
+        // Tailwind class strings contain the substring "disabled" (in
+        // utility classes like `disabled:opacity-50`).
+        expect(html).not.toMatch(/<button[^>]*disabled=""[^>]*>\+ 创建新 Key/);
     });
 
     it('renders one row per token with alias + masked key + 显示/复制/撤销 actions', () => {
@@ -91,7 +96,10 @@ describe('<KeysList /> SSR smoke', () => {
         }));
         const html = renderToString(<KeysList initialRows={nineKeys} />);
         expect(html).toContain('+ 创建新 Key');
-        expect(html).not.toMatch(/<button[^>]*disabled[^>]*>\+ 创建新 Key/);
+        // Tighten to the HTML `disabled=""` attribute (Tailwind utility
+        // classes like `disabled:opacity-50` would false-match a looser
+        // `[^>]*disabled[^>]*` regex on the new className string).
+        expect(html).not.toMatch(/<button[^>]*disabled=""[^>]*>\+ 创建新 Key/);
     });
 
     it('does NOT auto-show the create form (open=false initially)', () => {

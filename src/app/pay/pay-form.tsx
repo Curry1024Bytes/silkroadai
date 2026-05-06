@@ -1,6 +1,9 @@
 'use client';
 
 import { useState } from 'react';
+import { Button } from '@/components/ui/Button';
+import { FormError } from '@/components/ui/FormError';
+import { Input } from '@/components/ui/Input';
 
 /** Default tiers (CNY). Approved values from W4-1 D2 brief — adjust by
  *  editing this constant; no DB-config knob exists yet. */
@@ -99,19 +102,17 @@ export function PayForm({ enabledPaymentTypes }: { enabledPaymentTypes: string[]
 
     if (enabledPaymentTypes.length === 0) {
         return (
-            <p style={{ color: '#c44' }}>
+            <FormError severity="banner">
                 当前没有可用的支付方式,请联系管理员配置 ENABLED_PAYMENT_TYPES。
-            </p>
+            </FormError>
         );
     }
 
     return (
         <form onSubmit={handleSubmit}>
-            <fieldset style={{ border: 'none', padding: 0, margin: '0 0 20px' }}>
-                <legend style={{ fontSize: 13, color: '#5a6478', padding: 0, marginBottom: 8 }}>
-                    选择金额(CNY)
-                </legend>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 6 }}>
+            <fieldset className="border-0 p-0 m-0 mb-5">
+                <legend className="text-sm text-muted-ink p-0 mb-2">选择金额(CNY)</legend>
+                <div className="grid grid-cols-5 gap-1.5">
                     {DEFAULT_TIERS_CNY.map((tier) => {
                         const active = selectedTier === tier;
                         return (
@@ -119,31 +120,29 @@ export function PayForm({ enabledPaymentTypes }: { enabledPaymentTypes: string[]
                                 key={tier}
                                 type="button"
                                 onClick={() => setSelectedTier(tier)}
-                                style={{
-                                    padding: '10px 0',
-                                    background: active ? '#0a1535' : '#f5f7fa',
-                                    color: active ? '#fff' : '#1a2540',
-                                    border: '1px solid',
-                                    borderColor: active ? '#0a1535' : '#e5e8ee',
-                                    borderRadius: 4,
-                                    cursor: 'pointer',
-                                    fontSize: 14,
-                                }}
+                                className={[
+                                    'py-2.5 rounded-lg border text-sm cursor-pointer',
+                                    'transition-colors duration-150 ease-brand',
+                                    active
+                                        ? 'bg-navy text-paper border-navy'
+                                        : 'bg-paper-muted text-ink border-brand-border hover:border-navy',
+                                ].join(' ')}
                             >
                                 ¥{tier}
                             </button>
                         );
                     })}
                 </div>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12 }}>
+                <label className="flex items-center gap-2 mt-3">
                     <input
                         type="radio"
                         name="amount-source"
                         checked={selectedTier === 'custom'}
                         onChange={() => setSelectedTier('custom')}
+                        className="accent-navy"
                     />
-                    <span style={{ fontSize: 13, color: '#5a6478' }}>自定义金额:</span>
-                    <input
+                    <span className="text-sm text-muted-ink">自定义金额:</span>
+                    <Input
                         type="number"
                         step="0.01"
                         min="1"
@@ -152,36 +151,25 @@ export function PayForm({ enabledPaymentTypes }: { enabledPaymentTypes: string[]
                         value={customAmount}
                         onFocus={() => setSelectedTier('custom')}
                         onChange={(e) => setCustomAmount(e.target.value)}
-                        style={{
-                            flex: 1,
-                            padding: '6px 8px',
-                            border: '1px solid #e5e8ee',
-                            borderRadius: 4,
-                            fontSize: 14,
-                        }}
+                        block={false}
+                        className="flex-1 h-9 text-sm"
                     />
                 </label>
             </fieldset>
 
-            <fieldset style={{ border: 'none', padding: 0, margin: '0 0 24px' }}>
-                <legend style={{ fontSize: 13, color: '#5a6478', padding: 0, marginBottom: 8 }}>
-                    支付方式
-                </legend>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <fieldset className="border-0 p-0 m-0 mb-6">
+                <legend className="text-sm text-muted-ink p-0 mb-2">支付方式</legend>
+                <div className="flex flex-col gap-1.5">
                     {enabledPaymentTypes.map((t) => (
                         <label
                             key={t}
-                            style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: 8,
-                                padding: 10,
-                                border: '1px solid',
-                                borderColor: paymentType === t ? '#0a1535' : '#e5e8ee',
-                                borderRadius: 4,
-                                cursor: 'pointer',
-                                background: paymentType === t ? '#f0f2f8' : '#fff',
-                            }}
+                            className={[
+                                'flex items-center gap-2 px-3 py-2.5 rounded-lg border cursor-pointer',
+                                'transition-colors duration-150 ease-brand',
+                                paymentType === t
+                                    ? 'border-navy bg-paper-muted'
+                                    : 'border-brand-border bg-surface hover:border-muted-ink/40',
+                            ].join(' ')}
                         >
                             <input
                                 type="radio"
@@ -189,35 +177,19 @@ export function PayForm({ enabledPaymentTypes }: { enabledPaymentTypes: string[]
                                 value={t}
                                 checked={paymentType === t}
                                 onChange={() => setPaymentType(t)}
+                                className="accent-navy"
                             />
-                            <span style={{ fontSize: 14, color: '#1a2540' }}>
-                                {PROVIDER_LABEL[t] ?? t}
-                            </span>
+                            <span className="text-sm text-ink">{PROVIDER_LABEL[t] ?? t}</span>
                         </label>
                     ))}
                 </div>
             </fieldset>
 
-            {error && (
-                <p style={{ color: '#c44', fontSize: 13, margin: '0 0 12px' }}>{error}</p>
-            )}
+            <FormError>{error}</FormError>
 
-            <button
-                type="submit"
-                disabled={!canSubmit}
-                style={{
-                    width: '100%',
-                    padding: '12px 0',
-                    background: canSubmit ? '#0a1535' : '#a8aebc',
-                    color: '#fff',
-                    border: 'none',
-                    borderRadius: 4,
-                    cursor: canSubmit ? 'pointer' : 'not-allowed',
-                    fontSize: 15,
-                }}
-            >
+            <Button type="submit" block size="lg" loading={submitting} disabled={!canSubmit}>
                 {submitting ? '正在跳转支付…' : '前往支付'}
-            </button>
+            </Button>
         </form>
     );
 }

@@ -1,12 +1,16 @@
 'use client';
 
 import { useState } from 'react';
+import { Button } from '@/components/ui/Button';
 
 /**
  * Logout button. POSTs /api/auth/logout (clears the silkroad_session cookie
  * server-side, doesn't bump session_token_version — see W3 D4 gotcha #16:
  * full device-kick is reserved for password reset). On success we hard-nav
  * to /login so any cached client state is dropped.
+ *
+ * Visual: ghost variant on the paper header (was filled-button on the navy
+ * pre-W7-P2 header — the chrome flipped to paper, so a ghost reads better).
  */
 export function LogoutButton() {
     const [loggingOut, setLoggingOut] = useState(false);
@@ -28,22 +32,14 @@ export function LogoutButton() {
     }
 
     return (
-        <button
+        <Button
             type="button"
+            variant="ghost"
+            size="sm"
             onClick={handleLogout}
-            disabled={loggingOut}
-            style={{
-                background: 'transparent',
-                border: '1px solid rgba(255,255,255,0.3)',
-                color: '#fff',
-                padding: '6px 14px',
-                borderRadius: 4,
-                fontSize: 13,
-                cursor: loggingOut ? 'not-allowed' : 'pointer',
-                opacity: loggingOut ? 0.6 : 1,
-            }}
+            loading={loggingOut}
         >
             {loggingOut ? '退出中…' : '退出'}
-        </button>
+        </Button>
     );
 }

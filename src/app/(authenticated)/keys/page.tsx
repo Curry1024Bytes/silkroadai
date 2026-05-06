@@ -91,8 +91,8 @@ export default async function KeysPage() {
 
     return (
         <section>
-            <h1 style={{ margin: '0 0 8px', fontSize: 22, color: '#0a1535' }}>API Keys</h1>
-            <p style={{ margin: '0 0 24px', fontSize: 13, color: '#5a6478' }}>
+            <h1 className="m-0 mb-2 text-2xl font-semibold text-navy">API Keys</h1>
+            <p className="m-0 mb-6 text-sm text-muted-ink">
                 管理用于调用 Silk Road AI 的访问密钥。撤销后立即失效。
             </p>
             <KeysList initialRows={rows} />
