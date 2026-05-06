@@ -1,5 +1,9 @@
 /**
- * W4-2 D7 — /usage page server-component render smoke + period parsing.
+ * W4-2 D7 + W6 D5 — /usage page server-component render smoke + period parsing.
+ *
+ * W6 D5 sweep: the page now calls `getUsageAggregate` for totals/by-model
+ * AND `queryLogs(page_size=50)` for the recent-50 table. Both are mocked
+ * here so tests don't hit a real DB / new-api.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToString } from 'react-dom/server';
@@ -23,6 +27,11 @@ vi.mock('@/lib/newapi/client', async () => {
         quotaToUsd: (q: number) => q / 500_000,
     };
 });
+
+const mockGetUsageAggregate = vi.fn();
+vi.mock('@/lib/newapi/usage-aggregate', () => ({
+    getUsageAggregate: (...args: unknown[]) => mockGetUsageAggregate(...args),
+}));
 
 import UsagePage from '@/app/(authenticated)/usage/page';
 
@@ -55,9 +64,50 @@ function makeLog(overrides: Partial<{ id: number; model_name: string; quota: num
     };
 }
 
+/** Compute the aggregate snapshot the page would expect, given a list of
+ *  raw logs. Lets each test simulate "the aggregator saw the same logs"
+ *  without a separate fixture. Re-uses production logic via the simple
+ *  filter + sum below since this test isn't validating aggregator
+ *  behaviour (that's covered in usage-aggregate.test.ts). */
+function aggregateFor(period: string, logs: ReturnType<typeof makeLog>[]) {
+    const consume = logs.filter((l) => l.type === 2);
+    const totalUsedQuota = consume.reduce((a, l) => a + l.quota, 0);
+    const totalCalls = consume.length;
+    const byModelMap = new Map<string, { calls: number; quota: number }>();
+    for (const l of consume) {
+        const key = l.model_name || '<unknown>';
+        const slot = byModelMap.get(key) ?? { calls: 0, quota: 0 };
+        slot.calls++;
+        slot.quota += l.quota;
+        byModelMap.set(key, slot);
+    }
+    const byModel = Array.from(byModelMap.entries())
+        .map(([model, agg]) => ({ model, ...agg }))
+        .sort((a, b) => b.quota - a.quota);
+    return {
+        totalUsedQuota,
+        totalCalls,
+        byModel,
+        period,
+        source: 'live' as const,
+        computedAt: new Date(),
+        pagesFetched: 1,
+    };
+}
+
 beforeEach(() => {
     vi.clearAllMocks();
     mockHeadersGet.mockReturnValue('silkroad_session=fake-jwt');
+    // Default aggregator: empty result. Individual tests override.
+    mockGetUsageAggregate.mockImplementation(async ({ period }: { period: string }) => ({
+        totalUsedQuota: 0,
+        totalCalls: 0,
+        byModel: [],
+        period,
+        source: 'live' as const,
+        computedAt: new Date(),
+        pagesFetched: 0,
+    }));
 });
 afterEach(() => {
     vi.restoreAllMocks();
@@ -95,20 +145,24 @@ describe('<UsagePage /> SSR smoke', () => {
 
     it('renders summary cards + by-model breakdown + recent table when logs exist', async () => {
         mockGetCurrentUser.mockResolvedValue(SESSION_USER);
+        const logs = [
+            makeLog({ id: 1, model_name: 'gpt-4', quota: 1000 }),
+            makeLog({ id: 2, model_name: 'gpt-4', quota: 2000 }),
+            makeLog({ id: 3, model_name: 'claude-opus-4-7', quota: 500 }),
+            makeLog({ id: 4, model_name: 'deepseek-v4-flash', quota: 100 }),
+            // Filter: type!=2 should be excluded from aggregation
+            makeLog({ id: 5, model_name: 'noise', quota: 99_999_999, type: 1 }),
+        ];
+        // W6 D5: the aggregator now produces the totals + by-model. The
+        // page also queries the recent-50 logs separately for the table.
+        mockGetUsageAggregate.mockResolvedValue(aggregateFor('30d', logs));
         mockQueryLogs.mockResolvedValue({
-            items: [
-                makeLog({ id: 1, model_name: 'gpt-4', quota: 1000 }),
-                makeLog({ id: 2, model_name: 'gpt-4', quota: 2000 }),
-                makeLog({ id: 3, model_name: 'claude-opus-4-7', quota: 500 }),
-                makeLog({ id: 4, model_name: 'deepseek-v4-flash', quota: 100 }),
-                // Filter: type!=2 should be excluded from aggregation
-                makeLog({ id: 5, model_name: 'noise', quota: 99_999_999, type: 1 }),
-            ],
+            items: logs,
             total: 5,
         });
 
         const html = renderToString(await UsagePage({ searchParams: Promise.resolve({}) }));
-        // 4 consume calls (type=2), the type=1 noise excluded
+        // 4 consume calls (type=2), the type=1 noise excluded by aggregator
         expect(html).toContain('总调用次数');
         // Summary block: total quota = 1000+2000+500+100 = 3600 → ¥0.05
         expect(html).toMatch(/¥(<!-- -->)?0\.05/);
@@ -117,7 +171,7 @@ describe('<UsagePage /> SSR smoke', () => {
         expect(html).toContain('gpt-4');
         expect(html).toContain('claude-opus-4-7');
         expect(html).toContain('deepseek-v4-flash');
-        // Noise excluded
+        // Noise excluded by aggregator's type=2 filter
         expect(html).not.toContain('99,999,999');
         // Recent calls table header present
         expect(html).toContain('最近调用');
@@ -125,8 +179,14 @@ describe('<UsagePage /> SSR smoke', () => {
         expect(html).toMatch(/<button[^>]*disabled=""[^>]*title="W6/);
     });
 
-    it('renders error banner when queryLogs throws (no cache fallback for usage)', async () => {
+    it('renders error banner when usage aggregator hard-fails (no cache + new-api dead)', async () => {
+        // W6 D5 sweep: queryErr is now driven by the aggregator's hard-fail
+        // (no cache row + live fetch threw). The recent-50 queryLogs runs
+        // in parallel via allSettled — its failure alone is non-fatal.
         mockGetCurrentUser.mockResolvedValue(SESSION_USER);
+        mockGetUsageAggregate.mockRejectedValue(
+            new Error('usage aggregate fetch failed: new-api 503'),
+        );
         mockQueryLogs.mockRejectedValue(new Error('new-api 503'));
 
         const html = renderToString(await UsagePage({ searchParams: Promise.resolve({}) }));

@@ -34,23 +34,62 @@
 import { z } from 'zod';
 
 // ============================================
+// Server-only module guard (hotfix 2026-05-05)
+// ============================================
+//
+// `import 'server-only'` causes Next.js / Turbopack to FAIL the build at
+// compile time if any 'use client' file imports from this module. This
+// closes the W6 D4 regression where `keys-list.tsx` (a client component)
+// pulled in `quotaToCny` from here, and the bundler dragged the entire
+// module — including the module-top-level admin-env check below — into
+// the browser bundle. At runtime `process.env.NEWAPI_ADMIN_TOKEN` is
+// undefined in the browser, so the throw fires and the page crashes.
+//
+// Pure helpers (quotaToCny, cnyToQuota, etc.) live in
+// `./quota-units.ts` (no server-only marker, safe for client bundles).
+// We re-export them at the bottom for back-compat with existing
+// server-side imports.
+import 'server-only';
+
+// ============================================
 // 配置 + 常量
 // ============================================
 
 const NEWAPI_BASE_URL = process.env.NEWAPI_BASE_URL || 'http://localhost:3000';
-const NEWAPI_ADMIN_TOKEN = process.env.NEWAPI_ADMIN_TOKEN;
-const NEWAPI_ADMIN_USER_ID = process.env.NEWAPI_ADMIN_USER_ID;
 
-// new-api 默认 1 USD = 500,000 quota(可在 admin 后台改)
-// 如果你改了,这里也要同步,或者改用 GET /api/option/ 动态拉取
-export const QUOTA_PER_USD = parseInt(process.env.NEWAPI_QUOTA_PER_USD || '500000', 10);
-export const USD_TO_CNY_RATE = parseFloat(process.env.USD_TO_CNY_RATE || '7.2');
+// new-api 默认 1 USD = 500,000 quota — 这两个常量从 quota-units 重新导出,
+// 保留所有现有 import 路径(`from '@/lib/newapi/client'`)继续工作。
+export {
+    QUOTA_PER_USD,
+    USD_TO_CNY_RATE,
+    quotaToUsd,
+    quotaToCny,
+    usdToQuota,
+    cnyToQuota,
+} from './quota-units';
 
-if (!NEWAPI_ADMIN_TOKEN || !NEWAPI_ADMIN_USER_ID) {
-    throw new Error(
-        'Missing required env: NEWAPI_ADMIN_TOKEN + NEWAPI_ADMIN_USER_ID. ' +
-        'Generate them in new-api admin UI under Personal Settings → System Access Token.',
-    );
+// Local imports for internal callers within this module (re-export above
+// doesn't make the names visible in this file's scope).
+import { cnyToQuota as _cnyToQuota } from './quota-units';
+
+/**
+ * Lazy admin-env check. The previous `if (!TOKEN) throw` at module top
+ * level meant any importer (including bundlers traversing for tree-shake
+ * candidates) that loaded this module would evaluate the throw — which
+ * is what broke prod /keys when a client component reached for a pure
+ * helper. The lazy form runs only inside `call()` (and other functions
+ * that need the admin token), keeping module-load side-effect-free.
+ */
+function requireAdminEnv(): { token: string; userId: string } {
+    const token = process.env.NEWAPI_ADMIN_TOKEN;
+    const userId = process.env.NEWAPI_ADMIN_USER_ID;
+    if (!token || !userId) {
+        throw new Error(
+            'Missing required env: NEWAPI_ADMIN_TOKEN + NEWAPI_ADMIN_USER_ID. ' +
+                'Generate them in new-api admin UI under Personal Settings → System Access Token.',
+        );
+    }
+    return { token, userId };
 }
 
 // ============================================
@@ -106,12 +145,15 @@ async function call<T>(
         headers['Cookie'] = options.cookie.value;
         headers['New-Api-User'] = String(options.cookie.userId);
     } else {
-        const auth = options.asUser ?? {
-            accessToken: NEWAPI_ADMIN_TOKEN!,
-            userId: parseInt(NEWAPI_ADMIN_USER_ID!, 10),
-        };
-        headers['Authorization'] = auth.accessToken;     // no Bearer prefix
-        headers['New-Api-User'] = String(auth.userId);   // required by all endpoints
+        let auth = options.asUser;
+        if (!auth) {
+            // Fall back to admin auth — env validated lazily so a missing
+            // env at module load no longer crashes the browser bundle.
+            const env = requireAdminEnv();
+            auth = { accessToken: env.token, userId: parseInt(env.userId, 10) };
+        }
+        headers['Authorization'] = auth.accessToken; // no Bearer prefix
+        headers['New-Api-User'] = String(auth.userId); // required by all endpoints
     }
 
     const init: RequestInit = { method, headers };
@@ -236,26 +278,12 @@ export interface NewApiUsageLog {
 // ============================================
 // 工具函数:配额单位转换
 // ============================================
-
-/** quota → USD */
-export function quotaToUsd(quota: number): number {
-    return quota / QUOTA_PER_USD;
-}
-
-/** quota → CNY(展示给中国客户) */
-export function quotaToCny(quota: number): number {
-    return quotaToUsd(quota) * USD_TO_CNY_RATE;
-}
-
-/** USD → quota */
-export function usdToQuota(usd: number): number {
-    return Math.round(usd * QUOTA_PER_USD);
-}
-
-/** CNY → quota(用户充 100 元 → portal 算出对应 quota 调 add_quota) */
-export function cnyToQuota(cny: number): number {
-    return usdToQuota(cny / USD_TO_CNY_RATE);
-}
+//
+// Pure helpers (quotaToUsd / quotaToCny / usdToQuota / cnyToQuota +
+// QUOTA_PER_USD / USD_TO_CNY_RATE constants) live in `./quota-units.ts`
+// — see the re-export block at the top of this file. The split avoids
+// dragging this server-only module into client bundles when a 'use
+// client' component needs only the conversion math.
 
 // ============================================
 // A. User 管理(admin scope)
@@ -450,6 +478,12 @@ export async function queryLogs(args: {
     end_timestamp?: number;
     model_name?: string;
     token_name?: string;
+    /** W6 D4: forwarded as `token_id` query param so new-api can filter
+     *  upstream when supported. Callers MUST also post-filter by
+     *  `log.token_id === token_id` because (a) older new-api builds
+     *  silently ignore unknown query params, (b) `token_name` is not
+     *  unique across renamed tokens. */
+    token_id?: number;
     page?: number;
     page_size?: number;
 }): Promise<{ items: NewApiUsageLog[]; total: number }> {
@@ -463,6 +497,7 @@ export async function queryLogs(args: {
         end_timestamp: args.end_timestamp,
         model_name: args.model_name,
         token_name: args.token_name,
+        token_id: args.token_id,
     });
 }
 
@@ -615,7 +650,7 @@ export async function applyTopup(args: {
      */
     extraBonusQuota?: number;
 }): Promise<void> {
-    const mainQuota = cnyToQuota(args.cnyAmount);
+    const mainQuota = _cnyToQuota(args.cnyAmount);
     const bonus = args.extraBonusQuota ?? 0;
     await addQuota({
         userId: args.newapi_user_id,

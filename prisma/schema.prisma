@@ -213,6 +213,7 @@ model User {
   password_reset_tokens     PasswordResetToken[]
   email_verification_tokens EmailVerificationToken[]
   oauth_accounts            OAuthAccount[]
+  usage_aggregate_cache     UsageAggregateCache[]
 
   // ── session 失效控制 ──
   // JWT payload 带 tv = session_token_version。verifySession 时如果 token tv
@@ -224,6 +225,16 @@ model User {
   // 为 true(同事务内 CAS lock,防同 user 并发双发)。executeRecharge 失败
   // 回滚事务时此字段不会被永久锁,用户下次仍可拿首充 bonus。
   first_recharge_bonus_granted Boolean @default(false)
+
+  // ── 余额低提醒(W6 D2)──
+  // threshold_cny:用户在 /balance 页配置的提醒阈值(CNY)。0 = 关闭提醒,
+  //   范围 [0, 1000]。BalanceAlertScheduler 每 1h 扫一次,余额 ≤ 阈值 → 发邮件。
+  // last_sent_at:最近一次提醒邮件发送时间。null = 从未发过 / 最近一次充值
+  //   后被 reset 清空。同一用户 24h 内只发一次提醒(防爆邮)。
+  //   executeRecharge 成功事务中会清为 null,使下次余额低时立即可触发,不
+  //   等 24h cooldown(用户充完了又快花完属于真实风险信号)。
+  balance_alert_threshold_cny Decimal?  @default(10.00) @db.Decimal(8, 2)
+  balance_alert_last_sent_at  DateTime?
 
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
@@ -252,8 +263,13 @@ model NewApiToken {
   key_alias          String
 
   // 缓存(实时数据从 new-api 拉,这里只是 portal 显示用)
+  // W6 D4: cached_used_quota 改为非 nullable + default 0,新增 cached_used_at
+  // 作为 60s TTL 阈值。原 cached_remain_quota / last_synced_at 保留为 W2 D4
+  // legacy(目前只被 /api/user/route.ts 投影,无写路径)— 将来如果 quota-cache
+  // 重构再清理。
   cached_remain_quota BigInt?
-  cached_used_quota   BigInt?
+  cached_used_quota   BigInt    @default(0)
+  cached_used_at      DateTime?
   last_synced_at      DateTime?
 
   // 模型限制(冗余存,真实约束在 new-api 那边)
@@ -370,4 +386,26 @@ enum RechargeSource {
   refund // 退款(负数)
   promo // 推广奖励
   adjustment // 余额调整
+}
+
+// ── 用量聚合缓存(W6 D5)──
+// /dashboard 和 /usage 都需要按时间窗口聚合 new-api log 表(分页 1-50 页 ×
+// 每页 1000 条 = 50k 条)。一次 fetch 慢(2-5s),5min TTL 复用结果。
+//
+// payload JSON 结构:{ totalUsedQuota: number, totalCalls: number,
+//   byModel: [{ model: string, calls: number, quota: number }] }(quota 已是
+// 数字,不会越 INT 上限,因为 new-api log.quota 也是 int)。
+//
+// PK = (user_id, period) — 同一 user 每个 period 唯一一行;period 串行枚举
+// 'last_7_days' | 'last_30_days' | 'last_month' | 'all_time'(以及 /usage
+// 页对应的 '7d' | '30d' | 'all',与 aggregator UsagePeriod 类型保持一致)。
+model UsageAggregateCache {
+  user_id     String   @db.Uuid
+  period      String
+  payload     Json
+  computed_at DateTime
+  user        User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@id([user_id, period])
+  @@map("usage_aggregate_cache")
 }

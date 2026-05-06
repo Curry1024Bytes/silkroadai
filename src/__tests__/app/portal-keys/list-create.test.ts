@@ -72,7 +72,7 @@ describe('GET /api/portal/keys', () => {
         expect(mockTokenFindMany).not.toHaveBeenCalled();
     });
 
-    it('200 + masked tokens for current user only (where: status=active scopes server-side)', async () => {
+    it('200 + masked tokens for current user only (where: status=active scopes server-side) with W6 D4 usage cache fields', async () => {
         mockGetCurrentUser.mockResolvedValue(SESSION_USER);
         mockTokenFindMany.mockResolvedValue([
             {
@@ -80,6 +80,8 @@ describe('GET /api/portal/keys', () => {
                 key_alias: 'production',
                 newapi_token_value: 'sk-1234567abcdefgh1234567xxxxYYYY',
                 created_at: new Date('2026-05-01T10:00:00Z'),
+                cached_used_quota: BigInt(150_000),
+                cached_used_at: new Date('2026-05-04T08:00:00Z'),
             },
         ]);
 
@@ -92,6 +94,9 @@ describe('GET /api/portal/keys', () => {
             key_alias: 'production',
             masked_key: 'sk-1234****YYYY',
             created_at: '2026-05-01T10:00:00.000Z',
+            // W6 D4: BigInt serialized as string for client-side precision safety
+            cached_used_quota: '150000',
+            cached_used_at: '2026-05-04T08:00:00.000Z',
         });
         // Critical: never leaks newapi_token_value or other internal fields
         expect(JSON.stringify(body)).not.toContain('sk-1234567abcdefgh');
@@ -101,6 +106,25 @@ describe('GET /api/portal/keys', () => {
                 where: { user_id: PORTAL_USER_ID, status: 'active' },
             }),
         );
+    });
+
+    it('200 W6 D4: cached_used_at null serializes to null (token never synced)', async () => {
+        mockGetCurrentUser.mockResolvedValue(SESSION_USER);
+        mockTokenFindMany.mockResolvedValue([
+            {
+                id: 'tok-fresh',
+                key_alias: 'just-created',
+                newapi_token_value: 'sk-aaaa****bbbb-padding-1234567890',
+                created_at: new Date('2026-05-05T10:00:00Z'),
+                cached_used_quota: BigInt(0),
+                cached_used_at: null,
+            },
+        ]);
+
+        const res = await GET(makeReq({ method: 'GET' }));
+        const body = await res.json();
+        expect(body.tokens[0].cached_used_quota).toBe('0');
+        expect(body.tokens[0].cached_used_at).toBeNull();
     });
 
     it('200 + empty list when user has no active keys', async () => {
@@ -140,7 +164,7 @@ describe('POST /api/portal/keys', () => {
         expect(res.status).toBe(400);
     });
 
-    it('400 token_limit_reached when user already has MAX_TOKENS_PER_USER active', async () => {
+    it('400 token_limit_reached when user already has MAX_TOKENS_PER_USER (10) active', async () => {
         mockGetCurrentUser.mockResolvedValue(SESSION_USER);
         mockTokenCount.mockResolvedValue(MAX_TOKENS_PER_USER);
 
@@ -149,7 +173,30 @@ describe('POST /api/portal/keys', () => {
         const body = await res.json();
         expect(body.error).toBe('token_limit_reached');
         expect(body.max).toBe(MAX_TOKENS_PER_USER);
+        expect(MAX_TOKENS_PER_USER).toBe(10); // W6 D4 — bumped from 5
         expect(mockCreateTokenForCustomer).not.toHaveBeenCalled();
+    });
+
+    it('W6 D4: 6th-9th keys still proceed past the count check (was blocked under W4-2 D5 cap of 5)', async () => {
+        // count=9 is below the W6 D4 cap of 10 → request should proceed
+        // through to the new-api flow (which we mock as success).
+        mockGetCurrentUser.mockResolvedValue(SESSION_USER);
+        mockTokenCount.mockResolvedValue(9);
+        mockCreateTokenForCustomer.mockResolvedValue(undefined);
+        mockListTokensForCustomer.mockResolvedValue({
+            items: [{ id: 100, name: 'tenth-key' }],
+            total: 1,
+        });
+        mockGetTokenKey.mockResolvedValue('sk-tenth-mint-1234');
+        mockTokenCreate.mockResolvedValue({
+            id: 'tok-tenth',
+            key_alias: 'tenth-key',
+            created_at: new Date('2026-05-05T10:00:00Z'),
+        });
+
+        const res = await POST(makeReq({ method: 'POST', body: { alias: 'tenth-key' } }));
+        expect(res.status).toBe(200);
+        expect(mockCreateTokenForCustomer).toHaveBeenCalled();
     });
 
     it('happy: creates new-api token + returns full sk- ONCE in response', async () => {

@@ -13,6 +13,7 @@ const NAV: NavItem[] = [
     { href: '/keys', label: 'API Keys' },
     { href: '/balance', label: '余额' },
     { href: '/usage', label: '用量' },
+    { href: '/models', label: '模型清单' },
 ];
 
 const SIDEBAR_WIDTH = 200;

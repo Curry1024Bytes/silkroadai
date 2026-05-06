@@ -1214,12 +1214,16 @@ export async function executeRecharge(orderId: string): Promise<void> {
         // Cache bust(W4-2 D6):applyTopup 已经把 raw quota 涨到 new-api 那边,
         // 但 portal Prisma 上的 newapi_quota_cache 还是旧值。null 三个字段让
         // 下一次 /balance 渲染走 live fetch,看到最新余额。
+        // W6 D2: 同时清 balance_alert_last_sent_at — 用户充值后如果很快
+        // 又花光,提醒应立即可触发,不等 24h cooldown(充完又快花完是真实
+        // 风险信号,值得提醒)。
         await tx.user.update({
           where: { id: order.user_id! },
           data: {
             newapi_quota_cache: null,
             newapi_used_quota_cache: null,
             newapi_cached_at: null,
+            balance_alert_last_sent_at: null,
           },
         });
       },

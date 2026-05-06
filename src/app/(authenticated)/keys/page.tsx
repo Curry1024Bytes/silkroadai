@@ -13,6 +13,7 @@ import { headers } from 'next/headers';
 import { NextRequest } from 'next/server';
 import { getCurrentUser } from '@/lib/auth/session';
 import { prisma } from '@/lib/db';
+import { getTokenUsageWithCache } from '@/lib/newapi/token-usage';
 import { KeysList, type KeyRow } from './keys-list';
 
 export const dynamic = 'force-dynamic';
@@ -47,16 +48,46 @@ export default async function KeysPage() {
             id: true,
             key_alias: true,
             newapi_token_value: true,
+            newapi_token_id: true,
             created_at: true,
         },
     });
 
-    const rows: KeyRow[] = tokens.map((t) => ({
-        id: t.id,
-        key_alias: t.key_alias,
-        masked_key: maskKey(t.newapi_token_value),
-        created_at: t.created_at.toISOString(),
-    }));
+    // W6 D4: parallel per-token usage fetch. Each call goes through the
+    // 60s row cache so this is at most one batched new-api round-trip per
+    // tab — and zero when the cache is fresh. Failures per-token are
+    // contained to that row's snapshot (logged + null usage shown).
+    const usageSnaps = await Promise.all(
+        tokens.map(async (t) => {
+            if (user.newapi_user_id == null) return null;
+            try {
+                return await getTokenUsageWithCache({
+                    prismaTokenId: t.id,
+                    newapiUserId: user.newapi_user_id,
+                    newapiTokenId: t.newapi_token_id,
+                });
+            } catch (err) {
+                console.warn(`[keys] usage fetch failed for token ${t.id}:`, err);
+                return null;
+            }
+        }),
+    );
+
+    const rows: KeyRow[] = tokens.map((t, i) => {
+        const snap = usageSnaps[i];
+        return {
+            id: t.id,
+            key_alias: t.key_alias,
+            masked_key: maskKey(t.newapi_token_value),
+            created_at: t.created_at.toISOString(),
+            // BigInt → number is safe here: even a power user burning
+            // 10^15 quota a year is well within Number.MAX_SAFE_INTEGER.
+            // Pass null for failed lookups so UI can hide the row's
+            // usage line gracefully.
+            used_quota: snap ? Number(snap.used_quota) : null,
+            last_used_at: snap?.last_used_at ? snap.last_used_at.toISOString() : null,
+        };
+    });
 
     return (
         <section>

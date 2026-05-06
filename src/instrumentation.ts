@@ -8,5 +8,9 @@ export async function register() {
 
     const { startTimeoutScheduler } = await import('@/lib/order/timeout');
     startTimeoutScheduler();
+
+    // W6 D2: balance-low retention alerts. 1h cadence.
+    const { startBalanceAlertScheduler } = await import('@/lib/scheduler/balance-alert');
+    startBalanceAlertScheduler();
   }
 }

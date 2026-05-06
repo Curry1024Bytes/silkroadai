@@ -7,8 +7,11 @@
  * /keys UI but a direct API call without a session must still 401 cleanly,
  * so the route does its own getCurrentUser check.
  *
- * Token CAP: MAX_TOKENS_PER_USER = 5. The UI pre-disables the create button
- * but the server enforces independently (defense in depth).
+ * Token CAP: MAX_TOKENS_PER_USER = 10 (W6 D4 — bumped from 5 in W4-2 D5
+ * after multi-environment customers asked for more headroom). The UI
+ * pre-disables the create button but the server enforces independently
+ * (defense in depth). Future tier-based dynamic limit lives on a User
+ * column, not this constant.
  *
  * Token defaults align with W3 D6 provisionNewCustomer:
  *   - unlimited_quota=true (gotcha #12 — predicates on user.quota, not per-token)
@@ -28,7 +31,7 @@ import {
 
 export const runtime = 'nodejs';
 
-export const MAX_TOKENS_PER_USER = 5;
+export const MAX_TOKENS_PER_USER = 10;
 
 const CreateKeySchema = z.object({
     alias: z
@@ -52,6 +55,11 @@ export async function GET(req: NextRequest) {
             key_alias: true,
             newapi_token_value: true,
             created_at: true,
+            // W6 D4: per-key usage cache. Cheap to project; clients (the
+            // /keys page server component or future API consumers) can
+            // skip a separate fetch for the dashboard summary.
+            cached_used_quota: true,
+            cached_used_at: true,
         },
     });
 
@@ -61,6 +69,10 @@ export async function GET(req: NextRequest) {
             key_alias: t.key_alias,
             masked_key: maskKey(t.newapi_token_value),
             created_at: t.created_at.toISOString(),
+            // BigInt → string for JSON serialization (Number can lose
+            // precision for very-high quota counts).
+            cached_used_quota: t.cached_used_quota.toString(),
+            cached_used_at: t.cached_used_at?.toISOString() ?? null,
         })),
     });
 }
