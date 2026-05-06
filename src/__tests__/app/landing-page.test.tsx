@@ -97,13 +97,17 @@ describe('landing page — promo ACTIVE', () => {
         expect(html).toMatch(/href="\/refund"/);
     });
 
-    it('renders both CTAs: 立即开始 → /portal/register and 查看模型清单 → /models', async () => {
+    it('renders both CTAs: 立即开始 → /login and 查看模型清单 → /models', async () => {
         const Page = await loadPage();
         const tree = await Page({ searchParams: Promise.resolve({}) });
         const html = renderToString(tree);
         expect(html).toContain('立即开始');
         expect(html).toContain('查看模型清单');
-        expect(html).toMatch(/href="\/portal\/register"/);
+        // 立即开始 routes to /login (OAuth signup path) — must not 404.
+        // /portal/register is reserved for a future W7 D4 follow-up page;
+        // this assertion fails fast if anyone reverts the CTA target.
+        expect(html).toMatch(/href="\/login"/);
+        expect(html).not.toMatch(/href="\/portal\/register"/);
         expect(html).toMatch(/href="\/models"/);
     });
 

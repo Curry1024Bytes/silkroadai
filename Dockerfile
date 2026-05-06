@@ -31,17 +31,33 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN pnpm prisma generate
+
+# APP_URL is the canonical public origin baked into statically-prerendered
+# surfaces (sitemap.xml, robots.txt, og:url defaults). Default is the prod
+# apex; staging / preview builds override via:
+#   docker build --build-arg APP_URL=https://staging.silkroadai.io ...
+#
+# At runtime the .env passed via docker-compose env_file CAN re-override
+# `APP_URL` for server-side helpers, but statically-prerendered files
+# (sitemap.ts / robots.ts) freeze whatever value was present at build time
+# — so this ARG is what controls the host in those files.
+ARG APP_URL=https://silkroadai.io
+
 # next build prerenders some routes that import modules touching env at load
 # time (newapi/client.ts checks NEWAPI_ADMIN_TOKEN, jwt.ts checks
 # PORTAL_JWT_SECRET, etc). Without dummies the build crashes. These values
 # are NEVER used at runtime — the real values come from .env via docker-
 # compose env_file.
+#
+# `APP_URL` (real, from build-arg) wins over the `NEXT_PUBLIC_APP_URL`
+# placeholder per the precedence in `src/app/sitemap.ts` and `robots.ts`.
 RUN DATABASE_URL="postgresql://x:x@localhost:5432/x" \
     NEWAPI_BASE_URL="http://localhost:3000" \
     NEWAPI_ADMIN_TOKEN="build-dummy-token" \
     NEWAPI_ADMIN_USER_ID="1" \
     PORTAL_JWT_SECRET="build-dummy-jwt-secret-at-least-32-chars-padding-padding" \
     ADMIN_TOKEN="build-dummy-admin-token" \
+    APP_URL="${APP_URL}" \
     NEXT_PUBLIC_APP_URL="https://localhost" \
     pnpm build
 

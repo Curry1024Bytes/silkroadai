@@ -222,8 +222,13 @@ function Hero() {
                             flexWrap: 'wrap',
                         }}
                     >
+                        {/* CTA → /login: portal has no email-only signup UI today,
+                         *  and /login exposes Google + GitHub OAuth which is the
+                         *  de-facto registration path. A real /portal/register
+                         *  page is W7 D4 follow-up; until then this link must
+                         *  not 404. */}
                         <Link
-                            href="/portal/register"
+                            href="/login"
                             style={{
                                 display: 'inline-block',
                                 padding: '12px 24px',
