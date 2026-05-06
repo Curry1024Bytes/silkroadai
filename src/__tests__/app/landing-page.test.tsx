@@ -115,6 +115,25 @@ describe('landing page — promo ACTIVE', () => {
         expect(html).toContain('sk-xxx');
         expect(html).toContain('claude-sonnet-4-6');
     });
+
+    it('renders the brand <Logo /> in the header (not the legacy text wordmark)', async () => {
+        const Page = await loadPage();
+        const tree = await Page({ searchParams: Promise.resolve({}) });
+        const html = renderToString(tree);
+        // PR #23's <Logo /> renders an <img alt="Silk Road AI" height width />
+        // whose width = height × 4 for the full-logo variants (96/24 aspect).
+        // At size=28 → width=112. Vitest under Vite inlines the SVG as a
+        // base64 data: URI rather than preserving the filename, so we check
+        // the img dimensions (which are unique to the swap) instead.
+        expect(html).toMatch(/<img[^>]*alt="Silk Road AI"/);
+        expect(html).toMatch(/height="28"/);
+        expect(html).toMatch(/width="112"/);
+        // The legacy text-wordmark was a <span> with literal "Silk Road AI"
+        // text. The Logo asset has no inline text, so the only "Silk Road
+        // AI" string left in the header is the img alt attribute (asserted
+        // above) — there must be no plain text wordmark.
+        expect(html).not.toMatch(/<span[^>]*>Silk Road AI<\/span>/);
+    });
 });
 
 describe('landing page — promo INACTIVE (post-exit)', () => {
