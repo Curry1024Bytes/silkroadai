@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  silkroadai.io OpenGraph card placeholder (W7 D3).
+
+  1200×630 — the size every major social platform crops to. Pure SVG so
+  the landing PR can ship without a binary asset; designer ships a real
+  PNG in a follow-up commit and we update <meta og:image> to point at it.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FAF7F2"/>
+      <stop offset="100%" stop-color="#F3EDE1"/>
+    </linearGradient>
+    <linearGradient id="brand" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#1A2540"/>
+      <stop offset="100%" stop-color="#C9A961"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <rect x="0" y="0" width="6" height="630" fill="#C9A961"/>
+  <text x="80" y="240"
+    font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif"
+    font-size="68" font-weight="700" fill="url(#brand)" letter-spacing="-1">
+    Silk Road AI
+  </text>
+  <text x="80" y="335"
+    font-family="Inter, 'PingFang SC', sans-serif"
+    font-size="56" font-weight="700" fill="#1A2540" letter-spacing="-0.5">
+    一个 Key,接入 200+ AI 模型
+  </text>
+  <text x="80" y="395"
+    font-family="Inter, 'PingFang SC', sans-serif"
+    font-size="26" font-weight="400" fill="#3A4660">
+    国内直连 ChatGPT、Claude、Gemini · 人民币付费 · 价格透明
+  </text>
+  <text x="80" y="540"
+    font-family="Inter, 'PingFang SC', sans-serif"
+    font-size="22" font-weight="600" fill="#C9A961">
+    上线钜惠 · 海外模型 5 折 · 限时 30 天
+  </text>
+  <text x="80" y="580"
+    font-family="ui-monospace, SFMono-Regular, monospace"
+    font-size="18" fill="#6B7689">
+    silkroadai.io
+  </text>
+</svg>
