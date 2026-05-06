@@ -1,12 +1,44 @@
 @import 'tailwindcss';
 
 /*
- * W7 D3 brand tokens — exposed to Tailwind v4 via `@theme` so utility classes
- * like `bg-paper`, `text-navy`, `border-brand-border` resolve to Option A
- * warm-white. Other pages keep the legacy `--background / --foreground`
- * baseline; the landing-page tree opts in by composing these tokens.
+ * Silk Road AI design system — Option A warm white (W7 P1).
+ *
+ * Tailwind v4 ships a complete default scale for spacing / radius / type /
+ * shadow / easing. We DO NOT re-declare those defaults here; we layer
+ * brand-specific overrides on top so `bg-paper`, `text-ink`, `shadow-card`,
+ * `ease-brand` resolve to the warm-white palette while everything else stays
+ * vanilla Tailwind. This keeps the diff small and predictable.
+ *
+ * Canon
+ * -----
+ *   Colors   — see token block below; semantic names (paper / ink / navy …)
+ *              not hex. Hex literals in component code are an antipattern
+ *              and should be flagged in review.
+ *   Type     — Tailwind defaults (text-xs through text-5xl) PLUS
+ *              `text-hero` for the landing-page h1. Body line-height is 1.7
+ *              everywhere (set on body element below) to match the landing
+ *              copy spec. Use Tailwind's `leading-*` utilities to override
+ *              per-component when needed.
+ *   Spacing  — Tailwind 4px baseline (gap-1=4, gap-2=8, gap-3=12 …). Do
+ *              NOT use arbitrary values like `gap-[14px]` — round to a
+ *              Tailwind step. The landing page's 14px is `gap-3.5`, 22px
+ *              is `gap-5.5`, etc.
+ *   Radius   — Tailwind defaults (rounded-sm/md/lg/xl/2xl). Cards land at
+ *              `rounded-xl` (12px), buttons at `rounded-lg` (8px), chips
+ *              at `rounded` (4px).
+ *   Shadow   — `shadow-card` for primary surfaces, `shadow-card-strong`
+ *              for elevated (modals, hovered cards). Default Tailwind
+ *              shadows are too cool/blue against warm paper — use the
+ *              brand variants below.
+ *   Easing   — `ease-brand` (130ms cubic-bezier) for hover transitions.
+ *              Default `ease-out` is fine for layout transitions.
+ *
+ * Pre-W7 pages still inheriting the legacy `--background / --foreground`
+ * fallback are migrating in W7 P2. Once all 7 portal pages use the design
+ * system, the fallback block below is deletable.
  */
 @theme {
+  /* — Color tokens — */
   --color-paper: #faf7f2;
   --color-paper-muted: #f3ede1;
   --color-brand-accent: #c9a961;
@@ -16,10 +48,40 @@
   --color-muted-ink: #3a4660;
   --color-minor-ink: #6b7689;
   --color-brand-border: #efe8dd;
+  /* Semantic surfaces — keep the warm palette on inputs / dialogs. */
+  --color-surface: #ffffff;
+  --color-surface-muted: #f8f4ec;
+  /* Status — warm warm-white-friendly variants, not Tailwind's blue/red defaults. */
+  --color-status-warning-bg: #fff7ed;
+  --color-status-warning-border: #fed7aa;
+  --color-status-warning-text: #9a3412;
+  --color-status-error-bg: #fef2f2;
+  --color-status-error-border: #fecaca;
+  --color-status-error-text: #b91c1c;
+  --color-status-success-bg: #f0fdf4;
+  --color-status-success-border: #bbf7d0;
+  --color-status-success-text: #166534;
 
+  /* — Typography — */
   --font-sans:
     'Inter', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'PingFang SC',
     'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  /* Hero size: clamp lets the landing h1 scale 32 → 52 with viewport
+   *  width. Used as `text-hero` (Tailwind v4 generates the class from the
+   *  --text-* token). */
+  --text-hero: clamp(2rem, 5.4vw, 3.25rem);
+  --text-hero--line-height: 1.18;
+  --text-hero--letter-spacing: -0.0125em;
+
+  /* — Shadows (warm-tuned) — */
+  --shadow-card: 0 1px 0 rgba(26, 37, 64, 0.03);
+  --shadow-card-strong: 0 6px 24px -8px rgba(26, 37, 64, 0.18);
+  --shadow-focus: 0 0 0 3px rgba(26, 37, 64, 0.18);
+
+  /* — Easing — */
+  --ease-brand: cubic-bezier(0.32, 0.72, 0.32, 1);
 }
 
 :root {
@@ -30,13 +92,13 @@
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family:
-    system-ui,
-    -apple-system,
-    'PingFang SC',
-    'Hiragino Sans GB',
-    'Microsoft YaHei',
-    sans-serif;
+  /* Use the @theme `--font-sans` so Inter actually shows up in non-landing
+   *  pages too — used to be locked to system fonts which created the
+   *  landing↔portal typography break. */
+  font-family: var(--font-sans);
+  line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 /* Scrollbar - Light theme (default) */
