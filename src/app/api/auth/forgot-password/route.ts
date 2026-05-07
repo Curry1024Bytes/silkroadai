@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { randomBytes, createHash } from 'crypto';
 import { prisma } from '@/lib/db';
 import { sendPasswordResetEmail } from '@/lib/email/send';
+import { getAppUrl } from '@/lib/url/app-url';
 
 // nodemailer + prisma adapter-pg are Node-native; pin runtime so Next doesn't
 // try to put this on the Edge.
@@ -80,8 +81,7 @@ export async function POST(req: NextRequest) {
                     },
                 });
 
-                const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3002';
-                const resetUrl = `${appUrl}/reset-password?token=${rawToken}`;
+                const resetUrl = `${getAppUrl()}/reset-password?token=${rawToken}`;
 
                 // Email send failure should not block the response. Logged so
                 // ops can spot SMTP outages; returns 200 to the client either

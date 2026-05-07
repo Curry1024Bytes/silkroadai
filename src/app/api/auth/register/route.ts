@@ -13,6 +13,7 @@ import {
 import { signSession, setSessionCookie } from '@/lib/auth/session';
 import { sendVerificationEmail } from '@/lib/email/send';
 import { isValidInviteCode } from '@/lib/invite/code';
+import { getAppUrl } from '@/lib/url/app-url';
 
 const VERIFICATION_TOKEN_TTL_HOURS = 24;
 const VERIFICATION_TOKEN_BYTES = 32;
@@ -224,8 +225,7 @@ export async function POST(req: NextRequest) {
             data: { user_id: user.id, token_hash: tokenHash, expires_at: expiresAt },
         });
 
-        const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3002';
-        const verifyUrl = `${appUrl}/verify-email?token=${rawToken}`;
+        const verifyUrl = `${getAppUrl()}/verify-email?token=${rawToken}`;
 
         try {
             await sendVerificationEmail({

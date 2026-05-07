@@ -43,6 +43,9 @@ const SAMPLE_USER = {
     email: 'happy@silkroadai.io',
     nickname: null,
     newapi_user_id: 7,
+    // W7 D4 PR-J Bug 2: dashboard now reads newapi_username for the
+    // aggregator (admin auth ignores user_id, gotcha #15).
+    newapi_username: 'c-aaaa1111',
 };
 
 beforeEach(() => {

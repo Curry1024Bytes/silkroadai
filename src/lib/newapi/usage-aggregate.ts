@@ -83,10 +83,22 @@ export function periodToTimeRange(
 
 /**
  * Get the aggregate. Throws on hard-fail (no cache + new-api dead).
+ *
+ * Filter dimensions:
+ *   - `newapiUsername` is forwarded to new-api as the `username=...`
+ *     query param. This is the dimension new-api actually filters on
+ *     under admin auth (gotcha #15 + W7 D4 PR-J Bug 2 — `user_id` is
+ *     silently dropped, so the previous code unintentionally aggregated
+ *     ALL users into every per-user cache row).
+ *   - `newapiUserId` is used for a **defensive post-filter** in
+ *     `fetchLiveAggregate` (`if (log.user_id !== newapiUserId) continue`).
+ *     Mirrors the `token-usage.ts` belt-and-suspenders pattern. Catches
+ *     a future regression where new-api's username filter loosens.
  */
 export async function getUsageAggregate(args: {
     portalUserId: string;
     newapiUserId: number;
+    newapiUsername: string;
     period: UsagePeriod;
     now?: Date;
 }): Promise<UsageAggregateSnapshot> {
@@ -118,6 +130,7 @@ export async function getUsageAggregate(args: {
     try {
         const { aggregate, pagesFetched } = await fetchLiveAggregate({
             newapiUserId: args.newapiUserId,
+            newapiUsername: args.newapiUsername,
             period: args.period,
             now,
         });
@@ -208,9 +221,19 @@ function readPayload(payload: unknown): UsageAggregate {
 /** Live fetch: paginate queryLogs over the requested window, accumulate
  *  total / by-model. Stops early when (page * page_size) ≥ total OR
  *  the page returns fewer rows than page_size. Hard-caps at MAX_PAGES
- *  to bound the worst-case latency. */
+ *  to bound the worst-case latency.
+ *
+ *  Filter:
+ *   - Forwards `username=<newapiUsername>` to new-api (gotcha #15: admin
+ *     auth filters by username, NOT user_id — `user_id=...` is silently
+ *     dropped).
+ *   - Post-filters every row by `log.user_id === newapiUserId`. If new-api
+ *     ever stops respecting the username filter (or starts mixing rows on
+ *     a future build), the aggregator still won't pollute the cache with
+ *     other users' data. Mirrors `token-usage.ts:148`. */
 async function fetchLiveAggregate(args: {
     newapiUserId: number;
+    newapiUsername: string;
     period: UsagePeriod;
     now: Date;
 }): Promise<{ aggregate: UsageAggregate; pagesFetched: number }> {
@@ -223,7 +246,7 @@ async function fetchLiveAggregate(args: {
 
     for (let page = 1; page <= MAX_PAGES; page++) {
         const r = await queryLogs({
-            user_id: args.newapiUserId,
+            username: args.newapiUsername,
             type: 2, // consume only — refunds (6) etc. excluded
             // 0 means start-of-time; queryLogs forwards as-is and new-api
             // accepts. We could omit but explicit is clearer for Sentry.
@@ -235,6 +258,10 @@ async function fetchLiveAggregate(args: {
         pagesFetched++;
 
         for (const log of r.items) {
+            // Defensive cross-user post-filter — see fn-doc rationale.
+            // Without this the bug we just fixed would silently come back
+            // if a future new-api build loosens the username filter.
+            if (log.user_id !== args.newapiUserId) continue;
             // Defensive re-filter — new-api respects type=2 but a future
             // upstream change shouldn't double-count refunds if the filter
             // ever loosens.

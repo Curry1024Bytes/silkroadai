@@ -35,6 +35,7 @@ import {
 
 const PORTAL_USER_ID = 'aaaa1111-1111-4111-8111-111111111111';
 const NEWAPI_USER_ID = 7;
+const NEWAPI_USERNAME = 'c-aaaa1111';
 const TTL_MS = 5 * 60 * 1_000;
 
 beforeEach(() => {
@@ -46,6 +47,11 @@ function makeLog(overrides: Partial<Record<string, unknown>> = {}) {
     return {
         id: 1,
         type: 2,
+        // W7 D4 PR-J Bug 2: aggregator now post-filters on user_id matching
+        // — fixtures default to NEWAPI_USER_ID so existing happy-path tests
+        // pass through the filter unchanged.
+        user_id: NEWAPI_USER_ID,
+        username: NEWAPI_USERNAME,
         quota: 100,
         model_name: 'gpt-4o',
         token_id: 1,
@@ -111,6 +117,7 @@ describe('getUsageAggregate — cache paths', () => {
         const r = await getUsageAggregate({
             portalUserId: PORTAL_USER_ID,
             newapiUserId: NEWAPI_USER_ID,
+            newapiUsername: NEWAPI_USERNAME,
             period: '30d',
             now: NOW,
         });
@@ -138,6 +145,7 @@ describe('getUsageAggregate — cache paths', () => {
         const r = await getUsageAggregate({
             portalUserId: PORTAL_USER_ID,
             newapiUserId: NEWAPI_USER_ID,
+            newapiUsername: NEWAPI_USERNAME,
             period: '7d',
             now: NOW,
         });
@@ -151,13 +159,18 @@ describe('getUsageAggregate — cache paths', () => {
             { model: 'gpt-4o', calls: 2, quota: 150 },
         ]);
 
-        // queryLogs called with type=2 + page_size=1000 + period range
+        // W7 D4 PR-J Bug 2: filter on `username` (admin auth ignores
+        // `user_id`, gotcha #15). The `user_id` field is now used only
+        // by the in-process post-filter, never sent to new-api.
         expect(mockQueryLogs).toHaveBeenCalledWith(
             expect.objectContaining({
-                user_id: NEWAPI_USER_ID,
+                username: NEWAPI_USERNAME,
                 type: 2,
                 page_size: 1000,
             }),
+        );
+        expect(mockQueryLogs).not.toHaveBeenCalledWith(
+            expect.objectContaining({ user_id: expect.anything() }),
         );
         expect(mockCacheUpsert).toHaveBeenCalledTimes(1);
     });
@@ -174,6 +187,7 @@ describe('getUsageAggregate — cache paths', () => {
         const r = await getUsageAggregate({
             portalUserId: PORTAL_USER_ID,
             newapiUserId: NEWAPI_USER_ID,
+            newapiUsername: NEWAPI_USERNAME,
             period: 'all',
             now: NOW,
         });
@@ -200,6 +214,7 @@ describe('getUsageAggregate — cache paths', () => {
         const r = await getUsageAggregate({
             portalUserId: PORTAL_USER_ID,
             newapiUserId: NEWAPI_USER_ID,
+            newapiUsername: NEWAPI_USERNAME,
             period: 'last_month',
             now: NOW,
         });
@@ -220,6 +235,7 @@ describe('getUsageAggregate — cache paths', () => {
             getUsageAggregate({
                 portalUserId: PORTAL_USER_ID,
                 newapiUserId: NEWAPI_USER_ID,
+                newapiUsername: NEWAPI_USERNAME,
                 period: '7d',
                 now: NOW,
             }),
@@ -244,6 +260,7 @@ describe('getUsageAggregate — cache paths', () => {
         const r = await getUsageAggregate({
             portalUserId: PORTAL_USER_ID,
             newapiUserId: NEWAPI_USER_ID,
+            newapiUsername: NEWAPI_USERNAME,
             period: '7d',
             now: NOW,
         });
@@ -274,6 +291,7 @@ describe('getUsageAggregate — paging across multiple pages', () => {
         const r = await getUsageAggregate({
             portalUserId: PORTAL_USER_ID,
             newapiUserId: NEWAPI_USER_ID,
+            newapiUsername: NEWAPI_USERNAME,
             period: 'all',
             now: NOW,
         });
@@ -299,6 +317,7 @@ describe('getUsageAggregate — paging across multiple pages', () => {
         const r = await getUsageAggregate({
             portalUserId: PORTAL_USER_ID,
             newapiUserId: NEWAPI_USER_ID,
+            newapiUsername: NEWAPI_USERNAME,
             period: '30d',
             now: NOW,
         });
@@ -320,6 +339,7 @@ describe('getUsageAggregate — paging across multiple pages', () => {
         const r = await getUsageAggregate({
             portalUserId: PORTAL_USER_ID,
             newapiUserId: NEWAPI_USER_ID,
+            newapiUsername: NEWAPI_USERNAME,
             period: 'all',
             now: NOW,
         });
@@ -327,6 +347,36 @@ describe('getUsageAggregate — paging across multiple pages', () => {
         expect(r.pagesFetched).toBe(50);
         expect(r.totalCalls).toBe(50 * 1000);
         expect(mockQueryLogs).toHaveBeenCalledTimes(50);
+    });
+
+    it('Bug 2 — defensive cross-user post-filter excludes rows with mismatched user_id', async () => {
+        // Simulates a future regression where new-api's username filter
+        // loosens (or admin auth dumps everything again, like gotcha #15).
+        // Aggregator must not pollute the cache with other users' rows
+        // even if upstream returns them.
+        mockCacheFindUnique.mockResolvedValue(null);
+        mockQueryLogs.mockResolvedValue({
+            items: [
+                makeLog({ user_id: NEWAPI_USER_ID, quota: 100, model_name: 'mine' }),
+                makeLog({ user_id: NEWAPI_USER_ID + 1, quota: 999, model_name: 'theirs' }),
+                makeLog({ user_id: NEWAPI_USER_ID, quota: 50, model_name: 'mine' }),
+                makeLog({ user_id: 999, quota: 9999, model_name: 'rogue' }),
+            ],
+            total: 4,
+        });
+
+        const r = await getUsageAggregate({
+            portalUserId: PORTAL_USER_ID,
+            newapiUserId: NEWAPI_USER_ID,
+            newapiUsername: NEWAPI_USERNAME,
+            period: '7d',
+            now: new Date('2026-05-05T12:00:00Z'),
+        });
+
+        // Only my 2 rows count; cross-user rows are scrubbed entirely.
+        expect(r.totalCalls).toBe(2);
+        expect(r.totalUsedQuota).toBe(150);
+        expect(r.byModel).toEqual([{ model: 'mine', calls: 2, quota: 150 }]);
     });
 
     it('filters non-type=2 rows defensively (refunds / manage rows excluded)', async () => {
@@ -344,6 +394,7 @@ describe('getUsageAggregate — paging across multiple pages', () => {
         const r = await getUsageAggregate({
             portalUserId: PORTAL_USER_ID,
             newapiUserId: NEWAPI_USER_ID,
+            newapiUsername: NEWAPI_USERNAME,
             period: 'all',
             now: NOW,
         });
@@ -372,6 +423,7 @@ describe('getUsageAggregate — payload defensiveness', () => {
         const r = await getUsageAggregate({
             portalUserId: PORTAL_USER_ID,
             newapiUserId: NEWAPI_USER_ID,
+            newapiUsername: NEWAPI_USERNAME,
             period: '7d',
             now: NOW,
         });

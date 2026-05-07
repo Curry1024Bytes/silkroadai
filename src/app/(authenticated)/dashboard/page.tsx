@@ -57,32 +57,30 @@ export default async function DashboardPage() {
     }
 
     const newapiUserId = user.newapi_user_id;
+    const newapiUsername = user.newapi_username;
+    // W7 D4 PR-J Bug 2: aggregator now needs both — username for the
+    // upstream filter (the dimension new-api actually honors under admin
+    // auth, gotcha #15) and user_id for a defensive cross-row post-filter.
+    // Provision sets both atomically (W2 D6 provisionNewCustomer), so the
+    // null guard is just type narrowing for TS, not a real edge case.
+    const aggArgsBase: { portalUserId: string; newapiUserId: number; newapiUsername: string } | null =
+        newapiUserId != null && newapiUsername != null
+            ? { portalUserId: user.id, newapiUserId, newapiUsername }
+            : null;
 
     // Four parallel fetches via allSettled — a single new-api blip on one
     // card doesn't take out the whole page. Per-card error states render
     // inline below.
     const [balanceSettled, lastMonthSettled, allTimeSettled, top3Settled] = await Promise.allSettled([
         getQuotaWithCache(user.id),
-        newapiUserId != null
-            ? getUsageAggregate({
-                  portalUserId: user.id,
-                  newapiUserId,
-                  period: 'last_month',
-              })
+        aggArgsBase
+            ? getUsageAggregate({ ...aggArgsBase, period: 'last_month' })
             : Promise.reject(new Error('account_not_provisioned')),
-        newapiUserId != null
-            ? getUsageAggregate({
-                  portalUserId: user.id,
-                  newapiUserId,
-                  period: 'all',
-              })
+        aggArgsBase
+            ? getUsageAggregate({ ...aggArgsBase, period: 'all' })
             : Promise.reject(new Error('account_not_provisioned')),
-        newapiUserId != null
-            ? getUsageAggregate({
-                  portalUserId: user.id,
-                  newapiUserId,
-                  period: '30d',
-              })
+        aggArgsBase
+            ? getUsageAggregate({ ...aggArgsBase, period: '30d' })
             : Promise.reject(new Error('account_not_provisioned')),
     ]);
 

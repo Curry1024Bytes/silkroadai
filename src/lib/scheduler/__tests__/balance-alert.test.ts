@@ -6,7 +6,7 @@
  * timer here; tests call `scanAndAlert()` directly so each assertion has
  * a deterministic single-pass execution.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Prisma } from '@prisma/client';
 
 const mockUserFindMany = vi.fn();
@@ -60,12 +60,29 @@ function user(overrides: Partial<{
     };
 }
 
+// Snapshot whatever vitest's dotenv setup loaded so we can restore in
+// `afterEach` and not pollute other tests in the same worker.
+const ORIGINAL_APP_URL = process.env.APP_URL;
+const ORIGINAL_NEXT_PUBLIC = process.env.NEXT_PUBLIC_APP_URL;
+
 beforeEach(() => {
     vi.clearAllMocks();
+    // W7 D4 PR-J Bug 1: `getAppUrl()` reads APP_URL first (the runtime
+    // escape hatch around Next's NEXT_PUBLIC_* build-time inlining).
+    // Set both so the email CTA URLs match the prod-shape assertion
+    // regardless of which one the helper picks first.
+    process.env.APP_URL = 'https://portal.silkroadai.io';
     process.env.NEXT_PUBLIC_APP_URL = 'https://portal.silkroadai.io';
     // Default: claim succeeds (single-instance happy path).
     mockUserUpdateMany.mockResolvedValue({ count: 1 });
     mockSendBalanceAlertEmail.mockResolvedValue({ messageId: 'm-1' });
+});
+
+afterEach(() => {
+    if (ORIGINAL_APP_URL === undefined) delete process.env.APP_URL;
+    else process.env.APP_URL = ORIGINAL_APP_URL;
+    if (ORIGINAL_NEXT_PUBLIC === undefined) delete process.env.NEXT_PUBLIC_APP_URL;
+    else process.env.NEXT_PUBLIC_APP_URL = ORIGINAL_NEXT_PUBLIC;
 });
 
 describe('scanAndAlert — candidate selection', () => {

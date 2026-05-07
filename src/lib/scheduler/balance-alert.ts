@@ -33,6 +33,7 @@ import { prisma } from '@/lib/db';
 import { getQuotaWithCache } from '@/lib/newapi/quota-cache';
 import { quotaToCny } from '@/lib/newapi/client';
 import { sendBalanceAlertEmail } from '@/lib/email/send';
+import { getAppUrl } from '@/lib/url/app-url';
 
 const INTERVAL_MS = 60 * 60 * 1_000; // 1 hour
 const COOLDOWN_MS = 24 * 60 * 60 * 1_000; // 24 hours
@@ -43,13 +44,12 @@ const BATCH_SIZE = 200;
 
 let timer: ReturnType<typeof setInterval> | null = null;
 
-function publicAppUrl(): string {
-    // Caller-environment URL for the email CTA. NEXT_PUBLIC_APP_URL is
-    // already the canonical place we set the portal origin (login redirects,
-    // OAuth callbacks). Falls back to localhost for dev so e2e debug log
-    // entries are still useful.
-    return process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3002';
-}
+// Caller-environment URL for the email CTA. Delegates to the shared
+// `getAppUrl()` helper so we use the same APP_URL > NEXT_PUBLIC_APP_URL >
+// dev-fallback precedence as the auth-email senders. (W7 D4 PR-J fix —
+// Dockerfile L61 bakes a localhost placeholder into NEXT_PUBLIC_APP_URL,
+// which surfaced in W7 launch e2e as "https://localhost" CTAs in alert
+// mails.)
 
 export interface BalanceAlertScanResult {
     candidates: number;
@@ -99,8 +99,8 @@ export async function scanAndAlert(now: Date = new Date()): Promise<BalanceAlert
 
     result.candidates = candidates.length;
 
-    const topupUrl = `${publicAppUrl()}/pay`;
-    const settingsUrl = `${publicAppUrl()}/balance`;
+    const topupUrl = `${getAppUrl()}/pay`;
+    const settingsUrl = `${getAppUrl()}/balance`;
 
     for (const u of candidates) {
         try {

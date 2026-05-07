@@ -37,10 +37,14 @@ import UsagePage from '@/app/(authenticated)/usage/page';
 
 const PORTAL_USER_ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 const NEWAPI_USER_ID = 7;
+const NEWAPI_USERNAME = 'c-aaaaaaaa';
 const SESSION_USER = {
     id: PORTAL_USER_ID,
     email: 'happy@silkroadai.io',
     newapi_user_id: NEWAPI_USER_ID,
+    // W7 D4 PR-J Bug 2: page now reads newapi_username for the queryLogs
+    // filter (admin auth ignores user_id, gotcha #15).
+    newapi_username: NEWAPI_USERNAME,
 };
 
 function makeLog(overrides: Partial<{ id: number; model_name: string; quota: number; created_at: number; type: number; completion_tokens: number }> = {}) {
@@ -114,7 +118,13 @@ afterEach(() => {
 });
 
 describe('<UsagePage /> SSR smoke', () => {
-    it('passes user_id (NOT username) to queryLogs — W3 D2 F2 fix', async () => {
+    it('passes username (NOT user_id) to queryLogs — W7 D4 PR-J Bug 2 fix', async () => {
+        // Inverted from the W3 D2 F2 baseline: admin auth on /api/log/
+        // silently DROPS the `user_id` query param (gotcha #15 + the
+        // W7 launch e2e leak that revealed every user's dashboard
+        // showed a single global aggregate). The dimension new-api
+        // honors at admin auth is `username`. We now post-filter on
+        // `user_id` in-process for defence-in-depth.
         mockGetCurrentUser.mockResolvedValue(SESSION_USER);
         mockQueryLogs.mockResolvedValue({ items: [], total: 0 });
 
@@ -122,13 +132,29 @@ describe('<UsagePage /> SSR smoke', () => {
 
         expect(mockQueryLogs).toHaveBeenCalledWith(
             expect.objectContaining({
-                user_id: NEWAPI_USER_ID,
+                username: NEWAPI_USERNAME,
                 type: 2, // consume only — excludes topup/manage noise
             }),
         );
-        // CRITICAL: must NOT pass username (we know that filter is buggy)
+        // CRITICAL: must NOT pass user_id (the broken W3 D2 path)
         const callArgs = mockQueryLogs.mock.calls[0][0];
-        expect(callArgs.username).toBeUndefined();
+        expect(callArgs.user_id).toBeUndefined();
+    });
+
+    it('Bug 2 — recent-50 table scrubs cross-user rows defensively', async () => {
+        // If new-api regresses on the username filter and starts mixing
+        // rows again, the page-level post-filter must still hide other
+        // users' data from the recent-50 table.
+        mockGetCurrentUser.mockResolvedValue(SESSION_USER);
+        const mine = makeLog({ id: 1, model_name: 'mine' });
+        const theirs = { ...makeLog({ id: 2, model_name: 'theirs' }), user_id: NEWAPI_USER_ID + 1, username: 'c-other' };
+        mockGetUsageAggregate.mockResolvedValue(aggregateFor('30d', [mine]));
+        mockQueryLogs.mockResolvedValue({ items: [mine, theirs], total: 2 });
+
+        const html = renderToString(await UsagePage({ searchParams: Promise.resolve({}) }));
+        expect(html).toContain('mine');
+        expect(html).not.toContain('theirs');
+        expect(html).not.toContain('c-other');
     });
 
     it('renders empty state with link to /keys when no logs', async () => {

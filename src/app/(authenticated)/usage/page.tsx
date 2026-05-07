@@ -68,7 +68,9 @@ export default async function UsagePage({
     let aggSnap: Awaited<ReturnType<typeof getUsageAggregate>> | null = null;
     let recentLogs: NewApiUsageLog[] = [];
     let queryErr: string | null = null;
-    if (user.newapi_user_id == null) {
+    const newapiUserId = user.newapi_user_id;
+    const newapiUsername = user.newapi_username;
+    if (newapiUserId == null || newapiUsername == null) {
         queryErr = 'account_not_provisioned';
     } else {
         // Two parallel fetches: the aggregator (cached, totals + top-5) and
@@ -76,14 +78,19 @@ export default async function UsagePage({
         // independent — if the aggregator falls back to stale data, we
         // can still show fresh recent rows; if the recent-50 fetch fails
         // we still have totals.
+        //
+        // W7 D4 PR-J Bug 2: queryLogs filters on `username` (admin auth
+        // silently drops `user_id`, gotcha #15). Defensive post-filter
+        // below scrubs any cross-user rows new-api might still leak.
         const [aggSettled, recentSettled] = await Promise.allSettled([
             getUsageAggregate({
                 portalUserId: user.id,
-                newapiUserId: user.newapi_user_id,
+                newapiUserId,
+                newapiUsername,
                 period,
             }),
             queryLogs({
-                user_id: user.newapi_user_id,
+                username: newapiUsername,
                 type: 2,
                 start_timestamp: range.start || undefined,
                 end_timestamp: range.end,
@@ -103,7 +110,13 @@ export default async function UsagePage({
         }
 
         if (recentSettled.status === 'fulfilled') {
-            recentLogs = recentSettled.value.items;
+            // Belt-and-suspenders: scrub cross-user rows from the recent-50
+            // table the same way fetchLiveAggregate does. If new-api ever
+            // regresses on the username filter we won't accidentally render
+            // someone else's username / model_name in the table.
+            recentLogs = recentSettled.value.items.filter(
+                (log) => log.user_id === newapiUserId,
+            );
         } else {
             // Recent-50 failure is non-fatal — fall through with empty list.
             console.warn(`[usage] recent queryLogs failed for user ${user.id}:`, recentSettled.reason);
