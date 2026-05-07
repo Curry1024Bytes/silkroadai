@@ -254,6 +254,44 @@ describe('POST /api/portal/keys', () => {
         });
     });
 
+    it('W7 D4 PR-H: prefix-adds sk- when getTokenKey returns the bare 48-char id', async () => {
+        // Stage 1 PR-H diagnosis: live new-api returns the raw 48-char
+        // value (no `sk-` prefix) from POST /api/token/{id}/key. Portal
+        // stores it raw + must prepend the prefix at the response
+        // boundary so the customer's first paste lands a working
+        // Authorization header.
+        const RAW = 'Bc4UOPZdTYBS56MMFE1XrOXf5ILtXXXDPsWgqqgecvS5dezb';
+        expect(RAW.length).toBe(48);
+        mockGetCurrentUser.mockResolvedValue(SESSION_USER);
+        mockTokenCount.mockResolvedValue(0);
+        mockCreateTokenForCustomer.mockResolvedValue(undefined);
+        mockListTokensForCustomer.mockResolvedValue({
+            items: [{ id: 99, name: 'prod' }],
+            total: 1,
+        });
+        mockGetTokenKey.mockResolvedValue(RAW);
+        mockTokenCreate.mockResolvedValue({
+            id: 'tok-new',
+            key_alias: 'prod',
+            created_at: new Date('2026-05-07T10:00:00.000Z'),
+        });
+
+        const res = await POST(makeReq({ method: 'POST', body: { alias: 'prod' } }));
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        // Prisma row keeps the bare 48-char value (mirrors new-api
+        // canonical storage) — DB stays clean
+        expect(mockTokenCreate).toHaveBeenCalledWith(
+            expect.objectContaining({
+                data: expect.objectContaining({ newapi_token_value: RAW }),
+            }),
+        );
+        // Response carries the prefixed wire-format value (51 chars)
+        expect(body.key).toBe(`sk-${RAW}`);
+        expect((body.key as string).length).toBe(51);
+        expect((body.key as string).startsWith('sk-')).toBe(true);
+    });
+
     it('502 newapi_create_failed + Prisma row NOT written when createTokenForCustomer throws', async () => {
         mockGetCurrentUser.mockResolvedValue(SESSION_USER);
         mockTokenCount.mockResolvedValue(0);

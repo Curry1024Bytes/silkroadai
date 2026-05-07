@@ -234,4 +234,31 @@ describe('GET /api/portal/keys/[id]/key', () => {
         //  on some upstream variants — see W2 D6 / gotcha #11)
         expect(mockNewapiDeleteToken).not.toHaveBeenCalled();
     });
+
+    it('W7 D4 PR-H: prefix-adds sk- when DB stores the bare 48-char id', async () => {
+        // This is the prod-state shape — Stage 1 PR-H diagnosis
+        // confirmed live new-api stores values without the `sk-` prefix
+        // (length=48 raw). Reveal endpoint must prepend the prefix at
+        // the response boundary so customers paste a working
+        // Authorization header.
+        const RAW = 'Bc4UOPZdTYBS56MMFE1XrOXf5ILtXXXDPsWgqqgecvS5dezb';
+        expect(RAW.length).toBe(48);
+        mockGetCurrentUser.mockResolvedValue(SESSION_USER);
+        mockTokenFindUnique.mockResolvedValue({
+            user_id: PORTAL_USER_ID,
+            newapi_token_value: RAW,
+            status: 'active',
+        });
+
+        const res = await GET_KEY(
+            new NextRequest(`http://localhost/api/portal/keys/${TOKEN_ID}/key`, { method: 'GET' }),
+            { params },
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        // Prefix MUST be added; 51-char total
+        expect(body.key).toBe(`sk-${RAW}`);
+        expect((body.key as string).length).toBe(51);
+        expect((body.key as string).startsWith('sk-')).toBe(true);
+    });
 });

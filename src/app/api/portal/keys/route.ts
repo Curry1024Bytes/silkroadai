@@ -28,6 +28,7 @@ import {
     getTokenKey,
     deleteToken as newapiDeleteToken,
 } from '@/lib/newapi/client';
+import { formatTokenForDisplay } from '@/lib/newapi/token-format';
 
 export const runtime = 'nodejs';
 
@@ -67,7 +68,9 @@ export async function GET(req: NextRequest) {
         tokens: tokens.map((t) => ({
             id: t.id,
             key_alias: t.key_alias,
-            masked_key: maskKey(t.newapi_token_value),
+            // W7 D4 PR-H Tier A: prefix the stored 48-char value before
+            // masking so the rendered display reads `sk-XXXX****YYYY`.
+            masked_key: maskKey(formatTokenForDisplay(t.newapi_token_value)),
             created_at: t.created_at.toISOString(),
             // BigInt → string for JSON serialization (Number can lose
             // precision for very-high quota counts).
@@ -205,7 +208,12 @@ export async function POST(req: NextRequest) {
         // ONE-TIME: full sk- only in the create response. Subsequent reveals
         // go through GET /api/portal/keys/[id]/key (also auth + ownership
         // checked).
-        key: realKey,
+        // W7 D4 PR-H Tier A: prepend `sk-` so the customer's first paste
+        // (this response is auto-revealed in the UI) lands a working
+        // Authorization value. DB stores the raw 48-char id (matches
+        // new-api's canonical representation); prefix is purely a
+        // display/wire concern.
+        key: formatTokenForDisplay(realKey),
         created_at: row.created_at.toISOString(),
     });
 }

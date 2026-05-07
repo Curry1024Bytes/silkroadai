@@ -47,8 +47,12 @@ const REQUIRES_GUARD = ['client.ts', 'token-usage.ts', 'usage-aggregate.ts', 'qu
  * helpers, no env / no I/O). Adding to this allowlist requires the file
  * to be genuinely free of server-only behavior — pure constants and
  * pure functions only.
+ *
+ * Roster:
+ *   - quota-units.ts   pure CNY/USD/quota arithmetic constants + helpers
+ *   - token-format.ts  pure idempotent `sk-` prefix formatter (W7 D4 PR-H Tier A)
  */
-const ALLOWLIST_NO_GUARD = ['quota-units.ts'];
+const ALLOWLIST_NO_GUARD = ['quota-units.ts', 'token-format.ts'];
 
 function readFile(rel: string): string {
     return fs.readFileSync(path.join(NEWAPI_DIR, rel), 'utf-8');
@@ -64,22 +68,25 @@ describe('server-only guards on src/lib/newapi (hotfix 2026-05-05)', () => {
         },
     );
 
-    it('quota-units.ts is the ONLY client-safe newapi module (no env reads, no server-only marker)', () => {
-        const src = readFile('quota-units.ts');
-        // Must NOT carry the actual import directive at line start.
-        // Regex requires the import to be at column 0 (after optional
-        // whitespace) — JSDoc comments mentioning `import 'server-only'`
-        // for documentation purposes are fine because they're prefixed
-        // with ` * ` and won't match `^\s*import`.
-        expect(src).not.toMatch(/^\s*import\s+['"]server-only['"]/m);
-        // Must NOT actually READ admin secrets at runtime. The strings
-        // can appear in JSDoc comments (explaining the boundary), but a
-        // real `process.env.NEWAPI_ADMIN_TOKEN` access pattern is fatal.
-        expect(src).not.toMatch(/process\.env\.NEWAPI_ADMIN_TOKEN/);
-        expect(src).not.toMatch(/process\.env\.NEWAPI_ADMIN_USER_ID/);
-        // Must NOT make network calls (heuristic — pure helpers only).
-        expect(src).not.toMatch(/\bfetch\s*\(/);
-    });
+    it.each(ALLOWLIST_NO_GUARD)(
+        '%s is genuinely client-safe (no env reads, no server-only marker, no fetch)',
+        (filename) => {
+            const src = readFile(filename);
+            // Must NOT carry the actual import directive at line start.
+            // Regex requires the import to be at column 0 (after optional
+            // whitespace) — JSDoc comments mentioning `import 'server-only'`
+            // for documentation purposes are fine because they're prefixed
+            // with ` * ` and won't match `^\s*import`.
+            expect(src).not.toMatch(/^\s*import\s+['"]server-only['"]/m);
+            // Must NOT actually READ admin secrets at runtime. The strings
+            // can appear in JSDoc comments (explaining the boundary), but a
+            // real `process.env.NEWAPI_ADMIN_TOKEN` access pattern is fatal.
+            expect(src).not.toMatch(/process\.env\.NEWAPI_ADMIN_TOKEN/);
+            expect(src).not.toMatch(/process\.env\.NEWAPI_ADMIN_USER_ID/);
+            // Must NOT make network calls (heuristic — pure helpers only).
+            expect(src).not.toMatch(/\bfetch\s*\(/);
+        },
+    );
 
     it('every .ts under src/lib/newapi/ is either guarded or allowlisted (no orphaned server modules)', () => {
         const files = fs

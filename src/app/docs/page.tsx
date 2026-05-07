@@ -58,6 +58,11 @@ const AGENTS: AgentSection[] = [
     },
     { id: 'python-sdk', label: 'Python (openai SDK)', blurb: '官方 openai Python 包,实测可调通。' },
     { id: 'node-sdk', label: 'Node / TypeScript (openai SDK)', blurb: '官方 openai Node 包,实测可调通。' },
+    {
+        id: 'errors',
+        label: '常见错误码',
+        blurb: '401 / 403 insufficient_user_quota / 503 no available channel — body code 优先于 status。',
+    },
 ];
 
 const OPENAI_BASE = 'https://ai.silkroadai.io/v1';
@@ -334,6 +339,107 @@ const resp = await client.chat.completions.create({
 console.log(resp.choices[0].message.content);`}
                     </CodeBlock>
                 </AgentBlock>
+
+                {/* W7 D4 PR-H Tier B: surface the most common upstream
+                 *  error codes a customer will see + plain-language
+                 *  explanation. The 402-vs-403 status rewriting for
+                 *  `insufficient_user_quota` is queued under issue
+                 *  #27 (launch follow-up); for now the customer
+                 *  identifies the problem by the body code, which is
+                 *  stable regardless of HTTP status. */}
+                <section id="errors" className="mt-12 mb-10 scroll-mt-20">
+                    <div className="flex items-baseline justify-between flex-wrap gap-2 mb-4 pb-3 border-b-2 border-brand-accent">
+                        <h2 className="m-0 text-2xl font-semibold text-navy">
+                            <span className="text-brand-accent font-bold mr-3 tabular-nums">07</span>
+                            常见错误码
+                        </h2>
+                    </div>
+                    <p className="m-0 mb-4 text-sm text-ink leading-relaxed">
+                        如果您调用返回非 2xx,请先看响应 body 中的{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            error.code
+                        </code>{' '}
+                        字段(比 HTTP status 更精准)。下表列出最常见的三种:
+                    </p>
+                    <div className="rounded-lg overflow-hidden border border-brand-border bg-surface">
+                        <table className="w-full border-collapse text-sm">
+                            <thead>
+                                <tr className="bg-paper-muted text-muted-ink">
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        HTTP
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        body error.code
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        含义 / 处理
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-navy align-top">401</td>
+                                    <td className="px-4 py-3 font-mono text-navy align-top">
+                                        invalid_authentication
+                                    </td>
+                                    <td className="px-4 py-3 text-ink">
+                                        API key 无效或缺 <code className="font-mono text-xs">sk-</code> 前缀。
+                                        portal{' '}
+                                        <a
+                                            href="/keys"
+                                            className="text-navy font-medium hover:text-brand-accent"
+                                        >
+                                            /keys
+                                        </a>{' '}
+                                        重新复制完整 51 字符串。
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-navy align-top">403</td>
+                                    <td className="px-4 py-3 font-mono text-navy align-top">
+                                        insufficient_user_quota
+                                    </td>
+                                    <td className="px-4 py-3 text-ink">
+                                        <strong className="text-navy">账户余额不足</strong>(注:HTTP
+                                        语义上更接近 402 Payment Required;新版会改 status
+                                        码,当前以 body 的 error.code 为准)。
+                                        前往{' '}
+                                        <a
+                                            href="/balance"
+                                            className="text-navy font-medium hover:text-brand-accent"
+                                        >
+                                            /balance
+                                        </a>{' '}
+                                        查看余额,
+                                        <a
+                                            href="/pay"
+                                            className="text-navy font-medium hover:text-brand-accent"
+                                        >
+                                            /pay
+                                        </a>{' '}
+                                        充值。
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-3 font-mono text-navy align-top">503</td>
+                                    <td className="px-4 py-3 font-mono text-navy align-top">
+                                        no available channel
+                                    </td>
+                                    <td className="px-4 py-3 text-ink">
+                                        模型名拼写错误,或该模型暂时下线。请用{' '}
+                                        <a
+                                            href="/models"
+                                            className="text-navy font-medium hover:text-brand-accent"
+                                        >
+                                            /models
+                                        </a>{' '}
+                                        页搜索一下确认模型 id。
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
 
                 <section className="mt-12 mb-6 text-center">
                     <h2 className="m-0 mb-2 text-base font-semibold text-navy">遇到问题?</h2>

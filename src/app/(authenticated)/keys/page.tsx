@@ -14,6 +14,7 @@ import { NextRequest } from 'next/server';
 import { getCurrentUser } from '@/lib/auth/session';
 import { prisma } from '@/lib/db';
 import { getTokenUsageWithCache } from '@/lib/newapi/token-usage';
+import { formatTokenForDisplay } from '@/lib/newapi/token-format';
 import { KeysList, type KeyRow } from './keys-list';
 
 export const dynamic = 'force-dynamic';
@@ -78,7 +79,12 @@ export default async function KeysPage() {
         return {
             id: t.id,
             key_alias: t.key_alias,
-            masked_key: maskKey(t.newapi_token_value),
+            // W7 D4 PR-H Tier A: stored value is the bare 48-char id;
+            // wire format requires `sk-` prefix. Apply at the display
+            // boundary so the masked output reads `sk-XXXX****YYYY`
+            // matching the customer's expectation when they paste into
+            // their `Authorization: Bearer …` header.
+            masked_key: maskKey(formatTokenForDisplay(t.newapi_token_value)),
             created_at: t.created_at.toISOString(),
             // BigInt → number is safe here: even a power user burning
             // 10^15 quota a year is well within Number.MAX_SAFE_INTEGER.

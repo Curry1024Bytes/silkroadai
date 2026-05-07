@@ -42,8 +42,10 @@ describe('/docs page — header + chrome', () => {
 });
 
 describe('/docs page — 6 agent sections', () => {
-    it('all 6 anchor sections render with the right IDs (toc consistency)', () => {
+    it('all 7 anchor sections render with the right IDs (toc consistency)', () => {
         const html = renderToString(<DocsPage />);
+        // W7 D4 PR-H Tier B: 7th section "常见错误码" added (anchor=errors)
+        // for the doc-fallback path on 402/403 status guidance.
         for (const id of [
             'cursor',
             'cline',
@@ -51,6 +53,7 @@ describe('/docs page — 6 agent sections', () => {
             'claude-code',
             'python-sdk',
             'node-sdk',
+            'errors',
         ]) {
             expect(html, `section #${id} present`).toMatch(
                 new RegExp(`<section[^>]*id="${id}"`),
@@ -58,7 +61,7 @@ describe('/docs page — 6 agent sections', () => {
         }
     });
 
-    it('TOC list links to all 6 anchors via #', () => {
+    it('TOC list links to all 7 anchors via #', () => {
         const html = renderToString(<DocsPage />);
         for (const id of [
             'cursor',
@@ -67,6 +70,7 @@ describe('/docs page — 6 agent sections', () => {
             'claude-code',
             'python-sdk',
             'node-sdk',
+            'errors',
         ]) {
             expect(html, `TOC #${id} link present`).toMatch(
                 new RegExp(`href="#${id}"`),
@@ -130,6 +134,35 @@ describe('/docs page — code snippets ground-truthed', () => {
         const html = renderToString(<DocsPage />);
         expect(html).toContain('claude-sonnet-4-6');
         expect(html).toContain('gpt-5.4');
+    });
+});
+
+describe('/docs page — W7 D4 PR-H Tier B common-errors section', () => {
+    it('renders the 常见错误码 heading + the 3 stable error codes', () => {
+        const html = renderToString(<DocsPage />);
+        // Section heading
+        expect(html).toContain('常见错误码');
+        // 3 documented codes (these are stable regardless of how the
+        // 402-vs-403 status rewriting later resolves)
+        expect(html).toContain('invalid_authentication');
+        expect(html).toContain('insufficient_user_quota');
+        expect(html).toContain('no available channel');
+    });
+
+    it('links insufficient_user_quota to the recharge surface (/balance + /pay)', () => {
+        const html = renderToString(<DocsPage />);
+        // Customer who hits the quota error should be one click from
+        // either checking their balance or recharging.
+        expect(html).toMatch(/href="\/balance"/);
+        expect(html).toMatch(/href="\/pay"/);
+    });
+
+    it('explains that body error.code is the source of truth (not HTTP status)', () => {
+        const html = renderToString(<DocsPage />);
+        // Critical hint — the W7 D4 PR-H Tier B doc fallback exists
+        // precisely because we haven't rewritten HTTP 403 → 402 yet.
+        // Customers must read body.error.code to disambiguate.
+        expect(html).toContain('error.code');
     });
 });
 

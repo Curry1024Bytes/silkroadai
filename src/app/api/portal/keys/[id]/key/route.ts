@@ -12,6 +12,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
 import { getCurrentUser } from '@/lib/auth/session';
+import { formatTokenForDisplay } from '@/lib/newapi/token-format';
 
 export const runtime = 'nodejs';
 
@@ -45,5 +46,11 @@ export async function GET(
         return NextResponse.json({ error: 'token_revoked' }, { status: 410 });
     }
 
-    return NextResponse.json({ key: token.newapi_token_value });
+    // W7 D4 PR-H Tier A: stored value omits the `sk-` prefix that the
+    // wire format requires (new-api stores the bare 48-char id; we
+    // mirror its storage). Apply the prefix here at the response
+    // boundary so the customer pastes a working Authorization value
+    // verbatim. `formatTokenForDisplay` is idempotent — safe even if
+    // the stored representation ever flips to prefixed form.
+    return NextResponse.json({ key: formatTokenForDisplay(token.newapi_token_value) });
 }
