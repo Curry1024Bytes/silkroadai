@@ -1,10 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 24" role="img" aria-labelledby="logo-inverse-title logo-inverse-desc">
   <title id="logo-inverse-title">Silk Road AI</title>
-  <desc id="logo-inverse-desc">Silk Road AI logo, inverse variant for dark backgrounds. Sky-blue mark + white wordmark.</desc>
-  <!-- Mark: white anchor + sky anchor + sky-tinted silk-thread curve -->
+  <desc id="logo-inverse-desc">Silk Road AI logo, inverse variant for dark backgrounds. White anchor ball + sky-blue accent on the silk-thread curve, white "Silk Road" wordmark, sky-blue "AI". W7 D4 PR-MN: anchor balls re-sized + cyan ball moved to the actual path terminus to match the original brand PNG.</desc>
+  <!-- Inverse mark for dark surfaces. Sky-blue stroke keeps the silk-thread
+       story readable on navy bg; white anchor + cyan accent at curve termini. -->
   <g>
-    <circle cx="2.95" cy="21.03" r="2" fill="#FFFFFF"/>
-    <circle cx="20.02" cy="11.13" r="1" fill="#0EA5E9"/>
+    <circle cx="2.95" cy="21.03" r="2.8" fill="#FFFFFF"/>
     <path
       d="M 2.95 21.03 C 7.22 21.03 11.18 21.15 15.15 20.59 C 18.81 20.10 20.02 17.93 20.02 15.89 C 20.02 13.74 18.20 12.38 15.27 10.84 C 11.73 9.04 9.05 7.37 10.02 5.45 C 10.94 3.66 14.96 2.98 20.02 2.98"
       fill="none"
@@ -12,6 +12,7 @@
       stroke-width="1.4"
       stroke-linecap="round"
       stroke-linejoin="round"/>
+    <circle cx="20.02" cy="2.98" r="1.2" fill="#0EA5E9"/>
   </g>
   <g font-family="Inter, 'SF Pro Display', 'PingFang SC', 'Helvetica Neue', Arial, sans-serif" font-weight="600" font-size="11" letter-spacing="-0.2">
     <text x="26" y="17" fill="#FFFFFF">Silk Road</text>

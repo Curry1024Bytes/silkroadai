@@ -1,10 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 24" role="img" aria-labelledby="logo-flat-title logo-flat-desc">
   <title id="logo-flat-title">Silk Road AI</title>
-  <desc id="logo-flat-desc">Silk Road AI logo, flat-color variant for sub-48px renders where gradients alias. Navy mark, navy "Silk Road" wordmark, sky-blue "AI".</desc>
-  <!-- Mark: navy anchors + solid navy stroke (no gradient) -->
+  <desc id="logo-flat-desc">Silk Road AI logo, flat-color variant for sub-48px renders where gradients alias. Navy mark with prominent navy anchor ball, sky-blue accent ball at the top-right of the silk-thread S-curve. Navy "Silk Road" wordmark, sky-blue "AI". W7 D4 PR-MN: anchor balls re-sized + cyan ball moved to the actual path terminus to match the original brand PNG.</desc>
+  <!-- Mark: large navy anchor ball (S start), small cyan ball (S end), navy curve.
+       Anchor centers (2.95, 21.03) and (20.02, 2.98) match the path's M and final point. -->
   <g>
-    <circle cx="2.95" cy="21.03" r="2" fill="#1E3A8A"/>
-    <circle cx="20.02" cy="11.13" r="1" fill="#0EA5E9"/>
+    <circle cx="2.95" cy="21.03" r="2.8" fill="#1E3A8A"/>
     <path
       d="M 2.95 21.03 C 7.22 21.03 11.18 21.15 15.15 20.59 C 18.81 20.10 20.02 17.93 20.02 15.89 C 20.02 13.74 18.20 12.38 15.27 10.84 C 11.73 9.04 9.05 7.37 10.02 5.45 C 10.94 3.66 14.96 2.98 20.02 2.98"
       fill="none"
@@ -12,6 +12,7 @@
       stroke-width="1.4"
       stroke-linecap="round"
       stroke-linejoin="round"/>
+    <circle cx="20.02" cy="2.98" r="1.2" fill="#0EA5E9"/>
   </g>
   <g font-family="Inter, 'SF Pro Display', 'PingFang SC', 'Helvetica Neue', Arial, sans-serif" font-weight="600" font-size="11" letter-spacing="-0.2">
     <text x="26" y="17" fill="#1E3A8A">Silk Road</text>

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" aria-labelledby="mark-title mark-desc">
   <title id="mark-title">Silk Road AI</title>
-  <desc id="mark-desc">Silk Road AI symbol — silk-thread S-curve from navy anchor to sky-blue anchor. Used as favicon and app icon.</desc>
+  <desc id="mark-desc">Silk Road AI symbol — silk-thread S-curve from large navy anchor to small sky-blue accent ball. Used as favicon and app icon. W7 D4 PR-MN: anchor balls re-sized + accent ball moved to the actual path terminus to match the original brand PNG.</desc>
   <defs>
     <linearGradient id="silk-mark-gradient" x1="3" y1="21" x2="21" y2="3" gradientUnits="userSpaceOnUse">
       <stop offset="0%" stop-color="#1E3A8A"/>
@@ -10,8 +10,7 @@
   <!-- Same geometry as the horizontal logo's mark, but the 22-wide mark is
        horizontally stretched to fill the 24×24 viewBox: scale x by 24/22.
        Anchor coords here are pre-stretched. -->
-  <circle cx="3.22" cy="21.03" r="2.18" fill="#1E3A8A"/>
-  <circle cx="21.84" cy="11.13" r="1.09" fill="#0EA5E9"/>
+  <circle cx="3.22" cy="21.03" r="2.8" fill="#1E3A8A"/>
   <path
     d="M 3.22 21.03 C 7.88 21.03 12.20 21.15 16.53 20.59 C 20.52 20.10 21.84 17.93 21.84 15.89 C 21.84 13.74 19.85 12.38 16.66 10.84 C 12.80 9.04 9.87 7.37 10.93 5.45 C 11.93 3.66 16.32 2.98 21.84 2.98"
     fill="none"
@@ -19,4 +18,5 @@
     stroke-width="1.5"
     stroke-linecap="round"
     stroke-linejoin="round"/>
+  <circle cx="21.84" cy="2.98" r="1.2" fill="#0EA5E9"/>
 </svg>

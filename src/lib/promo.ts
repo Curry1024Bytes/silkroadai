@@ -1,14 +1,15 @@
 /**
  * W7 launch promo window — server-side date logic.
  *
- * Promo runs `2026-05-08 00:00:00 UTC+8` (inclusive) through
+ * Promo runs `2026-05-07 00:00:00 UTC+8` (inclusive) through
  * `2026-06-07 23:59:59.999 UTC+8` (inclusive). After 06-08 00:00 UTC+8 the
  * landing page reverts to retail prices and the banner disappears.
  *
- * W7 D4 PR-K shifted the original 5/10–6/9 window two days earlier so the
- * promo banner goes live on the same day as the public launch, while
- * preserving the 31-day duration (operator decision: launch_date == promo
- * start to avoid an awkward two-day "launched but no promo yet" window).
+ * Date history:
+ *   - W7 D4 PR-K: 5/10–6/9 → 5/8–6/7 (launch alignment)
+ *   - W7 D4 PR-MN: 5/8 → 5/7 (operator wants the banner live the moment
+ *     PR-MN deploys, instead of waiting for midnight tonight). End boundary
+ *     unchanged — duration grows from 31 to 32 days.
  *
  * Window is hard-coded on purpose:
  *   - The pricing-cutover script (`_bootstrap/apply-w7-pricing.ts`) bakes the
@@ -22,8 +23,8 @@
  * any node).
  */
 
-/** Inclusive promo start: 2026-05-08 00:00:00 UTC+8. */
-export const PROMO_START = new Date('2026-05-08T00:00:00+08:00');
+/** Inclusive promo start: 2026-05-07 00:00:00 UTC+8. */
+export const PROMO_START = new Date('2026-05-07T00:00:00+08:00');
 
 /** Exclusive promo end: 2026-06-08 00:00:00 UTC+8.
  *  (i.e. promo last instant is 2026-06-07 23:59:59.999 UTC+8) */
