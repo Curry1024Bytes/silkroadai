@@ -91,6 +91,7 @@ export function RegisterForm() {
     }
 
     return (
+        <>
         <form onSubmit={handleSubmit} className="space-y-3.5">
             <div>
                 <Label htmlFor="register-email" required>
@@ -202,5 +203,16 @@ export function RegisterForm() {
                 注册后将向您的邮箱发送验证链接,24 小时内有效。
             </p>
         </form>
+
+        <p className="m-0 mt-6 text-center text-sm text-minor-ink">
+            已有账户?{' '}
+            <a
+                href="/login"
+                className="text-muted-ink font-medium hover:text-brand-accent transition-colors"
+            >
+                登录 →
+            </a>
+        </p>
+        </>
     );
 }

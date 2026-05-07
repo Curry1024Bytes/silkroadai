@@ -100,6 +100,16 @@ export function LoginForm({ next }: { next: string }) {
                     使用 GitHub 登录
                 </Button>
             </div>
+
+            <p className="m-0 mt-6 text-center text-sm text-minor-ink">
+                还没账户?{' '}
+                <a
+                    href="/portal/register"
+                    className="text-muted-ink font-medium hover:text-brand-accent transition-colors"
+                >
+                    创建账户 →
+                </a>
+            </p>
         </div>
     );
 }
