@@ -18,6 +18,8 @@
  */
 import { listAvailableModels } from '@/lib/newapi/client';
 import { groupModels } from '@/lib/models/categorize';
+import { Logo } from '@/components/brand/Logo';
+import { FormError } from '@/components/ui/FormError';
 import { ModelsBrowser } from './models-browser';
 
 export const revalidate = 60;
@@ -42,46 +44,20 @@ export default async function ModelsPage() {
     const { grouped, totalModels, vendorCount } = groupModels(rawModels);
 
     return (
-        <main
-            style={{
-                minHeight: '100vh',
-                background: '#f5f7fa',
-                padding: '24px 16px',
-            }}
-        >
-            <div
-                style={{
-                    maxWidth: 1080,
-                    margin: '0 auto',
-                }}
-            >
-                <header style={{ marginBottom: 24 }}>
-                    <p style={{ margin: '0 0 4px', fontSize: 12, color: '#5a6478' }}>
-                        Silk Road AI · Connecting Global Intelligence.
-                    </p>
-                    <h1 style={{ margin: '0 0 8px', fontSize: 26, color: '#0a1535' }}>
-                        模型清单
-                    </h1>
-                    <p
-                        style={{
-                            margin: 0,
-                            fontSize: 14,
-                            color: '#5a6478',
-                            lineHeight: 1.6,
-                        }}
-                    >
-                        我们当前接入了 <strong>{totalModels}</strong> 个模型,涵盖{' '}
-                        <strong>{vendorCount}</strong> 个厂商。所有模型均可在{' '}
-                        <code
-                            style={{
-                                background: '#fff',
-                                padding: '2px 6px',
-                                borderRadius: 3,
-                                fontSize: 13,
-                                border: '1px solid #e5e8ee',
-                                color: '#0a1535',
-                            }}
-                        >
+        <main className="min-h-screen bg-paper px-4 py-8">
+            <div className="max-w-6xl mx-auto">
+                <header className="mb-6 flex flex-col gap-3">
+                    <div className="flex items-center gap-3">
+                        <Logo variant="primary-flat" size={28} />
+                        <p className="m-0 text-xs text-minor-ink">
+                            Connecting Global Intelligence.
+                        </p>
+                    </div>
+                    <h1 className="m-0 text-3xl font-semibold text-navy">模型清单</h1>
+                    <p className="m-0 text-sm text-muted-ink leading-relaxed max-w-3xl">
+                        我们当前接入了 <strong className="text-navy">{totalModels}</strong> 个模型,涵盖{' '}
+                        <strong className="text-navy">{vendorCount}</strong> 个厂商。所有模型均可在{' '}
+                        <code className="bg-surface px-1.5 py-0.5 rounded text-xs border border-brand-border text-navy">
                             https://ai.silkroadai.io
                         </code>{' '}
                         通过 OpenAI / Anthropic 兼容协议调用。
@@ -89,20 +65,7 @@ export default async function ModelsPage() {
                 </header>
 
                 {fetchErr ? (
-                    <div
-                        role="alert"
-                        style={{
-                            background: '#fdecea',
-                            border: '1px solid #f0c6c2',
-                            color: '#c44',
-                            padding: '14px 16px',
-                            borderRadius: 6,
-                            marginBottom: 24,
-                            fontSize: 13,
-                        }}
-                    >
-                        当前无法获取模型清单,请稍后重试。
-                    </div>
+                    <FormError severity="banner">当前无法获取模型清单,请稍后重试。</FormError>
                 ) : (
                     <ModelsBrowser
                         grouped={grouped}

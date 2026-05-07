@@ -55,8 +55,10 @@ describe('<ModelsPage /> SSR (W6 D3)', () => {
         const el = await ModelsPage();
         const html = renderToString(el);
         expect(html).toContain('模型清单');
-        // Total model count visible
-        expect(html).toMatch(/<strong>15<\/strong>\s*个模型/);
+        // Total model count visible. W7 P2B added a `class="text-navy"` on
+        // the <strong> for visual emphasis, so the regex tolerates an
+        // optional class= attribute.
+        expect(html).toMatch(/<strong[^>]*>15<\/strong>\s*个模型/);
         // ai.silkroadai.io endpoint surfaced for customer reference
         expect(html).toContain('https://ai.silkroadai.io');
     });
@@ -99,8 +101,8 @@ describe('<ModelsPage /> SSR (W6 D3)', () => {
         mockListAvailableModels.mockResolvedValue([]);
         const el = await ModelsPage();
         const html = renderToString(el);
-        // Header still says 0 models
-        expect(html).toMatch(/<strong>0<\/strong>\s*个模型/);
+        // Header still says 0 models (regex tolerates W7 P2B's class= on strong).
+        expect(html).toMatch(/<strong[^>]*>0<\/strong>\s*个模型/);
     });
 });
 
@@ -151,8 +153,11 @@ describe('<ModelsBrowser /> SSR (W6 D3)', () => {
                 vendorCount={vendorCount}
             />,
         );
-        expect(html).toMatch(new RegExp(`<strong>${totalModels}</strong>`));
-        expect(html).toMatch(new RegExp(`<strong>${vendorCount}</strong>`));
+        // W7 P2B: <strong> tags now carry class="text-navy"; regex tolerates
+        // an optional class= attribute. Non-greedy [^>]* avoids spanning
+        // across multiple tags.
+        expect(html).toMatch(new RegExp(`<strong[^>]*>${totalModels}</strong>`));
+        expect(html).toMatch(new RegExp(`<strong[^>]*>${vendorCount}</strong>`));
         // SSR pass shouldn't emit the "filter results" copy because
         // debouncedQuery state is initialized to ''
         expect(html).not.toContain('筛选结果');

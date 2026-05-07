@@ -15,11 +15,14 @@
  */
 import { headers } from 'next/headers';
 import { NextRequest } from 'next/server';
-import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth/session';
 import { prisma } from '@/lib/db';
 import { getQuotaWithCache, type QuotaSnapshot } from '@/lib/newapi/quota-cache';
 import { quotaToCny, quotaToUsd } from '@/lib/newapi/client';
+import { Button } from '@/components/ui/Button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { FormError } from '@/components/ui/FormError';
 import { BalanceAlertForm } from './balance-alert-form';
 
 export const dynamic = 'force-dynamic';
@@ -43,14 +46,6 @@ const SOURCE_LABEL: Record<string, string> = {
     refund: '退款',
     promo: '推广奖励',
     adjustment: '余额调整',
-};
-
-const cardStyle: React.CSSProperties = {
-    background: '#fff',
-    border: '1px solid #e5e8ee',
-    borderRadius: 6,
-    padding: 20,
-    boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
 };
 
 export default async function BalancePage() {
@@ -80,115 +75,65 @@ export default async function BalancePage() {
 
     return (
         <section>
-            <div
-                style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'flex-start',
-                    marginBottom: 20,
-                }}
-            >
+            <div className="flex justify-between items-start gap-3 flex-wrap mb-5">
                 <div>
-                    <h1 style={{ margin: '0 0 8px', fontSize: 22, color: '#0a1535' }}>余额</h1>
-                    <p style={{ margin: 0, fontSize: 13, color: '#5a6478' }}>
-                        实时余额与充值流水。
-                    </p>
+                    <h1 className="m-0 mb-2 text-2xl font-semibold text-navy">余额</h1>
+                    <p className="m-0 text-sm text-muted-ink">实时余额与充值流水。</p>
                 </div>
-                <Link
-                    href="/pay"
-                    style={{
-                        background: '#0a1535',
-                        color: '#fff',
-                        padding: '8px 16px',
-                        borderRadius: 4,
-                        fontSize: 13,
-                        textDecoration: 'none',
-                    }}
-                >
+                <Button href="/pay" size="sm">
                     + 充值
-                </Link>
+                </Button>
             </div>
 
             {snapshot?.source === 'fallback' && (
                 <div
                     role="status"
-                    style={{
-                        background: '#fff8e1',
-                        border: '1px solid #f0d785',
-                        color: '#7a5d00',
-                        padding: '8px 12px',
-                        borderRadius: 4,
-                        marginBottom: 16,
-                        fontSize: 12,
-                    }}
+                    className={[
+                        'mb-4 px-4 py-2.5 rounded-lg text-xs',
+                        'bg-status-warning-bg border border-status-warning-border text-status-warning-text',
+                    ].join(' ')}
                 >
                     数据暂时不可更新,显示的是稍早数据。
                 </div>
             )}
 
             {snapshotErr ? (
-                <div
-                    role="alert"
-                    style={{
-                        background: '#fdecea',
-                        border: '1px solid #f0c6c2',
-                        color: '#c44',
-                        padding: '12px 14px',
-                        borderRadius: 6,
-                        marginBottom: 24,
-                        fontSize: 13,
-                    }}
-                >
-                    当前无法获取余额,请稍后重试。
+                <div className="mb-6">
+                    <FormError severity="banner">当前无法获取余额,请稍后重试。</FormError>
                 </div>
             ) : (
-                <div
-                    style={{
-                        display: 'grid',
-                        gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-                        gap: 16,
-                        marginBottom: 24,
-                    }}
-                >
-                    <article style={cardStyle}>
-                        <p style={{ margin: '0 0 6px', fontSize: 12, color: '#5a6478' }}>
-                            可用余额
-                        </p>
-                        <p
-                            style={{
-                                margin: 0,
-                                fontSize: 28,
-                                color: '#0a1535',
-                                fontWeight: 600,
-                                fontVariantNumeric: 'tabular-nums',
-                            }}
-                        >
-                            ¥{quotaToCny(snapshot!.remain_quota).toFixed(2)}
-                        </p>
-                        <p style={{ margin: '6px 0 0', fontSize: 11, color: '#8a92a4' }}>
-                            ≈ ${quotaToUsd(snapshot!.remain_quota).toFixed(4)} USD ·{' '}
-                            {snapshot!.remain_quota.toLocaleString('en-US')} quota
-                        </p>
-                    </article>
-                    <article style={cardStyle}>
-                        <p style={{ margin: '0 0 6px', fontSize: 12, color: '#5a6478' }}>
-                            累计消费
-                        </p>
-                        <p
-                            style={{
-                                margin: 0,
-                                fontSize: 28,
-                                color: '#0a1535',
-                                fontWeight: 600,
-                                fontVariantNumeric: 'tabular-nums',
-                            }}
-                        >
-                            ¥{quotaToCny(snapshot!.used_quota).toFixed(2)}
-                        </p>
-                        <p style={{ margin: '6px 0 0', fontSize: 11, color: '#8a92a4' }}>
-                            ≈ ${quotaToUsd(snapshot!.used_quota).toFixed(4)} USD
-                        </p>
-                    </article>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
+                    <Card as="article">
+                        <CardHeader>
+                            <CardTitle as="h3" className="text-sm font-medium text-muted-ink">
+                                可用余额
+                            </CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                            <p className="m-0 text-3xl font-semibold text-navy tabular-nums">
+                                ¥{quotaToCny(snapshot!.remain_quota).toFixed(2)}
+                            </p>
+                            <p className="mt-1.5 m-0 text-xs text-minor-ink tabular-nums">
+                                ≈ ${quotaToUsd(snapshot!.remain_quota).toFixed(4)} USD ·{' '}
+                                {snapshot!.remain_quota.toLocaleString('en-US')} quota
+                            </p>
+                        </CardContent>
+                    </Card>
+                    <Card as="article">
+                        <CardHeader>
+                            <CardTitle as="h3" className="text-sm font-medium text-muted-ink">
+                                累计消费
+                            </CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                            <p className="m-0 text-3xl font-semibold text-navy tabular-nums">
+                                ¥{quotaToCny(snapshot!.used_quota).toFixed(2)}
+                            </p>
+                            <p className="mt-1.5 m-0 text-xs text-minor-ink tabular-nums">
+                                ≈ ${quotaToUsd(snapshot!.used_quota).toFixed(4)} USD
+                            </p>
+                        </CardContent>
+                    </Card>
                 </div>
             )}
 
@@ -205,89 +150,62 @@ export default async function BalancePage() {
                 }
             />
 
-            <h2 style={{ margin: '0 0 12px', fontSize: 16, color: '#0a1535' }}>充值流水</h2>
+            <h2 className="m-0 mb-3 text-base font-semibold text-navy">充值流水</h2>
             {history.length === 0 ? (
-                <div
-                    style={{
-                        background: '#fff',
-                        border: '1px dashed #e5e8ee',
-                        borderRadius: 6,
-                        padding: 32,
-                        textAlign: 'center',
-                        color: '#8a92a4',
-                        fontSize: 13,
-                    }}
-                >
-                    暂无充值记录,点击右上「+ 充值」开始。
-                </div>
+                <Card>
+                    <EmptyState
+                        title="暂无充值记录"
+                        body={
+                            <>
+                                点击右上「<code className="font-mono text-xs">+ 充值</code>」开始第一笔充值。
+                            </>
+                        }
+                    />
+                </Card>
             ) : (
-                <table
-                    style={{
-                        width: '100%',
-                        background: '#fff',
-                        border: '1px solid #e5e8ee',
-                        borderRadius: 6,
-                        borderCollapse: 'collapse',
-                        overflow: 'hidden',
-                    }}
-                >
-                    <thead>
-                        <tr>
-                            <th style={tableHeaderStyle}>金额(CNY)</th>
-                            <th style={tableHeaderStyle}>类型</th>
-                            <th style={tableHeaderStyle}>订单号</th>
-                            <th style={tableHeaderStyle}>时间</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {history.map((row) => (
-                            <tr key={row.id}>
-                                <td
-                                    style={{
-                                        ...tableCellStyle,
-                                        fontVariantNumeric: 'tabular-nums',
-                                        fontWeight: 500,
-                                    }}
-                                >
-                                    ¥{Number(row.amount).toFixed(2)}
-                                </td>
-                                <td style={tableCellStyle}>
-                                    {SOURCE_LABEL[row.source] ?? row.source}
-                                </td>
-                                <td
-                                    style={{
-                                        ...tableCellStyle,
-                                        fontFamily:
-                                            'ui-monospace, SFMono-Regular, Menlo, monospace',
-                                        fontSize: 12,
-                                        color: '#5a6478',
-                                    }}
-                                >
-                                    {row.order_id ? row.order_id.slice(0, 8) : '—'}
-                                </td>
-                                <td style={{ ...tableCellStyle, color: '#5a6478' }}>
-                                    {row.created_at.toLocaleString('zh-CN')}
-                                </td>
+                <Card className="overflow-hidden">
+                    <table className="w-full border-collapse">
+                        <thead>
+                            <tr className="bg-paper-muted text-muted-ink">
+                                <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                    金额(CNY)
+                                </th>
+                                <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                    类型
+                                </th>
+                                <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                    订单号
+                                </th>
+                                <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                    时间
+                                </th>
                             </tr>
-                        ))}
-                    </tbody>
-                </table>
+                        </thead>
+                        <tbody>
+                            {history.map((row, idx) => {
+                                const isLast = idx === history.length - 1;
+                                const cell = `px-4 py-3 text-sm text-ink ${isLast ? '' : 'border-b border-brand-border'}`;
+                                return (
+                                    <tr key={row.id}>
+                                        <td className={`${cell} tabular-nums font-medium`}>
+                                            ¥{Number(row.amount).toFixed(2)}
+                                        </td>
+                                        <td className={cell}>
+                                            {SOURCE_LABEL[row.source] ?? row.source}
+                                        </td>
+                                        <td className={`${cell} font-mono text-xs text-muted-ink`}>
+                                            {row.order_id ? row.order_id.slice(0, 8) : '—'}
+                                        </td>
+                                        <td className={`${cell} text-muted-ink`}>
+                                            {row.created_at.toLocaleString('zh-CN')}
+                                        </td>
+                                    </tr>
+                                );
+                            })}
+                        </tbody>
+                    </table>
+                </Card>
             )}
         </section>
     );
 }
-
-const tableHeaderStyle: React.CSSProperties = {
-    textAlign: 'left',
-    padding: '8px 12px',
-    fontSize: 12,
-    color: '#5a6478',
-    background: '#f5f7fa',
-    borderBottom: '1px solid #e5e8ee',
-};
-const tableCellStyle: React.CSSProperties = {
-    padding: '10px 12px',
-    fontSize: 13,
-    borderBottom: '1px solid #e5e8ee',
-    color: '#1a2540',
-};

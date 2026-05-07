@@ -6,15 +6,12 @@
  *   2. queryLogs against new-api with `user_id` filter (NOT `username` — see
  *      W3 D2 F2: username filter has been observed returning 0 against
  *      matching logs)
- *   3. Aggregate server-side: total calls, total quota, top-5 by model
+ *   3. Aggregate via getUsageAggregate (5-min cache, paginated full window)
  *   4. Render summary + by-model bars + recent-50 table
  *
  * Time window driven by `?period=7d|30d|all` querystring. Tabs are a small
  * client component — Link href changes navigate to a new render with the
  * fresh window.
- *
- * No new endpoint: the page is the only consumer; client-side dynamic
- * filtering can be added in W6 if customer demand surfaces.
  */
 import { headers } from 'next/headers';
 import { NextRequest } from 'next/server';
@@ -26,6 +23,9 @@ import {
     type NewApiUsageLog,
 } from '@/lib/newapi/client';
 import { getUsageAggregate } from '@/lib/newapi/usage-aggregate';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { FormError } from '@/components/ui/FormError';
 import { PeriodTabs } from './period-tabs';
 import { parsePeriod, periodToRange, type UsagePeriod } from './period';
 
@@ -52,35 +52,6 @@ async function getSessionUser() {
     });
     return getCurrentUser(req);
 }
-
-// W6 D5 sweep: the previous client-side aggregate(logs) helper has been
-// replaced by `getUsageAggregate` in `src/lib/newapi/usage-aggregate.ts`.
-// That helper paginates the full window (up to 50 pages × 1000 rows) and
-// caches the rolled-up payload for 5 minutes — closing the W3 D2 F3
-// long-tail gap where users with > 200 logs/window saw under-counted
-// totals from the page_size=200 single-fetch.
-
-const cardStyle: React.CSSProperties = {
-    background: '#fff',
-    border: '1px solid #e5e8ee',
-    borderRadius: 6,
-    padding: 20,
-    boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
-};
-const tableHeaderStyle: React.CSSProperties = {
-    textAlign: 'left',
-    padding: '8px 12px',
-    fontSize: 12,
-    color: '#5a6478',
-    background: '#f5f7fa',
-    borderBottom: '1px solid #e5e8ee',
-};
-const tableCellStyle: React.CSSProperties = {
-    padding: '10px 12px',
-    fontSize: 13,
-    borderBottom: '1px solid #e5e8ee',
-    color: '#1a2540',
-};
 
 export default async function UsagePage({
     searchParams,
@@ -154,287 +125,160 @@ export default async function UsagePage({
 
     return (
         <section>
-            <div
-                style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'flex-start',
-                    marginBottom: 20,
-                    gap: 12,
-                    flexWrap: 'wrap',
-                }}
-            >
+            <div className="flex justify-between items-start gap-3 flex-wrap mb-5">
                 <div>
-                    <h1 style={{ margin: '0 0 8px', fontSize: 22, color: '#0a1535' }}>用量</h1>
-                    <p style={{ margin: 0, fontSize: 13, color: '#5a6478' }}>
-                        按模型与时间维度的调用统计。
-                    </p>
+                    <h1 className="m-0 mb-2 text-2xl font-semibold text-navy">用量</h1>
+                    <p className="m-0 text-sm text-muted-ink">按模型与时间维度的调用统计。</p>
                 </div>
                 <PeriodTabs active={period} />
             </div>
 
             {queryErr && (
-                <div
-                    role="alert"
-                    style={{
-                        background: '#fdecea',
-                        border: '1px solid #f0c6c2',
-                        color: '#c44',
-                        padding: '12px 14px',
-                        borderRadius: 6,
-                        marginBottom: 24,
-                        fontSize: 13,
-                    }}
-                >
-                    {queryErr === 'account_not_provisioned'
-                        ? '账户尚未关联到上游,请联系管理员。'
-                        : '当前无法获取用量数据,请稍后重试。'}
+                <div className="mb-6">
+                    <FormError severity="banner">
+                        {queryErr === 'account_not_provisioned'
+                            ? '账户尚未关联到上游,请联系管理员。'
+                            : '当前无法获取用量数据,请稍后重试。'}
+                    </FormError>
                 </div>
             )}
 
             {!queryErr && agg.totalCalls === 0 ? (
-                <div
-                    style={{
-                        background: '#fff',
-                        border: '1px dashed #e5e8ee',
-                        borderRadius: 6,
-                        padding: 32,
-                        textAlign: 'center',
-                        color: '#8a92a4',
-                        fontSize: 13,
-                    }}
-                >
-                    该时间段内无 API 调用记录,前往{' '}
-                    <Link href="/keys" style={{ color: '#0a1535' }}>
-                        API Keys
-                    </Link>{' '}
-                    页创建 key 后开始调用。
-                </div>
+                <Card>
+                    <EmptyState
+                        title="该时间段内无 API 调用记录"
+                        body={
+                            <>
+                                前往{' '}
+                                <Link href="/keys" className="text-navy font-medium">
+                                    API Keys
+                                </Link>{' '}
+                                页创建 key 后开始调用。
+                            </>
+                        }
+                    />
+                </Card>
             ) : !queryErr ? (
                 <>
-                    <div
-                        style={{
-                            display: 'grid',
-                            gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-                            gap: 16,
-                            marginBottom: 24,
-                        }}
-                    >
-                        <article style={cardStyle}>
-                            <p style={{ margin: '0 0 6px', fontSize: 12, color: '#5a6478' }}>
-                                总调用次数
-                            </p>
-                            <p
-                                style={{
-                                    margin: 0,
-                                    fontSize: 28,
-                                    color: '#0a1535',
-                                    fontWeight: 600,
-                                    fontVariantNumeric: 'tabular-nums',
-                                }}
-                            >
-                                {agg.totalCalls.toLocaleString('en-US')}
-                            </p>
-                        </article>
-                        <article style={cardStyle}>
-                            <p style={{ margin: '0 0 6px', fontSize: 12, color: '#5a6478' }}>
-                                总消费(CNY 等价)
-                            </p>
-                            <p
-                                style={{
-                                    margin: 0,
-                                    fontSize: 28,
-                                    color: '#0a1535',
-                                    fontWeight: 600,
-                                    fontVariantNumeric: 'tabular-nums',
-                                }}
-                            >
-                                ¥{quotaToCny(agg.totalQuota).toFixed(2)}
-                            </p>
-                            <p style={{ margin: '6px 0 0', fontSize: 11, color: '#8a92a4' }}>
-                                {agg.totalQuota.toLocaleString('en-US')} quota
-                            </p>
-                        </article>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
+                        <Card as="article">
+                            <CardHeader>
+                                <CardTitle as="h3" className="text-sm font-medium text-muted-ink">
+                                    总调用次数
+                                </CardTitle>
+                            </CardHeader>
+                            <CardContent>
+                                <p className="m-0 text-3xl font-semibold text-navy tabular-nums">
+                                    {agg.totalCalls.toLocaleString('en-US')}
+                                </p>
+                            </CardContent>
+                        </Card>
+                        <Card as="article">
+                            <CardHeader>
+                                <CardTitle as="h3" className="text-sm font-medium text-muted-ink">
+                                    总消费(CNY 等价)
+                                </CardTitle>
+                            </CardHeader>
+                            <CardContent>
+                                <p className="m-0 text-3xl font-semibold text-navy tabular-nums">
+                                    ¥{quotaToCny(agg.totalQuota).toFixed(2)}
+                                </p>
+                                <p className="mt-1.5 m-0 text-xs text-minor-ink tabular-nums">
+                                    {agg.totalQuota.toLocaleString('en-US')} quota
+                                </p>
+                            </CardContent>
+                        </Card>
                     </div>
 
                     {agg.byModel.length > 0 && (
                         <>
-                            <h2
-                                style={{
-                                    margin: '0 0 12px',
-                                    fontSize: 16,
-                                    color: '#0a1535',
-                                }}
-                            >
+                            <h2 className="m-0 mb-3 text-base font-semibold text-navy">
                                 按模型 Top {agg.byModel.length}
                             </h2>
-                            <div
-                                style={{
-                                    display: 'grid',
-                                    gridTemplateColumns:
-                                        'repeat(auto-fit, minmax(180px, 1fr))',
-                                    gap: 12,
-                                    marginBottom: 24,
-                                }}
-                            >
+                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 mb-6">
                                 {agg.byModel.map((m) => {
                                     const pct = agg.totalQuota
                                         ? (m.quota / agg.totalQuota) * 100
                                         : 0;
                                     return (
-                                        <article
-                                            key={m.model}
-                                            style={{ ...cardStyle, padding: 14 }}
-                                        >
+                                        <Card as="article" key={m.model} className="px-4 py-3">
                                             <p
-                                                style={{
-                                                    margin: '0 0 4px',
-                                                    fontSize: 13,
-                                                    color: '#0a1535',
-                                                    fontWeight: 600,
-                                                    overflow: 'hidden',
-                                                    textOverflow: 'ellipsis',
-                                                    whiteSpace: 'nowrap',
-                                                }}
+                                                className="m-0 mb-1 text-sm font-semibold text-navy overflow-hidden text-ellipsis whitespace-nowrap font-mono"
                                                 title={m.model}
                                             >
                                                 {m.model}
                                             </p>
-                                            <p
-                                                style={{
-                                                    margin: '0 0 8px',
-                                                    fontSize: 11,
-                                                    color: '#5a6478',
-                                                    fontVariantNumeric: 'tabular-nums',
-                                                }}
-                                            >
-                                                {m.calls.toLocaleString('en-US')} 次 ·{' '}
-                                                {pct.toFixed(1)}%
+                                            <p className="m-0 mb-2 text-xs text-muted-ink tabular-nums">
+                                                {m.calls.toLocaleString('en-US')} 次 · {pct.toFixed(1)}%
                                             </p>
-                                            <div
-                                                style={{
-                                                    background: '#f0f2f8',
-                                                    borderRadius: 2,
-                                                    overflow: 'hidden',
-                                                    height: 6,
-                                                }}
-                                            >
+                                            <div className="bg-paper-muted rounded-sm overflow-hidden h-1.5">
                                                 <div
-                                                    style={{
-                                                        background: '#0a1535',
-                                                        height: '100%',
-                                                        width: `${Math.max(2, pct)}%`,
-                                                    }}
+                                                    className="bg-brand-accent h-full"
+                                                    style={{ width: `${Math.max(2, pct)}%` }}
                                                 />
                                             </div>
-                                        </article>
+                                        </Card>
                                     );
                                 })}
                             </div>
                         </>
                     )}
 
-                    <h2
-                        style={{
-                            margin: '0 0 12px',
-                            fontSize: 16,
-                            color: '#0a1535',
-                        }}
-                    >
+                    <h2 className="m-0 mb-3 text-base font-semibold text-navy">
                         最近调用(前 {Math.min(recent.length, RECENT_LIMIT)} 条)
                     </h2>
-                    <table
-                        style={{
-                            width: '100%',
-                            background: '#fff',
-                            border: '1px solid #e5e8ee',
-                            borderRadius: 6,
-                            borderCollapse: 'collapse',
-                            overflow: 'hidden',
-                        }}
-                    >
-                        <thead>
-                            <tr>
-                                <th style={tableHeaderStyle}>模型</th>
-                                <th style={tableHeaderStyle}>时间</th>
-                                <th
-                                    style={{
-                                        ...tableHeaderStyle,
-                                        textAlign: 'right',
-                                    }}
-                                >
-                                    quota
-                                </th>
-                                <th
-                                    style={{
-                                        ...tableHeaderStyle,
-                                        textAlign: 'right',
-                                    }}
-                                >
-                                    completion tokens
-                                </th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {recent.map((log) => (
-                                <tr key={log.id}>
-                                    <td
-                                        style={{
-                                            ...tableCellStyle,
-                                            fontFamily:
-                                                'ui-monospace, SFMono-Regular, Menlo, monospace',
-                                            fontSize: 12,
-                                        }}
-                                    >
-                                        {log.model_name || '<unknown>'}
-                                    </td>
-                                    <td style={{ ...tableCellStyle, color: '#5a6478' }}>
-                                        {new Date(log.created_at * 1000).toLocaleString('zh-CN')}
-                                    </td>
-                                    <td
-                                        style={{
-                                            ...tableCellStyle,
-                                            textAlign: 'right',
-                                            fontVariantNumeric: 'tabular-nums',
-                                        }}
-                                    >
-                                        {log.quota.toLocaleString('en-US')}
-                                    </td>
-                                    <td
-                                        style={{
-                                            ...tableCellStyle,
-                                            textAlign: 'right',
-                                            fontVariantNumeric: 'tabular-nums',
-                                            color: '#5a6478',
-                                        }}
-                                    >
-                                        {log.completion_tokens.toLocaleString('en-US')}
-                                    </td>
+                    <Card className="overflow-hidden">
+                        <table className="w-full border-collapse">
+                            <thead>
+                                <tr className="bg-paper-muted text-muted-ink">
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        模型
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        时间
+                                    </th>
+                                    <th className="text-right px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        quota
+                                    </th>
+                                    <th className="text-right px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        completion tokens
+                                    </th>
                                 </tr>
-                            ))}
-                        </tbody>
-                    </table>
+                            </thead>
+                            <tbody>
+                                {recent.map((log, idx) => {
+                                    const isLast = idx === recent.length - 1;
+                                    const cell = `px-4 py-3 text-sm text-ink ${isLast ? '' : 'border-b border-brand-border'}`;
+                                    return (
+                                        <tr key={log.id}>
+                                            <td className={`${cell} font-mono text-xs`}>
+                                                {log.model_name || '<unknown>'}
+                                            </td>
+                                            <td className={`${cell} text-muted-ink`}>
+                                                {new Date(log.created_at * 1000).toLocaleString('zh-CN')}
+                                            </td>
+                                            <td className={`${cell} text-right tabular-nums`}>
+                                                {log.quota.toLocaleString('en-US')}
+                                            </td>
+                                            <td className={`${cell} text-right tabular-nums text-muted-ink`}>
+                                                {log.completion_tokens.toLocaleString('en-US')}
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    </Card>
 
-                    <div
-                        style={{
-                            display: 'flex',
-                            justifyContent: 'flex-end',
-                            marginTop: 12,
-                        }}
-                    >
+                    <div className="flex justify-end mt-3">
                         <button
                             type="button"
                             disabled
                             title="W6 实装"
-                            style={{
-                                background: '#f5f7fa',
-                                color: '#a8aebc',
-                                border: '1px solid #e5e8ee',
-                                borderRadius: 4,
-                                padding: '6px 14px',
-                                fontSize: 12,
-                                cursor: 'not-allowed',
-                            }}
+                            className={[
+                                'bg-paper-muted text-minor-ink border border-brand-border',
+                                'rounded-lg px-4 py-1.5 text-xs cursor-not-allowed',
+                            ].join(' ')}
                         >
                             查看更多(W6)
                         </button>

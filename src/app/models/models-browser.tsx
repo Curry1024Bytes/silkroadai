@@ -27,9 +27,9 @@ import {
     filterGrouped,
     countGrouped,
 } from '@/lib/models/categorize';
-// TypeName, VendorName, ModelEntry are referenced by the helper components
-// below (TypeSection / VendorBlock / ModelCard), not by the top-level
-// ModelsBrowser. Keep them imported in one place.
+import { Card } from '@/components/ui/Card';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { Input } from '@/components/ui/Input';
 
 interface Props {
     grouped: GroupedModels;
@@ -60,58 +60,35 @@ export function ModelsBrowser({ grouped, totalModels, vendorCount }: Props) {
 
     return (
         <>
-            <div
-                style={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: 8,
-                    marginBottom: 24,
-                }}
-            >
-                <input
+            <div className="flex flex-col gap-2 mb-6">
+                <Input
                     type="search"
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
                     placeholder="搜索模型(支持模型名 / 厂商名)…"
                     aria-label="搜索模型"
-                    style={{
-                        width: '100%',
-                        padding: '12px 14px',
-                        border: '1px solid #e5e8ee',
-                        borderRadius: 6,
-                        fontSize: 14,
-                        background: '#fff',
-                        outline: 'none',
-                    }}
                 />
-                <p style={{ margin: 0, fontSize: 12, color: '#5a6478' }}>
+                <p className="m-0 text-xs text-muted-ink">
                     {debouncedQuery ? (
                         <>
                             筛选结果 {filteredTotal} / {totalModels} 条
                         </>
                     ) : (
                         <>
-                            共 <strong>{totalModels}</strong> 个模型,
-                            <strong>{vendorCount}</strong> 个厂商
+                            共 <strong className="text-navy">{totalModels}</strong> 个模型,
+                            <strong className="text-navy">{vendorCount}</strong> 个厂商
                         </>
                     )}
                 </p>
             </div>
 
             {typesWithContent.length === 0 ? (
-                <div
-                    style={{
-                        background: '#fff',
-                        border: '1px dashed #e5e8ee',
-                        borderRadius: 6,
-                        padding: 40,
-                        textAlign: 'center',
-                        color: '#8a92a4',
-                        fontSize: 14,
-                    }}
-                >
-                    没有匹配「{query}」的模型。试试其他关键词。
-                </div>
+                <Card>
+                    <EmptyState
+                        title={`没有匹配「${query}」的模型`}
+                        body="试试其他关键词,或清空搜索框查看全部。"
+                    />
+                </Card>
             ) : (
                 typesWithContent.map((type) => (
                     <TypeSection key={type} type={type} typeBucket={filtered[type]!} />
@@ -128,19 +105,13 @@ function TypeSection({
     type: TypeName;
     typeBucket: Partial<Record<VendorName, ModelEntry[]>>;
 }) {
-    const vendorsInOrder = VENDOR_ORDER.filter((v) => typeBucket[v] && typeBucket[v]!.length > 0);
+    const vendorsInOrder = VENDOR_ORDER.filter(
+        (v) => typeBucket[v] && typeBucket[v]!.length > 0,
+    );
 
     return (
-        <section style={{ marginBottom: 32 }}>
-            <h2
-                style={{
-                    margin: '0 0 14px',
-                    fontSize: 18,
-                    color: '#0a1535',
-                    paddingBottom: 8,
-                    borderBottom: '2px solid #0a1535',
-                }}
-            >
+        <section className="mb-8">
+            <h2 className="m-0 mb-4 pb-2 text-lg font-semibold text-navy border-b-2 border-brand-accent">
                 {TYPE_LABEL[type]}
             </h2>
             {vendorsInOrder.map((vendor) => (
@@ -152,29 +123,14 @@ function TypeSection({
 
 function VendorBlock({ vendor, entries }: { vendor: VendorName; entries: ModelEntry[] }) {
     return (
-        <div style={{ marginBottom: 18 }}>
-            <h3
-                style={{
-                    margin: '0 0 10px',
-                    fontSize: 13,
-                    color: '#5a6478',
-                    fontWeight: 600,
-                    letterSpacing: '0.02em',
-                    textTransform: 'uppercase',
-                }}
-            >
+        <div className="mb-5">
+            <h3 className="m-0 mb-2.5 text-xs font-semibold uppercase tracking-wide text-muted-ink">
                 {vendor}{' '}
-                <span style={{ color: '#8a92a4', fontWeight: 400, textTransform: 'none' }}>
+                <span className="text-minor-ink font-normal normal-case">
                     · {entries.length}
                 </span>
             </h3>
-            <div
-                style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
-                    gap: 10,
-                }}
-            >
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
                 {entries.map((m) => (
                     <ModelCard key={m.shortName} entry={m} />
                 ))}
@@ -199,71 +155,39 @@ function ModelCard({ entry }: { entry: ModelEntry }) {
     }
 
     return (
-        <article
-            style={{
-                background: '#fff',
-                border: '1px solid #e5e8ee',
-                borderRadius: 6,
-                padding: '12px 14px',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 6,
-            }}
-        >
-            <div
-                style={{
-                    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-                    fontSize: 13,
-                    color: '#0a1535',
-                    fontWeight: 600,
-                    wordBreak: 'break-all',
-                }}
-            >
+        <Card as="article" className="px-3.5 py-3 flex flex-col gap-1.5">
+            <div className="font-mono text-sm font-semibold text-navy break-all">
                 {entry.shortName}
             </div>
             {showCanonical && (
-                <div
-                    style={{
-                        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-                        fontSize: 11,
-                        color: '#8a92a4',
-                        wordBreak: 'break-all',
-                    }}
-                >
+                <div className="font-mono text-[11px] text-minor-ink break-all">
                     {entry.canonicalName}
                 </div>
             )}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
+            <div className="flex items-center gap-2 mt-1">
                 <span
-                    style={{
-                        fontSize: 11,
-                        background: '#f5f7fa',
-                        color: '#5a6478',
-                        padding: '2px 8px',
-                        borderRadius: 10,
-                        border: '1px solid #e5e8ee',
-                    }}
+                    className={[
+                        'text-[11px] px-2 py-0.5 rounded-full',
+                        'bg-paper-muted text-muted-ink border border-brand-border',
+                    ].join(' ')}
                 >
                     {entry.vendor}
                 </span>
                 <button
                     type="button"
                     onClick={handleCopy}
-                    style={{
-                        marginLeft: 'auto',
-                        fontSize: 11,
-                        padding: '3px 10px',
-                        background: copied ? '#1a8a4a' : '#0a1535',
-                        color: '#fff',
-                        border: 'none',
-                        borderRadius: 4,
-                        cursor: 'pointer',
-                    }}
                     aria-label={`复制模型名 ${entry.shortName}`}
+                    className={[
+                        'ml-auto text-[11px] px-2.5 py-1 rounded-lg',
+                        'border border-transparent transition-colors duration-150 ease-brand cursor-pointer',
+                        copied
+                            ? 'bg-status-success-bg text-status-success-text border-status-success-border'
+                            : 'bg-navy text-paper hover:bg-navy-strong',
+                    ].join(' ')}
                 >
                     {copied ? '已复制 ✓' : '复制'}
                 </button>
             </div>
-        </article>
+        </Card>
     );
 }

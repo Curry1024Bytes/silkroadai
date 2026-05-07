@@ -15,6 +15,10 @@
  * The server enforces the same range via zod regardless of UI clamping.
  */
 import { useState } from 'react';
+import { Button } from '@/components/ui/Button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
+import { Input } from '@/components/ui/Input';
+import { Label } from '@/components/ui/Label';
 
 interface Props {
     /** Current threshold from the SSR pass. null/undefined defaults to 10. */
@@ -66,97 +70,71 @@ export function BalanceAlertForm({ initialThreshold }: Props) {
     }
 
     return (
-        <article
-            data-testid="balance-alert-form"
-            style={{
-                background: '#fff',
-                border: '1px solid #e5e8ee',
-                borderRadius: 6,
-                padding: 20,
-                boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
-                marginBottom: 24,
-            }}
-        >
-            <h2
-                style={{
-                    margin: '0 0 4px',
-                    fontSize: 16,
-                    color: '#0a1535',
-                }}
-            >
-                余额提醒设置
-            </h2>
-            <p style={{ margin: '0 0 14px', fontSize: 12, color: '#5a6478' }}>
-                当余额低于阈值时,我们会向您的注册邮箱发送提醒(24 小时内最多一次)。
-                填 0 关闭提醒。
-            </p>
-
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                <label style={{ fontSize: 13, color: '#1a2540' }}>阈值(CNY)</label>
-                <input
-                    type="number"
-                    min={0}
-                    max={1000}
-                    step={1}
-                    value={value}
-                    onChange={(e) => {
-                        setValue(e.target.value);
-                        if (status !== 'idle') setStatus('idle');
-                    }}
-                    aria-label="余额提醒阈值"
-                    style={{
-                        width: 120,
-                        padding: '6px 8px',
-                        border: '1px solid #e5e8ee',
-                        borderRadius: 4,
-                        fontSize: 14,
-                        fontVariantNumeric: 'tabular-nums',
-                    }}
-                />
-                <button
-                    type="button"
-                    onClick={handleSave}
-                    disabled={!canSave}
-                    style={{
-                        padding: '6px 14px',
-                        background: canSave ? '#0a1535' : '#a8aebc',
-                        color: '#fff',
-                        border: 'none',
-                        borderRadius: 4,
-                        fontSize: 13,
-                        cursor: canSave ? 'pointer' : 'not-allowed',
-                    }}
-                >
-                    {status === 'saving' ? '保存中…' : '保存'}
-                </button>
-                {persisted === 0 && (
-                    <span
-                        style={{
-                            fontSize: 12,
-                            color: '#7a5d00',
-                            background: '#fff8e1',
-                            border: '1px solid #f0d785',
-                            padding: '3px 8px',
-                            borderRadius: 4,
-                        }}
+        <Card as="article" data-testid="balance-alert-form" className="mb-6">
+            <CardHeader>
+                <CardTitle as="h2" className="text-base font-semibold text-navy">
+                    余额提醒设置
+                </CardTitle>
+            </CardHeader>
+            <CardContent>
+                <p className="m-0 mb-4 text-xs text-muted-ink">
+                    当余额低于阈值时,我们会向您的注册邮箱发送提醒(24 小时内最多一次)。填 0
+                    关闭提醒。
+                </p>
+                <div className="flex items-end gap-2.5 flex-wrap">
+                    <div>
+                        <Label htmlFor="balance-alert-threshold">阈值(CNY)</Label>
+                        <Input
+                            id="balance-alert-threshold"
+                            type="number"
+                            min={0}
+                            max={1000}
+                            step={1}
+                            value={value}
+                            onChange={(e) => {
+                                setValue(e.target.value);
+                                if (status !== 'idle') setStatus('idle');
+                            }}
+                            aria-label="余额提醒阈值"
+                            block={false}
+                            className="w-32 tabular-nums"
+                        />
+                    </div>
+                    <Button
+                        type="button"
+                        variant="primary"
+                        size="md"
+                        onClick={handleSave}
+                        loading={status === 'saving'}
+                        disabled={!canSave}
                     >
-                        已关闭提醒
-                    </span>
-                )}
-                {status === 'saved' && persisted > 0 && (
-                    <span style={{ fontSize: 12, color: '#1a8a4a' }}>
-                        已保存 ✓ 当前阈值 ¥{persisted}
-                    </span>
-                )}
-                {status === 'error' && errMsg && (
-                    <span style={{ fontSize: 12, color: '#c44' }}>{errMsg}</span>
-                )}
-                {status === 'idle' && !validRange && dirty && (
-                    <span style={{ fontSize: 12, color: '#c44' }}>
-                        请输入 0–1000 的整数
-                    </span>
-                )}
-            </div>
-        </article>
+                        {status === 'saving' ? '保存中…' : '保存'}
+                    </Button>
+                    {persisted === 0 && (
+                        <span
+                            className={[
+                                'text-xs px-2 py-1 rounded',
+                                'bg-status-warning-bg border border-status-warning-border text-status-warning-text',
+                            ].join(' ')}
+                        >
+                            已关闭提醒
+                        </span>
+                    )}
+                    {status === 'saved' && persisted > 0 && (
+                        <span className="text-xs text-status-success-text">
+                            已保存 ✓ 当前阈值 ¥{persisted}
+                        </span>
+                    )}
+                    {status === 'error' && errMsg && (
+                        <span className="text-xs text-status-error-text">{errMsg}</span>
+                    )}
+                    {status === 'idle' && !validRange && dirty && (
+                        <span className="text-xs text-status-error-text">
+                            请输入 0–1000 的整数
+                        </span>
+                    )}
+                </div>
+            </CardContent>
+        </Card>
     );
 }

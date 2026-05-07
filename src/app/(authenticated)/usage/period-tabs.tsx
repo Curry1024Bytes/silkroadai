@@ -21,30 +21,27 @@ export function PeriodTabs({ active }: { active: UsagePeriod }) {
         <div
             role="tablist"
             aria-label="时间窗口"
-            style={{
-                display: 'inline-flex',
-                background: '#fff',
-                border: '1px solid #e5e8ee',
-                borderRadius: 4,
-                overflow: 'hidden',
-            }}
+            className={[
+                'inline-flex bg-surface border border-brand-border rounded-lg overflow-hidden',
+                'shadow-card',
+            ].join(' ')}
         >
-            {TABS.map((tab) => {
+            {TABS.map((tab, idx) => {
                 const isActive = tab.key === active;
+                const isLast = idx === TABS.length - 1;
                 return (
                     <Link
                         key={tab.key}
                         href={`${pathname}?period=${tab.key}`}
                         role="tab"
                         aria-selected={isActive}
-                        style={{
-                            padding: '6px 14px',
-                            fontSize: 13,
-                            color: isActive ? '#fff' : '#5a6478',
-                            background: isActive ? '#0a1535' : 'transparent',
-                            textDecoration: 'none',
-                            borderRight: '1px solid #e5e8ee',
-                        }}
+                        className={[
+                            'px-4 py-2 text-sm no-underline transition-colors duration-150 ease-brand',
+                            isActive
+                                ? 'bg-navy text-paper font-medium'
+                                : 'text-muted-ink hover:bg-paper-muted hover:text-navy',
+                            isLast ? '' : 'border-r border-brand-border',
+                        ].join(' ')}
                     >
                         {tab.label}
                     </Link>

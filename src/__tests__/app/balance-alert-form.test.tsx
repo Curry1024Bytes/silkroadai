@@ -21,8 +21,10 @@ describe('<BalanceAlertForm /> SSR (W6 D2)', () => {
     it('shows "已关闭提醒" badge when initial threshold is 0', () => {
         const html = renderToString(<BalanceAlertForm initialThreshold={0} />);
         expect(html).toContain('已关闭提醒');
-        // Yellow badge styling matches the W4-2 unverified-banner palette
-        expect(html).toContain('#fff8e1');
+        // W7 P2B swapped the inline #fff8e1 hex for the design-system warm
+        // status tokens. Same visual intent (warm-amber soft block).
+        expect(html).toContain('bg-status-warning-bg');
+        expect(html).toContain('text-status-warning-text');
     });
 
     it('does NOT show "已关闭提醒" when threshold > 0', () => {
