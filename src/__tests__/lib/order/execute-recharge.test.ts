@@ -5,7 +5,7 @@
  * applyTopup-based recharge introduced in W4-1 D1, plus the W6 D1 first-
  * recharge 20% bonus (CAS lock + interactive transaction rollback).
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Prisma } from '@prisma/client';
 
 // ── prisma mock ──
@@ -500,5 +500,166 @@ describe('executeRecharge — failure modes', () => {
 
     await expect(executeRecharge('does-not-exist')).rejects.toThrow('Order not found');
     expect(mockApplyTopup).not.toHaveBeenCalled();
+  });
+});
+
+/* ──────────────────────────────────────────────────────────── */
+/* W7 D4 — invite-code bonus rate (30% vs default 20%)          */
+/* ──────────────────────────────────────────────────────────── */
+
+describe('executeRecharge — W7 D4 invite-code bonus rate', () => {
+  const cnyAmount = 100;
+  const mainQuota = Math.round((cnyAmount / 7.2) * 500_000);
+  const ORIGINAL_INVITE = process.env.INVITE_CODES;
+
+  beforeEach(() => {
+    delete process.env.INVITE_CODES;
+  });
+
+  afterAll(() => {
+    if (ORIGINAL_INVITE === undefined) delete process.env.INVITE_CODES;
+    else process.env.INVITE_CODES = ORIGINAL_INVITE;
+  });
+
+  it('invite_code currently valid → 30% bonus (not 20%)', async () => {
+    process.env.INVITE_CODES = 'LAUNCH-A, FRIEND2026';
+    const expectedInvitedBonus = Math.floor(mainQuota * 0.3);
+
+    mockOrderFindUnique.mockResolvedValue(
+      pendingOrder({ amount: new Prisma.Decimal('100.00') }),
+    );
+    mockUserFindUnique.mockResolvedValue(
+      userRow({
+        first_recharge_bonus_granted: false,
+        invite_code: 'LAUNCH-A', // valid against env above
+      }),
+    );
+    mockRechargeLogFindFirst.mockResolvedValue(null);
+    mockNewapiGetUser
+      .mockResolvedValueOnce({ id: NEWAPI_USER_ID, quota: 0 })
+      .mockResolvedValueOnce({
+        id: NEWAPI_USER_ID,
+        quota: mainQuota + expectedInvitedBonus,
+      });
+    mockApplyTopup.mockResolvedValue(undefined);
+    mockUserUpdateMany.mockResolvedValue({ count: 1 });
+
+    await executeRecharge(ORDER_ID);
+
+    // applyTopup gets the 30% bonus, not 20%
+    expect(mockApplyTopup).toHaveBeenCalledWith({
+      newapi_user_id: NEWAPI_USER_ID,
+      cnyAmount,
+      extraBonusQuota: expectedInvitedBonus,
+    });
+    // Sanity: the difference matters — 30% != 20%
+    const default20 = Math.floor(mainQuota * FIRST_RECHARGE_BONUS_RATE);
+    expect(expectedInvitedBonus).toBeGreaterThan(default20);
+    // RechargeLog records the invited bonus subset
+    expect(mockRechargeLogCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          bonus_quota_added: BigInt(expectedInvitedBonus),
+        }),
+      }),
+    );
+  });
+
+  it('invite_code stored but no longer in INVITE_CODES env → falls back to 20% (soft revoke)', async () => {
+    // Operator removed "OLD-CODE" from INVITE_CODES; the user holding it
+    // should now get the default 20% bonus rather than 30%.
+    process.env.INVITE_CODES = 'NEW-CODE';
+    const expectedDefault20 = Math.floor(mainQuota * FIRST_RECHARGE_BONUS_RATE);
+
+    mockOrderFindUnique.mockResolvedValue(
+      pendingOrder({ amount: new Prisma.Decimal('100.00') }),
+    );
+    mockUserFindUnique.mockResolvedValue(
+      userRow({
+        first_recharge_bonus_granted: false,
+        invite_code: 'OLD-CODE', // user has it stored, but env no longer lists it
+      }),
+    );
+    mockRechargeLogFindFirst.mockResolvedValue(null);
+    mockNewapiGetUser
+      .mockResolvedValueOnce({ id: NEWAPI_USER_ID, quota: 0 })
+      .mockResolvedValueOnce({
+        id: NEWAPI_USER_ID,
+        quota: mainQuota + expectedDefault20,
+      });
+    mockApplyTopup.mockResolvedValue(undefined);
+    mockUserUpdateMany.mockResolvedValue({ count: 1 });
+
+    await executeRecharge(ORDER_ID);
+
+    expect(mockApplyTopup).toHaveBeenCalledWith({
+      newapi_user_id: NEWAPI_USER_ID,
+      cnyAmount,
+      extraBonusQuota: expectedDefault20,
+    });
+  });
+
+  it('invite_code is null → default 20% bonus (no regression vs W6 D1)', async () => {
+    process.env.INVITE_CODES = 'LAUNCH-A';
+    const expectedDefault20 = Math.floor(mainQuota * FIRST_RECHARGE_BONUS_RATE);
+
+    mockOrderFindUnique.mockResolvedValue(
+      pendingOrder({ amount: new Prisma.Decimal('100.00') }),
+    );
+    mockUserFindUnique.mockResolvedValue(
+      userRow({
+        first_recharge_bonus_granted: false,
+        invite_code: null, // user registered without a code
+      }),
+    );
+    mockRechargeLogFindFirst.mockResolvedValue(null);
+    mockNewapiGetUser
+      .mockResolvedValueOnce({ id: NEWAPI_USER_ID, quota: 0 })
+      .mockResolvedValueOnce({
+        id: NEWAPI_USER_ID,
+        quota: mainQuota + expectedDefault20,
+      });
+    mockApplyTopup.mockResolvedValue(undefined);
+    mockUserUpdateMany.mockResolvedValue({ count: 1 });
+
+    await executeRecharge(ORDER_ID);
+
+    expect(mockApplyTopup).toHaveBeenCalledWith({
+      newapi_user_id: NEWAPI_USER_ID,
+      cnyAmount,
+      extraBonusQuota: expectedDefault20,
+    });
+  });
+
+  it('invite_code valid but user already granted bonus → no new bonus regardless of rate', async () => {
+    // Confirms the invite-code rate selection sits *before* the eligibility
+    // gate: returning users don't get a second bonus just because their
+    // code is still valid.
+    process.env.INVITE_CODES = 'LAUNCH-A';
+
+    mockOrderFindUnique.mockResolvedValue(
+      pendingOrder({ amount: new Prisma.Decimal('100.00') }),
+    );
+    mockUserFindUnique.mockResolvedValue(
+      userRow({
+        first_recharge_bonus_granted: true, // already used
+        invite_code: 'LAUNCH-A',
+      }),
+    );
+    mockRechargeLogFindFirst.mockResolvedValue(null);
+    mockNewapiGetUser
+      .mockResolvedValueOnce({ id: NEWAPI_USER_ID, quota: mainQuota })
+      .mockResolvedValueOnce({ id: NEWAPI_USER_ID, quota: 2 * mainQuota });
+    mockApplyTopup.mockResolvedValue(undefined);
+
+    await executeRecharge(ORDER_ID);
+
+    expect(mockApplyTopup).toHaveBeenCalledWith({
+      newapi_user_id: NEWAPI_USER_ID,
+      cnyAmount,
+      extraBonusQuota: 0,
+    });
+    // No CAS-claim because peek saw granted=true
+    expect(mockUserUpdateMany).not.toHaveBeenCalled();
   });
 });

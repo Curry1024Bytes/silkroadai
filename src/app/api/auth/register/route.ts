@@ -12,6 +12,7 @@ import {
 } from '@/lib/newapi/client';
 import { signSession, setSessionCookie } from '@/lib/auth/session';
 import { sendVerificationEmail } from '@/lib/email/send';
+import { isValidInviteCode } from '@/lib/invite/code';
 
 const VERIFICATION_TOKEN_TTL_HOURS = 24;
 const VERIFICATION_TOKEN_BYTES = 32;
@@ -30,6 +31,18 @@ const RegisterSchema = z.object({
     email: z.string().email().max(254).transform((s) => s.trim().toLowerCase()),
     password: z.string().min(8).max(128),
     nickname: z.string().trim().max(64).optional(),
+    // W7 D4: optional invite code. Empty/whitespace-only strings are
+    // collapsed to undefined so the form's "leave blank" path doesn't
+    // hit the validity check below.
+    invite_code: z
+        .string()
+        .max(64)
+        .optional()
+        .transform((s) => {
+            if (!s) return undefined;
+            const trimmed = s.trim();
+            return trimmed.length > 0 ? trimmed : undefined;
+        }),
 });
 
 /**
@@ -74,7 +87,19 @@ export async function POST(req: NextRequest) {
             { status: 400 },
         );
     }
-    const { email, password, nickname } = parsed.data;
+    const { email, password, nickname, invite_code } = parsed.data;
+
+    // W7 D4: invite code is optional, but if provided it must be valid.
+    // Brief: "邀请码无效不阻塞注册(form 提示后用户可清空继续提交)" — the
+    // form-side flow is "fill code → submit → backend rejects → user clears
+    // → resubmit". We surface a distinct error code so the frontend can
+    // show a targeted hint without confusing it with bad email/password.
+    if (invite_code !== undefined && !isValidInviteCode(invite_code)) {
+        return NextResponse.json(
+            { error: 'invalid_invite_code', message: '邀请码无效。可清空后继续注册。' },
+            { status: 400 },
+        );
+    }
 
     const existing = await prisma.user.findUnique({ where: { email }, select: { id: true } });
     if (existing) {
@@ -86,7 +111,15 @@ export async function POST(req: NextRequest) {
     let user;
     try {
         user = await prisma.user.create({
-            data: { email, password_hash, nickname: nickname || null },
+            data: {
+                email,
+                password_hash,
+                nickname: nickname || null,
+                // Persist the trimmed code as-typed (preserves operator's
+                // intended casing for analytics). isValidInviteCode is
+                // case-insensitive, so this doesn't affect future lookups.
+                invite_code: invite_code ?? null,
+            },
             select: {
                 id: true,
                 email: true,

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 
 // ── mocks ──
@@ -344,5 +344,228 @@ describe('POST /api/auth/register (new-api)', () => {
         expect(mockSearchNewApiUser).not.toHaveBeenCalled();
 
         errSpy.mockRestore();
+    });
+});
+
+/* ──────────────────────────────────────────────────────────── */
+/* W7 D4 — invite_code branches                                 */
+/* ──────────────────────────────────────────────────────────── */
+
+describe('POST /api/auth/register (W7 D4 invite_code)', () => {
+    const ORIGINAL_INVITE = process.env.INVITE_CODES;
+
+    beforeEach(() => {
+        // Clean slate per test; individual tests opt-in to a specific
+        // INVITE_CODES env value.
+        delete process.env.INVITE_CODES;
+    });
+
+    // Restore at suite end so other test files don't see our env mutations.
+    // (vitest doesn't auto-snapshot process.env across files.)
+    afterAll(() => {
+        if (ORIGINAL_INVITE === undefined) delete process.env.INVITE_CODES;
+        else process.env.INVITE_CODES = ORIGINAL_INVITE;
+    });
+
+    it('valid invite_code: persists code on user.create + reaches new-api provision', async () => {
+        process.env.INVITE_CODES = 'LAUNCH-A, FRIEND2026';
+        mockUserFindUnique.mockImplementation(
+            (args: { where: { email?: string; id?: string } }) => {
+                if (args.where.id === PORTAL_USER_ID)
+                    return Promise.resolve({ session_token_version: 1 });
+                return Promise.resolve(null);
+            },
+        );
+        mockUserCreate.mockResolvedValue({
+            id: PORTAL_USER_ID,
+            email: 'invited@silkroadai.io',
+            nickname: null,
+            email_verified: false,
+            locale: 'zh-CN',
+            status: 'active',
+            created_at: new Date(),
+        });
+        mockProvision.mockResolvedValue({
+            newapi_user_id: NEWAPI_USER_ID,
+            newapi_username: 'c-aaaaaaaa',
+            newapi_access_token: 'a'.repeat(32),
+            newapi_token_id: 7,
+            newapi_token_value: 'sk-test-invite',
+        });
+
+        const res = await POST(
+            makeReq({
+                email: 'invited@silkroadai.io',
+                password: 'goodpass123',
+                invite_code: 'LAUNCH-A',
+            }),
+        );
+
+        expect(res.status).toBe(200);
+        // Invite code persisted on user.create — case preserved as-typed.
+        // (isValidInviteCode is case-insensitive; storing the operator's
+        // intended casing keeps analytics dashboards readable.)
+        expect(mockUserCreate).toHaveBeenCalledWith(
+            expect.objectContaining({
+                data: expect.objectContaining({ invite_code: 'LAUNCH-A' }),
+            }),
+        );
+    });
+
+    it('valid invite_code: case-insensitive match — user types lowercase, env has UPPER', async () => {
+        process.env.INVITE_CODES = 'LAUNCH-A';
+        mockUserFindUnique.mockImplementation(
+            (args: { where: { email?: string; id?: string } }) => {
+                if (args.where.id === PORTAL_USER_ID)
+                    return Promise.resolve({ session_token_version: 1 });
+                return Promise.resolve(null);
+            },
+        );
+        mockUserCreate.mockResolvedValue({
+            id: PORTAL_USER_ID,
+            email: 'lower@silkroadai.io',
+            nickname: null,
+            email_verified: false,
+            locale: 'zh-CN',
+            status: 'active',
+            created_at: new Date(),
+        });
+        mockProvision.mockResolvedValue({
+            newapi_user_id: NEWAPI_USER_ID,
+            newapi_username: 'c-aaaaaaaa',
+            newapi_access_token: 'a'.repeat(32),
+            newapi_token_id: 7,
+            newapi_token_value: 'sk-test',
+        });
+
+        const res = await POST(
+            makeReq({
+                email: 'lower@silkroadai.io',
+                password: 'goodpass123',
+                invite_code: 'launch-a',
+            }),
+        );
+
+        expect(res.status).toBe(200);
+        // Stored with the user's original casing; isValidInviteCode
+        // re-validates case-insensitively at bonus time.
+        expect(mockUserCreate).toHaveBeenCalledWith(
+            expect.objectContaining({
+                data: expect.objectContaining({ invite_code: 'launch-a' }),
+            }),
+        );
+    });
+
+    it('invalid invite_code: 400 invalid_invite_code, no user creation, no provision', async () => {
+        process.env.INVITE_CODES = 'LAUNCH-A';
+        // No setup needed for findUnique — request rejected before DB.
+
+        const res = await POST(
+            makeReq({
+                email: 'bad@silkroadai.io',
+                password: 'goodpass123',
+                invite_code: 'NOT-IN-LIST',
+            }),
+        );
+        const body = await res.json();
+
+        expect(res.status).toBe(400);
+        expect(body.error).toBe('invalid_invite_code');
+        // The frontend uses `data.message` to render the inline hint —
+        // assert it surfaces a non-empty Chinese string.
+        expect(body.message).toContain('邀请码');
+
+        // Nothing else should have been touched: not even findUnique.
+        expect(mockUserFindUnique).not.toHaveBeenCalled();
+        expect(mockUserCreate).not.toHaveBeenCalled();
+        expect(mockProvision).not.toHaveBeenCalled();
+        expect(mockEmailVerificationTokenCreate).not.toHaveBeenCalled();
+        expect(mockSendVerificationEmail).not.toHaveBeenCalled();
+    });
+
+    it('absent invite_code: registers cleanly, persists invite_code: null', async () => {
+        // Even with codes available, the user opts not to enter one.
+        process.env.INVITE_CODES = 'LAUNCH-A';
+        mockUserFindUnique.mockImplementation(
+            (args: { where: { email?: string; id?: string } }) => {
+                if (args.where.id === PORTAL_USER_ID)
+                    return Promise.resolve({ session_token_version: 1 });
+                return Promise.resolve(null);
+            },
+        );
+        mockUserCreate.mockResolvedValue({
+            id: PORTAL_USER_ID,
+            email: 'plain@silkroadai.io',
+            nickname: null,
+            email_verified: false,
+            locale: 'zh-CN',
+            status: 'active',
+            created_at: new Date(),
+        });
+        mockProvision.mockResolvedValue({
+            newapi_user_id: NEWAPI_USER_ID,
+            newapi_username: 'c-aaaaaaaa',
+            newapi_access_token: 'a'.repeat(32),
+            newapi_token_id: 7,
+            newapi_token_value: 'sk-test-plain',
+        });
+
+        const res = await POST(
+            makeReq({ email: 'plain@silkroadai.io', password: 'goodpass123' }),
+        );
+
+        expect(res.status).toBe(200);
+        // invite_code should land as null (not undefined / not "" /
+        // not the field omitted).
+        expect(mockUserCreate).toHaveBeenCalledWith(
+            expect.objectContaining({
+                data: expect.objectContaining({ invite_code: null }),
+            }),
+        );
+    });
+
+    it('whitespace-only invite_code: treated as absent (registers, persists null)', async () => {
+        // The form might submit "  " if a user types and clears via
+        // backspace without trimming. Backend should not reject this as
+        // "invalid"; it should be normalized to absent.
+        process.env.INVITE_CODES = 'LAUNCH-A';
+        mockUserFindUnique.mockImplementation(
+            (args: { where: { email?: string; id?: string } }) => {
+                if (args.where.id === PORTAL_USER_ID)
+                    return Promise.resolve({ session_token_version: 1 });
+                return Promise.resolve(null);
+            },
+        );
+        mockUserCreate.mockResolvedValue({
+            id: PORTAL_USER_ID,
+            email: 'spaces@silkroadai.io',
+            nickname: null,
+            email_verified: false,
+            locale: 'zh-CN',
+            status: 'active',
+            created_at: new Date(),
+        });
+        mockProvision.mockResolvedValue({
+            newapi_user_id: NEWAPI_USER_ID,
+            newapi_username: 'c-aaaaaaaa',
+            newapi_access_token: 'a'.repeat(32),
+            newapi_token_id: 7,
+            newapi_token_value: 'sk-test-spaces',
+        });
+
+        const res = await POST(
+            makeReq({
+                email: 'spaces@silkroadai.io',
+                password: 'goodpass123',
+                invite_code: '   ',
+            }),
+        );
+
+        expect(res.status).toBe(200);
+        expect(mockUserCreate).toHaveBeenCalledWith(
+            expect.objectContaining({
+                data: expect.objectContaining({ invite_code: null }),
+            }),
+        );
     });
 });

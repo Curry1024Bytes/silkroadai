@@ -41,11 +41,15 @@ export default function sitemap(): MetadataRoute.Sitemap {
             changeFrequency: 'daily',
             priority: 0.8,
         },
-        // /portal/register intentionally absent — the portal has no email-
-        // only signup UI yet (the public CTA "立即开始 →" routes to /login,
-        // which exposes Google + GitHub OAuth as the de-facto signup path).
-        // Once W7 D4 ships a proper /portal/register page, re-add it with
-        // priority 0.7 between /models and /login.
+        {
+            // W7 D4: real signup page (no longer a 404 placeholder — see
+            // PR #28 F2-quick which routed the landing CTA to /login as a
+            // band-aid until this page existed).
+            url: `${base}/portal/register`,
+            lastModified,
+            changeFrequency: 'monthly',
+            priority: 0.7,
+        },
         {
             url: `${base}/login`,
             lastModified,

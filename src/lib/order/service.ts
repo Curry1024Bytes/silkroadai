@@ -31,16 +31,28 @@ import { getBizDayStartUTC } from '@/lib/time/biz-day';
 import { buildOrderResultUrl, createOrderStatusAccessToken } from '@/lib/order/status-access';
 import { getSystemConfig, getSystemConfigs } from '@/lib/system-config';
 import { selectInstance, getInstanceConfig, type LoadBalanceStrategy } from '@/lib/payment/load-balancer';
+import { isValidInviteCode } from '@/lib/invite/code';
 
 const DEFAULT_MAX_PENDING_ORDERS = 3;
 /** Decimal(10,2) 允许的最大金额 */
 export const MAX_AMOUNT = 99999999.99;
 /**
- * 首充 bonus 比率(W6 D1)。20% 主 quota,一次性,仅 user 第一次充值发。
+ * 首充 bonus 比率(W6 D1)。默认 20% 主 quota,一次性,仅 user 第一次充值发。
  * 改这个数对存量已充用户无影响 — 已 flip 的 first_recharge_bonus_granted=true
  * 永远不会重新走 bonus 路径。
  */
 export const FIRST_RECHARGE_BONUS_RATE = 0.2;
+
+/**
+ * W7 D4: 邀请码 perk。注册时填入有效邀请码的 user 首充时获得 30% 而非 20% bonus。
+ * 与 FIRST_RECHARGE_BONUS_RATE 解耦,不互斥(选择高的)。改这个数同样仅
+ * 影响后续未发 bonus 的 user。
+ *
+ * 重要:bonus 发放时点 re-validate user.invite_code 是否仍在 INVITE_CODES env
+ * 列表里。这给操作员一条「软撤销」路径 — 把码从 env 移除即可让该码持有者
+ * 退回默认 20%,无需任何 DB migration。
+ */
+export const FIRST_RECHARGE_BONUS_RATE_INVITED = 0.3;
 
 function message(locale: Locale, zh: string, en: string): string {
   return pickLocaleText(locale, zh, en);
@@ -1078,6 +1090,11 @@ export async function executeRecharge(orderId: string): Promise<void> {
         id: true,
         newapi_user_id: true,
         first_recharge_bonus_granted: true,
+        // W7 D4: read invite_code so we can pick the right bonus rate
+        // (30% if currently-valid, 20% default). Re-validation against
+        // INVITE_CODES env happens inside the bonus tx so an operator
+        // can soft-revoke a code via env edit.
+        invite_code: true,
       },
     });
     if (!portalUser) {
@@ -1090,6 +1107,11 @@ export async function executeRecharge(orderId: string): Promise<void> {
     }
     const newapiUserId = portalUser.newapi_user_id;
     const peekBonusEligible = portalUser.first_recharge_bonus_granted === false;
+    // W7 D4: bonus-rate selection. Read once at peek time and pass into
+    // the tx so the rate doesn't shift mid-transaction if env is reloaded.
+    const bonusRate = isValidInviteCode(portalUser.invite_code)
+      ? FIRST_RECHARGE_BONUS_RATE_INVITED
+      : FIRST_RECHARGE_BONUS_RATE;
 
     // 读 balance_before(quota,raw 单位)。new-api 的 quota 字段就是预算总额,
     // applyTopup 是增量。失败可容忍 — 用 0 占位,审计准确性次于入账成功率。
@@ -1140,7 +1162,7 @@ export async function executeRecharge(orderId: string): Promise<void> {
             data: { first_recharge_bonus_granted: true },
           });
           if (claim.count === 1) {
-            bonusQuota = Math.floor(mainQuota * FIRST_RECHARGE_BONUS_RATE);
+            bonusQuota = Math.floor(mainQuota * bonusRate);
           }
           // count===0 防御性:peek 与 claim 之间另一条并发 order 已抢到 bonus,
           // 本次只入主 quota,不复发 bonus(数据自愈,不抛错)。
