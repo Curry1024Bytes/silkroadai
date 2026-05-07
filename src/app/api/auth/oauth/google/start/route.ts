@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { brandCookieDomain } from '@/lib/auth/session';
 import {
     buildGoogleAuthorizeUrl,
     generatePkceVerifier,
@@ -50,6 +51,13 @@ export async function GET() {
         sameSite: 'lax' as const,
         path: '/',
         maxAge: COOKIE_MAX_AGE_SECONDS,
+        // W7 D3 amend: scope to BRAND_COOKIE_DOMAIN (".silkroadai.io" in
+        // prod) so the apex-issued state/pkce cookies survive the round-
+        // trip through Google → callback at the same eTLD+1 even when the
+        // callback URI host briefly differs from the start URI host
+        // (transient portal subdomain still serves the same app until
+        // Caddy 301 fully drains).
+        domain: brandCookieDomain(),
     };
     res.cookies.set({ name: STATE_COOKIE, value: state, ...cookieOpts });
     res.cookies.set({ name: PKCE_COOKIE, value: codeVerifier, ...cookieOpts });

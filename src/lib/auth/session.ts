@@ -7,6 +7,32 @@ import { signSession as signSessionRaw, verifySession } from './jwt';
 export const SESSION_COOKIE_NAME = 'silkroad_session';
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7;
 
+/**
+ * Domain attribute applied to session + OAuth-state cookies so apex and
+ * subdomain hosts share them.
+ *
+ * Why: prior to W7 D3 the portal lived only at portal.silkroadai.io and
+ * cookies were host-scoped. After the W7 D3 apex landing came online,
+ * OAuth start fires from silkroadai.io but the registered Google/GitHub
+ * callback URI was still on the subdomain — the apex-scoped state cookie
+ * was invisible at the subdomain callback → state_mismatch (see Caddyfile
+ * + .env updates landing alongside this code change).
+ *
+ * Set `BRAND_COOKIE_DOMAIN=.silkroadai.io` on prod to scope cookies to
+ * the eTLD+1, making both apex and (transient) subdomain happy. Leave
+ * empty/unset in local dev — browsers refuse Domain attributes on
+ * localhost. Empty string also opts out (host-scoped fallback).
+ *
+ * Exported so the OAuth start/callback handlers stay in sync with session
+ * cookies — the same setting controls both. If they disagree the browser
+ * stores both versions and `req.cookies.get(name)` returns whichever one
+ * the parser picks first (Next does not disambiguate by Domain).
+ */
+export function brandCookieDomain(): string | undefined {
+    const v = process.env.BRAND_COOKIE_DOMAIN;
+    return v && v.length > 0 ? v : undefined;
+}
+
 export class UnauthorizedError extends Error {
     constructor(message = 'Unauthorized') {
         super(message);
@@ -95,10 +121,14 @@ export function setSessionCookie(res: NextResponse, token: string): void {
         sameSite: 'lax',
         path: '/',
         maxAge: SESSION_MAX_AGE_SECONDS,
+        domain: brandCookieDomain(),
     });
 }
 
 export function clearSessionCookie(res: NextResponse): void {
+    // Domain MUST match what setSessionCookie wrote — otherwise the browser
+    // treats the clear as setting a different cookie and the original is
+    // left untouched.
     res.cookies.set({
         name: SESSION_COOKIE_NAME,
         value: '',
@@ -107,5 +137,6 @@ export function clearSessionCookie(res: NextResponse): void {
         sameSite: 'lax',
         path: '/',
         maxAge: 0,
+        domain: brandCookieDomain(),
     });
 }

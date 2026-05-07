@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { brandCookieDomain } from '@/lib/auth/session';
 import { buildGitHubAuthorizeUrl, generateState } from '@/lib/auth/oauth/github';
 
 // Uses Node crypto (randomBytes) — pin runtime so Next doesn't try to put
@@ -34,6 +35,9 @@ export async function GET() {
         sameSite: 'lax',
         path: '/',
         maxAge: COOKIE_MAX_AGE_SECONDS,
+        // W7 D3 amend: scope to BRAND_COOKIE_DOMAIN so apex/subdomain see
+        // the same state cookie while OAuth collapses to apex-only.
+        domain: brandCookieDomain(),
     });
     return res;
 }

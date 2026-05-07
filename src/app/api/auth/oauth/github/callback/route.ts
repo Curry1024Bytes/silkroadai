@@ -8,7 +8,7 @@ import {
     GitHubOAuthError,
 } from '@/lib/auth/oauth/github';
 import { linkOrCreateOAuthUser } from '@/lib/auth/oauth/account-link';
-import { signSession, setSessionCookie } from '@/lib/auth/session';
+import { signSession, setSessionCookie, brandCookieDomain } from '@/lib/auth/session';
 import { extractClientIP } from '@/lib/auth/extract-ip';
 
 // Uses prisma + Node fetch — pin runtime so Next doesn't try to put this on
@@ -52,6 +52,10 @@ function buildResponse(reqUrl: string, opts: { error?: string } = {}): NextRespo
 }
 
 function clearOAuthCookies(res: NextResponse): void {
+    // Domain MUST match the start handler's setter; otherwise the browser
+    // treats this as setting a different cookie and the original lingers
+    // (CLAUDE.md gotcha #17 — single-use OAuth cookies leaking across
+    // failure paths).
     res.cookies.set({
         name: STATE_COOKIE,
         value: '',
@@ -60,6 +64,7 @@ function clearOAuthCookies(res: NextResponse): void {
         sameSite: 'lax',
         path: '/',
         maxAge: 0,
+        domain: brandCookieDomain(),
     });
 }
 
