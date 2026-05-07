@@ -128,9 +128,31 @@ const SUB2API_OPENAI_WHITELIST: Record<string, { retailIn: number; retailOut: nu
  * Mirror of _bootstrap/build-pricing-audit.py SF_WHOLESALE table.
  * Models NOT in this table are subject to the "delete-or-followup"
  * decision based on whether they had any traffic in the last 30 days.
+ *
+ * W7 D4 PR-K — operator-supplied refresh for the 5/8 launch flagship
+ * trio (3 entries, all SF Pro tier; only Pro/ shipped on SF for the
+ * 2 new SKUs):
+ *   - DeepSeek-V4-Flash:    wholesale revised ¥0.14/¥0.28 → ¥1.00/¥2.00
+ *     (W7 D2 was off by ~7×; the value shipped at mr=0.024/cr=2 was
+ *     under-charging by the same factor. Real customer count = 0,
+ *     internal = 4, so no compensation needed.)
+ *   - Pro/zai-org/GLM-5.1:  NEW. SF lists tiered pricing; took the
+ *     conservative 32k+ tier (in ¥8 / out ¥28) so the long-context
+ *     hit doesn't surprise us at customer first-call time.
+ *   - Pro/moonshotai/Kimi-K2.6: NEW. SF wholesale ¥6.50 in / ¥27 out
+ *     per 1M (vision + 256K).
+ *
+ * Retail price math (landing teaser cross-reference):
+ *   retail = mr × 7 = (wholesale/5.83) × 7 ≈ wholesale × 1.20
+ *   So a wholesale ¥1.00 row shows as retail ¥1.20 on the landing
+ *   pricing teaser (PRICING_ROWS in src/app/page.tsx). The teaser
+ *   intentionally never displays wholesale — that would be promising
+ *   to sell at cost.
  */
 const SF_WHOLESALE_CNY: Record<string, { in_cny_per_1m: number; out_cny_per_1m: number; note?: string }> = {
-    'deepseek-ai/DeepSeek-V4-Flash':           { in_cny_per_1m: 0.14, out_cny_per_1m: 0.28 },
+    'deepseek-ai/DeepSeek-V4-Flash':           { in_cny_per_1m: 1.00, out_cny_per_1m: 2.00, note: 'PR-K refresh: W7 D2 was 7× low' },
+    'Pro/zai-org/GLM-5.1':                     { in_cny_per_1m: 8.00, out_cny_per_1m: 28.00, note: 'PR-K NEW: SF 32k+ tier (conservative)' },
+    'Pro/moonshotai/Kimi-K2.6':                { in_cny_per_1m: 6.50, out_cny_per_1m: 27.00, note: 'PR-K NEW: SF vision/256K tier' },
     'Pro/deepseek-ai/DeepSeek-V3.2':           { in_cny_per_1m: 0.27, out_cny_per_1m: 0.42 },
     'deepseek-ai/DeepSeek-V3.2':               { in_cny_per_1m: 0.27, out_cny_per_1m: 0.42 },
     'Pro/deepseek-ai/DeepSeek-V3.1-Terminus':  { in_cny_per_1m: 0.27, out_cny_per_1m: 1.0 },

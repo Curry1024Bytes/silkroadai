@@ -421,7 +421,10 @@ function WhyUs() {
                     badge="③"
                     title="定价透明 · 人民币付费"
                     body={[
-                        '海外模型按上游官方原价 · 国内模型上游源价 +20%',
+                        <>
+                            海外模型 = 上游官方原生满血 API · 直连
+                            <strong> ChatGPT / Claude / Gemini</strong>
+                        </>,
                         '1 美金 = 100 万积分 · 固定汇率 ¥7',
                         <>
                             <strong>余额永不失效,可申请退款</strong>。
@@ -661,19 +664,28 @@ const PRICING_ROWS: PricingRow[] = [
         retailOut: '$30',
         promoOut: '$15',
     },
+    // W7 D4 PR-K: SF flagship trio refresh. Retail ¥ shown = wholesale × 1.20
+    // (= mr × 7 since mr = wholesale / 5.83). Wholesale itself never appears
+    // on the landing — surfacing it would imply we sell at cost. Numbers
+    // sourced from operator-supplied SF screenshots; mirror table in
+    // _bootstrap/apply-w7-pricing.ts:SF_WHOLESALE_CNY.
     {
-        model: 'DeepSeek-V3.2',
-        type: '国产高性价比',
-        cnyIn: '~¥4.8/1M',
-        cnyOut: '~¥4.8/1M',
+        model: 'DeepSeek V4-Flash',
+        type: '长上下文 1024K',
+        cnyIn: '¥1.20/1M',
+        cnyOut: '¥2.40/1M',
     },
-    { model: 'Qwen3-235B', type: '阿里通义', cnyIn: '~¥4.2/1M', cnyOut: '~¥4.2/1M' },
-    { model: 'GLM-4.6', type: '智谱', cnyIn: '~¥6/1M', cnyOut: '~¥6/1M' },
     {
-        model: 'Kimi-K2',
-        type: '月之暗面 · 长上下文',
-        cnyIn: '~¥2.4/1M',
-        cnyOut: '~¥2.4/1M',
+        model: 'GLM-5.1 (Pro)',
+        type: '旗舰 / 编程 / 200K',
+        cnyIn: '¥9.60/1M',
+        cnyOut: '¥33.60/1M',
+    },
+    {
+        model: 'Kimi K2.6 (Pro)',
+        type: '视觉 / 256K',
+        cnyIn: '¥7.80/1M',
+        cnyOut: '¥32.40/1M',
     },
 ];
 

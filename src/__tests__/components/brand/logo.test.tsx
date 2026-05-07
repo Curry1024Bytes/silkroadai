@@ -30,11 +30,13 @@ describe('<Logo /> SSR (brand assets PR)', () => {
         expect(html).toMatch(/<a[^>]*href="\/"/);
         // Accessible label on the link
         expect(html).toMatch(/aria-label="Silk Road AI"/);
-        // <img> with alt + measured dims; full-logo aspect is 4:1, so
-        // width = 4 × height = 96 at size=24.
+        // <img> with alt + measured dims. W7 D4 PR-K: viewBox cropped from
+        // 96x24 to 88x24 to drop the trailing whitespace after "AI", so
+        // wordmark aspect is now 88/24 ≈ 3.667 (was 4:1). At size=24:
+        // width = round(24 × 88 / 24) = 88.
         expect(html).toMatch(/<img[^>]*alt="Silk Road AI"/);
         expect(html).toMatch(/height="24"/);
-        expect(html).toMatch(/width="96"/);
+        expect(html).toMatch(/width="88"/);
     });
 
     it('linkHome={false} strips the wrapping anchor', () => {
@@ -45,9 +47,10 @@ describe('<Logo /> SSR (brand assets PR)', () => {
 
     it('size prop scales height + width by intrinsic aspect', () => {
         const html = renderToString(<Logo size={28} linkHome={false} />);
-        // 4:1 horizontal logo at height=28 → width=112
+        // 88/24 horizontal logo at height=28 → width = round(28 × 88 / 24) = 103
+        // (post-PR-K viewBox crop; was 112 with the old 96-wide viewBox).
         expect(html).toMatch(/height="28"/);
-        expect(html).toMatch(/width="112"/);
+        expect(html).toMatch(/width="103"/);
     });
 
     it('mark variant has 1:1 aspect (square)', () => {

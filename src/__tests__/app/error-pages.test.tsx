@@ -54,11 +54,12 @@ describe('<NotFound /> SSR (W7 D4)', () => {
 
     it('renders the brand <Logo /> (primary-flat for light bg)', () => {
         const html = renderToString(<NotFound />);
-        // PR #23's <Logo /> renders <img alt="Silk Road AI">; size=32 →
-        // width=128 (4:1 aspect for full-logo variants).
+        // PR #23's <Logo /> renders <img alt="Silk Road AI">. W7 D4 PR-K
+        // cropped the wordmark viewBox 96→88, so aspect is now 88/24
+        // (≈3.667). At size=32 → width = round(32 × 88 / 24) = 117.
         expect(html).toMatch(/<img[^>]*alt="Silk Road AI"/);
         expect(html).toMatch(/height="32"/);
-        expect(html).toMatch(/width="128"/);
+        expect(html).toMatch(/width="117"/);
     });
 
     it('tone is neutral — no jokes, no apologies, no pet metaphors', () => {

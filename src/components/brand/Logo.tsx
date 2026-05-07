@@ -85,12 +85,21 @@ interface VariantConfig {
     alt: string;
 }
 
+// W7 D4 PR-K: wordmark viewBoxes cropped from 96x24 → 88x24. The right
+// edge of the original viewBox was 9 units past the trailing "AI" glyph,
+// which at 28px (hero) baked in ~10px of unused width — visually the
+// logo looked left-shifted within its bounding box. Cropping the
+// viewBox tightens it to the actual content extents (~87 units), so
+// `alignItems: 'center'` in the surrounding flex containers now centers
+// on the visible mark+wordmark instead of on padded blank space. Aspect
+// drops accordingly: 88/24 ≈ 3.667 (vs the previous 4.0). All 5
+// wordmark SVG assets were updated in lockstep.
 const VARIANTS: Record<LogoVariant, VariantConfig> = {
-    primary: { src: assetUrl(logoPrimaryAsset), aspect: 96 / 24, alt: 'Silk Road AI' },
-    'primary-flat': { src: assetUrl(logoPrimaryFlatAsset), aspect: 96 / 24, alt: 'Silk Road AI' },
-    inverse: { src: assetUrl(logoInverseAsset), aspect: 96 / 24, alt: 'Silk Road AI' },
-    'mono-dark': { src: assetUrl(logoMonoDarkAsset), aspect: 96 / 24, alt: 'Silk Road AI' },
-    'mono-light': { src: assetUrl(logoMonoLightAsset), aspect: 96 / 24, alt: 'Silk Road AI' },
+    primary: { src: assetUrl(logoPrimaryAsset), aspect: 88 / 24, alt: 'Silk Road AI' },
+    'primary-flat': { src: assetUrl(logoPrimaryFlatAsset), aspect: 88 / 24, alt: 'Silk Road AI' },
+    inverse: { src: assetUrl(logoInverseAsset), aspect: 88 / 24, alt: 'Silk Road AI' },
+    'mono-dark': { src: assetUrl(logoMonoDarkAsset), aspect: 88 / 24, alt: 'Silk Road AI' },
+    'mono-light': { src: assetUrl(logoMonoLightAsset), aspect: 88 / 24, alt: 'Silk Road AI' },
     mark: { src: assetUrl(markOnlyAsset), aspect: 1, alt: 'Silk Road AI' },
 };
 
