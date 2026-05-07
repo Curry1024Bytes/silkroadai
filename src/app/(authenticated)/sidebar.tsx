@@ -24,6 +24,9 @@ const NAV: NavItem[] = [
     { href: '/balance', label: '余额' },
     { href: '/usage', label: '用量' },
     { href: '/models', label: '模型清单' },
+    // W7 D4 PR-G: public integration docs (Cursor / Cline / Continue /
+    // Claude Code Desktop / Python + Node SDK).
+    { href: '/docs', label: '文档' },
 ];
 
 export function Sidebar() {

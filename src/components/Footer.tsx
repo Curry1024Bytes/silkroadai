@@ -45,6 +45,12 @@ export function Footer() {
                     模型清单
                 </Link>
                 <Link
+                    href="/docs"
+                    className="text-muted-ink hover:text-navy no-underline transition-colors duration-150 ease-brand"
+                >
+                    文档
+                </Link>
+                <Link
                     href="/terms"
                     className="text-muted-ink hover:text-navy no-underline transition-colors duration-150 ease-brand"
                 >

@@ -91,7 +91,7 @@ describe('sitemap.ts — host source precedence', () => {
 });
 
 describe('sitemap.ts — public-route inclusion', () => {
-    it('includes the public routes (W7 D4: /portal/register is now real)', async () => {
+    it('includes the public routes (W7 D4: /portal/register + /docs)', async () => {
         process.env.APP_URL = 'https://silkroadai.io';
         const sitemap = await loadSitemap();
         const urls = sitemap().map((e) => e.url);
@@ -107,6 +107,9 @@ describe('sitemap.ts — public-route inclusion', () => {
         // W7 D4: /portal/register added now that the real signup page
         // ships. PR #28 had this excluded as the page didn't exist yet.
         expect(urls).toContain('https://silkroadai.io/portal/register');
+
+        // W7 D4 PR-G: public integration docs page.
+        expect(urls).toContain('https://silkroadai.io/docs');
     });
 
     it('declares / (apex) at priority 1.0 — the canonical landing surface', async () => {

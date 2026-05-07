@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 // IMPORTANT: import pure quota helpers from the side-effect-free module.
 // `@/lib/newapi/client` carries `import 'server-only'` + a runtime
 // admin-env check that crashes the browser bundle (W6 D4 → W6 D5 prod
@@ -12,6 +12,7 @@ import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { FormError } from '@/components/ui/FormError';
 import { Input } from '@/components/ui/Input';
+import { KeyHowtoPanel } from './key-howto-panel';
 
 export interface KeyRow {
     id: string;
@@ -88,6 +89,20 @@ export function KeysList({ initialRows }: { initialRows: KeyRow[] }) {
         submitting: false,
         error: null,
     });
+    // W7 D4 PR-G — "如何使用此 Key" panel expansion. Default collapsed
+    // for every existing key; auto-expanded once for a freshly-created
+    // key so the customer sees the integration snippet immediately
+    // without an extra click. Manual collapse persists for the session.
+    const [openHowto, setOpenHowto] = useState<Set<string>>(new Set());
+
+    function toggleHowto(id: string) {
+        setOpenHowto((prev) => {
+            const next = new Set(prev);
+            if (next.has(id)) next.delete(id);
+            else next.add(id);
+            return next;
+        });
+    }
 
     const atLimit = rows.length >= MAX_TOKENS_PER_USER;
     const isOnlyKey = rows.length === 1;
@@ -237,6 +252,17 @@ export function KeysList({ initialRows }: { initialRows: KeyRow[] }) {
             // Auto-reveal the brand-new key so the customer can copy it
             // immediately. The auto-hide timer above re-masks after 10s.
             setReveal((prev) => ({ ...prev, [data.id]: data.key }));
+            // W7 D4 PR-G: also auto-expand the "如何使用此 Key" panel for
+            // the freshly-created key so the customer sees the curl /
+            // Python / Node integration snippets without an extra click.
+            // The panel stays open until the user manually toggles it
+            // (we don't auto-collapse to mirror reveal's auto-hide —
+            // collapsed state is a UX preference, not a security one).
+            setOpenHowto((prev) => {
+                const next = new Set(prev);
+                next.add(data.id);
+                return next;
+            });
             setCreate({ open: false, alias: '', submitting: false, error: null });
         } catch (err) {
             setCreate((prev) => ({
@@ -356,9 +382,15 @@ export function KeysList({ initialRows }: { initialRows: KeyRow[] }) {
                                 const showCopied = copied[row.id];
                                 const busy = busyId === row.id;
                                 const isLast = idx === rows.length - 1;
-                                const cell = `px-4 py-3 text-sm text-ink ${isLast ? '' : 'border-b border-brand-border'}`;
+                                // W7 D4 PR-G: every row is a pair — main
+                                // tr + howto-panel tr. The main row has
+                                // NO bottom border (the panel-wrap row
+                                // owns the separator) so the pair reads
+                                // as a single visual unit.
+                                const cell = `px-4 py-3 text-sm text-ink`;
                                 return (
-                                    <tr key={row.id}>
+                                    <Fragment key={row.id}>
+                                    <tr>
                                         <td className={cell}>{row.key_alias}</td>
                                         <td className={cell}>
                                             <div
@@ -420,6 +452,26 @@ export function KeysList({ initialRows }: { initialRows: KeyRow[] }) {
                                             </span>
                                         </td>
                                     </tr>
+                                    {/* W7 D4 PR-G: per-key "如何使用此 Key"
+                                     *  panel. Sits directly under the main
+                                     *  row so the pair reads as a single
+                                     *  visual unit. The panel-wrap td owns
+                                     *  the separator between rows. */}
+                                    <tr>
+                                        <td
+                                            colSpan={4}
+                                            className={
+                                                isLast ? '' : 'border-b border-brand-border'
+                                            }
+                                        >
+                                            <KeyHowtoPanel
+                                                revealedKey={reveal[row.id] ?? null}
+                                                open={openHowto.has(row.id)}
+                                                onToggle={() => toggleHowto(row.id)}
+                                            />
+                                        </td>
+                                    </tr>
+                                    </Fragment>
                                 );
                             })}
                         </tbody>

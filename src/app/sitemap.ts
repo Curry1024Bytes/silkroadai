@@ -42,6 +42,15 @@ export default function sitemap(): MetadataRoute.Sitemap {
             priority: 0.8,
         },
         {
+            // W7 D4 PR-G: public integration docs — agent-by-agent
+            // quickstart for Cursor / Cline / Continue / Claude Code
+            // Desktop / Python SDK / Node SDK.
+            url: `${base}/docs`,
+            lastModified,
+            changeFrequency: 'weekly',
+            priority: 0.8,
+        },
+        {
             // W7 D4: real signup page (no longer a 404 placeholder — see
             // PR #28 F2-quick which routed the landing CTA to /login as a
             // band-aid until this page existed).
