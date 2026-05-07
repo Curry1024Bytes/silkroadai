@@ -1,75 +1,83 @@
 /**
- * Global footer (W5 D5).
+ * Global footer.
  *
- * Renders at the bottom of every page via the root layout. Inline-styled
- * to match /login + /pay color baseline (#0a1535 primary, #5a6478
- * secondary). Slim — ~60-80px tall — so it never competes with primary
- * page content.
+ * Renders at the bottom of every page via the root layout. Uses the W7
+ * design system (paper-muted surface, brand-border top separator,
+ * tokens-only colors). Slim — fits on one row at desktop, wraps on mobile.
  *
  * Server component: pure markup, no interactivity. Picks up the current
  * year at render time.
+ *
+ * Asset note: brief (W7 P3) reads "footer paper.muted 底色 · 反白 logo".
+ * paper-muted is a light warm-amber (#F3EDE1); the asset library's
+ * "inverse" variant is white-on-dark and would render invisibly on it.
+ * `primary-flat` is the asset cheat-sheet's recommended pick for light
+ * backgrounds < 48px tall — keeping the brand gradient + ensuring the
+ * wordmark is actually visible. If the operator wants a literal navy
+ * footer with inverse logo, this is one prop swap (paper-muted →
+ * navy-strong + primary-flat → inverse).
  */
 import Link from 'next/link';
 import { Logo } from '@/components/brand/Logo';
-
-const linkStyle: React.CSSProperties = {
-    color: '#5a6478',
-    textDecoration: 'none',
-    fontSize: 12,
-};
 
 export function Footer() {
     const year = new Date().getFullYear();
     return (
         <footer
-            style={{
-                background: '#fff',
-                borderTop: '1px solid #e5e8ee',
-                padding: '14px 24px',
-                fontSize: 12,
-                color: '#5a6478',
-                display: 'flex',
-                flexDirection: 'row',
-                flexWrap: 'wrap',
-                gap: 16,
-                justifyContent: 'space-between',
-                alignItems: 'center',
-            }}
+            className={[
+                'bg-paper-muted border-t border-brand-border',
+                'px-6 py-4 text-xs text-muted-ink',
+                'flex flex-row flex-wrap items-center justify-between gap-4',
+            ].join(' ')}
         >
-            <nav style={{ display: 'flex', gap: 16 }}>
-                <Link href="/models" style={linkStyle}>
+            <div className="flex items-center gap-3">
+                <Logo variant="primary-flat" size={24} />
+                <span className="hidden sm:inline text-minor-ink">
+                    Connecting Global Intelligence.
+                </span>
+            </div>
+
+            <nav className="flex items-center gap-4 flex-wrap" aria-label="页脚导航">
+                <Link
+                    href="/models"
+                    className="text-muted-ink hover:text-navy no-underline transition-colors duration-150 ease-brand"
+                >
                     模型清单
                 </Link>
-                <Link href="/terms" style={linkStyle}>
+                <Link
+                    href="/terms"
+                    className="text-muted-ink hover:text-navy no-underline transition-colors duration-150 ease-brand"
+                >
                     服务条款
                 </Link>
-                <Link href="/privacy" style={linkStyle}>
+                <Link
+                    href="/privacy"
+                    className="text-muted-ink hover:text-navy no-underline transition-colors duration-150 ease-brand"
+                >
                     隐私政策
                 </Link>
-                <Link href="/refund" style={linkStyle}>
+                <Link
+                    href="/refund"
+                    className="text-muted-ink hover:text-navy no-underline transition-colors duration-150 ease-brand"
+                >
                     退款政策
                 </Link>
             </nav>
-            <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+
+            <div className="flex items-center gap-4 flex-wrap">
                 <span>
-                    客服:微信 <code style={{ fontSize: 12 }}>Global_Ads</code>
+                    客服:微信{' '}
+                    <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                        Global_Ads
+                    </code>
                 </span>
-                <span>
-                    <a
-                        href="mailto:support@silkroadai.io"
-                        style={{ ...linkStyle, color: '#0a1535' }}
-                    >
-                        support@silkroadai.io
-                    </a>
-                </span>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                {/* Footer is on a white background → primary-flat (avoids
-                 *  gradient aliasing at this small render size). Brief:
-                 *  footer size=20. linkHome=true (the default) so the
-                 *  logo doubles as a "back home" affordance. */}
-                <Logo variant="primary-flat" size={20} />
-                <span>© {year}</span>
+                <a
+                    href="mailto:support@silkroadai.io"
+                    className="text-navy no-underline border-b border-dotted border-navy hover:text-brand-accent hover:border-brand-accent transition-colors duration-150 ease-brand"
+                >
+                    support@silkroadai.io
+                </a>
+                <span className="text-minor-ink">© {year} Silk Road AI</span>
             </div>
         </footer>
     );

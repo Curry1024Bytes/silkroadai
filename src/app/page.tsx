@@ -13,16 +13,13 @@
  * go from the visible CTAs.)
  */
 import type { Metadata } from 'next';
-import { Inter } from 'next/font/google';
 import Link from 'next/link';
 import { Logo } from '@/components/brand/Logo';
 import { isPromoActive } from '@/lib/promo';
 
-const inter = Inter({
-    subsets: ['latin'],
-    display: 'swap',
-    weight: ['400', '500', '600', '700'],
-});
+// Inter is loaded globally via `next/font/google` in `src/app/layout.tsx`
+// (W7 P3) so the @theme `--font-sans` token resolves on every page. We
+// no longer need a landing-local import.
 
 export const metadata: Metadata = {
     title: 'Silk Road AI · 一个 Key,接入 200+ AI 模型 | ChatGPT、Claude、Gemini 国内中转',
@@ -60,7 +57,6 @@ export default async function LandingPage({
 
     return (
         <main
-            className={inter.className}
             style={{
                 background: 'var(--color-paper)',
                 color: 'var(--color-ink)',

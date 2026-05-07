@@ -47,7 +47,7 @@ export function VerifyEmailRunner({ token }: { token: string }) {
     if (status.phase === 'success') {
         return (
             <div>
-                <p style={{ color: '#1a8a4a' }}>邮箱已验证 ✓</p>
+                <p style={{ color: 'var(--color-status-success-text)' }}>邮箱已验证 ✓</p>
                 <p>
                     <a href="/login" style={{ color: '#0a1535' }}>
                         前往登录
@@ -66,7 +66,7 @@ export function VerifyEmailRunner({ token }: { token: string }) {
 
     return (
         <div>
-            <p style={{ color: '#c44' }}>{msg}</p>
+            <p style={{ color: 'var(--color-status-error-text)' }}>{msg}</p>
             <p style={{ fontSize: 13, color: '#5a6478' }}>
                 登录后可在客户后台重新发送验证邮件。
             </p>

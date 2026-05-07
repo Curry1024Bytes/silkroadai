@@ -58,7 +58,7 @@ export function ResetPasswordForm({ token }: { token: string }) {
     if (result?.ok) {
         return (
             <div>
-                <p style={{ color: '#1a8a4a' }}>{result.msg}</p>
+                <p style={{ color: 'var(--color-status-success-text)' }}>{result.msg}</p>
                 <p>
                     <a href="/login" style={{ color: '#0a1535' }}>
                         前往登录
@@ -109,7 +109,7 @@ export function ResetPasswordForm({ token }: { token: string }) {
                 />
             </label>
             {result && !result.ok && (
-                <p style={{ color: '#c44', fontSize: 13, marginBottom: 12 }}>{result.msg}</p>
+                <p style={{ color: 'var(--color-status-error-text)', fontSize: 13, marginBottom: 12 }}>{result.msg}</p>
             )}
             <button
                 type="submit"

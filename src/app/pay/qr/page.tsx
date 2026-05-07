@@ -72,7 +72,7 @@ export default async function PayQrPage({
         return (
             <main style={containerStyle}>
                 <div style={cardStyle}>
-                    <h1 style={{ margin: 0, fontSize: 18, color: '#c44' }}>订单不存在</h1>
+                    <h1 style={{ margin: 0, fontSize: 18, color: 'var(--color-status-error-text)' }}>订单不存在</h1>
                     <p style={{ margin: '12px 0 16px', fontSize: 13, color: '#5a6478' }}>
                         请返回重新发起支付。
                     </p>
@@ -91,7 +91,7 @@ export default async function PayQrPage({
         return (
             <main style={containerStyle}>
                 <div style={cardStyle}>
-                    <h1 style={{ margin: 0, fontSize: 18, color: '#c44' }}>支付方式不匹配</h1>
+                    <h1 style={{ margin: 0, fontSize: 18, color: 'var(--color-status-error-text)' }}>支付方式不匹配</h1>
                     <p style={{ margin: '12px 0 16px', fontSize: 13, color: '#5a6478' }}>
                         当前订单不是扫码支付。
                     </p>

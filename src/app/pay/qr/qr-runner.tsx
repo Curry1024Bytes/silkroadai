@@ -37,14 +37,19 @@ interface PollResponse {
     failedReason: string | null;
 }
 
+// W7 P3: status colors swapped from inline hex to design-system tokens.
+// Same intent as before — neutral / processing → muted-ink/navy, terminal
+// success → status-success, terminal failure → status-error, transient
+// error → status-warning. Token resolution happens via CSS var so the
+// label still gets a pure hex color value applied inline.
 const PHASE_TEXT: Record<DisplayPhase, { label: string; color: string }> = {
-    waiting: { label: '等待付款…', color: '#5a6478' },
-    paid: { label: '付款已收到,正在到账…', color: '#0a1535' },
-    recharging: { label: '正在到账…', color: '#0a1535' },
-    success: { label: '充值成功,正在跳转余额页…', color: '#1f7a3a' },
-    failed: { label: '订单失败,正在跳转结果页…', color: '#c44' },
-    timeout: { label: '等待超时,正在跳转结果页…', color: '#c44' },
-    error: { label: '状态查询失败,稍后重试…', color: '#a86200' },
+    waiting: { label: '等待付款…', color: 'var(--color-muted-ink)' },
+    paid: { label: '付款已收到,正在到账…', color: 'var(--color-navy)' },
+    recharging: { label: '正在到账…', color: 'var(--color-navy)' },
+    success: { label: '充值成功,正在跳转余额页…', color: 'var(--color-status-success-text)' },
+    failed: { label: '订单失败,正在跳转结果页…', color: 'var(--color-status-error-text)' },
+    timeout: { label: '等待超时,正在跳转结果页…', color: 'var(--color-status-error-text)' },
+    error: { label: '状态查询失败,稍后重试…', color: 'var(--color-status-warning-text)' },
 };
 
 export function QrPollRunner({

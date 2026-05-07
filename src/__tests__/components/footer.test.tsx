@@ -47,8 +47,19 @@ describe('<Footer />', () => {
         expect(linkOpen![0]).toContain('href="/"');
     });
 
-    it('uses the secondary text color (#5a6478) for the body / nav links', () => {
+    it('uses design-system warm tokens (paper-muted surface + muted-ink links)', () => {
         const html = renderToString(<Footer />);
-        expect(html).toContain('#5a6478');
+        // W7 P3 swapped inline #5a6478 / #fff for design-system tokens.
+        // Paper-muted surface + brand-border top separator + muted-ink
+        // text gives the footer the same warm-white feel as the rest of
+        // the W7 portal/landing chrome.
+        expect(html).toContain('bg-paper-muted');
+        expect(html).toContain('border-brand-border');
+        expect(html).toContain('text-muted-ink');
+    });
+
+    it('renders the page-nav link to /models for SEO + customer reference', () => {
+        const html = renderToString(<Footer />);
+        expect(html).toMatch(/<a[^>]*href="\/models"[^>]*>模型清单<\/a>/);
     });
 });

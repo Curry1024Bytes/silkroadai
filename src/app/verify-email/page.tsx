@@ -52,7 +52,7 @@ async function VerifyEmailRunnerWrapper({
 }) {
     const { token } = await searchParamsPromise;
     if (!token) {
-        return <p style={{ color: '#c44' }}>缺少 token 参数,请从邮件链接打开。</p>;
+        return <p style={{ color: 'var(--color-status-error-text)' }}>缺少 token 参数,请从邮件链接打开。</p>;
     }
     return <VerifyEmailRunner token={token} />;
 }

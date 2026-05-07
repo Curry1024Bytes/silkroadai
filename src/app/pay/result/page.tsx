@@ -84,7 +84,7 @@ export default async function PayResultPage({
         return (
             <main style={containerStyle}>
                 <div style={cardStyle}>
-                    <h1 style={{ margin: 0, fontSize: 18, color: '#c44' }}>订单异常</h1>
+                    <h1 style={{ margin: 0, fontSize: 18, color: 'var(--color-status-error-text)' }}>订单异常</h1>
                     <p style={{ margin: '12px 0 0', fontSize: 13, color: '#5a6478' }}>
                         未找到该订单。如已付款请联系客服:微信 Globe_Ads。
                     </p>
@@ -104,7 +104,11 @@ export default async function PayResultPage({
                     style={{
                         margin: 0,
                         fontSize: 18,
-                        color: success ? '#1a8a4a' : processing ? '#0a1535' : '#c44',
+                        color: success
+                            ? 'var(--color-status-success-text)'
+                            : processing
+                              ? 'var(--color-navy)'
+                              : 'var(--color-status-error-text)',
                     }}
                 >
                     {success ? '付款成功' : processing ? '付款已收到,处理中' : '订单异常'}
