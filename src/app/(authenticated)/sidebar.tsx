@@ -27,6 +27,8 @@ const NAV: NavItem[] = [
     // W7 D4 PR-G: public integration docs (Cursor / Cline / Continue /
     // Claude Code Desktop / Python + Node SDK).
     { href: '/docs', label: '文档' },
+    // W7 PR-P: GPU rental landing — H100 / H200 / B300.
+    { href: '/gpu', label: 'GPU 租赁' },
 ];
 
 export function Sidebar() {

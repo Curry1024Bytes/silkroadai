@@ -952,6 +952,29 @@ function Trust() {
                     </a>
                 </p>
                 <p style={{ margin: 0 }}>
+                    <strong style={{ color: 'var(--color-navy)' }}>更多</strong>:
+                    <Link
+                        href="/gpu"
+                        style={{ color: 'var(--color-navy)', textDecoration: 'none' }}
+                    >
+                        GPU 租赁
+                    </Link>{' '}
+                    ·{' '}
+                    <Link
+                        href="/docs"
+                        style={{ color: 'var(--color-navy)', textDecoration: 'none' }}
+                    >
+                        集成文档
+                    </Link>{' '}
+                    ·{' '}
+                    <Link
+                        href="/models"
+                        style={{ color: 'var(--color-navy)', textDecoration: 'none' }}
+                    >
+                        模型清单
+                    </Link>
+                </p>
+                <p style={{ margin: 0 }}>
                     <strong style={{ color: 'var(--color-navy)' }}>法律</strong>:
                     <Link
                         href="/terms"
