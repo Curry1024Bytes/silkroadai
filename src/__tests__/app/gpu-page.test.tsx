@@ -12,12 +12,18 @@ import { GPU_SKUS, CONTACT, CUSTOMER_TYPES, ADVANTAGES, SERVICE_STEPS } from '@/
 import { GPU_PAGE_STRINGS, t } from '@/i18n/gpu-page';
 
 describe('/gpu page — header + chrome', () => {
-    it('renders the brand <Logo /> + navigation links to / + /pricing + /portal/register', () => {
+    it('renders the brand <Logo /> + 首页 + API 控制台 nav (W7 D4 PR-Q — no /pricing, no scattered "注册")', () => {
         const html = renderToString(<GpuPage />);
         expect(html).toMatch(/<img[^>]*alt="Silk Road AI"/);
         expect(html).toMatch(/href="\/"[^>]*>[^<]*首页/);
-        expect(html).toMatch(/href="\/pricing"/);
         expect(html).toMatch(/href="\/portal\/register"/);
+        // Single brand-accent solid CTA replaced the old trio.
+        expect(html).toContain('API 控制台');
+        // /pricing page does not exist yet — link removed to stop 404s.
+        expect(html).not.toMatch(/href="\/pricing"/);
+        expect(html).not.toContain('API 价格');
+        // Bare "注册" wording was merged into "API 控制台".
+        expect(html).not.toMatch(/>注册</);
     });
 
     it('exposes the hero title + subtitle + CTA + WeChat handle', () => {

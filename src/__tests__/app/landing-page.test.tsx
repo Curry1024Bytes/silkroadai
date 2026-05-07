@@ -142,6 +142,27 @@ describe('landing page — promo ACTIVE', () => {
         // above) — there must be no plain text wordmark.
         expect(html).not.toMatch(/<span[^>]*>Silk Road AI<\/span>/);
     });
+
+    it('renders the GPU 租赁 outline CTA in the header (W7 D4 PR-Q)', async () => {
+        const Page = await loadPage();
+        const tree = await Page({ searchParams: Promise.resolve({}) });
+        const html = renderToString(tree);
+        // PR-Q surfaces GPU rental as a brand-accent (gold) outline button
+        // in the sticky header. Operator visual feedback after PR-P shipped:
+        // footer-only entry was too buried for a high-ASP product line.
+        expect(html).toContain('GPU 租赁');
+        expect(html).toMatch(/href="\/gpu"/);
+    });
+
+    it('does NOT render the W7-PR-P "更多:" footer row (removed in W7 D4 PR-Q)', async () => {
+        const Page = await loadPage();
+        const tree = await Page({ searchParams: Promise.resolve({}) });
+        const html = renderToString(tree);
+        // PR-P inlined a "更多:GPU 租赁 · 集成文档 · 模型清单" row in the
+        // trust footer. PR-Q removed it once GPU got promoted to the header
+        // — the row read as a redundant secondary nav next to legal links.
+        expect(html).not.toMatch(/<strong[^>]*>更多<\/strong>/);
+    });
 });
 
 describe('landing page — promo INACTIVE (post-exit)', () => {

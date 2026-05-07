@@ -130,7 +130,8 @@ function Header() {
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'space-between',
-                    gap: 16,
+                    flexWrap: 'wrap',
+                    gap: 12,
                 }}
             >
                 {/* `Logo` wraps in `<Link href="/">` itself (default `linkHome={true}`).
@@ -138,7 +139,24 @@ function Header() {
                  *  on small screens; per the asset cheatsheet the flat variant is the
                  *  recommended pick below 48px. */}
                 <Logo variant="primary-flat" size={28} />
-                <nav style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <nav style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    {/* W7 D4 PR-Q — GPU 租赁 outline CTA. Brand-accent (gold)
+                     *  border to distinguish from the navy "进入控制台" CTA
+                     *  and signal a separate, higher-ASP product line. */}
+                    <Link
+                        href="/gpu"
+                        style={{
+                            color: 'var(--color-brand-accent)',
+                            textDecoration: 'none',
+                            fontSize: 14,
+                            fontWeight: 500,
+                            padding: '8px 14px',
+                            border: '1px solid var(--color-brand-accent)',
+                            borderRadius: 6,
+                        }}
+                    >
+                        GPU 租赁
+                    </Link>
                     <Link
                         href="/login"
                         style={{
@@ -950,29 +968,6 @@ function Trust() {
                     >
                         support@silkroadai.io
                     </a>
-                </p>
-                <p style={{ margin: 0 }}>
-                    <strong style={{ color: 'var(--color-navy)' }}>更多</strong>:
-                    <Link
-                        href="/gpu"
-                        style={{ color: 'var(--color-navy)', textDecoration: 'none' }}
-                    >
-                        GPU 租赁
-                    </Link>{' '}
-                    ·{' '}
-                    <Link
-                        href="/docs"
-                        style={{ color: 'var(--color-navy)', textDecoration: 'none' }}
-                    >
-                        集成文档
-                    </Link>{' '}
-                    ·{' '}
-                    <Link
-                        href="/models"
-                        style={{ color: 'var(--color-navy)', textDecoration: 'none' }}
-                    >
-                        模型清单
-                    </Link>
                 </p>
                 <p style={{ margin: 0 }}>
                     <strong style={{ color: 'var(--color-navy)' }}>法律</strong>:

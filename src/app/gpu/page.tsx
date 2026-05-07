@@ -102,31 +102,32 @@ function PageHeader() {
                 }}
             >
                 <Logo variant="primary-flat" size={28} />
-                <nav style={{ display: 'flex', gap: 16, alignItems: 'center', fontSize: 14 }}>
+                <nav style={{ display: 'flex', gap: 16, alignItems: 'center', fontSize: 14, flexWrap: 'wrap' }}>
                     <Link
                         href="/"
                         style={{ color: 'var(--color-muted-ink)', textDecoration: 'none' }}
                     >
                         首页
                     </Link>
-                    <Link
-                        href="/pricing"
-                        style={{ color: 'var(--color-muted-ink)', textDecoration: 'none' }}
-                    >
-                        API 价格
-                    </Link>
+                    {/* W7 D4 PR-Q — single primary CTA replaces the prior trio
+                     *  (首页 / API 价格 / 注册). /pricing is not yet built so
+                     *  the old "API 价格" 404'd; "注册" alone read as scattered.
+                     *  "API 控制台" is the unified entry — /portal/register
+                     *  for guests, the existing W3 redirect bounces signed-in
+                     *  users to /dashboard. Brand-accent solid for the highest
+                     *  visual weight in the page chrome. */}
                     <Link
                         href="/portal/register"
                         style={{
-                            color: 'var(--color-navy)',
+                            color: 'var(--color-paper)',
                             textDecoration: 'none',
-                            fontWeight: 500,
-                            border: '1px solid var(--color-navy)',
+                            fontWeight: 600,
+                            background: 'var(--color-brand-accent)',
                             borderRadius: 6,
-                            padding: '6px 14px',
+                            padding: '8px 16px',
                         }}
                     >
-                        注册
+                        API 控制台
                     </Link>
                 </nav>
             </div>
