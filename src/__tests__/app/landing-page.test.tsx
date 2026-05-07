@@ -69,8 +69,10 @@ describe('landing page — promo ACTIVE', () => {
         expect(html).toContain('$7.5');
         // Strikethrough style applied
         expect(html).toMatch(/text-decoration:\s*line-through/);
-        // W7 D4 PR-K — SF flagship trio retail prices (wholesale × 1.20)
+        // W7 D4 PR-K Item E — SF flagship trio retail prices (wholesale × 1.20)
         // render as plain ¥, no promo markup. Replaced V3.2 / GLM-4.6 / K2.
+        // (PR-L kept these test sentinels — only the width="112" assertion
+        // below was reverted to its pre-PR-K-Item-D value.)
         expect(html).toContain('¥1.20/1M');   // DeepSeek V4-Flash in
         expect(html).toContain('¥9.60/1M');   // GLM-5.1 (Pro) in
         expect(html).toContain('¥7.80/1M');   // Kimi K2.6 (Pro) in
@@ -126,15 +128,14 @@ describe('landing page — promo ACTIVE', () => {
         const Page = await loadPage();
         const tree = await Page({ searchParams: Promise.resolve({}) });
         const html = renderToString(tree);
-        // PR #23's <Logo /> renders an <img alt="Silk Road AI" height width />.
-        // W7 D4 PR-K: viewBox cropped 96→88 to drop trailing whitespace,
-        // so wordmark aspect is 88/24 ≈ 3.667. At size=28 → width = 103.
-        // Vitest under Vite inlines the SVG as a base64 data: URI rather
-        // than preserving the filename, so we check the img dimensions
-        // (which are unique to the swap) instead.
+        // PR #23's <Logo /> renders an <img alt="Silk Road AI" height width />
+        // whose width = height × 4 for the full-logo variants (96/24 aspect).
+        // At size=28 → width=112. Vitest under Vite inlines the SVG as a
+        // base64 data: URI rather than preserving the filename, so we check
+        // the img dimensions (which are unique to the swap) instead.
         expect(html).toMatch(/<img[^>]*alt="Silk Road AI"/);
         expect(html).toMatch(/height="28"/);
-        expect(html).toMatch(/width="103"/);
+        expect(html).toMatch(/width="112"/);
         // The legacy text-wordmark was a <span> with literal "Silk Road AI"
         // text. The Logo asset has no inline text, so the only "Silk Road
         // AI" string left in the header is the img alt attribute (asserted
