@@ -51,3 +51,4 @@ next-env.d.ts
 # Local W1 bootstrap archive (the W1 _bootstrap content lives in git history
 # at any commit ≤ 6fdc9b1; no need to ship a parallel copy).
 /_bootstrap-w1-archive/
+public/_email-preview/

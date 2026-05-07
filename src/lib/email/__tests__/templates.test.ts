@@ -48,7 +48,61 @@ describe('balanceAlertTemplate (W6 D2)', () => {
         expect(c.html).toContain('href="https://portal.silkroadai.io/pay"');
         // Settings link to /balance
         expect(c.html).toContain('href="https://portal.silkroadai.io/balance"');
-        // Brand color present
-        expect(c.html).toContain('#0a1535');
+        // W7 D4: brand navy is #1a2540 (was #0a1535 in W6 D2; the original
+        // wasn't a design-system color, just a one-off). Both the body
+        // text and the CTA button reference it inline.
+        expect(c.html).toContain('#1a2540');
+    });
+});
+
+describe('W7 D4 brand-shell consistency across all 3 templates', () => {
+    /**
+     * The shell unifies header / footer / CTA chrome so customers
+     * recognize all three transactional mails as one family. These
+     * assertions guard the contract — if a template is rewritten and
+     * loses the contact pair / legal triplet / paper bg / brand-accent
+     * accent, this test surfaces it before it ships.
+     */
+    const cases: Array<{ name: string; html: string }> = [];
+
+    it('renders all 3 templates with the shared shell', async () => {
+        const { emailVerificationTemplate, passwordResetTemplate, balanceAlertTemplate: bat } =
+            await import('@/lib/email/templates');
+        cases.push({
+            name: 'verify-email',
+            html: emailVerificationTemplate('https://silkroadai.io/verify-email?token=x', 24).html,
+        });
+        cases.push({
+            name: 'reset-password',
+            html: passwordResetTemplate('https://silkroadai.io/reset-password?token=y', 30).html,
+        });
+        cases.push({
+            name: 'balance-alert',
+            html: bat({
+                remainCny: 4.5,
+                thresholdCny: 10,
+                topupUrl: 'https://silkroadai.io/pay',
+                settingsUrl: 'https://silkroadai.io/balance',
+            }).html,
+        });
+        for (const c of cases) {
+            // Brand wordmark in the header strip
+            expect(c.html, c.name).toContain('Silk Road AI');
+            expect(c.html, c.name).toContain('Connecting Global Intelligence.');
+            // Paper bg on body element
+            expect(c.html, c.name).toMatch(/<body[^>]*background:#faf7f2/);
+            // Header's brand-accent gold border-bottom (the 1px hairline
+            // that ties the header to the landing's H2 underline aesthetic)
+            expect(c.html, c.name).toContain('#c9a961');
+            // Footer contact pair
+            expect(c.html, c.name).toContain('Global_Ads');
+            expect(c.html, c.name).toContain('support@silkroadai.io');
+            // Footer legal triplet
+            expect(c.html, c.name).toMatch(/href="https:\/\/silkroadai\.io\/terms"/);
+            expect(c.html, c.name).toMatch(/href="https:\/\/silkroadai\.io\/privacy"/);
+            expect(c.html, c.name).toMatch(/href="https:\/\/silkroadai\.io\/refund"/);
+            // Copyright with current year (template renders at call time)
+            expect(c.html, c.name).toContain(`© ${new Date().getFullYear()}`);
+        }
     });
 });
