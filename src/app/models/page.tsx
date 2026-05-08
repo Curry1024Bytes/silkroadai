@@ -16,6 +16,7 @@
  * than legitimate operator turnaround and keeps SSR fast even when
  * new-api is busy.
  */
+import Link from 'next/link';
 import { listAvailableModels } from '@/lib/newapi/client';
 import { groupModels } from '@/lib/models/categorize';
 import { Logo } from '@/components/brand/Logo';
@@ -47,6 +48,18 @@ export default async function ModelsPage() {
         <main className="min-h-screen bg-paper px-4 py-8">
             <div className="max-w-6xl mx-auto">
                 <header className="mb-6 flex flex-col gap-3">
+                    {/* W7 D4 PR-R Item D — back-to-landing link, sits
+                     *  above the brand row so customers landing on this
+                     *  public page from a search result or a shared
+                     *  link have an explicit way back. Small + muted
+                     *  per the PR-R style spec. */}
+                    <Link
+                        href="/"
+                        className="inline-flex items-center gap-1 text-xs text-muted-ink hover:text-brand-accent transition-colors duration-150 ease-brand no-underline w-fit"
+                    >
+                        <span aria-hidden="true">←</span>
+                        <span>返回首页</span>
+                    </Link>
                     <div className="flex items-center gap-3">
                         <Logo variant="primary-flat" size={28} />
                         <p className="m-0 text-xs text-minor-ink">

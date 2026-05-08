@@ -104,6 +104,18 @@ describe('<ModelsPage /> SSR (W6 D3)', () => {
         // Header still says 0 models (regex tolerates W7 P2B's class= on strong).
         expect(html).toMatch(/<strong[^>]*>0<\/strong>\s*个模型/);
     });
+
+    it('renders the ← 返回首页 back-to-landing link above the brand row (W7 D4 PR-R Item D)', async () => {
+        mockListAvailableModels.mockResolvedValue(SAMPLE);
+        const el = await ModelsPage();
+        const html = renderToString(el);
+        expect(html).toContain('返回首页');
+        // Anchor href="/" appears (the brand <Logo /> also wraps in
+        // href="/" by default — this assertion only confirms presence,
+        // the visible text "返回首页" pins the affordance to the
+        // dedicated link rather than the logo wordmark wrap).
+        expect(html).toMatch(/href="\/"/);
+    });
 });
 
 describe('<ModelsBrowser /> SSR (W6 D3)', () => {

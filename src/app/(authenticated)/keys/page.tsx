@@ -16,6 +16,7 @@ import { prisma } from '@/lib/db';
 import { getTokenUsageWithCache } from '@/lib/newapi/token-usage';
 import { formatTokenForDisplay } from '@/lib/newapi/token-format';
 import { KeysList, type KeyRow } from './keys-list';
+import { KeysSnippetsPanel } from './keys-snippets-panel';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'API Keys — Silk Road AI' };
@@ -102,6 +103,11 @@ export default async function KeysPage() {
                 管理用于调用 Silk Road AI 的访问密钥。撤销后立即失效。
             </p>
             <KeysList initialRows={rows} />
+            {/* W7 D4 PR-R Item C — unified 调用示例 panel below the
+             *  keys table replaces the per-row KeyHowtoPanel that PR-G
+             *  used to stitch into each row. Static `YOUR_API_KEY`
+             *  placeholder + curl / Python / Node tabs. */}
+            <KeysSnippetsPanel />
         </section>
     );
 }

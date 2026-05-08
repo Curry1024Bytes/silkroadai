@@ -162,6 +162,16 @@ describe('/gpu page — contact section', () => {
         expect(html).toMatch(/href="\/"/);
         expect(html).toContain(t('contact_back_to_landing'));
     });
+
+    it('renders the ← 返回首页 affordance next to the hero h1 (W7 D4 PR-R Item D)', () => {
+        const html = renderToString(<GpuPage />);
+        // PR-R Item D adds a small muted-ink ← back-to-landing link
+        // above the hero h1 to match /models + /docs. The page chrome
+        // already has a 首页 link on the right, but the left-aligned
+        // affordance helps deep-linked visitors who scan the hero
+        // first.
+        expect(html).toContain('返回首页');
+    });
 });
 
 describe('/gpu page — meta tags + SEO', () => {

@@ -141,6 +141,19 @@ function Hero() {
         <Section style={{ padding: '64px 0 48px' }}>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-10 items-center">
                 <div>
+                    {/* W7 D4 PR-R Item D — back-to-landing affordance
+                     *  above the h1. The page chrome already has a 首页
+                     *  link on the right, but visitors arriving from a
+                     *  search-result deep link or a sales-engineer
+                     *  shared URL benefit from a left-aligned ← arrow
+                     *  next to the hero title (matches /models /docs). */}
+                    <Link
+                        href="/"
+                        className="inline-flex items-center gap-1 mb-4 text-xs text-muted-ink hover:text-brand-accent transition-colors duration-150 ease-brand no-underline w-fit"
+                    >
+                        <span aria-hidden="true">←</span>
+                        <span>返回首页</span>
+                    </Link>
                     <h1
                         className="m-0 text-4xl md:text-5xl font-semibold text-navy"
                         style={{ lineHeight: 1.2 }}

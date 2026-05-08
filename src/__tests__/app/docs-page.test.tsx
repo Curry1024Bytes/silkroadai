@@ -39,6 +39,12 @@ describe('/docs page — header + chrome', () => {
         expect(html).toMatch(/href="\/keys"/);
         expect(html).toMatch(/href="\/models"/);
     });
+
+    it('renders the ← 返回首页 back-to-landing link above the h1 (W7 D4 PR-R Item D)', () => {
+        const html = renderToString(<DocsPage />);
+        expect(html).toContain('返回首页');
+        expect(html).toMatch(/href="\/"/);
+    });
 });
 
 describe('/docs page — 6 agent sections', () => {
