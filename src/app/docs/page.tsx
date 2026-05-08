@@ -198,8 +198,8 @@ export default function DocsPage() {
                         ]}
                     />
                     <p className="m-0 mt-3 text-xs text-minor-ink">
-                        注:Cursor 的"自定义 OpenAI 模型"开关位置随版本变动,建议直接搜索 Cursor docs
-                        中的 "OpenAI" 关键字定位最新指引。
+                        注:Cursor 的「自定义 OpenAI 模型」开关位置随版本变动,建议直接搜索 Cursor docs
+                        中的「OpenAI」关键字定位最新指引。
                     </p>
                 </AgentBlock>
 
@@ -415,19 +415,19 @@ console.log(resp.choices[0].message.content);`}
                                         语义上更接近 402 Payment Required;新版会改 status
                                         码,当前以 body 的 error.code 为准)。
                                         前往{' '}
-                                        <a
+                                        <Link
                                             href="/balance"
                                             className="text-navy font-medium hover:text-brand-accent"
                                         >
                                             /balance
-                                        </a>{' '}
+                                        </Link>{' '}
                                         查看余额,
-                                        <a
+                                        <Link
                                             href="/pay"
                                             className="text-navy font-medium hover:text-brand-accent"
                                         >
                                             /pay
-                                        </a>{' '}
+                                        </Link>{' '}
                                         充值。
                                     </td>
                                 </tr>

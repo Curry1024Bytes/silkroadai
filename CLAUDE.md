@@ -136,6 +136,12 @@ silkroadai/
 - [x] D4 — 多 key + 每 key 用量 ✅(2026-05-05,PR #20,见 verification doc)— `MAX_TOKENS_PER_USER 5→10` + `token-usage.ts` 60s row cache 镜像 W4-2 D6 4 路径;`queryLogs` 加 `token_id?` query param 转发(F5 best-effort,client 侧 post-filter 兜底);`/keys` server 并行 `Promise.all` per-token usage fetch + per-row try/catch;UI subline `累计 ¥X.XX · 最近调用 N 天前`(grey 11px,不抢主信息);alias 命名建议 placeholder `prod-openai / test-claude / dev-mobile` + `env-purpose` 小提示;migration 含手工 `UPDATE ... SET 0 WHERE NULL` 后 `SET NOT NULL`;16 新单测
 - [x] D5 — usage server-side aggregator + dashboard 真内容 + W6 收尾 ✅(2026-05-05,PR #21,见 `docs/W6-CLIENT-POLISH-VERIFICATION.md`)— `usage-aggregate.ts`(5min cache 4 路径 + paging 1-50 页 × 1000 行 = 50k hard-cap;F6/F7 已知)替代 W4-2 D7 客户端 200-cap aggregate(W3 D2 F3 长尾失真);新表 `usage_aggregate_cache(user_id, period)` PK 复合;period 支持 `7d / 30d / all / last_month`(自然月 UTC,Date.UTC(y,-1,1) 跨年 OK);`periodToTimeRange` 4 case 单测全 PASS;/dashboard 4 张真卡(当前余额 / 上月消费 / 累计调用 / Top 3 模型)+ 4 quick links 替代 W4-2 D5 占位;`Promise.allSettled` 4 并行 fetch + 单卡降级独立;tx 内 `applyTopup` HTTP 持有 DB 连接 ~10s 已知(F1);**W6 全周累积 = 67 files / 642 PASS / 1 skip / 0 fail**
 
+### W7(Brand + Landing + Pricing + GPU + Launch Polish — 见各 PR)
+- [x] PR-A..PR-O — brand identity / 落地页 / pricing / promo / SF 旗舰 / logo / 促销日期 等(PR #22..#43)
+- [x] PR-P — 公开 /gpu 算力租赁页(2026-05-07,PR #44)— H100 / H200 / B300 三 SKU + 4 步流程 + 客户类型 + 询价 CTA
+- [x] PR-Q — GPU 入口位置调整 + nav 简化(2026-05-07,PR #45)— GPU 租赁 outline 钮上 landing header,/gpu 页 nav 收敛单 CTA
+- [x] PR-R — 4 项 launch 前 UX 改进(2026-05-09,PR #46)— (A)landing header 删 `登录` / (B)landing 删 in-page Trust prose row 由 global Footer 单点担纲 / (C)`/keys` 拆掉 PR-G 的 per-row `KeyHowtoPanel`,改成底部统一 `KeysSnippetsPanel`(`YOUR_API_KEY` placeholder + curl/Python/Node SDK tabs + 复制按钮 + base URL chips)/ (D)`/models` `/docs` `/gpu` 公开页 hero 上方加 `← 返回首页`;**deploy 实测发现 CLAUDE.md 写的 `CI 触发自动部署` 不准 — 实际无 deploy step,必须手动 SSH 上 VPS**(本次顺手修)
+
 ---
 
 ## 关键架构决策(决策已定,不要重新讨论)
@@ -344,9 +350,12 @@ pnpm tsc --noEmit
 pnpm lint
 
 # 部署到 VPS(上线后)
-git push origin main                            # CI 触发自动部署
-# 或手动:
-ssh root@23.27.113.88 "cd /opt/silkroad-portal && git pull && docker compose up -d --build"
+# ⚠️ CI 实际**不**自动部署 — `.github/workflows/ci.yml` 只跑 typecheck/lint/test;
+#    `release.yml` 仅在 `v*` tag 触发 Docker 镜像 push 到 dockerhub。
+#    main push 后必须手动 deploy(W7 D4 PR-R 实测确认 — 2026-05-09):
+ssh vps "cd /opt/silkroadai-portal && git pull && docker compose -f docker-compose.prod.yml up -d --build portal"
+# 注:实际 VPS 路径是 /opt/silkroadai-portal(不是 silkroad-portal),
+#     实际 compose 文件是 docker-compose.prod.yml,服务名 portal。
 ```
 
 ---
@@ -408,5 +417,5 @@ APP_PORT=3002
 
 ---
 
-**版本**: 1.8
-**最后更新**: 2026-05-04
+**版本**: 1.9
+**最后更新**: 2026-05-09

@@ -12,6 +12,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
+    "test:ci": "vitest run --exclude=**/*.smoke.test.*",
     "test:watch": "vitest"
   },
   "dependencies": {

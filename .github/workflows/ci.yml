@@ -62,6 +62,25 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    # Stub env so modules that crash on import without a value (e.g.
+    # `src/lib/auth/jwt.ts`'s `process.env.PORTAL_JWT_SECRET` guard,
+    # `src/lib/config.ts`'s zod-validated `getEnv()`) load cleanly in
+    # the test environment. None of these values are used to talk to
+    # real systems — vitest mocks the network boundary. We deliberately
+    # do NOT export real secrets here; the only requirement is that
+    # the values are non-empty + the right shape.
+    env:
+      DATABASE_URL: postgresql://stub:stub@localhost:5432/stub
+      PORTAL_JWT_SECRET: ci-stub-jwt-secret-not-used-for-real-auth
+      PORTAL_JWT_EXPIRES: 7d
+      ADMIN_TOKEN: ci-stub-admin-token
+      NEWAPI_BASE_URL: http://localhost:3000
+      NEWAPI_ADMIN_TOKEN: ci-stub-newapi-admin-token
+      NEWAPI_ADMIN_USER_ID: '1'
+      NEWAPI_QUOTA_PER_USD: '500000'
+      USD_TO_CNY_RATE: '7.2'
+      APP_URL: http://localhost:3002
+      NEXT_PUBLIC_APP_URL: http://localhost:3002
     steps:
       - uses: actions/checkout@v4
         with:
@@ -73,4 +92,8 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm prisma generate
-      - run: pnpm test
+      # `test:ci` excludes `*.smoke.test.*` — those (e.g.
+      # `src/lib/newapi/__tests__/client.smoke.test.ts`) require a
+      # real running new-api over an SSH tunnel, which CI doesn't
+      # have. Smoke tests stay runnable locally with `pnpm test`.
+      - run: pnpm test:ci
