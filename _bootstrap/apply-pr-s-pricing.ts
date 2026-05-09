@@ -62,9 +62,6 @@ const SUB2API_OPENAI_CHANNEL_ID = 3;
 /** Text + embedding + per-token audio. Markup 1.0 (retail = wholesale).
  *  cr = output / input. For embedding-only models, cr = 1 (no output token tier). */
 const PER_TOKEN_USD: Record<string, { in: number; out: number; note?: string }> = {
-    // Text — Gemini 2.5 family (already in ModelRatio at older promo values; we overwrite to current Google prices)
-    'gemini-2.5-flash': { in: 0.30, out: 2.50, note: 'Google docs current ($0.30/$2.50)' },
-    'gemini-2.5-pro': { in: 1.25, out: 10.00, note: '≤200k tier — operator chose lower tier' },
     // Text — Gemini 3.1 family (newly priced)
     'gemini-3.1-flash-lite': { in: 0.25, out: 1.50 },
     'gemini-3.1-pro-preview': { in: 4.00, out: 18.00, note: '>200k long-context tier per Google docs' },
@@ -74,16 +71,28 @@ const PER_TOKEN_USD: Record<string, { in: number; out: number; note?: string }> 
     // Audio per-token
     'gemini-3.1-flash-tts-preview': { in: 1.00, out: 20.00, note: 'audio output tier' },
     'gemini-2.5-flash-native-audio-latest': { in: 1.00, out: 2.50, note: '2.5 flash audio tier' },
+    //
+    // Dropped 2026-05-09 (operator decision after PR-S merge): the 2.5
+    // text SKUs (gemini-2.5-flash + gemini-2.5-pro) were never added
+    // to channel 4 (operator added 3.1-only); ratios were a heads-up
+    // residual. Removed from prod options + this table to stop
+    // re-introduction on the next apply. To re-add: restore here AND
+    // add to channel.models in admin UI.
+    //   'gemini-2.5-flash': { in: 0.30, out: 2.50 },
+    //   'gemini-2.5-pro':   { in: 1.25, out: 10.00 },
 };
 
 /** Per-image flat fee. Markup 1.5. Applied as ModelPrice (USD per image). */
 const PER_IMAGE_USD: Record<string, { wholesale: number; note?: string }> = {
-    'gemini-2.5-flash-image-preview': { wholesale: 0.039, note: 'Google: nano-banana 2.5 flash image, $0.039/image standard' },
     'gemini-3.1-flash-image-preview': { wholesale: 0.10, note: 'Google: midpoint of $0.045-$0.151 per resolution' },
     'gemini-3-pro-image-preview': { wholesale: 0.187, note: 'Google: midpoint of $0.134-$0.24 per resolution' },
     'nano-banana-pro-preview': { wholesale: 0.187, note: 'Operator: same as gemini-3-pro-image-preview alias' },
     'imagen-4.0-ultra-generate-001': { wholesale: 0.06, note: 'Google: Ultra tier $0.06/image' },
     'gpt-image-2': { wholesale: 0.04, note: 'OpenAI standard quality — operator-stated $0.04/image' },
+    //
+    // Dropped 2026-05-09 with the 2.5 text pair above — same
+    // operator decision (not in channel 4 → 503 → never callable).
+    //   'gemini-2.5-flash-image-preview': { wholesale: 0.039 },
 };
 
 /** Per-second video. Markup 1.0. ModelPrice (USD per second). 720p tier default. */

@@ -127,7 +127,28 @@ Plus PUT `/api/channel/4` to drop 7 disabled SKUs from `channel.models`.
 
 `gemini-2.5-flash`, `gemini-2.5-pro`, `gemini-2.5-flash-image-preview` —
 operator listed them in Stage-3 spec; ratios written; not in any
-channel.models. They'll 503 until added. Operator decision queued.
+channel.models. They'll 503 until added.
+
+**Resolved (post-merge, 2026-05-09)**: operator decided to drop these
+3 SKUs rather than add to channel 4. One-shot cleanup ran live via
+`_bootstrap/_pr-s-cleanup-unrouted-2-5-skus.ts --apply`:
+
+```
+PR-S 2.5-cleanup (LIVE)
+Will drop:
+  ModelRatio["gemini-2.5-flash"]                        = 0.3
+  CompletionRatio["gemini-2.5-flash"]                   = 8.333333
+  ModelRatio["gemini-2.5-pro"]                          = 1.25
+  CompletionRatio["gemini-2.5-pro"]                     = 8
+  ModelPrice["gemini-2.5-flash-image-preview"]          = $0.0585
+→ PUT ModelRatio        ✓
+→ PUT CompletionRatio   ✓
+→ PUT ModelPrice        ✓
+```
+
+Followup PR also pruned the 3 entries from `apply-pr-s-pricing.ts`'s
+`PER_TOKEN_USD` + `PER_IMAGE_USD` tables so the next dry-run is a
+no-op (idempotent).
 
 ## Stage 4 — Real-call verification
 
