@@ -215,6 +215,21 @@ export async function POST(req: NextRequest) {
         );
     }
 
+    // PR-T1 Phase 0c — eagerly provision the portal system token used by
+    // server-managed services (image gen / future internal flows). Best-
+    // effort: failure here is logged but does not block registration; the
+    // first call to getOrCreateSystemToken from a portal-managed handler
+    // will retry. Idempotent + race-safe (CAS via WHERE … IS NULL).
+    try {
+        const { getOrCreateSystemToken } = await import('@/lib/newapi/system-token');
+        await getOrCreateSystemToken(user.id);
+    } catch (sysTokErr) {
+        console.warn(
+            `[register] portal system token eager-provision failed for ${user.id} (will retry lazily on first portal-managed call):`,
+            sysTokErr,
+        );
+    }
+
     // Issue an email-verification token + fire off the verification email.
     // Failures here don't roll back registration — the customer can request a
     // resend from /api/auth/resend-verification. Logged loudly so ops notice.

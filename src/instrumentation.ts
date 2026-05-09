@@ -12,5 +12,9 @@ export async function register() {
         // W6 D2: balance-low retention alerts. 1h cadence.
         const { startBalanceAlertScheduler } = await import('@/lib/scheduler/balance-alert');
         startBalanceAlertScheduler();
+
+        // PR-T1 Phase 4: image-generation TTL + soft-delete sweep. 6h cadence.
+        const { startImageCleanupScheduler } = await import('@/lib/scheduler/image-cleanup');
+        startImageCleanupScheduler();
     }
 }

@@ -29,13 +29,25 @@ import {
     deleteToken as newapiDeleteToken,
 } from '@/lib/newapi/client';
 import { formatTokenForDisplay } from '@/lib/newapi/token-format';
+import { PORTAL_INTERNAL_TOKEN_NAME } from '@/lib/newapi/system-token';
 
 export const runtime = 'nodejs';
 
 export const MAX_TOKENS_PER_USER = 10;
 
 const CreateKeySchema = z.object({
-    alias: z.string().trim().min(1, 'alias must not be empty').max(50, 'alias must be ≤ 50 chars'),
+    // PR-T1 Phase 0e: reserve `portal-internal` for the server-managed
+    // system token. Rejecting it here prevents a customer from creating
+    // a NewApiToken row that collides with `listTokensForCustomer`
+    // disambiguation in `getOrCreateSystemToken`.
+    alias: z
+        .string()
+        .trim()
+        .min(1, 'alias must not be empty')
+        .max(50, 'alias must be ≤ 50 chars')
+        .refine((s) => s !== PORTAL_INTERNAL_TOKEN_NAME, {
+            message: `alias "${PORTAL_INTERNAL_TOKEN_NAME}" is reserved`,
+        }),
 });
 
 export async function GET(req: NextRequest) {
@@ -45,7 +57,16 @@ export async function GET(req: NextRequest) {
     }
 
     const tokens = await prisma.newApiToken.findMany({
-        where: { user_id: user.id, status: 'active' },
+        where: {
+            user_id: user.id,
+            status: 'active',
+            // PR-T1 Phase 0e: defensive — system token is stored on
+            // `User.newapi_system_token_value`, not in this table, so
+            // this filter is a no-op today. Future-proofs against any
+            // path that mistakenly mirrors `portal-internal` to the
+            // NewApiToken table; customer must never see it in /keys.
+            key_alias: { not: PORTAL_INTERNAL_TOKEN_NAME },
+        },
         orderBy: { created_at: 'asc' },
         select: {
             id: true,

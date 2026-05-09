@@ -201,6 +201,20 @@ model User {
   newapi_username         String?   @unique
   // 32-字符 secret;portal 用它 act-as 该客户调 /api/token/* 等 per-user endpoint
   newapi_access_token     String?
+  // ── PR-T1 portal-managed system token(W7 D5 Phase 0)──
+  // portal 内部服务(image gen / chat UI / 自部署模型 / 等)调 new-api 的
+  // /v1/* 路径时需要客户的 sk-key 形式认证 — 但客户管理的 NewApiToken 行可
+  // 以被客户随时撤销,会影响 portal 服务可用性。新增一个隐藏 token(name
+  // = 'portal-internal',unlimited_quota=true),客户 /keys 页不展示,server
+  // 侧 read-only 用作 image-gen 等 server-managed 调用的 Bearer。
+  // - newapi_system_token_id: new-api 那边的 token.id(int → string),用于
+  //   将来 rotate / delete 的引用。
+  // - newapi_system_token_value: 完整 48 字符 raw token value(无 sk- 前缀
+  //   ;use site 用 formatTokenForDisplay() 拼);只在 server-side 读。
+  // 首次访问通过 getOrCreateSystemToken() 懒加载;失败不阻塞业务路径,下
+  // 次调用再试(retries are idempotent — race-safe via WHERE … IS NULL CAS)。
+  newapi_system_token_id    String?
+  newapi_system_token_value String?
   // 余额缓存(raw quota,不是 USD/CNY);实时数据从 new-api 拉
   newapi_quota_cache      BigInt?
   newapi_used_quota_cache BigInt?
@@ -214,6 +228,7 @@ model User {
   email_verification_tokens EmailVerificationToken[]
   oauth_accounts            OAuthAccount[]
   usage_aggregate_cache     UsageAggregateCache[]
+  image_generations         ImageGeneration[]
 
   // ── session 失效控制 ──
   // JWT payload 带 tv = session_token_version。verifySession 时如果 token tv
@@ -421,4 +436,37 @@ model UsageAggregateCache {
 
   @@id([user_id, period])
   @@map("usage_aggregate_cache")
+}
+
+// ── 生图历史(PR-T1 W7 D5)──
+// 每次客户调 POST /api/portal/image/generate 落一行。新-api 真扣 quota,
+// 我们 mirror cost 到 cost_usd 给前端展示;真账数仍以 new-api log 为准。
+//
+// r2_keys: string[] — 每张图在 R2 中的 key,形如
+//   "image-gen/{user_id}/{generation_id}/{index}.png"
+// 服务端组装 R2 public URL 给前端(或前端自己拼)。
+//
+// expires_at: 默认 created_at + 30 days;is_favorite=true 时清 null(永久)。
+// is_deleted: soft delete;30 天后由 cleanup cron 真删(R2 objects + DB row)。
+model ImageGeneration {
+  id             String    @id @default(uuid()) @db.Uuid
+  user_id        String    @db.Uuid
+  prompt         String    @db.Text
+  model_name     String
+  size           String
+  count          Int
+  /// string[]: R2 keys for the n images returned
+  r2_keys        Json
+  cost_usd       Decimal   @db.Decimal(10, 6)
+  quota_consumed BigInt
+  is_favorite    Boolean   @default(false)
+  is_deleted     Boolean   @default(false)
+  created_at     DateTime  @default(now())
+  expires_at     DateTime?
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id, is_favorite, created_at(sort: Desc)])
+  @@index([expires_at])
+  @@map("image_generations")
 }

@@ -163,6 +163,21 @@ async function createUserFromIdentity(identity: OAuthIdentity): Promise<string |
         return null;
     }
 
+    // PR-T1 Phase 0c — eagerly provision the portal system token used by
+    // server-managed services (image gen / future internal flows). Mirrors
+    // the same hook in /api/auth/register. Best-effort: failure logged
+    // but doesn't roll back the OAuth account; first portal-managed call
+    // retries lazily.
+    try {
+        const { getOrCreateSystemToken } = await import('@/lib/newapi/system-token');
+        await getOrCreateSystemToken(user.id);
+    } catch (sysTokErr) {
+        console.warn(
+            `[oauth/account-link] portal system token eager-provision failed for ${user.id} (will retry lazily on first portal-managed call):`,
+            sysTokErr,
+        );
+    }
+
     return user.id;
 }
 
