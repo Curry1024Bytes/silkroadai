@@ -76,6 +76,14 @@ describe('landing page — promo ACTIVE', () => {
         expect(html).toContain('¥1.20/1M'); // DeepSeek V4-Flash in
         expect(html).toContain('¥9.60/1M'); // GLM-5.1 (Pro) in
         expect(html).toContain('¥7.80/1M'); // Kimi K2.6 (Pro) in
+        // PR-S — Gemini family added. Zero-markup at launch (operator
+        // recovers margin via upstream swap post-launch); rows render
+        // as plain bold $/1M, no strikethrough since they're not in
+        // the 海外 5 折 promo set.
+        expect(html).toContain('Gemini 3.1 Pro');
+        expect(html).toContain('Gemini 3.1 Flash Lite');
+        expect(html).toContain('$0.25');
+        expect(html).toContain('$1.50');
     });
 
     it('renders the "当前促销 · 海外模型 5 折" subtitle on pricing section', async () => {

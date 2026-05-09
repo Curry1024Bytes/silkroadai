@@ -59,6 +59,11 @@ const AGENTS: AgentSection[] = [
     { id: 'python-sdk', label: 'Python (openai SDK)', blurb: '官方 openai Python 包,实测可调通。' },
     { id: 'node-sdk', label: 'Node / TypeScript (openai SDK)', blurb: '官方 openai Node 包,实测可调通。' },
     {
+        id: 'gemini',
+        label: 'Google Gemini · 同一 base URL',
+        blurb: 'Gemini 3.1 / Nano Banana / imagen-4 / veo-3.1 全部 OpenAI 兼容路径调用。',
+    },
+    {
         id: 'errors',
         label: '常见错误码',
         blurb: '401 / 403 insufficient_user_quota / 503 no available channel — body code 优先于 status。',
@@ -364,6 +369,51 @@ console.log(resp.choices[0].message.content);`}
                     </CodeBlock>
                 </AgentBlock>
 
+                {/* PR-S — Gemini family note. Surfaces the new Gemini
+                 *  3.1 / Nano Banana / imagen-4 / veo-3.1 SKUs as
+                 *  callable via the same OpenAI-compat base URL — no
+                 *  separate SDK / endpoint switch needed. The model
+                 *  names listed here are routable as of PR-S apply
+                 *  (verified via Stage 4 real-call). */}
+                <section id="gemini" className="mt-12 mb-10 scroll-mt-20">
+                    <div className="flex items-baseline justify-between flex-wrap gap-2 mb-4 pb-3 border-b-2 border-brand-accent">
+                        <h2 className="m-0 text-2xl font-semibold text-navy">
+                            <span className="text-brand-accent font-bold mr-3 tabular-nums">07</span>
+                            Google Gemini · 通过同一个 base URL 调用
+                        </h2>
+                    </div>
+                    <p className="m-0 mb-3 text-sm text-ink leading-relaxed">
+                        Gemini 全家(包括最新 Nano Banana 图像生成)与 OpenAI 兼容协议接入,base URL + SDK 都不变,只需把{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            model
+                        </code>{' '}
+                        换成 Gemini 模型名即可。
+                    </p>
+                    <ConfigList
+                        items={[
+                            ['Base URL', OPENAI_BASE],
+                            ['Text · Pro 旗舰', 'gemini-3.1-pro-preview'],
+                            ['Text · 高速 / 低成本', 'gemini-3.1-flash-lite'],
+                            ['Image · Nano Banana 3 Pro', 'gemini-3-pro-image-preview / nano-banana-pro-preview'],
+                            ['Image · Nano Banana 3.1 Flash', 'gemini-3.1-flash-image-preview'],
+                            ['Image · Imagen 4 Ultra', 'imagen-4.0-ultra-generate-001'],
+                            ['Video', 'veo-3.1-generate-preview / -fast / -lite'],
+                            ['Embedding', 'gemini-embedding-2'],
+                        ]}
+                    />
+                    <p className="m-0 mt-3 text-xs text-minor-ink">
+                        完整可调用清单 →{' '}
+                        <Link href="/models" className="text-navy font-medium hover:text-brand-accent">
+                            /models
+                        </Link>{' '}
+                        · 图像 / 视频按官方价透传(无加价),文本同样透传,公式见 portal{' '}
+                        <Link href="/pricing" className="text-navy font-medium hover:text-brand-accent">
+                            /pricing
+                        </Link>
+                        (暂未上线 — 表见 landing 页)。
+                    </p>
+                </section>
+
                 {/* W7 D4 PR-H Tier B: surface the most common upstream
                  *  error codes a customer will see + plain-language
                  *  explanation. The 402-vs-403 status rewriting for
@@ -374,7 +424,7 @@ console.log(resp.choices[0].message.content);`}
                 <section id="errors" className="mt-12 mb-10 scroll-mt-20">
                     <div className="flex items-baseline justify-between flex-wrap gap-2 mb-4 pb-3 border-b-2 border-brand-accent">
                         <h2 className="m-0 text-2xl font-semibold text-navy">
-                            <span className="text-brand-accent font-bold mr-3 tabular-nums">07</span>
+                            <span className="text-brand-accent font-bold mr-3 tabular-nums">08</span>
                             常见错误码
                         </h2>
                     </div>

@@ -48,18 +48,18 @@ describe('/docs page — header + chrome', () => {
 });
 
 describe('/docs page — 6 agent sections', () => {
-    it('all 7 anchor sections render with the right IDs (toc consistency)', () => {
+    it('all 8 anchor sections render with the right IDs (toc consistency)', () => {
         const html = renderToString(<DocsPage />);
-        // W7 D4 PR-H Tier B: 7th section "常见错误码" added (anchor=errors)
-        // for the doc-fallback path on 402/403 status guidance.
-        for (const id of ['cursor', 'cline', 'continue', 'claude-code', 'python-sdk', 'node-sdk', 'errors']) {
+        // PR-S inserted a Gemini section (anchor=gemini) between node-sdk
+        // and errors. Errors stays last; section count = 8.
+        for (const id of ['cursor', 'cline', 'continue', 'claude-code', 'python-sdk', 'node-sdk', 'gemini', 'errors']) {
             expect(html, `section #${id} present`).toMatch(new RegExp(`<section[^>]*id="${id}"`));
         }
     });
 
-    it('TOC list links to all 7 anchors via #', () => {
+    it('TOC list links to all 8 anchors via #', () => {
         const html = renderToString(<DocsPage />);
-        for (const id of ['cursor', 'cline', 'continue', 'claude-code', 'python-sdk', 'node-sdk', 'errors']) {
+        for (const id of ['cursor', 'cline', 'continue', 'claude-code', 'python-sdk', 'node-sdk', 'gemini', 'errors']) {
             expect(html, `TOC #${id} link present`).toMatch(new RegExp(`href="#${id}"`));
         }
     });

@@ -647,6 +647,22 @@ const PRICING_ROWS: PricingRow[] = [
         retailOut: '$30',
         promoOut: '$15',
     },
+    // PR-S — Google Gemini family (零 markup at launch:retail = official Google
+    // AI Studio price). Operator decision: keep margin via post-launch upstream
+    // swap rather than markup at launch. promoIn/promoOut omitted intentionally
+    // — Gemini is not in the W7 海外 5 折 promo (Anthropic/OpenAI only).
+    {
+        model: 'Gemini 3.1 Pro',
+        type: 'Google 旗舰长上下文',
+        retailIn: '$4',
+        retailOut: '$18',
+    },
+    {
+        model: 'Gemini 3.1 Flash Lite',
+        type: 'Google 高速 / 高吞吐',
+        retailIn: '$0.25',
+        retailOut: '$1.50',
+    },
     // W7 D4 PR-K: SF flagship trio refresh. Retail ¥ shown = wholesale × 1.20
     // (= mr × 7 since mr = wholesale / 5.83). Wholesale itself never appears
     // on the landing — surfacing it would imply we sell at cost. Numbers
