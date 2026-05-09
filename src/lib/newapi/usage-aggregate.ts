@@ -65,10 +65,7 @@ export interface UsageAggregateSnapshot extends UsageAggregate {
  *   `Date.UTC(y, -1, 1)` correctly rolls back into December of the
  *   previous year when the current month is January.
  */
-export function periodToTimeRange(
-    period: UsagePeriod,
-    now: Date = new Date(),
-): { start: number; end: number } {
+export function periodToTimeRange(period: UsagePeriod, now: Date = new Date()): { start: number; end: number } {
     const nowSec = Math.floor(now.getTime() / 1000);
     if (period === 'all') return { start: 0, end: nowSec };
     if (period === '7d') return { start: nowSec - 7 * 86_400, end: nowSec };
@@ -205,9 +202,7 @@ function readPayload(payload: unknown): UsageAggregate {
         ? (p.byModel as Array<{ model?: unknown; calls?: unknown; quota?: unknown }>)
               .filter(
                   (m): m is { model: string; calls: number; quota: number } =>
-                      typeof m.model === 'string' &&
-                      typeof m.calls === 'number' &&
-                      typeof m.quota === 'number',
+                      typeof m.model === 'string' && typeof m.calls === 'number' && typeof m.quota === 'number',
               )
               .map((m) => ({ model: m.model, calls: m.calls, quota: m.quota }))
         : [];

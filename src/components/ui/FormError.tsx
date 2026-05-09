@@ -20,31 +20,21 @@ export interface FormErrorProps {
     className?: string;
 }
 
-const INLINE =
-    'text-sm text-status-error-text mt-1.5 leading-snug';
+const INLINE = 'text-sm text-status-error-text mt-1.5 leading-snug';
 
 const BANNER =
     'text-sm rounded-lg px-4 py-3 ' +
     'bg-status-error-bg border border-status-error-border text-status-error-text ' +
     'flex items-start gap-2';
 
-export function FormError({
-    severity = 'inline',
-    children,
-    className,
-}: FormErrorProps): React.ReactElement | null {
+export function FormError({ severity = 'inline', children, className }: FormErrorProps): React.ReactElement | null {
     if (children === undefined || children === null || children === false || children === '') {
         return null;
     }
     return (
         <div
             role="alert"
-            className={[
-                severity === 'banner' ? BANNER : INLINE,
-                className ?? '',
-            ]
-                .filter(Boolean)
-                .join(' ')}
+            className={[severity === 'banner' ? BANNER : INLINE, className ?? ''].filter(Boolean).join(' ')}
         >
             {children}
         </div>

@@ -14,20 +14,20 @@
 
 ## 验证矩阵
 
-| 项 | 期望 | 实测 | 结果 |
-|---|---|---|---|
-| Branch + 起点 untracked / modified | Batch A 留 5 modified + 3 untracked dir | 一致 | ✅ |
-| `/verify-email` UI 页(auto-POST on load + StrictMode guard)| page.tsx + verify-email-runner.tsx | 60 + 78 lines,inline style,品牌色 #0a1535,fired ref 防 React 19 dev double-mount 重复消耗 token | ✅ |
-| Dev server with `EMAIL_DEBUG_LOG` | ready < 30s | ready in 1.7s | ✅ |
-| Unit tests:auth 全套 + smoke + 其他 | 32 files / 335 tests / 0 fail | 32 files / 335 tests / 1 skip / 0 fail / 2.87s | ✅ |
-| E2E 1: register fresh ephemeral user | 200 + apiKey + `email_verified:false` + log +1 | id=`99a9d7e5-...`, newapi=9, sk-prefix=`olGVezvR`, log +1 | ✅ |
-| E2E 2: resend on unverified user(throttle)| 200 + log unchanged | log 1→1(throttle reused existing token)| ✅ |
-| E2E 3: verify-email with token | 200 `{ok:true}` + DB `email_verified=t` + `email_verified_at` 非 null | 200 + DB row 双字段都对 | ✅ |
-| E2E 4: replay used token | 400 `invalid_or_expired_token` | 400 invalid_or_expired_token | ✅ |
-| E2E 5: resend after verify(silent noop)| 200 + log unchanged | log 1→1 | ✅ |
-| E2E 6: resend on fixture user_id=8(backfill verified)| 200 + log unchanged | log 1→1 | ✅ |
-| 后台进程 + 敏感临时文件清理 | 都清,带 secret 用 `rm -P` | dev kill,creds/token/register-response(含 apiKey)`rm -P`,其余普通 `rm` | ✅ |
-| Fixture retention | 不删 user_id=8 + 不删本批 ephemeral | DB 中 2 行,均已 verified | ✅ |
+| 项                                                          | 期望                                                                  | 实测                                                                                            | 结果 |
+| ----------------------------------------------------------- | --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | ---- |
+| Branch + 起点 untracked / modified                          | Batch A 留 5 modified + 3 untracked dir                               | 一致                                                                                            | ✅   |
+| `/verify-email` UI 页(auto-POST on load + StrictMode guard) | page.tsx + verify-email-runner.tsx                                    | 60 + 78 lines,inline style,品牌色 #0a1535,fired ref 防 React 19 dev double-mount 重复消耗 token | ✅   |
+| Dev server with `EMAIL_DEBUG_LOG`                           | ready < 30s                                                           | ready in 1.7s                                                                                   | ✅   |
+| Unit tests:auth 全套 + smoke + 其他                         | 32 files / 335 tests / 0 fail                                         | 32 files / 335 tests / 1 skip / 0 fail / 2.87s                                                  | ✅   |
+| E2E 1: register fresh ephemeral user                        | 200 + apiKey + `email_verified:false` + log +1                        | id=`99a9d7e5-...`, newapi=9, sk-prefix=`olGVezvR`, log +1                                       | ✅   |
+| E2E 2: resend on unverified user(throttle)                  | 200 + log unchanged                                                   | log 1→1(throttle reused existing token)                                                         | ✅   |
+| E2E 3: verify-email with token                              | 200 `{ok:true}` + DB `email_verified=t` + `email_verified_at` 非 null | 200 + DB row 双字段都对                                                                         | ✅   |
+| E2E 4: replay used token                                    | 400 `invalid_or_expired_token`                                        | 400 invalid_or_expired_token                                                                    | ✅   |
+| E2E 5: resend after verify(silent noop)                     | 200 + log unchanged                                                   | log 1→1                                                                                         | ✅   |
+| E2E 6: resend on fixture user_id=8(backfill verified)       | 200 + log unchanged                                                   | log 1→1                                                                                         | ✅   |
+| 后台进程 + 敏感临时文件清理                                 | 都清,带 secret 用 `rm -P`                                             | dev kill,creds/token/register-response(含 apiKey)`rm -P`,其余普通 `rm`                          | ✅   |
+| Fixture retention                                           | 不删 user_id=8 + 不删本批 ephemeral                                   | DB 中 2 行,均已 verified                                                                        | ✅   |
 
 **结论:核心信号 ✅,4 个 informational(F1-F4)。**
 
@@ -63,17 +63,17 @@
 
 W3 D5 后总共 2 个 fixture user:
 
-| 字段 | fixture A(W2 D6 起,backfill verified)| fixture B(本 batch ephemeral)|
-|---|---|---|
-| email | `w3d2test-1777777442@silkroadai-internal.test` | `w3d5test-1777790808@silkroadai-internal.test` |
-| portal user id | `8a6901f3-0054-42b2-87fc-edb24148440a` | `99a9d7e5-73cb-4c32-aaf3-4e6addd513ab` |
-| new-api user id | `8` | `9` |
-| new-api username | `c-8a6901f3` | `c-99a9d7e5` |
-| sk-xxx prefix | `e0QdAg2n` | `olGVezvR` |
-| email_verified | `t`(backfill)| `t`(real verify-email 跑通)|
-| email_verified_at | `~2026-05-02T06:11`(= created_at)| `~2026-05-03T06:47`(verify 时刻)|
-| password 状态 | W3 D4 reset 后 NEW_PASS(已 shred) | W3 D5 register 时随机(已 shred) |
-| 用途 | W3 D2/D3/D4 e2e + 充值 W4 复用 | D5 verified 状态参照 + W4 充值复用 |
+| 字段              | fixture A(W2 D6 起,backfill verified)          | fixture B(本 batch ephemeral)                  |
+| ----------------- | ---------------------------------------------- | ---------------------------------------------- |
+| email             | `w3d2test-1777777442@silkroadai-internal.test` | `w3d5test-1777790808@silkroadai-internal.test` |
+| portal user id    | `8a6901f3-0054-42b2-87fc-edb24148440a`         | `99a9d7e5-73cb-4c32-aaf3-4e6addd513ab`         |
+| new-api user id   | `8`                                            | `9`                                            |
+| new-api username  | `c-8a6901f3`                                   | `c-99a9d7e5`                                   |
+| sk-xxx prefix     | `e0QdAg2n`                                     | `olGVezvR`                                     |
+| email_verified    | `t`(backfill)                                  | `t`(real verify-email 跑通)                    |
+| email_verified_at | `~2026-05-02T06:11`(= created_at)              | `~2026-05-03T06:47`(verify 时刻)               |
+| password 状态     | W3 D4 reset 后 NEW_PASS(已 shred)              | W3 D5 register 时随机(已 shred)                |
+| 用途              | W3 D2/D3/D4 e2e + 充值 W4 复用                 | D5 verified 状态参照 + W4 充值复用             |
 
 两个 user 都不删,W4 充值流回归测试 + W3 D6/D7 OAuth e2e 都可能复用。
 

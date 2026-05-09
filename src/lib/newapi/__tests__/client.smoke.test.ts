@@ -1,11 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
-    listAvailableModels,
-    checkNewApiHealth,
-    quotaToUsd,
-    cnyToQuota,
-    USD_TO_CNY_RATE,
-} from '../client';
+import { listAvailableModels, checkNewApiHealth, quotaToUsd, cnyToQuota, USD_TO_CNY_RATE } from '../client';
 
 /**
  * Smoke test against the real VPS new-api via SSH tunnel:

@@ -47,9 +47,7 @@ describe('<PayResultPage /> SSR smoke (W5 D2)', () => {
         );
         expect(html).toContain('订单异常');
         expect(html).toContain('Globe_Ads');
-        expect(mockOrderFindUnique).toHaveBeenCalledWith(
-            expect.objectContaining({ where: { id: 'nonexistent' } }),
-        );
+        expect(mockOrderFindUnique).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'nonexistent' } }));
     });
 
     it('"付款成功" + amount + /balance link when order COMPLETED', async () => {
@@ -59,9 +57,7 @@ describe('<PayResultPage /> SSR smoke (W5 D2)', () => {
             amount: new Prisma.Decimal('10.00'),
         });
 
-        const html = renderToString(
-            await PayResultPage({ searchParams: Promise.resolve({ order_id: ORDER_ID }) }),
-        );
+        const html = renderToString(await PayResultPage({ searchParams: Promise.resolve({ order_id: ORDER_ID }) }));
         expect(html).toContain('付款成功');
         expect(html).toMatch(/¥(<!-- -->)?10\.00/);
         expect(html).toContain('60 秒');
@@ -75,9 +71,7 @@ describe('<PayResultPage /> SSR smoke (W5 D2)', () => {
             amount: new Prisma.Decimal('10.00'),
         });
 
-        const html = renderToString(
-            await PayResultPage({ searchParams: Promise.resolve({ order_id: ORDER_ID }) }),
-        );
+        const html = renderToString(await PayResultPage({ searchParams: Promise.resolve({ order_id: ORDER_ID }) }));
         expect(html).toContain('付款已收到');
         expect(html).toContain('处理中');
         expect(html).toMatch(/href="\/balance"/);
@@ -90,9 +84,7 @@ describe('<PayResultPage /> SSR smoke (W5 D2)', () => {
             amount: new Prisma.Decimal('10.00'),
         });
 
-        const html = renderToString(
-            await PayResultPage({ searchParams: Promise.resolve({ order_id: ORDER_ID }) }),
-        );
+        const html = renderToString(await PayResultPage({ searchParams: Promise.resolve({ order_id: ORDER_ID }) }));
         expect(html).toContain('处理中');
     });
 
@@ -104,9 +96,7 @@ describe('<PayResultPage /> SSR smoke (W5 D2)', () => {
                 amount: new Prisma.Decimal('10.00'),
             });
 
-            const html = renderToString(
-                await PayResultPage({ searchParams: Promise.resolve({ order_id: ORDER_ID }) }),
-            );
+            const html = renderToString(await PayResultPage({ searchParams: Promise.resolve({ order_id: ORDER_ID }) }));
             expect(html).toContain('订单异常');
             expect(html).toContain('Globe_Ads');
         }
@@ -122,13 +112,9 @@ describe('<PayResultPage /> SSR smoke (W5 D2)', () => {
             amount: new Prisma.Decimal('5.00'),
         });
 
-        const html = renderToString(
-            await PayResultPage({ searchParams: Promise.resolve({ out_trade_no: ORDER_ID }) }),
-        );
+        const html = renderToString(await PayResultPage({ searchParams: Promise.resolve({ out_trade_no: ORDER_ID }) }));
         expect(html).toContain('付款成功');
-        expect(mockOrderFindUnique).toHaveBeenCalledWith(
-            expect.objectContaining({ where: { id: ORDER_ID } }),
-        );
+        expect(mockOrderFindUnique).toHaveBeenCalledWith(expect.objectContaining({ where: { id: ORDER_ID } }));
     });
 
     it('prefers order_id over out_trade_no when both are present', async () => {
@@ -142,8 +128,6 @@ describe('<PayResultPage /> SSR smoke (W5 D2)', () => {
             searchParams: Promise.resolve({ order_id: 'real', out_trade_no: 'legacy' }),
         });
 
-        expect(mockOrderFindUnique).toHaveBeenCalledWith(
-            expect.objectContaining({ where: { id: 'real' } }),
-        );
+        expect(mockOrderFindUnique).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'real' } }));
     });
 });

@@ -16,11 +16,11 @@
 1. 注册 [微信支付商户平台](https://pay.weixin.qq.com/)，获取 **商户号 (mchid)**
 2. 在 [微信开放平台](https://open.weixin.qq.com/) 创建应用，获取 **APPID**
 3. 在商户后台 → API 安全 → 配置以下内容：
-   - **APIv3 密钥**（32 字节随机字符串）
-   - **商户 API 私钥**（RSA 2048，下载 PEM 文件）
-   - **微信支付公钥**（用于验签通知，注意区别于平台证书）
-   - **微信支付公钥 ID**（与公钥配套的 serial/key ID）
-   - **商户证书序列号**（用于签名请求的 Authorization header）
+    - **APIv3 密钥**（32 字节随机字符串）
+    - **商户 API 私钥**（RSA 2048，下载 PEM 文件）
+    - **微信支付公钥**（用于验签通知，注意区别于平台证书）
+    - **微信支付公钥 ID**（与公钥配套的 serial/key ID）
+    - **商户证书序列号**（用于签名请求的 Authorization header）
 
 ## 密钥说明
 
@@ -61,13 +61,13 @@ ENABLED_PAYMENT_TYPES=wxpay     # 前端展示哪些支付方式
 ```yaml
 # docker-compose.yml
 services:
-  app:
-    environment:
-      WXPAY_PRIVATE_KEY: |-
-        -----BEGIN PRIVATE KEY-----
-        MIIEvQIBADANBgkqhkiG9w0BAQEFAASC...
-        ...
-        -----END PRIVATE KEY-----
+    app:
+        environment:
+            WXPAY_PRIVATE_KEY: |-
+                -----BEGIN PRIVATE KEY-----
+                MIIEvQIBADANBgkqhkiG9w0BAQEFAASC...
+                ...
+                -----END PRIVATE KEY-----
 ```
 
 或者在 `.env` 中用 `\n` 表示换行：

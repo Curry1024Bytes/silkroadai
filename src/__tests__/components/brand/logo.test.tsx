@@ -58,14 +58,7 @@ describe('<Logo /> SSR (brand assets PR)', () => {
     });
 
     it('each variant resolves to a distinct asset src', () => {
-        const variants = [
-            'primary',
-            'primary-flat',
-            'inverse',
-            'mono-dark',
-            'mono-light',
-            'mark',
-        ] as const;
+        const variants = ['primary', 'primary-flat', 'inverse', 'mono-dark', 'mono-light', 'mark'] as const;
         const seen = new Set<string>();
         for (const v of variants) {
             const html = renderToString(<Logo variant={v} linkHome={false} />);
@@ -78,10 +71,7 @@ describe('<Logo /> SSR (brand assets PR)', () => {
             expect(m, `variant ${v} should render a src`).not.toBeNull();
             const url = m![1];
             expect(url.length, `variant ${v} src should be non-empty`).toBeGreaterThan(0);
-            expect(
-                seen.has(url),
-                `variant ${v} url collides with another variant`,
-            ).toBe(false);
+            expect(seen.has(url), `variant ${v} url collides with another variant`).toBe(false);
             seen.add(url);
         }
         expect(seen.size).toBe(variants.length);

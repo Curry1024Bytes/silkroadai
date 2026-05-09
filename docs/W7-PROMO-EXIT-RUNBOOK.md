@@ -57,13 +57,13 @@ The script enumerates `model_ratio` for sub2api channel 2 (Anthropic)
 and channel 3 (OpenAI), prints `old → old × 2` per model, and stops.
 Manual sanity check on a few:
 
-| model | promo mr (now) | retail mr (after exit) | retail $/1M input |
-|---|---|---|---|
-| `claude-opus-4-7` | 7.5 | **15.0** | $15 |
-| `claude-sonnet-4-6` | 1.5 | **3.0** | $3 |
-| `claude-haiku-4-5` | 0.5 | **1.0** | $1 |
-| `gpt-5.5` | 2.5 | **5.0** | $5 |
-| `gpt-5.4-mini` | 0.25 | **0.5** | $0.50 |
+| model               | promo mr (now) | retail mr (after exit) | retail $/1M input |
+| ------------------- | -------------- | ---------------------- | ----------------- |
+| `claude-opus-4-7`   | 7.5            | **15.0**               | $15               |
+| `claude-sonnet-4-6` | 1.5            | **3.0**                | $3                |
+| `claude-haiku-4-5`  | 0.5            | **1.0**                | $1                |
+| `gpt-5.5`           | 2.5            | **5.0**                | $5                |
+| `gpt-5.4-mini`      | 0.25           | **0.5**                | $0.50             |
 
 If any number doesn't match expected retail, **stop and investigate**.
 Do NOT run `--apply`.
@@ -112,10 +112,12 @@ ssh vps 'docker compose -f /opt/silkroadai-portal/docker-compose.prod.yml restar
 ## Step 6 — rebuild portal landing + /pricing without promo banner
 
 In `src/app/landing/page.tsx` (when it lands in W7 D2):
+
 - Remove the promo banner block ("上线钜惠 · 海外模型 5 折 …")
 - Optionally replace with a low-key "正式价已生效" notice that fades after a week
 
 In `src/app/pricing/page.tsx`:
+
 - Remove the strikethrough on retail prices (or keep "限时回归" highlight if running a follow-up promo)
 - Verify the prices in the page match new-api `/api/pricing`
 

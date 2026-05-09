@@ -27,10 +27,7 @@ interface LegalDocPageProps {
 }
 
 export async function LegalDocPage({ file }: LegalDocPageProps) {
-    const raw = await fs.readFile(
-        path.join(process.cwd(), 'src/content/legal', file),
-        'utf8',
-    );
+    const raw = await fs.readFile(path.join(process.cwd(), 'src/content/legal', file), 'utf8');
     // marked synchronous mode — no Promise unwrap needed.
     const html = marked.parse(raw) as string;
 
@@ -68,10 +65,7 @@ export async function LegalDocPage({ file }: LegalDocPageProps) {
                 {/* Style the rendered HTML in-place via a wrapper class +
                  *  scoped <style>. dangerouslySetInnerHTML is safe here —
                  *  source markdown is repo-controlled (no user input). */}
-                <article
-                    className="legal-doc"
-                    dangerouslySetInnerHTML={{ __html: html }}
-                />
+                <article className="legal-doc" dangerouslySetInnerHTML={{ __html: html }} />
                 <style>{`
                     .legal-doc { color: #1a2540; line-height: 1.7; font-size: 14px; }
                     .legal-doc h1 { font-size: 22px; color: #0a1535; margin: 8px 0 16px; }

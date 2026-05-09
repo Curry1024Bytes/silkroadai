@@ -138,10 +138,9 @@ export async function GET(req: NextRequest) {
         // account_disabled (banned) and link_conflict (suspected attack) →
         // not ops alerts.
         if (outcome.error === 'provisioning_failed') {
-            Sentry.captureException(
-                new Error(`oauth-github: provisionNewCustomer failed for email=${email}`),
-                { tags: { area: 'oauth-github-provision' } },
-            );
+            Sentry.captureException(new Error(`oauth-github: provisionNewCustomer failed for email=${email}`), {
+                tags: { area: 'oauth-github-provision' },
+            });
         }
         return buildResponse(req.url, { error: outcome.error });
     }
@@ -154,10 +153,7 @@ export async function GET(req: NextRequest) {
             data: { last_login_at: new Date(), last_login_ip: ip },
         })
         .catch((err) => {
-            console.warn(
-                `[oauth/github/callback] last_login update failed for ${outcome.userId}:`,
-                err,
-            );
+            console.warn(`[oauth/github/callback] last_login update failed for ${outcome.userId}:`, err);
         });
 
     const sessionToken = await signSession(outcome.userId);

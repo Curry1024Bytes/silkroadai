@@ -41,36 +41,20 @@ interface CardProps extends React.HTMLAttributes<HTMLDivElement> {
     as?: keyof React.JSX.IntrinsicElements;
 }
 
-export function Card({
-    variant = 'default',
-    as = 'div',
-    className,
-    children,
-    ...rest
-}: CardProps): React.ReactElement {
+export function Card({ variant = 'default', as = 'div', className, children, ...rest }: CardProps): React.ReactElement {
     const Tag = as as React.ElementType;
     return (
-        <Tag
-            {...rest}
-            className={[VARIANT_CLASSES[variant], className ?? ''].filter(Boolean).join(' ')}
-        >
+        <Tag {...rest} className={[VARIANT_CLASSES[variant], className ?? ''].filter(Boolean).join(' ')}>
             {children}
         </Tag>
     );
 }
 
-export function CardHeader({
-    className,
-    children,
-    ...rest
-}: React.HTMLAttributes<HTMLDivElement>): React.ReactElement {
+export function CardHeader({ className, children, ...rest }: React.HTMLAttributes<HTMLDivElement>): React.ReactElement {
     return (
         <div
             {...rest}
-            className={[
-                'px-6 pt-5 pb-3 flex items-start justify-between gap-3',
-                className ?? '',
-            ]
+            className={['px-6 pt-5 pb-3 flex items-start justify-between gap-3', className ?? '']
                 .filter(Boolean)
                 .join(' ')}
         >
@@ -89,12 +73,7 @@ export function CardTitle({
 }): React.ReactElement {
     const Tag = as as React.ElementType;
     return (
-        <Tag
-            {...rest}
-            className={['text-lg font-semibold text-navy', className ?? '']
-                .filter(Boolean)
-                .join(' ')}
-        >
+        <Tag {...rest} className={['text-lg font-semibold text-navy', className ?? ''].filter(Boolean).join(' ')}>
             {children}
         </Tag>
     );
@@ -106,29 +85,17 @@ export function CardContent({
     ...rest
 }: React.HTMLAttributes<HTMLDivElement>): React.ReactElement {
     return (
-        <div
-            {...rest}
-            className={['px-6 py-4 text-muted-ink', className ?? '']
-                .filter(Boolean)
-                .join(' ')}
-        >
+        <div {...rest} className={['px-6 py-4 text-muted-ink', className ?? ''].filter(Boolean).join(' ')}>
             {children}
         </div>
     );
 }
 
-export function CardFooter({
-    className,
-    children,
-    ...rest
-}: React.HTMLAttributes<HTMLDivElement>): React.ReactElement {
+export function CardFooter({ className, children, ...rest }: React.HTMLAttributes<HTMLDivElement>): React.ReactElement {
     return (
         <div
             {...rest}
-            className={[
-                'px-6 py-3 border-t border-brand-border flex items-center justify-end gap-3',
-                className ?? '',
-            ]
+            className={['px-6 py-3 border-t border-brand-border flex items-center justify-end gap-3', className ?? '']
                 .filter(Boolean)
                 .join(' ')}
         >

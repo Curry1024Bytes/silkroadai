@@ -54,7 +54,7 @@ async function callLiteLLM<T>(
     const init: RequestInit = {
         method,
         headers: {
-            'Authorization': `Bearer ${LITELLM_MASTER_KEY}`,
+            Authorization: `Bearer ${LITELLM_MASTER_KEY}`,
             'Content-Type': 'application/json',
         },
     };
@@ -63,7 +63,11 @@ async function callLiteLLM<T>(
     const res = await fetch(url, init);
     const text = await res.text();
     let data: unknown = null;
-    try { data = text ? JSON.parse(text) : null; } catch { data = text; }
+    try {
+        data = text ? JSON.parse(text) : null;
+    } catch {
+        data = text;
+    }
 
     if (!res.ok) {
         const detail = (data as { detail?: unknown } | null)?.detail;
@@ -71,13 +75,13 @@ async function callLiteLLM<T>(
         // LiteLLM frequently returns `detail` as a list of pydantic
         // validation issues. JSON-stringify so the message stays readable
         // instead of `[object Object]`.
-        const stringify = (v: unknown): string =>
-            typeof v === 'string' ? v : JSON.stringify(v);
-        const msg = detail !== undefined
-            ? stringify(detail)
-            : errField !== undefined
-              ? stringify(errField)
-              : text || res.statusText;
+        const stringify = (v: unknown): string => (typeof v === 'string' ? v : JSON.stringify(v));
+        const msg =
+            detail !== undefined
+                ? stringify(detail)
+                : errField !== undefined
+                  ? stringify(errField)
+                  : text || res.statusText;
         throw new LiteLLMApiError(res.status, `${method} ${path}`, data, msg);
     }
     return data as T;
@@ -115,7 +119,7 @@ export const LiteLLMKeySchema = z.object({
 export type LiteLLMKey = z.infer<typeof LiteLLMKeySchema>;
 
 export interface GenerateKeyResponse extends LiteLLMKey {
-    key: string;          // 完整的 sk-xxx,只在创建时返回一次
+    key: string; // 完整的 sk-xxx,只在创建时返回一次
     expires: string | null;
     user_id: string | null;
 }
@@ -128,8 +132,8 @@ export interface SpendLogEntry {
     total_tokens: number;
     prompt_tokens: number;
     completion_tokens: number;
-    startTime: string;     // UTC
-    endTime: string;       // UTC
+    startTime: string; // UTC
+    endTime: string; // UTC
     user: string | null;
     metadata: Record<string, unknown>;
 }
@@ -153,17 +157,13 @@ export async function createUser(args: {
     // LiteLLM 1.82.6 LitellmUserRoles enum: proxy_admin | proxy_admin_viewer
     // | internal_user | internal_user_viewer. Portal customers map to
     // `internal_user` (key/budget owner with no admin endpoints).
-    const result = await callLiteLLM<{ user_id: string; user_email: string }>(
-        'POST',
-        '/user/new',
-        {
-            user_email: args.user_email,
-            user_alias: args.user_alias,
-            max_budget: args.max_budget,
-            user_role: args.user_role || 'internal_user',
-            auto_create_key: false,
-        },
-    );
+    const result = await callLiteLLM<{ user_id: string; user_email: string }>('POST', '/user/new', {
+        user_email: args.user_email,
+        user_alias: args.user_alias,
+        max_budget: args.max_budget,
+        user_role: args.user_role || 'internal_user',
+        auto_create_key: false,
+    });
     return { user_id: result.user_id, user_email: result.user_email };
 }
 
@@ -191,20 +191,16 @@ export async function generateKey(args: {
     user_id: string;
     key_alias?: string;
     max_budget?: number;
-    models?: string[];          // 空数组 = 所有模型
+    models?: string[]; // 空数组 = 所有模型
     metadata?: Record<string, unknown>;
 }): Promise<GenerateKeyResponse> {
-    return await callLiteLLM<GenerateKeyResponse>(
-        'POST',
-        '/key/generate',
-        {
-            user_id: args.user_id,
-            key_alias: args.key_alias,
-            max_budget: args.max_budget,
-            models: args.models ?? [],
-            metadata: args.metadata,
-        },
-    );
+    return await callLiteLLM<GenerateKeyResponse>('POST', '/key/generate', {
+        user_id: args.user_id,
+        key_alias: args.key_alias,
+        max_budget: args.max_budget,
+        models: args.models ?? [],
+        metadata: args.metadata,
+    });
 }
 
 /**
@@ -217,16 +213,14 @@ export async function generateKey(args: {
  *   3. 充值后立刻调 getKeyInfo 强制刷新 LiteLLM 缓存(否则 60 秒内余额可能不生效)
  */
 export async function updateKeyBudget(args: {
-    key: string;                // 完整的 sk-xxx
-    max_budget: number;          // 替换为这个总值
+    key: string; // 完整的 sk-xxx
+    max_budget: number; // 替换为这个总值
 }): Promise<LiteLLMKey> {
-    const result = await callLiteLLM<LiteLLMKey>(
-        'POST',
-        '/key/update',
-        { key: args.key, max_budget: args.max_budget },
-    );
+    const result = await callLiteLLM<LiteLLMKey>('POST', '/key/update', { key: args.key, max_budget: args.max_budget });
     // 强制刷新缓存
-    await getKeyInfo(args.key).catch(() => {/* ignore */});
+    await getKeyInfo(args.key).catch(() => {
+        /* ignore */
+    });
     return result;
 }
 
@@ -257,19 +251,14 @@ export async function listKeys(args: {
     current_page: number;
     total_pages: number;
 }> {
-    return await callLiteLLM(
-        'GET',
-        '/key/list',
-        undefined,
-        {
-            user_id: args.user_id,
-            page: args.page ?? 1,
-            size: args.size ?? 20,
-            sort_by: args.sort_by ?? 'created_at',
-            sort_order: args.sort_order ?? 'desc',
-            return_full_object: String(args.return_full_object ?? true),
-        },
-    );
+    return await callLiteLLM('GET', '/key/list', undefined, {
+        user_id: args.user_id,
+        page: args.page ?? 1,
+        size: args.size ?? 20,
+        sort_by: args.sort_by ?? 'created_at',
+        sort_order: args.sort_order ?? 'desc',
+        return_full_object: String(args.return_full_object ?? true),
+    });
 }
 
 /**
@@ -303,8 +292,8 @@ export async function resetKeySpend(key: string): Promise<{ key: string; spend: 
 export async function getSpendLogs(args: {
     api_key?: string;
     user_id?: string;
-    start_date: string;           // "YYYY-MM-DD HH:MM:SS" UTC
-    end_date: string;             // 同上
+    start_date: string; // "YYYY-MM-DD HH:MM:SS" UTC
+    end_date: string; // 同上
     page?: number;
     page_size?: number;
 }): Promise<{
@@ -358,9 +347,9 @@ export async function checkLiteLLMHealth(): Promise<{ status: string }> {
  * Portal 要把这三个字段存到自己的 users + litellm_keys 表
  */
 export async function provisionNewCustomer(args: {
-    portal_user_id: string;       // Portal 自己的 user UUID
+    portal_user_id: string; // Portal 自己的 user UUID
     email: string;
-    initial_max_budget?: number;  // 默认 0
+    initial_max_budget?: number; // 默认 0
 }): Promise<{
     litellm_user_id: string;
     litellm_key: string;
@@ -379,7 +368,7 @@ export async function provisionNewCustomer(args: {
         user_id: user.user_id,
         key_alias: keyAlias,
         max_budget: args.initial_max_budget ?? 0,
-        models: [],   // 所有模型
+        models: [], // 所有模型
         metadata: { portal_user_id: args.portal_user_id, type: 'default' },
     });
 
@@ -402,7 +391,7 @@ export async function provisionNewCustomer(args: {
  */
 export async function applyRecharge(args: {
     litellm_key: string;
-    new_total_max_budget: number;  // 该 key 的累计充值总额(由 portal 算)
+    new_total_max_budget: number; // 该 key 的累计充值总额(由 portal 算)
 }): Promise<LiteLLMKey> {
     return await updateKeyBudget({
         key: args.litellm_key,

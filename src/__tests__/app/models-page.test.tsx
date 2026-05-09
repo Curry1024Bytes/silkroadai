@@ -10,9 +10,7 @@ import { renderToString } from 'react-dom/server';
 
 const mockListAvailableModels = vi.fn();
 vi.mock('@/lib/newapi/client', async () => {
-    const actual = await vi.importActual<typeof import('@/lib/newapi/client')>(
-        '@/lib/newapi/client',
-    );
+    const actual = await vi.importActual<typeof import('@/lib/newapi/client')>('@/lib/newapi/client');
     return {
         ...actual,
         listAvailableModels: () => mockListAvailableModels(),
@@ -122,11 +120,7 @@ describe('<ModelsBrowser /> SSR (W6 D3)', () => {
     it('serializes model entries as visible card text', () => {
         const { grouped, totalModels, vendorCount } = groupModels(SAMPLE);
         const html = renderToString(
-            <ModelsBrowser
-                grouped={grouped}
-                totalModels={totalModels}
-                vendorCount={vendorCount}
-            />,
+            <ModelsBrowser grouped={grouped} totalModels={totalModels} vendorCount={vendorCount} />,
         );
         // Every input model name appears somewhere in the markup
         for (const m of SAMPLE) {
@@ -145,11 +139,7 @@ describe('<ModelsBrowser /> SSR (W6 D3)', () => {
     it('renders the 复制 button per model card', () => {
         const { grouped, totalModels, vendorCount } = groupModels(['gpt-4', 'claude-opus-4-7']);
         const html = renderToString(
-            <ModelsBrowser
-                grouped={grouped}
-                totalModels={totalModels}
-                vendorCount={vendorCount}
-            />,
+            <ModelsBrowser grouped={grouped} totalModels={totalModels} vendorCount={vendorCount} />,
         );
         const copyBtns = html.match(/复制/g) ?? [];
         // Two cards → ≥ 2 copy-button surfaces (button text + aria-label)
@@ -159,11 +149,7 @@ describe('<ModelsBrowser /> SSR (W6 D3)', () => {
     it('totalModels + vendorCount render in the summary line on initial paint (no debounced query yet)', () => {
         const { grouped, totalModels, vendorCount } = groupModels(SAMPLE);
         const html = renderToString(
-            <ModelsBrowser
-                grouped={grouped}
-                totalModels={totalModels}
-                vendorCount={vendorCount}
-            />,
+            <ModelsBrowser grouped={grouped} totalModels={totalModels} vendorCount={vendorCount} />,
         );
         // W7 P2B: <strong> tags now carry class="text-navy"; regex tolerates
         // an optional class= attribute. Non-greedy [^>]* avoids spanning

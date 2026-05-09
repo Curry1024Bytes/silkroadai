@@ -17,11 +17,7 @@ import { headers } from 'next/headers';
 import { NextRequest } from 'next/server';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth/session';
-import {
-    queryLogs,
-    quotaToCny,
-    type NewApiUsageLog,
-} from '@/lib/newapi/client';
+import { queryLogs, quotaToCny, type NewApiUsageLog } from '@/lib/newapi/client';
 import { getUsageAggregate } from '@/lib/newapi/usage-aggregate';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
@@ -102,10 +98,7 @@ export default async function UsagePage({
         if (aggSettled.status === 'fulfilled') {
             aggSnap = aggSettled.value;
         } else {
-            queryErr =
-                aggSettled.reason instanceof Error
-                    ? aggSettled.reason.message
-                    : String(aggSettled.reason);
+            queryErr = aggSettled.reason instanceof Error ? aggSettled.reason.message : String(aggSettled.reason);
             console.warn(`[usage] getUsageAggregate failed for user ${user.id}:`, aggSettled.reason);
         }
 
@@ -114,9 +107,7 @@ export default async function UsagePage({
             // table the same way fetchLiveAggregate does. If new-api ever
             // regresses on the username filter we won't accidentally render
             // someone else's username / model_name in the table.
-            recentLogs = recentSettled.value.items.filter(
-                (log) => log.user_id === newapiUserId,
-            );
+            recentLogs = recentSettled.value.items.filter((log) => log.user_id === newapiUserId);
         } else {
             // Recent-50 failure is non-fatal — fall through with empty list.
             console.warn(`[usage] recent queryLogs failed for user ${user.id}:`, recentSettled.reason);
@@ -210,9 +201,7 @@ export default async function UsagePage({
                             </h2>
                             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 mb-6">
                                 {agg.byModel.map((m) => {
-                                    const pct = agg.totalQuota
-                                        ? (m.quota / agg.totalQuota) * 100
-                                        : 0;
+                                    const pct = agg.totalQuota ? (m.quota / agg.totalQuota) * 100 : 0;
                                     return (
                                         <Card as="article" key={m.model} className="px-4 py-3">
                                             <p

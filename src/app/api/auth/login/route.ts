@@ -15,11 +15,14 @@ export const runtime = 'nodejs';
 // timing the response. Format must be valid for bcryptjs.compare not to throw;
 // the hash itself is unreachable (it's the bcrypt of a 32-byte random string
 // generated once and discarded). Hashes a never-equal-to-anything sentinel.
-const TIMING_DEFENSE_HASH =
-    '$2a$12$abcdefghijklmnopqrstuOAk1FzbS9Vct.pRNW8a3VG9JaMvOaJfa';
+const TIMING_DEFENSE_HASH = '$2a$12$abcdefghijklmnopqrstuOAk1FzbS9Vct.pRNW8a3VG9JaMvOaJfa';
 
 const LoginSchema = z.object({
-    email: z.string().email().max(254).transform((s) => s.trim().toLowerCase()),
+    email: z
+        .string()
+        .email()
+        .max(254)
+        .transform((s) => s.trim().toLowerCase()),
     password: z.string().min(1).max(128),
 });
 

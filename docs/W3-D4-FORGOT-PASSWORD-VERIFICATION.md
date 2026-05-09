@@ -14,23 +14,23 @@
 
 ## 验证矩阵
 
-| 项 | 期望 | 实测 | 结果 |
-|---|---|---|---|
-| Branch + 起点 untracked | Batch A 留下 4 个 untracked dir + 9 modified files | 一致 | ✅ |
-| `.env` SMTP_* + NEXT_PUBLIC_APP_URL 已 set | 5 个 SMTP_* + APP_URL | 全 set(APP_URL 是 prod 值,不影响 e2e — token 走 regex 提) | ✅ |
-| `EMAIL_DEBUG_LOG` 机制 | env 设置时 append `to\tresetUrl` 到文件,prod 不启用 | sendPasswordResetEmail 末尾 try/catch + appendFile;SMTP 失败也写 | ✅ |
-| `/reset-password` UI 页面 | server `?token=` + client form 调 `/api/auth/reset-password` | page.tsx 60 行 + reset-password-form.tsx 100 行,inline style,品牌色 `#0a1535` | ✅ |
-| Reset fixture user 密码 | `session_token_version` 涨 1 + hash 更新 | stv 1 → 2,hash_prefix `$2b$10$` len=60 | ✅ |
-| Dev server with `EMAIL_DEBUG_LOG` | ready < 30s | ready in 1.8s | ✅ |
-| Unit tests: forgot + reset + jwt + register + login | 30 files / 320 tests / 0 fail | 30 files / 320 tests / 1 skip / 0 fail | ✅ |
-| E2E `forgot-happy` | 200 + token 写 debug log | 200 + 1 行 debug log,token 64 hex | ✅ |
-| E2E `reset-happy` | 200 `{ok:true}` | 200 `{ok:true}` | ✅ |
-| E2E `login-new` | 200 + `set-cookie` + body 含 `user`+`apiKey` | 200, cookie 207 chars, apiKey prefix `e0QdAg2n` | ✅ |
-| E2E `reset-replay`(用过的 token 再用)| 400 `invalid_or_expired_token` | 400 `invalid_or_expired_token` | ✅ |
-| E2E `login-old`(改密前的旧 pass)| 401 `invalid_credentials` | 401 `invalid_credentials` | ✅ |
-| E2E forgot 不存在 email | debug log 不增 | 1 → 1(0 增) | ✅ |
-| E2E throttle: 5 次连发同 email | debug log +1 | +1 | ✅ |
-| 后台进程 + 敏感临时文件清理 | 都清,带 secret 的用 `rm -P` | dev server + next-server 子进程都关,creds/token/cookie 文件 `rm -P`,其余普通 `rm` | ✅ |
+| 项                                                  | 期望                                                         | 实测                                                                              | 结果 |
+| --------------------------------------------------- | ------------------------------------------------------------ | --------------------------------------------------------------------------------- | ---- |
+| Branch + 起点 untracked                             | Batch A 留下 4 个 untracked dir + 9 modified files           | 一致                                                                              | ✅   |
+| `.env` SMTP\_\* + NEXT_PUBLIC_APP_URL 已 set        | 5 个 SMTP\_\* + APP_URL                                      | 全 set(APP_URL 是 prod 值,不影响 e2e — token 走 regex 提)                         | ✅   |
+| `EMAIL_DEBUG_LOG` 机制                              | env 设置时 append `to\tresetUrl` 到文件,prod 不启用          | sendPasswordResetEmail 末尾 try/catch + appendFile;SMTP 失败也写                  | ✅   |
+| `/reset-password` UI 页面                           | server `?token=` + client form 调 `/api/auth/reset-password` | page.tsx 60 行 + reset-password-form.tsx 100 行,inline style,品牌色 `#0a1535`     | ✅   |
+| Reset fixture user 密码                             | `session_token_version` 涨 1 + hash 更新                     | stv 1 → 2,hash_prefix `$2b$10$` len=60                                            | ✅   |
+| Dev server with `EMAIL_DEBUG_LOG`                   | ready < 30s                                                  | ready in 1.8s                                                                     | ✅   |
+| Unit tests: forgot + reset + jwt + register + login | 30 files / 320 tests / 0 fail                                | 30 files / 320 tests / 1 skip / 0 fail                                            | ✅   |
+| E2E `forgot-happy`                                  | 200 + token 写 debug log                                     | 200 + 1 行 debug log,token 64 hex                                                 | ✅   |
+| E2E `reset-happy`                                   | 200 `{ok:true}`                                              | 200 `{ok:true}`                                                                   | ✅   |
+| E2E `login-new`                                     | 200 + `set-cookie` + body 含 `user`+`apiKey`                 | 200, cookie 207 chars, apiKey prefix `e0QdAg2n`                                   | ✅   |
+| E2E `reset-replay`(用过的 token 再用)               | 400 `invalid_or_expired_token`                               | 400 `invalid_or_expired_token`                                                    | ✅   |
+| E2E `login-old`(改密前的旧 pass)                    | 401 `invalid_credentials`                                    | 401 `invalid_credentials`                                                         | ✅   |
+| E2E forgot 不存在 email                             | debug log 不增                                               | 1 → 1(0 增)                                                                       | ✅   |
+| E2E throttle: 5 次连发同 email                      | debug log +1                                                 | +1                                                                                | ✅   |
+| 后台进程 + 敏感临时文件清理                         | 都清,带 secret 的用 `rm -P`                                  | dev server + next-server 子进程都关,creds/token/cookie 文件 `rm -P`,其余普通 `rm` | ✅   |
 
 **结论:核心信号 ✅,1 条 P1 blocker(F1 — SMTP 凭据 535)+ 4 条 informational(F2-F5)。**
 
@@ -41,14 +41,14 @@
 - **症状**:Batch B 真实调 `getMailer().sendMail({...})` → throws `Error: Invalid login: 535 Login fail. Account is abnormal, service is not open, password is incorrect, login frequency limited, or system is busy.`
 - **影响**:邮件根本发不出去。本 batch 的 e2e 靠 `EMAIL_DEBUG_LOG` 机制拿到 token,逻辑路径全通,但客户实际收不到邮件。**W3 D5 邮箱验证流程**也会同样发不出激活邮件,得先修这个。
 - **根因可能**(没排查到位):
-  - SMTP_PASS 是过期的客户端授权码(腾讯企业邮箱授权码定期会过期)
-  - SMTP_USER 拼写问题(`noreplay@silkroadai.io` vs `noreply@silkroadai.io` — 但 Cowork 已确认是 `noreplay@`,所以这不是问题)
-  - 企业邮箱后台 "客户端授权码" 功能没开
-  - IP 频率限制(腾讯有时会临时 ban IP,等等再试)
+    - SMTP_PASS 是过期的客户端授权码(腾讯企业邮箱授权码定期会过期)
+    - SMTP_USER 拼写问题(`noreplay@silkroadai.io` vs `noreply@silkroadai.io` — 但 Cowork 已确认是 `noreplay@`,所以这不是问题)
+    - 企业邮箱后台 "客户端授权码" 功能没开
+    - IP 频率限制(腾讯有时会临时 ban IP,等等再试)
 - **修复**:用户去 admin.exmail.qq.com 后台:
-  1. 确认 `noreplay@silkroadai.io` mailbox 还活着(没过期 / 没被 disable)
-  2. 重新生成客户端授权码,写回本地 `.env` 的 `SMTP_PASS`
-  3. 用真实邮箱跑 F2 提到的 smoke
+    1. 确认 `noreplay@silkroadai.io` mailbox 还活着(没过期 / 没被 disable)
+    2. 重新生成客户端授权码,写回本地 `.env` 的 `SMTP_PASS`
+    3. 用真实邮箱跑 F2 提到的 smoke
 - **行动**:用户做。Cowork 这边 Claude Code 没法登 admin.exmail.qq.com。
 
 ### F2 [P1 / 等用户] SMTP 真实送达 smoke

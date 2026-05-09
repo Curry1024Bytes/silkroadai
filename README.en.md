@@ -228,19 +228,19 @@ Display a support contact image and description on the right side of the payment
 
 - **External URL** (recommended — no Compose changes needed): any publicly accessible image link (CDN, OSS, image hosting).
 
-  ```env
-  PAY_HELP_IMAGE_URL=https://cdn.example.com/help-qr.jpg
-  ```
+    ```env
+    PAY_HELP_IMAGE_URL=https://cdn.example.com/help-qr.jpg
+    ```
 
 - **Local file**: place the image in `./uploads/` and reference it as `/uploads/<filename>`.
   The directory must be mounted in `docker-compose.app.yml` (included by default):
-  ```yaml
-  volumes:
-    - ./uploads:/app/public/uploads:ro
-  ```
-  ```env
-  PAY_HELP_IMAGE_URL=/uploads/help-qr.jpg
-  ```
+    ```yaml
+    volumes:
+        - ./uploads:/app/public/uploads:ro
+    ```
+    ```env
+    PAY_HELP_IMAGE_URL=/uploads/help-qr.jpg
+    ```
 
 > Clicking the help image opens it full-screen in the center of the screen.
 

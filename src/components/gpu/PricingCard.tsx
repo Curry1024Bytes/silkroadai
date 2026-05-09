@@ -14,11 +14,7 @@
  *     because the action is "open WeChat search" not internal nav)
  */
 import { Card } from '@/components/ui/Card';
-import {
-    GPU_SKUS,
-    LEASE_TERM_LABEL,
-    type GpuSku,
-} from '@/data/gpu-pricing';
+import { GPU_SKUS, LEASE_TERM_LABEL, type GpuSku } from '@/data/gpu-pricing';
 import { t } from '@/i18n/gpu-page';
 
 export interface PricingCardProps {
@@ -29,11 +25,7 @@ export interface PricingCardProps {
 function formatPriceRange(sku: GpuSku): React.ReactNode {
     const { from, to } = sku.monthlyPriceCny;
     if (from === null && to === null) {
-        return (
-            <span className="text-2xl font-semibold text-navy">
-                {sku.customLabel ?? '—'}
-            </span>
-        );
+        return <span className="text-2xl font-semibold text-navy">{sku.customLabel ?? '—'}</span>;
     }
     const fmt = (n: number) => `¥${n.toLocaleString('zh-CN')}`;
     return (
@@ -72,16 +64,12 @@ export function PricingCard({ sku }: PricingCardProps) {
                 </dl>
             </div>
 
-            <div className="px-6 py-4 border-t border-brand-border">
-                {formatPriceRange(sku)}
-            </div>
+            <div className="px-6 py-4 border-t border-brand-border">{formatPriceRange(sku)}</div>
 
             <div className="px-6 py-3 border-t border-brand-border text-sm text-muted-ink space-y-1.5">
                 <p className="m-0">
                     <span className="text-minor-ink">{t('pricing_card_lease_term_label')}:</span>{' '}
-                    <span className="font-medium text-navy">
-                        {LEASE_TERM_LABEL[sku.minLeaseTerm]}
-                    </span>
+                    <span className="font-medium text-navy">{LEASE_TERM_LABEL[sku.minLeaseTerm]}</span>
                 </p>
                 <p className="m-0">
                     <span className="text-minor-ink">{t('pricing_card_quantity_label')}:</span>{' '}
@@ -90,9 +78,7 @@ export function PricingCard({ sku }: PricingCardProps) {
             </div>
 
             <div className="px-6 py-4 border-t border-brand-border flex-1">
-                <p className="m-0 mb-2 text-xs text-minor-ink">
-                    {t('pricing_card_use_cases_label')}
-                </p>
+                <p className="m-0 mb-2 text-xs text-minor-ink">{t('pricing_card_use_cases_label')}</p>
                 <ul className="list-none p-0 m-0 flex flex-wrap gap-1.5">
                     {sku.useCases.map((uc) => (
                         <li
@@ -106,9 +92,7 @@ export function PricingCard({ sku }: PricingCardProps) {
             </div>
 
             <div className="px-6 py-4 border-t border-brand-border bg-paper-muted/40">
-                <p className="m-0 text-sm text-navy font-medium">
-                    {t('pricing_card_cta')}
-                </p>
+                <p className="m-0 text-sm text-navy font-medium">{t('pricing_card_cta')}</p>
                 <p className="m-0 mt-1 text-xs text-minor-ink">
                     微信号 <code className="font-mono px-1.5 py-0.5 bg-surface rounded text-navy">Global_Ads</code>
                 </p>

@@ -2,3 +2,15 @@
 node_modules
 vendor
 pnpm-lock.yaml
+# CLAUDE.md flags this as "Claude Code 别动这个目录,这是辅助资源"
+# — bootstrapping artifacts mirroring upstream sub2apipay; not subject
+# to portal style rules.
+_bootstrap
+# Worktrees + harness state. .claude/ may also contain in-flight
+# transcripts the operator hasn't closed yet — never format.
+.claude
+# Generated Next build artifacts (separate from .next listed above).
+.next/dev
+.next/types
+# Submodule that just happens to be in the workspace
+vendor/stripe-node

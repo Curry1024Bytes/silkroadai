@@ -46,9 +46,7 @@ import { getCurrentUser } from '@/lib/auth/session';
 const PORTAL_USER_ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 
 function makeReq(cookieValue: string | null): NextRequest {
-    const headers: Record<string, string> = cookieValue
-        ? { cookie: `silkroad_session=${cookieValue}` }
-        : {};
+    const headers: Record<string, string> = cookieValue ? { cookie: `silkroad_session=${cookieValue}` } : {};
     return new NextRequest('http://localhost/internal', { method: 'GET', headers });
 }
 
@@ -106,10 +104,7 @@ describe('getCurrentUser — behavioral (cache() impact transparent)', () => {
 
 describe('getCurrentUser — structural cache() pin (dedup runs in production)', () => {
     it('source wraps the inner verify+lookup in React.cache()', () => {
-        const source = readFileSync(
-            join(process.cwd(), 'src/lib/auth/session.ts'),
-            'utf-8',
-        );
+        const source = readFileSync(join(process.cwd(), 'src/lib/auth/session.ts'), 'utf-8');
         // cache imported from react
         expect(source).toMatch(/import\s*{[^}]*\bcache\b/);
         // cache(...) actually invoked

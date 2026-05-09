@@ -28,19 +28,10 @@ export interface EmptyStateProps {
     className?: string;
 }
 
-export function EmptyState({
-    icon,
-    title,
-    body,
-    action,
-    className,
-}: EmptyStateProps): React.ReactElement {
+export function EmptyState({ icon, title, body, action, className }: EmptyStateProps): React.ReactElement {
     return (
         <div
-            className={[
-                'flex flex-col items-center justify-center text-center px-6 py-12 gap-3',
-                className ?? '',
-            ]
+            className={['flex flex-col items-center justify-center text-center px-6 py-12 gap-3', className ?? '']
                 .filter(Boolean)
                 .join(' ')}
         >
@@ -50,9 +41,7 @@ export function EmptyState({
                 </div>
             ) : null}
             <h3 className="text-lg font-semibold text-navy m-0">{title}</h3>
-            {body ? (
-                <p className="text-sm text-muted-ink m-0 max-w-sm leading-relaxed">{body}</p>
-            ) : null}
+            {body ? <p className="text-sm text-muted-ink m-0 max-w-sm leading-relaxed">{body}</p> : null}
             {action ? <div className="mt-2">{action}</div> : null}
         </div>
     );

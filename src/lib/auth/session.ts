@@ -50,20 +50,18 @@ export class UnauthorizedError extends Error {
  * slot. Each new request gets its own cache (per-render, per the React 19
  * server-component model).
  */
-const _resolveUserFromCookie = cache(
-    async (cookieValue: string | undefined): Promise<User | null> => {
-        if (!cookieValue) return null;
+const _resolveUserFromCookie = cache(async (cookieValue: string | undefined): Promise<User | null> => {
+    if (!cookieValue) return null;
 
-        const payload = await verifySession(cookieValue);
-        if (!payload) return null;
+    const payload = await verifySession(cookieValue);
+    if (!payload) return null;
 
-        const user = await prisma.user.findUnique({ where: { id: payload.userId } });
-        if (!user) return null;
-        if (user.session_token_version !== payload.tokenVersion) return null;
+    const user = await prisma.user.findUnique({ where: { id: payload.userId } });
+    if (!user) return null;
+    if (user.session_token_version !== payload.tokenVersion) return null;
 
-        return user;
-    },
-);
+    return user;
+});
 
 /**
  * Resolve the request's logged-in user.

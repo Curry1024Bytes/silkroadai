@@ -27,15 +27,10 @@ const BASE_CLASSES =
     'transition-shadow duration-150 ease-brand outline-none ' +
     'disabled:opacity-50 disabled:cursor-not-allowed disabled:bg-paper-muted';
 
-const STATE_OK =
-    'border-brand-border ' +
-    'hover:border-muted-ink/40 ' +
-    'focus:border-navy focus:shadow-focus';
+const STATE_OK = 'border-brand-border ' + 'hover:border-muted-ink/40 ' + 'focus:border-navy focus:shadow-focus';
 
 const STATE_ERR =
-    'border-status-error-border ' +
-    'focus:border-status-error-text ' +
-    'focus:shadow-[0_0_0_3px_rgba(185,28,28,0.18)]';
+    'border-status-error-border ' + 'focus:border-status-error-text ' + 'focus:shadow-[0_0_0_3px_rgba(185,28,28,0.18)]';
 
 export const Input = React.forwardRef<HTMLInputElement, InputProps>(function Input(
     { error, block = true, className, type = 'text', ...rest },
@@ -47,12 +42,7 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(function Inp
             type={type}
             aria-invalid={error || undefined}
             {...rest}
-            className={[
-                BASE_CLASSES,
-                error ? STATE_ERR : STATE_OK,
-                block ? 'w-full' : '',
-                className ?? '',
-            ]
+            className={[BASE_CLASSES, error ? STATE_ERR : STATE_OK, block ? 'w-full' : '', className ?? '']
                 .filter(Boolean)
                 .join(' ')}
         />

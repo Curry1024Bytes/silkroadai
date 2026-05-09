@@ -52,9 +52,7 @@ export function UnverifiedBanner() {
         >
             <span>邮箱未验证,部分功能受限。</span>
             <span className="flex items-center gap-2">
-                {status === 'sent' && (
-                    <span className="text-status-success-text">验证邮件已发送,请查收 ✓</span>
-                )}
+                {status === 'sent' && <span className="text-status-success-text">验证邮件已发送,请查收 ✓</span>}
                 {status === 'error' && errMsg ? <FormError>{errMsg}</FormError> : null}
                 {status !== 'sent' && (
                     <Button

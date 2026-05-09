@@ -22,9 +22,7 @@ describe('GET /api/auth/oauth/github/start', () => {
         expect(location.startsWith('https://github.com/login/oauth/authorize')).toBe(true);
         const u = new URL(location);
         expect(u.searchParams.get('client_id')).toBe('gh-cid');
-        expect(u.searchParams.get('redirect_uri')).toBe(
-            'http://localhost:3002/api/auth/oauth/github/callback',
-        );
+        expect(u.searchParams.get('redirect_uri')).toBe('http://localhost:3002/api/auth/oauth/github/callback');
         expect(u.searchParams.get('scope')).toBe('read:user user:email');
         expect(u.searchParams.get('state')).toMatch(/^[a-f0-9]{64}$/);
         expect(u.searchParams.get('allow_signup')).toBe('true');

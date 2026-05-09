@@ -1,39 +1,39 @@
 services:
-  app:
-    build: .
-    ports:
-      - '${APP_PORT:-3001}:3000'
-    env_file: .env
-    environment:
-      - DATABASE_URL=postgresql://silkroadai-portal:${DB_PASSWORD:-password}@db:5432/silkroadai-portal
-      - HOSTNAME=0.0.0.0
-    depends_on:
-      db:
-        condition: service_healthy
-    networks:
-      - default
-      - sub2api-network
-    restart: unless-stopped
+    app:
+        build: .
+        ports:
+            - '${APP_PORT:-3001}:3000'
+        env_file: .env
+        environment:
+            - DATABASE_URL=postgresql://silkroadai-portal:${DB_PASSWORD:-password}@db:5432/silkroadai-portal
+            - HOSTNAME=0.0.0.0
+        depends_on:
+            db:
+                condition: service_healthy
+        networks:
+            - default
+            - sub2api-network
+        restart: unless-stopped
 
-  db:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: silkroadai-portal
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-password}
-      POSTGRES_DB: silkroadai-portal
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U silkroadai-portal']
-      interval: 5s
-      timeout: 5s
-      retries: 10
-    restart: unless-stopped
+    db:
+        image: postgres:16-alpine
+        environment:
+            POSTGRES_USER: silkroadai-portal
+            POSTGRES_PASSWORD: ${DB_PASSWORD:-password}
+            POSTGRES_DB: silkroadai-portal
+        volumes:
+            - pgdata:/var/lib/postgresql/data
+        healthcheck:
+            test: ['CMD-SHELL', 'pg_isready -U silkroadai-portal']
+            interval: 5s
+            timeout: 5s
+            retries: 10
+        restart: unless-stopped
 
 volumes:
-  pgdata:
+    pgdata:
 
 networks:
-  sub2api-network:
-    external: true
-    name: deploy_default
+    sub2api-network:
+        external: true
+        name: deploy_default

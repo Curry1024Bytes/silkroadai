@@ -254,18 +254,14 @@ export function KeysList({ initialRows }: { initialRows: KeyRow[] }) {
         () => (
             <thead>
                 <tr className="bg-paper-muted text-muted-ink">
-                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
-                        别名
-                    </th>
+                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">别名</th>
                     <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
                         API Key
                     </th>
                     <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
                         创建时间
                     </th>
-                    <th className="text-right px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
-                        操作
-                    </th>
+                    <th className="text-right px-4 py-2.5 text-xs font-semibold border-b border-brand-border">操作</th>
                 </tr>
             </thead>
         ),
@@ -295,9 +291,7 @@ export function KeysList({ initialRows }: { initialRows: KeyRow[] }) {
                                 type="text"
                                 placeholder="例如 prod-openai / test-claude / dev-mobile"
                                 value={create.alias}
-                                onChange={(e) =>
-                                    setCreate((prev) => ({ ...prev, alias: e.target.value, error: null }))
-                                }
+                                onChange={(e) => setCreate((prev) => ({ ...prev, alias: e.target.value, error: null }))}
                                 maxLength={50}
                                 autoFocus
                                 error={!!create.error}
@@ -368,14 +362,10 @@ export function KeysList({ initialRows }: { initialRows: KeyRow[] }) {
                                 // the rest of the portal: every row except
                                 // the last gets a bottom border.
                                 const cell = `px-4 py-3 text-sm text-ink`;
-                                const borderClass = isLast
-                                    ? ''
-                                    : 'border-b border-brand-border';
+                                const borderClass = isLast ? '' : 'border-b border-brand-border';
                                 return (
                                     <tr key={row.id}>
-                                        <td className={`${cell} ${borderClass}`}>
-                                            {row.key_alias}
-                                        </td>
+                                        <td className={`${cell} ${borderClass}`}>{row.key_alias}</td>
                                         <td className={`${cell} ${borderClass}`}>
                                             <div
                                                 className={[

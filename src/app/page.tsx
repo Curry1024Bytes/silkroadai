@@ -25,14 +25,7 @@ export const metadata: Metadata = {
     title: 'Silk Road AI · 一个 Key,接入 200+ AI 模型 | ChatGPT、Claude、Gemini 国内中转',
     description:
         '国内开发者的 AI API 聚合网关。海外大模型直连,人民币付费,价格透明。上线钜惠:海外模型 5 折,限时 30 天。',
-    keywords: [
-        'ChatGPT API',
-        'Claude API',
-        'Gemini API',
-        'AI API 中转',
-        '国内调用 OpenAI',
-        'AI 网关',
-    ],
+    keywords: ['ChatGPT API', 'Claude API', 'Gemini API', 'AI API 中转', '国内调用 OpenAI', 'AI 网关'],
     openGraph: {
         title: 'Silk Road AI · 一个 Key,接入 200+ AI 模型',
         description: '国内直连 ChatGPT/Claude/Gemini · 人民币付费 · 上线 5 折',
@@ -51,8 +44,7 @@ export default async function LandingPage({
     searchParams?: Promise<Record<string, string | string[] | undefined>>;
 }) {
     const params = (await searchParams) ?? {};
-    const oauthError =
-        typeof params.oauth_error === 'string' ? params.oauth_error : null;
+    const oauthError = typeof params.oauth_error === 'string' ? params.oauth_error : null;
     const promoActive = isPromoActive();
 
     return (
@@ -88,15 +80,7 @@ export default async function LandingPage({
 
 const SECTION_MAX = 1120;
 
-function Section({
-    children,
-    style,
-    id,
-}: {
-    children: React.ReactNode;
-    style?: React.CSSProperties;
-    id?: string;
-}) {
+function Section({ children, style, id }: { children: React.ReactNode; style?: React.CSSProperties; id?: string }) {
     return (
         <section id={id} style={{ width: '100%', ...style }}>
             <div
@@ -223,8 +207,7 @@ function Hero() {
                             maxWidth: 580,
                         }}
                     >
-                        国内开发者直连 ChatGPT、Claude、Gemini 等海外大模型 · 人民币付费 ·
-                        价格透明 · 5 分钟接入
+                        国内开发者直连 ChatGPT、Claude、Gemini 等海外大模型 · 人民币付费 · 价格透明 · 5 分钟接入
                     </p>
                     <div
                         style={{
@@ -307,8 +290,7 @@ function CodeExample() {
                 color: '#e6ebf5',
                 borderRadius: 12,
                 padding: '20px 22px',
-                fontFamily:
-                    'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
+                fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
                 fontSize: 13.5,
                 lineHeight: 1.7,
                 overflow: 'auto',
@@ -360,13 +342,9 @@ function PromoBanner() {
             >
                 <GiftIcon />
                 <div>
-                    <strong style={{ color: 'var(--color-navy)' }}>
-                        上线钜惠 · 海外模型 5 折
-                    </strong>{' '}
-                    · ChatGPT / Claude / Gemini 全系列 · 限时 30 天 ·{' '}
-                    <span style={{ color: 'var(--color-navy)', fontWeight: 600 }}>
-                        6 月 9 日截止
-                    </span>
+                    <strong style={{ color: 'var(--color-navy)' }}>上线钜惠 · 海外模型 5 折</strong> · ChatGPT / Claude
+                    / Gemini 全系列 · 限时 30 天 ·{' '}
+                    <span style={{ color: 'var(--color-navy)', fontWeight: 600 }}>6 月 9 日截止</span>
                 </div>
             </div>
         </Section>
@@ -461,15 +439,7 @@ function WhyUs() {
     );
 }
 
-function Card({
-    badge,
-    title,
-    body,
-}: {
-    badge: string;
-    title: string;
-    body: React.ReactNode[];
-}) {
+function Card({ badge, title, body }: { badge: string; title: string; body: React.ReactNode[] }) {
     return (
         <div
             style={{
@@ -574,8 +544,7 @@ function HowItWorks() {
                     title="接入调用"
                     body={
                         <>
-                            复制 <code style={{ fontFamily: 'monospace' }}>sk-xxx</code>,任何
-                            OpenAI SDK 改一行{' '}
+                            复制 <code style={{ fontFamily: 'monospace' }}>sk-xxx</code>,任何 OpenAI SDK 改一行{' '}
                             <code style={{ fontFamily: 'monospace' }}>base_url</code> 即可
                         </>
                     }
@@ -620,9 +589,7 @@ function Step({ n, title, body }: { n: number; title: string; body: React.ReactN
             >
                 {title}
             </h3>
-            <p style={{ margin: 0, color: 'var(--color-muted-ink)', fontSize: 14.5 }}>
-                {body}
-            </p>
+            <p style={{ margin: 0, color: 'var(--color-muted-ink)', fontSize: 14.5 }}>{body}</p>
         </div>
     );
 }
@@ -801,10 +768,7 @@ function PricingTeaser({ promoActive }: { promoActive: boolean }) {
                                 <td
                                     style={{
                                         padding: '14px 20px',
-                                        borderTop:
-                                            i === 0
-                                                ? 'none'
-                                                : '1px solid var(--color-brand-border)',
+                                        borderTop: i === 0 ? 'none' : '1px solid var(--color-brand-border)',
                                         color: 'var(--color-navy)',
                                         fontWeight: 600,
                                     }}
@@ -814,10 +778,7 @@ function PricingTeaser({ promoActive }: { promoActive: boolean }) {
                                 <td
                                     style={{
                                         padding: '14px 20px',
-                                        borderTop:
-                                            i === 0
-                                                ? 'none'
-                                                : '1px solid var(--color-brand-border)',
+                                        borderTop: i === 0 ? 'none' : '1px solid var(--color-brand-border)',
                                         color: 'var(--color-muted-ink)',
                                     }}
                                 >
@@ -826,10 +787,7 @@ function PricingTeaser({ promoActive }: { promoActive: boolean }) {
                                 <td
                                     style={{
                                         padding: '14px 20px',
-                                        borderTop:
-                                            i === 0
-                                                ? 'none'
-                                                : '1px solid var(--color-brand-border)',
+                                        borderTop: i === 0 ? 'none' : '1px solid var(--color-brand-border)',
                                     }}
                                 >
                                     <PriceCell
@@ -842,10 +800,7 @@ function PricingTeaser({ promoActive }: { promoActive: boolean }) {
                                 <td
                                     style={{
                                         padding: '14px 20px',
-                                        borderTop:
-                                            i === 0
-                                                ? 'none'
-                                                : '1px solid var(--color-brand-border)',
+                                        borderTop: i === 0 ? 'none' : '1px solid var(--color-brand-border)',
                                     }}
                                 >
                                     <PriceCell
@@ -869,17 +824,11 @@ function PricingTeaser({ promoActive }: { promoActive: boolean }) {
                 }}
             >
                 完整价格 →{' '}
-                <Link
-                    href="/pricing"
-                    style={{ color: 'var(--color-navy)', fontWeight: 500 }}
-                >
+                <Link href="/pricing" style={{ color: 'var(--color-navy)', fontWeight: 500 }}>
                     /pricing
                 </Link>{' '}
                 · 全部模型 →{' '}
-                <Link
-                    href="/models"
-                    style={{ color: 'var(--color-navy)', fontWeight: 500 }}
-                >
+                <Link href="/models" style={{ color: 'var(--color-navy)', fontWeight: 500 }}>
                     /models
                 </Link>
             </p>

@@ -47,7 +47,16 @@ const SESSION_USER = {
     newapi_username: NEWAPI_USERNAME,
 };
 
-function makeLog(overrides: Partial<{ id: number; model_name: string; quota: number; created_at: number; type: number; completion_tokens: number }> = {}) {
+function makeLog(
+    overrides: Partial<{
+        id: number;
+        model_name: string;
+        quota: number;
+        created_at: number;
+        type: number;
+        completion_tokens: number;
+    }> = {},
+) {
     return {
         id: overrides.id ?? 1,
         user_id: NEWAPI_USER_ID,
@@ -147,7 +156,11 @@ describe('<UsagePage /> SSR smoke', () => {
         // users' data from the recent-50 table.
         mockGetCurrentUser.mockResolvedValue(SESSION_USER);
         const mine = makeLog({ id: 1, model_name: 'mine' });
-        const theirs = { ...makeLog({ id: 2, model_name: 'theirs' }), user_id: NEWAPI_USER_ID + 1, username: 'c-other' };
+        const theirs = {
+            ...makeLog({ id: 2, model_name: 'theirs' }),
+            user_id: NEWAPI_USER_ID + 1,
+            username: 'c-other',
+        };
         mockGetUsageAggregate.mockResolvedValue(aggregateFor('30d', [mine]));
         mockQueryLogs.mockResolvedValue({ items: [mine, theirs], total: 2 });
 
@@ -210,9 +223,7 @@ describe('<UsagePage /> SSR smoke', () => {
         // (no cache row + live fetch threw). The recent-50 queryLogs runs
         // in parallel via allSettled — its failure alone is non-fatal.
         mockGetCurrentUser.mockResolvedValue(SESSION_USER);
-        mockGetUsageAggregate.mockRejectedValue(
-            new Error('usage aggregate fetch failed: new-api 503'),
-        );
+        mockGetUsageAggregate.mockRejectedValue(new Error('usage aggregate fetch failed: new-api 503'));
         mockQueryLogs.mockRejectedValue(new Error('new-api 503'));
 
         const html = renderToString(await UsagePage({ searchParams: Promise.resolve({}) }));

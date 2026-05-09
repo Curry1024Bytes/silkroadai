@@ -26,9 +26,7 @@ function extractToken(request: NextRequest): string | null {
 
     const queryToken = request.nextUrl.searchParams.get('token');
     if (queryToken) {
-        console.warn(
-            '[DEPRECATED] Admin token via query parameter. Use "X-Admin-Token" header instead.',
-        );
+        console.warn('[DEPRECATED] Admin token via query parameter. Use "X-Admin-Token" header instead.');
         return queryToken;
     }
 
@@ -60,8 +58,5 @@ export const verifyAdminToken = isAdmin;
 
 export function unauthorizedResponse(request?: NextRequest) {
     const locale = resolveLocale(request?.nextUrl.searchParams.get('lang'));
-    return NextResponse.json(
-        { error: locale === 'en' ? 'Unauthorized' : '未授权' },
-        { status: 401 },
-    );
+    return NextResponse.json({ error: locale === 'en' ? 'Unauthorized' : '未授权' }, { status: 401 });
 }

@@ -42,13 +42,7 @@ import logoMonoDarkAsset from '@/assets/brand/logo-mono-dark.svg';
 import logoMonoLightAsset from '@/assets/brand/logo-mono-light.svg';
 import markOnlyAsset from '@/assets/brand/mark-only.svg';
 
-export type LogoVariant =
-    | 'primary'
-    | 'primary-flat'
-    | 'inverse'
-    | 'mono-dark'
-    | 'mono-light'
-    | 'mark';
+export type LogoVariant = 'primary' | 'primary-flat' | 'inverse' | 'mono-dark' | 'mono-light' | 'mark';
 
 interface LogoProps {
     variant?: LogoVariant;
@@ -94,12 +88,7 @@ const VARIANTS: Record<LogoVariant, VariantConfig> = {
     mark: { src: assetUrl(markOnlyAsset), aspect: 1, alt: 'Silk Road AI' },
 };
 
-export function Logo({
-    variant = 'primary',
-    size = 24,
-    linkHome = true,
-    className,
-}: LogoProps) {
+export function Logo({ variant = 'primary', size = 24, linkHome = true, className }: LogoProps) {
     const config = VARIANTS[variant];
     const width = Math.round(size * config.aspect);
 

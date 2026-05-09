@@ -18,6 +18,7 @@
 ## 项目核心定位 — **必读**
 
 这是一个**给 new-api 套客户层**的项目。new-api 本身**一个字不改**(AGPL),我们只在前面套一层:
+
 - 客户在 portal 注册 / 登录 / 充值 / 拿 API Key / 看用量
 - portal 在背后调 new-api Admin API:创建 user → login as user → rotate access_token → create token → 拿 sk-xxx
 - 充值 = 调 `POST /api/user/manage` `add_quota` 给 user(**user.quota 是单点预算门**,token 永远 unlimited_quota)
@@ -26,6 +27,7 @@
 **历史**:W1 走 LiteLLM 路线(15 个模型)。W2 D3 用户决定切到 B3:new-api 后端 + 自写前端 + Chat UI。LiteLLM 客户端代码现在保留在 `src/lib/litellm.archive/` 作 W1 参考,`src/lib/litellm/client.ts` 是 thin shim 让老 routes 编译。详见 `_bootstrap/docs/PROJECT-PLAN-B3.md`。
 
 **禁止做的事**:
+
 - ❌ 不要建议 fork 或修改 new-api 源码(AGPL,改了就要开源全部)
 - ❌ 不要在 portal 里实现"模型路由"逻辑(new-api 已经做了)
 - ❌ 不要尝试调 SiliconFlow / Anthropic / OpenAI 上游(走 new-api)
@@ -90,6 +92,7 @@ silkroadai/
 ⚠️ **每次 commit 时,如果完成了 WEEK1-CHECKLIST 或 WEEK2-CHECKLIST 里的某天,请更新这个区域**
 
 ### W1(LiteLLM 路线,已归档)
+
 - [x] D1 — 项目重命名 + dev server 跑起来 ✅
 - [x] D2 — Prisma schema 完成(User / LiteLLMKey / RechargeLog 三张新表)✅
 - [x] D3 — LiteLLM client 烟雾测试通过 ✅
@@ -97,8 +100,9 @@ silkroadai/
 - [x] D6-7 — 注册接口端到端跑通 ✅ (W1 完成 🎉)
 
 ### W2(B3 路线 — new-api 切换,已合并)
+
 - [x] D1-D2 — VPS 部署 new-api + 配置上游渠道 ✅ (在 VPS 上完成)
-- [x] D3 — _bootstrap 切到 B3 包 + 新分支 `feat/b3-newapi-switch` ✅
+- [x] D3 — \_bootstrap 切到 B3 包 + 新分支 `feat/b3-newapi-switch` ✅
 - [x] D4 — Prisma schema 切到 new-api 集成 ✅ (LiteLLMKey → NewApiToken)
 - [x] D5 — `src/lib/newapi/client.ts` + 烟雾测试通过(117 模型) ✅
 - [x] D6 — 注册接口切 new-api,端到端跑通(deepseek-v4-flash 真实调用) ✅
@@ -106,6 +110,7 @@ silkroadai/
 - [x] **W2 PR #1 merged at `6c4b422`(2026-05-02)** 🎉
 
 ### W3(Auth 完善 + LiteLLM 关停)
+
 - [x] D1 — VPS 收尾(2026-05-02):LiteLLM 容器停 + Caddy `api.silkroadai.io` 切到 new-api `:3000` + 3 个渠道配齐(SiliconFlow OpenAI / sub2api-claude Anthropic / sub2api-openai OpenAI)+ 117 模型可调 ✅
 - [x] D2 — portal e2e 验证 ✅(2026-05-03,见 `docs/W3-D2-VERIFICATION.md`)— 注册 → sk-xxx → 三格式真实模型调用 → 用量回查全链路 200
 - [x] D2.5 — SiliconFlow 短名 model_mapping 修复 ✅(2026-05-03,见 `scripts/rebuild-channel-model-mapping.ts` + gotcha #15 修复段)
@@ -116,20 +121,24 @@ silkroadai/
 - [x] D7 — GitHub OAuth(原生 OAuth2)✅(2026-05-02,见 `docs/W3-D7-GITHUB-OAUTH-VERIFICATION.md`)— `GET /api/auth/oauth/github/{start,callback}` 复用 D6 的 `oauth_accounts` 表(`provider='github'`);**纯 fetch 实现,零新依赖**(没 id_token / 没 PKCE);state CSRF cookie 单守门;email 走 `/user/emails` 挑 `primary && verified`,无则拒;5-branch 冲突逻辑抽出共用 helper `src/lib/auth/oauth/account-link.ts`,GitHub callback 调用之,**Google callback 暂未改造**(D7 brief 不动 google,F1 sweep 留 W4-W5);39 新单测 + 全套 389/390 PASS / **0 fail**;**真实浏览器 smoke 待用户跑**
 
 ### W4-1(充值流改造 — portal-internal /pay + new-api add_quota)
+
 - [x] D1 — `executeRecharge` 切 new-api `applyTopup` ✅(2026-05-03)— 删 W1 LiteLLM `createAndRedeem` stub(W3 D6 起会 throw deprecation,导致每个支付成功的 order 都 PAID→FAILED);CAS lock(PAID/FAILED → RECHARGING → COMPLETED)做主 idempotency,RechargeLog `findFirst` by `(order_id, source='payment')` 做二级 dedup(防"上轮 add_quota 成功但 status flip 前 crash");balance_before/after 用 `getUser(newapi_user_id).quota` 读,失败 fallback before+delta;9 新 `execute-recharge.test.ts` PASS
 - [x] D2 — `createOrder` + `/api/orders` cookie auth + portal `/pay` `/login` 页 ✅(2026-05-03)— `createOrder` 切 `prisma.user.findUnique`(替 litellm shim getUser);新错误码 `AUTH_REQUIRED` 401 / `USER_NOT_FOUND` 404 / `USER_INACTIVE` 403(banned/disabled);`/api/orders` POST 改 cookie session(`getCurrentUser(req)`)删 `token` 字段;新 `/pay/page.tsx` server component 守门 + `/pay/pay-form.tsx` 5-tier(¥10/30/100/300/1000)+ custom amount + provider radio + window.location 跳网关;新 `/login/page.tsx` + `/login/login-form.tsx` 邮箱密码 + Google + GitHub 三选一(白名单 next 防 open-redirect);W1 1160 行 `/pay/page.tsx` 重命名 `page.legacy.tsx`(Next 自动忽略,留 reference);`src/app/page.tsx` forward 全 query(原仅 lang,影响 OAuth `?oauth_error=` 穿透);20 新单测(create-order auth 5 + /api/orders POST 6 + pay/login UI SSR smoke 9)
 - [x] D3 — 集成测 + Google sweep + 易支付 sig alert ✅(2026-05-04,见 `docs/W4-1-RECHARGE-VERIFICATION.md`)— 5 集成测 `recharge-flow.test.ts`(happy / duplicate / defensive dedup / sig fail / applyTopup throw),用 `vi.hoisted()` + 内存 prisma mock + 真签名验证(`generateSign` 测试 pkey);Google callback refactored 改用共用 `linkOrCreateOAuthUser` helper(335→138 行,删 createUserFromGoogle + inline 5-branch),与 GitHub callback 走同一 code path,**D6 全套 15/15 仍 PASS 证明行为等价**;易支付 `verifyNotification` 失败现 `console.warn('[easy-pay/notify] signature verification failed', { instId, out_trade_no, pid, signPrefix })` + body `'success'`(silent ignore + ops 信号,W6 接 Sentry);全套 vitest **43 files / 423 PASS / 1 skip / 0 fail**;**真实易支付沙箱 ¥10 smoke 待用户跑**
 
 ### W4-2(客户后台 MVP — `(authenticated)` route group + Keys / Balance / Usage)
+
 - [x] D4 — layout + Sidebar + Header + UnverifiedBanner + `/api/auth/logout` ✅(2026-05-04)— `src/app/(authenticated)/` route group 单点 auth 守门(layout 顶层 `getCurrentUser` null → `redirect /login?next=` 透传 path),共享 Header(logo + email + 退出)+ Sidebar(4 nav 高亮 + 充值 CTA)+ 主区(soft-block yellow banner 当 `email_verified=false`);`/dashboard /keys /balance /usage` 4 占位页(D5-D7 替换为实页);`POST /api/auth/logout` 单设备登出(清 cookie 不动 `session_token_version`,gotcha #16);15 新单测;W1 `/portal/*` 不存在,fresh build
 - [x] D5 — `/keys` API key 管理页 + 3 endpoints ✅(2026-05-04)— `/api/portal/keys/{,[id],[id]/key}` 三 REST 端点(cookie auth + IDOR 401 防 enum);列表 / 创建(限 5)/ 撤销 / reveal-with-mask(10s auto-mask);创建走 3 步 new-api 流(createTokenForCustomer → list 反查 id → getTokenKey)+ Prisma create 双向回滚;撤销走 new-api delete + Prisma `status='disabled'` 软删(Order/RechargeLog FK refs 默认 RESTRICT 不能 hard delete);reveal **不调** new-api(Prisma 直读,gotcha #11+#13 警觉);token 永远 `unlimited_quota=true`(gotcha #12);27 新单测
-- [x] D6 — `/balance` 页 + `getQuotaWithCache` 4 路径 + `executeRecharge` cache bust ✅(2026-05-04)— `src/lib/newapi/quota-cache.ts` helper:hit(60s 内)/ miss(refetch + write-back)/ live / fallback(new-api 短暂不可用 + 有 stale cache → 返 stale + `console.warn '[quota-cache] new-api unreachable'`)/ hard fail;`executeRecharge` 事务内加 4th op `prisma.user.update({...nullify newapi_quota_cache 三字段...})`,充值成功原子性 cache bust;UI 两张大卡(可用余额 / 累计消费)CNY 主显 + USD/raw quota 副 + `+ 充值` CTA + 充值流水表(zh-CN 本地化 + 友好类型 label + 8 字符 order id 截断)+ fallback yellow banner + error 红 alert(隐藏卡片);**Cache 字段实际命名**:`User.newapi_quota_cache` / `newapi_used_quota_cache` / `newapi_cached_at`(W2 D4 与其他 newapi_ 列对齐,brief 假设的 NewApiToken 风格 `cached_remain_quota` 等不准);24 新单测
+- [x] D6 — `/balance` 页 + `getQuotaWithCache` 4 路径 + `executeRecharge` cache bust ✅(2026-05-04)— `src/lib/newapi/quota-cache.ts` helper:hit(60s 内)/ miss(refetch + write-back)/ live / fallback(new-api 短暂不可用 + 有 stale cache → 返 stale + `console.warn '[quota-cache] new-api unreachable'`)/ hard fail;`executeRecharge` 事务内加 4th op `prisma.user.update({...nullify newapi_quota_cache 三字段...})`,充值成功原子性 cache bust;UI 两张大卡(可用余额 / 累计消费)CNY 主显 + USD/raw quota 副 + `+ 充值` CTA + 充值流水表(zh-CN 本地化 + 友好类型 label + 8 字符 order id 截断)+ fallback yellow banner + error 红 alert(隐藏卡片);**Cache 字段实际命名**:`User.newapi_quota_cache` / `newapi_used_quota_cache` / `newapi_cached_at`(W2 D4 与其他 newapi\_ 列对齐,brief 假设的 NewApiToken 风格 `cached_remain_quota` 等不准);24 新单测
 - [x] D7 — `/usage` 页 + `getCurrentUser` cache() dedup + `/reset-password` fired guard ✅(2026-05-04,见 `docs/W4-2-DASHBOARD-VERIFICATION.md`)— `/usage` 页 `?period=7d|30d|all` 默认 30d(parsePeriod 白名单防注入)+ 服务端聚合 by-model top 5 + 最近 50 条表格 + 空状态指 `/keys` CTA;`queryLogs` 加 `user_id?: number` 参数(修 W3 D2 F2 username filter 0-result bug),portal 业务路径全部用 user_id;`getCurrentUser` 包 React `cache()` 内层 `_resolveUserFromCookie(cookieValue)` keyed by 字符串,layout + nested page + 内层 helper 共享同 cookie → 1 verify + 1 DB read per request(structural test + 5 behavioral test);`/reset-password` form 加 `useRef(false)` fired 同步 guard(防 React 19 + 双击 race,镜像 W3 D5 verify-email-runner pattern);全套 vitest **54 files / 494 PASS / 1 skip / 0 fail**;**真实浏览器 5 步 smoke 待用户跑**
 
 ### W5(Ops Hardening + Legal + 易支付 QR)— 见对应 verification doc 系列
+
 - [x] D1-D6 — Sentry / last_login_ip / DB backup cron / 法律页 / 易支付 QR display 等(详见 `docs/W5-DEPLOY-RUNBOOK.md` + 各 PR)
 
 ### W6(Client Polish + Retention Sprint — 5-day stack)
+
 - [x] D1 — 首充 20% bonus ✅(2026-05-05,PR #17)— `executeRecharge` 加 interactive `prisma.$transaction` 包 CAS-claim + applyTopup + finalize:`tx.user.updateMany WHERE first_recharge_bonus_granted=false` 拿到 row lock + flip true,`applyTopup` 加 `extraBonusQuota` 参数(raw quota,不经汇率);失败回滚整个 tx,bonus claim 也回滚;`/pay` 加 yellow banner(仅 `granted=false` 时渲染);schema `User.first_recharge_bonus_granted Boolean default false` + `RechargeLog.bonus_quota_added BigInt? default 0`;20 新单测
 - [x] D2 — 余额低提醒 + 阈值配置 ✅(2026-05-05,PR #18,见 `docs/W6-CLIENT-POLISH-VERIFICATION.md`)— `BalanceAlertScheduler`(1h 镜像 W4-2 Order timeout 模式)+ `sendBalanceAlertEmail` 复用 W3 D4 SMTP + W5 D4 Sentry + 5-state form on `/balance` + `POST /api/portal/balance-alert-threshold`(zod 0-1000 整数 + IDOR-safe);CAS-claim `WHERE last_sent IS NULL OR last_sent < now-24h` 防多实例双发;`executeRecharge` 事务尾加一行 `balance_alert_last_sent_at: null` 让充值后立即可重发提醒;26 新单测;**首次部署即触发 3 现有用户邮件**(spec 行为,F2)
 - [x] D3 — 公开 /models 双级分组 ✅(2026-05-05,PR #19,见 verification doc)— `categorize.ts`(type × vendor 规则 + filter helpers,纯函数)+ `/models` server page(`revalidate=60` ISR)+ `ModelsBrowser` client(200ms debounce + useMemo)+ Footer/Sidebar 模型清单链接;OpenAI 厂商规则比 brief 略宽(F3)— 加上 dall-e/sora/whisper/tts/text-embedding;**正则 `(^|[\/-])` 字符类边界匹配 dall-e-3 失败**(F4)→ 重写 `startsWith`/`includes` 链;40 新单测;公网 200 + 379 模型 9 厂商
@@ -137,6 +146,7 @@ silkroadai/
 - [x] D5 — usage server-side aggregator + dashboard 真内容 + W6 收尾 ✅(2026-05-05,PR #21,见 `docs/W6-CLIENT-POLISH-VERIFICATION.md`)— `usage-aggregate.ts`(5min cache 4 路径 + paging 1-50 页 × 1000 行 = 50k hard-cap;F6/F7 已知)替代 W4-2 D7 客户端 200-cap aggregate(W3 D2 F3 长尾失真);新表 `usage_aggregate_cache(user_id, period)` PK 复合;period 支持 `7d / 30d / all / last_month`(自然月 UTC,Date.UTC(y,-1,1) 跨年 OK);`periodToTimeRange` 4 case 单测全 PASS;/dashboard 4 张真卡(当前余额 / 上月消费 / 累计调用 / Top 3 模型)+ 4 quick links 替代 W4-2 D5 占位;`Promise.allSettled` 4 并行 fetch + 单卡降级独立;tx 内 `applyTopup` HTTP 持有 DB 连接 ~10s 已知(F1);**W6 全周累积 = 67 files / 642 PASS / 1 skip / 0 fail**
 
 ### W7(Brand + Landing + Pricing + GPU + Launch Polish — 见各 PR)
+
 - [x] PR-A..PR-O — brand identity / 落地页 / pricing / promo / SF 旗舰 / logo / 促销日期 等(PR #22..#43)
 - [x] PR-P — 公开 /gpu 算力租赁页(2026-05-07,PR #44)— H100 / H200 / B300 三 SKU + 4 步流程 + 客户类型 + 询价 CTA
 - [x] PR-Q — GPU 入口位置调整 + nav 简化(2026-05-07,PR #45)— GPU 租赁 outline 钮上 landing header,/gpu 页 nav 收敛单 CTA
@@ -157,23 +167,24 @@ silkroadai/
 
 ## 核心 API 调用(new-api Admin API)
 
-| 操作 | 函数 | new-api 端点 |
-|---|---|---|
-| 注册时建 new-api user(admin) | `createUser` | `POST /api/user/` |
-| 反查 user / 拿登录 cookie | `loginAsUser`(内部) | `POST /api/user/login` |
-| Rotate 出客户 access_token | (用 cookie 调 call) | `GET /api/user/token` ⚠️ **是 rotate 不是 read** |
-| 给 user 创建 token | `createTokenForCustomer` | `POST /api/token/` (act-as customer) |
-| 拿 token 真实 key | `getTokenKey` | `POST /api/token/{id}/key` (返回 `{key:"sk-..."}`) |
-| 列出客户的 tokens | `listTokensForCustomer` | `GET /api/token/?p=&page_size=` (act-as) |
-| 充值入账 | `addQuota` / `applyTopup` | `POST /api/user/manage` `action=add_quota` |
-| 查用户余额(quota) | `getUser` | `GET /api/user/{id}` |
-| 查用量日志 | `queryLogs` | `GET /api/log/` (filter by **username** 不是 user_id) |
-| 列出可用模型 | `listAvailableModels` | `GET /api/channel/models_enabled` |
-| 高层封装:开通新客户 | `provisionNewCustomer` | 6 步内部串联(W2 D6 验证) |
+| 操作                         | 函数                      | new-api 端点                                          |
+| ---------------------------- | ------------------------- | ----------------------------------------------------- |
+| 注册时建 new-api user(admin) | `createUser`              | `POST /api/user/`                                     |
+| 反查 user / 拿登录 cookie    | `loginAsUser`(内部)       | `POST /api/user/login`                                |
+| Rotate 出客户 access_token   | (用 cookie 调 call)       | `GET /api/user/token` ⚠️ **是 rotate 不是 read**      |
+| 给 user 创建 token           | `createTokenForCustomer`  | `POST /api/token/` (act-as customer)                  |
+| 拿 token 真实 key            | `getTokenKey`             | `POST /api/token/{id}/key` (返回 `{key:"sk-..."}`)    |
+| 列出客户的 tokens            | `listTokensForCustomer`   | `GET /api/token/?p=&page_size=` (act-as)              |
+| 充值入账                     | `addQuota` / `applyTopup` | `POST /api/user/manage` `action=add_quota`            |
+| 查用户余额(quota)            | `getUser`                 | `GET /api/user/{id}`                                  |
+| 查用量日志                   | `queryLogs`               | `GET /api/log/` (filter by **username** 不是 user_id) |
+| 列出可用模型                 | `listAvailableModels`     | `GET /api/channel/models_enabled`                     |
+| 高层封装:开通新客户          | `provisionNewCustomer`    | 6 步内部串联(W2 D6 验证)                              |
 
 封装在 `src/lib/newapi/client.ts`。看那里就是 source of truth。
 
 **双 header 认证**(每个请求都要):
+
 - `Authorization: <access_token>`(不带 `Bearer` 前缀,**新代码不要再用 admin token 调 per-user endpoint**)
 - `New-Api-User: <int_user_id>`(必填,缺了一律 401)
 
@@ -184,50 +195,61 @@ silkroadai/
 ## 必知技术 gotcha(开发时遇到 90% 是这几个)
 
 ### 1. `/key/update` 是替换不是增加
+
 **错**:充值时把 `+=amount` 当成增量发给 LiteLLM。
 **对**:Portal 维护 `recharge_logs`,先算 `newMax = SUM(amount)`,然后 PUT 这个总值。
 
 ### 2. LiteLLM 缓存 60 秒
+
 充值后 max_budget 不会立刻生效。`updateKeyBudget` 内部已经调了 `getKeyInfo` 强制刷新。如果你写新代码绕过这个封装,记得自己也加。
 
 ### 3. 流式请求会小额超支
+
 spend 是 post-flight 记录的,流式请求结束时一次性写入。可能出现 `spend > max_budget` 几个 cents。**UI 显示余额必须 `Math.max(0, max_budget - spend)`**,不要显示负数。
 
 ### 4. 退款让 max_budget < spend
+
 退款 → max_budget 减少 → 可能瞬间 max < spend → key 被锁。
 **政策**:退款时同时调 `resetKeySpend`,然后把 max_budget 重算。
 
 ### 5. 时区全部 UTC
+
 LiteLLM 所有时间字段都是 UTC。客户端展示时再转用户时区,不要把本地时间直接传给 `getSpendLogs`。
 
 ### 6. 别用 `user.max_budget`
+
 LiteLLM 同时支持 user-level 和 key-level 预算。我们只用 key-level(更灵活,客户后续可能多 key)。**`user.max_budget` 永远 null**。
 
 > ⚠️ 上面 #1-#6 是 W1 LiteLLM 时代的遗留(已停用,W2 D3 切到 new-api)。
 > 现在 portal 调 new-api,看下面 #9-#13(B3 W2 D6 实测踩到的坑)。
 
 ### 9. new-api `display_name` 20 字符上限(不是 50)
+
 **症状**:`POST /api/user/` 返回 `422 Field validation for 'DisplayName' failed on the 'max' tag`。
 **真实行为**:`display_name` max **20**(bootstrap 文档说 max 50,错的);`email` 字段才是 max 50。
 **解决**:`display_name` 用 username(`c-{8字符}` 必然 ≤20),邮箱仍走 `email` 字段。
 **修复 commit**:`ad401af` (W2 D6) — `_bootstrap/src/lib/newapi/client.ts` 文档不准。
 
 ### 10. `PUT /api/user/` 不能给客户改 `access_token`
+
 **症状**:PUT 返回 `{success:true}` 看似成功,但立刻 `GET /api/user/{id}` 拿回 `access_token: null`。任何用这个 access_token 的后续操作 → 401 Unauthorized。
 **真实行为**:`PUT /api/user/` **静默丢弃** `access_token` 字段,doc 没说。其他字段(group/role/quota)是真改的,所以错觉很强。
 **解决**:不能 admin 改,要让客户自己 rotate:
+
 1. `POST /api/user/login` 用 portal 持有的 username+password → 拿 session cookie + user.id
 2. `GET /api/user/token` 带 cookie + `New-Api-User: <user.id>` → 返回新生成的 access_token
 3. portal 把这个 access_token 存 DB,以后 act-as 该客户用
-**修复 commit**:`ad401af` (W2 D6) — 见 `provisionNewCustomer` 重写后的 6 步流程。
+   **修复 commit**:`ad401af` (W2 D6) — 见 `provisionNewCustomer` 重写后的 6 步流程。
 
 ### 11. `POST /api/token/{id}/key` 返回 `{key: "sk-..."}` 不是裸字符串
+
 **症状**:把返回值当 string 存进 `newapi_token_value String @unique` → Prisma 写入抛 type error,或者存进去后所有后续 `.slice` 调用炸。
 **真实行为**:envelope 里 `data: { key: "sk-..." }`,需要 `.key` 解包。
 **解决**:`getTokenKey` 在 client 层 unwrap,返回内层字符串。
 **修复 commit**:`ad401af` (W2 D6) — `client.ts:getTokenKey` 改 `Promise<{key:string}>` 后 `return result.key`。
 
 ### 12. `unlimited_quota=false + remain_quota=0` 的 token 直接拒绝调用
+
 **症状**:刚创建的 token 调 `/v1/chat/completions` → `Invalid token`(误导,看起来像 auth 错)。
 **真实行为**:new-api 把 `remain_quota=0` 视为"已耗尽",**在 token 验证阶段就拒**,根本没到上游模型。
 **解决**:portal 创建的 token 永远设 `unlimited_quota: true`。预算关由 `user.quota` 单点控制(W4 充值流入账走 `add_quota` 加给 user)。Token 不再做第二道独立预算门。
@@ -235,43 +257,50 @@ LiteLLM 同时支持 user-level 和 key-level 预算。我们只用 key-level(�
 **修复 commit**:`ad401af` (W2 D6) — `provisionNewCustomer` 默认 `unlimited_quota: true`。
 
 ### 13. ⚠️⚠️⚠️ `GET /api/user/token` 是 **rotate** 不是 read
+
 **最危险的一条**。这个端点不是"拿当前 token",是"重新生成并使旧的失效"。
 **症状**:你以为是无副作用的 GET,顺手调一下 → portal 用的 admin token 立即失效 → 整套 portal 调不通 new-api → 全线 502。
 **真实行为**:每次 GET 都 rotate,旧值作废。doc 没明说。
 **解决**:
+
 - 永远不调 `GET /api/user/token`,除非你**主动**想 rotate。
 - portal `.env` 里的 `NEWAPI_ADMIN_TOKEN` **完全人工管理**:在 1Password,不要从 API 拿。
 - 客户的 access_token 我们也只在 `provisionNewCustomer` 里 rotate **一次**(注册时),之后存 DB,后续 act-as 都用 DB 里的值,不再调这个端点。
-**W3 runbook 必读**:任何运维操作前先确认是否会触发 rotate。如果 admin token 真的丢了,流程是"在 admin.silkroadai.io UI 重新生成 → 写回 .env → 重启 dev/prod"(不要从 API 试图重新拿)。
-**修复 commit**:`ad401af` (W2 D6) — 在 `_bootstrap/src/lib/newapi/client.ts` 的注释里也标了。
+  **W3 runbook 必读**:任何运维操作前先确认是否会触发 rotate。如果 admin token 真的丢了,流程是"在 admin.silkroadai.io UI 重新生成 → 写回 .env → 重启 dev/prod"(不要从 API 试图重新拿)。
+  **修复 commit**:`ad401af` (W2 D6) — 在 `_bootstrap/src/lib/newapi/client.ts` 的注释里也标了。
 
 ### 14. 一个上游多种 API 格式 → 必须配多个渠道
+
 **症状**:同一上游(比如 sub2api)既能调 Claude 又能调 GPT,只配一个 Anthropic Claude 渠道时,GPT 调用 → `404 server_error`(模型不存在/上游路径不对)。
 **真实行为**:new-api 的"渠道类型"决定它对该上游用哪种请求格式:
+
 - `Anthropic Claude` type → `POST /v1/messages`(Claude 原生格式)
 - `OpenAI` type → `POST /v1/chat/completions`(OpenAI 兼容格式)
-一个渠道只能一种类型,所以同上游有多种格式的 endpoint 时必须建多个渠道。
-**解决**:同 base URL + 同 key 配两个渠道,types 不同,每个渠道的 model list 各列对应模型。
-**实例**(W3 D1 落地):
+  一个渠道只能一种类型,所以同上游有多种格式的 endpoint 时必须建多个渠道。
+  **解决**:同 base URL + 同 key 配两个渠道,types 不同,每个渠道的 model list 各列对应模型。
+  **实例**(W3 D1 落地):
 - `sub2api`(Anthropic Claude type)— `claude-opus-4-7` / `claude-sonnet-4-6` / etc
 - `sub2api-openai`(OpenAI type)— `gpt-5.4` / `gpt-5.4-pro` / `codex` / `gpt-image-2`
 - `SiliconFlow`(OpenAI type)— 余下的开源模型(deepseek/qwen/glm/kimi/...)
-**修复 commit**:运维操作,无 portal commit;在 admin.silkroadai.io UI 配置。
+  **修复 commit**:运维操作,无 portal commit;在 admin.silkroadai.io UI 配置。
 
 ### 15. 渠道 model_mapping 短名在渠道编辑/扩容后可能失效
+
 **症状**:从 ai.silkroadai.io 调用 `deepseek-v4-flash`(W1 时代用过的短名)→ `503 no available channel for model X under group default`。canonical 名 `deepseek-ai/DeepSeek-V4-Flash` 同样的 sk-xxx 通。
 **真实行为**:new-api 渠道的 `model_mapping` 字段是个 JSON,把客户传来的 model name 在路由前 transform 成 canonical。这个字段在 channel 编辑、PUT 不带它时,**可能被静默清掉**;也可能在 SiliconFlow 上游模型清单大幅扩容(W3 D1 后 117 → 291)时被覆盖。
 **影响**:任何 W1 时代公开过的短名,客户/前端/SDK/文档示例还在用 → 静默 503,看不到投诉但流量在掉。
 **解决**:
+
 - 任何渠道改动后,跑全 W1 短名清单(`deepseek-v4-flash` 等)的回归 e2e
 - `model_mapping` 字段在 admin UI 编辑 channel 时必须确认还在
 - 长期:portal 后台测试覆盖加入「短名清单回归」step
-**首次发现**:W3 D2 Batch B(2026-05-03),`docs/W3-D2-VERIFICATION.md` F1。
-**修复**:W3 D2.5 Batch D(2026-05-03)用 `scripts/rebuild-channel-model-mapping.ts` 重建 SiliconFlow 渠道 model_mapping。该脚本可复用 — 任何渠道编辑或上游扩容后跑一次 `pnpm tsx scripts/rebuild-channel-model-mapping.ts <channel_id> --apply` 即可。
-**额外发现(W3 D2.5 实测,gotcha #15 的延伸)**:`model_mapping` 仅做"上游 forward 时的名字翻译",**不影响路由匹配**。要让 portal 客户能用短名调用,**短名必须同时出现在 `channel.models` 字段里**(路由器按字面查找),否则 503 `no available channel`。脚本已经把短名 append 到 `models`。
-**Tier 优先级**(SiliconFlow 多变体的同短名冲突):`Pro/X` > `vendor/X` > `LoRA/X`。Pro 默认胜出(客户充的是真金白银,free tier 限速会变成 cryptic 错误)。
+  **首次发现**:W3 D2 Batch B(2026-05-03),`docs/W3-D2-VERIFICATION.md` F1。
+  **修复**:W3 D2.5 Batch D(2026-05-03)用 `scripts/rebuild-channel-model-mapping.ts` 重建 SiliconFlow 渠道 model_mapping。该脚本可复用 — 任何渠道编辑或上游扩容后跑一次 `pnpm tsx scripts/rebuild-channel-model-mapping.ts <channel_id> --apply` 即可。
+  **额外发现(W3 D2.5 实测,gotcha #15 的延伸)**:`model_mapping` 仅做"上游 forward 时的名字翻译",**不影响路由匹配**。要让 portal 客户能用短名调用,**短名必须同时出现在 `channel.models` 字段里**(路由器按字面查找),否则 503 `no available channel`。脚本已经把短名 append 到 `models`。
+  **Tier 优先级**(SiliconFlow 多变体的同短名冲突):`Pro/X` > `vendor/X` > `LoRA/X`。Pro 默认胜出(客户充的是真金白银,free tier 限速会变成 cryptic 错误)。
 
 ### 16. 改密 / token version 机制 — verifySession 每次多 1 DB read
+
 **现状**:为支持"改密即时踢登所有设备",jwt payload 带 `tv` 字段(= `User.session_token_version` 当时快照),`getCurrentUser` 内每次多查一次 User 表读 `session_token_version` 比对,不等返回 `null`。`signSession(userId)` 也内部读一次 User 表把当前 tv 写进 payload。
 **触发 tv++ 的事件**:reset-password endpoint(W3 D4)、未来主动 logout-all-devices endpoint。
 **影响**:Auth 热路径每请求 +1 DB read(getCurrentUser 本来就要查 user,等于 select 多一字段,几乎零额外成本;signSession 是写路径不在热路径)。目前无 cache。
@@ -279,6 +308,7 @@ LiteLLM 同时支持 user-level 和 key-level 预算。我们只用 key-level(�
 **首次发现**:W3 D4 引入(本特性),`docs/W3-D4-FORGOT-PASSWORD-VERIFICATION.md` F4。
 
 ### 17. OAuth `state` / `pkce` cookie 必须在 callback 出口清掉(成功 + 失败两条路都清)
+
 **现状**:`/api/auth/oauth/google/start` 写两个短命 httpOnly cookie:`oauth_google_state`(CSRF 校验)+ `oauth_google_pkce`(PKCE code_verifier),maxAge=600s。`/api/auth/oauth/google/callback` 在 **每条**返回路径(success / state mismatch / google_denied / id_token 错误 / provision 失败)都通过 `buildResponse() → clearOAuthCookies()` 把两个 cookie 设回 maxAge=0。
 **为什么重要**:这两个值是单次使用的安全凭据。如果失败路径忘清,攻击者诱导受害者再次访问 callback URL 时还能拿到旧 verifier,放大 CSRF / replay 窗口。
 **正确写法**:任何新 OAuth provider 的 callback 都走"集中出口函数"模式 — 成功失败都 return 同一个 helper 构造的 response,helper 内 unconditionally 清 cookie。**不要**只在 happy path 末尾清。
@@ -307,9 +337,9 @@ LiteLLM 同时支持 user-level 和 key-level 预算。我们只用 key-level(�
 - **API route** — 入口先 zod parse,出口 NextResponse.json
 - **数据库** — 所有 mutation 走 Prisma transaction(`$transaction`)
 - **commit message** — 用 conventional commits:
-  - `feat(auth): add login endpoint`
-  - `fix(litellm): handle key not found`
-  - `chore: update deps`
+    - `feat(auth): add login endpoint`
+    - `fix(litellm): handle key not found`
+    - `chore: update deps`
 - **分支** — 主分支 `main`,功能分支 `feat/xxx`
 
 ---

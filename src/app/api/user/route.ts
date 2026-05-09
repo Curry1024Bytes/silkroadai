@@ -17,10 +17,7 @@ export async function GET(request: NextRequest) {
 
     const user = await getCurrentUser(request);
     if (!user) {
-        return NextResponse.json(
-            { error: locale === 'en' ? 'Unauthorized' : '未授权' },
-            { status: 401 },
-        );
+        return NextResponse.json({ error: locale === 'en' ? 'Unauthorized' : '未授权' }, { status: 401 });
     }
 
     const tokens = await prisma.newApiToken.findMany({
@@ -39,17 +36,12 @@ export async function GET(request: NextRequest) {
                 used: BigInt(u.used_quota),
             };
         } catch (err) {
-            console.warn(
-                `[user/route] new-api getUser failed for ${user.newapi_user_id}, falling back to cache:`,
-                err,
-            );
+            console.warn(`[user/route] new-api getUser failed for ${user.newapi_user_id}, falling back to cache:`, err);
         }
     }
 
-    const remainQuota: bigint =
-        liveQuota?.remain ?? user.newapi_quota_cache ?? BigInt(0);
-    const usedQuota: bigint =
-        liveQuota?.used ?? user.newapi_used_quota_cache ?? BigInt(0);
+    const remainQuota: bigint = liveQuota?.remain ?? user.newapi_quota_cache ?? BigInt(0);
+    const usedQuota: bigint = liveQuota?.used ?? user.newapi_used_quota_cache ?? BigInt(0);
 
     const tokensOut = tokens.map((t) => ({
         id: t.id,

@@ -14,7 +14,11 @@ const THROTTLE_WINDOW_MINUTES = 5;
 const TOKEN_BYTES = 32;
 
 const ResendVerificationSchema = z.object({
-    email: z.string().email().max(255).transform((s) => s.trim().toLowerCase()),
+    email: z
+        .string()
+        .email()
+        .max(255)
+        .transform((s) => s.trim().toLowerCase()),
 });
 
 function hashToken(rawToken: string): string {
@@ -46,11 +50,7 @@ export async function POST(req: NextRequest) {
     // Quietly noop for: missing user, already-verified user, banned/disabled
     // user. Outward response is always 200 — same shape as forgot-password,
     // for the same no-existence-leak reason.
-    if (
-        user &&
-        user.status === 'active' &&
-        user.email_verified_at === null
-    ) {
+    if (user && user.status === 'active' && user.email_verified_at === null) {
         // 5min throttle: if there's a still-valid unused token issued recently,
         // don't issue a new one and don't send a new email.
         const throttleSince = new Date(Date.now() - THROTTLE_WINDOW_MINUTES * 60 * 1000);

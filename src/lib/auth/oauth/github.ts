@@ -27,11 +27,7 @@ export function generateState(): string {
 
 /* ────────────── authorize URL ────────────── */
 
-export function buildGitHubAuthorizeUrl(args: {
-    clientId: string;
-    redirectUri: string;
-    state: string;
-}): string {
+export function buildGitHubAuthorizeUrl(args: { clientId: string; redirectUri: string; state: string }): string {
     const u = new URL(GITHUB_AUTHORIZE_URL);
     u.searchParams.set('client_id', args.clientId);
     u.searchParams.set('redirect_uri', args.redirectUri);
@@ -96,8 +92,8 @@ export async function exchangeCodeForToken(args: {
 /* ────────────── user identity fetch ────────────── */
 
 export interface GitHubUserPayload {
-    id: number;          // stable per-user identifier
-    login: string;       // username
+    id: number; // stable per-user identifier
+    login: string; // username
     name: string | null;
     avatar_url: string | null;
 }
@@ -121,10 +117,7 @@ export async function fetchGitHubUser(accessToken: string): Promise<GitHubUserPa
     });
     if (!res.ok) {
         const text = await res.text().catch(() => '');
-        throw new GitHubOAuthError(
-            'user_fetch_failed',
-            `GitHub /user ${res.status}: ${text.slice(0, 300)}`,
-        );
+        throw new GitHubOAuthError('user_fetch_failed', `GitHub /user ${res.status}: ${text.slice(0, 300)}`);
     }
     const json = (await res.json()) as Partial<GitHubUserPayload>;
     if (typeof json.id !== 'number' || typeof json.login !== 'string') {
@@ -152,24 +145,15 @@ export async function fetchGitHubVerifiedPrimaryEmail(accessToken: string): Prom
     });
     if (!res.ok) {
         const text = await res.text().catch(() => '');
-        throw new GitHubOAuthError(
-            'email_fetch_failed',
-            `GitHub /user/emails ${res.status}: ${text.slice(0, 300)}`,
-        );
+        throw new GitHubOAuthError('email_fetch_failed', `GitHub /user/emails ${res.status}: ${text.slice(0, 300)}`);
     }
     const rows = (await res.json()) as GitHubEmailEntry[];
     if (!Array.isArray(rows)) {
-        throw new GitHubOAuthError(
-            'email_fetch_failed',
-            'GitHub /user/emails returned non-array',
-        );
+        throw new GitHubOAuthError('email_fetch_failed', 'GitHub /user/emails returned non-array');
     }
     const chosen = rows.find((e) => e?.primary === true && e?.verified === true);
     if (!chosen || typeof chosen.email !== 'string') {
-        throw new GitHubOAuthError(
-            'email_not_verified',
-            'No primary+verified email on this GitHub account',
-        );
+        throw new GitHubOAuthError('email_not_verified', 'No primary+verified email on this GitHub account');
     }
     return chosen.email.trim().toLowerCase();
 }

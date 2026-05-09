@@ -46,9 +46,7 @@ describe('<KeysSnippetsPanel /> initial render (curl tab)', () => {
         // Only one tab can be selected; the default is curl on first
         // paint. Python + Node are aria-selected="false" until the
         // user clicks them.
-        expect(html).toMatch(
-            /<button[^>]*aria-selected="true"[^>]*>curl<\/button>/,
-        );
+        expect(html).toMatch(/<button[^>]*aria-selected="true"[^>]*>curl<\/button>/);
     });
 
     it('renders the curl snippet body with sample model + Authorization header', () => {
@@ -108,8 +106,6 @@ describe('<KeysSnippetsPanel /> accessibility', () => {
         // (pointing at the panel's outer h2), so a naïve first-match
         // grab returns the wrapper's labelledby. Pin the assertion to
         // the tabpanel's labelledby attribute specifically.
-        expect(html).toMatch(
-            /<div[^>]*role="tabpanel"[^>]*aria-labelledby="keys-snippet-tab-curl"/,
-        );
+        expect(html).toMatch(/<div[^>]*role="tabpanel"[^>]*aria-labelledby="keys-snippet-tab-curl"/);
     });
 });

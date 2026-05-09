@@ -113,34 +113,25 @@ export function KeysSnippetsPanel() {
             className="mt-8 rounded-xl border border-brand-border bg-surface overflow-hidden"
         >
             <header className="px-5 py-4 border-b border-brand-border bg-paper-muted">
-                <h2
-                    id="keys-snippets-heading"
-                    className="m-0 text-base font-semibold text-navy"
-                >
+                <h2 id="keys-snippets-heading" className="m-0 text-base font-semibold text-navy">
                     调用示例
                 </h2>
                 <p className="m-0 mt-1 text-xs text-muted-ink">
-                    复制代码 · 把 <code className="font-mono text-xs bg-surface px-1 py-0.5 rounded border border-brand-border text-navy">{PLACEHOLDER}</code>{' '}
-                    换成上方表格里 <strong className="text-navy">显示</strong> + <strong className="text-navy">复制</strong> 到的 sk-… 即可。
+                    复制代码 · 把{' '}
+                    <code className="font-mono text-xs bg-surface px-1 py-0.5 rounded border border-brand-border text-navy">
+                        {PLACEHOLDER}
+                    </code>{' '}
+                    换成上方表格里 <strong className="text-navy">显示</strong> +{' '}
+                    <strong className="text-navy">复制</strong> 到的 sk-… 即可。
                 </p>
             </header>
 
             <div className="px-5 pt-4 pb-2 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <BaseUrlChip
-                    label="OpenAI 兼容 Base URL"
-                    value={OPENAI_BASE}
-                />
-                <BaseUrlChip
-                    label="Anthropic 兼容 Base URL"
-                    value={ANTHROPIC_BASE}
-                />
+                <BaseUrlChip label="OpenAI 兼容 Base URL" value={OPENAI_BASE} />
+                <BaseUrlChip label="Anthropic 兼容 Base URL" value={ANTHROPIC_BASE} />
             </div>
 
-            <div
-                role="tablist"
-                aria-label="代码示例语言"
-                className="px-5 pt-3 flex gap-1 border-b border-brand-border"
-            >
+            <div role="tablist" aria-label="代码示例语言" className="px-5 pt-3 flex gap-1 border-b border-brand-border">
                 {TABS.map((t) => {
                     const isActive = t.id === active;
                     return (
@@ -203,19 +194,13 @@ export function KeysSnippetsPanel() {
             <footer className="px-5 py-3 border-t border-brand-border text-xs text-muted-ink flex flex-wrap gap-x-4 gap-y-1">
                 <span>
                     模型示例 →{' '}
-                    <Link
-                        href="/models"
-                        className="text-navy font-medium hover:text-brand-accent"
-                    >
+                    <Link href="/models" className="text-navy font-medium hover:text-brand-accent">
                         {SAMPLE_MODEL}
                     </Link>
                 </span>
                 <span>
                     完整集成指南 →{' '}
-                    <Link
-                        href="/docs"
-                        className="text-navy font-medium hover:text-brand-accent"
-                    >
+                    <Link href="/docs" className="text-navy font-medium hover:text-brand-accent">
                         /docs
                     </Link>
                 </span>
@@ -229,10 +214,7 @@ function BaseUrlChip({ label, value }: { label: string; value: string }) {
         <div className="flex items-center gap-2 bg-paper-muted border border-brand-border rounded-lg px-3 py-2">
             <div className="flex-1 min-w-0">
                 <p className="m-0 text-xs text-muted-ink">{label}</p>
-                <p
-                    className="m-0 font-mono text-sm text-navy truncate"
-                    title={value}
-                >
+                <p className="m-0 font-mono text-sm text-navy truncate" title={value}>
                     {value}
                 </p>
             </div>

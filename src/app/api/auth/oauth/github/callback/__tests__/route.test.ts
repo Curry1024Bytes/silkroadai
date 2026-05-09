@@ -9,7 +9,10 @@ const mockFetchUser = vi.fn();
 const mockFetchEmail = vi.fn();
 vi.mock('@/lib/auth/oauth/github', () => {
     class GitHubOAuthError extends Error {
-        constructor(public code: string, message: string) {
+        constructor(
+            public code: string,
+            message: string,
+        ) {
             super(message);
             this.name = 'GitHubOAuthError';
         }
@@ -49,10 +52,7 @@ import { GitHubOAuthError } from '@/lib/auth/oauth/github';
 const ORIG_ENV = { ...process.env };
 const PORTAL_USER_ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 
-function makeReq(opts: {
-    query?: Record<string, string>;
-    cookies?: Record<string, string>;
-}): NextRequest {
+function makeReq(opts: { query?: Record<string, string>; cookies?: Record<string, string> }): NextRequest {
     const url = new URL('http://localhost/api/auth/oauth/github/callback');
     for (const [k, v] of Object.entries(opts.query ?? {})) {
         url.searchParams.set(k, v);
@@ -161,7 +161,11 @@ describe('GET /api/auth/oauth/github/callback', () => {
     });
 
     it('happy path: exchanges → fetches → invokes linkOrCreate with stringified id + signs session', async () => {
-        mockExchange.mockResolvedValue({ access_token: 'gho_xxx', token_type: 'bearer', scope: 'read:user user:email' });
+        mockExchange.mockResolvedValue({
+            access_token: 'gho_xxx',
+            token_type: 'bearer',
+            scope: 'read:user user:email',
+        });
         mockFetchUser.mockResolvedValue({ id: 12345, login: 'octocat', name: 'The Octocat', avatar_url: null });
         mockFetchEmail.mockResolvedValue('octo@example.com');
         mockLinkOrCreate.mockResolvedValue({ ok: true, userId: PORTAL_USER_ID, branch: 1 });
@@ -186,9 +190,9 @@ describe('GET /api/auth/oauth/github/callback', () => {
         expect(res.headers.getSetCookie().some((c) => c.startsWith('silkroad_session='))).toBe(true);
         // state cookie cleared
         expect(
-            res.headers.getSetCookie().some(
-                (c) => c.startsWith('oauth_github_state=;') || c.startsWith('oauth_github_state=; '),
-            ),
+            res.headers
+                .getSetCookie()
+                .some((c) => c.startsWith('oauth_github_state=;') || c.startsWith('oauth_github_state=; ')),
         ).toBe(true);
     });
 
@@ -205,9 +209,7 @@ describe('GET /api/auth/oauth/github/callback', () => {
             }),
         );
 
-        expect(mockLinkOrCreate).toHaveBeenCalledWith(
-            expect.objectContaining({ nameHint: 'noname' }),
-        );
+        expect(mockLinkOrCreate).toHaveBeenCalledWith(expect.objectContaining({ nameHint: 'noname' }));
     });
 
     it('maps account_disabled outcome from helper to redirect', async () => {
@@ -250,7 +252,11 @@ describe('GET /api/auth/oauth/github/callback', () => {
         process.env.NEXT_PUBLIC_APP_URL = 'https://portal.silkroadai.io';
 
         // Success path → /dashboard
-        mockExchange.mockResolvedValue({ access_token: 'gho_xxx', token_type: 'bearer', scope: 'read:user user:email' });
+        mockExchange.mockResolvedValue({
+            access_token: 'gho_xxx',
+            token_type: 'bearer',
+            scope: 'read:user user:email',
+        });
         mockFetchUser.mockResolvedValue({ id: 12345, login: 'octocat', name: 'The Octocat', avatar_url: null });
         mockFetchEmail.mockResolvedValue('octo@example.com');
         mockLinkOrCreate.mockResolvedValue({ ok: true, userId: PORTAL_USER_ID, branch: 1 });
@@ -264,12 +270,8 @@ describe('GET /api/auth/oauth/github/callback', () => {
         expect(okRes.headers.get('location')).toBe('https://portal.silkroadai.io/dashboard');
 
         // Failure path → /?oauth_error=...
-        const failRes = await GET(
-            makeReq({ query: { code: 'c', state: 'qstate' } /* no cookies */ }),
-        );
-        expect(failRes.headers.get('location')).toBe(
-            'https://portal.silkroadai.io/?oauth_error=state_mismatch',
-        );
+        const failRes = await GET(makeReq({ query: { code: 'c', state: 'qstate' } /* no cookies */ }));
+        expect(failRes.headers.get('location')).toBe('https://portal.silkroadai.io/?oauth_error=state_mismatch');
     });
 
     it('W5 D3 fix-up #3: APP_URL takes priority over NEXT_PUBLIC_APP_URL', async () => {
@@ -279,23 +281,15 @@ describe('GET /api/auth/oauth/github/callback', () => {
         process.env.APP_URL = 'https://runtime.example.com';
         process.env.NEXT_PUBLIC_APP_URL = 'https://build-time.example.com';
 
-        const res = await GET(
-            makeReq({ query: { code: 'c', state: 'qstate' } /* no cookies */ }),
-        );
-        expect(res.headers.get('location')).toBe(
-            'https://runtime.example.com/?oauth_error=state_mismatch',
-        );
+        const res = await GET(makeReq({ query: { code: 'c', state: 'qstate' } /* no cookies */ }));
+        expect(res.headers.get('location')).toBe('https://runtime.example.com/?oauth_error=state_mismatch');
     });
 
     it('W5 D3 fix-up #3: APP_URL alone (NEXT_PUBLIC_APP_URL unset) works', async () => {
         process.env.APP_URL = 'https://only-runtime.example.com';
         // NEXT_PUBLIC_APP_URL stays deleted (beforeEach)
 
-        const res = await GET(
-            makeReq({ query: { code: 'c', state: 'qstate' } /* no cookies */ }),
-        );
-        expect(res.headers.get('location')).toBe(
-            'https://only-runtime.example.com/?oauth_error=state_mismatch',
-        );
+        const res = await GET(makeReq({ query: { code: 'c', state: 'qstate' } /* no cookies */ }));
+        expect(res.headers.get('location')).toBe('https://only-runtime.example.com/?oauth_error=state_mismatch');
     });
 });

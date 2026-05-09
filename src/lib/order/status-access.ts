@@ -8,7 +8,7 @@ const TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 
 /** 使用独立派生密钥，不直接使用 ADMIN_TOKEN */
 function deriveKey(): string {
-  return crypto.createHmac('sha256', getEnv().ADMIN_TOKEN).update('order-status-access-key').digest('hex');
+    return crypto.createHmac('sha256', getEnv().ADMIN_TOKEN).update('order-status-access-key').digest('hex');
 }
 
 // userId may be a Sub2API legacy int (0/positive number) OR a portal UUID
@@ -18,53 +18,53 @@ function deriveKey(): string {
 type UserIdLike = string | number | null | undefined;
 
 function normalizeUserId(userId: UserIdLike): string {
-  if (userId === null || userId === undefined) return '0';
-  return String(userId);
+    if (userId === null || userId === undefined) return '0';
+    return String(userId);
 }
 
 function buildSignature(orderId: string, userId: string, expiresAt: number): string {
-  return crypto
-    .createHmac('sha256', deriveKey())
-    .update(`${ORDER_STATUS_ACCESS_PURPOSE}:${orderId}:${userId}:${expiresAt}`)
-    .digest('base64url');
+    return crypto
+        .createHmac('sha256', deriveKey())
+        .update(`${ORDER_STATUS_ACCESS_PURPOSE}:${orderId}:${userId}:${expiresAt}`)
+        .digest('base64url');
 }
 
 /** Token format: `{expiresAt}.{userId}.{signature}` (userId may be string or number) */
 export function createOrderStatusAccessToken(orderId: string, userId?: UserIdLike): string {
-  const expiresAt = Date.now() + TOKEN_TTL_MS;
-  const uid = normalizeUserId(userId);
-  const sig = buildSignature(orderId, uid, expiresAt);
-  return `${expiresAt}.${uid}.${sig}`;
+    const expiresAt = Date.now() + TOKEN_TTL_MS;
+    const uid = normalizeUserId(userId);
+    const sig = buildSignature(orderId, uid, expiresAt);
+    return `${expiresAt}.${uid}.${sig}`;
 }
 
 export function verifyOrderStatusAccessToken(orderId: string, token: string | null | undefined): boolean {
-  if (!token) return false;
+    if (!token) return false;
 
-  const parts = token.split('.');
-  if (parts.length !== 3) return false;
+    const parts = token.split('.');
+    if (parts.length !== 3) return false;
 
-  const [expiresAtStr, userId, sig] = parts;
-  const expiresAt = Number(expiresAtStr);
+    const [expiresAtStr, userId, sig] = parts;
+    const expiresAt = Number(expiresAtStr);
 
-  if (!Number.isFinite(expiresAt)) return false;
+    if (!Number.isFinite(expiresAt)) return false;
 
-  // 检查过期
-  if (Date.now() > expiresAt) return false;
+    // 检查过期
+    if (Date.now() > expiresAt) return false;
 
-  const expected = buildSignature(orderId, userId, expiresAt);
-  const expectedBuffer = Buffer.from(expected, 'utf8');
-  const receivedBuffer = Buffer.from(sig, 'utf8');
+    const expected = buildSignature(orderId, userId, expiresAt);
+    const expectedBuffer = Buffer.from(expected, 'utf8');
+    const receivedBuffer = Buffer.from(sig, 'utf8');
 
-  if (expectedBuffer.length !== receivedBuffer.length) {
-    return false;
-  }
+    if (expectedBuffer.length !== receivedBuffer.length) {
+        return false;
+    }
 
-  return crypto.timingSafeEqual(expectedBuffer, receivedBuffer);
+    return crypto.timingSafeEqual(expectedBuffer, receivedBuffer);
 }
 
 export function buildOrderResultUrl(appUrl: string, orderId: string, userId?: UserIdLike): string {
-  const url = new URL('/pay/result', appUrl);
-  url.searchParams.set('order_id', orderId);
-  url.searchParams.set(ORDER_STATUS_ACCESS_QUERY_KEY, createOrderStatusAccessToken(orderId, userId));
-  return url.toString();
+    const url = new URL('/pay/result', appUrl);
+    url.searchParams.set('order_id', orderId);
+    url.searchParams.set(ORDER_STATUS_ACCESS_QUERY_KEY, createOrderStatusAccessToken(orderId, userId));
+    return url.toString();
 }

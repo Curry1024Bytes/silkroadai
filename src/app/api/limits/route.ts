@@ -19,21 +19,21 @@ import { getCurrentUserByToken } from '@/lib/litellm/client';
  * }
  */
 export async function GET(request: NextRequest) {
-  const token = request.nextUrl.searchParams.get('token')?.trim();
-  if (!token) {
-    return NextResponse.json({ error: 'token is required' }, { status: 400 });
-  }
+    const token = request.nextUrl.searchParams.get('token')?.trim();
+    if (!token) {
+        return NextResponse.json({ error: 'token is required' }, { status: 400 });
+    }
 
-  try {
-    await getCurrentUserByToken(token);
-  } catch {
-    return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
-  }
+    try {
+        await getCurrentUserByToken(token);
+    } catch {
+        return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+    }
 
-  await ensureDBProviders();
-  const types = paymentRegistry.getSupportedTypes();
-  const methods = await queryMethodLimits(types);
-  const resetAt = getNextBizDayStartUTC();
+    await ensureDBProviders();
+    const types = paymentRegistry.getSupportedTypes();
+    const methods = await queryMethodLimits(types);
+    const resetAt = getNextBizDayStartUTC();
 
-  return NextResponse.json({ methods, resetAt });
+    return NextResponse.json({ methods, resetAt });
 }

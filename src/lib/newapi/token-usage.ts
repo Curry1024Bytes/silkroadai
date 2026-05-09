@@ -73,8 +73,7 @@ export async function getTokenUsageWithCache(args: {
         throw new Error(`token ${args.prismaTokenId} not found`);
     }
 
-    const cacheAge =
-        row.cached_used_at !== null ? now.getTime() - row.cached_used_at.getTime() : Infinity;
+    const cacheAge = row.cached_used_at !== null ? now.getTime() - row.cached_used_at.getTime() : Infinity;
     const hasCache = row.cached_used_at !== null;
     const cacheFresh = hasCache && cacheAge < TTL_MS;
 
@@ -103,10 +102,7 @@ export async function getTokenUsageWithCache(args: {
                 },
             })
             .catch((err) => {
-                console.warn(
-                    `[token-usage] failed to write-back cache for token ${args.prismaTokenId}:`,
-                    err,
-                );
+                console.warn(`[token-usage] failed to write-back cache for token ${args.prismaTokenId}:`, err);
             });
         return { ...live, source: 'live' };
     } catch (err) {

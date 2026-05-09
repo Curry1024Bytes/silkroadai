@@ -150,11 +150,13 @@ ssh vps "journalctl -u caddy --since '5 min ago' | tail -30"
 ```
 
 Look for:
+
 - `connection refused`(DNS not propagated;wait then retry)
 - `rate limit exceeded`(LE 50/week per registered domain;contact ops)
 - `wrong host`(Caddyfile typo;`caddy validate` then `systemctl reload caddy`)
 
 Manually re-trigger:
+
 ```bash
 ssh vps "systemctl restart caddy && sleep 30 && \
          journalctl -u caddy --since '1 min ago' | grep certificate"
@@ -167,8 +169,9 @@ ssh vps "docker logs silkroadai-portal-db 2>&1 | tail -30"
 ```
 
 Common causes:
+
 - Volume from a previous deploy with different password → `docker compose
-  down -v && docker compose up -d`(⚠️ destroys data — only first-time)
+down -v && docker compose up -d`(⚠️ destroys data — only first-time)
 - POSTGRES_PASSWORD mismatch between `.env` and DATABASE_URL → re-run
   step 2 (sanitize + derive password) → recreate
 
@@ -179,6 +182,7 @@ ssh vps "docker logs silkroadai-portal 2>&1 | grep -E 'migration|error' | tail"
 ```
 
 Common causes:
+
 - DATABASE_URL points to wrong host(should be `portal-postgres:5432`,
   not localhost)
 - Postgres still starting(start.sh waits for `prisma migrate deploy` but

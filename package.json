@@ -1,62 +1,62 @@
 {
-  "name": "silkroadai-portal",
-  "version": "0.1.0",
-  "private": true,
-  "packageManager": "pnpm@10.30.3",
-  "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "eslint",
-    "typecheck": "tsc --noEmit",
-    "format": "prettier --write .",
-    "format:check": "prettier --check .",
-    "test": "vitest run",
-    "test:ci": "vitest run --exclude=**/*.smoke.test.*",
-    "test:watch": "vitest"
-  },
-  "dependencies": {
-    "@prisma/adapter-pg": "7.4.1",
-    "@prisma/client": "^7.4.2",
-    "@sentry/nextjs": "^10.51.0",
-    "@stripe/stripe-js": "^8.9.0",
-    "bcryptjs": "^3.0.3",
-    "jose": "^6.2.3",
-    "marked": "^18.0.3",
-    "next": "16.1.6",
-    "nodemailer": "^8.0.7",
-    "pg": "^8.19.0",
-    "qrcode": "^1.5.4",
-    "react": "19.2.3",
-    "react-dom": "19.2.3",
-    "recharts": "^3.7.0",
-    "stripe": "^20.4.0",
-    "wechatpay-node-v3": "^2.2.1",
-    "zod": "^4.3.6"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "prisma",
-      "@prisma/engines",
-      "esbuild"
-    ]
-  },
-  "devDependencies": {
-    "@tailwindcss/postcss": "^4",
-    "@types/node": "^20",
-    "@types/nodemailer": "^8.0.0",
-    "@types/pg": "^8.16.0",
-    "@types/qrcode": "^1.5.6",
-    "@types/react": "^19",
-    "@types/react-dom": "^19",
-    "@vitejs/plugin-react": "^5.1.4",
-    "dotenv": "^17.4.2",
-    "eslint": "^9",
-    "eslint-config-next": "16.1.6",
-    "prettier": "^3.8.1",
-    "prisma": "7.4.1",
-    "tailwindcss": "^4",
-    "typescript": "^5",
-    "vitest": "^4.0.18"
-  }
+    "name": "silkroadai-portal",
+    "version": "0.1.0",
+    "private": true,
+    "packageManager": "pnpm@10.30.3",
+    "scripts": {
+        "dev": "next dev",
+        "build": "next build",
+        "start": "next start",
+        "lint": "eslint",
+        "typecheck": "tsc --noEmit",
+        "format": "prettier --write .",
+        "format:check": "prettier --check .",
+        "test": "vitest run",
+        "test:ci": "vitest run --exclude=**/*.smoke.test.*",
+        "test:watch": "vitest"
+    },
+    "dependencies": {
+        "@prisma/adapter-pg": "7.4.1",
+        "@prisma/client": "^7.4.2",
+        "@sentry/nextjs": "^10.51.0",
+        "@stripe/stripe-js": "^8.9.0",
+        "bcryptjs": "^3.0.3",
+        "jose": "^6.2.3",
+        "marked": "^18.0.3",
+        "next": "16.1.6",
+        "nodemailer": "^8.0.7",
+        "pg": "^8.19.0",
+        "qrcode": "^1.5.4",
+        "react": "19.2.3",
+        "react-dom": "19.2.3",
+        "recharts": "^3.7.0",
+        "stripe": "^20.4.0",
+        "wechatpay-node-v3": "^2.2.1",
+        "zod": "^4.3.6"
+    },
+    "pnpm": {
+        "onlyBuiltDependencies": [
+            "prisma",
+            "@prisma/engines",
+            "esbuild"
+        ]
+    },
+    "devDependencies": {
+        "@tailwindcss/postcss": "^4",
+        "@types/node": "^20",
+        "@types/nodemailer": "^8.0.0",
+        "@types/pg": "^8.16.0",
+        "@types/qrcode": "^1.5.6",
+        "@types/react": "^19",
+        "@types/react-dom": "^19",
+        "@vitejs/plugin-react": "^5.1.4",
+        "dotenv": "^17.4.2",
+        "eslint": "^9",
+        "eslint-config-next": "16.1.6",
+        "prettier": "^3.8.1",
+        "prisma": "7.4.1",
+        "tailwindcss": "^4",
+        "typescript": "^5",
+        "vitest": "^4.0.18"
+    }
 }

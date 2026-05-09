@@ -19,22 +19,15 @@ export function ServiceFlow() {
     return (
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
             {SERVICE_STEPS.map((step) => (
-                <article
-                    key={step.id}
-                    className="px-5 py-5 rounded-xl bg-paper-muted"
-                >
+                <article key={step.id} className="px-5 py-5 rounded-xl bg-paper-muted">
                     <div
                         className="w-8 h-8 rounded-full bg-navy text-paper flex items-center justify-center font-semibold text-sm"
                         aria-hidden="true"
                     >
                         {step.n}
                     </div>
-                    <h3 className="m-0 mt-3 mb-1 text-base font-semibold text-navy">
-                        {step.title}
-                    </h3>
-                    <p className="m-0 text-sm text-muted-ink leading-relaxed">
-                        {step.body}
-                    </p>
+                    <h3 className="m-0 mt-3 mb-1 text-base font-semibold text-navy">{step.title}</h3>
+                    <p className="m-0 text-sm text-muted-ink leading-relaxed">{step.body}</p>
                 </article>
             ))}
         </div>

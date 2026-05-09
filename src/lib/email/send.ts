@@ -1,11 +1,6 @@
 import * as Sentry from '@sentry/nextjs';
 import { getMailer } from './client';
-import {
-    passwordResetTemplate,
-    emailVerificationTemplate,
-    balanceAlertTemplate,
-    type EmailContent,
-} from './templates';
+import { passwordResetTemplate, emailVerificationTemplate, balanceAlertTemplate, type EmailContent } from './templates';
 
 export interface SendResult {
     messageId: string;
@@ -25,11 +20,7 @@ async function appendDebugLog(toAddress: string, url: string): Promise<void> {
     if (!path) return;
     try {
         const fs = await import('node:fs/promises');
-        await fs.appendFile(
-            path,
-            `${new Date().toISOString()}\t${toAddress}\t${url}\n`,
-            'utf-8',
-        );
+        await fs.appendFile(path, `${new Date().toISOString()}\t${toAddress}\t${url}\n`, 'utf-8');
     } catch (e) {
         console.warn('[email] EMAIL_DEBUG_LOG write failed:', e);
     }

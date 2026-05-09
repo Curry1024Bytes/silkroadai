@@ -14,19 +14,19 @@
 
 ## 验证矩阵
 
-| 项 | 期望 | 实测 | 结果 |
-|---|---|---|---|
-| Branch + 起点 untracked 状态 | working tree 有 login dir | yes(`route.ts` + `__tests__/route.test.ts`)| ✅ |
-| dev server `pnpm next dev -p 3002` ready | 30s 内 ready | ready in 2.9s | ✅ |
-| Reset fixture user(`newapi_user_id=8`)password | hash_len=60 + email/id 对得上 | hash_len=60,id=`8a6901f3-...`,email=`w3d2test-1777777442@silkroadai-internal.test` | ✅ |
-| Unit test: `POST /api/auth/login` | 6/6 PASS | 6/6 PASS / 280ms | ✅ |
-| E2E happy(正确密码)| 200 + Set-Cookie + body含 user+apiKey | 200, cookie 207 chars, apiKey prefix `e0QdAg2n`, user.id `8a6901f3-...` | ✅ |
-| E2E wrong-pass | 401 invalid_credentials, no cookie | 401, 0 cookie, error=`invalid_credentials` | ✅ |
-| E2E no-such-email | 401 invalid_credentials, no cookie(timing 防御)| 401, 0 cookie, error=`invalid_credentials` | ✅ |
-| E2E bad-format(`email: "not-an-email"`)| 400 invalid_input + zod issues | 400, 0 cookie, error=`invalid_input`, issues.email present | ✅ |
-| Cookie JWT 反解 → fixture userId | match `8a6901f3-0054-42b2-87fc-edb24148440a` | match=true | ✅ |
-| Login response.apiKey → `https://ai.silkroadai.io/v1/chat/completions deepseek-v4-flash` | 200 + content | 200, 3.76s, model=`deepseek-ai/DeepSeek-V4-Flash`, content="OK! I'm here and ready to help. What can" | ✅ |
-| 后台进程 + 敏感临时文件清理 | 都清 | dev server + next-server 子进程都关,`/tmp/d3-creds.env` + `/tmp/d3-happy.http`(含 cookie + apiKey)用 `rm -P` shred,其余 tmp 普通 rm | ✅ |
+| 项                                                                                       | 期望                                            | 实测                                                                                                                                | 结果 |
+| ---------------------------------------------------------------------------------------- | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | ---- |
+| Branch + 起点 untracked 状态                                                             | working tree 有 login dir                       | yes(`route.ts` + `__tests__/route.test.ts`)                                                                                         | ✅   |
+| dev server `pnpm next dev -p 3002` ready                                                 | 30s 内 ready                                    | ready in 2.9s                                                                                                                       | ✅   |
+| Reset fixture user(`newapi_user_id=8`)password                                           | hash_len=60 + email/id 对得上                   | hash_len=60,id=`8a6901f3-...`,email=`w3d2test-1777777442@silkroadai-internal.test`                                                  | ✅   |
+| Unit test: `POST /api/auth/login`                                                        | 6/6 PASS                                        | 6/6 PASS / 280ms                                                                                                                    | ✅   |
+| E2E happy(正确密码)                                                                      | 200 + Set-Cookie + body含 user+apiKey           | 200, cookie 207 chars, apiKey prefix `e0QdAg2n`, user.id `8a6901f3-...`                                                             | ✅   |
+| E2E wrong-pass                                                                           | 401 invalid_credentials, no cookie              | 401, 0 cookie, error=`invalid_credentials`                                                                                          | ✅   |
+| E2E no-such-email                                                                        | 401 invalid_credentials, no cookie(timing 防御) | 401, 0 cookie, error=`invalid_credentials`                                                                                          | ✅   |
+| E2E bad-format(`email: "not-an-email"`)                                                  | 400 invalid_input + zod issues                  | 400, 0 cookie, error=`invalid_input`, issues.email present                                                                          | ✅   |
+| Cookie JWT 反解 → fixture userId                                                         | match `8a6901f3-0054-42b2-87fc-edb24148440a`    | match=true                                                                                                                          | ✅   |
+| Login response.apiKey → `https://ai.silkroadai.io/v1/chat/completions deepseek-v4-flash` | 200 + content                                   | 200, 3.76s, model=`deepseek-ai/DeepSeek-V4-Flash`, content="OK! I'm here and ready to help. What can"                               | ✅   |
+| 后台进程 + 敏感临时文件清理                                                              | 都清                                            | dev server + next-server 子进程都关,`/tmp/d3-creds.env` + `/tmp/d3-happy.http`(含 cookie + apiKey)用 `rm -P` shred,其余 tmp 普通 rm | ✅   |
 
 **结论:核心信号 ✅,3 条非阻塞观察(F1-F3)+ 1 条命名约定声明(F4)。**
 

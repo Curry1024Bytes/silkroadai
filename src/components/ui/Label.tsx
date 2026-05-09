@@ -14,21 +14,11 @@ export interface LabelProps extends React.LabelHTMLAttributes<HTMLLabelElement> 
     required?: boolean;
 }
 
-export function Label({
-    required,
-    className,
-    children,
-    ...rest
-}: LabelProps): React.ReactElement {
+export function Label({ required, className, children, ...rest }: LabelProps): React.ReactElement {
     return (
         <label
             {...rest}
-            className={[
-                'text-sm font-medium text-muted-ink mb-1.5 block',
-                className ?? '',
-            ]
-                .filter(Boolean)
-                .join(' ')}
+            className={['text-sm font-medium text-muted-ink mb-1.5 block', className ?? ''].filter(Boolean).join(' ')}
         >
             {children}
             {required ? (

@@ -37,16 +37,10 @@ export function PayForm({ enabledPaymentTypes }: { enabledPaymentTypes: string[]
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
-    const effectiveAmount =
-        selectedTier === 'custom'
-            ? Number.parseFloat(customAmount)
-            : selectedTier;
+    const effectiveAmount = selectedTier === 'custom' ? Number.parseFloat(customAmount) : selectedTier;
 
     const canSubmit =
-        Number.isFinite(effectiveAmount) &&
-        (effectiveAmount as number) > 0 &&
-        paymentType.length > 0 &&
-        !submitting;
+        Number.isFinite(effectiveAmount) && (effectiveAmount as number) > 0 && paymentType.length > 0 && !submitting;
 
     async function handleSubmit(e: React.FormEvent) {
         e.preventDefault();
@@ -101,11 +95,7 @@ export function PayForm({ enabledPaymentTypes }: { enabledPaymentTypes: string[]
     }
 
     if (enabledPaymentTypes.length === 0) {
-        return (
-            <FormError severity="banner">
-                当前没有可用的支付方式,请联系管理员配置 ENABLED_PAYMENT_TYPES。
-            </FormError>
-        );
+        return <FormError severity="banner">当前没有可用的支付方式,请联系管理员配置 ENABLED_PAYMENT_TYPES。</FormError>;
     }
 
     return (

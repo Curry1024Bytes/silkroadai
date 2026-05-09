@@ -27,11 +27,7 @@ vi.mock('@sentry/nextjs', () => ({
     captureException: (...args: unknown[]) => mockSentryCapture(...args),
 }));
 
-import {
-    getUsageAggregate,
-    periodToTimeRange,
-    type UsagePeriod,
-} from '@/lib/newapi/usage-aggregate';
+import { getUsageAggregate, periodToTimeRange, type UsagePeriod } from '@/lib/newapi/usage-aggregate';
 
 const PORTAL_USER_ID = 'aaaa1111-1111-4111-8111-111111111111';
 const NEWAPI_USER_ID = 7;
@@ -169,9 +165,7 @@ describe('getUsageAggregate — cache paths', () => {
                 page_size: 1000,
             }),
         );
-        expect(mockQueryLogs).not.toHaveBeenCalledWith(
-            expect.objectContaining({ user_id: expect.anything() }),
-        );
+        expect(mockQueryLogs).not.toHaveBeenCalledWith(expect.objectContaining({ user_id: expect.anything() }));
         expect(mockCacheUpsert).toHaveBeenCalledTimes(1);
     });
 
@@ -277,9 +271,7 @@ describe('getUsageAggregate — paging across multiple pages', () => {
     it('paginates 3 pages (1000+1000+500) when total exceeds first page', async () => {
         mockCacheFindUnique.mockResolvedValue(null);
         // Simulate 2500-row period: page 1 = 1000, page 2 = 1000, page 3 = 500
-        const fullPage = Array.from({ length: 1000 }, (_, i) =>
-            makeLog({ id: i, quota: 1, model_name: 'gpt-4o' }),
-        );
+        const fullPage = Array.from({ length: 1000 }, (_, i) => makeLog({ id: i, quota: 1, model_name: 'gpt-4o' }));
         const halfPage = Array.from({ length: 500 }, (_, i) =>
             makeLog({ id: i + 2000, quota: 1, model_name: 'claude-opus' }),
         );

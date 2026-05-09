@@ -59,14 +59,7 @@ const NEWAPI_BASE_URL = process.env.NEWAPI_BASE_URL || 'http://localhost:3000';
 
 // new-api 默认 1 USD = 500,000 quota — 这两个常量从 quota-units 重新导出,
 // 保留所有现有 import 路径(`from '@/lib/newapi/client'`)继续工作。
-export {
-    QUOTA_PER_USD,
-    USD_TO_CNY_RATE,
-    quotaToUsd,
-    quotaToCny,
-    usdToQuota,
-    cnyToQuota,
-} from './quota-units';
+export { QUOTA_PER_USD, USD_TO_CNY_RATE, quotaToUsd, quotaToCny, usdToQuota, cnyToQuota } from './quota-units';
 
 // Local imports for internal callers within this module (re-export above
 // doesn't make the names visible in this file's scope).
@@ -162,7 +155,11 @@ async function call<T>(
     const res = await fetch(url, init);
     const text = await res.text();
     let data: NewApiEnvelope<T> | null = null;
-    try { data = text ? JSON.parse(text) as NewApiEnvelope<T> : null; } catch { /* */ }
+    try {
+        data = text ? (JSON.parse(text) as NewApiEnvelope<T>) : null;
+    } catch {
+        /* */
+    }
 
     if (!res.ok || (data && !data.success)) {
         const msg = data?.message ?? text ?? res.statusText;
@@ -183,10 +180,7 @@ async function call<T>(
  * cannot set someone else's access_token — PUT /api/user/ silently
  * ignores the field — so we must go through login.
  */
-async function loginAsUser(args: {
-    username: string;
-    password: string;
-}): Promise<{
+async function loginAsUser(args: { username: string; password: string }): Promise<{
     cookie: string;
     user: { id: number; username: string; role: number };
 }> {
@@ -198,7 +192,11 @@ async function loginAsUser(args: {
     });
     const text = await res.text();
     let data: NewApiEnvelope<{ id: number; username: string; role: number }> | null = null;
-    try { data = text ? JSON.parse(text) : null; } catch { /* */ }
+    try {
+        data = text ? JSON.parse(text) : null;
+    } catch {
+        /* */
+    }
 
     if (!res.ok || (data && !data.success)) {
         const msg = data?.message ?? text ?? res.statusText;
@@ -224,8 +222,8 @@ export const NewApiUserSchema = z.object({
     id: z.number().int(),
     username: z.string(),
     display_name: z.string(),
-    role: z.union([z.literal(1), z.literal(10), z.literal(100)]),  // common | admin | root
-    status: z.union([z.literal(1), z.literal(2)]),                  // enabled | disabled
+    role: z.union([z.literal(1), z.literal(10), z.literal(100)]), // common | admin | root
+    status: z.union([z.literal(1), z.literal(2)]), // enabled | disabled
     email: z.string(),
     group: z.string(),
     quota: z.number().int(),
@@ -241,16 +239,16 @@ export type NewApiUser = z.infer<typeof NewApiUserSchema>;
 export const NewApiTokenSchema = z.object({
     id: z.number().int(),
     user_id: z.number().int(),
-    key: z.string(),                                                // sk-... ; 通常被 mask
+    key: z.string(), // sk-... ; 通常被 mask
     status: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]),
     name: z.string(),
     created_time: z.number(),
     accessed_time: z.number(),
-    expired_time: z.number(),                                       // -1 = 永不过期
+    expired_time: z.number(), // -1 = 永不过期
     remain_quota: z.number().int(),
     unlimited_quota: z.boolean(),
     model_limits_enabled: z.boolean(),
-    model_limits: z.string(),                                       // CSV
+    model_limits: z.string(), // CSV
     used_quota: z.number().int(),
     group: z.string(),
 });
@@ -259,8 +257,8 @@ export type NewApiToken = z.infer<typeof NewApiTokenSchema>;
 export interface NewApiUsageLog {
     id: number;
     user_id: number;
-    created_at: number;                                             // unix seconds
-    type: 0 | 1 | 2 | 3 | 4 | 5 | 6;                                // unknown|topup|consume|manage|system|error|refund
+    created_at: number; // unix seconds
+    type: 0 | 1 | 2 | 3 | 4 | 5 | 6; // unknown|topup|consume|manage|system|error|refund
     content: string;
     username: string;
     token_name: string;
@@ -268,7 +266,7 @@ export interface NewApiUsageLog {
     quota: number;
     prompt_tokens: number;
     completion_tokens: number;
-    use_time: number;                                               // ms
+    use_time: number; // ms
     is_stream: boolean;
     channel: number;
     token_id: number;
@@ -296,17 +294,17 @@ export interface NewApiUsageLog {
  * 推荐:portal 用 portal_user_id 的前 8 字符作为 username 后缀,确保唯一好查
  */
 export async function createUser(args: {
-    username: string;       // 必须唯一,max 20 字符
-    password: string;       // 8-20 字符
-    display_name?: string;  // max 20
-    email?: string;         // max 50
+    username: string; // 必须唯一,max 20 字符
+    password: string; // 8-20 字符
+    display_name?: string; // max 20
+    email?: string; // max 50
 }): Promise<void> {
     await call<null>('POST', '/api/user/', {
         username: args.username,
         password: args.password,
         display_name: args.display_name ?? args.username,
         email: args.email ?? '',
-        role: 1,            // 1 = common user
+        role: 1, // 1 = common user
     });
 }
 
@@ -316,7 +314,11 @@ export async function getUser(id: number): Promise<NewApiUser> {
 }
 
 /** 搜 user(by 用户名/邮箱关键词) */
-export async function searchUser(keyword: string, page = 1, pageSize = 20): Promise<{
+export async function searchUser(
+    keyword: string,
+    page = 1,
+    pageSize = 20,
+): Promise<{
     items: NewApiUser[];
     total: number;
 }> {
@@ -350,7 +352,7 @@ export async function deleteUser(id: number): Promise<void> {
  */
 export async function addQuota(args: {
     userId: number;
-    quotaDelta: number;                                  // raw quota
+    quotaDelta: number; // raw quota
     mode?: 'add' | 'subtract' | 'override';
 }): Promise<void> {
     await call<null>('POST', '/api/user/manage', {
@@ -378,14 +380,14 @@ export async function addQuota(args: {
 export async function createTokenForCustomer(
     customerAuth: { accessToken: string; userId: number },
     args: {
-        name: string;                    // token 别名,max 50
-        unlimited_quota?: boolean;       // 默认 false
-        remain_quota?: number;           // 默认按 user 总 quota,unlimited 时忽略
-        expired_time?: number;           // unix seconds, -1 = 永不过期(默认)
+        name: string; // token 别名,max 50
+        unlimited_quota?: boolean; // 默认 false
+        remain_quota?: number; // 默认按 user 总 quota,unlimited 时忽略
+        expired_time?: number; // unix seconds, -1 = 永不过期(默认)
         model_limits_enabled?: boolean;
-        model_limits?: string;           // CSV "gpt-4,deepseek-v4-flash"
-        allow_ips?: string | null;       // newline-separated
-        group?: string;                  // 所属分组(决定计费倍率)
+        model_limits?: string; // CSV "gpt-4,deepseek-v4-flash"
+        allow_ips?: string | null; // newline-separated
+        group?: string; // 所属分组(决定计费倍率)
     },
 ): Promise<void> {
     await call<null>(
@@ -412,13 +414,7 @@ export async function listTokensForCustomer(
     page = 1,
     pageSize = 20,
 ): Promise<{ items: NewApiToken[]; total: number }> {
-    return await call(
-        'GET',
-        '/api/token/',
-        undefined,
-        { p: page, page_size: pageSize },
-        { asUser: customerAuth },
-    );
+    return await call('GET', '/api/token/', undefined, { p: page, page_size: pageSize }, { asUser: customerAuth });
 }
 
 /** 拿 token 的真实 key(masked 之外)
@@ -431,13 +427,9 @@ export async function getTokenKey(
     customerAuth: { accessToken: string; userId: number },
     tokenId: number,
 ): Promise<string> {
-    const result = await call<{ key: string }>(
-        'POST',
-        `/api/token/${tokenId}/key`,
-        undefined,
-        undefined,
-        { asUser: customerAuth },
-    );
+    const result = await call<{ key: string }>('POST', `/api/token/${tokenId}/key`, undefined, undefined, {
+        asUser: customerAuth,
+    });
     return result.key;
 }
 
@@ -446,13 +438,7 @@ export async function deleteToken(
     customerAuth: { accessToken: string; userId: number },
     tokenId: number,
 ): Promise<void> {
-    await call<null>(
-        'DELETE',
-        `/api/token/${tokenId}`,
-        undefined,
-        undefined,
-        { asUser: customerAuth },
-    );
+    await call<null>('DELETE', `/api/token/${tokenId}`, undefined, undefined, { asUser: customerAuth });
 }
 
 // ============================================
@@ -509,7 +495,7 @@ export async function getLogStats(args: {
     model_name?: string;
 }): Promise<{ quota: number; rpm: number; tpm: number }> {
     return await call('GET', '/api/log/stat', undefined, {
-        type: 2,             // consume only
+        type: 2, // consume only
         username: args.username,
         start_timestamp: args.start_timestamp,
         end_timestamp: args.end_timestamp,
@@ -538,15 +524,15 @@ import { randomBytes } from 'crypto';
 
 /** 生成随机密码(8-20 字符,符合 new-api validator) */
 function generateUserPassword(): string {
-    return randomBytes(8).toString('hex').slice(0, 16);     // 16 字符
+    return randomBytes(8).toString('hex').slice(0, 16); // 16 字符
 }
 
 export interface ProvisionedCustomer {
     newapi_user_id: number;
     newapi_username: string;
-    newapi_access_token: string;                            // portal 内部 secret
+    newapi_access_token: string; // portal 内部 secret
     newapi_token_id: number;
-    newapi_token_value: string;                             // sk-xxx 给客户
+    newapi_token_value: string; // sk-xxx 给客户
 }
 
 /**
@@ -569,9 +555,9 @@ export interface ProvisionedCustomer {
 export async function provisionNewCustomer(args: {
     portal_user_id: string;
     email: string;
-    initial_quota?: number;            // 默认 0
+    initial_quota?: number; // 默认 0
 }): Promise<ProvisionedCustomer> {
-    const username = `c-${args.portal_user_id.slice(0, 8)}`;     // c-25a69821
+    const username = `c-${args.portal_user_id.slice(0, 8)}`; // c-25a69821
     const password = generateUserPassword();
 
     // Step 1: admin creates user.
@@ -586,13 +572,9 @@ export async function provisionNewCustomer(args: {
 
     // Step 3: ask new-api to (re)generate this user's access_token. Returns
     // the new token; the previous value (if any) is invalidated server-side.
-    const accessToken = await call<string>(
-        'GET',
-        '/api/user/token',
-        undefined,
-        undefined,
-        { cookie: { value: session.cookie, userId } },
-    );
+    const accessToken = await call<string>('GET', '/api/user/token', undefined, undefined, {
+        cookie: { value: session.cookie, userId },
+    });
 
     // Step 4: create the first token. Must act-as the customer.
     //
@@ -613,7 +595,7 @@ export async function provisionNewCustomer(args: {
 
     // Step 5: look up token.id (create doesn't return it).
     const tokens = await listTokensForCustomer(customerAuth, 1, 10);
-    const token = tokens.items.find(t => t.name === tokenName);
+    const token = tokens.items.find((t) => t.name === tokenName);
     if (!token) {
         throw new Error(`Failed to find newly created token ${tokenName} after createTokenForCustomer.`);
     }

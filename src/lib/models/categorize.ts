@@ -24,13 +24,7 @@
 export type TypeName = 'chat' | 'vision' | 'audio' | 'embedding' | 'image-gen';
 
 /** Display order — chat first (most common), image-gen last (most novelty). */
-export const TYPE_ORDER: readonly TypeName[] = [
-    'chat',
-    'vision',
-    'audio',
-    'embedding',
-    'image-gen',
-] as const;
+export const TYPE_ORDER: readonly TypeName[] = ['chat', 'vision', 'audio', 'embedding', 'image-gen'] as const;
 
 export const TYPE_LABEL: Record<TypeName, string> = {
     chat: '对话模型',
@@ -147,9 +141,12 @@ export function categorizeByVendor(modelName: string): VendorName {
         n.startsWith('whisper') ||
         n.startsWith('text-embedding') ||
         n.startsWith('tts-') ||
-        n.startsWith('o1-') || n === 'o1' ||
-        n.startsWith('o3-') || n === 'o3' ||
-        n.startsWith('o4-') || n === 'o4' ||
+        n.startsWith('o1-') ||
+        n === 'o1' ||
+        n.startsWith('o3-') ||
+        n === 'o3' ||
+        n.startsWith('o4-') ||
+        n === 'o4' ||
         // Vendor-prefixed copies under HF/SiliconFlow style routing rarely
         // exist for OpenAI models, but guard for `openai/` direct.
         n.startsWith('openai/')
@@ -233,9 +230,7 @@ export function groupModels(rawModelNames: string[]): GroupModelsResult {
     for (const type of Object.keys(grouped) as TypeName[]) {
         const typeBucket = grouped[type]!;
         for (const vendor of Object.keys(typeBucket) as VendorName[]) {
-            typeBucket[vendor]!.sort((a, b) =>
-                a.shortName.localeCompare(b.shortName, 'en', { sensitivity: 'base' }),
-            );
+            typeBucket[vendor]!.sort((a, b) => a.shortName.localeCompare(b.shortName, 'en', { sensitivity: 'base' }));
         }
     }
 

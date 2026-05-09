@@ -93,13 +93,7 @@ function compose({
     block?: boolean;
     className?: string;
 }): string {
-    return [
-        BASE_CLASSES,
-        VARIANT_CLASSES[variant],
-        SIZE_CLASSES[size],
-        block ? 'w-full' : '',
-        className ?? '',
-    ]
+    return [BASE_CLASSES, VARIANT_CLASSES[variant], SIZE_CLASSES[size], block ? 'w-full' : '', className ?? '']
         .filter(Boolean)
         .join(' ');
 }
@@ -107,46 +101,22 @@ function compose({
 function Spinner({ size }: { size: ButtonSize }) {
     const px = size === 'sm' ? 14 : size === 'md' ? 16 : 18;
     return (
-        <svg
-            width={px}
-            height={px}
-            viewBox="0 0 24 24"
-            fill="none"
-            aria-hidden="true"
-            className="animate-spin"
-        >
+        <svg width={px} height={px} viewBox="0 0 24 24" fill="none" aria-hidden="true" className="animate-spin">
             <circle cx="12" cy="12" r="10" stroke="currentColor" strokeOpacity="0.25" strokeWidth="3" />
-            <path
-                d="M22 12a10 10 0 0 1-10 10"
-                stroke="currentColor"
-                strokeWidth="3"
-                strokeLinecap="round"
-            />
+            <path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
         </svg>
     );
 }
 
 export function Button(props: ButtonProps): React.ReactElement {
-    const {
-        variant = 'primary',
-        size = 'md',
-        loading = false,
-        block,
-        children,
-        className,
-        ...rest
-    } = props;
+    const { variant = 'primary', size = 'md', loading = false, block, children, className, ...rest } = props;
 
     const classes = compose({ variant, size, block, className });
 
     if ('href' in rest && rest.href !== undefined) {
         const anchorRest = rest as React.AnchorHTMLAttributes<HTMLAnchorElement>;
         return (
-            <a
-                {...anchorRest}
-                aria-disabled={loading || anchorRest['aria-disabled']}
-                className={classes}
-            >
+            <a {...anchorRest} aria-disabled={loading || anchorRest['aria-disabled']} className={classes}>
                 {loading ? <Spinner size={size} /> : null}
                 {children}
             </a>

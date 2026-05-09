@@ -11,10 +11,7 @@
 import type { MetadataRoute } from 'next';
 
 function baseUrl(): string {
-    const u =
-        process.env.APP_URL ||
-        process.env.NEXT_PUBLIC_APP_URL ||
-        'https://silkroadai.io';
+    const u = process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || 'https://silkroadai.io';
     return u.replace(/\/$/, '');
 }
 

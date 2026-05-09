@@ -158,9 +158,7 @@ describe('POST /api/portal/keys', () => {
     it('400 invalid_input when alias > 50 chars', async () => {
         mockGetCurrentUser.mockResolvedValue(SESSION_USER);
 
-        const res = await POST(
-            makeReq({ method: 'POST', body: { alias: 'a'.repeat(51) } }),
-        );
+        const res = await POST(makeReq({ method: 'POST', body: { alias: 'a'.repeat(51) } }));
         expect(res.status).toBe(400);
     });
 
@@ -229,10 +227,7 @@ describe('POST /api/portal/keys', () => {
                 expired_time: -1,
             }),
         );
-        expect(mockGetTokenKey).toHaveBeenCalledWith(
-            { accessToken: NEWAPI_ACCESS_TOKEN, userId: NEWAPI_USER_ID },
-            42,
-        );
+        expect(mockGetTokenKey).toHaveBeenCalledWith({ accessToken: NEWAPI_ACCESS_TOKEN, userId: NEWAPI_USER_ID }, 42);
         // Prisma row created with the right shape
         expect(mockTokenCreate).toHaveBeenCalledWith(
             expect.objectContaining({

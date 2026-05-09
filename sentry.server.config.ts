@@ -51,11 +51,7 @@ if (process.env.SENTRY_DSN) {
                 }
             }
             // Scrub request body fields (when sent as parsed object)
-            if (
-                event.request?.data &&
-                typeof event.request.data === 'object' &&
-                !Array.isArray(event.request.data)
-            ) {
+            if (event.request?.data && typeof event.request.data === 'object' && !Array.isArray(event.request.data)) {
                 const data = event.request.data as Record<string, unknown>;
                 for (const k of Object.keys(data)) {
                     if (SENSITIVE_BODY_KEYS.has(k)) data[k] = '[REDACTED]';

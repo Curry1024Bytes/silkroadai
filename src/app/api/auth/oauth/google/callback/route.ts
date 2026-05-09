@@ -154,10 +154,9 @@ export async function GET(req: NextRequest) {
         // owns this oauth identity" (suspected attack) — neither is an
         // ops alert.
         if (outcome.error === 'provisioning_failed') {
-            Sentry.captureException(
-                new Error(`oauth-google: provisionNewCustomer failed for email=${claims.email}`),
-                { tags: { area: 'oauth-google-provision' } },
-            );
+            Sentry.captureException(new Error(`oauth-google: provisionNewCustomer failed for email=${claims.email}`), {
+                tags: { area: 'oauth-google-provision' },
+            });
         }
         return buildResponse(req.url, { error: outcome.error });
     }

@@ -12,14 +12,14 @@
 
 Deleted directly on the prod `new-api-db` Postgres (no portal-side change):
 
-| target | rows deleted |
-|---|---|
-| `users` (id 8-12 — orphaned customer-style accounts from W2-W3 dev rounds) | 5 |
-| `tokens` (owned by id 8-12) | 9 |
-| `quota_data` (owned by id 8-12) | 10 |
-| `logs` attributed to id 8-12 | 18 |
-| `logs` for already-deleted users `c-8220a1ed` / `c-dbc1a63c` | 5 |
-| `logs` for `admin` (test traffic from various dev rounds) | 25 |
+| target                                                                     | rows deleted |
+| -------------------------------------------------------------------------- | ------------ |
+| `users` (id 8-12 — orphaned customer-style accounts from W2-W3 dev rounds) | 5            |
+| `tokens` (owned by id 8-12)                                                | 9            |
+| `quota_data` (owned by id 8-12)                                            | 10           |
+| `logs` attributed to id 8-12                                               | 18           |
+| `logs` for already-deleted users `c-8220a1ed` / `c-dbc1a63c`               | 5            |
+| `logs` for `admin` (test traffic from various dev rounds)                  | 25           |
 
 Result: **4 users remain** (admin + 3 portal users — Frankqy + 2 dev). 0 customer-attributable logs in the 30-day window. The apply script's "active models" triage now reflects only real customer behavior (currently zero).
 
@@ -58,6 +58,7 @@ Runbook covers: pre-flight, backup, dry-run, apply, verify, portal /pricing rebu
 ### Phase 2 — DB migration (15 min, **destructive**)
 
 Maintenance-window operations on prod new-api db:
+
 1. `pg_dump newapi > /tmp/newapi-pre-w7-pricing.sql.gz` (rollback insurance)
 2. Update QuotaPerUnit via admin UI: 500K → 1M
 3. SQL `UPDATE users SET quota = ROUND(quota * 2.0571);` (and tokens, redemption_codes, etc. — see brief B6 for the corrected multiplier)
@@ -69,7 +70,7 @@ Maintenance-window operations on prod new-api db:
 ```ts
 // src/lib/newapi/client.ts
 export const QUOTA_PER_USD = parseInt(process.env.NEWAPI_QUOTA_PER_USD || '1000000', 10); // was 500000
-export const USD_TO_CNY_RATE = parseFloat(process.env.USD_TO_CNY_RATE || '7');             // was 7.2
+export const USD_TO_CNY_RATE = parseFloat(process.env.USD_TO_CNY_RATE || '7'); // was 7.2
 ```
 
 Run full vitest, expect quota-cache + balance + recharge math tests to need fixture updates (existing tests assume QPU=500K). Belongs in a separate PR (or this PR's follow-up commit) so it can deploy in lockstep with Phase 2.
@@ -91,14 +92,14 @@ Run full vitest, expect quota-cache + balance + recharge math tests to need fixt
 
 ## What's in this PR
 
-| file | type | purpose |
-|---|---|---|
-| `_bootstrap/apply-w7-pricing.ts` | NEW | Phase 3 bulk apply (dry-run-validated) |
-| `_bootstrap/exit-w7-promo.ts` | NEW | Phase 7 promo exit (2026-06-09 manual trigger) |
-| `_bootstrap/build-pricing-audit.py` | NEW | W7 D1 audit script (was untracked, prerequisite reading) |
-| `docs/W7-D1-PRICING-AUDIT.md` | NEW | W7 D1 decision brief (operator's pricing strategy) |
-| `docs/W7-PROMO-EXIT-RUNBOOK.md` | NEW | Phase 7 operator playbook |
-| `docs/W7-D2-PROGRESS.md` | NEW | This file |
+| file                                | type | purpose                                                  |
+| ----------------------------------- | ---- | -------------------------------------------------------- |
+| `_bootstrap/apply-w7-pricing.ts`    | NEW  | Phase 3 bulk apply (dry-run-validated)                   |
+| `_bootstrap/exit-w7-promo.ts`       | NEW  | Phase 7 promo exit (2026-06-09 manual trigger)           |
+| `_bootstrap/build-pricing-audit.py` | NEW  | W7 D1 audit script (was untracked, prerequisite reading) |
+| `docs/W7-D1-PRICING-AUDIT.md`       | NEW  | W7 D1 decision brief (operator's pricing strategy)       |
+| `docs/W7-PROMO-EXIT-RUNBOOK.md`     | NEW  | Phase 7 operator playbook                                |
+| `docs/W7-D2-PROGRESS.md`            | NEW  | This file                                                |
 
 ## What's NOT in this PR
 
@@ -110,15 +111,18 @@ Run full vitest, expect quota-cache + balance + recharge math tests to need fixt
 ## Operator next-step decision tree
 
 **If you want to proceed with the maintenance-window cutover**:
+
 1. Schedule a 30-min window (recommend low-traffic time, e.g. 23:00-23:30 UTC+8)
 2. Notify Frankqy (站内 + WeChat) ~24h ahead
 3. Run Phases 2 → 3 (`--apply`) → 4 → portal rebuild → 5 verify in that window
 4. Phase 6 (landing + /pricing) can land in a follow-up PR after Phase 5 GREEN
 
 **If you want operator-confirmed retail prices for the OpenAI 5.x SKUs first**:
+
 - Edit `SUB2API_OPENAI_WHITELIST` in `_bootstrap/apply-w7-pricing.ts` for the 5 SKUs marked `✱ defaulted`
 - Re-run dry-run to verify
 - Then proceed with the maintenance window
 
 **If Phase 1.5 cleanup needs to be reverted**:
+
 - The orphan accounts had no real customer linkage; deletion is permanent. If needed, reactivate by re-running portal `provisionNewCustomer` against the 3 portal users (regenerates new newapi user rows).

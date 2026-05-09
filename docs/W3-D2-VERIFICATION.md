@@ -14,23 +14,23 @@ LiteLLM 在 W3 D1(2026-05-02 晚)关停后,portal 注册 → new-api 拿 sk-xxx 
 
 ## 验证矩阵
 
-| 项 | 期望 | 实测 | 结果 |
-|---|---|---|---|
-| feat 分支 + working tree clean | yes | yes | ✅ |
-| SSH 隧道 + new-api `/api/status` 200 | 200 + new-api envelope | 200 + `data.{HeaderNavModules,api_info,...}` | ✅ |
-| `pnpm tsc --noEmit` | exit 0,0 errors | exit 0 | ✅ |
-| `pnpm lint` | exit 0,error=0 | exit 0,errors=0,warnings=51(历史遗留) | ✅(F4) |
-| `pnpm vitest run src/lib/newapi` | all PASS | 1 file / 3 tests / 1.51s | ✅ |
-| `POST /api/auth/register` | 200 + sk-xxx | 200,user_id=8,sk-prefix=`e0QdAg2nQQnK` | ✅ |
-| Prisma User+NewApiToken + new-api user 一致 | 三处对得上 | 对得上,access_token 32 chars 不为空 | ✅ |
-| `addQuota(8, 500000)` | quota 0→500000 | 0→500000 实测 | ✅ |
-| `claude-opus-4-7` via ai.silkroadai.io | 200 + content | 200,3.01s,channel=2(sub2api-claude) | ✅ |
-| `gpt-5.4` via ai.silkroadai.io | 200 + content | 200,2.97s,channel=3(sub2api-openai) | ✅ |
-| `deepseek-v4-flash` via ai.silkroadai.io | 200 + content | **503 model_not_found**(F1) | ❌ → fallback ✅ |
-| `deepseek-ai/DeepSeek-V4-Flash` via ai.silkroadai.io | n/a(fallback) | 200,3.82s,channel=1(SiliconFlow) | ✅ |
-| `/api/log/?user_id=8` 回查 | ≥3 条调用 | 4 条(3 调用 + 1 add_quota event) | ✅ |
-| `/api/log/?username=c-8a6901f3` filter | ≥3 条 | 0 条(F2 — filter quirk) | ⚠️(F2) |
-| 后台进程清理 | 都关 | dev server + next-server 子进程都关,/tmp 清 | ✅ |
+| 项                                                   | 期望                   | 实测                                         | 结果             |
+| ---------------------------------------------------- | ---------------------- | -------------------------------------------- | ---------------- |
+| feat 分支 + working tree clean                       | yes                    | yes                                          | ✅               |
+| SSH 隧道 + new-api `/api/status` 200                 | 200 + new-api envelope | 200 + `data.{HeaderNavModules,api_info,...}` | ✅               |
+| `pnpm tsc --noEmit`                                  | exit 0,0 errors        | exit 0                                       | ✅               |
+| `pnpm lint`                                          | exit 0,error=0         | exit 0,errors=0,warnings=51(历史遗留)        | ✅(F4)           |
+| `pnpm vitest run src/lib/newapi`                     | all PASS               | 1 file / 3 tests / 1.51s                     | ✅               |
+| `POST /api/auth/register`                            | 200 + sk-xxx           | 200,user_id=8,sk-prefix=`e0QdAg2nQQnK`       | ✅               |
+| Prisma User+NewApiToken + new-api user 一致          | 三处对得上             | 对得上,access_token 32 chars 不为空          | ✅               |
+| `addQuota(8, 500000)`                                | quota 0→500000         | 0→500000 实测                                | ✅               |
+| `claude-opus-4-7` via ai.silkroadai.io               | 200 + content          | 200,3.01s,channel=2(sub2api-claude)          | ✅               |
+| `gpt-5.4` via ai.silkroadai.io                       | 200 + content          | 200,2.97s,channel=3(sub2api-openai)          | ✅               |
+| `deepseek-v4-flash` via ai.silkroadai.io             | 200 + content          | **503 model_not_found**(F1)                  | ❌ → fallback ✅ |
+| `deepseek-ai/DeepSeek-V4-Flash` via ai.silkroadai.io | n/a(fallback)          | 200,3.82s,channel=1(SiliconFlow)             | ✅               |
+| `/api/log/?user_id=8` 回查                           | ≥3 条调用              | 4 条(3 调用 + 1 add_quota event)             | ✅               |
+| `/api/log/?username=c-8a6901f3` filter               | ≥3 条                  | 0 条(F2 — filter quirk)                      | ⚠️(F2)           |
+| 后台进程清理                                         | 都关                   | dev server + next-server 子进程都关,/tmp 清  | ✅               |
 
 **结论:核心信号 ✅。3 个非阻塞观察(F2/F3/F4)+ 1 个语义 ⚠️(F1,deepseek-v4-flash 短名 — D3 前置 blocker)+ 1 个情境变化(F5,模型规模翻倍)。**
 
@@ -42,9 +42,9 @@ LiteLLM 在 W3 D1(2026-05-02 晚)关停后,portal 注册 → new-api 拿 sk-xxx 
 - **影响**:任何 W1 时代用过短名(`deepseek-v4-flash` 等)的客户 / 前端代码 / 文档示例,从 W3 D1 切到 new-api 后 → **持续 503**。可能是静默漏(没看到投诉但流量在掉)。
 - **根因假设**(待 Batch D 实查):SiliconFlow 渠道的 `model_mapping` 在 W3 D1 配置或后续 SiliconFlow 扩容到 291 模型的过程中丢失或未生效。silkroadai-project-memory.md 明确写了 W3 D1 配过短名 mapping。
 - **修复方案**(待 Batch D 落地):
-  - (a) admin UI 给 SiliconFlow 渠道补上 `model_mapping`,把所有 W1 时代公开过的短名重新映射到 canonical 名 — **推荐**,在 admin 改一下,客户接口最稳
-  - (b) 前端 / 文档全切到 canonical 名,接受短名失效 — 客户面破坏性,不推荐
-  - (c) portal 层做名称映射 — 脏(把上游知识泄到 portal),不推荐
+    - (a) admin UI 给 SiliconFlow 渠道补上 `model_mapping`,把所有 W1 时代公开过的短名重新映射到 canonical 名 — **推荐**,在 admin 改一下,客户接口最稳
+    - (b) 前端 / 文档全切到 canonical 名,接受短名失效 — 客户面破坏性,不推荐
+    - (c) portal 层做名称映射 — 脏(把上游知识泄到 portal),不推荐
 - **行动**:Batch D(D3 前置 blocker)走 (a),并跑全 W1 短名清单回归。
 - **Resolution**:Batch D(2026-05-03,本 PR)用 `scripts/rebuild-channel-model-mapping.ts --apply` 重建 SiliconFlow 渠道 mapping,实测 deepseek-v4-flash 等 88 个短名全部 200。详见本 PR 描述。
 

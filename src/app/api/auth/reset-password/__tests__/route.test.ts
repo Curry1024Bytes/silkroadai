@@ -57,9 +57,7 @@ describe('POST /api/auth/reset-password', () => {
             expires_at: new Date(Date.now() + 30 * 60 * 1000),
         });
 
-        const res = await POST(
-            makeReq({ token: VALID_TOKEN, newPassword: 'newgoodpass123' }),
-        );
+        const res = await POST(makeReq({ token: VALID_TOKEN, newPassword: 'newgoodpass123' }));
         const body = await res.json();
 
         expect(res.status).toBe(200);
@@ -91,9 +89,7 @@ describe('POST /api/auth/reset-password', () => {
     it('400 when token does not exist', async () => {
         mockTokenFindUnique.mockResolvedValue(null);
 
-        const res = await POST(
-            makeReq({ token: VALID_TOKEN, newPassword: 'newgoodpass123' }),
-        );
+        const res = await POST(makeReq({ token: VALID_TOKEN, newPassword: 'newgoodpass123' }));
         const body = await res.json();
 
         expect(res.status).toBe(400);
@@ -110,9 +106,7 @@ describe('POST /api/auth/reset-password', () => {
             expires_at: new Date(Date.now() - 60 * 1000), // expired 1min ago
         });
 
-        const res = await POST(
-            makeReq({ token: VALID_TOKEN, newPassword: 'newgoodpass123' }),
-        );
+        const res = await POST(makeReq({ token: VALID_TOKEN, newPassword: 'newgoodpass123' }));
         const body = await res.json();
 
         expect(res.status).toBe(400);
@@ -128,9 +122,7 @@ describe('POST /api/auth/reset-password', () => {
             expires_at: new Date(Date.now() + 30 * 60 * 1000),
         });
 
-        const res = await POST(
-            makeReq({ token: VALID_TOKEN, newPassword: 'newgoodpass123' }),
-        );
+        const res = await POST(makeReq({ token: VALID_TOKEN, newPassword: 'newgoodpass123' }));
         const body = await res.json();
 
         expect(res.status).toBe(400);
@@ -150,7 +142,10 @@ describe('POST /api/auth/reset-password', () => {
 
     it('400 when token format wrong (non-hex / wrong length)', async () => {
         const res = await POST(
-            makeReq({ token: 'not-hex-token-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx', newPassword: 'goodpass123' }),
+            makeReq({
+                token: 'not-hex-token-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+                newPassword: 'goodpass123',
+            }),
         );
         const body = await res.json();
 

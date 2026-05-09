@@ -120,9 +120,7 @@ describe('POST /api/auth/verify-email', () => {
     });
 
     it('400 when token format wrong (non-hex / wrong length)', async () => {
-        const res = await POST(
-            makeReq({ token: 'not-hex-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' }),
-        );
+        const res = await POST(makeReq({ token: 'not-hex-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' }));
         const body = await res.json();
 
         expect(res.status).toBe(400);

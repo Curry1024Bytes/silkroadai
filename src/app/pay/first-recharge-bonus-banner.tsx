@@ -27,9 +27,7 @@ export function FirstRechargeBonusBanner() {
             </span>
             <span>
                 <strong className="text-navy">首充福利</strong>
-                <span className="ml-2 text-muted-ink">
-                    额外赠送 20% bonus,机会只此一次
-                </span>
+                <span className="ml-2 text-muted-ink">额外赠送 20% bonus,机会只此一次</span>
             </span>
         </div>
     );

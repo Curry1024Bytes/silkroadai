@@ -100,10 +100,7 @@ function fallbackUrlBlock(url: string): string {
 /* verify-email (W3 D5)                                                */
 /* ─────────────────────────────────────────────────────────────────── */
 
-export function emailVerificationTemplate(
-    verifyUrl: string,
-    expiresInHours: number,
-): EmailContent {
+export function emailVerificationTemplate(verifyUrl: string, expiresInHours: number): EmailContent {
     const subject = '[Silk Road AI] 邮箱验证';
 
     // text body kept verbatim from the W3 D5 release — plain-text mail
@@ -172,10 +169,7 @@ https://silkroadai.io
 /* password-reset (W3 D4)                                              */
 /* ─────────────────────────────────────────────────────────────────── */
 
-export function passwordResetTemplate(
-    resetUrl: string,
-    expiresInMinutes: number,
-): EmailContent {
+export function passwordResetTemplate(resetUrl: string, expiresInMinutes: number): EmailContent {
     const subject = '[Silk Road AI] 重置密码';
 
     const text = `

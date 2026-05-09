@@ -46,12 +46,14 @@ import { scanAndAlert } from '@/lib/scheduler/balance-alert';
 const USER_A = 'aaaa1111-1111-4111-8111-111111111111';
 const USER_B = 'bbbb2222-2222-4222-8222-222222222222';
 
-function user(overrides: Partial<{
-    id: string;
-    email: string;
-    threshold: number;
-    last_sent_at: Date | null;
-}> = {}) {
+function user(
+    overrides: Partial<{
+        id: string;
+        email: string;
+        threshold: number;
+        last_sent_at: Date | null;
+    }> = {},
+) {
     return {
         id: overrides.id ?? USER_A,
         email: overrides.email ?? 'a@silkroadai.io',
@@ -115,7 +117,7 @@ describe('scanAndAlert — send decisions', () => {
     it('balance > threshold → no send, skippedAboveThreshold counted', async () => {
         mockUserFindMany.mockResolvedValue([user({ threshold: 5 })]);
         // remain quota maps to ¥10 (well above ¥5 threshold)
-        mockGetQuotaWithCache.mockResolvedValue({ remain_quota: 10 * 500_000 / 7.2, used_quota: 0, source: 'live' });
+        mockGetQuotaWithCache.mockResolvedValue({ remain_quota: (10 * 500_000) / 7.2, used_quota: 0, source: 'live' });
 
         const r = await scanAndAlert();
 
@@ -128,7 +130,7 @@ describe('scanAndAlert — send decisions', () => {
     it('balance ≤ threshold → CAS-claim then send + alertsSent counted', async () => {
         mockUserFindMany.mockResolvedValue([user({ threshold: 10 })]);
         // remain ¥3 → below threshold ¥10
-        mockGetQuotaWithCache.mockResolvedValue({ remain_quota: 3 * 500_000 / 7.2, used_quota: 0, source: 'cache' });
+        mockGetQuotaWithCache.mockResolvedValue({ remain_quota: (3 * 500_000) / 7.2, used_quota: 0, source: 'cache' });
 
         const r = await scanAndAlert();
 
@@ -156,7 +158,7 @@ describe('scanAndAlert — send decisions', () => {
 
     it('CAS-claim count=0 (sibling instance won race) → no email, skippedRaceLost counted', async () => {
         mockUserFindMany.mockResolvedValue([user({ threshold: 10 })]);
-        mockGetQuotaWithCache.mockResolvedValue({ remain_quota: 1 * 500_000 / 7.2, used_quota: 0, source: 'live' });
+        mockGetQuotaWithCache.mockResolvedValue({ remain_quota: (1 * 500_000) / 7.2, used_quota: 0, source: 'live' });
         mockUserUpdateMany.mockResolvedValueOnce({ count: 0 });
 
         const r = await scanAndAlert();
@@ -182,8 +184,7 @@ describe('scanAndAlert — send decisions', () => {
         expect(mockSendBalanceAlertEmail).toHaveBeenCalledTimes(2);
         expect(mockSentryCapture).toHaveBeenCalled();
         const tagged = mockSentryCapture.mock.calls.find(
-            (c) =>
-                (c[1] as { tags?: { area?: string } } | undefined)?.tags?.area === 'balance-alert',
+            (c) => (c[1] as { tags?: { area?: string } } | undefined)?.tags?.area === 'balance-alert',
         );
         expect(tagged).toBeDefined();
         // Only one alert succeeded
@@ -193,9 +194,7 @@ describe('scanAndAlert — send decisions', () => {
 
     it('quota fetch fails (cache miss + new-api dead) → skippedQuotaUnavailable, no Sentry', async () => {
         mockUserFindMany.mockResolvedValue([user({ threshold: 10 })]);
-        mockGetQuotaWithCache.mockRejectedValue(
-            new Error(`quota fetch failed for user ${USER_A}: ECONNREFUSED`),
-        );
+        mockGetQuotaWithCache.mockRejectedValue(new Error(`quota fetch failed for user ${USER_A}: ECONNREFUSED`));
 
         const r = await scanAndAlert();
 
@@ -211,7 +210,7 @@ describe('scanAndAlert — send decisions', () => {
         mockUserFindMany.mockResolvedValue([user({ threshold: 10 })]);
         // 60s cached value — fully valid; scheduler should not require 'live'.
         mockGetQuotaWithCache.mockResolvedValue({
-            remain_quota: 5 * 500_000 / 7.2,
+            remain_quota: (5 * 500_000) / 7.2,
             used_quota: 0,
             source: 'cache' as const,
         });

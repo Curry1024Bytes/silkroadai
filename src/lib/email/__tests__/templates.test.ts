@@ -66,8 +66,11 @@ describe('W7 D4 brand-shell consistency across all 3 templates', () => {
     const cases: Array<{ name: string; html: string }> = [];
 
     it('renders all 3 templates with the shared shell', async () => {
-        const { emailVerificationTemplate, passwordResetTemplate, balanceAlertTemplate: bat } =
-            await import('@/lib/email/templates');
+        const {
+            emailVerificationTemplate,
+            passwordResetTemplate,
+            balanceAlertTemplate: bat,
+        } = await import('@/lib/email/templates');
         cases.push({
             name: 'verify-email',
             html: emailVerificationTemplate('https://silkroadai.io/verify-email?token=x', 24).html,

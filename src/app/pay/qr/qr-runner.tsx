@@ -27,13 +27,7 @@ interface PollResponse {
     expiresAt: string | null;
     paymentSuccess: boolean;
     rechargeSuccess: boolean;
-    rechargeStatus:
-        | 'not_paid'
-        | 'paid_pending'
-        | 'recharging'
-        | 'success'
-        | 'failed'
-        | 'closed';
+    rechargeStatus: 'not_paid' | 'paid_pending' | 'recharging' | 'success' | 'failed' | 'closed';
     failedReason: string | null;
 }
 
@@ -52,13 +46,7 @@ const PHASE_TEXT: Record<DisplayPhase, { label: string; color: string }> = {
     error: { label: '状态查询失败,稍后重试…', color: 'var(--color-status-warning-text)' },
 };
 
-export function QrPollRunner({
-    orderId,
-    accessToken,
-}: {
-    orderId: string;
-    accessToken: string | null;
-}) {
+export function QrPollRunner({ orderId, accessToken }: { orderId: string; accessToken: string | null }) {
     const [phase, setPhase] = useState<DisplayPhase>('waiting');
     // Avoid double-redirect (interval + timeout racing) and stale state on unmount.
     const redirectedRef = useRef(false);

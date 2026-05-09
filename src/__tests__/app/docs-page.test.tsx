@@ -52,35 +52,15 @@ describe('/docs page — 6 agent sections', () => {
         const html = renderToString(<DocsPage />);
         // W7 D4 PR-H Tier B: 7th section "常见错误码" added (anchor=errors)
         // for the doc-fallback path on 402/403 status guidance.
-        for (const id of [
-            'cursor',
-            'cline',
-            'continue',
-            'claude-code',
-            'python-sdk',
-            'node-sdk',
-            'errors',
-        ]) {
-            expect(html, `section #${id} present`).toMatch(
-                new RegExp(`<section[^>]*id="${id}"`),
-            );
+        for (const id of ['cursor', 'cline', 'continue', 'claude-code', 'python-sdk', 'node-sdk', 'errors']) {
+            expect(html, `section #${id} present`).toMatch(new RegExp(`<section[^>]*id="${id}"`));
         }
     });
 
     it('TOC list links to all 7 anchors via #', () => {
         const html = renderToString(<DocsPage />);
-        for (const id of [
-            'cursor',
-            'cline',
-            'continue',
-            'claude-code',
-            'python-sdk',
-            'node-sdk',
-            'errors',
-        ]) {
-            expect(html, `TOC #${id} link present`).toMatch(
-                new RegExp(`href="#${id}"`),
-            );
+        for (const id of ['cursor', 'cline', 'continue', 'claude-code', 'python-sdk', 'node-sdk', 'errors']) {
+            expect(html, `TOC #${id} link present`).toMatch(new RegExp(`href="#${id}"`));
         }
     });
 

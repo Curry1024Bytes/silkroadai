@@ -14,12 +14,7 @@
  *   2026-06-10 00:00:00 UTC+8     → false
  */
 import { describe, expect, it } from 'vitest';
-import {
-    PROMO_END_EXCLUSIVE,
-    PROMO_START,
-    getPromoEndDate,
-    isPromoActive,
-} from './promo';
+import { PROMO_END_EXCLUSIVE, PROMO_START, getPromoEndDate, isPromoActive } from './promo';
 
 describe('isPromoActive — boundary cases (PR-O end shift: 5/7–6/9)', () => {
     it('is INACTIVE one second before promo start (5/6 23:59:59 UTC+8)', () => {
@@ -79,9 +74,7 @@ describe('getPromoEndDate', () => {
     it('returns 2026-06-09 23:59:59.999 UTC+8 (last inclusive instant)', () => {
         const end = getPromoEndDate();
         // Same instant as 2026-06-09T23:59:59.999+08:00.
-        expect(end.toISOString()).toBe(
-            new Date('2026-06-09T23:59:59.999+08:00').toISOString(),
-        );
+        expect(end.toISOString()).toBe(new Date('2026-06-09T23:59:59.999+08:00').toISOString());
     });
 
     it('is 1ms before PROMO_END_EXCLUSIVE', () => {

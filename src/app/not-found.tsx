@@ -32,9 +32,7 @@ export default function NotFound() {
                     404
                 </p>
                 <h1 className="m-0 mb-2 text-xl font-semibold text-navy">页面没找到</h1>
-                <p className="m-0 mb-6 text-sm text-muted-ink leading-relaxed">
-                    您访问的链接可能已变更或不存在。
-                </p>
+                <p className="m-0 mb-6 text-sm text-muted-ink leading-relaxed">您访问的链接可能已变更或不存在。</p>
                 <div className="flex flex-col sm:flex-row gap-2 justify-center">
                     <Button href="/" variant="primary" size="md">
                         返回首页
@@ -49,10 +47,7 @@ export default function NotFound() {
                         Global_Ads
                     </code>{' '}
                     · 邮箱{' '}
-                    <a
-                        href="mailto:support@silkroadai.io"
-                        className="text-navy no-underline hover:text-brand-accent"
-                    >
+                    <a href="mailto:support@silkroadai.io" className="text-navy no-underline hover:text-brand-accent">
                         support@silkroadai.io
                     </a>
                 </p>

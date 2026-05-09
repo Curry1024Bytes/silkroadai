@@ -16,10 +16,7 @@ import { formatTokenForDisplay } from '@/lib/newapi/token-format';
 
 export const runtime = 'nodejs';
 
-export async function GET(
-    req: NextRequest,
-    { params }: { params: Promise<{ id: string }> },
-) {
+export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
     const user = await getCurrentUser(req);
     if (!user) {
         return NextResponse.json({ error: 'invalid_credentials' }, { status: 401 });

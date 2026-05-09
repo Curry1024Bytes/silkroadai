@@ -63,22 +63,18 @@ describe('<AuthenticatedLayout />', () => {
     it('redirects to /login?next=<requested path> when no session', async () => {
         mockGetCurrentUser.mockResolvedValue(null);
 
-        await expect(
-            AuthenticatedLayout({ children: <div>child</div> }),
-        ).rejects.toMatchObject({ message: 'REDIRECT' });
+        await expect(AuthenticatedLayout({ children: <div>child</div> })).rejects.toMatchObject({
+            message: 'REDIRECT',
+        });
 
         expect(mockRedirect).toHaveBeenCalledWith('/login?next=%2Fkeys');
     });
 
     it('redirects to /login?next=/dashboard when path header is missing (fallback)', async () => {
         mockGetCurrentUser.mockResolvedValue(null);
-        mockHeadersGet.mockImplementation((name) =>
-            name === 'cookie' ? 'silkroad_session=fake-jwt' : null,
-        );
+        mockHeadersGet.mockImplementation((name) => (name === 'cookie' ? 'silkroad_session=fake-jwt' : null));
 
-        await expect(
-            AuthenticatedLayout({ children: <div /> }),
-        ).rejects.toMatchObject({ message: 'REDIRECT' });
+        await expect(AuthenticatedLayout({ children: <div /> })).rejects.toMatchObject({ message: 'REDIRECT' });
 
         expect(mockRedirect).toHaveBeenCalledWith('/login?next=%2Fdashboard');
     });

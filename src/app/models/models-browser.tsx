@@ -48,14 +48,9 @@ export function ModelsBrowser({ grouped, totalModels, vendorCount }: Props) {
         return () => clearTimeout(id);
     }, [query]);
 
-    const filtered: GroupedModels = useMemo(
-        () => filterGrouped(grouped, debouncedQuery),
-        [grouped, debouncedQuery],
-    );
+    const filtered: GroupedModels = useMemo(() => filterGrouped(grouped, debouncedQuery), [grouped, debouncedQuery]);
 
-    const typesWithContent = TYPE_ORDER.filter(
-        (t) => filtered[t] && Object.keys(filtered[t]!).length > 0,
-    );
+    const typesWithContent = TYPE_ORDER.filter((t) => filtered[t] && Object.keys(filtered[t]!).length > 0);
     const filteredTotal = useMemo(() => countGrouped(filtered), [filtered]);
 
     return (
@@ -84,30 +79,17 @@ export function ModelsBrowser({ grouped, totalModels, vendorCount }: Props) {
 
             {typesWithContent.length === 0 ? (
                 <Card>
-                    <EmptyState
-                        title={`没有匹配「${query}」的模型`}
-                        body="试试其他关键词,或清空搜索框查看全部。"
-                    />
+                    <EmptyState title={`没有匹配「${query}」的模型`} body="试试其他关键词,或清空搜索框查看全部。" />
                 </Card>
             ) : (
-                typesWithContent.map((type) => (
-                    <TypeSection key={type} type={type} typeBucket={filtered[type]!} />
-                ))
+                typesWithContent.map((type) => <TypeSection key={type} type={type} typeBucket={filtered[type]!} />)
             )}
         </>
     );
 }
 
-function TypeSection({
-    type,
-    typeBucket,
-}: {
-    type: TypeName;
-    typeBucket: Partial<Record<VendorName, ModelEntry[]>>;
-}) {
-    const vendorsInOrder = VENDOR_ORDER.filter(
-        (v) => typeBucket[v] && typeBucket[v]!.length > 0,
-    );
+function TypeSection({ type, typeBucket }: { type: TypeName; typeBucket: Partial<Record<VendorName, ModelEntry[]>> }) {
+    const vendorsInOrder = VENDOR_ORDER.filter((v) => typeBucket[v] && typeBucket[v]!.length > 0);
 
     return (
         <section className="mb-8">
@@ -125,10 +107,7 @@ function VendorBlock({ vendor, entries }: { vendor: VendorName; entries: ModelEn
     return (
         <div className="mb-5">
             <h3 className="m-0 mb-2.5 text-xs font-semibold uppercase tracking-wide text-muted-ink">
-                {vendor}{' '}
-                <span className="text-minor-ink font-normal normal-case">
-                    · {entries.length}
-                </span>
+                {vendor} <span className="text-minor-ink font-normal normal-case">· {entries.length}</span>
             </h3>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
                 {entries.map((m) => (
@@ -156,13 +135,9 @@ function ModelCard({ entry }: { entry: ModelEntry }) {
 
     return (
         <Card as="article" className="px-3.5 py-3 flex flex-col gap-1.5">
-            <div className="font-mono text-sm font-semibold text-navy break-all">
-                {entry.shortName}
-            </div>
+            <div className="font-mono text-sm font-semibold text-navy break-all">{entry.shortName}</div>
             {showCanonical && (
-                <div className="font-mono text-[11px] text-minor-ink break-all">
-                    {entry.canonicalName}
-                </div>
+                <div className="font-mono text-[11px] text-minor-ink break-all">{entry.canonicalName}</div>
             )}
             <div className="flex items-center gap-2 mt-1">
                 <span

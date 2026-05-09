@@ -12,6 +12,7 @@
 W3 之后 portal 完全没有客户后台 UI(W1 sub2apipay 时代靠 iframe `/pay`,无 `/portal/*`)。W4-2 fresh build 4 张页:`/dashboard` 落地 + `/keys` API key 管理 + `/balance` 余额与流水 + `/usage` 调用统计。共享 `(authenticated)` route group layout 单点鉴权 + sidebar nav + `email_verified=false` soft-block banner。新增 `/api/portal/keys/*` 3 endpoints + `/api/auth/logout`(单设备登出,不动 session_token_version,gotcha #16)。
 
 **核心新增**:
+
 - `getQuotaWithCache`(D6)4 路径:hit / miss / live / fallback,`executeRecharge` 事务内 cache bust 让充值后下次 `/balance` 必走 live(W3 D3 期间发现的 W4 必修债,本批落地)。
 - `getCurrentUser` 包 React.cache()(D7)按 cookie value memo,layout + nested page 两次调用 collapse 到 1 次 jose verify + 1 次 DB read。
 - `queryLogs` 加 `user_id` filter(D7),修 W3 D2 F2 发现的 username filter 0-result bug。
@@ -21,23 +22,23 @@ W3 之后 portal 完全没有客户后台 UI(W1 sub2apipay 时代靠 iframe `/pa
 
 ## D4 + D5 + D6 + D7 验证矩阵
 
-| 项 | 期望 | 实测 | 结果 |
-|---|---|---|---|
-| **D4** layout `(authenticated)/layout.tsx` | server auth 守门 + Header(logo/email/退出)+ Sidebar(4 nav + 充值)+ unverified banner soft-block | 4.0 KB · `getCurrentUser` null → `redirect /login?next=` 透传 path · 4 client 子组件 | ✅ |
-| D4 `POST /api/auth/logout` | 清 cookie 不动 tv,gotcha #16 | `clearSessionCookie(res)` 直返 200,httpOnly+SameSite=Lax+Path=/ + Max-Age=0 | ✅ |
-| D4 单测 | 15/15(layout auth × 4 + 4 component SSR + 3 logout)| 15/15(D7 sweep 后 placeholder 块清空,因为 4 页都已实装)| ✅ |
-| **D5** `/keys` 页 + 3 endpoints | 列表 / 创建(限 5)/ 撤销 / reveal-with-mask + 10s auto-mask + IDOR 防御 | page 2.5 KB + KeysList 17.9 KB + 3 endpoints 12.7 KB · 创建走 3 步 new-api 流(create/list-find/getKey)+ Prisma create 双向回滚 · 撤销走 new-api delete + Prisma `status='disabled'` 软删(保 Order/RechargeLog FK) | ✅ |
-| D5 单测 | GET/POST/DELETE/GET-key + UI smoke | 27/27(11 list-create + 11 delete-reveal + 5 UI)| ✅ |
-| **D6** `/balance` 页 + cache helper + recharge bust | 4 路径 cache(hit/miss/live/fallback)+ 充值事务内 nullify 三字段 | helper 5.1 KB · page 10.4 KB · executeRecharge 事务加 4th op `prisma.user.update({...nullify...})` | ✅ |
-| D6 单测 | helper × 9 + page SSR × 5 + recharge regression × 9 | 24/24 | ✅ |
-| **D7** `/usage` 页 | period filter `?period=7d\|30d\|all` + 服务端聚合 by-model top-5 + 最近 50 + 空状态指 /keys | page 13.2 KB + period-tabs 1.7 KB + period helper 1.1 KB · `queryLogs({user_id, type:2})` 替代 username · 防 querystring 注入(parsePeriod 白名单)| ✅ |
-| D7 Sweep 1:`getCurrentUser` cache | 同请求多次调用 1 次 DB read | `cache()` from `react` 包内层 by-cookie-value;函数签名不变 | ✅(structural 测 + behavioral 5 测) |
-| D7 Sweep 2:reset-password fired guard | useRef + 同步 short-circuit | `useRef(false)` + `if (fired.current) return` 在 await 之前 + 失败/异常路径 reset 允许重试 | ✅ |
-| D7 单测 | usage page × 9 + cache structural+behavioral × 6 + reset-password × 2 | 17/17 | ✅ |
-| 全套 vitest | 0 新 fail,W3 + W4-1 + W4-2 全绿 | **54 files / 494 PASS / 1 skip / 0 fail** | ✅ |
-| `tsc --noEmit` | 0 errors | 0 errors | ✅ |
-| `eslint`(D4-D7 改/新文件)| 0 issues | 0 issues | ✅ |
-| 真实浏览器 5 步 smoke | 用户手测 | 见 §用户手测指引 | ⏳ User TODO |
+| 项                                                  | 期望                                                                                            | 实测                                                                                                                                                                                                              | 结果                                |
+| --------------------------------------------------- | ----------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| **D4** layout `(authenticated)/layout.tsx`          | server auth 守门 + Header(logo/email/退出)+ Sidebar(4 nav + 充值)+ unverified banner soft-block | 4.0 KB · `getCurrentUser` null → `redirect /login?next=` 透传 path · 4 client 子组件                                                                                                                              | ✅                                  |
+| D4 `POST /api/auth/logout`                          | 清 cookie 不动 tv,gotcha #16                                                                    | `clearSessionCookie(res)` 直返 200,httpOnly+SameSite=Lax+Path=/ + Max-Age=0                                                                                                                                       | ✅                                  |
+| D4 单测                                             | 15/15(layout auth × 4 + 4 component SSR + 3 logout)                                             | 15/15(D7 sweep 后 placeholder 块清空,因为 4 页都已实装)                                                                                                                                                           | ✅                                  |
+| **D5** `/keys` 页 + 3 endpoints                     | 列表 / 创建(限 5)/ 撤销 / reveal-with-mask + 10s auto-mask + IDOR 防御                          | page 2.5 KB + KeysList 17.9 KB + 3 endpoints 12.7 KB · 创建走 3 步 new-api 流(create/list-find/getKey)+ Prisma create 双向回滚 · 撤销走 new-api delete + Prisma `status='disabled'` 软删(保 Order/RechargeLog FK) | ✅                                  |
+| D5 单测                                             | GET/POST/DELETE/GET-key + UI smoke                                                              | 27/27(11 list-create + 11 delete-reveal + 5 UI)                                                                                                                                                                   | ✅                                  |
+| **D6** `/balance` 页 + cache helper + recharge bust | 4 路径 cache(hit/miss/live/fallback)+ 充值事务内 nullify 三字段                                 | helper 5.1 KB · page 10.4 KB · executeRecharge 事务加 4th op `prisma.user.update({...nullify...})`                                                                                                                | ✅                                  |
+| D6 单测                                             | helper × 9 + page SSR × 5 + recharge regression × 9                                             | 24/24                                                                                                                                                                                                             | ✅                                  |
+| **D7** `/usage` 页                                  | period filter `?period=7d\|30d\|all` + 服务端聚合 by-model top-5 + 最近 50 + 空状态指 /keys     | page 13.2 KB + period-tabs 1.7 KB + period helper 1.1 KB · `queryLogs({user_id, type:2})` 替代 username · 防 querystring 注入(parsePeriod 白名单)                                                                 | ✅                                  |
+| D7 Sweep 1:`getCurrentUser` cache                   | 同请求多次调用 1 次 DB read                                                                     | `cache()` from `react` 包内层 by-cookie-value;函数签名不变                                                                                                                                                        | ✅(structural 测 + behavioral 5 测) |
+| D7 Sweep 2:reset-password fired guard               | useRef + 同步 short-circuit                                                                     | `useRef(false)` + `if (fired.current) return` 在 await 之前 + 失败/异常路径 reset 允许重试                                                                                                                        | ✅                                  |
+| D7 单测                                             | usage page × 9 + cache structural+behavioral × 6 + reset-password × 2                           | 17/17                                                                                                                                                                                                             | ✅                                  |
+| 全套 vitest                                         | 0 新 fail,W3 + W4-1 + W4-2 全绿                                                                 | **54 files / 494 PASS / 1 skip / 0 fail**                                                                                                                                                                         | ✅                                  |
+| `tsc --noEmit`                                      | 0 errors                                                                                        | 0 errors                                                                                                                                                                                                          | ✅                                  |
+| `eslint`(D4-D7 改/新文件)                           | 0 issues                                                                                        | 0 issues                                                                                                                                                                                                          | ✅                                  |
+| 真实浏览器 5 步 smoke                               | 用户手测                                                                                        | 见 §用户手测指引                                                                                                                                                                                                  | ⏳ User TODO                        |
 
 **结论:核心信号 ✅,7 个 Findings(F1-F7),1 个用户 TODO。**
 
@@ -46,6 +47,7 @@ W3 之后 portal 完全没有客户后台 UI(W1 sub2apipay 时代靠 iframe `/pa
 ### React.cache() dedup 策略
 
 `cache()` from React 19 仅在 server-component render context 内 memoize;vitest 外是 no-op pass-through。这意味着:
+
 - **生产**:layout 调 `getCurrentUser` → cache miss → verify+lookup,nested page 调 `getCurrentUser`(同 cookie 值)→ cache hit → 直返同一 user。**1 verify + 1 DB read per request**。
 - **vitest**:`cache()` 是 pass-through,每次调用都执行底层。所以 dedup 测试不能用"调 2 次断言 1 次 mock 调用"风格 — 改用 source-grep 结构断言(`cache(` 实际包了内层 + 用 `cookieValue` 做 key)+ 5 条 behavioral 断言(返回值在各 corner case 仍正确)。
 
@@ -109,12 +111,14 @@ W4-2 是 MVP。W6+ 待加:① 客户后台密码改 endpoint(目前只能走 res
 ## 用户手测 5 步指南(请用户在浏览器跑)
 
 预先(D6 教训):
+
 ```bash
 curl -s -o /dev/null -w "%{http_code}\n" http://localhost:3000/api/status
 # 期望 200。否则:ssh -fN -L 3000:localhost:3000 -o ServerAliveInterval=60 vps
 ```
 
 worktree 提醒:本 PR 在 `feat/w4-2-d4-portal-layout`,**stack 在 W4-1 PR #9 之上**(还没 merge)。如果你的主仓库不在这分支,先:
+
 ```bash
 git fetch origin && git checkout feat/w4-2-d4-portal-layout
 # 撞 worktree lock 按 W3 D7 教训处理
@@ -127,15 +131,16 @@ git fetch origin && git checkout feat/w4-2-d4-portal-layout
 3. **`/keys` 页**:点「+ 创建新 Key」→ alias 任意填(如 `test-key`)→ 创建后看到完整 sk-xxx,**复制保存**;返回列表看到 mask key + 创建时间;点「显示」reveal(10s 后自动 mask 验);点「撤销」一个 key 看是否消失。如果已有 5 个 key,验「+ 创建」按钮 disable + tooltip「已达上限 (5)」。
 
 4. **`/balance` + `/pay`(测 cache bust)**:
-   - 先访问 `/balance`,看到当前余额(可能 ¥0.00 如果 fixture 用户没充过钱)+ 累计消费 + 充值历史(可能空)
-   - 点右上「+ 充值」→ 跳 `/pay` → 选 ¥10 + 支付宝 → 提交 → 跳易支付沙箱
-   - 沙箱「测试支付成功」→ 跳回 portal `/pay/result`
-   - **回到 `/balance`** → 余额数字应增加 ¥10(cache bust 生效;否则会显示充值前的旧值最多 60s)
-   - 充值历史表格多 1 行(`amount=¥10.00`, `source=在线支付`, order_id 前 8 字符)
+    - 先访问 `/balance`,看到当前余额(可能 ¥0.00 如果 fixture 用户没充过钱)+ 累计消费 + 充值历史(可能空)
+    - 点右上「+ 充值」→ 跳 `/pay` → 选 ¥10 + 支付宝 → 提交 → 跳易支付沙箱
+    - 沙箱「测试支付成功」→ 跳回 portal `/pay/result`
+    - **回到 `/balance`** → 余额数字应增加 ¥10(cache bust 生效;否则会显示充值前的旧值最多 60s)
+    - 充值历史表格多 1 行(`amount=¥10.00`, `source=在线支付`, order_id 前 8 字符)
 
 5. **`/usage` 页**:fixture A(W3 D2 时打过 claude/gpt/deepseek 各几条调用)应看到 3-4 条记录;新 user 看空状态 + 「前往 /keys 创建 key」CTA。**切「近 7 天 / 近 30 天 / 全部」窗口** → URL 变 `?period=7d` 等 + 数字 / by-model 块刷新。
 
 任一失败 → server log 找 `[oauth/...]` / `[recharge]` / `[quota-cache]` / `[portal/keys ...]` 前缀,按 error code 反查路径。常见问题:
+
 - 登录后 redirect 不到 dashboard → 看 layout `getRequestedPath` 是否拿到 path header(看 `[oauth/google/callback]` 后续日志)
 - /balance 显示「当前无法获取余额」→ SSH 隧道挂了或 NEWAPI_ADMIN_TOKEN 失效
 - /usage 显示「该时间段内无 API 调用记录」但你确实调过 → 你账号的 newapi_user_id 可能没设 / 调用是更早周期的(切「全部」试试)

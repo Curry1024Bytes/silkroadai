@@ -17,18 +17,13 @@ import { deleteToken as newapiDeleteToken } from '@/lib/newapi/client';
 
 export const runtime = 'nodejs';
 
-export async function DELETE(
-    req: NextRequest,
-    { params }: { params: Promise<{ id: string }> },
-) {
+export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
     const user = await getCurrentUser(req);
     if (!user) {
         return NextResponse.json({ error: 'invalid_credentials' }, { status: 401 });
     }
     if (user.newapi_user_id == null || !user.newapi_access_token) {
-        console.error(
-            `[portal/keys DELETE] user ${user.id} has no newapi auth; cannot revoke`,
-        );
+        console.error(`[portal/keys DELETE] user ${user.id} has no newapi auth; cannot revoke`);
         return NextResponse.json({ error: 'account_not_provisioned' }, { status: 500 });
     }
 
@@ -69,10 +64,7 @@ export async function DELETE(
     try {
         await newapiDeleteToken(customerAuth, token.newapi_token_id);
     } catch (newapiErr) {
-        console.error(
-            `[portal/keys DELETE] new-api deleteToken failed for portal token ${id}:`,
-            newapiErr,
-        );
+        console.error(`[portal/keys DELETE] new-api deleteToken failed for portal token ${id}:`, newapiErr);
         return NextResponse.json({ error: 'newapi_delete_failed' }, { status: 502 });
     }
 

@@ -68,12 +68,11 @@ describe('legal pages share consistent style baseline', () => {
         // Verify the page modules import without crashing — the wrappers
         // are trivial (return <LegalDocPage file=X />) so this catches
         // accidental file-rename or type errors.
-        const [{ default: TermsPage }, { default: PrivacyPage }, { default: RefundPage }] =
-            await Promise.all([
-                import('@/app/terms/page'),
-                import('@/app/privacy/page'),
-                import('@/app/refund/page'),
-            ]);
+        const [{ default: TermsPage }, { default: PrivacyPage }, { default: RefundPage }] = await Promise.all([
+            import('@/app/terms/page'),
+            import('@/app/privacy/page'),
+            import('@/app/refund/page'),
+        ]);
         expect(typeof TermsPage).toBe('function');
         expect(typeof PrivacyPage).toBe('function');
         expect(typeof RefundPage).toBe('function');

@@ -59,14 +59,11 @@ function readFile(rel: string): string {
 }
 
 describe('server-only guards on src/lib/newapi (hotfix 2026-05-05)', () => {
-    it.each(REQUIRES_GUARD)(
-        '%s carries `import \'server-only\'`',
-        (filename) => {
-            const src = readFile(filename);
-            // Match either "import 'server-only'" or "import \"server-only\"".
-            expect(src).toMatch(/^\s*import\s+['"]server-only['"]/m);
-        },
-    );
+    it.each(REQUIRES_GUARD)("%s carries `import 'server-only'`", (filename) => {
+        const src = readFile(filename);
+        // Match either "import 'server-only'" or "import \"server-only\"".
+        expect(src).toMatch(/^\s*import\s+['"]server-only['"]/m);
+    });
 
     it.each(ALLOWLIST_NO_GUARD)(
         '%s is genuinely client-safe (no env reads, no server-only marker, no fetch)',

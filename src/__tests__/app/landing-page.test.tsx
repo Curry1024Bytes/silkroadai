@@ -73,9 +73,9 @@ describe('landing page — promo ACTIVE', () => {
         // render as plain ¥, no promo markup. Replaced V3.2 / GLM-4.6 / K2.
         // (PR-L kept these test sentinels — only the width="112" assertion
         // below was reverted to its pre-PR-K-Item-D value.)
-        expect(html).toContain('¥1.20/1M');   // DeepSeek V4-Flash in
-        expect(html).toContain('¥9.60/1M');   // GLM-5.1 (Pro) in
-        expect(html).toContain('¥7.80/1M');   // Kimi K2.6 (Pro) in
+        expect(html).toContain('¥1.20/1M'); // DeepSeek V4-Flash in
+        expect(html).toContain('¥9.60/1M'); // GLM-5.1 (Pro) in
+        expect(html).toContain('¥7.80/1M'); // Kimi K2.6 (Pro) in
     });
 
     it('renders the "当前促销 · 海外模型 5 折" subtitle on pricing section', async () => {

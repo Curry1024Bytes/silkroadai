@@ -46,11 +46,7 @@ export function Sidebar() {
             ].join(' ')}
             aria-label="客户后台导航"
         >
-            <ul
-                className={[
-                    'list-none p-0 m-0 flex flex-row md:flex-col gap-0.5 px-2 md:px-0',
-                ].join(' ')}
-            >
+            <ul className={['list-none p-0 m-0 flex flex-row md:flex-col gap-0.5 px-2 md:px-0'].join(' ')}>
                 {NAV.map((item) => {
                     const active = pathname === item.href;
                     return (

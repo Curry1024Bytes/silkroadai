@@ -22,50 +22,50 @@
 # postgres which only sees POSTGRES_*.
 
 services:
-  portal:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: silkroadai-portal
-    ports:
-      - '3002:3002'
-    env_file: .env
-    extra_hosts:
-      # Linux Docker doesn't auto-add host.docker.internal; this maps it to
-      # the gateway so portal can reach new-api on the VPS host port 3000.
-      - 'host.docker.internal:host-gateway'
-    depends_on:
-      portal-postgres:
-        condition: service_healthy
-    networks:
-      - silkroadai-portal-net
-    restart: unless-stopped
+    portal:
+        build:
+            context: .
+            dockerfile: Dockerfile
+        container_name: silkroadai-portal
+        ports:
+            - '3002:3002'
+        env_file: .env
+        extra_hosts:
+            # Linux Docker doesn't auto-add host.docker.internal; this maps it to
+            # the gateway so portal can reach new-api on the VPS host port 3000.
+            - 'host.docker.internal:host-gateway'
+        depends_on:
+            portal-postgres:
+                condition: service_healthy
+        networks:
+            - silkroadai-portal-net
+        restart: unless-stopped
 
-  portal-postgres:
-    image: postgres:16-alpine
-    container_name: silkroadai-portal-db
-    environment:
-      POSTGRES_USER: portal
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: silkroadai_portal_prod
-    volumes:
-      - portal_pg_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U portal -d silkroadai_portal_prod']
-      interval: 5s
-      timeout: 5s
-      retries: 12
-    # No port published to host — only the portal container reaches it via
-    # the silkroadai-portal-net network. Reduces attack surface.
-    networks:
-      - silkroadai-portal-net
-    restart: unless-stopped
+    portal-postgres:
+        image: postgres:16-alpine
+        container_name: silkroadai-portal-db
+        environment:
+            POSTGRES_USER: portal
+            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+            POSTGRES_DB: silkroadai_portal_prod
+        volumes:
+            - portal_pg_data:/var/lib/postgresql/data
+        healthcheck:
+            test: ['CMD-SHELL', 'pg_isready -U portal -d silkroadai_portal_prod']
+            interval: 5s
+            timeout: 5s
+            retries: 12
+        # No port published to host — only the portal container reaches it via
+        # the silkroadai-portal-net network. Reduces attack surface.
+        networks:
+            - silkroadai-portal-net
+        restart: unless-stopped
 
 volumes:
-  portal_pg_data:
-    name: silkroadai-portal-pg-data
+    portal_pg_data:
+        name: silkroadai-portal-pg-data
 
 networks:
-  silkroadai-portal-net:
-    name: silkroadai-portal-net
-    driver: bridge
+    silkroadai-portal-net:
+        name: silkroadai-portal-net
+        driver: bridge

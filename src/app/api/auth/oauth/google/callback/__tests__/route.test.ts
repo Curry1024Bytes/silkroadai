@@ -39,7 +39,10 @@ const mockExchange = vi.fn();
 const mockVerify = vi.fn();
 vi.mock('@/lib/auth/oauth/google', () => {
     class GoogleOAuthError extends Error {
-        constructor(public code: string, message: string) {
+        constructor(
+            public code: string,
+            message: string,
+        ) {
             super(message);
             this.name = 'GoogleOAuthError';
         }
@@ -73,10 +76,7 @@ const ORIG_ENV = { ...process.env };
 const PORTAL_USER_ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 const GOOGLE_SUB = '111122223333444455556';
 
-function makeReq(opts: {
-    query?: Record<string, string>;
-    cookies?: Record<string, string>;
-}): NextRequest {
+function makeReq(opts: { query?: Record<string, string>; cookies?: Record<string, string> }): NextRequest {
     const url = new URL('http://localhost/api/auth/oauth/google/callback');
     for (const [k, v] of Object.entries(opts.query ?? {})) {
         url.searchParams.set(k, v);
@@ -127,14 +127,14 @@ function happyClaims(overrides: Partial<Record<string, unknown>> = {}) {
 
 describe('GET /api/auth/oauth/google/callback', () => {
     it('redirects with state_mismatch when cookie missing', async () => {
-        const res = await GET(
-            makeReq({ query: { code: 'authcode', state: 'qstate' } /* no cookies */ }),
-        );
+        const res = await GET(makeReq({ query: { code: 'authcode', state: 'qstate' } /* no cookies */ }));
         expect(res.status).toBe(302);
         expect(res.headers.get('location')).toContain('oauth_error=state_mismatch');
         // cookies cleared
         const cookies = res.headers.getSetCookie();
-        expect(cookies.some((c) => c.startsWith('oauth_google_state=;') || c.startsWith('oauth_google_state=; '))).toBe(true);
+        expect(cookies.some((c) => c.startsWith('oauth_google_state=;') || c.startsWith('oauth_google_state=; '))).toBe(
+            true,
+        );
         // never reached token exchange
         expect(mockExchange).not.toHaveBeenCalled();
     });
@@ -164,8 +164,16 @@ describe('GET /api/auth/oauth/google/callback', () => {
     });
 
     it('surfaces GoogleOAuthError code from id_token verification', async () => {
-        mockExchange.mockResolvedValue({ id_token: 'idtoken', access_token: 'a', expires_in: 3600, scope: '', token_type: 'Bearer' });
-        mockVerify.mockRejectedValue(new GoogleOAuthError('email_not_verified', 'Google says this email is not verified'));
+        mockExchange.mockResolvedValue({
+            id_token: 'idtoken',
+            access_token: 'a',
+            expires_in: 3600,
+            scope: '',
+            token_type: 'Bearer',
+        });
+        mockVerify.mockRejectedValue(
+            new GoogleOAuthError('email_not_verified', 'Google says this email is not verified'),
+        );
 
         const res = await GET(
             makeReq({
@@ -178,7 +186,13 @@ describe('GET /api/auth/oauth/google/callback', () => {
     });
 
     it('Branch 1 (existing oauth_account): logs user in, sets session cookie', async () => {
-        mockExchange.mockResolvedValue({ id_token: 'idtoken', access_token: 'a', expires_in: 3600, scope: '', token_type: 'Bearer' });
+        mockExchange.mockResolvedValue({
+            id_token: 'idtoken',
+            access_token: 'a',
+            expires_in: 3600,
+            scope: '',
+            token_type: 'Bearer',
+        });
         mockVerify.mockResolvedValue(happyClaims());
         mockOAuthFindUnique.mockResolvedValue({
             user: { id: PORTAL_USER_ID, status: 'active', email: 'happy@example.com' },
@@ -205,10 +219,16 @@ describe('GET /api/auth/oauth/google/callback', () => {
     });
 
     it('Branch 2 (link-verified): existing user with email_verified=true → silent link, no email flag write', async () => {
-        mockExchange.mockResolvedValue({ id_token: 'idtoken', access_token: 'a', expires_in: 3600, scope: '', token_type: 'Bearer' });
+        mockExchange.mockResolvedValue({
+            id_token: 'idtoken',
+            access_token: 'a',
+            expires_in: 3600,
+            scope: '',
+            token_type: 'Bearer',
+        });
         mockVerify.mockResolvedValue(happyClaims());
         mockOAuthFindUnique.mockResolvedValue(null);
-        mockUserFindUnique.mockImplementation((args: { where: { email?: string; id?: string }, select?: unknown }) => {
+        mockUserFindUnique.mockImplementation((args: { where: { email?: string; id?: string }; select?: unknown }) => {
             if (args.where.email === 'happy@example.com') {
                 return Promise.resolve({ id: PORTAL_USER_ID, status: 'active', email_verified: true });
             }
@@ -245,7 +265,13 @@ describe('GET /api/auth/oauth/google/callback', () => {
     });
 
     it('Branch 3 (bootstrap-unverified): existing user with email_verified=false → flips email_verified + links in one transaction', async () => {
-        mockExchange.mockResolvedValue({ id_token: 'idtoken', access_token: 'a', expires_in: 3600, scope: '', token_type: 'Bearer' });
+        mockExchange.mockResolvedValue({
+            id_token: 'idtoken',
+            access_token: 'a',
+            expires_in: 3600,
+            scope: '',
+            token_type: 'Bearer',
+        });
         mockVerify.mockResolvedValue(happyClaims());
         mockOAuthFindUnique.mockResolvedValue(null);
         mockUserFindUnique.mockImplementation((args: { where: { email?: string; id?: string } }) => {
@@ -287,7 +313,13 @@ describe('GET /api/auth/oauth/google/callback', () => {
 
     it('Branch 4 (fresh signup): no existing user → create user (verified, no password) + provision + link', async () => {
         const NEW_USER_ID = 'bbbbbbbb-cccc-4ddd-8eee-ffffffffffff';
-        mockExchange.mockResolvedValue({ id_token: 'idtoken', access_token: 'a', expires_in: 3600, scope: '', token_type: 'Bearer' });
+        mockExchange.mockResolvedValue({
+            id_token: 'idtoken',
+            access_token: 'a',
+            expires_in: 3600,
+            scope: '',
+            token_type: 'Bearer',
+        });
         mockVerify.mockResolvedValue(happyClaims({ email: 'newbie@example.com' }));
         mockOAuthFindUnique.mockResolvedValue(null);
         mockUserFindUnique.mockImplementation((args: { where: { email?: string; id?: string } }) => {
@@ -342,7 +374,13 @@ describe('GET /api/auth/oauth/google/callback', () => {
 
     it('Branch 4 rollback: provision failure deletes the portal user + cleans new-api orphan', async () => {
         const NEW_USER_ID = 'cccccccc-dddd-4eee-8fff-aaaaaaaaaaaa';
-        mockExchange.mockResolvedValue({ id_token: 'idtoken', access_token: 'a', expires_in: 3600, scope: '', token_type: 'Bearer' });
+        mockExchange.mockResolvedValue({
+            id_token: 'idtoken',
+            access_token: 'a',
+            expires_in: 3600,
+            scope: '',
+            token_type: 'Bearer',
+        });
         mockVerify.mockResolvedValue(happyClaims({ email: 'unlucky@example.com' }));
         mockOAuthFindUnique.mockResolvedValue(null);
         mockUserFindUnique.mockResolvedValue(null);
@@ -361,13 +399,17 @@ describe('GET /api/auth/oauth/google/callback', () => {
         expect(res.status).toBe(302);
         expect(res.headers.get('location')).toContain('oauth_error=provisioning_failed');
         // portal user rolled back
-        expect(mockUserDelete).toHaveBeenCalledWith(
-            expect.objectContaining({ where: { id: NEW_USER_ID } }),
-        );
+        expect(mockUserDelete).toHaveBeenCalledWith(expect.objectContaining({ where: { id: NEW_USER_ID } }));
     });
 
     it('Branch 5 (link conflict): when oauth_account.create throws (e.g. sub already linked elsewhere), redirects with link_conflict', async () => {
-        mockExchange.mockResolvedValue({ id_token: 'idtoken', access_token: 'a', expires_in: 3600, scope: '', token_type: 'Bearer' });
+        mockExchange.mockResolvedValue({
+            id_token: 'idtoken',
+            access_token: 'a',
+            expires_in: 3600,
+            scope: '',
+            token_type: 'Bearer',
+        });
         mockVerify.mockResolvedValue(happyClaims());
         mockOAuthFindUnique.mockResolvedValue(null);
         mockUserFindUnique.mockResolvedValue({ id: PORTAL_USER_ID, status: 'active', email_verified: true });
@@ -385,7 +427,13 @@ describe('GET /api/auth/oauth/google/callback', () => {
     });
 
     it('refuses to log in disabled (banned) accounts even on existing oauth link', async () => {
-        mockExchange.mockResolvedValue({ id_token: 'idtoken', access_token: 'a', expires_in: 3600, scope: '', token_type: 'Bearer' });
+        mockExchange.mockResolvedValue({
+            id_token: 'idtoken',
+            access_token: 'a',
+            expires_in: 3600,
+            scope: '',
+            token_type: 'Bearer',
+        });
         mockVerify.mockResolvedValue(happyClaims());
         mockOAuthFindUnique.mockResolvedValue({
             user: { id: PORTAL_USER_ID, status: 'banned', email: 'happy@example.com' },
@@ -410,7 +458,13 @@ describe('GET /api/auth/oauth/google/callback', () => {
         process.env.NEXT_PUBLIC_APP_URL = 'https://portal.silkroadai.io';
 
         // Success path → /dashboard
-        mockExchange.mockResolvedValue({ id_token: 'idtoken', access_token: 'a', expires_in: 3600, scope: '', token_type: 'Bearer' });
+        mockExchange.mockResolvedValue({
+            id_token: 'idtoken',
+            access_token: 'a',
+            expires_in: 3600,
+            scope: '',
+            token_type: 'Bearer',
+        });
         mockVerify.mockResolvedValue(happyClaims());
         mockOAuthFindUnique.mockResolvedValue({
             user: { id: PORTAL_USER_ID, status: 'active', email: 'happy@example.com' },
@@ -426,12 +480,8 @@ describe('GET /api/auth/oauth/google/callback', () => {
         expect(okRes.headers.get('location')).toBe('https://portal.silkroadai.io/dashboard');
 
         // Failure path → /?oauth_error=...
-        const failRes = await GET(
-            makeReq({ query: { code: 'c', state: 'qstate' } /* no cookies */ }),
-        );
-        expect(failRes.headers.get('location')).toBe(
-            'https://portal.silkroadai.io/?oauth_error=state_mismatch',
-        );
+        const failRes = await GET(makeReq({ query: { code: 'c', state: 'qstate' } /* no cookies */ }));
+        expect(failRes.headers.get('location')).toBe('https://portal.silkroadai.io/?oauth_error=state_mismatch');
     });
 
     it('W5 D3 fix-up #3: APP_URL takes priority over NEXT_PUBLIC_APP_URL', async () => {
@@ -441,23 +491,15 @@ describe('GET /api/auth/oauth/google/callback', () => {
         process.env.APP_URL = 'https://runtime.example.com';
         process.env.NEXT_PUBLIC_APP_URL = 'https://build-time.example.com';
 
-        const res = await GET(
-            makeReq({ query: { code: 'c', state: 'qstate' } /* no cookies */ }),
-        );
-        expect(res.headers.get('location')).toBe(
-            'https://runtime.example.com/?oauth_error=state_mismatch',
-        );
+        const res = await GET(makeReq({ query: { code: 'c', state: 'qstate' } /* no cookies */ }));
+        expect(res.headers.get('location')).toBe('https://runtime.example.com/?oauth_error=state_mismatch');
     });
 
     it('W5 D3 fix-up #3: APP_URL alone (NEXT_PUBLIC_APP_URL unset) works', async () => {
         process.env.APP_URL = 'https://only-runtime.example.com';
         // NEXT_PUBLIC_APP_URL stays deleted (beforeEach)
 
-        const res = await GET(
-            makeReq({ query: { code: 'c', state: 'qstate' } /* no cookies */ }),
-        );
-        expect(res.headers.get('location')).toBe(
-            'https://only-runtime.example.com/?oauth_error=state_mismatch',
-        );
+        const res = await GET(makeReq({ query: { code: 'c', state: 'qstate' } /* no cookies */ }));
+        expect(res.headers.get('location')).toBe('https://only-runtime.example.com/?oauth_error=state_mismatch');
     });
 });

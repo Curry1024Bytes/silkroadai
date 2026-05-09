@@ -144,9 +144,7 @@ export default async function BalancePage() {
              *  (matches the schema default). */}
             <BalanceAlertForm
                 initialThreshold={
-                    user.balance_alert_threshold_cny != null
-                        ? Number(user.balance_alert_threshold_cny)
-                        : 10
+                    user.balance_alert_threshold_cny != null ? Number(user.balance_alert_threshold_cny) : 10
                 }
             />
 
@@ -190,9 +188,7 @@ export default async function BalancePage() {
                                         <td className={`${cell} tabular-nums font-medium`}>
                                             ¥{Number(row.amount).toFixed(2)}
                                         </td>
-                                        <td className={cell}>
-                                            {SOURCE_LABEL[row.source] ?? row.source}
-                                        </td>
+                                        <td className={cell}>{SOURCE_LABEL[row.source] ?? row.source}</td>
                                         <td className={`${cell} font-mono text-xs text-muted-ink`}>
                                             {row.order_id ? row.order_id.slice(0, 8) : '—'}
                                         </td>

@@ -47,8 +47,7 @@ export const metadata: Metadata = {
     ],
     openGraph: {
         title: 'GPU 租赁 — H100 / H200 / B300 算力中心',
-        description:
-            '专属 GPU 算力租赁:H100 80GB / H200 141GB / B300 288GB。AI 创业 / 训练 / 推理团队定制方案。',
+        description: '专属 GPU 算力租赁:H100 80GB / H200 141GB / B300 288GB。AI 创业 / 训练 / 推理团队定制方案。',
         url: '/gpu',
         type: 'website',
     },
@@ -103,10 +102,7 @@ function PageHeader() {
             >
                 <Logo variant="primary-flat" size={28} />
                 <nav style={{ display: 'flex', gap: 16, alignItems: 'center', fontSize: 14, flexWrap: 'wrap' }}>
-                    <Link
-                        href="/"
-                        style={{ color: 'var(--color-muted-ink)', textDecoration: 'none' }}
-                    >
+                    <Link href="/" style={{ color: 'var(--color-muted-ink)', textDecoration: 'none' }}>
                         首页
                     </Link>
                     {/* W7 D4 PR-Q — single primary CTA replaces the prior trio
@@ -154,16 +150,10 @@ function Hero() {
                         <span aria-hidden="true">←</span>
                         <span>返回首页</span>
                     </Link>
-                    <h1
-                        className="m-0 text-4xl md:text-5xl font-semibold text-navy"
-                        style={{ lineHeight: 1.2 }}
-                    >
+                    <h1 className="m-0 text-4xl md:text-5xl font-semibold text-navy" style={{ lineHeight: 1.2 }}>
                         {t('hero_title')}
                     </h1>
-                    <p
-                        className="m-0 mt-5 text-lg text-muted-ink"
-                        style={{ lineHeight: 1.6 }}
-                    >
+                    <p className="m-0 mt-5 text-lg text-muted-ink" style={{ lineHeight: 1.6 }}>
                         {t('hero_subtitle')}
                     </p>
                     <div className="mt-7 flex flex-wrap items-center gap-3">
@@ -185,13 +175,7 @@ function Hero() {
                     {/* Abstract compute / GPU mark — pure SVG, no external asset.
                         Stylized stack of three rack units in brand colors, with a
                         glow accent at the top to suggest active compute. */}
-                    <svg
-                        width="280"
-                        height="240"
-                        viewBox="0 0 280 240"
-                        role="img"
-                        aria-label="GPU 算力示意"
-                    >
+                    <svg width="280" height="240" viewBox="0 0 280 240" role="img" aria-label="GPU 算力示意">
                         <defs>
                             <linearGradient id="gpu-rack-glow" x1="0" y1="0" x2="0" y2="1">
                                 <stop offset="0%" stopColor="#0EA5E9" stopOpacity="0.65" />
@@ -220,9 +204,7 @@ function Hero() {
 function PricingSection() {
     return (
         <Section style={{ padding: '48px 0', background: 'var(--color-paper-muted)' }}>
-            <h2 className="m-0 text-3xl font-semibold text-navy text-center">
-                {t('pricing_section_title')}
-            </h2>
+            <h2 className="m-0 text-3xl font-semibold text-navy text-center">{t('pricing_section_title')}</h2>
             <p className="m-0 mt-3 text-base text-muted-ink text-center max-w-2xl mx-auto">
                 {t('pricing_section_subtitle')}
             </p>
@@ -237,12 +219,8 @@ function PricingSection() {
 function FlowSection() {
     return (
         <Section style={{ padding: '64px 0' }}>
-            <h2 className="m-0 text-3xl font-semibold text-navy text-center">
-                {t('flow_section_title')}
-            </h2>
-            <p className="m-0 mt-3 text-base text-muted-ink text-center">
-                {t('flow_section_subtitle')}
-            </p>
+            <h2 className="m-0 text-3xl font-semibold text-navy text-center">{t('flow_section_title')}</h2>
+            <p className="m-0 mt-3 text-base text-muted-ink text-center">{t('flow_section_subtitle')}</p>
             <div className="mt-9">
                 <ServiceFlow />
             </div>
@@ -254,21 +232,15 @@ function FlowSection() {
 function AdvantagesSection() {
     return (
         <Section style={{ padding: '48px 0', background: 'var(--color-paper-muted)' }}>
-            <h2 className="m-0 text-3xl font-semibold text-navy text-center">
-                {t('advantages_section_title')}
-            </h2>
+            <h2 className="m-0 text-3xl font-semibold text-navy text-center">{t('advantages_section_title')}</h2>
             <div className="mt-9 grid grid-cols-1 md:grid-cols-3 gap-6">
                 {ADVANTAGES.map((adv) => (
                     <article
                         key={adv.id}
                         className="px-6 py-6 rounded-xl bg-surface border border-brand-border shadow-card"
                     >
-                        <h3 className="m-0 text-lg font-semibold text-navy">
-                            {adv.title}
-                        </h3>
-                        <p className="m-0 mt-2 text-sm text-muted-ink leading-relaxed">
-                            {adv.body}
-                        </p>
+                        <h3 className="m-0 text-lg font-semibold text-navy">{adv.title}</h3>
+                        <p className="m-0 mt-2 text-sm text-muted-ink leading-relaxed">{adv.body}</p>
                     </article>
                 ))}
             </div>
@@ -280,9 +252,7 @@ function AdvantagesSection() {
 function CustomersSection() {
     return (
         <Section style={{ padding: '64px 0' }}>
-            <h2 className="m-0 text-3xl font-semibold text-navy text-center">
-                {t('customers_section_title')}
-            </h2>
+            <h2 className="m-0 text-3xl font-semibold text-navy text-center">{t('customers_section_title')}</h2>
             <p className="m-0 mt-3 text-base text-muted-ink text-center max-w-2xl mx-auto">
                 {t('customers_section_subtitle')}
             </p>
@@ -310,15 +280,11 @@ function ContactSection() {
             }}
         >
             <div id="contact">
-                <h2 className="m-0 text-2xl font-semibold text-navy text-center">
-                    {t('contact_section_title')}
-                </h2>
+                <h2 className="m-0 text-2xl font-semibold text-navy text-center">{t('contact_section_title')}</h2>
                 <div className="mt-6 max-w-md mx-auto text-center text-base text-muted-ink space-y-2.5">
                     <p className="m-0">
                         <strong className="text-navy">{t('contact_wechat_label')}</strong>:{' '}
-                        <code className="font-mono px-2 py-0.5 bg-paper-muted rounded text-navy">
-                            {CONTACT.wechat}
-                        </code>
+                        <code className="font-mono px-2 py-0.5 bg-paper-muted rounded text-navy">{CONTACT.wechat}</code>
                     </p>
                     <p className="m-0">
                         <strong className="text-navy">{t('contact_email_label')}</strong>:{' '}
@@ -330,15 +296,10 @@ function ContactSection() {
                             {CONTACT.email}
                         </a>
                     </p>
-                    <p className="m-0 text-sm text-minor-ink">
-                        {CONTACT.overseasNote}
-                    </p>
+                    <p className="m-0 text-sm text-minor-ink">{CONTACT.overseasNote}</p>
                 </div>
                 <p className="mt-10 text-center text-sm text-minor-ink">
-                    <Link
-                        href="/"
-                        className="text-muted-ink hover:text-brand-accent transition-colors no-underline"
-                    >
+                    <Link href="/" className="text-muted-ink hover:text-brand-accent transition-colors no-underline">
                         {t('contact_back_to_landing')}
                     </Link>
                 </p>

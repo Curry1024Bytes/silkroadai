@@ -108,15 +108,19 @@ export default function DocsPage() {
                     </Link>
                     <h1 className="m-0 mb-3 text-3xl font-semibold text-navy">集成文档</h1>
                     <p className="m-0 mb-2 text-base text-muted-ink leading-relaxed max-w-3xl">
-                        Silk Road AI 完全 OpenAI 兼容(同时提供 Anthropic 兼容协议),
-                        所有支持自定义 base URL 的客户端 / SDK 一行替换即可接入。
+                        Silk Road AI 完全 OpenAI 兼容(同时提供 Anthropic 兼容协议), 所有支持自定义 base URL 的客户端 /
+                        SDK 一行替换即可接入。
                     </p>
                     <p className="m-0 text-sm text-muted-ink">
                         没有 key?先{' '}
                         <Link href="/portal/register" className="text-navy font-medium hover:text-brand-accent">
                             注册一个账户
                         </Link>{' '}
-                        — 30 秒拿到能用的 <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">sk-…</code>。
+                        — 30 秒拿到能用的{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            sk-…
+                        </code>
+                        。
                     </p>
                 </section>
 
@@ -157,9 +161,7 @@ export default function DocsPage() {
                 </Card>
 
                 <nav aria-label="目录" className="mb-10">
-                    <h2 className="m-0 mb-3 text-sm font-semibold uppercase tracking-wide text-muted-ink">
-                        目录
-                    </h2>
+                    <h2 className="m-0 mb-3 text-sm font-semibold uppercase tracking-wide text-muted-ink">目录</h2>
                     <ol className="grid grid-cols-1 sm:grid-cols-2 gap-2 list-none p-0 m-0">
                         {AGENTS.map((a, i) => (
                             <li key={a.id}>
@@ -187,8 +189,8 @@ export default function DocsPage() {
                     docsLabel="cursor.com/docs"
                 >
                     <p className="m-0 mb-3 text-sm text-ink leading-relaxed">
-                        Cursor 设置里有 OpenAI 自定义模型入口,填入 base URL + API Key + 模型名即可。
-                        各版本 Cursor 设置面板路径偶有调整,以官方最新文档为准。
+                        Cursor 设置里有 OpenAI 自定义模型入口,填入 base URL + API Key + 模型名即可。 各版本 Cursor
+                        设置面板路径偶有调整,以官方最新文档为准。
                     </p>
                     <ConfigList
                         items={[
@@ -212,8 +214,8 @@ export default function DocsPage() {
                     docsLabel="docs.cline.bot"
                 >
                     <p className="m-0 mb-3 text-sm text-ink leading-relaxed">
-                        Cline 在 VS Code 设置里支持 OpenAI Compatible provider,base URL + API Key
-                        + 手填模型 ID 即可。具体下拉选项名称以官方最新文档为准。
+                        Cline 在 VS Code 设置里支持 OpenAI Compatible provider,base URL + API Key + 手填模型 ID
+                        即可。具体下拉选项名称以官方最新文档为准。
                     </p>
                     <ConfigList
                         items={[
@@ -234,12 +236,18 @@ export default function DocsPage() {
                     docsLabel="docs.continue.dev"
                 >
                     <p className="m-0 mb-3 text-sm text-ink leading-relaxed">
-                        Continue 通过 <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">config.yaml</code>{' '}
-                        / <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">config.json</code>{' '}
+                        Continue 通过{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            config.yaml
+                        </code>{' '}
+                        /{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            config.json
+                        </code>{' '}
                         管理模型。OpenAI provider 加一条即可:
                     </p>
                     <CodeBlock language="yaml">
-{`models:
+                        {`models:
   - name: Silk Road AI · gpt-5.4
     provider: openai
     apiBase: ${OPENAI_BASE}
@@ -251,8 +259,8 @@ export default function DocsPage() {
                     </CodeBlock>
                     <p className="m-0 mt-3 text-xs text-minor-ink">
                         字段名(provider / apiBase / apiKey / model)以 Continue 官方 schema 为准,
-                        不同版本可能略有差异。模型名替换为{' '}
-                        <code className="font-mono text-xs">claude-sonnet-4-6</code> 等亦可。
+                        不同版本可能略有差异。模型名替换为 <code className="font-mono text-xs">claude-sonnet-4-6</code>{' '}
+                        等亦可。
                     </p>
                 </AgentBlock>
 
@@ -272,7 +280,7 @@ export default function DocsPage() {
                         会以 Bearer 形式注入 Authorization 头。
                     </p>
                     <CodeBlock language="bash">
-{`# macOS / Linux
+                        {`# macOS / Linux
 export ANTHROPIC_BASE_URL="${ANTHROPIC_BASE}"
 export ANTHROPIC_AUTH_TOKEN="sk-…"   # portal /keys
 claude
@@ -284,8 +292,7 @@ claude`}
                     </CodeBlock>
                     <p className="m-0 mt-3 text-xs text-minor-ink">
                         Claude Code 检测到 ANTHROPIC_BASE_URL 指向非官方主机时,默认会停用 MCP tool
-                        search;若需要可同时设置{' '}
-                        <code className="font-mono text-xs">ENABLE_TOOL_SEARCH=true</code>。
+                        search;若需要可同时设置 <code className="font-mono text-xs">ENABLE_TOOL_SEARCH=true</code>。
                     </p>
                 </AgentBlock>
 
@@ -298,12 +305,15 @@ claude`}
                     docsLabel="github.com/openai/openai-python"
                 >
                     <p className="m-0 mb-3 text-sm text-ink leading-relaxed">
-                        官方 <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">openai</code>{' '}
+                        官方{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            openai
+                        </code>{' '}
                         Python 包构造函数接受 <code className="font-mono text-xs">base_url</code> +{' '}
                         <code className="font-mono text-xs">api_key</code>(snake_case),改一行即可。
                     </p>
                     <CodeBlock language="python">
-{`from openai import OpenAI
+                        {`from openai import OpenAI
 
 client = OpenAI(
     base_url="${OPENAI_BASE}",
@@ -329,12 +339,15 @@ print(resp.choices[0].message.content)`}
                     docsLabel="github.com/openai/openai-node"
                 >
                     <p className="m-0 mb-3 text-sm text-ink leading-relaxed">
-                        官方 <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">openai</code>{' '}
+                        官方{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            openai
+                        </code>{' '}
                         Node 包构造函数接受 <code className="font-mono text-xs">baseURL</code> +{' '}
                         <code className="font-mono text-xs">apiKey</code>(camelCase),改一行即可。
                     </p>
                     <CodeBlock language="typescript">
-{`import OpenAI from 'openai';
+                        {`import OpenAI from 'openai';
 
 const client = new OpenAI({
   baseURL: '${OPENAI_BASE}',
@@ -390,16 +403,10 @@ console.log(resp.choices[0].message.content);`}
                             <tbody>
                                 <tr className="border-b border-brand-border">
                                     <td className="px-4 py-3 font-mono text-navy align-top">401</td>
-                                    <td className="px-4 py-3 font-mono text-navy align-top">
-                                        invalid_authentication
-                                    </td>
+                                    <td className="px-4 py-3 font-mono text-navy align-top">invalid_authentication</td>
                                     <td className="px-4 py-3 text-ink">
-                                        API key 无效或缺 <code className="font-mono text-xs">sk-</code> 前缀。
-                                        portal{' '}
-                                        <a
-                                            href="/keys"
-                                            className="text-navy font-medium hover:text-brand-accent"
-                                        >
+                                        API key 无效或缺 <code className="font-mono text-xs">sk-</code> 前缀。 portal{' '}
+                                        <a href="/keys" className="text-navy font-medium hover:text-brand-accent">
                                             /keys
                                         </a>{' '}
                                         重新复制完整 51 字符串。
@@ -407,25 +414,15 @@ console.log(resp.choices[0].message.content);`}
                                 </tr>
                                 <tr className="border-b border-brand-border">
                                     <td className="px-4 py-3 font-mono text-navy align-top">403</td>
-                                    <td className="px-4 py-3 font-mono text-navy align-top">
-                                        insufficient_user_quota
-                                    </td>
+                                    <td className="px-4 py-3 font-mono text-navy align-top">insufficient_user_quota</td>
                                     <td className="px-4 py-3 text-ink">
-                                        <strong className="text-navy">账户余额不足</strong>(注:HTTP
-                                        语义上更接近 402 Payment Required;新版会改 status
-                                        码,当前以 body 的 error.code 为准)。
-                                        前往{' '}
-                                        <Link
-                                            href="/balance"
-                                            className="text-navy font-medium hover:text-brand-accent"
-                                        >
+                                        <strong className="text-navy">账户余额不足</strong>(注:HTTP 语义上更接近 402
+                                        Payment Required;新版会改 status 码,当前以 body 的 error.code 为准)。 前往{' '}
+                                        <Link href="/balance" className="text-navy font-medium hover:text-brand-accent">
                                             /balance
                                         </Link>{' '}
                                         查看余额,
-                                        <Link
-                                            href="/pay"
-                                            className="text-navy font-medium hover:text-brand-accent"
-                                        >
+                                        <Link href="/pay" className="text-navy font-medium hover:text-brand-accent">
                                             /pay
                                         </Link>{' '}
                                         充值。
@@ -433,15 +430,10 @@ console.log(resp.choices[0].message.content);`}
                                 </tr>
                                 <tr>
                                     <td className="px-4 py-3 font-mono text-navy align-top">503</td>
-                                    <td className="px-4 py-3 font-mono text-navy align-top">
-                                        no available channel
-                                    </td>
+                                    <td className="px-4 py-3 font-mono text-navy align-top">no available channel</td>
                                     <td className="px-4 py-3 text-ink">
                                         模型名拼写错误,或该模型暂时下线。请用{' '}
-                                        <a
-                                            href="/models"
-                                            className="text-navy font-medium hover:text-brand-accent"
-                                        >
+                                        <a href="/models" className="text-navy font-medium hover:text-brand-accent">
                                             /models
                                         </a>{' '}
                                         页搜索一下确认模型 id。
@@ -515,13 +507,8 @@ function ConfigList({ items }: { items: Array<[string, string]> }) {
     return (
         <ul className="list-none p-0 m-0 grid grid-cols-1 gap-2">
             {items.map(([k, v]) => (
-                <li
-                    key={k}
-                    className="flex flex-col sm:flex-row sm:items-baseline gap-1 sm:gap-3 text-sm"
-                >
-                    <span className="text-muted-ink min-w-[180px] text-xs uppercase tracking-wide">
-                        {k}
-                    </span>
+                <li key={k} className="flex flex-col sm:flex-row sm:items-baseline gap-1 sm:gap-3 text-sm">
+                    <span className="text-muted-ink min-w-[180px] text-xs uppercase tracking-wide">{k}</span>
                     <span className="font-mono text-sm text-navy break-all">{v}</span>
                 </li>
             ))}
@@ -537,20 +524,14 @@ function CodeBlock({
     children: string;
 }) {
     return (
-        <div
-            className="rounded-lg overflow-hidden border border-brand-border bg-navy-strong"
-            data-language={language}
-        >
+        <div className="rounded-lg overflow-hidden border border-brand-border bg-navy-strong" data-language={language}>
             <div className="flex items-center justify-between px-4 py-2 border-b border-white/10">
                 <span className="text-xs font-mono uppercase tracking-wider text-paper-muted opacity-70">
                     {language}
                 </span>
             </div>
             <pre className="m-0 p-4 overflow-x-auto text-sm leading-relaxed">
-                <code
-                    className="font-mono text-paper-muted block"
-                    style={{ whiteSpace: 'pre', wordBreak: 'normal' }}
-                >
+                <code className="font-mono text-paper-muted block" style={{ whiteSpace: 'pre', wordBreak: 'normal' }}>
                     {children}
                 </code>
             </pre>

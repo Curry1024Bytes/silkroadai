@@ -135,10 +135,18 @@ describe('<DashboardPage /> SSR — happy path (W6 D5)', () => {
     it('shows nickname when present, else email local-part', async () => {
         mockGetCurrentUser.mockResolvedValue({ ...SAMPLE_USER, nickname: 'Alice' });
         mockGetQuotaWithCache.mockResolvedValue({
-            remain_quota: 0, used_quota: 0, source: 'live',
+            remain_quota: 0,
+            used_quota: 0,
+            source: 'live',
         });
         mockGetUsageAggregate.mockResolvedValue({
-            totalUsedQuota: 0, totalCalls: 0, byModel: [], period: 'all', source: 'live', computedAt: new Date(), pagesFetched: 0,
+            totalUsedQuota: 0,
+            totalCalls: 0,
+            byModel: [],
+            period: 'all',
+            source: 'live',
+            computedAt: new Date(),
+            pagesFetched: 0,
         });
 
         const html = renderToString(await DashboardPage());
@@ -168,7 +176,9 @@ describe('<DashboardPage /> SSR — empty / error states', () => {
 
     it('top-3 card renders 暂无调用 when byModel is empty (no calls yet)', async () => {
         mockGetQuotaWithCache.mockResolvedValue({
-            remain_quota: 0, used_quota: 0, source: 'live',
+            remain_quota: 0,
+            used_quota: 0,
+            source: 'live',
         });
         mockGetUsageAggregate.mockResolvedValue({
             totalUsedQuota: 0,
@@ -228,7 +238,9 @@ describe('<DashboardPage /> SSR — empty / error states', () => {
     it('user without newapi_user_id renders 暂无数据 on aggregate cards (balance still works)', async () => {
         mockGetCurrentUser.mockResolvedValue({ ...SAMPLE_USER, newapi_user_id: null });
         mockGetQuotaWithCache.mockResolvedValue({
-            remain_quota: 0, used_quota: 0, source: 'live',
+            remain_quota: 0,
+            used_quota: 0,
+            source: 'live',
         });
         const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 

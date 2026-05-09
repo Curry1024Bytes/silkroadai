@@ -83,10 +83,7 @@ export async function scanAndAlert(now: Date = new Date()): Promise<BalanceAlert
             newapi_user_id: { not: null },
             // threshold === 0 (or null defensive) → user opted out, skip.
             balance_alert_threshold_cny: { gt: 0 },
-            OR: [
-                { balance_alert_last_sent_at: null },
-                { balance_alert_last_sent_at: { lt: cooldownCutoff } },
-            ],
+            OR: [{ balance_alert_last_sent_at: null }, { balance_alert_last_sent_at: { lt: cooldownCutoff } }],
         },
         select: {
             id: true,
@@ -120,10 +117,7 @@ export async function scanAndAlert(now: Date = new Date()): Promise<BalanceAlert
                 where: {
                     id: u.id,
                     balance_alert_threshold_cny: { gt: 0 },
-                    OR: [
-                        { balance_alert_last_sent_at: null },
-                        { balance_alert_last_sent_at: { lt: cooldownCutoff } },
-                    ],
+                    OR: [{ balance_alert_last_sent_at: null }, { balance_alert_last_sent_at: { lt: cooldownCutoff } }],
                 },
                 data: { balance_alert_last_sent_at: now },
             });

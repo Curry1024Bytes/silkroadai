@@ -246,9 +246,7 @@ describe('POST /api/auth/register (new-api)', () => {
 
         // searchUser returns the orphan that step 1 created
         mockSearchNewApiUser.mockResolvedValue({
-            items: [
-                { id: NEWAPI_USER_ID, username: 'c-aaaaaaaa', display_name: 'rollback@silkroadai.io' },
-            ],
+            items: [{ id: NEWAPI_USER_ID, username: 'c-aaaaaaaa', display_name: 'rollback@silkroadai.io' }],
             total: 1,
         });
         mockDeleteNewApiUser.mockResolvedValue(undefined);
@@ -369,13 +367,10 @@ describe('POST /api/auth/register (W7 D4 invite_code)', () => {
 
     it('valid invite_code: persists code on user.create + reaches new-api provision', async () => {
         process.env.INVITE_CODES = 'LAUNCH-A, FRIEND2026';
-        mockUserFindUnique.mockImplementation(
-            (args: { where: { email?: string; id?: string } }) => {
-                if (args.where.id === PORTAL_USER_ID)
-                    return Promise.resolve({ session_token_version: 1 });
-                return Promise.resolve(null);
-            },
-        );
+        mockUserFindUnique.mockImplementation((args: { where: { email?: string; id?: string } }) => {
+            if (args.where.id === PORTAL_USER_ID) return Promise.resolve({ session_token_version: 1 });
+            return Promise.resolve(null);
+        });
         mockUserCreate.mockResolvedValue({
             id: PORTAL_USER_ID,
             email: 'invited@silkroadai.io',
@@ -414,13 +409,10 @@ describe('POST /api/auth/register (W7 D4 invite_code)', () => {
 
     it('valid invite_code: case-insensitive match — user types lowercase, env has UPPER', async () => {
         process.env.INVITE_CODES = 'LAUNCH-A';
-        mockUserFindUnique.mockImplementation(
-            (args: { where: { email?: string; id?: string } }) => {
-                if (args.where.id === PORTAL_USER_ID)
-                    return Promise.resolve({ session_token_version: 1 });
-                return Promise.resolve(null);
-            },
-        );
+        mockUserFindUnique.mockImplementation((args: { where: { email?: string; id?: string } }) => {
+            if (args.where.id === PORTAL_USER_ID) return Promise.resolve({ session_token_version: 1 });
+            return Promise.resolve(null);
+        });
         mockUserCreate.mockResolvedValue({
             id: PORTAL_USER_ID,
             email: 'lower@silkroadai.io',
@@ -486,13 +478,10 @@ describe('POST /api/auth/register (W7 D4 invite_code)', () => {
     it('absent invite_code: registers cleanly, persists invite_code: null', async () => {
         // Even with codes available, the user opts not to enter one.
         process.env.INVITE_CODES = 'LAUNCH-A';
-        mockUserFindUnique.mockImplementation(
-            (args: { where: { email?: string; id?: string } }) => {
-                if (args.where.id === PORTAL_USER_ID)
-                    return Promise.resolve({ session_token_version: 1 });
-                return Promise.resolve(null);
-            },
-        );
+        mockUserFindUnique.mockImplementation((args: { where: { email?: string; id?: string } }) => {
+            if (args.where.id === PORTAL_USER_ID) return Promise.resolve({ session_token_version: 1 });
+            return Promise.resolve(null);
+        });
         mockUserCreate.mockResolvedValue({
             id: PORTAL_USER_ID,
             email: 'plain@silkroadai.io',
@@ -510,9 +499,7 @@ describe('POST /api/auth/register (W7 D4 invite_code)', () => {
             newapi_token_value: 'sk-test-plain',
         });
 
-        const res = await POST(
-            makeReq({ email: 'plain@silkroadai.io', password: 'goodpass123' }),
-        );
+        const res = await POST(makeReq({ email: 'plain@silkroadai.io', password: 'goodpass123' }));
 
         expect(res.status).toBe(200);
         // invite_code should land as null (not undefined / not "" /
@@ -529,13 +516,10 @@ describe('POST /api/auth/register (W7 D4 invite_code)', () => {
         // backspace without trimming. Backend should not reject this as
         // "invalid"; it should be normalized to absent.
         process.env.INVITE_CODES = 'LAUNCH-A';
-        mockUserFindUnique.mockImplementation(
-            (args: { where: { email?: string; id?: string } }) => {
-                if (args.where.id === PORTAL_USER_ID)
-                    return Promise.resolve({ session_token_version: 1 });
-                return Promise.resolve(null);
-            },
-        );
+        mockUserFindUnique.mockImplementation((args: { where: { email?: string; id?: string } }) => {
+            if (args.where.id === PORTAL_USER_ID) return Promise.resolve({ session_token_version: 1 });
+            return Promise.resolve(null);
+        });
         mockUserCreate.mockResolvedValue({
             id: PORTAL_USER_ID,
             email: 'spaces@silkroadai.io',

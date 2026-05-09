@@ -41,8 +41,7 @@ export default async function RootLayout({
     const headerStore = await headers();
     const pathname = headerStore.get('x-pathname') || '';
     const search = headerStore.get('x-search') || '';
-    const locale =
-        new URLSearchParams(search).get('lang')?.trim().toLowerCase() === 'en' ? 'en' : 'zh';
+    const locale = new URLSearchParams(search).get('lang')?.trim().toLowerCase() === 'en' ? 'en' : 'zh';
     const htmlLang = locale === 'en' ? 'en' : 'zh-CN';
 
     // W5 D5: body is a column flex so Footer pins to bottom even on short
@@ -50,13 +49,8 @@ export default async function RootLayout({
     // (which often has its own min-height: 100vh) still fills the viewport.
     return (
         <html lang={htmlLang} data-pathname={pathname} className={inter.variable}>
-            <body
-                className="antialiased"
-                style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}
-            >
-                <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-                    {children}
-                </div>
+            <body className="antialiased" style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>{children}</div>
                 <Footer />
             </body>
         </html>

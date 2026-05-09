@@ -14,35 +14,35 @@ GitHub OAuth(原生 OAuth2,非 OIDC)落地,**零新依赖**,与 D6 共用 `oauth
 
 ## 与 D6 的关键差异
 
-| 项 | D6 (Google OIDC) | D7 (GitHub OAuth2) |
-|---|---|---|
-| `id_token` / JWKS / `jose` 验签 | ✅ 必须 | ❌ 没 id_token,直接调 REST API 拿身份 |
-| PKCE | ✅ S256 双 cookie | ❌ GitHub web flow 不支持,只剩 state cookie |
-| email 来源 | id_token claim(`email_verified=true` 已绑) | `GET /user/emails` → 挑 `primary && verified`;无则拒 |
-| display name | id_token `name` claim | `/user.name`,无则 fallback `/user.login` |
-| token endpoint Content-Type | `application/x-www-form-urlencoded` | JSON `Accept: application/json`(否则 GitHub 默认返回 form-encoded) |
-| 共用代码 | (none) | 5-branch logic 走共用 `linkOrCreateOAuthUser` |
+| 项                              | D6 (Google OIDC)                           | D7 (GitHub OAuth2)                                                 |
+| ------------------------------- | ------------------------------------------ | ------------------------------------------------------------------ |
+| `id_token` / JWKS / `jose` 验签 | ✅ 必须                                    | ❌ 没 id_token,直接调 REST API 拿身份                              |
+| PKCE                            | ✅ S256 双 cookie                          | ❌ GitHub web flow 不支持,只剩 state cookie                        |
+| email 来源                      | id_token claim(`email_verified=true` 已绑) | `GET /user/emails` → 挑 `primary && verified`;无则拒               |
+| display name                    | id_token `name` claim                      | `/user.name`,无则 fallback `/user.login`                           |
+| token endpoint Content-Type     | `application/x-www-form-urlencoded`        | JSON `Accept: application/json`(否则 GitHub 默认返回 form-encoded) |
+| 共用代码                        | (none)                                     | 5-branch logic 走共用 `linkOrCreateOAuthUser`                      |
 
 ## 验证矩阵
 
-| 项 | 期望 | 实测 | 结果 |
-|---|---|---|---|
-| Pre-flight: SSH 隧道 up(D6 教训)| `curl /api/status` 200 | 200 | ✅ |
-| Branch off origin/main(D6 已 merge) | `feat/w3-d7-github-oauth` from `62236ea` | 一致 | ✅ |
-| GitHub helper `src/lib/auth/oauth/github.ts` | 纯 fetch,无新依赖,typed `GitHubOAuthError` | ~5KB,4 函数(`buildAuthorizeUrl` / `exchangeCodeForToken` / `fetchGitHubUser` / `fetchGitHubVerifiedPrimaryEmail`)+ state 生成 | ✅ |
-| 共用 5-branch helper `src/lib/auth/oauth/account-link.ts` | 1:1 抄 D6 inline 逻辑 | `linkOrCreateOAuthUser({provider, providerAccountId, email, nameHint?})` 返回 `LinkOrCreateOutcome` | ✅ |
-| `/start` 端点 | 302 + `oauth_github_state` cookie | scope=`read:user user:email` + `allow_signup=true` + state 64-hex + httpOnly+sameSite=lax+600s | ✅ |
-| `/callback` 端点 | state 校验 → token → /user + /user/emails → 5-branch | + GitHub-specific 错误码(token_exchange_failed / user_fetch_failed / email_fetch_failed / email_not_verified)+ 共用错误码(account_disabled / link_conflict / provisioning_failed) | ✅ |
-| Tests: account-link helper(5 branch + 2 rollback + banned)| 11 PASS | 11 PASS | ✅ |
-| Tests: github helper(URL builder + token exchange + /user + /user/emails)| 13 PASS | 13 PASS | ✅ |
-| Tests: github/start route | 4 PASS | 4 PASS | ✅ |
-| Tests: github/callback route | 11 PASS | 11 PASS | ✅ |
-| Google OAuth 单测不回归 | 15 D6 测试全过 | 15 PASS(在全套里跑过) | ✅ |
-| 全套 vitest | 0 新 fail | 389 PASS / 1 skip / **0 fail**(含 newapi smoke) | ✅ |
-| `tsc --noEmit` | 0 errors | 0 errors | ✅ |
-| `eslint src/lib/auth/oauth src/app/api/auth/oauth` | 0 issues | 0 issues | ✅ |
-| `.env.example` 加 3 行 GITHUB_OAUTH_* | + 注释引导 | 加在 GOOGLE_OAUTH_* 下方 | ✅ |
-| 真实 GitHub 登录 smoke | 用户手测 | 见 §用户手测指引 | ⏳ User TODO |
+| 项                                                                        | 期望                                                 | 实测                                                                                                                                                                              | 结果         |
+| ------------------------------------------------------------------------- | ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------ |
+| Pre-flight: SSH 隧道 up(D6 教训)                                          | `curl /api/status` 200                               | 200                                                                                                                                                                               | ✅           |
+| Branch off origin/main(D6 已 merge)                                       | `feat/w3-d7-github-oauth` from `62236ea`             | 一致                                                                                                                                                                              | ✅           |
+| GitHub helper `src/lib/auth/oauth/github.ts`                              | 纯 fetch,无新依赖,typed `GitHubOAuthError`           | ~5KB,4 函数(`buildAuthorizeUrl` / `exchangeCodeForToken` / `fetchGitHubUser` / `fetchGitHubVerifiedPrimaryEmail`)+ state 生成                                                     | ✅           |
+| 共用 5-branch helper `src/lib/auth/oauth/account-link.ts`                 | 1:1 抄 D6 inline 逻辑                                | `linkOrCreateOAuthUser({provider, providerAccountId, email, nameHint?})` 返回 `LinkOrCreateOutcome`                                                                               | ✅           |
+| `/start` 端点                                                             | 302 + `oauth_github_state` cookie                    | scope=`read:user user:email` + `allow_signup=true` + state 64-hex + httpOnly+sameSite=lax+600s                                                                                    | ✅           |
+| `/callback` 端点                                                          | state 校验 → token → /user + /user/emails → 5-branch | + GitHub-specific 错误码(token_exchange_failed / user_fetch_failed / email_fetch_failed / email_not_verified)+ 共用错误码(account_disabled / link_conflict / provisioning_failed) | ✅           |
+| Tests: account-link helper(5 branch + 2 rollback + banned)                | 11 PASS                                              | 11 PASS                                                                                                                                                                           | ✅           |
+| Tests: github helper(URL builder + token exchange + /user + /user/emails) | 13 PASS                                              | 13 PASS                                                                                                                                                                           | ✅           |
+| Tests: github/start route                                                 | 4 PASS                                               | 4 PASS                                                                                                                                                                            | ✅           |
+| Tests: github/callback route                                              | 11 PASS                                              | 11 PASS                                                                                                                                                                           | ✅           |
+| Google OAuth 单测不回归                                                   | 15 D6 测试全过                                       | 15 PASS(在全套里跑过)                                                                                                                                                             | ✅           |
+| 全套 vitest                                                               | 0 新 fail                                            | 389 PASS / 1 skip / **0 fail**(含 newapi smoke)                                                                                                                                   | ✅           |
+| `tsc --noEmit`                                                            | 0 errors                                             | 0 errors                                                                                                                                                                          | ✅           |
+| `eslint src/lib/auth/oauth src/app/api/auth/oauth`                        | 0 issues                                             | 0 issues                                                                                                                                                                          | ✅           |
+| `.env.example` 加 3 行 GITHUB*OAUTH*\*                                    | + 注释引导                                           | 加在 GOOGLE*OAUTH*\* 下方                                                                                                                                                         | ✅           |
+| 真实 GitHub 登录 smoke                                                    | 用户手测                                             | 见 §用户手测指引                                                                                                                                                                  | ⏳ User TODO |
 
 **结论:核心信号 ✅,3 个 informational(F1-F3),1 个用户 TODO(浏览器手测)。**
 
@@ -71,26 +71,27 @@ GitHub OAuth(原生 OAuth2,非 OIDC)落地,**零新依赖**,与 D6 共用 `oauth
 ## 用户手测指引
 
 预先(D6 教训,**不省**):
+
 - `curl localhost:3000/api/status` 应返回 200 — 否则 SSH 隧道 down,先 `ssh -fN -L 3000:localhost:3000 -o ServerAliveInterval=60 vps`
 
-1. **`.env` 已配 3 个 GITHUB_OAUTH_* 变量**(用户已确认)。GitHub OAuth App 的 Authorization callback URL 必须 = `http://localhost:3002/api/auth/oauth/github/callback`。
+1. **`.env` 已配 3 个 GITHUB*OAUTH*\* 变量**(用户已确认)。GitHub OAuth App 的 Authorization callback URL 必须 = `http://localhost:3002/api/auth/oauth/github/callback`。
 
 2. **`PORT=3002 pnpm dev`** 起本地。
 
 3. **浏览器开 `http://localhost:3002/api/auth/oauth/github/start`**。
-   - 期望:302 跳到 `https://github.com/login/oauth/authorize?...`,看到 GitHub 选账号 / Authorize 按钮。
+    - 期望:302 跳到 `https://github.com/login/oauth/authorize?...`,看到 GitHub 选账号 / Authorize 按钮。
 
 4. **同意授权**后 GitHub 把你 302 回 `…/api/auth/oauth/github/callback?code=…&state=…`。
-   - 期望(全新 GitHub 账号 / email 没注册过):302 → `http://localhost:3002/`(legacy 可能跳 `/pay`,正常),Cookie 里多 `silkroad_session=<jwt>`,DB:
-     - `users` 多 1 行(`password_hash IS NULL`,`email_verified=true`,`nickname=<GitHub name 或 login>`)
-     - `oauth_accounts` 多 1 行(`provider='github'`, `provider_account_id=<GitHub user.id 字符串>`)
-     - `newapi_tokens` 多 1 行(`key_alias='default-<uuid8>'`,`newapi_token_value=sk-...`)
-   - 期望(同 email 已存在,Google 或密码注册过):`users` 不变,`oauth_accounts` 多 1 行(silent link)。
-   - 期望(已链接 GitHub,二次登录):`users.last_login_at` 更新,无新行。
+    - 期望(全新 GitHub 账号 / email 没注册过):302 → `http://localhost:3002/`(legacy 可能跳 `/pay`,正常),Cookie 里多 `silkroad_session=<jwt>`,DB:
+        - `users` 多 1 行(`password_hash IS NULL`,`email_verified=true`,`nickname=<GitHub name 或 login>`)
+        - `oauth_accounts` 多 1 行(`provider='github'`, `provider_account_id=<GitHub user.id 字符串>`)
+        - `newapi_tokens` 多 1 行(`key_alias='default-<uuid8>'`,`newapi_token_value=sk-...`)
+    - 期望(同 email 已存在,Google 或密码注册过):`users` 不变,`oauth_accounts` 多 1 行(silent link)。
+    - 期望(已链接 GitHub,二次登录):`users.last_login_at` 更新,无新行。
 
 5. **失败路径手测**(可选):
-   - GitHub 授权页点 Cancel → 应回 `/?oauth_error=github_denied`
-   - 直接访问 `/api/auth/oauth/github/callback`(无 query)→ `/?oauth_error=missing_code_or_state`
+    - GitHub 授权页点 Cancel → 应回 `/?oauth_error=github_denied`
+    - 直接访问 `/api/auth/oauth/github/callback`(无 query)→ `/?oauth_error=missing_code_or_state`
 
 任一 happy path 失败 → 看 server log 中 `[oauth/github/callback]` 前缀诊断行,按 `oauth_error` code 反查 `route.ts` 内对应分支。
 

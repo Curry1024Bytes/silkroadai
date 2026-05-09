@@ -224,8 +224,6 @@ describe('/gpu page — i18n hook (W7 PR-P)', () => {
     });
 
     it('t(id) throws on unknown id (catches typos at SSR)', () => {
-        expect(() => t('this_does_not_exist' as keyof typeof GPU_PAGE_STRINGS)).toThrow(
-            /unknown string id/,
-        );
+        expect(() => t('this_does_not_exist' as keyof typeof GPU_PAGE_STRINGS)).toThrow(/unknown string id/);
     });
 });

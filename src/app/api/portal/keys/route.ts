@@ -35,11 +35,7 @@ export const runtime = 'nodejs';
 export const MAX_TOKENS_PER_USER = 10;
 
 const CreateKeySchema = z.object({
-    alias: z
-        .string()
-        .trim()
-        .min(1, 'alias must not be empty')
-        .max(50, 'alias must be ≤ 50 chars'),
+    alias: z.string().trim().min(1, 'alias must not be empty').max(50, 'alias must be ≤ 50 chars'),
 });
 
 export async function GET(req: NextRequest) {
@@ -88,9 +84,7 @@ export async function POST(req: NextRequest) {
     if (user.newapi_user_id == null || !user.newapi_access_token) {
         // Should never happen for a register/OAuth-provisioned user; flag as
         // upstream issue if it does (see W2 D6 provisionNewCustomer).
-        console.error(
-            `[portal/keys POST] user ${user.id} has no newapi_user_id/access_token; cannot create token`,
-        );
+        console.error(`[portal/keys POST] user ${user.id} has no newapi_user_id/access_token; cannot create token`);
         return NextResponse.json({ error: 'account_not_provisioned' }, { status: 500 });
     }
 
@@ -114,10 +108,7 @@ export async function POST(req: NextRequest) {
         where: { user_id: user.id, status: 'active' },
     });
     if (activeCount >= MAX_TOKENS_PER_USER) {
-        return NextResponse.json(
-            { error: 'token_limit_reached', max: MAX_TOKENS_PER_USER },
-            { status: 400 },
-        );
+        return NextResponse.json({ error: 'token_limit_reached', max: MAX_TOKENS_PER_USER }, { status: 400 });
     }
 
     const customerAuth = {
@@ -141,9 +132,7 @@ export async function POST(req: NextRequest) {
         // Find newly-created by name. Same-alias collisions are possible but
         // rare; if multiple match we pick the most recent (id desc).
         const list = await listTokensForCustomer(customerAuth, 1, 50);
-        const found = list.items
-            .filter((t) => t.name === alias)
-            .sort((a, b) => b.id - a.id)[0];
+        const found = list.items.filter((t) => t.name === alias).sort((a, b) => b.id - a.id)[0];
         if (!found) {
             throw new Error(`created token name=${alias} not found in subsequent list`);
         }
@@ -160,15 +149,10 @@ export async function POST(req: NextRequest) {
             const orphan = list.items.find((t) => t.name === alias);
             if (orphan) {
                 await newapiDeleteToken(customerAuth, orphan.id);
-                console.warn(
-                    `[portal/keys POST] cleaned orphan new-api token id=${orphan.id} name=${alias}`,
-                );
+                console.warn(`[portal/keys POST] cleaned orphan new-api token id=${orphan.id} name=${alias}`);
             }
         } catch (cleanupErr) {
-            console.error(
-                `[portal/keys POST] orphan cleanup also failed for user ${user.id}:`,
-                cleanupErr,
-            );
+            console.error(`[portal/keys POST] orphan cleanup also failed for user ${user.id}:`, cleanupErr);
         }
         return NextResponse.json({ error: 'newapi_create_failed' }, { status: 502 });
     }

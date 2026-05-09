@@ -35,11 +35,7 @@ export function BalanceAlertForm({ initialThreshold }: Props) {
 
     const numValue = Number(value);
     const dirty = !Number.isNaN(numValue) && numValue !== persisted;
-    const validRange =
-        Number.isFinite(numValue) &&
-        Number.isInteger(numValue) &&
-        numValue >= 0 &&
-        numValue <= 1000;
+    const validRange = Number.isFinite(numValue) && Number.isInteger(numValue) && numValue >= 0 && numValue <= 1000;
     const canSave = dirty && validRange && status !== 'saving';
 
     async function handleSave() {
@@ -78,8 +74,7 @@ export function BalanceAlertForm({ initialThreshold }: Props) {
             </CardHeader>
             <CardContent>
                 <p className="m-0 mb-4 text-xs text-muted-ink">
-                    当余额低于阈值时,我们会向您的注册邮箱发送提醒(24 小时内最多一次)。填 0
-                    关闭提醒。
+                    当余额低于阈值时,我们会向您的注册邮箱发送提醒(24 小时内最多一次)。填 0 关闭提醒。
                 </p>
                 <div className="flex items-end gap-2.5 flex-wrap">
                     <div>
@@ -121,17 +116,11 @@ export function BalanceAlertForm({ initialThreshold }: Props) {
                         </span>
                     )}
                     {status === 'saved' && persisted > 0 && (
-                        <span className="text-xs text-status-success-text">
-                            已保存 ✓ 当前阈值 ¥{persisted}
-                        </span>
+                        <span className="text-xs text-status-success-text">已保存 ✓ 当前阈值 ¥{persisted}</span>
                     )}
-                    {status === 'error' && errMsg && (
-                        <span className="text-xs text-status-error-text">{errMsg}</span>
-                    )}
+                    {status === 'error' && errMsg && <span className="text-xs text-status-error-text">{errMsg}</span>}
                     {status === 'idle' && !validRange && dirty && (
-                        <span className="text-xs text-status-error-text">
-                            请输入 0–1000 的整数
-                        </span>
+                        <span className="text-xs text-status-error-text">请输入 0–1000 的整数</span>
                     )}
                 </div>
             </CardContent>

@@ -32,9 +32,7 @@ export function Footer() {
         >
             <div className="flex items-center gap-3">
                 <Logo variant="primary-flat" size={24} />
-                <span className="hidden sm:inline text-minor-ink">
-                    Connecting Global Intelligence.
-                </span>
+                <span className="hidden sm:inline text-minor-ink">Connecting Global Intelligence.</span>
             </div>
 
             <nav className="flex items-center gap-4 flex-wrap" aria-label="页脚导航">

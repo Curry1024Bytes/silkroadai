@@ -29,7 +29,11 @@ export const runtime = 'nodejs';
 const BCRYPT_ROUNDS = 12;
 
 const RegisterSchema = z.object({
-    email: z.string().email().max(254).transform((s) => s.trim().toLowerCase()),
+    email: z
+        .string()
+        .email()
+        .max(254)
+        .transform((s) => s.trim().toLowerCase()),
     password: z.string().min(8).max(128),
     nickname: z.string().trim().max(64).optional(),
     // W7 D4: optional invite code. Empty/whitespace-only strings are
@@ -66,10 +70,7 @@ async function cleanupOrphanNewApiUser(portalUserId: string, contextEmail: strin
             );
         }
     } catch (err) {
-        console.error(
-            `[register] orphan new-api cleanup failed for ${contextEmail} (username=${username}):`,
-            err,
-        );
+        console.error(`[register] orphan new-api cleanup failed for ${contextEmail} (username=${username}):`, err);
     }
 }
 
@@ -188,9 +189,10 @@ export async function POST(req: NextRequest) {
             }),
         ]);
     } catch (linkageErr) {
-        const tokenPreview = typeof provisioned.newapi_token_value === 'string'
-            ? `${provisioned.newapi_token_value.slice(0, 12)}...`
-            : `<${typeof provisioned.newapi_token_value}>`;
+        const tokenPreview =
+            typeof provisioned.newapi_token_value === 'string'
+                ? `${provisioned.newapi_token_value.slice(0, 12)}...`
+                : `<${typeof provisioned.newapi_token_value}>`;
         console.error(
             `[register] new-api provision succeeded for ${user.id} ` +
                 `(newapi_user_id=${provisioned.newapi_user_id}, ` +
@@ -204,9 +206,9 @@ export async function POST(req: NextRequest) {
         await deleteNewApiUser(provisioned.newapi_user_id).catch((err) =>
             console.error(`[register] new-api user cleanup failed for ${provisioned.newapi_user_id}:`, err),
         );
-        await prisma.user.delete({ where: { id: user.id } }).catch((err) =>
-            console.error(`[register] portal user cleanup failed for ${user.id}:`, err),
-        );
+        await prisma.user
+            .delete({ where: { id: user.id } })
+            .catch((err) => console.error(`[register] portal user cleanup failed for ${user.id}:`, err));
         return NextResponse.json(
             { error: 'persistence_failed', message: 'Account creation failed, please retry' },
             { status: 500 },

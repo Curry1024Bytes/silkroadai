@@ -50,8 +50,9 @@ describe('sitemap.ts — host source precedence', () => {
         const entries = sitemap();
         expect(entries.length).toBeGreaterThan(0);
         for (const e of entries) {
-            expect(e.url, `entry ${JSON.stringify(e)} must use APP_URL host`)
-                .toMatch(/^https:\/\/silkroadai\.io(\/|$)/);
+            expect(e.url, `entry ${JSON.stringify(e)} must use APP_URL host`).toMatch(
+                /^https:\/\/silkroadai\.io(\/|$)/,
+            );
             expect(e.url).not.toContain('localhost');
         }
     });
@@ -158,16 +159,7 @@ describe('robots.ts — host source precedence', () => {
         const disallow = rulesArray.flatMap((r) =>
             Array.isArray(r.disallow) ? r.disallow : r.disallow ? [r.disallow] : [],
         );
-        for (const path of [
-            '/admin',
-            '/api/',
-            '/dashboard',
-            '/keys',
-            '/balance',
-            '/usage',
-            '/pay',
-            '/portal/',
-        ]) {
+        for (const path of ['/admin', '/api/', '/dashboard', '/keys', '/balance', '/usage', '/pay', '/portal/']) {
             expect(disallow, `robots.txt must disallow ${path}`).toContain(path);
         }
     });
@@ -177,9 +169,7 @@ describe('robots.ts — host source precedence', () => {
         const robots = await loadRobots();
         const rules = robots().rules;
         const rulesArray = Array.isArray(rules) ? rules : [rules];
-        const allow = rulesArray.flatMap((r) =>
-            Array.isArray(r.allow) ? r.allow : r.allow ? [r.allow] : [],
-        );
+        const allow = rulesArray.flatMap((r) => (Array.isArray(r.allow) ? r.allow : r.allow ? [r.allow] : []));
         for (const path of ['/', '/pricing', '/models', '/docs', '/gpu', '/terms', '/privacy', '/refund']) {
             expect(allow, `robots.txt must allow ${path}`).toContain(path);
         }

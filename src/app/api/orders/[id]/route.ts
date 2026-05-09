@@ -13,39 +13,39 @@ import { ORDER_STATUS_ACCESS_QUERY_KEY, verifyOrderStatusAccessToken } from '@/l
  * - 充值是否成功 / 当前充值阶段（rechargeSuccess / rechargeStatus）
  */
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
-  const accessToken = request.nextUrl.searchParams.get(ORDER_STATUS_ACCESS_QUERY_KEY);
-  const isAuthorized = verifyOrderStatusAccessToken(id, accessToken) || (await verifyAdminToken(request));
+    const { id } = await params;
+    const accessToken = request.nextUrl.searchParams.get(ORDER_STATUS_ACCESS_QUERY_KEY);
+    const isAuthorized = verifyOrderStatusAccessToken(id, accessToken) || (await verifyAdminToken(request));
 
-  if (!isAuthorized) {
-    return NextResponse.json({ error: '未授权访问该订单状态' }, { status: 401 });
-  }
+    if (!isAuthorized) {
+        return NextResponse.json({ error: '未授权访问该订单状态' }, { status: 401 });
+    }
 
-  const order = await prisma.order.findUnique({
-    where: { id },
-    select: {
-      id: true,
-      status: true,
-      expiresAt: true,
-      paidAt: true,
-      completedAt: true,
-      failedReason: true,
-    },
-  });
+    const order = await prisma.order.findUnique({
+        where: { id },
+        select: {
+            id: true,
+            status: true,
+            expiresAt: true,
+            paidAt: true,
+            completedAt: true,
+            failedReason: true,
+        },
+    });
 
-  if (!order) {
-    return NextResponse.json({ error: '订单不存在' }, { status: 404 });
-  }
+    if (!order) {
+        return NextResponse.json({ error: '订单不存在' }, { status: 404 });
+    }
 
-  const derived = deriveOrderState(order);
+    const derived = deriveOrderState(order);
 
-  return NextResponse.json({
-    id: order.id,
-    status: order.status,
-    expiresAt: order.expiresAt,
-    paymentSuccess: derived.paymentSuccess,
-    rechargeSuccess: derived.rechargeSuccess,
-    rechargeStatus: derived.rechargeStatus,
-    failedReason: order.failedReason ?? null,
-  });
+    return NextResponse.json({
+        id: order.id,
+        status: order.status,
+        expiresAt: order.expiresAt,
+        paymentSuccess: derived.paymentSuccess,
+        rechargeSuccess: derived.rechargeSuccess,
+        rechargeStatus: derived.rechargeStatus,
+        failedReason: order.failedReason ?? null,
+    });
 }

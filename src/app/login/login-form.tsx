@@ -77,12 +77,7 @@ export function LoginForm({ next }: { next: string }) {
                     />
                 </div>
                 <FormError>{error}</FormError>
-                <Button
-                    type="submit"
-                    block
-                    loading={submitting}
-                    disabled={submitting || !email || !password}
-                >
+                <Button type="submit" block loading={submitting} disabled={submitting || !email || !password}>
                     {submitting ? '登录中…' : '登录'}
                 </Button>
             </form>

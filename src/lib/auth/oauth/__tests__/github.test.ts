@@ -51,9 +51,7 @@ describe('buildGitHubAuthorizeUrl', () => {
         expect(url.startsWith(GITHUB_AUTHORIZE_URL)).toBe(true);
         const u = new URL(url);
         expect(u.searchParams.get('client_id')).toBe('cid123');
-        expect(u.searchParams.get('redirect_uri')).toBe(
-            'http://localhost:3002/api/auth/oauth/github/callback',
-        );
+        expect(u.searchParams.get('redirect_uri')).toBe('http://localhost:3002/api/auth/oauth/github/callback');
         expect(u.searchParams.get('scope')).toBe('read:user user:email');
         expect(u.searchParams.get('state')).toBe('abc');
         expect(u.searchParams.get('allow_signup')).toBe('true');

@@ -123,10 +123,7 @@ export interface GoogleIdTokenClaims {
  * be in the future. Returns typed claims on success, throws GoogleOAuthError
  * with a `code` callers can pattern-match on.
  */
-export async function verifyGoogleIdToken(args: {
-    idToken: string;
-    clientId: string;
-}): Promise<GoogleIdTokenClaims> {
+export async function verifyGoogleIdToken(args: { idToken: string; clientId: string }): Promise<GoogleIdTokenClaims> {
     let payload: Record<string, unknown>;
     try {
         const verified = await jwtVerify(args.idToken, getJWKS(), {
@@ -158,10 +155,7 @@ export async function verifyGoogleIdToken(args: {
         throw new GoogleOAuthError('id_token_missing_email', 'id_token has no email');
     }
     if (payload.email_verified !== true) {
-        throw new GoogleOAuthError(
-            'email_not_verified',
-            'Google says this email is not verified',
-        );
+        throw new GoogleOAuthError('email_not_verified', 'Google says this email is not verified');
     }
 
     return {

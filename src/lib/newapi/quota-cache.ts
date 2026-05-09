@@ -67,17 +67,13 @@ export async function getQuotaWithCache(portalUserId: string): Promise<QuotaSnap
         throw new Error(`portal user ${portalUserId} not found`);
     }
     if (user.newapi_user_id == null) {
-        throw new Error(
-            `portal user ${portalUserId} has no newapi_user_id (provisionNewCustomer never ran)`,
-        );
+        throw new Error(`portal user ${portalUserId} has no newapi_user_id (provisionNewCustomer never ran)`);
     }
 
     const now = Date.now();
     const cacheAge = user.newapi_cached_at ? now - user.newapi_cached_at.getTime() : Infinity;
     const hasCache =
-        user.newapi_quota_cache !== null &&
-        user.newapi_used_quota_cache !== null &&
-        user.newapi_cached_at !== null;
+        user.newapi_quota_cache !== null && user.newapi_used_quota_cache !== null && user.newapi_cached_at !== null;
     const cacheFresh = hasCache && cacheAge < TTL_MS;
 
     if (cacheFresh) {

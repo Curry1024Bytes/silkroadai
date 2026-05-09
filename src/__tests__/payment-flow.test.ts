@@ -6,14 +6,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockEasyPayCreatePayment = vi.fn();
 vi.mock('@/lib/easy-pay/client', () => ({
-  createPayment: (...args: unknown[]) => mockEasyPayCreatePayment(...args),
-  queryOrder: vi.fn(),
-  refund: vi.fn(),
+    createPayment: (...args: unknown[]) => mockEasyPayCreatePayment(...args),
+    queryOrder: vi.fn(),
+    refund: vi.fn(),
 }));
 
 vi.mock('@/lib/easy-pay/sign', () => ({
-  verifySign: vi.fn(),
-  generateSign: vi.fn(),
+    verifySign: vi.fn(),
+    generateSign: vi.fn(),
 }));
 
 // ============================================================
@@ -22,13 +22,13 @@ vi.mock('@/lib/easy-pay/sign', () => ({
 
 const mockAlipayPageExecute = vi.fn();
 vi.mock('@/lib/alipay/client', () => ({
-  pageExecute: (...args: unknown[]) => mockAlipayPageExecute(...args),
-  execute: vi.fn(),
+    pageExecute: (...args: unknown[]) => mockAlipayPageExecute(...args),
+    execute: vi.fn(),
 }));
 
 vi.mock('@/lib/alipay/sign', () => ({
-  verifySign: vi.fn(),
-  generateSign: vi.fn(),
+    verifySign: vi.fn(),
+    generateSign: vi.fn(),
 }));
 
 // ============================================================
@@ -38,13 +38,13 @@ vi.mock('@/lib/alipay/sign', () => ({
 const mockWxpayCreatePcOrder = vi.fn();
 const mockWxpayCreateH5Order = vi.fn();
 vi.mock('@/lib/wxpay/client', () => ({
-  createPcOrder: (...args: unknown[]) => mockWxpayCreatePcOrder(...args),
-  createH5Order: (...args: unknown[]) => mockWxpayCreateH5Order(...args),
-  queryOrder: vi.fn(),
-  closeOrder: vi.fn(),
-  createRefund: vi.fn(),
-  decipherNotify: vi.fn(),
-  verifyNotifySign: vi.fn(),
+    createPcOrder: (...args: unknown[]) => mockWxpayCreatePcOrder(...args),
+    createH5Order: (...args: unknown[]) => mockWxpayCreateH5Order(...args),
+    queryOrder: vi.fn(),
+    closeOrder: vi.fn(),
+    createRefund: vi.fn(),
+    decipherNotify: vi.fn(),
+    verifyNotifySign: vi.fn(),
 }));
 
 // ============================================================
@@ -52,31 +52,31 @@ vi.mock('@/lib/wxpay/client', () => ({
 // ============================================================
 
 vi.mock('@/lib/config', () => ({
-  getEnv: () => ({
-    // EasyPay
-    EASY_PAY_PID: 'test-pid',
-    EASY_PAY_PKEY: 'test-pkey',
-    EASY_PAY_API_BASE: 'https://easypay.example.com',
-    EASY_PAY_NOTIFY_URL: 'https://pay.example.com/api/easypay/notify',
-    EASY_PAY_RETURN_URL: 'https://pay.example.com/pay/result',
-    // Alipay
-    ALIPAY_APP_ID: '2021000000000000',
-    ALIPAY_PRIVATE_KEY: 'test-private-key',
-    ALIPAY_PUBLIC_KEY: 'test-public-key',
-    ALIPAY_NOTIFY_URL: 'https://pay.example.com/api/alipay/notify',
-    ALIPAY_RETURN_URL: 'https://pay.example.com/pay/result',
-    // Wxpay
-    WXPAY_APP_ID: 'wx-test-app-id',
-    WXPAY_MCH_ID: 'wx-test-mch-id',
-    WXPAY_PRIVATE_KEY: 'test-private-key',
-    WXPAY_API_V3_KEY: 'test-api-v3-key',
-    WXPAY_PUBLIC_KEY: 'test-public-key',
-    WXPAY_PUBLIC_KEY_ID: 'test-public-key-id',
-    WXPAY_CERT_SERIAL: 'test-cert-serial',
-    WXPAY_NOTIFY_URL: 'https://pay.example.com/api/wxpay/notify',
-    // General
-    NEXT_PUBLIC_APP_URL: 'https://pay.example.com',
-  }),
+    getEnv: () => ({
+        // EasyPay
+        EASY_PAY_PID: 'test-pid',
+        EASY_PAY_PKEY: 'test-pkey',
+        EASY_PAY_API_BASE: 'https://easypay.example.com',
+        EASY_PAY_NOTIFY_URL: 'https://pay.example.com/api/easypay/notify',
+        EASY_PAY_RETURN_URL: 'https://pay.example.com/pay/result',
+        // Alipay
+        ALIPAY_APP_ID: '2021000000000000',
+        ALIPAY_PRIVATE_KEY: 'test-private-key',
+        ALIPAY_PUBLIC_KEY: 'test-public-key',
+        ALIPAY_NOTIFY_URL: 'https://pay.example.com/api/alipay/notify',
+        ALIPAY_RETURN_URL: 'https://pay.example.com/pay/result',
+        // Wxpay
+        WXPAY_APP_ID: 'wx-test-app-id',
+        WXPAY_MCH_ID: 'wx-test-mch-id',
+        WXPAY_PRIVATE_KEY: 'test-private-key',
+        WXPAY_API_V3_KEY: 'test-api-v3-key',
+        WXPAY_PUBLIC_KEY: 'test-public-key',
+        WXPAY_PUBLIC_KEY_ID: 'test-public-key-id',
+        WXPAY_CERT_SERIAL: 'test-cert-serial',
+        WXPAY_NOTIFY_URL: 'https://pay.example.com/api/wxpay/notify',
+        // General
+        NEXT_PUBLIC_APP_URL: 'https://pay.example.com',
+    }),
 }));
 
 // ============================================================
@@ -99,13 +99,13 @@ import type { CreatePaymentRequest } from '@/lib/payment/types';
 // ============================================================
 
 function shouldAutoRedirect(opts: {
-  expired: boolean;
-  paymentType?: string;
-  payUrl?: string | null;
-  qrCode?: string | null;
-  isMobile: boolean;
+    expired: boolean;
+    paymentType?: string;
+    payUrl?: string | null;
+    qrCode?: string | null;
+    isMobile: boolean;
 }): boolean {
-  return !opts.expired && !isStripeType(opts.paymentType) && !!opts.payUrl && (opts.isMobile || !opts.qrCode);
+    return !opts.expired && !isStripeType(opts.paymentType) && !!opts.payUrl && (opts.isMobile || !opts.qrCode);
 }
 
 // ============================================================
@@ -113,447 +113,448 @@ function shouldAutoRedirect(opts: {
 // ============================================================
 
 describe('Payment Flow - PC/Mobile, QR/Redirect', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  // ----------------------------------------------------------
-  // EasyPay Provider
-  // ----------------------------------------------------------
-
-  describe('EasyPayProvider', () => {
-    let provider: EasyPayProvider;
-
     beforeEach(() => {
-      provider = new EasyPayProvider();
+        vi.clearAllMocks();
     });
 
-    it('PC: createPayment returns both payUrl and qrCode', async () => {
-      mockEasyPayCreatePayment.mockResolvedValue({
-        code: 1,
-        trade_no: 'EP-001',
-        payurl: 'https://easypay.example.com/pay/EP-001',
-        qrcode: 'https://qr.alipay.com/fkx12345',
-      });
+    // ----------------------------------------------------------
+    // EasyPay Provider
+    // ----------------------------------------------------------
 
-      const request: CreatePaymentRequest = {
-        orderId: 'order-ep-001',
-        amount: 50,
-        paymentType: 'alipay',
-        subject: 'Test Recharge',
-        clientIp: '1.2.3.4',
-        isMobile: false,
-      };
+    describe('EasyPayProvider', () => {
+        let provider: EasyPayProvider;
 
-      const result = await provider.createPayment(request);
+        beforeEach(() => {
+            provider = new EasyPayProvider();
+        });
 
-      expect(result.tradeNo).toBe('EP-001');
-      expect(result.qrCode).toBe('https://qr.alipay.com/fkx12345');
-      expect(result.payUrl).toBe('https://easypay.example.com/pay/EP-001');
+        it('PC: createPayment returns both payUrl and qrCode', async () => {
+            mockEasyPayCreatePayment.mockResolvedValue({
+                code: 1,
+                trade_no: 'EP-001',
+                payurl: 'https://easypay.example.com/pay/EP-001',
+                qrcode: 'https://qr.alipay.com/fkx12345',
+            });
 
-      // PC + has qrCode + has payUrl => shouldAutoRedirect = false (show QR)
-      expect(
-        shouldAutoRedirect({
-          expired: false,
-          paymentType: 'alipay',
-          payUrl: result.payUrl,
-          qrCode: result.qrCode,
-          isMobile: false,
-        }),
-      ).toBe(false);
+            const request: CreatePaymentRequest = {
+                orderId: 'order-ep-001',
+                amount: 50,
+                paymentType: 'alipay',
+                subject: 'Test Recharge',
+                clientIp: '1.2.3.4',
+                isMobile: false,
+            };
+
+            const result = await provider.createPayment(request);
+
+            expect(result.tradeNo).toBe('EP-001');
+            expect(result.qrCode).toBe('https://qr.alipay.com/fkx12345');
+            expect(result.payUrl).toBe('https://easypay.example.com/pay/EP-001');
+
+            // PC + has qrCode + has payUrl => shouldAutoRedirect = false (show QR)
+            expect(
+                shouldAutoRedirect({
+                    expired: false,
+                    paymentType: 'alipay',
+                    payUrl: result.payUrl,
+                    qrCode: result.qrCode,
+                    isMobile: false,
+                }),
+            ).toBe(false);
+        });
+
+        it('Mobile: createPayment returns payUrl for redirect', async () => {
+            mockEasyPayCreatePayment.mockResolvedValue({
+                code: 1,
+                trade_no: 'EP-002',
+                payurl: 'https://easypay.example.com/pay/EP-002',
+                qrcode: 'https://qr.alipay.com/fkx67890',
+            });
+
+            const request: CreatePaymentRequest = {
+                orderId: 'order-ep-002',
+                amount: 100,
+                paymentType: 'wxpay',
+                subject: 'Test Recharge',
+                clientIp: '1.2.3.4',
+                isMobile: true,
+            };
+
+            const result = await provider.createPayment(request);
+
+            expect(result.tradeNo).toBe('EP-002');
+            expect(result.payUrl).toBeDefined();
+
+            // Mobile + has payUrl => shouldAutoRedirect = true (redirect)
+            expect(
+                shouldAutoRedirect({
+                    expired: false,
+                    paymentType: 'wxpay',
+                    payUrl: result.payUrl,
+                    qrCode: result.qrCode,
+                    isMobile: true,
+                }),
+            ).toBe(true);
+        });
+
+        it('EasyPay forwards isMobile to client for device=jump on mobile', async () => {
+            mockEasyPayCreatePayment.mockResolvedValue({
+                code: 1,
+                trade_no: 'EP-003',
+                payurl: 'https://easypay.example.com/pay/EP-003',
+                qrcode: 'weixin://wxpay/bizpayurl?pr=xxx',
+            });
+
+            const request: CreatePaymentRequest = {
+                orderId: 'order-ep-003',
+                amount: 10,
+                paymentType: 'alipay',
+                subject: 'Test',
+                clientIp: '1.2.3.4',
+                isMobile: true,
+            };
+
+            await provider.createPayment(request);
+
+            // EasyPay client receives isMobile so it can set device=jump
+            expect(mockEasyPayCreatePayment).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    outTradeNo: 'order-ep-003',
+                    paymentType: 'alipay',
+                    isMobile: true,
+                }),
+                undefined,
+            );
+        });
     });
 
-    it('Mobile: createPayment returns payUrl for redirect', async () => {
-      mockEasyPayCreatePayment.mockResolvedValue({
-        code: 1,
-        trade_no: 'EP-002',
-        payurl: 'https://easypay.example.com/pay/EP-002',
-        qrcode: 'https://qr.alipay.com/fkx67890',
-      });
+    // ----------------------------------------------------------
+    // Alipay Provider
+    // ----------------------------------------------------------
 
-      const request: CreatePaymentRequest = {
-        orderId: 'order-ep-002',
-        amount: 100,
-        paymentType: 'wxpay',
-        subject: 'Test Recharge',
-        clientIp: '1.2.3.4',
-        isMobile: true,
-      };
+    describe('AlipayProvider', () => {
+        let provider: AlipayProvider;
 
-      const result = await provider.createPayment(request);
+        beforeEach(() => {
+            provider = new AlipayProvider();
+        });
 
-      expect(result.tradeNo).toBe('EP-002');
-      expect(result.payUrl).toBeDefined();
+        it('PC: returns service short-link payUrl and qrCode', async () => {
+            const request: CreatePaymentRequest = {
+                orderId: 'order-ali-001',
+                amount: 100,
+                paymentType: 'alipay_direct',
+                subject: 'Test Recharge',
+                isMobile: false,
+            };
 
-      // Mobile + has payUrl => shouldAutoRedirect = true (redirect)
-      expect(
-        shouldAutoRedirect({
-          expired: false,
-          paymentType: 'wxpay',
-          payUrl: result.payUrl,
-          qrCode: result.qrCode,
-          isMobile: true,
-        }),
-      ).toBe(true);
+            const result = await provider.createPayment(request);
+
+            expect(result.tradeNo).toBe('order-ali-001');
+            expect(result.payUrl).toBe('https://pay.example.com/pay/order-ali-001');
+            expect(result.qrCode).toBe('https://pay.example.com/pay/order-ali-001');
+            expect(mockAlipayPageExecute).not.toHaveBeenCalled();
+
+            expect(
+                shouldAutoRedirect({
+                    expired: false,
+                    paymentType: 'alipay_direct',
+                    payUrl: result.payUrl,
+                    qrCode: result.qrCode,
+                    isMobile: false,
+                }),
+            ).toBe(false);
+        });
+
+        it('Mobile: uses alipay.trade.wap.pay, returns payUrl', async () => {
+            mockAlipayPageExecute.mockReturnValue(
+                'https://openapi.alipay.com/gateway.do?method=alipay.trade.wap.pay&sign=yyy',
+            );
+
+            const request: CreatePaymentRequest = {
+                orderId: 'order-ali-002',
+                amount: 50,
+                paymentType: 'alipay_direct',
+                subject: 'Test Recharge',
+                isMobile: true,
+            };
+
+            const result = await provider.createPayment(request);
+
+            expect(result.tradeNo).toBe('order-ali-002');
+            expect(result.payUrl).toContain('alipay.trade.wap.pay');
+            expect(result.qrCode).toBeUndefined();
+
+            // Verify pageExecute was called with H5 method
+            expect(mockAlipayPageExecute).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    product_code: 'QUICK_WAP_WAY',
+                }),
+                expect.objectContaining({
+                    method: 'alipay.trade.wap.pay',
+                }),
+            );
+
+            // Mobile + payUrl => shouldAutoRedirect = true
+            expect(
+                shouldAutoRedirect({
+                    expired: false,
+                    paymentType: 'alipay_direct',
+                    payUrl: result.payUrl,
+                    qrCode: result.qrCode,
+                    isMobile: true,
+                }),
+            ).toBe(true);
+        });
+
+        it('Mobile: surfaces wap.pay creation errors', async () => {
+            mockAlipayPageExecute.mockImplementationOnce(() => {
+                throw new Error('WAP pay not available');
+            });
+
+            const request: CreatePaymentRequest = {
+                orderId: 'order-ali-003',
+                amount: 30,
+                paymentType: 'alipay_direct',
+                subject: 'Test Recharge',
+                isMobile: true,
+            };
+
+            await expect(provider.createPayment(request)).rejects.toThrow('WAP pay not available');
+            expect(mockAlipayPageExecute).toHaveBeenCalledTimes(1);
+            expect(mockAlipayPageExecute).toHaveBeenCalledWith(
+                expect.objectContaining({ product_code: 'QUICK_WAP_WAY' }),
+                expect.objectContaining({ method: 'alipay.trade.wap.pay' }),
+            );
+        });
+
+        it('alipay_direct is in REDIRECT_PAYMENT_TYPES', () => {
+            expect(REDIRECT_PAYMENT_TYPES.has('alipay_direct')).toBe(true);
+        });
     });
 
-    it('EasyPay forwards isMobile to client for device=jump on mobile', async () => {
-      mockEasyPayCreatePayment.mockResolvedValue({
-        code: 1,
-        trade_no: 'EP-003',
-        payurl: 'https://easypay.example.com/pay/EP-003',
-        qrcode: 'weixin://wxpay/bizpayurl?pr=xxx',
-      });
+    // ----------------------------------------------------------
+    // Wxpay Provider
+    // ----------------------------------------------------------
 
-      const request: CreatePaymentRequest = {
-        orderId: 'order-ep-003',
-        amount: 10,
-        paymentType: 'alipay',
-        subject: 'Test',
-        clientIp: '1.2.3.4',
-        isMobile: true,
-      };
+    describe('WxpayProvider', () => {
+        let provider: WxpayProvider;
 
-      await provider.createPayment(request);
+        beforeEach(() => {
+            provider = new WxpayProvider();
+        });
 
-      // EasyPay client receives isMobile so it can set device=jump
-      expect(mockEasyPayCreatePayment).toHaveBeenCalledWith(
-        expect.objectContaining({
-          outTradeNo: 'order-ep-003',
-          paymentType: 'alipay',
-          isMobile: true,
-        }),
-        undefined,
-      );
-    });
-  });
+        it('PC: uses Native order, returns qrCode (no payUrl)', async () => {
+            mockWxpayCreatePcOrder.mockResolvedValue('weixin://wxpay/bizpayurl?pr=abc123');
 
-  // ----------------------------------------------------------
-  // Alipay Provider
-  // ----------------------------------------------------------
+            const request: CreatePaymentRequest = {
+                orderId: 'order-wx-001',
+                amount: 100,
+                paymentType: 'wxpay_direct',
+                subject: 'Test Recharge',
+                clientIp: '1.2.3.4',
+                isMobile: false,
+            };
 
-  describe('AlipayProvider', () => {
-    let provider: AlipayProvider;
+            const result = await provider.createPayment(request);
 
-    beforeEach(() => {
-      provider = new AlipayProvider();
-    });
+            expect(result.tradeNo).toBe('order-wx-001');
+            expect(result.qrCode).toBe('weixin://wxpay/bizpayurl?pr=abc123');
+            expect(result.payUrl).toBeUndefined();
 
-    it('PC: returns service short-link payUrl and qrCode', async () => {
-      const request: CreatePaymentRequest = {
-        orderId: 'order-ali-001',
-        amount: 100,
-        paymentType: 'alipay_direct',
-        subject: 'Test Recharge',
-        isMobile: false,
-      };
+            // createPcOrder was called, not createH5Order
+            expect(mockWxpayCreatePcOrder).toHaveBeenCalledTimes(1);
+            expect(mockWxpayCreateH5Order).not.toHaveBeenCalled();
 
-      const result = await provider.createPayment(request);
+            // PC + qrCode (no payUrl) => shouldAutoRedirect = false (show QR)
+            expect(
+                shouldAutoRedirect({
+                    expired: false,
+                    paymentType: 'wxpay_direct',
+                    payUrl: result.payUrl,
+                    qrCode: result.qrCode,
+                    isMobile: false,
+                }),
+            ).toBe(false);
+        });
 
-      expect(result.tradeNo).toBe('order-ali-001');
-      expect(result.payUrl).toBe('https://pay.example.com/pay/order-ali-001');
-      expect(result.qrCode).toBe('https://pay.example.com/pay/order-ali-001');
-      expect(mockAlipayPageExecute).not.toHaveBeenCalled();
+        it('Mobile: uses H5 order, returns payUrl (no qrCode)', async () => {
+            mockWxpayCreateH5Order.mockResolvedValue(
+                'https://wx.tenpay.com/cgi-bin/mmpayweb-bin/checkmweb?prepay_id=wx123',
+            );
 
-      expect(
-        shouldAutoRedirect({
-          expired: false,
-          paymentType: 'alipay_direct',
-          payUrl: result.payUrl,
-          qrCode: result.qrCode,
-          isMobile: false,
-        }),
-      ).toBe(false);
-    });
+            const request: CreatePaymentRequest = {
+                orderId: 'order-wx-002',
+                amount: 50,
+                paymentType: 'wxpay_direct',
+                subject: 'Test Recharge',
+                clientIp: '2.3.4.5',
+                isMobile: true,
+            };
 
-    it('Mobile: uses alipay.trade.wap.pay, returns payUrl', async () => {
-      mockAlipayPageExecute.mockReturnValue(
-        'https://openapi.alipay.com/gateway.do?method=alipay.trade.wap.pay&sign=yyy',
-      );
+            const result = await provider.createPayment(request);
 
-      const request: CreatePaymentRequest = {
-        orderId: 'order-ali-002',
-        amount: 50,
-        paymentType: 'alipay_direct',
-        subject: 'Test Recharge',
-        isMobile: true,
-      };
+            expect(result.tradeNo).toBe('order-wx-002');
+            expect(result.payUrl).toContain('tenpay.com');
+            expect(result.qrCode).toBeUndefined();
 
-      const result = await provider.createPayment(request);
+            // createH5Order was called, not createPcOrder
+            expect(mockWxpayCreateH5Order).toHaveBeenCalledTimes(1);
+            expect(mockWxpayCreatePcOrder).not.toHaveBeenCalled();
 
-      expect(result.tradeNo).toBe('order-ali-002');
-      expect(result.payUrl).toContain('alipay.trade.wap.pay');
-      expect(result.qrCode).toBeUndefined();
+            // Mobile + payUrl => shouldAutoRedirect = true
+            expect(
+                shouldAutoRedirect({
+                    expired: false,
+                    paymentType: 'wxpay_direct',
+                    payUrl: result.payUrl,
+                    qrCode: result.qrCode,
+                    isMobile: true,
+                }),
+            ).toBe(true);
+        });
 
-      // Verify pageExecute was called with H5 method
-      expect(mockAlipayPageExecute).toHaveBeenCalledWith(
-        expect.objectContaining({
-          product_code: 'QUICK_WAP_WAY',
-        }),
-        expect.objectContaining({
-          method: 'alipay.trade.wap.pay',
-        }),
-      );
+        it('Mobile: falls back to Native qrCode when H5 returns NO_AUTH', async () => {
+            mockWxpayCreateH5Order.mockRejectedValue(new Error('Wxpay API error: [NO_AUTH] not authorized'));
+            mockWxpayCreatePcOrder.mockResolvedValue('weixin://wxpay/bizpayurl?pr=fallback123');
 
-      // Mobile + payUrl => shouldAutoRedirect = true
-      expect(
-        shouldAutoRedirect({
-          expired: false,
-          paymentType: 'alipay_direct',
-          payUrl: result.payUrl,
-          qrCode: result.qrCode,
-          isMobile: true,
-        }),
-      ).toBe(true);
-    });
+            const request: CreatePaymentRequest = {
+                orderId: 'order-wx-003',
+                amount: 30,
+                paymentType: 'wxpay_direct',
+                subject: 'Test Recharge',
+                clientIp: '3.4.5.6',
+                isMobile: true,
+            };
 
-    it('Mobile: surfaces wap.pay creation errors', async () => {
-      mockAlipayPageExecute.mockImplementationOnce(() => {
-        throw new Error('WAP pay not available');
-      });
+            const result = await provider.createPayment(request);
 
-      const request: CreatePaymentRequest = {
-        orderId: 'order-ali-003',
-        amount: 30,
-        paymentType: 'alipay_direct',
-        subject: 'Test Recharge',
-        isMobile: true,
-      };
+            expect(result.tradeNo).toBe('order-wx-003');
+            expect(result.qrCode).toBe('weixin://wxpay/bizpayurl?pr=fallback123');
+            expect(result.payUrl).toBeUndefined();
 
-      await expect(provider.createPayment(request)).rejects.toThrow('WAP pay not available');
-      expect(mockAlipayPageExecute).toHaveBeenCalledTimes(1);
-      expect(mockAlipayPageExecute).toHaveBeenCalledWith(
-        expect.objectContaining({ product_code: 'QUICK_WAP_WAY' }),
-        expect.objectContaining({ method: 'alipay.trade.wap.pay' }),
-      );
-    });
+            // Both were called: H5 failed, then Native succeeded
+            expect(mockWxpayCreateH5Order).toHaveBeenCalledTimes(1);
+            expect(mockWxpayCreatePcOrder).toHaveBeenCalledTimes(1);
 
-    it('alipay_direct is in REDIRECT_PAYMENT_TYPES', () => {
-      expect(REDIRECT_PAYMENT_TYPES.has('alipay_direct')).toBe(true);
-    });
-  });
+            // Mobile + qrCode only (no payUrl) => shouldAutoRedirect = false (show QR)
+            expect(
+                shouldAutoRedirect({
+                    expired: false,
+                    paymentType: 'wxpay_direct',
+                    payUrl: result.payUrl,
+                    qrCode: result.qrCode,
+                    isMobile: true,
+                }),
+            ).toBe(false);
+        });
 
-  // ----------------------------------------------------------
-  // Wxpay Provider
-  // ----------------------------------------------------------
+        it('Mobile: re-throws non-NO_AUTH errors from H5', async () => {
+            mockWxpayCreateH5Order.mockRejectedValue(new Error('Wxpay API error: [SYSTEMERROR] system error'));
 
-  describe('WxpayProvider', () => {
-    let provider: WxpayProvider;
+            const request: CreatePaymentRequest = {
+                orderId: 'order-wx-004',
+                amount: 20,
+                paymentType: 'wxpay_direct',
+                subject: 'Test Recharge',
+                clientIp: '4.5.6.7',
+                isMobile: true,
+            };
 
-    beforeEach(() => {
-      provider = new WxpayProvider();
-    });
+            await expect(provider.createPayment(request)).rejects.toThrow('SYSTEMERROR');
+            // Should not fall back to PC order
+            expect(mockWxpayCreatePcOrder).not.toHaveBeenCalled();
+        });
 
-    it('PC: uses Native order, returns qrCode (no payUrl)', async () => {
-      mockWxpayCreatePcOrder.mockResolvedValue('weixin://wxpay/bizpayurl?pr=abc123');
+        it('Mobile without clientIp: falls back to Native qrCode directly', async () => {
+            mockWxpayCreatePcOrder.mockResolvedValue('weixin://wxpay/bizpayurl?pr=noip');
 
-      const request: CreatePaymentRequest = {
-        orderId: 'order-wx-001',
-        amount: 100,
-        paymentType: 'wxpay_direct',
-        subject: 'Test Recharge',
-        clientIp: '1.2.3.4',
-        isMobile: false,
-      };
+            const request: CreatePaymentRequest = {
+                orderId: 'order-wx-005',
+                amount: 10,
+                paymentType: 'wxpay_direct',
+                subject: 'Test Recharge',
+                // No clientIp
+                isMobile: true,
+            };
 
-      const result = await provider.createPayment(request);
+            const result = await provider.createPayment(request);
 
-      expect(result.tradeNo).toBe('order-wx-001');
-      expect(result.qrCode).toBe('weixin://wxpay/bizpayurl?pr=abc123');
-      expect(result.payUrl).toBeUndefined();
+            expect(result.qrCode).toBe('weixin://wxpay/bizpayurl?pr=noip');
+            expect(result.payUrl).toBeUndefined();
+            // H5 was never attempted since clientIp is missing
+            expect(mockWxpayCreateH5Order).not.toHaveBeenCalled();
+        });
 
-      // createPcOrder was called, not createH5Order
-      expect(mockWxpayCreatePcOrder).toHaveBeenCalledTimes(1);
-      expect(mockWxpayCreateH5Order).not.toHaveBeenCalled();
+        it('uses request.notifyUrl as fallback when WXPAY_NOTIFY_URL is set', async () => {
+            mockWxpayCreatePcOrder.mockResolvedValue('weixin://wxpay/bizpayurl?pr=withnotify');
 
-      // PC + qrCode (no payUrl) => shouldAutoRedirect = false (show QR)
-      expect(
-        shouldAutoRedirect({
-          expired: false,
-          paymentType: 'wxpay_direct',
-          payUrl: result.payUrl,
-          qrCode: result.qrCode,
-          isMobile: false,
-        }),
-      ).toBe(false);
+            const request: CreatePaymentRequest = {
+                orderId: 'order-wx-006',
+                amount: 10,
+                paymentType: 'wxpay_direct',
+                subject: 'Test',
+                isMobile: false,
+                notifyUrl: 'https://pay.example.com/api/wxpay/notify-alt',
+            };
+
+            const result = await provider.createPayment(request);
+            expect(result.qrCode).toBe('weixin://wxpay/bizpayurl?pr=withnotify');
+            // WXPAY_NOTIFY_URL from env takes priority over request.notifyUrl
+            expect(mockWxpayCreatePcOrder).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    notify_url: 'https://pay.example.com/api/wxpay/notify',
+                }),
+            );
+        });
     });
 
-    it('Mobile: uses H5 order, returns payUrl (no qrCode)', async () => {
-      mockWxpayCreateH5Order.mockResolvedValue('https://wx.tenpay.com/cgi-bin/mmpayweb-bin/checkmweb?prepay_id=wx123');
+    // ----------------------------------------------------------
+    // Utility function tests
+    // ----------------------------------------------------------
 
-      const request: CreatePaymentRequest = {
-        orderId: 'order-wx-002',
-        amount: 50,
-        paymentType: 'wxpay_direct',
-        subject: 'Test Recharge',
-        clientIp: '2.3.4.5',
-        isMobile: true,
-      };
+    describe('isStripeType', () => {
+        it('returns true for "stripe"', () => {
+            expect(isStripeType('stripe')).toBe(true);
+        });
 
-      const result = await provider.createPayment(request);
+        it('returns true for stripe-prefixed types', () => {
+            expect(isStripeType('stripe_card')).toBe(true);
+        });
 
-      expect(result.tradeNo).toBe('order-wx-002');
-      expect(result.payUrl).toContain('tenpay.com');
-      expect(result.qrCode).toBeUndefined();
+        it('returns false for alipay', () => {
+            expect(isStripeType('alipay')).toBe(false);
+        });
 
-      // createH5Order was called, not createPcOrder
-      expect(mockWxpayCreateH5Order).toHaveBeenCalledTimes(1);
-      expect(mockWxpayCreatePcOrder).not.toHaveBeenCalled();
+        it('returns false for wxpay', () => {
+            expect(isStripeType('wxpay')).toBe(false);
+        });
 
-      // Mobile + payUrl => shouldAutoRedirect = true
-      expect(
-        shouldAutoRedirect({
-          expired: false,
-          paymentType: 'wxpay_direct',
-          payUrl: result.payUrl,
-          qrCode: result.qrCode,
-          isMobile: true,
-        }),
-      ).toBe(true);
+        it('returns false for undefined', () => {
+            expect(isStripeType(undefined)).toBe(false);
+        });
+
+        it('returns false for null', () => {
+            expect(isStripeType(null)).toBe(false);
+        });
     });
 
-    it('Mobile: falls back to Native qrCode when H5 returns NO_AUTH', async () => {
-      mockWxpayCreateH5Order.mockRejectedValue(new Error('Wxpay API error: [NO_AUTH] not authorized'));
-      mockWxpayCreatePcOrder.mockResolvedValue('weixin://wxpay/bizpayurl?pr=fallback123');
+    describe('REDIRECT_PAYMENT_TYPES', () => {
+        it('includes alipay_direct', () => {
+            expect(REDIRECT_PAYMENT_TYPES.has('alipay_direct')).toBe(true);
+        });
 
-      const request: CreatePaymentRequest = {
-        orderId: 'order-wx-003',
-        amount: 30,
-        paymentType: 'wxpay_direct',
-        subject: 'Test Recharge',
-        clientIp: '3.4.5.6',
-        isMobile: true,
-      };
+        it('does not include alipay (easypay version)', () => {
+            expect(REDIRECT_PAYMENT_TYPES.has('alipay')).toBe(false);
+        });
 
-      const result = await provider.createPayment(request);
+        it('does not include wxpay types', () => {
+            expect(REDIRECT_PAYMENT_TYPES.has('wxpay')).toBe(false);
+            expect(REDIRECT_PAYMENT_TYPES.has('wxpay_direct')).toBe(false);
+        });
 
-      expect(result.tradeNo).toBe('order-wx-003');
-      expect(result.qrCode).toBe('weixin://wxpay/bizpayurl?pr=fallback123');
-      expect(result.payUrl).toBeUndefined();
-
-      // Both were called: H5 failed, then Native succeeded
-      expect(mockWxpayCreateH5Order).toHaveBeenCalledTimes(1);
-      expect(mockWxpayCreatePcOrder).toHaveBeenCalledTimes(1);
-
-      // Mobile + qrCode only (no payUrl) => shouldAutoRedirect = false (show QR)
-      expect(
-        shouldAutoRedirect({
-          expired: false,
-          paymentType: 'wxpay_direct',
-          payUrl: result.payUrl,
-          qrCode: result.qrCode,
-          isMobile: true,
-        }),
-      ).toBe(false);
+        it('does not include stripe', () => {
+            expect(REDIRECT_PAYMENT_TYPES.has('stripe')).toBe(false);
+        });
     });
-
-    it('Mobile: re-throws non-NO_AUTH errors from H5', async () => {
-      mockWxpayCreateH5Order.mockRejectedValue(new Error('Wxpay API error: [SYSTEMERROR] system error'));
-
-      const request: CreatePaymentRequest = {
-        orderId: 'order-wx-004',
-        amount: 20,
-        paymentType: 'wxpay_direct',
-        subject: 'Test Recharge',
-        clientIp: '4.5.6.7',
-        isMobile: true,
-      };
-
-      await expect(provider.createPayment(request)).rejects.toThrow('SYSTEMERROR');
-      // Should not fall back to PC order
-      expect(mockWxpayCreatePcOrder).not.toHaveBeenCalled();
-    });
-
-    it('Mobile without clientIp: falls back to Native qrCode directly', async () => {
-      mockWxpayCreatePcOrder.mockResolvedValue('weixin://wxpay/bizpayurl?pr=noip');
-
-      const request: CreatePaymentRequest = {
-        orderId: 'order-wx-005',
-        amount: 10,
-        paymentType: 'wxpay_direct',
-        subject: 'Test Recharge',
-        // No clientIp
-        isMobile: true,
-      };
-
-      const result = await provider.createPayment(request);
-
-      expect(result.qrCode).toBe('weixin://wxpay/bizpayurl?pr=noip');
-      expect(result.payUrl).toBeUndefined();
-      // H5 was never attempted since clientIp is missing
-      expect(mockWxpayCreateH5Order).not.toHaveBeenCalled();
-    });
-
-    it('uses request.notifyUrl as fallback when WXPAY_NOTIFY_URL is set', async () => {
-      mockWxpayCreatePcOrder.mockResolvedValue('weixin://wxpay/bizpayurl?pr=withnotify');
-
-      const request: CreatePaymentRequest = {
-        orderId: 'order-wx-006',
-        amount: 10,
-        paymentType: 'wxpay_direct',
-        subject: 'Test',
-        isMobile: false,
-        notifyUrl: 'https://pay.example.com/api/wxpay/notify-alt',
-      };
-
-      const result = await provider.createPayment(request);
-      expect(result.qrCode).toBe('weixin://wxpay/bizpayurl?pr=withnotify');
-      // WXPAY_NOTIFY_URL from env takes priority over request.notifyUrl
-      expect(mockWxpayCreatePcOrder).toHaveBeenCalledWith(
-        expect.objectContaining({
-          notify_url: 'https://pay.example.com/api/wxpay/notify',
-        }),
-      );
-    });
-  });
-
-
-  // ----------------------------------------------------------
-  // Utility function tests
-  // ----------------------------------------------------------
-
-  describe('isStripeType', () => {
-    it('returns true for "stripe"', () => {
-      expect(isStripeType('stripe')).toBe(true);
-    });
-
-    it('returns true for stripe-prefixed types', () => {
-      expect(isStripeType('stripe_card')).toBe(true);
-    });
-
-    it('returns false for alipay', () => {
-      expect(isStripeType('alipay')).toBe(false);
-    });
-
-    it('returns false for wxpay', () => {
-      expect(isStripeType('wxpay')).toBe(false);
-    });
-
-    it('returns false for undefined', () => {
-      expect(isStripeType(undefined)).toBe(false);
-    });
-
-    it('returns false for null', () => {
-      expect(isStripeType(null)).toBe(false);
-    });
-  });
-
-  describe('REDIRECT_PAYMENT_TYPES', () => {
-    it('includes alipay_direct', () => {
-      expect(REDIRECT_PAYMENT_TYPES.has('alipay_direct')).toBe(true);
-    });
-
-    it('does not include alipay (easypay version)', () => {
-      expect(REDIRECT_PAYMENT_TYPES.has('alipay')).toBe(false);
-    });
-
-    it('does not include wxpay types', () => {
-      expect(REDIRECT_PAYMENT_TYPES.has('wxpay')).toBe(false);
-      expect(REDIRECT_PAYMENT_TYPES.has('wxpay_direct')).toBe(false);
-    });
-
-    it('does not include stripe', () => {
-      expect(REDIRECT_PAYMENT_TYPES.has('stripe')).toBe(false);
-    });
-  });
 });

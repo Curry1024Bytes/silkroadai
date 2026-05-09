@@ -99,9 +99,7 @@ export default async function KeysPage() {
     return (
         <section>
             <h1 className="m-0 mb-2 text-2xl font-semibold text-navy">API Keys</h1>
-            <p className="m-0 mb-6 text-sm text-muted-ink">
-                管理用于调用 Silk Road AI 的访问密钥。撤销后立即失效。
-            </p>
+            <p className="m-0 mb-6 text-sm text-muted-ink">管理用于调用 Silk Road AI 的访问密钥。撤销后立即失效。</p>
             <KeysList initialRows={rows} />
             {/* W7 D4 PR-R Item C — unified 调用示例 panel below the
              *  keys table replaces the per-row KeyHowtoPanel that PR-G

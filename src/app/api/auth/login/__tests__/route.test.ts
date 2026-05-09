@@ -75,9 +75,7 @@ describe('POST /api/auth/login', () => {
         });
         mockCompare.mockResolvedValue(true);
 
-        const res = await POST(
-            makeReq({ email: 'Happy@SilkRoadAI.io', password: 'goodpass123' }),
-        );
+        const res = await POST(makeReq({ email: 'Happy@SilkRoadAI.io', password: 'goodpass123' }));
         const body = await res.json();
 
         expect(res.status).toBe(200);
@@ -168,9 +166,7 @@ describe('POST /api/auth/login', () => {
         });
         mockCompare.mockResolvedValue(false);
 
-        const res = await POST(
-            makeReq({ email: 'wrongpass@silkroadai.io', password: 'badguess' }),
-        );
+        const res = await POST(makeReq({ email: 'wrongpass@silkroadai.io', password: 'badguess' }));
         const body = await res.json();
 
         expect(res.status).toBe(401);
@@ -184,9 +180,7 @@ describe('POST /api/auth/login', () => {
         mockUserFindUnique.mockResolvedValue(null);
         mockCompare.mockResolvedValue(false);
 
-        const res = await POST(
-            makeReq({ email: 'ghost@silkroadai.io', password: 'whatever' }),
-        );
+        const res = await POST(makeReq({ email: 'ghost@silkroadai.io', password: 'whatever' }));
         const body = await res.json();
 
         expect(res.status).toBe(401);
@@ -208,9 +202,7 @@ describe('POST /api/auth/login', () => {
         });
         mockCompare.mockResolvedValue(true); // password is right but account is banned
 
-        const res = await POST(
-            makeReq({ email: 'banned@silkroadai.io', password: 'rightpass' }),
-        );
+        const res = await POST(makeReq({ email: 'banned@silkroadai.io', password: 'rightpass' }));
         const body = await res.json();
 
         expect(res.status).toBe(401);
@@ -220,9 +212,7 @@ describe('POST /api/auth/login', () => {
     });
 
     it('400 when body has malformed email', async () => {
-        const res = await POST(
-            makeReq({ email: 'not-an-email', password: 'goodpass123' }),
-        );
+        const res = await POST(makeReq({ email: 'not-an-email', password: 'goodpass123' }));
         const body = await res.json();
 
         expect(res.status).toBe(400);

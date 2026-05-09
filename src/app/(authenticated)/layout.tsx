@@ -49,20 +49,12 @@ async function getSessionUser() {
  *  fall back to /dashboard (the canonical landing) when absent. */
 async function getRequestedPath(): Promise<string> {
     const h = await headers();
-    const path =
-        h.get('x-invoke-path') ||
-        h.get('x-matched-path') ||
-        h.get('next-url') ||
-        '';
+    const path = h.get('x-invoke-path') || h.get('x-matched-path') || h.get('next-url') || '';
     if (path && path.startsWith('/') && !path.startsWith('//')) return path;
     return '/dashboard';
 }
 
-export default async function AuthenticatedLayout({
-    children,
-}: {
-    children: ReactNode;
-}) {
+export default async function AuthenticatedLayout({ children }: { children: ReactNode }) {
     const user = await getSessionUser();
     if (!user) {
         const next = await getRequestedPath();
@@ -77,9 +69,7 @@ export default async function AuthenticatedLayout({
                 <div className="flex items-center justify-between gap-4 px-6 py-3.5">
                     <div className="flex items-center gap-3">
                         <Logo variant="primary-flat" size={28} />
-                        <p className="hidden md:block m-0 text-xs text-minor-ink">
-                            Connecting Global Intelligence.
-                        </p>
+                        <p className="hidden md:block m-0 text-xs text-minor-ink">Connecting Global Intelligence.</p>
                     </div>
                     <div className="flex items-center gap-3">
                         <span

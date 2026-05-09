@@ -66,10 +66,10 @@ export default async function PayResultPage({
             <main style={containerStyle}>
                 <div style={cardStyle}>
                     <h1 style={{ margin: 0, fontSize: 18, color: '#0a1535' }}>访问无效</h1>
-                    <p style={{ margin: '12px 0 0', fontSize: 13, color: '#5a6478' }}>
-                        缺少订单参数。
-                    </p>
-                    <Link href="/" style={buttonStyle}>返回首页</Link>
+                    <p style={{ margin: '12px 0 0', fontSize: 13, color: '#5a6478' }}>缺少订单参数。</p>
+                    <Link href="/" style={buttonStyle}>
+                        返回首页
+                    </Link>
                 </div>
             </main>
         );
@@ -88,7 +88,9 @@ export default async function PayResultPage({
                     <p style={{ margin: '12px 0 0', fontSize: 13, color: '#5a6478' }}>
                         未找到该订单。如已付款请联系客服:微信 Globe_Ads。
                     </p>
-                    <Link href="/" style={buttonStyle}>返回首页</Link>
+                    <Link href="/" style={buttonStyle}>
+                        返回首页
+                    </Link>
                 </div>
             </main>
         );
@@ -120,10 +122,7 @@ export default async function PayResultPage({
                           ? `¥${Number(order.amount).toFixed(2)} 已确认,正在到账,通常几秒内完成。`
                           : '订单状态异常,如已付款请联系客服:微信 Globe_Ads。'}
                 </p>
-                <Link
-                    href={success || processing ? '/balance' : '/'}
-                    style={buttonStyle}
-                >
+                <Link href={success || processing ? '/balance' : '/'} style={buttonStyle}>
                     {success || processing ? '返回 /balance' : '返回首页'}
                 </Link>
             </div>

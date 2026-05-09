@@ -26,8 +26,7 @@ import { ModelsBrowser } from './models-browser';
 export const revalidate = 60;
 export const metadata = {
     title: '模型清单 — Silk Road AI',
-    description:
-        'Silk Road AI 当前接入的全部模型(对话 / 视觉 / 音频 / 嵌入 / 图像生成),按厂商分组检索。',
+    description: 'Silk Road AI 当前接入的全部模型(对话 / 视觉 / 音频 / 嵌入 / 图像生成),按厂商分组检索。',
 };
 
 export default async function ModelsPage() {
@@ -62,9 +61,7 @@ export default async function ModelsPage() {
                     </Link>
                     <div className="flex items-center gap-3">
                         <Logo variant="primary-flat" size={28} />
-                        <p className="m-0 text-xs text-minor-ink">
-                            Connecting Global Intelligence.
-                        </p>
+                        <p className="m-0 text-xs text-minor-ink">Connecting Global Intelligence.</p>
                     </div>
                     <h1 className="m-0 text-3xl font-semibold text-navy">模型清单</h1>
                     <p className="m-0 text-sm text-muted-ink leading-relaxed max-w-3xl">
@@ -80,11 +77,7 @@ export default async function ModelsPage() {
                 {fetchErr ? (
                     <FormError severity="banner">当前无法获取模型清单,请稍后重试。</FormError>
                 ) : (
-                    <ModelsBrowser
-                        grouped={grouped}
-                        totalModels={totalModels}
-                        vendorCount={vendorCount}
-                    />
+                    <ModelsBrowser grouped={grouped} totalModels={totalModels} vendorCount={vendorCount} />
                 )}
             </div>
         </main>

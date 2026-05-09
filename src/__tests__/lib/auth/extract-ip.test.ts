@@ -29,15 +29,11 @@ describe('extractClientIP', () => {
     it('takes the first hop from a multi-hop x-forwarded-for', () => {
         // Caddy → upstream proxy → us. The leftmost value is the actual
         // client; subsequent ones are intermediate proxies.
-        expect(
-            extractClientIP(makeReq({ 'x-forwarded-for': '203.0.113.7, 10.0.0.1, 10.0.0.2' })),
-        ).toBe('203.0.113.7');
+        expect(extractClientIP(makeReq({ 'x-forwarded-for': '203.0.113.7, 10.0.0.1, 10.0.0.2' }))).toBe('203.0.113.7');
     });
 
     it('trims whitespace around the first hop', () => {
-        expect(extractClientIP(makeReq({ 'x-forwarded-for': '  1.2.3.4  , 10.0.0.1' }))).toBe(
-            '1.2.3.4',
-        );
+        expect(extractClientIP(makeReq({ 'x-forwarded-for': '  1.2.3.4  , 10.0.0.1' }))).toBe('1.2.3.4');
     });
 
     it('falls back to x-real-ip when x-forwarded-for absent', () => {
@@ -45,11 +41,7 @@ describe('extractClientIP', () => {
     });
 
     it('prefers x-forwarded-for over x-real-ip when both are present', () => {
-        expect(
-            extractClientIP(
-                makeReq({ 'x-forwarded-for': '1.2.3.4', 'x-real-ip': '5.6.7.8' }),
-            ),
-        ).toBe('1.2.3.4');
+        expect(extractClientIP(makeReq({ 'x-forwarded-for': '1.2.3.4', 'x-real-ip': '5.6.7.8' }))).toBe('1.2.3.4');
     });
 
     it('handles full IPv6 address (39 chars, fits in 45-char budget)', () => {

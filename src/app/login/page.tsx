@@ -71,7 +71,7 @@ export default async function LoginPage({
 
     const oauthMessage = oauthError
         ? (FRIENDLY_OAUTH_ERROR[oauthError] ??
-            `OAuth 登录失败:${oauthError.length > 60 ? oauthError.slice(0, 60) + '…' : oauthError}`)
+          `OAuth 登录失败:${oauthError.length > 60 ? oauthError.slice(0, 60) + '…' : oauthError}`)
         : null;
 
     return (

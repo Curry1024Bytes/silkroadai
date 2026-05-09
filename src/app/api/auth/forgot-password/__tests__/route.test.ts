@@ -87,9 +87,7 @@ describe('POST /api/auth/forgot-password', () => {
     it("200 when email doesn't exist: NO token, NO email", async () => {
         mockUserFindUnique.mockResolvedValue(null);
 
-        const res = await POST(
-            makeReq({ email: 'ghost@silkroadai.io' }),
-        );
+        const res = await POST(makeReq({ email: 'ghost@silkroadai.io' }));
         const body = await res.json();
 
         expect(res.status).toBe(200);

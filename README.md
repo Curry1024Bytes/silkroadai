@@ -33,6 +33,7 @@
 ## 历史
 
 本仓库 fork 自 [touwaeriol/sub2apipay](https://github.com/touwaeriol/sub2apipay)(已归档)。
+
 - W1 阶段:实验性走 LiteLLM Portal 路线,完成 7 个 commit(commit hash `22c3866` 至 `6fdc9b1`)
 - W1 后:经评估改走 B3 路线(new-api 后端 + 自写前端)
 - W2 阶段:迁移 LiteLLM client 到 new-api client,数据库 schema 调整
@@ -97,13 +98,13 @@ pnpm dev
 Portal 调 new-api 的所有调用封装在 `src/lib/newapi/client.ts`。
 关键操作:
 
-| 客户操作 | Portal 内部逻辑 | new-api API |
-|---|---|---|
-| 注册 | 创建 portal user → 调 new-api 创建 user → 创建 token | `POST /api/user/register` + `POST /api/token/` |
-| 登录 | 验证 portal user → 签发 JWT cookie | (不调 new-api,本地 auth) |
-| 充值 | 易支付通知 → portal 记账 → 调 new-api 加额度 | `POST /api/topup/` |
-| 看余额 | 调 new-api 查 user 余额 | `GET /api/user/self` |
-| 看用量 | 调 new-api 查 logs | `GET /api/log/` |
+| 客户操作 | Portal 内部逻辑                                      | new-api API                                    |
+| -------- | ---------------------------------------------------- | ---------------------------------------------- |
+| 注册     | 创建 portal user → 调 new-api 创建 user → 创建 token | `POST /api/user/register` + `POST /api/token/` |
+| 登录     | 验证 portal user → 签发 JWT cookie                   | (不调 new-api,本地 auth)                       |
+| 充值     | 易支付通知 → portal 记账 → 调 new-api 加额度         | `POST /api/topup/`                             |
+| 看余额   | 调 new-api 查 user 余额                              | `GET /api/user/self`                           |
+| 看用量   | 调 new-api 查 logs                                   | `GET /api/log/`                                |
 
 ---
 

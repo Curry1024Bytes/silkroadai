@@ -33,10 +33,7 @@ describe('<ResetPasswordForm /> fired-guard pattern (W4-2 D7 sweep)', () => {
     // so we verify the guard is at least structurally present in the file.
     // If a future refactor removes it, this test fails loudly.
     it('source contains useRef + fired guard before async work', () => {
-        const path = join(
-            process.cwd(),
-            'src/app/reset-password/reset-password-form.tsx',
-        );
+        const path = join(process.cwd(), 'src/app/reset-password/reset-password-form.tsx');
         const source = readFileSync(path, 'utf-8');
         // Imports useRef
         expect(source).toMatch(/import\s*{[^}]*\buseRef\b/);

@@ -28,12 +28,7 @@ import { Logo } from '@/components/brand/Logo';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 
-export default function ErrorBoundary({
-    error,
-}: {
-    error: Error & { digest?: string };
-    reset: () => void;
-}) {
+export default function ErrorBoundary({ error }: { error: Error & { digest?: string }; reset: () => void }) {
     // `digest` is Next's server-side error fingerprint, useful for ops
     // to grep logs. Show it small + monospace so a customer who pings
     // support can paste it. Won't leak secrets — Next strips messages
@@ -53,9 +48,7 @@ export default function ErrorBoundary({
                     500
                 </p>
                 <h1 className="m-0 mb-2 text-xl font-semibold text-navy">服务暂不可用</h1>
-                <p className="m-0 mb-6 text-sm text-muted-ink leading-relaxed">
-                    我们已收到错误,请稍后重试。
-                </p>
+                <p className="m-0 mb-6 text-sm text-muted-ink leading-relaxed">我们已收到错误,请稍后重试。</p>
                 <div className="flex flex-col sm:flex-row gap-2 justify-center">
                     <Button href="/" variant="primary" size="md">
                         返回首页
@@ -78,10 +71,7 @@ export default function ErrorBoundary({
                         Global_Ads
                     </code>{' '}
                     · 邮箱{' '}
-                    <a
-                        href="mailto:support@silkroadai.io"
-                        className="text-navy no-underline hover:text-brand-accent"
-                    >
+                    <a href="mailto:support@silkroadai.io" className="text-navy no-underline hover:text-brand-accent">
                         support@silkroadai.io
                     </a>
                 </p>

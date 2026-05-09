@@ -26,10 +26,7 @@ export async function GET() {
         console.error(
             '[oauth/google/start] missing env: GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_REDIRECT_URI must both be set',
         );
-        return NextResponse.json(
-            { error: 'oauth_not_configured' },
-            { status: 503 },
-        );
+        return NextResponse.json({ error: 'oauth_not_configured' }, { status: 503 });
     }
 
     const state = generateState();

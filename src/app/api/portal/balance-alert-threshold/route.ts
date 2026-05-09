@@ -43,10 +43,7 @@ export async function POST(req: NextRequest) {
 
     const parsed = ThresholdSchema.safeParse(body);
     if (!parsed.success) {
-        return NextResponse.json(
-            { error: 'invalid_threshold', details: parsed.error.flatten() },
-            { status: 400 },
-        );
+        return NextResponse.json({ error: 'invalid_threshold', details: parsed.error.flatten() }, { status: 400 });
     }
 
     const { threshold } = parsed.data;

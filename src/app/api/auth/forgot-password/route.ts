@@ -14,7 +14,11 @@ const THROTTLE_WINDOW_MINUTES = 5;
 const TOKEN_BYTES = 32;
 
 const ForgotPasswordSchema = z.object({
-    email: z.string().email().max(255).transform((s) => s.trim().toLowerCase()),
+    email: z
+        .string()
+        .email()
+        .max(255)
+        .transform((s) => s.trim().toLowerCase()),
 });
 
 function hashToken(rawToken: string): string {

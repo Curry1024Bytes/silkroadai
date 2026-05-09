@@ -64,9 +64,7 @@ export default async function DashboardPage() {
     // Provision sets both atomically (W2 D6 provisionNewCustomer), so the
     // null guard is just type narrowing for TS, not a real edge case.
     const aggArgsBase: { portalUserId: string; newapiUserId: number; newapiUsername: string } | null =
-        newapiUserId != null && newapiUsername != null
-            ? { portalUserId: user.id, newapiUserId, newapiUsername }
-            : null;
+        newapiUserId != null && newapiUsername != null ? { portalUserId: user.id, newapiUserId, newapiUsername } : null;
 
     // Four parallel fetches via allSettled — a single new-api blip on one
     // card doesn't take out the whole page. Per-card error states render
@@ -110,9 +108,7 @@ export default async function DashboardPage() {
             <h1 className="m-0 mb-2 text-2xl font-semibold text-navy">
                 欢迎,{user.nickname || user.email.split('@')[0]}
             </h1>
-            <p className="m-0 mb-6 text-sm text-muted-ink">
-                这是您的客户后台。在这里管理 API Keys、查看余额与用量。
-            </p>
+            <p className="m-0 mb-6 text-sm text-muted-ink">这是您的客户后台。在这里管理 API Keys、查看余额与用量。</p>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
                 {/* Card 1: Current balance */}
@@ -198,14 +194,9 @@ export default async function DashboardPage() {
                         {top3 && top3.byModel.length > 0 ? (
                             <ul className="m-0 mt-1.5 p-0 list-none flex flex-col gap-1.5">
                                 {top3.byModel.slice(0, 3).map((m) => {
-                                    const pct = top3.totalUsedQuota
-                                        ? (m.quota / top3.totalUsedQuota) * 100
-                                        : 0;
+                                    const pct = top3.totalUsedQuota ? (m.quota / top3.totalUsedQuota) * 100 : 0;
                                     return (
-                                        <li
-                                            key={m.model}
-                                            className="flex justify-between gap-2 text-xs text-ink"
-                                        >
+                                        <li key={m.model} className="flex justify-between gap-2 text-xs text-ink">
                                             <span
                                                 className="font-mono overflow-hidden text-ellipsis whitespace-nowrap flex-1"
                                                 title={m.model}

@@ -47,8 +47,6 @@ describe('<RegisterForm /> footer CTA → /login (W7 D4 PR-I)', () => {
 
     it('applies the muted-ink + brand-accent hover style tokens', () => {
         const html = renderToString(<RegisterForm />);
-        expect(html).toMatch(
-            /<a[^>]*href="\/login"[^>]*class="[^"]*text-muted-ink[^"]*hover:text-brand-accent/,
-        );
+        expect(html).toMatch(/<a[^>]*href="\/login"[^>]*class="[^"]*text-muted-ink[^"]*hover:text-brand-accent/);
     });
 });

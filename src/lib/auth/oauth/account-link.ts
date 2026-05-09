@@ -119,10 +119,7 @@ async function createUserFromIdentity(identity: OAuthIdentity): Promise<string |
                 deleteErr,
             );
         });
-        console.error(
-            `[oauth/account-link] provisionNewCustomer failed for ${identity.email}:`,
-            provisionErr,
-        );
+        console.error(`[oauth/account-link] provisionNewCustomer failed for ${identity.email}:`, provisionErr);
         return null;
     }
 
@@ -146,9 +143,10 @@ async function createUserFromIdentity(identity: OAuthIdentity): Promise<string |
             }),
         ]);
     } catch (linkageErr) {
-        const tokenPreview = typeof provisioned.newapi_token_value === 'string'
-            ? `${provisioned.newapi_token_value.slice(0, 12)}...`
-            : `<${typeof provisioned.newapi_token_value}>`;
+        const tokenPreview =
+            typeof provisioned.newapi_token_value === 'string'
+                ? `${provisioned.newapi_token_value.slice(0, 12)}...`
+                : `<${typeof provisioned.newapi_token_value}>`;
         console.error(
             `[oauth/account-link] new-api provision succeeded for ${user.id} ` +
                 `(newapi_user_id=${provisioned.newapi_user_id}, ` +
@@ -159,9 +157,9 @@ async function createUserFromIdentity(identity: OAuthIdentity): Promise<string |
         await deleteNewApiUser(provisioned.newapi_user_id).catch((err) =>
             console.error(`[oauth/account-link] new-api user cleanup failed for ${provisioned.newapi_user_id}:`, err),
         );
-        await prisma.user.delete({ where: { id: user.id } }).catch((err) =>
-            console.error(`[oauth/account-link] portal user cleanup failed for ${user.id}:`, err),
-        );
+        await prisma.user
+            .delete({ where: { id: user.id } })
+            .catch((err) => console.error(`[oauth/account-link] portal user cleanup failed for ${user.id}:`, err));
         return null;
     }
 

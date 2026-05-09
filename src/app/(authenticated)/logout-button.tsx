@@ -32,13 +32,7 @@ export function LogoutButton() {
     }
 
     return (
-        <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={handleLogout}
-            loading={loggingOut}
-        >
+        <Button type="button" variant="ghost" size="sm" onClick={handleLogout} loading={loggingOut}>
             {loggingOut ? '退出中…' : '退出'}
         </Button>
     );

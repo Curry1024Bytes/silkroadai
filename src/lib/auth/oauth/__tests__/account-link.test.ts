@@ -202,8 +202,11 @@ describe('linkOrCreateOAuthUser (5-branch policy)', () => {
         mockUserFindUnique.mockResolvedValue(null);
         mockUserCreate.mockResolvedValue({ id: 'newid' });
         mockProvision.mockResolvedValue({
-            newapi_user_id: 1, newapi_username: 'c-newid', newapi_access_token: 'a',
-            newapi_token_id: 1, newapi_token_value: 'sk',
+            newapi_user_id: 1,
+            newapi_username: 'c-newid',
+            newapi_access_token: 'a',
+            newapi_token_id: 1,
+            newapi_token_value: 'sk',
         });
 
         const longName = 'x'.repeat(80);
@@ -236,9 +239,7 @@ describe('linkOrCreateOAuthUser (5-branch policy)', () => {
         });
 
         expect(result).toEqual({ ok: false, error: 'provisioning_failed' });
-        expect(mockUserDelete).toHaveBeenCalledWith(
-            expect.objectContaining({ where: { id: NEW_USER_ID } }),
-        );
+        expect(mockUserDelete).toHaveBeenCalledWith(expect.objectContaining({ where: { id: NEW_USER_ID } }));
     });
 
     it('Branch 4 rollback: linkage transaction failure → deletes new-api user AND portal user', async () => {
@@ -266,9 +267,7 @@ describe('linkOrCreateOAuthUser (5-branch policy)', () => {
 
         expect(result).toEqual({ ok: false, error: 'provisioning_failed' });
         expect(mockDeleteUser).toHaveBeenCalledWith(99); // new-api side
-        expect(mockUserDelete).toHaveBeenCalledWith(
-            expect.objectContaining({ where: { id: NEW_USER_ID } }),
-        );
+        expect(mockUserDelete).toHaveBeenCalledWith(expect.objectContaining({ where: { id: NEW_USER_ID } }));
     });
 
     it('Branch 5 (link conflict): oauth_account.create throws → link_conflict', async () => {

@@ -7,14 +7,14 @@ export type ValidityUnit = 'day' | 'week' | 'month';
  * - month: 从 fromDate 到 value 个月后同一天的天数差
  */
 export function computeValidityDays(value: number, unit: ValidityUnit, fromDate?: Date): number {
-  if (unit === 'day') return value;
-  if (unit === 'week') return value * 7;
+    if (unit === 'day') return value;
+    if (unit === 'week') return value * 7;
 
-  // month: 计算到 value 个月后同一天的天数差
-  const from = fromDate ?? new Date();
-  const target = new Date(from);
-  target.setMonth(target.getMonth() + value);
-  return Math.round((target.getTime() - from.getTime()) / (1000 * 60 * 60 * 24));
+    // month: 计算到 value 个月后同一天的天数差
+    const from = fromDate ?? new Date();
+    const target = new Date(from);
+    target.setMonth(target.getMonth() + value);
+    return Math.round((target.getTime() - from.getTime()) / (1000 * 60 * 60 * 24));
 }
 
 /**
@@ -24,14 +24,14 @@ export function computeValidityDays(value: number, unit: ValidityUnit, fromDate?
  * - unit=day, value=30 → 30天 / 30 Days
  */
 export function formatValidityLabel(value: number, unit: ValidityUnit, locale: 'zh' | 'en'): string {
-  const unitLabels: Record<ValidityUnit, { zh: string; en: string; enPlural: string }> = {
-    day: { zh: '天', en: 'Day', enPlural: 'Days' },
-    week: { zh: '周', en: 'Week', enPlural: 'Weeks' },
-    month: { zh: '月', en: 'Month', enPlural: 'Months' },
-  };
-  const u = unitLabels[unit];
-  if (locale === 'zh') return `${value}${u.zh}`;
-  return `${value} ${value === 1 ? u.en : u.enPlural}`;
+    const unitLabels: Record<ValidityUnit, { zh: string; en: string; enPlural: string }> = {
+        day: { zh: '天', en: 'Day', enPlural: 'Days' },
+        week: { zh: '周', en: 'Week', enPlural: 'Weeks' },
+        month: { zh: '月', en: 'Month', enPlural: 'Months' },
+    };
+    const u = unitLabels[unit];
+    if (locale === 'zh') return `${value}${u.zh}`;
+    return `${value} ${value === 1 ? u.en : u.enPlural}`;
 }
 
 /**
@@ -41,14 +41,14 @@ export function formatValidityLabel(value: number, unit: ValidityUnit, locale: '
  * - unit=day, value=30 → /30天 / /30d
  */
 export function formatValiditySuffix(value: number, unit: ValidityUnit, locale: 'zh' | 'en'): string {
-  const unitLabels: Record<ValidityUnit, { zh: string; en: string }> = {
-    day: { zh: '天', en: 'd' },
-    week: { zh: '周', en: 'wk' },
-    month: { zh: '月', en: 'mo' },
-  };
-  const u = unitLabels[unit];
-  if (locale === 'zh') return `/${value}${u.zh}`;
-  return `/${value}${u.en}`;
+    const unitLabels: Record<ValidityUnit, { zh: string; en: string }> = {
+        day: { zh: '天', en: 'd' },
+        week: { zh: '周', en: 'wk' },
+        month: { zh: '月', en: 'mo' },
+    };
+    const u = unitLabels[unit];
+    if (locale === 'zh') return `/${value}${u.zh}`;
+    return `/${value}${u.en}`;
 }
 
 /**
@@ -58,11 +58,11 @@ export function formatValiditySuffix(value: number, unit: ValidityUnit, locale: 
  * - unit=month → "1 月"
  */
 export function formatValidityDisplay(value: number, unit: ValidityUnit, locale: 'zh' | 'en'): string {
-  const unitLabels: Record<ValidityUnit, { zh: string; en: string }> = {
-    day: { zh: '天', en: 'day(s)' },
-    week: { zh: '周', en: 'week(s)' },
-    month: { zh: '月', en: 'month(s)' },
-  };
-  const label = locale === 'zh' ? unitLabels[unit].zh : unitLabels[unit].en;
-  return `${value} ${label}`;
+    const unitLabels: Record<ValidityUnit, { zh: string; en: string }> = {
+        day: { zh: '天', en: 'day(s)' },
+        week: { zh: '周', en: 'week(s)' },
+        month: { zh: '月', en: 'month(s)' },
+    };
+    const label = locale === 'zh' ? unitLabels[unit].zh : unitLabels[unit].en;
+    return `${value} ${label}`;
 }

@@ -28,10 +28,7 @@ export function VerifyEmailRunner({ token }: { token: string }) {
                     setStatus({ phase: 'success' });
                 } else {
                     const data = await r.json().catch(() => ({}));
-                    const reason =
-                        data?.error === 'invalid_or_expired_token'
-                            ? 'invalid_or_expired_token'
-                            : 'unknown';
+                    const reason = data?.error === 'invalid_or_expired_token' ? 'invalid_or_expired_token' : 'unknown';
                     setStatus({ phase: 'failure', reason });
                 }
             } catch {
@@ -67,9 +64,7 @@ export function VerifyEmailRunner({ token }: { token: string }) {
     return (
         <div>
             <p style={{ color: 'var(--color-status-error-text)' }}>{msg}</p>
-            <p style={{ fontSize: 13, color: '#5a6478' }}>
-                登录后可在客户后台重新发送验证邮件。
-            </p>
+            <p style={{ fontSize: 13, color: '#5a6478' }}>登录后可在客户后台重新发送验证邮件。</p>
         </div>
     );
 }

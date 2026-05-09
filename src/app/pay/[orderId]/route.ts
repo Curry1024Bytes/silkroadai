@@ -15,47 +15,47 @@ const ALIPAY_APP_UA_PATTERN = /AlipayClient/i;
 type ShortLinkOrderStatus = OrderStatusLike & { id: string };
 
 function getUserAgent(request: NextRequest): string {
-  return request.headers.get('user-agent') || '';
+    return request.headers.get('user-agent') || '';
 }
 
 function isMobileRequest(request: NextRequest): boolean {
-  return MOBILE_UA_PATTERN.test(getUserAgent(request));
+    return MOBILE_UA_PATTERN.test(getUserAgent(request));
 }
 
 function isAlipayAppRequest(request: NextRequest): boolean {
-  return ALIPAY_APP_UA_PATTERN.test(getUserAgent(request));
+    return ALIPAY_APP_UA_PATTERN.test(getUserAgent(request));
 }
 
 function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+    return value
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
 }
 
 function buildAppUrl(pathname = '/'): string {
-  return new URL(pathname, getEnv().NEXT_PUBLIC_APP_URL).toString();
+    return new URL(pathname, getEnv().NEXT_PUBLIC_APP_URL).toString();
 }
 
 function buildResultUrl(orderId: string): string {
-  return buildOrderResultUrl(getEnv().NEXT_PUBLIC_APP_URL, orderId);
+    return buildOrderResultUrl(getEnv().NEXT_PUBLIC_APP_URL, orderId);
 }
 
 function serializeScriptString(value: string): string {
-  return JSON.stringify(value).replace(/</g, '\\u003c');
+    return JSON.stringify(value).replace(/</g, '\\u003c');
 }
 
 function getStatusDisplay(order: OrderStatusLike) {
-  return getOrderDisplayState({
-    status: order.status,
-    ...deriveOrderState(order),
-  });
+    return getOrderDisplayState({
+        status: order.status,
+        ...deriveOrderState(order),
+    });
 }
 
 function renderHtml(title: string, body: string, headExtra = ''): string {
-  return `<!DOCTYPE html>
+    return `<!DOCTYPE html>
 <html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
@@ -173,51 +173,51 @@ function renderHtml(title: string, body: string, headExtra = ''): string {
 }
 
 function renderErrorPage(title: string, message: string, orderId?: string, status = 400): NextResponse {
-  const html = renderHtml(
-    title,
-    `<main class="card">
+    const html = renderHtml(
+        title,
+        `<main class="card">
       <div class="icon">!</div>
       <h1>${escapeHtml(title)}</h1>
       <p>${escapeHtml(message)}</p>
       ${orderId ? `<div class="order">订单号：${escapeHtml(orderId)}</div>` : ''}
       <a class="button secondary" href="${escapeHtml(buildAppUrl('/'))}">返回支付首页</a>
     </main>`,
-  );
+    );
 
-  return new NextResponse(html, {
-    status,
-    headers: {
-      'Content-Type': 'text/html; charset=utf-8',
-      'Cache-Control': 'no-store, no-cache, must-revalidate',
-    },
-  });
+    return new NextResponse(html, {
+        status,
+        headers: {
+            'Content-Type': 'text/html; charset=utf-8',
+            'Cache-Control': 'no-store, no-cache, must-revalidate',
+        },
+    });
 }
 
 function renderStatusPage(order: ShortLinkOrderStatus): NextResponse {
-  const display = getStatusDisplay(order);
-  const html = renderHtml(
-    display.label,
-    `<main class="card">
+    const display = getStatusDisplay(order);
+    const html = renderHtml(
+        display.label,
+        `<main class="card">
       <div class="icon">${escapeHtml(display.icon)}</div>
       <h1>${escapeHtml(display.label)}</h1>
       <p>${escapeHtml(display.message)}</p>
       <div class="order">订单号：${escapeHtml(order.id)}</div>
       <a class="button secondary" href="${escapeHtml(buildResultUrl(order.id))}">查看订单结果</a>
     </main>`,
-  );
+    );
 
-  return new NextResponse(html, {
-    headers: {
-      'Content-Type': 'text/html; charset=utf-8',
-      'Cache-Control': 'no-store, no-cache, must-revalidate',
-    },
-  });
+    return new NextResponse(html, {
+        headers: {
+            'Content-Type': 'text/html; charset=utf-8',
+            'Cache-Control': 'no-store, no-cache, must-revalidate',
+        },
+    });
 }
 
 function renderRedirectPage(orderId: string, payUrl: string): NextResponse {
-  const html = renderHtml(
-    '正在跳转支付宝',
-    `<main class="card">
+    const html = renderHtml(
+        '正在跳转支付宝',
+        `<main class="card">
       <div class="icon">支</div>
       <h1>正在拉起支付宝</h1>
       <p>请稍候，系统正在自动跳转到支付宝完成支付。</p>
@@ -235,87 +235,87 @@ function renderRedirectPage(orderId: string, payUrl: string): NextResponse {
         }, 800);
       </script>
     </main>`,
-    `<noscript><meta http-equiv="refresh" content="0;url=${escapeHtml(payUrl)}" /></noscript>`,
-  );
+        `<noscript><meta http-equiv="refresh" content="0;url=${escapeHtml(payUrl)}" /></noscript>`,
+    );
 
-  return new NextResponse(html, {
-    headers: {
-      'Content-Type': 'text/html; charset=utf-8',
-      'Cache-Control': 'no-store, no-cache, must-revalidate',
-    },
-  });
+    return new NextResponse(html, {
+        headers: {
+            'Content-Type': 'text/html; charset=utf-8',
+            'Cache-Control': 'no-store, no-cache, must-revalidate',
+        },
+    });
 }
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ orderId: string }> }) {
-  const { orderId } = await params;
+    const { orderId } = await params;
 
-  const order = await prisma.order.findUnique({
-    where: { id: orderId },
-    select: {
-      id: true,
-      amount: true,
-      payAmount: true,
-      paymentType: true,
-      status: true,
-      expiresAt: true,
-      paidAt: true,
-      completedAt: true,
-      orderType: true,
-      plan: { select: { productName: true, name: true } },
-      subscriptionGroupId: true,
-    },
-  });
-
-  if (!order) {
-    return renderErrorPage('订单不存在', '未找到对应订单，请确认二维码是否正确', orderId, 404);
-  }
-
-  if (order.paymentType !== 'alipay_direct') {
-    return renderErrorPage('支付方式不匹配', '该订单不是支付宝直连订单，无法通过当前链接支付', orderId, 400);
-  }
-
-  if (order.status !== ORDER_STATUS.PENDING) {
-    return renderStatusPage(order);
-  }
-
-  if (order.expiresAt.getTime() <= Date.now()) {
-    return renderStatusPage({
-      id: order.id,
-      status: ORDER_STATUS.EXPIRED,
-      paidAt: order.paidAt,
-      completedAt: order.completedAt,
+    const order = await prisma.order.findUnique({
+        where: { id: orderId },
+        select: {
+            id: true,
+            amount: true,
+            payAmount: true,
+            paymentType: true,
+            status: true,
+            expiresAt: true,
+            paidAt: true,
+            completedAt: true,
+            orderType: true,
+            plan: { select: { productName: true, name: true } },
+            subscriptionGroupId: true,
+        },
     });
-  }
 
-  const payAmount = Number(order.payAmount ?? order.amount);
-  if (!Number.isFinite(payAmount) || payAmount <= 0) {
-    return renderErrorPage('订单金额异常', '订单金额无效，请返回原页面重新发起支付', order.id, 500);
-  }
-
-  // 构建支付商品名称（与 order/service.ts 逻辑保持一致）
-  let subject: string;
-  if (order.orderType === 'subscription' && order.plan) {
-    subject = order.plan.productName || `Sub2API 订阅 ${order.plan.name}`;
-  } else {
-    const nameConfigs = await getSystemConfigs(['PRODUCT_NAME_PREFIX', 'PRODUCT_NAME_SUFFIX']);
-    const prefix = nameConfigs['PRODUCT_NAME_PREFIX']?.trim();
-    const suffix = nameConfigs['PRODUCT_NAME_SUFFIX']?.trim();
-    if (prefix || suffix) {
-      subject = `${prefix || ''} ${payAmount.toFixed(2)} ${suffix || ''}`.trim();
-    } else {
-      subject = `Sub2API ${payAmount.toFixed(2)} CNY`;
+    if (!order) {
+        return renderErrorPage('订单不存在', '未找到对应订单，请确认二维码是否正确', orderId, 404);
     }
-  }
 
-  const env = getEnv();
-  const payUrl = buildAlipayPaymentUrl({
-    orderId: order.id,
-    amount: payAmount,
-    subject,
-    notifyUrl: env.ALIPAY_NOTIFY_URL,
-    returnUrl: isAlipayAppRequest(request) ? null : buildResultUrl(order.id),
-    isMobile: isMobileRequest(request),
-  });
+    if (order.paymentType !== 'alipay_direct') {
+        return renderErrorPage('支付方式不匹配', '该订单不是支付宝直连订单，无法通过当前链接支付', orderId, 400);
+    }
 
-  return renderRedirectPage(order.id, payUrl);
+    if (order.status !== ORDER_STATUS.PENDING) {
+        return renderStatusPage(order);
+    }
+
+    if (order.expiresAt.getTime() <= Date.now()) {
+        return renderStatusPage({
+            id: order.id,
+            status: ORDER_STATUS.EXPIRED,
+            paidAt: order.paidAt,
+            completedAt: order.completedAt,
+        });
+    }
+
+    const payAmount = Number(order.payAmount ?? order.amount);
+    if (!Number.isFinite(payAmount) || payAmount <= 0) {
+        return renderErrorPage('订单金额异常', '订单金额无效，请返回原页面重新发起支付', order.id, 500);
+    }
+
+    // 构建支付商品名称（与 order/service.ts 逻辑保持一致）
+    let subject: string;
+    if (order.orderType === 'subscription' && order.plan) {
+        subject = order.plan.productName || `Sub2API 订阅 ${order.plan.name}`;
+    } else {
+        const nameConfigs = await getSystemConfigs(['PRODUCT_NAME_PREFIX', 'PRODUCT_NAME_SUFFIX']);
+        const prefix = nameConfigs['PRODUCT_NAME_PREFIX']?.trim();
+        const suffix = nameConfigs['PRODUCT_NAME_SUFFIX']?.trim();
+        if (prefix || suffix) {
+            subject = `${prefix || ''} ${payAmount.toFixed(2)} ${suffix || ''}`.trim();
+        } else {
+            subject = `Sub2API ${payAmount.toFixed(2)} CNY`;
+        }
+    }
+
+    const env = getEnv();
+    const payUrl = buildAlipayPaymentUrl({
+        orderId: order.id,
+        amount: payAmount,
+        subject,
+        notifyUrl: env.ALIPAY_NOTIFY_URL,
+        returnUrl: isAlipayAppRequest(request) ? null : buildResultUrl(order.id),
+        isMobile: isMobileRequest(request),
+    });
+
+    return renderRedirectPage(order.id, payUrl);
 }
