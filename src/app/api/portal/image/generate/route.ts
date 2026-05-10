@@ -44,9 +44,14 @@ import { findImageModel, IMAGE_COUNT_MAX, IMAGE_COUNT_MIN, IMAGE_MODEL_IDS, IMAG
 import { imageKey, uploadImage, getPublicUrl } from '@/lib/r2/client';
 
 export const runtime = 'nodejs';
-/** R2 upload + multi-image fetch ⇒ keep route from edge / streaming
- *  truncation. 60s should cover the slowest model. */
-export const maxDuration = 60;
+/** Vercel-only deadline (self-hosted Node ignores). Bumped from 60→300
+ *  in PR-T2 timeout fix (2026-05-09): post-launch smoke showed
+ *  gpt-image-2 sub2api/Codex queue can park a request at 60s exactly
+ *  (probed live, hit 60.3s on a tiny prompt) and Caddy's
+ *  read_timeout=60s on the portal upstream surfaced as a 504 to the
+ *  customer. New ceiling = 300s, paired with Caddy 300s + upstream
+ *  AbortSignal 180s below. */
+export const maxDuration = 300;
 
 const PROMPT_MAX_CHARS = 1000;
 
@@ -150,7 +155,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             size,
             response_format: 'url',
         }),
-        signal: AbortSignal.timeout(60_000),
+        // 180s — post-launch probe (2026-05-09) hit 60.3s on a tiny
+        // gpt-image-2 prompt and 47.5s on a 380-char 1024×1792
+        // generation. 60s was right at the edge; 180s gives headroom
+        // for sub2api/Codex queue spikes without keeping the customer
+        // hanging indefinitely on a genuinely stuck upstream.
+        signal: AbortSignal.timeout(180_000),
     }).catch((err) => {
         console.error(`[image/generate] upstream fetch threw for ${user.id}:`, err);
         return null;
@@ -209,8 +219,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         if (item.b64_json) {
             buf = Buffer.from(item.b64_json, 'base64');
         } else if (item.url) {
+            // 60s (was 30s pre-PR-T2 504 fix): some Google `url` responses
+            // serve via cold CDN edges that take 15-25s; bumping to 60s
+            // preserves margin without keeping the route hanging on a
+            // truly dead URL.
             const imgRes = await fetch(item.url, {
-                signal: AbortSignal.timeout(30_000),
+                signal: AbortSignal.timeout(60_000),
             });
             if (!imgRes.ok) {
                 throw new Error(`fetch ${item.url} → ${imgRes.status}`);

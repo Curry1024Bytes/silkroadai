@@ -199,6 +199,12 @@ export function ImageStudio({ initialLatest }: Props) {
                         disabled={generateDisabled}
                         onClick={handleGenerate}
                         errorMessage={genError}
+                        // PR-T2 504 fix — gpt-image-2 sub2api/Codex
+                        // queue parks requests at 30-60s. Surface the
+                        // expected wait so the customer doesn't bail.
+                        slowModelHint={
+                            modelId === 'gpt-image-2' ? 'GPT image-2 生成时间约 30-60 秒,请耐心等待' : undefined
+                        }
                     />
                 </div>
             </div>

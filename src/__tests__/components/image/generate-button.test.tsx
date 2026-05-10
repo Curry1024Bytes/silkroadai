@@ -30,4 +30,23 @@ describe('<GenerateButton />', () => {
         const html = renderToString(<GenerateButton state="idle" disabled onClick={() => {}} />);
         expect(html).toMatch(/<button[^>]*disabled=""/);
     });
+
+    it('loading + slowModelHint: surfaces the wait hint via aria-live (PR-T2 504 fix)', () => {
+        const html = renderToString(
+            <GenerateButton
+                state="loading"
+                onClick={() => {}}
+                slowModelHint="GPT image-2 生成时间约 30-60 秒,请耐心等待"
+            />,
+        );
+        expect(html).toContain('GPT image-2 生成时间约 30-60 秒');
+        expect(html).toMatch(/aria-live="polite"/);
+    });
+
+    it('idle + slowModelHint: hint is NOT shown outside loading state', () => {
+        const html = renderToString(
+            <GenerateButton state="idle" onClick={() => {}} slowModelHint="GPT image-2 生成时间约 30-60 秒" />,
+        );
+        expect(html).not.toContain('30-60 秒');
+    });
 });

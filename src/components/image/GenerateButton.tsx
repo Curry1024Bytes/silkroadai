@@ -19,9 +19,13 @@ interface Props {
     disabled?: boolean;
     onClick: () => void;
     errorMessage?: string;
+    /** Optional one-line hint shown only while `state === 'loading'`.
+     *  PR-T2 504 fix: surfaces "约需 30-60 秒" for slow models (gpt-image-2)
+     *  so customers don't think the studio is frozen. */
+    slowModelHint?: string;
 }
 
-export function GenerateButton({ state, disabled = false, onClick, errorMessage }: Props) {
+export function GenerateButton({ state, disabled = false, onClick, errorMessage, slowModelHint }: Props) {
     const isLoading = state === 'loading';
     const isError = state === 'error';
 
@@ -42,6 +46,11 @@ export function GenerateButton({ state, disabled = false, onClick, errorMessage 
             {isError && errorMessage ? (
                 <span role="alert" className="text-xs text-status-error-text max-w-[260px] text-right">
                     {errorMessage}
+                </span>
+            ) : null}
+            {isLoading && slowModelHint ? (
+                <span aria-live="polite" className="text-xs text-minor-ink max-w-[260px] text-right">
+                    {slowModelHint}
                 </span>
             ) : null}
         </div>
