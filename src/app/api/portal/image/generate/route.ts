@@ -50,6 +50,7 @@ import {
 } from '@/lib/image-gen/models';
 import { extractB64Images } from '@/lib/image-gen/extract-b64';
 import { imageKey, uploadImage, getPublicUrl } from '@/lib/r2/client';
+import { record as recordAnalytics } from '@/lib/analytics/recorder';
 
 export const runtime = 'nodejs';
 /** Vercel-only deadline (self-hosted Node ignores). Bumped from 60→300
@@ -124,15 +125,58 @@ class EmptyResponseError extends Error {
     }
 }
 
+/** Upstream content-policy / safety-filter rejection. Distinct from a
+ *  generic UpstreamError so the route handler can surface a friendly
+ *  modal ("调整 prompt") rather than a raw 502. Detected via:
+ *    - error.code matching content_policy_violation / moderation_blocked /
+ *      safety_filter_triggered / content_filter
+ *    - message containing NSFW / violation / unsafe / blocked / safety
+ *  Quota usually NOT charged when this fires — surface that to the
+ *  customer. */
+class ContentFilterError extends Error {
+    constructor(public readonly upstreamCode?: string) {
+        super('content_filter');
+        this.name = 'ContentFilterError';
+    }
+}
+
+/** Heuristic: is this UpstreamError actually a content-policy rejection?
+ *  Detection is best-effort across providers (OpenAI / Google / sub2api
+ *  rewrap). Bias toward false-positive rather than miss — the worst case
+ *  of a false positive is "调整 prompt" instead of a generic 502, which
+ *  is still a kinder message. */
+const CONTENT_FILTER_CODES = new Set([
+    'content_policy_violation',
+    'moderation_blocked',
+    'safety_filter_triggered',
+    'content_filter',
+    'image_safety_violations',
+]);
+const CONTENT_FILTER_MESSAGE_RE =
+    /\b(nsfw|safety[ _-]?filter|content[ _-]?(policy|filter)|moderation|violat|unsafe|blocked|disallow)\b/i;
+
+function isContentFilter(err: UpstreamError): boolean {
+    if (err.code && CONTENT_FILTER_CODES.has(err.code)) return true;
+    if (err.message && CONTENT_FILTER_MESSAGE_RE.test(err.message)) return true;
+    return false;
+}
+
 export async function POST(req: NextRequest): Promise<NextResponse> {
     const user = await getCurrentUser(req);
     if (!user) {
         return NextResponse.json({ error: 'invalid_credentials' }, { status: 401 });
     }
+    const startedAt = Date.now();
 
     // Rate limit before any heavy work.
     const rl = rateLimitCheck(user.id);
     if (!rl.allowed) {
+        console.log(`[image-generate] rate_limited user=${user.id} retry_after_ms=${rl.retryAfterMs}`);
+        await recordAnalytics({
+            userId: user.id,
+            eventType: 'image_rate_limited',
+            properties: { retry_after_ms: rl.retryAfterMs },
+        });
         return NextResponse.json(
             {
                 error: 'rate_limit_exceeded',
@@ -174,8 +218,15 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     try {
         systemToken = await getOrCreateSystemToken(user.id);
     } catch (err) {
+        const latencyMs = Date.now() - startedAt;
         if (err instanceof PortalSystemTokenError) {
             const status = err.code === 'user_not_provisioned' ? 500 : 503;
+            console.log(`[image-generate-fail] system_token user=${user.id} code=${err.code} latency_ms=${latencyMs}`);
+            await recordAnalytics({
+                userId: user.id,
+                eventType: 'image_generate_failed',
+                properties: { model, count, size, code: err.code, latency_ms: latencyMs },
+            });
             return NextResponse.json(
                 {
                     error: err.code,
@@ -187,7 +238,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
                 { status },
             );
         }
-        console.error(`[image/generate] unexpected system-token error for ${user.id}:`, err);
+        console.error(`[image-generate-fail] system_token user=${user.id} latency_ms=${latencyMs}:`, err);
         Sentry.captureException(err, { tags: { area: 'image-gen', user_id: user.id } });
         return NextResponse.json({ error: 'internal_error' }, { status: 500 });
     }
@@ -211,9 +262,48 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             userId: user.id,
         });
     } catch (err) {
+        const latencyMs = Date.now() - startedAt;
+        // Promote upstream errors that look like content-policy hits.
+        // Quota is typically NOT charged when this fires; surfaces as a
+        // friendly "调整 prompt" modal client-side (PR-T3 Item 3).
+        if (err instanceof UpstreamError && isContentFilter(err)) {
+            err = new ContentFilterError(err.code);
+        }
+        // EmptyResponseError on chat/completions = Gemini safety filter
+        // (200 with empty content). Same UX as ContentFilterError.
+        if (err instanceof EmptyResponseError) {
+            err = new ContentFilterError('upstream_empty_response');
+        }
+
+        if (err instanceof ContentFilterError) {
+            console.log(
+                `[image-generate] content_filter user=${user.id} model=${model} upstream_code=${err.upstreamCode ?? 'none'} latency_ms=${latencyMs}`,
+            );
+            await recordAnalytics({
+                userId: user.id,
+                eventType: 'image_content_filter',
+                properties: { model, count, size, upstream_code: err.upstreamCode ?? null, latency_ms: latencyMs },
+            });
+            return NextResponse.json(
+                {
+                    error: 'content_filter',
+                    message: '您的提示词触发了内容审核,本次生成已取消',
+                    quota_charged: false,
+                },
+                { status: 400 },
+            );
+        }
         if (err instanceof UpstreamError) {
             // Friendly remap for the common 403 insufficient_user_quota case
             if (err.code === 'insufficient_user_quota' || err.status === 403) {
+                console.log(
+                    `[image-generate] balance_shortfall user=${user.id} model=${model} latency_ms=${latencyMs}`,
+                );
+                await recordAnalytics({
+                    userId: user.id,
+                    eventType: 'image_balance_shortfall',
+                    properties: { model, count, size, latency_ms: latencyMs },
+                });
                 return NextResponse.json(
                     {
                         error: 'insufficient_user_quota',
@@ -223,28 +313,39 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
                     { status: 402 },
                 );
             }
+            console.log(
+                `[image-generate-fail] user=${user.id} model=${model} upstream_status=${err.status} upstream_code=${err.code ?? 'none'} latency_ms=${latencyMs}`,
+            );
+            await recordAnalytics({
+                userId: user.id,
+                eventType: 'image_generate_failed',
+                properties: { model, count, size, status: err.status, code: err.code ?? null, latency_ms: latencyMs },
+            });
             return NextResponse.json(
                 { error: err.code ?? 'upstream_error', message: err.message },
                 { status: err.status >= 500 ? 502 : err.status },
             );
         }
         if (err instanceof TransportError) {
-            console.error(`[image/generate] upstream fetch threw for ${user.id}:`, err);
+            console.error(
+                `[image-generate-fail] transport_error user=${user.id} model=${model} latency_ms=${latencyMs}:`,
+                err,
+            );
+            await recordAnalytics({
+                userId: user.id,
+                eventType: 'image_generate_failed',
+                properties: { model, count, size, code: 'transport_error', latency_ms: latencyMs },
+            });
             return NextResponse.json({ error: err.code }, { status: 502 });
         }
-        if (err instanceof EmptyResponseError) {
-            console.warn(`[image/generate] upstream empty response for ${user.id} model=${model}`);
-            return NextResponse.json(
-                {
-                    error: 'upstream_empty_response',
-                    message: '上游未返回图像,可能触发了内容安全过滤,请换 prompt 重试',
-                },
-                { status: 502 },
-            );
-        }
         // Unknown error class — bubble to 500
-        console.error(`[image/generate] unexpected upstream error for ${user.id}:`, err);
+        console.error(`[image-generate-fail] unexpected user=${user.id} latency_ms=${latencyMs}:`, err);
         Sentry.captureException(err, { tags: { area: 'image-gen', user_id: user.id } });
+        await recordAnalytics({
+            userId: user.id,
+            eventType: 'image_generate_failed',
+            properties: { model, count, size, code: 'internal_error', latency_ms: latencyMs },
+        });
         return NextResponse.json({ error: 'internal_error' }, { status: 500 });
     }
 
@@ -261,9 +362,18 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     try {
         uploadResults = await Promise.all(uploads);
     } catch (err) {
-        console.error(`[image/generate] R2 upload failed for ${user.id} gen=${generationId}:`, err);
+        const latencyMs = Date.now() - startedAt;
+        console.error(
+            `[image-generate-fail] r2_upload_failed user=${user.id} gen=${generationId} latency_ms=${latencyMs}:`,
+            err,
+        );
         Sentry.captureException(err, {
             tags: { area: 'image-gen', user_id: user.id, generation_id: generationId },
+        });
+        await recordAnalytics({
+            userId: user.id,
+            eventType: 'image_generate_failed',
+            properties: { model, count, size, code: 'r2_upload_failed', latency_ms: latencyMs },
         });
         return NextResponse.json(
             {
@@ -297,6 +407,23 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             expires_at: new Date(now.getTime() + RETENTION_MS),
         },
         select: { id: true, created_at: true, expires_at: true },
+    });
+
+    const totalLatencyMs = Date.now() - startedAt;
+    console.log(
+        `[image-generate] ok user=${user.id} model=${model} count=${count} size=${size} cost_usd=${costUsdPreview.toFixed(4)} latency_ms=${totalLatencyMs}`,
+    );
+    await recordAnalytics({
+        userId: user.id,
+        eventType: 'image_generated',
+        properties: {
+            generation_id: created.id,
+            model,
+            count,
+            size,
+            cost_usd: costUsdPreview,
+            latency_ms: totalLatencyMs,
+        },
     });
 
     return NextResponse.json({

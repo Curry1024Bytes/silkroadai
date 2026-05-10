@@ -297,7 +297,7 @@ describe('POST /api/portal/image/generate — upstream failure modes', () => {
         fetchSpy.mockRestore();
     });
 
-    it('502 when upstream returns empty data array', async () => {
+    it('400 content_filter when upstream returns empty data array (PR-T3 — was 502 pre-T3)', async () => {
         mockGetCurrentUser.mockResolvedValueOnce(USER);
         mockGetOrCreateSystemToken.mockResolvedValueOnce('sk-token');
 
@@ -308,7 +308,53 @@ describe('POST /api/portal/image/generate — upstream failure modes', () => {
         ).mockResolvedValue(upstream);
 
         const res = await POST(makeReq(VALID_BODY));
-        expect(res.status).toBe(502);
+        expect(res.status).toBe(400);
+        const body = await res.json();
+        expect(body.error).toBe('content_filter');
+        expect(body.quota_charged).toBe(false);
+
+        fetchSpy.mockRestore();
+    });
+
+    it('400 content_filter when upstream code is content_policy_violation (PR-T3)', async () => {
+        mockGetCurrentUser.mockResolvedValueOnce(USER);
+        mockGetOrCreateSystemToken.mockResolvedValueOnce('sk-token');
+
+        const upstream = makeOkResponse(
+            { error: { code: 'content_policy_violation', message: 'NSFW prompt rejected' } },
+            400,
+        );
+        const fetchSpy = (vi.spyOn as unknown as (...args: unknown[]) => ReturnType<typeof vi.fn>)(
+            globalThis,
+            'fetch',
+        ).mockResolvedValue(upstream);
+
+        const res = await POST(makeReq(VALID_BODY));
+        expect(res.status).toBe(400);
+        const body = await res.json();
+        expect(body.error).toBe('content_filter');
+
+        fetchSpy.mockRestore();
+    });
+
+    it('400 content_filter when upstream message contains NSFW/safety keyword (PR-T3 message regex)', async () => {
+        mockGetCurrentUser.mockResolvedValueOnce(USER);
+        mockGetOrCreateSystemToken.mockResolvedValueOnce('sk-token');
+
+        // No matching code, but message has the safety keyword → still detected.
+        const upstream = makeOkResponse(
+            { error: { code: 'unknown_filter', message: 'Generation blocked by safety filter' } },
+            400,
+        );
+        const fetchSpy = (vi.spyOn as unknown as (...args: unknown[]) => ReturnType<typeof vi.fn>)(
+            globalThis,
+            'fetch',
+        ).mockResolvedValue(upstream);
+
+        const res = await POST(makeReq(VALID_BODY));
+        expect(res.status).toBe(400);
+        const body = await res.json();
+        expect(body.error).toBe('content_filter');
 
         fetchSpy.mockRestore();
     });

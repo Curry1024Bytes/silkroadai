@@ -229,6 +229,7 @@ model User {
   oauth_accounts            OAuthAccount[]
   usage_aggregate_cache     UsageAggregateCache[]
   image_generations         ImageGeneration[]
+  analytics_events          AnalyticsEvent[]
 
   // ── session 失效控制 ──
   // JWT payload 带 tv = session_token_version。verifySession 时如果 token tv
@@ -469,4 +470,31 @@ model ImageGeneration {
   @@index([user_id, is_favorite, created_at(sort: Desc)])
   @@index([expires_at])
   @@map("image_generations")
+}
+
+// ── 客户端 / 服务端事件埋点(PR-T3 W7 D5)──
+//
+// 轻量 analytics — 替代 Mixpanel / PostHog 的初版方案。客户端通过
+// POST /api/portal/analytics 写入,服务端在 /api/portal/image/generate
+// 等关键路径上也直接写入(rate-limit 失败 / R2 失败 / 大单等)。
+//
+// event_type 严格 whitelist(server-side validate),防客户端塞乱七八糟。
+// properties 是 free-form Json — 各 event_type 的 schema 由 collector 文档
+// 维护,不强约束。后续接 ops dashboard(/admin/stats)按 event_type +
+// 时间窗聚合查询。
+//
+// user_id 设 SET NULL on delete:用户被删除后 analytics 行保留(脱敏),
+// 利于历史趋势分析。
+model AnalyticsEvent {
+  id         String   @id @default(uuid()) @db.Uuid
+  user_id    String?  @db.Uuid
+  event_type String
+  properties Json
+  created_at DateTime @default(now())
+
+  user User? @relation(fields: [user_id], references: [id], onDelete: SetNull)
+
+  @@index([event_type, created_at(sort: Desc)])
+  @@index([user_id, created_at(sort: Desc)])
+  @@map("analytics_events")
 }
