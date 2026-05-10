@@ -29,11 +29,13 @@ afterEach(() => {
 });
 
 describe('<Sidebar />', () => {
-    it('renders 4 nav links + 充值 CTA', () => {
+    it('renders the W7+T2 nav links + 充值 CTA', () => {
         mockUsePathname.mockReturnValue('/dashboard');
         const html = renderToString(<Sidebar />);
-        // Four primary nav items
+        // Primary nav items (W4-2 + W7 P2 + PR-T2 AI 生图)
         expect(html).toContain('概览');
+        // PR-T2: AI 生图 inserted at second position (after 概览)
+        expect(html).toContain('AI 生图');
         expect(html).toContain('API Keys');
         expect(html).toContain('余额');
         expect(html).toContain('用量');
@@ -41,10 +43,22 @@ describe('<Sidebar />', () => {
         expect(html).toContain('充值');
         // Hrefs present
         expect(html).toMatch(/href="\/dashboard"/);
+        expect(html).toMatch(/href="\/image"/);
         expect(html).toMatch(/href="\/keys"/);
         expect(html).toMatch(/href="\/balance"/);
         expect(html).toMatch(/href="\/usage"/);
         expect(html).toMatch(/href="\/pay"/);
+    });
+
+    it('PR-T2: AI 生图 is in the second position (after 概览)', () => {
+        mockUsePathname.mockReturnValue('/dashboard');
+        const html = renderToString(<Sidebar />);
+        const dashIdx = html.indexOf('概览');
+        const imageIdx = html.indexOf('AI 生图');
+        const keysIdx = html.indexOf('API Keys');
+        expect(dashIdx).toBeGreaterThan(-1);
+        expect(imageIdx).toBeGreaterThan(dashIdx);
+        expect(keysIdx).toBeGreaterThan(imageIdx);
     });
 
     it('marks the active route with aria-current="page"', () => {

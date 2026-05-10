@@ -40,8 +40,12 @@ describe('IMAGE_MODELS table', () => {
         expect(IMAGE_MODEL_IDS).toContain('gemini-3.1-flash-image-preview');
     });
 
-    it('does NOT include the unrouted gemini-2.5-flash-image-preview (deleted in PR-S 2.5 cleanup)', () => {
+    it('does NOT include the unrouted gemini-2.5-flash-image-preview (PR-S 2.5 cleanup; canonical name is gemini-2.5-flash-image)', () => {
         expect(IMAGE_MODEL_IDS).not.toContain('gemini-2.5-flash-image-preview');
+    });
+
+    it('includes the canonical Nano Banana SKU (gemini-2.5-flash-image, re-added 2026-05-09 evening for PR-T2)', () => {
+        expect(IMAGE_MODEL_IDS).toContain('gemini-2.5-flash-image');
     });
 });
 

@@ -30,6 +30,16 @@ export interface ImageModelInfo {
 }
 
 export const IMAGE_MODELS: ImageModelInfo[] = [
+    // PR-T2 prep: re-added gemini-2.5-flash-image (canonical Google name,
+    // no `-preview` suffix; the W7 PR-S 2.5 cleanup dropped it because
+    // no channel routed it). Operator added it to channel 4 for /image
+    // launch; ratio re-applied + verified live (quota=58,500 = $0.0585 × 1M).
+    {
+        id: 'gemini-2.5-flash-image',
+        label: 'Nano Banana',
+        pricePerImageUsd: 0.0585,
+        blurb: 'Google 2.5 Flash Image · 入门首选',
+    },
     {
         id: 'gemini-3.1-flash-image-preview',
         label: 'Gemini 3.1 Flash Image',

@@ -20,6 +20,10 @@ interface NavItem {
 
 const NAV: NavItem[] = [
     { href: '/dashboard', label: '概览' },
+    // PR-T2: image generation lives in the second-position slot per
+    // operator brief — surfaces the headline customer-visible feature
+    // right under the dashboard hub.
+    { href: '/image', label: 'AI 生图' },
     { href: '/keys', label: 'API Keys' },
     { href: '/balance', label: '余额' },
     { href: '/usage', label: '用量' },

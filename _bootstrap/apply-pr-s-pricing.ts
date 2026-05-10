@@ -89,10 +89,17 @@ const PER_IMAGE_USD: Record<string, { wholesale: number; note?: string }> = {
     'nano-banana-pro-preview': { wholesale: 0.187, note: 'Operator: same as gemini-3-pro-image-preview alias' },
     'imagen-4.0-ultra-generate-001': { wholesale: 0.06, note: 'Google: Ultra tier $0.06/image' },
     'gpt-image-2': { wholesale: 0.04, note: 'OpenAI standard quality — operator-stated $0.04/image' },
-    //
-    // Dropped 2026-05-09 with the 2.5 text pair above — same
-    // operator decision (not in channel 4 → 503 → never callable).
-    //   'gemini-2.5-flash-image-preview': { wholesale: 0.039 },
+    // Re-added 2026-05-09 evening (PR-T2 prep): operator added the SKU
+    // back to channel 4 so the /image picker can offer it as the cheap
+    // entry ("Nano Banana") at ¥0.41/张. Canonical Google name has no
+    // `-preview` suffix (verified live: `gemini-2.5-flash-image-preview`
+    // returns Google upstream 404; `gemini-2.5-flash-image` is the
+    // routable name). Earlier dropped 2026-05-09 morning because no
+    // channel routed it; that's no longer true.
+    'gemini-2.5-flash-image': {
+        wholesale: 0.039,
+        note: 'Google: nano-banana 2.5 flash image, $0.039/image standard',
+    },
 };
 
 /** Per-second video. Markup 1.0. ModelPrice (USD per second). 720p tier default. */
