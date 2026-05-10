@@ -30,8 +30,9 @@ describe('IMAGE_MODEL_OPTIONS', () => {
     it('default selection is the first entry (Nano Banana)', () => {
         expect(DEFAULT_IMAGE_MODEL_ID).toBe(IMAGE_MODEL_OPTIONS[0].id);
         expect(IMAGE_MODEL_OPTIONS[0].label).toBe('Nano Banana');
-        // The cheap entry (¥0.41/张). Floating-point safe within ±0.01.
-        expect(IMAGE_MODEL_OPTIONS[0].pricePerImageCny).toBeCloseTo(0.41, 2);
+        // The cheap entry. Post-PR #55 (Gemini +10% markup): ¥0.30/张
+        // (= $0.0429 × 7). Floating-point safe within ±0.01.
+        expect(IMAGE_MODEL_OPTIONS[0].pricePerImageCny).toBeCloseTo(0.3, 2);
     });
 
     it('CNY prices are USD × 7 (within rounding)', () => {

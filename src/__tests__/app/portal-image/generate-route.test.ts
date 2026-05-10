@@ -213,7 +213,7 @@ describe('POST /api/portal/image/generate — happy path', () => {
         const body = await res.json();
         expect(body.id).toBe('gen-id');
         expect(body.image_urls).toHaveLength(1);
-        expect(body.cost_usd).toBeCloseTo(0.06, 6); // gpt-image-2 ModelPrice
+        expect(body.cost_usd).toBeCloseTo(0.04, 6); // gpt-image-2 ModelPrice (PR #55: 0% markup)
         expect(mockImgGenCreate).toHaveBeenCalledTimes(1);
         const createArgs = mockImgGenCreate.mock.calls[0][0];
         expect(createArgs.data.user_id).toBe(USER.id);

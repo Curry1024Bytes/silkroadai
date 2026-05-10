@@ -16,7 +16,8 @@ describe('<ModelSelector /> closed state', () => {
         // Closed dropdown shows ¥ in the trigger button. React 19 SSR
         // inserts <!-- --> between literal + interpolated text, so we
         // tolerate the comments inside the regex.
-        expect(html).toMatch(/¥(?:<!-- -->)?0\.41(?:<!-- -->)?\/张/);
+        // Post-PR #55: Nano Banana ¥0.41 → ¥0.30 (Gemini +10% markup, was +50%).
+        expect(html).toMatch(/¥(?:<!-- -->)?0\.30(?:<!-- -->)?\/张/);
     });
 
     it('toggle button has aria-haspopup + aria-expanded=false initially', () => {

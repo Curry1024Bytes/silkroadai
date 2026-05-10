@@ -40,42 +40,47 @@ function cny(usd: number): number {
 }
 
 /** Order = display order in the dropdown. Default selection is the
- *  first entry (`Nano Banana`). Cheapest + most marketable name. */
+ *  first entry (`Nano Banana`). Cheapest + most marketable name.
+ *
+ *  Price values mirror the server-side `_bootstrap/apply-pr-s-pricing.ts`
+ *  PER_IMAGE_USD * markup. As of 2026-05-10 the Gemini family is at +10%
+ *  markup (was +50%) and gpt-image-2 is at 0% markup (sub2api wholesale
+ *  passthrough); see PR #55 for the live diff. */
 export const IMAGE_MODEL_OPTIONS: ImageModelOption[] = [
     {
         id: 'gemini-2.5-flash-image',
         label: 'Nano Banana',
-        pricePerImageUsd: 0.0585,
-        pricePerImageCny: cny(0.0585), // ¥0.41
+        pricePerImageUsd: 0.0429, // 0.039 × 1.1
+        pricePerImageCny: cny(0.0429), // ¥0.30
         blurb: 'Google 2.5 Flash Image · 入门首选',
         badge: '推荐',
     },
     {
         id: 'gpt-image-2',
         label: 'GPT image-2',
-        pricePerImageUsd: 0.06,
-        pricePerImageCny: cny(0.06), // ¥0.42
+        pricePerImageUsd: 0.04, // 0% markup — operator-decided cost-only retail
+        pricePerImageCny: cny(0.04), // ¥0.28
         blurb: 'OpenAI · ChatGPT 风格 prompt',
     },
     {
         id: 'imagen-4.0-ultra-generate-001',
         label: 'Imagen 4 Ultra',
-        pricePerImageUsd: 0.09,
-        pricePerImageCny: cny(0.09), // ¥0.63
+        pricePerImageUsd: 0.066, // 0.06 × 1.1
+        pricePerImageCny: cny(0.066), // ¥0.46
         blurb: 'Google Imagen 4 · 高画质',
     },
     {
         id: 'gemini-3.1-flash-image-preview',
         label: 'Gemini 3.1 Flash Image',
-        pricePerImageUsd: 0.15,
-        pricePerImageCny: cny(0.15), // ¥1.05
+        pricePerImageUsd: 0.11, // 0.10 × 1.1
+        pricePerImageCny: cny(0.11), // ¥0.77
         blurb: 'Google · 中等成本',
     },
     {
         id: 'nano-banana-pro-preview',
         label: 'Nano Banana Pro',
-        pricePerImageUsd: 0.2805,
-        pricePerImageCny: cny(0.2805), // ¥1.96
+        pricePerImageUsd: 0.2057, // 0.187 × 1.1
+        pricePerImageCny: cny(0.2057), // ¥1.44
         blurb: 'Google 旗舰图像 · 最高画质',
         badge: '旗舰',
     },

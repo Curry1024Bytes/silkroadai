@@ -52,50 +52,48 @@ export interface ImageModelInfo {
     apiPath: ImageApiPath;
 }
 
+// Price values match `_bootstrap/apply-pr-s-pricing.ts` PER_IMAGE_USD ×
+// markup as of 2026-05-10 (PR #55 — Gemini family +10%, gpt-image-2 0%).
 export const IMAGE_MODELS: ImageModelInfo[] = [
-    // PR-T2 prep: re-added gemini-2.5-flash-image (canonical Google name,
-    // no `-preview` suffix; the W7 PR-S 2.5 cleanup dropped it because
-    // no channel routed it). Operator added it to channel 4 for /image
-    // launch; ratio re-applied + verified live (quota=58,500 = $0.0585 × 1M).
     {
         id: 'gemini-2.5-flash-image',
         label: 'Nano Banana',
-        pricePerImageUsd: 0.0585,
+        pricePerImageUsd: 0.0429, // 0.039 × 1.1
         blurb: 'Google 2.5 Flash Image · 入门首选',
         apiPath: 'chat/completions',
     },
     {
         id: 'gemini-3.1-flash-image-preview',
         label: 'Gemini 3.1 Flash Image',
-        pricePerImageUsd: 0.15,
+        pricePerImageUsd: 0.11, // 0.10 × 1.1
         blurb: 'Google · 高速生图 · 中等成本',
         apiPath: 'chat/completions',
     },
     {
         id: 'gemini-3-pro-image-preview',
         label: 'Gemini 3 Pro Image',
-        pricePerImageUsd: 0.2805,
+        pricePerImageUsd: 0.2057, // 0.187 × 1.1
         blurb: 'Google 旗舰图像 · Nano Banana Pro',
         apiPath: 'chat/completions',
     },
     {
         id: 'nano-banana-pro-preview',
         label: 'Nano Banana Pro',
-        pricePerImageUsd: 0.2805,
+        pricePerImageUsd: 0.2057, // alias of -3-pro-image
         blurb: 'Google 旗舰图像 (alias)',
         apiPath: 'chat/completions',
     },
     {
         id: 'imagen-4.0-ultra-generate-001',
         label: 'Imagen 4 Ultra',
-        pricePerImageUsd: 0.09,
+        pricePerImageUsd: 0.066, // 0.06 × 1.1
         blurb: 'Google Imagen 4 Ultra · 高画质',
         apiPath: 'images/generations',
     },
     {
         id: 'gpt-image-2',
         label: 'GPT Image 2',
-        pricePerImageUsd: 0.06,
+        pricePerImageUsd: 0.04, // 0% markup — sub2api subscription arbitrage
         blurb: 'OpenAI · 兼容 chat 风格 prompt',
         apiPath: 'images/generations',
     },
