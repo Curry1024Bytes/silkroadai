@@ -59,58 +59,63 @@ const SUB2API_OPENAI_CHANNEL_ID = 3;
 // PRICING TABLES — operator-supplied PR-S Stage 3 spec
 // =============================================================================
 
-/** Text + embedding + per-token audio. Markup 1.0 (retail = wholesale).
- *  cr = output / input. For embedding-only models, cr = 1 (no output token tier). */
-const PER_TOKEN_USD: Record<string, { in: number; out: number; note?: string }> = {
-    // Text — Gemini 3.1 family (newly priced)
-    'gemini-3.1-flash-lite': { in: 0.25, out: 1.50 },
-    'gemini-3.1-pro-preview': { in: 4.00, out: 18.00, note: '>200k long-context tier per Google docs' },
-    'gemini-3.1-pro-preview-customtools': { in: 4.00, out: 18.00, note: 'shares parent tier' },
+/** Per-SKU `markup` override — when present, overrides the category
+ *  default below. Used to special-case `gpt-image-2` to wholesale-cost
+ *  (markup 1.0) while the rest of the image family takes the category
+ *  default (1.1). Defaults to undefined → category default applies. */
+type MarkupOverride = { markup?: number };
+
+/** Text + embedding + per-token audio. cr = output / input. For
+ *  embedding-only models, cr = 1 (no output token tier). */
+const PER_TOKEN_USD: Record<string, { in: number; out: number; note?: string } & MarkupOverride> = {
+    // Text — Gemini 2.5 family (re-added 2026-05-10 morning per operator
+    // brief; previously dropped in PR #50 cleanup. >200k long-context tier
+    // per Google AI Studio docs — conservative ceiling so an unexpected
+    // long-context call doesn't surprise customers at first-bill time).
+    'gemini-2.5-flash': { in: 0.30, out: 2.50, note: 'Google docs current ($0.30/$2.50)' },
+    'gemini-2.5-pro': { in: 4.00, out: 18.0, note: '>200k long-context tier (operator chose ceiling)' },
+    // Text — Gemini 3.1 family
+    'gemini-3.1-flash-lite': { in: 0.25, out: 1.5 },
+    'gemini-3.1-pro-preview': { in: 4.0, out: 18.0, note: '>200k long-context tier per Google docs' },
+    'gemini-3.1-pro-preview-customtools': { in: 4.0, out: 18.0, note: 'shares parent tier' },
     // Embedding (cr=1 — no separate output)
-    'gemini-embedding-2': { in: 0.20, out: 0.20, note: 'embedding: cr=1' },
+    'gemini-embedding-2': { in: 0.2, out: 0.2, note: 'embedding: cr=1' },
     // Audio per-token
-    'gemini-3.1-flash-tts-preview': { in: 1.00, out: 20.00, note: 'audio output tier' },
-    'gemini-2.5-flash-native-audio-latest': { in: 1.00, out: 2.50, note: '2.5 flash audio tier' },
-    //
-    // Dropped 2026-05-09 (operator decision after PR-S merge): the 2.5
-    // text SKUs (gemini-2.5-flash + gemini-2.5-pro) were never added
-    // to channel 4 (operator added 3.1-only); ratios were a heads-up
-    // residual. Removed from prod options + this table to stop
-    // re-introduction on the next apply. To re-add: restore here AND
-    // add to channel.models in admin UI.
-    //   'gemini-2.5-flash': { in: 0.30, out: 2.50 },
-    //   'gemini-2.5-pro':   { in: 1.25, out: 10.00 },
+    'gemini-3.1-flash-tts-preview': { in: 1.0, out: 20.0, note: 'audio output tier' },
+    'gemini-2.5-flash-native-audio-latest': { in: 1.0, out: 2.5, note: '2.5 flash audio tier' },
 };
 
-/** Per-image flat fee. Markup 1.5. Applied as ModelPrice (USD per image). */
-const PER_IMAGE_USD: Record<string, { wholesale: number; note?: string }> = {
-    'gemini-3.1-flash-image-preview': { wholesale: 0.10, note: 'Google: midpoint of $0.045-$0.151 per resolution' },
+/** Per-image flat fee. Applied as ModelPrice (USD per image). */
+const PER_IMAGE_USD: Record<string, { wholesale: number; note?: string } & MarkupOverride> = {
+    'gemini-3.1-flash-image-preview': { wholesale: 0.1, note: 'Google: midpoint of $0.045-$0.151 per resolution' },
     'gemini-3-pro-image-preview': { wholesale: 0.187, note: 'Google: midpoint of $0.134-$0.24 per resolution' },
     'nano-banana-pro-preview': { wholesale: 0.187, note: 'Operator: same as gemini-3-pro-image-preview alias' },
     'imagen-4.0-ultra-generate-001': { wholesale: 0.06, note: 'Google: Ultra tier $0.06/image' },
-    'gpt-image-2': { wholesale: 0.04, note: 'OpenAI standard quality — operator-stated $0.04/image' },
-    // Re-added 2026-05-09 evening (PR-T2 prep): operator added the SKU
-    // back to channel 4 so the /image picker can offer it as the cheap
-    // entry ("Nano Banana") at ¥0.41/张. Canonical Google name has no
-    // `-preview` suffix (verified live: `gemini-2.5-flash-image-preview`
-    // returns Google upstream 404; `gemini-2.5-flash-image` is the
-    // routable name). Earlier dropped 2026-05-09 morning because no
-    // channel routed it; that's no longer true.
+    // gpt-image-2 special-case: 0% markup. Customer pays operator's
+    // sub2api wholesale ($0.04/image standard); operator's margin is
+    // the spread between sub2api's subscription cost and OpenAI's
+    // metered $0.04. Per-SKU `markup: 1.0` overrides the category
+    // MARKUP_IMAGE=1.1 (2026-05-10 brief decision).
+    'gpt-image-2': {
+        wholesale: 0.04,
+        markup: 1.0,
+        note: 'OpenAI standard $0.04/image — 0% markup (sub2api subscription arbitrage)',
+    },
     'gemini-2.5-flash-image': {
         wholesale: 0.039,
         note: 'Google: nano-banana 2.5 flash image, $0.039/image standard',
     },
 };
 
-/** Per-second video. Markup 1.0. ModelPrice (USD per second). 720p tier default. */
-const PER_SECOND_USD: Record<string, { wholesale: number; note?: string }> = {
-    'veo-3.1-generate-preview': { wholesale: 0.40, note: '720p/1080p tier (4K is $0.60/sec — not default)' },
-    'veo-3.1-fast-generate-preview': { wholesale: 0.10, note: '720p tier (1080p is $0.12, 4K $0.30)' },
+/** Per-second video. ModelPrice (USD per second). 720p tier default. */
+const PER_SECOND_USD: Record<string, { wholesale: number; note?: string } & MarkupOverride> = {
+    'veo-3.1-generate-preview': { wholesale: 0.4, note: '720p/1080p tier (4K is $0.60/sec — not default)' },
+    'veo-3.1-fast-generate-preview': { wholesale: 0.1, note: '720p tier (1080p is $0.12, 4K $0.30)' },
     'veo-3.1-lite-generate-preview': { wholesale: 0.05, note: '720p tier (1080p is $0.08)' },
 };
 
-/** Per-request flat fee (audio gen). Markup 1.0. ModelPrice (USD per request). */
-const PER_REQUEST_USD: Record<string, { wholesale: number; note?: string }> = {
+/** Per-request flat fee (audio gen). ModelPrice (USD per request). */
+const PER_REQUEST_USD: Record<string, { wholesale: number; note?: string } & MarkupOverride> = {
     'lyria-3-pro-preview': { wholesale: 0.08 },
     'lyria-3-clip-preview': { wholesale: 0.08, note: 'shares lyria-3-pro tier' },
 };
@@ -127,11 +132,22 @@ const DISABLE_FROM_GEMINI_CHANNEL = [
 ];
 
 /** Markup multipliers — kept as named constants so the diff makes the
- *  policy choice explicit + reviewable. */
-const MARKUP_IMAGE = 1.5;
-const MARKUP_TEXT = 1.0; // text / embedding / audio per-token
-const MARKUP_VIDEO = 1.0;
-const MARKUP_AUDIO_FLAT = 1.0;
+ *  policy choice explicit + reviewable.
+ *
+ *  2026-05-10 brief decision: unify Gemini family at +10% (was: image
+ *  +50%, others +0%). Per-SKU overrides via the `markup` field still
+ *  apply — currently `gpt-image-2` opts out to wholesale-cost (1.0).
+ *
+ *  Operator rationale:
+ *    - Margin floor without surprising customers vs the 50% PR-S image
+ *      markup. Post-launch upstream swaps (cheaper providers) recover
+ *      additional margin without changing customer-facing price.
+ *    - gpt-image-2 special: sub2api subscription cost amortizes; the
+ *      "markup" lives off-platform, retail = OpenAI's $0.04 official. */
+const MARKUP_IMAGE = 1.1;
+const MARKUP_TEXT = 1.1; // text / embedding / audio per-token
+const MARKUP_VIDEO = 1.1;
+const MARKUP_AUDIO_FLAT = 1.1;
 
 // =============================================================================
 // HELPERS
@@ -232,7 +248,8 @@ function buildPlan(
 
     // Per-token (text / embedding / audio per-token)
     for (const [key, p] of Object.entries(PER_TOKEN_USD)) {
-        const mr = +(p.in * MARKUP_TEXT).toFixed(6);
+        const markup = p.markup ?? MARKUP_TEXT;
+        const mr = +(p.in * markup).toFixed(6);
         const cr = p.in > 0 ? +(p.out / p.in).toFixed(6) : 1;
         if (oldMr[key] !== mr) {
             modelRatioChanges.push({ key, oldVal: oldMr[key], newVal: mr, note: p.note });
@@ -244,27 +261,32 @@ function buildPlan(
         newCr[key] = cr;
     }
 
-    // Per-image (ModelPrice mode, image markup 1.5)
+    // Per-image (ModelPrice mode). Per-SKU `markup` overrides the
+    // category MARKUP_IMAGE — currently used by gpt-image-2 (1.0,
+    // operator-decided wholesale-cost; sub2api subscription arbitrage).
     for (const [key, p] of Object.entries(PER_IMAGE_USD)) {
-        const price = +(p.wholesale * MARKUP_IMAGE).toFixed(6);
+        const markup = p.markup ?? MARKUP_IMAGE;
+        const price = +(p.wholesale * markup).toFixed(6);
         if (oldMp[key] !== price) {
             modelPriceChanges.push({ key, oldVal: oldMp[key], newVal: price, note: p.note });
         }
         newMp[key] = price;
     }
 
-    // Per-second (video, ModelPrice mode, markup 1.0)
+    // Per-second (video, ModelPrice mode)
     for (const [key, p] of Object.entries(PER_SECOND_USD)) {
-        const price = +(p.wholesale * MARKUP_VIDEO).toFixed(6);
+        const markup = p.markup ?? MARKUP_VIDEO;
+        const price = +(p.wholesale * markup).toFixed(6);
         if (oldMp[key] !== price) {
             modelPriceChanges.push({ key, oldVal: oldMp[key], newVal: price, note: p.note });
         }
         newMp[key] = price;
     }
 
-    // Per-request (audio gen flat, ModelPrice mode, markup 1.0)
+    // Per-request (audio gen flat, ModelPrice mode)
     for (const [key, p] of Object.entries(PER_REQUEST_USD)) {
-        const price = +(p.wholesale * MARKUP_AUDIO_FLAT).toFixed(6);
+        const markup = p.markup ?? MARKUP_AUDIO_FLAT;
+        const price = +(p.wholesale * markup).toFixed(6);
         if (oldMp[key] !== price) {
             modelPriceChanges.push({ key, oldVal: oldMp[key], newVal: price, note: p.note });
         }
