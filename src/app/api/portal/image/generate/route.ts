@@ -40,7 +40,15 @@ import { prisma } from '@/lib/db';
 import { getCurrentUser } from '@/lib/auth/session';
 import { getOrCreateSystemToken, PortalSystemTokenError } from '@/lib/newapi/system-token';
 import { rateLimitCheck } from '@/lib/image-gen/rate-limit';
-import { findImageModel, IMAGE_COUNT_MAX, IMAGE_COUNT_MIN, IMAGE_MODEL_IDS, IMAGE_SIZES } from '@/lib/image-gen/models';
+import {
+    findImageModel,
+    IMAGE_COUNT_MAX,
+    IMAGE_COUNT_MIN,
+    IMAGE_MODEL_IDS,
+    IMAGE_SIZES,
+    type ImageApiPath,
+} from '@/lib/image-gen/models';
+import { extractB64Images } from '@/lib/image-gen/extract-b64';
 import { imageKey, uploadImage, getPublicUrl } from '@/lib/r2/client';
 
 export const runtime = 'nodejs';
@@ -68,9 +76,52 @@ const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 const NEWAPI_PROXY_URL = process.env.NEWAPI_CUSTOMER_BASE_URL || 'https://ai.silkroadai.io';
 
-interface UpstreamImageResponse {
+const UPSTREAM_TIMEOUT_MS = 180_000;
+const URL_FETCH_TIMEOUT_MS = 60_000;
+
+interface ImagesGenerationsResponse {
     data?: Array<{ url?: string; b64_json?: string }>;
     error?: { message?: string; code?: string; type?: string };
+}
+
+interface ChatCompletionsResponse {
+    choices?: Array<{ message?: { content?: string } }>;
+    error?: { message?: string; code?: string; type?: string };
+}
+
+/** Upstream returned a non-2xx with a typed error body (insufficient_user_quota,
+ *  convert_request_failed, content_filter, etc). The route handler maps to
+ *  402 / status passthrough / 502 depending on `code` and `status`. */
+class UpstreamError extends Error {
+    constructor(
+        public readonly status: number,
+        public readonly code: string | undefined,
+        message: string,
+    ) {
+        super(message);
+        this.name = 'UpstreamError';
+    }
+}
+
+/** fetch() itself threw (network down, AbortSignal fired, DNS fail, etc.).
+ *  Always surfaces as 502 to the customer with a generic upstream-unreachable
+ *  message; the actual `err` is logged server-side for diagnosis. */
+class TransportError extends Error {
+    constructor(public readonly code: string = 'upstream_unreachable') {
+        super(code);
+        this.name = 'TransportError';
+    }
+}
+
+/** Upstream returned 2xx but the payload had no images (empty data[] for
+ *  images/generations, no markdown b64 matches for chat/completions). Most
+ *  often a Google safety filter rejection — surface 502 with a friendly
+ *  "try a different prompt" message. */
+class EmptyResponseError extends Error {
+    constructor() {
+        super('upstream_empty_response');
+        this.name = 'EmptyResponseError';
+    }
 }
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
@@ -141,99 +192,66 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         return NextResponse.json({ error: 'internal_error' }, { status: 500 });
     }
 
-    // Forward to new-api customer endpoint.
-    const upstreamRes = await fetch(`${NEWAPI_PROXY_URL}/v1/images/generations`, {
-        method: 'POST',
-        headers: {
-            Authorization: `Bearer ${systemToken}`,
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
+    // PR-T2 v2 fix (2026-05-09): branch upstream by model. Gemini-class
+    // image SKUs (Nano Banana / 3.1-flash-image / 3-pro-image) reject
+    // /v1/images/generations with `convert_request_failed: only imagen
+    // models are supported`; they must be called via /v1/chat/completions
+    // and the image extracted from a markdown `data:image/...;base64,…`
+    // payload in `choices[0].message.content`. Imagen + gpt-image-2 use
+    // the OpenAI-shaped /v1/images/generations as before.
+    let imageBuffers: Buffer[];
+    try {
+        imageBuffers = await fetchImagesFromUpstream({
+            apiPath: modelInfo.apiPath,
             model,
             prompt,
-            n: count,
+            count,
             size,
-            response_format: 'url',
-        }),
-        // 180s — post-launch probe (2026-05-09) hit 60.3s on a tiny
-        // gpt-image-2 prompt and 47.5s on a 380-char 1024×1792
-        // generation. 60s was right at the edge; 180s gives headroom
-        // for sub2api/Codex queue spikes without keeping the customer
-        // hanging indefinitely on a genuinely stuck upstream.
-        signal: AbortSignal.timeout(180_000),
-    }).catch((err) => {
-        console.error(`[image/generate] upstream fetch threw for ${user.id}:`, err);
-        return null;
-    });
-
-    if (!upstreamRes) {
-        return NextResponse.json({ error: 'upstream_unreachable' }, { status: 502 });
-    }
-
-    let upstreamBody: UpstreamImageResponse;
-    try {
-        upstreamBody = (await upstreamRes.json()) as UpstreamImageResponse;
-    } catch (parseErr) {
-        console.error(`[image/generate] upstream non-json body for ${user.id} (${upstreamRes.status}):`, parseErr);
-        return NextResponse.json({ error: 'upstream_invalid_response' }, { status: 502 });
-    }
-
-    if (!upstreamRes.ok) {
-        // Surface upstream error code where possible (gotcha: error.code
-        // is more stable than HTTP status; see /docs section 08).
-        const upstreamCode = upstreamBody.error?.code;
-        const upstreamMessage = upstreamBody.error?.message ?? 'upstream error';
-        // Friendly remap for the common 403 insufficient_user_quota case
-        if (upstreamCode === 'insufficient_user_quota' || upstreamRes.status === 403) {
+            systemToken,
+            userId: user.id,
+        });
+    } catch (err) {
+        if (err instanceof UpstreamError) {
+            // Friendly remap for the common 403 insufficient_user_quota case
+            if (err.code === 'insufficient_user_quota' || err.status === 403) {
+                return NextResponse.json(
+                    {
+                        error: 'insufficient_user_quota',
+                        message: '余额不足,请前往 /pay 充值',
+                        upstream_status: err.status,
+                    },
+                    { status: 402 },
+                );
+            }
             return NextResponse.json(
-                {
-                    error: 'insufficient_user_quota',
-                    message: '余额不足,请前往 /pay 充值',
-                    upstream_status: upstreamRes.status,
-                },
-                { status: 402 },
+                { error: err.code ?? 'upstream_error', message: err.message },
+                { status: err.status >= 500 ? 502 : err.status },
             );
         }
-        return NextResponse.json(
-            {
-                error: upstreamCode ?? 'upstream_error',
-                message: upstreamMessage,
-            },
-            { status: upstreamRes.status >= 500 ? 502 : upstreamRes.status },
-        );
-    }
-
-    const items = upstreamBody.data ?? [];
-    if (items.length === 0) {
-        return NextResponse.json({ error: 'upstream_empty_response' }, { status: 502 });
+        if (err instanceof TransportError) {
+            console.error(`[image/generate] upstream fetch threw for ${user.id}:`, err);
+            return NextResponse.json({ error: err.code }, { status: 502 });
+        }
+        if (err instanceof EmptyResponseError) {
+            console.warn(`[image/generate] upstream empty response for ${user.id} model=${model}`);
+            return NextResponse.json(
+                {
+                    error: 'upstream_empty_response',
+                    message: '上游未返回图像,可能触发了内容安全过滤,请换 prompt 重试',
+                },
+                { status: 502 },
+            );
+        }
+        // Unknown error class — bubble to 500
+        console.error(`[image/generate] unexpected upstream error for ${user.id}:`, err);
+        Sentry.captureException(err, { tags: { area: 'image-gen', user_id: user.id } });
+        return NextResponse.json({ error: 'internal_error' }, { status: 500 });
     }
 
     // Generation id we'll use both for R2 keying and the DB row PK.
     const generationId = randomUUID();
 
-    // Fetch + upload in parallel. We accept either { url } (most models)
-    // or { b64_json } (gpt-image-2 returns base64 even when we asked for
-    // url) — handle both shapes.
-    const uploads: Array<Promise<{ key: string; url: string }>> = items.map(async (item, i) => {
-        let buf: Buffer;
-        if (item.b64_json) {
-            buf = Buffer.from(item.b64_json, 'base64');
-        } else if (item.url) {
-            // 60s (was 30s pre-PR-T2 504 fix): some Google `url` responses
-            // serve via cold CDN edges that take 15-25s; bumping to 60s
-            // preserves margin without keeping the route hanging on a
-            // truly dead URL.
-            const imgRes = await fetch(item.url, {
-                signal: AbortSignal.timeout(60_000),
-            });
-            if (!imgRes.ok) {
-                throw new Error(`fetch ${item.url} → ${imgRes.status}`);
-            }
-            const ab = await imgRes.arrayBuffer();
-            buf = Buffer.from(ab);
-        } else {
-            throw new Error(`upstream item ${i}: neither url nor b64_json`);
-        }
+    const uploads: Array<Promise<{ key: string; url: string }>> = imageBuffers.map(async (buf, i) => {
         const key = imageKey(user.id, generationId, i);
         await uploadImage(key, buf);
         return { key, url: getPublicUrl(key) };
@@ -290,4 +308,137 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         expires_at: created.expires_at?.toISOString() ?? null,
         rate_limit_remaining: rl.remaining,
     });
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Upstream fetch helpers — branched by `apiPath`.
+// ──────────────────────────────────────────────────────────────────────
+
+interface FetchArgs {
+    apiPath: ImageApiPath;
+    model: string;
+    prompt: string;
+    count: number;
+    size: string;
+    systemToken: string;
+    userId: string;
+}
+
+/** Top-level dispatch. Returns the raw image buffers ready for R2 upload. */
+async function fetchImagesFromUpstream(args: FetchArgs): Promise<Buffer[]> {
+    if (args.apiPath === 'chat/completions') {
+        return fetchViaChatCompletions(args);
+    }
+    return fetchViaImagesGenerations(args);
+}
+
+/** OpenAI-style /v1/images/generations: single request with `n=count`,
+ *  response shape `{ data: [{ b64_json | url }] }`. Used for gpt-image-2
+ *  and Imagen models. */
+async function fetchViaImagesGenerations(args: FetchArgs): Promise<Buffer[]> {
+    const upstreamRes = await fetch(`${NEWAPI_PROXY_URL}/v1/images/generations`, {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${args.systemToken}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            model: args.model,
+            prompt: args.prompt,
+            n: args.count,
+            size: args.size,
+            response_format: 'url',
+        }),
+        signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+    }).catch((err) => {
+        throw new TransportError(err instanceof Error ? err.message : 'unknown');
+    });
+
+    let body: ImagesGenerationsResponse;
+    try {
+        body = (await upstreamRes.json()) as ImagesGenerationsResponse;
+    } catch {
+        throw new UpstreamError(upstreamRes.status, 'upstream_invalid_response', 'non-JSON upstream body');
+    }
+
+    if (!upstreamRes.ok) {
+        throw new UpstreamError(
+            upstreamRes.status,
+            body.error?.code,
+            body.error?.message ?? `upstream error ${upstreamRes.status}`,
+        );
+    }
+
+    const items = body.data ?? [];
+    if (items.length === 0) throw new EmptyResponseError();
+
+    return Promise.all(
+        items.map(async (item, i) => {
+            if (item.b64_json) {
+                return Buffer.from(item.b64_json, 'base64');
+            }
+            if (item.url) {
+                const imgRes = await fetch(item.url, {
+                    signal: AbortSignal.timeout(URL_FETCH_TIMEOUT_MS),
+                });
+                if (!imgRes.ok) {
+                    throw new Error(`fetch ${item.url} → ${imgRes.status}`);
+                }
+                return Buffer.from(await imgRes.arrayBuffer());
+            }
+            throw new Error(`upstream item ${i}: neither url nor b64_json`);
+        }),
+    );
+}
+
+/** Gemini-style /v1/chat/completions: response is markdown text with
+ *  `data:image/...;base64,...` payloads inline. We make `count` parallel
+ *  requests (the chat shape doesn't accept `n` like images/generations
+ *  does, and Gemini consistently returns one image per response). Returns
+ *  the union of decoded images across all parallel calls.
+ *
+ *  Empty across all calls → EmptyResponseError (most often Google
+ *  safety-filter rejection, surfaced as 502 with friendly message). */
+async function fetchViaChatCompletions(args: FetchArgs): Promise<Buffer[]> {
+    const single = async (): Promise<Buffer[]> => {
+        const upstreamRes = await fetch(`${NEWAPI_PROXY_URL}/v1/chat/completions`, {
+            method: 'POST',
+            headers: {
+                Authorization: `Bearer ${args.systemToken}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                model: args.model,
+                messages: [{ role: 'user', content: args.prompt }],
+            }),
+            signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+        }).catch((err) => {
+            throw new TransportError(err instanceof Error ? err.message : 'unknown');
+        });
+
+        let body: ChatCompletionsResponse;
+        try {
+            body = (await upstreamRes.json()) as ChatCompletionsResponse;
+        } catch {
+            throw new UpstreamError(upstreamRes.status, 'upstream_invalid_response', 'non-JSON upstream body');
+        }
+
+        if (!upstreamRes.ok) {
+            throw new UpstreamError(
+                upstreamRes.status,
+                body.error?.code,
+                body.error?.message ?? `upstream error ${upstreamRes.status}`,
+            );
+        }
+
+        const content = body.choices?.[0]?.message?.content ?? '';
+        const decoded = extractB64Images(content);
+        return decoded.map((d) => d.buffer);
+    };
+
+    // Parallel `count` requests; concat results.
+    const batches = await Promise.all(Array.from({ length: args.count }, () => single()));
+    const all = batches.flat();
+    if (all.length === 0) throw new EmptyResponseError();
+    return all;
 }

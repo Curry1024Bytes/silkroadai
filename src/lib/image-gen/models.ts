@@ -18,6 +18,25 @@
  * client-side or server-side.
  */
 
+/**
+ * Which upstream new-api endpoint a model expects.
+ *   - `images/generations`  POST /v1/images/generations  body { model, prompt,
+ *                           n, size, response_format }; response shape =
+ *                           `{ data: [{ b64_json }] }`. Used by OpenAI-style
+ *                           image-gen SKUs (gpt-image-2) + Google Imagen.
+ *   - `chat/completions`    POST /v1/chat/completions  body { model, messages };
+ *                           response shape = `choices[0].message.content` is
+ *                           markdown text with `data:image/<mime>;base64,...`
+ *                           inline. Used by Google's Gemini-class image
+ *                           models (Nano Banana / 3.1-flash-image / 3-pro-image).
+ *
+ * Trying to call a Gemini image model via /v1/images/generations returns
+ * `{"error":{"code":"convert_request_failed","message":"not supported model
+ * for image generation, only imagen models are supported"}}` — confirmed
+ * live 2026-05-09.
+ */
+export type ImageApiPath = 'images/generations' | 'chat/completions';
+
 export interface ImageModelInfo {
     /** Wire model name (matches `model_name` in /api/pricing). */
     id: string;
@@ -27,6 +46,10 @@ export interface ImageModelInfo {
     pricePerImageUsd: number;
     /** Short marketing blurb for cards. */
     blurb: string;
+    /** Which new-api endpoint to forward to. Default `images/generations`
+     *  (the OpenAI-shaped surface); override to `chat/completions` for
+     *  Gemini-family image models. */
+    apiPath: ImageApiPath;
 }
 
 export const IMAGE_MODELS: ImageModelInfo[] = [
@@ -39,36 +62,42 @@ export const IMAGE_MODELS: ImageModelInfo[] = [
         label: 'Nano Banana',
         pricePerImageUsd: 0.0585,
         blurb: 'Google 2.5 Flash Image · 入门首选',
+        apiPath: 'chat/completions',
     },
     {
         id: 'gemini-3.1-flash-image-preview',
         label: 'Gemini 3.1 Flash Image',
         pricePerImageUsd: 0.15,
         blurb: 'Google · 高速生图 · 中等成本',
+        apiPath: 'chat/completions',
     },
     {
         id: 'gemini-3-pro-image-preview',
         label: 'Gemini 3 Pro Image',
         pricePerImageUsd: 0.2805,
         blurb: 'Google 旗舰图像 · Nano Banana Pro',
+        apiPath: 'chat/completions',
     },
     {
         id: 'nano-banana-pro-preview',
         label: 'Nano Banana Pro',
         pricePerImageUsd: 0.2805,
         blurb: 'Google 旗舰图像 (alias)',
+        apiPath: 'chat/completions',
     },
     {
         id: 'imagen-4.0-ultra-generate-001',
         label: 'Imagen 4 Ultra',
         pricePerImageUsd: 0.09,
         blurb: 'Google Imagen 4 Ultra · 高画质',
+        apiPath: 'images/generations',
     },
     {
         id: 'gpt-image-2',
         label: 'GPT Image 2',
         pricePerImageUsd: 0.06,
         blurb: 'OpenAI · 兼容 chat 风格 prompt',
+        apiPath: 'images/generations',
     },
 ];
 

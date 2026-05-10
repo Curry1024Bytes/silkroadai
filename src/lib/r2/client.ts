@@ -69,12 +69,32 @@ function client(): S3Client {
     return _client;
 }
 
-/** Compose the public R2 object URL. Per operator: bucket is
- *  public-read so direct URLs work without presigning. UUID in the
- *  path is the access guard. */
+/** Compose the public R2 object URL.
+ *
+ *  R2's S3 endpoint (`*.r2.cloudflarestorage.com`) **always** requires
+ *  SigV4 — the legacy implementation (PR-T1) returned that URL and got
+ *  400 InvalidArgument on every browser fetch (post-launch smoke
+ *  diagnosis 2026-05-09). The right URL pattern for public access is
+ *  either a custom domain bound to the bucket (`images.silkroadai.io`,
+ *  what operator picked) or the `pub-<hash>.r2.dev` subdomain.
+ *
+ *  Reads `R2_PUBLIC_URL` (e.g. `https://images.silkroadai.io`) and
+ *  composes `${R2_PUBLIC_URL}/${key}`. Throws if env unset rather than
+ *  silently returning the broken S3-endpoint URL — a missing config
+ *  should fail loudly, not produce 100% broken images.
+ */
 export function getPublicUrl(key: string): string {
-    const env = readEnv();
-    return `https://${env.accountId}.r2.cloudflarestorage.com/${env.bucket}/${key}`;
+    const base = process.env.R2_PUBLIC_URL;
+    if (!base) {
+        throw new Error(
+            'R2_PUBLIC_URL not set — public R2 access requires the bound custom domain or pub-*.r2.dev. ' +
+                'Add to .env: R2_PUBLIC_URL=https://images.silkroadai.io',
+        );
+    }
+    // Normalize: strip trailing slash if present so a config typo doesn't
+    // produce `//key` paths.
+    const normalized = base.endsWith('/') ? base.slice(0, -1) : base;
+    return `${normalized}/${key}`;
 }
 
 /** Upload a buffer to R2. Returns the public URL.
