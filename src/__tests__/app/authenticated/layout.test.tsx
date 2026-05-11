@@ -35,6 +35,13 @@ vi.mock('next/navigation', async () => ({
     usePathname: () => '/dashboard',
 }));
 
+// PR-U2: layout now calls fetchResellerStatus to decide whether to show
+// the 代理后台 sidebar entry. Mock the helper so the layout test stays a
+// pure SSR smoke without needing the resellers table on the test DB.
+vi.mock('@/lib/reseller/fetch-status', () => ({
+    fetchResellerStatus: vi.fn(async () => ({ isReseller: false })),
+}));
+
 import AuthenticatedLayout from '@/app/(authenticated)/layout';
 
 const VERIFIED_USER = {

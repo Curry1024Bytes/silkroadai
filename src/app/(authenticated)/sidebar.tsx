@@ -18,7 +18,7 @@ interface NavItem {
     label: string;
 }
 
-const NAV: NavItem[] = [
+const BASE_NAV: NavItem[] = [
     { href: '/dashboard', label: '概览' },
     // PR-T2: image generation lives in the second-position slot per
     // operator brief — surfaces the headline customer-visible feature
@@ -35,8 +35,21 @@ const NAV: NavItem[] = [
     { href: '/gpu', label: 'GPU 租赁' },
 ];
 
-export function Sidebar() {
+interface SidebarProps {
+    /** PR-U2: when true (current user has an active Reseller row), the
+     *  sidebar inserts a "代理后台" entry between /docs and /gpu. Computed
+     *  server-side in layout.tsx so we don't ship the lookup to the client. */
+    isReseller?: boolean;
+}
+
+export function Sidebar({ isReseller = false }: SidebarProps) {
     const pathname = usePathname();
+    // Build the final nav list — inject the reseller entry just before
+    // /gpu (so customer-facing tools group together and the reseller
+    // back-office sits at the end of the customer rows).
+    const nav: NavItem[] = isReseller
+        ? [...BASE_NAV.slice(0, -1), { href: '/reseller', label: '代理后台' }, BASE_NAV[BASE_NAV.length - 1]]
+        : BASE_NAV;
 
     return (
         <nav
@@ -51,7 +64,7 @@ export function Sidebar() {
             aria-label="客户后台导航"
         >
             <ul className={['list-none p-0 m-0 flex flex-row md:flex-col gap-0.5 px-2 md:px-0'].join(' ')}>
-                {NAV.map((item) => {
+                {nav.map((item) => {
                     const active = pathname === item.href;
                     return (
                         <li key={item.href}>

@@ -25,6 +25,7 @@ import { redirect } from 'next/navigation';
 import { headers } from 'next/headers';
 import { NextRequest } from 'next/server';
 import { getCurrentUser } from '@/lib/auth/session';
+import { fetchResellerStatus } from '@/lib/reseller/fetch-status';
 import { Logo } from '@/components/brand/Logo';
 import { Sidebar } from './sidebar';
 import { LogoutButton } from './logout-button';
@@ -62,6 +63,10 @@ export default async function AuthenticatedLayout({ children }: { children: Reac
     }
 
     const showUnverifiedBanner = !user.email_verified;
+    // PR-U2: lookup reseller status to gate the sidebar entry. Cached
+    // via React.cache() in the helper so nested server components on
+    // /reseller/* don't pay a second DB round-trip.
+    const { isReseller } = await fetchResellerStatus(user.id);
 
     return (
         <div className="min-h-screen flex flex-col bg-paper text-ink">
@@ -84,7 +89,7 @@ export default async function AuthenticatedLayout({ children }: { children: Reac
             </header>
 
             <div className="flex flex-1 min-h-0 flex-col md:flex-row">
-                <Sidebar />
+                <Sidebar isReseller={isReseller} />
                 <main className="flex-1 px-4 sm:px-6 py-6 overflow-y-auto">
                     <div className="max-w-5xl mx-auto">
                         {showUnverifiedBanner && <UnverifiedBanner />}

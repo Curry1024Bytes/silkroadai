@@ -35,6 +35,11 @@ export const ANALYTICS_EVENT_TYPES = [
     'reseller_attribution_assigned',
     'reseller_signup_ip_throttle_flagged',
     'reseller_self_invite_rejected',
+    // Reseller UI path (PR-U2, client-side fired via /api/portal/analytics)
+    'reseller_join_clicked',
+    'reseller_code_created',
+    'reseller_settlement_requested',
+    'reseller_dashboard_viewed',
 ] as const;
 
 export type AnalyticsEventType = (typeof ANALYTICS_EVENT_TYPES)[number];
