@@ -36,20 +36,38 @@ const BASE_NAV: NavItem[] = [
 ];
 
 interface SidebarProps {
-    /** PR-U2: when true (current user has an active Reseller row), the
-     *  sidebar inserts a "代理后台" entry between /docs and /gpu. Computed
-     *  server-side in layout.tsx so we don't ship the lookup to the client. */
-    isReseller?: boolean;
+    /** PR-U2 + fix/reseller-entry-discovery: the reseller entry is ALWAYS
+     *  visible (CTA discoverability — operator decided non-resellers should
+     *  see the "邀请赚佣金" entry to find the program). Label shifts based
+     *  on status:
+     *    null/undefined → "邀请赚佣金" (new-user CTA)
+     *    'active'       → "代理后台"
+     *    'suspended' / 'banned' → "代理后台" (greyed)
+     *  Same href "/reseller" in all cases; the page server-side routes
+     *  active → /reseller/dashboard, others → status-appropriate view.
+     *  Computed server-side in layout.tsx via fetchResellerStatus. */
+    resellerStatus?: 'active' | 'suspended' | 'banned' | null;
 }
 
-export function Sidebar({ isReseller = false }: SidebarProps) {
+function resellerNavLabel(status: SidebarProps['resellerStatus']): string {
+    if (status === 'active') return '代理后台';
+    if (status === 'suspended' || status === 'banned') return '代理后台';
+    return '邀请赚佣金'; // null / undefined → never-joined CTA
+}
+
+export function Sidebar({ resellerStatus = null }: SidebarProps) {
     const pathname = usePathname();
-    // Build the final nav list — inject the reseller entry just before
-    // /gpu (so customer-facing tools group together and the reseller
-    // back-office sits at the end of the customer rows).
-    const nav: NavItem[] = isReseller
-        ? [...BASE_NAV.slice(0, -1), { href: '/reseller', label: '代理后台' }, BASE_NAV[BASE_NAV.length - 1]]
-        : BASE_NAV;
+    // Build the final nav list — always inject the reseller entry just
+    // before /gpu (customer-facing tools group together, reseller entry
+    // sits at the end of the customer rows whether they've joined or not).
+    const nav: NavItem[] = [
+        ...BASE_NAV.slice(0, -1),
+        { href: '/reseller', label: resellerNavLabel(resellerStatus) },
+        BASE_NAV[BASE_NAV.length - 1],
+    ];
+    // Suspended / banned resellers get a muted entry — their click still
+    // routes to /reseller, which server-side renders the status page.
+    const resellerMuted = resellerStatus === 'suspended' || resellerStatus === 'banned';
 
     return (
         <nav
@@ -66,11 +84,13 @@ export function Sidebar({ isReseller = false }: SidebarProps) {
             <ul className={['list-none p-0 m-0 flex flex-row md:flex-col gap-0.5 px-2 md:px-0'].join(' ')}>
                 {nav.map((item) => {
                     const active = pathname === item.href;
+                    const muted = item.href === '/reseller' && resellerMuted;
                     return (
                         <li key={item.href}>
                             <Link
                                 href={item.href}
                                 aria-current={active ? 'page' : undefined}
+                                data-status={item.href === '/reseller' ? (resellerStatus ?? 'none') : undefined}
                                 className={[
                                     'block whitespace-nowrap text-sm no-underline',
                                     'px-4 md:px-5 py-2 md:py-2.5',
@@ -78,7 +98,9 @@ export function Sidebar({ isReseller = false }: SidebarProps) {
                                     'border-l-[3px] border-transparent',
                                     active
                                         ? 'text-navy font-semibold bg-paper-muted md:border-l-brand-accent'
-                                        : 'text-muted-ink hover:text-navy hover:bg-paper-muted/60',
+                                        : muted
+                                          ? 'text-minor-ink/70 hover:text-minor-ink hover:bg-paper-muted/40'
+                                          : 'text-muted-ink hover:text-navy hover:bg-paper-muted/60',
                                     // Mobile uses a bottom-border affordance instead of left.
                                     active
                                         ? 'border-b-2 md:border-b-0 border-b-brand-accent md:border-b-transparent'

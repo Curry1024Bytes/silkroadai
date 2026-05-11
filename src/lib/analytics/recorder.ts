@@ -40,6 +40,8 @@ export const ANALYTICS_EVENT_TYPES = [
     'reseller_code_created',
     'reseller_settlement_requested',
     'reseller_dashboard_viewed',
+    // Reseller discovery (fix/reseller-entry-discovery, client-side)
+    'reseller_promo_card_clicked',
 ] as const;
 
 export type AnalyticsEventType = (typeof ANALYTICS_EVENT_TYPES)[number];

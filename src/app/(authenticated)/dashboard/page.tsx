@@ -22,6 +22,8 @@ import { getQuotaWithCache } from '@/lib/newapi/quota-cache';
 import { getUsageAggregate } from '@/lib/newapi/usage-aggregate';
 import { quotaToCny, quotaToUsd } from '@/lib/newapi/client';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
+import { fetchResellerStatus } from '@/lib/reseller/fetch-status';
+import { ResellerPromoCard } from '@/components/reseller/ResellerPromoCard';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: '概览 — Silk Road AI' };
@@ -81,6 +83,11 @@ export default async function DashboardPage() {
             ? getUsageAggregate({ ...aggArgsBase, period: '30d' })
             : Promise.reject(new Error('account_not_provisioned')),
     ]);
+
+    // fix/reseller-entry-discovery: lookup reseller status for the promo
+    // card gate. fetchResellerStatus is React.cache()-wrapped + layout
+    // already called it earlier, so this is a dedup'd zero-cost re-read.
+    const resellerSnap = await fetchResellerStatus(user.id);
 
     const balance = balanceSettled.status === 'fulfilled' ? balanceSettled.value : null;
     const lastMonth = lastMonthSettled.status === 'fulfilled' ? lastMonthSettled.value : null;
@@ -235,6 +242,16 @@ export default async function DashboardPage() {
                     </Link>
                 ))}
             </nav>
+
+            {/* fix/reseller-entry-discovery: bottom promo card surfaces the
+             *  代理计划 for any non-active reseller (null = never joined,
+             *  suspended/banned = was joined but currently can't earn).
+             *  Active resellers hide it — sidebar 代理后台 entry is enough. */}
+            {resellerSnap.status !== 'active' && (
+                <div className="mt-8">
+                    <ResellerPromoCard sourceStatus={resellerSnap.status === null ? 'none' : resellerSnap.status} />
+                </div>
+            )}
         </section>
     );
 }

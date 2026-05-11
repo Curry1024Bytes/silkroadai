@@ -1,8 +1,11 @@
 /**
- * PR-U2 — Sidebar conditional reseller entry.
+ * fix/reseller-entry-discovery — Sidebar polymorphic reseller entry.
  *
- * Layout passes isReseller; we verify the "代理后台" entry only appears
- * when the prop is true.
+ * Behavior:
+ *   - Always renders the reseller entry (CTA discoverability)
+ *   - Label depends on status: null → "邀请赚佣金"; active → "代理后台";
+ *     suspended/banned → "代理后台" + muted text color
+ *   - Same href "/reseller" in all cases
  *
  * usePathname is mocked because the Sidebar is a client component using
  * next/navigation hooks.
@@ -22,24 +25,49 @@ beforeEach(() => {
 });
 
 describe('<Sidebar />', () => {
-    it('hides 代理后台 entry by default (no prop)', () => {
+    it('non-reseller (default / no prop) → 邀请赚佣金 entry visible', () => {
         const html = renderToString(<Sidebar />);
+        expect(html).toContain('邀请赚佣金');
         expect(html).not.toContain('代理后台');
-        // Existing entries still render
+        // Same href, regardless of label
+        expect(html).toContain('href="/reseller"');
+        // Existing entries unchanged
         expect(html).toContain('概览');
         expect(html).toContain('API Keys');
     });
 
-    it('hides 代理后台 when isReseller=false', () => {
-        const html = renderToString(<Sidebar isReseller={false} />);
+    it('resellerStatus=null → same as no prop (邀请赚佣金 entry)', () => {
+        const html = renderToString(<Sidebar resellerStatus={null} />);
+        expect(html).toContain('邀请赚佣金');
         expect(html).not.toContain('代理后台');
     });
 
-    it('shows 代理后台 when isReseller=true (between /docs and /gpu)', () => {
-        const html = renderToString(<Sidebar isReseller={true} />);
+    it('resellerStatus=active → 代理后台 (not muted)', () => {
+        const html = renderToString(<Sidebar resellerStatus="active" />);
         expect(html).toContain('代理后台');
-        expect(html).toContain('href="/reseller"');
-        // Order: /docs → /reseller → /gpu (reseller injected before last entry)
+        expect(html).not.toContain('邀请赚佣金');
+        expect(html).toContain('data-status="active"');
+        // Active is NOT muted (uses standard nav text color)
+        expect(html).not.toMatch(/text-minor-ink\/70/);
+    });
+
+    it('resellerStatus=suspended → 代理后台 with muted text', () => {
+        const html = renderToString(<Sidebar resellerStatus="suspended" />);
+        expect(html).toContain('代理后台');
+        expect(html).toContain('data-status="suspended"');
+        // Suspended uses text-minor-ink/70 (grey-out)
+        expect(html).toMatch(/text-minor-ink\/70/);
+    });
+
+    it('resellerStatus=banned → 代理后台 with muted text', () => {
+        const html = renderToString(<Sidebar resellerStatus="banned" />);
+        expect(html).toContain('代理后台');
+        expect(html).toContain('data-status="banned"');
+        expect(html).toMatch(/text-minor-ink\/70/);
+    });
+
+    it('reseller entry sits between /docs and /gpu in nav order', () => {
+        const html = renderToString(<Sidebar resellerStatus="active" />);
         const docsIdx = html.indexOf('文档');
         const resellerIdx = html.indexOf('代理后台');
         const gpuIdx = html.indexOf('GPU 租赁');
@@ -48,10 +76,9 @@ describe('<Sidebar />', () => {
         expect(gpuIdx).toBeGreaterThan(resellerIdx);
     });
 
-    it('active state highlights /reseller when pathname matches', () => {
+    it('active state highlight on /reseller path', () => {
         mockUsePathname.mockReturnValue('/reseller');
-        const html = renderToString(<Sidebar isReseller={true} />);
-        // aria-current=page set on the active link
+        const html = renderToString(<Sidebar resellerStatus="active" />);
         expect(html).toContain('aria-current="page"');
     });
 });

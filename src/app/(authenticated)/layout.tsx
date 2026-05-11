@@ -63,10 +63,12 @@ export default async function AuthenticatedLayout({ children }: { children: Reac
     }
 
     const showUnverifiedBanner = !user.email_verified;
-    // PR-U2: lookup reseller status to gate the sidebar entry. Cached
-    // via React.cache() in the helper so nested server components on
-    // /reseller/* don't pay a second DB round-trip.
-    const { isReseller } = await fetchResellerStatus(user.id);
+    // PR-U2 + fix/reseller-entry-discovery: lookup reseller status to drive
+    // the Sidebar's always-visible polymorphic reseller entry (邀请赚佣金
+    // vs 代理后台 vs greyed 代理后台). Cached via React.cache() in the
+    // helper so nested server components on /reseller/* don't pay a second
+    // DB round-trip.
+    const { status: resellerStatus } = await fetchResellerStatus(user.id);
 
     return (
         <div className="min-h-screen flex flex-col bg-paper text-ink">
@@ -89,7 +91,7 @@ export default async function AuthenticatedLayout({ children }: { children: Reac
             </header>
 
             <div className="flex flex-1 min-h-0 flex-col md:flex-row">
-                <Sidebar isReseller={isReseller} />
+                <Sidebar resellerStatus={resellerStatus} />
                 <main className="flex-1 px-4 sm:px-6 py-6 overflow-y-auto">
                     <div className="max-w-5xl mx-auto">
                         {showUnverifiedBanner && <UnverifiedBanner />}

@@ -32,9 +32,36 @@ async function getSessionUser() {
 export default async function ResellerEntryPage() {
     const user = await getSessionUser();
     if (!user) return null; // layout gates; defensive narrowing
-    const { isReseller } = await fetchResellerStatus(user.id);
-    if (isReseller) redirect('/reseller/dashboard');
+    const { status } = await fetchResellerStatus(user.id);
+    if (status === 'active') redirect('/reseller/dashboard');
 
+    // Suspended / banned — show a status page so sidebar grey-entry clicks
+    // land on something explanatory instead of the join form (which would
+    // crash on the unique constraint or worse — quietly try to re-join).
+    if (status === 'suspended' || status === 'banned') {
+        const isBanned = status === 'banned';
+        return (
+            <div className="space-y-6">
+                <Card>
+                    <CardHeader>
+                        <div className="flex flex-col gap-1">
+                            <p className="text-xs uppercase tracking-wider text-muted-ink m-0">代理状态</p>
+                            <CardTitle as="h1">{isBanned ? '账户已封禁' : '账户已暂停'}</CardTitle>
+                        </div>
+                    </CardHeader>
+                    <CardContent>
+                        <p className="text-sm leading-relaxed text-muted-ink m-0">
+                            {isBanned
+                                ? '你的代理身份已被封禁。已发生的合规佣金按规则照付,封禁前的结算申请仍会处理。如有疑问请联系运营。'
+                                : '你的代理身份已被暂停,新的引流不再产生佣金。已确认的佣金仍可正常申请结算。请联系运营了解详情。'}
+                        </p>
+                    </CardContent>
+                </Card>
+            </div>
+        );
+    }
+
+    // null status → never joined → render join page.
     return (
         <div className="space-y-6">
             <Card>

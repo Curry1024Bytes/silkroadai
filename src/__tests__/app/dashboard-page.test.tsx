@@ -36,6 +36,16 @@ vi.mock('@/lib/newapi/client', async () => {
     return actual;
 });
 
+// fix/reseller-entry-discovery: dashboard now reads reseller status to
+// gate the bottom promo card. Mock the helper so this test stays a pure
+// SSR smoke without needing a `resellers` table on the test DB.
+// Default = null (non-reseller) — most existing assertions don't care
+// either way. Tests that want to assert the card's visibility override
+// per-call via mockResolvedValueOnce.
+vi.mock('@/lib/reseller/fetch-status', () => ({
+    fetchResellerStatus: vi.fn(async () => ({ status: null, isReseller: false })),
+}));
+
 import DashboardPage from '@/app/(authenticated)/dashboard/page';
 
 const SAMPLE_USER = {
@@ -247,5 +257,61 @@ describe('<DashboardPage /> SSR — empty / error states', () => {
         const html = renderToString(await DashboardPage());
         expect(html).toContain('暂无数据');
         warnSpy.mockRestore();
+    });
+});
+
+describe('<DashboardPage /> SSR — reseller promo card (fix/reseller-entry-discovery)', () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+        mockGetCurrentUser.mockReturnValue(SAMPLE_USER);
+        mockGetQuotaWithCache.mockResolvedValue({
+            remain_quota: 1_000_000,
+            used_quota: 100_000,
+            source: 'live',
+        });
+        // 4 calls to getUsageAggregate (last_month / all / 30d / unused 4th
+        // for safety) — every test in this block fans out a default
+        // success so we can focus on the promo card assertion only.
+        mockGetUsageAggregate.mockResolvedValue({
+            totalUsedQuota: 0,
+            totalCalls: 0,
+            byModel: [],
+            period: 'last_month',
+            source: 'live',
+            computedAt: new Date(),
+            pagesFetched: 1,
+        });
+    });
+
+    async function renderWithStatus(status: 'active' | 'suspended' | 'banned' | null) {
+        // Re-mock per-test so we control the visibility gate independently.
+        const mod = await import('@/lib/reseller/fetch-status');
+        (mod.fetchResellerStatus as unknown as { mockResolvedValueOnce: (v: unknown) => void }).mockResolvedValueOnce({
+            status,
+            isReseller: status === 'active',
+            tier: status === 'active' ? 'bronze' : undefined,
+        });
+        return renderToString(await DashboardPage());
+    }
+
+    it('non-reseller (status=null) → promo card visible', async () => {
+        const html = await renderWithStatus(null);
+        expect(html).toContain('邀请朋友充值,你也赚佣金');
+        expect(html).toContain('了解代理计划');
+    });
+
+    it('active reseller (status=active) → promo card HIDDEN', async () => {
+        const html = await renderWithStatus('active');
+        expect(html).not.toContain('邀请朋友充值,你也赚佣金');
+    });
+
+    it('suspended reseller (status=suspended) → promo card visible (was-joined re-engagement)', async () => {
+        const html = await renderWithStatus('suspended');
+        expect(html).toContain('邀请朋友充值,你也赚佣金');
+    });
+
+    it('banned reseller (status=banned) → promo card visible', async () => {
+        const html = await renderWithStatus('banned');
+        expect(html).toContain('邀请朋友充值,你也赚佣金');
     });
 });
