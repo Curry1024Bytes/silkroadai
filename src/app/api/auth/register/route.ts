@@ -12,8 +12,10 @@ import {
 } from '@/lib/newapi/client';
 import { signSession, setSessionCookie } from '@/lib/auth/session';
 import { sendVerificationEmail } from '@/lib/email/send';
-import { isValidInviteCode } from '@/lib/invite/code';
 import { getAppUrl } from '@/lib/url/app-url';
+import { extractClientIP } from '@/lib/auth/extract-ip';
+import { resolveInviteCode, checkIpThrottleAndFlag } from '@/lib/reseller/register-helper';
+import { record as recordAnalytics } from '@/lib/analytics/recorder';
 
 const VERIFICATION_TOKEN_TTL_HOURS = 24;
 const VERIFICATION_TOKEN_BYTES = 32;
@@ -91,14 +93,41 @@ export async function POST(req: NextRequest) {
     }
     const { email, password, nickname, invite_code } = parsed.data;
 
-    // W7 D4: invite code is optional, but if provided it must be valid.
-    // Brief: "邀请码无效不阻塞注册(form 提示后用户可清空继续提交)" — the
-    // form-side flow is "fill code → submit → backend rejects → user clears
-    // → resubmit". We surface a distinct error code so the frontend can
-    // show a targeted hint without confusing it with bad email/password.
-    if (invite_code !== undefined && !isValidInviteCode(invite_code)) {
+    // PR-U1: polymorphic invite resolution. Try reseller code FIRST,
+    // fall back to env allow-list (W7 D4). Both paths gated by a single
+    // form field. Resolution outcomes:
+    //   none                  — empty input, no attribution
+    //   reseller              — set inviter_code_id / inviter_reseller_id /
+    //                            attribution_expires_at
+    //   env_invite_code       — set User.invite_code = raw string
+    //   self_invite_rejected  — return 400 (防控 #1)
+    //   invalid               — return 400
+    const now = new Date();
+    const resolved = await resolveInviteCode({
+        typedCode: invite_code,
+        registeringEmail: email,
+        now,
+    });
+    if (resolved.kind === 'invalid') {
         return NextResponse.json(
             { error: 'invalid_invite_code', message: '邀请码无效。可清空后继续注册。' },
+            { status: 400 },
+        );
+    }
+    if (resolved.kind === 'self_invite_rejected') {
+        // 防控 #1 — record audit then 400. Pass new_user=null because the
+        // user row isn't created yet; the reseller's own user_id goes in
+        // properties so ops can trace which reseller this was about.
+        await recordAnalytics({
+            userId: null,
+            eventType: 'reseller_self_invite_rejected',
+            properties: {
+                reseller_id: resolved.resellerUserId,
+                registering_email_lower: email,
+            },
+        });
+        return NextResponse.json(
+            { error: 'invalid_invite_code', message: '不能使用自己的邀请码注册' },
             { status: 400 },
         );
     }
@@ -110,6 +139,11 @@ export async function POST(req: NextRequest) {
 
     const password_hash = await hash(password, BCRYPT_ROUNDS);
 
+    // PR-U1: capture register-time IP + UA on the User row. Both fields are
+    // nullable — local dev curl without a proxy header set produces null.
+    const signupIp = extractClientIP(req);
+    const signupUa = req.headers.get('user-agent')?.slice(0, 500) ?? null;
+
     let user;
     try {
         user = await prisma.user.create({
@@ -117,10 +151,14 @@ export async function POST(req: NextRequest) {
                 email,
                 password_hash,
                 nickname: nickname || null,
-                // Persist the trimmed code as-typed (preserves operator's
-                // intended casing for analytics). isValidInviteCode is
-                // case-insensitive, so this doesn't affect future lookups.
-                invite_code: invite_code ?? null,
+                // W7 D4 env allow-list path — set raw typed code.
+                invite_code: resolved.kind === 'env_invite_code' ? resolved.invite_code : null,
+                // PR-U1 reseller attribution path — set FK + expiry.
+                inviter_code_id: resolved.kind === 'reseller' ? resolved.inviter_code_id : null,
+                inviter_reseller_id: resolved.kind === 'reseller' ? resolved.inviter_reseller_id : null,
+                attribution_expires_at: resolved.kind === 'reseller' ? resolved.attribution_expires_at : null,
+                signup_ip: signupIp,
+                signup_ua: signupUa,
             },
             select: {
                 id: true,
@@ -228,6 +266,37 @@ export async function POST(req: NextRequest) {
             `[register] portal system token eager-provision failed for ${user.id} (will retry lazily on first portal-managed call):`,
             sysTokErr,
         );
+    }
+
+    // PR-U1: post-create analytics + 防控 #2 IP throttle check (24h same-IP
+    // + same-code ≥3 registrations → flag for ops review). Never blocks
+    // registration; record-only. Wrapped in try/catch so a Prisma blip on
+    // analytics path can't break a successful registration.
+    if (resolved.kind === 'reseller') {
+        try {
+            await recordAnalytics({
+                userId: user.id,
+                eventType: 'reseller_attribution_assigned',
+                properties: {
+                    reseller_id: resolved.inviter_reseller_id,
+                    inviter_code_id: resolved.inviter_code_id,
+                    attribution_expires_at: resolved.attribution_expires_at.toISOString(),
+                    signup_ip: signupIp,
+                },
+            });
+            await checkIpThrottleAndFlag({
+                signup_ip: signupIp,
+                inviter_code_id: resolved.inviter_code_id,
+                inviter_reseller_id: resolved.inviter_reseller_id,
+                new_user_id: user.id,
+                now,
+            });
+        } catch (analyticsErr) {
+            console.warn(
+                `[register] reseller analytics / throttle check failed for ${user.id} (registration succeeded):`,
+                analyticsErr,
+            );
+        }
     }
 
     // Issue an email-verification token + fire off the verification email.

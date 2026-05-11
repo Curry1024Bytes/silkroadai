@@ -28,6 +28,10 @@ import { buildOrderResultUrl, createOrderStatusAccessToken } from '@/lib/order/s
 import { getSystemConfig, getSystemConfigs } from '@/lib/system-config';
 import { selectInstance, getInstanceConfig, type LoadBalanceStrategy } from '@/lib/payment/load-balancer';
 import { isValidInviteCode } from '@/lib/invite/code';
+// PR-U1: reseller commission hook (called from inside executeRecharge tx
+// after RechargeLog.create). Failure throws → tx rollback → recharge
+// reverts (money-path consistency).
+import { writeCommissionInTx, isAttributionActive } from '@/lib/reseller/commission';
 
 const DEFAULT_MAX_PENDING_ORDERS = 3;
 /** Decimal(10,2) 允许的最大金额 */
@@ -1104,6 +1108,13 @@ export async function executeRecharge(orderId: string): Promise<void> {
                 // INVITE_CODES env happens inside the bonus tx so an operator
                 // can soft-revoke a code via env edit.
                 invite_code: true,
+                // PR-U1: reseller attribution. NULL on either field = no
+                // reseller commission to write. attribution_expires_at <= now
+                // also disables commission (24-month protection elapsed).
+                // Re-checked inside tx via isAttributionActive() so a stale
+                // peek can't trigger a write past the window.
+                inviter_reseller_id: true,
+                attribution_expires_at: true,
             },
         });
         if (!portalUser) {
@@ -1200,7 +1211,10 @@ export async function executeRecharge(orderId: string): Promise<void> {
                     balanceAfter = balanceBefore + totalQuota;
                 }
 
-                await tx.rechargeLog.create({
+                // PR-U1: capture rechargeLog.id so the commission hook
+                // below can link to it (1:1 unique constraint on
+                // ResellerCommission.recharge_log_id).
+                const rechargeLog = await tx.rechargeLog.create({
                     data: {
                         user_id: order.user_id!,
                         order_id: orderId,
@@ -1218,6 +1232,7 @@ export async function executeRecharge(orderId: string): Promise<void> {
                                 ? `recharge order:${orderId} (first-recharge bonus +${bonusQuota})`
                                 : `recharge order:${orderId}`,
                     },
+                    select: { id: true },
                 });
 
                 await tx.order.updateMany({
@@ -1242,6 +1257,42 @@ export async function executeRecharge(orderId: string): Promise<void> {
                         operator: 'system',
                     },
                 });
+
+                // ── PR-U1 reseller commission hook ──
+                // If user is currently attributed to an active reseller AND
+                // the 24-month window hasn't expired, write a ResellerCommission
+                // row + update Reseller.cumulative_gmv + maybe upgrade tier.
+                // Re-check `isAttributionActive` inside the tx so a stale peek
+                // can't write a commission past the window (defensive).
+                // Failure here rolls back the entire recharge tx — money path
+                // consistency over silently dropping commission.
+                if (
+                    isAttributionActive({
+                        inviter_reseller_id: portalUser.inviter_reseller_id,
+                        attribution_expires_at: portalUser.attribution_expires_at,
+                        now: new Date(),
+                    })
+                ) {
+                    try {
+                        await writeCommissionInTx(tx, {
+                            reseller_id: portalUser.inviter_reseller_id!,
+                            user_id: order.user_id!,
+                            recharge_log_id: rechargeLog.id,
+                            attributed_gmv_cny: cnyAmount,
+                            now: new Date(),
+                        });
+                    } catch (commissionErr) {
+                        // Money path: commission failure rolls back the whole
+                        // recharge tx (so the customer's quota top-up also
+                        // reverts). Operator can retry via /admin/order/retry.
+                        // Logged inside the catch block of the outer try.
+                        console.error(
+                            `[executeRecharge] reseller commission write failed (rolling back recharge):`,
+                            commissionErr,
+                        );
+                        throw commissionErr;
+                    }
+                }
 
                 // Cache bust(W4-2 D6):applyTopup 已经把 raw quota 涨到 new-api 那边,
                 // 但 portal Prisma 上的 newapi_quota_cache 还是旧值。null 三个字段让

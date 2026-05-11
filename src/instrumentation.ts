@@ -16,5 +16,10 @@ export async function register() {
         // PR-T1 Phase 4: image-generation TTL + soft-delete sweep. 6h cadence.
         const { startImageCleanupScheduler } = await import('@/lib/scheduler/image-cleanup');
         startImageCleanupScheduler();
+
+        // PR-U1: reseller commission hold-release (pending → confirmed after
+        // 14d) + monthly settlement auto-create on day 1 UTC. 1h cadence.
+        const { startResellerCommissionScheduler } = await import('@/lib/scheduler/reseller-commission');
+        startResellerCommissionScheduler();
     }
 }

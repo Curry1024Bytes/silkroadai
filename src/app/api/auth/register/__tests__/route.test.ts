@@ -11,6 +11,13 @@ const mockTokenCreate = vi.fn();
 const mockEmailVerificationTokenCreate = vi.fn();
 const mockTransaction = vi.fn();
 
+// PR-U1: reseller resolve path needs resellerInviteCode.findUnique
+// (returns null when env-only / empty input) + user.count for IP throttle
+// + analyticsEvent.create for the attribution-assigned event.
+const mockResellerCodeFindUnique = vi.fn();
+const mockUserCount = vi.fn();
+const mockAnalyticsEventCreate = vi.fn();
+
 vi.mock('@/lib/db', () => ({
     prisma: {
         user: {
@@ -18,12 +25,19 @@ vi.mock('@/lib/db', () => ({
             create: (...args: unknown[]) => mockUserCreate(...args),
             update: (...args: unknown[]) => mockUserUpdate(...args),
             delete: (...args: unknown[]) => mockUserDelete(...args),
+            count: (...args: unknown[]) => mockUserCount(...args),
         },
         newApiToken: {
             create: (...args: unknown[]) => mockTokenCreate(...args),
         },
         emailVerificationToken: {
             create: (...args: unknown[]) => mockEmailVerificationTokenCreate(...args),
+        },
+        resellerInviteCode: {
+            findUnique: (...args: unknown[]) => mockResellerCodeFindUnique(...args),
+        },
+        analyticsEvent: {
+            create: (...args: unknown[]) => mockAnalyticsEventCreate(...args),
         },
         $transaction: (...args: unknown[]) => mockTransaction(...args),
     },
@@ -70,6 +84,13 @@ beforeEach(() => {
         accepted: ['ok'],
         rejected: [],
     });
+    // PR-U1 defaults: no reseller code matches → polymorphic resolver
+    // falls through to env-allow-list path (which is currently empty, so
+    // resolved.kind === 'none' for blank invite_code in the existing tests).
+    // user.count / analyticsEvent.create are no-ops by default.
+    mockResellerCodeFindUnique.mockResolvedValue(null);
+    mockUserCount.mockResolvedValue(0);
+    mockAnalyticsEventCreate.mockResolvedValue({});
 });
 
 describe('POST /api/auth/register (new-api)', () => {

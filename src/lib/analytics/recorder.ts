@@ -30,6 +30,11 @@ export const ANALYTICS_EVENT_TYPES = [
     'image_deleted_ui',
     'cost_confirm_shown',
     'cost_confirm_canceled',
+    // Reseller path (PR-U1, server-side fired)
+    'reseller_tier_upgraded',
+    'reseller_attribution_assigned',
+    'reseller_signup_ip_throttle_flagged',
+    'reseller_self_invite_rejected',
 ] as const;
 
 export type AnalyticsEventType = (typeof ANALYTICS_EVENT_TYPES)[number];

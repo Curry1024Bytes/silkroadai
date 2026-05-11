@@ -260,6 +260,37 @@ model User {
   balance_alert_threshold_cny Decimal?  @default(10.00) @db.Decimal(8, 2)
   balance_alert_last_sent_at  DateTime?
 
+  // ── 代理分销归属(PR-U1)──
+  // 注册时由 register handler 填:
+  //   - inviter_code_id      = ResellerInviteCode.id(命中的码,FK,SetNull on delete)
+  //   - inviter_reseller_id  = Reseller.id(归属代理,从 code 反查得到)
+  //   - attribution_expires_at = registered_at + 24 months(保护期截止;
+  //                              过期后该 user 的 recharge 不再发 commission)
+  // 全部 nullable:未走代理路径(直接注册或用 env invite_code)= null。
+  // executeRecharge 在 commission hook 中读 inviter_reseller_id !=null AND
+  // attribution_expires_at > now 才发 commission。
+  inviter_code_id        String?   @db.Uuid
+  inviter_reseller_id    String?   @db.Uuid
+  attribution_expires_at DateTime?
+
+  // ── 注册风控元数据(PR-U1)──
+  // signup_ip / signup_ua:register handler 写入一次,后续不修改。
+  // 用于 24h 同 IP 注册 ≥3 同代理码 → manual_review flag 检测;
+  // 也为 W11+ 其他防控规则(同 UA + IP 注册多账号等)预留。
+  // 因为 IP/UA 字段较长且可为 null,用 String? 不加索引(全表扫描成本可控,
+  // 防控查询 24h 窗口 + reseller_id 已有索引)。
+  signup_ip String?
+  signup_ua String?
+
+  // 代理身份 — 用户加入代理计划后,1:1 关联到 Reseller。
+  // 普通用户此关联为空。删除 user 时级联清掉 reseller(onDelete: Cascade
+  // 在 Reseller 侧定义)。
+  reseller Reseller?
+
+  // 代理引流的 commission 流水(作为客户被 attribute 时,每次 recharge
+  // 触发一条)。SetNull on user delete 保留 reseller 的历史 GMV。
+  reseller_commissions_as_customer ResellerCommission[]
+
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
@@ -270,6 +301,12 @@ model User {
   // Not on a query hot-path — register/login/dashboard never filter by
   // invite_code — so partial index isn't worth the upgrade.
   @@index([invite_code])
+  // PR-U1: reseller customer-list query path (按 inviter_reseller_id 取
+  // 该代理所有引流客户),按 created_at desc 分页。WHERE inviter_reseller_id=?
+  // 是 hot path(每次 reseller 看 /reseller/customers 都会跑)。
+  @@index([inviter_reseller_id, created_at(sort: Desc)])
+  // PR-U1: 同 IP 24h 内注册次数检查 — 防控 #2 IP throttle。
+  @@index([signup_ip, created_at(sort: Desc)])
   @@map("users")
 }
 
@@ -400,6 +437,10 @@ model RechargeLog {
   source RechargeSource @default(payment)
   note   String?
 
+  // PR-U1: 代理 commission 反向(一次充值 ≤ 一条 commission;
+  // 见 ResellerCommission.recharge_log_id @unique 约束)。
+  reseller_commission ResellerCommission?
+
   created_at DateTime @default(now())
 
   @@index([user_id])
@@ -497,4 +538,178 @@ model AnalyticsEvent {
   @@index([event_type, created_at(sort: Desc)])
   @@index([user_id, created_at(sort: Desc)])
   @@map("analytics_events")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// 代理分销系统(PR-U1)— 4 models + 4 enums
+// ─────────────────────────────────────────────────────────────────────────
+//
+// 整体语义:
+//   - Reseller            = 1:1 User,代理身份 + tier + 结算信息
+//   - ResellerInviteCode  = N:1 Reseller,代理可创建多个码(限 10 个 active),
+//                           customers 注册时填这个码建立 attribution
+//   - ResellerCommission  = N:1 Reseller(挣钱方)+ N:1 User(消费方)
+//                           + 1:1 RechargeLog(对账锚点;一次充值 ≤ 一条 commission)
+//   - ResellerSettlement  = N:1 Reseller,每月一行(reseller_id, period_month) unique
+//
+// Money path 关键约束(money path 出错 = real loss,审 PR 时优先看):
+//   1. commission_rate 历史性:已 confirmed 的 commission 不补差;tier 升级
+//      后只影响下一笔。rate 在 INSERT 时快照存到 row。
+//   2. 24 月保护期:user.attribution_expires_at 过期后,executeRecharge 不
+//      再写 commission(brief 硬约束)。
+//   3. 14d hold:status=pending → confirmed 由 ResellerCommissionScheduler
+//      推。退款窗口内充值 → commission 仍处 pending,可被 refund hook 撤销
+//      (refund 流当前不动 commission,W11+ Phase 2 再补)。
+//   4. 一次充值 ≤ 一条 commission:RechargeLog.id 唯一索引在 ResellerCommission
+//      上,executeRecharge 内的 tx 同时写 RechargeLog + ResellerCommission,
+//      失败一起回滚。
+//   5. 大额风控:commission_amount > ¥100,000 → admin_review_required=true,
+//      cron 跳过自动 confirm,等 operator 手动审。
+
+model Reseller {
+  id      String @id @default(uuid()) @db.Uuid
+  user_id String @unique @db.Uuid
+  user    User   @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  // tier 仅缓存值,真实档位由 cumulative_gmv + TIER_THRESHOLDS 计算。
+  // 写入路径:commission hook 内每次写完 commission 后 re-compute,跨阈值
+  // 时同事务更新此字段 + 写 AnalyticsEvent(reseller_tier_upgraded)。
+  tier            ResellerTier @default(bronze)
+  cumulative_gmv  Decimal      @default(0) @db.Decimal(14, 4) // CNY total GMV; 14,4 cover billion-CNY scale
+  status          ResellerStatus @default(active)
+
+  // 提现 / 结算信息 — 代理 join 时可空,后期可在 /reseller dashboard 补填。
+  // 当代理点 [申请提现] 时校验三个字段都非空。
+  // method 是个 free-form string('alipay' / 'wechat' / 'bank' / 'manual'),
+  // 不上 enum:operator 结算多样,enum 限制反而麻烦。
+  settle_method  String?
+  settle_account String?
+  settle_name    String?
+
+  // Relations(反向)
+  invite_codes ResellerInviteCode[]
+  commissions  ResellerCommission[]
+  settlements  ResellerSettlement[]
+
+  joined_at  DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@index([status])
+  @@index([tier])
+  @@map("resellers")
+}
+
+model ResellerInviteCode {
+  id          String   @id @default(uuid()) @db.Uuid
+  reseller_id String   @db.Uuid
+  reseller    Reseller @relation(fields: [reseller_id], references: [id], onDelete: Cascade)
+
+  // 自定义码,大写 + 数字 + 中划线,3-20 字符。规范化存储 = 用户输入 toUpperCase
+  // 后落库。register handler 比对时也 toUpperCase。unique 全表,与 env
+  // INVITE_CODES allow-list 冲突在 API endpoint create 时 reject(避免双重
+  // 语义)。
+  code  String  @unique
+  label String? // 代理自标:"朋友圈 5/24" / "X Twitter" 等,UI 列表展示用
+
+  // is_active=false = 软删除,保留历史 attribution(已被某 user 用过的码不
+  // 能真删,DELETE FK RESTRICT)。soft-delete 仅影响新 register 不能再用。
+  is_active Boolean @default(true)
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@index([reseller_id, is_active])
+  @@map("reseller_invite_codes")
+}
+
+model ResellerCommission {
+  id          String @id @default(uuid()) @db.Uuid
+  reseller_id String @db.Uuid
+  reseller    Reseller @relation(fields: [reseller_id], references: [id], onDelete: Restrict)
+
+  // 客户(消费方)— 若 user 被删除,commission 行保留以追溯历史 GMV,
+  // user_id 置 NULL。
+  user_id String? @db.Uuid
+  user    User?   @relation(fields: [user_id], references: [id], onDelete: SetNull)
+
+  // 1:1 对锚点 RechargeLog(防双发 commission)— unique 索引保证。
+  // RestrictOnDelete:RechargeLog 不会被删除(append-only),但保险起见 Restrict。
+  recharge_log_id String       @unique @db.Uuid
+  recharge_log    RechargeLog  @relation(fields: [recharge_log_id], references: [id], onDelete: Restrict)
+
+  attributed_gmv    Decimal @db.Decimal(12, 4) // 与 recharge_log.amount 相等(CNY),快照存便于查询
+  commission_rate   Decimal @db.Decimal(5, 4)  // 0.1000 / 0.1500 / 0.2000;rate 在 INSERT 时快照
+  commission_amount Decimal @db.Decimal(12, 4) // attributed_gmv × commission_rate(CNY)
+
+  status                   CommissionStatus @default(pending)
+  admin_review_required    Boolean          @default(false) // commission_amount > ¥100,000 时为 true,cron 跳过
+
+  // 14 天 hold 窗口截止时刻;cron 每小时扫,hold_until < now 且 status=pending
+  // AND admin_review_required=false → flip 到 confirmed。
+  hold_until  DateTime
+  settled_at  DateTime? // settlement.status=paid 时由 settlement endpoint 一并写
+
+  created_at DateTime @default(now())
+
+  @@index([reseller_id, status])
+  @@index([reseller_id, created_at(sort: Desc)]) // /reseller/commissions 翻页路径
+  @@index([status, hold_until]) // cron 扫 pending → confirmed
+  @@index([user_id]) // /reseller/customers 聚合每客户累计 GMV
+  @@map("reseller_commissions")
+}
+
+model ResellerSettlement {
+  id          String   @id @default(uuid()) @db.Uuid
+  reseller_id String   @db.Uuid
+  reseller    Reseller @relation(fields: [reseller_id], references: [id], onDelete: Restrict)
+
+  // period_month 用 "YYYY-MM" UTC 字符串(避免 timezone 边界 bug)。
+  // 月初 cron 计算 = 上一月所有 confirmed commission 聚合。
+  period_month     String
+  total_commission Decimal @default(0) @db.Decimal(14, 4)
+  commission_count Int     @default(0)
+
+  // 状态机(brief Q2):
+  //   pending   = cron 月初创建,等代理申请提现
+  //   requested = 代理点了 [申请提现](POST /settlement/request)
+  //   paid      = operator 手动打款后改(更新 paid_at + paid_tx_ref)
+  status SettlementStatus @default(pending)
+
+  requested_at DateTime?
+  paid_at      DateTime?
+  paid_tx_ref  String? // operator 手填打款凭证(支付宝/微信 txn id)
+  notes        String? // operator 备注
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  // 同代理 + 同月份只能一行(upsert key)。
+  @@unique([reseller_id, period_month])
+  @@index([reseller_id, status])
+  @@index([status, period_month])
+  @@map("reseller_settlements")
+}
+
+enum ResellerStatus {
+  active
+  suspended
+  banned
+}
+
+enum ResellerTier {
+  bronze
+  silver
+  gold
+}
+
+enum CommissionStatus {
+  pending
+  confirmed
+  settled
+}
+
+enum SettlementStatus {
+  pending
+  requested
+  paid
 }
