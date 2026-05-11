@@ -32,9 +32,16 @@ export interface CodeRow {
     created_at: string;
 }
 
+/** Landing URL surfaced by the "复制落地链接" button. fix/invite-landing:
+ *  point at /register directly so customers skip the homepage detour.
+ *  Server-side /register page does an unconditional redirect to
+ *  /portal/register preserving ?invite=, so the real URL the customer
+ *  ends up on is /portal/register?invite=X. We still expose the short
+ *  /register URL because resellers paste this into chat / 朋友圈 / X and
+ *  short URLs are easier to trust. */
 function landingUrl(code: string): string {
-    if (typeof window === 'undefined') return `/?invite=${encodeURIComponent(code)}`;
-    return `${window.location.origin}/?invite=${encodeURIComponent(code)}`;
+    if (typeof window === 'undefined') return `/register?invite=${encodeURIComponent(code)}`;
+    return `${window.location.origin}/register?invite=${encodeURIComponent(code)}`;
 }
 
 function fmtCny(v: number): string {

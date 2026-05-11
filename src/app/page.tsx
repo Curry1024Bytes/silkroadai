@@ -16,6 +16,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { Logo } from '@/components/brand/Logo';
 import { isPromoActive } from '@/lib/promo';
+import { InviteCodeBridge } from '@/components/marketing/InviteCodeBridge';
 
 // Inter is loaded globally via `next/font/google` in `src/app/layout.tsx`
 // (W7 P3) so the @theme `--font-sans` token resolves on every page. We
@@ -57,6 +58,11 @@ export default async function LandingPage({
             }}
         >
             {oauthError ? <OAuthErrorBanner code={oauthError} /> : null}
+            {/* fix/invite-landing: capture `?invite=X` if a reseller link
+             *  was shared as the old `silkroadai.io/?invite=X` form, so
+             *  the register page can pick up the attribution on the
+             *  customer's next navigation. No render — pure side effect. */}
+            <InviteCodeBridge />
             <Header />
             <Hero />
             {promoActive ? <PromoBanner /> : null}

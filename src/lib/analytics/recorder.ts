@@ -42,6 +42,10 @@ export const ANALYTICS_EVENT_TYPES = [
     'reseller_dashboard_viewed',
     // Reseller discovery (fix/reseller-entry-discovery, client-side)
     'reseller_promo_card_clicked',
+    // Reseller landing (fix/invite-landing, fired by register-form when
+    // the page loads with `?invite=X` in the URL — i.e. the customer
+    // arrived via a reseller invite link)
+    'reseller_invite_link_landed',
 ] as const;
 
 export type AnalyticsEventType = (typeof ANALYTICS_EVENT_TYPES)[number];
