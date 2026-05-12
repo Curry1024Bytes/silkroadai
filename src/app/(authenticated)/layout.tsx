@@ -94,7 +94,7 @@ export default async function AuthenticatedLayout({ children }: { children: Reac
                 <Sidebar resellerStatus={resellerStatus} />
                 <main className="flex-1 px-4 sm:px-6 py-6 overflow-y-auto">
                     <div className="max-w-5xl mx-auto">
-                        {showUnverifiedBanner && <UnverifiedBanner />}
+                        {showUnverifiedBanner && <UnverifiedBanner email={user.email} />}
                         {children}
                     </div>
                 </main>

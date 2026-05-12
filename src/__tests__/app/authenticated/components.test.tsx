@@ -93,7 +93,11 @@ describe('<LogoutButton />', () => {
 
 describe('<UnverifiedBanner />', () => {
     it('renders a yellow alert with 重发验证邮件 button', () => {
-        const html = renderToString(<UnverifiedBanner />);
+        // fix/resend-verification-empty-body: prop is now required.
+        // The dedicated unverified-banner.test.tsx exercises the email
+        // field flowing into the fetch body; here we just need a stub
+        // to render the markup.
+        const html = renderToString(<UnverifiedBanner email="happy@silkroadai.io" />);
         expect(html).toMatch(/role="alert"/);
         expect(html).toContain('邮箱未验证');
         expect(html).toContain('重发验证邮件');

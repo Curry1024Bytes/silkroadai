@@ -11,12 +11,43 @@ import { FormError } from '@/components/ui/FormError';
  * reset / receipts / alerts).
  *
  * The "重发验证邮件" button POSTs /api/auth/resend-verification (W3 D5 endpoint).
- * That endpoint is throttled server-side, so spamming this button has no
- * additional effect.
+ * The endpoint is session-less by design (it's also called from /login when
+ * a user can't verify), so the form supplies the email via the body. PR-U2
+ * shipped this banner without a body, which made the endpoint reject with
+ * `invalid_input` every time — the fix here threads the logged-in user's
+ * email through from layout.tsx into the body.
+ *
+ * The server-side throttle still applies (5-min window per user), so
+ * spamming this button has no additional effect beyond the first valid call.
  */
 type SendStatus = 'idle' | 'sending' | 'sent' | 'error';
 
-export function UnverifiedBanner() {
+interface Props {
+    /** Current user's email — forwarded by the layout. Passed in the
+     *  request body so the session-less endpoint can identify the target. */
+    email: string;
+}
+
+/** Exported so tests can assert the request shape directly (the bug we're
+ *  fixing was exactly this contract — empty body vs schema requires email).
+ *  Returns a normalized result; the caller handles UI state. */
+export async function callResendVerification(email: string): Promise<{ ok: true } | { ok: false; error: string }> {
+    const r = await fetch('/api/auth/resend-verification', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ email }),
+    });
+    if (r.ok) return { ok: true };
+    const data = await r.json().catch(() => ({}));
+    const err =
+        typeof (data as { error?: unknown })?.error === 'string'
+            ? (data as { error: string }).error
+            : `请求失败 (${r.status})`;
+    return { ok: false, error: err };
+}
+
+export function UnverifiedBanner({ email }: Props) {
     const [status, setStatus] = useState<SendStatus>('idle');
     const [errMsg, setErrMsg] = useState<string | null>(null);
 
@@ -25,16 +56,12 @@ export function UnverifiedBanner() {
         setStatus('sending');
         setErrMsg(null);
         try {
-            const r = await fetch('/api/auth/resend-verification', {
-                method: 'POST',
-                credentials: 'same-origin',
-            });
+            const r = await callResendVerification(email);
             if (r.ok) {
                 setStatus('sent');
                 return;
             }
-            const data = await r.json().catch(() => ({}));
-            setErrMsg(typeof data?.error === 'string' ? data.error : `请求失败 (${r.status})`);
+            setErrMsg(r.error);
             setStatus('error');
         } catch (err) {
             setErrMsg(err instanceof Error ? err.message : '网络错误');
