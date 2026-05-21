@@ -29,7 +29,7 @@ import { Card } from '@/components/ui/Card';
 export const metadata = {
     title: '集成文档 — Silk Road AI',
     description:
-        'Silk Road AI 一键集成文档:Cursor、Cline、Continue、Claude Code Desktop、OpenAI Codex CLI、Python / Node SDK。OpenAI / Anthropic 兼容协议,5 分钟接入。',
+        'Silk Road AI 一键集成文档:Cursor、Cline、Continue、Claude Code Desktop、OpenAI Codex(CLI / IDE 插件 / 桌面 app)、Python / Node SDK。OpenAI / Anthropic 兼容协议,5 分钟接入。',
 };
 
 interface AgentSection {
@@ -58,8 +58,8 @@ const AGENTS: AgentSection[] = [
     },
     {
         id: 'codex-cli',
-        label: 'OpenAI Codex CLI',
-        blurb: 'Codex CLI 自定义 provider:wire_api = "chat" 走标准 OpenAI 兼容路径,可指定 gpt-5.4 等模型。',
+        label: 'OpenAI Codex(CLI / IDE / Desktop)',
+        blurb: 'Codex 三客户端形态共享 ~/.codex/config.toml — wire_api = "chat" 走标准 OpenAI 兼容路径,可指定 gpt-5.4 等模型。',
     },
     { id: 'python-sdk', label: 'Python (openai SDK)', blurb: '官方 openai Python 包,实测可调通。' },
     { id: 'node-sdk', label: 'Node / TypeScript (openai SDK)', blurb: '官方 openai Node 包,实测可调通。' },
@@ -306,22 +306,31 @@ claude`}
                     </p>
                 </AgentBlock>
 
-                {/* ─── OpenAI Codex CLI ───
-                 *  Codex CLI 内置 `openai` provider 默认 wire_api = "responses"
-                 *  (走 /v1/responses 路径),与上游 sub2api 的 passthrough 校验
-                 *  不兼容(顶层 instructions 字段约束)。客户配置一个 wire_api =
-                 *  "chat" 的自定义 provider 即可走我们 17 个 OpenAI 兼容渠道里
-                 *  9 个已验证可调的 gpt-5.x 模型(2026-05-21 task #8 全量测过)。
+                {/* ─── OpenAI Codex(CLI / IDE / Desktop)───
+                 *  Codex 三客户端形态(CLI / IDE 插件 / 桌面 app)共享同一个
+                 *  ~/.codex/config.toml 配置文件和同一个底层 agent
+                 *  (https://developers.openai.com/codex/ide 明示)。客户配置
+                 *  一次,所有客户端通用。关键约束:必须自定义一个
+                 *  wire_api = "chat" 的 provider,旁路 Codex 内置 `openai`
+                 *  provider 的默认 wire_api = "responses" 路径(与上游 sub2api
+                 *  passthrough 的 instructions 字段约束冲突,gotcha #18)。
                  */}
                 <AgentBlock
                     id="codex-cli"
                     number="05"
-                    title="OpenAI Codex CLI"
+                    title="OpenAI Codex(CLI / IDE 插件 / 桌面 app)"
                     docsUrl="https://developers.openai.com/codex/config-advanced"
                     docsLabel="developers.openai.com/codex/config-advanced"
                 >
                     <p className="m-0 mb-3 text-sm text-ink leading-relaxed">
-                        Codex CLI 内置的{' '}
+                        Codex 有三个客户端形态 — 终端 CLI、IDE 插件(VS Code / Cursor / Windsurf / JetBrains)、桌面 app —— <strong className="text-navy">共享同一个{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            ~/.codex/config.toml
+                        </code>{' '}
+                        配置文件和同一个底层 agent</strong>。下面的步骤 1 配置文件只需写一次,3 个客户端共用。
+                    </p>
+                    <p className="m-0 mb-3 text-sm text-ink leading-relaxed">
+                        Codex 内置的{' '}
                         <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
                             openai
                         </code>{' '}
@@ -336,20 +345,12 @@ claude`}
                         <code className="font-mono text-xs">/v1/chat/completions</code> 路径即可。
                     </p>
 
-                    <p className="m-0 mb-2 text-sm text-ink font-medium">1. 安装 Codex CLI</p>
-                    <CodeBlock language="bash">
-                        {`# macOS / Linux / Windows(需 Node 20+)
-npm install -g @openai/codex
-
-# 或 Homebrew(macOS)
-brew install --cask codex`}
-                    </CodeBlock>
-
                     <p className="m-0 mt-4 mb-2 text-sm text-ink font-medium">
-                        2. 编辑配置文件{' '}
+                        步骤 1:编辑共享配置{' '}
                         <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
                             ~/.codex/config.toml
                         </code>
+                        (三客户端通用)
                     </p>
                     <CodeBlock language="yaml">
                         {`# Silk Road AI provider — wire_api = "chat" 走 /v1/chat/completions
@@ -362,35 +363,101 @@ base_url = "${OPENAI_BASE}"
 env_key = "OPENAI_API_KEY"
 wire_api = "chat"`}
                     </CodeBlock>
+                    <p className="m-0 mt-2 text-xs text-minor-ink">
+                        如果{' '}
+                        <code className="font-mono text-xs">~/.codex/</code>{' '}
+                        目录不存在,先 <code className="font-mono text-xs">mkdir -p ~/.codex</code>{' '}
+                        再创建文件。Windows 用户路径为{' '}
+                        <code className="font-mono text-xs">%USERPROFILE%\.codex\config.toml</code>。
+                    </p>
 
-                    <p className="m-0 mt-4 mb-2 text-sm text-ink font-medium">3. 设置 API Key 并启动</p>
+                    <p className="m-0 mt-5 mb-2 text-sm text-ink font-medium">步骤 2:挑你用的客户端安装 + 登录</p>
+
+                    <p className="m-0 mb-2 mt-3 text-sm text-ink font-medium">2.1 终端 CLI</p>
                     <CodeBlock language="bash">
-                        {`# macOS / Linux
+                        {`# 安装(macOS / Linux / Windows,需 Node 20+)
+npm install -g @openai/codex
+# 或 Homebrew(macOS): brew install --cask codex
+
+# 启动(macOS / Linux)
 export OPENAI_API_KEY="sk-…"   # portal /keys
 codex
 
-# Windows PowerShell
+# 启动(Windows PowerShell)
 $env:OPENAI_API_KEY = "sk-…"
 codex`}
                     </CodeBlock>
 
-                    <p className="m-0 mt-4 text-xs text-minor-ink">
-                        切换模型:把第 2 步配置文件里的{' '}
+                    <p className="m-0 mb-2 mt-4 text-sm text-ink font-medium">
+                        2.2 IDE 插件(VS Code / Cursor / Windsurf / JetBrains 全系)
+                    </p>
+                    <ol className="m-0 mb-2 text-sm text-ink leading-relaxed list-decimal pl-5 space-y-1">
+                        <li>
+                            <span className="text-ink">VS Code / Cursor / Windsurf:</span> marketplace 搜{' '}
+                            <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                                Codex – OpenAI&apos;s coding agent
+                            </code>{' '}
+                            (发布者{' '}
+                            <code className="font-mono text-xs">openai.chatgpt</code>)。JetBrains 系(IntelliJ / PyCharm / WebStorm / Rider):marketplace 搜{' '}
+                            <code className="font-mono text-xs">Codex</code>。
+                        </li>
+                        <li>
+                            打开 Codex 侧边栏 →{' '}
+                            <strong className="text-navy">不要点 &quot;Sign in with ChatGPT&quot;</strong>,改点{' '}
+                            <strong className="text-navy">&quot;Use API Key&quot;</strong>。
+                        </li>
+                        <li>
+                            粘贴 portal{' '}
+                            <Link href="/keys" className="text-navy font-medium hover:text-brand-accent">
+                                /keys
+                            </Link>{' '}
+                            的{' '}
+                            <code className="font-mono text-xs">sk-…</code> → 确定。
+                        </li>
+                        <li>
+                            重启 IDE / reload extension,Codex 侧边栏自动读{' '}
+                            <code className="font-mono text-xs">~/.codex/config.toml</code>{' '}
+                            里的{' '}
+                            <code className="font-mono text-xs">silkroadai</code>{' '}
+                            provider 路由请求。
+                        </li>
+                    </ol>
+                    <p className="m-0 mt-1 text-xs text-minor-ink">
+                        VS Code 内也可走 Settings → Extensions → Codex → API Key 字段粘贴 sk-…,效果等同 2 + 3 步。
+                    </p>
+
+                    <p className="m-0 mb-2 mt-4 text-sm text-ink font-medium">2.3 桌面 app</p>
+                    <CodeBlock language="bash">
+                        {`# CLI 安装好后,内置桌面 app 子命令
+codex app
+
+# 首次打开会弹 sign-in 对话框,同 2.2 一样:
+#   选 "Use API Key" → 粘贴 sk-… → 确定`}
+                    </CodeBlock>
+
+                    <p className="m-0 mt-5 text-xs text-minor-ink">
+                        切换模型:把步骤 1 配置文件里的{' '}
                         <code className="font-mono text-xs">model = &quot;{SAMPLE_OPENAI_MODEL}&quot;</code>{' '}
                         改成任意 OpenAI 兼容模型(如{' '}
                         <code className="font-mono text-xs">gpt-5.5</code>、
-                        <code className="font-mono text-xs">gpt-5.4-mini</code>),完整清单见{' '}
+                        <code className="font-mono text-xs">gpt-5.4-mini</code>),保存后无需重装客户端,下次启动生效。完整清单见{' '}
                         <Link href="/models" className="text-navy font-medium hover:text-brand-accent">
                             /models
                         </Link>
                         。
                     </p>
                     <p className="m-0 mt-2 text-xs text-minor-ink">
-                        ⚠️ 不要使用 Codex CLI 内置的{' '}
+                        ⚠️ 三个客户端都不要使用 Codex 内置的{' '}
                         <code className="font-mono text-xs">openai</code> provider(默认{' '}
                         <code className="font-mono text-xs">wire_api = &quot;responses&quot;</code>),会收到{' '}
                         <code className="font-mono text-xs">403 forbidden_error · OpenAI codex passthrough requires a non-empty instructions field</code>。
-                        必须按上面新建一个自定义 provider。
+                        必须按步骤 1 新建自定义 provider。
+                    </p>
+                    <p className="m-0 mt-2 text-xs text-minor-ink">
+                        IDE 插件 + 桌面 app 的认证凭据缓存在{' '}
+                        <code className="font-mono text-xs">~/.codex/auth.json</code>(明文),换 key 时记得{' '}
+                        <code className="font-mono text-xs">rm ~/.codex/auth.json</code>{' '}
+                        后重新登录。
                     </p>
                 </AgentBlock>
 
