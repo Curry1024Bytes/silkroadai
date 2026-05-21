@@ -29,7 +29,7 @@ import { Card } from '@/components/ui/Card';
 export const metadata = {
     title: '集成文档 — Silk Road AI',
     description:
-        'Silk Road AI 一键集成文档:Cursor、Cline、Continue、Claude Code Desktop、Python / Node SDK。OpenAI / Anthropic 兼容协议,5 分钟接入。',
+        'Silk Road AI 一键集成文档:Cursor、Cline、Continue、Claude Code Desktop、OpenAI Codex CLI、Python / Node SDK。OpenAI / Anthropic 兼容协议,5 分钟接入。',
 };
 
 interface AgentSection {
@@ -55,6 +55,11 @@ const AGENTS: AgentSection[] = [
         id: 'claude-code',
         label: 'Claude Code Desktop / CLI',
         blurb: 'Claude Code 第三方 API:ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN 环境变量。',
+    },
+    {
+        id: 'codex-cli',
+        label: 'OpenAI Codex CLI',
+        blurb: 'Codex CLI 自定义 provider:wire_api = "chat" 走标准 OpenAI 兼容路径,可指定 gpt-5.4 等模型。',
     },
     { id: 'python-sdk', label: 'Python (openai SDK)', blurb: '官方 openai Python 包,实测可调通。' },
     { id: 'node-sdk', label: 'Node / TypeScript (openai SDK)', blurb: '官方 openai Node 包,实测可调通。' },
@@ -301,10 +306,98 @@ claude`}
                     </p>
                 </AgentBlock>
 
+                {/* ─── OpenAI Codex CLI ───
+                 *  Codex CLI 内置 `openai` provider 默认 wire_api = "responses"
+                 *  (走 /v1/responses 路径),与上游 sub2api 的 passthrough 校验
+                 *  不兼容(顶层 instructions 字段约束)。客户配置一个 wire_api =
+                 *  "chat" 的自定义 provider 即可走我们 17 个 OpenAI 兼容渠道里
+                 *  9 个已验证可调的 gpt-5.x 模型(2026-05-21 task #8 全量测过)。
+                 */}
+                <AgentBlock
+                    id="codex-cli"
+                    number="05"
+                    title="OpenAI Codex CLI"
+                    docsUrl="https://developers.openai.com/codex/config-advanced"
+                    docsLabel="developers.openai.com/codex/config-advanced"
+                >
+                    <p className="m-0 mb-3 text-sm text-ink leading-relaxed">
+                        Codex CLI 内置的{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            openai
+                        </code>{' '}
+                        provider 默认走 OpenAI Responses API(<code className="font-mono text-xs">/v1/responses</code>
+                        ),多数兼容网关不支持。要让 Codex 调 Silk Road AI 的{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            {SAMPLE_OPENAI_MODEL}
+                        </code>{' '}
+                        等模型,自定义一个{' '}
+                        <code className="font-mono text-xs">wire_api = &quot;chat&quot;</code>{' '}
+                        的 provider,使 Codex 走标准 OpenAI 兼容的{' '}
+                        <code className="font-mono text-xs">/v1/chat/completions</code> 路径即可。
+                    </p>
+
+                    <p className="m-0 mb-2 text-sm text-ink font-medium">1. 安装 Codex CLI</p>
+                    <CodeBlock language="bash">
+                        {`# macOS / Linux / Windows(需 Node 20+)
+npm install -g @openai/codex
+
+# 或 Homebrew(macOS)
+brew install --cask codex`}
+                    </CodeBlock>
+
+                    <p className="m-0 mt-4 mb-2 text-sm text-ink font-medium">
+                        2. 编辑配置文件{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            ~/.codex/config.toml
+                        </code>
+                    </p>
+                    <CodeBlock language="yaml">
+                        {`# Silk Road AI provider — wire_api = "chat" 走 /v1/chat/completions
+model = "${SAMPLE_OPENAI_MODEL}"
+model_provider = "silkroadai"
+
+[model_providers.silkroadai]
+name = "Silk Road AI"
+base_url = "${OPENAI_BASE}"
+env_key = "OPENAI_API_KEY"
+wire_api = "chat"`}
+                    </CodeBlock>
+
+                    <p className="m-0 mt-4 mb-2 text-sm text-ink font-medium">3. 设置 API Key 并启动</p>
+                    <CodeBlock language="bash">
+                        {`# macOS / Linux
+export OPENAI_API_KEY="sk-…"   # portal /keys
+codex
+
+# Windows PowerShell
+$env:OPENAI_API_KEY = "sk-…"
+codex`}
+                    </CodeBlock>
+
+                    <p className="m-0 mt-4 text-xs text-minor-ink">
+                        切换模型:把第 2 步配置文件里的{' '}
+                        <code className="font-mono text-xs">model = &quot;{SAMPLE_OPENAI_MODEL}&quot;</code>{' '}
+                        改成任意 OpenAI 兼容模型(如{' '}
+                        <code className="font-mono text-xs">gpt-5.5</code>、
+                        <code className="font-mono text-xs">gpt-5.4-mini</code>),完整清单见{' '}
+                        <Link href="/models" className="text-navy font-medium hover:text-brand-accent">
+                            /models
+                        </Link>
+                        。
+                    </p>
+                    <p className="m-0 mt-2 text-xs text-minor-ink">
+                        ⚠️ 不要使用 Codex CLI 内置的{' '}
+                        <code className="font-mono text-xs">openai</code> provider(默认{' '}
+                        <code className="font-mono text-xs">wire_api = &quot;responses&quot;</code>),会收到{' '}
+                        <code className="font-mono text-xs">403 forbidden_error · OpenAI codex passthrough requires a non-empty instructions field</code>。
+                        必须按上面新建一个自定义 provider。
+                    </p>
+                </AgentBlock>
+
                 {/* ─── Python SDK ─── */}
                 <AgentBlock
                     id="python-sdk"
-                    number="05"
+                    number="06"
                     title="Python(openai SDK)"
                     docsUrl="https://github.com/openai/openai-python"
                     docsLabel="github.com/openai/openai-python"
@@ -338,7 +431,7 @@ print(resp.choices[0].message.content)`}
                 {/* ─── Node SDK ─── */}
                 <AgentBlock
                     id="node-sdk"
-                    number="06"
+                    number="07"
                     title="Node / TypeScript(openai SDK)"
                     docsUrl="https://github.com/openai/openai-node"
                     docsLabel="github.com/openai/openai-node"
@@ -378,7 +471,7 @@ console.log(resp.choices[0].message.content);`}
                 <section id="gemini" className="mt-12 mb-10 scroll-mt-20">
                     <div className="flex items-baseline justify-between flex-wrap gap-2 mb-4 pb-3 border-b-2 border-brand-accent">
                         <h2 className="m-0 text-2xl font-semibold text-navy">
-                            <span className="text-brand-accent font-bold mr-3 tabular-nums">07</span>
+                            <span className="text-brand-accent font-bold mr-3 tabular-nums">08</span>
                             Google Gemini · 通过同一个 base URL 调用
                         </h2>
                     </div>
@@ -424,7 +517,7 @@ console.log(resp.choices[0].message.content);`}
                 <section id="errors" className="mt-12 mb-10 scroll-mt-20">
                     <div className="flex items-baseline justify-between flex-wrap gap-2 mb-4 pb-3 border-b-2 border-brand-accent">
                         <h2 className="m-0 text-2xl font-semibold text-navy">
-                            <span className="text-brand-accent font-bold mr-3 tabular-nums">08</span>
+                            <span className="text-brand-accent font-bold mr-3 tabular-nums">09</span>
                             常见错误码
                         </h2>
                     </div>
