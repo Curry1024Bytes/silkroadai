@@ -1,5 +1,14 @@
 #!/usr/bin/env tsx
 /**
+ * ⚠️ OBSOLETE — 2026-05-21 起永久作废
+ *
+ * 本脚本是 W7 promo 6/9 退场 runbook(原计划:6/9 自动把价格 revert 回 retail
+ * × 1.0 也就是 PROMO_DISCOUNT 拆掉)。永久新定价替换 W7 promo 后,**不存在
+ * 退场动作** — 不要在 6/9 触发本脚本,会让客户价格暴涨。
+ * 历史代码保留作 W7 retro 参考。
+ *
+ * ───────────── 以下是原 W7 D2 注释 ─────────────
+ *
  * W7 promo exit — restore sub2api retail pricing on 2026-06-09.
  *
  * Multiplies the current `model_ratio` of the two sub2api channels by 2.

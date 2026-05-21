@@ -152,6 +152,11 @@ silkroadai/
 - [x] PR-Q — GPU 入口位置调整 + nav 简化(2026-05-07,PR #45)— GPU 租赁 outline 钮上 landing header,/gpu 页 nav 收敛单 CTA
 - [x] PR-R — 4 项 launch 前 UX 改进(2026-05-09,PR #46)— (A)landing header 删 `登录` / (B)landing 删 in-page Trust prose row 由 global Footer 单点担纲 / (C)`/keys` 拆掉 PR-G 的 per-row `KeyHowtoPanel`,改成底部统一 `KeysSnippetsPanel`(`YOUR_API_KEY` placeholder + curl/Python/Node SDK tabs + 复制按钮 + base URL chips)/ (D)`/models` `/docs` `/gpu` 公开页 hero 上方加 `← 返回首页`;**deploy 实测发现 CLAUDE.md 写的 `CI 触发自动部署` 不准 — 实际无 deploy step,必须手动 SSH 上 VPS**(本次顺手修)
 
+### W8(launch 后第 2 周 — 维护 + 客户支援)
+
+- [x] D1 — `/docs` 加 OpenAI Codex 集成教程上线 ✅(2026-05-21,PR #63 merge `4d2afc0` + PR #64 merge `178abbc`)— 客户场景:用 Codex(CLI / VS Code / Cursor / Windsurf / JetBrains IDE 插件 / 桌面 app `codex app`)连 ai.silkroadai.io。三客户端共享 `~/.codex/config.toml`,核心是**自定义 `wire_api = "chat"` 的 provider** 旁路 Codex 内置 `openai` provider 默认 `wire_api = "responses"` 撞上 sub2api passthrough 非空 instructions 校验的问题(详见 gotcha #18 + 同日 task #8 / #11 完整诊断);IDE 插件强调**点 "Use API Key" 不点 "Sign in with ChatGPT"**(后者走 OpenAI OAuth 与 portal sk-xxx 不通)+ `~/.codex/auth.json` 凭据清理提示;单文件 `src/app/docs/page.tsx`,无 DB / 无 deps;VPS `/opt/silkroadai-portal` 手动 `git pull + docker compose --build portal` 部署;公网 `silkroadai.io/docs#codex-cli` 后验证 200,9 章节关键字 + 编号 01-09 + `wire_api` × 10 全到位
+- [x] D1.5 — 新定价永久替换 ✅(2026-05-21,PR #XX merge `<填>`)— 替换 W7 D2 `PROMO_DISCOUNT = 0.5` 这个 50% 促销,改为 **ChatGPT 系 ¥0.5 / 官方 $1**(mr × 0.5/7 = 0.0714,e.g. gpt-5.5 mr=0.357)+ **Claude 系 ¥1.5 / 官方 $1**(mr × 1.5/7 = 0.2143,e.g. opus-4-7 mr=3.214);per-channel `model_ratio` + `completion_ratio` PUT 到 new-api channel id=2(Anthropic 6 SKU)+ id=3(OpenAI 14 SKU),不动 global ModelRatio;`completion_ratio = retail_out / retail_in` 沿用官方比例(opus 5/sonnet 5/haiku 5,gpt-5.4 4/gpt-5.5 5);scripts/apply-new-pricing-2026-05-21.mjs dry-run + --apply + verify 20/20 entries 全 match;portal `src/app/page.tsx` `PRICING_ROWS` 同步:Claude/GPT 行切 `cnyIn/cnyOut` ¥ 格式(¥22.5/¥112.5 for opus-4-7 等)+ `promoActive` 硬编码 false 替代 `isPromoActive()`(promo 机器代码留着待后 PR 清理,Gemini 行保留 $ 因 channel 未动);`_bootstrap/apply-w7-pricing.ts` + `exit-w7-promo.ts` 标 OBSOLETE(永久价后不存在 6/9 退场动作);landing-page.test.tsx 删 promo-ACTIVE describe 块 + INACTIVE 块更新价格断言;**operator 拿货价 ~1/10 of new retail,毛利 ~90%**;SiliconFlow 渠道(118 模型)+ Gemini 渠道不动
+
 ---
 
 ## 关键架构决策(决策已定,不要重新讨论)

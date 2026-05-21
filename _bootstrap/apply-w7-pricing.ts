@@ -1,5 +1,15 @@
 #!/usr/bin/env tsx
 /**
+ * ⚠️ OBSOLETE — 2026-05-21 起永久作废
+ *
+ * 本脚本是 W7 D2(2026-05-06)的 50% promo 应用工具(PROMO_DISCOUNT = 0.5),
+ * 已被新永久定价方案替换:`scripts/apply-new-pricing-2026-05-21.mjs`。
+ * 新公式:ChatGPT × 0.0714 / Claude × 0.2143(¥0.5 / ¥1.5 抵 $1 官方)。
+ * 不要再 --apply 本脚本 — 会把 promo discount 写回去,客户余额扣费会错乱。
+ * 历史代码保留作 W7 retro 参考。
+ *
+ * ───────────── 以下是原 W7 D2 注释 ─────────────
+ *
  * W7 D2 Phase 3 — apply post-launch pricing across the 3 channels.
  *
  * Reads the operator-supplied pricing decisions (whitelists + retail

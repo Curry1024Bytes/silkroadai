@@ -33,10 +33,17 @@ beforeEach(() => {
     vi.resetModules();
 });
 
-describe('landing page — promo ACTIVE', () => {
+// W8 D1.5 (2026-05-21):W7 promo 永久替换为新 ¥-定价。原"promo ACTIVE / promo
+// INACTIVE"双块结构折叠 — page.tsx 现在硬编码 promoActive = false,promo helper
+// mock 不再影响渲染。3 个 promo 专属 it()(banner / strikethrough / "5 折"
+// subtitle)删除;其余通用渲染测试(hero / CTAs / Logo / GPU / 登录按钮等)
+// 沿用 describe 头。
+describe('landing page — general rendering (post-permanent-pricing)', () => {
     beforeEach(() => {
+        // mock 留着兼容旧测试代码 — page.tsx 不再调用 isPromoActive,mock
+        // value 实际上无作用,但保留以防有 import-time 副作用。
         vi.doMock('@/lib/promo', () => ({
-            isPromoActive: () => true,
+            isPromoActive: () => false,
             getPromoEndDate: () => new Date('2026-06-09T23:59:59.999+08:00'),
             PROMO_START: new Date('2026-05-10T00:00:00+08:00'),
             PROMO_END_EXCLUSIVE: new Date('2026-06-10T00:00:00+08:00'),
@@ -50,47 +57,20 @@ describe('landing page — promo ACTIVE', () => {
         expect(html).toContain('一个 Key,接入 200+ AI 模型');
     });
 
-    it('renders the promo banner with 5 折 + 6 月 9 日截止', async () => {
+    it('renders pricing table SF flagship trio + Gemini rows (永久 ¥ 定价 + Gemini $)', async () => {
         const Page = await loadPage();
         const tree = await Page({ searchParams: Promise.resolve({}) });
         const html = renderToString(tree);
-        expect(html).toContain('上线钜惠 · 海外模型 5 折');
-        expect(html).toContain('6 月 9 日截止');
-    });
-
-    it('renders pricing table with strikethrough retail + bold promo prices', async () => {
-        const Page = await loadPage();
-        const tree = await Page({ searchParams: Promise.resolve({}) });
-        const html = renderToString(tree);
-        // Claude Sonnet 4.6 row should show $3 strikethrough → $1.5 promo
-        expect(html).toContain('$3');
-        expect(html).toContain('$1.5');
-        expect(html).toContain('$15');
-        expect(html).toContain('$7.5');
-        // Strikethrough style applied
-        expect(html).toMatch(/text-decoration:\s*line-through/);
         // W7 D4 PR-K Item E — SF flagship trio retail prices (wholesale × 1.20)
         // render as plain ¥, no promo markup. Replaced V3.2 / GLM-4.6 / K2.
-        // (PR-L kept these test sentinels — only the width="112" assertion
-        // below was reverted to its pre-PR-K-Item-D value.)
         expect(html).toContain('¥1.20/1M'); // DeepSeek V4-Flash in
         expect(html).toContain('¥9.60/1M'); // GLM-5.1 (Pro) in
         expect(html).toContain('¥7.80/1M'); // Kimi K2.6 (Pro) in
-        // PR-S — Gemini family added. Zero-markup at launch (operator
-        // recovers margin via upstream swap post-launch); rows render
-        // as plain bold $/1M, no strikethrough since they're not in
-        // the 海外 5 折 promo set.
+        // PR-S — Gemini family. Zero-markup at launch; channel 未动,保留 $ 显示。
         expect(html).toContain('Gemini 3.1 Pro');
         expect(html).toContain('Gemini 3.1 Flash Lite');
         expect(html).toContain('$0.25');
         expect(html).toContain('$1.50');
-    });
-
-    it('renders the "当前促销 · 海外模型 5 折" subtitle on pricing section', async () => {
-        const Page = await loadPage();
-        const tree = await Page({ searchParams: Promise.resolve({}) });
-        const html = renderToString(tree);
-        expect(html).toContain('当前促销 · 海外模型 5 折');
     });
 
     // W7 D4 PR-R Item B — the legacy in-page <Trust /> prose row
@@ -185,7 +165,7 @@ describe('landing page — promo ACTIVE', () => {
     });
 });
 
-describe('landing page — promo INACTIVE (post-exit)', () => {
+describe('landing page — permanent ¥ pricing (post W8 D1.5, 2026-05-21)', () => {
     beforeEach(() => {
         vi.doMock('@/lib/promo', () => ({
             isPromoActive: () => false,
@@ -195,14 +175,7 @@ describe('landing page — promo INACTIVE (post-exit)', () => {
         }));
     });
 
-    it('still renders hero', async () => {
-        const Page = await loadPage();
-        const tree = await Page({ searchParams: Promise.resolve({}) });
-        const html = renderToString(tree);
-        expect(html).toContain('一个 Key,接入 200+ AI 模型');
-    });
-
-    it('does NOT render promo banner copy', async () => {
+    it('does NOT render W7 promo banner copy(W7 promo 已永久结束)', async () => {
         const Page = await loadPage();
         const tree = await Page({ searchParams: Promise.resolve({}) });
         const html = renderToString(tree);
@@ -217,13 +190,20 @@ describe('landing page — promo INACTIVE (post-exit)', () => {
         expect(html).not.toContain('当前促销');
     });
 
-    it('renders retail pricing as bold (no strikethrough)', async () => {
+    it('renders Claude / GPT rows in ¥ format, no strikethrough', async () => {
         const Page = await loadPage();
         const tree = await Page({ searchParams: Promise.resolve({}) });
         const html = renderToString(tree);
-        // Retail prices still show
-        expect(html).toContain('$3');
-        expect(html).toContain('$15');
+        // Claude Sonnet 4.6: $3/$15 (official) × 1.5 / 7 = ¥4.5 / ¥22.5
+        expect(html).toContain('¥4.5/1M');
+        expect(html).toContain('¥22.5/1M');
+        // Claude Opus 4.7: $15/$75 × 1.5 / 7 = ¥22.5 / ¥112.5
+        expect(html).toContain('¥112.5/1M');
+        // GPT-5.4: $5/$20 × 0.5 / 7 = ¥2.5 / ¥10
+        expect(html).toContain('¥2.5/1M');
+        expect(html).toContain('¥10/1M');
+        // GPT-5.5: $5/$25 × 0.5 / 7 = ¥2.5 / ¥12.5
+        expect(html).toContain('¥12.5/1M');
         // No line-through anywhere in pricing
         expect(html).not.toMatch(/text-decoration:\s*line-through/);
     });

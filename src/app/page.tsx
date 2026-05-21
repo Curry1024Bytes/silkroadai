@@ -15,7 +15,8 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import { Logo } from '@/components/brand/Logo';
-import { isPromoActive } from '@/lib/promo';
+// W8 D1.5 (2026-05-21): 新永久定价替换 W7 promo,landing 不再走 isPromoActive()。
+// import { isPromoActive } from '@/lib/promo'; — 留作日后审计参考
 import { InviteCodeBridge } from '@/components/marketing/InviteCodeBridge';
 
 // Inter is loaded globally via `next/font/google` in `src/app/layout.tsx`
@@ -25,11 +26,11 @@ import { InviteCodeBridge } from '@/components/marketing/InviteCodeBridge';
 export const metadata: Metadata = {
     title: 'Silk Road AI · 一个 Key,接入 200+ AI 模型 | ChatGPT、Claude、Gemini 国内中转',
     description:
-        '国内开发者的 AI API 聚合网关。海外大模型直连,人民币付费,价格透明。上线钜惠:海外模型 5 折,限时 30 天。',
+        '国内开发者的 AI API 聚合网关。海外大模型直连,人民币付费,价格透明,5 分钟接入。',
     keywords: ['ChatGPT API', 'Claude API', 'Gemini API', 'AI API 中转', '国内调用 OpenAI', 'AI 网关'],
     openGraph: {
         title: 'Silk Road AI · 一个 Key,接入 200+ AI 模型',
-        description: '国内直连 ChatGPT/Claude/Gemini · 人民币付费 · 上线 5 折',
+        description: '国内直连 ChatGPT/Claude/Gemini · 人民币付费 · 价格透明',
         url: 'https://silkroadai.io',
         type: 'website',
         // SVG placeholder — designer ships final 1200×630 PNG in a follow-up;
@@ -46,7 +47,11 @@ export default async function LandingPage({
 }) {
     const params = (await searchParams) ?? {};
     const oauthError = typeof params.oauth_error === 'string' ? params.oauth_error : null;
-    const promoActive = isPromoActive();
+    // W8 D1.5 (2026-05-21): W7 50% promo 已被永久新定价替换(¥0.5/¥1.5 抵 $1)。
+    // promo 横幅 / "当前促销 · 海外模型 5 折" 副标 / PriceCell strikethrough 视觉
+    // 全部下线。下方 PromoBanner/PricingTeaser 副标/PriceCell promo 分支变成
+    // 不可达代码,留着待后 PR 清理。
+    const promoActive = false;
 
     return (
         <main
@@ -621,37 +626,32 @@ interface PricingRow {
 }
 
 const PRICING_ROWS: PricingRow[] = [
+    // W8 D1.5 (2026-05-21):W7 50% promo 永久替换为 ¥0.5 / ¥1.5 抵 $1 公式。
+    // 这 4 行(Claude + GPT)从 retailIn/promoIn $ 双价切到 cnyIn/cnyOut ¥ 单价。
+    // Gemini 行(下方)保留 $ 因 channel 未动;SF 行原本就是 ¥(W7 PR-K 以来)。
     {
         model: 'Claude Sonnet 4.6',
         type: '通用对话 · 高性价比',
-        retailIn: '$3',
-        promoIn: '$1.5',
-        retailOut: '$15',
-        promoOut: '$7.5',
+        cnyIn: '¥4.5/1M',
+        cnyOut: '¥22.5/1M',
     },
     {
         model: 'Claude Opus 4.7',
         type: '旗舰推理',
-        retailIn: '$5',
-        promoIn: '$2.5',
-        retailOut: '$25',
-        promoOut: '$12.5',
+        cnyIn: '¥22.5/1M',
+        cnyOut: '¥112.5/1M',
     },
     {
         model: 'GPT-5.4',
         type: 'OpenAI 通用',
-        retailIn: '$2.5',
-        promoIn: '$1.25',
-        retailOut: '$15',
-        promoOut: '$7.5',
+        cnyIn: '¥2.5/1M',
+        cnyOut: '¥10/1M',
     },
     {
         model: 'GPT-5.5',
         type: 'OpenAI 旗舰',
-        retailIn: '$5',
-        promoIn: '$2.5',
-        retailOut: '$30',
-        promoOut: '$15',
+        cnyIn: '¥2.5/1M',
+        cnyOut: '¥12.5/1M',
     },
     // PR-S — Google Gemini family (零 markup at launch:retail = official Google
     // AI Studio price). Operator decision: keep margin via post-launch upstream
@@ -771,7 +771,7 @@ function PricingTeaser({ promoActive }: { promoActive: boolean }) {
                                     borderBottom: '1px solid var(--color-brand-border)',
                                 }}
                             >
-                                输入 ($/1M)
+                                输入
                             </th>
                             <th
                                 style={{
@@ -780,7 +780,7 @@ function PricingTeaser({ promoActive }: { promoActive: boolean }) {
                                     borderBottom: '1px solid var(--color-brand-border)',
                                 }}
                             >
-                                输出 ($/1M)
+                                输出
                             </th>
                         </tr>
                     </thead>
