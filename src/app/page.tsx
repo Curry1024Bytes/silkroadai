@@ -694,7 +694,195 @@ const PRICING_ROWS: PricingRow[] = [
     },
 ];
 
-function PricingTeaser({ promoActive }: { promoActive: boolean }) {
+/**
+ * W8 D2 (2026-05-26):价格预览板块重构 — 跟海报 v3 同步。
+ *
+ * 替换原"4 列 9 行 per-SKU 表格"为双卡片设计:
+ *   1) 海外模型 · 号池低价(默认):¥X 抵 $1 官方,3 个 family 卡片
+ *      (ChatGPT 0.2 / Claude 1.3 / Gemini 0.5),适合开发者
+ *   2) 企业 / 合规渠道 · 官方授权:3 个 family 卡片
+ *      (Azure / AWS Bedrock / Gemini t3),适合 B2B 合规场景
+ *
+ * 老 PRICING_ROWS 数据保留(供 /pricing 详情页用,以及 SF 系展示)。
+ */
+type FamilyTier = {
+    name: 'ChatGPT' | 'Claude' | 'Gemini';
+    family: 'chatgpt' | 'claude' | 'gemini';
+    /** Per-$1 price in CNY, e.g., '¥0.2' for the cheap pool */
+    cnyPerDollar: string;
+    /** Discount percentage label, e.g., '官方仅 2.9%' */
+    discountLabel: string;
+};
+
+const CHEAP_POOL: FamilyTier[] = [
+    {
+        name: 'ChatGPT',
+        family: 'chatgpt',
+        cnyPerDollar: '¥0.2',
+        discountLabel: '官方仅 2.9%',
+    },
+    {
+        name: 'Claude',
+        family: 'claude',
+        cnyPerDollar: '¥1.3',
+        discountLabel: '官方仅 19%',
+    },
+    {
+        name: 'Gemini',
+        family: 'gemini',
+        cnyPerDollar: '¥0.5',
+        discountLabel: '官方仅 7.3%',
+    },
+];
+
+const ENTERPRISE_TIER: Array<FamilyTier & { provider: string }> = [
+    {
+        name: 'ChatGPT',
+        family: 'chatgpt',
+        cnyPerDollar: '3.8 折',
+        discountLabel: '官方 38%',
+        provider: 'Azure OpenAI',
+    },
+    {
+        name: 'Claude',
+        family: 'claude',
+        cnyPerDollar: '5.0 折',
+        discountLabel: '官方 50%',
+        provider: 'AWS Bedrock',
+    },
+    {
+        name: 'Gemini',
+        family: 'gemini',
+        cnyPerDollar: '2.3 折',
+        discountLabel: '官方 23%',
+        provider: 'Vertex AI / t3 池',
+    },
+];
+
+function FamilyIcon({ family }: { family: 'chatgpt' | 'claude' | 'gemini' }) {
+    const styles = {
+        chatgpt: { bg: '#1B2A4E', fg: '#FFFFFF', label: 'G' },
+        claude: { bg: '#E66B47', fg: '#FFFFFF', label: '✻' },
+        gemini: { bg: '#3B82F6', fg: '#FFFFFF', label: '◆' },
+    } as const;
+    const s = styles[family];
+    return (
+        <div
+            style={{
+                width: 44,
+                height: 44,
+                borderRadius: 12,
+                background: s.bg,
+                color: s.fg,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: 22,
+                fontWeight: 700,
+                flexShrink: 0,
+            }}
+        >
+            {s.label}
+        </div>
+    );
+}
+
+function PricingFamilyRow({
+    tier,
+    rightLabel,
+    rightSubLabel,
+}: {
+    tier: FamilyTier;
+    rightLabel: string;
+    rightSubLabel?: string;
+}) {
+    return (
+        <div
+            style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 14,
+                padding: '14px 18px',
+                background: 'white',
+                borderRadius: 12,
+                border: '1px solid var(--color-brand-border)',
+            }}
+        >
+            <FamilyIcon family={tier.family} />
+            <div style={{ flex: '1 1 auto', minWidth: 0 }}>
+                <div
+                    style={{
+                        fontSize: 18,
+                        fontWeight: 700,
+                        color: 'var(--color-navy)',
+                        lineHeight: 1.15,
+                    }}
+                >
+                    {tier.name}
+                </div>
+            </div>
+            <div
+                style={{
+                    display: 'flex',
+                    alignItems: 'baseline',
+                    gap: 4,
+                    flexShrink: 0,
+                }}
+            >
+                <span
+                    style={{
+                        fontSize: 26,
+                        fontWeight: 700,
+                        color: 'var(--color-navy)',
+                        lineHeight: 1,
+                    }}
+                >
+                    {tier.cnyPerDollar}
+                </span>
+                {tier.cnyPerDollar.startsWith('¥') ? (
+                    <span style={{ fontSize: 14, color: 'var(--color-muted-ink)' }}>
+                        / $1
+                    </span>
+                ) : null}
+            </div>
+            <div
+                style={{
+                    flexShrink: 0,
+                    minWidth: 120,
+                    textAlign: 'right',
+                }}
+            >
+                <span
+                    style={{
+                        display: 'inline-block',
+                        padding: '4px 12px',
+                        borderRadius: 999,
+                        background: '#FBF1DC',
+                        color: 'var(--color-navy)',
+                        fontSize: 13,
+                        fontWeight: 600,
+                    }}
+                >
+                    {rightLabel}
+                </span>
+                {rightSubLabel ? (
+                    <div
+                        style={{
+                            marginTop: 4,
+                            fontSize: 11,
+                            color: 'var(--color-muted-ink)',
+                            fontWeight: 500,
+                        }}
+                    >
+                        {rightSubLabel}
+                    </div>
+                ) : null}
+            </div>
+        </div>
+    );
+}
+
+function PricingTeaser({ promoActive: _promoActive }: { promoActive: boolean }) {
     return (
         <Section style={{ padding: '48px 0' }}>
             <h2
@@ -708,190 +896,131 @@ function PricingTeaser({ promoActive }: { promoActive: boolean }) {
             >
                 价格预览
             </h2>
-            {promoActive ? (
-                <p
-                    style={{
-                        margin: '12px 0 0',
-                        textAlign: 'center',
-                        color: 'var(--color-brand-accent)',
-                        fontWeight: 600,
-                    }}
-                >
-                    当前促销 · 海外模型 5 折(限时 30 天)
-                </p>
-            ) : null}
+            <p
+                style={{
+                    margin: '10px 0 0',
+                    textAlign: 'center',
+                    fontSize: 15,
+                    color: 'var(--color-muted-ink)',
+                }}
+            >
+                ¥ 用 $1 官方等价额度 · 海外模型骨折价
+            </p>
 
+            {/* 卡片 1:号池低价(默认渠道,适合开发者 / 个人 / 大批量) */}
             <div
                 style={{
                     marginTop: 28,
-                    overflow: 'auto',
-                    border: '1px solid var(--color-brand-border)',
-                    borderRadius: 12,
-                    background: 'white',
+                    padding: 24,
+                    borderRadius: 16,
+                    background: 'linear-gradient(180deg, #FDF5E2 0%, #FAF1D5 100%)',
+                    border: '1px solid #EBD8A0',
                 }}
             >
-                <table
+                <div
                     style={{
-                        width: '100%',
-                        borderCollapse: 'collapse',
-                        fontSize: 14,
-                        minWidth: 640,
+                        marginBottom: 16,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 10,
                     }}
                 >
-                    <thead>
-                        <tr
-                            style={{
-                                background: 'var(--color-paper-muted)',
-                                color: 'var(--color-muted-ink)',
-                                fontWeight: 600,
-                            }}
-                        >
-                            <th
-                                style={{
-                                    padding: '14px 20px',
-                                    textAlign: 'left',
-                                    borderBottom: '1px solid var(--color-brand-border)',
-                                }}
-                            >
-                                模型
-                            </th>
-                            <th
-                                style={{
-                                    padding: '14px 20px',
-                                    textAlign: 'left',
-                                    borderBottom: '1px solid var(--color-brand-border)',
-                                }}
-                            >
-                                类型
-                            </th>
-                            <th
-                                style={{
-                                    padding: '14px 20px',
-                                    textAlign: 'left',
-                                    borderBottom: '1px solid var(--color-brand-border)',
-                                }}
-                            >
-                                输入
-                            </th>
-                            <th
-                                style={{
-                                    padding: '14px 20px',
-                                    textAlign: 'left',
-                                    borderBottom: '1px solid var(--color-brand-border)',
-                                }}
-                            >
-                                输出
-                            </th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {PRICING_ROWS.map((row, i) => (
-                            <tr key={row.model}>
-                                <td
-                                    style={{
-                                        padding: '14px 20px',
-                                        borderTop: i === 0 ? 'none' : '1px solid var(--color-brand-border)',
-                                        color: 'var(--color-navy)',
-                                        fontWeight: 600,
-                                    }}
-                                >
-                                    {row.model}
-                                </td>
-                                <td
-                                    style={{
-                                        padding: '14px 20px',
-                                        borderTop: i === 0 ? 'none' : '1px solid var(--color-brand-border)',
-                                        color: 'var(--color-muted-ink)',
-                                    }}
-                                >
-                                    {row.type}
-                                </td>
-                                <td
-                                    style={{
-                                        padding: '14px 20px',
-                                        borderTop: i === 0 ? 'none' : '1px solid var(--color-brand-border)',
-                                    }}
-                                >
-                                    <PriceCell
-                                        promoActive={promoActive}
-                                        retail={row.retailIn}
-                                        promo={row.promoIn}
-                                        cny={row.cnyIn}
-                                    />
-                                </td>
-                                <td
-                                    style={{
-                                        padding: '14px 20px',
-                                        borderTop: i === 0 ? 'none' : '1px solid var(--color-brand-border)',
-                                    }}
-                                >
-                                    <PriceCell
-                                        promoActive={promoActive}
-                                        retail={row.retailOut}
-                                        promo={row.promoOut}
-                                        cny={row.cnyOut}
-                                    />
-                                </td>
-                            </tr>
-                        ))}
-                    </tbody>
-                </table>
+                    <span style={{ fontSize: 22 }}>🏷️</span>
+                    <span
+                        style={{
+                            fontSize: 18,
+                            fontWeight: 700,
+                            color: 'var(--color-navy)',
+                        }}
+                    >
+                        海外模型 · 号池低价(默认渠道)
+                    </span>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    {CHEAP_POOL.map((tier) => (
+                        <PricingFamilyRow
+                            key={tier.name}
+                            tier={tier}
+                            rightLabel={tier.discountLabel}
+                        />
+                    ))}
+                </div>
+            </div>
+
+            {/* 卡片 2:企业 / 合规渠道 · 官方授权(可签商务合同,适合 B2B) */}
+            <div
+                style={{
+                    marginTop: 18,
+                    padding: 24,
+                    borderRadius: 16,
+                    background: 'linear-gradient(180deg, #F4F6FC 0%, #EAEEF8 100%)',
+                    border: '1px solid #C9D3EA',
+                }}
+            >
+                <div
+                    style={{
+                        marginBottom: 6,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 10,
+                    }}
+                >
+                    <span style={{ fontSize: 22 }}>🛡️</span>
+                    <span
+                        style={{
+                            fontSize: 18,
+                            fontWeight: 700,
+                            color: 'var(--color-navy)',
+                        }}
+                    >
+                        企业 / 合规渠道 · 官方授权
+                    </span>
+                </div>
+                <p
+                    style={{
+                        margin: '0 0 16px',
+                        fontSize: 13,
+                        color: 'var(--color-muted-ink)',
+                    }}
+                >
+                    走云厂商官方原生接口,可签订商务合同 · 适合金融 / 政企 / 出海合规要求场景
+                </p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    {ENTERPRISE_TIER.map((tier) => (
+                        <PricingFamilyRow
+                            key={tier.name}
+                            tier={tier}
+                            rightLabel={tier.cnyPerDollar}
+                            rightSubLabel={tier.provider}
+                        />
+                    ))}
+                </div>
             </div>
 
             <p
                 style={{
-                    marginTop: 18,
+                    marginTop: 22,
                     fontSize: 14,
                     color: 'var(--color-muted-ink)',
+                    textAlign: 'center',
                 }}
             >
-                完整价格 →{' '}
+                完整 per-model 价格 →{' '}
                 <Link href="/pricing" style={{ color: 'var(--color-navy)', fontWeight: 500 }}>
                     /pricing
                 </Link>{' '}
-                · 全部模型 →{' '}
+                · 全部 200+ 模型清单 →{' '}
                 <Link href="/models" style={{ color: 'var(--color-navy)', fontWeight: 500 }}>
                     /models
-                </Link>
+                </Link>{' '}
+                · 企业合作微信 <strong style={{ color: 'var(--color-navy)' }}>Global_Ads</strong>
             </p>
         </Section>
     );
 }
 
-function PriceCell({
-    promoActive,
-    retail,
-    promo,
-    cny,
-}: {
-    promoActive: boolean;
-    retail?: string;
-    promo?: string;
-    cny?: string;
-}) {
-    if (cny) {
-        // SF cost-plus: no promo, no strikethrough.
-        return <span style={{ color: 'var(--color-navy)' }}>{cny}</span>;
-    }
-    if (!retail) return <span>—</span>;
-    if (promoActive && promo) {
-        return (
-            <span>
-                <span
-                    style={{
-                        textDecoration: 'line-through',
-                        color: 'var(--color-minor-ink)',
-                        marginRight: 8,
-                    }}
-                >
-                    {retail}
-                </span>
-                <strong style={{ color: 'var(--color-navy)' }}>{promo}</strong>
-            </span>
-        );
-    }
-    return <strong style={{ color: 'var(--color-navy)' }}>{retail}</strong>;
-}
+// W8 D2(2026-05-26):老 PriceCell 删除 — PricingTeaser 重构成 family-summary 卡片
+// 后不再用 per-cell 渲染。PRICING_ROWS 数据保留(/pricing 详情页将复用)。
 
 /* ──────────────────────────────────────────────────────────────────── */
 /* OAuth-error banner — preserves the W4-1 ?oauth_error= forwarding     */
