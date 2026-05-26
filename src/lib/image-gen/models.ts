@@ -19,83 +19,82 @@
  */
 
 /**
- * Which upstream new-api endpoint a model expects.
- *   - `images/generations`  POST /v1/images/generations  body { model, prompt,
- *                           n, size, response_format }; response shape =
- *                           `{ data: [{ b64_json }] }`. Used by OpenAI-style
- *                           image-gen SKUs (gpt-image-2) + Google Imagen.
- *   - `chat/completions`    POST /v1/chat/completions  body { model, messages };
- *                           response shape = `choices[0].message.content` is
- *                           markdown text with `data:image/<mime>;base64,...`
- *                           inline. Used by Google's Gemini-class image
- *                           models (Nano Banana / 3.1-flash-image / 3-pro-image).
- *
- * Trying to call a Gemini image model via /v1/images/generations returns
- * `{"error":{"code":"convert_request_failed","message":"not supported model
- * for image generation, only imagen models are supported"}}` — confirmed
- * live 2026-05-09.
+ * Vendor classification (W8 D7 2026-05-26 重构 — 替代旧的 endpoint 分类)。
+ * 国外厂商前排展示(foreign=true),国内厂商后排。Backend 不再按 endpoint
+ * 分类路由 — generate route 会智能 fallback(先 chat/completions,失败的
+ * "wrong endpoint" signal 才 fallback 到 /v1/images/generations)。
  */
-export type ImageApiPath = 'images/generations' | 'chat/completions';
+export type ImageVendor = 'OpenAI' | 'Google' | 'SiliconFlow' | 'Other';
 
 export interface ImageModelInfo {
-    /** Wire model name (matches `model_name` in /api/pricing). */
+    /** Wire model name (matches `model_name` in new-api channel.models). */
     id: string;
     /** Display name on UI. */
     label: string;
-    /** Human-readable per-image USD price after PR-S markup. */
+    /** Human-readable per-image USD price. */
     pricePerImageUsd: number;
     /** Short marketing blurb for cards. */
     blurb: string;
-    /** Which new-api endpoint to forward to. Default `images/generations`
-     *  (the OpenAI-shaped surface); override to `chat/completions` for
-     *  Gemini-family image models. */
-    apiPath: ImageApiPath;
+    /** Vendor classification for grouping in UI. */
+    vendor: ImageVendor;
+    /** Foreign vs. domestic — foreign brands display first per operator
+     *  decision (2026-05-26). */
+    foreign: boolean;
 }
 
-// Price values match `_bootstrap/apply-pr-s-pricing.ts` PER_IMAGE_USD ×
-// markup as of 2026-05-10 (PR #55 — Gemini family +10%, gpt-image-2 0%).
+// 顺序 = UI 展示顺序(国外前排,OpenAI 旗舰首选,然后 Google 系)
+// Price values match `_bootstrap/apply-pr-s-pricing.ts` PER_IMAGE_USD.
+// W8 D7(2026-05-26):旧 apiPath 字段去除,后端改 smart auto-fallback。
 export const IMAGE_MODELS: ImageModelInfo[] = [
+    // ── 国外:OpenAI ──
+    {
+        id: 'gpt-image-2',
+        label: 'GPT Image 2',
+        pricePerImageUsd: 0.04,
+        blurb: 'OpenAI · GPT-5 多模态图像生成',
+        vendor: 'OpenAI',
+        foreign: true,
+    },
+    // ── 国外:Google ──
     {
         id: 'gemini-2.5-flash-image',
         label: 'Nano Banana',
-        pricePerImageUsd: 0.0429, // 0.039 × 1.1
+        pricePerImageUsd: 0.0429,
         blurb: 'Google 2.5 Flash Image · 入门首选',
-        apiPath: 'chat/completions',
+        vendor: 'Google',
+        foreign: true,
     },
     {
         id: 'gemini-3.1-flash-image-preview',
         label: 'Gemini 3.1 Flash Image',
-        pricePerImageUsd: 0.11, // 0.10 × 1.1
+        pricePerImageUsd: 0.11,
         blurb: 'Google · 高速生图 · 中等成本',
-        apiPath: 'chat/completions',
+        vendor: 'Google',
+        foreign: true,
     },
     {
         id: 'gemini-3-pro-image-preview',
         label: 'Gemini 3 Pro Image',
-        pricePerImageUsd: 0.2057, // 0.187 × 1.1
+        pricePerImageUsd: 0.2057,
         blurb: 'Google 旗舰图像 · Nano Banana Pro',
-        apiPath: 'chat/completions',
+        vendor: 'Google',
+        foreign: true,
     },
     {
         id: 'nano-banana-pro-preview',
         label: 'Nano Banana Pro',
-        pricePerImageUsd: 0.2057, // alias of -3-pro-image
+        pricePerImageUsd: 0.2057,
         blurb: 'Google 旗舰图像 (alias)',
-        apiPath: 'chat/completions',
+        vendor: 'Google',
+        foreign: true,
     },
     {
         id: 'imagen-4.0-ultra-generate-001',
         label: 'Imagen 4 Ultra',
-        pricePerImageUsd: 0.066, // 0.06 × 1.1
+        pricePerImageUsd: 0.066,
         blurb: 'Google Imagen 4 Ultra · 高画质',
-        apiPath: 'images/generations',
-    },
-    {
-        id: 'gpt-image-2',
-        label: 'GPT Image 2',
-        pricePerImageUsd: 0.04, // 0% markup — sub2api subscription arbitrage
-        blurb: 'OpenAI · 兼容 chat 风格 prompt',
-        apiPath: 'images/generations',
+        vendor: 'Google',
+        foreign: true,
     },
 ];
 

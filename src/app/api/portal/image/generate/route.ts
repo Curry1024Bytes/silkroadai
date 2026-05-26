@@ -46,7 +46,6 @@ import {
     IMAGE_COUNT_MIN,
     IMAGE_MODEL_IDS,
     IMAGE_SIZES,
-    type ImageApiPath,
 } from '@/lib/image-gen/models';
 import { extractB64Images } from '@/lib/image-gen/extract-b64';
 import { imageKey, uploadImage, getPublicUrl } from '@/lib/r2/client';
@@ -253,7 +252,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     let imageBuffers: Buffer[];
     try {
         imageBuffers = await fetchImagesFromUpstream({
-            apiPath: modelInfo.apiPath,
             model,
             prompt,
             count,
@@ -438,11 +436,16 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// Upstream fetch helpers — branched by `apiPath`.
+// Upstream fetch helpers — W8 D7(2026-05-26)重构:smart auto-fallback,
+// 不再按 model.apiPath 分类。先试 /v1/chat/completions(多模态 chat 路径,
+// 大多数现代图像模型走这里:Gemini Nano Banana / GPT image-2 / 等),
+// 失败时如果是"wrong-endpoint" signal(`convert_request_failed` /
+// "only imagen models" 等)就 fallback 到老的 /v1/images/generations
+// (Imagen 系还走这条)。其它错误(quota / safety filter / 网络)直接
+// 上抛,不 fallback。
 // ──────────────────────────────────────────────────────────────────────
 
 interface FetchArgs {
-    apiPath: ImageApiPath;
     model: string;
     prompt: string;
     count: number;
@@ -451,10 +454,32 @@ interface FetchArgs {
     userId: string;
 }
 
-/** Top-level dispatch. Returns the raw image buffers ready for R2 upload. */
+/**
+ * Specific upstream error patterns that signal "this endpoint doesn't
+ * support this model". When we see these on /v1/chat/completions, fall
+ * back to /v1/images/generations.
+ *
+ * Known cases:
+ *   - Imagen via chat/completions → `{"code":"convert_request_failed",
+ *     "message":"not supported model for image generation, only imagen
+ *     models are supported"}` (Google saying "wrong endpoint")
+ */
+function isWrongEndpointSignal(err: unknown): boolean {
+    if (!(err instanceof UpstreamError)) return false;
+    if (err.code === 'convert_request_failed') return true;
+    if (err.message && /not supported|only imagen/i.test(err.message)) return true;
+    return false;
+}
+
+/** Top-level dispatch with auto-fallback. Returns raw image buffers. */
 async function fetchImagesFromUpstream(args: FetchArgs): Promise<Buffer[]> {
-    if (args.apiPath === 'chat/completions') {
-        return fetchViaChatCompletions(args);
+    // Default: try /v1/chat/completions first (modern multimodal path)
+    try {
+        return await fetchViaChatCompletions(args);
+    } catch (err) {
+        if (!isWrongEndpointSignal(err)) throw err;
+        // Wrong-endpoint signal → fall back to legacy /v1/images/generations
+        // (Imagen 系列等)
     }
     return fetchViaImagesGenerations(args);
 }

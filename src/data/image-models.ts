@@ -17,6 +17,9 @@
  * the standard ¥7 / 1.5× markup math.
  */
 
+/** Vendor 分类 — W8 D7(2026-05-26)替代旧的 endpoint 分类。国外厂商前排展示。 */
+export type ImageVendor = 'OpenAI' | 'Google' | 'SiliconFlow' | 'Other';
+
 export interface ImageModelOption {
     /** Routable model id sent to /api/portal/image/generate. Must match
      *  a row in `src/lib/image-gen/models.ts`. */
@@ -31,6 +34,11 @@ export interface ImageModelOption {
     blurb: string;
     /** Optional badge for the dropdown card (e.g. `推荐` / `旗舰`). */
     badge?: string;
+    /** Vendor 厂商分类(W8 D7 加入,替代 endpoint 分类)。 */
+    vendor: ImageVendor;
+    /** Foreign vs. domestic — foreign brands display first per operator
+     *  decision(2026-05-26)。 */
+    foreign: boolean;
 }
 
 const USD_TO_CNY_RATE = 7;
@@ -42,47 +50,64 @@ function cny(usd: number): number {
 /** Order = display order in the dropdown. Default selection is the
  *  first entry (`Nano Banana`). Cheapest + most marketable name.
  *
- *  Price values mirror the server-side `_bootstrap/apply-pr-s-pricing.ts`
- *  PER_IMAGE_USD * markup. As of 2026-05-10 the Gemini family is at +10%
- *  markup (was +50%) and gpt-image-2 is at 0% markup (sub2api wholesale
- *  passthrough); see PR #55 for the live diff. */
+ *  Price math (2026-05-22 修订):
+ *    Gemini 家族 = wholesale_USD × 1.5 (¥1.5 抵官方 $1 规则,operator 2026-05-22 决策)
+ *    gpt-image-2 = 维持 0% markup 不动(等 operator 决定是否纳入 ChatGPT 一档 ¥0.5/$1)
+ *
+ *  Wholesale USD 数字来自 _bootstrap/apply-pr-s-pricing.ts(PR-S, 2026-05-10)。
+ *  对应后端 new-api global ModelRatio 通过 scripts/apply-new-pricing-global-2026-05-22.mjs
+ *  同步更新(× 1.5/7 = × 0.2143 公式)。 */
+// W8 D7(2026-05-26)重构:按厂商(vendor)分类,国外前排。
+// 顺序 = 客户在下拉里看到的从上到下顺序。OpenAI 首选 → Google 系 → 后续国内系。
 export const IMAGE_MODEL_OPTIONS: ImageModelOption[] = [
-    {
-        id: 'gemini-2.5-flash-image',
-        label: 'Nano Banana',
-        pricePerImageUsd: 0.0429, // 0.039 × 1.1
-        pricePerImageCny: cny(0.0429), // ¥0.30
-        blurb: 'Google 2.5 Flash Image · 入门首选',
-        badge: '推荐',
-    },
+    // ── OpenAI(国外旗舰)──
     {
         id: 'gpt-image-2',
         label: 'GPT image-2',
-        pricePerImageUsd: 0.04, // 0% markup — operator-decided cost-only retail
+        pricePerImageUsd: 0.04,
         pricePerImageCny: cny(0.04), // ¥0.28
-        blurb: 'OpenAI · ChatGPT 风格 prompt',
+        blurb: 'OpenAI · GPT-5 多模态图像生成',
+        badge: '推荐',
+        vendor: 'OpenAI',
+        foreign: true,
     },
+    // ── Google(国外)──
     {
-        id: 'imagen-4.0-ultra-generate-001',
-        label: 'Imagen 4 Ultra',
-        pricePerImageUsd: 0.066, // 0.06 × 1.1
-        pricePerImageCny: cny(0.066), // ¥0.46
-        blurb: 'Google Imagen 4 · 高画质',
+        id: 'gemini-2.5-flash-image',
+        label: 'Nano Banana',
+        pricePerImageUsd: 0.00836, // 0.039 × 1.5/7
+        pricePerImageCny: cny(0.00836), // ¥0.06
+        blurb: 'Google 2.5 Flash Image · 入门首选',
+        vendor: 'Google',
+        foreign: true,
     },
     {
         id: 'gemini-3.1-flash-image-preview',
         label: 'Gemini 3.1 Flash Image',
-        pricePerImageUsd: 0.11, // 0.10 × 1.1
-        pricePerImageCny: cny(0.11), // ¥0.77
-        blurb: 'Google · 中等成本',
+        pricePerImageUsd: 0.02143, // 0.10 × 1.5/7
+        pricePerImageCny: cny(0.02143), // ¥0.15
+        blurb: 'Google · 高速 · 中等成本',
+        vendor: 'Google',
+        foreign: true,
+    },
+    {
+        id: 'imagen-4.0-ultra-generate-001',
+        label: 'Imagen 4 Ultra',
+        pricePerImageUsd: 0.01286, // 0.06 × 1.5/7
+        pricePerImageCny: cny(0.01286), // ¥0.09
+        blurb: 'Google Imagen 4 · 高画质',
+        vendor: 'Google',
+        foreign: true,
     },
     {
         id: 'nano-banana-pro-preview',
         label: 'Nano Banana Pro',
-        pricePerImageUsd: 0.2057, // 0.187 × 1.1
-        pricePerImageCny: cny(0.2057), // ¥1.44
+        pricePerImageUsd: 0.04007, // 0.187 × 1.5/7
+        pricePerImageCny: cny(0.04007), // ¥0.28
         blurb: 'Google 旗舰图像 · 最高画质',
         badge: '旗舰',
+        vendor: 'Google',
+        foreign: true,
     },
 ];
 

@@ -1,15 +1,31 @@
 'use client';
 
 /**
- * ModelSelector (PR-T2) — dropdown of 5 image models.
+ * ModelSelector (PR-T2 → W8 D7 重构,2026-05-26).
  *
- * Each row shows: friendly label (Nano Banana / GPT image-2 / etc.) +
- * one-line blurb + per-image ¥ price. Optional badge in top-right
- * (推荐 / 旗舰). Default selection comes from the consumer (the
- * studio orchestrator).
+ * Dropdown of image models, **grouped by vendor**:
+ *   1. OpenAI(国外旗舰)
+ *   2. Google(国外)
+ *   3. 国内厂商(SiliconFlow / Other,当前为空,占位以备扩展)
+ *
+ * 国外厂商前排展示(operator decision 2026-05-26)。每行:label + blurb
+ * + ¥ 价格 + 可选 badge(推荐 / 旗舰)。
  */
 import { useState, useRef, useEffect } from 'react';
-import { IMAGE_MODEL_OPTIONS, type ImageModelOption } from '@/data/image-models';
+import {
+    IMAGE_MODEL_OPTIONS,
+    type ImageModelOption,
+    type ImageVendor,
+} from '@/data/image-models';
+
+/** Vendor 分组顺序 — foreign 系前排,domestic 后排。 */
+const VENDOR_ORDER: ImageVendor[] = ['OpenAI', 'Google', 'SiliconFlow', 'Other'];
+const VENDOR_LABEL: Record<ImageVendor, string> = {
+    OpenAI: 'OpenAI · 国外',
+    Google: 'Google · 国外',
+    SiliconFlow: 'SiliconFlow · 国内',
+    Other: '其它',
+};
 
 interface Props {
     value: string;
@@ -59,32 +75,47 @@ export function ModelSelector({ value, onChange, disabled = false }: Props) {
                     className={[
                         'absolute left-0 right-0 mt-1.5 z-20',
                         'bg-surface border border-brand-border shadow-card-strong rounded-xl',
-                        'overflow-hidden list-none p-0 m-0',
+                        'overflow-hidden list-none p-0 m-0 max-h-[480px] overflow-y-auto',
                     ].join(' ')}
                 >
-                    {IMAGE_MODEL_OPTIONS.map((m) => {
-                        const isActive = m.id === value;
-                        return (
-                            <li key={m.id}>
-                                <button
-                                    type="button"
-                                    role="option"
-                                    aria-selected={isActive}
-                                    onClick={() => {
-                                        onChange(m.id);
-                                        setOpen(false);
-                                    }}
-                                    className={[
-                                        'w-full text-left px-4 py-3 cursor-pointer',
-                                        'transition-colors duration-150 ease-brand',
-                                        isActive ? 'bg-paper-muted' : 'bg-transparent hover:bg-paper-muted/60',
-                                        'border-b border-brand-border last:border-b-0',
-                                    ].join(' ')}
-                                >
-                                    <Row option={m} active={isActive} />
-                                </button>
-                            </li>
-                        );
+                    {VENDOR_ORDER.flatMap((vendor) => {
+                        const items = IMAGE_MODEL_OPTIONS.filter((m) => m.vendor === vendor);
+                        if (items.length === 0) return [];
+                        return [
+                            <li
+                                key={`__hdr_${vendor}`}
+                                aria-hidden="true"
+                                className="px-4 pt-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-ink bg-paper-muted/40 border-b border-brand-border"
+                            >
+                                {VENDOR_LABEL[vendor]}
+                            </li>,
+                            ...items.map((m) => {
+                                const isActive = m.id === value;
+                                return (
+                                    <li key={m.id}>
+                                        <button
+                                            type="button"
+                                            role="option"
+                                            aria-selected={isActive}
+                                            onClick={() => {
+                                                onChange(m.id);
+                                                setOpen(false);
+                                            }}
+                                            className={[
+                                                'w-full text-left px-4 py-3 cursor-pointer',
+                                                'transition-colors duration-150 ease-brand',
+                                                isActive
+                                                    ? 'bg-paper-muted'
+                                                    : 'bg-transparent hover:bg-paper-muted/60',
+                                                'border-b border-brand-border last:border-b-0',
+                                            ].join(' ')}
+                                        >
+                                            <Row option={m} active={isActive} />
+                                        </button>
+                                    </li>
+                                );
+                            }),
+                        ];
                     })}
                 </ul>
             )}
