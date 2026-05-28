@@ -27,12 +27,13 @@ describe('IMAGE_MODEL_OPTIONS', () => {
         }
     });
 
-    it('default selection is the first entry (Nano Banana)', () => {
+    it('default selection is the first entry (GPT image-2)', () => {
         expect(DEFAULT_IMAGE_MODEL_ID).toBe(IMAGE_MODEL_OPTIONS[0].id);
-        expect(IMAGE_MODEL_OPTIONS[0].label).toBe('Nano Banana');
-        // The cheap entry. Post-PR #55 (Gemini +10% markup): ¥0.30/张
-        // (= $0.0429 × 7). Floating-point safe within ±0.01.
-        expect(IMAGE_MODEL_OPTIONS[0].pricePerImageCny).toBeCloseTo(0.3, 2);
+        // W8 D7 (PR #67) reorder by vendor: OpenAI 国外旗舰首选 — gpt-image-2 → [0]。
+        // W8 D7 二次更新(PR #XX,本 commit):ChatGPT ¥0.2/$1 第二轮降价
+        // → $0.04 × 0.2/7 = $0.00114/张 ≈ ¥0.01/张。
+        expect(IMAGE_MODEL_OPTIONS[0].label).toBe('GPT image-2');
+        expect(IMAGE_MODEL_OPTIONS[0].pricePerImageCny).toBeCloseTo(0.01, 2);
     });
 
     it('CNY prices are USD × 7 (within rounding)', () => {

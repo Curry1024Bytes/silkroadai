@@ -57,26 +57,29 @@ function cny(usd: number): number {
  *  Wholesale USD 数字来自 _bootstrap/apply-pr-s-pricing.ts(PR-S, 2026-05-10)。
  *  对应后端 new-api global ModelRatio 通过 scripts/apply-new-pricing-global-2026-05-22.mjs
  *  同步更新(× 1.5/7 = × 0.2143 公式)。 */
-// W8 D7(2026-05-26)重构:按厂商(vendor)分类,国外前排。
+// W8 D7(2026-05-26)按厂商(vendor)分类,国外前排。
+// W8 D7 二次更新(2026-05-26 晚):前端 5 个图像价格同步到 2026-05-22 第二轮降价规则。
+//   ChatGPT 系(gpt-image-2):¥0.2/$1 → pricePerImageUsd = official × 0.2 / 7
+//   Gemini 系(4 个):¥0.5/$1 → pricePerImageUsd = official × 0.5 / 7
 // 顺序 = 客户在下拉里看到的从上到下顺序。OpenAI 首选 → Google 系 → 后续国内系。
 export const IMAGE_MODEL_OPTIONS: ImageModelOption[] = [
-    // ── OpenAI(国外旗舰)──
+    // ── OpenAI(国外旗舰)── ¥0.2/$1
     {
         id: 'gpt-image-2',
         label: 'GPT image-2',
-        pricePerImageUsd: 0.04,
-        pricePerImageCny: cny(0.04), // ¥0.28
+        pricePerImageUsd: 0.00114, // 0.04 × 0.2/7
+        pricePerImageCny: cny(0.00114), // ¥0.01
         blurb: 'OpenAI · GPT-5 多模态图像生成',
         badge: '推荐',
         vendor: 'OpenAI',
         foreign: true,
     },
-    // ── Google(国外)──
+    // ── Google(国外)── ¥0.5/$1
     {
         id: 'gemini-2.5-flash-image',
         label: 'Nano Banana',
-        pricePerImageUsd: 0.00836, // 0.039 × 1.5/7
-        pricePerImageCny: cny(0.00836), // ¥0.06
+        pricePerImageUsd: 0.00279, // 0.039 × 0.5/7
+        pricePerImageCny: cny(0.00279), // ¥0.02
         blurb: 'Google 2.5 Flash Image · 入门首选',
         vendor: 'Google',
         foreign: true,
@@ -84,8 +87,8 @@ export const IMAGE_MODEL_OPTIONS: ImageModelOption[] = [
     {
         id: 'gemini-3.1-flash-image-preview',
         label: 'Gemini 3.1 Flash Image',
-        pricePerImageUsd: 0.02143, // 0.10 × 1.5/7
-        pricePerImageCny: cny(0.02143), // ¥0.15
+        pricePerImageUsd: 0.00714, // 0.10 × 0.5/7
+        pricePerImageCny: cny(0.00714), // ¥0.05
         blurb: 'Google · 高速 · 中等成本',
         vendor: 'Google',
         foreign: true,
@@ -93,8 +96,8 @@ export const IMAGE_MODEL_OPTIONS: ImageModelOption[] = [
     {
         id: 'imagen-4.0-ultra-generate-001',
         label: 'Imagen 4 Ultra',
-        pricePerImageUsd: 0.01286, // 0.06 × 1.5/7
-        pricePerImageCny: cny(0.01286), // ¥0.09
+        pricePerImageUsd: 0.00429, // 0.06 × 0.5/7
+        pricePerImageCny: cny(0.00429), // ¥0.03
         blurb: 'Google Imagen 4 · 高画质',
         vendor: 'Google',
         foreign: true,
@@ -102,8 +105,8 @@ export const IMAGE_MODEL_OPTIONS: ImageModelOption[] = [
     {
         id: 'nano-banana-pro-preview',
         label: 'Nano Banana Pro',
-        pricePerImageUsd: 0.04007, // 0.187 × 1.5/7
-        pricePerImageCny: cny(0.04007), // ¥0.28
+        pricePerImageUsd: 0.01336, // 0.187 × 0.5/7
+        pricePerImageCny: cny(0.01336), // ¥0.09
         blurb: 'Google 旗舰图像 · 最高画质',
         badge: '旗舰',
         vendor: 'Google',

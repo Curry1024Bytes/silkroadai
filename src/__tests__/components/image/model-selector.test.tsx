@@ -12,12 +12,14 @@ import { IMAGE_MODEL_OPTIONS, DEFAULT_IMAGE_MODEL_ID } from '@/data/image-models
 describe('<ModelSelector /> closed state', () => {
     it('shows the selected model label + ¥ price', () => {
         const html = renderToString(<ModelSelector value={DEFAULT_IMAGE_MODEL_ID} onChange={() => {}} />);
-        expect(html).toContain('Nano Banana');
+        // W8 D7 PR #67: 默认 [0] = OpenAI 国外旗舰 gpt-image-2(label 'GPT image-2')
+        // W8 D7 二次降价(本 PR):ChatGPT ¥0.2/$1 → $0.04 × 0.2/7 ≈ $0.00114
+        //   → ¥0.01/张(cny(0.00114) round)。
+        expect(html).toContain('GPT image-2');
         // Closed dropdown shows ¥ in the trigger button. React 19 SSR
         // inserts <!-- --> between literal + interpolated text, so we
         // tolerate the comments inside the regex.
-        // Post-PR #55: Nano Banana ¥0.41 → ¥0.30 (Gemini +10% markup, was +50%).
-        expect(html).toMatch(/¥(?:<!-- -->)?0\.30(?:<!-- -->)?\/张/);
+        expect(html).toMatch(/¥(?:<!-- -->)?0\.01(?:<!-- -->)?\/张/);
     });
 
     it('toggle button has aria-haspopup + aria-expanded=false initially', () => {
