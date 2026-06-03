@@ -54,7 +54,7 @@ interface RechargeLogRow {
     amount: Prisma.Decimal;
     balance_before: Prisma.Decimal;
     balance_after: Prisma.Decimal;
-    newapi_quota_added: bigint;
+    newapi_quota_added: bigint | null;
     bonus_quota_added: bigint;
     newapi_user_id: number;
     source: string;
@@ -139,7 +139,7 @@ const { mockPrismaImpl } = vi.hoisted(() => {
         amount: import('@prisma/client').Prisma.Decimal;
         balance_before: import('@prisma/client').Prisma.Decimal;
         balance_after: import('@prisma/client').Prisma.Decimal;
-        newapi_quota_added: bigint;
+        newapi_quota_added: bigint | null;
         bonus_quota_added: bigint;
         newapi_user_id: number;
         source: string;
@@ -216,6 +216,21 @@ const { mockPrismaImpl } = vi.hoisted(() => {
                 getState().rechargeLogs.push(row);
                 return Promise.resolve(row);
             },
+            // W8 D8: confirm-phase backfill (settle the placeholder).
+            update: (args: { where: { id: string }; data: Partial<RechargeLogRow> }) => {
+                const rows = getState().rechargeLogs;
+                const idx = rows.findIndex((r) => r.id === args.where.id);
+                if (idx === -1) throw new Error(`rechargeLog ${args.where.id} not found in mock state`);
+                rows[idx] = { ...rows[idx], ...args.data };
+                return Promise.resolve(rows[idx]);
+            },
+            // W8 D8: NewApiError clean-rollback deletes the placeholder.
+            delete: (args: { where: { id: string } }) => {
+                const rows = getState().rechargeLogs;
+                const idx = rows.findIndex((r) => r.id === args.where.id);
+                const removed = idx === -1 ? null : rows.splice(idx, 1)[0];
+                return Promise.resolve(removed ?? {});
+            },
         },
         auditLog: {
             create: (args: { data: AuditLogRow }) => {
@@ -248,12 +263,27 @@ vi.mock('@/lib/db', () => ({
 }));
 
 // ─── new-api mocks ───
+// W8 D8: stand-in for NewApiError so executeRecharge's smart-recovery branch
+// (`topupErr instanceof NewApiError` → delete placeholder + clean retry) works.
+const { MockNewApiError } = vi.hoisted(() => {
+    class MockNewApiError extends Error {
+        status: number;
+        constructor(message: string, status = 502) {
+            super(message);
+            this.name = 'NewApiError';
+            this.status = status;
+        }
+    }
+    return { MockNewApiError };
+});
 const mockApplyTopup = vi.fn();
 const mockNewapiGetUser = vi.fn();
 vi.mock('@/lib/newapi/client', () => ({
     applyTopup: (...args: unknown[]) => mockApplyTopup(...args),
     getUser: (...args: unknown[]) => mockNewapiGetUser(...args),
     cnyToQuota: (cny: number) => Math.round((cny / 7.2) * 500_000),
+    quotaToCny: (quota: number) => (quota / 500_000) * 7.2,
+    NewApiError: MockNewApiError,
 }));
 
 // ─── load-balancer mock — return a deterministic test config so the route
@@ -481,10 +511,12 @@ describe('Recharge integration: easy-pay notify → executeRecharge', () => {
         expect(warnLines).toMatch(/easy-pay\/notify.*signature/i);
     });
 
-    it('applyTopup fail: PAID + applyTopup throws → response "fail" + Order FAILED + RECHARGE_FAILED audit (easy-pay will retry)', async () => {
+    it('applyTopup fail (NewApiError): PAID + applyTopup 502 → response "fail" + Order FAILED + placeholder rolled back + RECHARGE_FAILED audit (easy-pay will retry cleanly)', async () => {
         seedPaidOrder();
         mockNewapiGetUser.mockResolvedValue({ id: NEWAPI_USER_ID, quota: 0 });
-        mockApplyTopup.mockRejectedValue(new Error('new-api 502 transient'));
+        // A NewApiError means new-api rejected the call → nothing charged →
+        // smart-recovery deletes the placeholder so the retry re-charges cleanly.
+        mockApplyTopup.mockRejectedValue(new MockNewApiError('new-api 502 transient', 502));
 
         const res = await easyPayNotifyGET(makeNotifyReq());
         const body = await res.text();
@@ -494,7 +526,8 @@ describe('Recharge integration: easy-pay notify → executeRecharge', () => {
         // Order moved to FAILED
         expect(state.orders.get(ORDER_ID)!.status).toBe('FAILED');
         expect(state.orders.get(ORDER_ID)!.failedReason).toContain('new-api 502 transient');
-        // No RechargeLog row written — failure path doesn't audit a success log
+        // Placeholder was created (intent) then DELETED (clean rollback) — no
+        // residual row, so the easy-pay retry starts fresh and re-charges.
         expect(state.rechargeLogs).toHaveLength(0);
         // RECHARGE_FAILED audit captured
         expect(state.auditLogs.find((a) => a.action === 'RECHARGE_FAILED')).toBeDefined();

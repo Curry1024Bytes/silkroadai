@@ -18,7 +18,13 @@ import {
 // new-api 充值入账 (W4-1 D1) — 替换 createAndRedeem stub。
 // 仅 executeRecharge 改造,createOrder/refund/subscription 仍走 litellm shim
 // (R3 stub 路径,W4-1 D1 brief 范围外,见 docs/W4-1-D1*)。
-import { applyTopup as newapiApplyTopup, getUser as newapiGetUser, cnyToQuota } from '@/lib/newapi/client';
+import {
+    applyTopup as newapiApplyTopup,
+    getUser as newapiGetUser,
+    cnyToQuota,
+    quotaToCny,
+    NewApiError,
+} from '@/lib/newapi/client';
 import { computeValidityDays, type ValidityUnit } from '@/lib/subscription-utils';
 import { Prisma } from '@prisma/client';
 import { deriveOrderState, isRefundStatus } from './status';
@@ -1016,23 +1022,37 @@ export async function executeSubscriptionFulfillment(orderId: string): Promise<v
 }
 
 /**
- * 余额充值履约（W4-1 D1 改造）
+ * 余额充值履约（W4-1 D1 初版 → W8 D8 重写为 intent → execute → confirm 三段)
  *
- * Order.status 上的 CAS lock(PAID/FAILED → RECHARGING → COMPLETED)是
- * 主 idempotency 守门 — 易支付重复回调时,第二个 webhook 进 lock 时 count==0
- * 提前 return,不会重复入账。
+ * ── W8 D8 背景 ──
+ * 旧实现把不可回滚的 applyTopup(HTTP add_quota)和去重锚点 rechargeLog.create
+ * 放在同一个 transaction 里,且把 raw quota(1–2 亿)写进 numeric(12,4) 的
+ * balance_before/after → numeric field overflow → tx 回滚但 applyTopup 已生效
+ * → 去重行没落库 → 易支付 webhook 重试 → 同一订单被重复入账 ~13×。
+ * 详见 docs/W8-D8-RECHARGE-BUG-ROOT-CAUSE.md。
  *
- * 二级防御:进入 lock 后再 findFirst RechargeLog by (order_id,
- * source='payment')。如果存在,说明上一轮已经成功调过 new-api 但写
- * Order.status=COMPLETED 之前 crash 了 — 复用已有 RechargeLog,
- * 直接 finalize order,不重复 add_quota。
+ * ── 新的三段式 idempotency ──
+ *   阶段 1 去重:CAS lock 后 findFirst RechargeLog(order_id, source=payment)。
+ *     - newapi_quota_added != null → 上轮已确认入账 → 幂等 finalize COMPLETED。
+ *     - newapi_quota_added == null → 占位行存在但入账结果未知(crash / 网络歧义
+ *       失败)→ order FAILED + RECHARGE_NEEDS_REVIEW,转人工,绝不自动重扣。
+ *   阶段 2 intent(独立 tx,commit):CAS-claim 首充 bonus + INSERT 占位 RechargeLog
+ *     (newapi_quota_added=null 哨兵,balance_* 占位 0)。commit 之后 applyTopup
+ *     对同一 order 永不二次执行(阶段 1 去重命中)。
+ *   阶段 3 execute(在任何 tx 之外):applyTopup。Smart-recovery 失败策略(operator
+ *     W8 D8 决策):NewApiError(new-api 明确拒绝 → 未入账)→ 删占位 + 撤 bonus claim
+ *     → 抛 → order FAILED → webhook 重试干净重扣;非 NewApiError(网络/超时,结果
+ *     未知)→ 保留占位 → 抛 → order FAILED → 重试走阶段 1 人工复核(不重扣)。
+ *   阶段 4 confirm(tx,commit):回填占位行(balance_* 存 ¥CNY、newapi_quota_added
+ *     落值)+ order COMPLETED + commission + 缓存清零。
  *
- * 与 W1 LiteLLM 时代的差异(gotcha #1 / #12):
- *   - 不调 createAndRedeem(W1 sub2apipay 兑换码模式,已废弃)
- *   - 不动 token(W1 修改 max_budget;new-api 永远 unlimited_quota=true)
- *   - 充值 = POST /api/user/manage action=add_quota,语义是「增量」
- *     (与 LiteLLM /key/update max_budget 的「替换」语义相反)
- *   - amount 是 CNY,服务器侧用 cnyToQuota 换算 raw quota
+ * ── 关键修正 ──
+ *   - balance_before/after 存 ¥CNY(quotaToCny),与 amount 同单位;raw quota 只在
+ *     newapi_quota_added(BigInt)。配合 schema 拓宽到 numeric(20,4),overflow 根除。
+ *   - applyTopup 移出 transaction,不再 ~10s 持 DB 连接(消解 W6 D5 F1)。
+ *
+ * 与 W1 LiteLLM 时代的差异(gotcha #1 / #12):不调 createAndRedeem、不动 token
+ * (new-api 永远 unlimited_quota=true)、充值 = add_quota 增量语义、amount 是 CNY。
  */
 export async function executeRecharge(orderId: string): Promise<void> {
     const order = await prisma.order.findUnique({ where: { id: orderId } });
@@ -1061,8 +1081,12 @@ export async function executeRecharge(orderId: string): Promise<void> {
         });
         throw new OrderError('INVALID_STATUS', 'Order has no user_id', 400);
     }
+    // Narrow user_id → string here (right after the guard, before any await,
+    // so TS keeps the narrowing). Used throughout the phases below.
+    const userId = order.user_id;
 
-    // 原子 CAS:将状态从 PAID/FAILED → RECHARGING,防止并发竞态。
+    // 原子 CAS:将状态从 PAID/FAILED → RECHARGING,防止并发竞态。同一 order 同时
+    // 只有一个 executeRecharge 持有 RECHARGING,后续阶段无需再防同 order 并发。
     const lockResult = await prisma.order.updateMany({
         where: { id: orderId, status: { in: [ORDER_STATUS.PAID, ORDER_STATUS.FAILED] } },
         data: { status: ORDER_STATUS.RECHARGING },
@@ -1075,19 +1099,39 @@ export async function executeRecharge(orderId: string): Promise<void> {
     const cnyAmount = Number(order.amount);
 
     try {
-        // 二级 idempotency 守门:RechargeLog 查重(支持上一轮 add_quota 成功
-        // 但 Order.status=COMPLETED 写入前 crash 的尾部场景)。
+        // ── 阶段 1:幂等去重 ──
+        // 占位 RechargeLog 行现在「在 applyTopup 之前就 commit」,newapi_quota_added
+        // 作为「是否已确认入账」哨兵。
         const existingLog = await prisma.rechargeLog.findFirst({
             where: { order_id: orderId, source: 'payment' },
-            select: { id: true, balance_after: true },
+            select: { id: true, newapi_quota_added: true },
         });
         if (existingLog) {
-            console.warn(
-                `[executeRecharge] order ${orderId} already has RechargeLog ${existingLog.id} — finalizing without re-charging new-api`,
-            );
-            await prisma.order.updateMany({
-                where: { id: orderId, status: ORDER_STATUS.RECHARGING },
-                data: { status: ORDER_STATUS.COMPLETED, completedAt: new Date() },
+            if (existingLog.newapi_quota_added != null) {
+                // 已确认入账(applyTopup 成功 + confirm tx commit 过)→ 幂等 finalize,
+                // 绝不重复 applyTopup。覆盖「上轮入账成功但 COMPLETED 写入前 crash」尾场景。
+                console.warn(
+                    `[executeRecharge] order ${orderId} already settled (RechargeLog ${existingLog.id}) — finalizing without re-charging new-api`,
+                );
+                await prisma.order.updateMany({
+                    where: { id: orderId, status: ORDER_STATUS.RECHARGING },
+                    data: { status: ORDER_STATUS.COMPLETED, completedAt: new Date() },
+                });
+                return;
+            }
+            // 占位行存在但 newapi_quota_added 仍为 null = 入账结果未知(进程在
+            // applyTopup 之后、confirm 之前 crash,或 applyTopup 网络层歧义失败被保留)。
+            // 既不能安全重扣(可能双扣),也不能直接 finalize(可能根本没入账)
+            // → 标 FAILED + RECHARGE_NEEDS_REVIEW 审计,转人工复核。不抛错(让
+            // confirmPayment 返回 true,webhook 停止重试),由 operator / 阶段 C 审计捞出。
+            const reviewReason = `RECHARGE_NEEDS_REVIEW: unconfirmed top-up placeholder (RechargeLog ${existingLog.id}); applyTopup outcome unknown — not auto-retrying to avoid double charge`;
+            console.error(`[executeRecharge] order ${orderId} ${reviewReason}`);
+            await prisma.order.update({
+                where: { id: orderId },
+                data: { status: ORDER_STATUS.FAILED, failedAt: new Date(), failedReason: reviewReason },
+            });
+            await prisma.auditLog.create({
+                data: { orderId, action: 'RECHARGE_NEEDS_REVIEW', detail: reviewReason, operator: 'system' },
             });
             return;
         }
@@ -1096,16 +1140,16 @@ export async function executeRecharge(orderId: string): Promise<void> {
         // 但充值要打到 new-api 的 int user id。这两个 ID 在 register/oauth
         // provisionNewCustomer 时建立映射(User.newapi_user_id)。
         // W6 D1: 同时读 first_recharge_bonus_granted,决定是否走首充福利路径
-        // (仅作 peek,真正的 race-safe claim 走事务内 updateMany)。
+        // (仅作 peek,真正的 race-safe claim 走 intent 事务内 updateMany)。
         const portalUser = await prisma.user.findUnique({
-            where: { id: order.user_id },
+            where: { id: userId },
             select: {
                 id: true,
                 newapi_user_id: true,
                 first_recharge_bonus_granted: true,
                 // W7 D4: read invite_code so we can pick the right bonus rate
                 // (30% if currently-valid, 20% default). Re-validation against
-                // INVITE_CODES env happens inside the bonus tx so an operator
+                // INVITE_CODES env happens inside the intent tx so an operator
                 // can soft-revoke a code via env edit.
                 invite_code: true,
                 // PR-U1: reseller attribution. NULL on either field = no
@@ -1118,11 +1162,11 @@ export async function executeRecharge(orderId: string): Promise<void> {
             },
         });
         if (!portalUser) {
-            throw new Error(`portal user ${order.user_id} not found`);
+            throw new Error(`portal user ${userId} not found`);
         }
         if (portalUser.newapi_user_id == null) {
             throw new Error(
-                `portal user ${order.user_id} has no newapi_user_id (provisionNewCustomer never ran or rolled back)`,
+                `portal user ${userId} has no newapi_user_id (provisionNewCustomer never ran or rolled back)`,
             );
         }
         const newapiUserId = portalUser.newapi_user_id;
@@ -1132,107 +1176,136 @@ export async function executeRecharge(orderId: string): Promise<void> {
         const bonusRate = isValidInviteCode(portalUser.invite_code)
             ? FIRST_RECHARGE_BONUS_RATE_INVITED
             : FIRST_RECHARGE_BONUS_RATE;
+        const mainQuota = cnyToQuota(cnyAmount);
 
-        // 读 balance_before(quota,raw 单位)。new-api 的 quota 字段就是预算总额,
-        // applyTopup 是增量。失败可容忍 — 用 0 占位,审计准确性次于入账成功率。
-        let balanceBefore: number;
+        // ── 阶段 2:intent — 首充 bonus CAS-claim + 占位 RechargeLog,独立 commit ──
+        // (W8 D8 核心)把去重锚点 placeholder 在 applyTopup **之前** commit。commit
+        // 之后,任何后续失败 / crash / webhook 重试都不会让同一 order 二次 applyTopup
+        // (阶段 1 去重命中)。
+        //
+        // 首充 bonus 的 race-safe claim 必须在此(applyTopup 之前、与 placeholder 原子):
+        //   - tx 内 updateMany WHERE first_recharge_bonus_granted=false。先到 count=1
+        //     拿到 bonus;并发同 user 第二条 order 在 Postgres READ COMMITTED 下 block
+        //     等行锁,commit 后 re-read granted=true → count=0 → 只入主 quota。
+        //   - 若放到 applyTopup 之后再 claim,并发两单会各自带 bonus 调一次 applyTopup
+        //     → 双发 bonus。所以 claim 必须前置。
+        const intent = await prisma.$transaction(async (tx) => {
+            let bonusQuota = 0;
+            let bonusClaimed = false;
+            if (peekBonusEligible) {
+                const claim = await tx.user.updateMany({
+                    where: { id: userId, first_recharge_bonus_granted: false },
+                    data: { first_recharge_bonus_granted: true },
+                });
+                if (claim.count === 1) {
+                    bonusQuota = Math.floor(mainQuota * bonusRate);
+                    bonusClaimed = true;
+                }
+                // count===0 防御性:peek 与 claim 之间另一条并发 order 已抢到 bonus,
+                // 本次只入主 quota,不复发 bonus(数据自愈,不抛错)。
+            }
+            const placeholder = await tx.rechargeLog.create({
+                data: {
+                    user_id: userId,
+                    order_id: orderId,
+                    amount: new Prisma.Decimal(cnyAmount.toFixed(4)),
+                    // balance_* 在阶段 4 confirm 回填为 ¥CNY;此处占位 0。
+                    balance_before: new Prisma.Decimal(0),
+                    balance_after: new Prisma.Decimal(0),
+                    // newapi_quota_added=null = 「尚未确认入账」哨兵(confirm 阶段落值)。
+                    newapi_quota_added: null,
+                    bonus_quota_added: BigInt(bonusQuota),
+                    newapi_user_id: newapiUserId,
+                    source: 'payment',
+                    note: `recharge order:${orderId} (pending top-up)`,
+                },
+                select: { id: true },
+            });
+            return { rechargeLogId: placeholder.id, bonusQuota, bonusClaimed };
+        });
+        const totalQuota = mainQuota + intent.bonusQuota;
+
+        // balance_before 审计基线(raw quota,后续换算 ¥CNY)。best-effort,失败用 0。
+        let balanceBeforeRaw = 0;
         try {
-            const u = await newapiGetUser(newapiUserId);
-            balanceBefore = u.quota;
+            balanceBeforeRaw = (await newapiGetUser(newapiUserId)).quota;
         } catch (err) {
             console.warn(
                 `[executeRecharge] getUser(${newapiUserId}) before topup failed (continuing with 0 baseline):`,
                 err,
             );
-            balanceBefore = 0;
         }
 
-        const mainQuota = cnyToQuota(cnyAmount);
+        // ── 阶段 3:execute — applyTopup(HTTP 副作用,at-most-once)──
+        // 占位行已 commit,本调用对同一 order 不会被 webhook 重试二次执行。
+        try {
+            await newapiApplyTopup({
+                newapi_user_id: newapiUserId,
+                cnyAmount,
+                extraBonusQuota: intent.bonusQuota,
+            });
+        } catch (topupErr) {
+            // Smart-recovery 失败策略(operator W8 D8 决策):
+            //   - NewApiError:new-api 明确返回错误响应 → add_quota 没生效 → 安全地把这
+            //     次 attempt 整个回退(删占位行 + 撤 bonus claim),order 落 FAILED,
+            //     webhook 重试时阶段 1 找不到占位行 → 干净重扣。
+            //   - 非 NewApiError(fetch 网络层抛错 / 超时,没拿到响应)→ 入账结果未知 →
+            //     保留占位行(null),order 落 FAILED,重试时阶段 1 命中 null 占位 →
+            //     人工复核,不自动重扣(防双扣)。
+            if (topupErr instanceof NewApiError) {
+                try {
+                    await prisma.$transaction(async (tx) => {
+                        await tx.rechargeLog.delete({ where: { id: intent.rechargeLogId } });
+                        if (intent.bonusClaimed) {
+                            // 撤回本次 claim(只在 granted 仍为 true 时,即没有别的流程介入)。
+                            await tx.user.updateMany({
+                                where: { id: userId, first_recharge_bonus_granted: true },
+                                data: { first_recharge_bonus_granted: false },
+                            });
+                        }
+                    });
+                } catch (rollbackErr) {
+                    // 回退失败不致命:占位行残留只会让下次重试走人工复核(保守,不双扣)。
+                    console.error(
+                        `[executeRecharge] order ${orderId} placeholder rollback after NewApiError failed:`,
+                        rollbackErr,
+                    );
+                }
+            }
+            throw topupErr;
+        }
 
-        // ── W6 D1 首充 bonus 事务 ──
-        // 把「bonus CAS-claim → applyTopup → RechargeLog 写入 → 订单 finalize →
-        // audit → 缓存清零」全部包在一次 interactive transaction 里。
-        //
-        // 失败回滚语义:
-        //   - applyTopup 抛 → callback 抛 → prisma rollback → bonus claim 撤回
-        //     → user.first_recharge_bonus_granted 退回 false,下次充值仍可拿首充
-        //   - RechargeLog 写入失败同理
-        //
-        // 并发安全(同 user 两个不同 order 同时充值):
-        //   - tx 内 updateMany WHERE first_recharge_bonus_granted=false
-        //     先到的 tx count=1 → 拿到 bonus
-        //     后到的 tx 在 Postgres READ COMMITTED 下会 block 等 row lock,
-        //     等先到 tx commit 后再 re-read,看到 granted=true → predicate 不符
-        //     → count=0 → bonus=0,只入主 quota
-        //
-        // 数据自愈:peek 看到 granted=true(已发过)→ 跳过整段 bonus 计算,
-        // 直接 mainQuota 走完。这条分支不进 updateMany,避免无谓的 row lock。
-        //
-        // tx timeout=15000ms 容纳 applyTopup 的 10s timeout + 后续 prisma 写。
+        // balance_after 审计。失败兜底 before+totalQuota(入账已成功,审计不阻塞 finalize)。
+        let balanceAfterRaw: number;
+        try {
+            balanceAfterRaw = (await newapiGetUser(newapiUserId)).quota;
+        } catch (err) {
+            console.warn(
+                `[executeRecharge] getUser(${newapiUserId}) after topup failed (using before+delta):`,
+                err,
+            );
+            balanceAfterRaw = balanceBeforeRaw + totalQuota;
+        }
+
+        // ── 阶段 4:confirm — 回填占位行 + finalize + commission + 缓存清零,一次 commit ──
+        // tx timeout=15000ms(applyTopup 已在 tx 外,这里只剩 prisma 写,余量充足)。
         await prisma.$transaction(
             async (tx) => {
-                // CAS-claim 首充 bonus(仅 peek 显示 eligible 时才尝试)
-                let bonusQuota = 0;
-                if (peekBonusEligible) {
-                    const claim = await tx.user.updateMany({
-                        where: {
-                            id: order.user_id!,
-                            first_recharge_bonus_granted: false,
-                        },
-                        data: { first_recharge_bonus_granted: true },
-                    });
-                    if (claim.count === 1) {
-                        bonusQuota = Math.floor(mainQuota * bonusRate);
-                    }
-                    // count===0 防御性:peek 与 claim 之间另一条并发 order 已抢到 bonus,
-                    // 本次只入主 quota,不复发 bonus(数据自愈,不抛错)。
-                }
-                const totalQuota = mainQuota + bonusQuota;
-
-                // 调 new-api 加 quota(action=add_quota,语义增量,见 gotcha #12)。
-                // 主 + bonus 一次入账(extraBonusQuota 是 raw,不再走汇率)。
-                await newapiApplyTopup({
-                    newapi_user_id: newapiUserId,
-                    cnyAmount,
-                    extraBonusQuota: bonusQuota,
-                });
-
-                // 读 balance_after 做审计。失败兜底为 before+totalQuota,因为入账
-                // 已经成功,审计不应阻塞 finalize。
-                let balanceAfter: number;
-                try {
-                    const u = await newapiGetUser(newapiUserId);
-                    balanceAfter = u.quota;
-                } catch (err) {
-                    console.warn(
-                        `[executeRecharge] getUser(${newapiUserId}) after topup failed (using before+delta):`,
-                        err,
-                    );
-                    balanceAfter = balanceBefore + totalQuota;
-                }
-
-                // PR-U1: capture rechargeLog.id so the commission hook
-                // below can link to it (1:1 unique constraint on
-                // ResellerCommission.recharge_log_id).
-                const rechargeLog = await tx.rechargeLog.create({
+                await tx.rechargeLog.update({
+                    where: { id: intent.rechargeLogId },
                     data: {
-                        user_id: order.user_id!,
-                        order_id: orderId,
-                        amount: new Prisma.Decimal(cnyAmount.toFixed(4)),
-                        balance_before: new Prisma.Decimal(balanceBefore),
-                        balance_after: new Prisma.Decimal(balanceAfter),
-                        // newapi_quota_added 是 main+bonus 的总和;bonus_quota_added
-                        // 单独记录 bonus 子项(非首充行为 0,审计可反查首充福利发放量)。
+                        // W8 D8: balance_* 存 ¥CNY(与 amount 同单位);raw quota 只在
+                        // newapi_quota_added。¥CNY 永远不会越 numeric(20,4) 上限。
+                        balance_before: new Prisma.Decimal(quotaToCny(balanceBeforeRaw).toFixed(4)),
+                        balance_after: new Prisma.Decimal(quotaToCny(balanceAfterRaw).toFixed(4)),
+                        // newapi_quota_added 从 null → 落值 = 哨兵确认入账,阶段 1 据此幂等。
                         newapi_quota_added: BigInt(totalQuota),
-                        bonus_quota_added: BigInt(bonusQuota),
-                        newapi_user_id: newapiUserId,
-                        source: 'payment',
+                        bonus_quota_added: BigInt(intent.bonusQuota),
                         note:
-                            bonusQuota > 0
-                                ? `recharge order:${orderId} (first-recharge bonus +${bonusQuota})`
+                            intent.bonusQuota > 0
+                                ? `recharge order:${orderId} (first-recharge bonus +${intent.bonusQuota})`
                                 : `recharge order:${orderId}`,
                     },
-                    select: { id: true },
                 });
 
                 await tx.order.updateMany({
@@ -1247,12 +1320,12 @@ export async function executeRecharge(orderId: string): Promise<void> {
                         detail: JSON.stringify({
                             cnyAmount,
                             mainQuota,
-                            bonusQuota,
+                            bonusQuota: intent.bonusQuota,
                             totalQuota,
-                            firstRechargeBonus: bonusQuota > 0,
+                            firstRechargeBonus: intent.bonusQuota > 0,
                             newapiUserId,
-                            balanceBefore,
-                            balanceAfter,
+                            balanceBefore: balanceBeforeRaw,
+                            balanceAfter: balanceAfterRaw,
                         }),
                         operator: 'system',
                     },
@@ -1264,8 +1337,6 @@ export async function executeRecharge(orderId: string): Promise<void> {
                 // row + update Reseller.cumulative_gmv + maybe upgrade tier.
                 // Re-check `isAttributionActive` inside the tx so a stale peek
                 // can't write a commission past the window (defensive).
-                // Failure here rolls back the entire recharge tx — money path
-                // consistency over silently dropping commission.
                 if (
                     isAttributionActive({
                         inviter_reseller_id: portalUser.inviter_reseller_id,
@@ -1276,32 +1347,34 @@ export async function executeRecharge(orderId: string): Promise<void> {
                     try {
                         await writeCommissionInTx(tx, {
                             reseller_id: portalUser.inviter_reseller_id!,
-                            user_id: order.user_id!,
-                            recharge_log_id: rechargeLog.id,
+                            user_id: userId,
+                            recharge_log_id: intent.rechargeLogId,
                             attributed_gmv_cny: cnyAmount,
                             now: new Date(),
                         });
                     } catch (commissionErr) {
-                        // Money path: commission failure rolls back the whole
-                        // recharge tx (so the customer's quota top-up also
-                        // reverts). Operator can retry via /admin/order/retry.
-                        // Logged inside the catch block of the outer try.
+                        // 沿用 PR-U1「commission 属 money path,不静默丢弃」语义:失败回滚
+                        // confirm tx(rechargeLog.update 落 newapi_quota_added 一并回滚 →
+                        // 占位行哨兵退回 null)→ 外层 catch 标 order FAILED。webhook 重试
+                        // 时阶段 1 命中「null 占位行」→ 人工复核(applyTopup 已成功入账,
+                        // 占位行阻断重扣,绝不双扣)。比改造前严格更安全 — 旧逻辑此处回滚
+                        // 后重试会再次 applyTopup 造成双扣。
                         console.error(
-                            `[executeRecharge] reseller commission write failed (rolling back recharge):`,
+                            `[executeRecharge] reseller commission write failed (rolling back confirm tx → manual review):`,
                             commissionErr,
                         );
                         throw commissionErr;
                     }
                 }
 
-                // Cache bust(W4-2 D6):applyTopup 已经把 raw quota 涨到 new-api 那边,
+                // Cache bust(W4-2 D6):applyTopup 已把 raw quota 涨到 new-api 那边,
                 // 但 portal Prisma 上的 newapi_quota_cache 还是旧值。null 三个字段让
                 // 下一次 /balance 渲染走 live fetch,看到最新余额。
                 // W6 D2: 同时清 balance_alert_last_sent_at — 用户充值后如果很快
                 // 又花光,提醒应立即可触发,不等 24h cooldown(充完又快花完是真实
                 // 风险信号,值得提醒)。
                 await tx.user.update({
-                    where: { id: order.user_id! },
+                    where: { id: userId },
                     data: {
                         newapi_quota_cache: null,
                         newapi_used_quota_cache: null,
@@ -1313,8 +1386,7 @@ export async function executeRecharge(orderId: string): Promise<void> {
             { timeout: 15_000, maxWait: 5_000 },
         );
     } catch (error) {
-        // 不写 RechargeLog 失败行(schema 没 status/error_msg 字段)。失败信息
-        // 记在 Order.failedReason + AuditLog,与现有 RECHARGE_FAILED 流一致。
+        // 失败信息记在 Order.failedReason + AuditLog,与现有 RECHARGE_FAILED 流一致。
         // NewApiError.message already includes "new-api {endpoint} {status}: ..."
         // so plain `error.message` is sufficient for both NewApiError and other Error.
         const reason = error instanceof Error ? error.message : String(error);

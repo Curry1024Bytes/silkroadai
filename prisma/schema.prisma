@@ -419,9 +419,15 @@ model RechargeLog {
   order_id String?
   order    Order?       @relation(fields: [order_id], references: [id])
 
-  amount         Decimal @db.Decimal(12, 4)
-  balance_before Decimal @db.Decimal(12, 4)
-  balance_after  Decimal @db.Decimal(12, 4)
+  // W8 D8: widened 12,4 → 20,4 as defense-in-depth. The W8 D8 incident wrote
+  // raw quota (1–2 亿) into balance_before/after (then numeric(12,4), max ~1 亿)
+  // → numeric field overflow → recharge tx rollback → webhook-retry double-charge.
+  // executeRecharge now stores ¥CNY (quotaToCny) in balance_*; raw quota stays
+  // only in newapi_quota_added (BigInt). ¥CNY display values can never approach
+  // the 20,4 ceiling, so this column type can't be the failure point again.
+  amount         Decimal @db.Decimal(20, 4)
+  balance_before Decimal @db.Decimal(20, 4)
+  balance_after  Decimal @db.Decimal(20, 4)
 
   // ── new-api 审计冗余 ──
   // 充给 new-api 的 raw quota 增量(对应 amount 经汇率换算)
