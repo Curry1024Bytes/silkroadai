@@ -13,6 +13,7 @@ import {
     IMAGE_MODEL_IDS,
     IMAGE_MODELS,
     IMAGE_SIZES,
+    sizeToAspectRatio,
 } from '@/lib/image-gen/models';
 
 describe('IMAGE_MODELS table', () => {
@@ -57,6 +58,46 @@ describe('findImageModel', () => {
 
     it('returns undefined for unknown ids', () => {
         expect(findImageModel('this-model-does-not-exist')).toBeUndefined();
+    });
+});
+
+describe('geminiImageSize routing flag (W8 D8 — native /v1beta resolution)', () => {
+    it('gemini-3.1-flash-image-preview is billed/served at 2K', () => {
+        expect(findImageModel('gemini-3.1-flash-image-preview')?.geminiImageSize).toBe('2K');
+    });
+
+    it('gemini-3-pro-image-preview + nano-banana-pro-preview are served at 4K', () => {
+        expect(findImageModel('gemini-3-pro-image-preview')?.geminiImageSize).toBe('4K');
+        expect(findImageModel('nano-banana-pro-preview')?.geminiImageSize).toBe('4K');
+    });
+
+    it('1K-tier and non-Gemini SKUs leave it undefined (keep chat/images path)', () => {
+        // gemini-2.5-flash-image physically caps at 1408×768; gpt-image-2 +
+        // Imagen are not native-Gemini image models.
+        expect(findImageModel('gemini-2.5-flash-image')?.geminiImageSize).toBeUndefined();
+        expect(findImageModel('gpt-image-2')?.geminiImageSize).toBeUndefined();
+        expect(findImageModel('imagen-4.0-ultra-generate-001')?.geminiImageSize).toBeUndefined();
+    });
+
+    it('only ever uses the values the upstream accepts (2K | 4K), never 1K/3K/etc', () => {
+        for (const m of IMAGE_MODELS) {
+            if (m.geminiImageSize !== undefined) {
+                expect(['2K', '4K']).toContain(m.geminiImageSize);
+            }
+        }
+    });
+});
+
+describe('sizeToAspectRatio', () => {
+    it('maps the 3 portal sizes to Gemini aspect ratios', () => {
+        expect(sizeToAspectRatio('1024x1024')).toBe('1:1');
+        expect(sizeToAspectRatio('1024x1792')).toBe('9:16');
+        expect(sizeToAspectRatio('1792x1024')).toBe('16:9');
+    });
+
+    it('falls back to 1:1 for anything unexpected', () => {
+        expect(sizeToAspectRatio('512x512')).toBe('1:1');
+        expect(sizeToAspectRatio('')).toBe('1:1');
     });
 });
 

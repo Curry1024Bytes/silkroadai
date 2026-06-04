@@ -46,6 +46,7 @@ import {
     IMAGE_COUNT_MIN,
     IMAGE_MODEL_IDS,
     IMAGE_SIZES,
+    sizeToAspectRatio,
 } from '@/lib/image-gen/models';
 import { extractB64Images } from '@/lib/image-gen/extract-b64';
 import { imageKey, uploadImage, getPublicUrl } from '@/lib/r2/client';
@@ -87,6 +88,20 @@ interface ImagesGenerationsResponse {
 interface ChatCompletionsResponse {
     choices?: Array<{ message?: { content?: string } }>;
     error?: { message?: string; code?: string; type?: string };
+}
+
+/** Native Gemini generateContent response shape. Image bytes live in
+ *  candidates[].content.parts[].inlineData.data (base64). new-api may emit
+ *  either camelCase (inlineData) or snake_case (inline_data) depending on
+ *  version, so we read both. Errors arrive as a Gemini-style envelope
+ *  ({error:{code,message,status}}) or an OpenAI-normalized one. */
+interface GeminiNativeResponse {
+    candidates?: Array<{
+        content?: { parts?: Array<{ inlineData?: { data?: string }; inline_data?: { data?: string } }> };
+        finishReason?: string;
+    }>;
+    promptFeedback?: { blockReason?: string };
+    error?: { message?: string; code?: string | number; status?: string; type?: string };
 }
 
 /** Upstream returned a non-2xx with a typed error body (insufficient_user_quota,
@@ -242,13 +257,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         return NextResponse.json({ error: 'internal_error' }, { status: 500 });
     }
 
-    // PR-T2 v2 fix (2026-05-09): branch upstream by model. Gemini-class
-    // image SKUs (Nano Banana / 3.1-flash-image / 3-pro-image) reject
-    // /v1/images/generations with `convert_request_failed: only imagen
-    // models are supported`; they must be called via /v1/chat/completions
-    // and the image extracted from a markdown `data:image/...;base64,…`
-    // payload in `choices[0].message.content`. Imagen + gpt-image-2 use
-    // the OpenAI-shaped /v1/images/generations as before.
+    // Upstream dispatch (see fetchImagesFromUpstream): 2K/4K Gemini SKUs
+    // → native /v1beta generateContent with imageConfig.imageSize (W8 D8);
+    // other Gemini-class SKUs (Nano Banana 1K) → /v1/chat/completions with
+    // the image extracted from a markdown data: URI; Imagen + gpt-image-2
+    // → OpenAI-shaped /v1/images/generations.
     let imageBuffers: Buffer[];
     try {
         imageBuffers = await fetchImagesFromUpstream({
@@ -473,6 +486,20 @@ function isWrongEndpointSignal(err: unknown): boolean {
 
 /** Top-level dispatch with auto-fallback. Returns raw image buffers. */
 async function fetchImagesFromUpstream(args: FetchArgs): Promise<Buffer[]> {
+    // W8 D8 (2026-06-04): Gemini SKUs billed above 1K (gemini-3.1-flash →
+    // 2K, gemini-3-pro / nano-banana-pro → 4K) MUST use the native Gemini
+    // endpoint with `imageConfig.imageSize`. That is the ONLY shape Channel
+    // 17 (nexaxis) honors for resolution — the /v1/chat/completions
+    // converter silently drops the hint and Google returns its 1408×768
+    // (~1K) default, which is exactly what these SKUs were returning while
+    // billed at 2K/4K. NO fallback to chat here: a silent 1K image under a
+    // 2K/4K charge is the bug we're fixing, so we surface upstream errors
+    // (incl. nexaxis account-pool 429s) rather than downgrade quietly.
+    const targetImageSize = findImageModel(args.model)?.geminiImageSize;
+    if (targetImageSize) {
+        return fetchViaGeminiNative(args, targetImageSize);
+    }
+
     // Default: try /v1/chat/completions first (modern multimodal path)
     try {
         return await fetchViaChatCompletions(args);
@@ -589,6 +616,76 @@ async function fetchViaChatCompletions(args: FetchArgs): Promise<Buffer[]> {
     };
 
     // Parallel `count` requests; concat results.
+    const batches = await Promise.all(Array.from({ length: args.count }, () => single()));
+    const all = batches.flat();
+    if (all.length === 0) throw new EmptyResponseError();
+    return all;
+}
+
+/** Native Gemini `/v1beta/models/{model}:generateContent` (W8 D8). The
+ *  ONLY path that carries a resolution hint to Channel 17 (nexaxis) →
+ *  Google: `generationConfig.imageConfig.imageSize` = "2K" | "4K". Verified
+ *  end-to-end through our new-api (2K → 2048², 4K → 4096²); the
+ *  chat/completions converter drops imageConfig in every placement. The
+ *  customer's aspect-ratio choice is carried via `imageConfig.aspectRatio`
+ *  (orthogonal to imageSize). Response is native Gemini shape; one image
+ *  per call, so we fan out `count` parallel requests like the chat path.
+ *
+ *  Empty across all calls → EmptyResponseError (Gemini safety block: 200
+ *  with finishReason SAFETY / promptFeedback.blockReason and no
+ *  inlineData), surfaced as a friendly content_filter 400 by the caller. */
+async function fetchViaGeminiNative(args: FetchArgs, imageSize: '2K' | '4K'): Promise<Buffer[]> {
+    const aspectRatio = sizeToAspectRatio(args.size);
+    const url = `${NEWAPI_PROXY_URL}/v1beta/models/${encodeURIComponent(args.model)}:generateContent`;
+
+    const single = async (): Promise<Buffer[]> => {
+        const upstreamRes = await fetch(url, {
+            method: 'POST',
+            headers: {
+                Authorization: `Bearer ${args.systemToken}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                contents: [{ parts: [{ text: args.prompt }] }],
+                generationConfig: {
+                    responseModalities: ['IMAGE'],
+                    imageConfig: { imageSize, aspectRatio },
+                },
+            }),
+            signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+        }).catch((err) => {
+            throw new TransportError(err instanceof Error ? err.message : 'unknown');
+        });
+
+        let body: GeminiNativeResponse;
+        try {
+            body = (await upstreamRes.json()) as GeminiNativeResponse;
+        } catch {
+            throw new UpstreamError(upstreamRes.status, 'upstream_invalid_response', 'non-JSON upstream body');
+        }
+
+        if (!upstreamRes.ok) {
+            // Normalize the error code so the route handler's quota /
+            // content-filter heuristics (which key on string codes) still fire.
+            const code = body.error?.code != null ? String(body.error.code) : body.error?.status;
+            throw new UpstreamError(
+                upstreamRes.status,
+                code,
+                body.error?.message ?? `upstream error ${upstreamRes.status}`,
+            );
+        }
+
+        const parts = body.candidates?.[0]?.content?.parts ?? [];
+        const buffers: Buffer[] = [];
+        for (const p of parts) {
+            const b64 = p.inlineData?.data ?? p.inline_data?.data;
+            if (typeof b64 === 'string' && b64.length > 0) {
+                buffers.push(Buffer.from(b64, 'base64'));
+            }
+        }
+        return buffers;
+    };
+
     const batches = await Promise.all(Array.from({ length: args.count }, () => single()));
     const all = batches.flat();
     if (all.length === 0) throw new EmptyResponseError();

@@ -93,6 +93,39 @@ const VALID_BODY = {
     size: '1024x1024',
 };
 
+/** Spy on globalThis.fetch with a URL-aware handler. afterEach's
+ *  restoreAllMocks also cleans up so a failed assertion before an explicit
+ *  mockRestore won't leak the spy into the next test. */
+function spyFetch(handler: (url: string, init: { body?: string }) => Response | Promise<Response>) {
+    return (vi.spyOn as unknown as (...args: unknown[]) => ReturnType<typeof vi.fn>)(
+        globalThis,
+        'fetch',
+    ).mockImplementation(async (url: unknown, init: unknown) =>
+        handler(String(url), (init ?? {}) as { body?: string }),
+    );
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+    return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+}
+
+/** The /v1/chat/completions wrong-endpoint signal that makes the dispatch
+ *  fall back to /v1/images/generations (W8 D7 smart fallback). Non-Gemini
+ *  image SKUs (gpt-image-2, Imagen) take this fallback in production —
+ *  these mocks must replay it or the chat-first dispatch returns an empty
+ *  body and the route 400s before reaching images/generations. */
+function wrongEndpointChat(): Response {
+    return jsonResponse(
+        {
+            error: {
+                code: 'convert_request_failed',
+                message: 'not supported model for image generation, only imagen models are supported',
+            },
+        },
+        400,
+    );
+}
+
 describe('POST /api/portal/image/generate — auth', () => {
     it('401 when no session', async () => {
         mockGetCurrentUser.mockResolvedValueOnce(null);
@@ -171,34 +204,20 @@ describe('POST /api/portal/image/generate — system token failure', () => {
 });
 
 describe('POST /api/portal/image/generate — happy path', () => {
-    function makeOkResponse(body: unknown, status = 200) {
-        return new Response(JSON.stringify(body), {
-            status,
-            headers: { 'Content-Type': 'application/json' },
-        });
-    }
-
     it('writes ImageGeneration row + returns image_urls + cost', async () => {
         mockGetCurrentUser.mockResolvedValueOnce(USER);
         mockGetOrCreateSystemToken.mockResolvedValueOnce('sk-system-token');
 
-        // First fetch = upstream new-api response with 1 image URL
-        const upstream = makeOkResponse({
-            data: [{ url: 'https://upstream/img1.png' }],
-        });
-        // Second fetch = the upstream image binary
-        const imgFetch = new Response(Buffer.from('fake-png-bytes'), {
-            status: 200,
-            headers: { 'Content-Type': 'image/png' },
-        });
-
-        const fetchSpy = (vi.spyOn as unknown as (...args: unknown[]) => ReturnType<typeof vi.fn>)(
-            globalThis,
-            'fetch',
-        ).mockImplementation(async (url: unknown) => {
-            const u = String(url);
-            if (u.includes('/v1/images/generations')) return upstream;
-            return imgFetch;
+        // gpt-image-2: chat/completions first → wrong-endpoint → fall back to
+        // images/generations (URL payload) → fetch the image binary.
+        const fetchSpy = spyFetch((url) => {
+            if (url.includes('/v1/chat/completions')) return wrongEndpointChat();
+            if (url.includes('/v1/images/generations'))
+                return jsonResponse({ data: [{ url: 'https://upstream/img1.png' }] });
+            return new Response(Buffer.from('fake-png-bytes'), {
+                status: 200,
+                headers: { 'Content-Type': 'image/png' },
+            });
         });
 
         mockUploadImage.mockResolvedValue('uploaded');
@@ -229,14 +248,12 @@ describe('POST /api/portal/image/generate — happy path', () => {
         mockGetCurrentUser.mockResolvedValueOnce(USER);
         mockGetOrCreateSystemToken.mockResolvedValueOnce('sk-system-token');
 
-        const upstream = makeOkResponse({
-            data: [{ b64_json: Buffer.from('fake-png').toString('base64') }],
+        // chat → wrong-endpoint → images/generations returns b64_json inline
+        // (no second binary fetch needed).
+        const fetchSpy = spyFetch((url) => {
+            if (url.includes('/v1/chat/completions')) return wrongEndpointChat();
+            return jsonResponse({ data: [{ b64_json: Buffer.from('fake-png').toString('base64') }] });
         });
-
-        const fetchSpy = (vi.spyOn as unknown as (...args: unknown[]) => ReturnType<typeof vi.fn>)(
-            globalThis,
-            'fetch',
-        ).mockResolvedValue(upstream);
 
         mockUploadImage.mockResolvedValueOnce('uploaded');
         mockImgGenCreate.mockResolvedValueOnce({
@@ -247,8 +264,9 @@ describe('POST /api/portal/image/generate — happy path', () => {
 
         const res = await POST(makeReq(VALID_BODY));
         expect(res.status).toBe(200);
-        // Only the upstream call — no second fetch for image binary
-        expect(fetchSpy).toHaveBeenCalledTimes(1);
+        // chat/completions (wrong-endpoint) + images/generations = 2 calls,
+        // and crucially NO third call for an image binary (b64 inline).
+        expect(fetchSpy).toHaveBeenCalledTimes(2);
         expect(mockUploadImage).toHaveBeenCalledTimes(1);
 
         fetchSpy.mockRestore();
@@ -363,13 +381,10 @@ describe('POST /api/portal/image/generate — upstream failure modes', () => {
         mockGetCurrentUser.mockResolvedValueOnce(USER);
         mockGetOrCreateSystemToken.mockResolvedValueOnce('sk-token');
 
-        const upstream = makeOkResponse({
-            data: [{ b64_json: 'YWFh' }],
+        const fetchSpy = spyFetch((url) => {
+            if (url.includes('/v1/chat/completions')) return wrongEndpointChat();
+            return jsonResponse({ data: [{ b64_json: 'YWFh' }] });
         });
-        const fetchSpy = (vi.spyOn as unknown as (...args: unknown[]) => ReturnType<typeof vi.fn>)(
-            globalThis,
-            'fetch',
-        ).mockResolvedValue(upstream);
 
         mockUploadImage.mockRejectedValueOnce(new Error('R2 down'));
 
@@ -378,6 +393,141 @@ describe('POST /api/portal/image/generate — upstream failure modes', () => {
         const body = await res.json();
         expect(body.error).toBe('r2_upload_failed');
         expect(mockImgGenCreate).not.toHaveBeenCalled();
+
+        fetchSpy.mockRestore();
+    });
+});
+
+describe('POST /api/portal/image/generate — native Gemini resolution path (W8 D8)', () => {
+    function makeNativeResponse(
+        parts: Array<{ inlineData?: { data?: string }; inline_data?: { data?: string } }>,
+        status = 200,
+    ) {
+        return new Response(JSON.stringify({ candidates: [{ content: { parts } }] }), {
+            status,
+            headers: { 'Content-Type': 'application/json' },
+        });
+    }
+
+    it('routes the 2K SKU to native /v1beta generateContent with imageConfig.imageSize=2K', async () => {
+        mockGetCurrentUser.mockResolvedValueOnce(USER);
+        mockGetOrCreateSystemToken.mockResolvedValueOnce('sk-system-token');
+
+        let calledUrl = '';
+        let sentBody: Record<string, unknown> = {};
+        const fetchSpy = spyFetch((url, init) => {
+            calledUrl = url;
+            sentBody = JSON.parse(init.body ?? '{}');
+            return makeNativeResponse([{ inlineData: { data: Buffer.from('fake-2k-png').toString('base64') } }]);
+        });
+        mockUploadImage.mockResolvedValueOnce('uploaded');
+        mockImgGenCreate.mockResolvedValueOnce({ id: 'gen-2k', created_at: new Date(), expires_at: new Date() });
+
+        const res = await POST(
+            makeReq({ prompt: 'a calico cat', model: 'gemini-3.1-flash-image-preview', count: 1, size: '1024x1024' }),
+        );
+
+        expect(res.status).toBe(200);
+        expect(calledUrl).toContain('/v1beta/models/gemini-3.1-flash-image-preview:generateContent');
+        const gc = (sentBody.generationConfig ?? {}) as { imageConfig?: { imageSize?: string; aspectRatio?: string } };
+        expect(gc.imageConfig?.imageSize).toBe('2K');
+        expect(gc.imageConfig?.aspectRatio).toBe('1:1');
+        // inlineData base64 is decoded directly → only the one upstream call, no binary fetch
+        expect(fetchSpy).toHaveBeenCalledTimes(1);
+        expect(mockUploadImage).toHaveBeenCalledTimes(1);
+
+        fetchSpy.mockRestore();
+    });
+
+    it('routes the 4K SKU with imageSize=4K, maps landscape size, and reads snake_case inline_data', async () => {
+        mockGetCurrentUser.mockResolvedValueOnce(USER);
+        mockGetOrCreateSystemToken.mockResolvedValueOnce('sk-system-token');
+
+        let calledUrl = '';
+        let sentBody: Record<string, unknown> = {};
+        const fetchSpy = spyFetch((url, init) => {
+            calledUrl = url;
+            sentBody = JSON.parse(init.body ?? '{}');
+            // snake_case variant — defensive parser must still find it
+            return makeNativeResponse([{ inline_data: { data: Buffer.from('fake-4k').toString('base64') } }]);
+        });
+        mockUploadImage.mockResolvedValueOnce('uploaded');
+        mockImgGenCreate.mockResolvedValueOnce({ id: 'gen-4k', created_at: new Date(), expires_at: new Date() });
+
+        const res = await POST(
+            makeReq({ prompt: 'a landscape', model: 'gemini-3-pro-image-preview', count: 1, size: '1792x1024' }),
+        );
+
+        expect(res.status).toBe(200);
+        expect(calledUrl).toContain('/v1beta/models/gemini-3-pro-image-preview:generateContent');
+        const gc = (sentBody.generationConfig ?? {}) as { imageConfig?: { imageSize?: string; aspectRatio?: string } };
+        expect(gc.imageConfig?.imageSize).toBe('4K');
+        expect(gc.imageConfig?.aspectRatio).toBe('16:9');
+        expect(mockUploadImage).toHaveBeenCalledTimes(1);
+
+        fetchSpy.mockRestore();
+    });
+
+    it('does NOT touch the native endpoint for gpt-image-2 (keeps chat→images/generations)', async () => {
+        mockGetCurrentUser.mockResolvedValueOnce(USER);
+        mockGetOrCreateSystemToken.mockResolvedValueOnce('sk-token');
+
+        const urls: string[] = [];
+        const fetchSpy = spyFetch((url) => {
+            urls.push(url);
+            if (url.includes('/v1/chat/completions')) return wrongEndpointChat();
+            return jsonResponse({ data: [{ b64_json: Buffer.from('x').toString('base64') }] });
+        });
+        mockUploadImage.mockResolvedValueOnce('uploaded');
+        mockImgGenCreate.mockResolvedValueOnce({ id: 'gen-gpt', created_at: new Date(), expires_at: new Date() });
+
+        const res = await POST(makeReq({ ...VALID_BODY, model: 'gpt-image-2' }));
+
+        expect(res.status).toBe(200);
+        // gpt-image-2 has no geminiImageSize → must never hit the native endpoint.
+        expect(urls.some((u) => u.includes(':generateContent'))).toBe(false);
+        expect(urls.some((u) => u.includes('/v1/images/generations'))).toBe(true);
+
+        fetchSpy.mockRestore();
+    });
+
+    it('empty candidates (Gemini safety block, 200 + no inlineData) → 400 content_filter', async () => {
+        mockGetCurrentUser.mockResolvedValueOnce(USER);
+        mockGetOrCreateSystemToken.mockResolvedValueOnce('sk-token');
+
+        const fetchSpy = spyFetch(() => makeNativeResponse([]));
+
+        const res = await POST(
+            makeReq({ prompt: 'blocked', model: 'gemini-3.1-flash-image-preview', count: 1, size: '1024x1024' }),
+        );
+
+        expect(res.status).toBe(400);
+        const body = await res.json();
+        expect(body.error).toBe('content_filter');
+        expect(mockImgGenCreate).not.toHaveBeenCalled();
+
+        fetchSpy.mockRestore();
+    });
+
+    it('native upstream 402-class quota error passes through as 402', async () => {
+        mockGetCurrentUser.mockResolvedValueOnce(USER);
+        mockGetOrCreateSystemToken.mockResolvedValueOnce('sk-token');
+
+        const fetchSpy = spyFetch(
+            () =>
+                new Response(JSON.stringify({ error: { code: 'insufficient_user_quota', message: 'low' } }), {
+                    status: 403,
+                    headers: { 'Content-Type': 'application/json' },
+                }),
+        );
+
+        const res = await POST(
+            makeReq({ prompt: 'x', model: 'gemini-3-pro-image-preview', count: 1, size: '1024x1024' }),
+        );
+
+        expect(res.status).toBe(402);
+        const body = await res.json();
+        expect(body.error).toBe('insufficient_user_quota');
 
         fetchSpy.mockRestore();
     });

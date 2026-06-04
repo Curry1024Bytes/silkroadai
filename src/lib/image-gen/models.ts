@@ -40,6 +40,23 @@ export interface ImageModelInfo {
     /** Foreign vs. domestic — foreign brands display first per operator
      *  decision (2026-05-26). */
     foreign: boolean;
+    /**
+     * Target Gemini output resolution (W8 D8, 2026-06-04). When set, the
+     * generate route MUST call the upstream via the native Gemini
+     * `/v1beta/models/{id}:generateContent` endpoint with
+     * `generationConfig.imageConfig.imageSize` = this value — that is the
+     * ONLY request shape Channel 17 (nexaxis) honors for higher
+     * resolution. The OpenAI-compatible /v1/chat/completions path silently
+     * drops the hint and Google falls back to its 1408×768 (~1K) default,
+     * which is what these SKUs were (wrongly) returning while billed at
+     * 2K/4K. See docs/W8-D8-NEXAXIS-IMAGE-RESOLUTION.md.
+     *
+     * Only set on SKUs whose billing assumes >1K output. 1K-tier SKUs
+     * (gemini-2.5-flash-image, which physically caps at 1408×768) and
+     * non-Gemini SKUs (gpt-image-2, Imagen) leave this undefined and keep
+     * their existing chat/completions → images/generations path.
+     */
+    geminiImageSize?: '2K' | '4K';
 }
 
 // 顺序 = UI 展示顺序(国外前排,OpenAI 旗舰首选,然后 Google 系)
@@ -71,6 +88,7 @@ export const IMAGE_MODELS: ImageModelInfo[] = [
         blurb: 'Google · 高速生图 · 中等成本',
         vendor: 'Google',
         foreign: true,
+        geminiImageSize: '2K', // billed 2K; flash caps at 2K (4K → upstream 503)
     },
     {
         id: 'gemini-3-pro-image-preview',
@@ -79,6 +97,7 @@ export const IMAGE_MODELS: ImageModelInfo[] = [
         blurb: 'Google 旗舰图像 · Nano Banana Pro',
         vendor: 'Google',
         foreign: true,
+        geminiImageSize: '4K', // billed 4K; Nano Banana Pro supports 1K/2K/4K
     },
     {
         id: 'nano-banana-pro-preview',
@@ -87,6 +106,7 @@ export const IMAGE_MODELS: ImageModelInfo[] = [
         blurb: 'Google 旗舰图像 (alias)',
         vendor: 'Google',
         foreign: true,
+        geminiImageSize: '4K', // alias of gemini-3-pro-image-preview
     },
     {
         id: 'imagen-4.0-ultra-generate-001',
@@ -109,4 +129,23 @@ export const IMAGE_COUNT_MAX = 4;
 /** Lookup helper. Returns undefined for unknown ids. */
 export function findImageModel(id: string): ImageModelInfo | undefined {
     return IMAGE_MODELS.find((m) => m.id === id);
+}
+
+/**
+ * Map a portal `size` selection to a Gemini `imageConfig.aspectRatio`.
+ * The native Gemini image API controls pixel count via `imageSize`
+ * ("2K"/"4K") and shape via `aspectRatio` — they are orthogonal, so the
+ * customer's aspect choice survives the resolution bump (W8 D8). Falls
+ * back to a square 1:1 for anything unexpected.
+ */
+export function sizeToAspectRatio(size: string): string {
+    switch (size) {
+        case '1024x1792':
+            return '9:16'; // portrait
+        case '1792x1024':
+            return '16:9'; // landscape
+        case '1024x1024':
+        default:
+            return '1:1';
+    }
 }
