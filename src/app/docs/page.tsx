@@ -73,6 +73,26 @@ const AGENTS: AgentSection[] = [
         label: '常见错误码',
         blurb: '401 / 403 insufficient_user_quota / 503 no available channel — body code 优先于 status。',
     },
+    {
+        id: 'api-endpoints',
+        label: 'API 接入速查',
+        blurb: 'Base URL + 认证 + 四种接口路径(OpenAI / Anthropic / OpenAI 图像 / Gemini 原生)一览。',
+    },
+    {
+        id: 'api-text',
+        label: '文本调用示例',
+        blurb: 'Python / Node / curl 三语言示例 + Claude 系 max_tokens ≤ 4096 注意。',
+    },
+    {
+        id: 'api-image',
+        label: '图像生成 · 2K / 4K 高清',
+        blurb: 'gpt-image-2 + Gemini Nano Banana;2K / 4K 必须走 /v1beta 原生 endpoint。',
+    },
+    {
+        id: 'api-billing',
+        label: '计费 · 账户 · 网络',
+        blurb: '余额 / 充值 / 用量明细入口 + 网络与流式调用建议。',
+    },
 ];
 
 const OPENAI_BASE = 'https://ai.silkroadai.io/v1';
@@ -323,11 +343,16 @@ claude`}
                     docsLabel="developers.openai.com/codex/config-advanced"
                 >
                     <p className="m-0 mb-3 text-sm text-ink leading-relaxed">
-                        Codex 有三个客户端形态 — 终端 CLI、IDE 插件(VS Code / Cursor / Windsurf / JetBrains)、桌面 app —— <strong className="text-navy">共享同一个{' '}
-                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
-                            ~/.codex/config.toml
-                        </code>{' '}
-                        配置文件和同一个底层 agent</strong>。下面的步骤 1 配置文件只需写一次,3 个客户端共用。
+                        Codex 有三个客户端形态 — 终端 CLI、IDE 插件(VS Code / Cursor / Windsurf / JetBrains)、桌面 app
+                        ——{' '}
+                        <strong className="text-navy">
+                            共享同一个{' '}
+                            <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                                ~/.codex/config.toml
+                            </code>{' '}
+                            配置文件和同一个底层 agent
+                        </strong>
+                        。下面的步骤 1 配置文件只需写一次,3 个客户端共用。
                     </p>
                     <p className="m-0 mb-3 text-sm text-ink leading-relaxed">
                         Codex 内置的{' '}
@@ -339,9 +364,8 @@ claude`}
                         <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
                             {SAMPLE_OPENAI_MODEL}
                         </code>{' '}
-                        等模型,自定义一个{' '}
-                        <code className="font-mono text-xs">wire_api = &quot;chat&quot;</code>{' '}
-                        的 provider,使 Codex 走标准 OpenAI 兼容的{' '}
+                        等模型,自定义一个 <code className="font-mono text-xs">wire_api = &quot;chat&quot;</code> 的
+                        provider,使 Codex 走标准 OpenAI 兼容的{' '}
                         <code className="font-mono text-xs">/v1/chat/completions</code> 路径即可。
                     </p>
 
@@ -364,10 +388,8 @@ env_key = "OPENAI_API_KEY"
 wire_api = "chat"`}
                     </CodeBlock>
                     <p className="m-0 mt-2 text-xs text-minor-ink">
-                        如果{' '}
-                        <code className="font-mono text-xs">~/.codex/</code>{' '}
-                        目录不存在,先 <code className="font-mono text-xs">mkdir -p ~/.codex</code>{' '}
-                        再创建文件。Windows 用户路径为{' '}
+                        如果 <code className="font-mono text-xs">~/.codex/</code> 目录不存在,先{' '}
+                        <code className="font-mono text-xs">mkdir -p ~/.codex</code> 再创建文件。Windows 用户路径为{' '}
                         <code className="font-mono text-xs">%USERPROFILE%\.codex\config.toml</code>。
                     </p>
 
@@ -397,9 +419,9 @@ codex`}
                             <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
                                 Codex – OpenAI&apos;s coding agent
                             </code>{' '}
-                            (发布者{' '}
-                            <code className="font-mono text-xs">openai.chatgpt</code>)。JetBrains 系(IntelliJ / PyCharm / WebStorm / Rider):marketplace 搜{' '}
-                            <code className="font-mono text-xs">Codex</code>。
+                            (发布者 <code className="font-mono text-xs">openai.chatgpt</code>)。JetBrains 系(IntelliJ /
+                            PyCharm / WebStorm / Rider):marketplace 搜 <code className="font-mono text-xs">Codex</code>
+                            。
                         </li>
                         <li>
                             打开 Codex 侧边栏 →{' '}
@@ -411,15 +433,12 @@ codex`}
                             <Link href="/keys" className="text-navy font-medium hover:text-brand-accent">
                                 /keys
                             </Link>{' '}
-                            的{' '}
-                            <code className="font-mono text-xs">sk-…</code> → 确定。
+                            的 <code className="font-mono text-xs">sk-…</code> → 确定。
                         </li>
                         <li>
                             重启 IDE / reload extension,Codex 侧边栏自动读{' '}
-                            <code className="font-mono text-xs">~/.codex/config.toml</code>{' '}
-                            里的{' '}
-                            <code className="font-mono text-xs">silkroadai</code>{' '}
-                            provider 路由请求。
+                            <code className="font-mono text-xs">~/.codex/config.toml</code> 里的{' '}
+                            <code className="font-mono text-xs">silkroadai</code> provider 路由请求。
                         </li>
                     </ol>
                     <p className="m-0 mt-1 text-xs text-minor-ink">
@@ -437,27 +456,28 @@ codex app
 
                     <p className="m-0 mt-5 text-xs text-minor-ink">
                         切换模型:把步骤 1 配置文件里的{' '}
-                        <code className="font-mono text-xs">model = &quot;{SAMPLE_OPENAI_MODEL}&quot;</code>{' '}
-                        改成任意 OpenAI 兼容模型(如{' '}
-                        <code className="font-mono text-xs">gpt-5.5</code>、
-                        <code className="font-mono text-xs">gpt-5.4-mini</code>),保存后无需重装客户端,下次启动生效。完整清单见{' '}
+                        <code className="font-mono text-xs">model = &quot;{SAMPLE_OPENAI_MODEL}&quot;</code> 改成任意
+                        OpenAI 兼容模型(如 <code className="font-mono text-xs">gpt-5.5</code>、
+                        <code className="font-mono text-xs">gpt-5.4-mini</code>
+                        ),保存后无需重装客户端,下次启动生效。完整清单见{' '}
                         <Link href="/models" className="text-navy font-medium hover:text-brand-accent">
                             /models
                         </Link>
                         。
                     </p>
                     <p className="m-0 mt-2 text-xs text-minor-ink">
-                        ⚠️ 三个客户端都不要使用 Codex 内置的{' '}
-                        <code className="font-mono text-xs">openai</code> provider(默认{' '}
-                        <code className="font-mono text-xs">wire_api = &quot;responses&quot;</code>),会收到{' '}
-                        <code className="font-mono text-xs">403 forbidden_error · OpenAI codex passthrough requires a non-empty instructions field</code>。
-                        必须按步骤 1 新建自定义 provider。
+                        ⚠️ 三个客户端都不要使用 Codex 内置的 <code className="font-mono text-xs">openai</code>{' '}
+                        provider(默认 <code className="font-mono text-xs">wire_api = &quot;responses&quot;</code>
+                        ),会收到{' '}
+                        <code className="font-mono text-xs">
+                            403 forbidden_error · OpenAI codex passthrough requires a non-empty instructions field
+                        </code>
+                        。 必须按步骤 1 新建自定义 provider。
                     </p>
                     <p className="m-0 mt-2 text-xs text-minor-ink">
                         IDE 插件 + 桌面 app 的认证凭据缓存在{' '}
                         <code className="font-mono text-xs">~/.codex/auth.json</code>(明文),换 key 时记得{' '}
-                        <code className="font-mono text-xs">rm ~/.codex/auth.json</code>{' '}
-                        后重新登录。
+                        <code className="font-mono text-xs">rm ~/.codex/auth.json</code> 后重新登录。
                     </p>
                 </AgentBlock>
 
@@ -652,6 +672,364 @@ console.log(resp.choices[0].message.content);`}
                             </tbody>
                         </table>
                     </div>
+                </section>
+
+                {/* ─── 10 · API 接入速查 (W8 D8 customer API guide) ───
+                 *  Consolidated reference for customers integrating their
+                 *  own code (vs the per-agent setup in 01–07). Source:
+                 *  operator-reviewed customer-api-guide 2026-06-04. */}
+                <section id="api-endpoints" className="mt-12 mb-10 scroll-mt-20">
+                    <div className="flex items-baseline justify-between flex-wrap gap-2 mb-4 pb-3 border-b-2 border-brand-accent">
+                        <h2 className="m-0 text-2xl font-semibold text-navy">
+                            <span className="text-brand-accent font-bold mr-3 tabular-nums">10</span>
+                            API 接入速查
+                        </h2>
+                    </div>
+                    <p className="m-0 mb-4 text-sm text-ink leading-relaxed">
+                        想直接写代码接入?一个 API Key 同时支持四种协议路径 —— 用哪条取决于你的客户端 / SDK 习惯。
+                        文本对话推荐{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            /v1/chat/completions
+                        </code>
+                        ,Gemini 2K / 4K 高清图必须走{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            /v1beta
+                        </code>{' '}
+                        原生路径(见第 12 章)。
+                    </p>
+                    <ConfigList
+                        items={[
+                            ['Base URL', ANTHROPIC_BASE],
+                            ['认证 Header', 'Authorization: Bearer sk-…'],
+                            ['API Key 获取', 'portal /keys(注册登录后创建)'],
+                        ]}
+                    />
+                    <div className="mt-4 rounded-lg overflow-hidden border border-brand-border bg-surface">
+                        <table className="w-full border-collapse text-sm">
+                            <thead>
+                                <tr className="bg-paper-muted text-muted-ink">
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        路径
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        格式
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        用途
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">
+                                        /v1/chat/completions
+                                    </td>
+                                    <td className="px-4 py-3 text-ink align-top">OpenAI 兼容</td>
+                                    <td className="px-4 py-3 text-ink">所有文本 / 多模态模型(推荐主用)</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">/v1/messages</td>
+                                    <td className="px-4 py-3 text-ink align-top">Anthropic 原生</td>
+                                    <td className="px-4 py-3 text-ink">Claude 系列</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">
+                                        /v1/images/generations
+                                    </td>
+                                    <td className="px-4 py-3 text-ink align-top">OpenAI 图像兼容</td>
+                                    <td className="px-4 py-3 text-ink">gpt-image-2 / DALL·E 系</td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">
+                                        /v1beta/models/&lt;model&gt;:generateContent
+                                    </td>
+                                    <td className="px-4 py-3 text-ink align-top">Gemini 原生</td>
+                                    <td className="px-4 py-3 text-ink">
+                                        Gemini 高清图像 <strong className="text-navy">2K / 4K</strong>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+
+                {/* ─── 11 · 文本调用示例 ─── */}
+                <section id="api-text" className="mt-12 mb-10 scroll-mt-20">
+                    <div className="flex items-baseline justify-between flex-wrap gap-2 mb-4 pb-3 border-b-2 border-brand-accent">
+                        <h2 className="m-0 text-2xl font-semibold text-navy">
+                            <span className="text-brand-accent font-bold mr-3 tabular-nums">11</span>
+                            文本调用示例
+                        </h2>
+                    </div>
+                    <div className="mb-4 rounded-lg border-l-4 border-brand-accent bg-paper-muted px-4 py-3 text-sm text-ink">
+                        ⚠️ <strong className="text-navy">Claude 系列 + Cline / Cursor / Roo Code</strong> 请把{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            max_tokens
+                        </code>{' '}
+                        设为 <strong className="text-navy">≤ 4096</strong> —— 上游有此限制,超过会返
+                        502(已知问题,持续跟进)。在 Cline 里请选 <strong className="text-navy">OpenAI Compatible</strong>{' '}
+                        provider, 不要选 Anthropic provider(否则会被 SDK 锁住 max_tokens)。
+                    </div>
+                    <p className="m-0 mb-2 text-sm font-medium text-navy">Python(openai SDK)</p>
+                    <CodeBlock language="python">
+                        {`from openai import OpenAI
+
+client = OpenAI(
+    api_key="sk-…",                       # portal /keys
+    base_url="${OPENAI_BASE}",
+)
+
+resp = client.chat.completions.create(
+    model="${SAMPLE_OPENAI_MODEL}",
+    max_tokens=4096,                      # Claude 系建议 ≤4096 避免上游 502
+    messages=[{"role": "user", "content": "你好,介绍一下丝绸之路"}],
+)
+print(resp.choices[0].message.content)`}
+                    </CodeBlock>
+                    <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">Node / TypeScript(openai SDK)</p>
+                    <CodeBlock language="typescript">
+                        {`import OpenAI from "openai";
+
+const client = new OpenAI({
+  apiKey: "sk-…",                         // portal /keys
+  baseURL: "${OPENAI_BASE}",
+});
+
+const completion = await client.chat.completions.create({
+  model: "${SAMPLE_ANTHROPIC_MODEL}",
+  max_tokens: 4096,
+  messages: [{ role: "user", content: "Hello" }],
+});
+console.log(completion.choices[0].message.content);`}
+                    </CodeBlock>
+                    <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">curl</p>
+                    <CodeBlock language="bash">
+                        {`curl -X POST ${OPENAI_BASE}/chat/completions \\
+  -H "Authorization: Bearer sk-…" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "${SAMPLE_OPENAI_MODEL}",
+    "max_tokens": 4096,
+    "messages": [{"role":"user","content":"Hello"}]
+  }'`}
+                    </CodeBlock>
+                    <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">Claude · Anthropic 原生格式(可选)</p>
+                    <CodeBlock language="bash">
+                        {`curl -X POST ${ANTHROPIC_BASE}/v1/messages \\
+  -H "x-api-key: sk-…" \\
+  -H "anthropic-version: 2023-06-01" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "claude-opus-4-7",
+    "max_tokens": 4096,
+    "messages": [{"role":"user","content":"Hello"}]
+  }'`}
+                    </CodeBlock>
+                </section>
+
+                {/* ─── 12 · 图像生成 2K/4K — the W8 D8 headline.
+                 *  Gemini high-res image MUST go through the native
+                 *  /v1beta generateContent path with imageConfig.imageSize;
+                 *  the OpenAI-compat chat path silently caps at ~1K. */}
+                <section id="api-image" className="mt-12 mb-10 scroll-mt-20">
+                    <div className="flex items-baseline justify-between flex-wrap gap-2 mb-4 pb-3 border-b-2 border-brand-accent">
+                        <h2 className="m-0 text-2xl font-semibold text-navy">
+                            <span className="text-brand-accent font-bold mr-3 tabular-nums">12</span>
+                            图像生成 · 2K / 4K 高清
+                        </h2>
+                    </div>
+                    <div className="rounded-lg overflow-hidden border border-brand-border bg-surface mb-4">
+                        <table className="w-full border-collapse text-sm">
+                            <thead>
+                                <tr className="bg-paper-muted text-muted-ink">
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        模型
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        分辨率
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        价格
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        用途
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">gpt-image-2</td>
+                                    <td className="px-4 py-3 text-ink align-top">1024×1024</td>
+                                    <td className="px-4 py-3 text-navy align-top font-medium">¥0.10 / 张</td>
+                                    <td className="px-4 py-3 text-ink">OpenAI 风格,通用</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">
+                                        gemini-2.5-flash-image
+                                    </td>
+                                    <td className="px-4 py-3 text-ink align-top">~1024×1024(1K)</td>
+                                    <td className="px-4 py-3 text-navy align-top font-medium">¥0.062 / 张</td>
+                                    <td className="px-4 py-3 text-ink">入门,经济</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">
+                                        gemini-3.1-flash-image-preview
+                                    </td>
+                                    <td className="px-4 py-3 text-navy align-top font-medium">2048×2048(2K)</td>
+                                    <td className="px-4 py-3 text-navy align-top font-medium">¥0.162 / 张</td>
+                                    <td className="px-4 py-3 text-ink">高速 + 高清</td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">
+                                        gemini-3-pro-image-preview
+                                    </td>
+                                    <td className="px-4 py-3 text-navy align-top font-medium">4096×4096(4K)</td>
+                                    <td className="px-4 py-3 text-navy align-top font-medium">¥0.384 / 张</td>
+                                    <td className="px-4 py-3 text-ink">旗舰,最高画质</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <p className="m-0 mb-2 text-sm font-medium text-navy">gpt-image-2(OpenAI 兼容)</p>
+                    <CodeBlock language="python">
+                        {`from openai import OpenAI
+
+client = OpenAI(api_key="sk-…", base_url="${OPENAI_BASE}")
+
+resp = client.images.generate(
+    model="gpt-image-2",
+    prompt="A calico cat sitting on a window sill, soft morning light",
+    n=1,
+    size="1024x1024",
+)
+print(resp.data[0].b64_json)   # 或 resp.data[0].url`}
+                    </CodeBlock>
+
+                    <div className="mt-5 mb-3 rounded-lg border-l-4 border-brand-accent bg-paper-muted px-4 py-3 text-sm text-ink">
+                        🔑 <strong className="text-navy">想要 Gemini 2K / 4K,必须用原生 endpoint。</strong> OpenAI
+                        兼容的{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            /v1/chat/completions
+                        </code>{' '}
+                        路径不支持 Gemini 的{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            imageConfig.imageSize
+                        </code>
+                        ,调它只会拿到默认 1K(1408×768)。要 2K / 4K 请走{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            /v1beta/models/&lt;model&gt;:generateContent
+                        </code>
+                        。最省事的方式:直接用 portal{' '}
+                        <Link href="/image" className="text-navy font-medium hover:text-brand-accent">
+                            /image
+                        </Link>{' '}
+                        页(已自动走原生路径出 2K / 4K)。
+                    </div>
+
+                    <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">Gemini 原生 API · curl(2K / 4K)</p>
+                    <CodeBlock language="bash">
+                        {`# 2K — gemini-3.1-flash-image-preview
+curl -X POST "${ANTHROPIC_BASE}/v1beta/models/gemini-3.1-flash-image-preview:generateContent" \\
+  -H "Authorization: Bearer sk-…" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "contents": [{ "parts": [{ "text": "A calico cat on a window sill" }] }],
+    "generationConfig": { "imageConfig": { "imageSize": "2K", "aspectRatio": "1:1" } }
+  }'
+
+# 4K — gemini-3-pro-image-preview(把 imageSize 改成 "4K")
+curl -X POST "${ANTHROPIC_BASE}/v1beta/models/gemini-3-pro-image-preview:generateContent" \\
+  -H "Authorization: Bearer sk-…" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "contents": [{ "parts": [{ "text": "A calico cat on a window sill" }] }],
+    "generationConfig": { "imageConfig": { "imageSize": "4K", "aspectRatio": "1:1" } }
+  }'`}
+                    </CodeBlock>
+                    <p className="m-0 mt-3 mb-2 text-xs text-minor-ink">
+                        响应为 Gemini 原生形:图片在{' '}
+                        <code className="font-mono text-xs">candidates[0].content.parts[].inlineData.data</code>{' '}
+                        (base64)。
+                    </p>
+
+                    <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">Python · Google Gen AI SDK</p>
+                    <CodeBlock language="python">
+                        {`from google import genai
+from google.genai import types
+
+client = genai.Client(
+    api_key="sk-…",
+    http_options=types.HttpOptions(base_url="${ANTHROPIC_BASE}"),
+)
+
+resp = client.models.generate_content(
+    model="gemini-3.1-flash-image-preview",
+    contents="A calico cat sitting on a window sill",
+    config=types.GenerateContentConfig(
+        image_config=types.ImageConfig(image_size="2K", aspect_ratio="1:1"),
+    ),
+)
+for part in resp.candidates[0].content.parts:
+    if part.inline_data:
+        open("output.jpg", "wb").write(part.inline_data.data)`}
+                    </CodeBlock>
+
+                    <p className="m-0 mt-4 text-xs text-minor-ink">
+                        关于 4K 库存:
+                        <code className="font-mono text-xs">gemini-3-pro-image-preview</code> 4K 使用 Google
+                        限额,每日有上限,超额会返 <code className="font-mono text-xs">429 quota exceeded</code> ——
+                        不扣费、不自动降级到 2K,稍后再试或改用 2K 模型即可。
+                    </p>
+                </section>
+
+                {/* ─── 13 · 计费 · 账户 · 网络 ─── */}
+                <section id="api-billing" className="mt-12 mb-10 scroll-mt-20">
+                    <div className="flex items-baseline justify-between flex-wrap gap-2 mb-4 pb-3 border-b-2 border-brand-accent">
+                        <h2 className="m-0 text-2xl font-semibold text-navy">
+                            <span className="text-brand-accent font-bold mr-3 tabular-nums">13</span>
+                            计费 · 账户 · 网络
+                        </h2>
+                    </div>
+                    <ul className="list-none p-0 m-0 grid grid-cols-1 gap-2 text-sm mb-4">
+                        <li className="flex flex-col sm:flex-row sm:items-baseline gap-1 sm:gap-3">
+                            <span className="text-muted-ink min-w-[120px] text-xs uppercase tracking-wide">
+                                实时余额
+                            </span>
+                            <span className="text-ink">
+                                <Link href="/balance" className="text-navy font-medium hover:text-brand-accent">
+                                    /balance
+                                </Link>{' '}
+                                —— 余额 + 累计消费
+                            </span>
+                        </li>
+                        <li className="flex flex-col sm:flex-row sm:items-baseline gap-1 sm:gap-3">
+                            <span className="text-muted-ink min-w-[120px] text-xs uppercase tracking-wide">充值</span>
+                            <span className="text-ink">
+                                <Link href="/pay" className="text-navy font-medium hover:text-brand-accent">
+                                    /pay
+                                </Link>{' '}
+                                —— 支付宝 / 微信 / Stripe
+                            </span>
+                        </li>
+                        <li className="flex flex-col sm:flex-row sm:items-baseline gap-1 sm:gap-3">
+                            <span className="text-muted-ink min-w-[120px] text-xs uppercase tracking-wide">
+                                用量明细
+                            </span>
+                            <span className="text-ink">
+                                <Link href="/usage" className="text-navy font-medium hover:text-brand-accent">
+                                    /usage
+                                </Link>{' '}
+                                —— 按模型 / token / 日期
+                            </span>
+                        </li>
+                    </ul>
+                    <p className="m-0 text-xs text-minor-ink leading-relaxed">
+                        网络:接入点 <code className="font-mono text-xs">ai.silkroadai.io</code> 多区域
+                        CDN,国内通常可直连。流式调用对网络稳定性敏感,丢包可能导致 502 —— 频繁出错时可尝试关闭{' '}
+                        <code className="font-mono text-xs">stream</code>,或换用更稳定的线路。排查时把响应里的{' '}
+                        <code className="font-mono text-xs">request_id</code> 发给客服可快速定位。
+                    </p>
                 </section>
 
                 <section className="mt-12 mb-6 text-center">
