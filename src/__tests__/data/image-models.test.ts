@@ -30,10 +30,10 @@ describe('IMAGE_MODEL_OPTIONS', () => {
     it('default selection is the first entry (GPT image-2)', () => {
         expect(DEFAULT_IMAGE_MODEL_ID).toBe(IMAGE_MODEL_OPTIONS[0].id);
         // W8 D7 (PR #67) reorder by vendor: OpenAI 国外旗舰首选 — gpt-image-2 → [0]。
-        // W8 D7 二次更新(PR #XX,本 commit):ChatGPT ¥0.2/$1 第二轮降价
-        // → $0.04 × 0.2/7 = $0.00114/张 ≈ ¥0.01/张。
+        // 2026-05-30 接专用渠道后改 per-call 固定价:后端 ModelPrice[gpt-image-2]
+        // = 0.01429 USD = ¥0.10/张(上游成本 ¥0.04/张,60% 毛利)。
         expect(IMAGE_MODEL_OPTIONS[0].label).toBe('GPT image-2');
-        expect(IMAGE_MODEL_OPTIONS[0].pricePerImageCny).toBeCloseTo(0.01, 2);
+        expect(IMAGE_MODEL_OPTIONS[0].pricePerImageCny).toBeCloseTo(0.1, 2);
     });
 
     it('CNY prices are USD × 7 (within rounding)', () => {

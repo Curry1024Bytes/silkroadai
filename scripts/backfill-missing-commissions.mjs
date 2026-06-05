@@ -107,7 +107,9 @@ async function main() {
 
     if (candidates.length === 0) {
         console.log('✅ 无缺失候选 —— 所有 attributed 成功充值都已有 commission。无需 backfill。\n');
-        console.log('   (注:overflow-FAILED 的单无 recharge_log,天然不在候选内 —— 见 docs/W8-D8-COMMISSION-AUDIT.md。)\n');
+        console.log(
+            '   (注:overflow-FAILED 的单无 recharge_log,天然不在候选内 —— 见 docs/W8-D8-COMMISSION-AUDIT.md。)\n',
+        );
         return;
     }
 
@@ -129,12 +131,16 @@ async function main() {
         totalCommissionCny += commissionCny;
         resellers.add(c.reseller_email);
 
-        console.log(`(${i + 1}) recharge_log ${String(c.recharge_log_id).slice(0, 8)} → invitee ${c.invitee_email} → reseller ${c.reseller_email}`);
+        console.log(
+            `(${i + 1}) recharge_log ${String(c.recharge_log_id).slice(0, 8)} → invitee ${c.invitee_email} → reseller ${c.reseller_email}`,
+        );
         console.log(
             `    ${cny(rechargeCny)} × ${rule.tier} rate=${rate} = commission ${cny(commissionCny)}` +
                 (adminReview ? '  ⚠️ >¥100k → admin_review_required' : ''),
         );
-        console.log(`    hold_until: ${holdUntil.toISOString().slice(0, 10)} (14d after recharge ${rechargeAt.toISOString().slice(0, 10)}) · status: pending`);
+        console.log(
+            `    hold_until: ${holdUntil.toISOString().slice(0, 10)} (14d after recharge ${rechargeAt.toISOString().slice(0, 10)}) · status: pending`,
+        );
 
         if (APPLY) {
             try {

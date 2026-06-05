@@ -158,7 +158,9 @@ async function main() {
         console.log(
             `    FAILED+已付: ${failedOrders.length} 笔 [${failedOrders.map((o) => o.id.slice(0, 8)).join(', ')}]`,
         );
-        console.log(`    全部已付订单: ${paidOrders.length} 笔(其中 ${completedCount} 笔 COMPLETED),合计付款 ${cny2(sumPaidCny)}`);
+        console.log(
+            `    全部已付订单: ${paidOrders.length} 笔(其中 ${completedCount} 笔 COMPLETED),合计付款 ${cny2(sumPaidCny)}`,
+        );
 
         if (realRaw == null) {
             console.log(`    ⚠️ 无法读 new-api 余额: ${errMsg} — 需人工查(SSH 隧道是否在?)`);
@@ -173,7 +175,7 @@ async function main() {
 
         if (ratio > FLAG_RATIO) {
             const overRetail = realCny - sumPaidCny;
-            const overRaw = realRaw - Math.round(sumPaidCny / FX * QUOTA_PER_USD);
+            const overRaw = realRaw - Math.round((sumPaidCny / FX) * QUOTA_PER_USD);
             const overCost = (overRaw / QUOTA_PER_USD) * COST_CNY_PER_USD;
             affectedCount += 1;
             totalOverRetailCny += overRetail;

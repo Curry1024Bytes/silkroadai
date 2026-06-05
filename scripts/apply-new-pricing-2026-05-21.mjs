@@ -63,25 +63,25 @@ const PRICING = {
         discount_cny: DISCOUNT_CHATGPT_CNY,
         models: {
             // gpt-5.2 base + variants(dated / pro / chat-latest 同价)
-            'gpt-5.2':                    { in: 2,    out: 8 },
-            'gpt-5.2-chat-latest':        { in: 2,    out: 8 },
-            'gpt-5.2-pro':                { in: 2,    out: 8 },
-            'gpt-5.2-pro-2025-12-11':     { in: 2,    out: 8 },
-            'gpt-5.2-2025-12-11':         { in: 2,    out: 8 },
+            'gpt-5.2': { in: 2, out: 8 },
+            'gpt-5.2-chat-latest': { in: 2, out: 8 },
+            'gpt-5.2-pro': { in: 2, out: 8 },
+            'gpt-5.2-pro-2025-12-11': { in: 2, out: 8 },
+            'gpt-5.2-2025-12-11': { in: 2, out: 8 },
             // gpt-5.3-codex 全家
-            'gpt-5.3-codex':              { in: 3,    out: 12 },
-            'gpt-5.3-codex-spark':        { in: 3,    out: 12 },
-            'codex-auto-review':          { in: 3,    out: 12 },
+            'gpt-5.3-codex': { in: 3, out: 12 },
+            'gpt-5.3-codex-spark': { in: 3, out: 12 },
+            'codex-auto-review': { in: 3, out: 12 },
             // gpt-5.4 base + dated
-            'gpt-5.4':                    { in: 5,    out: 20 },
-            'gpt-5.4-2026-03-05':         { in: 5,    out: 20 },
+            'gpt-5.4': { in: 5, out: 20 },
+            'gpt-5.4-2026-03-05': { in: 5, out: 20 },
             // gpt-5.4-mini
-            'gpt-5.4-mini':               { in: 0.5,  out: 2 },
+            'gpt-5.4-mini': { in: 0.5, out: 2 },
             // gpt-5.5
-            'gpt-5.5':                    { in: 5,    out: 25 },
+            'gpt-5.5': { in: 5, out: 25 },
             // gpt-4o audio / realtime
-            'gpt-4o-audio-preview':       { in: 2.5,  out: 10 },
-            'gpt-4o-realtime-preview':    { in: 5,    out: 20 },
+            'gpt-4o-audio-preview': { in: 2.5, out: 10 },
+            'gpt-4o-realtime-preview': { in: 5, out: 20 },
             // gpt-image-1 / 1.5 / 2: per-image 定价,不走 mr/cr,本脚本跳过
             // 由 admin UI / portal /image 页面独立处理
         },
@@ -91,12 +91,12 @@ const PRICING = {
         label: 'sub2api Anthropic (Claude 系)',
         discount_cny: DISCOUNT_CLAUDE_CNY,
         models: {
-            'claude-opus-4-7':            { in: 15,   out: 75 },
-            'claude-opus-4-6':            { in: 15,   out: 75 },
-            'claude-opus-4-5':            { in: 15,   out: 75 },
-            'claude-sonnet-4-6':          { in: 3,    out: 15 },
-            'claude-sonnet-4-5':          { in: 3,    out: 15 },
-            'claude-haiku-4-5':           { in: 1,    out: 5 },
+            'claude-opus-4-7': { in: 15, out: 75 },
+            'claude-opus-4-6': { in: 15, out: 75 },
+            'claude-opus-4-5': { in: 15, out: 75 },
+            'claude-sonnet-4-6': { in: 3, out: 15 },
+            'claude-sonnet-4-5': { in: 3, out: 15 },
+            'claude-haiku-4-5': { in: 1, out: 5 },
         },
     },
 };
@@ -186,7 +186,12 @@ async function processChannel(channelId, channelCfg) {
             const om = (d.oldMr === undefined ? '(new)' : fmtRatio(d.oldMr)).padEnd(8);
             const nm = fmtRatio(d.newMr).padEnd(5);
             const nc = fmtRatio(d.newCr).padEnd(4);
-            const note = d.oldMr === undefined ? 'new' : (d.newMr < d.oldMr ? `−${Math.round((1 - d.newMr / d.oldMr) * 100)}%` : `+${Math.round((d.newMr / d.oldMr - 1) * 100)}%`);
+            const note =
+                d.oldMr === undefined
+                    ? 'new'
+                    : d.newMr < d.oldMr
+                      ? `−${Math.round((1 - d.newMr / d.oldMr) * 100)}%`
+                      : `+${Math.round((d.newMr / d.oldMr - 1) * 100)}%`;
             console.log(`  │ ${d.model.padEnd(31)} │ ${ret} │ ${om} │ ${nm} │ ${nc} │ ${note.padEnd(9)} │`);
         }
         console.log(`  └─────────────────────────────────┴──────────┴──────────┴───────┴──────┴───────────┘`);
@@ -226,7 +231,9 @@ async function processChannel(channelId, channelCfg) {
         }
     }
     if (mismatches === 0) {
-        console.log(`  ✅ verified: ${Object.keys(channelCfg.models).length}/${Object.keys(channelCfg.models).length} entries match`);
+        console.log(
+            `  ✅ verified: ${Object.keys(channelCfg.models).length}/${Object.keys(channelCfg.models).length} entries match`,
+        );
     }
     return { ok: true, mismatches };
 }
@@ -234,8 +241,12 @@ async function processChannel(channelId, channelCfg) {
 async function main() {
     console.log(`\n=== Apply new pricing 2026-05-21 ===`);
     console.log(`base ${BASE} · apply=${APPLY}`);
-    console.log(`ChatGPT 系: ¥${DISCOUNT_CHATGPT_CNY} 抵 $1 官方 → new_mr = retail_in × ${DISCOUNT_CHATGPT_CNY}/${FX} = retail_in × ${(DISCOUNT_CHATGPT_CNY/FX).toFixed(4)}`);
-    console.log(`Claude 系: ¥${DISCOUNT_CLAUDE_CNY} 抵 $1 官方 → new_mr = retail_in × ${DISCOUNT_CLAUDE_CNY}/${FX} = retail_in × ${(DISCOUNT_CLAUDE_CNY/FX).toFixed(4)}`);
+    console.log(
+        `ChatGPT 系: ¥${DISCOUNT_CHATGPT_CNY} 抵 $1 官方 → new_mr = retail_in × ${DISCOUNT_CHATGPT_CNY}/${FX} = retail_in × ${(DISCOUNT_CHATGPT_CNY / FX).toFixed(4)}`,
+    );
+    console.log(
+        `Claude 系: ¥${DISCOUNT_CLAUDE_CNY} 抵 $1 官方 → new_mr = retail_in × ${DISCOUNT_CLAUDE_CNY}/${FX} = retail_in × ${(DISCOUNT_CLAUDE_CNY / FX).toFixed(4)}`,
+    );
     console.log(`completion_ratio = retail_out / retail_in(沿用官方比例)`);
 
     for (const [chId, cfg] of Object.entries(PRICING)) {
@@ -251,9 +262,14 @@ async function main() {
         console.log(`后续动作(需另起 PR):`);
         console.log(`  1. 改 portal landing PRICING_ROWS(src/app/page.tsx)同步显示价`);
         console.log(`  2. 如 /pricing 页存在,同步`);
-        console.log(`  3. _bootstrap/apply-w7-pricing.ts 标 OBSOLETE 注释 + _bootstrap/exit-w7-promo.ts 标 OBSOLETE(永久价后不再 promo 退场)`);
+        console.log(
+            `  3. _bootstrap/apply-w7-pricing.ts 标 OBSOLETE 注释 + _bootstrap/exit-w7-promo.ts 标 OBSOLETE(永久价后不再 promo 退场)`,
+        );
         console.log(`  4. CLAUDE.md 进度段加 W8 D1 新定价上线`);
     }
 }
 
-main().catch((e) => { console.error('FATAL', e); process.exit(99); });
+main().catch((e) => {
+    console.error('FATAL', e);
+    process.exit(99);
+});

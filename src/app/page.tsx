@@ -25,8 +25,7 @@ import { InviteCodeBridge } from '@/components/marketing/InviteCodeBridge';
 
 export const metadata: Metadata = {
     title: 'Silk Road AI · 一个 Key,接入 200+ AI 模型 | ChatGPT、Claude、Gemini 国内中转',
-    description:
-        '国内开发者的 AI API 聚合网关。海外大模型直连,人民币付费,价格透明,5 分钟接入。',
+    description: '国内开发者的 AI API 聚合网关。海外大模型直连,人民币付费,价格透明,5 分钟接入。',
     keywords: ['ChatGPT API', 'Claude API', 'Gemini API', 'AI API 中转', '国内调用 OpenAI', 'AI 网关'],
     openGraph: {
         title: 'Silk Road AI · 一个 Key,接入 200+ AI 模型',
@@ -840,9 +839,7 @@ function PricingFamilyRow({
                     {tier.cnyPerDollar}
                 </span>
                 {tier.cnyPerDollar.startsWith('¥') ? (
-                    <span style={{ fontSize: 14, color: 'var(--color-muted-ink)' }}>
-                        / $1
-                    </span>
+                    <span style={{ fontSize: 14, color: 'var(--color-muted-ink)' }}>/ $1</span>
                 ) : null}
             </div>
             <div
@@ -938,11 +935,7 @@ function PricingTeaser({ promoActive: _promoActive }: { promoActive: boolean }) 
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                     {CHEAP_POOL.map((tier) => (
-                        <PricingFamilyRow
-                            key={tier.name}
-                            tier={tier}
-                            rightLabel={tier.discountLabel}
-                        />
+                        <PricingFamilyRow key={tier.name} tier={tier} rightLabel={tier.discountLabel} />
                     ))}
                 </div>
             </div>

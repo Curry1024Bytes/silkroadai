@@ -319,6 +319,22 @@ LiteLLM 同时支持 user-level 和 key-level 预算。我们只用 key-level(�
 **正确写法**:任何新 OAuth provider 的 callback 都走"集中出口函数"模式 — 成功失败都 return 同一个 helper 构造的 response,helper 内 unconditionally 清 cookie。**不要**只在 happy path 末尾清。
 **首次发现**:W3 D6 引入(本特性),`docs/W3-D6-GOOGLE-OAUTH-VERIFICATION.md` F3。
 
+### 20. server-side `toLocaleString` 必须显式 `timeZone: 'Asia/Shanghai'`
+
+**问题**:`new Date(ts).toLocaleString('zh-CN')` 没指定 timeZone 时,**locale 决定格式语言('zh-CN' 即 yyyy/M/d HH:mm:ss),timeZone 完全独立 — 默认跟随 server 的 `process.env.TZ`**。Docker 容器(includes our portal in `/opt/silkroadai-portal/docker-compose.prod.yml`)默认 `TZ=UTC`,所以 server component(SSR)渲染出的 `2026/5/23 15:52` 其实是 UTC 时间,在北京客户那里实际是 23:52。客户看到 15:52 以为是下午,但 ta 北京时间 15:52 没用过 API,引起投诉。
+
+**正确写法**:`new Date(ts).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })`。把 timeZone 显式写出来,不依赖 server `TZ` 环境变量。`toLocaleDateString` 同理。
+
+**为什么不能改 server TZ env**:
+
+1. 不能保证所有部署环境一致(dev / CI / prod)
+2. 副作用太大 — server TZ 会影响 cron 调度、JWT timestamps、DB query 时间窗等所有依赖 `new Date()` 的逻辑;改它要全链路重测
+3. **代码层 explicit timeZone 才是 deterministic 写法**
+
+**Client component 是否需要?** 严格不需要(`toLocaleString` 在浏览器端跑,自动用 browser TZ,客户在北京 = Asia/Shanghai = 正确)。但**加上 `{ timeZone: 'Asia/Shanghai' }` 仍然推荐**,因为:(a) 全站统一 = 客户在海外访问也看北京时间 = 跟 operator/支持文档一致;(b) 任何被改写成 SSR 的 client component 自动免疫这个 bug。
+
+**首次发现**:2026-05-23 客户报告 /usage 时间对不上(task #22)。一次性扫全仓修了 9 处:`usage/page.tsx` `balance/page.tsx` `keys/keys-list.tsx` `ImageModal.tsx` (×2) + reseller 3 处 + `UserSubscriptions.tsx` + `admin/subscriptions/page.tsx`。**新增任何时间显示都必须带 `{ timeZone: 'Asia/Shanghai' }`,review 时把这条当硬性 checklist**。
+
 ---
 
 ## 不要做的事(避免误改)

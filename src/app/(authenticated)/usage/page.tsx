@@ -257,7 +257,9 @@ export default async function UsagePage({
                                                 {log.model_name || '<unknown>'}
                                             </td>
                                             <td className={`${cell} text-muted-ink`}>
-                                                {new Date(log.created_at * 1000).toLocaleString('zh-CN')}
+                                                {new Date(log.created_at * 1000).toLocaleString('zh-CN', {
+                                                    timeZone: 'Asia/Shanghai',
+                                                })}
                                             </td>
                                             <td className={`${cell} text-right tabular-nums`}>
                                                 {log.quota.toLocaleString('en-US')}

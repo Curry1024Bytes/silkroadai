@@ -161,10 +161,17 @@ export function ImageModal({ item, initialIndex, onClose, onToggleFavorite, onDe
                     <Field label="尺寸" value={item.size} />
                     <Field label="数量" value={String(item.count)} />
                     <Field label="花费" value={`$${item.cost_usd.toFixed(4)}`} />
-                    <Field label="时间" value={new Date(item.created_at).toLocaleString('zh-CN')} />
+                    <Field
+                        label="时间"
+                        value={new Date(item.created_at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}
+                    />
                     <Field
                         label="到期"
-                        value={item.expires_at ? new Date(item.expires_at).toLocaleDateString('zh-CN') : '永久(收藏)'}
+                        value={
+                            item.expires_at
+                                ? new Date(item.expires_at).toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' })
+                                : '永久(收藏)'
+                        }
                     />
 
                     <div className="mt-5 flex flex-wrap gap-2">

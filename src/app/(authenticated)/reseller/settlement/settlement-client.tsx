@@ -55,7 +55,7 @@ function fmtDate(iso: string | null): string {
     if (!iso) return '—';
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return '—';
-    return d.toLocaleDateString('zh-CN');
+    return d.toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' });
 }
 
 function fireAnalytics(eventType: string, properties: Record<string, unknown>): void {

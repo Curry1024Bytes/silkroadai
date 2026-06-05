@@ -646,9 +646,7 @@ describe('executeRecharge — W8 D8 numeric-overflow regression', () => {
         mockUserFindUnique.mockResolvedValue(userRow({ first_recharge_bonus_granted: true }));
         mockRechargeLogFindFirst.mockResolvedValue(null); // placeholder was deleted, so retry finds none
         mockNewapiGetUser.mockResolvedValue({ id: NEWAPI_USER_ID, quota: 1_000 });
-        mockApplyTopup
-            .mockRejectedValueOnce(new MockNewApiError('new-api 502', 502))
-            .mockResolvedValueOnce(undefined);
+        mockApplyTopup.mockRejectedValueOnce(new MockNewApiError('new-api 502', 502)).mockResolvedValueOnce(undefined);
 
         await expect(executeRecharge(ORDER_ID)).rejects.toThrow('502'); // delivery 1
         await executeRecharge(ORDER_ID); // delivery 2 — clean re-charge

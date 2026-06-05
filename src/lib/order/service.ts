@@ -1280,10 +1280,7 @@ export async function executeRecharge(orderId: string): Promise<void> {
         try {
             balanceAfterRaw = (await newapiGetUser(newapiUserId)).quota;
         } catch (err) {
-            console.warn(
-                `[executeRecharge] getUser(${newapiUserId}) after topup failed (using before+delta):`,
-                err,
-            );
+            console.warn(`[executeRecharge] getUser(${newapiUserId}) after topup failed (using before+delta):`, err);
             balanceAfterRaw = balanceBeforeRaw + totalQuota;
         }
 

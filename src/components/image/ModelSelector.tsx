@@ -12,11 +12,7 @@
  * + ¥ 价格 + 可选 badge(推荐 / 旗舰)。
  */
 import { useState, useRef, useEffect } from 'react';
-import {
-    IMAGE_MODEL_OPTIONS,
-    type ImageModelOption,
-    type ImageVendor,
-} from '@/data/image-models';
+import { IMAGE_MODEL_OPTIONS, type ImageModelOption, type ImageVendor } from '@/data/image-models';
 
 /** Vendor 分组顺序 — foreign 系前排,domestic 后排。 */
 const VENDOR_ORDER: ImageVendor[] = ['OpenAI', 'Google', 'SiliconFlow', 'Other'];
@@ -104,9 +100,7 @@ export function ModelSelector({ value, onChange, disabled = false }: Props) {
                                             className={[
                                                 'w-full text-left px-4 py-3 cursor-pointer',
                                                 'transition-colors duration-150 ease-brand',
-                                                isActive
-                                                    ? 'bg-paper-muted'
-                                                    : 'bg-transparent hover:bg-paper-muted/60',
+                                                isActive ? 'bg-paper-muted' : 'bg-transparent hover:bg-paper-muted/60',
                                                 'border-b border-brand-border last:border-b-0',
                                             ].join(' ')}
                                         >

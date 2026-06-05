@@ -392,7 +392,9 @@ export function KeysList({ initialRows }: { initialRows: KeyRow[] }) {
                                             </div>
                                         </td>
                                         <td className={`${cell} ${borderClass} text-muted-ink`}>
-                                            {new Date(row.created_at).toLocaleString('zh-CN')}
+                                            {new Date(row.created_at).toLocaleString('zh-CN', {
+                                                timeZone: 'Asia/Shanghai',
+                                            })}
                                         </td>
                                         <td className={`${cell} ${borderClass} text-right`}>
                                             <span className="inline-flex gap-1.5 justify-end">

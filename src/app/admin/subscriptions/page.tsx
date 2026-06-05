@@ -239,7 +239,12 @@ function buildText(locale: Locale) {
 function formatDate(dateStr: string | null): string {
     if (!dateStr) return '-';
     const d = new Date(dateStr);
-    return d.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' });
+    return d.toLocaleDateString('zh-CN', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        timeZone: 'Asia/Shanghai',
+    });
 }
 
 function daysRemaining(expiresAt: string | null): number | null {

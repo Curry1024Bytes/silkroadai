@@ -57,20 +57,24 @@ describe('landing page — general rendering (post-permanent-pricing)', () => {
         expect(html).toContain('一个 Key,接入 200+ AI 模型');
     });
 
-    it('renders pricing table SF flagship trio + Gemini rows (永久 ¥ 定价 + Gemini $)', async () => {
+    it('renders dual-card pricing poster: 号池低价 ¥/$1 trio + 企业合规 折扣 trio (PR #66/#68)', async () => {
         const Page = await loadPage();
         const tree = await Page({ searchParams: Promise.resolve({}) });
         const html = renderToString(tree);
-        // W7 D4 PR-K Item E — SF flagship trio retail prices (wholesale × 1.20)
-        // render as plain ¥, no promo markup. Replaced V3.2 / GLM-4.6 / K2.
-        expect(html).toContain('¥1.20/1M'); // DeepSeek V4-Flash in
-        expect(html).toContain('¥9.60/1M'); // GLM-5.1 (Pro) in
-        expect(html).toContain('¥7.80/1M'); // Kimi K2.6 (Pro) in
-        // PR-S — Gemini family. Zero-markup at launch; channel 未动,保留 $ 显示。
-        expect(html).toContain('Gemini 3.1 Pro');
-        expect(html).toContain('Gemini 3.1 Flash Lite');
-        expect(html).toContain('$0.25');
-        expect(html).toContain('$1.50');
+        // W8 PR #66 rebuilt PricingTeaser to dual-card poster v3; PR #68
+        // applied 2026-05-22 round-2 prices: ChatGPT ¥0.2 / Claude ¥1.3 /
+        // Gemini ¥0.5 per $1 官方等价额度.
+        expect(html).toContain('海外模型 · 号池低价');
+        expect(html).toContain('¥0.2'); // ChatGPT
+        expect(html).toContain('¥1.3'); // Claude
+        expect(html).toContain('¥0.5'); // Gemini
+        // 企业 / 合规渠道 card — 折扣 trio + 云厂商 label
+        expect(html).toContain('企业 / 合规渠道 · 官方授权');
+        expect(html).toContain('3.8 折'); // Azure OpenAI
+        expect(html).toContain('5.0 折'); // AWS Bedrock
+        expect(html).toContain('2.3 折'); // Vertex AI / t3 池
+        expect(html).toContain('Azure OpenAI');
+        expect(html).toContain('AWS Bedrock');
     });
 
     // W7 D4 PR-R Item B — the legacy in-page <Trust /> prose row
@@ -190,20 +194,15 @@ describe('landing page — permanent ¥ pricing (post W8 D1.5, 2026-05-21)', () 
         expect(html).not.toContain('当前促销');
     });
 
-    it('renders Claude / GPT rows in ¥ format, no strikethrough', async () => {
+    it('renders ¥/$1 pricing with 官方折扣 badges, no strikethrough', async () => {
         const Page = await loadPage();
         const tree = await Page({ searchParams: Promise.resolve({}) });
         const html = renderToString(tree);
-        // Claude Sonnet 4.6: $3/$15 (official) × 1.5 / 7 = ¥4.5 / ¥22.5
-        expect(html).toContain('¥4.5/1M');
-        expect(html).toContain('¥22.5/1M');
-        // Claude Opus 4.7: $15/$75 × 1.5 / 7 = ¥22.5 / ¥112.5
-        expect(html).toContain('¥112.5/1M');
-        // GPT-5.4: $5/$20 × 0.5 / 7 = ¥2.5 / ¥10
-        expect(html).toContain('¥2.5/1M');
-        expect(html).toContain('¥10/1M');
-        // GPT-5.5: $5/$25 × 0.5 / 7 = ¥2.5 / ¥12.5
-        expect(html).toContain('¥12.5/1M');
+        // W8 PR #68 — per-$1 等价额度定价 + "官方仅 X%" badge:
+        // ChatGPT ¥0.2/$1 = 官方 2.9%,Claude ¥1.3/$1 = 19%,Gemini ¥0.5/$1 = 7.3%
+        expect(html).toContain('官方仅 2.9%');
+        expect(html).toContain('官方仅 19%');
+        expect(html).toContain('官方仅 7.3%');
         // No line-through anywhere in pricing
         expect(html).not.toMatch(/text-decoration:\s*line-through/);
     });

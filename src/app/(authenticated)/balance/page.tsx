@@ -193,7 +193,7 @@ export default async function BalancePage() {
                                             {row.order_id ? row.order_id.slice(0, 8) : '—'}
                                         </td>
                                         <td className={`${cell} text-muted-ink`}>
-                                            {row.created_at.toLocaleString('zh-CN')}
+                                            {row.created_at.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}
                                         </td>
                                     </tr>
                                 );

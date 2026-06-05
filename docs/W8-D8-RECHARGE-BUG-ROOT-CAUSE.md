@@ -16,12 +16,12 @@ confirmPayment 返回 false → 支付宝 webhook 自动重试 → 重复 ~13 �
 
 ## 哪个字段被塞了 raw quota / 哪行代码
 
-| 字段 | schema | 写入行 | 写入值 | 单位 | 结论 |
-|---|---|---|---|---|---|
-| `amount` | numeric(12,4) | `service.ts:1221` | `cnyAmount.toFixed(4)` | ¥CNY | ✅ 正确 |
-| `balance_before` | numeric(12,4) | `service.ts:1222` | `balanceBefore`(= `getUser().quota`,`service.ts:1141`) | **raw quota** | ❌ overflow 源 |
-| `balance_after` | numeric(12,4) | `service.ts:1223` | `balanceAfter`(= `getUser().quota`,`service.ts:1205`) | **raw quota** | ❌ overflow 源 |
-| `newapi_quota_added` | BigInt | `service.ts:1226` | `BigInt(totalQuota)` | raw quota | ✅ 正确(BigInt 不溢出) |
+| 字段                 | schema        | 写入行            | 写入值                                                 | 单位          | 结论                   |
+| -------------------- | ------------- | ----------------- | ------------------------------------------------------ | ------------- | ---------------------- |
+| `amount`             | numeric(12,4) | `service.ts:1221` | `cnyAmount.toFixed(4)`                                 | ¥CNY          | ✅ 正确                |
+| `balance_before`     | numeric(12,4) | `service.ts:1222` | `balanceBefore`(= `getUser().quota`,`service.ts:1141`) | **raw quota** | ❌ overflow 源         |
+| `balance_after`      | numeric(12,4) | `service.ts:1223` | `balanceAfter`(= `getUser().quota`,`service.ts:1205`)  | **raw quota** | ❌ overflow 源         |
+| `newapi_quota_added` | BigInt        | `service.ts:1226` | `BigInt(totalQuota)`                                   | raw quota     | ✅ 正确(BigInt 不溢出) |
 
 `NewApiUserSchema.quota` 是 `z.number().int()`(`client.ts:229`),即 new-api raw quota。
 `balance_before/after` 是该值未经 `quotaToCny()` 换算就写进 numeric(12,4)。
@@ -47,21 +47,21 @@ confirmPayment 返回 false → 支付宝 webhook 自动重试 → 重复 ~13 �
 ## 推荐修法(两个都改)
 
 - **修 A(overflow)**:
-  - schema:`balance_before` / `balance_after` / `amount` 拓宽到 `numeric(20,4)`(防御纵深)。
-  - 代码:`balance_before/after` 改存 **¥CNY**(`quotaToCny(rawQuota)`),与 `amount` 同单位;
-    raw quota 只留在 `newapi_quota_added`(BigInt)。这两列纯审计、**全仓无任何读取/展示点**
-    (`/balance` 只 select `amount/source/order_id/created_at`),改单位零功能影响。
+    - schema:`balance_before` / `balance_after` / `amount` 拓宽到 `numeric(20,4)`(防御纵深)。
+    - 代码:`balance_before/after` 改存 **¥CNY**(`quotaToCny(rawQuota)`),与 `amount` 同单位;
+      raw quota 只留在 `newapi_quota_added`(BigInt)。这两列纯审计、**全仓无任何读取/展示点**
+      (`/balance` 只 select `amount/source/order_id/created_at`),改单位零功能影响。
 - **修 B(idempotency)**:把流程拆成 intent → execute → confirm 三段:
-  1. **intent(独立 tx,commit)**:CAS-claim 首充 bonus + INSERT placeholder `rechargeLog`
-     (`newapi_quota_added=NULL` 作"未确认"哨兵)。commit 后 applyTopup 对同一 order 永不二次执行。
-  2. **execute(HTTP,在任何 tx 之外)**:`applyTopup`。`NewApiError`(new-api 明确拒绝 →
-     未入账)→ 删 placeholder + 撤 bonus claim + order FAILED → 重试干净重扣;
-     非 NewApiError(网络/超时,入账结果未知)→ 留 placeholder + order FAILED → 重试走人工复核。
-  3. **confirm(tx,commit)**:回填 placeholder(`newapi_quota_added` 落值 + balances 存 CNY)+
-     order COMPLETED + commission + 缓存清零。
-  - 重试去重:placeholder 已 `newapi_quota_added != NULL` → 幂等 finalize COMPLETED;
-    `== NULL` → 结果未知 → order FAILED + `RECHARGE_NEEDS_REVIEW` 审计,**不自动重扣**。
-  - 附带收益:applyTopup 移出 transaction,不再 ~10s 持 DB 连接(消解 W6 D5 F1)。
+    1. **intent(独立 tx,commit)**:CAS-claim 首充 bonus + INSERT placeholder `rechargeLog`
+       (`newapi_quota_added=NULL` 作"未确认"哨兵)。commit 后 applyTopup 对同一 order 永不二次执行。
+    2. **execute(HTTP,在任何 tx 之外)**:`applyTopup`。`NewApiError`(new-api 明确拒绝 →
+       未入账)→ 删 placeholder + 撤 bonus claim + order FAILED → 重试干净重扣;
+       非 NewApiError(网络/超时,入账结果未知)→ 留 placeholder + order FAILED → 重试走人工复核。
+    3. **confirm(tx,commit)**:回填 placeholder(`newapi_quota_added` 落值 + balances 存 CNY)+
+       order COMPLETED + commission + 缓存清零。
+    - 重试去重:placeholder 已 `newapi_quota_added != NULL` → 幂等 finalize COMPLETED;
+      `== NULL` → 结果未知 → order FAILED + `RECHARGE_NEEDS_REVIEW` 审计,**不自动重扣**。
+    - 附带收益:applyTopup 移出 transaction,不再 ~10s 持 DB 连接(消解 W6 D5 F1)。
 
 ## 关键数据(diagnose 已做)
 

@@ -48,7 +48,7 @@ function fmtCny(v: number): string {
 function fmtDate(iso: string): string {
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return '—';
-    return d.toLocaleDateString('zh-CN');
+    return d.toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' });
 }
 
 function buildHref(status: StatusFilter, month: string | null, page = 1): string {

@@ -62,31 +62,31 @@ const PRICING_BASE = {
     chatgpt: {
         discount_cny: DISCOUNT_CHATGPT_CNY,
         models: {
-            'gpt-5.2':                    { in: 2,    out: 8 },
-            'gpt-5.2-chat-latest':        { in: 2,    out: 8 },
-            'gpt-5.2-pro':                { in: 2,    out: 8 },
-            'gpt-5.2-pro-2025-12-11':     { in: 2,    out: 8 },
-            'gpt-5.2-2025-12-11':         { in: 2,    out: 8 },
-            'gpt-5.3-codex':              { in: 3,    out: 12 },
-            'gpt-5.3-codex-spark':        { in: 3,    out: 12 },
-            'codex-auto-review':          { in: 3,    out: 12 },
-            'gpt-5.4':                    { in: 5,    out: 20 },
-            'gpt-5.4-2026-03-05':         { in: 5,    out: 20 },
-            'gpt-5.4-mini':               { in: 0.5,  out: 2 },
-            'gpt-5.5':                    { in: 5,    out: 25 },
-            'gpt-4o-audio-preview':       { in: 2.5,  out: 10 },
-            'gpt-4o-realtime-preview':    { in: 5,    out: 20 },
+            'gpt-5.2': { in: 2, out: 8 },
+            'gpt-5.2-chat-latest': { in: 2, out: 8 },
+            'gpt-5.2-pro': { in: 2, out: 8 },
+            'gpt-5.2-pro-2025-12-11': { in: 2, out: 8 },
+            'gpt-5.2-2025-12-11': { in: 2, out: 8 },
+            'gpt-5.3-codex': { in: 3, out: 12 },
+            'gpt-5.3-codex-spark': { in: 3, out: 12 },
+            'codex-auto-review': { in: 3, out: 12 },
+            'gpt-5.4': { in: 5, out: 20 },
+            'gpt-5.4-2026-03-05': { in: 5, out: 20 },
+            'gpt-5.4-mini': { in: 0.5, out: 2 },
+            'gpt-5.5': { in: 5, out: 25 },
+            'gpt-4o-audio-preview': { in: 2.5, out: 10 },
+            'gpt-4o-realtime-preview': { in: 5, out: 20 },
         },
     },
     claude: {
         discount_cny: DISCOUNT_CLAUDE_CNY,
         models: {
-            'claude-opus-4-7':            { in: 15,   out: 75 },
-            'claude-opus-4-6':            { in: 15,   out: 75 },
-            'claude-opus-4-5':            { in: 15,   out: 75 },
-            'claude-sonnet-4-6':          { in: 3,    out: 15 },
-            'claude-sonnet-4-5':          { in: 3,    out: 15 },
-            'claude-haiku-4-5':           { in: 1,    out: 5 },
+            'claude-opus-4-7': { in: 15, out: 75 },
+            'claude-opus-4-6': { in: 15, out: 75 },
+            'claude-opus-4-5': { in: 15, out: 75 },
+            'claude-sonnet-4-6': { in: 3, out: 15 },
+            'claude-sonnet-4-5': { in: 3, out: 15 },
+            'claude-haiku-4-5': { in: 1, out: 5 },
         },
     },
     gemini: {
@@ -97,27 +97,27 @@ const PRICING_BASE = {
         discount_cny: DISCOUNT_GEMINI_CNY,
         models: {
             // ↓ 4 个官方公布价 confirmed(text)
-            'gemini-2.5-pro':                       { in: 1.25, out: 10.0 },
-            'gemini-2.5-flash':                     { in: 0.30, out: 2.50 },
-            'gemini-3.1-pro-preview':               { in: 2.00, out: 12.0 },
-            'gemini-3.1-pro-preview-customtools':   { in: 2.00, out: 12.0 },
+            'gemini-2.5-pro': { in: 1.25, out: 10.0 },
+            'gemini-2.5-flash': { in: 0.3, out: 2.5 },
+            'gemini-3.1-pro-preview': { in: 2.0, out: 12.0 },
+            'gemini-3.1-pro-preview-customtools': { in: 2.0, out: 12.0 },
             // ↓ 6 个估计值(text),operator 2026-05-22 可手工改这里再 --apply
-            'gemini-3-pro-preview':                 { in: 2.00, out: 12.0 },
-            'gemini-3-flash-preview':               { in: 0.30, out: 2.50 },
-            'gemini-3.1-flash-lite':                { in: 0.10, out: 0.40 },
-            'gemini-2.0-flash':                     { in: 0.10, out: 0.40 },
-            'gemma-4-31b-it':                       { in: 0.10, out: 0.40 },
-            'gemini-embedding-2':                   { in: 0.025, out: 0 },
+            'gemini-3-pro-preview': { in: 2.0, out: 12.0 },
+            'gemini-3-flash-preview': { in: 0.3, out: 2.5 },
+            'gemini-3.1-flash-lite': { in: 0.1, out: 0.4 },
+            'gemini-2.0-flash': { in: 0.1, out: 0.4 },
+            'gemma-4-31b-it': { in: 0.1, out: 0.4 },
+            'gemini-embedding-2': { in: 0.025, out: 0 },
             // ↓ Image 6 个 — 2026-05-22 第二批加入(per-image $)
             // in/out 设相同 ⇒ cr=1,因为图生没有 "completion vs prompt" 的概念
             // wholesale USD 数字来自 _bootstrap/apply-pr-s-pricing.ts(PR-S 2026-05-10 operator 已知值)
             // 跟 src/data/image-models.ts 同步,公式 retail_¥ = wholesale_USD × 1.5(¥1.5 抵 $1)
-            'imagen-4.0-ultra-generate-001':        { in: 0.06,  out: 0.06 },   // Imagen 4 Ultra wholesale
-            'gemini-2.5-flash-image':               { in: 0.039, out: 0.039 },  // Nano Banana base wholesale
-            'gemini-3-pro-image-preview':           { in: 0.187, out: 0.187 },  // Nano Banana Pro wholesale ($0.187/image)
-            'gemini-3.1-flash-image-preview':       { in: 0.10,  out: 0.10 },   // Gemini 3.1 Flash Image wholesale
-            'gemini-3.1-flash-image':               { in: 0.10,  out: 0.10 },   // 同上(variant in channel 5)
-            'nano-banana-pro-preview':              { in: 0.187, out: 0.187 },  // gemini-3-pro-image-preview 别名,同价
+            'imagen-4.0-ultra-generate-001': { in: 0.06, out: 0.06 }, // Imagen 4 Ultra wholesale
+            'gemini-2.5-flash-image': { in: 0.039, out: 0.039 }, // Nano Banana base wholesale
+            'gemini-3-pro-image-preview': { in: 0.187, out: 0.187 }, // Nano Banana Pro wholesale ($0.187/image)
+            'gemini-3.1-flash-image-preview': { in: 0.1, out: 0.1 }, // Gemini 3.1 Flash Image wholesale
+            'gemini-3.1-flash-image': { in: 0.1, out: 0.1 }, // 同上(variant in channel 5)
+            'nano-banana-pro-preview': { in: 0.187, out: 0.187 }, // gemini-3-pro-image-preview 别名,同价
         },
     },
 };
@@ -160,7 +160,11 @@ async function api(path, init = {}) {
 function parseJson(s) {
     if (!s) return {};
     if (typeof s === 'object') return s;
-    try { return JSON.parse(s); } catch { return {}; }
+    try {
+        return JSON.parse(s);
+    } catch {
+        return {};
+    }
 }
 
 async function fetchGlobalRatios() {
@@ -170,9 +174,7 @@ async function fetchGlobalRatios() {
         process.exit(2);
     }
     const items = r.json.data ?? r.json ?? [];
-    const optMap = Array.isArray(items)
-        ? Object.fromEntries(items.map((i) => [i.key, i.value]))
-        : items;
+    const optMap = Array.isArray(items) ? Object.fromEntries(items.map((i) => [i.key, i.value])) : items;
     return {
         mr: parseJson(optMap.ModelRatio),
         cr: parseJson(optMap.CompletionRatio),
@@ -196,8 +198,12 @@ async function main() {
     console.log(`║  Apply new pricing → GLOBAL ModelRatio (2026-05-22 修复版)      ║`);
     console.log(`╚════════════════════════════════════════════════════════════════╝`);
     console.log(`base=${BASE}  apply=${APPLY}`);
-    console.log(`ChatGPT: mr = retail_in × ${DISCOUNT_CHATGPT_CNY}/${FX} = retail_in × ${(DISCOUNT_CHATGPT_CNY/FX).toFixed(4)}`);
-    console.log(`Claude:  mr = retail_in × ${DISCOUNT_CLAUDE_CNY}/${FX} = retail_in × ${(DISCOUNT_CLAUDE_CNY/FX).toFixed(4)}`);
+    console.log(
+        `ChatGPT: mr = retail_in × ${DISCOUNT_CHATGPT_CNY}/${FX} = retail_in × ${(DISCOUNT_CHATGPT_CNY / FX).toFixed(4)}`,
+    );
+    console.log(
+        `Claude:  mr = retail_in × ${DISCOUNT_CLAUDE_CNY}/${FX} = retail_in × ${(DISCOUNT_CLAUDE_CNY / FX).toFixed(4)}`,
+    );
 
     const expected = buildExpected();
     console.log(`\n要更新的 SKU:${Object.keys(expected).length} 条(14 ChatGPT + 6 Claude)`);
@@ -228,10 +234,11 @@ async function main() {
             const nm = String(d.newMr);
             const oc = d.oldCr === undefined ? '(new)' : String(d.oldCr);
             const nc = String(d.newCr);
-            const pct = (typeof d.oldMr === 'number' && d.oldMr > 0)
-                ? `${Math.round((d.newMr / d.oldMr - 1) * 100)}%`
-                : 'new';
-            console.log(`  │ ${d.model.padEnd(31)} │ ${om.padEnd(8)} │ ${nm.padEnd(8)} │ ${oc.padEnd(7)} │ ${nc.padEnd(7)} │ ${pct.padEnd(6)} │`);
+            const pct =
+                typeof d.oldMr === 'number' && d.oldMr > 0 ? `${Math.round((d.newMr / d.oldMr - 1) * 100)}%` : 'new';
+            console.log(
+                `  │ ${d.model.padEnd(31)} │ ${om.padEnd(8)} │ ${nm.padEnd(8)} │ ${oc.padEnd(7)} │ ${nc.padEnd(7)} │ ${pct.padEnd(6)} │`,
+            );
         }
         console.log(`  └─────────────────────────────────┴──────────┴──────────┴─────────┴─────────┴────────┘`);
     }
@@ -294,9 +301,14 @@ async function main() {
         console.log(`✅ 客户下次发请求即按新价计费(global ModelRatio 立即生效,无 channel cache)`);
         console.log(`\n下一步:跑 node scripts/verify-sonnet-pricing.mjs 看新发生的请求 implied_mr 应近 0.643`);
     } else {
-        console.error(`\n❌ ${mismatches} 处 mismatch,PUT 没真写进去。可能 new-api 的 /api/option/ PUT 也有限制,要进 admin UI 手工改。`);
+        console.error(
+            `\n❌ ${mismatches} 处 mismatch,PUT 没真写进去。可能 new-api 的 /api/option/ PUT 也有限制,要进 admin UI 手工改。`,
+        );
         process.exit(5);
     }
 }
 
-main().catch((e) => { console.error('FATAL', e); process.exit(99); });
+main().catch((e) => {
+    console.error('FATAL', e);
+    process.exit(99);
+});
