@@ -22,6 +22,22 @@ vi.mock('@/lib/r2/client', () => ({
     uploadImage: (key: string, body: Buffer, contentType?: string) => mockUploadImage(key, body, contentType),
 }));
 
+// Phase 3:mock 客户 OSS store + client(真实现触 prisma / S3)。
+// 默认:反查不到 user(=匿名/未配置)→ 走平台 R2,Phase 1/2 的既有测试不受影响。
+const mockResolveUserId = vi.fn(async (_auth: string | null): Promise<string | null> => null);
+const mockGetOssConfig = vi.fn(async (_userId: string): Promise<Record<string, unknown> | null> => null);
+const mockUploadToCustomerOss = vi.fn(
+    async (_config: unknown, _buf: Buffer, key: string, _mime: string) => `https://cdn.customer.com/${key}`,
+);
+vi.mock('@/lib/oss/store', () => ({
+    resolveUserIdFromAuthHeader: (auth: string | null) => mockResolveUserId(auth),
+    getOssConfig: (userId: string) => mockGetOssConfig(userId),
+}));
+vi.mock('@/lib/oss/client', () => ({
+    uploadToCustomerOss: (config: unknown, buf: Buffer, key: string, mime: string) =>
+        mockUploadToCustomerOss(config, buf, key, mime),
+}));
+
 import { GET, POST } from '../[...path]/route';
 
 const NEWAPI_BASE = process.env.NEWAPI_BASE_URL || 'http://localhost:3000';
@@ -386,5 +402,88 @@ describe('/v1 proxy — Phase 2: image_url 入参 + R2 上传 (W9 D2)', () => {
         expect(res.headers.get('X-Silkroadai-R2-Fallback')).toBe('yes');
         const data = (await res.json()) as { choices: Array<{ message: { content: string } }> };
         expect(data.choices[0].message.content).toBe('![image](data:image/png;base64,QkFTRTY0)');
+    });
+});
+
+describe('/v1 proxy — Phase 3: 客户自定义 OSS (W9 D3)', () => {
+    const activeConfig = {
+        provider: 'r2',
+        endpoint: 'https://acct.r2.cloudflarestorage.com',
+        bucket: 'customer-bucket',
+        region: null,
+        access_key_id: 'AKID',
+        secret_access_key_encrypted: 'encrypted',
+        public_url_prefix: 'https://cdn.customer.com',
+        status: 'active',
+    };
+
+    function geminiTextReq() {
+        return makeReq('/chat/completions', {
+            body: { model: 'gemini-3.1-flash-image-preview', messages: [{ role: 'user', content: 'a cat' }] },
+            headers: { authorization: 'Bearer sk-customer-token' },
+        });
+    }
+
+    it('uploads to customer OSS when config is active (test 16)', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        mockResolveUserId.mockResolvedValueOnce('user-uuid-1');
+        mockGetOssConfig.mockResolvedValueOnce(activeConfig);
+
+        const res = await POST(geminiTextReq(), ctx('chat', 'completions'));
+        const data = (await res.json()) as { choices: Array<{ message: { content: string } }> };
+
+        expect(mockResolveUserId).toHaveBeenCalledWith('Bearer sk-customer-token');
+        expect(mockGetOssConfig).toHaveBeenCalledWith('user-uuid-1');
+        expect(mockUploadToCustomerOss).toHaveBeenCalledTimes(1);
+        expect(mockUploadImage).not.toHaveBeenCalled(); // 平台 R2 没被用
+        expect(data.choices[0].message.content).toMatch(
+            /^!\[image\]\(https:\/\/cdn\.customer\.com\/gen\/[0-9a-f-]+\.png\)$/,
+        );
+        expect(res.headers.get('X-Silkroadai-Oss-Fallback')).toBeNull();
+    });
+
+    it('falls back to platform R2 + header when customer OSS upload throws (test 17)', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        mockResolveUserId.mockResolvedValueOnce('user-uuid-1');
+        mockGetOssConfig.mockResolvedValueOnce(activeConfig);
+        mockUploadToCustomerOss.mockRejectedValueOnce(new Error('AccessDenied'));
+
+        const res = await POST(geminiTextReq(), ctx('chat', 'completions'));
+        const data = (await res.json()) as { choices: Array<{ message: { content: string } }> };
+
+        expect(res.status).toBe(200); // 客户请求不失败
+        expect(res.headers.get('X-Silkroadai-Oss-Fallback')).toBe('yes');
+        expect(mockUploadImage).toHaveBeenCalledTimes(1);
+        expect(data.choices[0].message.content).toMatch(/^!\[image\]\(https:\/\/images\.silkroadai\.io\//);
+    });
+
+    it('uses platform R2 directly when user has no OSS config (test 18)', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        mockResolveUserId.mockResolvedValueOnce('user-uuid-1');
+        mockGetOssConfig.mockResolvedValueOnce(null);
+
+        const res = await POST(geminiTextReq(), ctx('chat', 'completions'));
+        expect(mockUploadToCustomerOss).not.toHaveBeenCalled();
+        expect(mockUploadImage).toHaveBeenCalledTimes(1);
+        expect(res.headers.get('X-Silkroadai-Oss-Fallback')).toBeNull();
+    });
+
+    it('skips customer OSS when config status is inactive', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        mockResolveUserId.mockResolvedValueOnce('user-uuid-1');
+        mockGetOssConfig.mockResolvedValueOnce({ ...activeConfig, status: 'inactive' });
+
+        await POST(geminiTextReq(), ctx('chat', 'completions'));
+        expect(mockUploadToCustomerOss).not.toHaveBeenCalled();
+        expect(mockUploadImage).toHaveBeenCalledTimes(1);
+    });
+
+    it('survives DB lookup failure — silently uses platform R2', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        mockResolveUserId.mockRejectedValueOnce(new Error('db down'));
+
+        const res = await POST(geminiTextReq(), ctx('chat', 'completions'));
+        expect(res.status).toBe(200);
+        expect(mockUploadImage).toHaveBeenCalledTimes(1);
     });
 });

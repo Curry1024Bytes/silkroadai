@@ -230,6 +230,7 @@ model User {
   usage_aggregate_cache     UsageAggregateCache[]
   image_generations         ImageGeneration[]
   analytics_events          AnalyticsEvent[]
+  oss_config                UserOssConfig?
 
   // ── session 失效控制 ──
   // JWT payload 带 tv = session_token_version。verifySession 时如果 token tv
@@ -718,4 +719,37 @@ enum SettlementStatus {
   pending
   requested
   paid
+}
+
+// ── 客户自定义 OSS 配置(W9 D3,PR-C)──
+// proxy 生图默认传 silkroadai R2;客户可在 /settings/storage 配自己的
+// S3 兼容存储(R2 / 阿里 OSS / 腾讯 COS / AWS S3 / 自建 S3 兼容)。
+// secret_access_key 用 AES-256-GCM 加密存(key = PORTAL_OSS_ENC_KEY env,
+// 64 hex = 32 bytes,见 src/lib/oss/encryption.ts)。
+// 一个 user 最多一份配置(user_id unique);清除配置 = 删行,回默认 R2。
+model UserOssConfig {
+  id      String @id @default(uuid()) @db.Uuid
+  user_id String @unique @db.Uuid
+  user    User   @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  // 'r2' | 'aliyun-oss' | 'tencent-cos' | 's3' | 's3-custom'
+  provider                    String
+  endpoint                    String?
+  bucket                      String
+  region                      String?
+  access_key_id               String
+  secret_access_key_encrypted String
+  // 客户的公网访问前缀(自定义域名 / CDN),拼 `${prefix}/${key}` 返给客户
+  public_url_prefix           String
+  cdn_enabled                 Boolean @default(false)
+
+  // active(测试通过,生效)/ inactive(暂停,回默认 R2)/ test-failed
+  status            String    @default("active")
+  last_test_at      DateTime?
+  last_test_message String?
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@map("user_oss_configs")
 }

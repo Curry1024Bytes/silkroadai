@@ -32,12 +32,20 @@
  *
  * 边界:
  * - 本文件不做鉴权 — Authorization 头原样透传,new-api 自己校验 sk-xxx。
- * - 不读不写 portal DB。
+ * - DB 访问仅限 Phase 3 的客户 OSS 查询(read-only,且任何 DB 故障都
+ *   静默回退平台 R2,绝不阻断客户请求);其余路径不触 DB。
  * - 回滚 = Caddy reverse_proxy 切回 new-api :3000(见 handoff 1.3)。
+ *
+ * Phase 3(W9 D3):出图存储按优先级:
+ *   1. 客户自定义 OSS(/settings/storage 配置,status='active')
+ *   2. 失败 → 平台 R2 + `X-Silkroadai-Oss-Fallback: yes`
+ *   3. R2 也失败 → data URL 内联 + `X-Silkroadai-R2-Fallback: yes`
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
 import { uploadImage } from '@/lib/r2/client';
+import { uploadToCustomerOss } from '@/lib/oss/client';
+import { getOssConfig, resolveUserIdFromAuthHeader } from '@/lib/oss/store';
 
 // Next.js: 强制动态 + Node runtime(需要流式 fetch duplex)
 export const dynamic = 'force-dynamic';
@@ -238,18 +246,43 @@ async function handleGeminiImage(req: NextRequest, body: JsonRecord, model: stri
 
     let content: string;
     let r2Fallback = false;
+    let ossFallback = false;
     if (imagePart?.inlineData) {
-        // Phase 2:上传 R2 返公网 URL;R2 故障降级回 data URL 内联(请求不失败)
+        // Phase 2/3:客户 OSS → 平台 R2 → data URL 内联,三级降级(请求不失败)
         const { mimeType, data } = imagePart.inlineData;
+        const buffer = Buffer.from(data, 'base64');
+        const ext = mimeType.includes('jpeg') ? 'jpg' : mimeType.includes('webp') ? 'webp' : 'png';
+        const key = `gen/${randomUUID()}.${ext}`;
+
+        // Phase 3:sk-xxx 反查 portal user → 客户 OSS 配置(查询失败一律回平台 R2)
+        let customerUrl: string | null = null;
         try {
-            const buffer = Buffer.from(data, 'base64');
-            const ext = mimeType.includes('jpeg') ? 'jpg' : mimeType.includes('webp') ? 'webp' : 'png';
-            const url = await uploadImage(`gen/${randomUUID()}.${ext}`, buffer, mimeType);
-            content = `![image](${url})`;
+            const userId = await resolveUserIdFromAuthHeader(req.headers.get('authorization'));
+            const ossConfig = userId ? await getOssConfig(userId) : null;
+            if (ossConfig && ossConfig.status === 'active') {
+                try {
+                    customerUrl = await uploadToCustomerOss(ossConfig, buffer, key, mimeType);
+                } catch (e) {
+                    console.warn('[v1-proxy] customer OSS upload failed, falling back to platform R2', e);
+                    ossFallback = true;
+                }
+            }
         } catch (e) {
-            console.warn('[v1-proxy] R2 upload failed, falling back to inline data URL', e);
-            r2Fallback = true;
-            content = `![image](data:${mimeType};base64,${data})`;
+            // DB 故障等 — 静默走平台 R2,不阻断客户请求
+            console.warn('[v1-proxy] customer OSS lookup failed, using platform R2', e);
+        }
+
+        if (customerUrl) {
+            content = `![image](${customerUrl})`;
+        } else {
+            try {
+                const url = await uploadImage(key, buffer, mimeType);
+                content = `![image](${url})`;
+            } catch (e) {
+                console.warn('[v1-proxy] R2 upload failed, falling back to inline data URL', e);
+                r2Fallback = true;
+                content = `![image](data:${mimeType};base64,${data})`;
+            }
         }
     } else {
         content = parts.find((p) => typeof p.text === 'string')?.text ?? 'No image generated';
@@ -269,6 +302,7 @@ async function handleGeminiImage(req: NextRequest, body: JsonRecord, model: stri
     };
 
     const respHeaders: Record<string, string> = { 'X-Silkroadai-Translated': 'gemini-native' };
+    if (ossFallback) respHeaders['X-Silkroadai-Oss-Fallback'] = 'yes';
     if (r2Fallback) respHeaders['X-Silkroadai-R2-Fallback'] = 'yes';
     return NextResponse.json(openaiResp, { status: 200, headers: respHeaders });
 }

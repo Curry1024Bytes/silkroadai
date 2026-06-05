@@ -27,6 +27,8 @@ const BASE_NAV: NavItem[] = [
     { href: '/keys', label: 'API Keys' },
     { href: '/balance', label: '余额' },
     { href: '/usage', label: '用量' },
+    // W9 D3 PR-C: 客户自定义 OSS(生图输出存储)配置入口。
+    { href: '/settings/storage', label: '存储设置' },
     { href: '/models', label: '模型清单' },
     // W7 D4 PR-G: public integration docs (Cursor / Cline / Continue /
     // Claude Code Desktop / Python + Node SDK).
