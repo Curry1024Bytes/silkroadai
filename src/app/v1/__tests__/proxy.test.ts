@@ -13,6 +13,15 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
+
+// Phase 2:mock R2 client(真实现读 R2_* env + 打 S3 API)
+const mockUploadImage = vi.fn(
+    async (key: string, _body?: Buffer, _contentType?: string) => `https://images.silkroadai.io/${key}`,
+);
+vi.mock('@/lib/r2/client', () => ({
+    uploadImage: (key: string, body: Buffer, contentType?: string) => mockUploadImage(key, body, contentType),
+}));
+
 import { GET, POST } from '../[...path]/route';
 
 const NEWAPI_BASE = process.env.NEWAPI_BASE_URL || 'http://localhost:3000';
@@ -91,7 +100,10 @@ describe('/v1 proxy — Gemini image translation', () => {
             usage: { completion_tokens: number };
         };
         expect(data.object).toBe('chat.completion');
-        expect(data.choices[0].message.content).toBe('![image](data:image/png;base64,QkFTRTY0)');
+        // Phase 2:图片走 R2,content 是 markdown 公网 URL(非 base64 内联)
+        expect(data.choices[0].message.content).toMatch(
+            /^!\[image\]\(https:\/\/images\.silkroadai\.io\/gen\/[0-9a-f-]+\.png\)$/,
+        );
         expect(data.usage.completion_tokens).toBe(1290);
     });
 
@@ -260,5 +272,119 @@ describe('/v1 proxy — passthrough', () => {
         const res = await POST(req, ctx('chat', 'completions'));
         expect(res.status).toBe(400);
         expect(mockFetch).not.toHaveBeenCalled();
+    });
+});
+
+describe('/v1 proxy — Phase 2: image_url 入参 + R2 上传 (W9 D2)', () => {
+    function geminiReq(content: unknown) {
+        return makeReq('/chat/completions', {
+            body: {
+                model: 'gemini-3.1-flash-image-preview',
+                messages: [{ role: 'user', content }],
+            },
+        });
+    }
+
+    it('fetches external image_url and sends inlineData upstream (test 9)', async () => {
+        const imgBytes = new Uint8Array([0xff, 0xd8, 0xff, 0xe0]); // JPEG magic
+        mockFetch.mockImplementation(async (url: string) => {
+            if (String(url).includes('example.com/cat.jpg')) {
+                return new Response(imgBytes, { status: 200, headers: { 'content-type': 'image/jpeg' } });
+            }
+            return geminiNativeResponse();
+        });
+
+        const res = await POST(
+            geminiReq([
+                { type: 'text', text: 'make this cat wear a hat' },
+                { type: 'image_url', image_url: { url: 'https://example.com/cat.jpg' } },
+            ]),
+            ctx('chat', 'completions'),
+        );
+
+        expect(res.status).toBe(200);
+        // 第 1 个 fetch = 拉图,第 2 个 = native generateContent
+        const upstreamCall = mockFetch.mock.calls.find(([u]) => String(u).includes(':generateContent'));
+        expect(upstreamCall).toBeDefined();
+        const sent = JSON.parse(String((upstreamCall![1] as RequestInit).body)) as {
+            contents: Array<{ parts: Array<{ text?: string; inlineData?: { mimeType: string; data: string } }> }>;
+        };
+        const parts = sent.contents[0].parts;
+        expect(parts[0].text).toBe('make this cat wear a hat');
+        expect(parts[1].inlineData?.mimeType).toBe('image/jpeg');
+        expect(parts[1].inlineData?.data).toBe(Buffer.from(imgBytes).toString('base64'));
+    });
+
+    it('extracts base64 directly from data URL image_url, no fetch for the image (test 10)', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const res = await POST(
+            geminiReq([
+                { type: 'text', text: 'edit this' },
+                { type: 'image_url', image_url: { url: 'data:image/png;base64,QUJD' } },
+            ]),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(200);
+        // 只有 1 个 fetch(generateContent),图没走网络
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+        const sent = JSON.parse(String((mockFetch.mock.calls[0][1] as RequestInit).body)) as {
+            contents: Array<{ parts: Array<{ inlineData?: { mimeType: string; data: string } }> }>;
+        };
+        expect(sent.contents[0].parts[1].inlineData).toEqual({ mimeType: 'image/png', data: 'QUJD' });
+    });
+
+    it('uploads generated image to R2 and returns markdown URL, not base64 (test 11)', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const res = await POST(geminiReq('a cat'), ctx('chat', 'completions'));
+        const data = (await res.json()) as { choices: Array<{ message: { content: string } }> };
+
+        expect(mockUploadImage).toHaveBeenCalledTimes(1);
+        const [key, body, contentType] = mockUploadImage.mock.calls[0];
+        expect(key).toMatch(/^gen\/[0-9a-f-]{36}\.png$/);
+        expect(Buffer.isBuffer(body)).toBe(true);
+        expect(contentType).toBe('image/png');
+        expect(data.choices[0].message.content).toBe(`![image](https://images.silkroadai.io/${key})`);
+        expect(data.choices[0].message.content).not.toContain('base64');
+        expect(res.headers.get('X-Silkroadai-R2-Fallback')).toBeNull();
+    });
+
+    it('returns 400 (not throw) when external image_url fetch fails (test 12)', async () => {
+        mockFetch.mockResolvedValueOnce(new Response('not found', { status: 404 }));
+        const res = await POST(
+            geminiReq([{ type: 'image_url', image_url: { url: 'https://example.com/gone.jpg' } }]),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(400);
+        const data = (await res.json()) as { error: { message: string; type: string } };
+        expect(data.error.type).toBe('invalid_request_error');
+        expect(data.error.message).toContain('404');
+        // 没打到 generateContent
+        expect(mockFetch.mock.calls.some(([u]) => String(u).includes(':generateContent'))).toBe(false);
+    });
+
+    it('rejects localhost / private-IP image_url with 400 (SSRF guard)', async () => {
+        for (const bad of [
+            'http://localhost/x.png',
+            'http://10.0.0.5/x.png',
+            'http://169.254.169.254/meta',
+            'file:///etc/passwd',
+        ]) {
+            const res = await POST(
+                geminiReq([{ type: 'image_url', image_url: { url: bad } }]),
+                ctx('chat', 'completions'),
+            );
+            expect(res.status, bad).toBe(400);
+        }
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('falls back to inline data URL + header when R2 upload throws', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        mockUploadImage.mockRejectedValueOnce(new Error('R2 env not configured'));
+        const res = await POST(geminiReq('a cat'), ctx('chat', 'completions'));
+        expect(res.status).toBe(200);
+        expect(res.headers.get('X-Silkroadai-R2-Fallback')).toBe('yes');
+        const data = (await res.json()) as { choices: Array<{ message: { content: string } }> };
+        expect(data.choices[0].message.content).toBe('![image](data:image/png;base64,QkFTRTY0)');
     });
 });
