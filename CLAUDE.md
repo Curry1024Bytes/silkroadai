@@ -160,6 +160,7 @@ silkroadai/
 ### W9(Portal Proxy Layer — 自有 /v1/\* 代理)
 
 - [x] D1 — portal `/v1/*` catch-all 代理上线 + Caddy 按路径分流 ✅(2026-06-05,PR #73 [#44 land WIP] merge `a9c92e8` + PR #74 [PR-A proxy] merge `71ef053`,详见 `docs/W9-D1-PORTAL-PROXY-DEPLOY.md`)— 新文件 `src/app/v1/[...path]/route.ts`:Branch 1 Gemini image(2.5-flash 1K / 3.1-flash 2K / 3-pro 4K)把 `/v1/chat/completions` 翻译成 new-api native `/v1beta/...:generateContent` 注入 `imageConfig.imageSize` 再转回 OpenAI 形(头 `X-Silkroadai-Translated`)→ **OpenAI SDK 客户端也能拿真 2K/4K**;Branch 2 `claude-*` 且 `max_tokens>4096` 钳到 4096(头 `X-Silkroadai-Clamped`);Branch 3 + 其余路径原样透传(SSE 不缓冲)。Caddy `ai.silkroadai.io` 加 `@portalv1 path /v1/*` → portal :3002,其余(含 `/v1beta` native Gemini)留 new-api :3000(备份 `/etc/caddy/Caddyfile.bak-w9d1`)。#73 顺带把长期红的 main CI 修绿。Gate 1/2/3 + smoke 5/5 全过(Gemini 2K→2048²、Claude clamp 头、GPT streaming、`/v1beta` 200、`/balance` 307)。**Phase 2(multimodal `image_url` 入参 + 图片 R2 上传)未开始,待 operator 绿灯。**
+- [x] D2 — proxy `image_url` 入参 + 自动 R2 上传返 URL ✅(2026-06-05,PR #75 merge `4a0bb85`,详见 `docs/W9-D2-PROXY-IMAGE-URL-R2.md`)— proxy Branch 1 加两件:(1) **入参** 支持 OpenAI multimodal `content` array 的 `image_url`(data URL 直解 / 外部 http(s) URL portal fetch→base64,SSRF 基础守门 = 协议白名单 + 私网 IP 字面量拒,15s 超时 + 20MB 上限,fetch 失败 → 400 invalid_request_error)翻译成 Gemini `inlineData`;(2) **出图** 改传 R2(`gen/{uuid}.{ext}`,复用 `src/lib/r2/client.ts` uploadImage),`content` 返公网 `https://images.silkroadai.io/gen/...` URL(不再内联 base64),R2 故障降级回 data URL + 头 `X-Silkroadai-R2-Fallback`。smoke 5/5:image_url(data URL + picsum 外部)→ R2 **2048²**、text-only → R2、坏 URL → 400、Claude clamp / GPT 透传无回归;R2 无降级。**已知**:`gen/` 不在 image-cleanup cron 管辖(operator 建议 R2 配 lifecycle rule);wikimedia 等对 VPS datacenter IP 回 400/403(proxy 正确 400,非 bug)。**Phase 3(自定义 OSS)待 operator 绿灯,未开始。**
 
 ---
 
@@ -472,5 +473,5 @@ APP_PORT=3002
 
 ---
 
-**版本**: 2.0
+**版本**: 2.1
 **最后更新**: 2026-06-05
