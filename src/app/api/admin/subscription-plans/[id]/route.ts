@@ -1,16 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { verifyAdminToken, unauthorizedResponse } from '@/lib/admin-auth';
+import { unauthorizedResponse } from '@/lib/admin-auth';
+import { resolveAdmin } from '@/lib/admin/auth';
+import { tenantScope } from '@/lib/admin/tenant-scope';
 import { prisma } from '@/lib/db';
 import { getGroup } from '@/lib/litellm/client';
 
 export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-    if (!(await verifyAdminToken(request))) return unauthorizedResponse(request);
+    const admin = await resolveAdmin(request, 'admin');
+    if (!admin) return unauthorizedResponse(request);
 
     try {
         const { id } = await params;
         const body = await request.json();
 
-        const existing = await prisma.subscriptionPlan.findUnique({ where: { id } });
+        const existing = await prisma.subscriptionPlan.findFirst({ where: { id, ...tenantScope(admin) } });
         if (!existing) {
             return NextResponse.json({ error: '订阅套餐不存在' }, { status: 404 });
         }
@@ -108,12 +111,13 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
 }
 
 export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-    if (!(await verifyAdminToken(request))) return unauthorizedResponse(request);
+    const admin = await resolveAdmin(request, 'admin');
+    if (!admin) return unauthorizedResponse(request);
 
     try {
         const { id } = await params;
 
-        const existing = await prisma.subscriptionPlan.findUnique({ where: { id } });
+        const existing = await prisma.subscriptionPlan.findFirst({ where: { id, ...tenantScope(admin) } });
         if (!existing) {
             return NextResponse.json({ error: '订阅套餐不存在' }, { status: 404 });
         }
@@ -121,6 +125,7 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
         // 检查是否有活跃订单引用此套餐
         const activeOrderCount = await prisma.order.count({
             where: {
+                ...tenantScope(admin),
                 planId: id,
                 status: { in: ['PENDING', 'PAID', 'RECHARGING'] },
             },

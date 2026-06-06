@@ -1,13 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { verifyAdminToken, unauthorizedResponse } from '@/lib/admin-auth';
+import { unauthorizedResponse } from '@/lib/admin-auth';
+import { resolveAdmin } from '@/lib/admin/auth';
+import { tenantScope, tenantForInsert } from '@/lib/admin/tenant-scope';
 import { prisma } from '@/lib/db';
 import { getGroup } from '@/lib/litellm/client';
 
 export async function GET(request: NextRequest) {
-    if (!(await verifyAdminToken(request))) return unauthorizedResponse(request);
+    const admin = await resolveAdmin(request, 'admin');
+    if (!admin) return unauthorizedResponse(request);
 
     try {
         const channels = await prisma.channel.findMany({
+            where: { ...tenantScope(admin) },
             orderBy: { sortOrder: 'asc' },
         });
 
@@ -39,7 +43,8 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-    if (!(await verifyAdminToken(request))) return unauthorizedResponse(request);
+    const admin = await resolveAdmin(request, 'admin');
+    if (!admin) return unauthorizedResponse(request);
 
     try {
         const body = await request.json();
@@ -84,6 +89,7 @@ export async function POST(request: NextRequest) {
                 features: features ?? null,
                 sortOrder: sort_order ?? 0,
                 enabled: enabled ?? true,
+                tenant_id: tenantForInsert(admin),
             },
         });
 

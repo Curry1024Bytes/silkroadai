@@ -8,6 +8,13 @@ import { BIZ_TZ_NAME, getBizDayStartUTC, toBizDateStr } from '@/lib/time/biz-day
 export async function GET(request: NextRequest) {
     if (!(await verifyAdminToken(request))) return unauthorizedResponse();
 
+    // P1 note: this analytics dashboard is intentionally NOT tenant-scoped yet.
+    // It mixes Prisma aggregates with two $queryRaw queries (leaderboard / daily
+    // series); scoping only the Prisma half would make the summary cards and the
+    // leaderboard disagree for a partner admin. Proper tenant-scoped analytics
+    // (including the raw SQL) lands in P6 when non-superadmin admins exist — in
+    // P1 the only granted role is superadmin (tenantScope() → {} = sees all), so
+    // behaviour is unchanged. `verifyAdminToken` is now cookie + role aware.
     const searchParams = request.nextUrl.searchParams;
     const days = Math.min(365, Math.max(1, Number(searchParams.get('days') || '30')));
 

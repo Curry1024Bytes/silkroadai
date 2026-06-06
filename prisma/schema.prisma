@@ -54,6 +54,10 @@ model Order {
   subscriptionDays    Int?              @map("subscription_days")
   providerInstanceId  String?           @map("provider_instance_id")
 
+  // ── 白标租户(P1)──
+  tenant_id String? @db.Uuid
+  tenant    Tenant? @relation(fields: [tenant_id], references: [id])
+
   auditLogs AuditLog[]
   recharges RechargeLog[]
 
@@ -64,6 +68,7 @@ model Order {
   @@index([paidAt])
   @@index([paymentType, paidAt])
   @@index([orderType])
+  @@index([tenant_id])
   @@map("orders")
 }
 
@@ -98,20 +103,26 @@ model AuditLog {
 
 // ── 渠道展示配置 ──
 model Channel {
-  id             String   @id @default(cuid())
-  groupId        Int?     @unique @map("group_id")
+  id             String  @id @default(cuid())
+  groupId        Int?    @unique @map("group_id")
   name           String
-  platform       String   @default("claude")
-  rateMultiplier Decimal  @map("rate_multiplier") @db.Decimal(10, 4)
-  description    String?  @db.Text
-  models         String?  @db.Text
-  features       String?  @db.Text
-  sortOrder      Int      @default(0) @map("sort_order")
-  enabled        Boolean  @default(true)
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt @map("updated_at")
+  platform       String  @default("claude")
+  rateMultiplier Decimal @map("rate_multiplier") @db.Decimal(10, 4)
+  description    String? @db.Text
+  models         String? @db.Text
+  features       String? @db.Text
+  sortOrder      Int     @default(0) @map("sort_order")
+  enabled        Boolean @default(true)
+
+  // ── 白标租户(P1)──
+  tenant_id String? @db.Uuid
+  tenant    Tenant? @relation(fields: [tenant_id], references: [id])
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
   @@index([sortOrder])
+  @@index([tenant_id])
   @@map("channels")
 }
 
@@ -129,12 +140,18 @@ model SubscriptionPlan {
   productName   String?  @map("product_name")
   forSale       Boolean  @default(false) @map("for_sale")
   sortOrder     Int      @default(0) @map("sort_order")
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  // ── 白标租户(P1)──
+  tenant_id String? @db.Uuid
+  tenant    Tenant? @relation(fields: [tenant_id], references: [id])
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
   orders Order[]
 
   @@index([forSale, sortOrder])
+  @@index([tenant_id])
   @@map("subscription_plans")
 }
 
@@ -152,20 +169,26 @@ model SystemConfig {
 
 // ── 支付服务商实例（多实例轮询） ──
 model PaymentProviderInstance {
-  id             String   @id @default(cuid())
-  providerKey    String   @map("provider_key") // easypay, alipay, wxpay, stripe
+  id             String  @id @default(cuid())
+  providerKey    String  @map("provider_key") // easypay, alipay, wxpay, stripe
   name           String // display name like "易支付A"
-  config         String   @db.Text // encrypted JSON credentials
-  supportedTypes String   @default("") @map("supported_types") // comma-separated: alipay,wxpay,stripe
-  enabled        Boolean  @default(true)
-  sortOrder      Int      @default(0) @map("sort_order")
-  limits         String?  @db.Text // JSON per-channel limits: { "alipay": { "dailyLimit": 10000, "singleLimit": 1000 } }
-  refundEnabled  Boolean  @default(false) @map("refund_enabled")
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt @map("updated_at")
+  config         String  @db.Text // encrypted JSON credentials
+  supportedTypes String  @default("") @map("supported_types") // comma-separated: alipay,wxpay,stripe
+  enabled        Boolean @default(true)
+  sortOrder      Int     @default(0) @map("sort_order")
+  limits         String? @db.Text // JSON per-channel limits: { "alipay": { "dailyLimit": 10000, "singleLimit": 1000 } }
+  refundEnabled  Boolean @default(false) @map("refund_enabled")
+
+  // ── 白标租户(P1)──
+  tenant_id String? @db.Uuid
+  tenant    Tenant? @relation(fields: [tenant_id], references: [id])
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
   @@index([providerKey])
   @@index([providerKey, enabled])
+  @@index([tenant_id])
   @@map("payment_provider_instances")
 }
 
@@ -174,6 +197,39 @@ model PaymentProviderInstance {
 // ============================================
 // 后端从 LiteLLM 切到 new-api。User / Key / RechargeLog / Order 关系
 // 全部指向 new-api 的 user/token 模型。
+
+// ── 白标租户(P1 地基,P6 完整化)──
+// null tenant_id 视为平台主体;所有现存数据在 add_user_role_and_tenant migration
+// 内回填到平台主体那一行(固定 UUID,见 src/lib/admin/tenant-scope.ts
+// PLATFORM_TENANT_ID)。本期(P1)只打地基:Tenant 表 + 核心表 tenant_id 列 +
+// role-based admin。partner 自有客户 / 定价目录 / 渠道分组 / 品牌等完整白标留 P6。
+model Tenant {
+  id                  String   @id @default(uuid()) @db.Uuid
+  slug                String   @unique // 'silkroadai' = 平台主体
+  brand_name          String
+  primary_domain      String?
+  status              String   @default("active") // active / suspended
+  prepaid_balance_cny Decimal  @default(0) @db.Decimal(20, 4) // 白标预付池(P6 用,P1 先建列)
+  created_at          DateTime @default(now())
+  updated_at          DateTime @updatedAt
+
+  users                      User[]
+  orders                     Order[]
+  channels                   Channel[]
+  subscription_plans         SubscriptionPlan[]
+  payment_provider_instances PaymentProviderInstance[]
+
+  @@map("tenants")
+}
+
+// admin 角色 — 取代单 ADMIN_TOKEN(后者保留为 break-glass = superadmin 等价)。
+// 角色序:customer < staff < admin < superadmin(见 src/lib/admin/auth.ts roleAtLeast)。
+enum UserRole {
+  customer
+  staff // 白标 partner 运营 / 平台客服,受 tenant scope 限制
+  admin // 平台管理员
+  superadmin // 平台超管,全局全权(= 现 ADMIN_TOKEN 等价)
+}
 
 // ── Portal 自有用户表 ──
 model User {
@@ -194,13 +250,23 @@ model User {
   locale            String     @default("zh-CN") @db.VarChar(10)
   status            UserStatus @default(active)
 
+  // ── admin 角色 + 白标租户(P1)──
+  // role: 取代单 ADMIN_TOKEN;customer < staff < admin < superadmin。日常 admin
+  //   登录走 role >= staff 的 session(见 src/lib/admin/auth.ts)。授予 superadmin
+  //   走独立脚本 scripts/grant-admin.ts(不在 migration 里硬编码邮箱)。
+  // tenant_id: null 视为平台主体;migration 把所有现存 user 回填到平台主体那行。
+  //   所有 admin 数据查询经 tenantScope() 施加租户隔离(P6 白标靠它)。
+  role      UserRole @default(customer)
+  tenant_id String?  @db.Uuid
+  tenant    Tenant?  @relation(fields: [tenant_id], references: [id])
+
   // ── new-api 后端关联 ──
   // newapi_user.id 是 int(不是 UUID)
-  newapi_user_id          Int?      @unique
+  newapi_user_id            Int?      @unique
   // new-api 那边的 username,日志查询接口需要 username 而不是 id
-  newapi_username         String?   @unique
+  newapi_username           String?   @unique
   // 32-字符 secret;portal 用它 act-as 该客户调 /api/token/* 等 per-user endpoint
-  newapi_access_token     String?
+  newapi_access_token       String?
   // ── PR-T1 portal-managed system token(W7 D5 Phase 0)──
   // portal 内部服务(image gen / chat UI / 自部署模型 / 等)调 new-api 的
   // /v1/* 路径时需要客户的 sk-key 形式认证 — 但客户管理的 NewApiToken 行可
@@ -216,9 +282,9 @@ model User {
   newapi_system_token_id    String?
   newapi_system_token_value String?
   // 余额缓存(raw quota,不是 USD/CNY);实时数据从 new-api 拉
-  newapi_quota_cache      BigInt?
-  newapi_used_quota_cache BigInt?
-  newapi_cached_at        DateTime?
+  newapi_quota_cache        BigInt?
+  newapi_used_quota_cache   BigInt?
+  newapi_cached_at          DateTime?
 
   // 关系
   keys                      NewApiToken[]
@@ -308,6 +374,9 @@ model User {
   @@index([inviter_reseller_id, created_at(sort: Desc)])
   // PR-U1: 同 IP 24h 内注册次数检查 — 防控 #2 IP throttle。
   @@index([signup_ip, created_at(sort: Desc)])
+  // P1: admin role 筛选 + 租户隔离查询。
+  @@index([role])
+  @@index([tenant_id])
   @@map("users")
 }
 
@@ -581,9 +650,9 @@ model Reseller {
   // tier 仅缓存值,真实档位由 cumulative_gmv + TIER_THRESHOLDS 计算。
   // 写入路径:commission hook 内每次写完 commission 后 re-compute,跨阈值
   // 时同事务更新此字段 + 写 AnalyticsEvent(reseller_tier_upgraded)。
-  tier            ResellerTier @default(bronze)
-  cumulative_gmv  Decimal      @default(0) @db.Decimal(14, 4) // CNY total GMV; 14,4 cover billion-CNY scale
-  status          ResellerStatus @default(active)
+  tier           ResellerTier   @default(bronze)
+  cumulative_gmv Decimal        @default(0) @db.Decimal(14, 4) // CNY total GMV; 14,4 cover billion-CNY scale
+  status         ResellerStatus @default(active)
 
   // 提现 / 结算信息 — 代理 join 时可空,后期可在 /reseller dashboard 补填。
   // 当代理点 [申请提现] 时校验三个字段都非空。
@@ -630,8 +699,8 @@ model ResellerInviteCode {
 }
 
 model ResellerCommission {
-  id          String @id @default(uuid()) @db.Uuid
-  reseller_id String @db.Uuid
+  id          String   @id @default(uuid()) @db.Uuid
+  reseller_id String   @db.Uuid
   reseller    Reseller @relation(fields: [reseller_id], references: [id], onDelete: Restrict)
 
   // 客户(消费方)— 若 user 被删除,commission 行保留以追溯历史 GMV,
@@ -641,20 +710,20 @@ model ResellerCommission {
 
   // 1:1 对锚点 RechargeLog(防双发 commission)— unique 索引保证。
   // RestrictOnDelete:RechargeLog 不会被删除(append-only),但保险起见 Restrict。
-  recharge_log_id String       @unique @db.Uuid
-  recharge_log    RechargeLog  @relation(fields: [recharge_log_id], references: [id], onDelete: Restrict)
+  recharge_log_id String      @unique @db.Uuid
+  recharge_log    RechargeLog @relation(fields: [recharge_log_id], references: [id], onDelete: Restrict)
 
   attributed_gmv    Decimal @db.Decimal(12, 4) // 与 recharge_log.amount 相等(CNY),快照存便于查询
-  commission_rate   Decimal @db.Decimal(5, 4)  // 0.1000 / 0.1500 / 0.2000;rate 在 INSERT 时快照
+  commission_rate   Decimal @db.Decimal(5, 4) // 0.1000 / 0.1500 / 0.2000;rate 在 INSERT 时快照
   commission_amount Decimal @db.Decimal(12, 4) // attributed_gmv × commission_rate(CNY)
 
-  status                   CommissionStatus @default(pending)
-  admin_review_required    Boolean          @default(false) // commission_amount > ¥100,000 时为 true,cron 跳过
+  status                CommissionStatus @default(pending)
+  admin_review_required Boolean          @default(false) // commission_amount > ¥100,000 时为 true,cron 跳过
 
   // 14 天 hold 窗口截止时刻;cron 每小时扫,hold_until < now 且 status=pending
   // AND admin_review_required=false → flip 到 confirmed。
-  hold_until  DateTime
-  settled_at  DateTime? // settlement.status=paid 时由 settlement endpoint 一并写
+  hold_until DateTime
+  settled_at DateTime? // settlement.status=paid 时由 settlement endpoint 一并写
 
   created_at DateTime @default(now())
 

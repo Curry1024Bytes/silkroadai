@@ -199,7 +199,6 @@ const emptyForm: ChannelFormData = {
 
 function ChannelsContent() {
     const searchParams = useSearchParams();
-    const token = searchParams.get('token') || '';
     const theme = searchParams.get('theme') === 'dark' ? 'dark' : 'light';
     const uiMode = searchParams.get('ui_mode') || 'standalone';
     const locale = resolveLocale(searchParams.get('lang'));
@@ -227,10 +226,9 @@ function ChannelsContent() {
     // ── Fetch channels ──
 
     const fetchChannels = useCallback(async () => {
-        if (!token) return;
         setLoading(true);
         try {
-            const res = await fetch(`/api/admin/channels?token=${encodeURIComponent(token)}`);
+            const res = await fetch(`/api/admin/channels`);
             if (!res.ok) {
                 if (res.status === 401) {
                     setError(t.invalidToken);
@@ -245,28 +243,11 @@ function ChannelsContent() {
         } finally {
             setLoading(false);
         }
-    }, [token]);
+    }, []);
 
     useEffect(() => {
         fetchChannels();
     }, [fetchChannels]);
-
-    // ── Missing token ──
-
-    if (!token) {
-        return (
-            <div
-                className={`flex min-h-screen items-center justify-center p-4 ${isDark ? 'bg-slate-950' : 'bg-slate-50'}`}
-            >
-                <div className="text-center text-red-500">
-                    <p className="text-lg font-medium">{t.missingToken}</p>
-                    <p className={`mt-2 text-sm ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
-                        {t.missingTokenHint}
-                    </p>
-                </div>
-            </div>
-        );
-    }
 
     // ── Edit modal handlers ──
 
@@ -326,7 +307,6 @@ function ChannelsContent() {
                 method,
                 headers: {
                     'Content-Type': 'application/json',
-                    Authorization: `Bearer ${token}`,
                 },
                 body: JSON.stringify(body),
             });
@@ -353,7 +333,6 @@ function ChannelsContent() {
         try {
             const res = await fetch(`/api/admin/channels/${channel.id}`, {
                 method: 'DELETE',
-                headers: { Authorization: `Bearer ${token}` },
             });
             if (!res.ok) {
                 const data = await res.json().catch(() => ({}));
@@ -374,7 +353,6 @@ function ChannelsContent() {
                 method: 'PUT',
                 headers: {
                     'Content-Type': 'application/json',
-                    Authorization: `Bearer ${token}`,
                 },
                 body: JSON.stringify({ enabled: !channel.enabled }),
             });
@@ -393,7 +371,7 @@ function ChannelsContent() {
         setSyncLoading(true);
         setSyncSelected(new Set());
         try {
-            const res = await fetch(`/api/admin/sub2api/groups?token=${encodeURIComponent(token)}`);
+            const res = await fetch(`/api/admin/sub2api/groups`);
             if (!res.ok) throw new Error();
             const data = await res.json();
             setSyncGroups(data.groups ?? []);
@@ -437,7 +415,6 @@ function ChannelsContent() {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
-                        Authorization: `Bearer ${token}`,
                     },
                     body: JSON.stringify({
                         group_id: group.id,

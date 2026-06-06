@@ -236,7 +236,6 @@ interface InstanceFormData {
 
 function PaymentConfigContent() {
     const searchParams = useSearchParams();
-    const token = searchParams.get('token') || '';
     const theme = searchParams.get('theme') === 'dark' ? 'dark' : 'light';
     const uiMode = searchParams.get('ui_mode') || 'standalone';
     const locale = resolveLocale(searchParams.get('lang'));
@@ -301,9 +300,8 @@ function PaymentConfigContent() {
     // ── Data fetching ──
 
     const fetchConfig = useCallback(async () => {
-        if (!token) return;
         try {
-            const res = await fetch(`/api/admin/config?token=${encodeURIComponent(token)}`);
+            const res = await fetch(`/api/admin/config`);
             if (!res.ok) return;
             const data = await res.json();
             const configs: { key: string; value: string }[] = data.configs ?? [];
@@ -334,12 +332,11 @@ function PaymentConfigContent() {
         } catch {
             /* ignore */
         }
-    }, [token]);
+    }, []);
 
     const fetchInstances = useCallback(async () => {
-        if (!token) return;
         try {
-            const res = await fetch(`/api/admin/provider-instances?token=${encodeURIComponent(token)}`);
+            const res = await fetch(`/api/admin/provider-instances`);
             if (res.ok) {
                 const data = await res.json();
                 setInstances(data.instances ?? []);
@@ -347,7 +344,7 @@ function PaymentConfigContent() {
         } catch {
             /* ignore */
         }
-    }, [token]);
+    }, []);
 
     useEffect(() => {
         fetchConfig();
@@ -361,7 +358,7 @@ function PaymentConfigContent() {
         setRcOverrideEnv(true);
         setLoadingEnvDefaults(true);
         try {
-            const res = await fetch(`/api/admin/config/env-defaults?token=${encodeURIComponent(token)}`);
+            const res = await fetch(`/api/admin/config/env-defaults`);
             if (res.ok) {
                 const data = await res.json();
                 const d = data.defaults;
@@ -388,7 +385,7 @@ function PaymentConfigContent() {
                         try {
                             const instRes = await fetch('/api/admin/provider-instances', {
                                 method: 'POST',
-                                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                                headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({
                                     providerKey,
                                     name,
@@ -450,7 +447,7 @@ function PaymentConfigContent() {
                 : '/api/admin/provider-instances';
             const res = await fetch(url, {
                 method: editingInstance ? 'PUT' : 'POST',
-                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     providerKey: instanceForm.providerKey,
                     name: instanceForm.name.trim(),
@@ -482,7 +479,6 @@ function PaymentConfigContent() {
         try {
             const res = await fetch(`/api/admin/provider-instances/${id}`, {
                 method: 'DELETE',
-                headers: { Authorization: `Bearer ${token}` },
             });
             if (!res.ok) {
                 const data = await res.json().catch(() => ({}));
@@ -532,7 +528,7 @@ function PaymentConfigContent() {
         try {
             const res = await fetch(`/api/admin/provider-instances/${inst.id}`, {
                 method: 'PUT',
-                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ enabled: !inst.enabled }),
             });
             if (!res.ok) {
@@ -550,7 +546,7 @@ function PaymentConfigContent() {
         try {
             const res = await fetch(`/api/admin/provider-instances/${inst.id}`, {
                 method: 'PUT',
-                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ refundEnabled: !inst.refundEnabled }),
             });
             if (!res.ok) {
@@ -574,7 +570,7 @@ function PaymentConfigContent() {
         try {
             const res = await fetch('/api/admin/config', {
                 method: 'PUT',
-                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     configs: [
                         { key: 'PRODUCT_NAME_PREFIX', value: rcPrefix.trim(), group: 'payment', label: '商品名前缀' },
@@ -689,22 +685,6 @@ function PaymentConfigContent() {
             setRcSaving(false);
         }
     };
-
-    // ── Missing token ──
-    if (!token) {
-        return (
-            <div
-                className={`flex min-h-screen items-center justify-center p-4 ${isDark ? 'bg-slate-950' : 'bg-slate-50'}`}
-            >
-                <div className="text-center text-red-500">
-                    <p className="text-lg font-medium">{t.missingToken}</p>
-                    <p className={`mt-2 text-sm ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
-                        {t.missingTokenHint}
-                    </p>
-                </div>
-            </div>
-        );
-    }
 
     // ── Shared classes ──
     const inputCls = [

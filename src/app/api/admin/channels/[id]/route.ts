@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { verifyAdminToken, unauthorizedResponse } from '@/lib/admin-auth';
+import { unauthorizedResponse } from '@/lib/admin-auth';
+import { resolveAdmin } from '@/lib/admin/auth';
+import { tenantScope } from '@/lib/admin/tenant-scope';
 import { prisma } from '@/lib/db';
 
 const updateChannelSchema = z.object({
@@ -22,7 +24,8 @@ const updateChannelSchema = z.object({
 });
 
 export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-    if (!(await verifyAdminToken(request))) return unauthorizedResponse(request);
+    const admin = await resolveAdmin(request, 'admin');
+    if (!admin) return unauthorizedResponse(request);
 
     try {
         const { id } = await params;
@@ -33,7 +36,7 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
         }
         const body = parsed.data;
 
-        const existing = await prisma.channel.findUnique({ where: { id } });
+        const existing = await prisma.channel.findFirst({ where: { id, ...tenantScope(admin) } });
         if (!existing) {
             return NextResponse.json({ error: '渠道不存在' }, { status: 404 });
         }
@@ -78,12 +81,13 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
 }
 
 export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-    if (!(await verifyAdminToken(request))) return unauthorizedResponse(request);
+    const admin = await resolveAdmin(request, 'admin');
+    if (!admin) return unauthorizedResponse(request);
 
     try {
         const { id } = await params;
 
-        const existing = await prisma.channel.findUnique({ where: { id } });
+        const existing = await prisma.channel.findFirst({ where: { id, ...tenantScope(admin) } });
         if (!existing) {
             return NextResponse.json({ error: '渠道不存在' }, { status: 404 });
         }

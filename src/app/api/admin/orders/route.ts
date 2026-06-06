@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
-import { verifyAdminToken, unauthorizedResponse } from '@/lib/admin-auth';
+import { unauthorizedResponse } from '@/lib/admin-auth';
+import { resolveAdmin } from '@/lib/admin/auth';
+import { tenantScope } from '@/lib/admin/tenant-scope';
 import { Prisma, OrderStatus } from '@prisma/client';
 
 export async function GET(request: NextRequest) {
-    if (!(await verifyAdminToken(request))) return unauthorizedResponse();
+    const admin = await resolveAdmin(request, 'admin');
+    if (!admin) return unauthorizedResponse();
 
     const searchParams = request.nextUrl.searchParams;
     const page = Math.max(1, Number(searchParams.get('page') || '1'));
@@ -15,7 +18,8 @@ export async function GET(request: NextRequest) {
     const dateFrom = searchParams.get('date_from');
     const dateTo = searchParams.get('date_to');
 
-    const where: Prisma.OrderWhereInput = {};
+    // P1: 租户隔离 —— superadmin 时 tenantScope 返回 {}(看全部),行为不变。
+    const where: Prisma.OrderWhereInput = { ...tenantScope(admin) };
     if (status && status in OrderStatus) where.status = status as OrderStatus;
     if (orderType && (orderType === 'balance' || orderType === 'subscription')) where.orderType = orderType;
 

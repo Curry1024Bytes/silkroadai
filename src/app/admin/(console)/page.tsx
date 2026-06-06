@@ -34,7 +34,6 @@ const DAYS_OPTIONS = [7, 30, 90] as const;
 
 function DashboardContent() {
     const searchParams = useSearchParams();
-    const token = searchParams.get('token');
     const theme = searchParams.get('theme') === 'dark' ? 'dark' : 'light';
     const uiMode = searchParams.get('ui_mode') || 'standalone';
     const locale = resolveLocale(searchParams.get('lang'));
@@ -74,11 +73,10 @@ function DashboardContent() {
     const [error, setError] = useState('');
 
     const fetchData = useCallback(async () => {
-        if (!token) return;
         setLoading(true);
         setError('');
         try {
-            const res = await fetch(`/api/admin/dashboard?token=${encodeURIComponent(token)}&days=${days}`);
+            const res = await fetch(`/api/admin/dashboard?days=${days}`);
             if (!res.ok) {
                 if (res.status === 401) {
                     setError(text.invalidToken);
@@ -92,26 +90,11 @@ function DashboardContent() {
         } finally {
             setLoading(false);
         }
-    }, [token, days]);
+    }, [days]);
 
     useEffect(() => {
         fetchData();
     }, [fetchData]);
-
-    if (!token) {
-        return (
-            <div
-                className={`flex min-h-screen items-center justify-center p-4 ${isDark ? 'bg-slate-950' : 'bg-slate-50'}`}
-            >
-                <div className="text-center text-red-500">
-                    <p className="text-lg font-medium">{text.missingToken}</p>
-                    <p className={`mt-2 text-sm ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
-                        {text.missingTokenHint}
-                    </p>
-                </div>
-            </div>
-        );
-    }
 
     const btnBase = [
         'inline-flex items-center rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors',

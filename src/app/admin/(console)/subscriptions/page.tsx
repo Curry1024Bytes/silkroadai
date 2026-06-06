@@ -314,7 +314,6 @@ function UsageBar({
 
 function SubscriptionsContent() {
     const searchParams = useSearchParams();
-    const token = searchParams.get('token') || '';
     const theme = searchParams.get('theme') === 'dark' ? 'dark' : 'light';
     const locale = resolveLocale(searchParams.get('lang'));
     const isDark = theme === 'dark';
@@ -363,10 +362,9 @@ function SubscriptionsContent() {
 
     /* --- fetch plans --- */
     const fetchPlans = useCallback(async () => {
-        if (!token) return;
         setPlansLoading(true);
         try {
-            const res = await fetch(`/api/admin/subscription-plans?token=${encodeURIComponent(token)}`);
+            const res = await fetch(`/api/admin/subscription-plans`);
             if (!res.ok) {
                 if (res.status === 401) {
                     setError(t.invalidToken);
@@ -381,13 +379,12 @@ function SubscriptionsContent() {
         } finally {
             setPlansLoading(false);
         }
-    }, [token]);
+    }, []);
 
     /* --- fetch groups --- */
     const fetchGroups = useCallback(async () => {
-        if (!token) return;
         try {
-            const res = await fetch(`/api/admin/sub2api/groups?token=${encodeURIComponent(token)}`);
+            const res = await fetch(`/api/admin/sub2api/groups`);
             if (res.ok) {
                 const data = await res.json();
                 setGroups(Array.isArray(data) ? data : (data.groups ?? []));
@@ -395,7 +392,7 @@ function SubscriptionsContent() {
         } catch {
             /* ignore */
         }
-    }, [token]);
+    }, []);
 
     useEffect(() => {
         fetchPlans();
@@ -477,7 +474,6 @@ function SubscriptionsContent() {
                 method,
                 headers: {
                     'Content-Type': 'application/json',
-                    Authorization: `Bearer ${token}`,
                 },
                 body: JSON.stringify(body),
             });
@@ -502,7 +498,6 @@ function SubscriptionsContent() {
         try {
             const res = await fetch(`/api/admin/subscription-plans/${plan.id}`, {
                 method: 'DELETE',
-                headers: { Authorization: `Bearer ${token}` },
             });
             if (!res.ok) {
                 const data = await res.json().catch(() => ({}));
@@ -521,7 +516,6 @@ function SubscriptionsContent() {
                 method: 'PUT',
                 headers: {
                     'Content-Type': 'application/json',
-                    Authorization: `Bearer ${token}`,
                 },
                 body: JSON.stringify({ for_sale: !plan.enabled }),
             });
@@ -545,9 +539,7 @@ function SubscriptionsContent() {
         }
         const timer = setTimeout(async () => {
             try {
-                const res = await fetch(
-                    `/api/admin/sub2api/search-users?token=${encodeURIComponent(token)}&keyword=${encodeURIComponent(value.trim())}`,
-                );
+                const res = await fetch(`/api/admin/sub2api/search-users?keyword=${encodeURIComponent(value.trim())}`);
                 if (res.ok) {
                     const data = await res.json();
                     setSearchResults(data.users ?? []);
@@ -569,12 +561,11 @@ function SubscriptionsContent() {
 
     /* --- fetch user subs --- */
     const fetchSubs = async () => {
-        if (!token) return;
         setSubsLoading(true);
         setSubsSearched(true);
         setSubsUser(null);
         try {
-            const qs = new URLSearchParams({ token });
+            const qs = new URLSearchParams();
             if (subsUserId.trim()) qs.set('user_id', subsUserId.trim());
             const res = await fetch(`/api/admin/subscriptions?${qs}`);
             if (!res.ok) {
@@ -593,22 +584,6 @@ function SubscriptionsContent() {
             setSubsLoading(false);
         }
     };
-
-    /* --- no token guard --- */
-    if (!token) {
-        return (
-            <div
-                className={`flex min-h-screen items-center justify-center p-4 ${isDark ? 'bg-slate-950' : 'bg-slate-50'}`}
-            >
-                <div className="text-center text-red-500">
-                    <p className="text-lg font-medium">{t.missingToken}</p>
-                    <p className={`mt-2 text-sm ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
-                        {t.missingTokenHint}
-                    </p>
-                </div>
-            </div>
-        );
-    }
 
     /* --- nav params --- */
     const btnBase = [

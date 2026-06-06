@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { verifyAdminToken, unauthorizedResponse } from '@/lib/admin-auth';
+import { unauthorizedResponse } from '@/lib/admin-auth';
+import { resolveAdmin } from '@/lib/admin/auth';
+import { tenantScope, tenantForInsert } from '@/lib/admin/tenant-scope';
 import { prisma } from '@/lib/db';
 import { encrypt, decrypt } from '@/lib/crypto';
 
@@ -31,13 +33,14 @@ function decryptAndMaskConfig(encryptedConfig: string): Record<string, string> {
 
 // GET: List all instances (optionally filter by providerKey)
 export async function GET(request: NextRequest) {
-    if (!(await verifyAdminToken(request))) return unauthorizedResponse(request);
+    const admin = await resolveAdmin(request, 'admin');
+    if (!admin) return unauthorizedResponse(request);
 
     try {
         const providerKey = request.nextUrl.searchParams.get('providerKey');
 
         const instances = await prisma.paymentProviderInstance.findMany({
-            where: providerKey ? { providerKey } : undefined,
+            where: { ...tenantScope(admin), ...(providerKey ? { providerKey } : {}) },
             orderBy: { sortOrder: 'asc' },
         });
 
@@ -56,7 +59,8 @@ export async function GET(request: NextRequest) {
 
 // POST: Create a new instance
 export async function POST(request: NextRequest) {
-    if (!(await verifyAdminToken(request))) return unauthorizedResponse(request);
+    const admin = await resolveAdmin(request, 'admin');
+    if (!admin) return unauthorizedResponse(request);
 
     try {
         const body = await request.json();
@@ -98,6 +102,7 @@ export async function POST(request: NextRequest) {
                 sortOrder: sortOrder ?? 0,
                 limits: limits ? JSON.stringify(limits) : null,
                 refundEnabled: refundEnabled === true,
+                tenant_id: tenantForInsert(admin),
             },
         });
 

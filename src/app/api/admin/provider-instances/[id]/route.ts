@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { verifyAdminToken, unauthorizedResponse } from '@/lib/admin-auth';
+import { unauthorizedResponse } from '@/lib/admin-auth';
+import { resolveAdmin } from '@/lib/admin/auth';
+import { tenantScope } from '@/lib/admin/tenant-scope';
 import { prisma } from '@/lib/db';
 import { encrypt, decrypt } from '@/lib/crypto';
 
@@ -72,11 +74,12 @@ async function checkCredentialChangeAllowed(
 
 // GET
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-    if (!(await verifyAdminToken(request))) return unauthorizedResponse(request);
+    const admin = await resolveAdmin(request, 'admin');
+    if (!admin) return unauthorizedResponse(request);
 
     try {
         const { id } = await params;
-        const instance = await prisma.paymentProviderInstance.findUnique({ where: { id } });
+        const instance = await prisma.paymentProviderInstance.findFirst({ where: { id, ...tenantScope(admin) } });
         if (!instance) return NextResponse.json({ error: '支付实例不存在' }, { status: 404 });
 
         return NextResponse.json({
@@ -92,14 +95,15 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
 // PUT
 export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-    if (!(await verifyAdminToken(request))) return unauthorizedResponse(request);
+    const admin = await resolveAdmin(request, 'admin');
+    if (!admin) return unauthorizedResponse(request);
 
     try {
         const { id } = await params;
         const body = await request.json();
         const { providerKey, name, config, enabled, sortOrder, supportedTypes, limits, refundEnabled } = body;
 
-        const existing = await prisma.paymentProviderInstance.findUnique({ where: { id } });
+        const existing = await prisma.paymentProviderInstance.findFirst({ where: { id, ...tenantScope(admin) } });
         if (!existing) return NextResponse.json({ error: '支付实例不存在' }, { status: 404 });
 
         const data: Record<string, unknown> = {};
@@ -168,11 +172,12 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
 
 // DELETE
 export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-    if (!(await verifyAdminToken(request))) return unauthorizedResponse(request);
+    const admin = await resolveAdmin(request, 'admin');
+    if (!admin) return unauthorizedResponse(request);
 
     try {
         const { id } = await params;
-        const existing = await prisma.paymentProviderInstance.findUnique({ where: { id } });
+        const existing = await prisma.paymentProviderInstance.findFirst({ where: { id, ...tenantScope(admin) } });
         if (!existing) return NextResponse.json({ error: '支付实例不存在' }, { status: 404 });
 
         const pendingCount = await getPendingOrderCount(id);

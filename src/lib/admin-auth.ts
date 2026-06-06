@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
+import type { UserRole } from '@prisma/client';
 import { getEnv } from '@/lib/config';
 import { resolveLocale } from '@/lib/locale';
+import { getCurrentUser } from '@/lib/auth/session';
+import { roleAtLeast } from './admin/roles';
 
 export class AdminUnauthorizedError extends Error {
     constructor(message = 'Unauthorized') {
@@ -33,17 +36,38 @@ function extractToken(request: NextRequest): string | null {
     return null;
 }
 
-export async function isAdmin(request: NextRequest): Promise<boolean> {
+/**
+ * Break-glass check: does the request carry a valid ADMIN_TOKEN
+ * (X-Admin-Token / Bearer / ?token=)? This is the superadmin-equivalent
+ * backdoor kept for emergencies / scripts. No DB hit; does NOT look at the
+ * session cookie. Used by {@link isAdmin} and by `resolveAdmin`
+ * (src/lib/admin/auth.ts) as the fallback after a session-role check.
+ */
+export function isBreakGlassToken(request: NextRequest): boolean {
     const token = extractToken(request);
     if (!token) return false;
+    return timingSafeStringEqual(token, getEnv().ADMIN_TOKEN);
+}
 
-    if (timingSafeStringEqual(token, getEnv().ADMIN_TOKEN)) return true;
+/** Session cookie belongs to a user with role >= minRole? One DB read via
+ *  getCurrentUser (React.cache()'d per request). */
+async function hasSessionRole(request: NextRequest, minRole: UserRole): Promise<boolean> {
+    const user = await getCurrentUser(request);
+    return !!user && roleAtLeast(user.role, minRole);
+}
 
-    // TODO(W2): also accept session cookie whose user has user.role === 'admin'.
-    // Requires `role` column on User model, which is intentionally deferred
-    // until R1/R2/R3 product decisions land in W2.
-
-    return false;
+/**
+ * Legacy admin gate — now cookie-aware (fulfils the old TODO). Passes if EITHER
+ * a break-glass ADMIN_TOKEN is present OR the session user has role >= admin.
+ *
+ * Used by the admin API routes that don't need the richer AdminPrincipal; the
+ * routes that wire tenantScope use `resolveAdmin` / `requireRole` from
+ * `@/lib/admin/auth`. Guard order per design §3.1: break-glass token first
+ * (cheap, no DB), then the session role.
+ */
+export async function isAdmin(request: NextRequest): Promise<boolean> {
+    if (isBreakGlassToken(request)) return true;
+    return hasSessionRole(request, 'admin');
 }
 
 export async function requireAdmin(request: NextRequest): Promise<void> {
