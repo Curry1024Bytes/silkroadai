@@ -52,8 +52,6 @@ const PLATFORMS = ['claude', 'anthropic', 'openai', 'gemini', 'codex', 'sora', '
 function getTexts(locale: Locale) {
     return locale === 'en'
         ? {
-              missingToken: 'Missing admin token',
-              missingTokenHint: 'Please access the admin page from the Sub2API platform.',
               invalidToken: 'Invalid admin token',
               title: 'Channel Management',
               subtitle: 'Configure and manage subscription channels',
@@ -105,8 +103,6 @@ function getTexts(locale: Locale) {
               configSaveFailed: 'Failed to save configuration',
           }
         : {
-              missingToken: '缺少管理员凭证',
-              missingTokenHint: '请从 Sub2API 平台正确访问管理页面',
               invalidToken: '管理员凭证无效',
               title: '渠道管理',
               subtitle: '配置和管理订阅渠道',
