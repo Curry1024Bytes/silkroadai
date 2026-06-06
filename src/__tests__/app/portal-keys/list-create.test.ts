@@ -36,6 +36,12 @@ vi.mock('@/lib/newapi/client', () => ({
     deleteToken: (...args: unknown[]) => mockNewapiDeleteToken(...args),
 }));
 
+// P3: POST resolves 档次 → new-api group via listEnabledChannelGroups.
+const mockListEnabledChannelGroups = vi.fn();
+vi.mock('@/lib/channel-group', () => ({
+    listEnabledChannelGroups: (...args: unknown[]) => mockListEnabledChannelGroups(...args),
+}));
+
 import { GET, POST, MAX_TOKENS_PER_USER } from '@/app/api/portal/keys/route';
 
 const PORTAL_USER_ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
@@ -60,6 +66,11 @@ function makeReq(opts: { method: string; body?: unknown } = { method: 'GET' }): 
 
 beforeEach(() => {
     vi.clearAllMocks();
+    // P3 default: tenant has pool (default) + official tiers.
+    mockListEnabledChannelGroups.mockResolvedValue([
+        { key: 'pool', newapi_group: 'default', is_default: true },
+        { key: 'official', newapi_group: 'official', is_default: false },
+    ]);
 });
 
 describe('GET /api/portal/keys', () => {
@@ -217,6 +228,7 @@ describe('POST /api/portal/keys', () => {
         mockTokenCreate.mockResolvedValue({
             id: 'tok-new',
             key_alias: 'prod',
+            tier: 'pool',
             created_at: new Date('2026-05-04T10:00:00Z'),
         });
 
@@ -249,6 +261,7 @@ describe('POST /api/portal/keys', () => {
         expect(body).toEqual({
             id: 'tok-new',
             key_alias: 'prod',
+            tier: 'pool',
             key: 'sk-NEWLY-MINTED-FULL-VALUE-xxxx',
             created_at: '2026-05-04T10:00:00.000Z',
         });

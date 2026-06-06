@@ -26,6 +26,16 @@ export interface KeyRow {
     /** ISO timestamp of the most recent log entry attributable to this
      *  key, or null if it has never been used. */
     last_used_at: string | null;
+    /** P3: portal 档次 key('pool' | 'official' | …). */
+    tier: string;
+}
+
+/** P3: a selectable tier (an enabled ChannelGroup), passed from the server page. */
+export interface TierOption {
+    key: string;
+    display_name: string;
+    description: string | null;
+    is_default: boolean;
 }
 
 /** Mirror of the server-side mask helper. Used when we receive a freshly
@@ -74,9 +84,15 @@ interface CreateState {
     alias: string;
     submitting: boolean;
     error: string | null;
+    tier: string;
 }
 
-export function KeysList({ initialRows }: { initialRows: KeyRow[] }) {
+export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; tiers?: TierOption[] }) {
+    // P3: 默认档 = is_default 的 ChannelGroup(pool);label / 单选项从 tiers 派生。
+    const defaultTier = tiers.find((t) => t.is_default)?.key ?? tiers[0]?.key ?? 'pool';
+    const showTierChoice = tiers.length > 1;
+    const tierLabel = (key: string) => tiers.find((t) => t.key === key)?.display_name ?? key;
+
     const [rows, setRows] = useState<KeyRow[]>(initialRows);
     const [reveal, setReveal] = useState<RevealMap>({});
     const [copied, setCopied] = useState<CopiedMap>({});
@@ -87,6 +103,7 @@ export function KeysList({ initialRows }: { initialRows: KeyRow[] }) {
         alias: '',
         submitting: false,
         error: null,
+        tier: defaultTier,
     });
 
     const atLimit = rows.length >= MAX_TOKENS_PER_USER;
@@ -207,7 +224,7 @@ export function KeysList({ initialRows }: { initialRows: KeyRow[] }) {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'same-origin',
-                body: JSON.stringify({ alias }),
+                body: JSON.stringify({ alias, tier: create.tier }),
             });
             if (!r.ok) {
                 const data = await r.json().catch(() => ({}));
@@ -223,6 +240,7 @@ export function KeysList({ initialRows }: { initialRows: KeyRow[] }) {
                 key_alias: string;
                 key: string;
                 created_at: string;
+                tier?: string;
             };
             const newRow: KeyRow = {
                 id: data.id,
@@ -232,6 +250,7 @@ export function KeysList({ initialRows }: { initialRows: KeyRow[] }) {
                 // Brand-new key — no usage yet by definition.
                 used_quota: 0,
                 last_used_at: null,
+                tier: data.tier ?? create.tier,
             };
             setRows((prev) => [...prev, newRow]);
             // Auto-reveal the brand-new key so the customer can copy it
@@ -240,7 +259,7 @@ export function KeysList({ initialRows }: { initialRows: KeyRow[] }) {
             // was removed; the unified bottom 调用示例 panel covers all
             // keys, so there's no per-row panel to auto-expand here.)
             setReveal((prev) => ({ ...prev, [data.id]: data.key }));
-            setCreate({ open: false, alias: '', submitting: false, error: null });
+            setCreate({ open: false, alias: '', submitting: false, error: null, tier: defaultTier });
         } catch (err) {
             setCreate((prev) => ({
                 ...prev,
@@ -275,7 +294,9 @@ export function KeysList({ initialRows }: { initialRows: KeyRow[] }) {
                     type="button"
                     variant="primary"
                     size="sm"
-                    onClick={() => setCreate({ open: true, alias: '', submitting: false, error: null })}
+                    onClick={() =>
+                        setCreate({ open: true, alias: '', submitting: false, error: null, tier: defaultTier })
+                    }
                     disabled={atLimit || create.open}
                     title={atLimit ? `已达上限 (${MAX_TOKENS_PER_USER})` : ''}
                 >
@@ -301,6 +322,32 @@ export function KeysList({ initialRows }: { initialRows: KeyRow[] }) {
                                 建议格式 <code className="font-mono text-xs">env-purpose</code> —
                                 方便区分不同环境与用途。
                             </p>
+                            {showTierChoice && (
+                                <div className="mt-2.5">
+                                    <p className="m-0 mb-1 text-xs font-medium text-muted-ink">档次</p>
+                                    <div className="flex flex-wrap gap-3">
+                                        {tiers.map((t) => (
+                                            <label
+                                                key={t.key}
+                                                className="inline-flex cursor-pointer items-center gap-1.5 text-sm text-ink"
+                                            >
+                                                <input
+                                                    type="radio"
+                                                    name="key-tier"
+                                                    value={t.key}
+                                                    checked={create.tier === t.key}
+                                                    onChange={() => setCreate((prev) => ({ ...prev, tier: t.key }))}
+                                                />
+                                                <span>{t.display_name}</span>
+                                            </label>
+                                        ))}
+                                    </div>
+                                    <p className="m-0 mt-1 text-xs text-minor-ink">
+                                        {tiers.find((t) => t.key === create.tier)?.description ??
+                                            '官方稳定档更稳、价格更高;低价号池性价比高。档次建后不可改,换档请新建 key。'}
+                                    </p>
+                                </div>
+                            )}
                             <FormError>{create.error}</FormError>
                         </div>
                         <Button
@@ -316,7 +363,9 @@ export function KeysList({ initialRows }: { initialRows: KeyRow[] }) {
                             type="button"
                             variant="secondary"
                             size="sm"
-                            onClick={() => setCreate({ open: false, alias: '', submitting: false, error: null })}
+                            onClick={() =>
+                                setCreate({ open: false, alias: '', submitting: false, error: null, tier: defaultTier })
+                            }
                             disabled={create.submitting}
                         >
                             取消
@@ -365,7 +414,14 @@ export function KeysList({ initialRows }: { initialRows: KeyRow[] }) {
                                 const borderClass = isLast ? '' : 'border-b border-brand-border';
                                 return (
                                     <tr key={row.id}>
-                                        <td className={`${cell} ${borderClass}`}>{row.key_alias}</td>
+                                        <td className={`${cell} ${borderClass}`}>
+                                            <div className="flex flex-wrap items-center gap-2">
+                                                <span>{row.key_alias}</span>
+                                                <span className="rounded-full bg-paper-muted px-2 py-0.5 text-[10px] font-medium text-muted-ink">
+                                                    {tierLabel(row.tier)}
+                                                </span>
+                                            </div>
+                                        </td>
                                         <td className={`${cell} ${borderClass}`}>
                                             <div
                                                 className={[

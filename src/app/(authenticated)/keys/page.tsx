@@ -15,6 +15,7 @@ import { getCurrentUser } from '@/lib/auth/session';
 import { prisma } from '@/lib/db';
 import { getTokenUsageWithCache } from '@/lib/newapi/token-usage';
 import { formatTokenForDisplay } from '@/lib/newapi/token-format';
+import { listEnabledChannelGroups } from '@/lib/channel-group';
 import { KeysList, type KeyRow } from './keys-list';
 import { KeysSnippetsPanel } from './keys-snippets-panel';
 
@@ -51,6 +52,7 @@ export default async function KeysPage() {
             key_alias: true,
             newapi_token_value: true,
             newapi_token_id: true,
+            tier: true,
             created_at: true,
         },
     });
@@ -93,14 +95,25 @@ export default async function KeysPage() {
             // usage line gracefully.
             used_quota: snap ? Number(snap.used_quota) : null,
             last_used_at: snap?.last_used_at ? snap.last_used_at.toISOString() : null,
+            tier: t.tier,
         };
     });
+
+    // P3: enabled 档次(低价号池 / 官方稳定)供建 key 时单选。数据驱动 —
+    // 客户 tenant 下 enabled 的 ChannelGroup。
+    const tierGroups = await listEnabledChannelGroups(user.tenant_id);
+    const tiers = tierGroups.map((g) => ({
+        key: g.key,
+        display_name: g.display_name,
+        description: g.description,
+        is_default: g.is_default,
+    }));
 
     return (
         <section>
             <h1 className="m-0 mb-2 text-2xl font-semibold text-navy">API Keys</h1>
             <p className="m-0 mb-6 text-sm text-muted-ink">管理用于调用 Silk Road AI 的访问密钥。撤销后立即失效。</p>
-            <KeysList initialRows={rows} />
+            <KeysList initialRows={rows} tiers={tiers} />
             {/* W7 D4 PR-R Item C — unified 调用示例 panel below the
              *  keys table replaces the per-row KeyHowtoPanel that PR-G
              *  used to stitch into each row. Static `YOUR_API_KEY`

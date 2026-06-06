@@ -219,6 +219,7 @@ model Tenant {
   subscription_plans         SubscriptionPlan[]
   payment_provider_instances PaymentProviderInstance[]
   catalog_models             CatalogModel[]
+  channel_groups             ChannelGroup[]
 
   @@map("tenants")
 }
@@ -414,6 +415,13 @@ model NewApiToken {
   model_limits         String[] @default([])
 
   status KeyStatus @default(active)
+
+  // ── 档次(P3)──
+  // 客户建 key 时选的档次 = ChannelGroup.key('pool' | 'official')。决定建
+  // token 时下发给 new-api 的 group(经 ChannelGroup.newapi_group 解耦:
+  // pool→'default' 保现有,official→'official')。现有 token 全部回填 'pool',
+  // 其 new-api group 仍是 'default',零迁移、行为不变。
+  tier String @default("pool")
 
   orders    Order[]
   recharges RechargeLog[]
@@ -880,4 +888,37 @@ model CatalogPrice {
 
   @@index([model_id, tier, effective_from])
   @@map("catalog_prices")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// 渠道分组 / 档次(P3 — 管理后台 §4.3 + §6)
+// ─────────────────────────────────────────────────────────────────────────
+// 客户建 key 选档次(低价号池 pool / 官方稳定 official)。路由逻辑【零代码留在
+// new-api】(它原生按 token.group → channel.group 匹配)。portal 只:建 token 时
+// 把 group 设成该档的 newapi_group + 后台登记/展示。
+//
+// ⚠️ portal 档次 key 与 new-api group 名【解耦】:pool → 'default'(复用现有
+// 渠道组,现有 token 已是 default,零迁移);official → 'official'(运维在 new-api
+// 新建该 group 并把官方渠道归进去)。绝不批量改现有 token 的 group。
+model ChannelGroup {
+  id                 String   @id @default(uuid()) @db.Uuid
+  tenant_id          String?  @db.Uuid // P1 tenant 维度;回填平台主体
+  tenant             Tenant?  @relation(fields: [tenant_id], references: [id])
+  key                String // portal 档次标识:'pool' | 'official'
+  display_name       String // '低价号池' / '官方稳定'
+  description        String?
+  // 真正下发到 new-api token.group 的名字(与 portal key 解耦)。
+  newapi_group       String
+  tier_level         Int      @default(0) // 排序 / 档位:pool=0, official=1
+  enabled            Boolean  @default(true)
+  is_default         Boolean  @default(false) // 客户不选时的默认档(设在 pool)
+  // 该档对应 new-api 哪些 channel id —— 运维登记,纯展示/审计;路由由 new-api
+  // 自己按 group 做,portal 不据此路由。
+  newapi_channel_ids Int[]    @default([])
+  created_at         DateTime @default(now())
+  updated_at         DateTime @updatedAt
+
+  @@unique([tenant_id, key])
+  @@index([tenant_id, enabled])
+  @@map("channel_groups")
 }

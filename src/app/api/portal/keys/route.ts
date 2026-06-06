@@ -30,6 +30,7 @@ import {
 } from '@/lib/newapi/client';
 import { formatTokenForDisplay } from '@/lib/newapi/token-format';
 import { PORTAL_INTERNAL_TOKEN_NAME } from '@/lib/newapi/system-token';
+import { listEnabledChannelGroups } from '@/lib/channel-group';
 
 export const runtime = 'nodejs';
 
@@ -48,6 +49,10 @@ const CreateKeySchema = z.object({
         .refine((s) => s !== PORTAL_INTERNAL_TOKEN_NAME, {
             message: `alias "${PORTAL_INTERNAL_TOKEN_NAME}" is reserved`,
         }),
+    // P3: 档次 = ChannelGroup.key('pool' | 'official' | …)。可选;不传走默认档
+    // (is_default = pool)。值域不写死 enum —— 数据驱动 + 可白标扩展,handler 内
+    // 按本 tenant 的 enabled 档次校验。
+    tier: z.string().trim().min(1).max(50).optional(),
 });
 
 export async function GET(req: NextRequest) {
@@ -72,6 +77,7 @@ export async function GET(req: NextRequest) {
             id: true,
             key_alias: true,
             newapi_token_value: true,
+            tier: true,
             created_at: true,
             // W6 D4: per-key usage cache. Cheap to project; clients (the
             // /keys page server component or future API consumers) can
@@ -85,6 +91,7 @@ export async function GET(req: NextRequest) {
         tokens: tokens.map((t) => ({
             id: t.id,
             key_alias: t.key_alias,
+            tier: t.tier,
             // W7 D4 PR-H Tier A: prefix the stored 48-char value before
             // masking so the rendered display reads `sk-XXXX****YYYY`.
             masked_key: maskKey(formatTokenForDisplay(t.newapi_token_value)),
@@ -122,7 +129,7 @@ export async function POST(req: NextRequest) {
             { status: 400 },
         );
     }
-    const { alias } = parsed.data;
+    const { alias, tier: requestedTier } = parsed.data;
 
     // Server-side cap (UI also enforces, but defense in depth)
     const activeCount = await prisma.newApiToken.count({
@@ -130,6 +137,27 @@ export async function POST(req: NextRequest) {
     });
     if (activeCount >= MAX_TOKENS_PER_USER) {
         return NextResponse.json({ error: 'token_limit_reached', max: MAX_TOKENS_PER_USER }, { status: 400 });
+    }
+
+    // P3: resolve 档次 → new-api group(portal key 与 new-api group 解耦)。
+    // pool→'default'(复用现有渠道,现有 token 已是 default);official→'official'。
+    // 不传档次 → 默认档(is_default = pool)。非法档次 → 400。
+    const groups = await listEnabledChannelGroups(user.tenant_id);
+    let tier = 'pool';
+    let newapiGroup = 'default';
+    if (groups.length > 0) {
+        const chosen = requestedTier
+            ? groups.find((g) => g.key === requestedTier)
+            : (groups.find((g) => g.is_default) ?? groups[0]);
+        if (!chosen) {
+            return NextResponse.json({ error: 'invalid_tier', allowed: groups.map((g) => g.key) }, { status: 400 });
+        }
+        tier = chosen.key;
+        newapiGroup = chosen.newapi_group;
+    } else if (requestedTier && requestedTier !== 'pool') {
+        // No ChannelGroup rows (misconfig — the P3 migration seeds pool+official).
+        // Can't honor a non-pool tier; reject rather than silently downgrade.
+        return NextResponse.json({ error: 'invalid_tier', allowed: ['pool'] }, { status: 400 });
     }
 
     const customerAuth = {
@@ -148,6 +176,7 @@ export async function POST(req: NextRequest) {
             name: alias,
             unlimited_quota: true, // gotcha #12 — quota lives on user, not token
             expired_time: -1,
+            group: newapiGroup, // P3: 档次下发的 new-api group(pool→default / official→official)
         });
 
         // Find newly-created by name. Same-alias collisions are possible but
@@ -188,9 +217,10 @@ export async function POST(req: NextRequest) {
                 newapi_token_id: newapiTokenId,
                 newapi_token_value: realKey,
                 key_alias: alias,
+                tier, // P3: portal 档次 key(new-api group 经 newapiGroup 解耦下发)
                 status: 'active',
             },
-            select: { id: true, key_alias: true, created_at: true },
+            select: { id: true, key_alias: true, tier: true, created_at: true },
         });
     } catch (dbErr) {
         // Unique-violation on newapi_token_id can happen if a previous
@@ -210,6 +240,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
         id: row.id,
         key_alias: row.key_alias,
+        tier: row.tier,
         // ONE-TIME: full sk- only in the create response. Subsequent reveals
         // go through GET /api/portal/keys/[id]/key (also auth + ownership
         // checked).

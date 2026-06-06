@@ -22,6 +22,7 @@ const SAMPLE_ROWS: KeyRow[] = [
         created_at: '2026-05-01T10:00:00.000Z',
         used_quota: 0,
         last_used_at: null,
+        tier: 'pool',
     },
     {
         id: 'tok-bbb',
@@ -30,6 +31,7 @@ const SAMPLE_ROWS: KeyRow[] = [
         created_at: '2026-05-02T10:00:00.000Z',
         used_quota: 0,
         last_used_at: null,
+        tier: 'pool',
     },
 ];
 
@@ -78,6 +80,7 @@ describe('<KeysList /> SSR smoke', () => {
             created_at: '2026-05-01T10:00:00.000Z',
             used_quota: 0,
             last_used_at: null,
+            tier: 'pool',
         }));
         const html = renderToString(<KeysList initialRows={fullList} />);
         // Button text changes + disabled attr present (W6 D4 limit 10)
@@ -93,6 +96,7 @@ describe('<KeysList /> SSR smoke', () => {
             created_at: '2026-05-01T10:00:00.000Z',
             used_quota: 0,
             last_used_at: null,
+            tier: 'pool',
         }));
         const html = renderToString(<KeysList initialRows={nineKeys} />);
         expect(html).toContain('+ 创建新 Key');
@@ -119,6 +123,7 @@ describe('<KeysList /> W6 D4 — per-key usage subline', () => {
                 created_at: '2026-05-05T10:00:00.000Z',
                 used_quota: 0,
                 last_used_at: null,
+                tier: 'pool',
             },
         ];
         const html = renderToString(<KeysList initialRows={rows} />);
@@ -139,6 +144,7 @@ describe('<KeysList /> W6 D4 — per-key usage subline', () => {
                 created_at: '2026-04-01T10:00:00.000Z',
                 used_quota: 695_000,
                 last_used_at: aboutADayAgo,
+                tier: 'pool',
             },
         ];
         const html = renderToString(<KeysList initialRows={rows} />);
@@ -158,6 +164,7 @@ describe('<KeysList /> W6 D4 — per-key usage subline', () => {
                 created_at: '2026-05-04T10:00:00.000Z',
                 used_quota: null,
                 last_used_at: null,
+                tier: 'pool',
             },
         ];
         const html = renderToString(<KeysList initialRows={rows} />);
@@ -174,5 +181,54 @@ describe('<KeysList /> W6 D4 — alias placeholder hint', () => {
         const html = renderToString(<KeysList initialRows={[]} />);
         expect(html).not.toContain('env-purpose');
         expect(html).not.toContain('prod-openai');
+    });
+});
+
+describe('<KeysList /> P3 — 档次 badge', () => {
+    const TIERS = [
+        { key: 'pool', display_name: '低价号池', description: null, is_default: true },
+        { key: 'official', display_name: '官方稳定', description: '更稳更贵', is_default: false },
+    ];
+
+    it('renders the tier display_name badge per row', () => {
+        const rows: KeyRow[] = [
+            {
+                id: 't1',
+                key_alias: 'prod',
+                masked_key: 'sk-aaaa****bbbb',
+                created_at: '2026-06-01T00:00:00.000Z',
+                used_quota: 0,
+                last_used_at: null,
+                tier: 'official',
+            },
+            {
+                id: 't2',
+                key_alias: 'dev',
+                masked_key: 'sk-cccc****dddd',
+                created_at: '2026-06-02T00:00:00.000Z',
+                used_quota: 0,
+                last_used_at: null,
+                tier: 'pool',
+            },
+        ];
+        const html = renderToString(<KeysList initialRows={rows} tiers={TIERS} />);
+        expect(html).toContain('官方稳定');
+        expect(html).toContain('低价号池');
+    });
+
+    it('falls back to the raw tier key when it is not in the tiers list', () => {
+        const rows: KeyRow[] = [
+            {
+                id: 't3',
+                key_alias: 'x',
+                masked_key: 'sk-eeee****ffff',
+                created_at: '2026-06-03T00:00:00.000Z',
+                used_quota: 0,
+                last_used_at: null,
+                tier: 'legacy',
+            },
+        ];
+        const html = renderToString(<KeysList initialRows={rows} tiers={TIERS} />);
+        expect(html).toContain('legacy');
     });
 });
