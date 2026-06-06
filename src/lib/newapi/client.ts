@@ -512,6 +512,31 @@ export async function listAvailableModels(): Promise<string[]> {
     return await call<string[]>('GET', '/api/channel/models_enabled');
 }
 
+/**
+ * new-api 渠道对象 —— 字段多且动态(model_ratio / completion_ratio / models /
+ * model_mapping / setting / other …)。我们只读/改 model_ratio + completion_ratio,
+ * 但 PUT 时【必须回传整个对象】(gotcha #15:不带 models/model_mapping 会被静默
+ * 清掉)。故类型放宽为 Record<string, unknown> + 我们关心的两个字段。
+ */
+export type NewApiChannel = Record<string, unknown> & {
+    id: number;
+    model_ratio?: string | Record<string, number> | null;
+    completion_ratio?: string | Record<string, number> | null;
+};
+
+/** GET 单个渠道完整对象(P2 定价 sync 用)。 */
+export async function getChannel(id: number): Promise<NewApiChannel> {
+    return await call<NewApiChannel>('GET', `/api/channel/${id}`);
+}
+
+/**
+ * PUT 整个渠道对象回 new-api。调用方负责传【完整】对象(在 getChannel 结果上
+ * merge 改动后整体回传),否则未带的字段会被清空(gotcha #15)。
+ */
+export async function updateChannel(channel: NewApiChannel): Promise<void> {
+    await call<unknown>('PUT', '/api/channel/', channel);
+}
+
 // ============================================
 // E. Portal 业务高层封装
 // ============================================

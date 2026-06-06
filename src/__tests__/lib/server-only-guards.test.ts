@@ -40,7 +40,14 @@ const NEWAPI_DIR = path.join(process.cwd(), 'src/lib/newapi');
  * Anything that calls `process.env.NEWAPI_ADMIN_*`, makes network calls
  * to new-api, or otherwise has server-only side effects belongs here.
  */
-const REQUIRES_GUARD = ['client.ts', 'token-usage.ts', 'usage-aggregate.ts', 'quota-cache.ts', 'system-token.ts'];
+const REQUIRES_GUARD = [
+    'client.ts',
+    'token-usage.ts',
+    'usage-aggregate.ts',
+    'quota-cache.ts',
+    'system-token.ts',
+    'pricing-sync.ts',
+];
 
 /**
  * Files in `src/lib/newapi/` that are intentionally client-safe (pure

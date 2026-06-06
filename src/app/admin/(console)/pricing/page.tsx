@@ -1,0 +1,855 @@
+'use client';
+
+import { useSearchParams } from 'next/navigation';
+import { useState, useEffect, useCallback, useMemo, Suspense, type ReactNode } from 'react';
+import PayPageLayout from '@/components/PayPageLayout';
+import { resolveLocale, type Locale } from '@/lib/locale';
+
+// ── Types (mirror /api/admin/pricing shapes) ──
+
+interface CatalogPrice {
+    id: string;
+    model_id: string;
+    tier: string;
+    input_cny_per_1m: string | number | null;
+    output_cny_per_1m: string | number | null;
+    per_image_cny: string | number | null;
+    cost_cny_per_1m: string | number | null;
+    effective_from: string;
+    created_by: string | null;
+    created_at: string;
+}
+
+interface ModelWithPrices {
+    id: string;
+    slug: string;
+    display_name: string;
+    vendor: string | null;
+    modality: string | null;
+    enabled: boolean;
+    sort_order: number;
+    upstream_map: unknown;
+    prices: CatalogPrice[];
+}
+
+// Returned by syncModelPriceToNewApi (best-effort sync to new-api).
+interface SyncResult {
+    ok: boolean;
+    skipped?: string;
+    channel_id?: number;
+    upstream_model?: string;
+    ratios?: { model_ratio: number; completion_ratio: number };
+    error?: string;
+}
+
+interface PriceFormData {
+    tier: string;
+    input_cny_per_1m: string;
+    output_cny_per_1m: string;
+    per_image_cny: string;
+    cost_cny_per_1m: string;
+}
+
+// ── i18n ──
+
+function getTexts(locale: Locale) {
+    return locale === 'en'
+        ? {
+              title: 'Pricing',
+              subtitle: 'Model × tier retail price (¥/1M token) → auto-sync new-api',
+              invalidToken: 'Session expired, please sign in again',
+              loadFailed: 'Failed to load pricing',
+              saveFailed: 'Failed to save price',
+              resyncFailed: 'Failed to resync',
+              refresh: 'Refresh',
+              loading: 'Loading...',
+              noModels: 'No models found',
+              colModel: 'Model',
+              colTier: 'Tier',
+              colInput: 'Input (¥/1M)',
+              colOutput: 'Output (¥/1M)',
+              colImage: 'Image (¥/img)',
+              colCost: 'Cost',
+              colMargin: 'Margin',
+              colActions: 'Actions',
+              unpriced: 'Unpriced',
+              edit: 'Edit price',
+              resync: 'Resync',
+              resyncing: 'Resyncing...',
+              history: 'History',
+              hide: 'Hide',
+              editTitle: 'Edit price',
+              fieldTier: 'Tier',
+              fieldInput: 'Input price (¥/1M token)',
+              fieldOutput: 'Output price (¥/1M token)',
+              fieldImage: 'Image price (¥/img, optional)',
+              fieldCost: 'Cost (¥/1M token, optional)',
+              optional: 'optional',
+              ratioHint: (mr: string, cr: string) => `≈ new-api model_ratio ${mr} · completion_ratio ${cr}`,
+              cancel: 'Cancel',
+              save: 'Save',
+              saving: 'Saving...',
+              syncOk: (mr: number | string, cr: number | string) => `✅ Synced (mr=${mr}, cr=${cr})`,
+              syncSkipped: (reason: string) => `↷ Sync skipped: ${reason}`,
+              syncFailed: (err: string) => `⚠️ Sync failed: ${err} — click "Resync" to retry`,
+              historyTitle: 'Price history',
+              noHistory: 'No price history yet',
+              colEffective: 'Effective from',
+              by: 'by',
+          }
+        : {
+              title: '定价',
+              subtitle: '模型 × 档次 零售价(¥/1M token)→ 自动同步 new-api',
+              invalidToken: '登录已过期',
+              loadFailed: '加载定价失败',
+              saveFailed: '保存价格失败',
+              resyncFailed: '重新同步失败',
+              refresh: '刷新',
+              loading: '加载中...',
+              noModels: '暂无模型',
+              colModel: '模型',
+              colTier: '档次',
+              colInput: '输入价(¥/1M)',
+              colOutput: '输出价(¥/1M)',
+              colImage: '图片价(¥/张)',
+              colCost: '成本',
+              colMargin: '毛利',
+              colActions: '操作',
+              unpriced: '未定价',
+              edit: '改价',
+              resync: '重新同步',
+              resyncing: '同步中...',
+              history: '历史',
+              hide: '收起',
+              editTitle: '改价',
+              fieldTier: '档次',
+              fieldInput: '输入价(¥/1M token)',
+              fieldOutput: '输出价(¥/1M token)',
+              fieldImage: '图片价(¥/张,可选)',
+              fieldCost: '成本(¥/1M token,可选)',
+              optional: '可选',
+              ratioHint: (mr: string, cr: string) => `≈ new-api model_ratio ${mr} · completion_ratio ${cr}`,
+              cancel: '取消',
+              save: '保存',
+              saving: '保存中...',
+              syncOk: (mr: number | string, cr: number | string) => `✅ 已同步 (mr=${mr}, cr=${cr})`,
+              syncSkipped: (reason: string) => `↷ 跳过同步: ${reason}`,
+              syncFailed: (err: string) => `⚠️ 同步失败: ${err} — 可点「重新同步」重试`,
+              historyTitle: '改价历史',
+              noHistory: '暂无改价历史',
+              colEffective: '生效时间',
+              by: '操作人',
+          };
+}
+
+// ── Money / number helpers ──
+
+/** Decimal fields arrive as string OR number from JSON — coerce + guard null/NaN. */
+function toNum(v: string | number | null | undefined): number | null {
+    if (v === null || v === undefined || v === '') return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+}
+
+/** Format a CNY money value (up to a few decimals, trims trailing zeros). null/NaN → dash. */
+function fmtMoney(v: string | number | null | undefined): string {
+    const n = toNum(v);
+    if (n === null) return '—';
+    return `¥${n.toLocaleString('zh-CN', { maximumFractionDigits: 4 })}`;
+}
+
+/** Gross margin % when both retail input and cost present, else dash. */
+function fmtMargin(input: string | number | null | undefined, cost: string | number | null | undefined): string {
+    const i = toNum(input);
+    const c = toNum(cost);
+    if (i === null || c === null || i <= 0) return '—';
+    return `${(((i - c) / i) * 100).toFixed(0)}%`;
+}
+
+/** Beijing-time date display — project gotcha #20 requires explicit timeZone. */
+function fmtDate(ts: string): string {
+    return new Date(ts).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+}
+
+/** Live conversion preview shown in the edit form (mirrors pricing-sync math). */
+function computeRatios(inputStr: string, outputStr: string): { mr: string; cr: string } | null {
+    const input = toNum(inputStr);
+    const output = toNum(outputStr);
+    if (input === null || input <= 0) return null;
+    const mr = (input / 7).toFixed(6);
+    const cr = output !== null ? (output / input).toFixed(4) : '—';
+    return { mr, cr };
+}
+
+const emptyForm: PriceFormData = {
+    tier: 'default',
+    input_cny_per_1m: '',
+    output_cny_per_1m: '',
+    per_image_cny: '',
+    cost_cny_per_1m: '',
+};
+
+// ── Per-tier row derivation ──
+
+interface TierRow {
+    tier: string;
+    current: CatalogPrice | null;
+}
+
+/** A model's rows = one per distinct tier present in prices (current = first, already
+ *  DESC by effective_from). No prices yet → a single "default" row marked 未定价. */
+function deriveTierRows(model: ModelWithPrices): TierRow[] {
+    if (model.prices.length === 0) return [{ tier: 'default', current: null }];
+    const byTier = new Map<string, CatalogPrice>();
+    for (const p of model.prices) {
+        if (!byTier.has(p.tier)) byTier.set(p.tier, p); // first = newest = current
+    }
+    return Array.from(byTier.entries()).map(([tier, current]) => ({ tier, current }));
+}
+
+// ── Main content ──
+
+function PricingContent() {
+    const searchParams = useSearchParams();
+    const theme = searchParams.get('theme') === 'dark' ? 'dark' : 'light';
+    const uiMode = searchParams.get('ui_mode') || 'standalone';
+    const locale = resolveLocale(searchParams.get('lang'));
+    const isDark = theme === 'dark';
+    const isEmbedded = uiMode === 'embedded';
+    const t = getTexts(locale);
+
+    const [models, setModels] = useState<ModelWithPrices[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState('');
+
+    // Edit modal state
+    const [editModalOpen, setEditModalOpen] = useState(false);
+    const [editingModel, setEditingModel] = useState<ModelWithPrices | null>(null);
+    const [form, setForm] = useState<PriceFormData>(emptyForm);
+    const [saving, setSaving] = useState(false);
+    const [saveSync, setSaveSync] = useState<SyncResult | null>(null);
+
+    // Resync per-model status: modelId → results (or 'loading')
+    const [resyncing, setResyncing] = useState<Set<string>>(new Set());
+    const [resyncResults, setResyncResults] = useState<Record<string, { tier: string; sync: SyncResult }[]>>({});
+
+    // History expansion: which model ids have history open
+    const [historyOpen, setHistoryOpen] = useState<Set<string>>(new Set());
+
+    // ── Fetch ──
+
+    const fetchModels = useCallback(async () => {
+        setLoading(true);
+        setError('');
+        try {
+            const res = await fetch('/api/admin/pricing');
+            if (!res.ok) {
+                if (res.status === 401) {
+                    setError(t.invalidToken);
+                    return;
+                }
+                throw new Error();
+            }
+            const data = await res.json();
+            setModels(Array.isArray(data.models) ? data.models : []);
+        } catch {
+            setError(t.loadFailed);
+        } finally {
+            setLoading(false);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    useEffect(() => {
+        fetchModels();
+    }, [fetchModels]);
+
+    // ── Edit modal ──
+
+    const openEditModal = (model: ModelWithPrices, row: TierRow) => {
+        setEditingModel(model);
+        setSaveSync(null);
+        setForm({
+            tier: row.tier,
+            input_cny_per_1m:
+                row.current?.input_cny_per_1m != null ? String(toNum(row.current.input_cny_per_1m) ?? '') : '',
+            output_cny_per_1m:
+                row.current?.output_cny_per_1m != null ? String(toNum(row.current.output_cny_per_1m) ?? '') : '',
+            per_image_cny: row.current?.per_image_cny != null ? String(toNum(row.current.per_image_cny) ?? '') : '',
+            cost_cny_per_1m:
+                row.current?.cost_cny_per_1m != null ? String(toNum(row.current.cost_cny_per_1m) ?? '') : '',
+        });
+        setEditModalOpen(true);
+    };
+
+    const closeEditModal = () => {
+        setEditModalOpen(false);
+        setEditingModel(null);
+        setSaveSync(null);
+    };
+
+    const formInput = toNum(form.input_cny_per_1m);
+    const formOutput = toNum(form.output_cny_per_1m);
+    const formImage = toNum(form.per_image_cny);
+    // API requires (input AND output) OR per_image.
+    const formValid = (formInput !== null && formOutput !== null) || formImage !== null;
+    const liveRatios = computeRatios(form.input_cny_per_1m, form.output_cny_per_1m);
+
+    const handleSave = async () => {
+        if (!editingModel || !formValid) return;
+        setSaving(true);
+        setError('');
+        setSaveSync(null);
+
+        const body: Record<string, unknown> = {
+            model_id: editingModel.id,
+            tier: form.tier.trim() || 'default',
+        };
+        if (formInput !== null) body.input_cny_per_1m = formInput;
+        if (formOutput !== null) body.output_cny_per_1m = formOutput;
+        if (formImage !== null) body.per_image_cny = formImage;
+        const cost = toNum(form.cost_cny_per_1m);
+        if (cost !== null) body.cost_cny_per_1m = cost;
+
+        try {
+            const res = await fetch('/api/admin/pricing', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'same-origin',
+                body: JSON.stringify(body),
+            });
+            if (!res.ok) {
+                if (res.status === 401) {
+                    setError(t.invalidToken);
+                    return;
+                }
+                const data = await res.json().catch(() => ({}));
+                setError(data.error || t.saveFailed);
+                return;
+            }
+            const data: { price: CatalogPrice; sync: SyncResult } = await res.json();
+            setSaveSync(data.sync ?? null);
+            // Re-fetch so the new version row appears; keep modal open to show sync status.
+            await fetchModels();
+        } catch {
+            setError(t.saveFailed);
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    // ── Resync ──
+
+    const handleResync = async (model: ModelWithPrices) => {
+        setError('');
+        setResyncing((prev) => new Set(prev).add(model.id));
+        try {
+            const res = await fetch(`/api/admin/pricing/${model.id}/resync`, {
+                method: 'POST',
+                credentials: 'same-origin',
+            });
+            if (!res.ok) {
+                if (res.status === 401) {
+                    setError(t.invalidToken);
+                    return;
+                }
+                const data = await res.json().catch(() => ({}));
+                setError(data.error || t.resyncFailed);
+                return;
+            }
+            const data: { results: { tier: string; sync: SyncResult }[] } = await res.json();
+            setResyncResults((prev) => ({ ...prev, [model.id]: data.results ?? [] }));
+        } catch {
+            setError(t.resyncFailed);
+        } finally {
+            setResyncing((prev) => {
+                const next = new Set(prev);
+                next.delete(model.id);
+                return next;
+            });
+        }
+    };
+
+    // ── History toggle ──
+
+    const toggleHistory = (modelId: string) => {
+        setHistoryOpen((prev) => {
+            const next = new Set(prev);
+            if (next.has(modelId)) next.delete(modelId);
+            else next.add(modelId);
+            return next;
+        });
+    };
+
+    // ── Sync status renderer (shared by edit modal + resync area) ──
+
+    const renderSyncStatus = (sync: SyncResult, prefix?: string) => {
+        if (sync.ok && !sync.skipped) {
+            const mr = sync.ratios?.model_ratio ?? '?';
+            const cr = sync.ratios?.completion_ratio ?? '?';
+            return (
+                <span className={isDark ? 'text-emerald-400' : 'text-emerald-600'}>
+                    {prefix}
+                    {t.syncOk(mr, cr)}
+                </span>
+            );
+        }
+        if (sync.skipped) {
+            return (
+                <span className={isDark ? 'text-slate-400' : 'text-slate-500'}>
+                    {prefix}
+                    {t.syncSkipped(sync.skipped)}
+                </span>
+            );
+        }
+        return (
+            <span className={isDark ? 'text-red-400' : 'text-red-600'}>
+                {prefix}
+                {t.syncFailed(sync.error || 'unknown')}
+            </span>
+        );
+    };
+
+    // ── Styles (mirror dashboard/channels conventions) ──
+
+    const btnBase = [
+        'inline-flex items-center rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors',
+        isDark
+            ? 'border-slate-600 text-slate-200 hover:bg-slate-800'
+            : 'border-slate-300 text-slate-700 hover:bg-slate-100',
+    ].join(' ');
+
+    const linkBtn = (color: 'indigo' | 'red' | 'slate') => {
+        const map = {
+            indigo: isDark ? 'text-indigo-400 hover:bg-indigo-500/20' : 'text-indigo-600 hover:bg-indigo-50',
+            red: isDark ? 'text-red-400 hover:bg-red-500/20' : 'text-red-600 hover:bg-red-50',
+            slate: isDark ? 'text-slate-300 hover:bg-slate-700/50' : 'text-slate-600 hover:bg-slate-100',
+        };
+        return ['rounded-md px-2 py-1 text-xs font-medium transition-colors', map[color]].join(' ');
+    };
+
+    const inputCls = [
+        'w-full rounded-lg border px-3 py-2 text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-500/50',
+        isDark
+            ? 'border-slate-600 bg-slate-700 text-slate-100 placeholder-slate-400'
+            : 'border-slate-300 bg-white text-slate-900 placeholder-slate-400',
+    ].join(' ');
+
+    const labelCls = ['block text-sm font-medium mb-1', isDark ? 'text-slate-300' : 'text-slate-700'].join(' ');
+
+    const thCls = 'px-4 py-3 font-medium';
+    const tdMuted = isDark ? 'text-slate-400' : 'text-slate-500';
+
+    // Flatten models → tier rows for rendering (memoized).
+    const rendered = useMemo(() => models.map((model) => ({ model, rows: deriveTierRows(model) })), [models]);
+
+    return (
+        <PayPageLayout
+            isDark={isDark}
+            isEmbedded={isEmbedded}
+            maxWidth="full"
+            title={t.title}
+            subtitle={t.subtitle}
+            locale={locale}
+            actions={
+                <button type="button" onClick={fetchModels} className={btnBase}>
+                    {t.refresh}
+                </button>
+            }
+        >
+            {/* Error banner */}
+            {error && (
+                <div
+                    className={`mb-4 rounded-lg border p-3 text-sm ${isDark ? 'border-red-800 bg-red-950/50 text-red-400' : 'border-red-200 bg-red-50 text-red-600'}`}
+                >
+                    {error}
+                    <button onClick={() => setError('')} className="ml-2 opacity-60 hover:opacity-100">
+                        ✕
+                    </button>
+                </div>
+            )}
+
+            {/* Table */}
+            <div
+                className={[
+                    'overflow-x-auto rounded-xl border',
+                    isDark ? 'border-slate-700 bg-slate-800/70' : 'border-slate-200 bg-white shadow-sm',
+                ].join(' ')}
+            >
+                {loading ? (
+                    <div className={`py-12 text-center ${isDark ? 'text-slate-400' : 'text-gray-500'}`}>
+                        {t.loading}
+                    </div>
+                ) : rendered.length === 0 ? (
+                    <div className={`py-12 text-center ${isDark ? 'text-slate-400' : 'text-gray-500'}`}>
+                        <p className="text-base font-medium">{t.noModels}</p>
+                    </div>
+                ) : (
+                    <table className="w-full text-sm">
+                        <thead>
+                            <tr
+                                className={
+                                    isDark
+                                        ? 'border-b border-slate-700 text-slate-400'
+                                        : 'border-b border-slate-200 text-slate-500'
+                                }
+                            >
+                                <th className={`${thCls} text-left`}>{t.colModel}</th>
+                                <th className={`${thCls} text-left`}>{t.colTier}</th>
+                                <th className={`${thCls} text-right`}>{t.colInput}</th>
+                                <th className={`${thCls} text-right`}>{t.colOutput}</th>
+                                <th className={`${thCls} text-right`}>{t.colImage}</th>
+                                <th className={`${thCls} text-right`}>{t.colCost}</th>
+                                <th className={`${thCls} text-right`}>{t.colMargin}</th>
+                                <th className={`${thCls} text-right`}>{t.colActions}</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {rendered.map(({ model, rows }) => {
+                                const isResyncing = resyncing.has(model.id);
+                                const rr = resyncResults[model.id];
+                                const histOpen = historyOpen.has(model.id);
+                                return (
+                                    <ModelRows
+                                        key={model.id}
+                                        model={model}
+                                        rows={rows}
+                                        isDark={isDark}
+                                        tdMuted={tdMuted}
+                                        linkBtn={linkBtn}
+                                        unpricedLabel={t.unpriced}
+                                        editLabel={t.edit}
+                                        resyncLabel={isResyncing ? t.resyncing : t.resync}
+                                        resyncDisabled={isResyncing}
+                                        historyLabel={histOpen ? t.hide : t.history}
+                                        onEdit={(row) => openEditModal(model, row)}
+                                        onResync={() => handleResync(model)}
+                                        onToggleHistory={() => toggleHistory(model.id)}
+                                        resyncResults={rr}
+                                        renderSyncStatus={renderSyncStatus}
+                                        historyOpen={histOpen}
+                                        t={t}
+                                    />
+                                );
+                            })}
+                        </tbody>
+                    </table>
+                )}
+            </div>
+
+            {/* ── Edit price modal ── */}
+            {editModalOpen && editingModel && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+                    <div
+                        className={[
+                            'relative w-full max-w-lg overflow-y-auto rounded-2xl border p-6 shadow-2xl',
+                            isDark ? 'border-slate-700 bg-slate-800' : 'border-slate-200 bg-white',
+                        ].join(' ')}
+                        style={{ maxHeight: '90vh' }}
+                    >
+                        <h2 className={`mb-1 text-lg font-semibold ${isDark ? 'text-slate-100' : 'text-slate-900'}`}>
+                            {t.editTitle}
+                        </h2>
+                        <p className={`mb-5 text-sm ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                            {editingModel.display_name}{' '}
+                            <span className={isDark ? 'text-slate-500' : 'text-slate-400'}>{editingModel.slug}</span>
+                        </p>
+
+                        <div className="space-y-4">
+                            <div>
+                                <label className={labelCls}>{t.fieldTier}</label>
+                                <input
+                                    type="text"
+                                    value={form.tier}
+                                    onChange={(e) => setForm({ ...form, tier: e.target.value })}
+                                    className={inputCls}
+                                    placeholder="default"
+                                />
+                            </div>
+                            <div>
+                                <label className={labelCls}>{t.fieldInput}</label>
+                                <input
+                                    type="number"
+                                    step="0.0001"
+                                    min="0"
+                                    value={form.input_cny_per_1m}
+                                    onChange={(e) => setForm({ ...form, input_cny_per_1m: e.target.value })}
+                                    className={inputCls}
+                                />
+                            </div>
+                            <div>
+                                <label className={labelCls}>{t.fieldOutput}</label>
+                                <input
+                                    type="number"
+                                    step="0.0001"
+                                    min="0"
+                                    value={form.output_cny_per_1m}
+                                    onChange={(e) => setForm({ ...form, output_cny_per_1m: e.target.value })}
+                                    className={inputCls}
+                                />
+                            </div>
+
+                            {/* Live mr/cr preview so operator sees the new-api conversion before save */}
+                            {liveRatios && (
+                                <p className={`-mt-2 text-xs ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+                                    {t.ratioHint(liveRatios.mr, liveRatios.cr)}
+                                </p>
+                            )}
+
+                            <div>
+                                <label className={labelCls}>{t.fieldImage}</label>
+                                <input
+                                    type="number"
+                                    step="0.0001"
+                                    min="0"
+                                    value={form.per_image_cny}
+                                    onChange={(e) => setForm({ ...form, per_image_cny: e.target.value })}
+                                    className={inputCls}
+                                    placeholder={t.optional}
+                                />
+                            </div>
+                            <div>
+                                <label className={labelCls}>{t.fieldCost}</label>
+                                <input
+                                    type="number"
+                                    step="0.0001"
+                                    min="0"
+                                    value={form.cost_cny_per_1m}
+                                    onChange={(e) => setForm({ ...form, cost_cny_per_1m: e.target.value })}
+                                    className={inputCls}
+                                    placeholder={t.optional}
+                                />
+                            </div>
+                        </div>
+
+                        {/* Inline sync status after save */}
+                        {saveSync && <div className="mt-4 text-sm">{renderSyncStatus(saveSync)}</div>}
+
+                        {/* Actions */}
+                        <div className="mt-6 flex justify-end gap-3">
+                            <button
+                                type="button"
+                                onClick={closeEditModal}
+                                className={[
+                                    'rounded-lg px-4 py-2 text-sm font-medium transition-colors',
+                                    isDark ? 'text-slate-400 hover:bg-slate-700' : 'text-slate-600 hover:bg-slate-100',
+                                ].join(' ')}
+                            >
+                                {t.cancel}
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleSave}
+                                disabled={saving || !formValid}
+                                className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                                {saving ? t.saving : t.save}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+        </PayPageLayout>
+    );
+}
+
+// ── Per-model rows + inline resync/history sub-rows ──
+
+interface ModelRowsProps {
+    model: ModelWithPrices;
+    rows: TierRow[];
+    isDark: boolean;
+    tdMuted: string;
+    linkBtn: (color: 'indigo' | 'red' | 'slate') => string;
+    unpricedLabel: string;
+    editLabel: string;
+    resyncLabel: string;
+    resyncDisabled: boolean;
+    historyLabel: string;
+    onEdit: (row: TierRow) => void;
+    onResync: () => void;
+    onToggleHistory: () => void;
+    resyncResults: { tier: string; sync: SyncResult }[] | undefined;
+    renderSyncStatus: (sync: SyncResult, prefix?: string) => ReactNode;
+    historyOpen: boolean;
+    t: ReturnType<typeof getTexts>;
+}
+
+function ModelRows({
+    model,
+    rows,
+    isDark,
+    tdMuted,
+    linkBtn,
+    unpricedLabel,
+    editLabel,
+    resyncLabel,
+    resyncDisabled,
+    historyLabel,
+    onEdit,
+    onResync,
+    onToggleHistory,
+    resyncResults,
+    renderSyncStatus,
+    historyOpen,
+    t,
+}: ModelRowsProps) {
+    const rowBorder = isDark ? 'border-slate-700/50 hover:bg-slate-700/30' : 'border-slate-100 hover:bg-slate-50';
+    const COL_SPAN = 8;
+
+    return (
+        <>
+            {rows.map((row, idx) => {
+                const cur = row.current;
+                const unpriced = cur === null;
+                return (
+                    <tr key={`${model.id}-${row.tier}`} className={['border-b transition-colors', rowBorder].join(' ')}>
+                        {/* Model name spans all tier rows (rendered on the first row only) */}
+                        {idx === 0 ? (
+                            <td
+                                className={`px-4 py-3 align-top font-medium ${isDark ? 'text-slate-100' : 'text-slate-900'}`}
+                                rowSpan={rows.length}
+                            >
+                                <div>{model.display_name}</div>
+                                <div className={`text-xs ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+                                    {model.slug}
+                                </div>
+                            </td>
+                        ) : null}
+                        <td className={`px-4 py-3 ${isDark ? 'text-slate-300' : 'text-slate-700'}`}>{row.tier}</td>
+                        {unpriced ? (
+                            <td className={`px-4 py-3 text-right ${tdMuted}`} colSpan={5}>
+                                {unpricedLabel}
+                            </td>
+                        ) : (
+                            <>
+                                <td className={`px-4 py-3 text-right ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>
+                                    {fmtMoney(cur.input_cny_per_1m)}
+                                </td>
+                                <td className={`px-4 py-3 text-right ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>
+                                    {fmtMoney(cur.output_cny_per_1m)}
+                                </td>
+                                <td className={`px-4 py-3 text-right ${tdMuted}`}>
+                                    {toNum(cur.per_image_cny) !== null ? fmtMoney(cur.per_image_cny) : '—'}
+                                </td>
+                                <td className={`px-4 py-3 text-right ${tdMuted}`}>{fmtMoney(cur.cost_cny_per_1m)}</td>
+                                <td className={`px-4 py-3 text-right ${tdMuted}`}>
+                                    {fmtMargin(cur.input_cny_per_1m, cur.cost_cny_per_1m)}
+                                </td>
+                            </>
+                        )}
+                        {/* Actions — 改价 is per-tier (every row); 重新同步/历史 are model-level
+                            (first row only, so they're not duplicated per tier). */}
+                        <td className="px-4 py-3 text-right align-top">
+                            <div className="inline-flex flex-wrap justify-end gap-1">
+                                <button type="button" onClick={() => onEdit(row)} className={linkBtn('indigo')}>
+                                    {editLabel}
+                                </button>
+                                {idx === 0 && (
+                                    <>
+                                        <button
+                                            type="button"
+                                            onClick={onResync}
+                                            disabled={resyncDisabled}
+                                            className={`${linkBtn('slate')} disabled:opacity-50`}
+                                        >
+                                            {resyncLabel}
+                                        </button>
+                                        <button type="button" onClick={onToggleHistory} className={linkBtn('slate')}>
+                                            {historyLabel}
+                                        </button>
+                                    </>
+                                )}
+                            </div>
+                        </td>
+                    </tr>
+                );
+            })}
+
+            {/* Resync results (inline status area) */}
+            {resyncResults && resyncResults.length > 0 && (
+                <tr className={isDark ? 'bg-slate-800/40' : 'bg-slate-50'}>
+                    <td colSpan={COL_SPAN} className="px-4 py-2">
+                        <div className="flex flex-col gap-1 text-xs">
+                            {resyncResults.map((r) => (
+                                <div key={`resync-${model.id}-${r.tier}`}>
+                                    {renderSyncStatus(r.sync, `${r.tier}: `)}
+                                </div>
+                            ))}
+                        </div>
+                    </td>
+                </tr>
+            )}
+
+            {/* History timeline (all tiers, newest first) */}
+            {historyOpen && (
+                <tr className={isDark ? 'bg-slate-900/50' : 'bg-slate-50/70'}>
+                    <td colSpan={COL_SPAN} className="px-4 py-3">
+                        <div className={`mb-2 text-xs font-semibold ${isDark ? 'text-slate-300' : 'text-slate-600'}`}>
+                            {t.historyTitle}
+                        </div>
+                        {model.prices.length === 0 ? (
+                            <div className={`text-xs ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+                                {t.noHistory}
+                            </div>
+                        ) : (
+                            <div className="overflow-x-auto">
+                                <table className="w-full text-xs">
+                                    <thead>
+                                        <tr className={isDark ? 'text-slate-500' : 'text-slate-400'}>
+                                            <th className="px-2 py-1 text-left font-medium">{t.colEffective}</th>
+                                            <th className="px-2 py-1 text-left font-medium">{t.colTier}</th>
+                                            <th className="px-2 py-1 text-right font-medium">{t.colInput}</th>
+                                            <th className="px-2 py-1 text-right font-medium">{t.colOutput}</th>
+                                            <th className="px-2 py-1 text-right font-medium">{t.colImage}</th>
+                                            <th className="px-2 py-1 text-right font-medium">{t.colCost}</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {model.prices.map((p) => (
+                                            <tr key={p.id} className={isDark ? 'text-slate-300' : 'text-slate-600'}>
+                                                <td className="px-2 py-1 whitespace-nowrap">
+                                                    {fmtDate(p.effective_from)}
+                                                </td>
+                                                <td className="px-2 py-1">{p.tier}</td>
+                                                <td className="px-2 py-1 text-right">{fmtMoney(p.input_cny_per_1m)}</td>
+                                                <td className="px-2 py-1 text-right">
+                                                    {fmtMoney(p.output_cny_per_1m)}
+                                                </td>
+                                                <td className="px-2 py-1 text-right">
+                                                    {toNum(p.per_image_cny) !== null ? fmtMoney(p.per_image_cny) : '—'}
+                                                </td>
+                                                <td className="px-2 py-1 text-right">{fmtMoney(p.cost_cny_per_1m)}</td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        )}
+                    </td>
+                </tr>
+            )}
+        </>
+    );
+}
+
+// ── Fallback + default export (mirror dashboard page) ──
+
+function PricingPageFallback() {
+    const searchParams = useSearchParams();
+    const locale = resolveLocale(searchParams.get('lang'));
+
+    return (
+        <div className="flex min-h-screen items-center justify-center">
+            <div className="text-slate-500">{locale === 'en' ? 'Loading...' : '加载中...'}</div>
+        </div>
+    );
+}
+
+export default function PricingPage() {
+    return (
+        <Suspense fallback={<PricingPageFallback />}>
+            <PricingContent />
+        </Suspense>
+    );
+}

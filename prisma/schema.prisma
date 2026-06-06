@@ -218,6 +218,7 @@ model Tenant {
   channels                   Channel[]
   subscription_plans         SubscriptionPlan[]
   payment_provider_instances PaymentProviderInstance[]
+  catalog_models             CatalogModel[]
 
   @@map("tenants")
 }
@@ -821,4 +822,62 @@ model UserOssConfig {
   updated_at DateTime @updatedAt
 
   @@map("user_oss_configs")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// 模型目录 + 定价(P2 — 管理后台 §4.2)
+// ─────────────────────────────────────────────────────────────────────────
+// 把"改价 / 管模型"从 SSH 跑脚本搬到后台。改价 = 插新 CatalogPrice 版本行
+// (effective_from,不 UPDATE 覆盖)→ 历史可复算 / 审计可追溯;改价保存后
+// 轻量 sync 折算成 new-api per-channel model_ratio/completion_ratio(决策①,
+// 一上线即生效)。P4 计费接管后,CatalogPrice 成为 portal 自有计费的事实源。
+
+// 我们对客户暴露的"模型",与 new-api 渠道模型名解耦。
+model CatalogModel {
+  id             String   @id @default(uuid()) @db.Uuid
+  tenant_id      String?  @db.Uuid // null=平台主体;白标可覆盖(P6)
+  tenant         Tenant?  @relation(fields: [tenant_id], references: [id])
+  slug           String // 客户调用名,如 'claude-opus-4-7'
+  display_name   String // 'Claude Opus 4.7'
+  vendor         String // anthropic / openai / google / deepseek …
+  modality       String   @default("chat") // chat / image / embedding
+  context_window Int?
+  enabled        Boolean  @default(true)
+  sort_order     Int      @default(0)
+  // 该模型在各档次下对应 new-api 的渠道 + 上游模型名(sync 用)。形如
+  // { "pool": { "channel_id": 3, "upstream_model": "gpt-5.4" }, "official": {...} }。
+  // P2 档次先用 'default' / 现有 channel,结构留好向 P3(pool/official)扩展。
+  upstream_map   Json
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
+
+  prices CatalogPrice[]
+
+  @@unique([tenant_id, slug])
+  @@index([tenant_id, sort_order])
+  @@map("catalog_models")
+}
+
+// 定价规则:每个模型 × 档次 一行价格(版本化:改价插新行,不覆盖)。
+// "当前价" = 该 (model, tier) 下 effective_from <= now 的最新一行。
+model CatalogPrice {
+  id       String       @id @default(uuid()) @db.Uuid
+  model_id String       @db.Uuid
+  model    CatalogModel @relation(fields: [model_id], references: [id], onDelete: Cascade)
+  tier     String // 'pool' | 'official'(P2 先 'default')
+
+  // 我们对客户的零售价(¥/1M token);图片模型用 per_image_cny。
+  input_cny_per_1m  Decimal? @db.Decimal(12, 4)
+  output_cny_per_1m Decimal? @db.Decimal(12, 4)
+  per_image_cny     Decimal? @db.Decimal(12, 4)
+  // 成本价(可选,毛利看板用)
+  cost_cny_per_1m   Decimal? @db.Decimal(12, 4)
+
+  effective_from DateTime @default(now()) // 改价留历史,不覆盖
+  created_by     String?  @db.Uuid // 哪个 admin 改的(详情另记 AuditLog)
+
+  created_at DateTime @default(now())
+
+  @@index([model_id, tier, effective_from])
+  @@map("catalog_prices")
 }

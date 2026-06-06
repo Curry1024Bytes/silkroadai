@@ -9,6 +9,8 @@ const NAV_ITEMS = [
     { path: '/admin/orders', label: { zh: '订单管理', en: 'Orders' } },
     { path: '/admin/payment-config', label: { zh: '支付配置', en: 'Payment Config' } },
     { path: '/admin/channels', label: { zh: '渠道管理', en: 'Channels' } },
+    { path: '/admin/models', label: { zh: '模型管理', en: 'Models' } },
+    { path: '/admin/pricing', label: { zh: '定价', en: 'Pricing' } },
     { path: '/admin/subscriptions', label: { zh: '订阅管理', en: 'Subscriptions' } },
 ];
 
