@@ -12,10 +12,12 @@ interface NavItem {
 
 // P6b §0: platform-level management is superadmin-only (the APIs enforce it too).
 // Partner admins (role=admin, tenant scoped) only see tenant-scoped views:
-// Dashboard + Orders (+ Customers in §2). superadmin sees everything.
+// Dashboard + Orders + Customers. superadmin sees everything.
 const NAV_ITEMS: NavItem[] = [
     { path: '/admin', label: { zh: '数据概览', en: 'Dashboard' } },
     { path: '/admin/orders', label: { zh: '订单管理', en: 'Orders' } },
+    // P6b-2: read-only customer view — visible to ALL admins (partner backend main page).
+    { path: '/admin/customers', label: { zh: '客户管理', en: 'Customers' } },
     { path: '/admin/payment-config', label: { zh: '支付配置', en: 'Payment Config' }, superadminOnly: true },
     { path: '/admin/channels', label: { zh: '渠道管理', en: 'Channels' }, superadminOnly: true },
     { path: '/admin/channel-groups', label: { zh: '渠道分组', en: 'Channel Groups' }, superadminOnly: true },

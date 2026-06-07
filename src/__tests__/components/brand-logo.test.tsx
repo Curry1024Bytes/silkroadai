@@ -1,8 +1,11 @@
 /**
- * P6a: BrandLogo renders the tenant's logo_url image when set, else falls back
- * to the default Silk Road AI <Logo> (so the platform domain is unchanged).
+ * BrandLogo fallback priority:
+ *   1. logo_url              → custom <img>
+ *   2. platform, no logo     → default Silk Road AI <Logo> (platform unchanged)
+ *   3. non-platform, no logo → brand_name text wordmark (P6b-2 §3.1)
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PLATFORM_TENANT_ID } from '@/lib/admin/tenant-scope';
 
 const mockGetCurrentTenant = vi.fn();
 vi.mock('@/lib/tenant/resolve', () => ({ getCurrentTenant: (...a: unknown[]) => mockGetCurrentTenant(...a) }));
@@ -16,16 +19,52 @@ type El = any;
 beforeEach(() => vi.clearAllMocks());
 
 describe('BrandLogo', () => {
-    it('no logo_url (platform) → default <Logo>, props passed through', async () => {
-        mockGetCurrentTenant.mockResolvedValue({ logo_url: null, brand_name: 'Silk Road AI' });
+    it('platform tenant, no logo_url → default <Logo>, props passed through (regression)', async () => {
+        mockGetCurrentTenant.mockResolvedValue({
+            id: PLATFORM_TENANT_ID,
+            logo_url: null,
+            brand_name: 'Silk Road AI',
+            primary_color: '#1a2540',
+        });
         const el: El = await BrandLogo({ variant: 'primary-flat', size: 28 });
         expect(el.type).toBe(Logo);
         expect(el.props.size).toBe(28);
         expect(el.props.variant).toBe('primary-flat');
     });
 
+    it('non-platform tenant, no logo_url, linkHome=false → bare brand_name wordmark <span> in primary color', async () => {
+        mockGetCurrentTenant.mockResolvedValue({
+            id: 'tenant-acme',
+            logo_url: null,
+            brand_name: 'Acme AI',
+            primary_color: '#ff0000',
+        });
+        const el: El = await BrandLogo({ size: 28, linkHome: false });
+        expect(el.type).toBe('span');
+        expect(el.props.children).toBe('Acme AI');
+        expect(el.props.style.color).toBe('#ff0000');
+    });
+
+    it('non-platform tenant, no logo_url, linkHome=true → home link wrapping the wordmark <span>', async () => {
+        mockGetCurrentTenant.mockResolvedValue({
+            id: 'tenant-acme',
+            logo_url: null,
+            brand_name: 'Acme AI',
+            primary_color: null,
+        });
+        const el: El = await BrandLogo({ size: 28 });
+        const span: El = el.props.children; // Link > span
+        expect(span.type).toBe('span');
+        expect(span.props.children).toBe('Acme AI');
+        expect(span.props.style.color).toBe('#1E3A8A'); // wordmark default color
+    });
+
     it('logo_url set → custom <img> wrapped in a home link, alt = brand_name', async () => {
-        mockGetCurrentTenant.mockResolvedValue({ logo_url: 'https://cdn/acme.png', brand_name: 'Acme' });
+        mockGetCurrentTenant.mockResolvedValue({
+            id: 'tenant-acme',
+            logo_url: 'https://cdn/acme.png',
+            brand_name: 'Acme',
+        });
         const el: El = await BrandLogo({ size: 28 });
         const img: El = el.props.children; // Link > img
         expect(img.type).toBe('img');
@@ -35,7 +74,11 @@ describe('BrandLogo', () => {
     });
 
     it('logo_url + linkHome=false → bare <img>, no link wrapper', async () => {
-        mockGetCurrentTenant.mockResolvedValue({ logo_url: 'https://cdn/acme.png', brand_name: 'Acme' });
+        mockGetCurrentTenant.mockResolvedValue({
+            id: 'tenant-acme',
+            logo_url: 'https://cdn/acme.png',
+            brand_name: 'Acme',
+        });
         const el: El = await BrandLogo({ size: 28, linkHome: false });
         expect(el.type).toBe('img');
     });

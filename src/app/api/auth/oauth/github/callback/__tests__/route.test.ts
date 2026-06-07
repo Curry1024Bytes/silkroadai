@@ -35,8 +35,10 @@ vi.mock('@/lib/auth/oauth/account-link', () => ({
 }));
 
 // P6a: callback resolves the request-domain tenant + passes its id to linkOrCreate.
+// P6b-2 §3.2: it also passes tenant.signup_enabled as the 3rd arg.
+const mockResolveTenant = vi.fn();
 vi.mock('@/lib/tenant/resolve', () => ({
-    resolveTenantByHost: vi.fn(async () => ({ id: 'tenant-platform' })),
+    resolveTenantByHost: (...args: unknown[]) => mockResolveTenant(...args),
 }));
 
 // ── prisma mock — only last_login_at touch + signSession's tv lookup ──
@@ -85,6 +87,8 @@ beforeEach(() => {
     // signSession's user lookup default
     mockUserFindUnique.mockResolvedValue({ session_token_version: 1 });
     mockUserUpdate.mockResolvedValue({});
+    // P6b-2: default tenant allows signup.
+    mockResolveTenant.mockResolvedValue({ id: 'tenant-platform', signup_enabled: true });
 });
 afterEach(() => {
     process.env = ORIG_ENV;
@@ -193,6 +197,7 @@ describe('GET /api/auth/oauth/github/callback', () => {
                 nameHint: 'The Octocat',
             },
             'tenant-platform', // P6a tenant attribution
+            true, // P6b-2 signup_enabled
         );
         // session cookie set
         expect(res.headers.getSetCookie().some((c) => c.startsWith('silkroad_session='))).toBe(true);
@@ -220,7 +225,30 @@ describe('GET /api/auth/oauth/github/callback', () => {
         expect(mockLinkOrCreate).toHaveBeenCalledWith(
             expect.objectContaining({ nameHint: 'noname' }),
             'tenant-platform',
+            true,
         );
+    });
+
+    it('P6b-2: signup-disabled tenant → passes signupEnabled=false + maps signup_disabled to redirect', async () => {
+        mockResolveTenant.mockResolvedValue({ id: 'tenant-closed', signup_enabled: false });
+        mockExchange.mockResolvedValue({ access_token: 'gho', token_type: 'bearer', scope: '' });
+        mockFetchUser.mockResolvedValue({ id: 999, login: 'newbie', name: null, avatar_url: null });
+        mockFetchEmail.mockResolvedValue('newbie@example.com');
+        mockLinkOrCreate.mockResolvedValue({ ok: false, error: 'signup_disabled' });
+
+        const res = await GET(
+            makeReq({
+                query: { code: 'c', state: 'good' },
+                cookies: { oauth_github_state: 'good' },
+            }),
+        );
+
+        // callback forwarded the tenant's signup_enabled=false
+        expect(mockLinkOrCreate).toHaveBeenCalledWith(expect.any(Object), 'tenant-closed', false);
+        // outcome mapped to a redirect, no session issued
+        expect(res.status).toBe(302);
+        expect(res.headers.get('location')).toContain('oauth_error=signup_disabled');
+        expect(res.headers.getSetCookie().some((c) => c.startsWith('silkroad_session='))).toBe(false);
     });
 
     it('maps account_disabled outcome from helper to redirect', async () => {

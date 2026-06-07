@@ -143,6 +143,8 @@ export async function GET(req: NextRequest) {
     // is identical to the inline version this replaced — verified by D6's
     // 15-test suite still passing unchanged.
     // P6a: attribute a new OAuth signup to the request-domain's tenant.
+    // P6b-2 §3.2: pass signup_enabled — a tenant with self-serve signup OFF rejects
+    // BRAND-NEW OAuth signups (existing users still log in).
     const tenant = await resolveTenantByHost(req.headers.get('host'));
     const outcome = await linkOrCreateOAuthUser(
         {
@@ -152,6 +154,7 @@ export async function GET(req: NextRequest) {
             nameHint: claims.name,
         },
         tenant.id,
+        tenant.signup_enabled,
     );
     if (!outcome.ok) {
         // W5 D4: provisioning_failed is operational (new-api flake or our

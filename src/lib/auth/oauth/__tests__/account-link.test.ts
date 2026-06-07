@@ -306,3 +306,67 @@ describe('linkOrCreateOAuthUser (5-branch policy)', () => {
         expect(mockOAuthCreate).not.toHaveBeenCalled();
     });
 });
+
+describe('linkOrCreateOAuthUser — signup_disabled gate (P6b-2 §3.2)', () => {
+    it('Branch 4 blocked: brand-new email + signupEnabled=false → signup_disabled, NO user created', async () => {
+        mockOAuthFindUnique.mockResolvedValue(null);
+        mockUserFindUnique.mockResolvedValue(null); // brand new email → would be branch 4
+
+        const result = await linkOrCreateOAuthUser(
+            { provider: PROVIDER, providerAccountId: ACCOUNT_ID, email: 'newbie@example.com' },
+            'tenant-7',
+            false, // tenant has self-serve signup OFF
+        );
+
+        expect(result).toEqual({ ok: false, error: 'signup_disabled' });
+        expect(mockUserCreate).not.toHaveBeenCalled();
+        expect(mockProvision).not.toHaveBeenCalled();
+    });
+
+    it('existing user (branch 1) still logs in even when signupEnabled=false', async () => {
+        mockOAuthFindUnique.mockResolvedValue({ user: { id: PORTAL_USER_ID, status: 'active' } });
+
+        const result = await linkOrCreateOAuthUser(
+            { provider: PROVIDER, providerAccountId: ACCOUNT_ID, email: EMAIL },
+            'tenant-7',
+            false,
+        );
+
+        expect(result).toEqual({ ok: true, userId: PORTAL_USER_ID, branch: 1 });
+    });
+
+    it('existing verified user (branch 2) still links even when signupEnabled=false', async () => {
+        mockOAuthFindUnique.mockResolvedValue(null);
+        mockUserFindUnique.mockResolvedValue({ id: PORTAL_USER_ID, status: 'active', email_verified: true });
+        mockOAuthCreate.mockResolvedValue({ id: 'oauth-row-1' });
+
+        const result = await linkOrCreateOAuthUser(
+            { provider: PROVIDER, providerAccountId: ACCOUNT_ID, email: EMAIL },
+            'tenant-7',
+            false,
+        );
+
+        expect(result).toEqual({ ok: true, userId: PORTAL_USER_ID, branch: 2 });
+    });
+
+    it('defaults to allowing signup when the 3rd arg is omitted (back-compat)', async () => {
+        mockOAuthFindUnique.mockResolvedValue(null);
+        mockUserFindUnique.mockResolvedValue(null);
+        mockUserCreate.mockResolvedValue({ id: 'new-id' });
+        mockProvision.mockResolvedValue({
+            newapi_user_id: 1,
+            newapi_username: 'c-new-id',
+            newapi_access_token: 'a',
+            newapi_token_id: 1,
+            newapi_token_value: 'sk',
+        });
+
+        const result = await linkOrCreateOAuthUser({
+            provider: PROVIDER,
+            providerAccountId: ACCOUNT_ID,
+            email: 'newbie@example.com',
+        });
+
+        expect(result).toEqual({ ok: true, userId: 'new-id', branch: 4 });
+    });
+});

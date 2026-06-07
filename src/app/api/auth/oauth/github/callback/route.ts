@@ -129,6 +129,8 @@ export async function GET(req: NextRequest) {
     }
 
     // P6a: attribute a new OAuth signup to the request-domain's tenant.
+    // P6b-2 §3.2: pass signup_enabled — a tenant with self-serve signup OFF rejects
+    // BRAND-NEW OAuth signups (existing users still log in).
     const tenant = await resolveTenantByHost(req.headers.get('host'));
     const outcome = await linkOrCreateOAuthUser(
         {
@@ -138,6 +140,7 @@ export async function GET(req: NextRequest) {
             nameHint,
         },
         tenant.id,
+        tenant.signup_enabled,
     );
     if (!outcome.ok) {
         // W5 D4: provisioning_failed = new-api flake / our rollback failed.
