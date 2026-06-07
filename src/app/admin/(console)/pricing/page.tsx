@@ -4,6 +4,7 @@ import { useSearchParams } from 'next/navigation';
 import { useState, useEffect, useCallback, useMemo, Suspense, type ReactNode } from 'react';
 import PayPageLayout from '@/components/PayPageLayout';
 import { resolveLocale, type Locale } from '@/lib/locale';
+import { deriveTierRows } from '@/lib/admin/pricing-tiers';
 
 // ── Types (mirror /api/admin/pricing shapes) ──
 
@@ -73,6 +74,8 @@ function getTexts(locale: Locale) {
               colMargin: 'Margin',
               colActions: 'Actions',
               unpriced: 'Unpriced',
+              tierPool: 'Pool',
+              tierOfficial: 'Official',
               edit: 'Edit price',
               resync: 'Resync',
               resyncing: 'Resyncing...',
@@ -116,6 +119,8 @@ function getTexts(locale: Locale) {
               colMargin: '毛利',
               colActions: '操作',
               unpriced: '未定价',
+              tierPool: '低价号池',
+              tierOfficial: '官方稳定',
               edit: '改价',
               resync: '重新同步',
               resyncing: '同步中...',
@@ -182,7 +187,7 @@ function computeRatios(inputStr: string, outputStr: string): { mr: string; cr: s
 }
 
 const emptyForm: PriceFormData = {
-    tier: 'default',
+    tier: 'pool',
     input_cny_per_1m: '',
     output_cny_per_1m: '',
     per_image_cny: '',
@@ -196,15 +201,16 @@ interface TierRow {
     current: CatalogPrice | null;
 }
 
-/** A model's rows = one per distinct tier present in prices (current = first, already
- *  DESC by effective_from). No prices yet → a single "default" row marked 未定价. */
-function deriveTierRows(model: ModelWithPrices): TierRow[] {
-    if (model.prices.length === 0) return [{ tier: 'default', current: null }];
-    const byTier = new Map<string, CatalogPrice>();
-    for (const p of model.prices) {
-        if (!byTier.has(p.tier)) byTier.set(p.tier, p); // first = newest = current
-    }
-    return Array.from(byTier.entries()).map(([tier, current]) => ({ tier, current }));
+// Row derivation lives in @/lib/admin/pricing-tiers (deriveTierRows): a model's rows = the
+// tiers in its upstream_map ∪ the tiers of existing prices — so every routable tier
+// (pool/official) gets a row, even unpriced, and operator can price each separately (P2.7).
+// Extracted there so it's unit-tested without the 'use client' page.
+
+/** Friendly tier name for the table/modal: pool→低价号池 / official→官方稳定 / else raw. */
+function tierLabel(tier: string, t: ReturnType<typeof getTexts>): string {
+    if (tier === 'pool') return t.tierPool;
+    if (tier === 'official') return t.tierOfficial;
+    return tier;
 }
 
 // ── Main content ──
@@ -303,7 +309,7 @@ function PricingContent() {
 
         const body: Record<string, unknown> = {
             model_id: editingModel.id,
-            tier: form.tier.trim() || 'default',
+            tier: form.tier.trim() || 'pool',
         };
         if (formInput !== null) body.input_cny_per_1m = formInput;
         if (formOutput !== null) body.output_cny_per_1m = formOutput;
@@ -435,6 +441,11 @@ function PricingContent() {
             : 'border-slate-300 bg-white text-slate-900 placeholder-slate-400',
     ].join(' ');
 
+    const readonlyInputCls = [
+        'w-full rounded-lg border px-3 py-2 text-sm cursor-not-allowed',
+        isDark ? 'border-slate-700 bg-slate-800 text-slate-400' : 'border-slate-200 bg-slate-100 text-slate-500',
+    ].join(' ');
+
     const labelCls = ['block text-sm font-medium mb-1', isDark ? 'text-slate-300' : 'text-slate-700'].join(' ');
 
     const thCls = 'px-4 py-3 font-medium';
@@ -558,12 +569,14 @@ function PricingContent() {
                         <div className="space-y-4">
                             <div>
                                 <label className={labelCls}>{t.fieldTier}</label>
+                                {/* Tier is fixed by the row being edited (a tier from the model's
+                                    upstream_map). Read-only so operator can't price an un-routable
+                                    tier (P2.7 §2). */}
                                 <input
                                     type="text"
-                                    value={form.tier}
-                                    onChange={(e) => setForm({ ...form, tier: e.target.value })}
-                                    className={inputCls}
-                                    placeholder="default"
+                                    value={tierLabel(form.tier, t)}
+                                    readOnly
+                                    className={readonlyInputCls}
                                 />
                             </div>
                             <div>
@@ -716,7 +729,9 @@ function ModelRows({
                                 </div>
                             </td>
                         ) : null}
-                        <td className={`px-4 py-3 ${isDark ? 'text-slate-300' : 'text-slate-700'}`}>{row.tier}</td>
+                        <td className={`px-4 py-3 ${isDark ? 'text-slate-300' : 'text-slate-700'}`}>
+                            {tierLabel(row.tier, t)}
+                        </td>
                         {unpriced ? (
                             <td className={`px-4 py-3 text-right ${tdMuted}`} colSpan={5}>
                                 {unpricedLabel}

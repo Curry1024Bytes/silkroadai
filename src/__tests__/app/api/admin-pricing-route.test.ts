@@ -108,6 +108,18 @@ describe('POST /api/admin/pricing (change price)', () => {
         expect(data.sync.ok).toBe(true);
     });
 
+    it('tier defaults to pool when omitted (P2.7 — never writes a "default" row)', async () => {
+        const res = await POST(
+            req('POST', {
+                model_id: CHANGE.model_id,
+                input_cny_per_1m: 2.5,
+                output_cny_per_1m: 10,
+            }),
+        );
+        expect(res.status).toBe(201);
+        expect(mockPriceCreate.mock.calls[0][0].data.tier).toBe('pool');
+    });
+
     it('records created_by = the admin user id', async () => {
         mockResolveAdmin.mockResolvedValue(PARTNER);
         await POST(req('POST', CHANGE));

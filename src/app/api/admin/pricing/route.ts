@@ -27,7 +27,9 @@ export async function GET(request: NextRequest) {
 const changePriceSchema = z
     .object({
         model_id: z.string().uuid(),
-        tier: z.string().min(1).default('default'),
+        // P2.7: tier defaults to 'pool' (catch-all), never 'default' — the page always sends the
+        // row's real tier (pool/official), but no fallback path should ever write a 'default' row.
+        tier: z.string().min(1).default('pool'),
         input_cny_per_1m: z.number().nonnegative().nullable().optional(),
         output_cny_per_1m: z.number().nonnegative().nullable().optional(),
         per_image_cny: z.number().nonnegative().nullable().optional(),
