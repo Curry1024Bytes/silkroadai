@@ -530,6 +530,23 @@ export async function getChannel(id: number): Promise<NewApiChannel> {
 }
 
 /**
+ * 列出所有渠道(P2.5 导入预览的「渠道菜单」用,让 operator 看到/挑选要导哪几个)。
+ *
+ * new-api list 端点的 envelope `data` 形态在不同版本间不一致(可能是裸数组,也
+ * 可能是 `{ items, total }`),这里两种都兜住。page_size 拉大(100)一次取够 ——
+ * 旗舰部署渠道数 ~20,远小于此;真正的导入仍按 id 逐个 getChannel(权威全量对象),
+ * 故菜单不全也不影响导入正确性(仅影响发现体验)。
+ */
+export async function listChannels(): Promise<NewApiChannel[]> {
+    const res = await call<NewApiChannel[] | { items?: NewApiChannel[] } | null>('GET', '/api/channel/', undefined, {
+        p: 1,
+        page_size: 100,
+    });
+    if (Array.isArray(res)) return res;
+    return res?.items ?? [];
+}
+
+/**
  * PUT 整个渠道对象回 new-api。调用方负责传【完整】对象(在 getChannel 结果上
  * merge 改动后整体回传),否则未带的字段会被清空(gotcha #15)。
  */

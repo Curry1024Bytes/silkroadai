@@ -40,9 +40,52 @@ interface ModelFormData {
     upstream_map: string;
 }
 
+// ── P2.5 「从 new-api 导入」预览/结果(对应 /api/admin/models/import 响应)──
+
+interface ImportChannelMenuItem {
+    id: number;
+    name: string | null;
+    type: number | null;
+    model_count: number;
+    selected: boolean;
+}
+
+interface ImportCreatedRow {
+    slug: string;
+    display_name: string;
+    vendor: string;
+    modality: string;
+    input_cny_per_1m: number | null;
+    output_cny_per_1m: number | null;
+    ratio_defaulted: boolean;
+}
+
+interface ImportFlaggedRow {
+    slug: string;
+    display_name: string;
+    vendor: string;
+    modality: string;
+    reason: string;
+}
+
+interface ImportPreview {
+    dryRun: boolean;
+    selectedChannelIds: number[];
+    channels: ImportChannelMenuItem[];
+    channelErrors: { channel_id: number; error: string }[];
+    created: ImportCreatedRow[];
+    skipped: { slug: string; reason: string }[];
+    flagged: ImportFlaggedRow[];
+    summary: { created: number; skipped: number; flagged: number };
+}
+
 const MODALITIES: Modality[] = ['chat', 'image', 'embedding'];
 
 const DEFAULT_UPSTREAM_MAP = '{\n  "default": {\n    "channel_id": 3,\n    "upstream_model": "gpt-5.4"\n  }\n}';
+
+// 旗舰渠道默认集(与 import 端点的 DEFAULT_FLAGSHIP_CHANNEL_IDS 一致):
+// Claude(2)/ ChatGPT(3)/ Gemini 图片(17)。Gemini 文本渠道 id 未固定,operator 在渠道菜单勾选。
+const DEFAULT_IMPORT_CHANNEL_IDS = [2, 3, 17];
 
 // ── i18n ──
 
@@ -88,6 +131,34 @@ function getTexts(locale: Locale) {
               deleteFailed: 'Failed to delete model',
               invalidJson: 'Upstream Map must be valid JSON',
               none: 'None',
+              // ── P2.5 import from new-api ──
+              importBtn: 'Import from new-api',
+              importTitle: 'Import models from new-api',
+              importIntro:
+                  'Reads model lists + current prices from the selected flagship channels and creates catalog entries. Already-existing models are skipped; image models are created without a price (set it on the Pricing page).',
+              importChannels: 'Channels to import from',
+              importSelectHint:
+                  "Defaults to Claude (2) / ChatGPT (3) / Gemini image (17). The Gemini text channel id isn't fixed — tick it below if present.",
+              importColModels: 'models',
+              importPreviewing: 'Loading preview…',
+              importRefresh: 'Re-preview',
+              importWillCreate: 'Will create',
+              importNeedsPrice: 'Needs manual price',
+              importSkippedExists: 'Skipped (already exists)',
+              importColIn: '¥ in / 1M',
+              importColOut: '¥ out / 1M',
+              importColReason: 'Note',
+              importImageReason: 'Image model — set per-image price on the Pricing page',
+              importNoRatioReason: 'No model_ratio in channel — set price manually',
+              importRatioDefaulted: 'completion_ratio defaulted to 1 (in = out)',
+              importChannelErrors: 'Some channels could not be read',
+              importConfirm: 'Confirm import',
+              importImporting: 'Importing…',
+              importDone: (s: { created: number; skipped: number; flagged: number }) =>
+                  `Import complete — created ${s.created}, skipped ${s.skipped}, needs price ${s.flagged}.`,
+              importFailed: 'Import failed',
+              importNothing: 'Nothing to import (all already exist, or no channels loaded).',
+              importClose: 'Close',
           }
         : {
               sessionExpired: '登录已过期,请重新登录',
@@ -129,6 +200,34 @@ function getTexts(locale: Locale) {
               deleteFailed: '删除模型失败',
               invalidJson: '上游映射必须是合法的 JSON',
               none: '无',
+              // ── P2.5 从 new-api 导入 ──
+              importBtn: '从 new-api 导入',
+              importTitle: '从 new-api 导入模型',
+              importIntro:
+                  '从选中的旗舰渠道读取模型清单 + 当前价格,自动建好目录条目。已存在的模型会跳过;图片模型只建条目、价格留空(去「定价」页手填)。',
+              importChannels: '从哪些渠道导入',
+              importSelectHint:
+                  '默认 Claude(2)/ ChatGPT(3)/ Gemini 图片(17)。Gemini 文本渠道 id 未固定 —— 若存在,在下方勾选。',
+              importColModels: '个模型',
+              importPreviewing: '预览中…',
+              importRefresh: '重新预览',
+              importWillCreate: '将创建',
+              importNeedsPrice: '需手填价',
+              importSkippedExists: '跳过(已存在)',
+              importColIn: '¥ 输入 / 1M',
+              importColOut: '¥ 输出 / 1M',
+              importColReason: '说明',
+              importImageReason: '图片模型 —— 价格需在「定价」页手填',
+              importNoRatioReason: '渠道无 model_ratio —— 价格需手填',
+              importRatioDefaulted: 'completion_ratio 缺省=1(输入=输出)',
+              importChannelErrors: '部分渠道读取失败',
+              importConfirm: '确认导入',
+              importImporting: '导入中…',
+              importDone: (s: { created: number; skipped: number; flagged: number }) =>
+                  `导入完成 —— 新建 ${s.created},跳过 ${s.skipped},需手填价 ${s.flagged}。`,
+              importFailed: '导入失败',
+              importNothing: '没有可导入的模型(都已存在,或没有渠道加载成功)。',
+              importClose: '关闭',
           };
 }
 
@@ -172,6 +271,15 @@ function ModelsContent() {
     const [editingModel, setEditingModel] = useState<CatalogModel | null>(null);
     const [form, setForm] = useState<ModelFormData>(emptyForm);
     const [saving, setSaving] = useState(false);
+
+    // ── P2.5 import-from-new-api modal state ──
+    const [importModalOpen, setImportModalOpen] = useState(false);
+    const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
+    const [importChannelIds, setImportChannelIds] = useState<number[]>(DEFAULT_IMPORT_CHANNEL_IDS);
+    const [importLoading, setImportLoading] = useState(false); // running a dry-run preview
+    const [importing, setImporting] = useState(false); // running the real import
+    const [importDoneResult, setImportDoneResult] = useState<ImportPreview | null>(null);
+    const [importError, setImportError] = useState('');
 
     // ── Fetch models ──
 
@@ -343,6 +451,92 @@ function ModelsContent() {
         }
     };
 
+    // ── P2.5 import-from-new-api handlers ──
+
+    // Dry-run preview: never writes. Returns the channel menu + what would be imported.
+    const runImportPreview = useCallback(async (channelIds: number[]) => {
+        setImportLoading(true);
+        setImportError('');
+        setImportDoneResult(null);
+        try {
+            const res = await fetch('/api/admin/models/import?dryRun=true', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ channel_ids: channelIds }),
+            });
+            if (!res.ok) {
+                if (res.status === 401) {
+                    setImportError(t.sessionExpired);
+                    return;
+                }
+                const data = await res.json().catch(() => ({}));
+                setImportError(data.error || t.importFailed);
+                return;
+            }
+            const data = (await res.json()) as ImportPreview;
+            setImportPreview(data);
+            setImportChannelIds(data.selectedChannelIds);
+        } catch {
+            setImportError(t.importFailed);
+        } finally {
+            setImportLoading(false);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    const openImportModal = () => {
+        setImportModalOpen(true);
+        setImportPreview(null);
+        setImportDoneResult(null);
+        setImportError('');
+        setImportChannelIds(DEFAULT_IMPORT_CHANNEL_IDS);
+        runImportPreview(DEFAULT_IMPORT_CHANNEL_IDS);
+    };
+
+    const closeImportModal = () => setImportModalOpen(false);
+
+    const toggleImportChannel = (id: number) => {
+        setImportChannelIds((prev) =>
+            prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id].sort((a, b) => a - b),
+        );
+    };
+
+    // Real import: writes inside a transaction, then refreshes the table behind the modal.
+    const confirmImport = async () => {
+        setImporting(true);
+        setImportError('');
+        try {
+            const res = await fetch('/api/admin/models/import?dryRun=false', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ channel_ids: importChannelIds }),
+            });
+            if (!res.ok) {
+                if (res.status === 401) {
+                    setImportError(t.sessionExpired);
+                    return;
+                }
+                const data = await res.json().catch(() => ({}));
+                setImportError(data.error || t.importFailed);
+                return;
+            }
+            const data = (await res.json()) as ImportPreview;
+            setImportPreview(data);
+            setImportDoneResult(data);
+            fetchModels();
+        } catch {
+            setImportError(t.importFailed);
+        } finally {
+            setImporting(false);
+        }
+    };
+
+    const flaggedReasonText = (reason: string) =>
+        reason === 'image_model_manual_price' ? t.importImageReason : t.importNoRatioReason;
+    const fmtPrice = (n: number | null) => (n == null ? '—' : `¥${n.toFixed(2)}`);
+
     // ── Shared styles ──
 
     const btnBase = [
@@ -396,6 +590,9 @@ function ModelsContent() {
 
             {/* Action buttons */}
             <div className="mb-4 flex flex-wrap gap-2 justify-end">
+                <button type="button" onClick={openImportModal} className={btnBase}>
+                    {t.importBtn}
+                </button>
                 <button
                     type="button"
                     onClick={openCreateModal}
@@ -709,6 +906,335 @@ function ModelsContent() {
                             >
                                 {saving ? t.saving : t.save}
                             </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* ── P2.5 Import-from-new-api Modal ── */}
+            {importModalOpen && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+                    <div
+                        className={[
+                            'relative w-full max-w-2xl overflow-y-auto rounded-2xl border p-6 shadow-2xl',
+                            isDark ? 'border-slate-700 bg-slate-800' : 'border-slate-200 bg-white',
+                        ].join(' ')}
+                        style={{ maxHeight: '90vh' }}
+                    >
+                        <h2 className={`mb-2 text-lg font-semibold ${isDark ? 'text-slate-100' : 'text-slate-900'}`}>
+                            {t.importTitle}
+                        </h2>
+                        <p className={`mb-4 text-sm ${isDark ? 'text-slate-400' : 'text-slate-600'}`}>
+                            {t.importIntro}
+                        </p>
+
+                        {importError && (
+                            <div
+                                className={`mb-4 rounded-lg border p-3 text-sm ${isDark ? 'border-red-800 bg-red-950/50 text-red-400' : 'border-red-200 bg-red-50 text-red-600'}`}
+                            >
+                                {importError}
+                            </div>
+                        )}
+
+                        {importDoneResult && (
+                            <div
+                                className={`mb-4 rounded-lg border p-3 text-sm ${isDark ? 'border-emerald-800 bg-emerald-950/40 text-emerald-300' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}
+                            >
+                                {t.importDone(importDoneResult.summary)}
+                            </div>
+                        )}
+
+                        {/* channel menu */}
+                        <div className="mb-4">
+                            <label className={labelCls}>{t.importChannels}</label>
+                            <p className={`mb-2 text-xs ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+                                {t.importSelectHint}
+                            </p>
+                            <div className="flex flex-col gap-1.5">
+                                {(importPreview?.channels.length ?? 0) === 0 && !importLoading ? (
+                                    <span className={`text-sm ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+                                        {t.none}
+                                    </span>
+                                ) : (
+                                    importPreview?.channels.map((ch) => (
+                                        <label
+                                            key={ch.id}
+                                            className={`flex items-center gap-2 text-sm ${isDark ? 'text-slate-300' : 'text-slate-700'}`}
+                                        >
+                                            <input
+                                                type="checkbox"
+                                                checked={importChannelIds.includes(ch.id)}
+                                                onChange={() => toggleImportChannel(ch.id)}
+                                                disabled={importLoading || importing || !!importDoneResult}
+                                                className="h-4 w-4 rounded border-slate-400 accent-emerald-500"
+                                            />
+                                            <span className="font-mono text-xs">#{ch.id}</span>
+                                            <span>{ch.name ?? '—'}</span>
+                                            <span className={`text-xs ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+                                                · {ch.model_count} {t.importColModels}
+                                            </span>
+                                        </label>
+                                    ))
+                                )}
+                            </div>
+                            {!importDoneResult && (
+                                <button
+                                    type="button"
+                                    onClick={() => runImportPreview(importChannelIds)}
+                                    disabled={importLoading || importing}
+                                    className={[btnBase, 'mt-3 disabled:opacity-50'].join(' ')}
+                                >
+                                    {importLoading ? t.importPreviewing : t.importRefresh}
+                                </button>
+                            )}
+                        </div>
+
+                        {/* channel load errors */}
+                        {importPreview && importPreview.channelErrors.length > 0 && (
+                            <div
+                                className={`mb-4 rounded-lg border p-3 text-xs ${isDark ? 'border-amber-800 bg-amber-950/40 text-amber-300' : 'border-amber-200 bg-amber-50 text-amber-700'}`}
+                            >
+                                <div className="font-medium">{t.importChannelErrors}</div>
+                                <ul className="mt-1 list-disc pl-4">
+                                    {importPreview.channelErrors.map((e) => (
+                                        <li key={e.channel_id}>
+                                            #{e.channel_id}: {e.error}
+                                        </li>
+                                    ))}
+                                </ul>
+                            </div>
+                        )}
+
+                        {/* preview body */}
+                        {importLoading ? (
+                            <div className={`py-8 text-center text-sm ${isDark ? 'text-slate-400' : 'text-gray-500'}`}>
+                                {t.importPreviewing}
+                            </div>
+                        ) : importPreview ? (
+                            <div className="space-y-4">
+                                <div className={`text-sm font-medium ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>
+                                    <span className="text-emerald-500">
+                                        {t.importWillCreate} {importPreview.summary.created}
+                                    </span>
+                                    {'  ·  '}
+                                    <span className="text-amber-500">
+                                        {t.importNeedsPrice} {importPreview.summary.flagged}
+                                    </span>
+                                    {'  ·  '}
+                                    <span className={isDark ? 'text-slate-500' : 'text-slate-400'}>
+                                        {t.importSkippedExists} {importPreview.summary.skipped}
+                                    </span>
+                                </div>
+
+                                {importPreview.created.length +
+                                    importPreview.flagged.length +
+                                    importPreview.skipped.length ===
+                                0 ? (
+                                    <p className={`text-sm ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                                        {t.importNothing}
+                                    </p>
+                                ) : null}
+
+                                {/* created */}
+                                {importPreview.created.length > 0 && (
+                                    <div>
+                                        <div
+                                            className={`mb-1 text-xs font-semibold uppercase ${isDark ? 'text-slate-400' : 'text-slate-500'}`}
+                                        >
+                                            {t.importWillCreate}
+                                        </div>
+                                        <div
+                                            className={[
+                                                'overflow-x-auto rounded-lg border',
+                                                isDark ? 'border-slate-700' : 'border-slate-200',
+                                            ].join(' ')}
+                                        >
+                                            <table className="w-full text-xs">
+                                                <thead>
+                                                    <tr className={isDark ? 'text-slate-400' : 'text-slate-500'}>
+                                                        <th className="px-3 py-2 text-left font-medium">{t.colName}</th>
+                                                        <th className="px-3 py-2 text-left font-medium">
+                                                            {t.colVendor}
+                                                        </th>
+                                                        <th className="px-3 py-2 text-right font-medium">
+                                                            {t.importColIn}
+                                                        </th>
+                                                        <th className="px-3 py-2 text-right font-medium">
+                                                            {t.importColOut}
+                                                        </th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {importPreview.created.map((r) => (
+                                                        <tr
+                                                            key={r.slug}
+                                                            className={
+                                                                isDark
+                                                                    ? 'border-t border-slate-700/50'
+                                                                    : 'border-t border-slate-100'
+                                                            }
+                                                        >
+                                                            <td className="px-3 py-1.5">
+                                                                <span
+                                                                    className={
+                                                                        isDark ? 'text-slate-200' : 'text-slate-800'
+                                                                    }
+                                                                >
+                                                                    {r.display_name}
+                                                                </span>
+                                                                <span
+                                                                    className={`ml-1 font-mono ${isDark ? 'text-slate-500' : 'text-slate-400'}`}
+                                                                >
+                                                                    {r.slug}
+                                                                </span>
+                                                                {r.ratio_defaulted && (
+                                                                    <span
+                                                                        className="ml-1 text-amber-500"
+                                                                        title={t.importRatioDefaulted}
+                                                                    >
+                                                                        *
+                                                                    </span>
+                                                                )}
+                                                            </td>
+                                                            <td
+                                                                className={`px-3 py-1.5 ${isDark ? 'text-slate-400' : 'text-slate-600'}`}
+                                                            >
+                                                                {r.vendor}
+                                                            </td>
+                                                            <td
+                                                                className={`px-3 py-1.5 text-right font-mono ${isDark ? 'text-slate-300' : 'text-slate-700'}`}
+                                                            >
+                                                                {fmtPrice(r.input_cny_per_1m)}
+                                                            </td>
+                                                            <td
+                                                                className={`px-3 py-1.5 text-right font-mono ${isDark ? 'text-slate-300' : 'text-slate-700'}`}
+                                                            >
+                                                                {fmtPrice(r.output_cny_per_1m)}
+                                                            </td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                        {importPreview.created.some((r) => r.ratio_defaulted) && (
+                                            <p className="mt-1 text-xs text-amber-500">* {t.importRatioDefaulted}</p>
+                                        )}
+                                    </div>
+                                )}
+
+                                {/* flagged */}
+                                {importPreview.flagged.length > 0 && (
+                                    <div>
+                                        <div
+                                            className={`mb-1 text-xs font-semibold uppercase ${isDark ? 'text-slate-400' : 'text-slate-500'}`}
+                                        >
+                                            {t.importNeedsPrice}
+                                        </div>
+                                        <div
+                                            className={[
+                                                'overflow-x-auto rounded-lg border',
+                                                isDark ? 'border-slate-700' : 'border-slate-200',
+                                            ].join(' ')}
+                                        >
+                                            <table className="w-full text-xs">
+                                                <thead>
+                                                    <tr className={isDark ? 'text-slate-400' : 'text-slate-500'}>
+                                                        <th className="px-3 py-2 text-left font-medium">{t.colName}</th>
+                                                        <th className="px-3 py-2 text-left font-medium">
+                                                            {t.colModality}
+                                                        </th>
+                                                        <th className="px-3 py-2 text-left font-medium">
+                                                            {t.importColReason}
+                                                        </th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {importPreview.flagged.map((r) => (
+                                                        <tr
+                                                            key={r.slug}
+                                                            className={
+                                                                isDark
+                                                                    ? 'border-t border-slate-700/50'
+                                                                    : 'border-t border-slate-100'
+                                                            }
+                                                        >
+                                                            <td className="px-3 py-1.5">
+                                                                <span
+                                                                    className={
+                                                                        isDark ? 'text-slate-200' : 'text-slate-800'
+                                                                    }
+                                                                >
+                                                                    {r.display_name}
+                                                                </span>
+                                                                <span
+                                                                    className={`ml-1 font-mono ${isDark ? 'text-slate-500' : 'text-slate-400'}`}
+                                                                >
+                                                                    {r.slug}
+                                                                </span>
+                                                            </td>
+                                                            <td
+                                                                className={`px-3 py-1.5 ${isDark ? 'text-slate-400' : 'text-slate-600'}`}
+                                                            >
+                                                                {r.modality}
+                                                            </td>
+                                                            <td
+                                                                className={`px-3 py-1.5 ${isDark ? 'text-slate-400' : 'text-slate-600'}`}
+                                                            >
+                                                                {flaggedReasonText(r.reason)}
+                                                            </td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* skipped */}
+                                {importPreview.skipped.length > 0 && (
+                                    <div>
+                                        <div
+                                            className={`mb-1 text-xs font-semibold uppercase ${isDark ? 'text-slate-400' : 'text-slate-500'}`}
+                                        >
+                                            {t.importSkippedExists}
+                                        </div>
+                                        <div
+                                            className={`font-mono text-xs ${isDark ? 'text-slate-500' : 'text-slate-400'}`}
+                                        >
+                                            {importPreview.skipped.map((r) => r.slug).join(', ')}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        ) : null}
+
+                        {/* footer */}
+                        <div className="mt-6 flex justify-end gap-3">
+                            <button
+                                type="button"
+                                onClick={closeImportModal}
+                                className={[
+                                    'rounded-lg px-4 py-2 text-sm font-medium transition-colors',
+                                    isDark ? 'text-slate-400 hover:bg-slate-700' : 'text-slate-600 hover:bg-slate-100',
+                                ].join(' ')}
+                            >
+                                {importDoneResult ? t.importClose : t.cancel}
+                            </button>
+                            {!importDoneResult && (
+                                <button
+                                    type="button"
+                                    onClick={confirmImport}
+                                    disabled={
+                                        importing ||
+                                        importLoading ||
+                                        !importPreview ||
+                                        importPreview.created.length + importPreview.flagged.length === 0
+                                    }
+                                    className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                    {importing ? t.importImporting : t.importConfirm}
+                                </button>
+                            )}
                         </div>
                     </div>
                 </div>

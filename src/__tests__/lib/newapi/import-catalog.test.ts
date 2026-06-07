@@ -1,0 +1,163 @@
+import { describe, expect, it } from 'vitest';
+import {
+    buildImportCandidates,
+    inferVendor,
+    isImageModel,
+    toDisplayName,
+    type ChannelForImport,
+} from '@/lib/newapi/import-catalog';
+
+describe('inferVendor', () => {
+    it.each([
+        ['claude-opus-4-7', 'anthropic'],
+        ['gpt-5.4', 'openai'],
+        ['gpt-image-2', 'openai'],
+        ['dall-e-3', 'openai'],
+        ['o3-pro', 'openai'],
+        ['codex', 'openai'],
+        ['text-embedding-3-large', 'openai'],
+        ['gemini-3-pro', 'google'],
+        ['imagen-4', 'google'],
+        ['deepseek-v4', 'deepseek'],
+        ['qwen3-max', 'qwen'],
+        ['glm-5', 'zhipu'],
+        ['kimi-k2', 'moonshot'],
+        ['mystery-model', 'unknown'],
+    ])('%s → %s', (slug, vendor) => {
+        expect(inferVendor(slug)).toBe(vendor);
+    });
+});
+
+describe('isImageModel', () => {
+    it.each([
+        ['gpt-image-2', true],
+        ['gemini-3-pro-image', true],
+        ['dall-e-3', true],
+        ['imagen-4', true],
+        ['claude-opus-4-7', false],
+        ['gpt-5.4', false],
+    ])('%s → %s', (slug, expected) => {
+        expect(isImageModel(slug)).toBe(expected);
+    });
+});
+
+describe('toDisplayName', () => {
+    it('title-cases alpha words, keeps numeric/version tokens', () => {
+        expect(toDisplayName('claude-opus-4-7')).toBe('Claude Opus 4 7');
+        expect(toDisplayName('gpt-5.4')).toBe('Gpt 5.4');
+    });
+
+    it('uses the last path segment for vendor/model paths', () => {
+        expect(toDisplayName('deepseek-ai/DeepSeek-V4-Flash')).toBe('DeepSeek V4 Flash');
+    });
+});
+
+describe('buildImportCandidates', () => {
+    const claudeChannel: ChannelForImport = {
+        id: 2,
+        name: 'sub2api',
+        models: 'claude-opus-4-7, claude-sonnet-4-6', // whitespace after comma → must be trimmed
+        model_ratio: JSON.stringify({ 'claude-opus-4-7': 3.214286, 'claude-sonnet-4-6': 0.642857 }),
+        completion_ratio: JSON.stringify({ 'claude-opus-4-7': 5, 'claude-sonnet-4-6': 5 }),
+    };
+    const openaiChannel: ChannelForImport = {
+        id: 3,
+        name: 'sub2api-openai',
+        // gpt-5.4 priced; gpt-mini has model_ratio but NO completion_ratio; gpt-image-2 is image;
+        // mystery is in models but absent from model_ratio (and not image).
+        models: 'gpt-5.4,gpt-mini,gpt-image-2,mystery',
+        model_ratio: JSON.stringify({ 'gpt-5.4': 0.357143, 'gpt-mini': 1 }),
+        completion_ratio: JSON.stringify({ 'gpt-5.4': 4 }),
+    };
+    const imageChannel: ChannelForImport = {
+        id: 17,
+        name: 'nexaxis',
+        models: 'gemini-3-pro-image',
+        model_ratio: {}, // already-parsed empty dict (not a JSON string)
+        completion_ratio: {},
+    };
+
+    it('reverse-derives chat prices, detects image + unpriced models', () => {
+        const candidates = buildImportCandidates([claudeChannel, openaiChannel, imageChannel]);
+        const bySlug = Object.fromEntries(candidates.map((c) => [c.slug, c]));
+
+        // priced chat (inverse of computeRatios — opus ¥22.5/¥112.5)
+        expect(bySlug['claude-opus-4-7']).toMatchObject({
+            vendor: 'anthropic',
+            modality: 'chat',
+            price_status: 'priced',
+            input_cny_per_1m: 22.5,
+            output_cny_per_1m: 112.5,
+            ratio_defaulted: false,
+            channel_id: 2,
+            channel_name: 'sub2api',
+            upstream_model: 'claude-opus-4-7',
+        });
+        expect(bySlug['gpt-5.4']).toMatchObject({
+            vendor: 'openai',
+            price_status: 'priced',
+            input_cny_per_1m: 2.5,
+            output_cny_per_1m: 10,
+            channel_id: 3,
+        });
+
+        // model_ratio present but completion_ratio missing → cr defaults to 1 (in = out)
+        expect(bySlug['gpt-mini']).toMatchObject({
+            price_status: 'priced',
+            input_cny_per_1m: 7,
+            output_cny_per_1m: 7,
+            ratio_defaulted: true,
+        });
+
+        // name contains 'image' → image, no price (even though on an OpenAI channel)
+        expect(bySlug['gpt-image-2']).toMatchObject({
+            vendor: 'openai',
+            modality: 'image',
+            price_status: 'image',
+            input_cny_per_1m: null,
+            output_cny_per_1m: null,
+        });
+
+        // in models but no model_ratio entry, not image → unpriced (build model, flag for manual price)
+        expect(bySlug['mystery']).toMatchObject({
+            modality: 'chat',
+            price_status: 'unpriced',
+            input_cny_per_1m: null,
+            output_cny_per_1m: null,
+        });
+
+        // image channel with already-parsed empty dicts
+        expect(bySlug['gemini-3-pro-image']).toMatchObject({
+            vendor: 'google',
+            modality: 'image',
+            price_status: 'image',
+        });
+    });
+
+    it('dedupes a slug seen in multiple channels (first channel wins)', () => {
+        const chA: ChannelForImport = {
+            id: 2,
+            name: 'A',
+            models: 'dup-model',
+            model_ratio: { 'dup-model': 1 },
+            completion_ratio: { 'dup-model': 2 },
+        };
+        const chB: ChannelForImport = {
+            id: 3,
+            name: 'B',
+            models: 'dup-model',
+            model_ratio: { 'dup-model': 9 },
+            completion_ratio: { 'dup-model': 9 },
+        };
+        const candidates = buildImportCandidates([chA, chB]);
+        expect(candidates.filter((c) => c.slug === 'dup-model')).toHaveLength(1);
+        expect(candidates[0].channel_id).toBe(2); // first wins
+        expect(candidates[0].input_cny_per_1m).toBe(7); // mr 1 × FX 7
+    });
+
+    it('handles empty / missing models', () => {
+        expect(buildImportCandidates([{ id: 5, models: '' }])).toEqual([]);
+        expect(buildImportCandidates([{ id: 5 }])).toEqual([]);
+        expect(buildImportCandidates([])).toEqual([]);
+    });
+});

@@ -47,6 +47,8 @@ const REQUIRES_GUARD = [
     'quota-cache.ts',
     'system-token.ts',
     'pricing-sync.ts',
+    // P2.5: pure logic, but imports server-only pricing-sync → guarded too.
+    'import-catalog.ts',
 ];
 
 /**

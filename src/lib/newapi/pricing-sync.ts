@@ -33,6 +33,30 @@ export function computeRatios(cnyIn: number, cnyOut: number): Ratios {
     return { model_ratio: Number(mr.toFixed(6)), completion_ratio: Number(cr.toFixed(4)) };
 }
 
+/** computeRatios 的逆运算输出:从 new-api ratio 还原出的零售 ¥/1M 价。 */
+export interface RetailPrice {
+    input_cny_per_1m: number;
+    output_cny_per_1m: number;
+}
+
+/**
+ * {@link computeRatios} 的【逆运算】(P2.5 从 new-api 反向导入定价用)。
+ *
+ *   ¥in/1M  = model_ratio × PRICING_FX
+ *   ¥out/1M = ¥in × completion_ratio
+ *
+ * 与正向 sync 互逆(四舍五入到 CatalogPrice 的 Decimal(12,4) 精度):
+ *   mr 0.357143, cr 4 → ¥2.5 / ¥10   (gpt-5.4)
+ *   mr 3.214286, cr 5 → ¥22.5 / ¥112.5(opus)
+ *
+ * completion_ratio 缺失时调用方应传 1(= in/out 同价),见 import-catalog.ts。
+ */
+export function retailFromRatios(modelRatio: number, completionRatio: number): RetailPrice {
+    const cnyIn = Number((modelRatio * PRICING_FX).toFixed(4));
+    const cnyOut = Number((cnyIn * completionRatio).toFixed(4));
+    return { input_cny_per_1m: cnyIn, output_cny_per_1m: cnyOut };
+}
+
 /** upstream_map 一个档次的映射(P2 结构,P3 扩展为 pool/official 多档)。 */
 export interface UpstreamMapEntry {
     channel_id: number;
@@ -57,7 +81,7 @@ export interface SyncResult {
 }
 
 /** new-api channel.model_ratio / completion_ratio 可能是 JSON 字符串或已解析 dict。 */
-function parseDict(s: string | Record<string, number> | null | undefined): Record<string, number> {
+export function parseRatioDict(s: string | Record<string, number> | null | undefined): Record<string, number> {
     if (!s) return {};
     if (typeof s === 'object') return s;
     try {
@@ -99,8 +123,8 @@ export async function syncModelPriceToNewApi(upstreamMap: UpstreamMap, price: Pr
 
     try {
         const ch = await getChannel(entry.channel_id);
-        const mr = parseDict(ch.model_ratio);
-        const cr = parseDict(ch.completion_ratio);
+        const mr = parseRatioDict(ch.model_ratio);
+        const cr = parseRatioDict(ch.completion_ratio);
         mr[entry.upstream_model] = ratios.model_ratio;
         cr[entry.upstream_model] = ratios.completion_ratio;
         // 整对象回传,只换 model_ratio / completion_ratio(其余字段原样保留)。

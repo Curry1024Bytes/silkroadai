@@ -8,7 +8,7 @@ vi.mock('@/lib/newapi/client', () => ({
     updateChannel: (...a: unknown[]) => mockUpdateChannel(...a),
 }));
 
-import { computeRatios, syncModelPriceToNewApi, PRICING_FX } from '@/lib/newapi/pricing-sync';
+import { computeRatios, retailFromRatios, syncModelPriceToNewApi, PRICING_FX } from '@/lib/newapi/pricing-sync';
 
 beforeEach(() => {
     vi.clearAllMocks();
@@ -31,6 +31,35 @@ describe('computeRatios (pinned to scripts/apply-new-pricing-2026-05-21.mjs)', (
 
     it('cnyIn = 0 → cr defaults to 1 (no divide-by-zero)', () => {
         expect(computeRatios(0, 0)).toEqual({ model_ratio: 0, completion_ratio: 1 });
+    });
+});
+
+describe('retailFromRatios (P2.5 reverse derivation — inverse of computeRatios)', () => {
+    it('gpt-5.4: mr 0.357143, cr 4 → ¥2.5 in / ¥10 out', () => {
+        expect(retailFromRatios(0.357143, 4)).toEqual({ input_cny_per_1m: 2.5, output_cny_per_1m: 10 });
+    });
+
+    it('claude opus: mr 3.214286, cr 5 → ¥22.5 in / ¥112.5 out', () => {
+        expect(retailFromRatios(3.214286, 5)).toEqual({ input_cny_per_1m: 22.5, output_cny_per_1m: 112.5 });
+    });
+
+    it('completion_ratio = 1 → in = out', () => {
+        expect(retailFromRatios(0.5, 1)).toEqual({ input_cny_per_1m: 3.5, output_cny_per_1m: 3.5 });
+    });
+
+    // The whole point: import (retailFromRatios) must undo sync (computeRatios), so a
+    // round-trip lands back on the operator's retail price. Both directions pinned to FX=7.
+    it.each([
+        [2.5, 10],
+        [22.5, 112.5],
+        [1.5, 7.5],
+        [0.5, 0.5],
+    ])('round-trips ¥%s in / ¥%s out through computeRatios → retailFromRatios', (cnyIn, cnyOut) => {
+        const r = computeRatios(cnyIn, cnyOut);
+        expect(retailFromRatios(r.model_ratio, r.completion_ratio)).toEqual({
+            input_cny_per_1m: cnyIn,
+            output_cny_per_1m: cnyOut,
+        });
     });
 });
 
