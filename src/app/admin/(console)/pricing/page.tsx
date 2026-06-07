@@ -40,6 +40,10 @@ interface SyncResult {
     channel_id?: number;
     upstream_model?: string;
     ratios?: { model_ratio: number; completion_ratio: number };
+    // P2.8 Part B: image models sync to new-api's global ModelPrice (USD/img) instead of mr/cr.
+    image?: boolean;
+    modelPrice_usd?: number;
+    warn?: string;
     error?: string;
 }
 
@@ -93,6 +97,7 @@ function getTexts(locale: Locale) {
               save: 'Save',
               saving: 'Saving...',
               syncOk: (mr: number | string, cr: number | string) => `✅ Synced (mr=${mr}, cr=${cr})`,
+              syncOkImage: (usd: number | string) => `✅ Synced ModelPrice ($${usd}/img, global — all tiers share it)`,
               syncSkipped: (reason: string) => `↷ Sync skipped: ${reason}`,
               syncFailed: (err: string) => `⚠️ Sync failed: ${err} — click "Resync" to retry`,
               historyTitle: 'Price history',
@@ -138,6 +143,7 @@ function getTexts(locale: Locale) {
               save: '保存',
               saving: '保存中...',
               syncOk: (mr: number | string, cr: number | string) => `✅ 已同步 (mr=${mr}, cr=${cr})`,
+              syncOkImage: (usd: number | string) => `✅ 已同步 ModelPrice ($${usd}/张,全局价 · 各档共享)`,
               syncSkipped: (reason: string) => `↷ 跳过同步: ${reason}`,
               syncFailed: (err: string) => `⚠️ 同步失败: ${err} — 可点「重新同步」重试`,
               historyTitle: '改价历史',
@@ -391,12 +397,17 @@ function PricingContent() {
 
     const renderSyncStatus = (sync: SyncResult, prefix?: string) => {
         if (sync.ok && !sync.skipped) {
-            const mr = sync.ratios?.model_ratio ?? '?';
-            const cr = sync.ratios?.completion_ratio ?? '?';
+            // P2.8 Part B: image models sync to the global ModelPrice (USD/img), not mr/cr.
+            const okText = sync.image
+                ? t.syncOkImage(sync.modelPrice_usd ?? '?')
+                : t.syncOk(sync.ratios?.model_ratio ?? '?', sync.ratios?.completion_ratio ?? '?');
             return (
                 <span className={isDark ? 'text-emerald-400' : 'text-emerald-600'}>
                     {prefix}
-                    {t.syncOk(mr, cr)}
+                    {okText}
+                    {sync.warn && (
+                        <span className={isDark ? 'block text-amber-400' : 'block text-amber-600'}>⚠️ {sync.warn}</span>
+                    )}
                 </span>
             );
         }

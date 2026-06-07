@@ -80,10 +80,12 @@ beforeEach(() => {
     vi.clearAllMocks();
     mockResolveAdmin.mockResolvedValue(SUPERADMIN);
     mockModelFindMany.mockResolvedValue([]); // no existing catalog models by default
-    // default: official group registered with NO channels → everything imports as pool.
+    // default: no group registers any channel → everything falls to the default tier (pool).
+    // Fixtures return groups already in DB orderBy order (tier_level asc, key asc); the route's
+    // orderBy is on the query (ignored by the mock), so we pre-sort here to mirror it.
     mockChannelGroupFindMany.mockResolvedValue([
-        { key: 'pool', newapi_channel_ids: [] },
-        { key: 'official', newapi_channel_ids: [] },
+        { key: 'pool', newapi_channel_ids: [], is_default: true, tier_level: 0 },
+        { key: 'official', newapi_channel_ids: [], is_default: false, tier_level: 1 },
     ]);
     mockGetChannel.mockImplementation((id: number) => Promise.resolve(channelFixture(id)));
     mockListChannels.mockResolvedValue([
@@ -171,8 +173,8 @@ describe('POST /api/admin/models/import — dry run (official not registered →
 describe('POST /api/admin/models/import — tier classification', () => {
     it('channels in the official group import as official; others as pool', async () => {
         mockChannelGroupFindMany.mockResolvedValue([
-            { key: 'pool', newapi_channel_ids: [] },
-            { key: 'official', newapi_channel_ids: [2] }, // Claude channel = official
+            { key: 'pool', newapi_channel_ids: [], is_default: true, tier_level: 0 },
+            { key: 'official', newapi_channel_ids: [2], is_default: false, tier_level: 1 }, // Claude = official
         ]);
         const body = await (await POST(req('POST', {}))).json();
 
@@ -181,6 +183,71 @@ describe('POST /api/admin/models/import — tier classification', () => {
         expect(body.created.find((r: { slug: string }) => r.slug === 'gpt-5.4').tier).toBe('pool');
         expect(body.channels.find((c: { id: number }) => c.id === 2).tier).toBe('official');
         expect(body.channels.find((c: { id: number }) => c.id === 3).tier).toBe('pool');
+        // only enabled groups are read for tier judgment, ordered deterministically.
+        expect(mockChannelGroupFindMany.mock.calls[0][0].where.enabled).toBe(true);
+        expect(mockChannelGroupFindMany.mock.calls[0][0].orderBy).toEqual([{ tier_level: 'asc' }, { key: 'asc' }]);
+    });
+});
+
+describe('POST /api/admin/models/import — P2.8 arbitrary tiers (cc-kiro) + conflicts', () => {
+    function ccKiroChannel(id: number) {
+        if (id === 20)
+            return {
+                id: 20,
+                name: 'cc-kiro-openai',
+                models: 'gpt-5.4',
+                model_ratio: JSON.stringify({ 'gpt-5.4': 0.357143 }),
+                completion_ratio: JSON.stringify({ 'gpt-5.4': 4 }),
+            };
+        return channelFixture(id);
+    }
+
+    it('a channel registered to a custom group imports under that group key (not pool)', async () => {
+        mockChannelGroupFindMany.mockResolvedValue([
+            { key: 'pool', newapi_channel_ids: [], is_default: true, tier_level: 0 },
+            { key: 'official', newapi_channel_ids: [2], is_default: false, tier_level: 1 },
+            { key: 'cc-kiro', newapi_channel_ids: [20], is_default: false, tier_level: 2 },
+        ]);
+        mockGetChannel.mockImplementation((id: number) => Promise.resolve(ccKiroChannel(id)));
+        mockListChannels.mockResolvedValue([
+            { id: 2, name: 'sub2api', type: 14, models: 'claude-opus-4-7,claude-sonnet-4-6' },
+            { id: 20, name: 'cc-kiro-openai', type: 1, models: 'gpt-5.4' },
+        ]);
+
+        const body = await (await POST(req('POST', { channel_ids: [2, 20] }))).json();
+        expect(body.defaultTier).toBe('pool');
+        expect(body.tierConflicts).toEqual([]);
+        // channel 20 (registered to cc-kiro) → cc-kiro, NOT pool (the P2.6 bug).
+        const gpt = body.created.find((r: { slug: string }) => r.slug === 'gpt-5.4');
+        expect(gpt).toMatchObject({ tier: 'cc-kiro', channel_id: 20 });
+        // channel 2 → official; menu reflects each channel's real tier.
+        expect(body.created.find((r: { slug: string }) => r.slug === 'claude-opus-4-7').tier).toBe('official');
+        expect(body.channels.find((c: { id: number }) => c.id === 20).tier).toBe('cc-kiro');
+        expect(body.channels.find((c: { id: number }) => c.id === 2).tier).toBe('official');
+    });
+
+    it('uses the is_default group key as catch-all (not hardcoded "pool")', async () => {
+        mockChannelGroupFindMany.mockResolvedValue([
+            { key: 'house', newapi_channel_ids: [], is_default: true, tier_level: 0 },
+            { key: 'official', newapi_channel_ids: [2], is_default: false, tier_level: 1 },
+        ]);
+        const body = await (await POST(req('POST', {}))).json();
+        expect(body.defaultTier).toBe('house');
+        // unregistered channel 3 → 'house' (the default tier), NOT 'pool'.
+        expect(body.created.find((r: { slug: string }) => r.slug === 'gpt-5.4').tier).toBe('house');
+        expect(body.channels.find((c: { id: number }) => c.id === 3).tier).toBe('house');
+    });
+
+    it('flags a channel registered to ≥2 enabled groups; first (lowest tier_level) wins', async () => {
+        mockChannelGroupFindMany.mockResolvedValue([
+            { key: 'pool', newapi_channel_ids: [3], is_default: true, tier_level: 0 },
+            { key: 'official', newapi_channel_ids: [3], is_default: false, tier_level: 1 },
+        ]);
+        const body = await (await POST(req('POST', { channel_ids: [3] }))).json();
+        // pool is iterated first (tier_level 0) → wins; the conflict is surfaced for the preview.
+        expect(body.tierConflicts).toEqual([{ channel_id: 3, tiers: ['pool', 'official'], assigned: 'pool' }]);
+        expect(body.channels.find((c: { id: number }) => c.id === 3).tier).toBe('pool');
+        expect(body.created.find((r: { slug: string }) => r.slug === 'gpt-5.4').tier).toBe('pool');
     });
 });
 

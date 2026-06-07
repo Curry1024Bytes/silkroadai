@@ -28,8 +28,9 @@ export interface ChannelForImport {
     model_ratio?: string | Record<string, number> | null;
     completion_ratio?: string | Record<string, number> | null;
     /**
-     * 该渠道的导入档次(P2.6)= ChannelGroup.key('pool'/'official')。由调用方按
-     * 「channel_id ∈ official 渠道组登记的 ids → official,否则 pool」判定后填入。
+     * 该渠道的导入档次(P2.8)= 登记了它的那个 ChannelGroup.key —— 任意档(pool /
+     * official / 自定义如 cc-kiro);未登记的渠道由调用方填入默认档(is_default)。
+     * 本模块把 tier 当作不透明字符串(按 (slug,tier) 去重),不假设其取值。
      */
     tier: string;
 }
@@ -47,7 +48,7 @@ export interface ImportCandidate {
     display_name: string;
     vendor: string;
     modality: 'chat' | 'image';
-    /** 档次(P2.6)= 来源渠道的 ChannelGroup.key('pool'/'official')。 */
+    /** 档次(P2.8)= 来源渠道所属 ChannelGroup.key(任意档;未登记渠道为默认档)。 */
     tier: string;
     channel_id: number;
     channel_name: string | null;

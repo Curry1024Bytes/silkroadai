@@ -13,8 +13,10 @@ export const runtime = 'nodejs';
 /**
  * POST /api/admin/models/import — 从 new-api 旗舰渠道一键导入「模型 + 价格」到目录。
  *
- * P2.6 档次感知:不再写死 'default' 档。按 ChannelGroup 判定每个渠道喂哪个档 ——
- * channel_id ∈ official 渠道组登记的 ids → 'official' 档,否则 → 'pool' 档(catch-all)。
+ * P2.8 任意档次感知:按【所有 enabled ChannelGroup 的登记渠道表】判定每个渠道喂哪个档 ——
+ * 渠道被哪个 group 登记(先到先得)就归哪档(支持 pool/official 之外的自定义档如 cc-kiro);
+ * 没被任何档登记的渠道 → 默认档(is_default,通常 pool 的 catch-all)。档次 key 动态读取,
+ * 不写死 'pool'/'official'(P2.6 曾写死二分 official/pool,漏掉自定义档 → 错映射到 pool)。
  *
  * 数据形态:一个 slug → 1 条 CatalogModel(upstream_map 按档填 {pool:…, official:…})
  * + 每档一条 CatalogPrice。同一模型从 pool 渠道 + official 渠道分别导入 → 自动合并
@@ -98,16 +100,32 @@ export async function POST(request: NextRequest) {
             ? Array.from(new Set(parsed.data.channel_ids))
             : DEFAULT_FLAGSHIP_CHANNEL_IDS;
 
-    // ── 读 ChannelGroup 判档(只读,不改 P3 任何数据)。official 渠道组登记的 channel
-    //    id → 'official' 档;其余 → 'pool' 档(pool 是 catch-all 默认档)。 ──
+    // ── 读【所有 enabled ChannelGroup】的登记渠道表判档(P2.8;只读,不改 P3 任何数据)。
+    //    渠道被哪个 group 登记就归哪档(先到先得);未登记 → 默认档(is_default,通常 pool)。
+    //    档次 key 完全动态 —— 不写死 'pool'/'official',自定义档(cc-kiro 等)同样生效。 ──
     const groups = await prisma.channelGroup.findMany({
-        where: { ...tenantScope(admin) },
-        select: { key: true, newapi_channel_ids: true },
+        where: { ...tenantScope(admin), enabled: true },
+        // tier_level→key 排序让"先到先得"确定:低档位先认领冲突渠道(pool=0 在前,
+        //「pool 自己登记的渠道明确归 pool」)。
+        orderBy: [{ tier_level: 'asc' }, { key: 'asc' }],
+        select: { key: true, newapi_channel_ids: true, is_default: true, tier_level: true },
     });
-    const officialGroup = groups.find((g) => g.key === 'official');
-    const officialChannelIds = new Set<number>(officialGroup?.newapi_channel_ids ?? []);
-    const officialRegistered = officialChannelIds.size > 0;
-    const channelTier = (id: number): string => (officialChannelIds.has(id) ? 'official' : 'pool');
+    const channelToTier = new Map<number, string>();
+    const channelTiersSeen = new Map<number, string[]>(); // 一渠道被几个档登记 → 供预览标冲突
+    for (const g of groups) {
+        for (const cid of g.newapi_channel_ids ?? []) {
+            if (!channelToTier.has(cid)) channelToTier.set(cid, g.key); // 先到先得,防一渠道多档
+            channelTiersSeen.set(cid, [...(channelTiersSeen.get(cid) ?? []), g.key]);
+        }
+    }
+    const defaultTier = groups.find((g) => g.is_default)?.key ?? 'pool';
+    const channelTier = (id: number): string => channelToTier.get(id) ?? defaultTier;
+    // 真有冲突(被 ≥2 个 enabled 档登记)的渠道 —— assigned 是先到先得的实际归属。
+    const tierConflicts = [...channelTiersSeen.entries()]
+        .filter(([, tiers]) => tiers.length > 1)
+        .map(([channel_id, tiers]) => ({ channel_id, tiers, assigned: channelToTier.get(channel_id)! }));
+    // 兼容旧导入预览横幅:'official' 档是否登记了渠道(纯 UI 提示信号,不参与判档逻辑)。
+    const officialRegistered = (groups.find((g) => g.key === 'official')?.newapi_channel_ids ?? []).length > 0;
 
     // ── 渠道菜单(best-effort):列出所有渠道 + 各自档次,让 operator 看到/挑选。
     //    失败不阻塞导入 —— 真正的导入按 id 逐个 getChannel。 ──
@@ -334,6 +352,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
         dryRun,
         selectedChannelIds: channelIds,
+        defaultTier,
+        tierConflicts,
         officialRegistered,
         channels: menu,
         channelErrors,

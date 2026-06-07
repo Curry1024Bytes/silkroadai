@@ -555,6 +555,42 @@ export async function updateChannel(channel: NewApiChannel): Promise<void> {
 }
 
 // ============================================
+// D′. 全局 Option(System Settings)
+// ============================================
+//
+// new-api `GET /api/option/` 返回【全部】系统设置,envelope.data 形态在不同版本间
+// 不一致(可能是 `[{key, value}, …]` 数组,也可能是 `{key: value}` 对象),两种都兜住。
+// 图片模型计费走全局 `ModelPrice`(option key,JSON 字符串 dict `{model: usd_per_image}`,
+// 全局按模型名、不分渠道 —— P2.8 Part B 实测确认)。
+//
+// ⚠️ 这是只读的安全 GET(可重复调,不像 GET /api/user/token 会 rotate,见 gotcha #13)。
+
+/** 读单个全局 option 的原始 value 字符串;不存在返回 null。 */
+export async function getOption(key: string): Promise<string | null> {
+    const data = await call<Array<{ key: string; value: unknown }> | Record<string, unknown> | null>(
+        'GET',
+        '/api/option/',
+    );
+    if (Array.isArray(data)) {
+        const found = data.find((i) => i && i.key === key);
+        return found && found.value != null ? String(found.value) : null;
+    }
+    if (data && typeof data === 'object') {
+        const v = (data as Record<string, unknown>)[key];
+        return v == null ? null : String(v);
+    }
+    return null;
+}
+
+/**
+ * 写单个全局 option(new-api `PUT /api/option/` body `{key, value}` —— 只更新这一个
+ * key,不影响其它 option)。value 必须是字符串(JSON dict 需调用方先 stringify)。
+ */
+export async function putOption(key: string, value: string): Promise<void> {
+    await call<unknown>('PUT', '/api/option/', { key, value });
+}
+
+// ============================================
 // E. Portal 业务高层封装
 // ============================================
 
