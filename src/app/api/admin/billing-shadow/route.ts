@@ -23,7 +23,7 @@ function rangeStart(period: string, now: Date): Date | null {
 }
 
 export async function GET(request: NextRequest) {
-    const admin = await resolveAdmin(request, 'admin');
+    const admin = await resolveAdmin(request, 'superadmin');
     if (!admin) return unauthorizedResponse(request);
 
     const raw = new URL(request.url).searchParams.get('period') ?? '7d';

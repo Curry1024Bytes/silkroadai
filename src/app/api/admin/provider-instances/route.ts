@@ -33,7 +33,7 @@ function decryptAndMaskConfig(encryptedConfig: string): Record<string, string> {
 
 // GET: List all instances (optionally filter by providerKey)
 export async function GET(request: NextRequest) {
-    const admin = await resolveAdmin(request, 'admin');
+    const admin = await resolveAdmin(request, 'superadmin');
     if (!admin) return unauthorizedResponse(request);
 
     try {
@@ -59,7 +59,7 @@ export async function GET(request: NextRequest) {
 
 // POST: Create a new instance
 export async function POST(request: NextRequest) {
-    const admin = await resolveAdmin(request, 'admin');
+    const admin = await resolveAdmin(request, 'superadmin');
     if (!admin) return unauthorizedResponse(request);
 
     try {

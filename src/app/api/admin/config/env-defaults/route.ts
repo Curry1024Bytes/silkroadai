@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { verifyAdminToken, unauthorizedResponse } from '@/lib/admin-auth';
+import { unauthorizedResponse } from '@/lib/admin-auth';
+import { resolveAdmin } from '@/lib/admin/auth';
 import { getEnv } from '@/lib/config';
 import { ensureDBProviders, paymentRegistry } from '@/lib/payment';
 
@@ -73,7 +74,7 @@ const PROVIDER_NAMES: Record<string, string> = {
 };
 
 export async function GET(request: NextRequest) {
-    if (!(await verifyAdminToken(request))) return unauthorizedResponse(request);
+    if (!(await resolveAdmin(request, 'superadmin'))) return unauthorizedResponse(request);
 
     try {
         const env = getEnv();

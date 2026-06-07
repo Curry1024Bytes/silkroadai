@@ -10,18 +10,20 @@ interface NavItem {
     superadminOnly?: boolean;
 }
 
+// P6b §0: platform-level management is superadmin-only (the APIs enforce it too).
+// Partner admins (role=admin, tenant scoped) only see tenant-scoped views:
+// Dashboard + Orders (+ Customers in §2). superadmin sees everything.
 const NAV_ITEMS: NavItem[] = [
     { path: '/admin', label: { zh: '数据概览', en: 'Dashboard' } },
     { path: '/admin/orders', label: { zh: '订单管理', en: 'Orders' } },
-    { path: '/admin/payment-config', label: { zh: '支付配置', en: 'Payment Config' } },
-    { path: '/admin/channels', label: { zh: '渠道管理', en: 'Channels' } },
-    { path: '/admin/channel-groups', label: { zh: '渠道分组', en: 'Channel Groups' } },
-    { path: '/admin/models', label: { zh: '模型管理', en: 'Models' } },
-    { path: '/admin/pricing', label: { zh: '定价', en: 'Pricing' } },
-    { path: '/admin/billing-shadow', label: { zh: '影子计量', en: 'Shadow Metering' } },
-    // P6a: tenant management is superadmin-only (the API also enforces superadmin).
+    { path: '/admin/payment-config', label: { zh: '支付配置', en: 'Payment Config' }, superadminOnly: true },
+    { path: '/admin/channels', label: { zh: '渠道管理', en: 'Channels' }, superadminOnly: true },
+    { path: '/admin/channel-groups', label: { zh: '渠道分组', en: 'Channel Groups' }, superadminOnly: true },
+    { path: '/admin/models', label: { zh: '模型管理', en: 'Models' }, superadminOnly: true },
+    { path: '/admin/pricing', label: { zh: '定价', en: 'Pricing' }, superadminOnly: true },
+    { path: '/admin/billing-shadow', label: { zh: '影子计量', en: 'Shadow Metering' }, superadminOnly: true },
+    { path: '/admin/subscriptions', label: { zh: '订阅管理', en: 'Subscriptions' }, superadminOnly: true },
     { path: '/admin/tenants', label: { zh: '租户管理', en: 'Tenants' }, superadminOnly: true },
-    { path: '/admin/subscriptions', label: { zh: '订阅管理', en: 'Subscriptions' } },
 ];
 
 function AdminShellInner({

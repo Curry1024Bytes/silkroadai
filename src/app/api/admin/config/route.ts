@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { verifyAdminToken, unauthorizedResponse } from '@/lib/admin-auth';
+import { unauthorizedResponse } from '@/lib/admin-auth';
+import { resolveAdmin } from '@/lib/admin/auth';
 import { getAllSystemConfigs, setSystemConfigs, getSystemConfig } from '@/lib/system-config';
 import { prisma } from '@/lib/db';
 
@@ -59,7 +60,7 @@ async function validateEnabledProviders(configs: { key: string; value: string }[
 }
 
 export async function GET(request: NextRequest) {
-    if (!(await verifyAdminToken(request))) return unauthorizedResponse(request);
+    if (!(await resolveAdmin(request, 'superadmin'))) return unauthorizedResponse(request);
 
     try {
         const configs = await getAllSystemConfigs();
@@ -98,7 +99,7 @@ const ALLOWED_CONFIG_KEYS = new Set([
 ]);
 
 export async function PUT(request: NextRequest) {
-    if (!(await verifyAdminToken(request))) return unauthorizedResponse(request);
+    if (!(await resolveAdmin(request, 'superadmin'))) return unauthorizedResponse(request);
 
     try {
         const body = await request.json();

@@ -13,7 +13,7 @@ export const runtime = 'nodejs';
  * 用于上次保存时 sync 失败后的「重新同步」按钮。
  */
 export async function POST(request: NextRequest, { params }: { params: Promise<{ modelId: string }> }) {
-    const admin = await resolveAdmin(request, 'admin');
+    const admin = await resolveAdmin(request, 'superadmin');
     if (!admin) return unauthorizedResponse(request);
 
     const { modelId } = await params;

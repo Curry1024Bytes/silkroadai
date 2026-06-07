@@ -73,7 +73,7 @@ function countModels(models: unknown): number {
 }
 
 export async function POST(request: NextRequest) {
-    const admin = await resolveAdmin(request, 'admin');
+    const admin = await resolveAdmin(request, 'superadmin');
     if (!admin) return unauthorizedResponse(request);
 
     // dryRun 默认 true:必须显式 ?dryRun=false 才真写库(误调永不破坏数据)。

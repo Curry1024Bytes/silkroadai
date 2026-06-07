@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { verifyAdminToken, unauthorizedResponse } from '@/lib/admin-auth';
+import { unauthorizedResponse } from '@/lib/admin-auth';
+import { resolveAdmin } from '@/lib/admin/auth';
 import { processRefund } from '@/lib/order/service';
 import { handleApiError } from '@/lib/utils/api';
 import { resolveLocale } from '@/lib/locale';
@@ -14,7 +15,7 @@ const refundSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-    if (!(await verifyAdminToken(request))) return unauthorizedResponse(request);
+    if (!(await resolveAdmin(request, 'superadmin'))) return unauthorizedResponse(request);
 
     const locale = resolveLocale(request.nextUrl.searchParams.get('lang'));
 

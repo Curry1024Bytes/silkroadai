@@ -74,7 +74,7 @@ async function checkCredentialChangeAllowed(
 
 // GET
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-    const admin = await resolveAdmin(request, 'admin');
+    const admin = await resolveAdmin(request, 'superadmin');
     if (!admin) return unauthorizedResponse(request);
 
     try {
@@ -95,7 +95,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
 // PUT
 export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-    const admin = await resolveAdmin(request, 'admin');
+    const admin = await resolveAdmin(request, 'superadmin');
     if (!admin) return unauthorizedResponse(request);
 
     try {
@@ -172,7 +172,7 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
 
 // DELETE
 export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-    const admin = await resolveAdmin(request, 'admin');
+    const admin = await resolveAdmin(request, 'superadmin');
     if (!admin) return unauthorizedResponse(request);
 
     try {

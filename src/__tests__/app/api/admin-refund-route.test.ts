@@ -1,11 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest, NextResponse } from 'next/server';
 
-const mockVerifyAdminToken = vi.fn();
+// P6b §0: refund is a money-moving op → gate raised from verifyAdminToken (role≥admin)
+// to resolveAdmin(req,'superadmin') so a partner admin (role=admin) cannot refund.
+const mockResolveAdmin = vi.fn();
 const mockProcessRefund = vi.fn();
 
+vi.mock('@/lib/admin/auth', () => ({
+    resolveAdmin: (...args: unknown[]) => mockResolveAdmin(...args),
+}));
+
 vi.mock('@/lib/admin-auth', () => ({
-    verifyAdminToken: (...args: unknown[]) => mockVerifyAdminToken(...args),
     unauthorizedResponse: () => NextResponse.json({ error: '未授权' }, { status: 401 }),
 }));
 
@@ -41,12 +46,12 @@ function createRequest(body?: object, lang?: string) {
 describe('POST /api/admin/refund', () => {
     beforeEach(() => {
         vi.clearAllMocks();
-        mockVerifyAdminToken.mockResolvedValue(true);
+        mockResolveAdmin.mockResolvedValue({ role: 'superadmin' });
         mockProcessRefund.mockResolvedValue({ success: true, balanceDeducted: 100, subscriptionDaysDeducted: 0 });
     });
 
-    it('returns 401 when unauthenticated', async () => {
-        mockVerifyAdminToken.mockResolvedValue(false);
+    it('returns 401 when not superadmin', async () => {
+        mockResolveAdmin.mockResolvedValue(null);
         const res = await POST(createRequest({ order_id: 'o1' }));
         expect(res.status).toBe(401);
     });

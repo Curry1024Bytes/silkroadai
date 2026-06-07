@@ -6,7 +6,7 @@ import { prisma } from '@/lib/db';
 import { getGroup } from '@/lib/litellm/client';
 
 export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-    const admin = await resolveAdmin(request, 'admin');
+    const admin = await resolveAdmin(request, 'superadmin');
     if (!admin) return unauthorizedResponse(request);
 
     try {
@@ -111,7 +111,7 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
 }
 
 export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-    const admin = await resolveAdmin(request, 'admin');
+    const admin = await resolveAdmin(request, 'superadmin');
     if (!admin) return unauthorizedResponse(request);
 
     try {

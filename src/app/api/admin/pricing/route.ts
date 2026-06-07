@@ -13,7 +13,7 @@ export const runtime = 'nodejs';
  * 倒序)。客户端从每个 (model, tier) 的第一行得"当前价",其余即改价历史时间线。
  */
 export async function GET(request: NextRequest) {
-    const admin = await resolveAdmin(request, 'admin');
+    const admin = await resolveAdmin(request, 'superadmin');
     if (!admin) return unauthorizedResponse(request);
 
     const models = await prisma.catalogModel.findMany({
@@ -46,7 +46,7 @@ const changePriceSchema = z
  * 以 portal DB 为事实源,sync 状态回前端,可「重新同步」。
  */
 export async function POST(request: NextRequest) {
-    const admin = await resolveAdmin(request, 'admin');
+    const admin = await resolveAdmin(request, 'superadmin');
     if (!admin) return unauthorizedResponse(request);
 
     let body: unknown;

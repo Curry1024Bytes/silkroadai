@@ -1,14 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest, NextResponse } from 'next/server';
 
-const mockVerifyAdminToken = vi.fn();
+// P6b §0: config is platform-global (SystemConfig has no tenant_id) → gate raised
+// from verifyAdminToken (role≥admin) to resolveAdmin(req,'superadmin').
+const mockResolveAdmin = vi.fn();
 const mockGetAllSystemConfigs = vi.fn();
 const mockSetSystemConfigs = vi.fn();
 const mockGetSystemConfig = vi.fn();
 const mockGroupBy = vi.fn();
 
+vi.mock('@/lib/admin/auth', () => ({
+    resolveAdmin: (...args: unknown[]) => mockResolveAdmin(...args),
+}));
+
 vi.mock('@/lib/admin-auth', () => ({
-    verifyAdminToken: (...args: unknown[]) => mockVerifyAdminToken(...args),
     unauthorizedResponse: () => NextResponse.json({ error: '未授权' }, { status: 401 }),
 }));
 
@@ -41,11 +46,11 @@ function createRequest(method = 'GET', body?: object) {
 describe('GET /api/admin/config', () => {
     beforeEach(() => {
         vi.clearAllMocks();
-        mockVerifyAdminToken.mockResolvedValue(true);
+        mockResolveAdmin.mockResolvedValue({ role: 'superadmin' });
     });
 
-    it('returns 401 when unauthenticated', async () => {
-        mockVerifyAdminToken.mockResolvedValue(false);
+    it('returns 401 when not superadmin', async () => {
+        mockResolveAdmin.mockResolvedValue(null);
         const res = await GET(createRequest());
         expect(res.status).toBe(401);
     });
@@ -103,12 +108,12 @@ describe('GET /api/admin/config', () => {
 describe('PUT /api/admin/config', () => {
     beforeEach(() => {
         vi.clearAllMocks();
-        mockVerifyAdminToken.mockResolvedValue(true);
+        mockResolveAdmin.mockResolvedValue({ role: 'superadmin' });
         mockSetSystemConfigs.mockResolvedValue(undefined);
     });
 
-    it('returns 401 when unauthenticated', async () => {
-        mockVerifyAdminToken.mockResolvedValue(false);
+    it('returns 401 when not superadmin', async () => {
+        mockResolveAdmin.mockResolvedValue(null);
         const res = await PUT(createRequest('PUT', { configs: [{ key: 'RECHARGE_MIN_AMOUNT', value: '5' }] }));
         expect(res.status).toBe(401);
     });

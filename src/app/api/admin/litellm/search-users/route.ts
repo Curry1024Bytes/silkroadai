@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { verifyAdminToken, unauthorizedResponse } from '@/lib/admin-auth';
+import { unauthorizedResponse } from '@/lib/admin-auth';
+import { resolveAdmin } from '@/lib/admin/auth';
 import { searchUsers } from '@/lib/litellm/client';
 
 export async function GET(request: NextRequest) {
-    if (!(await verifyAdminToken(request))) return unauthorizedResponse(request);
+    if (!(await resolveAdmin(request, 'superadmin'))) return unauthorizedResponse(request);
 
     const keyword = request.nextUrl.searchParams.get('keyword')?.trim();
     if (!keyword) {

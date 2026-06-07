@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { verifyAdminToken, unauthorizedResponse } from '@/lib/admin-auth';
+import { unauthorizedResponse } from '@/lib/admin-auth';
+import { resolveAdmin } from '@/lib/admin/auth';
 import { getUserSubscriptions, getUser, listSubscriptions } from '@/lib/litellm/client';
 
 export async function GET(request: NextRequest) {
-    if (!(await verifyAdminToken(request))) return unauthorizedResponse(request);
+    if (!(await resolveAdmin(request, 'superadmin'))) return unauthorizedResponse(request);
 
     try {
         const searchParams = request.nextUrl.searchParams;
