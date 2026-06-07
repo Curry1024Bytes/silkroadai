@@ -22,6 +22,14 @@ vi.mock('next/font/google', () => ({
     Inter: () => ({ className: 'mock-inter', style: { fontFamily: 'Inter' } }),
 }));
 
+// P6a: the landing header now uses the async <BrandLogo> (reads getCurrentTenant).
+// Render it as the default platform <Logo> (synchronous) so renderToString still
+// works and the brand-logo assertion (img alt="Silk Road AI" 28×112) holds.
+vi.mock('@/components/brand/BrandLogo', async () => {
+    const actual = await vi.importActual<typeof import('@/components/brand/Logo')>('@/components/brand/Logo');
+    return { BrandLogo: (props: Record<string, unknown>) => actual.Logo(props) };
+});
+
 // We mock @/lib/promo per test, then dynamic-import the page so the
 // fresh module sees the current mock value.
 async function loadPage() {

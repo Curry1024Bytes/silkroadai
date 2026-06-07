@@ -8,6 +8,7 @@ import {
     GitHubOAuthError,
 } from '@/lib/auth/oauth/github';
 import { linkOrCreateOAuthUser } from '@/lib/auth/oauth/account-link';
+import { resolveTenantByHost } from '@/lib/tenant/resolve';
 import { signSession, setSessionCookie, brandCookieDomain } from '@/lib/auth/session';
 import { extractClientIP } from '@/lib/auth/extract-ip';
 
@@ -127,12 +128,17 @@ export async function GET(req: NextRequest) {
         return buildResponse(req.url, { error: 'oauth_failed' });
     }
 
-    const outcome = await linkOrCreateOAuthUser({
-        provider: PROVIDER,
-        providerAccountId,
-        email,
-        nameHint,
-    });
+    // P6a: attribute a new OAuth signup to the request-domain's tenant.
+    const tenant = await resolveTenantByHost(req.headers.get('host'));
+    const outcome = await linkOrCreateOAuthUser(
+        {
+            provider: PROVIDER,
+            providerAccountId,
+            email,
+            nameHint,
+        },
+        tenant.id,
+    );
     if (!outcome.ok) {
         // W5 D4: provisioning_failed = new-api flake / our rollback failed.
         // account_disabled (banned) and link_conflict (suspected attack) →

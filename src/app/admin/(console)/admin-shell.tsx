@@ -4,7 +4,13 @@ import { useSearchParams, usePathname } from 'next/navigation';
 import { Suspense, useState, type ReactNode } from 'react';
 import { resolveLocale } from '@/lib/locale';
 
-const NAV_ITEMS = [
+interface NavItem {
+    path: string;
+    label: { zh: string; en: string };
+    superadminOnly?: boolean;
+}
+
+const NAV_ITEMS: NavItem[] = [
     { path: '/admin', label: { zh: '数据概览', en: 'Dashboard' } },
     { path: '/admin/orders', label: { zh: '订单管理', en: 'Orders' } },
     { path: '/admin/payment-config', label: { zh: '支付配置', en: 'Payment Config' } },
@@ -13,10 +19,20 @@ const NAV_ITEMS = [
     { path: '/admin/models', label: { zh: '模型管理', en: 'Models' } },
     { path: '/admin/pricing', label: { zh: '定价', en: 'Pricing' } },
     { path: '/admin/billing-shadow', label: { zh: '影子计量', en: 'Shadow Metering' } },
+    // P6a: tenant management is superadmin-only (the API also enforces superadmin).
+    { path: '/admin/tenants', label: { zh: '租户管理', en: 'Tenants' }, superadminOnly: true },
     { path: '/admin/subscriptions', label: { zh: '订阅管理', en: 'Subscriptions' } },
 ];
 
-function AdminShellInner({ adminEmail, children }: { adminEmail: string; children: ReactNode }) {
+function AdminShellInner({
+    adminEmail,
+    adminRole,
+    children,
+}: {
+    adminEmail: string;
+    adminRole: string;
+    children: ReactNode;
+}) {
     const searchParams = useSearchParams();
     const pathname = usePathname();
     const theme = searchParams.get('theme') || 'light';
@@ -40,6 +56,9 @@ function AdminShellInner({ adminEmail, children }: { adminEmail: string; childre
         return pathname.startsWith(navPath);
     };
 
+    // P6a: hide superadmin-only entries (e.g. 租户管理) from partner/platform admins.
+    const navItems = NAV_ITEMS.filter((it) => !it.superadminOnly || adminRole === 'superadmin');
+
     async function handleLogout() {
         if (loggingOut) return;
         setLoggingOut(true);
@@ -61,7 +80,7 @@ function AdminShellInner({ adminEmail, children }: { adminEmail: string; childre
                         isDark ? 'border-slate-700 bg-slate-800/70' : 'border-slate-200 bg-slate-100/90',
                     ].join(' ')}
                 >
-                    {NAV_ITEMS.map((item) => (
+                    {navItems.map((item) => (
                         <a
                             key={item.path}
                             href={buildUrl(item.path)}
@@ -122,10 +141,20 @@ function AdminShellInner({ adminEmail, children }: { adminEmail: string; childre
  * Keeps theme / ui_mode / lang in the URL (token dropped — auth is cookie
  * session now) and adds an identity + logout strip.
  */
-export function AdminShell({ adminEmail, children }: { adminEmail: string; children: ReactNode }) {
+export function AdminShell({
+    adminEmail,
+    adminRole,
+    children,
+}: {
+    adminEmail: string;
+    adminRole: string;
+    children: ReactNode;
+}) {
     return (
         <Suspense>
-            <AdminShellInner adminEmail={adminEmail}>{children}</AdminShellInner>
+            <AdminShellInner adminEmail={adminEmail} adminRole={adminRole}>
+                {children}
+            </AdminShellInner>
         </Suspense>
     );
 }

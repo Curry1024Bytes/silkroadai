@@ -14,7 +14,7 @@
  */
 import type { Metadata } from 'next';
 import Link from 'next/link';
-import { Logo } from '@/components/brand/Logo';
+import { BrandLogo } from '@/components/brand/BrandLogo';
 // W8 D1.5 (2026-05-21): 新永久定价替换 W7 promo,landing 不再走 isPromoActive()。
 // import { isPromoActive } from '@/lib/promo'; — 留作日后审计参考
 import { InviteCodeBridge } from '@/components/marketing/InviteCodeBridge';
@@ -138,7 +138,7 @@ function Header() {
                  *  Use `primary-flat` because at 28px the gradient on `primary` aliases
                  *  on small screens; per the asset cheatsheet the flat variant is the
                  *  recommended pick below 48px. */}
-                <Logo variant="primary-flat" size={28} />
+                <BrandLogo variant="primary-flat" size={28} />
                 <nav style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                     {/* W7 D4 PR-R Item A — operator visual feedback after PR-Q
                      *  shipped: "登录" + "进入控制台 →" pair read as redundant

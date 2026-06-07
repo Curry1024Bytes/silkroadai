@@ -12,11 +12,14 @@
  *
  * role ∈ { customer | staff | admin | superadmin }
  *   - customer    降级 / 撤销后台权限
- *   - staff       白标 partner 运营 / 客服(受 tenant scope 限制)
- *   - admin       平台管理员
- *   - superadmin  平台超管(= 现 ADMIN_TOKEN 等价)
+ *   - staff       ⚠️ P6a 起 /admin console 入口门提到 role ≥ admin(与 /api/admin/* 一致),
+ *                 staff 现在【进不了后台 UI】(会重定向到登录)。枚举值保留供将来细分。
+ *   - admin       平台管理员 OR 白标 partner 运营(tenantScope 限制只看自己租户)。
+ *                 ⭐ P6a partner 运营授 'admin'(不是 staff!)。该 user 的 tenant_id 需 = partner
+ *                 租户:让 partner 运营【先在 partner 域名注册】(注册自动归该域名租户),再授 admin。
+ *   - superadmin  平台超管(= 现 ADMIN_TOKEN 等价)。租户管理 /admin/tenants 是 superadmin 专属。
  *
- * 读 .env 的 DATABASE_URL。只改 portal 自有 User 表,不碰 new-api。
+ * 读 .env 的 DATABASE_URL。只改 portal 自有 User 表的 role(不改 tenant_id,不碰 new-api)。
  */
 import 'dotenv/config';
 import { prisma } from '@/lib/db';

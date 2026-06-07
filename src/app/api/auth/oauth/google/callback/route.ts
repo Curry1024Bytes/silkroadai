@@ -8,6 +8,7 @@ import {
     type GoogleIdTokenClaims,
 } from '@/lib/auth/oauth/google';
 import { linkOrCreateOAuthUser } from '@/lib/auth/oauth/account-link';
+import { resolveTenantByHost } from '@/lib/tenant/resolve';
 import { signSession, setSessionCookie, brandCookieDomain } from '@/lib/auth/session';
 import { extractClientIP } from '@/lib/auth/extract-ip';
 
@@ -141,12 +142,17 @@ export async function GET(req: NextRequest) {
     // shared helper (same one GitHub callback uses since W3 D7). Behavior
     // is identical to the inline version this replaced — verified by D6's
     // 15-test suite still passing unchanged.
-    const outcome = await linkOrCreateOAuthUser({
-        provider: PROVIDER,
-        providerAccountId: claims.sub,
-        email: claims.email,
-        nameHint: claims.name,
-    });
+    // P6a: attribute a new OAuth signup to the request-domain's tenant.
+    const tenant = await resolveTenantByHost(req.headers.get('host'));
+    const outcome = await linkOrCreateOAuthUser(
+        {
+            provider: PROVIDER,
+            providerAccountId: claims.sub,
+            email: claims.email,
+            nameHint: claims.name,
+        },
+        tenant.id,
+    );
     if (!outcome.ok) {
         // W5 D4: provisioning_failed is operational (new-api flake or our
         // rollback path failed) → Sentry. account_disabled is banned-user

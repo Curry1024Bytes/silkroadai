@@ -34,6 +34,11 @@ vi.mock('@/lib/auth/oauth/account-link', () => ({
     linkOrCreateOAuthUser: (...args: unknown[]) => mockLinkOrCreate(...args),
 }));
 
+// P6a: callback resolves the request-domain tenant + passes its id to linkOrCreate.
+vi.mock('@/lib/tenant/resolve', () => ({
+    resolveTenantByHost: vi.fn(async () => ({ id: 'tenant-platform' })),
+}));
+
 // ── prisma mock — only last_login_at touch + signSession's tv lookup ──
 const mockUserFindUnique = vi.fn();
 const mockUserUpdate = vi.fn();
@@ -180,12 +185,15 @@ describe('GET /api/auth/oauth/github/callback', () => {
         expect(res.status).toBe(302);
         expect(res.headers.get('location')).toBe('http://localhost/dashboard');
         // helper called with provider='github' + stringified id + lowercased email
-        expect(mockLinkOrCreate).toHaveBeenCalledWith({
-            provider: 'github',
-            providerAccountId: '12345',
-            email: 'octo@example.com',
-            nameHint: 'The Octocat',
-        });
+        expect(mockLinkOrCreate).toHaveBeenCalledWith(
+            {
+                provider: 'github',
+                providerAccountId: '12345',
+                email: 'octo@example.com',
+                nameHint: 'The Octocat',
+            },
+            'tenant-platform', // P6a tenant attribution
+        );
         // session cookie set
         expect(res.headers.getSetCookie().some((c) => c.startsWith('silkroad_session='))).toBe(true);
         // state cookie cleared
@@ -209,7 +217,10 @@ describe('GET /api/auth/oauth/github/callback', () => {
             }),
         );
 
-        expect(mockLinkOrCreate).toHaveBeenCalledWith(expect.objectContaining({ nameHint: 'noname' }));
+        expect(mockLinkOrCreate).toHaveBeenCalledWith(
+            expect.objectContaining({ nameHint: 'noname' }),
+            'tenant-platform',
+        );
     });
 
     it('maps account_disabled outcome from helper to redirect', async () => {

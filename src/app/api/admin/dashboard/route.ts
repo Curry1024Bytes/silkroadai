@@ -1,20 +1,25 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
-import { verifyAdminToken, unauthorizedResponse } from '@/lib/admin-auth';
+import { unauthorizedResponse } from '@/lib/admin-auth';
+import { resolveAdmin } from '@/lib/admin/auth';
+import { tenantScope } from '@/lib/admin/tenant-scope';
 import { OrderStatus } from '@prisma/client';
 import { BIZ_TZ_NAME, getBizDayStartUTC, toBizDateStr } from '@/lib/time/biz-day';
 
 export async function GET(request: NextRequest) {
-    if (!(await verifyAdminToken(request))) return unauthorizedResponse();
+    // P6a security fix (§9.5): tenant-scope the whole dashboard. Upgraded from
+    // verifyAdminToken → resolveAdmin so we have the AdminPrincipal. superadmin →
+    // tenantScope() = {} (sees all platform); partner admin (role=admin, tenant set)
+    // → only their tenant's orders, in BOTH the Prisma aggregates AND the two
+    // $queryRaw queries (else a partner admin would see全平台营收 — data leak).
+    const admin = await resolveAdmin(request, 'admin');
+    if (!admin) return unauthorizedResponse(request);
 
-    // P1 note: this analytics dashboard is intentionally NOT tenant-scoped yet.
-    // It mixes Prisma aggregates with two $queryRaw queries (leaderboard / daily
-    // series); scoping only the Prisma half would make the summary cards and the
-    // leaderboard disagree for a partner admin. Proper tenant-scoped analytics
-    // (including the raw SQL) lands in P6 when non-superadmin admins exist — in
-    // P1 the only granted role is superadmin (tenantScope() → {} = sees all), so
-    // behaviour is unchanged. `verifyAdminToken` is now cookie + role aware.
+    const scope = tenantScope(admin); // {} for superadmin, { tenant_id } otherwise
+    // Parameterized tenant clause for the raw SQL (empty for superadmin).
+    const tenantSql = scope.tenant_id ? Prisma.sql`AND tenant_id = ${scope.tenant_id}::uuid` : Prisma.empty;
+
     const searchParams = request.nextUrl.searchParams;
     const days = Math.min(365, Math.max(1, Number(searchParams.get('days') || '30')));
 
@@ -46,36 +51,36 @@ export async function GET(request: NextRequest) {
     ] = await Promise.all([
         // Today paid aggregate
         prisma.order.aggregate({
-            where: { status: { in: paidStatuses }, paidAt: { gte: todayStart } },
+            where: { status: { in: paidStatuses }, paidAt: { gte: todayStart }, ...scope },
             _sum: { amount: true },
             _count: { _all: true },
         }),
         // Total paid aggregate
         prisma.order.aggregate({
-            where: { status: { in: paidStatuses } },
+            where: { status: { in: paidStatuses }, ...scope },
             _sum: { amount: true },
             _count: { _all: true },
         }),
         // Today total orders
-        prisma.order.count({ where: { createdAt: { gte: todayStart } } }),
+        prisma.order.count({ where: { createdAt: { gte: todayStart }, ...scope } }),
         // Total orders
-        prisma.order.count(),
+        prisma.order.count({ where: { ...scope } }),
         // Subscription: today paid aggregate
         prisma.order.aggregate({
-            where: { status: { in: paidStatuses }, paidAt: { gte: todayStart }, orderType: 'subscription' },
+            where: { status: { in: paidStatuses }, paidAt: { gte: todayStart }, orderType: 'subscription', ...scope },
             _sum: { amount: true },
             _count: { _all: true },
         }),
         // Subscription: total paid aggregate
         prisma.order.aggregate({
-            where: { status: { in: paidStatuses }, orderType: 'subscription' },
+            where: { status: { in: paidStatuses }, orderType: 'subscription', ...scope },
             _sum: { amount: true },
             _count: { _all: true },
         }),
         // Subscription: today total orders
-        prisma.order.count({ where: { createdAt: { gte: todayStart }, orderType: 'subscription' } }),
+        prisma.order.count({ where: { createdAt: { gte: todayStart }, orderType: 'subscription', ...scope } }),
         // Subscription: total orders
-        prisma.order.count({ where: { orderType: 'subscription' } }),
+        prisma.order.count({ where: { orderType: 'subscription', ...scope } }),
         // Daily series: use AT TIME ZONE to group by business timezone date
         // Prisma.raw() inlines the timezone name to avoid parameterization mismatch between SELECT and GROUP BY
         prisma.$queryRaw<{ date: string; amount: string; count: bigint }[]>`
@@ -84,6 +89,7 @@ export async function GET(request: NextRequest) {
         FROM orders
         WHERE status IN ('PAID', 'RECHARGING', 'COMPLETED', 'REFUNDING', 'REFUNDED', 'REFUND_FAILED')
           AND paid_at >= ${startDate}
+          ${tenantSql}
         GROUP BY (paid_at AT TIME ZONE 'UTC' AT TIME ZONE ${Prisma.raw(`'${BIZ_TZ_NAME}'`)})::date
         ORDER BY date
       `,
@@ -102,6 +108,7 @@ export async function GET(request: NextRequest) {
         FROM orders
         WHERE status IN ('PAID', 'RECHARGING', 'COMPLETED', 'REFUNDING', 'REFUNDED', 'REFUND_FAILED')
           AND paid_at >= ${startDate}
+          ${tenantSql}
         GROUP BY user_id
         ORDER BY SUM(amount) DESC
         LIMIT 10
@@ -109,7 +116,7 @@ export async function GET(request: NextRequest) {
         // Payment method distribution (within time range)
         prisma.order.groupBy({
             by: ['paymentType'],
-            where: { status: { in: paidStatuses }, paidAt: { gte: startDate } },
+            where: { status: { in: paidStatuses }, paidAt: { gte: startDate }, ...scope },
             _sum: { amount: true },
             _count: { _all: true },
         }),

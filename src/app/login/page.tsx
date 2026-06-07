@@ -18,7 +18,7 @@ import { redirect } from 'next/navigation';
 import { headers } from 'next/headers';
 import { NextRequest } from 'next/server';
 import { getCurrentUser } from '@/lib/auth/session';
-import { Logo } from '@/components/brand/Logo';
+import { BrandLogo } from '@/components/brand/BrandLogo';
 import { Card } from '@/components/ui/Card';
 import { FormError } from '@/components/ui/FormError';
 import { LoginForm } from './login-form';
@@ -78,7 +78,7 @@ export default async function LoginPage({
         <main className="min-h-screen flex items-center justify-center bg-paper px-4 py-10">
             <Card className="w-full max-w-md p-8">
                 <header className="mb-6 flex items-center gap-3">
-                    <Logo variant="primary-flat" size={28} />
+                    <BrandLogo variant="primary-flat" size={28} />
                     <p className="m-0 text-xs text-minor-ink">Connecting Global Intelligence.</p>
                 </header>
                 <h2 className="m-0 mb-4 text-base font-semibold text-navy">登录</h2>

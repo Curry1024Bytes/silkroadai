@@ -42,6 +42,17 @@ vi.mock('@/lib/reseller/fetch-status', () => ({
     fetchResellerStatus: vi.fn(async () => ({ isReseller: false })),
 }));
 
+// P6a: layout now reads getCurrentTenant (brand color) + renders async <BrandLogo>.
+// Mock the tenant (platform values → no-op color) and render BrandLogo as the
+// default <Logo> (sync) so renderToString works + the "Silk Road AI" alt holds.
+vi.mock('@/lib/tenant/resolve', () => ({
+    getCurrentTenant: vi.fn(async () => ({ primary_color: '#1a2540', logo_url: null, brand_name: 'Silk Road AI' })),
+}));
+vi.mock('@/components/brand/BrandLogo', async () => {
+    const actual = await vi.importActual<typeof import('@/components/brand/Logo')>('@/components/brand/Logo');
+    return { BrandLogo: (props: Record<string, unknown>) => actual.Logo(props) };
+});
+
 import AuthenticatedLayout from '@/app/(authenticated)/layout';
 
 const VERIFIED_USER = {

@@ -24,9 +24,11 @@ import type { ReactNode } from 'react';
 import { redirect } from 'next/navigation';
 import { headers } from 'next/headers';
 import { NextRequest } from 'next/server';
+import type { CSSProperties } from 'react';
 import { getCurrentUser } from '@/lib/auth/session';
 import { fetchResellerStatus } from '@/lib/reseller/fetch-status';
-import { Logo } from '@/components/brand/Logo';
+import { BrandLogo } from '@/components/brand/BrandLogo';
+import { getCurrentTenant } from '@/lib/tenant/resolve';
 import { Sidebar } from './sidebar';
 import { LogoutButton } from './logout-button';
 import { UnverifiedBanner } from './unverified-banner';
@@ -70,12 +72,17 @@ export default async function AuthenticatedLayout({ children }: { children: Reac
     // DB round-trip.
     const { status: resellerStatus } = await fetchResellerStatus(user.id);
 
+    // P6a: tenant brand. Platform tenant's primary_color = #1a2540 (current navy) → no-op;
+    // a partner domain overrides --color-navy for this dashboard subtree.
+    const tenant = await getCurrentTenant();
+    const brandStyle = tenant.primary_color ? ({ ['--color-navy']: tenant.primary_color } as CSSProperties) : undefined;
+
     return (
-        <div className="min-h-screen flex flex-col bg-paper text-ink">
+        <div className="min-h-screen flex flex-col bg-paper text-ink" style={brandStyle}>
             <header className="bg-paper border-b border-brand-border sticky top-0 z-40">
                 <div className="flex items-center justify-between gap-4 px-6 py-3.5">
                     <div className="flex items-center gap-3">
-                        <Logo variant="primary-flat" size={28} />
+                        <BrandLogo variant="primary-flat" size={28} />
                         <p className="hidden md:block m-0 text-xs text-minor-ink">Connecting Global Intelligence.</p>
                     </div>
                     <div className="flex items-center gap-3">

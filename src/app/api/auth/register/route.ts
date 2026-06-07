@@ -16,6 +16,7 @@ import { getAppUrl } from '@/lib/url/app-url';
 import { extractClientIP } from '@/lib/auth/extract-ip';
 import { resolveInviteCode, checkIpThrottleAndFlag } from '@/lib/reseller/register-helper';
 import { record as recordAnalytics } from '@/lib/analytics/recorder';
+import { resolveTenantByHost } from '@/lib/tenant/resolve';
 
 const VERIFICATION_TOKEN_TTL_HOURS = 24;
 const VERIFICATION_TOKEN_BYTES = 32;
@@ -93,6 +94,17 @@ export async function POST(req: NextRequest) {
     }
     const { email, password, nickname, invite_code } = parsed.data;
 
+    // P6a: attribute the new customer to the tenant of the request domain
+    // (platform domain → platform tenant; partner domain → partner tenant).
+    // A tenant can disable self-serve signup → reject early.
+    const tenant = await resolveTenantByHost(req.headers.get('host'));
+    if (!tenant.signup_enabled) {
+        return NextResponse.json(
+            { error: 'signup_disabled', message: '该站点暂未开放自助注册,请联系客服。' },
+            { status: 403 },
+        );
+    }
+
     // PR-U1: polymorphic invite resolution. Try reseller code FIRST,
     // fall back to env allow-list (W7 D4). Both paths gated by a single
     // form field. Resolution outcomes:
@@ -151,6 +163,8 @@ export async function POST(req: NextRequest) {
                 email,
                 password_hash,
                 nickname: nickname || null,
+                // P6a: customer belongs to the request-domain's tenant.
+                tenant_id: tenant.id,
                 // W7 D4 env allow-list path — set raw typed code.
                 invite_code: resolved.kind === 'env_invite_code' ? resolved.invite_code : null,
                 // PR-U1 reseller attribution path — set FK + expiry.

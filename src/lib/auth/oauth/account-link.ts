@@ -77,7 +77,7 @@ async function cleanupOrphanNewApiUser(portalUserId: string, contextEmail: strin
  * Returns the new userId on success, null on failure (caller maps to
  * 'provisioning_failed').
  */
-async function createUserFromIdentity(identity: OAuthIdentity): Promise<string | null> {
+async function createUserFromIdentity(identity: OAuthIdentity, tenantId?: string): Promise<string | null> {
     let user;
     try {
         user = await prisma.user.create({
@@ -87,6 +87,8 @@ async function createUserFromIdentity(identity: OAuthIdentity): Promise<string |
                 nickname: identity.nameHint?.slice(0, 64) || null,
                 email_verified: true,
                 email_verified_at: new Date(),
+                // P6a: attribute the OAuth signup to the request-domain's tenant.
+                tenant_id: tenantId ?? null,
                 oauth_accounts: {
                     create: {
                         provider: identity.provider,
@@ -181,7 +183,7 @@ async function createUserFromIdentity(identity: OAuthIdentity): Promise<string |
     return user.id;
 }
 
-export async function linkOrCreateOAuthUser(identity: OAuthIdentity): Promise<LinkOrCreateOutcome> {
+export async function linkOrCreateOAuthUser(identity: OAuthIdentity, tenantId?: string): Promise<LinkOrCreateOutcome> {
     // Branch 1 — existing oauth_account: trust the (provider, account_id) pair.
     // No email lookup; the providerAccountId is more stable than email anyway
     // (users can change their primary email but the provider id stays put).
@@ -260,7 +262,7 @@ export async function linkOrCreateOAuthUser(identity: OAuthIdentity): Promise<Li
     }
 
     // Branch 4 — brand new email. Create user + provision + link.
-    const createdId = await createUserFromIdentity(identity);
+    const createdId = await createUserFromIdentity(identity, tenantId);
     if (!createdId) {
         return { ok: false, error: 'provisioning_failed' };
     }

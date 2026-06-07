@@ -8,18 +8,18 @@
  * unguarded /admin/login (a sibling, NOT in the group) is never wrapped by
  * this gate — avoids a redirect loop.
  *
- * getAdminUser requires role >= staff (cookie session only; the ADMIN_TOKEN
- * break-glass is for the API routes / scripts, not for entering the UI).
- * Individual /api/admin/* routes still gate at role >= admin (design §3.1
- * "P1 先统一用 admin"); a hypothetical staff-only user could load the shell
- * but its API calls would 401 — moot in P1 where the only granted role is
- * superadmin.
+ * P6a §6.2: the console entry gate now requires role >= admin (was staff), to
+ * MATCH the /api/admin/* gate (role >= admin). Previously a staff user could
+ * load the shell but every API call 401'd (blank pages). Partner operators are
+ * granted 'admin' (+ their tenant) — see scripts/grant-admin.ts. The ADMIN_TOKEN
+ * break-glass is for API routes / scripts, not for entering the UI.
  */
 import type { ReactNode } from 'react';
 import { redirect } from 'next/navigation';
 import { headers } from 'next/headers';
 import { NextRequest } from 'next/server';
 import { getAdminUser } from '@/lib/admin/auth';
+import { roleAtLeast } from '@/lib/admin/roles';
 import { AdminShell } from './admin-shell';
 
 export const dynamic = 'force-dynamic';
@@ -35,6 +35,11 @@ async function getSessionAdmin() {
 
 export default async function AdminConsoleLayout({ children }: { children: ReactNode }) {
     const admin = await getSessionAdmin();
-    if (!admin) redirect('/admin/login');
-    return <AdminShell adminEmail={admin.email}>{children}</AdminShell>;
+    // role >= admin (P6a §6.2) — consistent with the API gate.
+    if (!admin || !roleAtLeast(admin.role, 'admin')) redirect('/admin/login');
+    return (
+        <AdminShell adminEmail={admin.email} adminRole={admin.role}>
+            {children}
+        </AdminShell>
+    );
 }

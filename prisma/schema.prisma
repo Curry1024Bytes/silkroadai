@@ -204,14 +204,27 @@ model PaymentProviderInstance {
 // PLATFORM_TENANT_ID)。本期(P1)只打地基:Tenant 表 + 核心表 tenant_id 列 +
 // role-based admin。partner 自有客户 / 定价目录 / 渠道分组 / 品牌等完整白标留 P6。
 model Tenant {
-  id                  String   @id @default(uuid()) @db.Uuid
-  slug                String   @unique // 'silkroadai' = 平台主体
+  id                  String  @id @default(uuid()) @db.Uuid
+  slug                String  @unique // 'silkroadai' = 平台主体
   brand_name          String
   primary_domain      String?
-  status              String   @default("active") // active / suspended
-  prepaid_balance_cny Decimal  @default(0) @db.Decimal(20, 4) // 白标预付池(P6 用,P1 先建列)
-  created_at          DateTime @default(now())
-  updated_at          DateTime @updatedAt
+  status              String  @default("active") // active / suspended
+  prepaid_balance_cny Decimal @default(0) @db.Decimal(20, 4) // 白标预付池(P6 用,P1 先建列)
+
+  // ── 品牌/域名配置(P6a)──
+  // 客户侧按请求 Host 解析到 tenant 后,用这些字段渲染 header/logo/品牌色/客服联系。
+  // 平台主体回填为现状值(见 migration),故平台域渲染不变。
+  logo_url       String? // 客户 logo 图 URL;空 → 渲染默认(平台)logo
+  primary_color  String?  @default("#1E3A8A") // 品牌主色(覆盖 --color-navy);平台回填 #1a2540
+  support_email  String? // 客服邮箱(footer)
+  support_wechat String? // 客服微信号(footer)
+  // 多域名(partner 可能多个域名指向同一 tenant)。primary_domain 仍作主域。
+  domains        String[] @default([])
+  // 客户自助注册开关(partner 可关 → 注册接口拒)
+  signup_enabled Boolean  @default(true)
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
 
   users                      User[]
   orders                     Order[]
