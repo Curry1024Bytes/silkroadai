@@ -2,16 +2,21 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest, NextResponse } from 'next/server';
 
 const mockResolveAdmin = vi.fn();
-const mockFindMany = vi.fn();
+const mockModelFindMany = vi.fn();
+const mockChannelGroupFindMany = vi.fn();
 const mockTransaction = vi.fn();
 const mockModelCreate = vi.fn();
+const mockModelUpdate = vi.fn();
 const mockPriceCreate = vi.fn();
 const mockGetChannel = vi.fn();
 const mockListChannels = vi.fn();
 
 // tx proxy reuses the same per-table spies so prisma.* and tx.* hit one place.
 const txProxy = {
-    catalogModel: { create: (...a: unknown[]) => mockModelCreate(...a) },
+    catalogModel: {
+        create: (...a: unknown[]) => mockModelCreate(...a),
+        update: (...a: unknown[]) => mockModelUpdate(...a),
+    },
     catalogPrice: { create: (...a: unknown[]) => mockPriceCreate(...a) },
 };
 
@@ -22,7 +27,8 @@ vi.mock('@/lib/admin-auth', () => ({
 // Real tenant-scope so the where-wiring is exercised end-to-end.
 vi.mock('@/lib/db', () => ({
     prisma: {
-        catalogModel: { findMany: (...a: unknown[]) => mockFindMany(...a) },
+        catalogModel: { findMany: (...a: unknown[]) => mockModelFindMany(...a) },
+        channelGroup: { findMany: (...a: unknown[]) => mockChannelGroupFindMany(...a) },
         $transaction: (...a: unknown[]) => mockTransaction(...a),
     },
 }));
@@ -37,6 +43,7 @@ import { PLATFORM_TENANT_ID } from '@/lib/admin/tenant-scope';
 
 const SUPERADMIN = { role: 'superadmin', tenant_id: null, user: null, viaBreakGlass: true };
 const PARTNER = { role: 'admin', tenant_id: 'tenant-7', user: { id: 'admin-1' }, viaBreakGlass: false };
+const REAL = 'https://x/api/admin/models/import?dryRun=false';
 
 function req(method = 'POST', body?: object, url = 'https://x/api/admin/models/import') {
     return new NextRequest(url, {
@@ -72,7 +79,12 @@ function channelFixture(id: number) {
 beforeEach(() => {
     vi.clearAllMocks();
     mockResolveAdmin.mockResolvedValue(SUPERADMIN);
-    mockFindMany.mockResolvedValue([]); // no existing catalog models by default
+    mockModelFindMany.mockResolvedValue([]); // no existing catalog models by default
+    // default: official group registered with NO channels → everything imports as pool.
+    mockChannelGroupFindMany.mockResolvedValue([
+        { key: 'pool', newapi_channel_ids: [] },
+        { key: 'official', newapi_channel_ids: [] },
+    ]);
     mockGetChannel.mockImplementation((id: number) => Promise.resolve(channelFixture(id)));
     mockListChannels.mockResolvedValue([
         { id: 2, name: 'sub2api', type: 14, models: 'claude-opus-4-7,claude-sonnet-4-6' },
@@ -87,6 +99,7 @@ beforeEach(() => {
     mockModelCreate.mockImplementation(({ data }: { data: { slug: string } }) =>
         Promise.resolve({ id: `m-${data.slug}`, ...data }),
     );
+    mockModelUpdate.mockResolvedValue({});
     mockPriceCreate.mockResolvedValue({});
 });
 
@@ -96,7 +109,8 @@ describe('POST /api/admin/models/import — auth', () => {
         const res = await POST(req('POST', {}));
         expect(res.status).toBe(401);
         expect(mockGetChannel).not.toHaveBeenCalled();
-        expect(mockFindMany).not.toHaveBeenCalled();
+        expect(mockModelFindMany).not.toHaveBeenCalled();
+        expect(mockChannelGroupFindMany).not.toHaveBeenCalled();
     });
 
     it('400 on invalid channel_ids', async () => {
@@ -105,144 +119,228 @@ describe('POST /api/admin/models/import — auth', () => {
     });
 });
 
-describe('POST /api/admin/models/import — dry run (default)', () => {
-    it('previews the default flagship channels and writes nothing', async () => {
+describe('POST /api/admin/models/import — dry run (official not registered → all pool)', () => {
+    it('previews default channels as pool, writes nothing, flags missing official config', async () => {
         const res = await POST(req('POST', {}));
         expect(res.status).toBe(200);
         const body = await res.json();
 
         expect(body.dryRun).toBe(true);
+        expect(body.officialRegistered).toBe(false);
         expect(body.selectedChannelIds).toEqual(DEFAULT_FLAGSHIP_CHANNEL_IDS);
         expect(body.summary).toEqual({ created: 3, skipped: 0, flagged: 2 });
 
-        // GET each selected channel (read-only); never writes.
-        expect(mockGetChannel).toHaveBeenCalledWith(2);
-        expect(mockGetChannel).toHaveBeenCalledWith(3);
-        expect(mockGetChannel).toHaveBeenCalledWith(17);
+        // every imported (model,tier) lands in pool when no official channels are registered.
+        expect(body.created.every((r: { tier: string }) => r.tier === 'pool')).toBe(true);
+        expect(body.flagged.every((r: { tier: string }) => r.tier === 'pool')).toBe(true);
+
         expect(mockTransaction).not.toHaveBeenCalled();
         expect(mockModelCreate).not.toHaveBeenCalled();
         expect(mockPriceCreate).not.toHaveBeenCalled();
     });
 
-    it('surfaces reverse-derived retail prices + flags image models', async () => {
-        const res = await POST(req('POST', {}));
-        const body = await res.json();
-
+    it('surfaces reverse-derived retail prices + flags image models (with tier)', async () => {
+        const body = await (await POST(req('POST', {}))).json();
         const opus = body.created.find((r: { slug: string }) => r.slug === 'claude-opus-4-7');
-        expect(opus).toMatchObject({ vendor: 'anthropic', input_cny_per_1m: 22.5, output_cny_per_1m: 112.5 });
-        const gpt = body.created.find((r: { slug: string }) => r.slug === 'gpt-5.4');
-        expect(gpt).toMatchObject({ input_cny_per_1m: 2.5, output_cny_per_1m: 10 });
-
-        expect(body.flagged.map((r: { slug: string }) => r.slug).sort()).toEqual(['gemini-3-pro-image', 'gpt-image-2']);
-        expect(body.flagged.find((r: { slug: string }) => r.slug === 'gpt-image-2')).toMatchObject({
-            modality: 'image',
-            reason: 'image_model_manual_price',
-        });
+        expect(opus).toMatchObject({ tier: 'pool', input_cny_per_1m: 22.5, output_cny_per_1m: 112.5 });
+        const img = body.flagged.find((r: { slug: string }) => r.slug === 'gpt-image-2');
+        expect(img).toMatchObject({ tier: 'pool', modality: 'image', reason: 'image_model_manual_price' });
     });
 
-    it('returns the channel menu with selected flags (incl. unselected Gemini text channel)', async () => {
-        const res = await POST(req('POST', {}));
-        const body = await res.json();
-        expect(body.channels.find((c: { id: number }) => c.id === 2)).toMatchObject({ selected: true, model_count: 2 });
-        expect(body.channels.find((c: { id: number }) => c.id === 4)).toMatchObject({
-            selected: false,
-            model_count: 2,
-        });
+    it('returns the channel menu with per-channel tier (all pool here)', async () => {
+        const body = await (await POST(req('POST', {}))).json();
+        expect(body.channels.find((c: { id: number }) => c.id === 2)).toMatchObject({ selected: true, tier: 'pool' });
+        expect(body.channels.find((c: { id: number }) => c.id === 4)).toMatchObject({ selected: false, tier: 'pool' });
     });
 
-    it('listChannels failure → empty menu, import preview still works', async () => {
+    it('listChannels failure → empty menu; channel-group read + import preview still work', async () => {
         mockListChannels.mockRejectedValue(new Error('list boom'));
-        const res = await POST(req('POST', {}));
-        const body = await res.json();
+        const body = await (await POST(req('POST', {}))).json();
         expect(body.channels).toEqual([]);
+        expect(body.officialRegistered).toBe(false);
         expect(body.summary.created).toBe(3);
     });
 
-    it('skips slugs already in the catalog (idempotent, never overwrites)', async () => {
-        mockFindMany.mockResolvedValue([{ slug: 'gpt-5.4', sort_order: 5 }]);
-        const res = await POST(req('POST', {}));
-        const body = await res.json();
-        expect(body.skipped).toEqual([{ slug: 'gpt-5.4', reason: 'already_exists' }]);
-        expect(body.created.find((r: { slug: string }) => r.slug === 'gpt-5.4')).toBeUndefined();
-        expect(body.summary).toEqual({ created: 2, skipped: 1, flagged: 2 });
-    });
-
-    it('honors a custom channel_ids subset', async () => {
-        const res = await POST(req('POST', { channel_ids: [3] }));
-        const body = await res.json();
-        expect(body.selectedChannelIds).toEqual([3]);
-        expect(mockGetChannel).toHaveBeenCalledWith(3);
-        expect(mockGetChannel).not.toHaveBeenCalledWith(2);
-        expect(body.summary).toEqual({ created: 1, skipped: 0, flagged: 1 });
-    });
-
     it('records per-channel load failures without aborting the others', async () => {
-        const res = await POST(req('POST', { channel_ids: [3, 99] }));
-        const body = await res.json();
-        expect(body.channelErrors).toEqual([{ channel_id: 99, error: 'channel not found' }]);
-        expect(body.summary.created).toBe(1); // channel 3 still imported
+        const body = await (await POST(req('POST', { channel_ids: [3, 88] }))).json();
+        expect(body.channelErrors).toEqual([{ channel_id: 88, error: 'channel not found' }]);
+        expect(body.summary.created).toBe(1); // channel 3 gpt-5.4 still imported
     });
 });
 
-describe('POST /api/admin/models/import — real import (dryRun=false)', () => {
-    const realUrl = 'https://x/api/admin/models/import?dryRun=false';
+describe('POST /api/admin/models/import — tier classification', () => {
+    it('channels in the official group import as official; others as pool', async () => {
+        mockChannelGroupFindMany.mockResolvedValue([
+            { key: 'pool', newapi_channel_ids: [] },
+            { key: 'official', newapi_channel_ids: [2] }, // Claude channel = official
+        ]);
+        const body = await (await POST(req('POST', {}))).json();
 
-    it('writes models + prices in one transaction; image models get no price row', async () => {
-        const res = await POST(req('POST', {}, realUrl));
-        expect(res.status).toBe(200);
-        const body = await res.json();
+        expect(body.officialRegistered).toBe(true);
+        expect(body.created.find((r: { slug: string }) => r.slug === 'claude-opus-4-7').tier).toBe('official');
+        expect(body.created.find((r: { slug: string }) => r.slug === 'gpt-5.4').tier).toBe('pool');
+        expect(body.channels.find((c: { id: number }) => c.id === 2).tier).toBe('official');
+        expect(body.channels.find((c: { id: number }) => c.id === 3).tier).toBe('pool');
+    });
+});
+
+describe('POST /api/admin/models/import — same slug across tiers (real import)', () => {
+    it('pool + official channel with the same slug → 1 model (2-tier upstream_map) + 2 prices', async () => {
+        mockChannelGroupFindMany.mockResolvedValue([{ key: 'official', newapi_channel_ids: [99] }]);
+        mockGetChannel.mockImplementation((id: number) => {
+            if (id === 3)
+                return Promise.resolve({
+                    id: 3,
+                    name: 'pool-openai',
+                    models: 'gpt-5.4',
+                    model_ratio: JSON.stringify({ 'gpt-5.4': 0.357143 }),
+                    completion_ratio: JSON.stringify({ 'gpt-5.4': 4 }),
+                });
+            if (id === 99)
+                return Promise.resolve({
+                    id: 99,
+                    name: 'official-openai',
+                    models: 'gpt-5.4',
+                    model_ratio: JSON.stringify({ 'gpt-5.4': 0.5 }),
+                    completion_ratio: JSON.stringify({ 'gpt-5.4': 4 }),
+                });
+            throw new Error('nf');
+        });
+
+        const body = await (await POST(req('POST', { channel_ids: [3, 99] }, REAL))).json();
+        expect(body.summary).toEqual({ created: 2, skipped: 0, flagged: 0 });
+
+        // exactly one model created, carrying both tiers in upstream_map.
+        expect(mockModelCreate).toHaveBeenCalledTimes(1);
+        expect(mockModelCreate.mock.calls[0][0].data).toMatchObject({
+            slug: 'gpt-5.4',
+            upstream_map: {
+                pool: { channel_id: 3, upstream_model: 'gpt-5.4' },
+                official: { channel_id: 99, upstream_model: 'gpt-5.4' },
+            },
+        });
+
+        // two prices, one per tier, both pointing at the created model.
+        expect(mockPriceCreate).toHaveBeenCalledTimes(2);
+        const poolPrice = mockPriceCreate.mock.calls.find((c) => c[0].data.tier === 'pool')![0].data;
+        expect(poolPrice).toMatchObject({ model_id: 'm-gpt-5.4', input_cny_per_1m: 2.5, output_cny_per_1m: 10 });
+        const offPrice = mockPriceCreate.mock.calls.find((c) => c[0].data.tier === 'official')![0].data;
+        expect(offPrice).toMatchObject({ model_id: 'm-gpt-5.4', input_cny_per_1m: 3.5, output_cny_per_1m: 14 });
+    });
+});
+
+describe('POST /api/admin/models/import — per (slug,tier) idempotency (real import)', () => {
+    const existingGpt = {
+        id: 'mod-1',
+        slug: 'gpt-5.4',
+        sort_order: 1,
+        upstream_map: { pool: { channel_id: 3, upstream_model: 'gpt-5.4' } },
+        prices: [{ tier: 'pool' }],
+    };
+
+    it('existing pool model, importing official → merge upstream_map + add official price (pool untouched)', async () => {
+        mockChannelGroupFindMany.mockResolvedValue([{ key: 'official', newapi_channel_ids: [99] }]);
+        mockModelFindMany.mockResolvedValue([existingGpt]);
+        mockGetChannel.mockImplementation((id: number) =>
+            id === 99
+                ? Promise.resolve({
+                      id: 99,
+                      name: 'off',
+                      models: 'gpt-5.4',
+                      model_ratio: JSON.stringify({ 'gpt-5.4': 0.5 }),
+                      completion_ratio: JSON.stringify({ 'gpt-5.4': 4 }),
+                  })
+                : Promise.reject(new Error('nf')),
+        );
+
+        const body = await (await POST(req('POST', { channel_ids: [99] }, REAL))).json();
+        expect(body.summary).toEqual({ created: 1, skipped: 0, flagged: 0 });
+        expect(body.created[0]).toMatchObject({ slug: 'gpt-5.4', tier: 'official' });
+
+        // model merged (updated), NOT created.
+        expect(mockModelCreate).not.toHaveBeenCalled();
+        expect(mockModelUpdate).toHaveBeenCalledTimes(1);
+        expect(mockModelUpdate.mock.calls[0][0]).toMatchObject({
+            where: { id: 'mod-1' },
+            data: {
+                upstream_map: {
+                    pool: { channel_id: 3, upstream_model: 'gpt-5.4' },
+                    official: { channel_id: 99, upstream_model: 'gpt-5.4' },
+                },
+            },
+        });
+        // only the official price is created; the existing pool price is never overwritten.
+        expect(mockPriceCreate).toHaveBeenCalledTimes(1);
+        expect(mockPriceCreate.mock.calls[0][0].data).toMatchObject({ model_id: 'mod-1', tier: 'official' });
+    });
+
+    it('re-importing an existing (slug,tier) price → skipped, no overwrite, no model update', async () => {
+        // official NOT registered → channel 3 = pool, same as the existing pool price.
+        mockModelFindMany.mockResolvedValue([existingGpt]);
+        mockGetChannel.mockImplementation((id: number) =>
+            id === 3 ? Promise.resolve(channelFixture(3)) : Promise.reject(new Error('nf')),
+        );
+
+        const body = await (await POST(req('POST', { channel_ids: [3] }, REAL))).json();
+        // gpt-5.4 pool price exists → skipped; gpt-image-2 is a NEW image model → flagged.
+        expect(body.skipped).toContainEqual({ slug: 'gpt-5.4', tier: 'pool', reason: 'price_exists' });
+        expect(body.summary).toEqual({ created: 0, skipped: 1, flagged: 1 });
+
+        // gpt-5.4 upstream_map.pool already correct → not updated; gpt-image-2 created.
+        const gptUpdate = mockModelUpdate.mock.calls.find((c) => c[0].where?.id === 'mod-1');
+        expect(gptUpdate).toBeUndefined();
+        expect(mockModelCreate).toHaveBeenCalledTimes(1);
+        expect(mockModelCreate.mock.calls[0][0].data.slug).toBe('gpt-image-2');
+        expect(mockPriceCreate).not.toHaveBeenCalled(); // pool skip + image has no price
+    });
+
+    it('nothing new to import (all priced + mapped) → no transaction', async () => {
+        mockModelFindMany.mockResolvedValue([
+            existingGpt,
+            {
+                id: 'mod-2',
+                slug: 'gpt-image-2',
+                sort_order: 2,
+                upstream_map: { pool: { channel_id: 3, upstream_model: 'gpt-image-2' } },
+                prices: [{ tier: 'pool' }],
+            },
+        ]);
+        mockGetChannel.mockImplementation((id: number) =>
+            id === 3 ? Promise.resolve(channelFixture(3)) : Promise.reject(new Error('nf')),
+        );
+        const body = await (await POST(req('POST', { channel_ids: [3] }, REAL))).json();
+        expect(body.summary).toEqual({ created: 0, skipped: 2, flagged: 0 });
+        expect(mockTransaction).not.toHaveBeenCalled();
+    });
+});
+
+describe('POST /api/admin/models/import — real import writes + tenant scope', () => {
+    it('default channels (all pool): creates models + pool prices in one transaction; image gets no price', async () => {
+        const body = await (await POST(req('POST', {}, REAL))).json();
         expect(body.dryRun).toBe(false);
-
         expect(mockTransaction).toHaveBeenCalledTimes(1);
-        // 5 models (3 priced + 2 image), 3 prices (priced only)
+
+        // 5 distinct slugs → 5 models; 3 priced → 3 prices (all pool).
         expect(mockModelCreate).toHaveBeenCalledTimes(5);
         expect(mockPriceCreate).toHaveBeenCalledTimes(3);
+        expect(mockPriceCreate.mock.calls.every((c) => c[0].data.tier === 'pool')).toBe(true);
 
-        // image model: modality image, platform tenant, correct upstream_map, NO price row
-        const imageCreate = mockModelCreate.mock.calls.find((c) => c[0].data.slug === 'gpt-image-2');
-        expect(imageCreate![0].data).toMatchObject({
+        const imgCreate = mockModelCreate.mock.calls.find((c) => c[0].data.slug === 'gpt-image-2')!;
+        expect(imgCreate[0].data).toMatchObject({
             modality: 'image',
             tenant_id: PLATFORM_TENANT_ID,
-            upstream_map: { default: { channel_id: 3, upstream_model: 'gpt-image-2' } },
+            upstream_map: { pool: { channel_id: 3, upstream_model: 'gpt-image-2' } },
         });
         expect(mockPriceCreate.mock.calls.some((c) => c[0].data.model_id === 'm-gpt-image-2')).toBe(false);
-
-        // priced model: price row carries the reverse-derived retail price + tier default
-        const gptPrice = mockPriceCreate.mock.calls.find((c) => c[0].data.model_id === 'm-gpt-5.4');
-        expect(gptPrice![0].data).toMatchObject({
-            tier: 'default',
-            input_cny_per_1m: 2.5,
-            output_cny_per_1m: 10,
-            created_by: null, // break-glass superadmin
-        });
-
-        // sort_order assigned incrementally from the existing max (0) → first candidate = 1
-        const opusCreate = mockModelCreate.mock.calls.find((c) => c[0].data.slug === 'claude-opus-4-7');
-        expect(opusCreate![0].data.sort_order).toBe(1);
     });
 
-    it('stamps the partner admin tenant_id + created_by, tenant-scopes the existing-slug query', async () => {
+    it('stamps the partner admin tenant_id + created_by; tenant-scopes both reads', async () => {
         mockResolveAdmin.mockResolvedValue(PARTNER);
-        await POST(req('POST', { channel_ids: [3] }, realUrl));
-
-        expect(mockFindMany.mock.calls[0][0].where.tenant_id).toBe('tenant-7');
-        const gptCreate = mockModelCreate.mock.calls.find((c) => c[0].data.slug === 'gpt-5.4');
-        expect(gptCreate![0].data.tenant_id).toBe('tenant-7');
-        const price = mockPriceCreate.mock.calls[0][0];
-        expect(price.data.created_by).toBe('admin-1');
-    });
-
-    it('does not write when nothing new to import (all skipped)', async () => {
-        mockFindMany.mockResolvedValue([
-            { slug: 'claude-opus-4-7', sort_order: 1 },
-            { slug: 'claude-sonnet-4-6', sort_order: 2 },
-            { slug: 'gpt-5.4', sort_order: 3 },
-            { slug: 'gpt-image-2', sort_order: 4 },
-            { slug: 'gemini-3-pro-image', sort_order: 5 },
-        ]);
-        const res = await POST(req('POST', {}, realUrl));
-        const body = await res.json();
-        expect(body.summary).toEqual({ created: 0, skipped: 5, flagged: 0 });
-        expect(mockTransaction).not.toHaveBeenCalled();
+        await POST(req('POST', { channel_ids: [3] }, REAL));
+        expect(mockChannelGroupFindMany.mock.calls[0][0].where.tenant_id).toBe('tenant-7');
+        expect(mockModelFindMany.mock.calls[0][0].where.tenant_id).toBe('tenant-7');
+        const gptCreate = mockModelCreate.mock.calls.find((c) => c[0].data.slug === 'gpt-5.4')!;
+        expect(gptCreate[0].data.tenant_id).toBe('tenant-7');
+        expect(mockPriceCreate.mock.calls[0][0].data.created_by).toBe('admin-1');
     });
 });

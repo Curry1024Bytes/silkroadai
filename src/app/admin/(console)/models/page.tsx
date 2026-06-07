@@ -40,7 +40,7 @@ interface ModelFormData {
     upstream_map: string;
 }
 
-// ── P2.5 「从 new-api 导入」预览/结果(对应 /api/admin/models/import 响应)──
+// ── 「从 new-api 导入」预览/结果(对应 /api/admin/models/import 响应;P2.6 档次感知)──
 
 interface ImportChannelMenuItem {
     id: number;
@@ -48,6 +48,7 @@ interface ImportChannelMenuItem {
     type: number | null;
     model_count: number;
     selected: boolean;
+    tier: string; // 该渠道会喂哪个档(pool / official)
 }
 
 interface ImportCreatedRow {
@@ -55,6 +56,7 @@ interface ImportCreatedRow {
     display_name: string;
     vendor: string;
     modality: string;
+    tier: string;
     input_cny_per_1m: number | null;
     output_cny_per_1m: number | null;
     ratio_defaulted: boolean;
@@ -65,16 +67,18 @@ interface ImportFlaggedRow {
     display_name: string;
     vendor: string;
     modality: string;
+    tier: string;
     reason: string;
 }
 
 interface ImportPreview {
     dryRun: boolean;
     selectedChannelIds: number[];
+    officialRegistered: boolean; // false → 未登记官方渠道,全部进 pool 档
     channels: ImportChannelMenuItem[];
     channelErrors: { channel_id: number; error: string }[];
     created: ImportCreatedRow[];
-    skipped: { slug: string; reason: string }[];
+    skipped: { slug: string; tier: string; reason: string }[];
     flagged: ImportFlaggedRow[];
     summary: { created: number; skipped: number; flagged: number };
 }
@@ -144,13 +148,16 @@ function getTexts(locale: Locale) {
               importRefresh: 'Re-preview',
               importWillCreate: 'Will create',
               importNeedsPrice: 'Needs manual price',
-              importSkippedExists: 'Skipped (already exists)',
+              importSkippedExists: 'Skipped (price already exists)',
+              importColTier: 'Tier',
               importColIn: '¥ in / 1M',
               importColOut: '¥ out / 1M',
               importColReason: 'Note',
               importImageReason: 'Image model — set per-image price on the Pricing page',
               importNoRatioReason: 'No model_ratio in channel — set price manually',
               importRatioDefaulted: 'completion_ratio defaulted to 1 (in = out)',
+              importOfficialNotRegistered:
+                  'No official channels registered under /admin/channel-groups — everything imports as the pool tier. To capture official prices, register the official channels there first, then re-import.',
               importChannelErrors: 'Some channels could not be read',
               importConfirm: 'Confirm import',
               importImporting: 'Importing…',
@@ -213,13 +220,16 @@ function getTexts(locale: Locale) {
               importRefresh: '重新预览',
               importWillCreate: '将创建',
               importNeedsPrice: '需手填价',
-              importSkippedExists: '跳过(已存在)',
+              importSkippedExists: '跳过(价已存在)',
+              importColTier: '档次',
               importColIn: '¥ 输入 / 1M',
               importColOut: '¥ 输出 / 1M',
               importColReason: '说明',
               importImageReason: '图片模型 —— 价格需在「定价」页手填',
               importNoRatioReason: '渠道无 model_ratio —— 价格需手填',
               importRatioDefaulted: 'completion_ratio 缺省=1(输入=输出)',
+              importOfficialNotRegistered:
+                  '未在 /admin/channel-groups 登记 official 渠道,本次全部导入为 pool 档;要区分官方价请先登记官方渠道再导入。',
               importChannelErrors: '部分渠道读取失败',
               importConfirm: '确认导入',
               importImporting: '导入中…',
@@ -970,6 +980,19 @@ function ModelsContent() {
                                             />
                                             <span className="font-mono text-xs">#{ch.id}</span>
                                             <span>{ch.name ?? '—'}</span>
+                                            <span
+                                                className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                                                    ch.tier === 'official'
+                                                        ? isDark
+                                                            ? 'bg-indigo-500/20 text-indigo-300'
+                                                            : 'bg-indigo-50 text-indigo-600'
+                                                        : isDark
+                                                          ? 'bg-slate-700 text-slate-300'
+                                                          : 'bg-slate-100 text-slate-600'
+                                                }`}
+                                            >
+                                                {ch.tier}
+                                            </span>
                                             <span className={`text-xs ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
                                                 · {ch.model_count} {t.importColModels}
                                             </span>
@@ -1012,6 +1035,13 @@ function ModelsContent() {
                             </div>
                         ) : importPreview ? (
                             <div className="space-y-4">
+                                {!importPreview.officialRegistered && (
+                                    <div
+                                        className={`rounded-lg border p-3 text-xs ${isDark ? 'border-amber-700 bg-amber-950/40 text-amber-300' : 'border-amber-300 bg-amber-50 text-amber-800'}`}
+                                    >
+                                        ⚠️ {t.importOfficialNotRegistered}
+                                    </div>
+                                )}
                                 <div className={`text-sm font-medium ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>
                                     <span className="text-emerald-500">
                                         {t.importWillCreate} {importPreview.summary.created}
@@ -1056,6 +1086,9 @@ function ModelsContent() {
                                                         <th className="px-3 py-2 text-left font-medium">
                                                             {t.colVendor}
                                                         </th>
+                                                        <th className="px-3 py-2 text-left font-medium">
+                                                            {t.importColTier}
+                                                        </th>
                                                         <th className="px-3 py-2 text-right font-medium">
                                                             {t.importColIn}
                                                         </th>
@@ -1067,7 +1100,7 @@ function ModelsContent() {
                                                 <tbody>
                                                     {importPreview.created.map((r) => (
                                                         <tr
-                                                            key={r.slug}
+                                                            key={`${r.slug}-${r.tier}`}
                                                             className={
                                                                 isDark
                                                                     ? 'border-t border-slate-700/50'
@@ -1100,6 +1133,11 @@ function ModelsContent() {
                                                                 className={`px-3 py-1.5 ${isDark ? 'text-slate-400' : 'text-slate-600'}`}
                                                             >
                                                                 {r.vendor}
+                                                            </td>
+                                                            <td
+                                                                className={`px-3 py-1.5 font-mono ${isDark ? 'text-slate-400' : 'text-slate-600'}`}
+                                                            >
+                                                                {r.tier}
                                                             </td>
                                                             <td
                                                                 className={`px-3 py-1.5 text-right font-mono ${isDark ? 'text-slate-300' : 'text-slate-700'}`}
@@ -1141,6 +1179,9 @@ function ModelsContent() {
                                                     <tr className={isDark ? 'text-slate-400' : 'text-slate-500'}>
                                                         <th className="px-3 py-2 text-left font-medium">{t.colName}</th>
                                                         <th className="px-3 py-2 text-left font-medium">
+                                                            {t.importColTier}
+                                                        </th>
+                                                        <th className="px-3 py-2 text-left font-medium">
                                                             {t.colModality}
                                                         </th>
                                                         <th className="px-3 py-2 text-left font-medium">
@@ -1151,7 +1192,7 @@ function ModelsContent() {
                                                 <tbody>
                                                     {importPreview.flagged.map((r) => (
                                                         <tr
-                                                            key={r.slug}
+                                                            key={`${r.slug}-${r.tier}`}
                                                             className={
                                                                 isDark
                                                                     ? 'border-t border-slate-700/50'
@@ -1171,6 +1212,11 @@ function ModelsContent() {
                                                                 >
                                                                     {r.slug}
                                                                 </span>
+                                                            </td>
+                                                            <td
+                                                                className={`px-3 py-1.5 font-mono ${isDark ? 'text-slate-400' : 'text-slate-600'}`}
+                                                            >
+                                                                {r.tier}
                                                             </td>
                                                             <td
                                                                 className={`px-3 py-1.5 ${isDark ? 'text-slate-400' : 'text-slate-600'}`}
@@ -1201,7 +1247,7 @@ function ModelsContent() {
                                         <div
                                             className={`font-mono text-xs ${isDark ? 'text-slate-500' : 'text-slate-400'}`}
                                         >
-                                            {importPreview.skipped.map((r) => r.slug).join(', ')}
+                                            {importPreview.skipped.map((r) => `${r.slug} (${r.tier})`).join(', ')}
                                         </div>
                                     </div>
                                 )}

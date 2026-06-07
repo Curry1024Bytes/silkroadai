@@ -1,25 +1,33 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
+import type { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { unauthorizedResponse } from '@/lib/admin-auth';
 import { resolveAdmin } from '@/lib/admin/auth';
 import { tenantScope, tenantForInsert } from '@/lib/admin/tenant-scope';
 import { getChannel, listChannels, type NewApiChannel } from '@/lib/newapi/client';
-import { buildImportCandidates, type ChannelForImport } from '@/lib/newapi/import-catalog';
+import { buildImportCandidates, type ChannelForImport, type ImportCandidate } from '@/lib/newapi/import-catalog';
 
 export const runtime = 'nodejs';
 
 /**
  * POST /api/admin/models/import — 从 new-api 旗舰渠道一键导入「模型 + 价格」到目录。
  *
- * 两步用法(/admin/models 上的「从 new-api 导入」按钮):
- *   1. ?dryRun=true(默认)→ 只预览:返回渠道菜单 + 将导入什么(每个 model 的 slug /
- *      vendor / 算出的 ¥in/¥out / 是否图片需手填 / 是否已存在跳过),【不写库】。
- *   2. ?dryRun=false → 真导入:把 created+flagged 的模型在一个 $transaction 里建好
- *      (priced 的同时建 CatalogPrice;图片/无 ratio 的只建模型、价格留空待手填),失败整体回滚。
+ * P2.6 档次感知:不再写死 'default' 档。按 ChannelGroup 判定每个渠道喂哪个档 ——
+ * channel_id ∈ official 渠道组登记的 ids → 'official' 档,否则 → 'pool' 档(catch-all)。
  *
- * 幂等:按 (tenant_id, slug) 对账,已存在的 slug 一律 skip(不覆盖 operator 可能已手改的价)。
- * 不回写 new-api(价格本来就是从 new-api 读的,sync 回去无意义)——只落 portal DB(brief §4)。
+ * 数据形态:一个 slug → 1 条 CatalogModel(upstream_map 按档填 {pool:…, official:…})
+ * + 每档一条 CatalogPrice。同一模型从 pool 渠道 + official 渠道分别导入 → 自动合并
+ * 成「一个模型两档价」。
+ *
+ * 两步用法(/admin/models「从 new-api 导入」按钮):
+ *   1. ?dryRun=true(默认)→ 只预览:渠道菜单(标 tier)+ 每个 (model,tier) 将 created /
+ *      skipped(价已存在)/ flagged(图片/无 ratio 需手填),【不写库】。
+ *   2. ?dryRun=false → 真导入:$transaction 内建/合并模型 + 建缺失档的价,失败整体回滚。
+ *
+ * 幂等:per (slug, tier)。模型按 slug:不存在→建;已存在→merge upstream_map[tier]。
+ * 价按 (model, tier):不存在→建;已存在→skip(不覆盖 operator 手改的价)。
+ * 不回写 new-api;只读 GET 渠道 + 只读 ChannelGroup 判档(brief §2/§3)。
  */
 
 // 默认旗舰渠道:Claude(2,sub2api Anthropic)/ ChatGPT(3,sub2api-openai)/
@@ -35,14 +43,24 @@ function errMsg(e: unknown): string {
     return e instanceof Error ? e.message : String(e);
 }
 
-/** getChannel 全量对象 → 推导所需子集。 */
-function toChannelForImport(ch: NewApiChannel): ChannelForImport {
+type UpstreamEntry = { channel_id: number; upstream_model: string };
+type UpstreamMap = Record<string, UpstreamEntry>;
+
+/** Json 列 → upstream_map 对象(防 null/数组)。 */
+function asUpstreamMap(v: unknown): UpstreamMap {
+    if (v && typeof v === 'object' && !Array.isArray(v)) return { ...(v as UpstreamMap) };
+    return {};
+}
+
+/** getChannel 全量对象 + 该渠道判定出的档次 → 推导所需子集。 */
+function toChannelForImport(ch: NewApiChannel, tier: string): ChannelForImport {
     return {
         id: ch.id,
         name: typeof ch.name === 'string' ? ch.name : null,
         models: typeof ch.models === 'string' ? ch.models : '',
         model_ratio: (ch.model_ratio as ChannelForImport['model_ratio']) ?? null,
         completion_ratio: (ch.completion_ratio as ChannelForImport['completion_ratio']) ?? null,
+        tier,
     };
 }
 
@@ -80,9 +98,27 @@ export async function POST(request: NextRequest) {
             ? Array.from(new Set(parsed.data.channel_ids))
             : DEFAULT_FLAGSHIP_CHANNEL_IDS;
 
-    // ── 渠道菜单(best-effort):列出所有渠道让 operator 看到/挑选(含未在默认集里的
-    //    Gemini 文本渠道)。失败不阻塞导入 —— 真正的导入按 id 逐个 getChannel。 ──
-    let menu: { id: number; name: string | null; type: number | null; model_count: number; selected: boolean }[] = [];
+    // ── 读 ChannelGroup 判档(只读,不改 P3 任何数据)。official 渠道组登记的 channel
+    //    id → 'official' 档;其余 → 'pool' 档(pool 是 catch-all 默认档)。 ──
+    const groups = await prisma.channelGroup.findMany({
+        where: { ...tenantScope(admin) },
+        select: { key: true, newapi_channel_ids: true },
+    });
+    const officialGroup = groups.find((g) => g.key === 'official');
+    const officialChannelIds = new Set<number>(officialGroup?.newapi_channel_ids ?? []);
+    const officialRegistered = officialChannelIds.size > 0;
+    const channelTier = (id: number): string => (officialChannelIds.has(id) ? 'official' : 'pool');
+
+    // ── 渠道菜单(best-effort):列出所有渠道 + 各自档次,让 operator 看到/挑选。
+    //    失败不阻塞导入 —— 真正的导入按 id 逐个 getChannel。 ──
+    let menu: {
+        id: number;
+        name: string | null;
+        type: number | null;
+        model_count: number;
+        selected: boolean;
+        tier: string;
+    }[] = [];
     try {
         const all = await listChannels();
         menu = all.map((c) => ({
@@ -91,150 +127,214 @@ export async function POST(request: NextRequest) {
             type: typeof c.type === 'number' ? c.type : null,
             model_count: countModels(c.models),
             selected: channelIds.includes(c.id),
+            tier: channelTier(c.id),
         }));
     } catch {
         menu = [];
     }
 
-    // ── 逐个拉回选中渠道的权威全量对象(只读 GET,不 PUT)。单个失败只记录,不中断。 ──
-    const channels: NewApiChannel[] = [];
+    // ── 逐个拉回选中渠道的权威全量对象(只读 GET,不 PUT)+ 按档包装。单个失败只记录。 ──
+    const channels: ChannelForImport[] = [];
     const channelErrors: { channel_id: number; error: string }[] = [];
     for (const id of channelIds) {
         try {
-            channels.push(await getChannel(id));
+            channels.push(toChannelForImport(await getChannel(id), channelTier(id)));
         } catch (e) {
             channelErrors.push({ channel_id: id, error: errMsg(e) });
         }
     }
 
-    const candidates = buildImportCandidates(channels.map(toChannelForImport));
+    const candidates = buildImportCandidates(channels);
 
-    // ── 与本租户现有目录对账(幂等)+ 计算 sort_order 起点。 ──
+    // ── 现有目录对账(per (slug,tier) 幂等)。带 upstream_map + 各档已有价 tier。 ──
     const tenant_id = tenantForInsert(admin);
-    const existing = await prisma.catalogModel.findMany({
+    const existingModels = await prisma.catalogModel.findMany({
         where: { ...tenantScope(admin) },
-        select: { slug: true, sort_order: true },
+        select: { id: true, slug: true, sort_order: true, upstream_map: true, prices: { select: { tier: true } } },
     });
-    const existingSlugs = new Set(existing.map((m) => m.slug));
-    const maxSort = existing.reduce((acc, r) => Math.max(acc, r.sort_order ?? 0), 0);
+    const bySlug = new Map<
+        string,
+        { id: string; sort_order: number; upstream_map: UpstreamMap; priceTiers: Set<string> }
+    >();
+    let maxSort = 0;
+    for (const m of existingModels) {
+        maxSort = Math.max(maxSort, m.sort_order ?? 0);
+        bySlug.set(m.slug, {
+            id: m.id,
+            sort_order: m.sort_order ?? 0,
+            upstream_map: asUpstreamMap(m.upstream_map),
+            priceTiers: new Set(m.prices.map((p) => p.tier)),
+        });
+    }
 
+    // ── 按 slug 分组候选(同 slug 的 pool/official 候选聚到一起 → 一个模型多档)。 ──
+    const slugOrder: string[] = [];
+    const candidatesBySlug = new Map<string, ImportCandidate[]>();
+    for (const c of candidates) {
+        if (!candidatesBySlug.has(c.slug)) {
+            candidatesBySlug.set(c.slug, []);
+            slugOrder.push(c.slug);
+        }
+        candidatesBySlug.get(c.slug)!.push(c);
+    }
+
+    // 结果桶(per (slug, tier))。
     const created: Array<{
         slug: string;
         display_name: string;
         vendor: string;
         modality: string;
+        tier: string;
         channel_id: number;
-        channel_name: string | null;
         input_cny_per_1m: number | null;
         output_cny_per_1m: number | null;
         ratio_defaulted: boolean;
     }> = [];
-    const skipped: Array<{ slug: string; reason: string }> = [];
+    const skipped: Array<{ slug: string; tier: string; reason: string }> = [];
     const flagged: Array<{
         slug: string;
         display_name: string;
         vendor: string;
         modality: string;
+        tier: string;
         channel_id: number;
-        channel_name: string | null;
         reason: string;
     }> = [];
 
-    // 待写入的项(dryRun 时不写,只用于预览计数)。makePrice = 是否同时建 CatalogPrice。
-    const toWrite: Array<{
+    // 写计划:每个 slug 一项(create 或 merge model)+ 该 slug 下要建的价。
+    type PlanItem = {
         slug: string;
+        existingId: string | null;
         display_name: string;
         vendor: string;
         modality: 'chat' | 'image';
-        channel_id: number;
-        upstream_model: string;
         sort_order: number;
-        makePrice: boolean;
-        input_cny_per_1m: number | null;
-        output_cny_per_1m: number | null;
-    }> = [];
-
+        upstreamMap: UpstreamMap;
+        upstreamMapChanged: boolean;
+        pricesToCreate: { tier: string; input: number | null; output: number | null }[];
+    };
+    const plan: PlanItem[] = [];
     let sort = maxSort;
-    for (const c of candidates) {
-        if (existingSlugs.has(c.slug)) {
-            skipped.push({ slug: c.slug, reason: 'already_exists' });
-            continue;
-        }
-        sort += 1;
-        const common = {
-            slug: c.slug,
-            display_name: c.display_name,
-            vendor: c.vendor,
-            modality: c.modality,
-            channel_id: c.channel_id,
-            upstream_model: c.upstream_model,
-            sort_order: sort,
-            input_cny_per_1m: c.input_cny_per_1m,
-            output_cny_per_1m: c.output_cny_per_1m,
-        };
 
-        if (c.price_status === 'priced') {
-            created.push({
-                slug: c.slug,
-                display_name: c.display_name,
-                vendor: c.vendor,
-                modality: c.modality,
-                channel_id: c.channel_id,
-                channel_name: c.channel_name,
-                input_cny_per_1m: c.input_cny_per_1m,
-                output_cny_per_1m: c.output_cny_per_1m,
-                ratio_defaulted: c.ratio_defaulted,
-            });
-            toWrite.push({ ...common, makePrice: true });
-        } else {
-            flagged.push({
-                slug: c.slug,
-                display_name: c.display_name,
-                vendor: c.vendor,
-                modality: c.modality,
-                channel_id: c.channel_id,
-                channel_name: c.channel_name,
-                reason: c.price_status === 'image' ? 'image_model_manual_price' : 'no_model_ratio_manual_price',
-            });
-            // 图片 / 无 ratio:只建模型,价格留空待 operator 在 /admin/pricing 手填。
-            toWrite.push({ ...common, makePrice: false });
+    for (const slug of slugOrder) {
+        const cands = candidatesBySlug.get(slug)!;
+        const existing = bySlug.get(slug) ?? null;
+        const first = cands[0];
+
+        // 合并 upstream_map:从现有开始,叠加本次每档的映射(补/重指该档,不动其他档)。
+        const upstreamMap: UpstreamMap = existing ? { ...existing.upstream_map } : {};
+        let upstreamMapChanged = existing === null; // 新模型必写
+        for (const c of cands) {
+            const prev = upstreamMap[c.tier];
+            if (!prev || prev.channel_id !== c.channel_id || prev.upstream_model !== c.upstream_model) {
+                upstreamMap[c.tier] = { channel_id: c.channel_id, upstream_model: c.upstream_model };
+                upstreamMapChanged = true;
+            }
         }
+
+        let sortOrder: number;
+        if (existing) {
+            sortOrder = existing.sort_order;
+        } else {
+            sort += 1;
+            sortOrder = sort;
+        }
+
+        const pricesToCreate: { tier: string; input: number | null; output: number | null }[] = [];
+        for (const c of cands) {
+            const priceExists = existing?.priceTiers.has(c.tier) ?? false;
+            if (priceExists) {
+                // 价已存在 → 不覆盖 operator 手改的价。
+                skipped.push({ slug, tier: c.tier, reason: 'price_exists' });
+                continue;
+            }
+            if (c.price_status === 'priced') {
+                created.push({
+                    slug,
+                    display_name: c.display_name,
+                    vendor: c.vendor,
+                    modality: c.modality,
+                    tier: c.tier,
+                    channel_id: c.channel_id,
+                    input_cny_per_1m: c.input_cny_per_1m,
+                    output_cny_per_1m: c.output_cny_per_1m,
+                    ratio_defaulted: c.ratio_defaulted,
+                });
+                pricesToCreate.push({ tier: c.tier, input: c.input_cny_per_1m, output: c.output_cny_per_1m });
+            } else {
+                // 图片 / 无 ratio:建/合并模型,价留空待 operator 在 /admin/pricing 手填。
+                flagged.push({
+                    slug,
+                    display_name: c.display_name,
+                    vendor: c.vendor,
+                    modality: c.modality,
+                    tier: c.tier,
+                    channel_id: c.channel_id,
+                    reason: c.price_status === 'image' ? 'image_model_manual_price' : 'no_model_ratio_manual_price',
+                });
+            }
+        }
+
+        plan.push({
+            slug,
+            existingId: existing?.id ?? null,
+            display_name: first.display_name,
+            vendor: first.vendor,
+            modality: first.modality,
+            sort_order: sortOrder,
+            upstreamMap,
+            upstreamMapChanged,
+            pricesToCreate,
+        });
     }
 
-    // ── 真导入:一个 $transaction 包住所有 create,失败整体回滚(brief §4)。 ──
-    if (!dryRun && toWrite.length > 0) {
-        await prisma.$transaction(async (tx) => {
-            for (const w of toWrite) {
-                const model = await tx.catalogModel.create({
-                    data: {
-                        tenant_id,
-                        slug: w.slug,
-                        display_name: w.display_name,
-                        vendor: w.vendor,
-                        modality: w.modality,
-                        enabled: true,
-                        sort_order: w.sort_order,
-                        upstream_map: { default: { channel_id: w.channel_id, upstream_model: w.upstream_model } },
-                    },
-                });
-                if (w.makePrice) {
-                    await tx.catalogPrice.create({
-                        data: {
-                            model_id: model.id,
-                            tier: 'default',
-                            input_cny_per_1m: w.input_cny_per_1m,
-                            output_cny_per_1m: w.output_cny_per_1m,
-                            created_by: admin.user?.id ?? null,
-                        },
-                    });
+    // ── 真导入:一个 $transaction 包住建/合并模型 + 建价,失败整体回滚(brief §2/§3)。 ──
+    if (!dryRun) {
+        const hasWork = plan.some((p) => p.existingId === null || p.upstreamMapChanged || p.pricesToCreate.length > 0);
+        if (hasWork) {
+            await prisma.$transaction(async (tx) => {
+                for (const p of plan) {
+                    let modelId = p.existingId;
+                    if (modelId === null) {
+                        const m = await tx.catalogModel.create({
+                            data: {
+                                tenant_id,
+                                slug: p.slug,
+                                display_name: p.display_name,
+                                vendor: p.vendor,
+                                modality: p.modality,
+                                enabled: true,
+                                sort_order: p.sort_order,
+                                upstream_map: p.upstreamMap as Prisma.InputJsonValue,
+                            },
+                        });
+                        modelId = m.id;
+                    } else if (p.upstreamMapChanged) {
+                        await tx.catalogModel.update({
+                            where: { id: modelId },
+                            data: { upstream_map: p.upstreamMap as Prisma.InputJsonValue },
+                        });
+                    }
+                    for (const pr of p.pricesToCreate) {
+                        await tx.catalogPrice.create({
+                            data: {
+                                model_id: modelId,
+                                tier: pr.tier,
+                                input_cny_per_1m: pr.input,
+                                output_cny_per_1m: pr.output,
+                                created_by: admin.user?.id ?? null,
+                            },
+                        });
+                    }
                 }
-            }
-        });
+            });
+        }
     }
 
     return NextResponse.json({
         dryRun,
         selectedChannelIds: channelIds,
+        officialRegistered,
         channels: menu,
         channelErrors,
         created,

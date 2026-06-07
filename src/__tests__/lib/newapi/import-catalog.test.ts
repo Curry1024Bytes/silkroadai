@@ -56,6 +56,7 @@ describe('buildImportCandidates', () => {
     const claudeChannel: ChannelForImport = {
         id: 2,
         name: 'sub2api',
+        tier: 'pool',
         models: 'claude-opus-4-7, claude-sonnet-4-6', // whitespace after comma → must be trimmed
         model_ratio: JSON.stringify({ 'claude-opus-4-7': 3.214286, 'claude-sonnet-4-6': 0.642857 }),
         completion_ratio: JSON.stringify({ 'claude-opus-4-7': 5, 'claude-sonnet-4-6': 5 }),
@@ -63,6 +64,7 @@ describe('buildImportCandidates', () => {
     const openaiChannel: ChannelForImport = {
         id: 3,
         name: 'sub2api-openai',
+        tier: 'pool',
         // gpt-5.4 priced; gpt-mini has model_ratio but NO completion_ratio; gpt-image-2 is image;
         // mystery is in models but absent from model_ratio (and not image).
         models: 'gpt-5.4,gpt-mini,gpt-image-2,mystery',
@@ -72,6 +74,7 @@ describe('buildImportCandidates', () => {
     const imageChannel: ChannelForImport = {
         id: 17,
         name: 'nexaxis',
+        tier: 'pool',
         models: 'gemini-3-pro-image',
         model_ratio: {}, // already-parsed empty dict (not a JSON string)
         completion_ratio: {},
@@ -85,6 +88,7 @@ describe('buildImportCandidates', () => {
         expect(bySlug['claude-opus-4-7']).toMatchObject({
             vendor: 'anthropic',
             modality: 'chat',
+            tier: 'pool',
             price_status: 'priced',
             input_cny_per_1m: 22.5,
             output_cny_per_1m: 112.5,
@@ -134,30 +138,48 @@ describe('buildImportCandidates', () => {
         });
     });
 
-    it('dedupes a slug seen in multiple channels (first channel wins)', () => {
-        const chA: ChannelForImport = {
+    it('dedupes by (slug, tier): same tier → first wins; pool + official → two candidates', () => {
+        const poolA: ChannelForImport = {
             id: 2,
             name: 'A',
+            tier: 'pool',
             models: 'dup-model',
             model_ratio: { 'dup-model': 1 },
             completion_ratio: { 'dup-model': 2 },
         };
-        const chB: ChannelForImport = {
+        const poolB: ChannelForImport = {
             id: 3,
             name: 'B',
+            tier: 'pool',
             models: 'dup-model',
             model_ratio: { 'dup-model': 9 },
             completion_ratio: { 'dup-model': 9 },
         };
-        const candidates = buildImportCandidates([chA, chB]);
-        expect(candidates.filter((c) => c.slug === 'dup-model')).toHaveLength(1);
-        expect(candidates[0].channel_id).toBe(2); // first wins
-        expect(candidates[0].input_cny_per_1m).toBe(7); // mr 1 × FX 7
+        const official: ChannelForImport = {
+            id: 4,
+            name: 'C',
+            tier: 'official',
+            models: 'dup-model',
+            model_ratio: { 'dup-model': 2 },
+            completion_ratio: { 'dup-model': 3 },
+        };
+
+        // Two pool channels with the same slug → 1 candidate, first pool wins.
+        const samePool = buildImportCandidates([poolA, poolB]);
+        expect(samePool).toHaveLength(1);
+        expect(samePool[0]).toMatchObject({ tier: 'pool', channel_id: 2, input_cny_per_1m: 7 });
+
+        // Same slug on a pool channel + an official channel → 2 candidates (one per tier).
+        const both = buildImportCandidates([poolA, official]);
+        expect(both).toHaveLength(2);
+        const byTier = Object.fromEntries(both.map((c) => [c.tier, c]));
+        expect(byTier.pool).toMatchObject({ channel_id: 2, input_cny_per_1m: 7 }); // mr 1 × FX 7
+        expect(byTier.official).toMatchObject({ channel_id: 4, input_cny_per_1m: 14 }); // mr 2 × FX 7
     });
 
     it('handles empty / missing models', () => {
-        expect(buildImportCandidates([{ id: 5, models: '' }])).toEqual([]);
-        expect(buildImportCandidates([{ id: 5 }])).toEqual([]);
+        expect(buildImportCandidates([{ id: 5, tier: 'pool', models: '' }])).toEqual([]);
+        expect(buildImportCandidates([{ id: 5, tier: 'pool' }])).toEqual([]);
         expect(buildImportCandidates([])).toEqual([]);
     });
 });

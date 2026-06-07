@@ -27,6 +27,11 @@ export interface ChannelForImport {
     models?: string | null;
     model_ratio?: string | Record<string, number> | null;
     completion_ratio?: string | Record<string, number> | null;
+    /**
+     * 该渠道的导入档次(P2.6)= ChannelGroup.key('pool'/'official')。由调用方按
+     * 「channel_id ∈ official 渠道组登记的 ids → official,否则 pool」判定后填入。
+     */
+    tier: string;
 }
 
 /**
@@ -42,9 +47,11 @@ export interface ImportCandidate {
     display_name: string;
     vendor: string;
     modality: 'chat' | 'image';
+    /** 档次(P2.6)= 来源渠道的 ChannelGroup.key('pool'/'official')。 */
+    tier: string;
     channel_id: number;
     channel_name: string | null;
-    /** upstream_map.default.upstream_model —— P2.5 阶段 = slug 本身。 */
+    /** upstream_map[tier].upstream_model —— = slug 本身。 */
     upstream_model: string;
     input_cny_per_1m: number | null;
     output_cny_per_1m: number | null;
@@ -105,10 +112,11 @@ export function toDisplayName(slug: string): string {
 }
 
 /**
- * 从选中的旗舰渠道(已逐个 getChannel 拉回)推导出导入候选清单。
+ * 从选中的旗舰渠道(已逐个 getChannel 拉回、各自带 tier)推导出导入候选清单。
  *
- * - 同一 slug 在多个渠道出现 → 只取第一个出现的(first-channel-wins),后续静默去重
- *   (旗舰渠道间通常无重叠;Claude/OpenAI/Gemini 各管各的)。
+ * - 去重键 = (slug, tier)(P2.6):同一 slug 在两个【同档】渠道出现 → 取第一个
+ *   (first-wins);在 pool 渠道 + official 渠道各出现一次 → 产出【两个】候选
+ *   (pool 一个 + official 一个),供调用方合并成「一个模型两档价」。
  * - 顺序保持渠道入参顺序 → 渠道内 models 顺序,便于稳定的 sort_order 分配。
  */
 export function buildImportCandidates(channels: ChannelForImport[]): ImportCandidate[] {
@@ -124,13 +132,15 @@ export function buildImportCandidates(channels: ChannelForImport[]): ImportCandi
             .filter(Boolean);
 
         for (const slug of models) {
-            if (seen.has(slug)) continue;
-            seen.add(slug);
+            const dedupKey = `${slug}\u0000${ch.tier}`;
+            if (seen.has(dedupKey)) continue;
+            seen.add(dedupKey);
 
             const base = {
                 slug,
                 display_name: toDisplayName(slug),
                 vendor: inferVendor(slug),
+                tier: ch.tier,
                 channel_id: ch.id,
                 channel_name: ch.name ?? null,
                 upstream_model: slug,
