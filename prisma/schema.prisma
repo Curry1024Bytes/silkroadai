@@ -922,3 +922,51 @@ model ChannelGroup {
   @@index([tenant_id, enabled])
   @@map("channel_groups")
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// 影子计量(P4a — 计费接管第一段:纯观察,不扣费)
+// ─────────────────────────────────────────────────────────────────────────
+// portal 轮询 new-api consume 日志,按客户 token 档次(pool/official)取生效的
+// CatalogPrice 算出"我们这边该扣多少 ¥",写一条 UsageRecord(只读账)。
+// ⚠️ P4a 不扣余额 / 不挡请求 / 不改充值 / 不建 Account+LedgerEntry(那是 P4c)。
+// new-api 仍是唯一计费事实源;这里只为 P4b 对账(portal 算的 ¥ vs new-api 实扣 quota)打底。
+// 关系全部用裸 uuid 列(不建 FK relation)—— 影子记录独立,不牵动 User/Token 删除。
+model UsageRecord {
+  id        String  @id @default(uuid()) @db.Uuid
+  tenant_id String? @db.Uuid // P1 tenant 维度(冗余自 user)
+  user_id   String  @db.Uuid // portal user id
+  token_id  String? @db.Uuid // portal NewApiToken.id(反查不到时 null)
+
+  // 幂等锚:new-api log 的 id(全局唯一)→ 每条日志最多一条 UsageRecord。
+  newapi_log_id  Int @unique
+  newapi_user_id Int // 冗余,排查用
+
+  model_slug    String
+  tier          String @default("pool")
+  input_tokens  Int    @default(0)
+  output_tokens Int    @default(0)
+
+  // 我们按 CatalogPrice 算出的 ¥ 成本(影子,不扣余额)。8 位小数:单次调用 ¥ 可能极小。
+  cost_cny Decimal @db.Decimal(20, 8)
+  price_id String? @db.Uuid // 引用的 CatalogPrice 版本,可复算(image-only/无价时为 null)
+  matched  Boolean @default(true) // false = 没匹配到可算价的 CatalogPrice(model/tier 未配价 / 仅图片价)
+
+  // new-api 实扣的 raw quota(对账用:换算成 ¥ 与 cost_cny 比)。
+  newapi_quota   Int      @default(0)
+  log_created_at DateTime // new-api 日志时间(UTC)
+  created_at     DateTime @default(now())
+
+  @@index([user_id, log_created_at])
+  @@index([tenant_id, model_slug, log_created_at])
+  @@index([matched])
+  @@map("usage_records")
+}
+
+// 轮询游标(单行表,记上次处理到的 new-api log id)。
+model UsageMeterCursor {
+  id          Int       @id @default(1) // 永远 1 行
+  last_log_id Int       @default(0) // 上次处理到的 new-api log id
+  last_run_at DateTime?
+
+  @@map("usage_meter_cursor")
+}

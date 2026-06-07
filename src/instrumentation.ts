@@ -21,5 +21,10 @@ export async function register() {
         // 14d) + monthly settlement auto-create on day 1 UTC. 1h cadence.
         const { startResellerCommissionScheduler } = await import('@/lib/scheduler/reseller-commission');
         startResellerCommissionScheduler();
+
+        // P4a: shadow metering — poll new-api consume logs → UsageRecord (¥ per
+        // CatalogPrice). Pure observation, no billing/balance impact. 10m cadence.
+        const { startShadowMeterScheduler } = await import('@/lib/scheduler/shadow-meter');
+        startShadowMeterScheduler();
     }
 }

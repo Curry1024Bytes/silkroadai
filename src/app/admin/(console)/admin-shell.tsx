@@ -12,6 +12,7 @@ const NAV_ITEMS = [
     { path: '/admin/channel-groups', label: { zh: '渠道分组', en: 'Channel Groups' } },
     { path: '/admin/models', label: { zh: '模型管理', en: 'Models' } },
     { path: '/admin/pricing', label: { zh: '定价', en: 'Pricing' } },
+    { path: '/admin/billing-shadow', label: { zh: '影子计量', en: 'Shadow Metering' } },
     { path: '/admin/subscriptions', label: { zh: '订阅管理', en: 'Subscriptions' } },
 ];
 
