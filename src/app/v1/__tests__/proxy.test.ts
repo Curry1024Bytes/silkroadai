@@ -487,3 +487,232 @@ describe('/v1 proxy — Phase 3: 客户自定义 OSS (W9 D3)', () => {
         expect(mockUploadImage).toHaveBeenCalledTimes(1);
     });
 });
+
+describe('/v1 proxy — Phase 4: DALL·E /v1/images/{edits,generations} (W9 D4)', () => {
+    /** multipart 请求:body 传 FormData 让 Request 自动生成 multipart content-type + boundary。 */
+    function makeMultipartReq(form: FormData, path = '/images/edits'): NextRequest {
+        return new NextRequest(`https://ai.silkroadai.io/v1${path}`, { method: 'POST', body: form });
+    }
+
+    function imageFile(bytes: number[], name = 'ref.png', type = 'image/png'): File {
+        return new File([new Uint8Array(bytes)], name, { type });
+    }
+
+    it('edits multipart happy path → native translate + url DALL·E response (test D4-1)', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const jpegBytes = [0xff, 0xd8, 0xff, 0xe0];
+        const form = new FormData();
+        form.append('model', 'gemini-3.1-flash-image-preview');
+        form.append('prompt', 'make this cat wear a hat');
+        form.append('aspect_ratio', '16:9');
+        form.append('image', imageFile(jpegBytes, 'cat.jpg', 'image/jpeg'));
+
+        const res = await POST(makeMultipartReq(form, '/images/edits'), ctx('images', 'edits'));
+
+        const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(url).toBe(`${NEWAPI_BASE}/v1beta/models/gemini-3.1-flash-image-preview:generateContent`);
+        const sent = JSON.parse(String(init.body)) as {
+            contents: Array<{
+                role: string;
+                parts: Array<{ text?: string; inlineData?: { mimeType: string; data: string } }>;
+            }>;
+            generationConfig: { imageConfig: { imageSize: string; aspectRatio: string } };
+        };
+        expect(sent.generationConfig.imageConfig.imageSize).toBe('2K');
+        expect(sent.generationConfig.imageConfig.aspectRatio).toBe('16:9');
+        expect(sent.contents[0].parts[0].text).toBe('make this cat wear a hat');
+        expect(sent.contents[0].parts[1].inlineData?.mimeType).toBe('image/jpeg');
+        expect(sent.contents[0].parts[1].inlineData?.data).toBe(Buffer.from(jpegBytes).toString('base64'));
+
+        expect(res.status).toBe(200);
+        expect(res.headers.get('X-Silkroadai-Translated')).toBe('gemini-native');
+        const data = (await res.json()) as { created: number; data: Array<{ url: string }> };
+        expect(typeof data.created).toBe('number');
+        expect(data.data).toHaveLength(1);
+        expect(data.data[0].url).toMatch(/^https:\/\/images\.silkroadai\.io\/gen\/[0-9a-f-]+\.png$/);
+    });
+
+    it('edits multipart response_format=b64_json → base64, no R2 upload (test D4-2)', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const form = new FormData();
+        form.append('model', 'gemini-3.1-flash-image-preview');
+        form.append('prompt', 'x');
+        form.append('response_format', 'b64_json');
+        form.append('image', imageFile([1, 2, 3]));
+
+        const res = await POST(makeMultipartReq(form), ctx('images', 'edits'));
+        expect(res.status).toBe(200);
+        const data = (await res.json()) as { data: Array<{ b64_json?: string; url?: string }> };
+        expect(data.data[0].b64_json).toBe('QkFTRTY0'); // geminiNativeResponse 的 inlineData.data
+        expect(data.data[0].url).toBeUndefined();
+        expect(mockUploadImage).not.toHaveBeenCalled();
+        expect(mockUploadToCustomerOss).not.toHaveBeenCalled();
+    });
+
+    it('generations JSON happy path (no image) → DALL·E url response (test D4-3)', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const res = await POST(
+            makeReq('/images/generations', { body: { model: 'gemini-2.5-flash-image', prompt: 'a sunset' } }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(url).toBe(`${NEWAPI_BASE}/v1beta/models/gemini-2.5-flash-image:generateContent`);
+        const sent = JSON.parse(String(init.body)) as {
+            contents: Array<{ parts: Array<{ text?: string }> }>;
+            generationConfig: { imageConfig: { imageSize: string; aspectRatio: string } };
+        };
+        expect(sent.generationConfig.imageConfig.imageSize).toBe('1K');
+        expect(sent.generationConfig.imageConfig.aspectRatio).toBe('1:1'); // 默认
+        expect(sent.contents[0].parts).toHaveLength(1);
+        expect(sent.contents[0].parts[0].text).toBe('a sunset');
+        const data = (await res.json()) as { data: Array<{ url: string }> };
+        expect(data.data[0].url).toMatch(/^https:\/\/images\.silkroadai\.io\/gen\//);
+    });
+
+    it('rejects unsupported aspect_ratio with 400, does not hit upstream (test D4-4)', async () => {
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gemini-2.5-flash-image', prompt: 'x', aspect_ratio: '7:3' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(400);
+        const data = (await res.json()) as { error: { type: string; message: string } };
+        expect(data.error.type).toBe('invalid_request_error');
+        expect(data.error.message).toContain('7:3');
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('empty aspect_ratio defaults to 1:1 (test D4-5)', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gemini-2.5-flash-image', prompt: 'x', aspect_ratio: '' },
+            }),
+            ctx('images', 'generations'),
+        );
+        const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        const sent = JSON.parse(String(init.body)) as { generationConfig: { imageConfig: { aspectRatio: string } } };
+        expect(sent.generationConfig.imageConfig.aspectRatio).toBe('1:1');
+    });
+
+    it('pro-tier-only ratio 8:1 passes for pro, rejected for flash (test D4-6)', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const proRes = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gemini-3-pro-image-preview', prompt: 'x', aspect_ratio: '8:1' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(proRes.status).toBe(200);
+        const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        const sent = JSON.parse(String(init.body)) as { generationConfig: { imageConfig: { aspectRatio: string } } };
+        expect(sent.generationConfig.imageConfig.aspectRatio).toBe('8:1');
+
+        // 同比例在 flash 档不在白名单 → 400(分档生效),不打上游
+        const flashRes = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gemini-3.1-flash-image-preview', prompt: 'x', aspect_ratio: '8:1' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(flashRes.status).toBe(400);
+        expect(mockFetch).toHaveBeenCalledTimes(1); // 只有 pro 那次打了上游
+    });
+
+    it('passes non-Gemini model multipart through to new-api unchanged (test D4-7)', async () => {
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ data: [{ url: 'x' }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const form = new FormData();
+        form.append('model', 'gpt-image-2');
+        form.append('prompt', 'a logo');
+        form.append('image', imageFile([1, 2, 3]));
+
+        const res = await POST(makeMultipartReq(form, '/images/edits'), ctx('images', 'edits'));
+        const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(url).toBe(`${NEWAPI_BASE}/v1/images/edits`); // 透传,不翻译
+        expect(url).not.toContain('generateContent');
+        expect(init.body).toBeInstanceOf(FormData); // 重建 FormData 转发
+        // content-type 被删 → fetch 会按新 FormData 重生 boundary(mock 不会重生,断言已删)
+        expect((init.headers as Headers).get('content-type')).toBeNull();
+        expect(res.status).toBe(200);
+        expect(res.headers.get('X-Silkroadai-Translated')).toBeNull();
+    });
+
+    it('falls back to inline data URL + header when R2 upload throws (test D4-8)', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        mockUploadImage.mockRejectedValueOnce(new Error('R2 env not configured'));
+        const res = await POST(
+            makeReq('/images/generations', { body: { model: 'gemini-2.5-flash-image', prompt: 'x' } }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        expect(res.headers.get('X-Silkroadai-R2-Fallback')).toBe('yes');
+        const data = (await res.json()) as { data: Array<{ url: string }> };
+        expect(data.data[0].url).toBe('data:image/png;base64,QkFTRTY0');
+    });
+
+    it('rejects oversized image file with 400, does not hit upstream (test D4-9)', async () => {
+        const tooBig = new Array(20 * 1024 * 1024 + 1).fill(0); // 20MB + 1 byte
+        const form = new FormData();
+        form.append('model', 'gemini-3.1-flash-image-preview');
+        form.append('prompt', 'x');
+        form.append('image', imageFile(tooBig, 'big.png'));
+
+        const res = await POST(makeMultipartReq(form), ctx('images', 'edits'));
+        expect(res.status).toBe(400);
+        const data = (await res.json()) as { error: { type: string; message: string } };
+        expect(data.error.type).toBe('invalid_request_error');
+        expect(data.error.message).toContain('too large');
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('returns 502 when upstream generates no image part (test D4-10)', async () => {
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: 'cannot draw that' }] } }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const res = await POST(
+            makeReq('/images/generations', { body: { model: 'gemini-2.5-flash-image', prompt: 'x' } }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(502);
+        const data = (await res.json()) as { error: { type: string; message: string } };
+        expect(data.error.message).toBe('no image generated');
+        expect(data.error.type).toBe('invalid_request_error');
+    });
+
+    it('honors customer OSS on the DALL·E path too (storeGeneratedImage shared)', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        mockResolveUserId.mockResolvedValueOnce('user-uuid-9');
+        mockGetOssConfig.mockResolvedValueOnce({
+            provider: 'r2',
+            endpoint: 'https://acct.r2.cloudflarestorage.com',
+            bucket: 'customer-bucket',
+            region: null,
+            access_key_id: 'AKID',
+            secret_access_key_encrypted: 'encrypted',
+            public_url_prefix: 'https://cdn.customer.com',
+            status: 'active',
+        });
+
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gemini-2.5-flash-image', prompt: 'x' },
+                headers: { authorization: 'Bearer sk-customer-token' },
+            }),
+            ctx('images', 'generations'),
+        );
+        const data = (await res.json()) as { data: Array<{ url: string }> };
+        expect(mockUploadToCustomerOss).toHaveBeenCalledTimes(1);
+        expect(mockUploadImage).not.toHaveBeenCalled();
+        expect(data.data[0].url).toMatch(/^https:\/\/cdn\.customer\.com\/gen\/[0-9a-f-]+\.png$/);
+    });
+});

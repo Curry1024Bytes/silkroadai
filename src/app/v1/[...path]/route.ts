@@ -26,9 +26,14 @@
  *    → 钳到 4096 + 响应头 `X-Silkroadai-Clamped`(上游号池对超大
  *      max_tokens 限制,超了直接 4xx,钳掉对客户更友好)。
  *
- * 3. 其余一切(/messages、/images/generations、/models、/embeddings、
- *    其他模型的 /chat/completions…)→ 原样透传 new-api,
- *    streaming SSE 不缓冲(直接 forward upstream ReadableStream)。
+ * 3. POST /v1/images/{edits,generations}(DALL·E 兼容层,W9 D4)
+ *    + Gemini 生图模型 → 翻译到 native generateContent(注入 imageSize +
+ *      aspect_ratio),响应包成 DALL·E 形 `{ created, data:[{url|b64_json}] }`。
+ *      multipart/form-data(对标 gpt-best「Nano-banana」)与 JSON 两种 body 都收。
+ *      非 Gemini model(gpt-image-2 等)→ 原样透传 new-api。详见 handleImagesDalle。
+ *
+ * 4. 其余一切(/messages、/models、/embeddings、其他模型的 /chat/completions…)
+ *    → 原样透传 new-api,streaming SSE 不缓冲(直接 forward upstream ReadableStream)。
  *
  * 边界:
  * - 本文件不做鉴权 — Authorization 头原样透传,new-api 自己校验 sk-xxx。
@@ -58,6 +63,42 @@ const GEMINI_IMAGE_MODELS: Record<string, '1K' | '2K' | '4K'> = {
     'gemini-3.1-flash-image-preview': '2K',
     'gemini-3-pro-image-preview': '4K',
 };
+
+/** Gemini 官方支持的 aspect_ratio 白名单(按模型分档,key 与 GEMINI_IMAGE_MODELS 对齐)。
+ *  来源:ai.google.dev image-generation 文档 + Vertex 3-pro-image 文档(2026-06 查证)。
+ *  pro 档比 flash 多 1:4 / 1:8 / 8:1 三个极端比例。 */
+const GEMINI_ASPECT_RATIOS: Record<string, ReadonlySet<string>> = {
+    'gemini-2.5-flash-image': new Set(['21:9', '16:9', '4:3', '3:2', '1:1', '9:16', '3:4', '2:3', '5:4', '4:5']),
+    'gemini-3.1-flash-image-preview': new Set([
+        '21:9',
+        '16:9',
+        '4:3',
+        '3:2',
+        '1:1',
+        '9:16',
+        '3:4',
+        '2:3',
+        '5:4',
+        '4:5',
+    ]),
+    'gemini-3-pro-image-preview': new Set([
+        '1:1',
+        '2:3',
+        '3:2',
+        '3:4',
+        '4:3',
+        '4:5',
+        '5:4',
+        '9:16',
+        '16:9',
+        '21:9',
+        '1:4',
+        '1:8',
+        '8:1',
+    ]),
+};
+
+const DEFAULT_ASPECT_RATIO = '1:1';
 
 const CLAUDE_MAX_TOKENS_CAP = 4096;
 
@@ -211,6 +252,55 @@ interface GeminiPart {
     inlineData?: { mimeType: string; data: string };
 }
 
+interface StoredImage {
+    /** url 模式用:公网 URL(客户 OSS / 平台 R2)或降级时的 data URL */
+    url: string;
+    ossFallback: boolean;
+    r2Fallback: boolean;
+}
+
+/** 生成的 base64 图 → 客户 OSS / 平台 R2 / data URL 内联,三级降级。
+ *  任何故障(DB / OSS / R2)都不抛 — 客户请求绝不因我们的存储故障而失败。
+ *  chat(handleGeminiImage)与 images(handleImagesDalle)两条路复用此函数。 */
+async function storeGeneratedImage(
+    req: NextRequest,
+    buffer: Buffer,
+    mimeType: string,
+    base64: string,
+): Promise<StoredImage> {
+    const ext = mimeType.includes('jpeg') ? 'jpg' : mimeType.includes('webp') ? 'webp' : 'png';
+    const key = `gen/${randomUUID()}.${ext}`;
+    let ossFallback = false;
+
+    // Phase 3:sk-xxx 反查 portal user → 客户 OSS 配置(查询失败一律回平台 R2)
+    let customerUrl: string | null = null;
+    try {
+        const userId = await resolveUserIdFromAuthHeader(req.headers.get('authorization'));
+        const ossConfig = userId ? await getOssConfig(userId) : null;
+        if (ossConfig && ossConfig.status === 'active') {
+            try {
+                customerUrl = await uploadToCustomerOss(ossConfig, buffer, key, mimeType);
+            } catch (e) {
+                console.warn('[v1-proxy] customer OSS upload failed, falling back to platform R2', e);
+                ossFallback = true;
+            }
+        }
+    } catch (e) {
+        // DB 故障等 — 静默走平台 R2,不阻断客户请求
+        console.warn('[v1-proxy] customer OSS lookup failed, using platform R2', e);
+    }
+
+    if (customerUrl) return { url: customerUrl, ossFallback, r2Fallback: false };
+
+    try {
+        const url = await uploadImage(key, buffer, mimeType);
+        return { url, ossFallback, r2Fallback: false };
+    } catch (e) {
+        console.warn('[v1-proxy] R2 upload failed, falling back to inline data URL', e);
+        return { url: `data:${mimeType};base64,${base64}`, ossFallback, r2Fallback: true };
+    }
+}
+
 async function handleGeminiImage(req: NextRequest, body: JsonRecord, model: string): Promise<NextResponse> {
     const imageSize = GEMINI_IMAGE_MODELS[model];
     let contents: Array<{ role: string; parts: GeminiInputPart[] }>;
@@ -245,45 +335,12 @@ async function handleGeminiImage(req: NextRequest, body: JsonRecord, model: stri
     const imagePart = parts.find((p) => p.inlineData);
 
     let content: string;
-    let r2Fallback = false;
-    let ossFallback = false;
+    let stored: StoredImage | null = null;
     if (imagePart?.inlineData) {
         // Phase 2/3:客户 OSS → 平台 R2 → data URL 内联,三级降级(请求不失败)
         const { mimeType, data } = imagePart.inlineData;
-        const buffer = Buffer.from(data, 'base64');
-        const ext = mimeType.includes('jpeg') ? 'jpg' : mimeType.includes('webp') ? 'webp' : 'png';
-        const key = `gen/${randomUUID()}.${ext}`;
-
-        // Phase 3:sk-xxx 反查 portal user → 客户 OSS 配置(查询失败一律回平台 R2)
-        let customerUrl: string | null = null;
-        try {
-            const userId = await resolveUserIdFromAuthHeader(req.headers.get('authorization'));
-            const ossConfig = userId ? await getOssConfig(userId) : null;
-            if (ossConfig && ossConfig.status === 'active') {
-                try {
-                    customerUrl = await uploadToCustomerOss(ossConfig, buffer, key, mimeType);
-                } catch (e) {
-                    console.warn('[v1-proxy] customer OSS upload failed, falling back to platform R2', e);
-                    ossFallback = true;
-                }
-            }
-        } catch (e) {
-            // DB 故障等 — 静默走平台 R2,不阻断客户请求
-            console.warn('[v1-proxy] customer OSS lookup failed, using platform R2', e);
-        }
-
-        if (customerUrl) {
-            content = `![image](${customerUrl})`;
-        } else {
-            try {
-                const url = await uploadImage(key, buffer, mimeType);
-                content = `![image](${url})`;
-            } catch (e) {
-                console.warn('[v1-proxy] R2 upload failed, falling back to inline data URL', e);
-                r2Fallback = true;
-                content = `![image](data:${mimeType};base64,${data})`;
-            }
-        }
+        stored = await storeGeneratedImage(req, Buffer.from(data, 'base64'), mimeType, data);
+        content = `![image](${stored.url})`;
     } else {
         content = parts.find((p) => typeof p.text === 'string')?.text ?? 'No image generated';
     }
@@ -302,9 +359,147 @@ async function handleGeminiImage(req: NextRequest, body: JsonRecord, model: stri
     };
 
     const respHeaders: Record<string, string> = { 'X-Silkroadai-Translated': 'gemini-native' };
-    if (ossFallback) respHeaders['X-Silkroadai-Oss-Fallback'] = 'yes';
-    if (r2Fallback) respHeaders['X-Silkroadai-R2-Fallback'] = 'yes';
+    if (stored?.ossFallback) respHeaders['X-Silkroadai-Oss-Fallback'] = 'yes';
+    if (stored?.r2Fallback) respHeaders['X-Silkroadai-R2-Fallback'] = 'yes';
     return NextResponse.json(openaiResp, { status: 200, headers: respHeaders });
+}
+
+/** DALL·E 形错误(默认 400 invalid_request_error)。 */
+function imageError(message: string, status = 400): NextResponse {
+    return NextResponse.json({ error: { message, type: 'invalid_request_error' } }, { status });
+}
+
+/** 非 Gemini model 的 multipart 透传:重建 FormData 转发 new-api。
+ *  req.body 已被 formData() 消费,不能再 stream,所以转发已解析的 FormData;
+ *  删掉原 content-type 让 fetch 按新 FormData 重新生成 boundary。 */
+async function forwardMultipart(req: NextRequest, form: FormData, path: string, search: string): Promise<NextResponse> {
+    const headers = forwardHeaders(req);
+    headers.delete('content-type');
+    const upstream = await fetch(`${NEWAPI_BASE_URL}/v1${path}${search}`, {
+        method: 'POST',
+        headers,
+        body: form,
+    });
+    return passthroughResponse(upstream);
+}
+
+/**
+ * /v1/images/edits + /v1/images/generations 的 DALL·E 兼容入口(W9 D4)。
+ *
+ * model 命中 GEMINI_IMAGE_MODELS → 翻译到 Gemini native generateContent
+ * 并注入 imageSize(1K/2K/4K)+ aspectRatio,响应包成 DALL·E 形
+ * `{ created, data: [{ url | b64_json }] }`;否则原样透传 new-api(gpt-image-2 等)。
+ *
+ * 边界与已知取舍(对照官方 DALL·E 的有意差异):
+ * - `n`(多图):不支持,固定返 1 张(Gemini generateContent 单次出 1 图)。
+ *   客户传 n>1 我们忽略。需多图后续迭代。
+ * - `size`(如 1024x1024):忽略 —— 分辨率由 model 档位(imageSize 1K/2K/4K)决定,
+ *   比例由 aspect_ratio 决定。
+ * - 空 `aspect_ratio=""`(参考 curl 即空串)→ 默认 1:1,不报错;非空且不在该 model
+ *   官方白名单 → 400。
+ * - 多参考图:`image` 字段可重复(multipart form.getAll('image') / JSON 数组),
+ *   全部按顺序转 inlineData 塞进 parts。
+ * - 鉴权不在本层 —— Authorization 透传,new-api 校验 sk-xxx。
+ */
+async function handleImagesDalle(req: NextRequest, path: string, search: string): Promise<NextResponse> {
+    const contentType = req.headers.get('content-type') || '';
+    const isMultipart = contentType.includes('multipart/form-data');
+
+    // ---- 解析入参(multipart 或 JSON)----
+    let model = '';
+    let prompt = '';
+    let responseFormat = 'url';
+    let aspectRatio = '';
+    const inputParts: GeminiInputPart[] = [];
+
+    try {
+        if (isMultipart) {
+            const form = await req.formData();
+            model = String(form.get('model') ?? '');
+            prompt = String(form.get('prompt') ?? '');
+            responseFormat = String(form.get('response_format') ?? 'url') || 'url';
+            aspectRatio = String(form.get('aspect_ratio') ?? '');
+            // model 非我们的 Gemini 生图 → 重建 FormData 透传(保留 gpt-image-2 等)
+            if (!(model in GEMINI_IMAGE_MODELS)) {
+                return forwardMultipart(req, form, path, search);
+            }
+            for (const file of form.getAll('image')) {
+                if (file instanceof File && file.size > 0) {
+                    const buf = Buffer.from(await file.arrayBuffer());
+                    if (buf.byteLength > IMAGE_FETCH_MAX_BYTES) {
+                        return imageError(`image too large: ${buf.byteLength} bytes (max ${IMAGE_FETCH_MAX_BYTES})`);
+                    }
+                    inputParts.push({
+                        inlineData: { mimeType: file.type || 'image/png', data: buf.toString('base64') },
+                    });
+                }
+            }
+        } else {
+            const body = (await req.json()) as JsonRecord;
+            model = String(body.model ?? '');
+            prompt = String(body.prompt ?? '');
+            responseFormat = String(body.response_format ?? 'url') || 'url';
+            aspectRatio = String(body.aspect_ratio ?? '');
+            if (!(model in GEMINI_IMAGE_MODELS)) {
+                return forwardToNewApi(req, body, path, search);
+            }
+            // JSON 形态的 image 可能是 data URL / 外部 URL 字符串或其数组(复用现有 helper)
+            const imageField = body.image;
+            const urls = Array.isArray(imageField) ? imageField : imageField ? [imageField] : [];
+            for (const u of urls) {
+                if (typeof u === 'string') inputParts.push(await imageUrlToInlinePart(u));
+            }
+        }
+    } catch (e) {
+        if (e instanceof ImageUrlError) return imageError(e.message);
+        return imageError('invalid request body');
+    }
+
+    // ---- aspect_ratio 校验(按 model 档位的 Gemini 官方白名单)----
+    const allowed = GEMINI_ASPECT_RATIOS[model];
+    if (aspectRatio && !allowed.has(aspectRatio)) {
+        return imageError(`unsupported aspect_ratio "${aspectRatio}" for ${model}`);
+    }
+    const finalAspect = aspectRatio || DEFAULT_ASPECT_RATIO;
+
+    // ---- 拼 Gemini contents:prompt 文本 + 参考图 inlineData ----
+    const parts: GeminiInputPart[] = [{ text: prompt }, ...inputParts];
+    const upstream = await fetch(`${NEWAPI_BASE_URL}/v1beta/models/${model}:generateContent`, {
+        method: 'POST',
+        headers: forwardHeaders(req),
+        body: JSON.stringify({
+            contents: [{ role: 'user', parts }],
+            generationConfig: { imageConfig: { imageSize: GEMINI_IMAGE_MODELS[model], aspectRatio: finalAspect } },
+        }),
+    });
+    if (!upstream.ok) return passthroughResponse(upstream);
+
+    const upstreamData = (await upstream.json()) as {
+        candidates?: Array<{ content?: { parts?: GeminiPart[] } }>;
+    };
+    const inlineData = (upstreamData.candidates?.[0]?.content?.parts ?? []).find((p) => p.inlineData)?.inlineData;
+    if (!inlineData) {
+        return imageError('no image generated', 502);
+    }
+
+    // ---- 包成 DALL·E 响应 ----
+    const { mimeType, data: b64 } = inlineData;
+    const respHeaders: Record<string, string> = { 'X-Silkroadai-Translated': 'gemini-native' };
+    let datum: JsonRecord;
+
+    if (responseFormat === 'b64_json') {
+        datum = { b64_json: b64 };
+    } else {
+        const stored = await storeGeneratedImage(req, Buffer.from(b64, 'base64'), mimeType, b64);
+        datum = { url: stored.url };
+        if (stored.ossFallback) respHeaders['X-Silkroadai-Oss-Fallback'] = 'yes';
+        if (stored.r2Fallback) respHeaders['X-Silkroadai-R2-Fallback'] = 'yes';
+    }
+
+    return NextResponse.json(
+        { created: Math.floor(Date.now() / 1000), data: [datum] },
+        { status: 200, headers: respHeaders },
+    );
 }
 
 async function handleRequest(req: NextRequest, params: Promise<{ path: string[] }>): Promise<NextResponse> {
@@ -342,7 +537,12 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
         return forwardToNewApi(req, body, path, search);
     }
 
-    // 其他路径(/messages /images/generations /models /embeddings …)全部透传
+    // DALL·E 兼容图像接口:Gemini 生图模型翻译,其余(gpt-image-2 等)透传
+    if ((path === '/images/edits' || path === '/images/generations') && req.method === 'POST') {
+        return handleImagesDalle(req, path, search);
+    }
+
+    // 其他路径(/messages /models /embeddings …)全部透传
     return forwardToNewApi(req, null, path, search);
 }
 
