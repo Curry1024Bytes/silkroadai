@@ -20,6 +20,9 @@ interface NavItem {
 
 const BASE_NAV: NavItem[] = [
     { href: '/dashboard', label: '概览' },
+    // ChatUI v1 (stateless): headline conversational feature, sits right
+    // under the dashboard hub above 生图.
+    { href: '/chat', label: 'AI 对话' },
     // PR-T2: image generation lives in the second-position slot per
     // operator brief — surfaces the headline customer-visible feature
     // right under the dashboard hub.

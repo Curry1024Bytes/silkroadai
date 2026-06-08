@@ -1,0 +1,185 @@
+/**
+ * POST /api/portal/chat/stream — Chat UI v1 (stateless) streaming proxy.
+ *
+ * Background
+ * ----------
+ * Chat UI v1 is deliberately *stateless*: the customer picks a model,
+ * sends a turn, streams the reply, and nothing is persisted. No schema
+ * change, no new table — conversation history lands later as its own
+ * coordinated migration (see PROJECT-PLAN-B3 roadmap).
+ *
+ * This route is the only server piece. It mirrors the proven image-gen
+ * pattern (POST /api/portal/image/generate):
+ *   1. Cookie auth via getCurrentUser (W3 D3+).
+ *   2. In-memory sliding-window rate limit (scope `chat_stream`).
+ *   3. zod-validate { model, messages }.
+ *   4. Resolve the customer's portal-internal system token
+ *      (getOrCreateSystemToken) — the sk-… NEVER reaches the browser.
+ *   5. Forward to https://ai.silkroadai.io/v1/chat/completions with
+ *      stream:true and pipe the upstream SSE ReadableStream straight
+ *      back to the client (no buffering — same passthrough the /v1/*
+ *      proxy uses).
+ *
+ * Quota deducts from the customer's new-api account exactly as a direct
+ * sk-… call would. We write nothing to Postgres here.
+ *
+ * Why proxy server-side instead of letting the browser call /v1 with a
+ * revealed key: (a) the key stays server-side, (b) we keep one rate-limit
+ * choke point, (c) the customer doesn't need to have minted a manual key
+ * to use the chat — the system token is lazily provisioned.
+ */
+import 'server-only';
+import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
+import { getCurrentUser } from '@/lib/auth/session';
+import { getOrCreateSystemToken, PortalSystemTokenError } from '@/lib/newapi/system-token';
+import { rateLimitCheck } from '@/lib/image-gen/rate-limit';
+
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+/** Self-hosted Node ignores this; Vercel deadline guard. Chat turns can
+ *  be long (reasoning models), so we give a generous ceiling paired with
+ *  the upstream AbortSignal below. */
+export const maxDuration = 300;
+
+const NEWAPI_PROXY_URL = process.env.NEWAPI_CUSTOMER_BASE_URL || 'https://ai.silkroadai.io';
+
+/** Abort the upstream connection if it stalls. Generous — reasoning
+ *  models legitimately think for a while before the first token. */
+const UPSTREAM_TIMEOUT_MS = 180_000;
+
+const MAX_MESSAGES = 100;
+const MAX_CONTENT_CHARS = 32_000;
+
+/** Stateless: the client re-sends the full (in-memory) transcript each
+ *  turn. We cap message count + per-message size to keep a single
+ *  request bounded; the customer's own context window is the real
+ *  upstream limit. */
+const MessageSchema = z.object({
+    role: z.enum(['system', 'user', 'assistant']),
+    content: z.string().max(MAX_CONTENT_CHARS, `message > ${MAX_CONTENT_CHARS} chars`),
+});
+
+const ChatStreamSchema = z.object({
+    model: z.string().trim().min(1, 'model required').max(200),
+    messages: z.array(MessageSchema).min(1, 'at least one message').max(MAX_MESSAGES, `too many messages`),
+    /** Optional sampling knob; clamped server-side. Defaults to upstream
+     *  default when omitted. */
+    temperature: z.number().min(0).max(2).optional(),
+});
+
+export async function POST(req: NextRequest): Promise<Response> {
+    const user = await getCurrentUser(req);
+    if (!user) {
+        return NextResponse.json({ error: 'invalid_credentials' }, { status: 401 });
+    }
+
+    // Rate limit before any upstream work. 20/min/user — chat turns are
+    // cheaper + more frequent than image gen, so a looser cap than the
+    // image-gen 10/min.
+    const rl = rateLimitCheck(user.id, { scope: 'chat_stream', maxHits: 20 });
+    if (!rl.allowed) {
+        return NextResponse.json(
+            {
+                error: 'rate_limit_exceeded',
+                message: '请求过于频繁,请稍候再试',
+                retry_after_ms: rl.retryAfterMs,
+            },
+            {
+                status: 429,
+                headers: { 'Retry-After': Math.ceil(rl.retryAfterMs / 1000).toString() },
+            },
+        );
+    }
+
+    let body: unknown;
+    try {
+        body = await req.json();
+    } catch {
+        return NextResponse.json({ error: 'invalid_input', message: 'body must be JSON' }, { status: 400 });
+    }
+    const parsed = ChatStreamSchema.safeParse(body);
+    if (!parsed.success) {
+        return NextResponse.json(
+            { error: 'invalid_input', issues: parsed.error.flatten().fieldErrors },
+            { status: 400 },
+        );
+    }
+    const { model, messages, temperature } = parsed.data;
+
+    // Resolve the customer's portal-internal sk-… token (lazy-provisions
+    // on first use). Failure maps to a friendly 4xx/503 like image-gen.
+    let systemToken: string;
+    try {
+        systemToken = await getOrCreateSystemToken(user.id);
+    } catch (err) {
+        if (err instanceof PortalSystemTokenError) {
+            const status = err.code === 'user_not_provisioned' ? 500 : 503;
+            console.log(`[chat-stream-fail] system_token user=${user.id} code=${err.code}`);
+            return NextResponse.json(
+                {
+                    error: err.code,
+                    message:
+                        err.code === 'user_not_provisioned'
+                            ? '账户未完成 new-api 关联,联系客服 Global_Ads'
+                            : '对话服务暂不可用,请稍后再试',
+                },
+                { status },
+            );
+        }
+        console.error(`[chat-stream-fail] system_token user=${user.id}:`, err);
+        return NextResponse.json({ error: 'internal_error' }, { status: 500 });
+    }
+
+    // Forward to the customer-facing /v1/chat/completions with streaming.
+    let upstream: Response;
+    try {
+        upstream = await fetch(`${NEWAPI_PROXY_URL}/v1/chat/completions`, {
+            method: 'POST',
+            headers: {
+                Authorization: `Bearer ${systemToken}`,
+                'Content-Type': 'application/json',
+                Accept: 'text/event-stream',
+            },
+            body: JSON.stringify({
+                model,
+                messages,
+                stream: true,
+                ...(temperature != null ? { temperature } : {}),
+            }),
+            signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+        });
+    } catch (err) {
+        console.error(`[chat-stream-fail] transport user=${user.id} model=${model}:`, err);
+        return NextResponse.json({ error: 'upstream_unreachable' }, { status: 502 });
+    }
+
+    // Non-2xx upstream: surface the (JSON) error body + a sane status.
+    // new-api returns OpenAI-shaped { error: { message, code, type } }.
+    if (!upstream.ok || !upstream.body) {
+        let detail: unknown = null;
+        try {
+            detail = await upstream.json();
+        } catch {
+            /* non-JSON upstream error — leave detail null */
+        }
+        const status = upstream.status >= 500 ? 502 : upstream.status;
+        console.log(`[chat-stream-fail] upstream user=${user.id} model=${model} status=${upstream.status}`);
+        return NextResponse.json({ error: 'upstream_error', upstream_status: upstream.status, detail }, { status });
+    }
+
+    console.log(`[chat-stream] ok user=${user.id} model=${model} msgs=${messages.length}`);
+
+    // Pipe the upstream SSE stream straight through. No buffering — tokens
+    // reach the client as new-api emits them. Strip hop-by-hop headers and
+    // pin the content-type to text/event-stream.
+    return new Response(upstream.body, {
+        status: 200,
+        headers: {
+            'Content-Type': upstream.headers.get('content-type') || 'text/event-stream; charset=utf-8',
+            'Cache-Control': 'no-cache, no-transform',
+            Connection: 'keep-alive',
+            'X-Accel-Buffering': 'no',
+        },
+    });
+}
