@@ -1,24 +1,37 @@
 'use client';
 
 /**
- * Chat UI v1 — stateless chat console (client island).
+ * Chat UI v2 — assistant-ui console (client island).
  *
- * Everything here is in-memory: the `messages` array lives in React
- * state and is gone on refresh. No persistence, no schema. Each send
- * POSTs the *full* current transcript to /api/portal/chat/stream and
- * reads the SSE reply token-by-token. "新对话" just clears state.
+ * Upgrades v1's hand-rolled console to assistant-ui (LocalRuntime) while
+ * keeping every backend contract identical:
+ *   - still POSTs the full transcript to /api/portal/chat/stream
+ *     (cookie auth + system token + quota — the sk-… never reaches here);
+ *   - still stateless: no persistence. "新对话" remounts a fresh runtime.
  *
- * The server proxy resolves the customer's system token, so the browser
- * never sees an sk-… key.
+ * What assistant-ui buys us: real streaming-aware markdown + Prism code
+ * highlighting (see assistant-markdown.tsx), image attachments, and a
+ * maintained composer/thread — instead of ~700 lines of bespoke UI.
+ *
+ * What stays ours: the vendor-grouped model picker (operator's core ask)
+ * and a 联网搜索 toggle. The runtime is headless, so the picker/toggle sit
+ * outside it and feed the adapter via refs.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Markdown } from './markdown';
+import {
+    AssistantRuntimeProvider,
+    useLocalRuntime,
+    ThreadPrimitive,
+    MessagePrimitive,
+    ComposerPrimitive,
+    ActionBarPrimitive,
+    AttachmentPrimitive,
+    SimpleImageAttachmentAdapter,
+    type ChatModelAdapter,
+    type ThreadMessage,
+} from '@assistant-ui/react';
 import type { ChatModelGroup } from '@/lib/chat/models';
-
-interface Message {
-    role: 'user' | 'assistant';
-    content: string;
-}
+import { AssistantMarkdown } from './assistant-markdown';
 
 interface ChatConsoleProps {
     groups: ChatModelGroup[];
@@ -26,13 +39,61 @@ interface ChatConsoleProps {
     modelIds: string[];
 }
 
-/** Parse the OpenAI-style SSE chunk buffer, returning concatenated delta
- *  text plus the remaining (incomplete) buffer tail. */
+// ── OpenAI message conversion ──────────────────────────────────────────
+
+type OAIContentPart = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } };
+type OAIMessage = { role: 'system' | 'user' | 'assistant'; content: string | OAIContentPart[] };
+
+/** Convert assistant-ui ThreadMessages into the OpenAI shape our backend
+ *  forwards to new-api. Text parts → text; image parts + image attachments
+ *  → `image_url` (data URLs from SimpleImageAttachmentAdapter). A turn with
+ *  no images stays a plain string (cheaper, and what non-vision models want). */
+function toOpenAIMessages(messages: readonly ThreadMessage[]): OAIMessage[] {
+    const out: OAIMessage[] = [];
+    for (const m of messages) {
+        if (m.role !== 'user' && m.role !== 'assistant' && m.role !== 'system') continue;
+        const texts: string[] = [];
+        const imageUrls = new Set<string>();
+
+        for (const part of m.content as ReadonlyArray<{ type: string; text?: string; image?: string }>) {
+            if (part.type === 'text' && part.text) texts.push(part.text);
+            else if (part.type === 'image' && part.image) imageUrls.add(part.image);
+        }
+        // Image attachments live alongside content (SimpleImageAttachmentAdapter).
+        const attachments = (
+            m as {
+                attachments?: ReadonlyArray<{
+                    content?: ReadonlyArray<{ type: string; text?: string; image?: string }>;
+                }>;
+            }
+        ).attachments;
+        for (const att of attachments ?? []) {
+            for (const part of att.content ?? []) {
+                if (part.type === 'image' && part.image) imageUrls.add(part.image);
+                else if (part.type === 'text' && part.text) texts.push(part.text);
+            }
+        }
+
+        const text = texts.join('\n').trim();
+        if (imageUrls.size > 0) {
+            const parts: OAIContentPart[] = [];
+            if (text) parts.push({ type: 'text', text });
+            for (const url of imageUrls) parts.push({ type: 'image_url', image_url: { url } });
+            out.push({ role: m.role, content: parts });
+        } else {
+            out.push({ role: m.role, content: text });
+        }
+    }
+    return out;
+}
+
+/** Parse OpenAI-style SSE buffer → concatenated delta text + remaining tail
+ *  + done flag. Verbatim from v1 (proven). */
 function drainSse(buffer: string): { text: string; rest: string; done: boolean } {
     let text = '';
     let done = false;
     const parts = buffer.split('\n\n');
-    const rest = parts.pop() ?? ''; // last element is a possibly-incomplete event
+    const rest = parts.pop() ?? '';
     for (const part of parts) {
         for (const rawLine of part.split('\n')) {
             const line = rawLine.trim();
@@ -47,267 +108,311 @@ function drainSse(buffer: string): { text: string; rest: string; done: boolean }
                 const delta = json?.choices?.[0]?.delta?.content;
                 if (typeof delta === 'string') text += delta;
             } catch {
-                /* keep partial JSON in the next pass — but since we only
-                 * split on complete \n\n boundaries, a parse failure here
-                 * means a genuinely malformed event; skip it. */
+                /* malformed event — skip */
             }
         }
     }
     return { text, rest, done };
 }
 
-export function ChatConsole({ groups, modelIds }: ChatConsoleProps) {
-    const [model, setModel] = useState(modelIds[0] ?? '');
-    const [messages, setMessages] = useState<Message[]>([]);
-    const [input, setInput] = useState('');
-    const [streaming, setStreaming] = useState(false);
-    const [error, setError] = useState<string | null>(null);
+// ── Inner runtime + thread (remounts on "新对话") ────────────────────────
 
-    const abortRef = useRef<AbortController | null>(null);
-    const scrollRef = useRef<HTMLDivElement | null>(null);
-    const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+function ChatThread({
+    modelRef,
+    webSearchRef,
+    canAttach,
+}: {
+    modelRef: React.RefObject<string>;
+    webSearchRef: React.RefObject<boolean>;
+    canAttach: boolean;
+}) {
+    const attachmentAdapter = useMemo(() => new SimpleImageAttachmentAdapter(), []);
 
-    // Auto-scroll to bottom as content streams in.
-    useEffect(() => {
-        scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-    }, [messages, streaming]);
-
-    const canSend = input.trim().length > 0 && !streaming && model !== '';
-
-    const send = useCallback(async () => {
-        const text = input.trim();
-        if (!text || streaming || !model) return;
-
-        setError(null);
-        const nextMessages: Message[] = [...messages, { role: 'user', content: text }];
-        setMessages(nextMessages);
-        setInput('');
-        setStreaming(true);
-
-        // Placeholder assistant message we stream into.
-        setMessages((m) => [...m, { role: 'assistant', content: '' }]);
-
-        const controller = new AbortController();
-        abortRef.current = controller;
-
-        try {
-            const res = await fetch('/api/portal/chat/stream', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ model, messages: nextMessages }),
-                signal: controller.signal,
-            });
-
-            if (!res.ok || !res.body) {
-                let msg = `请求失败 (${res.status})`;
+    const adapter = useMemo<ChatModelAdapter>(
+        () => ({
+            async *run({ messages, abortSignal }) {
+                // Surface errors as a visible assistant bubble (⚠️ …) rather than
+                // throwing — a thrown run error renders an empty bubble in prod
+                // (assistant-ui needs ErrorPrimitive wiring we don't have). A
+                // user-initiated abort (停止) must still propagate so the runtime
+                // keeps the partial content, so we re-throw AbortError only.
+                let res: Response;
                 try {
-                    const j = await res.json();
-                    msg = j?.message || j?.detail?.error?.message || j?.error || msg;
-                } catch {
-                    /* non-JSON */
-                }
-                throw new Error(msg);
-            }
-
-            const reader = res.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = '';
-            let acc = '';
-
-            for (;;) {
-                const { value, done } = await reader.read();
-                if (done) break;
-                buffer += decoder.decode(value, { stream: true });
-                const { text: chunk, rest, done: sseDone } = drainSse(buffer);
-                buffer = rest;
-                if (chunk) {
-                    acc += chunk;
-                    setMessages((m) => {
-                        const copy = m.slice();
-                        copy[copy.length - 1] = { role: 'assistant', content: acc };
-                        return copy;
+                    res = await fetch('/api/portal/chat/stream', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        signal: abortSignal,
+                        body: JSON.stringify({
+                            model: modelRef.current,
+                            web_search: webSearchRef.current,
+                            messages: toOpenAIMessages(messages),
+                        }),
                     });
+                } catch (err) {
+                    if (err instanceof DOMException && err.name === 'AbortError') throw err;
+                    yield { content: [{ type: 'text' as const, text: '⚠️ 网络连接失败,请稍后重试' }] };
+                    return;
                 }
-                if (sseDone) break;
-            }
 
-            // If upstream sent nothing usable, surface a gentle note.
-            if (acc.trim() === '') {
-                setMessages((m) => {
-                    const copy = m.slice();
-                    copy[copy.length - 1] = { role: 'assistant', content: '_(无返回内容)_' };
-                    return copy;
-                });
-            }
-        } catch (err) {
-            const aborted = err instanceof DOMException && err.name === 'AbortError';
-            if (!aborted) {
-                const msg = err instanceof Error ? err.message : '对话出错,请重试';
-                setError(msg);
-            }
-            // Drop the empty/partial assistant placeholder on hard error so
-            // we don't leave a blank bubble (keep partial content on abort).
-            setMessages((m) => {
-                const last = m[m.length - 1];
-                if (last?.role === 'assistant' && last.content === '') return m.slice(0, -1);
-                return m;
-            });
-        } finally {
-            setStreaming(false);
-            abortRef.current = null;
-            textareaRef.current?.focus();
-        }
-    }, [input, streaming, model, messages]);
+                if (!res.ok || !res.body) {
+                    let msg = `请求失败 (${res.status})`;
+                    try {
+                        const j = await res.json();
+                        msg = j?.message || j?.detail?.error?.message || j?.error || msg;
+                    } catch {
+                        /* non-JSON */
+                    }
+                    yield { content: [{ type: 'text' as const, text: `⚠️ ${msg}` }] };
+                    return;
+                }
 
-    function stop() {
-        abortRef.current?.abort();
-    }
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                let acc = '';
+                for (;;) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+                    const { text, rest, done: sseDone } = drainSse(buffer);
+                    buffer = rest;
+                    if (text) {
+                        acc += text;
+                        yield { content: [{ type: 'text' as const, text: acc }] };
+                    }
+                    if (sseDone) break;
+                }
+                if (acc.trim() === '') {
+                    yield { content: [{ type: 'text' as const, text: '_(无返回内容)_' }] };
+                }
+            },
+        }),
+        [modelRef, webSearchRef],
+    );
 
-    function newConversation() {
-        abortRef.current?.abort();
-        setMessages([]);
-        setInput('');
-        setError(null);
-        textareaRef.current?.focus();
-    }
-
-    function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-        if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            void send();
-        }
-    }
+    const runtime = useLocalRuntime(adapter, { adapters: { attachments: attachmentAdapter } });
 
     return (
-        <div className="flex flex-col h-[calc(100vh-220px)] min-h-[420px] border border-brand-border rounded-xl bg-surface overflow-hidden">
-            {/* Toolbar: model picker + new conversation */}
-            <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-b border-brand-border bg-paper">
-                <ModelPicker groups={groups} value={model} onChange={setModel} disabled={streaming} />
+        <AssistantRuntimeProvider runtime={runtime}>
+            <ThreadPrimitive.Root className="flex flex-1 flex-col overflow-hidden">
+                <ThreadPrimitive.Viewport className="flex flex-1 flex-col gap-4 overflow-y-auto px-4 py-4">
+                    <ThreadPrimitive.Empty>
+                        <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center text-muted-ink">
+                            <p className="m-0 text-base font-medium text-navy">开始对话</p>
+                            <p className="m-0 max-w-sm text-sm">选择上方模型,输入消息即可。对话不会保存,刷新后清空。</p>
+                        </div>
+                    </ThreadPrimitive.Empty>
+                    <ThreadPrimitive.Messages components={{ UserMessage, AssistantMessage }} />
+                </ThreadPrimitive.Viewport>
+                <Composer canAttach={canAttach} />
+            </ThreadPrimitive.Root>
+        </AssistantRuntimeProvider>
+    );
+}
+
+// ── Message renderers ──────────────────────────────────────────────────
+
+function UserMessage() {
+    return (
+        <MessagePrimitive.Root className="flex justify-end">
+            <div className="max-w-[85%] rounded-xl bg-navy px-3.5 py-2.5 text-sm text-paper">
+                <MessagePrimitive.Attachments
+                    components={{ Image: MessageImageThumb, Attachment: MessageAttachmentChip }}
+                />
+                <div className="whitespace-pre-wrap break-words">
+                    <MessagePrimitive.Parts />
+                </div>
+            </div>
+        </MessagePrimitive.Root>
+    );
+}
+
+function AssistantMessage() {
+    return (
+        <MessagePrimitive.Root className="group flex flex-col items-start gap-1">
+            <div className="max-w-[85%] rounded-xl border border-brand-border bg-paper-muted px-3.5 py-2.5 text-sm text-ink">
+                <MessagePrimitive.Parts components={{ Text: AssistantMarkdown }} />
+            </div>
+            <ActionBarPrimitive.Root
+                hideWhenRunning
+                autohide="not-last"
+                className="ml-1 flex gap-2 opacity-0 transition-opacity group-hover:opacity-100"
+            >
+                <ActionBarPrimitive.Copy className="text-[11px] text-minor-ink hover:text-navy cursor-pointer">
+                    复制
+                </ActionBarPrimitive.Copy>
+            </ActionBarPrimitive.Root>
+        </MessagePrimitive.Root>
+    );
+}
+
+/** Image attachment thumbnail inside a sent user message. */
+function MessageImageThumb() {
+    return (
+        <AttachmentPrimitive.Root className="mb-2 inline-block overflow-hidden rounded-lg border border-white/20">
+            <AttachmentPrimitive.unstable_Thumb className="max-h-40 max-w-[220px] object-cover" />
+        </AttachmentPrimitive.Root>
+    );
+}
+
+/** Non-image attachment fallback chip. */
+function MessageAttachmentChip() {
+    return (
+        <AttachmentPrimitive.Root className="mb-2 inline-flex items-center gap-1 rounded bg-white/15 px-2 py-1 text-xs">
+            <AttachmentPrimitive.Name />
+        </AttachmentPrimitive.Root>
+    );
+}
+
+// ── Composer ───────────────────────────────────────────────────────────
+
+function Composer({ canAttach }: { canAttach: boolean }) {
+    return (
+        <div className="border-t border-brand-border bg-paper px-3 py-3">
+            <ComposerPrimitive.Attachments
+                components={{ Image: ComposerImageThumb, Attachment: ComposerAttachmentChip }}
+            />
+            <ComposerPrimitive.Root className="flex items-end gap-2">
+                {canAttach && (
+                    <ComposerPrimitive.AddAttachment
+                        className="shrink-0 rounded-lg border border-brand-border px-2.5 py-2 text-base text-muted-ink transition-colors hover:bg-paper-muted hover:text-navy cursor-pointer"
+                        aria-label="上传图片"
+                    >
+                        🖼
+                    </ComposerPrimitive.AddAttachment>
+                )}
+                <ComposerPrimitive.Input
+                    autoFocus
+                    rows={1}
+                    placeholder="输入消息,Enter 发送,Shift+Enter 换行"
+                    className="max-h-40 min-h-[40px] flex-1 resize-none rounded-lg border border-brand-border bg-surface px-3 py-2 text-sm text-ink placeholder:text-minor-ink focus:border-brand-accent focus:outline-none"
+                />
+                <ThreadPrimitive.If running={false}>
+                    <ComposerPrimitive.Send className="shrink-0 rounded-lg bg-navy px-4 py-2 text-sm text-paper transition-colors hover:bg-navy-strong disabled:cursor-not-allowed disabled:bg-paper-muted disabled:text-minor-ink/60 cursor-pointer">
+                        发送
+                    </ComposerPrimitive.Send>
+                </ThreadPrimitive.If>
+                <ThreadPrimitive.If running>
+                    <ComposerPrimitive.Cancel className="shrink-0 rounded-lg border border-brand-border px-4 py-2 text-sm text-muted-ink transition-colors hover:bg-paper-muted hover:text-navy cursor-pointer">
+                        停止
+                    </ComposerPrimitive.Cancel>
+                </ThreadPrimitive.If>
+            </ComposerPrimitive.Root>
+        </div>
+    );
+}
+
+function ComposerImageThumb() {
+    return (
+        <AttachmentPrimitive.Root className="relative mb-2 mr-2 inline-block overflow-hidden rounded-lg border border-brand-border">
+            <AttachmentPrimitive.unstable_Thumb className="max-h-24 max-w-[140px] object-cover" />
+            <AttachmentPrimitive.Remove
+                className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-navy/70 text-[11px] text-paper hover:bg-navy cursor-pointer"
+                aria-label="移除"
+            >
+                ✕
+            </AttachmentPrimitive.Remove>
+        </AttachmentPrimitive.Root>
+    );
+}
+
+function ComposerAttachmentChip() {
+    return (
+        <AttachmentPrimitive.Root className="mb-2 mr-2 inline-flex items-center gap-1 rounded border border-brand-border bg-paper-muted px-2 py-1 text-xs text-muted-ink">
+            <AttachmentPrimitive.Name />
+            <AttachmentPrimitive.Remove className="text-minor-ink hover:text-navy cursor-pointer" aria-label="移除">
+                ✕
+            </AttachmentPrimitive.Remove>
+        </AttachmentPrimitive.Root>
+    );
+}
+
+// ── Outer console: toolbar (picker + web search + new chat) + thread ────
+
+export function ChatConsole({ groups, modelIds }: ChatConsoleProps) {
+    const [model, setModel] = useState(modelIds[0] ?? '');
+    const [webSearch, setWebSearch] = useState(false);
+    const [resetKey, setResetKey] = useState(0);
+
+    // Latest model / web-search flag for the headless adapter to read at send.
+    // Synced in an effect (not during render) — the adapter only reads these
+    // on a user send, which always happens after effects have flushed.
+    const modelRef = useRef(model);
+    const webSearchRef = useRef(webSearch);
+    useEffect(() => {
+        modelRef.current = model;
+        webSearchRef.current = webSearch;
+    }, [model, webSearch]);
+
+    // Vision lookup: gate the image-upload button to image-capable models.
+    const visionById = useMemo(() => {
+        const map = new Map<string, boolean>();
+        for (const g of groups) for (const m of g.models) map.set(m.id, m.vision);
+        return map;
+    }, [groups]);
+    const canAttach = visionById.get(model) ?? false;
+
+    return (
+        <div className="flex h-[calc(100vh-220px)] min-h-[460px] flex-col overflow-hidden rounded-xl border border-brand-border bg-surface">
+            {/* Toolbar */}
+            <div className="flex items-center justify-between gap-3 border-b border-brand-border bg-paper px-4 py-2.5">
+                <div className="flex items-center gap-2">
+                    <ModelPicker groups={groups} value={model} onChange={setModel} />
+                    <WebSearchToggle on={webSearch} onToggle={() => setWebSearch((v) => !v)} />
+                </div>
                 <button
                     type="button"
-                    onClick={newConversation}
-                    disabled={messages.length === 0 && !streaming}
-                    className={[
-                        'text-sm px-3 py-1.5 rounded-lg border transition-colors duration-150 ease-brand',
-                        messages.length === 0 && !streaming
-                            ? 'border-brand-border text-minor-ink/60 cursor-not-allowed'
-                            : 'border-brand-border text-muted-ink hover:text-navy hover:bg-paper-muted cursor-pointer',
-                    ].join(' ')}
+                    onClick={() => setResetKey((k) => k + 1)}
+                    className="rounded-lg border border-brand-border px-3 py-1.5 text-sm text-muted-ink transition-colors hover:bg-paper-muted hover:text-navy cursor-pointer"
                 >
                     新对话
                 </button>
             </div>
 
-            {/* Message scroll area */}
-            <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-4">
-                {messages.length === 0 ? (
-                    <div className="flex-1 flex flex-col items-center justify-center text-center gap-2 text-muted-ink">
-                        <p className="m-0 text-base font-medium text-navy">开始对话</p>
-                        <p className="m-0 text-sm max-w-sm">选择上方模型,输入消息即可。对话不会保存,刷新后清空。</p>
-                    </div>
-                ) : (
-                    messages.map((msg, i) => <MessageBubble key={i} msg={msg} />)
-                )}
-            </div>
-
-            {/* Error banner */}
-            {error && (
-                <div className="px-4 py-2 text-sm text-status-error-text bg-status-error-bg border-t border-status-error-border">
-                    {error}
-                </div>
-            )}
-
-            {/* Composer */}
-            <div className="border-t border-brand-border bg-paper px-3 py-3">
-                <div className="flex items-end gap-2">
-                    <textarea
-                        ref={textareaRef}
-                        value={input}
-                        onChange={(e) => setInput(e.target.value)}
-                        onKeyDown={onKeyDown}
-                        rows={1}
-                        placeholder="输入消息,Enter 发送,Shift+Enter 换行"
-                        className="flex-1 resize-none max-h-40 min-h-[40px] px-3 py-2 text-sm rounded-lg border border-brand-border bg-surface text-ink placeholder:text-minor-ink focus:outline-none focus:border-brand-accent"
-                    />
-                    {streaming ? (
-                        <button
-                            type="button"
-                            onClick={stop}
-                            className="shrink-0 px-4 py-2 text-sm rounded-lg border border-brand-border text-muted-ink hover:text-navy hover:bg-paper-muted transition-colors duration-150 ease-brand cursor-pointer"
-                        >
-                            停止
-                        </button>
-                    ) : (
-                        <button
-                            type="button"
-                            onClick={() => void send()}
-                            disabled={!canSend}
-                            className={[
-                                'shrink-0 px-4 py-2 text-sm rounded-lg transition-colors duration-150 ease-brand',
-                                canSend
-                                    ? 'bg-navy text-paper hover:bg-navy-strong cursor-pointer'
-                                    : 'bg-paper-muted text-minor-ink/60 cursor-not-allowed',
-                            ].join(' ')}
-                        >
-                            发送
-                        </button>
-                    )}
-                </div>
-            </div>
+            {/* Runtime + thread — `key` remounts a fresh (empty) runtime on 新对话 */}
+            <ChatThread key={resetKey} modelRef={modelRef} webSearchRef={webSearchRef} canAttach={canAttach} />
         </div>
     );
 }
 
-function MessageBubble({ msg }: { msg: Message }) {
-    const isUser = msg.role === 'user';
+function WebSearchToggle({ on, onToggle }: { on: boolean; onToggle: () => void }) {
     return (
-        <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-            <div
-                className={[
-                    'max-w-[85%] rounded-xl px-3.5 py-2.5 text-sm',
-                    isUser
-                        ? 'bg-navy text-paper whitespace-pre-wrap break-words'
-                        : 'bg-paper-muted text-ink border border-brand-border',
-                ].join(' ')}
-            >
-                {isUser ? (
-                    msg.content
-                ) : msg.content === '' ? (
-                    <span className="inline-flex items-center gap-1 text-muted-ink">
-                        <span className="animate-pulse">●</span> 思考中…
-                    </span>
-                ) : (
-                    <Markdown content={msg.content} />
-                )}
-            </div>
-        </div>
+        <button
+            type="button"
+            onClick={onToggle}
+            title="联网搜索:开启后会先检索网络再回答(需 operator 开通搜索服务)"
+            aria-pressed={on}
+            className={[
+                'flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-sm transition-colors duration-150',
+                on
+                    ? 'border-brand-accent bg-brand-accent/10 text-navy'
+                    : 'border-brand-border text-muted-ink hover:bg-paper-muted hover:text-navy',
+                'cursor-pointer',
+            ].join(' ')}
+        >
+            <span aria-hidden>🌐</span>
+            <span className="hidden sm:inline">联网</span>
+        </button>
     );
 }
 
-/** Vendor-grouped model dropdown. Custom (not <select>) so we can show
- *  vendor sub-headers like the reference design. */
+/** Vendor-grouped model dropdown (ported from v1; now flags vision models). */
 function ModelPicker({
     groups,
     value,
     onChange,
-    disabled,
 }: {
     groups: ChatModelGroup[];
     value: string;
     onChange: (id: string) => void;
-    disabled?: boolean;
 }) {
     const [open, setOpen] = useState(false);
     const rootRef = useRef<HTMLDivElement | null>(null);
 
-    useEffect(() => {
-        if (!open) return;
-        function onDoc(e: MouseEvent) {
-            if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
-        }
-        document.addEventListener('mousedown', onDoc);
-        return () => document.removeEventListener('mousedown', onDoc);
-    }, [open]);
+    const close = useCallback(() => setOpen(false), []);
+    const onRootBlur = useCallback((e: React.FocusEvent<HTMLDivElement>) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node)) setOpen(false);
+    }, []);
 
     const currentVendor = useMemo(
         () => groups.find((g) => g.models.some((m) => m.id === value))?.vendor,
@@ -315,20 +420,15 @@ function ModelPicker({
     );
 
     return (
-        <div ref={rootRef} className="relative">
+        <div ref={rootRef} onBlur={onRootBlur} className="relative">
             <button
                 type="button"
-                onClick={() => !disabled && setOpen((o) => !o)}
-                disabled={disabled}
-                className={[
-                    'flex items-center gap-2 px-3 py-1.5 rounded-lg border border-brand-border text-sm',
-                    'bg-surface transition-colors duration-150 ease-brand',
-                    disabled ? 'text-minor-ink/60 cursor-not-allowed' : 'text-navy hover:bg-paper-muted cursor-pointer',
-                ].join(' ')}
+                onClick={() => setOpen((o) => !o)}
+                className="flex items-center gap-2 rounded-lg border border-brand-border bg-surface px-3 py-1.5 text-sm text-navy transition-colors hover:bg-paper-muted cursor-pointer"
             >
-                <span className="font-mono font-medium truncate max-w-[240px]">{value || '选择模型'}</span>
+                <span className="max-w-[220px] truncate font-mono font-medium">{value || '选择模型'}</span>
                 {currentVendor && (
-                    <span className="text-[11px] text-minor-ink hidden sm:inline">· {currentVendor}</span>
+                    <span className="hidden text-[11px] text-minor-ink sm:inline">· {currentVendor}</span>
                 )}
                 <span aria-hidden className="text-minor-ink">
                     ▾
@@ -336,13 +436,13 @@ function ModelPicker({
             </button>
 
             {open && (
-                <div className="absolute left-0 top-full mt-1 z-50 w-[300px] max-h-[60vh] overflow-y-auto rounded-xl border border-brand-border bg-surface shadow-lg py-1">
+                <div className="absolute left-0 top-full z-50 mt-1 max-h-[60vh] w-[320px] overflow-y-auto rounded-xl border border-brand-border bg-surface py-1 shadow-lg">
                     {groups.length === 0 ? (
                         <p className="m-0 px-3 py-2 text-sm text-muted-ink">暂无可用模型</p>
                     ) : (
                         groups.map((g) => (
                             <div key={g.vendor}>
-                                <p className="m-0 px-3 pt-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-minor-ink">
+                                <p className="m-0 px-3 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wide text-minor-ink">
                                     {g.vendor}
                                 </p>
                                 {g.models.map((m) => (
@@ -351,17 +451,22 @@ function ModelPicker({
                                         type="button"
                                         onClick={() => {
                                             onChange(m.id);
-                                            setOpen(false);
+                                            close();
                                         }}
                                         className={[
-                                            'block w-full text-left px-3 py-1.5 text-sm font-mono break-all',
-                                            'transition-colors duration-150 ease-brand cursor-pointer',
+                                            'flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left font-mono text-sm break-all',
+                                            'transition-colors duration-150 cursor-pointer',
                                             m.id === value
-                                                ? 'bg-paper-muted text-navy font-medium'
+                                                ? 'bg-paper-muted font-medium text-navy'
                                                 : 'text-muted-ink hover:bg-paper-muted/60 hover:text-navy',
                                         ].join(' ')}
                                     >
-                                        {m.id}
+                                        <span>{m.id}</span>
+                                        {m.vision && (
+                                            <span className="shrink-0 rounded bg-brand-accent/15 px-1 text-[10px] text-brand-accent">
+                                                视觉
+                                            </span>
+                                        )}
                                     </button>
                                 ))}
                             </div>

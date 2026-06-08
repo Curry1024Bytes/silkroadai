@@ -1,12 +1,18 @@
 /**
- * POST /api/portal/chat/stream — Chat UI v1 (stateless) streaming proxy.
+ * POST /api/portal/chat/stream — Chat UI (stateless) streaming proxy.
  *
  * Background
  * ----------
- * Chat UI v1 is deliberately *stateless*: the customer picks a model,
+ * The chat UI is deliberately *stateless*: the customer picks a model,
  * sends a turn, streams the reply, and nothing is persisted. No schema
  * change, no new table — conversation history lands later as its own
  * coordinated migration (see PROJECT-PLAN-B3 roadmap).
+ *
+ * v2 adds two upstream-capability features without changing this contract:
+ *   - multimodal `content` (text + image_url parts) forwarded verbatim so
+ *     vision models can take images;
+ *   - optional `web_search`: prepend a system message with live search
+ *     results (best-effort, model-agnostic; see src/lib/chat/web-search.ts).
  *
  * This route is the only server piece. It mirrors the proven image-gen
  * pattern (POST /api/portal/image/generate):
@@ -34,6 +40,7 @@ import { z } from 'zod';
 import { getCurrentUser } from '@/lib/auth/session';
 import { getOrCreateSystemToken, PortalSystemTokenError } from '@/lib/newapi/system-token';
 import { rateLimitCheck } from '@/lib/image-gen/rate-limit';
+import { runWebSearch } from '@/lib/chat/web-search';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -51,13 +58,31 @@ const UPSTREAM_TIMEOUT_MS = 180_000;
 const MAX_MESSAGES = 100;
 const MAX_CONTENT_CHARS = 32_000;
 
+/** v2: a message's content is either a plain string OR an OpenAI-style
+ *  multimodal parts array (text + image_url) so vision models can take
+ *  images. Multimodal content is forwarded verbatim to new-api; non-vision
+ *  models will 4xx upstream if handed an image, so the client disables the
+ *  upload button unless a vision model is selected (defense-in-depth, not
+ *  enforced here — the upstream owns capability). */
+const TextPart = z.object({ type: z.literal('text'), text: z.string().max(MAX_CONTENT_CHARS) });
+const ImageUrlPart = z.object({
+    type: z.literal('image_url'),
+    // data: URL (base64) or http(s) URL. Cap ~2MB of chars (≈1.5MB image
+    // as a data URL) so a single request stays bounded.
+    image_url: z.object({ url: z.string().max(2_000_000), detail: z.string().optional() }),
+});
+const ContentPart = z.union([TextPart, ImageUrlPart]);
+
 /** Stateless: the client re-sends the full (in-memory) transcript each
  *  turn. We cap message count + per-message size to keep a single
  *  request bounded; the customer's own context window is the real
  *  upstream limit. */
 const MessageSchema = z.object({
     role: z.enum(['system', 'user', 'assistant']),
-    content: z.string().max(MAX_CONTENT_CHARS, `message > ${MAX_CONTENT_CHARS} chars`),
+    content: z.union([
+        z.string().max(MAX_CONTENT_CHARS, `message > ${MAX_CONTENT_CHARS} chars`),
+        z.array(ContentPart).max(20),
+    ]),
 });
 
 const ChatStreamSchema = z.object({
@@ -66,6 +91,10 @@ const ChatStreamSchema = z.object({
     /** Optional sampling knob; clamped server-side. Defaults to upstream
      *  default when omitted. */
     temperature: z.number().min(0).max(2).optional(),
+    /** v2: opt-in web search. When true AND a provider is configured
+     *  (TAVILY_API_KEY), the route prepends a system message with search
+     *  results for the latest user query. No-op (plain chat) otherwise. */
+    web_search: z.boolean().optional(),
 });
 
 export async function POST(req: NextRequest): Promise<Response> {
@@ -105,7 +134,20 @@ export async function POST(req: NextRequest): Promise<Response> {
             { status: 400 },
         );
     }
-    const { model, messages, temperature } = parsed.data;
+    const { model, messages, temperature, web_search } = parsed.data;
+
+    // v2: optional web-search injection. Best-effort + model-agnostic —
+    // prepend a system message carrying search results for the latest user
+    // query so any chat model can ground on it. No-op when the toggle is
+    // off, no provider env is configured, or the search fails/returns empty
+    // (runWebSearch never throws). The customer-facing toggle stays stable
+    // even if a real tool-call loop replaces this later.
+    let finalMessages: typeof messages = messages;
+    if (web_search) {
+        const q = extractLatestUserText(messages);
+        const ctx = q ? await runWebSearch(q) : null;
+        if (ctx) finalMessages = [{ role: 'system', content: ctx }, ...messages];
+    }
 
     // Resolve the customer's portal-internal sk-… token (lazy-provisions
     // on first use). Failure maps to a friendly 4xx/503 like image-gen.
@@ -143,7 +185,7 @@ export async function POST(req: NextRequest): Promise<Response> {
             },
             body: JSON.stringify({
                 model,
-                messages,
+                messages: finalMessages,
                 stream: true,
                 ...(temperature != null ? { temperature } : {}),
             }),
@@ -182,4 +224,24 @@ export async function POST(req: NextRequest): Promise<Response> {
             'X-Accel-Buffering': 'no',
         },
     });
+}
+
+/** Pull the latest user turn's text for the web-search query: string
+ *  content as-is; multimodal content → its text parts joined. Returns ''
+ *  when there's no user text (e.g. an image-only turn) so the caller skips
+ *  the search. */
+function extractLatestUserText(msgs: Array<{ role: string; content: unknown }>): string {
+    for (let i = msgs.length - 1; i >= 0; i--) {
+        if (msgs[i].role !== 'user') continue;
+        const c = msgs[i].content;
+        if (typeof c === 'string') return c;
+        if (Array.isArray(c)) {
+            return (c as Array<{ type?: string; text?: string }>)
+                .filter((p) => p?.type === 'text')
+                .map((p) => p.text ?? '')
+                .join(' ')
+                .trim();
+        }
+    }
+    return '';
 }

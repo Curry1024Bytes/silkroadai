@@ -45,6 +45,19 @@ describe('collapseChatModels', () => {
             expect(g.models.every((m) => m.vendor === g.vendor)).toBe(true);
         }
     });
+
+    it('flags vision models (image-capable) vs plain chat for the upload gate', () => {
+        const { grouped } = groupModels([
+            'gpt-5.5', // plain chat → vision:false
+            'claude-opus-4-7', // multimodal flagship → vision:true
+            'gpt-4o', // multimodal → vision:true
+        ]);
+        const { flat } = _collapseChatModelsForTest(grouped);
+        const byId = Object.fromEntries(flat.map((m) => [m.id, m.vision]));
+        expect(byId['gpt-5.5']).toBe(false);
+        expect(byId['claude-opus-4-7']).toBe(true);
+        expect(byId['gpt-4o']).toBe(true);
+    });
 });
 
 describe('listChatModels', () => {

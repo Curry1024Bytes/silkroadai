@@ -27,6 +27,10 @@ export interface ChatModel {
     /** Wire name passed to /v1/chat/completions `model`. */
     id: string;
     vendor: VendorName;
+    /** True when this model is in the `vision` type bucket (accepts image
+     *  input). The chat UI uses it to gate the image-upload button — a
+     *  non-vision model handed an image just 4xx's upstream. */
+    vision: boolean;
 }
 
 export interface ChatModelGroup {
@@ -60,7 +64,10 @@ function collapseChatModels(grouped: GroupedModels): ChatModelList {
                 if (seen.has(entry.shortName)) continue;
                 seen.add(entry.shortName);
                 const list = byVendor.get(vendor) ?? [];
-                list.push({ id: entry.shortName, vendor });
+                // `type` is the outer CHAT_TYPES loop var; a model lands in
+                // exactly one type bucket (categorizeByType → single type),
+                // so this flag is authoritative.
+                list.push({ id: entry.shortName, vendor, vision: type === 'vision' });
                 byVendor.set(vendor, list);
             }
         }

@@ -16,6 +16,9 @@
         "test:watch": "vitest"
     },
     "dependencies": {
+        "@assistant-ui/react": "^0.14.14",
+        "@assistant-ui/react-markdown": "0.14.1",
+        "@assistant-ui/react-syntax-highlighter": "0.14.1",
         "@aws-sdk/client-s3": "^3.1045.0",
         "@prisma/adapter-pg": "7.4.1",
         "@prisma/client": "^7.4.2",
@@ -30,7 +33,9 @@
         "qrcode": "^1.5.4",
         "react": "19.2.3",
         "react-dom": "19.2.3",
+        "react-syntax-highlighter": "^16.1.1",
         "recharts": "^3.7.0",
+        "remark-gfm": "^4.0.1",
         "stripe": "^20.4.0",
         "swr": "^2.4.1",
         "wechatpay-node-v3": "^2.2.1",
@@ -51,6 +56,7 @@
         "@types/qrcode": "^1.5.6",
         "@types/react": "^19",
         "@types/react-dom": "^19",
+        "@types/react-syntax-highlighter": "^15.5.13",
         "@vitejs/plugin-react": "^5.1.4",
         "dotenv": "^17.4.2",
         "eslint": "^9",

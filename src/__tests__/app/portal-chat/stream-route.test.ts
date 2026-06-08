@@ -37,6 +37,12 @@ vi.mock('@/lib/image-gen/rate-limit', () => ({
     rateLimitCheck: vi.fn(),
 }));
 
+// v2 web-search layer — mocked so we control whether injection happens.
+const mockRunWebSearch = vi.fn();
+vi.mock('@/lib/chat/web-search', () => ({
+    runWebSearch: (...args: unknown[]) => mockRunWebSearch(...args),
+}));
+
 import { rateLimitCheck } from '@/lib/image-gen/rate-limit';
 import { POST } from '@/app/api/portal/chat/stream/route';
 
@@ -47,6 +53,7 @@ beforeEach(() => {
     (rateLimitCheck as ReturnType<typeof vi.fn>).mockReturnValue({ allowed: true, remaining: 19, retryAfterMs: 0 });
     mockGetCurrentUser.mockResolvedValue(USER);
     mockGetOrCreateSystemToken.mockResolvedValue('sk-test-123');
+    mockRunWebSearch.mockResolvedValue(null); // default: web search off / unconfigured
 });
 
 afterEach(() => vi.restoreAllMocks());
@@ -177,5 +184,71 @@ describe('POST /api/portal/chat/stream', () => {
         });
         const res = await POST(makeReq(VALID_BODY));
         expect(res.status).toBe(502);
+    });
+
+    // ── v2: multimodal content + web search ──────────────────────────────
+
+    it('forwards multimodal content (text + image_url) verbatim to upstream', async () => {
+        let sentBodyStr = '';
+        spyFetch((_url, init) => {
+            sentBodyStr = init.body || '';
+            return sseResponse([JSON.stringify({ choices: [{ delta: { content: 'a cat' } }] })]);
+        });
+        const body = {
+            model: 'gpt-4o',
+            messages: [
+                {
+                    role: 'user',
+                    content: [
+                        { type: 'text', text: '图里是什么' },
+                        { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAABBBB' } },
+                    ],
+                },
+            ],
+        };
+        const res = await POST(makeReq(body));
+        expect(res.status).toBe(200);
+        const sent = JSON.parse(sentBodyStr);
+        expect(Array.isArray(sent.messages[0].content)).toBe(true);
+        expect(sent.messages[0].content[0]).toEqual({ type: 'text', text: '图里是什么' });
+        expect(sent.messages[0].content[1].type).toBe('image_url');
+        expect(sent.messages[0].content[1].image_url.url).toContain('data:image/png;base64');
+    });
+
+    it('web_search:true prepends a system message with the search context', async () => {
+        mockRunWebSearch.mockResolvedValue('搜索结果:\n[1] 今日要闻\nURL: https://news.example');
+        let sentBodyStr = '';
+        spyFetch((_url, init) => {
+            sentBodyStr = init.body || '';
+            return sseResponse([JSON.stringify({ choices: [{ delta: { content: 'x' } }] })]);
+        });
+        const res = await POST(
+            makeReq({ model: 'gpt-5.5', messages: [{ role: 'user', content: '今天有什么新闻' }], web_search: true }),
+        );
+        expect(res.status).toBe(200);
+        // extracted the latest user text as the query
+        expect(mockRunWebSearch).toHaveBeenCalledWith('今天有什么新闻');
+        const sent = JSON.parse(sentBodyStr);
+        expect(sent.messages[0].role).toBe('system');
+        expect(sent.messages[0].content).toContain('搜索结果');
+        // original user message preserved after the injected context
+        expect(sent.messages[1].role).toBe('user');
+        expect(sent.messages[1].content).toBe('今天有什么新闻');
+    });
+
+    it('web_search:true is a no-op when the provider is unconfigured (returns null)', async () => {
+        mockRunWebSearch.mockResolvedValue(null);
+        let sentBodyStr = '';
+        spyFetch((_url, init) => {
+            sentBodyStr = init.body || '';
+            return sseResponse([JSON.stringify({ choices: [{ delta: { content: 'x' } }] })]);
+        });
+        const res = await POST(
+            makeReq({ model: 'gpt-5.5', messages: [{ role: 'user', content: 'hi' }], web_search: true }),
+        );
+        expect(res.status).toBe(200);
+        const sent = JSON.parse(sentBodyStr);
+        expect(sent.messages).toHaveLength(1);
+        expect(sent.messages[0].role).toBe('user');
     });
 });
