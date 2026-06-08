@@ -119,6 +119,15 @@ function forwardHeaders(req: NextRequest): Headers {
     return headers;
 }
 
+/** 翻译到 native generateContent 时用:复用鉴权头但强制 JSON Content-Type。
+ *  原请求可能是 multipart/form-data,若把那个 Content-Type 带给 JSON body,
+ *  new-api 会把 JSON 当 multipart 解析 → `bufio: buffer full` / `NextPart: EOF`。 */
+function jsonForwardHeaders(req: NextRequest): Headers {
+    const h = forwardHeaders(req);
+    h.set('content-type', 'application/json');
+    return h;
+}
+
 function passthroughResponse(upstream: Response): NextResponse {
     const headers = new Headers();
     upstream.headers.forEach((value, key) => {
@@ -313,7 +322,7 @@ async function handleGeminiImage(req: NextRequest, body: JsonRecord, model: stri
 
     const upstream = await fetch(`${NEWAPI_BASE_URL}/v1beta/models/${model}:generateContent`, {
         method: 'POST',
-        headers: forwardHeaders(req),
+        headers: jsonForwardHeaders(req),
         body: JSON.stringify({
             contents,
             // 不指定 aspectRatio:文生图走 Gemini 默认,图生图(image_url 入参)跟随输入图。
@@ -473,7 +482,7 @@ async function handleImagesDalle(req: NextRequest, path: string, search: string)
     const parts: GeminiInputPart[] = [{ text: prompt }, ...inputParts];
     const upstream = await fetch(`${NEWAPI_BASE_URL}/v1beta/models/${model}:generateContent`, {
         method: 'POST',
-        headers: forwardHeaders(req),
+        headers: jsonForwardHeaders(req),
         body: JSON.stringify({
             contents: [{ role: 'user', parts }],
             generationConfig: { imageConfig },

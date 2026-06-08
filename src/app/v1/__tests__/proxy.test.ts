@@ -754,4 +754,35 @@ describe('/v1 proxy — Phase 4: DALL·E /v1/images/{edits,generations} (W9 D4)'
         expect(mockUploadImage).not.toHaveBeenCalled();
         expect(data.data[0].url).toMatch(/^https:\/\/cdn\.customer\.com\/gen\/[0-9a-f-]+\.png$/);
     });
+
+    it('forces application/json Content-Type on translated generateContent for multipart input (CT hotfix core)', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const form = new FormData();
+        form.append('model', 'gemini-3.1-flash-image-preview');
+        form.append('prompt', '给这只猫戴一顶圣诞帽');
+        form.append('aspect_ratio', 'auto');
+        form.append('image', imageFile([0xff, 0xd8, 0xff, 0xe0], 'cat.jpg', 'image/jpeg'));
+
+        const res = await POST(makeMultipartReq(form, '/images/edits'), ctx('images', 'edits'));
+        expect(res.status).toBe(200);
+        // 核心守护:翻译到 generateContent 的请求 Content-Type 必须是 application/json,
+        // 不能把原 multipart/form-data CT 带过去(否则 new-api 把 JSON 当 multipart → bufio buffer full)。
+        const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(url).toContain(':generateContent');
+        expect((init.headers as Headers).get('content-type')).toBe('application/json');
+    });
+
+    it('translated chat generateContent also uses application/json Content-Type (CT hotfix, §2)', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        await POST(
+            makeReq('/chat/completions', {
+                body: { model: 'gemini-3.1-flash-image-preview', messages: [{ role: 'user', content: 'a cat' }] },
+                headers: { authorization: 'Bearer sk-x' },
+            }),
+            ctx('chat', 'completions'),
+        );
+        const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(url).toContain(':generateContent');
+        expect((init.headers as Headers).get('content-type')).toBe('application/json');
+    });
 });
