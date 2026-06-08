@@ -105,6 +105,7 @@ describe('/v1 proxy — Gemini image translation', () => {
             generationConfig: { imageConfig: { imageSize: string } };
         };
         expect(upstreamBody.generationConfig.imageConfig.imageSize).toBe('2K'); // 3.1-flash-image-preview → 2K
+        expect(upstreamBody.generationConfig.imageConfig).not.toHaveProperty('aspectRatio'); // §2:chat 路径不再钉 1:1
         expect(upstreamBody.contents[0].parts[0].text).toBe('a cat');
 
         // 响应转回 OpenAI 格式 + 翻译 header
@@ -560,10 +561,11 @@ describe('/v1 proxy — Phase 4: DALL·E /v1/images/{edits,generations} (W9 D4)'
         expect(url).toBe(`${NEWAPI_BASE}/v1beta/models/gemini-2.5-flash-image:generateContent`);
         const sent = JSON.parse(String(init.body)) as {
             contents: Array<{ parts: Array<{ text?: string }> }>;
-            generationConfig: { imageConfig: { imageSize: string; aspectRatio: string } };
+            generationConfig: { imageConfig: { imageSize: string; aspectRatio?: string } };
         };
         expect(sent.generationConfig.imageConfig.imageSize).toBe('1K');
-        expect(sent.generationConfig.imageConfig.aspectRatio).toBe('1:1'); // 默认
+        // 无 aspect_ratio = 不指定 → 不注入,让 Gemini 自动定比例
+        expect(sent.generationConfig.imageConfig).not.toHaveProperty('aspectRatio');
         expect(sent.contents[0].parts).toHaveLength(1);
         expect(sent.contents[0].parts[0].text).toBe('a sunset');
         const data = (await res.json()) as { data: Array<{ url: string }> };
@@ -584,7 +586,7 @@ describe('/v1 proxy — Phase 4: DALL·E /v1/images/{edits,generations} (W9 D4)'
         expect(mockFetch).not.toHaveBeenCalled();
     });
 
-    it('empty aspect_ratio defaults to 1:1 (test D4-5)', async () => {
+    it('empty aspect_ratio = unspecified → no aspectRatio injected (test D4-5)', async () => {
         mockFetch.mockResolvedValueOnce(geminiNativeResponse());
         await POST(
             makeReq('/images/generations', {
@@ -593,8 +595,45 @@ describe('/v1 proxy — Phase 4: DALL·E /v1/images/{edits,generations} (W9 D4)'
             ctx('images', 'generations'),
         );
         const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
-        const sent = JSON.parse(String(init.body)) as { generationConfig: { imageConfig: { aspectRatio: string } } };
-        expect(sent.generationConfig.imageConfig.aspectRatio).toBe('1:1');
+        const sent = JSON.parse(String(init.body)) as {
+            generationConfig: { imageConfig: { imageSize: string; aspectRatio?: string } };
+        };
+        expect(sent.generationConfig.imageConfig.imageSize).toBe('1K');
+        expect(sent.generationConfig.imageConfig).not.toHaveProperty('aspectRatio');
+    });
+
+    it('aspect_ratio=auto = unspecified → 200, no aspectRatio injected (hotfix)', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const form = new FormData();
+        form.append('model', 'gemini-3.1-flash-image-preview');
+        form.append('prompt', 'edit this');
+        form.append('aspect_ratio', 'auto');
+        form.append('image', imageFile([1, 2, 3], 'in.png', 'image/png'));
+
+        const res = await POST(makeMultipartReq(form, '/images/edits'), ctx('images', 'edits'));
+        expect(res.status).toBe(200); // 不再 400
+        const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        const sent = JSON.parse(String(init.body)) as {
+            generationConfig: { imageConfig: { imageSize: string; aspectRatio?: string } };
+        };
+        expect(sent.generationConfig.imageConfig.imageSize).toBe('2K');
+        expect(sent.generationConfig.imageConfig).not.toHaveProperty('aspectRatio');
+    });
+
+    it('aspect_ratio=AUTO (case-insensitive) → no aspectRatio injected (hotfix)', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gemini-2.5-flash-image', prompt: 'x', aspect_ratio: 'AUTO' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        const sent = JSON.parse(String(init.body)) as {
+            generationConfig: { imageConfig: { aspectRatio?: string } };
+        };
+        expect(sent.generationConfig.imageConfig).not.toHaveProperty('aspectRatio');
     });
 
     it('pro-tier-only ratio 8:1 passes for pro, rejected for flash (test D4-6)', async () => {

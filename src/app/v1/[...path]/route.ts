@@ -98,8 +98,6 @@ const GEMINI_ASPECT_RATIOS: Record<string, ReadonlySet<string>> = {
     ]),
 };
 
-const DEFAULT_ASPECT_RATIO = '1:1';
-
 const CLAUDE_MAX_TOKENS_CAP = 4096;
 
 /** 外部 image_url fetch 的大小上限(Gemini inline 也有自己的上限,先在我们这层挡) */
@@ -318,7 +316,9 @@ async function handleGeminiImage(req: NextRequest, body: JsonRecord, model: stri
         headers: forwardHeaders(req),
         body: JSON.stringify({
             contents,
-            generationConfig: { imageConfig: { imageSize, aspectRatio: '1:1' } },
+            // 不指定 aspectRatio:文生图走 Gemini 默认,图生图(image_url 入参)跟随输入图。
+            // 与 /v1/images/* 的 auto 行为一致。
+            generationConfig: { imageConfig: { imageSize } },
         }),
     });
 
@@ -387,7 +387,7 @@ async function forwardMultipart(req: NextRequest, form: FormData, path: string, 
  * /v1/images/edits + /v1/images/generations 的 DALL·E 兼容入口(W9 D4)。
  *
  * model 命中 GEMINI_IMAGE_MODELS → 翻译到 Gemini native generateContent
- * 并注入 imageSize(1K/2K/4K)+ aspectRatio,响应包成 DALL·E 形
+ * 注入 imageSize(1K/2K/4K)、按需注入 aspectRatio,响应包成 DALL·E 形
  * `{ created, data: [{ url | b64_json }] }`;否则原样透传 new-api(gpt-image-2 等)。
  *
  * 边界与已知取舍(对照官方 DALL·E 的有意差异):
@@ -395,8 +395,8 @@ async function forwardMultipart(req: NextRequest, form: FormData, path: string, 
  *   客户传 n>1 我们忽略。需多图后续迭代。
  * - `size`(如 1024x1024):忽略 —— 分辨率由 model 档位(imageSize 1K/2K/4K)决定,
  *   比例由 aspect_ratio 决定。
- * - 空 `aspect_ratio=""`(参考 curl 即空串)→ 默认 1:1,不报错;非空且不在该 model
- *   官方白名单 → 400。
+ * - `aspect_ratio` 缺省 / `""` / `auto`(大小写不限)= "不指定" → 不注入 aspectRatio,
+ *   让 Gemini 自动定比例(edits 跟随输入图);非空、非 auto 且不在该 model 官方白名单 → 400。
  * - 多参考图:`image` 字段可重复(multipart form.getAll('image') / JSON 数组),
  *   全部按顺序转 inlineData 塞进 parts。
  * - 鉴权不在本层 —— Authorization 透传,new-api 校验 sk-xxx。
@@ -455,12 +455,19 @@ async function handleImagesDalle(req: NextRequest, path: string, search: string)
         return imageError('invalid request body');
     }
 
-    // ---- aspect_ratio 校验(按 model 档位的 Gemini 官方白名单)----
+    // ---- aspect_ratio 校验 ----
+    // "" 和 "auto"(大小写不限)= "不指定",不注入 aspectRatio,让 Gemini 自动定比例
+    // (edits 会跟随输入图)。业界客户端(OpenAI gpt-image size:"auto" 等)常默认发 auto,
+    // 不能当非法值拒。
+    const wantsAuto = aspectRatio === '' || aspectRatio.toLowerCase() === 'auto';
     const allowed = GEMINI_ASPECT_RATIOS[model];
-    if (aspectRatio && !allowed.has(aspectRatio)) {
+    if (aspectRatio && !wantsAuto && !allowed.has(aspectRatio)) {
         return imageError(`unsupported aspect_ratio "${aspectRatio}" for ${model}`);
     }
-    const finalAspect = aspectRatio || DEFAULT_ASPECT_RATIO;
+
+    // 只有客户显式给了合法比例才注入 aspectRatio;auto/空则不传。
+    const imageConfig: Record<string, string> = { imageSize: GEMINI_IMAGE_MODELS[model] };
+    if (!wantsAuto) imageConfig.aspectRatio = aspectRatio;
 
     // ---- 拼 Gemini contents:prompt 文本 + 参考图 inlineData ----
     const parts: GeminiInputPart[] = [{ text: prompt }, ...inputParts];
@@ -469,7 +476,7 @@ async function handleImagesDalle(req: NextRequest, path: string, search: string)
         headers: forwardHeaders(req),
         body: JSON.stringify({
             contents: [{ role: 'user', parts }],
-            generationConfig: { imageConfig: { imageSize: GEMINI_IMAGE_MODELS[model], aspectRatio: finalAspect } },
+            generationConfig: { imageConfig },
         }),
     });
     if (!upstream.ok) return passthroughResponse(upstream);
