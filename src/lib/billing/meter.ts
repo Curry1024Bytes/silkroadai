@@ -4,6 +4,8 @@ import { prisma } from '@/lib/db';
 import { queryLogs, type NewApiUsageLog } from '@/lib/newapi/client';
 import { PLATFORM_TENANT_ID } from '@/lib/admin/tenant-scope';
 import { computeUsageCost, pickEffectivePrice } from './cost';
+import { applyLedgerEntry } from './ledger';
+import { billingSourceIsPortal } from './billing-source';
 
 /**
  * P4a 影子计量 job:轮询 new-api consume 日志,按客户 token 档次取生效 CatalogPrice 算 ¥,
@@ -32,6 +34,7 @@ export interface ShadowMeterResult {
     matched: number;
     unmatched: number;
     skippedNoUser: number;
+    charged: number; // P4c-2:扣了 ¥账本的条数(仅 portal 模式 + matched + 两道门通过;默认 0)
 }
 
 type ResolvedUser = { id: string; tenant_id: string | null } | null;
@@ -58,6 +61,7 @@ export async function runShadowMeter(): Promise<ShadowMeterResult> {
         matched: 0,
         unmatched: 0,
         skippedNoUser: 0,
+        charged: 0,
     };
 
     // 2) 翻页拉 type=2(consume)日志,收集 id > cursor 的。
@@ -184,9 +188,66 @@ export async function runShadowMeter(): Promise<ShadowMeterResult> {
         result.recorded = created.count;
     }
 
+    // 4.5) P4c-2 计量扣账本 —— 两道门(全局 BILLING_SOURCE + 单客户 billing_mode='portal')。
+    //   纯记账,【不挡请求】;只扣 matched(有价);(charge, ref=UsageRecord.id) 幂等绝不双扣。
+    //   全局门 = newapi(默认/未设)→ 整个阶段跳过,对 newapi 客户零开销、零回归。
+    //   放在【推进游标之前】:扣费崩了 cursor 不前进 → 下轮重拉 + (charge,ref) 幂等补扣,不丢账。
+    if (billingSourceIsPortal() && rows.length > 0) {
+        await debitPortalUsers(rows, result);
+    }
+
     // 5) 推进游标(只在成功后)。
     await prisma.usageMeterCursor.update({ where: { id: 1 }, data: { last_log_id: maxId, last_run_at: new Date() } });
     result.cursorAfter = maxId;
 
     return result;
+}
+
+/**
+ * P4c-2:对【本轮新写的、portal 模式客户的、matched 有价】UsageRecord,用 applyLedgerEntry 扣 ¥账本。
+ *
+ * createMany 不回 id → 按 newapi_log_id 取回真实 UsageRecord(拿其 id 作幂等 ref)。
+ * 单客户门:批量查 billing_mode='portal' 的 user(防 N+1);非 portal → 不扣(= 现状)。
+ * 幂等:(kind='charge', ref=UsageRecord.id) 唯一约束 —— meter 重处理 / 崩溃重跑都不双扣。
+ * 不挡请求:扣费失败仅 warn、不抛(UsageRecord 已写、cursor 照常前进,下轮 ref 幂等补)。
+ */
+async function debitPortalUsers(rows: Prisma.UsageRecordCreateManyInput[], result: ShadowMeterResult): Promise<void> {
+    const freshLogIds = rows.map((r) => r.newapi_log_id);
+    // 只取 matched(有价)的真实记录;matched=false 算不出价 → 不扣(留观察 / 对账)。
+    const records = await prisma.usageRecord.findMany({
+        where: { newapi_log_id: { in: freshLogIds }, matched: true },
+        select: { id: true, user_id: true, cost_cny: true, model_slug: true, tier: true },
+    });
+    if (records.length === 0) return;
+
+    const userIds = [...new Set(records.map((r) => r.user_id))];
+    const portalUserIds = new Set(
+        (
+            await prisma.user.findMany({
+                where: { id: { in: userIds }, billing_mode: 'portal' },
+                select: { id: true },
+            })
+        ).map((u) => u.id),
+    );
+    if (portalUserIds.size === 0) return; // 无人是 portal → 不扣(= 现状)
+
+    for (const rec of records) {
+        if (!portalUserIds.has(rec.user_id)) continue; // 单客户门:非 portal → 跳过
+        if (rec.cost_cny.isZero()) continue; // 0 成本:无需记账(不动余额、不留噪声)
+        try {
+            await applyLedgerEntry(rec.user_id, {
+                kind: 'charge',
+                amount_cny: rec.cost_cny.negated(), // 扣减(负);cost_cny = 零售价 = 客户该付的
+                ref: rec.id, // (charge, ref) 幂等 —— 绝不双扣
+                note: `${rec.model_slug}/${rec.tier}`,
+            });
+            result.charged++;
+        } catch (err) {
+            // 不挡请求 / 不阻断计量:扣费失败只 warn。UsageRecord 已写、cursor 照常前进。
+            console.warn(
+                `[meter] ledger charge failed for usage ${rec.id} (user ${rec.user_id}):`,
+                err instanceof Error ? err.message : err,
+            );
+        }
+    }
 }

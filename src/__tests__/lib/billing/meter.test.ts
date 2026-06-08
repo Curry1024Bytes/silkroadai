@@ -1,13 +1,17 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Prisma } from '@prisma/client';
 
 // ── mocks ──
 const mockQueryLogs = vi.fn();
 const mockCursorUpsert = vi.fn();
 const mockCursorUpdate = vi.fn();
 const mockUserFindUnique = vi.fn();
+const mockUserFindMany = vi.fn();
 const mockTokenFindUnique = vi.fn();
 const mockModelFindFirst = vi.fn();
 const mockUsageCreateMany = vi.fn();
+const mockUsageFindMany = vi.fn();
+const mockApplyLedgerEntry = vi.fn();
 
 // Only `queryLogs` is exposed — if the meter ever reaches for a new-api WRITE
 // (addQuota / token / user) the call would be undefined and throw, which is
@@ -19,12 +23,21 @@ vi.mock('@/lib/db', () => ({
             upsert: (...a: unknown[]) => mockCursorUpsert(...a),
             update: (...a: unknown[]) => mockCursorUpdate(...a),
         },
-        user: { findUnique: (...a: unknown[]) => mockUserFindUnique(...a) },
+        user: {
+            findUnique: (...a: unknown[]) => mockUserFindUnique(...a),
+            findMany: (...a: unknown[]) => mockUserFindMany(...a),
+        },
         newApiToken: { findUnique: (...a: unknown[]) => mockTokenFindUnique(...a) },
         catalogModel: { findFirst: (...a: unknown[]) => mockModelFindFirst(...a) },
-        usageRecord: { createMany: (...a: unknown[]) => mockUsageCreateMany(...a) },
+        usageRecord: {
+            createMany: (...a: unknown[]) => mockUsageCreateMany(...a),
+            findMany: (...a: unknown[]) => mockUsageFindMany(...a),
+        },
     },
 }));
+// P4c-2: the meter debits via applyLedgerEntry; mock it to assert the call shape
+// (its atomicity / optimistic lock / idempotency is covered by ledger.test.ts).
+vi.mock('@/lib/billing/ledger', () => ({ applyLedgerEntry: (...a: unknown[]) => mockApplyLedgerEntry(...a) }));
 
 import { runShadowMeter } from '@/lib/billing/meter';
 import { PLATFORM_TENANT_ID } from '@/lib/admin/tenant-scope';
@@ -71,6 +84,14 @@ beforeEach(() => {
     mockUsageCreateMany.mockImplementation(({ data }: { data: unknown[] }) => Promise.resolve({ count: data.length }));
     // single page, fewer than PAGE_SIZE → stops after page 1
     mockQueryLogs.mockResolvedValue({ items: [consumeLog()], total: 1 });
+    // P4c-2 defaults: debit phase off (BILLING_SOURCE unset) + empty query-backs.
+    mockUsageFindMany.mockResolvedValue([]);
+    mockUserFindMany.mockResolvedValue([]);
+    mockApplyLedgerEntry.mockResolvedValue({ deduped: false });
+});
+
+afterEach(() => {
+    vi.unstubAllEnvs(); // clear any BILLING_SOURCE stub between tests
 });
 
 describe('runShadowMeter — happy path (matched cost, read-only, cursor advance)', () => {
@@ -173,5 +194,101 @@ describe('runShadowMeter — idempotency / cursor', () => {
         const r = await runShadowMeter();
         expect(r.recorded).toBe(0);
         expect(r.cursorAfter).toBe(10); // cursor still advances
+    });
+});
+
+describe('runShadowMeter — P4c-2 ledger debit (two gates, idempotent, never blocks)', () => {
+    // The real UsageRecord the meter reads back after createMany (has the real id used as the ref).
+    const usageRow = (over: Record<string, unknown> = {}) => ({
+        id: 'ur1',
+        user_id: 'u1',
+        cost_cny: new Prisma.Decimal('12.5'),
+        model_slug: 'gpt-5.4',
+        tier: 'pool',
+        ...over,
+    });
+
+    it('global gate OFF (BILLING_SOURCE unset → newapi): no debit phase at all, even if user is portal', async () => {
+        // newapi customers behave exactly as P4a — kill-switch closed → query-back never even runs.
+        mockUserFindMany.mockResolvedValue([{ id: 'u1' }]);
+        mockUsageFindMany.mockResolvedValue([usageRow()]);
+        const r = await runShadowMeter();
+        expect(mockUsageFindMany).not.toHaveBeenCalled();
+        expect(mockApplyLedgerEntry).not.toHaveBeenCalled();
+        expect(r.charged).toBe(0);
+    });
+
+    it('both gates open (BILLING_SOURCE=portal + user billing_mode=portal) + matched → debits −cost_cny, ref=id', async () => {
+        vi.stubEnv('BILLING_SOURCE', 'portal');
+        mockUsageFindMany.mockResolvedValue([usageRow()]);
+        mockUserFindMany.mockResolvedValue([{ id: 'u1' }]); // u1 is portal
+        const r = await runShadowMeter();
+
+        // query-back fetches ONLY matched records, keyed by the fresh log ids (before cursor advance)
+        expect(mockUsageFindMany).toHaveBeenCalledWith(
+            expect.objectContaining({ where: expect.objectContaining({ matched: true, newapi_log_id: { in: [10] } }) }),
+        );
+        // per-customer gate via a single batch fetch (no N+1), scoped to portal
+        expect(mockUserFindMany).toHaveBeenCalledTimes(1);
+        expect(mockUserFindMany).toHaveBeenCalledWith(
+            expect.objectContaining({ where: expect.objectContaining({ billing_mode: 'portal' }) }),
+        );
+        // charge: negated retail, ref = UsageRecord.id (the idempotency key), descriptive note
+        expect(mockApplyLedgerEntry).toHaveBeenCalledTimes(1);
+        const [userId, arg] = mockApplyLedgerEntry.mock.calls[0];
+        expect(userId).toBe('u1');
+        expect(arg.kind).toBe('charge');
+        expect(arg.ref).toBe('ur1');
+        expect(arg.note).toBe('gpt-5.4/pool');
+        expect(arg.amount_cny.toString()).toBe('-12.5');
+        expect(r.charged).toBe(1);
+    });
+
+    it('per-customer gate (user billing_mode=newapi) → not debited even when BILLING_SOURCE=portal', async () => {
+        vi.stubEnv('BILLING_SOURCE', 'portal');
+        mockUsageFindMany.mockResolvedValue([usageRow()]);
+        mockUserFindMany.mockResolvedValue([]); // no portal users in this batch
+        const r = await runShadowMeter();
+        expect(mockApplyLedgerEntry).not.toHaveBeenCalled();
+        expect(r.charged).toBe(0);
+    });
+
+    it('matched-only: no matched records → skips the billing_mode lookup + charge entirely', async () => {
+        vi.stubEnv('BILLING_SOURCE', 'portal');
+        mockUsageFindMany.mockResolvedValue([]); // matched:true filter yielded nothing to debit
+        mockUserFindMany.mockResolvedValue([{ id: 'u1' }]);
+        await runShadowMeter();
+        expect(mockUserFindMany).not.toHaveBeenCalled();
+        expect(mockApplyLedgerEntry).not.toHaveBeenCalled();
+    });
+
+    it('zero-cost matched record → no ledger entry (no-op, no noise)', async () => {
+        vi.stubEnv('BILLING_SOURCE', 'portal');
+        mockUsageFindMany.mockResolvedValue([usageRow({ cost_cny: new Prisma.Decimal(0) })]);
+        mockUserFindMany.mockResolvedValue([{ id: 'u1' }]);
+        const r = await runShadowMeter();
+        expect(mockApplyLedgerEntry).not.toHaveBeenCalled();
+        expect(r.charged).toBe(0);
+    });
+
+    it('never blocks: a failed charge is swallowed; meter does not throw + cursor still advances', async () => {
+        vi.stubEnv('BILLING_SOURCE', 'portal');
+        mockUsageFindMany.mockResolvedValue([usageRow()]);
+        mockUserFindMany.mockResolvedValue([{ id: 'u1' }]);
+        mockApplyLedgerEntry.mockRejectedValue(new Error('ledger down'));
+        const r = await runShadowMeter(); // must resolve, not reject
+        expect(r.charged).toBe(0);
+        expect(mockCursorUpdate).toHaveBeenCalledWith(
+            expect.objectContaining({ data: expect.objectContaining({ last_log_id: 10 }) }),
+        );
+    });
+
+    it('passes ref = UsageRecord.id so (charge, ref) makes a re-run idempotent (no double-debit)', async () => {
+        vi.stubEnv('BILLING_SOURCE', 'portal');
+        mockUsageFindMany.mockResolvedValue([usageRow({ id: 'ur-stable' })]);
+        mockUserFindMany.mockResolvedValue([{ id: 'u1' }]);
+        await runShadowMeter();
+        // the meter keys idempotency on the stable record id; dedup itself is ledger.test.ts's job
+        expect(mockApplyLedgerEntry.mock.calls[0][1].ref).toBe('ur-stable');
     });
 });
