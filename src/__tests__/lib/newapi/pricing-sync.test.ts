@@ -17,6 +17,7 @@ import {
     retailFromRatios,
     syncModelPriceToNewApi,
     resolveImageModelPrice,
+    resolveChatTierPrice,
     PRICING_FX,
 } from '@/lib/newapi/pricing-sync';
 
@@ -73,19 +74,90 @@ describe('retailFromRatios (P2.5 reverse derivation — inverse of computeRatios
     });
 });
 
-describe('syncModelPriceToNewApi', () => {
+describe('syncModelPriceToNewApi — chat models → global ModelRatio + CompletionRatio (P2.9)', () => {
     const UPSTREAM = { default: { channel_id: 3, upstream_model: 'gpt-5.4' } };
 
-    it('tier not in upstream_map → ok:false, never calls new-api', async () => {
+    // getOption keyed by option name (ModelRatio vs CompletionRatio dicts).
+    const optionFixture =
+        (mr: Record<string, number>, cr: Record<string, number>) =>
+        (key: string): Promise<string | null> =>
+            Promise.resolve(
+                key === 'ModelRatio' ? JSON.stringify(mr) : key === 'CompletionRatio' ? JSON.stringify(cr) : null,
+            );
+    const putByKey = () => Object.fromEntries(mockPutOption.mock.calls.map(([k, v]) => [k, JSON.parse(v as string)]));
+
+    it('merges into GLOBAL ModelRatio+CompletionRatio, PUTs WHOLE dict (others preserved); NO channel PUT', async () => {
+        // P2.9: per-channel model_ratio PUT is silently dropped by new-api → bill from global options.
+        mockGetOption.mockImplementation(optionFixture({ 'other-model': 1.0 }, { 'other-model': 2.0 }));
+        mockPutOption.mockResolvedValue(undefined);
+
+        const r = await syncModelPriceToNewApi(UPSTREAM, {
+            tier: 'default',
+            input_cny_per_1m: 2.5,
+            output_cny_per_1m: 10,
+        });
+
+        expect(r.ok).toBe(true);
+        expect(r.image).toBeFalsy(); // chat path, not image
+        expect(r.ratios).toEqual({ model_ratio: 0.357143, completion_ratio: 4 });
+        expect(r.upstream_model).toBe('gpt-5.4');
+        // GETs both global option dicts...
+        expect(mockGetOption).toHaveBeenCalledWith('ModelRatio');
+        expect(mockGetOption).toHaveBeenCalledWith('CompletionRatio');
+        // ...and PUTs both back whole, our SKU merged on top (pre-existing entries preserved).
+        const put = putByKey();
+        expect(put['ModelRatio']).toEqual({ 'other-model': 1.0, 'gpt-5.4': 0.357143 });
+        expect(put['CompletionRatio']).toEqual({ 'other-model': 2.0, 'gpt-5.4': 4 });
+        // the dropped per-channel path is gone entirely.
+        expect(mockGetChannel).not.toHaveBeenCalled();
+        expect(mockUpdateChannel).not.toHaveBeenCalled();
+    });
+
+    it('option absent (null) → starts fresh dicts', async () => {
+        mockGetOption.mockResolvedValue(null);
+        mockPutOption.mockResolvedValue(undefined);
+        const r = await syncModelPriceToNewApi(UPSTREAM, {
+            tier: 'default',
+            input_cny_per_1m: 2.5,
+            output_cny_per_1m: 10,
+        });
+        expect(r.ok).toBe(true);
+        const put = putByKey();
+        expect(put['ModelRatio']).toEqual({ 'gpt-5.4': 0.357143 });
+        expect(put['CompletionRatio']).toEqual({ 'gpt-5.4': 4 });
+    });
+
+    it('edited tier lacks a mapping → falls back to any tier upstream_model (chat name is tier-agnostic)', async () => {
+        mockGetOption.mockResolvedValue('{}');
+        mockPutOption.mockResolvedValue(undefined);
         const r = await syncModelPriceToNewApi(UPSTREAM, {
             tier: 'official',
             input_cny_per_1m: 2.5,
             output_cny_per_1m: 10,
         });
+        expect(r.ok).toBe(true);
+        expect(r.upstream_model).toBe('gpt-5.4'); // resolved from the 'default' mapping
+        expect(putByKey()['ModelRatio']).toEqual({ 'gpt-5.4': 0.357143 });
+    });
+
+    it('empty upstream_map → ok:false, never calls new-api', async () => {
+        const r = await syncModelPriceToNewApi({}, { tier: 'default', input_cny_per_1m: 2.5, output_cny_per_1m: 10 });
         expect(r.ok).toBe(false);
-        expect(r.error).toContain('official');
-        expect(mockGetChannel).not.toHaveBeenCalled();
-        expect(mockUpdateChannel).not.toHaveBeenCalled();
+        expect(mockGetOption).not.toHaveBeenCalled();
+        expect(mockPutOption).not.toHaveBeenCalled();
+    });
+
+    it('option GET/PUT failure → ok:false with error, ratios still computed', async () => {
+        mockGetOption.mockRejectedValue(new Error('502 option'));
+        const r = await syncModelPriceToNewApi(UPSTREAM, {
+            tier: 'default',
+            input_cny_per_1m: 2.5,
+            output_cny_per_1m: 10,
+        });
+        expect(r.ok).toBe(false);
+        expect(r.error).toContain('502');
+        expect(r.ratios).toEqual({ model_ratio: 0.357143, completion_ratio: 4 });
+        expect(mockPutOption).not.toHaveBeenCalled();
     });
 
     it('no in/out price AND no per_image → skipped (nothing to sync), never calls new-api', async () => {
@@ -96,63 +168,7 @@ describe('syncModelPriceToNewApi', () => {
         });
         expect(r.ok).toBe(true);
         expect(r.skipped).toBeTruthy();
-        expect(mockGetChannel).not.toHaveBeenCalled();
         expect(mockGetOption).not.toHaveBeenCalled();
-    });
-
-    it('merges mr/cr into the channel and PUTs the WHOLE object (gotcha #15)', async () => {
-        mockGetChannel.mockResolvedValue({
-            id: 3,
-            name: 'sub2api OpenAI',
-            model_ratio: JSON.stringify({ 'other-model': 1.0 }),
-            completion_ratio: JSON.stringify({ 'other-model': 2.0 }),
-            models: 'gpt-5.4,other-model',
-            model_mapping: JSON.stringify({ short: 'gpt-5.4' }),
-        });
-        mockUpdateChannel.mockResolvedValue(undefined);
-
-        const r = await syncModelPriceToNewApi(UPSTREAM, {
-            tier: 'default',
-            input_cny_per_1m: 2.5,
-            output_cny_per_1m: 10,
-        });
-
-        expect(r.ok).toBe(true);
-        expect(r.ratios).toEqual({ model_ratio: 0.357143, completion_ratio: 4 });
-
-        const put = mockUpdateChannel.mock.calls[0][0];
-        // gotcha #15: the whole channel object must be PUT back — models /
-        // model_mapping must survive, or new-api silently clears them.
-        expect(put.models).toBe('gpt-5.4,other-model');
-        expect(put.model_mapping).toBe(JSON.stringify({ short: 'gpt-5.4' }));
-        // our SKU merged on top of the pre-existing entry (not replacing the dict).
-        expect(JSON.parse(put.model_ratio)).toEqual({ 'other-model': 1.0, 'gpt-5.4': 0.357143 });
-        expect(JSON.parse(put.completion_ratio)).toEqual({ 'other-model': 2.0, 'gpt-5.4': 4 });
-    });
-
-    it('handles an already-parsed dict (model_ratio as object, not JSON string)', async () => {
-        mockGetChannel.mockResolvedValue({ id: 3, model_ratio: { x: 1 }, completion_ratio: { x: 2 } });
-        mockUpdateChannel.mockResolvedValue(undefined);
-        const r = await syncModelPriceToNewApi(UPSTREAM, {
-            tier: 'default',
-            input_cny_per_1m: 2.5,
-            output_cny_per_1m: 10,
-        });
-        expect(r.ok).toBe(true);
-        expect(JSON.parse(mockUpdateChannel.mock.calls[0][0].model_ratio)).toEqual({ x: 1, 'gpt-5.4': 0.357143 });
-    });
-
-    it('new-api failure → ok:false with error, ratios still computed', async () => {
-        mockGetChannel.mockRejectedValue(new Error('502 upstream'));
-        const r = await syncModelPriceToNewApi(UPSTREAM, {
-            tier: 'default',
-            input_cny_per_1m: 2.5,
-            output_cny_per_1m: 10,
-        });
-        expect(r.ok).toBe(false);
-        expect(r.error).toContain('502');
-        expect(r.ratios).toEqual({ model_ratio: 0.357143, completion_ratio: 4 });
-        expect(mockUpdateChannel).not.toHaveBeenCalled();
     });
 });
 
@@ -298,6 +314,64 @@ describe('resolveImageModelPrice (global ModelPrice is single-price — brief B.
         );
         expect(r.tier).toBe('house');
         expect(r.per_image_cny).toBe(0.2);
+        expect(r.warn).toContain('house');
+    });
+});
+
+describe('resolveChatTierPrice (global ModelRatio is single-price — P2.9, mirrors image)', () => {
+    const row = (tier: string, i: number | null, o: number | null) => ({
+        tier,
+        input_cny_per_1m: i,
+        output_cny_per_1m: o,
+    });
+
+    it('single priced tier → that tier, no warn', () => {
+        expect(resolveChatTierPrice([row('pool', 2.5, 10)], 'pool')).toEqual({
+            tier: 'pool',
+            input_cny_per_1m: 2.5,
+            output_cny_per_1m: 10,
+        });
+    });
+
+    it('multi-tier SAME (in,out) → default tier, no warn', () => {
+        const r = resolveChatTierPrice([row('pool', 2.5, 10), row('official', 2.5, 10)], 'pool');
+        expect(r).toEqual({ tier: 'pool', input_cny_per_1m: 2.5, output_cny_per_1m: 10 });
+    });
+
+    it('multi-tier DIFFERENT price → uses default (pool) value + warns the rest is ignored', () => {
+        const r = resolveChatTierPrice([row('pool', 6.5, 32.5), row('official', 16, 80)], 'pool');
+        expect(r.tier).toBe('pool');
+        expect(r.input_cny_per_1m).toBe(6.5);
+        expect(r.output_cny_per_1m).toBe(32.5);
+        expect(r.warn).toContain('pool');
+    });
+
+    it('divergence in output only (same input) → still warns', () => {
+        const r = resolveChatTierPrice([row('pool', 2.5, 10), row('official', 2.5, 12)], 'pool');
+        expect(r.tier).toBe('pool');
+        expect(r.warn).toBeTruthy();
+    });
+
+    it('default tier unpriced → falls back to first by tier order (no divergence → no warn)', () => {
+        const r = resolveChatTierPrice([row('pool', null, null), row('official', 16, 80)], 'pool');
+        expect(r.tier).toBe('official');
+        expect(r.input_cny_per_1m).toBe(16);
+        expect(r.output_cny_per_1m).toBe(80);
+        expect(r.warn).toBeUndefined();
+    });
+
+    it('no tier priced → default tier + nulls (nothing to sync)', () => {
+        expect(resolveChatTierPrice([row('pool', null, null)], 'pool')).toEqual({
+            tier: 'pool',
+            input_cny_per_1m: null,
+            output_cny_per_1m: null,
+        });
+    });
+
+    it('honors a custom default tier key (not hardcoded "pool")', () => {
+        const r = resolveChatTierPrice([row('house', 2, 4), row('official', 3, 6)], 'house');
+        expect(r.tier).toBe('house');
+        expect(r.input_cny_per_1m).toBe(2);
         expect(r.warn).toContain('house');
     });
 });

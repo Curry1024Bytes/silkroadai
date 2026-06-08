@@ -192,7 +192,7 @@ describe('POST /api/admin/pricing/[modelId]/resync', () => {
         expect((await RESYNC(req('POST', undefined, rurl), { params: rparams() })).status).toBe(400);
     });
 
-    it('re-syncs current price per tier', async () => {
+    it('chat resync → resolves default tier then ONE global sync (P2.9; no per-tier loop)', async () => {
         mockModelFindFirst.mockResolvedValue({
             id: 'm1',
             upstream_map: UPSTREAM,
@@ -216,15 +216,68 @@ describe('POST /api/admin/pricing/[modelId]/resync', () => {
         const res = await RESYNC(req('POST', undefined, rurl), { params: rparams() });
         expect(res.status).toBe(200);
         const data = await res.json();
-        // only the CURRENT (first/newest) price per tier is synced → 1 call
+        // current (newest) chat price → ONE global sync (chat is global-by-name now, not per-tier).
         expect(mockSync).toHaveBeenCalledTimes(1);
         expect(mockSync).toHaveBeenCalledWith(
             UPSTREAM,
-            expect.objectContaining({ tier: 'default', input_cny_per_1m: 2.5 }),
+            expect.objectContaining({
+                tier: 'default',
+                input_cny_per_1m: 2.5,
+                output_cny_per_1m: 10,
+                per_image_cny: null,
+            }),
         );
         expect(data.results[0].tier).toBe('default');
-        // chat resync never queries the default-tier group (that's only for image models).
-        expect(mockChannelGroupFindFirst).not.toHaveBeenCalled();
+        // P2.9: chat resolves the default tier from ChannelGroup.is_default (global price can't tier).
+        expect(mockChannelGroupFindFirst.mock.calls[0][0].where.is_default).toBe(true);
+    });
+
+    it('chat resync multi-tier divergent → default (pool) value + warn surfaced (P2.9)', async () => {
+        mockChannelGroupFindFirst.mockResolvedValue({ key: 'pool' });
+        mockModelFindFirst.mockResolvedValue({
+            id: 'm1',
+            upstream_map: {
+                pool: { channel_id: 20, upstream_model: 'claude-opus-4-7' },
+                official: { channel_id: 18, upstream_model: 'claude-opus-4-7' },
+            },
+            prices: [
+                {
+                    tier: 'pool',
+                    input_cny_per_1m: '6.5',
+                    output_cny_per_1m: '32.5',
+                    per_image_cny: null,
+                    effective_from: '2026-06-06T00:00:00Z',
+                },
+                {
+                    tier: 'official',
+                    input_cny_per_1m: '16',
+                    output_cny_per_1m: '80',
+                    per_image_cny: null,
+                    effective_from: '2026-06-06T00:00:00Z',
+                },
+            ],
+        });
+        mockSync.mockResolvedValue({
+            ok: true,
+            upstream_model: 'claude-opus-4-7',
+            ratios: { model_ratio: 0.928571, completion_ratio: 5 },
+        });
+        const res = await RESYNC(req('POST', undefined, rurl), { params: rparams() });
+        const data = await res.json();
+        // single global sync at the default (pool) tier value...
+        expect(mockSync).toHaveBeenCalledTimes(1);
+        expect(mockSync).toHaveBeenCalledWith(
+            expect.anything(),
+            expect.objectContaining({
+                tier: 'pool',
+                input_cny_per_1m: 6.5,
+                output_cny_per_1m: 32.5,
+                per_image_cny: null,
+            }),
+        );
+        // ...with the divergence warn surfaced (chat can't tier — global ModelRatio by name).
+        expect(data.results).toHaveLength(1);
+        expect(data.results[0].sync.warn).toContain('pool');
     });
 
     it('image model resync → ONE sync at the default tier + warn on divergent per_image (P2.8)', async () => {

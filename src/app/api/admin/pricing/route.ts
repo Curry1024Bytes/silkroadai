@@ -81,9 +81,10 @@ export async function POST(request: NextRequest) {
         },
     });
 
-    // best-effort sync 到 new-api。chat → per-channel model_ratio;图片(填了 per_image_cny)
-    // → 全局 ModelPrice(P2.8 Part B,之前走 skip)。本路由是单档改价,图片按【本次编辑档】
-    // 的值即时同步;全局 ModelPrice 不分档(默认档归一 + 多档 warn 在「重新同步」里统一处理)。
+    // best-effort sync 到 new-api。chat → 全局 ModelRatio + CompletionRatio(P2.9;旧的 PUT
+    // 渠道 model_ratio 被 new-api 静默丢弃);图片 → 全局 ModelPrice(P2.8)。两者都按模型名、
+    // 不分档。本路由是单档改价,按【本次编辑档】的值即时同步;全局价不分档(默认档归一 + 多档
+    // warn 在「重新同步」里统一处理)。⚠️ 保存即改真实计费 —— operator 须先核对目录价。
     const sync = await syncModelPriceToNewApi(model.upstream_map as unknown as UpstreamMap, {
         tier: d.tier,
         input_cny_per_1m: d.input_cny_per_1m ?? null,

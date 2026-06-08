@@ -96,7 +96,8 @@ function getTexts(locale: Locale) {
               cancel: 'Cancel',
               save: 'Save',
               saving: 'Saving...',
-              syncOk: (mr: number | string, cr: number | string) => `✅ Synced (mr=${mr}, cr=${cr})`,
+              syncOk: (mr: number | string, cr: number | string) =>
+                  `✅ Synced ModelRatio (mr=${mr}, cr=${cr}, global — all tiers share it)`,
               syncOkImage: (usd: number | string) => `✅ Synced ModelPrice ($${usd}/img, global — all tiers share it)`,
               syncSkipped: (reason: string) => `↷ Sync skipped: ${reason}`,
               syncFailed: (err: string) => `⚠️ Sync failed: ${err} — click "Resync" to retry`,
@@ -142,7 +143,8 @@ function getTexts(locale: Locale) {
               cancel: '取消',
               save: '保存',
               saving: '保存中...',
-              syncOk: (mr: number | string, cr: number | string) => `✅ 已同步 (mr=${mr}, cr=${cr})`,
+              syncOk: (mr: number | string, cr: number | string) =>
+                  `✅ 已同步 ModelRatio (mr=${mr}, cr=${cr},全局价 · 各档共享)`,
               syncOkImage: (usd: number | string) => `✅ 已同步 ModelPrice ($${usd}/张,全局价 · 各档共享)`,
               syncSkipped: (reason: string) => `↷ 跳过同步: ${reason}`,
               syncFailed: (err: string) => `⚠️ 同步失败: ${err} — 可点「重新同步」重试`,

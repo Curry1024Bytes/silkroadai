@@ -1,5 +1,5 @@
 import 'server-only';
-import { getChannel, updateChannel, getOption, putOption } from './client';
+import { getOption, putOption } from './client';
 import { tierOrder } from '@/lib/admin/pricing-tiers';
 
 /**
@@ -99,50 +99,69 @@ export function parseRatioDict(s: string | Record<string, number> | null | undef
 }
 
 /**
- * 改价后把单个 (model, tier) 的零售价折算 mr/cr,sync 到对应 new-api 渠道:
- * GET 渠道完整对象 → 在原 model_ratio / completion_ratio dict 上【merge】我们这个
- * upstream_model → 整对象 PUT 回(gotcha #15:必须回传整个对象,否则
- * models/model_mapping 等被静默清空)。
+ * 改价后把单个 (model, tier) 的零售价同步到 new-api。两条全局 option 路径,**都按模型名、
+ * 不分渠道/档次**(P2.9 实测:new-api v1.0.0-rc.2 PUT `channel.model_ratio`/`completion_ratio`
+ * 返回 200 但【静默丢弃】不入库 → per-channel sync 从未生效;真实计费读全局 option):
+ *   - chat(有 in/out 价)→ 全局 `ModelRatio` + `CompletionRatio`(见 {@link syncChatModelRatio})。
+ *   - 图片(填了 per_image_cny)→ 全局 `ModelPrice`(见 {@link syncImageModelPrice},P2.8 Part B)。
+ * 两者对称:GET 全量 dict → 只 merge 我们这个 upstream_model → PUT 整 dict(保留别的条目,
+ * gotcha #15 精神)。⚠️ 全局按模型名 → chat 与图片**都无法分 pool/official 档**(同名各档共享
+ * 一个值);多档归一 + warn 由调用方(resync)用 {@link resolveChatTierPrice} /
+ * {@link resolveImageModelPrice} 做,真分档计费留 P4c。
  *
- * 返回 ok=false 的情形(调用方:价格已落 portal DB 为事实源,sync 是 best-effort,
- * 失败在 UI 回报并可「重新同步」):
- *   - 档次在 upstream_map 没有 {channel_id, upstream_model} 映射 → 无法 sync;
- *   - new-api GET/PUT 失败。
- * 图片模型(填了 per_image_cny)→ 走 {@link syncImageModelPrice}(全局 ModelPrice,P2.8 Part B)。
- * 既无 in/out 价又无 per_image → ok=true 但 skipped(没有可同步的价)。
+ * 返回 ok=false:upstream_map 完全没有 {channel_id, upstream_model} 映射 / new-api GET/PUT 失败。
+ * 既无 in/out 又无 per_image → ok=true 但 skipped(没有可同步的价)。
  */
 export async function syncModelPriceToNewApi(upstreamMap: UpstreamMap, price: PriceInput): Promise<SyncResult> {
-    // ── 图片模型:per-image 定价走 new-api【全局 ModelPrice】(按模型名,USD/张),
-    //    不折算 model_ratio/completion_ratio。必须在下方 in/out 空值判断【之前】。 ──
+    // 图片:per-image → 全局 ModelPrice。必须在下方 in/out 空值判断【之前】。
     if (price.per_image_cny != null) {
         return syncImageModelPrice(upstreamMap, price);
     }
 
-    const entry = upstreamMap?.[price.tier];
-    if (!entry || typeof entry.channel_id !== 'number' || !entry.upstream_model) {
-        return { ok: false, error: `档次 "${price.tier}" 在 upstream_map 中没有 {channel_id, upstream_model} 映射` };
-    }
-
     // 既无 in/out 价又无 per_image —— 真的没有可同步的价格。
     if (price.input_cny_per_1m == null || price.output_cny_per_1m == null) {
+        const entry = upstreamMap?.[price.tier] ?? firstUpstreamEntry(upstreamMap);
         return {
             ok: true,
             skipped: '无 in/out 价且无 per-image —— 没有可同步的价格',
-            channel_id: entry.channel_id,
-            upstream_model: entry.upstream_model,
+            channel_id: entry?.channel_id,
+            upstream_model: entry?.upstream_model,
         };
     }
 
-    const ratios = computeRatios(price.input_cny_per_1m, price.output_cny_per_1m);
+    // chat:有 in/out 价 → 全局 ModelRatio + CompletionRatio。
+    return syncChatModelRatio(upstreamMap, price);
+}
 
+/**
+ * chat 模型 → new-api【全局 ModelRatio + CompletionRatio】同步(P2.9)。
+ *
+ * ⚠️ 架构限制(与图片 {@link syncImageModelPrice} 同款):全局 `ModelRatio`/`CompletionRatio`
+ * 是 `{ 模型名: 值 }`,**按模型名、不分渠道/档次** —— pool/official/cc-kiro 用同一模型名 →
+ * 全局层只能一个值 → **chat 也无法分档定价**(本期)。真分档计费留 P4c(portal 自己按档计量)。
+ *
+ * 旧实现 PUT `channel.model_ratio`(P2),被 new-api 静默丢弃 → 改价从未生效;P2.9 改走全局。
+ * 写法镜像 gotcha #15:GET 全量 ModelRatio/CompletionRatio dict → 只 merge 我们这个 upstream_model
+ * → PUT 整 dict(保留别的 ~293 条)。换算沿用 {@link computeRatios}(mr 6 位、cr 4 位,对齐现网精度)。
+ */
+async function syncChatModelRatio(upstreamMap: UpstreamMap, price: PriceInput): Promise<SyncResult> {
+    // 模型名:本档映射优先;本档无映射则取任一档(chat 模型名各档一致,同图片 brief B.4)。
+    const entry = upstreamMap?.[price.tier] ?? firstUpstreamEntry(upstreamMap);
+    if (!entry || !entry.upstream_model) {
+        return {
+            ok: false,
+            error: 'chat 模型在 upstream_map 中没有任何 {channel_id, upstream_model} 映射,无法同步 ModelRatio',
+        };
+    }
+    const ratios = computeRatios(price.input_cny_per_1m as number, price.output_cny_per_1m as number);
     try {
-        const ch = await getChannel(entry.channel_id);
-        const mr = parseRatioDict(ch.model_ratio);
-        const cr = parseRatioDict(ch.completion_ratio);
-        mr[entry.upstream_model] = ratios.model_ratio;
-        cr[entry.upstream_model] = ratios.completion_ratio;
-        // 整对象回传,只换 model_ratio / completion_ratio(其余字段原样保留)。
-        await updateChannel({ ...ch, model_ratio: JSON.stringify(mr), completion_ratio: JSON.stringify(cr) });
+        const mrDict = parseRatioDict(await getOption('ModelRatio'));
+        const crDict = parseRatioDict(await getOption('CompletionRatio'));
+        mrDict[entry.upstream_model] = ratios.model_ratio;
+        crDict[entry.upstream_model] = ratios.completion_ratio;
+        // 整 dict 回传,只换我们这个模型名(其余条目原样保留)。两个 option 各 PUT 一次。
+        await putOption('ModelRatio', JSON.stringify(mrDict));
+        await putOption('CompletionRatio', JSON.stringify(crDict));
         return { ok: true, channel_id: entry.channel_id, upstream_model: entry.upstream_model, ratios };
     } catch (err) {
         return {
@@ -215,11 +234,22 @@ async function syncImageModelPrice(upstreamMap: UpstreamMap, price: PriceInput):
 }
 
 /**
+ * 全局价(ModelPrice/ModelRatio)按模型名,无法分档 → 多档要二选一时,选【默认档】
+ * (is_default,通常 pool);默认档不在候选则按档次序(pool→official→其余)取第一个。
+ * 供 {@link resolveImageModelPrice} / {@link resolveChatTierPrice} 复用。
+ */
+function pickDefaultTierRow<T extends { tier: string }>(priced: T[], defaultTier: string): T {
+    return (
+        priced.find((p) => p.tier === defaultTier) ??
+        priced.slice().sort((a, b) => tierOrder(a.tier) - tierOrder(b.tier) || a.tier.localeCompare(b.tier))[0]
+    );
+}
+
+/**
  * 图片全局价归一(P2.8 Part B,架构限制见 {@link syncImageModelPrice})。
  *
  * 全局 ModelPrice 一个模型名只能有一个价,所以多档若填了不同 per_image 必须二选一:
- *   - 取【默认档】(is_default,通常 pool)的值;默认档没填则按档次序(pool→official→其余)
- *     取第一个有价的;
+ *   - 取【默认档】(is_default,通常 pool)的值;默认档没填则按档次序取第一个有价的;
  *   - 多档价不一致时产出 warn(告知 operator 其余档的价未生效,真分档留 P4c)。
  * 没有任何档填了 per_image → 返回默认档 + null(无价可同步)。
  */
@@ -229,13 +259,37 @@ export function resolveImageModelPrice(
 ): { tier: string; per_image_cny: number | null; warn?: string } {
     const withPrice = pricesByTier.filter((p) => p.per_image_cny != null);
     if (withPrice.length === 0) return { tier: defaultTier, per_image_cny: null };
-    const chosen =
-        withPrice.find((p) => p.tier === defaultTier) ??
-        withPrice.slice().sort((a, b) => tierOrder(a.tier) - tierOrder(b.tier) || a.tier.localeCompare(b.tier))[0];
+    const chosen = pickDefaultTierRow(withPrice, defaultTier);
     const distinct = new Set(withPrice.map((p) => p.per_image_cny));
     const warn =
         distinct.size > 1
             ? `图片模型暂不支持分档价(new-api ModelPrice 按模型名全局),已用「${chosen.tier}」档价 ¥${chosen.per_image_cny}/张 同步;其余档填的不同价未生效(真分档计费留 P4c)。`
             : undefined;
     return { tier: chosen.tier, per_image_cny: chosen.per_image_cny, warn };
+}
+
+/**
+ * chat 全局价归一(P2.9,架构限制见 {@link syncChatModelRatio})。与图片
+ * {@link resolveImageModelPrice} 对称:全局 ModelRatio 按模型名,多档若填了不同 (in,out)
+ * 价 → 取【默认档】(is_default,通常 pool)的价;默认档没填则按档次序取第一个有价的;多档
+ * (in,out) 不一致时产出 warn(其余档价未生效,真分档留 P4c)。无任何档定价 → 默认档 + null。
+ */
+export function resolveChatTierPrice(
+    pricesByTier: Array<{ tier: string; input_cny_per_1m: number | null; output_cny_per_1m: number | null }>,
+    defaultTier: string,
+): { tier: string; input_cny_per_1m: number | null; output_cny_per_1m: number | null; warn?: string } {
+    const withPrice = pricesByTier.filter((p) => p.input_cny_per_1m != null && p.output_cny_per_1m != null);
+    if (withPrice.length === 0) return { tier: defaultTier, input_cny_per_1m: null, output_cny_per_1m: null };
+    const chosen = pickDefaultTierRow(withPrice, defaultTier);
+    const distinct = new Set(withPrice.map((p) => `${p.input_cny_per_1m}/${p.output_cny_per_1m}`));
+    const warn =
+        distinct.size > 1
+            ? `chat 模型暂不支持分档价(new-api ModelRatio 按模型名全局),已用「${chosen.tier}」档价 ¥${chosen.input_cny_per_1m}/¥${chosen.output_cny_per_1m} 同步;其余档填的不同价未生效(真分档计费留 P4c)。`
+            : undefined;
+    return {
+        tier: chosen.tier,
+        input_cny_per_1m: chosen.input_cny_per_1m,
+        output_cny_per_1m: chosen.output_cny_per_1m,
+        warn,
+    };
 }
