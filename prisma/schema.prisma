@@ -312,6 +312,7 @@ model User {
   image_generations         ImageGeneration[]
   analytics_events          AnalyticsEvent[]
   oss_config                UserOssConfig?
+  account                   Account? // P4c-1 ¥账本(零客户影响,默认无 row)
 
   // ── session 失效控制 ──
   // JWT payload 带 tv = session_token_version。verifySession 时如果 token tv
@@ -323,6 +324,12 @@ model User {
   // 为 true(同事务内 CAS lock,防同 user 并发双发)。executeRecharge 失败
   // 回滚事务时此字段不会被永久锁,用户下次仍可拿首充 bonus。
   first_recharge_bonus_granted Boolean @default(false)
+
+  // ── P4c 计费模式(P4c-1 地基)──
+  // 'newapi'(默认,现状):计费走 new-api quota,portal 不扣账本。
+  // 'portal'(P4c 灰度后):计费走 portal Account/LedgerEntry ¥账本。
+  // ⚠️ P4c-1 不读它做任何分支(P4c-2+ 才用)→ 现有客户零行为变化。
+  billing_mode String @default("newapi")
 
   // ── 邀请码(W7 D4)──
   // 用户注册时填写的邀请码(可选)。register handler 仅在 isValidInviteCode
@@ -982,4 +989,56 @@ model UsageMeterCursor {
   last_run_at DateTime?
 
   @@map("usage_meter_cursor")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// P4c-1 ¥账本地基。零客户影响:本任务没有任何东西自动建/扣它,billing_mode
+// 默认 newapi。改余额唯一入口 = src/lib/billing/ledger.ts applyLedgerEntry
+// (乐观锁 version);P4c-2 计量扣费 / P4c-3 充值 / P4c-4 迁移后才常态写。
+// ─────────────────────────────────────────────────────────────────────────
+
+/// 客户余额 —— portal 自有权威 ¥账本(P4c 切换后取代 new-api quota 当余额真相)。
+/// 一个 user 一行(user_id unique;get-or-create)。
+model Account {
+  id        String  @id @default(uuid()) @db.Uuid
+  user_id   String  @unique @db.Uuid
+  user      User    @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  tenant_id String? @db.Uuid // 白标隔离 + tenantScope(冗余自 user.tenant_id)
+
+  // 精度 Decimal(20,8):对齐 UsageRecord.cost_cny —— 单次调用成本可低到 ¥0.0001 以下,
+  // 12,4 会把小额扣费舍成 0 = 免费调用。展示给客户时再 round 到 2 位。
+  balance_cny Decimal @default(0) @db.Decimal(20, 8)
+  version     Int     @default(0) // 乐观锁:每次改余额 +1,update WHERE version=? 防丢更新
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  entries LedgerEntry[]
+
+  @@index([tenant_id])
+  @@map("accounts")
+}
+
+/// 统一总账 —— 充值/扣费/调整/迁移全部进这里(append-only,审计真相)。
+model LedgerEntry {
+  id         String  @id @default(uuid()) @db.Uuid
+  account_id String  @db.Uuid
+  account    Account @relation(fields: [account_id], references: [id], onDelete: Cascade)
+  tenant_id  String? @db.Uuid
+
+  kind          String // 'recharge' | 'charge' | 'adjustment' | 'migration'
+  amount_cny    Decimal @db.Decimal(20, 8) // 带符号:+ 进账 / − 扣减
+  balance_after Decimal @db.Decimal(20, 8) // 记账后余额快照(审计/对账)
+  ref           String? // 来源关联:Order id / UsageRecord id 等;adjustment 可空
+  note          String? // admin 调整原因等
+  created_by    String? @db.Uuid // 哪个 admin(adjustment);系统记账为 null
+
+  created_at DateTime @default(now())
+
+  // P4c-2 幂等预留:同 (kind, ref) 只入一次(charge/recharge 传 ref)。Postgres
+  // unique 里多个 NULL 互不相等 → adjustment(ref=null)不去重,可多条。本任务
+  // 加约束但不依赖它(只测 adjustment);P4c-2 扣费真用它防重复扣。
+  @@unique([kind, ref])
+  @@index([account_id, created_at])
+  @@map("ledger_entries")
 }

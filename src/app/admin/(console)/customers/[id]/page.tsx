@@ -38,11 +38,21 @@ interface RechargeRow {
     note: string | null;
     created_at: string;
 }
+interface LedgerEntryRow {
+    id: string;
+    kind: 'recharge' | 'charge' | 'adjustment' | 'migration';
+    amount_cny: number;
+    balance_after: number;
+    ref: string | null;
+    note: string | null;
+    created_at: string;
+}
 interface DetailData {
     customer: CustomerDetail;
     keys: KeyRow[];
     usage_by_model: ModelRow[];
     recharges: RechargeRow[];
+    ledger: { balance_cny: number; entries: LedgerEntryRow[] };
     usage_window_days: number;
 }
 
@@ -89,6 +99,23 @@ function getTexts(locale: Locale) {
               srcRefund: 'refund',
               srcPromo: 'promo',
               srcAdjustment: 'adjustment',
+              ledgerTitle: 'Ledger balance (¥)',
+              ledgerNote: "Portal's own ¥ ledger (P4c). Most customers have no entries yet.",
+              ledgerBalance: 'Ledger balance',
+              colKind: 'Type',
+              colBalAfter: 'Balance after',
+              noLedger: 'No ledger entries.',
+              kindRecharge: 'recharge',
+              kindCharge: 'charge',
+              kindAdjustment: 'adjustment',
+              kindMigration: 'migration',
+              adjustAmountPh: 'Amount (+ credit / − debit)',
+              adjustNotePh: 'Reason (required)',
+              adjustSubmit: 'Apply',
+              adjustingLabel: 'Applying...',
+              adjustBadAmount: 'Enter a non-zero amount.',
+              adjustBadNote: 'A reason is required.',
+              adjustFailed: 'Adjustment failed',
           }
         : {
               back: '← 客户列表',
@@ -131,6 +158,23 @@ function getTexts(locale: Locale) {
               srcRefund: '退款',
               srcPromo: '推广奖励',
               srcAdjustment: '余额调整',
+              ledgerTitle: '¥账本余额',
+              ledgerNote: 'portal 自有 ¥账本(P4c)。多数客户暂无记录。',
+              ledgerBalance: '账本余额',
+              colKind: '类型',
+              colBalAfter: '记账后余额',
+              noLedger: '暂无账本记录。',
+              kindRecharge: '充值',
+              kindCharge: '扣费',
+              kindAdjustment: '调整',
+              kindMigration: '迁移',
+              adjustAmountPh: '金额(+ 充入 / − 扣减)',
+              adjustNotePh: '调整原因(必填)',
+              adjustSubmit: '提交调整',
+              adjustingLabel: '提交中...',
+              adjustBadAmount: '请输入非 0 金额。',
+              adjustBadNote: '必须填写调整原因。',
+              adjustFailed: '调整失败',
           };
 }
 
@@ -191,6 +235,50 @@ function DetailContent() {
         if (id) fetchData(id);
     }, [fetchData, id]);
 
+    // ── P4c-1 余额调整(走 /balance-adjust → applyLedgerEntry,成功后重拉详情)──
+    const [adjustAmount, setAdjustAmount] = useState('');
+    const [adjustNote, setAdjustNote] = useState('');
+    const [adjusting, setAdjusting] = useState(false);
+    const [adjustError, setAdjustError] = useState('');
+
+    const handleAdjust = async () => {
+        const amount = Number(adjustAmount);
+        if (!Number.isFinite(amount) || amount === 0) {
+            setAdjustError(t.adjustBadAmount);
+            return;
+        }
+        if (!adjustNote.trim()) {
+            setAdjustError(t.adjustBadNote);
+            return;
+        }
+        setAdjusting(true);
+        setAdjustError('');
+        try {
+            const res = await fetch(`/api/admin/customers/${id}/balance-adjust`, {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ amount_cny: amount, note: adjustNote.trim() }),
+            });
+            if (!res.ok) {
+                if (res.status === 401) {
+                    setAdjustError(t.invalidToken);
+                    return;
+                }
+                const d = await res.json().catch(() => ({}));
+                setAdjustError(d.error || t.adjustFailed);
+                return;
+            }
+            setAdjustAmount('');
+            setAdjustNote('');
+            if (id) fetchData(id);
+        } catch {
+            setAdjustError(t.adjustFailed);
+        } finally {
+            setAdjusting(false);
+        }
+    };
+
     const card = isDark ? 'border-slate-700 bg-slate-800/70' : 'border-slate-200 bg-white shadow-sm';
     const tableWrap = ['overflow-x-auto rounded-xl border', card].join(' ');
     const thCls = `px-4 py-3 font-medium ${isDark ? 'text-slate-400' : 'text-slate-500'}`;
@@ -212,6 +300,14 @@ function DetailContent() {
                 : s === 'promo'
                   ? t.srcPromo
                   : t.srcAdjustment;
+    const kindLabel = (k: LedgerEntryRow['kind']) =>
+        k === 'recharge'
+            ? t.kindRecharge
+            : k === 'charge'
+              ? t.kindCharge
+              : k === 'adjustment'
+                ? t.kindAdjustment
+                : t.kindMigration;
 
     return (
         <PayPageLayout
@@ -279,6 +375,90 @@ function DetailContent() {
                                 <div className={labelCls}>{t.used}</div>
                                 <div className={valueCls}>{fmtCny(data.customer.used_cny)}</div>
                             </div>
+                        </div>
+                    </div>
+
+                    {/* P4c-1 Ledger balance + adjust */}
+                    <div>
+                        <div className={sectionTitle}>{t.ledgerTitle}</div>
+                        <div className={`mb-2 text-xs ${muted}`}>{t.ledgerNote}</div>
+                        <div className={`rounded-xl border p-4 ${card}`}>
+                            <div className="flex flex-wrap items-end justify-between gap-4">
+                                <div>
+                                    <div className={labelCls}>{t.ledgerBalance}</div>
+                                    <div
+                                        className={`text-2xl font-semibold ${isDark ? 'text-slate-100' : 'text-slate-900'}`}
+                                    >
+                                        {fmtCny(data.ledger.balance_cny)}
+                                    </div>
+                                </div>
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <input
+                                        type="number"
+                                        value={adjustAmount}
+                                        onChange={(e) => setAdjustAmount(e.target.value)}
+                                        placeholder={t.adjustAmountPh}
+                                        className={`w-48 rounded-lg border px-3 py-1.5 text-sm ${isDark ? 'border-slate-600 bg-slate-900 text-slate-100' : 'border-slate-300 bg-white text-slate-900'}`}
+                                    />
+                                    <input
+                                        type="text"
+                                        value={adjustNote}
+                                        onChange={(e) => setAdjustNote(e.target.value)}
+                                        placeholder={t.adjustNotePh}
+                                        className={`w-56 rounded-lg border px-3 py-1.5 text-sm ${isDark ? 'border-slate-600 bg-slate-900 text-slate-100' : 'border-slate-300 bg-white text-slate-900'}`}
+                                    />
+                                    <button
+                                        type="button"
+                                        onClick={handleAdjust}
+                                        disabled={adjusting}
+                                        className="rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-indigo-700 disabled:opacity-50"
+                                    >
+                                        {adjusting ? t.adjustingLabel : t.adjustSubmit}
+                                    </button>
+                                </div>
+                            </div>
+                            {adjustError && (
+                                <div className={`mt-3 text-sm ${isDark ? 'text-red-400' : 'text-red-600'}`}>
+                                    {adjustError}
+                                </div>
+                            )}
+                            {data.ledger.entries.length === 0 ? (
+                                <div className={`mt-4 text-sm ${muted}`}>{t.noLedger}</div>
+                            ) : (
+                                <div className={`mt-4 ${tableWrap}`}>
+                                    <table className="w-full text-sm">
+                                        <thead>
+                                            <tr className={`border-b ${rowBorder}`}>
+                                                <th className={`${thCls} text-left`}>{t.colKind}</th>
+                                                <th className={`${thCls} text-right`}>{t.colAmount}</th>
+                                                <th className={`${thCls} text-right`}>{t.colBalAfter}</th>
+                                                <th className={`${thCls} text-left`}>{t.colNote}</th>
+                                                <th className={`${thCls} text-left`}>{t.colTime}</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {data.ledger.entries.map((e) => (
+                                                <tr key={e.id} className={`border-b ${rowBorder}`}>
+                                                    <td className={`px-4 py-3 ${muted}`}>{kindLabel(e.kind)}</td>
+                                                    <td
+                                                        className={`px-4 py-3 text-right ${e.amount_cny < 0 ? (isDark ? 'text-red-400' : 'text-red-600') : isDark ? 'text-emerald-400' : 'text-emerald-600'}`}
+                                                    >
+                                                        {e.amount_cny >= 0 ? '+' : '−'}
+                                                        {fmtCny(Math.abs(e.amount_cny))}
+                                                    </td>
+                                                    <td
+                                                        className={`px-4 py-3 text-right ${isDark ? 'text-slate-200' : 'text-slate-800'}`}
+                                                    >
+                                                        {fmtCny(e.balance_after)}
+                                                    </td>
+                                                    <td className={`px-4 py-3 ${muted}`}>{e.note ?? '—'}</td>
+                                                    <td className={`px-4 py-3 ${muted}`}>{fmtDate(e.created_at)}</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            )}
                         </div>
                     </div>
 

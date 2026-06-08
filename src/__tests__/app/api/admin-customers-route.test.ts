@@ -10,6 +10,7 @@ const mockUserFindFirst = vi.fn();
 const mockUsageGroupBy = vi.fn();
 const mockTokenFindMany = vi.fn();
 const mockRechargeFindMany = vi.fn();
+const mockAccountFindUnique = vi.fn();
 
 vi.mock('@/lib/admin/auth', () => ({
     resolveAdmin: (...a: unknown[]) => mockResolveAdmin(...a),
@@ -28,6 +29,7 @@ vi.mock('@/lib/db', () => ({
         usageRecord: { groupBy: (...a: unknown[]) => mockUsageGroupBy(...a) },
         newApiToken: { findMany: (...a: unknown[]) => mockTokenFindMany(...a) },
         rechargeLog: { findMany: (...a: unknown[]) => mockRechargeFindMany(...a) },
+        account: { findUnique: (...a: unknown[]) => mockAccountFindUnique(...a) },
     },
 }));
 // quotaToCny is server-only via client.ts — mock with the real formula (500k/USD, ¥7.2).
@@ -52,6 +54,7 @@ beforeEach(() => {
     mockUsageGroupBy.mockResolvedValue([]);
     mockTokenFindMany.mockResolvedValue([]);
     mockRechargeFindMany.mockResolvedValue([]);
+    mockAccountFindUnique.mockResolvedValue(null); // P4c-1: no ledger Account by default
 });
 
 describe('GET /api/admin/customers (list)', () => {
@@ -190,6 +193,47 @@ describe('GET /api/admin/customers/[id] (detail — IDOR-safe)', () => {
         expect(body.keys[0]).toMatchObject({ key_alias: 'prod', tier: 'pool' });
         expect(body.usage_by_model[0]).toMatchObject({ model_slug: 'gpt-5.5', calls: 3, cost_cny: 0.5 });
         expect(body.recharges[0]).toMatchObject({ amount: 100, source: 'payment' });
+        // P4c-1: no Account row → ledger balance ¥0, no entries (zero customer impact default).
+        expect(body.ledger).toEqual({ balance_cny: 0, entries: [] });
+    });
+
+    it('P4c-1: maps ledger balance + recent entries when an Account exists', async () => {
+        mockResolveAdmin.mockResolvedValue(SUPERADMIN);
+        mockUserFindFirst.mockResolvedValue({
+            id: 'u1',
+            email: 'a@x.com',
+            nickname: null,
+            status: 'active',
+            created_at: new Date('2026-01-01T00:00:00Z'),
+            last_login_at: null,
+            newapi_quota_cache: BigInt(0),
+            newapi_used_quota_cache: BigInt(0),
+            newapi_cached_at: null,
+        });
+        mockAccountFindUnique.mockResolvedValue({
+            balance_cny: '12.5',
+            entries: [
+                {
+                    id: 'le1',
+                    kind: 'adjustment',
+                    amount_cny: '12.5',
+                    balance_after: '12.5',
+                    ref: null,
+                    note: 'comp',
+                    created_at: new Date('2026-01-05T00:00:00Z'),
+                },
+            ],
+        });
+        const res = await DETAIL(detailReq('u1'), detailParams('u1'));
+        const body = await res.json();
+        expect(body.ledger.balance_cny).toBe(12.5);
+        expect(body.ledger.entries[0]).toMatchObject({
+            kind: 'adjustment',
+            amount_cny: 12.5,
+            balance_after: 12.5,
+            note: 'comp',
+        });
+        expect(mockAccountFindUnique.mock.calls[0][0].where).toMatchObject({ user_id: 'u1' });
     });
 
     it('detail keys query has no sk plaintext field selected (read-only)', async () => {

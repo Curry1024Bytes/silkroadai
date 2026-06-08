@@ -17,6 +17,7 @@ export const runtime = 'nodejs';
  */
 const USAGE_WINDOW_DAYS = 30;
 const RECHARGE_LIMIT = 50;
+const LEDGER_LIMIT = 20; // P4c-1: recent ¥账本 entries shown on the detail page
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
     const admin = await resolveAdmin(request, 'admin');
@@ -42,7 +43,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
     const usageStart = new Date(Date.now() - USAGE_WINDOW_DAYS * 24 * 60 * 60 * 1_000);
 
-    const [keys, usageByModel, recharges] = await Promise.all([
+    const [keys, usageByModel, recharges, account] = await Promise.all([
         prisma.newApiToken.findMany({
             where: { user_id: id },
             orderBy: { created_at: 'desc' },
@@ -59,6 +60,26 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
             orderBy: { created_at: 'desc' },
             take: RECHARGE_LIMIT,
             select: { id: true, amount: true, source: true, note: true, created_at: true },
+        }),
+        // P4c-1 portal ¥账本(零客户影响:多数客户无 Account 行 → null → 余额 0)。
+        prisma.account.findUnique({
+            where: { user_id: id },
+            select: {
+                balance_cny: true,
+                entries: {
+                    orderBy: { created_at: 'desc' },
+                    take: LEDGER_LIMIT,
+                    select: {
+                        id: true,
+                        kind: true,
+                        amount_cny: true,
+                        balance_after: true,
+                        ref: true,
+                        note: true,
+                        created_at: true,
+                    },
+                },
+            },
         }),
     ]);
 
@@ -96,6 +117,19 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
             note: r.note,
             created_at: r.created_at,
         })),
+        // P4c-1 portal ¥账本(权威 = Account.balance_cny;无 Account → ¥0)。
+        ledger: {
+            balance_cny: Number(account?.balance_cny ?? 0),
+            entries: (account?.entries ?? []).map((e) => ({
+                id: e.id,
+                kind: e.kind,
+                amount_cny: Number(e.amount_cny),
+                balance_after: Number(e.balance_after),
+                ref: e.ref,
+                note: e.note,
+                created_at: e.created_at,
+            })),
+        },
         usage_window_days: USAGE_WINDOW_DAYS,
     });
 }
