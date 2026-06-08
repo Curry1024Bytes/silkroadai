@@ -1,53 +1,63 @@
-# P4b — 影子计量对账报表(P4c 切换前的验证关)
+# P4b-v2 — 对账报表(零售 / 成本 / 毛利)
 
-> 升级 P4a 的 `/admin/billing-shadow` 观察页为**对账报表**:对比"portal 按我们定价算的成本"
-> vs"new-api 实际扣的",看差多少、覆盖多少。
-> ⚠️ **纯只读**:不扣费、不挡请求、不改 meter、不写 new-api、不碰客户余额。只读 `UsageRecord` 聚合。
+> `/admin/billing-shadow` 从「portal 零售 vs new-api quota」重做成「**零售 vs 成本 vs 毛利**」。
+> ⚠️ **纯只读**:不扣费、不挡请求、不写库、不写 new-api、不碰客户余额。只读 `UsageRecord` + `CatalogPrice`。
+
+## 为什么撤掉 new-api quota 基准
+
+P4b-v1 拿「new-api 实扣 quota → ¥」当成本对账。operator 审后发现根本问题:**new-api 实扣 quota 不是成本** ——
+它只是 new-api 自己的 `ModelRatio` 配置 × token(而且我们一直把**零售价** sync 进去 + 旧脚本留下一堆 stale 值)。
+真实成本是上游渠道扣的,系统里对应的是 portal 目录自己录的 `CatalogPrice.cost_cny_per_1m`(P2.10 批量填充铺开)。
+所以报表改用 **portal 目录的数 + 日志里唯一有用的 token 数**,**彻底撤掉 new-api ¥ 列**。
 
 ## 对账口径
 
-`UsageRecord` 每条有 `cost_cny`(portal 按生效 `CatalogPrice` 算的)、`newapi_quota`(new-api 实扣 raw quota)、
-`matched`、`model_slug`/`tier`/tokens/`log_created_at`/`tenant_id`/`user_id`。
+`UsageRecord` 每条有 `input_tokens`/`output_tokens`(日志 token 数 = 计量 ground truth)、`cost_cny`(meter 时算的**零售**)、`model_slug`/`tier`/`matched`/`tenant_id`/`user_id`。
 
-| 指标         | 算法                                                                                |
-| ------------ | ----------------------------------------------------------------------------------- |
-| portal 成本  | `Σ cost_cny`,**仅 `matched=true`**(未配价记录 `cost_cny=0`,口径上排除)              |
-| new-api 实扣 | `Σ newapi_quota`(全部记录)经 `quotaToCny` 折 ¥(走 `quota-units.ts`,不另写 FX)       |
-| 差异         | portal 成本 − new-api 实扣(¥ 和 %)                                                  |
-| 覆盖率       | `matched 记录数 / 总记录数`(`matched=false` = 还没配价 / 仅图片,算不出 portal 成本) |
+| 指标       | 算法                                                                                                              |
+| ---------- | ----------------------------------------------------------------------------------------------------------------- |
+| 零售       | `Σ cost_cny`(仅 matched;UsageRecord.cost_cny 本就是零售)                                                          |
+| 成本       | `Σ (cost_cny_per_1m × (input+output) tokens / 1e6)`,`cost_cny_per_1m` 取 (tenant,slug,tier) **当前** CatalogPrice |
+| 毛利       | 零售 − 成本                                                                                                       |
+| 毛利率     | 毛利 / 零售                                                                                                       |
+| 成本覆盖率 | 有 `cost_cny_per_1m` 的 matched 记录数 / matched 记录数(没成本 → 毛利算不出,进「待补成本」清单)                   |
 
-**为什么差异里含覆盖缺口**:portal 成本只算 matched,new-api 实扣算全部。覆盖率低时,
-未配价调用被 new-api 计费但 portal 记 0 → 差异自然偏大。所以「差异小」必须配「覆盖率高」才成立 ——
-这正是 P4c 就绪判据(见下)。覆盖率到 100% 时,headline 差异 = 纯计量校准差异(口径对齐)。
+**new-api 日志只贡献 token 数**,不再有 quota/¥/差异列。
 
 ## 报表内容(`/admin/billing-shadow`)
 
-时间窗 `?period=7d|30d|all`(白名单,默认 **30d**)。
+时间窗沿用 `?period=7d|30d|all`(默认 30d)。
 
-- **汇总卡**:portal 总成本 ¥ / new-api 实扣总 ¥ / 差异 ¥+% / 覆盖率(matched%)。覆盖率卡副行显示「其中未配价占实扣 ¥X」。
-- **未配价高亮**:`matched=false` 聚合成 chips,每个带 model×tier·调用数·**该项占的 new-api 实扣 ¥**(按实扣降序 = operator 待配价优先级)。
-- **按模型 × 档次**:每行 model/tier / 调用数 / **匹配率** / portal ¥ / new-api ¥ / **差异 ¥+%**。按调用量降序;`|差异%| > 10%` 的行标红;匹配率 <100% 标黄。
-- **按租户**(仅 >1 租户时显示):superadmin 的跨租户视图;partner admin 经 `tenantScope` 自然只看自己一行。
-- **按客户**:email / 调用数 / portal ¥ / new-api ¥ / 差异 ¥+%。
+- **汇总卡**:零售总额 ¥ / 成本总额 ¥ / **毛利 ¥ + 毛利率%** / 成本覆盖率(+总调用数)。
+- **按模型 × 档次**:每行 model / tier / 调用数 / 零售 ¥ / 成本 ¥ / **毛利 ¥ / 毛利率%** / 成本覆盖。按零售额降序。
+    - **高亮**:毛利率 **< 20% 标黄、< 0(在亏钱)标红** —— operator 重点盯红行。没录成本的行 成本/毛利显 `—`。
+- **待补成本清单**:有零售、`cost_cny_per_1m` 为空的 model×tier,列零售额 + 调用数(降序 = 去定价页补成本的优先级)。
+- **按客户 / 按租户**:各自零售 / 成本 / 毛利 / 毛利率(每个客户、每个租户赚多少 —— 白标经济性)。
 
-## 怎么读 / P4c 就绪判据
+## 怎么读
 
-- **这是影子数据** —— portal 假设接管计费会怎么算,对比 new-api 现在实际怎么扣。未生效、不影响客户。
-- **差异小 + 覆盖率高** → 计量管道可信,可考虑 P4c 切换。
-- **差异大 / 覆盖率低** → 先给未定价模型配价、把 catalog 对齐 global,再继续观察。
+- 零售 = 向客户收的(meter 时算)。成本 = 上游拿货(portal 目录录的)。毛利 = 两者差。**new-api 不参与**,token 数取自日志。
+- 毛利率 < 20% 黄 / < 0 红 —— 盯红行。
+- **毛利率在成本覆盖率<100% 时偏高**(部分调用还没录成本:零售算进分母、成本没算)—— 配合覆盖率卡 + 待补成本清单看,别只看头条毛利率。
 
-## 守门 + 隔离
+## 已知近似(brief §4,代码注释 + 页面均标注)
 
-- `GET /api/admin/billing-shadow`:cookie + **superadmin**(P6b §0 平台级管理锁;`admin-platform-superadmin-lockdown` 静态守护测试强制此串)。nav 项 `superadminOnly`。
-- `tenantScope(admin)` spread 进每个聚合 `where`:superadmin 看全部;partner admin(role=admin)只看自己租户。
-  当前 gate 是 superadmin-only,partner 分支为**防御性接线**(单测以 partner principal 直接验证 where 被收敛),
-  P6c partner 后台开放访问时即生效 —— 符合 brief §7「partner admin 只看自己租户,不看全平台对账」。
+- **成本单一字段**:`cost_cny_per_1m` 不分 input/output,按 (input+output) **总 token** 估算成本。拆 input/output 成本留后。
+- **时间基准**:零售用 meter 时刻值(`UsageRecord.cost_cny`),成本用**当前** CatalogPrice;价格已永久化、无促销 → 差≈0。要完全一致需 meter 存成本快照,本期不做。
+- **成本取最新版本**:按 (model,tier) 取 effective_from 最新一行的 `cost_cny_per_1m`;历史窗内若改过成本有轻微失真,可接受。
+
+## 实现
+
+- 纯聚合 `src/lib/billing/margin-report.ts` `computeMarginReport(rows, platformTenantId)`:roll up summary + byModel + byCustomer + byTenant + 待补成本(无 prisma/可单测)。
+- `GET /api/admin/billing-shadow`:`groupBy(user_id, tenant_id, model_slug, tier, matched)` 拿 token + 零售 → join 当前成本价 Map(一次性查目录,避免 N+1,key=`JSON([tenant,slug,tier])`,`pickEffectivePrice` 取当前)→ `computeMarginReport` → 补 email/租户名。
+- 守门沿用 **superadmin + tenantScope**(billing-shadow 仍在 `admin-platform-superadmin-lockdown` 守护清单)。
 
 ## 测试
 
-- `src/__tests__/app/api/admin-billing-shadow-route.test.ts`:聚合算法(matched-only portal 成本、`quotaToCny` 实扣、差异、覆盖率、未配价实扣)、byModel 匹配率+差异+排序、byTenant join 名字+排序+null→平台主体、鉴权、tenantScope(superadmin vs partner)、period 白名单(默认 30d / all / 注入回退)。
-- `src/__tests__/app/billing-shadow-report.test.tsx`:`<ShadowReport>` SSR smoke —— 解读说明、4 汇总卡(含覆盖率/未配价占比)、匹配率、大差异标红、未配价 chips 带实扣 ¥、按租户表(>1 才出)、中英文。
+- `margin-report.test.ts`:零售(Σmatched cost_cny)、成本(price×总token/1e6)、毛利、毛利率、成本覆盖率;无成本 → 待补成本 + 覆盖率正确;byCustomer/byTenant 毛利;null tenant→平台主体;空输入。
+- `admin-billing-shadow-route.test.ts`:cost join(取最新版本价)、**撤掉 new-api 字段**(断言无 newapi/diff)、待补成本、email/租户名 join、tenantScope(usage+catalog 双查询都收敛)、period。
+- `billing-shadow-report.test.tsx`:`<ShadowReport>` SSR —— 怎么读(new-api 不参与)、4 卡、亏损红/薄黄/无成本 `—`、待补成本、按租户(>1)、旧 new-api/差异口径已消失、中英文。
 
 ## 边界(死线)
 
-纯只读 —— 不扣费、不挡请求、不改 P4a meter、不写 new-api、不碰余额、不做 P4c(余额账本 / 余额门 / 充值改写)。换算复用 `quota-units.ts`。
+纯只读;不做 P4c(真扣费 / 余额门 / 充值改写);成本不进 new-api 计费(纯 portal 毛利看板)。

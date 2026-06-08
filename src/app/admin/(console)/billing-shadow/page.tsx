@@ -5,69 +5,47 @@ import { useState, useEffect, useCallback, Suspense } from 'react';
 import PayPageLayout from '@/components/PayPageLayout';
 import { resolveLocale, type Locale } from '@/lib/locale';
 
-// ── Types (mirror /api/admin/billing-shadow) ──
+// ── Types (mirror /api/admin/billing-shadow, P4b-v2 零售/成本/毛利) ──
 
-interface Summary {
-    records: number;
-    matched: number;
-    unmatched: number;
-    coverage: number | null;
-    costCny: number;
-    newapiQuota: number;
-    newapiCny: number;
-    unmatchedNewapiCny: number;
-    diffCny: number;
-    diffRate: number | null;
-}
-interface ModelRow {
-    model_slug: string;
-    tier: string;
+interface MarginMoney {
     records: number;
     matchedRecords: number;
-    matchedRate: number | null;
+    costCoveredRecords: number;
+    retailCny: number;
     costCny: number;
-    newapiQuota: number;
-    newapiCny: number;
-    diffCny: number;
-    diffRate: number | null;
+    marginCny: number;
+    marginRate: number | null;
+    costCoverage: number | null;
 }
-interface CustomerRow {
+interface ModelRow extends MarginMoney {
+    model_slug: string;
+    tier: string;
+    hasCost: boolean;
+}
+interface CustomerRow extends MarginMoney {
     user_id: string;
     email: string | null;
-    records: number;
-    costCny: number;
-    newapiQuota: number;
-    newapiCny: number;
-    diffCny: number;
-    diffRate: number | null;
 }
-interface TenantRow {
+interface TenantRow extends MarginMoney {
     tenant_id: string;
     slug: string | null;
     name: string | null;
-    records: number;
-    costCny: number;
-    newapiQuota: number;
-    newapiCny: number;
-    diffCny: number;
-    diffRate: number | null;
 }
-interface UnmatchedRow {
+interface CostMissingRow {
     model_slug: string;
     tier: string;
+    retailCny: number;
     records: number;
-    newapiQuota: number;
-    newapiCny: number;
 }
 export interface ShadowData {
     period: string;
     rangeStart: string | null;
-    bigDiffThreshold: number;
-    summary: Summary;
+    marginYellowThreshold: number;
+    summary: MarginMoney;
     byModel: ModelRow[];
     byCustomer: CustomerRow[];
     byTenant: TenantRow[];
-    unmatched: UnmatchedRow[];
+    costMissing: CostMissingRow[];
 }
 
 type Period = '7d' | '30d' | 'all';
@@ -76,56 +54,55 @@ const PERIODS: Period[] = ['7d', '30d', 'all'];
 export function getTexts(locale: Locale) {
     return locale === 'en'
         ? {
-              title: 'Reconciliation',
-              subtitle:
-                  'P4b — portal metered cost (¥/CatalogPrice) vs new-api actual quota. The verification gate before P4c (real billing).',
-              shadowWarn: '⚠️ Shadow data — computed for reconciliation only, NOT applied to any customer balance.',
+              title: 'Margin report',
+              subtitle: 'Retail vs cost vs margin — portal catalog cost × log tokens. new-api is not involved.',
+              shadowWarn: '⚠️ Internal margin board — NOT applied to any customer balance.',
               howTo: 'How to read this',
               interpWhat:
-                  'What portal WOULD charge if it took over billing, compared with what new-api actually deducts now. Not in effect — does not affect customers.',
-              interpReady:
-                  'Small difference + high coverage → the metering pipeline is trustworthy; the P4c switch can be considered.',
-              interpNotReady:
-                  'Large difference / low coverage → first price the unpriced models and align catalog to global, then keep observing.',
+                  'Retail = what we charge the customer (computed at meter time). Cost = upstream wholesale (the cost_cny_per_1m you record in the catalog). Margin = the difference. new-api is not involved — only the token counts come from its logs.',
+              interpApprox:
+                  'Cost is estimated as (input+output) total tokens × current cost price (single cost field, not split in/out; uses the current price). Margin % is optimistic when cost coverage < 100% — read it alongside coverage + the "cost to fill" list.',
+              interpMargin: 'Margin < 20% is amber, < 0 (losing money) is red — watch the red rows.',
               invalidToken: 'Session expired, please sign in again',
-              loadFailed: 'Failed to load reconciliation',
+              loadFailed: 'Failed to load report',
               loading: 'Loading...',
               empty: 'No usage records yet — the meter polls new-api logs every 10 min.',
               p7d: 'Last 7d',
               p30d: 'Last 30d',
               pall: 'All',
-              portalCost: 'Portal metered (¥)',
-              newapiCost: 'new-api actual (¥)',
-              diff: 'Difference',
-              coverage: 'Coverage',
-              records: 'records',
-              matched: 'matched',
-              unmatched: 'unmatched',
-              unmatchedShare: 'unpriced share of actual',
+              retail: 'Retail total (¥)',
+              cost: 'Cost total (¥)',
+              margin: 'Margin',
+              coverage: 'Cost coverage',
+              calls: 'calls',
+              covered: 'priced',
               byModel: 'By model × tier',
               byCustomer: 'By customer',
               byTenant: 'By tenant',
-              unmatchedTitle: 'Unpriced (matched=false) — configure these on Pricing',
+              costMissingTitle: 'Cost to fill (has retail, no cost recorded) — set cost on Pricing',
               colModel: 'Model',
               colTier: 'Tier',
+              colCalls: 'Calls',
+              colRetail: 'Retail ¥',
+              colCost: 'Cost ¥',
+              colMargin: 'Margin ¥',
+              colMarginRate: 'Margin%',
+              colCoverage: 'Cost cov.',
               colCustomer: 'Customer',
               colTenant: 'Tenant',
-              colRecords: 'Calls',
-              colMatchedPct: 'Matched%',
-              colPortal: 'Portal ¥',
-              colNewapi: 'new-api ¥',
-              colDiff: 'Diff ¥',
-              colDiffPct: 'Diff%',
               none: 'None 🎉',
+              dash: '—',
           }
         : {
               title: '对账报表',
-              subtitle: 'P4b — portal 按 CatalogPrice 算的 ¥ vs new-api 实扣 quota。P4c 真扣费切换前的验证关。',
-              shadowWarn: '⚠️ 影子数据 —— 仅用于对账,未对任何客户余额生效。',
+              subtitle: '零售 vs 成本 vs 毛利 —— portal 目录成本 × 日志 token。new-api 不参与。',
+              shadowWarn: '⚠️ 内部毛利看板 —— 未对任何客户余额生效。',
               howTo: '怎么读这份报表',
-              interpWhat: 'portal 假设接管计费会怎么算,对比 new-api 现在实际怎么扣。未生效、不影响客户。',
-              interpReady: '差异小 + 覆盖率高 → 计量管道可信,可考虑 P4c 切换。',
-              interpNotReady: '差异大 / 覆盖率低 → 先给未定价模型配价、把 catalog 对齐 global,再观察。',
+              interpWhat:
+                  '零售 = 向客户收的(meter 时算)。成本 = 上游拿货(portal 目录里录的 cost_cny_per_1m)。毛利 = 两者差。new-api 不参与,只有 token 数取自它的日志。',
+              interpApprox:
+                  '成本按 (输入+输出) 总 token × 当前成本价估算(成本单一字段、不分 in/out;用当前价)。毛利率在成本覆盖率<100% 时偏高 —— 配合覆盖率 + 待补成本清单一起看。',
+              interpMargin: '毛利率 < 20% 标黄、< 0(在亏钱)标红 —— 重点盯红行。',
               invalidToken: '登录已过期',
               loadFailed: '加载对账报表失败',
               loading: '加载中...',
@@ -133,135 +110,129 @@ export function getTexts(locale: Locale) {
               p7d: '近 7 天',
               p30d: '近 30 天',
               pall: '全部',
-              portalCost: 'portal 计量(¥)',
-              newapiCost: 'new-api 实扣(¥)',
-              diff: '差异',
-              coverage: '覆盖率',
-              records: '记录',
-              matched: '已匹配',
-              unmatched: '未匹配',
-              unmatchedShare: '其中未配价占实扣',
+              retail: '零售总额(¥)',
+              cost: '成本总额(¥)',
+              margin: '毛利',
+              coverage: '成本覆盖率',
+              calls: '调用',
+              covered: '已录成本',
               byModel: '按模型 × 档次',
               byCustomer: '按客户',
               byTenant: '按租户',
-              unmatchedTitle: '未配价(matched=false)—— 去「定价」页补上',
+              costMissingTitle: '待补成本(有零售、未录成本)—— 去「定价」页补',
               colModel: '模型',
               colTier: '档次',
+              colCalls: '调用',
+              colRetail: '零售 ¥',
+              colCost: '成本 ¥',
+              colMargin: '毛利 ¥',
+              colMarginRate: '毛利率',
+              colCoverage: '成本覆盖',
               colCustomer: '客户',
               colTenant: '租户',
-              colRecords: '调用',
-              colMatchedPct: '匹配率',
-              colPortal: 'portal ¥',
-              colNewapi: 'new-api ¥',
-              colDiff: '差异 ¥',
-              colDiffPct: '差异%',
               none: '无 🎉',
+              dash: '—',
           };
 }
 
 type Texts = ReturnType<typeof getTexts>;
 
 const fmt = (n: number): string => `¥${n.toLocaleString('zh-CN', { maximumFractionDigits: 4 })}`;
-const fmtSigned = (n: number): string =>
-    `${n >= 0 ? '+' : '-'}¥${Math.abs(n).toLocaleString('zh-CN', { maximumFractionDigits: 4 })}`;
 const fmtPct = (r: number | null): string => (r === null ? '—' : `${(r * 100).toFixed(1)}%`);
-const fmtPctSigned = (r: number | null): string =>
-    r === null ? '—' : `${r >= 0 ? '+' : '-'}${(Math.abs(r) * 100).toFixed(1)}%`;
 
 /**
- * Pure presentational reconciliation report (no hooks — props in, markup out).
+ * Pure presentational margin report (no hooks — props in, markup out).
  * Exported so it can be SSR-smoke-tested with deterministic sample data.
- * Rendered by <ShadowContent /> once data has loaded (records > 0).
  */
 export function ShadowReport({ data, t, isDark }: { data: ShadowData; t: Texts; isDark: boolean }) {
     const { summary } = data;
-    const threshold = data.bigDiffThreshold;
-    const isBig = (r: number | null): boolean => r !== null && Math.abs(r) > threshold;
+    const threshold = data.marginYellowThreshold;
 
     const card = isDark ? 'border-slate-700 bg-slate-800/70' : 'border-slate-200 bg-white shadow-sm';
     const tableWrap = ['overflow-x-auto rounded-xl border', card].join(' ');
     const thCls = `px-4 py-3 font-medium ${isDark ? 'text-slate-400' : 'text-slate-500'}`;
     const rowBorder = isDark ? 'border-slate-700/50' : 'border-slate-100';
     const labelCls = isDark ? 'text-slate-400' : 'text-slate-500';
-    const bigCls = 'text-red-500 font-semibold';
     const okCls = isDark ? 'text-slate-200' : 'text-slate-800';
     const mutedCls = isDark ? 'text-slate-400' : 'text-slate-500';
-    const diffNeutral = isDark ? 'text-slate-100' : 'text-slate-900';
     const sectionTitle = `mb-2 text-sm font-semibold ${isDark ? 'text-slate-200' : 'text-slate-800'}`;
+
+    // 毛利率配色:亏钱(<0)红、薄(<阈值)黄、健康中性。无成本(hasCost=false / rate=null)灰。
+    const marginColor = (rate: number | null, hasCost: boolean): string => {
+        if (!hasCost || rate === null) return mutedCls;
+        if (rate < 0) return 'text-red-500 font-semibold';
+        if (rate < threshold) return 'text-amber-500';
+        return okCls;
+    };
 
     return (
         <div className="space-y-6">
-            {/* Interpretation / readiness — how to read this report (brief §4) */}
+            {/* Interpretation / how to read (brief §2 顶部块 + §4 近似) */}
             <div
                 className={`rounded-xl border p-4 text-sm ${isDark ? 'border-slate-700 bg-slate-800/40 text-slate-300' : 'border-slate-200 bg-slate-50 text-slate-600'}`}
             >
                 <div className={`mb-1 font-semibold ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>{t.howTo}</div>
                 <p>{t.interpWhat}</p>
                 <ul className="mt-2 list-disc space-y-1 pl-5">
-                    <li>{t.interpReady}</li>
-                    <li>{t.interpNotReady}</li>
+                    <li>{t.interpMargin}</li>
+                    <li>{t.interpApprox}</li>
                 </ul>
             </div>
 
-            {/* Summary cards */}
+            {/* Summary cards: 零售 / 成本 / 毛利+率 / 成本覆盖率 */}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 <div className={`rounded-xl border p-4 ${card}`}>
-                    <div className={`text-xs ${labelCls}`}>{t.portalCost}</div>
+                    <div className={`text-xs ${labelCls}`}>{t.retail}</div>
+                    <div className={`mt-1 text-2xl font-semibold ${okCls}`}>{fmt(summary.retailCny)}</div>
+                    <div className={`mt-1 text-xs ${mutedCls}`}>
+                        {summary.records} {t.calls}
+                    </div>
+                </div>
+                <div className={`rounded-xl border p-4 ${card}`}>
+                    <div className={`text-xs ${labelCls}`}>{t.cost}</div>
                     <div className={`mt-1 text-2xl font-semibold ${okCls}`}>{fmt(summary.costCny)}</div>
                     <div className={`mt-1 text-xs ${mutedCls}`}>
-                        {summary.records} {t.records} · {summary.matched} {t.matched} ·{' '}
-                        <span className={summary.unmatched > 0 ? 'text-amber-500' : ''}>
-                            {summary.unmatched} {t.unmatched}
-                        </span>
+                        {summary.costCoveredRecords}/{summary.matchedRecords} {t.covered}
                     </div>
                 </div>
                 <div className={`rounded-xl border p-4 ${card}`}>
-                    <div className={`text-xs ${labelCls}`}>{t.newapiCost}</div>
-                    <div className={`mt-1 text-2xl font-semibold ${okCls}`}>{fmt(summary.newapiCny)}</div>
-                    <div className={`mt-1 text-xs ${mutedCls}`}>
-                        quota {summary.newapiQuota.toLocaleString('zh-CN')}
+                    <div className={`text-xs ${labelCls}`}>{t.margin}</div>
+                    <div
+                        className={`mt-1 text-2xl font-semibold ${marginColor(summary.marginRate, summary.costCoveredRecords > 0)}`}
+                    >
+                        {fmt(summary.marginCny)}
                     </div>
-                </div>
-                <div className={`rounded-xl border p-4 ${card}`}>
-                    <div className={`text-xs ${labelCls}`}>{t.diff}</div>
-                    <div className={`mt-1 text-2xl font-semibold ${isBig(summary.diffRate) ? bigCls : diffNeutral}`}>
-                        {fmtSigned(summary.diffCny)}
-                    </div>
-                    <div className={`mt-1 text-xs ${isBig(summary.diffRate) ? 'text-red-500' : mutedCls}`}>
-                        {fmtPctSigned(summary.diffRate)}
+                    <div className={`mt-1 text-xs ${marginColor(summary.marginRate, summary.costCoveredRecords > 0)}`}>
+                        {fmtPct(summary.marginRate)}
                     </div>
                 </div>
                 <div className={`rounded-xl border p-4 ${card}`}>
                     <div className={`text-xs ${labelCls}`}>{t.coverage}</div>
                     <div
-                        className={`mt-1 text-2xl font-semibold ${summary.coverage !== null && summary.coverage < 0.9 ? 'text-amber-500' : okCls}`}
+                        className={`mt-1 text-2xl font-semibold ${summary.costCoverage !== null && summary.costCoverage < 1 ? 'text-amber-500' : okCls}`}
                     >
-                        {fmtPct(summary.coverage)}
+                        {fmtPct(summary.costCoverage)}
                     </div>
                     <div className={`mt-1 text-xs ${mutedCls}`}>
-                        {summary.unmatchedNewapiCny > 0 && (
-                            <>
-                                {t.unmatchedShare} {fmt(summary.unmatchedNewapiCny)}
-                            </>
-                        )}
+                        {summary.costCoveredRecords}/{summary.matchedRecords} {t.covered}
                     </div>
                 </div>
             </div>
 
-            {/* Unmatched highlight — the actionable "go price these" list, with how much each costs */}
+            {/* 待补成本:有零售、未录成本 → 去定价页补(按零售降序) */}
             <div>
-                <div className={sectionTitle}>{t.unmatchedTitle}</div>
-                {data.unmatched.length === 0 ? (
+                <div className={sectionTitle}>{t.costMissingTitle}</div>
+                {data.costMissing.length === 0 ? (
                     <div className={`text-sm ${mutedCls}`}>{t.none}</div>
                 ) : (
                     <div className="flex flex-wrap gap-2">
-                        {data.unmatched.map((u) => (
+                        {data.costMissing.map((u) => (
                             <span
                                 key={`${u.model_slug}-${u.tier}`}
                                 className={`rounded-lg border px-2 py-1 text-xs ${isDark ? 'border-amber-800 bg-amber-950/30 text-amber-300' : 'border-amber-200 bg-amber-50 text-amber-700'}`}
                             >
-                                <span className="font-mono">{u.model_slug}</span> · {u.tier} · {u.records} {t.records} ·{' '}
-                                {fmt(u.newapiCny)}
+                                <span className="font-mono">{u.model_slug}</span> · {u.tier} · {fmt(u.retailCny)} ·{' '}
+                                {u.records} {t.calls}
                             </span>
                         ))}
                     </div>
@@ -277,17 +248,17 @@ export function ShadowReport({ data, t, isDark }: { data: ShadowData; t: Texts; 
                             <tr className={`border-b ${rowBorder}`}>
                                 <th className={`${thCls} text-left`}>{t.colModel}</th>
                                 <th className={`${thCls} text-left`}>{t.colTier}</th>
-                                <th className={`${thCls} text-right`}>{t.colRecords}</th>
-                                <th className={`${thCls} text-right`}>{t.colMatchedPct}</th>
-                                <th className={`${thCls} text-right`}>{t.colPortal}</th>
-                                <th className={`${thCls} text-right`}>{t.colNewapi}</th>
-                                <th className={`${thCls} text-right`}>{t.colDiff}</th>
-                                <th className={`${thCls} text-right`}>{t.colDiffPct}</th>
+                                <th className={`${thCls} text-right`}>{t.colCalls}</th>
+                                <th className={`${thCls} text-right`}>{t.colRetail}</th>
+                                <th className={`${thCls} text-right`}>{t.colCost}</th>
+                                <th className={`${thCls} text-right`}>{t.colMargin}</th>
+                                <th className={`${thCls} text-right`}>{t.colMarginRate}</th>
+                                <th className={`${thCls} text-right`}>{t.colCoverage}</th>
                             </tr>
                         </thead>
                         <tbody>
                             {data.byModel.map((m) => {
-                                const big = isBig(m.diffRate);
+                                const mc = marginColor(m.marginRate, m.hasCost);
                                 return (
                                     <tr key={`${m.model_slug}-${m.tier}`} className={`border-b ${rowBorder}`}>
                                         <td className={`px-4 py-3 font-mono text-xs ${okCls}`}>{m.model_slug}</td>
@@ -297,18 +268,20 @@ export function ShadowReport({ data, t, isDark }: { data: ShadowData; t: Texts; 
                                         >
                                             {m.records}
                                         </td>
+                                        <td className={`px-4 py-3 text-right ${okCls}`}>{fmt(m.retailCny)}</td>
+                                        <td className={`px-4 py-3 text-right ${mutedCls}`}>
+                                            {m.hasCost ? fmt(m.costCny) : t.dash}
+                                        </td>
+                                        <td className={`px-4 py-3 text-right ${mc}`}>
+                                            {m.hasCost ? fmt(m.marginCny) : t.dash}
+                                        </td>
+                                        <td className={`px-4 py-3 text-right ${mc}`}>
+                                            {m.hasCost ? fmtPct(m.marginRate) : t.dash}
+                                        </td>
                                         <td
-                                            className={`px-4 py-3 text-right ${m.matchedRate !== null && m.matchedRate < 1 ? 'text-amber-500' : mutedCls}`}
+                                            className={`px-4 py-3 text-right ${m.costCoverage !== null && m.costCoverage < 1 ? 'text-amber-500' : mutedCls}`}
                                         >
-                                            {fmtPct(m.matchedRate)}
-                                        </td>
-                                        <td className={`px-4 py-3 text-right ${okCls}`}>{fmt(m.costCny)}</td>
-                                        <td className={`px-4 py-3 text-right ${mutedCls}`}>{fmt(m.newapiCny)}</td>
-                                        <td className={`px-4 py-3 text-right ${big ? bigCls : okCls}`}>
-                                            {fmtSigned(m.diffCny)}
-                                        </td>
-                                        <td className={`px-4 py-3 text-right ${big ? bigCls : mutedCls}`}>
-                                            {fmtPctSigned(m.diffRate)}
+                                            {fmtPct(m.costCoverage)}
                                         </td>
                                     </tr>
                                 );
@@ -318,7 +291,7 @@ export function ShadowReport({ data, t, isDark }: { data: ShadowData; t: Texts; 
                 </div>
             </div>
 
-            {/* By tenant — only meaningful with >1 tenant (superadmin cross-tenant view). */}
+            {/* By tenant — 仅 >1 租户时显示(白标经济性) */}
             {data.byTenant.length > 1 && (
                 <div>
                     <div className={sectionTitle}>{t.byTenant}</div>
@@ -327,16 +300,16 @@ export function ShadowReport({ data, t, isDark }: { data: ShadowData; t: Texts; 
                             <thead>
                                 <tr className={`border-b ${rowBorder}`}>
                                     <th className={`${thCls} text-left`}>{t.colTenant}</th>
-                                    <th className={`${thCls} text-right`}>{t.colRecords}</th>
-                                    <th className={`${thCls} text-right`}>{t.colPortal}</th>
-                                    <th className={`${thCls} text-right`}>{t.colNewapi}</th>
-                                    <th className={`${thCls} text-right`}>{t.colDiff}</th>
-                                    <th className={`${thCls} text-right`}>{t.colDiffPct}</th>
+                                    <th className={`${thCls} text-right`}>{t.colCalls}</th>
+                                    <th className={`${thCls} text-right`}>{t.colRetail}</th>
+                                    <th className={`${thCls} text-right`}>{t.colCost}</th>
+                                    <th className={`${thCls} text-right`}>{t.colMargin}</th>
+                                    <th className={`${thCls} text-right`}>{t.colMarginRate}</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {data.byTenant.map((tn) => {
-                                    const big = isBig(tn.diffRate);
+                                    const mc = marginColor(tn.marginRate, tn.costCoveredRecords > 0);
                                     return (
                                         <tr key={tn.tenant_id} className={`border-b ${rowBorder}`}>
                                             <td className={`px-4 py-3 ${okCls}`}>
@@ -347,14 +320,10 @@ export function ShadowReport({ data, t, isDark }: { data: ShadowData; t: Texts; 
                                             >
                                                 {tn.records}
                                             </td>
-                                            <td className={`px-4 py-3 text-right ${okCls}`}>{fmt(tn.costCny)}</td>
-                                            <td className={`px-4 py-3 text-right ${mutedCls}`}>{fmt(tn.newapiCny)}</td>
-                                            <td className={`px-4 py-3 text-right ${big ? bigCls : okCls}`}>
-                                                {fmtSigned(tn.diffCny)}
-                                            </td>
-                                            <td className={`px-4 py-3 text-right ${big ? bigCls : mutedCls}`}>
-                                                {fmtPctSigned(tn.diffRate)}
-                                            </td>
+                                            <td className={`px-4 py-3 text-right ${okCls}`}>{fmt(tn.retailCny)}</td>
+                                            <td className={`px-4 py-3 text-right ${mutedCls}`}>{fmt(tn.costCny)}</td>
+                                            <td className={`px-4 py-3 text-right ${mc}`}>{fmt(tn.marginCny)}</td>
+                                            <td className={`px-4 py-3 text-right ${mc}`}>{fmtPct(tn.marginRate)}</td>
                                         </tr>
                                     );
                                 })}
@@ -372,16 +341,16 @@ export function ShadowReport({ data, t, isDark }: { data: ShadowData; t: Texts; 
                         <thead>
                             <tr className={`border-b ${rowBorder}`}>
                                 <th className={`${thCls} text-left`}>{t.colCustomer}</th>
-                                <th className={`${thCls} text-right`}>{t.colRecords}</th>
-                                <th className={`${thCls} text-right`}>{t.colPortal}</th>
-                                <th className={`${thCls} text-right`}>{t.colNewapi}</th>
-                                <th className={`${thCls} text-right`}>{t.colDiff}</th>
-                                <th className={`${thCls} text-right`}>{t.colDiffPct}</th>
+                                <th className={`${thCls} text-right`}>{t.colCalls}</th>
+                                <th className={`${thCls} text-right`}>{t.colRetail}</th>
+                                <th className={`${thCls} text-right`}>{t.colCost}</th>
+                                <th className={`${thCls} text-right`}>{t.colMargin}</th>
+                                <th className={`${thCls} text-right`}>{t.colMarginRate}</th>
                             </tr>
                         </thead>
                         <tbody>
                             {data.byCustomer.map((c) => {
-                                const big = isBig(c.diffRate);
+                                const mc = marginColor(c.marginRate, c.costCoveredRecords > 0);
                                 return (
                                     <tr key={c.user_id} className={`border-b ${rowBorder}`}>
                                         <td className={`px-4 py-3 ${okCls}`}>{c.email ?? c.user_id.slice(0, 8)}</td>
@@ -390,14 +359,10 @@ export function ShadowReport({ data, t, isDark }: { data: ShadowData; t: Texts; 
                                         >
                                             {c.records}
                                         </td>
-                                        <td className={`px-4 py-3 text-right ${okCls}`}>{fmt(c.costCny)}</td>
-                                        <td className={`px-4 py-3 text-right ${mutedCls}`}>{fmt(c.newapiCny)}</td>
-                                        <td className={`px-4 py-3 text-right ${big ? bigCls : okCls}`}>
-                                            {fmtSigned(c.diffCny)}
-                                        </td>
-                                        <td className={`px-4 py-3 text-right ${big ? bigCls : mutedCls}`}>
-                                            {fmtPctSigned(c.diffRate)}
-                                        </td>
+                                        <td className={`px-4 py-3 text-right ${okCls}`}>{fmt(c.retailCny)}</td>
+                                        <td className={`px-4 py-3 text-right ${mutedCls}`}>{fmt(c.costCny)}</td>
+                                        <td className={`px-4 py-3 text-right ${mc}`}>{fmt(c.marginCny)}</td>
+                                        <td className={`px-4 py-3 text-right ${mc}`}>{fmtPct(c.marginRate)}</td>
                                     </tr>
                                 );
                             })}
