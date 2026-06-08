@@ -4,7 +4,8 @@ import { useSearchParams } from 'next/navigation';
 import { useState, useEffect, useCallback, useMemo, Suspense, type ReactNode } from 'react';
 import PayPageLayout from '@/components/PayPageLayout';
 import { resolveLocale, type Locale } from '@/lib/locale';
-import { deriveTierRows } from '@/lib/admin/pricing-tiers';
+import { deriveTierRows, tierOrder } from '@/lib/admin/pricing-tiers';
+import type { BatchCostResult } from '@/lib/admin/batch-cost';
 
 // ── Types (mirror /api/admin/pricing shapes) ──
 
@@ -105,6 +106,31 @@ function getTexts(locale: Locale) {
               noHistory: 'No price history yet',
               colEffective: 'Effective from',
               by: 'by',
+              // P2.10 batch cost fill
+              batchBtn: 'Batch fill cost',
+              batchTitle: 'Batch fill cost by vendor',
+              batchDesc:
+                  'Cost = retail × (cost ratio / retail ratio). Only models that already have a retail price; retail prices and new-api sync are left untouched.',
+              batchVendor: 'Vendor',
+              batchTier: 'Tier (optional)',
+              batchAllTiers: 'All tiers',
+              batchCostRatio: 'Cost ratio (¥ / official $)',
+              batchRetailRatio: 'Retail ratio (¥ / official $)',
+              batchFractionLine: (f: string, costPct: string, marginPct: string) =>
+                  `fraction ${f} · cost is ${costPct}% of retail · margin ${marginPct}%`,
+              batchRetailHint:
+                  '⚠️ Retail ratio MUST equal the one used when the retail prices were set — otherwise cost is wrong. Verify the margins in the preview below.',
+              batchPreviewBtn: 'Preview',
+              batchPreviewing: 'Computing…',
+              batchApply: (n: number) => `Apply to ${n}`,
+              batchApplying: 'Applying…',
+              batchAffected: (a: number, s: number) => `${a} to fill · ${s} skipped`,
+              batchNoRetail: 'No retail price — skipped',
+              batchColRetail: 'Retail',
+              batchColNewCost: 'New cost',
+              batchApplied: (n: number) => `✅ Wrote ${n} new cost version row(s). Retail prices unchanged.`,
+              batchFailed: 'Batch fill failed',
+              batchNoVendors: 'No vendors found',
           }
         : {
               title: '定价',
@@ -152,6 +178,29 @@ function getTexts(locale: Locale) {
               noHistory: '暂无改价历史',
               colEffective: '生效时间',
               by: '操作人',
+              // P2.10 批量填成本
+              batchBtn: '批量填成本',
+              batchTitle: '按家族批量填成本',
+              batchDesc: '成本 = 零售 × (拿货ratio / 零售ratio)。只填已有零售价的模型;不动零售价、不同步 new-api。',
+              batchVendor: '家族(vendor)',
+              batchTier: '档次(可选)',
+              batchAllTiers: '全部档次',
+              batchCostRatio: '拿货 ratio(¥ / 官方 $)',
+              batchRetailRatio: '零售 ratio(¥ / 官方 $)',
+              batchFractionLine: (f: string, costPct: string, marginPct: string) =>
+                  `fraction ${f} · 成本占零售 ${costPct}% · 毛利 ${marginPct}%`,
+              batchRetailHint: '⚠️ 零售 ratio 必须 = 当初设零售价用的那个,否则成本会算错。用下方预览核对毛利。',
+              batchPreviewBtn: '预览',
+              batchPreviewing: '计算中…',
+              batchApply: (n: number) => `确认填入 ${n} 个`,
+              batchApplying: '写入中…',
+              batchAffected: (a: number, s: number) => `${a} 个将填 · ${s} 个跳过`,
+              batchNoRetail: '无零售价,跳过',
+              batchColRetail: '现零售',
+              batchColNewCost: '算出成本',
+              batchApplied: (n: number) => `✅ 已写入 ${n} 个新成本版本行,零售价不变。`,
+              batchFailed: '批量填成本失败',
+              batchNoVendors: '暂无家族',
           };
 }
 
@@ -235,6 +284,9 @@ function PricingContent() {
     const [models, setModels] = useState<ModelWithPrices[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
+
+    // P2.10 批量填成本 modal
+    const [batchOpen, setBatchOpen] = useState(false);
 
     // Edit modal state
     const [editModalOpen, setEditModalOpen] = useState(false);
@@ -476,9 +528,14 @@ function PricingContent() {
             subtitle={t.subtitle}
             locale={locale}
             actions={
-                <button type="button" onClick={fetchModels} className={btnBase}>
-                    {t.refresh}
-                </button>
+                <div className="flex flex-wrap gap-2">
+                    <button type="button" onClick={() => setBatchOpen(true)} className={btnBase}>
+                        {t.batchBtn}
+                    </button>
+                    <button type="button" onClick={fetchModels} className={btnBase}>
+                        {t.refresh}
+                    </button>
+                </div>
             }
         >
             {/* Error banner */}
@@ -675,6 +732,17 @@ function PricingContent() {
                     </div>
                 </div>
             )}
+
+            {/* ── P2.10 批量填成本 modal ── */}
+            {batchOpen && (
+                <BatchCostModal
+                    isDark={isDark}
+                    t={t}
+                    models={models}
+                    onClose={() => setBatchOpen(false)}
+                    onApplied={fetchModels}
+                />
+            )}
         </PayPageLayout>
     );
 }
@@ -858,6 +926,318 @@ function ModelRows({
                 </tr>
             )}
         </>
+    );
+}
+
+// ── P2.10 Batch cost fill modal ──
+
+function BatchCostModal({
+    isDark,
+    t,
+    models,
+    onClose,
+    onApplied,
+}: {
+    isDark: boolean;
+    t: ReturnType<typeof getTexts>;
+    models: ModelWithPrices[];
+    onClose: () => void;
+    onApplied: () => void;
+}) {
+    const vendors = useMemo(
+        () => Array.from(new Set(models.map((m) => m.vendor).filter((v): v is string => !!v))).sort(),
+        [models],
+    );
+    const [vendor, setVendor] = useState(vendors[0] ?? '');
+    const [tier, setTier] = useState(''); // '' = all tiers
+    const [costRatio, setCostRatio] = useState('');
+    const [retailRatio, setRetailRatio] = useState('');
+    const [preview, setPreview] = useState<(BatchCostResult & { written?: number }) | null>(null);
+    const [loading, setLoading] = useState(false);
+    const [applying, setApplying] = useState(false);
+    const [applied, setApplied] = useState<number | null>(null);
+    const [error, setError] = useState('');
+
+    // Tiers available for the selected vendor (union via deriveTierRows, stable order).
+    const tiers = useMemo(() => {
+        const set = new Set<string>();
+        for (const m of models) {
+            if (m.vendor !== vendor) continue;
+            for (const r of deriveTierRows(m)) set.add(r.tier);
+        }
+        return Array.from(set).sort((a, b) => tierOrder(a) - tierOrder(b) || a.localeCompare(b));
+    }, [models, vendor]);
+
+    const cr = toNum(costRatio);
+    const rr = toNum(retailRatio);
+    const fraction = cr !== null && rr !== null && cr > 0 && rr > 0 ? cr / rr : null;
+    const ratiosValid = fraction !== null && !!vendor;
+
+    // Any input change invalidates a stale preview / applied result (so operator can't apply a
+    // preview computed for different ratios).
+    const invalidate = () => {
+        setPreview(null);
+        setApplied(null);
+    };
+
+    async function callBatch(dryRun: boolean): Promise<(BatchCostResult & { written: number }) | null> {
+        const body: Record<string, unknown> = { vendor, cost_ratio: cr, retail_ratio: rr, dryRun };
+        if (tier) body.tier = tier;
+        try {
+            const res = await fetch('/api/admin/pricing/batch-cost', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'same-origin',
+                body: JSON.stringify(body),
+            });
+            if (!res.ok) {
+                if (res.status === 401) {
+                    setError(t.invalidToken);
+                    return null;
+                }
+                const d = await res.json().catch(() => ({}));
+                setError(typeof d.error === 'string' ? d.error : t.batchFailed);
+                return null;
+            }
+            return (await res.json()) as BatchCostResult & { written: number };
+        } catch {
+            setError(t.batchFailed);
+            return null;
+        }
+    }
+
+    async function doPreview() {
+        if (!ratiosValid) return;
+        setError('');
+        setApplied(null);
+        setLoading(true);
+        const r = await callBatch(true);
+        if (r) setPreview(r);
+        setLoading(false);
+    }
+
+    async function doApply() {
+        if (!ratiosValid || !preview || preview.affected === 0) return;
+        setError('');
+        setApplying(true);
+        const r = await callBatch(false);
+        if (r) {
+            setPreview(r);
+            setApplied(r.written);
+            onApplied();
+        }
+        setApplying(false);
+    }
+
+    const panel = isDark ? 'border-slate-700 bg-slate-800' : 'border-slate-200 bg-white';
+    const labelCls = `block text-sm font-medium mb-1 ${isDark ? 'text-slate-300' : 'text-slate-700'}`;
+    const fieldCls = [
+        'w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/50',
+        isDark ? 'border-slate-600 bg-slate-700 text-slate-100' : 'border-slate-300 bg-white text-slate-900',
+    ].join(' ');
+    const thCls = `px-3 py-2 text-left font-medium ${isDark ? 'text-slate-400' : 'text-slate-500'}`;
+    const mutedCls = isDark ? 'text-slate-500' : 'text-slate-400';
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+            <div
+                className={['relative w-full max-w-2xl overflow-y-auto rounded-2xl border p-6 shadow-2xl', panel].join(
+                    ' ',
+                )}
+                style={{ maxHeight: '90vh' }}
+            >
+                <h2 className={`mb-1 text-lg font-semibold ${isDark ? 'text-slate-100' : 'text-slate-900'}`}>
+                    {t.batchTitle}
+                </h2>
+                <p className={`mb-5 text-sm ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>{t.batchDesc}</p>
+
+                {vendors.length === 0 ? (
+                    <div className={`py-6 text-center text-sm ${mutedCls}`}>{t.batchNoVendors}</div>
+                ) : (
+                    <div className="space-y-4">
+                        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                            <div>
+                                <label className={labelCls}>{t.batchVendor}</label>
+                                <select
+                                    value={vendor}
+                                    onChange={(e) => {
+                                        setVendor(e.target.value);
+                                        setTier('');
+                                        invalidate();
+                                    }}
+                                    className={fieldCls}
+                                >
+                                    {vendors.map((v) => (
+                                        <option key={v} value={v}>
+                                            {v}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                            <div>
+                                <label className={labelCls}>{t.batchTier}</label>
+                                <select
+                                    value={tier}
+                                    onChange={(e) => {
+                                        setTier(e.target.value);
+                                        invalidate();
+                                    }}
+                                    className={fieldCls}
+                                >
+                                    <option value="">{t.batchAllTiers}</option>
+                                    {tiers.map((tr) => (
+                                        <option key={tr} value={tr}>
+                                            {tierLabel(tr, t)}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                            <div>
+                                <label className={labelCls}>{t.batchCostRatio}</label>
+                                <input
+                                    type="number"
+                                    step="0.0001"
+                                    min="0"
+                                    value={costRatio}
+                                    onChange={(e) => {
+                                        setCostRatio(e.target.value);
+                                        invalidate();
+                                    }}
+                                    className={fieldCls}
+                                />
+                            </div>
+                            <div>
+                                <label className={labelCls}>{t.batchRetailRatio}</label>
+                                <input
+                                    type="number"
+                                    step="0.0001"
+                                    min="0"
+                                    value={retailRatio}
+                                    onChange={(e) => {
+                                        setRetailRatio(e.target.value);
+                                        invalidate();
+                                    }}
+                                    className={fieldCls}
+                                />
+                            </div>
+                        </div>
+
+                        {fraction !== null && (
+                            <p className={`text-xs ${isDark ? 'text-slate-300' : 'text-slate-600'}`}>
+                                {t.batchFractionLine(
+                                    fraction.toFixed(4),
+                                    (fraction * 100).toFixed(1),
+                                    ((1 - fraction) * 100).toFixed(1),
+                                )}
+                            </p>
+                        )}
+                        <p className={`text-xs ${isDark ? 'text-amber-400' : 'text-amber-600'}`}>{t.batchRetailHint}</p>
+
+                        {error && (
+                            <div
+                                className={`rounded-lg border p-2 text-sm ${isDark ? 'border-red-800 bg-red-950/50 text-red-400' : 'border-red-200 bg-red-50 text-red-600'}`}
+                            >
+                                {error}
+                            </div>
+                        )}
+
+                        {/* Preview table */}
+                        {preview && (
+                            <div>
+                                <div className={`mb-1 text-xs ${mutedCls}`}>
+                                    {t.batchAffected(preview.affected, preview.skipped)}
+                                </div>
+                                <div
+                                    className={[
+                                        'max-h-72 overflow-y-auto rounded-lg border',
+                                        isDark ? 'border-slate-700' : 'border-slate-200',
+                                    ].join(' ')}
+                                >
+                                    <table className="w-full text-xs">
+                                        <thead className={isDark ? 'bg-slate-900/40' : 'bg-slate-50'}>
+                                            <tr>
+                                                <th className={thCls}>{t.colModel}</th>
+                                                <th className={thCls}>{t.colTier}</th>
+                                                <th className={`${thCls} text-right`}>{t.batchColRetail}</th>
+                                                <th className={`${thCls} text-right`}>{t.batchColNewCost}</th>
+                                                <th className={`${thCls} text-right`}>{t.colMargin}</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {preview.rows.map((row) => (
+                                                <tr
+                                                    key={`${row.model_id}-${row.tier}`}
+                                                    className={[
+                                                        'border-t',
+                                                        isDark ? 'border-slate-700/50' : 'border-slate-100',
+                                                        row.skipped ? mutedCls : '',
+                                                    ].join(' ')}
+                                                >
+                                                    <td className="px-3 py-1.5">
+                                                        <span className="font-mono">{row.slug}</span>
+                                                    </td>
+                                                    <td className="px-3 py-1.5">{tierLabel(row.tier, t)}</td>
+                                                    <td className="px-3 py-1.5 text-right">
+                                                        {row.skipped ? '—' : fmtMoney(row.retail)}
+                                                    </td>
+                                                    <td className="px-3 py-1.5 text-right">
+                                                        {row.skipped ? t.batchNoRetail : fmtMoney(row.newCost)}
+                                                    </td>
+                                                    <td className="px-3 py-1.5 text-right">
+                                                        {row.skipped ? '—' : fmtMargin(row.retail, row.newCost)}
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        )}
+
+                        {applied !== null && (
+                            <div className={`text-sm ${isDark ? 'text-emerald-400' : 'text-emerald-600'}`}>
+                                {t.batchApplied(applied)}
+                            </div>
+                        )}
+                    </div>
+                )}
+
+                {/* Actions */}
+                <div className="mt-6 flex justify-end gap-3">
+                    <button
+                        type="button"
+                        onClick={onClose}
+                        className={[
+                            'rounded-lg px-4 py-2 text-sm font-medium transition-colors',
+                            isDark ? 'text-slate-400 hover:bg-slate-700' : 'text-slate-600 hover:bg-slate-100',
+                        ].join(' ')}
+                    >
+                        {t.cancel}
+                    </button>
+                    <button
+                        type="button"
+                        onClick={doPreview}
+                        disabled={!ratiosValid || loading}
+                        className={[
+                            'rounded-lg border px-4 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+                            isDark
+                                ? 'border-slate-600 text-slate-200 hover:bg-slate-700'
+                                : 'border-slate-300 text-slate-700 hover:bg-slate-100',
+                        ].join(' ')}
+                    >
+                        {loading ? t.batchPreviewing : t.batchPreviewBtn}
+                    </button>
+                    <button
+                        type="button"
+                        onClick={doApply}
+                        disabled={!preview || preview.affected === 0 || applying || applied !== null}
+                        className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                        {applying ? t.batchApplying : t.batchApply(preview?.affected ?? 0)}
+                    </button>
+                </div>
+            </div>
+        </div>
     );
 }
 

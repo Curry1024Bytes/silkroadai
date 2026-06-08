@@ -32,6 +32,7 @@ const SUPERADMIN_ROUTES = [
     'models/import/route.ts',
     'pricing/route.ts',
     'pricing/[modelId]/resync/route.ts',
+    'pricing/batch-cost/route.ts',
     'provider-instances/route.ts',
     'provider-instances/[id]/route.ts',
     'subscription-plans/route.ts',
