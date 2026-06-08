@@ -17,7 +17,7 @@
  *   阶段 4  confirm tx (commit): backfill placeholder (balances in ¥CNY,
  *             newapi_quota_added set) + order COMPLETED + commission + cache bust
  */
-import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Prisma } from '@prisma/client';
 
 // W8 D8: a stand-in for new-api's NewApiError so `topupErr instanceof NewApiError`
@@ -113,6 +113,12 @@ vi.mock('@/lib/newapi/client', () => ({
     NewApiError: MockNewApiError,
 }));
 
+// ── P4c-3 portal-mode mocks: portal recharge → ¥ ledger + dumb-gate open (NOT add_quota) ──
+const mockApplyLedgerEntry = vi.fn();
+const mockSyncNewapiGate = vi.fn();
+vi.mock('@/lib/billing/ledger', () => ({ applyLedgerEntry: (...args: unknown[]) => mockApplyLedgerEntry(...args) }));
+vi.mock('@/lib/billing/newapi-gate', () => ({ syncNewapiGate: (...args: unknown[]) => mockSyncNewapiGate(...args) }));
+
 import { executeRecharge, OrderError, FIRST_RECHARGE_BONUS_RATE } from '@/lib/order/service';
 
 const ORDER_ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
@@ -169,6 +175,17 @@ beforeEach(() => {
     mockRechargeLogUpdate.mockResolvedValue({});
     mockRechargeLogDelete.mockResolvedValue({});
     mockAuditLogCreate.mockResolvedValue({});
+    // P4c-3 defaults: ledger recharge returns a post-balance; gate sync no-ops.
+    mockApplyLedgerEntry.mockResolvedValue({
+        entryId: 'le-1',
+        balance_after: new Prisma.Decimal('100'),
+        deduped: false,
+    });
+    mockSyncNewapiGate.mockResolvedValue(undefined);
+});
+
+afterEach(() => {
+    vi.unstubAllEnvs(); // clear BILLING_SOURCE between tests
 });
 
 describe('executeRecharge — happy path', () => {
@@ -796,5 +813,92 @@ describe('executeRecharge — W7 D4 invite-code bonus rate', () => {
         });
         // No CAS-claim because peek saw granted=true
         expect(mockUserUpdateMany).not.toHaveBeenCalled();
+    });
+});
+
+describe('executeRecharge — P4c-3 portal mode (¥ ledger, NOT new-api quota)', () => {
+    it('both gates open → applyLedgerEntry(recharge, ref=order.id) + syncNewapiGate; NEVER add_quota', async () => {
+        vi.stubEnv('BILLING_SOURCE', 'portal');
+        mockOrderFindUnique.mockResolvedValue(pendingOrder({ amount: new Prisma.Decimal('100.00') }));
+        mockUserFindUnique.mockResolvedValue(userRow({ billing_mode: 'portal', first_recharge_bonus_granted: true })); // no bonus
+        mockRechargeLogFindFirst.mockResolvedValue(null);
+        mockApplyLedgerEntry.mockResolvedValue({
+            entryId: 'le-1',
+            balance_after: new Prisma.Decimal('100'),
+            deduped: false,
+        });
+
+        await executeRecharge(ORDER_ID);
+
+        // money → ¥ ledger keyed (recharge, ref=order.id); NEVER new-api quota (IRON RULE)
+        expect(mockApplyLedgerEntry).toHaveBeenCalledTimes(1);
+        expect(mockApplyLedgerEntry).toHaveBeenCalledWith(
+            PORTAL_USER_ID,
+            expect.objectContaining({ kind: 'recharge', amount_cny: 100, ref: ORDER_ID }),
+        );
+        expect(mockApplyTopup).not.toHaveBeenCalled();
+        // open the dumb gate after recharge (balance now positive)
+        expect(mockSyncNewapiGate).toHaveBeenCalledWith(PORTAL_USER_ID);
+        // confirmed RechargeLog: sentinel non-null but newapi_quota_added=0 (nothing added to new-api)
+        const confirm = mockRechargeLogUpdate.mock.calls.find((c) => c[0].data.newapi_quota_added != null);
+        expect(confirm?.[0].data.newapi_quota_added).toBe(BigInt(0));
+        // order COMPLETED (all existing idempotency machinery preserved)
+        expect(mockOrderUpdateMany).toHaveBeenCalledWith(
+            expect.objectContaining({ data: { status: 'COMPLETED', completedAt: expect.any(Date) } }),
+        );
+    });
+
+    it('portal first-recharge bonus → ledger amount = ¥100 + 20% = ¥120 (one recharge entry)', async () => {
+        vi.stubEnv('BILLING_SOURCE', 'portal');
+        mockOrderFindUnique.mockResolvedValue(pendingOrder({ amount: new Prisma.Decimal('100.00') }));
+        mockUserFindUnique.mockResolvedValue(userRow({ billing_mode: 'portal', first_recharge_bonus_granted: false })); // eligible
+        mockRechargeLogFindFirst.mockResolvedValue(null);
+        mockUserUpdateMany.mockResolvedValue({ count: 1 }); // bonus claim wins
+        mockApplyLedgerEntry.mockResolvedValue({
+            entryId: 'le-1',
+            balance_after: new Prisma.Decimal('120'),
+            deduped: false,
+        });
+
+        await executeRecharge(ORDER_ID);
+
+        expect(mockApplyLedgerEntry).toHaveBeenCalledWith(
+            PORTAL_USER_ID,
+            expect.objectContaining({
+                kind: 'recharge',
+                amount_cny: 100 + 100 * FIRST_RECHARGE_BONUS_RATE,
+                ref: ORDER_ID,
+            }),
+        );
+        expect(mockApplyTopup).not.toHaveBeenCalled();
+    });
+
+    it('global gate closed (BILLING_SOURCE unset) + billing_mode=portal → STILL new-api path (add_quota)', async () => {
+        mockOrderFindUnique.mockResolvedValue(pendingOrder({ amount: new Prisma.Decimal('100.00') }));
+        mockUserFindUnique.mockResolvedValue(userRow({ billing_mode: 'portal', first_recharge_bonus_granted: true }));
+        mockRechargeLogFindFirst.mockResolvedValue(null);
+        mockNewapiGetUser.mockResolvedValue({ id: NEWAPI_USER_ID, quota: 0 });
+        mockApplyTopup.mockResolvedValue(undefined);
+
+        await executeRecharge(ORDER_ID);
+
+        expect(mockApplyTopup).toHaveBeenCalledTimes(1); // emergency kill-switch → old path
+        expect(mockApplyLedgerEntry).not.toHaveBeenCalled();
+        expect(mockSyncNewapiGate).not.toHaveBeenCalled();
+    });
+
+    it('portal ledger write fails → placeholder rolled back + order FAILED + no add_quota (clean retry)', async () => {
+        vi.stubEnv('BILLING_SOURCE', 'portal');
+        mockOrderFindUnique.mockResolvedValue(pendingOrder({ amount: new Prisma.Decimal('100.00') }));
+        mockUserFindUnique.mockResolvedValue(userRow({ billing_mode: 'portal', first_recharge_bonus_granted: true }));
+        mockRechargeLogFindFirst.mockResolvedValue(null);
+        mockApplyLedgerEntry.mockRejectedValue(new Error('ledger down'));
+
+        await expect(executeRecharge(ORDER_ID)).rejects.toThrow();
+        expect(mockRechargeLogDelete).toHaveBeenCalledWith({ where: { id: 'rl-1' } }); // placeholder rolled back
+        expect(mockOrderUpdate).toHaveBeenCalledWith(
+            expect.objectContaining({ data: expect.objectContaining({ status: 'FAILED' }) }),
+        );
+        expect(mockApplyTopup).not.toHaveBeenCalled();
     });
 });

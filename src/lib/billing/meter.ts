@@ -6,6 +6,7 @@ import { PLATFORM_TENANT_ID } from '@/lib/admin/tenant-scope';
 import { computeUsageCost, pickEffectivePrice } from './cost';
 import { applyLedgerEntry } from './ledger';
 import { billingSourceIsPortal } from './billing-source';
+import { syncNewapiGate } from './newapi-gate';
 
 /**
  * P4a 影子计量 job:轮询 new-api consume 日志,按客户 token 档次取生效 CatalogPrice 算 ¥,
@@ -231,6 +232,7 @@ async function debitPortalUsers(rows: Prisma.UsageRecordCreateManyInput[], resul
     );
     if (portalUserIds.size === 0) return; // 无人是 portal → 不扣(= 现状)
 
+    const chargedUserIds = new Set<string>();
     for (const rec of records) {
         if (!portalUserIds.has(rec.user_id)) continue; // 单客户门:非 portal → 跳过
         if (rec.cost_cny.isZero()) continue; // 0 成本:无需记账(不动余额、不留噪声)
@@ -242,10 +244,25 @@ async function debitPortalUsers(rows: Prisma.UsageRecordCreateManyInput[], resul
                 note: `${rec.model_slug}/${rec.tier}`,
             });
             result.charged++;
+            chargedUserIds.add(rec.user_id);
         } catch (err) {
             // 不挡请求 / 不阻断计量:扣费失败只 warn。UsageRecord 已写、cursor 照常前进。
             console.warn(
                 `[meter] ledger charge failed for usage ${rec.id} (user ${rec.user_id}):`,
+                err instanceof Error ? err.message : err,
+            );
+        }
+    }
+
+    // P4c-3 哑门:本轮扣过费的 portal 客户重新同步 new-api quota —— 余额掉到 ≤0 → 关门
+    //   (new-api 拒 → insufficient_user_quota);仍 >0 → 顶满 GATE_OPEN_QUOTA。每客户一次。
+    //   非致命:失败仅 warn,下一轮 meter / 下次充值会再 sync(透支窗口 = 一个轮询周期)。
+    for (const uid of chargedUserIds) {
+        try {
+            await syncNewapiGate(uid);
+        } catch (err) {
+            console.warn(
+                `[meter] syncNewapiGate failed for user ${uid} (next run reconciles):`,
                 err instanceof Error ? err.message : err,
             );
         }

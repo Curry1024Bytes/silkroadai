@@ -12,6 +12,7 @@ const mockModelFindFirst = vi.fn();
 const mockUsageCreateMany = vi.fn();
 const mockUsageFindMany = vi.fn();
 const mockApplyLedgerEntry = vi.fn();
+const mockSyncNewapiGate = vi.fn();
 
 // Only `queryLogs` is exposed — if the meter ever reaches for a new-api WRITE
 // (addQuota / token / user) the call would be undefined and throw, which is
@@ -38,6 +39,8 @@ vi.mock('@/lib/db', () => ({
 // P4c-2: the meter debits via applyLedgerEntry; mock it to assert the call shape
 // (its atomicity / optimistic lock / idempotency is covered by ledger.test.ts).
 vi.mock('@/lib/billing/ledger', () => ({ applyLedgerEntry: (...a: unknown[]) => mockApplyLedgerEntry(...a) }));
+// P4c-3: after charging a portal user, the meter re-syncs the new-api dumb gate.
+vi.mock('@/lib/billing/newapi-gate', () => ({ syncNewapiGate: (...a: unknown[]) => mockSyncNewapiGate(...a) }));
 
 import { runShadowMeter } from '@/lib/billing/meter';
 import { PLATFORM_TENANT_ID } from '@/lib/admin/tenant-scope';
@@ -88,6 +91,7 @@ beforeEach(() => {
     mockUsageFindMany.mockResolvedValue([]);
     mockUserFindMany.mockResolvedValue([]);
     mockApplyLedgerEntry.mockResolvedValue({ deduped: false });
+    mockSyncNewapiGate.mockResolvedValue(undefined); // P4c-3
 });
 
 afterEach(() => {
@@ -290,5 +294,63 @@ describe('runShadowMeter — P4c-2 ledger debit (two gates, idempotent, never bl
         await runShadowMeter();
         // the meter keys idempotency on the stable record id; dedup itself is ledger.test.ts's job
         expect(mockApplyLedgerEntry.mock.calls[0][1].ref).toBe('ur-stable');
+    });
+});
+
+describe('runShadowMeter — P4c-3 dumb-gate sync after charging portal users', () => {
+    const usageRow = (over: Record<string, unknown> = {}) => ({
+        id: 'ur1',
+        user_id: 'u1',
+        cost_cny: new Prisma.Decimal('12.5'),
+        model_slug: 'gpt-5.4',
+        tier: 'pool',
+        ...over,
+    });
+
+    it('charged a portal user → syncNewapiGate(userId) called once (close/re-top the gate)', async () => {
+        vi.stubEnv('BILLING_SOURCE', 'portal');
+        mockUsageFindMany.mockResolvedValue([usageRow()]);
+        mockUserFindMany.mockResolvedValue([{ id: 'u1' }]);
+        await runShadowMeter();
+        expect(mockSyncNewapiGate).toHaveBeenCalledTimes(1);
+        expect(mockSyncNewapiGate).toHaveBeenCalledWith('u1');
+    });
+
+    it('once per DISTINCT charged user (two records same user → one gate sync)', async () => {
+        vi.stubEnv('BILLING_SOURCE', 'portal');
+        mockUsageFindMany.mockResolvedValue([usageRow({ id: 'ur1' }), usageRow({ id: 'ur2' })]);
+        mockUserFindMany.mockResolvedValue([{ id: 'u1' }]);
+        await runShadowMeter();
+        expect(mockApplyLedgerEntry).toHaveBeenCalledTimes(2); // both records charged
+        expect(mockSyncNewapiGate).toHaveBeenCalledTimes(1); // gate synced once for the user
+    });
+
+    it('global gate OFF (newapi) → no charge → no gate sync (newapi customers never touched)', async () => {
+        // BILLING_SOURCE unset by default
+        mockUsageFindMany.mockResolvedValue([usageRow()]);
+        mockUserFindMany.mockResolvedValue([{ id: 'u1' }]);
+        await runShadowMeter();
+        expect(mockSyncNewapiGate).not.toHaveBeenCalled();
+    });
+
+    it('a failed charge → that user is NOT gate-synced (only successfully-charged users)', async () => {
+        vi.stubEnv('BILLING_SOURCE', 'portal');
+        mockUsageFindMany.mockResolvedValue([usageRow()]);
+        mockUserFindMany.mockResolvedValue([{ id: 'u1' }]);
+        mockApplyLedgerEntry.mockRejectedValue(new Error('ledger down'));
+        await runShadowMeter();
+        expect(mockSyncNewapiGate).not.toHaveBeenCalled();
+    });
+
+    it('never blocks: a failed gate sync is swallowed; meter resolves + cursor still advances', async () => {
+        vi.stubEnv('BILLING_SOURCE', 'portal');
+        mockUsageFindMany.mockResolvedValue([usageRow()]);
+        mockUserFindMany.mockResolvedValue([{ id: 'u1' }]);
+        mockSyncNewapiGate.mockRejectedValue(new Error('new-api 502'));
+        const r = await runShadowMeter(); // must resolve, not reject
+        expect(r.charged).toBe(1);
+        expect(mockCursorUpdate).toHaveBeenCalledWith(
+            expect.objectContaining({ data: expect.objectContaining({ last_log_id: 10 }) }),
+        );
     });
 });

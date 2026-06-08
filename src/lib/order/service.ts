@@ -38,6 +38,11 @@ import { isValidInviteCode } from '@/lib/invite/code';
 // after RechargeLog.create). Failure throws → tx rollback → recharge
 // reverts (money-path consistency).
 import { writeCommissionInTx, isAttributionActive } from '@/lib/reseller/commission';
+// P4c-3: portal-mode 客户充值 → ¥账本(applyLedgerEntry)+ 开哑门(syncNewapiGate),不 add_quota。
+// 两道门 billingSourceIsPortal() + user.billing_mode === 'portal';否则完全走旧 new-api 路径。
+import { applyLedgerEntry } from '@/lib/billing/ledger';
+import { syncNewapiGate } from '@/lib/billing/newapi-gate';
+import { billingSourceIsPortal } from '@/lib/billing/billing-source';
 
 const DEFAULT_MAX_PENDING_ORDERS = 3;
 /** Decimal(10,2) 允许的最大金额 */
@@ -1146,6 +1151,8 @@ export async function executeRecharge(orderId: string): Promise<void> {
             select: {
                 id: true,
                 newapi_user_id: true,
+                // P4c-3: 决定走 ¥账本(portal)还是 add_quota(newapi,默认)。
+                billing_mode: true,
                 first_recharge_bonus_granted: true,
                 // W7 D4: read invite_code so we can pick the right bonus rate
                 // (30% if currently-valid, 20% default). Re-validation against
@@ -1177,6 +1184,9 @@ export async function executeRecharge(orderId: string): Promise<void> {
             ? FIRST_RECHARGE_BONUS_RATE_INVITED
             : FIRST_RECHARGE_BONUS_RATE;
         const mainQuota = cnyToQuota(cnyAmount);
+        // P4c-3 两道门:全局 BILLING_SOURCE=portal + 单客户 billing_mode='portal' → 钱进 ¥账本;
+        // 否则(默认 / 任一门关)= 完全照旧的 new-api add_quota 路径(newapi 客户一字不改)。
+        const isPortalRecharge = billingSourceIsPortal() && portalUser.billing_mode === 'portal';
 
         // ── 阶段 2:intent — 首充 bonus CAS-claim + 占位 RechargeLog,独立 commit ──
         // (W8 D8 核心)把去重锚点 placeholder 在 applyTopup **之前** commit。commit
@@ -1225,39 +1235,39 @@ export async function executeRecharge(orderId: string): Promise<void> {
         });
         const totalQuota = mainQuota + intent.bonusQuota;
 
-        // balance_before 审计基线(raw quota,后续换算 ¥CNY)。best-effort,失败用 0。
+        // 余额审计快照:newapi 路径用 new-api raw quota;portal 路径用 ¥账本(applyLedgerEntry 返回)。
         let balanceBeforeRaw = 0;
-        try {
-            balanceBeforeRaw = (await newapiGetUser(newapiUserId)).quota;
-        } catch (err) {
-            console.warn(
-                `[executeRecharge] getUser(${newapiUserId}) before topup failed (continuing with 0 baseline):`,
-                err,
-            );
-        }
+        let balanceAfterRaw = 0;
+        let portalBalanceBeforeCny: number | null = null;
+        let portalBalanceAfterCny: number | null = null;
 
-        // ── 阶段 3:execute — applyTopup(HTTP 副作用,at-most-once)──
-        // 占位行已 commit,本调用对同一 order 不会被 webhook 重试二次执行。
-        try {
-            await newapiApplyTopup({
-                newapi_user_id: newapiUserId,
-                cnyAmount,
-                extraBonusQuota: intent.bonusQuota,
-            });
-        } catch (topupErr) {
-            // Smart-recovery 失败策略(operator W8 D8 决策):
-            //   - NewApiError:new-api 明确返回错误响应 → add_quota 没生效 → 安全地把这
-            //     次 attempt 整个回退(删占位行 + 撤 bonus claim),order 落 FAILED,
-            //     webhook 重试时阶段 1 找不到占位行 → 干净重扣。
-            //   - 非 NewApiError(fetch 网络层抛错 / 超时,没拿到响应)→ 入账结果未知 →
-            //     保留占位行(null),order 落 FAILED,重试时阶段 1 命中 null 占位 →
-            //     人工复核,不自动重扣(防双扣)。
-            if (topupErr instanceof NewApiError) {
+        if (isPortalRecharge) {
+            // ── 阶段 3(portal 模式):钱进 portal ¥账本,**不**进 new-api quota ──
+            //   首充 bonus 以 ¥ 计入同一条 recharge entry(金额含 bonus)。(recharge, ref=order.id)
+            //   唯一约束 → 重复回调不双充(applyLedgerEntry 幂等)。
+            //   ⚠️ 绝不 add_quota:portal 客户的 new-api quota 只是哑门开关(syncNewapiGate 控),
+            //      不是余额、不计扣费 —— portal Account.balance_cny 是唯一余额事实源。
+            const bonusCny = intent.bonusClaimed ? Number((cnyAmount * bonusRate).toFixed(8)) : 0;
+            try {
+                const led = await applyLedgerEntry(userId, {
+                    kind: 'recharge',
+                    amount_cny: cnyAmount + bonusCny,
+                    ref: orderId, // (recharge, ref=order.id) 幂等:重复回调不双充
+                    note:
+                        bonusCny > 0
+                            ? `recharge order:${orderId} (首充 bonus +¥${bonusCny})`
+                            : `recharge order:${orderId}`,
+                });
+                portalBalanceAfterCny = Number(led.balance_after);
+                portalBalanceBeforeCny = portalBalanceAfterCny - (cnyAmount + bonusCny);
+            } catch (ledgerErr) {
+                // 与 newapi NewApiError 回退同义:删占位行 + 撤 bonus claim → order FAILED →
+                // webhook 重试时阶段 1 找不到占位行 → 干净重试。applyLedgerEntry (recharge,ref)
+                // 幂等:即便上次其实写进去了,重试也只 dedup 返回、绝不双充。
                 try {
                     await prisma.$transaction(async (tx) => {
                         await tx.rechargeLog.delete({ where: { id: intent.rechargeLogId } });
                         if (intent.bonusClaimed) {
-                            // 撤回本次 claim(只在 granted 仍为 true 时,即没有别的流程介入)。
                             await tx.user.updateMany({
                                 where: { id: userId, first_recharge_bonus_granted: true },
                                 data: { first_recharge_bonus_granted: false },
@@ -1265,23 +1275,83 @@ export async function executeRecharge(orderId: string): Promise<void> {
                         }
                     });
                 } catch (rollbackErr) {
-                    // 回退失败不致命:占位行残留只会让下次重试走人工复核(保守,不双扣)。
                     console.error(
-                        `[executeRecharge] order ${orderId} placeholder rollback after NewApiError failed:`,
+                        `[executeRecharge] order ${orderId} portal-ledger placeholder rollback failed:`,
                         rollbackErr,
                     );
                 }
+                throw ledgerErr;
             }
-            throw topupErr;
-        }
+            // 余额转正 → 立即开哑门(非致命:失败下一轮 meter 会再 sync)。
+            try {
+                await syncNewapiGate(userId);
+            } catch (gateErr) {
+                console.warn(
+                    `[executeRecharge] order ${orderId} syncNewapiGate after recharge failed (next meter run reconciles):`,
+                    gateErr,
+                );
+            }
+        } else {
+            // ── 阶段 3(newapi 模式,完全照旧,一字不改)──
+            // balance_before 审计基线(raw quota,后续换算 ¥CNY)。best-effort,失败用 0。
+            try {
+                balanceBeforeRaw = (await newapiGetUser(newapiUserId)).quota;
+            } catch (err) {
+                console.warn(
+                    `[executeRecharge] getUser(${newapiUserId}) before topup failed (continuing with 0 baseline):`,
+                    err,
+                );
+            }
 
-        // balance_after 审计。失败兜底 before+totalQuota(入账已成功,审计不阻塞 finalize)。
-        let balanceAfterRaw: number;
-        try {
-            balanceAfterRaw = (await newapiGetUser(newapiUserId)).quota;
-        } catch (err) {
-            console.warn(`[executeRecharge] getUser(${newapiUserId}) after topup failed (using before+delta):`, err);
-            balanceAfterRaw = balanceBeforeRaw + totalQuota;
+            // execute — applyTopup(HTTP 副作用,at-most-once)。占位行已 commit,本调用对同一
+            // order 不会被 webhook 重试二次执行。
+            try {
+                await newapiApplyTopup({
+                    newapi_user_id: newapiUserId,
+                    cnyAmount,
+                    extraBonusQuota: intent.bonusQuota,
+                });
+            } catch (topupErr) {
+                // Smart-recovery 失败策略(operator W8 D8 决策):
+                //   - NewApiError:new-api 明确返回错误响应 → add_quota 没生效 → 安全地把这
+                //     次 attempt 整个回退(删占位行 + 撤 bonus claim),order 落 FAILED,
+                //     webhook 重试时阶段 1 找不到占位行 → 干净重扣。
+                //   - 非 NewApiError(fetch 网络层抛错 / 超时,没拿到响应)→ 入账结果未知 →
+                //     保留占位行(null),order 落 FAILED,重试时阶段 1 命中 null 占位 →
+                //     人工复核,不自动重扣(防双扣)。
+                if (topupErr instanceof NewApiError) {
+                    try {
+                        await prisma.$transaction(async (tx) => {
+                            await tx.rechargeLog.delete({ where: { id: intent.rechargeLogId } });
+                            if (intent.bonusClaimed) {
+                                // 撤回本次 claim(只在 granted 仍为 true 时,即没有别的流程介入)。
+                                await tx.user.updateMany({
+                                    where: { id: userId, first_recharge_bonus_granted: true },
+                                    data: { first_recharge_bonus_granted: false },
+                                });
+                            }
+                        });
+                    } catch (rollbackErr) {
+                        // 回退失败不致命:占位行残留只会让下次重试走人工复核(保守,不双扣)。
+                        console.error(
+                            `[executeRecharge] order ${orderId} placeholder rollback after NewApiError failed:`,
+                            rollbackErr,
+                        );
+                    }
+                }
+                throw topupErr;
+            }
+
+            // balance_after 审计。失败兜底 before+totalQuota(入账已成功,审计不阻塞 finalize)。
+            try {
+                balanceAfterRaw = (await newapiGetUser(newapiUserId)).quota;
+            } catch (err) {
+                console.warn(
+                    `[executeRecharge] getUser(${newapiUserId}) after topup failed (using before+delta):`,
+                    err,
+                );
+                balanceAfterRaw = balanceBeforeRaw + totalQuota;
+            }
         }
 
         // ── 阶段 4:confirm — 回填占位行 + finalize + commission + 缓存清零,一次 commit ──
@@ -1291,12 +1361,19 @@ export async function executeRecharge(orderId: string): Promise<void> {
                 await tx.rechargeLog.update({
                     where: { id: intent.rechargeLogId },
                     data: {
-                        // W8 D8: balance_* 存 ¥CNY(与 amount 同单位);raw quota 只在
-                        // newapi_quota_added。¥CNY 永远不会越 numeric(20,4) 上限。
-                        balance_before: new Prisma.Decimal(quotaToCny(balanceBeforeRaw).toFixed(4)),
-                        balance_after: new Prisma.Decimal(quotaToCny(balanceAfterRaw).toFixed(4)),
+                        // W8 D8: balance_* 存 ¥CNY(与 amount 同单位)。
+                        // portal:¥账本余额(applyLedgerEntry 返回);newapi:quotaToCny(raw quota)。
+                        balance_before: new Prisma.Decimal(
+                            (isPortalRecharge ? (portalBalanceBeforeCny ?? 0) : quotaToCny(balanceBeforeRaw)).toFixed(
+                                4,
+                            ),
+                        ),
+                        balance_after: new Prisma.Decimal(
+                            (isPortalRecharge ? (portalBalanceAfterCny ?? 0) : quotaToCny(balanceAfterRaw)).toFixed(4),
+                        ),
                         // newapi_quota_added 从 null → 落值 = 哨兵确认入账,阶段 1 据此幂等。
-                        newapi_quota_added: BigInt(totalQuota),
+                        // portal:0(钱在 ¥账本,没动 new-api quota);newapi:totalQuota。
+                        newapi_quota_added: BigInt(isPortalRecharge ? 0 : totalQuota),
                         bonus_quota_added: BigInt(intent.bonusQuota),
                         note:
                             intent.bonusQuota > 0
