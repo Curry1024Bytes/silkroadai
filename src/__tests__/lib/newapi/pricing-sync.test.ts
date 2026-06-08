@@ -18,26 +18,26 @@ import {
     syncModelPriceToNewApi,
     resolveImageModelPrice,
     resolveChatTierPrice,
-    PRICING_FX,
+    CHAT_FX,
+    IMAGE_FX,
 } from '@/lib/newapi/pricing-sync';
 
 beforeEach(() => {
     vi.clearAllMocks();
 });
 
-describe('computeRatios (pinned to scripts/apply-new-pricing-2026-05-21.mjs)', () => {
-    it('uses FX = 7 (NOT quota-units USD_TO_CNY_RATE 7.2)', () => {
-        expect(PRICING_FX).toBe(7);
+describe('computeRatios (FX calibrated to new-api actual billing — P4c-prereq 2026-06-08)', () => {
+    it('chat CHAT_FX = 2 × USD_TO_CNY = 14.4; image IMAGE_FX = USD_TO_CNY = 7.2', () => {
+        expect(CHAT_FX).toBe(14.4);
+        expect(IMAGE_FX).toBe(7.2);
     });
 
-    it('gpt-5.4 retail ¥2.5 in / ¥10 out → mr 0.357143, cr 4', () => {
-        // official $5/$20 × ¥0.5/$1 discount = retail ¥2.5/¥10. mr = 2.5/7.
-        expect(computeRatios(2.5, 10)).toEqual({ model_ratio: 0.357143, completion_ratio: 4 });
+    it('retail ¥2.5 in / ¥10 out → mr 0.173611 (= 2.5/14.4), cr 4', () => {
+        expect(computeRatios(2.5, 10)).toEqual({ model_ratio: 0.173611, completion_ratio: 4 });
     });
 
-    it('claude opus retail ¥22.5 in / ¥112.5 out → mr 3.214286, cr 5', () => {
-        // official $15/$75 × ¥1.5/$1 = retail ¥22.5/¥112.5. mr = 22.5/7.
-        expect(computeRatios(22.5, 112.5)).toEqual({ model_ratio: 3.214286, completion_ratio: 5 });
+    it('retail ¥22.5 in / ¥112.5 out → mr 1.5625 (= 22.5/14.4), cr 5', () => {
+        expect(computeRatios(22.5, 112.5)).toEqual({ model_ratio: 1.5625, completion_ratio: 5 });
     });
 
     it('cnyIn = 0 → cr defaults to 1 (no divide-by-zero)', () => {
@@ -46,20 +46,20 @@ describe('computeRatios (pinned to scripts/apply-new-pricing-2026-05-21.mjs)', (
 });
 
 describe('retailFromRatios (P2.5 reverse derivation — inverse of computeRatios)', () => {
-    it('gpt-5.4: mr 0.357143, cr 4 → ¥2.5 in / ¥10 out', () => {
-        expect(retailFromRatios(0.357143, 4)).toEqual({ input_cny_per_1m: 2.5, output_cny_per_1m: 10 });
+    it('mr 0.173611, cr 4 → ¥2.5 in / ¥10 out', () => {
+        expect(retailFromRatios(0.173611, 4)).toEqual({ input_cny_per_1m: 2.5, output_cny_per_1m: 10 });
     });
 
-    it('claude opus: mr 3.214286, cr 5 → ¥22.5 in / ¥112.5 out', () => {
-        expect(retailFromRatios(3.214286, 5)).toEqual({ input_cny_per_1m: 22.5, output_cny_per_1m: 112.5 });
+    it('mr 1.5625, cr 5 → ¥22.5 in / ¥112.5 out', () => {
+        expect(retailFromRatios(1.5625, 5)).toEqual({ input_cny_per_1m: 22.5, output_cny_per_1m: 112.5 });
     });
 
-    it('completion_ratio = 1 → in = out', () => {
-        expect(retailFromRatios(0.5, 1)).toEqual({ input_cny_per_1m: 3.5, output_cny_per_1m: 3.5 });
+    it('completion_ratio = 1 → in = out (¥ = mr × 14.4)', () => {
+        expect(retailFromRatios(0.5, 1)).toEqual({ input_cny_per_1m: 7.2, output_cny_per_1m: 7.2 });
     });
 
     // The whole point: import (retailFromRatios) must undo sync (computeRatios), so a
-    // round-trip lands back on the operator's retail price. Both directions pinned to FX=7.
+    // round-trip lands back on the operator's retail price. Both directions pinned to CHAT_FX=14.4.
     it.each([
         [2.5, 10],
         [22.5, 112.5],
@@ -99,14 +99,14 @@ describe('syncModelPriceToNewApi — chat models → global ModelRatio + Complet
 
         expect(r.ok).toBe(true);
         expect(r.image).toBeFalsy(); // chat path, not image
-        expect(r.ratios).toEqual({ model_ratio: 0.357143, completion_ratio: 4 });
+        expect(r.ratios).toEqual({ model_ratio: 0.173611, completion_ratio: 4 });
         expect(r.upstream_model).toBe('gpt-5.4');
         // GETs both global option dicts...
         expect(mockGetOption).toHaveBeenCalledWith('ModelRatio');
         expect(mockGetOption).toHaveBeenCalledWith('CompletionRatio');
         // ...and PUTs both back whole, our SKU merged on top (pre-existing entries preserved).
         const put = putByKey();
-        expect(put['ModelRatio']).toEqual({ 'other-model': 1.0, 'gpt-5.4': 0.357143 });
+        expect(put['ModelRatio']).toEqual({ 'other-model': 1.0, 'gpt-5.4': 0.173611 });
         expect(put['CompletionRatio']).toEqual({ 'other-model': 2.0, 'gpt-5.4': 4 });
         // the dropped per-channel path is gone entirely.
         expect(mockGetChannel).not.toHaveBeenCalled();
@@ -123,7 +123,7 @@ describe('syncModelPriceToNewApi — chat models → global ModelRatio + Complet
         });
         expect(r.ok).toBe(true);
         const put = putByKey();
-        expect(put['ModelRatio']).toEqual({ 'gpt-5.4': 0.357143 });
+        expect(put['ModelRatio']).toEqual({ 'gpt-5.4': 0.173611 });
         expect(put['CompletionRatio']).toEqual({ 'gpt-5.4': 4 });
     });
 
@@ -137,7 +137,7 @@ describe('syncModelPriceToNewApi — chat models → global ModelRatio + Complet
         });
         expect(r.ok).toBe(true);
         expect(r.upstream_model).toBe('gpt-5.4'); // resolved from the 'default' mapping
-        expect(putByKey()['ModelRatio']).toEqual({ 'gpt-5.4': 0.357143 });
+        expect(putByKey()['ModelRatio']).toEqual({ 'gpt-5.4': 0.173611 });
     });
 
     it('empty upstream_map → ok:false, never calls new-api', async () => {
@@ -156,7 +156,7 @@ describe('syncModelPriceToNewApi — chat models → global ModelRatio + Complet
         });
         expect(r.ok).toBe(false);
         expect(r.error).toContain('502');
-        expect(r.ratios).toEqual({ model_ratio: 0.357143, completion_ratio: 4 });
+        expect(r.ratios).toEqual({ model_ratio: 0.173611, completion_ratio: 4 });
         expect(mockPutOption).not.toHaveBeenCalled();
     });
 
@@ -175,8 +175,8 @@ describe('syncModelPriceToNewApi — chat models → global ModelRatio + Complet
 describe('syncModelPriceToNewApi — image models → global ModelPrice (P2.8 Part B)', () => {
     const IMG = { pool: { channel_id: 17, upstream_model: 'gpt-image-2' } };
 
-    it('per_image ¥0.10 → ModelPrice $0.01429 (= /7); GET-merge-PUT WHOLE dict (preserves others)', async () => {
-        // discovery-pinned: live new-api ModelPrice[gpt-image-2] = 0.01429 = ¥0.10/7.
+    it('per_image ¥0.10 → ModelPrice $0.01389 (= /7.2); GET-merge-PUT WHOLE dict (preserves others)', async () => {
+        // ¥0.10 / IMAGE_FX(7.2) = 0.01389 (per-call USD). per_image here is an arbitrary unit-test value.
         mockGetOption.mockResolvedValue(JSON.stringify({ 'dall-e-3': 0.04, 'other-img': 0.5 }));
         mockPutOption.mockResolvedValue(undefined);
 
@@ -189,13 +189,13 @@ describe('syncModelPriceToNewApi — image models → global ModelPrice (P2.8 Pa
 
         expect(r.ok).toBe(true);
         expect(r.image).toBe(true);
-        expect(r.modelPrice_usd).toBe(0.01429);
+        expect(r.modelPrice_usd).toBe(0.01389);
         expect(r.upstream_model).toBe('gpt-image-2');
         // brief B.2 pt3 + gotcha #15 spirit: PUT the whole ModelPrice dict, ours merged on top.
         expect(mockGetOption).toHaveBeenCalledWith('ModelPrice');
         const [key, value] = mockPutOption.mock.calls[0];
         expect(key).toBe('ModelPrice');
-        expect(JSON.parse(value)).toEqual({ 'dall-e-3': 0.04, 'other-img': 0.5, 'gpt-image-2': 0.01429 });
+        expect(JSON.parse(value)).toEqual({ 'dall-e-3': 0.04, 'other-img': 0.5, 'gpt-image-2': 0.01389 });
         // never touches the per-channel mr/cr path (chat regression guard).
         expect(mockGetChannel).not.toHaveBeenCalled();
         expect(mockUpdateChannel).not.toHaveBeenCalled();
@@ -209,7 +209,7 @@ describe('syncModelPriceToNewApi — image models → global ModelPrice (P2.8 Pa
             { tier: 'pool', input_cny_per_1m: null, output_cny_per_1m: null, per_image_cny: 0.07 },
         );
         expect(r.ok).toBe(true);
-        expect(JSON.parse(mockPutOption.mock.calls[0][1])).toEqual({ 'gemini-3-pro-image': 0.01 }); // 0.07/7
+        expect(JSON.parse(mockPutOption.mock.calls[0][1])).toEqual({ 'gemini-3-pro-image': 0.00972 }); // 0.07/7.2
     });
 
     it('edited tier lacks a mapping → falls back to any tier upstream_model (image names are tier-agnostic)', async () => {
@@ -223,7 +223,7 @@ describe('syncModelPriceToNewApi — image models → global ModelPrice (P2.8 Pa
         });
         expect(r.ok).toBe(true);
         expect(r.upstream_model).toBe('gpt-image-2'); // resolved from pool mapping
-        expect(JSON.parse(mockPutOption.mock.calls[0][1])).toEqual({ 'gpt-image-2': 0.02 }); // 0.14/7
+        expect(JSON.parse(mockPutOption.mock.calls[0][1])).toEqual({ 'gpt-image-2': 0.01944 }); // 0.14/7.2
     });
 
     it('empty upstream_map → ok:false, image:true, never calls new-api', async () => {
@@ -247,7 +247,7 @@ describe('syncModelPriceToNewApi — image models → global ModelPrice (P2.8 Pa
         });
         expect(r.ok).toBe(false);
         expect(r.image).toBe(true);
-        expect(r.modelPrice_usd).toBe(0.01429);
+        expect(r.modelPrice_usd).toBe(0.01389);
         expect(r.error).toContain('502');
     });
 });

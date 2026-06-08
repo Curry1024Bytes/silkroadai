@@ -84,14 +84,14 @@ describe('buildImportCandidates', () => {
         const candidates = buildImportCandidates([claudeChannel, openaiChannel, imageChannel]);
         const bySlug = Object.fromEntries(candidates.map((c) => [c.slug, c]));
 
-        // priced chat (inverse of computeRatios — opus ¥22.5/¥112.5)
+        // priced chat (inverse of computeRatios — opus mr 3.214286 × CHAT_FX 14.4 → ¥46.2857/¥231.4285)
         expect(bySlug['claude-opus-4-7']).toMatchObject({
             vendor: 'anthropic',
             modality: 'chat',
             tier: 'pool',
             price_status: 'priced',
-            input_cny_per_1m: 22.5,
-            output_cny_per_1m: 112.5,
+            input_cny_per_1m: 46.2857,
+            output_cny_per_1m: 231.4285,
             ratio_defaulted: false,
             channel_id: 2,
             channel_name: 'sub2api',
@@ -100,16 +100,16 @@ describe('buildImportCandidates', () => {
         expect(bySlug['gpt-5.4']).toMatchObject({
             vendor: 'openai',
             price_status: 'priced',
-            input_cny_per_1m: 2.5,
-            output_cny_per_1m: 10,
+            input_cny_per_1m: 5.1429, // mr 0.357143 × 14.4
+            output_cny_per_1m: 20.5716,
             channel_id: 3,
         });
 
         // model_ratio present but completion_ratio missing → cr defaults to 1 (in = out)
         expect(bySlug['gpt-mini']).toMatchObject({
             price_status: 'priced',
-            input_cny_per_1m: 7,
-            output_cny_per_1m: 7,
+            input_cny_per_1m: 14.4, // mr 1 × CHAT_FX 14.4
+            output_cny_per_1m: 14.4,
             ratio_defaulted: true,
         });
 
@@ -167,14 +167,14 @@ describe('buildImportCandidates', () => {
         // Two pool channels with the same slug → 1 candidate, first pool wins.
         const samePool = buildImportCandidates([poolA, poolB]);
         expect(samePool).toHaveLength(1);
-        expect(samePool[0]).toMatchObject({ tier: 'pool', channel_id: 2, input_cny_per_1m: 7 });
+        expect(samePool[0]).toMatchObject({ tier: 'pool', channel_id: 2, input_cny_per_1m: 14.4 });
 
         // Same slug on a pool channel + an official channel → 2 candidates (one per tier).
         const both = buildImportCandidates([poolA, official]);
         expect(both).toHaveLength(2);
         const byTier = Object.fromEntries(both.map((c) => [c.tier, c]));
-        expect(byTier.pool).toMatchObject({ channel_id: 2, input_cny_per_1m: 7 }); // mr 1 × FX 7
-        expect(byTier.official).toMatchObject({ channel_id: 4, input_cny_per_1m: 14 }); // mr 2 × FX 7
+        expect(byTier.pool).toMatchObject({ channel_id: 2, input_cny_per_1m: 14.4 }); // mr 1 × FX 14.4
+        expect(byTier.official).toMatchObject({ channel_id: 4, input_cny_per_1m: 28.8 }); // mr 2 × FX 14.4
     });
 
     it('handles empty / missing models', () => {

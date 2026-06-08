@@ -1,16 +1,26 @@
 import 'server-only';
 import { getOption, putOption } from './client';
 import { tierOrder } from '@/lib/admin/pricing-tiers';
+import { USD_TO_CNY_RATE } from './quota-units';
 
 /**
- * 定价 sync 专用 FX 常量 = 7。
+ * 定价 sync 的换算 FX —— 必须与 new-api 真实计费口径一致(P4c-prereq 诊断 2026-06-08 修正)。
  *
- * ⚠️ 与 quota-units.ts 的 USD_TO_CNY_RATE(默认 7.2,余额展示用)【故意不同】。
- * 定价 mr/cr 是业务决策(¥0.5/$1、¥1.5/$1 配 FX=7 得到干净的 ratio),沿用
- * scripts/apply-new-pricing-2026-05-21.* 实际在用的值(brief 1.2:FX / quota 以
- * 现有脚本为准,不要凭记忆写死)。改这个值会改变所有客户的 token 计费,慎动。
+ * 历史 bug:旧实现用裸 `PRICING_FX = 7` 同时给 chat 和 image,导致「目录标价 ≠ 客户实扣」:
+ *   - chat:new-api 实扣 ¥/1M = mr × 2 × USD_TO_CNY(下行解释那个 ×2),等效 FX = 14.4 ≠ 7
+ *     → 实扣 = 标价 × 14.4/7 ≈ 2.057 倍。
+ *   - image:ModelPrice 是 per-call USD 直价,实扣 ¥ = ModelPrice × USD_TO_CNY,等效 FX = 7.2 ≠ 7
+ *     → 实扣 = 标价 × 7.2/7 ≈ 1.029 倍。
+ * 修正:chat 用 {@link CHAT_FX}、image 用 {@link IMAGE_FX},使「目录标价 / FX == new-api live ratio」
+ * 恒等 → 目录标价 = 客户实扣。USD_TO_CNY 取 quota-units 单一常量(随 env),不再硬编码裸 7 / 7.2。
+ *
+ * ⚠️ 这两个常数只决定【以后】sync 怎么算 mr/ModelPrice;本次配套把目录价 ×factor 提上去(Part B),
+ * **不主动 re-sync** → live ratio 不变 → 客户账单零变化(见 cc-brief-fx-calibration-unify-up)。
  */
-export const PRICING_FX = 7;
+/** chat FX:1M token × ratio=1 → 100万 quota = 2 USD(new-api QUOTA_PER_USD=500000 约定);再 × USD_TO_CNY。 */
+export const CHAT_FX = 2 * USD_TO_CNY_RATE; // = 14.4 (USD_TO_CNY=7.2)
+/** image FX:ModelPrice 是 per-call USD 直价,无 chat 的 ×2 token 约定 → 等效 FX = USD_TO_CNY。 */
+export const IMAGE_FX = USD_TO_CNY_RATE; // = 7.2
 
 export interface Ratios {
     model_ratio: number;
@@ -20,16 +30,15 @@ export interface Ratios {
 /**
  * 把零售 ¥/1M 价折算成 new-api 的 model_ratio / completion_ratio。
  *
- *   model_ratio      = input_cny_per_1m / PRICING_FX
+ *   model_ratio      = input_cny_per_1m / CHAT_FX(= 2 × USD_TO_CNY = 14.4)
  *   completion_ratio = output_cny_per_1m / input_cny_per_1m(沿用官方 in/out 比例)
  *
- * 与现有脚本等价:脚本传 (official_USD × discount_cny),此处直接传零售 ¥(折扣已含),
- * 折扣在 cr 的分子分母里约掉,结果一致。例:
- *   gpt-5.4 零售 ¥2.5/¥10  → mr 0.357143, cr 4
- *   opus    零售 ¥22.5/¥112.5 → mr 3.214286, cr 5
+ * CHAT_FX=14.4 使「目录标价 = 客户实扣」(目录价 / 14.4 == new-api live mr)。例(FX=14.4):
+ *   零售 ¥2.5/¥10    → mr 0.173611, cr 4
+ *   零售 ¥22.5/¥112.5 → mr 1.5625, cr 5
  */
 export function computeRatios(cnyIn: number, cnyOut: number): Ratios {
-    const mr = cnyIn / PRICING_FX;
+    const mr = cnyIn / CHAT_FX;
     const cr = cnyIn > 0 ? cnyOut / cnyIn : 1;
     return { model_ratio: Number(mr.toFixed(6)), completion_ratio: Number(cr.toFixed(4)) };
 }
@@ -43,17 +52,17 @@ export interface RetailPrice {
 /**
  * {@link computeRatios} 的【逆运算】(P2.5 从 new-api 反向导入定价用)。
  *
- *   ¥in/1M  = model_ratio × PRICING_FX
+ *   ¥in/1M  = model_ratio × CHAT_FX(= 14.4)
  *   ¥out/1M = ¥in × completion_ratio
  *
- * 与正向 sync 互逆(四舍五入到 CatalogPrice 的 Decimal(12,4) 精度):
- *   mr 0.357143, cr 4 → ¥2.5 / ¥10   (gpt-5.4)
- *   mr 3.214286, cr 5 → ¥22.5 / ¥112.5(opus)
+ * 与正向 sync 互逆(四舍五入到 CatalogPrice 的 Decimal(12,4) 精度),例(FX=14.4):
+ *   mr 0.173611, cr 4 → ¥2.5 / ¥10
+ *   mr 1.5625,   cr 5 → ¥22.5 / ¥112.5
  *
  * completion_ratio 缺失时调用方应传 1(= in/out 同价),见 import-catalog.ts。
  */
 export function retailFromRatios(modelRatio: number, completionRatio: number): RetailPrice {
-    const cnyIn = Number((modelRatio * PRICING_FX).toFixed(4));
+    const cnyIn = Number((modelRatio * CHAT_FX).toFixed(4));
     const cnyOut = Number((cnyIn * completionRatio).toFixed(4));
     return { input_cny_per_1m: cnyIn, output_cny_per_1m: cnyOut };
 }
@@ -80,7 +89,7 @@ export interface SyncResult {
     ratios?: Ratios;
     /** 图片模型:本次走【全局 ModelPrice】同步(非 per-channel mr/cr)。 */
     image?: boolean;
-    /** 图片模型同步进 new-api 全局 ModelPrice 的 USD/张(= per_image_cny / PRICING_FX)。 */
+    /** 图片模型同步进 new-api 全局 ModelPrice 的 USD/张(= per_image_cny / IMAGE_FX)。 */
     modelPrice_usd?: number;
     /** 非致命提示(如:图片多档填了不同价,已按默认档值同步,其余未生效)。 */
     warn?: string;
@@ -192,7 +201,7 @@ function firstUpstreamEntry(map: UpstreamMap): UpstreamMapEntry | undefined {
  * 不同:chat 用 per-channel model_ratio 能分档)。真正的图片分档计费留 P4c(portal 自己
  * 按档计量,不依赖 new-api ModelPrice)。本期按单一价同步(默认档值,见 resolveImageModelPrice)。
  *
- * 换算:`ModelPrice_USD = per_image_cny / PRICING_FX`(FX=7;对拍 gpt-image-2 ¥0.10/7 ≈ 0.01429)。
+ * 换算:`ModelPrice_USD = per_image_cny / IMAGE_FX`(= USD_TO_CNY = 7.2,image per-call USD 直价)。
  * 写法镜像 gotcha #15:GET 全量 ModelPrice dict → 在原 dict 上 merge 我们这个模型 → PUT 整个
  * dict(只 PUT 自己那条会清掉别的模型的 ModelPrice 条目)。
  */
@@ -206,9 +215,9 @@ async function syncImageModelPrice(upstreamMap: UpstreamMap, price: PriceInput):
             error: '图片模型在 upstream_map 中没有任何 {channel_id, upstream_model} 映射,无法同步 ModelPrice',
         };
     }
-    // 5 位小数:对齐 new-api ModelPrice dict 既有精度(gpt-image-2=0.01429 / gemini=0.00891),
-    // 也让 ¥0.10/7 = 0.01429 与现网值精确一致(P2.8 Part B 实测确认)。
-    const modelPrice_usd = Number(((price.per_image_cny as number) / PRICING_FX).toFixed(5));
+    // 5 位小数:对齐 new-api ModelPrice dict 既有精度。换算用 IMAGE_FX(= USD_TO_CNY = 7.2);
+    // 配套把目录 per_image ×7.2/7 提上去后(Part B),per_image / 7.2 == 现网 live ModelPrice。
+    const modelPrice_usd = Number(((price.per_image_cny as number) / IMAGE_FX).toFixed(5));
     try {
         // parseRatioDict:把 JSON 字符串/对象解析成 Record<string, number>(对 ModelPrice dict 同形)。
         const dict = parseRatioDict(await getOption('ModelPrice'));

@@ -6,8 +6,8 @@
  * 现有 slug 对账(已存在→skip)后落库。把推导逻辑抽到这里,是为了能脱离 new-api /
  * 数据库对「反向价格推导 + 厂商/模态推断」单测对拍(brief §6)。
  *
- * 价格反向推导 = P2 正向 sync 的逆运算,复用 pricing-sync 的 PRICING_FX(不另写 7):
- *   ¥in/1M  = model_ratio × PRICING_FX
+ * 价格反向推导 = P2 正向 sync 的逆运算,复用 pricing-sync 的 retailFromRatios(CHAT_FX,不另写裸数):
+ *   ¥in/1M  = model_ratio × CHAT_FX(= 14.4)
  *   ¥out/1M = ¥in × completion_ratio
  * 图片模型走 new-api 的 ModelPrice(每张固定价),不走 model_ratio/completion_ratio,
  * 本模块算不出 per-image ¥ → price_status='image',价格留空,由 operator 在

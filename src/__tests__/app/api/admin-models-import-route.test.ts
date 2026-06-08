@@ -144,7 +144,7 @@ describe('POST /api/admin/models/import — dry run (official not registered →
     it('surfaces reverse-derived retail prices + flags image models (with tier)', async () => {
         const body = await (await POST(req('POST', {}))).json();
         const opus = body.created.find((r: { slug: string }) => r.slug === 'claude-opus-4-7');
-        expect(opus).toMatchObject({ tier: 'pool', input_cny_per_1m: 22.5, output_cny_per_1m: 112.5 });
+        expect(opus).toMatchObject({ tier: 'pool', input_cny_per_1m: 46.2857, output_cny_per_1m: 231.4285 }); // mr 3.214286 × CHAT_FX 14.4
         const img = body.flagged.find((r: { slug: string }) => r.slug === 'gpt-image-2');
         expect(img).toMatchObject({ tier: 'pool', modality: 'image', reason: 'image_model_manual_price' });
     });
@@ -290,9 +290,13 @@ describe('POST /api/admin/models/import — same slug across tiers (real import)
         // two prices, one per tier, both pointing at the created model.
         expect(mockPriceCreate).toHaveBeenCalledTimes(2);
         const poolPrice = mockPriceCreate.mock.calls.find((c) => c[0].data.tier === 'pool')![0].data;
-        expect(poolPrice).toMatchObject({ model_id: 'm-gpt-5.4', input_cny_per_1m: 2.5, output_cny_per_1m: 10 });
+        expect(poolPrice).toMatchObject({
+            model_id: 'm-gpt-5.4',
+            input_cny_per_1m: 5.1429,
+            output_cny_per_1m: 20.5716,
+        }); // mr 0.357143 × 14.4
         const offPrice = mockPriceCreate.mock.calls.find((c) => c[0].data.tier === 'official')![0].data;
-        expect(offPrice).toMatchObject({ model_id: 'm-gpt-5.4', input_cny_per_1m: 3.5, output_cny_per_1m: 14 });
+        expect(offPrice).toMatchObject({ model_id: 'm-gpt-5.4', input_cny_per_1m: 7.2, output_cny_per_1m: 28.8 }); // mr 0.5 × 14.4
     });
 });
 
