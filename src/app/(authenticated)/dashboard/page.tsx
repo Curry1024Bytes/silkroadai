@@ -18,9 +18,10 @@ import { headers } from 'next/headers';
 import { NextRequest } from 'next/server';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth/session';
-import { getQuotaWithCache } from '@/lib/newapi/quota-cache';
+import { getCustomerBalance } from '@/lib/billing/customer-balance';
 import { getUsageAggregate } from '@/lib/newapi/usage-aggregate';
-import { quotaToCny, quotaToUsd } from '@/lib/newapi/client';
+import { quotaToCny } from '@/lib/newapi/client';
+import { USD_TO_CNY_RATE } from '@/lib/newapi/quota-units';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { fetchResellerStatus } from '@/lib/reseller/fetch-status';
 import { ResellerPromoCard } from '@/components/reseller/ResellerPromoCard';
@@ -72,7 +73,8 @@ export default async function DashboardPage() {
     // card doesn't take out the whole page. Per-card error states render
     // inline below.
     const [balanceSettled, lastMonthSettled, allTimeSettled, top3Settled] = await Promise.allSettled([
-        getQuotaWithCache(user.id),
+        // P4c-3.5: portal 客户读 ¥账本(Account);newapi 照旧 getQuotaWithCache。
+        getCustomerBalance(user.id),
         aggArgsBase
             ? getUsageAggregate({ ...aggArgsBase, period: 'last_month' })
             : Promise.reject(new Error('account_not_provisioned')),
@@ -129,11 +131,11 @@ export default async function DashboardPage() {
                         {balance ? (
                             <>
                                 <p className="m-0 text-3xl font-semibold text-navy tabular-nums">
-                                    ¥{quotaToCny(balance.remain_quota).toFixed(2)}
+                                    ¥{balance.balanceCny.toFixed(2)}
                                 </p>
                                 <p className="mt-1.5 m-0 text-xs text-minor-ink tabular-nums">
-                                    ≈ ${quotaToUsd(balance.remain_quota).toFixed(4)} USD
-                                    {balance.source === 'fallback' && ' · 数据稍滞后'}
+                                    ≈ ${(balance.balanceCny / USD_TO_CNY_RATE).toFixed(4)} USD
+                                    {balance.stale && ' · 数据稍滞后'}
                                 </p>
                             </>
                         ) : (

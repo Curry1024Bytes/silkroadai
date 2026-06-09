@@ -1,7 +1,7 @@
 /**
  * W6 D5 — /dashboard SSR smoke.
  *
- * Mocks at the boundary (getCurrentUser + getQuotaWithCache +
+ * Mocks at the boundary (getCurrentUser + getCustomerBalance +
  * getUsageAggregate) so the page renders with deterministic numbers.
  * Asserts on the contract surface: 4 cards' labels + numbers + quick
  * links. Same shallow react-dom/server pattern as W6 D2 / W6 D4 SSR
@@ -9,15 +9,17 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToString } from 'react-dom/server';
+import { quotaToCny } from '@/lib/newapi/quota-units';
 
 const mockGetCurrentUser = vi.fn();
 vi.mock('@/lib/auth/session', () => ({
     getCurrentUser: (...args: unknown[]) => mockGetCurrentUser(...args),
 }));
 
-const mockGetQuotaWithCache = vi.fn();
-vi.mock('@/lib/newapi/quota-cache', () => ({
-    getQuotaWithCache: (...args: unknown[]) => mockGetQuotaWithCache(...args),
+// P4c-3.5: the balance card now reads via getCustomerBalance (portal → Account; newapi → quota).
+const mockGetCustomerBalance = vi.fn();
+vi.mock('@/lib/billing/customer-balance', () => ({
+    getCustomerBalance: (...args: unknown[]) => mockGetCustomerBalance(...args),
 }));
 
 const mockGetUsageAggregate = vi.fn();
@@ -58,6 +60,15 @@ const SAMPLE_USER = {
     newapi_username: 'c-aaaa1111',
 };
 
+/** newapi-mode CustomerBalance: ¥ from quota for the balance card. */
+const newapiBal = (remain: number, used = 0) => ({
+    balanceCny: quotaToCny(remain),
+    spentCny: quotaToCny(used),
+    source: 'newapi' as const,
+    stale: false,
+    quota: { remain, used },
+});
+
 beforeEach(() => {
     vi.clearAllMocks();
 });
@@ -70,11 +81,7 @@ describe('<DashboardPage /> SSR — happy path (W6 D5)', () => {
     it('renders 4 real data cards + quick links when all fetches succeed', async () => {
         mockGetCurrentUser.mockResolvedValue(SAMPLE_USER);
         // 500_000 quota = 1 USD = ~¥7.20
-        mockGetQuotaWithCache.mockResolvedValue({
-            remain_quota: 500_000,
-            used_quota: 100_000,
-            source: 'live',
-        });
+        mockGetCustomerBalance.mockResolvedValue(newapiBal(500_000, 100_000));
         // last_month
         mockGetUsageAggregate.mockResolvedValueOnce({
             totalUsedQuota: 250_000,
@@ -144,11 +151,7 @@ describe('<DashboardPage /> SSR — happy path (W6 D5)', () => {
 
     it('shows nickname when present, else email local-part', async () => {
         mockGetCurrentUser.mockResolvedValue({ ...SAMPLE_USER, nickname: 'Alice' });
-        mockGetQuotaWithCache.mockResolvedValue({
-            remain_quota: 0,
-            used_quota: 0,
-            source: 'live',
-        });
+        mockGetCustomerBalance.mockResolvedValue(newapiBal(0));
         mockGetUsageAggregate.mockResolvedValue({
             totalUsedQuota: 0,
             totalCalls: 0,
@@ -170,7 +173,7 @@ describe('<DashboardPage /> SSR — empty / error states', () => {
     });
 
     it('falls through to "暂无数据" per card when fetches reject', async () => {
-        mockGetQuotaWithCache.mockRejectedValue(new Error('quota-fail'));
+        mockGetCustomerBalance.mockRejectedValue(new Error('quota-fail'));
         mockGetUsageAggregate.mockRejectedValue(new Error('aggregate-fail'));
         const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
@@ -185,11 +188,7 @@ describe('<DashboardPage /> SSR — empty / error states', () => {
     });
 
     it('top-3 card renders 暂无调用 when byModel is empty (no calls yet)', async () => {
-        mockGetQuotaWithCache.mockResolvedValue({
-            remain_quota: 0,
-            used_quota: 0,
-            source: 'live',
-        });
+        mockGetCustomerBalance.mockResolvedValue(newapiBal(0));
         mockGetUsageAggregate.mockResolvedValue({
             totalUsedQuota: 0,
             totalCalls: 0,
@@ -205,11 +204,7 @@ describe('<DashboardPage /> SSR — empty / error states', () => {
     });
 
     it('shows "数据稍滞后" hint when aggregate source=fallback (stale cache)', async () => {
-        mockGetQuotaWithCache.mockResolvedValue({
-            remain_quota: 100_000,
-            used_quota: 0,
-            source: 'live',
-        });
+        mockGetCustomerBalance.mockResolvedValue(newapiBal(100_000));
         // last_month is fallback; the others are fresh
         mockGetUsageAggregate
             .mockResolvedValueOnce({
@@ -247,11 +242,7 @@ describe('<DashboardPage /> SSR — empty / error states', () => {
 
     it('user without newapi_user_id renders 暂无数据 on aggregate cards (balance still works)', async () => {
         mockGetCurrentUser.mockResolvedValue({ ...SAMPLE_USER, newapi_user_id: null });
-        mockGetQuotaWithCache.mockResolvedValue({
-            remain_quota: 0,
-            used_quota: 0,
-            source: 'live',
-        });
+        mockGetCustomerBalance.mockResolvedValue(newapiBal(0));
         const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
         const html = renderToString(await DashboardPage());
@@ -264,11 +255,7 @@ describe('<DashboardPage /> SSR — reseller promo card (fix/reseller-entry-disc
     beforeEach(() => {
         vi.clearAllMocks();
         mockGetCurrentUser.mockReturnValue(SAMPLE_USER);
-        mockGetQuotaWithCache.mockResolvedValue({
-            remain_quota: 1_000_000,
-            used_quota: 100_000,
-            source: 'live',
-        });
+        mockGetCustomerBalance.mockResolvedValue(newapiBal(1_000_000, 100_000));
         // 4 calls to getUsageAggregate (last_month / all / 30d / unused 4th
         // for safety) — every test in this block fans out a default
         // success so we can focus on the promo card assertion only.

@@ -17,8 +17,8 @@ import { headers } from 'next/headers';
 import { NextRequest } from 'next/server';
 import { getCurrentUser } from '@/lib/auth/session';
 import { prisma } from '@/lib/db';
-import { getQuotaWithCache, type QuotaSnapshot } from '@/lib/newapi/quota-cache';
-import { quotaToCny, quotaToUsd } from '@/lib/newapi/client';
+import { getCustomerBalance, type CustomerBalance } from '@/lib/billing/customer-balance';
+import { USD_TO_CNY_RATE } from '@/lib/newapi/quota-units';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
@@ -52,12 +52,13 @@ export default async function BalancePage() {
     const user = await getSessionUser();
     if (!user) return null;
 
-    let snapshot: QuotaSnapshot | null = null;
-    let snapshotErr: string | null = null;
+    // P4c-3.5: portal 客户读 ¥账本(Account);newapi 照旧 getQuotaWithCache(60s 缓存 + fallback)。
+    let bal: CustomerBalance | null = null;
+    let balErr: string | null = null;
     try {
-        snapshot = await getQuotaWithCache(user.id);
+        bal = await getCustomerBalance(user.id);
     } catch (err) {
-        snapshotErr = err instanceof Error ? err.message : String(err);
+        balErr = err instanceof Error ? err.message : String(err);
     }
 
     const history = await prisma.rechargeLog.findMany({
@@ -85,7 +86,7 @@ export default async function BalancePage() {
                 </Button>
             </div>
 
-            {snapshot?.source === 'fallback' && (
+            {bal?.stale && (
                 <div
                     role="status"
                     className={[
@@ -97,7 +98,7 @@ export default async function BalancePage() {
                 </div>
             )}
 
-            {snapshotErr ? (
+            {balErr ? (
                 <div className="mb-6">
                     <FormError severity="banner">当前无法获取余额,请稍后重试。</FormError>
                 </div>
@@ -111,11 +112,12 @@ export default async function BalancePage() {
                         </CardHeader>
                         <CardContent>
                             <p className="m-0 text-3xl font-semibold text-navy tabular-nums">
-                                ¥{quotaToCny(snapshot!.remain_quota).toFixed(2)}
+                                ¥{bal!.balanceCny.toFixed(2)}
                             </p>
                             <p className="mt-1.5 m-0 text-xs text-minor-ink tabular-nums">
-                                ≈ ${quotaToUsd(snapshot!.remain_quota).toFixed(4)} USD ·{' '}
-                                {snapshot!.remain_quota.toLocaleString('en-US')} quota
+                                ≈ ${(bal!.balanceCny / USD_TO_CNY_RATE).toFixed(4)} USD
+                                {/* raw quota 副显仅 newapi 有意义;portal 无 quota 概念 */}
+                                {bal!.quota && <> · {bal!.quota.remain.toLocaleString('en-US')} quota</>}
                             </p>
                         </CardContent>
                     </Card>
@@ -127,10 +129,10 @@ export default async function BalancePage() {
                         </CardHeader>
                         <CardContent>
                             <p className="m-0 text-3xl font-semibold text-navy tabular-nums">
-                                ¥{quotaToCny(snapshot!.used_quota).toFixed(2)}
+                                ¥{bal!.spentCny.toFixed(2)}
                             </p>
                             <p className="mt-1.5 m-0 text-xs text-minor-ink tabular-nums">
-                                ≈ ${quotaToUsd(snapshot!.used_quota).toFixed(4)} USD
+                                ≈ ${(bal!.spentCny / USD_TO_CNY_RATE).toFixed(4)} USD
                             </p>
                         </CardContent>
                     </Card>

@@ -1,13 +1,14 @@
 /**
  * W4-2 D6 — /balance page server-component render smoke.
+ * P4c-3.5 — page now reads via getCustomerBalance (portal → Account; newapi → quota).
  *
- * Same pattern as src/__tests__/app/authenticated/layout.test.tsx —
- * mock next/headers + getCurrentUser + getQuotaWithCache + prisma, then
- * call the async page function and renderToString the JSX.
+ * Mock next/headers + getCurrentUser + getCustomerBalance + prisma, then call
+ * the async page function and renderToString the JSX.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToString } from 'react-dom/server';
 import { Prisma } from '@prisma/client';
+import { quotaToCny } from '@/lib/newapi/quota-units';
 
 const mockHeadersGet = vi.fn<(name: string) => string | null>();
 vi.mock('next/headers', () => ({
@@ -19,9 +20,9 @@ vi.mock('@/lib/auth/session', () => ({
     getCurrentUser: (...args: unknown[]) => mockGetCurrentUser(...args),
 }));
 
-const mockGetQuotaWithCache = vi.fn();
-vi.mock('@/lib/newapi/quota-cache', () => ({
-    getQuotaWithCache: (...args: unknown[]) => mockGetQuotaWithCache(...args),
+const mockGetCustomerBalance = vi.fn();
+vi.mock('@/lib/billing/customer-balance', () => ({
+    getCustomerBalance: (...args: unknown[]) => mockGetCustomerBalance(...args),
 }));
 
 const mockRechargeLogFindMany = vi.fn();
@@ -38,6 +39,15 @@ import BalancePage from '@/app/(authenticated)/balance/page';
 const PORTAL_USER_ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 const SESSION_USER = { id: PORTAL_USER_ID, email: 'happy@silkroadai.io' };
 
+/** newapi-mode CustomerBalance: ¥ from quota + raw quota for the sub-display. */
+const newapiBal = (remain: number, used: number, stale = false) => ({
+    balanceCny: quotaToCny(remain),
+    spentCny: quotaToCny(used),
+    source: 'newapi' as const,
+    stale,
+    quota: { remain, used },
+});
+
 beforeEach(() => {
     vi.clearAllMocks();
     mockHeadersGet.mockReturnValue('silkroad_session=fake-jwt');
@@ -47,57 +57,59 @@ afterEach(() => {
 });
 
 describe('<BalancePage /> SSR smoke', () => {
-    it('renders ¥ + USD + raw quota for live snapshot, with empty history hint', async () => {
+    it('renders ¥ + USD + raw quota for a newapi live snapshot, with empty history hint', async () => {
         mockGetCurrentUser.mockResolvedValue(SESSION_USER);
-        mockGetQuotaWithCache.mockResolvedValue({
-            // 694_444 quota ≈ ¥10.00 (1 USD = 7.2 CNY = 500_000 quota)
-            remain_quota: 694_444,
-            used_quota: 138_888,
-            source: 'live',
-        });
+        // 694_444 quota ≈ ¥10.00; 138_888 ≈ ¥2.00 (1 USD = 7.2 CNY = 500_000 quota)
+        mockGetCustomerBalance.mockResolvedValue(newapiBal(694_444, 138_888));
         mockRechargeLogFindMany.mockResolvedValue([]);
 
         const tree = await BalancePage();
         const html = renderToString(tree);
 
-        // CNY display (rounded to 2dp)
         expect(html).toMatch(/¥(<!-- -->)?10\.00/);
-        expect(html).toMatch(/¥(<!-- -->)?2\.00/); // used_quota = 138_888 ≈ ¥2.00
-        // USD subtitle
+        expect(html).toMatch(/¥(<!-- -->)?2\.00/);
         expect(html).toContain('USD');
-        // Raw quota with thousands sep
+        // newapi: raw quota sub-display with thousands sep
         expect(html).toContain('694,444');
-        // Empty history hint
         expect(html).toContain('暂无充值记录');
-        // 充值 CTA on top
         expect(html).toContain('+ 充值');
-        // No fallback / error banner on live source
         expect(html).not.toContain('数据暂时不可更新');
         expect(html).not.toContain('当前无法获取余额');
     });
 
-    it('shows "数据暂时不可更新" banner when source=fallback', async () => {
+    it('P4c-3.5: portal customer renders the ¥ Account balance + NO raw-quota sub-display', async () => {
         mockGetCurrentUser.mockResolvedValue(SESSION_USER);
-        mockGetQuotaWithCache.mockResolvedValue({
-            remain_quota: 694_444,
-            used_quota: 0,
-            source: 'fallback',
+        // portal: balance from Account.balance_cny, spent from Σ|charge|; no quota concept.
+        mockGetCustomerBalance.mockResolvedValue({
+            balanceCny: 33.5,
+            spentCny: 6.5,
+            source: 'portal',
+            stale: false,
+            quota: null,
         });
         mockRechargeLogFindMany.mockResolvedValue([]);
 
         const html = renderToString(await BalancePage());
+        expect(html).toMatch(/¥(<!-- -->)?33\.50/); // available balance from the ledger
+        expect(html).toMatch(/¥(<!-- -->)?6\.50/); // cumulative spend
+        // portal has no new-api quota → the "· N quota" sub-display is absent
+        expect(html).not.toContain('quota');
+        expect(html).not.toContain('数据暂时不可更新');
+    });
+
+    it('shows "数据暂时不可更新" banner when newapi balance is stale (new-api unreachable)', async () => {
+        mockGetCurrentUser.mockResolvedValue(SESSION_USER);
+        mockGetCustomerBalance.mockResolvedValue(newapiBal(694_444, 0, true));
+        mockRechargeLogFindMany.mockResolvedValue([]);
+
+        const html = renderToString(await BalancePage());
         expect(html).toContain('数据暂时不可更新');
-        // Numbers still rendered (we have data, just stale)
         expect(html).toMatch(/¥(<!-- -->)?10\.00/);
     });
 
-    it('does NOT show fallback banner when source=cache (fresh)', async () => {
+    it('does NOT show fallback banner when balance is fresh', async () => {
         mockGetCurrentUser.mockResolvedValue(SESSION_USER);
-        mockGetQuotaWithCache.mockResolvedValue({
-            remain_quota: 1_388_888, // ≈ ¥20.00
-            used_quota: 0,
-            source: 'cache',
-        });
+        mockGetCustomerBalance.mockResolvedValue(newapiBal(1_388_888, 0)); // ≈ ¥20.00
         mockRechargeLogFindMany.mockResolvedValue([]);
 
         const html = renderToString(await BalancePage());
@@ -105,27 +117,21 @@ describe('<BalancePage /> SSR smoke', () => {
         expect(html).toMatch(/¥(<!-- -->)?20\.00/);
     });
 
-    it('shows error banner when getQuotaWithCache throws (no cache + new-api dead)', async () => {
+    it('shows error banner when getCustomerBalance throws (no cache + new-api dead)', async () => {
         mockGetCurrentUser.mockResolvedValue(SESSION_USER);
-        mockGetQuotaWithCache.mockRejectedValue(new Error('quota fetch failed: ...'));
+        mockGetCustomerBalance.mockRejectedValue(new Error('quota fetch failed: ...'));
         mockRechargeLogFindMany.mockResolvedValue([]);
 
         const html = renderToString(await BalancePage());
         expect(html).toContain('当前无法获取余额');
-        // Cards must NOT render when quota fetch failed (avoid showing ¥0.00 misleadingly)
         expect(html).not.toContain('可用余额');
         expect(html).not.toContain('累计消费');
-        // History section still renders (independent of quota fetch)
         expect(html).toContain('充值流水');
     });
 
     it('renders history table with friendly source labels + 8-char order id prefix', async () => {
         mockGetCurrentUser.mockResolvedValue(SESSION_USER);
-        mockGetQuotaWithCache.mockResolvedValue({
-            remain_quota: 694_444,
-            used_quota: 0,
-            source: 'live',
-        });
+        mockGetCustomerBalance.mockResolvedValue(newapiBal(694_444, 0));
         mockRechargeLogFindMany.mockResolvedValue([
             {
                 id: 'rl-1',
@@ -144,24 +150,16 @@ describe('<BalancePage /> SSR smoke', () => {
         ]);
 
         const html = renderToString(await BalancePage());
-        // Friendly labels
         expect(html).toContain('在线支付');
         expect(html).toContain('管理员充值');
-        // 8-char order id prefix
         expect(html).toContain('order-ab');
-        // Null order_id rendered as em-dash placeholder
         expect(html).toContain('—');
-        // Empty-state hint NOT shown when rows exist
         expect(html).not.toContain('暂无充值记录');
     });
 
     it('passes user_id scope to prisma.rechargeLog.findMany (no cross-user leak)', async () => {
         mockGetCurrentUser.mockResolvedValue(SESSION_USER);
-        mockGetQuotaWithCache.mockResolvedValue({
-            remain_quota: 0,
-            used_quota: 0,
-            source: 'live',
-        });
+        mockGetCustomerBalance.mockResolvedValue(newapiBal(0, 0));
         mockRechargeLogFindMany.mockResolvedValue([]);
 
         await BalancePage();

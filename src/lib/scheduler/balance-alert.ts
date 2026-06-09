@@ -30,8 +30,7 @@
  */
 import * as Sentry from '@sentry/nextjs';
 import { prisma } from '@/lib/db';
-import { getQuotaWithCache } from '@/lib/newapi/quota-cache';
-import { quotaToCny } from '@/lib/newapi/client';
+import { getCustomerBalance } from '@/lib/billing/customer-balance';
 import { sendBalanceAlertEmail } from '@/lib/email/send';
 import { getAppUrl } from '@/lib/url/app-url';
 
@@ -101,8 +100,10 @@ export async function scanAndAlert(now: Date = new Date()): Promise<BalanceAlert
 
     for (const u of candidates) {
         try {
-            const snap = await getQuotaWithCache(u.id);
-            const remainCny = quotaToCny(snap.remain_quota);
+            // P4c-3.5: portal 客户按 Account.balance_cny 判低余额 —— 否则读到哑门 quota(1e9 放行)
+            // 会永远 > 阈值、永不提醒。newapi 照旧 getQuotaWithCache。
+            const bal = await getCustomerBalance(u.id);
+            const remainCny = bal.balanceCny;
             const threshold = u.balance_alert_threshold_cny ? Number(u.balance_alert_threshold_cny) : 0;
 
             if (remainCny > threshold) {

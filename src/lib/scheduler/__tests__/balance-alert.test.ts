@@ -21,15 +21,19 @@ vi.mock('@/lib/db', () => ({
     },
 }));
 
-const mockGetQuotaWithCache = vi.fn();
-vi.mock('@/lib/newapi/quota-cache', () => ({
-    getQuotaWithCache: (...args: unknown[]) => mockGetQuotaWithCache(...args),
+// P4c-3.5: balance-alert reads via getCustomerBalance (portal → Account.balance_cny; newapi → quota).
+const mockGetCustomerBalance = vi.fn();
+vi.mock('@/lib/billing/customer-balance', () => ({
+    getCustomerBalance: (...args: unknown[]) => mockGetCustomerBalance(...args),
 }));
-
-vi.mock('@/lib/newapi/client', () => ({
-    // 1 USD = 7.2 CNY = 500_000 quota → 1 quota = ~0.0144 CNY * 1e-3 ish
-    quotaToCny: (quota: number) => (quota / 500_000) * 7.2,
-}));
+/** A newapi-mode CustomerBalance carrying the given ¥ available balance (the field the alert reads). */
+const newapiBal = (balanceCny: number) => ({
+    balanceCny,
+    spentCny: 0,
+    source: 'newapi' as const,
+    stale: false,
+    quota: { remain: 0, used: 0 },
+});
 
 const mockSendBalanceAlertEmail = vi.fn();
 vi.mock('@/lib/email/send', () => ({
@@ -116,8 +120,8 @@ describe('scanAndAlert — candidate selection', () => {
 describe('scanAndAlert — send decisions', () => {
     it('balance > threshold → no send, skippedAboveThreshold counted', async () => {
         mockUserFindMany.mockResolvedValue([user({ threshold: 5 })]);
-        // remain quota maps to ¥10 (well above ¥5 threshold)
-        mockGetQuotaWithCache.mockResolvedValue({ remain_quota: (10 * 500_000) / 7.2, used_quota: 0, source: 'live' });
+        // ¥10 balance — well above the ¥5 threshold
+        mockGetCustomerBalance.mockResolvedValue(newapiBal(10));
 
         const r = await scanAndAlert();
 
@@ -129,8 +133,8 @@ describe('scanAndAlert — send decisions', () => {
 
     it('balance ≤ threshold → CAS-claim then send + alertsSent counted', async () => {
         mockUserFindMany.mockResolvedValue([user({ threshold: 10 })]);
-        // remain ¥3 → below threshold ¥10
-        mockGetQuotaWithCache.mockResolvedValue({ remain_quota: (3 * 500_000) / 7.2, used_quota: 0, source: 'cache' });
+        // ¥3 balance → below the ¥10 threshold
+        mockGetCustomerBalance.mockResolvedValue(newapiBal(3));
 
         const r = await scanAndAlert();
 
@@ -158,7 +162,7 @@ describe('scanAndAlert — send decisions', () => {
 
     it('CAS-claim count=0 (sibling instance won race) → no email, skippedRaceLost counted', async () => {
         mockUserFindMany.mockResolvedValue([user({ threshold: 10 })]);
-        mockGetQuotaWithCache.mockResolvedValue({ remain_quota: (1 * 500_000) / 7.2, used_quota: 0, source: 'live' });
+        mockGetCustomerBalance.mockResolvedValue(newapiBal(1));
         mockUserUpdateMany.mockResolvedValueOnce({ count: 0 });
 
         const r = await scanAndAlert();
@@ -173,7 +177,7 @@ describe('scanAndAlert — send decisions', () => {
             user({ id: USER_A, email: 'a@x.io', threshold: 10 }),
             user({ id: USER_B, email: 'b@x.io', threshold: 10 }),
         ]);
-        mockGetQuotaWithCache.mockResolvedValue({ remain_quota: 1, used_quota: 0, source: 'live' });
+        mockGetCustomerBalance.mockResolvedValue(newapiBal(1));
         // First send throws, second succeeds.
         mockSendBalanceAlertEmail
             .mockRejectedValueOnce(new Error('SMTP timeout'))
@@ -194,7 +198,7 @@ describe('scanAndAlert — send decisions', () => {
 
     it('quota fetch fails (cache miss + new-api dead) → skippedQuotaUnavailable, no Sentry', async () => {
         mockUserFindMany.mockResolvedValue([user({ threshold: 10 })]);
-        mockGetQuotaWithCache.mockRejectedValue(new Error(`quota fetch failed for user ${USER_A}: ECONNREFUSED`));
+        mockGetCustomerBalance.mockRejectedValue(new Error(`quota fetch failed for user ${USER_A}: ECONNREFUSED`));
 
         const r = await scanAndAlert();
 
@@ -208,16 +212,31 @@ describe('scanAndAlert — send decisions', () => {
 
     it('cache source quota also goes through (no live-only restriction)', async () => {
         mockUserFindMany.mockResolvedValue([user({ threshold: 10 })]);
-        // 60s cached value — fully valid; scheduler should not require 'live'.
-        mockGetQuotaWithCache.mockResolvedValue({
-            remain_quota: (5 * 500_000) / 7.2,
-            used_quota: 0,
-            source: 'cache' as const,
+        // ¥5 balance (newapi cache path); scheduler shouldn't require a 'live' source.
+        mockGetCustomerBalance.mockResolvedValue(newapiBal(5));
+
+        const r = await scanAndAlert();
+
+        expect(mockSendBalanceAlertEmail).toHaveBeenCalledTimes(1);
+        expect(r.alertsSent).toBe(1);
+    });
+
+    it('P4c-3.5: portal customer judged by Account.balance_cny (NOT the 1e9 dumb-gate quota)', async () => {
+        mockUserFindMany.mockResolvedValue([user({ threshold: 10 })]);
+        // getCustomerBalance returns the portal ¥ ledger balance (¥2), not the new-api gate quota.
+        // If the scheduler still read quota (1e9 → ¥14400), it would wrongly skip — this guards that.
+        mockGetCustomerBalance.mockResolvedValue({
+            balanceCny: 2,
+            spentCny: 8,
+            source: 'portal' as const,
+            stale: false,
+            quota: null,
         });
 
         const r = await scanAndAlert();
 
         expect(mockSendBalanceAlertEmail).toHaveBeenCalledTimes(1);
+        expect((mockSendBalanceAlertEmail.mock.calls[0][0] as { remainCny: number }).remainCny).toBeCloseTo(2, 5);
         expect(r.alertsSent).toBe(1);
     });
 });
