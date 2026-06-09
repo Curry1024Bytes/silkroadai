@@ -1,0 +1,138 @@
+'use client';
+
+/**
+ * 模型消耗分布图 — daily consumption stacked by model (new-api 看板 风格).
+ *
+ * Data comes from `getUsageAggregate().byDay` (raw quota per model per day,
+ * Asia/Shanghai buckets) + `.chartModels` (ordered stack keys, top-N + '其他').
+ * Quota → ¥ conversion happens here at render via `quotaToCny` so cached
+ * aggregate rows never bake in a stale FX rate.
+ *
+ * recharts is already a portal dependency (admin DailyChart). This is a
+ * client island — recharts needs the DOM (ResponsiveContainer measures width).
+ * The custom tooltip is typed in-file to avoid recharts' loose ValueType
+ * generics, matching the DailyChart pattern.
+ */
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Legend, CartesianGrid } from 'recharts';
+import { quotaToCny } from '@/lib/newapi/quota-units';
+
+export interface ModelConsumptionChartProps {
+    byDay: Array<{ date: string; values: Record<string, number> }>;
+    /** Ordered stack keys (top-N model names, '其他' last when present). */
+    models: string[];
+}
+
+const OTHER_LABEL = '其他';
+
+/** Stack colors. '其他' is always the muted grey; real models cycle the
+ *  brand-leaning palette by index. */
+const PALETTE = ['#1a2540', '#4f46e5', '#0ea5e9', '#10b981', '#f59e0b', '#ec4899'];
+const OTHER_COLOR = '#94a3b8';
+
+function colorFor(model: string, idx: number): string {
+    if (model === OTHER_LABEL) return OTHER_COLOR;
+    return PALETTE[idx % PALETTE.length];
+}
+
+/** YYYY-MM-DD → M/D for the axis. */
+function shortDate(date: string): string {
+    const [, m, d] = date.split('-');
+    return m && d ? `${Number(m)}/${Number(d)}` : date;
+}
+
+/** Compact ¥ for the Y axis ticks. */
+function formatCnyTick(quota: number): string {
+    const cny = quotaToCny(quota);
+    if (cny >= 1000) return `¥${(cny / 1000).toFixed(1)}k`;
+    if (cny >= 1) return `¥${cny.toFixed(0)}`;
+    return `¥${cny.toFixed(2)}`;
+}
+
+interface TooltipPayloadEntry {
+    value: number;
+    dataKey: string;
+    color: string;
+}
+
+function ChartTooltip({
+    active,
+    payload,
+    label,
+}: {
+    active?: boolean;
+    payload?: TooltipPayloadEntry[];
+    label?: string;
+}) {
+    if (!active || !payload?.length) return null;
+    // Skip zero stacks so a busy day's tooltip stays readable.
+    const rows = payload.filter((p) => p.value > 0);
+    const total = rows.reduce((a, p) => a + p.value, 0);
+    return (
+        <div className="rounded-lg border border-brand-border bg-surface px-3 py-2 text-xs shadow-card-strong">
+            <p className="m-0 mb-1.5 font-medium text-navy">{label}</p>
+            {rows.map((p) => (
+                <p key={p.dataKey} className="m-0 flex items-center justify-between gap-3 text-muted-ink">
+                    <span className="flex items-center gap-1.5">
+                        <span className="inline-block h-2 w-2 rounded-sm" style={{ backgroundColor: p.color }} />
+                        <span className="font-mono">{p.dataKey}</span>
+                    </span>
+                    <span className="tabular-nums text-ink">¥{quotaToCny(p.value).toFixed(2)}</span>
+                </p>
+            ))}
+            <p className="m-0 mt-1.5 flex justify-between gap-3 border-t border-brand-border pt-1.5 font-medium text-navy">
+                <span>合计</span>
+                <span className="tabular-nums">¥{quotaToCny(total).toFixed(2)}</span>
+            </p>
+        </div>
+    );
+}
+
+export function ModelConsumptionChart({ byDay, models }: ModelConsumptionChartProps) {
+    if (byDay.length === 0 || models.length === 0) {
+        return (
+            <div className="flex h-[260px] items-center justify-center rounded-xl border border-brand-border bg-surface text-sm text-minor-ink shadow-card">
+                该时间段内暂无消耗数据
+            </div>
+        );
+    }
+
+    // Flatten to recharts rows, ensuring every stack key exists (default 0)
+    // so stacking is gap-free.
+    const data = byDay.map((d) => {
+        const row: Record<string, number | string> = { date: shortDate(d.date) };
+        for (const m of models) row[m] = d.values[m] ?? 0;
+        return row;
+    });
+
+    // Thin out ticks when the window is long (mirrors DailyChart).
+    const tickInterval = data.length > 30 ? Math.ceil(data.length / 12) - 1 : 0;
+
+    return (
+        <div className="rounded-xl border border-brand-border bg-surface p-4 shadow-card">
+            <ResponsiveContainer width="100%" height={280}>
+                <BarChart data={data} margin={{ top: 8, right: 12, bottom: 4, left: 4 }}>
+                    <CartesianGrid stroke="#e2e8f0" strokeDasharray="3 3" vertical={false} />
+                    <XAxis
+                        dataKey="date"
+                        tick={{ fill: '#64748b', fontSize: 12 }}
+                        axisLine={{ stroke: '#e2e8f0' }}
+                        tickLine={false}
+                        interval={tickInterval}
+                    />
+                    <YAxis
+                        tickFormatter={formatCnyTick}
+                        tick={{ fill: '#64748b', fontSize: 12 }}
+                        axisLine={{ stroke: '#e2e8f0' }}
+                        tickLine={false}
+                        width={52}
+                    />
+                    <Tooltip content={<ChartTooltip />} cursor={{ fill: 'rgba(148,163,184,0.12)' }} />
+                    <Legend wrapperStyle={{ fontSize: 12 }} iconType="square" />
+                    {models.map((m, idx) => (
+                        <Bar key={m} dataKey={m} stackId="quota" fill={colorFor(m, idx)} maxBarSize={48} />
+                    ))}
+                </BarChart>
+            </ResponsiveContainer>
+        </div>
+    );
+}

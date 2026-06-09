@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { renderToString } from 'react-dom/server';
-import { BalanceAlertForm } from '@/app/(authenticated)/balance/balance-alert-form';
+import { BalanceAlertForm } from '@/app/(authenticated)/dashboard/balance-alert-form';
 
 describe('<BalanceAlertForm /> SSR (W6 D2)', () => {
     it('renders the threshold input with the initial value populated', () => {

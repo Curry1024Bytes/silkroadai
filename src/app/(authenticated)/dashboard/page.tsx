@@ -1,254 +1,423 @@
 /**
- * /dashboard — landing page for authenticated users.
+ * /dashboard — 客户控制台三合一 (overview + balance + usage on one page,
+ * new-api 看板 风格). Replaces the separate /balance + /usage pages, which now
+ * 307-redirect here.
  *
- * W6 D5 replaces the W4-2 D4 placeholder cards with real data:
- *   - Card 1: 当前余额 (getQuotaWithCache, W4-2 D6 helper)
- *   - Card 2: 上月消费 (UsageAggregate period='last_month', W6 D5)
- *   - Card 3: 累计调用次数 (UsageAggregate period='all', W6 D5)
- *   - Card 4: 最常用模型 Top 3 (UsageAggregate period='30d' byModel slice 3)
+ * Sections (all in one scroll, period tabs drive the period-scoped ones):
+ *   1. 汇总卡 ×5    — 当前余额 / 历史消费 / 请求次数 / 统计 Tokens / 本期消费
+ *   2. 模型消耗分布 — recharts stacked bar by model over time (ModelConsumptionChart)
+ *   3. 按模型 Top N — per-model % breakdown (preserved from /usage)
+ *   4. 调用明细     — per-call table: 时间/模型/时长/token/¥/结果 (CallDetailTable) — the
+ *                     customer's core ask; pulls type=2 (成功) + type=5 (失败) merged
+ *   5. 余额提醒设置 — threshold form (preserved from /balance)
+ *   6. 充值流水     — recharge history (preserved from /balance)
+ *   7. 代理推广卡   — reseller promo (preserved from old /dashboard)
  *
- * Plus a row of quick-link buttons to /pay, /keys, /usage, /models.
+ * ⚠️ Balance/spend ALWAYS go through getCustomerBalance (P4c-3.5 fork: portal
+ *    mode reads Account ¥ ledger, newapi mode reads quota). Never read new-api
+ *    quota directly as balance.
  *
- * All four data fetches run in parallel via `Promise.allSettled` — if one
- * fails (e.g. new-api blip on the all-time aggregate), the others still
- * render. Per-card error states are inline (re-cast as <EmptyState> in W7
- * P2 so they read as intentional empties rather than UI bugs).
+ * Resilience: balance, the usage aggregate, and the per-call log fetches are
+ * independent — one failing degrades only its own section (暂无数据 / empty
+ * state), never the whole page.
  */
+import type { ReactNode } from 'react';
 import { headers } from 'next/headers';
 import { NextRequest } from 'next/server';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth/session';
-import { getCustomerBalance } from '@/lib/billing/customer-balance';
-import { getUsageAggregate } from '@/lib/newapi/usage-aggregate';
-import { quotaToCny } from '@/lib/newapi/client';
+import { prisma } from '@/lib/db';
+import { getCustomerBalance, type CustomerBalance } from '@/lib/billing/customer-balance';
+import { getUsageAggregate, type UsageAggregateSnapshot } from '@/lib/newapi/usage-aggregate';
+import { queryLogs, quotaToCny, type NewApiUsageLog } from '@/lib/newapi/client';
 import { USD_TO_CNY_RATE } from '@/lib/newapi/quota-units';
+import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { FormError } from '@/components/ui/FormError';
 import { fetchResellerStatus } from '@/lib/reseller/fetch-status';
 import { ResellerPromoCard } from '@/components/reseller/ResellerPromoCard';
+import { parsePeriod, periodToRange, type UsagePeriod } from './period';
+import { PeriodTabs } from './period-tabs';
+import { BalanceAlertForm } from './balance-alert-form';
+import { ModelConsumptionChart } from './model-consumption-chart';
+import { CallDetailTable, type CallRow } from './call-detail-table';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: '概览 — Silk Road AI' };
 
+/** Recent-call fetch sizes for the detail table. The full-period TOTALS come
+ *  from the aggregator (up to 50k rows); these two slices are only for the
+ *  "每次调用明细" rows, so a bounded recent window keeps the render fast.
+ *  Errors (type=5) are rarer, so a smaller slice. The merged list is capped
+ *  at CALLS_CAP — paginated client-side in CallDetailTable. */
+const CONSUME_FETCH_SIZE = 150;
+const ERROR_FETCH_SIZE = 50;
+const CALLS_CAP = 200;
+const HISTORY_LIMIT = 10;
+const TOP_MODELS = 5;
+
+const PERIOD_LABEL: Record<UsagePeriod, string> = { '7d': '近 7 天', '30d': '近 30 天', all: '全部' };
+
+const RECHARGE_SOURCE_LABEL: Record<string, string> = {
+    payment: '在线支付',
+    manual: '管理员充值',
+    refund: '退款',
+    promo: '推广奖励',
+    adjustment: '余额调整',
+};
+
 async function getSessionUser() {
     const h = await headers();
     const cookie = h.get('cookie') || '';
-    const req = new NextRequest('http://internal/dashboard', {
-        method: 'GET',
-        headers: { cookie },
-    });
+    const req = new NextRequest('http://internal/dashboard', { method: 'GET', headers: { cookie } });
     return getCurrentUser(req);
 }
 
-interface QuickLink {
-    href: string;
-    label: string;
-    desc: string;
+function toCallRow(log: NewApiUsageLog): CallRow {
+    return {
+        id: log.id,
+        createdAt: log.created_at,
+        model: log.model_name,
+        useTimeMs: log.use_time,
+        promptTokens: log.prompt_tokens,
+        completionTokens: log.completion_tokens,
+        quota: log.quota,
+        type: log.type,
+        content: log.content,
+    };
 }
-const QUICK_LINKS: QuickLink[] = [
-    { href: '/pay', label: '充值', desc: '为账户余额充值' },
-    { href: '/keys', label: '管理 Keys', desc: '创建 / 撤销 / 查用量' },
-    { href: '/usage', label: '查看用量', desc: '按模型、按时间统计' },
-    { href: '/models', label: '模型清单', desc: '当前接入的全部模型' },
-];
 
-export default async function DashboardPage() {
+/** A summary stat card (label + body). Body decides its own empty state. */
+function StatCard({ label, children }: { label: string; children: ReactNode }) {
+    return (
+        <Card as="article">
+            <CardHeader>
+                <CardTitle as="h3" className="text-sm font-medium text-muted-ink">
+                    {label}
+                </CardTitle>
+            </CardHeader>
+            <CardContent>{children}</CardContent>
+        </Card>
+    );
+}
+
+const BIG = 'm-0 text-2xl font-semibold text-navy tabular-nums';
+const SUB = 'mt-1.5 m-0 text-xs text-minor-ink tabular-nums';
+const NO_DATA = <p className="m-0 text-sm text-minor-ink">暂无数据</p>;
+
+export default async function DashboardPage({
+    searchParams,
+}: {
+    searchParams?: Promise<Record<string, string | string[] | undefined>>;
+} = {}) {
     const user = await getSessionUser();
-    // Layout has already gated; this branch should never run, but typescript
-    // narrows `user` to non-null only after the explicit check.
-    if (!user) {
-        return null;
+    // Layout already gated; this is just TS narrowing.
+    if (!user) return null;
+
+    const params = (await searchParams) ?? {};
+    const period = parsePeriod(params.period);
+    const range = periodToRange(period);
+    const periodLabel = PERIOD_LABEL[period];
+
+    // ── Balance (P4c-3.5 fork — never read quota directly) ──
+    let bal: CustomerBalance | null = null;
+    let balErr = false;
+    try {
+        bal = await getCustomerBalance(user.id);
+    } catch (err) {
+        balErr = true;
+        console.warn(`[dashboard] getCustomerBalance failed for user ${user.id}:`, err);
     }
 
+    // ── Usage aggregate + per-call logs (period-scoped) ──
     const newapiUserId = user.newapi_user_id;
     const newapiUsername = user.newapi_username;
-    // W7 D4 PR-J Bug 2: aggregator now needs both — username for the
-    // upstream filter (the dimension new-api actually honors under admin
-    // auth, gotcha #15) and user_id for a defensive cross-row post-filter.
-    // Provision sets both atomically (W2 D6 provisionNewCustomer), so the
-    // null guard is just type narrowing for TS, not a real edge case.
-    const aggArgsBase: { portalUserId: string; newapiUserId: number; newapiUsername: string } | null =
-        newapiUserId != null && newapiUsername != null ? { portalUserId: user.id, newapiUserId, newapiUsername } : null;
+    let agg: UsageAggregateSnapshot | null = null;
+    let usageErr: 'account_not_provisioned' | 'fetch_failed' | null = null;
+    let calls: CallRow[] = [];
 
-    // Four parallel fetches via allSettled — a single new-api blip on one
-    // card doesn't take out the whole page. Per-card error states render
-    // inline below.
-    const [balanceSettled, lastMonthSettled, allTimeSettled, top3Settled] = await Promise.allSettled([
-        // P4c-3.5: portal 客户读 ¥账本(Account);newapi 照旧 getQuotaWithCache。
-        getCustomerBalance(user.id),
-        aggArgsBase
-            ? getUsageAggregate({ ...aggArgsBase, period: 'last_month' })
-            : Promise.reject(new Error('account_not_provisioned')),
-        aggArgsBase
-            ? getUsageAggregate({ ...aggArgsBase, period: 'all' })
-            : Promise.reject(new Error('account_not_provisioned')),
-        aggArgsBase
-            ? getUsageAggregate({ ...aggArgsBase, period: '30d' })
-            : Promise.reject(new Error('account_not_provisioned')),
-    ]);
+    if (newapiUserId == null || newapiUsername == null) {
+        usageErr = 'account_not_provisioned';
+    } else {
+        // username is the dimension new-api honors under admin auth (gotcha
+        // #15 — user_id is silently dropped); we still post-filter every row
+        // by user_id for defence-in-depth. type=2 (成功) + type=5 (失败) are
+        // fetched separately, then merged + sorted desc for the detail table.
+        const [aggSettled, consumeSettled, errorSettled] = await Promise.allSettled([
+            getUsageAggregate({ portalUserId: user.id, newapiUserId, newapiUsername, period }),
+            queryLogs({
+                username: newapiUsername,
+                type: 2,
+                start_timestamp: range.start || undefined,
+                end_timestamp: range.end,
+                page: 1,
+                page_size: CONSUME_FETCH_SIZE,
+            }),
+            queryLogs({
+                username: newapiUsername,
+                type: 5,
+                start_timestamp: range.start || undefined,
+                end_timestamp: range.end,
+                page: 1,
+                page_size: ERROR_FETCH_SIZE,
+            }),
+        ]);
 
-    // fix/reseller-entry-discovery: lookup reseller status for the promo
-    // card gate. fetchResellerStatus is React.cache()-wrapped + layout
-    // already called it earlier, so this is a dedup'd zero-cost re-read.
+        if (aggSettled.status === 'fulfilled') {
+            agg = aggSettled.value;
+        } else {
+            usageErr = 'fetch_failed';
+            console.warn(`[dashboard] getUsageAggregate failed for user ${user.id}:`, aggSettled.reason);
+        }
+
+        const consume =
+            consumeSettled.status === 'fulfilled'
+                ? consumeSettled.value.items.filter((l) => l.user_id === newapiUserId && l.type === 2)
+                : [];
+        const errors =
+            errorSettled.status === 'fulfilled'
+                ? errorSettled.value.items.filter((l) => l.user_id === newapiUserId && l.type === 5)
+                : [];
+        if (consumeSettled.status === 'rejected') {
+            console.warn(`[dashboard] consume queryLogs failed for user ${user.id}:`, consumeSettled.reason);
+        }
+        if (errorSettled.status === 'rejected') {
+            console.warn(`[dashboard] error queryLogs failed for user ${user.id}:`, errorSettled.reason);
+        }
+        calls = [...consume, ...errors]
+            .sort((a, b) => b.created_at - a.created_at)
+            .slice(0, CALLS_CAP)
+            .map(toCallRow);
+    }
+
+    // ── Recharge history + reseller promo gate (preserved features) ──
+    const history = await prisma.rechargeLog.findMany({
+        where: { user_id: user.id },
+        orderBy: { created_at: 'desc' },
+        take: HISTORY_LIMIT,
+        select: { id: true, order_id: true, amount: true, source: true, created_at: true },
+    });
     const resellerSnap = await fetchResellerStatus(user.id);
 
-    const balance = balanceSettled.status === 'fulfilled' ? balanceSettled.value : null;
-    const lastMonth = lastMonthSettled.status === 'fulfilled' ? lastMonthSettled.value : null;
-    const allTime = allTimeSettled.status === 'fulfilled' ? allTimeSettled.value : null;
-    const top3 = top3Settled.status === 'fulfilled' ? top3Settled.value : null;
-
-    // Log per-card failures once (server stderr is enough — not Sentry-worthy
-    // for individual user dashboard renders; the underlying helper already
-    // captures the new-api outage to Sentry on hard-fail).
-    if (balanceSettled.status === 'rejected') {
-        console.warn(`[dashboard] balance fetch failed for user ${user.id}:`, balanceSettled.reason);
-    }
-    if (lastMonthSettled.status === 'rejected') {
-        console.warn(`[dashboard] last_month fetch failed for user ${user.id}:`, lastMonthSettled.reason);
-    }
-    if (allTimeSettled.status === 'rejected') {
-        console.warn(`[dashboard] all_time fetch failed for user ${user.id}:`, allTimeSettled.reason);
-    }
-    if (top3Settled.status === 'rejected') {
-        console.warn(`[dashboard] top3 fetch failed for user ${user.id}:`, top3Settled.reason);
-    }
+    const byModel = agg ? agg.byModel.slice(0, TOP_MODELS) : [];
+    const totalTokens = agg ? agg.totalPromptTokens + agg.totalCompletionTokens : 0;
 
     return (
         <section>
-            <h1 className="m-0 mb-2 text-2xl font-semibold text-navy">
-                欢迎,{user.nickname || user.email.split('@')[0]}
-            </h1>
-            <p className="m-0 mb-6 text-sm text-muted-ink">这是您的客户后台。在这里管理 API Keys、查看余额与用量。</p>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-                {/* Card 1: Current balance */}
-                <Card as="article">
-                    <CardHeader>
-                        <CardTitle as="h3" className="text-sm font-medium text-muted-ink">
-                            当前余额
-                        </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                        {balance ? (
-                            <>
-                                <p className="m-0 text-3xl font-semibold text-navy tabular-nums">
-                                    ¥{balance.balanceCny.toFixed(2)}
-                                </p>
-                                <p className="mt-1.5 m-0 text-xs text-minor-ink tabular-nums">
-                                    ≈ ${(balance.balanceCny / USD_TO_CNY_RATE).toFixed(4)} USD
-                                    {balance.stale && ' · 数据稍滞后'}
-                                </p>
-                            </>
-                        ) : (
-                            <p className="m-0 text-sm text-minor-ink">暂无数据</p>
-                        )}
-                    </CardContent>
-                </Card>
-
-                {/* Card 2: Last calendar month spend */}
-                <Card as="article">
-                    <CardHeader>
-                        <CardTitle as="h3" className="text-sm font-medium text-muted-ink">
-                            上月消费
-                        </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                        {lastMonth ? (
-                            <>
-                                <p className="m-0 text-3xl font-semibold text-navy tabular-nums">
-                                    ¥{quotaToCny(lastMonth.totalUsedQuota).toFixed(2)}
-                                </p>
-                                <p className="mt-1.5 m-0 text-xs text-minor-ink tabular-nums">
-                                    {lastMonth.totalCalls.toLocaleString('en-US')} 次调用
-                                    {lastMonth.source === 'fallback' && ' · 数据稍滞后'}
-                                </p>
-                            </>
-                        ) : (
-                            <p className="m-0 text-sm text-minor-ink">暂无数据</p>
-                        )}
-                    </CardContent>
-                </Card>
-
-                {/* Card 3: All-time call count */}
-                <Card as="article">
-                    <CardHeader>
-                        <CardTitle as="h3" className="text-sm font-medium text-muted-ink">
-                            累计调用次数
-                        </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                        {allTime ? (
-                            <>
-                                <p className="m-0 text-3xl font-semibold text-navy tabular-nums">
-                                    {allTime.totalCalls.toLocaleString('en-US')}
-                                </p>
-                                <p className="mt-1.5 m-0 text-xs text-minor-ink tabular-nums">
-                                    共消费 ¥{quotaToCny(allTime.totalUsedQuota).toFixed(2)}
-                                    {allTime.source === 'fallback' && ' · 数据稍滞后'}
-                                </p>
-                            </>
-                        ) : (
-                            <p className="m-0 text-sm text-minor-ink">暂无数据</p>
-                        )}
-                    </CardContent>
-                </Card>
-
-                {/* Card 4: Top 3 models in last 30 days */}
-                <Card as="article">
-                    <CardHeader>
-                        <CardTitle as="h3" className="text-sm font-medium text-muted-ink">
-                            最常用模型 · 近 30 天
-                        </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                        {top3 && top3.byModel.length > 0 ? (
-                            <ul className="m-0 mt-1.5 p-0 list-none flex flex-col gap-1.5">
-                                {top3.byModel.slice(0, 3).map((m) => {
-                                    const pct = top3.totalUsedQuota ? (m.quota / top3.totalUsedQuota) * 100 : 0;
-                                    return (
-                                        <li key={m.model} className="flex justify-between gap-2 text-xs text-ink">
-                                            <span
-                                                className="font-mono overflow-hidden text-ellipsis whitespace-nowrap flex-1"
-                                                title={m.model}
-                                            >
-                                                {m.model}
-                                            </span>
-                                            <span className="text-muted-ink tabular-nums whitespace-nowrap">
-                                                {m.calls} 次 · {pct.toFixed(0)}%
-                                            </span>
-                                        </li>
-                                    );
-                                })}
-                            </ul>
-                        ) : (
-                            <p className="m-0 text-sm text-minor-ink">暂无调用</p>
-                        )}
-                    </CardContent>
-                </Card>
+            <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+                <div>
+                    <h1 className="m-0 mb-2 text-2xl font-semibold text-navy">
+                        欢迎,{user.nickname || user.email.split('@')[0]}
+                    </h1>
+                    <p className="m-0 text-sm text-muted-ink">余额、用量与每次调用明细,都在这里。</p>
+                </div>
+                <div className="flex items-center gap-3">
+                    <PeriodTabs active={period} />
+                    <Button href="/pay" size="sm">
+                        + 充值
+                    </Button>
+                </div>
             </div>
 
-            <h2 className="m-0 mb-3 text-base font-semibold text-navy">快速操作</h2>
-            <nav className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-                {QUICK_LINKS.map((link) => (
-                    <Link
-                        key={link.href}
-                        href={link.href}
-                        className={[
-                            'block bg-surface border border-brand-border rounded-xl shadow-card',
-                            'no-underline px-4 py-3.5',
-                            'hover:border-brand-accent hover:shadow-card-strong',
-                            'transition-all duration-150 ease-brand',
-                        ].join(' ')}
-                    >
-                        <span className="block text-sm font-semibold text-navy">{link.label}</span>
-                        <span className="block mt-0.5 text-xs text-muted-ink">{link.desc}</span>
-                    </Link>
-                ))}
-            </nav>
+            {bal?.stale && (
+                <div
+                    role="status"
+                    className="mb-4 rounded-lg border border-status-warning-border bg-status-warning-bg px-4 py-2.5 text-xs text-status-warning-text"
+                >
+                    余额数据暂时不可更新,显示的是稍早数据。
+                </div>
+            )}
+            {balErr && (
+                <div className="mb-4">
+                    <FormError severity="banner">当前无法获取余额,请稍后重试。</FormError>
+                </div>
+            )}
 
-            {/* fix/reseller-entry-discovery: bottom promo card surfaces the
-             *  代理计划 for any non-active reseller (null = never joined,
-             *  suspended/banned = was joined but currently can't earn).
-             *  Active resellers hide it — sidebar 代理后台 entry is enough. */}
+            {/* 1. Summary cards */}
+            <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-5">
+                <StatCard label="当前余额">
+                    {bal ? (
+                        <>
+                            <p className={BIG}>¥{bal.balanceCny.toFixed(2)}</p>
+                            <p className={SUB}>
+                                ≈ ${(bal.balanceCny / USD_TO_CNY_RATE).toFixed(2)} USD
+                                {bal.quota && <> · {bal.quota.remain.toLocaleString('en-US')} quota</>}
+                            </p>
+                        </>
+                    ) : (
+                        NO_DATA
+                    )}
+                </StatCard>
+                <StatCard label="历史消费">
+                    {bal ? (
+                        <>
+                            <p className={BIG}>¥{bal.spentCny.toFixed(2)}</p>
+                            <p className={SUB}>累计</p>
+                        </>
+                    ) : (
+                        NO_DATA
+                    )}
+                </StatCard>
+                <StatCard label="请求次数">
+                    {agg ? (
+                        <>
+                            <p className={BIG}>{agg.totalCalls.toLocaleString('en-US')}</p>
+                            <p className={SUB}>{periodLabel}</p>
+                        </>
+                    ) : (
+                        NO_DATA
+                    )}
+                </StatCard>
+                <StatCard label="统计 Tokens">
+                    {agg ? (
+                        <>
+                            <p className={BIG}>{totalTokens.toLocaleString('en-US')}</p>
+                            <p className={SUB}>
+                                输入 {agg.totalPromptTokens.toLocaleString('en-US')} · 输出{' '}
+                                {agg.totalCompletionTokens.toLocaleString('en-US')}
+                            </p>
+                        </>
+                    ) : (
+                        NO_DATA
+                    )}
+                </StatCard>
+                <StatCard label="本期消费">
+                    {agg ? (
+                        <>
+                            <p className={BIG}>¥{quotaToCny(agg.totalUsedQuota).toFixed(2)}</p>
+                            <p className={SUB}>
+                                {periodLabel}
+                                {agg.source === 'fallback' && ' · 数据稍滞后'}
+                            </p>
+                        </>
+                    ) : (
+                        NO_DATA
+                    )}
+                </StatCard>
+            </div>
+
+            {usageErr && (
+                <div className="mb-6">
+                    <FormError severity="banner">
+                        {usageErr === 'account_not_provisioned'
+                            ? '账户尚未关联到上游,请联系管理员。'
+                            : '当前无法获取用量数据,请稍后重试。'}
+                    </FormError>
+                </div>
+            )}
+
+            {/* 2. Model consumption chart */}
+            <h2 className="m-0 mb-3 text-base font-semibold text-navy">模型消耗分布 · {periodLabel}</h2>
+            <div className="mb-6">
+                <ModelConsumptionChart byDay={agg?.byDay ?? []} models={agg?.chartModels ?? []} />
+            </div>
+
+            {/* 3. By-model breakdown (preserved from /usage) */}
+            {byModel.length > 0 && (
+                <>
+                    <h2 className="m-0 mb-3 text-base font-semibold text-navy">按模型 Top {byModel.length}</h2>
+                    <div className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                        {byModel.map((m) => {
+                            const pct = agg && agg.totalUsedQuota ? (m.quota / agg.totalUsedQuota) * 100 : 0;
+                            return (
+                                <Card as="article" key={m.model} className="px-4 py-3">
+                                    <p
+                                        className="m-0 mb-1 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-sm font-semibold text-navy"
+                                        title={m.model}
+                                    >
+                                        {m.model}
+                                    </p>
+                                    <p className="m-0 mb-2 text-xs text-muted-ink tabular-nums">
+                                        {m.calls.toLocaleString('en-US')} 次 · ¥{quotaToCny(m.quota).toFixed(2)} ·{' '}
+                                        {pct.toFixed(1)}%
+                                    </p>
+                                    <div className="h-1.5 overflow-hidden rounded-sm bg-paper-muted">
+                                        <div
+                                            className="h-full bg-brand-accent"
+                                            style={{ width: `${Math.max(2, pct)}%` }}
+                                        />
+                                    </div>
+                                </Card>
+                            );
+                        })}
+                    </div>
+                </>
+            )}
+
+            {/* 4. Per-call detail table (core ask) */}
+            <h2 className="m-0 mb-3 text-base font-semibold text-navy">调用明细 · {periodLabel}</h2>
+            <p className="m-0 mb-3 text-xs text-muted-ink">
+                每行一次调用,含模型、时长、token 与消耗;失败的调用可展开查看错误详情。
+            </p>
+            <div className="mb-8">
+                <CallDetailTable rows={calls} />
+            </div>
+
+            {/* 5. Balance alert threshold (preserved from /balance) */}
+            <BalanceAlertForm
+                initialThreshold={
+                    user.balance_alert_threshold_cny != null ? Number(user.balance_alert_threshold_cny) : 10
+                }
+            />
+
+            {/* 6. Recharge history (preserved from /balance) */}
+            <h2 className="m-0 mb-3 text-base font-semibold text-navy">充值流水</h2>
+            {history.length === 0 ? (
+                <Card>
+                    <EmptyState
+                        title="暂无充值记录"
+                        body={
+                            <>
+                                点击右上「<code className="font-mono text-xs">+ 充值</code>」开始第一笔充值。
+                            </>
+                        }
+                    />
+                </Card>
+            ) : (
+                <Card className="overflow-hidden">
+                    <table className="w-full border-collapse">
+                        <thead>
+                            <tr className="bg-paper-muted text-muted-ink">
+                                <th className="border-b border-brand-border px-4 py-2.5 text-left text-xs font-semibold">
+                                    金额(CNY)
+                                </th>
+                                <th className="border-b border-brand-border px-4 py-2.5 text-left text-xs font-semibold">
+                                    类型
+                                </th>
+                                <th className="border-b border-brand-border px-4 py-2.5 text-left text-xs font-semibold">
+                                    订单号
+                                </th>
+                                <th className="border-b border-brand-border px-4 py-2.5 text-left text-xs font-semibold">
+                                    时间
+                                </th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {history.map((row, idx) => {
+                                const isLast = idx === history.length - 1;
+                                const cell = `px-4 py-3 text-sm text-ink ${isLast ? '' : 'border-b border-brand-border'}`;
+                                return (
+                                    <tr key={row.id}>
+                                        <td className={`${cell} font-medium tabular-nums`}>
+                                            ¥{Number(row.amount).toFixed(2)}
+                                        </td>
+                                        <td className={cell}>{RECHARGE_SOURCE_LABEL[row.source] ?? row.source}</td>
+                                        <td className={`${cell} font-mono text-xs text-muted-ink`}>
+                                            {row.order_id ? row.order_id.slice(0, 8) : '—'}
+                                        </td>
+                                        <td className={`${cell} text-muted-ink`}>
+                                            {row.created_at.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}
+                                        </td>
+                                    </tr>
+                                );
+                            })}
+                        </tbody>
+                    </table>
+                </Card>
+            )}
+
+            {/* 7. Reseller promo (preserved from old /dashboard) */}
             {resellerSnap.status !== 'active' && (
                 <div className="mt-8">
                     <ResellerPromoCard sourceStatus={resellerSnap.status === null ? 'none' : resellerSnap.status} />

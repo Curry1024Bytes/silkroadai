@@ -29,6 +29,19 @@ import { queryLogs } from './client';
 const TTL_MS = 5 * 60 * 1_000;
 const PAGE_SIZE = 1000;
 const MAX_PAGES = 50;
+/** How many distinct models get their own stack in the 模型消耗分布图; the
+ *  rest collapse into a single '其他' series so the chart + cached payload
+ *  stay bounded regardless of how many models a power user touches. */
+const CHART_TOP_MODELS = 6;
+const OTHER_MODEL_LABEL = '其他';
+
+/** Calendar day (YYYY-MM-DD) of a unix-second timestamp in Asia/Shanghai.
+ *  Computed via a fixed +8h offset on the epoch so the bucket is
+ *  deterministic regardless of the server's TZ env (gotcha #20) — the same
+ *  reason the UI passes `{ timeZone: 'Asia/Shanghai' }` to toLocaleString. */
+function shanghaiDay(unixSec: number): string {
+    return new Date((unixSec + 8 * 3_600) * 1_000).toISOString().slice(0, 10);
+}
 
 /** Period values accepted by the aggregator + the cache row's `period`
  *  column. Two naming styles coexist for backward-compat with the
@@ -38,10 +51,29 @@ export type UsagePeriod = '7d' | '30d' | 'all' | 'last_month';
 
 export const USAGE_PERIODS: readonly UsagePeriod[] = ['7d', '30d', 'all', 'last_month'] as const;
 
+/** One day's consumption, split per model (top-N + '其他'). Feeds the
+ *  stacked-bar 模型消耗分布图. Values are raw quota (FX-independent — the
+ *  chart converts to ¥ at render so cached rows don't bake in a stale rate). */
+export interface UsageDayPoint {
+    /** YYYY-MM-DD in Asia/Shanghai. */
+    date: string;
+    /** model name → quota consumed that day. Keys ⊆ `chartModels`. */
+    values: Record<string, number>;
+}
+
 export interface UsageAggregate {
     totalUsedQuota: number;
     totalCalls: number;
+    /** Σ prompt_tokens over the window (drives the 统计 Tokens card, brief §2). */
+    totalPromptTokens: number;
+    /** Σ completion_tokens over the window. */
+    totalCompletionTokens: number;
     byModel: Array<{ model: string; calls: number; quota: number }>;
+    /** Daily consumption stacked by model, ascending by date. */
+    byDay: UsageDayPoint[];
+    /** Ordered stack keys for the chart = top-N model names, with
+     *  '其他' appended when models were collapsed. Empty when no consumption. */
+    chartModels: string[];
 }
 
 export interface UsageAggregateSnapshot extends UsageAggregate {
@@ -197,7 +229,7 @@ export async function getUsageAggregate(args: {
  *  shape blindly even though we wrote it ourselves (forward-compat: old
  *  cache rows after a payload schema bump should at least not crash). */
 function readPayload(payload: unknown): UsageAggregate {
-    const p = payload as Partial<UsageAggregate> & { byModel?: unknown };
+    const p = payload as Partial<UsageAggregate> & { byModel?: unknown; byDay?: unknown; chartModels?: unknown };
     const byModel = Array.isArray(p.byModel)
         ? (p.byModel as Array<{ model?: unknown; calls?: unknown; quota?: unknown }>)
               .filter(
@@ -206,10 +238,33 @@ function readPayload(payload: unknown): UsageAggregate {
               )
               .map((m) => ({ model: m.model, calls: m.calls, quota: m.quota }))
         : [];
+    // byDay / chartModels / token totals were added after the cache table
+    // shipped — old rows lack them and default to []/0 here, self-healing on
+    // the next live refresh (≤ 5min TTL). The chart treats [] as "暂无数据".
+    const byDay = Array.isArray(p.byDay)
+        ? (p.byDay as Array<{ date?: unknown; values?: unknown }>)
+              .filter((d): d is { date: string; values: Record<string, unknown> } => typeof d.date === 'string')
+              .map((d) => {
+                  const values: Record<string, number> = {};
+                  if (d.values && typeof d.values === 'object') {
+                      for (const [k, v] of Object.entries(d.values as Record<string, unknown>)) {
+                          if (typeof v === 'number') values[k] = v;
+                      }
+                  }
+                  return { date: d.date, values };
+              })
+        : [];
+    const chartModels = Array.isArray(p.chartModels)
+        ? (p.chartModels as unknown[]).filter((m): m is string => typeof m === 'string')
+        : [];
     return {
         totalUsedQuota: typeof p.totalUsedQuota === 'number' ? p.totalUsedQuota : 0,
         totalCalls: typeof p.totalCalls === 'number' ? p.totalCalls : 0,
+        totalPromptTokens: typeof p.totalPromptTokens === 'number' ? p.totalPromptTokens : 0,
+        totalCompletionTokens: typeof p.totalCompletionTokens === 'number' ? p.totalCompletionTokens : 0,
         byModel,
+        byDay,
+        chartModels,
     };
 }
 
@@ -236,7 +291,11 @@ async function fetchLiveAggregate(args: {
 
     let totalUsedQuota = 0;
     let totalCalls = 0;
+    let totalPromptTokens = 0;
+    let totalCompletionTokens = 0;
     const byModelMap = new Map<string, { calls: number; quota: number }>();
+    // date(YYYY-MM-DD, Shanghai) → model → quota, for the stacked-bar chart.
+    const dayModelMap = new Map<string, Map<string, number>>();
     let pagesFetched = 0;
 
     for (let page = 1; page <= MAX_PAGES; page++) {
@@ -263,11 +322,18 @@ async function fetchLiveAggregate(args: {
             if (log.type !== 2) continue;
             totalCalls++;
             totalUsedQuota += log.quota;
+            totalPromptTokens += log.prompt_tokens;
+            totalCompletionTokens += log.completion_tokens;
             const key = log.model_name || '<unknown>';
             const slot = byModelMap.get(key) ?? { calls: 0, quota: 0 };
             slot.calls++;
             slot.quota += log.quota;
             byModelMap.set(key, slot);
+            // Daily-by-model bucket for the chart.
+            const day = shanghaiDay(log.created_at);
+            const dm = dayModelMap.get(day) ?? new Map<string, number>();
+            dm.set(key, (dm.get(key) ?? 0) + log.quota);
+            dayModelMap.set(day, dm);
         }
 
         // Early-exit conditions:
@@ -281,8 +347,35 @@ async function fetchLiveAggregate(args: {
         .map(([model, agg]) => ({ model, ...agg }))
         .sort((a, b) => b.quota - a.quota);
 
+    // Stack keys = top-N models by quota; everything else folds into '其他'.
+    const topModels = byModel.slice(0, CHART_TOP_MODELS).map((m) => m.model);
+    const topSet = new Set(topModels);
+    const hasOther = byModel.length > topModels.length;
+    const chartModels = byModel.length === 0 ? [] : hasOther ? [...topModels, OTHER_MODEL_LABEL] : [...topModels];
+
+    const byDay: UsageDayPoint[] = Array.from(dayModelMap.entries())
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .map(([date, dm]) => {
+            const values: Record<string, number> = {};
+            let other = 0;
+            for (const [model, quota] of dm) {
+                if (topSet.has(model)) values[model] = (values[model] ?? 0) + quota;
+                else other += quota;
+            }
+            if (hasOther && other > 0) values[OTHER_MODEL_LABEL] = other;
+            return { date, values };
+        });
+
     return {
-        aggregate: { totalUsedQuota, totalCalls, byModel },
+        aggregate: {
+            totalUsedQuota,
+            totalCalls,
+            totalPromptTokens,
+            totalCompletionTokens,
+            byModel,
+            byDay,
+            chartModels,
+        },
         pagesFetched,
     };
 }

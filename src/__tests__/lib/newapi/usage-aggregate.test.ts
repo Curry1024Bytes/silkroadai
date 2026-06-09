@@ -52,6 +52,10 @@ function makeLog(overrides: Partial<Record<string, unknown>> = {}) {
         model_name: 'gpt-4o',
         token_id: 1,
         created_at: 1715000000,
+        // 客户控制台三合一: aggregator now also sums tokens + buckets by day.
+        prompt_tokens: 10,
+        completion_tokens: 20,
+        use_time: 500,
         ...overrides,
     };
 }
@@ -424,6 +428,112 @@ describe('getUsageAggregate — payload defensiveness', () => {
         expect(r.totalCalls).toBe(5);
         expect(r.totalUsedQuota).toBe(0); // defaulted
         expect(r.byModel).toEqual([]);
+    });
+});
+
+describe('getUsageAggregate — token totals + chart series (客户控制台三合一)', () => {
+    const NOW = new Date('2026-06-05T12:00:00Z');
+
+    it('sums prompt/completion tokens over the window', async () => {
+        mockCacheFindUnique.mockResolvedValue(null);
+        mockQueryLogs.mockResolvedValue({
+            items: [
+                makeLog({ quota: 100, prompt_tokens: 100, completion_tokens: 200 }),
+                makeLog({ quota: 50, prompt_tokens: 30, completion_tokens: 70 }),
+            ],
+            total: 2,
+        });
+
+        const r = await getUsageAggregate({
+            portalUserId: PORTAL_USER_ID,
+            newapiUserId: NEWAPI_USER_ID,
+            newapiUsername: NEWAPI_USERNAME,
+            period: '7d',
+            now: NOW,
+        });
+
+        expect(r.totalPromptTokens).toBe(130);
+        expect(r.totalCompletionTokens).toBe(270);
+    });
+
+    it('buckets byDay by Asia/Shanghai date, stacked per model', async () => {
+        mockCacheFindUnique.mockResolvedValue(null);
+        // Two days in Shanghai; the second timestamp is 20:00Z → 04:00 next
+        // day Shanghai, exercising the +8h rollover.
+        const jun1 = Math.floor(Date.UTC(2026, 5, 1, 2, 0, 0) / 1000); // 2026-06-01 (Shanghai)
+        const jun2 = Math.floor(Date.UTC(2026, 5, 1, 20, 0, 0) / 1000); // 2026-06-02 (Shanghai)
+        mockQueryLogs.mockResolvedValue({
+            items: [
+                makeLog({ created_at: jun1, model_name: 'gpt-5.4', quota: 300 }),
+                makeLog({ created_at: jun1, model_name: 'claude-opus-4-8', quota: 100 }),
+                makeLog({ created_at: jun2, model_name: 'gpt-5.4', quota: 50 }),
+            ],
+            total: 3,
+        });
+
+        const r = await getUsageAggregate({
+            portalUserId: PORTAL_USER_ID,
+            newapiUserId: NEWAPI_USER_ID,
+            newapiUsername: NEWAPI_USERNAME,
+            period: '30d',
+            now: NOW,
+        });
+
+        expect(r.byDay).toEqual([
+            { date: '2026-06-01', values: { 'gpt-5.4': 300, 'claude-opus-4-8': 100 } },
+            { date: '2026-06-02', values: { 'gpt-5.4': 50 } },
+        ]);
+        // ≤ 6 models → no '其他' bucket
+        expect(r.chartModels).toEqual(['gpt-5.4', 'claude-opus-4-8']);
+    });
+
+    it('collapses models beyond the top 6 into 其他 (stack + chartModels)', async () => {
+        mockCacheFindUnique.mockResolvedValue(null);
+        const day = Math.floor(Date.UTC(2026, 5, 3, 2, 0, 0) / 1000); // 2026-06-03 Shanghai
+        // 8 distinct models, descending quota m1..m8 (1000..300 step 100).
+        const items = Array.from({ length: 8 }, (_, i) =>
+            makeLog({ id: i + 1, created_at: day, model_name: `m${i + 1}`, quota: 1000 - i * 100 }),
+        );
+        mockQueryLogs.mockResolvedValue({ items, total: items.length });
+
+        const r = await getUsageAggregate({
+            portalUserId: PORTAL_USER_ID,
+            newapiUserId: NEWAPI_USER_ID,
+            newapiUsername: NEWAPI_USERNAME,
+            period: 'all',
+            now: NOW,
+        });
+
+        // top 6 = m1..m6, then '其他'
+        expect(r.chartModels).toEqual(['m1', 'm2', 'm3', 'm4', 'm5', 'm6', '其他']);
+        // 其他 = m7 (400) + m8 (300) = 700
+        expect(r.byDay).toHaveLength(1);
+        expect(r.byDay[0].values['其他']).toBe(700);
+        expect(r.byDay[0].values['m1']).toBe(1000);
+        expect(r.byDay[0].values['m7']).toBeUndefined(); // folded into 其他
+    });
+
+    it('old cache row (no byDay/chartModels/token totals) → safe defaults on HIT', async () => {
+        mockCacheFindUnique.mockResolvedValue({
+            user_id: PORTAL_USER_ID,
+            period: '30d',
+            computed_at: new Date(NOW.getTime() - 60_000),
+            payload: { totalUsedQuota: 100, totalCalls: 1, byModel: [] }, // pre-upgrade shape
+        });
+
+        const r = await getUsageAggregate({
+            portalUserId: PORTAL_USER_ID,
+            newapiUserId: NEWAPI_USER_ID,
+            newapiUsername: NEWAPI_USERNAME,
+            period: '30d',
+            now: NOW,
+        });
+
+        expect(r.source).toBe('cache');
+        expect(r.byDay).toEqual([]);
+        expect(r.chartModels).toEqual([]);
+        expect(r.totalPromptTokens).toBe(0);
+        expect(r.totalCompletionTokens).toBe(0);
     });
 });
 

@@ -19,6 +19,9 @@ interface NavItem {
 }
 
 const BASE_NAV: NavItem[] = [
+    // 客户控制台三合一: 概览 now IS the merged console — 余额 + 用量 + 每次调用
+    // 明细 all live on /dashboard. Old /balance + /usage routes 307-redirect
+    // here, so the two former nav rows collapsed into this one.
     { href: '/dashboard', label: '概览' },
     // ChatUI v1 (stateless): headline conversational feature, sits right
     // under the dashboard hub above 生图.
@@ -28,8 +31,6 @@ const BASE_NAV: NavItem[] = [
     // right under the dashboard hub.
     { href: '/image', label: 'AI 生图' },
     { href: '/keys', label: 'API Keys' },
-    { href: '/balance', label: '余额' },
-    { href: '/usage', label: '用量' },
     // W9 D3 PR-C: 客户自定义 OSS(生图输出存储)配置入口。
     { href: '/settings/storage', label: '存储设置' },
     { href: '/models', label: '模型清单' },

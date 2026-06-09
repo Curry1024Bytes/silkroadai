@@ -37,16 +37,18 @@ describe('<Sidebar />', () => {
         // PR-T2: AI 生图 inserted at second position (after 概览)
         expect(html).toContain('AI 生图');
         expect(html).toContain('API Keys');
-        expect(html).toContain('余额');
-        expect(html).toContain('用量');
+        // 客户控制台三合一: 余额 + 用量 collapsed into 概览 (/balance + /usage
+        // now 307-redirect to /dashboard), so they're no longer separate rows.
+        expect(html).not.toContain('>余额<');
+        expect(html).not.toContain('>用量<');
+        expect(html).not.toMatch(/href="\/balance"/);
+        expect(html).not.toMatch(/href="\/usage"/);
         // Bottom-pinned 充值 CTA — the W7 P2 redesign prefixed it with "+"
         expect(html).toContain('充值');
         // Hrefs present
         expect(html).toMatch(/href="\/dashboard"/);
         expect(html).toMatch(/href="\/image"/);
         expect(html).toMatch(/href="\/keys"/);
-        expect(html).toMatch(/href="\/balance"/);
-        expect(html).toMatch(/href="\/usage"/);
         expect(html).toMatch(/href="\/pay"/);
     });
 
