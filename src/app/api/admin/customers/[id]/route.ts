@@ -37,6 +37,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
             newapi_quota_cache: true,
             newapi_used_quota_cache: true,
             newapi_cached_at: true,
+            billing_mode: true, // P4c-4: 决定显示「迁移到 portal」还是「回滚到 newapi」
         },
     });
     if (!user) return NextResponse.json({ error: '客户不存在' }, { status: 404 });
@@ -94,6 +95,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
             balance_cny: Math.max(0, quotaToCny(Number(user.newapi_quota_cache ?? 0))),
             used_cny: quotaToCny(Number(user.newapi_used_quota_cache ?? 0)),
             balance_cached_at: user.newapi_cached_at,
+            billing_mode: user.billing_mode, // P4c-4: 'newapi' | 'portal'
         },
         keys: keys.map((k) => ({
             id: k.id,

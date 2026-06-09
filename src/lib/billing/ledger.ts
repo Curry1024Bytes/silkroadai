@@ -63,70 +63,83 @@ function isUniqueViolation(err: unknown, targetField?: string): boolean {
     return joined.includes(targetField);
 }
 
-export async function applyLedgerEntry(userId: string, input: ApplyLedgerInput): Promise<LedgerResult> {
+/**
+ * 在【给定 tx】内记一笔账(get-or-create Account → 算新余额 → 插 LedgerEntry(带 balance_after)
+ * → 乐观锁 updateMany)。**无重试**:乐观锁冲突直接抛 {@link OptimisticLockConflict}(由外层
+ * {@link applyLedgerEntry} 的重试包,或【调用方自己的事务】回滚处理)。
+ *
+ * 供需要把记账并入【自己事务】的调用方复用 —— P4c-4 迁移要求「flip billing_mode + seed ledger
+ * 同一 DB 事务原子成/原子回滚」,故走这个 in-tx 版本(普通调用仍走有重试的 applyLedgerEntry)。
+ */
+export async function applyLedgerEntryInTx(
+    tx: Prisma.TransactionClient,
+    userId: string,
+    input: ApplyLedgerInput,
+): Promise<LedgerResult> {
     const amount = new Prisma.Decimal(input.amount_cny);
     const ref = input.ref ?? null;
-    // 只有 charge/recharge 且带 ref 才去重;adjustment(ref=null)永不去重(Postgres unique 里多个 NULL 互不相等)。
+    // 只有 charge/recharge 且带 ref 才去重;adjustment / migration(ref 带 ts)永不去重。
+    const dedupable = ref !== null && (input.kind === 'charge' || input.kind === 'recharge');
+
+    // 1. get-or-create Account(无则建,balance=0 version=0)。
+    let account = await tx.account.findUnique({ where: { user_id: userId } });
+    if (!account) {
+        const tenantId =
+            input.tenantId !== undefined
+                ? input.tenantId
+                : ((await tx.user.findUnique({ where: { id: userId }, select: { tenant_id: true } }))?.tenant_id ??
+                  null);
+        account = await tx.account.create({ data: { user_id: userId, tenant_id: tenantId } });
+    }
+
+    // 幂等快路径:已有同 (kind,ref) → 直接返回既有,不重复入账。
+    if (dedupable) {
+        const existing = await tx.ledgerEntry.findUnique({
+            where: { kind_ref: { kind: input.kind, ref: ref as string } },
+        });
+        if (existing) return toResult(existing, account.id, input.kind, true);
+    }
+
+    const newBalance = account.balance_cny.add(amount);
+
+    // 3. 插 LedgerEntry(带 balance_after 快照)。
+    const entry = await tx.ledgerEntry.create({
+        data: {
+            account_id: account.id,
+            tenant_id: account.tenant_id,
+            kind: input.kind,
+            amount_cny: amount,
+            balance_after: newBalance,
+            ref,
+            note: input.note ?? null,
+            created_by: input.createdBy ?? null,
+        },
+    });
+
+    // 4. 乐观锁:只在 version 未变时更新;变了(并发)→ count=0 → 抛(外层重试 / 调用方 tx 回滚)。
+    const updated = await tx.account.updateMany({
+        where: { id: account.id, version: account.version },
+        data: { balance_cny: newBalance, version: { increment: 1 } },
+    });
+    if (updated.count === 0) throw new OptimisticLockConflict();
+
+    return {
+        entryId: entry.id,
+        accountId: account.id,
+        kind: input.kind,
+        amount_cny: amount,
+        balance_after: newBalance,
+        deduped: false,
+    };
+}
+
+export async function applyLedgerEntry(userId: string, input: ApplyLedgerInput): Promise<LedgerResult> {
+    const ref = input.ref ?? null;
     const dedupable = ref !== null && (input.kind === 'charge' || input.kind === 'recharge');
 
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
         try {
-            return await prisma.$transaction(async (tx) => {
-                // 1. get-or-create Account(无则建,balance=0 version=0)。
-                let account = await tx.account.findUnique({ where: { user_id: userId } });
-                if (!account) {
-                    const tenantId =
-                        input.tenantId !== undefined
-                            ? input.tenantId
-                            : ((
-                                  await tx.user.findUnique({
-                                      where: { id: userId },
-                                      select: { tenant_id: true },
-                                  })
-                              )?.tenant_id ?? null);
-                    account = await tx.account.create({ data: { user_id: userId, tenant_id: tenantId } });
-                }
-
-                // 幂等快路径:已有同 (kind,ref) → 直接返回既有,不重复入账。
-                if (dedupable) {
-                    const existing = await tx.ledgerEntry.findUnique({
-                        where: { kind_ref: { kind: input.kind, ref: ref as string } },
-                    });
-                    if (existing) return toResult(existing, account.id, input.kind, true);
-                }
-
-                const newBalance = account.balance_cny.add(amount);
-
-                // 3. 插 LedgerEntry(带 balance_after 快照)。
-                const entry = await tx.ledgerEntry.create({
-                    data: {
-                        account_id: account.id,
-                        tenant_id: account.tenant_id,
-                        kind: input.kind,
-                        amount_cny: amount,
-                        balance_after: newBalance,
-                        ref,
-                        note: input.note ?? null,
-                        created_by: input.createdBy ?? null,
-                    },
-                });
-
-                // 4. 乐观锁:只在 version 未变时更新;变了(并发)→ count=0 → 抛重试。
-                const updated = await tx.account.updateMany({
-                    where: { id: account.id, version: account.version },
-                    data: { balance_cny: newBalance, version: { increment: 1 } },
-                });
-                if (updated.count === 0) throw new OptimisticLockConflict();
-
-                return {
-                    entryId: entry.id,
-                    accountId: account.id,
-                    kind: input.kind,
-                    amount_cny: amount,
-                    balance_after: newBalance,
-                    deduped: false,
-                };
-            });
+            return await prisma.$transaction((tx) => applyLedgerEntryInTx(tx, userId, input));
         } catch (err) {
             if (err instanceof OptimisticLockConflict) continue; // 版本冲突 → 重试
             if (isUniqueViolation(err, 'user_id')) continue; // 并发建 Account → 重试(下轮 findUnique 命中)

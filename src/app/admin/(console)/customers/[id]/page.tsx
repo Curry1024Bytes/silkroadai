@@ -17,6 +17,7 @@ interface CustomerDetail {
     balance_cny: number;
     used_cny: number;
     balance_cached_at: string | null;
+    billing_mode: 'newapi' | 'portal'; // P4c-4: which billing source this customer is on
 }
 interface KeyRow {
     id: string;
@@ -116,6 +117,29 @@ function getTexts(locale: Locale) {
               adjustBadAmount: 'Enter a non-zero amount.',
               adjustBadNote: 'A reason is required.',
               adjustFailed: 'Adjustment failed',
+              // ── P4c-4 billing-mode flip (superadmin) ──
+              billingTitle: 'Billing mode',
+              billingNote: 'Superadmin gray-rollout flip. Single account, atomic, reversible, net-neutral.',
+              billingCurrent: 'Current mode',
+              modeNewapi: 'new-api quota (legacy)',
+              modePortal: 'portal ¥ ledger',
+              flipToPortal: 'Migrate to portal ledger',
+              flipToNewapi: 'Roll back to new-api',
+              flipConfirmToPortalTitle: 'Migrate this customer to the portal ¥ ledger?',
+              flipConfirmToNewapiTitle: 'Roll this customer back to new-api billing?',
+              flipConfirmToPortalBody: (amt: string) =>
+                  `Will snapshot the current new-api balance (≈${amt}) into the ¥ ledger and open the gate. Exact value is read from the server snapshot at flip time.`,
+              flipConfirmToNewapiBody: (amt: string) =>
+                  `Will fold the current ¥ ledger balance (≈${amt}) back into new-api quota and flip back. Exact value is read from the server snapshot at flip time.`,
+              flipConfirmBtn: 'Confirm switch',
+              flipCancel: 'Cancel',
+              flipping: 'Switching...',
+              flipFailed: 'Billing-mode switch failed',
+              flipDoneToPortal: (amt: string, q: number) =>
+                  `Migrated. Seeded ${amt} into the ledger (backup raw quota ${q.toLocaleString('en-US')}).`,
+              flipDoneToNewapi: (amt: string, q: number) =>
+                  `Rolled back. Returned ${amt} = ${q.toLocaleString('en-US')} quota to new-api.`,
+              flipNoop: 'Already in the target mode — nothing changed.',
           }
         : {
               back: '← 客户列表',
@@ -175,6 +199,29 @@ function getTexts(locale: Locale) {
               adjustBadAmount: '请输入非 0 金额。',
               adjustBadNote: '必须填写调整原因。',
               adjustFailed: '调整失败',
+              // ── P4c-4 计费模式翻号(superadmin)──
+              billingTitle: '计费模式',
+              billingNote: 'superadmin 灰度翻号。单号、原子、可逆、净中性。',
+              billingCurrent: '当前模式',
+              modeNewapi: 'new-api 余额(旧)',
+              modePortal: 'portal ¥账本',
+              flipToPortal: '迁移到 portal 账本',
+              flipToNewapi: '回滚到 new-api',
+              flipConfirmToPortalTitle: '确认把该客户迁移到 portal ¥账本?',
+              flipConfirmToNewapiTitle: '确认把该客户回滚到 new-api 计费?',
+              flipConfirmToPortalBody: (amt: string) =>
+                  `将把当前 new-api 余额(约 ${amt})快照迁进 ¥账本并开门。精确值以服务端翻号时刻快照为准。`,
+              flipConfirmToNewapiBody: (amt: string) =>
+                  `将把当前 ¥账本余额(约 ${amt})折回 new-api quota 并翻回。精确值以服务端翻号时刻快照为准。`,
+              flipConfirmBtn: '确认切换',
+              flipCancel: '取消',
+              flipping: '切换中...',
+              flipFailed: '计费模式切换失败',
+              flipDoneToPortal: (amt: string, q: number) =>
+                  `已迁移。账本入账 ${amt}(备份原始 quota ${q.toLocaleString('zh-CN')})。`,
+              flipDoneToNewapi: (amt: string, q: number) =>
+                  `已回滚。已把 ${amt} = ${q.toLocaleString('zh-CN')} quota 还回 new-api。`,
+              flipNoop: '已在目标模式 —— 无变化。',
           };
 }
 
@@ -276,6 +323,54 @@ function DetailContent() {
             setAdjustError(t.adjustFailed);
         } finally {
             setAdjusting(false);
+        }
+    };
+
+    // ── P4c-4 计费模式翻号(→ /billing-mode → migrate/rollback,二次确认后 POST,成功重拉详情)──
+    const [flipConfirm, setFlipConfirm] = useState<null | 'to_portal' | 'to_newapi'>(null);
+    const [flipping, setFlipping] = useState(false);
+    const [flipError, setFlipError] = useState('');
+    const [flipDone, setFlipDone] = useState('');
+
+    const handleFlip = async (action: 'to_portal' | 'to_newapi') => {
+        setFlipping(true);
+        setFlipError('');
+        setFlipDone('');
+        try {
+            const res = await fetch(`/api/admin/customers/${id}/billing-mode`, {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action }),
+            });
+            if (!res.ok) {
+                if (res.status === 401) {
+                    setFlipError(t.invalidToken);
+                    return;
+                }
+                const d = await res.json().catch(() => ({}));
+                setFlipError(d.error || t.flipFailed);
+                return;
+            }
+            const d = (await res.json()) as {
+                flipped: boolean;
+                action: 'to_portal' | 'to_newapi';
+                amountCny: number;
+                backupQuota: number;
+            };
+            setFlipDone(
+                !d.flipped
+                    ? t.flipNoop
+                    : d.action === 'to_portal'
+                      ? t.flipDoneToPortal(fmtCny(d.amountCny), d.backupQuota)
+                      : t.flipDoneToNewapi(fmtCny(d.amountCny), d.backupQuota),
+            );
+            setFlipConfirm(null);
+            if (id) fetchData(id);
+        } catch {
+            setFlipError(t.flipFailed);
+        } finally {
+            setFlipping(false);
         }
     };
 
@@ -457,6 +552,110 @@ function DetailContent() {
                                             ))}
                                         </tbody>
                                     </table>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* P4c-4 Billing mode — superadmin gray-rollout flip */}
+                    <div>
+                        <div className={sectionTitle}>{t.billingTitle}</div>
+                        <div className={`mb-2 text-xs ${muted}`}>{t.billingNote}</div>
+                        <div className={`rounded-xl border p-4 ${card}`}>
+                            <div className="flex flex-wrap items-center justify-between gap-4">
+                                <div>
+                                    <div className={labelCls}>{t.billingCurrent}</div>
+                                    <div className={valueCls}>
+                                        {data.customer.billing_mode === 'portal' ? t.modePortal : t.modeNewapi}
+                                    </div>
+                                </div>
+                                {data.customer.billing_mode === 'newapi' ? (
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setFlipDone('');
+                                            setFlipError('');
+                                            setFlipConfirm('to_portal');
+                                        }}
+                                        disabled={flipping || flipConfirm !== null}
+                                        className="rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-indigo-700 disabled:opacity-50"
+                                    >
+                                        {t.flipToPortal}
+                                    </button>
+                                ) : (
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setFlipDone('');
+                                            setFlipError('');
+                                            setFlipConfirm('to_newapi');
+                                        }}
+                                        disabled={flipping || flipConfirm !== null}
+                                        className={[
+                                            'rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors disabled:opacity-50',
+                                            isDark
+                                                ? 'border-amber-700 text-amber-300 hover:bg-amber-950/40'
+                                                : 'border-amber-400 text-amber-700 hover:bg-amber-50',
+                                        ].join(' ')}
+                                    >
+                                        {t.flipToNewapi}
+                                    </button>
+                                )}
+                            </div>
+
+                            {/* 二次确认面板(显示近似金额;精确值服务端快照) */}
+                            {flipConfirm && (
+                                <div
+                                    className={[
+                                        'mt-4 rounded-lg border p-3',
+                                        isDark ? 'border-amber-700/60 bg-amber-950/30' : 'border-amber-300 bg-amber-50',
+                                    ].join(' ')}
+                                >
+                                    <div
+                                        className={`text-sm font-medium ${isDark ? 'text-amber-200' : 'text-amber-800'}`}
+                                    >
+                                        {flipConfirm === 'to_portal'
+                                            ? t.flipConfirmToPortalTitle
+                                            : t.flipConfirmToNewapiTitle}
+                                    </div>
+                                    <div className={`mt-1 text-xs ${isDark ? 'text-amber-300/80' : 'text-amber-700'}`}>
+                                        {flipConfirm === 'to_portal'
+                                            ? t.flipConfirmToPortalBody(fmtCny(data.customer.balance_cny))
+                                            : t.flipConfirmToNewapiBody(fmtCny(data.ledger.balance_cny))}
+                                    </div>
+                                    <div className="mt-3 flex gap-2">
+                                        <button
+                                            type="button"
+                                            onClick={() => handleFlip(flipConfirm)}
+                                            disabled={flipping}
+                                            className="rounded-lg bg-amber-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-amber-700 disabled:opacity-50"
+                                        >
+                                            {flipping ? t.flipping : t.flipConfirmBtn}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => setFlipConfirm(null)}
+                                            disabled={flipping}
+                                            className={[
+                                                'rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors disabled:opacity-50',
+                                                isDark
+                                                    ? 'border-slate-600 text-slate-300 hover:bg-slate-800'
+                                                    : 'border-slate-300 text-slate-700 hover:bg-slate-100',
+                                            ].join(' ')}
+                                        >
+                                            {t.flipCancel}
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+                            {flipError && (
+                                <div className={`mt-3 text-sm ${isDark ? 'text-red-400' : 'text-red-600'}`}>
+                                    {flipError}
+                                </div>
+                            )}
+                            {flipDone && (
+                                <div className={`mt-3 text-sm ${isDark ? 'text-emerald-400' : 'text-emerald-600'}`}>
+                                    {flipDone}
                                 </div>
                             )}
                         </div>
