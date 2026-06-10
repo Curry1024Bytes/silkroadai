@@ -254,6 +254,103 @@ async function toGeminiContents(messages: unknown): Promise<Array<{ role: string
     );
 }
 
+/** 从图片字节头读宽高(dep-free,只认 PNG / JPEG / WebP 三种主流格式)。
+ *  读不出(其他格式 / 截断 / 坏数据)→ null,调用方按"不注入 aspectRatio"降级。 */
+function imageDimensions(buf: Buffer): { w: number; h: number } | null {
+    // PNG:8 字节签名 + IHDR chunk,width / height 大端在 offset 16 / 20
+    if (
+        buf.length >= 24 &&
+        buf[0] === 0x89 &&
+        buf[1] === 0x50 &&
+        buf[2] === 0x4e &&
+        buf[3] === 0x47 &&
+        buf.toString('latin1', 12, 16) === 'IHDR'
+    ) {
+        const w = buf.readUInt32BE(16);
+        const h = buf.readUInt32BE(20);
+        return w > 0 && h > 0 ? { w, h } : null;
+    }
+    // JPEG:FF D8 起,顺序扫 segment 找 SOF(C0-CF 除 DHT C4 / JPG C8 / DAC CC),
+    // SOF payload = [precision(1)][height(2)][width(2)],大端
+    if (buf.length > 4 && buf[0] === 0xff && buf[1] === 0xd8) {
+        let i = 2;
+        while (i + 9 <= buf.length) {
+            if (buf[i] !== 0xff) return null;
+            const marker = buf[i + 1];
+            if (marker === 0xff) {
+                i += 1; // padding fill byte
+                continue;
+            }
+            if ((marker >= 0xd0 && marker <= 0xd9) || marker === 0x01) {
+                i += 2; // standalone marker(RST/SOI/EOI/TEM)无 length 段
+                continue;
+            }
+            if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+                const h = buf.readUInt16BE(i + 5);
+                const w = buf.readUInt16BE(i + 7);
+                return w > 0 && h > 0 ? { w, h } : null;
+            }
+            i += 2 + buf.readUInt16BE(i + 2);
+        }
+        return null;
+    }
+    // WebP:RIFF container,VP8(lossy)/ VP8L(lossless)/ VP8X(extended)三种 chunk
+    if (buf.length >= 30 && buf.toString('latin1', 0, 4) === 'RIFF' && buf.toString('latin1', 8, 12) === 'WEBP') {
+        const chunk = buf.toString('latin1', 12, 16);
+        if (chunk === 'VP8 ' && buf[23] === 0x9d && buf[24] === 0x01 && buf[25] === 0x2a) {
+            // payload = 3 字节 frame tag + sync code 9D 01 2A + 14-bit 宽 / 高(小端)
+            const w = buf.readUInt16LE(26) & 0x3fff;
+            const h = buf.readUInt16LE(28) & 0x3fff;
+            return w > 0 && h > 0 ? { w, h } : null;
+        }
+        if (chunk === 'VP8L' && buf[20] === 0x2f) {
+            // 签名 0x2F 后 28 bit 打包:14-bit (width-1) + 14-bit (height-1),LSB-first
+            const w = 1 + (((buf[22] & 0x3f) << 8) | buf[21]);
+            const h = 1 + (((buf[24] & 0x0f) << 10) | (buf[23] << 2) | (buf[22] >> 6));
+            return { w, h };
+        }
+        if (chunk === 'VP8X') {
+            // flags(1) + reserved(3) 后 24-bit (canvasWidth-1) / (canvasHeight-1),小端
+            const w = 1 + (buf[24] | (buf[25] << 8) | (buf[26] << 16));
+            const h = 1 + (buf[27] | (buf[28] << 8) | (buf[29] << 16));
+            return { w, h };
+        }
+        return null;
+    }
+    return null;
+}
+
+/** 在该 model 的官方白名单里找与 w/h 线性距离最近的 aspectRatio(精确比例必命中;
+ *  并列时取白名单先出现者)。 */
+function closestAspectRatio(w: number, h: number, model: string): string | null {
+    const allowed = GEMINI_ASPECT_RATIOS[model];
+    if (!allowed) return null;
+    const target = w / h;
+    let best: string | null = null;
+    let bestDiff = Infinity;
+    for (const candidate of allowed) {
+        const [cw, ch] = candidate.split(':');
+        const diff = Math.abs(Number(cw) / Number(ch) - target);
+        if (diff < bestDiff) {
+            bestDiff = diff;
+            best = candidate;
+        }
+    }
+    return best;
+}
+
+/** 图生图 auto 语义:Gemini 不给 aspectRatio 时默认 1:1,【不会】自动跟随输入图
+ *  (实测纠正 D4-hotfix 的"跟随输入图"假设 — 16:9 输入曾被出成方图)。
+ *  所以从第一张输入图(主图;多参考图时取第一张)的字节头读宽高,
+ *  映射到该 model 白名单里最接近的比例,由调用方注入。
+ *  读不出尺寸 → null,调用方维持"不注入"现状 — 出图绝不因读比例失败而失败。 */
+function aspectRatioFromInput(parts: GeminiInputPart[], model: string): string | null {
+    const image = parts.find((p): p is { inlineData: { mimeType: string; data: string } } => 'inlineData' in p);
+    if (!image) return null;
+    const dims = imageDimensions(Buffer.from(image.inlineData.data, 'base64'));
+    return dims ? closestAspectRatio(dims.w, dims.h, model) : null;
+}
+
 interface GeminiPart {
     text?: string;
     inlineData?: { mimeType: string; data: string };
@@ -320,14 +417,22 @@ async function handleGeminiImage(req: NextRequest, body: JsonRecord, model: stri
         throw e;
     }
 
+    // chat 形态没有 aspect_ratio 参数,等同 auto:文生图不注入(走 Gemini 默认);
+    // 图生图(image_url 入参)读输入图尺寸注入最近的合法比例 — Gemini 默认 1:1
+    // 不跟随输入图(见 aspectRatioFromInput)。与 /v1/images/* 的 auto 行为一致。
+    const imageConfig: Record<string, string> = { imageSize };
+    const inputAspect = aspectRatioFromInput(
+        contents.flatMap((c) => c.parts),
+        model,
+    );
+    if (inputAspect) imageConfig.aspectRatio = inputAspect;
+
     const upstream = await fetch(`${NEWAPI_BASE_URL}/v1beta/models/${model}:generateContent`, {
         method: 'POST',
         headers: jsonForwardHeaders(req),
         body: JSON.stringify({
             contents,
-            // 不指定 aspectRatio:文生图走 Gemini 默认,图生图(image_url 入参)跟随输入图。
-            // 与 /v1/images/* 的 auto 行为一致。
-            generationConfig: { imageConfig: { imageSize } },
+            generationConfig: { imageConfig },
         }),
     });
 
@@ -404,8 +509,9 @@ async function forwardMultipart(req: NextRequest, form: FormData, path: string, 
  *   客户传 n>1 我们忽略。需多图后续迭代。
  * - `size`(如 1024x1024):忽略 —— 分辨率由 model 档位(imageSize 1K/2K/4K)决定,
  *   比例由 aspect_ratio 决定。
- * - `aspect_ratio` 缺省 / `""` / `auto`(大小写不限)= "不指定" → 不注入 aspectRatio,
- *   让 Gemini 自动定比例(edits 跟随输入图);非空、非 auto 且不在该 model 官方白名单 → 400。
+ * - `aspect_ratio` 缺省 / `""` / `auto`(大小写不限)= "不指定" → 文生图不注入 aspectRatio
+ *   (走 Gemini 默认);图生图读输入主图尺寸注入白名单里最近的比例(Gemini 不注入时
+ *   默认 1:1、不跟随输入图);非空、非 auto 且不在该 model 官方白名单 → 400。
  * - 多参考图:`image` 字段可重复(multipart form.getAll('image') / JSON 数组),
  *   全部按顺序转 inlineData 塞进 parts。
  * - 鉴权不在本层 —— Authorization 透传,new-api 校验 sk-xxx。
@@ -465,18 +571,24 @@ async function handleImagesDalle(req: NextRequest, path: string, search: string)
     }
 
     // ---- aspect_ratio 校验 ----
-    // "" 和 "auto"(大小写不限)= "不指定",不注入 aspectRatio,让 Gemini 自动定比例
-    // (edits 会跟随输入图)。业界客户端(OpenAI gpt-image size:"auto" 等)常默认发 auto,
-    // 不能当非法值拒。
+    // "" 和 "auto"(大小写不限)= "不指定"。业界客户端(OpenAI gpt-image size:"auto" 等)
+    // 常默认发 auto,不能当非法值拒。
     const wantsAuto = aspectRatio === '' || aspectRatio.toLowerCase() === 'auto';
     const allowed = GEMINI_ASPECT_RATIOS[model];
     if (aspectRatio && !wantsAuto && !allowed.has(aspectRatio)) {
         return imageError(`unsupported aspect_ratio "${aspectRatio}" for ${model}`);
     }
 
-    // 只有客户显式给了合法比例才注入 aspectRatio;auto/空则不传。
+    // 显式合法比例 → 按显式注入;auto/空 + 有输入图(图生图)→ 读主图尺寸注入
+    // 最近的合法比例(Gemini 默认 1:1 不跟随输入图,见 aspectRatioFromInput);
+    // auto/空 + 无输入图(文生图)/ 尺寸读不出 → 不注入,走 Gemini 默认。
     const imageConfig: Record<string, string> = { imageSize: GEMINI_IMAGE_MODELS[model] };
-    if (!wantsAuto) imageConfig.aspectRatio = aspectRatio;
+    if (!wantsAuto) {
+        imageConfig.aspectRatio = aspectRatio;
+    } else {
+        const inputAspect = aspectRatioFromInput(inputParts, model);
+        if (inputAspect) imageConfig.aspectRatio = inputAspect;
+    }
 
     // ---- 拼 Gemini contents:prompt 文本 + 参考图 inlineData ----
     const parts: GeminiInputPart[] = [{ text: prompt }, ...inputParts];

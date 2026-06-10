@@ -602,12 +602,13 @@ describe('/v1 proxy — Phase 4: DALL·E /v1/images/{edits,generations} (W9 D4)'
         expect(sent.generationConfig.imageConfig).not.toHaveProperty('aspectRatio');
     });
 
-    it('aspect_ratio=auto = unspecified → 200, no aspectRatio injected (hotfix)', async () => {
+    it('aspect_ratio=auto + 读不出输入图尺寸 → 200,fallback 不注入(hotfix + img2img fallback)', async () => {
         mockFetch.mockResolvedValueOnce(geminiNativeResponse());
         const form = new FormData();
         form.append('model', 'gemini-3.1-flash-image-preview');
         form.append('prompt', 'edit this');
         form.append('aspect_ratio', 'auto');
+        // [1,2,3] 不是合法图片字节 → imageDimensions 读不出 → 维持不注入,出图不阻断
         form.append('image', imageFile([1, 2, 3], 'in.png', 'image/png'));
 
         const res = await POST(makeMultipartReq(form, '/images/edits'), ctx('images', 'edits'));
@@ -784,5 +785,219 @@ describe('/v1 proxy — Phase 4: DALL·E /v1/images/{edits,generations} (W9 D4)'
         const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
         expect(url).toContain(':generateContent');
         expect((init.headers as Headers).get('content-type')).toBe('application/json');
+    });
+});
+
+describe('/v1 proxy — img2img:auto 时输出比例跟随输入图(fix gemini-img2img-match-input-aspect)', () => {
+    // Gemini 实测不给 aspectRatio 时图生图默认 1:1(不跟随输入图),
+    // 所以 auto + 有输入图 → proxy 读字节头测宽高,注入白名单里最近的比例。
+    // ---- 最小图片字节构造器(只含 imageDimensions 解析所需的头) ----
+    function pngBytes(w: number, h: number): Uint8Array<ArrayBuffer> {
+        const buf = Buffer.alloc(33);
+        buf.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+        buf.writeUInt32BE(13, 8);
+        buf.write('IHDR', 12, 'latin1');
+        buf.writeUInt32BE(w, 16);
+        buf.writeUInt32BE(h, 20);
+        return new Uint8Array(buf);
+    }
+    function jpegBytes(w: number, h: number): Uint8Array<ArrayBuffer> {
+        const buf = Buffer.alloc(29);
+        buf.set([0xff, 0xd8, 0xff, 0xe0], 0); // SOI + APP0
+        buf.writeUInt16BE(16, 4); // APP0 段长(payload 被跳过)
+        buf.set([0xff, 0xc0], 20); // SOF0
+        buf.writeUInt16BE(17, 22);
+        buf[24] = 8; // precision
+        buf.writeUInt16BE(h, 25);
+        buf.writeUInt16BE(w, 27);
+        return new Uint8Array(buf);
+    }
+    function webpVp8Bytes(w: number, h: number): Uint8Array<ArrayBuffer> {
+        const buf = Buffer.alloc(30);
+        buf.write('RIFF', 0, 'latin1');
+        buf.writeUInt32LE(22, 4);
+        buf.write('WEBP', 8, 'latin1');
+        buf.write('VP8 ', 12, 'latin1');
+        buf.writeUInt32LE(10, 16);
+        buf.set([0x9d, 0x01, 0x2a], 23); // sync code(20-22 frame tag 任意)
+        buf.writeUInt16LE(w, 26);
+        buf.writeUInt16LE(h, 28);
+        return new Uint8Array(buf);
+    }
+    function webpVp8lBytes(w: number, h: number): Uint8Array<ArrayBuffer> {
+        const buf = Buffer.alloc(30);
+        buf.write('RIFF', 0, 'latin1');
+        buf.writeUInt32LE(22, 4);
+        buf.write('WEBP', 8, 'latin1');
+        buf.write('VP8L', 12, 'latin1');
+        buf.writeUInt32LE(10, 16);
+        buf[20] = 0x2f; // VP8L 签名
+        const wm = w - 1;
+        const hm = h - 1;
+        buf[21] = wm & 0xff;
+        buf[22] = ((wm >> 8) & 0x3f) | ((hm & 0x03) << 6);
+        buf[23] = (hm >> 2) & 0xff;
+        buf[24] = (hm >> 10) & 0x0f;
+        return new Uint8Array(buf);
+    }
+    function webpVp8xBytes(w: number, h: number): Uint8Array<ArrayBuffer> {
+        const buf = Buffer.alloc(30);
+        buf.write('RIFF', 0, 'latin1');
+        buf.writeUInt32LE(22, 4);
+        buf.write('WEBP', 8, 'latin1');
+        buf.write('VP8X', 12, 'latin1');
+        buf.writeUInt32LE(10, 16);
+        const wm = w - 1;
+        const hm = h - 1;
+        buf[24] = wm & 0xff;
+        buf[25] = (wm >> 8) & 0xff;
+        buf[26] = (wm >> 16) & 0xff;
+        buf[27] = hm & 0xff;
+        buf[28] = (hm >> 8) & 0xff;
+        buf[29] = (hm >> 16) & 0xff;
+        return new Uint8Array(buf);
+    }
+
+    function multipartReq(form: FormData): NextRequest {
+        return new NextRequest('https://ai.silkroadai.io/v1/images/edits', { method: 'POST', body: form });
+    }
+
+    function editsForm(
+        image: Uint8Array<ArrayBuffer>,
+        opts: { model?: string; aspectRatio?: string; type?: string } = {},
+    ): FormData {
+        const form = new FormData();
+        form.append('model', opts.model ?? 'gemini-3.1-flash-image-preview');
+        form.append('prompt', 'edit this');
+        if (opts.aspectRatio !== undefined) form.append('aspect_ratio', opts.aspectRatio);
+        form.append('image', new File([image], 'in.img', { type: opts.type ?? 'image/png' }));
+        return form;
+    }
+
+    /** 取最近一次打到 generateContent 的 imageConfig。 */
+    function sentImageConfig(): { imageSize: string; aspectRatio?: string } {
+        const call = mockFetch.mock.calls.find(([u]) => String(u).includes(':generateContent'));
+        expect(call).toBeDefined();
+        const sent = JSON.parse(String((call![1] as RequestInit).body)) as {
+            generationConfig: { imageConfig: { imageSize: string; aspectRatio?: string } };
+        };
+        return sent.generationConfig.imageConfig;
+    }
+
+    it('edits + auto + 1920×1080 PNG → 注入 16:9(不再被 Gemini 默认成方图)', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const res = await POST(
+            multipartReq(editsForm(pngBytes(1920, 1080), { aspectRatio: 'auto' })),
+            ctx('images', 'edits'),
+        );
+        expect(res.status).toBe(200);
+        expect(sentImageConfig().aspectRatio).toBe('16:9');
+    });
+
+    it('edits + 缺省 aspect_ratio + 1024×1024 JPEG → 注入 1:1', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const res = await POST(
+            multipartReq(editsForm(jpegBytes(1024, 1024), { type: 'image/jpeg' })),
+            ctx('images', 'edits'),
+        );
+        expect(res.status).toBe(200);
+        expect(sentImageConfig().aspectRatio).toBe('1:1');
+    });
+
+    it('edits + auto + 竖图 1080×1920 WebP(VP8 / VP8L / VP8X 三种头)→ 注入 9:16', async () => {
+        for (const bytes of [webpVp8Bytes(1080, 1920), webpVp8lBytes(1080, 1920), webpVp8xBytes(1080, 1920)]) {
+            mockFetch.mockClear();
+            mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+            const res = await POST(
+                multipartReq(editsForm(bytes, { aspectRatio: 'auto', type: 'image/webp' })),
+                ctx('images', 'edits'),
+            );
+            expect(res.status).toBe(200);
+            expect(sentImageConfig().aspectRatio).toBe('9:16');
+        }
+    });
+
+    it('JSON edits + auto + 非标 1600×1000(1.6:1)→ 取白名单最近的 3:2', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const dataUrl = `data:image/png;base64,${Buffer.from(pngBytes(1600, 1000)).toString('base64')}`;
+        const res = await POST(
+            makeReq('/images/edits', {
+                body: { model: 'gemini-2.5-flash-image', prompt: 'x', image: dataUrl },
+            }),
+            ctx('images', 'edits'),
+        );
+        expect(res.status).toBe(200);
+        expect(sentImageConfig().aspectRatio).toBe('3:2');
+    });
+
+    it('显式 aspect_ratio=1:1 + 16:9 输入 → 仍用显式值(显式覆盖优先)', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const res = await POST(
+            multipartReq(editsForm(pngBytes(1920, 1080), { aspectRatio: '1:1' })),
+            ctx('images', 'edits'),
+        );
+        expect(res.status).toBe(200);
+        expect(sentImageConfig().aspectRatio).toBe('1:1');
+    });
+
+    it('多参考图 → 取第一张(主图)的比例', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const form = editsForm(pngBytes(1920, 1080), { aspectRatio: 'auto' });
+        form.append('image', new File([pngBytes(1000, 1000)], 'ref2.png', { type: 'image/png' }));
+        const res = await POST(multipartReq(form), ctx('images', 'edits'));
+        expect(res.status).toBe(200);
+        expect(sentImageConfig().aspectRatio).toBe('16:9');
+    });
+
+    it('极端 8000×1000 输入:pro 档注入独有的 8:1,flash 档取白名单内最近的 21:9', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        await POST(
+            multipartReq(editsForm(pngBytes(8000, 1000), { model: 'gemini-3-pro-image-preview' })),
+            ctx('images', 'edits'),
+        );
+        expect(sentImageConfig().aspectRatio).toBe('8:1');
+
+        mockFetch.mockClear();
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        await POST(
+            multipartReq(editsForm(pngBytes(8000, 1000), { model: 'gemini-3.1-flash-image-preview' })),
+            ctx('images', 'edits'),
+        );
+        expect(sentImageConfig().aspectRatio).toBe('21:9');
+    });
+
+    it('chat image_url 图生图(等同 auto)→ 也注入输入图比例 16:9', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const dataUrl = `data:image/png;base64,${Buffer.from(pngBytes(1920, 1080)).toString('base64')}`;
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: {
+                    model: 'gemini-3.1-flash-image-preview',
+                    messages: [
+                        {
+                            role: 'user',
+                            content: [
+                                { type: 'text', text: 'make it night' },
+                                { type: 'image_url', image_url: { url: dataUrl } },
+                            ],
+                        },
+                    ],
+                },
+            }),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(200);
+        expect(sentImageConfig().aspectRatio).toBe('16:9');
+    });
+
+    it('chat 文生图(无输入图)→ 维持不注入', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        await POST(
+            makeReq('/chat/completions', {
+                body: { model: 'gemini-3.1-flash-image-preview', messages: [{ role: 'user', content: 'a cat' }] },
+            }),
+            ctx('chat', 'completions'),
+        );
+        expect(sentImageConfig()).not.toHaveProperty('aspectRatio');
     });
 });
