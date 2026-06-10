@@ -46,8 +46,11 @@ const CreateKeySchema = z.object({
         .trim()
         .min(1, 'alias must not be empty')
         .max(50, 'alias must be ≤ 50 chars')
-        .refine((s) => s !== PORTAL_INTERNAL_TOKEN_NAME, {
-            message: `alias "${PORTAL_INTERNAL_TOKEN_NAME}" is reserved`,
+        // Reserve the whole `portal-internal*` prefix — covers the primary
+        // system token AND the per-group tokens (`portal-internal-official`,
+        // etc.) so a customer can't mint a key that collides with the routing.
+        .refine((s) => !s.startsWith(PORTAL_INTERNAL_TOKEN_NAME), {
+            message: `alias starting with "${PORTAL_INTERNAL_TOKEN_NAME}" is reserved`,
         }),
     // P3: 档次 = ChannelGroup.key('pool' | 'official' | …)。可选;不传走默认档
     // (is_default = pool)。值域不写死 enum —— 数据驱动 + 可白标扩展,handler 内
@@ -70,7 +73,7 @@ export async function GET(req: NextRequest) {
             // this filter is a no-op today. Future-proofs against any
             // path that mistakenly mirrors `portal-internal` to the
             // NewApiToken table; customer must never see it in /keys.
-            key_alias: { not: PORTAL_INTERNAL_TOKEN_NAME },
+            key_alias: { not: { startsWith: PORTAL_INTERNAL_TOKEN_NAME } },
         },
         orderBy: { created_at: 'asc' },
         select: {

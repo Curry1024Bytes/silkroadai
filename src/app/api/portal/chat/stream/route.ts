@@ -41,6 +41,7 @@ import { getCurrentUser } from '@/lib/auth/session';
 import { getOrCreateSystemToken, PortalSystemTokenError } from '@/lib/newapi/system-token';
 import { rateLimitCheck } from '@/lib/image-gen/rate-limit';
 import { runWebSearch } from '@/lib/chat/web-search';
+import { resolveModelGroup } from '@/lib/chat/model-groups';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -149,11 +150,17 @@ export async function POST(req: NextRequest): Promise<Response> {
         if (ctx) finalMessages = [{ role: 'system', content: ctx }, ...messages];
     }
 
-    // Resolve the customer's portal-internal sk-… token (lazy-provisions
-    // on first use). Failure maps to a friendly 4xx/503 like image-gen.
+    // Route premium / official-only models through their group's system
+    // token. The group is resolved SERVER-SIDE (not trusting the client) from
+    // channel data — the cheapest group serving the model; default-group
+    // models keep the primary token. resolveModelGroup never throws.
+    const group = await resolveModelGroup(model);
+
+    // Resolve the customer's portal-internal sk-… token for that group
+    // (lazy-provisions on first use). Failure maps to a friendly 4xx/503.
     let systemToken: string;
     try {
-        systemToken = await getOrCreateSystemToken(user.id);
+        systemToken = await getOrCreateSystemToken(user.id, group);
     } catch (err) {
         if (err instanceof PortalSystemTokenError) {
             const status = err.code === 'user_not_provisioned' ? 500 : 503;
@@ -210,7 +217,7 @@ export async function POST(req: NextRequest): Promise<Response> {
         return NextResponse.json({ error: 'upstream_error', upstream_status: upstream.status, detail }, { status });
     }
 
-    console.log(`[chat-stream] ok user=${user.id} model=${model} msgs=${messages.length}`);
+    console.log(`[chat-stream] ok user=${user.id} model=${model} group=${group} msgs=${messages.length}`);
 
     // Pipe the upstream SSE stream straight through. No buffering — tokens
     // reach the client as new-api emits them. Strip hop-by-hop headers and

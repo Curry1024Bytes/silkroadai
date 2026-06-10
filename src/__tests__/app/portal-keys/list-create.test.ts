@@ -112,13 +112,14 @@ describe('GET /api/portal/keys', () => {
         // Critical: never leaks newapi_token_value or other internal fields
         expect(JSON.stringify(body)).not.toContain('sk-1234567abcdefgh');
         // Query scoped to (user_id, status='active'); PR-T1 Phase 0e
-        // also defensively excludes the reserved `portal-internal` alias.
+        // also defensively excludes the reserved `portal-internal*` prefix
+        // (primary + per-group system tokens).
         expect(mockTokenFindMany).toHaveBeenCalledWith(
             expect.objectContaining({
                 where: {
                     user_id: PORTAL_USER_ID,
                     status: 'active',
-                    key_alias: { not: 'portal-internal' },
+                    key_alias: { not: { startsWith: 'portal-internal' } },
                 },
             }),
         );

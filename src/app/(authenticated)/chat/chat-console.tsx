@@ -397,6 +397,11 @@ function WebSearchToggle({ on, onToggle }: { on: boolean; onToggle: () => void }
 }
 
 /** Vendor-grouped model dropdown (ported from v1; now flags vision models). */
+/** Compact price-multiplier label: 2 → "2", 2.4615 → "2.5". */
+function formatMultiplier(m: number): string {
+    return m % 1 === 0 ? String(m) : m.toFixed(1);
+}
+
 function ModelPicker({
     groups,
     value,
@@ -414,10 +419,8 @@ function ModelPicker({
         if (!e.currentTarget.contains(e.relatedTarget as Node)) setOpen(false);
     }, []);
 
-    const currentVendor = useMemo(
-        () => groups.find((g) => g.models.some((m) => m.id === value))?.vendor,
-        [groups, value],
-    );
+    const currentModel = useMemo(() => groups.flatMap((g) => g.models).find((m) => m.id === value), [groups, value]);
+    const currentPremium = (currentModel?.priceMultiplier ?? 1) > 1.05;
 
     return (
         <div ref={rootRef} onBlur={onRootBlur} className="relative">
@@ -427,8 +430,16 @@ function ModelPicker({
                 className="flex items-center gap-2 rounded-lg border border-brand-border bg-surface px-3 py-1.5 text-sm text-navy transition-colors hover:bg-paper-muted cursor-pointer"
             >
                 <span className="max-w-[220px] truncate font-mono font-medium">{value || '选择模型'}</span>
-                {currentVendor && (
-                    <span className="hidden text-[11px] text-minor-ink sm:inline">· {currentVendor}</span>
+                {currentModel?.vendor && (
+                    <span className="hidden text-[11px] text-minor-ink sm:inline">· {currentModel.vendor}</span>
+                )}
+                {currentPremium && currentModel?.priceMultiplier != null && (
+                    <span
+                        title={`官方稳定渠道,计费约为普通池的 ${formatMultiplier(currentModel.priceMultiplier)} 倍`}
+                        className="rounded bg-amber-50 px-1 text-[10px] font-medium text-amber-700 ring-1 ring-amber-200"
+                    >
+                        官方 {formatMultiplier(currentModel.priceMultiplier)}×
+                    </span>
                 )}
                 <span aria-hidden className="text-minor-ink">
                     ▾
@@ -461,12 +472,22 @@ function ModelPicker({
                                                 : 'text-muted-ink hover:bg-paper-muted/60 hover:text-navy',
                                         ].join(' ')}
                                     >
-                                        <span>{m.id}</span>
-                                        {m.vision && (
-                                            <span className="shrink-0 rounded bg-brand-accent/15 px-1 text-[10px] text-brand-accent">
-                                                视觉
-                                            </span>
-                                        )}
+                                        <span className="truncate">{m.id}</span>
+                                        <span className="flex shrink-0 items-center gap-1">
+                                            {m.priceMultiplier != null && m.priceMultiplier > 1.05 && (
+                                                <span
+                                                    title={`官方稳定渠道,计费约为普通池的 ${formatMultiplier(m.priceMultiplier)} 倍`}
+                                                    className="rounded bg-amber-50 px-1 text-[10px] font-medium text-amber-700 ring-1 ring-amber-200"
+                                                >
+                                                    官方 {formatMultiplier(m.priceMultiplier)}×
+                                                </span>
+                                            )}
+                                            {m.vision && (
+                                                <span className="rounded bg-brand-accent/15 px-1 text-[10px] text-brand-accent">
+                                                    视觉
+                                                </span>
+                                            )}
+                                        </span>
                                     </button>
                                 ))}
                             </div>
