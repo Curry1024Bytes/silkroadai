@@ -93,6 +93,11 @@ const AGENTS: AgentSection[] = [
         label: '计费 · 账户 · 网络',
         blurb: '余额 / 充值 / 用量明细入口 + 网络与流式调用建议。',
     },
+    {
+        id: 'seedance',
+        label: 'Seedance 2.0 · 视频生成',
+        blurb: 'ByteDance Seedance 2.0 文生视频 — 异步提交 / 轮询,按秒计费。',
+    },
 ];
 
 const OPENAI_BASE = 'https://ai.silkroadai.io/v1';
@@ -868,7 +873,7 @@ console.log(completion.choices[0].message.content);`}
                                         gemini-2.5-flash-image
                                     </td>
                                     <td className="px-4 py-3 text-ink align-top">~1024×1024(1K)</td>
-                                    <td className="px-4 py-3 text-navy align-top font-medium">¥0.062 / 张</td>
+                                    <td className="px-4 py-3 text-navy align-top font-medium">¥0.10 / 张</td>
                                     <td className="px-4 py-3 text-ink">入门,经济</td>
                                 </tr>
                                 <tr className="border-b border-brand-border">
@@ -876,7 +881,7 @@ console.log(completion.choices[0].message.content);`}
                                         gemini-3.1-flash-image-preview
                                     </td>
                                     <td className="px-4 py-3 text-navy align-top font-medium">2048×2048(2K)</td>
-                                    <td className="px-4 py-3 text-navy align-top font-medium">¥0.162 / 张</td>
+                                    <td className="px-4 py-3 text-navy align-top font-medium">¥0.20 / 张</td>
                                     <td className="px-4 py-3 text-ink">高速 + 高清</td>
                                 </tr>
                                 <tr>
@@ -884,12 +889,56 @@ console.log(completion.choices[0].message.content);`}
                                         gemini-3-pro-image-preview
                                     </td>
                                     <td className="px-4 py-3 text-navy align-top font-medium">4096×4096(4K)</td>
-                                    <td className="px-4 py-3 text-navy align-top font-medium">¥0.384 / 张</td>
+                                    <td className="px-4 py-3 text-navy align-top font-medium">¥0.50 / 张</td>
                                     <td className="px-4 py-3 text-ink">旗舰,最高画质</td>
                                 </tr>
                             </tbody>
                         </table>
                     </div>
+
+                    <p className="m-0 mb-2 text-sm font-medium text-navy">
+                        Gemini 生图 · OpenAI 兼容(推荐 — 自动 2K / 4K,返回公网 URL)
+                    </p>
+                    <p className="m-0 mb-2 text-sm text-ink leading-relaxed">
+                        任何 OpenAI SDK / 工具改一行 base_url 即可。返回标准 chat.completion,图片是
+                        <strong className="text-navy">公网 URL</strong>(不是 base64),形如{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            https://images.silkroadai.io/gen/&lt;uuid&gt;.png
+                        </code>
+                        。
+                    </p>
+                    <CodeBlock language="bash">
+                        {`# 文生图 — 用哪个模型就拿哪档分辨率(2.5=1K / 3.1=2K / 3-pro=4K)
+curl ${OPENAI_BASE}/chat/completions \\
+  -H "Authorization: Bearer sk-你的KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "gemini-3.1-flash-image-preview",
+    "messages": [{ "role": "user", "content": "一只戴帽子的橘猫,水彩风格" }]
+  }'
+# 响应 choices[0].message.content = "![image](https://images.silkroadai.io/gen/….png)"`}
+                    </CodeBlock>
+                    <p className="m-0 mt-3 mb-2 text-sm text-ink leading-relaxed">
+                        <strong className="text-navy">传图改图</strong>:content 用 OpenAI 多模态数组,加一个{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            image_url
+                        </code>
+                        (data URL 最稳;外部 http(s) URL 平台代拉,单图 ≤ 20MB,内网地址拒绝)。
+                    </p>
+                    <CodeBlock language="json">
+                        {`{ "role": "user", "content": [
+  { "type": "text", "text": "给这只猫戴一顶圣诞帽" },
+  { "type": "image_url", "image_url": { "url": "data:image/jpeg;base64,<BASE64>" } }
+] }`}
+                    </CodeBlock>
+                    <p className="m-0 mt-3 mb-5 text-xs text-minor-ink">
+                        图片默认存平台图床(不保证长期保留,重要图请及时转存)。想让图片直接进
+                        <strong className="text-navy">自己的 bucket、用自己的域名</strong> →{' '}
+                        <Link href="/settings/storage" className="text-navy font-medium hover:text-brand-accent">
+                            存储设置
+                        </Link>{' '}
+                        配置自定义 OSS(R2 / 阿里 OSS / 腾讯 COS / AWS S3 / 自建;故障自动回退平台图床,不影响出图)。
+                    </p>
 
                     <p className="m-0 mb-2 text-sm font-medium text-navy">gpt-image-2(OpenAI 兼容)</p>
                     <CodeBlock language="python">
@@ -907,24 +956,26 @@ print(resp.data[0].b64_json)   # 或 resp.data[0].url`}
                     </CodeBlock>
 
                     <div className="mt-5 mb-3 rounded-lg border-l-4 border-brand-accent bg-paper-muted px-4 py-3 text-sm text-ink">
-                        🔑 <strong className="text-navy">想要 Gemini 2K / 4K,必须用原生 endpoint。</strong> OpenAI
-                        兼容的{' '}
+                        ✅{' '}
+                        <strong className="text-navy">OpenAI 兼容接口现在直接返回该模型的最大分辨率(2K / 4K)。</strong>{' '}
+                        平台代理会把{' '}
                         <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
                             /v1/chat/completions
                         </code>{' '}
-                        路径不支持 Gemini 的{' '}
+                        自动翻译到 Gemini 原生接口并注入{' '}
                         <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
                             imageConfig.imageSize
                         </code>
-                        ,调它只会拿到默认 1K(1408×768)。要 2K / 4K 请走{' '}
+                        —— 用哪个模型就拿哪档分辨率,无需任何额外参数(2026-06-05 起,旧式只出 1K 的问题已解决)。 只有需要
+                        <strong className="text-navy">自定义出图比例</strong>(
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            aspectRatio
+                        </code>
+                        )时,才用下面的原生{' '}
                         <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
                             /v1beta/models/&lt;model&gt;:generateContent
-                        </code>
-                        。最省事的方式:直接用 portal{' '}
-                        <Link href="/image" className="text-navy font-medium hover:text-brand-accent">
-                            /image
-                        </Link>{' '}
-                        页(已自动走原生路径出 2K / 4K)。
+                        </code>{' '}
+                        endpoint(默认比例 1:1)。
                     </div>
 
                     <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">Gemini 原生 API · curl(2K / 4K)</p>
@@ -1029,6 +1080,131 @@ for part in resp.candidates[0].content.parts:
                         CDN,国内通常可直连。流式调用对网络稳定性敏感,丢包可能导致 502 —— 频繁出错时可尝试关闭{' '}
                         <code className="font-mono text-xs">stream</code>,或换用更稳定的线路。排查时把响应里的{' '}
                         <code className="font-mono text-xs">request_id</code> 发给客服可快速定位。
+                    </p>
+                </section>
+
+                <section id="seedance" className="mt-12 mb-10 scroll-mt-20">
+                    <div className="flex items-baseline justify-between flex-wrap gap-2 mb-4 pb-3 border-b-2 border-brand-accent">
+                        <h2 className="m-0 text-2xl font-semibold text-navy">
+                            <span className="text-brand-accent font-bold mr-3 tabular-nums">14</span>
+                            Seedance 2.0 · 视频生成
+                        </h2>
+                    </div>
+                    <p className="m-0 mb-3 text-sm text-ink leading-relaxed">
+                        ByteDance Seedance 2.0 文生视频,3 个分辨率档。<strong className="text-navy">异步接口</strong>
+                        :提交后拿到{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            task_id
+                        </code>
+                        ,轮询直到{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            SUCCESS
+                        </code>{' '}
+                        取视频 URL。走{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            /v1/video/generations
+                        </code>
+                        ,<strong className="text-navy">不是</strong>{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            /v1/chat/completions
+                        </code>
+                        (后者会 404)。
+                    </p>
+                    <div className="rounded-lg overflow-hidden border border-brand-border bg-surface mb-3">
+                        <table className="w-full border-collapse text-sm">
+                            <thead>
+                                <tr className="bg-paper-muted text-muted-ink">
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        模型
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        分辨率
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        价格(按秒)
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        5 秒 / 15 秒
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">seedance-2.0</td>
+                                    <td className="px-4 py-3 text-ink align-top">≤ 720P</td>
+                                    <td className="px-4 py-3 text-navy align-top font-medium">¥0.04 / 秒</td>
+                                    <td className="px-4 py-3 text-ink align-top">¥0.20 / ¥0.60</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">
+                                        seedance-2.0-fast
+                                    </td>
+                                    <td className="px-4 py-3 text-ink align-top">480P</td>
+                                    <td className="px-4 py-3 text-navy align-top font-medium">¥0.04 / 秒</td>
+                                    <td className="px-4 py-3 text-ink align-top">¥0.20 / ¥0.60</td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">
+                                        seedance-2.0-1080p
+                                    </td>
+                                    <td className="px-4 py-3 text-ink align-top">1080P</td>
+                                    <td className="px-4 py-3 text-navy align-top font-medium">¥0.12 / 秒</td>
+                                    <td className="px-4 py-3 text-ink align-top">¥0.60 / ¥1.80</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <p className="m-0 mb-5 text-xs text-minor-ink">
+                        按视频实际时长(秒)计费;
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            duration
+                        </code>{' '}
+                        控制秒数(默认 4 秒)。
+                    </p>
+
+                    <p className="m-0 mb-2 text-sm font-medium text-navy">1) 提交任务</p>
+                    <CodeBlock language="bash">
+                        {`curl ${OPENAI_BASE}/video/generations \\
+  -H "Authorization: Bearer sk-你的KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "model": "seedance-2.0", "prompt": "一只猫在沙滩上散步", "duration": 5 }'
+# → { "task_id": "task_xxx", "object": "video", "status": "queued", "progress": 10 }`}
+                    </CodeBlock>
+
+                    <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">2) 轮询直到完成</p>
+                    <CodeBlock language="bash">
+                        {`curl ${OPENAI_BASE}/video/generations/task_xxx -H "Authorization: Bearer sk-你的KEY"
+# status: IN_PROGRESS … 约 1–2 分钟后 "status": "SUCCESS"
+# 视频地址在 data.data.video_url(公网 .mp4)`}
+                    </CodeBlock>
+
+                    <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">Python(提交 + 轮询)</p>
+                    <CodeBlock language="python">
+                        {`import time, requests
+
+H = {"Authorization": "Bearer sk-你的KEY", "Content-Type": "application/json"}
+B = "${OPENAI_BASE}/video/generations"
+
+task = requests.post(B, headers=H, json={
+    "model": "seedance-2.0", "prompt": "一只猫在沙滩上散步", "duration": 5,
+}).json()
+tid = task["task_id"]
+
+while True:
+    r = requests.get(f"{B}/{tid}", headers=H).json()
+    status = r.get("data", {}).get("status") or r.get("status")
+    if status in ("SUCCESS", "FAILURE"):
+        break
+    time.sleep(10)
+
+print(r["data"]["data"]["video_url"])`}
+                    </CodeBlock>
+                    <p className="m-0 mt-3 text-xs text-minor-ink">
+                        3 个模型同一接口,只改{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            model
+                        </code>
+                        。
                     </p>
                 </section>
 
