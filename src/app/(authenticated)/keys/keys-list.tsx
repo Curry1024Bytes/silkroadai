@@ -1,12 +1,11 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-// IMPORTANT: import pure quota helpers from the side-effect-free module.
-// `@/lib/newapi/client` carries `import 'server-only'` + a runtime
-// admin-env check that crashes the browser bundle (W6 D4 → W6 D5 prod
-// regression). Anything imported by a 'use client' component MUST come
-// from `quota-units` or another client-safe module.
-import { quotaToCny } from '@/lib/newapi/quota-units';
+// NOTE: this 'use client' island does NOT convert quota→¥ itself. quotaToCny
+// reads NEWAPI_QUOTA_PER_USD / USD_TO_CNY_RATE — server-only env that is
+// undefined in the browser bundle, so quota-units would fall back to stale
+// defaults (500k / 7.2) and over-display ¥ by ~2×. The server passes the
+// ready-to-render ¥ (KeyRow.usedCny) instead.
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
@@ -23,6 +22,9 @@ export interface KeyRow {
      *  caller converts to CNY for display). null = usage fetch failed
      *  or user has no new-api linkage. */
     used_quota: number | null;
+    /** ¥ value of `used_quota`, computed server-side (quotaToCny). null when
+     *  usage is unavailable. Client must NOT derive this (server-only FX env). */
+    usedCny: number | null;
     /** ISO timestamp of the most recent log entry attributable to this
      *  key, or null if it has never been used. */
     last_used_at: string | null;
@@ -249,6 +251,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                 created_at: data.created_at,
                 // Brand-new key — no usage yet by definition.
                 used_quota: 0,
+                usedCny: 0,
                 last_used_at: null,
                 tier: data.tier ?? create.tier,
             };
@@ -440,7 +443,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                                                     <span>用量数据暂不可用</span>
                                                 ) : (
                                                     <>
-                                                        累计 ¥{quotaToCny(row.used_quota).toFixed(2)}
+                                                        累计 ¥{(row.usedCny ?? 0).toFixed(2)}
                                                         <span className="mx-1.5">·</span>
                                                         最近调用 {formatLastUsed(row.last_used_at)}
                                                     </>

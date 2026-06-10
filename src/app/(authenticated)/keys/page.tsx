@@ -14,6 +14,7 @@ import { NextRequest } from 'next/server';
 import { getCurrentUser } from '@/lib/auth/session';
 import { prisma } from '@/lib/db';
 import { getTokenUsageWithCache } from '@/lib/newapi/token-usage';
+import { quotaToCny } from '@/lib/newapi/quota-units';
 import { formatTokenForDisplay } from '@/lib/newapi/token-format';
 import { listEnabledChannelGroups } from '@/lib/channel-group';
 import { KeysList, type KeyRow } from './keys-list';
@@ -94,6 +95,8 @@ export default async function KeysPage() {
             // Pass null for failed lookups so UI can hide the row's
             // usage line gracefully.
             used_quota: snap ? Number(snap.used_quota) : null,
+            // ¥ computed server-side; keys-list is a client island (server-only FX env).
+            usedCny: snap ? quotaToCny(Number(snap.used_quota)) : null,
             last_used_at: snap?.last_used_at ? snap.last_used_at.toISOString() : null,
             tier: t.tier,
         };

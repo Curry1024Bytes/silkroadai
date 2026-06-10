@@ -21,6 +21,7 @@ const SAMPLE_ROWS: KeyRow[] = [
         masked_key: 'sk-1234****abcd',
         created_at: '2026-05-01T10:00:00.000Z',
         used_quota: 0,
+        usedCny: 0,
         last_used_at: null,
         tier: 'pool',
     },
@@ -30,6 +31,7 @@ const SAMPLE_ROWS: KeyRow[] = [
         masked_key: 'sk-5678****wxyz',
         created_at: '2026-05-02T10:00:00.000Z',
         used_quota: 0,
+        usedCny: 0,
         last_used_at: null,
         tier: 'pool',
     },
@@ -79,6 +81,7 @@ describe('<KeysList /> SSR smoke', () => {
             masked_key: `sk-aaaa****0000`,
             created_at: '2026-05-01T10:00:00.000Z',
             used_quota: 0,
+            usedCny: 0,
             last_used_at: null,
             tier: 'pool',
         }));
@@ -95,6 +98,7 @@ describe('<KeysList /> SSR smoke', () => {
             masked_key: 'sk-aaaa****0000',
             created_at: '2026-05-01T10:00:00.000Z',
             used_quota: 0,
+            usedCny: 0,
             last_used_at: null,
             tier: 'pool',
         }));
@@ -122,6 +126,7 @@ describe('<KeysList /> W6 D4 — per-key usage subline', () => {
                 masked_key: 'sk-1111****2222',
                 created_at: '2026-05-05T10:00:00.000Z',
                 used_quota: 0,
+                usedCny: 0,
                 last_used_at: null,
                 tier: 'pool',
             },
@@ -133,8 +138,8 @@ describe('<KeysList /> W6 D4 — per-key usage subline', () => {
         expect(html).toMatch(/累计 ¥(<!-- -->)?0\.00/);
     });
 
-    it('renders ¥X.XX accumulated + relative last-used time when last_used_at is set', () => {
-        // 695_000 raw quota ≈ 1 USD ≈ ¥7.20 (default rates)
+    it('renders ¥X.XX accumulated (server usedCny, not client-derived) + relative last-used time', () => {
+        // usedCny is computed server-side (correct FX) and passed in; rendered verbatim.
         const aboutADayAgo = new Date(Date.now() - 26 * 60 * 60 * 1000).toISOString();
         const rows: KeyRow[] = [
             {
@@ -143,14 +148,16 @@ describe('<KeysList /> W6 D4 — per-key usage subline', () => {
                 masked_key: 'sk-3333****4444',
                 created_at: '2026-04-01T10:00:00.000Z',
                 used_quota: 695_000,
+                usedCny: 4.87,
                 last_used_at: aboutADayAgo,
                 tier: 'pool',
             },
         ];
         const html = renderToString(<KeysList initialRows={rows} />);
-        // CNY conversion: 695000 / 500000 * 7.2 = 10.008 → "¥10.01"
         // React 19 inserts <!-- --> between literal ¥ and dynamic value.
-        expect(html).toMatch(/累计 ¥(<!-- -->)?10\./);
+        expect(html).toMatch(/累计 ¥(<!-- -->)?4\.87/);
+        // client-side quotaToCny(695000) with stale defaults would render ¥10.01 — guard against regression
+        expect(html).not.toContain('10.01');
         // 26h ago → "1 天前" (with optional comment)
         expect(html).toMatch(/最近调用 (<!-- -->)?1 天前/);
     });
@@ -163,6 +170,7 @@ describe('<KeysList /> W6 D4 — per-key usage subline', () => {
                 masked_key: 'sk-9999****eeee',
                 created_at: '2026-05-04T10:00:00.000Z',
                 used_quota: null,
+                usedCny: null,
                 last_used_at: null,
                 tier: 'pool',
             },
@@ -198,6 +206,7 @@ describe('<KeysList /> P3 — 档次 badge', () => {
                 masked_key: 'sk-aaaa****bbbb',
                 created_at: '2026-06-01T00:00:00.000Z',
                 used_quota: 0,
+                usedCny: 0,
                 last_used_at: null,
                 tier: 'official',
             },
@@ -207,6 +216,7 @@ describe('<KeysList /> P3 — 档次 badge', () => {
                 masked_key: 'sk-cccc****dddd',
                 created_at: '2026-06-02T00:00:00.000Z',
                 used_quota: 0,
+                usedCny: 0,
                 last_used_at: null,
                 tier: 'pool',
             },
@@ -224,6 +234,7 @@ describe('<KeysList /> P3 — 档次 badge', () => {
                 masked_key: 'sk-eeee****ffff',
                 created_at: '2026-06-03T00:00:00.000Z',
                 used_quota: 0,
+                usedCny: 0,
                 last_used_at: null,
                 tier: 'legacy',
             },

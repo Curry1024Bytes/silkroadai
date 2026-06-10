@@ -83,6 +83,9 @@ function toCallRow(log: NewApiUsageLog): CallRow {
         promptTokens: log.prompt_tokens,
         completionTokens: log.completion_tokens,
         quota: log.quota,
+        // Compute ¥ here (server) where NEWAPI_QUOTA_PER_USD/USD_TO_CNY_RATE are
+        // available — CallDetailTable is a client island and must not convert.
+        costCny: quotaToCny(log.quota),
         type: log.type,
         content: log.content,
     };
@@ -310,7 +313,11 @@ export default async function DashboardPage({
             {/* 2. Model consumption chart */}
             <h2 className="m-0 mb-3 text-base font-semibold text-navy">模型消耗分布 · {periodLabel}</h2>
             <div className="mb-6">
-                <ModelConsumptionChart byDay={agg?.byDay ?? []} models={agg?.chartModels ?? []} />
+                <ModelConsumptionChart
+                    byDay={agg?.byDay ?? []}
+                    models={agg?.chartModels ?? []}
+                    cnyPerQuota={quotaToCny(1)}
+                />
             </div>
 
             {/* 3. By-model breakdown (preserved from /usage) */}

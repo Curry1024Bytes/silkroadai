@@ -21,6 +21,7 @@ function row(o: Partial<CallRow> = {}): CallRow {
         promptTokens: o.promptTokens ?? 100,
         completionTokens: o.completionTokens ?? 200,
         quota: o.quota ?? 500_000,
+        costCny: o.costCny ?? 0.2,
         type: o.type ?? 2,
         content: o.content ?? '',
     };
@@ -32,12 +33,16 @@ describe('<CallDetailTable /> SSR', () => {
         expect(html).toContain('暂无调用记录');
     });
 
-    it('success row (type=2) → 成功 + ¥ from quota + friendly duration + tokens', () => {
-        // 500_000 quota = 1 USD = ¥7.20
-        const html = renderToString(<CallDetailTable rows={[row({ type: 2 })]} />);
+    it('success row (type=2) → 成功 + ¥ from server-passed costCny (not client-derived)', () => {
+        // costCny is computed server-side (correct FX) and passed in; this client
+        // island must render it verbatim. Re-deriving from quota in the browser
+        // would bake the stale client default (500k/7.2) and over-display ¥ ~2×.
+        const html = renderToString(<CallDetailTable rows={[row({ type: 2, quota: 28_570, costCny: 0.2 })]} />);
         expect(html).toContain('成功');
         expect(html).not.toContain('失败');
-        expect(html).toMatch(/¥(<!-- -->)?7\.20/);
+        expect(html).toMatch(/¥(<!-- -->)?0\.20/);
+        // client-side quotaToCny(28570) with stale defaults would render ¥0.41 — guard against regression
+        expect(html).not.toContain('0.41');
         expect(html).toContain('1.2s');
         expect(html).toContain('100 / 200');
     });
