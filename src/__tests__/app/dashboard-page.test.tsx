@@ -96,8 +96,7 @@ function aggSnap(over: Record<string, unknown> = {}) {
     return {
         totalUsedQuota: 600_000, // ¥8.64
         totalCalls: 250,
-        totalPromptTokens: 12_000,
-        totalCompletionTokens: 8_000,
+        totalTokens: 20_000, // combined token_used from /api/data/
         byModel: [
             { model: 'gpt-5.4', calls: 150, quota: 400_000 },
             { model: 'claude-opus-4-8', calls: 80, quota: 150_000 },
@@ -108,7 +107,6 @@ function aggSnap(over: Record<string, unknown> = {}) {
         period: '30d',
         source: 'live' as const,
         computedAt: new Date(),
-        pagesFetched: 1,
         ...over,
     };
 }
@@ -170,9 +168,8 @@ describe('<DashboardPage /> merged console — happy path', () => {
         expect(html).toMatch(/¥(<!-- -->)?7\.20/); // balance
         expect(html).toMatch(/¥(<!-- -->)?1\.44/); // historical spend
         expect(html).toMatch(/¥(<!-- -->)?8\.64/); // period spend (600k quota)
-        expect(html).toContain('20,000'); // total tokens (12k + 8k)
-        expect(html).toContain('12,000'); // prompt sub
-        expect(html).toContain('8,000'); // completion sub
+        expect(html).toContain('20,000'); // total tokens (combined token_used)
+        expect(html).toContain('输入+输出'); // token card subline (no per-side split from /api/data/)
         // raw quota sub-display present in newapi mode
         expect(html).toContain('500,000');
     });

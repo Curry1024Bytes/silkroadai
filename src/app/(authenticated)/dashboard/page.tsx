@@ -24,7 +24,6 @@
 import type { ReactNode } from 'react';
 import { headers } from 'next/headers';
 import { NextRequest } from 'next/server';
-import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth/session';
 import { prisma } from '@/lib/db';
 import { getCustomerBalance, type CustomerBalance } from '@/lib/billing/customer-balance';
@@ -204,7 +203,7 @@ export default async function DashboardPage({
     const resellerSnap = await fetchResellerStatus(user.id);
 
     const byModel = agg ? agg.byModel.slice(0, TOP_MODELS) : [];
-    const totalTokens = agg ? agg.totalPromptTokens + agg.totalCompletionTokens : 0;
+    const totalTokens = agg ? agg.totalTokens : 0;
 
     return (
         <section>
@@ -276,10 +275,7 @@ export default async function DashboardPage({
                     {agg ? (
                         <>
                             <p className={BIG}>{totalTokens.toLocaleString('en-US')}</p>
-                            <p className={SUB}>
-                                输入 {agg.totalPromptTokens.toLocaleString('en-US')} · 输出{' '}
-                                {agg.totalCompletionTokens.toLocaleString('en-US')}
-                            </p>
+                            <p className={SUB}>{periodLabel} · 输入+输出</p>
                         </>
                     ) : (
                         NO_DATA

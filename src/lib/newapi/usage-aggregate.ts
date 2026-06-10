@@ -1,34 +1,28 @@
 /**
- * W6 D5 — Server-side usage aggregator over new-api logs.
+ * Server-side usage aggregator (客户控制台三合一 汇总卡 + 模型消耗图).
  *
- * Replaces the W4-2 D7 client-side `page_size=200` aggregate (W3 D2 F3:
- * power users with > 200 logs in the window get a long-tail-truncated
- * total). This helper paginates the full window (up to 50 pages × 1000
- * rows = 50k rows) and caches the rolled-up result for 5 minutes in
- * `usage_aggregate_cache`.
+ * Source: new-api's own dashboard endpoint `/api/data/` (getUsageDashboard) —
+ * server-side pre-aggregated buckets of (day × model) with count / quota /
+ * token_used. ONE request covers the whole window, exact.
  *
- * 4-path mirror of W4-2 D6 quota-cache + W6 D4 token-usage:
- *   - HIT  (computed_at < TTL): return cached payload, source='cache'
+ * Why not paginate `/api/log/` like the original W6 D5 version: new-api hard-
+ * caps `/api/log/` at page_size=100 (requesting 1000 still returns 100). The
+ * old loop did `if (items.length < PAGE_SIZE=1000) break` → bailed after the
+ * first 100 rows, pinning 请求次数 at ≤100 and undercounting tokens / spend
+ * for any active customer. `/api/data/` has no such cap.
+ *
+ * Cached 5 minutes in `usage_aggregate_cache`. 4-path mirror of quota-cache:
+ *   - HIT  (computed_at < TTL): cached payload, source='cache'
  *   - MISS / STALE: fetch live, write back, source='live'
  *   - FALLBACK: live fail with stale cache → return cache, source='fallback'
  *   - HARD-FAIL: live fail + no cache → throw
- *
- * 5-minute TTL is intentional. /balance and /keys use 60s because they're
- * single-row fetches; here we're paginating up to 50 pages and the
- * underlying numbers are coarse-grained (a few minutes of staleness on
- * "上月消费" is invisible to the customer).
- *
- * No new endpoint — both /dashboard and /usage call the helper directly
- * from their server components.
  */
 import 'server-only';
 import * as Sentry from '@sentry/nextjs';
 import { prisma } from '@/lib/db';
-import { queryLogs } from './client';
+import { getUsageDashboard } from './client';
 
 const TTL_MS = 5 * 60 * 1_000;
-const PAGE_SIZE = 1000;
-const MAX_PAGES = 50;
 /** How many distinct models get their own stack in the 模型消耗分布图; the
  *  rest collapse into a single '其他' series so the chart + cached payload
  *  stay bounded regardless of how many models a power user touches. */
@@ -53,7 +47,8 @@ export const USAGE_PERIODS: readonly UsagePeriod[] = ['7d', '30d', 'all', 'last_
 
 /** One day's consumption, split per model (top-N + '其他'). Feeds the
  *  stacked-bar 模型消耗分布图. Values are raw quota (FX-independent — the
- *  chart converts to ¥ at render so cached rows don't bake in a stale rate). */
+ *  page converts to ¥ server-side at render so cached rows don't bake in a
+ *  stale rate, and the client chart never touches server-only env). */
 export interface UsageDayPoint {
     /** YYYY-MM-DD in Asia/Shanghai. */
     date: string;
@@ -64,10 +59,9 @@ export interface UsageDayPoint {
 export interface UsageAggregate {
     totalUsedQuota: number;
     totalCalls: number;
-    /** Σ prompt_tokens over the window (drives the 统计 Tokens card, brief §2). */
-    totalPromptTokens: number;
-    /** Σ completion_tokens over the window. */
-    totalCompletionTokens: number;
+    /** Σ token_used over the window (prompt+completion combined — what
+     *  new-api's /api/data/ reports). Drives the 统计 Tokens card. */
+    totalTokens: number;
     byModel: Array<{ model: string; calls: number; quota: number }>;
     /** Daily consumption stacked by model, ascending by date. */
     byDay: UsageDayPoint[];
@@ -81,10 +75,6 @@ export interface UsageAggregateSnapshot extends UsageAggregate {
     computedAt: Date;
     /** Where the numbers came from. UI uses this to show staleness hints. */
     source: 'cache' | 'live' | 'fallback';
-    /** Number of new-api log pages fetched (0 on cache hit). Surfaced for
-     *  ops grep — high value (> 10) on a single render means the user has
-     *  unusually heavy traffic and the next live refresh will be slow. */
-    pagesFetched: number;
 }
 
 /**
@@ -114,15 +104,11 @@ export function periodToTimeRange(period: UsagePeriod, now: Date = new Date()): 
  * Get the aggregate. Throws on hard-fail (no cache + new-api dead).
  *
  * Filter dimensions:
- *   - `newapiUsername` is forwarded to new-api as the `username=...`
- *     query param. This is the dimension new-api actually filters on
- *     under admin auth (gotcha #15 + W7 D4 PR-J Bug 2 — `user_id` is
- *     silently dropped, so the previous code unintentionally aggregated
- *     ALL users into every per-user cache row).
- *   - `newapiUserId` is used for a **defensive post-filter** in
- *     `fetchLiveAggregate` (`if (log.user_id !== newapiUserId) continue`).
- *     Mirrors the `token-usage.ts` belt-and-suspenders pattern. Catches
- *     a future regression where new-api's username filter loosens.
+ *   - `newapiUsername` is forwarded to `/api/data/` as `username=...` — the
+ *     dimension new-api filters on under admin auth (gotcha #15).
+ *   - `newapiUserId` is a **defensive post-filter** in `fetchLiveAggregate`
+ *     (`if (row.user_id !== newapiUserId) continue`) so a future regression
+ *     in the username filter can't leak another user's rows into the cache.
  */
 export async function getUsageAggregate(args: {
     portalUserId: string;
@@ -151,13 +137,12 @@ export async function getUsageAggregate(args: {
             period: args.period,
             computedAt: cached!.computed_at,
             source: 'cache',
-            pagesFetched: 0,
         };
     }
 
     // Miss / stale — try live, fall back to stale on failure.
     try {
-        const { aggregate, pagesFetched } = await fetchLiveAggregate({
+        const aggregate = await fetchLiveAggregate({
             newapiUserId: args.newapiUserId,
             newapiUsername: args.newapiUsername,
             period: args.period,
@@ -198,7 +183,6 @@ export async function getUsageAggregate(args: {
             period: args.period,
             computedAt: now,
             source: 'live',
-            pagesFetched,
         };
     } catch (err) {
         if (cached) {
@@ -211,7 +195,6 @@ export async function getUsageAggregate(args: {
                 period: args.period,
                 computedAt: cached.computed_at,
                 source: 'fallback',
-                pagesFetched: 0,
             };
         }
         // Hard fail — surface to caller for an error-state render.
@@ -225,11 +208,19 @@ export async function getUsageAggregate(args: {
 }
 
 /** Defensive payload reader — Prisma JsonValue is `unknown` for type
- *  safety, so we narrow + sanitize here. Callers don't trust the JSON
- *  shape blindly even though we wrote it ourselves (forward-compat: old
- *  cache rows after a payload schema bump should at least not crash). */
+ *  safety, so we narrow + sanitize here. Forward/backward-compat: old cache
+ *  rows (pre-/api/data/ shape, e.g. the W6 D5 `totalPromptTokens` +
+ *  `totalCompletionTokens` split) should at least not crash — missing
+ *  fields default to []/0 and self-heal on the next live refresh (≤ 5min). */
 function readPayload(payload: unknown): UsageAggregate {
-    const p = payload as Partial<UsageAggregate> & { byModel?: unknown; byDay?: unknown; chartModels?: unknown };
+    const p = payload as Partial<UsageAggregate> & {
+        byModel?: unknown;
+        byDay?: unknown;
+        chartModels?: unknown;
+        // legacy (pre-/api/data/) token split — summed as a fallback.
+        totalPromptTokens?: unknown;
+        totalCompletionTokens?: unknown;
+    };
     const byModel = Array.isArray(p.byModel)
         ? (p.byModel as Array<{ model?: unknown; calls?: unknown; quota?: unknown }>)
               .filter(
@@ -238,9 +229,6 @@ function readPayload(payload: unknown): UsageAggregate {
               )
               .map((m) => ({ model: m.model, calls: m.calls, quota: m.quota }))
         : [];
-    // byDay / chartModels / token totals were added after the cache table
-    // shipped — old rows lack them and default to []/0 here, self-healing on
-    // the next live refresh (≤ 5min TTL). The chart treats [] as "暂无数据".
     const byDay = Array.isArray(p.byDay)
         ? (p.byDay as Array<{ date?: unknown; values?: unknown }>)
               .filter((d): d is { date: string; values: Record<string, unknown> } => typeof d.date === 'string')
@@ -257,90 +245,64 @@ function readPayload(payload: unknown): UsageAggregate {
     const chartModels = Array.isArray(p.chartModels)
         ? (p.chartModels as unknown[]).filter((m): m is string => typeof m === 'string')
         : [];
+    const legacyTokens =
+        (typeof p.totalPromptTokens === 'number' ? p.totalPromptTokens : 0) +
+        (typeof p.totalCompletionTokens === 'number' ? p.totalCompletionTokens : 0);
     return {
         totalUsedQuota: typeof p.totalUsedQuota === 'number' ? p.totalUsedQuota : 0,
         totalCalls: typeof p.totalCalls === 'number' ? p.totalCalls : 0,
-        totalPromptTokens: typeof p.totalPromptTokens === 'number' ? p.totalPromptTokens : 0,
-        totalCompletionTokens: typeof p.totalCompletionTokens === 'number' ? p.totalCompletionTokens : 0,
+        totalTokens: typeof p.totalTokens === 'number' ? p.totalTokens : legacyTokens,
         byModel,
         byDay,
         chartModels,
     };
 }
 
-/** Live fetch: paginate queryLogs over the requested window, accumulate
- *  total / by-model. Stops early when (page * page_size) ≥ total OR
- *  the page returns fewer rows than page_size. Hard-caps at MAX_PAGES
- *  to bound the worst-case latency.
+/** Live fetch: pull the (day × model) buckets from `/api/data/` over the
+ *  window and roll them up. No pagination — `/api/data/` returns the full
+ *  pre-aggregated set in one call.
  *
  *  Filter:
- *   - Forwards `username=<newapiUsername>` to new-api (gotcha #15: admin
- *     auth filters by username, NOT user_id — `user_id=...` is silently
- *     dropped).
- *   - Post-filters every row by `log.user_id === newapiUserId`. If new-api
- *     ever stops respecting the username filter (or starts mixing rows on
- *     a future build), the aggregator still won't pollute the cache with
- *     other users' data. Mirrors `token-usage.ts:148`. */
+ *   - Forwards `username=<newapiUsername>` (gotcha #15: admin auth filters by
+ *     username, not user_id).
+ *   - Post-filters every bucket by `row.user_id === newapiUserId` for
+ *     defence-in-depth. */
 async function fetchLiveAggregate(args: {
     newapiUserId: number;
     newapiUsername: string;
     period: UsagePeriod;
     now: Date;
-}): Promise<{ aggregate: UsageAggregate; pagesFetched: number }> {
+}): Promise<UsageAggregate> {
     const range = periodToTimeRange(args.period, args.now);
+
+    const rows = await getUsageDashboard({
+        username: args.newapiUsername,
+        start_timestamp: range.start || undefined,
+        end_timestamp: range.end,
+    });
 
     let totalUsedQuota = 0;
     let totalCalls = 0;
-    let totalPromptTokens = 0;
-    let totalCompletionTokens = 0;
+    let totalTokens = 0;
     const byModelMap = new Map<string, { calls: number; quota: number }>();
     // date(YYYY-MM-DD, Shanghai) → model → quota, for the stacked-bar chart.
     const dayModelMap = new Map<string, Map<string, number>>();
-    let pagesFetched = 0;
 
-    for (let page = 1; page <= MAX_PAGES; page++) {
-        const r = await queryLogs({
-            username: args.newapiUsername,
-            type: 2, // consume only — refunds (6) etc. excluded
-            // 0 means start-of-time; queryLogs forwards as-is and new-api
-            // accepts. We could omit but explicit is clearer for Sentry.
-            start_timestamp: range.start || undefined,
-            end_timestamp: range.end,
-            page,
-            page_size: PAGE_SIZE,
-        });
-        pagesFetched++;
-
-        for (const log of r.items) {
-            // Defensive cross-user post-filter — see fn-doc rationale.
-            // Without this the bug we just fixed would silently come back
-            // if a future new-api build loosens the username filter.
-            if (log.user_id !== args.newapiUserId) continue;
-            // Defensive re-filter — new-api respects type=2 but a future
-            // upstream change shouldn't double-count refunds if the filter
-            // ever loosens.
-            if (log.type !== 2) continue;
-            totalCalls++;
-            totalUsedQuota += log.quota;
-            totalPromptTokens += log.prompt_tokens;
-            totalCompletionTokens += log.completion_tokens;
-            const key = log.model_name || '<unknown>';
-            const slot = byModelMap.get(key) ?? { calls: 0, quota: 0 };
-            slot.calls++;
-            slot.quota += log.quota;
-            byModelMap.set(key, slot);
-            // Daily-by-model bucket for the chart.
-            const day = shanghaiDay(log.created_at);
-            const dm = dayModelMap.get(day) ?? new Map<string, number>();
-            dm.set(key, (dm.get(key) ?? 0) + log.quota);
-            dayModelMap.set(day, dm);
-        }
-
-        // Early-exit conditions:
-        // - this page returned fewer rows than page_size → last page
-        // - we've accounted for all matching rows per `total`
-        if (r.items.length < PAGE_SIZE) break;
-        if (page * PAGE_SIZE >= r.total) break;
+    for (const row of rows) {
+        // Defensive cross-user post-filter (see fn-doc).
+        if (row.user_id !== args.newapiUserId) continue;
+        totalCalls += row.count;
+        totalUsedQuota += row.quota;
+        totalTokens += row.token_used;
+        const key = row.model_name || '<unknown>';
+        const slot = byModelMap.get(key) ?? { calls: 0, quota: 0 };
+        slot.calls += row.count;
+        slot.quota += row.quota;
+        byModelMap.set(key, slot);
+        const day = shanghaiDay(row.created_at);
+        const dm = dayModelMap.get(day) ?? new Map<string, number>();
+        dm.set(key, (dm.get(key) ?? 0) + row.quota);
+        dayModelMap.set(day, dm);
     }
 
     const byModel = Array.from(byModelMap.entries())
@@ -366,16 +328,5 @@ async function fetchLiveAggregate(args: {
             return { date, values };
         });
 
-    return {
-        aggregate: {
-            totalUsedQuota,
-            totalCalls,
-            totalPromptTokens,
-            totalCompletionTokens,
-            byModel,
-            byDay,
-            chartModels,
-        },
-        pagesFetched,
-    };
+    return { totalUsedQuota, totalCalls, totalTokens, byModel, byDay, chartModels };
 }
