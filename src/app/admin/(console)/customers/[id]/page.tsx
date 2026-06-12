@@ -151,6 +151,8 @@ function getTexts(locale: Locale) {
               adjustBadAmount: 'Enter a non-zero amount.',
               adjustBadNote: 'A reason is required.',
               adjustFailed: 'Adjustment failed',
+              adjustNewapiModeWarn:
+                  'This customer currently bills from the new-api balance — a ledger adjustment does NOT change their usable balance (it only pre-books the dormant portal ledger). To change the real balance, use new-api add_quota (manual credit runbook).',
               // ── P4c-4 billing-mode flip (superadmin) ──
               billingTitle: 'Billing mode',
               billingNote: 'Superadmin gray-rollout flip. Single account, atomic, reversible, net-neutral.',
@@ -257,6 +259,8 @@ function getTexts(locale: Locale) {
               adjustBadAmount: '请输入非 0 金额。',
               adjustBadNote: '必须填写调整原因。',
               adjustFailed: '调整失败',
+              adjustNewapiModeWarn:
+                  '该客户当前按 new-api 余额计费 —— 账本调整不会改变其可用余额(只是预记进休眠的 portal 账本)。要调真实余额请走 new-api add_quota(手动入账流程)。',
               // ── P4c-4 计费模式翻号(superadmin)──
               billingTitle: '计费模式',
               billingNote: 'superadmin 灰度翻号。单号、原子、可逆、净中性。',
@@ -586,6 +590,18 @@ function DetailContent() {
                         <div className={sectionTitle}>{t.ledgerTitle}</div>
                         <div className={`mb-2 text-xs ${muted}`}>{t.ledgerNote}</div>
                         <div className={`rounded-xl border p-4 ${card}`}>
+                            {data.customer.billing_mode === 'newapi' && (
+                                <div
+                                    className={[
+                                        'mb-4 rounded-lg border p-3 text-xs',
+                                        isDark
+                                            ? 'border-amber-700/60 bg-amber-950/30 text-amber-300'
+                                            : 'border-amber-300 bg-amber-50 text-amber-700',
+                                    ].join(' ')}
+                                >
+                                    {t.adjustNewapiModeWarn}
+                                </div>
+                            )}
                             <div className="flex flex-wrap items-end justify-between gap-4">
                                 <div>
                                     <div className={labelCls}>{t.ledgerBalance}</div>

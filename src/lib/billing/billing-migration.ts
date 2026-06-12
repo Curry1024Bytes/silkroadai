@@ -69,7 +69,14 @@ export async function migrateUserToPortal(userId: string, createdBy?: string | n
         await prisma.$transaction(async (tx) => {
             const cas = await tx.user.updateMany({
                 where: { id: userId, billing_mode: 'newapi' },
-                data: { billing_mode: 'portal' },
+                data: {
+                    billing_mode: 'portal',
+                    // 翻号即清 quota 缓存(镜像 executeRecharge):admin 详情页头部「余额」
+                    // 读 newapi_quota_cache,不清会一直显示翻号前的旧值。
+                    newapi_quota_cache: null,
+                    newapi_used_quota_cache: null,
+                    newapi_cached_at: null,
+                },
             });
             if (cas.count === 0) throw new AlreadyInTargetMode(); // 并发已翻 → 回滚、不 seed
             await applyLedgerEntryInTx(tx, userId, {
@@ -148,7 +155,14 @@ export async function rollbackUserToNewapi(userId: string, createdBy?: string | 
         await prisma.$transaction(async (tx) => {
             const cas = await tx.user.updateMany({
                 where: { id: userId, billing_mode: 'portal' },
-                data: { billing_mode: 'newapi' },
+                data: {
+                    billing_mode: 'newapi',
+                    // 回滚刚 override 了 new-api quota,旧缓存必错 —— 事务内一并清,
+                    // 下次任何余额读取走 live 刷新(2026-06-12 实操踩坑:头部余额停在翻号前)。
+                    newapi_quota_cache: null,
+                    newapi_used_quota_cache: null,
+                    newapi_cached_at: null,
+                },
             });
             if (cas.count === 0) throw new AlreadyInTargetMode(); // 并发已翻回 → 回滚、不双记
             if (balanceY !== 0) {
