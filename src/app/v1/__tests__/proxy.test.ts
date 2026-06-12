@@ -479,13 +479,15 @@ describe('/v1 proxy — Phase 3: 客户自定义 OSS (W9 D3)', () => {
         expect(mockUploadImage).toHaveBeenCalledTimes(1);
     });
 
-    it('survives DB lookup failure — silently uses platform R2', async () => {
+    it('survives DB lookup failure — falls back to platform R2 WITH X-Silkroadai-Oss-Fallback header', async () => {
         mockFetch.mockResolvedValueOnce(geminiNativeResponse());
         mockResolveUserId.mockRejectedValueOnce(new Error('db down'));
 
         const res = await POST(geminiTextReq(), ctx('chat', 'completions'));
-        expect(res.status).toBe(200);
+        expect(res.status).toBe(200); // 客户请求不失败
         expect(mockUploadImage).toHaveBeenCalledTimes(1);
+        // 2026-06-12 修复:lookup 失败不再无痕 — 响应头可检测(日志侧另有 warn)
+        expect(res.headers.get('X-Silkroadai-Oss-Fallback')).toBe('yes');
     });
 });
 

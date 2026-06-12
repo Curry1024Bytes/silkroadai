@@ -81,25 +81,33 @@ export function deleteOssConfig(userId: string): Promise<{ count: number }> {
  *   src/lib/newapi/token-format.ts)→ 查 NewApiToken.newapi_token_value
  * - 查不到再试 User.newapi_system_token_value(portal-internal token,
  *   image-gen 等内部服务在用 — 它们的生图也应该尊重客户 OSS 配置)
- * - 任何失败返回 null(proxy 回退平台 R2,绝不 throw 阻断客户请求)
+ * - header 形状不对 / 干净查无此 token → null(匿名,走平台 R2)
+ * - DB 查询抛错(并发尖峰下连接池竞争等瞬时故障)→ **重试一次**;仍失败
+ *   则 throw 给调用方记日志后回落平台 R2 — **不要在这里静默吞**。
+ *   2026-06-12 实测教训:旧版 `catch { return null }` 吞掉瞬时异常,客户
+ *   高并发完成尖峰时 ~7% 生图无声落了平台 R2,零日志、零响应头,排查只能
+ *   靠对账 R2 对象时间戳(配了 OSS 的客户投诉"bucket 里少图")。
  */
 export async function resolveUserIdFromAuthHeader(authHeader: string | null): Promise<string | null> {
-    try {
-        const m = authHeader?.match(/^Bearer\s+(.+)$/i);
-        if (!m) return null;
-        const raw = m[1].startsWith('sk-') ? m[1].slice(3) : m[1];
-        if (!raw) return null;
-        const token = await prisma.newApiToken.findUnique({
-            where: { newapi_token_value: raw },
-            select: { user_id: true },
-        });
-        if (token) return token.user_id;
-        const sys = await prisma.user.findFirst({
-            where: { newapi_system_token_value: raw },
-            select: { id: true },
-        });
-        return sys?.id ?? null;
-    } catch {
-        return null;
+    const m = authHeader?.match(/^Bearer\s+(.+)$/i);
+    if (!m) return null;
+    const raw = m[1].startsWith('sk-') ? m[1].slice(3) : m[1];
+    if (!raw) return null;
+    for (let attempt = 0; ; attempt++) {
+        try {
+            const token = await prisma.newApiToken.findUnique({
+                where: { newapi_token_value: raw },
+                select: { user_id: true },
+            });
+            if (token) return token.user_id;
+            const sys = await prisma.user.findFirst({
+                where: { newapi_system_token_value: raw },
+                select: { id: true },
+            });
+            return sys?.id ?? null;
+        } catch (e) {
+            if (attempt >= 1) throw e;
+            console.warn('[oss-store] token→user 反查瞬时失败,重试一次', e);
+        }
     }
 }

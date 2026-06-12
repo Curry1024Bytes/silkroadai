@@ -390,8 +390,11 @@ async function storeGeneratedImage(
             }
         }
     } catch (e) {
-        // DB 故障等 — 静默走平台 R2,不阻断客户请求
+        // DB 故障等(resolve 重试一次后仍失败才会到这)— 走平台 R2 不阻断请求,
+        // 但要打日志 + 带 X-Silkroadai-Oss-Fallback 头,让配了 OSS 的客户可检测
+        // (2026-06-12 教训:此前 resolve 内部静默吞错,客户图无声落平台 R2 零痕迹)
         console.warn('[v1-proxy] customer OSS lookup failed, using platform R2', e);
+        ossFallback = true;
     }
 
     if (customerUrl) return { url: customerUrl, ossFallback, r2Fallback: false };
