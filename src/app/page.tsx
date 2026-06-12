@@ -797,6 +797,7 @@ function PricingFamilyRow({
 }) {
     return (
         <div
+            className="lp-fam-row"
             style={{
                 display: 'flex',
                 alignItems: 'center',
@@ -808,7 +809,7 @@ function PricingFamilyRow({
             }}
         >
             <FamilyIcon family={tier.family} />
-            <div style={{ flex: '1 1 auto', minWidth: 0 }}>
+            <div className="lp-fam-name" style={{ flex: '1 1 auto', minWidth: 0 }}>
                 <div
                     style={{
                         fontSize: 18,
@@ -843,6 +844,7 @@ function PricingFamilyRow({
                 ) : null}
             </div>
             <div
+                className="lp-fam-pill"
                 style={{
                     flexShrink: 0,
                     minWidth: 120,
@@ -882,6 +884,19 @@ function PricingFamilyRow({
 function PricingTeaser({ promoActive: _promoActive }: { promoActive: boolean }) {
     return (
         <Section style={{ padding: '48px 0' }}>
+            {/* 手机窄屏下行内固定宽度(图标 44 + 价格 + pill minWidth 120)超过可用宽度,
+                模型名被压到 0 宽溢出叠到价格上 — 允许换行:第一行图标+模型名,第二行价格靠左 + pill 靠右 */}
+            <style
+                dangerouslySetInnerHTML={{
+                    __html: `
+                        @media (max-width: 640px) {
+                            .lp-fam-row { flex-wrap: wrap; }
+                            .lp-fam-name { flex: 1 0 auto !important; }
+                            .lp-fam-pill { min-width: 0 !important; margin-left: auto; }
+                        }
+                    `,
+                }}
+            />
             <h2
                 style={{
                     margin: 0,
