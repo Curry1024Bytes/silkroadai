@@ -87,11 +87,13 @@ function toOpenAIMessages(messages: readonly ThreadMessage[]): OAIMessage[] {
     return out;
 }
 
-/** Parse OpenAI-style SSE buffer → concatenated delta text + remaining tail
- *  + done flag. Verbatim from v1 (proven). */
-function drainSse(buffer: string): { text: string; rest: string; done: boolean } {
+/** Parse OpenAI-style SSE buffer → concatenated delta text + remaining tail +
+ *  done flag + the latest finish_reason (e.g. `content_filter` when the
+ *  upstream nukes a response to empty — see the empty-output handling below). */
+function drainSse(buffer: string): { text: string; rest: string; done: boolean; finishReason: string | null } {
     let text = '';
     let done = false;
+    let finishReason: string | null = null;
     const parts = buffer.split('\n\n');
     const rest = parts.pop() ?? '';
     for (const part of parts) {
@@ -107,12 +109,14 @@ function drainSse(buffer: string): { text: string; rest: string; done: boolean }
                 const json = JSON.parse(data);
                 const delta = json?.choices?.[0]?.delta?.content;
                 if (typeof delta === 'string') text += delta;
+                const fr = json?.choices?.[0]?.finish_reason;
+                if (typeof fr === 'string') finishReason = fr;
             } catch {
                 /* malformed event — skip */
             }
         }
     }
-    return { text, rest, done };
+    return { text, rest, done, finishReason };
 }
 
 // ── Inner runtime + thread (remounts on "新对话") ────────────────────────
@@ -170,20 +174,30 @@ function ChatThread({
                 const decoder = new TextDecoder();
                 let buffer = '';
                 let acc = '';
+                let finishReason: string | null = null;
                 for (;;) {
                     const { value, done } = await reader.read();
                     if (done) break;
                     buffer += decoder.decode(value, { stream: true });
-                    const { text, rest, done: sseDone } = drainSse(buffer);
+                    const { text, rest, done: sseDone, finishReason: fr } = drainSse(buffer);
                     buffer = rest;
+                    if (fr) finishReason = fr;
                     if (text) {
                         acc += text;
                         yield { content: [{ type: 'text' as const, text: acc }] };
                     }
                     if (sseDone) break;
                 }
+                // Empty output: distinguish an upstream content filter (common on
+                // some reseller channels — they intermittently nuke a reply to
+                // zero tokens with finish_reason=content_filter) from a plain
+                // empty completion, and tell the customer it's retryable.
                 if (acc.trim() === '') {
-                    yield { content: [{ type: 'text' as const, text: '_(无返回内容)_' }] };
+                    const msg =
+                        finishReason === 'content_filter'
+                            ? '⚠️ 上游内容过滤导致本次无输出,请重试或更换模型。'
+                            : '⚠️ 本次无返回内容,请重试。';
+                    yield { content: [{ type: 'text' as const, text: msg }] };
                 }
             },
         }),
