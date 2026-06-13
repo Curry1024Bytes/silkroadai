@@ -888,9 +888,19 @@ console.log(completion.choices[0].message.content);`}
                                     <td className="px-4 py-3 font-mono text-xs text-navy align-top">
                                         gemini-3-pro-image-preview
                                     </td>
-                                    <td className="px-4 py-3 text-navy align-top font-medium">4096×4096(4K)</td>
+                                    <td className="px-4 py-3 text-navy align-top font-medium">
+                                        4096×4096(4K)· 可选 2K
+                                    </td>
                                     <td className="px-4 py-3 text-navy align-top font-medium">¥0.50 / 张</td>
                                     <td className="px-4 py-3 text-ink">旗舰,最高画质</td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">
+                                        gemini-3-pro-image-preview-2k
+                                    </td>
+                                    <td className="px-4 py-3 text-navy align-top font-medium">2048×2048(2K)</td>
+                                    <td className="px-4 py-3 text-navy align-top font-medium">¥0.30 / 张</td>
+                                    <td className="px-4 py-3 text-ink">旗舰画质 · 省钱 2K(比 4K 省 40%)</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -976,6 +986,63 @@ print(resp.data[0].b64_json)   # 或 resp.data[0].url`}
                             /v1beta/models/&lt;model&gt;:generateContent
                         </code>{' '}
                         endpoint(默认比例 1:1)。
+                    </div>
+
+                    <div className="mt-3 mb-3 rounded-lg border-l-4 border-brand-accent bg-paper-muted px-4 py-3 text-sm text-ink">
+                        💰 <strong className="text-navy">要旗舰画质又想省钱?用 2K 折扣型号</strong>{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            gemini-3-pro-image-preview-2k
+                        </code>
+                        —— 锁定 2K 分辨率、<strong className="text-navy">¥0.30 / 张</strong>(比 4K 原型号省 40%),画质与
+                        pro 旗舰同源。用法不变,把请求里的{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            model
+                        </code>{' '}
+                        换成它即可(
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            /v1/chat/completions
+                        </code>{' '}
+                        与{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            /v1/images/generations
+                        </code>{' '}
+                        都支持,出图比例照常用{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            aspect_ratio
+                        </code>
+                        )。
+                        <span className="block mt-1.5 text-xs text-minor-ink">
+                            另:原型号{' '}
+                            <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                                gemini-3-pro-image-preview
+                            </code>{' '}
+                            也接受{' '}
+                            <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                                {`size`}
+                            </code>{' '}
+                            参数(
+                            <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                                {`"2K"`}
+                            </code>
+                            /
+                            <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                                {`"4K"`}
+                            </code>
+                            ,也认{' '}
+                            <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                                2048x2048
+                            </code>
+                            /
+                            <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                                4096x4096
+                            </code>
+                            )切分辨率,但<strong className="text-navy">价格不随尺寸变</strong>(仍 ¥0.50)——
+                            想省钱请认准上面带{' '}
+                            <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                                -2k
+                            </code>{' '}
+                            的型号。
+                        </span>
                     </div>
 
                     <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">Gemini 原生 API · curl(2K / 4K)</p>

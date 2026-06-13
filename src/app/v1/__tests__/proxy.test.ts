@@ -1003,3 +1003,196 @@ describe('/v1 proxy — img2img:auto 时输出比例跟随输入图(fix gemini-i
         expect(sentImageConfig()).not.toHaveProperty('aspectRatio');
     });
 });
+
+describe('/v1 proxy — pro imageSize 可选 (size param, feat/pro-image-size-select)', () => {
+    // 仅 gemini-3-pro-image-preview 认 size;其余模型忽略 size 维持固定档。
+    function makeMultipartReq(form: FormData, path = '/images/edits'): NextRequest {
+        return new NextRequest(`https://ai.silkroadai.io/v1${path}`, { method: 'POST', body: form });
+    }
+    function imageFile(bytes: number[], name = 'ref.png', type = 'image/png'): File {
+        return new File([new Uint8Array(bytes)], name, { type });
+    }
+    /** 取最近一次打到 generateContent 的 imageConfig.imageSize。 */
+    function sentImageSize(): string {
+        const call = mockFetch.mock.calls.find(([u]) => String(u).includes(':generateContent'));
+        expect(call).toBeDefined();
+        const sent = JSON.parse(String((call![1] as RequestInit).body)) as {
+            generationConfig: { imageConfig: { imageSize: string } };
+        };
+        return sent.generationConfig.imageConfig.imageSize;
+    }
+
+    // ---- JSON /v1/images/generations 入口 ----
+    it('pro + size=2K (JSON images) → imageSize 2K (test 1)', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gemini-3-pro-image-preview', prompt: 'x', size: '2K' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        expect(sentImageSize()).toBe('2K');
+    });
+
+    it('pro + size=2048x2048 → imageSize 2K (test 2)', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gemini-3-pro-image-preview', prompt: 'x', size: '2048x2048' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(sentImageSize()).toBe('2K');
+    });
+
+    it('pro + size=4K → imageSize 4K (test 3)', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gemini-3-pro-image-preview', prompt: 'x', size: '4K' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(sentImageSize()).toBe('4K');
+    });
+
+    it('pro + 无 size → 默认 4K(回归保护,test 4)', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gemini-3-pro-image-preview', prompt: 'x' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(sentImageSize()).toBe('4K');
+    });
+
+    it('pro + size=8K(非法)→ 400 invalid_request_error,不打上游 (test 5)', async () => {
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gemini-3-pro-image-preview', prompt: 'x', size: '8K' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(400);
+        const data = (await res.json()) as { error: { type: string; message: string } };
+        expect(data.error.type).toBe('invalid_request_error');
+        expect(data.error.message).toContain('8K');
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('非 pro 忽略 size:gemini-2.5-flash-image + size=4K → 仍 1K (test 6)', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gemini-2.5-flash-image', prompt: 'x', size: '4K' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200); // size 被忽略,不报错
+        expect(sentImageSize()).toBe('1K');
+    });
+
+    // ---- multipart /v1/images/edits 入口 (test 7a) ----
+    it('pro + size=2K (multipart images/edits) → imageSize 2K', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const form = new FormData();
+        form.append('model', 'gemini-3-pro-image-preview');
+        form.append('prompt', 'edit this');
+        form.append('size', '2K');
+        form.append('image', imageFile([1, 2, 3])); // 非法字节 → 不注入 aspectRatio,只验 size
+        const res = await POST(makeMultipartReq(form, '/images/edits'), ctx('images', 'edits'));
+        expect(res.status).toBe(200);
+        expect(sentImageSize()).toBe('2K');
+    });
+
+    // ---- chat /v1/chat/completions 入口(body.size,test 7b) ----
+    it('pro + body.size=2K (chat/completions) → imageSize 2K', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: {
+                    model: 'gemini-3-pro-image-preview',
+                    size: '2K',
+                    messages: [{ role: 'user', content: 'a cat' }],
+                },
+            }),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(200);
+        expect(sentImageSize()).toBe('2K');
+    });
+
+    it('pro + body.size=8K (chat/completions, 非法)→ 400,不打上游', async () => {
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: {
+                    model: 'gemini-3-pro-image-preview',
+                    size: '8K',
+                    messages: [{ role: 'user', content: 'a cat' }],
+                },
+            }),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(400);
+        const data = (await res.json()) as { error: { type: string } };
+        expect(data.error.type).toBe('invalid_request_error');
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    // ── 折扣 SKU gemini-3-pro-image-preview-2k(锁 2K @ ¥0.30,new-api 单独计费)──
+    it('折扣 SKU → 锁 2K + native URL 用【别名】(new-api 据此按 ¥0.30 计费,不是真名 ¥0.50)', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gemini-3-pro-image-preview-2k', prompt: 'x' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        const call = mockFetch.mock.calls.find(([u]) => String(u).includes(':generateContent'));
+        expect(call).toBeDefined();
+        // 关键:打到 new-api 的 model 必须是别名(new-api model_mapping 再翻回真名给上游)。
+        // 若这里误用真名,new-api 会按 ¥0.50 计费,折扣 SKU 形同虚设。
+        expect(String(call![0])).toBe(`${NEWAPI_BASE}/v1beta/models/gemini-3-pro-image-preview-2k:generateContent`);
+        expect(sentImageSize()).toBe('2K');
+    });
+
+    it('折扣 SKU 忽略 size 参数(锁 2K):传 size=4K → 仍 2K', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gemini-3-pro-image-preview-2k', prompt: 'x', size: '4K' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(sentImageSize()).toBe('2K');
+    });
+
+    it('折扣 SKU 走 chat/completions 也锁 2K', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: { model: 'gemini-3-pro-image-preview-2k', messages: [{ role: 'user', content: 'a cat' }] },
+            }),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(200);
+        expect(sentImageSize()).toBe('2K');
+    });
+
+    it('折扣 SKU 复用 pro 档比例白名单(pro 独有 8:1 通过,不 400)', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gemini-3-pro-image-preview-2k', prompt: 'x', aspect_ratio: '8:1' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        const sent = JSON.parse(String(init.body)) as { generationConfig: { imageConfig: { aspectRatio: string } } };
+        expect(sent.generationConfig.imageConfig.aspectRatio).toBe('8:1');
+    });
+});
