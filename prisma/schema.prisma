@@ -1048,6 +1048,31 @@ model RequestLog {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// 数据存储 Phase 1 第③步(2026-06-13)— RequestLog 受控查看的访问审计。
+// superadmin 每次访问(列表 / 看元数据 / 拉输入·输出原文)写一条;看客户原文
+// (view_input/view_output)审计写失败则拒绝展示(fail-closed,治理硬要求)。
+// 现有 AuditLog 绑死 Order(orderId NOT NULL),不可复用 → 独立表。
+// 镜像 RequestLog 惯例:裸 uuid、不建 FK relation(审计独立,不牵动 User/
+// RequestLog 删除)、snake_case、@@map。永久留存(不建 retention job)。
+// ─────────────────────────────────────────────────────────────────────────
+model RequestLogAccess {
+  id              String  @id @default(uuid()) @db.Uuid
+  actor_user_id   String? @db.Uuid // 访问者 superadmin 的 User.id;break-glass ADMIN_TOKEN 时 null
+  via_break_glass Boolean @default(false) // 经 ADMIN_TOKEN break-glass 入(无 session user)
+  action          String // 'list' | 'view_meta' | 'view_input' | 'view_output'
+  request_log_id  String? @db.Uuid // view_* 时 = 被看的 RequestLog.id;list 时 null
+  query           String? // list 时的筛选条件摘要(截断存,复盘"看了哪批")
+  ip              String? // 操作者 IP(extractClientIP,生产在 Caddy 后,best-effort)
+
+  created_at DateTime @default(now())
+
+  @@index([actor_user_id, created_at])
+  @@index([request_log_id])
+  @@index([created_at])
+  @@map("request_log_access")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // P4c-1 ¥账本地基。零客户影响:本任务没有任何东西自动建/扣它,billing_mode
 // 默认 newapi。改余额唯一入口 = src/lib/billing/ledger.ts applyLedgerEntry
 // (乐观锁 version);P4c-2 计量扣费 / P4c-3 充值 / P4c-4 迁移后才常态写。
