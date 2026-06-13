@@ -172,6 +172,14 @@ silkroadai/
 
 - [x] v2 — assistant-ui + 图片上传 + 联网搜索 ✅(2026-06-08,PR #99 merge `c89e9a1`,brief `chatui-v2-assistant-ui-brief.md`)— `/chat` 升级到 **assistant-ui**(`useLocalRuntime` + `ChatModelAdapter` 包住同一个 `/api/portal/chat/stream`,复用 v1 `drainSse`;后端契约 / 计费 / 无状态 / 零 schema 全不变)。**真 markdown + Prism 代码高亮**(`@assistant-ui/react-markdown` + `react-syntax-highlighter`,`assistant-markdown.tsx`)替代 v1 手写 `markdown.tsx`(已删)。保留 vendor 分组模型选择器(加 `视觉` 标记);**新对话 = remount 全新 runtime**。**图片上传**:`SimpleImageAttachmentAdapter` → data URL → OpenAI 多模态 content,上传按钮按新增 `ChatModel.vision` 仅对视觉模型开放。**联网搜索**:`src/lib/chat/web-search.ts`(inject-results MVP,Tavily,model-agnostic,never throws)+ 工具条「联网」toggle → `web_search` flag;route 把检索结果拼成 system message 前插(`extractLatestUserText` + `runWebSearch`)。**dark 上线**:未配 `TAVILY_API_KEY` 时 `getWebSearchProvider()` 返 null、联网开关 no-op(纯对话照常),operator 在 VPS `.env` 配 key 再开。route §3:`MessageSchema` 收 `string | 多模态 parts`;adapter 把上游错误渲染成可见 `⚠️` 气泡(不白屏),abort 仍透传给停止键。tsc/lint/prettier clean,全套 **1577 pass / 1 skip / 0 fail**(新增 `chat-websearch` 7 + 多模态透传 / `web_search` 注入 / vision-flag 测试)。**真机浏览器 smoke(本地 dev)**:assistant-ui 在 Next 16 编译挂载无 console 错、picker + 视觉徽章、视觉门控上传(`gpt-5.4` 隐藏 / `claude-opus-4-8` 显示)、联网 toggle、send→友好错误气泡 全过;**happy-path 逐 token 流式 / 视觉识别 / 联网结果待有余额账号验证**(本地 DB 用户线上 new-api record-not-found,同 v1)。部署后线上:`/chat` unauth→307、`stream` unauth→401。新依赖 `@assistant-ui/*` + `react-syntax-highlighter` + `remark-gfm`(operator 同意解除 v1 零依赖约束);无 migration,Caddy 不动。**已知**:`categorize.ts` 把个别 image/video 模型(`gpt-image-2` / `seedance-2.0`)漏进 chat picker(v1 同款,本 PR 不动)。
 
+### 数据存储(客户 /v1/\* 请求+响应捕获 — 与 admin 后台/P4c 线并行)
+
+> 设计文档在仓库外 `~/Documents/silk road ai/data-storage-design-2026-06-12.md`。目标:把每次 `/v1/*` 调用的输入+输出捕获落库(PG 元数据 + 私有 R2 大体)。operator 拍板(2026-06-13):输入图字节全存、留存永久、全量 100%、superadmin 门 + 访问审计是后续步硬要求。
+
+- [x] 第①步 — `RequestLog` schema + 私有 log bucket R2 helper ✅(2026-06-13,PR #120 merge `6c2fa71`,brief `cc-brief-data-storage-step1-schema-2026-06-13.md`)— 纯**地基**,零捕获、零客户影响。`prisma RequestLog` model(镜像 `UsageRecord` 惯例:裸 uuid 列、**不建 FK relation**、身份列 `tenant_id?`/`user_id?`/`token_id?` 全 nullable —— 第②步 auth 头解析失败也**不丢日志** + `newapi_token_hash?` = sha256(去 `sk-` token 值)兜底反查;计量只存 token 数不算费用,费用走 `UsageRecord` 不重复;`retention_expires_at?` null=永久 + `capture_version`)+ additive migration `20260612185558_add_request_log`(1 CREATE TABLE + 4 INDEX,零 ALTER/DROP)。新 `src/lib/r2/log-store.ts`:**私有** bucket(独立 env `R2_LOG_BUCKET_NAME`,凭证沿用现有 `R2_*`)的 put/get/delete + 键约定常量(单一事实源)`reqlog/{yyyy}/{mm}/{dd}/{request_id}.{in|out}.json` + `.in.{i}.{ext}`(UTC 日期);env 未配置 **fail-closed** 抛 `LogStoreNotConfiguredError` 且零 SDK 调用,**绝不回落公开读 image bucket**(测试显式守护);`isLogStoreConfigured()` 给第②步当总开关。**18 新单测**,全套 1724 pass / 1 skip / 0 fail。**§7 覆盖核查**(168h GIN 日志):`/v1/*` 全经 portal proxy = 捕获面天然覆盖;**盲区 = `/v1beta` 直达 new-api,但大头是 proxy 翻译 Gemini 生图的上游腿,明确客户直连仅 `nano-banana-pro-preview` 6 次/7d**(要补则 Caddy 分流 `/v1beta/*` 给 portal,operator 决策)。merge+部署 2026-06-13(VPS HEAD `6c2fa71`,prod migrate deploy applied + `request_logs` 表结构核对一致 + portal 无回归 307/401/200)。**部署侧待办(不阻塞,第②步才用):operator 在 Cloudflare 建 private log bucket + VPS `.env` 配 `R2_LOG_BUCKET_NAME`;若现有 R2 token 是 scoped 只授 image bucket 会 403 → 届时加 `R2_LOG_*` override env。**
+- [ ] 第②步 — proxy 捕获/tee(独立 PR,未开始):在 `src/app/v1/[...path]/route.ts` tee 输入+输出到 `request_logs` + log bucket;身份解析复用 `resolveUserIdFromAuthHeader`(`src/lib/oss/store.ts`);`capture_version` 写 ≥1。
+- [ ] 后续步 — admin 查看页(superadmin 门)+ 访问审计 + retention 开关(独立 PR)。
+
 ---
 
 ## 关键架构决策(决策已定,不要重新讨论)
@@ -503,4 +511,4 @@ APP_PORT=3002
 ---
 
 **版本**: 2.2
-**最后更新**: 2026-06-08
+**最后更新**: 2026-06-13
