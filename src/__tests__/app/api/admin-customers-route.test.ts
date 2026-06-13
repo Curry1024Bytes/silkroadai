@@ -36,6 +36,13 @@ vi.mock('@/lib/db', () => ({
 vi.mock('@/lib/newapi/client', () => ({
     quotaToCny: (quota: number) => (quota / 500_000) * 7.2,
 }));
+// Detail header live-refetches balance via getQuotaWithCache. Default it to REJECT
+// so the existing detail assertions exercise the graceful fallback (→ cache columns,
+// the pre-change behavior). One dedicated test below drives the live-success path.
+const mockGetQuotaWithCache = vi.fn();
+vi.mock('@/lib/newapi/quota-cache', () => ({
+    getQuotaWithCache: (...a: unknown[]) => mockGetQuotaWithCache(...a),
+}));
 
 import { GET as LIST } from '@/app/api/admin/customers/route';
 import { GET as DETAIL } from '@/app/api/admin/customers/[id]/route';
@@ -55,6 +62,8 @@ beforeEach(() => {
     mockTokenFindMany.mockResolvedValue([]);
     mockRechargeFindMany.mockResolvedValue([]);
     mockAccountFindUnique.mockResolvedValue(null); // P4c-1: no ledger Account by default
+    // default: live refetch unavailable → route falls back to cache columns (pre-change behavior)
+    mockGetQuotaWithCache.mockRejectedValue(new Error('no upstream in test'));
 });
 
 describe('GET /api/admin/customers (list)', () => {
@@ -253,5 +262,53 @@ describe('GET /api/admin/customers/[id] (detail — IDOR-safe)', () => {
         const keySelect = mockTokenFindMany.mock.calls[0][0].select;
         expect(keySelect.newapi_token_value).toBeUndefined();
         expect(keySelect).toMatchObject({ key_alias: true, tier: true, status: true });
+    });
+
+    it('header live-refetches balance: NULL cache + live value → shows live ¥, NOT ¥0 (2026-06-13 migrate-out regression)', async () => {
+        mockResolveAdmin.mockResolvedValue(SUPERADMIN);
+        mockUserFindFirst.mockResolvedValue({
+            id: 'u1',
+            email: 'a@x.com',
+            nickname: null,
+            status: 'active',
+            created_at: new Date('2026-01-01T00:00:00Z'),
+            last_login_at: null,
+            // cache busted by migrate-out — column reads would show ¥0
+            newapi_quota_cache: null,
+            newapi_used_quota_cache: null,
+            newapi_cached_at: null,
+        });
+        // live new-api: 1,000,000 quota → ¥14.4 remain, 500,000 → ¥7.2 used
+        mockGetQuotaWithCache.mockResolvedValue({ remain_quota: 1_000_000, used_quota: 500_000, source: 'live' });
+
+        const res = await DETAIL(detailReq('u1'), detailParams('u1'));
+        const body = await res.json();
+        expect(res.status).toBe(200);
+        expect(mockGetQuotaWithCache).toHaveBeenCalledWith('u1');
+        expect(body.customer.balance_cny).toBeCloseTo(14.4, 5); // live, not 0
+        expect(body.customer.used_cny).toBeCloseTo(7.2, 5);
+        expect(body.customer.balance_cached_at).not.toBeNull(); // stamped fresh on live
+    });
+
+    it('header refetch fallback: live throws → degrades to cache columns, never 500s', async () => {
+        mockResolveAdmin.mockResolvedValue(SUPERADMIN);
+        mockUserFindFirst.mockResolvedValue({
+            id: 'u1',
+            email: 'a@x.com',
+            nickname: null,
+            status: 'active',
+            created_at: new Date('2026-01-01T00:00:00Z'),
+            last_login_at: null,
+            newapi_quota_cache: BigInt(500_000), // ¥7.2
+            newapi_used_quota_cache: BigInt(250_000), // ¥3.6
+            newapi_cached_at: new Date('2026-01-02T00:00:00Z'),
+        });
+        mockGetQuotaWithCache.mockRejectedValue(new Error('new-api down'));
+
+        const res = await DETAIL(detailReq('u1'), detailParams('u1'));
+        const body = await res.json();
+        expect(res.status).toBe(200);
+        expect(body.customer.balance_cny).toBeCloseTo(7.2, 5); // from cache column
+        expect(body.customer.used_cny).toBeCloseTo(3.6, 5);
     });
 });
