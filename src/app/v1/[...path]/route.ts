@@ -51,6 +51,14 @@ import { randomUUID } from 'node:crypto';
 import { uploadImage } from '@/lib/r2/client';
 import { uploadToCustomerOss } from '@/lib/oss/client';
 import { getOssConfig, resolveUserIdFromAuthHeader } from '@/lib/oss/store';
+import {
+    type CaptureCtx,
+    beginCapture,
+    captureJsonResponse,
+    captureResponse,
+    parseModelAndStream,
+    recordRequestBody,
+} from '@/lib/reqlog/capture';
 
 // Next.js: 强制动态 + Node runtime(需要流式 fetch duplex)
 export const dynamic = 'force-dynamic';
@@ -141,18 +149,38 @@ async function forwardToNewApi(
     bodyOverride: JsonRecord | null,
     path: string,
     search: string,
+    cap: CaptureCtx | null = null,
 ): Promise<NextResponse> {
     const url = `${NEWAPI_BASE_URL}/v1${path}${search}`;
     const hasBody = req.method !== 'GET' && req.method !== 'HEAD';
+
+    // 出口体决定:
+    // - bodyOverride 在手(A:chat clamp/透传、D 的 JSON 透传)→ 序列化它;
+    //   请求体捕获由 call site 用【原始】body 记(clamp 分支要存未钳的),这里不记。
+    // - bodyOverride null(出口 B:messages/responses/embeddings…)→ 默认 req.body
+    //   stream 直传(**开关 off 字节级不变**);仅捕获激活时才 buffer 出来记 + 转发该串。
+    let outgoingBody: BodyInit | undefined;
+    if (bodyOverride) {
+        outgoingBody = JSON.stringify(bodyOverride);
+    } else if (hasBody) {
+        if (cap) {
+            const raw = await req.text();
+            const pm = parseModelAndStream(raw);
+            recordRequestBody(cap, raw, pm.model, pm.streamed);
+            outgoingBody = raw;
+        } else {
+            outgoingBody = req.body as unknown as BodyInit;
+        }
+    }
+
     const init: RequestInit & { duplex?: 'half' } = {
         method: req.method,
         headers: forwardHeaders(req),
-        // streaming SSE 透传:upstream.body 直接 forward,不缓冲
-        body: bodyOverride ? JSON.stringify(bodyOverride) : hasBody ? req.body : undefined,
+        body: outgoingBody,
         duplex: 'half',
     };
     const upstream = await fetch(url, init);
-    return passthroughResponse(upstream);
+    return cap ? captureResponse(cap, upstream) : passthroughResponse(upstream);
 }
 
 /** image_url 解析失败 → 客户侧 400(OpenAI invalid_request_error 形) */
@@ -408,14 +436,21 @@ async function storeGeneratedImage(
     }
 }
 
-async function handleGeminiImage(req: NextRequest, body: JsonRecord, model: string): Promise<NextResponse> {
+async function handleGeminiImage(
+    req: NextRequest,
+    body: JsonRecord,
+    model: string,
+    cap: CaptureCtx | null = null,
+): Promise<NextResponse> {
     const imageSize = GEMINI_IMAGE_MODELS[model];
     let contents: Array<{ role: string; parts: GeminiInputPart[] }>;
     try {
         contents = await toGeminiContents(body.messages);
     } catch (e) {
         if (e instanceof ImageUrlError) {
-            return NextResponse.json({ error: { message: e.message, type: 'invalid_request_error' } }, { status: 400 });
+            const err = { error: { message: e.message, type: 'invalid_request_error' } };
+            if (cap) captureJsonResponse(cap, 400, err);
+            return NextResponse.json(err, { status: 400 });
         }
         throw e;
     }
@@ -441,7 +476,7 @@ async function handleGeminiImage(req: NextRequest, body: JsonRecord, model: stri
 
     if (!upstream.ok) {
         // 上游错误(401 / 429 / 5xx)原样透传 status + body,客户端能看到 new-api 的错误信息
-        return passthroughResponse(upstream);
+        return cap ? captureResponse(cap, upstream) : passthroughResponse(upstream);
     }
 
     const upstreamData = (await upstream.json()) as {
@@ -478,18 +513,33 @@ async function handleGeminiImage(req: NextRequest, body: JsonRecord, model: stri
     const respHeaders: Record<string, string> = { 'X-Silkroadai-Translated': 'gemini-native' };
     if (stored?.ossFallback) respHeaders['X-Silkroadai-Oss-Fallback'] = 'yes';
     if (stored?.r2Fallback) respHeaders['X-Silkroadai-R2-Fallback'] = 'yes';
+    // 出图引用:仅记真实公网 URL(data URL 降级时是内联 base64,不当 ref 存)
+    if (cap) captureJsonResponse(cap, 200, openaiResp, hostedRefs(stored));
     return NextResponse.json(openaiResp, { status: 200, headers: respHeaders });
 }
 
-/** DALL·E 形错误(默认 400 invalid_request_error)。 */
-function imageError(message: string, status = 400): NextResponse {
-    return NextResponse.json({ error: { message, type: 'invalid_request_error' } }, { status });
+/** stored 是真实公网 URL(非 data URL 降级)→ [url],否则 []。供 output_image_refs。 */
+function hostedRefs(stored: StoredImage | null): string[] {
+    return stored && /^https?:\/\//.test(stored.url) ? [stored.url] : [];
+}
+
+/** DALL·E 形错误(默认 400 invalid_request_error)。cap 在手时一并捕获。 */
+function imageError(message: string, status = 400, cap: CaptureCtx | null = null): NextResponse {
+    const obj = { error: { message, type: 'invalid_request_error' } };
+    if (cap) captureJsonResponse(cap, status, obj);
+    return NextResponse.json(obj, { status });
 }
 
 /** 非 Gemini model 的 multipart 透传:重建 FormData 转发 new-api。
  *  req.body 已被 formData() 消费,不能再 stream,所以转发已解析的 FormData;
  *  删掉原 content-type 让 fetch 按新 FormData 重新生成 boundary。 */
-async function forwardMultipart(req: NextRequest, form: FormData, path: string, search: string): Promise<NextResponse> {
+async function forwardMultipart(
+    req: NextRequest,
+    form: FormData,
+    path: string,
+    search: string,
+    cap: CaptureCtx | null = null,
+): Promise<NextResponse> {
     const headers = forwardHeaders(req);
     headers.delete('content-type');
     const upstream = await fetch(`${NEWAPI_BASE_URL}/v1${path}${search}`, {
@@ -497,7 +547,7 @@ async function forwardMultipart(req: NextRequest, form: FormData, path: string, 
         headers,
         body: form,
     });
-    return passthroughResponse(upstream);
+    return cap ? captureResponse(cap, upstream) : passthroughResponse(upstream);
 }
 
 /**
@@ -519,7 +569,12 @@ async function forwardMultipart(req: NextRequest, form: FormData, path: string, 
  *   全部按顺序转 inlineData 塞进 parts。
  * - 鉴权不在本层 —— Authorization 透传,new-api 校验 sk-xxx。
  */
-async function handleImagesDalle(req: NextRequest, path: string, search: string): Promise<NextResponse> {
+async function handleImagesDalle(
+    req: NextRequest,
+    path: string,
+    search: string,
+    cap: CaptureCtx | null = null,
+): Promise<NextResponse> {
     const contentType = req.headers.get('content-type') || '';
     const isMultipart = contentType.includes('multipart/form-data');
 
@@ -539,27 +594,55 @@ async function handleImagesDalle(req: NextRequest, path: string, search: string)
             aspectRatio = String(form.get('aspect_ratio') ?? '');
             // model 非我们的 Gemini 生图 → 重建 FormData 透传(保留 gpt-image-2 等)
             if (!(model in GEMINI_IMAGE_MODELS)) {
-                return forwardMultipart(req, form, path, search);
+                // multipart 入参不拆图字节(brief §3 Out),只记文本字段摘要
+                if (cap)
+                    recordRequestBody(
+                        cap,
+                        JSON.stringify({ model, prompt, response_format: responseFormat, _multipart: true }),
+                        model,
+                        false,
+                    );
+                return forwardMultipart(req, form, path, search, cap);
             }
             for (const file of form.getAll('image')) {
                 if (file instanceof File && file.size > 0) {
                     const buf = Buffer.from(await file.arrayBuffer());
                     if (buf.byteLength > IMAGE_FETCH_MAX_BYTES) {
-                        return imageError(`image too large: ${buf.byteLength} bytes (max ${IMAGE_FETCH_MAX_BYTES})`);
+                        return imageError(
+                            `image too large: ${buf.byteLength} bytes (max ${IMAGE_FETCH_MAX_BYTES})`,
+                            400,
+                            cap,
+                        );
                     }
                     inputParts.push({
                         inlineData: { mimeType: file.type || 'image/png', data: buf.toString('base64') },
                     });
                 }
             }
+            // multipart Gemini 入参摘要(不含图字节,brief §3 Out)
+            if (cap)
+                recordRequestBody(
+                    cap,
+                    JSON.stringify({
+                        model,
+                        prompt,
+                        response_format: responseFormat,
+                        aspect_ratio: aspectRatio,
+                        images: inputParts.length,
+                        _multipart: true,
+                    }),
+                    model,
+                    false,
+                );
         } else {
             const body = (await req.json()) as JsonRecord;
             model = String(body.model ?? '');
             prompt = String(body.prompt ?? '');
             responseFormat = String(body.response_format ?? 'url') || 'url';
             aspectRatio = String(body.aspect_ratio ?? '');
+            if (cap) recordRequestBody(cap, JSON.stringify(body), model, false);
             if (!(model in GEMINI_IMAGE_MODELS)) {
-                return forwardToNewApi(req, body, path, search);
+                return forwardToNewApi(req, body, path, search, cap);
             }
             // JSON 形态的 image 可能是 data URL / 外部 URL 字符串或其数组(复用现有 helper)
             const imageField = body.image;
@@ -569,8 +652,8 @@ async function handleImagesDalle(req: NextRequest, path: string, search: string)
             }
         }
     } catch (e) {
-        if (e instanceof ImageUrlError) return imageError(e.message);
-        return imageError('invalid request body');
+        if (e instanceof ImageUrlError) return imageError(e.message, 400, cap);
+        return imageError('invalid request body', 400, cap);
     }
 
     // ---- aspect_ratio 校验 ----
@@ -579,7 +662,7 @@ async function handleImagesDalle(req: NextRequest, path: string, search: string)
     const wantsAuto = aspectRatio === '' || aspectRatio.toLowerCase() === 'auto';
     const allowed = GEMINI_ASPECT_RATIOS[model];
     if (aspectRatio && !wantsAuto && !allowed.has(aspectRatio)) {
-        return imageError(`unsupported aspect_ratio "${aspectRatio}" for ${model}`);
+        return imageError(`unsupported aspect_ratio "${aspectRatio}" for ${model}`, 400, cap);
     }
 
     // 显式合法比例 → 按显式注入;auto/空 + 有输入图(图生图)→ 读主图尺寸注入
@@ -603,14 +686,14 @@ async function handleImagesDalle(req: NextRequest, path: string, search: string)
             generationConfig: { imageConfig },
         }),
     });
-    if (!upstream.ok) return passthroughResponse(upstream);
+    if (!upstream.ok) return cap ? captureResponse(cap, upstream) : passthroughResponse(upstream);
 
     const upstreamData = (await upstream.json()) as {
         candidates?: Array<{ content?: { parts?: GeminiPart[] } }>;
     };
     const inlineData = (upstreamData.candidates?.[0]?.content?.parts ?? []).find((p) => p.inlineData)?.inlineData;
     if (!inlineData) {
-        return imageError('no image generated', 502);
+        return imageError('no image generated', 502, cap);
     }
 
     // ---- 包成 DALL·E 响应 ----
@@ -618,6 +701,7 @@ async function handleImagesDalle(req: NextRequest, path: string, search: string)
     const respHeaders: Record<string, string> = { 'X-Silkroadai-Translated': 'gemini-native' };
     let datum: JsonRecord;
 
+    let refs: string[] = [];
     if (responseFormat === 'b64_json') {
         datum = { b64_json: b64 };
     } else {
@@ -625,18 +709,22 @@ async function handleImagesDalle(req: NextRequest, path: string, search: string)
         datum = { url: stored.url };
         if (stored.ossFallback) respHeaders['X-Silkroadai-Oss-Fallback'] = 'yes';
         if (stored.r2Fallback) respHeaders['X-Silkroadai-R2-Fallback'] = 'yes';
+        refs = hostedRefs(stored);
     }
 
-    return NextResponse.json(
-        { created: Math.floor(Date.now() / 1000), data: [datum] },
-        { status: 200, headers: respHeaders },
-    );
+    const dalleResp = { created: Math.floor(Date.now() / 1000), data: [datum] };
+    if (cap) captureJsonResponse(cap, 200, dalleResp, refs);
+    return NextResponse.json(dalleResp, { status: 200, headers: respHeaders });
 }
 
 async function handleRequest(req: NextRequest, params: Promise<{ path: string[] }>): Promise<NextResponse> {
     const { path: segments } = await params;
     const path = '/' + (segments ?? []).join('/');
     const search = req.nextUrl.search || '';
+
+    // 请求日志捕获(数据存储 Phase 1 第②步)。开关 off → null → 下面全程与今天
+    // 字节级一致;on → 旁路捕获,best-effort,绝不影响客户请求(见 capture.ts)。
+    const cap = beginCapture(req, path);
 
     if (path === '/chat/completions' && req.method === 'POST') {
         let body: JsonRecord;
@@ -649,32 +737,34 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
             );
         }
         const model = String(body.model ?? '');
+        // 捕获【原始】请求体(clamp 分支也存未钳的,记录客户真实输入,brief §4)
+        if (cap) recordRequestBody(cap, JSON.stringify(body), model, body.stream === true);
 
         // Branch 1: Gemini image → native endpoint 翻译
         if (model in GEMINI_IMAGE_MODELS) {
-            return handleGeminiImage(req, body, model);
+            return handleGeminiImage(req, body, model, cap);
         }
 
         // Branch 2: Claude max_tokens clamp
         const maxTokens = typeof body.max_tokens === 'number' ? body.max_tokens : 0;
         if (model.startsWith('claude-') && maxTokens > CLAUDE_MAX_TOKENS_CAP) {
             const clamped = { ...body, max_tokens: CLAUDE_MAX_TOKENS_CAP };
-            const resp = await forwardToNewApi(req, clamped, path, search);
+            const resp = await forwardToNewApi(req, clamped, path, search, cap);
             resp.headers.set('X-Silkroadai-Clamped', `max_tokens=${CLAUDE_MAX_TOKENS_CAP}-was-${maxTokens}`);
             return resp;
         }
 
         // Branch 3: 其他模型透传(body 已消费,重新序列化)
-        return forwardToNewApi(req, body, path, search);
+        return forwardToNewApi(req, body, path, search, cap);
     }
 
     // DALL·E 兼容图像接口:Gemini 生图模型翻译,其余(gpt-image-2 等)透传
     if ((path === '/images/edits' || path === '/images/generations') && req.method === 'POST') {
-        return handleImagesDalle(req, path, search);
+        return handleImagesDalle(req, path, search, cap);
     }
 
     // 其他路径(/messages /models /embeddings …)全部透传
-    return forwardToNewApi(req, null, path, search);
+    return forwardToNewApi(req, null, path, search, cap);
 }
 
 type RouteContext = { params: Promise<{ path: string[] }> };
