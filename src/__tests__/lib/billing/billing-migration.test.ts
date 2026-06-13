@@ -51,9 +51,18 @@ describe('migrateUserToPortal — newapi → portal', () => {
 
         expect(r).toMatchObject({ action: 'to_portal', flipped: true, backupQuota: 500_000, newBillingMode: 'portal' });
         expect(r.amountCny).toBeCloseTo(quotaToCny(500_000), 5); // ¥7.2
-        // CAS flip newapi → portal (atomic with seed)
+        // CAS flip newapi → portal (atomic with seed) + quota-cache bust (2026-06-12:
+        // 不清缓存 admin 详情页头部「余额」会一直显示翻号前的旧值)
         expect(mockUserUpdateMany).toHaveBeenCalledWith(
-            expect.objectContaining({ where: { id: 'u1', billing_mode: 'newapi' }, data: { billing_mode: 'portal' } }),
+            expect.objectContaining({
+                where: { id: 'u1', billing_mode: 'newapi' },
+                data: {
+                    billing_mode: 'portal',
+                    newapi_quota_cache: null,
+                    newapi_used_quota_cache: null,
+                    newapi_cached_at: null,
+                },
+            }),
         );
         // seed ledger: migration entry +amountCny, ref=migrate-in, note carries the backup quota
         expect(mockApplyLedgerEntryInTx).toHaveBeenCalledTimes(1);
@@ -114,9 +123,18 @@ describe('rollbackUserToNewapi — portal → newapi', () => {
         expect(r.backupQuota).toBe(cnyToQuota(14.4)); // 1,000,000
         // return money FIRST (override = absolute set → idempotent)
         expect(mockAddQuota).toHaveBeenCalledWith({ userId: 42, quotaDelta: cnyToQuota(14.4), mode: 'override' });
-        // CAS flip portal → newapi + zero-out ledger entry (−Y)
+        // CAS flip portal → newapi + zero-out ledger entry (−Y) + quota-cache bust
+        // (回滚刚 override 了 new-api quota,旧缓存必错)
         expect(mockUserUpdateMany).toHaveBeenCalledWith(
-            expect.objectContaining({ where: { id: 'u1', billing_mode: 'portal' }, data: { billing_mode: 'newapi' } }),
+            expect.objectContaining({
+                where: { id: 'u1', billing_mode: 'portal' },
+                data: {
+                    billing_mode: 'newapi',
+                    newapi_quota_cache: null,
+                    newapi_used_quota_cache: null,
+                    newapi_cached_at: null,
+                },
+            }),
         );
         const zero = mockApplyLedgerEntryInTx.mock.calls[0];
         expect(zero[2].kind).toBe('migration');

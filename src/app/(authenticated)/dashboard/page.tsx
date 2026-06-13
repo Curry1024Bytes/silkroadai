@@ -24,7 +24,6 @@
 import type { ReactNode } from 'react';
 import { headers } from 'next/headers';
 import { NextRequest } from 'next/server';
-import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth/session';
 import { prisma } from '@/lib/db';
 import { getCustomerBalance, type CustomerBalance } from '@/lib/billing/customer-balance';
@@ -83,6 +82,9 @@ function toCallRow(log: NewApiUsageLog): CallRow {
         promptTokens: log.prompt_tokens,
         completionTokens: log.completion_tokens,
         quota: log.quota,
+        // Compute ¥ here (server) where NEWAPI_QUOTA_PER_USD/USD_TO_CNY_RATE are
+        // available — CallDetailTable is a client island and must not convert.
+        costCny: quotaToCny(log.quota),
         type: log.type,
         content: log.content,
     };
@@ -201,7 +203,7 @@ export default async function DashboardPage({
     const resellerSnap = await fetchResellerStatus(user.id);
 
     const byModel = agg ? agg.byModel.slice(0, TOP_MODELS) : [];
-    const totalTokens = agg ? agg.totalPromptTokens + agg.totalCompletionTokens : 0;
+    const totalTokens = agg ? agg.totalTokens : 0;
 
     return (
         <section>
@@ -273,10 +275,7 @@ export default async function DashboardPage({
                     {agg ? (
                         <>
                             <p className={BIG}>{totalTokens.toLocaleString('en-US')}</p>
-                            <p className={SUB}>
-                                输入 {agg.totalPromptTokens.toLocaleString('en-US')} · 输出{' '}
-                                {agg.totalCompletionTokens.toLocaleString('en-US')}
-                            </p>
+                            <p className={SUB}>{periodLabel} · 输入+输出</p>
                         </>
                     ) : (
                         NO_DATA
@@ -310,7 +309,11 @@ export default async function DashboardPage({
             {/* 2. Model consumption chart */}
             <h2 className="m-0 mb-3 text-base font-semibold text-navy">模型消耗分布 · {periodLabel}</h2>
             <div className="mb-6">
-                <ModelConsumptionChart byDay={agg?.byDay ?? []} models={agg?.chartModels ?? []} />
+                <ModelConsumptionChart
+                    byDay={agg?.byDay ?? []}
+                    models={agg?.chartModels ?? []}
+                    cnyPerQuota={quotaToCny(1)}
+                />
             </div>
 
             {/* 3. By-model breakdown (preserved from /usage) */}

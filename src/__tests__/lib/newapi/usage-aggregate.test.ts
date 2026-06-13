@@ -1,8 +1,10 @@
 /**
- * W6 D5 — getUsageAggregate unit tests.
+ * getUsageAggregate unit tests.
  *
- * 4-path cache mirror plus paging-correctness coverage. Mirrors the
- * W4-2 D6 quota-cache + W6 D4 token-usage test patterns.
+ * Source is now new-api's `/api/data/` (getUsageDashboard) — pre-aggregated
+ * (day × model) buckets, one call, no page_size=100 cap. Tests cover the
+ * 4-path cache mirror + the roll-up (count / quota / token_used → totals +
+ * byModel + byDay + chartModels) + the legacy-payload token fallback.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -17,9 +19,9 @@ vi.mock('@/lib/db', () => ({
     },
 }));
 
-const mockQueryLogs = vi.fn();
+const mockGetUsageDashboard = vi.fn();
 vi.mock('@/lib/newapi/client', () => ({
-    queryLogs: (...args: unknown[]) => mockQueryLogs(...args),
+    getUsageDashboard: (...args: unknown[]) => mockGetUsageDashboard(...args),
 }));
 
 const mockSentryCapture = vi.fn();
@@ -39,28 +41,21 @@ beforeEach(() => {
     mockCacheUpsert.mockResolvedValue({});
 });
 
-function makeLog(overrides: Partial<Record<string, unknown>> = {}) {
+/** One `/api/data/` bucket (day × model). */
+function makeRow(overrides: Partial<Record<string, unknown>> = {}) {
     return {
-        id: 1,
-        type: 2,
-        // W7 D4 PR-J Bug 2: aggregator now post-filters on user_id matching
-        // — fixtures default to NEWAPI_USER_ID so existing happy-path tests
-        // pass through the filter unchanged.
         user_id: NEWAPI_USER_ID,
         username: NEWAPI_USERNAME,
-        quota: 100,
         model_name: 'gpt-4o',
-        token_id: 1,
         created_at: 1715000000,
-        // 客户控制台三合一: aggregator now also sums tokens + buckets by day.
-        prompt_tokens: 10,
-        completion_tokens: 20,
-        use_time: 500,
+        count: 1,
+        quota: 100,
+        token_used: 30,
         ...overrides,
     };
 }
 
-describe('periodToTimeRange (W6 D5)', () => {
+describe('periodToTimeRange', () => {
     const NOW = new Date('2026-05-05T12:30:00Z');
 
     it('all → start=0, end=now', () => {
@@ -70,47 +65,41 @@ describe('periodToTimeRange (W6 D5)', () => {
     });
 
     it('7d → trailing 7×86400 seconds', () => {
-        const r = periodToTimeRange('7d', NOW);
-        expect(r.end - r.start).toBe(7 * 86_400);
+        expect(periodToTimeRange('7d', NOW).end - periodToTimeRange('7d', NOW).start).toBe(7 * 86_400);
     });
 
     it('30d → trailing 30×86400 seconds', () => {
-        const r = periodToTimeRange('30d', NOW);
-        expect(r.end - r.start).toBe(30 * 86_400);
+        expect(periodToTimeRange('30d', NOW).end - periodToTimeRange('30d', NOW).start).toBe(30 * 86_400);
     });
 
-    it('last_month → previous calendar month UTC (start=Apr 1, end=May 1)', () => {
+    it('last_month → previous calendar month UTC (Apr 1 → May 1)', () => {
         const r = periodToTimeRange('last_month', NOW);
-        const aprilFirst = Math.floor(Date.UTC(2026, 3, 1, 0, 0, 0) / 1000);
-        const mayFirst = Math.floor(Date.UTC(2026, 4, 1, 0, 0, 0) / 1000);
-        expect(r.start).toBe(aprilFirst);
-        expect(r.end).toBe(mayFirst);
+        expect(r.start).toBe(Math.floor(Date.UTC(2026, 3, 1) / 1000));
+        expect(r.end).toBe(Math.floor(Date.UTC(2026, 4, 1) / 1000));
     });
 
     it('last_month rolls into previous year for January now', () => {
-        // On Jan 5 2026, last_month should be December 1 2025 → Jan 1 2026
-        const jan2026 = new Date('2026-01-05T12:00:00Z');
-        const r = periodToTimeRange('last_month', jan2026);
-        expect(r.start).toBe(Math.floor(Date.UTC(2025, 11, 1, 0, 0, 0) / 1000));
-        expect(r.end).toBe(Math.floor(Date.UTC(2026, 0, 1, 0, 0, 0) / 1000));
+        const r = periodToTimeRange('last_month', new Date('2026-01-05T12:00:00Z'));
+        expect(r.start).toBe(Math.floor(Date.UTC(2025, 11, 1) / 1000));
+        expect(r.end).toBe(Math.floor(Date.UTC(2026, 0, 1) / 1000));
     });
 });
 
 describe('getUsageAggregate — cache paths', () => {
     const NOW = new Date('2026-05-05T12:00:00Z');
 
-    it('HIT (computed_at within 5min) → returns cached payload, no live fetch', async () => {
+    it('HIT (computed_at within TTL) → cached payload, no live fetch', async () => {
         mockCacheFindUnique.mockResolvedValue({
             user_id: PORTAL_USER_ID,
             period: '30d',
-            computed_at: new Date(NOW.getTime() - 60_000), // 1min ago
+            computed_at: new Date(NOW.getTime() - 60_000),
             payload: {
                 totalUsedQuota: 100_000,
                 totalCalls: 42,
-                byModel: [
-                    { model: 'gpt-4o', calls: 30, quota: 80_000 },
-                    { model: 'claude-opus-4-7', calls: 12, quota: 20_000 },
-                ],
+                totalTokens: 9999,
+                byModel: [{ model: 'gpt-4o', calls: 42, quota: 100_000 }],
+                byDay: [],
+                chartModels: ['gpt-4o'],
             },
         });
 
@@ -125,22 +114,17 @@ describe('getUsageAggregate — cache paths', () => {
         expect(r.source).toBe('cache');
         expect(r.totalCalls).toBe(42);
         expect(r.totalUsedQuota).toBe(100_000);
-        expect(r.byModel).toHaveLength(2);
-        expect(r.pagesFetched).toBe(0);
-        expect(mockQueryLogs).not.toHaveBeenCalled();
+        expect(r.totalTokens).toBe(9999);
+        expect(mockGetUsageDashboard).not.toHaveBeenCalled();
         expect(mockCacheUpsert).not.toHaveBeenCalled();
     });
 
-    it('MISS (no cache row) → fetches live + writes back + source=live', async () => {
+    it('MISS → fetch live via /api/data/ (username + time window, NO user_id) + write back', async () => {
         mockCacheFindUnique.mockResolvedValue(null);
-        mockQueryLogs.mockResolvedValue({
-            items: [
-                makeLog({ quota: 100, model_name: 'gpt-4o' }),
-                makeLog({ quota: 50, model_name: 'gpt-4o' }),
-                makeLog({ quota: 200, model_name: 'claude-opus' }),
-            ],
-            total: 3,
-        });
+        mockGetUsageDashboard.mockResolvedValue([
+            makeRow({ model_name: 'gpt-4o', count: 2, quota: 150, token_used: 300 }),
+            makeRow({ model_name: 'claude-opus', count: 1, quota: 200, token_used: 50 }),
+        ]);
 
         const r = await getUsageAggregate({
             portalUserId: PORTAL_USER_ID,
@@ -151,36 +135,31 @@ describe('getUsageAggregate — cache paths', () => {
         });
 
         expect(r.source).toBe('live');
-        expect(r.totalCalls).toBe(3);
+        expect(r.totalCalls).toBe(3); // Σ count = 2 + 1
         expect(r.totalUsedQuota).toBe(350);
-        // Sorted desc by quota — claude (200) before gpt-4o (150)
+        expect(r.totalTokens).toBe(350);
+        // sorted desc by quota
         expect(r.byModel).toEqual([
             { model: 'claude-opus', calls: 1, quota: 200 },
             { model: 'gpt-4o', calls: 2, quota: 150 },
         ]);
-
-        // W7 D4 PR-J Bug 2: filter on `username` (admin auth ignores
-        // `user_id`, gotcha #15). The `user_id` field is now used only
-        // by the in-process post-filter, never sent to new-api.
-        expect(mockQueryLogs).toHaveBeenCalledWith(
-            expect.objectContaining({
-                username: NEWAPI_USERNAME,
-                type: 2,
-                page_size: 1000,
-            }),
-        );
-        expect(mockQueryLogs).not.toHaveBeenCalledWith(expect.objectContaining({ user_id: expect.anything() }));
+        // filtered on username, time window forwarded, never user_id
+        const callArgs = mockGetUsageDashboard.mock.calls[0][0];
+        expect(callArgs.username).toBe(NEWAPI_USERNAME);
+        expect(callArgs.end_timestamp).toBe(Math.floor(NOW.getTime() / 1000));
+        expect(callArgs).not.toHaveProperty('user_id');
+        expect(mockGetUsageDashboard).toHaveBeenCalledTimes(1); // no pagination
         expect(mockCacheUpsert).toHaveBeenCalledTimes(1);
     });
 
-    it('STALE (computed_at > 5min) → fetches live + writes back', async () => {
+    it('STALE (computed_at > TTL) → fetch live + write back', async () => {
         mockCacheFindUnique.mockResolvedValue({
             user_id: PORTAL_USER_ID,
             period: 'all',
             computed_at: new Date(NOW.getTime() - (TTL_MS + 60_000)),
-            payload: { totalUsedQuota: 50, totalCalls: 1, byModel: [] },
+            payload: { totalUsedQuota: 50, totalCalls: 1, totalTokens: 5, byModel: [], byDay: [], chartModels: [] },
         });
-        mockQueryLogs.mockResolvedValue({ items: [], total: 0 });
+        mockGetUsageDashboard.mockResolvedValue([]);
 
         const r = await getUsageAggregate({
             portalUserId: PORTAL_USER_ID,
@@ -191,7 +170,7 @@ describe('getUsageAggregate — cache paths', () => {
         });
 
         expect(r.source).toBe('live');
-        expect(r.totalCalls).toBe(0); // fresh fetch returned empty
+        expect(r.totalCalls).toBe(0);
         expect(mockCacheUpsert).toHaveBeenCalled();
     });
 
@@ -199,14 +178,17 @@ describe('getUsageAggregate — cache paths', () => {
         mockCacheFindUnique.mockResolvedValue({
             user_id: PORTAL_USER_ID,
             period: 'last_month',
-            computed_at: new Date(NOW.getTime() - 30 * 60_000), // 30min stale
+            computed_at: new Date(NOW.getTime() - 30 * 60_000),
             payload: {
                 totalUsedQuota: 12345,
                 totalCalls: 99,
+                totalTokens: 8888,
                 byModel: [{ model: 'gpt-4', calls: 99, quota: 12345 }],
+                byDay: [],
+                chartModels: ['gpt-4'],
             },
         });
-        mockQueryLogs.mockRejectedValue(new Error('ECONNREFUSED'));
+        mockGetUsageDashboard.mockRejectedValue(new Error('ECONNREFUSED'));
         const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
         const r = await getUsageAggregate({
@@ -219,15 +201,15 @@ describe('getUsageAggregate — cache paths', () => {
 
         expect(r.source).toBe('fallback');
         expect(r.totalCalls).toBe(99);
-        expect(r.totalUsedQuota).toBe(12345);
-        expect(mockCacheUpsert).not.toHaveBeenCalled(); // no fresh data to write
-        expect(mockSentryCapture).not.toHaveBeenCalled(); // fallback isn't Sentry-worthy
+        expect(r.totalTokens).toBe(8888);
+        expect(mockCacheUpsert).not.toHaveBeenCalled();
+        expect(mockSentryCapture).not.toHaveBeenCalled();
         warnSpy.mockRestore();
     });
 
     it('HARD-FAIL: no cache + live fail → throw + Sentry capture', async () => {
         mockCacheFindUnique.mockResolvedValue(null);
-        mockQueryLogs.mockRejectedValue(new Error('new-api 502'));
+        mockGetUsageDashboard.mockRejectedValue(new Error('new-api 502'));
 
         await expect(
             getUsageAggregate({
@@ -248,10 +230,7 @@ describe('getUsageAggregate — cache paths', () => {
 
     it('write-back failure tolerated — still returns live snapshot', async () => {
         mockCacheFindUnique.mockResolvedValue(null);
-        mockQueryLogs.mockResolvedValue({
-            items: [makeLog({ quota: 10 })],
-            total: 1,
-        });
+        mockGetUsageDashboard.mockResolvedValue([makeRow({ quota: 10, count: 1 })]);
         mockCacheUpsert.mockRejectedValue(new Error('DB transient'));
         const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
@@ -269,46 +248,15 @@ describe('getUsageAggregate — cache paths', () => {
     });
 });
 
-describe('getUsageAggregate — paging across multiple pages', () => {
-    const NOW = new Date('2026-05-05T12:00:00Z');
+describe('getUsageAggregate — roll-up (count / quota / tokens / byModel / byDay)', () => {
+    const NOW = new Date('2026-06-05T12:00:00Z');
 
-    it('paginates 3 pages (1000+1000+500) when total exceeds first page', async () => {
+    it('sums count / quota / token_used across buckets', async () => {
         mockCacheFindUnique.mockResolvedValue(null);
-        // Simulate 2500-row period: page 1 = 1000, page 2 = 1000, page 3 = 500
-        const fullPage = Array.from({ length: 1000 }, (_, i) => makeLog({ id: i, quota: 1, model_name: 'gpt-4o' }));
-        const halfPage = Array.from({ length: 500 }, (_, i) =>
-            makeLog({ id: i + 2000, quota: 1, model_name: 'claude-opus' }),
-        );
-        mockQueryLogs
-            .mockResolvedValueOnce({ items: fullPage, total: 2500 })
-            .mockResolvedValueOnce({ items: fullPage, total: 2500 })
-            .mockResolvedValueOnce({ items: halfPage, total: 2500 });
-
-        const r = await getUsageAggregate({
-            portalUserId: PORTAL_USER_ID,
-            newapiUserId: NEWAPI_USER_ID,
-            newapiUsername: NEWAPI_USERNAME,
-            period: 'all',
-            now: NOW,
-        });
-
-        expect(r.source).toBe('live');
-        expect(r.pagesFetched).toBe(3);
-        expect(r.totalCalls).toBe(2500);
-        expect(r.totalUsedQuota).toBe(2500);
-        // by_model: gpt-4o (2000) before claude-opus (500)
-        expect(r.byModel).toEqual([
-            { model: 'gpt-4o', calls: 2000, quota: 2000 },
-            { model: 'claude-opus', calls: 500, quota: 500 },
+        mockGetUsageDashboard.mockResolvedValue([
+            makeRow({ count: 100, quota: 5000, token_used: 1_000_000 }),
+            makeRow({ count: 50, quota: 2500, token_used: 500_000 }),
         ]);
-    });
-
-    it('early-exit when items.length < page_size on first page', async () => {
-        mockCacheFindUnique.mockResolvedValue(null);
-        mockQueryLogs.mockResolvedValueOnce({
-            items: Array.from({ length: 50 }, () => makeLog({ quota: 10 })),
-            total: 50,
-        });
 
         const r = await getUsageAggregate({
             portalUserId: PORTAL_USER_ID,
@@ -318,158 +266,20 @@ describe('getUsageAggregate — paging across multiple pages', () => {
             now: NOW,
         });
 
-        expect(r.pagesFetched).toBe(1);
-        expect(r.totalCalls).toBe(50);
-        expect(mockQueryLogs).toHaveBeenCalledTimes(1);
-    });
-
-    it('caps at MAX_PAGES (50) — hard limit on pathologically heavy windows', async () => {
-        mockCacheFindUnique.mockResolvedValue(null);
-        // Always return 1000 rows + total=999_999 so the loop never gets the
-        // "we've covered everything" early-exit. MAX_PAGES kicks in.
-        mockQueryLogs.mockResolvedValue({
-            items: Array.from({ length: 1000 }, () => makeLog({ quota: 1 })),
-            total: 999_999,
-        });
-
-        const r = await getUsageAggregate({
-            portalUserId: PORTAL_USER_ID,
-            newapiUserId: NEWAPI_USER_ID,
-            newapiUsername: NEWAPI_USERNAME,
-            period: 'all',
-            now: NOW,
-        });
-
-        expect(r.pagesFetched).toBe(50);
-        expect(r.totalCalls).toBe(50 * 1000);
-        expect(mockQueryLogs).toHaveBeenCalledTimes(50);
-    });
-
-    it('Bug 2 — defensive cross-user post-filter excludes rows with mismatched user_id', async () => {
-        // Simulates a future regression where new-api's username filter
-        // loosens (or admin auth dumps everything again, like gotcha #15).
-        // Aggregator must not pollute the cache with other users' rows
-        // even if upstream returns them.
-        mockCacheFindUnique.mockResolvedValue(null);
-        mockQueryLogs.mockResolvedValue({
-            items: [
-                makeLog({ user_id: NEWAPI_USER_ID, quota: 100, model_name: 'mine' }),
-                makeLog({ user_id: NEWAPI_USER_ID + 1, quota: 999, model_name: 'theirs' }),
-                makeLog({ user_id: NEWAPI_USER_ID, quota: 50, model_name: 'mine' }),
-                makeLog({ user_id: 999, quota: 9999, model_name: 'rogue' }),
-            ],
-            total: 4,
-        });
-
-        const r = await getUsageAggregate({
-            portalUserId: PORTAL_USER_ID,
-            newapiUserId: NEWAPI_USER_ID,
-            newapiUsername: NEWAPI_USERNAME,
-            period: '7d',
-            now: new Date('2026-05-05T12:00:00Z'),
-        });
-
-        // Only my 2 rows count; cross-user rows are scrubbed entirely.
-        expect(r.totalCalls).toBe(2);
-        expect(r.totalUsedQuota).toBe(150);
-        expect(r.byModel).toEqual([{ model: 'mine', calls: 2, quota: 150 }]);
-    });
-
-    it('filters non-type=2 rows defensively (refunds / manage rows excluded)', async () => {
-        mockCacheFindUnique.mockResolvedValue(null);
-        mockQueryLogs.mockResolvedValue({
-            items: [
-                makeLog({ type: 2, quota: 100 }),
-                makeLog({ type: 6, quota: 50 }), // refund — must be excluded
-                makeLog({ type: 1, quota: 999 }), // topup — must be excluded
-                makeLog({ type: 2, quota: 200 }),
-            ],
-            total: 4,
-        });
-
-        const r = await getUsageAggregate({
-            portalUserId: PORTAL_USER_ID,
-            newapiUserId: NEWAPI_USER_ID,
-            newapiUsername: NEWAPI_USERNAME,
-            period: 'all',
-            now: NOW,
-        });
-
-        expect(r.totalCalls).toBe(2); // only type=2 entries
-        expect(r.totalUsedQuota).toBe(300);
-    });
-});
-
-describe('getUsageAggregate — payload defensiveness', () => {
-    const NOW = new Date('2026-05-05T12:00:00Z');
-
-    it('sanitizes malformed payload (missing fields → defaults) on cache hit', async () => {
-        mockCacheFindUnique.mockResolvedValue({
-            user_id: PORTAL_USER_ID,
-            period: '7d',
-            computed_at: new Date(NOW.getTime() - 60_000),
-            payload: {
-                // Old-format row missing some fields
-                totalCalls: 5,
-                // totalUsedQuota missing
-                // byModel missing
-            },
-        });
-
-        const r = await getUsageAggregate({
-            portalUserId: PORTAL_USER_ID,
-            newapiUserId: NEWAPI_USER_ID,
-            newapiUsername: NEWAPI_USERNAME,
-            period: '7d',
-            now: NOW,
-        });
-
-        expect(r.source).toBe('cache');
-        expect(r.totalCalls).toBe(5);
-        expect(r.totalUsedQuota).toBe(0); // defaulted
-        expect(r.byModel).toEqual([]);
-    });
-});
-
-describe('getUsageAggregate — token totals + chart series (客户控制台三合一)', () => {
-    const NOW = new Date('2026-06-05T12:00:00Z');
-
-    it('sums prompt/completion tokens over the window', async () => {
-        mockCacheFindUnique.mockResolvedValue(null);
-        mockQueryLogs.mockResolvedValue({
-            items: [
-                makeLog({ quota: 100, prompt_tokens: 100, completion_tokens: 200 }),
-                makeLog({ quota: 50, prompt_tokens: 30, completion_tokens: 70 }),
-            ],
-            total: 2,
-        });
-
-        const r = await getUsageAggregate({
-            portalUserId: PORTAL_USER_ID,
-            newapiUserId: NEWAPI_USER_ID,
-            newapiUsername: NEWAPI_USERNAME,
-            period: '7d',
-            now: NOW,
-        });
-
-        expect(r.totalPromptTokens).toBe(130);
-        expect(r.totalCompletionTokens).toBe(270);
+        expect(r.totalCalls).toBe(150);
+        expect(r.totalUsedQuota).toBe(7500);
+        expect(r.totalTokens).toBe(1_500_000);
     });
 
     it('buckets byDay by Asia/Shanghai date, stacked per model', async () => {
         mockCacheFindUnique.mockResolvedValue(null);
-        // Two days in Shanghai; the second timestamp is 20:00Z → 04:00 next
-        // day Shanghai, exercising the +8h rollover.
-        const jun1 = Math.floor(Date.UTC(2026, 5, 1, 2, 0, 0) / 1000); // 2026-06-01 (Shanghai)
-        const jun2 = Math.floor(Date.UTC(2026, 5, 1, 20, 0, 0) / 1000); // 2026-06-02 (Shanghai)
-        mockQueryLogs.mockResolvedValue({
-            items: [
-                makeLog({ created_at: jun1, model_name: 'gpt-5.4', quota: 300 }),
-                makeLog({ created_at: jun1, model_name: 'claude-opus-4-8', quota: 100 }),
-                makeLog({ created_at: jun2, model_name: 'gpt-5.4', quota: 50 }),
-            ],
-            total: 3,
-        });
+        const jun1 = Math.floor(Date.UTC(2026, 5, 1, 2, 0, 0) / 1000); // 2026-06-01 Shanghai
+        const jun2 = Math.floor(Date.UTC(2026, 5, 1, 20, 0, 0) / 1000); // 2026-06-02 Shanghai (rollover)
+        mockGetUsageDashboard.mockResolvedValue([
+            makeRow({ created_at: jun1, model_name: 'gpt-5.4', quota: 300, count: 3 }),
+            makeRow({ created_at: jun1, model_name: 'claude-opus-4-8', quota: 100, count: 1 }),
+            makeRow({ created_at: jun2, model_name: 'gpt-5.4', quota: 50, count: 1 }),
+        ]);
 
         const r = await getUsageAggregate({
             portalUserId: PORTAL_USER_ID,
@@ -483,18 +293,17 @@ describe('getUsageAggregate — token totals + chart series (客户控制台三�
             { date: '2026-06-01', values: { 'gpt-5.4': 300, 'claude-opus-4-8': 100 } },
             { date: '2026-06-02', values: { 'gpt-5.4': 50 } },
         ]);
-        // ≤ 6 models → no '其他' bucket
         expect(r.chartModels).toEqual(['gpt-5.4', 'claude-opus-4-8']);
     });
 
-    it('collapses models beyond the top 6 into 其他 (stack + chartModels)', async () => {
+    it('collapses models beyond the top 6 into 其他', async () => {
         mockCacheFindUnique.mockResolvedValue(null);
-        const day = Math.floor(Date.UTC(2026, 5, 3, 2, 0, 0) / 1000); // 2026-06-03 Shanghai
-        // 8 distinct models, descending quota m1..m8 (1000..300 step 100).
-        const items = Array.from({ length: 8 }, (_, i) =>
-            makeLog({ id: i + 1, created_at: day, model_name: `m${i + 1}`, quota: 1000 - i * 100 }),
+        const day = Math.floor(Date.UTC(2026, 5, 3, 2, 0, 0) / 1000);
+        mockGetUsageDashboard.mockResolvedValue(
+            Array.from({ length: 8 }, (_, i) =>
+                makeRow({ created_at: day, model_name: `m${i + 1}`, quota: 1000 - i * 100, count: 1 }),
+            ),
         );
-        mockQueryLogs.mockResolvedValue({ items, total: items.length });
 
         const r = await getUsageAggregate({
             portalUserId: PORTAL_USER_ID,
@@ -504,21 +313,68 @@ describe('getUsageAggregate — token totals + chart series (客户控制台三�
             now: NOW,
         });
 
-        // top 6 = m1..m6, then '其他'
         expect(r.chartModels).toEqual(['m1', 'm2', 'm3', 'm4', 'm5', 'm6', '其他']);
-        // 其他 = m7 (400) + m8 (300) = 700
         expect(r.byDay).toHaveLength(1);
-        expect(r.byDay[0].values['其他']).toBe(700);
-        expect(r.byDay[0].values['m1']).toBe(1000);
-        expect(r.byDay[0].values['m7']).toBeUndefined(); // folded into 其他
+        expect(r.byDay[0].values['其他']).toBe(700); // m7(400) + m8(300)
+        expect(r.byDay[0].values['m7']).toBeUndefined();
     });
 
-    it('old cache row (no byDay/chartModels/token totals) → safe defaults on HIT', async () => {
+    it('defensive cross-user post-filter excludes mismatched user_id buckets', async () => {
+        mockCacheFindUnique.mockResolvedValue(null);
+        mockGetUsageDashboard.mockResolvedValue([
+            makeRow({ user_id: NEWAPI_USER_ID, quota: 100, count: 1, model_name: 'mine' }),
+            makeRow({ user_id: NEWAPI_USER_ID + 1, quota: 999, count: 9, model_name: 'theirs' }),
+            makeRow({ user_id: NEWAPI_USER_ID, quota: 50, count: 1, model_name: 'mine' }),
+        ]);
+
+        const r = await getUsageAggregate({
+            portalUserId: PORTAL_USER_ID,
+            newapiUserId: NEWAPI_USER_ID,
+            newapiUsername: NEWAPI_USERNAME,
+            period: '7d',
+            now: NOW,
+        });
+
+        expect(r.totalCalls).toBe(2);
+        expect(r.totalUsedQuota).toBe(150);
+        expect(r.byModel).toEqual([{ model: 'mine', calls: 2, quota: 150 }]);
+    });
+});
+
+describe('getUsageAggregate — payload defensiveness', () => {
+    const NOW = new Date('2026-05-05T12:00:00Z');
+
+    it('malformed cache payload (missing fields) → safe defaults on HIT', async () => {
+        mockCacheFindUnique.mockResolvedValue({
+            user_id: PORTAL_USER_ID,
+            period: '7d',
+            computed_at: new Date(NOW.getTime() - 60_000),
+            payload: { totalCalls: 5 }, // everything else missing
+        });
+
+        const r = await getUsageAggregate({
+            portalUserId: PORTAL_USER_ID,
+            newapiUserId: NEWAPI_USER_ID,
+            newapiUsername: NEWAPI_USERNAME,
+            period: '7d',
+            now: NOW,
+        });
+
+        expect(r.source).toBe('cache');
+        expect(r.totalCalls).toBe(5);
+        expect(r.totalUsedQuota).toBe(0);
+        expect(r.totalTokens).toBe(0);
+        expect(r.byModel).toEqual([]);
+        expect(r.byDay).toEqual([]);
+        expect(r.chartModels).toEqual([]);
+    });
+
+    it('legacy payload (W6 D5 prompt+completion split, no totalTokens) → summed as fallback', async () => {
         mockCacheFindUnique.mockResolvedValue({
             user_id: PORTAL_USER_ID,
             period: '30d',
             computed_at: new Date(NOW.getTime() - 60_000),
-            payload: { totalUsedQuota: 100, totalCalls: 1, byModel: [] }, // pre-upgrade shape
+            payload: { totalCalls: 3, totalPromptTokens: 100, totalCompletionTokens: 200, byModel: [] },
         });
 
         const r = await getUsageAggregate({
@@ -529,11 +385,7 @@ describe('getUsageAggregate — token totals + chart series (客户控制台三�
             now: NOW,
         });
 
-        expect(r.source).toBe('cache');
-        expect(r.byDay).toEqual([]);
-        expect(r.chartModels).toEqual([]);
-        expect(r.totalPromptTokens).toBe(0);
-        expect(r.totalCompletionTokens).toBe(0);
+        expect(r.totalTokens).toBe(300); // 100 + 200
     });
 });
 
@@ -541,8 +393,6 @@ describe('USAGE_PERIODS contract', () => {
     it('exports the 4 supported period keys', async () => {
         const m = await import('@/lib/newapi/usage-aggregate');
         expect(m.USAGE_PERIODS).toEqual(['7d', '30d', 'all', 'last_month']);
-        // Type-system check — if the assertion below fails the type changed
-        // and call sites need to be updated.
         const _periodCheck: UsagePeriod = '7d';
         expect(_periodCheck).toBe('7d');
     });

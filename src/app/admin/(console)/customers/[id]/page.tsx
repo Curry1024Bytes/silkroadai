@@ -56,6 +56,40 @@ interface DetailData {
     ledger: { balance_cny: number; entries: LedgerEntryRow[] };
     usage_window_days: number;
 }
+// ── new-api 权威用量(mirror /api/admin/customers/[id]/newapi-usage)──
+interface NewApiByModelRow {
+    model: string;
+    calls: number;
+    tokens: number;
+    cost_cny: number;
+    avg_cny: number;
+}
+interface NewApiPriceSampleRow {
+    model: string;
+    samples: number;
+    min_cny: number;
+    avg_cny: number;
+    max_cny: number;
+    note: string | null;
+    last_at: string;
+}
+interface NewApiDailyRow {
+    date: string;
+    model: string;
+    calls: number;
+    cost_cny: number;
+    unit_cny: number;
+}
+interface NewApiUsageData {
+    linked: boolean;
+    live?: { balance_cny: number; used_cny: number };
+    by_model?: NewApiByModelRow[];
+    totals?: { calls: number; tokens: number; cost_cny: number };
+    daily?: NewApiDailyRow[];
+    daily_truncated?: boolean;
+    price_samples?: NewApiPriceSampleRow[];
+    sample_size?: number;
+}
 
 function getTexts(locale: Locale) {
     return locale === 'en'
@@ -117,6 +151,8 @@ function getTexts(locale: Locale) {
               adjustBadAmount: 'Enter a non-zero amount.',
               adjustBadNote: 'A reason is required.',
               adjustFailed: 'Adjustment failed',
+              adjustNewapiModeWarn:
+                  'This customer currently bills from the new-api balance — a ledger adjustment does NOT change their usable balance (it only pre-books the dormant portal ledger). To change the real balance, use new-api add_quota (manual credit runbook).',
               // ── P4c-4 billing-mode flip (superadmin) ──
               billingTitle: 'Billing mode',
               billingNote: 'Superadmin gray-rollout flip. Single account, atomic, reversible, net-neutral.',
@@ -140,6 +176,30 @@ function getTexts(locale: Locale) {
               flipDoneToNewapi: (amt: string, q: number) =>
                   `Rolled back. Returned ${amt} = ${q.toLocaleString('en-US')} quota to new-api.`,
               flipNoop: 'Already in the target mode — nothing changed.',
+              // ── new-api actual usage ──
+              nuTitle: 'Actual usage (new-api · lifetime)',
+              nuNote: 'Authoritative billing data read live from new-api: exact per-model totals + per-call price. "Usage by model" below is portal shadow metering.',
+              nuLoading: 'Querying new-api...',
+              nuFailed: 'new-api query failed — try again later',
+              nuNotLinked: 'This customer has no linked new-api account.',
+              nuNoUsage: 'No usage recorded on new-api.',
+              nuLiveBalance: 'Live balance',
+              nuLiveUsed: 'Total spent (live)',
+              nuTotalCalls: 'Total calls',
+              nuTotalTokens: 'Total tokens',
+              nuColAvg: 'Avg ¥/call',
+              nuTotalRow: 'Total',
+              nuPriceTitle: (n: number) => `Per-call price (last ${n} samples)`,
+              nuColSamples: 'Samples',
+              nuColMin: 'Min ¥',
+              nuColAvgPrice: 'Avg ¥',
+              nuColMax: 'Max ¥',
+              nuColPriceNote: 'Pricing note',
+              nuColLast: 'Last call',
+              nuDailyTitle: 'Daily breakdown',
+              nuDailyTruncated: 'Showing the most recent 90 rows only.',
+              nuColDate: 'Date',
+              nuColUnit: '¥/call',
           }
         : {
               back: '← 客户列表',
@@ -199,6 +259,8 @@ function getTexts(locale: Locale) {
               adjustBadAmount: '请输入非 0 金额。',
               adjustBadNote: '必须填写调整原因。',
               adjustFailed: '调整失败',
+              adjustNewapiModeWarn:
+                  '该客户当前按 new-api 余额计费 —— 账本调整不会改变其可用余额(只是预记进休眠的 portal 账本)。要调真实余额请走 new-api add_quota(手动入账流程)。',
               // ── P4c-4 计费模式翻号(superadmin)──
               billingTitle: '计费模式',
               billingNote: 'superadmin 灰度翻号。单号、原子、可逆、净中性。',
@@ -222,10 +284,37 @@ function getTexts(locale: Locale) {
               flipDoneToNewapi: (amt: string, q: number) =>
                   `已回滚。已把 ${amt} = ${q.toLocaleString('zh-CN')} quota 还回 new-api。`,
               flipNoop: '已在目标模式 —— 无变化。',
+              // ── new-api 实际用量 ──
+              nuTitle: '实际用量(new-api · 全周期)',
+              nuNote: '直读 new-api 的权威计费数据:按模型精确总量 + 单次调用单价。下方「按模型用量」为 portal 影子计量。',
+              nuLoading: '查询 new-api 中...',
+              nuFailed: 'new-api 查询失败,请稍后重试',
+              nuNotLinked: '该客户未绑定 new-api 账号。',
+              nuNoUsage: 'new-api 无用量记录。',
+              nuLiveBalance: '实时余额',
+              nuLiveUsed: '累计消费(实时)',
+              nuTotalCalls: '调用总次数',
+              nuTotalTokens: 'tokens 合计',
+              nuColAvg: '均价 ¥/次',
+              nuTotalRow: '合计',
+              nuPriceTitle: (n: number) => `单次调用单价(最近 ${n} 条样本)`,
+              nuColSamples: '样本数',
+              nuColMin: '最低 ¥',
+              nuColAvgPrice: '平均 ¥',
+              nuColMax: '最高 ¥',
+              nuColPriceNote: '计价说明',
+              nuColLast: '最近一次',
+              nuDailyTitle: '按天明细',
+              nuDailyTruncated: '仅显示最近 90 行。',
+              nuColDate: '日期',
+              nuColUnit: '¥/次',
           };
 }
 
 const fmtCny = (n: number): string => `¥${n.toLocaleString('zh-CN', { maximumFractionDigits: 2 })}`;
+// 单次调用价常见 ¥0.0x 量级,2 位小数会四舍成 ¥0.08/¥0.1 分不清 —— 用 4 位。
+const fmtCny4 = (n: number): string =>
+    `¥${n.toLocaleString('zh-CN', { minimumFractionDigits: 4, maximumFractionDigits: 4 })}`;
 // gotcha #20: server TZ is UTC — pin Asia/Shanghai explicitly everywhere we render a time.
 const fmtDate = (iso: string): string =>
     new Date(iso).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
@@ -281,6 +370,29 @@ function DetailContent() {
     useEffect(() => {
         if (id) fetchData(id);
     }, [fetchData, id]);
+
+    // ── new-api 权威用量(独立加载:3 个上游调用慢且可能失败,不拖累主详情)──
+    const [nuData, setNuData] = useState<NewApiUsageData | null>(null);
+    const [nuLoading, setNuLoading] = useState(true);
+    const [nuError, setNuError] = useState('');
+
+    const fetchNewApiUsage = useCallback(async (cid: string) => {
+        setNuLoading(true);
+        setNuError('');
+        try {
+            const res = await fetch(`/api/admin/customers/${cid}/newapi-usage`);
+            if (!res.ok) throw new Error();
+            setNuData((await res.json()) as NewApiUsageData);
+        } catch {
+            setNuError('failed');
+        } finally {
+            setNuLoading(false);
+        }
+    }, []);
+
+    useEffect(() => {
+        if (id) fetchNewApiUsage(id);
+    }, [fetchNewApiUsage, id]);
 
     // ── P4c-1 余额调整(走 /balance-adjust → applyLedgerEntry,成功后重拉详情)──
     const [adjustAmount, setAdjustAmount] = useState('');
@@ -478,6 +590,18 @@ function DetailContent() {
                         <div className={sectionTitle}>{t.ledgerTitle}</div>
                         <div className={`mb-2 text-xs ${muted}`}>{t.ledgerNote}</div>
                         <div className={`rounded-xl border p-4 ${card}`}>
+                            {data.customer.billing_mode === 'newapi' && (
+                                <div
+                                    className={[
+                                        'mb-4 rounded-lg border p-3 text-xs',
+                                        isDark
+                                            ? 'border-amber-700/60 bg-amber-950/30 text-amber-300'
+                                            : 'border-amber-300 bg-amber-50 text-amber-700',
+                                    ].join(' ')}
+                                >
+                                    {t.adjustNewapiModeWarn}
+                                </div>
+                            )}
                             <div className="flex flex-wrap items-end justify-between gap-4">
                                 <div>
                                     <div className={labelCls}>{t.ledgerBalance}</div>
@@ -693,6 +817,226 @@ function DetailContent() {
                                         ))}
                                     </tbody>
                                 </table>
+                            </div>
+                        )}
+                    </div>
+
+                    {/* new-api 权威用量(全周期) */}
+                    <div>
+                        <div className={sectionTitle}>{t.nuTitle}</div>
+                        <div className={`mb-2 text-xs ${muted}`}>{t.nuNote}</div>
+                        {nuLoading ? (
+                            <div className={`rounded-xl border p-4 text-sm ${card} ${muted}`}>{t.nuLoading}</div>
+                        ) : nuError ? (
+                            <div
+                                className={`rounded-lg border p-3 text-sm ${isDark ? 'border-red-800 bg-red-950/50 text-red-400' : 'border-red-200 bg-red-50 text-red-600'}`}
+                            >
+                                {t.nuFailed}
+                            </div>
+                        ) : !nuData ? null : !nuData.linked ? (
+                            <div className={`rounded-xl border p-4 text-sm ${card} ${muted}`}>{t.nuNotLinked}</div>
+                        ) : (
+                            <div className="space-y-4">
+                                {/* 实时数字 */}
+                                <div className={`grid grid-cols-2 gap-4 rounded-xl border p-4 sm:grid-cols-4 ${card}`}>
+                                    <div>
+                                        <div className={labelCls}>{t.nuLiveBalance}</div>
+                                        <div className={valueCls}>{fmtCny(nuData.live?.balance_cny ?? 0)}</div>
+                                    </div>
+                                    <div>
+                                        <div className={labelCls}>{t.nuLiveUsed}</div>
+                                        <div className={valueCls}>{fmtCny(nuData.live?.used_cny ?? 0)}</div>
+                                    </div>
+                                    <div>
+                                        <div className={labelCls}>{t.nuTotalCalls}</div>
+                                        <div className={valueCls}>
+                                            {(nuData.totals?.calls ?? 0).toLocaleString('zh-CN')}
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <div className={labelCls}>{t.nuTotalTokens}</div>
+                                        <div className={valueCls}>
+                                            {(nuData.totals?.tokens ?? 0).toLocaleString('zh-CN')}
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* 按模型聚合 */}
+                                {(nuData.by_model?.length ?? 0) === 0 ? (
+                                    <div className={`text-sm ${muted}`}>{t.nuNoUsage}</div>
+                                ) : (
+                                    <div className={tableWrap}>
+                                        <table className="w-full text-sm">
+                                            <thead>
+                                                <tr className={`border-b ${rowBorder}`}>
+                                                    <th className={`${thCls} text-left`}>{t.colModel}</th>
+                                                    <th className={`${thCls} text-right`}>{t.colCalls}</th>
+                                                    <th className={`${thCls} text-right`}>tokens</th>
+                                                    <th className={`${thCls} text-right`}>{t.colCost}</th>
+                                                    <th className={`${thCls} text-right`}>{t.nuColAvg}</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {(nuData.by_model ?? []).map((m) => (
+                                                    <tr key={m.model} className={`border-b ${rowBorder}`}>
+                                                        <td
+                                                            className={`px-4 py-3 font-mono text-xs ${isDark ? 'text-slate-200' : 'text-slate-800'}`}
+                                                        >
+                                                            {m.model}
+                                                        </td>
+                                                        <td
+                                                            className={`px-4 py-3 text-right ${isDark ? 'text-slate-300' : 'text-slate-700'}`}
+                                                        >
+                                                            {m.calls.toLocaleString('zh-CN')}
+                                                        </td>
+                                                        <td className={`px-4 py-3 text-right ${muted}`}>
+                                                            {m.tokens.toLocaleString('zh-CN')}
+                                                        </td>
+                                                        <td
+                                                            className={`px-4 py-3 text-right ${isDark ? 'text-slate-200' : 'text-slate-800'}`}
+                                                        >
+                                                            {fmtCny(m.cost_cny)}
+                                                        </td>
+                                                        <td className={`px-4 py-3 text-right ${muted}`}>
+                                                            {fmtCny4(m.avg_cny)}
+                                                        </td>
+                                                    </tr>
+                                                ))}
+                                                <tr>
+                                                    <td
+                                                        className={`px-4 py-3 font-medium ${isDark ? 'text-slate-200' : 'text-slate-800'}`}
+                                                    >
+                                                        {t.nuTotalRow}
+                                                    </td>
+                                                    <td
+                                                        className={`px-4 py-3 text-right font-medium ${isDark ? 'text-slate-200' : 'text-slate-800'}`}
+                                                    >
+                                                        {(nuData.totals?.calls ?? 0).toLocaleString('zh-CN')}
+                                                    </td>
+                                                    <td className={`px-4 py-3 text-right ${muted}`}>
+                                                        {(nuData.totals?.tokens ?? 0).toLocaleString('zh-CN')}
+                                                    </td>
+                                                    <td
+                                                        className={`px-4 py-3 text-right font-medium ${isDark ? 'text-slate-200' : 'text-slate-800'}`}
+                                                    >
+                                                        {fmtCny(nuData.totals?.cost_cny ?? 0)}
+                                                    </td>
+                                                    <td className="px-4 py-3" />
+                                                </tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                )}
+
+                                {/* 单次调用单价 */}
+                                {(nuData.price_samples?.length ?? 0) > 0 && (
+                                    <div>
+                                        <div className={`mb-2 text-xs ${muted}`}>
+                                            {t.nuPriceTitle(nuData.sample_size ?? 0)}
+                                        </div>
+                                        <div className={tableWrap}>
+                                            <table className="w-full text-sm">
+                                                <thead>
+                                                    <tr className={`border-b ${rowBorder}`}>
+                                                        <th className={`${thCls} text-left`}>{t.colModel}</th>
+                                                        <th className={`${thCls} text-right`}>{t.nuColSamples}</th>
+                                                        <th className={`${thCls} text-right`}>{t.nuColMin}</th>
+                                                        <th className={`${thCls} text-right`}>{t.nuColAvgPrice}</th>
+                                                        <th className={`${thCls} text-right`}>{t.nuColMax}</th>
+                                                        <th className={`${thCls} text-left`}>{t.nuColPriceNote}</th>
+                                                        <th className={`${thCls} text-left`}>{t.nuColLast}</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {(nuData.price_samples ?? []).map((p) => (
+                                                        <tr key={p.model} className={`border-b ${rowBorder}`}>
+                                                            <td
+                                                                className={`px-4 py-3 font-mono text-xs ${isDark ? 'text-slate-200' : 'text-slate-800'}`}
+                                                            >
+                                                                {p.model}
+                                                            </td>
+                                                            <td className={`px-4 py-3 text-right ${muted}`}>
+                                                                {p.samples}
+                                                            </td>
+                                                            <td className={`px-4 py-3 text-right ${muted}`}>
+                                                                {fmtCny4(p.min_cny)}
+                                                            </td>
+                                                            <td
+                                                                className={`px-4 py-3 text-right ${isDark ? 'text-slate-200' : 'text-slate-800'}`}
+                                                            >
+                                                                {fmtCny4(p.avg_cny)}
+                                                            </td>
+                                                            <td className={`px-4 py-3 text-right ${muted}`}>
+                                                                {fmtCny4(p.max_cny)}
+                                                            </td>
+                                                            <td className={`px-4 py-3 text-xs ${muted}`}>
+                                                                {p.note ?? '—'}
+                                                            </td>
+                                                            <td className={`px-4 py-3 ${muted}`}>
+                                                                {fmtDate(p.last_at)}
+                                                            </td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* 按天明细(默认折叠) */}
+                                {(nuData.daily?.length ?? 0) > 0 && (
+                                    <details className={`rounded-xl border ${card}`}>
+                                        <summary
+                                            className={`cursor-pointer px-4 py-3 text-sm font-medium ${isDark ? 'text-slate-200' : 'text-slate-800'}`}
+                                        >
+                                            {t.nuDailyTitle}
+                                            {nuData.daily_truncated ? (
+                                                <span className={`ml-2 text-xs font-normal ${muted}`}>
+                                                    {t.nuDailyTruncated}
+                                                </span>
+                                            ) : null}
+                                        </summary>
+                                        <div className="overflow-x-auto px-4 pb-4">
+                                            <table className="w-full text-sm">
+                                                <thead>
+                                                    <tr className={`border-b ${rowBorder}`}>
+                                                        <th className={`${thCls} text-left`}>{t.nuColDate}</th>
+                                                        <th className={`${thCls} text-left`}>{t.colModel}</th>
+                                                        <th className={`${thCls} text-right`}>{t.colCalls}</th>
+                                                        <th className={`${thCls} text-right`}>{t.colCost}</th>
+                                                        <th className={`${thCls} text-right`}>{t.nuColUnit}</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {(nuData.daily ?? []).map((d) => (
+                                                        <tr
+                                                            key={`${d.date}-${d.model}`}
+                                                            className={`border-b ${rowBorder}`}
+                                                        >
+                                                            <td className={`px-4 py-3 ${muted}`}>{d.date}</td>
+                                                            <td
+                                                                className={`px-4 py-3 font-mono text-xs ${isDark ? 'text-slate-200' : 'text-slate-800'}`}
+                                                            >
+                                                                {d.model}
+                                                            </td>
+                                                            <td className={`px-4 py-3 text-right ${muted}`}>
+                                                                {d.calls.toLocaleString('zh-CN')}
+                                                            </td>
+                                                            <td
+                                                                className={`px-4 py-3 text-right ${isDark ? 'text-slate-200' : 'text-slate-800'}`}
+                                                            >
+                                                                {fmtCny(d.cost_cny)}
+                                                            </td>
+                                                            <td className={`px-4 py-3 text-right ${muted}`}>
+                                                                {fmtCny4(d.unit_cny)}
+                                                            </td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </details>
+                                )}
                             </div>
                         )}
                     </div>

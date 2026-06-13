@@ -992,6 +992,87 @@ model UsageMeterCursor {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// 数据存储 Phase 1 第①步(2026-06-13)— 客户 /v1/* 请求/响应捕获日志地基。
+// 元数据存本表;请求体/响应体/输入图原始字节存【私有】R2 log bucket
+// (键约定单一事实源 = src/lib/r2/log-store.ts:reqlog/{yyyy}/{mm}/{dd}/…)。
+// 本步只建表、零捕获 — proxy tee 第②步独立 PR 接入,上线零客户影响。
+// 惯例镜像 UsageRecord:裸 uuid 列、不建 FK relation(日志独立,不牵动 User 删除)。
+// ─────────────────────────────────────────────────────────────────────────
+model RequestLog {
+  // id = 捕获时生成的 request_id,R2 键里用同一个值(PG ↔ R2 关联锚)。
+  id        String  @id @default(uuid()) @db.Uuid
+  tenant_id String? @db.Uuid // 白标租户维度(冗余自 user;解析不到 null)
+  user_id   String? @db.Uuid // portal User.id — auth 头反查;解析失败 null,日志不丢
+  token_id  String? @db.Uuid // portal NewApiToken.id(系统 token / 反查不到 null)
+
+  // 兜底标识:sha256 hex of 客户提交的 token 原值(去 "sk-" 前缀,与
+  // NewApiToken.newapi_token_value 同形)。user_id 没解出来时事后仍可按
+  // hash 反查归属;无 Authorization 头 → null。
+  newapi_token_hash String?
+
+  // ── 调用元数据 ──
+  path        String // 客户打的路径,如 /v1/chat/completions
+  method      String
+  model       String? // 请求体里解出;非 chat/images 路径可能没有
+  status_code Int? // 返给客户的 HTTP 状态;我们侧捕获失败时可能 null
+  success     Boolean @default(false) // 2xx 且完整收尾
+  duration_ms Int?
+  streamed    Boolean @default(false)
+  incomplete  Boolean @default(false) // 流式被中断 / 响应未读到完整
+  error       String? // 我们侧捕获失败原因(截断存,排障用)
+
+  // ── 计量(从响应 usage 解,解不出留 null;费用走 UsageRecord,不在此重复)──
+  input_tokens  Int?
+  output_tokens Int?
+
+  // ── R2 大体引用(键格式见 src/lib/r2/log-store.ts)──
+  input_r2_key        String? // reqlog/.../{id}.in.json
+  output_r2_key       String? // reqlog/.../{id}.out.json(流式 = 重组后完整体)
+  input_bytes         Int     @default(0) // 落 R2 前请求体字节数
+  output_bytes        Int     @default(0)
+  /// string[] — 输入图原始字节的 reqlog/ 键({id}.in.{i}.{ext})
+  input_image_r2_keys Json    @default("[]")
+  /// string[] — 输出图引用(已在 gen/、image-gen/ 或客户 OSS 的 URL/键,不复制字节)
+  output_image_refs   Json    @default("[]")
+
+  // ── 治理 ──
+  retention_expires_at DateTime? // null = 永久(operator 2026-06-13 拍板;列留未来开关)
+  capture_version      Int       @default(0) // 捕获实现版本(第②步起写 ≥1,排障用)
+  created_at           DateTime  @default(now())
+
+  @@index([user_id, created_at])
+  @@index([model, created_at])
+  @@index([created_at])
+  @@index([success, created_at])
+  @@map("request_logs")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// 数据存储 Phase 1 第③步(2026-06-13)— RequestLog 受控查看的访问审计。
+// superadmin 每次访问(列表 / 看元数据 / 拉输入·输出原文)写一条;看客户原文
+// (view_input/view_output)审计写失败则拒绝展示(fail-closed,治理硬要求)。
+// 现有 AuditLog 绑死 Order(orderId NOT NULL),不可复用 → 独立表。
+// 镜像 RequestLog 惯例:裸 uuid、不建 FK relation(审计独立,不牵动 User/
+// RequestLog 删除)、snake_case、@@map。永久留存(不建 retention job)。
+// ─────────────────────────────────────────────────────────────────────────
+model RequestLogAccess {
+  id              String  @id @default(uuid()) @db.Uuid
+  actor_user_id   String? @db.Uuid // 访问者 superadmin 的 User.id;break-glass ADMIN_TOKEN 时 null
+  via_break_glass Boolean @default(false) // 经 ADMIN_TOKEN break-glass 入(无 session user)
+  action          String // 'list' | 'view_meta' | 'view_input' | 'view_output'
+  request_log_id  String? @db.Uuid // view_* 时 = 被看的 RequestLog.id;list 时 null
+  query           String? // list 时的筛选条件摘要(截断存,复盘"看了哪批")
+  ip              String? // 操作者 IP(extractClientIP,生产在 Caddy 后,best-effort)
+
+  created_at DateTime @default(now())
+
+  @@index([actor_user_id, created_at])
+  @@index([request_log_id])
+  @@index([created_at])
+  @@map("request_log_access")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // P4c-1 ¥账本地基。零客户影响:本任务没有任何东西自动建/扣它,billing_mode
 // 默认 newapi。改余额唯一入口 = src/lib/billing/ledger.ts applyLedgerEntry
 // (乐观锁 version);P4c-2 计量扣费 / P4c-3 充值 / P4c-4 迁移后才常态写。

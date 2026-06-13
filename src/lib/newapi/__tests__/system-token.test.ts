@@ -37,7 +37,12 @@ vi.mock('@/lib/newapi/client', () => ({
     deleteToken: (...args: unknown[]) => mockDeleteToken(...args),
 }));
 
-import { getOrCreateSystemToken, PORTAL_INTERNAL_TOKEN_NAME, PortalSystemTokenError } from '@/lib/newapi/system-token';
+import {
+    getOrCreateSystemToken,
+    PORTAL_INTERNAL_TOKEN_NAME,
+    PortalSystemTokenError,
+    _resetGroupTokenCacheForTest,
+} from '@/lib/newapi/system-token';
 
 const USER_ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 
@@ -62,6 +67,7 @@ function userBase(
 
 beforeEach(() => {
     vi.clearAllMocks();
+    _resetGroupTokenCacheForTest();
 });
 
 describe('getOrCreateSystemToken — fast path', () => {
@@ -241,6 +247,72 @@ describe('getOrCreateSystemToken — failure modes', () => {
         mockGetTokenKey.mockRejectedValueOnce(new Error('500'));
         await expect(getOrCreateSystemToken(USER_ID)).rejects.toMatchObject({
             code: 'newapi_lookup_failed',
+        });
+    });
+});
+
+describe('getOrCreateSystemToken — per-group token (Path B)', () => {
+    const OFFICIAL_NAME = `${PORTAL_INTERNAL_TOKEN_NAME}-official`;
+    const groupUser = () => ({
+        id: USER_ID,
+        newapi_user_id: 99,
+        newapi_access_token: 'access-stub-32chars-padding-padding',
+    });
+
+    it("'default' group delegates to the primary (User-row cached) path", async () => {
+        mockUserFindUnique.mockResolvedValueOnce(userBase({ newapi_system_token_value: 'a'.repeat(48) }));
+        const result = await getOrCreateSystemToken(USER_ID, 'default');
+        expect(result).toBe('sk-' + 'a'.repeat(48));
+        expect(mockCreateToken).not.toHaveBeenCalled();
+        expect(mockListTokens).not.toHaveBeenCalled();
+    });
+
+    it('creates a group-pinned portal-internal-{group} token when absent', async () => {
+        mockUserFindUnique.mockResolvedValueOnce(groupUser());
+        mockListTokens.mockResolvedValueOnce({ items: [{ id: 1, name: 'other' }], total: 1 }); // not found
+        mockCreateToken.mockResolvedValueOnce(undefined);
+        mockListTokens.mockResolvedValueOnce({ items: [{ id: 42, name: OFFICIAL_NAME }], total: 1 });
+        mockGetTokenKey.mockResolvedValueOnce('g'.repeat(48));
+
+        const result = await getOrCreateSystemToken(USER_ID, 'official');
+
+        expect(result).toBe('sk-' + 'g'.repeat(48));
+        const [, argsArg] = mockCreateToken.mock.calls[0];
+        expect(argsArg.name).toBe(OFFICIAL_NAME);
+        expect(argsArg.group).toBe('official'); // ← pins routing + billing
+        expect(argsArg.unlimited_quota).toBe(true);
+        expect(mockGetTokenKey).toHaveBeenCalledWith(expect.anything(), 42);
+    });
+
+    it('reuses an existing group token without creating a new one', async () => {
+        mockUserFindUnique.mockResolvedValueOnce(groupUser());
+        mockListTokens.mockResolvedValueOnce({ items: [{ id: 7, name: OFFICIAL_NAME }], total: 1 });
+        mockGetTokenKey.mockResolvedValueOnce('h'.repeat(48));
+
+        const result = await getOrCreateSystemToken(USER_ID, 'official');
+
+        expect(result).toBe('sk-' + 'h'.repeat(48));
+        expect(mockCreateToken).not.toHaveBeenCalled();
+        expect(mockGetTokenKey).toHaveBeenCalledWith(expect.anything(), 7);
+    });
+
+    it('process-caches the group token (no second lookup)', async () => {
+        mockUserFindUnique.mockResolvedValueOnce(groupUser());
+        mockListTokens.mockResolvedValueOnce({ items: [{ id: 9, name: OFFICIAL_NAME }], total: 1 });
+        mockGetTokenKey.mockResolvedValueOnce('i'.repeat(48));
+
+        const first = await getOrCreateSystemToken(USER_ID, 'official');
+        const second = await getOrCreateSystemToken(USER_ID, 'official'); // cache hit
+
+        expect(first).toBe(second);
+        expect(mockUserFindUnique).toHaveBeenCalledTimes(1);
+        expect(mockListTokens).toHaveBeenCalledTimes(1);
+    });
+
+    it('throws user_not_provisioned when the customer has no new-api linkage', async () => {
+        mockUserFindUnique.mockResolvedValueOnce({ id: USER_ID, newapi_user_id: null, newapi_access_token: null });
+        await expect(getOrCreateSystemToken(USER_ID, 'official')).rejects.toMatchObject({
+            code: 'user_not_provisioned',
         });
     });
 });

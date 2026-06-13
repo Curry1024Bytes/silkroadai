@@ -57,8 +57,91 @@ export class PortalSystemTokenError extends Error {
 }
 
 /**
- * Returns the user's portal system token in **wire format** (with
- * `sk-` prefix), creating one on the first call.
+ * Resolve a customer's portal system token in wire format (`sk-…`),
+ * optionally pinned to a new-api routing **group**.
+ *
+ *   - group omitted / 'default' / '' → the primary token cached on the User
+ *     row (group=default). Used by image-gen and the default chat path.
+ *   - any other group (e.g. 'official') → a separate group-pinned token
+ *     `portal-internal-{group}`, lazily find-or-created + process-cached.
+ *     Lets the chat route premium / official-only models (group resolved
+ *     server-side — see src/lib/chat/model-groups.ts) at the correct
+ *     per-group price, with NO schema change.
+ *
+ * The token is never shown to the customer (the /keys page filters out every
+ * `portal-internal*` name).
+ */
+export async function getOrCreateSystemToken(userId: string, group?: string): Promise<string> {
+    const g = (group ?? '').trim();
+    if (!g || g === 'default') return getPrimarySystemToken(userId);
+    return getGroupSystemToken(userId, g);
+}
+
+/** Process-local cache of group-pinned tokens: `${userId}:${group}` → wire
+ *  sk-. Lost on restart (re-resolved via find-or-create) — fine for the
+ *  low-traffic premium path; the primary token uses the durable User-row
+ *  cache instead. */
+const groupTokenCache = new Map<string, string>();
+
+async function getGroupSystemToken(userId: string, group: string): Promise<string> {
+    const cacheKey = `${userId}:${group}`;
+    const hit = groupTokenCache.get(cacheKey);
+    if (hit) return hit;
+
+    const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { id: true, newapi_user_id: true, newapi_access_token: true },
+    });
+    if (!user) throw new PortalSystemTokenError(`user ${userId} not found`, 'user_not_found');
+    if (user.newapi_user_id == null || !user.newapi_access_token) {
+        throw new PortalSystemTokenError(
+            `user ${userId} has no new-api linkage; cannot provision ${group} system token`,
+            'user_not_provisioned',
+        );
+    }
+    const customerAuth = { accessToken: user.newapi_access_token, userId: user.newapi_user_id };
+    const tokenName = `${PORTAL_INTERNAL_TOKEN_NAME}-${group}`;
+
+    let realKey: string;
+    try {
+        // find-or-create: list → match by name; create (group-pinned) if absent.
+        const find = async (): Promise<number | null> => {
+            const { items } = await listTokensForCustomer(customerAuth, 1, 50);
+            const m = items.filter((t) => t.name === tokenName).sort((a, b) => b.id - a.id)[0];
+            return m ? m.id : null;
+        };
+        let id = await find();
+        if (id == null) {
+            await createTokenForCustomer(customerAuth, {
+                name: tokenName,
+                group, // ← pins routing + billing to this group
+                unlimited_quota: true, // gotcha #12 — budget gate is user.quota
+                expired_time: -1,
+            });
+            id = await find();
+            if (id == null) throw new Error(`token ${tokenName} not found after create`);
+        }
+        realKey = await getTokenKey(customerAuth, id);
+    } catch (err) {
+        throw new PortalSystemTokenError(
+            `new-api ${group} token provision failed for user ${userId}: ${err instanceof Error ? err.message : String(err)}`,
+            'newapi_create_failed',
+        );
+    }
+
+    const wire = formatTokenForDisplay(realKey);
+    groupTokenCache.set(cacheKey, wire);
+    return wire;
+}
+
+/** Test seam: clear the process-local group-token cache between unit tests. */
+export function _resetGroupTokenCacheForTest(): void {
+    groupTokenCache.clear();
+}
+
+/**
+ * Returns the user's primary (group=default) portal system token in **wire
+ * format** (with `sk-` prefix), creating one on the first call.
  *
  * Idempotent + race-safe — concurrent callers may both create a new-api
  * token, but only one's value gets persisted; the loser cleans up its
@@ -70,7 +153,7 @@ export class PortalSystemTokenError extends Error {
  * 500). Call sites that can degrade gracefully (e.g. eager-provision at
  * register) should `.catch()` and fall back to lazy.
  */
-export async function getOrCreateSystemToken(userId: string): Promise<string> {
+async function getPrimarySystemToken(userId: string): Promise<string> {
     const user = await prisma.user.findUnique({
         where: { id: userId },
         select: {

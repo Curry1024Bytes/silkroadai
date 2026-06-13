@@ -26,6 +26,8 @@ const NAV_ITEMS: NavItem[] = [
     { path: '/admin/billing-shadow', label: { zh: '影子计量', en: 'Shadow Metering' }, superadminOnly: true },
     { path: '/admin/subscriptions', label: { zh: '订阅管理', en: 'Subscriptions' }, superadminOnly: true },
     { path: '/admin/tenants', label: { zh: '租户管理', en: 'Tenants' }, superadminOnly: true },
+    // 数据存储第③步:请求日志查看(全量客户内容,最高敏感)。
+    { path: '/admin/request-logs', label: { zh: '请求日志', en: 'Request Logs' }, superadminOnly: true },
 ];
 
 function AdminShellInner({

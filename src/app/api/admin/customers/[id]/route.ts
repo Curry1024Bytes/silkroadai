@@ -4,6 +4,7 @@ import { unauthorizedResponse } from '@/lib/admin-auth';
 import { resolveAdmin } from '@/lib/admin/auth';
 import { tenantScope } from '@/lib/admin/tenant-scope';
 import { quotaToCny } from '@/lib/newapi/client';
+import { getQuotaWithCache } from '@/lib/newapi/quota-cache';
 
 export const runtime = 'nodejs';
 
@@ -41,6 +42,27 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         },
     });
     if (!user) return NextResponse.json({ error: '客户不存在' }, { status: 404 });
+
+    // 头部「余额 / 累计消费」走 live-refetch-on-miss(getQuotaWithCache,镜像客户端
+    // /balance):缓存新鲜→读缓存,缓存空/过期→打 new-api 刷新并写回。直接读
+    // newapi_quota_cache 列会把 null 当 ¥0 显示 —— 而充值 / 迁移翻号都会把缓存清成
+    // null(executeRecharge + billing-migration),于是头部显示 ¥0 但客户真实有余额
+    // (2026-06-13 实操踩坑:migrate-out 后真实 ¥3653 头部却 ¥0)。new-api 不可达且
+    // 无缓存兜底 → 优雅回落到缓存列(很可能是 0),不让详情页 500。
+    let balanceCny = Math.max(0, quotaToCny(Number(user.newapi_quota_cache ?? 0)));
+    let usedCny = quotaToCny(Number(user.newapi_used_quota_cache ?? 0));
+    let balanceCachedAt: Date | null = user.newapi_cached_at;
+    try {
+        const snap = await getQuotaWithCache(user.id);
+        balanceCny = Math.max(0, quotaToCny(snap.remain_quota));
+        usedCny = quotaToCny(snap.used_quota);
+        if (snap.source !== 'fallback') balanceCachedAt = new Date();
+    } catch (err) {
+        console.warn(
+            '[admin/customers/[id]] live quota refetch failed, showing cached column:',
+            err instanceof Error ? err.message : err,
+        );
+    }
 
     const usageStart = new Date(Date.now() - USAGE_WINDOW_DAYS * 24 * 60 * 60 * 1_000);
 
@@ -92,9 +114,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
             status: user.status,
             created_at: user.created_at,
             last_login_at: user.last_login_at,
-            balance_cny: Math.max(0, quotaToCny(Number(user.newapi_quota_cache ?? 0))),
-            used_cny: quotaToCny(Number(user.newapi_used_quota_cache ?? 0)),
-            balance_cached_at: user.newapi_cached_at,
+            balance_cny: balanceCny,
+            used_cny: usedCny,
+            balance_cached_at: balanceCachedAt,
             billing_mode: user.billing_mode, // P4c-4: 'newapi' | 'portal'
         },
         keys: keys.map((k) => ({

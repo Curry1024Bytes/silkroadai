@@ -13,7 +13,7 @@ import { ModelConsumptionChart } from '@/app/(authenticated)/dashboard/model-con
 
 describe('<ModelConsumptionChart /> SSR', () => {
     it('empty data → empty-state text (no recharts)', () => {
-        const html = renderToString(<ModelConsumptionChart byDay={[]} models={[]} />);
+        const html = renderToString(<ModelConsumptionChart byDay={[]} models={[]} cnyPerQuota={7 / 1_000_000} />);
         expect(html).toContain('暂无消耗数据');
     });
 
@@ -23,7 +23,9 @@ describe('<ModelConsumptionChart /> SSR', () => {
             { date: '2026-06-02', values: { 'gpt-5.4': 100_000 } },
         ];
         expect(() =>
-            renderToString(<ModelConsumptionChart byDay={byDay} models={['gpt-5.4', '其他']} />),
+            renderToString(
+                <ModelConsumptionChart byDay={byDay} models={['gpt-5.4', '其他']} cnyPerQuota={7 / 1_000_000} />,
+            ),
         ).not.toThrow();
     });
 });

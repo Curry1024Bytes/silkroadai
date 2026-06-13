@@ -1,26 +1,28 @@
 import 'server-only';
 import { getOption, putOption } from './client';
 import { tierOrder } from '@/lib/admin/pricing-tiers';
-import { USD_TO_CNY_RATE } from './quota-units';
+import { USD_TO_CNY_RATE, quotaToCny } from './quota-units';
 
 /**
- * 定价 sync 的换算 FX —— 必须与 new-api 真实计费口径一致(P4c-prereq 诊断 2026-06-08 修正)。
+ * 定价 sync 的换算 FX —— 把零售 ¥/1M 折算成 new-api ratio,必须与真实计费口径一致。
  *
- * 历史 bug:旧实现用裸 `PRICING_FX = 7` 同时给 chat 和 image,导致「目录标价 ≠ 客户实扣」:
- *   - chat:new-api 实扣 ¥/1M = mr × 2 × USD_TO_CNY(下行解释那个 ×2),等效 FX = 14.4 ≠ 7
- *     → 实扣 = 标价 × 14.4/7 ≈ 2.057 倍。
- *   - image:ModelPrice 是 per-call USD 直价,实扣 ¥ = ModelPrice × USD_TO_CNY,等效 FX = 7.2 ≠ 7
- *     → 实扣 = 标价 × 7.2/7 ≈ 1.029 倍。
- * 修正:chat 用 {@link CHAT_FX}、image 用 {@link IMAGE_FX},使「目录标价 / FX == new-api live ratio」
- * 恒等 → 目录标价 = 客户实扣。USD_TO_CNY 取 quota-units 单一常量(随 env),不再硬编码裸 7 / 7.2。
+ * chat 计费:1M token × model_ratio=1 × group=1 → 1M quota;客户实扣 ¥ = quotaToCny(1M)
+ *   = (1e6 / QUOTA_PER_USD) × USD_TO_CNY。所以 model_ratio = 零售¥/1M ÷ quotaToCny(1M)。
+ * image 计费:ModelPrice 是 per-call USD 直价,¥ = ModelPrice × USD_TO_CNY(QuotaPerUnit 抵消)。
  *
- * ⚠️ 这两个常数只决定【以后】sync 怎么算 mr/ModelPrice;本次配套把目录价 ×factor 提上去(Part B),
- * **不主动 re-sync** → live ratio 不变 → 客户账单零变化(见 cc-brief-fx-calibration-unify-up)。
+ * ⚠️ 2026-06-12 修正:旧实现把 CHAT_FX 硬编码成 `2 × USD_TO_CNY`(= 14.4),那个 ×2 暗含
+ *   QUOTA_PER_USD=500000(1M quota=$2)。但【prod】QUOTA_PER_USD=1,000,000(1M quota=$1,
+ *   USDExchangeRate=7)→ 正确 CHAT_FX=7。旧的 14.4 在 prod 高了 2× → 同步出的 model_ratio
+ *   砍半 → "重新同步"会把客户实扣压到目录标价的一半。改成 `quotaToCny(1_000_000)` 从 env 推导:
+ *   prod(1e6/7)=7,本地测试 env(500000/7.2)=14.4 不变(单测照旧绿)。IMAGE_FX 无 ×2 问题。
+ *
+ * 改这两个常数只决定【以后】sync/import 怎么算 mr/ModelPrice;不主动 re-sync → 现网 live
+ * ratio 不变 → 客户账单零变化。
  */
-/** chat FX:1M token × ratio=1 → 100万 quota = 2 USD(new-api QUOTA_PER_USD=500000 约定);再 × USD_TO_CNY。 */
-export const CHAT_FX = 2 * USD_TO_CNY_RATE; // = 14.4 (USD_TO_CNY=7.2)
-/** image FX:ModelPrice 是 per-call USD 直价,无 chat 的 ×2 token 约定 → 等效 FX = USD_TO_CNY。 */
-export const IMAGE_FX = USD_TO_CNY_RATE; // = 7.2
+/** chat FX = 1M quota 的 ¥ 值(= model_ratio=1 时 1M token 的实扣)= quotaToCny(1e6)。prod=7,本地测试=14.4。 */
+export const CHAT_FX = quotaToCny(1_000_000);
+/** image FX:ModelPrice per-call USD 直价 → ¥ = ModelPrice × USD_TO_CNY → 等效 FX = USD_TO_CNY。prod=7,本地=7.2。 */
+export const IMAGE_FX = USD_TO_CNY_RATE;
 
 export interface Ratios {
     model_ratio: number;
@@ -30,10 +32,10 @@ export interface Ratios {
 /**
  * 把零售 ¥/1M 价折算成 new-api 的 model_ratio / completion_ratio。
  *
- *   model_ratio      = input_cny_per_1m / CHAT_FX(= 2 × USD_TO_CNY = 14.4)
+ *   model_ratio      = input_cny_per_1m / CHAT_FX(见 {@link CHAT_FX};prod=7、本地测试 env=14.4)
  *   completion_ratio = output_cny_per_1m / input_cny_per_1m(沿用官方 in/out 比例)
  *
- * CHAT_FX=14.4 使「目录标价 = 客户实扣」(目录价 / 14.4 == new-api live mr)。例(FX=14.4):
+ * 使「目录标价 = 客户实扣」(目录价 / CHAT_FX == new-api live mr)。例(本地测试 env FX=14.4):
  *   零售 ¥2.5/¥10    → mr 0.173611, cr 4
  *   零售 ¥22.5/¥112.5 → mr 1.5625, cr 5
  */
@@ -52,10 +54,10 @@ export interface RetailPrice {
 /**
  * {@link computeRatios} 的【逆运算】(P2.5 从 new-api 反向导入定价用)。
  *
- *   ¥in/1M  = model_ratio × CHAT_FX(= 14.4)
+ *   ¥in/1M  = model_ratio × CHAT_FX(见 {@link CHAT_FX};prod=7、本地测试 env=14.4)
  *   ¥out/1M = ¥in × completion_ratio
  *
- * 与正向 sync 互逆(四舍五入到 CatalogPrice 的 Decimal(12,4) 精度),例(FX=14.4):
+ * 与正向 sync 互逆(四舍五入到 CatalogPrice 的 Decimal(12,4) 精度),例(本地测试 env FX=14.4):
  *   mr 0.173611, cr 4 → ¥2.5 / ¥10
  *   mr 1.5625,   cr 5 → ¥22.5 / ¥112.5
  *

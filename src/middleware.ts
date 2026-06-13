@@ -18,5 +18,10 @@ export function middleware() {
 }
 
 export const config = {
-    matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
+    // ⚠️ /v1/* 必须排除在 middleware 之外:Next 对命中 middleware 的路由会把请求体
+    // 缓冲到 middlewareClientMaxBodySize(默认 10MB)再交给 handler,超出被截断 —
+    // 客户给 /v1/images/edits 传 >10MB multipart(多参考图 2K 编辑)会拿到
+    // 400 "invalid request body"(2026-06-11 实测;proxy 自身限制是单图 20MB,
+    // 被框架层先挡)。/v1 是纯 API 中继,这三个页面向安全头对它无意义。
+    matcher: ['/((?!v1/|_next/static|_next/image|favicon.ico).*)'],
 };

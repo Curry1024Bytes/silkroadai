@@ -43,6 +43,12 @@ vi.mock('@/lib/chat/web-search', () => ({
     runWebSearch: (...args: unknown[]) => mockRunWebSearch(...args),
 }));
 
+// Server-authoritative model→group resolver — mocked to control routing group.
+const mockResolveModelGroup = vi.fn();
+vi.mock('@/lib/chat/model-groups', () => ({
+    resolveModelGroup: (...args: unknown[]) => mockResolveModelGroup(...args),
+}));
+
 import { rateLimitCheck } from '@/lib/image-gen/rate-limit';
 import { POST } from '@/app/api/portal/chat/stream/route';
 
@@ -54,6 +60,7 @@ beforeEach(() => {
     mockGetCurrentUser.mockResolvedValue(USER);
     mockGetOrCreateSystemToken.mockResolvedValue('sk-test-123');
     mockRunWebSearch.mockResolvedValue(null); // default: web search off / unconfigured
+    mockResolveModelGroup.mockResolvedValue('default'); // default: route via the primary group
 });
 
 afterEach(() => vi.restoreAllMocks());
@@ -250,5 +257,25 @@ describe('POST /api/portal/chat/stream', () => {
         const sent = JSON.parse(sentBodyStr);
         expect(sent.messages).toHaveLength(1);
         expect(sent.messages[0].role).toBe('user');
+    });
+
+    // ── per-group routing (Path B) ───────────────────────────────────────
+
+    it('routes the model through its SERVER-resolved group token (official)', async () => {
+        mockResolveModelGroup.mockResolvedValue('official');
+        spyFetch(() => sseResponse([JSON.stringify({ choices: [{ delta: { content: 'x' } }] })]));
+        const res = await POST(makeReq({ model: 'claude-fable-5', messages: [{ role: 'user', content: 'hi' }] }));
+        expect(res.status).toBe(200);
+        // group resolved from the model name (server-side, not client-supplied)
+        expect(mockResolveModelGroup).toHaveBeenCalledWith('claude-fable-5');
+        // …and the system token is requested for THAT group
+        expect(mockGetOrCreateSystemToken).toHaveBeenCalledWith(USER.id, 'official');
+    });
+
+    it('default-group models resolve the primary token', async () => {
+        mockResolveModelGroup.mockResolvedValue('default');
+        spyFetch(() => sseResponse([JSON.stringify({ choices: [{ delta: { content: 'x' } }] })]));
+        await POST(makeReq(VALID_BODY));
+        expect(mockGetOrCreateSystemToken).toHaveBeenCalledWith(USER.id, 'default');
     });
 });

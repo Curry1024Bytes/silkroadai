@@ -18,6 +18,7 @@
 import 'server-only';
 import { listAvailableModels } from '@/lib/newapi/client';
 import { groupModels, VENDOR_ORDER, type TypeName, type VendorName, type GroupedModels } from '@/lib/models/categorize';
+import { getModelGroupMap } from './model-groups';
 
 /** Type buckets that are valid chat targets. Vision models accept text
  *  prompts, so they belong here; everything else does not. */
@@ -31,6 +32,13 @@ export interface ChatModel {
      *  input). The chat UI uses it to gate the image-upload button — a
      *  non-vision model handed an image just 4xx's upstream. */
     vision: boolean;
+    /** new-api routing group this model bills through (cheapest serving
+     *  group). Attached by listChatModels from channel data; undefined in
+     *  the pure collapse test seam. */
+    group?: string;
+    /** Price multiplier vs the default group (>1 ⇒ premium tier). Drives the
+     *  picker's price badge so customers aren't surprise-billed. */
+    priceMultiplier?: number;
 }
 
 export interface ChatModelGroup {
@@ -96,7 +104,21 @@ export async function listChatModels(): Promise<ChatModelList> {
         return { groups: [], flat: [], totalModels: 0 };
     }
     const { grouped } = groupModels(raw);
-    return collapseChatModels(grouped);
+    const list = collapseChatModels(grouped);
+
+    // Attach each model's routing group + price multiplier (premium tiers) so
+    // the picker can flag pricier models. `flat` and `groups` share the same
+    // ChatModel object refs, so one pass updates both. Best-effort —
+    // getModelGroupMap never throws; on a miss the model just has no badge.
+    const gmap = await getModelGroupMap();
+    for (const m of list.flat) {
+        const info = gmap.get(m.id);
+        if (info) {
+            m.group = info.group;
+            m.priceMultiplier = info.multiplier;
+        }
+    }
+    return list;
 }
 
 /** Test seam: collapse a pre-grouped structure without an upstream call. */

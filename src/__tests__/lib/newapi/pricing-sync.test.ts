@@ -21,13 +21,18 @@ import {
     CHAT_FX,
     IMAGE_FX,
 } from '@/lib/newapi/pricing-sync';
+import { quotaToCny } from '@/lib/newapi/quota-units';
 
 beforeEach(() => {
     vi.clearAllMocks();
 });
 
 describe('computeRatios (FX calibrated to new-api actual billing — P4c-prereq 2026-06-08)', () => {
-    it('chat CHAT_FX = 2 × USD_TO_CNY = 14.4; image IMAGE_FX = USD_TO_CNY = 7.2', () => {
+    // CHAT_FX = quotaToCny(1M) = (1e6/QUOTA_PER_USD)×USD_TO_CNY, env-derived (2026-06-12 fix:
+    // was hardcoded 2×USD_TO_CNY which wrongly assumed QUOTA_PER_USD=500000; prod is 1e6 → 7).
+    // Local test env (QUOTA_PER_USD=500000, USD_TO_CNY=7.2) → 14.4; prod (1e6/7) → 7.
+    it('chat CHAT_FX = quotaToCny(1M) (local test env = 14.4); image IMAGE_FX = USD_TO_CNY = 7.2', () => {
+        expect(CHAT_FX).toBe(quotaToCny(1_000_000));
         expect(CHAT_FX).toBe(14.4);
         expect(IMAGE_FX).toBe(7.2);
     });

@@ -503,6 +503,49 @@ export async function getLogStats(args: {
     });
 }
 
+/**
+ * new-api 数据看板行 —— `/api/data/` 返回的【按 (天 × 模型) 预聚合】桶。
+ * 这是 new-api 自己看板用的端点:服务端已聚合,**不分页、不受 `/api/log/`
+ * 的 page_size≤100 上限影响**,一次请求拿全周期。
+ *
+ * - `created_at`: 该桶的日期(unix 秒,日粒度)
+ * - `count`:     该桶请求次数
+ * - `quota`:     该桶消费 quota
+ * - `token_used`:该桶 token 合计(prompt+completion 合并计)
+ */
+export interface NewApiDataPoint {
+    user_id: number;
+    username: string;
+    model_name: string;
+    created_at: number;
+    count: number;
+    quota: number;
+    token_used: number;
+}
+
+/**
+ * 拉某客户(或全局)在时间窗内的【按天×模型】用量聚合。
+ *
+ * 为什么不用 `queryLogs` 累加:new-api 把 `/api/log/` 的 page_size 硬钳在 100
+ * (实测请求 1000 仍只回 100),用它做总量统计会被截断成「永远 ≤100」。
+ * `/api/data/` 是服务端预聚合,count/quota/token_used 都是精确总量。
+ *
+ * 过滤维度沿用 gotcha #15:传 `username`(admin 认证下真正生效的维度);
+ * 调用方仍可按 `user_id` 做防御性二次过滤。
+ */
+export async function getUsageDashboard(args: {
+    username?: string;
+    start_timestamp?: number;
+    end_timestamp?: number;
+}): Promise<NewApiDataPoint[]> {
+    const data = await call<NewApiDataPoint[] | null>('GET', '/api/data/', undefined, {
+        username: args.username,
+        start_timestamp: args.start_timestamp,
+        end_timestamp: args.end_timestamp,
+    });
+    return Array.isArray(data) ? data : [];
+}
+
 // ============================================
 // D. 模型列表
 // ============================================

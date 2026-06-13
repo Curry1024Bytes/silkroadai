@@ -13,10 +13,18 @@ vi.mock('@/lib/newapi/client', () => ({
     listAvailableModels: () => mockListAvailableModels(),
 }));
 
+const mockGetModelGroupMap = vi.fn();
+vi.mock('@/lib/chat/model-groups', () => ({
+    getModelGroupMap: () => mockGetModelGroupMap(),
+}));
+
 import { listChatModels, _collapseChatModelsForTest } from '@/lib/chat/models';
 import { groupModels } from '@/lib/models/categorize';
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetModelGroupMap.mockResolvedValue(new Map()); // default: no group augmentation
+});
 
 describe('collapseChatModels', () => {
     it('keeps chat + vision models, drops image-gen / embedding', () => {
@@ -72,5 +80,21 @@ describe('listChatModels', () => {
         mockListAvailableModels.mockRejectedValue(new Error('new-api down'));
         const res = await listChatModels();
         expect(res).toEqual({ groups: [], flat: [], totalModels: 0 });
+    });
+
+    it('augments models with routing group + price multiplier for the picker badge', async () => {
+        mockListAvailableModels.mockResolvedValue(['gpt-5.4', 'claude-fable-5']);
+        mockGetModelGroupMap.mockResolvedValue(
+            new Map([
+                ['gpt-5.4', { group: 'default', ratio: 1, multiplier: 1 }],
+                ['claude-fable-5', { group: 'official', ratio: 2.4615, multiplier: 2.4615 }],
+            ]),
+        );
+        const res = await listChatModels();
+        const byId = Object.fromEntries(res.flat.map((m) => [m.id, m]));
+        expect(byId['gpt-5.4'].group).toBe('default');
+        expect(byId['gpt-5.4'].priceMultiplier).toBe(1);
+        expect(byId['claude-fable-5'].group).toBe('official');
+        expect(byId['claude-fable-5'].priceMultiplier).toBeCloseTo(2.4615, 3);
     });
 });

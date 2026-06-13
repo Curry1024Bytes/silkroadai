@@ -15,7 +15,6 @@
  * (not a misleading "0 / 0"); the model name + ¥ + result still read clearly.
  */
 import { useState } from 'react';
-import { quotaToCny } from '@/lib/newapi/quota-units';
 import { formatDuration, formatTokens, callResult } from './format';
 
 export interface CallRow {
@@ -27,6 +26,11 @@ export interface CallRow {
     promptTokens: number;
     completionTokens: number;
     quota: number;
+    /** ¥ cost of this call, computed server-side (quotaToCny) and passed down.
+     *  This is a 'use client' island — it must NOT call quotaToCny itself, as
+     *  NEWAPI_QUOTA_PER_USD / USD_TO_CNY_RATE are server-only env (undefined in
+     *  the client bundle → stale 500k/7.2 defaults → ~2× over-display). */
+    costCny: number;
     /** new-api log type — 2=consume(成功) / 5=error(失败) */
     type: number;
     /** error detail (only meaningful when type=5) */
@@ -138,7 +142,7 @@ function CallRowItem({
                 <td className={`${cell} text-right tabular-nums text-muted-ink`}>
                     {formatTokens(row.promptTokens, row.completionTokens)}
                 </td>
-                <td className={`${cell} text-right tabular-nums font-medium`}>¥{quotaToCny(row.quota).toFixed(2)}</td>
+                <td className={`${cell} text-right tabular-nums font-medium`}>¥{row.costCny.toFixed(2)}</td>
                 <td className={`${cell} text-center`}>
                     {isError ? (
                         <button

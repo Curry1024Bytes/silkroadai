@@ -5,8 +5,12 @@
  *
  * Data comes from `getUsageAggregate().byDay` (raw quota per model per day,
  * Asia/Shanghai buckets) + `.chartModels` (ordered stack keys, top-N + '其他').
- * Quota → ¥ conversion happens here at render via `quotaToCny` so cached
- * aggregate rows never bake in a stale FX rate.
+ * Quota → ¥ uses `cnyPerQuota` passed from the server (= quotaToCny(1)).
+ *
+ * ⚠️ This is a 'use client' island, so it must NOT call quotaToCny directly:
+ * NEWAPI_QUOTA_PER_USD / USD_TO_CNY_RATE are server-only env (not NEXT_PUBLIC_),
+ * undefined in the client bundle → quota-units falls back to stale defaults
+ * (500k / 7.2) and over-displays ¥ by ~2×. The server passes the real rate.
  *
  * recharts is already a portal dependency (admin DailyChart). This is a
  * client island — recharts needs the DOM (ResponsiveContainer measures width).
@@ -14,12 +18,14 @@
  * generics, matching the DailyChart pattern.
  */
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Legend, CartesianGrid } from 'recharts';
-import { quotaToCny } from '@/lib/newapi/quota-units';
 
 export interface ModelConsumptionChartProps {
     byDay: Array<{ date: string; values: Record<string, number> }>;
     /** Ordered stack keys (top-N model names, '其他' last when present). */
     models: string[];
+    /** ¥ per 1 raw quota, computed server-side (= quotaToCny(1)). Multiplied
+     *  client-side so this island never reads server-only FX env. */
+    cnyPerQuota: number;
 }
 
 const OTHER_LABEL = '其他';
@@ -40,9 +46,8 @@ function shortDate(date: string): string {
     return m && d ? `${Number(m)}/${Number(d)}` : date;
 }
 
-/** Compact ¥ for the Y axis ticks. */
-function formatCnyTick(quota: number): string {
-    const cny = quotaToCny(quota);
+/** Compact ¥ for the Y axis ticks (input is already ¥). */
+function formatCnyTick(cny: number): string {
     if (cny >= 1000) return `¥${(cny / 1000).toFixed(1)}k`;
     if (cny >= 1) return `¥${cny.toFixed(0)}`;
     return `¥${cny.toFixed(2)}`;
@@ -58,10 +63,12 @@ function ChartTooltip({
     active,
     payload,
     label,
+    cnyPerQuota,
 }: {
     active?: boolean;
     payload?: TooltipPayloadEntry[];
     label?: string;
+    cnyPerQuota: number;
 }) {
     if (!active || !payload?.length) return null;
     // Skip zero stacks so a busy day's tooltip stays readable.
@@ -76,18 +83,18 @@ function ChartTooltip({
                         <span className="inline-block h-2 w-2 rounded-sm" style={{ backgroundColor: p.color }} />
                         <span className="font-mono">{p.dataKey}</span>
                     </span>
-                    <span className="tabular-nums text-ink">¥{quotaToCny(p.value).toFixed(2)}</span>
+                    <span className="tabular-nums text-ink">¥{(p.value * cnyPerQuota).toFixed(2)}</span>
                 </p>
             ))}
             <p className="m-0 mt-1.5 flex justify-between gap-3 border-t border-brand-border pt-1.5 font-medium text-navy">
                 <span>合计</span>
-                <span className="tabular-nums">¥{quotaToCny(total).toFixed(2)}</span>
+                <span className="tabular-nums">¥{(total * cnyPerQuota).toFixed(2)}</span>
             </p>
         </div>
     );
 }
 
-export function ModelConsumptionChart({ byDay, models }: ModelConsumptionChartProps) {
+export function ModelConsumptionChart({ byDay, models, cnyPerQuota }: ModelConsumptionChartProps) {
     if (byDay.length === 0 || models.length === 0) {
         return (
             <div className="flex h-[260px] items-center justify-center rounded-xl border border-brand-border bg-surface text-sm text-minor-ink shadow-card">
@@ -120,13 +127,16 @@ export function ModelConsumptionChart({ byDay, models }: ModelConsumptionChartPr
                         interval={tickInterval}
                     />
                     <YAxis
-                        tickFormatter={formatCnyTick}
+                        tickFormatter={(v) => formatCnyTick(v * cnyPerQuota)}
                         tick={{ fill: '#64748b', fontSize: 12 }}
                         axisLine={{ stroke: '#e2e8f0' }}
                         tickLine={false}
                         width={52}
                     />
-                    <Tooltip content={<ChartTooltip />} cursor={{ fill: 'rgba(148,163,184,0.12)' }} />
+                    <Tooltip
+                        content={<ChartTooltip cnyPerQuota={cnyPerQuota} />}
+                        cursor={{ fill: 'rgba(148,163,184,0.12)' }}
+                    />
                     <Legend wrapperStyle={{ fontSize: 12 }} iconType="square" />
                     {models.map((m, idx) => (
                         <Bar key={m} dataKey={m} stackId="quota" fill={colorFor(m, idx)} maxBarSize={48} />
