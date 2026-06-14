@@ -65,12 +65,44 @@ export const dynamic = 'force-dynamic';
 
 const NEWAPI_BASE_URL = process.env.NEWAPI_BASE_URL || 'http://localhost:3000';
 
-/** Gemini image 模型 → 注入的 native imageSize */
+/** Gemini image 模型 → 注入的 native imageSize(客户没选 size 时的固定档) */
 const GEMINI_IMAGE_MODELS: Record<string, '1K' | '2K' | '4K'> = {
     'gemini-2.5-flash-image': '1K',
     'gemini-3.1-flash-image-preview': '2K',
     'gemini-3-pro-image-preview': '4K',
+    // 折扣 SKU:= pro 锁 2K(size 参数对它无效),new-api 单独计 ¥0.30(4K 原名仍 ¥0.50)。
+    // model_mapping(ch#24/#17)把它翻回 gemini-3-pro-image-preview 给上游。见 configure-pro-2k-sku.mjs。
+    'gemini-3-pro-image-preview-2k': '2K',
 };
+
+/** 仅这些模型允许客户用 `size` 选 imageSize(其余按 GEMINI_IMAGE_MODELS 固定档,size 被忽略)。
+ *  pro 上限 4K → 1K/2K/4K 都合法。 */
+const SIZE_SELECTABLE_MODELS = new Set<string>(['gemini-3-pro-image-preview']);
+
+/** "2K"/"4K"/"2048x2048" 等 → 规范 imageSize;无法识别返 null(调用方据此 400)。 */
+function normalizeImageSize(raw: string): '1K' | '2K' | '4K' | null {
+    const s = raw.trim().toLowerCase();
+    if (s === '1k' || s === '1024x1024') return '1K';
+    if (s === '2k' || s === '2048x2048') return '2K';
+    if (s === '4k' || s === '4096x4096') return '4K';
+    return null;
+}
+
+/** 客户传的 size 非法时抛此错,调用方转 400 invalid_request_error。 */
+class ImageSizeError extends Error {}
+
+/** model + 客户传的 size 原始值 → 最终 imageSize。
+ *  非 size-selectable 模型(或客户没传 size):忽略 size,返回该模型固定档。
+ *  size-selectable 且传了无法识别的值:抛 ImageSizeError(调用方转 400)。 */
+function resolveImageSize(model: string, sizeRaw: string): '1K' | '2K' | '4K' {
+    const fixed = GEMINI_IMAGE_MODELS[model];
+    if (!SIZE_SELECTABLE_MODELS.has(model) || !sizeRaw) return fixed;
+    const norm = normalizeImageSize(sizeRaw);
+    if (!norm) {
+        throw new ImageSizeError(`unsupported size "${sizeRaw}". Use 2K / 4K (or 2048x2048 / 4096x4096).`);
+    }
+    return norm;
+}
 
 /** Gemini 官方支持的 aspect_ratio 白名单(按模型分档,key 与 GEMINI_IMAGE_MODELS 对齐)。
  *  来源:ai.google.dev image-generation 文档 + Vertex 3-pro-image 文档(2026-06 查证)。
@@ -105,6 +137,8 @@ const GEMINI_ASPECT_RATIOS: Record<string, ReadonlySet<string>> = {
         '8:1',
     ]),
 };
+// 折扣 SKU 与 pro 同源 → 复用 pro 档的 aspect_ratio 白名单(否则 allowed.has 会在 undefined 上抛)
+GEMINI_ASPECT_RATIOS['gemini-3-pro-image-preview-2k'] = GEMINI_ASPECT_RATIOS['gemini-3-pro-image-preview'];
 
 const CLAUDE_MAX_TOKENS_CAP = 4096;
 
@@ -442,7 +476,14 @@ async function handleGeminiImage(
     model: string,
     cap: CaptureCtx | null = null,
 ): Promise<NextResponse> {
-    const imageSize = GEMINI_IMAGE_MODELS[model];
+    // size:仅 pro 可选 1K/2K/4K(默认 4K),其余模型忽略;非法值 → 400。
+    let imageSize: '1K' | '2K' | '4K';
+    try {
+        imageSize = resolveImageSize(model, String(body.size ?? ''));
+    } catch (e) {
+        if (e instanceof ImageSizeError) return imageError(e.message, 400, cap);
+        throw e;
+    }
     let contents: Array<{ role: string; parts: GeminiInputPart[] }>;
     try {
         contents = await toGeminiContents(body.messages);
@@ -560,8 +601,9 @@ async function forwardMultipart(
  * 边界与已知取舍(对照官方 DALL·E 的有意差异):
  * - `n`(多图):不支持,固定返 1 张(Gemini generateContent 单次出 1 图)。
  *   客户传 n>1 我们忽略。需多图后续迭代。
- * - `size`(如 1024x1024):忽略 —— 分辨率由 model 档位(imageSize 1K/2K/4K)决定,
- *   比例由 aspect_ratio 决定。
+ * - `size`:仅 `gemini-3-pro-image-preview` 可选(`2K`/`4K`,或 `2048x2048`/`4096x4096`,
+ *   默认 4K),其余模型忽略 size 维持固定档(2.5→1K / 3.1-flash→2K);
+ *   pro 传无法识别的 size → 400。比例仍由 aspect_ratio 决定。
  * - `aspect_ratio` 缺省 / `""` / `auto`(大小写不限)= "不指定" → 文生图不注入 aspectRatio
  *   (走 Gemini 默认);图生图读输入主图尺寸注入白名单里最近的比例(Gemini 不注入时
  *   默认 1:1、不跟随输入图);非空、非 auto 且不在该 model 官方白名单 → 400。
@@ -583,6 +625,7 @@ async function handleImagesDalle(
     let prompt = '';
     let responseFormat = 'url';
     let aspectRatio = '';
+    let sizeRaw = '';
     const inputParts: GeminiInputPart[] = [];
 
     try {
@@ -592,6 +635,7 @@ async function handleImagesDalle(
             prompt = String(form.get('prompt') ?? '');
             responseFormat = String(form.get('response_format') ?? 'url') || 'url';
             aspectRatio = String(form.get('aspect_ratio') ?? '');
+            sizeRaw = String(form.get('size') ?? '');
             // model 非我们的 Gemini 生图 → 重建 FormData 透传(保留 gpt-image-2 等)
             if (!(model in GEMINI_IMAGE_MODELS)) {
                 // multipart 入参不拆图字节(brief §3 Out),只记文本字段摘要
@@ -640,6 +684,7 @@ async function handleImagesDalle(
             prompt = String(body.prompt ?? '');
             responseFormat = String(body.response_format ?? 'url') || 'url';
             aspectRatio = String(body.aspect_ratio ?? '');
+            sizeRaw = String(body.size ?? '');
             if (cap) recordRequestBody(cap, JSON.stringify(body), model, false);
             if (!(model in GEMINI_IMAGE_MODELS)) {
                 return forwardToNewApi(req, body, path, search, cap);
@@ -665,10 +710,19 @@ async function handleImagesDalle(
         return imageError(`unsupported aspect_ratio "${aspectRatio}" for ${model}`, 400, cap);
     }
 
+    // size:仅 pro 可选 1K/2K/4K(默认 4K),其余模型忽略;非法值 → 400。
+    let imageSize: '1K' | '2K' | '4K';
+    try {
+        imageSize = resolveImageSize(model, sizeRaw);
+    } catch (e) {
+        if (e instanceof ImageSizeError) return imageError(e.message, 400, cap);
+        throw e;
+    }
+
     // 显式合法比例 → 按显式注入;auto/空 + 有输入图(图生图)→ 读主图尺寸注入
     // 最近的合法比例(Gemini 默认 1:1 不跟随输入图,见 aspectRatioFromInput);
     // auto/空 + 无输入图(文生图)/ 尺寸读不出 → 不注入,走 Gemini 默认。
-    const imageConfig: Record<string, string> = { imageSize: GEMINI_IMAGE_MODELS[model] };
+    const imageConfig: Record<string, string> = { imageSize };
     if (!wantsAuto) {
         imageConfig.aspectRatio = aspectRatio;
     } else {
