@@ -226,11 +226,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const modelInfo = findImageModel(model)!;
     const costUsdPreview = modelInfo.pricePerImageUsd * count;
 
-    // Resolve the customer's portal-internal sk-… token. Lazy-provisions
-    // on first use; failures map to a 503 so the customer can retry.
+    // Resolve the customer's portal-internal sk-… token, pinned to the model's
+    // new-api routing group when it declares one (gpt-image-2 → `image2` → ch36;
+    // 2026-06-15). Undefined group → the default-group primary token, as before.
+    // Lazy-provisions on first use; failures map to a 503 so the customer can retry.
     let systemToken: string;
     try {
-        systemToken = await getOrCreateSystemToken(user.id);
+        systemToken = await getOrCreateSystemToken(user.id, modelInfo.group);
     } catch (err) {
         const latencyMs = Date.now() - startedAt;
         if (err instanceof PortalSystemTokenError) {
@@ -495,9 +497,18 @@ async function fetchImagesFromUpstream(args: FetchArgs): Promise<Buffer[]> {
     // billed at 2K/4K. NO fallback to chat here: a silent 1K image under a
     // 2K/4K charge is the bug we're fixing, so we surface upstream errors
     // (incl. nexaxis account-pool 429s) rather than downgrade quietly.
-    const targetImageSize = findImageModel(args.model)?.geminiImageSize;
+    const info = findImageModel(args.model);
+    const targetImageSize = info?.geminiImageSize;
     if (targetImageSize) {
         return fetchViaGeminiNative(args, targetImageSize);
+    }
+
+    // 2026-06-15: images-API-only SKUs (gpt-image-2 on ch36/czeq) skip the chat
+    // probe — czeq answers /v1/chat/completions with 200 + polite text, not a
+    // wrong-endpoint error, so the auto-fallback below can't fire and the empty
+    // body would surface as a bogus content_filter. Go straight to images/generations.
+    if (info?.imagesApiOnly) {
+        return fetchViaImagesGenerations(args);
     }
 
     // Default: try /v1/chat/completions first (modern multimodal path)

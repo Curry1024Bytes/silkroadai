@@ -208,10 +208,9 @@ describe('POST /api/portal/image/generate — happy path', () => {
         mockGetCurrentUser.mockResolvedValueOnce(USER);
         mockGetOrCreateSystemToken.mockResolvedValueOnce('sk-system-token');
 
-        // gpt-image-2: chat/completions first → wrong-endpoint → fall back to
-        // images/generations (URL payload) → fetch the image binary.
+        // gpt-image-2 (imagesApiOnly, 2026-06-15): straight to images/generations
+        // (URL payload) → fetch the image binary. No chat probe.
         const fetchSpy = spyFetch((url) => {
-            if (url.includes('/v1/chat/completions')) return wrongEndpointChat();
             if (url.includes('/v1/images/generations'))
                 return jsonResponse({ data: [{ url: 'https://upstream/img1.png' }] });
             return new Response(Buffer.from('fake-png-bytes'), {
@@ -232,7 +231,9 @@ describe('POST /api/portal/image/generate — happy path', () => {
         const body = await res.json();
         expect(body.id).toBe('gen-id');
         expect(body.image_urls).toHaveLength(1);
-        expect(body.cost_usd).toBeCloseTo(0.04, 6); // gpt-image-2 ModelPrice (PR #55: 0% markup)
+        expect(body.cost_usd).toBeCloseTo(0.00714, 6); // gpt-image-2 ModelPrice ¥0.05 (2026-06-15 ch36)
+        // gpt-image-2 pins the image2 routing group (→ ch36)
+        expect(mockGetOrCreateSystemToken).toHaveBeenCalledWith(USER.id, 'image2');
         expect(mockImgGenCreate).toHaveBeenCalledTimes(1);
         const createArgs = mockImgGenCreate.mock.calls[0][0];
         expect(createArgs.data.user_id).toBe(USER.id);
@@ -248,8 +249,8 @@ describe('POST /api/portal/image/generate — happy path', () => {
         mockGetCurrentUser.mockResolvedValueOnce(USER);
         mockGetOrCreateSystemToken.mockResolvedValueOnce('sk-system-token');
 
-        // chat → wrong-endpoint → images/generations returns b64_json inline
-        // (no second binary fetch needed).
+        // imagesApiOnly → images/generations returns b64_json inline (no chat
+        // probe, no second binary fetch needed).
         const fetchSpy = spyFetch((url) => {
             if (url.includes('/v1/chat/completions')) return wrongEndpointChat();
             return jsonResponse({ data: [{ b64_json: Buffer.from('fake-png').toString('base64') }] });
@@ -264,9 +265,9 @@ describe('POST /api/portal/image/generate — happy path', () => {
 
         const res = await POST(makeReq(VALID_BODY));
         expect(res.status).toBe(200);
-        // chat/completions (wrong-endpoint) + images/generations = 2 calls,
-        // and crucially NO third call for an image binary (b64 inline).
-        expect(fetchSpy).toHaveBeenCalledTimes(2);
+        // gpt-image-2 skips chat → exactly ONE upstream call (images/generations,
+        // b64 inline), and NO binary fetch.
+        expect(fetchSpy).toHaveBeenCalledTimes(1);
         expect(mockUploadImage).toHaveBeenCalledTimes(1);
 
         fetchSpy.mockRestore();
@@ -468,7 +469,7 @@ describe('POST /api/portal/image/generate — native Gemini resolution path (W8 
         fetchSpy.mockRestore();
     });
 
-    it('does NOT touch the native endpoint for gpt-image-2 (keeps chat→images/generations)', async () => {
+    it('gpt-image-2 goes straight to images/generations — no native endpoint, no chat probe (imagesApiOnly, 2026-06-15)', async () => {
         mockGetCurrentUser.mockResolvedValueOnce(USER);
         mockGetOrCreateSystemToken.mockResolvedValueOnce('sk-token');
 
@@ -484,9 +485,37 @@ describe('POST /api/portal/image/generate — native Gemini resolution path (W8 
         const res = await POST(makeReq({ ...VALID_BODY, model: 'gpt-image-2' }));
 
         expect(res.status).toBe(200);
-        // gpt-image-2 has no geminiImageSize → must never hit the native endpoint.
+        // gpt-image-2 has no geminiImageSize → never the native endpoint;
+        // imagesApiOnly → never the chat probe (czeq 200s with polite text there).
         expect(urls.some((u) => u.includes(':generateContent'))).toBe(false);
+        expect(urls.some((u) => u.includes('/v1/chat/completions'))).toBe(false);
         expect(urls.some((u) => u.includes('/v1/images/generations'))).toBe(true);
+
+        fetchSpy.mockRestore();
+    });
+
+    it('non-imagesApiOnly SKU (imagen) keeps the chat→wrong-endpoint→images/generations fallback + default group', async () => {
+        mockGetCurrentUser.mockResolvedValueOnce(USER);
+        mockGetOrCreateSystemToken.mockResolvedValueOnce('sk-token');
+
+        const urls: string[] = [];
+        const fetchSpy = spyFetch((url) => {
+            urls.push(url);
+            if (url.includes('/v1/chat/completions')) return wrongEndpointChat();
+            return jsonResponse({ data: [{ b64_json: Buffer.from('x').toString('base64') }] });
+        });
+        mockUploadImage.mockResolvedValueOnce('uploaded');
+        mockImgGenCreate.mockResolvedValueOnce({ id: 'gen-imagen', created_at: new Date(), expires_at: new Date() });
+
+        const res = await POST(makeReq({ ...VALID_BODY, model: 'imagen-4.0-ultra-generate-001' }));
+
+        expect(res.status).toBe(200);
+        // imagen declares neither imagesApiOnly nor a group → still probes chat
+        // first, falls back on the wrong-endpoint signal, and uses the default
+        // (undefined → primary) system token.
+        expect(urls.some((u) => u.includes('/v1/chat/completions'))).toBe(true);
+        expect(urls.some((u) => u.includes('/v1/images/generations'))).toBe(true);
+        expect(mockGetOrCreateSystemToken).toHaveBeenCalledWith(USER.id, undefined);
 
         fetchSpy.mockRestore();
     });

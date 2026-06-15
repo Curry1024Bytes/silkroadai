@@ -57,6 +57,25 @@ export interface ImageModelInfo {
      * their existing chat/completions → images/generations path.
      */
     geminiImageSize?: '2K' | '4K';
+    /**
+     * new-api routing group to pin the portal system token to (2026-06-15).
+     * When set, the generate route resolves `getOrCreateSystemToken(userId, group)`
+     * so the request routes to the channel(s) in that group. gpt-image-2 lives
+     * ONLY in the `image2` group (channel 36, img2.api.czeq.org) — its main
+     * channel — so it must pin `image2`; cheapest-group auto-routing would tie
+     * to `default` and land on the legacy channel 34 instead. Undefined → the
+     * primary default-group token (Gemini/Imagen SKUs keep today's behavior).
+     */
+    group?: string;
+    /**
+     * Skip the /v1/chat/completions attempt and dispatch straight to
+     * /v1/images/generations (2026-06-15). The czeq upstream behind ch36 is
+     * images-API-only and answers /v1/chat/completions with HTTP 200 + a polite
+     * text ("画图请使用画图端点") instead of an image or a wrong-endpoint error —
+     * so the route's auto-fallback can't fire and the empty body would surface
+     * as a bogus content_filter 400. Set on images-API-only SKUs (gpt-image-2).
+     */
+    imagesApiOnly?: boolean;
 }
 
 // 顺序 = UI 展示顺序(国外前排,OpenAI 旗舰首选,然后 Google 系)
@@ -66,11 +85,16 @@ export const IMAGE_MODELS: ImageModelInfo[] = [
     // ── 国外:OpenAI ──
     {
         id: 'gpt-image-2',
+        // 2026-06-15: main channel switched to ch36 (img2.api.czeq.org), isolated
+        // in the `image2` group, flat ¥0.05/张 (new-api ModelPrice 0.00714 USD at
+        // prod QPU 1e6 / FX ¥7). czeq is images-API-only → must skip the chat probe.
         label: 'GPT Image 2',
-        pricePerImageUsd: 0.04,
+        pricePerImageUsd: 0.00714, // = ¥0.05 / 7, matches new-api ModelPrice
         blurb: 'OpenAI · GPT-5 多模态图像生成',
         vendor: 'OpenAI',
         foreign: true,
+        group: 'image2',
+        imagesApiOnly: true,
     },
     // ── 国外:Google ──
     {
