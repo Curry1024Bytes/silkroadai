@@ -55,6 +55,7 @@ import { getOssConfig, resolveUserIdFromAuthHeader } from '@/lib/oss/store';
 import {
     type CaptureCtx,
     beginCapture,
+    isMediaCaptureSkipped,
     captureJsonResponse,
     captureResponse,
     parseModelAndStream,
@@ -894,13 +895,18 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
             );
         }
         const model = String(body.model ?? '');
-        // 捕获【原始】请求体(clamp 分支也存未钳的,记录客户真实输入,brief §4)
-        if (cap) recordRequestBody(cap, JSON.stringify(body), model, body.stream === true);
 
-        // Branch 1: Gemini image → native endpoint 翻译
+        // Branch 1: Gemini image → native endpoint 翻译。
+        // text-only 模式(REQUEST_LOGGING_SKIP_MEDIA)下生图不捕获 → imgCap=null(请求体也不记);
+        // 否则用 cap 并先记请求体(handleGeminiImage 只捕响应侧)。
         if (model in GEMINI_IMAGE_MODELS) {
-            return handleGeminiImage(req, body, model, cap);
+            const imgCap = isMediaCaptureSkipped() ? null : cap;
+            if (imgCap) recordRequestBody(imgCap, JSON.stringify(body), model, body.stream === true);
+            return handleGeminiImage(req, body, model, imgCap);
         }
+
+        // 捕获【原始】请求体(文本路径;clamp 分支也存未钳的,记录客户真实输入,brief §4)
+        if (cap) recordRequestBody(cap, JSON.stringify(body), model, body.stream === true);
 
         // Branch 2: Claude max_tokens clamp
         const maxTokens = typeof body.max_tokens === 'number' ? body.max_tokens : 0;

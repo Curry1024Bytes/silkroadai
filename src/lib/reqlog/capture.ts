@@ -64,6 +64,23 @@ export function shouldCapture(): boolean {
     return Math.random() < sampleRate();
 }
 
+/**
+ * 媒体生成(生图 / 生视频)捕获跳过开关(2026-06-15)。
+ * `REQUEST_LOGGING_SKIP_MEDIA` 真值 → 只捕获文本 LLM 请求,跳过生图/生视频
+ * (它们体积大、噪声多、b64 响应撑存储)。默认未配 = 不跳(捕获全部,向后兼容)。
+ * operator "看时机再开图片" = 删掉该 env / 设 off 即可,无需改代码。
+ */
+export function isMediaCaptureSkipped(): boolean {
+    const v = (process.env.REQUEST_LOGGING_SKIP_MEDIA || '').toLowerCase();
+    return v === 'on' || v === 'true' || v === '1' || v === 'yes';
+}
+
+/** 路径属于媒体生成(生图 / 生视频)—— DALL·E 图片接口 + 视频生成。chat 形态的
+ *  Gemini 生图模型按 model 判定(在 route.ts,那里才有 model),不在此。 */
+export function isMediaGenPath(path: string): boolean {
+    return path === '/images' || path === '/video' || path.startsWith('/images/') || path.startsWith('/video/');
+}
+
 export interface CaptureCtx {
     id: string;
     startedAt: number;
@@ -89,9 +106,12 @@ export interface CaptureCtx {
     finalized: boolean;
 }
 
-/** 开关激活才创建 ctx;off 返 null(零成本:不生成 request_id、不查 DB)。 */
+/** 开关激活才创建 ctx;off 返 null(零成本:不生成 request_id、不查 DB)。
+ *  text-only 模式(REQUEST_LOGGING_SKIP_MEDIA)下,生图/生视频路径直接不捕获;
+ *  chat 形态的 Gemini 生图(/chat/completions + 图片模型)由 route.ts 按 model 跳过。 */
 export function beginCapture(req: NextRequest, path: string): CaptureCtx | null {
     if (!shouldCapture()) return null;
+    if (isMediaCaptureSkipped() && isMediaGenPath(path)) return null;
     const startedAt = Date.now();
     return {
         id: randomUUID(),
