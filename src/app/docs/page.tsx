@@ -96,7 +96,7 @@ const AGENTS: AgentSection[] = [
     {
         id: 'seedance',
         label: 'Seedance 2.0 · 视频生成',
-        blurb: 'ByteDance Seedance 2.0 文生视频 — 异步提交 / 轮询,按秒计费。',
+        blurb: 'ByteDance Seedance 2.0 视频生成(文生 / 图生 / 首尾帧 / 参考生)— 异步提交 / 轮询,按秒计费。',
     },
 ];
 
@@ -1158,7 +1158,8 @@ for part in resp.candidates[0].content.parts:
                         </h2>
                     </div>
                     <p className="m-0 mb-3 text-sm text-ink leading-relaxed">
-                        ByteDance Seedance 2.0 文生视频,3 个分辨率档。<strong className="text-navy">异步接口</strong>
+                        ByteDance Seedance 2.0 视频生成,3 个分辨率档,支持文生 / 图生 / 首尾帧 / 参考生。
+                        <strong className="text-navy">异步接口</strong>
                         :提交后拿到{' '}
                         <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
                             task_id
@@ -1266,6 +1267,83 @@ while True:
 
 print(r["data"]["data"]["video_url"])`}
                     </CodeBlock>
+
+                    <p className="m-0 mt-6 mb-2 text-sm font-semibold text-navy">进阶:图生 / 首尾帧 / 参考生</p>
+                    <p className="m-0 mb-3 text-sm text-ink leading-relaxed">
+                        同一接口,加图片字段即可。
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            image
+                        </code>{' '}
+                        与{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            last_frame_image
+                        </code>{' '}
+                        只接受<strong className="text-navy">字符串</strong>(https 链接或 base64 dataURL,传数组会 400);
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            reference_images
+                        </code>{' '}
+                        是数组,最多 4 张。
+                    </p>
+
+                    <p className="m-0 mb-2 text-sm font-medium text-navy">图生视频(一张图当首帧,让它动)</p>
+                    <CodeBlock language="bash">
+                        {`curl ${OPENAI_BASE}/video/generations \\
+  -H "Authorization: Bearer sk-你的KEY" -H "Content-Type: application/json" \\
+  -d '{ "model": "seedance-2.0", "prompt": "镜头缓缓推进,头发被风吹动", "duration": 5, "image": "https://你的图床/first.png" }'`}
+                    </CodeBlock>
+
+                    <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">首尾帧(给开头和结尾,补中间过程)</p>
+                    <CodeBlock language="bash">
+                        {`curl ${OPENAI_BASE}/video/generations \\
+  -H "Authorization: Bearer sk-你的KEY" -H "Content-Type: application/json" \\
+  -d '{ "model": "seedance-2.0", "prompt": "镜头从全景平滑过渡到特写", "duration": 5, "image": "https://你的图床/first.png", "last_frame_image": "https://你的图床/last.png" }'`}
+                    </CodeBlock>
+                    <p className="m-0 mt-2 text-xs text-minor-ink">
+                        尾帧字段名是{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            last_frame_image
+                        </code>
+                        ,不是{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            image_tail
+                        </code>
+                        。
+                    </p>
+
+                    <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">参考生(锁人物 / 风格一致)</p>
+                    <CodeBlock language="bash">
+                        {`curl ${OPENAI_BASE}/video/generations \\
+  -H "Authorization: Bearer sk-你的KEY" -H "Content-Type: application/json" \\
+  -d '{ "model": "seedance-2.0", "prompt": "这个女孩在花园里奔跑,阳光明媚", "duration": 5, "reference_images": ["https://你的图床/role-a.png", "https://你的图床/role-b.png"] }'`}
+                    </CodeBlock>
+                    <p className="m-0 mt-2 text-xs text-minor-ink">
+                        <strong className="text-navy">图生</strong>:图片是视频第一帧;{' '}
+                        <strong className="text-navy">参考生</strong>:图片不出现在画面里,只锁长相 / 画风。两者可同时用。
+                    </p>
+
+                    <p className="m-0 mt-4 text-xs text-minor-ink">
+                        进阶可选字段(随模型透传,不填走默认):{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            aspect_ratio
+                        </code>
+                        、
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            resolution
+                        </code>
+                        、
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            generate_audio
+                        </code>
+                        、
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            camera_fixed
+                        </code>
+                        。纯文生较慢(约 3–6 分钟),偶发{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            504
+                        </code>{' '}
+                        重试即可;视频直链约 24 小时失效,请及时转存。
+                    </p>
                     <p className="m-0 mt-3 text-xs text-minor-ink">
                         3 个模型同一接口,只改{' '}
                         <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
