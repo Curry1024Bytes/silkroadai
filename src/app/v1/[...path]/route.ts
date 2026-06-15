@@ -619,16 +619,27 @@ function estimateImageTokens(sizeStr: string): number {
 }
 
 /** 估算 OpenAI gpt-image `usage`(号池不回真实值)。输入只算 prompt 文本;输入图(edits)
- *  token 不估、记 0(估算局限)。结构对齐官方 gpt-image-1 响应。 */
+ *  token 不估、记 0(估算局限)。
+ *
+ *  两套字段都给:
+ *   - gpt-image-1 形 `input_tokens` / `output_tokens` / `*_details`(客户端 SDK / 展示读这套);
+ *   - chat-completions 形 `prompt_tokens` / `completion_tokens`(**new-api 等中继按这套字段
+ *     记 token** —— 客户把我们的 key 接进自己的 new-api 当上游时,它的调用日志读
+ *     prompt/completion_tokens,缺了就显示 0,见客户反馈)。
+ *  两套共用 `total_tokens`。 */
 function buildEstimatedUsage(prompt: string, outSize: string): JsonRecord {
     const textTokens = estimateTextTokens(prompt);
     const outImageTokens = estimateImageTokens(outSize);
     return {
+        // gpt-image-1 形
         input_tokens: textTokens,
         input_tokens_details: { image_tokens: 0, text_tokens: textTokens },
         output_tokens: outImageTokens,
         output_tokens_details: { image_tokens: outImageTokens, text_tokens: 0 },
         total_tokens: textTokens + outImageTokens,
+        // chat-completions 形别名(中继/new-api 记 token 用)
+        prompt_tokens: textTokens,
+        completion_tokens: outImageTokens,
     };
 }
 

@@ -1204,6 +1204,9 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
         output_tokens: number;
         output_tokens_details: { image_tokens: number; text_tokens: number };
         total_tokens: number;
+        // chat-completions 形别名(中继/new-api 记 token 用)
+        prompt_tokens: number;
+        completion_tokens: number;
     };
 
     it('generations 成功 → 透传 new-api + 补顶层 size + 估算 usage,b64_json 原样保留', async () => {
@@ -1243,6 +1246,9 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
         expect(data.usage.input_tokens_details.text_tokens).toBeGreaterThan(0);
         expect(data.usage.input_tokens_details.image_tokens).toBe(0);
         expect(data.usage.total_tokens).toBe(data.usage.input_tokens + data.usage.output_tokens);
+        // chat-completions 形别名:中继(new-api)按这套字段记 token,缺了就显示 0
+        expect(data.usage.prompt_tokens).toBe(data.usage.input_tokens);
+        expect(data.usage.completion_tokens).toBe(data.usage.output_tokens);
     });
 
     async function imageTokensFor(size: string): Promise<number> {
