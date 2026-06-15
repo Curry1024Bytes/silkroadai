@@ -864,8 +864,8 @@ console.log(completion.choices[0].message.content);`}
                             <tbody>
                                 <tr className="border-b border-brand-border">
                                     <td className="px-4 py-3 font-mono text-xs text-navy align-top">gpt-image-2</td>
-                                    <td className="px-4 py-3 text-ink align-top">1024×1024</td>
-                                    <td className="px-4 py-3 text-navy align-top font-medium">¥0.10 / 张</td>
+                                    <td className="px-4 py-3 text-ink align-top">1024×1024 / 1536×1024 …</td>
+                                    <td className="px-4 py-3 text-navy align-top font-medium">¥0.05 / 张</td>
                                     <td className="px-4 py-3 text-ink">OpenAI 风格,通用</td>
                                 </tr>
                                 <tr className="border-b border-brand-border">
@@ -962,8 +962,32 @@ resp = client.images.generate(
     n=1,
     size="1024x1024",
 )
-print(resp.data[0].b64_json)   # 或 resp.data[0].url`}
+print(resp.data[0].b64_json)   # 返回 b64_json(PNG),base64 解码保存`}
                     </CodeBlock>
+                    <div className="mt-3 mb-3 rounded-lg border-l-4 border-brand-border bg-paper-muted px-4 py-3 text-sm text-ink">
+                        🖼️ <strong className="text-navy">gpt-image-2 返回与计费</strong>:图片在{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            data[0].b64_json
+                        </code>{' '}
+                        (Base64 的 PNG,自行解码保存);响应含顶层{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            size
+                        </code>{' '}
+                        与{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            usage
+                        </code>
+                        (OpenAI gpt-image 形)。
+                        <span className="block mt-1.5 text-xs text-minor-ink">
+                            ⚠️{' '}
+                            <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                                usage
+                            </code>{' '}
+                            是<strong className="text-navy">平台估算值</strong>,非上游真实计费 token,
+                            <strong className="text-navy">请勿用于对账</strong> —— 实际按 ¥0.05 / 张扣费。上游报错
+                            <strong className="text-navy">原样透传</strong>(状态码 + OpenAI 错误体,不隐藏)。
+                        </span>
+                    </div>
 
                     <div className="mt-5 mb-3 rounded-lg border-l-4 border-brand-accent bg-paper-muted px-4 py-3 text-sm text-ink">
                         ✅{' '}
