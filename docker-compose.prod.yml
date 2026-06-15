@@ -28,7 +28,9 @@ services:
             dockerfile: Dockerfile
         container_name: silkroadai-portal
         ports:
-            - '3002:3002'
+            # Bind to loopback only — public traffic must go through the host
+            # Caddy/nginx reverse proxy, never hit the container port directly.
+            - '127.0.0.1:3002:3002'
         env_file: .env
         extra_hosts:
             # Linux Docker doesn't auto-add host.docker.internal; this maps it to
