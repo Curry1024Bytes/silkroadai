@@ -124,7 +124,7 @@ function makeLog(o: Partial<Record<string, unknown>> = {}) {
         quota: (o.quota as number) ?? 1000,
         prompt_tokens: (o.prompt_tokens as number) ?? 100,
         completion_tokens: (o.completion_tokens as number) ?? 200,
-        use_time: (o.use_time as number) ?? 1200,
+        use_time: (o.use_time as number) ?? 2, // new-api 单位:秒
         is_stream: false,
         channel: 1,
         token_id: 1,
@@ -185,14 +185,16 @@ describe('<DashboardPage /> merged console — happy path', () => {
     it('renders the per-call detail table: 成功 + 失败 + error content + 生图 token=0 "—"', async () => {
         setLogs(
             [
-                makeLog({ id: 1, model_name: 'gpt-5.4', quota: 1000, use_time: 1200 }),
+                // 非生图:默认 token 100/200,use_time 3 秒 → "3s"
+                makeLog({ id: 1, model_name: 'gpt-5.4', quota: 1000, use_time: 3 }),
                 makeLog({
                     id: 2,
                     model_name: 'gemini-3-pro-image-preview',
                     quota: 5000,
-                    prompt_tokens: 0,
-                    completion_tokens: 0,
-                    use_time: 800,
+                    // 生图上游回报不一致的 token(实测见过 1212/1105)——应被隐藏成 "—"
+                    prompt_tokens: 1212,
+                    completion_tokens: 1105,
+                    use_time: 56, // 秒 → 应显示 "56s"(不是 "56ms")
                 }),
             ],
             [
@@ -212,7 +214,12 @@ describe('<DashboardPage /> merged console — happy path', () => {
         expect(html).toContain('失败');
         expect(html).toContain('upstream 429 rate limited'); // error content surfaced
         expect(html).toContain('gemini-3-pro-image-preview'); // image row visible
-        expect(html).toContain('1.2s'); // friendly duration
+        // 时长:use_time 是秒,56 秒 → "56s"(回归:曾经被当 ms 错显示成 "56ms")
+        expect(html).toContain('56s');
+        // 生图 token 一律 "—",不显示误导的原始 token 数
+        expect(html).not.toContain('1,212 / 1,105');
+        // 非生图模型 token 正常显示
+        expect(html).toContain('100 / 200');
     });
 
     it('renders preserved features: 充值流水 + 余额提醒设置', async () => {
