@@ -85,8 +85,13 @@ const AGENTS: AgentSection[] = [
     },
     {
         id: 'api-image',
-        label: '图像生成 · 2K / 4K 高清',
-        blurb: 'gpt-image-2 + Gemini Nano Banana;2K / 4K 必须走 /v1beta 原生 endpoint。',
+        label: 'Gemini 生图 · 2K / 4K 高清',
+        blurb: 'Gemini Nano Banana / 3.1 Flash / 3 Pro;OpenAI 兼容自动出 2K / 4K,比例走 /v1beta 原生。',
+    },
+    {
+        id: 'api-gpt-image',
+        label: 'GPT image-2 生图',
+        blurb: 'gpt-image-2 系(自适应 / 1k / 2k / 4k)· OpenAI Images API · 文生图 + 图生图 · ¥0.05/张。',
     },
     {
         id: 'api-billing',
@@ -832,15 +837,16 @@ console.log(completion.choices[0].message.content);`}
                     </CodeBlock>
                 </section>
 
-                {/* ─── 12 · 图像生成 2K/4K — the W8 D8 headline.
+                {/* ─── 12 · Gemini 生图 2K/4K — the W8 D8 headline.
                  *  Gemini high-res image MUST go through the native
                  *  /v1beta generateContent path with imageConfig.imageSize;
-                 *  the OpenAI-compat chat path silently caps at ~1K. */}
+                 *  the OpenAI-compat chat path silently caps at ~1K.
+                 *  gpt-image-2 lives in its own chapter (13) — 2026-06-16. */}
                 <section id="api-image" className="mt-12 mb-10 scroll-mt-20">
                     <div className="flex items-baseline justify-between flex-wrap gap-2 mb-4 pb-3 border-b-2 border-brand-accent">
                         <h2 className="m-0 text-2xl font-semibold text-navy">
                             <span className="text-brand-accent font-bold mr-3 tabular-nums">12</span>
-                            图像生成 · 2K / 4K 高清
+                            Gemini 生图 · 2K / 4K 高清
                         </h2>
                     </div>
                     <div className="rounded-lg overflow-hidden border border-brand-border bg-surface mb-4">
@@ -862,12 +868,6 @@ console.log(completion.choices[0].message.content);`}
                                 </tr>
                             </thead>
                             <tbody>
-                                <tr className="border-b border-brand-border">
-                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">gpt-image-2</td>
-                                    <td className="px-4 py-3 text-ink align-top">1024×1024 / 1536×1024 …</td>
-                                    <td className="px-4 py-3 text-navy align-top font-medium">¥0.05 / 张</td>
-                                    <td className="px-4 py-3 text-ink">OpenAI 风格,通用</td>
-                                </tr>
                                 <tr className="border-b border-brand-border">
                                     <td className="px-4 py-3 font-mono text-xs text-navy align-top">
                                         gemini-2.5-flash-image
@@ -949,45 +949,6 @@ curl ${OPENAI_BASE}/chat/completions \\
                         </Link>{' '}
                         配置自定义 OSS(R2 / 阿里 OSS / 腾讯 COS / AWS S3 / 自建;故障自动回退平台图床,不影响出图)。
                     </p>
-
-                    <p className="m-0 mb-2 text-sm font-medium text-navy">gpt-image-2(OpenAI 兼容)</p>
-                    <CodeBlock language="python">
-                        {`from openai import OpenAI
-
-client = OpenAI(api_key="sk-…", base_url="${OPENAI_BASE}")
-
-resp = client.images.generate(
-    model="gpt-image-2",
-    prompt="A calico cat sitting on a window sill, soft morning light",
-    n=1,
-    size="1024x1024",
-)
-print(resp.data[0].b64_json)   # 返回 b64_json(PNG),base64 解码保存`}
-                    </CodeBlock>
-                    <div className="mt-3 mb-3 rounded-lg border-l-4 border-brand-border bg-paper-muted px-4 py-3 text-sm text-ink">
-                        🖼️ <strong className="text-navy">gpt-image-2 返回与计费</strong>:图片在{' '}
-                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
-                            data[0].b64_json
-                        </code>{' '}
-                        (Base64 的 PNG,自行解码保存);响应含顶层{' '}
-                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
-                            size
-                        </code>{' '}
-                        与{' '}
-                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
-                            usage
-                        </code>
-                        (OpenAI gpt-image 形)。
-                        <span className="block mt-1.5 text-xs text-minor-ink">
-                            ⚠️{' '}
-                            <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
-                                usage
-                            </code>{' '}
-                            是<strong className="text-navy">平台估算值</strong>,非上游真实计费 token,
-                            <strong className="text-navy">请勿用于对账</strong> —— 实际按 ¥0.05 / 张扣费。上游报错
-                            <strong className="text-navy">原样透传</strong>(状态码 + OpenAI 错误体,不隐藏)。
-                        </span>
-                    </div>
 
                     <div className="mt-5 mb-3 rounded-lg border-l-4 border-brand-accent bg-paper-muted px-4 py-3 text-sm text-ink">
                         ✅{' '}
@@ -1125,11 +1086,148 @@ for part in resp.candidates[0].content.parts:
                     </p>
                 </section>
 
-                {/* ─── 13 · 计费 · 账户 · 网络 ─── */}
-                <section id="api-billing" className="mt-12 mb-10 scroll-mt-20">
+                {/* ─── 13 · GPT image-2 生图 (2026-06-16: split out of the Gemini chapter; ch36/czeq, image2 group) ─── */}
+                <section id="api-gpt-image" className="mt-12 mb-10 scroll-mt-20">
                     <div className="flex items-baseline justify-between flex-wrap gap-2 mb-4 pb-3 border-b-2 border-brand-accent">
                         <h2 className="m-0 text-2xl font-semibold text-navy">
                             <span className="text-brand-accent font-bold mr-3 tabular-nums">13</span>
+                            GPT image-2 生图
+                        </h2>
+                    </div>
+                    <p className="m-0 mb-4 text-sm text-ink leading-relaxed">
+                        OpenAI Images API 兼容 ——{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            POST /v1/images/generations
+                        </code>{' '}
+                        文生图、
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            POST /v1/images/edits
+                        </code>{' '}
+                        图生图。现有 OpenAI SDK 改一行 base_url 即可。返回{' '}
+                        <strong className="text-navy">b64_json</strong>(Base64 PNG)。
+                        <strong className="text-navy"> 请用 image2 分组创建的 API Key</strong> 调用全部档位。
+                    </p>
+
+                    <div className="rounded-lg overflow-hidden border border-brand-border bg-surface mb-4">
+                        <table className="w-full border-collapse text-sm">
+                            <thead>
+                                <tr className="bg-paper-muted text-muted-ink">
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        模型
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        分辨率
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        价格
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        用途
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">gpt-image-2</td>
+                                    <td className="px-4 py-3 text-ink align-top">自适应</td>
+                                    <td className="px-4 py-3 text-navy align-top font-medium">¥0.05 / 张</td>
+                                    <td className="px-4 py-3 text-ink">默认推荐,最快</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">gpt-image-2-1k</td>
+                                    <td className="px-4 py-3 text-ink align-top">锁定 1K</td>
+                                    <td className="px-4 py-3 text-navy align-top font-medium">¥0.05 / 张</td>
+                                    <td className="px-4 py-3 text-ink">稳定 1024</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">gpt-image-2-2k</td>
+                                    <td className="px-4 py-3 text-navy align-top font-medium">锁定 2K</td>
+                                    <td className="px-4 py-3 text-navy align-top font-medium">¥0.05 / 张</td>
+                                    <td className="px-4 py-3 text-ink">更清晰</td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">gpt-image-2-4k</td>
+                                    <td className="px-4 py-3 text-navy align-top font-medium">锁定 4K</td>
+                                    <td className="px-4 py-3 text-navy align-top font-medium">¥0.05 / 张</td>
+                                    <td className="px-4 py-3 text-ink">最高清(较慢,见下)</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <p className="m-0 mb-4 text-xs text-minor-ink">
+                        专用档(-1k / -2k / -4k)会强制按各自档位输出,即使 size 传了别的尺寸。4 档同价 ¥0.05 / 张。
+                    </p>
+
+                    <p className="m-0 mb-2 text-sm font-medium text-navy">文生图 · /v1/images/generations</p>
+                    <CodeBlock language="bash">
+                        {`curl ${OPENAI_BASE}/images/generations \\
+  -H "Authorization: Bearer sk-你的KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "gpt-image-2",
+    "prompt": "一只戴圣诞帽的橘猫,工作室灯光,高细节",
+    "size": "1536x1024"
+  }'`}
+                    </CodeBlock>
+                    <CodeBlock language="python">
+                        {`from openai import OpenAI
+import base64
+
+client = OpenAI(api_key="sk-你的KEY", base_url="${OPENAI_BASE}")
+
+resp = client.images.generate(
+    model="gpt-image-2",
+    prompt="一只戴圣诞帽的橘猫,工作室灯光,高细节",
+    size="1536x1024",
+)
+with open("out.png", "wb") as f:
+    f.write(base64.b64decode(resp.data[0].b64_json))`}
+                    </CodeBlock>
+
+                    <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">图生图 · /v1/images/edits(multipart)</p>
+                    <CodeBlock language="bash">
+                        {`curl ${OPENAI_BASE}/images/edits \\
+  -H "Authorization: Bearer sk-你的KEY" \\
+  -F model=gpt-image-2 \\
+  -F prompt="把背景换成雪景" \\
+  -F image=@cat.png`}
+                    </CodeBlock>
+
+                    <div className="mt-4 mb-3 rounded-lg border-l-4 border-brand-border bg-paper-muted px-4 py-3 text-sm text-ink">
+                        🖼️ <strong className="text-navy">返回与计费</strong>:图片在{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            data[0].b64_json
+                        </code>
+                        (Base64 的 PNG,自行解码保存;始终返回 b64,传 response_format=url 也回 b64)。实际
+                        <strong className="text-navy">按 ¥0.05 / 张</strong>扣费,响应里的 usage 仅平台估算、勿用于对账。
+                        上游报错<strong className="text-navy">原样透传</strong>(状态码 + OpenAI 错误体)。
+                    </div>
+
+                    <div className="mt-3 mb-3 rounded-lg border-l-4 border-brand-accent bg-paper-muted px-4 py-3 text-sm text-ink">
+                        ⏱️ <strong className="text-navy">4K(gpt-image-2-4k)又慢又大</strong>:单张约 7–8MB、生成最长约
+                        120s。接入务必把<strong className="text-navy">超时设到 ≥ 180s</strong>{' '}
+                        并对偶发断连重试一次;不强求 4K 时优先用 gpt-image-2(自适应)或 -1k / -2k,更快更稳。
+                        <span className="block mt-1.5 text-xs text-minor-ink">
+                            Python:
+                            <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                                OpenAI(..., timeout=180.0, max_retries=2)
+                            </code>
+                        </span>
+                    </div>
+
+                    <div className="mt-3 mb-3 rounded-lg border-l-4 border-brand-border bg-paper-muted px-4 py-3 text-sm text-ink">
+                        🛡️ <strong className="text-navy">内容准则</strong>:禁止暴力 / 血腥 / 未成年 / NSFW、侵权 / 违法
+                        / 恐怖活动相关(即便无关键词、被识别出意图也不出图)。ComfyUI 用户
+                        <strong className="text-navy">不要带 SD 式负面提示词</strong>
+                        (易被风控误伤);图生图时参考图含上述内容同样不出图。
+                    </div>
+                </section>
+
+                {/* ─── 14 · 计费 · 账户 · 网络 ─── */}
+                <section id="api-billing" className="mt-12 mb-10 scroll-mt-20">
+                    <div className="flex items-baseline justify-between flex-wrap gap-2 mb-4 pb-3 border-b-2 border-brand-accent">
+                        <h2 className="m-0 text-2xl font-semibold text-navy">
+                            <span className="text-brand-accent font-bold mr-3 tabular-nums">14</span>
                             计费 · 账户 · 网络
                         </h2>
                     </div>
@@ -1177,7 +1275,7 @@ for part in resp.candidates[0].content.parts:
                 <section id="seedance" className="mt-12 mb-10 scroll-mt-20">
                     <div className="flex items-baseline justify-between flex-wrap gap-2 mb-4 pb-3 border-b-2 border-brand-accent">
                         <h2 className="m-0 text-2xl font-semibold text-navy">
-                            <span className="text-brand-accent font-bold mr-3 tabular-nums">14</span>
+                            <span className="text-brand-accent font-bold mr-3 tabular-nums">15</span>
                             Seedance 2.0 · 视频生成
                         </h2>
                     </div>
