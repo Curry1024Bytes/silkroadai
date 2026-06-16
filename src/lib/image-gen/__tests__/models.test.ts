@@ -88,6 +88,26 @@ describe('geminiImageSize routing flag (W8 D8 — native /v1beta resolution)', (
     });
 });
 
+describe('routing pins (2026-06-15 — gpt-image-2 → image2 group / ch36)', () => {
+    it('gpt-image-2 pins the image2 group and is images-API-only', () => {
+        const m = findImageModel('gpt-image-2');
+        expect(m?.group).toBe('image2');
+        expect(m?.imagesApiOnly).toBe(true);
+    });
+
+    it('gpt-image-2 retails at ¥0.05 (ModelPrice 0.00714 USD)', () => {
+        expect(findImageModel('gpt-image-2')?.pricePerImageUsd).toBeCloseTo(0.00714, 5);
+    });
+
+    it('other SKUs declare no group pin and are not images-API-only (keep default token + auto-dispatch)', () => {
+        for (const m of IMAGE_MODELS) {
+            if (m.id === 'gpt-image-2') continue;
+            expect(m.group).toBeUndefined();
+            expect(m.imagesApiOnly).toBeUndefined();
+        }
+    });
+});
+
 describe('sizeToAspectRatio', () => {
     it('maps the 3 portal sizes to Gemini aspect ratios', () => {
         expect(sizeToAspectRatio('1024x1024')).toBe('1:1');

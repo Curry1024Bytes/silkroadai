@@ -78,7 +78,9 @@ function toCallRow(log: NewApiUsageLog): CallRow {
         id: log.id,
         createdAt: log.created_at,
         model: log.model_name,
-        useTimeMs: log.use_time,
+        // new-api `use_time` 单位是【秒】,×1000 转 ms(formatDuration 收 ms)。
+        // 不转的话 56 秒的生图会显示成 "56ms"。
+        useTimeMs: log.use_time * 1000,
         promptTokens: log.prompt_tokens,
         completionTokens: log.completion_tokens,
         quota: log.quota,

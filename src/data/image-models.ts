@@ -63,15 +63,14 @@ function cny(usd: number): number {
 //   Gemini 系(4 个):¥0.5/$1 → pricePerImageUsd = official × 0.5 / 7
 // 顺序 = 客户在下拉里看到的从上到下顺序。OpenAI 首选 → Google 系 → 后续国内系。
 export const IMAGE_MODEL_OPTIONS: ImageModelOption[] = [
-    // ── OpenAI(国外旗舰)── per-image 固定价(2026-05-30 接专用渠道后改 per-call)
-    // 注意:不是 ¥0.2/$1 token 公式 — gpt-image-2 在 new-api 走 ModelPrice 固定每张价
-    // 后端 ModelPrice[gpt-image-2] = 0.01429 USD = ¥0.10/张
-    // 上游成本 ¥0.04/张,我们零售 ¥0.10/张 = 60% 毛利
+    // ── OpenAI(国外旗舰)── per-image 固定价(2026-06-15:主渠道切到 ch36/czeq)
+    // 注意:不是 token 公式 — gpt-image-2 在 new-api 走 ModelPrice 固定每张价
+    // 后端 ModelPrice[gpt-image-2] = 0.00714 USD = ¥0.05/张(prod QPU 1e6 / FX ¥7)
     {
         id: 'gpt-image-2',
         label: 'GPT image-2',
-        pricePerImageUsd: 0.01429, // = ¥0.10 / 7
-        pricePerImageCny: cny(0.01429), // ¥0.10
+        pricePerImageUsd: 0.00714, // = ¥0.05 / 7
+        pricePerImageCny: cny(0.00714), // ¥0.05
         blurb: 'OpenAI · GPT-5 多模态图像生成',
         badge: '推荐',
         vendor: 'OpenAI',

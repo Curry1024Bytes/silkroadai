@@ -11,8 +11,8 @@
  * component fetches a bounded recent window, post-filters to this user, and
  * passes the merged+sorted rows down as plain serializable objects.
  *
- * 生图友好: image-generation calls report token=0 → formatTokens shows "—"
- * (not a misleading "0 / 0"); the model name + ¥ + result still read clearly.
+ * 生图友好: 生图模型按【张】计费,上游回报的 token 数无意义且极不一致(1/0、
+ * 9/124、1212/1105…),formatTokens 按模型名一律显示 "—";模型名 + ¥ + 结果照常清晰。
  */
 import { useState } from 'react';
 import { formatDuration, formatTokens, callResult } from './format';
@@ -140,7 +140,7 @@ function CallRowItem({
                 <td className={`${cell} font-mono text-xs`}>{row.model || '<unknown>'}</td>
                 <td className={`${cell} text-right tabular-nums text-muted-ink`}>{formatDuration(row.useTimeMs)}</td>
                 <td className={`${cell} text-right tabular-nums text-muted-ink`}>
-                    {formatTokens(row.promptTokens, row.completionTokens)}
+                    {formatTokens(row.promptTokens, row.completionTokens, row.model)}
                 </td>
                 <td className={`${cell} text-right tabular-nums font-medium`}>¥{row.costCny.toFixed(2)}</td>
                 <td className={`${cell} text-center`}>

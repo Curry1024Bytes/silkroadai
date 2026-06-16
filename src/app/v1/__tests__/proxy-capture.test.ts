@@ -111,11 +111,21 @@ beforeEach(() => {
     logStoreConfigured = true;
     process.env.REQUEST_LOGGING = 'on';
     delete process.env.REQUEST_LOGGING_SAMPLE_RATE;
+    delete process.env.REQUEST_LOGGING_SKIP_MEDIA;
 });
 afterEach(() => {
     delete process.env.REQUEST_LOGGING;
     delete process.env.REQUEST_LOGGING_SAMPLE_RATE;
+    delete process.env.REQUEST_LOGGING_SKIP_MEDIA;
 });
+
+/** Gemini native generateContent 响应(含一张内联图)。 */
+function geminiImageUpstream(): Response {
+    return jsonUpstream({
+        candidates: [{ content: { parts: [{ inlineData: { mimeType: 'image/png', data: 'QkFTRTY0' } }] } }],
+        usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 100, totalTokenCount: 105 },
+    });
+}
 
 describe('开关 off — 字节级零变化 + 零捕获', () => {
     it('REQUEST_LOGGING unset → 不调 putLogObject / create / identity,响应透传不变', async () => {
@@ -331,5 +341,84 @@ describe('出口 B — /messages 请求体 buffer + 捕获', () => {
         const d = lastCreateData();
         expect(d.method).toBe('GET');
         expect(d.input_r2_key).toBeNull();
+    });
+});
+
+describe('text-only 模式(REQUEST_LOGGING_SKIP_MEDIA)— 跳过生图/生视频,只留文本', () => {
+    beforeEach(() => {
+        process.env.REQUEST_LOGGING_SKIP_MEDIA = 'on';
+    });
+
+    it('/images/generations(生图)→ 不捕获', async () => {
+        mockFetch.mockResolvedValueOnce(jsonUpstream({ created: 1, data: [{ url: 'x' }] }));
+        await POST(
+            makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'a cat' } }),
+            ctx('images', 'generations'),
+        );
+        await __flushReqlogForTest();
+        expect(mockPutLogObject).not.toHaveBeenCalled();
+        expect(mockCreate).not.toHaveBeenCalled();
+    });
+
+    it('/chat/completions + Gemini 生图模型 → 不捕获(请求体也不记)', async () => {
+        mockFetch.mockResolvedValueOnce(geminiImageUpstream());
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: { model: 'gemini-3-pro-image-preview', messages: [{ role: 'user', content: 'a cat' }] },
+            }),
+            ctx('chat', 'completions'),
+        );
+        await res.text();
+        await __flushReqlogForTest();
+        expect(res.status).toBe(200); // 生图照常工作
+        expect(mockPutLogObject).not.toHaveBeenCalled();
+        expect(mockCreate).not.toHaveBeenCalled();
+    });
+
+    it('/video/generations(生视频)→ 不捕获', async () => {
+        mockFetch.mockResolvedValueOnce(jsonUpstream({ task_id: 't1' }));
+        await POST(makeReq('/video/generations', { body: { model: 'seedance-2.0' } }), ctx('video', 'generations'));
+        await __flushReqlogForTest();
+        expect(mockPutLogObject).not.toHaveBeenCalled();
+        expect(mockCreate).not.toHaveBeenCalled();
+    });
+
+    it('/chat/completions + 文本模型(gpt)→ 仍捕获', async () => {
+        mockFetch.mockResolvedValueOnce(jsonUpstream({ id: 'x', usage: { prompt_tokens: 3, completion_tokens: 4 } }));
+        const res = await POST(
+            makeReq('/chat/completions', { body: { model: 'gpt-5.4', messages: [{ role: 'user', content: 'hi' }] } }),
+            ctx('chat', 'completions'),
+        );
+        await res.text();
+        await __flushReqlogForTest();
+        expect(findPut('in')).toBeTruthy();
+        expect(lastCreateData().model).toBe('gpt-5.4');
+    });
+
+    it('/messages(Claude 文本)→ 仍捕获', async () => {
+        mockFetch.mockResolvedValueOnce(jsonUpstream({ ok: 1 }));
+        const res = await POST(
+            makeReq('/messages', { body: { model: 'claude-opus-4-8', messages: [] } }),
+            ctx('messages'),
+        );
+        await res.text(); // 消费响应驱动 tee 收尾(/messages 走 passthrough teeStream)
+        await __flushReqlogForTest();
+        expect(lastCreateData().path).toBe('/messages');
+    });
+});
+
+describe('默认(未配 SKIP_MEDIA)— 生图仍捕获(证开关控制)', () => {
+    it('Gemini 生图 chat 在 skip 关时【被】捕获', async () => {
+        mockFetch.mockResolvedValueOnce(geminiImageUpstream());
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: { model: 'gemini-3-pro-image-preview', messages: [{ role: 'user', content: 'a cat' }] },
+            }),
+            ctx('chat', 'completions'),
+        );
+        await res.text();
+        await __flushReqlogForTest();
+        expect(mockCreate).toHaveBeenCalled();
+        expect(lastCreateData().model).toBe('gemini-3-pro-image-preview');
     });
 });

@@ -30,7 +30,8 @@
  *    + Gemini 生图模型 → 翻译到 native generateContent(注入 imageSize +
  *      aspect_ratio),响应包成 DALL·E 形 `{ created, data:[{url|b64_json}] }`。
  *      multipart/form-data(对标 gpt-best「Nano-banana」)与 JSON 两种 body 都收。
- *      非 Gemini model(gpt-image-2 等)→ 原样透传 new-api。详见 handleImagesDalle。
+ *      非 Gemini model(gpt-image-2 等)→ 透传 new-api,成功时补顶层 size + 估算 usage,
+ *      上游报错原样透传(详见 handleImagesDalle / reshapeOpenAiImageResponse)。
  *
  * 4. 其余一切(/messages、/models、/embeddings、其他模型的 /chat/completions…)
  *    → 原样透传 new-api,streaming SSE 不缓冲(直接 forward upstream ReadableStream)。
@@ -54,6 +55,7 @@ import { getOssConfig, resolveUserIdFromAuthHeader } from '@/lib/oss/store';
 import {
     type CaptureCtx,
     beginCapture,
+    isMediaCaptureSkipped,
     captureJsonResponse,
     captureResponse,
     parseModelAndStream,
@@ -571,24 +573,117 @@ function imageError(message: string, status = 400, cap: CaptureCtx | null = null
     return NextResponse.json(obj, { status });
 }
 
-/** 非 Gemini model 的 multipart 透传:重建 FormData 转发 new-api。
- *  req.body 已被 formData() 消费,不能再 stream,所以转发已解析的 FormData;
- *  删掉原 content-type 让 fetch 按新 FormData 重新生成 boundary。 */
-async function forwardMultipart(
-    req: NextRequest,
-    form: FormData,
-    path: string,
-    search: string,
-    cap: CaptureCtx | null = null,
-): Promise<NextResponse> {
+/** 非 Gemini 图片(gpt-image-2 等)multipart 转发 → 返回【原始】响应供 reshape。
+ *  req.body 已被 formData() 消费,转发已解析的 FormData;删原 content-type 让 fetch
+ *  按重建 FormData 重生 boundary。 */
+function fetchUpstreamMultipart(req: NextRequest, form: FormData, path: string, search: string): Promise<Response> {
     const headers = forwardHeaders(req);
     headers.delete('content-type');
-    const upstream = await fetch(`${NEWAPI_BASE_URL}/v1${path}${search}`, {
+    return fetch(`${NEWAPI_BASE_URL}/v1${path}${search}`, { method: 'POST', headers, body: form });
+}
+
+/** 非 Gemini 图片 JSON 转发 → 返回【原始】响应供 reshape(CT 强制 json)。 */
+function fetchUpstreamJson(req: NextRequest, body: JsonRecord, path: string, search: string): Promise<Response> {
+    return fetch(`${NEWAPI_BASE_URL}/v1${path}${search}`, {
         method: 'POST',
-        headers,
-        body: form,
+        headers: jsonForwardHeaders(req),
+        body: JSON.stringify(body),
     });
-    return cap ? captureResponse(cap, upstream) : passthroughResponse(upstream);
+}
+
+/** OpenAI gpt-image 图片输出 token 估算系数:~703 tok/百万像素(校准到 1536×1024≈1106,
+ *  贴近客户参考样例 1105)。号池/new-api 不回真实 usage,这是【估算值】,不等于官方计费 token。 */
+const OPENAI_IMAGE_OUTPUT_TOKENS_PER_MP = 703;
+
+/** prompt 文本 token 粗估(无官方 tokenizer 的近似):CJK ~1.5 tok/字,其余 ~1 tok/4 字符。 */
+function estimateTextTokens(s: string): number {
+    if (!s) return 0;
+    let cjk = 0;
+    let other = 0;
+    for (const ch of s) {
+        const c = ch.codePointAt(0) ?? 0;
+        if ((c >= 0x3000 && c <= 0x9fff) || (c >= 0xac00 && c <= 0xd7af) || (c >= 0xf900 && c <= 0xfaff)) cjk++;
+        else other++;
+    }
+    return Math.max(1, Math.ceil(cjk * 1.5 + other / 4));
+}
+
+/** "1536x1024" → 估算输出图 token(按像素面积);无法解析返 0。 */
+function estimateImageTokens(sizeStr: string): number {
+    const m = /^(\d+)x(\d+)$/.exec(sizeStr.trim());
+    if (!m) return 0;
+    const w = Number(m[1]);
+    const h = Number(m[2]);
+    if (!(w > 0 && h > 0)) return 0;
+    return Math.round(((w * h) / 1_000_000) * OPENAI_IMAGE_OUTPUT_TOKENS_PER_MP);
+}
+
+/** 估算 OpenAI gpt-image `usage`(号池不回真实值)。输入只算 prompt 文本;输入图(edits)
+ *  token 不估、记 0(估算局限)。
+ *
+ *  两套字段都给:
+ *   - gpt-image-1 形 `input_tokens` / `output_tokens` / `*_details`(客户端 SDK / 展示读这套);
+ *   - chat-completions 形 `prompt_tokens` / `completion_tokens`(**new-api 等中继按这套字段
+ *     记 token** —— 客户把我们的 key 接进自己的 new-api 当上游时,它的调用日志读
+ *     prompt/completion_tokens,缺了就显示 0,见客户反馈)。
+ *  两套共用 `total_tokens`。 */
+function buildEstimatedUsage(prompt: string, outSize: string): JsonRecord {
+    const textTokens = estimateTextTokens(prompt);
+    const outImageTokens = estimateImageTokens(outSize);
+    return {
+        // gpt-image-1 形
+        input_tokens: textTokens,
+        input_tokens_details: { image_tokens: 0, text_tokens: textTokens },
+        output_tokens: outImageTokens,
+        output_tokens_details: { image_tokens: outImageTokens, text_tokens: 0 },
+        total_tokens: textTokens + outImageTokens,
+        // chat-completions 形别名(中继/new-api 记 token 用)
+        prompt_tokens: textTokens,
+        completion_tokens: outImageTokens,
+    };
+}
+
+/** 非 Gemini 图片模型(gpt-image-2 等)透传 + 响应整形:
+ *  - 上游报错(非 2xx)/ 非预期形态 → 原样透传 status+体(**绝不隐藏报错**,客户要求)。
+ *  - 成功 → 补 OpenAI gpt-image 形的顶层 `size` + 估算 `usage`(上游不回 usage;若上游
+ *    已带则保留不覆盖)。data[].b64_json 等字段原样保留。 */
+async function reshapeOpenAiImageResponse(
+    upstream: Response,
+    prompt: string,
+    requestedSize: string,
+    cap: CaptureCtx | null,
+): Promise<NextResponse> {
+    const text = await upstream.text();
+    const headers = new Headers();
+    upstream.headers.forEach((v, k) => {
+        if (!STRIP_RESPONSE_HEADERS.has(k.toLowerCase())) headers.set(k, v);
+    });
+
+    let json: JsonRecord | null = null;
+    try {
+        json = JSON.parse(text) as JsonRecord;
+    } catch {
+        json = null;
+    }
+    const data = json && Array.isArray((json as { data?: unknown }).data) ? (json.data as JsonRecord[]) : null;
+
+    // 上游报错 / 形态非预期(非 JSON、无 data)→ 原样透传,不加 usage、不改体。
+    if (!upstream.ok || !data) {
+        if (cap) captureJsonResponse(cap, upstream.status, (json ?? { _raw: text.slice(0, 500) }) as JsonRecord);
+        return new NextResponse(text, { status: upstream.status, headers });
+    }
+
+    // 成功:补顶层 size + 估算 usage(保留上游已有的)。
+    const j = json as JsonRecord; // data 非空 ⇒ json 非空
+    const firstSize = typeof data[0]?.size === 'string' ? (data[0].size as string) : '';
+    const outSize = (typeof j.size === 'string' && j.size) || firstSize || requestedSize || '';
+    const out: JsonRecord = { ...j };
+    if (out.size === undefined && outSize) out.size = outSize;
+    if (out.usage === undefined) out.usage = buildEstimatedUsage(prompt, outSize);
+
+    headers.set('content-type', 'application/json');
+    if (cap) captureJsonResponse(cap, 200, out);
+    return new NextResponse(JSON.stringify(out), { status: 200, headers });
 }
 
 /**
@@ -596,7 +691,8 @@ async function forwardMultipart(
  *
  * model 命中 GEMINI_IMAGE_MODELS → 翻译到 Gemini native generateContent
  * 注入 imageSize(1K/2K/4K)、按需注入 aspectRatio,响应包成 DALL·E 形
- * `{ created, data: [{ url | b64_json }] }`;否则原样透传 new-api(gpt-image-2 等)。
+ * `{ created, data: [{ url | b64_json }] }`;否则(gpt-image-2 等)透传 new-api 并整形:
+ * 成功补 OpenAI gpt-image 形的顶层 `size` + 估算 `usage`(上游不回 usage),上游报错原样透传。
  *
  * 边界与已知取舍(对照官方 DALL·E 的有意差异):
  * - `n`(多图):不支持,固定返 1 张(Gemini generateContent 单次出 1 图)。
@@ -646,7 +742,17 @@ async function handleImagesDalle(
                         model,
                         false,
                     );
-                return forwardMultipart(req, form, path, search, cap);
+                try {
+                    const upstream = await fetchUpstreamMultipart(req, form, path, search);
+                    return await reshapeOpenAiImageResponse(upstream, prompt, sizeRaw, cap);
+                } catch (e) {
+                    // 连不上 new-api 等网络异常:透出真实原因(不被外层 catch 兜底成笼统 400)
+                    return imageError(
+                        `upstream request failed: ${e instanceof Error ? e.message : String(e)}`,
+                        502,
+                        cap,
+                    );
+                }
             }
             for (const file of form.getAll('image')) {
                 if (file instanceof File && file.size > 0) {
@@ -687,7 +793,16 @@ async function handleImagesDalle(
             sizeRaw = String(body.size ?? '');
             if (cap) recordRequestBody(cap, JSON.stringify(body), model, false);
             if (!(model in GEMINI_IMAGE_MODELS)) {
-                return forwardToNewApi(req, body, path, search, cap);
+                try {
+                    const upstream = await fetchUpstreamJson(req, body, path, search);
+                    return await reshapeOpenAiImageResponse(upstream, prompt, sizeRaw, cap);
+                } catch (e) {
+                    return imageError(
+                        `upstream request failed: ${e instanceof Error ? e.message : String(e)}`,
+                        502,
+                        cap,
+                    );
+                }
             }
             // JSON 形态的 image 可能是 data URL / 外部 URL 字符串或其数组(复用现有 helper)
             const imageField = body.image;
@@ -791,13 +906,18 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
             );
         }
         const model = String(body.model ?? '');
-        // 捕获【原始】请求体(clamp 分支也存未钳的,记录客户真实输入,brief §4)
-        if (cap) recordRequestBody(cap, JSON.stringify(body), model, body.stream === true);
 
-        // Branch 1: Gemini image → native endpoint 翻译
+        // Branch 1: Gemini image → native endpoint 翻译。
+        // text-only 模式(REQUEST_LOGGING_SKIP_MEDIA)下生图不捕获 → imgCap=null(请求体也不记);
+        // 否则用 cap 并先记请求体(handleGeminiImage 只捕响应侧)。
         if (model in GEMINI_IMAGE_MODELS) {
-            return handleGeminiImage(req, body, model, cap);
+            const imgCap = isMediaCaptureSkipped() ? null : cap;
+            if (imgCap) recordRequestBody(imgCap, JSON.stringify(body), model, body.stream === true);
+            return handleGeminiImage(req, body, model, imgCap);
         }
+
+        // 捕获【原始】请求体(文本路径;clamp 分支也存未钳的,记录客户真实输入,brief §4)
+        if (cap) recordRequestBody(cap, JSON.stringify(body), model, body.stream === true);
 
         // Branch 2: Claude max_tokens clamp
         const maxTokens = typeof body.max_tokens === 'number' ? body.max_tokens : 0;

@@ -30,10 +30,10 @@ describe('IMAGE_MODEL_OPTIONS', () => {
     it('default selection is the first entry (GPT image-2)', () => {
         expect(DEFAULT_IMAGE_MODEL_ID).toBe(IMAGE_MODEL_OPTIONS[0].id);
         // W8 D7 (PR #67) reorder by vendor: OpenAI 国外旗舰首选 — gpt-image-2 → [0]。
-        // 2026-05-30 接专用渠道后改 per-call 固定价:后端 ModelPrice[gpt-image-2]
-        // = 0.01429 USD = ¥0.10/张(上游成本 ¥0.04/张,60% 毛利)。
+        // 2026-06-15 主渠道切到 ch36/czeq:后端 ModelPrice[gpt-image-2]
+        // = 0.00714 USD = ¥0.05/张(prod QPU 1e6 / FX ¥7)。
         expect(IMAGE_MODEL_OPTIONS[0].label).toBe('GPT image-2');
-        expect(IMAGE_MODEL_OPTIONS[0].pricePerImageCny).toBeCloseTo(0.1, 2);
+        expect(IMAGE_MODEL_OPTIONS[0].pricePerImageCny).toBeCloseTo(0.05, 2);
     });
 
     it('CNY prices are USD × 7 (within rounding)', () => {

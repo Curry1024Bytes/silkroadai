@@ -3,7 +3,7 @@
  * (brief §5: use_time→友好时长; token=0→"—"; type→成功/失败)
  */
 import { describe, expect, it } from 'vitest';
-import { formatDuration, formatTokens, callResult } from '@/app/(authenticated)/dashboard/format';
+import { formatDuration, formatTokens, isImageModel, callResult } from '@/app/(authenticated)/dashboard/format';
 
 describe('formatDuration', () => {
     it('0 / negative / non-finite → "—"', () => {
@@ -30,20 +30,53 @@ describe('formatDuration', () => {
         expect(formatDuration(65000)).toBe('1m 5s');
         expect(formatDuration(125000)).toBe('2m 5s');
     });
+
+    it('生图 56 秒(page toCallRow ×1000 后)→ "56s"(回归:不能再显示 "56ms")', () => {
+        // new-api use_time=56(秒)→ page ×1000 → 56000ms
+        expect(formatDuration(56 * 1000)).toBe('56s');
+        expect(formatDuration(11 * 1000)).toBe('11s');
+    });
+});
+
+describe('isImageModel', () => {
+    it('生图模型名命中', () => {
+        for (const m of [
+            'gpt-image-2',
+            'gemini-2.5-flash-image',
+            'gemini-3-pro-image-preview',
+            'gemini-3-pro-image-preview-2k',
+            'dall-e-3',
+            'imagen-3',
+        ])
+            expect(isImageModel(m), m).toBe(true);
+    });
+    it('非生图模型不命中(含视频/空)', () => {
+        for (const m of ['gpt-5.4', 'claude-opus-4-8', 'deepseek-v4', 'seedance-2.0', ''])
+            expect(isImageModel(m), m).toBe(false);
+    });
 });
 
 describe('formatTokens', () => {
-    it('both zero (image gen) → "—" (生图友好, not "0 / 0")', () => {
+    it('生图模型 → 一律 "—"(token 无意义,不管上游报什么数)', () => {
+        expect(formatTokens(1, 0, 'gpt-image-2')).toBe('—');
+        expect(formatTokens(9, 124, 'gpt-image-2')).toBe('—');
+        expect(formatTokens(1212, 1105, 'gpt-image-2')).toBe('—');
+        expect(formatTokens(31, 765, 'gemini-3-pro-image-preview')).toBe('—');
+        expect(formatTokens(50, 0, 'dall-e-3')).toBe('—');
+    });
+
+    it('非生图模型两端都 0 → "—"(不显示误导的 "0 / 0")', () => {
         expect(formatTokens(0, 0)).toBe('—');
+        expect(formatTokens(0, 0, 'gpt-5.4')).toBe('—');
     });
 
-    it('formats 输入 / 输出 with thousands separators', () => {
-        expect(formatTokens(100, 200)).toBe('100 / 200');
-        expect(formatTokens(1234, 5678)).toBe('1,234 / 5,678');
+    it('非生图模型正常显示 输入 / 输出(千分位)', () => {
+        expect(formatTokens(100, 200, 'gpt-5.4')).toBe('100 / 200');
+        expect(formatTokens(1234, 5678, 'claude-opus-4-8')).toBe('1,234 / 5,678');
     });
 
-    it('shows the row when only one side is non-zero', () => {
-        expect(formatTokens(100, 0)).toBe('100 / 0');
+    it('非生图模型仅一端非 0 仍显示', () => {
+        expect(formatTokens(100, 0, 'gpt-5.4')).toBe('100 / 0');
         expect(formatTokens(0, 50)).toBe('0 / 50');
     });
 });

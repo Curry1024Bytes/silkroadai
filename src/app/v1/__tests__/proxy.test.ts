@@ -1196,3 +1196,128 @@ describe('/v1 proxy — pro imageSize 可选 (size param, feat/pro-image-size-se
         expect(sent.generationConfig.imageConfig.aspectRatio).toBe('8:1');
     });
 });
+
+describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usage + 报错透传', () => {
+    type Usage = {
+        input_tokens: number;
+        input_tokens_details: { image_tokens: number; text_tokens: number };
+        output_tokens: number;
+        output_tokens_details: { image_tokens: number; text_tokens: number };
+        total_tokens: number;
+        // chat-completions 形别名(中继/new-api 记 token 用)
+        prompt_tokens: number;
+        completion_tokens: number;
+    };
+
+    it('generations 成功 → 透传 new-api + 补顶层 size + 估算 usage,b64_json 原样保留', async () => {
+        mockFetch.mockResolvedValueOnce(
+            new Response(
+                JSON.stringify({
+                    created: 123,
+                    data: [{ b64_json: 'QUJD', revised_prompt: 'a red apple', size: '1536x1024' }],
+                }),
+                { status: 200, headers: { 'content-type': 'application/json' } },
+            ),
+        );
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2', prompt: 'a red apple', size: '1536x1024' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        // 透传到 new-api images 端点(不翻译成 generateContent)
+        const [url] = mockFetch.mock.calls[0] as [string];
+        expect(url).toBe(`${NEWAPI_BASE}/v1/images/generations`);
+        expect(url).not.toContain('generateContent');
+
+        const data = (await res.json()) as {
+            created: number;
+            size: string;
+            data: Array<{ b64_json: string }>;
+            usage: Usage;
+        };
+        expect(data.data[0].b64_json).toBe('QUJD'); // 图原样
+        expect(data.created).toBe(123);
+        expect(data.size).toBe('1536x1024'); // 顶层 size 补上(原在 data[0].size)
+        // 估算 usage 结构对齐官方 gpt-image-1
+        expect(data.usage.output_tokens_details.image_tokens).toBeGreaterThan(1000);
+        expect(data.usage.output_tokens).toBe(data.usage.output_tokens_details.image_tokens);
+        expect(data.usage.input_tokens_details.text_tokens).toBeGreaterThan(0);
+        expect(data.usage.input_tokens_details.image_tokens).toBe(0);
+        expect(data.usage.total_tokens).toBe(data.usage.input_tokens + data.usage.output_tokens);
+        // chat-completions 形别名:中继(new-api)按这套字段记 token,缺了就显示 0
+        expect(data.usage.prompt_tokens).toBe(data.usage.input_tokens);
+        expect(data.usage.completion_tokens).toBe(data.usage.output_tokens);
+    });
+
+    async function imageTokensFor(size: string): Promise<number> {
+        mockFetch.mockReset();
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ created: 1, data: [{ b64_json: 'QUJD', size }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const res = await POST(
+            makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x', size } }),
+            ctx('images', 'generations'),
+        );
+        return ((await res.json()) as { usage: Usage }).usage.output_tokens_details.image_tokens;
+    }
+
+    it('image_tokens 随输出尺寸缩放(按面积:1536x1024≈1106 > 1024x1024≈737)', async () => {
+        expect(await imageTokensFor('1536x1024')).toBe(1106);
+        expect(await imageTokensFor('1024x1024')).toBe(737);
+    });
+
+    it('multipart edits 也整形(补 size + usage)', async () => {
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ created: 1, data: [{ b64_json: 'QUJD', size: '1024x1024' }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const form = new FormData();
+        form.append('model', 'gpt-image-2');
+        form.append('prompt', '改成夜景');
+        form.append('image', new File([new Uint8Array([1, 2, 3])], 'in.png', { type: 'image/png' }));
+        const req = new NextRequest('https://ai.silkroadai.io/v1/images/edits', { method: 'POST', body: form });
+        const res = await POST(req, ctx('images', 'edits'));
+        expect(res.status).toBe(200);
+        const data = (await res.json()) as { size: string; usage: Usage };
+        expect(data.size).toBe('1024x1024');
+        expect(data.usage.output_tokens_details.image_tokens).toBeGreaterThan(0);
+    });
+
+    it('上游报错 → 原样透传 status + 错误体,不加 usage(不隐藏报错)', async () => {
+        mockFetch.mockResolvedValueOnce(
+            new Response(
+                JSON.stringify({
+                    error: { message: 'blocked', type: 'invalid_request_error', code: 'content_policy_violation' },
+                }),
+                { status: 400, headers: { 'content-type': 'application/json' } },
+            ),
+        );
+        const res = await POST(
+            makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x' } }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(400); // 上游状态码透传
+        const data = (await res.json()) as { error: { code: string }; usage?: unknown };
+        expect(data.error.code).toBe('content_policy_violation'); // 上游错误体原样
+        expect(data.usage).toBeUndefined(); // 报错不加 usage
+    });
+
+    it('连不上 new-api(网络异常)→ 502 透出真实原因,不被兜底成笼统 400', async () => {
+        mockFetch.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+        const res = await POST(
+            makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x' } }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(502);
+        const data = (await res.json()) as { error: { message: string; type: string } };
+        expect(data.error.message).toContain('ECONNREFUSED');
+        expect(data.error.type).toBe('invalid_request_error');
+    });
+});
