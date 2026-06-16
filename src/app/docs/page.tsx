@@ -1611,6 +1611,157 @@ print(r["data"]["data"]["video_url"])`}
                     <p className="m-0 mt-3 text-xs text-minor-ink">
                         参考图别太小(约 256px 以下会被上游拒,用 ≥512px 稳);视频直链是临时的,拿到尽快转存。
                     </p>
+
+                    <p className="m-0 mt-6 mb-2 text-sm font-medium text-navy">参数总表</p>
+                    <div className="rounded-lg overflow-hidden border border-brand-border bg-surface mb-5">
+                        <table className="w-full border-collapse text-sm">
+                            <thead>
+                                <tr className="bg-paper-muted text-muted-ink">
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        参数
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        适用
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        说明
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy">model</td>
+                                    <td className="px-4 py-2.5 text-ink">必填</td>
+                                    <td className="px-4 py-2.5 text-ink">上表模型名(决定分辨率 / 计费档)</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy">prompt</td>
+                                    <td className="px-4 py-2.5 text-ink">必填</td>
+                                    <td className="px-4 py-2.5 text-ink">画面描述</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy">duration</td>
+                                    <td className="px-4 py-2.5 text-ink">否</td>
+                                    <td className="px-4 py-2.5 text-ink">秒数,默认 4(价格 = 每秒价 × 秒数)</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy">aspect_ratio</td>
+                                    <td className="px-4 py-2.5 text-ink">否</td>
+                                    <td className="px-4 py-2.5 text-ink">16:9(默认)/ 9:16 / 1:1 / 4:3 / 3:4 / 21:9</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy">image / images</td>
+                                    <td className="px-4 py-2.5 text-ink">-ref</td>
+                                    <td className="px-4 py-2.5 text-ink">参考图(单 / 多 ≤4);http 链接或 base64</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy">
+                                        first_frame / last_frame
+                                    </td>
+                                    <td className="px-4 py-2.5 text-ink">-ref</td>
+                                    <td className="px-4 py-2.5 text-ink">首帧 / 尾帧图(首尾帧过渡)</td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy">audio_url</td>
+                                    <td className="px-4 py-2.5 text-ink">-ref</td>
+                                    <td className="px-4 py-2.5 text-ink">参考音频(直链或 base64),需配 ≥1 张图</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <p className="m-0 mb-2 text-sm font-medium text-navy">Python 完整示例(提交 + 轮询)</p>
+                    <CodeBlock language="python">
+                        {`import time, requests
+
+BASE = "${OPENAI_BASE}"
+KEY  = "你的 seedance海外满血 key"
+H = {"Authorization": f"Bearer {KEY}", "Content-Type": "application/json"}
+
+# 图生(参考图);文生去掉 image、换不带 -ref 的模型即可
+task = requests.post(f"{BASE}/video/generations", headers=H, json={
+    "model": "dreamina-seedance-2-0-720p-ref",
+    "prompt": "镜头缓缓推进,画面动起来",
+    "duration": 5,
+    "image": "https://你的图床/photo.jpg",
+}).json()
+tid = task.get("task_id") or task.get("id")
+
+def pick(d):  # 递归找视频直链
+    out = None
+    def w(n):
+        nonlocal out
+        if isinstance(n, dict):
+            v = n.get("video_url")
+            if isinstance(v, str) and v.startswith("http") and not out: out = v
+            for x in n.values(): w(x)
+        elif isinstance(n, list):
+            for x in n: w(x)
+    w(d); return out
+
+for _ in range(120):  # 最多约 10 分钟
+    r = requests.get(f"{BASE}/video/generations/{tid}", headers=H).json()
+    st = str(r.get("data", {}).get("status") or r.get("status") or "").upper()
+    if st in ("SUCCESS", "FAILURE", "FAILED"):
+        print(st, "→", pick(r) or r.get("data", {}).get("result_url")); break
+    time.sleep(8)`}
+                    </CodeBlock>
+
+                    <p className="m-0 mt-5 mb-2 text-sm font-medium text-navy">常见问题</p>
+                    <div className="rounded-lg overflow-hidden border border-brand-border bg-surface">
+                        <table className="w-full border-collapse text-sm">
+                            <thead>
+                                <tr className="bg-paper-muted text-muted-ink">
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        现象
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        原因 / 解决
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 text-navy">无可用渠道 / 模型不存在</td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        key 不是「seedance海外满血」档,或模型名拼错
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 text-navy">401 鉴权失败</td>
+                                    <td className="px-4 py-2.5 text-ink">检查 Authorization: Bearer 头与 key</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 text-navy">参考图报 Asset provider error</td>
+                                    <td className="px-4 py-2.5 text-ink">图太小(&lt;~256px),换 ≥512px</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 text-navy">-ref 模型报 requires an image</td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        -ref 必须带 image / first_frame / last_frame
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 text-navy">音频报 requires reference_image</td>
+                                    <td className="px-4 py-2.5 text-ink">用音频时必须同时带至少一张图</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 text-navy">视频链接过段时间失效</td>
+                                    <td className="px-4 py-2.5 text-ink">临时直链,拿到尽快转存到自己存储</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 text-navy">任务很久仍生成中</td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        高峰排队正常,1080P 更慢;耐心轮询,别频繁重建
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-2.5 text-navy">偶发 5xx</td>
+                                    <td className="px-4 py-2.5 text-ink">上游波动,稍后重试</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
                 </section>
 
                 <section className="mt-12 mb-6 text-center">
