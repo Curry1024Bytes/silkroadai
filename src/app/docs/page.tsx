@@ -1163,7 +1163,53 @@ for part in resp.candidates[0].content.parts:
                         专用档(-1k / -2k / -4k)会强制按各自档位输出,即使 size 传了别的尺寸。4 档同价 ¥0.05 / 张。
                     </p>
 
-                    <p className="m-0 mb-2 text-sm font-medium text-navy">文生图 · /v1/images/generations</p>
+                    <p className="m-0 mb-2 text-sm font-medium text-navy">文生图 · /v1/images/generations(JSON)</p>
+                    <div className="rounded-lg overflow-hidden border border-brand-border bg-surface mb-3">
+                        <table className="w-full border-collapse text-sm">
+                            <thead>
+                                <tr className="bg-paper-muted text-muted-ink">
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        参数
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        必填
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        说明
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">model</td>
+                                    <td className="px-4 py-3 text-ink align-top">✓</td>
+                                    <td className="px-4 py-3 text-ink">gpt-image-2(或 -1k / -2k / -4k)</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">prompt</td>
+                                    <td className="px-4 py-3 text-ink align-top">✓</td>
+                                    <td className="px-4 py-3 text-ink">图像文字描述</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">size</td>
+                                    <td className="px-4 py-3 text-ink align-top">—</td>
+                                    <td className="px-4 py-3 text-ink">
+                                        1024x1024 / 1024x1536 / 1536x1024 / auto;专用档忽略此项分辨率
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">n</td>
+                                    <td className="px-4 py-3 text-ink align-top">—</td>
+                                    <td className="px-4 py-3 text-ink">张数,默认 1(建议 1,多张分多次更稳)</td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">response_format</td>
+                                    <td className="px-4 py-3 text-ink align-top">—</td>
+                                    <td className="px-4 py-3 text-ink">b64_json(默认且唯一有效)</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
                     <CodeBlock language="bash">
                         {`curl ${OPENAI_BASE}/images/generations \\
   -H "Authorization: Bearer sk-你的KEY" \\
@@ -1188,8 +1234,65 @@ resp = client.images.generate(
 with open("out.png", "wb") as f:
     f.write(base64.b64decode(resp.data[0].b64_json))`}
                     </CodeBlock>
+                    <CodeBlock language="typescript">
+                        {`import OpenAI from "openai";
+import fs from "node:fs";
 
-                    <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">图生图 · /v1/images/edits(multipart)</p>
+const client = new OpenAI({ apiKey: "sk-你的KEY", baseURL: "${OPENAI_BASE}" });
+
+const resp = await client.images.generate({
+  model: "gpt-image-2",
+  prompt: "一只戴圣诞帽的橘猫,工作室灯光,高细节",
+  size: "1536x1024",
+});
+fs.writeFileSync("out.png", Buffer.from(resp.data[0].b64_json, "base64"));`}
+                    </CodeBlock>
+
+                    <p className="m-0 mt-5 mb-2 text-sm font-medium text-navy">图生图 · /v1/images/edits(multipart)</p>
+                    <p className="m-0 mb-3 text-sm text-ink leading-relaxed">
+                        上传一张(或多张)参考图 + 修改要求,返回改后的图。
+                    </p>
+                    <div className="rounded-lg overflow-hidden border border-brand-border bg-surface mb-3">
+                        <table className="w-full border-collapse text-sm">
+                            <thead>
+                                <tr className="bg-paper-muted text-muted-ink">
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        字段
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        必填
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        说明
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">model</td>
+                                    <td className="px-4 py-3 text-ink align-top">✓</td>
+                                    <td className="px-4 py-3 text-ink">gpt-image-2(或专用档)</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">prompt</td>
+                                    <td className="px-4 py-3 text-ink align-top">✓</td>
+                                    <td className="px-4 py-3 text-ink">修改要求</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">image</td>
+                                    <td className="px-4 py-3 text-ink align-top">✓</td>
+                                    <td className="px-4 py-3 text-ink">原图文件;可重复传多张参考图</td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">
+                                        size / response_format
+                                    </td>
+                                    <td className="px-4 py-3 text-ink align-top">—</td>
+                                    <td className="px-4 py-3 text-ink">同文生图(response_format 默认 b64_json)</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
                     <CodeBlock language="bash">
                         {`curl ${OPENAI_BASE}/images/edits \\
   -H "Authorization: Bearer sk-你的KEY" \\
@@ -1197,8 +1300,29 @@ with open("out.png", "wb") as f:
   -F prompt="把背景换成雪景" \\
   -F image=@cat.png`}
                     </CodeBlock>
+                    <CodeBlock language="python">
+                        {`from openai import OpenAI
+import base64
 
-                    <div className="mt-4 mb-3 rounded-lg border-l-4 border-brand-border bg-paper-muted px-4 py-3 text-sm text-ink">
+client = OpenAI(api_key="sk-你的KEY", base_url="${OPENAI_BASE}")
+
+resp = client.images.edit(
+    model="gpt-image-2",
+    prompt="把背景换成雪景",
+    image=open("cat.png", "rb"),
+)
+with open("edited.png", "wb") as f:
+    f.write(base64.b64decode(resp.data[0].b64_json))`}
+                    </CodeBlock>
+
+                    <p className="m-0 mt-5 mb-2 text-sm font-medium text-navy">响应格式</p>
+                    <CodeBlock language="json">
+                        {`{
+  "created": 1781523778,
+  "data": [{ "b64_json": "iVBORw0KGgoAAAANSUhEUgAA..." }]
+}`}
+                    </CodeBlock>
+                    <div className="mt-3 mb-3 rounded-lg border-l-4 border-brand-border bg-paper-muted px-4 py-3 text-sm text-ink">
                         🖼️ <strong className="text-navy">返回与计费</strong>:图片在{' '}
                         <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
                             data[0].b64_json
@@ -1225,6 +1349,72 @@ with open("out.png", "wb") as f:
                         / 恐怖活动相关(即便无关键词、被识别出意图也不出图)。ComfyUI 用户
                         <strong className="text-navy">不要带 SD 式负面提示词</strong>
                         (易被风控误伤);图生图时参考图含上述内容同样不出图。
+                    </div>
+
+                    <p className="m-0 mt-5 mb-2 text-sm font-medium text-navy">错误处理</p>
+                    <p className="m-0 mb-3 text-sm text-ink leading-relaxed">
+                        上游报错原样透传,HTTP 状态码即上游状态码,响应体为 OpenAI 错误格式;按非 2xx 状态码 +{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            error.message
+                        </code>{' '}
+                        处理。
+                    </p>
+                    <div className="rounded-lg overflow-hidden border border-brand-border bg-surface mb-4">
+                        <table className="w-full border-collapse text-sm">
+                            <thead>
+                                <tr className="bg-paper-muted text-muted-ink">
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        状态码
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        含义
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        处理
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">401</td>
+                                    <td className="px-4 py-3 text-ink align-top">Key 无效</td>
+                                    <td className="px-4 py-3 text-ink">检查 Authorization 头</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">402</td>
+                                    <td className="px-4 py-3 text-ink align-top">余额不足</td>
+                                    <td className="px-4 py-3 text-ink">前往 /pay 充值</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">400</td>
+                                    <td className="px-4 py-3 text-ink align-top">内容违规 / 参数错误</td>
+                                    <td className="px-4 py-3 text-ink">看 error.message,调整 prompt / 参数</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">429</td>
+                                    <td className="px-4 py-3 text-ink align-top">频率过高</td>
+                                    <td className="px-4 py-3 text-ink">退避后重试</td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">5xx</td>
+                                    <td className="px-4 py-3 text-ink align-top">上游临时故障</td>
+                                    <td className="px-4 py-3 text-ink">稍后重试</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div className="rounded-lg border-l-4 border-brand-accent bg-paper-muted px-4 py-3 text-sm text-ink">
+                        📌 <strong className="text-navy">速查</strong>:文生图{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            POST /v1/images/generations
+                        </code>{' '}
+                        · 图生图{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            POST /v1/images/edits
+                        </code>{' '}
+                        · 模型 gpt-image-2(自适应,推荐)/ -1k / -2k / -4k · 返回 data[0].b64_json(PNG)· ¥0.05 / 张 · 4K
+                        超时 ≥180s + 重试 · Key 用 image2 分组。
                     </div>
                 </section>
 
