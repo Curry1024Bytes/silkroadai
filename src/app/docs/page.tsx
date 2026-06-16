@@ -103,6 +103,11 @@ const AGENTS: AgentSection[] = [
         label: 'Seedance 2.0 · 视频生成',
         blurb: 'ByteDance Seedance 2.0 视频生成(文生 / 图生 / 首尾帧 / 参考生)— 异步提交 / 轮询,按秒计费。',
     },
+    {
+        id: 'seedance-overseas',
+        label: 'Seedance 海外满血 · 高质量视频',
+        blurb: '即梦 Seedance 2.0 官方满血源 — 文生 / 图生 / 首尾帧 / 参考音频;需「seedance海外满血」档 key。',
+    },
 ];
 
 const OPENAI_BASE = 'https://ai.silkroadai.io/v1';
@@ -1472,6 +1477,139 @@ print(r["data"]["data"]["video_url"])`}
                             model
                         </code>
                         。
+                    </p>
+                </section>
+
+                <section id="seedance-overseas" className="mt-12 mb-10 scroll-mt-20">
+                    <div className="flex items-baseline justify-between flex-wrap gap-2 mb-4 pb-3 border-b-2 border-brand-accent">
+                        <h2 className="m-0 text-2xl font-semibold text-navy">
+                            <span className="text-brand-accent font-bold mr-3 tabular-nums">16</span>
+                            Seedance 海外满血 · 高质量视频
+                        </h2>
+                    </div>
+                    <p className="m-0 mb-3 text-sm text-ink leading-relaxed">
+                        即梦 Seedance 2.0 <strong className="text-navy">官方满血源</strong>(质量优先,与上方普通 Seedance
+                        是两套独立的源与价格)。支持
+                        <strong className="text-navy">文生 / 图生 / 首尾帧 / 参考音频</strong>,异步接口(提交 →
+                        轮询),按视频秒数计费。
+                    </p>
+                    <div className="rounded-lg border border-brand-border bg-paper-muted px-4 py-3 mb-4 text-sm text-ink leading-relaxed">
+                        ⚠️ 需先在「API 密钥」页创建一把 <strong className="text-navy">「seedance海外满血」档</strong> 的
+                        key(创建密钥时在档次里选它)。该 key 专用于下列{' '}
+                        <code className="font-mono text-xs">dreamina-seedance-2-0-*</code> 模型;调别的模型请用默认档
+                        key。
+                    </div>
+
+                    <p className="m-0 mb-2 text-sm font-medium text-navy">模型与价格(按视频秒数)</p>
+                    <div className="rounded-lg overflow-hidden border border-brand-border bg-surface mb-2">
+                        <table className="w-full border-collapse text-sm">
+                            <thead>
+                                <tr className="bg-paper-muted text-muted-ink">
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        模型(文生 / 图生·首尾帧·音频用 -ref)
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        分辨率
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        文生 ¥/秒
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        带图(-ref)¥/秒
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy">
+                                        dreamina-seedance-2-0-480p[-ref]
+                                    </td>
+                                    <td className="px-4 py-2.5 text-ink">480P</td>
+                                    <td className="px-4 py-2.5 text-navy">¥0.43</td>
+                                    <td className="px-4 py-2.5 text-navy">¥0.27</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy">
+                                        dreamina-seedance-2-0-720p[-ref]
+                                    </td>
+                                    <td className="px-4 py-2.5 text-ink">720P</td>
+                                    <td className="px-4 py-2.5 text-navy">¥0.93</td>
+                                    <td className="px-4 py-2.5 text-navy">¥0.57</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy">
+                                        dreamina-seedance-2-0-1080p[-ref]
+                                    </td>
+                                    <td className="px-4 py-2.5 text-ink">1080P</td>
+                                    <td className="px-4 py-2.5 text-navy">¥2.31</td>
+                                    <td className="px-4 py-2.5 text-navy">¥1.41</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy">
+                                        dreamina-seedance-2-0-fast-480p[-ref]
+                                    </td>
+                                    <td className="px-4 py-2.5 text-ink">480P 快</td>
+                                    <td className="px-4 py-2.5 text-navy">¥0.35</td>
+                                    <td className="px-4 py-2.5 text-navy">¥0.20</td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy">
+                                        dreamina-seedance-2-0-fast-720p[-ref]
+                                    </td>
+                                    <td className="px-4 py-2.5 text-ink">720P 快</td>
+                                    <td className="px-4 py-2.5 text-navy">¥0.75</td>
+                                    <td className="px-4 py-2.5 text-navy">¥0.44</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <p className="m-0 mb-5 text-xs text-minor-ink">
+                        纯文字用不带 <code className="font-mono text-xs">-ref</code> 的;带图 / 首尾帧 / 音频用带{' '}
+                        <code className="font-mono text-xs">-ref</code> 的(更便宜)。
+                        <code className="font-mono text-xs">duration</code> 控制秒数(默认 4)。
+                    </p>
+
+                    <p className="m-0 mb-2 text-sm font-medium text-navy">1) 文生视频</p>
+                    <CodeBlock language="bash">
+                        {`curl ${OPENAI_BASE}/video/generations \\
+  -H "Authorization: Bearer sk-你的海外满血KEY" -H "Content-Type: application/json" \\
+  -d '{ "model": "dreamina-seedance-2-0-720p", "prompt": "一只橘猫在窗台伸懒腰,暖色调", "duration": 5 }'`}
+                    </CodeBlock>
+
+                    <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">2) 图生 / 参考生(-ref + image)</p>
+                    <CodeBlock language="bash">
+                        {`curl ${OPENAI_BASE}/video/generations -H "Authorization: Bearer sk-你的海外满血KEY" \\
+  -H "Content-Type: application/json" -d '{ "model": "dreamina-seedance-2-0-720p-ref",
+  "prompt": "镜头缓缓推进,画面动起来", "duration": 5, "image": "https://你的图床/photo.jpg" }'
+# image 支持 http 链接或 base64 data URL;多图用 images:[...](≤4)`}
+                    </CodeBlock>
+
+                    <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">
+                        3) 首尾帧过渡(-ref + first_frame/last_frame)
+                    </p>
+                    <CodeBlock language="bash">
+                        {`curl ${OPENAI_BASE}/video/generations -H "Authorization: Bearer sk-你的海外满血KEY" \\
+  -H "Content-Type: application/json" -d '{ "model": "dreamina-seedance-2-0-720p-ref",
+  "prompt": "从第一张平滑过渡到第二张", "duration": 5,
+  "first_frame": "https://你的图床/first.jpg", "last_frame": "https://你的图床/last.jpg" }'`}
+                    </CodeBlock>
+
+                    <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">4) 参考音频(-ref + image + audio_url)</p>
+                    <CodeBlock language="bash">
+                        {`curl ${OPENAI_BASE}/video/generations -H "Authorization: Bearer sk-你的海外满血KEY" \\
+  -H "Content-Type: application/json" -d '{ "model": "dreamina-seedance-2-0-720p-ref",
+  "prompt": "这个人随节奏唱歌", "duration": 5, "image": "https://你的图床/singer.jpg",
+  "audio_url": "https://你的音频/song.mp3" }'
+# 用音频时必须同时带至少一张图`}
+                    </CodeBlock>
+
+                    <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">轮询取片</p>
+                    <CodeBlock language="bash">
+                        {`curl ${OPENAI_BASE}/video/generations/task_xxx -H "Authorization: Bearer sk-你的海外满血KEY"
+# data.status=SUCCESS 后,视频在 data.data.video_url(或 result_url,等价)`}
+                    </CodeBlock>
+                    <p className="m-0 mt-3 text-xs text-minor-ink">
+                        参考图别太小(约 256px 以下会被上游拒,用 ≥512px 稳);视频直链是临时的,拿到尽快转存。
                     </p>
                 </section>
 
