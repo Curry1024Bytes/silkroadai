@@ -7,20 +7,34 @@
  *
  * 计费由 new-api 按「请求 duration × ModelPrice × GroupRatio」算,与本适配器无关。
  * 见 seedance-overseas-adaptor-brief.md。
+ *
+ * Phase 1:文生(无参考图)。Phase 2:`-ref` 档 = 图生/参考生 —— 入参图经
+ * service-inference.ai 的 asset 流(建组→传图→轮询就绪→`asset://{id}` + role=reference_image)。
+ * 上游只收 http(s) 图床 URL(不收 data URL)→ data URL 先转存我们 R2 拿 http URL。
  */
 import { NextRequest, NextResponse } from 'next/server';
+import { randomUUID } from 'node:crypto';
+import { uploadImage } from '@/lib/r2/client';
 
 const SVC_BASE = process.env.SEEDANCE_INFERENCE_BASE_URL || 'https://model.service-inference.ai';
 const UA =
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
+const MAX_REF_IMAGES = 4;
 
-/** 客户/new-api 模型名 → service-inference.ai 真实 model + resolution 档。 */
-const MODEL_MAP: Record<string, { svc: string; resolution: string }> = {
-    'dreamina-seedance-2-0-480p': { svc: 'dreamina-seedance-2-0-260128', resolution: '480p' },
-    'dreamina-seedance-2-0-720p': { svc: 'dreamina-seedance-2-0-260128', resolution: '720p' },
-    'dreamina-seedance-2-0-1080p': { svc: 'dreamina-seedance-2-0-260128', resolution: '1080p' },
-    'dreamina-seedance-2-0-fast-480p': { svc: 'dreamina-seedance-2-0-fast-260128', resolution: '480p' },
-    'dreamina-seedance-2-0-fast-720p': { svc: 'dreamina-seedance-2-0-fast-260128', resolution: '720p' },
+/** 客户/new-api 模型名 → service-inference.ai model + resolution + 是否参考档(-ref)。 */
+const MODEL_MAP: Record<string, { svc: string; resolution: string; ref: boolean }> = {
+    // 无参考(文生):Phase 1
+    'dreamina-seedance-2-0-480p': { svc: 'dreamina-seedance-2-0-260128', resolution: '480p', ref: false },
+    'dreamina-seedance-2-0-720p': { svc: 'dreamina-seedance-2-0-260128', resolution: '720p', ref: false },
+    'dreamina-seedance-2-0-1080p': { svc: 'dreamina-seedance-2-0-260128', resolution: '1080p', ref: false },
+    'dreamina-seedance-2-0-fast-480p': { svc: 'dreamina-seedance-2-0-fast-260128', resolution: '480p', ref: false },
+    'dreamina-seedance-2-0-fast-720p': { svc: 'dreamina-seedance-2-0-fast-260128', resolution: '720p', ref: false },
+    // 带参考图(图生/参考生):Phase 2 —— WITH_REF 费率(更便宜)
+    'dreamina-seedance-2-0-480p-ref': { svc: 'dreamina-seedance-2-0-260128', resolution: '480p', ref: true },
+    'dreamina-seedance-2-0-720p-ref': { svc: 'dreamina-seedance-2-0-260128', resolution: '720p', ref: true },
+    'dreamina-seedance-2-0-1080p-ref': { svc: 'dreamina-seedance-2-0-260128', resolution: '1080p', ref: true },
+    'dreamina-seedance-2-0-fast-480p-ref': { svc: 'dreamina-seedance-2-0-fast-260128', resolution: '480p', ref: true },
+    'dreamina-seedance-2-0-fast-720p-ref': { svc: 'dreamina-seedance-2-0-fast-260128', resolution: '720p', ref: true },
 };
 const ALLOWED_RATIOS = new Set(['16:9', '9:16', '1:1', '4:3', '3:4', '21:9']);
 
@@ -57,6 +71,90 @@ function extractPrompt(body: Record<string, unknown>): string {
     return '';
 }
 
+/** 抽出所有入参图 URL(OpenAI content[].image_url + 顶层 image/images)。 */
+function extractImageUrls(body: Record<string, unknown>): string[] {
+    const urls: string[] = [];
+    const pushUrl = (u: unknown) => {
+        if (typeof u === 'string' && u) urls.push(u);
+        else if (u && typeof u === 'object' && typeof (u as { url?: unknown }).url === 'string')
+            urls.push((u as { url: string }).url);
+    };
+    const content = body.content;
+    if (Array.isArray(content)) {
+        for (const c of content) {
+            const o = c as { type?: string; image_url?: unknown };
+            if (o?.type === 'image_url' || o?.type === 'input_image') pushUrl(o.image_url);
+        }
+    }
+    if (typeof body.image === 'string') urls.push(body.image);
+    if (Array.isArray(body.images)) for (const i of body.images) pushUrl(i);
+    return urls;
+}
+
+const fetchSvc = (path: string, auth: string, init: RequestInit = {}) =>
+    fetch(`${SVC_BASE}${path}`, {
+        ...init,
+        headers: { Authorization: auth, Accept: 'application/json', 'User-Agent': UA, ...(init.headers || {}) },
+    });
+
+/** data URL → 转存 R2 拿 http URL;http(s) URL 原样返回(上游只收 http 图床)。 */
+async function toHttpImageUrl(url: string): Promise<string> {
+    const m = /^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i.exec(url.trim());
+    if (!m) {
+        if (/^https?:\/\//i.test(url)) return url;
+        throw new Error('image must be an http(s) URL or a base64 data URL');
+    }
+    const mime = m[1];
+    const buf = Buffer.from(m[2], 'base64');
+    if (buf.length > 20 * 1024 * 1024) throw new Error('image exceeds 20MB');
+    // ⚠️ NO file extension on the R2 key: service-inference.ai 的 asset 抓取器对
+    // URL 末尾 `.jpg` 扩展名会走坏分支报 "Asset provider error"(`.png` / 无扩展名正常,
+    // 实测 2026-06-16)。无扩展名 key + R2 对象正确 content-type(picsum 同款)对所有格式都通。
+    const r2url = await uploadImage(`seedance-ref/${randomUUID()}`, buf, mime);
+    console.log('[seedance-adapter] r2 upload', { mime, bytes: buf.length, url: r2url });
+    return r2url;
+}
+
+/** 把一张 http 图传成 service-inference.ai 的 asset,轮询到 completed,返回 asset_id。 */
+async function uploadAndReadyAsset(auth: string, groupId: string, httpUrl: string): Promise<string> {
+    const up = await fetchSvc('/v1/assets', auth, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ group_id: groupId, url: httpUrl, asset_type: 'Image', name: 'ref' }),
+    });
+    const upText = await up.text();
+    let upJson: { id?: string; task_id?: string | null; error?: unknown };
+    try {
+        upJson = JSON.parse(upText);
+    } catch {
+        throw new Error(`asset upload bad response: ${upText.slice(0, 120)}`);
+    }
+    const assetId = upJson.id;
+    if (!up.ok || !assetId) {
+        console.warn('[seedance-adapter] /v1/assets reject', {
+            url: httpUrl,
+            status: up.status,
+            body: upText.slice(0, 200),
+        });
+        throw new Error(`asset upload failed (${up.status}): ${upText.slice(0, 160)}`);
+    }
+    // poll until completed (~资产把图下载落地;实测数秒~数十秒)
+    const deadline = Date.now() + 75_000;
+    while (Date.now() < deadline) {
+        const r = await fetchSvc('/v1/assets/get', auth, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ asset_id: assetId, task_id: upJson.task_id ?? null }),
+        });
+        const j = (await r.json().catch(() => null)) as { status?: string } | null;
+        const st = String(j?.status || '').toLowerCase();
+        if (st === 'completed') return assetId;
+        if (st === 'failed' || st === 'error') throw new Error(`asset ${assetId} failed`);
+        await new Promise((res) => setTimeout(res, 3000));
+    }
+    throw new Error(`asset ${assetId} not ready in time`);
+}
+
 /** POST 提交:OpenAI-video → service-inference.ai /v1/video/generate。 */
 export async function submitVideo(req: NextRequest): Promise<NextResponse> {
     const auth = req.headers.get('authorization') || '';
@@ -76,32 +174,71 @@ export async function submitVideo(req: NextRequest): Promise<NextResponse> {
     const prompt = extractPrompt(body);
     if (!prompt) return err(400, 'invalid_request', 'prompt (text) is required');
 
+    const imageUrls = extractImageUrls(body);
+    // 防串档:-ref 名必须带图;非 -ref 名带了图就拒(否则会按贵档多收客户)
+    if (map.ref && imageUrls.length === 0)
+        return err(400, 'invalid_request', `${model} requires at least one reference image (image_url)`);
+    if (!map.ref && imageUrls.length > 0)
+        return err(400, 'invalid_request', `${model} is text-only; use the "-ref" model to send reference images`);
+    if (imageUrls.length > MAX_REF_IMAGES)
+        return err(400, 'invalid_request', `at most ${MAX_REF_IMAGES} reference images`);
+
     const durRaw = Number(body.duration);
     const duration = Number.isFinite(durRaw) && durRaw >= 1 ? Math.floor(durRaw) : 4;
     let ratio = String(body.ratio || body.aspect_ratio || '16:9');
     if (!ALLOWED_RATIOS.has(ratio)) ratio = '16:9';
 
+    const content: Array<Record<string, unknown>> = [{ type: 'text', text: prompt }];
+
+    // -ref 路径:转 http(data URL→R2)→ 建素材组 → 并行上传+轮询资产 → asset:// 引用
+    if (map.ref) {
+        let assetIds: string[];
+        try {
+            const httpUrls = await Promise.all(imageUrls.map(toHttpImageUrl));
+            const grp = await fetchSvc('/v1/asset-groups', auth, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    name: `sk-${randomUUID().slice(0, 8)}`,
+                    description: 'silkroadai seedance ref',
+                }),
+            });
+            const grpJson = (await grp.json().catch(() => null)) as { id?: string } | null;
+            const groupId = grpJson?.id;
+            if (!grp.ok || !groupId) throw new Error(`asset-group create failed (${grp.status})`);
+            assetIds = await Promise.all(httpUrls.map((u) => uploadAndReadyAsset(auth, groupId, u)));
+        } catch (e) {
+            console.warn('[seedance-adapter] ref asset prep failed', String(e));
+            return err(400, 'invalid_request', `reference image processing failed: ${String(e).slice(0, 160)}`);
+        }
+        for (const id of assetIds)
+            content.push({ type: 'image_url', image_url: { url: `asset://${id}` }, role: 'reference_image' });
+    }
+
     const svcBody = {
         model: map.svc,
-        content: [{ type: 'text', text: prompt }],
+        content,
         duration,
         resolution: map.resolution,
         ratio,
         generate_audio: body.generate_audio === true,
         watermark: false,
     };
-    console.log('[seedance-adapter] submit', { model, svc: map.svc, resolution: map.resolution, duration, ratio });
+    console.log('[seedance-adapter] submit', {
+        model,
+        svc: map.svc,
+        resolution: map.resolution,
+        ref: map.ref,
+        images: imageUrls.length,
+        duration,
+        ratio,
+    });
 
     let upstream: Response;
     try {
-        upstream = await fetch(`${SVC_BASE}/v1/video/generate`, {
+        upstream = await fetchSvc('/v1/video/generate', auth, {
             method: 'POST',
-            headers: {
-                Authorization: auth,
-                'Content-Type': 'application/json',
-                Accept: 'application/json',
-                'User-Agent': UA,
-            },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(svcBody),
         });
     } catch (e) {
@@ -160,9 +297,7 @@ export async function pollVideo(req: NextRequest, id: string): Promise<NextRespo
     const auth = req.headers.get('authorization') || '';
     let upstream: Response;
     try {
-        upstream = await fetch(`${SVC_BASE}/v1/video/tasks/${encodeURIComponent(id)}`, {
-            headers: { Authorization: auth, Accept: 'application/json', 'User-Agent': UA },
-        });
+        upstream = await fetchSvc(`/v1/video/tasks/${encodeURIComponent(id)}`, auth);
     } catch (e) {
         return err(502, 'upstream_unreachable', String(e));
     }
