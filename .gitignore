@@ -56,3 +56,4 @@ next-env.d.ts
 # at any commit ≤ 6fdc9b1; no need to ship a parallel copy).
 /_bootstrap-w1-archive/
 public/_email-preview/
+.env
