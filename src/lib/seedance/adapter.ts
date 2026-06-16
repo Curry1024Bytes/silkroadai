@@ -338,3 +338,35 @@ export async function pollVideo(req: NextRequest, id: string): Promise<NextRespo
         { status: 200 },
     );
 }
+
+/**
+ * GET 内容代理:GET /seedance-adapter/v1/videos/{id}/content —— new-api 的 result_url
+ * 内容代理会回抓本端点(渠道 base_url 走公网 443 域名,过 new-api SSRF 白名单),
+ * 本端点查上游任务拿 outputs[0] 视频直链,拉取后流式回(隐藏上游 URL,给客户稳定可用的
+ * result_url)。客户也可直接用轮询响应里的 `data.data.video_url`(等价)。
+ */
+export async function streamContent(req: NextRequest, id: string): Promise<Response> {
+    const auth = req.headers.get('authorization') || '';
+    let taskRes: Response;
+    try {
+        taskRes = await fetchSvc(`/v1/video/tasks/${encodeURIComponent(id)}`, auth);
+    } catch (e) {
+        return err(502, 'upstream_unreachable', String(e));
+    }
+    const task = ((await taskRes.json().catch(() => null)) as { task?: { outputs?: unknown[] } } | null)?.task;
+    const outputs = Array.isArray(task?.outputs) ? (task.outputs as unknown[]) : [];
+    const videoUrl = typeof outputs[0] === 'string' ? (outputs[0] as string) : null;
+    if (!videoUrl) return err(409, 'not_ready', 'video not available yet');
+
+    let vid: Response;
+    try {
+        vid = await fetch(videoUrl, { headers: { 'User-Agent': UA } });
+    } catch (e) {
+        return err(502, 'upstream_unreachable', `fetch video failed: ${String(e)}`);
+    }
+    if (!vid.ok || !vid.body) return err(502, 'upstream_error', `video fetch ${vid.status}`);
+    const headers: Record<string, string> = { 'Content-Type': vid.headers.get('content-type') || 'video/mp4' };
+    const len = vid.headers.get('content-length');
+    if (len) headers['Content-Length'] = len;
+    return new Response(vid.body, { status: 200, headers });
+}
