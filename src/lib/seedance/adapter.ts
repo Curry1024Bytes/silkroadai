@@ -97,12 +97,12 @@ const fetchSvc = (path: string, auth: string, init: RequestInit = {}) =>
         headers: { Authorization: auth, Accept: 'application/json', 'User-Agent': UA, ...(init.headers || {}) },
     });
 
-/** data URL → 转存 R2 拿 http URL;http(s) URL 原样返回(上游只收 http 图床)。 */
-async function toHttpImageUrl(url: string): Promise<string> {
-    const m = /^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i.exec(url.trim());
+/** data URL(image/audio)→ 转存 R2 拿 http URL;http(s) URL 原样返回(上游只收 http 链接)。 */
+async function toHttpMediaUrl(url: string): Promise<string> {
+    const m = /^data:((?:image|audio)\/[a-z0-9.+-]+);base64,(.+)$/i.exec(url.trim());
     if (!m) {
         if (/^https?:\/\//i.test(url)) return url;
-        throw new Error('image must be an http(s) URL or a base64 data URL');
+        throw new Error('media must be an http(s) URL or a base64 data URL');
     }
     const mime = m[1];
     const buf = Buffer.from(m[2], 'base64');
@@ -174,14 +174,34 @@ export async function submitVideo(req: NextRequest): Promise<NextResponse> {
     const prompt = extractPrompt(body);
     if (!prompt) return err(400, 'invalid_request', 'prompt (text) is required');
 
-    const imageUrls = extractImageUrls(body);
-    // 防串档:-ref 名必须带图;非 -ref 名带了图就拒(否则会按贵档多收客户)
-    if (map.ref && imageUrls.length === 0)
-        return err(400, 'invalid_request', `${model} requires at least one reference image (image_url)`);
-    if (!map.ref && imageUrls.length > 0)
-        return err(400, 'invalid_request', `${model} is text-only; use the "-ref" model to send reference images`);
-    if (imageUrls.length > MAX_REF_IMAGES)
-        return err(400, 'invalid_request', `at most ${MAX_REF_IMAGES} reference images`);
+    // 收集图输入(带角色):参考图(reference_image)+ 首帧(first_frame)+ 尾帧(last_frame)
+    const imageInputs: Array<{ url: string; role: string }> = extractImageUrls(body).map((url) => ({
+        url,
+        role: 'reference_image',
+    }));
+    if (typeof body.first_frame === 'string' && body.first_frame)
+        imageInputs.push({ url: body.first_frame, role: 'first_frame' });
+    if (typeof body.last_frame === 'string' && body.last_frame)
+        imageInputs.push({ url: body.last_frame, role: 'last_frame' });
+    // 音频(直链或 base64;上游要求音频需配 ≥1 张图)
+    const audioField = body.audio_url as { url?: unknown } | string | undefined;
+    const audioRaw =
+        typeof body.audio === 'string'
+            ? body.audio
+            : typeof audioField === 'string'
+              ? audioField
+              : typeof audioField?.url === 'string'
+                ? audioField.url
+                : null;
+
+    // 防串档 + 校验
+    if (!map.ref && (imageInputs.length > 0 || audioRaw))
+        return err(400, 'invalid_request', `${model} is text-only; use a "-ref" model for image/audio inputs`);
+    if (map.ref && imageInputs.length === 0)
+        return err(400, 'invalid_request', `${model} requires an image (image / first_frame / last_frame)`);
+    if (imageInputs.length > MAX_REF_IMAGES) return err(400, 'invalid_request', `at most ${MAX_REF_IMAGES} images`);
+    if (audioRaw && !imageInputs.some((i) => i.role === 'reference_image' || i.role === 'first_frame'))
+        return err(400, 'invalid_request', 'audio requires at least one reference_image or first_frame');
 
     const durRaw = Number(body.duration);
     const duration = Number.isFinite(durRaw) && durRaw >= 1 ? Math.floor(durRaw) : 4;
@@ -190,11 +210,9 @@ export async function submitVideo(req: NextRequest): Promise<NextResponse> {
 
     const content: Array<Record<string, unknown>> = [{ type: 'text', text: prompt }];
 
-    // -ref 路径:转 http(data URL→R2)→ 建素材组 → 并行上传+轮询资产 → asset:// 引用
+    // -ref 路径:每个媒体转 http(data URL→R2)→ 图建素材组并行上传+轮询拿 asset:// + 角色;音频走直链
     if (map.ref) {
-        let assetIds: string[];
         try {
-            const httpUrls = await Promise.all(imageUrls.map(toHttpImageUrl));
             const grp = await fetchSvc('/v1/asset-groups', auth, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -203,16 +221,24 @@ export async function submitVideo(req: NextRequest): Promise<NextResponse> {
                     description: 'silkroadai seedance ref',
                 }),
             });
-            const grpJson = (await grp.json().catch(() => null)) as { id?: string } | null;
-            const groupId = grpJson?.id;
+            const groupId = ((await grp.json().catch(() => null)) as { id?: string } | null)?.id;
             if (!grp.ok || !groupId) throw new Error(`asset-group create failed (${grp.status})`);
-            assetIds = await Promise.all(httpUrls.map((u) => uploadAndReadyAsset(auth, groupId, u)));
+            const assets = await Promise.all(
+                imageInputs.map(async (inp) => ({
+                    role: inp.role,
+                    id: await uploadAndReadyAsset(auth, groupId, await toHttpMediaUrl(inp.url)),
+                })),
+            );
+            for (const a of assets)
+                content.push({ type: 'image_url', image_url: { url: `asset://${a.id}` }, role: a.role });
+            if (audioRaw) {
+                const audioUrl = await toHttpMediaUrl(audioRaw);
+                content.push({ type: 'audio_url', audio_url: { url: audioUrl }, role: 'reference_audio' });
+            }
         } catch (e) {
-            console.warn('[seedance-adapter] ref asset prep failed', String(e));
-            return err(400, 'invalid_request', `reference image processing failed: ${String(e).slice(0, 160)}`);
+            console.warn('[seedance-adapter] ref media prep failed', String(e));
+            return err(400, 'invalid_request', `reference media processing failed: ${String(e).slice(0, 160)}`);
         }
-        for (const id of assetIds)
-            content.push({ type: 'image_url', image_url: { url: `asset://${id}` }, role: 'reference_image' });
     }
 
     const svcBody = {
@@ -221,7 +247,7 @@ export async function submitVideo(req: NextRequest): Promise<NextResponse> {
         duration,
         resolution: map.resolution,
         ratio,
-        generate_audio: body.generate_audio === true,
+        generate_audio: body.generate_audio === true || !!audioRaw,
         watermark: false,
     };
     console.log('[seedance-adapter] submit', {
@@ -229,7 +255,9 @@ export async function submitVideo(req: NextRequest): Promise<NextResponse> {
         svc: map.svc,
         resolution: map.resolution,
         ref: map.ref,
-        images: imageUrls.length,
+        images: imageInputs.length,
+        roles: imageInputs.map((i) => i.role),
+        audio: !!audioRaw,
         duration,
         ratio,
     });
