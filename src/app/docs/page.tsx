@@ -86,7 +86,7 @@ const AGENTS: AgentSection[] = [
     {
         id: 'api-image',
         label: 'Gemini 生图 · 2K / 4K 高清',
-        blurb: 'Gemini Nano Banana / 3.1 Flash / 3 Pro;OpenAI 兼容自动出 2K / 4K,比例走 /v1beta 原生。',
+        blurb: 'Gemini Nano Banana / 3.1 Flash / 3 Pro;3 种接口(OpenAI 兼容 / DALL·E images / 原生)+ 比例控制 + 自定义图床。',
     },
     {
         id: 'api-gpt-image',
@@ -893,9 +893,7 @@ console.log(completion.choices[0].message.content);`}
                                     <td className="px-4 py-3 font-mono text-xs text-navy align-top">
                                         gemini-3-pro-image-preview
                                     </td>
-                                    <td className="px-4 py-3 text-navy align-top font-medium">
-                                        4096×4096(4K)· 可选 2K
-                                    </td>
+                                    <td className="px-4 py-3 text-navy align-top font-medium">4096×4096(4K)</td>
                                     <td className="px-4 py-3 text-navy align-top font-medium">¥0.50 / 张</td>
                                     <td className="px-4 py-3 text-ink">旗舰,最高画质</td>
                                 </tr>
@@ -909,6 +907,23 @@ console.log(completion.choices[0].message.content);`}
                                 </tr>
                             </tbody>
                         </table>
+                    </div>
+
+                    <div className="mt-1 mb-5 rounded-lg border-l-4 border-brand-accent bg-paper-muted px-4 py-3 text-sm text-ink">
+                        📐 <strong className="text-navy">「档」是像素预算,不是固定方边长。</strong> 上表尺寸为{' '}
+                        <strong className="text-navy">1:1</strong> 比例下的值;同一档总像素量不变,实际宽高随比例重新分布
+                        —— 指定 16:9 等宽幅时长边更大(2K 长边 ≈ 2816、4K ≈ 5504)。
+                        <span className="block mt-1.5 text-xs text-minor-ink">
+                            不指定比例时:
+                            <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                                gemini-2.5-flash-image
+                            </code>{' '}
+                            默认出方图,
+                            <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                                gemini-3.1-flash-image-preview
+                            </code>{' '}
+                            与 pro 系默认出 16:9 宽幅。要正方形或其他比例 → 见下方「出图比例」。
+                        </span>
                     </div>
 
                     <p className="m-0 mb-2 text-sm font-medium text-navy">
@@ -966,16 +981,7 @@ curl ${OPENAI_BASE}/chat/completions \\
                         <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
                             imageConfig.imageSize
                         </code>
-                        —— 用哪个模型就拿哪档分辨率,无需任何额外参数(2026-06-05 起,旧式只出 1K 的问题已解决)。 只有需要
-                        <strong className="text-navy">自定义出图比例</strong>(
-                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
-                            aspectRatio
-                        </code>
-                        )时,才用下面的原生{' '}
-                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
-                            /v1beta/models/&lt;model&gt;:generateContent
-                        </code>{' '}
-                        endpoint(默认比例 1:1)。
+                        —— 用哪个模型就拿哪档分辨率,无需任何额外参数(2026-06-05 起,旧式只出 1K 的问题已解决)。
                     </div>
 
                     <div className="mt-3 mb-3 rounded-lg border-l-4 border-brand-accent bg-paper-muted px-4 py-3 text-sm text-ink">
@@ -1001,39 +1007,27 @@ curl ${OPENAI_BASE}/chat/completions \\
                             aspect_ratio
                         </code>
                         )。
-                        <span className="block mt-1.5 text-xs text-minor-ink">
-                            另:原型号{' '}
-                            <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
-                                gemini-3-pro-image-preview
-                            </code>{' '}
-                            也接受{' '}
-                            <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
-                                {`size`}
-                            </code>{' '}
-                            参数(
-                            <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
-                                {`"2K"`}
-                            </code>
-                            /
-                            <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
-                                {`"4K"`}
-                            </code>
-                            ,也认{' '}
-                            <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
-                                2048x2048
-                            </code>
-                            /
-                            <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
-                                4096x4096
-                            </code>
-                            )切分辨率,但<strong className="text-navy">价格不随尺寸变</strong>(仍 ¥0.50)——
-                            想省钱请认准上面带{' '}
-                            <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
-                                -2k
-                            </code>{' '}
-                            的型号。
-                        </span>
                     </div>
+
+                    <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">出图比例</p>
+                    <p className="m-0 mb-2 text-sm text-ink leading-relaxed">
+                        OpenAI{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            chat/completions
+                        </code>{' '}
+                        接口本身没有比例参数,这条路上:<strong className="text-navy">文生图</strong> 走 Gemini
+                        默认取景(2.5-flash 出方图;3.1-flash 与 pro 出 16:9 宽幅),
+                        <strong className="text-navy">传图改图</strong> 自动跟随输入图比例。要{' '}
+                        <strong className="text-navy">精确指定比例</strong> → 用下方 DALL·E 接口的{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            aspect_ratio
+                        </code>{' '}
+                        参数,或原生接口的{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            aspectRatio
+                        </code>
+                        (完整取值见下方「出图比例白名单」)。
+                    </p>
 
                     <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">Gemini 原生 API · curl(2K / 4K)</p>
                     <CodeBlock language="bash">
@@ -1089,6 +1083,263 @@ for part in resp.candidates[0].content.parts:
                         限额,每日有上限,超额会返 <code className="font-mono text-xs">429 quota exceeded</code> ——
                         不扣费、不自动降级到 2K,稍后再试或改用 2K 模型即可。
                     </p>
+
+                    <div className="mt-3 mb-3 rounded-lg border-l-4 border-brand-accent bg-paper-muted px-4 py-3 text-sm text-ink">
+                        💡 <strong className="text-navy">计费按 model 名算:</strong>{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            gemini-3-pro-image-preview-2k
+                        </code>{' '}
+                        = 2K ¥0.30,
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            gemini-3-pro-image-preview
+                        </code>{' '}
+                        = 4K ¥0.50。给 4K 的原型号传{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            {`imageSize:"2K"`}
+                        </code>{' '}
+                        出的是 2K 图,但仍<strong className="text-navy">按 4K 价 ¥0.50 计费</strong> —— 要省钱拿
+                        2K,直接用带{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            -2k
+                        </code>{' '}
+                        的 model。
+                    </div>
+
+                    {/* ─── DALL·E 兼容接口 /v1/images/* (W9 D4) ─── */}
+                    <p className="m-0 mt-6 mb-2 text-sm font-medium text-navy">
+                        Gemini 生图 · DALL·E 兼容接口(/v1/images/*)
+                    </p>
+                    <p className="m-0 mb-2 text-sm text-ink leading-relaxed">
+                        要用 OpenAI 图像专用接口(
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            images.generate
+                        </code>{' '}
+                        /{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            images.edit
+                        </code>
+                        )或需要<strong className="text-navy">显式比例</strong>时用这条。返回标准 DALL·E 形{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            {`{ "created":…, "data":[{ "url" | "b64_json" }] }`}
+                        </code>
+                        。
+                    </p>
+                    <CodeBlock language="bash">
+                        {`# 文生图 — /v1/images/generations(显式比例)
+curl ${OPENAI_BASE}/images/generations \\
+  -H "Authorization: Bearer sk-你的KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "gemini-3-pro-image-preview",
+    "prompt": "赛博朋克城市夜景,雨后霓虹",
+    "aspect_ratio": "16:9",
+    "response_format": "url"
+  }'
+
+# 改图 — /v1/images/edits(multipart;image 可重复传多张参考图,也支持 JSON + data URL)
+curl ${OPENAI_BASE}/images/edits \\
+  -H "Authorization: Bearer sk-你的KEY" \\
+  -F model="gemini-3-pro-image-preview" \\
+  -F prompt="把这两张人物合到同一个海边场景" \\
+  -F aspect_ratio="3:2" \\
+  -F image=@person1.png \\
+  -F image=@person2.png`}
+                    </CodeBlock>
+                    <div className="rounded-lg overflow-hidden border border-brand-border bg-surface my-3">
+                        <table className="w-full border-collapse text-sm">
+                            <thead>
+                                <tr className="bg-paper-muted text-muted-ink">
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        参数
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        取值
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        说明
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">model</td>
+                                    <td className="px-4 py-3 text-ink align-top">见上表 Gemini 生图模型</td>
+                                    <td className="px-4 py-3 text-ink">非 Gemini 模型(gpt-image-2 等)原样透传上游</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">prompt</td>
+                                    <td className="px-4 py-3 text-ink align-top">文本</td>
+                                    <td className="px-4 py-3 text-ink">必填</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">aspect_ratio</td>
+                                    <td className="px-4 py-3 text-ink align-top">见白名单;auto / 空 = 不指定</td>
+                                    <td className="px-4 py-3 text-ink">
+                                        不在白名单 → 400;auto / 空时文生图走默认、图生图跟随输入图
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">image</td>
+                                    <td className="px-4 py-3 text-ink align-top">文件(可多张)/ data URL / 外部 URL</td>
+                                    <td className="px-4 py-3 text-ink">仅 /v1/images/edits;参考图</td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">response_format</td>
+                                    <td className="px-4 py-3 text-ink align-top">url(默认,进图床)/ b64_json</td>
+                                    <td className="px-4 py-3 text-ink">b64_json 直返 base64 内联</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <p className="m-0 mt-1 mb-2 text-xs text-minor-ink">
+                        取舍:<code className="font-mono text-xs">n</code>(多图)忽略,单次出 1 张;分辨率由 model
+                        档决定,形状由 <code className="font-mono text-xs">aspect_ratio</code> 决定。
+                    </p>
+
+                    {/* ─── aspect_ratio 白名单 ─── */}
+                    <p className="m-0 mt-6 mb-2 text-sm font-medium text-navy">出图比例白名单</p>
+                    <p className="m-0 mb-2 text-sm text-ink leading-relaxed">
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            aspect_ratio
+                        </code>{' '}
+                        /{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            aspectRatio
+                        </code>{' '}
+                        取值按模型分档(传白名单外的值 → 400):
+                    </p>
+                    <ul className="list-none p-0 m-0 grid grid-cols-1 gap-2 mb-2">
+                        <li className="text-sm text-ink">
+                            <strong className="text-navy">flash 系</strong>(2.5-flash / 3.1-flash),10 个:
+                            <code className="block mt-1 font-mono text-xs bg-paper-muted px-2 py-1.5 rounded border border-brand-border text-navy">
+                                21:9 · 16:9 · 4:3 · 3:2 · 5:4 · 1:1 · 4:5 · 3:4 · 2:3 · 9:16
+                            </code>
+                        </li>
+                        <li className="text-sm text-ink">
+                            <strong className="text-navy">pro 系</strong>(pro / pro-2k),13 个:上面 10 个 + 三个极端比例
+                            <code className="block mt-1 font-mono text-xs bg-paper-muted px-2 py-1.5 rounded border border-brand-border text-navy">
+                                1:4 · 1:8 · 8:1（超长条 / 全景）
+                            </code>
+                        </li>
+                    </ul>
+
+                    {/* ─── 自定义图床 OSS ─── */}
+                    <p className="m-0 mt-6 mb-2 text-sm font-medium text-navy">自定义图床(OSS)</p>
+                    <p className="m-0 mb-2 text-sm text-ink leading-relaxed">
+                        默认生成图存平台图床(URL 形如{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            images.silkroadai.io/gen/&lt;uuid&gt;.png
+                        </code>
+                        ,不保证长期保留)。想让图片
+                        <strong className="text-navy">直接进自己的 bucket、用自己的域名、数据归属自己</strong> → 在{' '}
+                        <Link href="/settings/storage" className="text-navy font-medium hover:text-brand-accent">
+                            存储设置
+                        </Link>{' '}
+                        配置自定义 OSS:选服务商 → 填 Bucket / AK / SK / 公网前缀 →
+                        点「测试连接」(平台写入并删除一个临时文件验证读写)→ 保存即时生效,之后所有生图自动进你的 bucket。
+                    </p>
+                    <div className="rounded-lg overflow-hidden border border-brand-border bg-surface my-3">
+                        <table className="w-full border-collapse text-sm">
+                            <thead>
+                                <tr className="bg-paper-muted text-muted-ink">
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        服务商
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        Endpoint 示例
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        Region
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 text-ink align-top">Cloudflare R2</td>
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top break-all">
+                                        https://&lt;account_id&gt;.r2.cloudflarestorage.com
+                                    </td>
+                                    <td className="px-4 py-3 text-ink align-top">留空</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 text-ink align-top">阿里云 OSS</td>
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top break-all">
+                                        https://oss-cn-hangzhou.aliyuncs.com
+                                    </td>
+                                    <td className="px-4 py-3 text-ink align-top">留空</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 text-ink align-top">腾讯云 COS</td>
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top break-all">
+                                        https://cos.ap-guangzhou.myqcloud.com
+                                    </td>
+                                    <td className="px-4 py-3 text-ink align-top">留空</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 text-ink align-top">AWS S3</td>
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">留空</td>
+                                    <td className="px-4 py-3 text-ink align-top">
+                                        <strong className="text-navy">必填</strong>(如 us-east-1)
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-3 text-ink align-top">自建 / 其他 S3 兼容</td>
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top break-all">
+                                        https://minio.example.com
+                                    </td>
+                                    <td className="px-4 py-3 text-ink align-top">留空(自动 path-style)</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <p className="m-0 mt-1 mb-2 text-xs text-minor-ink">
+                        安全:用<strong className="text-navy">子账号最小权限</strong>(只授该 bucket 的 PutObject +
+                        DeleteObject),凭证在平台侧 AES-256-GCM 加密存储、保存后永不回显。OSS 出任何故障(凭证过期 /
+                        bucket 删 / 网络)
+                        <strong className="text-navy">不会导致生图失败</strong> —— 自动回退平台图床并在响应头加{' '}
+                        <code className="font-mono text-xs">X-Silkroadai-Oss-Fallback: yes</code>。
+                    </p>
+
+                    {/* ─── FAQ ─── */}
+                    <p className="m-0 mt-6 mb-2 text-sm font-medium text-navy">常见问题</p>
+                    <div className="grid grid-cols-1 gap-3">
+                        <div className="rounded-lg border border-brand-border bg-surface px-4 py-3 text-sm">
+                            <p className="m-0 font-medium text-navy">Q:没指定比例,出来的为什么不是正方形?</p>
+                            <p className="m-0 mt-1 text-ink leading-relaxed">
+                                3.1-flash 和 pro 系默认出 16:9 宽幅,只有 2.5-flash 默认方图。要正方形请显式传{' '}
+                                <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                                    {`aspect_ratio: "1:1"`}
+                                </code>
+                                。
+                            </p>
+                        </div>
+                        <div className="rounded-lg border border-brand-border bg-surface px-4 py-3 text-sm">
+                            <p className="m-0 font-medium text-navy">Q:pro 的 2K 和 4K 怎么选?</p>
+                            <p className="m-0 mt-1 text-ink leading-relaxed">
+                                要快、要省 →{' '}
+                                <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                                    gemini-3-pro-image-preview-2k
+                                </code>
+                                (¥0.30);要最高清(印刷)→{' '}
+                                <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                                    gemini-3-pro-image-preview
+                                </code>
+                                (¥0.50,生成慢一倍)。
+                            </p>
+                        </div>
+                        <div className="rounded-lg border border-brand-border bg-surface px-4 py-3 text-sm">
+                            <p className="m-0 font-medium text-navy">Q:image_url 返回 400 image_url fetch failed?</p>
+                            <p className="m-0 mt-1 text-ink leading-relaxed">
+                                源站拒绝平台拉取(反盗链 / 限流)或图超 20MB。改用 data URL(把图转 base64 直接发)。
+                            </p>
+                        </div>
+                        <div className="rounded-lg border border-brand-border bg-surface px-4 py-3 text-sm">
+                            <p className="m-0 font-medium text-navy">Q:图片 URL 会一直有效吗?</p>
+                            <p className="m-0 mt-1 text-ink leading-relaxed">
+                                平台图床不保证永久保留,重要图请及时转存,或配置自定义 OSS 让图直接进自己的 bucket。
+                            </p>
+                        </div>
+                    </div>
                 </section>
 
                 {/* ─── 13 · GPT image-2 生图 (2026-06-16: split out of the Gemini chapter; ch36/czeq, image2 group) ─── */}
