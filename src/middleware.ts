@@ -23,5 +23,7 @@ export const config = {
     // 客户给 /v1/images/edits 传 >10MB multipart(多参考图 2K 编辑)会拿到
     // 400 "invalid request body"(2026-06-11 实测;proxy 自身限制是单图 20MB,
     // 被框架层先挡)。/v1 是纯 API 中继,这三个页面向安全头对它无意义。
-    matcher: ['/((?!v1/|_next/static|_next/image|favicon.ico).*)'],
+    // seedance-adapter/* 同 /v1/* 一并排除:内部视频中继端点,不需页面安全头,
+    // 且要避开 middleware 的 10MB body 缓冲(Phase 2 参考图 base64 可能偏大)。
+    matcher: ['/((?!v1/|seedance-adapter/|_next/static|_next/image|favicon.ico).*)'],
 };
