@@ -241,13 +241,17 @@ export async function submitVideo(req: NextRequest): Promise<NextResponse> {
         }
     }
 
+    // Seedance 2.0 原生出声:实测同一 prompt 带音轨(aac)vs 纯画面,上游 completion_tokens
+    // 完全相同(50638/50638)→ 音频零额外成本。故默认开(满血定位 + 客户期望有声,且 new-api
+    // 按秒固定计费,开关音频客户付费不变),传 generate_audio:false 可关;给了参考音频则强制开。
+    const generateAudio = body.generate_audio !== false || !!audioRaw;
     const svcBody = {
         model: map.svc,
         content,
         duration,
         resolution: map.resolution,
         ratio,
-        generate_audio: body.generate_audio === true || !!audioRaw,
+        generate_audio: generateAudio,
         watermark: false,
     };
     console.log('[seedance-adapter] submit', {
@@ -257,7 +261,8 @@ export async function submitVideo(req: NextRequest): Promise<NextResponse> {
         ref: map.ref,
         images: imageInputs.length,
         roles: imageInputs.map((i) => i.role),
-        audio: !!audioRaw,
+        genAudio: generateAudio,
+        refAudio: !!audioRaw,
         duration,
         ratio,
     });

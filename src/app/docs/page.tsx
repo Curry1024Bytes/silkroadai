@@ -1941,6 +1941,16 @@ print(r["data"]["data"]["video_url"])`}
                         key。
                     </div>
 
+                    <div className="rounded-lg border border-brand-border bg-paper-muted px-4 py-3 mb-4 text-sm text-ink leading-relaxed">
+                        🔊 <strong className="text-navy">视频默认带声音</strong>:Seedance 2.0 会为画面自动生成 AI 环境音
+                        / 音效,<strong className="text-navy">默认开启且不额外收费</strong>。 不想要声音时传{' '}
+                        <code className="font-mono text-xs">{'"generate_audio": false'}</code>
+                        ;想让画面跟随你指定的音频(唱歌 / 卡点)见下方「参考音频」玩法。注意:上方
+                        <strong className="text-navy">普通 Seedance</strong>
+                        是另一套独立的源,是否有声以那套源为准 —— 要稳定有声请用本节的{' '}
+                        <code className="font-mono text-xs">dreamina-seedance-2-0-*</code>。
+                    </div>
+
                     <p className="m-0 mb-2 text-sm font-medium text-navy">模型与价格(按视频秒数)</p>
                     <div className="rounded-lg overflow-hidden border border-brand-border bg-surface mb-2">
                         <table className="w-full border-collapse text-sm">
@@ -2102,10 +2112,18 @@ print(r["data"]["data"]["video_url"])`}
                                     <td className="px-4 py-2.5 text-ink">-ref</td>
                                     <td className="px-4 py-2.5 text-ink">首帧 / 尾帧图(首尾帧过渡)</td>
                                 </tr>
-                                <tr>
+                                <tr className="border-b border-brand-border">
                                     <td className="px-4 py-2.5 font-mono text-xs text-navy">audio_url</td>
                                     <td className="px-4 py-2.5 text-ink">-ref</td>
                                     <td className="px-4 py-2.5 text-ink">参考音频(直链或 base64),需配 ≥1 张图</td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy">generate_audio</td>
+                                    <td className="px-4 py-2.5 text-ink">全部</td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        是否生成 AI 声音,<strong className="text-navy">默认 true(出声)</strong>;传{' '}
+                                        <code className="font-mono text-xs">false</code> 得静音视频。不额外收费
+                                    </td>
                                 </tr>
                             </tbody>
                         </table>
@@ -2166,6 +2184,15 @@ for _ in range(120):  # 最多约 10 分钟
                                     <td className="px-4 py-2.5 text-navy">无可用渠道 / 模型不存在</td>
                                     <td className="px-4 py-2.5 text-ink">
                                         key 不是「seedance海外满血」档,或模型名拼错
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 text-navy">视频没有声音</td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        本节模型默认带声音;若用的是普通{' '}
+                                        <code className="font-mono text-xs">seedance-2.0</code>(另一套源)或传了{' '}
+                                        <code className="font-mono text-xs">generate_audio:false</code> 会静音 —— 改用{' '}
+                                        <code className="font-mono text-xs">dreamina-seedance-2-0-*</code> 且别关音频
                                     </td>
                                 </tr>
                                 <tr className="border-b border-brand-border">
