@@ -325,6 +325,36 @@ function toEpoch(v: unknown): number {
     return Math.floor(Date.now() / 1000);
 }
 
+/**
+ * 成片转存到我们 R2:拉上游视频字节 → 上传 R2 → 返回我们域名的公网永久直链。
+ * 解决三件事:(1) 藏上游 service-inference.ai 域名;(2) R2 永久不过期(上游直链是临时的);
+ * (3) 公网可直接浏览器打开(不像 new-api 的 result_url 要带 key)。
+ * key 用上游任务 id(确定性 → 重复轮询不会重复上传)。任何失败返回 null,调用方回退上游直链。
+ */
+async function mirrorVideoToR2(videoUrl: string, auth: string, id: string): Promise<string | null> {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 60_000);
+    try {
+        const vid = await fetch(videoUrl, {
+            headers: { Authorization: auth, 'User-Agent': UA },
+            signal: ctrl.signal,
+        });
+        if (!vid.ok) return null;
+        const len = Number(vid.headers.get('content-length') || 0);
+        if (len > 200 * 1024 * 1024) return null; // 太大不转存,回退上游
+        const buf = Buffer.from(await vid.arrayBuffer());
+        if (buf.length === 0) return null;
+        const ct = vid.headers.get('content-type') || 'video/mp4';
+        const ext = ct.includes('webm') ? 'webm' : 'mp4';
+        return await uploadImage(`seedance-video/${id}.${ext}`, buf, ct.startsWith('video/') ? ct : 'video/mp4');
+    } catch (e) {
+        console.warn('[seedance-adapter] r2 video mirror failed', String(e).slice(0, 160));
+        return null;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
 /** GET 轮询:service-inference.ai /v1/video/tasks/{id} → OpenAI-video 形。 */
 export async function pollVideo(req: NextRequest, id: string): Promise<NextResponse> {
     const auth = req.headers.get('authorization') || '';
@@ -351,8 +381,15 @@ export async function pollVideo(req: NextRequest, id: string): Promise<NextRespo
     }
     const status = mapStatus(task.status);
     const outputs = Array.isArray(task.outputs) ? (task.outputs as unknown[]) : [];
-    const videoUrl = typeof outputs[0] === 'string' ? (outputs[0] as string) : null;
+    let videoUrl = typeof outputs[0] === 'string' ? (outputs[0] as string) : null;
     const failReason = task.error ? (typeof task.error === 'string' ? task.error : JSON.stringify(task.error)) : '';
+    // 完成出片后转存我们 R2,返回公网永久直链(藏上游 + 不过期 + 浏览器可开);R2 故障回退上游直链。
+    let r2Fallback = false;
+    if (status === 'completed' && videoUrl) {
+        const mirrored = await mirrorVideoToR2(videoUrl, auth, id);
+        if (mirrored) videoUrl = mirrored;
+        else r2Fallback = true;
+    }
     return NextResponse.json(
         {
             id,
@@ -368,7 +405,7 @@ export async function pollVideo(req: NextRequest, id: string): Promise<NextRespo
             url: videoUrl ?? undefined,
             fail_reason: failReason || undefined,
         },
-        { status: 200 },
+        { status: 200, headers: r2Fallback ? { 'X-Silkroadai-R2-Fallback': '1' } : {} },
     );
 }
 
