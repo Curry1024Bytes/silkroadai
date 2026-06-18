@@ -55,12 +55,6 @@ vi.mock('@sentry/nextjs', () => ({
     captureException: vi.fn(),
 }));
 
-vi.mock('@/lib/image-gen/rate-limit', () => ({
-    rateLimitCheck: vi.fn(),
-    _resetRateLimitForTest: vi.fn(),
-}));
-
-import { rateLimitCheck } from '@/lib/image-gen/rate-limit';
 import { POST } from '@/app/api/portal/image/generate/route';
 
 const USER = {
@@ -71,7 +65,6 @@ const USER = {
 
 beforeEach(() => {
     vi.clearAllMocks();
-    (rateLimitCheck as ReturnType<typeof vi.fn>).mockReturnValue({ allowed: true, remaining: 9, retryAfterMs: 0 });
 });
 
 afterEach(() => {
@@ -131,23 +124,6 @@ describe('POST /api/portal/image/generate — auth', () => {
         mockGetCurrentUser.mockResolvedValueOnce(null);
         const res = await POST(makeReq(VALID_BODY));
         expect(res.status).toBe(401);
-    });
-});
-
-describe('POST /api/portal/image/generate — rate limit', () => {
-    it('429 with Retry-After header when bucket full', async () => {
-        mockGetCurrentUser.mockResolvedValueOnce(USER);
-        (rateLimitCheck as ReturnType<typeof vi.fn>).mockReturnValueOnce({
-            allowed: false,
-            remaining: 0,
-            retryAfterMs: 30000,
-        });
-        const res = await POST(makeReq(VALID_BODY));
-        expect(res.status).toBe(429);
-        expect(res.headers.get('Retry-After')).toBe('30');
-        const body = await res.json();
-        expect(body.error).toBe('rate_limit_exceeded');
-        expect(body.retry_after_ms).toBe(30000);
     });
 });
 

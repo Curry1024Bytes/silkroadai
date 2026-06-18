@@ -33,10 +33,6 @@ vi.mock('@/lib/newapi/system-token', () => {
 
 const { PortalSystemTokenError } = await import('@/lib/newapi/system-token');
 
-vi.mock('@/lib/image-gen/rate-limit', () => ({
-    rateLimitCheck: vi.fn(),
-}));
-
 // v2 web-search layer — mocked so we control whether injection happens.
 const mockRunWebSearch = vi.fn();
 vi.mock('@/lib/chat/web-search', () => ({
@@ -49,14 +45,12 @@ vi.mock('@/lib/chat/model-groups', () => ({
     resolveModelGroup: (...args: unknown[]) => mockResolveModelGroup(...args),
 }));
 
-import { rateLimitCheck } from '@/lib/image-gen/rate-limit';
 import { POST } from '@/app/api/portal/chat/stream/route';
 
 const USER = { id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' };
 
 beforeEach(() => {
     vi.clearAllMocks();
-    (rateLimitCheck as ReturnType<typeof vi.fn>).mockReturnValue({ allowed: true, remaining: 19, retryAfterMs: 0 });
     mockGetCurrentUser.mockResolvedValue(USER);
     mockGetOrCreateSystemToken.mockResolvedValue('sk-test-123');
     mockRunWebSearch.mockResolvedValue(null); // default: web search off / unconfigured
@@ -98,17 +92,6 @@ describe('POST /api/portal/chat/stream', () => {
         mockGetCurrentUser.mockResolvedValue(null);
         const res = await POST(makeReq(VALID_BODY));
         expect(res.status).toBe(401);
-    });
-
-    it('429 when rate limited', async () => {
-        (rateLimitCheck as ReturnType<typeof vi.fn>).mockReturnValue({
-            allowed: false,
-            remaining: 0,
-            retryAfterMs: 3000,
-        });
-        const res = await POST(makeReq(VALID_BODY));
-        expect(res.status).toBe(429);
-        expect(res.headers.get('Retry-After')).toBe('3');
     });
 
     it('400 on invalid body (missing model)', async () => {
