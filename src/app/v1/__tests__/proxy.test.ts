@@ -29,6 +29,10 @@ const mockGetOssConfig = vi.fn(async (_userId: string): Promise<Record<string, u
 const mockUploadToCustomerOss = vi.fn(
     async (_config: unknown, _buf: Buffer, key: string, _mime: string) => `https://cdn.customer.com/${key}`,
 );
+const mockObjectExistsInOss = vi.fn(async (_config: unknown, _key: string): Promise<boolean> => false);
+const mockOssPublicUrl = vi.fn(
+    (config: { public_url_prefix: string }, key: string) => `${config.public_url_prefix}/${key}`,
+);
 vi.mock('@/lib/oss/store', () => ({
     resolveUserIdFromAuthHeader: (auth: string | null) => mockResolveUserId(auth),
     getOssConfig: (userId: string) => mockGetOssConfig(userId),
@@ -36,6 +40,8 @@ vi.mock('@/lib/oss/store', () => ({
 vi.mock('@/lib/oss/client', () => ({
     uploadToCustomerOss: (config: unknown, buf: Buffer, key: string, mime: string) =>
         mockUploadToCustomerOss(config, buf, key, mime),
+    objectExistsInOss: (config: unknown, key: string) => mockObjectExistsInOss(config, key),
+    ossPublicUrl: (config: { public_url_prefix: string }, key: string) => mockOssPublicUrl(config, key),
 }));
 
 import { GET, POST } from '../[...path]/route';
@@ -1319,5 +1325,78 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
         const data = (await res.json()) as { error: { message: string; type: string } };
         expect(data.error.message).toContain('ECONNREFUSED');
         expect(data.error.type).toBe('invalid_request_error');
+    });
+});
+
+describe('/v1 proxy — video poll customer-OSS rehost', () => {
+    const R2 = 'https://images.silkroadai.io';
+    const R2_VIDEO = `${R2}/seedance-video/task_abc.mp4`;
+    const OSS_CONFIG = { status: 'active', public_url_prefix: 'https://cdn.customer.com' };
+
+    beforeEach(() => {
+        process.env.R2_PUBLIC_URL = R2;
+    });
+
+    function videoPoll(videoUrl: string, status = 'SUCCESS') {
+        return new Response(
+            JSON.stringify({
+                code: 'success',
+                data: {
+                    id: 1,
+                    status,
+                    data: { status: 'completed', video_url: videoUrl, url: videoUrl, urls: [videoUrl] },
+                },
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+    }
+    function pollReq() {
+        return makeReq('/video/generations/task_abc', { method: 'GET', headers: { authorization: 'Bearer sk-x' } });
+    }
+
+    it('completed + R2 video + customer OSS → rehosts + rewrites video_url', async () => {
+        mockResolveUserId.mockResolvedValueOnce('user-1');
+        mockGetOssConfig.mockResolvedValueOnce(OSS_CONFIG as unknown as Record<string, unknown>);
+        mockObjectExistsInOss.mockResolvedValueOnce(false);
+        mockFetch
+            .mockResolvedValueOnce(videoPoll(R2_VIDEO))
+            .mockResolvedValueOnce(
+                new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { 'content-type': 'video/mp4' } }),
+            );
+        const res = await GET(pollReq(), ctx('video', 'generations', 'task_abc'));
+        const body = (await res.json()) as { data: { data: { video_url: string; urls: string[] } } };
+        expect(body.data.data.video_url).toBe('https://cdn.customer.com/seedance-video/task_abc.mp4');
+        expect(body.data.data.urls).toEqual(['https://cdn.customer.com/seedance-video/task_abc.mp4']);
+        expect(mockUploadToCustomerOss).toHaveBeenCalledTimes(1);
+        expect(mockUploadToCustomerOss.mock.calls[0][2]).toBe('seedance-video/task_abc.mp4');
+    });
+
+    it('completed + OSS object already exists → ossPublicUrl, no re-upload', async () => {
+        mockResolveUserId.mockResolvedValueOnce('user-1');
+        mockGetOssConfig.mockResolvedValueOnce(OSS_CONFIG as unknown as Record<string, unknown>);
+        mockObjectExistsInOss.mockResolvedValueOnce(true);
+        mockFetch.mockResolvedValueOnce(videoPoll(R2_VIDEO));
+        const res = await GET(pollReq(), ctx('video', 'generations', 'task_abc'));
+        const body = (await res.json()) as { data: { data: { video_url: string } } };
+        expect(body.data.data.video_url).toBe('https://cdn.customer.com/seedance-video/task_abc.mp4');
+        expect(mockUploadToCustomerOss).not.toHaveBeenCalled();
+    });
+
+    it('no customer OSS → keeps platform R2 url', async () => {
+        mockResolveUserId.mockResolvedValueOnce('user-1');
+        mockGetOssConfig.mockResolvedValueOnce(null);
+        mockFetch.mockResolvedValueOnce(videoPoll(R2_VIDEO));
+        const res = await GET(pollReq(), ctx('video', 'generations', 'task_abc'));
+        const body = (await res.json()) as { data: { data: { video_url: string } } };
+        expect(body.data.data.video_url).toBe(R2_VIDEO);
+        expect(mockUploadToCustomerOss).not.toHaveBeenCalled();
+    });
+
+    it('in-progress → passthrough, no user lookup / no rehost', async () => {
+        mockFetch.mockResolvedValueOnce(videoPoll(R2_VIDEO, 'IN_PROGRESS'));
+        const res = await GET(pollReq(), ctx('video', 'generations', 'task_abc'));
+        const body = (await res.json()) as { data: { data: { video_url: string } } };
+        expect(mockResolveUserId).not.toHaveBeenCalled();
+        expect(body.data.data.video_url).toBe(R2_VIDEO);
     });
 });

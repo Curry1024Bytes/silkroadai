@@ -50,7 +50,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
 import { uploadImage } from '@/lib/r2/client';
-import { uploadToCustomerOss } from '@/lib/oss/client';
+import { objectExistsInOss, ossPublicUrl, uploadToCustomerOss } from '@/lib/oss/client';
 import { getOssConfig, resolveUserIdFromAuthHeader } from '@/lib/oss/store';
 import {
     type CaptureCtx,
@@ -886,6 +886,66 @@ async function handleImagesDalle(
     return NextResponse.json(dalleResp, { status: 200, headers: respHeaders });
 }
 
+/**
+ * 视频轮询(GET /video/generations/{id}):转发 new-api,若任务已完成且 video_url 是我们平台 R2、
+ * 且该客户配了自定义 OSS,则把成片转存到客户 bucket 并改写 video_url 为客户域名。
+ * 这是视频版的「自定义对象存储」——镜像生图的 storeGeneratedImage,但生图在生成时存(代理里有客户 key),
+ * 视频成片是 new-api 异步轮询时由适配器落到平台 R2(那一步没有客户身份),所以放到客户【轮询】这步做
+ * (轮询请求带客户 sk-xxx → 能反查 user → OSS 配置)。HEAD 幂等:重复轮询不重复下载+上传。
+ * 任何故障一律保持平台 R2 直链 —— 绝不因客户 OSS 转存失败而让客户拿不到片。
+ */
+async function handleVideoPoll(req: NextRequest, path: string, search: string): Promise<NextResponse> {
+    const upstream = await fetch(`${NEWAPI_BASE_URL}/v1${path}${search}`, {
+        method: 'GET',
+        headers: forwardHeaders(req),
+    });
+    const text = await upstream.text();
+    if (!upstream.ok) {
+        return new NextResponse(text, { status: upstream.status, headers: { 'Content-Type': 'application/json' } });
+    }
+    let body: JsonRecord;
+    try {
+        body = JSON.parse(text) as JsonRecord;
+    } catch {
+        return new NextResponse(text, { status: upstream.status, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    try {
+        const data = body.data as JsonRecord | undefined;
+        const inner = data?.data as JsonRecord | undefined;
+        const status = String(data?.status ?? '').toUpperCase();
+        const videoUrl = typeof inner?.video_url === 'string' ? (inner.video_url as string) : null;
+        const r2Base = (process.env.R2_PUBLIC_URL || '').replace(/\/$/, '');
+        if (status === 'SUCCESS' && videoUrl && r2Base && videoUrl.startsWith(r2Base + '/') && inner) {
+            const userId = await resolveUserIdFromAuthHeader(req.headers.get('authorization'));
+            const ossConfig = userId ? await getOssConfig(userId) : null;
+            if (ossConfig && ossConfig.status === 'active') {
+                const key = videoUrl.slice(r2Base.length + 1);
+                let ossUrl: string | null = null;
+                if (await objectExistsInOss(ossConfig, key)) {
+                    ossUrl = ossPublicUrl(ossConfig, key);
+                } else {
+                    const vid = await fetch(videoUrl);
+                    if (vid.ok) {
+                        const buf = Buffer.from(await vid.arrayBuffer());
+                        const ct = vid.headers.get('content-type') || 'video/mp4';
+                        ossUrl = await uploadToCustomerOss(ossConfig, buf, key, ct);
+                    }
+                }
+                if (ossUrl) {
+                    inner.video_url = ossUrl;
+                    inner.url = ossUrl;
+                    if (Array.isArray(inner.urls)) inner.urls = [ossUrl];
+                }
+            }
+        }
+    } catch (e) {
+        // DB / OSS / R2 任一故障都不阻断:保持平台 R2 直链返回(客户照样拿得到片)
+        console.warn('[v1-proxy] video customer-OSS rehost failed, keeping platform R2', e);
+    }
+    return NextResponse.json(body, { status: upstream.status });
+}
+
 async function handleRequest(req: NextRequest, params: Promise<{ path: string[] }>): Promise<NextResponse> {
     const { path: segments } = await params;
     const path = '/' + (segments ?? []).join('/');
@@ -935,6 +995,11 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
     // DALL·E 兼容图像接口:Gemini 生图模型翻译,其余(gpt-image-2 等)透传
     if ((path === '/images/edits' || path === '/images/generations') && req.method === 'POST') {
         return handleImagesDalle(req, path, search, cap);
+    }
+
+    // 视频轮询完成后:按客户自定义 OSS 转存(详见 handleVideoPoll)
+    if (req.method === 'GET' && /^\/video\/generations\/[^/]+$/.test(path)) {
+        return handleVideoPoll(req, path, search);
     }
 
     // 其他路径(/messages /models /embeddings …)全部透传

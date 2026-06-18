@@ -168,7 +168,7 @@ export function StorageSettingsForm({ initialConfig }: Props) {
     return (
         <Card className="mt-6">
             <CardHeader>
-                <CardTitle>图片输出存储</CardTitle>
+                <CardTitle>图片 / 视频输出存储</CardTitle>
             </CardHeader>
             <CardContent>
                 {/* 模式选择 */}
@@ -199,7 +199,7 @@ export function StorageSettingsForm({ initialConfig }: Props) {
                         <span>
                             <span className="text-sm font-medium text-navy">自定义对象存储</span>
                             <span className="block text-xs text-muted-ink">
-                                图片直接上传到你自己的 bucket,URL 用你的域名,数据归属你
+                                图片和视频直接上传到你自己的 bucket,URL 用你的域名,数据归属你
                             </span>
                         </span>
                     </label>

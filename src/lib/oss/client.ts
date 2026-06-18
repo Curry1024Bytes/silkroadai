@@ -15,7 +15,7 @@
  * Server-only — 解密后的 secret 只在内存中存活于单次调用。
  */
 import 'server-only';
-import { DeleteObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { DeleteObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { decryptSecret } from './encryption';
 
 /** 结构化的 OSS 配置(= prisma UserOssConfig 的子集,解耦生成的 client 类型) */
@@ -62,6 +62,21 @@ export async function uploadToCustomerOss(
         }),
     );
     return `${config.public_url_prefix.replace(/\/$/, '')}/${key}`;
+}
+
+/** 客户 OSS 上某 key 的公网 URL(与 uploadToCustomerOss 同构,供 HEAD 命中后直接拼 URL 不重传)。 */
+export function ossPublicUrl(config: OssConfigLike, key: string): string {
+    return `${config.public_url_prefix.replace(/\/$/, '')}/${key}`;
+}
+
+/** 客户 bucket 里是否已有该 key(HEAD)。用于幂等:重复轮询时不重复下载+上传。任何错误(含 404)→ false。 */
+export async function objectExistsInOss(config: OssConfigLike, key: string): Promise<boolean> {
+    try {
+        await getS3ClientForConfig(config).send(new HeadObjectCommand({ Bucket: config.bucket, Key: key }));
+        return true;
+    } catch {
+        return false;
+    }
 }
 
 /** 测试连接:put 一个临时对象再删掉。失败返回 {ok:false, message},不 throw。 */
