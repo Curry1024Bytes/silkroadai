@@ -4,7 +4,11 @@ import { prisma } from '@/lib/db';
 import { unauthorizedResponse } from '@/lib/admin-auth';
 import { resolveAdmin } from '@/lib/admin/auth';
 import { tenantScope } from '@/lib/admin/tenant-scope';
-import { migrateUserToPortal, rollbackUserToNewapi } from '@/lib/billing/billing-migration';
+import {
+    migrateUserToPortal,
+    rollbackUserToNewapi,
+    BillingSourceNotPortalError,
+} from '@/lib/billing/billing-migration';
 
 export const runtime = 'nodejs';
 
@@ -48,10 +52,19 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const user = await prisma.user.findFirst({ where: { id, ...tenantScope(admin) }, select: { id: true } });
     if (!user) return NextResponse.json({ error: '客户不存在' }, { status: 404 });
 
-    const result =
-        parsed.data.action === 'to_portal'
-            ? await migrateUserToPortal(user.id, admin.user?.id ?? null)
-            : await rollbackUserToNewapi(user.id, admin.user?.id ?? null);
+    let result;
+    try {
+        result =
+            parsed.data.action === 'to_portal'
+                ? await migrateUserToPortal(user.id, admin.user?.id ?? null)
+                : await rollbackUserToNewapi(user.id, admin.user?.id ?? null);
+    } catch (err) {
+        // guardrail:全局闸没开禁翻 portal(半翻号防护)→ 409 + 明确消息给 admin UI 显示。
+        if (err instanceof BillingSourceNotPortalError) {
+            return NextResponse.json({ error: err.message }, { status: 409 });
+        }
+        throw err;
+    }
 
     // 审计流(LedgerEntry migration 是权威账本留痕;这条是 admin 行为审计,best-effort)。
     try {

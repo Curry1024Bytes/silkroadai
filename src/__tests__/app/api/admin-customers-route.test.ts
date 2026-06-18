@@ -204,6 +204,8 @@ describe('GET /api/admin/customers/[id] (detail — IDOR-safe)', () => {
         expect(body.recharges[0]).toMatchObject({ amount: 100, source: 'payment' });
         // P4c-1: no Account row → ledger balance ¥0, no entries (zero customer impact default).
         expect(body.ledger).toEqual({ balance_cny: 0, entries: [] });
+        // flip-guardrail: BILLING_SOURCE unset in test env → false (UI grays the「迁移到 portal」钮).
+        expect(body.billing_source_portal).toBe(false);
     });
 
     it('P4c-1: maps ledger balance + recent entries when an Account exists', async () => {

@@ -299,3 +299,17 @@ export async function reconcileAllPortalGates(): Promise<number> {
     }
     return synced;
 }
+
+/**
+ * flip-guardrail §2 反向危险态:全局闸关(`BILLING_SOURCE≠portal`)但仍有 `billing_mode='portal'`
+ * 客户 —— 他们【脱钩】:哑门 quota 停在 1e9、`syncNewapiGate`/meter 全 no-op → 账本冻结、不扣费 →
+ * 可能无限免费用。这是 kill-switch 的盲区(比 357 半翻号更糟:单关 env flag 不是完整 revert,
+ * 关闸前必须先把所有 portal 客户回滚到 newapi)。
+ *
+ * 返回这种"孤儿"portal 客户数(闸【开】→ 返 0,portal 客户是正常态、不算孤儿)。**只读、无副作用**
+ * —— 调用方负责 loud warn + Sentry 告警,【不】自动回滚客户(太重 + 有风险,留人工)。
+ */
+export async function countOrphanedPortalCustomers(): Promise<number> {
+    if (billingSourceIsPortal()) return 0; // 闸开 → portal 客户正常,不算孤儿
+    return prisma.user.count({ where: { billing_mode: 'portal' } });
+}

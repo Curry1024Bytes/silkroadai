@@ -6,7 +6,7 @@
  * 不扣余额、不挡请求、不改充值、不调 new-api 写接口(P4a 边界)。
  */
 import * as Sentry from '@sentry/nextjs';
-import { runShadowMeter, reconcileAllPortalGates } from '@/lib/billing/meter';
+import { runShadowMeter, reconcileAllPortalGates, countOrphanedPortalCustomers } from '@/lib/billing/meter';
 
 const INTERVAL_MS = 10 * 60 * 1_000; // 10 分钟
 
@@ -33,6 +33,21 @@ async function tick(): Promise<void> {
         if (synced > 0) console.log(`[shadow-meter] reconciled ${synced} portal gate(s)`);
     } catch (err) {
         console.error('[shadow-meter] gate reconcile failed:', err);
+        Sentry.captureException(err, { tags: { area: 'shadow-meter' } });
+    }
+
+    // flip-guardrail §2:反向危险态 —— 全局闸已关但还有 portal 客户(脱钩、哑门停在 1e9、meter 不扣 →
+    //   可能无限免费用,比 357 半翻号更糟)。只 loud warn + Sentry 告警,【不】自动回滚(留人工)。闸开时
+    //   countOrphanedPortalCustomers 返 0、不告警。让这种态主动被抓到,不靠人肉发现。
+    try {
+        const orphaned = await countOrphanedPortalCustomers();
+        if (orphaned > 0) {
+            const msg = `${orphaned} 个客户是 portal 模式但 BILLING_SOURCE 已关 —— 他们脱钩(哑门停在 1e9、meter 不扣,可能无限免费用)。请把这些客户回滚到 newapi,或重开 BILLING_SOURCE。`;
+            console.error(`[shadow-meter] ⚠️ DANGER: ${msg}`);
+            Sentry.captureMessage(`[billing-guardrail] ${msg}`, 'error');
+        }
+    } catch (err) {
+        console.error('[shadow-meter] orphaned-portal check failed:', err);
         Sentry.captureException(err, { tags: { area: 'shadow-meter' } });
     }
 }

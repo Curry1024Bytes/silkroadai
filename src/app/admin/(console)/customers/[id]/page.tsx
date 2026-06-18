@@ -55,6 +55,7 @@ interface DetailData {
     recharges: RechargeRow[];
     ledger: { balance_cny: number; entries: LedgerEntryRow[] };
     usage_window_days: number;
+    billing_source_portal: boolean; // flip-guardrail:全局闸开了才能翻到 portal
 }
 // ── new-api 权威用量(mirror /api/admin/customers/[id]/newapi-usage)──
 interface NewApiByModelRow {
@@ -160,6 +161,8 @@ function getTexts(locale: Locale) {
               modeNewapi: 'new-api quota (legacy)',
               modePortal: 'portal ¥ ledger',
               flipToPortal: 'Migrate to portal ledger',
+              flipGateOffHint:
+                  'Open the global gate first (BILLING_SOURCE=portal) — otherwise the flip is blocked (half-flip protection).',
               flipToNewapi: 'Roll back to new-api',
               flipConfirmToPortalTitle: 'Migrate this customer to the portal ¥ ledger?',
               flipConfirmToNewapiTitle: 'Roll this customer back to new-api billing?',
@@ -268,6 +271,7 @@ function getTexts(locale: Locale) {
               modeNewapi: 'new-api 余额(旧)',
               modePortal: 'portal ¥账本',
               flipToPortal: '迁移到 portal 账本',
+              flipGateOffHint: '请先开全局闸(BILLING_SOURCE=portal)—— 否则禁止翻号(半翻号防护)。',
               flipToNewapi: '回滚到 new-api',
               flipConfirmToPortalTitle: '确认把该客户迁移到 portal ¥账本?',
               flipConfirmToNewapiTitle: '确认把该客户回滚到 new-api 计费?',
@@ -694,18 +698,28 @@ function DetailContent() {
                                     </div>
                                 </div>
                                 {data.customer.billing_mode === 'newapi' ? (
-                                    <button
-                                        type="button"
-                                        onClick={() => {
-                                            setFlipDone('');
-                                            setFlipError('');
-                                            setFlipConfirm('to_portal');
-                                        }}
-                                        disabled={flipping || flipConfirm !== null}
-                                        className="rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-indigo-700 disabled:opacity-50"
-                                    >
-                                        {t.flipToPortal}
-                                    </button>
+                                    <div className="flex flex-col items-end gap-1">
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                setFlipDone('');
+                                                setFlipError('');
+                                                setFlipConfirm('to_portal');
+                                            }}
+                                            disabled={flipping || flipConfirm !== null || !data.billing_source_portal}
+                                            title={!data.billing_source_portal ? t.flipGateOffHint : undefined}
+                                            className="rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-indigo-700 disabled:opacity-50"
+                                        >
+                                            {t.flipToPortal}
+                                        </button>
+                                        {!data.billing_source_portal && (
+                                            <span
+                                                className={`max-w-xs text-right text-xs ${isDark ? 'text-amber-400' : 'text-amber-600'}`}
+                                            >
+                                                {t.flipGateOffHint}
+                                            </span>
+                                        )}
+                                    </div>
                                 ) : (
                                     <button
                                         type="button"

@@ -5,6 +5,7 @@ import { resolveAdmin } from '@/lib/admin/auth';
 import { tenantScope } from '@/lib/admin/tenant-scope';
 import { quotaToCny } from '@/lib/newapi/client';
 import { getQuotaWithCache } from '@/lib/newapi/quota-cache';
+import { billingSourceIsPortal } from '@/lib/billing/billing-source';
 
 export const runtime = 'nodejs';
 
@@ -119,6 +120,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
             balance_cached_at: balanceCachedAt,
             billing_mode: user.billing_mode, // P4c-4: 'newapi' | 'portal'
         },
+        // flip-guardrail:全局闸是否为 portal。前端据此灰掉「迁移到 portal」钮(闸关时翻 portal 路由 409)。
+        billing_source_portal: billingSourceIsPortal(),
         keys: keys.map((k) => ({
             id: k.id,
             key_alias: k.key_alias,

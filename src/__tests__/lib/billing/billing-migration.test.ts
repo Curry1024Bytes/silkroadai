@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Prisma } from '@prisma/client';
 
 const mockUserFindUnique = vi.fn();
@@ -24,13 +24,20 @@ vi.mock('@/lib/newapi/client', () => ({
 vi.mock('@/lib/billing/ledger', () => ({ applyLedgerEntryInTx: (...a: unknown[]) => mockApplyLedgerEntryInTx(...a) }));
 vi.mock('@/lib/billing/newapi-gate', () => ({ syncNewapiGate: (...a: unknown[]) => mockSyncNewapiGate(...a) }));
 
-import { migrateUserToPortal, rollbackUserToNewapi } from '@/lib/billing/billing-migration';
+import {
+    migrateUserToPortal,
+    rollbackUserToNewapi,
+    BillingSourceNotPortalError,
+} from '@/lib/billing/billing-migration';
 import { quotaToCny, cnyToQuota } from '@/lib/newapi/quota-units';
 
 const D = (n: number | string) => new Prisma.Decimal(n);
 
 beforeEach(() => {
     vi.clearAllMocks();
+    // flip-guardrail:migrateUserToPortal 第一行校验 BILLING_SOURCE=portal —— 默认开闸,让既有翻进
+    //   测试照常跑;闸关行为由专门的 guardrail 测试覆盖(stubEnv 改值)。
+    vi.stubEnv('BILLING_SOURCE', 'portal');
     // interactive $transaction: run the callback with the tx proxy; propagate throws (rollback).
     mockTransaction.mockImplementation(async (arg: unknown) => {
         if (typeof arg === 'function') return await (arg as (tx: typeof txProxy) => Promise<unknown>)(txProxy);
@@ -40,6 +47,10 @@ beforeEach(() => {
     mockApplyLedgerEntryInTx.mockResolvedValue({ entryId: 'le-1', balance_after: D(0) });
     mockSyncNewapiGate.mockResolvedValue(undefined);
     mockAddQuota.mockResolvedValue(undefined);
+});
+
+afterEach(() => {
+    vi.unstubAllEnvs();
 });
 
 describe('migrateUserToPortal — newapi → portal', () => {
@@ -104,6 +115,35 @@ describe('migrateUserToPortal — newapi → portal', () => {
         mockSyncNewapiGate.mockRejectedValue(new Error('BILLING_SOURCE off / new-api down'));
         const r = await migrateUserToPortal('u1');
         expect(r.flipped).toBe(true);
+    });
+});
+
+describe('flip-guardrail — BILLING_SOURCE≠portal 禁翻到 portal(357 半翻号防护)', () => {
+    it('gate off → migrateUserToPortal throws BillingSourceNotPortalError with ZERO side effects', async () => {
+        vi.stubEnv('BILLING_SOURCE', 'newapi'); // 关闸(覆盖 beforeEach 的 portal)
+        mockUserFindUnique.mockResolvedValue({ billing_mode: 'newapi', newapi_user_id: 42, tenant_id: 't1' });
+
+        await expect(migrateUserToPortal('u1', 'admin-1')).rejects.toBeInstanceOf(BillingSourceNotPortalError);
+
+        // 校验在最前 → 零副作用:不读 user、不读 new-api、不开事务、不 seed、不开哑门
+        expect(mockUserFindUnique).not.toHaveBeenCalled();
+        expect(mockGetUser).not.toHaveBeenCalled();
+        expect(mockTransaction).not.toHaveBeenCalled();
+        expect(mockApplyLedgerEntryInTx).not.toHaveBeenCalled();
+        expect(mockSyncNewapiGate).not.toHaveBeenCalled();
+    });
+
+    it('gate off → rollbackUserToNewapi is NOT blocked (cleanup must always run)', async () => {
+        vi.stubEnv('BILLING_SOURCE', 'newapi'); // 关闸
+        mockUserFindUnique.mockResolvedValue({
+            billing_mode: 'portal',
+            newapi_user_id: 42,
+            tenant_id: 't1',
+            account: { balance_cny: D('5') },
+        });
+        const r = await rollbackUserToNewapi('u1', 'admin-1');
+        expect(r).toMatchObject({ action: 'to_newapi', flipped: true, newBillingMode: 'newapi' });
+        expect(mockAddQuota).toHaveBeenCalled(); // 还 quota 照常
     });
 });
 
