@@ -331,7 +331,7 @@ function toEpoch(v: unknown): number {
  * (3) 公网可直接浏览器打开(不像 new-api 的 result_url 要带 key)。
  * key 用上游任务 id(确定性 → 重复轮询不会重复上传)。任何失败返回 null,调用方回退上游直链。
  */
-async function mirrorVideoToR2(videoUrl: string, auth: string, id: string): Promise<string | null> {
+export async function mirrorVideoToR2(videoUrl: string, auth: string, id: string): Promise<string | null> {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 60_000);
     try {
