@@ -152,7 +152,7 @@ function getTexts(locale: Locale) {
               adjustBadNote: 'A reason is required.',
               adjustFailed: 'Adjustment failed',
               adjustNewapiModeWarn:
-                  'This customer currently bills from the new-api balance — a ledger adjustment does NOT change their usable balance (it only pre-books the dormant portal ledger). To change the real balance, use new-api add_quota (manual credit runbook).',
+                  'This customer bills from their new-api balance, so this adjustment changes their new-api quota directly (NOT the ¥ ledger) and applies immediately. + credits / − debits (a debit clamps at 0).',
               // ── P4c-4 billing-mode flip (superadmin) ──
               billingTitle: 'Billing mode',
               billingNote: 'Superadmin gray-rollout flip. Single account, atomic, reversible, net-neutral.',
@@ -260,7 +260,7 @@ function getTexts(locale: Locale) {
               adjustBadNote: '必须填写调整原因。',
               adjustFailed: '调整失败',
               adjustNewapiModeWarn:
-                  '该客户当前按 new-api 余额计费 —— 账本调整不会改变其可用余额(只是预记进休眠的 portal 账本)。要调真实余额请走 new-api add_quota(手动入账流程)。',
+                  '该客户按 new-api 余额计费,本次调整会直接改其 new-api 额度(不是 ¥账本),立即生效。+ 充入 / − 扣减(扣减到 0 为止)。',
               // ── P4c-4 计费模式翻号(superadmin)──
               billingTitle: '计费模式',
               billingNote: 'superadmin 灰度翻号。单号、原子、可逆、净中性。',

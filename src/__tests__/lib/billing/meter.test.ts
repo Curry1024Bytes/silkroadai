@@ -42,7 +42,7 @@ vi.mock('@/lib/billing/ledger', () => ({ applyLedgerEntry: (...a: unknown[]) => 
 // P4c-3: after charging a portal user, the meter re-syncs the new-api dumb gate.
 vi.mock('@/lib/billing/newapi-gate', () => ({ syncNewapiGate: (...a: unknown[]) => mockSyncNewapiGate(...a) }));
 
-import { runShadowMeter } from '@/lib/billing/meter';
+import { runShadowMeter, reconcileAllPortalGates } from '@/lib/billing/meter';
 import { PLATFORM_TENANT_ID } from '@/lib/admin/tenant-scope';
 
 const LOG_TS = Math.floor(Date.parse('2026-06-06T00:00:00Z') / 1000); // unix seconds
@@ -352,5 +352,46 @@ describe('runShadowMeter — P4c-3 dumb-gate sync after charging portal users', 
         expect(mockCursorUpdate).toHaveBeenCalledWith(
             expect.objectContaining({ data: expect.objectContaining({ last_log_id: 10 }) }),
         );
+    });
+});
+
+describe('reconcileAllPortalGates — P4c-5 §1.5 self-heal (standalone, runs every scheduler tick)', () => {
+    it('BILLING_SOURCE=portal: syncs EVERY portal customer gate (not just charged); returns the count', async () => {
+        vi.stubEnv('BILLING_SOURCE', 'portal');
+        mockUserFindMany.mockResolvedValue([{ id: 'p1' }, { id: 'p2' }, { id: 'p3' }]);
+
+        const n = await reconcileAllPortalGates();
+
+        expect(mockUserFindMany).toHaveBeenCalledWith(expect.objectContaining({ where: { billing_mode: 'portal' } }));
+        expect(mockSyncNewapiGate).toHaveBeenCalledTimes(3);
+        expect(mockSyncNewapiGate).toHaveBeenCalledWith('p1');
+        expect(mockSyncNewapiGate).toHaveBeenCalledWith('p2');
+        expect(mockSyncNewapiGate).toHaveBeenCalledWith('p3');
+        expect(n).toBe(3);
+    });
+
+    it('BILLING_SOURCE unset (default newapi): no-op — no query, no sync (newapi customers untouched)', async () => {
+        mockUserFindMany.mockResolvedValue([{ id: 'p1' }]);
+        const n = await reconcileAllPortalGates();
+        expect(mockUserFindMany).not.toHaveBeenCalled();
+        expect(mockSyncNewapiGate).not.toHaveBeenCalled();
+        expect(n).toBe(0);
+    });
+
+    it('one gate sync failing does not abort the rest or throw; counts only successes', async () => {
+        vi.stubEnv('BILLING_SOURCE', 'portal');
+        mockUserFindMany.mockResolvedValue([{ id: 'p1' }, { id: 'p2' }]);
+        mockSyncNewapiGate.mockRejectedValueOnce(new Error('new-api blip')); // p1 fails, p2 still runs
+        const n = await reconcileAllPortalGates();
+        expect(mockSyncNewapiGate).toHaveBeenCalledTimes(2);
+        expect(n).toBe(1);
+    });
+
+    it('no portal customers → zero syncs', async () => {
+        vi.stubEnv('BILLING_SOURCE', 'portal');
+        mockUserFindMany.mockResolvedValue([]);
+        const n = await reconcileAllPortalGates();
+        expect(mockSyncNewapiGate).not.toHaveBeenCalled();
+        expect(n).toBe(0);
     });
 });
