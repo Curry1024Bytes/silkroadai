@@ -60,18 +60,23 @@ export async function pollVideo(req: NextRequest, id: string): Promise<NextRespo
         return new NextResponse(text, { status: 200, headers: { 'Content-Type': 'application/json' } });
     }
     const status = String(j.status || '').toLowerCase();
+    const isDone = status === 'completed' || status === 'succeeded' || status === 'success';
     const urls = Array.isArray(j.urls) ? (j.urls as unknown[]) : [];
-    // niuma 的 /generated/ 公开直链(urls[0])优先;否则用 video_url(/content,带 auth 也能拉)。
+    // 公开直链(/generated/,urls[0])优先;否则 video_url(/content,需鉴权)。
     const src =
         (typeof urls[0] === 'string' ? (urls[0] as string) : null) ||
         (typeof j.video_url === 'string' ? (j.video_url as string) : null);
-    if ((status === 'completed' || status === 'succeeded' || status === 'success') && src) {
-        const r2 = await mirrorVideoToR2(src, auth, id);
-        if (r2) {
-            j.video_url = r2;
-            j.url = r2;
-            if (Array.isArray(j.urls)) j.urls = [r2];
-        }
+    if (isDone && src) {
+        // 完成:转存 R2 → 我们域名公网直链;R2 失败回退公开 src(urls[0]),绝不返回 /content。
+        const finalUrl = (await mirrorVideoToR2(src, auth, id)) || src;
+        j.video_url = finalUrl;
+        j.url = finalUrl;
+        j.urls = [finalUrl];
+    } else if (!isDone) {
+        // 生成中:别把上游"生成中"的 /content 临时链漏给客户(打不开)。置空,等完成再给。
+        j.video_url = null;
+        j.url = null;
+        j.urls = [];
     }
     return NextResponse.json(j, { status: 200 });
 }

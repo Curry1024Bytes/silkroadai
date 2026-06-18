@@ -1806,6 +1806,13 @@ with open("edited.png", "wb") as f:
 # status: in_progress … 几分钟后 "status": "completed"
 # 视频直链在响应的 video_url 字段(公网 .mp4)`}
                     </CodeBlock>
+                    <div className="rounded-lg border border-brand-border bg-paper-muted px-4 py-3 mt-3 text-sm text-ink leading-relaxed">
+                        ⚠️ <strong className="text-navy">务必轮询到 status 变 completed / SUCCESS 再取视频</strong>。
+                        生成中(<code className="font-mono text-xs">in_progress</code>)时{' '}
+                        <code className="font-mono text-xs">video_url</code> 为空(或临时链),
+                        <strong className="text-navy">取了也打不开</strong> —— 这是「扣钱没出片」最常见的原因。完成后{' '}
+                        <code className="font-mono text-xs">video_url</code> 是我们的公网永久直链,可直接播放 / 下载。
+                    </div>
 
                     <p className="m-0 mt-5 mb-2 text-sm font-medium text-navy">参数总表</p>
                     <div className="rounded-lg overflow-hidden border border-brand-border bg-surface mb-2">
