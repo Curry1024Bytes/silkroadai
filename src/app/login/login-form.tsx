@@ -75,6 +75,14 @@ export function LoginForm({ next }: { next: string }) {
                         onChange={(e) => setPassword(e.target.value)}
                         error={!!error}
                     />
+                    <div className="mt-1.5 text-right">
+                        <a
+                            href="/forgot-password"
+                            className="text-xs text-minor-ink hover:text-brand-accent transition-colors"
+                        >
+                            忘记密码?
+                        </a>
+                    </div>
                 </div>
                 <FormError>{error}</FormError>
                 <Button type="submit" block loading={submitting} disabled={submitting || !email || !password}>
