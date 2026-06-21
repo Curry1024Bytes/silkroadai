@@ -1,15 +1,17 @@
 /**
- * Public /models page (W6 D3) — full catalog of models available through
- * https://ai.silkroadai.io with double grouping by type × vendor.
+ * Public /models page — full catalog of models available through
+ * https://ai.silkroadai.io, grouped VENDOR-first (OpenAI / Anthropic /
+ * Google / 字节跳动 / …) so each vendor appears exactly once, with a light
+ * capability sub-grouping (对话 / 视觉 / 图像 / 视频) inside each vendor.
  *
  * Public access (NOT under (authenticated)). Acts as both a marketing
  * surface ("look how many models we have!") and a customer reference
  * ("which name do I pass to /v1/chat/completions?").
  *
  * Server component fetches `listAvailableModels()` (new-api admin
- * `/api/channel/models_enabled`) once per ISR window and groups via
- * `src/lib/models/categorize.ts`. The grouped structure is passed to the
- * `ModelsBrowser` client component which handles search + filter + cards.
+ * `/api/channel/models_enabled`) once per ISR window and classifies via
+ * `src/lib/models/categorize.ts` → a flat `ModelEntry[]` handed to the
+ * `ModelsBrowser` client component (search + vendor grouping + cards).
  *
  * ISR: revalidate=60 — channels do change occasionally (admin adds /
  * removes models in admin.silkroadai.io UI) but rarely. 60s is faster
@@ -18,7 +20,7 @@
  */
 import Link from 'next/link';
 import { listAvailableModels } from '@/lib/newapi/client';
-import { groupModels } from '@/lib/models/categorize';
+import { classifyModels } from '@/lib/models/categorize';
 import { Logo } from '@/components/brand/Logo';
 import { FormError } from '@/components/ui/FormError';
 import { ModelsBrowser } from './models-browser';
@@ -26,7 +28,8 @@ import { ModelsBrowser } from './models-browser';
 export const revalidate = 60;
 export const metadata = {
     title: '模型清单 — Silk Road AI',
-    description: 'Silk Road AI 当前接入的全部模型(对话 / 视觉 / 音频 / 嵌入 / 图像生成),按厂商分组检索。',
+    description:
+        'Silk Road AI 当前接入的全部模型,按厂商分组(OpenAI / Anthropic / Google / 字节跳动 等),覆盖对话 / 视觉 / 图像 / 视频,可搜索检索。',
 };
 
 export default async function ModelsPage() {
@@ -41,7 +44,7 @@ export default async function ModelsPage() {
         console.warn('[models] listAvailableModels failed:', err);
     }
 
-    const { grouped, totalModels, vendorCount } = groupModels(rawModels);
+    const { entries, totalModels, vendorCount } = classifyModels(rawModels);
 
     return (
         <main className="min-h-screen bg-paper px-4 py-8">
@@ -77,7 +80,7 @@ export default async function ModelsPage() {
                 {fetchErr ? (
                     <FormError severity="banner">当前无法获取模型清单,请稍后重试。</FormError>
                 ) : (
-                    <ModelsBrowser grouped={grouped} totalModels={totalModels} vendorCount={vendorCount} />
+                    <ModelsBrowser entries={entries} totalModels={totalModels} vendorCount={vendorCount} />
                 )}
             </div>
         </main>

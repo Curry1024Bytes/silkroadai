@@ -1,57 +1,54 @@
 'use client';
 
 /**
- * W6 D3 — /models browser client component.
+ * /models browser — vendor-first catalog.
  *
- * Receives the full grouped model structure from the server page (one ISR
- * pass per 60s) and provides:
- *   - Search input over shortName / canonicalName / vendor
- *   - 200ms debounce so fast typers don't trigger a re-filter every keystroke
- *   - 5 type-sections (chat / vision / audio / embedding / image-gen) with
- *     vendor sub-sections + model card grid
- *   - Empty-state when filter narrows everything out
+ * Receives the full flat `ModelEntry[]` from the server page (one ISR pass
+ * per 60s) and renders it grouped by VENDOR first (one section per vendor,
+ * each appearing exactly once), with a light type sub-grouping inside each
+ * vendor and a per-card capability badge.
  *
- * Filtering is in-memory — total payload from new-api is ~379 entries (W3
- * D2 F5), which serializes to ~25-35KB of JSON inlined in the SSR HTML.
- * Cheap enough that we don't bother with server-side filter or virtualization.
+ *   - Search over model name / vendor (EN + 中文) / type label
+ *   - 200ms debounce so fast typers don't re-filter every keystroke
+ *   - Empty-state when the filter narrows everything out
+ *
+ * Filtering + grouping are in-memory: the catalog is a few dozen entries,
+ * far too small to bother with server-side filter or virtualization.
  */
 import { useMemo, useState, useEffect } from 'react';
 import {
-    type GroupedModels,
-    type TypeName,
-    type VendorName,
     type ModelEntry,
-    TYPE_ORDER,
+    type TypeName,
+    type VendorSection,
     TYPE_LABEL,
-    VENDOR_ORDER,
-    filterGrouped,
-    countGrouped,
+    TYPE_BADGE,
+    VENDOR_META,
+    groupByVendor,
+    filterEntries,
 } from '@/lib/models/categorize';
 import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { Input } from '@/components/ui/Input';
 
 interface Props {
-    grouped: GroupedModels;
+    entries: ModelEntry[];
     totalModels: number;
     vendorCount: number;
 }
 
-export function ModelsBrowser({ grouped, totalModels, vendorCount }: Props) {
+export function ModelsBrowser({ entries, totalModels, vendorCount }: Props) {
     const [query, setQuery] = useState('');
     const [debouncedQuery, setDebouncedQuery] = useState('');
 
-    // 200ms debounce — strikes the balance between feeling instant on a
-    // single keystroke and avoiding 5 re-filters during a 5-char input.
+    // 200ms debounce — instant on a single keystroke, no thrash on a burst.
     useEffect(() => {
         const id = setTimeout(() => setDebouncedQuery(query.trim().toLowerCase()), 200);
         return () => clearTimeout(id);
     }, [query]);
 
-    const filtered: GroupedModels = useMemo(() => filterGrouped(grouped, debouncedQuery), [grouped, debouncedQuery]);
-
-    const typesWithContent = TYPE_ORDER.filter((t) => filtered[t] && Object.keys(filtered[t]!).length > 0);
-    const filteredTotal = useMemo(() => countGrouped(filtered), [filtered]);
+    const filtered = useMemo(() => filterEntries(entries, debouncedQuery), [entries, debouncedQuery]);
+    const sections = useMemo(() => groupByVendor(filtered), [filtered]);
+    const filteredTotal = filtered.length;
 
     return (
         <>
@@ -60,7 +57,7 @@ export function ModelsBrowser({ grouped, totalModels, vendorCount }: Props) {
                     type="search"
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
-                    placeholder="搜索模型(支持模型名 / 厂商名)…"
+                    placeholder="搜索模型(支持模型名 / 厂商 / 类型)…"
                     aria-label="搜索模型"
                 />
                 <p className="m-0 text-xs text-muted-ink">
@@ -77,46 +74,68 @@ export function ModelsBrowser({ grouped, totalModels, vendorCount }: Props) {
                 </p>
             </div>
 
-            {typesWithContent.length === 0 ? (
+            {sections.length === 0 ? (
                 <Card>
                     <EmptyState title={`没有匹配「${query}」的模型`} body="试试其他关键词,或清空搜索框查看全部。" />
                 </Card>
             ) : (
-                typesWithContent.map((type) => <TypeSection key={type} type={type} typeBucket={filtered[type]!} />)
+                <div className="flex flex-col gap-10">
+                    {sections.map((section) => (
+                        <VendorSectionBlock key={section.vendor} section={section} />
+                    ))}
+                </div>
             )}
         </>
     );
 }
 
-function TypeSection({ type, typeBucket }: { type: TypeName; typeBucket: Partial<Record<VendorName, ModelEntry[]>> }) {
-    const vendorsInOrder = VENDOR_ORDER.filter((v) => typeBucket[v] && typeBucket[v]!.length > 0);
-
+function VendorSectionBlock({ section }: { section: VendorSection }) {
+    const meta = VENDOR_META[section.vendor];
     return (
-        <section className="mb-8">
-            <h2 className="m-0 mb-4 pb-2 text-lg font-semibold text-navy border-b-2 border-brand-accent">
-                {TYPE_LABEL[type]}
-            </h2>
-            {vendorsInOrder.map((vendor) => (
-                <VendorBlock key={vendor} vendor={vendor} entries={typeBucket[vendor]!} />
-            ))}
+        <section>
+            <header className="flex items-center gap-3 mb-4 pb-3 border-b border-brand-border">
+                <span
+                    aria-hidden="true"
+                    className="flex items-center justify-center w-10 h-10 rounded-xl bg-navy text-paper font-semibold text-lg shrink-0"
+                >
+                    {meta.initial}
+                </span>
+                <div className="min-w-0">
+                    <h2 className="m-0 text-xl font-semibold text-navy leading-tight">{section.vendor}</h2>
+                    {meta.zh && <p className="m-0 text-xs text-minor-ink">{meta.zh}</p>}
+                </div>
+                <span className="ml-auto shrink-0 text-xs font-medium text-muted-ink bg-paper-muted border border-brand-border rounded-full px-2.5 py-1">
+                    {section.total} 个模型
+                </span>
+            </header>
+
+            <div className="flex flex-col gap-5">
+                {section.types.map((bucket) => (
+                    <div key={bucket.type}>
+                        <h3 className="m-0 mb-2.5 text-xs font-semibold uppercase tracking-wide text-muted-ink">
+                            {TYPE_LABEL[bucket.type]}{' '}
+                            <span className="text-minor-ink font-normal normal-case">· {bucket.entries.length}</span>
+                        </h3>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                            {bucket.entries.map((m) => (
+                                <ModelCard key={m.shortName} entry={m} />
+                            ))}
+                        </div>
+                    </div>
+                ))}
+            </div>
         </section>
     );
 }
 
-function VendorBlock({ vendor, entries }: { vendor: VendorName; entries: ModelEntry[] }) {
-    return (
-        <div className="mb-5">
-            <h3 className="m-0 mb-2.5 text-xs font-semibold uppercase tracking-wide text-muted-ink">
-                {vendor} <span className="text-minor-ink font-normal normal-case">· {entries.length}</span>
-            </h3>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
-                {entries.map((m) => (
-                    <ModelCard key={m.shortName} entry={m} />
-                ))}
-            </div>
-        </div>
-    );
-}
+const TYPE_CHIP_CLASS: Record<TypeName, string> = {
+    chat: 'bg-paper-muted text-muted-ink border-brand-border',
+    vision: 'bg-paper-muted text-muted-ink border-brand-border',
+    'image-gen': 'bg-status-warning-bg text-status-warning-text border-status-warning-border',
+    video: 'bg-status-success-bg text-status-success-text border-status-success-border',
+    audio: 'bg-paper-muted text-muted-ink border-brand-border',
+    embedding: 'bg-paper-muted text-muted-ink border-brand-border',
+};
 
 function ModelCard({ entry }: { entry: ModelEntry }) {
     const [copied, setCopied] = useState(false);
@@ -141,12 +160,9 @@ function ModelCard({ entry }: { entry: ModelEntry }) {
             )}
             <div className="flex items-center gap-2 mt-1">
                 <span
-                    className={[
-                        'text-[11px] px-2 py-0.5 rounded-full',
-                        'bg-paper-muted text-muted-ink border border-brand-border',
-                    ].join(' ')}
+                    className={['text-[11px] px-2 py-0.5 rounded-full border', TYPE_CHIP_CLASS[entry.type]].join(' ')}
                 >
-                    {entry.vendor}
+                    {TYPE_BADGE[entry.type]}
                 </span>
                 <button
                     type="button"
