@@ -331,6 +331,13 @@ model User {
   // ⚠️ P4c-1 不读它做任何分支(P4c-2+ 才用)→ 现有客户零行为变化。
   billing_mode String @default("newapi")
 
+  // ── per-customer 档次白名单 ──
+  // 空 = 不限制(看本 tenant 下全部 enabled 的 ChannelGroup,现状)。
+  // 非空 = 只允许这些 ChannelGroup.key:/keys 页只显示这些档,建 key 也只放行
+  // 这些档(服务端强校验,见 src/app/api/portal/keys/route.ts)。运维按客户设。
+  // 通用 admin UI 待做(目前直接 DB 设值)。
+  allowed_tier_keys String[] @default([])
+
   // ── 邀请码(W7 D4)──
   // 用户注册时填写的邀请码(可选)。register handler 仅在 isValidInviteCode
   // 通过时写入,所以读到非空值意味着「注册当时 INVITE_CODES env 里有」。

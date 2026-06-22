@@ -27,13 +27,25 @@ vi.mock('@/lib/newapi/client', () => ({
 }));
 
 const mockListEnabledChannelGroups = vi.fn();
-vi.mock('@/lib/channel-group', () => ({
-    listEnabledChannelGroups: (...a: unknown[]) => mockListEnabledChannelGroups(...a),
-}));
+// Keep the REAL restrictGroupsForUser (pure) — mock only the DB-touching list.
+vi.mock('@/lib/channel-group', async () => {
+    const actual = await vi.importActual<typeof import('@/lib/channel-group')>('@/lib/channel-group');
+    return {
+        ...actual,
+        listEnabledChannelGroups: (...a: unknown[]) => mockListEnabledChannelGroups(...a),
+    };
+});
 
 import { POST } from '@/app/api/portal/keys/route';
 
-const SESSION_USER = { id: 'u1', email: 'a@b.c', newapi_user_id: 7, newapi_access_token: 'at', tenant_id: null };
+const SESSION_USER = {
+    id: 'u1',
+    email: 'a@b.c',
+    newapi_user_id: 7,
+    newapi_access_token: 'at',
+    tenant_id: null,
+    allowed_tier_keys: [] as string[],
+};
 const GROUPS = [
     { key: 'pool', newapi_group: 'default', is_default: true },
     { key: 'official', newapi_group: 'official', is_default: false },
@@ -108,5 +120,54 @@ describe('POST /api/portal/keys — P3 档次 → new-api group (decoupled)', ()
         expect(res.status).toBe(200);
         expect(mockCreateTokenForCustomer.mock.calls[0][1].group).toBe('default');
         expect(mockTokenCreate.mock.calls[0][0].data.tier).toBe('pool');
+    });
+});
+
+describe('POST /api/portal/keys — per-customer 档次白名单 (allowed_tier_keys)', () => {
+    const restrictTo = (keys: string[]) =>
+        mockGetCurrentUser.mockResolvedValue({ ...SESSION_USER, allowed_tier_keys: keys });
+
+    it('restricted to [official] + no tier → defaults to the only allowed tier (official)', async () => {
+        restrictTo(['official']);
+        const res = await POST(req({ alias: 'k' }));
+        expect(res.status).toBe(200);
+        expect(mockCreateTokenForCustomer.mock.calls[0][1].group).toBe('official');
+        expect(mockTokenCreate.mock.calls[0][0].data.tier).toBe('official');
+    });
+
+    it('restricted to [official] + asks pool (not allowed) → 400, never touches new-api', async () => {
+        restrictTo(['official']);
+        const res = await POST(req({ alias: 'k', tier: 'pool' }));
+        expect(res.status).toBe(400);
+        expect((await res.json()).error).toBe('invalid_tier');
+        expect(mockCreateTokenForCustomer).not.toHaveBeenCalled();
+    });
+
+    it('restricted to image2 (enabled) → key created in group=image2', async () => {
+        mockListEnabledChannelGroups.mockResolvedValue([
+            { key: 'pool', newapi_group: 'default', is_default: true },
+            { key: 'image2', newapi_group: 'image2', is_default: false },
+        ]);
+        restrictTo(['image2']);
+        const res = await POST(req({ alias: 'k' }));
+        expect(res.status).toBe(200);
+        expect(mockCreateTokenForCustomer.mock.calls[0][1].group).toBe('image2');
+        expect(mockTokenCreate.mock.calls[0][0].data.tier).toBe('image2');
+    });
+
+    it('whitelist resolves to nothing (image2 not enabled) → 400, no silent default fallback', async () => {
+        // enabled = pool/official only; user restricted to image2 → empty intersection.
+        restrictTo(['image2']);
+        const res = await POST(req({ alias: 'k' }));
+        expect(res.status).toBe(400);
+        expect((await res.json()).error).toBe('invalid_tier');
+        expect(mockCreateTokenForCustomer).not.toHaveBeenCalled();
+    });
+
+    it('empty allowed_tier_keys = unrestricted (existing behavior unchanged)', async () => {
+        restrictTo([]);
+        const res = await POST(req({ alias: 'k', tier: 'official' }));
+        expect(res.status).toBe(200);
+        expect(mockCreateTokenForCustomer.mock.calls[0][1].group).toBe('official');
     });
 });
