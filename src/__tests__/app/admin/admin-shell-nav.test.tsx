@@ -12,7 +12,17 @@ vi.mock('next/navigation', () => ({
 
 import { AdminShell } from '@/app/admin/(console)/admin-shell';
 
-const PLATFORM_LABELS = ['支付配置', '渠道管理', '渠道分组', '模型管理', '定价', '影子计量', '订阅管理', '租户管理'];
+const PLATFORM_LABELS = [
+    '支付配置',
+    '渠道管理',
+    '渠道分组',
+    '模型管理',
+    '定价',
+    '影子计量',
+    '订阅管理',
+    '租户管理',
+    '公告管理',
+];
 
 describe('AdminShell nav role-filter', () => {
     it('partner admin (role=admin) → Dashboard + Orders + Customers, no platform items', () => {

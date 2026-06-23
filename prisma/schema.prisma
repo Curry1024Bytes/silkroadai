@@ -233,8 +233,40 @@ model Tenant {
   payment_provider_instances PaymentProviderInstance[]
   catalog_models             CatalogModel[]
   channel_groups             ChannelGroup[]
+  announcements              Announcement[]
 
   @@map("tenants")
+}
+
+/// 运营公告 — 客户控制台顶部通栏 banner。superadmin 在 /admin/announcements 发布;
+/// 客户端按 id 记 localStorage 关闭(不建已读表)。tenant_id=null = 平台全局,
+/// 预留白标 partner 给自有租户客户发公告(P6+,初版只发全局)。
+model Announcement {
+  id         String            @id @default(uuid()) @db.Uuid
+  tenant_id  String?           @db.Uuid
+  tenant     Tenant?           @relation(fields: [tenant_id], references: [id])
+
+  title      String            @db.VarChar(200)
+  body       String            @db.Text
+  level      AnnouncementLevel @default(info)
+  // 可选行动号召(CTA):有 url 时 banner 末尾渲染一个链接,label 缺省用「查看详情」。
+  link_url   String?           @db.VarChar(500)
+  link_label String?           @db.VarChar(80)
+  // 上线开关 — 客户端只拉 is_active=true;下线不删,留作历史/审计。
+  is_active  Boolean           @default(true)
+
+  created_at DateTime          @default(now())
+  updated_at DateTime          @updatedAt
+
+  @@index([is_active, created_at])
+  @@index([tenant_id])
+  @@map("announcements")
+}
+
+enum AnnouncementLevel {
+  info // 普通消息(蓝)
+  warning // 提醒(橙)
+  critical // 重要(红)
 }
 
 // admin 角色 — 取代单 ADMIN_TOKEN(后者保留为 break-glass = superadmin 等价)。

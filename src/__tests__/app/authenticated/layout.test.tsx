@@ -42,6 +42,12 @@ vi.mock('@/lib/reseller/fetch-status', () => ({
     fetchResellerStatus: vi.fn(async () => ({ isReseller: false })),
 }));
 
+// 公告 banner: layout 调 getActiveAnnouncements;mock 成空,保持 layout 为纯 SSR
+// smoke 而不连 prisma(镜像 fetchResellerStatus 的处理)。
+vi.mock('@/lib/announcements/fetch-active', () => ({
+    getActiveAnnouncements: vi.fn(async () => []),
+}));
+
 // P6a: layout now reads getCurrentTenant (brand color) + renders async <BrandLogo>.
 // Mock the tenant (platform values → no-op color) and render BrandLogo as the
 // default <Logo> (sync) so renderToString works + the "Silk Road AI" alt holds.

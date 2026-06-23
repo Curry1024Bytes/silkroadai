@@ -19,6 +19,7 @@ import AdminPaymentConfig from '@/app/admin/(console)/payment-config/page';
 import AdminSubscriptions from '@/app/admin/(console)/subscriptions/page';
 import AdminBillingShadow from '@/app/admin/(console)/billing-shadow/page';
 import AdminTenants from '@/app/admin/(console)/tenants/page';
+import AdminAnnouncements from '@/app/admin/(console)/announcements/page';
 
 const PAGES = [
     ['/admin', AdminHome],
@@ -29,6 +30,7 @@ const PAGES = [
     ['/admin/subscriptions', AdminSubscriptions],
     ['/admin/billing-shadow', AdminBillingShadow],
     ['/admin/tenants', AdminTenants],
+    ['/admin/announcements', AdminAnnouncements],
 ] as const;
 
 describe('admin console pages — SSR smoke (post token-removal)', () => {

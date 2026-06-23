@@ -61,6 +61,10 @@
     --color-status-success-bg: #f0fdf4;
     --color-status-success-border: #bbf7d0;
     --color-status-success-text: #166534;
+    /* Info — calm blue for announcements / neutral notices (no warm-paper variant needed). */
+    --color-status-info-bg: #eff6ff;
+    --color-status-info-border: #bfdbfe;
+    --color-status-info-text: #1e40af;
 
     /* — Typography —
    * `--font-inter` is set by `next/font/google` in `src/app/layout.tsx`
