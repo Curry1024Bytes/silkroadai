@@ -740,6 +740,8 @@ async function handleImagesDalle(
             sizeRaw = String(form.get('size') ?? '');
             // model 非我们的 Gemini 生图 → 重建 FormData 透传(保留 gpt-image-2 等)
             if (!(model in GEMINI_IMAGE_MODELS)) {
+                // gpt-image-2 上游严格拒收 response_format → multipart 同样剥掉(见 JSON 分支)
+                if (model.startsWith('gpt-image')) form.delete('response_format');
                 // multipart 入参不拆图字节(brief §3 Out),只记文本字段摘要
                 if (cap)
                     recordRequestBody(
@@ -799,6 +801,9 @@ async function handleImagesDalle(
             sizeRaw = String(body.size ?? '');
             if (cap) recordRequestBody(cap, JSON.stringify(body), model, false);
             if (!(model in GEMINI_IMAGE_MODELS)) {
+                // gpt-image-2 上游(zhiyunai / Azure gpt-image)严格拒收 response_format → 400;
+                // 官方 gpt-image-1 本就恒回 b64,转发前剥掉该参数。
+                if (model.startsWith('gpt-image')) delete body.response_format;
                 try {
                     const upstream = await fetchUpstreamJson(req, body, path, search);
                     return await reshapeOpenAiImageResponse(upstream, prompt, sizeRaw, cap);
