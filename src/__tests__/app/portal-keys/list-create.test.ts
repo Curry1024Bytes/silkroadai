@@ -38,9 +38,13 @@ vi.mock('@/lib/newapi/client', () => ({
 
 // P3: POST resolves 档次 → new-api group via listEnabledChannelGroups.
 const mockListEnabledChannelGroups = vi.fn();
-vi.mock('@/lib/channel-group', () => ({
-    listEnabledChannelGroups: (...args: unknown[]) => mockListEnabledChannelGroups(...args),
-}));
+vi.mock('@/lib/channel-group', async () => {
+    const actual = await vi.importActual<typeof import('@/lib/channel-group')>('@/lib/channel-group');
+    return {
+        ...actual, // keep the real restrictGroupsForUser (pure)
+        listEnabledChannelGroups: (...args: unknown[]) => mockListEnabledChannelGroups(...args),
+    };
+});
 
 import { GET, POST, MAX_TOKENS_PER_USER } from '@/app/api/portal/keys/route';
 
@@ -52,6 +56,7 @@ const SESSION_USER = {
     email: 'happy@silkroadai.io',
     newapi_user_id: NEWAPI_USER_ID,
     newapi_access_token: NEWAPI_ACCESS_TOKEN,
+    allowed_tier_keys: [] as string[],
 };
 
 function makeReq(opts: { method: string; body?: unknown } = { method: 'GET' }): NextRequest {

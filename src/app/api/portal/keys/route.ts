@@ -30,7 +30,7 @@ import {
 } from '@/lib/newapi/client';
 import { formatTokenForDisplay } from '@/lib/newapi/token-format';
 import { PORTAL_INTERNAL_TOKEN_NAME } from '@/lib/newapi/system-token';
-import { listEnabledChannelGroups } from '@/lib/channel-group';
+import { listEnabledChannelGroups, restrictGroupsForUser } from '@/lib/channel-group';
 
 export const runtime = 'nodejs';
 
@@ -145,7 +145,11 @@ export async function POST(req: NextRequest) {
     // P3: resolve 档次 → new-api group(portal key 与 new-api group 解耦)。
     // pool→'default'(复用现有渠道,现有 token 已是 default);official→'official'。
     // 不传档次 → 默认档(is_default = pool)。非法档次 → 400。
-    const groups = await listEnabledChannelGroups(user.tenant_id);
+    // per-customer 白名单收窄(allowed_tier_keys 非空 → 只允许这些档)。与 /keys
+    // 页用同一个 restrictGroupsForUser,展示与校验一致。
+    const enabled = await listEnabledChannelGroups(user.tenant_id);
+    const groups = restrictGroupsForUser(enabled, user.allowed_tier_keys);
+    const restricted = user.allowed_tier_keys.length > 0;
     let tier = 'pool';
     let newapiGroup = 'default';
     if (groups.length > 0) {
@@ -157,10 +161,10 @@ export async function POST(req: NextRequest) {
         }
         tier = chosen.key;
         newapiGroup = chosen.newapi_group;
-    } else if (requestedTier && requestedTier !== 'pool') {
-        // No ChannelGroup rows (misconfig — the P3 migration seeds pool+official).
-        // Can't honor a non-pool tier; reject rather than silently downgrade.
-        return NextResponse.json({ error: 'invalid_tier', allowed: ['pool'] }, { status: 400 });
+    } else if (restricted || (requestedTier && requestedTier !== 'pool')) {
+        // 受限客户的白名单解析为空(配置问题),或无档次配置却要非 pool 档:
+        // 不静默降级到 default(那会给受限客户发出一个默认档 key),直接拒。
+        return NextResponse.json({ error: 'invalid_tier', allowed: groups.map((g) => g.key) }, { status: 400 });
     }
 
     const customerAuth = {

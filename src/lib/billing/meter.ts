@@ -268,3 +268,48 @@ async function debitPortalUsers(rows: Prisma.UsageRecordCreateManyInput[], resul
         }
     }
 }
+
+/**
+ * P4c-5 §1.5:每轮兜底把【所有】portal 客户的哑门重同步到账本余额(余额 >0 顶满放行 / ≤0 关门),
+ * 不依赖"是否本轮被扣费"。根治 P4c-5 灰度发现的卡死缺口 —— 任何改余额的路径(admin 调余额/退款/
+ * 未来别的入口)漏调 syncNewapiGate 时,下一轮 meter 必然把哑门校正到与账本一致,卡死客户最多等
+ * 一个轮询周期自愈。
+ *
+ * 独立于 {@link runShadowMeter} 的日志处理 —— 由 scheduler 每轮单独调一次(`shadow-meter.ts`),
+ * 所以即使本轮没有任何日志/扣费,空闲 / 被 admin 调过余额 / 退过款的 portal 客户的哑门也会被校正。
+ * 仅 BILLING_SOURCE='portal' 时跑;syncNewapiGate 内部再守 `billing_mode='portal'` + 有 newapi_user_id
+ * (newapi 客户 quota 一字不碰)。量级:portal 客户极少,每轮全量 sync 无压力(将来多了可只 sync
+ * 余额可能变过的那批,先做全量兜底,简单稳)。失败逐个吞掉、不阻断。返回成功 sync 的客户数。
+ */
+export async function reconcileAllPortalGates(): Promise<number> {
+    if (!billingSourceIsPortal()) return 0; // 全局门关 → 不碰任何人
+
+    const portalUsers = await prisma.user.findMany({
+        where: { billing_mode: 'portal' },
+        select: { id: true },
+    });
+    let synced = 0;
+    for (const u of portalUsers) {
+        try {
+            await syncNewapiGate(u.id);
+            synced++;
+        } catch (err) {
+            console.warn(`[meter] gate reconcile failed for user ${u.id}:`, err instanceof Error ? err.message : err);
+        }
+    }
+    return synced;
+}
+
+/**
+ * flip-guardrail §2 反向危险态:全局闸关(`BILLING_SOURCE≠portal`)但仍有 `billing_mode='portal'`
+ * 客户 —— 他们【脱钩】:哑门 quota 停在 1e9、`syncNewapiGate`/meter 全 no-op → 账本冻结、不扣费 →
+ * 可能无限免费用。这是 kill-switch 的盲区(比 357 半翻号更糟:单关 env flag 不是完整 revert,
+ * 关闸前必须先把所有 portal 客户回滚到 newapi)。
+ *
+ * 返回这种"孤儿"portal 客户数(闸【开】→ 返 0,portal 客户是正常态、不算孤儿)。**只读、无副作用**
+ * —— 调用方负责 loud warn + Sentry 告警,【不】自动回滚客户(太重 + 有风险,留人工)。
+ */
+export async function countOrphanedPortalCustomers(): Promise<number> {
+    if (billingSourceIsPortal()) return 0; // 闸开 → portal 客户正常,不算孤儿
+    return prisma.user.count({ where: { billing_mode: 'portal' } });
+}

@@ -39,7 +39,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { getCurrentUser } from '@/lib/auth/session';
 import { getOrCreateSystemToken, PortalSystemTokenError } from '@/lib/newapi/system-token';
-import { rateLimitCheck } from '@/lib/image-gen/rate-limit';
 import { runWebSearch } from '@/lib/chat/web-search';
 import { resolveModelGroup } from '@/lib/chat/model-groups';
 
@@ -104,23 +103,7 @@ export async function POST(req: NextRequest): Promise<Response> {
         return NextResponse.json({ error: 'invalid_credentials' }, { status: 401 });
     }
 
-    // Rate limit before any upstream work. 20/min/user — chat turns are
-    // cheaper + more frequent than image gen, so a looser cap than the
-    // image-gen 10/min.
-    const rl = rateLimitCheck(user.id, { scope: 'chat_stream', maxHits: 20 });
-    if (!rl.allowed) {
-        return NextResponse.json(
-            {
-                error: 'rate_limit_exceeded',
-                message: '请求过于频繁,请稍候再试',
-                retry_after_ms: rl.retryAfterMs,
-            },
-            {
-                status: 429,
-                headers: { 'Retry-After': Math.ceil(rl.retryAfterMs / 1000).toString() },
-            },
-        );
-    }
+    // 限流已移除(运营策略:不对客户 API 用量设节流)。
 
     let body: unknown;
     try {

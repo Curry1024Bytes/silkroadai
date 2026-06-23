@@ -13,13 +13,41 @@
  * gated by the per-order status access token (token-of-bearer)
  * issued by createOrder. Admin token also works (verifyAdminToken
  * fallback in route.ts) but the portal flow uses the t= param.
+ *
+ * Transient poll failures are SWALLOWED. A single failed poll (flaky
+ * mobile network, the tab backgrounded while the customer is in the
+ * WeChat app, our own container restart during a deploy) self-heals on
+ * the next 3s tick, so we keep showing the last good phase instead of
+ * flashing an alarming error. Only a sustained outage — FAILURE_GRACE_TICKS
+ * back-to-back failures (~10s) — surfaces a calm "正在重新连接" hint in
+ * muted ink. This is why customers no longer see the old red
+ * "状态查询失败" on every network blip (it scared people into thinking
+ * their payment had failed).
  */
 import { useEffect, useRef, useState } from 'react';
 
 const POLL_INTERVAL_MS = 3_000;
 const TIMEOUT_MS = 15 * 60 * 1_000; // 15 minutes
+// How many back-to-back poll failures to tolerate before showing the calm
+// "reconnecting" hint. At 3s/poll the 4th consecutive failure lands ~10s in —
+// long enough to swallow a flaky-network blip or a deploy-time container
+// restart, which would otherwise self-heal on the very next tick.
+export const FAILURE_GRACE_TICKS = 4;
 
-type DisplayPhase = 'waiting' | 'paid' | 'recharging' | 'success' | 'failed' | 'timeout' | 'error';
+type DisplayPhase = 'waiting' | 'paid' | 'recharging' | 'success' | 'failed' | 'timeout' | 'reconnecting';
+
+/**
+ * Pure decision for a single poll failure. Returns the new consecutive-failure
+ * count and the phase to display — or a `null` phase meaning "leave the current
+ * phase untouched", so a short blip never disturbs the screen. Extracted so the
+ * swallow-then-reconnect threshold is unit-testable without a DOM (the
+ * component itself is effect / timer / fetch driven and not run by the repo's
+ * renderToString-based component tests).
+ */
+export function reduceFailure(prevFailures: number): { failures: number; phase: 'reconnecting' | null } {
+    const failures = prevFailures + 1;
+    return { failures, phase: failures >= FAILURE_GRACE_TICKS ? 'reconnecting' : null };
+}
 
 interface PollResponse {
     id: string;
@@ -33,9 +61,9 @@ interface PollResponse {
 
 // W7 P3: status colors swapped from inline hex to design-system tokens.
 // Same intent as before — neutral / processing → muted-ink/navy, terminal
-// success → status-success, terminal failure → status-error, transient
-// error → status-warning. Token resolution happens via CSS var so the
-// label still gets a pure hex color value applied inline.
+// success → status-success, terminal failure → status-error. The
+// sustained-outage hint uses muted-ink (calm grey, NOT a warning red): it is
+// a "still trying" reassurance, not a failure the customer must act on.
 const PHASE_TEXT: Record<DisplayPhase, { label: string; color: string }> = {
     waiting: { label: '等待付款…', color: 'var(--color-muted-ink)' },
     paid: { label: '付款已收到,正在到账…', color: 'var(--color-navy)' },
@@ -43,7 +71,9 @@ const PHASE_TEXT: Record<DisplayPhase, { label: string; color: string }> = {
     success: { label: '充值成功,正在跳转余额页…', color: 'var(--color-status-success-text)' },
     failed: { label: '订单失败,正在跳转结果页…', color: 'var(--color-status-error-text)' },
     timeout: { label: '等待超时,正在跳转结果页…', color: 'var(--color-status-error-text)' },
-    error: { label: '状态查询失败,稍后重试…', color: 'var(--color-status-warning-text)' },
+    // Shown only after FAILURE_GRACE_TICKS consecutive failures — a single
+    // transient blip never reaches here. Calm copy + muted ink on purpose.
+    reconnecting: { label: '正在重新连接,请稍候…', color: 'var(--color-muted-ink)' },
 };
 
 export function QrPollRunner({ orderId, accessToken }: { orderId: string; accessToken: string | null }) {
@@ -55,11 +85,25 @@ export function QrPollRunner({ orderId, accessToken }: { orderId: string; access
         if (!orderId) return;
 
         let cancelled = false;
+        // Count of consecutive failed polls. Reset to 0 by any good poll.
+        // Lives in the effect scope so it resets naturally on remount / dep
+        // change and never triggers a re-render the way a state value would.
+        let failures = 0;
 
         const goTo = (url: string) => {
             if (redirectedRef.current || cancelled) return;
             redirectedRef.current = true;
             window.location.href = url;
+        };
+
+        // A poll failed (non-2xx or network error). Swallow short streaks —
+        // keep the last good phase on screen — and only flip to the calm
+        // "reconnecting" hint once the failures are clearly sustained.
+        const noteTransientFailure = () => {
+            if (cancelled || redirectedRef.current) return;
+            const next = reduceFailure(failures);
+            failures = next.failures;
+            if (next.phase) setPhase(next.phase);
         };
 
         const url = accessToken
@@ -75,11 +119,15 @@ export function QrPollRunner({ orderId, accessToken }: { orderId: string; access
                     cache: 'no-store',
                 });
                 if (!r.ok) {
-                    if (!cancelled) setPhase('error');
+                    noteTransientFailure();
                     return;
                 }
                 const data = (await r.json()) as PollResponse;
                 if (cancelled) return;
+
+                // A good poll clears the failure streak (and any reconnecting
+                // hint) before we map the real status below.
+                failures = 0;
 
                 if (data.rechargeSuccess) {
                     setPhase('success');
@@ -101,7 +149,7 @@ export function QrPollRunner({ orderId, accessToken }: { orderId: string; access
                 }
                 setPhase('waiting');
             } catch {
-                if (!cancelled) setPhase('error');
+                noteTransientFailure();
             }
         };
 

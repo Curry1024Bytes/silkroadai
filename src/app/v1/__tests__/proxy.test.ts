@@ -29,6 +29,10 @@ const mockGetOssConfig = vi.fn(async (_userId: string): Promise<Record<string, u
 const mockUploadToCustomerOss = vi.fn(
     async (_config: unknown, _buf: Buffer, key: string, _mime: string) => `https://cdn.customer.com/${key}`,
 );
+const mockObjectExistsInOss = vi.fn(async (_config: unknown, _key: string): Promise<boolean> => false);
+const mockOssPublicUrl = vi.fn(
+    (config: { public_url_prefix: string }, key: string) => `${config.public_url_prefix}/${key}`,
+);
 vi.mock('@/lib/oss/store', () => ({
     resolveUserIdFromAuthHeader: (auth: string | null) => mockResolveUserId(auth),
     getOssConfig: (userId: string) => mockGetOssConfig(userId),
@@ -36,6 +40,8 @@ vi.mock('@/lib/oss/store', () => ({
 vi.mock('@/lib/oss/client', () => ({
     uploadToCustomerOss: (config: unknown, buf: Buffer, key: string, mime: string) =>
         mockUploadToCustomerOss(config, buf, key, mime),
+    objectExistsInOss: (config: unknown, key: string) => mockObjectExistsInOss(config, key),
+    ossPublicUrl: (config: { public_url_prefix: string }, key: string) => mockOssPublicUrl(config, key),
 }));
 
 import { GET, POST } from '../[...path]/route';
@@ -186,6 +192,180 @@ describe('/v1 proxy — Claude max_tokens clamp', () => {
         const sent = JSON.parse(String(init.body)) as { max_tokens: number };
         expect(sent.max_tokens).toBe(4096);
         expect(res.headers.get('X-Silkroadai-Clamped')).toBeNull();
+    });
+});
+
+describe('/v1 proxy — Claude prompt-cache injection', () => {
+    const BIG_SYS = 'You are a careful assistant. '.repeat(300); // > MIN_CACHE_CHARS
+    function anthropicMsgResponse() {
+        return new Response(
+            JSON.stringify({
+                id: 'msg_x',
+                type: 'message',
+                role: 'assistant',
+                model: 'claude-sonnet-4-6',
+                content: [{ type: 'text', text: 'Hi there' }],
+                stop_reason: 'end_turn',
+                usage: {
+                    input_tokens: 5,
+                    cache_read_input_tokens: 5000,
+                    cache_creation_input_tokens: 0,
+                    output_tokens: 3,
+                },
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+    }
+
+    it('translates cacheable Claude chat → /v1/messages with cache_control injected + OpenAI response + header', async () => {
+        mockFetch.mockResolvedValueOnce(anthropicMsgResponse());
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: {
+                    model: 'claude-sonnet-4-6',
+                    messages: [
+                        { role: 'system', content: BIG_SYS },
+                        { role: 'user', content: 'hello' },
+                    ],
+                },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('chat', 'completions'),
+        );
+        // 打到原生 /v1/messages,且注入了 cache_control
+        const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(url).toBe(`${NEWAPI_BASE}/v1/messages`);
+        const sent = JSON.parse(String(init.body)) as {
+            system: Array<{ cache_control?: unknown }>;
+            messages: Array<{ content: Array<{ cache_control?: unknown }> }>;
+            max_tokens: number;
+        };
+        expect(sent.system[0].cache_control).toEqual({ type: 'ephemeral' });
+        expect(sent.messages[0].content[0].cache_control).toEqual({ type: 'ephemeral' });
+        expect(sent.max_tokens).toBe(4096);
+        // Authorization 透传
+        expect((init.headers as Headers).get('authorization')).toBe('Bearer sk-test');
+        // 响应翻回 OpenAI 形 + header
+        expect(res.headers.get('X-Silkroadai-Cache-Injected')).toBe('claude');
+        const data = (await res.json()) as {
+            object: string;
+            choices: Array<{ message: { content: string } }>;
+            usage: { prompt_tokens: number; prompt_tokens_details: { cached_tokens: number } };
+        };
+        expect(data.object).toBe('chat.completion');
+        expect(data.choices[0].message.content).toBe('Hi there');
+        expect(data.usage.prompt_tokens).toBe(5005);
+        expect(data.usage.prompt_tokens_details.cached_tokens).toBe(5000);
+    });
+
+    it('upstream /v1/messages 4xx → falls back to original /chat/completions passthrough (no regression)', async () => {
+        mockFetch
+            .mockResolvedValueOnce(new Response(JSON.stringify({ type: 'error' }), { status: 400 }))
+            .mockResolvedValueOnce(
+                new Response(JSON.stringify({ ok: true }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+            );
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: {
+                    model: 'claude-sonnet-4-6',
+                    messages: [
+                        { role: 'system', content: BIG_SYS },
+                        { role: 'user', content: 'hi' },
+                    ],
+                },
+            }),
+            ctx('chat', 'completions'),
+        );
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+        expect((mockFetch.mock.calls[0] as [string, RequestInit])[0]).toBe(`${NEWAPI_BASE}/v1/messages`);
+        expect((mockFetch.mock.calls[1] as [string, RequestInit])[0]).toBe(`${NEWAPI_BASE}/v1/chat/completions`);
+        expect(res.headers.get('X-Silkroadai-Cache-Injected')).toBeNull();
+    });
+
+    it('Claude with tools → NOT translated, passthrough to /chat/completions', async () => {
+        mockFetch.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: {
+                    model: 'claude-sonnet-4-6',
+                    tools: [{ type: 'function', function: { name: 'f' } }],
+                    messages: [
+                        { role: 'system', content: BIG_SYS },
+                        { role: 'user', content: 'hi' },
+                    ],
+                },
+            }),
+            ctx('chat', 'completions'),
+        );
+        const [url] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(url).toBe(`${NEWAPI_BASE}/v1/chat/completions`);
+        expect(res.headers.get('X-Silkroadai-Cache-Injected')).toBeNull();
+    });
+
+    it('small Claude chat (below cache threshold) → NOT translated, passthrough', async () => {
+        mockFetch.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+        await POST(
+            makeReq('/chat/completions', {
+                body: { model: 'claude-sonnet-4-6', messages: [{ role: 'user', content: 'hi' }] },
+            }),
+            ctx('chat', 'completions'),
+        );
+        const [url] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(url).toBe(`${NEWAPI_BASE}/v1/chat/completions`);
+    });
+
+    it('streaming cacheable Claude → /v1/messages + translated SSE + header', async () => {
+        const enc = new TextEncoder();
+        const sse = [
+            'event: message_start',
+            'data: {"type":"message_start","message":{"model":"claude-sonnet-4-6"}}',
+            '',
+            'event: content_block_delta',
+            'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hi"}}',
+            '',
+            'event: message_stop',
+            'data: {"type":"message_stop"}',
+            '',
+            '',
+        ].join('\n');
+        mockFetch.mockResolvedValueOnce(
+            new Response(
+                new ReadableStream({
+                    start(c) {
+                        c.enqueue(enc.encode(sse));
+                        c.close();
+                    },
+                }),
+                {
+                    status: 200,
+                    headers: { 'content-type': 'text/event-stream' },
+                },
+            ),
+        );
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: {
+                    model: 'claude-sonnet-4-6',
+                    stream: true,
+                    messages: [
+                        { role: 'system', content: BIG_SYS },
+                        { role: 'user', content: 'hi' },
+                    ],
+                },
+            }),
+            ctx('chat', 'completions'),
+        );
+        const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(url).toBe(`${NEWAPI_BASE}/v1/messages`);
+        expect(JSON.parse(String(init.body)).stream).toBe(true);
+        expect(res.headers.get('content-type')).toMatch(/event-stream/);
+        expect(res.headers.get('X-Silkroadai-Cache-Injected')).toBe('claude');
+        const text = await res.text();
+        expect(text).toContain('"content":"Hi"');
+        expect(text.trimEnd().endsWith('data: [DONE]')).toBe(true);
     });
 });
 
@@ -1319,5 +1499,78 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
         const data = (await res.json()) as { error: { message: string; type: string } };
         expect(data.error.message).toContain('ECONNREFUSED');
         expect(data.error.type).toBe('invalid_request_error');
+    });
+});
+
+describe('/v1 proxy — video poll customer-OSS rehost', () => {
+    const R2 = 'https://images.silkroadai.io';
+    const R2_VIDEO = `${R2}/seedance-video/task_abc.mp4`;
+    const OSS_CONFIG = { status: 'active', public_url_prefix: 'https://cdn.customer.com' };
+
+    beforeEach(() => {
+        process.env.R2_PUBLIC_URL = R2;
+    });
+
+    function videoPoll(videoUrl: string, status = 'SUCCESS') {
+        return new Response(
+            JSON.stringify({
+                code: 'success',
+                data: {
+                    id: 1,
+                    status,
+                    data: { status: 'completed', video_url: videoUrl, url: videoUrl, urls: [videoUrl] },
+                },
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+    }
+    function pollReq() {
+        return makeReq('/video/generations/task_abc', { method: 'GET', headers: { authorization: 'Bearer sk-x' } });
+    }
+
+    it('completed + R2 video + customer OSS → rehosts + rewrites video_url', async () => {
+        mockResolveUserId.mockResolvedValueOnce('user-1');
+        mockGetOssConfig.mockResolvedValueOnce(OSS_CONFIG as unknown as Record<string, unknown>);
+        mockObjectExistsInOss.mockResolvedValueOnce(false);
+        mockFetch
+            .mockResolvedValueOnce(videoPoll(R2_VIDEO))
+            .mockResolvedValueOnce(
+                new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { 'content-type': 'video/mp4' } }),
+            );
+        const res = await GET(pollReq(), ctx('video', 'generations', 'task_abc'));
+        const body = (await res.json()) as { data: { data: { video_url: string; urls: string[] } } };
+        expect(body.data.data.video_url).toBe('https://cdn.customer.com/seedance-video/task_abc.mp4');
+        expect(body.data.data.urls).toEqual(['https://cdn.customer.com/seedance-video/task_abc.mp4']);
+        expect(mockUploadToCustomerOss).toHaveBeenCalledTimes(1);
+        expect(mockUploadToCustomerOss.mock.calls[0][2]).toBe('seedance-video/task_abc.mp4');
+    });
+
+    it('completed + OSS object already exists → ossPublicUrl, no re-upload', async () => {
+        mockResolveUserId.mockResolvedValueOnce('user-1');
+        mockGetOssConfig.mockResolvedValueOnce(OSS_CONFIG as unknown as Record<string, unknown>);
+        mockObjectExistsInOss.mockResolvedValueOnce(true);
+        mockFetch.mockResolvedValueOnce(videoPoll(R2_VIDEO));
+        const res = await GET(pollReq(), ctx('video', 'generations', 'task_abc'));
+        const body = (await res.json()) as { data: { data: { video_url: string } } };
+        expect(body.data.data.video_url).toBe('https://cdn.customer.com/seedance-video/task_abc.mp4');
+        expect(mockUploadToCustomerOss).not.toHaveBeenCalled();
+    });
+
+    it('no customer OSS → keeps platform R2 url', async () => {
+        mockResolveUserId.mockResolvedValueOnce('user-1');
+        mockGetOssConfig.mockResolvedValueOnce(null);
+        mockFetch.mockResolvedValueOnce(videoPoll(R2_VIDEO));
+        const res = await GET(pollReq(), ctx('video', 'generations', 'task_abc'));
+        const body = (await res.json()) as { data: { data: { video_url: string } } };
+        expect(body.data.data.video_url).toBe(R2_VIDEO);
+        expect(mockUploadToCustomerOss).not.toHaveBeenCalled();
+    });
+
+    it('in-progress → passthrough, no user lookup / no rehost', async () => {
+        mockFetch.mockResolvedValueOnce(videoPoll(R2_VIDEO, 'IN_PROGRESS'));
+        const res = await GET(pollReq(), ctx('video', 'generations', 'task_abc'));
+        const body = (await res.json()) as { data: { data: { video_url: string } } };
+        expect(mockResolveUserId).not.toHaveBeenCalled();
+        expect(body.data.data.video_url).toBe(R2_VIDEO);
     });
 });

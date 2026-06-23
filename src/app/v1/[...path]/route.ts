@@ -50,7 +50,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
 import { uploadImage } from '@/lib/r2/client';
-import { uploadToCustomerOss } from '@/lib/oss/client';
+import { objectExistsInOss, ossPublicUrl, uploadToCustomerOss } from '@/lib/oss/client';
 import { getOssConfig, resolveUserIdFromAuthHeader } from '@/lib/oss/store';
 import {
     type CaptureCtx,
@@ -61,6 +61,12 @@ import {
     parseModelAndStream,
     recordRequestBody,
 } from '@/lib/reqlog/capture';
+import {
+    isCacheableClaudeChat,
+    buildAnthropicRequest,
+    anthropicToOpenAiChat,
+    translateAnthropicSseToOpenAi,
+} from './claude-chat-cache';
 
 // Next.js: 强制动态 + Node runtime(需要流式 fetch duplex)
 export const dynamic = 'force-dynamic';
@@ -886,6 +892,133 @@ async function handleImagesDalle(
     return NextResponse.json(dalleResp, { status: 200, headers: respHeaders });
 }
 
+/**
+ * 视频轮询(GET /video/generations/{id}):转发 new-api,若任务已完成且 video_url 是我们平台 R2、
+ * 且该客户配了自定义 OSS,则把成片转存到客户 bucket 并改写 video_url 为客户域名。
+ * 这是视频版的「自定义对象存储」——镜像生图的 storeGeneratedImage,但生图在生成时存(代理里有客户 key),
+ * 视频成片是 new-api 异步轮询时由适配器落到平台 R2(那一步没有客户身份),所以放到客户【轮询】这步做
+ * (轮询请求带客户 sk-xxx → 能反查 user → OSS 配置)。HEAD 幂等:重复轮询不重复下载+上传。
+ * 任何故障一律保持平台 R2 直链 —— 绝不因客户 OSS 转存失败而让客户拿不到片。
+ */
+async function handleVideoPoll(req: NextRequest, path: string, search: string): Promise<NextResponse> {
+    const upstream = await fetch(`${NEWAPI_BASE_URL}/v1${path}${search}`, {
+        method: 'GET',
+        headers: forwardHeaders(req),
+    });
+    const text = await upstream.text();
+    if (!upstream.ok) {
+        return new NextResponse(text, { status: upstream.status, headers: { 'Content-Type': 'application/json' } });
+    }
+    let body: JsonRecord;
+    try {
+        body = JSON.parse(text) as JsonRecord;
+    } catch {
+        return new NextResponse(text, { status: upstream.status, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    try {
+        const data = body.data as JsonRecord | undefined;
+        const inner = data?.data as JsonRecord | undefined;
+        const status = String(data?.status ?? '').toUpperCase();
+        const videoUrl = typeof inner?.video_url === 'string' ? (inner.video_url as string) : null;
+        const r2Base = (process.env.R2_PUBLIC_URL || '').replace(/\/$/, '');
+        if (status === 'SUCCESS' && videoUrl && r2Base && videoUrl.startsWith(r2Base + '/') && inner) {
+            const userId = await resolveUserIdFromAuthHeader(req.headers.get('authorization'));
+            const ossConfig = userId ? await getOssConfig(userId) : null;
+            if (ossConfig && ossConfig.status === 'active') {
+                const key = videoUrl.slice(r2Base.length + 1);
+                let ossUrl: string | null = null;
+                if (await objectExistsInOss(ossConfig, key)) {
+                    ossUrl = ossPublicUrl(ossConfig, key);
+                } else {
+                    const vid = await fetch(videoUrl);
+                    if (vid.ok) {
+                        const buf = Buffer.from(await vid.arrayBuffer());
+                        const ct = vid.headers.get('content-type') || 'video/mp4';
+                        ossUrl = await uploadToCustomerOss(ossConfig, buf, key, ct);
+                    }
+                }
+                if (ossUrl) {
+                    inner.video_url = ossUrl;
+                    inner.url = ossUrl;
+                    if (Array.isArray(inner.urls)) inner.urls = [ossUrl];
+                }
+            }
+        }
+    } catch (e) {
+        // DB / OSS / R2 任一故障都不阻断:保持平台 R2 直链返回(客户照样拿得到片)
+        console.warn('[v1-proxy] video customer-OSS rehost failed, keeping platform R2', e);
+    }
+    return NextResponse.json(body, { status: upstream.status });
+}
+
+/**
+ * Claude prompt-cache 透明增强:把可缓存的 OpenAI 格式 Claude 请求翻译成原生
+ * /v1/messages(注入 cache_control)发给 new-api,响应翻回 OpenAI 形。
+ *
+ * 安全:翻译请求被上游拒(网络异常 / 非 2xx)→ 回退原透传(翻译请求未计费,
+ * 重发原 body 安全),零回归。响应翻译(含流式)失败也不重发(已计费),返错误形。
+ * 详见 ./claude-chat-cache.ts。
+ */
+async function handleClaudeCachedChat(
+    req: NextRequest,
+    originalBody: JsonRecord,
+    anthropicBody: JsonRecord,
+    path: string,
+    search: string,
+    cap: CaptureCtx | null,
+): Promise<NextResponse> {
+    const model = String(originalBody.model ?? '');
+    const wantStream = anthropicBody.stream === true;
+
+    let upstream: Response;
+    try {
+        upstream = await fetch(`${NEWAPI_BASE_URL}/v1/messages`, {
+            method: 'POST',
+            headers: jsonForwardHeaders(req),
+            body: JSON.stringify(anthropicBody),
+        });
+    } catch {
+        return forwardToNewApi(req, originalBody, path, search, cap); // 网络异常 → 回退透传
+    }
+
+    // 上游拒(4xx/5xx):翻译请求未产生计费,重发原始请求安全 → 回退透传(零回归)
+    if (!upstream.ok) {
+        await upstream.body?.cancel().catch(() => {});
+        return forwardToNewApi(req, originalBody, path, search, cap);
+    }
+
+    // 流式:逐事件翻 Anthropic SSE → OpenAI chunk
+    if (wantStream) {
+        if (!upstream.body) return forwardToNewApi(req, originalBody, path, search, cap);
+        const translated = translateAnthropicSseToOpenAi(upstream.body, model);
+        const headers = new Headers({
+            'content-type': 'text/event-stream; charset=utf-8',
+            'cache-control': 'no-cache',
+        });
+        const resp = cap
+            ? captureResponse(cap, new Response(translated, { status: 200, headers }))
+            : new NextResponse(translated, { status: 200, headers });
+        resp.headers.set('X-Silkroadai-Cache-Injected', 'claude');
+        return resp;
+    }
+
+    // 非流式:Anthropic message → OpenAI chat.completion
+    let anthropicJson: JsonRecord;
+    try {
+        anthropicJson = (await upstream.json()) as JsonRecord;
+    } catch {
+        const err = { error: { message: 'upstream returned non-JSON', type: 'api_error' } };
+        if (cap) captureJsonResponse(cap, 502, err);
+        return NextResponse.json(err, { status: 502 });
+    }
+    const openai = anthropicToOpenAiChat(anthropicJson, model);
+    if (cap) captureJsonResponse(cap, 200, openai);
+    const resp = NextResponse.json(openai);
+    resp.headers.set('X-Silkroadai-Cache-Injected', 'claude');
+    return resp;
+}
+
 async function handleRequest(req: NextRequest, params: Promise<{ path: string[] }>): Promise<NextResponse> {
     const { path: segments } = await params;
     const path = '/' + (segments ?? []).join('/');
@@ -919,6 +1052,18 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
         // 捕获【原始】请求体(文本路径;clamp 分支也存未钳的,记录客户真实输入,brief §4)
         if (cap) recordRequestBody(cap, JSON.stringify(body), model, body.stream === true);
 
+        // Branch 1.5: 可缓存的纯文本 Claude 请求 → 翻译到原生 /v1/messages 注入 cache_control。
+        // new-api 的 OpenAI→Claude 转换会丢弃 cache_control,故用 OpenAI 格式调 Claude 拿不到
+        // prompt 缓存、大上下文每轮全价重发。这里透明补上(gate 保守,带 tools/多模态/过小的请求
+        // 不命中 → 落到下面的 clamp/透传,零回归)。max_tokens 钳在 build 内一并处理。
+        if (model.startsWith('claude-') && isCacheableClaudeChat(body)) {
+            const anthropicBody = buildAnthropicRequest(body);
+            if (anthropicBody) {
+                return handleClaudeCachedChat(req, body, anthropicBody, path, search, cap);
+            }
+            // null(结构无法干净翻译,如首条非 system 消息不是 user)→ 落到下面透传
+        }
+
         // Branch 2: Claude max_tokens clamp
         const maxTokens = typeof body.max_tokens === 'number' ? body.max_tokens : 0;
         if (model.startsWith('claude-') && maxTokens > CLAUDE_MAX_TOKENS_CAP) {
@@ -935,6 +1080,11 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
     // DALL·E 兼容图像接口:Gemini 生图模型翻译,其余(gpt-image-2 等)透传
     if ((path === '/images/edits' || path === '/images/generations') && req.method === 'POST') {
         return handleImagesDalle(req, path, search, cap);
+    }
+
+    // 视频轮询完成后:按客户自定义 OSS 转存(详见 handleVideoPoll)
+    if (req.method === 'GET' && /^\/video\/generations\/[^/]+$/.test(path)) {
+        return handleVideoPoll(req, path, search);
     }
 
     // 其他路径(/messages /models /embeddings …)全部透传

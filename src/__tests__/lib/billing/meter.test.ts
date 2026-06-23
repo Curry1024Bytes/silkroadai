@@ -7,6 +7,7 @@ const mockCursorUpsert = vi.fn();
 const mockCursorUpdate = vi.fn();
 const mockUserFindUnique = vi.fn();
 const mockUserFindMany = vi.fn();
+const mockUserCount = vi.fn();
 const mockTokenFindUnique = vi.fn();
 const mockModelFindFirst = vi.fn();
 const mockUsageCreateMany = vi.fn();
@@ -27,6 +28,7 @@ vi.mock('@/lib/db', () => ({
         user: {
             findUnique: (...a: unknown[]) => mockUserFindUnique(...a),
             findMany: (...a: unknown[]) => mockUserFindMany(...a),
+            count: (...a: unknown[]) => mockUserCount(...a),
         },
         newApiToken: { findUnique: (...a: unknown[]) => mockTokenFindUnique(...a) },
         catalogModel: { findFirst: (...a: unknown[]) => mockModelFindFirst(...a) },
@@ -42,7 +44,7 @@ vi.mock('@/lib/billing/ledger', () => ({ applyLedgerEntry: (...a: unknown[]) => 
 // P4c-3: after charging a portal user, the meter re-syncs the new-api dumb gate.
 vi.mock('@/lib/billing/newapi-gate', () => ({ syncNewapiGate: (...a: unknown[]) => mockSyncNewapiGate(...a) }));
 
-import { runShadowMeter } from '@/lib/billing/meter';
+import { runShadowMeter, reconcileAllPortalGates, countOrphanedPortalCustomers } from '@/lib/billing/meter';
 import { PLATFORM_TENANT_ID } from '@/lib/admin/tenant-scope';
 
 const LOG_TS = Math.floor(Date.parse('2026-06-06T00:00:00Z') / 1000); // unix seconds
@@ -90,6 +92,7 @@ beforeEach(() => {
     // P4c-2 defaults: debit phase off (BILLING_SOURCE unset) + empty query-backs.
     mockUsageFindMany.mockResolvedValue([]);
     mockUserFindMany.mockResolvedValue([]);
+    mockUserCount.mockResolvedValue(0);
     mockApplyLedgerEntry.mockResolvedValue({ deduped: false });
     mockSyncNewapiGate.mockResolvedValue(undefined); // P4c-3
 });
@@ -352,5 +355,68 @@ describe('runShadowMeter — P4c-3 dumb-gate sync after charging portal users', 
         expect(mockCursorUpdate).toHaveBeenCalledWith(
             expect.objectContaining({ data: expect.objectContaining({ last_log_id: 10 }) }),
         );
+    });
+});
+
+describe('reconcileAllPortalGates — P4c-5 §1.5 self-heal (standalone, runs every scheduler tick)', () => {
+    it('BILLING_SOURCE=portal: syncs EVERY portal customer gate (not just charged); returns the count', async () => {
+        vi.stubEnv('BILLING_SOURCE', 'portal');
+        mockUserFindMany.mockResolvedValue([{ id: 'p1' }, { id: 'p2' }, { id: 'p3' }]);
+
+        const n = await reconcileAllPortalGates();
+
+        expect(mockUserFindMany).toHaveBeenCalledWith(expect.objectContaining({ where: { billing_mode: 'portal' } }));
+        expect(mockSyncNewapiGate).toHaveBeenCalledTimes(3);
+        expect(mockSyncNewapiGate).toHaveBeenCalledWith('p1');
+        expect(mockSyncNewapiGate).toHaveBeenCalledWith('p2');
+        expect(mockSyncNewapiGate).toHaveBeenCalledWith('p3');
+        expect(n).toBe(3);
+    });
+
+    it('BILLING_SOURCE unset (default newapi): no-op — no query, no sync (newapi customers untouched)', async () => {
+        mockUserFindMany.mockResolvedValue([{ id: 'p1' }]);
+        const n = await reconcileAllPortalGates();
+        expect(mockUserFindMany).not.toHaveBeenCalled();
+        expect(mockSyncNewapiGate).not.toHaveBeenCalled();
+        expect(n).toBe(0);
+    });
+
+    it('one gate sync failing does not abort the rest or throw; counts only successes', async () => {
+        vi.stubEnv('BILLING_SOURCE', 'portal');
+        mockUserFindMany.mockResolvedValue([{ id: 'p1' }, { id: 'p2' }]);
+        mockSyncNewapiGate.mockRejectedValueOnce(new Error('new-api blip')); // p1 fails, p2 still runs
+        const n = await reconcileAllPortalGates();
+        expect(mockSyncNewapiGate).toHaveBeenCalledTimes(2);
+        expect(n).toBe(1);
+    });
+
+    it('no portal customers → zero syncs', async () => {
+        vi.stubEnv('BILLING_SOURCE', 'portal');
+        mockUserFindMany.mockResolvedValue([]);
+        const n = await reconcileAllPortalGates();
+        expect(mockSyncNewapiGate).not.toHaveBeenCalled();
+        expect(n).toBe(0);
+    });
+});
+
+describe('countOrphanedPortalCustomers — flip-guardrail §2 反向危险态(关闸但还有 portal 客户)', () => {
+    it('gate OFF + portal customers exist → returns the count (caller alerts)', async () => {
+        // BILLING_SOURCE unset by default = newapi (闸关)
+        mockUserCount.mockResolvedValue(3);
+        const n = await countOrphanedPortalCustomers();
+        expect(mockUserCount).toHaveBeenCalledWith(expect.objectContaining({ where: { billing_mode: 'portal' } }));
+        expect(n).toBe(3);
+    });
+
+    it('gate OFF + no portal customers → 0 (no alert)', async () => {
+        mockUserCount.mockResolvedValue(0);
+        expect(await countOrphanedPortalCustomers()).toBe(0);
+    });
+
+    it('gate ON (BILLING_SOURCE=portal) → 0 without even counting (portal customers are normal)', async () => {
+        vi.stubEnv('BILLING_SOURCE', 'portal');
+        mockUserCount.mockResolvedValue(5);
+        expect(await countOrphanedPortalCustomers()).toBe(0);
+        expect(mockUserCount).not.toHaveBeenCalled();
     });
 });

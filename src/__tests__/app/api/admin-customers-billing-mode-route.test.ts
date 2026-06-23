@@ -6,6 +6,10 @@ const mockUserFindFirst = vi.fn();
 const mockAnalyticsCreate = vi.fn();
 const mockMigrateToPortal = vi.fn();
 const mockRollbackToNewapi = vi.fn();
+// 真错误类(hoisted),让路由的 `err instanceof BillingSourceNotPortalError` 在 mock 下也成立。
+const { BillingSourceNotPortalError } = vi.hoisted(() => ({
+    BillingSourceNotPortalError: class BillingSourceNotPortalError extends Error {},
+}));
 
 vi.mock('@/lib/admin/auth', () => ({ resolveAdmin: (...a: unknown[]) => mockResolveAdmin(...a) }));
 vi.mock('@/lib/admin-auth', () => ({
@@ -20,6 +24,7 @@ vi.mock('@/lib/db', () => ({
 vi.mock('@/lib/billing/billing-migration', () => ({
     migrateUserToPortal: (...a: unknown[]) => mockMigrateToPortal(...a),
     rollbackUserToNewapi: (...a: unknown[]) => mockRollbackToNewapi(...a),
+    BillingSourceNotPortalError,
 }));
 
 import { POST } from '@/app/api/admin/customers/[id]/billing-mode/route';
@@ -110,5 +115,19 @@ describe('POST /api/admin/customers/[id]/billing-mode', () => {
         mockAnalyticsCreate.mockRejectedValue(new Error('analytics down'));
         const res = await POST(req({ action: 'to_portal' }), { params: params() });
         expect(res.status).toBe(200); // flip already done via migrateUserToPortal
+    });
+
+    it('flip-guardrail: to_portal when gate off → 409 + the clear message (no audit)', async () => {
+        mockMigrateToPortal.mockRejectedValue(new BillingSourceNotPortalError('BILLING_SOURCE 未设为 portal …'));
+        const res = await POST(req({ action: 'to_portal' }), { params: params() });
+        expect(res.status).toBe(409);
+        expect((await res.json()).error).toContain('BILLING_SOURCE');
+        expect(mockAnalyticsCreate).not.toHaveBeenCalled(); // 没翻成 → 不记审计
+    });
+
+    it('flip-guardrail: to_newapi is NEVER gate-blocked → 200 (rollback always allowed)', async () => {
+        const res = await POST(req({ action: 'to_newapi' }), { params: params() });
+        expect(res.status).toBe(200);
+        expect(mockRollbackToNewapi).toHaveBeenCalled();
     });
 });

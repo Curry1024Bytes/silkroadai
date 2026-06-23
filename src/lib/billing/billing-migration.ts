@@ -4,6 +4,7 @@ import { getUser, addQuota } from '@/lib/newapi/client';
 import { quotaToCny, cnyToQuota } from '@/lib/newapi/quota-units';
 import { applyLedgerEntryInTx } from './ledger';
 import { syncNewapiGate } from './newapi-gate';
+import { billingSourceIsPortal } from './billing-source';
 
 /**
  * P4c-4 灰度翻号工具 —— 把单个客户在 `billing_mode` 'newapi'↔'portal' 之间翻转,
@@ -12,9 +13,30 @@ import { syncNewapiGate } from './newapi-gate';
  *
  * ⚠️ 工具本身不真翻任何号(真翻测试号 = P4c-5,operator 节奏);newapi 客户(没被翻的)零影响。
  * ⚠️ 净中性:翻进 ¥账本 = quotaToCny(原 quota);翻出 new-api quota = cnyToQuota(当前 ¥余额)。
+ *
+ * ⚠️⚠️ 运维铁律(`BILLING_SOURCE=portal` 与 `billing_mode='portal'` 必须一致):
+ *   - 翻到 portal【前】必须先开全局闸(`BILLING_SOURCE=portal`)—— 否则【半翻号】:账本 seed 了,但
+ *     `syncNewapiGate`/meter 在闸关时全 no-op → 哑门不开、meter 不扣 → 客户的钱锁死在脱钩账本里、
+ *     真实计费仍走 new-api quota(357 事故根因)。`migrateUserToPortal` 第一行硬挡这种顺序错。
+ *   - 关全局闸【前】必须先把【所有】portal 客户回滚到 newapi(`to_newapi`)—— 单关 env flag【不是】
+ *     完整 revert(会留下脱钩的 portal 客户无限免费用,见 shadow-meter 的反向危险态告警兜底)。
  */
 
 export type BillingMode = 'newapi' | 'portal';
+
+/**
+ * 翻到 portal 但全局闸没开(`BILLING_SOURCE≠portal`)→ 抛此错。路由 catch → 409 + 明确消息。
+ * **半翻号防护**:闸关时 seed 账本会让客户脱钩(钱锁死、真实计费仍走 quota)。无 force 逃生口 ——
+ * 正确顺序就是"先开闸再翻号"(P4c-5 runbook),硬挡最安全。只挡 `to_portal`,`to_newapi` 永远放行。
+ */
+export class BillingSourceNotPortalError extends Error {
+    constructor() {
+        super(
+            'BILLING_SOURCE 未设为 portal,禁止翻号到 portal —— 否则会半翻号(账本 seed 了但哑门不开、meter 不扣,客户的钱锁死)。请先在 VPS 设 BILLING_SOURCE=portal 重启,再翻号。',
+        );
+        this.name = 'BillingSourceNotPortalError';
+    }
+}
 
 export interface MigrateResult {
     action: 'to_portal' | 'to_newapi';
@@ -42,6 +64,11 @@ class AlreadyInTargetMode extends Error {}
  *     总闸没开则 **no-op、new-api quota 维持 X**(客户暂由 quota 把守,等总闸开 + 下轮 meter 再开门)。
  */
 export async function migrateUserToPortal(userId: string, createdBy?: string | null): Promise<MigrateResult> {
+    // ⚠️ guardrail(357 半翻号事故根因):翻到 portal 前【必须】先开全局闸,否则账本 seed 了但
+    //    syncNewapiGate/meter 在 BILLING_SOURCE≠portal 时全 no-op → 客户脱钩、钱锁死。校验【在最前】
+    //    → 零副作用(不读 new-api、不 seed 账本、不改 billing_mode)。只挡 to_portal;rollback 不受此限。
+    if (!billingSourceIsPortal()) throw new BillingSourceNotPortalError();
+
     const user = await prisma.user.findUnique({
         where: { id: userId },
         select: { billing_mode: true, newapi_user_id: true, tenant_id: true },

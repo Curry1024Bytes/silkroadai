@@ -39,7 +39,6 @@ import { randomUUID } from 'crypto';
 import { prisma } from '@/lib/db';
 import { getCurrentUser } from '@/lib/auth/session';
 import { getOrCreateSystemToken, PortalSystemTokenError } from '@/lib/newapi/system-token';
-import { rateLimitCheck } from '@/lib/image-gen/rate-limit';
 import {
     findImageModel,
     IMAGE_COUNT_MAX,
@@ -182,27 +181,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
     const startedAt = Date.now();
 
-    // Rate limit before any heavy work.
-    const rl = rateLimitCheck(user.id);
-    if (!rl.allowed) {
-        console.log(`[image-generate] rate_limited user=${user.id} retry_after_ms=${rl.retryAfterMs}`);
-        await recordAnalytics({
-            userId: user.id,
-            eventType: 'image_rate_limited',
-            properties: { retry_after_ms: rl.retryAfterMs },
-        });
-        return NextResponse.json(
-            {
-                error: 'rate_limit_exceeded',
-                message: '1 分钟内最多 10 次,稍候再试',
-                retry_after_ms: rl.retryAfterMs,
-            },
-            {
-                status: 429,
-                headers: { 'Retry-After': Math.ceil(rl.retryAfterMs / 1000).toString() },
-            },
-        );
-    }
+    // 限流已移除(运营策略:不对客户 API 用量设节流)。
 
     let body: unknown;
     try {
@@ -446,7 +425,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         quota_consumed: Math.round(costUsdPreview * 1_000_000),
         created_at: created.created_at.toISOString(),
         expires_at: created.expires_at?.toISOString() ?? null,
-        rate_limit_remaining: rl.remaining,
     });
 }
 

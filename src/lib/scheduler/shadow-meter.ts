@@ -6,7 +6,7 @@
  * 不扣余额、不挡请求、不改充值、不调 new-api 写接口(P4a 边界)。
  */
 import * as Sentry from '@sentry/nextjs';
-import { runShadowMeter } from '@/lib/billing/meter';
+import { runShadowMeter, reconcileAllPortalGates, countOrphanedPortalCustomers } from '@/lib/billing/meter';
 
 const INTERVAL_MS = 10 * 60 * 1_000; // 10 分钟
 
@@ -22,6 +22,32 @@ async function tick(): Promise<void> {
         }
     } catch (err) {
         console.error('[shadow-meter] scan failed:', err);
+        Sentry.captureException(err, { tags: { area: 'shadow-meter' } });
+    }
+
+    // P4c-5 §1.5:每轮单独兜底重同步【所有】portal 客户的哑门(与上面的日志处理解耦,所以即使本轮
+    //   没日志/没扣费也会跑)。修真缺口:admin 调余额 / 退款等改余额却漏 syncNewapiGate 时,空闲被卡
+    //   的 portal 客户最多等一个轮询周期就自愈。BILLING_SOURCE≠portal 时整段 no-op(newapi 零碰)。
+    try {
+        const synced = await reconcileAllPortalGates();
+        if (synced > 0) console.log(`[shadow-meter] reconciled ${synced} portal gate(s)`);
+    } catch (err) {
+        console.error('[shadow-meter] gate reconcile failed:', err);
+        Sentry.captureException(err, { tags: { area: 'shadow-meter' } });
+    }
+
+    // flip-guardrail §2:反向危险态 —— 全局闸已关但还有 portal 客户(脱钩、哑门停在 1e9、meter 不扣 →
+    //   可能无限免费用,比 357 半翻号更糟)。只 loud warn + Sentry 告警,【不】自动回滚(留人工)。闸开时
+    //   countOrphanedPortalCustomers 返 0、不告警。让这种态主动被抓到,不靠人肉发现。
+    try {
+        const orphaned = await countOrphanedPortalCustomers();
+        if (orphaned > 0) {
+            const msg = `${orphaned} 个客户是 portal 模式但 BILLING_SOURCE 已关 —— 他们脱钩(哑门停在 1e9、meter 不扣,可能无限免费用)。请把这些客户回滚到 newapi,或重开 BILLING_SOURCE。`;
+            console.error(`[shadow-meter] ⚠️ DANGER: ${msg}`);
+            Sentry.captureMessage(`[billing-guardrail] ${msg}`, 'error');
+        }
+    } catch (err) {
+        console.error('[shadow-meter] orphaned-portal check failed:', err);
         Sentry.captureException(err, { tags: { area: 'shadow-meter' } });
     }
 }

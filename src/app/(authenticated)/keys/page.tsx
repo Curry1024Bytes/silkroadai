@@ -16,7 +16,7 @@ import { prisma } from '@/lib/db';
 import { getTokenUsageWithCache } from '@/lib/newapi/token-usage';
 import { quotaToCny } from '@/lib/newapi/quota-units';
 import { formatTokenForDisplay } from '@/lib/newapi/token-format';
-import { listEnabledChannelGroups } from '@/lib/channel-group';
+import { listEnabledChannelGroups, restrictGroupsForUser } from '@/lib/channel-group';
 import { KeysList, type KeyRow } from './keys-list';
 import { KeysSnippetsPanel } from './keys-snippets-panel';
 
@@ -103,8 +103,9 @@ export default async function KeysPage() {
     });
 
     // P3: enabled 档次(低价号池 / 官方稳定)供建 key 时单选。数据驱动 —
-    // 客户 tenant 下 enabled 的 ChannelGroup。
-    const tierGroups = await listEnabledChannelGroups(user.tenant_id);
+    // 客户 tenant 下 enabled 的 ChannelGroup,再按 per-customer 白名单收窄
+    // (allowed_tier_keys 非空 → 只显示这些档;空 → 全部)。
+    const tierGroups = restrictGroupsForUser(await listEnabledChannelGroups(user.tenant_id), user.allowed_tier_keys);
     const tiers = tierGroups.map((g) => ({
         key: g.key,
         display_name: g.display_name,
