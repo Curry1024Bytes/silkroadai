@@ -72,6 +72,7 @@ export default async function LandingPage({
             {promoActive ? <PromoBanner /> : null}
             <WhyUs />
             <HowItWorks />
+            <Tools />
             <PricingTeaser promoActive={promoActive} />
             {/* W7 D4 PR-R Item B — the in-page <Trust /> prose row
              *  duplicated the global <Footer />'s contact + legal-link
@@ -500,6 +501,100 @@ function Card({ badge, title, body }: { badge: string; title: string; body: Reac
                 ))}
             </div>
         </div>
+    );
+}
+
+/* ──────────────────────────────────────────────────────────────────── */
+/* Tools showcase — 卡片式,未来可持续追加                                  */
+/* ──────────────────────────────────────────────────────────────────── */
+
+type Tool = { icon: string; tag: string; title: string; desc: string; href: string; cta: string };
+
+const TOOLS: Tool[] = [
+    {
+        icon: '🎬',
+        tag: '在线工具',
+        title: 'Seedance 视频测试工具',
+        desc: '填入你的 API Key,在线生成 Seedance 视频 —— 全部模型、全部玩法(文生 / 图生 / 首尾帧 / 参考音频),无需写代码。',
+        href: '/tools/seedance',
+        cta: '立即使用',
+    },
+    {
+        icon: '⌨️',
+        tag: '下载安装',
+        title: 'OpenAI Codex 接入',
+        desc: 'Codex CLI / IDE 插件 / 桌面版接入 Silk Road AI,一份配置直连 ChatGPT,人民币计费。',
+        href: '/docs#codex-cli',
+        cta: '下载 & 接入',
+    },
+    {
+        icon: '🤖',
+        tag: '下载安装',
+        title: 'Claude Code 接入',
+        desc: 'Claude Code 桌面 / CLI 接入 Silk Road AI,配好 Base URL + Key 即用 Claude,人民币计费。',
+        href: '/docs#claude-code',
+        cta: '下载 & 接入',
+    },
+];
+
+function ToolCard({ icon, tag, title, desc, href, cta }: Tool) {
+    return (
+        <a
+            className="tool-card"
+            href={href}
+            style={{
+                display: 'flex',
+                flexDirection: 'column',
+                background: 'white',
+                border: '1px solid var(--color-brand-border)',
+                borderRadius: 12,
+                padding: 24,
+                textDecoration: 'none',
+                color: 'inherit',
+                height: '100%',
+                boxShadow: '0 1px 0 rgba(26,37,64,0.03)',
+            }}
+        >
+            <div style={{ fontSize: 30, marginBottom: 10 }}>{icon}</div>
+            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-brand-accent)', marginBottom: 6 }}>
+                {tag}
+            </span>
+            <h3 style={{ margin: '0 0 8px', fontSize: 17, fontWeight: 700, color: 'var(--color-navy)' }}>{title}</h3>
+            <p style={{ margin: '0 0 16px', flex: 1, fontSize: 14, lineHeight: 1.6, color: 'var(--color-muted-ink)' }}>
+                {desc}
+            </p>
+            <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-brand-accent)' }}>{cta} →</span>
+        </a>
+    );
+}
+
+function Tools() {
+    return (
+        <Section id="tools" style={{ padding: '48px 0' }}>
+            <h2 style={{ margin: 0, fontSize: 28, fontWeight: 600, color: 'var(--color-navy)', textAlign: 'center' }}>
+                工具箱
+            </h2>
+            <p style={{ margin: '8px 0 0', textAlign: 'center', fontSize: 15, color: 'var(--color-muted-ink)' }}>
+                开箱即用,更快用上 Silk Road AI · 更多工具陆续接入
+            </p>
+            <div
+                className="lp-three-col"
+                style={{ marginTop: 36, display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 24 }}
+            >
+                {TOOLS.map((t) => (
+                    <ToolCard key={t.title} {...t} />
+                ))}
+            </div>
+            <style
+                dangerouslySetInnerHTML={{
+                    __html: `
+                        @media (min-width: 768px) { .lp-three-col { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; } }
+                        .tool-card { transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease; }
+                        .tool-card:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(26,37,64,0.08); border-color: var(--color-brand-accent); }
+                    `,
+                }}
+            />
+        </Section>
     );
 }
 
