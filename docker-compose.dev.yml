@@ -1,0 +1,32 @@
+#
+# Silk Road AI Portal — local dev database only
+#
+# 只起一个本地 Postgres 给 `pnpm dev` 用，端口映射到宿主机 5433
+# （避开系统自带 PG 的 5432）。参数严格匹配 .env 的 DATABASE_URL：
+#   postgresql://portal:devpass123@localhost:5433/silkroadai_portal_dev
+#
+# 用法：
+#   docker compose -f docker-compose.dev.yml up -d
+#
+services:
+    dev-db:
+        image: postgres:16-alpine
+        container_name: silkroadai-portal-dev-db
+        ports:
+            - '127.0.0.1:5433:5432'
+        environment:
+            POSTGRES_USER: portal
+            POSTGRES_PASSWORD: devpass123
+            POSTGRES_DB: silkroadai_portal_dev
+        volumes:
+            - dev_pgdata:/var/lib/postgresql/data
+        healthcheck:
+            test: ['CMD-SHELL', 'pg_isready -U portal -d silkroadai_portal_dev']
+            interval: 5s
+            timeout: 5s
+            retries: 10
+        restart: unless-stopped
+
+volumes:
+    dev_pgdata:
+        name: silkroadai-portal-dev-pgdata
