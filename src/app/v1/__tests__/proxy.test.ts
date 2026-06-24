@@ -1147,6 +1147,19 @@ describe('/v1 proxy — img2img:auto 时输出比例跟随输入图(fix gemini-i
         return sent.generationConfig.imageConfig;
     }
 
+    /** 取最近一次 generateContent 请求 body 里全部 parts 的文本拼接(校验多图画幅文字指令)。 */
+    function sentPartsText(): string {
+        const call = mockFetch.mock.calls.find(([u]) => String(u).includes(':generateContent'));
+        expect(call).toBeDefined();
+        const sent = JSON.parse(String((call![1] as RequestInit).body)) as {
+            contents: Array<{ parts: Array<{ text?: string }> }>;
+        };
+        return sent.contents
+            .flatMap((c) => c.parts)
+            .map((p) => p.text ?? '')
+            .join('\n');
+    }
+
     it('edits + auto + 1920×1080 PNG → 注入 16:9(不再被 Gemini 默认成方图)', async () => {
         mockFetch.mockResolvedValueOnce(geminiNativeResponse());
         const res = await POST(
@@ -1210,6 +1223,39 @@ describe('/v1 proxy — img2img:auto 时输出比例跟随输入图(fix gemini-i
         const res = await POST(multipartReq(form), ctx('images', 'edits'));
         expect(res.status).toBe(200);
         expect(sentImageConfig().aspectRatio).toBe('16:9');
+    });
+
+    it('多图 + 显式比例 16:9 → 文字指令锁定 16:9 而非首图(修复可选输出比例场景)', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const form = editsForm(pngBytes(1080, 1920), { aspectRatio: '16:9' }); // 首图是竖图,选 16:9
+        form.append('image', new File([pngBytes(1000, 1000)], 'ref2.png', { type: 'image/png' }));
+        const res = await POST(multipartReq(form), ctx('images', 'edits'));
+        expect(res.status).toBe(200);
+        const text = sentPartsText();
+        expect(text).toMatch(/16:9/);
+        expect(text).not.toMatch(/FIRST reference image/);
+    });
+
+    it('多图 + auto → 文字指令仍跟随第一张图(配饰上身场景不回归)', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const form = editsForm(pngBytes(1080, 1920), { aspectRatio: 'auto' });
+        form.append('image', new File([pngBytes(1000, 1000)], 'ref2.png', { type: 'image/png' }));
+        const res = await POST(multipartReq(form), ctx('images', 'edits'));
+        expect(res.status).toBe(200);
+        expect(sentPartsText()).toMatch(/FIRST reference image/);
+    });
+
+    it('单图 + 显式比例 → 走 imageConfig,不追加任何画幅文字指令', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const res = await POST(
+            multipartReq(editsForm(pngBytes(1080, 1920), { aspectRatio: '16:9' })),
+            ctx('images', 'edits'),
+        );
+        expect(res.status).toBe(200);
+        expect(sentImageConfig().aspectRatio).toBe('16:9');
+        const text = sentPartsText();
+        expect(text).not.toMatch(/FIRST reference image/);
+        expect(text).not.toMatch(/MUST have exactly/);
     });
 
     it('极端 8000×1000 输入:pro 档注入独有的 8:1,flash 档取白名单内最近的 21:9', async () => {

@@ -79,6 +79,12 @@ const NEWAPI_BASE_URL = process.env.NEWAPI_BASE_URL || 'http://localhost:3000';
 const MULTI_IMAGE_ASPECT_INSTRUCTION =
     '[IMPORTANT] The generated image MUST have the exact same aspect ratio and framing as the FIRST reference image. Do not change the aspect ratio, do not output a square image, do not crop or zoom in. 输出图必须与第一张参考图保持完全相同的画幅比例和构图,不要改变比例、不要输出方图、不要裁剪放大。';
 
+/** 多图 + 客户【显式选了比例】时:Gemini 同样忽略 imageConfig.aspectRatio,改用文字强指令锁定
+ *  【客户选的】比例(而非跟随第一张图)—— 否则客户"可选输出比例"的场景会被首图指令误覆盖。
+ *  ratio 已过 GEMINI_ASPECT_RATIOS 白名单校验(实测 2026-06-24:文字"必须 16:9"能逼出 16:9)。 */
+const explicitAspectInstruction = (ratio: string) =>
+    `[IMPORTANT] The generated image MUST have exactly a ${ratio} aspect ratio (width:height = ${ratio}). Do NOT output a square image unless ${ratio} is 1:1, and do NOT follow the reference images' aspect ratio. 输出图必须严格为 ${ratio} 的画幅比例,不要跟随参考图的比例,不要输出方图(除非比例本身就是 1:1)。`;
+
 /** 逆向上游任意报错(非 2xx,含 400/429/5xx 全部)→ 自动转这些非逆向备用 SKU 重试一次。
  *  ch45 逆向源故障形态杂(400 / 429 / 500 do_request_failed / 502 空响应 / 503 memory overloaded),
  *  且其 4xx 多为上游抽风而非真客户端错,故 operator 要求一律兜底。备用 SKU 是独立模型名
@@ -888,8 +894,11 @@ async function handleImagesDalle(
 
     // ---- 拼 Gemini contents:prompt 文本 + 参考图 inlineData ----
     const parts: GeminiInputPart[] = [{ text: prompt }, ...inputParts];
-    // 多图同 handleGeminiImage:文字强指令锁定第一张参考图画幅(imageConfig 对多图无效)。
-    if (inputParts.length >= 2) parts.push({ text: MULTI_IMAGE_ASPECT_INSTRUCTION });
+    // 多图:Gemini 忽略 imageConfig.aspectRatio,必须用文字强指令锁定画幅(imageConfig 对多图无效)。
+    // 客户没选比例(auto)→ 跟随第一张参考图(配饰上身);选了比例 → 锁定客户选的比例(可选比例场景)。
+    if (inputParts.length >= 2) {
+        parts.push({ text: wantsAuto ? MULTI_IMAGE_ASPECT_INSTRUCTION : explicitAspectInstruction(aspectRatio) });
+    }
     const upstream = await geminiGenerateWithFailover(
         req,
         model,
