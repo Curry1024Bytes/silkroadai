@@ -564,6 +564,37 @@ describe('/v1 proxy — Phase 2: image_url 入参 + R2 上传 (W9 D2)', () => {
         expect(texts.some((t) => /FIRST reference image/.test(String(t)))).toBe(false);
     });
 
+    it('502 空响应 → 自动转 -hq 备用 SKU 重试并成功', async () => {
+        mockFetch.mockImplementation(async (url: string) => {
+            if (String(url).includes('gemini-3.1-flash-image-preview-hq:generateContent'))
+                return geminiNativeResponse();
+            if (String(url).includes(':generateContent')) {
+                return new Response(
+                    JSON.stringify({ error: { message: 'Upstream returned empty response, please retry later' } }),
+                    { status: 502 },
+                );
+            }
+            return geminiNativeResponse();
+        });
+        const res = await POST(geminiReq('a cat'), ctx('chat', 'completions'));
+        expect(res.status).toBe(200);
+        expect(
+            mockFetch.mock.calls.some(([u]) => String(u).includes('gemini-3.1-flash-image-preview-hq:generateContent')),
+        ).toBe(true);
+    });
+
+    it('502 非空响应 → 不转备用,原样返回 502', async () => {
+        mockFetch.mockImplementation(async (url: string) => {
+            if (String(url).includes(':generateContent')) {
+                return new Response(JSON.stringify({ error: { message: 'rate limited' } }), { status: 502 });
+            }
+            return geminiNativeResponse();
+        });
+        const res = await POST(geminiReq('a cat'), ctx('chat', 'completions'));
+        expect(res.status).toBe(502);
+        expect(mockFetch.mock.calls.some(([u]) => String(u).includes('gemini-3.1-flash-image-preview-hq'))).toBe(false);
+    });
+
     it('uploads generated image to R2 and returns markdown URL, not base64 (test 11)', async () => {
         mockFetch.mockResolvedValueOnce(geminiNativeResponse());
         const res = await POST(geminiReq('a cat'), ctx('chat', 'completions'));
