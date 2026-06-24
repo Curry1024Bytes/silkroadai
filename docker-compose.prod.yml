@@ -46,6 +46,10 @@ services:
     portal-postgres:
         image: postgres:16-alpine
         container_name: silkroadai-portal-db
+        ports:
+            # Loopback-only publish for SSH-tunnel admin access (e.g. Navicat).
+            # NEVER 0.0.0.0 — that exposes Postgres to the public internet.
+            - '127.0.0.1:5432:5432'
         environment:
             POSTGRES_USER: portal
             POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
