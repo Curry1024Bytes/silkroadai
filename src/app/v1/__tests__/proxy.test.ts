@@ -564,9 +564,11 @@ describe('/v1 proxy — Phase 2: image_url 入参 + R2 上传 (W9 D2)', () => {
         expect(texts.some((t) => /FIRST reference image/.test(String(t)))).toBe(false);
     });
 
-    // ch45(逆向)实测以多种 5xx 形态失败:500 do_request_failed / 503 memory overloaded / 502 空响应。
-    // flash 是 ch45 独占 → 任意 5xx 都意味着 ch45 挂了,兜底转 -hq/ch42。
+    // ch45(逆向)实测以多种状态失败:400 / 429 / 500 do_request_failed / 502 空响应 / 503 memory overloaded。
+    // flash 是 ch45 独占 → operator 要求任意非 2xx 都视作 ch45 挂了,一律兜底转 -hq/ch42 重试一次。
     for (const [code, label, msg] of [
+        [400, 'bad request', 'invalid argument'],
+        [429, 'rate limited', 'rate limit exceeded'],
         [500, 'do_request_failed', 'upstream error: do request failed'],
         [502, '空响应', 'Upstream returned empty response, please retry later'],
         [503, 'memory overloaded', 'system memory overloaded (current: 93.4%)'],
@@ -589,15 +591,24 @@ describe('/v1 proxy — Phase 2: image_url 入参 + R2 上传 (W9 D2)', () => {
         });
     }
 
-    it('4xx(400 坏图)→ 不转备用,原样返回(failover 只兜底 5xx)', async () => {
+    it('ch45 成功(200)→ 不触发 failover,不浪费 ch42 调用', async () => {
+        mockFetch.mockImplementation(async () => geminiNativeResponse());
+        const res = await POST(geminiReq('a cat'), ctx('chat', 'completions'));
+        expect(res.status).toBe(200);
+        expect(mockFetch.mock.calls.some(([u]) => String(u).includes('gemini-3.1-flash-image-preview-hq'))).toBe(false);
+    });
+
+    it('ch45 错 + ch42 也错 → 单次重试后原样透传 ch42 的错(不无限重试)', async () => {
+        const hits: string[] = [];
         mockFetch.mockImplementation(async (url: string) => {
+            hits.push(String(url));
             if (String(url).includes(':generateContent'))
-                return new Response(JSON.stringify({ error: { message: 'invalid image' } }), { status: 400 });
+                return new Response(JSON.stringify({ error: { message: 'both down' } }), { status: 503 });
             return geminiNativeResponse();
         });
         const res = await POST(geminiReq('a cat'), ctx('chat', 'completions'));
-        expect(res.status).toBe(400);
-        expect(mockFetch.mock.calls.some(([u]) => String(u).includes('gemini-3.1-flash-image-preview-hq'))).toBe(false);
+        expect(res.status).toBe(503);
+        expect(hits.filter((u) => u.includes(':generateContent')).length).toBe(2);
     });
 
     it('uploads generated image to R2 and returns markdown URL, not base64 (test 11)', async () => {
