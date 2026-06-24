@@ -1574,3 +1574,61 @@ describe('/v1 proxy — video poll customer-OSS rehost', () => {
         expect(body.data.data.video_url).toBe(R2_VIDEO);
     });
 });
+
+describe('/v1 proxy — gpt-image-2 response_format stripping (zhiyunai compat)', () => {
+    it('strips response_format from JSON /images/generations, keeps size/quality', async () => {
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ data: [{ b64_json: 'QkFTRTY0' }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: {
+                    model: 'gpt-image-2',
+                    prompt: 'a red apple',
+                    size: '1024x1024',
+                    quality: 'high',
+                    response_format: 'url',
+                },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(url).toBe(`${NEWAPI_BASE}/v1/images/generations`);
+        const sent = JSON.parse(String(init.body)) as Record<string, unknown>;
+        // response_format 剥掉(zhiyunai 拒收),其余官方参数照常透传
+        expect(sent).not.toHaveProperty('response_format');
+        expect(sent.size).toBe('1024x1024');
+        expect(sent.quality).toBe('high');
+        expect(sent.model).toBe('gpt-image-2');
+    });
+
+    it('strips response_format from multipart /images/edits before forwarding', async () => {
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ data: [{ b64_json: 'QkFTRTY0' }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const form = new FormData();
+        form.append('model', 'gpt-image-2');
+        form.append('prompt', 'make it red');
+        form.append('response_format', 'b64_json');
+        form.append('image', new Blob([Buffer.from('x')], { type: 'image/png' }), 'in.png');
+        const req = new NextRequest('https://ai.silkroadai.io/v1/images/edits', {
+            method: 'POST',
+            headers: { authorization: 'Bearer sk-test' },
+            body: form,
+        });
+        const res = await POST(req, ctx('images', 'edits'));
+        expect(res.status).toBe(200);
+        const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        const sentForm = init.body as FormData;
+        expect(sentForm.get('response_format')).toBeNull();
+        expect(sentForm.get('model')).toBe('gpt-image-2');
+    });
+});

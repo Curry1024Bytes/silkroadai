@@ -515,7 +515,9 @@ async function fetchViaImagesGenerations(args: FetchArgs): Promise<Buffer[]> {
             prompt: args.prompt,
             n: args.count,
             size: args.size,
-            response_format: 'url',
+            // No response_format: the gpt-image-2 upstream (zhiyunai / Azure gpt-image)
+            // strictly rejects it with HTTP 400 "Unknown parameter: 'response_format'".
+            // Official gpt-image-1 always returns b64_json anyway — handled below.
         }),
         signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     }).catch((err) => {

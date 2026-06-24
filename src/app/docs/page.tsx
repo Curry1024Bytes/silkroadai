@@ -91,7 +91,7 @@ const AGENTS: AgentSection[] = [
     {
         id: 'api-gpt-image',
         label: 'GPT image-2 生图',
-        blurb: 'gpt-image-2 系(自适应 / 1k / 2k / 4k)· OpenAI Images API · 文生图 + 图生图 · ¥0.05/张。',
+        blurb: 'gpt-image-2 · OpenAI Images API · 文生图 + 图生图 · Azure 官方稳定 · 高并发 · 按 token 计费(¥1=官方$1)。',
     },
     {
         id: 'api-billing',
@@ -1360,58 +1360,68 @@ curl ${OPENAI_BASE}/images/edits \\
                             POST /v1/images/edits
                         </code>{' '}
                         图生图。现有 OpenAI SDK 改一行 base_url 即可。返回{' '}
-                        <strong className="text-navy">b64_json</strong>(Base64 PNG)。
-                        <strong className="text-navy"> 请用 image2 分组创建的 API Key</strong> 调用全部档位。
+                        <strong className="text-navy">b64_json</strong>(Base64 PNG)。后端为
+                        <strong className="text-navy"> Azure 官方 gpt-image,稳定 + 抗高并发</strong>(实测 100 并发 100%
+                        成功)。
+                        <strong className="text-navy"> 请用「image2官方稳定高并发」档的 API Key</strong> 调用。
                     </p>
 
-                    <div className="rounded-lg overflow-hidden border border-brand-border bg-surface mb-4">
+                    <div className="mt-1 mb-3 rounded-lg border-l-4 border-brand-accent bg-paper-muted px-4 py-3 text-sm text-ink">
+                        💰 <strong className="text-navy">计价:按 token 计费,¥1 = 官方 $1</strong> —— 按官方 gpt-image
+                        的真实 token 用量结算(官方价:输入 $5 / 百万 token、输出 $30 / 百万 token)。
+                        <strong className="text-navy">
+                            成本主要由{' '}
+                            <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                                quality
+                            </code>{' '}
+                            决定
+                        </strong>
+                        (下表),尺寸(size)影响很小。
+                    </div>
+                    <div className="rounded-lg overflow-hidden border border-brand-border bg-surface mb-2">
                         <table className="w-full border-collapse text-sm">
                             <thead>
                                 <tr className="bg-paper-muted text-muted-ink">
                                     <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
-                                        模型
+                                        情形
                                     </th>
                                     <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
-                                        分辨率
+                                        大致输出 token
                                     </th>
                                     <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
-                                        价格
-                                    </th>
-                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
-                                        用途
+                                        约 ¥ / 张
                                     </th>
                                 </tr>
                             </thead>
                             <tbody>
                                 <tr className="border-b border-brand-border">
-                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">gpt-image-2</td>
-                                    <td className="px-4 py-3 text-ink align-top">自适应</td>
-                                    <td className="px-4 py-3 text-navy align-top font-medium">¥0.05 / 张</td>
-                                    <td className="px-4 py-3 text-ink">默认推荐,最快</td>
+                                    <td className="px-4 py-3 text-ink align-top">简单 prompt · quality 默认(auto)</td>
+                                    <td className="px-4 py-3 text-ink align-top">~200–400</td>
+                                    <td className="px-4 py-3 text-navy align-top font-medium">¥0.006–0.02</td>
                                 </tr>
                                 <tr className="border-b border-brand-border">
-                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">gpt-image-2-1k</td>
-                                    <td className="px-4 py-3 text-ink align-top">锁定 1K</td>
-                                    <td className="px-4 py-3 text-navy align-top font-medium">¥0.05 / 张</td>
-                                    <td className="px-4 py-3 text-ink">稳定 1024</td>
-                                </tr>
-                                <tr className="border-b border-brand-border">
-                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">gpt-image-2-2k</td>
-                                    <td className="px-4 py-3 text-navy align-top font-medium">锁定 2K</td>
-                                    <td className="px-4 py-3 text-navy align-top font-medium">¥0.05 / 张</td>
-                                    <td className="px-4 py-3 text-ink">更清晰</td>
+                                    <td className="px-4 py-3 text-ink align-top">复杂 prompt · auto(自动提质)</td>
+                                    <td className="px-4 py-3 text-ink align-top">~2000–4000</td>
+                                    <td className="px-4 py-3 text-navy align-top font-medium">¥0.05–0.12</td>
                                 </tr>
                                 <tr>
-                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">gpt-image-2-4k</td>
-                                    <td className="px-4 py-3 text-navy align-top font-medium">锁定 4K</td>
-                                    <td className="px-4 py-3 text-navy align-top font-medium">¥0.05 / 张</td>
-                                    <td className="px-4 py-3 text-ink">最高清(较慢,见下)</td>
+                                    <td className="px-4 py-3 text-ink align-top">quality=high(1024²)</td>
+                                    <td className="px-4 py-3 text-ink align-top">~7000</td>
+                                    <td className="px-4 py-3 text-navy align-top font-medium">~¥0.21</td>
                                 </tr>
                             </tbody>
                         </table>
                     </div>
                     <p className="m-0 mb-4 text-xs text-minor-ink">
-                        专用档(-1k / -2k / -4k)会强制按各自档位输出,即使 size 传了别的尺寸。4 档同价 ¥0.05 / 张。
+                        单一模型{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            gpt-image-2
+                        </code>
+                        ,分辨率由{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            size
+                        </code>{' '}
+                        控制(最高 3840×2160);上表为估算,实际以响应 usage / 账单为准。
                     </p>
 
                     <p className="m-0 mb-2 text-sm font-medium text-navy">文生图 · /v1/images/generations(JSON)</p>
@@ -1434,7 +1444,7 @@ curl ${OPENAI_BASE}/images/edits \\
                                 <tr className="border-b border-brand-border">
                                     <td className="px-4 py-3 font-mono text-xs text-navy align-top">model</td>
                                     <td className="px-4 py-3 text-ink align-top">✓</td>
-                                    <td className="px-4 py-3 text-ink">gpt-image-2(或 -1k / -2k / -4k)</td>
+                                    <td className="px-4 py-3 text-ink">gpt-image-2</td>
                                 </tr>
                                 <tr className="border-b border-brand-border">
                                     <td className="px-4 py-3 font-mono text-xs text-navy align-top">prompt</td>
@@ -1442,11 +1452,31 @@ curl ${OPENAI_BASE}/images/edits \\
                                     <td className="px-4 py-3 text-ink">图像文字描述</td>
                                 </tr>
                                 <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">quality</td>
+                                    <td className="px-4 py-3 text-ink align-top">—</td>
+                                    <td className="px-4 py-3 text-ink">
+                                        low / medium / high / auto(默认)——{' '}
+                                        <strong className="text-navy">直接决定成本</strong>,见上表
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
                                     <td className="px-4 py-3 font-mono text-xs text-navy align-top">size</td>
                                     <td className="px-4 py-3 text-ink align-top">—</td>
                                     <td className="px-4 py-3 text-ink">
-                                        1024x1024 / 1024x1536 / 1536x1024 / auto;专用档忽略此项分辨率
+                                        1024x1024 / 1536x1024 / 1024x1536 / auto;最高 3840x2160
                                     </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">background</td>
+                                    <td className="px-4 py-3 text-ink align-top">—</td>
+                                    <td className="px-4 py-3 text-ink">
+                                        transparent / opaque / auto(透明背景用 transparent)
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">output_format</td>
+                                    <td className="px-4 py-3 text-ink align-top">—</td>
+                                    <td className="px-4 py-3 text-ink">png(默认)/ jpeg / webp</td>
                                 </tr>
                                 <tr className="border-b border-brand-border">
                                     <td className="px-4 py-3 font-mono text-xs text-navy align-top">n</td>
@@ -1456,7 +1486,7 @@ curl ${OPENAI_BASE}/images/edits \\
                                 <tr>
                                     <td className="px-4 py-3 font-mono text-xs text-navy align-top">response_format</td>
                                     <td className="px-4 py-3 text-ink align-top">—</td>
-                                    <td className="px-4 py-3 text-ink">b64_json(默认且唯一有效)</td>
+                                    <td className="px-4 py-3 text-ink">不用传 —— 平台自动忽略,恒返 b64_json</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -1468,7 +1498,8 @@ curl ${OPENAI_BASE}/images/edits \\
   -d '{
     "model": "gpt-image-2",
     "prompt": "一只戴圣诞帽的橘猫,工作室灯光,高细节",
-    "size": "1536x1024"
+    "size": "1536x1024",
+    "quality": "high"
   }'`}
                     </CodeBlock>
                     <CodeBlock language="python">
@@ -1534,12 +1565,17 @@ fs.writeFileSync("out.png", Buffer.from(resp.data[0].b64_json, "base64"));`}
                                     <td className="px-4 py-3 text-ink align-top">✓</td>
                                     <td className="px-4 py-3 text-ink">原图文件;可重复传多张参考图</td>
                                 </tr>
-                                <tr>
-                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">
-                                        size / response_format
-                                    </td>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">input_fidelity</td>
                                     <td className="px-4 py-3 text-ink align-top">—</td>
-                                    <td className="px-4 py-3 text-ink">同文生图(response_format 默认 b64_json)</td>
+                                    <td className="px-4 py-3 text-ink">
+                                        low / high —— high 更忠于原图细节(输入 token 略增)
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">quality / size</td>
+                                    <td className="px-4 py-3 text-ink align-top">—</td>
+                                    <td className="px-4 py-3 text-ink">同文生图;response_format 不用传(恒回 b64)</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -1578,15 +1614,16 @@ with open("edited.png", "wb") as f:
                         <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
                             data[0].b64_json
                         </code>
-                        (Base64 的 PNG,自行解码保存;始终返回 b64,传 response_format=url 也回 b64)。实际
-                        <strong className="text-navy">按 ¥0.05 / 张</strong>扣费,响应里的 usage 仅平台估算、勿用于对账。
-                        上游报错<strong className="text-navy">原样透传</strong>(状态码 + OpenAI 错误体)。
+                        (Base64 的 PNG,自行解码保存;始终返回 b64,传 response_format 也会被平台自动剥掉、仍回 b64)。
+                        <strong className="text-navy">按 token 计费(¥1 = 官方 $1)</strong>,成本由 quality 主导(见上表),
+                        响应 usage 即真实 token 用量。上游报错<strong className="text-navy">原样透传</strong>(状态码 +
+                        OpenAI 错误体)。
                     </div>
 
                     <div className="mt-3 mb-3 rounded-lg border-l-4 border-brand-accent bg-paper-muted px-4 py-3 text-sm text-ink">
-                        ⏱️ <strong className="text-navy">4K(gpt-image-2-4k)又慢又大</strong>:单张约 7–8MB、生成最长约
+                        ⏱️ <strong className="text-navy">4K(size=3840x2160)又慢又大</strong>:单张约 7–8MB、生成最长约
                         120s。接入务必把<strong className="text-navy">超时设到 ≥ 180s</strong>{' '}
-                        并对偶发断连重试一次;不强求 4K 时优先用 gpt-image-2(自适应)或 -1k / -2k,更快更稳。
+                        并对偶发断连重试一次;不强求 4K 时用默认 size 更快更省;4K 配 quality=high 的 token 成本最高。
                         <span className="block mt-1.5 text-xs text-minor-ink">
                             Python:
                             <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">

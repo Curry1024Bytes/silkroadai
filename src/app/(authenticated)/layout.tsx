@@ -32,6 +32,8 @@ import { getCurrentTenant } from '@/lib/tenant/resolve';
 import { Sidebar } from './sidebar';
 import { LogoutButton } from './logout-button';
 import { UnverifiedBanner } from './unverified-banner';
+import { AnnouncementBanner } from './announcement-banner';
+import { getActiveAnnouncements } from '@/lib/announcements/fetch-active';
 
 export const dynamic = 'force-dynamic';
 
@@ -77,6 +79,10 @@ export default async function AuthenticatedLayout({ children }: { children: Reac
     const tenant = await getCurrentTenant();
     const brandStyle = tenant.primary_color ? ({ ['--color-navy']: tenant.primary_color } as CSSProperties) : undefined;
 
+    // 运营公告(顶部通栏)— 全局(tenant_id=null)+ 该客户所属租户;client island 按
+    // localStorage 关闭。查询抽到 helper 便于 layout 单测 mock(不连 prisma)。
+    const announcements = await getActiveAnnouncements(user.tenant_id ?? null);
+
     return (
         <div className="min-h-screen flex flex-col bg-paper text-ink" style={brandStyle}>
             <header className="bg-paper border-b border-brand-border sticky top-0 z-40">
@@ -102,6 +108,7 @@ export default async function AuthenticatedLayout({ children }: { children: Reac
                 <main className="flex-1 px-4 sm:px-6 py-6 overflow-y-auto">
                     <div className="max-w-5xl mx-auto">
                         {showUnverifiedBanner && <UnverifiedBanner email={user.email} />}
+                        <AnnouncementBanner items={announcements} />
                         {children}
                     </div>
                 </main>
