@@ -530,6 +530,40 @@ describe('/v1 proxy — Phase 2: image_url 入参 + R2 上传 (W9 D2)', () => {
         expect(sent.contents[0].parts[1].inlineData).toEqual({ mimeType: 'image/png', data: 'QUJD' });
     });
 
+    it('多图(≥2 输入图)追加锁定首图画幅的文字强指令', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const res = await POST(
+            geminiReq([
+                { type: 'text', text: 'try-on' },
+                { type: 'image_url', image_url: { url: 'data:image/png;base64,QUJD' } },
+                { type: 'image_url', image_url: { url: 'data:image/png;base64,REVG' } },
+            ]),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(200);
+        const sent = JSON.parse(String((mockFetch.mock.calls[0][1] as RequestInit).body)) as {
+            contents: Array<{ parts: Array<{ text?: string }> }>;
+        };
+        const texts = sent.contents.flatMap((c) => c.parts).map((p) => p.text);
+        expect(texts.some((t) => /FIRST reference image/.test(String(t)))).toBe(true);
+    });
+
+    it('单图 img2img 不追加多图指令', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        await POST(
+            geminiReq([
+                { type: 'text', text: 'edit' },
+                { type: 'image_url', image_url: { url: 'data:image/png;base64,QUJD' } },
+            ]),
+            ctx('chat', 'completions'),
+        );
+        const sent = JSON.parse(String((mockFetch.mock.calls[0][1] as RequestInit).body)) as {
+            contents: Array<{ parts: Array<{ text?: string }> }>;
+        };
+        const texts = sent.contents.flatMap((c) => c.parts).map((p) => p.text);
+        expect(texts.some((t) => /FIRST reference image/.test(String(t)))).toBe(false);
+    });
+
     it('uploads generated image to R2 and returns markdown URL, not base64 (test 11)', async () => {
         mockFetch.mockResolvedValueOnce(geminiNativeResponse());
         const res = await POST(geminiReq('a cat'), ctx('chat', 'completions'));

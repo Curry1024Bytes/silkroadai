@@ -73,6 +73,12 @@ export const dynamic = 'force-dynamic';
 
 const NEWAPI_BASE_URL = process.env.NEWAPI_BASE_URL || 'http://localhost:3000';
 
+/** 多图 img2img(≥2 输入图)时 Gemini 会忽略 `imageConfig.aspectRatio`、自行决定输出比例与
+ *  构图(实测常出方图或跟随非首图,导致"出图尺寸跟原图不符")。追加这句文字强指令能压住它,
+ *  锁定输出 = 第一张参考图的画幅比例与构图(实测 2026-06-24:imageConfig 无效、文字指令有效)。 */
+const MULTI_IMAGE_ASPECT_INSTRUCTION =
+    '[IMPORTANT] The generated image MUST have the exact same aspect ratio and framing as the FIRST reference image. Do not change the aspect ratio, do not output a square image, do not crop or zoom in. 输出图必须与第一张参考图保持完全相同的画幅比例和构图,不要改变比例、不要输出方图、不要裁剪放大。';
+
 /** Gemini image 模型 → 注入的 native imageSize(客户没选 size 时的固定档) */
 const GEMINI_IMAGE_MODELS: Record<string, '1K' | '2K' | '4K'> = {
     'gemini-2.5-flash-image': '1K',
@@ -514,6 +520,11 @@ async function handleGeminiImage(
     );
     if (inputAspect) imageConfig.aspectRatio = inputAspect;
 
+    // 多图(≥2 输入图)时 Gemini 忽略 imageConfig.aspectRatio,改用文字强指令锁定首图画幅。
+    if (contents.flatMap((c) => c.parts).filter((p) => 'inlineData' in p).length >= 2) {
+        contents[contents.length - 1].parts.push({ text: MULTI_IMAGE_ASPECT_INSTRUCTION });
+    }
+
     const upstream = await fetch(`${NEWAPI_BASE_URL}/v1beta/models/${model}:generateContent`, {
         method: 'POST',
         headers: jsonForwardHeaders(req),
@@ -858,6 +869,8 @@ async function handleImagesDalle(
 
     // ---- 拼 Gemini contents:prompt 文本 + 参考图 inlineData ----
     const parts: GeminiInputPart[] = [{ text: prompt }, ...inputParts];
+    // 多图同 handleGeminiImage:文字强指令锁定第一张参考图画幅(imageConfig 对多图无效)。
+    if (inputParts.length >= 2) parts.push({ text: MULTI_IMAGE_ASPECT_INSTRUCTION });
     const upstream = await fetch(`${NEWAPI_BASE_URL}/v1beta/models/${model}:generateContent`, {
         method: 'POST',
         headers: jsonForwardHeaders(req),
