@@ -79,10 +79,10 @@ const NEWAPI_BASE_URL = process.env.NEWAPI_BASE_URL || 'http://localhost:3000';
 const MULTI_IMAGE_ASPECT_INSTRUCTION =
     '[IMPORTANT] The generated image MUST have the exact same aspect ratio and framing as the FIRST reference image. Do not change the aspect ratio, do not output a square image, do not crop or zoom in. 输出图必须与第一张参考图保持完全相同的画幅比例和构图,不要改变比例、不要输出方图、不要裁剪放大。';
 
-/** 逆向上游 502 空响应("Upstream returned empty response")→ 自动转这些非逆向备用 SKU 重试。
- *  备用 SKU 是独立模型名(挂在专属非逆向渠道、单独计费),仅在主渠道空响应时兜底。
- *  gemini-3.1-flash-image-preview(ch45 逆向 ¥0.09)→ -hq(ch42 非逆向 ¥0.26)。 */
-const FAILOVER_502_MODELS: Record<string, string> = {
+/** 逆向上游服务端故障(任意 5xx:500 do_request_failed / 503 memory overloaded / 502 空响应)
+ *  → 自动转这些非逆向备用 SKU 重试。备用 SKU 是独立模型名(挂在专属非逆向渠道、单独计费),
+ *  仅在主渠道服务端故障时兜底。gemini-3.1-flash-image-preview(ch45 逆向 ¥0.09)→ -hq(ch42 非逆向 ¥0.26)。 */
+const FAILOVER_MODELS: Record<string, string> = {
     'gemini-3.1-flash-image-preview': 'gemini-3.1-flash-image-preview-hq',
 };
 
@@ -191,14 +191,15 @@ function jsonForwardHeaders(req: NextRequest): Headers {
     return h;
 }
 
-/** Gemini 生图 native 转发:主模型上游报 502 空响应时,自动用同一个已翻译好的 body
+/** Gemini 生图 native 转发:主模型上游服务端故障(任意 5xx)时,自动用同一个已翻译好的 body
  *  (contents + imageConfig)转到非逆向备用 SKU 重试一次,仅换 URL 里的模型名(故计费切到备用 SKU)。
- *  非 502 / 非空响应错误不重试,原样返回(用 clone 读 body,不消费原响应)。见 FAILOVER_502_MODELS。 */
+ *  flash 是 ch45 独占,任意 5xx 都意味着 ch45 已耗尽 new-api 内部重试 → 兜底转 -hq/ch42。
+ *  4xx(客户端错误,如 400 坏图 / 429 限流)不转,原样返回。见 FAILOVER_MODELS。 */
 async function geminiGenerateWithFailover(req: NextRequest, model: string, requestBody: string): Promise<Response> {
     const url = (m: string) => `${NEWAPI_BASE_URL}/v1beta/models/${m}:generateContent`;
     const upstream = await fetch(url(model), { method: 'POST', headers: jsonForwardHeaders(req), body: requestBody });
-    const backup = FAILOVER_502_MODELS[model];
-    if (backup && upstream.status === 502 && /empty response/i.test(await upstream.clone().text())) {
+    const backup = FAILOVER_MODELS[model];
+    if (backup && upstream.status >= 500 && upstream.status <= 599) {
         return fetch(url(backup), { method: 'POST', headers: jsonForwardHeaders(req), body: requestBody });
     }
     return upstream;

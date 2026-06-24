@@ -564,34 +564,39 @@ describe('/v1 proxy — Phase 2: image_url 入参 + R2 上传 (W9 D2)', () => {
         expect(texts.some((t) => /FIRST reference image/.test(String(t)))).toBe(false);
     });
 
-    it('502 空响应 → 自动转 -hq 备用 SKU 重试并成功', async () => {
-        mockFetch.mockImplementation(async (url: string) => {
-            if (String(url).includes('gemini-3.1-flash-image-preview-hq:generateContent'))
+    // ch45(逆向)实测以多种 5xx 形态失败:500 do_request_failed / 503 memory overloaded / 502 空响应。
+    // flash 是 ch45 独占 → 任意 5xx 都意味着 ch45 挂了,兜底转 -hq/ch42。
+    for (const [code, label, msg] of [
+        [500, 'do_request_failed', 'upstream error: do request failed'],
+        [502, '空响应', 'Upstream returned empty response, please retry later'],
+        [503, 'memory overloaded', 'system memory overloaded (current: 93.4%)'],
+    ] as const) {
+        it(`${code} ${label} → 自动转 -hq 备用 SKU 重试并成功`, async () => {
+            mockFetch.mockImplementation(async (url: string) => {
+                if (String(url).includes('gemini-3.1-flash-image-preview-hq:generateContent'))
+                    return geminiNativeResponse();
+                if (String(url).includes(':generateContent'))
+                    return new Response(JSON.stringify({ error: { message: msg } }), { status: code });
                 return geminiNativeResponse();
-            if (String(url).includes(':generateContent')) {
-                return new Response(
-                    JSON.stringify({ error: { message: 'Upstream returned empty response, please retry later' } }),
-                    { status: 502 },
-                );
-            }
-            return geminiNativeResponse();
+            });
+            const res = await POST(geminiReq('a cat'), ctx('chat', 'completions'));
+            expect(res.status).toBe(200);
+            expect(
+                mockFetch.mock.calls.some(([u]) =>
+                    String(u).includes('gemini-3.1-flash-image-preview-hq:generateContent'),
+                ),
+            ).toBe(true);
         });
-        const res = await POST(geminiReq('a cat'), ctx('chat', 'completions'));
-        expect(res.status).toBe(200);
-        expect(
-            mockFetch.mock.calls.some(([u]) => String(u).includes('gemini-3.1-flash-image-preview-hq:generateContent')),
-        ).toBe(true);
-    });
+    }
 
-    it('502 非空响应 → 不转备用,原样返回 502', async () => {
+    it('4xx(400 坏图)→ 不转备用,原样返回(failover 只兜底 5xx)', async () => {
         mockFetch.mockImplementation(async (url: string) => {
-            if (String(url).includes(':generateContent')) {
-                return new Response(JSON.stringify({ error: { message: 'rate limited' } }), { status: 502 });
-            }
+            if (String(url).includes(':generateContent'))
+                return new Response(JSON.stringify({ error: { message: 'invalid image' } }), { status: 400 });
             return geminiNativeResponse();
         });
         const res = await POST(geminiReq('a cat'), ctx('chat', 'completions'));
-        expect(res.status).toBe(502);
+        expect(res.status).toBe(400);
         expect(mockFetch.mock.calls.some(([u]) => String(u).includes('gemini-3.1-flash-image-preview-hq'))).toBe(false);
     });
 
