@@ -147,6 +147,18 @@ function Header() {
                      *  unauthenticated → /login, authenticated → /dashboard),
                      *  so the lone "进入控制台" CTA covers both states without
                      *  the visual clutter of a third nav button. */}
+                    <a
+                        href="#tools"
+                        style={{
+                            color: 'var(--color-navy)',
+                            textDecoration: 'none',
+                            fontSize: 14,
+                            fontWeight: 500,
+                            padding: '8px 14px',
+                        }}
+                    >
+                        工具
+                    </a>
                     <Link
                         href="/gpu"
                         style={{
@@ -570,7 +582,7 @@ function ToolCard({ icon, tag, title, desc, href, cta }: Tool) {
 
 function Tools() {
     return (
-        <Section id="tools" style={{ padding: '48px 0' }}>
+        <Section id="tools" style={{ padding: '48px 0', scrollMarginTop: 72 }}>
             <h2 style={{ margin: 0, fontSize: 28, fontWeight: 600, color: 'var(--color-navy)', textAlign: 'center' }}>
                 工具箱
             </h2>
