@@ -73,6 +73,26 @@ export const dynamic = 'force-dynamic';
 
 const NEWAPI_BASE_URL = process.env.NEWAPI_BASE_URL || 'http://localhost:3000';
 
+/** 多图 img2img(≥2 输入图)时 Gemini 会忽略 `imageConfig.aspectRatio`、自行决定输出比例与
+ *  构图(实测常出方图或跟随非首图,导致"出图尺寸跟原图不符")。追加这句文字强指令能压住它,
+ *  锁定输出 = 第一张参考图的画幅比例与构图(实测 2026-06-24:imageConfig 无效、文字指令有效)。 */
+const MULTI_IMAGE_ASPECT_INSTRUCTION =
+    '[IMPORTANT] The generated image MUST have the exact same aspect ratio and framing as the FIRST reference image. Do not change the aspect ratio, do not output a square image, do not crop or zoom in. 输出图必须与第一张参考图保持完全相同的画幅比例和构图,不要改变比例、不要输出方图、不要裁剪放大。';
+
+/** 多图 + 客户【显式选了比例】时:Gemini 同样忽略 imageConfig.aspectRatio,改用文字强指令锁定
+ *  【客户选的】比例(而非跟随第一张图)—— 否则客户"可选输出比例"的场景会被首图指令误覆盖。
+ *  ratio 已过 GEMINI_ASPECT_RATIOS 白名单校验(实测 2026-06-24:文字"必须 16:9"能逼出 16:9)。 */
+const explicitAspectInstruction = (ratio: string) =>
+    `[IMPORTANT] The generated image MUST have exactly a ${ratio} aspect ratio (width:height = ${ratio}). Do NOT output a square image unless ${ratio} is 1:1, and do NOT follow the reference images' aspect ratio. 输出图必须严格为 ${ratio} 的画幅比例,不要跟随参考图的比例,不要输出方图(除非比例本身就是 1:1)。`;
+
+/** 逆向上游任意报错(非 2xx,含 400/429/5xx 全部)→ 自动转这些非逆向备用 SKU 重试一次。
+ *  ch45 逆向源故障形态杂(400 / 429 / 500 do_request_failed / 502 空响应 / 503 memory overloaded),
+ *  且其 4xx 多为上游抽风而非真客户端错,故 operator 要求一律兜底。备用 SKU 是独立模型名
+ *  (专属非逆向渠道、单独计费)。gemini-3.1-flash-image-preview(ch45 逆向 ¥0.09)→ -hq(ch42 非逆向 ¥0.26)。 */
+const FAILOVER_MODELS: Record<string, string> = {
+    'gemini-3.1-flash-image-preview': 'gemini-3.1-flash-image-preview-hq',
+};
+
 /** Gemini image 模型 → 注入的 native imageSize(客户没选 size 时的固定档) */
 const GEMINI_IMAGE_MODELS: Record<string, '1K' | '2K' | '4K'> = {
     'gemini-2.5-flash-image': '1K',
@@ -176,6 +196,20 @@ function jsonForwardHeaders(req: NextRequest): Headers {
     const h = forwardHeaders(req);
     h.set('content-type', 'application/json');
     return h;
+}
+
+/** Gemini 生图 native 转发:主模型上游任意报错(非 2xx)时,自动用同一个已翻译好的 body
+ *  (contents + imageConfig)转到非逆向备用 SKU 重试一次,仅换 URL 里的模型名(故计费切到备用 SKU)。
+ *  flash 是 ch45 独占,任意非 2xx 都视作 ch45 挂了 → 兜底转 -hq/ch42(operator:45 所有报错都转 42)。
+ *  只重试一次:备用也报错则原样透传其错,不无限重试。成功(2xx)不转,省一次 ch42 调用。见 FAILOVER_MODELS。 */
+async function geminiGenerateWithFailover(req: NextRequest, model: string, requestBody: string): Promise<Response> {
+    const url = (m: string) => `${NEWAPI_BASE_URL}/v1beta/models/${m}:generateContent`;
+    const upstream = await fetch(url(model), { method: 'POST', headers: jsonForwardHeaders(req), body: requestBody });
+    const backup = FAILOVER_MODELS[model];
+    if (backup && !upstream.ok) {
+        return fetch(url(backup), { method: 'POST', headers: jsonForwardHeaders(req), body: requestBody });
+    }
+    return upstream;
 }
 
 function passthroughResponse(upstream: Response): NextResponse {
@@ -514,14 +548,16 @@ async function handleGeminiImage(
     );
     if (inputAspect) imageConfig.aspectRatio = inputAspect;
 
-    const upstream = await fetch(`${NEWAPI_BASE_URL}/v1beta/models/${model}:generateContent`, {
-        method: 'POST',
-        headers: jsonForwardHeaders(req),
-        body: JSON.stringify({
-            contents,
-            generationConfig: { imageConfig },
-        }),
-    });
+    // 多图(≥2 输入图)时 Gemini 忽略 imageConfig.aspectRatio,改用文字强指令锁定首图画幅。
+    if (contents.flatMap((c) => c.parts).filter((p) => 'inlineData' in p).length >= 2) {
+        contents[contents.length - 1].parts.push({ text: MULTI_IMAGE_ASPECT_INSTRUCTION });
+    }
+
+    const upstream = await geminiGenerateWithFailover(
+        req,
+        model,
+        JSON.stringify({ contents, generationConfig: { imageConfig } }),
+    );
 
     if (!upstream.ok) {
         // 上游错误(401 / 429 / 5xx)原样透传 status + body,客户端能看到 new-api 的错误信息
@@ -858,14 +894,16 @@ async function handleImagesDalle(
 
     // ---- 拼 Gemini contents:prompt 文本 + 参考图 inlineData ----
     const parts: GeminiInputPart[] = [{ text: prompt }, ...inputParts];
-    const upstream = await fetch(`${NEWAPI_BASE_URL}/v1beta/models/${model}:generateContent`, {
-        method: 'POST',
-        headers: jsonForwardHeaders(req),
-        body: JSON.stringify({
-            contents: [{ role: 'user', parts }],
-            generationConfig: { imageConfig },
-        }),
-    });
+    // 多图:Gemini 忽略 imageConfig.aspectRatio,必须用文字强指令锁定画幅(imageConfig 对多图无效)。
+    // 客户没选比例(auto)→ 跟随第一张参考图(配饰上身);选了比例 → 锁定客户选的比例(可选比例场景)。
+    if (inputParts.length >= 2) {
+        parts.push({ text: wantsAuto ? MULTI_IMAGE_ASPECT_INSTRUCTION : explicitAspectInstruction(aspectRatio) });
+    }
+    const upstream = await geminiGenerateWithFailover(
+        req,
+        model,
+        JSON.stringify({ contents: [{ role: 'user', parts }], generationConfig: { imageConfig } }),
+    );
     if (!upstream.ok) return cap ? captureResponse(cap, upstream) : passthroughResponse(upstream);
 
     const upstreamData = (await upstream.json()) as {

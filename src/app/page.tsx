@@ -532,6 +532,22 @@ const TOOLS: Tool[] = [
         cta: '立即使用',
     },
     {
+        icon: '💬',
+        tag: '在线工具',
+        title: 'AI 对话测试工具',
+        desc: '填入你的 API Key,在线测试 AI 对话(逐字流式)—— 覆盖你这把 key 能用的全部对话模型(GPT / Claude / Gemini / DeepSeek 等)。',
+        href: '/tools/chat',
+        cta: '立即使用',
+    },
+    {
+        icon: '🎨',
+        tag: '在线工具',
+        title: 'AI 生图测试工具',
+        desc: '填入你的 API Key,在线测试文生图 / 图生图 —— 覆盖你这把 key 能用的全部生图模型(Gemini / GPT Image 等)。',
+        href: '/tools/image',
+        cta: '立即使用',
+    },
+    {
         icon: '⌨️',
         tag: '下载安装',
         title: 'OpenAI Codex 接入',

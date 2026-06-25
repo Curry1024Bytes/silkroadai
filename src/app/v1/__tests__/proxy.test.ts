@@ -530,6 +530,87 @@ describe('/v1 proxy — Phase 2: image_url 入参 + R2 上传 (W9 D2)', () => {
         expect(sent.contents[0].parts[1].inlineData).toEqual({ mimeType: 'image/png', data: 'QUJD' });
     });
 
+    it('多图(≥2 输入图)追加锁定首图画幅的文字强指令', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const res = await POST(
+            geminiReq([
+                { type: 'text', text: 'try-on' },
+                { type: 'image_url', image_url: { url: 'data:image/png;base64,QUJD' } },
+                { type: 'image_url', image_url: { url: 'data:image/png;base64,REVG' } },
+            ]),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(200);
+        const sent = JSON.parse(String((mockFetch.mock.calls[0][1] as RequestInit).body)) as {
+            contents: Array<{ parts: Array<{ text?: string }> }>;
+        };
+        const texts = sent.contents.flatMap((c) => c.parts).map((p) => p.text);
+        expect(texts.some((t) => /FIRST reference image/.test(String(t)))).toBe(true);
+    });
+
+    it('单图 img2img 不追加多图指令', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        await POST(
+            geminiReq([
+                { type: 'text', text: 'edit' },
+                { type: 'image_url', image_url: { url: 'data:image/png;base64,QUJD' } },
+            ]),
+            ctx('chat', 'completions'),
+        );
+        const sent = JSON.parse(String((mockFetch.mock.calls[0][1] as RequestInit).body)) as {
+            contents: Array<{ parts: Array<{ text?: string }> }>;
+        };
+        const texts = sent.contents.flatMap((c) => c.parts).map((p) => p.text);
+        expect(texts.some((t) => /FIRST reference image/.test(String(t)))).toBe(false);
+    });
+
+    // ch45(逆向)实测以多种状态失败:400 / 429 / 500 do_request_failed / 502 空响应 / 503 memory overloaded。
+    // flash 是 ch45 独占 → operator 要求任意非 2xx 都视作 ch45 挂了,一律兜底转 -hq/ch42 重试一次。
+    for (const [code, label, msg] of [
+        [400, 'bad request', 'invalid argument'],
+        [429, 'rate limited', 'rate limit exceeded'],
+        [500, 'do_request_failed', 'upstream error: do request failed'],
+        [502, '空响应', 'Upstream returned empty response, please retry later'],
+        [503, 'memory overloaded', 'system memory overloaded (current: 93.4%)'],
+    ] as const) {
+        it(`${code} ${label} → 自动转 -hq 备用 SKU 重试并成功`, async () => {
+            mockFetch.mockImplementation(async (url: string) => {
+                if (String(url).includes('gemini-3.1-flash-image-preview-hq:generateContent'))
+                    return geminiNativeResponse();
+                if (String(url).includes(':generateContent'))
+                    return new Response(JSON.stringify({ error: { message: msg } }), { status: code });
+                return geminiNativeResponse();
+            });
+            const res = await POST(geminiReq('a cat'), ctx('chat', 'completions'));
+            expect(res.status).toBe(200);
+            expect(
+                mockFetch.mock.calls.some(([u]) =>
+                    String(u).includes('gemini-3.1-flash-image-preview-hq:generateContent'),
+                ),
+            ).toBe(true);
+        });
+    }
+
+    it('ch45 成功(200)→ 不触发 failover,不浪费 ch42 调用', async () => {
+        mockFetch.mockImplementation(async () => geminiNativeResponse());
+        const res = await POST(geminiReq('a cat'), ctx('chat', 'completions'));
+        expect(res.status).toBe(200);
+        expect(mockFetch.mock.calls.some(([u]) => String(u).includes('gemini-3.1-flash-image-preview-hq'))).toBe(false);
+    });
+
+    it('ch45 错 + ch42 也错 → 单次重试后原样透传 ch42 的错(不无限重试)', async () => {
+        const hits: string[] = [];
+        mockFetch.mockImplementation(async (url: string) => {
+            hits.push(String(url));
+            if (String(url).includes(':generateContent'))
+                return new Response(JSON.stringify({ error: { message: 'both down' } }), { status: 503 });
+            return geminiNativeResponse();
+        });
+        const res = await POST(geminiReq('a cat'), ctx('chat', 'completions'));
+        expect(res.status).toBe(503);
+        expect(hits.filter((u) => u.includes(':generateContent')).length).toBe(2);
+    });
+
     it('uploads generated image to R2 and returns markdown URL, not base64 (test 11)', async () => {
         mockFetch.mockResolvedValueOnce(geminiNativeResponse());
         const res = await POST(geminiReq('a cat'), ctx('chat', 'completions'));
@@ -1066,6 +1147,19 @@ describe('/v1 proxy — img2img:auto 时输出比例跟随输入图(fix gemini-i
         return sent.generationConfig.imageConfig;
     }
 
+    /** 取最近一次 generateContent 请求 body 里全部 parts 的文本拼接(校验多图画幅文字指令)。 */
+    function sentPartsText(): string {
+        const call = mockFetch.mock.calls.find(([u]) => String(u).includes(':generateContent'));
+        expect(call).toBeDefined();
+        const sent = JSON.parse(String((call![1] as RequestInit).body)) as {
+            contents: Array<{ parts: Array<{ text?: string }> }>;
+        };
+        return sent.contents
+            .flatMap((c) => c.parts)
+            .map((p) => p.text ?? '')
+            .join('\n');
+    }
+
     it('edits + auto + 1920×1080 PNG → 注入 16:9(不再被 Gemini 默认成方图)', async () => {
         mockFetch.mockResolvedValueOnce(geminiNativeResponse());
         const res = await POST(
@@ -1129,6 +1223,39 @@ describe('/v1 proxy — img2img:auto 时输出比例跟随输入图(fix gemini-i
         const res = await POST(multipartReq(form), ctx('images', 'edits'));
         expect(res.status).toBe(200);
         expect(sentImageConfig().aspectRatio).toBe('16:9');
+    });
+
+    it('多图 + 显式比例 16:9 → 文字指令锁定 16:9 而非首图(修复可选输出比例场景)', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const form = editsForm(pngBytes(1080, 1920), { aspectRatio: '16:9' }); // 首图是竖图,选 16:9
+        form.append('image', new File([pngBytes(1000, 1000)], 'ref2.png', { type: 'image/png' }));
+        const res = await POST(multipartReq(form), ctx('images', 'edits'));
+        expect(res.status).toBe(200);
+        const text = sentPartsText();
+        expect(text).toMatch(/16:9/);
+        expect(text).not.toMatch(/FIRST reference image/);
+    });
+
+    it('多图 + auto → 文字指令仍跟随第一张图(配饰上身场景不回归)', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const form = editsForm(pngBytes(1080, 1920), { aspectRatio: 'auto' });
+        form.append('image', new File([pngBytes(1000, 1000)], 'ref2.png', { type: 'image/png' }));
+        const res = await POST(multipartReq(form), ctx('images', 'edits'));
+        expect(res.status).toBe(200);
+        expect(sentPartsText()).toMatch(/FIRST reference image/);
+    });
+
+    it('单图 + 显式比例 → 走 imageConfig,不追加任何画幅文字指令', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const res = await POST(
+            multipartReq(editsForm(pngBytes(1080, 1920), { aspectRatio: '16:9' })),
+            ctx('images', 'edits'),
+        );
+        expect(res.status).toBe(200);
+        expect(sentImageConfig().aspectRatio).toBe('16:9');
+        const text = sentPartsText();
+        expect(text).not.toMatch(/FIRST reference image/);
+        expect(text).not.toMatch(/MUST have exactly/);
     });
 
     it('极端 8000×1000 输入:pro 档注入独有的 8:1,flash 档取白名单内最近的 21:9', async () => {
