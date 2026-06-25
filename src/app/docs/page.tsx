@@ -2243,7 +2243,9 @@ for _ in range(120):  # 最多约 16 分钟
                         参考图别太小(约 256px 以下会被上游拒,用 ≥512px 稳);视频直链是临时的,拿到尽快转存。首尾帧也可用{' '}
                         <code className="font-mono text-xs">video_config.reference_mode</code> = start_frame/start_end
                         指定。参考视频用 <code className="font-mono text-xs">reference_videos</code>(数组 ≤3,单段建议
-                        ≤15s),与图片同走转存,可与参考图 / 音频同用。
+                        ≤15s),与图片同走转存,可与参考图 / 音频同用;
+                        <strong className="text-navy">参考视频分辨率需 ≥480p</strong>
+                        (像素 ≥409600,360p 等过小会被上游拒)。
                     </p>
 
                     <p className="m-0 mt-6 mb-2 text-sm font-medium text-navy">参数总表</p>
