@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
+import { BackButton } from '@/components/BackButton';
 
 export const metadata: Metadata = {
     title: '工具箱 · Silk Road AI',
@@ -56,9 +57,9 @@ export default function ToolsIndexPage() {
     return (
         <main className="min-h-screen bg-paper text-ink">
             <div className="mx-auto max-w-4xl px-5 py-8">
-                <Link href="/" className="text-sm text-brand-accent hover:underline">
-                    ← 返回首页
-                </Link>
+                <BackButton className="text-sm text-brand-accent hover:underline cursor-pointer border-0 bg-transparent p-0">
+                    ← 返回
+                </BackButton>
                 <h1 className="m-0 mt-4 mb-1 text-2xl font-semibold text-navy">工具箱</h1>
                 <p className="m-0 mb-6 text-sm text-muted-ink leading-relaxed">
                     在线测试工具与接入指引,后续会持续加入更多工具。

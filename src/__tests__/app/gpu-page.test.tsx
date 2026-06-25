@@ -163,14 +163,12 @@ describe('/gpu page — contact section', () => {
         expect(html).toContain(t('contact_back_to_landing'));
     });
 
-    it('renders the ← 返回首页 affordance next to the hero h1 (W7 D4 PR-R Item D)', () => {
+    it('renders the ← 返回 affordance next to the hero h1 (back-to-previous-page)', () => {
         const html = renderToString(<GpuPage />);
-        // PR-R Item D adds a small muted-ink ← back-to-landing link
-        // above the hero h1 to match /models + /docs. The page chrome
-        // already has a 首页 link on the right, but the left-aligned
-        // affordance helps deep-linked visitors who scan the hero
-        // first.
-        expect(html).toContain('返回首页');
+        // Small muted-ink ← back affordance above the hero h1 (matches
+        // /models + /docs). Now a <BackButton> that goes to the previous
+        // page (browser back) instead of always home.
+        expect(html).toContain('返回');
     });
 });
 

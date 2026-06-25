@@ -19,6 +19,7 @@
  * new-api is busy.
  */
 import Link from 'next/link';
+import { BackButton } from '@/components/BackButton';
 import { listAvailableModels } from '@/lib/newapi/client';
 import { classifyModels } from '@/lib/models/categorize';
 import { Logo } from '@/components/brand/Logo';
@@ -55,13 +56,10 @@ export default async function ModelsPage() {
                      *  public page from a search result or a shared
                      *  link have an explicit way back. Small + muted
                      *  per the PR-R style spec. */}
-                    <Link
-                        href="/"
-                        className="inline-flex items-center gap-1 text-xs text-muted-ink hover:text-brand-accent transition-colors duration-150 ease-brand no-underline w-fit"
-                    >
+                    <BackButton className="inline-flex items-center gap-1 text-xs text-muted-ink hover:text-brand-accent transition-colors duration-150 ease-brand no-underline w-fit cursor-pointer border-0 bg-transparent p-0">
                         <span aria-hidden="true">←</span>
-                        <span>返回首页</span>
-                    </Link>
+                        <span>返回</span>
+                    </BackButton>
                     <div className="flex items-center gap-3">
                         <Logo variant="primary-flat" size={28} />
                         <p className="m-0 text-xs text-minor-ink">Connecting Global Intelligence.</p>

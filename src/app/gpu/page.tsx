@@ -20,6 +20,7 @@
  *   - meta tags: title / description / keywords + og:* set below.
  */
 import Link from 'next/link';
+import { BackButton } from '@/components/BackButton';
 import type { Metadata } from 'next';
 import { Logo } from '@/components/brand/Logo';
 import { PricingCardsGrid } from '@/components/gpu/PricingCard';
@@ -143,13 +144,10 @@ function Hero() {
                      *  search-result deep link or a sales-engineer
                      *  shared URL benefit from a left-aligned ← arrow
                      *  next to the hero title (matches /models /docs). */}
-                    <Link
-                        href="/"
-                        className="inline-flex items-center gap-1 mb-4 text-xs text-muted-ink hover:text-brand-accent transition-colors duration-150 ease-brand no-underline w-fit"
-                    >
+                    <BackButton className="inline-flex items-center gap-1 mb-4 text-xs text-muted-ink hover:text-brand-accent transition-colors duration-150 ease-brand no-underline w-fit cursor-pointer border-0 bg-transparent p-0">
                         <span aria-hidden="true">←</span>
-                        <span>返回首页</span>
-                    </Link>
+                        <span>返回</span>
+                    </BackButton>
                     <h1 className="m-0 text-4xl md:text-5xl font-semibold text-navy" style={{ lineHeight: 1.2 }}>
                         {t('hero_title')}
                     </h1>

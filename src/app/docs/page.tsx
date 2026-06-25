@@ -23,6 +23,7 @@
  *   Node SDK        https://github.com/openai/openai-node           (baseURL + apiKey ground-truthed)
  */
 import Link from 'next/link';
+import { BackButton } from '@/components/BackButton';
 import { Logo } from '@/components/brand/Logo';
 import { Card } from '@/components/ui/Card';
 
@@ -144,13 +145,10 @@ export default function DocsPage() {
                      *  above the h1 so customers who deep-linked into
                      *  /docs from a chat or a docs search have an
                      *  explicit way back. Small + muted per spec. */}
-                    <Link
-                        href="/"
-                        className="inline-flex items-center gap-1 mb-3 text-xs text-muted-ink hover:text-brand-accent transition-colors duration-150 ease-brand no-underline w-fit"
-                    >
+                    <BackButton className="inline-flex items-center gap-1 mb-3 text-xs text-muted-ink hover:text-brand-accent transition-colors duration-150 ease-brand no-underline w-fit cursor-pointer border-0 bg-transparent p-0">
                         <span aria-hidden="true">←</span>
-                        <span>返回首页</span>
-                    </Link>
+                        <span>返回</span>
+                    </BackButton>
                     <h1 className="m-0 mb-3 text-3xl font-semibold text-navy">集成文档</h1>
                     <p className="m-0 mb-2 text-base text-muted-ink leading-relaxed max-w-3xl">
                         Silk Road AI 完全 OpenAI 兼容(同时提供 Anthropic 兼容协议), 所有支持自定义 base URL 的客户端 /

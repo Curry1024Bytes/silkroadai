@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import Link from 'next/link';
+import { BackButton } from '@/components/BackButton';
 import { ImageTool } from './image-tool';
 
 export const metadata: Metadata = {
@@ -12,9 +12,9 @@ export default function ImageToolPage() {
     return (
         <main className="min-h-screen bg-paper text-ink">
             <div className="mx-auto max-w-3xl px-5 py-8">
-                <Link href="/" className="text-sm text-brand-accent hover:underline">
-                    ← 返回首页
-                </Link>
+                <BackButton className="text-sm text-brand-accent hover:underline cursor-pointer border-0 bg-transparent p-0">
+                    ← 返回
+                </BackButton>
                 <h1 className="m-0 mt-4 mb-1 text-2xl font-semibold text-navy">AI 生图测试工具</h1>
                 <p className="m-0 mb-6 text-sm text-muted-ink leading-relaxed">
                     填入你的 API Key,选模型,在线测试文生图 / 图生图。覆盖你这把 key 能用的全部生图模型。表单与下方 JSON
