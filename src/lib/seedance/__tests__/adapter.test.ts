@@ -33,10 +33,9 @@ beforeEach(() => {
         if (u.endsWith('/v1/assets'))
             return json({ id: `asset_${Math.random().toString(36).slice(2, 8)}`, task_id: null });
         if (u.endsWith('/v1/video/generate')) return json({ task: { id: 'task_abc' } });
-        return new Response(Buffer.from([0xff, 0xd8, 0xff, 0xe0]), {
-            status: 200,
-            headers: { 'content-type': 'image/jpeg' },
-        });
+        // 非上游 URL = 客户图床/视频 → 返回字节(供 re-host fetch);按扩展名给 content-type
+        const ct = /\.mp4(\?|$)/i.test(u) ? 'video/mp4' : 'image/jpeg';
+        return new Response(Buffer.from([0x00, 0x00, 0x00, 0x18]), { status: 200, headers: { 'content-type': ct } });
     });
     global.fetch = mockFetch as typeof fetch;
 });
@@ -121,5 +120,39 @@ describe('seedance overseas adapter — 参考图 http URL 转存 R2', () => {
         expect(res.status).toBe(400);
         const body = (await res.json()) as { error: { message: string } };
         expect(body.error.message).toContain('text-only');
+    });
+
+    it('reference_videos → 上传 asset_type=Video + content video_url/role=reference_video', async () => {
+        const res = await submitVideo(
+            makeReq({
+                model: 'dreamina-seedance-2-0-720p-ref',
+                prompt: '运镜参考 @Video1',
+                reference_videos: ['https://customer.example/clip.mp4?sig=x'],
+            }),
+        );
+        expect(res.status).toBe(200);
+        // 客户视频 URL 被 re-host(fetch)→ 喂上游 /v1/assets 的是 R2 链接 + asset_type=Video
+        expect(mockFetch.mock.calls.some((c) => String(c[0]) === 'https://customer.example/clip.mp4?sig=x')).toBe(true);
+        const assetBody = JSON.parse(
+            String((mockFetch.mock.calls.find((c) => String(c[0]).endsWith('/v1/assets'))![1] as RequestInit).body),
+        );
+        expect(assetBody.asset_type).toBe('Video');
+        expect(String(assetBody.url).startsWith('https://images.silkroadai.io/seedance-ref/')).toBe(true);
+        // content 含 video_url + role reference_video + asset:// 引用
+        const content = upstreamBody('/v1/video/generate').content as Array<{
+            type: string;
+            role?: string;
+            video_url?: { url: string };
+        }>;
+        const v = content.find((c) => c.type === 'video_url');
+        expect(v?.role).toBe('reference_video');
+        expect(String(v?.video_url?.url)).toMatch(/^asset:\/\//);
+    });
+
+    it('文生(非 -ref)模型带参考视频 → 400 text-only', async () => {
+        const res = await submitVideo(
+            makeReq({ model: 'dreamina-seedance-2-0-720p', prompt: 'x', reference_videos: ['https://h/c.mp4'] }),
+        );
+        expect(res.status).toBe(400);
     });
 });

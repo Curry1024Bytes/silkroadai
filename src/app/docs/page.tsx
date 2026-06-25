@@ -106,7 +106,7 @@ const AGENTS: AgentSection[] = [
     {
         id: 'seedance-overseas',
         label: 'Seedance 海外满血 · 高质量视频',
-        blurb: '即梦 Seedance 2.0 官方满血源 — 文生 / 图生 / 首尾帧 / 参考音频;需「seedance海外满血」档 key。',
+        blurb: '即梦 Seedance 2.0 官方满血源 — 文生 / 图生 / 首尾帧 / 参考视频 / 参考音频;需「seedance海外满血」档 key。',
     },
 ];
 
@@ -2225,6 +2225,15 @@ for _ in range(120):  # 最多约 16 分钟
 # 用音频时必须同时带至少一张图`}
                     </CodeBlock>
 
+                    <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">5) 参考视频(-ref + reference_videos)</p>
+                    <CodeBlock language="bash">
+                        {`curl ${OPENAI_BASE}/video/generations -H "Authorization: Bearer sk-你的海外满血KEY" \\
+  -H "Content-Type: application/json" -d '{ "model": "dreamina-seedance-2-0-720p-ref",
+  "prompt": "运镜参考 @Video1,把场景换成雪天", "duration": 5,
+  "reference_videos": ["https://你的视频/camera.mp4"] }'
+# reference_videos 数组(≤3);可与参考图同用,prompt 里 @Video1 / @Image1 指代`}
+                    </CodeBlock>
+
                     <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">轮询取片</p>
                     <CodeBlock language="bash">
                         {`curl ${OPENAI_BASE}/video/generations/task_xxx -H "Authorization: Bearer sk-你的海外满血KEY"
@@ -2233,7 +2242,8 @@ for _ in range(120):  # 最多约 16 分钟
                     <p className="m-0 mt-3 text-xs text-minor-ink">
                         参考图别太小(约 256px 以下会被上游拒,用 ≥512px 稳);视频直链是临时的,拿到尽快转存。首尾帧也可用{' '}
                         <code className="font-mono text-xs">video_config.reference_mode</code> = start_frame/start_end
-                        指定。本档暂不支持参考视频(reference_videos)输入。
+                        指定。参考视频用 <code className="font-mono text-xs">reference_videos</code>(数组 ≤3,单段建议
+                        ≤15s),与图片同走转存,可与参考图 / 音频同用。
                     </p>
 
                     <p className="m-0 mt-6 mb-2 text-sm font-medium text-navy">参数总表</p>
@@ -2288,6 +2298,13 @@ for _ in range(120):  # 最多约 16 分钟
                                     </td>
                                     <td className="px-4 py-2.5 text-ink">-ref</td>
                                     <td className="px-4 py-2.5 text-ink">首帧 / 尾帧图(首尾帧过渡)</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy">reference_videos</td>
+                                    <td className="px-4 py-2.5 text-ink">-ref</td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        参考视频数组(≤3,单段建议 ≤15s);http 链接或 base64
+                                    </td>
                                 </tr>
                                 <tr className="border-b border-brand-border">
                                     <td className="px-4 py-2.5 font-mono text-xs text-navy">audio_url</td>
