@@ -51,8 +51,8 @@ describe('<Sidebar />', () => {
         expect(html).toMatch(/href="\/dashboard"/);
         expect(html).toMatch(/href="\/keys"/);
         expect(html).toMatch(/href="\/pay"/);
-        // 工具箱 → 落地页 #tools 板块;旧 AI 对话 / AI 生图 控制台路由已下线
-        expect(html).toMatch(/href="\/#tools"/);
+        // 工具箱 → 独立页 /tools(不跳落地页);旧 AI 对话 / AI 生图 控制台路由已下线
+        expect(html).toMatch(/href="\/tools"/);
         expect(html).not.toMatch(/href="\/chat"/);
         expect(html).not.toMatch(/href="\/image"/);
     });
