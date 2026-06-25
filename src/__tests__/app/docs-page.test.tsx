@@ -40,10 +40,11 @@ describe('/docs page — header + chrome', () => {
         expect(html).toMatch(/href="\/models"/);
     });
 
-    it('renders the ← 返回首页 back-to-landing link above the h1 (W7 D4 PR-R Item D)', () => {
+    it('renders the ← 返回 affordance above the h1 (back-to-previous-page)', () => {
         const html = renderToString(<DocsPage />);
-        expect(html).toContain('返回首页');
-        expect(html).toMatch(/href="\/"/);
+        // Now a <BackButton> (browser back) instead of a fixed href="/" link.
+        expect(html).toContain('返回');
+        expect(html).toMatch(/<button[^>]*>[\s\S]*返回/);
     });
 });
 

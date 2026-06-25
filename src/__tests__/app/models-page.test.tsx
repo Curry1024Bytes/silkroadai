@@ -101,12 +101,13 @@ describe('<ModelsPage /> SSR', () => {
         expect(html).toMatch(/<strong[^>]*>0<\/strong>\s*个模型/);
     });
 
-    it('renders the ← 返回首页 back-to-landing link', async () => {
+    it('renders the ← 返回 affordance (back-to-previous-page)', async () => {
         mockListAvailableModels.mockResolvedValue(SAMPLE);
         const el = await ModelsPage();
         const html = renderToString(el);
-        expect(html).toContain('返回首页');
-        expect(html).toMatch(/href="\/"/);
+        // Now a <BackButton> (browser back) instead of a fixed href="/" link.
+        expect(html).toContain('返回');
+        expect(html).toMatch(/<button[^>]*>[\s\S]*返回/);
     });
 });
 
