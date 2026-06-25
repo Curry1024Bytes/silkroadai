@@ -23,14 +23,11 @@ const BASE_NAV: NavItem[] = [
     // 明细 all live on /dashboard. Old /balance + /usage routes 307-redirect
     // here, so the two former nav rows collapsed into this one.
     { href: '/dashboard', label: '概览' },
-    // ChatUI v1 (stateless): headline conversational feature, sits right
-    // under the dashboard hub above 生图.
-    { href: '/chat', label: 'AI 对话' },
-    // PR-T2: image generation lives in the second-position slot per
-    // operator brief — surfaces the headline customer-visible feature
-    // right under the dashboard hub.
-    { href: '/image', label: 'AI 生图' },
     { href: '/keys', label: 'API Keys' },
+    // 工具箱: 公开在线工具(Seedance 视频 / AI 对话 / AI 生图 测试 + Codex / Claude Code
+    // 接入)—— 落地页 #tools 板块。放在 API Keys 之后。控制台的 AI 对话 / AI 生图 入口已下线,
+    // 统一收敛到工具箱(/chat /image 页面仍在,只是不再挂导航)。
+    { href: '/#tools', label: '工具箱' },
     // W9 D3 PR-C: 客户自定义 OSS(生图输出存储)配置入口。
     { href: '/settings/storage', label: '存储设置' },
     { href: '/models', label: '模型清单' },
