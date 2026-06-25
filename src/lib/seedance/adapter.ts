@@ -19,7 +19,7 @@ import { uploadImage } from '@/lib/r2/client';
 const SVC_BASE = process.env.SEEDANCE_INFERENCE_BASE_URL || 'https://model.service-inference.ai';
 const UA =
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
-const MAX_REF_IMAGES = 4;
+const MAX_REF_IMAGES = 9; // 对齐文档 reference_image_urls ≤9
 
 /** 客户/new-api 模型名 → service-inference.ai model + resolution + 是否参考档(-ref)。 */
 const MODEL_MAP: Record<string, { svc: string; resolution: string; ref: boolean }> = {
@@ -79,6 +79,9 @@ function extractImageUrls(body: Record<string, unknown>): string[] {
         else if (u && typeof u === 'object' && typeof (u as { url?: unknown }).url === 'string')
             urls.push((u as { url: string }).url);
     };
+    // 文档承诺的字段(满血上游原生):顶层 image_url(单张)+ reference_image_urls(数组,@ImageN 按序),放最前保证顺序
+    pushUrl(body.image_url);
+    if (Array.isArray(body.reference_image_urls)) for (const i of body.reference_image_urls) pushUrl(i);
     const content = body.content;
     if (Array.isArray(content)) {
         for (const c of content) {
@@ -97,22 +100,50 @@ const fetchSvc = (path: string, auth: string, init: RequestInit = {}) =>
         headers: { Authorization: auth, Accept: 'application/json', 'User-Agent': UA, ...(init.headers || {}) },
     });
 
-/** data URL(image/audio)→ 转存 R2 拿 http URL;http(s) URL 原样返回(上游只收 http 链接)。 */
-async function toHttpMediaUrl(url: string): Promise<string> {
-    const m = /^data:((?:image|audio)\/[a-z0-9.+-]+);base64,(.+)$/i.exec(url.trim());
-    if (!m) {
-        if (/^https?:\/\//i.test(url)) return url;
-        throw new Error('media must be an http(s) URL or a base64 data URL');
-    }
-    const mime = m[1];
-    const buf = Buffer.from(m[2], 'base64');
-    if (buf.length > 20 * 1024 * 1024) throw new Error('image exceeds 20MB');
-    // ⚠️ NO file extension on the R2 key: service-inference.ai 的 asset 抓取器对
-    // URL 末尾 `.jpg` 扩展名会走坏分支报 "Asset provider error"(`.png` / 无扩展名正常,
-    // 实测 2026-06-16)。无扩展名 key + R2 对象正确 content-type(picsum 同款)对所有格式都通。
+// ⚠️ NO file extension on the R2 key: service-inference.ai 的 asset 抓取器对 URL 末尾
+// `.jpg` 扩展名会走坏分支报 "Asset provider error"(`.png` / 无扩展名正常,实测 2026-06-16)。
+// 无扩展名 key + R2 对象正确 content-type(picsum 同款)对所有格式都通。
+async function uploadCleanMedia(buf: Buffer, mime: string): Promise<string> {
+    if (buf.length > 20 * 1024 * 1024) throw new Error('media exceeds 20MB');
     const r2url = await uploadImage(`seedance-ref/${randomUUID()}`, buf, mime);
     console.log('[seedance-adapter] r2 upload', { mime, bytes: buf.length, url: r2url });
     return r2url;
+}
+
+/**
+ * 媒体 URL → 上游 asset 抓取器能吃下的「干净」http 链接。
+ * - data URL(image/audio)→ 解码上传我们 R2,返回无扩展名干净链接。
+ * - http(s) URL:
+ *   - rehostHttp=true(图片):也把字节拉到我们 R2 再返回干净链接。客户图床的 presigned /
+ *     长 query / `.jpg` 扩展名 URL 直接喂上游 /v1/assets 会报 "Asset provider error"(502),
+ *     统一过一遍我们 R2 即根治;拉取失败回退原 URL(不比原来更糟)。
+ *   - rehostHttp=false(音频):原样透传(音频走直链不经 /v1/assets,客户直链本就能用,不动)。
+ */
+async function toHttpMediaUrl(url: string, opts: { rehostHttp?: boolean } = {}): Promise<string> {
+    const u = url.trim();
+    const m = /^data:((?:image|audio)\/[a-z0-9.+-]+);base64,(.+)$/i.exec(u);
+    if (m) return uploadCleanMedia(Buffer.from(m[2], 'base64'), m[1]);
+    if (!/^https?:\/\//i.test(u)) throw new Error('media must be an http(s) URL or a base64 data URL');
+    if (!opts.rehostHttp) return u;
+    try {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 15_000);
+        let resp: Response;
+        try {
+            resp = await fetch(u, { headers: { 'User-Agent': UA }, signal: ctrl.signal });
+        } finally {
+            clearTimeout(timer);
+        }
+        if (!resp.ok) throw new Error(`fetch ${resp.status}`);
+        const buf = Buffer.from(await resp.arrayBuffer());
+        if (buf.length === 0) throw new Error('empty body');
+        let mime = (resp.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+        if (!/^image\//.test(mime)) mime = 'image/jpeg';
+        return await uploadCleanMedia(buf, mime);
+    } catch (e) {
+        console.warn('[seedance-adapter] http image rehost failed, passing raw url', String(e).slice(0, 140));
+        return u;
+    }
 }
 
 /** 把一张 http 图传成 service-inference.ai 的 asset,轮询到 completed,返回 asset_id。 */
@@ -174,17 +205,37 @@ export async function submitVideo(req: NextRequest): Promise<NextResponse> {
     const prompt = extractPrompt(body);
     if (!prompt) return err(400, 'invalid_request', 'prompt (text) is required');
 
-    // 收集图输入(带角色):参考图(reference_image)+ 首帧(first_frame)+ 尾帧(last_frame)
-    const imageInputs: Array<{ url: string; role: string }> = extractImageUrls(body).map((url) => ({
-        url,
-        role: 'reference_image',
-    }));
-    if (typeof body.first_frame === 'string' && body.first_frame)
-        imageInputs.push({ url: body.first_frame, role: 'first_frame' });
-    if (typeof body.last_frame === 'string' && body.last_frame)
-        imageInputs.push({ url: body.last_frame, role: 'last_frame' });
-    // 音频(直链或 base64;上游要求音频需配 ≥1 张图)
+    // 收集图输入并按 video_config.reference_mode 派角色:
+    //   start_frame=首帧(取第1张) / start_end=首尾帧(取前2张) / auto(默认/缺省)=多图参考。
+    //   顶层 first_frame/last_frame(legacy 显式指定)优先,与 reference_mode 互斥。
+    const refUrls = extractImageUrls(body);
+    const refMode = String(
+        (body.video_config as { reference_mode?: unknown } | undefined)?.reference_mode || '',
+    ).toLowerCase();
+    const explicitFirst = typeof body.first_frame === 'string' ? body.first_frame : '';
+    const explicitLast = typeof body.last_frame === 'string' ? body.last_frame : '';
+    const imageInputs: Array<{ url: string; role: string }> = [];
+    if (!explicitFirst && !explicitLast && refMode === 'start_frame' && refUrls.length >= 1) {
+        imageInputs.push({ url: refUrls[0], role: 'first_frame' });
+    } else if (!explicitFirst && !explicitLast && refMode === 'start_end' && refUrls.length >= 2) {
+        imageInputs.push({ url: refUrls[0], role: 'first_frame' }, { url: refUrls[1], role: 'last_frame' });
+    } else {
+        for (const url of refUrls) imageInputs.push({ url, role: 'reference_image' });
+    }
+    if (explicitFirst) imageInputs.push({ url: explicitFirst, role: 'first_frame' });
+    if (explicitLast) imageInputs.push({ url: explicitLast, role: 'last_frame' });
+
+    // 音频(直链或 base64;上游要求音频需配 ≥1 张图):audio / audio_url / reference_audios[0]
     const audioField = body.audio_url as { url?: unknown } | string | undefined;
+    const refAudios = body.reference_audios;
+    const firstRefAudio =
+        Array.isArray(refAudios) && refAudios.length
+            ? typeof refAudios[0] === 'string'
+                ? (refAudios[0] as string)
+                : typeof (refAudios[0] as { url?: unknown })?.url === 'string'
+                  ? (refAudios[0] as { url: string }).url
+                  : null
+            : null;
     const audioRaw =
         typeof body.audio === 'string'
             ? body.audio
@@ -192,18 +243,23 @@ export async function submitVideo(req: NextRequest): Promise<NextResponse> {
               ? audioField
               : typeof audioField?.url === 'string'
                 ? audioField.url
-                : null;
+                : firstRefAudio;
 
     // 防串档 + 校验
     if (!map.ref && (imageInputs.length > 0 || audioRaw))
         return err(400, 'invalid_request', `${model} is text-only; use a "-ref" model for image/audio inputs`);
     if (map.ref && imageInputs.length === 0)
-        return err(400, 'invalid_request', `${model} requires an image (image / first_frame / last_frame)`);
+        return err(
+            400,
+            'invalid_request',
+            `${model} requires an image (image_url / reference_image_urls / first_frame / last_frame)`,
+        );
     if (imageInputs.length > MAX_REF_IMAGES) return err(400, 'invalid_request', `at most ${MAX_REF_IMAGES} images`);
     if (audioRaw && !imageInputs.some((i) => i.role === 'reference_image' || i.role === 'first_frame'))
         return err(400, 'invalid_request', 'audio requires at least one reference_image or first_frame');
 
-    const durRaw = Number(body.duration);
+    // duration:文档用 seconds(常为字符串,如 "15"),兼容 legacy duration
+    const durRaw = Number(body.seconds ?? body.duration);
     const duration = Number.isFinite(durRaw) && durRaw >= 1 ? Math.floor(durRaw) : 4;
     let ratio = String(body.ratio || body.aspect_ratio || '16:9');
     if (!ALLOWED_RATIOS.has(ratio)) ratio = '16:9';
@@ -226,7 +282,7 @@ export async function submitVideo(req: NextRequest): Promise<NextResponse> {
             const assets = await Promise.all(
                 imageInputs.map(async (inp) => ({
                     role: inp.role,
-                    id: await uploadAndReadyAsset(auth, groupId, await toHttpMediaUrl(inp.url)),
+                    id: await uploadAndReadyAsset(auth, groupId, await toHttpMediaUrl(inp.url, { rehostHttp: true })),
                 })),
             );
             for (const a of assets)
