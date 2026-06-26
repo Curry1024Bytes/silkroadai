@@ -43,6 +43,54 @@ function err(status: number, code: string, message: string) {
     return NextResponse.json({ error: { code, message, type: 'seedance_adapter_error' } }, { status });
 }
 
+/**
+ * 从上游错误响应里挖出**最具体**的人类可读原因。
+ * service-inference.ai 把真错误层层包成嵌套 JSON(常是 message 字段里再塞一段转义的 JSON),
+ * 直接 String(j.error) 会得到 "[object Object]"、客户什么都看不到(实测 user 465 因此盲目重试
+ * 60 次)。本函数深度优先递归(限深 + try/catch),把内嵌 JSON 串也解开,返回如
+ * "InputTextSensitiveContentDetected: The request failed because the input text may contain ...";
+ * 解不出就回退到原始串。见 2026-06-26 诊断。
+ */
+function digUpstreamError(raw: unknown, depth = 0): string {
+    if (depth > 6 || raw == null) return '';
+    if (typeof raw === 'string') {
+        const s = raw.trim();
+        if (!s) return '';
+        // 整串就是 JSON → 解开递归
+        if ((s.startsWith('{') && s.endsWith('}')) || (s.startsWith('[') && s.endsWith(']'))) {
+            try {
+                return digUpstreamError(JSON.parse(s), depth + 1) || s;
+            } catch {
+                return s;
+            }
+        }
+        // 串里内嵌一段 JSON(如 "... failed (400): {\"code\":...}") → 抽出来挖更具体的
+        const m = s.match(/\{[\s\S]*\}/);
+        if (m) {
+            try {
+                const inner = digUpstreamError(JSON.parse(m[0]), depth + 1);
+                if (inner) return inner;
+            } catch {
+                /* 内嵌片段非合法 JSON,忽略,用原串 */
+            }
+        }
+        return s;
+    }
+    if (typeof raw === 'object') {
+        const o = raw as Record<string, unknown>;
+        if (o.error != null) {
+            const inner = digUpstreamError(o.error, depth + 1);
+            if (inner) return inner;
+        }
+        // fail_to_fetch_task 是 service-inference 的外壳码,无信息量,跳过只取内层
+        const code = typeof o.code === 'string' && o.code !== 'fail_to_fetch_task' ? o.code : '';
+        const msg = o.message != null ? digUpstreamError(o.message, depth + 1) : '';
+        if (code && msg) return `${code}: ${msg}`;
+        return msg || code || '';
+    }
+    return '';
+}
+
 function extractPrompt(body: Record<string, unknown>): string {
     if (typeof body.prompt === 'string') return body.prompt;
     const content = body.content;
@@ -396,7 +444,7 @@ export async function submitVideo(req: NextRequest): Promise<NextResponse> {
         return err(
             upstream.status >= 400 ? upstream.status : 502,
             'upstream_error',
-            String((j?.error as string) || text || 'submit failed').slice(0, 300),
+            (digUpstreamError(text) || 'submit failed').slice(0, 300),
         );
     }
     return NextResponse.json(
@@ -482,7 +530,7 @@ export async function pollVideo(req: NextRequest, id: string): Promise<NextRespo
         return err(
             upstream.status >= 400 ? upstream.status : 502,
             'upstream_error',
-            String(text || 'poll failed').slice(0, 300),
+            (digUpstreamError(text) || 'poll failed').slice(0, 300),
         );
     }
     const status = mapStatus(task.status);

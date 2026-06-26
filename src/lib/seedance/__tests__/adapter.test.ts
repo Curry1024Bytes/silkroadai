@@ -152,4 +152,29 @@ describe('seedance overseas adapter — 参考图 http URL 转存 R2', () => {
         );
         expect(res.status).toBe(400);
     });
+
+    it('上游多层嵌套错误 → 透出最具体真因(不再 [object Object])', async () => {
+        // 复刻 service-inference.ai 实际形态:error.message 里再塞一层转义 JSON,内含审核码
+        const innermost = JSON.stringify({
+            error: {
+                code: 'InputTextSensitiveContentDetected',
+                message: 'The request failed because the input text may contain sensitive information',
+            },
+        });
+        const mid = JSON.stringify({ code: 'fail_to_fetch_task', message: innermost });
+        const upstreamErr = JSON.stringify({
+            error: { message: `Failed to submit video generation job: Upstream submit failed (400): ${mid}` },
+        });
+        mockFetch.mockImplementation(async (url: string) => {
+            if (String(url).endsWith('/v1/video/generate'))
+                return new Response(upstreamErr, { status: 400, headers: { 'content-type': 'application/json' } });
+            return json({});
+        });
+        const res = await submitVideo(makeReq({ model: 'dreamina-seedance-2-0-720p', prompt: '某敏感提示词' }));
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { error: { message: string } };
+        expect(body.error.message).toContain('InputTextSensitiveContentDetected');
+        expect(body.error.message).toContain('sensitive information');
+        expect(body.error.message).not.toContain('[object Object]');
+    });
 });
