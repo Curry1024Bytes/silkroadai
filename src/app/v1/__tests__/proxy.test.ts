@@ -1759,3 +1759,85 @@ describe('/v1 proxy — gpt-image-2 response_format stripping (zhiyunai compat)'
         expect(sentForm.get('model')).toBe('gpt-image-2');
     });
 });
+
+describe('/v1 proxy — gpt-image-2 aspect_ratio → pixel size (zhiyunai compat)', () => {
+    const imgResp = () =>
+        new Response(JSON.stringify({ data: [{ b64_json: 'QkFTRTY0' }] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+        });
+
+    it('JSON aspect_ratio:"16:9" → size 1536x864, aspect_ratio stripped', async () => {
+        mockFetch.mockResolvedValueOnce(imgResp());
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2', prompt: 'a cat', aspect_ratio: '16:9' },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        const sent = JSON.parse(String((mockFetch.mock.calls[0][1] as RequestInit).body)) as Record<string, unknown>;
+        expect(sent.size).toBe('1536x864');
+        expect(sent).not.toHaveProperty('aspect_ratio');
+    });
+
+    it('JSON ratio-shaped size:"1:1" → size 1024x1024', async () => {
+        mockFetch.mockResolvedValueOnce(imgResp());
+        await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2', prompt: 'a cat', size: '1:1' },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        const sent = JSON.parse(String((mockFetch.mock.calls[0][1] as RequestInit).body)) as Record<string, unknown>;
+        expect(sent.size).toBe('1024x1024');
+    });
+
+    it('JSON pixel size:"1536x1024" passes through unchanged', async () => {
+        mockFetch.mockResolvedValueOnce(imgResp());
+        await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2', prompt: 'a cat', size: '1536x1024' },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        const sent = JSON.parse(String((mockFetch.mock.calls[0][1] as RequestInit).body)) as Record<string, unknown>;
+        expect(sent.size).toBe('1536x1024');
+    });
+
+    it('JSON uncommon ratio:"5:3" → computed ~5:3 pixel size', async () => {
+        mockFetch.mockResolvedValueOnce(imgResp());
+        await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2', prompt: 'a cat', aspect_ratio: '5:3' },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        const sent = JSON.parse(String((mockFetch.mock.calls[0][1] as RequestInit).body)) as { size?: string };
+        expect(sent.size).toMatch(/^\d+x\d+$/);
+        const [w, h] = (sent.size ?? '').split('x').map(Number);
+        expect(w / h).toBeCloseTo(5 / 3, 1);
+    });
+
+    it('multipart aspect_ratio:"9:16" → form size 864x1536, aspect_ratio stripped', async () => {
+        mockFetch.mockResolvedValueOnce(imgResp());
+        const form = new FormData();
+        form.append('model', 'gpt-image-2');
+        form.append('prompt', 'a cat');
+        form.append('aspect_ratio', '9:16');
+        form.append('image', new Blob([Buffer.from('x')], { type: 'image/png' }), 'in.png');
+        const req = new NextRequest('https://ai.silkroadai.io/v1/images/edits', {
+            method: 'POST',
+            headers: { authorization: 'Bearer sk-test' },
+            body: form,
+        });
+        await POST(req, ctx('images', 'edits'));
+        const sentForm = (mockFetch.mock.calls[0][1] as RequestInit).body as FormData;
+        expect(sentForm.get('size')).toBe('864x1536');
+        expect(sentForm.get('aspect_ratio')).toBeNull();
+    });
+});

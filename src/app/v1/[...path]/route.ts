@@ -633,6 +633,69 @@ function fetchUpstreamJson(req: NextRequest, body: JsonRecord, path: string, sea
     });
 }
 
+/** OpenAI gpt-image 用像素 size,不认 aspect_ratio / 比例串("16:9")—— 客户传比例时上游静默
+ *  出方图(实测 aspect_ratio:"16:9" → 1254×1254 方图;size:"16:9" → 400)。把常见比例折成
+ *  ~1MP 像素 size(zhiyunai 接受任意 WxH);表外比例按 1MP 等比折算、取整到 16。 */
+const GPT_IMAGE_ASPECT_SIZE: Record<string, string> = {
+    '1:1': '1024x1024',
+    '3:2': '1536x1024',
+    '2:3': '1024x1536',
+    '4:3': '1152x896',
+    '3:4': '896x1152',
+    '5:4': '1120x896',
+    '4:5': '896x1120',
+    '16:9': '1536x864',
+    '9:16': '864x1536',
+    '21:9': '1536x672',
+    '9:21': '672x1536',
+    '2:1': '1408x704',
+    '1:2': '704x1408',
+};
+const ASPECT_RATIO_RE = /^(\d{1,2}):(\d{1,2})$/;
+function aspectToPixelSize(ratio: string): string | null {
+    const fixed = GPT_IMAGE_ASPECT_SIZE[ratio];
+    if (fixed) return fixed;
+    const m = ASPECT_RATIO_RE.exec(ratio);
+    if (!m) return null;
+    const w = Number(m[1]);
+    const h = Number(m[2]);
+    if (!w || !h) return null;
+    const k = Math.sqrt((1024 * 1024) / (w * h));
+    const px = (x: number) => Math.min(2048, Math.max(512, Math.round((x * k) / 16) * 16));
+    return `${px(w)}x${px(h)}`;
+}
+/** 从 aspect_ratio 或比例形态的 size 取出比例 → 对应像素 size;无比例 → null。 */
+function ratioToSize(aspectRatio: string, size: string): string | null {
+    const ar = aspectRatio.trim();
+    const sz = size.trim();
+    const ratio = ASPECT_RATIO_RE.test(ar) ? ar : ASPECT_RATIO_RE.test(sz) ? sz : '';
+    return ratio ? aspectToPixelSize(ratio) : null;
+}
+/** gpt-image JSON 规整:剥 response_format(zhiyunai 拒收 →400)+ 比例→像素 size(默认出方图)。 */
+function normalizeGptImageJson(body: JsonRecord): void {
+    delete body.response_format;
+    const ar = typeof body.aspect_ratio === 'string' ? body.aspect_ratio : '';
+    const sz = typeof body.size === 'string' ? body.size : '';
+    if (ASPECT_RATIO_RE.test(ar.trim()) || ASPECT_RATIO_RE.test(sz.trim())) {
+        const px = ratioToSize(ar, sz);
+        if (px) body.size = px;
+        else delete body.size;
+    }
+    delete body.aspect_ratio;
+}
+/** gpt-image multipart 规整(同 normalizeGptImageJson,作用于 FormData)。 */
+function normalizeGptImageForm(form: FormData): void {
+    form.delete('response_format');
+    const ar = String(form.get('aspect_ratio') ?? '');
+    const sz = String(form.get('size') ?? '');
+    if (ASPECT_RATIO_RE.test(ar.trim()) || ASPECT_RATIO_RE.test(sz.trim())) {
+        const px = ratioToSize(ar, sz);
+        if (px) form.set('size', px);
+        else form.delete('size');
+    }
+    form.delete('aspect_ratio');
+}
+
 /** OpenAI gpt-image 图片输出 token 估算系数:~703 tok/百万像素(校准到 1536×1024≈1106,
  *  贴近客户参考样例 1105)。号池/new-api 不回真实 usage,这是【估算值】,不等于官方计费 token。 */
 const OPENAI_IMAGE_OUTPUT_TOKENS_PER_MP = 703;
@@ -776,8 +839,11 @@ async function handleImagesDalle(
             sizeRaw = String(form.get('size') ?? '');
             // model 非我们的 Gemini 生图 → 重建 FormData 透传(保留 gpt-image-2 等)
             if (!(model in GEMINI_IMAGE_MODELS)) {
-                // gpt-image-2 上游严格拒收 response_format → multipart 同样剥掉(见 JSON 分支)
-                if (model.startsWith('gpt-image')) form.delete('response_format');
+                // gpt-image:剥 response_format + 把比例(aspect_ratio / "16:9" 形态 size)翻成像素 size
+                if (model.startsWith('gpt-image')) {
+                    normalizeGptImageForm(form);
+                    sizeRaw = String(form.get('size') ?? '');
+                }
                 // multipart 入参不拆图字节(brief §3 Out),只记文本字段摘要
                 if (cap)
                     recordRequestBody(
@@ -837,9 +903,12 @@ async function handleImagesDalle(
             sizeRaw = String(body.size ?? '');
             if (cap) recordRequestBody(cap, JSON.stringify(body), model, false);
             if (!(model in GEMINI_IMAGE_MODELS)) {
-                // gpt-image-2 上游(zhiyunai / Azure gpt-image)严格拒收 response_format → 400;
-                // 官方 gpt-image-1 本就恒回 b64,转发前剥掉该参数。
-                if (model.startsWith('gpt-image')) delete body.response_format;
+                // gpt-image:剥 response_format(zhiyunai 拒收 →400)+ 比例→像素 size(zhiyunai 不认
+                // aspect_ratio / "16:9" 形态 size,默认出方图)。见 normalizeGptImageJson。
+                if (model.startsWith('gpt-image')) {
+                    normalizeGptImageJson(body);
+                    sizeRaw = typeof body.size === 'string' ? body.size : '';
+                }
                 try {
                     const upstream = await fetchUpstreamJson(req, body, path, search);
                     return await reshapeOpenAiImageResponse(upstream, prompt, sizeRaw, cap);
