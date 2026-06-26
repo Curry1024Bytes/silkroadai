@@ -1841,3 +1841,90 @@ describe('/v1 proxy — gpt-image-2 aspect_ratio → pixel size (zhiyunai compat
         expect(sentForm.get('aspect_ratio')).toBeNull();
     });
 });
+
+describe('/v1 proxy — gpt-image-2 via /chat/completions → images translation', () => {
+    const imgGenResp = () =>
+        new Response(
+            JSON.stringify({
+                data: [{ b64_json: 'QkFTRTY0' }],
+                usage: { input_tokens: 14, output_tokens: 196, total_tokens: 210 },
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+
+    it('text-only chat → /v1/images/generations, wrapped as chat.completion with markdown image', async () => {
+        mockFetch.mockResolvedValueOnce(imgGenResp());
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: { model: 'gpt-image-2', messages: [{ role: 'user', content: 'a red apple' }] },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(200);
+        const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(url).toContain('/v1/images/generations');
+        const sent = JSON.parse(String(init.body)) as Record<string, unknown>;
+        expect(sent.model).toBe('gpt-image-2');
+        expect(sent.prompt).toBe('a red apple');
+        expect(sent).not.toHaveProperty('messages');
+        const data = (await res.json()) as {
+            object: string;
+            choices: Array<{ message: { content: string } }>;
+            usage: { prompt_tokens: number; completion_tokens: number };
+        };
+        expect(data.object).toBe('chat.completion');
+        expect(data.choices[0].message.content).toMatch(/^!\[image\]\(https:\/\/images\.silkroadai\.io\//);
+        expect(data.usage.completion_tokens).toBe(196);
+        expect(res.headers.get('X-Silkroadai-Translated')).toBe('gpt-image-chat');
+    });
+
+    it('multimodal chat (image_url) → /v1/images/edits multipart', async () => {
+        mockFetch.mockResolvedValueOnce(imgGenResp());
+        const dataUrl = 'data:image/png;base64,' + Buffer.from('x').toString('base64');
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: {
+                    model: 'gpt-image-2',
+                    messages: [
+                        {
+                            role: 'user',
+                            content: [
+                                { type: 'text', text: 'make it green' },
+                                { type: 'image_url', image_url: { url: dataUrl } },
+                            ],
+                        },
+                    ],
+                },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(200);
+        const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(url).toContain('/v1/images/edits');
+        const form = init.body as FormData;
+        expect(form.get('prompt')).toBe('make it green');
+        expect(form.get('model')).toBe('gpt-image-2');
+        expect(form.get('image')).toBeInstanceOf(Blob);
+        const data = (await res.json()) as { choices: Array<{ message: { content: string } }> };
+        expect(data.choices[0].message.content).toMatch(/!\[image\]\(/);
+    });
+
+    it('upstream error → passthrough status', async () => {
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ error: { message: 'boom' } }), {
+                status: 400,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: { model: 'gpt-image-2', messages: [{ role: 'user', content: 'a red apple' }] },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(400);
+    });
+});

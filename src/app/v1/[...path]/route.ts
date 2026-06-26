@@ -615,6 +615,108 @@ function imageError(message: string, status = 400, cap: CaptureCtx | null = null
     return NextResponse.json(obj, { status });
 }
 
+/** gpt-image-2 是图片模型,zhiyunai/Azure 只支持 Images 接口 —— 客户用 /v1/chat/completions
+ *  调它会被上游 400「The requested operation is unsupported」。这里把 chat 请求翻成
+ *  /v1/images/{generations,edits}(messages 带 image_url → edits,否则 generations),出图存图床
+ *  后包成 chat.completion 回复(content = markdown 图 url),与 Gemini 生图(handleGeminiImage)一致。
+ *  计费照常由 new-api 按该 images 调用扣(token 计费)。stream:true 同 Gemini 返回非流 JSON。 */
+async function handleGptImageChat(
+    req: NextRequest,
+    body: JsonRecord,
+    model: string,
+    cap: CaptureCtx | null = null,
+): Promise<NextResponse> {
+    let contents: Array<{ role: string; parts: GeminiInputPart[] }>;
+    try {
+        contents = await toGeminiContents(body.messages);
+    } catch (e) {
+        if (e instanceof ImageUrlError) return imageError(e.message, 400, cap);
+        throw e;
+    }
+    const parts = contents.flatMap((c) => c.parts);
+    const prompt = parts
+        .map((p) => ('text' in p ? p.text : ''))
+        .filter(Boolean)
+        .join(' ')
+        .trim();
+    const inputImages = parts.flatMap((p) => ('inlineData' in p ? [p.inlineData] : []));
+    if (!prompt && inputImages.length === 0) {
+        return imageError('messages 里需要文字 prompt 或图片', 400, cap);
+    }
+
+    // chat 形态一般不带 size;带了就认像素 size,或把比例("16:9")翻成像素,其余忽略走上游默认。
+    const sizeRaw = (typeof body.size === 'string' ? body.size : '').trim();
+    let size: string | undefined;
+    if (/^\d{2,4}x\d{2,4}$/.test(sizeRaw)) size = sizeRaw;
+    else if (ASPECT_RATIO_RE.test(sizeRaw)) size = aspectToPixelSize(sizeRaw) ?? undefined;
+    const quality = typeof body.quality === 'string' ? body.quality : undefined;
+
+    let upstream: Response;
+    if (inputImages.length > 0) {
+        // messages 带 image_url → 图生图 edits(multipart)
+        const form = new FormData();
+        form.append('model', model);
+        form.append('prompt', prompt || 'edit the image');
+        if (size) form.append('size', size);
+        if (quality) form.append('quality', quality);
+        for (const img of inputImages) {
+            form.append(
+                'image',
+                new Blob([Buffer.from(img.data, 'base64')], { type: img.mimeType || 'image/png' }),
+                'image.png',
+            );
+        }
+        upstream = await fetchUpstreamMultipart(req, form, '/images/edits', '');
+    } else {
+        // 纯文字 → 文生图 generations(JSON)
+        const genBody: JsonRecord = { model, prompt };
+        if (size) genBody.size = size;
+        if (quality) genBody.quality = quality;
+        upstream = await fetchUpstreamJson(req, genBody, '/images/generations', '');
+    }
+
+    if (!upstream.ok) {
+        // 上游错误原样透传 status + body(客户能看到真实错误信息)
+        return cap ? captureResponse(cap, upstream) : passthroughResponse(upstream);
+    }
+    const data = (await upstream.json().catch(() => null)) as {
+        data?: Array<{ b64_json?: string; url?: string }>;
+        usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number };
+    } | null;
+    const item = data?.data?.[0];
+
+    let content: string;
+    let stored: StoredImage | null = null;
+    if (item?.b64_json) {
+        // 客户 OSS → 平台 R2 → data URL 三级降级(同 handleGeminiImage)
+        stored = await storeGeneratedImage(req, Buffer.from(item.b64_json, 'base64'), 'image/png', item.b64_json);
+        content = `![image](${stored.url})`;
+    } else if (item?.url) {
+        content = `![image](${item.url})`;
+    } else {
+        return imageError('上游未返回图片', 502, cap);
+    }
+
+    const usage = data?.usage ?? {};
+    const openaiResp = {
+        id: `chatcmpl-${Date.now()}`,
+        object: 'chat.completion',
+        created: Math.floor(Date.now() / 1000),
+        model,
+        choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }],
+        usage: {
+            prompt_tokens: usage.input_tokens ?? 0,
+            completion_tokens: usage.output_tokens ?? 0,
+            total_tokens: usage.total_tokens ?? 0,
+        },
+    };
+    const respHeaders: Record<string, string> = { 'X-Silkroadai-Translated': 'gpt-image-chat' };
+    if (stored?.ossFallback) respHeaders['X-Silkroadai-Oss-Fallback'] = 'yes';
+    if (stored?.r2Fallback) respHeaders['X-Silkroadai-R2-Fallback'] = 'yes';
+    if (cap) captureJsonResponse(cap, 200, openaiResp, hostedRefs(stored));
+    return NextResponse.json(openaiResp, { status: 200, headers: respHeaders });
+}
+
 /** 非 Gemini 图片(gpt-image-2 等)multipart 转发 → 返回【原始】响应供 reshape。
  *  req.body 已被 formData() 消费,转发已解析的 FormData;删原 content-type 让 fetch
  *  按重建 FormData 重生 boundary。 */
@@ -1159,6 +1261,14 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
             const imgCap = isMediaCaptureSkipped() ? null : cap;
             if (imgCap) recordRequestBody(imgCap, JSON.stringify(body), model, body.stream === true);
             return handleGeminiImage(req, body, model, imgCap);
+        }
+
+        // Branch 1.1: gpt-image-2(图片模型)被当 chat 模型调 → 翻译到 Images 接口(否则上游
+        // 400「The requested operation is unsupported」)。同 Gemini,出图包成 chat.completion 回复。
+        if (model.startsWith('gpt-image')) {
+            const imgCap = isMediaCaptureSkipped() ? null : cap;
+            if (imgCap) recordRequestBody(imgCap, JSON.stringify(body), model, body.stream === true);
+            return handleGptImageChat(req, body, model, imgCap);
         }
 
         // 捕获【原始】请求体(文本路径;clamp 分支也存未钳的,记录客户真实输入,brief §4)
