@@ -219,12 +219,17 @@ async function toHttpMediaUrl(
     }
 }
 
-/** 把一张图传成 service-inference.ai 的 Image asset,轮询到 completed,返回 asset_id。(视频不走 asset 流,见 submitVideo) */
-async function uploadAndReadyAsset(auth: string, groupId: string, httpUrl: string): Promise<string> {
+/** 把一张图 / 一段视频传成 service-inference.ai 的 asset,轮询到 completed,返回 asset_id。 */
+async function uploadAndReadyAsset(
+    auth: string,
+    groupId: string,
+    httpUrl: string,
+    assetType: 'Image' | 'Video' = 'Image',
+): Promise<string> {
     const up = await fetchSvc('/v1/assets', auth, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ group_id: groupId, url: httpUrl, asset_type: 'Image', name: 'ref' }),
+        body: JSON.stringify({ group_id: groupId, url: httpUrl, asset_type: assetType, name: 'ref' }),
     });
     const upText = await up.text();
     let upJson: { id?: string; task_id?: string | null; error?: unknown };
@@ -343,15 +348,17 @@ export async function submitVideo(req: NextRequest): Promise<NextResponse> {
 
     const content: Array<Record<string, unknown>> = [{ type: 'text', text: prompt }];
 
-    // -ref 路径:图片走 asset 流(asset://);视频 / 音频走直链(转存 R2 拿可抓直链)。
-    // ⚠️ 视频不走 asset 流:上游 /v1/assets 对 asset_type=Video 一律 "Asset provider error"(proxy_error,
-    //    我们 R2 [GET 206 video/mp4] 与 Google 公网 .mp4 都被拒);但 generate 的 content.video_url 直接吃 http
-    //    直链——实测上游会抓取+解码我们 R2 视频按 r2v(参考生视频)处理(仅要求像素 ≥409600 ≈480p)。故视频
-    //    转存 R2 后作直链传,与音频同路。详见 2026-06-25 上游探测。
+    // -ref 路径:图片 + 视频都走上游 asset 流(建组→传素材→轮询就绪→asset://),与上游文档一致
+    // (reference 媒体走 asset,音频例外走直链)。客户 URL / data URL 先转存我们 R2 拿上游能抓的干净链接,
+    // 再传 /v1/assets(asset_type=Image / Video)。⚠️ 早前(#172)误判视频 asset 不可用改成直链 video_url,
+    // 实为当时上游 video-asset 暂态 / 测试视频上游解不动;2026-06-26 实测真 mp4 走 asset 流端到端通(传素材
+    // completed → generate asset:// 建 task),且直链 video_url 会被上游按内容审核拦(privacy/sensitive),
+    // 故视频改回 asset 流。音频仍直链(文档示例即直链,上游不经 /v1/assets)。
     if (map.ref) {
         try {
-            // 图片:建素材组 → 并行上传+轮询拿 asset:// + 角色
-            if (imageInputs.length) {
+            // 图片 + 视频共用一个素材组
+            let groupId: string | undefined;
+            if (imageInputs.length || videoUrls.length) {
                 const grp = await fetchSvc('/v1/asset-groups', auth, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -360,14 +367,17 @@ export async function submitVideo(req: NextRequest): Promise<NextResponse> {
                         description: 'silkroadai seedance ref',
                     }),
                 });
-                const groupId = ((await grp.json().catch(() => null)) as { id?: string } | null)?.id;
+                groupId = ((await grp.json().catch(() => null)) as { id?: string } | null)?.id;
                 if (!grp.ok || !groupId) throw new Error(`asset-group create failed (${grp.status})`);
+            }
+            // 图片 asset(asset_type=Image)→ asset:// + 角色(reference_image / first_frame / last_frame)
+            if (groupId && imageInputs.length) {
                 const assets = await Promise.all(
                     imageInputs.map(async (inp) => ({
                         role: inp.role,
                         id: await uploadAndReadyAsset(
                             auth,
-                            groupId,
+                            groupId!,
                             await toHttpMediaUrl(inp.url, { rehostHttp: true }),
                         ),
                     })),
@@ -375,15 +385,19 @@ export async function submitVideo(req: NextRequest): Promise<NextResponse> {
                 for (const a of assets)
                     content.push({ type: 'image_url', image_url: { url: `asset://${a.id}` }, role: a.role });
             }
-            // 视频:转存 R2 → 直链 video_url(不走 asset 流,上游 r2v 直接吃直链)
-            if (videoUrls.length) {
-                const vurls = await Promise.all(
-                    videoUrls.map((url) => toHttpMediaUrl(url, { rehostHttp: true, kind: 'video' })),
+            // 视频 asset(asset_type=Video)→ asset:// + role reference_video
+            if (groupId && videoUrls.length) {
+                const vassets = await Promise.all(
+                    videoUrls.map((url) =>
+                        toHttpMediaUrl(url, { rehostHttp: true, kind: 'video' }).then((u) =>
+                            uploadAndReadyAsset(auth, groupId!, u, 'Video'),
+                        ),
+                    ),
                 );
-                for (const vu of vurls)
-                    content.push({ type: 'video_url', video_url: { url: vu }, role: 'reference_video' });
+                for (const id of vassets)
+                    content.push({ type: 'video_url', video_url: { url: `asset://${id}` }, role: 'reference_video' });
             }
-            // 音频:直链
+            // 音频:直链(上游不经 /v1/assets)
             if (audioRaw) {
                 const audioUrl = await toHttpMediaUrl(audioRaw);
                 content.push({ type: 'audio_url', audio_url: { url: audioUrl }, role: 'reference_audio' });

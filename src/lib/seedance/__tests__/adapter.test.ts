@@ -122,7 +122,7 @@ describe('seedance overseas adapter — 参考图 http URL 转存 R2', () => {
         expect(body.error.message).toContain('text-only');
     });
 
-    it('reference_videos → 转存 R2 直链 video_url/role=reference_video(不走 asset 流)', async () => {
+    it('reference_videos → 转存 R2 → 上传 asset_type=Video → content video_url asset://(走 asset 流)', async () => {
         const res = await submitVideo(
             makeReq({
                 model: 'dreamina-seedance-2-0-720p-ref',
@@ -133,9 +133,12 @@ describe('seedance overseas adapter — 参考图 http URL 转存 R2', () => {
         expect(res.status).toBe(200);
         // 客户视频 URL 被 re-host(fetch)→ 转存我们 R2
         expect(mockFetch.mock.calls.some((c) => String(c[0]) === 'https://customer.example/clip.mp4?sig=x')).toBe(true);
-        // 视频不走 /v1/assets 上传(上游对 Video asset 报错);只有图片才打 /v1/assets,本例无图 → 0 次
-        expect(mockFetch.mock.calls.filter((c) => String(c[0]).endsWith('/v1/assets')).length).toBe(0);
-        // content 含 video_url + role reference_video,url 是我们 R2 直链(非 asset://)
+        // 视频走 /v1/assets 上传,asset_type=Video,url 是我们 R2 干净链接
+        const assetCall = mockFetch.mock.calls.find((c) => String(c[0]).endsWith('/v1/assets'));
+        const assetBody = JSON.parse(String((assetCall![1] as RequestInit).body));
+        expect(assetBody.asset_type).toBe('Video');
+        expect(String(assetBody.url).startsWith('https://images.silkroadai.io/seedance-ref/')).toBe(true);
+        // content 含 video_url + role reference_video,url 是 asset://(非直链)
         const content = upstreamBody('/v1/video/generate').content as Array<{
             type: string;
             role?: string;
@@ -143,7 +146,7 @@ describe('seedance overseas adapter — 参考图 http URL 转存 R2', () => {
         }>;
         const v = content.find((c) => c.type === 'video_url');
         expect(v?.role).toBe('reference_video');
-        expect(String(v?.video_url?.url).startsWith('https://images.silkroadai.io/seedance-ref/')).toBe(true);
+        expect(String(v?.video_url?.url)).toMatch(/^asset:\/\//);
     });
 
     it('文生(非 -ref)模型带参考视频 → 400 text-only', async () => {
