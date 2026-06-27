@@ -644,18 +644,22 @@ async function handleGptImageChat(
         return imageError('messages 里需要文字 prompt 或图片', 400, cap);
     }
 
-    // chat 形态一般不带 size;带了就认像素 size,或把比例("16:9")翻成像素,其余忽略走上游默认。
+    // 旧变体名(gpt-image-2-4k 等)→ gpt-image-2 + 对应像素 size(未显式给 size 时)
+    const variant = gptImageVariant(model);
+    const effModel = variant ? variant.base : model;
+    // chat 形态一般不带 size;带了就认像素 size,或把比例("16:9")翻成像素,其余走变体 / 上游默认。
     const sizeRaw = (typeof body.size === 'string' ? body.size : '').trim();
     let size: string | undefined;
     if (/^\d{2,4}x\d{2,4}$/.test(sizeRaw)) size = sizeRaw;
     else if (ASPECT_RATIO_RE.test(sizeRaw)) size = aspectToPixelSize(sizeRaw) ?? undefined;
+    if (!size && variant) size = variant.size;
     const quality = typeof body.quality === 'string' ? body.quality : undefined;
 
     let upstream: Response;
     if (inputImages.length > 0) {
         // messages 带 image_url → 图生图 edits(multipart)
         const form = new FormData();
-        form.append('model', model);
+        form.append('model', effModel);
         form.append('prompt', prompt || 'edit the image');
         if (size) form.append('size', size);
         if (quality) form.append('quality', quality);
@@ -669,7 +673,7 @@ async function handleGptImageChat(
         upstream = await fetchUpstreamMultipart(req, form, '/images/edits', '');
     } else {
         // 纯文字 → 文生图 generations(JSON)
-        const genBody: JsonRecord = { model, prompt };
+        const genBody: JsonRecord = { model: effModel, prompt };
         if (size) genBody.size = size;
         if (quality) genBody.quality = quality;
         upstream = await fetchUpstreamJson(req, genBody, '/images/generations', '');
@@ -773,9 +777,24 @@ function ratioToSize(aspectRatio: string, size: string): string | null {
     const ratio = ASPECT_RATIO_RE.test(ar) ? ar : ASPECT_RATIO_RE.test(sz) ? sz : '';
     return ratio ? aspectToPixelSize(ratio) : null;
 }
+/** 旧 czeq SKU 名 gpt-image-2-{1,2,4}k 只是别名(zhiyunai 上游只有 gpt-image-2 一个模型,分辨率靠
+ *  size 像素控制)→ 翻成 gpt-image-2 + 对应像素 size(1k→1024² / 2k→2048² / 4k→3840x2160)。
+ *  返回 null = 非变体名。 */
+function gptImageVariant(model: string): { base: string; size: string } | null {
+    const m = /^(gpt-image-2)-([124])[kK]$/.exec(model);
+    if (!m) return null;
+    const size = m[2] === '1' ? '1024x1024' : m[2] === '2' ? '2048x2048' : '3840x2160';
+    return { base: m[1], size };
+}
 /** gpt-image JSON 规整:剥 response_format(zhiyunai 拒收 →400)+ 比例→像素 size(默认出方图)。 */
 function normalizeGptImageJson(body: JsonRecord): void {
     delete body.response_format;
+    const vm = typeof body.model === 'string' ? gptImageVariant(body.model) : null;
+    if (vm) {
+        body.model = vm.base;
+        const s = typeof body.size === 'string' ? body.size.trim() : '';
+        if (!s || s.toLowerCase() === 'auto') body.size = vm.size; // 未显式给 size → 用变体默认
+    }
     const ar = typeof body.aspect_ratio === 'string' ? body.aspect_ratio : '';
     const sz = typeof body.size === 'string' ? body.size : '';
     if (ASPECT_RATIO_RE.test(ar.trim()) || ASPECT_RATIO_RE.test(sz.trim())) {
@@ -788,6 +807,12 @@ function normalizeGptImageJson(body: JsonRecord): void {
 /** gpt-image multipart 规整(同 normalizeGptImageJson,作用于 FormData)。 */
 function normalizeGptImageForm(form: FormData): void {
     form.delete('response_format');
+    const vm = gptImageVariant(String(form.get('model') ?? ''));
+    if (vm) {
+        form.set('model', vm.base);
+        const s = String(form.get('size') ?? '').trim();
+        if (!s || s.toLowerCase() === 'auto') form.set('size', vm.size);
+    }
     const ar = String(form.get('aspect_ratio') ?? '');
     const sz = String(form.get('size') ?? '');
     if (ASPECT_RATIO_RE.test(ar.trim()) || ASPECT_RATIO_RE.test(sz.trim())) {
