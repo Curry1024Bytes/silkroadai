@@ -1,6 +1,7 @@
 import 'server-only';
 import { prisma } from '@/lib/db';
 import { getQuotaWithCache } from '@/lib/newapi/quota-cache';
+import { fetchUserRefunds } from '@/lib/newapi/client';
 import { quotaToCny } from '@/lib/newapi/quota-units';
 
 export interface CustomerBalance {
@@ -35,7 +36,7 @@ export interface CustomerBalance {
 export async function getCustomerBalance(userId: string): Promise<CustomerBalance> {
     const user = await prisma.user.findUnique({
         where: { id: userId },
-        select: { billing_mode: true, account: { select: { id: true, balance_cny: true } } },
+        select: { billing_mode: true, newapi_user_id: true, account: { select: { id: true, balance_cny: true } } },
     });
 
     // ── portal:¥账本(Account)是唯一真相,绝不读 new-api quota(它是哑门开关)──
@@ -53,13 +54,29 @@ export async function getCustomerBalance(userId: string): Promise<CustomerBalanc
         return { balanceCny, spentCny, source: 'portal', stale: false, quota: null };
     }
 
-    // ── newapi(默认):完全照旧 getQuotaWithCache(含 60s 缓存 + fallback)──
+    // ── newapi(默认):getQuotaWithCache(60s 缓存 + fallback)拿 remain/used(毛)──
     const snap = await getQuotaWithCache(userId);
+    // new-api 的 used_quota 是【毛消费】,不减视频失败退款(type=6;退款只加回 remain 余额)。
+    // 净消费 = 毛 − Σ退款,否则历史消费虚高(2026-06 客户 zyt;seedance 大量失败退款)。
+    // 退款查询失败 → 回退毛消费(不阻塞余额/消费展示)。
+    let refundQuota = 0;
+    if (user?.newapi_user_id != null) {
+        try {
+            const refunds = await fetchUserRefunds({
+                user_id: user.newapi_user_id,
+                username: `c-${userId.slice(0, 8)}`, // 与 provisionNewCustomer 约定一致
+            });
+            refundQuota = refunds.reduce((sum, r) => sum + r.quota, 0);
+        } catch (err) {
+            console.warn(`[customer-balance] 退款查询失败 user ${userId},历史消费暂用毛消费:`, err);
+        }
+    }
+    const netUsed = Math.max(0, snap.used_quota - refundQuota);
     return {
         balanceCny: quotaToCny(snap.remain_quota),
-        spentCny: quotaToCny(snap.used_quota),
+        spentCny: quotaToCny(netUsed),
         source: 'newapi',
         stale: snap.source === 'fallback',
-        quota: { remain: snap.remain_quota, used: snap.used_quota },
+        quota: { remain: snap.remain_quota, used: netUsed },
     };
 }
