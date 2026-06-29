@@ -44,7 +44,19 @@ vi.mock('@/lib/oss/client', () => ({
     ossPublicUrl: (config: { public_url_prefix: string }, key: string) => mockOssPublicUrl(config, key),
 }));
 
+// 余额查询拦截:mock NewApiToken 反查 + getCustomerBalance(现有 chat/image 测试不走
+// billing 路径,不触发这两个 mock)。
+const mockTokenFindUnique = vi.fn();
+vi.mock('@/lib/db', () => ({
+    prisma: { newApiToken: { findUnique: (...a: unknown[]) => mockTokenFindUnique(...a) } },
+}));
+const mockGetCustomerBalance = vi.fn();
+vi.mock('@/lib/billing/customer-balance', () => ({
+    getCustomerBalance: (...a: unknown[]) => mockGetCustomerBalance(...a),
+}));
+
 import { GET, POST } from '../[...path]/route';
+import { USD_TO_CNY_RATE } from '@/lib/newapi/quota-units';
 
 const NEWAPI_BASE = process.env.NEWAPI_BASE_URL || 'http://localhost:3000';
 
@@ -1993,5 +2005,90 @@ describe('/v1 proxy — gpt-image-2-{1,2,4}k variant names → gpt-image-2 + siz
         const sent = JSON.parse(String(init.body)) as Record<string, unknown>;
         expect(sent.model).toBe('gpt-image-2');
         expect(sent.size).toBe('3840x2160');
+    });
+});
+
+describe('/v1 proxy — 余额查询(billing 拦截 + /balance)', () => {
+    const BAL = { balanceCny: 300, spentCny: 920, source: 'newapi' as const, stale: false, quota: null };
+
+    it('subscription: sk- 剥前缀反查 → OpenAI 形 hard_limit_usd=(余+耗)/FX,不透传上游', async () => {
+        mockTokenFindUnique.mockResolvedValue({ user_id: 'u1', status: 'active' });
+        mockGetCustomerBalance.mockResolvedValue(BAL);
+        const res = await GET(
+            makeReq('/dashboard/billing/subscription', {
+                method: 'GET',
+                headers: { authorization: 'Bearer sk-ABC123' },
+            }),
+            ctx('dashboard', 'billing', 'subscription'),
+        );
+        expect(res.status).toBe(200);
+        const j = await res.json();
+        expect(j.object).toBe('billing_subscription');
+        expect(j.hard_limit_usd).toBeCloseTo(1220 / USD_TO_CNY_RATE, 4);
+        expect(j.has_payment_method).toBe(true);
+        // 反查剥掉 sk- 前缀(DB 存 48 字符无前缀)
+        expect(mockTokenFindUnique).toHaveBeenCalledWith(
+            expect.objectContaining({ where: { newapi_token_value: 'ABC123' } }),
+        );
+        expect(mockFetch).not.toHaveBeenCalled(); // 不透传 new-api
+    });
+
+    it('usage: total_usage = 已用美分(spent/FX*100)', async () => {
+        mockTokenFindUnique.mockResolvedValue({ user_id: 'u1', status: 'active' });
+        mockGetCustomerBalance.mockResolvedValue(BAL);
+        const res = await GET(
+            makeReq('/dashboard/billing/usage', { method: 'GET', headers: { authorization: 'Bearer sk-X' } }),
+            ctx('dashboard', 'billing', 'usage'),
+        );
+        const j = await res.json();
+        expect(j.object).toBe('list');
+        expect(j.total_usage).toBe(Math.round((920 / USD_TO_CNY_RATE) * 100));
+    });
+
+    it('/balance: portal 自有直观 ¥ 形', async () => {
+        mockTokenFindUnique.mockResolvedValue({ user_id: 'u1', status: 'active' });
+        mockGetCustomerBalance.mockResolvedValue({ ...BAL, balanceCny: 299.47, spentCny: 920.53 });
+        const res = await GET(
+            makeReq('/balance', { method: 'GET', headers: { authorization: 'Bearer sk-X' } }),
+            ctx('balance'),
+        );
+        const j = await res.json();
+        expect(j).toMatchObject({ object: 'balance', currency: 'CNY', balance_cny: 299.47, used_cny: 920.53 });
+        expect(j.balance_usd).toBeCloseTo(299.47 / USD_TO_CNY_RATE, 4);
+    });
+
+    it('无 Authorization → 401,不查库', async () => {
+        const res = await GET(makeReq('/balance', { method: 'GET' }), ctx('balance'));
+        expect(res.status).toBe(401);
+        expect(mockTokenFindUnique).not.toHaveBeenCalled();
+    });
+
+    it('反查不到 token → 401 Invalid token', async () => {
+        mockTokenFindUnique.mockResolvedValue(null);
+        const res = await GET(
+            makeReq('/balance', { method: 'GET', headers: { authorization: 'Bearer sk-bad' } }),
+            ctx('balance'),
+        );
+        expect(res.status).toBe(401);
+        expect((await res.json()).error.message).toBe('Invalid token');
+    });
+
+    it('disabled token → 401', async () => {
+        mockTokenFindUnique.mockResolvedValue({ user_id: 'u1', status: 'disabled' });
+        const res = await GET(
+            makeReq('/balance', { method: 'GET', headers: { authorization: 'Bearer sk-X' } }),
+            ctx('balance'),
+        );
+        expect(res.status).toBe(401);
+    });
+
+    it('getCustomerBalance 失败 → 503(不 500、不透传)', async () => {
+        mockTokenFindUnique.mockResolvedValue({ user_id: 'u1', status: 'active' });
+        mockGetCustomerBalance.mockRejectedValue(new Error('new-api down'));
+        const res = await GET(
+            makeReq('/balance', { method: 'GET', headers: { authorization: 'Bearer sk-X' } }),
+            ctx('balance'),
+        );
+        expect(res.status).toBe(503);
     });
 });

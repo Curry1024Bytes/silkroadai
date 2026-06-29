@@ -49,6 +49,9 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
+import { prisma } from '@/lib/db';
+import { getCustomerBalance, type CustomerBalance } from '@/lib/billing/customer-balance';
+import { USD_TO_CNY_RATE } from '@/lib/newapi/quota-units';
 import { uploadImage } from '@/lib/r2/client';
 import { objectExistsInOss, ossPublicUrl, uploadToCustomerOss } from '@/lib/oss/client';
 import { getOssConfig, resolveUserIdFromAuthHeader } from '@/lib/oss/store';
@@ -1258,10 +1261,83 @@ async function handleClaudeCachedChat(
     return resp;
 }
 
+const BALANCE_PATHS = new Set(['/dashboard/billing/subscription', '/dashboard/billing/usage', '/balance']);
+
+/** OpenAI 形错误(与 new-api 一致,客户端余额工具能识别)。 */
+function billingError(message: string, status: number): NextResponse {
+    return NextResponse.json({ error: { message, type: 'new_api_error', code: '' } }, { status });
+}
+
+/**
+ * 余额查询(portal 自答,不透传 new-api)。
+ *
+ * portal 给客户的 key 是 unlimited_quota(预算在账户级 user.quota,gotcha #12),new-api 的
+ * 标准 /v1/dashboard/billing/* 只看 key 层 → 占位无限额度 + 0 用量,查不到真实余额。这里用
+ * sk- 反查账户(NewApiToken.newapi_token_value 存 48 字符【无 sk- 前缀】,token-format.ts),
+ * getCustomerBalance 拿真实 ¥(已扣视频失败退款),按端点形态返回:
+ *   - /dashboard/billing/subscription → OpenAI 形,hard_limit_usd = 总额度(余+耗) USD
+ *   - /dashboard/billing/usage        → OpenAI 形,total_usage = 已用美分(cents)
+ *   - /balance                        → 直观 ¥ 形(portal 自有,脚本监控友好)
+ */
+async function handleBalanceQuery(req: NextRequest, path: string): Promise<NextResponse> {
+    const auth = req.headers.get('authorization') || '';
+    const m = auth.match(/^Bearer\s+(.+)$/i);
+    if (!m) return billingError('Missing bearer token', 401);
+    const raw = m[1].trim();
+    const stored = raw.startsWith('sk-') ? raw.slice(3) : raw; // DB 存无 sk- 前缀
+
+    const token = await prisma.newApiToken.findUnique({
+        where: { newapi_token_value: stored },
+        select: { user_id: true, status: true },
+    });
+    if (!token || token.status !== 'active') return billingError('Invalid token', 401);
+
+    let bal: CustomerBalance;
+    try {
+        bal = await getCustomerBalance(token.user_id);
+    } catch {
+        return billingError('balance temporarily unavailable', 503);
+    }
+
+    const toUsd = (cny: number) => cny / USD_TO_CNY_RATE;
+
+    if (path === '/dashboard/billing/usage') {
+        // OpenAI 兼容:total_usage 单位 = 美分(cents)。
+        return NextResponse.json({ object: 'list', total_usage: Math.round(toUsd(bal.spentCny) * 100) });
+    }
+    if (path === '/dashboard/billing/subscription') {
+        const limitUsd = toUsd(bal.balanceCny + bal.spentCny); // 总额度 = 余额 + 已用
+        return NextResponse.json({
+            object: 'billing_subscription',
+            has_payment_method: true,
+            soft_limit_usd: limitUsd,
+            hard_limit_usd: limitUsd,
+            system_hard_limit_usd: limitUsd,
+            access_until: 0,
+        });
+    }
+    // /balance — portal 自有直观形(¥ 余额直接给,脚本监控友好)
+    return NextResponse.json({
+        object: 'balance',
+        currency: 'CNY',
+        balance_cny: Number(bal.balanceCny.toFixed(4)),
+        used_cny: Number(bal.spentCny.toFixed(4)),
+        balance_usd: Number(toUsd(bal.balanceCny).toFixed(4)),
+        stale: bal.stale,
+    });
+}
+
 async function handleRequest(req: NextRequest, params: Promise<{ path: string[] }>): Promise<NextResponse> {
     const { path: segments } = await params;
     const path = '/' + (segments ?? []).join('/');
     const search = req.nextUrl.search || '';
+
+    // 余额查询拦截(在 capture 之前 return:GET 余额查询无需记录)。portal 给客户的 key 是
+    // unlimited_quota(预算在账户级 user.quota,gotcha #12),new-api 标准 billing 端点只看
+    // key 层 → 返回占位无限额度;故在代理层用 sk- 反查账户、自答真实余额。
+    if (req.method === 'GET' && BALANCE_PATHS.has(path)) {
+        return handleBalanceQuery(req, path);
+    }
 
     // 请求日志捕获(数据存储 Phase 1 第②步)。开关 off → null → 下面全程与今天
     // 字节级一致;on → 旁路捕获,best-effort,绝不影响客户请求(见 capture.ts)。
