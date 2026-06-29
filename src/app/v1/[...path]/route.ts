@@ -361,7 +361,51 @@ async function toGeminiContents(messages: unknown): Promise<Array<{ role: string
     );
 }
 
+/** 读 JPEG 的 EXIF Orientation(1-8;无 / 读不出 → 1),dep-free 字节解析。
+ *  5-8 = 旋转 90°/270°,显示时宽高对调 —— 手机竖拍照片几乎都是 6 或 8
+ *  (横像素 + EXIF 转正)。不处理它会把 aspectRatio 注反 → 出图尺寸不符。 */
+function jpegExifOrientation(buf: Buffer): number {
+    if (buf.length < 4 || buf[0] !== 0xff || buf[1] !== 0xd8) return 1;
+    let i = 2;
+    while (i + 4 <= buf.length) {
+        if (buf[i] !== 0xff) return 1;
+        const marker = buf[i + 1];
+        if (marker === 0xff) {
+            i += 1; // padding fill byte
+            continue;
+        }
+        if ((marker >= 0xd0 && marker <= 0xd9) || marker === 0x01) {
+            i += 2; // standalone marker
+            continue;
+        }
+        if (marker === 0xda) return 1; // SOS:图像数据开始,EXIF 必在此前
+        const len = buf.readUInt16BE(i + 2);
+        if (marker === 0xe1 && i + 10 <= buf.length && buf.toString('latin1', i + 4, i + 10) === 'Exif\x00\x00') {
+            const tiff = i + 10; // TIFF header 起点
+            if (tiff + 8 > buf.length) return 1;
+            const le = buf.toString('latin1', tiff, tiff + 2) === 'II';
+            const u16 = (o: number) => (le ? buf.readUInt16LE(o) : buf.readUInt16BE(o));
+            const u32 = (o: number) => (le ? buf.readUInt32LE(o) : buf.readUInt32BE(o));
+            const ifd0 = tiff + u32(tiff + 4);
+            if (ifd0 + 2 > buf.length) return 1;
+            const n = u16(ifd0);
+            for (let e = 0; e < n; e++) {
+                const entry = ifd0 + 2 + e * 12;
+                if (entry + 12 > buf.length) break;
+                if (u16(entry) === 0x0112) {
+                    const v = u16(entry + 8); // Orientation: SHORT,值内联在 value 字段
+                    return v >= 1 && v <= 8 ? v : 1;
+                }
+            }
+            return 1;
+        }
+        i += 2 + len;
+    }
+    return 1;
+}
+
 /** 从图片字节头读宽高(dep-free,只认 PNG / JPEG / WebP 三种主流格式)。
+ *  JPEG 额外读 EXIF Orientation,旋转 90°/270° 时返回【显示】宽高(对调)。
  *  读不出(其他格式 / 截断 / 坏数据)→ null,调用方按"不注入 aspectRatio"降级。 */
 function imageDimensions(buf: Buffer): { w: number; h: number } | null {
     // PNG:8 字节签名 + IHDR chunk,width / height 大端在 offset 16 / 20
@@ -395,7 +439,10 @@ function imageDimensions(buf: Buffer): { w: number; h: number } | null {
             if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
                 const h = buf.readUInt16BE(i + 5);
                 const w = buf.readUInt16BE(i + 7);
-                return w > 0 && h > 0 ? { w, h } : null;
+                if (!(w > 0 && h > 0)) return null;
+                // EXIF 旋转 90°/270°(orient 5-8)→ 返回显示宽高(对调),否则手机竖拍图被注反比例。
+                const o = jpegExifOrientation(buf);
+                return o >= 5 && o <= 8 ? { w: h, h: w } : { w, h };
             }
             i += 2 + buf.readUInt16BE(i + 2);
         }

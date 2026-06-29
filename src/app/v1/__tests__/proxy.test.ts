@@ -1087,6 +1087,50 @@ describe('/v1 proxy — img2img:auto 时输出比例跟随输入图(fix gemini-i
         buf.writeUInt16BE(w, 27);
         return new Uint8Array(buf);
     }
+    /** JPEG + EXIF Orientation:SOI + APP1(orient) + SOF0(裸像素 w×h)。
+     *  orient 6/8 = 手机竖拍(横像素 + EXIF 转正),显示尺寸应对调。 */
+    function jpegBytesWithExif(w: number, h: number, orientation: number): Uint8Array<ArrayBuffer> {
+        const app1 = [
+            0xff,
+            0xe1,
+            0x00,
+            0x22,
+            0x45,
+            0x78,
+            0x69,
+            0x66,
+            0x00,
+            0x00, // "Exif\0\0"
+            0x49,
+            0x49,
+            0x2a,
+            0x00,
+            0x08,
+            0x00,
+            0x00,
+            0x00, // TIFF II + IFD0 offset 8
+            0x01,
+            0x00, // 1 entry
+            0x12,
+            0x01,
+            0x03,
+            0x00,
+            0x01,
+            0x00,
+            0x00,
+            0x00,
+            orientation & 0xff,
+            0x00,
+            0x00,
+            0x00, // tag 0x0112 Orientation
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+        ];
+        const sof = [0xff, 0xc0, 0x00, 0x11, 0x08, (h >> 8) & 0xff, h & 0xff, (w >> 8) & 0xff, w & 0xff];
+        return new Uint8Array(Buffer.from([0xff, 0xd8, ...app1, ...sof]));
+    }
     function webpVp8Bytes(w: number, h: number): Uint8Array<ArrayBuffer> {
         const buf = Buffer.alloc(30);
         buf.write('RIFF', 0, 'latin1');
@@ -1190,6 +1234,36 @@ describe('/v1 proxy — img2img:auto 时输出比例跟随输入图(fix gemini-i
         );
         expect(res.status).toBe(200);
         expect(sentImageConfig().aspectRatio).toBe('1:1');
+    });
+
+    // 手机竖拍照片 = 横向裸像素(1920×1080)+ EXIF Orientation 6/8(显示转成竖)。
+    // 修复前 proxy 读裸像素 → 注 16:9 → 出横图(客户报"尺寸不符");修复后读 EXIF 对调 → 9:16。
+    it('edits + EXIF orient=6 横像素 JPEG(手机竖拍)→ 对调注入 9:16(非 16:9)', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const res = await POST(
+            multipartReq(editsForm(jpegBytesWithExif(1920, 1080, 6), { aspectRatio: 'auto', type: 'image/jpeg' })),
+            ctx('images', 'edits'),
+        );
+        expect(res.status).toBe(200);
+        expect(sentImageConfig().aspectRatio).toBe('9:16');
+    });
+
+    it('edits + EXIF orient=8 横像素 JPEG → 同样对调注入 9:16', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        await POST(
+            multipartReq(editsForm(jpegBytesWithExif(1920, 1080, 8), { aspectRatio: 'auto', type: 'image/jpeg' })),
+            ctx('images', 'edits'),
+        );
+        expect(sentImageConfig().aspectRatio).toBe('9:16');
+    });
+
+    it('edits + EXIF orient=1(正常)横像素 JPEG → 不对调,注入 16:9', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        await POST(
+            multipartReq(editsForm(jpegBytesWithExif(1920, 1080, 1), { aspectRatio: 'auto', type: 'image/jpeg' })),
+            ctx('images', 'edits'),
+        );
+        expect(sentImageConfig().aspectRatio).toBe('16:9');
     });
 
     it('edits + auto + 竖图 1080×1920 WebP(VP8 / VP8L / VP8X 三种头)→ 注入 9:16', async () => {
