@@ -1759,3 +1759,239 @@ describe('/v1 proxy — gpt-image-2 response_format stripping (zhiyunai compat)'
         expect(sentForm.get('model')).toBe('gpt-image-2');
     });
 });
+
+describe('/v1 proxy — gpt-image-2 aspect_ratio → pixel size (zhiyunai compat)', () => {
+    const imgResp = () =>
+        new Response(JSON.stringify({ data: [{ b64_json: 'QkFTRTY0' }] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+        });
+
+    it('JSON aspect_ratio:"16:9" → size 1536x864, aspect_ratio stripped', async () => {
+        mockFetch.mockResolvedValueOnce(imgResp());
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2', prompt: 'a cat', aspect_ratio: '16:9' },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        const sent = JSON.parse(String((mockFetch.mock.calls[0][1] as RequestInit).body)) as Record<string, unknown>;
+        expect(sent.size).toBe('1536x864');
+        expect(sent).not.toHaveProperty('aspect_ratio');
+    });
+
+    it('JSON ratio-shaped size:"1:1" → size 1024x1024', async () => {
+        mockFetch.mockResolvedValueOnce(imgResp());
+        await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2', prompt: 'a cat', size: '1:1' },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        const sent = JSON.parse(String((mockFetch.mock.calls[0][1] as RequestInit).body)) as Record<string, unknown>;
+        expect(sent.size).toBe('1024x1024');
+    });
+
+    it('JSON pixel size:"1536x1024" passes through unchanged', async () => {
+        mockFetch.mockResolvedValueOnce(imgResp());
+        await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2', prompt: 'a cat', size: '1536x1024' },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        const sent = JSON.parse(String((mockFetch.mock.calls[0][1] as RequestInit).body)) as Record<string, unknown>;
+        expect(sent.size).toBe('1536x1024');
+    });
+
+    it('JSON uncommon ratio:"5:3" → computed ~5:3 pixel size', async () => {
+        mockFetch.mockResolvedValueOnce(imgResp());
+        await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2', prompt: 'a cat', aspect_ratio: '5:3' },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        const sent = JSON.parse(String((mockFetch.mock.calls[0][1] as RequestInit).body)) as { size?: string };
+        expect(sent.size).toMatch(/^\d+x\d+$/);
+        const [w, h] = (sent.size ?? '').split('x').map(Number);
+        expect(w / h).toBeCloseTo(5 / 3, 1);
+    });
+
+    it('multipart aspect_ratio:"9:16" → form size 864x1536, aspect_ratio stripped', async () => {
+        mockFetch.mockResolvedValueOnce(imgResp());
+        const form = new FormData();
+        form.append('model', 'gpt-image-2');
+        form.append('prompt', 'a cat');
+        form.append('aspect_ratio', '9:16');
+        form.append('image', new Blob([Buffer.from('x')], { type: 'image/png' }), 'in.png');
+        const req = new NextRequest('https://ai.silkroadai.io/v1/images/edits', {
+            method: 'POST',
+            headers: { authorization: 'Bearer sk-test' },
+            body: form,
+        });
+        await POST(req, ctx('images', 'edits'));
+        const sentForm = (mockFetch.mock.calls[0][1] as RequestInit).body as FormData;
+        expect(sentForm.get('size')).toBe('864x1536');
+        expect(sentForm.get('aspect_ratio')).toBeNull();
+    });
+});
+
+describe('/v1 proxy — gpt-image-2 via /chat/completions → images translation', () => {
+    const imgGenResp = () =>
+        new Response(
+            JSON.stringify({
+                data: [{ b64_json: 'QkFTRTY0' }],
+                usage: { input_tokens: 14, output_tokens: 196, total_tokens: 210 },
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+
+    it('text-only chat → /v1/images/generations, wrapped as chat.completion with markdown image', async () => {
+        mockFetch.mockResolvedValueOnce(imgGenResp());
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: { model: 'gpt-image-2', messages: [{ role: 'user', content: 'a red apple' }] },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(200);
+        const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(url).toContain('/v1/images/generations');
+        const sent = JSON.parse(String(init.body)) as Record<string, unknown>;
+        expect(sent.model).toBe('gpt-image-2');
+        expect(sent.prompt).toBe('a red apple');
+        expect(sent).not.toHaveProperty('messages');
+        const data = (await res.json()) as {
+            object: string;
+            choices: Array<{ message: { content: string } }>;
+            usage: { prompt_tokens: number; completion_tokens: number };
+        };
+        expect(data.object).toBe('chat.completion');
+        expect(data.choices[0].message.content).toMatch(/^!\[image\]\(https:\/\/images\.silkroadai\.io\//);
+        expect(data.usage.completion_tokens).toBe(196);
+        expect(res.headers.get('X-Silkroadai-Translated')).toBe('gpt-image-chat');
+    });
+
+    it('multimodal chat (image_url) → /v1/images/edits multipart', async () => {
+        mockFetch.mockResolvedValueOnce(imgGenResp());
+        const dataUrl = 'data:image/png;base64,' + Buffer.from('x').toString('base64');
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: {
+                    model: 'gpt-image-2',
+                    messages: [
+                        {
+                            role: 'user',
+                            content: [
+                                { type: 'text', text: 'make it green' },
+                                { type: 'image_url', image_url: { url: dataUrl } },
+                            ],
+                        },
+                    ],
+                },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(200);
+        const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(url).toContain('/v1/images/edits');
+        const form = init.body as FormData;
+        expect(form.get('prompt')).toBe('make it green');
+        expect(form.get('model')).toBe('gpt-image-2');
+        expect(form.get('image')).toBeInstanceOf(Blob);
+        const data = (await res.json()) as { choices: Array<{ message: { content: string } }> };
+        expect(data.choices[0].message.content).toMatch(/!\[image\]\(/);
+    });
+
+    it('upstream error → passthrough status', async () => {
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ error: { message: 'boom' } }), {
+                status: 400,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: { model: 'gpt-image-2', messages: [{ role: 'user', content: 'a red apple' }] },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(400);
+    });
+});
+
+describe('/v1 proxy — gpt-image-2-{1,2,4}k variant names → gpt-image-2 + size', () => {
+    const imgResp = () =>
+        new Response(JSON.stringify({ data: [{ b64_json: 'QkFTRTY0' }] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+        });
+
+    it('images/generations: gpt-image-2-4k (no size) → model gpt-image-2 + size 3840x2160', async () => {
+        mockFetch.mockResolvedValueOnce(imgResp());
+        await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2-4k', prompt: 'a cat' },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        const sent = JSON.parse(String((mockFetch.mock.calls[0][1] as RequestInit).body)) as Record<string, unknown>;
+        expect(sent.model).toBe('gpt-image-2');
+        expect(sent.size).toBe('3840x2160');
+    });
+
+    it('images/generations: gpt-image-2-2k → size 2048x2048', async () => {
+        mockFetch.mockResolvedValueOnce(imgResp());
+        await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2-2k', prompt: 'a cat' },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        const sent = JSON.parse(String((mockFetch.mock.calls[0][1] as RequestInit).body)) as Record<string, unknown>;
+        expect(sent.model).toBe('gpt-image-2');
+        expect(sent.size).toBe('2048x2048');
+    });
+
+    it('explicit size wins over the variant default', async () => {
+        mockFetch.mockResolvedValueOnce(imgResp());
+        await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2-4k', prompt: 'a cat', size: '1536x1024' },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        const sent = JSON.parse(String((mockFetch.mock.calls[0][1] as RequestInit).body)) as Record<string, unknown>;
+        expect(sent.model).toBe('gpt-image-2');
+        expect(sent.size).toBe('1536x1024');
+    });
+
+    it('chat/completions: gpt-image-2-4k → images/generations with gpt-image-2 + 3840x2160', async () => {
+        mockFetch.mockResolvedValueOnce(imgResp());
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: { model: 'gpt-image-2-4k', messages: [{ role: 'user', content: 'a cat' }] },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(200);
+        const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(url).toContain('/v1/images/generations');
+        const sent = JSON.parse(String(init.body)) as Record<string, unknown>;
+        expect(sent.model).toBe('gpt-image-2');
+        expect(sent.size).toBe('3840x2160');
+    });
+});

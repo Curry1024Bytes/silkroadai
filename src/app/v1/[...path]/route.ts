@@ -615,6 +615,112 @@ function imageError(message: string, status = 400, cap: CaptureCtx | null = null
     return NextResponse.json(obj, { status });
 }
 
+/** gpt-image-2 是图片模型,zhiyunai/Azure 只支持 Images 接口 —— 客户用 /v1/chat/completions
+ *  调它会被上游 400「The requested operation is unsupported」。这里把 chat 请求翻成
+ *  /v1/images/{generations,edits}(messages 带 image_url → edits,否则 generations),出图存图床
+ *  后包成 chat.completion 回复(content = markdown 图 url),与 Gemini 生图(handleGeminiImage)一致。
+ *  计费照常由 new-api 按该 images 调用扣(token 计费)。stream:true 同 Gemini 返回非流 JSON。 */
+async function handleGptImageChat(
+    req: NextRequest,
+    body: JsonRecord,
+    model: string,
+    cap: CaptureCtx | null = null,
+): Promise<NextResponse> {
+    let contents: Array<{ role: string; parts: GeminiInputPart[] }>;
+    try {
+        contents = await toGeminiContents(body.messages);
+    } catch (e) {
+        if (e instanceof ImageUrlError) return imageError(e.message, 400, cap);
+        throw e;
+    }
+    const parts = contents.flatMap((c) => c.parts);
+    const prompt = parts
+        .map((p) => ('text' in p ? p.text : ''))
+        .filter(Boolean)
+        .join(' ')
+        .trim();
+    const inputImages = parts.flatMap((p) => ('inlineData' in p ? [p.inlineData] : []));
+    if (!prompt && inputImages.length === 0) {
+        return imageError('messages 里需要文字 prompt 或图片', 400, cap);
+    }
+
+    // 旧变体名(gpt-image-2-4k 等)→ gpt-image-2 + 对应像素 size(未显式给 size 时)
+    const variant = gptImageVariant(model);
+    const effModel = variant ? variant.base : model;
+    // chat 形态一般不带 size;带了就认像素 size,或把比例("16:9")翻成像素,其余走变体 / 上游默认。
+    const sizeRaw = (typeof body.size === 'string' ? body.size : '').trim();
+    let size: string | undefined;
+    if (/^\d{2,4}x\d{2,4}$/.test(sizeRaw)) size = sizeRaw;
+    else if (ASPECT_RATIO_RE.test(sizeRaw)) size = aspectToPixelSize(sizeRaw) ?? undefined;
+    if (!size && variant) size = variant.size;
+    const quality = typeof body.quality === 'string' ? body.quality : undefined;
+
+    let upstream: Response;
+    if (inputImages.length > 0) {
+        // messages 带 image_url → 图生图 edits(multipart)
+        const form = new FormData();
+        form.append('model', effModel);
+        form.append('prompt', prompt || 'edit the image');
+        if (size) form.append('size', size);
+        if (quality) form.append('quality', quality);
+        for (const img of inputImages) {
+            form.append(
+                'image',
+                new Blob([Buffer.from(img.data, 'base64')], { type: img.mimeType || 'image/png' }),
+                'image.png',
+            );
+        }
+        upstream = await fetchUpstreamMultipart(req, form, '/images/edits', '');
+    } else {
+        // 纯文字 → 文生图 generations(JSON)
+        const genBody: JsonRecord = { model: effModel, prompt };
+        if (size) genBody.size = size;
+        if (quality) genBody.quality = quality;
+        upstream = await fetchUpstreamJson(req, genBody, '/images/generations', '');
+    }
+
+    if (!upstream.ok) {
+        // 上游错误原样透传 status + body(客户能看到真实错误信息)
+        return cap ? captureResponse(cap, upstream) : passthroughResponse(upstream);
+    }
+    const data = (await upstream.json().catch(() => null)) as {
+        data?: Array<{ b64_json?: string; url?: string }>;
+        usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number };
+    } | null;
+    const item = data?.data?.[0];
+
+    let content: string;
+    let stored: StoredImage | null = null;
+    if (item?.b64_json) {
+        // 客户 OSS → 平台 R2 → data URL 三级降级(同 handleGeminiImage)
+        stored = await storeGeneratedImage(req, Buffer.from(item.b64_json, 'base64'), 'image/png', item.b64_json);
+        content = `![image](${stored.url})`;
+    } else if (item?.url) {
+        content = `![image](${item.url})`;
+    } else {
+        return imageError('上游未返回图片', 502, cap);
+    }
+
+    const usage = data?.usage ?? {};
+    const openaiResp = {
+        id: `chatcmpl-${Date.now()}`,
+        object: 'chat.completion',
+        created: Math.floor(Date.now() / 1000),
+        model,
+        choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }],
+        usage: {
+            prompt_tokens: usage.input_tokens ?? 0,
+            completion_tokens: usage.output_tokens ?? 0,
+            total_tokens: usage.total_tokens ?? 0,
+        },
+    };
+    const respHeaders: Record<string, string> = { 'X-Silkroadai-Translated': 'gpt-image-chat' };
+    if (stored?.ossFallback) respHeaders['X-Silkroadai-Oss-Fallback'] = 'yes';
+    if (stored?.r2Fallback) respHeaders['X-Silkroadai-R2-Fallback'] = 'yes';
+    if (cap) captureJsonResponse(cap, 200, openaiResp, hostedRefs(stored));
+    return NextResponse.json(openaiResp, { status: 200, headers: respHeaders });
+}
+
 /** 非 Gemini 图片(gpt-image-2 等)multipart 转发 → 返回【原始】响应供 reshape。
  *  req.body 已被 formData() 消费,转发已解析的 FormData;删原 content-type 让 fetch
  *  按重建 FormData 重生 boundary。 */
@@ -631,6 +737,90 @@ function fetchUpstreamJson(req: NextRequest, body: JsonRecord, path: string, sea
         headers: jsonForwardHeaders(req),
         body: JSON.stringify(body),
     });
+}
+
+/** OpenAI gpt-image 用像素 size,不认 aspect_ratio / 比例串("16:9")—— 客户传比例时上游静默
+ *  出方图(实测 aspect_ratio:"16:9" → 1254×1254 方图;size:"16:9" → 400)。把常见比例折成
+ *  ~1MP 像素 size(zhiyunai 接受任意 WxH);表外比例按 1MP 等比折算、取整到 16。 */
+const GPT_IMAGE_ASPECT_SIZE: Record<string, string> = {
+    '1:1': '1024x1024',
+    '3:2': '1536x1024',
+    '2:3': '1024x1536',
+    '4:3': '1152x896',
+    '3:4': '896x1152',
+    '5:4': '1120x896',
+    '4:5': '896x1120',
+    '16:9': '1536x864',
+    '9:16': '864x1536',
+    '21:9': '1536x672',
+    '9:21': '672x1536',
+    '2:1': '1408x704',
+    '1:2': '704x1408',
+};
+const ASPECT_RATIO_RE = /^(\d{1,2}):(\d{1,2})$/;
+function aspectToPixelSize(ratio: string): string | null {
+    const fixed = GPT_IMAGE_ASPECT_SIZE[ratio];
+    if (fixed) return fixed;
+    const m = ASPECT_RATIO_RE.exec(ratio);
+    if (!m) return null;
+    const w = Number(m[1]);
+    const h = Number(m[2]);
+    if (!w || !h) return null;
+    const k = Math.sqrt((1024 * 1024) / (w * h));
+    const px = (x: number) => Math.min(2048, Math.max(512, Math.round((x * k) / 16) * 16));
+    return `${px(w)}x${px(h)}`;
+}
+/** 从 aspect_ratio 或比例形态的 size 取出比例 → 对应像素 size;无比例 → null。 */
+function ratioToSize(aspectRatio: string, size: string): string | null {
+    const ar = aspectRatio.trim();
+    const sz = size.trim();
+    const ratio = ASPECT_RATIO_RE.test(ar) ? ar : ASPECT_RATIO_RE.test(sz) ? sz : '';
+    return ratio ? aspectToPixelSize(ratio) : null;
+}
+/** 旧 czeq SKU 名 gpt-image-2-{1,2,4}k 只是别名(zhiyunai 上游只有 gpt-image-2 一个模型,分辨率靠
+ *  size 像素控制)→ 翻成 gpt-image-2 + 对应像素 size(1k→1024² / 2k→2048² / 4k→3840x2160)。
+ *  返回 null = 非变体名。 */
+function gptImageVariant(model: string): { base: string; size: string } | null {
+    const m = /^(gpt-image-2)-([124])[kK]$/.exec(model);
+    if (!m) return null;
+    const size = m[2] === '1' ? '1024x1024' : m[2] === '2' ? '2048x2048' : '3840x2160';
+    return { base: m[1], size };
+}
+/** gpt-image JSON 规整:剥 response_format(zhiyunai 拒收 →400)+ 比例→像素 size(默认出方图)。 */
+function normalizeGptImageJson(body: JsonRecord): void {
+    delete body.response_format;
+    const vm = typeof body.model === 'string' ? gptImageVariant(body.model) : null;
+    if (vm) {
+        body.model = vm.base;
+        const s = typeof body.size === 'string' ? body.size.trim() : '';
+        if (!s || s.toLowerCase() === 'auto') body.size = vm.size; // 未显式给 size → 用变体默认
+    }
+    const ar = typeof body.aspect_ratio === 'string' ? body.aspect_ratio : '';
+    const sz = typeof body.size === 'string' ? body.size : '';
+    if (ASPECT_RATIO_RE.test(ar.trim()) || ASPECT_RATIO_RE.test(sz.trim())) {
+        const px = ratioToSize(ar, sz);
+        if (px) body.size = px;
+        else delete body.size;
+    }
+    delete body.aspect_ratio;
+}
+/** gpt-image multipart 规整(同 normalizeGptImageJson,作用于 FormData)。 */
+function normalizeGptImageForm(form: FormData): void {
+    form.delete('response_format');
+    const vm = gptImageVariant(String(form.get('model') ?? ''));
+    if (vm) {
+        form.set('model', vm.base);
+        const s = String(form.get('size') ?? '').trim();
+        if (!s || s.toLowerCase() === 'auto') form.set('size', vm.size);
+    }
+    const ar = String(form.get('aspect_ratio') ?? '');
+    const sz = String(form.get('size') ?? '');
+    if (ASPECT_RATIO_RE.test(ar.trim()) || ASPECT_RATIO_RE.test(sz.trim())) {
+        const px = ratioToSize(ar, sz);
+        if (px) form.set('size', px);
+        else form.delete('size');
+    }
+    form.delete('aspect_ratio');
 }
 
 /** OpenAI gpt-image 图片输出 token 估算系数:~703 tok/百万像素(校准到 1536×1024≈1106,
@@ -776,8 +966,11 @@ async function handleImagesDalle(
             sizeRaw = String(form.get('size') ?? '');
             // model 非我们的 Gemini 生图 → 重建 FormData 透传(保留 gpt-image-2 等)
             if (!(model in GEMINI_IMAGE_MODELS)) {
-                // gpt-image-2 上游严格拒收 response_format → multipart 同样剥掉(见 JSON 分支)
-                if (model.startsWith('gpt-image')) form.delete('response_format');
+                // gpt-image:剥 response_format + 把比例(aspect_ratio / "16:9" 形态 size)翻成像素 size
+                if (model.startsWith('gpt-image')) {
+                    normalizeGptImageForm(form);
+                    sizeRaw = String(form.get('size') ?? '');
+                }
                 // multipart 入参不拆图字节(brief §3 Out),只记文本字段摘要
                 if (cap)
                     recordRequestBody(
@@ -837,9 +1030,12 @@ async function handleImagesDalle(
             sizeRaw = String(body.size ?? '');
             if (cap) recordRequestBody(cap, JSON.stringify(body), model, false);
             if (!(model in GEMINI_IMAGE_MODELS)) {
-                // gpt-image-2 上游(zhiyunai / Azure gpt-image)严格拒收 response_format → 400;
-                // 官方 gpt-image-1 本就恒回 b64,转发前剥掉该参数。
-                if (model.startsWith('gpt-image')) delete body.response_format;
+                // gpt-image:剥 response_format(zhiyunai 拒收 →400)+ 比例→像素 size(zhiyunai 不认
+                // aspect_ratio / "16:9" 形态 size,默认出方图)。见 normalizeGptImageJson。
+                if (model.startsWith('gpt-image')) {
+                    normalizeGptImageJson(body);
+                    sizeRaw = typeof body.size === 'string' ? body.size : '';
+                }
                 try {
                     const upstream = await fetchUpstreamJson(req, body, path, search);
                     return await reshapeOpenAiImageResponse(upstream, prompt, sizeRaw, cap);
@@ -1090,6 +1286,14 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
             const imgCap = isMediaCaptureSkipped() ? null : cap;
             if (imgCap) recordRequestBody(imgCap, JSON.stringify(body), model, body.stream === true);
             return handleGeminiImage(req, body, model, imgCap);
+        }
+
+        // Branch 1.1: gpt-image-2(图片模型)被当 chat 模型调 → 翻译到 Images 接口(否则上游
+        // 400「The requested operation is unsupported」)。同 Gemini,出图包成 chat.completion 回复。
+        if (model.startsWith('gpt-image')) {
+            const imgCap = isMediaCaptureSkipped() ? null : cap;
+            if (imgCap) recordRequestBody(imgCap, JSON.stringify(body), model, body.stream === true);
+            return handleGptImageChat(req, body, model, imgCap);
         }
 
         // 捕获【原始】请求体(文本路径;clamp 分支也存未钳的,记录客户真实输入,brief §4)
