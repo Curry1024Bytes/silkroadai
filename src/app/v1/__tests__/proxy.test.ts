@@ -623,6 +623,51 @@ describe('/v1 proxy — Phase 2: image_url 入参 + R2 上传 (W9 D2)', () => {
         expect(hits.filter((u) => u.includes(':generateContent')).length).toBe(2);
     });
 
+    // 慢尾根治:逆向 flash 渠道可能数十分钟才出图,主请求挂 80s AbortController,到点 abort 当失败切 -hq。
+    it('flash 主请求 reject(abort/网络错)→ 走 catch 切 -hq 候补', async () => {
+        mockFetch.mockImplementation(async (url: string) => {
+            if (String(url).includes('gemini-3.1-flash-image-preview-hq:generateContent'))
+                return geminiNativeResponse();
+            if (String(url).includes(':generateContent'))
+                throw new DOMException('The operation was aborted.', 'AbortError');
+            return geminiNativeResponse();
+        });
+        const res = await POST(geminiReq('a cat'), ctx('chat', 'completions'));
+        expect(res.status).toBe(200);
+        expect(
+            mockFetch.mock.calls.some(([u]) => String(u).includes('gemini-3.1-flash-image-preview-hq:generateContent')),
+        ).toBe(true);
+    });
+
+    it('flash 主请求超 80s 未返回 → AbortController 触发 → 切 -hq 候补', async () => {
+        vi.useFakeTimers();
+        try {
+            mockFetch.mockImplementation((url: string, init?: RequestInit) => {
+                if (String(url).includes('gemini-3.1-flash-image-preview-hq:generateContent'))
+                    return Promise.resolve(geminiNativeResponse());
+                if (String(url).includes(':generateContent'))
+                    // 主渠道模拟慢渠道:永不 resolve,只在 signal abort 时 reject
+                    return new Promise<Response>((_resolve, reject) => {
+                        init?.signal?.addEventListener('abort', () =>
+                            reject(new DOMException('The operation was aborted.', 'AbortError')),
+                        );
+                    });
+                return Promise.resolve(geminiNativeResponse());
+            });
+            const resP = POST(geminiReq('a cat'), ctx('chat', 'completions'));
+            await vi.advanceTimersByTimeAsync(81_000); // 越过 FLASH_TIMEOUT_MS(80s)
+            const res = await resP;
+            expect(res.status).toBe(200);
+            expect(
+                mockFetch.mock.calls.some(([u]) =>
+                    String(u).includes('gemini-3.1-flash-image-preview-hq:generateContent'),
+                ),
+            ).toBe(true);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it('uploads generated image to R2 and returns markdown URL, not base64 (test 11)', async () => {
         mockFetch.mockResolvedValueOnce(geminiNativeResponse());
         const res = await POST(geminiReq('a cat'), ctx('chat', 'completions'));

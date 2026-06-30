@@ -96,6 +96,12 @@ const FAILOVER_MODELS: Record<string, string> = {
     'gemini-3.1-flash-image-preview': 'gemini-3.1-flash-image-preview-hq',
 };
 
+/** flash 主请求超时(ms):逆向 flash 渠道(ch46 xyaigc / ch53 等)尾延迟可达数十分钟
+ *  (实测 357413195 客户多条 41-43min 出图)。new-api 自身无 relay 超时,只能在 proxy 这层兜。
+ *  到点 abort 当作失败 → 切候补 -hq/ch42(快且稳),客户最多等 ~80s + 候补一次。
+ *  仅对有候补的 flash 生效;pro(4K 合法耗时长、无候补)不设超时。operator:80s 自动切。 */
+const FLASH_TIMEOUT_MS = 80_000;
+
 /** Gemini image 模型 → 注入的 native imageSize(客户没选 size 时的固定档) */
 const GEMINI_IMAGE_MODELS: Record<string, '1K' | '2K' | '4K'> = {
     'gemini-2.5-flash-image': '1K',
@@ -201,18 +207,30 @@ function jsonForwardHeaders(req: NextRequest): Headers {
     return h;
 }
 
-/** Gemini 生图 native 转发:主模型上游任意报错(非 2xx)时,自动用同一个已翻译好的 body
+/** Gemini 生图 native 转发:主模型上游任意报错(非 2xx)【或超时】时,自动用同一个已翻译好的 body
  *  (contents + imageConfig)转到非逆向备用 SKU 重试一次,仅换 URL 里的模型名(故计费切到备用 SKU)。
- *  flash 是 ch45 独占,任意非 2xx 都视作 ch45 挂了 → 兜底转 -hq/ch42(operator:45 所有报错都转 42)。
+ *  flash 任意非 2xx 都视作主渠道挂了 → 兜底转 -hq/ch42(operator:45 所有报错都转 42)。
+ *  另:逆向 flash 渠道会出现数十分钟才出图的慢尾(见 FLASH_TIMEOUT_MS),new-api 无 relay 超时,
+ *  故主请求挂 80s AbortController,到点 abort 当失败一样切候补 → 客户不会再被卡几十分钟。
  *  只重试一次:备用也报错则原样透传其错,不无限重试。成功(2xx)不转,省一次 ch42 调用。见 FAILOVER_MODELS。 */
 async function geminiGenerateWithFailover(req: NextRequest, model: string, requestBody: string): Promise<Response> {
     const url = (m: string) => `${NEWAPI_BASE_URL}/v1beta/models/${m}:generateContent`;
-    const upstream = await fetch(url(model), { method: 'POST', headers: jsonForwardHeaders(req), body: requestBody });
+    const send = (m: string, signal?: AbortSignal) =>
+        fetch(url(m), { method: 'POST', headers: jsonForwardHeaders(req), body: requestBody, signal });
     const backup = FAILOVER_MODELS[model];
-    if (backup && !upstream.ok) {
-        return fetch(url(backup), { method: 'POST', headers: jsonForwardHeaders(req), body: requestBody });
+    if (!backup) return send(model); // 无候补(pro 4K 等合法耗时长)→ 不设超时,原样透传
+    // flash:主请求 80s 超时,慢渠道到点 abort 当失败、连同非 2xx 一并切候补 -hq/ch42
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), FLASH_TIMEOUT_MS);
+    let upstream: Response;
+    try {
+        upstream = await send(model, ctrl.signal);
+    } catch {
+        return send(backup); // 超时(AbortError)/网络错 → 切候补
+    } finally {
+        clearTimeout(timer);
     }
-    return upstream;
+    return upstream.ok ? upstream : send(backup); // 非 2xx → 切候补
 }
 
 function passthroughResponse(upstream: Response): NextResponse {
