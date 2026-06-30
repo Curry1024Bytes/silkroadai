@@ -1745,6 +1745,79 @@ with open("edited.png", "wb") as f:
                             </span>
                         </li>
                     </ul>
+
+                    {/* 用 API 查余额(2026-06 客户支援)。注意:/balance 是【网页】控制台页面;
+                        脚本 / 监控要用 /v1/balance(本节),鉴权用调模型的同一个 sk- key。 */}
+                    <h3 className="m-0 mt-6 mb-2 text-base font-semibold text-navy">用 API 查询余额</h3>
+                    <div className="mb-4 rounded-lg border-l-4 border-brand-accent bg-paper-muted px-4 py-3 text-sm text-ink">
+                        💡 想用脚本 / 监控查余额,请用下面的{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            /v1/balance
+                        </code>{' '}
+                        ——<strong className="text-navy">不是</strong>上面的{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            /balance
+                        </code>{' '}
+                        网页。鉴权用你的 API Key(<code className="font-mono text-xs">sk-…</code>),和调用模型同一个。
+                    </div>
+
+                    <p className="m-0 mb-2 text-sm font-medium text-navy">① 查余额(推荐,直接返回人民币)</p>
+                    <CodeBlock language="bash">
+                        {`curl ${OPENAI_BASE}/balance \\
+  -H "Authorization: Bearer sk-…"`}
+                    </CodeBlock>
+                    <CodeBlock language="json">
+                        {`{
+  "object": "balance",
+  "currency": "CNY",
+  "balance_cny": 268.46,
+  "used_cny": 951.54,
+  "balance_usd": 38.35
+}`}
+                    </CodeBlock>
+                    <p className="m-0 mt-3 mb-2 text-xs text-minor-ink leading-relaxed">
+                        <code className="font-mono text-xs">balance_cny</code> = 可用余额(¥)·{' '}
+                        <code className="font-mono text-xs">used_cny</code> =
+                        累计消费(¥,已扣视频等失败任务的退款,与控制台「概览」一致)·{' '}
+                        <code className="font-mono text-xs">balance_usd</code> = 余额折算美元。
+                    </p>
+
+                    <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">Python</p>
+                    <CodeBlock language="python">
+                        {`import requests
+
+r = requests.get(
+    "${OPENAI_BASE}/balance",
+    headers={"Authorization": "Bearer sk-…"},
+)
+data = r.json()
+print(f"余额 ¥{data['balance_cny']} · 已用 ¥{data['used_cny']}")`}
+                    </CodeBlock>
+
+                    <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">
+                        ② OpenAI 兼容接口(给现成余额工具用,零改动)
+                    </p>
+                    <p className="m-0 mb-2 text-xs text-minor-ink leading-relaxed">
+                        很多客户端 / 余额监控工具按 OpenAI 老接口查额度,我们也兼容。余额 ={' '}
+                        <code className="font-mono text-xs">hard_limit_usd − total_usage / 100</code>(单位美元)。
+                    </p>
+                    <CodeBlock language="bash">
+                        {`# 总额度(美元)
+curl ${OPENAI_BASE}/dashboard/billing/subscription \\
+  -H "Authorization: Bearer sk-…"
+# → {"hard_limit_usd": 174.29, ...}
+
+# 已用(美分)
+curl ${OPENAI_BASE}/dashboard/billing/usage \\
+  -H "Authorization: Bearer sk-…"
+# → {"total_usage": 13593}   # = $135.93`}
+                    </CodeBlock>
+                    <p className="m-0 mt-3 mb-4 text-xs text-minor-ink leading-relaxed">
+                        Key 无效 / 停用返 <code className="font-mono text-xs">401</code>。余额实时(约 60 秒缓存)。⚠️
+                        这些是查询接口,<strong className="text-navy">不要</strong>用 GET{' '}
+                        <code className="font-mono text-xs">/balance</code>(无 v1 前缀)——那是网页,会返回 HTML。
+                    </p>
+
                     <p className="m-0 text-xs text-minor-ink leading-relaxed">
                         网络:接入点 <code className="font-mono text-xs">ai.silkroadai.io</code> 多区域
                         CDN,国内通常可直连。流式调用对网络稳定性敏感,丢包可能导致 502 —— 频繁出错时可尝试关闭{' '}

@@ -20,7 +20,7 @@
 import 'server-only';
 import * as Sentry from '@sentry/nextjs';
 import { prisma } from '@/lib/db';
-import { getUsageDashboard } from './client';
+import { fetchUserRefunds, getUsageDashboard } from './client';
 
 const TTL_MS = 5 * 60 * 1_000;
 /** How many distinct models get their own stack in the 模型消耗分布图; the
@@ -305,8 +305,32 @@ async function fetchLiveAggregate(args: {
         dayModelMap.set(day, dm);
     }
 
+    // /api/data/ 只聚合消费(毛),不含退款。拉 type=6 退款,从【汇总卡 total】与【按模型
+    // byModel】扣除 → 净消费(2026-06 客户 zyt:seedance 视频大量失败退款使本期消费虚高)。
+    // byDay 图表维持毛趋势:退款发生日常晚于消费日,逐日扣减会跨日失真甚至为负;失败退款
+    // 已在汇总卡体现,图仅作分布示意。totalCalls/totalTokens 不减(请求确实发生过)。
+    try {
+        const refunds = await fetchUserRefunds({
+            user_id: args.newapiUserId,
+            username: args.newapiUsername,
+            start_timestamp: range.start || undefined,
+            end_timestamp: range.end,
+        });
+        for (const r of refunds) {
+            totalUsedQuota -= r.quota;
+            const slot = byModelMap.get(r.model_name || '<unknown>');
+            if (slot) slot.quota -= r.quota;
+        }
+    } catch (err) {
+        console.warn(
+            `[usage-aggregate] 退款查询失败 user=${args.newapiUserId} period=${args.period},本期消费暂用毛消费:`,
+            err,
+        );
+    }
+    if (totalUsedQuota < 0) totalUsedQuota = 0;
+
     const byModel = Array.from(byModelMap.entries())
-        .map(([model, agg]) => ({ model, ...agg }))
+        .map(([model, agg]) => ({ model, calls: agg.calls, quota: Math.max(0, agg.quota) }))
         .sort((a, b) => b.quota - a.quota);
 
     // Stack keys = top-N models by quota; everything else folds into '其他'.

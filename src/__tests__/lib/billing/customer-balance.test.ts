@@ -12,11 +12,16 @@ vi.mock('@/lib/db', () => ({
     },
 }));
 vi.mock('@/lib/newapi/quota-cache', () => ({ getQuotaWithCache: (...a: unknown[]) => mockGetQuotaWithCache(...a) }));
+const mockFetchUserRefunds = vi.fn();
+vi.mock('@/lib/newapi/client', () => ({ fetchUserRefunds: (...a: unknown[]) => mockFetchUserRefunds(...a) }));
 
 import { getCustomerBalance } from '@/lib/billing/customer-balance';
 import { quotaToCny } from '@/lib/newapi/quota-units';
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+    vi.clearAllMocks();
+    mockFetchUserRefunds.mockResolvedValue([]); // 默认无退款 → 净=毛(现有断言不变)
+});
 
 describe('getCustomerBalance — portal mode (¥ ledger is the truth)', () => {
     it('reads Account.balance_cny + Σ|charge|; NEVER reads the new-api quota/dumb-gate', async () => {
@@ -55,7 +60,7 @@ describe('getCustomerBalance — portal mode (¥ ledger is the truth)', () => {
 
 describe('getCustomerBalance — newapi mode (default, unchanged)', () => {
     it('goes through getQuotaWithCache; balance/spent = quotaToCny; never reads Account', async () => {
-        mockUserFindUnique.mockResolvedValue({ billing_mode: 'newapi', account: null });
+        mockUserFindUnique.mockResolvedValue({ billing_mode: 'newapi', newapi_user_id: 465, account: null });
         mockGetQuotaWithCache.mockResolvedValue({ remain_quota: 500_000, used_quota: 250_000, source: 'cache' });
         const r = await getCustomerBalance('u1');
         expect(mockGetQuotaWithCache).toHaveBeenCalledWith('u1');
@@ -79,5 +84,30 @@ describe('getCustomerBalance — newapi mode (default, unchanged)', () => {
         mockUserFindUnique.mockResolvedValue(null);
         mockGetQuotaWithCache.mockRejectedValue(new Error('portal user u1 not found'));
         await expect(getCustomerBalance('u1')).rejects.toThrow();
+    });
+
+    it('nets out type=6 refunds: spent = quotaToCny(used − Σrefund), balance unchanged (2026-06 zyt bug)', async () => {
+        mockUserFindUnique.mockResolvedValue({ billing_mode: 'newapi', newapi_user_id: 465, account: null });
+        // 毛消费 200M,退款 70M → 净 130M。余额(remain)是 new-api 已净值,不动。
+        mockGetQuotaWithCache.mockResolvedValue({ remain_quota: 42_000_000, used_quota: 200_000_000, source: 'live' });
+        mockFetchUserRefunds.mockResolvedValue([
+            { quota: 50_000_000, user_id: 465 },
+            { quota: 20_000_000, user_id: 465 },
+        ]);
+        const r = await getCustomerBalance('u1');
+        expect(mockFetchUserRefunds).toHaveBeenCalledWith({ user_id: 465, username: 'c-u1' });
+        expect(r.spentCny).toBe(quotaToCny(130_000_000)); // 净:200M − 70M
+        expect(r.balanceCny).toBe(quotaToCny(42_000_000)); // 余额不变
+        expect(r.quota).toEqual({ remain: 42_000_000, used: 130_000_000 });
+    });
+
+    it('refund query failure → falls back to gross used (spend never throws)', async () => {
+        mockUserFindUnique.mockResolvedValue({ billing_mode: 'newapi', newapi_user_id: 465, account: null });
+        mockGetQuotaWithCache.mockResolvedValue({ remain_quota: 100, used_quota: 5_000, source: 'cache' });
+        mockFetchUserRefunds.mockRejectedValue(new Error('new-api log query failed'));
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const r = await getCustomerBalance('u1');
+        expect(r.spentCny).toBe(quotaToCny(5_000)); // 回退毛消费
+        warn.mockRestore();
     });
 });

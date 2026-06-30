@@ -487,6 +487,46 @@ export async function queryLogs(args: {
     });
 }
 
+/**
+ * 拉某客户在时间窗内的退款(type=6)明细。
+ *
+ * 背景:Seedance 等视频任务失败/未出片时,new-api 退还已扣 quota(加回 user.quota
+ * 余额),但 user.used_quota 字段【不减退款】—— 仍是毛消费。净消费 = 毛 − Σ退款,
+ * 故历史/本期消费展示都要扣掉退款,否则虚高(2026-06 客户 zyt1735867 反馈)。
+ *
+ * 过滤:username 是 admin 下真正生效的维度(gotcha #15;/api/log/ 忽略 user_id),
+ * 但仍按 user_id 二次过滤防御(万一 username 不唯一/被忽略,不泄漏他人退款)。
+ * /api/log/ page_size 硬钳 100(gotcha),故分页累加;退款条数远少于消费,通常 1-2 页,
+ * MAX_PAGES 兜底防极端不卡死。
+ */
+export async function fetchUserRefunds(args: {
+    user_id: number;
+    username: string;
+    start_timestamp?: number;
+    end_timestamp?: number;
+}): Promise<NewApiUsageLog[]> {
+    const PAGE_SIZE = 100;
+    const MAX_PAGES = 20;
+    const out: NewApiUsageLog[] = [];
+    for (let page = 1; page <= MAX_PAGES; page++) {
+        const { items } = await queryLogs({
+            user_id: args.user_id,
+            username: args.username,
+            type: 6,
+            page,
+            page_size: PAGE_SIZE,
+            start_timestamp: args.start_timestamp,
+            end_timestamp: args.end_timestamp,
+        });
+        for (const it of items) {
+            if (it.user_id === args.user_id) out.push(it);
+        }
+        if (items.length < PAGE_SIZE) return out;
+    }
+    console.warn(`[fetchUserRefunds] user ${args.user_id} 退款超过 ${MAX_PAGES * PAGE_SIZE} 条,统计可能偏低`);
+    return out;
+}
+
 /** 聚合统计 */
 export async function getLogStats(args: {
     username?: string;

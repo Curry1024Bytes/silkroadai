@@ -20,8 +20,10 @@ vi.mock('@/lib/db', () => ({
 }));
 
 const mockGetUsageDashboard = vi.fn();
+const mockFetchUserRefunds = vi.fn();
 vi.mock('@/lib/newapi/client', () => ({
     getUsageDashboard: (...args: unknown[]) => mockGetUsageDashboard(...args),
+    fetchUserRefunds: (...args: unknown[]) => mockFetchUserRefunds(...args),
 }));
 
 const mockSentryCapture = vi.fn();
@@ -39,6 +41,7 @@ const TTL_MS = 5 * 60 * 1_000;
 beforeEach(() => {
     vi.clearAllMocks();
     mockCacheUpsert.mockResolvedValue({});
+    mockFetchUserRefunds.mockResolvedValue([]); // 默认无退款 → 净=毛(现有断言不变)
 });
 
 /** One `/api/data/` bucket (day × model). */
@@ -338,6 +341,53 @@ describe('getUsageAggregate — roll-up (count / quota / tokens / byModel / byDa
         expect(r.totalCalls).toBe(2);
         expect(r.totalUsedQuota).toBe(150);
         expect(r.byModel).toEqual([{ model: 'mine', calls: 2, quota: 150 }]);
+    });
+
+    it('nets out type=6 refunds from total + byModel; calls unchanged (2026-06 zyt bug)', async () => {
+        mockCacheFindUnique.mockResolvedValue(null);
+        mockGetUsageDashboard.mockResolvedValue([
+            makeRow({ model_name: 'seedance-720p', quota: 1000, count: 10, token_used: 0 }),
+            makeRow({ model_name: 'gpt-5.4', quota: 200, count: 1, token_used: 500 }),
+        ]);
+        // seedance 视频失败退款 300(只退 seedance 模型)
+        mockFetchUserRefunds.mockResolvedValue([
+            { quota: 200, user_id: NEWAPI_USER_ID, model_name: 'seedance-720p', created_at: 1715000000 },
+            { quota: 100, user_id: NEWAPI_USER_ID, model_name: 'seedance-720p', created_at: 1715000000 },
+        ]);
+
+        const r = await getUsageAggregate({
+            portalUserId: PORTAL_USER_ID,
+            newapiUserId: NEWAPI_USER_ID,
+            newapiUsername: NEWAPI_USERNAME,
+            period: '30d',
+            now: NOW,
+        });
+
+        expect(r.totalUsedQuota).toBe(900); // 毛 1200 − 退 300
+        expect(r.byModel).toEqual([
+            { model: 'seedance-720p', calls: 10, quota: 700 }, // 1000 − 300
+            { model: 'gpt-5.4', calls: 1, quota: 200 },
+        ]);
+        expect(r.totalCalls).toBe(11); // 请求次数不减(请求确实发生过)
+        expect(mockFetchUserRefunds).toHaveBeenCalledWith(
+            expect.objectContaining({ user_id: NEWAPI_USER_ID, username: NEWAPI_USERNAME }),
+        );
+    });
+
+    it('refund query failure → falls back to gross (本期消费不为此中断)', async () => {
+        mockCacheFindUnique.mockResolvedValue(null);
+        mockGetUsageDashboard.mockResolvedValue([makeRow({ quota: 500, count: 2 })]);
+        mockFetchUserRefunds.mockRejectedValue(new Error('log query 502'));
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const r = await getUsageAggregate({
+            portalUserId: PORTAL_USER_ID,
+            newapiUserId: NEWAPI_USER_ID,
+            newapiUsername: NEWAPI_USERNAME,
+            period: '7d',
+            now: NOW,
+        });
+        expect(r.totalUsedQuota).toBe(500); // 毛
+        warn.mockRestore();
     });
 });
 

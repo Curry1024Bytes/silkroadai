@@ -49,6 +49,9 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
+import { prisma } from '@/lib/db';
+import { getCustomerBalance, type CustomerBalance } from '@/lib/billing/customer-balance';
+import { USD_TO_CNY_RATE } from '@/lib/newapi/quota-units';
 import { uploadImage } from '@/lib/r2/client';
 import { objectExistsInOss, ossPublicUrl, uploadToCustomerOss } from '@/lib/oss/client';
 import { getOssConfig, resolveUserIdFromAuthHeader } from '@/lib/oss/store';
@@ -92,6 +95,12 @@ const explicitAspectInstruction = (ratio: string) =>
 const FAILOVER_MODELS: Record<string, string> = {
     'gemini-3.1-flash-image-preview': 'gemini-3.1-flash-image-preview-hq',
 };
+
+/** flash 主请求超时(ms):逆向 flash 渠道(ch46 xyaigc / ch53 等)尾延迟可达数十分钟
+ *  (实测 357413195 客户多条 41-43min 出图)。new-api 自身无 relay 超时,只能在 proxy 这层兜。
+ *  到点 abort 当作失败 → 切候补 -hq/ch42(快且稳),客户最多等 ~80s + 候补一次。
+ *  仅对有候补的 flash 生效;pro(4K 合法耗时长、无候补)不设超时。operator:80s 自动切。 */
+const FLASH_TIMEOUT_MS = 80_000;
 
 /** Gemini image 模型 → 注入的 native imageSize(客户没选 size 时的固定档) */
 const GEMINI_IMAGE_MODELS: Record<string, '1K' | '2K' | '4K'> = {
@@ -198,18 +207,30 @@ function jsonForwardHeaders(req: NextRequest): Headers {
     return h;
 }
 
-/** Gemini 生图 native 转发:主模型上游任意报错(非 2xx)时,自动用同一个已翻译好的 body
+/** Gemini 生图 native 转发:主模型上游任意报错(非 2xx)【或超时】时,自动用同一个已翻译好的 body
  *  (contents + imageConfig)转到非逆向备用 SKU 重试一次,仅换 URL 里的模型名(故计费切到备用 SKU)。
- *  flash 是 ch45 独占,任意非 2xx 都视作 ch45 挂了 → 兜底转 -hq/ch42(operator:45 所有报错都转 42)。
+ *  flash 任意非 2xx 都视作主渠道挂了 → 兜底转 -hq/ch42(operator:45 所有报错都转 42)。
+ *  另:逆向 flash 渠道会出现数十分钟才出图的慢尾(见 FLASH_TIMEOUT_MS),new-api 无 relay 超时,
+ *  故主请求挂 80s AbortController,到点 abort 当失败一样切候补 → 客户不会再被卡几十分钟。
  *  只重试一次:备用也报错则原样透传其错,不无限重试。成功(2xx)不转,省一次 ch42 调用。见 FAILOVER_MODELS。 */
 async function geminiGenerateWithFailover(req: NextRequest, model: string, requestBody: string): Promise<Response> {
     const url = (m: string) => `${NEWAPI_BASE_URL}/v1beta/models/${m}:generateContent`;
-    const upstream = await fetch(url(model), { method: 'POST', headers: jsonForwardHeaders(req), body: requestBody });
+    const send = (m: string, signal?: AbortSignal) =>
+        fetch(url(m), { method: 'POST', headers: jsonForwardHeaders(req), body: requestBody, signal });
     const backup = FAILOVER_MODELS[model];
-    if (backup && !upstream.ok) {
-        return fetch(url(backup), { method: 'POST', headers: jsonForwardHeaders(req), body: requestBody });
+    if (!backup) return send(model); // 无候补(pro 4K 等合法耗时长)→ 不设超时,原样透传
+    // flash:主请求 80s 超时,慢渠道到点 abort 当失败、连同非 2xx 一并切候补 -hq/ch42
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), FLASH_TIMEOUT_MS);
+    let upstream: Response;
+    try {
+        upstream = await send(model, ctrl.signal);
+    } catch {
+        return send(backup); // 超时(AbortError)/网络错 → 切候补
+    } finally {
+        clearTimeout(timer);
     }
-    return upstream;
+    return upstream.ok ? upstream : send(backup); // 非 2xx → 切候补
 }
 
 function passthroughResponse(upstream: Response): NextResponse {
@@ -358,7 +379,51 @@ async function toGeminiContents(messages: unknown): Promise<Array<{ role: string
     );
 }
 
+/** 读 JPEG 的 EXIF Orientation(1-8;无 / 读不出 → 1),dep-free 字节解析。
+ *  5-8 = 旋转 90°/270°,显示时宽高对调 —— 手机竖拍照片几乎都是 6 或 8
+ *  (横像素 + EXIF 转正)。不处理它会把 aspectRatio 注反 → 出图尺寸不符。 */
+function jpegExifOrientation(buf: Buffer): number {
+    if (buf.length < 4 || buf[0] !== 0xff || buf[1] !== 0xd8) return 1;
+    let i = 2;
+    while (i + 4 <= buf.length) {
+        if (buf[i] !== 0xff) return 1;
+        const marker = buf[i + 1];
+        if (marker === 0xff) {
+            i += 1; // padding fill byte
+            continue;
+        }
+        if ((marker >= 0xd0 && marker <= 0xd9) || marker === 0x01) {
+            i += 2; // standalone marker
+            continue;
+        }
+        if (marker === 0xda) return 1; // SOS:图像数据开始,EXIF 必在此前
+        const len = buf.readUInt16BE(i + 2);
+        if (marker === 0xe1 && i + 10 <= buf.length && buf.toString('latin1', i + 4, i + 10) === 'Exif\x00\x00') {
+            const tiff = i + 10; // TIFF header 起点
+            if (tiff + 8 > buf.length) return 1;
+            const le = buf.toString('latin1', tiff, tiff + 2) === 'II';
+            const u16 = (o: number) => (le ? buf.readUInt16LE(o) : buf.readUInt16BE(o));
+            const u32 = (o: number) => (le ? buf.readUInt32LE(o) : buf.readUInt32BE(o));
+            const ifd0 = tiff + u32(tiff + 4);
+            if (ifd0 + 2 > buf.length) return 1;
+            const n = u16(ifd0);
+            for (let e = 0; e < n; e++) {
+                const entry = ifd0 + 2 + e * 12;
+                if (entry + 12 > buf.length) break;
+                if (u16(entry) === 0x0112) {
+                    const v = u16(entry + 8); // Orientation: SHORT,值内联在 value 字段
+                    return v >= 1 && v <= 8 ? v : 1;
+                }
+            }
+            return 1;
+        }
+        i += 2 + len;
+    }
+    return 1;
+}
+
 /** 从图片字节头读宽高(dep-free,只认 PNG / JPEG / WebP 三种主流格式)。
+ *  JPEG 额外读 EXIF Orientation,旋转 90°/270° 时返回【显示】宽高(对调)。
  *  读不出(其他格式 / 截断 / 坏数据)→ null,调用方按"不注入 aspectRatio"降级。 */
 function imageDimensions(buf: Buffer): { w: number; h: number } | null {
     // PNG:8 字节签名 + IHDR chunk,width / height 大端在 offset 16 / 20
@@ -392,7 +457,10 @@ function imageDimensions(buf: Buffer): { w: number; h: number } | null {
             if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
                 const h = buf.readUInt16BE(i + 5);
                 const w = buf.readUInt16BE(i + 7);
-                return w > 0 && h > 0 ? { w, h } : null;
+                if (!(w > 0 && h > 0)) return null;
+                // EXIF 旋转 90°/270°(orient 5-8)→ 返回显示宽高(对调),否则手机竖拍图被注反比例。
+                const o = jpegExifOrientation(buf);
+                return o >= 5 && o <= 8 ? { w: h, h: w } : { w, h };
             }
             i += 2 + buf.readUInt16BE(i + 2);
         }
@@ -1258,10 +1326,83 @@ async function handleClaudeCachedChat(
     return resp;
 }
 
+const BALANCE_PATHS = new Set(['/dashboard/billing/subscription', '/dashboard/billing/usage', '/balance']);
+
+/** OpenAI 形错误(与 new-api 一致,客户端余额工具能识别)。 */
+function billingError(message: string, status: number): NextResponse {
+    return NextResponse.json({ error: { message, type: 'new_api_error', code: '' } }, { status });
+}
+
+/**
+ * 余额查询(portal 自答,不透传 new-api)。
+ *
+ * portal 给客户的 key 是 unlimited_quota(预算在账户级 user.quota,gotcha #12),new-api 的
+ * 标准 /v1/dashboard/billing/* 只看 key 层 → 占位无限额度 + 0 用量,查不到真实余额。这里用
+ * sk- 反查账户(NewApiToken.newapi_token_value 存 48 字符【无 sk- 前缀】,token-format.ts),
+ * getCustomerBalance 拿真实 ¥(已扣视频失败退款),按端点形态返回:
+ *   - /dashboard/billing/subscription → OpenAI 形,hard_limit_usd = 总额度(余+耗) USD
+ *   - /dashboard/billing/usage        → OpenAI 形,total_usage = 已用美分(cents)
+ *   - /balance                        → 直观 ¥ 形(portal 自有,脚本监控友好)
+ */
+async function handleBalanceQuery(req: NextRequest, path: string): Promise<NextResponse> {
+    const auth = req.headers.get('authorization') || '';
+    const m = auth.match(/^Bearer\s+(.+)$/i);
+    if (!m) return billingError('Missing bearer token', 401);
+    const raw = m[1].trim();
+    const stored = raw.startsWith('sk-') ? raw.slice(3) : raw; // DB 存无 sk- 前缀
+
+    const token = await prisma.newApiToken.findUnique({
+        where: { newapi_token_value: stored },
+        select: { user_id: true, status: true },
+    });
+    if (!token || token.status !== 'active') return billingError('Invalid token', 401);
+
+    let bal: CustomerBalance;
+    try {
+        bal = await getCustomerBalance(token.user_id);
+    } catch {
+        return billingError('balance temporarily unavailable', 503);
+    }
+
+    const toUsd = (cny: number) => cny / USD_TO_CNY_RATE;
+
+    if (path === '/dashboard/billing/usage') {
+        // OpenAI 兼容:total_usage 单位 = 美分(cents)。
+        return NextResponse.json({ object: 'list', total_usage: Math.round(toUsd(bal.spentCny) * 100) });
+    }
+    if (path === '/dashboard/billing/subscription') {
+        const limitUsd = toUsd(bal.balanceCny + bal.spentCny); // 总额度 = 余额 + 已用
+        return NextResponse.json({
+            object: 'billing_subscription',
+            has_payment_method: true,
+            soft_limit_usd: limitUsd,
+            hard_limit_usd: limitUsd,
+            system_hard_limit_usd: limitUsd,
+            access_until: 0,
+        });
+    }
+    // /balance — portal 自有直观形(¥ 余额直接给,脚本监控友好)
+    return NextResponse.json({
+        object: 'balance',
+        currency: 'CNY',
+        balance_cny: Number(bal.balanceCny.toFixed(4)),
+        used_cny: Number(bal.spentCny.toFixed(4)),
+        balance_usd: Number(toUsd(bal.balanceCny).toFixed(4)),
+        stale: bal.stale,
+    });
+}
+
 async function handleRequest(req: NextRequest, params: Promise<{ path: string[] }>): Promise<NextResponse> {
     const { path: segments } = await params;
     const path = '/' + (segments ?? []).join('/');
     const search = req.nextUrl.search || '';
+
+    // 余额查询拦截(在 capture 之前 return:GET 余额查询无需记录)。portal 给客户的 key 是
+    // unlimited_quota(预算在账户级 user.quota,gotcha #12),new-api 标准 billing 端点只看
+    // key 层 → 返回占位无限额度;故在代理层用 sk- 反查账户、自答真实余额。
+    if (req.method === 'GET' && BALANCE_PATHS.has(path)) {
+        return handleBalanceQuery(req, path);
+    }
 
     // 请求日志捕获(数据存储 Phase 1 第②步)。开关 off → null → 下面全程与今天
     // 字节级一致;on → 旁路捕获,best-effort,绝不影响客户请求(见 capture.ts)。
