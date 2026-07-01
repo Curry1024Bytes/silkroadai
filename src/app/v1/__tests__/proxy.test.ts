@@ -1859,6 +1859,51 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
         const sent = JSON.parse(init.body as string) as { n: unknown };
         expect(sent.n).toBe(3); // 数字
     });
+
+    // ── response_format:url opt-in → 存图床(客户 OSS→平台 R2)返 URL;默认仍 b64_json(不破坏现有客户)──
+    function b64Only200(): Response {
+        return new Response(JSON.stringify({ created: 1, data: [{ b64_json: 'QUJD', size: '1024x1024' }] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+        });
+    }
+
+    it('response_format:url → gpt-image b64 存图床、返回 url(不再内联 b64_json)', async () => {
+        mockFetch.mockResolvedValueOnce(b64Only200());
+        const res = await POST(
+            makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x', response_format: 'url' } }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        const data = (await res.json()) as { data: Array<{ url?: string; b64_json?: string }> };
+        expect(data.data[0].url).toMatch(/^https:\/\/images\.silkroadai\.io\/gen\/[0-9a-f-]+\.png$/);
+        expect(data.data[0].b64_json).toBeUndefined(); // b64 换成 url
+    });
+
+    it('默认(无 response_format)→ 仍返回 b64_json 内联,不存图床(OpenAI 契约,不破坏现有客户)', async () => {
+        mockFetch.mockResolvedValueOnce(b64Only200());
+        const res = await POST(
+            makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x' } }),
+            ctx('images', 'generations'),
+        );
+        const data = (await res.json()) as { data: Array<{ b64_json?: string; url?: string }> };
+        expect(data.data[0].b64_json).toBe('QUJD'); // 原样内联
+        expect(data.data[0].url).toBeUndefined();
+        expect(mockUploadImage).not.toHaveBeenCalled();
+    });
+
+    it('response_format:b64_json → 显式 b64,不存图床', async () => {
+        mockFetch.mockResolvedValueOnce(b64Only200());
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2', prompt: 'x', response_format: 'b64_json' },
+            }),
+            ctx('images', 'generations'),
+        );
+        const data = (await res.json()) as { data: Array<{ b64_json?: string }> };
+        expect(data.data[0].b64_json).toBe('QUJD');
+        expect(mockUploadImage).not.toHaveBeenCalled();
+    });
 });
 
 describe('/v1 proxy — video poll customer-OSS rehost', () => {

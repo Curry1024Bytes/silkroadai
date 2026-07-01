@@ -1043,6 +1043,8 @@ async function reshapeOpenAiImageResponse(
     prompt: string,
     requestedSize: string,
     cap: CaptureCtx | null,
+    req: NextRequest | null = null,
+    storeToUrl = false,
 ): Promise<NextResponse> {
     const text = await upstream.text();
     const headers = new Headers();
@@ -1072,8 +1074,30 @@ async function reshapeOpenAiImageResponse(
     if (out.size === undefined && outSize) out.size = outSize;
     if (out.usage === undefined) out.usage = buildEstimatedUsage(prompt, outSize);
 
+    // opt-in(response_format:url):把 b64_json 存客户 OSS→平台 R2,响应改回 url(镜像 Gemini 生图)。
+    // 默认(无 response_format / b64_json)保持 b64_json 原样 —— OpenAI gpt-image 契约,不破坏现有客户。
+    let refs: string[] = [];
+    if (storeToUrl && req) {
+        const newData: JsonRecord[] = [];
+        for (const item of data) {
+            const b64 = typeof item.b64_json === 'string' ? item.b64_json : null;
+            if (!b64) {
+                newData.push(item);
+                continue;
+            }
+            const stored = await storeGeneratedImage(req, Buffer.from(b64, 'base64'), 'image/png', b64);
+            const d: JsonRecord = { ...item, url: stored.url };
+            delete d.b64_json;
+            newData.push(d);
+            if (stored.ossFallback) headers.set('X-Silkroadai-Oss-Fallback', 'yes');
+            if (stored.r2Fallback) headers.set('X-Silkroadai-R2-Fallback', 'yes');
+            refs = hostedRefs(stored);
+        }
+        out.data = newData;
+    }
+
     headers.set('content-type', 'application/json');
-    if (cap) captureJsonResponse(cap, 200, out);
+    if (cap) captureJsonResponse(cap, 200, out, refs);
     return new NextResponse(JSON.stringify(out), { status: 200, headers });
 }
 
@@ -1113,6 +1137,8 @@ async function handleImagesDalle(
     let responseFormat = 'url';
     let aspectRatio = '';
     let sizeRaw = '';
+    // gpt-image 默认返回 b64_json(OpenAI 契约);仅当客户显式 response_format:url 才存图床返 URL(opt-in)。
+    let wantHostedUrl = false;
     const inputParts: GeminiInputPart[] = [];
 
     try {
@@ -1121,6 +1147,7 @@ async function handleImagesDalle(
             model = String(form.get('model') ?? '');
             prompt = String(form.get('prompt') ?? '');
             responseFormat = String(form.get('response_format') ?? 'url') || 'url';
+            wantHostedUrl = String(form.get('response_format') ?? '').toLowerCase() === 'url';
             aspectRatio = String(form.get('aspect_ratio') ?? '');
             sizeRaw = String(form.get('size') ?? '');
             // model 非我们的 Gemini 生图 → 重建 FormData 透传(保留 gpt-image-2 等)
@@ -1144,7 +1171,14 @@ async function handleImagesDalle(
                     const upstream = model.startsWith('gpt-image')
                         ? await gptImageUpstream(req, form, null, search)
                         : await fetchUpstreamMultipart(req, form, path, search);
-                    return await reshapeOpenAiImageResponse(upstream, prompt, sizeRaw, cap);
+                    return await reshapeOpenAiImageResponse(
+                        upstream,
+                        prompt,
+                        sizeRaw,
+                        cap,
+                        req,
+                        model.startsWith('gpt-image') && wantHostedUrl,
+                    );
                 } catch (e) {
                     if (e instanceof ImageUrlError) return imageError(e.message, 400, cap);
                     // 连不上 new-api 等网络异常:透出真实原因(不被外层 catch 兜底成笼统 400)
@@ -1190,6 +1224,7 @@ async function handleImagesDalle(
             model = String(body.model ?? '');
             prompt = String(body.prompt ?? '');
             responseFormat = String(body.response_format ?? 'url') || 'url';
+            wantHostedUrl = String(body.response_format ?? '').toLowerCase() === 'url';
             aspectRatio = String(body.aspect_ratio ?? '');
             sizeRaw = String(body.size ?? '');
             if (cap) recordRequestBody(cap, JSON.stringify(body), model, false);
@@ -1205,7 +1240,14 @@ async function handleImagesDalle(
                     const upstream = model.startsWith('gpt-image')
                         ? await gptImageUpstream(req, null, body, search)
                         : await fetchUpstreamJson(req, body, path, search);
-                    return await reshapeOpenAiImageResponse(upstream, prompt, sizeRaw, cap);
+                    return await reshapeOpenAiImageResponse(
+                        upstream,
+                        prompt,
+                        sizeRaw,
+                        cap,
+                        req,
+                        model.startsWith('gpt-image') && wantHostedUrl,
+                    );
                 } catch (e) {
                     if (e instanceof ImageUrlError) return imageError(e.message, 400, cap);
                     return imageError(

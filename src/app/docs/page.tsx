@@ -1478,7 +1478,11 @@ curl ${OPENAI_BASE}/images/edits \\
                                 <tr>
                                     <td className="px-4 py-3 font-mono text-xs text-navy align-top">response_format</td>
                                     <td className="px-4 py-3 text-ink align-top">—</td>
-                                    <td className="px-4 py-3 text-ink">不用传 —— 平台自动忽略,恒返 b64_json</td>
+                                    <td className="px-4 py-3 text-ink">
+                                        默认 <code className="font-mono text-xs">b64_json</code>;传{' '}
+                                        <code className="font-mono text-xs">url</code> 则存图床(默认
+                                        images.silkroadai.io 或你配置的 OSS)返回 URL
+                                    </td>
                                 </tr>
                             </tbody>
                         </table>
@@ -1560,7 +1564,10 @@ fs.writeFileSync("out.png", Buffer.from(resp.data[0].b64_json, "base64"));`}
                                 <tr>
                                     <td className="px-4 py-3 font-mono text-xs text-navy align-top">quality / size</td>
                                     <td className="px-4 py-3 text-ink align-top">—</td>
-                                    <td className="px-4 py-3 text-ink">同文生图;response_format 不用传(恒回 b64)</td>
+                                    <td className="px-4 py-3 text-ink">
+                                        同文生图;默认回 b64_json,传{' '}
+                                        <code className="font-mono text-xs">response_format: url</code> 存图床返 URL
+                                    </td>
                                 </tr>
                             </tbody>
                         </table>
@@ -1599,8 +1606,16 @@ with open("edited.png", "wb") as f:
                         <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
                             data[0].b64_json
                         </code>
-                        (Base64 的 PNG,自行解码保存;始终返回 b64,传 response_format 也会被平台自动剥掉、仍回 b64)。
-                        <strong className="text-navy">按 token 计费(¥1.3 = 官方 $1)</strong>,成本由 quality
+                        (Base64 的 PNG,自行解码保存)。默认回 b64_json;若想拿
+                        <strong className="text-navy">公网 URL</strong>(存平台图床 images.silkroadai.io,或你在
+                        <Link href="/settings/storage" className="text-navy underline hover:text-brand-accent">
+                            存储设置
+                        </Link>
+                        配了自定义 OSS 则进你的 bucket),请求加{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            {`"response_format": "url"`}
+                        </code>
+                        。<strong className="text-navy">按 token 计费(¥1.3 = 官方 $1)</strong>,成本由 quality
                         主导(见上表), 响应 usage 即真实 token 用量。上游报错
                         <strong className="text-navy">原样透传</strong>(状态码 + OpenAI 错误体)。
                     </div>

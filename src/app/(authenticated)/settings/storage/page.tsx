@@ -57,8 +57,10 @@ export default async function StorageSettingsPage() {
             <p className="mt-2 text-sm text-muted-ink">
                 AI 生图(Gemini 系列)与 AI 视频(Seedance 系列)的输出默认存储在 Silk Road AI 的对象存储,返回
                 <code className="mx-1 font-mono text-xs">images.silkroadai.io</code>
-                URL。你也可以配置自己的对象存储(Cloudflare R2 / 阿里云 OSS / 腾讯云 COS / AWS S3 / 自建 S3
-                兼容),生成的图片和视频将直接上传到你的 bucket,URL 用你自己的域名。
+                URL;gpt-image-2 默认返回 base64,请求传
+                <code className="mx-1 font-mono text-xs">response_format: url</code>
+                时同样走对象存储、返回 URL。你也可以配置自己的对象存储(Cloudflare R2 / 阿里云 OSS / 腾讯云 COS / AWS S3
+                / 自建 S3 兼容),生成的图片和视频将直接上传到你的 bucket,URL 用你自己的域名。
             </p>
             <StorageSettingsForm initialConfig={initialConfig} />
         </div>
