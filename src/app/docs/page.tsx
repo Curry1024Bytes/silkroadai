@@ -92,7 +92,7 @@ const AGENTS: AgentSection[] = [
     {
         id: 'api-gpt-image',
         label: 'GPT image-2 生图',
-        blurb: 'gpt-image-2 · OpenAI Images API · 文生图 + 图生图 · Azure 官方稳定 · 高并发 · 按 token 计费(¥1=官方$1)。',
+        blurb: 'gpt-image-2 · OpenAI Images API · 文生图 + 图生图 · Azure 官方稳定 · 高并发 · 按 token 计费(¥1.3=官方$1)。',
     },
     {
         id: 'api-billing',
@@ -1365,8 +1365,9 @@ curl ${OPENAI_BASE}/images/edits \\
                     </p>
 
                     <div className="mt-1 mb-3 rounded-lg border-l-4 border-brand-accent bg-paper-muted px-4 py-3 text-sm text-ink">
-                        💰 <strong className="text-navy">计价:按 token 计费,¥1 = 官方 $1</strong> —— 按官方 gpt-image
-                        的真实 token 用量结算(官方价:输入 $5 / 百万 token、输出 $30 / 百万 token)。
+                        💰 <strong className="text-navy">计价:按 token 计费,¥1.3 = 官方 $1</strong> —— 按官方 gpt-image
+                        的真实 token 用量结算(官方价:输入 $5 / 图像输入 $8 / 输出 $30,每百万
+                        token;图生图的参考图算图像输入)。
                         <strong className="text-navy">
                             成本主要由{' '}
                             <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
@@ -1395,17 +1396,17 @@ curl ${OPENAI_BASE}/images/edits \\
                                 <tr className="border-b border-brand-border">
                                     <td className="px-4 py-3 text-ink align-top">简单 prompt · quality 默认(auto)</td>
                                     <td className="px-4 py-3 text-ink align-top">~200–400</td>
-                                    <td className="px-4 py-3 text-navy align-top font-medium">¥0.006–0.02</td>
+                                    <td className="px-4 py-3 text-navy align-top font-medium">¥0.008–0.026</td>
                                 </tr>
                                 <tr className="border-b border-brand-border">
                                     <td className="px-4 py-3 text-ink align-top">复杂 prompt · auto(自动提质)</td>
                                     <td className="px-4 py-3 text-ink align-top">~2000–4000</td>
-                                    <td className="px-4 py-3 text-navy align-top font-medium">¥0.05–0.12</td>
+                                    <td className="px-4 py-3 text-navy align-top font-medium">¥0.065–0.16</td>
                                 </tr>
                                 <tr>
                                     <td className="px-4 py-3 text-ink align-top">quality=high(1024²)</td>
                                     <td className="px-4 py-3 text-ink align-top">~7000</td>
-                                    <td className="px-4 py-3 text-navy align-top font-medium">~¥0.21</td>
+                                    <td className="px-4 py-3 text-navy align-top font-medium">~¥0.27</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -1465,16 +1466,9 @@ curl ${OPENAI_BASE}/images/edits \\
                                     </td>
                                 </tr>
                                 <tr className="border-b border-brand-border">
-                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">background</td>
-                                    <td className="px-4 py-3 text-ink align-top">—</td>
-                                    <td className="px-4 py-3 text-ink">
-                                        transparent / opaque / auto(透明背景用 transparent)
-                                    </td>
-                                </tr>
-                                <tr className="border-b border-brand-border">
                                     <td className="px-4 py-3 font-mono text-xs text-navy align-top">output_format</td>
                                     <td className="px-4 py-3 text-ink align-top">—</td>
-                                    <td className="px-4 py-3 text-ink">png(默认)/ jpeg / webp</td>
+                                    <td className="px-4 py-3 text-ink">png(默认)/ jpeg(webp 暂不支持)</td>
                                 </tr>
                                 <tr className="border-b border-brand-border">
                                     <td className="px-4 py-3 font-mono text-xs text-navy align-top">n</td>
@@ -1484,7 +1478,11 @@ curl ${OPENAI_BASE}/images/edits \\
                                 <tr>
                                     <td className="px-4 py-3 font-mono text-xs text-navy align-top">response_format</td>
                                     <td className="px-4 py-3 text-ink align-top">—</td>
-                                    <td className="px-4 py-3 text-ink">不用传 —— 平台自动忽略,恒返 b64_json</td>
+                                    <td className="px-4 py-3 text-ink">
+                                        默认 <code className="font-mono text-xs">b64_json</code>;传{' '}
+                                        <code className="font-mono text-xs">url</code> 则存图床(默认
+                                        images.silkroadai.io 或你配置的 OSS)返回 URL
+                                    </td>
                                 </tr>
                             </tbody>
                         </table>
@@ -1563,17 +1561,13 @@ fs.writeFileSync("out.png", Buffer.from(resp.data[0].b64_json, "base64"));`}
                                     <td className="px-4 py-3 text-ink align-top">✓</td>
                                     <td className="px-4 py-3 text-ink">原图文件;可重复传多张参考图</td>
                                 </tr>
-                                <tr className="border-b border-brand-border">
-                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">input_fidelity</td>
-                                    <td className="px-4 py-3 text-ink align-top">—</td>
-                                    <td className="px-4 py-3 text-ink">
-                                        low / high —— high 更忠于原图细节(输入 token 略增)
-                                    </td>
-                                </tr>
                                 <tr>
                                     <td className="px-4 py-3 font-mono text-xs text-navy align-top">quality / size</td>
                                     <td className="px-4 py-3 text-ink align-top">—</td>
-                                    <td className="px-4 py-3 text-ink">同文生图;response_format 不用传(恒回 b64)</td>
+                                    <td className="px-4 py-3 text-ink">
+                                        同文生图;默认回 b64_json,传{' '}
+                                        <code className="font-mono text-xs">response_format: url</code> 存图床返 URL
+                                    </td>
                                 </tr>
                             </tbody>
                         </table>
@@ -1612,10 +1606,44 @@ with open("edited.png", "wb") as f:
                         <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
                             data[0].b64_json
                         </code>
-                        (Base64 的 PNG,自行解码保存;始终返回 b64,传 response_format 也会被平台自动剥掉、仍回 b64)。
-                        <strong className="text-navy">按 token 计费(¥1 = 官方 $1)</strong>,成本由 quality 主导(见上表),
-                        响应 usage 即真实 token 用量。上游报错<strong className="text-navy">原样透传</strong>(状态码 +
-                        OpenAI 错误体)。
+                        (Base64 的 PNG,自行解码保存)。默认回 b64_json;若想拿
+                        <strong className="text-navy">公网 URL</strong>(存平台图床 images.silkroadai.io,或你在
+                        <Link href="/settings/storage" className="text-navy underline hover:text-brand-accent">
+                            存储设置
+                        </Link>
+                        配了自定义 OSS 则进你的 bucket),请求加{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            {`"response_format": "url"`}
+                        </code>
+                        。<strong className="text-navy">按 token 计费(¥1.3 = 官方 $1)</strong>,成本由 quality
+                        主导(见上表), 响应 usage 即真实 token 用量。上游报错
+                        <strong className="text-navy">原样透传</strong>(状态码 + OpenAI 错误体)。
+                    </div>
+
+                    <div className="mt-3 mb-3 rounded-lg border-l-4 border-brand-accent bg-paper-muted px-4 py-3 text-sm text-ink">
+                        🔀 <strong className="text-navy">文生图 / 图生图 可合并为一个接口</strong> ——
+                        不想分两条路径的话,发到{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            /v1/images/generations
+                        </code>{' '}
+                        或{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            /v1/images/edits
+                        </code>{' '}
+                        任意一个都行,平台按<strong className="text-navy">有没有带参考图</strong>自动分流:带图(multipart
+                        的{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            image
+                        </code>{' '}
+                        字段,或 JSON 里{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            image
+                        </code>{' '}
+                        /{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            image_url
+                        </code>{' '}
+                        传 data URL)→ 走图生图;只有 prompt → 走文生图。原来的两个独立接口照常可用、行为不变。
                     </div>
 
                     <div className="mt-3 mb-3 rounded-lg border-l-4 border-brand-accent bg-paper-muted px-4 py-3 text-sm text-ink">
@@ -1699,8 +1727,8 @@ with open("edited.png", "wb") as f:
                         <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
                             POST /v1/images/edits
                         </code>{' '}
-                        · 模型 gpt-image-2(自适应,推荐)/ -1k / -2k / -4k · 返回 data[0].b64_json(PNG)· ¥0.05 / 张 · 4K
-                        超时 ≥180s + 重试 · Key 用 image2 分组。
+                        · 模型 gpt-image-2(自适应,推荐)/ -1k / -2k / -4k · 返回 data[0].b64_json(PNG)· 按
+                        token(¥1.3=$1)· 4K 超时 ≥180s + 重试 · Key 用 image2 分组。
                     </div>
                 </section>
 

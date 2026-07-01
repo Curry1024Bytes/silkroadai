@@ -190,10 +190,24 @@ const STRIP_RESPONSE_HEADERS = new Set(['content-length', 'content-encoding', 't
 
 type JsonRecord = Record<string, unknown>;
 
+/** 运行时可配置的额外剥离请求头(env `PROXY_STRIP_REQUEST_HEADERS`,逗号分隔,小写比较)。
+ *  挡掉客户端注入、会干扰上游的头(如 kiro/Bedrock 上游因客户端带 profileArn 相关头而报
+ *  "profileArn is required")。动态读 env → 改 .env + 重启即生效,无需重构建。 */
+function extraStripRequestHeaders(): Set<string> {
+    return new Set(
+        (process.env.PROXY_STRIP_REQUEST_HEADERS || '')
+            .split(',')
+            .map((h) => h.trim().toLowerCase())
+            .filter(Boolean),
+    );
+}
+
 function forwardHeaders(req: NextRequest): Headers {
+    const extra = extraStripRequestHeaders();
     const headers = new Headers();
     req.headers.forEach((value, key) => {
-        if (!HOP_BY_HOP_REQUEST_HEADERS.has(key.toLowerCase())) headers.set(key, value);
+        const lk = key.toLowerCase();
+        if (!HOP_BY_HOP_REQUEST_HEADERS.has(lk) && !extra.has(lk)) headers.set(key, value);
     });
     return headers;
 }
@@ -256,6 +270,14 @@ async function forwardToNewApi(
     //   请求体捕获由 call site 用【原始】body 记(clamp 分支要存未钳的),这里不记。
     // - bodyOverride null(出口 B:messages/responses/embeddings…)→ 默认 req.body
     //   stream 直传(**开关 off 字节级不变**);仅捕获激活时才 buffer 出来记 + 转发该串。
+    // 兼容:部分客户端(图片生成 SDK 等)把 `n`(生成数量)发成字符串 "1" 而非数字。
+    // new-api 的图片/chat 请求结构体要 uint,会报 400/500
+    // `json: cannot unmarshal string into Go struct field Alias.n of type uint`。
+    // 这里把纯数字字符串的 n 转成数字再转发(只在已解析出 body 的 JSON 透传路径生效)。
+    if (bodyOverride && typeof bodyOverride.n === 'string' && /^\d+$/.test(bodyOverride.n.trim())) {
+        bodyOverride = { ...bodyOverride, n: parseInt(bodyOverride.n.trim(), 10) };
+    }
+
     let outgoingBody: BodyInit | undefined;
     if (bodyOverride) {
         outgoingBody = JSON.stringify(bodyOverride);
@@ -277,6 +299,19 @@ async function forwardToNewApi(
         duplex: 'half',
     };
     const upstream = await fetch(url, init);
+    // 临时诊断(HDR_CAPTURE=1):记上游错误响应,与 [HDRCAP] 请求头按 tokFp+时间对应,
+    // 用于坐实客户报的 profileArn 到底哪些请求触发。查完撤。
+    if (process.env.HDR_CAPTURE === '1' && upstream.status >= 400) {
+        try {
+            const tokFp = (req.headers.get('authorization') || req.headers.get('x-api-key') || '')
+                .replace(/^Bearer\s+/i, '')
+                .slice(-4);
+            const errBody = (await upstream.clone().text()).slice(0, 400);
+            console.log('[HDRCAP-RESP]', JSON.stringify({ tokFp, status: upstream.status, body: errBody }));
+        } catch {
+            /* diagnostic only */
+        }
+    }
     return cap ? captureResponse(cap, upstream) : passthroughResponse(upstream);
 }
 
@@ -807,6 +842,60 @@ function fetchUpstreamJson(req: NextRequest, body: JsonRecord, path: string, sea
     });
 }
 
+/** 从 JSON body 的 image / image_url(字符串或数组:data URL / 外部 http URL)解出输入图字节。
+ *  复用 imageUrlToInlinePart(data URL 直解 / http URL fetch→base64 + SSRF 守门)。 */
+async function extractJsonInputImages(body: JsonRecord): Promise<Array<{ mimeType: string; data: string }>> {
+    const field = body.image ?? body.image_url;
+    const urls = Array.isArray(field) ? field : field ? [field] : [];
+    const out: Array<{ mimeType: string; data: string }> = [];
+    for (const u of urls) {
+        if (typeof u === 'string' && u.trim()) {
+            const part = await imageUrlToInlinePart(u);
+            if ('inlineData' in part) out.push(part.inlineData);
+        }
+    }
+    return out;
+}
+
+/** gpt-image 统一分流:按【有无输入图】把请求路由到上游 /images/edits(有图,multipart)或
+ *  /images/generations(无图,JSON),与客户调用的 path 无关 —— 文生图 / 图生图可发同一路径,
+ *  代理据输入图分流,并按需在 JSON↔multipart 间转换(保留 n / quality / output_format 等透传字段)。
+ *  两条入口:multipart 传 form、JSON 传 body(另一个传 null)。现有单独接口不受影响:
+ *  文生图(JSON 无图)→ generations、图生图(multipart 有图)→ edits,与今天行为一致。 */
+async function gptImageUpstream(
+    req: NextRequest,
+    form: FormData | null,
+    body: JsonRecord | null,
+    search: string,
+): Promise<Response> {
+    if (form) {
+        const hasImage = form.getAll('image').some((f) => f instanceof File && f.size > 0);
+        if (hasImage) return fetchUpstreamMultipart(req, form, '/images/edits', search);
+        // 无图 → 文生图 generations(上游要 JSON):把 form 文本字段搬进 JSON
+        const j: JsonRecord = {};
+        for (const [k, v] of form.entries()) if (typeof v === 'string') j[k] = v;
+        coerceImageIntFields(j);
+        return fetchUpstreamJson(req, j, '/images/generations', search);
+    }
+    const b = body ?? {};
+    const imgs = await extractJsonInputImages(b);
+    if (imgs.length === 0) return fetchUpstreamJson(req, b, '/images/generations', search);
+    // 有图 → 图生图 edits(上游要 multipart):JSON 标量字段搬进 form + 图片作为文件部件
+    const f = new FormData();
+    for (const [k, v] of Object.entries(b)) {
+        if (k === 'image' || k === 'image_url') continue;
+        if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') f.append(k, String(v));
+    }
+    for (const img of imgs) {
+        f.append(
+            'image',
+            new Blob([Buffer.from(img.data, 'base64')], { type: img.mimeType || 'image/png' }),
+            'image.png',
+        );
+    }
+    return fetchUpstreamMultipart(req, f, '/images/edits', search);
+}
+
 /** OpenAI gpt-image 用像素 size,不认 aspect_ratio / 比例串("16:9")—— 客户传比例时上游静默
  *  出方图(实测 aspect_ratio:"16:9" → 1254×1254 方图;size:"16:9" → 400)。把常见比例折成
  *  ~1MP 像素 size(zhiyunai 接受任意 WxH);表外比例按 1MP 等比折算、取整到 16。 */
@@ -854,6 +943,15 @@ function gptImageVariant(model: string): { base: string; size: string } | null {
     const size = m[2] === '1' ? '1024x1024' : m[2] === '2' ? '2048x2048' : '3840x2160';
     return { base: m[1], size };
 }
+/** OpenAI images 的整型字段(n / output_compression)—— 客户端可能发成字符串(`"n":"1"`),
+ *  或 multipart→JSON 转换把 form 值(恒字符串)搬进 JSON —— new-api 按 uint 解析 JSON 会 500
+ *  `cannot unmarshal string into Go struct field Alias.n of type uint`。就地把纯数字字符串强转成数字。 */
+function coerceImageIntFields(obj: JsonRecord): void {
+    for (const k of ['n', 'output_compression']) {
+        const v = obj[k];
+        if (typeof v === 'string' && /^\d+$/.test(v.trim())) obj[k] = Number(v.trim());
+    }
+}
 /** gpt-image JSON 规整:剥 response_format(zhiyunai 拒收 →400)+ 比例→像素 size(默认出方图)。 */
 function normalizeGptImageJson(body: JsonRecord): void {
     delete body.response_format;
@@ -871,6 +969,7 @@ function normalizeGptImageJson(body: JsonRecord): void {
         else delete body.size;
     }
     delete body.aspect_ratio;
+    coerceImageIntFields(body);
 }
 /** gpt-image multipart 规整(同 normalizeGptImageJson,作用于 FormData)。 */
 function normalizeGptImageForm(form: FormData): void {
@@ -952,6 +1051,8 @@ async function reshapeOpenAiImageResponse(
     prompt: string,
     requestedSize: string,
     cap: CaptureCtx | null,
+    req: NextRequest | null = null,
+    storeToUrl = false,
 ): Promise<NextResponse> {
     const text = await upstream.text();
     const headers = new Headers();
@@ -981,8 +1082,30 @@ async function reshapeOpenAiImageResponse(
     if (out.size === undefined && outSize) out.size = outSize;
     if (out.usage === undefined) out.usage = buildEstimatedUsage(prompt, outSize);
 
+    // opt-in(response_format:url):把 b64_json 存客户 OSS→平台 R2,响应改回 url(镜像 Gemini 生图)。
+    // 默认(无 response_format / b64_json)保持 b64_json 原样 —— OpenAI gpt-image 契约,不破坏现有客户。
+    let refs: string[] = [];
+    if (storeToUrl && req) {
+        const newData: JsonRecord[] = [];
+        for (const item of data) {
+            const b64 = typeof item.b64_json === 'string' ? item.b64_json : null;
+            if (!b64) {
+                newData.push(item);
+                continue;
+            }
+            const stored = await storeGeneratedImage(req, Buffer.from(b64, 'base64'), 'image/png', b64);
+            const d: JsonRecord = { ...item, url: stored.url };
+            delete d.b64_json;
+            newData.push(d);
+            if (stored.ossFallback) headers.set('X-Silkroadai-Oss-Fallback', 'yes');
+            if (stored.r2Fallback) headers.set('X-Silkroadai-R2-Fallback', 'yes');
+            refs = hostedRefs(stored);
+        }
+        out.data = newData;
+    }
+
     headers.set('content-type', 'application/json');
-    if (cap) captureJsonResponse(cap, 200, out);
+    if (cap) captureJsonResponse(cap, 200, out, refs);
     return new NextResponse(JSON.stringify(out), { status: 200, headers });
 }
 
@@ -1022,6 +1145,8 @@ async function handleImagesDalle(
     let responseFormat = 'url';
     let aspectRatio = '';
     let sizeRaw = '';
+    // gpt-image 默认返回 b64_json(OpenAI 契约);仅当客户显式 response_format:url 才存图床返 URL(opt-in)。
+    let wantHostedUrl = false;
     const inputParts: GeminiInputPart[] = [];
 
     try {
@@ -1030,6 +1155,7 @@ async function handleImagesDalle(
             model = String(form.get('model') ?? '');
             prompt = String(form.get('prompt') ?? '');
             responseFormat = String(form.get('response_format') ?? 'url') || 'url';
+            wantHostedUrl = String(form.get('response_format') ?? '').toLowerCase() === 'url';
             aspectRatio = String(form.get('aspect_ratio') ?? '');
             sizeRaw = String(form.get('size') ?? '');
             // model 非我们的 Gemini 生图 → 重建 FormData 透传(保留 gpt-image-2 等)
@@ -1048,9 +1174,21 @@ async function handleImagesDalle(
                         false,
                     );
                 try {
-                    const upstream = await fetchUpstreamMultipart(req, form, path, search);
-                    return await reshapeOpenAiImageResponse(upstream, prompt, sizeRaw, cap);
+                    // 统一入口:gpt-image 按有无输入图分流到上游 edits/generations(与调用 path 无关);
+                    // 其余非 Gemini 图片模型仍按调用 path 原样透传 multipart。
+                    const upstream = model.startsWith('gpt-image')
+                        ? await gptImageUpstream(req, form, null, search)
+                        : await fetchUpstreamMultipart(req, form, path, search);
+                    return await reshapeOpenAiImageResponse(
+                        upstream,
+                        prompt,
+                        sizeRaw,
+                        cap,
+                        req,
+                        model.startsWith('gpt-image') && wantHostedUrl,
+                    );
                 } catch (e) {
+                    if (e instanceof ImageUrlError) return imageError(e.message, 400, cap);
                     // 连不上 new-api 等网络异常:透出真实原因(不被外层 catch 兜底成笼统 400)
                     return imageError(
                         `upstream request failed: ${e instanceof Error ? e.message : String(e)}`,
@@ -1094,6 +1232,7 @@ async function handleImagesDalle(
             model = String(body.model ?? '');
             prompt = String(body.prompt ?? '');
             responseFormat = String(body.response_format ?? 'url') || 'url';
+            wantHostedUrl = String(body.response_format ?? '').toLowerCase() === 'url';
             aspectRatio = String(body.aspect_ratio ?? '');
             sizeRaw = String(body.size ?? '');
             if (cap) recordRequestBody(cap, JSON.stringify(body), model, false);
@@ -1105,9 +1244,20 @@ async function handleImagesDalle(
                     sizeRaw = typeof body.size === 'string' ? body.size : '';
                 }
                 try {
-                    const upstream = await fetchUpstreamJson(req, body, path, search);
-                    return await reshapeOpenAiImageResponse(upstream, prompt, sizeRaw, cap);
+                    // 统一入口:gpt-image body 里带 image/image_url → 图生图 edits;否则文生图 generations。
+                    const upstream = model.startsWith('gpt-image')
+                        ? await gptImageUpstream(req, null, body, search)
+                        : await fetchUpstreamJson(req, body, path, search);
+                    return await reshapeOpenAiImageResponse(
+                        upstream,
+                        prompt,
+                        sizeRaw,
+                        cap,
+                        req,
+                        model.startsWith('gpt-image') && wantHostedUrl,
+                    );
                 } catch (e) {
+                    if (e instanceof ImageUrlError) return imageError(e.message, 400, cap);
                     return imageError(
                         `upstream request failed: ${e instanceof Error ? e.message : String(e)}`,
                         502,
@@ -1396,6 +1546,53 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
     const { path: segments } = await params;
     const path = '/' + (segments ?? []).join('/');
     const search = req.nextUrl.search || '';
+
+    // 临时诊断(env HDR_CAPTURE=1,默认关):记 /messages + /chat/completions POST 的请求头
+    // 名+值(脱敏 auth),带账户 id + token 尾 4 位精确定位。用于抓客户端注入的异常头
+    // (如 kiro profileArn)。查完把 HDR_CAPTURE 撤掉。
+    if (
+        process.env.HDR_CAPTURE === '1' &&
+        req.method === 'POST' &&
+        (path === '/messages' || path === '/chat/completions')
+    ) {
+        const auth = req.headers.get('authorization') || req.headers.get('x-api-key') || '';
+        const tokFp = auth.replace(/^Bearer\s+/i, '').slice(-4);
+        const hdrs: Record<string, string> = {};
+        req.headers.forEach((v, k) => {
+            hdrs[k] = /^(authorization|x-api-key|cookie|proxy-authorization)$/i.test(k) ? '***' : v;
+        });
+        let uid: string | null = null;
+        try {
+            uid = await resolveUserIdFromAuthHeader(auth || null); // 尽力而为,失败不影响记头
+        } catch {
+            /* 头才是重点 */
+        }
+        // body 形状(护栏:content-length < 15MB 才解析,避免 OOM);区分失败 vs 成功请求的差异
+        let bodyInfo: Record<string, unknown>;
+        const clen = Number(req.headers.get('content-length') || '0');
+        if (clen > 0 && clen < 15_000_000) {
+            try {
+                const b = (await req.clone().json()) as Record<string, unknown>;
+                const msgs = Array.isArray(b.messages) ? (b.messages as unknown[]) : [];
+                const hasToolResult = msgs.some((m) => {
+                    const c = (m as Record<string, unknown>)?.content;
+                    return Array.isArray(c) && c.some((x) => (x as Record<string, unknown>)?.type === 'tool_result');
+                });
+                bodyInfo = {
+                    model: b.model,
+                    hasTools: Array.isArray(b.tools) && b.tools.length > 0,
+                    hasToolResult,
+                    numMsgs: msgs.length,
+                    beta: hdrs['anthropic-beta'] ?? null,
+                };
+            } catch {
+                bodyInfo = { parseErr: true };
+            }
+        } else {
+            bodyInfo = { skipped: `clen=${clen}` };
+        }
+        console.log('[HDRCAP]', JSON.stringify({ uid, tokFp, path, hdrs, bodyInfo }));
+    }
 
     // 余额查询拦截(在 capture 之前 return:GET 余额查询无需记录)。portal 给客户的 key 是
     // unlimited_quota(预算在账户级 user.quota,gotcha #12),new-api 标准 billing 端点只看
