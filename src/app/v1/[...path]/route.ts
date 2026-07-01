@@ -270,6 +270,14 @@ async function forwardToNewApi(
     //   请求体捕获由 call site 用【原始】body 记(clamp 分支要存未钳的),这里不记。
     // - bodyOverride null(出口 B:messages/responses/embeddings…)→ 默认 req.body
     //   stream 直传(**开关 off 字节级不变**);仅捕获激活时才 buffer 出来记 + 转发该串。
+    // 兼容:部分客户端(图片生成 SDK 等)把 `n`(生成数量)发成字符串 "1" 而非数字。
+    // new-api 的图片/chat 请求结构体要 uint,会报 400/500
+    // `json: cannot unmarshal string into Go struct field Alias.n of type uint`。
+    // 这里把纯数字字符串的 n 转成数字再转发(只在已解析出 body 的 JSON 透传路径生效)。
+    if (bodyOverride && typeof bodyOverride.n === 'string' && /^\d+$/.test(bodyOverride.n.trim())) {
+        bodyOverride = { ...bodyOverride, n: parseInt(bodyOverride.n.trim(), 10) };
+    }
+
     let outgoingBody: BodyInit | undefined;
     if (bodyOverride) {
         outgoingBody = JSON.stringify(bodyOverride);

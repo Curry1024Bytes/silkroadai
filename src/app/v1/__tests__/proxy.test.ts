@@ -2396,3 +2396,39 @@ describe('/v1 proxy — PROXY_STRIP_REQUEST_HEADERS(可配置剥离请求头)', 
         expect(fwd.get('x-kiro-profilearn')).toBe('arn:xxx'); // 不剥
     });
 });
+
+describe('/v1 proxy — n 字符串→数字兼容(修 Alias.n unmarshal)', () => {
+    it('图片生成透传:n:"2" → 转成数字 2', async () => {
+        mockFetch.mockResolvedValueOnce(
+            new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } }),
+        );
+        await POST(
+            makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'a cat', n: '2' } }),
+            ctx('images', 'generations'),
+        );
+        const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        const fwd = JSON.parse(String(init.body)) as { n: unknown };
+        expect(fwd.n).toBe(2);
+        expect(typeof fwd.n).toBe('number');
+    });
+
+    it('n 本就是数字 → 不动;n 非数字串 → 不转(留给 new-api 报错)', async () => {
+        mockFetch.mockResolvedValue(
+            new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } }),
+        );
+        await POST(
+            makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x', n: 3 } }),
+            ctx('images', 'generations'),
+        );
+        expect(
+            (JSON.parse(String((mockFetch.mock.calls[0] as [string, RequestInit])[1].body)) as { n: unknown }).n,
+        ).toBe(3);
+        await POST(
+            makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x', n: 'abc' } }),
+            ctx('images', 'generations'),
+        );
+        expect(
+            (JSON.parse(String((mockFetch.mock.calls[1] as [string, RequestInit])[1].body)) as { n: unknown }).n,
+        ).toBe('abc');
+    });
+});
