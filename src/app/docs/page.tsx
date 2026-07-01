@@ -1366,7 +1366,8 @@ curl ${OPENAI_BASE}/images/edits \\
 
                     <div className="mt-1 mb-3 rounded-lg border-l-4 border-brand-accent bg-paper-muted px-4 py-3 text-sm text-ink">
                         💰 <strong className="text-navy">计价:按 token 计费,¥1 = 官方 $1</strong> —— 按官方 gpt-image
-                        的真实 token 用量结算(官方价:输入 $5 / 百万 token、输出 $30 / 百万 token)。
+                        的真实 token 用量结算(官方价:输入 $5 / 图像输入 $8 / 输出 $30,每百万
+                        token;图生图的参考图算图像输入)。
                         <strong className="text-navy">
                             成本主要由{' '}
                             <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
@@ -1465,16 +1466,9 @@ curl ${OPENAI_BASE}/images/edits \\
                                     </td>
                                 </tr>
                                 <tr className="border-b border-brand-border">
-                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">background</td>
-                                    <td className="px-4 py-3 text-ink align-top">—</td>
-                                    <td className="px-4 py-3 text-ink">
-                                        transparent / opaque / auto(透明背景用 transparent)
-                                    </td>
-                                </tr>
-                                <tr className="border-b border-brand-border">
                                     <td className="px-4 py-3 font-mono text-xs text-navy align-top">output_format</td>
                                     <td className="px-4 py-3 text-ink align-top">—</td>
-                                    <td className="px-4 py-3 text-ink">png(默认)/ jpeg / webp</td>
+                                    <td className="px-4 py-3 text-ink">png(默认)/ jpeg(webp 暂不支持)</td>
                                 </tr>
                                 <tr className="border-b border-brand-border">
                                     <td className="px-4 py-3 font-mono text-xs text-navy align-top">n</td>
@@ -1562,13 +1556,6 @@ fs.writeFileSync("out.png", Buffer.from(resp.data[0].b64_json, "base64"));`}
                                     <td className="px-4 py-3 font-mono text-xs text-navy align-top">image</td>
                                     <td className="px-4 py-3 text-ink align-top">✓</td>
                                     <td className="px-4 py-3 text-ink">原图文件;可重复传多张参考图</td>
-                                </tr>
-                                <tr className="border-b border-brand-border">
-                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">input_fidelity</td>
-                                    <td className="px-4 py-3 text-ink align-top">—</td>
-                                    <td className="px-4 py-3 text-ink">
-                                        low / high —— high 更忠于原图细节(输入 token 略增)
-                                    </td>
                                 </tr>
                                 <tr>
                                     <td className="px-4 py-3 font-mono text-xs text-navy align-top">quality / size</td>
