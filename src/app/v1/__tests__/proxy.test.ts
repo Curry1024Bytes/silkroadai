@@ -1758,6 +1758,78 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
         expect(data.error.message).toContain('ECONNREFUSED');
         expect(data.error.type).toBe('invalid_request_error');
     });
+
+    // ── 统一入口:文生图 + 图生图合并到同一路径,代理按【有无输入图】分流到上游,
+    //    与现有单独接口并存;现有用户(path 与图存在性一致)行为不变。 ──
+    function imageJson200(): Response {
+        return new Response(JSON.stringify({ created: 1, data: [{ b64_json: 'QUJD', size: '1024x1024' }] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+        });
+    }
+
+    it('统一入口:multipart 带图发到 /images/generations → 代理分流到上游 edits', async () => {
+        mockFetch.mockResolvedValueOnce(imageJson200());
+        const form = new FormData();
+        form.append('model', 'gpt-image-2');
+        form.append('prompt', '改成夜景');
+        form.append('image', new File([new Uint8Array([1, 2, 3])], 'in.png', { type: 'image/png' }));
+        const req = new NextRequest('https://ai.silkroadai.io/v1/images/generations', { method: 'POST', body: form });
+        const res = await POST(req, ctx('images', 'generations'));
+        expect(res.status).toBe(200);
+        const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(url).toBe(`${NEWAPI_BASE}/v1/images/edits`); // 有图 → edits(客户发的是 generations)
+        expect(init.body).toBeInstanceOf(FormData);
+    });
+
+    it('统一入口:JSON 无图发到 /images/edits → 代理分流到上游 generations', async () => {
+        mockFetch.mockResolvedValueOnce(imageJson200());
+        const res = await POST(
+            makeReq('/images/edits', { body: { model: 'gpt-image-2', prompt: 'a red apple' } }),
+            ctx('images', 'edits'),
+        );
+        expect(res.status).toBe(200);
+        const [url] = mockFetch.mock.calls[0] as [string];
+        expect(url).toBe(`${NEWAPI_BASE}/v1/images/generations`); // 无图 → generations(客户发的是 edits)
+    });
+
+    it('统一入口:JSON 带 image(data URL)发到 /images/generations → 转 multipart 走上游 edits', async () => {
+        mockFetch.mockResolvedValueOnce(imageJson200());
+        const dataUrl = `data:image/png;base64,${Buffer.from([1, 2, 3]).toString('base64')}`;
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2', prompt: '给猫戴帽子', image: dataUrl },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(url).toBe(`${NEWAPI_BASE}/v1/images/edits`); // JSON 有图 → 转 multipart 走 edits
+        expect(init.body).toBeInstanceOf(FormData);
+        const f = init.body as FormData;
+        expect(f.get('model')).toBe('gpt-image-2');
+        expect(f.get('prompt')).toBe('给猫戴帽子');
+        expect(f.getAll('image').length).toBe(1); // image_url 已转成文件部件
+    });
+
+    it('回归:现有单独接口路径 1:1 —— 文生图 JSON→generations、图生图 multipart→edits', async () => {
+        mockFetch.mockResolvedValueOnce(imageJson200());
+        await POST(
+            makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'a red apple' } }),
+            ctx('images', 'generations'),
+        );
+        expect((mockFetch.mock.calls[0] as [string])[0]).toBe(`${NEWAPI_BASE}/v1/images/generations`);
+        mockFetch.mockResolvedValueOnce(imageJson200());
+        const form = new FormData();
+        form.append('model', 'gpt-image-2');
+        form.append('prompt', '改图');
+        form.append('image', new File([new Uint8Array([1, 2, 3])], 'in.png', { type: 'image/png' }));
+        await POST(
+            new NextRequest('https://ai.silkroadai.io/v1/images/edits', { method: 'POST', body: form }),
+            ctx('images', 'edits'),
+        );
+        expect((mockFetch.mock.calls[1] as [string])[0]).toBe(`${NEWAPI_BASE}/v1/images/edits`);
+    });
 });
 
 describe('/v1 proxy — video poll customer-OSS rehost', () => {

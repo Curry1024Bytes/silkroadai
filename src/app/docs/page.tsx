@@ -1606,6 +1606,32 @@ with open("edited.png", "wb") as f:
                     </div>
 
                     <div className="mt-3 mb-3 rounded-lg border-l-4 border-brand-accent bg-paper-muted px-4 py-3 text-sm text-ink">
+                        🔀 <strong className="text-navy">文生图 / 图生图 可合并为一个接口</strong> ——
+                        不想分两条路径的话,发到{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            /v1/images/generations
+                        </code>{' '}
+                        或{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            /v1/images/edits
+                        </code>{' '}
+                        任意一个都行,平台按<strong className="text-navy">有没有带参考图</strong>自动分流:带图(multipart
+                        的{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            image
+                        </code>{' '}
+                        字段,或 JSON 里{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            image
+                        </code>{' '}
+                        /{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            image_url
+                        </code>{' '}
+                        传 data URL)→ 走图生图;只有 prompt → 走文生图。原来的两个独立接口照常可用、行为不变。
+                    </div>
+
+                    <div className="mt-3 mb-3 rounded-lg border-l-4 border-brand-accent bg-paper-muted px-4 py-3 text-sm text-ink">
                         ⏱️ <strong className="text-navy">4K(size=3840x2160)又慢又大</strong>:单张约 7–8MB、生成最长约
                         120s。接入务必把<strong className="text-navy">超时设到 ≥ 180s</strong>{' '}
                         并对偶发断连重试一次;不强求 4K 时用默认 size 更快更省;4K 配 quality=high 的 token 成本最高。

@@ -834,6 +834,59 @@ function fetchUpstreamJson(req: NextRequest, body: JsonRecord, path: string, sea
     });
 }
 
+/** 从 JSON body 的 image / image_url(字符串或数组:data URL / 外部 http URL)解出输入图字节。
+ *  复用 imageUrlToInlinePart(data URL 直解 / http URL fetch→base64 + SSRF 守门)。 */
+async function extractJsonInputImages(body: JsonRecord): Promise<Array<{ mimeType: string; data: string }>> {
+    const field = body.image ?? body.image_url;
+    const urls = Array.isArray(field) ? field : field ? [field] : [];
+    const out: Array<{ mimeType: string; data: string }> = [];
+    for (const u of urls) {
+        if (typeof u === 'string' && u.trim()) {
+            const part = await imageUrlToInlinePart(u);
+            if ('inlineData' in part) out.push(part.inlineData);
+        }
+    }
+    return out;
+}
+
+/** gpt-image 统一分流:按【有无输入图】把请求路由到上游 /images/edits(有图,multipart)或
+ *  /images/generations(无图,JSON),与客户调用的 path 无关 —— 文生图 / 图生图可发同一路径,
+ *  代理据输入图分流,并按需在 JSON↔multipart 间转换(保留 n / quality / output_format 等透传字段)。
+ *  两条入口:multipart 传 form、JSON 传 body(另一个传 null)。现有单独接口不受影响:
+ *  文生图(JSON 无图)→ generations、图生图(multipart 有图)→ edits,与今天行为一致。 */
+async function gptImageUpstream(
+    req: NextRequest,
+    form: FormData | null,
+    body: JsonRecord | null,
+    search: string,
+): Promise<Response> {
+    if (form) {
+        const hasImage = form.getAll('image').some((f) => f instanceof File && f.size > 0);
+        if (hasImage) return fetchUpstreamMultipart(req, form, '/images/edits', search);
+        // 无图 → 文生图 generations(上游要 JSON):把 form 文本字段搬进 JSON
+        const j: JsonRecord = {};
+        for (const [k, v] of form.entries()) if (typeof v === 'string') j[k] = v;
+        return fetchUpstreamJson(req, j, '/images/generations', search);
+    }
+    const b = body ?? {};
+    const imgs = await extractJsonInputImages(b);
+    if (imgs.length === 0) return fetchUpstreamJson(req, b, '/images/generations', search);
+    // 有图 → 图生图 edits(上游要 multipart):JSON 标量字段搬进 form + 图片作为文件部件
+    const f = new FormData();
+    for (const [k, v] of Object.entries(b)) {
+        if (k === 'image' || k === 'image_url') continue;
+        if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') f.append(k, String(v));
+    }
+    for (const img of imgs) {
+        f.append(
+            'image',
+            new Blob([Buffer.from(img.data, 'base64')], { type: img.mimeType || 'image/png' }),
+            'image.png',
+        );
+    }
+    return fetchUpstreamMultipart(req, f, '/images/edits', search);
+}
+
 /** OpenAI gpt-image 用像素 size,不认 aspect_ratio / 比例串("16:9")—— 客户传比例时上游静默
  *  出方图(实测 aspect_ratio:"16:9" → 1254×1254 方图;size:"16:9" → 400)。把常见比例折成
  *  ~1MP 像素 size(zhiyunai 接受任意 WxH);表外比例按 1MP 等比折算、取整到 16。 */
@@ -1075,9 +1128,14 @@ async function handleImagesDalle(
                         false,
                     );
                 try {
-                    const upstream = await fetchUpstreamMultipart(req, form, path, search);
+                    // 统一入口:gpt-image 按有无输入图分流到上游 edits/generations(与调用 path 无关);
+                    // 其余非 Gemini 图片模型仍按调用 path 原样透传 multipart。
+                    const upstream = model.startsWith('gpt-image')
+                        ? await gptImageUpstream(req, form, null, search)
+                        : await fetchUpstreamMultipart(req, form, path, search);
                     return await reshapeOpenAiImageResponse(upstream, prompt, sizeRaw, cap);
                 } catch (e) {
+                    if (e instanceof ImageUrlError) return imageError(e.message, 400, cap);
                     // 连不上 new-api 等网络异常:透出真实原因(不被外层 catch 兜底成笼统 400)
                     return imageError(
                         `upstream request failed: ${e instanceof Error ? e.message : String(e)}`,
@@ -1132,9 +1190,13 @@ async function handleImagesDalle(
                     sizeRaw = typeof body.size === 'string' ? body.size : '';
                 }
                 try {
-                    const upstream = await fetchUpstreamJson(req, body, path, search);
+                    // 统一入口:gpt-image body 里带 image/image_url → 图生图 edits;否则文生图 generations。
+                    const upstream = model.startsWith('gpt-image')
+                        ? await gptImageUpstream(req, null, body, search)
+                        : await fetchUpstreamJson(req, body, path, search);
                     return await reshapeOpenAiImageResponse(upstream, prompt, sizeRaw, cap);
                 } catch (e) {
+                    if (e instanceof ImageUrlError) return imageError(e.message, 400, cap);
                     return imageError(
                         `upstream request failed: ${e instanceof Error ? e.message : String(e)}`,
                         502,
