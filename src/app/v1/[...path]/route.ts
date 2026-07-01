@@ -291,6 +291,19 @@ async function forwardToNewApi(
         duplex: 'half',
     };
     const upstream = await fetch(url, init);
+    // 临时诊断(HDR_CAPTURE=1):记上游错误响应,与 [HDRCAP] 请求头按 tokFp+时间对应,
+    // 用于坐实客户报的 profileArn 到底哪些请求触发。查完撤。
+    if (process.env.HDR_CAPTURE === '1' && upstream.status >= 400) {
+        try {
+            const tokFp = (req.headers.get('authorization') || req.headers.get('x-api-key') || '')
+                .replace(/^Bearer\s+/i, '')
+                .slice(-4);
+            const errBody = (await upstream.clone().text()).slice(0, 400);
+            console.log('[HDRCAP-RESP]', JSON.stringify({ tokFp, status: upstream.status, body: errBody }));
+        } catch {
+            /* diagnostic only */
+        }
+    }
     return cap ? captureResponse(cap, upstream) : passthroughResponse(upstream);
 }
 
@@ -1431,7 +1444,31 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
         } catch {
             /* 头才是重点 */
         }
-        console.log('[HDRCAP]', JSON.stringify({ uid, tokFp, path, hdrs }));
+        // body 形状(护栏:content-length < 15MB 才解析,避免 OOM);区分失败 vs 成功请求的差异
+        let bodyInfo: Record<string, unknown>;
+        const clen = Number(req.headers.get('content-length') || '0');
+        if (clen > 0 && clen < 15_000_000) {
+            try {
+                const b = (await req.clone().json()) as Record<string, unknown>;
+                const msgs = Array.isArray(b.messages) ? (b.messages as unknown[]) : [];
+                const hasToolResult = msgs.some((m) => {
+                    const c = (m as Record<string, unknown>)?.content;
+                    return Array.isArray(c) && c.some((x) => (x as Record<string, unknown>)?.type === 'tool_result');
+                });
+                bodyInfo = {
+                    model: b.model,
+                    hasTools: Array.isArray(b.tools) && b.tools.length > 0,
+                    hasToolResult,
+                    numMsgs: msgs.length,
+                    beta: hdrs['anthropic-beta'] ?? null,
+                };
+            } catch {
+                bodyInfo = { parseErr: true };
+            }
+        } else {
+            bodyInfo = { skipped: `clen=${clen}` };
+        }
+        console.log('[HDRCAP]', JSON.stringify({ uid, tokFp, path, hdrs, bodyInfo }));
     }
 
     // 余额查询拦截(在 capture 之前 return:GET 余额查询无需记录)。portal 给客户的 key 是
