@@ -1830,6 +1830,35 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
         );
         expect((mockFetch.mock.calls[1] as [string])[0]).toBe(`${NEWAPI_BASE}/v1/images/edits`);
     });
+
+    // ── 整型字段 n 强转:客户端发 "n":"1"(字符串)或 multipart 无图转 JSON 时 n 恒字符串,
+    //    new-api 按 uint 解析 JSON 会 500 `cannot unmarshal string into ... n of type uint`。──
+    it('n="2"(字符串)JSON generations → 强转成数字 2(避免 new-api uint unmarshal 500)', async () => {
+        mockFetch.mockResolvedValueOnce(imageJson200());
+        await POST(
+            makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x', n: '2' } }),
+            ctx('images', 'generations'),
+        );
+        const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        const sent = JSON.parse(init.body as string) as { n: unknown };
+        expect(sent.n).toBe(2); // 数字,不是 "2"
+    });
+
+    it('multipart 无图带 n → 转 JSON generations 时 n 强转成数字(#192 回归修复)', async () => {
+        mockFetch.mockResolvedValueOnce(imageJson200());
+        const form = new FormData();
+        form.append('model', 'gpt-image-2');
+        form.append('prompt', 'x');
+        form.append('n', '3');
+        await POST(
+            new NextRequest('https://ai.silkroadai.io/v1/images/generations', { method: 'POST', body: form }),
+            ctx('images', 'generations'),
+        );
+        const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(url).toBe(`${NEWAPI_BASE}/v1/images/generations`);
+        const sent = JSON.parse(init.body as string) as { n: unknown };
+        expect(sent.n).toBe(3); // 数字
+    });
 });
 
 describe('/v1 proxy — video poll customer-OSS rehost', () => {

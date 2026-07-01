@@ -866,6 +866,7 @@ async function gptImageUpstream(
         // 无图 → 文生图 generations(上游要 JSON):把 form 文本字段搬进 JSON
         const j: JsonRecord = {};
         for (const [k, v] of form.entries()) if (typeof v === 'string') j[k] = v;
+        coerceImageIntFields(j);
         return fetchUpstreamJson(req, j, '/images/generations', search);
     }
     const b = body ?? {};
@@ -934,6 +935,15 @@ function gptImageVariant(model: string): { base: string; size: string } | null {
     const size = m[2] === '1' ? '1024x1024' : m[2] === '2' ? '2048x2048' : '3840x2160';
     return { base: m[1], size };
 }
+/** OpenAI images 的整型字段(n / output_compression)—— 客户端可能发成字符串(`"n":"1"`),
+ *  或 multipart→JSON 转换把 form 值(恒字符串)搬进 JSON —— new-api 按 uint 解析 JSON 会 500
+ *  `cannot unmarshal string into Go struct field Alias.n of type uint`。就地把纯数字字符串强转成数字。 */
+function coerceImageIntFields(obj: JsonRecord): void {
+    for (const k of ['n', 'output_compression']) {
+        const v = obj[k];
+        if (typeof v === 'string' && /^\d+$/.test(v.trim())) obj[k] = Number(v.trim());
+    }
+}
 /** gpt-image JSON 规整:剥 response_format(zhiyunai 拒收 →400)+ 比例→像素 size(默认出方图)。 */
 function normalizeGptImageJson(body: JsonRecord): void {
     delete body.response_format;
@@ -951,6 +961,7 @@ function normalizeGptImageJson(body: JsonRecord): void {
         else delete body.size;
     }
     delete body.aspect_ratio;
+    coerceImageIntFields(body);
 }
 /** gpt-image multipart 规整(同 normalizeGptImageJson,作用于 FormData)。 */
 function normalizeGptImageForm(form: FormData): void {
