@@ -2211,3 +2211,42 @@ describe('/v1 proxy — 余额查询(billing 拦截 + /balance)', () => {
         expect(res.status).toBe(503);
     });
 });
+
+describe('/v1 proxy — PROXY_STRIP_REQUEST_HEADERS(可配置剥离请求头)', () => {
+    it('剥掉 env 列出的头、保留其余、不动 auth(修 kiro profileArn)', async () => {
+        process.env.PROXY_STRIP_REQUEST_HEADERS = 'x-kiro-profilearn, x-amz-foo';
+        mockFetch.mockResolvedValueOnce(
+            new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } }),
+        );
+        await POST(
+            makeReq('/messages', {
+                body: { model: 'claude-opus-4-8', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] },
+                headers: { authorization: 'Bearer sk-test', 'x-kiro-profilearn': 'arn:xxx', 'x-keep': 'yes' },
+            }),
+            ctx('messages'),
+        );
+        const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        const fwd = init.headers as Headers;
+        expect(fwd.has('x-kiro-profilearn')).toBe(false); // 剥掉
+        expect(fwd.get('x-keep')).toBe('yes'); // 保留
+        expect(fwd.get('authorization')).toBe('Bearer sk-test'); // auth 不动
+        delete process.env.PROXY_STRIP_REQUEST_HEADERS;
+    });
+
+    it('未设 env → 不剥任何自定义头(默认行为不变)', async () => {
+        delete process.env.PROXY_STRIP_REQUEST_HEADERS;
+        mockFetch.mockResolvedValueOnce(
+            new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } }),
+        );
+        await POST(
+            makeReq('/messages', {
+                body: { model: 'claude-opus-4-8', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] },
+                headers: { authorization: 'Bearer sk-test', 'x-kiro-profilearn': 'arn:xxx' },
+            }),
+            ctx('messages'),
+        );
+        const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        const fwd = init.headers as Headers;
+        expect(fwd.get('x-kiro-profilearn')).toBe('arn:xxx'); // 不剥
+    });
+});

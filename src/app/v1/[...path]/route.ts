@@ -190,10 +190,24 @@ const STRIP_RESPONSE_HEADERS = new Set(['content-length', 'content-encoding', 't
 
 type JsonRecord = Record<string, unknown>;
 
+/** 运行时可配置的额外剥离请求头(env `PROXY_STRIP_REQUEST_HEADERS`,逗号分隔,小写比较)。
+ *  挡掉客户端注入、会干扰上游的头(如 kiro/Bedrock 上游因客户端带 profileArn 相关头而报
+ *  "profileArn is required")。动态读 env → 改 .env + 重启即生效,无需重构建。 */
+function extraStripRequestHeaders(): Set<string> {
+    return new Set(
+        (process.env.PROXY_STRIP_REQUEST_HEADERS || '')
+            .split(',')
+            .map((h) => h.trim().toLowerCase())
+            .filter(Boolean),
+    );
+}
+
 function forwardHeaders(req: NextRequest): Headers {
+    const extra = extraStripRequestHeaders();
     const headers = new Headers();
     req.headers.forEach((value, key) => {
-        if (!HOP_BY_HOP_REQUEST_HEADERS.has(key.toLowerCase())) headers.set(key, value);
+        const lk = key.toLowerCase();
+        if (!HOP_BY_HOP_REQUEST_HEADERS.has(lk) && !extra.has(lk)) headers.set(key, value);
     });
     return headers;
 }
@@ -1396,6 +1410,29 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
     const { path: segments } = await params;
     const path = '/' + (segments ?? []).join('/');
     const search = req.nextUrl.search || '';
+
+    // 临时诊断(env HDR_CAPTURE=1,默认关):记 /messages + /chat/completions POST 的请求头
+    // 名+值(脱敏 auth),带账户 id + token 尾 4 位精确定位。用于抓客户端注入的异常头
+    // (如 kiro profileArn)。查完把 HDR_CAPTURE 撤掉。
+    if (
+        process.env.HDR_CAPTURE === '1' &&
+        req.method === 'POST' &&
+        (path === '/messages' || path === '/chat/completions')
+    ) {
+        const auth = req.headers.get('authorization') || req.headers.get('x-api-key') || '';
+        const tokFp = auth.replace(/^Bearer\s+/i, '').slice(-4);
+        const hdrs: Record<string, string> = {};
+        req.headers.forEach((v, k) => {
+            hdrs[k] = /^(authorization|x-api-key|cookie|proxy-authorization)$/i.test(k) ? '***' : v;
+        });
+        let uid: string | null = null;
+        try {
+            uid = await resolveUserIdFromAuthHeader(auth || null); // 尽力而为,失败不影响记头
+        } catch {
+            /* 头才是重点 */
+        }
+        console.log('[HDRCAP]', JSON.stringify({ uid, tokFp, path, hdrs }));
+    }
 
     // 余额查询拦截(在 capture 之前 return:GET 余额查询无需记录)。portal 给客户的 key 是
     // unlimited_quota(预算在账户级 user.quota,gotcha #12),new-api 标准 billing 端点只看
