@@ -857,6 +857,17 @@ async function extractJsonInputImages(body: JsonRecord): Promise<Array<{ mimeTyp
     return out;
 }
 
+/** OpenAI Images 的输入图字段:单图用 `image`,多图 SDK 用 `image[]`(个别客户端还用 image[0]/image[1])。
+ *  只认 `image` 会把「用 image[] 的客户端 / 多图 edits」的参考图全漏掉 → 被当文生图重新画一张
+ *  (#192 hasImage 回归,客户报「不识图、出图跟输入没关系」)。这里把这些字段名变体的图文件都收上来。 */
+function formImageFiles(form: FormData): File[] {
+    const files: File[] = [];
+    for (const [k, v] of form.entries()) {
+        if (/^image(\[\d*\])?$/.test(k) && v instanceof File && v.size > 0) files.push(v);
+    }
+    return files;
+}
+
 /** gpt-image 统一分流:按【有无输入图】把请求路由到上游 /images/edits(有图,multipart)或
  *  /images/generations(无图,JSON),与客户调用的 path 无关 —— 文生图 / 图生图可发同一路径,
  *  代理据输入图分流,并按需在 JSON↔multipart 间转换(保留 n / quality / output_format 等透传字段)。
@@ -869,7 +880,7 @@ async function gptImageUpstream(
     search: string,
 ): Promise<Response> {
     if (form) {
-        const hasImage = form.getAll('image').some((f) => f instanceof File && f.size > 0);
+        const hasImage = formImageFiles(form).length > 0;
         if (hasImage) return fetchUpstreamMultipart(req, form, '/images/edits', search);
         // 无图 → 文生图 generations(上游要 JSON):把 form 文本字段搬进 JSON
         const j: JsonRecord = {};
@@ -1197,7 +1208,7 @@ async function handleImagesDalle(
                     );
                 }
             }
-            for (const file of form.getAll('image')) {
+            for (const file of formImageFiles(form)) {
                 if (file instanceof File && file.size > 0) {
                     const buf = Buffer.from(await file.arrayBuffer());
                     if (buf.byteLength > IMAGE_FETCH_MAX_BYTES) {
