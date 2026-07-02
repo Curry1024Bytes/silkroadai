@@ -17,6 +17,7 @@
 import 'server-only';
 import { DeleteObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { decryptSecret } from './encryption';
+import { storageRequestHandler } from '@/lib/storage/proxy-request-handler';
 
 /** 结构化的 OSS 配置(= prisma UserOssConfig 的子集,解耦生成的 client 类型) */
 export interface OssConfigLike {
@@ -41,6 +42,8 @@ export function getS3ClientForConfig(config: OssConfigLike): S3Client {
             secretAccessKey: decryptSecret(config.secret_access_key_encrypted),
         },
         forcePathStyle: config.provider === 's3-custom',
+        // 同 r2/client:出站可选走代理 + 短超时(HE 线路故障绕行 + 快速降级)。
+        requestHandler: storageRequestHandler(),
     });
 }
 

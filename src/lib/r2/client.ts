@@ -18,6 +18,7 @@
  */
 import 'server-only';
 import { DeleteObjectCommand, DeleteObjectsCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { storageRequestHandler } from '@/lib/storage/proxy-request-handler';
 
 interface R2EnvSnapshot {
     accountId: string;
@@ -63,6 +64,9 @@ function client(): S3Client {
             },
             // R2 doesn't need / use SigV4 path-style + virtual-host
             // distinctions; the SDK default works.
+            // 出站可选走 SOCKS5 代理 + 短超时(2026-07-01 HE 线路故障:存储 endpoint
+            // 直连超时,经代理绕行;短超时让上层三级降级不被拖垮)。
+            requestHandler: storageRequestHandler(),
         });
         _envSig = sig;
     }
