@@ -1808,6 +1808,18 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
         expect((mockFetch.mock.calls[0] as [string])[0]).toBe(`${NEWAPI_BASE}/v1/images/generations`);
     });
 
+    it('加固:非标准字段名的图文件(如 file)也识别为图 → 走 edits(不再靠字段名黑名单)', async () => {
+        mockFetch.mockResolvedValueOnce(imageJson200());
+        const form = new FormData();
+        form.append('model', 'gpt-image-2');
+        form.append('prompt', '改图');
+        form.append('file', new File([new Uint8Array([1, 2, 3])], 'ref.png', { type: 'image/png' })); // 非 image/image[] 字段名
+        const req = new NextRequest('https://ai.silkroadai.io/v1/images/generations', { method: 'POST', body: form });
+        const res = await POST(req, ctx('images', 'generations'));
+        expect(res.status).toBe(200);
+        expect((mockFetch.mock.calls[0] as [string])[0]).toBe(`${NEWAPI_BASE}/v1/images/edits`); // 有文件 → edits
+    });
+
     it('统一入口:JSON 无图发到 /images/edits → 代理分流到上游 generations', async () => {
         mockFetch.mockResolvedValueOnce(imageJson200());
         const res = await POST(

@@ -857,13 +857,15 @@ async function extractJsonInputImages(body: JsonRecord): Promise<Array<{ mimeTyp
     return out;
 }
 
-/** OpenAI Images 的输入图字段:单图用 `image`,多图 SDK 用 `image[]`(个别客户端还用 image[0]/image[1])。
- *  只认 `image` 会把「用 image[] 的客户端 / 多图 edits」的参考图全漏掉 → 被当文生图重新画一张
- *  (#192 hasImage 回归,客户报「不识图、出图跟输入没关系」)。这里把这些字段名变体的图文件都收上来。 */
+/** 收集 multipart 里的所有输入图文件 —— 按【是不是文件】而不是【字段名】判定。
+ *  历史上只认 `image`,后来加了 `image[]`/`image[N]`(#192→#198,客户各种 SDK 的多图约定各不相同,
+ *  漏一个就把参考图当文生图重画、客户报「不识图」)。字段名黑名单永远追不完,直接收所有文件部件:
+ *  images 接口里带文件 = 必然是要改图(edits),不存在「传了文件却当文生图忽略」的合法场景。
+ *  gpt-image 分支照常把整个 form 原样转发给 /images/edits(字段名不变,上游自己认 image/mask 等)。 */
 function formImageFiles(form: FormData): File[] {
     const files: File[] = [];
-    for (const [k, v] of form.entries()) {
-        if (/^image(\[\d*\])?$/.test(k) && v instanceof File && v.size > 0) files.push(v);
+    for (const v of form.values()) {
+        if (v instanceof File && v.size > 0) files.push(v);
     }
     return files;
 }
