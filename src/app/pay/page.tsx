@@ -78,6 +78,12 @@ export default async function PayPage({
                  *  lock,不依赖 banner 状态。 */}
                 {user.first_recharge_bonus_granted === false && <FirstRechargeBonusBanner />}
                 <PayForm enabledPaymentTypes={enabledTypes} />
+                {/* 充值失败求助入口:第三方支付网关偶发超时(易支付网关侧问题),
+                 *  给客户一个人工兜底渠道。文案与微信号按 operator 提供的原样展示,
+                 *  微信号 select-all 方便一键复制。 */}
+                <p className="m-0 mt-6 pt-4 border-t border-brand-border text-center text-xs text-muted-ink">
+                    充值遇到问题?请联系微信客服 <span className="font-medium text-navy select-all">lambda_yyh充值</span>
+                </p>
             </Card>
         </main>
     );

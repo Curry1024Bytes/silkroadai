@@ -19,7 +19,8 @@
 export type CallResult = 'success' | 'error';
 
 export function callResult(type: number): CallResult {
-    return type === 5 ? 'error' : 'success';
+    // 5 = new-api 同步错误;6 = 视频异步任务失败(已退款,dashboard 关联后标成此类型)。
+    return type === 5 || type === 6 ? 'error' : 'success';
 }
 
 /**

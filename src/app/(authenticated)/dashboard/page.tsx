@@ -41,6 +41,7 @@ import { PeriodTabs } from './period-tabs';
 import { BalanceAlertForm } from './balance-alert-form';
 import { ModelConsumptionChart } from './model-consumption-chart';
 import { CallDetailTable, type CallRow } from './call-detail-table';
+import { matchFailedVideoConsumes } from './failed-video-match';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: '概览 — Silk Road AI' };
@@ -52,6 +53,7 @@ export const metadata = { title: '概览 — Silk Road AI' };
  *  at CALLS_CAP — paginated client-side in CallDetailTable. */
 const CONSUME_FETCH_SIZE = 150;
 const ERROR_FETCH_SIZE = 50;
+const TASKFAIL_FETCH_SIZE = 50; // type=6 视频任务失败(退款)记录,用于把对应 type=2 行标成失败·已退款
 const CALLS_CAP = 200;
 const HISTORY_LIMIT = 10;
 const TOP_MODELS = 5;
@@ -148,7 +150,7 @@ export default async function DashboardPage({
         // #15 — user_id is silently dropped); we still post-filter every row
         // by user_id for defence-in-depth. type=2 (成功) + type=5 (失败) are
         // fetched separately, then merged + sorted desc for the detail table.
-        const [aggSettled, consumeSettled, errorSettled] = await Promise.allSettled([
+        const [aggSettled, consumeSettled, errorSettled, taskFailSettled] = await Promise.allSettled([
             getUsageAggregate({ portalUserId: user.id, newapiUserId, newapiUsername, period }),
             queryLogs({
                 username: newapiUsername,
@@ -165,6 +167,14 @@ export default async function DashboardPage({
                 end_timestamp: range.end,
                 page: 1,
                 page_size: ERROR_FETCH_SIZE,
+            }),
+            queryLogs({
+                username: newapiUsername,
+                type: 6, // 视频异步任务失败 → 退还预扣 quota;用来把对应 type=2 消费标成失败·已退款
+                start_timestamp: range.start || undefined,
+                end_timestamp: range.end,
+                page: 1,
+                page_size: TASKFAIL_FETCH_SIZE,
             }),
         ]);
 
@@ -183,16 +193,31 @@ export default async function DashboardPage({
             errorSettled.status === 'fulfilled'
                 ? errorSettled.value.items.filter((l) => l.user_id === newapiUserId && l.type === 5)
                 : [];
+        const taskFailed =
+            taskFailSettled.status === 'fulfilled'
+                ? taskFailSettled.value.items.filter((l) => l.user_id === newapiUserId && l.type === 6)
+                : [];
         if (consumeSettled.status === 'rejected') {
             console.warn(`[dashboard] consume queryLogs failed for user ${user.id}:`, consumeSettled.reason);
         }
         if (errorSettled.status === 'rejected') {
             console.warn(`[dashboard] error queryLogs failed for user ${user.id}:`, errorSettled.reason);
         }
+        // 视频异步任务失败(type=6)会退还预扣费用(净扣 0)。把对应的 type=2 消费标成失败·已退款,
+        // 否则明细表会把失败任务错显示成「成功 ¥X」(客户以为没出片还被扣钱)。
+        const failedConsumeIds = matchFailedVideoConsumes(consume, taskFailed);
         calls = [...consume, ...errors]
             .sort((a, b) => b.created_at - a.created_at)
             .slice(0, CALLS_CAP)
-            .map(toCallRow);
+            .map((l) => {
+                const row = toCallRow(l);
+                if (failedConsumeIds.has(l.id)) {
+                    row.type = 6; // → callResult 判失败
+                    row.costCny = 0; // 已退款,本次不计费
+                    row.content = '视频任务未生成成功,已自动退还本次预扣费用(未实际扣费)。';
+                }
+                return row;
+            });
     }
 
     // ── Recharge history + reseller promo gate (preserved features) ──

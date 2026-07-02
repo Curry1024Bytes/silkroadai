@@ -180,4 +180,35 @@ describe('seedance overseas adapter — 参考图 http URL 转存 R2', () => {
         expect(body.error.message).toContain('sensitive information');
         expect(body.error.message).not.toContain('[object Object]');
     });
+
+    it('参考图被上游 asset 拒(Asset provider error)→ 报错补上图片尺寸,给可懂原因', async () => {
+        // 最小 JPEG:SOF0 编码 438×320(短边 320,上游会拒)
+        const smallJpeg = Buffer.from([
+            0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x01, 0x40, 0x01, 0xb6, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ]);
+        mockFetch.mockImplementation(async (url: string) => {
+            const u = String(url);
+            if (u.endsWith('/v1/asset-groups')) return json({ id: 'grp1' });
+            if (u.endsWith('/v1/assets/get')) return json({ status: 'completed' });
+            if (u.endsWith('/v1/assets'))
+                return new Response(
+                    JSON.stringify({ error: { message: 'Asset provider error', type: 'proxy_error' } }),
+                    {
+                        status: 400,
+                        headers: { 'content-type': 'application/json' },
+                    },
+                );
+            if (u.endsWith('/v1/video/generate')) return json({ task: { id: 't' } });
+            // 客户图 URL(re-host)+ R2 url(量尺寸)都返回这张小 JPEG
+            return new Response(smallJpeg, { status: 200, headers: { 'content-type': 'image/jpeg' } });
+        });
+        const res = await submitVideo(
+            makeReq({ model: 'dreamina-seedance-2-0-720p-ref', prompt: 'x', image: 'https://cust/small.jpg' }),
+        );
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { error: { message: string } };
+        expect(body.error.message).toContain('438×320'); // 尺寸补进错误
+        expect(body.error.message).toContain('参考图');
+        expect(body.error.message).not.toContain('[object Object]');
+    });
 });

@@ -857,6 +857,19 @@ async function extractJsonInputImages(body: JsonRecord): Promise<Array<{ mimeTyp
     return out;
 }
 
+/** 收集 multipart 里的所有输入图文件 —— 按【是不是文件】而不是【字段名】判定。
+ *  历史上只认 `image`,后来加了 `image[]`/`image[N]`(#192→#198,客户各种 SDK 的多图约定各不相同,
+ *  漏一个就把参考图当文生图重画、客户报「不识图」)。字段名黑名单永远追不完,直接收所有文件部件:
+ *  images 接口里带文件 = 必然是要改图(edits),不存在「传了文件却当文生图忽略」的合法场景。
+ *  gpt-image 分支照常把整个 form 原样转发给 /images/edits(字段名不变,上游自己认 image/mask 等)。 */
+function formImageFiles(form: FormData): File[] {
+    const files: File[] = [];
+    for (const v of form.values()) {
+        if (v instanceof File && v.size > 0) files.push(v);
+    }
+    return files;
+}
+
 /** gpt-image 统一分流:按【有无输入图】把请求路由到上游 /images/edits(有图,multipart)或
  *  /images/generations(无图,JSON),与客户调用的 path 无关 —— 文生图 / 图生图可发同一路径,
  *  代理据输入图分流,并按需在 JSON↔multipart 间转换(保留 n / quality / output_format 等透传字段)。
@@ -869,7 +882,7 @@ async function gptImageUpstream(
     search: string,
 ): Promise<Response> {
     if (form) {
-        const hasImage = form.getAll('image').some((f) => f instanceof File && f.size > 0);
+        const hasImage = formImageFiles(form).length > 0;
         if (hasImage) return fetchUpstreamMultipart(req, form, '/images/edits', search);
         // 无图 → 文生图 generations(上游要 JSON):把 form 文本字段搬进 JSON
         const j: JsonRecord = {};
@@ -1197,7 +1210,7 @@ async function handleImagesDalle(
                     );
                 }
             }
-            for (const file of form.getAll('image')) {
+            for (const file of formImageFiles(form)) {
                 if (file instanceof File && file.size > 0) {
                     const buf = Buffer.from(await file.arrayBuffer());
                     if (buf.byteLength > IMAGE_FETCH_MAX_BYTES) {

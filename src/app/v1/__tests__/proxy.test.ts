@@ -1782,6 +1782,44 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
         expect(init.body).toBeInstanceOf(FormData);
     });
 
+    it('multipart 用 image[] 字段(OpenAI 多图约定)也识别为图 → 走 edits(#192 不识图回归修复)', async () => {
+        mockFetch.mockResolvedValueOnce(imageJson200());
+        const form = new FormData();
+        form.append('model', 'gpt-image-2');
+        form.append('prompt', '把图2产品放进图1背景');
+        form.append('image[]', new File([new Uint8Array([1, 2, 3])], 'bg.png', { type: 'image/png' }));
+        form.append('image[]', new File([new Uint8Array([4, 5, 6])], 'obj.png', { type: 'image/png' }));
+        const req = new NextRequest('https://ai.silkroadai.io/v1/images/edits', { method: 'POST', body: form });
+        const res = await POST(req, ctx('images', 'edits'));
+        expect(res.status).toBe(200);
+        const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(url).toBe(`${NEWAPI_BASE}/v1/images/edits`); // image[] 被识别 → edits(不再误走 generations 丢图)
+        expect(init.body).toBeInstanceOf(FormData);
+    });
+
+    it('multipart 无任何图字段 → 仍走 generations(文生图不误判)', async () => {
+        mockFetch.mockResolvedValueOnce(imageJson200());
+        const form = new FormData();
+        form.append('model', 'gpt-image-2');
+        form.append('prompt', 'a red circle');
+        const req = new NextRequest('https://ai.silkroadai.io/v1/images/generations', { method: 'POST', body: form });
+        const res = await POST(req, ctx('images', 'generations'));
+        expect(res.status).toBe(200);
+        expect((mockFetch.mock.calls[0] as [string])[0]).toBe(`${NEWAPI_BASE}/v1/images/generations`);
+    });
+
+    it('加固:非标准字段名的图文件(如 file)也识别为图 → 走 edits(不再靠字段名黑名单)', async () => {
+        mockFetch.mockResolvedValueOnce(imageJson200());
+        const form = new FormData();
+        form.append('model', 'gpt-image-2');
+        form.append('prompt', '改图');
+        form.append('file', new File([new Uint8Array([1, 2, 3])], 'ref.png', { type: 'image/png' })); // 非 image/image[] 字段名
+        const req = new NextRequest('https://ai.silkroadai.io/v1/images/generations', { method: 'POST', body: form });
+        const res = await POST(req, ctx('images', 'generations'));
+        expect(res.status).toBe(200);
+        expect((mockFetch.mock.calls[0] as [string])[0]).toBe(`${NEWAPI_BASE}/v1/images/edits`); // 有文件 → edits
+    });
+
     it('统一入口:JSON 无图发到 /images/edits → 代理分流到上游 generations', async () => {
         mockFetch.mockResolvedValueOnce(imageJson200());
         const res = await POST(
