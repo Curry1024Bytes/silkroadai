@@ -31,9 +31,9 @@ export interface CallRow {
      *  NEWAPI_QUOTA_PER_USD / USD_TO_CNY_RATE are server-only env (undefined in
      *  the client bundle → stale 500k/7.2 defaults → ~2× over-display). */
     costCny: number;
-    /** new-api log type — 2=consume(成功) / 5=error(失败) */
+    /** new-api log type — 2=consume(成功) / 5=error(失败) / 6=视频任务失败·已退款(失败,¥0) */
     type: number;
-    /** error detail (only meaningful when type=5) */
+    /** error / 失败详情(type=5 上游错误;type=6 已退款说明) */
     content: string;
 }
 

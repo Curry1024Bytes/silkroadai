@@ -274,10 +274,10 @@ describe('<DashboardPage /> P4c-3.5 balance fork', () => {
 });
 
 describe('<DashboardPage /> period filter (gotcha #15)', () => {
-    it('passes username (NOT user_id) + type 2 and type 5 to queryLogs', async () => {
+    it('passes username (NOT user_id) + type 2, 5, 6 to queryLogs', async () => {
         await DashboardPage({ searchParams: Promise.resolve({}) });
         const types = mockQueryLogs.mock.calls.map((c) => c[0].type).sort();
-        expect(types).toEqual([2, 5]);
+        expect(types).toEqual([2, 5, 6]); // 2=consume 5=error 6=视频任务失败(退款,标失败·¥0)
         for (const call of mockQueryLogs.mock.calls) {
             expect(call[0].username).toBe(NEWAPI_USERNAME);
             expect(call[0].user_id).toBeUndefined();
