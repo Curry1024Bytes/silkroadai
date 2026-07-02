@@ -179,6 +179,59 @@ async function uploadCleanMedia(buf: Buffer, mime: string): Promise<string> {
     return r2url;
 }
 
+/** dep-free 近似尺寸解析(PNG IHDR / JPEG SOF),仅用于报错提示,不做 EXIF 旋转校正。 */
+function imageDimensions(buf: Buffer): { w: number; h: number } | null {
+    if (
+        buf.length >= 24 &&
+        buf[0] === 0x89 &&
+        buf[1] === 0x50 &&
+        buf[2] === 0x4e &&
+        buf[3] === 0x47 &&
+        buf.toString('latin1', 12, 16) === 'IHDR'
+    ) {
+        const w = buf.readUInt32BE(16),
+            h = buf.readUInt32BE(20);
+        return w > 0 && h > 0 ? { w, h } : null;
+    }
+    if (buf.length > 4 && buf[0] === 0xff && buf[1] === 0xd8) {
+        let i = 2;
+        while (i + 9 <= buf.length) {
+            if (buf[i] !== 0xff) return null;
+            const marker = buf[i + 1];
+            if (marker === 0xff) {
+                i += 1;
+                continue;
+            }
+            if ((marker >= 0xd0 && marker <= 0xd9) || marker === 0x01) {
+                i += 2;
+                continue;
+            }
+            if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+                const h = buf.readUInt16BE(i + 5),
+                    w = buf.readUInt16BE(i + 7);
+                return w > 0 && h > 0 ? { w, h } : null;
+            }
+            i += 2 + buf.readUInt16BE(i + 2);
+        }
+    }
+    return null;
+}
+
+/** 拉一个(我们 R2 的)图 URL 量尺寸,失败返回 null。仅报错路径用。 */
+async function imageDimsFromUrl(url: string): Promise<{ w: number; h: number } | null> {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 10_000);
+    try {
+        const r = await fetch(url, { signal: ctrl.signal });
+        if (!r.ok) return null;
+        return imageDimensions(Buffer.from(await r.arrayBuffer()));
+    } catch {
+        return null;
+    } finally {
+        clearTimeout(t);
+    }
+}
+
 /**
  * 媒体 URL → 上游 asset 抓取器能吃下的「干净」http 链接。
  * - data URL(image/audio)→ 解码上传我们 R2,返回无扩展名干净链接。
@@ -373,14 +426,22 @@ export async function submitVideo(req: NextRequest): Promise<NextResponse> {
             // 图片 asset(asset_type=Image)→ asset:// + 角色(reference_image / first_frame / last_frame)
             if (groupId && imageInputs.length) {
                 const assets = await Promise.all(
-                    imageInputs.map(async (inp) => ({
-                        role: inp.role,
-                        id: await uploadAndReadyAsset(
-                            auth,
-                            groupId!,
-                            await toHttpMediaUrl(inp.url, { rehostHttp: true }),
-                        ),
-                    })),
+                    imageInputs.map(async (inp) => {
+                        const r2url = await toHttpMediaUrl(inp.url, { rehostHttp: true });
+                        try {
+                            return { role: inp.role, id: await uploadAndReadyAsset(auth, groupId!, r2url) };
+                        } catch (e) {
+                            // 上游 asset 拒最常见的是「参考图过小」——上游 /v1/assets 只回笼统
+                            // "Asset provider error",客户看不懂(实测 438×320 被拒、448² 通过)。
+                            // 这里量出该图尺寸补进错误,给客户可懂的原因,而非让他对着 "Asset provider error" 猜。
+                            if (!/Asset provider error/i.test(String(e))) throw e;
+                            const dims = await imageDimsFromUrl(r2url);
+                            const sz = dims ? `(该参考图 ${dims.w}×${dims.h})` : '';
+                            throw new Error(
+                                `参考图被上游拒绝${sz}:请换更大更清晰的图 —— 上游对参考图有最小尺寸要求(短边过小会被拒,建议 ≥512px),且需为常见格式(jpg / png)`,
+                            );
+                        }
+                    }),
                 );
                 for (const a of assets)
                     content.push({ type: 'image_url', image_url: { url: `asset://${a.id}` }, role: a.role });
