@@ -947,6 +947,12 @@ function ratioToSize(aspectRatio: string, size: string): string | null {
     const ratio = ASPECT_RATIO_RE.test(ar) ? ar : ASPECT_RATIO_RE.test(sz) ? sz : '';
     return ratio ? aspectToPixelSize(ratio) : null;
 }
+/** 走 gpt-image(OpenAI Images 契约、zhiyunai 上游)那套适配的模型:官方 `gpt-image*` +
+ *  我们自设的 `az-gpt-image*` 别名(如 az-gpt-image-2 ¥2.2,new-api model_mapping 翻成 gpt-image-2 发上游)。
+ *  这些都要在代理层做同样的适配(剥 response_format / 比例转 size / n 强转 / image[] / 图床 / chat 翻译)。 */
+function isGptImageModel(model: string): boolean {
+    return model.startsWith('gpt-image') || model.startsWith('az-gpt-image');
+}
 /** 旧 czeq SKU 名 gpt-image-2-{1,2,4}k 只是别名(zhiyunai 上游只有 gpt-image-2 一个模型,分辨率靠
  *  size 像素控制)→ 翻成 gpt-image-2 + 对应像素 size(1k→1024² / 2k→2048² / 4k→3840x2160)。
  *  返回 null = 非变体名。 */
@@ -1174,7 +1180,7 @@ async function handleImagesDalle(
             // model 非我们的 Gemini 生图 → 重建 FormData 透传(保留 gpt-image-2 等)
             if (!(model in GEMINI_IMAGE_MODELS)) {
                 // gpt-image:剥 response_format + 把比例(aspect_ratio / "16:9" 形态 size)翻成像素 size
-                if (model.startsWith('gpt-image')) {
+                if (isGptImageModel(model)) {
                     normalizeGptImageForm(form);
                     sizeRaw = String(form.get('size') ?? '');
                 }
@@ -1189,7 +1195,7 @@ async function handleImagesDalle(
                 try {
                     // 统一入口:gpt-image 按有无输入图分流到上游 edits/generations(与调用 path 无关);
                     // 其余非 Gemini 图片模型仍按调用 path 原样透传 multipart。
-                    const upstream = model.startsWith('gpt-image')
+                    const upstream = isGptImageModel(model)
                         ? await gptImageUpstream(req, form, null, search)
                         : await fetchUpstreamMultipart(req, form, path, search);
                     return await reshapeOpenAiImageResponse(
@@ -1198,7 +1204,7 @@ async function handleImagesDalle(
                         sizeRaw,
                         cap,
                         req,
-                        model.startsWith('gpt-image') && wantHostedUrl,
+                        isGptImageModel(model) && wantHostedUrl,
                     );
                 } catch (e) {
                     if (e instanceof ImageUrlError) return imageError(e.message, 400, cap);
@@ -1252,13 +1258,13 @@ async function handleImagesDalle(
             if (!(model in GEMINI_IMAGE_MODELS)) {
                 // gpt-image:剥 response_format(zhiyunai 拒收 →400)+ 比例→像素 size(zhiyunai 不认
                 // aspect_ratio / "16:9" 形态 size,默认出方图)。见 normalizeGptImageJson。
-                if (model.startsWith('gpt-image')) {
+                if (isGptImageModel(model)) {
                     normalizeGptImageJson(body);
                     sizeRaw = typeof body.size === 'string' ? body.size : '';
                 }
                 try {
                     // 统一入口:gpt-image body 里带 image/image_url → 图生图 edits;否则文生图 generations。
-                    const upstream = model.startsWith('gpt-image')
+                    const upstream = isGptImageModel(model)
                         ? await gptImageUpstream(req, null, body, search)
                         : await fetchUpstreamJson(req, body, path, search);
                     return await reshapeOpenAiImageResponse(
@@ -1267,7 +1273,7 @@ async function handleImagesDalle(
                         sizeRaw,
                         cap,
                         req,
-                        model.startsWith('gpt-image') && wantHostedUrl,
+                        isGptImageModel(model) && wantHostedUrl,
                     );
                 } catch (e) {
                     if (e instanceof ImageUrlError) return imageError(e.message, 400, cap);
@@ -1641,7 +1647,7 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
 
         // Branch 1.1: gpt-image-2(图片模型)被当 chat 模型调 → 翻译到 Images 接口(否则上游
         // 400「The requested operation is unsupported」)。同 Gemini,出图包成 chat.completion 回复。
-        if (model.startsWith('gpt-image')) {
+        if (isGptImageModel(model)) {
             const imgCap = isMediaCaptureSkipped() ? null : cap;
             if (imgCap) recordRequestBody(imgCap, JSON.stringify(body), model, body.stream === true);
             return handleGptImageChat(req, body, model, imgCap);
