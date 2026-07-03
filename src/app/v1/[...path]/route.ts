@@ -824,6 +824,76 @@ async function handleGptImageChat(
     return NextResponse.json(openaiResp, { status: 200, headers: respHeaders });
 }
 
+/** gpt-4o-image(zhiyunai chat 生图)返回 markdown 里的 `pro.filesystem.site` CDN 链接(会过期)。
+ *  这里强制非流拿到完整响应 → 把图转存到客户 OSS / 平台 R2(复用 storeGeneratedImage)→ 把内容里所有
+ *  CDN 链接换成我们的稳定 url。取图失败则保留原链接(客户仍拿得到图,不阻断)。计费不变(new-api 按
+ *  chat token 扣)。stream:true 合成单 chunk SSE 返回。 */
+async function handleGpt4oImageChat(
+    req: NextRequest,
+    body: JsonRecord,
+    model: string,
+    cap: CaptureCtx | null = null,
+): Promise<NextResponse> {
+    const wantStream = body.stream === true;
+    let upstream: Response;
+    try {
+        upstream = await fetch(`${NEWAPI_BASE_URL}/v1/chat/completions`, {
+            method: 'POST',
+            headers: jsonForwardHeaders(req),
+            body: JSON.stringify({ ...body, stream: false }), // 非流才能取出 url 转存
+        });
+    } catch (e) {
+        return imageError(`upstream request failed: ${e instanceof Error ? e.message : String(e)}`, 502, cap);
+    }
+    if (!upstream.ok) return cap ? captureResponse(cap, upstream) : passthroughResponse(upstream);
+
+    const data = (await upstream.json().catch(() => null)) as JsonRecord | null;
+    const msg = (data?.choices as Array<{ message?: { content?: unknown } }> | undefined)?.[0]?.message;
+    const content = typeof msg?.content === 'string' ? msg.content : '';
+
+    const urls = [...content.matchAll(/!\[[^\]]*\]\((https?:\/\/[^)\s]+)\)/g)].map((m) => m[1]);
+    let newContent = content;
+    let refs: string[] = [];
+    const respHeaders: Record<string, string> = { 'X-Silkroadai-Translated': 'gpt-4o-image-rehost' };
+    if (urls.length > 0) {
+        try {
+            const imgResp = await fetch(urls[0], { redirect: 'follow', signal: AbortSignal.timeout(30_000) });
+            if (imgResp.ok) {
+                const buf = Buffer.from(await imgResp.arrayBuffer());
+                const mime = imgResp.headers.get('content-type')?.split(';')[0] || 'image/png';
+                const stored = await storeGeneratedImage(req, buf, mime, buf.toString('base64'));
+                // 内容里所有 pro.filesystem.site 链接(图片 + 下载)统一换成我们的稳定 url
+                newContent = content.replace(/https?:\/\/pro\.filesystem\.site\/[^)\s"'\]]+/g, stored.url);
+                refs = hostedRefs(stored);
+                if (stored.ossFallback) respHeaders['X-Silkroadai-Oss-Fallback'] = 'yes';
+                if (stored.r2Fallback) respHeaders['X-Silkroadai-R2-Fallback'] = 'yes';
+            } else {
+                respHeaders['X-Silkroadai-Rehost'] = `skipped-${imgResp.status}`; // 保留原链接
+            }
+        } catch {
+            respHeaders['X-Silkroadai-Rehost'] = 'failed'; // 取图失败 → 保留原链接,不阻断
+        }
+    }
+    if (msg) msg.content = newContent;
+
+    if (cap) captureJsonResponse(cap, 200, (data ?? {}) as JsonRecord, refs);
+    if (wantStream) {
+        const chunk = {
+            id: (data?.id as string) ?? `chatcmpl-${Date.now()}`,
+            object: 'chat.completion.chunk',
+            created: (data?.created as number) ?? Math.floor(Date.now() / 1000),
+            model,
+            choices: [{ index: 0, delta: { role: 'assistant', content: newContent }, finish_reason: 'stop' }],
+        };
+        respHeaders['content-type'] = 'text/event-stream';
+        return new NextResponse(`data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`, {
+            status: 200,
+            headers: respHeaders,
+        });
+    }
+    return NextResponse.json(data ?? {}, { status: 200, headers: respHeaders });
+}
+
 /** 非 Gemini 图片(gpt-image-2 等)multipart 转发 → 返回【原始】响应供 reshape。
  *  req.body 已被 formData() 消费,转发已解析的 FormData;删原 content-type 让 fetch
  *  按重建 FormData 重生 boundary。 */
@@ -1651,6 +1721,14 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
             const imgCap = isMediaCaptureSkipped() ? null : cap;
             if (imgCap) recordRequestBody(imgCap, JSON.stringify(body), model, body.stream === true);
             return handleGptImageChat(req, body, model, imgCap);
+        }
+
+        // Branch 1.2: gpt-4o-image(zhiyunai chat 生图)→ 透传对话,但把返回的 CDN 图片 url 转存图床/客户 OSS,
+        // 返回我们的稳定 url(pro.filesystem.site 链接会过期)。计费不变(new-api 按 chat token 扣)。
+        if (model.startsWith('gpt-4o-image')) {
+            const imgCap = isMediaCaptureSkipped() ? null : cap;
+            if (imgCap) recordRequestBody(imgCap, JSON.stringify(body), model, body.stream === true);
+            return handleGpt4oImageChat(req, body, model, imgCap);
         }
 
         // 捕获【原始】请求体(文本路径;clamp 分支也存未钳的,记录客户真实输入,brief §4)
