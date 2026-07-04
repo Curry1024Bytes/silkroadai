@@ -89,9 +89,10 @@ const MULTI_IMAGE_ASPECT_INSTRUCTION =
 const explicitAspectInstruction = (ratio: string) =>
     `[IMPORTANT] The generated image MUST have exactly a ${ratio} aspect ratio (width:height = ${ratio}). Do NOT output a square image unless ${ratio} is 1:1, and do NOT follow the reference images' aspect ratio. 输出图必须严格为 ${ratio} 的画幅比例,不要跟随参考图的比例,不要输出方图(除非比例本身就是 1:1)。`;
 
-/** 逆向上游任意报错(非 2xx,含 400/429/5xx 全部)→ 自动转这些非逆向备用 SKU 重试一次。
+/** 逆向上游报错(非 2xx)→ 自动转这些非逆向备用 SKU 重试一次。
  *  ch45 逆向源故障形态杂(400 / 429 / 500 do_request_failed / 502 空响应 / 503 memory overloaded),
- *  且其 4xx 多为上游抽风而非真客户端错,故 operator 要求一律兜底。备用 SKU 是独立模型名
+ *  且其 4xx 多为上游抽风而非真客户端错,故 operator 要求一律兜底 —— 唯一例外是
+ *  isTerminalUpstreamError 判定的「重试注定无效」终态错(坏输入图),直接透传。备用 SKU 是独立模型名
  *  (专属非逆向渠道、单独计费)。gemini-3.1-flash-image-preview(ch45 逆向 ¥0.09)→ -hq(ch42 非逆向 ¥0.26)。 */
 const FAILOVER_MODELS: Record<string, string> = {
     'gemini-3.1-flash-image-preview': 'gemini-3.1-flash-image-preview-hq',
@@ -102,6 +103,10 @@ const FAILOVER_MODELS: Record<string, string> = {
  *  到点 abort 当作失败 → 切候补 -hq/ch42(快且稳),客户最多等 ~80s + 候补一次。
  *  仅对有候补的 flash 生效;pro(4K 合法耗时长、无候补)不设超时。operator:80s 自动切。 */
 const FLASH_TIMEOUT_MS = 80_000;
+
+/** 主请求非 2xx 后读错误 body(做终态分类)的超时:逆向渠道可能 headers 到了、body 滴流不完,
+ *  不设钟会把本该立即切候补的兜底卡死。到点 abort → 当读不出 → 照旧兜底。 */
+const ERROR_BODY_TIMEOUT_MS = 5_000;
 
 /** Gemini image 模型 → 注入的 native imageSize(客户没选 size 时的固定档) */
 const GEMINI_IMAGE_MODELS: Record<string, '1K' | '2K' | '4K'> = {
@@ -222,9 +227,27 @@ function jsonForwardHeaders(req: NextRequest): Headers {
     return h;
 }
 
-/** Gemini 生图 native 转发:主模型上游任意报错(非 2xx)【或超时】时,自动用同一个已翻译好的 body
+/** 错误分类:候补重试【注定无效】的「终态错误」→ 不烧候补调用,原样(且更快)透传给客户。
+ *  当前只收一类高置信模式,其余一律维持 operator 决定「任何非 2xx 都兜底」(ch45 逆向源 4xx 多为上游抽风):
+ *  —— Gemini 对输入图字节的确定性拒绝(Unable to process input image):候补同为 Gemini,
+ *     同一份 inlineData 发过去必然同拒;终态化省一次真实候补上游调用,客户更快拿到同样的 400。
+ *     实测已知案例均为客户字节真坏(坏 base64 / 不支持的格式);残余风险是逆向 relay 自己
+ *     压/裁图导致同文案(此时候补本可救),靠下方 warn 日志观察反例,有了再收窄。
+ *  【特意不收】三类同样"看起来终态"的错 —— 共同原因:若是我方 new-api 网关拒的(鉴权/额度在
+ *  relay 之前检查),候补重试只是一次本地空转、连上游都不触,客户结局不变;而同样的文案若来自
+ *  上游经销商转发(上游多半也是 new-api 实例,错误文案一模一样),换渠道【能】救 —— 终态化
+ *  几乎无收益,误判却会杀掉救援:
+ *  - 401 无效令牌(另:新建 key 有 1-2 分钟 token-cache 延迟会误 401,见 memory);
+ *  - 403 无权访问 X 分组(我方网关授权拒跟 token.group 走、与模型无关,候补同 token 必同拒);
+ *  - insufficient_user_quota(客户真没钱时,候补在网关同样被拒)。 */
+function isTerminalUpstreamError(bodyText: string): boolean {
+    return /unable to process input image/i.test(bodyText);
+}
+
+/** Gemini 生图 native 转发:主模型上游报错(非 2xx)【或超时】时,自动用同一个已翻译好的 body
  *  (contents + imageConfig)转到非逆向备用 SKU 重试一次,仅换 URL 里的模型名(故计费切到备用 SKU)。
- *  flash 任意非 2xx 都视作主渠道挂了 → 兜底转 -hq/ch42(operator:45 所有报错都转 42)。
+ *  flash 非 2xx 视作主渠道挂了 → 兜底转 -hq/ch42(operator:45 所有报错都转 42),
+ *  【唯一例外】isTerminalUpstreamError 判定的终态错(坏输入图,重试注定同拒)直接透传不重试。
  *  另:逆向 flash 渠道会出现数十分钟才出图的慢尾(见 FLASH_TIMEOUT_MS),new-api 无 relay 超时,
  *  故主请求挂 80s AbortController,到点 abort 当失败一样切候补 → 客户不会再被卡几十分钟。
  *  只重试一次:备用也报错则原样透传其错,不无限重试。成功(2xx)不转,省一次 ch42 调用。见 FAILOVER_MODELS。 */
@@ -241,11 +264,45 @@ async function geminiGenerateWithFailover(req: NextRequest, model: string, reque
     try {
         upstream = await send(model, ctrl.signal);
     } catch {
+        console.warn('[proxy/failover] primary timed out or network error, retrying backup', { model, backup });
         return send(backup); // 超时(AbortError)/网络错 → 切候补
     } finally {
         clearTimeout(timer);
     }
-    return upstream.ok ? upstream : send(backup); // 非 2xx → 切候补
+    if (upstream.ok) return upstream;
+    // 分类需要读错误 body,但必须带钟:ch45 类渠道存在「headers 到了、body 滴流不完」的形态
+    // (此时 80s 主钟已在 finally 清掉),无界 text() 会把本该立即触发的兜底卡死。
+    // 到点用同一个 ctrl abort 掉 body 流 → errText 留空 → 必然判非终态 → 照旧兜底。
+    const readTimer = setTimeout(() => ctrl.abort(), ERROR_BODY_TIMEOUT_MS);
+    let errText = '';
+    try {
+        errText = await upstream.text();
+    } catch {
+        // body 读挂 / 被 abort → 当读不出,走兜底
+    } finally {
+        clearTimeout(readTimer);
+    }
+    // 消费 body 后按原 status/headers 重建响应(content-length/encoding 已随重建失真,
+    // 剥掉让下游按新 body 重算;passthroughResponse 本来也剥,这里防走到别的出口)。
+    if (isTerminalUpstreamError(errText)) {
+        console.warn('[proxy/failover] terminal error, skip backup', {
+            model,
+            status: upstream.status,
+            snippet: errText.slice(0, 200),
+        });
+        const headers = new Headers(upstream.headers);
+        headers.delete('content-length');
+        headers.delete('content-encoding');
+        headers.set('X-Silkroadai-Failover', 'skipped-terminal');
+        return new Response(errText, { status: upstream.status, statusText: upstream.statusText, headers });
+    }
+    console.warn('[proxy/failover] primary failed, retrying backup', {
+        model,
+        backup,
+        status: upstream.status,
+        snippet: errText.slice(0, 200),
+    });
+    return send(backup); // 其余非 2xx → 切候补
 }
 
 function passthroughResponse(upstream: Response): NextResponse {

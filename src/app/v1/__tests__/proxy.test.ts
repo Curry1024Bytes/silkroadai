@@ -578,6 +578,7 @@ describe('/v1 proxy — Phase 2: image_url 入参 + R2 上传 (W9 D2)', () => {
 
     // ch45(逆向)实测以多种状态失败:400 / 429 / 500 do_request_failed / 502 空响应 / 503 memory overloaded。
     // flash 是 ch45 独占 → operator 要求任意非 2xx 都视作 ch45 挂了,一律兜底转 -hq/ch42 重试一次。
+    // (唯一例外:isTerminalUpstreamError 判定的终态错,见下方「终态错误分类」块。)
     for (const [code, label, msg] of [
         [400, 'bad request', 'invalid argument'],
         [429, 'rate limited', 'rate limit exceeded'],
@@ -666,6 +667,111 @@ describe('/v1 proxy — Phase 2: image_url 入参 + R2 上传 (W9 D2)', () => {
         } finally {
             vi.useRealTimers();
         }
+    });
+
+    // 错误分类学:候补重试【注定无效】的终态错(当前仅坏输入图一类)→ 不烧 ch42 调用,原样(更快)透传。
+    // 其余非 2xx 维持 operator 决定「任何报错都兜底」(上面的参数化用例即回归守护);
+    // 网关侧鉴权/额度/分组错【特意不终态化】(候补在网关空转 = 客户结局不变;同文案来自上游经销商时换渠道能救)。
+    describe('终态错误分类(isTerminalUpstreamError)', () => {
+        const generateContentCalls = () =>
+            mockFetch.mock.calls.filter(([u]) => String(u).includes(':generateContent')).length;
+        const backupCalled = () =>
+            mockFetch.mock.calls.some(([u]) => String(u).includes('gemini-3.1-flash-image-preview-hq:generateContent'));
+
+        it('400 Unable to process input image(输入图字节坏,Gemini 确定性拒)→ 透传不重试', async () => {
+            mockFetch.mockImplementation(async (url: string) => {
+                if (String(url).includes(':generateContent'))
+                    return new Response(
+                        JSON.stringify({ error: { message: 'Unable to process input image.', code: 400 } }),
+                        { status: 400 },
+                    );
+                return geminiNativeResponse();
+            });
+            const res = await POST(geminiReq('a cat'), ctx('chat', 'completions'));
+            expect(res.status).toBe(400);
+            expect(generateContentCalls()).toBe(1);
+            expect(backupCalled()).toBe(false);
+            // 错误 body 原样透传 + 标记头,客户/支持能看出「代理判了终态、没有重试」
+            const body = (await res.json()) as { error: { message: string } };
+            expect(body.error.message).toMatch(/Unable to process input image/);
+            expect(res.headers.get('X-Silkroadai-Failover')).toBe('skipped-terminal');
+        });
+
+        it('403 无权访问 X 分组【不】终态化(双向歧义:上游经销商同文案时换渠道能救)→ 仍兜底', async () => {
+            mockFetch.mockImplementation(async (url: string) => {
+                if (String(url).includes('gemini-3.1-flash-image-preview-hq:generateContent'))
+                    return geminiNativeResponse();
+                if (String(url).includes(':generateContent'))
+                    return new Response(
+                        JSON.stringify({ error: { message: '无权访问 17 分组', type: 'new_api_error' } }),
+                        { status: 403 },
+                    );
+                return geminiNativeResponse();
+            });
+            const res = await POST(geminiReq('a cat'), ctx('chat', 'completions'));
+            expect(res.status).toBe(200);
+            expect(backupCalled()).toBe(true);
+        });
+
+        it('403 insufficient_user_quota【不】终态化(网关拒时候补只是本地空转,结局不变)→ 仍兜底', async () => {
+            mockFetch.mockImplementation(async (url: string) => {
+                if (String(url).includes('gemini-3.1-flash-image-preview-hq:generateContent'))
+                    return geminiNativeResponse();
+                if (String(url).includes(':generateContent'))
+                    return new Response(
+                        JSON.stringify({ error: { code: 'insufficient_user_quota', message: '用户额度不足' } }),
+                        { status: 403 },
+                    );
+                return geminiNativeResponse();
+            });
+            const res = await POST(geminiReq('a cat'), ctx('chat', 'completions'));
+            expect(res.status).toBe(200);
+            expect(backupCalled()).toBe(true);
+        });
+
+        it('401 无效令牌【不】终态化(fresh-key 缓存延迟会误 401,逆向 401 换渠道可救)→ 仍兜底', async () => {
+            mockFetch.mockImplementation(async (url: string) => {
+                if (String(url).includes('gemini-3.1-flash-image-preview-hq:generateContent'))
+                    return geminiNativeResponse();
+                if (String(url).includes(':generateContent'))
+                    return new Response(JSON.stringify({ error: { message: '无效的令牌', type: 'new_api_error' } }), {
+                        status: 401,
+                    });
+                return geminiNativeResponse();
+            });
+            const res = await POST(geminiReq('a cat'), ctx('chat', 'completions'));
+            expect(res.status).toBe(200);
+            expect(backupCalled()).toBe(true);
+        });
+
+        it('非 2xx 且错误 body 滴流不完 → 读钟(5s)到点放弃读 body → 照旧兜底切候补,不再卡死', async () => {
+            vi.useFakeTimers();
+            try {
+                mockFetch.mockImplementation((url: string, init?: RequestInit) => {
+                    if (String(url).includes('gemini-3.1-flash-image-preview-hq:generateContent'))
+                        return Promise.resolve(geminiNativeResponse());
+                    if (String(url).includes(':generateContent')) {
+                        // 502 headers 立即到,body 永不结束;abort 时 error 掉流(镜像真实 fetch 语义)
+                        const body = new ReadableStream({
+                            start(controller) {
+                                init?.signal?.addEventListener('abort', () =>
+                                    controller.error(new DOMException('The operation was aborted.', 'AbortError')),
+                                );
+                            },
+                        });
+                        return Promise.resolve(new Response(body, { status: 502 }));
+                    }
+                    return Promise.resolve(geminiNativeResponse());
+                });
+                const resP = POST(geminiReq('a cat'), ctx('chat', 'completions'));
+                await vi.advanceTimersByTimeAsync(6_000); // 越过 ERROR_BODY_TIMEOUT_MS(5s)
+                const res = await resP;
+                expect(res.status).toBe(200);
+                expect(backupCalled()).toBe(true);
+            } finally {
+                vi.useRealTimers();
+            }
+        });
     });
 
     it('uploads generated image to R2 and returns markdown URL, not base64 (test 11)', async () => {
