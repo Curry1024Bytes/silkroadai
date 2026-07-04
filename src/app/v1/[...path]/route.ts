@@ -81,6 +81,7 @@ import {
     buildSubmitEnvelope,
     buildQueryEnvelope,
     notFoundEnvelope,
+    buildWebhookForTask,
     type ImageTaskEndpoint,
 } from './async-image';
 
@@ -1729,8 +1730,28 @@ function sniffImageMime(buf: Buffer): string {
 }
 
 /** 后台跑生图:用捕获的请求重建 Request → handleImagesDalle → 确保出图床 URL(b64 转存)→ 落库。 */
+/** Phase 2:任务终态回调。POST `{ topic, data }` 到客户 webhook,best-effort,3 次重试,永不抛。 */
+async function sendTaskWebhook(webhookUrl: string, body: unknown): Promise<void> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+            const r = await fetch(webhookUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+                signal: AbortSignal.timeout(10_000),
+            });
+            if (r.ok) return;
+        } catch {
+            /* 网络失败 → 重试 */
+        }
+        if (attempt < 2) await new Promise((res) => setTimeout(res, 1000 * (attempt + 1)));
+    }
+    console.warn('[async-image] webhook delivery failed after retries:', webhookUrl.slice(0, 80));
+}
+
 async function runAsyncImageTask(
     taskId: string,
+    webhookUrl: string | null,
     url: string,
     headers: Headers,
     bodyBuf: ArrayBuffer,
@@ -1765,6 +1786,12 @@ async function runAsyncImageTask(
         await saveImageTaskSuccess(taskId, json);
     } catch (e) {
         await saveImageTaskFailure(taskId, e instanceof Error ? e.message : String(e));
+    } finally {
+        // 终态已落库(SUCCESS/FAILURE 任一路径都到这)→ 回调客户 webhook,带最终 status + url
+        if (webhookUrl) {
+            const body = await buildWebhookForTask(taskId).catch(() => null);
+            if (body) await sendTaskWebhook(webhookUrl, body);
+        }
     }
 }
 
@@ -1778,6 +1805,15 @@ async function handleAsyncImageSubmit(req: NextRequest, path: string, search: st
     }
     if (!userId)
         return NextResponse.json({ code: 'unauthorized', message: 'invalid api key', data: null }, { status: 401 });
+
+    // Phase 2:可选 webhook 回调 URL(SSRF 守门:只放公网 http(s),拒 localhost/私网字面量)
+    const webhookUrl = new URLSearchParams(search).get('webhook');
+    if (webhookUrl && isDisallowedImageUrl(webhookUrl)) {
+        return NextResponse.json(
+            { code: 'invalid_webhook', message: 'webhook must be a public http(s) URL', data: null },
+            { status: 400 },
+        );
+    }
 
     const bodyBuf = await req.arrayBuffer();
     const headers = new Headers(req.headers);
@@ -1797,7 +1833,7 @@ async function handleAsyncImageSubmit(req: NextRequest, path: string, search: st
     sp.delete('webhook');
     const cleanSearch = sp.toString() ? `?${sp.toString()}` : '';
     const cleanUrl = req.url.split('?')[0] + cleanSearch;
-    void runAsyncImageTask(taskId, cleanUrl, headers, bodyBuf, path, cleanSearch);
+    void runAsyncImageTask(taskId, webhookUrl, cleanUrl, headers, bodyBuf, path, cleanSearch);
     return NextResponse.json(buildSubmitEnvelope(taskId, submitTime), { status: 200 });
 }
 

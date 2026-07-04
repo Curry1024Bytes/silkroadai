@@ -123,3 +123,13 @@ export function buildQueryEnvelope(row: ImageTaskRow): Record<string, unknown> {
 export function notFoundEnvelope(): Record<string, unknown> {
     return { code: 'not_found', message: 'task not found', data: null };
 }
+
+/** 任务完成回调(webhook)的 topic。data 用与查询响应一致的 data,客户 handler 与轮询同一套解析。 */
+export const WEBHOOK_TOPIC = 'image_task_completed';
+
+/** 构造 webhook 载荷(内部,无 IDOR):`{ topic, data }`,data 即查询响应的 data。任务不存在 → null。 */
+export async function buildWebhookForTask(taskId: string): Promise<{ topic: string; data: unknown } | null> {
+    const row = (await prisma.imageTask.findUnique({ where: { task_id: taskId } })) as ImageTaskRow | null;
+    if (!row) return null;
+    return { topic: WEBHOOK_TOPIC, data: buildQueryEnvelope(row).data };
+}

@@ -2845,4 +2845,51 @@ describe('/v1 proxy — 异步生图(?async=true)', () => {
         expect(((await res.json()) as { data: { status: string } }).data.status).toBe('FAILURE');
         expect(mockImageTaskUpdate).toHaveBeenCalled(); // saveFailure 落库
     });
+
+    // ---- Phase 2: webhook ----
+    it('提交带非法 webhook(私网 IP)→ 400 invalid_webhook,不建任务', async () => {
+        const res = await POST(
+            makeReq('/images/generations?async=true&webhook=http://169.254.169.254/meta', {
+                body: { model: 'gpt-image-2', prompt: 'x' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { code: string }).code).toBe('invalid_webhook');
+        expect(mockImageTaskCreate).not.toHaveBeenCalled();
+    });
+
+    it('提交带合法 webhook → 200;完成后 POST {topic,data} 到 webhook(含最终 status + url)', async () => {
+        mockImageTaskFindUnique.mockImplementation(async () =>
+            taskRow({
+                status: 'SUCCESS',
+                finished_at: new Date(),
+                result_json: { created: 1, data: [{ url: 'https://images.silkroadai.io/gen/x.png', b64_json: '' }] },
+            }),
+        );
+        mockFetch.mockImplementation(async (u: unknown) => {
+            if (String(u).includes('hooks.example.com')) return new Response('ok', { status: 200 });
+            return new Response(JSON.stringify({ created: 1, data: [{ b64_json: 'QUJD' }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            });
+        });
+        const res = await POST(
+            makeReq('/images/generations?async=true&webhook=https://hooks.example.com/cb', {
+                body: { model: 'gpt-image-2', prompt: 'x' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 10)); // flush 后台 + webhook
+        const hookCall = mockFetch.mock.calls.find((c) => String(c[0]).includes('hooks.example.com'));
+        expect(hookCall).toBeTruthy();
+        const payload = JSON.parse(String((hookCall![1] as RequestInit).body)) as {
+            topic: string;
+            data: { status: string; data: { data: Array<{ url: string }> } };
+        };
+        expect(payload.topic).toBe('image_task_completed');
+        expect(payload.data.status).toBe('SUCCESS');
+        expect(payload.data.data.data[0].url).toBe('https://images.silkroadai.io/gen/x.png');
+    });
 });
