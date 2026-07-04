@@ -1820,6 +1820,36 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
         expect((mockFetch.mock.calls[0] as [string])[0]).toBe(`${NEWAPI_BASE}/v1/images/edits`); // 有文件 → edits
     });
 
+    it('az-gpt-image-2 走 gpt-image 同一套适配(带图 → edits;model 名原样发给 new-api 计费)', async () => {
+        mockFetch.mockResolvedValueOnce(imageJson200());
+        const form = new FormData();
+        form.append('model', 'az-gpt-image-2'); // ¥2.2 别名,应和 gpt-image-2 同样处理
+        form.append('prompt', '改图');
+        form.append('image', new File([new Uint8Array([1, 2, 3])], 'in.png', { type: 'image/png' }));
+        const req = new NextRequest('https://ai.silkroadai.io/v1/images/generations', { method: 'POST', body: form });
+        const res = await POST(req, ctx('images', 'generations'));
+        expect(res.status).toBe(200);
+        const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(url).toBe(`${NEWAPI_BASE}/v1/images/edits`); // 被当 gpt-image → 有图分流到 edits
+        const sent = init.body as FormData;
+        expect(sent.get('model')).toBe('az-gpt-image-2'); // 原样透传给 new-api(new-api 按此计费 ¥2.2 + model_mapping 翻上游)
+    });
+
+    it('az-gpt-image-2 JSON 文生图默认仍 b64_json(和 gpt-image-2 一致,不误当普通透传)', async () => {
+        mockFetch.mockResolvedValueOnce(imageJson200());
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'az-gpt-image-2', prompt: 'x', response_format: 'b64_json' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        const sent = JSON.parse(init.body as string) as { response_format?: unknown; model: string };
+        expect(sent.response_format).toBeUndefined(); // gpt-image 适配:剥 response_format(否则 zhiyunai 400)
+        expect(sent.model).toBe('az-gpt-image-2');
+    });
+
     it('统一入口:JSON 无图发到 /images/edits → 代理分流到上游 generations', async () => {
         mockFetch.mockResolvedValueOnce(imageJson200());
         const res = await POST(
@@ -2468,5 +2498,72 @@ describe('/v1 proxy — n 字符串→数字兼容(修 Alias.n unmarshal)', () =
         expect(
             (JSON.parse(String((mockFetch.mock.calls[1] as [string, RequestInit])[1].body)) as { n: unknown }).n,
         ).toBe('abc');
+    });
+});
+
+describe('/v1 proxy — gpt-4o-image chat 生图 URL 转存', () => {
+    const CDN = 'https://pro.filesystem.site/cdn/20260703/abc123.png';
+    function chat200(content: string): Response {
+        return new Response(
+            JSON.stringify({
+                id: 'chatcmpl-x',
+                object: 'chat.completion',
+                created: 1,
+                model: 'gpt-4o-image',
+                choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }],
+                usage: { prompt_tokens: 19, completion_tokens: 116, total_tokens: 135 },
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+    }
+    const imgBytes200 = () =>
+        new Response(new Uint8Array([137, 80, 78, 71]), { status: 200, headers: { 'content-type': 'image/png' } });
+
+    it('把 CDN 图片 url 转存平台 R2、内容里换成我们的稳定 url', async () => {
+        mockFetch.mockResolvedValueOnce(chat200(`> 🎨\n\n![${CDN}](${CDN})\n\n[点击下载](${CDN})`));
+        mockFetch.mockResolvedValueOnce(imgBytes200());
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: { model: 'gpt-4o-image', messages: [{ role: 'user', content: 'a red apple' }] },
+            }),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(200);
+        expect((mockFetch.mock.calls[0] as [string])[0]).toBe(`${NEWAPI_BASE}/v1/chat/completions`); // 非流对话
+        expect((mockFetch.mock.calls[1] as [string])[0]).toBe(CDN); // 取图
+        const data = (await res.json()) as { choices: Array<{ message: { content: string } }> };
+        const content = data.choices[0].message.content;
+        expect(content).toMatch(/https:\/\/images\.silkroadai\.io\/gen\/[0-9a-f-]+\.png/); // 我们的 url
+        expect(content).not.toContain('pro.filesystem.site'); // 所有 CDN 链接被替换(含下载链接)
+        expect(res.headers.get('X-Silkroadai-Translated')).toBe('gpt-4o-image-rehost');
+    });
+
+    it('响应无图片 url(纯文字)→ 原样返回,不取图', async () => {
+        mockFetch.mockResolvedValueOnce(chat200('Sorry, I cannot do that.'));
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: { model: 'gpt-4o-image', messages: [{ role: 'user', content: 'hi' }] },
+            }),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(200);
+        expect(mockFetch).toHaveBeenCalledTimes(1); // 没去取图
+        const data = (await res.json()) as { choices: Array<{ message: { content: string } }> };
+        expect(data.choices[0].message.content).toBe('Sorry, I cannot do that.');
+    });
+
+    it('取图失败 → 保留原 CDN 链接(不阻断,X-Silkroadai-Rehost: failed)', async () => {
+        mockFetch.mockResolvedValueOnce(chat200(`![img](${CDN})`));
+        mockFetch.mockRejectedValueOnce(new Error('image fetch failed'));
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: { model: 'gpt-4o-image', messages: [{ role: 'user', content: 'x' }] },
+            }),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(200);
+        const data = (await res.json()) as { choices: Array<{ message: { content: string } }> };
+        expect(data.choices[0].message.content).toContain('pro.filesystem.site'); // 保留原链接
+        expect(res.headers.get('X-Silkroadai-Rehost')).toBe('failed');
     });
 });

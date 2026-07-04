@@ -70,6 +70,7 @@ import {
     anthropicToOpenAiChat,
     translateAnthropicSseToOpenAi,
 } from './claude-chat-cache';
+import { withKeepalive } from './keepalive';
 
 // Next.js: 强制动态 + Node runtime(需要流式 fetch duplex)
 export const dynamic = 'force-dynamic';
@@ -824,6 +825,76 @@ async function handleGptImageChat(
     return NextResponse.json(openaiResp, { status: 200, headers: respHeaders });
 }
 
+/** gpt-4o-image(zhiyunai chat 生图)返回 markdown 里的 `pro.filesystem.site` CDN 链接(会过期)。
+ *  这里强制非流拿到完整响应 → 把图转存到客户 OSS / 平台 R2(复用 storeGeneratedImage)→ 把内容里所有
+ *  CDN 链接换成我们的稳定 url。取图失败则保留原链接(客户仍拿得到图,不阻断)。计费不变(new-api 按
+ *  chat token 扣)。stream:true 合成单 chunk SSE 返回。 */
+async function handleGpt4oImageChat(
+    req: NextRequest,
+    body: JsonRecord,
+    model: string,
+    cap: CaptureCtx | null = null,
+): Promise<NextResponse> {
+    const wantStream = body.stream === true;
+    let upstream: Response;
+    try {
+        upstream = await fetch(`${NEWAPI_BASE_URL}/v1/chat/completions`, {
+            method: 'POST',
+            headers: jsonForwardHeaders(req),
+            body: JSON.stringify({ ...body, stream: false }), // 非流才能取出 url 转存
+        });
+    } catch (e) {
+        return imageError(`upstream request failed: ${e instanceof Error ? e.message : String(e)}`, 502, cap);
+    }
+    if (!upstream.ok) return cap ? captureResponse(cap, upstream) : passthroughResponse(upstream);
+
+    const data = (await upstream.json().catch(() => null)) as JsonRecord | null;
+    const msg = (data?.choices as Array<{ message?: { content?: unknown } }> | undefined)?.[0]?.message;
+    const content = typeof msg?.content === 'string' ? msg.content : '';
+
+    const urls = [...content.matchAll(/!\[[^\]]*\]\((https?:\/\/[^)\s]+)\)/g)].map((m) => m[1]);
+    let newContent = content;
+    let refs: string[] = [];
+    const respHeaders: Record<string, string> = { 'X-Silkroadai-Translated': 'gpt-4o-image-rehost' };
+    if (urls.length > 0) {
+        try {
+            const imgResp = await fetch(urls[0], { redirect: 'follow', signal: AbortSignal.timeout(30_000) });
+            if (imgResp.ok) {
+                const buf = Buffer.from(await imgResp.arrayBuffer());
+                const mime = imgResp.headers.get('content-type')?.split(';')[0] || 'image/png';
+                const stored = await storeGeneratedImage(req, buf, mime, buf.toString('base64'));
+                // 内容里所有 pro.filesystem.site 链接(图片 + 下载)统一换成我们的稳定 url
+                newContent = content.replace(/https?:\/\/pro\.filesystem\.site\/[^)\s"'\]]+/g, stored.url);
+                refs = hostedRefs(stored);
+                if (stored.ossFallback) respHeaders['X-Silkroadai-Oss-Fallback'] = 'yes';
+                if (stored.r2Fallback) respHeaders['X-Silkroadai-R2-Fallback'] = 'yes';
+            } else {
+                respHeaders['X-Silkroadai-Rehost'] = `skipped-${imgResp.status}`; // 保留原链接
+            }
+        } catch {
+            respHeaders['X-Silkroadai-Rehost'] = 'failed'; // 取图失败 → 保留原链接,不阻断
+        }
+    }
+    if (msg) msg.content = newContent;
+
+    if (cap) captureJsonResponse(cap, 200, (data ?? {}) as JsonRecord, refs);
+    if (wantStream) {
+        const chunk = {
+            id: (data?.id as string) ?? `chatcmpl-${Date.now()}`,
+            object: 'chat.completion.chunk',
+            created: (data?.created as number) ?? Math.floor(Date.now() / 1000),
+            model,
+            choices: [{ index: 0, delta: { role: 'assistant', content: newContent }, finish_reason: 'stop' }],
+        };
+        respHeaders['content-type'] = 'text/event-stream';
+        return new NextResponse(`data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`, {
+            status: 200,
+            headers: respHeaders,
+        });
+    }
+    return NextResponse.json(data ?? {}, { status: 200, headers: respHeaders });
+}
+
 /** 非 Gemini 图片(gpt-image-2 等)multipart 转发 → 返回【原始】响应供 reshape。
  *  req.body 已被 formData() 消费,转发已解析的 FormData;删原 content-type 让 fetch
  *  按重建 FormData 重生 boundary。 */
@@ -946,6 +1017,12 @@ function ratioToSize(aspectRatio: string, size: string): string | null {
     const sz = size.trim();
     const ratio = ASPECT_RATIO_RE.test(ar) ? ar : ASPECT_RATIO_RE.test(sz) ? sz : '';
     return ratio ? aspectToPixelSize(ratio) : null;
+}
+/** 走 gpt-image(OpenAI Images 契约、zhiyunai 上游)那套适配的模型:官方 `gpt-image*` +
+ *  我们自设的 `az-gpt-image*` 别名(如 az-gpt-image-2 ¥2.2,new-api model_mapping 翻成 gpt-image-2 发上游)。
+ *  这些都要在代理层做同样的适配(剥 response_format / 比例转 size / n 强转 / image[] / 图床 / chat 翻译)。 */
+function isGptImageModel(model: string): boolean {
+    return model.startsWith('gpt-image') || model.startsWith('az-gpt-image');
 }
 /** 旧 czeq SKU 名 gpt-image-2-{1,2,4}k 只是别名(zhiyunai 上游只有 gpt-image-2 一个模型,分辨率靠
  *  size 像素控制)→ 翻成 gpt-image-2 + 对应像素 size(1k→1024² / 2k→2048² / 4k→3840x2160)。
@@ -1174,7 +1251,7 @@ async function handleImagesDalle(
             // model 非我们的 Gemini 生图 → 重建 FormData 透传(保留 gpt-image-2 等)
             if (!(model in GEMINI_IMAGE_MODELS)) {
                 // gpt-image:剥 response_format + 把比例(aspect_ratio / "16:9" 形态 size)翻成像素 size
-                if (model.startsWith('gpt-image')) {
+                if (isGptImageModel(model)) {
                     normalizeGptImageForm(form);
                     sizeRaw = String(form.get('size') ?? '');
                 }
@@ -1189,7 +1266,7 @@ async function handleImagesDalle(
                 try {
                     // 统一入口:gpt-image 按有无输入图分流到上游 edits/generations(与调用 path 无关);
                     // 其余非 Gemini 图片模型仍按调用 path 原样透传 multipart。
-                    const upstream = model.startsWith('gpt-image')
+                    const upstream = isGptImageModel(model)
                         ? await gptImageUpstream(req, form, null, search)
                         : await fetchUpstreamMultipart(req, form, path, search);
                     return await reshapeOpenAiImageResponse(
@@ -1198,7 +1275,7 @@ async function handleImagesDalle(
                         sizeRaw,
                         cap,
                         req,
-                        model.startsWith('gpt-image') && wantHostedUrl,
+                        isGptImageModel(model) && wantHostedUrl,
                     );
                 } catch (e) {
                     if (e instanceof ImageUrlError) return imageError(e.message, 400, cap);
@@ -1252,13 +1329,13 @@ async function handleImagesDalle(
             if (!(model in GEMINI_IMAGE_MODELS)) {
                 // gpt-image:剥 response_format(zhiyunai 拒收 →400)+ 比例→像素 size(zhiyunai 不认
                 // aspect_ratio / "16:9" 形态 size,默认出方图)。见 normalizeGptImageJson。
-                if (model.startsWith('gpt-image')) {
+                if (isGptImageModel(model)) {
                     normalizeGptImageJson(body);
                     sizeRaw = typeof body.size === 'string' ? body.size : '';
                 }
                 try {
                     // 统一入口:gpt-image body 里带 image/image_url → 图生图 edits;否则文生图 generations。
-                    const upstream = model.startsWith('gpt-image')
+                    const upstream = isGptImageModel(model)
                         ? await gptImageUpstream(req, null, body, search)
                         : await fetchUpstreamJson(req, body, path, search);
                     return await reshapeOpenAiImageResponse(
@@ -1267,7 +1344,7 @@ async function handleImagesDalle(
                         sizeRaw,
                         cap,
                         req,
-                        model.startsWith('gpt-image') && wantHostedUrl,
+                        isGptImageModel(model) && wantHostedUrl,
                     );
                 } catch (e) {
                     if (e instanceof ImageUrlError) return imageError(e.message, 400, cap);
@@ -1636,15 +1713,23 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
         if (model in GEMINI_IMAGE_MODELS) {
             const imgCap = isMediaCaptureSkipped() ? null : cap;
             if (imgCap) recordRequestBody(imgCap, JSON.stringify(body), model, body.stream === true);
-            return handleGeminiImage(req, body, model, imgCap);
+            return withKeepalive(handleGeminiImage(req, body, model, imgCap));
         }
 
         // Branch 1.1: gpt-image-2(图片模型)被当 chat 模型调 → 翻译到 Images 接口(否则上游
         // 400「The requested operation is unsupported」)。同 Gemini,出图包成 chat.completion 回复。
-        if (model.startsWith('gpt-image')) {
+        if (isGptImageModel(model)) {
             const imgCap = isMediaCaptureSkipped() ? null : cap;
             if (imgCap) recordRequestBody(imgCap, JSON.stringify(body), model, body.stream === true);
-            return handleGptImageChat(req, body, model, imgCap);
+            return withKeepalive(handleGptImageChat(req, body, model, imgCap));
+        }
+
+        // Branch 1.2: gpt-4o-image(zhiyunai chat 生图)→ 透传对话,但把返回的 CDN 图片 url 转存图床/客户 OSS,
+        // 返回我们的稳定 url(pro.filesystem.site 链接会过期)。计费不变(new-api 按 chat token 扣)。
+        if (model.startsWith('gpt-4o-image')) {
+            const imgCap = isMediaCaptureSkipped() ? null : cap;
+            if (imgCap) recordRequestBody(imgCap, JSON.stringify(body), model, body.stream === true);
+            return withKeepalive(handleGpt4oImageChat(req, body, model, imgCap), { sse: body.stream === true });
         }
 
         // 捕获【原始】请求体(文本路径;clamp 分支也存未钳的,记录客户真实输入,brief §4)
@@ -1677,7 +1762,7 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
 
     // DALL·E 兼容图像接口:Gemini 生图模型翻译,其余(gpt-image-2 等)透传
     if ((path === '/images/edits' || path === '/images/generations') && req.method === 'POST') {
-        return handleImagesDalle(req, path, search, cap);
+        return withKeepalive(handleImagesDalle(req, path, search, cap));
     }
 
     // 视频轮询完成后:按客户自定义 OSS 转存(详见 handleVideoPoll)
