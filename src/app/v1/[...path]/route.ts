@@ -70,6 +70,7 @@ import {
     anthropicToOpenAiChat,
     translateAnthropicSseToOpenAi,
 } from './claude-chat-cache';
+import { withKeepalive } from './keepalive';
 
 // Next.js: 强制动态 + Node runtime(需要流式 fetch duplex)
 export const dynamic = 'force-dynamic';
@@ -1712,7 +1713,7 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
         if (model in GEMINI_IMAGE_MODELS) {
             const imgCap = isMediaCaptureSkipped() ? null : cap;
             if (imgCap) recordRequestBody(imgCap, JSON.stringify(body), model, body.stream === true);
-            return handleGeminiImage(req, body, model, imgCap);
+            return withKeepalive(handleGeminiImage(req, body, model, imgCap));
         }
 
         // Branch 1.1: gpt-image-2(图片模型)被当 chat 模型调 → 翻译到 Images 接口(否则上游
@@ -1720,7 +1721,7 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
         if (isGptImageModel(model)) {
             const imgCap = isMediaCaptureSkipped() ? null : cap;
             if (imgCap) recordRequestBody(imgCap, JSON.stringify(body), model, body.stream === true);
-            return handleGptImageChat(req, body, model, imgCap);
+            return withKeepalive(handleGptImageChat(req, body, model, imgCap));
         }
 
         // Branch 1.2: gpt-4o-image(zhiyunai chat 生图)→ 透传对话,但把返回的 CDN 图片 url 转存图床/客户 OSS,
@@ -1728,7 +1729,7 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
         if (model.startsWith('gpt-4o-image')) {
             const imgCap = isMediaCaptureSkipped() ? null : cap;
             if (imgCap) recordRequestBody(imgCap, JSON.stringify(body), model, body.stream === true);
-            return handleGpt4oImageChat(req, body, model, imgCap);
+            return withKeepalive(handleGpt4oImageChat(req, body, model, imgCap), { sse: body.stream === true });
         }
 
         // 捕获【原始】请求体(文本路径;clamp 分支也存未钳的,记录客户真实输入,brief §4)
@@ -1761,7 +1762,7 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
 
     // DALL·E 兼容图像接口:Gemini 生图模型翻译,其余(gpt-image-2 等)透传
     if ((path === '/images/edits' || path === '/images/generations') && req.method === 'POST') {
-        return handleImagesDalle(req, path, search, cap);
+        return withKeepalive(handleImagesDalle(req, path, search, cap));
     }
 
     // 视频轮询完成后:按客户自定义 OSS 转存(详见 handleVideoPoll)
