@@ -95,6 +95,11 @@ const AGENTS: AgentSection[] = [
         blurb: 'gpt-image-2 · OpenAI Images API · 文生图 + 图生图 · Azure 官方稳定 · 高并发 · 按 token 计费(¥1.3=官方$1)。',
     },
     {
+        id: 'api-async-image',
+        label: '异步生图 · 大图免超时',
+        blurb: '大图/批量生成:图片接口加 ?async=true 秒回 task_id,轮询或 webhook 拿结果 —— 免长连接超时。文生图 / 图生图 / gpt-image / Gemini 通用。',
+    },
+    {
         id: 'api-billing',
         label: '计费 · 账户 · 网络',
         blurb: '余额 / 充值 / 用量明细入口 + 网络与流式调用建议。',
@@ -1732,11 +1737,228 @@ with open("edited.png", "wb") as f:
                     </div>
                 </section>
 
-                {/* ─── 14 · 计费 · 账户 · 网络 ─── */}
-                <section id="api-billing" className="mt-12 mb-10 scroll-mt-20">
+                {/* ─── 14 · 异步生图 · 大图/批量免超时 ─── */}
+                <section id="api-async-image" className="mt-12 mb-10 scroll-mt-20">
                     <div className="flex items-baseline justify-between flex-wrap gap-2 mb-4 pb-3 border-b-2 border-brand-accent">
                         <h2 className="m-0 text-2xl font-semibold text-navy">
                             <span className="text-brand-accent font-bold mr-3 tabular-nums">14</span>
+                            异步生图 · 大图/批量免超时
+                        </h2>
+                    </div>
+                    <p className="m-0 mb-4 text-sm text-ink leading-relaxed">
+                        4K / 高质量图生成可能耗时 1–4 分钟,同步长连接容易在你或中间层(反向代理 / 云网关)撞
+                        <strong className="text-navy">超时</strong>。异步模式:提交
+                        <strong className="text-navy">秒回一个 task_id</strong>(不占长连接),之后用 task_id
+                        <strong className="text-navy">轮询</strong>结果,或配一个{' '}
+                        <strong className="text-navy">webhook</strong> 让我们在完成时主动回调你。对所有走{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            /v1/images/*
+                        </code>{' '}
+                        的模型都生效(gpt-image-2、Gemini 生图等),文生图 / 图生图都支持。
+                    </p>
+
+                    <div className="mt-1 mb-4 rounded-lg border-l-4 border-brand-accent bg-paper-muted px-4 py-3 text-sm text-ink">
+                        🔀 <strong className="text-navy">用法</strong>:在原来的图片接口后加一个 query 参数{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            ?async=true
+                        </code>{' '}
+                        即可 —— 请求 body 和同步调用<strong className="text-navy">完全一样</strong>
+                        ,只是返回从「图片」变成「task_id」。
+                    </div>
+
+                    <p className="m-0 mb-2 text-sm font-medium text-navy">三个接口</p>
+                    <div className="rounded-lg overflow-hidden border border-brand-border bg-surface mb-4">
+                        <table className="w-full border-collapse text-sm">
+                            <thead>
+                                <tr className="bg-paper-muted text-muted-ink">
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        接口
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        作用
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">
+                                        POST /v1/images/generations?async=true
+                                    </td>
+                                    <td className="px-4 py-3 text-ink">文生图,提交 → 秒回 task_id</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">
+                                        POST /v1/images/edits?async=true
+                                    </td>
+                                    <td className="px-4 py-3 text-ink">
+                                        图生图(multipart:image + prompt + model),提交 → 秒回 task_id
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">
+                                        GET /v1/images/tasks/{'{task_id}'}
+                                    </td>
+                                    <td className="px-4 py-3 text-ink">查询结果:IN_PROGRESS / SUCCESS / FAILURE</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <p className="m-0 mb-2 text-sm font-medium text-navy">Query 参数</p>
+                    <div className="rounded-lg overflow-hidden border border-brand-border bg-surface mb-4">
+                        <table className="w-full border-collapse text-sm">
+                            <thead>
+                                <tr className="bg-paper-muted text-muted-ink">
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        参数
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        必填
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        说明
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">async</td>
+                                    <td className="px-4 py-3 text-ink align-top">✓</td>
+                                    <td className="px-4 py-3 text-ink">
+                                        填{' '}
+                                        <code className="font-mono text-xs bg-paper-muted px-1 rounded text-navy">
+                                            true
+                                        </code>{' '}
+                                        启用异步(不填 = 原同步行为不变)
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">webhook</td>
+                                    <td className="px-4 py-3 text-ink align-top">—</td>
+                                    <td className="px-4 py-3 text-ink">
+                                        公网 http(s) 回调地址;任务完成时我们 POST 结果过去(见下方 webhook 段)
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <p className="m-0 mb-4 text-xs text-minor-ink">
+                        body 参数(model / prompt / size / quality / image …)与同步接口完全一致,见上一章。
+                    </p>
+
+                    <p className="m-0 mb-2 text-sm font-medium text-navy">调用示例(curl)</p>
+                    <CodeBlock language="bash">
+                        {`# ① 提交(文生图;图生图用 /v1/images/edits + multipart,加同一个 ?async=true)
+curl "${OPENAI_BASE}/images/generations?async=true" \\
+  -H "Authorization: Bearer sk-你的KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "model": "gpt-image-2", "prompt": "一只在炒菜的小猫", "size": "1024x1024" }'
+# → { "code":"success", "data":{ "task_id":"3dad96708a77…", "status":"IN_PROGRESS" } }
+
+# ② 轮询(每几秒一次,直到 status = SUCCESS / FAILURE)
+curl "${OPENAI_BASE}/images/tasks/3dad96708a77…" \\
+  -H "Authorization: Bearer sk-你的KEY"`}
+                    </CodeBlock>
+
+                    <p className="m-0 mb-2 text-sm font-medium text-navy">查询响应结构</p>
+                    <CodeBlock language="json">
+                        {`{
+  "code": "success",
+  "data": {
+    "task_id": "3dad96708a77485e97ac7ef652796d7b",
+    "status": "SUCCESS",              // IN_PROGRESS / SUCCESS / FAILURE
+    "fail_reason": "",                // FAILURE 时填失败原因
+    "submit_time": 1758993864,
+    "finish_time": 1758993885,
+    "progress": "100%",
+    "data": {                         // ← 内层 = 标准图片结果
+      "data": [ { "url": "https://images.silkroadai.io/gen/xxxx.png" } ],
+      "model": "gpt-image-2",
+      "created": 1758993885
+    }
+  }
+}
+// 成功后图片 URL 在 data.data.data[0].url`}
+                    </CodeBlock>
+
+                    <p className="m-0 mb-2 mt-4 text-sm font-medium text-navy">Python(提交 + 轮询封装)</p>
+                    <CodeBlock language="python">
+                        {`import time, requests
+BASE = "https://ai.silkroadai.io/v1"
+H = {"Authorization": "Bearer sk-你的KEY"}
+
+# 提交
+task_id = requests.post(
+    f"{BASE}/images/generations?async=true", headers=H,
+    json={"model": "gpt-image-2", "prompt": "一只在炒菜的小猫", "size": "1024x1024"},
+).json()["data"]["task_id"]
+
+# 轮询
+while True:
+    d = requests.get(f"{BASE}/images/tasks/{task_id}", headers=H).json()["data"]
+    if d["status"] == "SUCCESS":
+        print("图片:", d["data"]["data"][0]["url"]); break
+    if d["status"] == "FAILURE":
+        print("失败:", d["fail_reason"]); break
+    time.sleep(3)`}
+                    </CodeBlock>
+
+                    <h3 className="m-0 mt-6 mb-2 text-base font-semibold text-navy">webhook 回调(可选,免轮询)</h3>
+                    <p className="m-0 mb-3 text-sm text-ink leading-relaxed">
+                        提交时带上{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            &amp;webhook=你的公网地址
+                        </code>
+                        ,任务完成时(成功或失败)我们会向该地址 POST 一份结果,你就不用轮询了:
+                    </p>
+                    <CodeBlock language="bash">
+                        {`curl "${OPENAI_BASE}/images/generations?async=true&webhook=https://你的域名/callback" \\
+  -H "Authorization: Bearer sk-你的KEY" -H "Content-Type: application/json" \\
+  -d '{ "model": "gpt-image-2", "prompt": "一只在炒菜的小猫" }'`}
+                    </CodeBlock>
+                    <p className="m-0 mb-2 mt-3 text-sm text-ink leading-relaxed">我们 POST 到你 webhook 的内容:</p>
+                    <CodeBlock language="json">
+                        {`{
+  "topic": "image_task_completed",
+  "data": { /* 与查询响应的 data 完全一致:含 status、fail_reason、data.data[0].url 等 */ }
+}`}
+                    </CodeBlock>
+                    <p className="m-0 mt-3 mb-4 text-xs text-minor-ink">
+                        webhook 必须是<strong className="text-navy">公网 http(s) 地址</strong>(不接受 localhost / 内网
+                        IP,提交时会 400 拒绝)。投递失败自动重试 3 次;webhook
+                        只是通知,任务结果始终可用上面的查询接口拿到。
+                    </p>
+
+                    <div className="rounded-lg border-l-4 border-brand-accent bg-paper-muted px-4 py-3 text-sm text-ink">
+                        📌 <strong className="text-navy">速查</strong>:图片接口后加{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            ?async=true
+                        </code>{' '}
+                        → 秒回{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            task_id
+                        </code>{' '}
+                        →{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            GET /v1/images/tasks/{'{task_id}'}
+                        </code>{' '}
+                        轮询(或加{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            &amp;webhook=
+                        </code>{' '}
+                        收回调)· 图在{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            data.data.data[0].url
+                        </code>{' '}
+                        · Key 用你在 /keys 拿的即可 · Gemini 生图填对应 model 名,不要用原生 /v1beta。
+                    </div>
+                </section>
+
+                {/* ─── 15 · 计费 · 账户 · 网络 ─── */}
+                <section id="api-billing" className="mt-12 mb-10 scroll-mt-20">
+                    <div className="flex items-baseline justify-between flex-wrap gap-2 mb-4 pb-3 border-b-2 border-brand-accent">
+                        <h2 className="m-0 text-2xl font-semibold text-navy">
+                            <span className="text-brand-accent font-bold mr-3 tabular-nums">15</span>
                             计费 · 账户 · 网络
                         </h2>
                     </div>
@@ -1857,7 +2079,7 @@ curl ${OPENAI_BASE}/dashboard/billing/usage \\
                 <section id="seedance" className="mt-12 mb-10 scroll-mt-20">
                     <div className="flex items-baseline justify-between flex-wrap gap-2 mb-4 pb-3 border-b-2 border-brand-accent">
                         <h2 className="m-0 text-2xl font-semibold text-navy">
-                            <span className="text-brand-accent font-bold mr-3 tabular-nums">15</span>
+                            <span className="text-brand-accent font-bold mr-3 tabular-nums">16</span>
                             Seedance 2.0 · 视频生成
                         </h2>
                     </div>
@@ -2194,7 +2416,7 @@ for _ in range(120):  # 最多约 16 分钟
                 <section id="seedance-overseas" className="mt-12 mb-10 scroll-mt-20">
                     <div className="flex items-baseline justify-between flex-wrap gap-2 mb-4 pb-3 border-b-2 border-brand-accent">
                         <h2 className="m-0 text-2xl font-semibold text-navy">
-                            <span className="text-brand-accent font-bold mr-3 tabular-nums">16</span>
+                            <span className="text-brand-accent font-bold mr-3 tabular-nums">17</span>
                             Seedance 海外满血 · 高质量视频
                         </h2>
                     </div>
