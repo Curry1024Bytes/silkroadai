@@ -162,3 +162,45 @@ describe('/docs page — page-level metadata', () => {
         expect((meta.description as string).length).toBeGreaterThan(20);
     });
 });
+
+describe('/docs page — W10 API 契约三件套(流式契约 / 模型目录 / key 自查)', () => {
+    const html = renderToString(<DocsPage />);
+
+    it('第 09 章追加流式契约:keep-alive 注释 + 流中断错误帧 + finish_reason 标准集', () => {
+        expect(html).toContain('keep-alive');
+        expect(html).toContain('upstream_stream_interrupted');
+        expect(html).toContain('finish_reason');
+        // 标准集里的 error 语义(流中断)必须在表里
+        expect(html).toContain('content_filter');
+    });
+
+    it('第 18 章 模型目录:anchor + silkroadai 字段 + 标记头 + 档次价格语义', () => {
+        expect(html).toContain('id="api-models-catalog"');
+        expect(html).toContain('silkroadai');
+        expect(html).toContain('X-Silkroadai-Enriched');
+        expect(html).toContain('input_cny_per_1m');
+        expect(html).toContain('context_window');
+    });
+
+    it('第 19 章 Key 自查:anchor + 账户级余额语义 + stale + recent_used_cny', () => {
+        expect(html).toContain('id="api-key-inspect"');
+        expect(html).toContain('GET /v1/key');
+        expect(html).toContain('account_balance');
+        expect(html).toContain('stale');
+        expect(html).toContain('recent_used_cny');
+        expect(html).toContain('tier_display_name');
+    });
+
+    it('第 10 章速查表登记两个新端点(带章节指引)', () => {
+        expect(html).toContain('GET /v1/models');
+        expect(html).toContain('见第 18 章');
+        expect(html).toContain('见第 19 章');
+    });
+
+    it('TOC 含两个新章节入口', () => {
+        expect(html).toContain('#api-models-catalog');
+        expect(html).toContain('#api-key-inspect');
+        expect(html).toContain('程序化价格发现');
+        expect(html).toContain('余额监控');
+    });
+});

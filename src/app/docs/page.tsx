@@ -114,6 +114,16 @@ const AGENTS: AgentSection[] = [
         label: 'Seedance 海外满血 · 高质量视频',
         blurb: '即梦 Seedance 2.0 官方满血源 — 文生 / 图生 / 首尾帧 / 参考视频 / 参考音频;需「seedance海外满血」档 key。',
     },
+    {
+        id: 'api-models-catalog',
+        label: '模型目录 · 程序化价格发现',
+        blurb: 'GET /v1/models 返回你 key 可用的模型 + silkroadai 元数据(显示名 / 厂商 / 类型 / 按档次 ¥ 价格)— 比价、选型、工具链集成。',
+    },
+    {
+        id: 'api-key-inspect',
+        label: 'Key 自查 · 余额监控',
+        blurb: 'GET /v1/key 拿 sk- 直接自查:别名 / 档次 / 账户余额(含 stale 标志)/ 近期用量 — 余额告警脚本必备,不用登后台。',
+    },
 ];
 
 const OPENAI_BASE = 'https://ai.silkroadai.io/v1';
@@ -690,6 +700,108 @@ console.log(resp.choices[0].message.content);`}
                             </tbody>
                         </table>
                     </div>
+
+                    {/* 流式(SSE)契约 — W10 #209/#210:keep-alive 注释 + 流中断错误帧 + finish_reason 标准集 */}
+                    <h3 className="m-0 mt-8 mb-2 text-base font-semibold text-navy">
+                        流式(SSE)调用契约:keep-alive 注释与流中断错误帧
+                    </h3>
+                    <p className="m-0 mb-3 text-sm text-ink leading-relaxed">
+                        流式调用(
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            stream: true
+                        </code>
+                        )时,我们的网关提供两项可靠性保障,自研 SSE 解析器需要了解:
+                    </p>
+                    <ul className="m-0 mb-4 pl-5 text-sm text-ink leading-relaxed space-y-2">
+                        <li>
+                            <strong className="text-navy">keep-alive 注释行</strong>:上游静默超过约 15 秒(如 reasoning
+                            模型思考中),流里会出现{' '}
+                            <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                                : keep-alive
+                            </code>{' '}
+                            注释行,防止中间网络设备掐断长连接。这是 SSE 规范的标准注释(以冒号开头),OpenAI / Anthropic
+                            官方 SDK 会自动忽略;<strong className="text-navy">自研解析器请跳过所有以 : 开头的行</strong>
+                            。
+                        </li>
+                        <li>
+                            <strong className="text-navy">流中断错误帧</strong>:上游连接在输出中途断开时,你不会再遇到
+                            莫名其妙的 TCP 断连 —— 流会以一个格式内合法的错误事件干净收尾。OpenAI 兼容路径收到:
+                        </li>
+                    </ul>
+                    <CodeBlock language="json">
+                        {`data: {"id":"chatcmpl-…","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"error":{"message":"Upstream connection lost mid-stream; partial output may be incomplete. Please retry.","type":"silkroadai_proxy_error","code":"upstream_stream_interrupted"}}
+
+data: [DONE]`}
+                    </CodeBlock>
+                    <p className="m-0 mt-3 mb-3 text-sm text-ink leading-relaxed">
+                        Anthropic 原生路径(/v1/messages)则收到标准的{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            event: error
+                        </code>{' '}
+                        事件。收到任一错误帧,表示
+                        <strong className="text-navy">已输出内容可能不完整,建议整轮重试</strong>
+                        (已产生的 token 正常计费,中断本身不额外收费)。
+                    </p>
+                    <p className="m-0 mb-2 text-sm text-ink leading-relaxed">
+                        另外,
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            finish_reason
+                        </code>{' '}
+                        在 OpenAI 兼容路径(/v1/chat/completions)上已做跨厂商归一,你只会见到标准集;Anthropic 原生
+                        /v1/messages 与 Gemini 原生 /v1beta 不做任何改写,收到的是上游原始值(个别上游的非标值如{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            end_turn
+                        </code>
+                        、
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            MAX_TOKENS
+                        </code>{' '}
+                        已自动映射):
+                    </p>
+                    <div className="rounded-lg overflow-hidden border border-brand-border bg-surface">
+                        <table className="w-full border-collapse text-sm">
+                            <thead>
+                                <tr className="bg-paper-muted text-muted-ink">
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        finish_reason
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        含义
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy align-top">stop</td>
+                                    <td className="px-4 py-2.5 text-ink">正常结束</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy align-top">length</td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        到达 max_tokens 上限(reasoning 模型注意:思考也消耗预算,建议 ≥2000)
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy align-top">
+                                        tool_calls / function_call
+                                    </td>
+                                    <td className="px-4 py-2.5 text-ink">模型发起工具调用</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy align-top">
+                                        content_filter
+                                    </td>
+                                    <td className="px-4 py-2.5 text-ink">上游内容过滤截断,换措辞或换模型重试</td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy align-top">error</td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        流中断错误帧(见上),内容可能不完整,建议整轮重试
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
                 </section>
 
                 {/* ─── 10 · API 接入速查 (W8 D8 customer API guide) ───
@@ -757,7 +869,7 @@ console.log(resp.choices[0].message.content);`}
                                     <td className="px-4 py-3 text-ink align-top">OpenAI 图像兼容</td>
                                     <td className="px-4 py-3 text-ink">gpt-image-2 / DALL·E 系</td>
                                 </tr>
-                                <tr>
+                                <tr className="border-b border-brand-border">
                                     <td className="px-4 py-3 font-mono text-xs text-navy align-top">
                                         /v1beta/models/&lt;model&gt;:generateContent
                                     </td>
@@ -765,6 +877,18 @@ console.log(resp.choices[0].message.content);`}
                                     <td className="px-4 py-3 text-ink">
                                         Gemini 高清图像 <strong className="text-navy">2K / 4K</strong>
                                     </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">GET /v1/models</td>
+                                    <td className="px-4 py-3 text-ink align-top">OpenAI 兼容 + 扩展</td>
+                                    <td className="px-4 py-3 text-ink">
+                                        你的 key 可用的模型 + 价格/模态元数据(见第 18 章)
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">GET /v1/key</td>
+                                    <td className="px-4 py-3 text-ink align-top">Silk Road 扩展</td>
+                                    <td className="px-4 py-3 text-ink">key 自查:档次 / 账户余额 / 用量(见第 19 章)</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -2743,6 +2867,337 @@ for _ in range(120):  # 最多约 10 分钟
                                 <tr>
                                     <td className="px-4 py-2.5 text-navy">偶发 5xx</td>
                                     <td className="px-4 py-2.5 text-ink">上游波动,稍后重试</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+
+                {/* ─── 18 · 机器可读模型目录(W10 #211)─── */}
+                <section id="api-models-catalog" className="mt-12 mb-10 scroll-mt-20">
+                    <div className="flex items-baseline justify-between flex-wrap gap-2 mb-4 pb-3 border-b-2 border-brand-accent">
+                        <h2 className="m-0 text-2xl font-semibold text-navy">
+                            <span className="text-brand-accent font-bold mr-3 tabular-nums">18</span>
+                            模型目录 · 程序化价格发现
+                        </h2>
+                    </div>
+                    <p className="m-0 mb-4 text-sm text-ink leading-relaxed">
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            GET /v1/models
+                        </code>{' '}
+                        返回<strong className="text-navy">你的 key 可调用</strong>的模型列表(标准 OpenAI
+                        形),每个条目额外带一个{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            silkroadai
+                        </code>{' '}
+                        字段:显示名、厂商、类型、上下文窗口、
+                        <strong className="text-navy">按你 key 档次解析的 ¥ 价格</strong>。 比价、选型、给 litellm /
+                        网关生成配置,都不用再人肉翻网页。OpenAI 官方 SDK 对多出来的字段自动忽略 —— 存量代码零改动。
+                    </p>
+                    <ConfigList
+                        items={[
+                            ['端点', `GET ${OPENAI_BASE}/models`],
+                            ['认证', 'Authorization: Bearer sk-…'],
+                            ['响应标记头', 'X-Silkroadai-Enriched: models'],
+                            ['目录数据刷新', '约 60 秒'],
+                        ]}
+                    />
+                    <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">响应示例(单个条目)</p>
+                    <CodeBlock language="json">
+                        {`{
+  "id": "claude-opus-4-8",
+  "object": "model",
+  "created": 1700000000,
+  "owned_by": "anthropic",
+  "silkroadai": {
+    "display_name": "Claude Opus 4.8",
+    "vendor": "Anthropic",
+    "type": "vision",
+    "vision": true,
+    "context_window": 200000,
+    "tier": "official",
+    "pricing": {
+      "input_cny_per_1m": 34,
+      "output_cny_per_1m": 170,
+      "per_image_cny": null
+    }
+  }
+}`}
+                    </CodeBlock>
+                    <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">silkroadai 字段说明</p>
+                    <div className="rounded-lg overflow-hidden border border-brand-border bg-surface">
+                        <table className="w-full border-collapse text-sm">
+                            <thead>
+                                <tr className="bg-paper-muted text-muted-ink">
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        字段
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        说明
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy align-top">display_name</td>
+                                    <td className="px-4 py-2.5 text-ink">人类可读名(目录未收录的模型无此字段)</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy align-top">vendor</td>
+                                    <td className="px-4 py-2.5 text-ink">厂商(OpenAI / Anthropic / Google / …)</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy align-top">type</td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        展示分类:chat / vision / image-gen / video / audio / embedding。
+                                        <strong className="text-navy">注意</strong>:具备视觉能力的对话旗舰归{' '}
+                                        <code className="font-mono text-xs">vision</code> 而非{' '}
+                                        <code className="font-mono text-xs">chat</code> —— 判断「能否对话」用 type ∈{' '}
+                                        {'{'}chat, vision{'}'},判断「收不收图」用下面的 vision 布尔。
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy align-top">vision</td>
+                                    <td className="px-4 py-2.5 text-ink">能力位:是否接受图片输入</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy align-top">
+                                        context_window
+                                    </td>
+                                    <td className="px-4 py-2.5 text-ink">上下文窗口(token;已知才给)</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy align-top">tier</td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        本响应价格对应的档次 = 你请求所用 key 的档次
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy align-top">pricing</td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        ¥ / 100 万 token(对话类 input / output)或 ¥ / 张(生图类 per_image_cny)。
+                                        <strong className="text-navy">该档未定价 = null</strong>
+                                        (不会拿别档价格充数);实际扣费以账单为准。
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">curl + jq:列出你可用的视觉模型和价格</p>
+                    <CodeBlock language="bash">
+                        {`curl -s ${OPENAI_BASE}/models -H "Authorization: Bearer sk-…" \\
+  | jq -r '.data[] | select(.silkroadai.vision == true)
+      | "\\(.id)\\t¥\\(.silkroadai.pricing.input_cny_per_1m // "未定价")/1M in\\t¥\\(.silkroadai.pricing.output_cny_per_1m // "-")/1M out"'`}
+                    </CodeBlock>
+                    <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">Python:选出最便宜的可对话模型</p>
+                    <CodeBlock language="python">
+                        {`import requests
+
+resp = requests.get(
+    "${OPENAI_BASE}/models",
+    headers={"Authorization": "Bearer sk-…"},
+).json()
+
+chatable = [
+    m for m in resp["data"]
+    if m.get("silkroadai", {}).get("type") in ("chat", "vision")
+    and m["silkroadai"].get("pricing")           # 该档有定价的才参与比价
+]
+cheapest = min(chatable, key=lambda m: m["silkroadai"]["pricing"]["input_cny_per_1m"])
+p = cheapest["silkroadai"]["pricing"]
+print(f'最便宜可对话模型: {cheapest["id"]}  ¥{p["input_cny_per_1m"]}/1M in, ¥{p["output_cny_per_1m"]}/1M out')`}
+                    </CodeBlock>
+                    <p className="m-0 mt-6 mb-2 text-sm font-medium text-navy">常见问题</p>
+                    <div className="rounded-lg overflow-hidden border border-brand-border bg-surface">
+                        <table className="w-full border-collapse text-sm">
+                            <tbody>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 text-navy align-top">为什么有的模型 pricing 是 null?</td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        该模型在你 key 的档次下没有登记目录价(不代表不能调用)。实际按量计费照常, 费用以
+                                        portal /usage 与账单为准。
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 text-navy align-top">价格和账单对不上?</td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        目录价是标价快照(约 60
+                                        秒刷新);实际扣费由计费引擎按调用时点结算。两者不一致时以账单为准。
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 text-navy align-top">
+                                        不同 key 看到的列表 / 价格不一样?
+                                    </td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        是。列表按 key 可调模型过滤,价格按 key 档次解析 —— 用哪个 key 查,就是哪个 key
+                                        的视角。
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-2.5 text-navy align-top">增强会影响我现有代码吗?</td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        不会。条目集合、顺序、原有字段完全不变,只是每条多了 silkroadai
+                                        字段;元数据服务异常时 自动回退为原始列表(无 X-Silkroadai-Enriched 头)。
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+
+                {/* ─── 19 · Key 自查(W10 #212)─── */}
+                <section id="api-key-inspect" className="mt-12 mb-10 scroll-mt-20">
+                    <div className="flex items-baseline justify-between flex-wrap gap-2 mb-4 pb-3 border-b-2 border-brand-accent">
+                        <h2 className="m-0 text-2xl font-semibold text-navy">
+                            <span className="text-brand-accent font-bold mr-3 tabular-nums">19</span>
+                            Key 自查 · 余额监控
+                        </h2>
+                    </div>
+                    <p className="m-0 mb-4 text-sm text-ink leading-relaxed">
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            GET /v1/key
+                        </code>{' '}
+                        用 sk- 本身即可自查这把 key 的档次、状态和<strong className="text-navy">账户余额</strong> ——
+                        写个 cron 定时轮询就是现成的余额告警,不用登后台、不用截图问客服。
+                    </p>
+                    <ConfigList
+                        items={[
+                            ['端点', `GET ${OPENAI_BASE}/key`],
+                            ['认证', 'Authorization: Bearer sk-…'],
+                            ['错误', '401 = key 无效/已撤销 · 503 = 余额服务暂不可用(稍后重试)'],
+                        ]}
+                    />
+                    <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">响应示例</p>
+                    <CodeBlock language="json">
+                        {`{
+  "data": {
+    "key_alias": "prod-openai",
+    "status": "active",
+    "tier": "official",
+    "tier_display_name": "官方稳定",
+    "created_at": "2026-05-04T00:00:00.000Z",
+    "model_limits_enabled": false,
+    "model_limits": [],
+    "account_balance": {
+      "balance_cny": 123.45,
+      "spent_cny": 67.89,
+      "currency": "CNY",
+      "stale": false
+    },
+    "key_usage": {
+      "recent_used_cny": 12.34,
+      "last_used_at": "2026-07-01T12:00:00.000Z",
+      "source": "live"
+    }
+  }
+}`}
+                    </CodeBlock>
+                    <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">字段说明</p>
+                    <div className="rounded-lg overflow-hidden border border-brand-border bg-surface">
+                        <table className="w-full border-collapse text-sm">
+                            <thead>
+                                <tr className="bg-paper-muted text-muted-ink">
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        字段
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        说明
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy align-top">
+                                        key_alias / status / tier
+                                    </td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        key 别名、状态(能查到的必为 active)、档次;tier_display_name 是档次的中文名
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy align-top">model_limits</td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        建 key 时配置的模型白名单(未启用则为空数组)
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy align-top">
+                                        account_balance
+                                    </td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        <strong className="text-navy">账户级</strong>余额与累计消费(¥)—— 预算在账户不在
+                                        key,同账户所有 key 查到的数值相同。
+                                        <code className="font-mono text-xs">stale: true</code>{' '}
+                                        表示计费源短暂不可达、数值可能滞后(监控脚本此时不要当实时值触发动作)。
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy align-top">key_usage</td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        本 key 的近期消费概览(best-effort,暂不可得时为 null):
+                                        <code className="font-mono text-xs">recent_used_cny</code> 是近期消费记录(最多约
+                                        1000 条)的合计,<strong className="text-navy">是概览不是对账口径</strong>
+                                        (对账以 portal /usage 与账单为准);
+                                        <code className="font-mono text-xs">last_used_at</code>{' '}
+                                        仅实时数据(source=live)时出现 —— 字段缺失=本次未知,null=从未使用过。
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">curl</p>
+                    <CodeBlock language="bash">
+                        {`curl -s ${OPENAI_BASE}/key -H "Authorization: Bearer sk-…" | jq .data.account_balance`}
+                    </CodeBlock>
+                    <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">Python:余额低于阈值告警(可放 cron)</p>
+                    <CodeBlock language="python">
+                        {`import requests
+
+THRESHOLD_CNY = 50
+
+resp = requests.get("${OPENAI_BASE}/key", headers={"Authorization": "Bearer sk-…"})
+if resp.status_code == 503:
+    print("余额服务暂不可用,下轮再查")     # 稍后重试,勿告警
+    raise SystemExit(0)
+resp.raise_for_status()
+
+bal = resp.json()["data"]["account_balance"]
+if bal["stale"]:
+    print("余额为滞后快照(stale),跳过本轮判断")
+elif bal["balance_cny"] < THRESHOLD_CNY:
+    print(f'⚠️ 余额仅 ¥{bal["balance_cny"]},请及时充值!')  # 接你的告警渠道
+else:
+    print(f'余额充足: ¥{bal["balance_cny"]}')`}
+                    </CodeBlock>
+                    <p className="m-0 mt-6 mb-2 text-sm font-medium text-navy">常见问题</p>
+                    <div className="rounded-lg overflow-hidden border border-brand-border bg-surface">
+                        <table className="w-full border-collapse text-sm">
+                            <tbody>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 text-navy align-top">几把 key 查到的余额都一样?</td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        正常。预算在账户级,key 只是访问凭证 —— 所有 key 共享同一个账户余额。
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 text-navy align-top">recent_used_cny 和后台对不上?</td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        它是近期消费概览(约 60 秒缓存 + 记录条数有上限),长期高频使用的 key
+                                        只反映最近一段;完整对账请看 portal /usage。
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 text-navy align-top">已撤销的 key 能查吗?</td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        不能,返回 401(撤销的 key 在任何端点都不可用)。
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-2.5 text-navy align-top">会被限流吗?</td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        不限流,但余额数据有约 60 秒缓存 —— 高于每分钟一次的轮询不会拿到更新的数字。
+                                    </td>
                                 </tr>
                             </tbody>
                         </table>
