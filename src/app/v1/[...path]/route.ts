@@ -1159,6 +1159,58 @@ function normalizeGptImageForm(form: FormData): void {
     form.delete('aspect_ratio');
 }
 
+// ============ 严格模式(opt-in,对标 Azure gpt-image 契约)============
+// zhiyunai(渠道 44)对不支持的参数「静默忽略 / 静默改尺寸」而非按 Azure 那样 400。客户可发
+// `X-Silkroadai-Strict: true`(或 `?strict=true`)让代理层先按 Azure 标准校验:webp/transparent/
+// 非法尺寸 → 400;`output_format=jpeg` → 服务端 png→jpeg 转码(zhiyunai 恒返 png)。非严格模式
+// 行为完全不变(不带开关 = 现状)。
+
+/** 严格模式开关:请求头 `X-Silkroadai-Strict: true` 或 query `?strict=true`。 */
+function isStrictImageMode(req: NextRequest, search: string): boolean {
+    if ((req.headers.get('x-silkroadai-strict') || '').toLowerCase() === 'true') return true;
+    return new URLSearchParams(search).get('strict') === 'true';
+}
+
+/** gpt-image 尺寸校验(逆向 ch44 zhiyunai 实测规则)。仅校验显式 WxH 像素尺寸(auto / 比例串
+ *  交给 normalize)。合规 = 两边都是 16 的倍数、1024 ≤ 长边 ≤ 3840、短边 ≤ 2160、长/短 ≤ 3:1。
+ *  返回 400 错误文案或 null(合规)。 */
+function gptImageSizeError(size: string): string | null {
+    if (!size) return null;
+    const m = size.match(/^(\d+)x(\d+)$/);
+    if (!m) return null; // 非 WxH(auto / "16:9" 等)→ 不在此校验
+    const w = Number(m[1]);
+    const h = Number(m[2]);
+    if (w % 16 !== 0 || h % 16 !== 0) return `invalid size '${size}': width and height must be multiples of 16`;
+    const long = Math.max(w, h);
+    const short = Math.min(w, h);
+    if (long < 1024) return `invalid size '${size}': minimum long edge is 1024`;
+    if (long > 3840 || short > 2160)
+        return `invalid size '${size}': maximum is 3840x2160 (long edge ≤ 3840, short edge ≤ 2160)`;
+    if (long / short > 3) return `invalid size '${size}': aspect ratio must be within 3:1`;
+    return null;
+}
+
+/** 严格模式下校验 gpt-image 入参(output_format / background / size)。返回 400 文案或 null。 */
+function strictGptImageError(outputFormat: string, background: string, size: string): string | null {
+    const of = outputFormat.toLowerCase();
+    if (of && of !== 'png' && of !== 'jpeg') return `output_format '${outputFormat}' not supported (only png / jpeg)`;
+    if (background.toLowerCase() === 'transparent') return `background 'transparent' not supported`;
+    return gptImageSizeError(size);
+}
+
+/** png base64 → jpeg base64(jimp,纯 JS 无 native 依赖,失败回退原 png,永不抛)。 */
+async function pngToJpegB64(pngB64: string): Promise<string> {
+    try {
+        const { Jimp } = await import('jimp');
+        const img = await Jimp.read(Buffer.from(pngB64, 'base64'));
+        const jpegBuf = await img.getBuffer('image/jpeg', { quality: 92 });
+        return Buffer.from(jpegBuf).toString('base64');
+    } catch (e) {
+        console.warn('[gpt-image] png→jpeg transcode failed, keeping png:', e instanceof Error ? e.message : e);
+        return pngB64;
+    }
+}
+
 /** OpenAI gpt-image 图片输出 token 估算系数:~703 tok/百万像素(校准到 1536×1024≈1106,
  *  贴近客户参考样例 1105)。号池/new-api 不回真实 usage,这是【估算值】,不等于官方计费 token。 */
 const OPENAI_IMAGE_OUTPUT_TOKENS_PER_MP = 703;
@@ -1222,6 +1274,7 @@ async function reshapeOpenAiImageResponse(
     cap: CaptureCtx | null,
     req: NextRequest | null = null,
     storeToUrl = false,
+    transcodeJpeg = false,
 ): Promise<NextResponse> {
     const text = await upstream.text();
     const headers = new Headers();
@@ -1251,6 +1304,17 @@ async function reshapeOpenAiImageResponse(
     if (out.size === undefined && outSize) out.size = outSize;
     if (out.usage === undefined) out.usage = buildEstimatedUsage(prompt, outSize);
 
+    // 严格模式 output_format=jpeg:zhiyunai 恒返 png,服务端 png→jpeg 转码(就地改 data[].b64_json,
+    // out.data 同一引用会一并反映)。失败回退原 png(pngToJpegB64 永不抛)。
+    const imgMime = transcodeJpeg ? 'image/jpeg' : 'image/png';
+    if (transcodeJpeg) {
+        for (const item of data) {
+            if (typeof item.b64_json === 'string' && item.b64_json) {
+                item.b64_json = await pngToJpegB64(item.b64_json);
+            }
+        }
+    }
+
     // opt-in(response_format:url):把 b64_json 存客户 OSS→平台 R2,响应改回 url(镜像 Gemini 生图)。
     // 默认(无 response_format / b64_json)保持 b64_json 原样 —— OpenAI gpt-image 契约,不破坏现有客户。
     let refs: string[] = [];
@@ -1262,7 +1326,7 @@ async function reshapeOpenAiImageResponse(
                 newData.push(item);
                 continue;
             }
-            const stored = await storeGeneratedImage(req, Buffer.from(b64, 'base64'), 'image/png', b64);
+            const stored = await storeGeneratedImage(req, Buffer.from(b64, 'base64'), imgMime, b64);
             const d: JsonRecord = { ...item, url: stored.url };
             delete d.b64_json;
             newData.push(d);
@@ -1330,7 +1394,18 @@ async function handleImagesDalle(
             // model 非我们的 Gemini 生图 → 重建 FormData 透传(保留 gpt-image-2 等)
             if (!(model in GEMINI_IMAGE_MODELS)) {
                 // gpt-image:剥 response_format + 把比例(aspect_ratio / "16:9" 形态 size)翻成像素 size
+                let wantJpeg = false;
                 if (isGptImageModel(model)) {
+                    // 严格模式(opt-in):先按 Azure 标准校验 output_format/background/size,不合规 → 400
+                    if (isStrictImageMode(req, search)) {
+                        const err = strictGptImageError(
+                            String(form.get('output_format') ?? ''),
+                            String(form.get('background') ?? ''),
+                            sizeRaw,
+                        );
+                        if (err) return imageError(err, 400, cap);
+                        wantJpeg = String(form.get('output_format') ?? '').toLowerCase() === 'jpeg';
+                    }
                     normalizeGptImageForm(form);
                     sizeRaw = String(form.get('size') ?? '');
                 }
@@ -1355,6 +1430,7 @@ async function handleImagesDalle(
                         cap,
                         req,
                         isGptImageModel(model) && wantHostedUrl,
+                        wantJpeg,
                     );
                 } catch (e) {
                     if (e instanceof ImageUrlError) return imageError(e.message, 400, cap);
@@ -1408,7 +1484,19 @@ async function handleImagesDalle(
             if (!(model in GEMINI_IMAGE_MODELS)) {
                 // gpt-image:剥 response_format(zhiyunai 拒收 →400)+ 比例→像素 size(zhiyunai 不认
                 // aspect_ratio / "16:9" 形态 size,默认出方图)。见 normalizeGptImageJson。
+                let wantJpeg = false;
                 if (isGptImageModel(model)) {
+                    // 严格模式(opt-in):先按 Azure 标准校验 output_format/background/size,不合规 → 400
+                    if (isStrictImageMode(req, search)) {
+                        const err = strictGptImageError(
+                            typeof body.output_format === 'string' ? body.output_format : '',
+                            typeof body.background === 'string' ? body.background : '',
+                            sizeRaw,
+                        );
+                        if (err) return imageError(err, 400, cap);
+                        wantJpeg =
+                            (typeof body.output_format === 'string' ? body.output_format : '').toLowerCase() === 'jpeg';
+                    }
                     normalizeGptImageJson(body);
                     sizeRaw = typeof body.size === 'string' ? body.size : '';
                 }
@@ -1424,6 +1512,7 @@ async function handleImagesDalle(
                         cap,
                         req,
                         isGptImageModel(model) && wantHostedUrl,
+                        wantJpeg,
                     );
                 } catch (e) {
                     if (e instanceof ImageUrlError) return imageError(e.message, 400, cap);

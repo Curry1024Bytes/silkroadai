@@ -3301,3 +3301,89 @@ describe('/v1 proxy — 异步生图(?async=true)', () => {
         expect(payload.data.data.data[0].url).toBe('https://images.silkroadai.io/gen/x.png');
     });
 });
+
+describe('/v1 proxy — 严格模式 Azure gpt-image 合规(opt-in)', () => {
+    beforeEach(() => {
+        mockFetch.mockResolvedValue(
+            new Response(JSON.stringify({ created: 1, data: [{ b64_json: 'QUJD' }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+    });
+    const strictBody = (body: Record<string, unknown>) =>
+        makeReq('/images/generations', {
+            body: { model: 'gpt-image-2', prompt: 'x', ...body },
+            headers: { 'x-silkroadai-strict': 'true' },
+        });
+
+    it('严格 + output_format=webp → 400,不打上游', async () => {
+        const res = await POST(strictBody({ output_format: 'webp' }), ctx('images', 'generations'));
+        expect(res.status).toBe(400);
+        expect(JSON.stringify(await res.json())).toMatch(/output_format/);
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('严格 + background=transparent → 400', async () => {
+        const res = await POST(strictBody({ background: 'transparent' }), ctx('images', 'generations'));
+        expect(res.status).toBe(400);
+        expect(JSON.stringify(await res.json())).toMatch(/transparent/);
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it.each(['1024x641', '1024x648', '3200x1024', '3856x2160', '3840x2176', '512x512'])(
+        '严格 + 非法尺寸 %s → 400',
+        async (size) => {
+            const res = await POST(strictBody({ size }), ctx('images', 'generations'));
+            expect(res.status).toBe(400);
+            expect(mockFetch).not.toHaveBeenCalled();
+        },
+    );
+
+    it.each(['1024x640', '3072x1024', '3840x2160', '1536x1024', '2048x2048', '1280x720'])(
+        '严格 + 合规尺寸 %s → 放行(打上游 200)',
+        async (size) => {
+            const res = await POST(strictBody({ size }), ctx('images', 'generations'));
+            expect(res.status).toBe(200);
+            expect(mockFetch).toHaveBeenCalled();
+        },
+    );
+
+    it('?strict=true(query 开关)也生效 → webp 400', async () => {
+        const res = await POST(
+            makeReq('/images/generations?strict=true', {
+                body: { model: 'gpt-image-2', prompt: 'x', output_format: 'webp' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(400);
+    });
+
+    it('非严格模式:webp + 非法尺寸 → 不 400,原样放行(零回归)', async () => {
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2', prompt: 'x', output_format: 'webp', size: '1024x641' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        expect(mockFetch).toHaveBeenCalled();
+    });
+
+    it('严格 + output_format=jpeg → 服务端转码,返回 b64 是 JPEG(FFD8)', async () => {
+        const { Jimp } = await import('jimp');
+        const pngBuf = await new Jimp({ width: 4, height: 4, color: 0xff0000ff }).getBuffer('image/png');
+        const pngB64 = Buffer.from(pngBuf).toString('base64');
+        mockFetch.mockResolvedValue(
+            new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64 }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const res = await POST(strictBody({ output_format: 'jpeg' }), ctx('images', 'generations'));
+        expect(res.status).toBe(200);
+        const j = (await res.json()) as { data: Array<{ b64_json: string }> };
+        const magic = Buffer.from(j.data[0].b64_json, 'base64').subarray(0, 2);
+        expect([magic[0], magic[1]]).toEqual([0xff, 0xd8]); // JPEG SOI marker
+    });
+});
