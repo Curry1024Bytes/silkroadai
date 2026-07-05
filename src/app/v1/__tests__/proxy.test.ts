@@ -68,9 +68,30 @@ const mockGetCustomerBalance = vi.fn();
 vi.mock('@/lib/billing/customer-balance', () => ({
     getCustomerBalance: (...a: unknown[]) => mockGetCustomerBalance(...a),
 }));
+// GET /v1/key 自查端点用:档次显示名 + 本 key 用量(默认成功;失败场景用例里 Once 覆盖)
+const mockListChannelGroups = vi.fn(
+    async (..._a: unknown[]): Promise<unknown[]> => [
+        { key: 'pool', display_name: '低价号池' },
+        { key: 'official', display_name: '官方稳定' },
+    ],
+);
+vi.mock('@/lib/channel-group', () => ({
+    listEnabledChannelGroups: (...a: unknown[]) => mockListChannelGroups(...a),
+    restrictGroupsForUser: <T>(g: T[]) => g,
+}));
+const mockGetTokenUsage = vi.fn(
+    async (..._a: unknown[]): Promise<unknown> => ({
+        used_quota: BigInt(0),
+        last_used_at: null,
+        source: 'cache',
+    }),
+);
+vi.mock('@/lib/newapi/token-usage', () => ({
+    getTokenUsageWithCache: (...a: unknown[]) => mockGetTokenUsage(...a),
+}));
 
 import { GET, POST } from '../[...path]/route';
-import { USD_TO_CNY_RATE } from '@/lib/newapi/quota-units';
+import { USD_TO_CNY_RATE, quotaToCny } from '@/lib/newapi/quota-units';
 
 const NEWAPI_BASE = process.env.NEWAPI_BASE_URL || 'http://localhost:3000';
 
@@ -436,6 +457,161 @@ describe('/v1 proxy — Claude prompt-cache injection', () => {
         expect(text).not.toContain('"finish_reason":"stop"');
         expect(text.trimEnd().endsWith('data: [DONE]')).toBe(true);
         warn.mockRestore();
+    });
+});
+
+// GET /v1/key 自查端点(OpenRouter GET /api/v1/key 模式):new-api 无此端点,拦截纯增量。
+describe('/v1 proxy — GET /key 自查', () => {
+    const activeToken = {
+        id: 'tok-uuid-1',
+        user_id: 'user-uuid-1',
+        key_alias: 'prod-openai',
+        status: 'active',
+        tier: 'official',
+        created_at: new Date('2026-05-04T00:00:00Z'),
+        model_limits_enabled: false,
+        model_limits: [],
+        newapi_token_id: 42,
+        user: { newapi_user_id: 7, tenant_id: null },
+    };
+
+    it('无 Bearer → 401(不打 DB)', async () => {
+        const res = await GET(makeReq('/key', { method: 'GET' }), ctx('key'));
+        expect(res.status).toBe(401);
+        expect(mockTokenFindUnique).not.toHaveBeenCalled();
+    });
+
+    it('未知 key / 已撤销 key → 401 Invalid token(revoked 不该在任何端点可用)', async () => {
+        mockTokenFindUnique.mockResolvedValueOnce(null);
+        const res1 = await GET(
+            makeReq('/key', { method: 'GET', headers: { authorization: 'Bearer sk-unknown' } }),
+            ctx('key'),
+        );
+        expect(res1.status).toBe(401);
+
+        mockTokenFindUnique.mockResolvedValueOnce({ ...activeToken, status: 'disabled' });
+        const res2 = await GET(
+            makeReq('/key', { method: 'GET', headers: { authorization: 'Bearer sk-revoked' } }),
+            ctx('key'),
+        );
+        expect(res2.status).toBe(401);
+    });
+
+    it('active key(live 用量)→ golden 全形断言,sk- 前缀剥离反查,档次按 key 主人 tenant 解析', async () => {
+        mockTokenFindUnique.mockResolvedValueOnce(activeToken);
+        mockGetCustomerBalance.mockResolvedValueOnce({
+            balanceCny: 123.45000000000002, // 故意带浮点噪音,断言 round4 吸收
+            spentCny: 67.89,
+            stale: false,
+        });
+        mockGetTokenUsage.mockResolvedValueOnce({
+            used_quota: BigInt(720000),
+            last_used_at: new Date('2026-07-01T12:00:00Z'),
+            source: 'live',
+        });
+        const res = await GET(
+            makeReq('/key', { method: 'GET', headers: { authorization: 'Bearer sk-abc' } }),
+            ctx('key'),
+        );
+        expect(res.status).toBe(200);
+        expect(mockTokenFindUnique).toHaveBeenCalledWith(
+            expect.objectContaining({ where: { newapi_token_value: 'abc' } }),
+        );
+        // golden 全形断言:响应契约整体钉死(字段增删都得动这里)
+        expect(await res.json()).toEqual({
+            data: {
+                key_alias: 'prod-openai',
+                status: 'active',
+                tier: 'official',
+                tier_display_name: '官方稳定',
+                created_at: '2026-05-04T00:00:00.000Z',
+                model_limits_enabled: false,
+                model_limits: [],
+                account_balance: { balance_cny: 123.45, spent_cny: 67.89, currency: 'CNY', stale: false },
+                key_usage: {
+                    recent_used_cny: quotaToCny(720000),
+                    last_used_at: '2026-07-01T12:00:00.000Z', // live 数据才给(见下一用例)
+                    source: 'live',
+                },
+            },
+        });
+        // 传给用量 helper 的三元组正确(portal id / new-api user id / new-api token id)
+        expect(mockGetTokenUsage).toHaveBeenCalledWith({
+            prismaTokenId: 'tok-uuid-1',
+            newapiUserId: 7,
+            newapiTokenId: 42,
+        });
+        // 档次显示名按 key 主人的 tenant 查(平台用户 tenant_id null → 平台组)
+        expect(mockListChannelGroups).toHaveBeenCalledWith(null);
+    });
+
+    it('缓存命中(source=cache)→ last_used_at 省略(缓存写入时间≠真实最后使用,不给撒谎数据)', async () => {
+        mockTokenFindUnique.mockResolvedValueOnce(activeToken);
+        mockGetCustomerBalance.mockResolvedValueOnce({ balanceCny: 1, spentCny: 2, stale: false });
+        mockGetTokenUsage.mockResolvedValueOnce({
+            used_quota: BigInt(0),
+            last_used_at: new Date('2026-07-06T00:00:00Z'), // helper 给的是缓存写入时间
+            source: 'cache',
+        });
+        const res = await GET(
+            makeReq('/key', { method: 'GET', headers: { authorization: 'Bearer sk-abc' } }),
+            ctx('key'),
+        );
+        const { data } = (await res.json()) as { data: { key_usage: Record<string, unknown> } };
+        expect(data.key_usage.source).toBe('cache');
+        expect('last_used_at' in data.key_usage).toBe(false); // 省略 = 本次未知
+    });
+
+    it('余额陈旧兜底(new-api 不可达)→ stale:true 透出,监控脚本能分辨', async () => {
+        mockTokenFindUnique.mockResolvedValueOnce(activeToken);
+        mockGetCustomerBalance.mockResolvedValueOnce({ balanceCny: 50, spentCny: 10, stale: true });
+        const res = await GET(
+            makeReq('/key', { method: 'GET', headers: { authorization: 'Bearer sk-abc' } }),
+            ctx('key'),
+        );
+        const { data } = (await res.json()) as { data: { account_balance: { stale: boolean } } };
+        expect(data.account_balance.stale).toBe(true);
+    });
+
+    it('余额服务挂 → 503(主用途是脚本监控,不给 null 让脚本误判)', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        mockTokenFindUnique.mockResolvedValueOnce(activeToken);
+        mockGetCustomerBalance.mockRejectedValueOnce(new Error('new-api down'));
+        const res = await GET(
+            makeReq('/key', { method: 'GET', headers: { authorization: 'Bearer sk-abc' } }),
+            ctx('key'),
+        );
+        expect(res.status).toBe(503);
+        expect(warn).toHaveBeenCalledWith('[key-inspect] balance unavailable', expect.anything());
+        warn.mockRestore();
+    });
+
+    it('次要信息 best-effort:用量/档次显示名挂 → 对应字段 null,响应照常 200', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        mockTokenFindUnique.mockResolvedValueOnce(activeToken);
+        mockGetCustomerBalance.mockResolvedValueOnce({ balanceCny: 1, spentCny: 2, stale: false });
+        mockGetTokenUsage.mockRejectedValueOnce(new Error('log query flaky'));
+        mockListChannelGroups.mockRejectedValueOnce(new Error('db flaky'));
+        const res = await GET(
+            makeReq('/key', { method: 'GET', headers: { authorization: 'Bearer sk-abc' } }),
+            ctx('key'),
+        );
+        expect(res.status).toBe(200);
+        const { data } = (await res.json()) as { data: Record<string, unknown> };
+        expect(data.key_usage).toBeNull();
+        expect(data.tier_display_name).toBeNull();
+        expect(data.account_balance).toEqual({ balance_cny: 1, spent_cny: 2, currency: 'CNY', stale: false });
+        warn.mockRestore();
+    });
+
+    it('白标 tenant 的 key → 档次显示名按其 tenant 查(不是平台的牌子)', async () => {
+        mockTokenFindUnique.mockResolvedValueOnce({
+            ...activeToken,
+            user: { newapi_user_id: 7, tenant_id: 'tenant-reseller-1' },
+        });
+        mockGetCustomerBalance.mockResolvedValueOnce({ balanceCny: 1, spentCny: 2, stale: false });
+        await GET(makeReq('/key', { method: 'GET', headers: { authorization: 'Bearer sk-abc' } }), ctx('key'));
+        expect(mockListChannelGroups).toHaveBeenCalledWith('tenant-reseller-1');
     });
 });
 

@@ -54,7 +54,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
 import { prisma } from '@/lib/db';
 import { getCustomerBalance, type CustomerBalance } from '@/lib/billing/customer-balance';
-import { USD_TO_CNY_RATE } from '@/lib/newapi/quota-units';
+import { USD_TO_CNY_RATE, quotaToCny } from '@/lib/newapi/quota-units';
+import { listEnabledChannelGroups } from '@/lib/channel-group';
+import { getTokenUsageWithCache } from '@/lib/newapi/token-usage';
 import { uploadImage } from '@/lib/r2/client';
 import { objectExistsInOss, ossPublicUrl, uploadToCustomerOss } from '@/lib/oss/client';
 import { getOssConfig, resolveUserIdFromAuthHeader } from '@/lib/oss/store';
@@ -1652,6 +1654,116 @@ async function handleClaudeCachedChat(
 
 const BALANCE_PATHS = new Set(['/dashboard/billing/subscription', '/dashboard/billing/usage', '/balance']);
 
+/**
+ * GET /v1/key — key 自查端点(借鉴 OpenRouter `GET /api/v1/key`)。
+ * 客户拿 sk- 编程自查:别名 / 状态 / 档次 / 账户余额 / 本 key 累计用量,不用登后台。
+ * new-api 没有这个端点(纯透传时代这里是 404)→ 拦截是纯增量,零兼容风险。
+ *
+ * 语义:
+ * - 预算在【账户级】(gotcha #12:token 恒 unlimited_quota),余额字段叫
+ *   account_balance 明示"这是账户的、不是本 key 的";key 级只有累计消费
+ *   (60s 行缓存,best-effort);
+ * - 余额是本端点的主用途(脚本监控),拿不到就 503(与 /dashboard/billing/* 一致,
+ *   不给 null 让脚本误判);档次显示名 / key 用量是次要信息,失败给 null 不拖垮响应;
+ * - 撤销/未知 key 一律 401(与余额查询一致,revoked key 不该在任何端点可用);
+ * - 与余额查询同样在 beginCapture 之前拦截,不记请求日志。
+ */
+async function handleKeySelfInspect(req: NextRequest): Promise<NextResponse> {
+    const auth = req.headers.get('authorization') || '';
+    const m = auth.match(/^Bearer\s+(.+)$/i);
+    if (!m) return billingError('Missing bearer token', 401);
+    const raw = m[1].trim();
+    const stored = raw.startsWith('sk-') ? raw.slice(3) : raw; // DB 存无 sk- 前缀
+
+    const token = await prisma.newApiToken.findUnique({
+        where: { newapi_token_value: stored },
+        select: {
+            id: true,
+            user_id: true,
+            key_alias: true,
+            status: true,
+            tier: true,
+            created_at: true,
+            model_limits_enabled: true,
+            model_limits: true,
+            newapi_token_id: true,
+            user: { select: { newapi_user_id: true, tenant_id: true } },
+        },
+    });
+    if (!token || token.status !== 'active') return billingError('Invalid token', 401);
+
+    let bal: CustomerBalance;
+    try {
+        bal = await getCustomerBalance(token.user_id);
+    } catch (err) {
+        console.warn('[key-inspect] balance unavailable', {
+            err: err instanceof Error ? err.message : String(err),
+        });
+        return billingError('balance temporarily unavailable', 503);
+    }
+
+    // 档次显示名按 key 主人的 tenant 解析(与 /keys 页、建 key POST 同标准)——
+    // 白标 tenant 客户不能看到平台的牌子(ChannelGroup 是 @@unique([tenant_id, key]))
+    let tierDisplayName: string | null = null;
+    try {
+        const groups = await listEnabledChannelGroups(token.user.tenant_id ?? null);
+        tierDisplayName = groups.find((g) => g.key === token.tier)?.display_name ?? null;
+    } catch (err) {
+        console.warn('[key-inspect] tier display name unavailable', {
+            err: err instanceof Error ? err.message : String(err),
+        });
+    }
+
+    // 本 key 用量(60s 行缓存,best-effort):
+    // - recent_used_cny 是【近 1000 条消费日志的毛和】(token-usage.ts 的 at-a-glance
+    //   近似,不含退款、超窗即截断)—— 命名带 recent,不冒充对账口径的累计消费;
+    // - last_used_at 只在 source==='live' 时给(缓存命中时 helper 返回的是缓存写入
+    //   时间,不是真实最后使用时间 —— 机读端点不能给撒谎数据):字段省略 = 本次未知,
+    //   null = 确认从未使用。
+    let keyUsage: { recent_used_cny: number; last_used_at?: string | null; source: string } | null = null;
+    try {
+        if (token.user.newapi_user_id != null) {
+            const snap = await getTokenUsageWithCache({
+                prismaTokenId: token.id,
+                newapiUserId: token.user.newapi_user_id,
+                newapiTokenId: token.newapi_token_id,
+            });
+            keyUsage = {
+                recent_used_cny: quotaToCny(Number(snap.used_quota)),
+                ...(snap.source === 'live'
+                    ? { last_used_at: snap.last_used_at ? snap.last_used_at.toISOString() : null }
+                    : {}),
+                source: snap.source,
+            };
+        }
+    } catch (err) {
+        console.warn('[key-inspect] key usage unavailable', {
+            err: err instanceof Error ? err.message : String(err),
+        });
+    }
+
+    const round4 = (n: number) => Number(n.toFixed(4)); // 与 /v1/balance 同舍入,不漏浮点噪音
+    return NextResponse.json({
+        data: {
+            key_alias: token.key_alias,
+            status: token.status,
+            tier: token.tier,
+            tier_display_name: tierDisplayName,
+            created_at: token.created_at.toISOString(),
+            model_limits_enabled: token.model_limits_enabled,
+            model_limits: token.model_limits,
+            account_balance: {
+                balance_cny: round4(bal.balanceCny),
+                spent_cny: round4(bal.spentCny),
+                currency: 'CNY',
+                // 监控脚本必须能分辨"新鲜余额"和"new-api 不可达时的陈旧兜底值"
+                stale: bal.stale,
+            },
+            key_usage: keyUsage,
+        },
+    });
+}
+
 /** OpenAI 形错误(与 new-api 一致,客户端余额工具能识别)。 */
 function billingError(message: string, status: number): NextResponse {
     return NextResponse.json({ error: { message, type: 'new_api_error', code: '' } }, { status });
@@ -1929,6 +2041,11 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
     // key 层 → 返回占位无限额度;故在代理层用 sk- 反查账户、自答真实余额。
     if (req.method === 'GET' && BALANCE_PATHS.has(path)) {
         return handleBalanceQuery(req, path);
+    }
+
+    // key 自查(OpenRouter GET /api/v1/key 模式)。同余额查询:capture 之前拦截,不记日志。
+    if (req.method === 'GET' && path === '/key') {
+        return handleKeySelfInspect(req);
     }
 
     // 请求日志捕获(数据存储 Phase 1 第②步)。开关 off → null → 下面全程与今天
