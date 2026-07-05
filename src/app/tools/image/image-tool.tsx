@@ -5,9 +5,40 @@ import { useCallback, useEffect, useState } from 'react';
 type Mode = 'text' | 'edit';
 const ASPECTS = ['auto', '1:1', '16:9', '9:16', '4:3', '3:4', '2:3', '3:2'];
 
-function buildBody(model: string, mode: Mode, prompt: string, aspect: string, n: number, image: string): string {
+/** 分辨率(size)选项按模型给 —— gpt-image / dall-e 用 WxH,Gemini 生图用 1K/2K/4K 档。
+ *  用错格式会被上游 400,所以 model 变了就重置 size(见 ImageTool)。 */
+type SizeOpt = { v: string; label: string };
+function sizeOptionsFor(model: string): SizeOpt[] {
+    const m = model.toLowerCase();
+    if (m.includes('gpt-image') || m.includes('dall-e') || m.includes('dalle')) {
+        return [
+            { v: '', label: '默认' },
+            { v: '1024x1024', label: '1024×1024 方' },
+            { v: '1536x1024', label: '1536×1024 横' },
+            { v: '1024x1536', label: '1024×1536 竖' },
+        ];
+    }
+    // Gemini 生图:1K/2K/4K(pro 可自选;其余模型固定档时该参数被上游忽略,无害)
+    return [
+        { v: '', label: '默认' },
+        { v: '1K', label: '1K (1024)' },
+        { v: '2K', label: '2K (2048)' },
+        { v: '4K', label: '4K (4096)' },
+    ];
+}
+
+function buildBody(
+    model: string,
+    mode: Mode,
+    prompt: string,
+    aspect: string,
+    size: string,
+    n: number,
+    image: string,
+): string {
     const b: Record<string, unknown> = { model, prompt };
     if (aspect && aspect !== 'auto') b.aspect_ratio = aspect;
+    if (size) b.size = size;
     if (n > 1) b.n = n;
     if (mode === 'edit' && image) b.image = image;
     return JSON.stringify(b, null, 2);
@@ -22,6 +53,7 @@ export function ImageTool() {
     const [mode, setMode] = useState<Mode>('text');
     const [prompt, setPrompt] = useState('');
     const [aspect, setAspect] = useState('1:1');
+    const [size, setSize] = useState('');
     const [n, setN] = useState(1);
     const [image, setImage] = useState('');
     const [bodyJson, setBodyJson] = useState('');
@@ -30,9 +62,14 @@ export function ImageTool() {
     const [raw, setRaw] = useState('');
     const [err, setErr] = useState('');
 
+    // 换模型时重置分辨率 —— 不同模型 size 格式不同(WxH vs 1K/2K/4K),留旧值会被上游 400。
     useEffect(() => {
-        if (model) setBodyJson(buildBody(model, mode, prompt, aspect, n, image));
-    }, [model, mode, prompt, aspect, n, image]);
+        setSize('');
+    }, [model]);
+
+    useEffect(() => {
+        if (model) setBodyJson(buildBody(model, mode, prompt, aspect, size, n, image));
+    }, [model, mode, prompt, aspect, size, n, image]);
 
     const loadModels = useCallback(async () => {
         setErr('');
@@ -59,6 +96,23 @@ export function ImageTool() {
         const reader = new FileReader();
         reader.onload = () => setImage(String(reader.result || ''));
         reader.readAsDataURL(f);
+    }, []);
+
+    // 下载生成图:data URL 直接下;跨源 R2/OSS 链接走同源代理强制 attachment(浏览器对跨源
+    // <a download> 只会打开不下载)。
+    const downloadImage = useCallback((url: string, idx: number) => {
+        const name = `silkroadai-image-${idx + 1}`;
+        const a = document.createElement('a');
+        if (url.startsWith('data:')) {
+            a.href = url;
+            a.download = `${name}.png`;
+        } else {
+            a.href = `/api/tools/image/download?url=${encodeURIComponent(url)}&name=${encodeURIComponent(name)}`;
+            a.download = name; // 服务端会带 Content-Disposition,这里只作提示
+        }
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
     }, []);
 
     const generate = useCallback(async () => {
@@ -195,6 +249,20 @@ export function ImageTool() {
                                 </select>
                             </div>
                             <div className="flex items-center gap-2">
+                                <label className="text-sm font-medium text-navy">分辨率</label>
+                                <select
+                                    value={size}
+                                    onChange={(e) => setSize(e.target.value)}
+                                    className="rounded border border-brand-border bg-paper px-2 py-1.5 text-sm"
+                                >
+                                    {sizeOptionsFor(model).map((o) => (
+                                        <option key={o.v} value={o.v}>
+                                            {o.label}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                            <div className="flex items-center gap-2">
                                 <label className="text-sm font-medium text-navy">数量</label>
                                 <input
                                     type="number"
@@ -249,13 +317,21 @@ export function ImageTool() {
                     {imgs.length > 0 && (
                         <div className="grid grid-cols-2 gap-3">
                             {imgs.map((u, i) => (
-                                <a key={i} href={u} target="_blank" rel="noreferrer">
-                                    <img
-                                        src={u}
-                                        alt={`result ${i + 1}`}
-                                        className="w-full rounded-lg border border-brand-border"
-                                    />
-                                </a>
+                                <div key={i} className="space-y-2">
+                                    <a href={u} target="_blank" rel="noreferrer">
+                                        <img
+                                            src={u}
+                                            alt={`result ${i + 1}`}
+                                            className="w-full rounded-lg border border-brand-border"
+                                        />
+                                    </a>
+                                    <button
+                                        onClick={() => downloadImage(u, i)}
+                                        className="w-full rounded border border-brand-border px-3 py-1.5 text-sm font-medium text-navy hover:bg-paper-muted"
+                                    >
+                                        下载图片
+                                    </button>
+                                </div>
                             ))}
                         </div>
                     )}
