@@ -390,6 +390,50 @@ describe('/v1 proxy — Claude prompt-cache injection', () => {
         expect(text).toContain('"content":"Hi"');
         expect(text.trimEnd().endsWith('data: [DONE]')).toBe(true);
     });
+
+    it('cache-injected 流中途死 → finish_reason:"error" 尾帧(不是装完整的 "stop")', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const enc = new TextEncoder();
+        mockFetch.mockResolvedValueOnce(
+            new Response(
+                new ReadableStream({
+                    start(c) {
+                        c.enqueue(
+                            enc.encode(
+                                'event: message_start\ndata: {"type":"message_start","message":{"model":"claude-sonnet-4-6"}}\n\n' +
+                                    'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"par"}}\n\n',
+                            ),
+                        );
+                        // 异步 error:让读端先消费已入队字节(error() 会丢弃未读队列,真实网络也是字节先到错误后至)
+                        setTimeout(() => c.error(new Error('ECONNRESET')), 0);
+                    },
+                }),
+                { status: 200, headers: { 'content-type': 'text/event-stream' } },
+            ),
+        );
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: {
+                    model: 'claude-sonnet-4-6',
+                    stream: true,
+                    messages: [
+                        { role: 'system', content: BIG_SYS },
+                        { role: 'user', content: 'hi' },
+                    ],
+                },
+            }),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(200);
+        expect(res.headers.get('X-Silkroadai-Cache-Injected')).toBe('claude');
+        const text = await res.text();
+        expect(text).toContain('"content":"par"'); // 已产出内容保留
+        expect(text).toContain('"finish_reason":"error"');
+        expect(text).toContain('"upstream_stream_interrupted"');
+        expect(text).not.toContain('"finish_reason":"stop"');
+        expect(text.trimEnd().endsWith('data: [DONE]')).toBe(true);
+        warn.mockRestore();
+    });
 });
 
 describe('/v1 proxy — passthrough', () => {
@@ -429,6 +473,66 @@ describe('/v1 proxy — passthrough', () => {
         );
         expect(res.headers.get('content-type')).toBe('text/event-stream');
         expect(await res.text()).toBe(sse);
+    });
+
+    // SSE 流式两件套(stream-guard):上游流中途死 → 注入格式内合法的错误尾帧后干净收流,
+    // 客户端 SDK 能解析出"上游中断",而不是 TCP 层莫名断开。keep-alive 注入在
+    // src/lib/sse/__tests__/stream-guard.test.ts 单测覆盖;这里测路由接线。
+    it('SSE 透传流中途死(chat/completions)→ OpenAI 形 finish_reason:"error" 尾帧 + [DONE]', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const enc2 = new TextEncoder();
+        mockFetch.mockResolvedValueOnce(
+            new Response(
+                new ReadableStream({
+                    start(c) {
+                        c.enqueue(enc2.encode('data: {"choices":[{"delta":{"content":"par"}}]}\n\n'));
+                        // 异步 error:让读端先消费已入队字节(error() 会丢弃未读队列,真实网络也是字节先到错误后至)
+                        setTimeout(() => c.error(new Error('ECONNRESET')), 0);
+                    },
+                }),
+                { status: 200, headers: { 'content-type': 'text/event-stream' } },
+            ),
+        );
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: { model: 'gpt-5.4', stream: true, messages: [{ role: 'user', content: 'hi' }] },
+            }),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(200);
+        const text = await res.text(); // 不 throw = 干净收流
+        expect(text).toContain('par');
+        expect(text).toContain('"finish_reason":"error"');
+        expect(text.trimEnd().endsWith('data: [DONE]')).toBe(true);
+        warn.mockRestore();
+    });
+
+    it('SSE 透传流中途死(/messages 原生 Anthropic)→ event: error 尾帧', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const enc2 = new TextEncoder();
+        mockFetch.mockResolvedValueOnce(
+            new Response(
+                new ReadableStream({
+                    start(c) {
+                        c.enqueue(enc2.encode('event: content_block_delta\ndata: {"type":"content_block_delta"}\n\n'));
+                        // 异步 error:让读端先消费已入队字节(error() 会丢弃未读队列,真实网络也是字节先到错误后至)
+                        setTimeout(() => c.error(new Error('boom')), 0);
+                    },
+                }),
+                { status: 200, headers: { 'content-type': 'text/event-stream' } },
+            ),
+        );
+        const res = await POST(
+            makeReq('/messages', {
+                body: { model: 'claude-sonnet-4-6', stream: true, max_tokens: 100, messages: [] },
+            }),
+            ctx('messages'),
+        );
+        expect(res.status).toBe(200);
+        const text = await res.text();
+        expect(text).toContain('event: error\n');
+        expect(text).toContain('"type":"api_error"');
+        warn.mockRestore();
     });
 
     it('passes through upstream 502 status', async () => {

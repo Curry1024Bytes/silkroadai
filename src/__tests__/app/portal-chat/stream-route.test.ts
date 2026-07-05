@@ -140,6 +140,29 @@ describe('POST /api/portal/chat/stream', () => {
         expect(text).toContain('[DONE]');
     });
 
+    it('upstream stream dies mid-response → finish_reason:"error" tail + [DONE] (clean close, not a reset)', async () => {
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const enc = new TextEncoder();
+        spyFetch(() => {
+            return new Response(
+                new ReadableStream({
+                    start(c) {
+                        c.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"par"}}]}\n\n'));
+                        c.error(new Error('ECONNRESET'));
+                    },
+                }),
+                { status: 200, headers: { 'Content-Type': 'text/event-stream; charset=utf-8' } },
+            );
+        });
+        const res = await POST(makeReq(VALID_BODY));
+        expect(res.status).toBe(200);
+        const text = await res.text(); // 不 throw = guard 干净收流
+        expect(text).toContain('par');
+        expect(text).toContain('"finish_reason":"error"');
+        expect(text.trimEnd().endsWith('data: [DONE]')).toBe(true);
+        warnSpy.mockRestore();
+    });
+
     it('forwards the system token as a Bearer header', async () => {
         let seenAuth: string | undefined;
         spyFetch((_url, init) => {

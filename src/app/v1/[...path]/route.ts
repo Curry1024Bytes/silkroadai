@@ -34,7 +34,8 @@
  *      上游报错原样透传(详见 handleImagesDalle / reshapeOpenAiImageResponse)。
  *
  * 4. 其余一切(/messages、/models、/embeddings、其他模型的 /chat/completions…)
- *    → 原样透传 new-api,streaming SSE 不缓冲(直接 forward upstream ReadableStream)。
+ *    → 原样透传 new-api,streaming SSE 不缓冲(forward upstream ReadableStream,外面
+ *    包一层 stream-guard:静默期 keep-alive 注释 + 流中断错误尾帧,见 @/lib/sse/stream-guard)。
  *
  * 边界:
  * - 本文件不做鉴权 — Authorization 头原样透传,new-api 自己校验 sk-xxx。
@@ -71,6 +72,7 @@ import {
     translateAnthropicSseToOpenAi,
 } from './claude-chat-cache';
 import { withKeepalive } from './keepalive';
+import { guardSseResponse, guardSseStream, type SseErrorShape } from '@/lib/sse/stream-guard';
 import {
     newImageTaskId,
     createImageTask,
@@ -318,6 +320,16 @@ async function geminiGenerateWithFailover(req: NextRequest, model: string, reque
     return send(backup); // 其余非 2xx → 切候补
 }
 
+/** SSE 流中断时该注入哪种格式的错误事件(见 stream-guard.ts):
+ *  /chat/completions = OpenAI chunk 形;/messages = Anthropic 原生形;其余 SSE 路径
+ *  (legacy /completions 是 choices[].text 形、/responses 是 Responses 事件流)格式
+ *  各异 → null,只做 keep-alive、错误照旧传播(不注入不一定能解析的事件)。 */
+function sseShapeForPath(path: string): SseErrorShape {
+    if (path === '/chat/completions') return 'openai';
+    if (path === '/messages') return 'anthropic';
+    return null;
+}
+
 function passthroughResponse(upstream: Response): NextResponse {
     const headers = new Headers();
     upstream.headers.forEach((value, key) => {
@@ -383,7 +395,22 @@ async function forwardToNewApi(
             /* diagnostic only */
         }
     }
-    return cap ? captureResponse(cap, upstream) : passthroughResponse(upstream);
+    // SSE 流式两件套:静默期 keep-alive 注释 + 流中断错误事件(guard 在 capture 之前,
+    // 请求日志记到的 = 客户实际收到的字节,含错误尾帧)。非 SSE / 非 2xx 原样返回。
+    // onInterrupted:守卫把上游死转成尾帧 + 干净收流后,tee 只看到正常 done —— 不回填
+    // 的话中断流在请求日志的结构化字段(incomplete/errorParts)里会隐身。
+    const guarded = guardSseResponse(upstream, {
+        shape: sseShapeForPath(path),
+        label: `proxy${path}`,
+        model: typeof bodyOverride?.model === 'string' ? bodyOverride.model : undefined,
+        onInterrupted: cap
+            ? (err) => {
+                  cap.incomplete = true;
+                  cap.errorParts.push('upstream-read:' + (err instanceof Error ? err.message : String(err)));
+              }
+            : undefined,
+    });
+    return cap ? captureResponse(cap, guarded) : passthroughResponse(guarded);
 }
 
 /** image_url 解析失败 → 客户侧 400(OpenAI invalid_request_error 形) */
@@ -1608,7 +1635,14 @@ async function handleClaudeCachedChat(
     // 流式:逐事件翻 Anthropic SSE → OpenAI chunk
     if (wantStream) {
         if (!upstream.body) return forwardToNewApi(req, originalBody, path, search, cap);
-        const translated = translateAnthropicSseToOpenAi(upstream.body, model);
+        // 守卫在这条路径上只负责 keep-alive:翻译器内部把上游读错/无 message_stop 的
+        // 提前收流都转成 finish_reason:"error" 尾帧后【干净 close】(它拿得到 id/model,
+        // 尾帧形状更完整),错误不会传播到这里;shape 仅作防御性兜底。
+        const translated = guardSseStream(translateAnthropicSseToOpenAi(upstream.body, model), {
+            shape: 'openai',
+            model,
+            label: 'proxy/chat/completions#cache-injected',
+        });
         const headers = new Headers({
             'content-type': 'text/event-stream; charset=utf-8',
             'cache-control': 'no-cache',

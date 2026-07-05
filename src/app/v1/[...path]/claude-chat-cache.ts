@@ -207,10 +207,39 @@ export function translateAnthropicSseToOpenAi(
     return new ReadableStream<Uint8Array>({
         async start(controller) {
             let ended = false;
+            // 是否收到过"生成已完整结束"的信号(message_delta.stop_reason / message_stop)。
+            // 没有它就收流 = 中断(连接死/上游 error 事件),必须以 finish_reason:"error"
+            // 收尾,不能包装成 "stop" —— 否则截断的回答与完整回答无法区分(SSE 两件套的
+            // 核心目标)。上游死时本流干净 close,外层 stream-guard 看不到 error,所以
+            // 错误尾帧由这里(拿得到 id/created/model)自己发。
+            let sawStopSignal = false;
             const finish = () => {
                 if (ended) return;
                 ended = true;
                 controller.enqueue(chunk({}, finishReason));
+                controller.enqueue(DONE);
+                controller.close();
+            };
+            const interrupted = (msg: string) => {
+                if (ended) return;
+                ended = true;
+                console.warn('[claude-cache] upstream stream interrupted', { model: respModel, msg });
+                controller.enqueue(
+                    encoder.encode(
+                        `data: ${JSON.stringify({
+                            id,
+                            object: 'chat.completion.chunk',
+                            created,
+                            model: respModel,
+                            choices: [{ index: 0, delta: {}, finish_reason: 'error' }],
+                            error: {
+                                message: msg,
+                                type: 'silkroadai_proxy_error',
+                                code: 'upstream_stream_interrupted',
+                            },
+                        })}\n\n`,
+                    ),
+                );
                 controller.enqueue(DONE);
                 controller.close();
             };
@@ -251,21 +280,30 @@ export function translateAnthropicSseToOpenAi(
                                 controller.enqueue(chunk({ content: text }, null));
                         } else if (t === 'message_delta') {
                             const delta = data.delta as JsonRecord | undefined;
-                            if (delta && delta.stop_reason != null) finishReason = mapStopReason(delta.stop_reason);
+                            if (delta && delta.stop_reason != null) {
+                                finishReason = mapStopReason(delta.stop_reason);
+                                sawStopSignal = true; // 生成已完整,之后即使连接死也算完整回答
+                            }
                         } else if (t === 'message_stop') {
+                            sawStopSignal = true;
                             finish();
                             return;
                         } else if (t === 'error') {
-                            // 上游流中错误:尽力收尾,客户至少拿到已产出的内容 + 正常结束
-                            finish();
+                            // 上游流中错误事件:透出错误(finish_reason:"error" + error 对象),
+                            // 客户拿到已产出内容 + 明确的"中断了,可重试"信号
+                            const errObj = data.error as JsonRecord | undefined;
+                            interrupted(String(errObj?.message ?? 'upstream sent an error event mid-stream'));
                             return;
                         }
                         // 忽略 ping / content_block_start / content_block_stop
                     }
                 }
-                finish();
-            } catch {
-                finish();
+                // 上游没发 message_stop / stop_reason 就关流 = 半途断开(连接死的另一副
+                // 面孔:干净 close 而非 read error),同样必须标 error 不能装 "stop"
+                if (sawStopSignal) finish();
+                else interrupted('upstream stream ended without message_stop; output may be incomplete');
+            } catch (err) {
+                interrupted(`upstream connection lost mid-stream: ${err instanceof Error ? err.message : String(err)}`);
             }
         },
         cancel() {
