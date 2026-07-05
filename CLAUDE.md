@@ -183,6 +183,16 @@ silkroadai/
 - [ ] 后续步 — retention 清理 job + 输入图字节拆存(`input_image_r2_keys`)+ `/v1beta` 盲区补捕(若 operator 要)+ 导出/脱敏 + 给租户管理员开(tenant scope)(各自独立 PR)。
 - [ ] **开启捕获(operator 操作,非代码)**:prod `.env` 配 `R2_LOG_BUCKET_NAME`(私有 bucket)+ `REQUEST_LOGGING=on`(可选 `REQUEST_LOGGING_SAMPLE_RATE`)→ 重启 portal。建议小流量先验真机逐字流式 + 客户断开。
 
+### W10(代理层 API 体验四连 — 借鉴 OpenRouter,2026-07-06 晚维护窗口部署)
+
+> 源于 OpenRouter 核心技术调研。四个 stacked PR 各过 3 视角对抗评审;合并踩到 stacked-squash 坑(合 #209 删基分支 → GitHub 把 #210 **CLOSED** 而非重定向;修法 = 恢复基分支 reopen + 全部重定向 main + 逐段 `rebase --onto` 新 main 再合)。**部署 2026-07-06(VPS HEAD `b738c99`)+ Caddy `@portalv1` 扩成 `path /v1/* /v1beta/*`(回滚备份 `Caddyfile.bak-w10-v1beta`);smoke 5/5**。
+
+- [x] #209 — **SSE 流式两件套**(`src/lib/sse/stream-guard.ts`):上游静默 >15s 注 `: keep-alive` 注释(防 CF ~100s 掐线;只在行边界注)+ 流中断注格式内合法错误尾帧后干净收流(openai 形 `finish_reason:"error"`+`[DONE]` / anthropic 形 `event: error`;未知格式只保活)。接入 /v1/* 透传、Claude 缓存翻译流、portal /chat。**顺带修存量 bug**:claude-chat-cache 翻译器把读错/无 message_stop 收流包装成 `finish_reason:"stop"` → 按 stop 信号判定,三种中断形态都发 error 尾帧。评审教训:读错误 body 必须带钟(`controller.error()` 会丢弃未读队列)。
+- [x] #210 — **finish_reason 归一 + /v1beta native 透传**:`lib/proxy/finish-reason.ts` 只挂 /v1/chat/completions(end_turn/STOP/MAX_TOKENS/SAFETY → OpenAI 标准集,未知值保留,native 面一字不动;评审 major:SSE 变换 enqueue-less pull 连续两次空手 = 永久挂死 → pull 内循环 + `\r\n\r\n|\n\n` 双边界)。新 `src/app/v1beta/[...path]/route.ts` 纯透传(补 reqlog 盲区;**OPTIONS/CORS 必须转发**否则浏览器 Gemini SDK 全灭;x-goog-api-key/?key= 合成 Bearer 归因;media skip 生效;middleware matcher 单列 `v1beta/` 防 10MB 截断)。共享转发助手抽 `lib/proxy/forward.ts`。
+- [x] #211 — **机器可读模型目录**:GET /v1/models 逐条附加 `silkroadai` 命名空间(display_name/vendor/type/vision/context_window/按 key 档次 ¥ 价,`lib/models/machine-catalog.ts`,60s 缓存)。铁律:只加不减、精确档次命中才给价、失败原字节回退 + 2.5s 截止钟。评审 major:目录查询锁 `PLATFORM_TENANT_ID`(slug 仅 tenant 内唯一,白标自定价上线后不锁会串价)+ 只取已生效价(对齐计费侧 pickEffectivePrice)。
+- [x] #212 — **GET /v1/key 自查端点**(new-api 无此路径,拦截纯增量):sk- 自查别名/状态/档次(显示名按 key 主人 tenant)/账户余额(round4 + `stale` 标志)/近期用量。评审 major:`last_used_at` 缓存命中时是缓存写入时间 → 只 `source==='live'` 才给;`recent_used_cny` 命名不冒充对账口径。余额挂 → 503;次要信息 best-effort null。
+- [ ] `/docs` 章节(流式契约 / silkroadai 字段 / /v1/key)另起 PR;enriched 头 + 真实逐 token 流式待有余额 key 验证(unauth 通路已证)。
+
 ---
 
 ## 关键架构决策(决策已定,不要重新讨论)
