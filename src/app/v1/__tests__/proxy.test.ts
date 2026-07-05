@@ -51,9 +51,12 @@ const mockTokenFindUnique = vi.fn();
 const mockImageTaskCreate = vi.fn(async (..._a: unknown[]) => ({}));
 const mockImageTaskUpdate = vi.fn(async (..._a: unknown[]) => ({}));
 const mockImageTaskFindUnique = vi.fn(async (..._a: unknown[]): Promise<Record<string, unknown> | null> => null);
+// 机器可读模型目录:catalogModel mock(默认空目录 = 增强仍工作,pricing 全 null)
+const mockCatalogFindMany = vi.fn(async (..._a: unknown[]): Promise<unknown[]> => []);
 vi.mock('@/lib/db', () => ({
     prisma: {
         newApiToken: { findUnique: (...a: unknown[]) => mockTokenFindUnique(...a) },
+        catalogModel: { findMany: (...a: unknown[]) => mockCatalogFindMany(...a) },
         imageTask: {
             create: (...a: unknown[]) => mockImageTaskCreate(...a),
             update: (...a: unknown[]) => mockImageTaskUpdate(...a),
@@ -632,13 +635,84 @@ describe('/v1 proxy — passthrough', () => {
         expect(res.headers.get('X-Silkroadai-Clamped')).toBeNull();
     });
 
-    it('forwards GET /models untouched', async () => {
+    it('forwards GET /models untouched(上游无 JSON content-type → 不增强,原样透传)', async () => {
         mockFetch.mockResolvedValueOnce(new Response(JSON.stringify({ data: [] }), { status: 200 }));
         const res = await GET(makeReq('/models', { method: 'GET' }), ctx('models'));
         const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
         expect(url).toBe(`${NEWAPI_BASE}/v1/models`);
         expect(init.method).toBe('GET');
         expect(res.status).toBe(200);
+        expect(res.headers.get('X-Silkroadai-Enriched')).toBeNull();
+    });
+
+    // 机器可读模型目录(OpenRouter /api/v1/models 模式):上游列表逐条附加 silkroadai
+    // 元数据。纯函数契约在 machine-catalog 单测;这里测路由接线 + best-effort 回退。
+    it('GET /models(JSON)→ 逐条附加 silkroadai 元数据,按 key 档次给价,上游字段全保留', async () => {
+        const { resetCatalogMetaCacheForTests } = await import('@/lib/models/machine-catalog');
+        resetCatalogMetaCacheForTests();
+        mockTokenFindUnique.mockResolvedValueOnce({ tier: 'official' });
+        mockCatalogFindMany.mockResolvedValueOnce([
+            {
+                slug: 'claude-opus-4-8',
+                display_name: 'Claude Opus 4.8',
+                context_window: 200000,
+                prices: [
+                    { tier: 'official', input_cny_per_1m: 34, output_cny_per_1m: 170, per_image_cny: null },
+                    { tier: 'pool', input_cny_per_1m: 22.5, output_cny_per_1m: 112.5, per_image_cny: null },
+                ],
+            },
+        ]);
+        mockFetch.mockResolvedValueOnce(
+            new Response(
+                JSON.stringify({
+                    object: 'list',
+                    data: [{ id: 'claude-opus-4-8', object: 'model', created: 1700000000, owned_by: 'anthropic' }],
+                }),
+                { status: 200, headers: { 'content-type': 'application/json', 'x-oneapi-request-id': 'req-m-1' } },
+            ),
+        );
+        const res = await GET(
+            makeReq('/models', { method: 'GET', headers: { authorization: 'Bearer sk-official-key' } }),
+            ctx('models'),
+        );
+        expect(res.status).toBe(200);
+        expect(res.headers.get('X-Silkroadai-Enriched')).toBe('models');
+        // 上游头在增强路径也保留(x-oneapi-request-id 是排查链路的关键头)
+        expect(res.headers.get('x-oneapi-request-id')).toBe('req-m-1');
+        expect(mockTokenFindUnique).toHaveBeenCalledWith({
+            where: { newapi_token_value: 'official-key' },
+            select: { tier: true },
+        });
+        const body = (await res.json()) as {
+            object: string;
+            data: Array<Record<string, unknown> & { silkroadai: Record<string, unknown> }>;
+        };
+        expect(body.object).toBe('list');
+        expect(body.data[0].id).toBe('claude-opus-4-8');
+        expect(body.data[0].owned_by).toBe('anthropic'); // 上游字段保留
+        expect(body.data[0].silkroadai.tier).toBe('official');
+        expect(body.data[0].silkroadai.pricing).toEqual({
+            input_cny_per_1m: 34,
+            output_cny_per_1m: 170,
+            per_image_cny: null,
+        });
+        expect(body.data[0].silkroadai.vendor).toBe('Anthropic');
+    });
+
+    it('GET /models 增强链失败(目录 DB 挂)→ 原字节回退透传,无 enriched 头', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const { resetCatalogMetaCacheForTests } = await import('@/lib/models/machine-catalog');
+        resetCatalogMetaCacheForTests();
+        mockCatalogFindMany.mockRejectedValueOnce(new Error('db down'));
+        const raw = JSON.stringify({ object: 'list', data: [{ id: 'gpt-5.4', object: 'model' }] });
+        mockFetch.mockResolvedValueOnce(
+            new Response(raw, { status: 200, headers: { 'content-type': 'application/json' } }),
+        );
+        const res = await GET(makeReq('/models', { method: 'GET' }), ctx('models'));
+        expect(res.status).toBe(200);
+        expect(res.headers.get('X-Silkroadai-Enriched')).toBeNull();
+        expect(await res.text()).toBe(raw); // 原字节
+        warn.mockRestore();
     });
 
     it('returns 400 on invalid JSON body for chat/completions', async () => {

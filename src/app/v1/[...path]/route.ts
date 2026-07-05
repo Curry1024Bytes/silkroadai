@@ -33,9 +33,11 @@
  *      非 Gemini model(gpt-image-2 等)→ 透传 new-api,成功时补顶层 size + 估算 usage,
  *      上游报错原样透传(详见 handleImagesDalle / reshapeOpenAiImageResponse)。
  *
- * 4. 其余一切(/messages、/models、/embeddings、其他模型的 /chat/completions…)
+ * 4. 其余一切(/messages、/embeddings、其他模型的 /chat/completions…)
  *    → 原样透传 new-api,streaming SSE 不缓冲(forward upstream ReadableStream,外面
  *    包一层 stream-guard:静默期 keep-alive 注释 + 流中断错误尾帧,见 @/lib/sse/stream-guard)。
+ *    例外:GET /models 透传之上逐条附加 `silkroadai` 元数据(机器可读目录,
+ *    见 @/lib/models/machine-catalog;best-effort,失败原样透传)。
  *
  * 边界:
  * - 本文件不做鉴权 — Authorization 头原样透传,new-api 自己校验 sk-xxx。
@@ -75,6 +77,7 @@ import { withKeepalive } from './keepalive';
 import { guardSseResponse, guardSseStream, type SseErrorShape } from '@/lib/sse/stream-guard';
 import { forwardHeaders, passthroughResponse, STRIP_RESPONSE_HEADERS } from '@/lib/proxy/forward';
 import { normalizeOpenAiResponse, normalizeChoices } from '@/lib/proxy/finish-reason';
+import { loadCatalogMeta, resolveTierFromAuthHeader, enrichModelList } from '@/lib/models/machine-catalog';
 import {
     newImageTaskId,
     createImageTask,
@@ -2016,8 +2019,82 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
         return handleVideoPoll(req, path, search);
     }
 
-    // 其他路径(/messages /models /embeddings …)全部透传
+    // 机器可读模型目录(OpenRouter /api/v1/models 模式):GET /models 的上游列表
+    // (per-token 过滤)每条追加 `silkroadai` 命名空间元数据(价格/模态/厂商)。
+    // OpenAI SDK 忽略未知字段;增强 best-effort,任何失败原样透传。
+    if (path === '/models' && req.method === 'GET') {
+        return handleModelsEnriched(req, search, cap);
+    }
+
+    // 其他路径(/messages /embeddings …)全部透传
     return forwardToNewApi(req, null, path, search, cap);
+}
+
+/** GET /v1/models 拦截:透传上游列表 + 逐条附加 silkroadai 元数据(见 machine-catalog.ts)。
+ *  上游非 2xx / 非 JSON → 原样透传;增强链(目录 DB / 档次解析 / 形状)任何失败 →
+ *  原字节回退,绝不打断请求。 */
+async function handleModelsEnriched(req: NextRequest, search: string, cap: CaptureCtx | null): Promise<NextResponse> {
+    const upstream = await fetch(`${NEWAPI_BASE_URL}/v1/models${search}`, {
+        method: 'GET',
+        headers: forwardHeaders(req),
+    });
+    const ct = upstream.headers.get('content-type') || '';
+    if (!upstream.ok || !ct.includes('application/json')) {
+        return cap ? captureResponse(cap, upstream) : passthroughResponse(upstream);
+    }
+    const text = await upstream.text();
+    let json: JsonRecord | null = null;
+    try {
+        json = JSON.parse(text) as JsonRecord;
+    } catch {
+        /* content-type 撒谎(非 JSON 实体)→ 下面重建原响应走标准 capture/passthrough */
+    }
+    if (!json) {
+        const rebuilt = new Response(text, { status: upstream.status, headers: upstream.headers });
+        return cap ? captureResponse(cap, rebuilt) : passthroughResponse(rebuilt);
+    }
+    // 上游头逐条保留(x-oneapi-request-id 是排查链路的关键头,不能只在回退路径有),
+    // strip 集剥掉会撒谎的;两条出口(增强/回退)头行为一致。
+    const headers = new Headers();
+    upstream.headers.forEach((v, k) => {
+        if (!STRIP_RESPONSE_HEADERS.has(k.toLowerCase())) headers.set(k, v);
+    });
+    try {
+        // 2.5s 钟:portal DB 慢/挂时别让 /models(纯透传时代零 DB)跟着 Prisma
+        // 连接超时陪跑十几秒 —— 到点放弃增强走回退。
+        const [meta, tier] = await withDeadline(
+            Promise.all([loadCatalogMeta(), resolveTierFromAuthHeader(req.headers.get('authorization'))]),
+            MODELS_ENRICH_DEADLINE_MS,
+        );
+        const enriched = enrichModelList(json, tier, meta);
+        if (cap) captureJsonResponse(cap, 200, enriched);
+        headers.set('content-type', 'application/json');
+        headers.set('X-Silkroadai-Enriched', 'models');
+        return new NextResponse(JSON.stringify(enriched), { status: upstream.status, headers });
+    } catch (err) {
+        console.warn('[models-enrich] enrichment failed, passthrough', {
+            err: err instanceof Error ? err.message : String(err),
+        });
+        if (cap) captureJsonResponse(cap, upstream.status, json); // 回退也记日志(与纯透传时代等价)
+        return new NextResponse(text, { status: upstream.status, headers });
+    }
+}
+
+/** 目录增强的整体截止钟(loadCatalogMeta + 档次反查合起来)。 */
+const MODELS_ENRICH_DEADLINE_MS = 2_500;
+
+async function withDeadline<T>(p: Promise<T>, ms: number): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+        return await Promise.race([
+            p,
+            new Promise<never>((_, reject) => {
+                timer = setTimeout(() => reject(new Error(`deadline ${ms}ms exceeded`)), ms);
+            }),
+        ]);
+    } finally {
+        if (timer) clearTimeout(timer);
+    }
 }
 
 type RouteContext = { params: Promise<{ path: string[] }> };
