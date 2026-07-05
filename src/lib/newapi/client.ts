@@ -271,6 +271,10 @@ export interface NewApiUsageLog {
     channel: number;
     token_id: number;
     group: string;
+    /** new-api 为每条请求生成的唯一 ID(前 14 位是 UTC 时间戳)。客户排障 /
+     *  跟我们对账时的定位句柄 —— HTTP `GET /api/log/` 已直接返回此字段
+     *  (rows 未经 zod 校验,历史极老行可能是空串)。 */
+    request_id: string;
 }
 
 // ============================================
