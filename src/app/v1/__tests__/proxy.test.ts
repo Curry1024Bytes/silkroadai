@@ -11,7 +11,7 @@
  * 7. Authorization 等 header 透传(host/content-length 剥掉)
  * 8. /messages(Anthropic)透传
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 
 // Phase 2:mock R2 client(真实现读 R2_* env + 打 S3 API)
@@ -47,8 +47,19 @@ vi.mock('@/lib/oss/client', () => ({
 // 余额查询拦截:mock NewApiToken 反查 + getCustomerBalance(现有 chat/image 测试不走
 // billing 路径,不触发这两个 mock)。
 const mockTokenFindUnique = vi.fn();
+// 异步生图任务表 mock(现有测试不触发)
+const mockImageTaskCreate = vi.fn(async (..._a: unknown[]) => ({}));
+const mockImageTaskUpdate = vi.fn(async (..._a: unknown[]) => ({}));
+const mockImageTaskFindUnique = vi.fn(async (..._a: unknown[]): Promise<Record<string, unknown> | null> => null);
 vi.mock('@/lib/db', () => ({
-    prisma: { newApiToken: { findUnique: (...a: unknown[]) => mockTokenFindUnique(...a) } },
+    prisma: {
+        newApiToken: { findUnique: (...a: unknown[]) => mockTokenFindUnique(...a) },
+        imageTask: {
+            create: (...a: unknown[]) => mockImageTaskCreate(...a),
+            update: (...a: unknown[]) => mockImageTaskUpdate(...a),
+            findUnique: (...a: unknown[]) => mockImageTaskFindUnique(...a),
+        },
+    },
 }));
 const mockGetCustomerBalance = vi.fn();
 vi.mock('@/lib/billing/customer-balance', () => ({
@@ -578,6 +589,7 @@ describe('/v1 proxy — Phase 2: image_url 入参 + R2 上传 (W9 D2)', () => {
 
     // ch45(逆向)实测以多种状态失败:400 / 429 / 500 do_request_failed / 502 空响应 / 503 memory overloaded。
     // flash 是 ch45 独占 → operator 要求任意非 2xx 都视作 ch45 挂了,一律兜底转 -hq/ch42 重试一次。
+    // (唯一例外:isTerminalUpstreamError 判定的终态错,见下方「终态错误分类」块。)
     for (const [code, label, msg] of [
         [400, 'bad request', 'invalid argument'],
         [429, 'rate limited', 'rate limit exceeded'],
@@ -666,6 +678,111 @@ describe('/v1 proxy — Phase 2: image_url 入参 + R2 上传 (W9 D2)', () => {
         } finally {
             vi.useRealTimers();
         }
+    });
+
+    // 错误分类学:候补重试【注定无效】的终态错(当前仅坏输入图一类)→ 不烧 ch42 调用,原样(更快)透传。
+    // 其余非 2xx 维持 operator 决定「任何报错都兜底」(上面的参数化用例即回归守护);
+    // 网关侧鉴权/额度/分组错【特意不终态化】(候补在网关空转 = 客户结局不变;同文案来自上游经销商时换渠道能救)。
+    describe('终态错误分类(isTerminalUpstreamError)', () => {
+        const generateContentCalls = () =>
+            mockFetch.mock.calls.filter(([u]) => String(u).includes(':generateContent')).length;
+        const backupCalled = () =>
+            mockFetch.mock.calls.some(([u]) => String(u).includes('gemini-3.1-flash-image-preview-hq:generateContent'));
+
+        it('400 Unable to process input image(输入图字节坏,Gemini 确定性拒)→ 透传不重试', async () => {
+            mockFetch.mockImplementation(async (url: string) => {
+                if (String(url).includes(':generateContent'))
+                    return new Response(
+                        JSON.stringify({ error: { message: 'Unable to process input image.', code: 400 } }),
+                        { status: 400 },
+                    );
+                return geminiNativeResponse();
+            });
+            const res = await POST(geminiReq('a cat'), ctx('chat', 'completions'));
+            expect(res.status).toBe(400);
+            expect(generateContentCalls()).toBe(1);
+            expect(backupCalled()).toBe(false);
+            // 错误 body 原样透传 + 标记头,客户/支持能看出「代理判了终态、没有重试」
+            const body = (await res.json()) as { error: { message: string } };
+            expect(body.error.message).toMatch(/Unable to process input image/);
+            expect(res.headers.get('X-Silkroadai-Failover')).toBe('skipped-terminal');
+        });
+
+        it('403 无权访问 X 分组【不】终态化(双向歧义:上游经销商同文案时换渠道能救)→ 仍兜底', async () => {
+            mockFetch.mockImplementation(async (url: string) => {
+                if (String(url).includes('gemini-3.1-flash-image-preview-hq:generateContent'))
+                    return geminiNativeResponse();
+                if (String(url).includes(':generateContent'))
+                    return new Response(
+                        JSON.stringify({ error: { message: '无权访问 17 分组', type: 'new_api_error' } }),
+                        { status: 403 },
+                    );
+                return geminiNativeResponse();
+            });
+            const res = await POST(geminiReq('a cat'), ctx('chat', 'completions'));
+            expect(res.status).toBe(200);
+            expect(backupCalled()).toBe(true);
+        });
+
+        it('403 insufficient_user_quota【不】终态化(网关拒时候补只是本地空转,结局不变)→ 仍兜底', async () => {
+            mockFetch.mockImplementation(async (url: string) => {
+                if (String(url).includes('gemini-3.1-flash-image-preview-hq:generateContent'))
+                    return geminiNativeResponse();
+                if (String(url).includes(':generateContent'))
+                    return new Response(
+                        JSON.stringify({ error: { code: 'insufficient_user_quota', message: '用户额度不足' } }),
+                        { status: 403 },
+                    );
+                return geminiNativeResponse();
+            });
+            const res = await POST(geminiReq('a cat'), ctx('chat', 'completions'));
+            expect(res.status).toBe(200);
+            expect(backupCalled()).toBe(true);
+        });
+
+        it('401 无效令牌【不】终态化(fresh-key 缓存延迟会误 401,逆向 401 换渠道可救)→ 仍兜底', async () => {
+            mockFetch.mockImplementation(async (url: string) => {
+                if (String(url).includes('gemini-3.1-flash-image-preview-hq:generateContent'))
+                    return geminiNativeResponse();
+                if (String(url).includes(':generateContent'))
+                    return new Response(JSON.stringify({ error: { message: '无效的令牌', type: 'new_api_error' } }), {
+                        status: 401,
+                    });
+                return geminiNativeResponse();
+            });
+            const res = await POST(geminiReq('a cat'), ctx('chat', 'completions'));
+            expect(res.status).toBe(200);
+            expect(backupCalled()).toBe(true);
+        });
+
+        it('非 2xx 且错误 body 滴流不完 → 读钟(5s)到点放弃读 body → 照旧兜底切候补,不再卡死', async () => {
+            vi.useFakeTimers();
+            try {
+                mockFetch.mockImplementation((url: string, init?: RequestInit) => {
+                    if (String(url).includes('gemini-3.1-flash-image-preview-hq:generateContent'))
+                        return Promise.resolve(geminiNativeResponse());
+                    if (String(url).includes(':generateContent')) {
+                        // 502 headers 立即到,body 永不结束;abort 时 error 掉流(镜像真实 fetch 语义)
+                        const body = new ReadableStream({
+                            start(controller) {
+                                init?.signal?.addEventListener('abort', () =>
+                                    controller.error(new DOMException('The operation was aborted.', 'AbortError')),
+                                );
+                            },
+                        });
+                        return Promise.resolve(new Response(body, { status: 502 }));
+                    }
+                    return Promise.resolve(geminiNativeResponse());
+                });
+                const resP = POST(geminiReq('a cat'), ctx('chat', 'completions'));
+                await vi.advanceTimersByTimeAsync(6_000); // 越过 ERROR_BODY_TIMEOUT_MS(5s)
+                const res = await resP;
+                expect(res.status).toBe(200);
+                expect(backupCalled()).toBe(true);
+            } finally {
+                vi.useRealTimers();
+            }
+        });
     });
 
     it('uploads generated image to R2 and returns markdown URL, not base64 (test 11)', async () => {
@@ -2565,5 +2682,214 @@ describe('/v1 proxy — gpt-4o-image chat 生图 URL 转存', () => {
         const data = (await res.json()) as { choices: Array<{ message: { content: string } }> };
         expect(data.choices[0].message.content).toContain('pro.filesystem.site'); // 保留原链接
         expect(res.headers.get('X-Silkroadai-Rehost')).toBe('failed');
+    });
+});
+
+describe('/v1 proxy — 异步生图(?async=true)', () => {
+    beforeEach(() => {
+        mockResolveUserId.mockImplementation(async () => 'user-a'); // 异步测试:key 解析出 user-a
+        mockImageTaskCreate.mockImplementation(async () => ({}));
+        mockImageTaskUpdate.mockImplementation(async () => ({}));
+        mockImageTaskFindUnique.mockImplementation(async () => null);
+        mockFetch.mockResolvedValue(
+            new Response(JSON.stringify({ created: 1, data: [{ url: 'https://images.silkroadai.io/gen/x.png' }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+    });
+    afterEach(() => {
+        mockResolveUserId.mockReset();
+        mockResolveUserId.mockImplementation(async () => null); // 还原默认,防泄漏到其它 describe
+    });
+
+    const taskRow = (over: Record<string, unknown>) => ({
+        task_id: 'abc',
+        user_id: 'user-a',
+        status: 'IN_PROGRESS',
+        model: 'gpt-image-2',
+        endpoint: 'generations',
+        result_json: null,
+        fail_reason: null,
+        started_at: new Date(),
+        finished_at: null,
+        created_at: new Date(),
+        ...over,
+    });
+
+    it('提交文生图异步 → 200 + 32-hex task_id + IN_PROGRESS,建任务行', async () => {
+        const res = await POST(
+            makeReq('/images/generations?async=true', { body: { model: 'gpt-image-2', prompt: 'a cat' } }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        const j = (await res.json()) as { code: string; data: { task_id: string; status: string } };
+        expect(j.code).toBe('success');
+        expect(j.data.status).toBe('IN_PROGRESS');
+        expect(j.data.task_id).toMatch(/^[0-9a-f]{32}$/);
+        expect(mockImageTaskCreate).toHaveBeenCalledTimes(1);
+    });
+
+    it('提交图生图异步(multipart)→ 200 + task_id', async () => {
+        const form = new FormData();
+        form.append('image', new File([new Uint8Array([1, 2, 3])], 'in.png', { type: 'image/png' }));
+        form.append('prompt', '带上眼镜');
+        form.append('model', 'gpt-image-2');
+        const req = new NextRequest('https://ai.silkroadai.io/v1/images/edits?async=true', {
+            method: 'POST',
+            body: form,
+        });
+        const res = await POST(req, ctx('images', 'edits'));
+        expect(res.status).toBe(200);
+        expect(((await res.json()) as { data: { task_id: string } }).data.task_id).toMatch(/^[0-9a-f]{32}$/);
+        expect(mockImageTaskCreate).toHaveBeenCalledTimes(1);
+    });
+
+    it('不带 async → 走同步路径,不建任务(零回归)', async () => {
+        await POST(
+            makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'a cat' } }),
+            ctx('images', 'generations'),
+        );
+        expect(mockImageTaskCreate).not.toHaveBeenCalled();
+    });
+
+    it('提交 async 但 key 无效 → 401,不建任务', async () => {
+        mockResolveUserId.mockImplementation(async () => null);
+        const res = await POST(
+            makeReq('/images/generations?async=true', { body: { model: 'gpt-image-2', prompt: 'x' } }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(401);
+        expect(mockImageTaskCreate).not.toHaveBeenCalled();
+    });
+
+    it('后台生图:b64 转存图床、落 SUCCESS + url、b64 清空', async () => {
+        mockFetch.mockResolvedValue(
+            new Response(JSON.stringify({ created: 1, model: 'gpt-image-2', data: [{ b64_json: 'QUJD' }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        await POST(
+            makeReq('/images/generations?async=true', { body: { model: 'gpt-image-2', prompt: 'x' } }),
+            ctx('images', 'generations'),
+        );
+        for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 0)); // flush fire-and-forget
+        const success = mockImageTaskUpdate.mock.calls.find(
+            (c) => (c[0] as { data?: { status?: string } })?.data?.status === 'SUCCESS',
+        );
+        expect(success).toBeTruthy();
+        const rj = (success![0] as { data: { result_json: { data: Array<{ url: string; b64_json: string }> } } }).data
+            .result_json;
+        expect(rj.data[0].url).toMatch(/images\.silkroadai\.io\/gen\//);
+        expect(rj.data[0].b64_json).toBe('');
+    });
+
+    it('查询 IN_PROGRESS → status=IN_PROGRESS + progress 0%', async () => {
+        mockImageTaskFindUnique.mockImplementation(async () => taskRow({ status: 'IN_PROGRESS' }));
+        const res = await GET(makeReq('/images/tasks/abc', { method: 'GET' }), ctx('images', 'tasks', 'abc'));
+        expect(res.status).toBe(200);
+        const j = (await res.json()) as { code: string; data: { status: string; progress: string } };
+        expect(j.code).toBe('success');
+        expect(j.data.status).toBe('IN_PROGRESS');
+        expect(j.data.progress).toBe('0%');
+    });
+
+    it('查询 SUCCESS → 三层嵌套 data.data.data[0].url + progress 100%', async () => {
+        mockImageTaskFindUnique.mockImplementation(async () =>
+            taskRow({
+                status: 'SUCCESS',
+                finished_at: new Date(),
+                result_json: {
+                    created: 1,
+                    model: 'gpt-image-2',
+                    data: [{ url: 'https://images.silkroadai.io/gen/x.png', b64_json: '' }],
+                },
+            }),
+        );
+        const res = await GET(makeReq('/images/tasks/abc', { method: 'GET' }), ctx('images', 'tasks', 'abc'));
+        const j = (await res.json()) as {
+            data: { status: string; progress: string; data: { data: Array<{ url: string }> } };
+        };
+        expect(j.data.status).toBe('SUCCESS');
+        expect(j.data.progress).toBe('100%');
+        expect(j.data.data.data[0].url).toBe('https://images.silkroadai.io/gen/x.png');
+    });
+
+    it('查询别人的 task(IDOR)→ not_found、data=null', async () => {
+        mockImageTaskFindUnique.mockImplementation(async () => taskRow({ user_id: 'user-OTHER', status: 'SUCCESS' }));
+        const res = await GET(makeReq('/images/tasks/abc', { method: 'GET' }), ctx('images', 'tasks', 'abc'));
+        const j = (await res.json()) as { code: string; data: unknown };
+        expect(j.code).toBe('not_found');
+        expect(j.data).toBeNull();
+    });
+
+    it('查询不存在的 task → not_found', async () => {
+        mockImageTaskFindUnique.mockImplementation(async () => null);
+        const res = await GET(makeReq('/images/tasks/nope', { method: 'GET' }), ctx('images', 'tasks', 'nope'));
+        expect(((await res.json()) as { code: string }).code).toBe('not_found');
+    });
+
+    it('查询 key 无效 → 401', async () => {
+        mockResolveUserId.mockImplementation(async () => null);
+        const res = await GET(makeReq('/images/tasks/abc', { method: 'GET' }), ctx('images', 'tasks', 'abc'));
+        expect(res.status).toBe(401);
+    });
+
+    it('孤儿任务(IN_PROGRESS 超 10 分钟)查询 → 判 FAILURE + 落库', async () => {
+        const old = new Date(Date.now() - 11 * 60 * 1000);
+        mockImageTaskFindUnique.mockImplementation(async () =>
+            taskRow({ status: 'IN_PROGRESS', created_at: old, started_at: old }),
+        );
+        const res = await GET(makeReq('/images/tasks/abc', { method: 'GET' }), ctx('images', 'tasks', 'abc'));
+        expect(((await res.json()) as { data: { status: string } }).data.status).toBe('FAILURE');
+        expect(mockImageTaskUpdate).toHaveBeenCalled(); // saveFailure 落库
+    });
+
+    // ---- Phase 2: webhook ----
+    it('提交带非法 webhook(私网 IP)→ 400 invalid_webhook,不建任务', async () => {
+        const res = await POST(
+            makeReq('/images/generations?async=true&webhook=http://169.254.169.254/meta', {
+                body: { model: 'gpt-image-2', prompt: 'x' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { code: string }).code).toBe('invalid_webhook');
+        expect(mockImageTaskCreate).not.toHaveBeenCalled();
+    });
+
+    it('提交带合法 webhook → 200;完成后 POST {topic,data} 到 webhook(含最终 status + url)', async () => {
+        mockImageTaskFindUnique.mockImplementation(async () =>
+            taskRow({
+                status: 'SUCCESS',
+                finished_at: new Date(),
+                result_json: { created: 1, data: [{ url: 'https://images.silkroadai.io/gen/x.png', b64_json: '' }] },
+            }),
+        );
+        mockFetch.mockImplementation(async (u: unknown) => {
+            if (String(u).includes('hooks.example.com')) return new Response('ok', { status: 200 });
+            return new Response(JSON.stringify({ created: 1, data: [{ b64_json: 'QUJD' }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            });
+        });
+        const res = await POST(
+            makeReq('/images/generations?async=true&webhook=https://hooks.example.com/cb', {
+                body: { model: 'gpt-image-2', prompt: 'x' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 10)); // flush 后台 + webhook
+        const hookCall = mockFetch.mock.calls.find((c) => String(c[0]).includes('hooks.example.com'));
+        expect(hookCall).toBeTruthy();
+        const payload = JSON.parse(String((hookCall![1] as RequestInit).body)) as {
+            topic: string;
+            data: { status: string; data: { data: Array<{ url: string }> } };
+        };
+        expect(payload.topic).toBe('image_task_completed');
+        expect(payload.data.status).toBe('SUCCESS');
+        expect(payload.data.data.data[0].url).toBe('https://images.silkroadai.io/gen/x.png');
     });
 });

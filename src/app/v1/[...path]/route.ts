@@ -71,6 +71,19 @@ import {
     translateAnthropicSseToOpenAi,
 } from './claude-chat-cache';
 import { withKeepalive } from './keepalive';
+import {
+    newImageTaskId,
+    createImageTask,
+    markImageTaskStarted,
+    saveImageTaskSuccess,
+    saveImageTaskFailure,
+    getImageTask,
+    buildSubmitEnvelope,
+    buildQueryEnvelope,
+    notFoundEnvelope,
+    buildWebhookForTask,
+    type ImageTaskEndpoint,
+} from './async-image';
 
 // Next.js: 强制动态 + Node runtime(需要流式 fetch duplex)
 export const dynamic = 'force-dynamic';
@@ -89,9 +102,10 @@ const MULTI_IMAGE_ASPECT_INSTRUCTION =
 const explicitAspectInstruction = (ratio: string) =>
     `[IMPORTANT] The generated image MUST have exactly a ${ratio} aspect ratio (width:height = ${ratio}). Do NOT output a square image unless ${ratio} is 1:1, and do NOT follow the reference images' aspect ratio. 输出图必须严格为 ${ratio} 的画幅比例,不要跟随参考图的比例,不要输出方图(除非比例本身就是 1:1)。`;
 
-/** 逆向上游任意报错(非 2xx,含 400/429/5xx 全部)→ 自动转这些非逆向备用 SKU 重试一次。
+/** 逆向上游报错(非 2xx)→ 自动转这些非逆向备用 SKU 重试一次。
  *  ch45 逆向源故障形态杂(400 / 429 / 500 do_request_failed / 502 空响应 / 503 memory overloaded),
- *  且其 4xx 多为上游抽风而非真客户端错,故 operator 要求一律兜底。备用 SKU 是独立模型名
+ *  且其 4xx 多为上游抽风而非真客户端错,故 operator 要求一律兜底 —— 唯一例外是
+ *  isTerminalUpstreamError 判定的「重试注定无效」终态错(坏输入图),直接透传。备用 SKU 是独立模型名
  *  (专属非逆向渠道、单独计费)。gemini-3.1-flash-image-preview(ch45 逆向 ¥0.09)→ -hq(ch42 非逆向 ¥0.26)。 */
 const FAILOVER_MODELS: Record<string, string> = {
     'gemini-3.1-flash-image-preview': 'gemini-3.1-flash-image-preview-hq',
@@ -102,6 +116,10 @@ const FAILOVER_MODELS: Record<string, string> = {
  *  到点 abort 当作失败 → 切候补 -hq/ch42(快且稳),客户最多等 ~80s + 候补一次。
  *  仅对有候补的 flash 生效;pro(4K 合法耗时长、无候补)不设超时。operator:80s 自动切。 */
 const FLASH_TIMEOUT_MS = 80_000;
+
+/** 主请求非 2xx 后读错误 body(做终态分类)的超时:逆向渠道可能 headers 到了、body 滴流不完,
+ *  不设钟会把本该立即切候补的兜底卡死。到点 abort → 当读不出 → 照旧兜底。 */
+const ERROR_BODY_TIMEOUT_MS = 5_000;
 
 /** Gemini image 模型 → 注入的 native imageSize(客户没选 size 时的固定档) */
 const GEMINI_IMAGE_MODELS: Record<string, '1K' | '2K' | '4K'> = {
@@ -222,9 +240,27 @@ function jsonForwardHeaders(req: NextRequest): Headers {
     return h;
 }
 
-/** Gemini 生图 native 转发:主模型上游任意报错(非 2xx)【或超时】时,自动用同一个已翻译好的 body
+/** 错误分类:候补重试【注定无效】的「终态错误」→ 不烧候补调用,原样(且更快)透传给客户。
+ *  当前只收一类高置信模式,其余一律维持 operator 决定「任何非 2xx 都兜底」(ch45 逆向源 4xx 多为上游抽风):
+ *  —— Gemini 对输入图字节的确定性拒绝(Unable to process input image):候补同为 Gemini,
+ *     同一份 inlineData 发过去必然同拒;终态化省一次真实候补上游调用,客户更快拿到同样的 400。
+ *     实测已知案例均为客户字节真坏(坏 base64 / 不支持的格式);残余风险是逆向 relay 自己
+ *     压/裁图导致同文案(此时候补本可救),靠下方 warn 日志观察反例,有了再收窄。
+ *  【特意不收】三类同样"看起来终态"的错 —— 共同原因:若是我方 new-api 网关拒的(鉴权/额度在
+ *  relay 之前检查),候补重试只是一次本地空转、连上游都不触,客户结局不变;而同样的文案若来自
+ *  上游经销商转发(上游多半也是 new-api 实例,错误文案一模一样),换渠道【能】救 —— 终态化
+ *  几乎无收益,误判却会杀掉救援:
+ *  - 401 无效令牌(另:新建 key 有 1-2 分钟 token-cache 延迟会误 401,见 memory);
+ *  - 403 无权访问 X 分组(我方网关授权拒跟 token.group 走、与模型无关,候补同 token 必同拒);
+ *  - insufficient_user_quota(客户真没钱时,候补在网关同样被拒)。 */
+function isTerminalUpstreamError(bodyText: string): boolean {
+    return /unable to process input image/i.test(bodyText);
+}
+
+/** Gemini 生图 native 转发:主模型上游报错(非 2xx)【或超时】时,自动用同一个已翻译好的 body
  *  (contents + imageConfig)转到非逆向备用 SKU 重试一次,仅换 URL 里的模型名(故计费切到备用 SKU)。
- *  flash 任意非 2xx 都视作主渠道挂了 → 兜底转 -hq/ch42(operator:45 所有报错都转 42)。
+ *  flash 非 2xx 视作主渠道挂了 → 兜底转 -hq/ch42(operator:45 所有报错都转 42),
+ *  【唯一例外】isTerminalUpstreamError 判定的终态错(坏输入图,重试注定同拒)直接透传不重试。
  *  另:逆向 flash 渠道会出现数十分钟才出图的慢尾(见 FLASH_TIMEOUT_MS),new-api 无 relay 超时,
  *  故主请求挂 80s AbortController,到点 abort 当失败一样切候补 → 客户不会再被卡几十分钟。
  *  只重试一次:备用也报错则原样透传其错,不无限重试。成功(2xx)不转,省一次 ch42 调用。见 FAILOVER_MODELS。 */
@@ -241,11 +277,45 @@ async function geminiGenerateWithFailover(req: NextRequest, model: string, reque
     try {
         upstream = await send(model, ctrl.signal);
     } catch {
+        console.warn('[proxy/failover] primary timed out or network error, retrying backup', { model, backup });
         return send(backup); // 超时(AbortError)/网络错 → 切候补
     } finally {
         clearTimeout(timer);
     }
-    return upstream.ok ? upstream : send(backup); // 非 2xx → 切候补
+    if (upstream.ok) return upstream;
+    // 分类需要读错误 body,但必须带钟:ch45 类渠道存在「headers 到了、body 滴流不完」的形态
+    // (此时 80s 主钟已在 finally 清掉),无界 text() 会把本该立即触发的兜底卡死。
+    // 到点用同一个 ctrl abort 掉 body 流 → errText 留空 → 必然判非终态 → 照旧兜底。
+    const readTimer = setTimeout(() => ctrl.abort(), ERROR_BODY_TIMEOUT_MS);
+    let errText = '';
+    try {
+        errText = await upstream.text();
+    } catch {
+        // body 读挂 / 被 abort → 当读不出,走兜底
+    } finally {
+        clearTimeout(readTimer);
+    }
+    // 消费 body 后按原 status/headers 重建响应(content-length/encoding 已随重建失真,
+    // 剥掉让下游按新 body 重算;passthroughResponse 本来也剥,这里防走到别的出口)。
+    if (isTerminalUpstreamError(errText)) {
+        console.warn('[proxy/failover] terminal error, skip backup', {
+            model,
+            status: upstream.status,
+            snippet: errText.slice(0, 200),
+        });
+        const headers = new Headers(upstream.headers);
+        headers.delete('content-length');
+        headers.delete('content-encoding');
+        headers.set('X-Silkroadai-Failover', 'skipped-terminal');
+        return new Response(errText, { status: upstream.status, statusText: upstream.statusText, headers });
+    }
+    console.warn('[proxy/failover] primary failed, retrying backup', {
+        model,
+        backup,
+        status: upstream.status,
+        snippet: errText.slice(0, 200),
+    });
+    return send(backup); // 其余非 2xx → 切候补
 }
 
 function passthroughResponse(upstream: Response): NextResponse {
@@ -1632,6 +1702,162 @@ async function handleBalanceQuery(req: NextRequest, path: string): Promise<NextR
     });
 }
 
+// ============================ 异步生图(opt-in ?async=true)============================
+// DB + 信封在 ./async-image;这里做「提交(秒回 task_id)」「后台跑生图」「结果查询」三件。
+// 后台执行放这里(不放 async-image)是因为要调本文件的 handleImagesDalle / storeGeneratedImage,
+// 反过来 import 会成循环依赖。计费不变:后台真调 new-api,成功才扣 token。
+
+/** 尽力从请求体嗅 model(仅 task 行展示;成功后 result_json 里有权威 model)。 */
+function sniffModel(contentType: string, bodyBuf: ArrayBuffer): string | null {
+    try {
+        const text = Buffer.from(bodyBuf).toString('utf8');
+        if (contentType.includes('application/json')) {
+            const m = JSON.parse(text) as { model?: unknown };
+            return typeof m.model === 'string' ? m.model : null;
+        }
+        const mm = text.match(/name="model"\r?\n\r?\n([^\r\n]+)/); // multipart 轻量取
+        return mm ? mm[1].trim() : null;
+    } catch {
+        return null;
+    }
+}
+
+function sniffImageMime(buf: Buffer): string {
+    if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
+    if (buf.length >= 12 && buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP')
+        return 'image/webp';
+    return 'image/png';
+}
+
+/** 后台跑生图:用捕获的请求重建 Request → handleImagesDalle → 确保出图床 URL(b64 转存)→ 落库。 */
+/** Phase 2:任务终态回调。POST `{ topic, data }` 到客户 webhook,best-effort,3 次重试,永不抛。 */
+async function sendTaskWebhook(webhookUrl: string, body: unknown): Promise<void> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+            const r = await fetch(webhookUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+                signal: AbortSignal.timeout(10_000),
+            });
+            if (r.ok) return;
+        } catch {
+            /* 网络失败 → 重试 */
+        }
+        if (attempt < 2) await new Promise((res) => setTimeout(res, 1000 * (attempt + 1)));
+    }
+    console.warn('[async-image] webhook delivery failed after retries:', webhookUrl.slice(0, 80));
+}
+
+async function runAsyncImageTask(
+    taskId: string,
+    webhookUrl: string | null,
+    url: string,
+    headers: Headers,
+    bodyBuf: ArrayBuffer,
+    path: string,
+    search: string,
+): Promise<void> {
+    await markImageTaskStarted(taskId);
+    try {
+        const bgReq = new NextRequest(url, { method: 'POST', headers, body: bodyBuf });
+        const resp = await handleImagesDalle(bgReq, path, search, null);
+        const bodyText = await resp.text();
+        let json: JsonRecord | null = null;
+        try {
+            json = bodyText ? (JSON.parse(bodyText) as JsonRecord) : null;
+        } catch {
+            json = null;
+        }
+        if (resp.status < 200 || resp.status >= 300 || !json) {
+            await saveImageTaskFailure(taskId, `upstream ${resp.status}: ${bodyText.slice(0, 1000)}`);
+            return;
+        }
+        // 确保每个 data 项都有图床 url(任何内联 b64_json → 转存换成稳定 url)
+        const data = Array.isArray(json.data) ? (json.data as Array<Record<string, unknown>>) : [];
+        for (const item of data) {
+            if (!item.url && typeof item.b64_json === 'string' && item.b64_json) {
+                const buf = Buffer.from(item.b64_json, 'base64');
+                const stored = await storeGeneratedImage(bgReq, buf, sniffImageMime(buf), item.b64_json);
+                item.url = stored.url;
+                item.b64_json = '';
+            }
+        }
+        await saveImageTaskSuccess(taskId, json);
+    } catch (e) {
+        await saveImageTaskFailure(taskId, e instanceof Error ? e.message : String(e));
+    } finally {
+        // 终态已落库(SUCCESS/FAILURE 任一路径都到这)→ 回调客户 webhook,带最终 status + url
+        if (webhookUrl) {
+            const body = await buildWebhookForTask(taskId).catch(() => null);
+            if (body) await sendTaskWebhook(webhookUrl, body);
+        }
+    }
+}
+
+/** 提交:opt-in `?async=true`。秒回 task_id,后台异步生图。 */
+async function handleAsyncImageSubmit(req: NextRequest, path: string, search: string): Promise<NextResponse> {
+    let userId: string | null;
+    try {
+        userId = await resolveUserIdFromAuthHeader(req.headers.get('authorization'));
+    } catch {
+        return NextResponse.json({ code: 'error', message: 'auth lookup failed', data: null }, { status: 500 });
+    }
+    if (!userId)
+        return NextResponse.json({ code: 'unauthorized', message: 'invalid api key', data: null }, { status: 401 });
+
+    // Phase 2:可选 webhook 回调 URL(SSRF 守门:只放公网 http(s),拒 localhost/私网字面量)
+    const webhookUrl = new URLSearchParams(search).get('webhook');
+    if (webhookUrl && isDisallowedImageUrl(webhookUrl)) {
+        return NextResponse.json(
+            { code: 'invalid_webhook', message: 'webhook must be a public http(s) URL', data: null },
+            { status: 400 },
+        );
+    }
+
+    const bodyBuf = await req.arrayBuffer();
+    const headers = new Headers(req.headers);
+    const endpoint: ImageTaskEndpoint = path === '/images/edits' ? 'edits' : 'generations';
+    const model = sniffModel(req.headers.get('content-type') || '', bodyBuf);
+    const taskId = newImageTaskId();
+    const submitTime = new Date();
+    try {
+        await createImageTask(taskId, userId, model, endpoint);
+    } catch (e) {
+        console.error('[async-image] createTask failed', e);
+        return NextResponse.json({ code: 'error', message: 'failed to create task', data: null }, { status: 500 });
+    }
+    // 去掉 async/webhook,后台按普通同步生图跑
+    const sp = new URLSearchParams(search);
+    sp.delete('async');
+    sp.delete('webhook');
+    const cleanSearch = sp.toString() ? `?${sp.toString()}` : '';
+    const cleanUrl = req.url.split('?')[0] + cleanSearch;
+    void runAsyncImageTask(taskId, webhookUrl, cleanUrl, headers, bodyBuf, path, cleanSearch);
+    return NextResponse.json(buildSubmitEnvelope(taskId, submitTime), { status: 200 });
+}
+
+/** 查询:GET /v1/images/tasks/{task_id}。IDOR 按 user_id 守门。 */
+async function handleAsyncImageQuery(req: NextRequest, path: string): Promise<NextResponse> {
+    let userId: string | null;
+    try {
+        userId = await resolveUserIdFromAuthHeader(req.headers.get('authorization'));
+    } catch {
+        return NextResponse.json({ code: 'error', message: 'auth lookup failed', data: null }, { status: 500 });
+    }
+    if (!userId)
+        return NextResponse.json({ code: 'unauthorized', message: 'invalid api key', data: null }, { status: 401 });
+    const taskId = path.split('/').pop() || '';
+    let row;
+    try {
+        row = await getImageTask(taskId, userId);
+    } catch {
+        return NextResponse.json({ code: 'error', message: 'lookup failed', data: null }, { status: 500 });
+    }
+    if (!row) return NextResponse.json(notFoundEnvelope(), { status: 200 });
+    return NextResponse.json(buildQueryEnvelope(row), { status: 200 });
+}
+
 async function handleRequest(req: NextRequest, params: Promise<{ path: string[] }>): Promise<NextResponse> {
     const { path: segments } = await params;
     const path = '/' + (segments ?? []).join('/');
@@ -1762,7 +1988,16 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
 
     // DALL·E 兼容图像接口:Gemini 生图模型翻译,其余(gpt-image-2 等)透传
     if ((path === '/images/edits' || path === '/images/generations') && req.method === 'POST') {
+        // opt-in 异步:?async=true → 秒回 task_id,后台生图。不带 async 完全走原同步路径(字节不变)。
+        if (new URLSearchParams(search).get('async') === 'true') {
+            return handleAsyncImageSubmit(req, path, search);
+        }
         return withKeepalive(handleImagesDalle(req, path, search, cap));
+    }
+
+    // 异步生图结果查询:GET /v1/images/tasks/{task_id}
+    if (req.method === 'GET' && /^\/images\/tasks\/[^/]+$/.test(path)) {
+        return handleAsyncImageQuery(req, path);
     }
 
     // 视频轮询完成后:按客户自定义 OSS 转存(详见 handleVideoPoll)

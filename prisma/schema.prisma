@@ -242,9 +242,9 @@ model Tenant {
 /// 客户端按 id 记 localStorage 关闭(不建已读表)。tenant_id=null = 平台全局,
 /// 预留白标 partner 给自有租户客户发公告(P6+,初版只发全局)。
 model Announcement {
-  id         String            @id @default(uuid()) @db.Uuid
-  tenant_id  String?           @db.Uuid
-  tenant     Tenant?           @relation(fields: [tenant_id], references: [id])
+  id        String  @id @default(uuid()) @db.Uuid
+  tenant_id String? @db.Uuid
+  tenant    Tenant? @relation(fields: [tenant_id], references: [id])
 
   title      String            @db.VarChar(200)
   body       String            @db.Text
@@ -255,8 +255,8 @@ model Announcement {
   // 上线开关 — 客户端只拉 is_active=true;下线不删,留作历史/审计。
   is_active  Boolean           @default(true)
 
-  created_at DateTime          @default(now())
-  updated_at DateTime          @updatedAt
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
 
   @@index([is_active, created_at])
   @@index([tenant_id])
@@ -1161,4 +1161,25 @@ model LedgerEntry {
   @@unique([kind, ref])
   @@index([account_id, created_at])
   @@map("ledger_entries")
+}
+
+/// 异步生图任务(opt-in `?async=true`)。提交即建行返回 task_id,后台跑 handleImagesDalle,
+/// 客户轮询 `GET /v1/images/tasks/{task_id}` 拿结果。计费不变(后台真调 new-api,成功才扣)。
+/// user_id = 从 sk- key 解析的 portal 用户,查询时按它做 IDOR 守门。
+model ImageTask {
+  task_id     String    @id // 32-hex(对齐参考平台格式,不带前缀/连字符)
+  user_id     String    @db.Uuid // 提交该任务的 portal 用户(IDOR)
+  status      String    @default("IN_PROGRESS") // IN_PROGRESS | SUCCESS | FAILURE
+  model       String?
+  endpoint    String // 'generations' | 'edits'
+  result_json Json? // 成功时的内层 OpenAI 图结果(data/model/created/usage)
+  fail_reason String? // 失败原因(FAILURE)
+  started_at  DateTime?
+  finished_at DateTime?
+  created_at  DateTime  @default(now())
+  updated_at  DateTime  @updatedAt
+
+  @@index([user_id, created_at])
+  @@index([status, created_at])
+  @@map("image_tasks")
 }
