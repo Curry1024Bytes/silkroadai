@@ -28,30 +28,31 @@ describe('middleware — security headers', () => {
 describe('middleware — matcher excludes /v1/* (body-buffering 10MB cap)', () => {
     const pattern = config.matcher[0];
 
-    it('declares the v1/ negative lookahead explicitly', () => {
+    it('declares the v1/ and v1beta/ negative lookaheads explicitly', () => {
         expect(pattern).toContain('?!v1/');
+        expect(pattern).toContain('v1beta/');
     });
-
-    it.each(['/v1/chat/completions', '/v1/images/edits', '/v1/images/generations', '/v1/models', '/v1/messages'])(
-        'does NOT match proxy path %s',
-        (path) => {
-            expect(matches(pattern, path)).toBe(false);
-        },
-    );
 
     it.each([
-        '/',
-        '/dashboard',
-        '/login',
-        '/pay',
-        '/chat',
-        '/api/portal/keys',
-        '/api/orders',
-        // /v1beta 不经 portal(Caddy 直送 new-api),不在排除范围 — 精确只排 /v1/
+        '/v1/chat/completions',
+        '/v1/images/edits',
+        '/v1/images/generations',
+        '/v1/models',
+        '/v1/messages',
+        // W10:/v1beta native 透传经 portal(Caddy 今晚切流),Gemini inlineData
+        // 大图 base64 必须避开 middleware 的 10MB body 缓冲截断
+        '/v1beta/models/gemini-3-pro-image-preview:generateContent',
         '/v1beta/models',
-    ])('still matches page/API path %s', (path) => {
-        expect(matches(pattern, path)).toBe(true);
+    ])('does NOT match proxy path %s', (path) => {
+        expect(matches(pattern, path)).toBe(false);
     });
+
+    it.each(['/', '/dashboard', '/login', '/pay', '/chat', '/api/portal/keys', '/api/orders'])(
+        'still matches page/API path %s',
+        (path) => {
+            expect(matches(pattern, path)).toBe(true);
+        },
+    );
 
     it.each(['/_next/static/chunk.js', '/_next/image', '/favicon.ico'])(
         'keeps excluding static asset path %s',

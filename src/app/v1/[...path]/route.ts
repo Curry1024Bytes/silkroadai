@@ -73,6 +73,8 @@ import {
 } from './claude-chat-cache';
 import { withKeepalive } from './keepalive';
 import { guardSseResponse, guardSseStream, type SseErrorShape } from '@/lib/sse/stream-guard';
+import { forwardHeaders, passthroughResponse, STRIP_RESPONSE_HEADERS } from '@/lib/proxy/forward';
+import { normalizeOpenAiResponse, normalizeChoices } from '@/lib/proxy/finish-reason';
 import {
     newImageTaskId,
     createImageTask,
@@ -204,34 +206,9 @@ const CLAUDE_MAX_TOKENS_CAP = 4096;
 const IMAGE_FETCH_MAX_BYTES = 20 * 1024 * 1024;
 
 /** 不往上游转发的请求头(host/content-length 由 fetch 重算) */
-const HOP_BY_HOP_REQUEST_HEADERS = new Set(['host', 'content-length', 'connection', 'keep-alive', 'transfer-encoding']);
-
-/** 不往客户端回传的响应头(body 已被改写/重新分块时这些头会撒谎) */
-const STRIP_RESPONSE_HEADERS = new Set(['content-length', 'content-encoding', 'transfer-encoding', 'connection']);
-
+// 转发助手(forwardHeaders / passthroughResponse / 头剥离集)抽到 @/lib/proxy/forward
+// 与 /v1beta 原生透传路由共用,行为零改动。
 type JsonRecord = Record<string, unknown>;
-
-/** 运行时可配置的额外剥离请求头(env `PROXY_STRIP_REQUEST_HEADERS`,逗号分隔,小写比较)。
- *  挡掉客户端注入、会干扰上游的头(如 kiro/Bedrock 上游因客户端带 profileArn 相关头而报
- *  "profileArn is required")。动态读 env → 改 .env + 重启即生效,无需重构建。 */
-function extraStripRequestHeaders(): Set<string> {
-    return new Set(
-        (process.env.PROXY_STRIP_REQUEST_HEADERS || '')
-            .split(',')
-            .map((h) => h.trim().toLowerCase())
-            .filter(Boolean),
-    );
-}
-
-function forwardHeaders(req: NextRequest): Headers {
-    const extra = extraStripRequestHeaders();
-    const headers = new Headers();
-    req.headers.forEach((value, key) => {
-        const lk = key.toLowerCase();
-        if (!HOP_BY_HOP_REQUEST_HEADERS.has(lk) && !extra.has(lk)) headers.set(key, value);
-    });
-    return headers;
-}
 
 /** 翻译到 native generateContent 时用:复用鉴权头但强制 JSON Content-Type。
  *  原请求可能是 multipart/form-data,若把那个 Content-Type 带给 JSON body,
@@ -330,14 +307,6 @@ function sseShapeForPath(path: string): SseErrorShape {
     return null;
 }
 
-function passthroughResponse(upstream: Response): NextResponse {
-    const headers = new Headers();
-    upstream.headers.forEach((value, key) => {
-        if (!STRIP_RESPONSE_HEADERS.has(key.toLowerCase())) headers.set(key, value);
-    });
-    return new NextResponse(upstream.body, { status: upstream.status, headers });
-}
-
 async function forwardToNewApi(
     req: NextRequest,
     bodyOverride: JsonRecord | null,
@@ -381,7 +350,7 @@ async function forwardToNewApi(
         body: outgoingBody,
         duplex: 'half',
     };
-    const upstream = await fetch(url, init);
+    let upstream = await fetch(url, init);
     // 临时诊断(HDR_CAPTURE=1):记上游错误响应,与 [HDRCAP] 请求头按 tokFp+时间对应,
     // 用于坐实客户报的 profileArn 到底哪些请求触发。查完撤。
     if (process.env.HDR_CAPTURE === '1' && upstream.status >= 400) {
@@ -395,6 +364,11 @@ async function forwardToNewApi(
             /* diagnostic only */
         }
     }
+    // finish_reason 归一(只对 OpenAI 兼容面):逆向/经销商渠道漏出的非标 stop reason
+    // (end_turn / STOP / MAX_TOKENS / SAFETY…)映射成 OpenAI 标准集;/messages、
+    // /v1beta 等 native 面不动。放在 guard 之前:guard 的 error 尾帧本就是标准值。
+    if (path === '/chat/completions') upstream = await normalizeOpenAiResponse(upstream);
+
     // SSE 流式两件套:静默期 keep-alive 注释 + 流中断错误事件(guard 在 capture 之前,
     // 请求日志记到的 = 客户实际收到的字节,含错误尾帧)。非 SSE / 非 2xx 原样返回。
     // onInterrupted:守卫把上游死转成尾帧 + 干净收流后,tee 只看到正常 done —— 不回填
@@ -989,6 +963,9 @@ async function handleGpt4oImageChat(
             headers: respHeaders,
         });
     }
+    // 非流式:zhiyunai 逆向上游的 finish_reason 可能漏非标值,归一后再返
+    // (本分支不走 forwardToNewApi,归一入口覆盖不到,这里自己补)
+    if (data) normalizeChoices(data);
     return NextResponse.json(data ?? {}, { status: 200, headers: respHeaders });
 }
 

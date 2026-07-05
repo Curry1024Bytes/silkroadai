@@ -535,6 +535,60 @@ describe('/v1 proxy — passthrough', () => {
         warn.mockRestore();
     });
 
+    // finish_reason 归一(OpenAI 兼容面):逆向/经销商渠道漏出的非标 stop reason
+    // 映射到 OpenAI 标准集;native 面(/messages)不动。映射表契约在
+    // src/lib/proxy/__tests__/finish-reason.test.ts,这里测路由接线。
+    it('非流式 chat/completions:上游漏出 end_turn → 客户收到 stop', async () => {
+        mockFetch.mockResolvedValueOnce(
+            new Response(
+                JSON.stringify({
+                    id: 'chatcmpl-x',
+                    choices: [{ index: 0, message: { content: 'hi' }, finish_reason: 'end_turn' }],
+                }),
+                { status: 200, headers: { 'content-type': 'application/json' } },
+            ),
+        );
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: { model: 'gpt-5.4', messages: [{ role: 'user', content: 'hi' }] },
+            }),
+            ctx('chat', 'completions'),
+        );
+        const j = (await res.json()) as { choices: Array<{ finish_reason: string }> };
+        expect(j.choices[0].finish_reason).toBe('stop');
+    });
+
+    it('流式 chat/completions:chunk 里的 MAX_TOKENS → length,其余字节不变', async () => {
+        const sse =
+            'data: {"choices":[{"delta":{"content":"a"},"finish_reason":null}]}\n\n' +
+            'data: {"choices":[{"delta":{},"finish_reason":"MAX_TOKENS"}]}\n\ndata: [DONE]\n\n';
+        mockFetch.mockResolvedValueOnce(
+            new Response(sse, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+        );
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: { model: 'gpt-5.4', stream: true, messages: [{ role: 'user', content: 'hi' }] },
+            }),
+            ctx('chat', 'completions'),
+        );
+        const text = await res.text();
+        expect(text).toContain('"finish_reason":"length"');
+        expect(text).not.toContain('MAX_TOKENS');
+        expect(text).toContain('data: {"choices":[{"delta":{"content":"a"},"finish_reason":null}]}');
+    });
+
+    it('/messages(native 面)不做归一:stop_reason 原样透传', async () => {
+        const anthropic = JSON.stringify({ type: 'message', stop_reason: 'end_turn', content: [] });
+        mockFetch.mockResolvedValueOnce(
+            new Response(anthropic, { status: 200, headers: { 'content-type': 'application/json' } }),
+        );
+        const res = await POST(
+            makeReq('/messages', { body: { model: 'claude-sonnet-4-6', max_tokens: 10, messages: [] } }),
+            ctx('messages'),
+        );
+        expect(await res.text()).toBe(anthropic);
+    });
+
     it('passes through upstream 502 status', async () => {
         mockFetch.mockResolvedValueOnce(new Response('bad gateway', { status: 502 }));
         const res = await POST(
