@@ -1859,6 +1859,87 @@ with open("edited.png", "wb") as f:
                         · 模型 gpt-image-2(自适应,推荐)/ -1k / -2k / -4k · 返回 data[0].b64_json(PNG)· 按
                         token(¥1.3=$1)· 4K 超时 ≥180s + 重试 · Key 用 image2 分组。
                     </div>
+
+                    <h3 className="m-0 mt-8 mb-2 text-base font-semibold text-navy">严格模式 · Azure 标准校验(可选)</h3>
+                    <p className="m-0 mb-3 text-sm text-ink leading-relaxed">
+                        默认对不支持的参数「尽量出图」(静默忽略 / 自动调整尺寸)。若你需要
+                        <strong className="text-navy">严格对标 Azure gpt-image 行为</strong>
+                        (不支持的参数明确报 400、而非静默改),给请求加一个开关即可:请求头{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            X-Silkroadai-Strict: true
+                        </code>{' '}
+                        或 URL 加{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            ?strict=true
+                        </code>
+                        。
+                        <strong className="text-navy">不加这个开关 = 保持现在的宽容行为,现有代码完全不受影响。</strong>
+                    </p>
+                    <p className="m-0 mb-2 text-sm font-medium text-navy">开启后</p>
+                    <div className="rounded-lg overflow-hidden border border-brand-border bg-surface mb-3">
+                        <table className="w-full border-collapse text-sm">
+                            <thead>
+                                <tr className="bg-paper-muted text-muted-ink">
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        参数
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        严格模式行为
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">
+                                        output_format(webp 等)
+                                    </td>
+                                    <td className="px-4 py-3 text-ink">非 png / jpeg → 400(默认:静默返回 PNG)</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">
+                                        background=transparent
+                                    </td>
+                                    <td className="px-4 py-3 text-ink">→ 400(默认:静默返回不透明 PNG)</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">size</td>
+                                    <td className="px-4 py-3 text-ink">非法尺寸 → 400(默认:静默四舍五入),规则见下</td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">
+                                        output_format=jpeg
+                                    </td>
+                                    <td className="px-4 py-3 text-ink">
+                                        <strong className="text-navy">真正返回 JPEG</strong>(默认:恒返 PNG)
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div className="mt-1 mb-3 rounded-lg border-l-4 border-brand-accent bg-paper-muted px-4 py-3 text-sm text-ink">
+                        📐 <strong className="text-navy">合规尺寸规则</strong>:宽、高都是{' '}
+                        <strong className="text-navy">16 的倍数</strong> · 长边{' '}
+                        <strong className="text-navy">1024~3840</strong> · 短边{' '}
+                        <strong className="text-navy">≤ 2160</strong> · 长宽比{' '}
+                        <strong className="text-navy">≤ 3:1</strong>。
+                        <br />
+                        合规例:1024x1024 / 1536x1024 / 3072x1024 / 3840x2160;非法例:3200x1024(比例 &gt;
+                        3:1)、3840x2176(短边 &gt; 2160)、1024x641(非 16 倍数)。
+                    </div>
+                    <CodeBlock language="bash">
+                        {`# 严格模式:非法参数直接 400,不再静默出图
+curl ${OPENAI_BASE}/images/generations \\
+  -H "Authorization: Bearer sk-你的KEY" \\
+  -H "X-Silkroadai-Strict: true" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "model": "gpt-image-2", "prompt": "...", "size": "3200x1024" }'
+# → 400  invalid size '3200x1024': aspect ratio must be within 3:1
+
+# output_format=jpeg 在严格模式下真正返回 JPEG(也可用 ?strict=true 开关)
+curl "${OPENAI_BASE}/images/generations?strict=true" \\
+  -H "Authorization: Bearer sk-你的KEY" -H "Content-Type: application/json" \\
+  -d '{ "model": "gpt-image-2", "prompt": "...", "output_format": "jpeg" }'`}
+                    </CodeBlock>
                 </section>
 
                 {/* ─── 14 · 异步生图 · 大图/批量免超时 ─── */}
