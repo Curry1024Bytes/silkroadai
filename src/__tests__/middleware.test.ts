@@ -28,9 +28,11 @@ describe('middleware — security headers', () => {
 describe('middleware — matcher excludes /v1/* (body-buffering 10MB cap)', () => {
     const pattern = config.matcher[0];
 
-    it('declares the v1/ and v1beta/ negative lookaheads explicitly', () => {
+    it('declares the v1/ v1beta/ seedance-adapter/ api/tools/ negative lookaheads explicitly', () => {
         expect(pattern).toContain('?!v1/');
         expect(pattern).toContain('v1beta/');
+        expect(pattern).toContain('seedance-adapter/');
+        expect(pattern).toContain('api/tools/');
     });
 
     it.each([
@@ -43,6 +45,12 @@ describe('middleware — matcher excludes /v1/* (body-buffering 10MB cap)', () =
         // 大图 base64 必须避开 middleware 的 10MB body 缓冲截断
         '/v1beta/models/gemini-3-pro-image-preview:generateContent',
         '/v1beta/models',
+        '/seedance-adapter/v1/videos',
+        // 2026-07-05:工具箱各工具的提交入口带参考图 base64,>10MB 被缓冲截断 →
+        // new-api 报 "unexpected end of JSON input"(seedance 图生视频客户实测)。
+        '/api/tools/seedance/submit',
+        '/api/tools/image/generate',
+        '/api/tools/chat/stream',
     ])('does NOT match proxy path %s', (path) => {
         expect(matches(pattern, path)).toBe(false);
     });
