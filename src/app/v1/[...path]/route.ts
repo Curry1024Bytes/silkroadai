@@ -33,8 +33,11 @@
  *      非 Gemini model(gpt-image-2 等)→ 透传 new-api,成功时补顶层 size + 估算 usage,
  *      上游报错原样透传(详见 handleImagesDalle / reshapeOpenAiImageResponse)。
  *
- * 4. 其余一切(/messages、/models、/embeddings、其他模型的 /chat/completions…)
- *    → 原样透传 new-api,streaming SSE 不缓冲(直接 forward upstream ReadableStream)。
+ * 4. 其余一切(/messages、/embeddings、其他模型的 /chat/completions…)
+ *    → 原样透传 new-api,streaming SSE 不缓冲(forward upstream ReadableStream,外面
+ *    包一层 stream-guard:静默期 keep-alive 注释 + 流中断错误尾帧,见 @/lib/sse/stream-guard)。
+ *    例外:GET /models 透传之上逐条附加 `silkroadai` 元数据(机器可读目录,
+ *    见 @/lib/models/machine-catalog;best-effort,失败原样透传)。
  *
  * 边界:
  * - 本文件不做鉴权 — Authorization 头原样透传,new-api 自己校验 sk-xxx。
@@ -51,7 +54,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
 import { prisma } from '@/lib/db';
 import { getCustomerBalance, type CustomerBalance } from '@/lib/billing/customer-balance';
-import { USD_TO_CNY_RATE } from '@/lib/newapi/quota-units';
+import { USD_TO_CNY_RATE, quotaToCny } from '@/lib/newapi/quota-units';
+import { listEnabledChannelGroups } from '@/lib/channel-group';
+import { getTokenUsageWithCache } from '@/lib/newapi/token-usage';
 import { uploadImage } from '@/lib/r2/client';
 import { objectExistsInOss, ossPublicUrl, uploadToCustomerOss } from '@/lib/oss/client';
 import { getOssConfig, resolveUserIdFromAuthHeader } from '@/lib/oss/store';
@@ -71,6 +76,10 @@ import {
     translateAnthropicSseToOpenAi,
 } from './claude-chat-cache';
 import { withKeepalive } from './keepalive';
+import { guardSseResponse, guardSseStream, type SseErrorShape } from '@/lib/sse/stream-guard';
+import { forwardHeaders, passthroughResponse, STRIP_RESPONSE_HEADERS } from '@/lib/proxy/forward';
+import { normalizeOpenAiResponse, normalizeChoices } from '@/lib/proxy/finish-reason';
+import { loadCatalogMeta, resolveTierFromAuthHeader, enrichModelList } from '@/lib/models/machine-catalog';
 import {
     newImageTaskId,
     createImageTask,
@@ -202,34 +211,9 @@ const CLAUDE_MAX_TOKENS_CAP = 4096;
 const IMAGE_FETCH_MAX_BYTES = 20 * 1024 * 1024;
 
 /** 不往上游转发的请求头(host/content-length 由 fetch 重算) */
-const HOP_BY_HOP_REQUEST_HEADERS = new Set(['host', 'content-length', 'connection', 'keep-alive', 'transfer-encoding']);
-
-/** 不往客户端回传的响应头(body 已被改写/重新分块时这些头会撒谎) */
-const STRIP_RESPONSE_HEADERS = new Set(['content-length', 'content-encoding', 'transfer-encoding', 'connection']);
-
+// 转发助手(forwardHeaders / passthroughResponse / 头剥离集)抽到 @/lib/proxy/forward
+// 与 /v1beta 原生透传路由共用,行为零改动。
 type JsonRecord = Record<string, unknown>;
-
-/** 运行时可配置的额外剥离请求头(env `PROXY_STRIP_REQUEST_HEADERS`,逗号分隔,小写比较)。
- *  挡掉客户端注入、会干扰上游的头(如 kiro/Bedrock 上游因客户端带 profileArn 相关头而报
- *  "profileArn is required")。动态读 env → 改 .env + 重启即生效,无需重构建。 */
-function extraStripRequestHeaders(): Set<string> {
-    return new Set(
-        (process.env.PROXY_STRIP_REQUEST_HEADERS || '')
-            .split(',')
-            .map((h) => h.trim().toLowerCase())
-            .filter(Boolean),
-    );
-}
-
-function forwardHeaders(req: NextRequest): Headers {
-    const extra = extraStripRequestHeaders();
-    const headers = new Headers();
-    req.headers.forEach((value, key) => {
-        const lk = key.toLowerCase();
-        if (!HOP_BY_HOP_REQUEST_HEADERS.has(lk) && !extra.has(lk)) headers.set(key, value);
-    });
-    return headers;
-}
 
 /** 翻译到 native generateContent 时用:复用鉴权头但强制 JSON Content-Type。
  *  原请求可能是 multipart/form-data,若把那个 Content-Type 带给 JSON body,
@@ -318,12 +302,14 @@ async function geminiGenerateWithFailover(req: NextRequest, model: string, reque
     return send(backup); // 其余非 2xx → 切候补
 }
 
-function passthroughResponse(upstream: Response): NextResponse {
-    const headers = new Headers();
-    upstream.headers.forEach((value, key) => {
-        if (!STRIP_RESPONSE_HEADERS.has(key.toLowerCase())) headers.set(key, value);
-    });
-    return new NextResponse(upstream.body, { status: upstream.status, headers });
+/** SSE 流中断时该注入哪种格式的错误事件(见 stream-guard.ts):
+ *  /chat/completions = OpenAI chunk 形;/messages = Anthropic 原生形;其余 SSE 路径
+ *  (legacy /completions 是 choices[].text 形、/responses 是 Responses 事件流)格式
+ *  各异 → null,只做 keep-alive、错误照旧传播(不注入不一定能解析的事件)。 */
+function sseShapeForPath(path: string): SseErrorShape {
+    if (path === '/chat/completions') return 'openai';
+    if (path === '/messages') return 'anthropic';
+    return null;
 }
 
 async function forwardToNewApi(
@@ -369,7 +355,7 @@ async function forwardToNewApi(
         body: outgoingBody,
         duplex: 'half',
     };
-    const upstream = await fetch(url, init);
+    let upstream = await fetch(url, init);
     // 临时诊断(HDR_CAPTURE=1):记上游错误响应,与 [HDRCAP] 请求头按 tokFp+时间对应,
     // 用于坐实客户报的 profileArn 到底哪些请求触发。查完撤。
     if (process.env.HDR_CAPTURE === '1' && upstream.status >= 400) {
@@ -383,7 +369,27 @@ async function forwardToNewApi(
             /* diagnostic only */
         }
     }
-    return cap ? captureResponse(cap, upstream) : passthroughResponse(upstream);
+    // finish_reason 归一(只对 OpenAI 兼容面):逆向/经销商渠道漏出的非标 stop reason
+    // (end_turn / STOP / MAX_TOKENS / SAFETY…)映射成 OpenAI 标准集;/messages、
+    // /v1beta 等 native 面不动。放在 guard 之前:guard 的 error 尾帧本就是标准值。
+    if (path === '/chat/completions') upstream = await normalizeOpenAiResponse(upstream);
+
+    // SSE 流式两件套:静默期 keep-alive 注释 + 流中断错误事件(guard 在 capture 之前,
+    // 请求日志记到的 = 客户实际收到的字节,含错误尾帧)。非 SSE / 非 2xx 原样返回。
+    // onInterrupted:守卫把上游死转成尾帧 + 干净收流后,tee 只看到正常 done —— 不回填
+    // 的话中断流在请求日志的结构化字段(incomplete/errorParts)里会隐身。
+    const guarded = guardSseResponse(upstream, {
+        shape: sseShapeForPath(path),
+        label: `proxy${path}`,
+        model: typeof bodyOverride?.model === 'string' ? bodyOverride.model : undefined,
+        onInterrupted: cap
+            ? (err) => {
+                  cap.incomplete = true;
+                  cap.errorParts.push('upstream-read:' + (err instanceof Error ? err.message : String(err)));
+              }
+            : undefined,
+    });
+    return cap ? captureResponse(cap, guarded) : passthroughResponse(guarded);
 }
 
 /** image_url 解析失败 → 客户侧 400(OpenAI invalid_request_error 形) */
@@ -962,6 +968,9 @@ async function handleGpt4oImageChat(
             headers: respHeaders,
         });
     }
+    // 非流式:zhiyunai 逆向上游的 finish_reason 可能漏非标值,归一后再返
+    // (本分支不走 forwardToNewApi,归一入口覆盖不到,这里自己补)
+    if (data) normalizeChoices(data);
     return NextResponse.json(data ?? {}, { status: 200, headers: respHeaders });
 }
 
@@ -1150,6 +1159,58 @@ function normalizeGptImageForm(form: FormData): void {
     form.delete('aspect_ratio');
 }
 
+// ============ 严格模式(opt-in,对标 Azure gpt-image 契约)============
+// zhiyunai(渠道 44)对不支持的参数「静默忽略 / 静默改尺寸」而非按 Azure 那样 400。客户可发
+// `X-Silkroadai-Strict: true`(或 `?strict=true`)让代理层先按 Azure 标准校验:webp/transparent/
+// 非法尺寸 → 400;`output_format=jpeg` → 服务端 png→jpeg 转码(zhiyunai 恒返 png)。非严格模式
+// 行为完全不变(不带开关 = 现状)。
+
+/** 严格模式开关:请求头 `X-Silkroadai-Strict: true` 或 query `?strict=true`。 */
+function isStrictImageMode(req: NextRequest, search: string): boolean {
+    if ((req.headers.get('x-silkroadai-strict') || '').toLowerCase() === 'true') return true;
+    return new URLSearchParams(search).get('strict') === 'true';
+}
+
+/** gpt-image 尺寸校验(逆向 ch44 zhiyunai 实测规则)。仅校验显式 WxH 像素尺寸(auto / 比例串
+ *  交给 normalize)。合规 = 两边都是 16 的倍数、1024 ≤ 长边 ≤ 3840、短边 ≤ 2160、长/短 ≤ 3:1。
+ *  返回 400 错误文案或 null(合规)。 */
+function gptImageSizeError(size: string): string | null {
+    if (!size) return null;
+    const m = size.match(/^(\d+)x(\d+)$/);
+    if (!m) return null; // 非 WxH(auto / "16:9" 等)→ 不在此校验
+    const w = Number(m[1]);
+    const h = Number(m[2]);
+    if (w % 16 !== 0 || h % 16 !== 0) return `invalid size '${size}': width and height must be multiples of 16`;
+    const long = Math.max(w, h);
+    const short = Math.min(w, h);
+    if (long < 1024) return `invalid size '${size}': minimum long edge is 1024`;
+    if (long > 3840 || short > 2160)
+        return `invalid size '${size}': maximum is 3840x2160 (long edge ≤ 3840, short edge ≤ 2160)`;
+    if (long / short > 3) return `invalid size '${size}': aspect ratio must be within 3:1`;
+    return null;
+}
+
+/** 严格模式下校验 gpt-image 入参(output_format / background / size)。返回 400 文案或 null。 */
+function strictGptImageError(outputFormat: string, background: string, size: string): string | null {
+    const of = outputFormat.toLowerCase();
+    if (of && of !== 'png' && of !== 'jpeg') return `output_format '${outputFormat}' not supported (only png / jpeg)`;
+    if (background.toLowerCase() === 'transparent') return `background 'transparent' not supported`;
+    return gptImageSizeError(size);
+}
+
+/** png base64 → jpeg base64(jimp,纯 JS 无 native 依赖,失败回退原 png,永不抛)。 */
+async function pngToJpegB64(pngB64: string): Promise<string> {
+    try {
+        const { Jimp } = await import('jimp');
+        const img = await Jimp.read(Buffer.from(pngB64, 'base64'));
+        const jpegBuf = await img.getBuffer('image/jpeg', { quality: 92 });
+        return Buffer.from(jpegBuf).toString('base64');
+    } catch (e) {
+        console.warn('[gpt-image] png→jpeg transcode failed, keeping png:', e instanceof Error ? e.message : e);
+        return pngB64;
+    }
+}
+
 /** OpenAI gpt-image 图片输出 token 估算系数:~703 tok/百万像素(校准到 1536×1024≈1106,
  *  贴近客户参考样例 1105)。号池/new-api 不回真实 usage,这是【估算值】,不等于官方计费 token。 */
 const OPENAI_IMAGE_OUTPUT_TOKENS_PER_MP = 703;
@@ -1213,6 +1274,7 @@ async function reshapeOpenAiImageResponse(
     cap: CaptureCtx | null,
     req: NextRequest | null = null,
     storeToUrl = false,
+    transcodeJpeg = false,
 ): Promise<NextResponse> {
     const text = await upstream.text();
     const headers = new Headers();
@@ -1242,6 +1304,17 @@ async function reshapeOpenAiImageResponse(
     if (out.size === undefined && outSize) out.size = outSize;
     if (out.usage === undefined) out.usage = buildEstimatedUsage(prompt, outSize);
 
+    // 严格模式 output_format=jpeg:zhiyunai 恒返 png,服务端 png→jpeg 转码(就地改 data[].b64_json,
+    // out.data 同一引用会一并反映)。失败回退原 png(pngToJpegB64 永不抛)。
+    const imgMime = transcodeJpeg ? 'image/jpeg' : 'image/png';
+    if (transcodeJpeg) {
+        for (const item of data) {
+            if (typeof item.b64_json === 'string' && item.b64_json) {
+                item.b64_json = await pngToJpegB64(item.b64_json);
+            }
+        }
+    }
+
     // opt-in(response_format:url):把 b64_json 存客户 OSS→平台 R2,响应改回 url(镜像 Gemini 生图)。
     // 默认(无 response_format / b64_json)保持 b64_json 原样 —— OpenAI gpt-image 契约,不破坏现有客户。
     let refs: string[] = [];
@@ -1253,7 +1326,7 @@ async function reshapeOpenAiImageResponse(
                 newData.push(item);
                 continue;
             }
-            const stored = await storeGeneratedImage(req, Buffer.from(b64, 'base64'), 'image/png', b64);
+            const stored = await storeGeneratedImage(req, Buffer.from(b64, 'base64'), imgMime, b64);
             const d: JsonRecord = { ...item, url: stored.url };
             delete d.b64_json;
             newData.push(d);
@@ -1321,7 +1394,18 @@ async function handleImagesDalle(
             // model 非我们的 Gemini 生图 → 重建 FormData 透传(保留 gpt-image-2 等)
             if (!(model in GEMINI_IMAGE_MODELS)) {
                 // gpt-image:剥 response_format + 把比例(aspect_ratio / "16:9" 形态 size)翻成像素 size
+                let wantJpeg = false;
                 if (isGptImageModel(model)) {
+                    // 严格模式(opt-in):先按 Azure 标准校验 output_format/background/size,不合规 → 400
+                    if (isStrictImageMode(req, search)) {
+                        const err = strictGptImageError(
+                            String(form.get('output_format') ?? ''),
+                            String(form.get('background') ?? ''),
+                            sizeRaw,
+                        );
+                        if (err) return imageError(err, 400, cap);
+                        wantJpeg = String(form.get('output_format') ?? '').toLowerCase() === 'jpeg';
+                    }
                     normalizeGptImageForm(form);
                     sizeRaw = String(form.get('size') ?? '');
                 }
@@ -1346,6 +1430,7 @@ async function handleImagesDalle(
                         cap,
                         req,
                         isGptImageModel(model) && wantHostedUrl,
+                        wantJpeg,
                     );
                 } catch (e) {
                     if (e instanceof ImageUrlError) return imageError(e.message, 400, cap);
@@ -1399,7 +1484,19 @@ async function handleImagesDalle(
             if (!(model in GEMINI_IMAGE_MODELS)) {
                 // gpt-image:剥 response_format(zhiyunai 拒收 →400)+ 比例→像素 size(zhiyunai 不认
                 // aspect_ratio / "16:9" 形态 size,默认出方图)。见 normalizeGptImageJson。
+                let wantJpeg = false;
                 if (isGptImageModel(model)) {
+                    // 严格模式(opt-in):先按 Azure 标准校验 output_format/background/size,不合规 → 400
+                    if (isStrictImageMode(req, search)) {
+                        const err = strictGptImageError(
+                            typeof body.output_format === 'string' ? body.output_format : '',
+                            typeof body.background === 'string' ? body.background : '',
+                            sizeRaw,
+                        );
+                        if (err) return imageError(err, 400, cap);
+                        wantJpeg =
+                            (typeof body.output_format === 'string' ? body.output_format : '').toLowerCase() === 'jpeg';
+                    }
                     normalizeGptImageJson(body);
                     sizeRaw = typeof body.size === 'string' ? body.size : '';
                 }
@@ -1415,6 +1512,7 @@ async function handleImagesDalle(
                         cap,
                         req,
                         isGptImageModel(model) && wantHostedUrl,
+                        wantJpeg,
                     );
                 } catch (e) {
                     if (e instanceof ImageUrlError) return imageError(e.message, 400, cap);
@@ -1608,7 +1706,14 @@ async function handleClaudeCachedChat(
     // 流式:逐事件翻 Anthropic SSE → OpenAI chunk
     if (wantStream) {
         if (!upstream.body) return forwardToNewApi(req, originalBody, path, search, cap);
-        const translated = translateAnthropicSseToOpenAi(upstream.body, model);
+        // 守卫在这条路径上只负责 keep-alive:翻译器内部把上游读错/无 message_stop 的
+        // 提前收流都转成 finish_reason:"error" 尾帧后【干净 close】(它拿得到 id/model,
+        // 尾帧形状更完整),错误不会传播到这里;shape 仅作防御性兜底。
+        const translated = guardSseStream(translateAnthropicSseToOpenAi(upstream.body, model), {
+            shape: 'openai',
+            model,
+            label: 'proxy/chat/completions#cache-injected',
+        });
         const headers = new Headers({
             'content-type': 'text/event-stream; charset=utf-8',
             'cache-control': 'no-cache',
@@ -1637,6 +1742,116 @@ async function handleClaudeCachedChat(
 }
 
 const BALANCE_PATHS = new Set(['/dashboard/billing/subscription', '/dashboard/billing/usage', '/balance']);
+
+/**
+ * GET /v1/key — key 自查端点(借鉴 OpenRouter `GET /api/v1/key`)。
+ * 客户拿 sk- 编程自查:别名 / 状态 / 档次 / 账户余额 / 本 key 累计用量,不用登后台。
+ * new-api 没有这个端点(纯透传时代这里是 404)→ 拦截是纯增量,零兼容风险。
+ *
+ * 语义:
+ * - 预算在【账户级】(gotcha #12:token 恒 unlimited_quota),余额字段叫
+ *   account_balance 明示"这是账户的、不是本 key 的";key 级只有累计消费
+ *   (60s 行缓存,best-effort);
+ * - 余额是本端点的主用途(脚本监控),拿不到就 503(与 /dashboard/billing/* 一致,
+ *   不给 null 让脚本误判);档次显示名 / key 用量是次要信息,失败给 null 不拖垮响应;
+ * - 撤销/未知 key 一律 401(与余额查询一致,revoked key 不该在任何端点可用);
+ * - 与余额查询同样在 beginCapture 之前拦截,不记请求日志。
+ */
+async function handleKeySelfInspect(req: NextRequest): Promise<NextResponse> {
+    const auth = req.headers.get('authorization') || '';
+    const m = auth.match(/^Bearer\s+(.+)$/i);
+    if (!m) return billingError('Missing bearer token', 401);
+    const raw = m[1].trim();
+    const stored = raw.startsWith('sk-') ? raw.slice(3) : raw; // DB 存无 sk- 前缀
+
+    const token = await prisma.newApiToken.findUnique({
+        where: { newapi_token_value: stored },
+        select: {
+            id: true,
+            user_id: true,
+            key_alias: true,
+            status: true,
+            tier: true,
+            created_at: true,
+            model_limits_enabled: true,
+            model_limits: true,
+            newapi_token_id: true,
+            user: { select: { newapi_user_id: true, tenant_id: true } },
+        },
+    });
+    if (!token || token.status !== 'active') return billingError('Invalid token', 401);
+
+    let bal: CustomerBalance;
+    try {
+        bal = await getCustomerBalance(token.user_id);
+    } catch (err) {
+        console.warn('[key-inspect] balance unavailable', {
+            err: err instanceof Error ? err.message : String(err),
+        });
+        return billingError('balance temporarily unavailable', 503);
+    }
+
+    // 档次显示名按 key 主人的 tenant 解析(与 /keys 页、建 key POST 同标准)——
+    // 白标 tenant 客户不能看到平台的牌子(ChannelGroup 是 @@unique([tenant_id, key]))
+    let tierDisplayName: string | null = null;
+    try {
+        const groups = await listEnabledChannelGroups(token.user.tenant_id ?? null);
+        tierDisplayName = groups.find((g) => g.key === token.tier)?.display_name ?? null;
+    } catch (err) {
+        console.warn('[key-inspect] tier display name unavailable', {
+            err: err instanceof Error ? err.message : String(err),
+        });
+    }
+
+    // 本 key 用量(60s 行缓存,best-effort):
+    // - recent_used_cny 是【近 1000 条消费日志的毛和】(token-usage.ts 的 at-a-glance
+    //   近似,不含退款、超窗即截断)—— 命名带 recent,不冒充对账口径的累计消费;
+    // - last_used_at 只在 source==='live' 时给(缓存命中时 helper 返回的是缓存写入
+    //   时间,不是真实最后使用时间 —— 机读端点不能给撒谎数据):字段省略 = 本次未知,
+    //   null = 确认从未使用。
+    let keyUsage: { recent_used_cny: number; last_used_at?: string | null; source: string } | null = null;
+    try {
+        if (token.user.newapi_user_id != null) {
+            const snap = await getTokenUsageWithCache({
+                prismaTokenId: token.id,
+                newapiUserId: token.user.newapi_user_id,
+                newapiTokenId: token.newapi_token_id,
+            });
+            keyUsage = {
+                recent_used_cny: quotaToCny(Number(snap.used_quota)),
+                ...(snap.source === 'live'
+                    ? { last_used_at: snap.last_used_at ? snap.last_used_at.toISOString() : null }
+                    : {}),
+                source: snap.source,
+            };
+        }
+    } catch (err) {
+        console.warn('[key-inspect] key usage unavailable', {
+            err: err instanceof Error ? err.message : String(err),
+        });
+    }
+
+    const round4 = (n: number) => Number(n.toFixed(4)); // 与 /v1/balance 同舍入,不漏浮点噪音
+    return NextResponse.json({
+        data: {
+            key_alias: token.key_alias,
+            status: token.status,
+            tier: token.tier,
+            tier_display_name: tierDisplayName,
+            created_at: token.created_at.toISOString(),
+            model_limits_enabled: token.model_limits_enabled,
+            model_limits: token.model_limits,
+            account_balance: {
+                balance_cny: round4(bal.balanceCny),
+                spent_cny: round4(bal.spentCny),
+                currency: 'CNY',
+                // 监控脚本必须能分辨"新鲜余额"和"new-api 不可达时的陈旧兜底值"
+                stale: bal.stale,
+            },
+            key_usage: keyUsage,
+        },
+    });
+}
 
 /** OpenAI 形错误(与 new-api 一致,客户端余额工具能识别)。 */
 function billingError(message: string, status: number): NextResponse {
@@ -1917,6 +2132,11 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
         return handleBalanceQuery(req, path);
     }
 
+    // key 自查(OpenRouter GET /api/v1/key 模式)。同余额查询:capture 之前拦截,不记日志。
+    if (req.method === 'GET' && path === '/key') {
+        return handleKeySelfInspect(req);
+    }
+
     // 请求日志捕获(数据存储 Phase 1 第②步)。开关 off → null → 下面全程与今天
     // 字节级一致;on → 旁路捕获,best-effort,绝不影响客户请求(见 capture.ts)。
     const cap = beginCapture(req, path);
@@ -2005,8 +2225,82 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
         return handleVideoPoll(req, path, search);
     }
 
-    // 其他路径(/messages /models /embeddings …)全部透传
+    // 机器可读模型目录(OpenRouter /api/v1/models 模式):GET /models 的上游列表
+    // (per-token 过滤)每条追加 `silkroadai` 命名空间元数据(价格/模态/厂商)。
+    // OpenAI SDK 忽略未知字段;增强 best-effort,任何失败原样透传。
+    if (path === '/models' && req.method === 'GET') {
+        return handleModelsEnriched(req, search, cap);
+    }
+
+    // 其他路径(/messages /embeddings …)全部透传
     return forwardToNewApi(req, null, path, search, cap);
+}
+
+/** GET /v1/models 拦截:透传上游列表 + 逐条附加 silkroadai 元数据(见 machine-catalog.ts)。
+ *  上游非 2xx / 非 JSON → 原样透传;增强链(目录 DB / 档次解析 / 形状)任何失败 →
+ *  原字节回退,绝不打断请求。 */
+async function handleModelsEnriched(req: NextRequest, search: string, cap: CaptureCtx | null): Promise<NextResponse> {
+    const upstream = await fetch(`${NEWAPI_BASE_URL}/v1/models${search}`, {
+        method: 'GET',
+        headers: forwardHeaders(req),
+    });
+    const ct = upstream.headers.get('content-type') || '';
+    if (!upstream.ok || !ct.includes('application/json')) {
+        return cap ? captureResponse(cap, upstream) : passthroughResponse(upstream);
+    }
+    const text = await upstream.text();
+    let json: JsonRecord | null = null;
+    try {
+        json = JSON.parse(text) as JsonRecord;
+    } catch {
+        /* content-type 撒谎(非 JSON 实体)→ 下面重建原响应走标准 capture/passthrough */
+    }
+    if (!json) {
+        const rebuilt = new Response(text, { status: upstream.status, headers: upstream.headers });
+        return cap ? captureResponse(cap, rebuilt) : passthroughResponse(rebuilt);
+    }
+    // 上游头逐条保留(x-oneapi-request-id 是排查链路的关键头,不能只在回退路径有),
+    // strip 集剥掉会撒谎的;两条出口(增强/回退)头行为一致。
+    const headers = new Headers();
+    upstream.headers.forEach((v, k) => {
+        if (!STRIP_RESPONSE_HEADERS.has(k.toLowerCase())) headers.set(k, v);
+    });
+    try {
+        // 2.5s 钟:portal DB 慢/挂时别让 /models(纯透传时代零 DB)跟着 Prisma
+        // 连接超时陪跑十几秒 —— 到点放弃增强走回退。
+        const [meta, tier] = await withDeadline(
+            Promise.all([loadCatalogMeta(), resolveTierFromAuthHeader(req.headers.get('authorization'))]),
+            MODELS_ENRICH_DEADLINE_MS,
+        );
+        const enriched = enrichModelList(json, tier, meta);
+        if (cap) captureJsonResponse(cap, 200, enriched);
+        headers.set('content-type', 'application/json');
+        headers.set('X-Silkroadai-Enriched', 'models');
+        return new NextResponse(JSON.stringify(enriched), { status: upstream.status, headers });
+    } catch (err) {
+        console.warn('[models-enrich] enrichment failed, passthrough', {
+            err: err instanceof Error ? err.message : String(err),
+        });
+        if (cap) captureJsonResponse(cap, upstream.status, json); // 回退也记日志(与纯透传时代等价)
+        return new NextResponse(text, { status: upstream.status, headers });
+    }
+}
+
+/** 目录增强的整体截止钟(loadCatalogMeta + 档次反查合起来)。 */
+const MODELS_ENRICH_DEADLINE_MS = 2_500;
+
+async function withDeadline<T>(p: Promise<T>, ms: number): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+        return await Promise.race([
+            p,
+            new Promise<never>((_, reject) => {
+                timer = setTimeout(() => reject(new Error(`deadline ${ms}ms exceeded`)), ms);
+            }),
+        ]);
+    } finally {
+        if (timer) clearTimeout(timer);
+    }
 }
 
 type RouteContext = { params: Promise<{ path: string[] }> };

@@ -41,6 +41,7 @@ import { getCurrentUser } from '@/lib/auth/session';
 import { getOrCreateSystemToken, PortalSystemTokenError } from '@/lib/newapi/system-token';
 import { runWebSearch } from '@/lib/chat/web-search';
 import { resolveModelGroup } from '@/lib/chat/model-groups';
+import { guardSseStream } from '@/lib/sse/stream-guard';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -205,7 +206,11 @@ export async function POST(req: NextRequest): Promise<Response> {
     // Pipe the upstream SSE stream straight through. No buffering — tokens
     // reach the client as new-api emits them. Strip hop-by-hop headers and
     // pin the content-type to text/event-stream.
-    return new Response(upstream.body, {
+    // SSE 流式两件套(stream-guard):静默期 keep-alive 注释(reasoning 模型思考期不被
+    // CF/代理/SDK 空闲超时掐线;drainSse 忽略注释行)+ 上游流中断时注入
+    // finish_reason:"error" 尾帧(chat-console 渲染成可见的「连接中断」提示,而非莫名断流)。
+    const guarded = guardSseStream(upstream.body, { shape: 'openai', model, label: 'portal-chat-stream' });
+    return new Response(guarded, {
         status: 200,
         headers: {
             'Content-Type': upstream.headers.get('content-type') || 'text/event-stream; charset=utf-8',

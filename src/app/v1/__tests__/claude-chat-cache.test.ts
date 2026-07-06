@@ -1,7 +1,7 @@
 /**
  * W9 Claude prompt-cache 透明增强 — 翻译纯函数单测。
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
     isCacheableClaudeChat,
     buildAnthropicRequest,
@@ -278,5 +278,98 @@ describe('translateAnthropicSseToOpenAi', () => {
         const contents = chunks.map((c) => c.choices[0].delta.content).filter((x) => typeof x === 'string');
         expect(contents.join('')).toBe('AB');
         expect(out.trimEnd().endsWith('data: [DONE]')).toBe(true);
+    });
+
+    // SSE 流式两件套:翻译流的中断不能包装成 finish_reason:"stop"(截断回答与完整回答
+    // 必须可区分)。三种中断形态都要以 error 尾帧收尾:读异常 / 无 message_stop 的干净
+    // 关流 / 上游 in-band error 事件。
+    const parseChunks = (out: string) =>
+        out
+            .split('\n\n')
+            .map((b) => b.replace(/^data: /, '').trim())
+            .filter((d) => d && d !== '[DONE]')
+            .map((d) => JSON.parse(d));
+
+    it('上游读异常(连接死)→ finish_reason:"error" 尾帧 + error 对象 + [DONE],不装 stop', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const enc = new TextEncoder();
+        const stream = new ReadableStream<Uint8Array>({
+            start(c) {
+                c.enqueue(
+                    enc.encode(
+                        'event: message_start\ndata: {"type":"message_start","message":{"model":"claude-sonnet-4-6"}}\n\n' +
+                            'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"par"}}\n\n',
+                    ),
+                );
+                // 异步 error:让读端先消费已入队字节(error() 会丢弃未读队列,真实网络也是字节先到错误后至)
+                setTimeout(() => c.error(new Error('ECONNRESET')), 0);
+            },
+        });
+        const out = await collect(translateAnthropicSseToOpenAi(stream, 'claude-sonnet-4-6'));
+        const chunks = parseChunks(out);
+        const last = chunks[chunks.length - 1];
+        expect(last.choices[0].finish_reason).toBe('error');
+        expect(last.error.code).toBe('upstream_stream_interrupted');
+        expect(last.model).toBe('claude-sonnet-4-6');
+        expect(out.trimEnd().endsWith('data: [DONE]')).toBe(true);
+        // 已产出的部分内容仍在
+        expect(out).toContain('"content":"par"');
+        warn.mockRestore();
+    });
+
+    it('上游没发 message_stop 就干净关流(半途断开的另一副面孔)→ 同样 error 尾帧', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const truncated = [
+            'event: message_start',
+            'data: {"type":"message_start","message":{"model":"claude-sonnet-4-6"}}',
+            '',
+            'event: content_block_delta',
+            'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"par"}}',
+            '',
+            '',
+        ].join('\n');
+        const out = await collect(translateAnthropicSseToOpenAi(sseStream(truncated), 'claude-sonnet-4-6'));
+        const chunks = parseChunks(out);
+        expect(chunks[chunks.length - 1].choices[0].finish_reason).toBe('error');
+        expect(out).toContain('without message_stop');
+        warn.mockRestore();
+    });
+
+    it('message_delta 已带 stop_reason、message_stop 前断开 → 生成已完整,按正常 finish 收尾', async () => {
+        const complete = [
+            'event: message_start',
+            'data: {"type":"message_start","message":{"model":"claude-sonnet-4-6"}}',
+            '',
+            'event: content_block_delta',
+            'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"full"}}',
+            '',
+            'event: message_delta',
+            'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}',
+            '',
+            '',
+        ].join('\n');
+        const out = await collect(translateAnthropicSseToOpenAi(sseStream(complete), 'claude-sonnet-4-6'));
+        const chunks = parseChunks(out);
+        expect(chunks[chunks.length - 1].choices[0].finish_reason).toBe('stop');
+        expect(out).not.toContain('interrupted');
+    });
+
+    it('上游 in-band error 事件 → error 尾帧带上游错误文案', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const errored = [
+            'event: message_start',
+            'data: {"type":"message_start","message":{"model":"claude-sonnet-4-6"}}',
+            '',
+            'event: error',
+            'data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}',
+            '',
+            '',
+        ].join('\n');
+        const out = await collect(translateAnthropicSseToOpenAi(sseStream(errored), 'claude-sonnet-4-6'));
+        const chunks = parseChunks(out);
+        const last = chunks[chunks.length - 1];
+        expect(last.choices[0].finish_reason).toBe('error');
+        expect(last.error.message).toBe('Overloaded');
+        warn.mockRestore();
     });
 });

@@ -80,6 +80,9 @@ function toCallRow(log: NewApiUsageLog): CallRow {
         id: log.id,
         createdAt: log.created_at,
         model: log.model_name,
+        // 哪个 key(token 别名)+ request id — 客户排障定位句柄
+        tokenName: log.token_name,
+        requestId: log.request_id,
         // new-api `use_time` 单位是【秒】,×1000 转 ms(formatDuration 收 ms)。
         // 不转的话 56 秒的生图会显示成 "56ms"。
         useTimeMs: log.use_time * 1000,

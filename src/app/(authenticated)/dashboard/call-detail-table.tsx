@@ -2,9 +2,15 @@
 
 /**
  * 每次调用明细表 — the customer's core ask (brief §3). One row per call,
- * merging new-api consume (type=2) + error (type=5) logs:
+ * merging new-api consume (type=2) + error (type=5/6) logs:
  *
- *   | 时间 | 模型 | 时长 | Tokens(输入/输出) | 消耗 ¥ | 结果 |
+ *   | 时间 | 模型 | Key | Request ID | 时长 | Tokens(输入/输出) | 消耗 ¥ | 结果 |
+ *
+ * `Key` = the token alias (new-api `token_name`) so the customer can see
+ * WHICH of their keys made each call; `Request ID` = new-api's per-request id
+ * (copyable — it's a 40-char handle only useful if you can paste it into a
+ * support message). Both added at customer request ("日志信息太少,最少显示每条
+ * 请求是哪个 key 跟 request ID").
  *
  * Client island so it can paginate in place + expand a failed row to show
  * the error `content` without a server round-trip. The parent server
@@ -22,6 +28,10 @@ export interface CallRow {
     /** unix seconds */
     createdAt: number;
     model: string;
+    /** key alias (new-api token_name) — which API key made this call */
+    tokenName: string;
+    /** new-api request id — the customer's support / upstream-trace handle */
+    requestId: string;
     useTimeMs: number;
     promptTokens: number;
     completionTokens: number;
@@ -40,6 +50,9 @@ export interface CallRow {
 const PAGE_SIZE = 20;
 
 const HEAD = 'text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border text-muted-ink';
+
+/** Table spans 8 columns; the expanded error-detail sub-row must match. */
+const COL_SPAN = 8;
 
 export function CallDetailTable({ rows }: { rows: CallRow[] }) {
     const [page, setPage] = useState(0);
@@ -66,6 +79,8 @@ export function CallDetailTable({ rows }: { rows: CallRow[] }) {
                         <tr className="bg-paper-muted">
                             <th className={HEAD}>时间</th>
                             <th className={HEAD}>模型</th>
+                            <th className={HEAD}>Key</th>
+                            <th className={HEAD}>Request ID</th>
                             <th className={`${HEAD} text-right`}>时长</th>
                             <th className={`${HEAD} text-right`}>Tokens(输入/输出)</th>
                             <th className={`${HEAD} text-right`}>消耗</th>
@@ -118,6 +133,36 @@ export function CallDetailTable({ rows }: { rows: CallRow[] }) {
     );
 }
 
+/** Request-id cell: truncated mono id + a copy button (the full 40-char id is
+ *  only useful if it can be pasted into a support message). Empty id → "—". */
+function RequestIdCell({ value }: { value: string }) {
+    const [copied, setCopied] = useState(false);
+    if (!value) return <span className="text-minor-ink">—</span>;
+    return (
+        <span className="inline-flex items-center gap-1.5">
+            <span className="max-w-[150px] truncate font-mono text-xs text-muted-ink" title={value}>
+                {value}
+            </span>
+            <button
+                type="button"
+                onClick={async () => {
+                    try {
+                        await navigator.clipboard.writeText(value);
+                        setCopied(true);
+                        setTimeout(() => setCopied(false), 1500);
+                    } catch {
+                        /* clipboard unavailable (insecure ctx / old browser) — no-op */
+                    }
+                }}
+                title="复制完整 Request ID"
+                className="shrink-0 rounded border border-brand-border bg-surface px-1.5 py-0.5 text-[10px] text-muted-ink transition-colors hover:bg-paper-muted"
+            >
+                {copied ? '已复制' : '复制'}
+            </button>
+        </span>
+    );
+}
+
 /** A call row + its optional expanded error-detail sub-row. */
 function CallRowItem({
     row,
@@ -138,6 +183,17 @@ function CallRowItem({
                     {new Date(row.createdAt * 1000).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}
                 </td>
                 <td className={`${cell} font-mono text-xs`}>{row.model || '<unknown>'}</td>
+                <td className={`${cell} text-xs`}>
+                    <span
+                        className="inline-block max-w-[140px] truncate align-bottom"
+                        title={row.tokenName || undefined}
+                    >
+                        {row.tokenName || '—'}
+                    </span>
+                </td>
+                <td className={cell}>
+                    <RequestIdCell value={row.requestId} />
+                </td>
                 <td className={`${cell} text-right tabular-nums text-muted-ink`}>{formatDuration(row.useTimeMs)}</td>
                 <td className={`${cell} text-right tabular-nums text-muted-ink`}>
                     {formatTokens(row.promptTokens, row.completionTokens, row.model)}
@@ -166,7 +222,7 @@ function CallRowItem({
             </tr>
             {isError && isOpen && (
                 <tr className="bg-paper-muted/40">
-                    <td colSpan={6} className="border-b border-brand-border px-4 py-2.5">
+                    <td colSpan={COL_SPAN} className="border-b border-brand-border px-4 py-2.5">
                         <p className="m-0 mb-1 text-xs font-medium text-status-error-text">错误详情</p>
                         <pre className="m-0 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-paper-muted px-3 py-2 font-mono text-xs text-ink">
                             {row.content || '(上游未返回错误详情)'}

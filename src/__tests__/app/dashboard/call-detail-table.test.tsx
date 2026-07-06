@@ -17,6 +17,8 @@ function row(o: Partial<CallRow> = {}): CallRow {
         id: o.id ?? 1,
         createdAt: o.createdAt ?? 1_700_000_000,
         model: o.model ?? 'gpt-5.4',
+        tokenName: o.tokenName ?? 'prod-openai',
+        requestId: o.requestId ?? '202607052055427215383818268d9d6Zl7iiHJo',
         useTimeMs: o.useTimeMs ?? 1200,
         promptTokens: o.promptTokens ?? 100,
         completionTokens: o.completionTokens ?? 200,
@@ -45,6 +47,22 @@ describe('<CallDetailTable /> SSR', () => {
         expect(html).not.toContain('0.41');
         expect(html).toContain('1.2s');
         expect(html).toContain('100 / 200');
+    });
+
+    it('surfaces the key alias (token_name) + request id per row (customer ask)', () => {
+        const html = renderToString(renderRow({ tokenName: 'test-claude', requestId: '20260705ABCDEF0123456789' }));
+        // Key column header + value
+        expect(html).toContain('Key');
+        expect(html).toContain('test-claude');
+        // Request ID column header + value + copy affordance
+        expect(html).toContain('Request ID');
+        expect(html).toContain('20260705ABCDEF0123456789');
+        expect(html).toContain('复制');
+    });
+
+    it('empty request id → "—" (no copy button, no blank cell)', () => {
+        const html = renderToString(renderRow({ tokenName: '', requestId: '' }));
+        expect(html).toContain('—');
     });
 
     it('error row (type=5) → 失败 + error content surfaced (展开/hover 详情)', () => {

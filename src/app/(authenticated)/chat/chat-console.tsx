@@ -188,6 +188,17 @@ function ChatThread({
                     }
                     if (sseDone) break;
                 }
+                // Mid-stream interruption: the server-side sse guard turns an
+                // upstream stream death into a finish_reason:"error" tail frame
+                // (see src/lib/sse/stream-guard.ts). Tell the customer instead
+                // of silently truncating.
+                if (finishReason === 'error') {
+                    const notice = '⚠️ 连接中断,以上回复可能不完整,请重试。';
+                    yield {
+                        content: [{ type: 'text' as const, text: acc.trim() ? `${acc}\n\n${notice}` : notice }],
+                    };
+                    return;
+                }
                 // Empty output: distinguish an upstream content filter (common on
                 // some reseller channels — they intermittently nuke a reply to
                 // zero tokens with finish_reason=content_filter) from a plain

@@ -25,5 +25,11 @@ export const config = {
     // 被框架层先挡)。/v1 是纯 API 中继,这三个页面向安全头对它无意义。
     // seedance-adapter/* 同 /v1/* 一并排除:内部视频中继端点,不需页面安全头,
     // 且要避开 middleware 的 10MB body 缓冲(Phase 2 参考图 base64 可能偏大)。
-    matcher: ['/((?!v1/|seedance-adapter/|_next/static|_next/image|favicon.ico).*)'],
+    // v1beta/* 同理:Gemini native 透传(W10),inlineData 大图 base64 必须避开
+    // 10MB 缓冲截断;`v1/` 的负向断言匹配不到 `v1beta/`(v1b ≠ v1/),要单列。
+    // api/tools/* 一并排除:工具箱各工具的客户提交入口(seedance 图生视频 submit /
+    // 生图 edit / chat 图片上传)body 里带参考图 base64,>10MB 会被 middleware 缓冲
+    // 截断 → new-api 收到残缺 JSON,报 "unexpected end of JSON input"(2026-07-05
+    // 客户 seedance 图生视频实测)。纯 API 中继,不需页面安全头。
+    matcher: ['/((?!v1/|v1beta/|seedance-adapter/|api/tools/|_next/static|_next/image|favicon.ico).*)'],
 };

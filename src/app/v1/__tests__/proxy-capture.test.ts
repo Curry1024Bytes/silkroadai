@@ -36,7 +36,13 @@ vi.mock('@/lib/r2/log-store', async (importOriginal) => {
 // prisma RequestLog.create
 const mockCreate = vi.fn(async (_args: { data: Record<string, unknown> }) => ({}));
 vi.mock('@/lib/db', () => ({
-    prisma: { requestLog: { create: (a: { data: Record<string, unknown> }) => mockCreate(a) } },
+    prisma: {
+        requestLog: { create: (a: { data: Record<string, unknown> }) => mockCreate(a) },
+        // 机器可读模型目录(GET /models 增强)用:空目录 + 无 token 行 → 增强成功、
+        // pricing 全 null,让 /models 捕获用例走【增强成功】路径而非回退
+        catalogModel: { findMany: async () => [] },
+        newApiToken: { findUnique: async () => null },
+    },
 }));
 
 // identity:固定返回(身份解析本身在 identity.test 测;这里只验贯穿)
@@ -332,9 +338,10 @@ describe('出口 B — /messages 请求体 buffer + 捕获', () => {
         expect(d.model).toBe('claude-opus-4-8');
     });
 
-    it('GET /models(无 body)→ 捕获元数据,不写 in.json', async () => {
+    it('GET /models(无 body)→ 捕获元数据,不写 in.json(增强成功 × capture 开)', async () => {
         mockFetch.mockResolvedValueOnce(jsonUpstream({ data: [] }));
         const res = await GET(makeReq('/models', { method: 'GET', body: undefined }), ctx('models'));
+        expect(res.headers.get('X-Silkroadai-Enriched')).toBe('models'); // 走的是增强成功路径
         await res.text(); // 消费响应驱动 tee 收尾(否则 done 不 resolve)
         await __flushReqlogForTest();
         expect(findPut('in')).toBeUndefined(); // 无请求体 → 不写 in.json

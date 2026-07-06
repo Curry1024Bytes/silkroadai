@@ -51,9 +51,12 @@ const mockTokenFindUnique = vi.fn();
 const mockImageTaskCreate = vi.fn(async (..._a: unknown[]) => ({}));
 const mockImageTaskUpdate = vi.fn(async (..._a: unknown[]) => ({}));
 const mockImageTaskFindUnique = vi.fn(async (..._a: unknown[]): Promise<Record<string, unknown> | null> => null);
+// 机器可读模型目录:catalogModel mock(默认空目录 = 增强仍工作,pricing 全 null)
+const mockCatalogFindMany = vi.fn(async (..._a: unknown[]): Promise<unknown[]> => []);
 vi.mock('@/lib/db', () => ({
     prisma: {
         newApiToken: { findUnique: (...a: unknown[]) => mockTokenFindUnique(...a) },
+        catalogModel: { findMany: (...a: unknown[]) => mockCatalogFindMany(...a) },
         imageTask: {
             create: (...a: unknown[]) => mockImageTaskCreate(...a),
             update: (...a: unknown[]) => mockImageTaskUpdate(...a),
@@ -65,9 +68,30 @@ const mockGetCustomerBalance = vi.fn();
 vi.mock('@/lib/billing/customer-balance', () => ({
     getCustomerBalance: (...a: unknown[]) => mockGetCustomerBalance(...a),
 }));
+// GET /v1/key 自查端点用:档次显示名 + 本 key 用量(默认成功;失败场景用例里 Once 覆盖)
+const mockListChannelGroups = vi.fn(
+    async (..._a: unknown[]): Promise<unknown[]> => [
+        { key: 'pool', display_name: '低价号池' },
+        { key: 'official', display_name: '官方稳定' },
+    ],
+);
+vi.mock('@/lib/channel-group', () => ({
+    listEnabledChannelGroups: (...a: unknown[]) => mockListChannelGroups(...a),
+    restrictGroupsForUser: <T>(g: T[]) => g,
+}));
+const mockGetTokenUsage = vi.fn(
+    async (..._a: unknown[]): Promise<unknown> => ({
+        used_quota: BigInt(0),
+        last_used_at: null,
+        source: 'cache',
+    }),
+);
+vi.mock('@/lib/newapi/token-usage', () => ({
+    getTokenUsageWithCache: (...a: unknown[]) => mockGetTokenUsage(...a),
+}));
 
 import { GET, POST } from '../[...path]/route';
-import { USD_TO_CNY_RATE } from '@/lib/newapi/quota-units';
+import { USD_TO_CNY_RATE, quotaToCny } from '@/lib/newapi/quota-units';
 
 const NEWAPI_BASE = process.env.NEWAPI_BASE_URL || 'http://localhost:3000';
 
@@ -390,6 +414,205 @@ describe('/v1 proxy — Claude prompt-cache injection', () => {
         expect(text).toContain('"content":"Hi"');
         expect(text.trimEnd().endsWith('data: [DONE]')).toBe(true);
     });
+
+    it('cache-injected 流中途死 → finish_reason:"error" 尾帧(不是装完整的 "stop")', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const enc = new TextEncoder();
+        mockFetch.mockResolvedValueOnce(
+            new Response(
+                new ReadableStream({
+                    start(c) {
+                        c.enqueue(
+                            enc.encode(
+                                'event: message_start\ndata: {"type":"message_start","message":{"model":"claude-sonnet-4-6"}}\n\n' +
+                                    'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"par"}}\n\n',
+                            ),
+                        );
+                        // 异步 error:让读端先消费已入队字节(error() 会丢弃未读队列,真实网络也是字节先到错误后至)
+                        setTimeout(() => c.error(new Error('ECONNRESET')), 0);
+                    },
+                }),
+                { status: 200, headers: { 'content-type': 'text/event-stream' } },
+            ),
+        );
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: {
+                    model: 'claude-sonnet-4-6',
+                    stream: true,
+                    messages: [
+                        { role: 'system', content: BIG_SYS },
+                        { role: 'user', content: 'hi' },
+                    ],
+                },
+            }),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(200);
+        expect(res.headers.get('X-Silkroadai-Cache-Injected')).toBe('claude');
+        const text = await res.text();
+        expect(text).toContain('"content":"par"'); // 已产出内容保留
+        expect(text).toContain('"finish_reason":"error"');
+        expect(text).toContain('"upstream_stream_interrupted"');
+        expect(text).not.toContain('"finish_reason":"stop"');
+        expect(text.trimEnd().endsWith('data: [DONE]')).toBe(true);
+        warn.mockRestore();
+    });
+});
+
+// GET /v1/key 自查端点(OpenRouter GET /api/v1/key 模式):new-api 无此端点,拦截纯增量。
+describe('/v1 proxy — GET /key 自查', () => {
+    const activeToken = {
+        id: 'tok-uuid-1',
+        user_id: 'user-uuid-1',
+        key_alias: 'prod-openai',
+        status: 'active',
+        tier: 'official',
+        created_at: new Date('2026-05-04T00:00:00Z'),
+        model_limits_enabled: false,
+        model_limits: [],
+        newapi_token_id: 42,
+        user: { newapi_user_id: 7, tenant_id: null },
+    };
+
+    it('无 Bearer → 401(不打 DB)', async () => {
+        const res = await GET(makeReq('/key', { method: 'GET' }), ctx('key'));
+        expect(res.status).toBe(401);
+        expect(mockTokenFindUnique).not.toHaveBeenCalled();
+    });
+
+    it('未知 key / 已撤销 key → 401 Invalid token(revoked 不该在任何端点可用)', async () => {
+        mockTokenFindUnique.mockResolvedValueOnce(null);
+        const res1 = await GET(
+            makeReq('/key', { method: 'GET', headers: { authorization: 'Bearer sk-unknown' } }),
+            ctx('key'),
+        );
+        expect(res1.status).toBe(401);
+
+        mockTokenFindUnique.mockResolvedValueOnce({ ...activeToken, status: 'disabled' });
+        const res2 = await GET(
+            makeReq('/key', { method: 'GET', headers: { authorization: 'Bearer sk-revoked' } }),
+            ctx('key'),
+        );
+        expect(res2.status).toBe(401);
+    });
+
+    it('active key(live 用量)→ golden 全形断言,sk- 前缀剥离反查,档次按 key 主人 tenant 解析', async () => {
+        mockTokenFindUnique.mockResolvedValueOnce(activeToken);
+        mockGetCustomerBalance.mockResolvedValueOnce({
+            balanceCny: 123.45000000000002, // 故意带浮点噪音,断言 round4 吸收
+            spentCny: 67.89,
+            stale: false,
+        });
+        mockGetTokenUsage.mockResolvedValueOnce({
+            used_quota: BigInt(720000),
+            last_used_at: new Date('2026-07-01T12:00:00Z'),
+            source: 'live',
+        });
+        const res = await GET(
+            makeReq('/key', { method: 'GET', headers: { authorization: 'Bearer sk-abc' } }),
+            ctx('key'),
+        );
+        expect(res.status).toBe(200);
+        expect(mockTokenFindUnique).toHaveBeenCalledWith(
+            expect.objectContaining({ where: { newapi_token_value: 'abc' } }),
+        );
+        // golden 全形断言:响应契约整体钉死(字段增删都得动这里)
+        expect(await res.json()).toEqual({
+            data: {
+                key_alias: 'prod-openai',
+                status: 'active',
+                tier: 'official',
+                tier_display_name: '官方稳定',
+                created_at: '2026-05-04T00:00:00.000Z',
+                model_limits_enabled: false,
+                model_limits: [],
+                account_balance: { balance_cny: 123.45, spent_cny: 67.89, currency: 'CNY', stale: false },
+                key_usage: {
+                    recent_used_cny: quotaToCny(720000),
+                    last_used_at: '2026-07-01T12:00:00.000Z', // live 数据才给(见下一用例)
+                    source: 'live',
+                },
+            },
+        });
+        // 传给用量 helper 的三元组正确(portal id / new-api user id / new-api token id)
+        expect(mockGetTokenUsage).toHaveBeenCalledWith({
+            prismaTokenId: 'tok-uuid-1',
+            newapiUserId: 7,
+            newapiTokenId: 42,
+        });
+        // 档次显示名按 key 主人的 tenant 查(平台用户 tenant_id null → 平台组)
+        expect(mockListChannelGroups).toHaveBeenCalledWith(null);
+    });
+
+    it('缓存命中(source=cache)→ last_used_at 省略(缓存写入时间≠真实最后使用,不给撒谎数据)', async () => {
+        mockTokenFindUnique.mockResolvedValueOnce(activeToken);
+        mockGetCustomerBalance.mockResolvedValueOnce({ balanceCny: 1, spentCny: 2, stale: false });
+        mockGetTokenUsage.mockResolvedValueOnce({
+            used_quota: BigInt(0),
+            last_used_at: new Date('2026-07-06T00:00:00Z'), // helper 给的是缓存写入时间
+            source: 'cache',
+        });
+        const res = await GET(
+            makeReq('/key', { method: 'GET', headers: { authorization: 'Bearer sk-abc' } }),
+            ctx('key'),
+        );
+        const { data } = (await res.json()) as { data: { key_usage: Record<string, unknown> } };
+        expect(data.key_usage.source).toBe('cache');
+        expect('last_used_at' in data.key_usage).toBe(false); // 省略 = 本次未知
+    });
+
+    it('余额陈旧兜底(new-api 不可达)→ stale:true 透出,监控脚本能分辨', async () => {
+        mockTokenFindUnique.mockResolvedValueOnce(activeToken);
+        mockGetCustomerBalance.mockResolvedValueOnce({ balanceCny: 50, spentCny: 10, stale: true });
+        const res = await GET(
+            makeReq('/key', { method: 'GET', headers: { authorization: 'Bearer sk-abc' } }),
+            ctx('key'),
+        );
+        const { data } = (await res.json()) as { data: { account_balance: { stale: boolean } } };
+        expect(data.account_balance.stale).toBe(true);
+    });
+
+    it('余额服务挂 → 503(主用途是脚本监控,不给 null 让脚本误判)', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        mockTokenFindUnique.mockResolvedValueOnce(activeToken);
+        mockGetCustomerBalance.mockRejectedValueOnce(new Error('new-api down'));
+        const res = await GET(
+            makeReq('/key', { method: 'GET', headers: { authorization: 'Bearer sk-abc' } }),
+            ctx('key'),
+        );
+        expect(res.status).toBe(503);
+        expect(warn).toHaveBeenCalledWith('[key-inspect] balance unavailable', expect.anything());
+        warn.mockRestore();
+    });
+
+    it('次要信息 best-effort:用量/档次显示名挂 → 对应字段 null,响应照常 200', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        mockTokenFindUnique.mockResolvedValueOnce(activeToken);
+        mockGetCustomerBalance.mockResolvedValueOnce({ balanceCny: 1, spentCny: 2, stale: false });
+        mockGetTokenUsage.mockRejectedValueOnce(new Error('log query flaky'));
+        mockListChannelGroups.mockRejectedValueOnce(new Error('db flaky'));
+        const res = await GET(
+            makeReq('/key', { method: 'GET', headers: { authorization: 'Bearer sk-abc' } }),
+            ctx('key'),
+        );
+        expect(res.status).toBe(200);
+        const { data } = (await res.json()) as { data: Record<string, unknown> };
+        expect(data.key_usage).toBeNull();
+        expect(data.tier_display_name).toBeNull();
+        expect(data.account_balance).toEqual({ balance_cny: 1, spent_cny: 2, currency: 'CNY', stale: false });
+        warn.mockRestore();
+    });
+
+    it('白标 tenant 的 key → 档次显示名按其 tenant 查(不是平台的牌子)', async () => {
+        mockTokenFindUnique.mockResolvedValueOnce({
+            ...activeToken,
+            user: { newapi_user_id: 7, tenant_id: 'tenant-reseller-1' },
+        });
+        mockGetCustomerBalance.mockResolvedValueOnce({ balanceCny: 1, spentCny: 2, stale: false });
+        await GET(makeReq('/key', { method: 'GET', headers: { authorization: 'Bearer sk-abc' } }), ctx('key'));
+        expect(mockListChannelGroups).toHaveBeenCalledWith('tenant-reseller-1');
+    });
 });
 
 describe('/v1 proxy — passthrough', () => {
@@ -429,6 +652,120 @@ describe('/v1 proxy — passthrough', () => {
         );
         expect(res.headers.get('content-type')).toBe('text/event-stream');
         expect(await res.text()).toBe(sse);
+    });
+
+    // SSE 流式两件套(stream-guard):上游流中途死 → 注入格式内合法的错误尾帧后干净收流,
+    // 客户端 SDK 能解析出"上游中断",而不是 TCP 层莫名断开。keep-alive 注入在
+    // src/lib/sse/__tests__/stream-guard.test.ts 单测覆盖;这里测路由接线。
+    it('SSE 透传流中途死(chat/completions)→ OpenAI 形 finish_reason:"error" 尾帧 + [DONE]', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const enc2 = new TextEncoder();
+        mockFetch.mockResolvedValueOnce(
+            new Response(
+                new ReadableStream({
+                    start(c) {
+                        c.enqueue(enc2.encode('data: {"choices":[{"delta":{"content":"par"}}]}\n\n'));
+                        // 异步 error:让读端先消费已入队字节(error() 会丢弃未读队列,真实网络也是字节先到错误后至)
+                        setTimeout(() => c.error(new Error('ECONNRESET')), 0);
+                    },
+                }),
+                { status: 200, headers: { 'content-type': 'text/event-stream' } },
+            ),
+        );
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: { model: 'gpt-5.4', stream: true, messages: [{ role: 'user', content: 'hi' }] },
+            }),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(200);
+        const text = await res.text(); // 不 throw = 干净收流
+        expect(text).toContain('par');
+        expect(text).toContain('"finish_reason":"error"');
+        expect(text.trimEnd().endsWith('data: [DONE]')).toBe(true);
+        warn.mockRestore();
+    });
+
+    it('SSE 透传流中途死(/messages 原生 Anthropic)→ event: error 尾帧', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const enc2 = new TextEncoder();
+        mockFetch.mockResolvedValueOnce(
+            new Response(
+                new ReadableStream({
+                    start(c) {
+                        c.enqueue(enc2.encode('event: content_block_delta\ndata: {"type":"content_block_delta"}\n\n'));
+                        // 异步 error:让读端先消费已入队字节(error() 会丢弃未读队列,真实网络也是字节先到错误后至)
+                        setTimeout(() => c.error(new Error('boom')), 0);
+                    },
+                }),
+                { status: 200, headers: { 'content-type': 'text/event-stream' } },
+            ),
+        );
+        const res = await POST(
+            makeReq('/messages', {
+                body: { model: 'claude-sonnet-4-6', stream: true, max_tokens: 100, messages: [] },
+            }),
+            ctx('messages'),
+        );
+        expect(res.status).toBe(200);
+        const text = await res.text();
+        expect(text).toContain('event: error\n');
+        expect(text).toContain('"type":"api_error"');
+        warn.mockRestore();
+    });
+
+    // finish_reason 归一(OpenAI 兼容面):逆向/经销商渠道漏出的非标 stop reason
+    // 映射到 OpenAI 标准集;native 面(/messages)不动。映射表契约在
+    // src/lib/proxy/__tests__/finish-reason.test.ts,这里测路由接线。
+    it('非流式 chat/completions:上游漏出 end_turn → 客户收到 stop', async () => {
+        mockFetch.mockResolvedValueOnce(
+            new Response(
+                JSON.stringify({
+                    id: 'chatcmpl-x',
+                    choices: [{ index: 0, message: { content: 'hi' }, finish_reason: 'end_turn' }],
+                }),
+                { status: 200, headers: { 'content-type': 'application/json' } },
+            ),
+        );
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: { model: 'gpt-5.4', messages: [{ role: 'user', content: 'hi' }] },
+            }),
+            ctx('chat', 'completions'),
+        );
+        const j = (await res.json()) as { choices: Array<{ finish_reason: string }> };
+        expect(j.choices[0].finish_reason).toBe('stop');
+    });
+
+    it('流式 chat/completions:chunk 里的 MAX_TOKENS → length,其余字节不变', async () => {
+        const sse =
+            'data: {"choices":[{"delta":{"content":"a"},"finish_reason":null}]}\n\n' +
+            'data: {"choices":[{"delta":{},"finish_reason":"MAX_TOKENS"}]}\n\ndata: [DONE]\n\n';
+        mockFetch.mockResolvedValueOnce(
+            new Response(sse, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+        );
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: { model: 'gpt-5.4', stream: true, messages: [{ role: 'user', content: 'hi' }] },
+            }),
+            ctx('chat', 'completions'),
+        );
+        const text = await res.text();
+        expect(text).toContain('"finish_reason":"length"');
+        expect(text).not.toContain('MAX_TOKENS');
+        expect(text).toContain('data: {"choices":[{"delta":{"content":"a"},"finish_reason":null}]}');
+    });
+
+    it('/messages(native 面)不做归一:stop_reason 原样透传', async () => {
+        const anthropic = JSON.stringify({ type: 'message', stop_reason: 'end_turn', content: [] });
+        mockFetch.mockResolvedValueOnce(
+            new Response(anthropic, { status: 200, headers: { 'content-type': 'application/json' } }),
+        );
+        const res = await POST(
+            makeReq('/messages', { body: { model: 'claude-sonnet-4-6', max_tokens: 10, messages: [] } }),
+            ctx('messages'),
+        );
+        expect(await res.text()).toBe(anthropic);
     });
 
     it('passes through upstream 502 status', async () => {
@@ -474,13 +811,84 @@ describe('/v1 proxy — passthrough', () => {
         expect(res.headers.get('X-Silkroadai-Clamped')).toBeNull();
     });
 
-    it('forwards GET /models untouched', async () => {
+    it('forwards GET /models untouched(上游无 JSON content-type → 不增强,原样透传)', async () => {
         mockFetch.mockResolvedValueOnce(new Response(JSON.stringify({ data: [] }), { status: 200 }));
         const res = await GET(makeReq('/models', { method: 'GET' }), ctx('models'));
         const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
         expect(url).toBe(`${NEWAPI_BASE}/v1/models`);
         expect(init.method).toBe('GET');
         expect(res.status).toBe(200);
+        expect(res.headers.get('X-Silkroadai-Enriched')).toBeNull();
+    });
+
+    // 机器可读模型目录(OpenRouter /api/v1/models 模式):上游列表逐条附加 silkroadai
+    // 元数据。纯函数契约在 machine-catalog 单测;这里测路由接线 + best-effort 回退。
+    it('GET /models(JSON)→ 逐条附加 silkroadai 元数据,按 key 档次给价,上游字段全保留', async () => {
+        const { resetCatalogMetaCacheForTests } = await import('@/lib/models/machine-catalog');
+        resetCatalogMetaCacheForTests();
+        mockTokenFindUnique.mockResolvedValueOnce({ tier: 'official' });
+        mockCatalogFindMany.mockResolvedValueOnce([
+            {
+                slug: 'claude-opus-4-8',
+                display_name: 'Claude Opus 4.8',
+                context_window: 200000,
+                prices: [
+                    { tier: 'official', input_cny_per_1m: 34, output_cny_per_1m: 170, per_image_cny: null },
+                    { tier: 'pool', input_cny_per_1m: 22.5, output_cny_per_1m: 112.5, per_image_cny: null },
+                ],
+            },
+        ]);
+        mockFetch.mockResolvedValueOnce(
+            new Response(
+                JSON.stringify({
+                    object: 'list',
+                    data: [{ id: 'claude-opus-4-8', object: 'model', created: 1700000000, owned_by: 'anthropic' }],
+                }),
+                { status: 200, headers: { 'content-type': 'application/json', 'x-oneapi-request-id': 'req-m-1' } },
+            ),
+        );
+        const res = await GET(
+            makeReq('/models', { method: 'GET', headers: { authorization: 'Bearer sk-official-key' } }),
+            ctx('models'),
+        );
+        expect(res.status).toBe(200);
+        expect(res.headers.get('X-Silkroadai-Enriched')).toBe('models');
+        // 上游头在增强路径也保留(x-oneapi-request-id 是排查链路的关键头)
+        expect(res.headers.get('x-oneapi-request-id')).toBe('req-m-1');
+        expect(mockTokenFindUnique).toHaveBeenCalledWith({
+            where: { newapi_token_value: 'official-key' },
+            select: { tier: true },
+        });
+        const body = (await res.json()) as {
+            object: string;
+            data: Array<Record<string, unknown> & { silkroadai: Record<string, unknown> }>;
+        };
+        expect(body.object).toBe('list');
+        expect(body.data[0].id).toBe('claude-opus-4-8');
+        expect(body.data[0].owned_by).toBe('anthropic'); // 上游字段保留
+        expect(body.data[0].silkroadai.tier).toBe('official');
+        expect(body.data[0].silkroadai.pricing).toEqual({
+            input_cny_per_1m: 34,
+            output_cny_per_1m: 170,
+            per_image_cny: null,
+        });
+        expect(body.data[0].silkroadai.vendor).toBe('Anthropic');
+    });
+
+    it('GET /models 增强链失败(目录 DB 挂)→ 原字节回退透传,无 enriched 头', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const { resetCatalogMetaCacheForTests } = await import('@/lib/models/machine-catalog');
+        resetCatalogMetaCacheForTests();
+        mockCatalogFindMany.mockRejectedValueOnce(new Error('db down'));
+        const raw = JSON.stringify({ object: 'list', data: [{ id: 'gpt-5.4', object: 'model' }] });
+        mockFetch.mockResolvedValueOnce(
+            new Response(raw, { status: 200, headers: { 'content-type': 'application/json' } }),
+        );
+        const res = await GET(makeReq('/models', { method: 'GET' }), ctx('models'));
+        expect(res.status).toBe(200);
+        expect(res.headers.get('X-Silkroadai-Enriched')).toBeNull();
+        expect(await res.text()).toBe(raw); // 原字节
+        warn.mockRestore();
     });
 
     it('returns 400 on invalid JSON body for chat/completions', async () => {
@@ -2891,5 +3299,91 @@ describe('/v1 proxy — 异步生图(?async=true)', () => {
         expect(payload.topic).toBe('image_task_completed');
         expect(payload.data.status).toBe('SUCCESS');
         expect(payload.data.data.data[0].url).toBe('https://images.silkroadai.io/gen/x.png');
+    });
+});
+
+describe('/v1 proxy — 严格模式 Azure gpt-image 合规(opt-in)', () => {
+    beforeEach(() => {
+        mockFetch.mockResolvedValue(
+            new Response(JSON.stringify({ created: 1, data: [{ b64_json: 'QUJD' }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+    });
+    const strictBody = (body: Record<string, unknown>) =>
+        makeReq('/images/generations', {
+            body: { model: 'gpt-image-2', prompt: 'x', ...body },
+            headers: { 'x-silkroadai-strict': 'true' },
+        });
+
+    it('严格 + output_format=webp → 400,不打上游', async () => {
+        const res = await POST(strictBody({ output_format: 'webp' }), ctx('images', 'generations'));
+        expect(res.status).toBe(400);
+        expect(JSON.stringify(await res.json())).toMatch(/output_format/);
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('严格 + background=transparent → 400', async () => {
+        const res = await POST(strictBody({ background: 'transparent' }), ctx('images', 'generations'));
+        expect(res.status).toBe(400);
+        expect(JSON.stringify(await res.json())).toMatch(/transparent/);
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it.each(['1024x641', '1024x648', '3200x1024', '3856x2160', '3840x2176', '512x512'])(
+        '严格 + 非法尺寸 %s → 400',
+        async (size) => {
+            const res = await POST(strictBody({ size }), ctx('images', 'generations'));
+            expect(res.status).toBe(400);
+            expect(mockFetch).not.toHaveBeenCalled();
+        },
+    );
+
+    it.each(['1024x640', '3072x1024', '3840x2160', '1536x1024', '2048x2048', '1280x720'])(
+        '严格 + 合规尺寸 %s → 放行(打上游 200)',
+        async (size) => {
+            const res = await POST(strictBody({ size }), ctx('images', 'generations'));
+            expect(res.status).toBe(200);
+            expect(mockFetch).toHaveBeenCalled();
+        },
+    );
+
+    it('?strict=true(query 开关)也生效 → webp 400', async () => {
+        const res = await POST(
+            makeReq('/images/generations?strict=true', {
+                body: { model: 'gpt-image-2', prompt: 'x', output_format: 'webp' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(400);
+    });
+
+    it('非严格模式:webp + 非法尺寸 → 不 400,原样放行(零回归)', async () => {
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2', prompt: 'x', output_format: 'webp', size: '1024x641' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        expect(mockFetch).toHaveBeenCalled();
+    });
+
+    it('严格 + output_format=jpeg → 服务端转码,返回 b64 是 JPEG(FFD8)', async () => {
+        const { Jimp } = await import('jimp');
+        const pngBuf = await new Jimp({ width: 4, height: 4, color: 0xff0000ff }).getBuffer('image/png');
+        const pngB64 = Buffer.from(pngBuf).toString('base64');
+        mockFetch.mockResolvedValue(
+            new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64 }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const res = await POST(strictBody({ output_format: 'jpeg' }), ctx('images', 'generations'));
+        expect(res.status).toBe(200);
+        const j = (await res.json()) as { data: Array<{ b64_json: string }> };
+        const magic = Buffer.from(j.data[0].b64_json, 'base64').subarray(0, 2);
+        expect([magic[0], magic[1]]).toEqual([0xff, 0xd8]); // JPEG SOI marker
     });
 });

@@ -119,7 +119,8 @@ function makeLog(o: Partial<Record<string, unknown>> = {}) {
         type: (o.type as number) ?? 2,
         content: (o.content as string) ?? '',
         username: NEWAPI_USERNAME,
-        token_name: 'prod',
+        token_name: (o.token_name as string) ?? 'prod',
+        request_id: (o.request_id as string) ?? '20260705REQ00000000000000000000000000',
         model_name: (o.model_name as string) ?? 'gpt-5.4',
         quota: (o.quota as number) ?? 1000,
         prompt_tokens: (o.prompt_tokens as number) ?? 100,
@@ -186,7 +187,14 @@ describe('<DashboardPage /> merged console — happy path', () => {
         setLogs(
             [
                 // 非生图:默认 token 100/200,use_time 3 秒 → "3s"
-                makeLog({ id: 1, model_name: 'gpt-5.4', quota: 1000, use_time: 3 }),
+                makeLog({
+                    id: 1,
+                    model_name: 'gpt-5.4',
+                    quota: 1000,
+                    use_time: 3,
+                    token_name: 'prod-openai',
+                    request_id: '20260705REQ-consume-0001',
+                }),
                 makeLog({
                     id: 2,
                     model_name: 'gemini-3-pro-image-preview',
@@ -220,6 +228,9 @@ describe('<DashboardPage /> merged console — happy path', () => {
         expect(html).not.toContain('1,212 / 1,105');
         // 非生图模型 token 正常显示
         expect(html).toContain('100 / 200');
+        // 客户要的两列:哪个 key(token_name)+ request id 逐行透传到明细表
+        expect(html).toContain('prod-openai');
+        expect(html).toContain('20260705REQ-consume-0001');
     });
 
     it('renders preserved features: 充值流水 + 余额提醒设置', async () => {
