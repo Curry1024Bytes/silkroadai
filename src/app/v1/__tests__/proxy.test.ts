@@ -134,6 +134,19 @@ function geminiNativeResponse() {
     );
 }
 
+/** Gemini 出图响应,可指定上游声明的 mimeType 与真实字节(用于测嗅探)。 */
+function geminiImgResponse(mimeType: string, data: Buffer) {
+    return new Response(
+        JSON.stringify({
+            candidates: [{ content: { parts: [{ inlineData: { mimeType, data: data.toString('base64') } }] } }],
+            usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 1290, totalTokenCount: 1300 },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+    );
+}
+const JPEG_MAGIC = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46]);
+const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
+
 describe('/v1 proxy — Gemini image translation', () => {
     it('translates chat/completions to native generateContent with imageSize injected', async () => {
         mockFetch.mockResolvedValueOnce(geminiNativeResponse());
@@ -1208,6 +1221,30 @@ describe('/v1 proxy — Phase 2: image_url 入参 + R2 上传 (W9 D2)', () => {
         expect(res.headers.get('X-Silkroadai-R2-Fallback')).toBeNull();
     });
 
+    // Gemini 3.1 image 有时把 JPEG 字节标成 image/png(实测约 1/3)→ 若信 mimeType 会存成 .png +
+    // Content-Type image/png,Photoshop 用 PNG 解码器解 JPEG 失败。嗅探真实字节修正。
+    it('mimeType 谎报 image/png 但字节是 JPEG → 存 .jpg + image/jpeg(修 PS 打不开)', async () => {
+        mockFetch.mockResolvedValueOnce(geminiImgResponse('image/png', JPEG_MAGIC));
+        const res = await POST(geminiReq('a cat'), ctx('chat', 'completions'));
+        const data = (await res.json()) as { choices: Array<{ message: { content: string } }> };
+
+        expect(mockUploadImage).toHaveBeenCalledTimes(1);
+        const [key, , contentType] = mockUploadImage.mock.calls[0];
+        expect(key).toMatch(/^gen\/[0-9a-f-]{36}\.jpg$/);
+        expect(contentType).toBe('image/jpeg');
+        expect(data.choices[0].message.content).toBe(`![image](https://images.silkroadai.io/${key})`);
+    });
+
+    it('真 PNG 字节 → 保持 .png + image/png(嗅探不误伤正常图)', async () => {
+        mockFetch.mockResolvedValueOnce(geminiImgResponse('image/png', PNG_MAGIC));
+        const res = await POST(geminiReq('a cat'), ctx('chat', 'completions'));
+        await res.json();
+
+        const [key, , contentType] = mockUploadImage.mock.calls[0];
+        expect(key).toMatch(/^gen\/[0-9a-f-]{36}\.png$/);
+        expect(contentType).toBe('image/png');
+    });
+
     it('returns 400 (not throw) when external image_url fetch fails (test 12)', async () => {
         mockFetch.mockResolvedValueOnce(new Response('not found', { status: 404 }));
         const res = await POST(
@@ -1284,6 +1321,22 @@ describe('/v1 proxy — Phase 3: 客户自定义 OSS (W9 D3)', () => {
             /^!\[image\]\(https:\/\/cdn\.customer\.com\/gen\/[0-9a-f-]+\.png\)$/,
         );
         expect(res.headers.get('X-Silkroadai-Oss-Fallback')).toBeNull();
+    });
+
+    // 357413195 场景:客户配了 aliyun OSS,Gemini 返回 JPEG-as-png → OSS 也要按真实字节存 .jpg + image/jpeg。
+    it('客户 OSS 路径 JPEG-as-png → OSS 存 .jpg + image/jpeg', async () => {
+        mockFetch.mockResolvedValueOnce(geminiImgResponse('image/png', JPEG_MAGIC));
+        mockResolveUserId.mockResolvedValueOnce('user-uuid-1');
+        mockGetOssConfig.mockResolvedValueOnce(activeConfig);
+
+        const res = await POST(geminiTextReq(), ctx('chat', 'completions'));
+        const data = (await res.json()) as { choices: Array<{ message: { content: string } }> };
+
+        expect(mockUploadToCustomerOss).toHaveBeenCalledTimes(1);
+        const [, , key, mime] = mockUploadToCustomerOss.mock.calls[0];
+        expect(key).toMatch(/^gen\/[0-9a-f-]+\.jpg$/);
+        expect(mime).toBe('image/jpeg');
+        expect(data.choices[0].message.content).toMatch(/\.jpg\)$/);
     });
 
     it('falls back to platform R2 + header when customer OSS upload throws (test 17)', async () => {

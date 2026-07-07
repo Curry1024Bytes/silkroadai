@@ -656,7 +656,10 @@ async function storeGeneratedImage(
     mimeType: string,
     base64: string,
 ): Promise<StoredImage> {
-    const ext = mimeType.includes('jpeg') ? 'jpg' : mimeType.includes('webp') ? 'webp' : 'png';
+    // 上游 mimeType 不可信(Gemini 3.1 image 约 1/3 把 JPEG 字节标成 image/png → 存成 .png 后
+    // Photoshop 按扩展名/CT 用 PNG 解码器解 JPEG 失败)→ 嗅探真实字节定扩展名 + Content-Type + data URL。
+    const realMime = sniffImageMime(buffer);
+    const ext = realMime.includes('jpeg') ? 'jpg' : realMime.includes('webp') ? 'webp' : 'png';
     const key = `gen/${randomUUID()}.${ext}`;
     let ossFallback = false;
 
@@ -667,7 +670,7 @@ async function storeGeneratedImage(
         const ossConfig = userId ? await getOssConfig(userId) : null;
         if (ossConfig && ossConfig.status === 'active') {
             try {
-                customerUrl = await uploadToCustomerOss(ossConfig, buffer, key, mimeType);
+                customerUrl = await uploadToCustomerOss(ossConfig, buffer, key, realMime);
             } catch (e) {
                 console.warn('[v1-proxy] customer OSS upload failed, falling back to platform R2', e);
                 ossFallback = true;
@@ -684,11 +687,11 @@ async function storeGeneratedImage(
     if (customerUrl) return { url: customerUrl, ossFallback, r2Fallback: false };
 
     try {
-        const url = await uploadImage(key, buffer, mimeType);
+        const url = await uploadImage(key, buffer, realMime);
         return { url, ossFallback, r2Fallback: false };
     } catch (e) {
         console.warn('[v1-proxy] R2 upload failed, falling back to inline data URL', e);
-        return { url: `data:${mimeType};base64,${base64}`, ossFallback, r2Fallback: true };
+        return { url: `data:${realMime};base64,${base64}`, ossFallback, r2Fallback: true };
     }
 }
 
