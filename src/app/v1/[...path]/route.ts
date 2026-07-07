@@ -656,7 +656,10 @@ async function storeGeneratedImage(
     mimeType: string,
     base64: string,
 ): Promise<StoredImage> {
-    const ext = mimeType.includes('jpeg') ? 'jpg' : mimeType.includes('webp') ? 'webp' : 'png';
+    // 上游 mimeType 不可信(Gemini 3.1 image 约 1/3 把 JPEG 字节标成 image/png → 存成 .png 后
+    // Photoshop 按扩展名/CT 用 PNG 解码器解 JPEG 失败)→ 嗅探真实字节定扩展名 + Content-Type + data URL。
+    const realMime = sniffImageMime(buffer);
+    const ext = realMime.includes('jpeg') ? 'jpg' : realMime.includes('webp') ? 'webp' : 'png';
     const key = `gen/${randomUUID()}.${ext}`;
     let ossFallback = false;
 
@@ -667,7 +670,7 @@ async function storeGeneratedImage(
         const ossConfig = userId ? await getOssConfig(userId) : null;
         if (ossConfig && ossConfig.status === 'active') {
             try {
-                customerUrl = await uploadToCustomerOss(ossConfig, buffer, key, mimeType);
+                customerUrl = await uploadToCustomerOss(ossConfig, buffer, key, realMime);
             } catch (e) {
                 console.warn('[v1-proxy] customer OSS upload failed, falling back to platform R2', e);
                 ossFallback = true;
@@ -684,11 +687,11 @@ async function storeGeneratedImage(
     if (customerUrl) return { url: customerUrl, ossFallback, r2Fallback: false };
 
     try {
-        const url = await uploadImage(key, buffer, mimeType);
+        const url = await uploadImage(key, buffer, realMime);
         return { url, ossFallback, r2Fallback: false };
     } catch (e) {
         console.warn('[v1-proxy] R2 upload failed, falling back to inline data URL', e);
-        return { url: `data:${mimeType};base64,${base64}`, ossFallback, r2Fallback: true };
+        return { url: `data:${realMime};base64,${base64}`, ossFallback, r2Fallback: true };
     }
 }
 
@@ -1659,6 +1662,16 @@ async function handleVideoPoll(req: NextRequest, path: string, search: string): 
                     if (Array.isArray(inner.urls)) inner.urls = [ossUrl];
                 }
             }
+        }
+
+        // result_url 重写:new-api 生成的 result_url 是「内容代理」(…/v1/videos/{id}/content),需带 key
+        // 且靠 new-api 从渠道 base_url 回抓视频;2026-07-04 把 ch41 base_url 内网化(修 CF 502/524)后
+        // 回抓失效 → 401/403(客户反馈「result_url 不是视频地址」)。这里把它改写成 inner 里可播的直链
+        // (客户 OSS 优先,否则平台 R2 —— 即上面同一份 video_url),让仍在用 result_url 的老客户自动恢复。
+        // data.data.video_url 一直是对的直链,不受影响;失败/未完成任务不改写(finalVideoUrl 为空)。
+        const finalVideoUrl = typeof inner?.video_url === 'string' ? (inner.video_url as string) : null;
+        if (status === 'SUCCESS' && data && finalVideoUrl && /^https?:\/\//.test(finalVideoUrl)) {
+            data.result_url = finalVideoUrl;
         }
     } catch (e) {
         // DB / OSS / R2 任一故障都不阻断:保持平台 R2 直链返回(客户照样拿得到片)
