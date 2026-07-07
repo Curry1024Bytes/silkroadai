@@ -3440,3 +3440,67 @@ describe('/v1 proxy — 严格模式 Azure gpt-image 合规(opt-in)', () => {
         expect([magic[0], magic[1]]).toEqual([0xff, 0xd8]); // JPEG SOI marker
     });
 });
+
+describe('/v1 proxy — 视频轮询 result_url 重写(2026-07-04 base_url 内网化致内容代理失效)', () => {
+    const AUTH = { authorization: 'Bearer sk-test-video' };
+    const R2_URL = 'https://images.silkroadai.io/seedance-video/mvt-abc123.mp4';
+    const CONTENT_PROXY = 'https://ai.silkroadai.io/v1/videos/task_xyz/content';
+
+    function pollResponse(status: string, videoUrl: string | null) {
+        const inner: Record<string, unknown> = { status: status === 'SUCCESS' ? 'completed' : 'running' };
+        if (videoUrl) {
+            inner.url = videoUrl;
+            inner.video_url = videoUrl;
+        }
+        return new Response(
+            JSON.stringify({
+                code: 'success',
+                message: '',
+                data: { task_id: 'task_xyz', status, result_url: CONTENT_PROXY, data: inner },
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+    }
+
+    it('SUCCESS → result_url 改写成 R2 直链(不再是需鉴权的内容代理)', async () => {
+        mockFetch.mockResolvedValueOnce(pollResponse('SUCCESS', R2_URL));
+        const res = await GET(
+            makeReq('/video/generations/task_xyz', { method: 'GET', headers: AUTH }),
+            ctx('video', 'generations', 'task_xyz'),
+        );
+        const json = (await res.json()) as { data: { result_url: string; data: { video_url: string } } };
+        expect(json.data.result_url).toBe(R2_URL); // 改写成可播直链
+        expect(json.data.data.video_url).toBe(R2_URL); // 内层直链一直是对的,不受影响
+    });
+
+    it('未完成(status≠SUCCESS,无 video_url)→ result_url 保持 new-api 原值不动', async () => {
+        mockFetch.mockResolvedValueOnce(pollResponse('IN_PROGRESS', null));
+        const res = await GET(
+            makeReq('/video/generations/task_xyz', { method: 'GET', headers: AUTH }),
+            ctx('video', 'generations', 'task_xyz'),
+        );
+        const json = (await res.json()) as { data: { result_url: string } };
+        expect(json.data.result_url).toBe(CONTENT_PROXY); // 未完成不改写
+    });
+
+    it('配了客户 OSS → result_url 跟随改写成客户 OSS 域名(与 video_url 一致)', async () => {
+        vi.stubEnv('R2_PUBLIC_URL', 'https://images.silkroadai.io');
+        mockResolveUserId.mockResolvedValueOnce('user-1');
+        mockGetOssConfig.mockResolvedValueOnce({ status: 'active', public_url_prefix: 'https://cdn.customer.com' });
+        mockObjectExistsInOss.mockResolvedValueOnce(false);
+        mockFetch
+            .mockResolvedValueOnce(pollResponse('SUCCESS', R2_URL)) // new-api 轮询
+            .mockResolvedValueOnce(
+                new Response(Buffer.from('vid-bytes'), { status: 200, headers: { 'content-type': 'video/mp4' } }),
+            ); // 下载 R2 视频给客户 OSS
+        const res = await GET(
+            makeReq('/video/generations/task_xyz', { method: 'GET', headers: AUTH }),
+            ctx('video', 'generations', 'task_xyz'),
+        );
+        const json = (await res.json()) as { data: { result_url: string; data: { video_url: string } } };
+        const expected = 'https://cdn.customer.com/seedance-video/mvt-abc123.mp4';
+        expect(json.data.data.video_url).toBe(expected);
+        expect(json.data.result_url).toBe(expected); // result_url 跟随 OSS
+        vi.unstubAllEnvs();
+    });
+});

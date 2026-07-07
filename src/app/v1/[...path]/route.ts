@@ -1663,6 +1663,16 @@ async function handleVideoPoll(req: NextRequest, path: string, search: string): 
                 }
             }
         }
+
+        // result_url 重写:new-api 生成的 result_url 是「内容代理」(…/v1/videos/{id}/content),需带 key
+        // 且靠 new-api 从渠道 base_url 回抓视频;2026-07-04 把 ch41 base_url 内网化(修 CF 502/524)后
+        // 回抓失效 → 401/403(客户反馈「result_url 不是视频地址」)。这里把它改写成 inner 里可播的直链
+        // (客户 OSS 优先,否则平台 R2 —— 即上面同一份 video_url),让仍在用 result_url 的老客户自动恢复。
+        // data.data.video_url 一直是对的直链,不受影响;失败/未完成任务不改写(finalVideoUrl 为空)。
+        const finalVideoUrl = typeof inner?.video_url === 'string' ? (inner.video_url as string) : null;
+        if (status === 'SUCCESS' && data && finalVideoUrl && /^https?:\/\//.test(finalVideoUrl)) {
+            data.result_url = finalVideoUrl;
+        }
     } catch (e) {
         // DB / OSS / R2 任一故障都不阻断:保持平台 R2 直链返回(客户照样拿得到片)
         console.warn('[v1-proxy] video customer-OSS rehost failed, keeping platform R2', e);
