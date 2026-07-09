@@ -134,6 +134,10 @@ const ERROR_BODY_TIMEOUT_MS = 5_000;
 const GEMINI_IMAGE_MODELS: Record<string, '1K' | '2K' | '4K'> = {
     'gemini-2.5-flash-image': '1K',
     'gemini-3.1-flash-image-preview': '2K',
+    // -hq 原是 flash 的候补 SKU(FAILOVER_MODELS 目标,走 premium 渠道 ch42/ch67);也让客户直接点名调用。
+    // 与 flash 同底模同档(2K)。不在此表时 → passthrough → 返回内联 base64、无 imageSize,客户 pipeline 走不通;
+    // 加进来后 proxy 同样翻译到 native + 注入 imageSize + 落图床返托管 URL。它自身无候补(FAILOVER_MODELS 无此 key)。
+    'gemini-3.1-flash-image-preview-hq': '2K',
     'gemini-3-pro-image-preview': '4K',
     // 折扣 SKU:= pro 锁 2K(size 参数对它无效),new-api 单独计 ¥0.30(4K 原名仍 ¥0.50)。
     // model_mapping(ch#24/#17)把它翻回 gemini-3-pro-image-preview 给上游。见 configure-pro-2k-sku.mjs。
@@ -175,6 +179,19 @@ function resolveImageSize(model: string, sizeRaw: string): '1K' | '2K' | '4K' {
 const GEMINI_ASPECT_RATIOS: Record<string, ReadonlySet<string>> = {
     'gemini-2.5-flash-image': new Set(['21:9', '16:9', '4:3', '3:2', '1:1', '9:16', '3:4', '2:3', '5:4', '4:5']),
     'gemini-3.1-flash-image-preview': new Set([
+        '21:9',
+        '16:9',
+        '4:3',
+        '3:2',
+        '1:1',
+        '9:16',
+        '3:4',
+        '2:3',
+        '5:4',
+        '4:5',
+    ]),
+    // -hq 与 flash 同底模,共用 flash 的比例白名单。
+    'gemini-3.1-flash-image-preview-hq': new Set([
         '21:9',
         '16:9',
         '4:3',

@@ -203,6 +203,27 @@ describe('/v1 proxy — Gemini image translation', () => {
         expect(body.generationConfig.imageConfig.imageSize).toBe('4K');
     });
 
+    // -hq 原只是候补 SKU;客户直接点名调用现在也走翻译(而非 passthrough 返回内联 base64)。
+    it('客户直接调 -hq → 翻译到 native + imageSize 2K + 落图床返托管 URL', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: { model: 'gemini-3.1-flash-image-preview-hq', messages: [{ role: 'user', content: 'a cat' }] },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('chat', 'completions'),
+        );
+        const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(url).toBe(`${NEWAPI_BASE}/v1beta/models/gemini-3.1-flash-image-preview-hq:generateContent`);
+        const body = JSON.parse(String(init.body)) as { generationConfig: { imageConfig: { imageSize: string } } };
+        expect(body.generationConfig.imageConfig.imageSize).toBe('2K'); // 与 flash 同档
+        expect(res.headers.get('X-Silkroadai-Translated')).toBe('gemini-native');
+        const data = (await res.json()) as { choices: Array<{ message: { content: string } }> };
+        expect(data.choices[0].message.content).toMatch(
+            /^!\[image\]\(https:\/\/images\.silkroadai\.io\/gen\/[0-9a-f-]+\.png\)$/,
+        );
+    });
+
     it('passes through upstream error status (e.g. 429) without translating', async () => {
         mockFetch.mockResolvedValueOnce(
             new Response(JSON.stringify({ error: { message: 'rate limited' } }), { status: 429 }),
