@@ -2327,6 +2327,51 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
         expect(data.usage.output_tokens_details.image_tokens).toBeGreaterThan(0);
     });
 
+    // ── size 归一化:候补上游(Adobe/ch83)拒收 auto/缺省/非 WxH(400 "size must use <width>x<height>"),
+    //    统一归一成明确 WxH,让 zhiyunai→Adobe 的 failover 能落地(两家 size 规则不一致)。──
+    it('JSON size:auto → 归一成 1024x1024 转发上游', async () => {
+        mockFetch.mockResolvedValueOnce(imageJson200());
+        await POST(
+            makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x', size: 'auto' } }),
+            ctx('images', 'generations'),
+        );
+        const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect((JSON.parse(String(init.body)) as { size: string }).size).toBe('1024x1024');
+    });
+
+    it('JSON 缺省 size → 归一成 1024x1024 转发上游', async () => {
+        mockFetch.mockResolvedValueOnce(imageJson200());
+        await POST(
+            makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x' } }),
+            ctx('images', 'generations'),
+        );
+        const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect((JSON.parse(String(init.body)) as { size: string }).size).toBe('1024x1024');
+    });
+
+    it('JSON 显式合法 size(2048x2048)→ 原样保留,不被归一', async () => {
+        mockFetch.mockResolvedValueOnce(imageJson200());
+        await POST(
+            makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x', size: '2048x2048' } }),
+            ctx('images', 'generations'),
+        );
+        const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect((JSON.parse(String(init.body)) as { size: string }).size).toBe('2048x2048');
+    });
+
+    it('multipart edits size:auto → 转发上游 form 里 size 归一成 1024x1024', async () => {
+        mockFetch.mockResolvedValueOnce(imageJson200());
+        const form = new FormData();
+        form.append('model', 'gpt-image-2');
+        form.append('prompt', '改成夜景');
+        form.append('size', 'auto');
+        form.append('image', new File([new Uint8Array([1, 2, 3])], 'in.png', { type: 'image/png' }));
+        const req = new NextRequest('https://ai.silkroadai.io/v1/images/edits', { method: 'POST', body: form });
+        await POST(req, ctx('images', 'edits'));
+        const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect((init.body as FormData).get('size')).toBe('1024x1024');
+    });
+
     it('上游报错 → 原样透传 status + 错误体,不加 usage(不隐藏报错)', async () => {
         mockFetch.mockResolvedValueOnce(
             new Response(

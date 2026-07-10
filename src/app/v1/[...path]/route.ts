@@ -853,6 +853,7 @@ async function handleGptImageChat(
     if (/^\d{2,4}x\d{2,4}$/.test(sizeRaw)) size = sizeRaw;
     else if (ASPECT_RATIO_RE.test(sizeRaw)) size = aspectToPixelSize(sizeRaw) ?? undefined;
     if (!size && variant) size = variant.size;
+    if (!size) size = DEFAULT_GPT_IMAGE_SIZE; // 兜底:候补渠道(Adobe/ch83)拒收缺省 size
     const quality = typeof body.quality === 'string' ? body.quality : undefined;
 
     let upstream: Response;
@@ -1098,6 +1099,12 @@ const GPT_IMAGE_ASPECT_SIZE: Record<string, string> = {
     '1:2': '704x1408',
 };
 const ASPECT_RATIO_RE = /^(\d{1,2}):(\d{1,2})$/;
+/** 明确的像素尺寸格式 `宽x高`(如 1024x1024)。 */
+const PIXEL_SIZE_RE = /^\d+x\d+$/;
+/** gpt-image 兜底默认尺寸。部分候补上游(Adobe/ch83)拒收 auto/缺省/非 WxH 的 size
+ *  (400 "size must use <width>x<height> format"),zhiyunai/ch44 能容忍。统一把非像素 WxH 的
+ *  size 归一成这个默认方图,让候补渠道也能接住 failover(两家 size 规则不一致,见 gotcha)。 */
+const DEFAULT_GPT_IMAGE_SIZE = '1024x1024';
 function aspectToPixelSize(ratio: string): string | null {
     const fixed = GPT_IMAGE_ASPECT_SIZE[ratio];
     if (fixed) return fixed;
@@ -1158,6 +1165,9 @@ function normalizeGptImageJson(body: JsonRecord): void {
         else delete body.size;
     }
     delete body.aspect_ratio;
+    // 兜底:size 恒归一成明确 WxH(auto/缺省/非法格式 → 默认方图),让候补渠道(Adobe/ch83)也能接住 failover。
+    const finalSize = (typeof body.size === 'string' ? body.size.trim() : '').toLowerCase();
+    body.size = PIXEL_SIZE_RE.test(finalSize) ? finalSize : DEFAULT_GPT_IMAGE_SIZE;
     coerceImageIntFields(body);
 }
 /** gpt-image multipart 规整(同 normalizeGptImageJson,作用于 FormData)。 */
@@ -1177,6 +1187,11 @@ function normalizeGptImageForm(form: FormData): void {
         else form.delete('size');
     }
     form.delete('aspect_ratio');
+    // 兜底:size 恒归一成明确 WxH(同 normalizeGptImageJson)。
+    const finalSize = String(form.get('size') ?? '')
+        .trim()
+        .toLowerCase();
+    form.set('size', PIXEL_SIZE_RE.test(finalSize) ? finalSize : DEFAULT_GPT_IMAGE_SIZE);
 }
 
 // ============ 严格模式(opt-in,对标 Azure gpt-image 契约)============
