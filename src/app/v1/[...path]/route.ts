@@ -871,7 +871,6 @@ async function handleGptImageChat(
     if (/^\d{2,4}x\d{2,4}$/.test(sizeRaw)) size = sizeRaw;
     else if (ASPECT_RATIO_RE.test(sizeRaw)) size = aspectToPixelSize(sizeRaw) ?? undefined;
     if (!size && variant) size = variant.size;
-    if (!size) size = DEFAULT_GPT_IMAGE_SIZE; // 兜底:候补渠道(Adobe/ch83)拒收缺省 size
     const quality = typeof body.quality === 'string' ? body.quality : undefined;
 
     let upstream: Response;
@@ -889,13 +888,13 @@ async function handleGptImageChat(
                 'image.png',
             );
         }
-        upstream = await fetchUpstreamMultipart(req, form, '/images/edits', '');
+        upstream = await gptImageUpstreamWithSizeRetry(req, form, null, '');
     } else {
         // 纯文字 → 文生图 generations(JSON)
         const genBody: JsonRecord = { model: effModel, prompt };
         if (size) genBody.size = size;
         if (quality) genBody.quality = quality;
-        upstream = await fetchUpstreamJson(req, genBody, '/images/generations', '');
+        upstream = await gptImageUpstreamWithSizeRetry(req, null, genBody, '');
     }
 
     if (!upstream.ok) {
@@ -1109,6 +1108,65 @@ async function gptImageUpstream(
     return fetchUpstreamMultipart(req, f, '/images/edits', search);
 }
 
+/** 输入图尺寸 → 最近的合法 gpt-image 像素 size(从 GPT_IMAGE_ASPECT_SIZE 表按宽高比挑最近的)。 */
+function gptImageSizeFromInput(w: number, h: number): string {
+    if (!(w > 0 && h > 0)) return DEFAULT_GPT_IMAGE_SIZE;
+    const target = w / h;
+    let best = DEFAULT_GPT_IMAGE_SIZE;
+    let bestDiff = Infinity;
+    for (const px of Object.values(GPT_IMAGE_ASPECT_SIZE)) {
+        const m = /^(\d+)x(\d+)$/.exec(px);
+        if (!m) continue;
+        const diff = Math.abs(Number(m[1]) / Number(m[2]) - target);
+        if (diff < bestDiff) {
+            bestDiff = diff;
+            best = px;
+        }
+    }
+    return best;
+}
+
+/** 尺寸重试用的明确 size:有输入图(图生图)→ 读第一张输入图尺寸选最近合法 WxH(改竖图出竖图,
+ *  不强行方图);无输入图(文生图)/ 读不出尺寸 → 1024²。 */
+async function gptImageFallbackSize(form: FormData | null, body: JsonRecord | null): Promise<string> {
+    let dims: { w: number; h: number } | null = null;
+    if (form) {
+        const files = formImageFiles(form);
+        if (files.length) dims = imageDimensions(Buffer.from(await files[0].arrayBuffer()));
+    } else if (body) {
+        const imgs = await extractJsonInputImages(body);
+        if (imgs.length) dims = imageDimensions(Buffer.from(imgs[0].data, 'base64'));
+    }
+    return dims ? gptImageSizeFromInput(dims.w, dims.h) : DEFAULT_GPT_IMAGE_SIZE;
+}
+
+/** gpt-image 上游调用 + 尺寸重试:先按客户【原始】size(可能是 auto / 缺省)发上游 —— 直签渠道
+ *  (zhiyunai/ch44)收 auto 照旧,体验完全不变。仅当上游回 "size must use <width>x<height>"
+ *  (只有候补 Adobe/ch83 这样)→ 补一个明确 size 重试一次(edits 跟随输入图、文生图 1024²)。
+ *  内容安全 / 上游饱和等其它错误不重试 —— 归一化只在 adobe 那条路发生。 */
+async function gptImageUpstreamWithSizeRetry(
+    req: NextRequest,
+    form: FormData | null,
+    body: JsonRecord | null,
+    search: string,
+): Promise<Response> {
+    const first = await gptImageUpstream(req, form, body, search);
+    if (first.ok) return first;
+    const errText = await first.text();
+    if (!/size must use/i.test(errText)) {
+        // 非尺寸格式错(含内容安全 / 上游饱和)→ 不重试,重建 Response 供上层 reshape/脱敏读取。
+        // 保留原响应头(x-new-api-version 等),仅剥 content-encoding/length —— text() 已解压,原值会失配。
+        const h = new Headers(first.headers);
+        h.delete('content-encoding');
+        h.delete('content-length');
+        return new Response(errText, { status: first.status, headers: h });
+    }
+    const explicit = await gptImageFallbackSize(form, body);
+    if (form) form.set('size', explicit);
+    else if (body) body.size = explicit;
+    return gptImageUpstream(req, form, body, search);
+}
+
 /** OpenAI gpt-image 用像素 size,不认 aspect_ratio / 比例串("16:9")—— 客户传比例时上游静默
  *  出方图(实测 aspect_ratio:"16:9" → 1254×1254 方图;size:"16:9" → 400)。把常见比例折成
  *  ~1MP 像素 size(zhiyunai 接受任意 WxH);表外比例按 1MP 等比折算、取整到 16。 */
@@ -1128,11 +1186,7 @@ const GPT_IMAGE_ASPECT_SIZE: Record<string, string> = {
     '1:2': '704x1408',
 };
 const ASPECT_RATIO_RE = /^(\d{1,2}):(\d{1,2})$/;
-/** 明确的像素尺寸格式 `宽x高`(如 1024x1024)。 */
-const PIXEL_SIZE_RE = /^\d+x\d+$/;
-/** gpt-image 兜底默认尺寸。部分候补上游(Adobe/ch83)拒收 auto/缺省/非 WxH 的 size
- *  (400 "size must use <width>x<height> format"),zhiyunai/ch44 能容忍。统一把非像素 WxH 的
- *  size 归一成这个默认方图,让候补渠道也能接住 failover(两家 size 规则不一致,见 gotcha)。 */
+/** gpt-image 尺寸重试的兜底默认(文生图、或读不出输入图尺寸时用)。 */
 const DEFAULT_GPT_IMAGE_SIZE = '1024x1024';
 function aspectToPixelSize(ratio: string): string | null {
     const fixed = GPT_IMAGE_ASPECT_SIZE[ratio];
@@ -1194,9 +1248,6 @@ function normalizeGptImageJson(body: JsonRecord): void {
         else delete body.size;
     }
     delete body.aspect_ratio;
-    // 兜底:size 恒归一成明确 WxH(auto/缺省/非法格式 → 默认方图),让候补渠道(Adobe/ch83)也能接住 failover。
-    const finalSize = (typeof body.size === 'string' ? body.size.trim() : '').toLowerCase();
-    body.size = PIXEL_SIZE_RE.test(finalSize) ? finalSize : DEFAULT_GPT_IMAGE_SIZE;
     coerceImageIntFields(body);
 }
 /** gpt-image multipart 规整(同 normalizeGptImageJson,作用于 FormData)。 */
@@ -1216,11 +1267,6 @@ function normalizeGptImageForm(form: FormData): void {
         else form.delete('size');
     }
     form.delete('aspect_ratio');
-    // 兜底:size 恒归一成明确 WxH(同 normalizeGptImageJson)。
-    const finalSize = String(form.get('size') ?? '')
-        .trim()
-        .toLowerCase();
-    form.set('size', PIXEL_SIZE_RE.test(finalSize) ? finalSize : DEFAULT_GPT_IMAGE_SIZE);
 }
 
 // ============ 严格模式(opt-in,对标 Azure gpt-image 契约)============
@@ -1485,7 +1531,7 @@ async function handleImagesDalle(
                     // 统一入口:gpt-image 按有无输入图分流到上游 edits/generations(与调用 path 无关);
                     // 其余非 Gemini 图片模型仍按调用 path 原样透传 multipart。
                     const upstream = isGptImageModel(model)
-                        ? await gptImageUpstream(req, form, null, search)
+                        ? await gptImageUpstreamWithSizeRetry(req, form, null, search)
                         : await fetchUpstreamMultipart(req, form, path, search);
                     return await reshapeOpenAiImageResponse(
                         upstream,
@@ -1567,7 +1613,7 @@ async function handleImagesDalle(
                 try {
                     // 统一入口:gpt-image body 里带 image/image_url → 图生图 edits;否则文生图 generations。
                     const upstream = isGptImageModel(model)
-                        ? await gptImageUpstream(req, null, body, search)
+                        ? await gptImageUpstreamWithSizeRetry(req, null, body, search)
                         : await fetchUpstreamJson(req, body, path, search);
                     return await reshapeOpenAiImageResponse(
                         upstream,

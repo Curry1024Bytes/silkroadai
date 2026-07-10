@@ -2327,29 +2327,31 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
         expect(data.usage.output_tokens_details.image_tokens).toBeGreaterThan(0);
     });
 
-    // ── size 归一化:候补上游(Adobe/ch83)拒收 auto/缺省/非 WxH(400 "size must use <width>x<height>"),
-    //    统一归一成明确 WxH,让 zhiyunai→Adobe 的 failover 能落地(两家 size 规则不一致)。──
-    it('JSON size:auto → 归一成 1024x1024 转发上游', async () => {
+    // ── retry-on-rejection:直签渠道(zhiyunai/ch44)收 auto 照旧、体验不变;仅当上游回 "size must use"
+    //    (只有候补 Adobe/ch83 会)才补明确 size 重试一次(edits 跟随输入图、文生图 1024²)。──
+    it('直签路径 size:auto → 原样透传(不重试、不被归一,ch44 体验不变)', async () => {
         mockFetch.mockResolvedValueOnce(imageJson200());
         await POST(
             makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x', size: 'auto' } }),
             ctx('images', 'generations'),
         );
+        expect(mockFetch).toHaveBeenCalledTimes(1);
         const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
-        expect((JSON.parse(String(init.body)) as { size: string }).size).toBe('1024x1024');
+        expect((JSON.parse(String(init.body)) as { size?: string }).size).toBe('auto');
     });
 
-    it('JSON 缺省 size → 归一成 1024x1024 转发上游', async () => {
+    it('直签路径 缺省 size → 不注入 size,原样透传', async () => {
         mockFetch.mockResolvedValueOnce(imageJson200());
         await POST(
             makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x' } }),
             ctx('images', 'generations'),
         );
+        expect(mockFetch).toHaveBeenCalledTimes(1);
         const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
-        expect((JSON.parse(String(init.body)) as { size: string }).size).toBe('1024x1024');
+        expect((JSON.parse(String(init.body)) as { size?: string }).size).toBeUndefined();
     });
 
-    it('JSON 显式合法 size(2048x2048)→ 原样保留,不被归一', async () => {
+    it('显式合法 size(2048x2048)→ 原样保留', async () => {
         mockFetch.mockResolvedValueOnce(imageJson200());
         await POST(
             makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x', size: '2048x2048' } }),
@@ -2359,17 +2361,74 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
         expect((JSON.parse(String(init.body)) as { size: string }).size).toBe('2048x2048');
     });
 
-    it('multipart edits size:auto → 转发上游 form 里 size 归一成 1024x1024', async () => {
-        mockFetch.mockResolvedValueOnce(imageJson200());
+    it('上游 "size must use"(仅 Adobe)→ 补明确 size 重试一次;文生图无输入图 → 1024²', async () => {
+        mockFetch
+            .mockResolvedValueOnce(
+                new Response(JSON.stringify({ error: { message: 'size must use <width>x<height> format' } }), {
+                    status: 400,
+                    headers: { 'content-type': 'application/json' },
+                }),
+            )
+            .mockResolvedValueOnce(imageJson200());
+        const res = await POST(
+            makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x', size: 'auto' } }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        expect(mockFetch).toHaveBeenCalledTimes(2); // 重试一次
+        const [, first] = mockFetch.mock.calls[0] as [string, RequestInit];
+        const [, second] = mockFetch.mock.calls[1] as [string, RequestInit];
+        expect((JSON.parse(String(first.body)) as { size?: string }).size).toBe('auto'); // 首次发原始 auto
+        expect((JSON.parse(String(second.body)) as { size: string }).size).toBe('1024x1024'); // 重试补明确
+    });
+
+    it('edits + 竖图输入 + "size must use" → 重试补跟随输入图比例的 size(1024x1536,不方图)', async () => {
+        mockFetch
+            .mockResolvedValueOnce(
+                new Response(JSON.stringify({ error: { message: 'size must use <width>x<height> format' } }), {
+                    status: 400,
+                    headers: { 'content-type': 'application/json' },
+                }),
+            )
+            .mockResolvedValueOnce(imageJson200());
+        // 竖图输入(1024×1536)最小 PNG 头(imageDimensions 只读 IHDR)
+        const png = Buffer.alloc(33);
+        png.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+        png.writeUInt32BE(13, 8);
+        png.write('IHDR', 12, 'latin1');
+        png.writeUInt32BE(1024, 16);
+        png.writeUInt32BE(1536, 20);
         const form = new FormData();
         form.append('model', 'gpt-image-2');
-        form.append('prompt', '改成夜景');
+        form.append('prompt', 'add a bird');
         form.append('size', 'auto');
-        form.append('image', new File([new Uint8Array([1, 2, 3])], 'in.png', { type: 'image/png' }));
+        form.append('image', new File([png], 'in.png', { type: 'image/png' }));
         const req = new NextRequest('https://ai.silkroadai.io/v1/images/edits', { method: 'POST', body: form });
-        await POST(req, ctx('images', 'edits'));
-        const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
-        expect((init.body as FormData).get('size')).toBe('1024x1024');
+        const res = await POST(req, ctx('images', 'edits'));
+        expect(res.status).toBe(200);
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+        const [, second] = mockFetch.mock.calls[1] as [string, RequestInit];
+        expect((second.body as FormData).get('size')).toBe('1024x1536'); // 竖图 → 竖图,不强行方图
+    });
+
+    it('内容安全拒绝(非 size 错)→ 不重试,直接脱敏返回', async () => {
+        mockFetch.mockResolvedValueOnce(
+            new Response(
+                JSON.stringify({
+                    error: { message: 'adobe content rejected: status 451 {"error_code":"image_unsafe"}' },
+                }),
+                { status: 400, headers: { 'content-type': 'application/json' } },
+            ),
+        );
+        const res = await POST(
+            makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x', size: 'auto' } }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(400);
+        expect(mockFetch).toHaveBeenCalledTimes(1); // 内容错误不重试
+        const text = await res.text();
+        expect(text.toLowerCase()).not.toContain('adobe'); // 仍脱敏
+        expect((JSON.parse(text) as { error: { code: string } }).error.code).toBe('content_policy_violation');
     });
 
     it('上游报错 → 原样透传 status + 错误体,不加 usage(不隐藏报错)', async () => {
