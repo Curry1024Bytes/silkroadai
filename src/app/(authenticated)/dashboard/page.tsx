@@ -42,6 +42,7 @@ import { BalanceAlertForm } from './balance-alert-form';
 import { ModelConsumptionChart } from './model-consumption-chart';
 import { CallDetailTable, type CallRow } from './call-detail-table';
 import { matchFailedVideoConsumes } from './failed-video-match';
+import { collapseRetriedFailures, sanitizeLogContent } from './format';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: '概览 — Silk Road AI' };
@@ -93,7 +94,7 @@ function toCallRow(log: NewApiUsageLog): CallRow {
         // available — CallDetailTable is a client island and must not convert.
         costCny: quotaToCny(log.quota),
         type: log.type,
-        content: log.content,
+        content: sanitizeLogContent(log.content),
     };
 }
 
@@ -209,7 +210,10 @@ export default async function DashboardPage({
         // 视频异步任务失败(type=6)会退还预扣费用(净扣 0)。把对应的 type=2 消费标成失败·已退款,
         // 否则明细表会把失败任务错显示成「成功 ¥X」(客户以为没出片还被扣钱)。
         const failedConsumeIds = matchFailedVideoConsumes(consume, taskFailed);
-        calls = [...consume, ...errors]
+        // 折叠"失败了但重试 / failover 成功"的中间失败行(见 collapseRetriedFailures)——
+        // 否则客户日志被 429/上游饱和这类中间过程刷屏,主观以为出了大问题。真失败(内容拒绝等)照常显示。
+        const visibleErrors = collapseRetriedFailures(consume, errors);
+        calls = [...consume, ...visibleErrors]
             .sort((a, b) => b.created_at - a.created_at)
             .slice(0, CALLS_CAP)
             .map((l) => {

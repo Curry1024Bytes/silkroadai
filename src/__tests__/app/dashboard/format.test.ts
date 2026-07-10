@@ -3,7 +3,14 @@
  * (brief §5: use_time→友好时长; token=0→"—"; type→成功/失败)
  */
 import { describe, expect, it } from 'vitest';
-import { formatDuration, formatTokens, isImageModel, callResult } from '@/app/(authenticated)/dashboard/format';
+import {
+    formatDuration,
+    formatTokens,
+    isImageModel,
+    callResult,
+    collapseRetriedFailures,
+    sanitizeLogContent,
+} from '@/app/(authenticated)/dashboard/format';
 
 describe('formatDuration', () => {
     it('0 / negative / non-finite → "—"', () => {
@@ -86,5 +93,71 @@ describe('callResult', () => {
         expect(callResult(5)).toBe('error');
         expect(callResult(2)).toBe('success');
         expect(callResult(1)).toBe('success');
+    });
+});
+
+describe('collapseRetriedFailures', () => {
+    const mk = (request_id: string, created_at: number, content = '') => ({ request_id, created_at, content });
+
+    it('failover:失败行与成功共用同一 request_id → 藏掉失败行', () => {
+        const consume = [mk('rid-A', 100)];
+        const errors = [mk('rid-A', 90, 'status_code=429, 当前分组上游负载已饱和')];
+        expect(collapseRetriedFailures(consume, errors)).toHaveLength(0);
+    });
+
+    it('真失败:独立 request_id、无对应成功 → 保留', () => {
+        const consume = [mk('rid-A', 100)];
+        const errors = [mk('rid-B', 95, 'adobe content rejected image_unsafe')];
+        expect(collapseRetriedFailures(consume, errors)).toHaveLength(1);
+    });
+
+    it('proxy 尺寸重试:size must use + 180s 内有成功 → 藏', () => {
+        const consume = [mk('rid-ok', 200)];
+        const errors = [mk('rid-err', 120, 'status_code=400, size must use <width>x<height>')];
+        expect(collapseRetriedFailures(consume, errors)).toHaveLength(0);
+    });
+
+    it('size must use 但无邻近成功 → 保留(真失败)', () => {
+        const consume = [mk('rid-ok', 1000)]; // 远在 180s 外
+        const errors = [mk('rid-err', 120, 'size must use <width>x<height>')];
+        expect(collapseRetriedFailures(consume, errors)).toHaveLength(1);
+    });
+
+    it('内容拒绝不因邻近成功被藏(只有 size must use 才按时间藏)', () => {
+        const consume = [mk('rid-ok', 130)];
+        const errors = [mk('rid-err', 120, 'adobe content rejected image_unsafe')];
+        expect(collapseRetriedFailures(consume, errors)).toHaveLength(1);
+    });
+});
+
+describe('sanitizeLogContent', () => {
+    it('adobe 内容拒绝 → 友好安全文案,不泄露 adobe / image_unsafe', () => {
+        const out = sanitizeLogContent(
+            'status_code=400, adobe content rejected: status 451 {"error_code":"image_unsafe"}',
+        );
+        expect(out.toLowerCase()).not.toContain('adobe');
+        expect(out).not.toContain('image_unsafe');
+        expect(out).toContain('安全系统');
+    });
+
+    it('Azure safety system → 同样友好文案', () => {
+        expect(sanitizeLogContent('Your request was rejected by the safety system.')).toContain('安全');
+    });
+
+    it('size must use → 尺寸友好文案', () => {
+        expect(sanitizeLogContent('status_code=400, size must use <width>x<height> format')).toContain('尺寸');
+    });
+
+    it('上游饱和 / 429 → 服务繁忙', () => {
+        expect(sanitizeLogContent('status_code=429, 当前分组上游负载已饱和')).toContain('繁忙');
+    });
+
+    it('兜底:抹掉残留上游品牌名', () => {
+        expect(sanitizeLogContent('failed via zhiyunai gateway').toLowerCase()).not.toContain('zhiyunai');
+    });
+
+    it('普通 / 空内容不误伤', () => {
+        expect(sanitizeLogContent('')).toBe('');
+        expect(sanitizeLogContent('model not found: gpt-99')).toBe('model not found: gpt-99');
     });
 });

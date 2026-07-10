@@ -211,6 +211,7 @@ describe('<DashboardPage /> merged console — happy path', () => {
                     type: 5,
                     model_name: 'claude-opus-4-8',
                     quota: 0,
+                    request_id: '20260705REQ-error-0003', // 独立 request_id → 真失败,不被折叠
                     content: 'upstream 429 rate limited',
                 }),
             ],
@@ -220,7 +221,7 @@ describe('<DashboardPage /> merged console — happy path', () => {
         expect(html).toContain('调用明细');
         expect(html).toContain('成功');
         expect(html).toContain('失败');
-        expect(html).toContain('upstream 429 rate limited'); // error content surfaced
+        expect(html).toContain('服务繁忙'); // 错误文案脱敏 + 友好化(upstream 429 → 服务繁忙,不泄露上游)
         expect(html).toContain('gemini-3-pro-image-preview'); // image row visible
         // 时长:use_time 是秒,56 秒 → "56s"(回归:曾经被当 ms 错显示成 "56ms")
         expect(html).toContain('56s');
