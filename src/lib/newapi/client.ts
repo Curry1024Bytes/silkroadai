@@ -474,6 +474,9 @@ export async function queryLogs(args: {
      *  silently ignore unknown query params, (b) `token_name` is not
      *  unique across renamed tokens. */
     token_id?: number;
+    /** /api/log/ 实测支持精确 `request_id` / `channel` 过滤(命中单条 / 单渠道),转发给 new-api。 */
+    request_id?: string;
+    channel?: number;
     page?: number;
     page_size?: number;
 }): Promise<{ items: NewApiUsageLog[]; total: number }> {
@@ -488,6 +491,8 @@ export async function queryLogs(args: {
         model_name: args.model_name,
         token_name: args.token_name,
         token_id: args.token_id,
+        request_id: args.request_id,
+        channel: args.channel,
     });
 }
 

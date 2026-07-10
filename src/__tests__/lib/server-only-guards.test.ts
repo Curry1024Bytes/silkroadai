@@ -60,8 +60,9 @@ const REQUIRES_GUARD = [
  * Roster:
  *   - quota-units.ts   pure CNY/USD/quota arithmetic constants + helpers
  *   - token-format.ts  pure idempotent `sk-` prefix formatter (W7 D4 PR-H Tier A)
+ *   - log-display.ts   pure 日志折叠 + 错误文案脱敏(纯字符串/数组逻辑,无 env / I/O)
  */
-const ALLOWLIST_NO_GUARD = ['quota-units.ts', 'token-format.ts'];
+const ALLOWLIST_NO_GUARD = ['quota-units.ts', 'token-format.ts', 'log-display.ts'];
 
 function readFile(rel: string): string {
     return fs.readFileSync(path.join(NEWAPI_DIR, rel), 'utf-8');

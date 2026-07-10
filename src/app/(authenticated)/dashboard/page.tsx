@@ -383,9 +383,15 @@ export default async function DashboardPage({
             )}
 
             {/* 4. Per-call detail table (core ask) */}
-            <h2 className="m-0 mb-3 text-base font-semibold text-navy">调用明细 · {periodLabel}</h2>
+            <div className="mb-3 flex items-end justify-between gap-3">
+                <h2 className="m-0 text-base font-semibold text-navy">调用明细 · {periodLabel}</h2>
+                <a href="/logs" className="shrink-0 text-xs font-medium text-navy no-underline hover:underline">
+                    查看全部日志 →
+                </a>
+            </div>
             <p className="m-0 mb-3 text-xs text-muted-ink">
-                每行一次调用,含模型、时长、token 与消耗;失败的调用可展开查看错误详情。
+                每行一次调用,含模型、时长、token 与消耗;失败的调用可展开查看错误详情。完整日志(按日期 + Request ID /
+                令牌 / 模型 / 渠道 搜索)在「调用日志」页。
             </p>
             <div className="mb-8">
                 <CallDetailTable rows={calls} />
