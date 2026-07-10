@@ -2391,6 +2391,31 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
         expect(data.usage).toBeUndefined(); // 报错不加 usage
     });
 
+    it('上游 adobe 内容拒绝 → 脱敏成 content_policy_violation,不泄露 adobe 来源', async () => {
+        mockFetch.mockResolvedValueOnce(
+            new Response(
+                JSON.stringify({
+                    error: {
+                        message:
+                            'adobe content rejected: status 451 {"error_code":"image_unsafe","message":"The generated images appear to be unsafe."}',
+                    },
+                }),
+                { status: 400, headers: { 'content-type': 'application/json' } },
+            ),
+        );
+        const res = await POST(
+            makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x' } }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(400); // 状态码透传
+        const text = await res.text();
+        expect(text.toLowerCase()).not.toContain('adobe'); // 来源脱敏
+        expect(text).not.toContain('image_unsafe');
+        const data = JSON.parse(text) as { error: { code: string; type: string } };
+        expect(data.error.code).toBe('content_policy_violation');
+        expect(data.error.type).toBe('invalid_request_error');
+    });
+
     it('连不上 new-api(网络异常)→ 502 透出真实原因,不被兜底成笼统 400', async () => {
         mockFetch.mockRejectedValueOnce(new Error('ECONNREFUSED'));
         const res = await POST(

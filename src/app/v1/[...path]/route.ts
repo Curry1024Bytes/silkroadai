@@ -815,6 +815,24 @@ function imageError(message: string, status = 400, cap: CaptureCtx | null = null
     return NextResponse.json(obj, { status });
 }
 
+/** 转发上游图片错误给客户前脱敏:候补源(Adobe/we-token 等)的内容安全拒绝会带上来源名
+ *  (如 `adobe content rejected: ... image_unsafe`),不能暴露给客户。命中内容安全类 → 统一改写成
+ *  中性的 content_policy_violation;其余错误里残留的上游品牌名兜底抹掉。仅作用于图片错误【响应体】,
+ *  内部 reqlog 仍记原文(便于运维排障)。 */
+function sanitizeImageErrorBody(text: string): string {
+    if (/\badobe\b|image_unsafe|content rejected|appear to be unsafe/i.test(text)) {
+        return JSON.stringify({
+            error: {
+                message:
+                    'Your request was rejected by the content safety system. The generated image may not comply with the content policy — please modify your prompt and try again.',
+                type: 'invalid_request_error',
+                code: 'content_policy_violation',
+            },
+        });
+    }
+    return text.replace(/\badobe\b/gi, 'the provider');
+}
+
 /** gpt-image-2 是图片模型,zhiyunai/Azure 只支持 Images 接口 —— 客户用 /v1/chat/completions
  *  调它会被上游 400「The requested operation is unsupported」。这里把 chat 请求翻成
  *  /v1/images/{generations,edits}(messages 带 image_url → edits,否则 generations),出图存图床
@@ -881,8 +899,19 @@ async function handleGptImageChat(
     }
 
     if (!upstream.ok) {
-        // 上游错误原样透传 status + body(客户能看到真实错误信息)
-        return cap ? captureResponse(cap, upstream) : passthroughResponse(upstream);
+        // 上游错误:脱敏(隐藏 adobe 等来源)后透传 status;内部 reqlog 记原文
+        const errText = await upstream.text();
+        let errJson: JsonRecord | null = null;
+        try {
+            errJson = JSON.parse(errText) as JsonRecord;
+        } catch {
+            errJson = null;
+        }
+        if (cap) captureJsonResponse(cap, upstream.status, errJson ?? { _raw: errText.slice(0, 500) });
+        return new NextResponse(sanitizeImageErrorBody(errText), {
+            status: upstream.status,
+            headers: { 'content-type': 'application/json' },
+        });
     }
     const data = (await upstream.json().catch(() => null)) as {
         data?: Array<{ b64_json?: string; url?: string }>;
@@ -1328,7 +1357,7 @@ async function reshapeOpenAiImageResponse(
     // 上游报错 / 形态非预期(非 JSON、无 data)→ 原样透传,不加 usage、不改体。
     if (!upstream.ok || !data) {
         if (cap) captureJsonResponse(cap, upstream.status, (json ?? { _raw: text.slice(0, 500) }) as JsonRecord);
-        return new NextResponse(text, { status: upstream.status, headers });
+        return new NextResponse(sanitizeImageErrorBody(text), { status: upstream.status, headers });
     }
 
     // 成功:补顶层 size + 估算 usage(保留上游已有的)。
