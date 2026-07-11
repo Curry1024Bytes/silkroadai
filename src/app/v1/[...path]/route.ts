@@ -78,6 +78,7 @@ import {
 import { withKeepalive } from './keepalive';
 import { guardSseResponse, guardSseStream, type SseErrorShape } from '@/lib/sse/stream-guard';
 import { forwardHeaders, passthroughResponse, STRIP_RESPONSE_HEADERS } from '@/lib/proxy/forward';
+import { stripAdobeImageMetadataB64 } from '@/lib/proxy/image-metadata';
 import { normalizeOpenAiResponse, normalizeChoices } from '@/lib/proxy/finish-reason';
 import { loadCatalogMeta, resolveTierFromAuthHeader, enrichModelList } from '@/lib/models/machine-catalog';
 import {
@@ -921,8 +922,10 @@ async function handleGptImageChat(
     let content: string;
     let stored: StoredImage | null = null;
     if (item?.b64_json) {
+        // 先剥 adobe(Firefly)C2PA 元数据(azure/gemini 不含标识 → 字节原样),再走
         // 客户 OSS → 平台 R2 → data URL 三级降级(同 handleGeminiImage)
-        stored = await storeGeneratedImage(req, Buffer.from(item.b64_json, 'base64'), 'image/png', item.b64_json);
+        const rawB64 = stripAdobeImageMetadataB64(item.b64_json);
+        stored = await storeGeneratedImage(req, Buffer.from(rawB64, 'base64'), 'image/png', rawB64);
         content = `![image](${stored.url})`;
     } else if (item?.url) {
         content = `![image](${item.url})`;
@@ -1413,6 +1416,13 @@ async function reshapeOpenAiImageResponse(
     const out: JsonRecord = { ...j };
     if (out.size === undefined && outSize) out.size = outSize;
     if (out.usage === undefined) out.usage = buildEstimatedUsage(prompt, outSize);
+
+    // 候补 adobe(Firefly)出图内嵌 C2PA 会暴露真实上游 → 剥离图内元数据(自定向:仅命中 adobe/
+    // firefly 标识的图才剥,azure/gemini 出图不含该标识 → 字节原样)。放在 transcode/存图/返回之前,
+    // 三条出图路径(内联 b64 / jpeg 转码 / 转存 url)统一干净。out.data 与 data 同引用,就地改即生效。
+    for (const it of data) {
+        if (typeof it.b64_json === 'string' && it.b64_json) it.b64_json = stripAdobeImageMetadataB64(it.b64_json);
+    }
 
     // 严格模式 output_format=jpeg:zhiyunai 恒返 png,服务端 png→jpeg 转码(就地改 data[].b64_json,
     // out.data 同一引用会一并反映)。失败回退原 png(pngToJpegB64 永不抛)。
