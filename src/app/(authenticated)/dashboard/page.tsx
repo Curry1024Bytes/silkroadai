@@ -43,6 +43,7 @@ import { ModelConsumptionChart } from './model-consumption-chart';
 import { CallDetailTable, type CallRow } from './call-detail-table';
 import { matchFailedVideoConsumes } from './failed-video-match';
 import { collapseRetriedFailures, sanitizeLogContent } from './format';
+import { isPerImageBilled } from '@/lib/newapi/log-display';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: '概览 — Silk Road AI' };
@@ -89,6 +90,8 @@ function toCallRow(log: NewApiUsageLog): CallRow {
         useTimeMs: log.use_time * 1000,
         promptTokens: log.prompt_tokens,
         completionTokens: log.completion_tokens,
+        // 按张计费(生图 ModelPrice)→ token 列显示 "—";按 token 计费(gpt-image-2 等)→ 显示真实 token。
+        perImageBilled: isPerImageBilled(log.other, log.model_name),
         quota: log.quota,
         // Compute ¥ here (server) where NEWAPI_QUOTA_PER_USD/USD_TO_CNY_RATE are
         // available — CallDetailTable is a client island and must not convert.

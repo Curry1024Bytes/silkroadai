@@ -6,7 +6,6 @@ import { describe, expect, it } from 'vitest';
 import {
     formatDuration,
     formatTokens,
-    isImageModel,
     callResult,
     collapseRetriedFailures,
     sanitizeLogContent,
@@ -45,45 +44,29 @@ describe('formatDuration', () => {
     });
 });
 
-describe('isImageModel', () => {
-    it('生图模型名命中', () => {
-        for (const m of [
-            'gpt-image-2',
-            'gemini-2.5-flash-image',
-            'gemini-3-pro-image-preview',
-            'gemini-3-pro-image-preview-2k',
-            'dall-e-3',
-            'imagen-3',
-        ])
-            expect(isImageModel(m), m).toBe(true);
-    });
-    it('非生图模型不命中(含视频/空)', () => {
-        for (const m of ['gpt-5.4', 'claude-opus-4-8', 'deepseek-v4', 'seedance-2.0', ''])
-            expect(isImageModel(m), m).toBe(false);
-    });
-});
+// isImageModel + 计费口径判断(parseModelPrice / isPerImageBilled)已随函数移到
+// log-display,测试见 src/__tests__/lib/newapi/log-display.test.ts。
 
 describe('formatTokens', () => {
-    it('生图模型 → 一律 "—"(token 无意义,不管上游报什么数)', () => {
-        expect(formatTokens(1, 0, 'gpt-image-2')).toBe('—');
-        expect(formatTokens(9, 124, 'gpt-image-2')).toBe('—');
-        expect(formatTokens(1212, 1105, 'gpt-image-2')).toBe('—');
-        expect(formatTokens(31, 765, 'gemini-3-pro-image-preview')).toBe('—');
-        expect(formatTokens(50, 0, 'dall-e-3')).toBe('—');
+    it('按张计费(perImageBilled=true)→ 一律 "—"(token 是噪声,不管上游报什么数)', () => {
+        expect(formatTokens(1, 0, true)).toBe('—');
+        expect(formatTokens(1212, 1105, true)).toBe('—');
     });
 
-    it('非生图模型两端都 0 → "—"(不显示误导的 "0 / 0")', () => {
+    it('按 token 计费(perImageBilled=false)→ 如实显示(含 gpt-image-2 这类按 token 的生图)', () => {
+        expect(formatTokens(3054, 196, false)).toBe('3,054 / 196');
+        expect(formatTokens(1234, 5678, false)).toBe('1,234 / 5,678');
+    });
+
+    it('两端都 0 → "—"(不显示误导的 "0 / 0"),不受 perImageBilled 影响', () => {
         expect(formatTokens(0, 0)).toBe('—');
-        expect(formatTokens(0, 0, 'gpt-5.4')).toBe('—');
+        expect(formatTokens(0, 0, false)).toBe('—');
+        expect(formatTokens(0, 0, true)).toBe('—');
     });
 
-    it('非生图模型正常显示 输入 / 输出(千分位)', () => {
-        expect(formatTokens(100, 200, 'gpt-5.4')).toBe('100 / 200');
-        expect(formatTokens(1234, 5678, 'claude-opus-4-8')).toBe('1,234 / 5,678');
-    });
-
-    it('非生图模型仅一端非 0 仍显示', () => {
-        expect(formatTokens(100, 0, 'gpt-5.4')).toBe('100 / 0');
+    it('默认(省略第三参)= 按 token 如实显示', () => {
+        expect(formatTokens(100, 200)).toBe('100 / 200');
+        expect(formatTokens(100, 0)).toBe('100 / 0');
         expect(formatTokens(0, 50)).toBe('0 / 50');
     });
 });

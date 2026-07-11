@@ -22,6 +22,7 @@ function row(o: Partial<CallRow> = {}): CallRow {
         useTimeMs: o.useTimeMs ?? 1200,
         promptTokens: o.promptTokens ?? 100,
         completionTokens: o.completionTokens ?? 200,
+        perImageBilled: o.perImageBilled ?? false,
         quota: o.quota ?? 500_000,
         costCny: o.costCny ?? 0.2,
         type: o.type ?? 2,
@@ -75,13 +76,27 @@ describe('<CallDetailTable /> SSR', () => {
         expect(html).toContain('rate limit exceeded');
     });
 
-    it('image-gen row (token=0) → "—" not "0 / 0" (生图友好)', () => {
+    it('按张计费的生图行(perImageBilled)→ token 显示 "—"(即使上游报了噪声 token)', () => {
         const html = renderToString(
-            renderRow({ model: 'gemini-3-pro-image-preview', promptTokens: 0, completionTokens: 0, useTimeMs: 800 }),
+            renderRow({
+                model: 'gemini-3-pro-image-preview',
+                perImageBilled: true,
+                promptTokens: 31,
+                completionTokens: 765,
+                useTimeMs: 800,
+            }),
         );
         expect(html).toContain('gemini-3-pro-image-preview');
         expect(html).toContain('—');
-        expect(html).not.toContain('0 / 0');
+        expect(html).not.toContain('31 / 765'); // 噪声 token 不外显
+    });
+
+    it('按 token 计费的生图行(gpt-image-2, perImageBilled=false)→ 如实显示 token(客户被计费的依据)', () => {
+        const html = renderToString(
+            renderRow({ model: 'gpt-image-2', perImageBilled: false, promptTokens: 3054, completionTokens: 196 }),
+        );
+        expect(html).toContain('gpt-image-2');
+        expect(html).toContain('3,054 / 196');
     });
 
     it('paginates — first 20 rows only, pager controls present', () => {

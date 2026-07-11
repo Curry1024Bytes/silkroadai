@@ -30,6 +30,9 @@ interface LogOpt {
     created_at?: number;
     model_name?: string;
     token_name?: string;
+    other?: string;
+    prompt_tokens?: number;
+    completion_tokens?: number;
 }
 function makeLog(o: LogOpt = {}) {
     return {
@@ -41,9 +44,11 @@ function makeLog(o: LogOpt = {}) {
         username: 'c-x',
         token_name: o.token_name ?? 'k',
         model_name: o.model_name ?? 'gpt-image-2',
+        // 默认 gpt-image-2 按 token 计费(model_price=-1);per-张 的行显式传 model_price≥0 的 other
+        other: o.other ?? '{"model_price":-1,"model_ratio":0.9285714285714286,"completion_ratio":6}',
         quota: 100000,
-        prompt_tokens: 0,
-        completion_tokens: 0,
+        prompt_tokens: o.prompt_tokens ?? 0,
+        completion_tokens: o.completion_tokens ?? 0,
         use_time: 1,
         is_stream: false,
         channel: 44,
@@ -108,6 +113,30 @@ describe('GET /api/portal/logs', () => {
         const d = (await (await GET(req())).json()) as { rows: Array<{ content: string }> };
         expect(d.rows[0].content.toLowerCase()).not.toContain('adobe');
         expect(d.rows[0].content).toContain('安全系统');
+    });
+
+    it('perImageBilled 按 other.model_price 计:gpt-image-2 按 token→false;gemini 生图按张→true', async () => {
+        mockGetCurrentUser.mockResolvedValue(provisioned);
+        mockQueryLogs.mockResolvedValue({
+            items: [
+                // 按 token(model_price=-1)→ token 是计费依据 → perImageBilled=false(显示 token)
+                makeLog({ id: 1, type: 2, model_name: 'gpt-image-2', request_id: 'A', prompt_tokens: 3054 }),
+                // 按张(model_price≥0)→ token 是噪声 → perImageBilled=true(显示 "—")
+                makeLog({
+                    id: 2,
+                    type: 2,
+                    model_name: 'gemini-3-pro-image-preview',
+                    other: '{"model_price":0.06429,"model_ratio":0}',
+                    request_id: 'B',
+                    prompt_tokens: 1212,
+                }),
+            ],
+            total: 2,
+        });
+        const d = (await (await GET(req())).json()) as { rows: Array<{ id: number; perImageBilled: boolean }> };
+        const byId = Object.fromEntries(d.rows.map((r) => [r.id, r.perImageBilled]));
+        expect(byId[1]).toBe(false); // gpt-image-2 按 token → 显示
+        expect(byId[2]).toBe(true); // gemini 生图按张 → "—"
     });
 
     it('IDOR:别人 user_id 的行被过滤掉', async () => {

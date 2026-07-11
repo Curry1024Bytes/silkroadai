@@ -318,7 +318,7 @@ function LogRowItem({
                 </td>
                 <td className={`${CELL} text-right tabular-nums text-muted-ink`}>{formatDuration(row.useTimeMs)}</td>
                 <td className={`${CELL} text-right tabular-nums text-muted-ink`}>
-                    {formatTokens(row.promptTokens, row.completionTokens, row.model)}
+                    {formatTokens(row.promptTokens, row.completionTokens, row.perImageBilled)}
                 </td>
                 <td className={`${CELL} text-right tabular-nums font-medium`}>¥{row.costCny.toFixed(2)}</td>
                 <td className={`${CELL} text-center`}>

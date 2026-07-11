@@ -18,7 +18,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { getCurrentUser } from '@/lib/auth/session';
 import { queryLogs, quotaToCny, type NewApiUsageLog } from '@/lib/newapi/client';
-import { collapseRetriedFailures, sanitizeLogContent } from '@/lib/newapi/log-display';
+import { collapseRetriedFailures, sanitizeLogContent, isPerImageBilled } from '@/lib/newapi/log-display';
 
 export const runtime = 'nodejs';
 
@@ -50,6 +50,8 @@ export interface LogRow {
     useTimeMs: number;
     promptTokens: number;
     completionTokens: number;
+    /** 按张计费(生图 ModelPrice)→ token 列显示 "—";false = 按 token 计费 → 显示真实 token。 */
+    perImageBilled: boolean;
     quota: number;
     costCny: number;
     type: number;
@@ -66,6 +68,7 @@ function toLogRow(log: NewApiUsageLog): LogRow {
         useTimeMs: log.use_time * 1000, // new-api use_time 是【秒】
         promptTokens: log.prompt_tokens,
         completionTokens: log.completion_tokens,
+        perImageBilled: isPerImageBilled(log.other, log.model_name), // 按张计费才藏 token
         quota: log.quota,
         costCny: quotaToCny(log.quota),
         type: log.type,
