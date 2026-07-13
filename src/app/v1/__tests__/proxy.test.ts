@@ -1580,6 +1580,43 @@ describe('/v1 proxy — Phase 4: DALL·E /v1/images/{edits,generations} (W9 D4)'
         expect(mockFetch).toHaveBeenCalledTimes(1); // 只有 pro 那次打了上游
     });
 
+    it('gpt-image-2 上游 fetch 挂 600s AbortSignal(对齐 Caddy,防 undici 默认 300s → 扣费无图)', async () => {
+        // JSON 文生图 → fetchUpstreamJson
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ data: [{ b64_json: 'AAAA' }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2', prompt: 'a red cube', response_format: 'b64_json' },
+            }),
+            ctx('images', 'generations'),
+        );
+        const [, jsonInit] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(jsonInit.signal).toBeInstanceOf(AbortSignal);
+        expect(jsonInit.signal?.aborted).toBe(false);
+
+        mockFetch.mockClear();
+
+        // multipart 图生图 → fetchUpstreamMultipart
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ data: [{ b64_json: 'AAAA' }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const form = new FormData();
+        form.append('model', 'gpt-image-2');
+        form.append('prompt', 'edit it');
+        form.append('image', imageFile([1, 2, 3]));
+        await POST(makeMultipartReq(form, '/images/edits'), ctx('images', 'edits'));
+        const [, mpInit] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(mpInit.signal).toBeInstanceOf(AbortSignal);
+        expect(mpInit.signal?.aborted).toBe(false);
+    });
+
     it('passes non-Gemini model multipart through to new-api unchanged (test D4-7)', async () => {
         mockFetch.mockResolvedValueOnce(
             new Response(JSON.stringify({ data: [{ url: 'x' }] }), {
