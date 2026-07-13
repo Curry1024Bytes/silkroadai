@@ -22,18 +22,23 @@ const UA =
 const MAX_REF_IMAGES = 9; // 对齐文档 reference_image_urls ≤9
 const MAX_REF_VIDEOS = 3; // 对齐文档 reference_videos ≤3
 
-/** 客户/new-api 模型名 → service-inference.ai model + resolution + 是否参考档(-ref)。 */
+/** 客户/new-api 模型名 → service-inference.ai model + resolution + 是否参考档(-ref)。
+ *  满血档上游模型 2026-07-13 由 `dreamina-seedance-2-0-260128` 升级到 `dreamina-seedance-2-0-hc`
+ *  —— 上游契约不变(generate/poll/asset 流实测全兼容),仅换模型名。fast 档上游无 hc 版,
+ *  仍走 `dreamina-seedance-2-0-fast-260128`(实测仍可用)。 */
 const MODEL_MAP: Record<string, { svc: string; resolution: string; ref: boolean }> = {
     // 无参考(文生):Phase 1
-    'dreamina-seedance-2-0-480p': { svc: 'dreamina-seedance-2-0-260128', resolution: '480p', ref: false },
-    'dreamina-seedance-2-0-720p': { svc: 'dreamina-seedance-2-0-260128', resolution: '720p', ref: false },
-    'dreamina-seedance-2-0-1080p': { svc: 'dreamina-seedance-2-0-260128', resolution: '1080p', ref: false },
+    'dreamina-seedance-2-0-480p': { svc: 'dreamina-seedance-2-0-hc', resolution: '480p', ref: false },
+    'dreamina-seedance-2-0-720p': { svc: 'dreamina-seedance-2-0-hc', resolution: '720p', ref: false },
+    'dreamina-seedance-2-0-1080p': { svc: 'dreamina-seedance-2-0-hc', resolution: '1080p', ref: false },
+    'dreamina-seedance-2-0-4k': { svc: 'dreamina-seedance-2-0-hc', resolution: '4k', ref: false }, // hc 新增 4K 档
     'dreamina-seedance-2-0-fast-480p': { svc: 'dreamina-seedance-2-0-fast-260128', resolution: '480p', ref: false },
     'dreamina-seedance-2-0-fast-720p': { svc: 'dreamina-seedance-2-0-fast-260128', resolution: '720p', ref: false },
     // 带参考图(图生/参考生):Phase 2 —— WITH_REF 费率(更便宜)
-    'dreamina-seedance-2-0-480p-ref': { svc: 'dreamina-seedance-2-0-260128', resolution: '480p', ref: true },
-    'dreamina-seedance-2-0-720p-ref': { svc: 'dreamina-seedance-2-0-260128', resolution: '720p', ref: true },
-    'dreamina-seedance-2-0-1080p-ref': { svc: 'dreamina-seedance-2-0-260128', resolution: '1080p', ref: true },
+    'dreamina-seedance-2-0-480p-ref': { svc: 'dreamina-seedance-2-0-hc', resolution: '480p', ref: true },
+    'dreamina-seedance-2-0-720p-ref': { svc: 'dreamina-seedance-2-0-hc', resolution: '720p', ref: true },
+    'dreamina-seedance-2-0-1080p-ref': { svc: 'dreamina-seedance-2-0-hc', resolution: '1080p', ref: true },
+    'dreamina-seedance-2-0-4k-ref': { svc: 'dreamina-seedance-2-0-hc', resolution: '4k', ref: true }, // hc 新增 4K 参考档
     'dreamina-seedance-2-0-fast-480p-ref': { svc: 'dreamina-seedance-2-0-fast-260128', resolution: '480p', ref: true },
     'dreamina-seedance-2-0-fast-720p-ref': { svc: 'dreamina-seedance-2-0-fast-260128', resolution: '720p', ref: true },
 };

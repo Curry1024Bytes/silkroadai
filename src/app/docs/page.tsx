@@ -2694,6 +2694,14 @@ for _ in range(120):  # 最多约 16 分钟
                                 </tr>
                                 <tr className="border-b border-brand-border">
                                     <td className="px-4 py-2.5 font-mono text-xs text-navy">
+                                        dreamina-seedance-2-0-4k[-ref]
+                                    </td>
+                                    <td className="px-4 py-2.5 text-ink">4K</td>
+                                    <td className="px-4 py-2.5 text-navy">¥4.45</td>
+                                    <td className="px-4 py-2.5 text-navy">¥2.67</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy">
                                         dreamina-seedance-2-0-fast-480p[-ref]
                                     </td>
                                     <td className="px-4 py-2.5 text-ink">480P 快</td>
