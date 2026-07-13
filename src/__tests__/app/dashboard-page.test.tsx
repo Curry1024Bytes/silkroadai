@@ -122,6 +122,8 @@ function makeLog(o: Partial<Record<string, unknown>> = {}) {
         token_name: (o.token_name as string) ?? 'prod',
         request_id: (o.request_id as string) ?? '20260705REQ00000000000000000000000000',
         model_name: (o.model_name as string) ?? 'gpt-5.4',
+        // 计费口径:默认按 token(model_price=-1);生图按张的行显式传 model_price≥0 的 other。
+        other: (o.other as string) ?? '{"model_price":-1,"model_ratio":2,"completion_ratio":4}',
         quota: (o.quota as number) ?? 1000,
         prompt_tokens: (o.prompt_tokens as number) ?? 100,
         completion_tokens: (o.completion_tokens as number) ?? 200,
@@ -199,10 +201,20 @@ describe('<DashboardPage /> merged console — happy path', () => {
                     id: 2,
                     model_name: 'gemini-3-pro-image-preview',
                     quota: 5000,
-                    // 生图上游回报不一致的 token(实测见过 1212/1105)——应被隐藏成 "—"
+                    // 按张计费(model_price 设值)→ 上游噪声 token(1212/1105)应被隐藏成 "—"
+                    other: '{"model_price":0.06429,"model_ratio":0}',
                     prompt_tokens: 1212,
                     completion_tokens: 1105,
                     use_time: 56, // 秒 → 应显示 "56s"(不是 "56ms")
+                }),
+                makeLog({
+                    id: 4,
+                    model_name: 'gpt-image-2',
+                    quota: 3928,
+                    // 按 token 计费(model_price=-1,ModelRatio)→ token 是计费依据,必须如实显示
+                    other: '{"model_price":-1,"model_ratio":0.9285714285714286,"completion_ratio":6}',
+                    prompt_tokens: 3054,
+                    completion_tokens: 196,
                 }),
             ],
             [
@@ -211,6 +223,7 @@ describe('<DashboardPage /> merged console — happy path', () => {
                     type: 5,
                     model_name: 'claude-opus-4-8',
                     quota: 0,
+                    request_id: '20260705REQ-error-0003', // 独立 request_id → 真失败,不被折叠
                     content: 'upstream 429 rate limited',
                 }),
             ],
@@ -220,12 +233,14 @@ describe('<DashboardPage /> merged console — happy path', () => {
         expect(html).toContain('调用明细');
         expect(html).toContain('成功');
         expect(html).toContain('失败');
-        expect(html).toContain('upstream 429 rate limited'); // error content surfaced
+        expect(html).toContain('服务繁忙'); // 错误文案脱敏 + 友好化(upstream 429 → 服务繁忙,不泄露上游)
         expect(html).toContain('gemini-3-pro-image-preview'); // image row visible
         // 时长:use_time 是秒,56 秒 → "56s"(回归:曾经被当 ms 错显示成 "56ms")
         expect(html).toContain('56s');
-        // 生图 token 一律 "—",不显示误导的原始 token 数
+        // 按张计费的生图(gemini)token 一律 "—",不显示误导的原始 token 数
         expect(html).not.toContain('1,212 / 1,105');
+        // 按 token 计费的生图(gpt-image-2)如实显示 token —— 客户被计费的依据
+        expect(html).toContain('3,054 / 196');
         // 非生图模型 token 正常显示
         expect(html).toContain('100 / 200');
         // 客户要的两列:哪个 key(token_name)+ request id 逐行透传到明细表

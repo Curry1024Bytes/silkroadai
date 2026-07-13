@@ -78,6 +78,7 @@ import {
 import { withKeepalive } from './keepalive';
 import { guardSseResponse, guardSseStream, type SseErrorShape } from '@/lib/sse/stream-guard';
 import { forwardHeaders, passthroughResponse, STRIP_RESPONSE_HEADERS } from '@/lib/proxy/forward';
+import { stripAdobeImageMetadataB64 } from '@/lib/proxy/image-metadata';
 import { normalizeOpenAiResponse, normalizeChoices } from '@/lib/proxy/finish-reason';
 import { loadCatalogMeta, resolveTierFromAuthHeader, enrichModelList } from '@/lib/models/machine-catalog';
 import {
@@ -815,6 +816,24 @@ function imageError(message: string, status = 400, cap: CaptureCtx | null = null
     return NextResponse.json(obj, { status });
 }
 
+/** 转发上游图片错误给客户前脱敏:候补源(Adobe/we-token 等)的内容安全拒绝会带上来源名
+ *  (如 `adobe content rejected: ... image_unsafe`),不能暴露给客户。命中内容安全类 → 统一改写成
+ *  中性的 content_policy_violation;其余错误里残留的上游品牌名兜底抹掉。仅作用于图片错误【响应体】,
+ *  内部 reqlog 仍记原文(便于运维排障)。 */
+function sanitizeImageErrorBody(text: string): string {
+    if (/\badobe\b|image_unsafe|content rejected|appear to be unsafe/i.test(text)) {
+        return JSON.stringify({
+            error: {
+                message:
+                    'Your request was rejected by the content safety system. The generated image may not comply with the content policy — please modify your prompt and try again.',
+                type: 'invalid_request_error',
+                code: 'content_policy_violation',
+            },
+        });
+    }
+    return text.replace(/\badobe\b/gi, 'the provider');
+}
+
 /** gpt-image-2 是图片模型,zhiyunai/Azure 只支持 Images 接口 —— 客户用 /v1/chat/completions
  *  调它会被上游 400「The requested operation is unsupported」。这里把 chat 请求翻成
  *  /v1/images/{generations,edits}(messages 带 image_url → edits,否则 generations),出图存图床
@@ -870,18 +889,29 @@ async function handleGptImageChat(
                 'image.png',
             );
         }
-        upstream = await fetchUpstreamMultipart(req, form, '/images/edits', '');
+        upstream = await gptImageUpstreamWithSizeRetry(req, form, null, '');
     } else {
         // 纯文字 → 文生图 generations(JSON)
         const genBody: JsonRecord = { model: effModel, prompt };
         if (size) genBody.size = size;
         if (quality) genBody.quality = quality;
-        upstream = await fetchUpstreamJson(req, genBody, '/images/generations', '');
+        upstream = await gptImageUpstreamWithSizeRetry(req, null, genBody, '');
     }
 
     if (!upstream.ok) {
-        // 上游错误原样透传 status + body(客户能看到真实错误信息)
-        return cap ? captureResponse(cap, upstream) : passthroughResponse(upstream);
+        // 上游错误:脱敏(隐藏 adobe 等来源)后透传 status;内部 reqlog 记原文
+        const errText = await upstream.text();
+        let errJson: JsonRecord | null = null;
+        try {
+            errJson = JSON.parse(errText) as JsonRecord;
+        } catch {
+            errJson = null;
+        }
+        if (cap) captureJsonResponse(cap, upstream.status, errJson ?? { _raw: errText.slice(0, 500) });
+        return new NextResponse(sanitizeImageErrorBody(errText), {
+            status: upstream.status,
+            headers: { 'content-type': 'application/json' },
+        });
     }
     const data = (await upstream.json().catch(() => null)) as {
         data?: Array<{ b64_json?: string; url?: string }>;
@@ -892,8 +922,10 @@ async function handleGptImageChat(
     let content: string;
     let stored: StoredImage | null = null;
     if (item?.b64_json) {
+        // 先剥 adobe(Firefly)C2PA 元数据(azure/gemini 不含标识 → 字节原样),再走
         // 客户 OSS → 平台 R2 → data URL 三级降级(同 handleGeminiImage)
-        stored = await storeGeneratedImage(req, Buffer.from(item.b64_json, 'base64'), 'image/png', item.b64_json);
+        const rawB64 = stripAdobeImageMetadataB64(item.b64_json);
+        stored = await storeGeneratedImage(req, Buffer.from(rawB64, 'base64'), 'image/png', rawB64);
         content = `![image](${stored.url})`;
     } else if (item?.url) {
         content = `![image](${item.url})`;
@@ -1079,6 +1111,65 @@ async function gptImageUpstream(
     return fetchUpstreamMultipart(req, f, '/images/edits', search);
 }
 
+/** 输入图尺寸 → 最近的合法 gpt-image 像素 size(从 GPT_IMAGE_ASPECT_SIZE 表按宽高比挑最近的)。 */
+function gptImageSizeFromInput(w: number, h: number): string {
+    if (!(w > 0 && h > 0)) return DEFAULT_GPT_IMAGE_SIZE;
+    const target = w / h;
+    let best = DEFAULT_GPT_IMAGE_SIZE;
+    let bestDiff = Infinity;
+    for (const px of Object.values(GPT_IMAGE_ASPECT_SIZE)) {
+        const m = /^(\d+)x(\d+)$/.exec(px);
+        if (!m) continue;
+        const diff = Math.abs(Number(m[1]) / Number(m[2]) - target);
+        if (diff < bestDiff) {
+            bestDiff = diff;
+            best = px;
+        }
+    }
+    return best;
+}
+
+/** 尺寸重试用的明确 size:有输入图(图生图)→ 读第一张输入图尺寸选最近合法 WxH(改竖图出竖图,
+ *  不强行方图);无输入图(文生图)/ 读不出尺寸 → 1024²。 */
+async function gptImageFallbackSize(form: FormData | null, body: JsonRecord | null): Promise<string> {
+    let dims: { w: number; h: number } | null = null;
+    if (form) {
+        const files = formImageFiles(form);
+        if (files.length) dims = imageDimensions(Buffer.from(await files[0].arrayBuffer()));
+    } else if (body) {
+        const imgs = await extractJsonInputImages(body);
+        if (imgs.length) dims = imageDimensions(Buffer.from(imgs[0].data, 'base64'));
+    }
+    return dims ? gptImageSizeFromInput(dims.w, dims.h) : DEFAULT_GPT_IMAGE_SIZE;
+}
+
+/** gpt-image 上游调用 + 尺寸重试:先按客户【原始】size(可能是 auto / 缺省)发上游 —— 直签渠道
+ *  (zhiyunai/ch44)收 auto 照旧,体验完全不变。仅当上游回 "size must use <width>x<height>"
+ *  (只有候补 Adobe/ch83 这样)→ 补一个明确 size 重试一次(edits 跟随输入图、文生图 1024²)。
+ *  内容安全 / 上游饱和等其它错误不重试 —— 归一化只在 adobe 那条路发生。 */
+async function gptImageUpstreamWithSizeRetry(
+    req: NextRequest,
+    form: FormData | null,
+    body: JsonRecord | null,
+    search: string,
+): Promise<Response> {
+    const first = await gptImageUpstream(req, form, body, search);
+    if (first.ok) return first;
+    const errText = await first.text();
+    if (!/size must use/i.test(errText)) {
+        // 非尺寸格式错(含内容安全 / 上游饱和)→ 不重试,重建 Response 供上层 reshape/脱敏读取。
+        // 保留原响应头(x-new-api-version 等),仅剥 content-encoding/length —— text() 已解压,原值会失配。
+        const h = new Headers(first.headers);
+        h.delete('content-encoding');
+        h.delete('content-length');
+        return new Response(errText, { status: first.status, headers: h });
+    }
+    const explicit = await gptImageFallbackSize(form, body);
+    if (form) form.set('size', explicit);
+    else if (body) body.size = explicit;
+    return gptImageUpstream(req, form, body, search);
+}
+
 /** OpenAI gpt-image 用像素 size,不认 aspect_ratio / 比例串("16:9")—— 客户传比例时上游静默
  *  出方图(实测 aspect_ratio:"16:9" → 1254×1254 方图;size:"16:9" → 400)。把常见比例折成
  *  ~1MP 像素 size(zhiyunai 接受任意 WxH);表外比例按 1MP 等比折算、取整到 16。 */
@@ -1098,6 +1189,8 @@ const GPT_IMAGE_ASPECT_SIZE: Record<string, string> = {
     '1:2': '704x1408',
 };
 const ASPECT_RATIO_RE = /^(\d{1,2}):(\d{1,2})$/;
+/** gpt-image 尺寸重试的兜底默认(文生图、或读不出输入图尺寸时用)。 */
+const DEFAULT_GPT_IMAGE_SIZE = '1024x1024';
 function aspectToPixelSize(ratio: string): string | null {
     const fixed = GPT_IMAGE_ASPECT_SIZE[ratio];
     if (fixed) return fixed;
@@ -1313,7 +1406,7 @@ async function reshapeOpenAiImageResponse(
     // 上游报错 / 形态非预期(非 JSON、无 data)→ 原样透传,不加 usage、不改体。
     if (!upstream.ok || !data) {
         if (cap) captureJsonResponse(cap, upstream.status, (json ?? { _raw: text.slice(0, 500) }) as JsonRecord);
-        return new NextResponse(text, { status: upstream.status, headers });
+        return new NextResponse(sanitizeImageErrorBody(text), { status: upstream.status, headers });
     }
 
     // 成功:补顶层 size + 估算 usage(保留上游已有的)。
@@ -1323,6 +1416,13 @@ async function reshapeOpenAiImageResponse(
     const out: JsonRecord = { ...j };
     if (out.size === undefined && outSize) out.size = outSize;
     if (out.usage === undefined) out.usage = buildEstimatedUsage(prompt, outSize);
+
+    // 候补 adobe(Firefly)出图内嵌 C2PA 会暴露真实上游 → 剥离图内元数据(自定向:仅命中 adobe/
+    // firefly 标识的图才剥,azure/gemini 出图不含该标识 → 字节原样)。放在 transcode/存图/返回之前,
+    // 三条出图路径(内联 b64 / jpeg 转码 / 转存 url)统一干净。out.data 与 data 同引用,就地改即生效。
+    for (const it of data) {
+        if (typeof it.b64_json === 'string' && it.b64_json) it.b64_json = stripAdobeImageMetadataB64(it.b64_json);
+    }
 
     // 严格模式 output_format=jpeg:zhiyunai 恒返 png,服务端 png→jpeg 转码(就地改 data[].b64_json,
     // out.data 同一引用会一并反映)。失败回退原 png(pngToJpegB64 永不抛)。
@@ -1441,7 +1541,7 @@ async function handleImagesDalle(
                     // 统一入口:gpt-image 按有无输入图分流到上游 edits/generations(与调用 path 无关);
                     // 其余非 Gemini 图片模型仍按调用 path 原样透传 multipart。
                     const upstream = isGptImageModel(model)
-                        ? await gptImageUpstream(req, form, null, search)
+                        ? await gptImageUpstreamWithSizeRetry(req, form, null, search)
                         : await fetchUpstreamMultipart(req, form, path, search);
                     return await reshapeOpenAiImageResponse(
                         upstream,
@@ -1523,7 +1623,7 @@ async function handleImagesDalle(
                 try {
                     // 统一入口:gpt-image body 里带 image/image_url → 图生图 edits;否则文生图 generations。
                     const upstream = isGptImageModel(model)
-                        ? await gptImageUpstream(req, null, body, search)
+                        ? await gptImageUpstreamWithSizeRetry(req, null, body, search)
                         : await fetchUpstreamJson(req, body, path, search);
                     return await reshapeOpenAiImageResponse(
                         upstream,

@@ -43,24 +43,21 @@ export function formatDuration(ms: number): string {
     return secs === 0 ? `${mins}m` : `${mins}m ${secs}s`;
 }
 
-/** 按模型名判断是否生图模型。生图按【张】计费(¥/张),token 数对它无意义 —— 上游
- *  回报极不一致(gpt-image-2 实测同样 ¥0.05/张,token 见过 1/0、9/124、1212/1105…)。
- *  client-safe 纯字符串匹配(不引 server-only 的 import-catalog)。 */
-export function isImageModel(model: string): boolean {
-    const m = model.toLowerCase();
-    return m.includes('image') || m.includes('dall-e') || m.includes('imagen');
-}
-
 /**
  * Friendly token cell.
- *   - 生图模型 → 一律 "—":按张计费,token 数无意义且极不一致(客户误以为"显示异常")。
- *   - 其余模型:两端都 0(`prompt_tokens===0 && completion_tokens===0`)→ "—"
- *     (不显示误导的 "0 / 0");否则 "输入 / 输出"。
+ *   - `perImageBilled`(按张计费的生图,如 Gemini 生图)→ 一律 "—":token 数是噪声、极不一致
+ *     (客户误以为"显示异常")。**注意**:gpt-image-2 等【按 token 计费】的生图 perImageBilled=false,
+ *     token 就是计费依据,要如实显示 —— 判据由调用方(toCallRow/toLogRow)按 `other.model_price` 算好传入。
+ *   - 其余(含所有 LLM 与按 token 的生图):两端都 0 → "—"(不显示误导的 "0 / 0");否则 "输入 / 输出"。
  */
-export function formatTokens(promptTokens: number, completionTokens: number, model = ''): string {
-    if (isImageModel(model)) return '—';
+export function formatTokens(promptTokens: number, completionTokens: number, perImageBilled = false): string {
+    if (perImageBilled) return '—';
     const p = Number.isFinite(promptTokens) ? promptTokens : 0;
     const c = Number.isFinite(completionTokens) ? completionTokens : 0;
     if (p === 0 && c === 0) return '—';
     return `${p.toLocaleString('en-US')} / ${c.toLocaleString('en-US')}`;
 }
+
+// 日志展示 helpers 都在共享 lib(dashboard 页 + /logs 页 + /api/portal/logs 复用),此处 re-export
+// 保持既有 import 不变(折叠重试失败 / 错误脱敏 / 计费口径判断)。
+export { collapseRetriedFailures, sanitizeLogContent, isImageModel } from '@/lib/newapi/log-display';

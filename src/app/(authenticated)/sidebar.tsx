@@ -23,6 +23,8 @@ const BASE_NAV: NavItem[] = [
     // 明细 all live on /dashboard. Old /balance + /usage routes 307-redirect
     // here, so the two former nav rows collapsed into this one.
     { href: '/dashboard', label: '概览' },
+    // 全功能调用日志:按日期范围 + Request ID / 令牌 / 模型 / 渠道 搜索,分页展示(已去重复失败)。
+    { href: '/logs', label: '调用日志' },
     { href: '/keys', label: 'API Keys' },
     // 工具箱: 独立页 /tools(Seedance 视频 / AI 对话 / AI 生图 在线测试 + Codex / Claude Code
     // 接入),不跳落地页。放在 API Keys 之后。控制台的 AI 对话 / AI 生图 入口已下线,统一收敛

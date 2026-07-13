@@ -271,6 +271,10 @@ export interface NewApiUsageLog {
     channel: number;
     token_id: number;
     group: string;
+    /** 计费元信息 JSON 串(model_price / model_ratio / completion_ratio / group_ratio 等)。
+     *  展示层用 `model_price` 区分「按张(≥0)」vs「按 token(-1)」计费 —— 见 log-display
+     *  `isPerImageBilled`。rows 未经 zod 校验,老行可能缺此字段(空串)。 */
+    other: string;
     /** new-api 为每条请求生成的唯一 ID(前 14 位是 UTC 时间戳)。客户排障 /
      *  跟我们对账时的定位句柄 —— HTTP `GET /api/log/` 已直接返回此字段
      *  (rows 未经 zod 校验,历史极老行可能是空串)。 */
@@ -474,6 +478,9 @@ export async function queryLogs(args: {
      *  silently ignore unknown query params, (b) `token_name` is not
      *  unique across renamed tokens. */
     token_id?: number;
+    /** /api/log/ 实测支持精确 `request_id` / `channel` 过滤(命中单条 / 单渠道),转发给 new-api。 */
+    request_id?: string;
+    channel?: number;
     page?: number;
     page_size?: number;
 }): Promise<{ items: NewApiUsageLog[]; total: number }> {
@@ -488,6 +495,8 @@ export async function queryLogs(args: {
         model_name: args.model_name,
         token_name: args.token_name,
         token_id: args.token_id,
+        request_id: args.request_id,
+        channel: args.channel,
     });
 }
 

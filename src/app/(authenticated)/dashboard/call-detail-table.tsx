@@ -17,8 +17,9 @@
  * component fetches a bounded recent window, post-filters to this user, and
  * passes the merged+sorted rows down as plain serializable objects.
  *
- * 生图友好: 生图模型按【张】计费,上游回报的 token 数无意义且极不一致(1/0、
- * 9/124、1212/1105…),formatTokens 按模型名一律显示 "—";模型名 + ¥ + 结果照常清晰。
+ * Tokens 列按【计费口径】显示(perImageBilled,server 端按 other.model_price 算):按张计费的生图
+ * (Gemini 生图等)token 是噪声、极不一致(1/0、9/124…)→ 显示 "—";按 token 计费的(gpt-image-2 /
+ * 所有 LLM)token 就是计费依据 → 如实显示。¥ + 结果照常清晰。
  */
 import { useState } from 'react';
 import { formatDuration, formatTokens, callResult } from './format';
@@ -35,6 +36,9 @@ export interface CallRow {
     useTimeMs: number;
     promptTokens: number;
     completionTokens: number;
+    /** 按张计费(生图 ModelPrice)→ token 列显示 "—"(token 是噪声);false = 按 token 计费
+     *  (gpt-image-2 / LLM 等)→ 显示真实 token。由 server 端按 `other.model_price` 算好传入。 */
+    perImageBilled: boolean;
     quota: number;
     /** ¥ cost of this call, computed server-side (quotaToCny) and passed down.
      *  This is a 'use client' island — it must NOT call quotaToCny itself, as
@@ -196,7 +200,7 @@ function CallRowItem({
                 </td>
                 <td className={`${cell} text-right tabular-nums text-muted-ink`}>{formatDuration(row.useTimeMs)}</td>
                 <td className={`${cell} text-right tabular-nums text-muted-ink`}>
-                    {formatTokens(row.promptTokens, row.completionTokens, row.model)}
+                    {formatTokens(row.promptTokens, row.completionTokens, row.perImageBilled)}
                 </td>
                 <td className={`${cell} text-right tabular-nums font-medium`}>¥{row.costCny.toFixed(2)}</td>
                 <td className={`${cell} text-center`}>
