@@ -2,12 +2,12 @@
 /**
  * 配置 new-api 的「seedance 国内企业级端口」(火山方舟 doubao-seedance / token.xinhankr.com,
  * 经 portal 适配器 /seedance-cn-adapter)。镜像 setup-seedance-overseas.mjs 的四步:
- *   1. GroupRatio       : seedance-cn-enterprise = 1.0(卖价烤进 ModelPrice,组只隔离/显示)
- *   2. UserUsableGroups : seedance-cn-enterprise = "seedance 国内企业级端口"(前端显示名)
- *      —— 与 overseas 一致【不动 group_ratio_setting】(本台该项为 null、走 legacy GroupRatio;
- *         擅动会波及 official-gpt 等。若 deploy 时报 403「已被弃用」再补 group_ratio_setting.group_ratio)
- *   3. ModelPrice       : 8 档(4 分辨率 × {无参考, -ref}),$/秒。由实测 token/秒 换算(见下)
- *   4. Channel          : type=1 → portal 适配器,group=seedance-cn-enterprise,models=8 档
+ *   1. GroupRatio                      : seedance-cn-enterprise = 1.0(卖价烤进 ModelPrice,组只隔离/显示)
+ *   2. group_ratio_setting.group_ratio : seedance-cn-enterprise = 1.0 —— 本台【强制】此结构化 key,
+ *      缺了客户请求会 403「分组 X 已被弃用」(2026-07-15 部署实测)。merge 只加本 group、保留其余。
+ *   3. UserUsableGroups                : seedance-cn-enterprise = "seedance 国内企业级端口"(前端显示名)
+ *   4. ModelPrice                      : 8 档(4 分辨率 × {无参考, -ref}),$/秒。由实测 token/秒 换算(见下)
+ *   5. Channel                         : type=1 → portal 适配器,group=seedance-cn-enterprise,models=8 档
  *
  * 计费 = new-api 按 duration × ModelPrice × GroupRatio(=1)算,与适配器无关(与现有 seedance 一致)。
  *
@@ -105,9 +105,13 @@ console.log('ModelPrice($/秒,含 SAFETY=' + SAFETY + '):');
 for (const [m, p] of Object.entries(PRICES)) console.log(`  ${m.padEnd(30)} $${p}/秒  = ¥${(p * FX).toFixed(4)}/秒`);
 console.log('');
 
-// 1+2: group options(不动 group_ratio_setting,同 overseas)
+// 1+2+3: group options。本台【强制】group_ratio_setting.group_ratio —— 缺了该结构化 key
+// 客户请求会 403「分组 X 已被弃用」(2026-07-15 部署实测)。三张 map 都 merge(只加本 group、
+// 保留其余,故不会波及 official-gpt 等);group_ratio_setting.group_ratio 本台已是 populated map,
+// merge 安全。⚠️ 若某台该项为 null,merge 会把它变成单 key map(可能启用 enforcement),届时先确认。
 for (const [key, val] of [
     ['GroupRatio', 1.0],
+    ['group_ratio_setting.group_ratio', 1.0],
     ['UserUsableGroups', LABEL],
 ]) {
     const obj = parse(await getOption(key));
