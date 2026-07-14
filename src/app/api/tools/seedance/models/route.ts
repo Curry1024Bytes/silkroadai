@@ -24,6 +24,6 @@ export async function GET(req: NextRequest) {
     } catch {
         return NextResponse.json({ error: { message: '模型列表解析失败' } }, { status: 502 });
     }
-    const video = ids.filter((id) => /seedance|dreamina/i.test(id)).sort();
+    const video = ids.filter((id) => /seedance|dreamina|artsdance/i.test(id)).sort();
     return NextResponse.json({ models: video });
 }

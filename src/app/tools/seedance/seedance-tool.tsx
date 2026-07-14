@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 type Mode = 'text' | 'image' | 'multi' | 'frames' | 'audio';
-type Source = 'overseas' | 'reverse' | 'normal';
+type Source = 'overseas' | 'reverse' | 'cn' | 'normal';
 
 const MODES: { key: Mode; label: string; hint: string }[] = [
     { key: 'text', label: '文生视频', hint: '纯文字描述生成' },
@@ -17,15 +17,16 @@ const RATIOS = ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9'];
 function detectSource(id: string): Source {
     if (/^dreamina-/i.test(id)) return 'overseas';
     if (/^seedance-2\.0-(720|1080)$/i.test(id)) return 'reverse';
+    if (/^artsdance/i.test(id)) return 'cn';
     return 'normal';
 }
 function sourceLabel(s: Source): string {
-    return s === 'overseas' ? '海外满血' : s === 'reverse' ? '逆向低价' : '普通';
+    return s === 'overseas' ? '海外满血' : s === 'reverse' ? '逆向低价' : s === 'cn' ? '国内企业级' : '普通';
 }
 function groupModels(models: string[]): { source: Source; ids: string[] }[] {
-    const by: Record<Source, string[]> = { overseas: [], reverse: [], normal: [] };
+    const by: Record<Source, string[]> = { overseas: [], reverse: [], cn: [], normal: [] };
     for (const m of models) by[detectSource(m)].push(m);
-    return (['overseas', 'reverse', 'normal'] as Source[])
+    return (['overseas', 'reverse', 'cn', 'normal'] as Source[])
         .filter((s) => by[s].length)
         .map((s) => ({ source: s, ids: by[s] }));
 }
@@ -41,11 +42,11 @@ function buildBody(
     audio: string,
 ): Record<string, unknown> {
     const src = detectSource(model);
-    // 图生类玩法:海外满血需 -ref 模型,自动补
+    // 图生类玩法:海外满血 / 国内企业级 需 -ref 模型,自动补
     let m = model;
-    if (src === 'overseas' && mode !== 'text' && !/-ref$/.test(m)) m = m + '-ref';
+    if ((src === 'overseas' || src === 'cn') && mode !== 'text' && !/-ref$/.test(m)) m = m + '-ref';
     const b: Record<string, unknown> = { model: m, prompt };
-    if (src === 'normal') b.duration = Number(seconds) || 5;
+    if (src === 'normal' || src === 'cn') b.duration = Number(seconds) || 5;
     else b.seconds = String(seconds || '5');
     if (ratio) b.aspect_ratio = ratio;
 
@@ -53,11 +54,11 @@ function buildBody(
         if (src === 'reverse') b.image_url = images[0];
         else b.image = images[0];
     } else if (mode === 'multi') {
-        if (src === 'overseas') b.images = images;
+        if (src === 'overseas' || src === 'cn') b.images = images;
         else if (src === 'reverse') b.reference_image_urls = images;
         else b.reference_images = images;
     } else if (mode === 'frames') {
-        if (src === 'overseas') {
+        if (src === 'overseas' || src === 'cn') {
             b.first_frame = images[0];
             b.last_frame = images[1];
         } else if (src === 'reverse') {

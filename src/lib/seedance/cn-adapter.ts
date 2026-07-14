@@ -4,9 +4,11 @@
  * 上游网关「与 OpenAI 官方视频规范完全对齐」:提交 POST /v1/video/generations、
  * 轮询 GET /v1/video/generations/{task_id}、完成响应 { status, data:[{url}], usage }。
  * 因此本适配器比海外档(service-inference.ai 自定义 API)简单得多 —— 近乎透传,
- * 只做三件事:①档位模型名 → 上游单模型 artsdance2.0-pro-260701 + resolution + 参考模式门控;
- * ②入参图/视频 data URL 先转存我们 R2(上游 images[] 只吃 http(s) 直链);
- * ③成片转存我们 R2(藏上游 volcvideo 签名直链 + 永久不过期 + 浏览器可开)。
+ * 只做两件事:①档位模型名 → 上游单模型 artsdance2.0-pro-260701 + resolution + 参考模式门控;
+ * ②入参图/视频/音频 data URL 先转存我们 R2(上游 images[]/videos[]/audios[] 只吃 http(s) 直链)。
+ * 成片【不转存】,直接返回火山 volcvideo.com 原始直链(operator 要「真实感」:客户看到火山官方
+ * VOD 域名,已隐藏 token.xinhankr 上游、只露 Volcengine=火山方舟)。⚠️ 火山直链是【签名 URL ~24h 过期】,
+ * 客户须及时下载/转存(不像 R2 永久)。见 /docs 说明。
  *
  * 计费:走 new-api 原生「按秒 ModelPrice × duration × GroupRatio」,与本适配器无关
  * (与现有 seedance 档一致)。价目表的「分辨率档 × 有/无参考」两维通过【拆成 8 个模型名】
@@ -124,6 +126,23 @@ function extractVideoUrls(body: Record<string, unknown>): string[] {
     return urls;
 }
 
+/** 入参音频 URL(audio_url / audio / audios / reference_audios + content[].audio_url)。 */
+function extractAudioUrls(body: Record<string, unknown>): string[] {
+    const urls: string[] = [];
+    pushUrl(urls, body.audio_url);
+    if (typeof body.audio === 'string') urls.push(body.audio);
+    if (Array.isArray(body.audios)) for (const a of body.audios) pushUrl(urls, a);
+    if (Array.isArray(body.reference_audios)) for (const a of body.reference_audios) pushUrl(urls, a);
+    const content = body.content;
+    if (Array.isArray(content)) {
+        for (const c of content) {
+            const o = c as { type?: string; audio_url?: unknown };
+            if (o?.type === 'audio_url' || o?.type === 'input_audio') pushUrl(urls, o.audio_url);
+        }
+    }
+    return urls;
+}
+
 /** media URL → 上游能抓的 http(s) 直链。data URL 解码上传我们 R2(无扩展名,content-type 权威);
  *  http(s) 原样透传(上游 Volcengine 抓取器直接吃网络直链)。 */
 async function toHttpMediaUrl(url: string): Promise<string> {
@@ -136,29 +155,6 @@ async function toHttpMediaUrl(url: string): Promise<string> {
     }
     if (!/^https?:\/\//i.test(u)) throw new Error('media must be an http(s) URL or a base64 data URL');
     return u;
-}
-
-/** 成片转存我们 R2:拉上游视频字节 → 上传 R2 → 我们域名永久直链。key 用上游任务 id(确定性 →
- *  重复轮询不重复上传)。任何失败返回 null,调用方回退上游直链。 */
-export async function mirrorVideoToR2(videoUrl: string, auth: string, id: string): Promise<string | null> {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 60_000);
-    try {
-        const vid = await fetch(videoUrl, { headers: { Authorization: auth }, signal: ctrl.signal });
-        if (!vid.ok) return null;
-        const len = Number(vid.headers.get('content-length') || 0);
-        if (len > 200 * 1024 * 1024) return null;
-        const buf = Buffer.from(await vid.arrayBuffer());
-        if (buf.length === 0) return null;
-        const ct = vid.headers.get('content-type') || 'video/mp4';
-        const ext = ct.includes('webm') ? 'webm' : 'mp4';
-        return await uploadImage(`seedance-cn-video/${id}.${ext}`, buf, ct.startsWith('video/') ? ct : 'video/mp4');
-    } catch (e) {
-        console.warn('[seedance-cn-adapter] r2 video mirror failed', String(e).slice(0, 160));
-        return null;
-    } finally {
-        clearTimeout(timer);
-    }
 }
 
 const fetchXhk = (path: string, auth: string, init: RequestInit = {}) =>
@@ -194,19 +190,23 @@ export async function submitVideo(req: NextRequest): Promise<NextResponse> {
     ).toLowerCase();
     const explicitFirst = typeof body.first_frame === 'string' ? body.first_frame : '';
     const explicitLast = typeof body.last_frame === 'string' ? body.last_frame : '';
+    const rawAudios = extractAudioUrls(body);
+    const totalImages = rawImages.length + (explicitFirst ? 1 : 0) + (explicitLast ? 1 : 0);
 
     // 档位与输入一致性门控(防串档薅便宜档)
-    const hasInputs = rawImages.length > 0 || rawVideos.length > 0 || !!explicitFirst || !!explicitLast;
+    const hasInputs = totalImages > 0 || rawVideos.length > 0 || rawAudios.length > 0;
     if (!map.ref && hasInputs)
-        return err(400, 'invalid_request', `${model} is text-only; use a "-ref" model for image/video inputs`);
+        return err(400, 'invalid_request', `${model} is text-only; use a "-ref" model for image/video/audio inputs`);
     if (map.ref && !hasInputs)
         return err(
             400,
             'invalid_request',
             `${model} requires a reference (image_url / images / reference_image_urls / first_frame / last_frame / reference_videos)`,
         );
-    if (rawImages.length + (explicitFirst ? 1 : 0) + (explicitLast ? 1 : 0) > MAX_REF_IMAGES)
-        return err(400, 'invalid_request', `at most ${MAX_REF_IMAGES} images`);
+    // 音频需配 ≥1 张图(对齐上游文档)
+    if (rawAudios.length > 0 && totalImages === 0)
+        return err(400, 'invalid_request', 'audio requires at least one reference image (image / first_frame)');
+    if (totalImages > MAX_REF_IMAGES) return err(400, 'invalid_request', `at most ${MAX_REF_IMAGES} images`);
     if (rawVideos.length > MAX_REF_VIDEOS) return err(400, 'invalid_request', `at most ${MAX_REF_VIDEOS} videos`);
 
     // duration:5 或 10(上游只收这两档);ratio 白名单外回落 16:9
@@ -246,6 +246,10 @@ export async function submitVideo(req: NextRequest): Promise<NextResponse> {
                 const videos = await Promise.all(rawVideos.map((u) => toHttpMediaUrl(u)));
                 upstreamBody.videos = videos;
             }
+            if (rawAudios.length) {
+                const audios = await Promise.all(rawAudios.map((u) => toHttpMediaUrl(u)));
+                upstreamBody.audios = audios;
+            }
         } catch (e) {
             return err(400, 'invalid_request', `reference media processing failed: ${String(e).slice(0, 160)}`);
         }
@@ -255,8 +259,9 @@ export async function submitVideo(req: NextRequest): Promise<NextResponse> {
         model,
         resolution: map.resolution,
         ref: map.ref,
-        images: rawImages.length + (explicitFirst ? 1 : 0) + (explicitLast ? 1 : 0),
+        images: totalImages,
         videos: rawVideos.length,
+        audios: rawAudios.length,
         duration,
         ratio,
         genAudio: generateAudio,
@@ -338,18 +343,14 @@ export async function pollVideo(req: NextRequest, id: string): Promise<NextRespo
         return err(upstream.status >= 400 ? upstream.status : 502, 'upstream_error', String(msg).slice(0, 300));
     }
     const status = mapStatus(j.status);
-    let videoUrl = firstVideoUrl(j.data);
+    const videoUrl = firstVideoUrl(j.data);
     const failReason =
         status === 'failed'
             ? String((j.error as { message?: string } | undefined)?.message || j.message || 'generation failed')
             : '';
-    // 完成出片 → 转存我们 R2(藏上游 + 永久直链);R2 故障回退上游直链
-    let r2Fallback = false;
-    if (status === 'completed' && videoUrl) {
-        const mirrored = await mirrorVideoToR2(videoUrl, auth, id);
-        if (mirrored) videoUrl = mirrored;
-        else r2Fallback = true;
-    }
+    // 成片直接返回火山 volcvideo.com 原始直链(不转存 R2)—— operator 要「真实感」:
+    // 客户看到的是火山官方 VOD 域名(已隐藏 token.xinhankr 上游、只露 Volcengine=火山方舟,与品牌一致)。
+    // ⚠️ 火山直链是【签名 URL,~24h 过期】,客户须及时下载/转存;不像 R2 永久(见 /docs 说明)。
     return NextResponse.json(
         {
             id,
@@ -361,7 +362,7 @@ export async function pollVideo(req: NextRequest, id: string): Promise<NextRespo
             url: videoUrl ?? undefined,
             fail_reason: failReason || undefined,
         },
-        { status: 200, headers: r2Fallback ? { 'X-Silkroadai-R2-Fallback': '1' } : {} },
+        { status: 200 },
     );
 }
 

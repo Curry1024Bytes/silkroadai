@@ -144,6 +144,29 @@ describe('seedance-cn adapter submit', () => {
         expect(images.map((i) => i.role)).toEqual(['first_frame', 'last_frame']);
     });
 
+    it('参考音频:ref 档 + 图 + audio_url → 上游带 audios', async () => {
+        const res = await submitVideo(
+            makeReq({
+                model: 'artsdance2.0-pro-720p-ref',
+                prompt: '让画中人跟着音乐节奏点头',
+                image: 'https://cdn/a.png',
+                audio_url: 'https://cdn/track.mp3',
+            }),
+        );
+        expect(res.status).toBe(200);
+        const b = submitBody();
+        expect((b.images as unknown[]).length).toBe(1);
+        expect(b.audios).toEqual(['https://cdn/track.mp3']);
+    });
+
+    it('音频但没图 → 400(音频需配 ≥1 图)', async () => {
+        const res = await submitVideo(
+            makeReq({ model: 'artsdance2.0-pro-720p-ref', prompt: 'x', audio_url: 'https://cdn/track.mp3' }),
+        );
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error: { message: string } }).error.message).toMatch(/audio requires/);
+    });
+
     it('duration 归一到 5/10;ratio 白名单外回落 16:9;generate_audio:false 关', async () => {
         await submitVideo(
             makeReq({
@@ -174,17 +197,14 @@ describe('seedance-cn adapter submit', () => {
 });
 
 describe('seedance-cn adapter poll', () => {
-    it('完成 → 成片转存 R2 + video_url 指向我们域名', async () => {
+    it('完成 → 直接返回火山原始直链(不转存 R2)', async () => {
         const res = await pollVideo(pollReq(), 'cgt-test-1');
         expect(res.status).toBe(200);
         const j = (await res.json()) as Record<string, unknown>;
         expect(j.status).toBe('completed');
-        expect(mockUploadImage).toHaveBeenCalledWith(
-            expect.stringMatching(/^seedance-cn-video\/cgt-test-1\./),
-            expect.anything(),
-            expect.stringContaining('video'),
-        );
-        expect(j.video_url).toMatch(/^https:\/\/images\.silkroadai\.io\/seedance-cn-video\//);
+        // 成片不落 R2:video_url = 上游火山直链原样
+        expect(mockUploadImage).not.toHaveBeenCalled();
+        expect(j.video_url).toBe(`${UP}/out/generated.mp4?auth_key=xyz`);
         expect(j.url).toBe(j.video_url);
     });
 });
