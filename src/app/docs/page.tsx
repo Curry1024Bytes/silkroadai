@@ -2990,7 +2990,7 @@ for _ in range(120):  # 最多约 10 分钟
                         ⚠️ 需先在「API 密钥」页创建一把{' '}
                         <strong className="text-navy">「seedance 国内企业级端口」档</strong> 的
                         key(创建密钥时在档次里选它)。 该 key 专用于下列{' '}
-                        <code className="font-mono text-xs">artsdance2.0-pro-*</code> 模型;调别的模型请用对应档 key。
+                        <code className="font-mono text-xs">seedance2.0-pro-*</code> 模型;调别的模型请用对应档 key。
                     </div>
 
                     <p className="m-0 mb-2 text-sm font-medium text-navy">模型与价格(按视频秒数)</p>
@@ -3013,44 +3013,44 @@ for _ in range(120):  # 最多约 10 分钟
                                 <tr className="border-b border-brand-border">
                                     <td className="px-4 py-3 text-ink align-top">720P</td>
                                     <td className="px-4 py-3 align-top">
-                                        <span className="font-mono text-xs text-navy">artsdance2.0-pro-720p</span>
+                                        <span className="font-mono text-xs text-navy">seedance2.0-pro-720p</span>
                                         <span className="text-navy font-medium"> · ¥0.396/秒</span>
                                     </td>
                                     <td className="px-4 py-3 align-top">
-                                        <span className="font-mono text-xs text-navy">artsdance2.0-pro-720p-ref</span>
+                                        <span className="font-mono text-xs text-navy">seedance2.0-pro-720p-ref</span>
                                         <span className="text-navy font-medium"> · ¥0.241/秒</span>
                                     </td>
                                 </tr>
                                 <tr className="border-b border-brand-border">
                                     <td className="px-4 py-3 text-ink align-top">1080P</td>
                                     <td className="px-4 py-3 align-top">
-                                        <span className="font-mono text-xs text-navy">artsdance2.0-pro-1080p</span>
+                                        <span className="font-mono text-xs text-navy">seedance2.0-pro-1080p</span>
                                         <span className="text-navy font-medium"> · ¥0.852/秒</span>
                                     </td>
                                     <td className="px-4 py-3 align-top">
-                                        <span className="font-mono text-xs text-navy">artsdance2.0-pro-1080p-ref</span>
+                                        <span className="font-mono text-xs text-navy">seedance2.0-pro-1080p-ref</span>
                                         <span className="text-navy font-medium"> · ¥0.518/秒</span>
                                     </td>
                                 </tr>
                                 <tr className="border-b border-brand-border">
                                     <td className="px-4 py-3 text-ink align-top">2K</td>
                                     <td className="px-4 py-3 align-top">
-                                        <span className="font-mono text-xs text-navy">artsdance2.0-pro-2k</span>
+                                        <span className="font-mono text-xs text-navy">seedance2.0-pro-2k</span>
                                         <span className="text-navy font-medium"> · ¥2.124/秒</span>
                                     </td>
                                     <td className="px-4 py-3 align-top">
-                                        <span className="font-mono text-xs text-navy">artsdance2.0-pro-2k-ref</span>
+                                        <span className="font-mono text-xs text-navy">seedance2.0-pro-2k-ref</span>
                                         <span className="text-navy font-medium"> · ¥1.291/秒</span>
                                     </td>
                                 </tr>
                                 <tr>
                                     <td className="px-4 py-3 text-ink align-top">4K</td>
                                     <td className="px-4 py-3 align-top">
-                                        <span className="font-mono text-xs text-navy">artsdance2.0-pro-4k</span>
+                                        <span className="font-mono text-xs text-navy">seedance2.0-pro-4k</span>
                                         <span className="text-navy font-medium"> · ¥2.124/秒</span>
                                     </td>
                                     <td className="px-4 py-3 align-top">
-                                        <span className="font-mono text-xs text-navy">artsdance2.0-pro-4k-ref</span>
+                                        <span className="font-mono text-xs text-navy">seedance2.0-pro-4k-ref</span>
                                         <span className="text-navy font-medium"> · ¥1.291/秒</span>
                                     </td>
                                 </tr>
@@ -3072,7 +3072,7 @@ for _ in range(120):  # 最多约 10 分钟
   -H "Authorization: Bearer 你的key" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "model": "artsdance2.0-pro-1080p",
+    "model": "seedance2.0-pro-1080p",
     "prompt": "一只穿红大衣的小猫在漫天大雪中好奇地伸爪抓雪花,写实电影质感",
     "aspect_ratio": "16:9",
     "duration": 5
@@ -3116,7 +3116,7 @@ for _ in range(120):  # 最多约 10 分钟
                                     <td className="px-4 py-2.5 font-mono text-xs text-navy">model</td>
                                     <td className="px-4 py-2.5 text-ink">必填</td>
                                     <td className="px-4 py-2.5 text-ink">
-                                        artsdance2.0-pro-{'{'}720p|1080p|2k|4k{'}'}(文生)或加{' '}
+                                        seedance2.0-pro-{'{'}720p|1080p|2k|4k{'}'}(文生)或加{' '}
                                         <code className="font-mono text-xs">-ref</code> 后缀(图生 / 参考)
                                     </td>
                                 </tr>
@@ -3188,7 +3188,7 @@ for _ in range(120):  # 最多约 10 分钟
                     <CodeBlock language="bash">
                         {`curl ${OPENAI_BASE}/video/generations \\
   -H "Authorization: Bearer 你的key" -H "Content-Type: application/json" \\
-  -d '{ "model": "artsdance2.0-pro-720p-ref", "prompt": "图中人物开始走路,镜头跟随推进",
+  -d '{ "model": "seedance2.0-pro-720p-ref", "prompt": "图中人物开始走路,镜头跟随推进",
         "duration": 5, "image_url": "https://你的图床/start.jpg" }'`}
                     </CodeBlock>
 
@@ -3196,7 +3196,7 @@ for _ in range(120):  # 最多约 10 分钟
                     <CodeBlock language="bash">
                         {`curl ${OPENAI_BASE}/video/generations \\
   -H "Authorization: Bearer 你的key" -H "Content-Type: application/json" \\
-  -d '{ "model": "artsdance2.0-pro-1080p-ref", "prompt": "从第一张画面平滑过渡到第二张",
+  -d '{ "model": "seedance2.0-pro-1080p-ref", "prompt": "从第一张画面平滑过渡到第二张",
         "duration": 5, "first_frame": "https://.../a.jpg", "last_frame": "https://.../b.jpg" }'`}
                     </CodeBlock>
 
@@ -3204,7 +3204,7 @@ for _ in range(120):  # 最多约 10 分钟
                     <CodeBlock language="bash">
                         {`curl ${OPENAI_BASE}/video/generations \\
   -H "Authorization: Bearer 你的key" -H "Content-Type: application/json" \\
-  -d '{ "model": "artsdance2.0-pro-720p-ref", "prompt": "参考人物外观,跟随音乐节奏起舞",
+  -d '{ "model": "seedance2.0-pro-720p-ref", "prompt": "参考人物外观,跟随音乐节奏起舞",
         "duration": 5,
         "images": ["https://.../face.jpg", "https://.../outfit.jpg"],
         "audio_url": "https://.../beat.mp3" }'`}

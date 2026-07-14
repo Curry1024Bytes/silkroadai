@@ -17,7 +17,7 @@ const RATIOS = ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9'];
 function detectSource(id: string): Source {
     if (/^dreamina-/i.test(id)) return 'overseas';
     if (/^seedance-2\.0-(720|1080)$/i.test(id)) return 'reverse';
-    if (/^artsdance/i.test(id)) return 'cn';
+    if (/^seedance2\.0-pro/i.test(id)) return 'cn';
     return 'normal';
 }
 function sourceLabel(s: Source): string {

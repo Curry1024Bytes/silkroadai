@@ -62,8 +62,8 @@ const RETAIL_CNY_PER_M = {
 const priceUsd = (mode, res) => +((RETAIL_CNY_PER_M[mode][res] * TOK_PER_SEC[res] * SAFETY) / 1e6 / FX).toFixed(6);
 const PRICES = {};
 for (const res of ['720p', '1080p', '2k', '4k']) {
-    PRICES[`artsdance2.0-pro-${res}`] = priceUsd('noref', res);
-    PRICES[`artsdance2.0-pro-${res}-ref`] = priceUsd('ref', res);
+    PRICES[`seedance2.0-pro-${res}`] = priceUsd('noref', res);
+    PRICES[`seedance2.0-pro-${res}-ref`] = priceUsd('ref', res);
 }
 const MODELS = Object.keys(PRICES).join(',');
 

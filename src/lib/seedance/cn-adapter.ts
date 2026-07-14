@@ -30,14 +30,14 @@ const MAX_REF_VIDEOS = 3;
 
 /** 客户/new-api 档位模型名 → { resolution, 是否参考档 }。8 个名 = 4 分辨率 × {无参考, -ref}。 */
 const MODEL_MAP: Record<string, { resolution: '720p' | '1080p' | '2k' | '4k'; ref: boolean }> = {
-    'artsdance2.0-pro-720p': { resolution: '720p', ref: false },
-    'artsdance2.0-pro-1080p': { resolution: '1080p', ref: false },
-    'artsdance2.0-pro-2k': { resolution: '2k', ref: false },
-    'artsdance2.0-pro-4k': { resolution: '4k', ref: false },
-    'artsdance2.0-pro-720p-ref': { resolution: '720p', ref: true },
-    'artsdance2.0-pro-1080p-ref': { resolution: '1080p', ref: true },
-    'artsdance2.0-pro-2k-ref': { resolution: '2k', ref: true },
-    'artsdance2.0-pro-4k-ref': { resolution: '4k', ref: true },
+    'seedance2.0-pro-720p': { resolution: '720p', ref: false },
+    'seedance2.0-pro-1080p': { resolution: '1080p', ref: false },
+    'seedance2.0-pro-2k': { resolution: '2k', ref: false },
+    'seedance2.0-pro-4k': { resolution: '4k', ref: false },
+    'seedance2.0-pro-720p-ref': { resolution: '720p', ref: true },
+    'seedance2.0-pro-1080p-ref': { resolution: '1080p', ref: true },
+    'seedance2.0-pro-2k-ref': { resolution: '2k', ref: true },
+    'seedance2.0-pro-4k-ref': { resolution: '4k', ref: true },
 };
 
 const ALLOWED_RATIOS = new Set(['16:9', '9:16', '4:3', '3:4', '1:1', '21:9']);
