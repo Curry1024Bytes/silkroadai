@@ -231,4 +231,36 @@ describe('seedance overseas adapter — 参考图 http URL 转存 R2', () => {
         expect(body.error.message).toContain('参考图');
         expect(body.error.message).not.toContain('[object Object]');
     });
+
+    it('CreateAsset 账号限流(AccountFlowLimitExceeded / 1033)→ 退避重试后成功', async () => {
+        let nPost = 0;
+        mockFetch.mockImplementation(async (url: string) => {
+            const u = String(url);
+            if (u.endsWith('/v1/sd/assets')) {
+                // POST create:第 1 次回账号流控 400,之后成功
+                nPost++;
+                if (nPost === 1)
+                    return new Response(
+                        JSON.stringify({
+                            success: false,
+                            message:
+                                'CreateAsset failed: status_code=1033 status_msg=system error, upstream CreateAsset failed: AccountFlowLimitExceeded',
+                        }),
+                        { status: 400, headers: { 'content-type': 'application/json' } },
+                    );
+                return json({ data: { Id: 'asset_ok' } });
+            }
+            if (/\/v1\/sd\/assets\/[^/]+$/.test(u)) return json({ data: { Status: 'Active' } });
+            if (u.endsWith('/v1/video/generate')) return json({ task: { id: 't' } });
+            return new Response(Buffer.from([0x00, 0x00, 0x00, 0x18]), {
+                status: 200,
+                headers: { 'content-type': 'image/jpeg' },
+            });
+        });
+        const res = await submitVideo(
+            makeReq({ model: 'dreamina-seedance-2-0-480p-ref', prompt: 'x', image: 'https://h/a.jpg' }),
+        );
+        expect(res.status).toBe(200); // 重试后成功
+        expect(nPost).toBeGreaterThanOrEqual(2); // 第 1 次限流、第 2 次成功
+    }, 15000);
 });

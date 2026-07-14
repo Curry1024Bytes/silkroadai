@@ -328,12 +328,27 @@ async function uploadAndReadyAsset(
  *  `/v1/asset-groups`+`/v1/assets` 建的去 hc generate 会报 `The specified asset ... is not found`(切 hc
  *  后客户 -ref 图生视频报错就是这个);反之 fast-260128 只认旧 API。故 submitVideo 按 map.svc 分流。 */
 async function uploadSdAsset(auth: string, httpUrl: string, assetType: 'Image' | 'Video' = 'Image'): Promise<string> {
-    const up = await fetchSvc('/v1/sd/assets', auth, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ URL: httpUrl, Name: 'ref', AssetType: assetType }),
-    });
-    const upText = await up.text();
+    // 上游 CreateAsset 有【账号级流控】,突发会回 400 `AccountFlowLimitExceeded`(status_code=1033)——
+    // 瞬时的,退避重试几次即恢复(2026-07-14 高频客户 user 465 报障)。非限流错不重试。
+    let up!: Response;
+    let upText = '';
+    for (let attempt = 0; attempt < 4; attempt++) {
+        up = await fetchSvc('/v1/sd/assets', auth, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ URL: httpUrl, Name: 'ref', AssetType: assetType }),
+        });
+        upText = await up.text();
+        if (up.ok) break;
+        const rateLimited = /AccountFlowLimitExceeded|FlowLimitExceeded|status_code=1033|too many|rate ?limit/i.test(
+            upText,
+        );
+        if (attempt < 3 && rateLimited) {
+            await new Promise((r) => setTimeout(r, 2500 * (attempt + 1))); // 2.5s / 5s / 7.5s
+            continue;
+        }
+        break;
+    }
     let upJson: { data?: { Id?: string } };
     try {
         upJson = JSON.parse(upText);
@@ -513,8 +528,12 @@ export async function submitVideo(req: NextRequest): Promise<NextResponse> {
                 content.push({ type: 'audio_url', audio_url: { url: audioUrl }, role: 'reference_audio' });
             }
         } catch (e) {
-            console.warn('[seedance-adapter] ref media prep failed', String(e));
-            return err(400, 'invalid_request', `reference media processing failed: ${String(e).slice(0, 160)}`);
+            const msg = String(e);
+            console.warn('[seedance-adapter] ref media prep failed', msg);
+            // 账号级流控重试仍失败 → 给客户可懂的「稍后重试」,不外抛上游原始 CreateAsset 错误
+            if (/AccountFlowLimitExceeded|FlowLimitExceeded|status_code=1033/i.test(msg))
+                return err(429, 'rate_limited', '参考图上传上游暂时繁忙(限流),请稍后重试');
+            return err(400, 'invalid_request', `reference media processing failed: ${msg.slice(0, 160)}`);
         }
     }
 
