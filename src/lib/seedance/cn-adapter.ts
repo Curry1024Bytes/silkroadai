@@ -10,10 +10,11 @@
  * VOD 域名,已隐藏 token.xinhankr 上游、只露 Volcengine=火山方舟)。⚠️ 火山直链是【签名 URL ~24h 过期】,
  * 客户须及时下载/转存(不像 R2 永久)。见 /docs 说明。
  *
- * 计费:走 new-api 原生「按秒 ModelPrice × duration × GroupRatio」,与本适配器无关
- * (与现有 seedance 档一致)。价目表的「分辨率档 × 有/无参考」两维通过【拆成 8 个模型名】
- * 承载,每个名一档 ModelPrice(见 scripts/setup-seedance-cn-enterprise.mjs)。适配器强制
- * 档位与实际输入一致(无参考档带图 → 400;参考档不带图/视频 → 400),防止客户挑便宜档串用。
+ * 计费:【按 token 量】—— 上游按 token 计价(usage.completion_tokens 权威),我们对客 = 实际 token ×
+ * 零售单价(官方价 × 0.85;上游给我们 0.75)。分辨率(720p/1080p/4k,共 6 个模型名 = 3×{无参考,-ref})
+ * 决定每-token 费率档;pollVideo 回传 usage 供 new-api ModelRatio 或适配器自扣计费(见按 token 计费方案)。
+ * ⚠️ 参考视频档(输入视频也计 token)成本高于无视频,不能按无视频档收 —— 待接入含视频费率档(off-peak)。
+ * 适配器强制档位与实际输入一致(无参考档带图 → 400;参考档不带图/视频 → 400),防止客户挑便宜档串用。
  *
  * ⚠️ 上游账户余额 < ¥5 会对【所有】请求回 403「账户余额不足5元」—— 保持上游充值。
  */
@@ -28,15 +29,14 @@ const UPSTREAM_MODEL = process.env.SEEDANCE_XHK_MODEL || 'artsdance2.0-pro-26070
 const MAX_REF_IMAGES = 9;
 const MAX_REF_VIDEOS = 3;
 
-/** 客户/new-api 档位模型名 → { resolution, 是否参考档 }。8 个名 = 4 分辨率 × {无参考, -ref}。 */
-const MODEL_MAP: Record<string, { resolution: '720p' | '1080p' | '2k' | '4k'; ref: boolean }> = {
+/** 客户/new-api 档位模型名 → { resolution, 是否参考档 }。6 个名 = 3 分辨率 × {无参考, -ref}。
+ *  2k 已下线(官方无 2k 档,2026-07-15 去掉)。 */
+const MODEL_MAP: Record<string, { resolution: '720p' | '1080p' | '4k'; ref: boolean }> = {
     'seedance2.0-pro-720p': { resolution: '720p', ref: false },
     'seedance2.0-pro-1080p': { resolution: '1080p', ref: false },
-    'seedance2.0-pro-2k': { resolution: '2k', ref: false },
     'seedance2.0-pro-4k': { resolution: '4k', ref: false },
     'seedance2.0-pro-720p-ref': { resolution: '720p', ref: true },
     'seedance2.0-pro-1080p-ref': { resolution: '1080p', ref: true },
-    'seedance2.0-pro-2k-ref': { resolution: '2k', ref: true },
     'seedance2.0-pro-4k-ref': { resolution: '4k', ref: true },
 };
 
@@ -348,9 +348,10 @@ export async function pollVideo(req: NextRequest, id: string): Promise<NextRespo
         status === 'failed'
             ? String((j.error as { message?: string } | undefined)?.message || j.message || 'generation failed')
             : '';
-    // 成片直接返回火山 volcvideo.com 原始直链(不转存 R2)—— operator 要「真实感」:
-    // 客户看到的是火山官方 VOD 域名(已隐藏 token.xinhankr 上游、只露 Volcengine=火山方舟,与品牌一致)。
-    // ⚠️ 火山直链是【签名 URL,~24h 过期】,客户须及时下载/转存;不像 R2 永久(见 /docs 说明)。
+    // 上游按 token 计费(usage.completion_tokens = 权威 token 数,= 火山公式 (输入+输出时长)×宽×高×帧率/1024;
+    // 参考视频档因输入视频时长也计入,token 更多)。回传给下游做【按 token 量计费】—— 见按 token 计费方案。
+    // ⚠️ 早期上游报的 token 数偏小一半(2026-07-15 修复),现以 usage 实报为准。
+    const usage = (j.usage ?? undefined) as Record<string, unknown> | undefined;
     return NextResponse.json(
         {
             id,
@@ -361,6 +362,8 @@ export async function pollVideo(req: NextRequest, id: string): Promise<NextRespo
             video_url: videoUrl ?? undefined,
             url: videoUrl ?? undefined,
             fail_reason: failReason || undefined,
+            // 完成时透传上游 usage(供 new-api ModelRatio 或适配器自扣按 token 计费)
+            usage: status === 'completed' ? usage : undefined,
         },
         { status: 200 },
     );

@@ -11,13 +11,13 @@
  *
  * 计费 = new-api 按 duration × ModelPrice × GroupRatio(=1)算,与适配器无关(与现有 seedance 一致)。
  *
- * === 定价推导(按秒承载「按 token」价目表)===
- * 上游按 token 计价、我们对客按秒。因视频 token ≈ 分辨率×时长(近确定),按秒可无损承载,
- * 且 8 个模型名同时承载「分辨率档 × 有/无参考」两维。ModelPrice(¥/秒) = 零售(¥/1M) × token/秒。
- *   零售 = 上游官方挂牌价 × 0.85(8.5 折);上游给我们是 0.75(7.5 折)→ 内含 ~13.3% 毛利,
- *   足以吸收 token/秒 抖动,故 SAFETY=1.0(对客即挂牌表价)。观察到毛利被压再调高。
- *   token/秒 实测(5s 文生,2026-07-14):720p=10128 / 1080p=21780 / 2k=49005 / 4k=49005
- *   (4k 输出 token 数与 2k 完全相同,上游价目表 2k/4k 亦同价 → 4k=2k)。
+ * === 定价推导(按 token 量)===
+ * 上游按 token 计价(usage.completion_tokens 权威)、我们对客也按 token。视频 token = 时长×宽×高×帧率/1024
+ * (线性于时长),故 new-api「按秒 ModelPrice」= 数学等价「按 token 量」:每秒价 = 每秒token × 单价。
+ * 锚点:720p 5s = 108872 token(上游修复 token bug 后实测,2026-07-15;旧值偏小一半)。token ∝ 像素。
+ *   零售 = 官方「无视频」挂牌 × 0.85(8.5 折);上游给我们 0.75 → ~13.3% 毛利。
+ *   6 个模型名 = 3 分辨率(720p/1080p/4k)× {无参考, -ref};2k 已下线(官方无此档)。
+ *   ⚠️ 参考视频「含视频」档更便宜、输入视频也计 token,不能按无视频档收 —— 待接入(off-peak)。
  *
  * 用法: SEEDANCE_XHK_KEY=sk-... node scripts/setup-seedance-cn-enterprise.mjs [--apply]
  *   需 :3000 隧道(ssh -fN -L 3000:localhost:3000 vps)。
@@ -50,20 +50,20 @@ const ADAPTER_BASE = process.env.SEEDANCE_CN_ADAPTER_BASE || 'http://172.21.0.1:
 const FX = 7; // prod:1 USD = ¥7(QPU=1e6)
 
 // 定价输入(改这里即可)。token/秒 实测;retail = 官方挂牌 × 0.85(¥/1M token)。
-const SAFETY = 1.0;
-// token/秒 实测(5s 文生,2026-07-14):4k 与 2k 输出 token 数完全相同(245025),
-// 上游价目表也把 2k/4k 同价 —— 故 4k = 2k(49005),两者 ¥/秒 完全一致。
-const TOK_PER_SEC = { '720p': 10128, '1080p': 21780, '2k': 49005, '4k': 49005 };
-const RETAIL_CNY_PER_M = {
-    noref: { '720p': 39.1, '1080p': 39.1, '2k': 43.35, '4k': 43.35 },
-    ref: { '720p': 23.8, '1080p': 23.8, '2k': 26.35, '4k': 26.35 },
-};
-// ModelPrice($/秒) = retail(¥/1M) × token/秒 / 1e6 × SAFETY / FX
-const priceUsd = (mode, res) => +((RETAIL_CNY_PER_M[mode][res] * TOK_PER_SEC[res] * SAFETY) / 1e6 / FX).toFixed(6);
+// 上游修复 token bug 后(2026-07-15),以 usage.completion_tokens 实报为准。锚点:720p 5s = 108872 token,
+// token ∝ 像素(火山公式 时长×宽×高×帧率/1024);retail = 官方「无视频」挂牌 × 0.85(¥/1M token)。
+// 当前所有档(含 -ref 图生/首尾帧/多图,都是「无视频输入」)按无视频档收;参考视频「含视频」档更便宜、
+// 且输入视频也计 token(成本更高)—— 待接入含视频费率档(见 cn-adapter 注释)。2k 已下线(官方无此档)。
+const TOK720_5S = 108872;
+const tps720 = TOK720_5S / 5;
+const PX = { '720p': 1280 * 720, '1080p': 1920 * 1080, '4k': 3840 * 2160 };
+const RETAIL_CNY_PER_M = { '720p': 46 * 0.85, '1080p': 51 * 0.85, '4k': 26 * 0.85 };
+// ModelPrice($/秒) = retail(¥/1M) × 每秒token / 1e6 / FX;每秒token = 720p锚点 × 像素比(= 按 token 量)
+const priceUsd = (res) => +((tps720 * (PX[res] / PX['720p']) * RETAIL_CNY_PER_M[res]) / 1e6 / FX).toFixed(6);
 const PRICES = {};
-for (const res of ['720p', '1080p', '2k', '4k']) {
-    PRICES[`seedance2.0-pro-${res}`] = priceUsd('noref', res);
-    PRICES[`seedance2.0-pro-${res}-ref`] = priceUsd('ref', res);
+for (const res of ['720p', '1080p', '4k']) {
+    PRICES[`seedance2.0-pro-${res}`] = priceUsd(res);
+    PRICES[`seedance2.0-pro-${res}-ref`] = priceUsd(res);
 }
 const MODELS = Object.keys(PRICES).join(',');
 
@@ -101,7 +101,7 @@ const parse = (raw) => {
 console.log(`=== setup-seedance-cn-enterprise [${APPLY ? 'APPLY' : 'DRY-RUN'}] ===`);
 console.log(`adapter base_url: ${ADAPTER_BASE}`);
 console.log(`group: ${GROUP} ("${LABEL}")\nmodels(8): ${MODELS}\n`);
-console.log('ModelPrice($/秒,含 SAFETY=' + SAFETY + '):');
+console.log('ModelPrice($/秒,= 按 token 量:每秒token × 无视频零售价):');
 for (const [m, p] of Object.entries(PRICES)) console.log(`  ${m.padEnd(30)} $${p}/秒  = ¥${(p * FX).toFixed(4)}/秒`);
 console.log('');
 

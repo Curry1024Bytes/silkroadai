@@ -33,7 +33,7 @@ beforeEach(() => {
                 id: 'cgt-test-1',
                 status: 'completed',
                 data: [{ url: `${UP}/out/generated.mp4?auth_key=xyz` }],
-                usage: { total_tokens: 50638 },
+                usage: { completion_tokens: 108872, total_tokens: 108872 },
             });
         }
         // 其余(客户图床 / 成片下载)→ 返回字节
@@ -109,12 +109,12 @@ describe('seedance-cn adapter submit', () => {
     it('参考档 data URL 图 → 转存 R2 + role=reference_image', async () => {
         const dataUrl = 'data:image/png;base64,aGVsbG8=';
         const res = await submitVideo(
-            makeReq({ model: 'seedance2.0-pro-2k-ref', prompt: '参考图生视频', image_url: dataUrl }),
+            makeReq({ model: 'seedance2.0-pro-4k-ref', prompt: '参考图生视频', image_url: dataUrl }),
         );
         expect(res.status).toBe(200);
         expect(mockUploadImage).toHaveBeenCalled();
         const b = submitBody();
-        expect(b.resolution).toBe('2k');
+        expect(b.resolution).toBe('4k');
         const images = b.images as Array<{ url: string; role: string }>;
         expect(images).toHaveLength(1);
         expect(images[0].role).toBe('reference_image');
@@ -206,5 +206,13 @@ describe('seedance-cn adapter poll', () => {
         expect(mockUploadImage).not.toHaveBeenCalled();
         expect(j.video_url).toBe(`${UP}/out/generated.mp4?auth_key=xyz`);
         expect(j.url).toBe(j.video_url);
+        // 完成时透传上游 usage(供按 token 量计费)
+        expect(j.usage).toEqual({ completion_tokens: 108872, total_tokens: 108872 });
+    });
+
+    it('未知/已下线模型(2k)→ 400 model_not_found', async () => {
+        const res = await submitVideo(makeReq({ model: 'seedance2.0-pro-2k', prompt: 'x' }));
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error: { code: string } }).error.code).toBe('model_not_found');
     });
 });
