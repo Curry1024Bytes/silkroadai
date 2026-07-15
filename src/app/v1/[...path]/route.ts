@@ -76,6 +76,12 @@ import {
     translateAnthropicSseToOpenAi,
 } from './claude-chat-cache';
 import { withKeepalive } from './keepalive';
+import {
+    isSeedanceCnModel,
+    isSeedanceCnTask,
+    handleSeedanceVideoSubmit,
+    handleSeedanceVideoPoll,
+} from '@/lib/seedance/cn-proxy';
 import { guardSseResponse, guardSseStream, type SseErrorShape } from '@/lib/sse/stream-guard';
 import { forwardHeaders, passthroughResponse, STRIP_RESPONSE_HEADERS } from '@/lib/proxy/forward';
 import { stripAdobeImageMetadataB64 } from '@/lib/proxy/image-metadata';
@@ -2369,8 +2375,28 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
         return handleAsyncImageQuery(req, path);
     }
 
-    // 视频轮询完成后:按客户自定义 OSS 转存(详见 handleVideoPoll)
+    // seedance-cn 视频【提交】:端到端自扣(绕 new-api:门控 + 记录归属 + 轮询按真 usage 扣)。
+    // 非 seedance-cn 的视频提交原样透传 new-api(现有 seedance 逆向/海外档等)。
+    if (req.method === 'POST' && (path === '/video/generations' || path === '/videos')) {
+        let vbody: JsonRecord;
+        try {
+            vbody = (await req.json()) as JsonRecord;
+        } catch {
+            return NextResponse.json(
+                { error: { message: 'invalid JSON body', type: 'invalid_request_error' } },
+                { status: 400 },
+            );
+        }
+        if (isSeedanceCnModel(String(vbody.model ?? ''))) {
+            return handleSeedanceVideoSubmit(req, vbody);
+        }
+        return forwardToNewApi(req, vbody, path, search, cap);
+    }
+
+    // 视频轮询:seedance-cn 任务(我们记录过的)走端到端自扣轮询 + 扣费;其余走 new-api + 客户 OSS 转存。
     if (req.method === 'GET' && /^\/video\/generations\/[^/]+$/.test(path)) {
+        const taskId = path.slice(path.lastIndexOf('/') + 1);
+        if (await isSeedanceCnTask(taskId)) return handleSeedanceVideoPoll(req, taskId);
         return handleVideoPoll(req, path, search);
     }
 

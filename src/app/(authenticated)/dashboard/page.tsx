@@ -27,7 +27,7 @@ import { NextRequest } from 'next/server';
 import { getCurrentUser } from '@/lib/auth/session';
 import { prisma } from '@/lib/db';
 import { getCustomerBalance, type CustomerBalance } from '@/lib/billing/customer-balance';
-import { getUsageAggregate, type UsageAggregateSnapshot } from '@/lib/newapi/usage-aggregate';
+import { getUsageAggregate, unionSeedanceUsage, type UsageAggregateSnapshot } from '@/lib/newapi/usage-aggregate';
 import { queryLogs, quotaToCny, type NewApiUsageLog } from '@/lib/newapi/client';
 import { USD_TO_CNY_RATE } from '@/lib/newapi/quota-units';
 import { Button } from '@/components/ui/Button';
@@ -186,7 +186,8 @@ export default async function DashboardPage({
         ]);
 
         if (aggSettled.status === 'fulfilled') {
-            agg = aggSettled.value;
+            // seedance-cn 视频绕过 new-api、不进其日志,这里补进聚合让它在 dashboard 可见。
+            agg = await unionSeedanceUsage(aggSettled.value, user.id, period);
         } else {
             usageErr = 'fetch_failed';
             console.warn(`[dashboard] getUsageAggregate failed for user ${user.id}:`, aggSettled.reason);

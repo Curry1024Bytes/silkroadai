@@ -62,6 +62,8 @@ vi.mock('@/lib/db', () => ({
             update: (...a: unknown[]) => mockImageTaskUpdate(...a),
             findUnique: (...a: unknown[]) => mockImageTaskFindUnique(...a),
         },
+        // seedance-cn 视频任务表:默认返 null → isSeedanceCnTask=false → 视频轮询走 new-api 原路径。
+        seedanceVideoTask: { findUnique: async () => null },
     },
 }));
 const mockGetCustomerBalance = vi.fn();

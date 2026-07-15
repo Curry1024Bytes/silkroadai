@@ -31,7 +31,7 @@ const MAX_REF_VIDEOS = 3;
 
 /** 客户/new-api 档位模型名 → { resolution, 是否参考档 }。6 个名 = 3 分辨率 × {无参考, -ref}。
  *  2k 已下线(官方无 2k 档,2026-07-15 去掉)。 */
-const MODEL_MAP: Record<string, { resolution: '720p' | '1080p' | '4k'; ref: boolean }> = {
+export const MODEL_MAP: Record<string, { resolution: '720p' | '1080p' | '4k'; ref: boolean }> = {
     'seedance2.0-pro-720p': { resolution: '720p', ref: false },
     'seedance2.0-pro-1080p': { resolution: '1080p', ref: false },
     'seedance2.0-pro-4k': { resolution: '4k', ref: false },
@@ -111,7 +111,7 @@ function extractImageUrls(body: Record<string, unknown>): string[] {
 }
 
 /** 入参视频 URL(reference_video / reference_videos / videos + content[].video_url)。 */
-function extractVideoUrls(body: Record<string, unknown>): string[] {
+export function extractVideoUrls(body: Record<string, unknown>): string[] {
     const urls: string[] = [];
     pushUrl(urls, body.reference_video);
     if (Array.isArray(body.reference_videos)) for (const v of body.reference_videos) pushUrl(urls, v);
