@@ -31,8 +31,8 @@ function groupModels(models: string[]): { source: Source; ids: string[] }[] {
         .map((s) => ({ source: s, ids: by[s] }));
 }
 
-// 按模型来源 + 玩法拼请求体(海外满血 / 逆向 / 普通 三套字段约定不同)。
-function buildBody(
+// 按模型来源 + 玩法拼请求体(海外满血 / 逆向 / 国内企业级 / 普通 四套字段约定不同)。
+export function buildBody(
     model: string,
     mode: Mode,
     prompt: string,
@@ -124,6 +124,7 @@ export function SeedanceTool() {
     const [images, setImages] = useState<string[]>([]);
     const [audio, setAudio] = useState('');
     const [bodyJson, setBodyJson] = useState('');
+    const [manualEdit, setManualEdit] = useState(false); // 用户手改过请求 JSON → 提交用文本框而非表单重建
     const [status, setStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
     const [progress, setProgress] = useState('');
     const [videoUrl, setVideoUrl] = useState('');
@@ -133,10 +134,11 @@ export function SeedanceTool() {
     const grouped = useMemo(() => groupModels(models), [models]);
     const src = model ? detectSource(model) : null;
 
-    // 表单变化 → 自动重建请求 JSON(手改 JSON 后,改任意表单项会覆盖)
+    // 表单变化 → 自动重建请求 JSON + 退出"手改"模式(改任意表单项会覆盖手改内容)
     useEffect(() => {
         if (!model) return;
         setBodyJson(JSON.stringify(buildBody(model, mode, prompt, seconds, ratio, images, audio), null, 2));
+        setManualEdit(false);
     }, [model, mode, prompt, seconds, ratio, images, audio]);
 
     const loadModels = useCallback(async () => {
@@ -189,13 +191,41 @@ export function SeedanceTool() {
         setRaw('');
         setStatus('running');
         setProgress('提交中…');
-        let body: unknown;
-        try {
-            body = JSON.parse(bodyJson);
-        } catch {
-            setErr('请求 JSON 格式错误');
-            setStatus('error');
-            return;
+        // 未手改 JSON 时,提交用【实时表单状态】重建 —— 避免"上传图后 JSON 文本框还没同步"的竞态
+        // (老实现只读文本框,上传与文本框刷新之间点生成就会漏掉图)。手改过 JSON 才用文本框内容。
+        let body: Record<string, unknown>;
+        if (manualEdit) {
+            try {
+                body = JSON.parse(bodyJson) as Record<string, unknown>;
+            } catch {
+                setErr('请求 JSON 格式错误');
+                setStatus('error');
+                return;
+            }
+        } else {
+            body = buildBody(model, mode, prompt, seconds, ratio, images, audio);
+        }
+        // 需要参考媒体的玩法:body 里必须真有媒体,防"选了文件但没进请求"(比如切档把已选图清空了)
+        if (mode !== 'text') {
+            const mediaKeys = [
+                'image',
+                'image_url',
+                'images',
+                'reference_image_urls',
+                'first_frame',
+                'last_frame',
+                'audio_url',
+                'reference_videos',
+            ];
+            const hasMedia = mediaKeys.some((k) => {
+                const v = body[k];
+                return typeof v === 'string' ? !!v : Array.isArray(v) ? v.length > 0 : false;
+            });
+            if (!hasMedia) {
+                setErr('这个玩法需要参考素材 —— 请在上方重新选择参考图 / 首尾帧 / 音频后再生成');
+                setStatus('error');
+                return;
+            }
         }
         const headers = { Authorization: `Bearer ${key.trim()}`, 'Content-Type': 'application/json' };
         let taskId = '';
@@ -242,7 +272,7 @@ export function SeedanceTool() {
         }
         setErr('超时(>15 分钟未出片),请稍后用 task_id 再查或重试');
         setStatus('error');
-    }, [bodyJson, key]);
+    }, [manualEdit, bodyJson, key, model, mode, prompt, seconds, ratio, images, audio]);
 
     const needImages = mode !== 'text';
     const imgCount = mode === 'frames' ? 2 : mode === 'multi' ? 9 : 1;
@@ -301,7 +331,8 @@ export function SeedanceTool() {
                         </select>
                         {src && (
                             <p className="m-0 mt-1 text-xs text-minor-ink">
-                                档位:{sourceLabel(src)} · 时长字段 {src === 'normal' ? 'duration' : 'seconds'}
+                                档位:{sourceLabel(src)} · 时长字段{' '}
+                                {src === 'normal' || src === 'cn' ? 'duration' : 'seconds'}
                                 {src === 'reverse' ? '(建议 10/15)' : ''}
                             </p>
                         )}
@@ -315,6 +346,7 @@ export function SeedanceTool() {
                                 <button
                                     key={m.key}
                                     onClick={() => {
+                                        if (m.key === mode) return; // 再点当前玩法不清空已选素材
                                         setMode(m.key);
                                         setImages([]);
                                     }}
@@ -426,7 +458,10 @@ export function SeedanceTool() {
                         </label>
                         <textarea
                             value={bodyJson}
-                            onChange={(e) => setBodyJson(e.target.value)}
+                            onChange={(e) => {
+                                setBodyJson(e.target.value);
+                                setManualEdit(true);
+                            }}
                             rows={10}
                             className="w-full rounded border border-brand-border bg-paper px-3 py-2 text-xs font-mono"
                             spellCheck={false}
