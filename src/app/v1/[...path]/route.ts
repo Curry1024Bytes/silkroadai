@@ -148,6 +148,11 @@ const GEMINI_IMAGE_MODELS: Record<string, '1K' | '2K' | '4K'> = {
     // 折扣 SKU:= pro 锁 2K(size 参数对它无效),new-api 单独计 ¥0.30(4K 原名仍 ¥0.50)。
     // model_mapping(ch#24/#17)把它翻回 gemini-3-pro-image-preview 给上游。见 configure-pro-2k-sku.mjs。
     'gemini-3-pro-image-preview-2k': '2K',
+    // ch96(adobe 逆向 we-token.cc)上新的两款,客户走 /v1/images/edits。不在此表时 → passthrough →
+    // new-api 把 images/edits 当 Imagen 形态请求发上游 → 上游报 "only imagen models supported" 500。
+    // 加进来后 proxy 翻译到 native generateContent(输入图转 inlineData + 注入 imageSize)→ 上游正常出图 + 落图床。
+    'gemini-3.1-flash-image-adobe': '2K',
+    'gemini-3-pro-image-adobe': '4K',
 };
 
 /** 仅这些模型允许客户用 `size` 选 imageSize(其余按 GEMINI_IMAGE_MODELS 固定档,size 被忽略)。
@@ -227,6 +232,9 @@ const GEMINI_ASPECT_RATIOS: Record<string, ReadonlySet<string>> = {
 };
 // 折扣 SKU 与 pro 同源 → 复用 pro 档的 aspect_ratio 白名单(否则 allowed.has 会在 undefined 上抛)
 GEMINI_ASPECT_RATIOS['gemini-3-pro-image-preview-2k'] = GEMINI_ASPECT_RATIOS['gemini-3-pro-image-preview'];
+// ch96 adobe 逆向两款与 flash/pro 同底模 → 复用对应档白名单。
+GEMINI_ASPECT_RATIOS['gemini-3.1-flash-image-adobe'] = GEMINI_ASPECT_RATIOS['gemini-3.1-flash-image-preview'];
+GEMINI_ASPECT_RATIOS['gemini-3-pro-image-adobe'] = GEMINI_ASPECT_RATIOS['gemini-3-pro-image-preview'];
 
 const CLAUDE_MAX_TOKENS_CAP = 4096;
 
