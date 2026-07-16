@@ -117,7 +117,7 @@ const AGENTS: AgentSection[] = [
     {
         id: 'seedance-cn',
         label: 'Seedance 国内企业级 · 火山方舟',
-        blurb: '火山方舟 doubao-seedance 国内企业级端口 — 文生 / 图生 / 首尾帧 / 多图参考 / 参考视频 / 参考音频;720P·1080P·2K·4K,成片返火山官方直链,需「seedance 国内企业级端口」档 key。',
+        blurb: '火山方舟 doubao-seedance 国内企业级端口 — 文生 / 图生 / 首尾帧 / 多图参考 / 参考视频 / 参考音频;720P·1080P·4K,按 token 计费,成片返火山官方直链,需「seedance 国内企业级端口」档 key。',
     },
     {
         id: 'api-models-catalog',
@@ -2978,7 +2978,7 @@ for _ in range(120):  # 最多约 10 分钟
                     <p className="m-0 mb-3 text-sm text-ink leading-relaxed">
                         火山方舟(Volcengine Ark)<strong className="text-navy">doubao-seedance</strong> 国内企业级端口 ——
                         文生 / 图生 / 首帧·首尾帧 / 多图参考 / 参考视频 / 参考音频,
-                        <strong className="text-navy">720P · 1080P · 2K · 4K</strong> 全档。
+                        <strong className="text-navy">720P · 1080P · 4K</strong> 全档。
                         <strong className="text-navy">异步</strong>:提交拿{' '}
                         <code className="font-mono text-xs">task_id</code>,轮询到{' '}
                         <code className="font-mono text-xs">completed</code> 取视频。走{' '}
@@ -2993,7 +2993,7 @@ for _ in range(120):  # 最多约 10 分钟
                         <code className="font-mono text-xs">seedance2.0-pro-*</code> 模型;调别的模型请用对应档 key。
                     </div>
 
-                    <p className="m-0 mb-2 text-sm font-medium text-navy">模型与价格(按视频秒数)</p>
+                    <p className="m-0 mb-2 text-sm font-medium text-navy">模型与价格(按 token 计费)</p>
                     <div className="rounded-lg overflow-hidden border border-brand-border bg-surface mb-2">
                         <table className="w-full border-collapse text-sm">
                             <thead>
@@ -3002,68 +3002,48 @@ for _ in range(120):  # 最多约 10 分钟
                                         分辨率
                                     </th>
                                     <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
-                                        文生 / 无参考(模型 · ¥每秒)
+                                        无视频输入(文生 / 图生 / 首尾帧 / 多图)· 元/1M token
                                     </th>
                                     <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
-                                        图生 / 有参考(模型 · ¥每秒)
+                                        含视频输入(参考视频)· 元/1M token
                                     </th>
                                 </tr>
                             </thead>
                             <tbody>
                                 <tr className="border-b border-brand-border">
                                     <td className="px-4 py-3 text-ink align-top">720P</td>
-                                    <td className="px-4 py-3 align-top">
-                                        <span className="font-mono text-xs text-navy">seedance2.0-pro-720p</span>
-                                        <span className="text-navy font-medium"> · ¥0.396/秒</span>
-                                    </td>
-                                    <td className="px-4 py-3 align-top">
-                                        <span className="font-mono text-xs text-navy">seedance2.0-pro-720p-ref</span>
-                                        <span className="text-navy font-medium"> · ¥0.241/秒</span>
-                                    </td>
+                                    <td className="px-4 py-3 text-navy font-medium align-top">¥39.1</td>
+                                    <td className="px-4 py-3 text-navy font-medium align-top">¥23.8</td>
                                 </tr>
                                 <tr className="border-b border-brand-border">
                                     <td className="px-4 py-3 text-ink align-top">1080P</td>
-                                    <td className="px-4 py-3 align-top">
-                                        <span className="font-mono text-xs text-navy">seedance2.0-pro-1080p</span>
-                                        <span className="text-navy font-medium"> · ¥0.852/秒</span>
-                                    </td>
-                                    <td className="px-4 py-3 align-top">
-                                        <span className="font-mono text-xs text-navy">seedance2.0-pro-1080p-ref</span>
-                                        <span className="text-navy font-medium"> · ¥0.518/秒</span>
-                                    </td>
-                                </tr>
-                                <tr className="border-b border-brand-border">
-                                    <td className="px-4 py-3 text-ink align-top">2K</td>
-                                    <td className="px-4 py-3 align-top">
-                                        <span className="font-mono text-xs text-navy">seedance2.0-pro-2k</span>
-                                        <span className="text-navy font-medium"> · ¥2.124/秒</span>
-                                    </td>
-                                    <td className="px-4 py-3 align-top">
-                                        <span className="font-mono text-xs text-navy">seedance2.0-pro-2k-ref</span>
-                                        <span className="text-navy font-medium"> · ¥1.291/秒</span>
-                                    </td>
+                                    <td className="px-4 py-3 text-navy font-medium align-top">¥43.35</td>
+                                    <td className="px-4 py-3 text-navy font-medium align-top">¥26.35</td>
                                 </tr>
                                 <tr>
                                     <td className="px-4 py-3 text-ink align-top">4K</td>
-                                    <td className="px-4 py-3 align-top">
-                                        <span className="font-mono text-xs text-navy">seedance2.0-pro-4k</span>
-                                        <span className="text-navy font-medium"> · ¥2.124/秒</span>
-                                    </td>
-                                    <td className="px-4 py-3 align-top">
-                                        <span className="font-mono text-xs text-navy">seedance2.0-pro-4k-ref</span>
-                                        <span className="text-navy font-medium"> · ¥1.291/秒</span>
-                                    </td>
+                                    <td className="px-4 py-3 text-navy font-medium align-top">¥22.1</td>
+                                    <td className="px-4 py-3 text-navy font-medium align-top">¥13.6</td>
                                 </tr>
                             </tbody>
                         </table>
                     </div>
                     <p className="m-0 mb-5 text-xs text-minor-ink">
-                        按视频秒数计费,<code className="font-mono text-xs">duration</code> 控制时长,支持{' '}
-                        <code className="font-mono text-xs">5</code> / <code className="font-mono text-xs">10</code>
-                        (秒)。 分辨率与「是否带参考图」由<strong className="text-navy">模型名</strong>决定 —— 纯文生用无{' '}
-                        <code className="font-mono text-xs">-ref</code> 名,带参考图 / 视频 / 音频用{' '}
-                        <code className="font-mono text-xs">-ref</code> 名(带错档位会 400)。示例:720P 文生 10 秒 ≈
-                        ¥3.96, 1080P 图生 5 秒 ≈ ¥2.59。
+                        <strong className="text-navy">按实际 token 计费</strong>(以响应{' '}
+                        <code className="font-mono text-xs">usage.completion_tokens</code> 为准,仅对成功出片扣费)。视频
+                        token ≈ 分辨率 × 时长 —— 分辨率越高 / 视频越长,token 越多。示例:720P 5 秒 ≈ 10.9 万 token ≈{' '}
+                        <strong className="text-navy">¥4.26</strong>。模型 6 档:{' '}
+                        <code className="font-mono text-xs">
+                            seedance2.0-pro-{'{'}720p|1080p|4k{'}'}
+                        </code>
+                        (文生)+ 加 <code className="font-mono text-xs">-ref</code>(图生 / 首尾帧 / 多图 / 参考视频)。
+                        <strong className="text-navy">
+                            含视频输入(参考视频)每 1M token 更便宜,但输入视频时长也计入 token
+                        </strong>
+                        ,故整体成本更高。
+                        <code className="font-mono text-xs">duration</code> 支持{' '}
+                        <code className="font-mono text-xs">5</code> / <code className="font-mono text-xs">10</code>{' '}
+                        秒。
                     </p>
 
                     <p className="m-0 mb-2 text-sm font-medium text-navy">1) 提交任务(文生视频)</p>
@@ -3116,8 +3096,9 @@ for _ in range(120):  # 最多约 10 分钟
                                     <td className="px-4 py-2.5 font-mono text-xs text-navy">model</td>
                                     <td className="px-4 py-2.5 text-ink">必填</td>
                                     <td className="px-4 py-2.5 text-ink">
-                                        seedance2.0-pro-{'{'}720p|1080p|2k|4k{'}'}(文生)或加{' '}
-                                        <code className="font-mono text-xs">-ref</code> 后缀(图生 / 参考)
+                                        seedance2.0-pro-{'{'}720p|1080p|4k{'}'}(文生)或加{' '}
+                                        <code className="font-mono text-xs">-ref</code> 后缀(图生 / 首尾帧 / 多图 /
+                                        参考视频)
                                     </td>
                                 </tr>
                                 <tr className="border-b border-brand-border">
