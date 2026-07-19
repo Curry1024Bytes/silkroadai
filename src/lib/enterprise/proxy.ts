@@ -175,14 +175,16 @@ async function handleSubmit(req: NextRequest): Promise<NextResponse> {
     const res = await submitVideoWithKey({ ...body, model: adapterModel }, `Bearer ${cust.upstreamKey}`);
     const text = await res.text();
     if (!res.ok) return new NextResponse(text, { status: res.status, headers: { 'Content-Type': 'application/json' } });
-    let j: { id?: string; task_id?: string } | null;
+    let j: { id?: string; task_id?: string; model?: string } | null;
     try {
-        j = JSON.parse(text) as { id?: string; task_id?: string };
+        j = JSON.parse(text) as { id?: string; task_id?: string; model?: string };
     } catch {
         j = null;
     }
     const taskId = j?.task_id || j?.id;
     if (!taskId) return errJson(502, 'upstream_error', 'no task_id from upstream');
+    // 响应 model 回显客户调用的名字(短名路径下适配器回显的是内部长名)
+    if (j && j.model && j.model !== model) j.model = model;
 
     try {
         await prisma.seedanceVideoTask.create({
@@ -203,7 +205,9 @@ async function handleSubmit(req: NextRequest): Promise<NextResponse> {
         console.error('[enterprise-proxy] task record failed, rejecting submit', e);
         return errJson(503, 'temporarily_unavailable', 'billing record failed, please retry');
     }
-    return new NextResponse(text, { status: 200, headers: { 'Content-Type': 'application/json' } });
+    return j
+        ? NextResponse.json(j)
+        : new NextResponse(text, { status: 200, headers: { 'Content-Type': 'application/json' } });
 }
 
 /** 轮询:归属 + tier 双门(IDOR)→ 直调适配器核心 → 完成写 tokens + 幂等扣费 → 透传响应。 */

@@ -205,7 +205,10 @@ describe('归一短名(2026-07-20)', () => {
         submitVideoWithKey.mockResolvedValue(NextResponse.json({ id: 'cgt-u1', task_id: 'cgt-u1', status: 'queued' }));
     });
 
-    it('seedance-2-0 默认 720p 文生:适配器收长名,任务行存短名', async () => {
+    it('seedance-2-0 默认 720p 文生:适配器收长名,任务行与响应回显短名', async () => {
+        submitVideoWithKey.mockResolvedValue(
+            NextResponse.json({ id: 'cgt-u1', task_id: 'cgt-u1', model: 'seedance2.0-pro-720p', status: 'queued' }),
+        );
         const res = await handleEnterpriseV1(
             req('POST', '/v1/video/generations', { model: 'seedance-2-0', prompt: '一只猫' }),
             '/video/generations',
@@ -218,6 +221,7 @@ describe('归一短名(2026-07-20)', () => {
         expect(db.seedanceVideoTask.create).toHaveBeenCalledWith({
             data: expect.objectContaining({ model: 'seedance-2-0', resolution: '720p' }),
         });
+        expect(((await res.json()) as { model: string }).model).toBe('seedance-2-0');
     });
 
     it('resolution 参数选档 + 带参考图自动加 -ref:mini@1080p+images → seedance2.0-mini-1080p-ref', async () => {
