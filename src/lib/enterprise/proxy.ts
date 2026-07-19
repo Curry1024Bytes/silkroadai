@@ -91,7 +91,7 @@ async function handleSubmit(req: NextRequest): Promise<NextResponse> {
             select: { balance_cny: true },
         });
         const balance = account ? Number(account.balance_cny) : 0;
-        const est = await estimateEnterpriseCostCny(cust.userId, map.resolution, duration, hasVideo);
+        const est = await estimateEnterpriseCostCny(cust.userId, map.resolution, duration, hasVideo, map.variant);
         if (balance < est) {
             return errJson(
                 402,

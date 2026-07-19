@@ -72,12 +72,15 @@ describe('isEnterpriseFlavor', () => {
 });
 
 describe('分发白名单', () => {
-    it('GET /models → 6 档模型', async () => {
+    it('GET /models → 14 档模型(pro 6 + fast 4 + mini 4)', async () => {
         const res = await handleEnterpriseV1(req('GET', '/v1/models'), '/models');
         const j = (await res.json()) as { data: Array<{ id: string }> };
         expect(res.status).toBe(200);
-        expect(j.data.map((m) => m.id)).toContain('seedance2.0-pro-720p');
-        expect(j.data).toHaveLength(6);
+        const ids = j.data.map((m) => m.id);
+        expect(ids).toContain('seedance2.0-pro-720p');
+        expect(ids).toContain('seedance2.0-fast-1080p');
+        expect(ids).toContain('seedance2.0-mini-720p-ref');
+        expect(j.data).toHaveLength(14);
     });
 
     it('白名单外路径(/chat/completions 等)→ 404', async () => {

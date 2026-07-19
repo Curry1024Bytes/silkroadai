@@ -17,17 +17,38 @@ import { getUser, addQuota } from '@/lib/newapi/client';
 import { cnyToQuota } from '@/lib/newapi/quota-units';
 
 export type Resolution = '720p' | '1080p' | '4k';
+export type { SeedanceVariant } from './cn-adapter';
+import { variantForModel, type SeedanceVariant } from './cn-adapter';
 
-/** 零售单价(元/1M token):[分辨率][是否含视频输入]。 */
-const RETAIL_CNY_PER_M: Record<Resolution, { noVideo: number; withVideo: number }> = {
-    '720p': { noVideo: 46 * 0.85, withVideo: 28 * 0.85 }, // 39.1 / 23.8
-    '1080p': { noVideo: 51 * 0.85, withVideo: 31 * 0.85 }, // 43.35 / 26.35
-    '4k': { noVideo: 26 * 0.85, withVideo: 16 * 0.85 }, // 22.1 / 13.6
+/** 零售单价(元/1M token):[变体][分辨率][是否含视频输入]。挂牌 × 0.85(上游给我们 0.75)。
+ *  2026-07-19 加 fast/mini(上游仅 720p/1080p 两档):fast 挂牌 37/22、mini 挂牌 23/14。 */
+const RETAIL_CNY_PER_M: Record<SeedanceVariant, Partial<Record<Resolution, { noVideo: number; withVideo: number }>>> = {
+    pro: {
+        '720p': { noVideo: 46 * 0.85, withVideo: 28 * 0.85 }, // 39.1 / 23.8
+        '1080p': { noVideo: 51 * 0.85, withVideo: 31 * 0.85 }, // 43.35 / 26.35
+        '4k': { noVideo: 26 * 0.85, withVideo: 16 * 0.85 }, // 22.1 / 13.6
+    },
+    fast: {
+        '720p': { noVideo: 37 * 0.85, withVideo: 22 * 0.85 }, // 31.45 / 18.7
+        '1080p': { noVideo: 37 * 0.85, withVideo: 22 * 0.85 }, // 31.45 / 18.7
+    },
+    mini: {
+        '720p': { noVideo: 23 * 0.85, withVideo: 14 * 0.85 }, // 19.55 / 11.9
+        '1080p': { noVideo: 23 * 0.85, withVideo: 14 * 0.85 }, // 19.55 / 11.9
+    },
 };
 
-/** 对客 ¥ = 实际 token / 1e6 × 费率(分辨率 × 是否含视频)。 */
-export function computeCostCny(tokens: number | bigint, resolution: Resolution, hasVideo: boolean): number {
-    const rate = RETAIL_CNY_PER_M[resolution][hasVideo ? 'withVideo' : 'noVideo'];
+/** 对客 ¥ = 实际 token / 1e6 × 费率(变体 × 分辨率 × 是否含视频)。
+ *  variant 缺省 pro(兼容存量调用/历史任务行);该变体没有的分辨率档回落 pro 档(防漏收)。 */
+export function computeCostCny(
+    tokens: number | bigint,
+    resolution: Resolution,
+    hasVideo: boolean,
+    variant: SeedanceVariant = 'pro',
+): number {
+    const rate = (RETAIL_CNY_PER_M[variant][resolution] ?? RETAIL_CNY_PER_M.pro[resolution]!)[
+        hasVideo ? 'withVideo' : 'noVideo'
+    ];
     const t = typeof tokens === 'bigint' ? Number(tokens) : tokens;
     return +((t / 1e6) * rate).toFixed(6);
 }
@@ -42,8 +63,13 @@ export function estimateTokens(resolution: Resolution, duration: number): number
 }
 
 /** 提交前的成本预估(用于余额门)。参考视频还会加输入视频 token,故预估偏低 —— 加 1.5× 缓冲。 */
-export function estimateCostCny(resolution: Resolution, duration: number, hasVideo: boolean): number {
-    const base = computeCostCny(estimateTokens(resolution, duration), resolution, hasVideo);
+export function estimateCostCny(
+    resolution: Resolution,
+    duration: number,
+    hasVideo: boolean,
+    variant: SeedanceVariant = 'pro',
+): number {
+    const base = computeCostCny(estimateTokens(resolution, duration), resolution, hasVideo, variant);
     return hasVideo ? +(base * 1.5).toFixed(6) : base;
 }
 
@@ -67,7 +93,12 @@ export async function chargeSeedanceVideoTask(taskId: string): Promise<ChargeRes
     if (task.billed) return { outcome: 'already_billed' };
     if (task.tokens == null || Number(task.tokens) <= 0) return { outcome: 'skipped' };
 
-    const costCny = computeCostCny(task.tokens, task.resolution as Resolution, task.has_video);
+    const costCny = computeCostCny(
+        task.tokens,
+        task.resolution as Resolution,
+        task.has_video,
+        variantForModel(task.model),
+    );
 
     // 1) 原子抢占:并发轮询只有一个 count=1
     const claim = await prisma.seedanceVideoTask.updateMany({

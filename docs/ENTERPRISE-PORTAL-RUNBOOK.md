@@ -94,18 +94,18 @@ curl -s -X POST http://127.0.0.1:3003/api/admin/enterprise/credit \
 默认费率 = 挂牌(见 §5 表)。谈了特殊价,按【客户 × 分辨率 × 是否含视频输入】覆盖:
 
 ```bash
-# 例:给某客户 720p 无视频档改成 ¥35/1M token
+# 例:给某客户 pro 720p 无视频档改成 ¥35/1M token(variant 可省略,默认 pro)
 curl -s -X POST http://127.0.0.1:3003/api/admin/enterprise/rate-override \
   -H "x-admin-token: $AT" -H "content-type: application/json" \
-  -d '{"user_id":"<用户uuid>","resolution":"720p","has_video":false,"cny_per_m":35}'
+  -d '{"user_id":"<用户uuid>","variant":"pro","resolution":"720p","has_video":false,"cny_per_m":35}'
 
 # 取消覆盖(回落默认挂牌):cny_per_m 传 null
 curl -s -X POST http://127.0.0.1:3003/api/admin/enterprise/rate-override \
   -H "x-admin-token: $AT" -H "content-type: application/json" \
-  -d '{"user_id":"<用户uuid>","resolution":"720p","has_video":false,"cny_per_m":null}'
+  -d '{"user_id":"<用户uuid>","variant":"pro","resolution":"720p","has_video":false,"cny_per_m":null}'
 ```
 
-- `resolution`:`720p` / `1080p` / `4k`;六个档要全覆盖就调六次(3 分辨率 × 有/无视频)。
+- `variant`:`pro` / `fast` / `mini`(按变体分别议价,互不影响);`resolution`:`720p` / `1080p` / `4k`(fast/mini 无 4k)。
 - 只影响**之后完成的任务**;已扣费任务不重算。
 - `user_id` 查法:见 §6.1。
 
@@ -129,13 +129,18 @@ docker exec silkroadai-portal-db psql -U portal -d silkroadai_portal_prod \
 
 ## 5. 计费与对账
 
-### 5.1 对客费率(默认挂牌,元 / 1M token)
+### 5.1 对客费率(默认挂牌 = 火山挂牌 × 0.85,元 / 1M token)
 
-| 分辨率 | 无视频输入(文生/图生/首尾帧/多图) | 含视频输入(参考视频) |
-| ------ | --------------------------------- | -------------------- |
-| 720P   | ¥39.1                             | ¥23.8                |
-| 1080P  | ¥43.35                            | ¥26.35               |
-| 4K     | ¥22.1                             | ¥13.6                |
+| 变体 | 分辨率       | 无视频输入(文生/图生/首尾帧/多图) | 含视频输入(参考视频) |
+| ---- | ------------ | --------------------------------- | -------------------- |
+| pro  | 720P         | ¥39.1                             | ¥23.8                |
+| pro  | 1080P        | ¥43.35                            | ¥26.35               |
+| pro  | 4K           | ¥22.1                             | ¥13.6                |
+| fast | 720P / 1080P | ¥31.45                            | ¥18.7                |
+| mini | 720P / 1080P | ¥19.55                            | ¥11.9                |
+
+(fast/mini 2026-07-19 上线,上游 `artsdance2.0-{fast,mini}-260701`,无 4K 档;
+成本 = 挂牌 × 0.75,毛利同 pro ≈ 13.3%。议价覆盖 §3 现在带 `variant` 字段。)
 
 - 扣费 = 上游返回的真实 `usage.completion_tokens` ÷ 1e6 × 费率(轮询完成时自动扣,幂等)。
 - 参考:720p 5s ≈ 108,872 token ≈ **¥4.26**。失败任务不计费。
@@ -243,6 +248,8 @@ curl -X POST http://128.241.232.23/v1/video/generations \
 curl http://128.241.232.23/v1/video/generations/cgt-… -H "Authorization: Bearer sk-ent-…"
 ```
 
+模型全集(14 档):`seedance2.0-pro-{720p|1080p|4k}`、`seedance2.0-fast-{720p|1080p}`、
+`seedance2.0-mini-{720p|1080p}`,以及每档同名 `-ref` 版(收图/视频参考)。
 参数:`duration` 5/10;`ratio` 16:9/9:16/4:3/3:4/1:1/21:9;-ref 档收
 `images`(≤9,支持 role first_frame/last_frame)/ `first_frame` / `last_frame` /
 `reference_videos`(≤3)/ `audios`(需配图);URL 或 base64 data URL 均可。

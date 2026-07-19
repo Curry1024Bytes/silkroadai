@@ -23,22 +23,48 @@ import { randomUUID } from 'node:crypto';
 import { uploadImage } from '@/lib/r2/client';
 
 const XHK_BASE = process.env.SEEDANCE_XHK_BASE_URL || 'https://token.xinhankr.com';
-/** 上游单一模型名(所有档位都映射到它,分辨率/参考模式由请求体承载)。 */
+/** 上游 pro 模型名(SEEDANCE_XHK_MODEL 仅覆盖 pro;fast/mini 上游 id 固定)。 */
 const UPSTREAM_MODEL = process.env.SEEDANCE_XHK_MODEL || 'artsdance2.0-pro-260701';
+const UPSTREAM_FAST = 'artsdance2.0-fast-260701';
+const UPSTREAM_MINI = 'artsdance2.0-mini-260701';
 
 const MAX_REF_IMAGES = 9;
 const MAX_REF_VIDEOS = 3;
 
-/** 客户/new-api 档位模型名 → { resolution, 是否参考档 }。6 个名 = 3 分辨率 × {无参考, -ref}。
- *  2k 已下线(官方无 2k 档,2026-07-15 去掉)。 */
-export const MODEL_MAP: Record<string, { resolution: '720p' | '1080p' | '4k'; ref: boolean }> = {
-    'seedance2.0-pro-720p': { resolution: '720p', ref: false },
-    'seedance2.0-pro-1080p': { resolution: '1080p', ref: false },
-    'seedance2.0-pro-4k': { resolution: '4k', ref: false },
-    'seedance2.0-pro-720p-ref': { resolution: '720p', ref: true },
-    'seedance2.0-pro-1080p-ref': { resolution: '1080p', ref: true },
-    'seedance2.0-pro-4k-ref': { resolution: '4k', ref: true },
+/** seedance 变体(2026-07-19 加 fast/mini):费率按 variant × resolution × 含视频 分档。 */
+export type SeedanceVariant = 'pro' | 'fast' | 'mini';
+
+export interface SeedanceModelSpec {
+    resolution: '720p' | '1080p' | '4k';
+    ref: boolean;
+    variant: SeedanceVariant;
+    /** 该档实际发给上游的模型 id(分辨率/参考模式由请求体承载)。 */
+    upstream: string;
+}
+
+/** 客户/new-api 档位模型名 → 档位规格。pro 3 分辨率 × {无参考,-ref} = 6 名;
+ *  fast/mini 上游只有 720p/1080p(无 4k)各 4 名 → 共 14 名。2k 已下线(2026-07-15)。 */
+export const MODEL_MAP: Record<string, SeedanceModelSpec> = {
+    'seedance2.0-pro-720p': { resolution: '720p', ref: false, variant: 'pro', upstream: UPSTREAM_MODEL },
+    'seedance2.0-pro-1080p': { resolution: '1080p', ref: false, variant: 'pro', upstream: UPSTREAM_MODEL },
+    'seedance2.0-pro-4k': { resolution: '4k', ref: false, variant: 'pro', upstream: UPSTREAM_MODEL },
+    'seedance2.0-pro-720p-ref': { resolution: '720p', ref: true, variant: 'pro', upstream: UPSTREAM_MODEL },
+    'seedance2.0-pro-1080p-ref': { resolution: '1080p', ref: true, variant: 'pro', upstream: UPSTREAM_MODEL },
+    'seedance2.0-pro-4k-ref': { resolution: '4k', ref: true, variant: 'pro', upstream: UPSTREAM_MODEL },
+    'seedance2.0-fast-720p': { resolution: '720p', ref: false, variant: 'fast', upstream: UPSTREAM_FAST },
+    'seedance2.0-fast-1080p': { resolution: '1080p', ref: false, variant: 'fast', upstream: UPSTREAM_FAST },
+    'seedance2.0-fast-720p-ref': { resolution: '720p', ref: true, variant: 'fast', upstream: UPSTREAM_FAST },
+    'seedance2.0-fast-1080p-ref': { resolution: '1080p', ref: true, variant: 'fast', upstream: UPSTREAM_FAST },
+    'seedance2.0-mini-720p': { resolution: '720p', ref: false, variant: 'mini', upstream: UPSTREAM_MINI },
+    'seedance2.0-mini-1080p': { resolution: '1080p', ref: false, variant: 'mini', upstream: UPSTREAM_MINI },
+    'seedance2.0-mini-720p-ref': { resolution: '720p', ref: true, variant: 'mini', upstream: UPSTREAM_MINI },
+    'seedance2.0-mini-1080p-ref': { resolution: '1080p', ref: true, variant: 'mini', upstream: UPSTREAM_MINI },
 };
+
+/** 任务行只存 model 名 → 变体(计费用);未知名(历史/异常)回落 pro,宁多收不少收。 */
+export function variantForModel(model: string): SeedanceVariant {
+    return MODEL_MAP[model]?.variant ?? 'pro';
+}
 
 const ALLOWED_RATIOS = new Set(['16:9', '9:16', '4:3', '3:4', '1:1', '21:9']);
 
@@ -222,7 +248,7 @@ export async function submitVideoWithKey(body: Record<string, unknown>, auth: st
 
     // 上游请求体(images/videos 用带 role 的对象;帧角色显式指定优先)
     const upstreamBody: Record<string, unknown> = {
-        model: UPSTREAM_MODEL,
+        model: map.upstream,
         prompt,
         resolution: map.resolution,
         ratio,

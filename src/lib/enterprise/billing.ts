@@ -10,29 +10,43 @@ import 'server-only';
 import { prisma } from '@/lib/db';
 import { applyLedgerEntry } from '@/lib/billing/ledger';
 import { computeCostCny, estimateTokens, type ChargeResult, type Resolution } from '@/lib/seedance/cn-billing';
+import { variantForModel, type SeedanceVariant } from '@/lib/seedance/cn-adapter';
 
 /** 企业门户任务在 seedance_video_tasks.tier 里的标记(区分 seedance-cn 渠道任务)。 */
 export const ENTERPRISE_TIER = 'enterprise-portal';
 
-async function rateOverrideCnyPerM(userId: string, resolution: Resolution, hasVideo: boolean): Promise<number | null> {
+async function rateOverrideCnyPerM(
+    userId: string,
+    variant: SeedanceVariant,
+    resolution: Resolution,
+    hasVideo: boolean,
+): Promise<number | null> {
     const row = await prisma.enterpriseRateOverride.findUnique({
-        where: { user_id_resolution_has_video: { user_id: userId, resolution, has_video: hasVideo } },
+        where: {
+            user_id_variant_resolution_has_video: {
+                user_id: userId,
+                variant,
+                resolution,
+                has_video: hasVideo,
+            },
+        },
         select: { cny_per_m: true },
     });
     return row ? Number(row.cny_per_m) : null;
 }
 
-/** 对客 ¥:议价覆盖优先,否则默认挂牌。 */
+/** 对客 ¥:议价覆盖(按 变体×分辨率×含视频)优先,否则默认挂牌。 */
 export async function computeEnterpriseCostCny(
     userId: string,
     tokens: number | bigint,
     resolution: Resolution,
     hasVideo: boolean,
+    variant: SeedanceVariant = 'pro',
 ): Promise<number> {
-    const override = await rateOverrideCnyPerM(userId, resolution, hasVideo);
+    const override = await rateOverrideCnyPerM(userId, variant, resolution, hasVideo);
     const t = typeof tokens === 'bigint' ? Number(tokens) : tokens;
     if (override != null) return +((t / 1e6) * override).toFixed(6);
-    return computeCostCny(t, resolution, hasVideo);
+    return computeCostCny(t, resolution, hasVideo, variant);
 }
 
 /** 提交前成本预估(余额门)。含视频 1.5× 缓冲,同 cn-billing 语义。 */
@@ -41,8 +55,15 @@ export async function estimateEnterpriseCostCny(
     resolution: Resolution,
     duration: number,
     hasVideo: boolean,
+    variant: SeedanceVariant = 'pro',
 ): Promise<number> {
-    const base = await computeEnterpriseCostCny(userId, estimateTokens(resolution, duration), resolution, hasVideo);
+    const base = await computeEnterpriseCostCny(
+        userId,
+        estimateTokens(resolution, duration),
+        resolution,
+        hasVideo,
+        variant,
+    );
     return hasVideo ? +(base * 1.5).toFixed(6) : base;
 }
 
@@ -62,6 +83,7 @@ export async function chargeEnterpriseVideoTask(taskId: string): Promise<ChargeR
         task.tokens,
         task.resolution as Resolution,
         task.has_video,
+        variantForModel(task.model),
     );
 
     const claim = await prisma.seedanceVideoTask.updateMany({

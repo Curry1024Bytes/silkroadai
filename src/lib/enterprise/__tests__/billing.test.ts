@@ -34,16 +34,54 @@ describe('computeEnterpriseCostCny', () => {
         expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false)).toBeCloseTo(39.1, 4);
     });
 
-    it('有覆盖 → 按覆盖价(¥30/1M)', async () => {
+    it('有覆盖 → 按覆盖价(¥30/1M),覆盖键带 variant(缺省 pro)', async () => {
         db.enterpriseRateOverride.findUnique.mockResolvedValue({ cny_per_m: '30' });
         expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false)).toBeCloseTo(30, 4);
         expect(db.enterpriseRateOverride.findUnique).toHaveBeenCalledWith(
             expect.objectContaining({
                 where: {
-                    user_id_resolution_has_video: { user_id: 'u1', resolution: '720p', has_video: false },
+                    user_id_variant_resolution_has_video: {
+                        user_id: 'u1',
+                        variant: 'pro',
+                        resolution: '720p',
+                        has_video: false,
+                    },
                 },
             }),
         );
+    });
+
+    it('fast/mini 变体默认挂牌(¥31.45/18.7 与 ¥19.55/11.9),覆盖键按变体隔离', async () => {
+        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false, 'fast')).toBeCloseTo(31.45, 4);
+        expect(await computeEnterpriseCostCny('u1', 1_000_000, '1080p', true, 'fast')).toBeCloseTo(18.7, 4);
+        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false, 'mini')).toBeCloseTo(19.55, 4);
+        expect(await computeEnterpriseCostCny('u1', 1_000_000, '1080p', true, 'mini')).toBeCloseTo(11.9, 4);
+        expect(db.enterpriseRateOverride.findUnique).toHaveBeenLastCalledWith(
+            expect.objectContaining({
+                where: expect.objectContaining({
+                    user_id_variant_resolution_has_video: expect.objectContaining({ variant: 'mini' }),
+                }),
+            }),
+        );
+    });
+
+    it('fast 任务扣费按 fast 费率(variant 从 task.model 推导)', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({
+            id: 'cgt-f1',
+            user_id: 'u1',
+            tenant_id: null,
+            tier: ENTERPRISE_TIER,
+            model: 'seedance2.0-fast-720p',
+            resolution: '720p',
+            has_video: false,
+            tokens: BigInt(1_000_000),
+            billed: false,
+            status: 'completed',
+        });
+        db.seedanceVideoTask.updateMany.mockResolvedValue({ count: 1 });
+        applyLedgerEntry.mockResolvedValue({ balance_after: { toFixed: () => '0.00' } });
+        const r = await chargeEnterpriseVideoTask('cgt-f1');
+        expect(r.costCny).toBeCloseTo(31.45, 4);
     });
 
     it('覆盖按 (resolution, has_video) 分档独立', async () => {

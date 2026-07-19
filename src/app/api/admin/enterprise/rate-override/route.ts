@@ -15,6 +15,7 @@ export const runtime = 'nodejs';
  */
 const schema = z.object({
     user_id: z.string().uuid(),
+    variant: z.enum(['pro', 'fast', 'mini']).default('pro'),
     resolution: z.enum(['720p', '1080p', '4k']),
     has_video: z.boolean(),
     cny_per_m: z.number().positive().max(10_000).nullable(),
@@ -37,17 +38,19 @@ export async function POST(request: NextRequest) {
             { status: 400 },
         );
     }
-    const { user_id, resolution, has_video, cny_per_m } = parsed.data;
-    const where = { user_id_resolution_has_video: { user_id, resolution, has_video } };
+    const { user_id, variant, resolution, has_video, cny_per_m } = parsed.data;
+    const where = {
+        user_id_variant_resolution_has_video: { user_id, variant, resolution, has_video },
+    };
 
     if (cny_per_m === null) {
-        await prisma.enterpriseRateOverride.deleteMany({ where: { user_id, resolution, has_video } });
-        return NextResponse.json({ user_id, resolution, has_video, cny_per_m: null, deleted: true });
+        await prisma.enterpriseRateOverride.deleteMany({ where: { user_id, variant, resolution, has_video } });
+        return NextResponse.json({ user_id, variant, resolution, has_video, cny_per_m: null, deleted: true });
     }
     await prisma.enterpriseRateOverride.upsert({
         where,
-        create: { user_id, resolution, has_video, cny_per_m },
+        create: { user_id, variant, resolution, has_video, cny_per_m },
         update: { cny_per_m },
     });
-    return NextResponse.json({ user_id, resolution, has_video, cny_per_m });
+    return NextResponse.json({ user_id, variant, resolution, has_video, cny_per_m });
 }

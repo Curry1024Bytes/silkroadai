@@ -102,7 +102,7 @@ export async function handleSeedanceVideoSubmit(
     // 2) 余额门(视频后付费 + 绕过 new-api,提交时先估价挡,防大额透支)
     try {
         const bal = await getCustomerBalance(cust.userId);
-        const est = estimateCostCny(map.resolution as Resolution, duration, hasVideo);
+        const est = estimateCostCny(map.resolution as Resolution, duration, hasVideo, map.variant);
         if (bal.balanceCny < est)
             return errJson(
                 402,
