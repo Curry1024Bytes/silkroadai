@@ -72,15 +72,11 @@ describe('isEnterpriseFlavor', () => {
 });
 
 describe('分发白名单', () => {
-    it('GET /models → 14 档模型(pro 6 + fast 4 + mini 4)', async () => {
+    it('GET /models → 3 个归一短名(resolution 是参数,2026-07-20)', async () => {
         const res = await handleEnterpriseV1(req('GET', '/v1/models'), '/models');
         const j = (await res.json()) as { data: Array<{ id: string }> };
         expect(res.status).toBe(200);
-        const ids = j.data.map((m) => m.id);
-        expect(ids).toContain('seedance2.0-pro-720p');
-        expect(ids).toContain('seedance2.0-fast-1080p');
-        expect(ids).toContain('seedance2.0-mini-720p-ref');
-        expect(j.data).toHaveLength(14);
+        expect(j.data.map((m) => m.id)).toEqual(['seedance-2-0', 'seedance-2-0-fast', 'seedance-2-0-mini']);
     });
 
     it('白名单外路径(/chat/completions 等)→ 404', async () => {
@@ -201,6 +197,120 @@ describe('提交', () => {
         );
         expect(res.status).toBe(400);
         expect(submitVideoWithKey).not.toHaveBeenCalled();
+    });
+});
+
+describe('归一短名(2026-07-20)', () => {
+    beforeEach(() => {
+        submitVideoWithKey.mockResolvedValue(NextResponse.json({ id: 'cgt-u1', task_id: 'cgt-u1', status: 'queued' }));
+    });
+
+    it('seedance-2-0 默认 720p 文生:适配器收长名,任务行存短名', async () => {
+        const res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { model: 'seedance-2-0', prompt: '一只猫' }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(200);
+        expect(submitVideoWithKey).toHaveBeenCalledWith(
+            expect.objectContaining({ model: 'seedance2.0-pro-720p' }),
+            'Bearer sk-upstream-u1',
+        );
+        expect(db.seedanceVideoTask.create).toHaveBeenCalledWith({
+            data: expect.objectContaining({ model: 'seedance-2-0', resolution: '720p' }),
+        });
+    });
+
+    it('resolution 参数选档 + 带参考图自动加 -ref:mini@1080p+images → seedance2.0-mini-1080p-ref', async () => {
+        const res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', {
+                model: 'seedance-2-0-mini',
+                resolution: '1080p',
+                prompt: 'x',
+                images: ['https://cdn/x.png'],
+            }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(200);
+        expect(submitVideoWithKey).toHaveBeenCalledWith(
+            expect.objectContaining({ model: 'seedance2.0-mini-1080p-ref' }),
+            'Bearer sk-upstream-u1',
+        );
+        expect(db.seedanceVideoTask.create).toHaveBeenCalledWith({
+            data: expect.objectContaining({ model: 'seedance-2-0-mini', resolution: '1080p' }),
+        });
+    });
+
+    it('大小写不敏感(Seedance-2-0-Fast)+ first_frame 也触发 ref', async () => {
+        const res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', {
+                model: 'Seedance-2-0-Fast',
+                prompt: 'x',
+                first_frame: 'https://cdn/f.png',
+            }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(200);
+        expect(submitVideoWithKey).toHaveBeenCalledWith(
+            expect.objectContaining({ model: 'seedance2.0-fast-720p-ref' }),
+            'Bearer sk-upstream-u1',
+        );
+    });
+
+    it('4k 仅 pro:seedance-2-0@4k 通过,fast/mini@4k → 400 不打上游', async () => {
+        let res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { model: 'seedance-2-0', resolution: '4k', prompt: 'x' }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(200);
+        expect(submitVideoWithKey).toHaveBeenLastCalledWith(
+            expect.objectContaining({ model: 'seedance2.0-pro-4k' }),
+            'Bearer sk-upstream-u1',
+        );
+        submitVideoWithKey.mockClear();
+        res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { model: 'seedance-2-0-fast', resolution: '4k', prompt: 'x' }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(400);
+        expect(submitVideoWithKey).not.toHaveBeenCalled();
+    });
+
+    it('非法 resolution → 400;旧长名仍兼容', async () => {
+        const bad = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { model: 'seedance-2-0', resolution: '2k', prompt: 'x' }),
+            '/video/generations',
+        );
+        expect(bad.status).toBe(400);
+        const legacy = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { model: 'seedance2.0-fast-1080p', prompt: 'x' }),
+            '/video/generations',
+        );
+        expect(legacy.status).toBe(200);
+        expect(submitVideoWithKey).toHaveBeenLastCalledWith(
+            expect.objectContaining({ model: 'seedance2.0-fast-1080p' }),
+            'Bearer sk-upstream-u1',
+        );
+    });
+
+    it('素材引用(asset→URL)也触发 ref 识别(替换在识别之前)', async () => {
+        resolveAssetRefs.mockResolvedValue({
+            model: 'seedance-2-0',
+            prompt: 'x',
+            images: ['https://r2/asset-1.png'],
+        });
+        const res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', {
+                model: 'seedance-2-0',
+                prompt: 'x',
+                images: ['asset-20260719120000-aaaaaa'],
+            }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(200);
+        expect(submitVideoWithKey).toHaveBeenCalledWith(
+            expect.objectContaining({ model: 'seedance2.0-pro-720p-ref' }),
+            'Bearer sk-upstream-u1',
+        );
     });
 });
 

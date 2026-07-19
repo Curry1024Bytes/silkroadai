@@ -12,10 +12,59 @@
 import 'server-only';
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
-import { MODEL_MAP, extractVideoUrls, submitVideoWithKey, pollVideoWithKey } from '@/lib/seedance/cn-adapter';
+import {
+    MODEL_MAP,
+    extractImageUrls,
+    extractVideoUrls,
+    extractAudioUrls,
+    submitVideoWithKey,
+    pollVideoWithKey,
+    type SeedanceModelSpec,
+    type SeedanceVariant,
+} from '@/lib/seedance/cn-adapter';
 import { resolveEnterpriseCustomer, type EnterpriseCustomer } from './keys';
 import { ENTERPRISE_TIER, estimateEnterpriseCostCny, chargeEnterpriseVideoTask } from './billing';
 import { AssetError, resolveAssetRefs } from './assets';
+
+/** 企业门户对客模型名(2026-07-20 归一,operator 拍板):按量计费下分辨率是参数不是模型名。
+ *  `resolution` 参数选 720p/1080p/4k(默认 720p;4k 仅 pro),带参考图/视频/音频自动识别
+ *  (不再需要 -ref 后缀)。旧 14 个长名(seedance2.0-pro-720p 等)保留兼容,不再对外宣传。 */
+export const ENTERPRISE_MODELS: Record<string, SeedanceVariant> = {
+    'seedance-2-0': 'pro',
+    'seedance-2-0-fast': 'fast',
+    'seedance-2-0-mini': 'mini',
+};
+
+const RESOLUTIONS = ['720p', '1080p', '4k'] as const;
+
+/** 短名 + body 参数 → 内部长名规格。非短名返回 null(走长名/未知分支)。 */
+function resolveEnterpriseModel(
+    rawModel: string,
+    body: Record<string, unknown>,
+): { spec: SeedanceModelSpec; longName: string } | { error: NextResponse } | null {
+    const variant = ENTERPRISE_MODELS[rawModel.toLowerCase()];
+    if (!variant) return null;
+    const resRaw = String(body.resolution ?? '720p').toLowerCase();
+    if (!(RESOLUTIONS as readonly string[]).includes(resRaw)) {
+        return { error: errJson(400, 'invalid_request', 'resolution 仅支持 720p / 1080p / 4k') };
+    }
+    if (resRaw === '4k' && variant !== 'pro') {
+        return { error: errJson(400, 'invalid_request', `${rawModel} 无 4k 档(resolution 仅 720p / 1080p)`) };
+    }
+    const hasRefs =
+        extractImageUrls(body).length > 0 ||
+        extractVideoUrls(body).length > 0 ||
+        extractAudioUrls(body).length > 0 ||
+        (typeof body.first_frame === 'string' && body.first_frame !== '') ||
+        (typeof body.last_frame === 'string' && body.last_frame !== '');
+    const longName = `seedance2.0-${variant}-${resRaw}${hasRefs ? '-ref' : ''}`;
+    const spec = MODEL_MAP[longName];
+    if (!spec) {
+        // 组合表齐全时到不了这里;防御性兜底
+        return { error: errJson(400, 'invalid_request', `unsupported combination: ${rawModel} @ ${resRaw}`) };
+    }
+    return { spec, longName };
+}
 
 export function isEnterpriseFlavor(): boolean {
     return process.env.PORTAL_FLAVOR === 'seedance-enterprise';
@@ -27,9 +76,14 @@ const errJson = (status: number, code: string, message: string) =>
 /** /v1 分发:models / 提交 / 轮询,其余 404。 */
 export async function handleEnterpriseV1(req: NextRequest, path: string): Promise<NextResponse> {
     if (req.method === 'GET' && path === '/models') {
+        // 只列 3 个归一短名(resolution 是参数);旧长名仍可调但不再列出
         return NextResponse.json({
             object: 'list',
-            data: Object.keys(MODEL_MAP).map((id) => ({ id, object: 'model', owned_by: 'silkroadai-enterprise' })),
+            data: Object.keys(ENTERPRISE_MODELS).map((id) => ({
+                id,
+                object: 'model',
+                owned_by: 'silkroadai-enterprise',
+            })),
         });
     }
     if (req.method === 'POST' && (path === '/video/generations' || path === '/videos')) {
@@ -67,10 +121,8 @@ async function handleSubmit(req: NextRequest): Promise<NextResponse> {
     }
 
     const model = String(body.model || '');
-    const map = MODEL_MAP[model];
-    if (!map) return errJson(400, 'model_not_found', `unknown seedance model: ${model}`);
 
-    // P3 素材库引用:asset-…/group-… → R2 公网 URL(必须在 hasVideo 检测之前,
+    // P3 素材库引用:asset-…/group-… → R2 公网 URL(必须在 ref/hasVideo 检测之前,
     // 视频素材引用也要计入含视频费率档)。未知/非本人 id → 400。
     try {
         body = await resolveAssetRefs(body, cust.userId);
@@ -78,6 +130,22 @@ async function handleSubmit(req: NextRequest): Promise<NextResponse> {
         if (e instanceof AssetError) return errJson(e.status, e.code, e.message);
         console.error('[enterprise-proxy] asset ref resolve failed', e);
         return errJson(503, 'temporarily_unavailable', 'asset lookup failed, please retry');
+    }
+
+    // 模型解析:归一短名(seedance-2-0[-fast|-mini] + resolution 参数 + ref 自动识别)
+    // 优先;旧长名(MODEL_MAP)保留兼容。任务行存客户实际调用的名字。
+    let map: SeedanceModelSpec;
+    let adapterModel: string; // 发给适配器核心的长名
+    const short = resolveEnterpriseModel(model, body);
+    if (short && 'error' in short) return short.error;
+    if (short) {
+        map = short.spec;
+        adapterModel = short.longName;
+    } else if (MODEL_MAP[model]) {
+        map = MODEL_MAP[model];
+        adapterModel = model;
+    } else {
+        return errJson(400, 'model_not_found', `unknown seedance model: ${model}`);
     }
 
     const hasVideo = extractVideoUrls(body).length > 0;
@@ -104,7 +172,7 @@ async function handleSubmit(req: NextRequest): Promise<NextResponse> {
         console.warn('[enterprise-proxy] balance gate skipped (lookup failed)', e);
     }
 
-    const res = await submitVideoWithKey(body, `Bearer ${cust.upstreamKey}`);
+    const res = await submitVideoWithKey({ ...body, model: adapterModel }, `Bearer ${cust.upstreamKey}`);
     const text = await res.text();
     if (!res.ok) return new NextResponse(text, { status: res.status, headers: { 'Content-Type': 'application/json' } });
     let j: { id?: string; task_id?: string } | null;

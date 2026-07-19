@@ -61,9 +61,15 @@ export const MODEL_MAP: Record<string, SeedanceModelSpec> = {
     'seedance2.0-mini-1080p-ref': { resolution: '1080p', ref: true, variant: 'mini', upstream: UPSTREAM_MINI },
 };
 
-/** 任务行只存 model 名 → 变体(计费用);未知名(历史/异常)回落 pro,宁多收不少收。 */
+/** 任务行只存 model 名 → 变体(计费用)。长名走 MODEL_MAP;企业门户短名
+ *  (seedance-2-0[-fast|-mini],2026-07-20 归一)按后缀识别;未知名回落 pro(宁多收不少收)。 */
 export function variantForModel(model: string): SeedanceVariant {
-    return MODEL_MAP[model]?.variant ?? 'pro';
+    const hit = MODEL_MAP[model]?.variant;
+    if (hit) return hit;
+    const m = model.toLowerCase();
+    if (m.includes('-fast')) return 'fast';
+    if (m.includes('-mini')) return 'mini';
+    return 'pro';
 }
 
 const ALLOWED_RATIOS = new Set(['16:9', '9:16', '4:3', '3:4', '1:1', '21:9']);
@@ -119,7 +125,7 @@ function pushUrl(list: string[], u: unknown) {
 }
 
 /** 入参图 URL(顶层 image_url / image / images / reference_image_urls + content[].image_url)。 */
-function extractImageUrls(body: Record<string, unknown>): string[] {
+export function extractImageUrls(body: Record<string, unknown>): string[] {
     const urls: string[] = [];
     pushUrl(urls, body.image_url);
     if (typeof body.image === 'string') urls.push(body.image);
@@ -153,7 +159,7 @@ export function extractVideoUrls(body: Record<string, unknown>): string[] {
 }
 
 /** 入参音频 URL(audio_url / audio / audios / reference_audios + content[].audio_url)。 */
-function extractAudioUrls(body: Record<string, unknown>): string[] {
+export function extractAudioUrls(body: Record<string, unknown>): string[] {
     const urls: string[] = [];
     pushUrl(urls, body.audio_url);
     if (typeof body.audio === 'string') urls.push(body.audio);

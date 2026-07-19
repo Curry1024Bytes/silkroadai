@@ -94,7 +94,14 @@ export default async function EnterpriseOverviewPage() {
                     </div>
                     <div>
                         <dt className="inline font-medium text-gray-800">模型:</dt>{' '}
-                        <dd className="inline">seedance2.0-pro-{'{720p|1080p|4k}'}(文生)/ 同名 -ref 档(图/视频参考)</dd>
+                        <dd className="inline">seedance-2-0 / seedance-2-0-fast / seedance-2-0-mini</dd>
+                    </div>
+                    <div>
+                        <dt className="inline font-medium text-gray-800">分辨率:</dt>{' '}
+                        <dd className="inline">
+                            <span className="font-mono">resolution</span> 参数 720p / 1080p / 4k(默认 720p;4k 仅
+                            seedance-2-0);带参考图/视频自动识别,无需换模型名
+                        </dd>
                     </div>
                 </dl>
             </section>

@@ -248,11 +248,20 @@ curl -X POST http://128.241.232.23/v1/video/generations \
 curl http://128.241.232.23/v1/video/generations/cgt-… -H "Authorization: Bearer sk-ent-…"
 ```
 
-模型全集(14 档):`seedance2.0-pro-{720p|1080p|4k}`、`seedance2.0-fast-{720p|1080p}`、
-`seedance2.0-mini-{720p|1080p}`,以及每档同名 `-ref` 版(收图/视频参考)。
-参数:`duration` 5/10;`ratio` 16:9/9:16/4:3/3:4/1:1/21:9;-ref 档收
+模型(3 个,2026-07-20 归一):**`seedance-2-0`(pro)/ `seedance-2-0-fast` / `seedance-2-0-mini`**。
+分辨率走 **`resolution` 参数**:`720p`(默认)/ `1080p` / `4k`(4k 仅 seedance-2-0);
+带参考图/视频/音频**自动识别**,无需换模型名。
+(旧 14 个长名 `seedance2.0-pro-720p` 等仍兼容可调,但不再对外宣传。)
+参数:`duration` 5/10;`ratio` 16:9/9:16/4:3/3:4/1:1/21:9;参考输入收
 `images`(≤9,支持 role first_frame/last_frame)/ `first_frame` / `last_frame` /
 `reference_videos`(≤3)/ `audios`(需配图);URL 或 base64 data URL 均可。
+
+```bash
+# 例:mini 档 1080p 图生视频
+curl -X POST http://128.241.232.23/v1/video/generations \
+  -H "Authorization: Bearer sk-ent-…" -H "Content-Type: application/json" \
+  -d '{"model":"seedance-2-0-mini","resolution":"1080p","prompt":"…","images":["asset-…"]}'
+```
 
 **素材库**(对标火山方舟,`POST /api?Action=…&Version=2024-01-01&ns=asset_manager`):
 

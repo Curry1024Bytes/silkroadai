@@ -65,6 +65,25 @@ describe('computeEnterpriseCostCny', () => {
         );
     });
 
+    it('归一短名任务(seedance-2-0-mini)扣费按 mini 费率(variantForModel 后缀识别)', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({
+            id: 'cgt-s1',
+            user_id: 'u1',
+            tenant_id: null,
+            tier: ENTERPRISE_TIER,
+            model: 'seedance-2-0-mini',
+            resolution: '720p',
+            has_video: false,
+            tokens: BigInt(1_000_000),
+            billed: false,
+            status: 'completed',
+        });
+        db.seedanceVideoTask.updateMany.mockResolvedValue({ count: 1 });
+        applyLedgerEntry.mockResolvedValue({ balance_after: { toFixed: () => '0.00' } });
+        const r = await chargeEnterpriseVideoTask('cgt-s1');
+        expect(r.costCny).toBeCloseTo(19.55, 4);
+    });
+
     it('fast 任务扣费按 fast 费率(variant 从 task.model 推导)', async () => {
         db.seedanceVideoTask.findUnique.mockResolvedValue({
             id: 'cgt-f1',
