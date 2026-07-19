@@ -47,6 +47,7 @@ import {
     IMAGE_SIZES,
     sizeToAspectRatio,
 } from '@/lib/image-gen/models';
+import { cnyToQuota, REAL_USD_TO_CNY } from '@/lib/newapi/quota-units';
 import { extractB64Images } from '@/lib/image-gen/extract-b64';
 import { imageKey, uploadImage, getPublicUrl } from '@/lib/r2/client';
 import { record as recordAnalytics } from '@/lib/analytics/recorder';
@@ -391,8 +392,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             cost_usd: costUsdPreview.toFixed(6),
             // new-api charged this many raw quota units; we don't have
             // the exact number from the response (it's logged in
-            // /api/log/), so we record the preview converted at QPU=1M.
-            quota_consumed: BigInt(Math.round(costUsdPreview * 1_000_000)),
+            // /api/log/), so we record the preview: 真$ → 真¥ → 当前
+            // 标尺的 quota(env 推导,计价单位迁移前后都对)。
+            quota_consumed: BigInt(cnyToQuota(costUsdPreview * REAL_USD_TO_CNY)),
             is_favorite: false,
             is_deleted: false,
             created_at: now,
@@ -422,7 +424,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         id: created.id,
         image_urls: uploadResults.map((u) => u.url),
         cost_usd: costUsdPreview,
-        quota_consumed: Math.round(costUsdPreview * 1_000_000),
+        quota_consumed: cnyToQuota(costUsdPreview * REAL_USD_TO_CNY),
         created_at: created.created_at.toISOString(),
         expires_at: created.expires_at?.toISOString() ?? null,
     });

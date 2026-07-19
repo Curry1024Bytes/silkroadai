@@ -54,7 +54,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
 import { prisma } from '@/lib/db';
 import { getCustomerBalance, type CustomerBalance } from '@/lib/billing/customer-balance';
-import { USD_TO_CNY_RATE, quotaToCny } from '@/lib/newapi/quota-units';
+import { REAL_USD_TO_CNY, quotaToCny } from '@/lib/newapi/quota-units';
 import { listEnabledChannelGroups } from '@/lib/channel-group';
 import { getTokenUsageWithCache } from '@/lib/newapi/token-usage';
 import { uploadImage } from '@/lib/r2/client';
@@ -2045,7 +2045,9 @@ async function handleBalanceQuery(req: NextRequest, path: string): Promise<NextR
         return billingError('balance temporarily unavailable', 503);
     }
 
-    const toUsd = (cny: number) => cny / USD_TO_CNY_RATE;
+    // 真实汇率折 $(客户监控脚本看的是真美元)— 不能用 USD_TO_CNY_RATE(那是
+    // quota 换算因子,计价单位迁移后 =1,不是汇率)。
+    const toUsd = (cny: number) => cny / REAL_USD_TO_CNY;
 
     if (path === '/dashboard/billing/usage') {
         // OpenAI 兼容:total_usage 单位 = 美分(cents)。

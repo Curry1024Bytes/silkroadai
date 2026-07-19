@@ -59,7 +59,16 @@ const NEWAPI_BASE_URL = process.env.NEWAPI_BASE_URL || 'http://localhost:3000';
 
 // new-api 默认 1 USD = 500,000 quota — 这两个常量从 quota-units 重新导出,
 // 保留所有现有 import 路径(`from '@/lib/newapi/client'`)继续工作。
-export { QUOTA_PER_USD, USD_TO_CNY_RATE, quotaToUsd, quotaToCny, usdToQuota, cnyToQuota } from './quota-units';
+export {
+    QUOTA_PER_USD,
+    USD_TO_CNY_RATE,
+    REAL_USD_TO_CNY,
+    quotaToUsd,
+    quotaToRealUsd,
+    quotaToCny,
+    usdToQuota,
+    cnyToQuota,
+} from './quota-units';
 
 // Local imports for internal callers within this module (re-export above
 // doesn't make the names visible in this file's scope).
