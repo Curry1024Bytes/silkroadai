@@ -41,6 +41,29 @@ services:
             - silkroadai-portal-net
         restart: unless-stopped
 
+    # ── seedance 大客户独立门户(P1,seedance-enterprise-portal-design.md)──
+    # 同镜像同库,PORTAL_FLAVOR 切形态:/v1 只服务 seedance 视频端点,主站页面/API 404,
+    # 定时任务不跑(instrumentation 门)。只绑 127.0.0.1:3003 —— 公网入口由 Caddy 在
+    # 128.241.232.23(HTTP :80 + tls internal :443)只放 /v1/* 反代进来,其余 Caddy 404。
+    seedance-portal:
+        build:
+            context: .
+            dockerfile: Dockerfile
+        container_name: silkroadai-seedance-portal
+        ports:
+            - '127.0.0.1:3003:3002'
+        env_file: .env
+        environment:
+            PORTAL_FLAVOR: seedance-enterprise
+        extra_hosts:
+            - 'host.docker.internal:host-gateway'
+        depends_on:
+            portal-postgres:
+                condition: service_healthy
+        networks:
+            - silkroadai-portal-net
+        restart: unless-stopped
+
     portal-postgres:
         image: postgres:16-alpine
         container_name: silkroadai-portal-db
