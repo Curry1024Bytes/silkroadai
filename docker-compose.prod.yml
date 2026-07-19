@@ -55,6 +55,10 @@ services:
         env_file: .env
         environment:
             PORTAL_FLAVOR: seedance-enterprise
+            # 裸 IP 入口的 cookie 修正(P2):Domain=.silkroadai.io 对 IP host 无效
+            # (浏览器拒收)→ 置空回 host-scoped;HTTP 下 Secure cookie 被丢弃 → 显式关。
+            BRAND_COOKIE_DOMAIN: ''
+            SESSION_COOKIE_SECURE: 'false'
         extra_hosts:
             - 'host.docker.internal:host-gateway'
         depends_on:
