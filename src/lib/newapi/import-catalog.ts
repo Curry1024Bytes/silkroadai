@@ -33,6 +33,12 @@ export interface ChannelForImport {
      * 本模块把 tier 当作不透明字符串(按 (slug,tier) 去重),不假设其取值。
      */
     tier: string;
+    /**
+     * 该档所在 new-api 组的 live GroupRatio(GR 原生语义 2026-07-20:¥ = mr × CHAT_FX × GR)。
+     * 调用方解析(channel_groups.newapi_group → GroupRatio option);解析不到传 null →
+     * 该渠道的 chat 模型一律按 'unpriced' 处理(宁可留空手填,不按错倍率反推出错价)。
+     */
+    group_ratio: number | null;
 }
 
 /**
@@ -161,11 +167,11 @@ export function buildImportCandidates(channels: ChannelForImport[]): ImportCandi
             }
 
             const mr = mrDict[slug];
-            if (typeof mr === 'number') {
+            if (typeof mr === 'number' && ch.group_ratio != null) {
                 const crRaw = crDict[slug];
                 const ratioDefaulted = typeof crRaw !== 'number';
                 const cr = ratioDefaulted ? 1 : crRaw;
-                const price = retailFromRatios(mr, cr);
+                const price = retailFromRatios(mr, cr, ch.group_ratio);
                 out.push({
                     ...base,
                     modality: 'chat',

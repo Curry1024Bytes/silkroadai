@@ -5,7 +5,7 @@ import { prisma } from '@/lib/db';
 import { unauthorizedResponse } from '@/lib/admin-auth';
 import { resolveAdmin } from '@/lib/admin/auth';
 import { tenantScope, tenantForInsert } from '@/lib/admin/tenant-scope';
-import { getChannel, listChannels, type NewApiChannel } from '@/lib/newapi/client';
+import { getChannel, getOption, listChannels, type NewApiChannel } from '@/lib/newapi/client';
 import { buildImportCandidates, type ChannelForImport, type ImportCandidate } from '@/lib/newapi/import-catalog';
 
 export const runtime = 'nodejs';
@@ -54,8 +54,8 @@ function asUpstreamMap(v: unknown): UpstreamMap {
     return {};
 }
 
-/** getChannel 全量对象 + 该渠道判定出的档次 → 推导所需子集。 */
-function toChannelForImport(ch: NewApiChannel, tier: string): ChannelForImport {
+/** getChannel 全量对象 + 该渠道判定出的档次(+ 该档组倍率,GR 原生语义)→ 推导所需子集。 */
+function toChannelForImport(ch: NewApiChannel, tier: string, groupRatio: number | null): ChannelForImport {
     return {
         id: ch.id,
         name: typeof ch.name === 'string' ? ch.name : null,
@@ -63,6 +63,7 @@ function toChannelForImport(ch: NewApiChannel, tier: string): ChannelForImport {
         model_ratio: (ch.model_ratio as ChannelForImport['model_ratio']) ?? null,
         completion_ratio: (ch.completion_ratio as ChannelForImport['completion_ratio']) ?? null,
         tier,
+        group_ratio: groupRatio,
     };
 }
 
@@ -108,8 +109,23 @@ export async function POST(request: NextRequest) {
         // tier_level→key 排序让"先到先得"确定:低档位先认领冲突渠道(pool=0 在前,
         //「pool 自己登记的渠道明确归 pool」)。
         orderBy: [{ tier_level: 'asc' }, { key: 'asc' }],
-        select: { key: true, newapi_channel_ids: true, is_default: true, tier_level: true },
+        select: { key: true, newapi_channel_ids: true, is_default: true, tier_level: true, newapi_group: true },
     });
+    // GR 原生语义(2026-07-20):档次 → 组倍率(¥ = mr × CHAT_FX × GR)。GroupRatio option
+    // 读一次,best-effort —— 读不到 → 全部 null → chat 模型按 unpriced 留手填,不反推错价。
+    let groupRatioDict: Record<string, number> = {};
+    try {
+        const raw = await getOption('GroupRatio');
+        groupRatioDict = raw ? (JSON.parse(raw) as Record<string, number>) : {};
+    } catch {
+        groupRatioDict = {};
+    }
+    const tierRatioByKey = new Map<string, number | null>();
+    for (const g of groups) {
+        const r = groupRatioDict[g.newapi_group];
+        tierRatioByKey.set(g.key, typeof r === 'number' && Number.isFinite(r) && r > 0 ? r : null);
+    }
+    const tierRatio = (tier: string): number | null => tierRatioByKey.get(tier) ?? null;
     const channelToTier = new Map<number, string>();
     const channelTiersSeen = new Map<number, string[]>(); // 一渠道被几个档登记 → 供预览标冲突
     for (const g of groups) {
@@ -156,7 +172,7 @@ export async function POST(request: NextRequest) {
     const channelErrors: { channel_id: number; error: string }[] = [];
     for (const id of channelIds) {
         try {
-            channels.push(toChannelForImport(await getChannel(id), channelTier(id)));
+            channels.push(toChannelForImport(await getChannel(id), channelTier(id), tierRatio(channelTier(id))));
         } catch (e) {
             channelErrors.push({ channel_id: id, error: errMsg(e) });
         }

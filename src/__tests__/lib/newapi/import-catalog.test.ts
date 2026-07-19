@@ -1,4 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+// import-catalog → pricing-sync → '@/lib/db'(GR 原生语义引入)。纯函数测试不碰 DB,mock 掉。
+vi.mock('@/lib/db', () => ({ prisma: {} }));
+vi.mock('@/lib/newapi/client', () => ({ getOption: () => Promise.resolve(null), putOption: () => Promise.resolve() }));
 import {
     buildImportCandidates,
     inferVendor,
@@ -57,6 +61,7 @@ describe('buildImportCandidates', () => {
         id: 2,
         name: 'sub2api',
         tier: 'pool',
+        group_ratio: 1,
         models: 'claude-opus-4-7, claude-sonnet-4-6', // whitespace after comma → must be trimmed
         model_ratio: JSON.stringify({ 'claude-opus-4-7': 3.214286, 'claude-sonnet-4-6': 0.642857 }),
         completion_ratio: JSON.stringify({ 'claude-opus-4-7': 5, 'claude-sonnet-4-6': 5 }),
@@ -65,6 +70,7 @@ describe('buildImportCandidates', () => {
         id: 3,
         name: 'sub2api-openai',
         tier: 'pool',
+        group_ratio: 1,
         // gpt-5.4 priced; gpt-mini has model_ratio but NO completion_ratio; gpt-image-2 is image;
         // mystery is in models but absent from model_ratio (and not image).
         models: 'gpt-5.4,gpt-mini,gpt-image-2,mystery',
@@ -75,6 +81,7 @@ describe('buildImportCandidates', () => {
         id: 17,
         name: 'nexaxis',
         tier: 'pool',
+        group_ratio: 1,
         models: 'gemini-3-pro-image',
         model_ratio: {}, // already-parsed empty dict (not a JSON string)
         completion_ratio: {},
@@ -143,6 +150,7 @@ describe('buildImportCandidates', () => {
             id: 2,
             name: 'A',
             tier: 'pool',
+            group_ratio: 1,
             models: 'dup-model',
             model_ratio: { 'dup-model': 1 },
             completion_ratio: { 'dup-model': 2 },
@@ -151,6 +159,7 @@ describe('buildImportCandidates', () => {
             id: 3,
             name: 'B',
             tier: 'pool',
+            group_ratio: 1,
             models: 'dup-model',
             model_ratio: { 'dup-model': 9 },
             completion_ratio: { 'dup-model': 9 },
@@ -159,6 +168,7 @@ describe('buildImportCandidates', () => {
             id: 4,
             name: 'C',
             tier: 'official',
+            group_ratio: 1,
             models: 'dup-model',
             model_ratio: { 'dup-model': 2 },
             completion_ratio: { 'dup-model': 3 },
@@ -177,9 +187,23 @@ describe('buildImportCandidates', () => {
         expect(byTier.official).toMatchObject({ channel_id: 4, input_cny_per_1m: 28.8 }); // mr 2 × FX 14.4
     });
 
+    it('group_ratio null(组倍率不可解析)→ chat 一律 unpriced,不反推错价(GR 原生语义)', () => {
+        const noRatio: ChannelForImport = {
+            id: 9,
+            name: 'no-gr',
+            tier: 'mystery-tier',
+            group_ratio: null,
+            models: 'claude-opus-4-7',
+            model_ratio: { 'claude-opus-4-7': 3.214286 },
+            completion_ratio: { 'claude-opus-4-7': 5 },
+        };
+        const [c] = buildImportCandidates([noRatio]);
+        expect(c).toMatchObject({ price_status: 'unpriced', input_cny_per_1m: null, output_cny_per_1m: null });
+    });
+
     it('handles empty / missing models', () => {
-        expect(buildImportCandidates([{ id: 5, tier: 'pool', models: '' }])).toEqual([]);
-        expect(buildImportCandidates([{ id: 5, tier: 'pool' }])).toEqual([]);
+        expect(buildImportCandidates([{ id: 5, tier: 'pool', group_ratio: 1, models: '' }])).toEqual([]);
+        expect(buildImportCandidates([{ id: 5, tier: 'pool', group_ratio: 1 }])).toEqual([]);
         expect(buildImportCandidates([])).toEqual([]);
     });
 });

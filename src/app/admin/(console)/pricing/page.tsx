@@ -233,12 +233,23 @@ function fmtDate(ts: string): string {
     return new Date(ts).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
 }
 
-/** Live conversion preview shown in the edit form (mirrors pricing-sync math). */
-function computeRatios(inputStr: string, outputStr: string): { mr: string; cr: string } | null {
+/**
+ * Live conversion preview shown in the edit form (mirrors pricing-sync math).
+ * GR 原生语义:mr = ¥in ÷ (CHAT_FX × 该档组倍率)。FX/倍率来自 GET 附带的 pricing_context
+ * (旧实现硬编码 ÷7,是单位迁移前的口径,已废);context 缺失/该档倍率未知 → 不显示预览。
+ */
+function computeRatios(
+    inputStr: string,
+    outputStr: string,
+    ctx: { chat_fx: number; group_ratio_by_tier: Record<string, number> } | null,
+    tier: string,
+): { mr: string; cr: string } | null {
     const input = toNum(inputStr);
     const output = toNum(outputStr);
-    if (input === null || input <= 0) return null;
-    const mr = (input / 7).toFixed(6);
+    if (input === null || input <= 0 || !ctx) return null;
+    const gr = ctx.group_ratio_by_tier[tier];
+    if (typeof gr !== 'number' || gr <= 0) return null;
+    const mr = (input / (ctx.chat_fx * gr)).toFixed(6);
     const cr = output !== null ? (output / input).toFixed(4) : '—';
     return { mr, cr };
 }
@@ -282,6 +293,13 @@ function PricingContent() {
     const t = getTexts(locale);
 
     const [models, setModels] = useState<ModelWithPrices[]>([]);
+    // GR 原生语义(2026-07-20):换算预览上下文(FX + 各档组倍率),GET /api/admin/pricing 附带;
+    // new-api 不可达时为 null → 预览隐藏(不显示可能错误的数)。
+    const [pricingCtx, setPricingCtx] = useState<{
+        chat_fx: number;
+        image_fx: number;
+        group_ratio_by_tier: Record<string, number>;
+    } | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
 
@@ -318,6 +336,7 @@ function PricingContent() {
             }
             const data = await res.json();
             setModels(Array.isArray(data.models) ? data.models : []);
+            setPricingCtx(data.pricing_context ?? null);
         } catch {
             setError(t.loadFailed);
         } finally {
@@ -359,7 +378,12 @@ function PricingContent() {
     const formImage = toNum(form.per_image_cny);
     // API requires (input AND output) OR per_image.
     const formValid = (formInput !== null && formOutput !== null) || formImage !== null;
-    const liveRatios = computeRatios(form.input_cny_per_1m, form.output_cny_per_1m);
+    const liveRatios = computeRatios(
+        form.input_cny_per_1m,
+        form.output_cny_per_1m,
+        pricingCtx,
+        form.tier.trim() || 'pool',
+    );
 
     const handleSave = async () => {
         if (!editingModel || !formValid) return;

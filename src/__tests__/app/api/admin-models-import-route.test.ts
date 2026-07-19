@@ -36,6 +36,8 @@ vi.mock('@/lib/db', () => ({
 vi.mock('@/lib/newapi/client', () => ({
     getChannel: (...a: unknown[]) => mockGetChannel(...a),
     listChannels: (...a: unknown[]) => mockListChannels(...a),
+    // GR 原生语义:路由读 GroupRatio 做档→组倍率解析;fixture 全 1 → 反推价格与旧期望一致。
+    getOption: (key: string) => Promise.resolve(key === 'GroupRatio' ? '{"default":1,"official":1,"cc-kiro":1}' : null),
 }));
 
 import { POST, DEFAULT_FLAGSHIP_CHANNEL_IDS } from '@/app/api/admin/models/import/route';
@@ -84,8 +86,8 @@ beforeEach(() => {
     // Fixtures return groups already in DB orderBy order (tier_level asc, key asc); the route's
     // orderBy is on the query (ignored by the mock), so we pre-sort here to mirror it.
     mockChannelGroupFindMany.mockResolvedValue([
-        { key: 'pool', newapi_channel_ids: [], is_default: true, tier_level: 0 },
-        { key: 'official', newapi_channel_ids: [], is_default: false, tier_level: 1 },
+        { key: 'pool', newapi_group: 'default', newapi_channel_ids: [], is_default: true, tier_level: 0 },
+        { key: 'official', newapi_group: 'official', newapi_channel_ids: [], is_default: false, tier_level: 1 },
     ]);
     mockGetChannel.mockImplementation((id: number) => Promise.resolve(channelFixture(id)));
     mockListChannels.mockResolvedValue([
@@ -173,8 +175,8 @@ describe('POST /api/admin/models/import — dry run (official not registered →
 describe('POST /api/admin/models/import — tier classification', () => {
     it('channels in the official group import as official; others as pool', async () => {
         mockChannelGroupFindMany.mockResolvedValue([
-            { key: 'pool', newapi_channel_ids: [], is_default: true, tier_level: 0 },
-            { key: 'official', newapi_channel_ids: [2], is_default: false, tier_level: 1 }, // Claude = official
+            { key: 'pool', newapi_group: 'default', newapi_channel_ids: [], is_default: true, tier_level: 0 },
+            { key: 'official', newapi_group: 'official', newapi_channel_ids: [2], is_default: false, tier_level: 1 }, // Claude = official
         ]);
         const body = await (await POST(req('POST', {}))).json();
 
@@ -204,9 +206,9 @@ describe('POST /api/admin/models/import — P2.8 arbitrary tiers (cc-kiro) + con
 
     it('a channel registered to a custom group imports under that group key (not pool)', async () => {
         mockChannelGroupFindMany.mockResolvedValue([
-            { key: 'pool', newapi_channel_ids: [], is_default: true, tier_level: 0 },
-            { key: 'official', newapi_channel_ids: [2], is_default: false, tier_level: 1 },
-            { key: 'cc-kiro', newapi_channel_ids: [20], is_default: false, tier_level: 2 },
+            { key: 'pool', newapi_group: 'default', newapi_channel_ids: [], is_default: true, tier_level: 0 },
+            { key: 'official', newapi_group: 'official', newapi_channel_ids: [2], is_default: false, tier_level: 1 },
+            { key: 'cc-kiro', newapi_group: 'cc-kiro', newapi_channel_ids: [20], is_default: false, tier_level: 2 },
         ]);
         mockGetChannel.mockImplementation((id: number) => Promise.resolve(ccKiroChannel(id)));
         mockListChannels.mockResolvedValue([
@@ -228,8 +230,8 @@ describe('POST /api/admin/models/import — P2.8 arbitrary tiers (cc-kiro) + con
 
     it('uses the is_default group key as catch-all (not hardcoded "pool")', async () => {
         mockChannelGroupFindMany.mockResolvedValue([
-            { key: 'house', newapi_channel_ids: [], is_default: true, tier_level: 0 },
-            { key: 'official', newapi_channel_ids: [2], is_default: false, tier_level: 1 },
+            { key: 'house', newapi_group: 'default', newapi_channel_ids: [], is_default: true, tier_level: 0 },
+            { key: 'official', newapi_group: 'official', newapi_channel_ids: [2], is_default: false, tier_level: 1 },
         ]);
         const body = await (await POST(req('POST', {}))).json();
         expect(body.defaultTier).toBe('house');
@@ -240,8 +242,8 @@ describe('POST /api/admin/models/import — P2.8 arbitrary tiers (cc-kiro) + con
 
     it('flags a channel registered to ≥2 enabled groups; first (lowest tier_level) wins', async () => {
         mockChannelGroupFindMany.mockResolvedValue([
-            { key: 'pool', newapi_channel_ids: [3], is_default: true, tier_level: 0 },
-            { key: 'official', newapi_channel_ids: [3], is_default: false, tier_level: 1 },
+            { key: 'pool', newapi_group: 'default', newapi_channel_ids: [3], is_default: true, tier_level: 0 },
+            { key: 'official', newapi_group: 'official', newapi_channel_ids: [3], is_default: false, tier_level: 1 },
         ]);
         const body = await (await POST(req('POST', { channel_ids: [3] }))).json();
         // pool is iterated first (tier_level 0) → wins; the conflict is surfaced for the preview.
@@ -253,7 +255,11 @@ describe('POST /api/admin/models/import — P2.8 arbitrary tiers (cc-kiro) + con
 
 describe('POST /api/admin/models/import — same slug across tiers (real import)', () => {
     it('pool + official channel with the same slug → 1 model (2-tier upstream_map) + 2 prices', async () => {
-        mockChannelGroupFindMany.mockResolvedValue([{ key: 'official', newapi_channel_ids: [99] }]);
+        mockChannelGroupFindMany.mockResolvedValue([
+            // GR 原生语义:catch-all 档也要登记(否则组倍率不可解析 → chat 一律 unpriced)。
+            { key: 'pool', newapi_group: 'default', newapi_channel_ids: [], is_default: true, tier_level: 0 },
+            { key: 'official', newapi_group: 'official', newapi_channel_ids: [99], is_default: false, tier_level: 1 },
+        ]);
         mockGetChannel.mockImplementation((id: number) => {
             if (id === 3)
                 return Promise.resolve({
@@ -310,7 +316,9 @@ describe('POST /api/admin/models/import — per (slug,tier) idempotency (real im
     };
 
     it('existing pool model, importing official → merge upstream_map + add official price (pool untouched)', async () => {
-        mockChannelGroupFindMany.mockResolvedValue([{ key: 'official', newapi_channel_ids: [99] }]);
+        mockChannelGroupFindMany.mockResolvedValue([
+            { key: 'official', newapi_group: 'official', newapi_channel_ids: [99] },
+        ]);
         mockModelFindMany.mockResolvedValue([existingGpt]);
         mockGetChannel.mockImplementation((id: number) =>
             id === 99

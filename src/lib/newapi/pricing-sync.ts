@@ -2,6 +2,7 @@ import 'server-only';
 import { getOption, putOption } from './client';
 import { tierOrder } from '@/lib/admin/pricing-tiers';
 import { USD_TO_CNY_RATE, quotaToCny } from './quota-units';
+import { prisma } from '@/lib/db';
 
 /**
  * 定价 sync 的换算 FX —— 把零售 ¥/1M 折算成 new-api ratio,必须与真实计费口径一致。
@@ -32,15 +33,20 @@ export interface Ratios {
 /**
  * 把零售 ¥/1M 价折算成 new-api 的 model_ratio / completion_ratio。
  *
- *   model_ratio      = input_cny_per_1m / CHAT_FX(见 {@link CHAT_FX};prod=7、本地测试 env=14.4)
+ *   model_ratio      = input_cny_per_1m / (CHAT_FX × groupRatio)
  *   completion_ratio = output_cny_per_1m / input_cny_per_1m(沿用官方 in/out 比例)
  *
- * 使「目录标价 = 客户实扣」(目录价 / CHAT_FX == new-api live mr)。例(本地测试 env FX=14.4):
+ * ⚠️ GR 原生语义重锚(2026-07-20)之后,GroupRatio = 该组的 ¥/$ 汇率(default=1.2、
+ * az-gpt=1.5、pool-gpt=0.2 …),不再恒 1。实扣 ¥/1M = CHAT_FX × mr × GR,所以换算
+ * 必须除以【该档次所在组】的 live GroupRatio —— groupRatio 为必传参,禁止任何调用点
+ * 隐含 GR=1 的旧假设。档次 → 组 → 倍率的解析见 {@link getTierGroupRatio}。
+ *
+ * 例(本地测试 env CHAT_FX=14.4, groupRatio=1):
  *   零售 ¥2.5/¥10    → mr 0.173611, cr 4
  *   零售 ¥22.5/¥112.5 → mr 1.5625, cr 5
  */
-export function computeRatios(cnyIn: number, cnyOut: number): Ratios {
-    const mr = cnyIn / CHAT_FX;
+export function computeRatios(cnyIn: number, cnyOut: number, groupRatio: number): Ratios {
+    const mr = cnyIn / (CHAT_FX * groupRatio);
     const cr = cnyIn > 0 ? cnyOut / cnyIn : 1;
     return { model_ratio: Number(mr.toFixed(6)), completion_ratio: Number(cr.toFixed(4)) };
 }
@@ -54,19 +60,42 @@ export interface RetailPrice {
 /**
  * {@link computeRatios} 的【逆运算】(P2.5 从 new-api 反向导入定价用)。
  *
- *   ¥in/1M  = model_ratio × CHAT_FX(见 {@link CHAT_FX};prod=7、本地测试 env=14.4)
+ *   ¥in/1M  = model_ratio × CHAT_FX × groupRatio(GR 原生语义:实扣要乘该档组倍率)
  *   ¥out/1M = ¥in × completion_ratio
  *
- * 与正向 sync 互逆(四舍五入到 CatalogPrice 的 Decimal(12,4) 精度),例(本地测试 env FX=14.4):
+ * 与正向 sync 互逆(四舍五入到 CatalogPrice 的 Decimal(12,4) 精度),例(本地测试 env
+ * FX=14.4, groupRatio=1):
  *   mr 0.173611, cr 4 → ¥2.5 / ¥10
  *   mr 1.5625,   cr 5 → ¥22.5 / ¥112.5
  *
  * completion_ratio 缺失时调用方应传 1(= in/out 同价),见 import-catalog.ts。
  */
-export function retailFromRatios(modelRatio: number, completionRatio: number): RetailPrice {
-    const cnyIn = Number((modelRatio * CHAT_FX).toFixed(4));
+export function retailFromRatios(modelRatio: number, completionRatio: number, groupRatio: number): RetailPrice {
+    const cnyIn = Number((modelRatio * CHAT_FX * groupRatio).toFixed(4));
     const cnyOut = Number((cnyIn * completionRatio).toFixed(4));
     return { input_cny_per_1m: cnyIn, output_cny_per_1m: cnyOut };
+}
+
+/**
+ * 档次 key(channel_groups.key,如 'pool' / 'official' / 'pool-gpt')→ 该档所在
+ * new-api 组的 live GroupRatio。GR 原生语义重锚(2026-07-20)后 GroupRatio = ¥/$ 汇率
+ * (default=1.2、az-gpt=1.5、pool-gpt=0.2 …),不再恒 1,sync 换算必须除/乘它。
+ *
+ * 解析链:channel_groups.key → newapi_group → getOption('GroupRatio')[group]。
+ * 任一环缺失 → throw(调用方转成 ok:false)——宁可同步失败,也不能按错的倍率写计费。
+ */
+export async function getTierGroupRatio(tier: string): Promise<number> {
+    const cg = await prisma.channelGroup.findFirst({
+        where: { key: tier },
+        select: { newapi_group: true },
+    });
+    if (!cg) throw new Error(`档次「${tier}」未在 channel_groups 登记,无法解析组倍率`);
+    const dict = parseRatioDict(await getOption('GroupRatio'));
+    const ratio = dict[cg.newapi_group];
+    if (typeof ratio !== 'number' || !Number.isFinite(ratio) || ratio <= 0) {
+        throw new Error(`new-api GroupRatio 缺组「${cg.newapi_group}」(档次「${tier}」),无法换算`);
+    }
+    return ratio;
 }
 
 /** upstream_map 一个档次的映射(P2 结构,P3 扩展为 pool/official 多档)。 */
@@ -91,8 +120,10 @@ export interface SyncResult {
     ratios?: Ratios;
     /** 图片模型:本次走【全局 ModelPrice】同步(非 per-channel mr/cr)。 */
     image?: boolean;
-    /** 图片模型同步进 new-api 全局 ModelPrice 的 USD/张(= per_image_cny / IMAGE_FX)。 */
+    /** 图片模型同步进 new-api 全局 ModelPrice 的值(= per_image_cny / (IMAGE_FX × 组倍率))。 */
     modelPrice_usd?: number;
+    /** 本次换算用的该档组倍率(getTierGroupRatio 解析,GR 原生语义 2026-07-20)。 */
+    group_ratio?: number;
     /** 非致命提示(如:图片多档填了不同价,已按默认档值同步,其余未生效)。 */
     warn?: string;
     error?: string;
@@ -116,9 +147,10 @@ export function parseRatioDict(s: string | Record<string, number> | null | undef
  *   - chat(有 in/out 价)→ 全局 `ModelRatio` + `CompletionRatio`(见 {@link syncChatModelRatio})。
  *   - 图片(填了 per_image_cny)→ 全局 `ModelPrice`(见 {@link syncImageModelPrice},P2.8 Part B)。
  * 两者对称:GET 全量 dict → 只 merge 我们这个 upstream_model → PUT 整 dict(保留别的条目,
- * gotcha #15 精神)。⚠️ 全局按模型名 → chat 与图片**都无法分 pool/official 档**(同名各档共享
- * 一个值);多档归一 + warn 由调用方(resync)用 {@link resolveChatTierPrice} /
- * {@link resolveImageModelPrice} 做,真分档计费留 P4c。
+ * gotcha #15 精神)。GR 原生语义(2026-07-20)后,分档由 GroupRatio 承担:全局值是【组无关
+ * 基准】,换算 = 编辑档 ¥ ÷ 该档组倍率({@link getTierGroupRatio});各档实售 = 基准 × 各自
+ * 组倍率。多档归一 + warn 仍由调用方(resync)用 {@link resolveChatTierPrice} /
+ * {@link resolveImageModelPrice} 做(各档目录价应满足「¥ ∝ 组倍率」,否则以同步档为准)。
  *
  * 返回 ok=false:upstream_map 完全没有 {channel_id, upstream_model} 映射 / new-api GET/PUT 失败。
  * 既无 in/out 又无 per_image → ok=true 但 skipped(没有可同步的价)。
@@ -147,9 +179,10 @@ export async function syncModelPriceToNewApi(upstreamMap: UpstreamMap, price: Pr
 /**
  * chat 模型 → new-api【全局 ModelRatio + CompletionRatio】同步(P2.9)。
  *
- * ⚠️ 架构限制(与图片 {@link syncImageModelPrice} 同款):全局 `ModelRatio`/`CompletionRatio`
- * 是 `{ 模型名: 值 }`,**按模型名、不分渠道/档次** —— pool/official/cc-kiro 用同一模型名 →
- * 全局层只能一个值 → **chat 也无法分档定价**(本期)。真分档计费留 P4c(portal 自己按档计量)。
+ * 全局 `ModelRatio`/`CompletionRatio` 是 `{ 模型名: 值 }`,按模型名共享。GR 原生语义
+ * (2026-07-20)下这不再是"无法分档"—— 分档由 GroupRatio 承担:实扣 = mr × CHAT_FX ×
+ * GR[组],mr 是该模型的【组无关基准】。sync 用编辑档的 ¥ ÷ 该档组倍率还原基准写入,
+ * 各档实售价 = 基准 × 各自组倍率。
  *
  * 旧实现 PUT `channel.model_ratio`(P2),被 new-api 静默丢弃 → 改价从未生效;P2.9 改走全局。
  * 写法镜像 gotcha #15:GET 全量 ModelRatio/CompletionRatio dict → 只 merge 我们这个 upstream_model
@@ -164,7 +197,18 @@ async function syncChatModelRatio(upstreamMap: UpstreamMap, price: PriceInput): 
             error: 'chat 模型在 upstream_map 中没有任何 {channel_id, upstream_model} 映射,无法同步 ModelRatio',
         };
     }
-    const ratios = computeRatios(price.input_cny_per_1m as number, price.output_cny_per_1m as number);
+    let groupRatio: number;
+    try {
+        groupRatio = await getTierGroupRatio(price.tier);
+    } catch (err) {
+        return {
+            ok: false,
+            channel_id: entry.channel_id,
+            upstream_model: entry.upstream_model,
+            error: err instanceof Error ? err.message : String(err),
+        };
+    }
+    const ratios = computeRatios(price.input_cny_per_1m as number, price.output_cny_per_1m as number, groupRatio);
     try {
         const mrDict = parseRatioDict(await getOption('ModelRatio'));
         const crDict = parseRatioDict(await getOption('CompletionRatio'));
@@ -173,13 +217,20 @@ async function syncChatModelRatio(upstreamMap: UpstreamMap, price: PriceInput): 
         // 整 dict 回传,只换我们这个模型名(其余条目原样保留)。两个 option 各 PUT 一次。
         await putOption('ModelRatio', JSON.stringify(mrDict));
         await putOption('CompletionRatio', JSON.stringify(crDict));
-        return { ok: true, channel_id: entry.channel_id, upstream_model: entry.upstream_model, ratios };
+        return {
+            ok: true,
+            channel_id: entry.channel_id,
+            upstream_model: entry.upstream_model,
+            ratios,
+            group_ratio: groupRatio,
+        };
     } catch (err) {
         return {
             ok: false,
             channel_id: entry.channel_id,
             upstream_model: entry.upstream_model,
             ratios,
+            group_ratio: groupRatio,
             error: err instanceof Error ? err.message : String(err),
         };
     }
@@ -217,9 +268,22 @@ async function syncImageModelPrice(upstreamMap: UpstreamMap, price: PriceInput):
             error: '图片模型在 upstream_map 中没有任何 {channel_id, upstream_model} 映射,无法同步 ModelPrice',
         };
     }
-    // 5 位小数:对齐 new-api ModelPrice dict 既有精度。换算用 IMAGE_FX(= USD_TO_CNY = 7.2);
-    // 配套把目录 per_image ×7.2/7 提上去后(Part B),per_image / 7.2 == 现网 live ModelPrice。
-    const modelPrice_usd = Number(((price.per_image_cny as number) / IMAGE_FX).toFixed(5));
+    // GR 原生语义:实扣 ¥/张 = ModelPrice × GR[组] × (quota→¥ 链 = IMAGE_FX) → ModelPrice
+    // = per_image ÷ (IMAGE_FX × 组倍率)。组倍率解析失败 → ok:false,绝不按错倍率写。
+    let groupRatio: number;
+    try {
+        groupRatio = await getTierGroupRatio(price.tier);
+    } catch (err) {
+        return {
+            ok: false,
+            image: true,
+            channel_id: entry.channel_id,
+            upstream_model: entry.upstream_model,
+            error: err instanceof Error ? err.message : String(err),
+        };
+    }
+    // 6 位小数:重锚后 ModelPrice 出现 0.083333 类循环小数,5 位会放大 ¥ 误差。
+    const modelPrice_usd = Number(((price.per_image_cny as number) / (IMAGE_FX * groupRatio)).toFixed(6));
     try {
         // parseRatioDict:把 JSON 字符串/对象解析成 Record<string, number>(对 ModelPrice dict 同形)。
         const dict = parseRatioDict(await getOption('ModelPrice'));
@@ -231,6 +295,7 @@ async function syncImageModelPrice(upstreamMap: UpstreamMap, price: PriceInput):
             channel_id: entry.channel_id,
             upstream_model: entry.upstream_model,
             modelPrice_usd,
+            group_ratio: groupRatio,
         };
     } catch (err) {
         return {
@@ -239,6 +304,7 @@ async function syncImageModelPrice(upstreamMap: UpstreamMap, price: PriceInput):
             channel_id: entry.channel_id,
             upstream_model: entry.upstream_model,
             modelPrice_usd,
+            group_ratio: groupRatio,
             error: err instanceof Error ? err.message : String(err),
         };
     }
@@ -261,41 +327,89 @@ function pickDefaultTierRow<T extends { tier: string }>(priced: T[], defaultTier
  *
  * 全局 ModelPrice 一个模型名只能有一个价,所以多档若填了不同 per_image 必须二选一:
  *   - 取【默认档】(is_default,通常 pool)的值;默认档没填则按档次序取第一个有价的;
- *   - 多档价不一致时产出 warn(告知 operator 其余档的价未生效,真分档留 P4c)。
+ *   - 各档目录价与「基准 × 组倍率」不符时产出 warn(GR 原生语义:分档由组倍率承担)。
  * 没有任何档填了 per_image → 返回默认档 + null(无价可同步)。
  */
 export function resolveImageModelPrice(
     pricesByTier: Array<{ tier: string; per_image_cny: number | null }>,
     defaultTier: string,
+    /** 可选:各档组倍率(GR 原生语义)。给了就按「¥ ∝ 组倍率」校验一致性;没给退回逐字比价。 */
+    ratiosByTier?: Record<string, number>,
 ): { tier: string; per_image_cny: number | null; warn?: string } {
     const withPrice = pricesByTier.filter((p) => p.per_image_cny != null);
     if (withPrice.length === 0) return { tier: defaultTier, per_image_cny: null };
     const chosen = pickDefaultTierRow(withPrice, defaultTier);
-    const distinct = new Set(withPrice.map((p) => p.per_image_cny));
+    const divergent = tiersOffBase(
+        withPrice.map((p) => ({ tier: p.tier, cny: p.per_image_cny as number })),
+        { tier: chosen.tier, cny: chosen.per_image_cny as number },
+        ratiosByTier,
+    );
     const warn =
-        distinct.size > 1
-            ? `图片模型暂不支持分档价(new-api ModelPrice 按模型名全局),已用「${chosen.tier}」档价 ¥${chosen.per_image_cny}/张 同步;其余档填的不同价未生效(真分档计费留 P4c)。`
+        divergent.length > 0
+            ? `全局 ModelPrice 按模型名共享:已按「${chosen.tier}」档价 ¥${chosen.per_image_cny}/张 ÷ 该档组倍率写入基准;档 ${divergent.join('、')} 的目录价与「基准 × 其组倍率」不符,实扣以同步基准为准,请核对目录价或组倍率。`
             : undefined;
     return { tier: chosen.tier, per_image_cny: chosen.per_image_cny, warn };
 }
 
 /**
+ * 找出与「同步基准 × 组倍率」不符的档(GR 原生语义下,各档目录价应满足 ¥ ∝ 组倍率)。
+ * 没给 ratiosByTier(或缺基准档的倍率)时退化为逐字比价(与旧行为一致)。容差 1%。
+ */
+function tiersOffBase(
+    rows: Array<{ tier: string; cny: number }>,
+    chosen: { tier: string; cny: number },
+    ratiosByTier?: Record<string, number>,
+): string[] {
+    const baseRatio = ratiosByTier?.[chosen.tier];
+    if (typeof baseRatio === 'number' && baseRatio > 0 && chosen.cny > 0) {
+        const base = chosen.cny / baseRatio;
+        return rows
+            .filter((r) => {
+                const gr = ratiosByTier?.[r.tier];
+                if (typeof gr !== 'number' || gr <= 0) return true; // 倍率未知 → 无法核对,点名
+                return Math.abs(r.cny - base * gr) / (base * gr) > 0.01;
+            })
+            .map((r) => r.tier);
+    }
+    // 无倍率信息 → 老逻辑:价格逐字不同即点名(不含被选档自身)。
+    return rows.filter((r) => r.cny !== chosen.cny).map((r) => r.tier);
+}
+
+/**
  * chat 全局价归一(P2.9,架构限制见 {@link syncChatModelRatio})。与图片
- * {@link resolveImageModelPrice} 对称:全局 ModelRatio 按模型名,多档若填了不同 (in,out)
- * 价 → 取【默认档】(is_default,通常 pool)的价;默认档没填则按档次序取第一个有价的;多档
- * (in,out) 不一致时产出 warn(其余档价未生效,真分档留 P4c)。无任何档定价 → 默认档 + null。
+ * {@link resolveImageModelPrice} 对称:取【默认档】(is_default,通常 pool)的价;默认档没填
+ * 则按档次序取第一个有价的;各档目录价与「基准 × 组倍率」不符时产出 warn(GR 原生语义:
+ * 分档由组倍率承担,同步只写组无关基准)。无任何档定价 → 默认档 + null。
  */
 export function resolveChatTierPrice(
     pricesByTier: Array<{ tier: string; input_cny_per_1m: number | null; output_cny_per_1m: number | null }>,
     defaultTier: string,
+    /** 可选:各档组倍率(GR 原生语义)。给了就按「¥in ∝ 组倍率 且 out/in 一致」校验;没给退回逐字比价。 */
+    ratiosByTier?: Record<string, number>,
 ): { tier: string; input_cny_per_1m: number | null; output_cny_per_1m: number | null; warn?: string } {
     const withPrice = pricesByTier.filter((p) => p.input_cny_per_1m != null && p.output_cny_per_1m != null);
     if (withPrice.length === 0) return { tier: defaultTier, input_cny_per_1m: null, output_cny_per_1m: null };
     const chosen = pickDefaultTierRow(withPrice, defaultTier);
-    const distinct = new Set(withPrice.map((p) => `${p.input_cny_per_1m}/${p.output_cny_per_1m}`));
+    const chosenIn = chosen.input_cny_per_1m as number;
+    const chosenOut = chosen.output_cny_per_1m as number;
+    const chosenCr = chosenIn > 0 ? chosenOut / chosenIn : 1;
+    // in 价按组倍率核对;out 价要求各档 out/in(completion_ratio)一致(全局 CR 按模型名共享)。
+    const offIn = new Set(
+        tiersOffBase(
+            withPrice.map((p) => ({ tier: p.tier, cny: p.input_cny_per_1m as number })),
+            { tier: chosen.tier, cny: chosenIn },
+            ratiosByTier,
+        ),
+    );
+    for (const p of withPrice) {
+        const pin = p.input_cny_per_1m as number;
+        const cr = pin > 0 ? (p.output_cny_per_1m as number) / pin : 1;
+        if (Math.abs(cr - chosenCr) / (chosenCr || 1) > 0.01) offIn.add(p.tier);
+    }
+    const divergent = [...offIn];
     const warn =
-        distinct.size > 1
-            ? `chat 模型暂不支持分档价(new-api ModelRatio 按模型名全局),已用「${chosen.tier}」档价 ¥${chosen.input_cny_per_1m}/¥${chosen.output_cny_per_1m} 同步;其余档填的不同价未生效(真分档计费留 P4c)。`
+        divergent.length > 0
+            ? `全局 ModelRatio/CompletionRatio 按模型名共享:已按「${chosen.tier}」档价 ¥${chosenIn}/¥${chosenOut} ÷ 该档组倍率写入基准;档 ${divergent.join('、')} 的目录价与「基准 × 其组倍率」不符,实扣以同步基准为准,请核对目录价或组倍率。`
             : undefined;
     return {
         tier: chosen.tier,
