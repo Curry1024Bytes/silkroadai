@@ -49,6 +49,7 @@ describe('middleware — 独立门户形态门(PORTAL_FLAVOR=seedance-enterprise
             '/api/auth/login',
             '/api/auth/logout',
             '/api/enterprise/keys',
+            '/api', // P3 素材库 Action API(火山形)
         ]) {
             expect(middleware(req(p)).status).not.toBe(404);
         }
@@ -84,6 +85,9 @@ describe('middleware — matcher excludes /v1/* (body-buffering 10MB cap)', () =
         '/v1/images/generations',
         '/v1/models',
         '/v1/messages',
+        // P3:dashboard 素材上传(multipart 视频可 >10MB)避开 body 缓冲截断
+        '/api/enterprise/assets',
+        '/api/enterprise/assets/asset-20260719120000-abcdef',
         // W10:/v1beta native 透传经 portal(Caddy 今晚切流),Gemini inlineData
         // 大图 base64 必须避开 middleware 的 10MB body 缓冲截断
         '/v1beta/models/gemini-3-pro-image-preview:generateContent',

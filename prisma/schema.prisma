@@ -1242,6 +1242,42 @@ model EnterpriseUpstreamKey {
   @@map("enterprise_upstream_keys")
 }
 
+// ── P3 素材库(2026-07-19)——门户自有存储(R2),API 形态对标火山方舟素材库 ──
+// operator 确认:上游对直传 URL 全权限,素材库与上游归属无关 → 素材存我们 R2,
+// 对客 API = 火山 Action 契约(POST /api?Action=CreateAsset…),生成请求里可引用
+// asset-…/group-… id(proxy 解析成 R2 公网 URL 注入)。隔离 = user_id 行级归属。
+model EnterpriseAssetGroup {
+  id          String   @id // "group-YYYYMMDDHHMMSS-xxxxxx"
+  user_id     String   @db.Uuid
+  name        String
+  description String?
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  @@index([user_id])
+  @@map("enterprise_asset_groups")
+}
+
+model EnterpriseAsset {
+  id          String   @id // "asset-YYYYMMDDHHMMSS-xxxxxx"
+  user_id     String   @db.Uuid
+  group_id    String? // 所属素材组(可空;删组只解除引用不删素材)
+  asset_type  String // image | video | audio
+  name        String
+  description String?
+  r2_key      String // enterprise-assets/{user_id}/{asset_id}.{ext}
+  public_url  String // R2 公网直链(生成引用时注入的就是它)
+  mime        String?
+  bytes       Int      @default(0)
+  source_url  String? // CreateAsset 注册时的原始 URL(dashboard 上传的为 null)
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  @@index([user_id, created_at])
+  @@index([group_id])
+  @@map("enterprise_assets")
+}
+
 // 大客户议价:per-customer 费率覆盖(元/1M token)。查不到 → cn-billing 默认挂牌。
 model EnterpriseRateOverride {
   id         String   @id @default(uuid()) @db.Uuid

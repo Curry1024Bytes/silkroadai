@@ -15,6 +15,7 @@ import { prisma } from '@/lib/db';
 import { MODEL_MAP, extractVideoUrls, submitVideoWithKey, pollVideoWithKey } from '@/lib/seedance/cn-adapter';
 import { resolveEnterpriseCustomer, type EnterpriseCustomer } from './keys';
 import { ENTERPRISE_TIER, estimateEnterpriseCostCny, chargeEnterpriseVideoTask } from './billing';
+import { AssetError, resolveAssetRefs } from './assets';
 
 export function isEnterpriseFlavor(): boolean {
     return process.env.PORTAL_FLAVOR === 'seedance-enterprise';
@@ -68,6 +69,16 @@ async function handleSubmit(req: NextRequest): Promise<NextResponse> {
     const model = String(body.model || '');
     const map = MODEL_MAP[model];
     if (!map) return errJson(400, 'model_not_found', `unknown seedance model: ${model}`);
+
+    // P3 素材库引用:asset-…/group-… → R2 公网 URL(必须在 hasVideo 检测之前,
+    // 视频素材引用也要计入含视频费率档)。未知/非本人 id → 400。
+    try {
+        body = await resolveAssetRefs(body, cust.userId);
+    } catch (e) {
+        if (e instanceof AssetError) return errJson(e.status, e.code, e.message);
+        console.error('[enterprise-proxy] asset ref resolve failed', e);
+        return errJson(503, 'temporarily_unavailable', 'asset lookup failed, please retry');
+    }
 
     const hasVideo = extractVideoUrls(body).length > 0;
     const durRaw = Number(body.duration ?? body.seconds);

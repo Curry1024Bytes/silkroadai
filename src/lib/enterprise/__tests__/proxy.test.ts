@@ -32,6 +32,12 @@ vi.mock('../billing', async (importOriginal) => {
     const mod = await importOriginal<typeof import('../billing')>();
     return { ...mod, estimateEnterpriseCostCny, chargeEnterpriseVideoTask };
 });
+const { resolveAssetRefs } = vi.hoisted(() => ({ resolveAssetRefs: vi.fn() }));
+vi.mock('../assets', async (importOriginal) => {
+    const mod = await importOriginal<typeof import('../assets')>();
+    return { ...mod, resolveAssetRefs };
+});
+import { AssetError } from '../assets';
 
 import { handleEnterpriseV1, isEnterpriseFlavor } from '../proxy';
 
@@ -52,6 +58,7 @@ beforeEach(() => {
     estimateEnterpriseCostCny.mockResolvedValue(4.26);
     db.seedanceVideoTask.create.mockResolvedValue({});
     db.seedanceVideoTask.update.mockResolvedValue({});
+    resolveAssetRefs.mockImplementation((body: Record<string, unknown>) => Promise.resolve(body));
 });
 
 describe('isEnterpriseFlavor', () => {
@@ -157,6 +164,40 @@ describe('提交', () => {
         db.seedanceVideoTask.create.mockRejectedValue(new Error('db down'));
         const res = await handleEnterpriseV1(req('POST', '/v1/video/generations', goodBody), '/video/generations');
         expect(res.status).toBe(503);
+    });
+
+    it('P3 素材引用:resolveAssetRefs 替换后的 body 才发上游', async () => {
+        const substituted = {
+            model: 'seedance2.0-pro-720p-ref',
+            prompt: '一只猫',
+            images: ['https://r2/asset-1.png'],
+        };
+        resolveAssetRefs.mockResolvedValue(substituted);
+        submitVideoWithKey.mockResolvedValue(NextResponse.json({ id: 'cgt-e3', status: 'queued' }));
+        const res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', {
+                model: 'seedance2.0-pro-720p-ref',
+                prompt: '一只猫',
+                images: ['asset-20260719120000-aaaaaa'],
+            }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(200);
+        expect(resolveAssetRefs).toHaveBeenCalledWith(
+            expect.objectContaining({ images: ['asset-20260719120000-aaaaaa'] }),
+            'u1',
+        );
+        expect(submitVideoWithKey).toHaveBeenCalledWith(substituted, 'Bearer sk-upstream-u1');
+    });
+
+    it('P3 素材引用非本人/不存在 → 400,不打上游', async () => {
+        resolveAssetRefs.mockRejectedValue(new AssetError('AssetNotFound', '素材不存在: asset-x', 400));
+        const res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { model: 'seedance2.0-pro-720p-ref', prompt: 'x', images: ['x'] }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(400);
+        expect(submitVideoWithKey).not.toHaveBeenCalled();
     });
 });
 

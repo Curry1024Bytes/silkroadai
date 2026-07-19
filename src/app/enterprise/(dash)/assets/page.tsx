@@ -1,19 +1,38 @@
 /**
- * 企业门户素材库页(P2 占位)—— P3 接上游素材 API(CreateAsset/CreateAssetGroup 等,
- * 网关按 key 归属隔离),见 seedance-enterprise-portal-design.md §3.6。
+ * P3 素材库页:server 拉素材+素材组 → client island(上传/分组/改名/删除/复制 id)。
+ * 素材存我们 R2;生成请求里直接写 asset-…/group-… id 即可引用(接入说明见页内)。
  */
+import { prisma } from '@/lib/db';
+import { getEnterpriseSessionUser } from '@/lib/enterprise/session';
+import { AssetsManager } from './assets-manager';
+
 export const dynamic = 'force-dynamic';
 
 export const metadata = { title: 'Seedance 企业端口 · 素材库' };
 
-export default function EnterpriseAssetsPage() {
+export default async function EnterpriseAssetsPage() {
+    const user = (await getEnterpriseSessionUser())!;
+    const [assets, groups] = await Promise.all([
+        prisma.enterpriseAsset.findMany({
+            where: { user_id: user.id },
+            orderBy: { created_at: 'desc' },
+            take: 500,
+        }),
+        prisma.enterpriseAssetGroup.findMany({ where: { user_id: user.id }, orderBy: { created_at: 'asc' } }),
+    ]);
+
     return (
-        <section className="rounded-xl border border-gray-200 bg-white p-8 text-center">
-            <h2 className="text-base font-semibold text-gray-900">素材库</h2>
-            <p className="mx-auto mt-2 max-w-md text-sm text-gray-500">
-                素材资产管理(上传参考图/视频、建素材组、在生成中引用)即将上线。 当前可在生成请求里直接传参考图/视频 URL
-                或 base64,功能不受影响。
-            </p>
-        </section>
+        <AssetsManager
+            initialAssets={assets.map((a) => ({
+                id: a.id,
+                name: a.name,
+                asset_type: a.asset_type,
+                group_id: a.group_id,
+                url: a.public_url,
+                bytes: a.bytes,
+                created_at: a.created_at.toISOString(),
+            }))}
+            initialGroups={groups.map((g) => ({ id: g.id, name: g.name }))}
+        />
     );
 }

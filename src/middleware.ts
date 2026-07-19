@@ -26,6 +26,7 @@ export function middleware(request: NextRequest) {
         const allowed =
             p === '/enterprise' ||
             p.startsWith('/enterprise/') ||
+            p === '/api' || // P3 素材库 Action API(火山形 /api?Action=…,sk-ent 鉴权)
             p === '/api/auth/login' ||
             p === '/api/auth/logout' ||
             p.startsWith('/api/enterprise/') ||
@@ -53,5 +54,9 @@ export const config = {
     // 生图 edit / chat 图片上传)body 里带参考图 base64,>10MB 会被 middleware 缓冲
     // 截断 → new-api 收到残缺 JSON,报 "unexpected end of JSON input"(2026-07-05
     // 客户 seedance 图生视频实测)。纯 API 中继,不需页面安全头。
-    matcher: ['/((?!v1/|v1beta/|seedance-adapter/|api/tools/|_next/static|_next/image|favicon.ico).*)'],
+    // api/enterprise/assets 一并排除:P3 dashboard 素材上传(multipart 视频可 >10MB,
+    // 避开 middleware body 缓冲截断)。纯 API(cookie 鉴权在 route 内),不需页面安全头。
+    matcher: [
+        '/((?!v1/|v1beta/|seedance-adapter/|api/tools/|api/enterprise/assets|_next/static|_next/image|favicon.ico).*)',
+    ],
 };
