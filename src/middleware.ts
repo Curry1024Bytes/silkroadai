@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 
 /**
  * Default-deny security headers for every response.
@@ -9,7 +9,16 @@ import { NextResponse } from 'next/server';
  * (X-Frame-Options=SAMEORIGIN) is correct and the dynamic CSP build was
  * dead code.
  */
-export function middleware() {
+export function middleware(request: NextRequest) {
+    // 独立门户形态(PORTAL_FLAVOR=seedance-enterprise 实例):主站页面/API 全部 404 ——
+    // 大客户实例只暴露 /v1 视频端点(matcher 排除,由 enterprise/proxy 分发)。
+    // 仅放行 admin break-glass 开户/入账端点(x-admin-token 守门,VPS 本机 curl 用)。
+    // P2 dashboard 上线时在这里加 /enterprise/* 放行。主站实例(env 未设)零影响。
+    if (process.env.PORTAL_FLAVOR === 'seedance-enterprise') {
+        if (!request.nextUrl.pathname.startsWith('/api/admin/enterprise/')) {
+            return new NextResponse(null, { status: 404 });
+        }
+    }
     const response = NextResponse.next();
     response.headers.set('X-Frame-Options', 'SAMEORIGIN');
     response.headers.set('X-Content-Type-Options', 'nosniff');

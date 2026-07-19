@@ -8,7 +8,8 @@
  *    (2026-06-11 实测,proxy 自身的 20MB 单图限制被框架层先挡)。
  *    谁要是把 `v1/` 从负向断言里删掉,这里会红。
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import { NextRequest } from 'next/server';
 import { config, middleware } from '@/middleware';
 
 /** 近似 Next 的 matcher 编译:本仓 matcher 是单个含正则组的 pattern,首尾锚定即可。 */
@@ -16,12 +17,34 @@ function matches(pattern: string, path: string): boolean {
     return new RegExp(`^${pattern}$`).test(path);
 }
 
+const req = (path: string) => new NextRequest(`http://localhost${path}`);
+
 describe('middleware — security headers', () => {
     it('sets the three security headers', () => {
-        const res = middleware();
+        const res = middleware(req('/dashboard'));
         expect(res.headers.get('X-Frame-Options')).toBe('SAMEORIGIN');
         expect(res.headers.get('X-Content-Type-Options')).toBe('nosniff');
         expect(res.headers.get('Referrer-Policy')).toBe('strict-origin-when-cross-origin');
+    });
+});
+
+describe('middleware — 独立门户形态门(PORTAL_FLAVOR=seedance-enterprise)', () => {
+    afterEach(() => {
+        delete process.env.PORTAL_FLAVOR;
+    });
+
+    it('enterprise 实例:主站页面/API 全 404,admin enterprise break-glass 放行', () => {
+        process.env.PORTAL_FLAVOR = 'seedance-enterprise';
+        for (const p of ['/', '/dashboard', '/login', '/pay', '/api/portal/keys', '/api/orders']) {
+            expect(middleware(req(p)).status).toBe(404);
+        }
+        for (const p of ['/api/admin/enterprise/onboard', '/api/admin/enterprise/credit']) {
+            expect(middleware(req(p)).status).not.toBe(404);
+        }
+    });
+
+    it('主站实例(env 未设):行为不变', () => {
+        expect(middleware(req('/dashboard')).status).not.toBe(404);
     });
 });
 

@@ -1209,3 +1209,48 @@ model SeedanceVideoTask {
   @@index([billed])
   @@map("seedance_video_tasks")
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// seedance 大客户独立门户 P1(2026-07-19,设计见 seedance-enterprise-portal-design.md)。
+// 独立部署(PORTAL_FLAVOR=seedance-enterprise,裸 IP 128.241.232.23),门户自发
+// sk-ent- key(只存 sha256,明文创建时返一次)、每客户一把独立上游 key(AES-256-GCM
+// 加密存,env ENTERPRISE_UPSTREAM_ENC_KEY)、计费走 P4c ¥账本(客户 billing_mode='portal')。
+// 惯例镜像 RequestLog/SeedanceVideoTask:裸 uuid 列,不建 FK relation。
+// ─────────────────────────────────────────────────────────────────────────
+model EnterpriseKey {
+  id           String    @id @default(uuid()) @db.Uuid
+  tenant_id    String?   @db.Uuid
+  user_id      String    @db.Uuid
+  key_hash     String    @unique // sha256 hex of 完整 "sk-ent-…";明文不落库
+  key_prefix   String // 前 12 字符("sk-ent-xxxxx"),列表展示用
+  name         String
+  status       String    @default("active") // active | disabled
+  created_at   DateTime  @default(now())
+  last_used_at DateTime?
+
+  @@index([user_id])
+  @@map("enterprise_keys")
+}
+
+model EnterpriseUpstreamKey {
+  id               String   @id @default(uuid()) @db.Uuid
+  user_id          String   @unique @db.Uuid // 一客户一把(决策②)
+  upstream_key_enc String // AES-256-GCM(iv‖tag‖ct base64),key=ENTERPRISE_UPSTREAM_ENC_KEY
+  note             String? // 上游侧对账备注(key 名/账户)
+  created_at       DateTime @default(now())
+
+  @@map("enterprise_upstream_keys")
+}
+
+// 大客户议价:per-customer 费率覆盖(元/1M token)。查不到 → cn-billing 默认挂牌。
+model EnterpriseRateOverride {
+  id         String   @id @default(uuid()) @db.Uuid
+  user_id    String   @db.Uuid
+  resolution String // 720p | 1080p | 4k
+  has_video  Boolean
+  cny_per_m  Decimal  @db.Decimal(12, 4)
+  created_at DateTime @default(now())
+
+  @@unique([user_id, resolution, has_video])
+  @@map("enterprise_rate_overrides")
+}

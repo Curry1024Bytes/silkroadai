@@ -36,10 +36,14 @@ export function computeCostCny(tokens: number | bigint, resolution: Resolution, 
  *  实际扣费用轮询回来的真 usage.completion_tokens。 */
 const TOK_PER_SEC: Record<Resolution, number> = { '720p': 21774, '1080p': 48992, '4k': 195970 };
 
+/** 估算 token 数(预估用;独立门户 enterprise/billing 也复用同一锚点)。 */
+export function estimateTokens(resolution: Resolution, duration: number): number {
+    return TOK_PER_SEC[resolution] * Math.max(1, duration || 5);
+}
+
 /** 提交前的成本预估(用于余额门)。参考视频还会加输入视频 token,故预估偏低 —— 加 1.5× 缓冲。 */
 export function estimateCostCny(resolution: Resolution, duration: number, hasVideo: boolean): number {
-    const tokens = TOK_PER_SEC[resolution] * Math.max(1, duration || 5);
-    const base = computeCostCny(tokens, resolution, hasVideo);
+    const base = computeCostCny(estimateTokens(resolution, duration), resolution, hasVideo);
     return hasVideo ? +(base * 1.5).toFixed(6) : base;
 }
 

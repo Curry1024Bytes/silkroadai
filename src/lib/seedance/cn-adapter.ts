@@ -174,7 +174,11 @@ export async function submitVideo(req: NextRequest): Promise<NextResponse> {
     } catch {
         return err(400, 'invalid_json', 'request body must be JSON');
     }
+    return submitVideoWithKey(body, auth);
+}
 
+/** 提交核心(独立门户直调:body + 上游 key 授权头,进程内调用,不走 HTTP/适配器单 key 鉴权)。 */
+export async function submitVideoWithKey(body: Record<string, unknown>, auth: string): Promise<NextResponse> {
     const model = String(body.model || '');
     const map = MODEL_MAP[model];
     if (!map) return err(400, 'model_not_found', `unknown seedance-cn model: ${model}`);
@@ -324,7 +328,11 @@ function firstVideoUrl(data: unknown): string | null {
 
 /** GET 轮询:token.xinhankr.com /v1/video/generations/{id} → OpenAI-video 形。 */
 export async function pollVideo(req: NextRequest, id: string): Promise<NextResponse> {
-    const auth = req.headers.get('authorization') || '';
+    return pollVideoWithKey(id, req.headers.get('authorization') || '');
+}
+
+/** 轮询核心(独立门户直调:id + 上游 key 授权头)。 */
+export async function pollVideoWithKey(id: string, auth: string): Promise<NextResponse> {
     let upstream: Response;
     try {
         upstream = await fetchXhk(`/v1/video/generations/${encodeURIComponent(id)}`, auth);

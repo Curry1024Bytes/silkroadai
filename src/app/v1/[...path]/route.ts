@@ -82,6 +82,7 @@ import {
     handleSeedanceVideoSubmit,
     handleSeedanceVideoPoll,
 } from '@/lib/seedance/cn-proxy';
+import { isEnterpriseFlavor, handleEnterpriseV1 } from '@/lib/enterprise/proxy';
 import { guardSseResponse, guardSseStream, type SseErrorShape } from '@/lib/sse/stream-guard';
 import { forwardHeaders, passthroughResponse, STRIP_RESPONSE_HEADERS } from '@/lib/proxy/forward';
 import { stripAdobeImageMetadataB64 } from '@/lib/proxy/image-metadata';
@@ -2232,6 +2233,10 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
     const { path: segments } = await params;
     const path = '/' + (segments ?? []).join('/');
     const search = req.nextUrl.search || '';
+
+    // 独立门户形态(PORTAL_FLAVOR=seedance-enterprise 实例):/v1 只服务 seedance 视频
+    // 端点(sk-ent- key + 每客户独立上游 key + ¥账本自扣),其余路径 404。主站实例不受影响。
+    if (isEnterpriseFlavor()) return handleEnterpriseV1(req, path);
 
     // 临时诊断(env HDR_CAPTURE=1,默认关):记 /messages + /chat/completions POST 的请求头
     // 名+值(脱敏 auth),带账户 id + token 尾 4 位精确定位。用于抓客户端注入的异常头

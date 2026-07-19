@@ -6,6 +6,11 @@ export async function register() {
         // the project root, but this instrumentation hook lives under src/.
         await import('../sentry.server.config');
 
+        // 独立门户实例(PORTAL_FLAVOR=seedance-enterprise)与主站共库 —— 定时任务
+        // (订单超时/余额提醒/图片清理/分销结算/shadow meter)只能主站单实例跑,
+        // 否则双实例双跑(meter 游标竞态 / 提醒双发风险)。企业实例到此为止。
+        if (process.env.PORTAL_FLAVOR === 'seedance-enterprise') return;
+
         const { startTimeoutScheduler } = await import('@/lib/order/timeout');
         startTimeoutScheduler();
 
