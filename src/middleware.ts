@@ -10,14 +10,27 @@ import { NextRequest, NextResponse } from 'next/server';
  * dead code.
  */
 export function middleware(request: NextRequest) {
-    // 独立门户形态(PORTAL_FLAVOR=seedance-enterprise 实例):主站页面/API 全部 404 ——
-    // 大客户实例只暴露 /v1 视频端点(matcher 排除,由 enterprise/proxy 分发)。
-    // 仅放行 admin break-glass 开户/入账端点(x-admin-token 守门,VPS 本机 curl 用)。
-    // P2 dashboard 上线时在这里加 /enterprise/* 放行。主站实例(env 未设)零影响。
+    // 独立门户形态(PORTAL_FLAVOR=seedance-enterprise 实例):主站页面/API 默认 404 ——
+    // 大客户实例只暴露 /v1 视频端点(matcher 排除,由 enterprise/proxy 分发)+ 下列白名单:
+    //  - /enterprise/*   P2 dashboard(登录 + 概览/计费/日志/密钥/素材库)
+    //  - /api/auth/{login,logout}   cookie 会话(企业登录页复用主站 JWT 会话)
+    //  - /api/enterprise/*          dashboard 的客户 API(keys 管理等)
+    //  - /api/admin/enterprise/*    admin break-glass(x-admin-token,VPS 本机 curl)
+    //  - /login → 302 /enterprise/login(next.config 把 / 先 307 到 /login,借道进门)
+    // 主站实例(env 未设)零影响。
     if (process.env.PORTAL_FLAVOR === 'seedance-enterprise') {
-        if (!request.nextUrl.pathname.startsWith('/api/admin/enterprise/')) {
-            return new NextResponse(null, { status: 404 });
+        const p = request.nextUrl.pathname;
+        if (p === '/login' || p === '/') {
+            return NextResponse.redirect(new URL('/enterprise/login', request.url));
         }
+        const allowed =
+            p === '/enterprise' ||
+            p.startsWith('/enterprise/') ||
+            p === '/api/auth/login' ||
+            p === '/api/auth/logout' ||
+            p.startsWith('/api/enterprise/') ||
+            p.startsWith('/api/admin/enterprise/');
+        if (!allowed) return new NextResponse(null, { status: 404 });
     }
     const response = NextResponse.next();
     response.headers.set('X-Frame-Options', 'SAMEORIGIN');

@@ -33,13 +33,33 @@ describe('middleware — 独立门户形态门(PORTAL_FLAVOR=seedance-enterprise
         delete process.env.PORTAL_FLAVOR;
     });
 
-    it('enterprise 实例:主站页面/API 全 404,admin enterprise break-glass 放行', () => {
+    it('enterprise 实例:主站页面/API 全 404,白名单放行', () => {
         process.env.PORTAL_FLAVOR = 'seedance-enterprise';
-        for (const p of ['/', '/dashboard', '/login', '/pay', '/api/portal/keys', '/api/orders']) {
+        for (const p of ['/dashboard', '/pay', '/api/portal/keys', '/api/orders', '/api/auth/register', '/models']) {
             expect(middleware(req(p)).status).toBe(404);
         }
-        for (const p of ['/api/admin/enterprise/onboard', '/api/admin/enterprise/credit']) {
+        for (const p of [
+            '/api/admin/enterprise/onboard',
+            '/api/admin/enterprise/credit',
+            '/api/admin/enterprise/set-password',
+            '/enterprise',
+            '/enterprise/login',
+            '/enterprise/billing',
+            '/enterprise/keys',
+            '/api/auth/login',
+            '/api/auth/logout',
+            '/api/enterprise/keys',
+        ]) {
             expect(middleware(req(p)).status).not.toBe(404);
+        }
+    });
+
+    it('enterprise 实例:/ 与 /login 重定向到 /enterprise/login(借道 next.config 的 / → /login)', () => {
+        process.env.PORTAL_FLAVOR = 'seedance-enterprise';
+        for (const p of ['/', '/login']) {
+            const res = middleware(req(p));
+            expect(res.status).toBe(307);
+            expect(res.headers.get('location')).toContain('/enterprise/login');
         }
     });
 
