@@ -5,6 +5,7 @@
  * 改名 / 删除 / 复制素材 id(生成请求里直接引用)。
  */
 import { useMemo, useRef, useState } from 'react';
+import { copyText } from '@/lib/enterprise/copy-text';
 
 export interface AssetRow {
     id: string;
@@ -119,13 +120,9 @@ export function AssetsManager({
     }
 
     async function onCopyId(id: string) {
-        try {
-            await navigator.clipboard.writeText(id);
-            setCopiedId(id);
-            setTimeout(() => setCopiedId(null), 1500);
-        } catch {
-            // clipboard 不可用时用户手动复制
-        }
+        if (!(await copyText(id))) return;
+        setCopiedId(id);
+        setTimeout(() => setCopiedId(null), 1500);
     }
 
     return (

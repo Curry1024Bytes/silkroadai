@@ -5,6 +5,7 @@
  * 数据源 = /api/enterprise/keys;操作后本地更新列表,不整页刷新。
  */
 import { useState } from 'react';
+import { copyText } from '@/lib/enterprise/copy-text';
 
 export interface KeyRow {
     id: string;
@@ -69,12 +70,7 @@ export function KeysManager({ initialKeys }: { initialKeys: KeyRow[] }) {
 
     async function onCopy() {
         if (!freshKey) return;
-        try {
-            await navigator.clipboard.writeText(freshKey);
-            setCopied(true);
-        } catch {
-            // clipboard 不可用时用户手动选中复制
-        }
+        if (await copyText(freshKey)) setCopied(true);
     }
 
     return (

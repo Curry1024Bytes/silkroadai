@@ -6,6 +6,7 @@
  * 全部调用 /api/admin/enterprise/*(superadmin session cookie 鉴权)。
  */
 import { useCallback, useEffect, useState } from 'react';
+import { copyText } from '@/lib/enterprise/copy-text';
 
 interface CustomerRow {
     user_id: string;
@@ -167,8 +168,7 @@ export function AdminPanel() {
                         <code className="break-all rounded bg-white px-2 py-1 text-xs">{freshKey}</code>
                         <button
                             onClick={() => {
-                                void navigator.clipboard.writeText(freshKey);
-                                flash('已复制');
+                                void copyText(freshKey).then((ok) => flash(ok ? '已复制' : '复制失败,请手动选中'));
                             }}
                             className="shrink-0 rounded border border-amber-400 px-2 py-1 text-xs hover:bg-amber-100"
                         >
