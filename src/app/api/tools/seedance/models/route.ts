@@ -4,7 +4,10 @@ import { NextRequest, NextResponse } from 'next/server';
  * Seedance 测试工具 — 模型列表(同源)。用客户的 key 拉 /v1/models,
  * 只回该 key 能调的 seedance/dreamina 视频模型(自动按 key 的档位过滤,避免选错档)。
  */
-const BASE = process.env.NEWAPI_BASE_URL || 'http://localhost:3000';
+import { PORTAL_SELF_V1_BASE } from '@/lib/seedance/tools-proxy-base';
+
+// 走 portal /v1 代理(透传 /v1/models 到 new-api;与 submit/poll 同一条路,见 tools-proxy-base.ts)。
+const BASE = PORTAL_SELF_V1_BASE;
 
 export async function GET(req: NextRequest) {
     const auth = req.headers.get('authorization') || '';

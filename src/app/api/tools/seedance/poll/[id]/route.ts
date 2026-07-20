@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-// Seedance 测试工具 — 轮询代理(同源)。转发到 new-api 视频任务查询。
-const BASE = process.env.NEWAPI_BASE_URL || 'http://localhost:3000';
+import { PORTAL_SELF_V1_BASE } from '@/lib/seedance/tools-proxy-base';
+
+// Seedance 测试工具 — 轮询代理(同源)。转发到【portal /v1 代理】(seedance-cn 任务的
+// 轮询扣费在代理层,见 tools-proxy-base.ts;非 cn 任务代理透传 new-api,行为不变)。
+const BASE = PORTAL_SELF_V1_BASE;
 
 export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
     const auth = req.headers.get('authorization') || '';

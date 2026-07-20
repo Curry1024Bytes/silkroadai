@@ -1,11 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+import { PORTAL_SELF_V1_BASE } from '@/lib/seedance/tools-proxy-base';
+
 /**
  * Seedance 测试工具 — 提交代理(同源,绕浏览器 CORS)。
- * 客户在工具里填自己的 key → 本路由原样转发到 new-api 视频接口,key 仅服务端中转。
+ * 客户在工具里填自己的 key → 本路由原样转发到【portal /v1 代理】(不是 new-api 直连,
+ * 原因见 tools-proxy-base.ts:seedance-cn 的拦截/门控/自扣计费都在代理层),key 仅服务端中转。
  * 不加任何限流(运营策略),不存任何东西。
  */
-const BASE = process.env.NEWAPI_BASE_URL || 'http://localhost:3000';
+const BASE = PORTAL_SELF_V1_BASE;
 
 export async function POST(req: NextRequest) {
     const auth = req.headers.get('authorization') || '';
