@@ -26,6 +26,8 @@ export function middleware(request: NextRequest) {
         const allowed =
             p === '/enterprise' ||
             p.startsWith('/enterprise/') ||
+            p === '/enterprise-admin' || // 运营后台(superadmin session 守门)
+            p.startsWith('/enterprise-admin/') ||
             p === '/api' || // P3 素材库 Action API(火山形 /api?Action=…,sk-ent 鉴权)
             p === '/api/auth/login' ||
             p === '/api/auth/logout' ||

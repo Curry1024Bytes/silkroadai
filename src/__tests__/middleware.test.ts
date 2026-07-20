@@ -50,6 +50,8 @@ describe('middleware — 独立门户形态门(PORTAL_FLAVOR=seedance-enterprise
             '/api/auth/logout',
             '/api/enterprise/keys',
             '/api', // P3 素材库 Action API(火山形)
+            '/enterprise-admin', // 运营后台
+            '/enterprise-admin/login',
         ]) {
             expect(middleware(req(p)).status).not.toBe(404);
         }
