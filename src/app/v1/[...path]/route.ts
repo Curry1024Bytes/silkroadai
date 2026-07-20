@@ -16,7 +16,8 @@
  *        localhost/私网 IP 字面量拒绝;DNS rebinding 级别的防护留 Phase 3)
  *        + 20MB 大小上限。fetch 失败 → 400(OpenAI invalid_request_error 形)。
  *      - 出图改传 R2(复用 PR-T1 的 `src/lib/r2/client.ts` uploadImage,
- *        key = `gen/{uuid}.{ext}`),content 返 markdown 公网 URL。
+ *        key = `gen/{YYYY-MM-DD}/{uuid}.{ext}`,日期取北京时间,方便客户
+ *        按日期目录整删过期图),content 返 markdown 公网 URL。
  *        R2 不可用时降级回 data URL 内联 + `X-Silkroadai-R2-Fallback: yes`
  *        (客户请求不应因我们的存储故障而失败)。
  *      ⚠️ `gen/` 前缀不在 image-cleanup cron 的管辖内(那个按 ImageGeneration
@@ -698,7 +699,10 @@ async function storeGeneratedImage(
     // Photoshop 按扩展名/CT 用 PNG 解码器解 JPEG 失败)→ 嗅探真实字节定扩展名 + Content-Type + data URL。
     const realMime = sniffImageMime(buffer);
     const ext = realMime.includes('jpeg') ? 'jpg' : realMime.includes('webp') ? 'webp' : 'png';
-    const key = `gen/${randomUUID()}.${ext}`;
+    // 按日期分子目录(客户诉求 2026-07-21):客户清理 OSS 时可整删过期日期目录。
+    // 日期取北京时间(gotcha #20:容器 TZ=UTC,不显式指定会差 8h);en-CA locale = YYYY-MM-DD。
+    const day = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' });
+    const key = `gen/${day}/${randomUUID()}.${ext}`;
     let ossFallback = false;
 
     // Phase 3:sk-xxx 反查 portal user → 客户 OSS 配置(查询失败一律回平台 R2)

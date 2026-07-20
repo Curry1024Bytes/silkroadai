@@ -187,7 +187,7 @@ describe('/v1 proxy — Gemini image translation', () => {
         expect(data.object).toBe('chat.completion');
         // Phase 2:图片走 R2,content 是 markdown 公网 URL(非 base64 内联)
         expect(data.choices[0].message.content).toMatch(
-            /^!\[image\]\(https:\/\/images\.silkroadai\.io\/gen\/[0-9a-f-]+\.png\)$/,
+            /^!\[image\]\(https:\/\/images\.silkroadai\.io\/gen\/\d{4}-\d{2}-\d{2}\/[0-9a-f-]+\.png\)$/,
         );
         expect(data.usage.completion_tokens).toBe(1290);
     });
@@ -222,7 +222,7 @@ describe('/v1 proxy — Gemini image translation', () => {
         expect(res.headers.get('X-Silkroadai-Translated')).toBe('gemini-native');
         const data = (await res.json()) as { choices: Array<{ message: { content: string } }> };
         expect(data.choices[0].message.content).toMatch(
-            /^!\[image\]\(https:\/\/images\.silkroadai\.io\/gen\/[0-9a-f-]+\.png\)$/,
+            /^!\[image\]\(https:\/\/images\.silkroadai\.io\/gen\/\d{4}-\d{2}-\d{2}\/[0-9a-f-]+\.png\)$/,
         );
     });
 
@@ -1236,7 +1236,7 @@ describe('/v1 proxy — Phase 2: image_url 入参 + R2 上传 (W9 D2)', () => {
 
         expect(mockUploadImage).toHaveBeenCalledTimes(1);
         const [key, body, contentType] = mockUploadImage.mock.calls[0];
-        expect(key).toMatch(/^gen\/[0-9a-f-]{36}\.png$/);
+        expect(key).toMatch(/^gen\/\d{4}-\d{2}-\d{2}\/[0-9a-f-]{36}\.png$/);
         expect(Buffer.isBuffer(body)).toBe(true);
         expect(contentType).toBe('image/png');
         expect(data.choices[0].message.content).toBe(`![image](https://images.silkroadai.io/${key})`);
@@ -1253,7 +1253,7 @@ describe('/v1 proxy — Phase 2: image_url 入参 + R2 上传 (W9 D2)', () => {
 
         expect(mockUploadImage).toHaveBeenCalledTimes(1);
         const [key, , contentType] = mockUploadImage.mock.calls[0];
-        expect(key).toMatch(/^gen\/[0-9a-f-]{36}\.jpg$/);
+        expect(key).toMatch(/^gen\/\d{4}-\d{2}-\d{2}\/[0-9a-f-]{36}\.jpg$/);
         expect(contentType).toBe('image/jpeg');
         expect(data.choices[0].message.content).toBe(`![image](https://images.silkroadai.io/${key})`);
     });
@@ -1264,7 +1264,7 @@ describe('/v1 proxy — Phase 2: image_url 入参 + R2 上传 (W9 D2)', () => {
         await res.json();
 
         const [key, , contentType] = mockUploadImage.mock.calls[0];
-        expect(key).toMatch(/^gen\/[0-9a-f-]{36}\.png$/);
+        expect(key).toMatch(/^gen\/\d{4}-\d{2}-\d{2}\/[0-9a-f-]{36}\.png$/);
         expect(contentType).toBe('image/png');
     });
 
@@ -1341,7 +1341,7 @@ describe('/v1 proxy — Phase 3: 客户自定义 OSS (W9 D3)', () => {
         expect(mockUploadToCustomerOss).toHaveBeenCalledTimes(1);
         expect(mockUploadImage).not.toHaveBeenCalled(); // 平台 R2 没被用
         expect(data.choices[0].message.content).toMatch(
-            /^!\[image\]\(https:\/\/cdn\.customer\.com\/gen\/[0-9a-f-]+\.png\)$/,
+            /^!\[image\]\(https:\/\/cdn\.customer\.com\/gen\/\d{4}-\d{2}-\d{2}\/[0-9a-f-]+\.png\)$/,
         );
         expect(res.headers.get('X-Silkroadai-Oss-Fallback')).toBeNull();
     });
@@ -1357,7 +1357,7 @@ describe('/v1 proxy — Phase 3: 客户自定义 OSS (W9 D3)', () => {
 
         expect(mockUploadToCustomerOss).toHaveBeenCalledTimes(1);
         const [, , key, mime] = mockUploadToCustomerOss.mock.calls[0];
-        expect(key).toMatch(/^gen\/[0-9a-f-]+\.jpg$/);
+        expect(key).toMatch(/^gen\/\d{4}-\d{2}-\d{2}\/[0-9a-f-]+\.jpg$/);
         expect(mime).toBe('image/jpeg');
         expect(data.choices[0].message.content).toMatch(/\.jpg\)$/);
     });
@@ -1451,7 +1451,7 @@ describe('/v1 proxy — Phase 4: DALL·E /v1/images/{edits,generations} (W9 D4)'
         const data = (await res.json()) as { created: number; data: Array<{ url: string }> };
         expect(typeof data.created).toBe('number');
         expect(data.data).toHaveLength(1);
-        expect(data.data[0].url).toMatch(/^https:\/\/images\.silkroadai\.io\/gen\/[0-9a-f-]+\.png$/);
+        expect(data.data[0].url).toMatch(/^https:\/\/images\.silkroadai\.io\/gen\/\d{4}-\d{2}-\d{2}\/[0-9a-f-]+\.png$/);
     });
 
     // ch96 adobe 逆向两款:客户走 /images/edits。不在 GEMINI_IMAGE_MODELS 时 → passthrough →
@@ -1472,7 +1472,7 @@ describe('/v1 proxy — Phase 4: DALL·E /v1/images/{edits,generations} (W9 D4)'
         expect(res.status).toBe(200);
         expect(res.headers.get('X-Silkroadai-Translated')).toBe('gemini-native');
         const data = (await res.json()) as { data: Array<{ url: string }> };
-        expect(data.data[0].url).toMatch(/^https:\/\/images\.silkroadai\.io\/gen\/[0-9a-f-]+\.png$/);
+        expect(data.data[0].url).toMatch(/^https:\/\/images\.silkroadai\.io\/gen\/\d{4}-\d{2}-\d{2}\/[0-9a-f-]+\.png$/);
     });
 
     it('ch96 gemini-3-pro-image-adobe 经 /images/edits → imageSize 4K', async () => {
@@ -1747,7 +1747,7 @@ describe('/v1 proxy — Phase 4: DALL·E /v1/images/{edits,generations} (W9 D4)'
         const data = (await res.json()) as { data: Array<{ url: string }> };
         expect(mockUploadToCustomerOss).toHaveBeenCalledTimes(1);
         expect(mockUploadImage).not.toHaveBeenCalled();
-        expect(data.data[0].url).toMatch(/^https:\/\/cdn\.customer\.com\/gen\/[0-9a-f-]+\.png$/);
+        expect(data.data[0].url).toMatch(/^https:\/\/cdn\.customer\.com\/gen\/\d{4}-\d{2}-\d{2}\/[0-9a-f-]+\.png$/);
     });
 
     it('forces application/json Content-Type on translated generateContent for multipart input (CT hotfix core)', async () => {
@@ -2747,7 +2747,7 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
         );
         expect(res.status).toBe(200);
         const data = (await res.json()) as { data: Array<{ url?: string; b64_json?: string }> };
-        expect(data.data[0].url).toMatch(/^https:\/\/images\.silkroadai\.io\/gen\/[0-9a-f-]+\.png$/);
+        expect(data.data[0].url).toMatch(/^https:\/\/images\.silkroadai\.io\/gen\/\d{4}-\d{2}-\d{2}\/[0-9a-f-]+\.png$/);
         expect(data.data[0].b64_json).toBeUndefined(); // b64 换成 url
     });
 
@@ -3336,7 +3336,7 @@ describe('/v1 proxy — gpt-4o-image chat 生图 URL 转存', () => {
         expect((mockFetch.mock.calls[1] as [string])[0]).toBe(CDN); // 取图
         const data = (await res.json()) as { choices: Array<{ message: { content: string } }> };
         const content = data.choices[0].message.content;
-        expect(content).toMatch(/https:\/\/images\.silkroadai\.io\/gen\/[0-9a-f-]+\.png/); // 我们的 url
+        expect(content).toMatch(/https:\/\/images\.silkroadai\.io\/gen\/\d{4}-\d{2}-\d{2}\/[0-9a-f-]+\.png/); // 我们的 url
         expect(content).not.toContain('pro.filesystem.site'); // 所有 CDN 链接被替换(含下载链接)
         expect(res.headers.get('X-Silkroadai-Translated')).toBe('gpt-4o-image-rehost');
     });
