@@ -35,7 +35,18 @@ async function rateOverrideCnyPerM(
     return row ? Number(row.cny_per_m) : null;
 }
 
-/** 对客 ¥:议价覆盖(按 变体×分辨率×含视频)优先,否则默认挂牌。 */
+/** 客户级整体折扣率(enterprise_upstream_keys.discount,1 = 无折扣)。查失败回 1(宁多收不漏收)。 */
+async function customerDiscount(userId: string): Promise<number> {
+    const row = await prisma.enterpriseUpstreamKey.findUnique({
+        where: { user_id: userId },
+        select: { discount: true },
+    });
+    const d = row ? Number(row.discount) : 1;
+    return Number.isFinite(d) && d > 0 ? d : 1;
+}
+
+/** 对客 ¥:议价覆盖(按 变体×分辨率×含视频,绝对单价不再乘折扣)优先;
+ *  否则挂牌 × 客户折扣率(默认 1)。 */
 export async function computeEnterpriseCostCny(
     userId: string,
     tokens: number | bigint,
@@ -43,10 +54,13 @@ export async function computeEnterpriseCostCny(
     hasVideo: boolean,
     variant: SeedanceVariant = 'pro',
 ): Promise<number> {
-    const override = await rateOverrideCnyPerM(userId, variant, resolution, hasVideo);
+    const [override, discount] = await Promise.all([
+        rateOverrideCnyPerM(userId, variant, resolution, hasVideo),
+        customerDiscount(userId),
+    ]);
     const t = typeof tokens === 'bigint' ? Number(tokens) : tokens;
     if (override != null) return +((t / 1e6) * override).toFixed(6);
-    return computeCostCny(t, resolution, hasVideo, variant);
+    return +(computeCostCny(t, resolution, hasVideo, variant) * discount).toFixed(6);
 }
 
 /** 提交前成本预估(余额门)。含视频 1.5× 缓冲,同 cn-billing 语义。 */

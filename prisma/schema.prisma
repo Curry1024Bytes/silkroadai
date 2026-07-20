@@ -1237,6 +1237,9 @@ model EnterpriseUpstreamKey {
   user_id          String   @unique @db.Uuid // 一客户一把(决策②)
   upstream_key_enc String // AES-256-GCM(iv‖tag‖ct base64),key=ENTERPRISE_UPSTREAM_ENC_KEY
   note             String? // 上游侧对账备注(key 名/账户)
+  // 客户级整体折扣率(2026-07-20):挂牌价 × discount,全变体×分辨率生效;
+  // 1 = 无折扣。单档 enterprise_rate_overrides 是绝对单价,优先且【不】再乘折扣。
+  discount         Decimal  @default(1) @db.Decimal(6, 4)
   created_at       DateTime @default(now())
 
   @@map("enterprise_upstream_keys")

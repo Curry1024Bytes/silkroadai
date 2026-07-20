@@ -6,7 +6,7 @@ import { NextRequest } from 'next/server';
 
 const { db, resolveAdmin } = vi.hoisted(() => ({
     db: {
-        enterpriseUpstreamKey: { findMany: vi.fn(), findUnique: vi.fn() },
+        enterpriseUpstreamKey: { findMany: vi.fn(), findUnique: vi.fn(), updateMany: vi.fn() },
         enterpriseKey: { groupBy: vi.fn(), findMany: vi.fn(), updateMany: vi.fn() },
         enterpriseRateOverride: { findMany: vi.fn() },
         user: { findMany: vi.fn(), findUnique: vi.fn() },
@@ -23,7 +23,7 @@ vi.mock('@/lib/admin-auth', () => ({
 }));
 
 import { GET as listGET } from '../customers/route';
-import { GET as detailGET } from '../customers/[id]/route';
+import { GET as detailGET, PATCH as customerPATCH } from '../customers/[id]/route';
 import { PATCH as keyPATCH } from '../keys/[id]/route';
 
 const req = (url: string, method = 'GET', body?: unknown) =>
@@ -106,6 +106,27 @@ describe('GET /api/admin/enterprise/customers/[id]', () => {
         expect((j.keys as unknown[]).length).toBe(1);
         expect((j.overrides as Array<{ cny_per_m: number }>)[0].cny_per_m).toBe(15);
         expect(j.spent_cny).toBeCloseTo(4.25, 4);
+    });
+});
+
+describe('PATCH /api/admin/enterprise/customers/[id](折扣率)', () => {
+    const params = { params: Promise.resolve({ id: 'u1' }) };
+
+    it('设置 0.9 → updateMany;非法(0 / 3 / 缺字段)→ 400;不存在 → 404;非 superadmin → 401', async () => {
+        db.enterpriseUpstreamKey.updateMany.mockResolvedValue({ count: 1 });
+        const ok = await customerPATCH(req('/x', 'PATCH', { discount: 0.9 }), params);
+        expect(ok.status).toBe(200);
+        expect(db.enterpriseUpstreamKey.updateMany).toHaveBeenCalledWith({
+            where: { user_id: 'u1' },
+            data: { discount: 0.9 },
+        });
+        expect((await customerPATCH(req('/x', 'PATCH', { discount: 0 }), params)).status).toBe(400);
+        expect((await customerPATCH(req('/x', 'PATCH', { discount: 3 }), params)).status).toBe(400);
+        expect((await customerPATCH(req('/x', 'PATCH', {}), params)).status).toBe(400);
+        db.enterpriseUpstreamKey.updateMany.mockResolvedValue({ count: 0 });
+        expect((await customerPATCH(req('/x', 'PATCH', { discount: 0.9 }), params)).status).toBe(404);
+        resolveAdmin.mockResolvedValue(null);
+        expect((await customerPATCH(req('/x', 'PATCH', { discount: 0.9 }), params)).status).toBe(401);
     });
 });
 

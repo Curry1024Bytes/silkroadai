@@ -15,7 +15,7 @@ export async function GET(request: NextRequest) {
     if (!admin) return unauthorizedResponse(request);
 
     const ups = await prisma.enterpriseUpstreamKey.findMany({
-        select: { user_id: true, note: true },
+        select: { user_id: true, note: true, discount: true },
         orderBy: { created_at: 'asc' },
     });
     const userIds = ups.map((u) => u.user_id);
@@ -63,6 +63,7 @@ export async function GET(request: NextRequest) {
                     spent_cny: account ? (spentByAccount.get(account.id) ?? 0) : 0,
                     active_keys: activeKeys.get(u.user_id) ?? 0,
                     upstream_note: u.note,
+                    discount: Number(u.discount ?? 1),
                     created_at: user.created_at.toISOString(),
                 };
             }),

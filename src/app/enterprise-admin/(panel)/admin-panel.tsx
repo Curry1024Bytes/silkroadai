@@ -22,6 +22,7 @@ interface CustomerRow {
 interface Detail {
     user: { id: string; email: string; name: string | null; created_at: string };
     upstream_note: string | null;
+    discount: number;
     balance_cny: number;
     spent_cny: number;
     keys: Array<{
@@ -148,6 +149,14 @@ export function AdminPanel() {
                     : `议价已设:¥${body.cny_per_m}/1M`
                 : `失败(${r.status})`,
         );
+        await refresh();
+    }
+    async function onDiscount(userId: string, current: number) {
+        const raw = window.prompt('客户级整体折扣率(0.05~2;1=无折扣,0.9=全线九折;单档议价不受影响):', String(current));
+        if (raw === null || raw.trim() === '') return;
+        const d = Number(raw);
+        const r = await post(`/api/admin/enterprise/customers/${userId}`, { discount: d }, 'PATCH');
+        flash(r.ok ? `折扣率已设为 ${d}(即时生效)` : `失败(${r.status}):${JSON.stringify(r.j).slice(0, 120)}`);
         await refresh();
     }
     async function onKeyToggle(keyId: string, to: 'active' | 'disabled') {
@@ -291,6 +300,11 @@ export function AdminPanel() {
                             {detail.user.email}
                             {detail.user.name ? `(${detail.user.name})` : ''} — 余额 {fmtCny(detail.balance_cny)} ·
                             累计消费 {fmtCny(detail.spent_cny)}
+                            {detail.discount !== 1 && (
+                                <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-800">
+                                    折扣 ×{detail.discount}
+                                </span>
+                            )}
                         </h2>
                         <div className="flex gap-2">
                             <button
@@ -298,6 +312,12 @@ export function AdminPanel() {
                                 className="rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-700"
                             >
                                 入账 / 冲正
+                            </button>
+                            <button
+                                onClick={() => void onDiscount(detail.user.id, detail.discount)}
+                                className="rounded-md border border-gray-300 px-3 py-1.5 text-xs hover:bg-gray-50"
+                            >
+                                折扣率
                             </button>
                             <button
                                 onClick={() => void onSetPassword(detail.user.id)}

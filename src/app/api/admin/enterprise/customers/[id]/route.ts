@@ -1,10 +1,34 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { unauthorizedResponse } from '@/lib/admin-auth';
 import { resolveAdmin } from '@/lib/admin/auth';
 import { ENTERPRISE_TIER } from '@/lib/enterprise/billing';
 
 export const runtime = 'nodejs';
+
+const PatchSchema = z.object({
+    // 客户级整体折扣率:0.05~2(>1 = 上浮),1 = 无折扣。挂牌 × discount;单档 override 不受影响。
+    discount: z.number().min(0.05).max(2),
+});
+
+/** PATCH /api/admin/enterprise/customers/[id] — 设客户级折扣率。守门:superadmin。 */
+export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+    const admin = await resolveAdmin(request, 'superadmin');
+    if (!admin) return unauthorizedResponse(request);
+    const { id } = await params;
+
+    const parsed = PatchSchema.safeParse(await request.json().catch(() => null));
+    if (!parsed.success) {
+        return NextResponse.json({ error: 'invalid_request', detail: 'discount 须为 0.05~2 的数字' }, { status: 400 });
+    }
+    const updated = await prisma.enterpriseUpstreamKey.updateMany({
+        where: { user_id: id },
+        data: { discount: parsed.data.discount },
+    });
+    if (updated.count === 0) return NextResponse.json({ error: 'not_found' }, { status: 404 });
+    return NextResponse.json({ ok: true, discount: parsed.data.discount });
+}
 
 /**
  * GET /api/admin/enterprise/customers/[id] — 单客户详情(运营后台):
@@ -17,7 +41,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
     const up = await prisma.enterpriseUpstreamKey.findUnique({
         where: { user_id: id },
-        select: { note: true, created_at: true },
+        select: { note: true, created_at: true, discount: true },
     });
     const user = await prisma.user.findUnique({
         where: { id },
@@ -74,6 +98,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     return NextResponse.json({
         user: { id: user.id, email: user.email, name: user.nickname, created_at: user.created_at.toISOString() },
         upstream_note: up.note,
+        discount: Number(up.discount ?? 1),
         balance_cny: account ? Number(account.balance_cny) : 0,
         spent_cny: spentAgg?._sum.amount_cny ? Math.abs(Number(spentAgg._sum.amount_cny)) : 0,
         keys: keys.map((k) => ({

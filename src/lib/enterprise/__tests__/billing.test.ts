@@ -7,6 +7,7 @@ const { db, applyLedgerEntry } = vi.hoisted(() => ({
     db: {
         seedanceVideoTask: { findUnique: vi.fn(), updateMany: vi.fn() },
         enterpriseRateOverride: { findUnique: vi.fn() },
+        enterpriseUpstreamKey: { findUnique: vi.fn() },
     },
     applyLedgerEntry: vi.fn(),
 }));
@@ -27,6 +28,7 @@ import {
 beforeEach(() => {
     vi.clearAllMocks();
     db.enterpriseRateOverride.findUnique.mockResolvedValue(null);
+    db.enterpriseUpstreamKey.findUnique.mockResolvedValue({ discount: '1' });
 });
 
 describe('computeEnterpriseCostCny', () => {
@@ -63,6 +65,25 @@ describe('computeEnterpriseCostCny', () => {
                 }),
             }),
         );
+    });
+
+    it('客户级折扣率 0.9 → 挂牌 × 0.9(720p pro ¥39.1 → ¥35.19)', async () => {
+        db.enterpriseUpstreamKey.findUnique.mockResolvedValue({ discount: '0.9' });
+        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false)).toBeCloseTo(35.19, 4);
+        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false, 'mini')).toBeCloseTo(17.595, 4);
+    });
+
+    it('单档覆盖是绝对单价,不再乘折扣(覆盖 ¥30 + 折扣 0.5 → 仍 ¥30)', async () => {
+        db.enterpriseUpstreamKey.findUnique.mockResolvedValue({ discount: '0.5' });
+        db.enterpriseRateOverride.findUnique.mockResolvedValue({ cny_per_m: '30' });
+        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false)).toBeCloseTo(30, 4);
+    });
+
+    it('无 upstream key 行 / 非法折扣值 → 回落 1(不打折)', async () => {
+        db.enterpriseUpstreamKey.findUnique.mockResolvedValue(null);
+        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false)).toBeCloseTo(39.1, 4);
+        db.enterpriseUpstreamKey.findUnique.mockResolvedValue({ discount: '0' });
+        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false)).toBeCloseTo(39.1, 4);
     });
 
     it('归一短名任务(seedance-2-0-mini)扣费按 mini 费率(variantForModel 后缀识别)', async () => {
