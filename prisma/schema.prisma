@@ -1183,3 +1183,29 @@ model ImageTask {
   @@index([status, created_at])
   @@map("image_tasks")
 }
+
+/// seedance-cn 视频【端到端自扣】计费:每笔视频任务的归属 + token + ¥ 消费。
+/// /v1 代理绕过 new-api 直连上游,提交时记录(id=上游 cgt-...),轮询完成时按实际
+/// usage.completion_tokens × 费率(分辨率×是否含视频)扣费(billed 幂等)。兼作 dashboard
+/// 用量来源(该渠道不进 new-api 日志 → usage-aggregate 里 union 它)。
+model SeedanceVideoTask {
+  id             String    @id // 上游 cgt-... 任务 id(客户轮询也用它)
+  tenant_id      String?   @db.Uuid
+  user_id        String    @db.Uuid // portal User.id
+  newapi_user_id Int? // newapi 账本扣费用(override quota)
+  tier           String    @default("pool")
+  model          String // seedance2.0-pro-720p 等
+  resolution     String // 720p | 1080p | 4k
+  has_video      Boolean   @default(false) // 输入含参考视频 → 含视频费率档
+  duration       Int       @default(5)
+  tokens         BigInt? // 完成时 usage.completion_tokens
+  cost_cny       Decimal?  @db.Decimal(20, 8) // 完成时算出的对客 ¥
+  billed         Boolean   @default(false) // 幂等:已扣费
+  status         String    @default("queued") // queued | completed | failed
+  created_at     DateTime  @default(now())
+  billed_at      DateTime?
+
+  @@index([user_id, created_at])
+  @@index([billed])
+  @@map("seedance_video_tasks")
+}

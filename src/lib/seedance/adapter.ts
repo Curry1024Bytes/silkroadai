@@ -22,18 +22,23 @@ const UA =
 const MAX_REF_IMAGES = 9; // 对齐文档 reference_image_urls ≤9
 const MAX_REF_VIDEOS = 3; // 对齐文档 reference_videos ≤3
 
-/** 客户/new-api 模型名 → service-inference.ai model + resolution + 是否参考档(-ref)。 */
+/** 客户/new-api 模型名 → service-inference.ai model + resolution + 是否参考档(-ref)。
+ *  满血档上游模型 2026-07-13 由 `dreamina-seedance-2-0-260128` 升级到 `dreamina-seedance-2-0-hc`
+ *  —— 上游契约不变(generate/poll/asset 流实测全兼容),仅换模型名。fast 档上游无 hc 版,
+ *  仍走 `dreamina-seedance-2-0-fast-260128`(实测仍可用)。 */
 const MODEL_MAP: Record<string, { svc: string; resolution: string; ref: boolean }> = {
     // 无参考(文生):Phase 1
-    'dreamina-seedance-2-0-480p': { svc: 'dreamina-seedance-2-0-260128', resolution: '480p', ref: false },
-    'dreamina-seedance-2-0-720p': { svc: 'dreamina-seedance-2-0-260128', resolution: '720p', ref: false },
-    'dreamina-seedance-2-0-1080p': { svc: 'dreamina-seedance-2-0-260128', resolution: '1080p', ref: false },
+    'dreamina-seedance-2-0-480p': { svc: 'dreamina-seedance-2-0-hc', resolution: '480p', ref: false },
+    'dreamina-seedance-2-0-720p': { svc: 'dreamina-seedance-2-0-hc', resolution: '720p', ref: false },
+    'dreamina-seedance-2-0-1080p': { svc: 'dreamina-seedance-2-0-hc', resolution: '1080p', ref: false },
+    'dreamina-seedance-2-0-4k': { svc: 'dreamina-seedance-2-0-hc', resolution: '4k', ref: false }, // hc 新增 4K 档
     'dreamina-seedance-2-0-fast-480p': { svc: 'dreamina-seedance-2-0-fast-260128', resolution: '480p', ref: false },
     'dreamina-seedance-2-0-fast-720p': { svc: 'dreamina-seedance-2-0-fast-260128', resolution: '720p', ref: false },
     // 带参考图(图生/参考生):Phase 2 —— WITH_REF 费率(更便宜)
-    'dreamina-seedance-2-0-480p-ref': { svc: 'dreamina-seedance-2-0-260128', resolution: '480p', ref: true },
-    'dreamina-seedance-2-0-720p-ref': { svc: 'dreamina-seedance-2-0-260128', resolution: '720p', ref: true },
-    'dreamina-seedance-2-0-1080p-ref': { svc: 'dreamina-seedance-2-0-260128', resolution: '1080p', ref: true },
+    'dreamina-seedance-2-0-480p-ref': { svc: 'dreamina-seedance-2-0-hc', resolution: '480p', ref: true },
+    'dreamina-seedance-2-0-720p-ref': { svc: 'dreamina-seedance-2-0-hc', resolution: '720p', ref: true },
+    'dreamina-seedance-2-0-1080p-ref': { svc: 'dreamina-seedance-2-0-hc', resolution: '1080p', ref: true },
+    'dreamina-seedance-2-0-4k-ref': { svc: 'dreamina-seedance-2-0-hc', resolution: '4k', ref: true }, // hc 新增 4K 参考档
     'dreamina-seedance-2-0-fast-480p-ref': { svc: 'dreamina-seedance-2-0-fast-260128', resolution: '480p', ref: true },
     'dreamina-seedance-2-0-fast-720p-ref': { svc: 'dreamina-seedance-2-0-fast-260128', resolution: '720p', ref: true },
 };
@@ -317,6 +322,61 @@ async function uploadAndReadyAsset(
     throw new Error(`asset ${assetId} not ready in time`);
 }
 
+/** hc 档的 asset:走新 `/v1/sd/assets`(POST {URL,Name,AssetType} → data.Id;GET /v1/sd/assets/{id} 轮询到
+ *  Status=Active),不需要 asset-group。
+ *  ⚠️ 2026-07-14:hc 与 fast-260128 的 asset 存储【互不相认】——hc 只认这个新 API 建的 asset,拿旧
+ *  `/v1/asset-groups`+`/v1/assets` 建的去 hc generate 会报 `The specified asset ... is not found`(切 hc
+ *  后客户 -ref 图生视频报错就是这个);反之 fast-260128 只认旧 API。故 submitVideo 按 map.svc 分流。 */
+async function uploadSdAsset(auth: string, httpUrl: string, assetType: 'Image' | 'Video' = 'Image'): Promise<string> {
+    // 上游 CreateAsset 有【账号级流控】,突发会回 400 `AccountFlowLimitExceeded`(status_code=1033)——
+    // 瞬时的,退避重试几次即恢复(2026-07-14 高频客户 user 465 报障)。非限流错不重试。
+    let up!: Response;
+    let upText = '';
+    for (let attempt = 0; attempt < 4; attempt++) {
+        up = await fetchSvc('/v1/sd/assets', auth, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ URL: httpUrl, Name: 'ref', AssetType: assetType }),
+        });
+        upText = await up.text();
+        if (up.ok) break;
+        const rateLimited = /AccountFlowLimitExceeded|FlowLimitExceeded|status_code=1033|too many|rate ?limit/i.test(
+            upText,
+        );
+        if (attempt < 3 && rateLimited) {
+            await new Promise((r) => setTimeout(r, 2500 * (attempt + 1))); // 2.5s / 5s / 7.5s
+            continue;
+        }
+        break;
+    }
+    let upJson: { data?: { Id?: string } };
+    try {
+        upJson = JSON.parse(upText);
+    } catch {
+        throw new Error(`asset upload bad response: ${upText.slice(0, 120)}`);
+    }
+    const assetId = upJson.data?.Id;
+    if (!up.ok || !assetId) {
+        console.warn('[seedance-adapter] /v1/sd/assets reject', {
+            url: httpUrl,
+            status: up.status,
+            body: upText.slice(0, 200),
+        });
+        throw new Error(`asset upload failed (${up.status}): ${upText.slice(0, 160)}`);
+    }
+    // poll GET /v1/sd/assets/{id} until Status=Active(实测就绪极快,通常首轮即 Active)
+    const deadline = Date.now() + 75_000;
+    while (Date.now() < deadline) {
+        const r = await fetchSvc(`/v1/sd/assets/${encodeURIComponent(assetId)}`, auth);
+        const j = (await r.json().catch(() => null)) as { data?: { Status?: string } } | null;
+        const st = String(j?.data?.Status || '').toLowerCase();
+        if (st === 'active') return assetId;
+        if (st === 'failed' || st === 'error') throw new Error(`asset ${assetId} failed`);
+        await new Promise((res) => setTimeout(res, 3000));
+    }
+    throw new Error(`asset ${assetId} not ready in time`);
+}
+
 /** POST 提交:OpenAI-video → service-inference.ai /v1/video/generate。 */
 export async function submitVideo(req: NextRequest): Promise<NextResponse> {
     const auth = req.headers.get('authorization') || '';
@@ -408,10 +468,14 @@ export async function submitVideo(req: NextRequest): Promise<NextResponse> {
     // completed → generate asset:// 建 task),且直链 video_url 会被上游按内容审核拦(privacy/sensitive),
     // 故视频改回 asset 流。音频仍直链(文档示例即直链,上游不经 /v1/assets)。
     if (map.ref) {
+        // hc 走新 /v1/sd/assets(无 group);fast-260128 走旧 /v1/asset-groups+/v1/assets。两套 asset 存储互不相认。
+        const useSd = map.svc === 'dreamina-seedance-2-0-hc';
+        const uploadAsset = (url: string, type: 'Image' | 'Video', gid?: string) =>
+            useSd ? uploadSdAsset(auth, url, type) : uploadAndReadyAsset(auth, gid!, url, type);
         try {
-            // 图片 + 视频共用一个素材组
+            // 旧档(fast-260128)才需要素材组;hc 的 /v1/sd/assets 无 group。
             let groupId: string | undefined;
-            if (imageInputs.length || videoUrls.length) {
+            if (!useSd && (imageInputs.length || videoUrls.length)) {
                 const grp = await fetchSvc('/v1/asset-groups', auth, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -423,13 +487,13 @@ export async function submitVideo(req: NextRequest): Promise<NextResponse> {
                 groupId = ((await grp.json().catch(() => null)) as { id?: string } | null)?.id;
                 if (!grp.ok || !groupId) throw new Error(`asset-group create failed (${grp.status})`);
             }
-            // 图片 asset(asset_type=Image)→ asset:// + 角色(reference_image / first_frame / last_frame)
-            if (groupId && imageInputs.length) {
+            // 图片 asset → asset:// + 角色(reference_image / first_frame / last_frame)
+            if (imageInputs.length) {
                 const assets = await Promise.all(
                     imageInputs.map(async (inp) => {
                         const r2url = await toHttpMediaUrl(inp.url, { rehostHttp: true });
                         try {
-                            return { role: inp.role, id: await uploadAndReadyAsset(auth, groupId!, r2url) };
+                            return { role: inp.role, id: await uploadAsset(r2url, 'Image', groupId) };
                         } catch (e) {
                             // 上游 asset 拒最常见的是「参考图过小」——上游 /v1/assets 只回笼统
                             // "Asset provider error",客户看不懂(实测 438×320 被拒、448² 通过)。
@@ -446,12 +510,12 @@ export async function submitVideo(req: NextRequest): Promise<NextResponse> {
                 for (const a of assets)
                     content.push({ type: 'image_url', image_url: { url: `asset://${a.id}` }, role: a.role });
             }
-            // 视频 asset(asset_type=Video)→ asset:// + role reference_video
-            if (groupId && videoUrls.length) {
+            // 视频 asset → asset:// + role reference_video
+            if (videoUrls.length) {
                 const vassets = await Promise.all(
                     videoUrls.map((url) =>
                         toHttpMediaUrl(url, { rehostHttp: true, kind: 'video' }).then((u) =>
-                            uploadAndReadyAsset(auth, groupId!, u, 'Video'),
+                            uploadAsset(u, 'Video', groupId),
                         ),
                     ),
                 );
@@ -464,8 +528,12 @@ export async function submitVideo(req: NextRequest): Promise<NextResponse> {
                 content.push({ type: 'audio_url', audio_url: { url: audioUrl }, role: 'reference_audio' });
             }
         } catch (e) {
-            console.warn('[seedance-adapter] ref media prep failed', String(e));
-            return err(400, 'invalid_request', `reference media processing failed: ${String(e).slice(0, 160)}`);
+            const msg = String(e);
+            console.warn('[seedance-adapter] ref media prep failed', msg);
+            // 账号级流控重试仍失败 → 给客户可懂的「稍后重试」,不外抛上游原始 CreateAsset 错误
+            if (/AccountFlowLimitExceeded|FlowLimitExceeded|status_code=1033/i.test(msg))
+                return err(429, 'rate_limited', '参考图上传上游暂时繁忙(限流),请稍后重试');
+            return err(400, 'invalid_request', `reference media processing failed: ${msg.slice(0, 160)}`);
         }
     }
 

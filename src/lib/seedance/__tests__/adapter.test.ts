@@ -28,10 +28,15 @@ beforeEach(() => {
     // 上游 service-inference.ai 各端点;非上游 URL = 客户图床 → 返回图片字节(供 re-host fetch)
     mockFetch.mockImplementation(async (url: string) => {
         const u = String(url);
+        // 旧 asset 流(fast-260128 档)
         if (u.endsWith('/v1/asset-groups')) return json({ id: 'grp1' });
         if (u.endsWith('/v1/assets/get')) return json({ status: 'completed' });
         if (u.endsWith('/v1/assets'))
             return json({ id: `asset_${Math.random().toString(36).slice(2, 8)}`, task_id: null });
+        // 新 asset 流(hc 档):GET /v1/sd/assets/{id} → data.Status;POST /v1/sd/assets → data.Id
+        if (/\/v1\/sd\/assets\/[^/]+$/.test(u)) return json({ data: { Status: 'Active' } });
+        if (u.endsWith('/v1/sd/assets'))
+            return json({ data: { Id: `asset_${Math.random().toString(36).slice(2, 8)}` } });
         if (u.endsWith('/v1/video/generate')) return json({ task: { id: 'task_abc' } });
         // 非上游 URL = 客户图床/视频 → 返回字节(供 re-host fetch);按扩展名给 content-type
         const ct = /\.mp4(\?|$)/i.test(u) ? 'video/mp4' : 'image/jpeg';
@@ -67,11 +72,27 @@ describe('seedance overseas adapter — 参考图 http URL 转存 R2', () => {
         // 上传我们 R2(无扩展名 key)
         expect(mockUploadImage).toHaveBeenCalled();
         expect(mockUploadImage.mock.calls[0][0]).toMatch(/^seedance-ref\//);
-        // 喂给上游 /v1/assets 的是我们 R2 链接,不是客户原 URL
-        const assetCall = mockFetch.mock.calls.find((c) => String(c[0]).endsWith('/v1/assets'));
-        const sentUrl = JSON.parse(String((assetCall![1] as RequestInit).body)).url as string;
+        // 720p-ref → hc → 新 /v1/sd/assets 流;喂给上游的是我们 R2 链接(字段 URL),不是客户原 URL
+        const assetCall = mockFetch.mock.calls.find((c) => String(c[0]).endsWith('/v1/sd/assets'));
+        const sentUrl = JSON.parse(String((assetCall![1] as RequestInit).body)).URL as string;
         expect(sentUrl.startsWith('https://images.silkroadai.io/seedance-ref/')).toBe(true);
         expect(sentUrl).not.toContain('cloudflarestorage');
+    });
+
+    it('fast 档(→ fast-260128)走【旧】asset 流(/v1/asset-groups + /v1/assets),不走 /v1/sd/assets', async () => {
+        // hc 与 fast-260128 的 asset 存储互不相认,故 submitVideo 按 map.svc 分流:fast → 旧 API
+        const res = await submitVideo(
+            makeReq({ model: 'dreamina-seedance-2-0-fast-720p-ref', prompt: 'x', image: 'https://h/a.jpg' }),
+        );
+        expect(res.status).toBe(200);
+        expect(mockFetch.mock.calls.some((c) => String(c[0]).endsWith('/v1/asset-groups'))).toBe(true);
+        expect(mockFetch.mock.calls.some((c) => String(c[0]).endsWith('/v1/assets'))).toBe(true);
+        expect(mockFetch.mock.calls.some((c) => String(c[0]).endsWith('/v1/sd/assets'))).toBe(false);
+        const content = upstreamBody('/v1/video/generate').content as Array<{
+            type: string;
+            image_url?: { url: string };
+        }>;
+        expect(String(content.find((c) => c.type === 'image_url')?.image_url?.url)).toMatch(/^asset:\/\//);
     });
 
     it('reference_image_urls + seconds(字符串)被识别', async () => {
@@ -133,11 +154,11 @@ describe('seedance overseas adapter — 参考图 http URL 转存 R2', () => {
         expect(res.status).toBe(200);
         // 客户视频 URL 被 re-host(fetch)→ 转存我们 R2
         expect(mockFetch.mock.calls.some((c) => String(c[0]) === 'https://customer.example/clip.mp4?sig=x')).toBe(true);
-        // 视频走 /v1/assets 上传,asset_type=Video,url 是我们 R2 干净链接
-        const assetCall = mockFetch.mock.calls.find((c) => String(c[0]).endsWith('/v1/assets'));
+        // 720p-ref → hc → 视频走新 /v1/sd/assets 上传,AssetType=Video,URL 是我们 R2 干净链接
+        const assetCall = mockFetch.mock.calls.find((c) => String(c[0]).endsWith('/v1/sd/assets'));
         const assetBody = JSON.parse(String((assetCall![1] as RequestInit).body));
-        expect(assetBody.asset_type).toBe('Video');
-        expect(String(assetBody.url).startsWith('https://images.silkroadai.io/seedance-ref/')).toBe(true);
+        expect(assetBody.AssetType).toBe('Video');
+        expect(String(assetBody.URL).startsWith('https://images.silkroadai.io/seedance-ref/')).toBe(true);
         // content 含 video_url + role reference_video,url 是 asset://(非直链)
         const content = upstreamBody('/v1/video/generate').content as Array<{
             type: string;
@@ -188,9 +209,8 @@ describe('seedance overseas adapter — 参考图 http URL 转存 R2', () => {
         ]);
         mockFetch.mockImplementation(async (url: string) => {
             const u = String(url);
-            if (u.endsWith('/v1/asset-groups')) return json({ id: 'grp1' });
-            if (u.endsWith('/v1/assets/get')) return json({ status: 'completed' });
-            if (u.endsWith('/v1/assets'))
+            // 720p-ref → hc → 新 /v1/sd/assets 流;POST 直接回 Asset provider error
+            if (u.endsWith('/v1/sd/assets'))
                 return new Response(
                     JSON.stringify({ error: { message: 'Asset provider error', type: 'proxy_error' } }),
                     {
@@ -211,4 +231,36 @@ describe('seedance overseas adapter — 参考图 http URL 转存 R2', () => {
         expect(body.error.message).toContain('参考图');
         expect(body.error.message).not.toContain('[object Object]');
     });
+
+    it('CreateAsset 账号限流(AccountFlowLimitExceeded / 1033)→ 退避重试后成功', async () => {
+        let nPost = 0;
+        mockFetch.mockImplementation(async (url: string) => {
+            const u = String(url);
+            if (u.endsWith('/v1/sd/assets')) {
+                // POST create:第 1 次回账号流控 400,之后成功
+                nPost++;
+                if (nPost === 1)
+                    return new Response(
+                        JSON.stringify({
+                            success: false,
+                            message:
+                                'CreateAsset failed: status_code=1033 status_msg=system error, upstream CreateAsset failed: AccountFlowLimitExceeded',
+                        }),
+                        { status: 400, headers: { 'content-type': 'application/json' } },
+                    );
+                return json({ data: { Id: 'asset_ok' } });
+            }
+            if (/\/v1\/sd\/assets\/[^/]+$/.test(u)) return json({ data: { Status: 'Active' } });
+            if (u.endsWith('/v1/video/generate')) return json({ task: { id: 't' } });
+            return new Response(Buffer.from([0x00, 0x00, 0x00, 0x18]), {
+                status: 200,
+                headers: { 'content-type': 'image/jpeg' },
+            });
+        });
+        const res = await submitVideo(
+            makeReq({ model: 'dreamina-seedance-2-0-480p-ref', prompt: 'x', image: 'https://h/a.jpg' }),
+        );
+        expect(res.status).toBe(200); // 重试后成功
+        expect(nPost).toBeGreaterThanOrEqual(2); // 第 1 次限流、第 2 次成功
+    }, 15000);
 });

@@ -76,6 +76,12 @@ import {
     translateAnthropicSseToOpenAi,
 } from './claude-chat-cache';
 import { withKeepalive } from './keepalive';
+import {
+    isSeedanceCnModel,
+    isSeedanceCnTask,
+    handleSeedanceVideoSubmit,
+    handleSeedanceVideoPoll,
+} from '@/lib/seedance/cn-proxy';
 import { guardSseResponse, guardSseStream, type SseErrorShape } from '@/lib/sse/stream-guard';
 import { forwardHeaders, passthroughResponse, STRIP_RESPONSE_HEADERS } from '@/lib/proxy/forward';
 import { stripAdobeImageMetadataB64 } from '@/lib/proxy/image-metadata';
@@ -126,6 +132,11 @@ const FAILOVER_MODELS: Record<string, string> = {
  *  到点 abort 当作失败 → 切候补 -hq/ch42(快且稳),客户最多等 ~80s + 候补一次。
  *  仅对有候补的 flash 生效;pro(4K 合法耗时长、无候补)不设超时。operator:80s 自动切。 */
 const FLASH_TIMEOUT_MS = 80_000;
+// portal → new-api 图片上游 fetch 的超时,与 Caddy `ai.silkroadai.io` 的 response_header_timeout 600s 对齐。
+// 不显式设的话吃 undici 默认 headersTimeout 300s:new-api 对图片 relay 无超时,会等满上游(慢渠道
+// 300-600s)出图【并计费】,但 portal 的 fetch 300s 就 abort → 客户「扣了费却拿到 fetch failed 没有图」
+// (见 2026-07-12 lkl1131888403 案例:ch83 大图 377/423s,new-api 计费、portal 300s 掐断)。
+const UPSTREAM_IMAGE_TIMEOUT_MS = 600_000;
 
 /** 主请求非 2xx 后读错误 body(做终态分类)的超时:逆向渠道可能 headers 到了、body 滴流不完,
  *  不设钟会把本该立即切候补的兜底卡死。到点 abort → 当读不出 → 照旧兜底。 */
@@ -143,6 +154,11 @@ const GEMINI_IMAGE_MODELS: Record<string, '1K' | '2K' | '4K'> = {
     // 折扣 SKU:= pro 锁 2K(size 参数对它无效),new-api 单独计 ¥0.30(4K 原名仍 ¥0.50)。
     // model_mapping(ch#24/#17)把它翻回 gemini-3-pro-image-preview 给上游。见 configure-pro-2k-sku.mjs。
     'gemini-3-pro-image-preview-2k': '2K',
+    // ch96(adobe 逆向 we-token.cc)上新的两款,客户走 /v1/images/edits。不在此表时 → passthrough →
+    // new-api 把 images/edits 当 Imagen 形态请求发上游 → 上游报 "only imagen models supported" 500。
+    // 加进来后 proxy 翻译到 native generateContent(输入图转 inlineData + 注入 imageSize)→ 上游正常出图 + 落图床。
+    'gemini-3.1-flash-image-adobe': '2K',
+    'gemini-3-pro-image-adobe': '4K',
 };
 
 /** 仅这些模型允许客户用 `size` 选 imageSize(其余按 GEMINI_IMAGE_MODELS 固定档,size 被忽略)。
@@ -222,6 +238,9 @@ const GEMINI_ASPECT_RATIOS: Record<string, ReadonlySet<string>> = {
 };
 // 折扣 SKU 与 pro 同源 → 复用 pro 档的 aspect_ratio 白名单(否则 allowed.has 会在 undefined 上抛)
 GEMINI_ASPECT_RATIOS['gemini-3-pro-image-preview-2k'] = GEMINI_ASPECT_RATIOS['gemini-3-pro-image-preview'];
+// ch96 adobe 逆向两款与 flash/pro 同底模 → 复用对应档白名单。
+GEMINI_ASPECT_RATIOS['gemini-3.1-flash-image-adobe'] = GEMINI_ASPECT_RATIOS['gemini-3.1-flash-image-preview'];
+GEMINI_ASPECT_RATIOS['gemini-3-pro-image-adobe'] = GEMINI_ASPECT_RATIOS['gemini-3-pro-image-preview'];
 
 const CLAUDE_MAX_TOKENS_CAP = 4096;
 
@@ -1032,7 +1051,12 @@ async function handleGpt4oImageChat(
 function fetchUpstreamMultipart(req: NextRequest, form: FormData, path: string, search: string): Promise<Response> {
     const headers = forwardHeaders(req);
     headers.delete('content-type');
-    return fetch(`${NEWAPI_BASE_URL}/v1${path}${search}`, { method: 'POST', headers, body: form });
+    return fetch(`${NEWAPI_BASE_URL}/v1${path}${search}`, {
+        method: 'POST',
+        headers,
+        body: form,
+        signal: AbortSignal.timeout(UPSTREAM_IMAGE_TIMEOUT_MS), // 600s,对齐 Caddy(否则 undici 默认 300s → 扣费无图)
+    });
 }
 
 /** 非 Gemini 图片 JSON 转发 → 返回【原始】响应供 reshape(CT 强制 json)。 */
@@ -1041,6 +1065,7 @@ function fetchUpstreamJson(req: NextRequest, body: JsonRecord, path: string, sea
         method: 'POST',
         headers: jsonForwardHeaders(req),
         body: JSON.stringify(body),
+        signal: AbortSignal.timeout(UPSTREAM_IMAGE_TIMEOUT_MS), // 600s,对齐 Caddy(否则 undici 默认 300s → 扣费无图)
     });
 }
 
@@ -2350,8 +2375,28 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
         return handleAsyncImageQuery(req, path);
     }
 
-    // 视频轮询完成后:按客户自定义 OSS 转存(详见 handleVideoPoll)
+    // seedance-cn 视频【提交】:端到端自扣(绕 new-api:门控 + 记录归属 + 轮询按真 usage 扣)。
+    // 非 seedance-cn 的视频提交原样透传 new-api(现有 seedance 逆向/海外档等)。
+    if (req.method === 'POST' && (path === '/video/generations' || path === '/videos')) {
+        let vbody: JsonRecord;
+        try {
+            vbody = (await req.json()) as JsonRecord;
+        } catch {
+            return NextResponse.json(
+                { error: { message: 'invalid JSON body', type: 'invalid_request_error' } },
+                { status: 400 },
+            );
+        }
+        if (isSeedanceCnModel(String(vbody.model ?? ''))) {
+            return handleSeedanceVideoSubmit(req, vbody);
+        }
+        return forwardToNewApi(req, vbody, path, search, cap);
+    }
+
+    // 视频轮询:seedance-cn 任务(我们记录过的)走端到端自扣轮询 + 扣费;其余走 new-api + 客户 OSS 转存。
     if (req.method === 'GET' && /^\/video\/generations\/[^/]+$/.test(path)) {
+        const taskId = path.slice(path.lastIndexOf('/') + 1);
+        if (await isSeedanceCnTask(taskId)) return handleSeedanceVideoPoll(req, taskId);
         return handleVideoPoll(req, path, search);
     }
 

@@ -21,6 +21,7 @@ import 'server-only';
 import * as Sentry from '@sentry/nextjs';
 import { prisma } from '@/lib/db';
 import { fetchUserRefunds, getUsageDashboard } from './client';
+import { cnyToQuota } from './quota-units';
 
 const TTL_MS = 5 * 60 * 1_000;
 /** How many distinct models get their own stack in the 模型消耗分布图; the
@@ -353,4 +354,54 @@ async function fetchLiveAggregate(args: {
         });
 
     return { totalUsedQuota, totalCalls, totalTokens, byModel, byDay, chartModels };
+}
+
+/**
+ * 把 seedance-cn 视频用量并进聚合结果 —— 这些视频【绕过 new-api】(端到端自扣),不进 new-api 日志,
+ * 所以聚合器(读 new-api /api/data/)看不到它们。这里从 seedance_video_tasks 补上,让它们在 dashboard
+ * 的「累计消费 / 调用次数 / Tokens / Top 模型」可见。只并 totals + byModel(byDay 图暂不含)。
+ * cost_cny → quota(与其它模型同单位,前端 quotaToCny 还原)。任何失败返回原聚合(不打断 dashboard)。
+ */
+export async function unionSeedanceUsage<T extends UsageAggregate>(
+    agg: T,
+    portalUserId: string,
+    period: UsagePeriod,
+): Promise<T> {
+    try {
+        const { start } = periodToTimeRange(period);
+        const rows = await prisma.seedanceVideoTask.findMany({
+            where: {
+                user_id: portalUserId,
+                billed: true,
+                cost_cny: { not: null },
+                ...(start > 0 ? { created_at: { gte: new Date(start * 1000) } } : {}),
+            },
+            select: { model: true, cost_cny: true, tokens: true },
+        });
+        if (!rows.length) return agg;
+        const byModel = new Map(agg.byModel.map((m) => [m.model, { ...m }]));
+        let addQuota = 0;
+        let addCalls = 0;
+        let addTokens = 0;
+        for (const r of rows) {
+            const q = cnyToQuota(Number(r.cost_cny));
+            addQuota += q;
+            addCalls += 1;
+            addTokens += r.tokens ? Number(r.tokens) : 0;
+            const e = byModel.get(r.model) ?? { model: r.model, calls: 0, quota: 0 };
+            e.calls += 1;
+            e.quota += q;
+            byModel.set(r.model, e);
+        }
+        return {
+            ...agg,
+            totalUsedQuota: agg.totalUsedQuota + addQuota,
+            totalCalls: agg.totalCalls + addCalls,
+            totalTokens: agg.totalTokens + addTokens,
+            byModel: [...byModel.values()].sort((a, b) => b.quota - a.quota),
+        };
+    } catch (e) {
+        console.warn('[usage-aggregate] seedance union failed, returning base agg', e);
+        return agg;
+    }
 }

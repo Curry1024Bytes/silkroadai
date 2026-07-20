@@ -42,6 +42,8 @@ vi.mock('@/lib/billing/customer-balance', () => ({
 const mockGetUsageAggregate = vi.fn();
 vi.mock('@/lib/newapi/usage-aggregate', () => ({
     getUsageAggregate: (...a: unknown[]) => mockGetUsageAggregate(...a),
+    // seedance-cn union 单独在 usage-aggregate.test 里测;这里透传不改聚合。
+    unionSeedanceUsage: async (agg: unknown) => agg,
 }));
 
 const mockQueryLogs = vi.fn();

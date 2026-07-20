@@ -115,6 +115,11 @@ const AGENTS: AgentSection[] = [
         blurb: '即梦 Seedance 2.0 官方满血源 — 文生 / 图生 / 首尾帧 / 参考视频 / 参考音频;需「seedance海外满血」档 key。',
     },
     {
+        id: 'seedance-cn',
+        label: 'Seedance 国内企业级 · 火山方舟',
+        blurb: '火山方舟 doubao-seedance 国内企业级端口 — 文生 / 图生 / 首尾帧 / 多图参考 / 参考视频 / 参考音频;720P·1080P·4K,按 token 计费,成片返火山官方直链,需「seedance 国内企业级端口」档 key。',
+    },
+    {
         id: 'api-models-catalog',
         label: '模型目录 · 程序化价格发现',
         blurb: 'GET /v1/models 返回你 key 可用的模型 + silkroadai 元数据(显示名 / 厂商 / 类型 / 按档次 ¥ 价格)— 比价、选型、工具链集成。',
@@ -2694,6 +2699,14 @@ for _ in range(120):  # 最多约 16 分钟
                                 </tr>
                                 <tr className="border-b border-brand-border">
                                     <td className="px-4 py-2.5 font-mono text-xs text-navy">
+                                        dreamina-seedance-2-0-4k[-ref]
+                                    </td>
+                                    <td className="px-4 py-2.5 text-ink">4K</td>
+                                    <td className="px-4 py-2.5 text-navy">¥4.45</td>
+                                    <td className="px-4 py-2.5 text-navy">¥2.67</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy">
                                         dreamina-seedance-2-0-fast-480p[-ref]
                                     </td>
                                     <td className="px-4 py-2.5 text-ink">480P 快</td>
@@ -2955,10 +2968,243 @@ for _ in range(120):  # 最多约 10 分钟
                 </section>
 
                 {/* ─── 18 · 机器可读模型目录(W10 #211)─── */}
-                <section id="api-models-catalog" className="mt-12 mb-10 scroll-mt-20">
+                <section id="seedance-cn" className="mt-12 mb-10 scroll-mt-20">
                     <div className="flex items-baseline justify-between flex-wrap gap-2 mb-4 pb-3 border-b-2 border-brand-accent">
                         <h2 className="m-0 text-2xl font-semibold text-navy">
                             <span className="text-brand-accent font-bold mr-3 tabular-nums">18</span>
+                            Seedance 国内企业级 · 火山方舟
+                        </h2>
+                    </div>
+                    <p className="m-0 mb-3 text-sm text-ink leading-relaxed">
+                        火山方舟(Volcengine Ark)<strong className="text-navy">doubao-seedance</strong> 国内企业级端口 ——
+                        文生 / 图生 / 首帧·首尾帧 / 多图参考 / 参考视频 / 参考音频,
+                        <strong className="text-navy">720P · 1080P · 4K</strong> 全档。
+                        <strong className="text-navy">异步</strong>:提交拿{' '}
+                        <code className="font-mono text-xs">task_id</code>,轮询到{' '}
+                        <code className="font-mono text-xs">completed</code> 取视频。走{' '}
+                        <code className="font-mono text-xs">/v1/video/generations</code>(不是{' '}
+                        <code className="font-mono text-xs">/v1/chat/completions</code>,后者 404),与「Seedance
+                        2.0」章节同一套调用方式。
+                    </p>
+                    <div className="rounded-lg border border-brand-border bg-paper-muted px-4 py-3 mb-4 text-sm text-ink leading-relaxed">
+                        ⚠️ 需先在「API 密钥」页创建一把{' '}
+                        <strong className="text-navy">「seedance 国内企业级端口」档</strong> 的
+                        key(创建密钥时在档次里选它)。 该 key 专用于下列{' '}
+                        <code className="font-mono text-xs">seedance2.0-pro-*</code> 模型;调别的模型请用对应档 key。
+                    </div>
+
+                    <p className="m-0 mb-2 text-sm font-medium text-navy">模型与价格(按 token 计费)</p>
+                    <div className="rounded-lg overflow-hidden border border-brand-border bg-surface mb-2">
+                        <table className="w-full border-collapse text-sm">
+                            <thead>
+                                <tr className="bg-paper-muted text-muted-ink">
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        分辨率
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        无视频输入(文生 / 图生 / 首尾帧 / 多图)· 元/1M token
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        含视频输入(参考视频)· 元/1M token
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 text-ink align-top">720P</td>
+                                    <td className="px-4 py-3 text-navy font-medium align-top">¥39.1</td>
+                                    <td className="px-4 py-3 text-navy font-medium align-top">¥23.8</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 text-ink align-top">1080P</td>
+                                    <td className="px-4 py-3 text-navy font-medium align-top">¥43.35</td>
+                                    <td className="px-4 py-3 text-navy font-medium align-top">¥26.35</td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-3 text-ink align-top">4K</td>
+                                    <td className="px-4 py-3 text-navy font-medium align-top">¥22.1</td>
+                                    <td className="px-4 py-3 text-navy font-medium align-top">¥13.6</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <p className="m-0 mb-5 text-xs text-minor-ink">
+                        <strong className="text-navy">按实际 token 计费</strong>(以响应{' '}
+                        <code className="font-mono text-xs">usage.completion_tokens</code> 为准,仅对成功出片扣费)。视频
+                        token ≈ 分辨率 × 时长 —— 分辨率越高 / 视频越长,token 越多。示例:720P 5 秒 ≈ 10.9 万 token ≈{' '}
+                        <strong className="text-navy">¥4.26</strong>。模型 6 档:{' '}
+                        <code className="font-mono text-xs">
+                            seedance2.0-pro-{'{'}720p|1080p|4k{'}'}
+                        </code>
+                        (文生)+ 加 <code className="font-mono text-xs">-ref</code>(图生 / 首尾帧 / 多图 / 参考视频)。
+                        <strong className="text-navy">
+                            含视频输入(参考视频)每 1M token 更便宜,但输入视频时长也计入 token
+                        </strong>
+                        ,故整体成本更高。
+                        <code className="font-mono text-xs">duration</code> 支持{' '}
+                        <code className="font-mono text-xs">5</code> / <code className="font-mono text-xs">10</code>{' '}
+                        秒。
+                    </p>
+
+                    <p className="m-0 mb-2 text-sm font-medium text-navy">1) 提交任务(文生视频)</p>
+                    <CodeBlock language="bash">
+                        {`curl ${OPENAI_BASE}/video/generations \\
+  -H "Authorization: Bearer 你的key" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "seedance2.0-pro-1080p",
+    "prompt": "一只穿红大衣的小猫在漫天大雪中好奇地伸爪抓雪花,写实电影质感",
+    "aspect_ratio": "16:9",
+    "duration": 5
+  }'
+# → { "task_id": "cgt_xxx", "object": "video", "status": "queued" }`}
+                    </CodeBlock>
+
+                    <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">2) 轮询直到完成</p>
+                    <CodeBlock language="bash">
+                        {`curl ${OPENAI_BASE}/video/generations/cgt_xxx -H "Authorization: Bearer 你的key"
+# status: in_progress … 几分钟后 "status": "completed"
+# 视频直链在响应的 video_url 字段`}
+                    </CodeBlock>
+                    <div className="rounded-lg border border-brand-border bg-paper-muted px-4 py-3 mt-3 text-sm text-ink leading-relaxed">
+                        ⚠️ <strong className="text-navy">视频直链是火山官方 VOD 的签名链接,约 24 小时后过期</strong>。
+                        完成后请<strong className="text-navy">尽快下载或转存到你自己的存储</strong>;过期后需重新生成。
+                        （与其它 Seedance 档不同:本档返回火山官方直链以保证资源真实性,不做永久托管。）另注: 生成中(
+                        <code className="font-mono text-xs">in_progress</code>)时{' '}
+                        <code className="font-mono text-xs">video_url</code> 为空,务必轮询到{' '}
+                        <code className="font-mono text-xs">completed</code> 再取。
+                    </div>
+
+                    <p className="m-0 mt-5 mb-2 text-sm font-medium text-navy">参数总表</p>
+                    <div className="rounded-lg overflow-hidden border border-brand-border bg-surface mb-2">
+                        <table className="w-full border-collapse text-sm">
+                            <thead>
+                                <tr className="bg-paper-muted text-muted-ink">
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        参数
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        必填
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        说明
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy">model</td>
+                                    <td className="px-4 py-2.5 text-ink">必填</td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        seedance2.0-pro-{'{'}720p|1080p|4k{'}'}(文生)或加{' '}
+                                        <code className="font-mono text-xs">-ref</code> 后缀(图生 / 首尾帧 / 多图 /
+                                        参考视频)
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy">prompt</td>
+                                    <td className="px-4 py-2.5 text-ink">必填</td>
+                                    <td className="px-4 py-2.5 text-ink">画面提示词</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy">duration</td>
+                                    <td className="px-4 py-2.5 text-ink">否</td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        时长秒数,<code className="font-mono text-xs">5</code> /{' '}
+                                        <code className="font-mono text-xs">10</code>,默认 5(也接受{' '}
+                                        <code className="font-mono text-xs">seconds</code>)
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy">aspect_ratio</td>
+                                    <td className="px-4 py-2.5 text-ink">否</td>
+                                    <td className="px-4 py-2.5 text-ink">16:9(默认)/ 9:16 / 1:1 / 4:3 / 3:4 / 21:9</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy">image / image_url</td>
+                                    <td className="px-4 py-2.5 text-ink">否</td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        单张参考图(URL 或 base64 dataURL);需用{' '}
+                                        <code className="font-mono text-xs">-ref</code> 模型
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy">
+                                        images / reference_image_urls
+                                    </td>
+                                    <td className="px-4 py-2.5 text-ink">否</td>
+                                    <td className="px-4 py-2.5 text-ink">多张参考图数组(≤9)</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy">
+                                        first_frame / last_frame
+                                    </td>
+                                    <td className="px-4 py-2.5 text-ink">否</td>
+                                    <td className="px-4 py-2.5 text-ink">首帧 / 尾帧图(首尾帧玩法)</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy">reference_videos</td>
+                                    <td className="px-4 py-2.5 text-ink">否</td>
+                                    <td className="px-4 py-2.5 text-ink">参考视频数组(≤3)</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy">audio_url / audios</td>
+                                    <td className="px-4 py-2.5 text-ink">否</td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        参考音频,<strong className="text-navy">需同时带 ≥1 张参考图</strong>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy">generate_audio</td>
+                                    <td className="px-4 py-2.5 text-ink">否</td>
+                                    <td className="px-4 py-2.5 text-ink">是否生成背景音效,默认 true(传 false 关)</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <p className="m-0 mt-5 mb-2 text-sm font-medium text-navy">玩法示例</p>
+
+                    <p className="m-0 mb-2 text-sm font-medium text-navy">1) 图生视频(单图 → 用 -ref 模型)</p>
+                    <CodeBlock language="bash">
+                        {`curl ${OPENAI_BASE}/video/generations \\
+  -H "Authorization: Bearer 你的key" -H "Content-Type: application/json" \\
+  -d '{ "model": "seedance2.0-pro-720p-ref", "prompt": "图中人物开始走路,镜头跟随推进",
+        "duration": 5, "image_url": "https://你的图床/start.jpg" }'`}
+                    </CodeBlock>
+
+                    <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">2) 首尾帧</p>
+                    <CodeBlock language="bash">
+                        {`curl ${OPENAI_BASE}/video/generations \\
+  -H "Authorization: Bearer 你的key" -H "Content-Type: application/json" \\
+  -d '{ "model": "seedance2.0-pro-1080p-ref", "prompt": "从第一张画面平滑过渡到第二张",
+        "duration": 5, "first_frame": "https://.../a.jpg", "last_frame": "https://.../b.jpg" }'`}
+                    </CodeBlock>
+
+                    <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">3) 多图参考 + 参考音频</p>
+                    <CodeBlock language="bash">
+                        {`curl ${OPENAI_BASE}/video/generations \\
+  -H "Authorization: Bearer 你的key" -H "Content-Type: application/json" \\
+  -d '{ "model": "seedance2.0-pro-720p-ref", "prompt": "参考人物外观,跟随音乐节奏起舞",
+        "duration": 5,
+        "images": ["https://.../face.jpg", "https://.../outfit.jpg"],
+        "audio_url": "https://.../beat.mp3" }'`}
+                    </CodeBlock>
+                    <p className="m-0 mt-3 mb-5 text-xs text-minor-ink">
+                        参考图 / 视频 / 音频可传公网 URL 或 base64 dataURL;dataURL 会由我们自动转存后再交给上游。
+                        无参考模型(不带 <code className="font-mono text-xs">-ref</code>)带图会 400,请选对应{' '}
+                        <code className="font-mono text-xs">-ref</code> 模型。也可在{' '}
+                        <a href="/tools/seedance" className="text-brand-accent hover:underline">
+                            Seedance 视频测试工具
+                        </a>{' '}
+                        里在线试。
+                    </p>
+                </section>
+
+                <section id="api-models-catalog" className="mt-12 mb-10 scroll-mt-20">
+                    <div className="flex items-baseline justify-between flex-wrap gap-2 mb-4 pb-3 border-b-2 border-brand-accent">
+                        <h2 className="m-0 text-2xl font-semibold text-navy">
+                            <span className="text-brand-accent font-bold mr-3 tabular-nums">19</span>
                             模型目录 · 程序化价格发现
                         </h2>
                     </div>
@@ -3131,7 +3377,7 @@ print(f'最便宜可对话模型: {cheapest["id"]}  ¥{p["input_cny_per_1m"]}/1M
                 <section id="api-key-inspect" className="mt-12 mb-10 scroll-mt-20">
                     <div className="flex items-baseline justify-between flex-wrap gap-2 mb-4 pb-3 border-b-2 border-brand-accent">
                         <h2 className="m-0 text-2xl font-semibold text-navy">
-                            <span className="text-brand-accent font-bold mr-3 tabular-nums">19</span>
+                            <span className="text-brand-accent font-bold mr-3 tabular-nums">20</span>
                             Key 自查 · 余额监控
                         </h2>
                     </div>

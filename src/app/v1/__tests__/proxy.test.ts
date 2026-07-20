@@ -62,6 +62,8 @@ vi.mock('@/lib/db', () => ({
             update: (...a: unknown[]) => mockImageTaskUpdate(...a),
             findUnique: (...a: unknown[]) => mockImageTaskFindUnique(...a),
         },
+        // seedance-cn 视频任务表:默认返 null → isSeedanceCnTask=false → 视频轮询走 new-api 原路径。
+        seedanceVideoTask: { findUnique: async () => null },
     },
 }));
 const mockGetCustomerBalance = vi.fn();
@@ -1452,6 +1454,42 @@ describe('/v1 proxy — Phase 4: DALL·E /v1/images/{edits,generations} (W9 D4)'
         expect(data.data[0].url).toMatch(/^https:\/\/images\.silkroadai\.io\/gen\/[0-9a-f-]+\.png$/);
     });
 
+    // ch96 adobe 逆向两款:客户走 /images/edits。不在 GEMINI_IMAGE_MODELS 时 → passthrough →
+    // new-api 当 Imagen 请求发上游 → "only imagen models supported" 500。加进表后走 native 翻译。
+    it('ch96 gemini-3.1-flash-image-adobe 经 /images/edits → 翻译到 native + imageSize 2K + 托管 URL', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const form = new FormData();
+        form.append('model', 'gemini-3.1-flash-image-adobe');
+        form.append('prompt', 'make it blue');
+        form.append('image', imageFile([0xff, 0xd8, 0xff, 0xe0], 'in.jpg', 'image/jpeg'));
+
+        const res = await POST(makeMultipartReq(form, '/images/edits'), ctx('images', 'edits'));
+
+        const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(url).toBe(`${NEWAPI_BASE}/v1beta/models/gemini-3.1-flash-image-adobe:generateContent`);
+        const sent = JSON.parse(String(init.body)) as { generationConfig: { imageConfig: { imageSize: string } } };
+        expect(sent.generationConfig.imageConfig.imageSize).toBe('2K');
+        expect(res.status).toBe(200);
+        expect(res.headers.get('X-Silkroadai-Translated')).toBe('gemini-native');
+        const data = (await res.json()) as { data: Array<{ url: string }> };
+        expect(data.data[0].url).toMatch(/^https:\/\/images\.silkroadai\.io\/gen\/[0-9a-f-]+\.png$/);
+    });
+
+    it('ch96 gemini-3-pro-image-adobe 经 /images/edits → imageSize 4K', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const form = new FormData();
+        form.append('model', 'gemini-3-pro-image-adobe');
+        form.append('prompt', 'x');
+        form.append('image', imageFile([1, 2, 3]));
+
+        await POST(makeMultipartReq(form, '/images/edits'), ctx('images', 'edits'));
+
+        const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(url).toBe(`${NEWAPI_BASE}/v1beta/models/gemini-3-pro-image-adobe:generateContent`);
+        const sent = JSON.parse(String(init.body)) as { generationConfig: { imageConfig: { imageSize: string } } };
+        expect(sent.generationConfig.imageConfig.imageSize).toBe('4K');
+    });
+
     it('edits multipart response_format=b64_json → base64, no R2 upload (test D4-2)', async () => {
         mockFetch.mockResolvedValueOnce(geminiNativeResponse());
         const form = new FormData();
@@ -1578,6 +1616,43 @@ describe('/v1 proxy — Phase 4: DALL·E /v1/images/{edits,generations} (W9 D4)'
         );
         expect(flashRes.status).toBe(400);
         expect(mockFetch).toHaveBeenCalledTimes(1); // 只有 pro 那次打了上游
+    });
+
+    it('gpt-image-2 上游 fetch 挂 600s AbortSignal(对齐 Caddy,防 undici 默认 300s → 扣费无图)', async () => {
+        // JSON 文生图 → fetchUpstreamJson
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ data: [{ b64_json: 'AAAA' }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2', prompt: 'a red cube', response_format: 'b64_json' },
+            }),
+            ctx('images', 'generations'),
+        );
+        const [, jsonInit] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(jsonInit.signal).toBeInstanceOf(AbortSignal);
+        expect(jsonInit.signal?.aborted).toBe(false);
+
+        mockFetch.mockClear();
+
+        // multipart 图生图 → fetchUpstreamMultipart
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ data: [{ b64_json: 'AAAA' }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const form = new FormData();
+        form.append('model', 'gpt-image-2');
+        form.append('prompt', 'edit it');
+        form.append('image', imageFile([1, 2, 3]));
+        await POST(makeMultipartReq(form, '/images/edits'), ctx('images', 'edits'));
+        const [, mpInit] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(mpInit.signal).toBeInstanceOf(AbortSignal);
+        expect(mpInit.signal?.aborted).toBe(false);
     });
 
     it('passes non-Gemini model multipart through to new-api unchanged (test D4-7)', async () => {

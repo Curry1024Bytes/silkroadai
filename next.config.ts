@@ -2,7 +2,8 @@ import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
     output: 'standalone',
-    serverExternalPackages: ['wechatpay-node-v3'],
+    // undici 外置:instrumentation.ts 用它给 Node fetch 设 600s headersTimeout(慢生图)。
+    serverExternalPackages: ['wechatpay-node-v3', 'undici'],
     // 落地页暂时下线(设计待重做):silkroadai.io/ 直接进控制台登录页。
     // 落地页代码完整保留在 src/app/page.tsx,恢复 = 删掉本 redirects()(不用动文件)。
     // - ?invite=X 旧式邀请链接 → /register(保留 reseller 归因;register 挂了
