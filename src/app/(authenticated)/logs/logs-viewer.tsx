@@ -39,6 +39,20 @@ function defaultRange(): { start: string; end: string } {
     return { start: fmt(start), end: fmt(now) };
 }
 
+/** 过滤条件 → query string(/api/portal/logs 与 /export 共用同一套参数)。 */
+function buildParams(f: Filters): URLSearchParams {
+    const params = new URLSearchParams();
+    const s = toUnix(f.start);
+    const e = toUnix(f.end);
+    if (s) params.set('start', String(s));
+    if (e) params.set('end', String(e));
+    if (f.requestId.trim()) params.set('request_id', f.requestId.trim());
+    if (f.token.trim()) params.set('token', f.token.trim());
+    if (f.model.trim()) params.set('model', f.model.trim());
+    if (f.channel.trim()) params.set('channel', f.channel.trim());
+    return params;
+}
+
 const INPUT =
     'h-9 px-3 text-sm text-ink rounded-lg border border-brand-border bg-surface placeholder:text-minor-ink outline-none transition-shadow focus:border-navy focus:shadow-focus';
 const HEAD = 'text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border text-muted-ink';
@@ -66,15 +80,7 @@ export function LogsViewer() {
     const fetchLogs = useCallback(async (f: Filters, p: number) => {
         setLoading(true);
         setError(null);
-        const params = new URLSearchParams();
-        const s = toUnix(f.start);
-        const e = toUnix(f.end);
-        if (s) params.set('start', String(s));
-        if (e) params.set('end', String(e));
-        if (f.requestId.trim()) params.set('request_id', f.requestId.trim());
-        if (f.token.trim()) params.set('token', f.token.trim());
-        if (f.model.trim()) params.set('model', f.model.trim());
-        if (f.channel.trim()) params.set('channel', f.channel.trim());
+        const params = buildParams(f);
         params.set('page', String(p));
         try {
             const res = await fetch(`/api/portal/logs?${params.toString()}`);
@@ -176,7 +182,19 @@ export function LogsViewer() {
                         />
                     </label>
                 </div>
-                <div className="mt-3 flex justify-end">
+                <div className="mt-3 flex items-center justify-end gap-2">
+                    <button
+                        type="button"
+                        onClick={() => {
+                            // 按当前过滤条件整段导出(服务端翻页拉全量);浏览器按
+                            // Content-Disposition 直接下载,不离开本页。
+                            window.location.assign(`/api/portal/logs/export?${buildParams(filters).toString()}`);
+                        }}
+                        title="按当前过滤条件导出 CSV(Excel 可直接打开)"
+                        className="inline-flex h-9 items-center rounded-lg border border-brand-border bg-surface px-4 text-sm font-medium text-navy transition-colors hover:bg-paper-muted"
+                    >
+                        导出 CSV
+                    </button>
                     <button
                         type="button"
                         onClick={onSearch}
