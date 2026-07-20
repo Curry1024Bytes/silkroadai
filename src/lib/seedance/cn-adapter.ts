@@ -322,7 +322,13 @@ export async function submitVideoWithKey(body: Record<string, unknown>, auth: st
     }
     const taskId = j?.task_id || j?.id;
     if (!upstream.ok || !taskId) {
-        console.warn('[seedance-cn-adapter] submit failed', upstream.status, text.slice(0, 300));
+        // 上游原始报错体落日志(2000 字):客户投诉 upstream_error 时按时间点反查根因
+        console.warn('[seedance-cn-adapter] submit failed', {
+            model,
+            upstream_model: map.upstream,
+            status: upstream.status,
+            body: text.slice(0, 2000),
+        });
         return err(
             upstream.status >= 400 ? upstream.status : 502,
             'upstream_error',
@@ -379,6 +385,11 @@ export async function pollVideoWithKey(id: string, auth: string): Promise<NextRe
         j = null;
     }
     if (!upstream.ok || !j) {
+        console.warn('[seedance-cn-adapter] poll failed', {
+            id,
+            status: upstream.status,
+            body: text.slice(0, 2000),
+        });
         const msg = (j?.error as { message?: string } | undefined)?.message || text || 'poll failed';
         return err(upstream.status >= 400 ? upstream.status : 502, 'upstream_error', String(msg).slice(0, 300));
     }
@@ -388,6 +399,7 @@ export async function pollVideoWithKey(id: string, auth: string): Promise<NextRe
         status === 'failed'
             ? String((j.error as { message?: string } | undefined)?.message || j.message || 'generation failed')
             : '';
+    if (failReason) console.warn('[seedance-cn-adapter] task failed upstream', { id, fail_reason: failReason });
     // 上游按 token 计费(usage.completion_tokens = 权威 token 数,= 火山公式 (输入+输出时长)×宽×高×帧率/1024;
     // 参考视频档因输入视频时长也计入,token 更多)。回传给下游做【按 token 量计费】—— 见按 token 计费方案。
     // ⚠️ 早期上游报的 token 数偏小一半(2026-07-15 修复),现以 usage 实报为准。

@@ -174,7 +174,16 @@ async function handleSubmit(req: NextRequest): Promise<NextResponse> {
 
     const res = await submitVideoWithKey({ ...body, model: adapterModel }, `Bearer ${cust.upstreamKey}`);
     const text = await res.text();
-    if (!res.ok) return new NextResponse(text, { status: res.status, headers: { 'Content-Type': 'application/json' } });
+    if (!res.ok) {
+        // 带客户身份落日志(适配器层只有上游视角):upstream_error 投诉可直接定位到人
+        console.warn('[enterprise-proxy] submit error', {
+            user_id: cust.userId,
+            model,
+            status: res.status,
+            body: text.slice(0, 2000),
+        });
+        return new NextResponse(text, { status: res.status, headers: { 'Content-Type': 'application/json' } });
+    }
     let j: { id?: string; task_id?: string; model?: string } | null;
     try {
         j = JSON.parse(text) as { id?: string; task_id?: string; model?: string };
@@ -222,7 +231,15 @@ async function handlePoll(req: NextRequest, taskId: string): Promise<NextRespons
 
     const res = await pollVideoWithKey(taskId, `Bearer ${cust.upstreamKey}`);
     const text = await res.text();
-    if (!res.ok) return new NextResponse(text, { status: res.status, headers: { 'Content-Type': 'application/json' } });
+    if (!res.ok) {
+        console.warn('[enterprise-proxy] poll error', {
+            user_id: cust.userId,
+            task_id: taskId,
+            status: res.status,
+            body: text.slice(0, 2000),
+        });
+        return new NextResponse(text, { status: res.status, headers: { 'Content-Type': 'application/json' } });
+    }
     let j: Record<string, unknown> | null;
     try {
         j = JSON.parse(text) as Record<string, unknown>;
