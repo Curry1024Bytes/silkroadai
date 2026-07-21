@@ -8,7 +8,8 @@
  *    (2026-06-11 实测,proxy 自身的 20MB 单图限制被框架层先挡)。
  *    谁要是把 `v1/` 从负向断言里删掉,这里会红。
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import { NextRequest } from 'next/server';
 import { config, middleware } from '@/middleware';
 
 /** 近似 Next 的 matcher 编译:本仓 matcher 是单个含正则组的 pattern,首尾锚定即可。 */
@@ -16,12 +17,57 @@ function matches(pattern: string, path: string): boolean {
     return new RegExp(`^${pattern}$`).test(path);
 }
 
+const req = (path: string) => new NextRequest(`http://localhost${path}`);
+
 describe('middleware — security headers', () => {
     it('sets the three security headers', () => {
-        const res = middleware();
+        const res = middleware(req('/dashboard'));
         expect(res.headers.get('X-Frame-Options')).toBe('SAMEORIGIN');
         expect(res.headers.get('X-Content-Type-Options')).toBe('nosniff');
         expect(res.headers.get('Referrer-Policy')).toBe('strict-origin-when-cross-origin');
+    });
+});
+
+describe('middleware — 独立门户形态门(PORTAL_FLAVOR=seedance-enterprise)', () => {
+    afterEach(() => {
+        delete process.env.PORTAL_FLAVOR;
+    });
+
+    it('enterprise 实例:主站页面/API 全 404,白名单放行', () => {
+        process.env.PORTAL_FLAVOR = 'seedance-enterprise';
+        for (const p of ['/dashboard', '/pay', '/api/portal/keys', '/api/orders', '/api/auth/register', '/models']) {
+            expect(middleware(req(p)).status).toBe(404);
+        }
+        for (const p of [
+            '/api/admin/enterprise/onboard',
+            '/api/admin/enterprise/credit',
+            '/api/admin/enterprise/set-password',
+            '/enterprise',
+            '/enterprise/login',
+            '/enterprise/billing',
+            '/enterprise/keys',
+            '/api/auth/login',
+            '/api/auth/logout',
+            '/api/enterprise/keys',
+            '/api', // P3 素材库 Action API(火山形)
+            '/enterprise-admin', // 运营后台
+            '/enterprise-admin/login',
+        ]) {
+            expect(middleware(req(p)).status).not.toBe(404);
+        }
+    });
+
+    it('enterprise 实例:/ 与 /login 重定向到 /enterprise/login(借道 next.config 的 / → /login)', () => {
+        process.env.PORTAL_FLAVOR = 'seedance-enterprise';
+        for (const p of ['/', '/login']) {
+            const res = middleware(req(p));
+            expect(res.status).toBe(307);
+            expect(res.headers.get('location')).toContain('/enterprise/login');
+        }
+    });
+
+    it('主站实例(env 未设):行为不变', () => {
+        expect(middleware(req('/dashboard')).status).not.toBe(404);
     });
 });
 
@@ -41,6 +87,9 @@ describe('middleware — matcher excludes /v1/* (body-buffering 10MB cap)', () =
         '/v1/images/generations',
         '/v1/models',
         '/v1/messages',
+        // P3:dashboard 素材上传(multipart 视频可 >10MB)避开 body 缓冲截断
+        '/api/enterprise/assets',
+        '/api/enterprise/assets/asset-20260719120000-abcdef',
         // W10:/v1beta native 透传经 portal(Caddy 今晚切流),Gemini inlineData
         // 大图 base64 必须避开 middleware 的 10MB body 缓冲截断
         '/v1beta/models/gemini-3-pro-image-preview:generateContent',

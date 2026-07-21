@@ -87,6 +87,24 @@ describe('seedance-cn adapter submit', () => {
         expect(((await res.json()) as { error: { code: string } }).error.code).toBe('model_not_found');
     });
 
+    it('fast/mini 变体(2026-07-19):按档映射到各自上游模型 id', async () => {
+        let res = await submitVideo(makeReq({ model: 'seedance2.0-fast-720p', prompt: '一只猫' }));
+        expect(res.status).toBe(200);
+        expect(submitBody().model).toBe('artsdance2.0-fast-260701');
+        expect(submitBody().resolution).toBe('720p');
+
+        mockFetch.mockClear(); // 只清调用记录,mockImplementation 仍在
+        res = await submitVideo(makeReq({ model: 'seedance2.0-mini-1080p', prompt: '一只猫' }));
+        expect(res.status).toBe(200);
+        expect(submitBody().model).toBe('artsdance2.0-mini-260701');
+        expect(submitBody().resolution).toBe('1080p');
+    });
+
+    it('fast/mini 无 4k 档:seedance2.0-fast-4k → 400', async () => {
+        const res = await submitVideo(makeReq({ model: 'seedance2.0-fast-4k', prompt: 'x' }));
+        expect(res.status).toBe(400);
+    });
+
     it('缺 prompt → 400', async () => {
         const res = await submitVideo(makeReq({ model: 'seedance2.0-pro-720p' }));
         expect(res.status).toBe(400);

@@ -33,6 +33,20 @@ describe('computeCostCny 费率', () => {
         expect(computeCostCny(1_000_000, '1080p', true)).toBeCloseTo(26.35, 4);
         expect(computeCostCny(1_000_000, '4k', true)).toBeCloseTo(13.6, 4);
     });
+    it('fast 变体(2026-07-19):720p/1080p 同价 无视 ¥31.45 / 含视 ¥18.7(挂牌 37/22 ×0.85)', () => {
+        expect(computeCostCny(1_000_000, '720p', false, 'fast')).toBeCloseTo(31.45, 4);
+        expect(computeCostCny(1_000_000, '1080p', false, 'fast')).toBeCloseTo(31.45, 4);
+        expect(computeCostCny(1_000_000, '720p', true, 'fast')).toBeCloseTo(18.7, 4);
+        expect(computeCostCny(1_000_000, '1080p', true, 'fast')).toBeCloseTo(18.7, 4);
+    });
+    it('mini 变体:无视 ¥19.55 / 含视 ¥11.9(挂牌 23/14 ×0.85)', () => {
+        expect(computeCostCny(1_000_000, '720p', false, 'mini')).toBeCloseTo(19.55, 4);
+        expect(computeCostCny(1_000_000, '1080p', true, 'mini')).toBeCloseTo(11.9, 4);
+    });
+    it('变体缺省 = pro(存量调用不变);fast/mini 无 4k 档 → 回落 pro 4k 价(防漏收)', () => {
+        expect(computeCostCny(1_000_000, '720p', false)).toBeCloseTo(39.1, 4);
+        expect(computeCostCny(1_000_000, '4k', false, 'fast')).toBeCloseTo(22.1, 4);
+    });
     it('720p 5s(108872 token)无视频 ≈ ¥4.26', () => {
         expect(computeCostCny(108872, '720p', false)).toBeCloseTo(4.257, 2);
     });

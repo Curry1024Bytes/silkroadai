@@ -110,12 +110,23 @@ export async function signSession(userId: string): Promise<string> {
     return signSessionRaw(userId, user.session_token_version);
 }
 
+/**
+ * Secure 属性:生产默认 true;`SESSION_COOKIE_SECURE=false` 显式关(独立门户裸 IP
+ * HTTP 入口用 —— Secure cookie 在纯 HTTP 会被浏览器直接丢弃,登录永远回登录页。
+ * 主站实例不设此 env,行为不变)。同实例还需 `BRAND_COOKIE_DOMAIN=` 置空:
+ * `.silkroadai.io` 的 Domain 属性对 IP host 无效,浏览器整个拒收 cookie。
+ */
+function cookieSecure(): boolean {
+    if (process.env.SESSION_COOKIE_SECURE === 'false') return false;
+    return process.env.NODE_ENV === 'production';
+}
+
 export function setSessionCookie(res: NextResponse, token: string): void {
     res.cookies.set({
         name: SESSION_COOKIE_NAME,
         value: token,
         httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
+        secure: cookieSecure(),
         sameSite: 'lax',
         path: '/',
         maxAge: SESSION_MAX_AGE_SECONDS,
@@ -131,7 +142,7 @@ export function clearSessionCookie(res: NextResponse): void {
         name: SESSION_COOKIE_NAME,
         value: '',
         httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
+        secure: cookieSecure(),
         sameSite: 'lax',
         path: '/',
         maxAge: 0,

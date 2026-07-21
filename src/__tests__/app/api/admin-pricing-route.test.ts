@@ -6,6 +6,7 @@ const mockModelFindFirst = vi.fn();
 const mockModelFindMany = vi.fn();
 const mockPriceCreate = vi.fn();
 const mockChannelGroupFindFirst = vi.fn();
+const mockChannelGroupFindMany = vi.fn();
 const mockSync = vi.fn();
 
 vi.mock('@/lib/admin/auth', () => ({ resolveAdmin: (...a: unknown[]) => mockResolveAdmin(...a) }));
@@ -23,8 +24,14 @@ vi.mock('@/lib/db', () => ({
         },
         channelGroup: {
             findFirst: (...a: unknown[]) => mockChannelGroupFindFirst(...a),
+            findMany: (...a: unknown[]) => mockChannelGroupFindMany(...a),
         },
     },
+}));
+// 密闭:pricing-sync/GET 现在会读 new-api option(GroupRatio)—— mock 掉 client,别打真网络。
+vi.mock('@/lib/newapi/client', () => ({
+    getOption: (key: string) => Promise.resolve(key === 'GroupRatio' ? '{"default":1,"official":1}' : null),
+    putOption: () => Promise.resolve(),
 }));
 // Mock only the HTTP-touching syncModelPriceToNewApi; keep the pure resolveImageModelPrice real
 // so the resync route's default-tier/warn logic is exercised end-to-end.
@@ -54,7 +61,8 @@ beforeEach(() => {
     mockModelFindMany.mockResolvedValue([]);
     mockModelFindFirst.mockResolvedValue({ id: 'm1', upstream_map: UPSTREAM, prices: [] });
     mockPriceCreate.mockImplementation(({ data }: { data: object }) => Promise.resolve({ id: 'p1', ...data }));
-    mockChannelGroupFindFirst.mockResolvedValue({ key: 'pool' }); // is_default tier
+    mockChannelGroupFindFirst.mockResolvedValue({ key: 'pool', newapi_group: 'default' }); // is_default tier / GR 解析
+    mockChannelGroupFindMany.mockResolvedValue([{ key: 'pool', newapi_group: 'default' }]);
     mockSync.mockResolvedValue({
         ok: true,
         channel_id: 3,

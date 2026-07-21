@@ -23,22 +23,54 @@ import { randomUUID } from 'node:crypto';
 import { uploadImage } from '@/lib/r2/client';
 
 const XHK_BASE = process.env.SEEDANCE_XHK_BASE_URL || 'https://token.xinhankr.com';
-/** 上游单一模型名(所有档位都映射到它,分辨率/参考模式由请求体承载)。 */
+/** 上游 pro 模型名(SEEDANCE_XHK_MODEL 仅覆盖 pro;fast/mini 上游 id 固定)。 */
 const UPSTREAM_MODEL = process.env.SEEDANCE_XHK_MODEL || 'artsdance2.0-pro-260701';
+const UPSTREAM_FAST = 'artsdance2.0-fast-260701';
+const UPSTREAM_MINI = 'artsdance2.0-mini-260701';
 
 const MAX_REF_IMAGES = 9;
 const MAX_REF_VIDEOS = 3;
 
-/** 客户/new-api 档位模型名 → { resolution, 是否参考档 }。6 个名 = 3 分辨率 × {无参考, -ref}。
- *  2k 已下线(官方无 2k 档,2026-07-15 去掉)。 */
-export const MODEL_MAP: Record<string, { resolution: '720p' | '1080p' | '4k'; ref: boolean }> = {
-    'seedance2.0-pro-720p': { resolution: '720p', ref: false },
-    'seedance2.0-pro-1080p': { resolution: '1080p', ref: false },
-    'seedance2.0-pro-4k': { resolution: '4k', ref: false },
-    'seedance2.0-pro-720p-ref': { resolution: '720p', ref: true },
-    'seedance2.0-pro-1080p-ref': { resolution: '1080p', ref: true },
-    'seedance2.0-pro-4k-ref': { resolution: '4k', ref: true },
+/** seedance 变体(2026-07-19 加 fast/mini):费率按 variant × resolution × 含视频 分档。 */
+export type SeedanceVariant = 'pro' | 'fast' | 'mini';
+
+export interface SeedanceModelSpec {
+    resolution: '720p' | '1080p' | '4k';
+    ref: boolean;
+    variant: SeedanceVariant;
+    /** 该档实际发给上游的模型 id(分辨率/参考模式由请求体承载)。 */
+    upstream: string;
+}
+
+/** 客户/new-api 档位模型名 → 档位规格。pro 3 分辨率 × {无参考,-ref} = 6 名;
+ *  fast/mini 上游只有 720p/1080p(无 4k)各 4 名 → 共 14 名。2k 已下线(2026-07-15)。 */
+export const MODEL_MAP: Record<string, SeedanceModelSpec> = {
+    'seedance2.0-pro-720p': { resolution: '720p', ref: false, variant: 'pro', upstream: UPSTREAM_MODEL },
+    'seedance2.0-pro-1080p': { resolution: '1080p', ref: false, variant: 'pro', upstream: UPSTREAM_MODEL },
+    'seedance2.0-pro-4k': { resolution: '4k', ref: false, variant: 'pro', upstream: UPSTREAM_MODEL },
+    'seedance2.0-pro-720p-ref': { resolution: '720p', ref: true, variant: 'pro', upstream: UPSTREAM_MODEL },
+    'seedance2.0-pro-1080p-ref': { resolution: '1080p', ref: true, variant: 'pro', upstream: UPSTREAM_MODEL },
+    'seedance2.0-pro-4k-ref': { resolution: '4k', ref: true, variant: 'pro', upstream: UPSTREAM_MODEL },
+    'seedance2.0-fast-720p': { resolution: '720p', ref: false, variant: 'fast', upstream: UPSTREAM_FAST },
+    'seedance2.0-fast-1080p': { resolution: '1080p', ref: false, variant: 'fast', upstream: UPSTREAM_FAST },
+    'seedance2.0-fast-720p-ref': { resolution: '720p', ref: true, variant: 'fast', upstream: UPSTREAM_FAST },
+    'seedance2.0-fast-1080p-ref': { resolution: '1080p', ref: true, variant: 'fast', upstream: UPSTREAM_FAST },
+    'seedance2.0-mini-720p': { resolution: '720p', ref: false, variant: 'mini', upstream: UPSTREAM_MINI },
+    'seedance2.0-mini-1080p': { resolution: '1080p', ref: false, variant: 'mini', upstream: UPSTREAM_MINI },
+    'seedance2.0-mini-720p-ref': { resolution: '720p', ref: true, variant: 'mini', upstream: UPSTREAM_MINI },
+    'seedance2.0-mini-1080p-ref': { resolution: '1080p', ref: true, variant: 'mini', upstream: UPSTREAM_MINI },
 };
+
+/** 任务行只存 model 名 → 变体(计费用)。长名走 MODEL_MAP;企业门户短名
+ *  (seedance-2-0[-fast|-mini],2026-07-20 归一)按后缀识别;未知名回落 pro(宁多收不少收)。 */
+export function variantForModel(model: string): SeedanceVariant {
+    const hit = MODEL_MAP[model]?.variant;
+    if (hit) return hit;
+    const m = model.toLowerCase();
+    if (m.includes('-fast')) return 'fast';
+    if (m.includes('-mini')) return 'mini';
+    return 'pro';
+}
 
 const ALLOWED_RATIOS = new Set(['16:9', '9:16', '4:3', '3:4', '1:1', '21:9']);
 
@@ -93,7 +125,7 @@ function pushUrl(list: string[], u: unknown) {
 }
 
 /** 入参图 URL(顶层 image_url / image / images / reference_image_urls + content[].image_url)。 */
-function extractImageUrls(body: Record<string, unknown>): string[] {
+export function extractImageUrls(body: Record<string, unknown>): string[] {
     const urls: string[] = [];
     pushUrl(urls, body.image_url);
     if (typeof body.image === 'string') urls.push(body.image);
@@ -127,7 +159,7 @@ export function extractVideoUrls(body: Record<string, unknown>): string[] {
 }
 
 /** 入参音频 URL(audio_url / audio / audios / reference_audios + content[].audio_url)。 */
-function extractAudioUrls(body: Record<string, unknown>): string[] {
+export function extractAudioUrls(body: Record<string, unknown>): string[] {
     const urls: string[] = [];
     pushUrl(urls, body.audio_url);
     if (typeof body.audio === 'string') urls.push(body.audio);
@@ -174,7 +206,11 @@ export async function submitVideo(req: NextRequest): Promise<NextResponse> {
     } catch {
         return err(400, 'invalid_json', 'request body must be JSON');
     }
+    return submitVideoWithKey(body, auth);
+}
 
+/** 提交核心(独立门户直调:body + 上游 key 授权头,进程内调用,不走 HTTP/适配器单 key 鉴权)。 */
+export async function submitVideoWithKey(body: Record<string, unknown>, auth: string): Promise<NextResponse> {
     const model = String(body.model || '');
     const map = MODEL_MAP[model];
     if (!map) return err(400, 'model_not_found', `unknown seedance-cn model: ${model}`);
@@ -218,7 +254,7 @@ export async function submitVideo(req: NextRequest): Promise<NextResponse> {
 
     // 上游请求体(images/videos 用带 role 的对象;帧角色显式指定优先)
     const upstreamBody: Record<string, unknown> = {
-        model: UPSTREAM_MODEL,
+        model: map.upstream,
         prompt,
         resolution: map.resolution,
         ratio,
@@ -286,7 +322,13 @@ export async function submitVideo(req: NextRequest): Promise<NextResponse> {
     }
     const taskId = j?.task_id || j?.id;
     if (!upstream.ok || !taskId) {
-        console.warn('[seedance-cn-adapter] submit failed', upstream.status, text.slice(0, 300));
+        // 上游原始报错体落日志(2000 字):客户投诉 upstream_error 时按时间点反查根因
+        console.warn('[seedance-cn-adapter] submit failed', {
+            model,
+            upstream_model: map.upstream,
+            status: upstream.status,
+            body: text.slice(0, 2000),
+        });
         return err(
             upstream.status >= 400 ? upstream.status : 502,
             'upstream_error',
@@ -324,7 +366,11 @@ function firstVideoUrl(data: unknown): string | null {
 
 /** GET 轮询:token.xinhankr.com /v1/video/generations/{id} → OpenAI-video 形。 */
 export async function pollVideo(req: NextRequest, id: string): Promise<NextResponse> {
-    const auth = req.headers.get('authorization') || '';
+    return pollVideoWithKey(id, req.headers.get('authorization') || '');
+}
+
+/** 轮询核心(独立门户直调:id + 上游 key 授权头)。 */
+export async function pollVideoWithKey(id: string, auth: string): Promise<NextResponse> {
     let upstream: Response;
     try {
         upstream = await fetchXhk(`/v1/video/generations/${encodeURIComponent(id)}`, auth);
@@ -339,6 +385,11 @@ export async function pollVideo(req: NextRequest, id: string): Promise<NextRespo
         j = null;
     }
     if (!upstream.ok || !j) {
+        console.warn('[seedance-cn-adapter] poll failed', {
+            id,
+            status: upstream.status,
+            body: text.slice(0, 2000),
+        });
         const msg = (j?.error as { message?: string } | undefined)?.message || text || 'poll failed';
         return err(upstream.status >= 400 ? upstream.status : 502, 'upstream_error', String(msg).slice(0, 300));
     }
@@ -348,6 +399,7 @@ export async function pollVideo(req: NextRequest, id: string): Promise<NextRespo
         status === 'failed'
             ? String((j.error as { message?: string } | undefined)?.message || j.message || 'generation failed')
             : '';
+    if (failReason) console.warn('[seedance-cn-adapter] task failed upstream', { id, fail_reason: failReason });
     // 上游按 token 计费(usage.completion_tokens = 权威 token 数,= 火山公式 (输入+输出时长)×宽×高×帧率/1024;
     // 参考视频档因输入视频时长也计入,token 更多)。回传给下游做【按 token 量计费】—— 见按 token 计费方案。
     // ⚠️ 早期上游报的 token 数偏小一半(2026-07-15 修复),现以 usage 实报为准。

@@ -1,0 +1,211 @@
+/**
+ * 独立门户计费单测(钱敏感):议价覆盖 vs 默认挂牌 + 幂等扣费(纯 ¥账本,无 newapi 分支)。
+ */
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const { db, applyLedgerEntry } = vi.hoisted(() => ({
+    db: {
+        seedanceVideoTask: { findUnique: vi.fn(), updateMany: vi.fn() },
+        enterpriseRateOverride: { findUnique: vi.fn() },
+        enterpriseUpstreamKey: { findUnique: vi.fn() },
+    },
+    applyLedgerEntry: vi.fn(),
+}));
+vi.mock('@/lib/db', () => ({ prisma: db }));
+vi.mock('@/lib/billing/ledger', () => ({ applyLedgerEntry }));
+// cn-billing 的传递依赖(本文件不触发,mock 掉防 env 读取)
+vi.mock('@/lib/billing/newapi-gate', () => ({ syncNewapiGate: vi.fn() }));
+vi.mock('@/lib/newapi/client', () => ({ getUser: vi.fn(), addQuota: vi.fn() }));
+vi.mock('@/lib/newapi/quota-units', () => ({ cnyToQuota: (c: number) => Math.round((c * 1e6) / 7) }));
+
+import {
+    computeEnterpriseCostCny,
+    estimateEnterpriseCostCny,
+    chargeEnterpriseVideoTask,
+    ENTERPRISE_TIER,
+} from '../billing';
+
+beforeEach(() => {
+    vi.clearAllMocks();
+    db.enterpriseRateOverride.findUnique.mockResolvedValue(null);
+    db.enterpriseUpstreamKey.findUnique.mockResolvedValue({ discount: '1' });
+});
+
+describe('computeEnterpriseCostCny', () => {
+    it('无覆盖 → 默认挂牌(720p 无视频 ¥39.1/1M)', async () => {
+        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false)).toBeCloseTo(39.1, 4);
+    });
+
+    it('有覆盖 → 按覆盖价(¥30/1M),覆盖键带 variant(缺省 pro)', async () => {
+        db.enterpriseRateOverride.findUnique.mockResolvedValue({ cny_per_m: '30' });
+        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false)).toBeCloseTo(30, 4);
+        expect(db.enterpriseRateOverride.findUnique).toHaveBeenCalledWith(
+            expect.objectContaining({
+                where: {
+                    user_id_variant_resolution_has_video: {
+                        user_id: 'u1',
+                        variant: 'pro',
+                        resolution: '720p',
+                        has_video: false,
+                    },
+                },
+            }),
+        );
+    });
+
+    it('fast/mini 变体默认挂牌(¥31.45/18.7 与 ¥19.55/11.9),覆盖键按变体隔离', async () => {
+        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false, 'fast')).toBeCloseTo(31.45, 4);
+        expect(await computeEnterpriseCostCny('u1', 1_000_000, '1080p', true, 'fast')).toBeCloseTo(18.7, 4);
+        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false, 'mini')).toBeCloseTo(19.55, 4);
+        expect(await computeEnterpriseCostCny('u1', 1_000_000, '1080p', true, 'mini')).toBeCloseTo(11.9, 4);
+        expect(db.enterpriseRateOverride.findUnique).toHaveBeenLastCalledWith(
+            expect.objectContaining({
+                where: expect.objectContaining({
+                    user_id_variant_resolution_has_video: expect.objectContaining({ variant: 'mini' }),
+                }),
+            }),
+        );
+    });
+
+    it('客户级折扣率 0.9 → 挂牌 × 0.9(720p pro ¥39.1 → ¥35.19)', async () => {
+        db.enterpriseUpstreamKey.findUnique.mockResolvedValue({ discount: '0.9' });
+        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false)).toBeCloseTo(35.19, 4);
+        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false, 'mini')).toBeCloseTo(17.595, 4);
+    });
+
+    it('单档覆盖是绝对单价,不再乘折扣(覆盖 ¥30 + 折扣 0.5 → 仍 ¥30)', async () => {
+        db.enterpriseUpstreamKey.findUnique.mockResolvedValue({ discount: '0.5' });
+        db.enterpriseRateOverride.findUnique.mockResolvedValue({ cny_per_m: '30' });
+        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false)).toBeCloseTo(30, 4);
+    });
+
+    it('无 upstream key 行 / 非法折扣值 → 回落 1(不打折)', async () => {
+        db.enterpriseUpstreamKey.findUnique.mockResolvedValue(null);
+        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false)).toBeCloseTo(39.1, 4);
+        db.enterpriseUpstreamKey.findUnique.mockResolvedValue({ discount: '0' });
+        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false)).toBeCloseTo(39.1, 4);
+    });
+
+    it('归一短名任务(seedance-2-0-mini)扣费按 mini 费率(variantForModel 后缀识别)', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({
+            id: 'cgt-s1',
+            user_id: 'u1',
+            tenant_id: null,
+            tier: ENTERPRISE_TIER,
+            model: 'seedance-2-0-mini',
+            resolution: '720p',
+            has_video: false,
+            tokens: BigInt(1_000_000),
+            billed: false,
+            status: 'completed',
+        });
+        db.seedanceVideoTask.updateMany.mockResolvedValue({ count: 1 });
+        applyLedgerEntry.mockResolvedValue({ balance_after: { toFixed: () => '0.00' } });
+        const r = await chargeEnterpriseVideoTask('cgt-s1');
+        expect(r.costCny).toBeCloseTo(19.55, 4);
+    });
+
+    it('fast 任务扣费按 fast 费率(variant 从 task.model 推导)', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({
+            id: 'cgt-f1',
+            user_id: 'u1',
+            tenant_id: null,
+            tier: ENTERPRISE_TIER,
+            model: 'seedance2.0-fast-720p',
+            resolution: '720p',
+            has_video: false,
+            tokens: BigInt(1_000_000),
+            billed: false,
+            status: 'completed',
+        });
+        db.seedanceVideoTask.updateMany.mockResolvedValue({ count: 1 });
+        applyLedgerEntry.mockResolvedValue({ balance_after: { toFixed: () => '0.00' } });
+        const r = await chargeEnterpriseVideoTask('cgt-f1');
+        expect(r.costCny).toBeCloseTo(31.45, 4);
+    });
+
+    it('覆盖按 (resolution, has_video) 分档独立', async () => {
+        db.enterpriseRateOverride.findUnique.mockResolvedValue(null);
+        // 4k 含视频默认 ¥13.6/1M
+        expect(await computeEnterpriseCostCny('u1', 2_000_000, '4k', true)).toBeCloseTo(27.2, 4);
+    });
+
+    it('estimate:含视频 1.5× 缓冲', async () => {
+        const noVideo = await estimateEnterpriseCostCny('u1', '720p', 5, false);
+        db.enterpriseRateOverride.findUnique.mockResolvedValue(null);
+        const withVideo = await estimateEnterpriseCostCny('u1', '720p', 5, true);
+        expect(noVideo).toBeGreaterThan(0);
+        expect(withVideo).toBeGreaterThan(0);
+    });
+});
+
+describe('chargeEnterpriseVideoTask', () => {
+    const task = {
+        id: 'cgt-1',
+        user_id: 'u1',
+        tenant_id: null,
+        tier: ENTERPRISE_TIER,
+        model: 'seedance2.0-pro-720p',
+        resolution: '720p',
+        has_video: false,
+        tokens: BigInt(1_000_000),
+        billed: false,
+        status: 'completed',
+    };
+
+    it('happy:CAS 抢占 → applyLedgerEntry(charge, ref=taskId, 负数)', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue(task);
+        db.seedanceVideoTask.updateMany.mockResolvedValue({ count: 1 });
+        applyLedgerEntry.mockResolvedValue({ balance_after: { toFixed: () => '10.90' } });
+        const r = await chargeEnterpriseVideoTask('cgt-1');
+        expect(r.outcome).toBe('charged');
+        expect(r.costCny).toBeCloseTo(39.1, 4);
+        expect(db.seedanceVideoTask.updateMany).toHaveBeenCalledWith(
+            expect.objectContaining({ where: { id: 'cgt-1', billed: false } }),
+        );
+        expect(applyLedgerEntry).toHaveBeenCalledWith(
+            'u1',
+            expect.objectContaining({ kind: 'charge', amount_cny: -39.1, ref: 'cgt-1' }),
+        );
+    });
+
+    it('已 billed → already_billed,不重复扣', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({ ...task, billed: true });
+        const r = await chargeEnterpriseVideoTask('cgt-1');
+        expect(r.outcome).toBe('already_billed');
+        expect(applyLedgerEntry).not.toHaveBeenCalled();
+    });
+
+    it('并发轮询 CAS 输了(count=0)→ already_billed,不扣', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue(task);
+        db.seedanceVideoTask.updateMany.mockResolvedValue({ count: 0 });
+        const r = await chargeEnterpriseVideoTask('cgt-1');
+        expect(r.outcome).toBe('already_billed');
+        expect(applyLedgerEntry).not.toHaveBeenCalled();
+    });
+
+    it('tokens 未写 → skipped', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({ ...task, tokens: null });
+        expect((await chargeEnterpriseVideoTask('cgt-1')).outcome).toBe('skipped');
+    });
+
+    it('扣款失败 → deduct_failed,billed 不回滚(保守语义同 cn-billing)', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue(task);
+        db.seedanceVideoTask.updateMany.mockResolvedValue({ count: 1 });
+        applyLedgerEntry.mockRejectedValue(new Error('ledger down'));
+        const r = await chargeEnterpriseVideoTask('cgt-1');
+        expect(r.outcome).toBe('deduct_failed');
+        // 没有第二次 updateMany(不回滚 billed)
+        expect(db.seedanceVideoTask.updateMany).toHaveBeenCalledTimes(1);
+    });
+
+    it('议价覆盖生效于扣费:覆盖 ¥30/1M → 扣 ¥30', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue(task);
+        db.seedanceVideoTask.updateMany.mockResolvedValue({ count: 1 });
+        db.enterpriseRateOverride.findUnique.mockResolvedValue({ cny_per_m: '30' });
+        applyLedgerEntry.mockResolvedValue({ balance_after: { toFixed: () => '0.00' } });
+        const r = await chargeEnterpriseVideoTask('cgt-1');
+        expect(r.costCny).toBeCloseTo(30, 4);
+        expect(applyLedgerEntry).toHaveBeenCalledWith('u1', expect.objectContaining({ amount_cny: -30 }));
+    });
+});

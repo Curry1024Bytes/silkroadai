@@ -4,7 +4,8 @@ import { prisma } from '@/lib/db';
 import { unauthorizedResponse } from '@/lib/admin-auth';
 import { resolveAdmin } from '@/lib/admin/auth';
 import { tenantScope } from '@/lib/admin/tenant-scope';
-import { syncModelPriceToNewApi, type UpstreamMap } from '@/lib/newapi/pricing-sync';
+import { syncModelPriceToNewApi, CHAT_FX, IMAGE_FX, type UpstreamMap } from '@/lib/newapi/pricing-sync';
+import { getOption } from '@/lib/newapi/client';
 
 export const runtime = 'nodejs';
 
@@ -21,7 +22,34 @@ export async function GET(request: NextRequest) {
         orderBy: [{ sort_order: 'asc' }, { created_at: 'asc' }],
         include: { prices: { orderBy: { effective_from: 'desc' } } },
     });
-    return NextResponse.json({ models });
+
+    // GR 原生语义(2026-07-20):编辑表单的实时换算预览需要 (FX, 各档组倍率)。best-effort ——
+    // new-api 不可达时为 null,页面隐藏预览即可,不影响列表/改价本身。
+    let pricing_context: {
+        chat_fx: number;
+        image_fx: number;
+        group_ratio_by_tier: Record<string, number>;
+    } | null = null;
+    try {
+        const [cgs, raw] = await Promise.all([
+            prisma.channelGroup.findMany({
+                where: { ...tenantScope(admin) },
+                select: { key: true, newapi_group: true },
+            }),
+            getOption('GroupRatio'),
+        ]);
+        const dict = raw ? (JSON.parse(raw) as Record<string, number>) : {};
+        const byTier: Record<string, number> = {};
+        for (const g of cgs) {
+            const r = dict[g.newapi_group];
+            if (typeof r === 'number' && Number.isFinite(r) && r > 0) byTier[g.key] = r;
+        }
+        pricing_context = { chat_fx: CHAT_FX, image_fx: IMAGE_FX, group_ratio_by_tier: byTier };
+    } catch {
+        pricing_context = null;
+    }
+
+    return NextResponse.json({ models, pricing_context });
 }
 
 const changePriceSchema = z

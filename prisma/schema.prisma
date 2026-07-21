@@ -1209,3 +1209,89 @@ model SeedanceVideoTask {
   @@index([billed])
   @@map("seedance_video_tasks")
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// seedance 大客户独立门户 P1(2026-07-19,设计见 seedance-enterprise-portal-design.md)。
+// 独立部署(PORTAL_FLAVOR=seedance-enterprise,裸 IP 128.241.232.23),门户自发
+// sk-ent- key(只存 sha256,明文创建时返一次)、每客户一把独立上游 key(AES-256-GCM
+// 加密存,env ENTERPRISE_UPSTREAM_ENC_KEY)、计费走 P4c ¥账本(客户 billing_mode='portal')。
+// 惯例镜像 RequestLog/SeedanceVideoTask:裸 uuid 列,不建 FK relation。
+// ─────────────────────────────────────────────────────────────────────────
+model EnterpriseKey {
+  id           String    @id @default(uuid()) @db.Uuid
+  tenant_id    String?   @db.Uuid
+  user_id      String    @db.Uuid
+  key_hash     String    @unique // sha256 hex of 完整 "sk-ent-…";明文不落库
+  key_prefix   String // 前 12 字符("sk-ent-xxxxx"),列表展示用
+  name         String
+  status       String    @default("active") // active | disabled
+  created_at   DateTime  @default(now())
+  last_used_at DateTime?
+
+  @@index([user_id])
+  @@map("enterprise_keys")
+}
+
+model EnterpriseUpstreamKey {
+  id               String   @id @default(uuid()) @db.Uuid
+  user_id          String   @unique @db.Uuid // 一客户一把(决策②)
+  upstream_key_enc String // AES-256-GCM(iv‖tag‖ct base64),key=ENTERPRISE_UPSTREAM_ENC_KEY
+  note             String? // 上游侧对账备注(key 名/账户)
+  // 客户级整体折扣率(2026-07-20):挂牌价 × discount,全变体×分辨率生效;
+  // 1 = 无折扣。单档 enterprise_rate_overrides 是绝对单价,优先且【不】再乘折扣。
+  discount         Decimal  @default(1) @db.Decimal(6, 4)
+  created_at       DateTime @default(now())
+
+  @@map("enterprise_upstream_keys")
+}
+
+// ── P3 素材库(2026-07-19)——门户自有存储(R2),API 形态对标火山方舟素材库 ──
+// operator 确认:上游对直传 URL 全权限,素材库与上游归属无关 → 素材存我们 R2,
+// 对客 API = 火山 Action 契约(POST /api?Action=CreateAsset…),生成请求里可引用
+// asset-…/group-… id(proxy 解析成 R2 公网 URL 注入)。隔离 = user_id 行级归属。
+model EnterpriseAssetGroup {
+  id          String   @id // "group-YYYYMMDDHHMMSS-xxxxxx"
+  user_id     String   @db.Uuid
+  name        String
+  description String?
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  @@index([user_id])
+  @@map("enterprise_asset_groups")
+}
+
+model EnterpriseAsset {
+  id          String   @id // "asset-YYYYMMDDHHMMSS-xxxxxx"
+  user_id     String   @db.Uuid
+  group_id    String? // 所属素材组(可空;删组只解除引用不删素材)
+  asset_type  String // image | video | audio
+  name        String
+  description String?
+  r2_key      String // enterprise-assets/{user_id}/{asset_id}.{ext}
+  public_url  String // R2 公网直链(生成引用时注入的就是它)
+  mime        String?
+  bytes       Int      @default(0)
+  source_url  String? // CreateAsset 注册时的原始 URL(dashboard 上传的为 null)
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  @@index([user_id, created_at])
+  @@index([group_id])
+  @@map("enterprise_assets")
+}
+
+// 大客户议价:per-customer 费率覆盖(元/1M token)。查不到 → cn-billing 默认挂牌。
+// 2026-07-19 加 variant 维度(pro/fast/mini):同客户可按变体分别议价。
+model EnterpriseRateOverride {
+  id         String   @id @default(uuid()) @db.Uuid
+  user_id    String   @db.Uuid
+  variant    String   @default("pro") // pro | fast | mini
+  resolution String // 720p | 1080p | 4k
+  has_video  Boolean
+  cny_per_m  Decimal  @db.Decimal(12, 4)
+  created_at DateTime @default(now())
+
+  @@unique([user_id, variant, resolution, has_video])
+  @@map("enterprise_rate_overrides")
+}

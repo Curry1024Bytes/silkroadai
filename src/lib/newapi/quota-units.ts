@@ -46,3 +46,19 @@ export function usdToQuota(usd: number): number {
 export function cnyToQuota(cny: number): number {
     return usdToQuota(cny / USD_TO_CNY_RATE);
 }
+
+/**
+ * 真实市场汇率 $→¥,与上面的 quota 换算因子是两回事。
+ *
+ * 计价单位迁移(QuotaPerUnit=500k、USD_TO_CNY_RATE=1,quota 单位=¥)之后,
+ * `USD_TO_CNY_RATE` 只是 quota↔¥ 换算链的一环,不再是真汇率;凡是要给客户/
+ * 运营展示【真实美元】的地方(OpenAI 兼容 billing 端点、remain_usd 等)一律
+ * 用本常量。未设 `REAL_USD_TO_CNY_RATE` 时回落 `USD_TO_CNY_RATE`,所以迁移前
+ * 两者同值、行为零变化。
+ */
+export const REAL_USD_TO_CNY = parseFloat(process.env.REAL_USD_TO_CNY_RATE || process.env.USD_TO_CNY_RATE || '7');
+
+/** quota → 真实 USD(先折 ¥ 再按真汇率折 $,展示用;迁移前等价于 quotaToUsd) */
+export function quotaToRealUsd(quota: number): number {
+    return quotaToCny(quota) / REAL_USD_TO_CNY;
+}

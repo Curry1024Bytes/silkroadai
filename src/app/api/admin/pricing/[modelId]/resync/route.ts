@@ -7,6 +7,7 @@ import {
     syncModelPriceToNewApi,
     resolveImageModelPrice,
     resolveChatTierPrice,
+    getTierGroupRatio,
     type UpstreamMap,
 } from '@/lib/newapi/pricing-sync';
 
@@ -61,6 +62,17 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
               )?.key ?? 'pool')
             : 'pool';
 
+    // GR 原生语义:各档组倍率(用于一致性 warn —— 各档目录价应满足 ¥ ∝ 组倍率)。
+    // 解析失败的档留空 → resolve* 对该档退回逐字比价/直接点名,不阻塞同步。
+    const ratiosByTier: Record<string, number> = {};
+    for (const t of new Set(current.map((p) => p.tier))) {
+        try {
+            ratiosByTier[t] = await getTierGroupRatio(t);
+        } catch {
+            /* 未登记档/GroupRatio 缺组 → 留空 */
+        }
+    }
+
     const results: { tier: string; sync: Awaited<ReturnType<typeof syncModelPriceToNewApi>> }[] = [];
 
     if (chatPrices.length > 0) {
@@ -71,6 +83,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
                 output_cny_per_1m: Number(p.output_cny_per_1m),
             })),
             defaultTier,
+            ratiosByTier,
         );
         const sync = await syncModelPriceToNewApi(upstreamMap, {
             tier: picked.tier,
@@ -85,6 +98,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         const picked = resolveImageModelPrice(
             imagePrices.map((p) => ({ tier: p.tier, per_image_cny: Number(p.per_image_cny) })),
             defaultTier,
+            ratiosByTier,
         );
         const sync = await syncModelPriceToNewApi(upstreamMap, {
             tier: picked.tier,

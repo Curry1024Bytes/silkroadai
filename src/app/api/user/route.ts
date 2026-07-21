@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
 import { getCurrentUser } from '@/lib/auth/session';
-import { getUser, quotaToCny, quotaToUsd } from '@/lib/newapi/client';
+import { getUser, quotaToCny, quotaToRealUsd } from '@/lib/newapi/client';
 import { resolveLocale } from '@/lib/locale';
 
 /**
@@ -77,7 +77,7 @@ export async function GET(request: NextRequest) {
         quota: {
             remain_raw: remainQuota.toString(),
             used_raw: usedQuota.toString(),
-            remain_usd: quotaToUsd(Number(remainQuota)),
+            remain_usd: quotaToRealUsd(Number(remainQuota)),
             remain_cny: quotaToCny(Number(remainQuota)),
             live: liveQuota !== null,
         },
