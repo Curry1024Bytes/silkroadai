@@ -185,7 +185,7 @@ describe('seedance-cn adapter submit', () => {
         expect(((await res.json()) as { error: { message: string } }).error.message).toMatch(/audio requires/);
     });
 
-    it('duration 归一到 5/10;ratio 白名单外回落 16:9;generate_audio:false 关', async () => {
+    it('duration 归一到 5/10/15;ratio 白名单外回落 16:9;generate_audio:false 关', async () => {
         await submitVideo(
             makeReq({
                 model: 'seedance2.0-pro-720p',
@@ -199,6 +199,14 @@ describe('seedance-cn adapter submit', () => {
         expect(b.duration).toBe(10);
         expect(b.ratio).toBe('16:9');
         expect(b.generate_audio).toBe(false);
+    });
+
+    it('duration 15 放行;非法值(7)回落 5', async () => {
+        await submitVideo(makeReq({ model: 'seedance2.0-pro-720p', prompt: 'x', duration: 15 }));
+        expect(submitBody().duration).toBe(15);
+        mockFetch.mockClear(); // submitBody 取首个 submit 调用,读第二次前先清
+        await submitVideo(makeReq({ model: 'seedance2.0-pro-720p', prompt: 'x', duration: 7 }));
+        expect(submitBody().duration).toBe(5);
     });
 
     it('XHK_KEY 配置时精确校验:错 key → 401', async () => {

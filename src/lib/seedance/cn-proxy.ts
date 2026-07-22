@@ -97,7 +97,7 @@ export async function handleSeedanceVideoSubmit(
 
     const hasVideo = extractVideoUrls(body).length > 0;
     const durRaw = Number(body.duration ?? body.seconds);
-    const duration = durRaw === 10 ? 10 : 5;
+    const duration = durRaw === 10 || durRaw === 15 ? durRaw : 5; // 与 cn-adapter 同步:5/10/15 三档
 
     // 2) 余额门(视频后付费 + 绕过 new-api,提交时先估价挡,防大额透支)
     try {
