@@ -181,6 +181,7 @@ export function KeysManager({ initialKeys }: { initialKeys: KeyRow[] }) {
                 <p className="mt-2 text-xs text-gray-400">
                     密钥明文只在创建时显示一次;服务端仅存哈希,无法找回。海外版密钥调 seedance-2-0-global
                     系模型(参数/价格与国内一致,海外节点出片),国内/海外密钥不互通。
+                    如果生成因敏感内容被审核拒绝(fail_reason 提示 sensitive),并非开白/权限原因,请尝试海外版。
                 </p>
             </section>
         </div>

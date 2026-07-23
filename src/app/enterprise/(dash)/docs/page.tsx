@@ -187,6 +187,7 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                         节点(BytePlus),成片链接为海外 CDN(同样 ~24 小时有效)。调用需使用
                         <b>海外版专用 API 密钥</b>(「API 密钥」页创建时选「海外版」),国内/海外密钥不互通;
                         余额与国内版共享同一账户。
+                        <b>如果生成因敏感内容被审核拒绝(fail_reason 提示 sensitive),并非开白/权限原因,请尝试海外版。</b>
                     </p>
                 </div>
             </Section>
@@ -575,6 +576,13 @@ curl -X POST ${BASE}/v1/video/generations \\
             </Section>
 
             <Section id="faq" title="7. FAQ">
+                <div>
+                    <p className="font-medium">Q:任务失败,fail_reason 提示 sensitive information?</p>
+                    <p className="text-gray-600">
+                        这是内容安全审核拦截(生成内容随机,同提示词重跑也可能通过),并非开白/权限原因 ——
+                        可换提示词重试;若仍被拦,请尝试海外版模型(seedance-2-0-global 系,审核策略不同)。 审核失败不计费。
+                    </p>
+                </div>
                 <div className="space-y-3">
                     <div>
                         <p className="font-medium text-gray-900">Q:一条 5 秒 720p 视频多少钱?</p>
