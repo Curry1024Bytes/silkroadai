@@ -150,7 +150,7 @@ async function handleSubmit(req: NextRequest): Promise<NextResponse> {
 
     const hasVideo = extractVideoUrls(body).length > 0;
     const durRaw = Number(body.duration ?? body.seconds);
-    const duration = durRaw === 10 ? 10 : 5;
+    const duration = durRaw === 10 || durRaw === 15 ? durRaw : 5; // 与 cn-adapter 同步:5/10/15 三档
 
     // 余额门(视频后付费,提交时按估价挡,防大额透支)。企业客户余额 = Account.balance_cny 唯一真相。
     try {

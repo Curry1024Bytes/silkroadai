@@ -245,9 +245,9 @@ export async function submitVideoWithKey(body: Record<string, unknown>, auth: st
     if (totalImages > MAX_REF_IMAGES) return err(400, 'invalid_request', `at most ${MAX_REF_IMAGES} images`);
     if (rawVideos.length > MAX_REF_VIDEOS) return err(400, 'invalid_request', `at most ${MAX_REF_VIDEOS} videos`);
 
-    // duration:5 或 10(上游只收这两档);ratio 白名单外回落 16:9
+    // duration:5 / 10 / 15(上游支持三档,2026-07-22 实测 15 可用);其余值回落 5。ratio 白名单外回落 16:9
     const durRaw = Number(body.duration ?? body.seconds);
-    const duration = durRaw === 10 ? 10 : 5;
+    const duration = durRaw === 10 || durRaw === 15 ? durRaw : 5;
     let ratio = String(body.ratio || body.aspect_ratio || '16:9');
     if (!ALLOWED_RATIOS.has(ratio)) ratio = '16:9';
     const generateAudio = body.generate_audio !== false; // 满血企业档默认出声;传 false 关(音频零额外 token 成本)

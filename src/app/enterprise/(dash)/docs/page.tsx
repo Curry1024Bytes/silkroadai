@@ -225,7 +225,7 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                                 </Td>
                                 <Td>int</Td>
                                 <Td>否</Td>
-                                <Td>5(默认)或 10,单位秒</Td>
+                                <Td>5(默认)/ 10 / 15,单位秒</Td>
                             </tr>
                             <tr>
                                 <Td>
