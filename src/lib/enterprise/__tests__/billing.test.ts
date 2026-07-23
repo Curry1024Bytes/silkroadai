@@ -42,8 +42,9 @@ describe('computeEnterpriseCostCny', () => {
         expect(db.enterpriseRateOverride.findUnique).toHaveBeenCalledWith(
             expect.objectContaining({
                 where: {
-                    user_id_variant_resolution_has_video: {
+                    user_id_region_variant_resolution_has_video: {
                         user_id: 'u1',
+                        region: 'cn',
                         variant: 'pro',
                         resolution: '720p',
                         has_video: false,
@@ -61,7 +62,7 @@ describe('computeEnterpriseCostCny', () => {
         expect(db.enterpriseRateOverride.findUnique).toHaveBeenLastCalledWith(
             expect.objectContaining({
                 where: expect.objectContaining({
-                    user_id_variant_resolution_has_video: expect.objectContaining({ variant: 'mini' }),
+                    user_id_region_variant_resolution_has_video: expect.objectContaining({ variant: 'mini' }),
                 }),
             }),
         );
@@ -84,6 +85,43 @@ describe('computeEnterpriseCostCny', () => {
         expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false)).toBeCloseTo(39.1, 4);
         db.enterpriseUpstreamKey.findUnique.mockResolvedValue({ discount: '0' });
         expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false)).toBeCloseTo(39.1, 4);
+    });
+
+    it('global 版本:折扣/覆盖按 region 行查(user_id_region),挂牌价同国内', async () => {
+        db.enterpriseUpstreamKey.findUnique.mockResolvedValue({ discount: '0.8' });
+        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false, 'mini', 'global')).toBeCloseTo(15.64, 4);
+        expect(db.enterpriseUpstreamKey.findUnique).toHaveBeenLastCalledWith(
+            expect.objectContaining({ where: { user_id_region: { user_id: 'u1', region: 'global' } } }),
+        );
+        expect(db.enterpriseRateOverride.findUnique).toHaveBeenLastCalledWith(
+            expect.objectContaining({
+                where: expect.objectContaining({
+                    user_id_region_variant_resolution_has_video: expect.objectContaining({ region: 'global' }),
+                }),
+            }),
+        );
+    });
+
+    it('global 短名任务扣费:variant + region 都从 task.model 推导', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({
+            id: 'cgt-g1',
+            user_id: 'u1',
+            tenant_id: null,
+            tier: ENTERPRISE_TIER,
+            model: 'seedance-2-0-global-mini',
+            resolution: '720p',
+            has_video: false,
+            tokens: BigInt(1_000_000),
+            billed: false,
+            status: 'completed',
+        });
+        db.seedanceVideoTask.updateMany.mockResolvedValue({ count: 1 });
+        applyLedgerEntry.mockResolvedValue({ balance_after: { toFixed: () => '0.00' } });
+        const r = await chargeEnterpriseVideoTask('cgt-g1');
+        expect(r.costCny).toBeCloseTo(19.55, 4);
+        expect(db.enterpriseUpstreamKey.findUnique).toHaveBeenLastCalledWith(
+            expect.objectContaining({ where: { user_id_region: { user_id: 'u1', region: 'global' } } }),
+        );
     });
 
     it('归一短名任务(seedance-2-0-mini)扣费按 mini 费率(variantForModel 后缀识别)', async () => {

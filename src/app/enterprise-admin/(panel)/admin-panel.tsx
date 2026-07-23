@@ -23,17 +23,19 @@ interface Detail {
     user: { id: string; email: string; name: string | null; created_at: string };
     upstream_note: string | null;
     discount: number;
+    upstreams: Array<{ region: string; note: string | null; discount: number }>;
     balance_cny: number;
     spent_cny: number;
     keys: Array<{
         id: string;
         name: string;
         key_prefix: string;
+        region: string;
         status: string;
         created_at: string;
         last_used_at: string | null;
     }>;
-    overrides: Array<{ variant: string; resolution: string; has_video: boolean; cny_per_m: number }>;
+    overrides: Array<{ region: string; variant: string; resolution: string; has_video: boolean; cny_per_m: number }>;
     ledger: Array<{ kind: string; amount_cny: number; balance_after: number; note: string | null; created_at: string }>;
     tasks: Array<{
         id: string;
@@ -136,6 +138,7 @@ export function AdminPanel() {
         const raw = String(form.get('cny_per_m') || '').trim();
         const body = {
             user_id: userId,
+            region: String(form.get('region') || 'cn'),
             variant: String(form.get('variant')),
             resolution: String(form.get('resolution')),
             has_video: String(form.get('has_video')) === 'true',
@@ -151,12 +154,30 @@ export function AdminPanel() {
         );
         await refresh();
     }
-    async function onDiscount(userId: string, current: number) {
-        const raw = window.prompt('客户级整体折扣率(0.05~2;1=无折扣,0.9=全线九折;单档议价不受影响):', String(current));
+    async function onDiscount(userId: string, region: string, current: number) {
+        const label = region === 'global' ? '海外版' : '国内版';
+        const raw = window.prompt(
+            `${label}整体折扣率(0.05~2;1=无折扣,0.9=全线九折;单档议价不受影响):`,
+            String(current),
+        );
         if (raw === null || raw.trim() === '') return;
         const d = Number(raw);
-        const r = await post(`/api/admin/enterprise/customers/${userId}`, { discount: d }, 'PATCH');
-        flash(r.ok ? `折扣率已设为 ${d}(即时生效)` : `失败(${r.status}):${JSON.stringify(r.j).slice(0, 120)}`);
+        const r = await post(`/api/admin/enterprise/customers/${userId}`, { discount: d, region }, 'PATCH');
+        flash(r.ok ? `${label}折扣率已设为 ${d}(即时生效)` : `失败(${r.status}):${JSON.stringify(r.j).slice(0, 120)}`);
+        await refresh();
+    }
+    async function onSetUpstreamKey(userId: string, region: string) {
+        const label = region === 'global' ? '海外版' : '国内版';
+        const key = window.prompt(`${label}上游 key(设置/替换,立即生效):`);
+        if (!key) return;
+        const note = window.prompt('备注(上游账户/key 名,可空):') || undefined;
+        const r = await post('/api/admin/enterprise/upstream-key', {
+            user_id: userId,
+            region,
+            upstream_key: key.trim(),
+            note,
+        });
+        flash(r.ok ? `${label}上游 key 已保存` : `失败(${r.status}):${JSON.stringify(r.j).slice(0, 120)}`);
         await refresh();
     }
     async function onKeyToggle(keyId: string, to: 'active' | 'disabled') {
@@ -300,10 +321,16 @@ export function AdminPanel() {
                             {detail.user.email}
                             {detail.user.name ? `(${detail.user.name})` : ''} — 余额 {fmtCny(detail.balance_cny)} ·
                             累计消费 {fmtCny(detail.spent_cny)}
-                            {detail.discount !== 1 && (
-                                <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-800">
-                                    折扣 ×{detail.discount}
-                                </span>
+                            {detail.upstreams.map(
+                                (u) =>
+                                    u.discount !== 1 && (
+                                        <span
+                                            key={u.region}
+                                            className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-800"
+                                        >
+                                            {u.region === 'global' ? '海外' : '国内'}折扣 ×{u.discount}
+                                        </span>
+                                    ),
                             )}
                         </h2>
                         <div className="flex gap-2">
@@ -313,18 +340,55 @@ export function AdminPanel() {
                             >
                                 入账 / 冲正
                             </button>
-                            <button
-                                onClick={() => void onDiscount(detail.user.id, detail.discount)}
-                                className="rounded-md border border-gray-300 px-3 py-1.5 text-xs hover:bg-gray-50"
-                            >
-                                折扣率
-                            </button>
+
                             <button
                                 onClick={() => void onSetPassword(detail.user.id)}
                                 className="rounded-md border border-gray-300 px-3 py-1.5 text-xs hover:bg-gray-50"
                             >
                                 设密码
                             </button>
+                        </div>
+                    </div>
+
+                    <div className="rounded-lg border border-gray-200 p-3">
+                        <h3 className="mb-2 text-xs font-semibold text-gray-500">版本配置(上游 key / 折扣率)</h3>
+                        <div className="flex flex-wrap gap-6">
+                            {(['cn', 'global'] as const).map((rg) => {
+                                const row = detail.upstreams.find((u) => u.region === rg);
+                                const label = rg === 'global' ? '海外版(global)' : '国内版(cn)';
+                                return (
+                                    <div key={rg} className="text-sm">
+                                        <span className="font-medium">{label}</span>
+                                        {row ? (
+                                            <>
+                                                <span className="ml-2 text-gray-500">
+                                                    折扣 ×{row.discount}
+                                                    {row.note ? ` · ${row.note}` : ''}
+                                                </span>
+                                                <button
+                                                    onClick={() => void onDiscount(detail.user.id, rg, row.discount)}
+                                                    className="ml-2 rounded border border-gray-300 px-2 py-0.5 text-xs hover:bg-gray-50"
+                                                >
+                                                    折扣率
+                                                </button>
+                                                <button
+                                                    onClick={() => void onSetUpstreamKey(detail.user.id, rg)}
+                                                    className="ml-1 rounded border border-gray-300 px-2 py-0.5 text-xs hover:bg-gray-50"
+                                                >
+                                                    换上游key
+                                                </button>
+                                            </>
+                                        ) : (
+                                            <button
+                                                onClick={() => void onSetUpstreamKey(detail.user.id, rg)}
+                                                className="ml-2 rounded border border-indigo-300 px-2 py-0.5 text-xs text-indigo-700 hover:bg-indigo-50"
+                                            >
+                                                开通{rg === 'global' ? '海外版' : '国内版'}
+                                            </button>
+                                        )}
+                                    </div>
+                                );
+                            })}
                         </div>
                     </div>
 
@@ -339,6 +403,11 @@ export function AdminPanel() {
                                             <td className="py-1.5 pr-3">{k.name}</td>
                                             <td className="py-1.5 pr-3 font-mono text-xs text-gray-500">
                                                 {k.key_prefix}…
+                                                {k.region === 'global' && (
+                                                    <span className="ml-1 rounded bg-indigo-50 px-1 py-0.5 text-[10px] font-sans text-indigo-700">
+                                                        海外
+                                                    </span>
+                                                )}
                                             </td>
                                             <td className="py-1.5 pr-3">
                                                 {k.status === 'active' ? (
@@ -375,8 +444,8 @@ export function AdminPanel() {
                                 <ul className="mb-2 space-y-0.5 text-sm text-gray-700">
                                     {detail.overrides.map((o, i) => (
                                         <li key={i}>
-                                            {o.variant} · {o.resolution} · {o.has_video ? '含视频' : '无视频'} →{' '}
-                                            <b>¥{o.cny_per_m}</b>/1M
+                                            {o.region === 'global' ? '海外' : '国内'} · {o.variant} · {o.resolution} ·{' '}
+                                            {o.has_video ? '含视频' : '无视频'} → <b>¥{o.cny_per_m}</b>/1M
                                         </li>
                                     ))}
                                 </ul>
@@ -388,6 +457,10 @@ export function AdminPanel() {
                                 }}
                                 className="flex flex-wrap items-center gap-2"
                             >
+                                <select name="region" className="rounded border border-gray-300 px-2 py-1.5 text-sm">
+                                    <option value="cn">国内</option>
+                                    <option value="global">海外</option>
+                                </select>
                                 <select name="variant" className="rounded border border-gray-300 px-2 py-1.5 text-sm">
                                     <option value="pro">pro</option>
                                     <option value="fast">fast</option>

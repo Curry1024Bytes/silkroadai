@@ -19,12 +19,24 @@ export async function GET(req: NextRequest) {
     const keys = await prisma.enterpriseKey.findMany({
         where: { user_id: user.id },
         orderBy: { created_at: 'asc' },
-        select: { id: true, name: true, key_prefix: true, status: true, created_at: true, last_used_at: true },
+        select: {
+            id: true,
+            name: true,
+            key_prefix: true,
+            region: true,
+            status: true,
+            created_at: true,
+            last_used_at: true,
+        },
     });
     return NextResponse.json({ keys });
 }
 
-const createSchema = z.object({ name: z.string().trim().min(1).max(50) });
+const createSchema = z.object({
+    name: z.string().trim().min(1).max(50),
+    // 版本绑定(2026-07-23 海外版):key 只能调对应版本模型
+    region: z.enum(['cn', 'global']).default('cn'),
+});
 
 export async function POST(req: NextRequest) {
     const user = await requireEnterpriseUser(req);
@@ -52,8 +64,17 @@ export async function POST(req: NextRequest) {
             key_hash: g.hash,
             key_prefix: g.prefix,
             name: parsed.data.name,
+            region: parsed.data.region,
         },
-        select: { id: true, name: true, key_prefix: true, status: true, created_at: true, last_used_at: true },
+        select: {
+            id: true,
+            name: true,
+            key_prefix: true,
+            region: true,
+            status: true,
+            created_at: true,
+            last_used_at: true,
+        },
     });
     // ⚠️ 明文只在这里返回一次(DB 只存 sha256)
     return NextResponse.json({ key: g.key, row });

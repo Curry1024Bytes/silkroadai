@@ -6,7 +6,7 @@ import { NextRequest } from 'next/server';
 
 const { db, resolveAdmin } = vi.hoisted(() => ({
     db: {
-        enterpriseUpstreamKey: { findMany: vi.fn(), findUnique: vi.fn(), updateMany: vi.fn() },
+        enterpriseUpstreamKey: { findMany: vi.fn(), findUnique: vi.fn(), updateMany: vi.fn(), upsert: vi.fn() },
         enterpriseKey: { groupBy: vi.fn(), findMany: vi.fn(), updateMany: vi.fn() },
         enterpriseRateOverride: { findMany: vi.fn() },
         user: { findMany: vi.fn(), findUnique: vi.fn() },
@@ -21,10 +21,12 @@ vi.mock('@/lib/admin/auth', () => ({ resolveAdmin }));
 vi.mock('@/lib/admin-auth', () => ({
     unauthorizedResponse: () => new Response(null, { status: 401 }),
 }));
+vi.mock('@/lib/enterprise/crypto', () => ({ encryptUpstreamKey: (k: string) => `enc(${k})` }));
 
 import { GET as listGET } from '../customers/route';
 import { GET as detailGET, PATCH as customerPATCH } from '../customers/[id]/route';
 import { PATCH as keyPATCH } from '../keys/[id]/route';
+import { POST as upstreamKeyPOST } from '../upstream-key/route';
 
 const req = (url: string, method = 'GET', body?: unknown) =>
     new NextRequest(`http://internal${url}`, {
@@ -117,7 +119,7 @@ describe('PATCH /api/admin/enterprise/customers/[id](折扣率)', () => {
         const ok = await customerPATCH(req('/x', 'PATCH', { discount: 0.9 }), params);
         expect(ok.status).toBe(200);
         expect(db.enterpriseUpstreamKey.updateMany).toHaveBeenCalledWith({
-            where: { user_id: 'u1' },
+            where: { user_id: 'u1', region: 'cn' },
             data: { discount: 0.9 },
         });
         expect((await customerPATCH(req('/x', 'PATCH', { discount: 0 }), params)).status).toBe(400);
@@ -149,5 +151,37 @@ describe('PATCH /api/admin/enterprise/keys/[id]', () => {
     it('非 superadmin → 401', async () => {
         resolveAdmin.mockResolvedValue(null);
         expect((await keyPATCH(req('/x', 'PATCH', { status: 'active' }), params)).status).toBe(401);
+    });
+});
+
+describe('POST /api/admin/enterprise/upstream-key(版本上游 key upsert)', () => {
+    const UID = '11111111-2222-4333-8444-555555555555';
+
+    it('global 开通:upsert (user, global) 行,secret 加密存;user 不存在 404;非法 region 400;非 superadmin 401', async () => {
+        db.user.findUnique.mockResolvedValue({ id: UID });
+        db.enterpriseUpstreamKey.upsert.mockResolvedValue({});
+        const ok = await upstreamKeyPOST(
+            req('/x', 'POST', { user_id: UID, region: 'global', upstream_key: 'sk-intl-123456', note: '海外' }),
+        );
+        expect(ok.status).toBe(200);
+        expect(db.enterpriseUpstreamKey.upsert).toHaveBeenCalledWith({
+            where: { user_id_region: { user_id: UID, region: 'global' } },
+            create: { user_id: UID, region: 'global', upstream_key_enc: 'enc(sk-intl-123456)', note: '海外' },
+            update: { upstream_key_enc: 'enc(sk-intl-123456)', note: '海外' },
+        });
+        expect(
+            (await upstreamKeyPOST(req('/x', 'POST', { user_id: UID, region: 'jp', upstream_key: 'sk-x-123456' })))
+                .status,
+        ).toBe(400);
+        db.user.findUnique.mockResolvedValue(null);
+        expect(
+            (await upstreamKeyPOST(req('/x', 'POST', { user_id: UID, region: 'global', upstream_key: 'sk-x-123456' })))
+                .status,
+        ).toBe(404);
+        resolveAdmin.mockResolvedValue(null);
+        expect(
+            (await upstreamKeyPOST(req('/x', 'POST', { user_id: UID, region: 'global', upstream_key: 'sk-x-123456' })))
+                .status,
+        ).toBe(401);
     });
 });

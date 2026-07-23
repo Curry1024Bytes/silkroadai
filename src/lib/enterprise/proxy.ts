@@ -19,8 +19,10 @@ import {
     extractAudioUrls,
     submitVideoWithKey,
     pollVideoWithKey,
+    regionForModel,
     type SeedanceModelSpec,
     type SeedanceVariant,
+    type SeedanceRegion,
 } from '@/lib/seedance/cn-adapter';
 import { resolveEnterpriseCustomer, type EnterpriseCustomer } from './keys';
 import { ENTERPRISE_TIER, estimateEnterpriseCostCny, chargeEnterpriseVideoTask } from './billing';
@@ -33,6 +35,10 @@ export const ENTERPRISE_MODELS: Record<string, SeedanceVariant> = {
     'seedance-2-0': 'pro',
     'seedance-2-0-fast': 'fast',
     'seedance-2-0-mini': 'mini',
+    // 海外版(2026-07-23):同厂商国际端口,协议/档位/定价与国内一致,仅出片节点在海外(BytePlus)
+    'seedance-2-0-global': 'pro',
+    'seedance-2-0-global-fast': 'fast',
+    'seedance-2-0-global-mini': 'mini',
 };
 
 const RESOLUTIONS = ['720p', '1080p', '4k'] as const;
@@ -42,8 +48,10 @@ function resolveEnterpriseModel(
     rawModel: string,
     body: Record<string, unknown>,
 ): { spec: SeedanceModelSpec; longName: string } | { error: NextResponse } | null {
-    const variant = ENTERPRISE_MODELS[rawModel.toLowerCase()];
+    const lower = rawModel.toLowerCase();
+    const variant = ENTERPRISE_MODELS[lower];
     if (!variant) return null;
+    const region = lower.includes('-global') ? 'global' : 'cn';
     const resRaw = String(body.resolution ?? '720p').toLowerCase();
     if (!(RESOLUTIONS as readonly string[]).includes(resRaw)) {
         return { error: errJson(400, 'invalid_request', 'resolution 仅支持 720p / 1080p / 4k') };
@@ -57,7 +65,7 @@ function resolveEnterpriseModel(
         extractAudioUrls(body).length > 0 ||
         (typeof body.first_frame === 'string' && body.first_frame !== '') ||
         (typeof body.last_frame === 'string' && body.last_frame !== '');
-    const longName = `seedance2.0-${variant}-${resRaw}${hasRefs ? '-ref' : ''}`;
+    const longName = `seedance2.0-${region === 'global' ? 'global-' : ''}${variant}-${resRaw}${hasRefs ? '-ref' : ''}`;
     const spec = MODEL_MAP[longName];
     if (!spec) {
         // 组合表齐全时到不了这里;防御性兜底
@@ -96,10 +104,10 @@ export async function handleEnterpriseV1(req: NextRequest, path: string): Promis
     return errJson(404, 'not_found', 'this endpoint is not available on the seedance enterprise portal');
 }
 
-async function resolveOr401(req: NextRequest): Promise<EnterpriseCustomer | NextResponse> {
+async function resolveOr401(req: NextRequest, expectedRegion?: string): Promise<EnterpriseCustomer | NextResponse> {
     let r: Awaited<ReturnType<typeof resolveEnterpriseCustomer>>;
     try {
-        r = await resolveEnterpriseCustomer(req.headers.get('authorization'));
+        r = await resolveEnterpriseCustomer(req.headers.get('authorization'), expectedRegion);
     } catch (e) {
         console.error('[enterprise-proxy] resolve customer failed', e);
         return errJson(503, 'temporarily_unavailable', 'account lookup failed, please retry');
@@ -108,11 +116,8 @@ async function resolveOr401(req: NextRequest): Promise<EnterpriseCustomer | Next
     return r.customer;
 }
 
-/** 提交:key 鉴权 → 模型门 → 余额门(¥账本)→ 直调适配器核心(客户上游 key)→ 记任务(fail closed)。 */
+/** 提交:key 鉴权(绑版本)→ 模型门 → 余额门(¥账本)→ 直调适配器核心(客户上游 key)→ 记任务(fail closed)。 */
 async function handleSubmit(req: NextRequest): Promise<NextResponse> {
-    const cust = await resolveOr401(req);
-    if (cust instanceof NextResponse) return cust;
-
     let body: Record<string, unknown>;
     try {
         body = (await req.json()) as Record<string, unknown>;
@@ -121,6 +126,10 @@ async function handleSubmit(req: NextRequest): Promise<NextResponse> {
     }
 
     const model = String(body.model || '');
+    // 版本先于鉴权确定(模型名承载):key 与模型版本必须一致(单独 key,operator 决策),
+    // 上游 key 也按版本行解密。未知模型按 cn 解析,后续 model_not_found 分支照常 400。
+    const cust = await resolveOr401(req, regionForModel(model));
+    if (cust instanceof NextResponse) return cust;
 
     // P3 素材库引用:asset-…/group-… → R2 公网 URL(必须在 ref/hasVideo 检测之前,
     // 视频素材引用也要计入含视频费率档)。未知/非本人 id → 400。
@@ -159,7 +168,14 @@ async function handleSubmit(req: NextRequest): Promise<NextResponse> {
             select: { balance_cny: true },
         });
         const balance = account ? Number(account.balance_cny) : 0;
-        const est = await estimateEnterpriseCostCny(cust.userId, map.resolution, duration, hasVideo, map.variant);
+        const est = await estimateEnterpriseCostCny(
+            cust.userId,
+            map.resolution,
+            duration,
+            hasVideo,
+            map.variant,
+            map.region ?? 'cn',
+        );
         if (balance < est) {
             return errJson(
                 402,
@@ -219,7 +235,7 @@ async function handleSubmit(req: NextRequest): Promise<NextResponse> {
         : new NextResponse(text, { status: 200, headers: { 'Content-Type': 'application/json' } });
 }
 
-/** 轮询:归属 + tier 双门(IDOR)→ 直调适配器核心 → 完成写 tokens + 幂等扣费 → 透传响应。 */
+/** 轮询:归属 + tier + 版本三门(IDOR)→ 直调适配器核心(按版本 base)→ 完成写 tokens + 幂等扣费 → 透传响应。 */
 async function handlePoll(req: NextRequest, taskId: string): Promise<NextResponse> {
     const cust = await resolveOr401(req);
     if (cust instanceof NextResponse) return cust;
@@ -228,8 +244,17 @@ async function handlePoll(req: NextRequest, taskId: string): Promise<NextRespons
     if (!task || task.tier !== ENTERPRISE_TIER || task.user_id !== cust.userId) {
         return errJson(404, 'not_found', 'task not found');
     }
+    const taskRegion: SeedanceRegion = regionForModel(task.model);
+    if (cust.region !== taskRegion) {
+        // 本人任务但 key 版本不符:提示换对应版本 key(不藏 404,自己的任务无枚举风险)
+        return errJson(
+            403,
+            'region_mismatch',
+            `this task belongs to the ${taskRegion} region; use your ${taskRegion} API key to poll it`,
+        );
+    }
 
-    const res = await pollVideoWithKey(taskId, `Bearer ${cust.upstreamKey}`);
+    const res = await pollVideoWithKey(taskId, `Bearer ${cust.upstreamKey}`, taskRegion);
     const text = await res.text();
     if (!res.ok) {
         console.warn('[enterprise-proxy] poll error', {

@@ -178,6 +178,17 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                     <li>生成失败不计费。提交时按预估价校验余额,不足返回 402(不会透支)。</li>
                     <li>消费明细实时可见:「计费流水」「调用日志」页,每笔带 token 数与金额。</li>
                 </ul>
+                <div className="mt-4 rounded-lg border border-indigo-200 bg-indigo-50 p-4 text-sm">
+                    <p className="font-semibold text-indigo-900">海外版(global)</p>
+                    <p className="mt-1 text-indigo-900">
+                        另有海外节点出片的同款模型:<Code>seedance-2-0-global</Code> /{' '}
+                        <Code>seedance-2-0-global-fast</Code> / <Code>seedance-2-0-global-mini</Code>
+                        。参数、分辨率档位、时长与费率<b>均与国内版完全一致</b>,仅生成与出片走海外
+                        节点(BytePlus),成片链接为海外 CDN(同样 ~24 小时有效)。调用需使用
+                        <b>海外版专用 API 密钥</b>(「API 密钥」页创建时选「海外版」),国内/海外密钥不互通;
+                        余额与国内版共享同一账户。
+                    </p>
+                </div>
             </Section>
 
             <Section id="generate" title="3. 视频生成 API">

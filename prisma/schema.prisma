@@ -1224,6 +1224,8 @@ model EnterpriseKey {
   key_hash     String    @unique // sha256 hex of 完整 "sk-ent-…";明文不落库
   key_prefix   String // 前 12 字符("sk-ent-xxxxx"),列表展示用
   name         String
+  // 版本绑定(2026-07-23 海外版):'cn' 国内 | 'global' 海外。key 只能调对应版本模型。
+  region       String    @default("cn")
   status       String    @default("active") // active | disabled
   created_at   DateTime  @default(now())
   last_used_at DateTime?
@@ -1234,7 +1236,10 @@ model EnterpriseKey {
 
 model EnterpriseUpstreamKey {
   id               String   @id @default(uuid()) @db.Uuid
-  user_id          String   @unique @db.Uuid // 一客户一把(决策②)
+  user_id          String   @db.Uuid
+  // 版本(2026-07-23 海外版):'cn' | 'global',每客户每版本一把上游 key。
+  // discount 挂本行 → 国内/海外折扣天然独立。
+  region           String   @default("cn")
   upstream_key_enc String // AES-256-GCM(iv‖tag‖ct base64),key=ENTERPRISE_UPSTREAM_ENC_KEY
   note             String? // 上游侧对账备注(key 名/账户)
   // 客户级整体折扣率(2026-07-20):挂牌价 × discount,全变体×分辨率生效;
@@ -1242,6 +1247,7 @@ model EnterpriseUpstreamKey {
   discount         Decimal  @default(1) @db.Decimal(6, 4)
   created_at       DateTime @default(now())
 
+  @@unique([user_id, region])
   @@map("enterprise_upstream_keys")
 }
 
@@ -1286,12 +1292,13 @@ model EnterpriseAsset {
 model EnterpriseRateOverride {
   id         String   @id @default(uuid()) @db.Uuid
   user_id    String   @db.Uuid
+  region     String   @default("cn") // 'cn' | 'global'(2026-07-23 海外版)
   variant    String   @default("pro") // pro | fast | mini
   resolution String // 720p | 1080p | 4k
   has_video  Boolean
   cny_per_m  Decimal  @db.Decimal(12, 4)
   created_at DateTime @default(now())
 
-  @@unique([user_id, variant, resolution, has_video])
+  @@unique([user_id, region, variant, resolution, has_video])
   @@map("enterprise_rate_overrides")
 }

@@ -10,9 +10,11 @@ export const runtime = 'nodejs';
 const PatchSchema = z.object({
     // 客户级整体折扣率:0.05~2(>1 = 上浮),1 = 无折扣。挂牌 × discount;单档 override 不受影响。
     discount: z.number().min(0.05).max(2),
+    // 版本(2026-07-23):每版本独立折扣,缺省 cn
+    region: z.enum(['cn', 'global']).default('cn'),
 });
 
-/** PATCH /api/admin/enterprise/customers/[id] — 设客户级折扣率。守门:superadmin。 */
+/** PATCH /api/admin/enterprise/customers/[id] — 设客户级折扣率(按版本)。守门:superadmin。 */
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
     const admin = await resolveAdmin(request, 'superadmin');
     if (!admin) return unauthorizedResponse(request);
@@ -23,11 +25,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         return NextResponse.json({ error: 'invalid_request', detail: 'discount 须为 0.05~2 的数字' }, { status: 400 });
     }
     const updated = await prisma.enterpriseUpstreamKey.updateMany({
-        where: { user_id: id },
+        where: { user_id: id, region: parsed.data.region },
         data: { discount: parsed.data.discount },
     });
     if (updated.count === 0) return NextResponse.json({ error: 'not_found' }, { status: 404 });
-    return NextResponse.json({ ok: true, discount: parsed.data.discount });
+    return NextResponse.json({ ok: true, region: parsed.data.region, discount: parsed.data.discount });
 }
 
 /**
@@ -39,10 +41,12 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     if (!admin) return unauthorizedResponse(request);
     const { id } = await params;
 
-    const up = await prisma.enterpriseUpstreamKey.findUnique({
+    const upRows = await prisma.enterpriseUpstreamKey.findMany({
         where: { user_id: id },
-        select: { note: true, created_at: true, discount: true },
+        orderBy: { region: 'asc' }, // cn 在前
+        select: { region: true, note: true, created_at: true, discount: true },
     });
+    const up = upRows.find((r) => r.region === 'cn') ?? upRows[0];
     const user = await prisma.user.findUnique({
         where: { id },
         select: { id: true, email: true, nickname: true, created_at: true },
@@ -63,12 +67,20 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         prisma.enterpriseKey.findMany({
             where: { user_id: id },
             orderBy: { created_at: 'asc' },
-            select: { id: true, name: true, key_prefix: true, status: true, created_at: true, last_used_at: true },
+            select: {
+                id: true,
+                name: true,
+                key_prefix: true,
+                region: true,
+                status: true,
+                created_at: true,
+                last_used_at: true,
+            },
         }),
         prisma.enterpriseRateOverride.findMany({
             where: { user_id: id },
-            orderBy: [{ variant: 'asc' }, { resolution: 'asc' }],
-            select: { variant: true, resolution: true, has_video: true, cny_per_m: true },
+            orderBy: [{ region: 'asc' }, { variant: 'asc' }, { resolution: 'asc' }],
+            select: { region: true, variant: true, resolution: true, has_video: true, cny_per_m: true },
         }),
         account
             ? prisma.ledgerEntry.findMany({
@@ -99,6 +111,12 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         user: { id: user.id, email: user.email, name: user.nickname, created_at: user.created_at.toISOString() },
         upstream_note: up.note,
         discount: Number(up.discount ?? 1),
+        // 每版本一行(cn/global):note + 独立折扣率(2026-07-23 海外版)
+        upstreams: upRows.map((r) => ({
+            region: r.region,
+            note: r.note,
+            discount: Number(r.discount ?? 1),
+        })),
         balance_cny: account ? Number(account.balance_cny) : 0,
         spent_cny: spentAgg?._sum.amount_cny ? Math.abs(Number(spentAgg._sum.amount_cny)) : 0,
         keys: keys.map((k) => ({
