@@ -190,6 +190,53 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                         <b>如果生成因敏感内容被审核拒绝(fail_reason 提示 sensitive),并非开白/权限原因,请尝试海外版。</b>
                     </p>
                 </div>
+                <div className="mt-3 rounded-lg border border-purple-200 bg-purple-50 p-4 text-sm">
+                    <p className="font-semibold text-purple-900">海外版proMax(独立定价)</p>
+                    <p className="mt-1 text-purple-900">
+                        更高规格的海外出片系列:<Code>seedance-2-0-promax</Code> / <Code>seedance-2-0-promax-fast</Code>{' '}
+                        / <Code>seedance-2-0-promax-mini</Code>
+                        。调用方式同上(resolution 参数、参考输入自动识别),需<b>海外版proMax 专用密钥</b>; proMax
+                        fast/mini 仅 720p 档,promax(pro)支持 720p/1080p/4k。费率(¥/1M token):
+                    </p>
+                    <div className="mt-2 overflow-x-auto">
+                        <table className="w-full text-sm">
+                            <thead>
+                                <tr>
+                                    <Th>模型</Th>
+                                    <Th>分辨率</Th>
+                                    <Th>无视频输入</Th>
+                                    <Th>含视频输入</Th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <Td>
+                                        <Code>seedance-2-0-promax</Code>
+                                    </Td>
+                                    <Td>720p / 1080p / 4k</Td>
+                                    <Td>57.8 / 62.424 / 32.368</Td>
+                                    <Td>34.68 / 38.148 / 19.652</Td>
+                                </tr>
+                                <tr>
+                                    <Td>
+                                        <Code>seedance-2-0-promax-fast</Code>
+                                    </Td>
+                                    <Td>720p</Td>
+                                    <Td>46.24</Td>
+                                    <Td>27.9616</Td>
+                                </tr>
+                                <tr>
+                                    <Td>
+                                        <Code>seedance-2-0-promax-mini</Code>
+                                    </Td>
+                                    <Td>720p</Td>
+                                    <Td>28.9</Td>
+                                    <Td>17.34</Td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
             </Section>
 
             <Section id="generate" title="3. 视频生成 API">

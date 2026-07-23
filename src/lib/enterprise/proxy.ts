@@ -39,6 +39,10 @@ export const ENTERPRISE_MODELS: Record<string, SeedanceVariant> = {
     'seedance-2-0-global': 'pro',
     'seedance-2-0-global-fast': 'fast',
     'seedance-2-0-global-mini': 'mini',
+    // 海外版proMax(2026-07-23):dreamina 系,费率独立(挂牌更高 ×0.85);fast/mini 仅 720p
+    'seedance-2-0-promax': 'promax',
+    'seedance-2-0-promax-fast': 'promax-fast',
+    'seedance-2-0-promax-mini': 'promax-mini',
 };
 
 const RESOLUTIONS = ['720p', '1080p', '4k'] as const;
@@ -51,13 +55,16 @@ function resolveEnterpriseModel(
     const lower = rawModel.toLowerCase();
     const variant = ENTERPRISE_MODELS[lower];
     if (!variant) return null;
-    const region = lower.includes('-global') ? 'global' : 'cn';
+    const region = lower.includes('-promax') ? 'promax' : lower.includes('-global') ? 'global' : 'cn';
     const resRaw = String(body.resolution ?? '720p').toLowerCase();
     if (!(RESOLUTIONS as readonly string[]).includes(resRaw)) {
         return { error: errJson(400, 'invalid_request', 'resolution 仅支持 720p / 1080p / 4k') };
     }
-    if (resRaw === '4k' && variant !== 'pro') {
+    if (resRaw === '4k' && variant !== 'pro' && variant !== 'promax') {
         return { error: errJson(400, 'invalid_request', `${rawModel} 无 4k 档(resolution 仅 720p / 1080p)`) };
+    }
+    if ((variant === 'promax-fast' || variant === 'promax-mini') && resRaw !== '720p') {
+        return { error: errJson(400, 'invalid_request', `${rawModel} 仅支持 720p 档`) };
     }
     const hasRefs =
         extractImageUrls(body).length > 0 ||
@@ -65,6 +72,7 @@ function resolveEnterpriseModel(
         extractAudioUrls(body).length > 0 ||
         (typeof body.first_frame === 'string' && body.first_frame !== '') ||
         (typeof body.last_frame === 'string' && body.last_frame !== '');
+    // 长名:global 前缀在 variant 前;promax 系 variant 自带前缀(seedance2.0-promax[-fast|-mini]-…)
     const longName = `seedance2.0-${region === 'global' ? 'global-' : ''}${variant}-${resRaw}${hasRefs ? '-ref' : ''}`;
     const spec = MODEL_MAP[longName];
     if (!spec) {

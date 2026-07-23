@@ -36,6 +36,19 @@ const RETAIL_CNY_PER_M: Record<SeedanceVariant, Partial<Record<Resolution, { noV
         '720p': { noVideo: 23 * 0.85, withVideo: 14 * 0.85 }, // 19.55 / 11.9
         '1080p': { noVideo: 23 * 0.85, withVideo: 14 * 0.85 }, // 19.55 / 11.9
     },
+    // 海外版proMax(2026-07-23,dreamina 系):挂牌 × 0.85(上游对我们 9 折,operator 定零售 85 折)。
+    // fast/mini 上游仅 480p/720p → 门户只开 720p 档。
+    promax: {
+        '720p': { noVideo: 68 * 0.85, withVideo: 40.8 * 0.85 }, // 57.8 / 34.68
+        '1080p': { noVideo: 73.44 * 0.85, withVideo: 44.88 * 0.85 }, // 62.424 / 38.148
+        '4k': { noVideo: 38.08 * 0.85, withVideo: 23.12 * 0.85 }, // 32.368 / 19.652
+    },
+    'promax-fast': {
+        '720p': { noVideo: 54.4 * 0.85, withVideo: 32.896 * 0.85 }, // 46.24 / 27.9616
+    },
+    'promax-mini': {
+        '720p': { noVideo: 34 * 0.85, withVideo: 20.4 * 0.85 }, // 28.9 / 17.34
+    },
 };
 
 /** 对客 ¥ = 实际 token / 1e6 × 费率(变体 × 分辨率 × 是否含视频)。

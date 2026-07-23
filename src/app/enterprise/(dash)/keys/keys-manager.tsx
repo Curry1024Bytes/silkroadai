@@ -25,7 +25,7 @@ function fmtTime(iso: string | null): string {
 export function KeysManager({ initialKeys }: { initialKeys: KeyRow[] }) {
     const [keys, setKeys] = useState(initialKeys);
     const [name, setName] = useState('');
-    const [region, setRegion] = useState<'cn' | 'global'>('cn');
+    const [region, setRegion] = useState<'cn' | 'global' | 'promax'>('cn');
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [freshKey, setFreshKey] = useState<string | null>(null);
@@ -115,7 +115,11 @@ export function KeysManager({ initialKeys }: { initialKeys: KeyRow[] }) {
                                     <td className="py-2 pr-4">{k.name}</td>
                                     <td className="py-2 pr-4 font-mono text-xs text-gray-500">{k.key_prefix}…</td>
                                     <td className="py-2 pr-4">
-                                        {k.region === 'global' ? (
+                                        {k.region === 'promax' ? (
+                                            <span className="rounded bg-purple-50 px-1.5 py-0.5 text-xs font-medium text-purple-700">
+                                                海外版proMax
+                                            </span>
+                                        ) : k.region === 'global' ? (
                                             <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-xs font-medium text-indigo-700">
                                                 海外版
                                             </span>
@@ -163,11 +167,12 @@ export function KeysManager({ initialKeys }: { initialKeys: KeyRow[] }) {
                     />
                     <select
                         value={region}
-                        onChange={(e) => setRegion(e.target.value as 'cn' | 'global')}
+                        onChange={(e) => setRegion(e.target.value as 'cn' | 'global' | 'promax')}
                         className="rounded-md border border-gray-300 px-2 py-2 text-sm focus:border-blue-500 focus:outline-none"
                     >
                         <option value="cn">国内版</option>
                         <option value="global">海外版(global)</option>
+                        <option value="promax">海外版proMax</option>
                     </select>
                     <button
                         type="submit"
@@ -180,8 +185,9 @@ export function KeysManager({ initialKeys }: { initialKeys: KeyRow[] }) {
                 {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
                 <p className="mt-2 text-xs text-gray-400">
                     密钥明文只在创建时显示一次;服务端仅存哈希,无法找回。海外版密钥调 seedance-2-0-global
-                    系模型(参数/价格与国内一致,海外节点出片),国内/海外密钥不互通。
-                    如果生成因敏感内容被审核拒绝(fail_reason 提示 sensitive),并非开白/权限原因,请尝试海外版。
+                    系模型(参数/价格与国内一致,海外节点出片);海外版proMax 密钥调 seedance-2-0-promax
+                    系模型(独立定价,见文档)。各版本密钥不互通。 如果生成因敏感内容被审核拒绝(fail_reason 提示
+                    sensitive),并非开白/权限原因,请尝试海外版。
                 </p>
             </section>
         </div>

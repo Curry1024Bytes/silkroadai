@@ -15,7 +15,7 @@ export const runtime = 'nodejs';
  */
 const schema = z.object({
     user_id: z.string().uuid(),
-    region: z.enum(['cn', 'global']).default('cn'),
+    region: z.enum(['cn', 'global', 'promax']).default('cn'),
     variant: z.enum(['pro', 'fast', 'mini']).default('pro'),
     resolution: z.enum(['720p', '1080p', '4k']),
     has_video: z.boolean(),

@@ -72,7 +72,7 @@ describe('isEnterpriseFlavor', () => {
 });
 
 describe('分发白名单', () => {
-    it('GET /models → 6 个归一短名(国内 3 + 海外 global 3,2026-07-23)', async () => {
+    it('GET /models → 9 个归一短名(国内 3 + global 3 + promax 3)', async () => {
         const res = await handleEnterpriseV1(req('GET', '/v1/models'), '/models');
         const j = (await res.json()) as { data: Array<{ id: string }> };
         expect(res.status).toBe(200);
@@ -83,6 +83,9 @@ describe('分发白名单', () => {
             'seedance-2-0-global',
             'seedance-2-0-global-fast',
             'seedance-2-0-global-mini',
+            'seedance-2-0-promax',
+            'seedance-2-0-promax-fast',
+            'seedance-2-0-promax-mini',
         ]);
     });
 
@@ -277,6 +280,44 @@ describe('归一短名(2026-07-20)', () => {
         res = await handleEnterpriseV1(req('GET', '/v1/video/generations/cgt-g1'), '/video/generations/cgt-g1');
         expect(res.status).toBe(200);
         expect(pollVideoWithKey).toHaveBeenCalledWith('cgt-g1', 'Bearer sk-upstream-u1', 'global');
+    });
+
+    it('promax 短名:鉴权 region=promax,长名 seedance2.0-promax-mini-720p;1080p → 400(仅 720p)', async () => {
+        resolveEnterpriseCustomer.mockResolvedValue({ ok: true, customer: { ...CUSTOMER, region: 'promax' } });
+        submitVideoWithKey.mockImplementation(() =>
+            Promise.resolve(NextResponse.json({ id: 'cgt-pm1', task_id: 'cgt-pm1', status: 'queued' })),
+        );
+        let res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { model: 'seedance-2-0-promax-mini', prompt: '一只猫' }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(200);
+        expect(resolveEnterpriseCustomer).toHaveBeenCalledWith(expect.any(String), 'promax');
+        expect(submitVideoWithKey).toHaveBeenCalledWith(
+            expect.objectContaining({ model: 'seedance2.0-promax-mini-720p' }),
+            'Bearer sk-upstream-u1',
+        );
+        // fast/mini 仅 720p:1080p → 400
+        res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', {
+                model: 'seedance-2-0-promax-mini',
+                prompt: 'x',
+                resolution: '1080p',
+            }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(400);
+        // promax(pro)4k 放行
+        submitVideoWithKey.mockClear();
+        res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { model: 'seedance-2-0-promax', prompt: 'x', resolution: '4k' }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(200);
+        expect(submitVideoWithKey).toHaveBeenCalledWith(
+            expect.objectContaining({ model: 'seedance2.0-promax-4k' }),
+            'Bearer sk-upstream-u1',
+        );
     });
 
     it('resolution 参数选档 + 带参考图自动加 -ref:mini@1080p+images → seedance2.0-mini-1080p-ref', async () => {

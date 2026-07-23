@@ -124,6 +124,44 @@ describe('computeEnterpriseCostCny', () => {
         );
     });
 
+    it('promax 系费率(挂牌×0.85):mini 28.9 / fast 46.24 / pro 4k 32.368;含视 17.34', async () => {
+        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false, 'promax-mini', 'promax')).toBeCloseTo(
+            28.9,
+            4,
+        );
+        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false, 'promax-fast', 'promax')).toBeCloseTo(
+            46.24,
+            4,
+        );
+        expect(await computeEnterpriseCostCny('u1', 1_000_000, '4k', false, 'promax', 'promax')).toBeCloseTo(32.368, 4);
+        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', true, 'promax-mini', 'promax')).toBeCloseTo(
+            17.34,
+            4,
+        );
+    });
+
+    it('promax 短名任务扣费:variant=promax-mini + region=promax 全从 task.model 推导', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({
+            id: 'cgt-pm1',
+            user_id: 'u1',
+            tenant_id: null,
+            tier: ENTERPRISE_TIER,
+            model: 'seedance-2-0-promax-mini',
+            resolution: '720p',
+            has_video: false,
+            tokens: BigInt(1_000_000),
+            billed: false,
+            status: 'completed',
+        });
+        db.seedanceVideoTask.updateMany.mockResolvedValue({ count: 1 });
+        applyLedgerEntry.mockResolvedValue({ balance_after: { toFixed: () => '0.00' } });
+        const r = await chargeEnterpriseVideoTask('cgt-pm1');
+        expect(r.costCny).toBeCloseTo(28.9, 4);
+        expect(db.enterpriseUpstreamKey.findUnique).toHaveBeenLastCalledWith(
+            expect.objectContaining({ where: { user_id_region: { user_id: 'u1', region: 'promax' } } }),
+        );
+    });
+
     it('归一短名任务(seedance-2-0-mini)扣费按 mini 费率(variantForModel 后缀识别)', async () => {
         db.seedanceVideoTask.findUnique.mockResolvedValue({
             id: 'cgt-s1',

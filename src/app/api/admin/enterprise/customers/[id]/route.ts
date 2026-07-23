@@ -11,7 +11,7 @@ const PatchSchema = z.object({
     // 客户级整体折扣率:0.05~2(>1 = 上浮),1 = 无折扣。挂牌 × discount;单档 override 不受影响。
     discount: z.number().min(0.05).max(2),
     // 版本(2026-07-23):每版本独立折扣,缺省 cn
-    region: z.enum(['cn', 'global']).default('cn'),
+    region: z.enum(['cn', 'global', 'promax']).default('cn'),
 });
 
 /** PATCH /api/admin/enterprise/customers/[id] — 设客户级折扣率(按版本)。守门:superadmin。 */
