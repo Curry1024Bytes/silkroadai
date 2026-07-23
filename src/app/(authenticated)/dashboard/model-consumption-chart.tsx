@@ -17,7 +17,7 @@
  * The custom tooltip is typed in-file to avoid recharts' loose ValueType
  * generics, matching the DailyChart pattern.
  */
-import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Legend, CartesianGrid } from 'recharts';
+import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, Legend, CartesianGrid } from 'recharts';
 
 export interface ModelConsumptionChartProps {
     byDay: Array<{ date: string; values: Record<string, number> }>;
@@ -32,8 +32,8 @@ const OTHER_LABEL = '其他';
 
 /** Stack colors. '其他' is always the muted grey; real models cycle the
  *  brand-leaning palette by index. */
-const PALETTE = ['#1a2540', '#4f46e5', '#0ea5e9', '#10b981', '#f59e0b', '#ec4899'];
-const OTHER_COLOR = '#94a3b8';
+const PALETTE = ['#1e3a8a', '#a16207', '#0f766e', '#b45309', '#6d28d9', '#be123c'];
+const OTHER_COLOR = '#8c94a1';
 
 function colorFor(model: string, idx: number): string {
     if (model === OTHER_LABEL) return OTHER_COLOR;
@@ -75,18 +75,18 @@ function ChartTooltip({
     const rows = payload.filter((p) => p.value > 0);
     const total = rows.reduce((a, p) => a + p.value, 0);
     return (
-        <div className="rounded-lg border border-brand-border bg-surface px-3 py-2 text-xs shadow-card-strong">
-            <p className="m-0 mb-1.5 font-medium text-navy">{label}</p>
+        <div className="rounded-md border border-portal-line bg-portal-panel px-3 py-2 text-xs shadow-portal">
+            <p className="m-0 mb-1.5 font-medium text-portal-ink">{label}</p>
             {rows.map((p) => (
-                <p key={p.dataKey} className="m-0 flex items-center justify-between gap-3 text-muted-ink">
+                <p key={p.dataKey} className="m-0 flex items-center justify-between gap-3 text-portal-muted">
                     <span className="flex items-center gap-1.5">
                         <span className="inline-block h-2 w-2 rounded-sm" style={{ backgroundColor: p.color }} />
                         <span className="font-mono">{p.dataKey}</span>
                     </span>
-                    <span className="tabular-nums text-ink">¥{(p.value * cnyPerQuota).toFixed(2)}</span>
+                    <span className="tabular-nums text-portal-ink">¥{(p.value * cnyPerQuota).toFixed(2)}</span>
                 </p>
             ))}
-            <p className="m-0 mt-1.5 flex justify-between gap-3 border-t border-brand-border pt-1.5 font-medium text-navy">
+            <p className="m-0 mt-1.5 flex justify-between gap-3 border-t border-portal-line pt-1.5 font-medium text-portal-ink">
                 <span>合计</span>
                 <span className="tabular-nums">¥{(total * cnyPerQuota).toFixed(2)}</span>
             </p>
@@ -97,8 +97,8 @@ function ChartTooltip({
 export function ModelConsumptionChart({ byDay, models, cnyPerQuota }: ModelConsumptionChartProps) {
     if (byDay.length === 0 || models.length === 0) {
         return (
-            <div className="flex h-[260px] items-center justify-center rounded-xl border border-brand-border bg-surface text-sm text-minor-ink shadow-card">
-                该时间段内暂无消耗数据
+            <div className="flex h-[260px] items-center justify-center rounded-md border border-dashed border-portal-line bg-portal-soft px-6 text-center text-sm text-portal-subtle sm:h-[300px]">
+                该时间段内暂无消耗数据。完成首次调用后,趋势会显示在这里。
             </div>
         );
     }
@@ -115,33 +115,44 @@ export function ModelConsumptionChart({ byDay, models, cnyPerQuota }: ModelConsu
     const tickInterval = data.length > 30 ? Math.ceil(data.length / 12) - 1 : 0;
 
     return (
-        <div className="rounded-xl border border-brand-border bg-surface p-4 shadow-card">
-            <ResponsiveContainer width="100%" height={280}>
-                <BarChart data={data} margin={{ top: 8, right: 12, bottom: 4, left: 4 }}>
-                    <CartesianGrid stroke="#e2e8f0" strokeDasharray="3 3" vertical={false} />
+        <div className="h-[260px] w-full sm:h-[300px]">
+            <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={data} margin={{ top: 12, right: 8, bottom: 0, left: 0 }}>
+                    <CartesianGrid stroke="#eceef1" strokeDasharray="3 4" vertical={false} />
                     <XAxis
                         dataKey="date"
-                        tick={{ fill: '#64748b', fontSize: 12 }}
-                        axisLine={{ stroke: '#e2e8f0' }}
+                        tick={{ fill: '#7b8492', fontSize: 11 }}
+                        axisLine={{ stroke: '#e3e6ea' }}
                         tickLine={false}
                         interval={tickInterval}
                     />
                     <YAxis
                         tickFormatter={(v) => formatCnyTick(v * cnyPerQuota)}
-                        tick={{ fill: '#64748b', fontSize: 12 }}
-                        axisLine={{ stroke: '#e2e8f0' }}
+                        tick={{ fill: '#7b8492', fontSize: 11 }}
+                        axisLine={false}
                         tickLine={false}
                         width={52}
                     />
                     <Tooltip
                         content={<ChartTooltip cnyPerQuota={cnyPerQuota} />}
-                        cursor={{ fill: 'rgba(148,163,184,0.12)' }}
+                        cursor={{ stroke: '#c6cad0', strokeWidth: 1 }}
                     />
-                    <Legend wrapperStyle={{ fontSize: 12 }} iconType="square" />
+                    <Legend wrapperStyle={{ fontSize: 11, color: '#5d6675' }} iconType="plainline" />
                     {models.map((m, idx) => (
-                        <Bar key={m} dataKey={m} stackId="quota" fill={colorFor(m, idx)} maxBarSize={48} />
+                        <Area
+                            key={m}
+                            type="monotone"
+                            dataKey={m}
+                            stackId="quota"
+                            stroke={colorFor(m, idx)}
+                            fill={colorFor(m, idx)}
+                            fillOpacity={0.1}
+                            strokeWidth={1.8}
+                            strokeDasharray={idx === 0 ? undefined : idx % 2 === 0 ? '3 2' : undefined}
+                            activeDot={{ r: 3, strokeWidth: 0 }}
+                        />
                     ))}
-                </BarChart>
+                </AreaChart>
             </ResponsiveContainer>
         </div>
     );

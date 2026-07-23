@@ -22,6 +22,7 @@
  * 所有 LLM)token 就是计费依据 → 如实显示。¥ + 结果照常清晰。
  */
 import { useState } from 'react';
+import { Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Copy, XCircle } from 'lucide-react';
 import { formatDuration, formatTokens, callResult } from './format';
 
 export interface CallRow {
@@ -53,7 +54,8 @@ export interface CallRow {
 
 const PAGE_SIZE = 20;
 
-const HEAD = 'text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border text-muted-ink';
+const HEAD =
+    'text-left px-4 py-3 text-xs font-semibold border-b border-portal-line text-portal-muted whitespace-nowrap';
 
 /** Table spans 8 columns; the expanded error-detail sub-row must match. */
 const COL_SPAN = 8;
@@ -64,8 +66,8 @@ export function CallDetailTable({ rows }: { rows: CallRow[] }) {
 
     if (rows.length === 0) {
         return (
-            <div className="rounded-xl border border-brand-border bg-surface px-4 py-8 text-center text-sm text-minor-ink shadow-card">
-                该时间段内暂无调用记录
+            <div className="flex min-h-[156px] items-center justify-center rounded-lg border border-dashed border-portal-line bg-portal-panel px-6 text-center text-sm text-portal-subtle">
+                该时间段内暂无调用记录。完成首次 API 调用后,记录会显示在这里。
             </div>
         );
     }
@@ -77,10 +79,10 @@ export function CallDetailTable({ rows }: { rows: CallRow[] }) {
 
     return (
         <div>
-            <div className="overflow-x-auto rounded-xl border border-brand-border bg-surface shadow-card">
+            <div className="overflow-x-auto rounded-lg border border-portal-line bg-portal-panel shadow-portal">
                 <table className="w-full border-collapse">
                     <thead>
-                        <tr className="bg-paper-muted">
+                        <tr className="bg-portal-soft">
                             <th className={HEAD}>时间</th>
                             <th className={HEAD}>模型</th>
                             <th className={HEAD}>Key</th>
@@ -110,7 +112,7 @@ export function CallDetailTable({ rows }: { rows: CallRow[] }) {
                 </table>
             </div>
 
-            <div className="mt-3 flex items-center justify-between gap-3 text-xs text-muted-ink">
+            <div className="mt-3 flex items-center justify-between gap-3 text-xs text-portal-muted">
                 <span className="tabular-nums">
                     共 {rows.length.toLocaleString('en-US')} 条 · 第 {safePage + 1} / {totalPages} 页
                 </span>
@@ -119,17 +121,19 @@ export function CallDetailTable({ rows }: { rows: CallRow[] }) {
                         type="button"
                         onClick={() => setPage(Math.max(0, safePage - 1))}
                         disabled={safePage === 0}
-                        className="rounded-lg border border-brand-border bg-surface px-3 py-1.5 text-xs text-navy transition-colors hover:bg-paper-muted disabled:cursor-not-allowed disabled:text-minor-ink disabled:hover:bg-surface"
+                        className="inline-flex h-8 items-center gap-1 rounded-md border border-portal-line bg-portal-panel px-2.5 text-xs text-portal-muted transition-colors hover:bg-portal-soft hover:text-portal-ink disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-portal-panel"
                     >
+                        <ChevronLeft size={14} aria-hidden="true" />
                         上一页
                     </button>
                     <button
                         type="button"
                         onClick={() => setPage(Math.min(totalPages - 1, safePage + 1))}
                         disabled={safePage >= totalPages - 1}
-                        className="rounded-lg border border-brand-border bg-surface px-3 py-1.5 text-xs text-navy transition-colors hover:bg-paper-muted disabled:cursor-not-allowed disabled:text-minor-ink disabled:hover:bg-surface"
+                        className="inline-flex h-8 items-center gap-1 rounded-md border border-portal-line bg-portal-panel px-2.5 text-xs text-portal-muted transition-colors hover:bg-portal-soft hover:text-portal-ink disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-portal-panel"
                     >
                         下一页
+                        <ChevronRight size={14} aria-hidden="true" />
                     </button>
                 </div>
             </div>
@@ -141,10 +145,10 @@ export function CallDetailTable({ rows }: { rows: CallRow[] }) {
  *  only useful if it can be pasted into a support message). Empty id → "—". */
 function RequestIdCell({ value }: { value: string }) {
     const [copied, setCopied] = useState(false);
-    if (!value) return <span className="text-minor-ink">—</span>;
+    if (!value) return <span className="text-portal-subtle">—</span>;
     return (
         <span className="inline-flex items-center gap-1.5">
-            <span className="max-w-[150px] truncate font-mono text-xs text-muted-ink" title={value}>
+            <span className="max-w-[150px] truncate font-mono text-xs text-portal-muted" title={value}>
                 {value}
             </span>
             <button
@@ -159,9 +163,11 @@ function RequestIdCell({ value }: { value: string }) {
                     }
                 }}
                 title="复制完整 Request ID"
-                className="shrink-0 rounded border border-brand-border bg-surface px-1.5 py-0.5 text-[10px] text-muted-ink transition-colors hover:bg-paper-muted"
+                aria-label={copied ? '已复制 Request ID' : '复制 Request ID'}
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-portal-subtle transition-colors hover:bg-portal-active hover:text-portal-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy/25"
             >
-                {copied ? '已复制' : '复制'}
+                {copied ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
+                <span className="sr-only">{copied ? '已复制' : '复制'}</span>
             </button>
         </span>
     );
@@ -179,11 +185,11 @@ function CallRowItem({
     isOpen: boolean;
     onToggle: () => void;
 }) {
-    const cell = 'px-4 py-3 text-sm text-ink border-b border-brand-border';
+    const cell = 'px-4 py-3 text-sm text-portal-ink border-b border-portal-line';
     return (
         <>
-            <tr className={isOpen ? 'bg-paper-muted/40' : undefined}>
-                <td className={`${cell} whitespace-nowrap text-muted-ink`}>
+            <tr className={isOpen ? 'bg-portal-soft' : 'transition-colors hover:bg-portal-soft/70'}>
+                <td className={`${cell} whitespace-nowrap text-portal-muted`}>
                     {new Date(row.createdAt * 1000).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}
                 </td>
                 <td className={`${cell} font-mono text-xs`}>{row.model || '<unknown>'}</td>
@@ -198,8 +204,8 @@ function CallRowItem({
                 <td className={cell}>
                     <RequestIdCell value={row.requestId} />
                 </td>
-                <td className={`${cell} text-right tabular-nums text-muted-ink`}>{formatDuration(row.useTimeMs)}</td>
-                <td className={`${cell} text-right tabular-nums text-muted-ink`}>
+                <td className={`${cell} text-right tabular-nums text-portal-muted`}>{formatDuration(row.useTimeMs)}</td>
+                <td className={`${cell} text-right tabular-nums text-portal-muted`}>
                     {formatTokens(row.promptTokens, row.completionTokens, row.perImageBilled)}
                 </td>
                 <td className={`${cell} text-right tabular-nums font-medium`}>¥{row.costCny.toFixed(2)}</td>
@@ -210,25 +216,29 @@ function CallRowItem({
                             onClick={onToggle}
                             title={row.content || '调用失败'}
                             aria-expanded={isOpen}
-                            className="inline-flex items-center gap-1 rounded border border-status-error-border bg-status-error-bg px-2 py-0.5 text-xs font-medium text-status-error-text"
+                            className="inline-flex items-center gap-1.5 rounded bg-status-error-bg px-2 py-1 text-xs font-medium text-status-error-text transition-colors hover:bg-red-100"
                         >
+                            <XCircle size={13} aria-hidden="true" />
                             失败
-                            <span aria-hidden className="text-[10px]">
-                                {isOpen ? '▲' : '▼'}
-                            </span>
+                            {isOpen ? (
+                                <ChevronUp size={12} aria-hidden="true" />
+                            ) : (
+                                <ChevronDown size={12} aria-hidden="true" />
+                            )}
                         </button>
                     ) : (
-                        <span className="inline-flex items-center rounded border border-status-success-border bg-status-success-bg px-2 py-0.5 text-xs font-medium text-status-success-text">
+                        <span className="inline-flex items-center gap-1.5 rounded bg-status-success-bg px-2 py-1 text-xs font-medium text-status-success-text">
+                            <CheckCircle2 size={13} aria-hidden="true" />
                             成功
                         </span>
                     )}
                 </td>
             </tr>
             {isError && isOpen && (
-                <tr className="bg-paper-muted/40">
-                    <td colSpan={COL_SPAN} className="border-b border-brand-border px-4 py-2.5">
+                <tr className="bg-portal-soft">
+                    <td colSpan={COL_SPAN} className="border-b border-portal-line px-4 py-3">
                         <p className="m-0 mb-1 text-xs font-medium text-status-error-text">错误详情</p>
-                        <pre className="m-0 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-paper-muted px-3 py-2 font-mono text-xs text-ink">
+                        <pre className="m-0 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-portal-active px-3 py-2 font-mono text-xs text-portal-ink">
                             {row.content || '(上游未返回错误详情)'}
                         </pre>
                     </td>

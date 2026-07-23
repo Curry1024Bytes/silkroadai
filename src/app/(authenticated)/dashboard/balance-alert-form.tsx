@@ -15,8 +15,8 @@
  * The server enforces the same range via zod regardless of UI clamping.
  */
 import { useState } from 'react';
+import { BellRing } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Input } from '@/components/ui/Input';
 import { Label } from '@/components/ui/Label';
 
@@ -66,14 +66,19 @@ export function BalanceAlertForm({ initialThreshold }: Props) {
     }
 
     return (
-        <Card as="article" data-testid="balance-alert-form" className="mb-6">
-            <CardHeader>
-                <CardTitle as="h2" className="text-base font-semibold text-navy">
-                    余额提醒设置
-                </CardTitle>
-            </CardHeader>
-            <CardContent>
-                <p className="m-0 mb-4 text-xs text-muted-ink">
+        <section
+            data-testid="balance-alert-form"
+            className="overflow-hidden rounded-lg border border-portal-line bg-portal-panel shadow-portal"
+        >
+            <div className="border-b border-portal-line px-5 py-4 sm:px-6">
+                <div className="flex items-center gap-2">
+                    <BellRing size={17} className="text-portal-gold" strokeWidth={1.8} aria-hidden="true" />
+                    <h2 className="m-0 text-base font-semibold text-portal-ink">余额提醒设置</h2>
+                </div>
+                <p className="m-0 mt-1 text-xs text-portal-subtle">账户保护</p>
+            </div>
+            <div className="px-5 py-5 sm:px-6">
+                <p className="m-0 mb-5 text-sm leading-relaxed text-portal-muted">
                     当余额低于阈值时,我们会向您的注册邮箱发送提醒(24 小时内最多一次)。填 0 关闭提醒。
                 </p>
                 <div className="flex items-end gap-2.5 flex-wrap">
@@ -92,7 +97,7 @@ export function BalanceAlertForm({ initialThreshold }: Props) {
                             }}
                             aria-label="余额提醒阈值"
                             block={false}
-                            className="w-32 tabular-nums"
+                            className="w-32 rounded-md border-portal-line tabular-nums"
                         />
                     </div>
                     <Button
@@ -102,6 +107,7 @@ export function BalanceAlertForm({ initialThreshold }: Props) {
                         onClick={handleSave}
                         loading={status === 'saving'}
                         disabled={!canSave}
+                        className="rounded-md"
                     >
                         {status === 'saving' ? '保存中…' : '保存'}
                     </Button>
@@ -123,7 +129,7 @@ export function BalanceAlertForm({ initialThreshold }: Props) {
                         <span className="text-xs text-status-error-text">请输入 0–1000 的整数</span>
                     )}
                 </div>
-            </CardContent>
-        </Card>
+            </div>
+        </section>
     );
 }

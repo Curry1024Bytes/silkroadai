@@ -1,136 +1,203 @@
 'use client';
 
-/**
- * Authenticated nav. Desktop ≥ 768px: vertical 200px panel on the left.
- * Mobile <768px: horizontal scrollable strip below the header (the
- * authenticated layout flips to flex-col on mobile, so this nav lives in
- * the sidebar slot but visually renders horizontally).
- *
- * Active item gets a brand-accent left-border (desktop) or bottom-border
- * (mobile) plus a paper-muted background. Other items are quiet, with a
- * brand-accent text shift on hover.
- */
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import type { LucideIcon } from 'lucide-react';
+import {
+    BookOpenText,
+    Boxes,
+    Cpu,
+    CreditCard,
+    HardDrive,
+    KeyRound,
+    LayoutDashboard,
+    ScrollText,
+    UsersRound,
+    Wrench,
+    X,
+} from 'lucide-react';
 
 interface NavItem {
     href: string;
     label: string;
+    icon: LucideIcon;
+    muted?: boolean;
+    status?: string;
 }
 
-const BASE_NAV: NavItem[] = [
-    // 客户控制台三合一: 概览 now IS the merged console — 余额 + 用量 + 每次调用
-    // 明细 all live on /dashboard. Old /balance + /usage routes 307-redirect
-    // here, so the two former nav rows collapsed into this one.
-    { href: '/dashboard', label: '概览' },
-    // 全功能调用日志:按日期范围 + Request ID / 令牌 / 模型 / 渠道 搜索,分页展示(已去重复失败)。
-    { href: '/logs', label: '调用日志' },
-    { href: '/keys', label: 'API Keys' },
-    // 工具箱: 独立页 /tools(Seedance 视频 / AI 对话 / AI 生图 在线测试 + Codex / Claude Code
-    // 接入),不跳落地页。放在 API Keys 之后。控制台的 AI 对话 / AI 生图 入口已下线,统一收敛
-    // 到工具箱(/chat /image 页面仍在,只是不再挂导航)。
-    { href: '/tools', label: '工具箱' },
-    // W9 D3 PR-C: 客户自定义 OSS(生图输出存储)配置入口。
-    { href: '/settings/storage', label: '存储设置' },
-    { href: '/models', label: '模型清单' },
-    // W7 D4 PR-G: public integration docs (Cursor / Cline / Continue /
-    // Claude Code Desktop / Python + Node SDK).
-    { href: '/docs', label: '文档' },
-    // W7 PR-P: GPU rental landing — H100 / H200 / B300.
-    { href: '/gpu', label: 'GPU 租赁' },
+interface NavGroup {
+    label: string;
+    items: NavItem[];
+}
+
+const WORKSPACE_NAV: NavItem[] = [
+    { href: '/dashboard', label: '概览', icon: LayoutDashboard },
+    { href: '/logs', label: '调用日志', icon: ScrollText },
+    { href: '/keys', label: 'API Keys', icon: KeyRound },
+    { href: '/tools', label: '工具箱', icon: Wrench },
 ];
 
-interface SidebarProps {
-    /** PR-U2 + fix/reseller-entry-discovery: the reseller entry is ALWAYS
-     *  visible (CTA discoverability — operator decided non-resellers should
-     *  see the "邀请赚佣金" entry to find the program). Label shifts based
-     *  on status:
-     *    null/undefined → "邀请赚佣金" (new-user CTA)
-     *    'active'       → "代理后台"
-     *    'suspended' / 'banned' → "代理后台" (greyed)
-     *  Same href "/reseller" in all cases; the page server-side routes
-     *  active → /reseller/dashboard, others → status-appropriate view.
-     *  Computed server-side in layout.tsx via fetchResellerStatus. */
+const RESOURCE_NAV: NavItem[] = [
+    { href: '/settings/storage', label: '存储设置', icon: HardDrive },
+    { href: '/models', label: '模型清单', icon: Boxes },
+    { href: '/docs', label: '文档', icon: BookOpenText },
+];
+
+export interface SidebarProps {
     resellerStatus?: 'active' | 'suspended' | 'banned' | null;
+    mobileOpen?: boolean;
+    onMobileClose?: () => void;
 }
 
 function resellerNavLabel(status: SidebarProps['resellerStatus']): string {
-    if (status === 'active') return '代理后台';
-    if (status === 'suspended' || status === 'banned') return '代理后台';
-    return '邀请赚佣金'; // null / undefined → never-joined CTA
+    if (status === 'active' || status === 'suspended' || status === 'banned') return '代理后台';
+    return '邀请赚佣金';
 }
 
-export function Sidebar({ resellerStatus = null }: SidebarProps) {
-    const pathname = usePathname();
-    // Build the final nav list — always inject the reseller entry just
-    // before /gpu (customer-facing tools group together, reseller entry
-    // sits at the end of the customer rows whether they've joined or not).
-    const nav: NavItem[] = [
-        ...BASE_NAV.slice(0, -1),
-        { href: '/reseller', label: resellerNavLabel(resellerStatus) },
-        BASE_NAV[BASE_NAV.length - 1],
-    ];
-    // Suspended / banned resellers get a muted entry — their click still
-    // routes to /reseller, which server-side renders the status page.
-    const resellerMuted = resellerStatus === 'suspended' || resellerStatus === 'banned';
+function isRouteActive(pathname: string, href: string): boolean {
+    if (href === '/dashboard') return pathname === href;
+    return pathname === href || pathname.startsWith(`${href}/`);
+}
 
+function NavigationPanel({
+    groups,
+    pathname,
+    onNavigate,
+    onClose,
+    mobile,
+}: {
+    groups: NavGroup[];
+    pathname: string;
+    onNavigate?: () => void;
+    onClose?: () => void;
+    mobile?: boolean;
+}) {
     return (
-        <nav
-            className={[
-                // Mobile: horizontal scroll strip under the header.
-                'border-b border-brand-border bg-surface overflow-x-auto',
-                // Desktop: vertical panel.
-                'md:w-[200px] md:min-w-[200px] md:border-b-0 md:border-r md:overflow-x-visible',
-                'md:flex md:flex-col md:justify-between',
-                'py-2 md:py-4',
-            ].join(' ')}
-            aria-label="客户后台导航"
-        >
-            <ul className={['list-none p-0 m-0 flex flex-row md:flex-col gap-0.5 px-2 md:px-0'].join(' ')}>
-                {nav.map((item) => {
-                    const active = pathname === item.href;
-                    const muted = item.href === '/reseller' && resellerMuted;
-                    return (
-                        <li key={item.href}>
-                            <Link
-                                href={item.href}
-                                aria-current={active ? 'page' : undefined}
-                                data-status={item.href === '/reseller' ? (resellerStatus ?? 'none') : undefined}
-                                className={[
-                                    'block whitespace-nowrap text-sm no-underline',
-                                    'px-4 md:px-5 py-2 md:py-2.5',
-                                    'transition-colors duration-150 ease-brand',
-                                    'border-l-[3px] border-transparent',
-                                    active
-                                        ? 'text-navy font-semibold bg-paper-muted md:border-l-brand-accent'
-                                        : muted
-                                          ? 'text-minor-ink/70 hover:text-minor-ink hover:bg-paper-muted/40'
-                                          : 'text-muted-ink hover:text-navy hover:bg-paper-muted/60',
-                                    // Mobile uses a bottom-border affordance instead of left.
-                                    active
-                                        ? 'border-b-2 md:border-b-0 border-b-brand-accent md:border-b-transparent'
-                                        : 'border-b-2 border-b-transparent',
-                                ].join(' ')}
-                            >
-                                {item.label}
-                            </Link>
-                        </li>
-                    );
-                })}
-            </ul>
+        <>
+            {mobile && (
+                <div className="flex h-16 items-center justify-between border-b border-portal-line px-5">
+                    <span className="text-sm font-semibold text-portal-ink">导航</span>
+                    <button
+                        type="button"
+                        onClick={onClose}
+                        aria-label="关闭导航"
+                        title="关闭导航"
+                        className="flex h-9 w-9 items-center justify-center rounded-md text-portal-muted transition-colors hover:bg-portal-active hover:text-portal-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy/30"
+                    >
+                        <X size={19} strokeWidth={1.8} aria-hidden="true" />
+                    </button>
+                </div>
+            )}
 
-            <div className="hidden md:block px-4 pb-2">
+            <nav className="min-h-0 flex-1 overflow-y-auto px-3 py-5" aria-label="客户后台导航">
+                <div className="space-y-6">
+                    {groups.map((group) => (
+                        <div key={group.label}>
+                            <p className="mb-2 px-3 text-[11px] font-semibold text-portal-subtle">{group.label}</p>
+                            <ul className="m-0 list-none space-y-1 p-0">
+                                {group.items.map((item) => {
+                                    const active = isRouteActive(pathname, item.href);
+                                    const Icon = item.icon;
+                                    return (
+                                        <li key={item.href}>
+                                            <Link
+                                                href={item.href}
+                                                aria-current={active ? 'page' : undefined}
+                                                data-status={item.status}
+                                                onClick={onNavigate}
+                                                className={[
+                                                    'flex h-10 items-center gap-3 rounded-md border-l-2 px-3 text-sm no-underline',
+                                                    'transition-colors duration-150 ease-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy/25',
+                                                    active
+                                                        ? 'border-l-navy bg-portal-active font-semibold text-portal-ink'
+                                                        : item.muted
+                                                          ? 'border-l-transparent text-minor-ink/70 hover:bg-portal-soft hover:text-portal-muted'
+                                                          : 'border-l-transparent text-portal-muted hover:bg-portal-soft hover:text-portal-ink',
+                                                ].join(' ')}
+                                            >
+                                                <Icon
+                                                    size={17}
+                                                    strokeWidth={active ? 2 : 1.7}
+                                                    className={active ? 'text-portal-gold' : 'text-portal-subtle'}
+                                                    aria-hidden="true"
+                                                />
+                                                <span className="truncate">{item.label}</span>
+                                            </Link>
+                                        </li>
+                                    );
+                                })}
+                            </ul>
+                        </div>
+                    ))}
+                </div>
+            </nav>
+
+            <div className="border-t border-portal-line p-4">
                 <Link
                     href="/pay"
-                    className={[
-                        'block text-center px-4 py-2.5 text-sm font-medium no-underline',
-                        'rounded-lg bg-navy text-paper hover:bg-navy-strong',
-                        'transition-colors duration-150 ease-brand',
-                    ].join(' ')}
+                    onClick={onNavigate}
+                    className="flex h-10 items-center justify-center gap-2 rounded-md bg-navy px-4 text-sm font-semibold text-white no-underline transition-colors hover:bg-navy-strong focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy/30"
                 >
-                    + 充值
+                    <CreditCard size={17} strokeWidth={1.8} aria-hidden="true" />
+                    充值
                 </Link>
             </div>
-        </nav>
+        </>
+    );
+}
+
+export function Sidebar({ resellerStatus = null, mobileOpen = false, onMobileClose }: SidebarProps) {
+    const pathname = usePathname();
+    const resellerMuted = resellerStatus === 'suspended' || resellerStatus === 'banned';
+    const groups: NavGroup[] = [
+        { label: '工作区', items: WORKSPACE_NAV },
+        { label: '资源与设置', items: RESOURCE_NAV },
+        {
+            label: '更多服务',
+            items: [
+                {
+                    href: '/reseller',
+                    label: resellerNavLabel(resellerStatus),
+                    icon: UsersRound,
+                    muted: resellerMuted,
+                    status: resellerStatus ?? 'none',
+                },
+                { href: '/gpu', label: 'GPU 租赁', icon: Cpu },
+            ],
+        },
+    ];
+
+    return (
+        <>
+            <aside className="sticky top-16 hidden h-[calc(100dvh-4rem)] w-[240px] shrink-0 flex-col border-r border-portal-line bg-portal-panel md:flex">
+                <NavigationPanel groups={groups} pathname={pathname} />
+            </aside>
+
+            {mobileOpen && (
+                <div className="fixed inset-0 z-50 md:hidden">
+                    <button
+                        type="button"
+                        className="absolute inset-0 bg-black/45"
+                        onClick={onMobileClose}
+                        aria-label="关闭导航"
+                    />
+                    <aside
+                        id="portal-mobile-navigation"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-label="客户后台导航"
+                        className="absolute inset-y-0 left-0 flex w-[min(82vw,300px)] flex-col bg-portal-panel shadow-2xl"
+                    >
+                        <NavigationPanel
+                            groups={groups}
+                            pathname={pathname}
+                            onNavigate={onMobileClose}
+                            onClose={onMobileClose}
+                            mobile
+                        />
+                    </aside>
+                </div>
+            )}
+        </>
     );
 }

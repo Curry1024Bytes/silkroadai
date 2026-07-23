@@ -22,17 +22,12 @@ const mockRedirect = vi.fn((url: string) => {
 });
 vi.mock('next/navigation', () => ({
     redirect: (url: string) => mockRedirect(url),
+    usePathname: () => '/dashboard',
 }));
 
 const mockGetCurrentUser = vi.fn();
 vi.mock('@/lib/auth/session', () => ({
     getCurrentUser: (...args: unknown[]) => mockGetCurrentUser(...args),
-}));
-
-// Sidebar uses next/navigation usePathname — provide stub so SSR renders
-vi.mock('next/navigation', async () => ({
-    redirect: (url: string) => mockRedirect(url),
-    usePathname: () => '/dashboard',
 }));
 
 // PR-U2: layout now calls fetchResellerStatus to decide whether to show

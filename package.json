@@ -28,6 +28,7 @@
         "bcryptjs": "^3.0.3",
         "jimp": "^1.6.1",
         "jose": "^6.2.3",
+        "lucide-react": "^1.26.0",
         "marked": "^18.0.3",
         "next": "16.1.6",
         "nodemailer": "^8.0.7",

@@ -22,6 +22,19 @@
  * state), never the whole page.
  */
 import type { ReactNode } from 'react';
+import type { LucideIcon } from 'lucide-react';
+import {
+    Activity,
+    ArrowUpRight,
+    BarChart3,
+    Coins,
+    CreditCard,
+    Database,
+    History as HistoryIcon,
+    ReceiptText,
+    Wallet,
+} from 'lucide-react';
+import Link from 'next/link';
 import { headers } from 'next/headers';
 import { NextRequest } from 'next/server';
 import { getCurrentUser } from '@/lib/auth/session';
@@ -31,7 +44,6 @@ import { getUsageAggregate, unionSeedanceUsage, type UsageAggregateSnapshot } fr
 import { queryLogs, quotaToCny, type NewApiUsageLog } from '@/lib/newapi/client';
 import { USD_TO_CNY_RATE } from '@/lib/newapi/quota-units';
 import { Button } from '@/components/ui/Button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { FormError } from '@/components/ui/FormError';
 import { fetchResellerStatus } from '@/lib/reseller/fetch-status';
@@ -101,23 +113,34 @@ function toCallRow(log: NewApiUsageLog): CallRow {
     };
 }
 
-/** A summary stat card (label + body). Body decides its own empty state. */
-function StatCard({ label, children }: { label: string; children: ReactNode }) {
+function MetricCell({
+    icon: Icon,
+    label,
+    value,
+    detail,
+    className,
+}: {
+    icon: LucideIcon;
+    label: string;
+    value: ReactNode;
+    detail: ReactNode;
+    className?: string;
+}) {
     return (
-        <Card as="article">
-            <CardHeader>
-                <CardTitle as="h3" className="text-sm font-medium text-muted-ink">
-                    {label}
-                </CardTitle>
-            </CardHeader>
-            <CardContent>{children}</CardContent>
-        </Card>
+        <article className={['min-w-0 p-5 sm:p-6', className ?? ''].filter(Boolean).join(' ')}>
+            <div className="mb-6 flex items-center justify-between gap-3">
+                <p className="m-0 text-sm font-medium text-portal-muted">{label}</p>
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-portal-soft text-portal-subtle">
+                    <Icon size={16} strokeWidth={1.8} aria-hidden="true" />
+                </span>
+            </div>
+            <p className="m-0 truncate text-2xl font-semibold text-portal-ink tabular-nums sm:text-[28px]">{value}</p>
+            <p className="m-0 mt-2 text-xs text-portal-subtle tabular-nums">{detail}</p>
+        </article>
     );
 }
 
-const BIG = 'm-0 text-2xl font-semibold text-navy tabular-nums';
-const SUB = 'mt-1.5 m-0 text-xs text-minor-ink tabular-nums';
-const NO_DATA = <p className="m-0 text-sm text-minor-ink">暂无数据</p>;
+const NO_DATA = <span className="text-base font-medium text-portal-subtle">暂无数据</span>;
 
 export default async function DashboardPage({
     searchParams,
@@ -242,20 +265,21 @@ export default async function DashboardPage({
 
     const byModel = agg ? agg.byModel.slice(0, TOP_MODELS) : [];
     const totalTokens = agg ? agg.totalTokens : 0;
+    const displayName = user.nickname || user.email.split('@')[0];
 
     return (
-        <section>
-            <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+        <section className="space-y-7">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
                 <div>
-                    <h1 className="m-0 mb-2 text-2xl font-semibold text-navy">
-                        欢迎,{user.nickname || user.email.split('@')[0]}
-                    </h1>
-                    <p className="m-0 text-sm text-muted-ink">余额、用量与每次调用明细,都在这里。</p>
+                    <p className="m-0 mb-1 text-xs font-semibold text-portal-gold">OVERVIEW</p>
+                    <h1 className="m-0 text-[28px] font-semibold leading-tight text-portal-ink">你好，{displayName}</h1>
+                    <p className="m-0 mt-2 text-sm text-portal-muted">查看账户余额、模型消费与最近调用。</p>
                 </div>
-                <div className="flex items-center gap-3">
+                <div className="flex flex-wrap items-center gap-3">
                     <PeriodTabs active={period} />
-                    <Button href="/pay" size="sm">
-                        + 充值
+                    <Button href="/pay" size="md" className="rounded-md">
+                        <CreditCard size={17} strokeWidth={1.8} aria-hidden="true" />
+                        充值
                     </Button>
                 </div>
             </div>
@@ -263,79 +287,95 @@ export default async function DashboardPage({
             {bal?.stale && (
                 <div
                     role="status"
-                    className="mb-4 rounded-lg border border-status-warning-border bg-status-warning-bg px-4 py-2.5 text-xs text-status-warning-text"
+                    className="rounded-md border border-status-warning-border bg-status-warning-bg px-4 py-2.5 text-sm text-status-warning-text"
                 >
                     余额数据暂时不可更新,显示的是稍早数据。
                 </div>
             )}
             {balErr && (
-                <div className="mb-4">
+                <div>
                     <FormError severity="banner">当前无法获取余额,请稍后重试。</FormError>
                 </div>
             )}
 
-            {/* 1. Summary cards */}
-            <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-5">
-                <StatCard label="当前余额">
-                    {bal ? (
-                        <>
-                            <p className={BIG}>¥{bal.balanceCny.toFixed(2)}</p>
-                            <p className={SUB}>
-                                ≈ ${(bal.balanceCny / USD_TO_CNY_RATE).toFixed(2)} USD
-                                {bal.quota && <> · {bal.quota.remain.toLocaleString('en-US')} quota</>}
+            <div className="grid gap-4 lg:grid-cols-12">
+                <article className="relative overflow-hidden rounded-lg bg-navy p-6 text-white shadow-portal lg:col-span-4 lg:min-h-[220px]">
+                    <div className="absolute inset-x-0 top-0 h-1 bg-portal-gold" aria-hidden="true" />
+                    <div className="flex items-start justify-between gap-4">
+                        <div>
+                            <p className="m-0 text-sm font-medium text-white/70">当前余额</p>
+                            <div className="mt-4">
+                                {bal ? (
+                                    <p className="m-0 text-[38px] font-semibold leading-none text-white tabular-nums">
+                                        ¥{bal.balanceCny.toFixed(2)}
+                                    </p>
+                                ) : (
+                                    <p className="m-0 text-base font-medium text-white/55">暂无数据</p>
+                                )}
+                            </div>
+                            {bal && (
+                                <p className="m-0 mt-3 text-xs text-white/55 tabular-nums">
+                                    ≈ ${(bal.balanceCny / USD_TO_CNY_RATE).toFixed(2)} USD
+                                    {bal.quota && <> · {bal.quota.remain.toLocaleString('en-US')} quota</>}
+                                </p>
+                            )}
+                        </div>
+                        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-white/10 text-white/85">
+                            <Wallet size={20} strokeWidth={1.7} aria-hidden="true" />
+                        </span>
+                    </div>
+
+                    <div className="mt-8 flex items-end justify-between gap-4 border-t border-white/15 pt-4">
+                        <div>
+                            <p className="m-0 text-xs text-white/55">历史消费</p>
+                            <p className="m-0 mt-1 text-lg font-semibold text-white tabular-nums">
+                                {bal ? `¥${bal.spentCny.toFixed(2)}` : '暂无数据'}
                             </p>
-                        </>
-                    ) : (
-                        NO_DATA
-                    )}
-                </StatCard>
-                <StatCard label="历史消费">
-                    {bal ? (
-                        <>
-                            <p className={BIG}>¥{bal.spentCny.toFixed(2)}</p>
-                            <p className={SUB}>累计</p>
-                        </>
-                    ) : (
-                        NO_DATA
-                    )}
-                </StatCard>
-                <StatCard label="请求次数">
-                    {agg ? (
-                        <>
-                            <p className={BIG}>{agg.totalCalls.toLocaleString('en-US')}</p>
-                            <p className={SUB}>{periodLabel}</p>
-                        </>
-                    ) : (
-                        NO_DATA
-                    )}
-                </StatCard>
-                <StatCard label="统计 Tokens">
-                    {agg ? (
-                        <>
-                            <p className={BIG}>{totalTokens.toLocaleString('en-US')}</p>
-                            <p className={SUB}>{periodLabel} · 输入+输出</p>
-                        </>
-                    ) : (
-                        NO_DATA
-                    )}
-                </StatCard>
-                <StatCard label="本期消费">
-                    {agg ? (
-                        <>
-                            <p className={BIG}>¥{quotaToCny(agg.totalUsedQuota).toFixed(2)}</p>
-                            <p className={SUB}>
-                                {periodLabel}
-                                {agg.source === 'fallback' && ' · 数据稍滞后'}
-                            </p>
-                        </>
-                    ) : (
-                        NO_DATA
-                    )}
-                </StatCard>
+                        </div>
+                        <Link
+                            href="/pay"
+                            className="inline-flex items-center gap-1 text-xs font-medium text-white/70 no-underline transition-colors hover:text-white"
+                        >
+                            账户充值 <ArrowUpRight size={14} aria-hidden="true" />
+                        </Link>
+                    </div>
+                </article>
+
+                <div className="grid overflow-hidden rounded-lg border border-portal-line bg-portal-panel shadow-portal sm:grid-cols-3 lg:col-span-8">
+                    <MetricCell
+                        icon={Coins}
+                        label="本期消费"
+                        value={agg ? `¥${quotaToCny(agg.totalUsedQuota).toFixed(2)}` : NO_DATA}
+                        detail={
+                            agg ? (
+                                <>
+                                    {periodLabel}
+                                    {agg.source === 'fallback' && ' · 数据稍滞后'}
+                                </>
+                            ) : (
+                                '当前周期'
+                            )
+                        }
+                    />
+                    <MetricCell
+                        icon={Activity}
+                        label="请求次数"
+                        value={agg ? agg.totalCalls.toLocaleString('en-US') : NO_DATA}
+                        detail={periodLabel}
+                        className="border-t border-portal-line sm:border-l sm:border-t-0"
+                    />
+                    <MetricCell
+                        icon={Database}
+                        label="统计 Tokens"
+                        value={agg ? totalTokens.toLocaleString('en-US') : NO_DATA}
+                        detail={`${periodLabel} · 输入+输出`}
+                        className="border-t border-portal-line sm:border-l sm:border-t-0"
+                    />
+                </div>
             </div>
 
             {usageErr && (
-                <div className="mb-6">
+                <div>
                     <FormError severity="banner">
                         {usageErr === 'account_not_provisioned'
                             ? '账户尚未关联到上游,请联系管理员。'
@@ -344,131 +384,205 @@ export default async function DashboardPage({
                 </div>
             )}
 
-            {/* 2. Model consumption chart */}
-            <h2 className="m-0 mb-3 text-base font-semibold text-navy">模型消耗分布 · {periodLabel}</h2>
-            <div className="mb-6">
-                <ModelConsumptionChart
-                    byDay={agg?.byDay ?? []}
-                    models={agg?.chartModels ?? []}
-                    cnyPerQuota={quotaToCny(1)}
-                />
-            </div>
-
-            {/* 3. By-model breakdown (preserved from /usage) */}
-            {byModel.length > 0 && (
-                <>
-                    <h2 className="m-0 mb-3 text-base font-semibold text-navy">按模型 Top {byModel.length}</h2>
-                    <div className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                        {byModel.map((m) => {
-                            const pct = agg && agg.totalUsedQuota ? (m.quota / agg.totalUsedQuota) * 100 : 0;
-                            return (
-                                <Card as="article" key={m.model} className="px-4 py-3">
-                                    <p
-                                        className="m-0 mb-1 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-sm font-semibold text-navy"
-                                        title={m.model}
-                                    >
-                                        {m.model}
-                                    </p>
-                                    <p className="m-0 mb-2 text-xs text-muted-ink tabular-nums">
-                                        {m.calls.toLocaleString('en-US')} 次 · ¥{quotaToCny(m.quota).toFixed(2)} ·{' '}
-                                        {pct.toFixed(1)}%
-                                    </p>
-                                    <div className="h-1.5 overflow-hidden rounded-sm bg-paper-muted">
-                                        <div
-                                            className="h-full bg-brand-accent"
-                                            style={{ width: `${Math.max(2, pct)}%` }}
-                                        />
-                                    </div>
-                                </Card>
-                            );
-                        })}
+            <div className="grid gap-4 xl:grid-cols-[minmax(0,1.9fr)_minmax(320px,0.8fr)]">
+                <section className="min-w-0 rounded-lg border border-portal-line bg-portal-panel p-5 shadow-portal sm:p-6">
+                    <div className="mb-5 flex items-start justify-between gap-4">
+                        <div>
+                            <div className="flex items-center gap-2">
+                                <BarChart3
+                                    size={18}
+                                    className="text-portal-gold"
+                                    strokeWidth={1.8}
+                                    aria-hidden="true"
+                                />
+                                <h2 className="m-0 text-base font-semibold text-portal-ink">模型消耗分布</h2>
+                            </div>
+                            <p className="m-0 mt-1.5 text-xs text-portal-subtle">
+                                按日展示各模型消费趋势 · {periodLabel}
+                            </p>
+                        </div>
                     </div>
-                </>
-            )}
-
-            {/* 4. Per-call detail table (core ask) */}
-            <div className="mb-3 flex items-end justify-between gap-3">
-                <h2 className="m-0 text-base font-semibold text-navy">调用明细 · {periodLabel}</h2>
-                <a href="/logs" className="shrink-0 text-xs font-medium text-navy no-underline hover:underline">
-                    查看全部日志 →
-                </a>
-            </div>
-            <p className="m-0 mb-3 text-xs text-muted-ink">
-                每行一次调用,含模型、时长、token 与消耗;失败的调用可展开查看错误详情。完整日志(按日期 + Request ID /
-                令牌 / 模型 / 渠道 搜索)在「调用日志」页。
-            </p>
-            <div className="mb-8">
-                <CallDetailTable rows={calls} />
-            </div>
-
-            {/* 5. Balance alert threshold (preserved from /balance) */}
-            <BalanceAlertForm
-                initialThreshold={
-                    user.balance_alert_threshold_cny != null ? Number(user.balance_alert_threshold_cny) : 10
-                }
-            />
-
-            {/* 6. Recharge history (preserved from /balance) */}
-            <h2 className="m-0 mb-3 text-base font-semibold text-navy">充值流水</h2>
-            {history.length === 0 ? (
-                <Card>
-                    <EmptyState
-                        title="暂无充值记录"
-                        body={
-                            <>
-                                点击右上「<code className="font-mono text-xs">+ 充值</code>」开始第一笔充值。
-                            </>
-                        }
+                    <ModelConsumptionChart
+                        byDay={agg?.byDay ?? []}
+                        models={agg?.chartModels ?? []}
+                        cnyPerQuota={quotaToCny(1)}
                     />
-                </Card>
-            ) : (
-                <Card className="overflow-hidden">
-                    <table className="w-full border-collapse">
-                        <thead>
-                            <tr className="bg-paper-muted text-muted-ink">
-                                <th className="border-b border-brand-border px-4 py-2.5 text-left text-xs font-semibold">
-                                    金额(CNY)
-                                </th>
-                                <th className="border-b border-brand-border px-4 py-2.5 text-left text-xs font-semibold">
-                                    类型
-                                </th>
-                                <th className="border-b border-brand-border px-4 py-2.5 text-left text-xs font-semibold">
-                                    订单号
-                                </th>
-                                <th className="border-b border-brand-border px-4 py-2.5 text-left text-xs font-semibold">
-                                    时间
-                                </th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {history.map((row, idx) => {
-                                const isLast = idx === history.length - 1;
-                                const cell = `px-4 py-3 text-sm text-ink ${isLast ? '' : 'border-b border-brand-border'}`;
+                </section>
+
+                <aside className="rounded-lg border border-portal-line bg-portal-panel p-5 shadow-portal sm:p-6">
+                    <div className="mb-4 flex items-center justify-between gap-3">
+                        <div>
+                            <h2 className="m-0 text-base font-semibold text-portal-ink">热门模型</h2>
+                            <p className="m-0 mt-1 text-xs text-portal-subtle">按消费金额排序 · {periodLabel}</p>
+                        </div>
+                        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-portal-gold-soft text-portal-gold">
+                            <Activity size={17} strokeWidth={1.8} aria-hidden="true" />
+                        </span>
+                    </div>
+
+                    {byModel.length === 0 ? (
+                        <div className="flex min-h-[248px] items-center justify-center border-t border-portal-line text-center text-sm text-portal-subtle">
+                            暂无模型消费数据
+                        </div>
+                    ) : (
+                        <ol className="m-0 list-none divide-y divide-portal-line p-0">
+                            {byModel.map((model, index) => {
+                                const pct = agg && agg.totalUsedQuota ? (model.quota / agg.totalUsedQuota) * 100 : 0;
                                 return (
-                                    <tr key={row.id}>
-                                        <td className={`${cell} font-medium tabular-nums`}>
-                                            ¥{Number(row.amount).toFixed(2)}
-                                        </td>
-                                        <td className={cell}>{RECHARGE_SOURCE_LABEL[row.source] ?? row.source}</td>
-                                        <td className={`${cell} font-mono text-xs text-muted-ink`}>
-                                            {row.order_id ? row.order_id.slice(0, 8) : '—'}
-                                        </td>
-                                        <td className={`${cell} text-muted-ink`}>
-                                            {row.created_at.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}
-                                        </td>
-                                    </tr>
+                                    <li key={model.model} className="py-4 first:pt-2 last:pb-0">
+                                        <div className="flex items-start gap-3">
+                                            <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded bg-portal-soft text-[11px] font-semibold text-portal-muted">
+                                                {index + 1}
+                                            </span>
+                                            <div className="min-w-0 flex-1">
+                                                <div className="flex items-start justify-between gap-3">
+                                                    <p
+                                                        className="m-0 truncate font-mono text-xs font-semibold text-portal-ink"
+                                                        title={model.model}
+                                                    >
+                                                        {model.model}
+                                                    </p>
+                                                    <span className="shrink-0 text-xs font-semibold text-portal-ink tabular-nums">
+                                                        ¥{quotaToCny(model.quota).toFixed(2)}
+                                                    </span>
+                                                </div>
+                                                <div className="mt-2 flex items-center gap-3">
+                                                    <div className="h-1 flex-1 overflow-hidden rounded-sm bg-portal-line">
+                                                        <div
+                                                            className="h-full bg-portal-gold"
+                                                            style={{ width: `${Math.max(2, pct)}%` }}
+                                                        />
+                                                    </div>
+                                                    <span className="w-10 text-right text-[11px] text-portal-subtle tabular-nums">
+                                                        {pct.toFixed(1)}%
+                                                    </span>
+                                                </div>
+                                                <p className="m-0 mt-1.5 text-[11px] text-portal-subtle tabular-nums">
+                                                    {model.calls.toLocaleString('en-US')} 次调用
+                                                </p>
+                                            </div>
+                                        </div>
+                                    </li>
                                 );
                             })}
-                        </tbody>
-                    </table>
-                </Card>
-            )}
+                        </ol>
+                    )}
+                </aside>
+            </div>
 
-            {/* 7. Reseller promo (preserved from old /dashboard) */}
-            {resellerSnap.status !== 'active' && (
-                <div className="mt-8">
-                    <ResellerPromoCard sourceStatus={resellerSnap.status === null ? 'none' : resellerSnap.status} />
+            <section aria-labelledby="recent-calls-title">
+                <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+                    <div>
+                        <div className="flex items-center gap-2">
+                            <Activity size={18} className="text-portal-gold" strokeWidth={1.8} aria-hidden="true" />
+                            <h2 id="recent-calls-title" className="m-0 text-base font-semibold text-portal-ink">
+                                调用明细
+                            </h2>
+                        </div>
+                        <p className="m-0 mt-1.5 text-xs text-portal-subtle">
+                            最近调用的模型、密钥、耗时、Token、消费与结果 · {periodLabel}
+                        </p>
+                    </div>
+                    <Link
+                        href="/logs"
+                        className="inline-flex shrink-0 items-center gap-1 text-xs font-semibold text-portal-muted no-underline transition-colors hover:text-portal-ink"
+                    >
+                        查看全部日志 <ArrowUpRight size={14} aria-hidden="true" />
+                    </Link>
                 </div>
+                <CallDetailTable rows={calls} />
+            </section>
+
+            <div className="grid items-start gap-4 xl:grid-cols-2">
+                <BalanceAlertForm
+                    initialThreshold={
+                        user.balance_alert_threshold_cny != null ? Number(user.balance_alert_threshold_cny) : 10
+                    }
+                />
+
+                <section className="overflow-hidden rounded-lg border border-portal-line bg-portal-panel shadow-portal">
+                    <div className="flex items-start justify-between gap-4 border-b border-portal-line px-5 py-4 sm:px-6">
+                        <div>
+                            <div className="flex items-center gap-2">
+                                <ReceiptText
+                                    size={17}
+                                    className="text-portal-gold"
+                                    strokeWidth={1.8}
+                                    aria-hidden="true"
+                                />
+                                <h2 className="m-0 text-base font-semibold text-portal-ink">充值流水</h2>
+                            </div>
+                            <p className="m-0 mt-1 text-xs text-portal-subtle">最近 {HISTORY_LIMIT} 笔账户入账记录</p>
+                        </div>
+                        <HistoryIcon
+                            size={17}
+                            className="mt-0.5 text-portal-subtle"
+                            strokeWidth={1.7}
+                            aria-hidden="true"
+                        />
+                    </div>
+
+                    {history.length === 0 ? (
+                        <EmptyState
+                            title="暂无充值记录"
+                            body={
+                                <>
+                                    完成第一笔<code className="mx-1 font-mono text-xs">充值</code>后,记录会显示在这里。
+                                </>
+                            }
+                            className="min-h-[210px] py-8"
+                        />
+                    ) : (
+                        <div className="overflow-x-auto">
+                            <table className="w-full border-collapse">
+                                <thead>
+                                    <tr className="bg-portal-soft text-portal-muted">
+                                        <th className="border-b border-portal-line px-5 py-2.5 text-left text-xs font-semibold">
+                                            金额(CNY)
+                                        </th>
+                                        <th className="border-b border-portal-line px-5 py-2.5 text-left text-xs font-semibold">
+                                            类型
+                                        </th>
+                                        <th className="border-b border-portal-line px-5 py-2.5 text-left text-xs font-semibold">
+                                            订单号
+                                        </th>
+                                        <th className="border-b border-portal-line px-5 py-2.5 text-left text-xs font-semibold">
+                                            时间
+                                        </th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {history.map((row, idx) => {
+                                        const isLast = idx === history.length - 1;
+                                        const cell = `whitespace-nowrap px-5 py-3 text-sm text-portal-ink ${isLast ? '' : 'border-b border-portal-line'}`;
+                                        return (
+                                            <tr key={row.id} className="transition-colors hover:bg-portal-soft">
+                                                <td className={`${cell} font-semibold tabular-nums`}>
+                                                    ¥{Number(row.amount).toFixed(2)}
+                                                </td>
+                                                <td className={cell}>
+                                                    {RECHARGE_SOURCE_LABEL[row.source] ?? row.source}
+                                                </td>
+                                                <td className={`${cell} font-mono text-xs text-portal-muted`}>
+                                                    {row.order_id ? row.order_id.slice(0, 8) : '—'}
+                                                </td>
+                                                <td className={`${cell} text-portal-muted`}>
+                                                    {row.created_at.toLocaleString('zh-CN', {
+                                                        timeZone: 'Asia/Shanghai',
+                                                    })}
+                                                </td>
+                                            </tr>
+                                        );
+                                    })}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
+                </section>
+            </div>
+
+            {resellerSnap.status !== 'active' && (
+                <ResellerPromoCard sourceStatus={resellerSnap.status === null ? 'none' : resellerSnap.status} />
             )}
         </section>
     );

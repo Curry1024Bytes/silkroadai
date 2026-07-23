@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Button } from '@/components/ui/Button';
+import { LoaderCircle, LogOut } from 'lucide-react';
 
 /**
  * Logout button. POSTs /api/auth/logout (clears the silkroad_session cookie
@@ -32,8 +32,20 @@ export function LogoutButton() {
     }
 
     return (
-        <Button type="button" variant="ghost" size="sm" onClick={handleLogout} loading={loggingOut}>
-            {loggingOut ? '退出中…' : '退出'}
-        </Button>
+        <button
+            type="button"
+            onClick={handleLogout}
+            disabled={loggingOut}
+            aria-label={loggingOut ? '退出中' : '退出登录'}
+            title={loggingOut ? '退出中' : '退出登录'}
+            className="flex h-9 items-center justify-center gap-2 rounded-md px-2.5 text-sm text-portal-muted transition-colors hover:bg-portal-active hover:text-portal-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy/30 disabled:cursor-wait disabled:opacity-60"
+        >
+            {loggingOut ? (
+                <LoaderCircle size={17} className="animate-spin" aria-hidden="true" />
+            ) : (
+                <LogOut size={17} strokeWidth={1.8} aria-hidden="true" />
+            )}
+            <span className="hidden lg:inline">{loggingOut ? '退出中…' : '退出'}</span>
+        </button>
     );
 }

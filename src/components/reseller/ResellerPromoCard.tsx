@@ -19,7 +19,7 @@
  * competing for attention with the 4 data cards.
  */
 import Link from 'next/link';
-import { Card, CardContent } from '@/components/ui/Card';
+import { ArrowUpRight, UsersRound } from 'lucide-react';
 
 function fireAnalytics(eventType: string, properties: Record<string, unknown> = {}): void {
     void fetch('/api/portal/analytics', {
@@ -40,27 +40,24 @@ interface Props {
 
 export function ResellerPromoCard({ sourceStatus }: Props) {
     return (
-        <Card as="aside" className="mt-2">
-            <CardContent className="flex flex-col sm:flex-row sm:items-center gap-4 py-5">
-                <div className="flex-1 min-w-0">
-                    <p className="m-0 text-base font-semibold text-navy">邀请朋友充值,你也赚佣金</p>
-                    <p className="m-0 mt-1 text-sm text-muted-ink leading-relaxed">
-                        阶梯佣金 <strong className="text-navy">10% / 15% / 20%</strong>,归因期{' '}
-                        <strong className="text-navy">24 个月</strong>,月结打款。最低门槛,代理人人可申请。
-                    </p>
-                </div>
-                <Link
-                    href="/reseller"
-                    onClick={() => fireAnalytics('reseller_promo_card_clicked', { source: sourceStatus })}
-                    className={[
-                        'inline-flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0',
-                        'rounded-lg bg-navy text-paper no-underline px-4 py-2.5 text-sm font-medium',
-                        'hover:bg-navy-strong transition-colors duration-150 ease-brand',
-                    ].join(' ')}
-                >
-                    了解代理计划 <span aria-hidden="true">→</span>
-                </Link>
-            </CardContent>
-        </Card>
+        <aside className="flex flex-col gap-4 rounded-lg border border-portal-line bg-portal-panel p-5 shadow-portal sm:flex-row sm:items-center sm:p-6">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-portal-gold-soft text-portal-gold">
+                <UsersRound size={19} strokeWidth={1.8} aria-hidden="true" />
+            </span>
+            <div className="min-w-0 flex-1">
+                <p className="m-0 text-base font-semibold text-portal-ink">邀请朋友充值,你也赚佣金</p>
+                <p className="m-0 mt-1 text-sm leading-relaxed text-portal-muted">
+                    阶梯佣金 <strong className="text-navy">10% / 15% / 20%</strong>,归因期{' '}
+                    <strong className="text-navy">24 个月</strong>,月结打款。最低门槛,代理人人可申请。
+                </p>
+            </div>
+            <Link
+                href="/reseller"
+                onClick={() => fireAnalytics('reseller_promo_card_clicked', { source: sourceStatus })}
+                className="inline-flex h-10 shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-md border border-portal-line bg-portal-panel px-4 text-sm font-semibold text-portal-ink no-underline transition-colors hover:bg-portal-soft"
+            >
+                了解代理计划 <ArrowUpRight size={15} aria-hidden="true" />
+            </Link>
+        </aside>
     );
 }

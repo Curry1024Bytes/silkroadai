@@ -29,11 +29,10 @@ import { getCurrentUser } from '@/lib/auth/session';
 import { fetchResellerStatus } from '@/lib/reseller/fetch-status';
 import { BrandLogo } from '@/components/brand/BrandLogo';
 import { getCurrentTenant } from '@/lib/tenant/resolve';
-import { Sidebar } from './sidebar';
-import { LogoutButton } from './logout-button';
 import { UnverifiedBanner } from './unverified-banner';
 import { AnnouncementBanner } from './announcement-banner';
 import { getActiveAnnouncements } from '@/lib/announcements/fetch-active';
+import { CustomerShell } from './customer-shell';
 
 export const dynamic = 'force-dynamic';
 
@@ -84,35 +83,19 @@ export default async function AuthenticatedLayout({ children }: { children: Reac
     const announcements = await getActiveAnnouncements(user.tenant_id ?? null);
 
     return (
-        <div className="min-h-screen flex flex-col bg-paper text-ink" style={brandStyle}>
-            <header className="bg-paper border-b border-brand-border sticky top-0 z-40">
-                <div className="flex items-center justify-between gap-4 px-6 py-3.5">
-                    <div className="flex items-center gap-3">
-                        <BrandLogo variant="primary-flat" size={28} />
-                        <p className="hidden md:block m-0 text-xs text-minor-ink">Connecting Global Intelligence.</p>
-                    </div>
-                    <div className="flex items-center gap-3">
-                        <span
-                            className="hidden sm:inline text-sm text-muted-ink truncate max-w-[200px]"
-                            title={user.email}
-                        >
-                            {user.email}
-                        </span>
-                        <LogoutButton />
-                    </div>
-                </div>
-            </header>
-
-            <div className="flex flex-1 min-h-0 flex-col md:flex-row">
-                <Sidebar resellerStatus={resellerStatus} />
-                <main className="flex-1 px-4 sm:px-6 py-6 overflow-y-auto">
-                    <div className="max-w-5xl mx-auto">
-                        {showUnverifiedBanner && <UnverifiedBanner email={user.email} />}
-                        <AnnouncementBanner items={announcements} />
-                        {children}
-                    </div>
-                </main>
-            </div>
-        </div>
+        <CustomerShell
+            logo={<BrandLogo variant="primary-flat" size={26} />}
+            userEmail={user.email}
+            resellerStatus={resellerStatus}
+            brandStyle={brandStyle}
+            notices={
+                <>
+                    {showUnverifiedBanner && <UnverifiedBanner email={user.email} />}
+                    <AnnouncementBanner items={announcements} />
+                </>
+            }
+        >
+            {children}
+        </CustomerShell>
     );
 }

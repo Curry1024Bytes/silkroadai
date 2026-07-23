@@ -66,6 +66,20 @@
     --color-status-info-border: #bfdbfe;
     --color-status-info-text: #1e40af;
 
+    /* Customer console — neutral operational canvas. Kept separate from the
+       warmer public-site palette so the dashboard can stay crisp and dense
+       without changing landing/auth surfaces. */
+    --color-portal-canvas: #f4f5f7;
+    --color-portal-panel: #ffffff;
+    --color-portal-ink: #171a21;
+    --color-portal-muted: #5d6675;
+    --color-portal-subtle: #8c94a1;
+    --color-portal-line: #e3e6ea;
+    --color-portal-soft: #f8f9fa;
+    --color-portal-active: #eff1f4;
+    --color-portal-gold: #a16207;
+    --color-portal-gold-soft: #f6f0e5;
+
     /* — Typography —
    * `--font-inter` is set by `next/font/google` in `src/app/layout.tsx`
    * (W7 P3 hoisted from the landing's local import). When the woff2 is
@@ -88,6 +102,7 @@
     --shadow-card: 0 1px 0 rgba(26, 37, 64, 0.03);
     --shadow-card-strong: 0 6px 24px -8px rgba(26, 37, 64, 0.18);
     --shadow-focus: 0 0 0 3px rgba(26, 37, 64, 0.18);
+    --shadow-portal: 0 1px 2px rgba(23, 26, 33, 0.04);
 
     /* — Easing — */
     --ease-brand: cubic-bezier(0.32, 0.72, 0.32, 1);

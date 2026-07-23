@@ -8,7 +8,7 @@
  * prep lives in the aggregator and is tested in usage-aggregate.test.
  *
  * Coverage:
- *   - 5 summary cards (当前余额 via getCustomerBalance — P4c-3.5 fork preserved)
+ *   - account balance feature panel + usage metric grid
  *   - 模型消耗分布 chart receives chartModels
  *   - 按模型 breakdown + per-call detail (成功/失败 + 生图 token=0)
  *   - period filter (queryLogs uses username NOT user_id, gotcha #15)
@@ -179,11 +179,11 @@ describe('<DashboardPage /> merged console — happy path', () => {
         expect(html).toContain('500,000');
     });
 
-    it('passes chartModels to the chart + renders the 按模型 breakdown', async () => {
+    it('passes chartModels to the chart + renders the 热门模型 breakdown', async () => {
         const html = renderToString(await DashboardPage({ searchParams: Promise.resolve({}) }));
         expect(html).toContain('模型消耗分布');
         expect(html).toContain('chart-models:gpt-5.4|claude-opus-4-8|gemini-3-pro-image-preview');
-        expect(html).toContain('按模型 Top');
+        expect(html).toContain('热门模型');
         expect(html).toContain('claude-opus-4-8');
     });
 
