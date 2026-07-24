@@ -19,12 +19,24 @@ export async function GET(req: NextRequest) {
     const keys = await prisma.enterpriseKey.findMany({
         where: { user_id: user.id },
         orderBy: { created_at: 'asc' },
-        select: { id: true, name: true, key_prefix: true, status: true, created_at: true, last_used_at: true },
+        select: {
+            id: true,
+            name: true,
+            key_prefix: true,
+            region: true,
+            status: true,
+            created_at: true,
+            last_used_at: true,
+        },
     });
     return NextResponse.json({ keys });
 }
 
-const createSchema = z.object({ name: z.string().trim().min(1).max(50) });
+const createSchema = z.object({
+    name: z.string().trim().min(1).max(50),
+    // 版本绑定(2026-07-23 海外版):key 只能调对应版本模型
+    region: z.enum(['cn', 'global', 'promax']).default('cn'),
+});
 
 export async function POST(req: NextRequest) {
     const user = await requireEnterpriseUser(req);
@@ -44,6 +56,16 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'key_limit_reached' }, { status: 400 });
     }
 
+    // 版本开通门(2026-07-24):该版本没配上游 key 就不让建 —— 否则客户拿到 key 一调就 503,
+    // 且看不出原因。开通 = 运营后台给该客户写对应 region 的上游 key 行。
+    const enabled = await prisma.enterpriseUpstreamKey.findUnique({
+        where: { user_id_region: { user_id: user.id, region: parsed.data.region } },
+        select: { id: true },
+    });
+    if (!enabled) {
+        return NextResponse.json({ error: 'region_not_enabled' }, { status: 400 });
+    }
+
     const g = generateEnterpriseKey();
     const row = await prisma.enterpriseKey.create({
         data: {
@@ -52,8 +74,17 @@ export async function POST(req: NextRequest) {
             key_hash: g.hash,
             key_prefix: g.prefix,
             name: parsed.data.name,
+            region: parsed.data.region,
         },
-        select: { id: true, name: true, key_prefix: true, status: true, created_at: true, last_used_at: true },
+        select: {
+            id: true,
+            name: true,
+            key_prefix: true,
+            region: true,
+            status: true,
+            created_at: true,
+            last_used_at: true,
+        },
     });
     // ⚠️ 明文只在这里返回一次(DB 只存 sha256)
     return NextResponse.json({ key: g.key, row });

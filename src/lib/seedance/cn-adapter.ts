@@ -27,12 +27,32 @@ const XHK_BASE = process.env.SEEDANCE_XHK_BASE_URL || 'https://token.xinhankr.co
 const UPSTREAM_MODEL = process.env.SEEDANCE_XHK_MODEL || 'artsdance2.0-pro-260701';
 const UPSTREAM_FAST = 'artsdance2.0-fast-260701';
 const UPSTREAM_MINI = 'artsdance2.0-mini-260701';
+// 海外版(2026-07-23,同上游厂商的国际端口 BytePlus 出片;协议与国内完全一致,实测见
+// seedance-enterprise-intl-design.md):仅 base/key/模型名不同。key 按客户存
+// enterprise_upstream_keys(region='global') 行。
+const INTL_BASE = process.env.SEEDANCE_INTL_BASE_URL || 'https://ai.artsmcp.com';
+const UPSTREAM_INTL_PRO = 'artsdance2-0-pro-intl-260701';
+const UPSTREAM_INTL_FAST = 'artsdance2-0-fast-intl-260701';
+const UPSTREAM_INTL_MINI = 'artsdance2-0-mini-intl-260701';
+// 海外版proMax(2026-07-23):同 intl base/key,dreamina 系上游模型(挂牌更高,零售=挂牌×0.85)。
+// pro 有 720p/1080p/4k,fast/mini 上游仅 480p/720p → 门户只开 720p。mini 实测 token 基数
+// 与现有渠道一致(720p 5s = 108,900);计费按 usage 实报,基数差异不影响正确性。
+const UPSTREAM_PROMAX_PRO = 'dreamina-seedance-2-0-260128';
+const UPSTREAM_PROMAX_FAST = 'dreamina-seedance-2-0-fast-260128';
+const UPSTREAM_PROMAX_MINI = 'dreamina-seedance-2-0-mini-260615';
+
+/** 版本 → 上游 base URL(global 与 promax 同为 intl 端口,仅模型名/费率不同)。 */
+export type SeedanceRegion = 'cn' | 'global' | 'promax';
+export function baseForRegion(region: SeedanceRegion): string {
+    return region === 'global' || region === 'promax' ? INTL_BASE : XHK_BASE;
+}
 
 const MAX_REF_IMAGES = 9;
 const MAX_REF_VIDEOS = 3;
 
-/** seedance 变体(2026-07-19 加 fast/mini):费率按 variant × resolution × 含视频 分档。 */
-export type SeedanceVariant = 'pro' | 'fast' | 'mini';
+/** seedance 变体(2026-07-19 加 fast/mini;2026-07-23 加 promax 系,费率独立):
+ *  费率按 variant × resolution × 含视频 分档。 */
+export type SeedanceVariant = 'pro' | 'fast' | 'mini' | 'promax' | 'promax-fast' | 'promax-mini';
 
 export interface SeedanceModelSpec {
     resolution: '720p' | '1080p' | '4k';
@@ -40,6 +60,8 @@ export interface SeedanceModelSpec {
     variant: SeedanceVariant;
     /** 该档实际发给上游的模型 id(分辨率/参考模式由请求体承载)。 */
     upstream: string;
+    /** 版本:缺省 'cn';'global' 走海外 base(INTL_BASE)。 */
+    region?: SeedanceRegion;
 }
 
 /** 客户/new-api 档位模型名 → 档位规格。pro 3 分辨率 × {无参考,-ref} = 6 名;
@@ -59,7 +81,51 @@ export const MODEL_MAP: Record<string, SeedanceModelSpec> = {
     'seedance2.0-mini-1080p': { resolution: '1080p', ref: false, variant: 'mini', upstream: UPSTREAM_MINI },
     'seedance2.0-mini-720p-ref': { resolution: '720p', ref: true, variant: 'mini', upstream: UPSTREAM_MINI },
     'seedance2.0-mini-1080p-ref': { resolution: '1080p', ref: true, variant: 'mini', upstream: UPSTREAM_MINI },
+    // ── 海外版proMax(promax,2026-07-23):dreamina 系,费率独立;pro 3 档,fast/mini 仅 720p ──
+    ...Object.fromEntries(
+        (
+            [
+                ['promax', UPSTREAM_PROMAX_PRO, ['720p', '1080p', '4k']],
+                ['promax-fast', UPSTREAM_PROMAX_FAST, ['720p']],
+                ['promax-mini', UPSTREAM_PROMAX_MINI, ['720p']],
+            ] as Array<[SeedanceVariant, string, Array<'720p' | '1080p' | '4k'>]>
+        ).flatMap(([variant, upstream, resolutions]) =>
+            resolutions.flatMap((resolution) =>
+                [false, true].map((ref) => [
+                    `seedance2.0-${variant}-${resolution}${ref ? '-ref' : ''}`,
+                    { resolution, ref, variant, upstream, region: 'promax' as const },
+                ]),
+            ),
+        ),
+    ),
+    // ── 海外版(global,2026-07-23):档位与国内一致(operator 拍板同 4k/15s/定价),仅上游不同 ──
+    ...Object.fromEntries(
+        (
+            [
+                ['pro', UPSTREAM_INTL_PRO, ['720p', '1080p', '4k']],
+                ['fast', UPSTREAM_INTL_FAST, ['720p', '1080p']],
+                ['mini', UPSTREAM_INTL_MINI, ['720p', '1080p']],
+            ] as Array<[SeedanceVariant, string, Array<'720p' | '1080p' | '4k'>]>
+        ).flatMap(([variant, upstream, resolutions]) =>
+            resolutions.flatMap((resolution) =>
+                [false, true].map((ref) => [
+                    `seedance2.0-global-${variant}-${resolution}${ref ? '-ref' : ''}`,
+                    { resolution, ref, variant, upstream, region: 'global' as const },
+                ]),
+            ),
+        ),
+    ),
 };
+
+/** model 名 → 版本(计费折扣/上游 base 用):MODEL_MAP 优先,短名按 '-global' 识别,缺省 cn。 */
+export function regionForModel(model: string): SeedanceRegion {
+    const hit = MODEL_MAP[model]?.region;
+    if (hit) return hit;
+    const m = String(model || '').toLowerCase();
+    if (m.includes('-promax')) return 'promax';
+    if (m.includes('-global')) return 'global';
+    return 'cn';
+}
 
 /** 任务行只存 model 名 → 变体(计费用)。长名走 MODEL_MAP;企业门户短名
  *  (seedance-2-0[-fast|-mini],2026-07-20 归一)按后缀识别;未知名回落 pro(宁多收不少收)。 */
@@ -67,6 +133,12 @@ export function variantForModel(model: string): SeedanceVariant {
     const hit = MODEL_MAP[model]?.variant;
     if (hit) return hit;
     const m = model.toLowerCase();
+    if (m.includes('-promax')) {
+        // promax 系费率独立,必须先于 -fast/-mini 判(seedance-2-0-promax-fast 含 '-fast')
+        if (m.includes('-fast')) return 'promax-fast';
+        if (m.includes('-mini')) return 'promax-mini';
+        return 'promax';
+    }
     if (m.includes('-fast')) return 'fast';
     if (m.includes('-mini')) return 'mini';
     return 'pro';
@@ -189,8 +261,8 @@ async function toHttpMediaUrl(url: string): Promise<string> {
     return u;
 }
 
-const fetchXhk = (path: string, auth: string, init: RequestInit = {}) =>
-    fetch(`${XHK_BASE}${path}`, {
+const fetchXhk = (path: string, auth: string, init: RequestInit = {}, base: string = XHK_BASE) =>
+    fetch(`${base}${path}`, {
         ...init,
         headers: { Authorization: auth, Accept: 'application/json', ...(init.headers || {}) },
     });
@@ -303,15 +375,21 @@ export async function submitVideoWithKey(body: Record<string, unknown>, auth: st
         genAudio: generateAudio,
     });
 
+    const upstreamBase = baseForRegion(map.region ?? 'cn');
     let upstream: Response;
     try {
-        upstream = await fetchXhk('/v1/video/generations', auth, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(upstreamBody),
-        });
+        upstream = await fetchXhk(
+            '/v1/video/generations',
+            auth,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(upstreamBody),
+            },
+            upstreamBase,
+        );
     } catch (e) {
-        return err(502, 'upstream_unreachable', `token.xinhankr.com unreachable: ${String(e)}`);
+        return err(502, 'upstream_unreachable', `${upstreamBase} unreachable: ${String(e)}`);
     }
     const text = await upstream.text();
     let j: { id?: string; task_id?: string; error?: { message?: string } } | null;
@@ -369,11 +447,11 @@ export async function pollVideo(req: NextRequest, id: string): Promise<NextRespo
     return pollVideoWithKey(id, req.headers.get('authorization') || '');
 }
 
-/** 轮询核心(独立门户直调:id + 上游 key 授权头)。 */
-export async function pollVideoWithKey(id: string, auth: string): Promise<NextResponse> {
+/** 轮询核心(独立门户直调:id + 上游 key 授权头;region 决定打哪个 base,缺省国内)。 */
+export async function pollVideoWithKey(id: string, auth: string, region: SeedanceRegion = 'cn'): Promise<NextResponse> {
     let upstream: Response;
     try {
-        upstream = await fetchXhk(`/v1/video/generations/${encodeURIComponent(id)}`, auth);
+        upstream = await fetchXhk(`/v1/video/generations/${encodeURIComponent(id)}`, auth, {}, baseForRegion(region));
     } catch (e) {
         return err(502, 'upstream_unreachable', String(e));
     }

@@ -26,7 +26,9 @@ export interface EnterpriseCustomer {
     userId: string;
     tenantId: string | null;
     keyId: string;
-    /** 该客户的独立上游 key(已解密)。 */
+    /** 本 key 绑定的版本('cn' | 'global',2026-07-23)。 */
+    region: string;
+    /** 该客户对应版本的独立上游 key(已解密)。 */
     upstreamKey: string;
 }
 
@@ -34,8 +36,12 @@ export type ResolveResult =
     | { ok: true; customer: EnterpriseCustomer }
     | { ok: false; status: number; code: string; message: string };
 
-/** Bearer sk-ent-… → 客户 + 独立上游 key。无效/禁用 401;未配上游 key/解密失败 503(配置态问题,非客户错)。 */
-export async function resolveEnterpriseCustomer(auth: string | null): Promise<ResolveResult> {
+/**
+ * Bearer sk-ent-… → 客户 + 对应版本上游 key。无效/禁用 401;未配上游 key/解密失败 503。
+ * expectedRegion 传入时(视频提交/轮询)校验 key 绑定版本一致,不一致 403 —— 国内/海外
+ * 是单独的 key(operator 决策);不传(素材库等版本无关面)按 key 自身版本解析。
+ */
+export async function resolveEnterpriseCustomer(auth: string | null, expectedRegion?: string): Promise<ResolveResult> {
     const m = auth?.match(/^Bearer\s+(.+)$/i);
     const key = m?.[1]?.trim();
     if (!key || !key.startsWith(ENTERPRISE_KEY_PREFIX)) {
@@ -43,13 +49,21 @@ export async function resolveEnterpriseCustomer(auth: string | null): Promise<Re
     }
     const row = await prisma.enterpriseKey.findUnique({
         where: { key_hash: hashEnterpriseKey(key) },
-        select: { id: true, user_id: true, tenant_id: true, status: true },
+        select: { id: true, user_id: true, tenant_id: true, status: true, region: true },
     });
     if (!row || row.status !== 'active') {
         return { ok: false, status: 401, code: 'invalid_api_key', message: 'invalid or inactive API key' };
     }
+    if (expectedRegion && row.region !== expectedRegion) {
+        return {
+            ok: false,
+            status: 403,
+            code: 'region_mismatch',
+            message: `this API key is bound to the ${row.region === 'global' ? 'global' : 'cn'} region; create a ${expectedRegion} key in the dashboard to call ${expectedRegion} models`,
+        };
+    }
     const up = await prisma.enterpriseUpstreamKey.findUnique({
-        where: { user_id: row.user_id },
+        where: { user_id_region: { user_id: row.user_id, region: row.region } },
         select: { upstream_key_enc: true },
     });
     if (!up) {
@@ -76,6 +90,6 @@ export async function resolveEnterpriseCustomer(auth: string | null): Promise<Re
     prisma.enterpriseKey.update({ where: { id: row.id }, data: { last_used_at: new Date() } }).catch(() => {});
     return {
         ok: true,
-        customer: { userId: row.user_id, tenantId: row.tenant_id, keyId: row.id, upstreamKey },
+        customer: { userId: row.user_id, tenantId: row.tenant_id, keyId: row.id, region: row.region, upstreamKey },
     };
 }

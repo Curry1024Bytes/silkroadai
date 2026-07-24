@@ -16,7 +16,8 @@ import { prisma } from '@/lib/db';
 export async function requireEnterpriseUser(req: NextRequest): Promise<User | null> {
     const user = await getCurrentUser(req);
     if (!user) return null;
-    const up = await prisma.enterpriseUpstreamKey.findUnique({
+    // 任一版本(cn/global)行存在即为企业客户(2026-07-23 起每客户每版本一行)
+    const up = await prisma.enterpriseUpstreamKey.findFirst({
         where: { user_id: user.id },
         select: { id: true },
     });

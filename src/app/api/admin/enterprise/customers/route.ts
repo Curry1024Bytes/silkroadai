@@ -15,10 +15,18 @@ export async function GET(request: NextRequest) {
     if (!admin) return unauthorizedResponse(request);
 
     const ups = await prisma.enterpriseUpstreamKey.findMany({
-        select: { user_id: true, note: true, discount: true },
+        select: { user_id: true, region: true, note: true, discount: true },
         orderBy: { created_at: 'asc' },
     });
-    const userIds = ups.map((u) => u.user_id);
+    // 每客户可有 cn/global 两行(2026-07-23 海外版):列表一人一行,cn 行为主,global 出徽章
+    const byUser = new Map<string, Array<(typeof ups)[number]>>();
+    for (const u of ups) {
+        const l = byUser.get(u.user_id) ?? [];
+        l.push(u);
+        byUser.set(u.user_id, l);
+    }
+    const primary = [...byUser.values()].map((rows) => rows.find((r) => r.region === 'cn') ?? rows[0]);
+    const userIds = primary.map((u) => u.user_id);
 
     const [users, accounts, keyCounts] = await Promise.all([
         prisma.user.findMany({
@@ -50,7 +58,7 @@ export async function GET(request: NextRequest) {
     }
 
     return NextResponse.json({
-        customers: ups
+        customers: primary
             .filter((u) => userById.has(u.user_id))
             .map((u) => {
                 const user = userById.get(u.user_id)!;
@@ -64,6 +72,7 @@ export async function GET(request: NextRequest) {
                     active_keys: activeKeys.get(u.user_id) ?? 0,
                     upstream_note: u.note,
                     discount: Number(u.discount ?? 1),
+                    regions: (byUser.get(u.user_id) ?? []).map((r) => r.region),
                     created_at: user.created_at.toISOString(),
                 };
             }),

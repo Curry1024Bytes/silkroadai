@@ -7,6 +7,7 @@ import { NextRequest } from 'next/server';
 const { db, requireEnterpriseUser } = vi.hoisted(() => ({
     db: {
         enterpriseKey: { findMany: vi.fn(), count: vi.fn(), create: vi.fn(), updateMany: vi.fn() },
+        enterpriseUpstreamKey: { findUnique: vi.fn() },
     },
     requireEnterpriseUser: vi.fn(),
 }));
@@ -28,6 +29,7 @@ function req(method: string, body?: unknown): NextRequest {
 
 beforeEach(() => {
     vi.clearAllMocks();
+    db.enterpriseUpstreamKey.findUnique.mockResolvedValue({ id: 'up1' }); // 版本默认已开通
     requireEnterpriseUser.mockResolvedValue(USER);
 });
 
@@ -105,5 +107,26 @@ describe('DELETE /api/enterprise/keys/[id]', () => {
         requireEnterpriseUser.mockResolvedValue(null);
         expect((await DELETE(req('DELETE'), params)).status).toBe(401);
         expect(db.enterpriseKey.updateMany).not.toHaveBeenCalled();
+    });
+});
+
+describe('POST /api/enterprise/keys — 版本开通门(2026-07-24)', () => {
+    it('该版本未配上游 key → 400 region_not_enabled(防拿到 key 一调 503)', async () => {
+        requireEnterpriseUser.mockResolvedValue({ id: 'u1', tenant_id: null });
+        db.enterpriseKey.count.mockResolvedValue(0);
+        db.enterpriseUpstreamKey.findUnique.mockResolvedValue(null);
+        const res = await POST(
+            new NextRequest('http://x/api/enterprise/keys', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ name: 'k', region: 'promax' }),
+            }),
+        );
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error: string }).error).toBe('region_not_enabled');
+        expect(db.enterpriseUpstreamKey.findUnique).toHaveBeenCalledWith(
+            expect.objectContaining({ where: { user_id_region: { user_id: 'u1', region: 'promax' } } }),
+        );
+        expect(db.enterpriseKey.create).not.toHaveBeenCalled();
     });
 });

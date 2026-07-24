@@ -41,7 +41,7 @@ import { AssetError } from '../assets';
 
 import { handleEnterpriseV1, isEnterpriseFlavor } from '../proxy';
 
-const CUSTOMER = { userId: 'u1', tenantId: null, keyId: 'k1', upstreamKey: 'sk-upstream-u1' };
+const CUSTOMER = { userId: 'u1', tenantId: null, keyId: 'k1', region: 'cn', upstreamKey: 'sk-upstream-u1' };
 
 function req(method: string, url: string, body?: unknown): NextRequest {
     return new NextRequest(`http://128.241.232.23${url}`, {
@@ -72,11 +72,21 @@ describe('isEnterpriseFlavor', () => {
 });
 
 describe('分发白名单', () => {
-    it('GET /models → 3 个归一短名(resolution 是参数,2026-07-20)', async () => {
+    it('GET /models → 9 个归一短名(国内 3 + global 3 + promax 3)', async () => {
         const res = await handleEnterpriseV1(req('GET', '/v1/models'), '/models');
         const j = (await res.json()) as { data: Array<{ id: string }> };
         expect(res.status).toBe(200);
-        expect(j.data.map((m) => m.id)).toEqual(['seedance-2-0', 'seedance-2-0-fast', 'seedance-2-0-mini']);
+        expect(j.data.map((m) => m.id)).toEqual([
+            'seedance-2-0',
+            'seedance-2-0-fast',
+            'seedance-2-0-mini',
+            'seedance-2-0-global',
+            'seedance-2-0-global-fast',
+            'seedance-2-0-global-mini',
+            'seedance-2-0-promax',
+            'seedance-2-0-promax-fast',
+            'seedance-2-0-promax-mini',
+        ]);
     });
 
     it('白名单外路径(/chat/completions 等)→ 404', async () => {
@@ -224,6 +234,92 @@ describe('归一短名(2026-07-20)', () => {
         expect(((await res.json()) as { model: string }).model).toBe('seedance-2-0');
     });
 
+    it('global 短名(2026-07-23):鉴权带 region=global,适配器收 global 长名,回显短名', async () => {
+        resolveEnterpriseCustomer.mockResolvedValue({ ok: true, customer: { ...CUSTOMER, region: 'global' } });
+        submitVideoWithKey.mockResolvedValue(
+            NextResponse.json({
+                id: 'cgt-g1',
+                task_id: 'cgt-g1',
+                model: 'seedance2.0-global-mini-720p',
+                status: 'queued',
+            }),
+        );
+        const res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { model: 'seedance-2-0-global-mini', prompt: '一只猫' }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(200);
+        expect(resolveEnterpriseCustomer).toHaveBeenCalledWith(expect.any(String), 'global');
+        expect(submitVideoWithKey).toHaveBeenCalledWith(
+            expect.objectContaining({ model: 'seedance2.0-global-mini-720p' }),
+            'Bearer sk-upstream-u1',
+        );
+        expect(db.seedanceVideoTask.create).toHaveBeenCalledWith({
+            data: expect.objectContaining({ model: 'seedance-2-0-global-mini', resolution: '720p' }),
+        });
+        expect(((await res.json()) as { model: string }).model).toBe('seedance-2-0-global-mini');
+    });
+
+    it('global 任务轮询:cn key → 403 region_mismatch;global key → pollVideoWithKey 带 global', async () => {
+        const gTask = {
+            id: 'cgt-g1',
+            user_id: 'u1',
+            tier: 'enterprise-portal',
+            model: 'seedance-2-0-global',
+            tokens: null,
+            status: 'queued',
+        };
+        db.seedanceVideoTask.findUnique.mockResolvedValue(gTask);
+        // cn key(默认 CUSTOMER)→ 403
+        let res = await handleEnterpriseV1(req('GET', '/v1/video/generations/cgt-g1'), '/video/generations/cgt-g1');
+        expect(res.status).toBe(403);
+        expect(pollVideoWithKey).not.toHaveBeenCalled();
+        // global key → 透传轮询,base 走海外
+        resolveEnterpriseCustomer.mockResolvedValue({ ok: true, customer: { ...CUSTOMER, region: 'global' } });
+        pollVideoWithKey.mockResolvedValue(NextResponse.json({ id: 'cgt-g1', status: 'in_progress', progress: 50 }));
+        res = await handleEnterpriseV1(req('GET', '/v1/video/generations/cgt-g1'), '/video/generations/cgt-g1');
+        expect(res.status).toBe(200);
+        expect(pollVideoWithKey).toHaveBeenCalledWith('cgt-g1', 'Bearer sk-upstream-u1', 'global');
+    });
+
+    it('promax 短名:鉴权 region=promax,长名 seedance2.0-promax-mini-720p;1080p → 400(仅 720p)', async () => {
+        resolveEnterpriseCustomer.mockResolvedValue({ ok: true, customer: { ...CUSTOMER, region: 'promax' } });
+        submitVideoWithKey.mockImplementation(() =>
+            Promise.resolve(NextResponse.json({ id: 'cgt-pm1', task_id: 'cgt-pm1', status: 'queued' })),
+        );
+        let res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { model: 'seedance-2-0-promax-mini', prompt: '一只猫' }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(200);
+        expect(resolveEnterpriseCustomer).toHaveBeenCalledWith(expect.any(String), 'promax');
+        expect(submitVideoWithKey).toHaveBeenCalledWith(
+            expect.objectContaining({ model: 'seedance2.0-promax-mini-720p' }),
+            'Bearer sk-upstream-u1',
+        );
+        // fast/mini 仅 720p:1080p → 400
+        res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', {
+                model: 'seedance-2-0-promax-mini',
+                prompt: 'x',
+                resolution: '1080p',
+            }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(400);
+        // promax(pro)4k 放行
+        submitVideoWithKey.mockClear();
+        res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { model: 'seedance-2-0-promax', prompt: 'x', resolution: '4k' }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(200);
+        expect(submitVideoWithKey).toHaveBeenCalledWith(
+            expect.objectContaining({ model: 'seedance2.0-promax-4k' }),
+            'Bearer sk-upstream-u1',
+        );
+    });
+
     it('resolution 参数选档 + 带参考图自动加 -ref:mini@1080p+images → seedance2.0-mini-1080p-ref', async () => {
         const res = await handleEnterpriseV1(
             req('POST', '/v1/video/generations', {
@@ -323,6 +419,7 @@ describe('轮询', () => {
         id: 'cgt-e1',
         user_id: 'u1',
         tier: 'enterprise-portal',
+        model: 'seedance-2-0',
         tokens: null,
         status: 'queued',
     };
@@ -352,7 +449,7 @@ describe('轮询', () => {
         chargeEnterpriseVideoTask.mockResolvedValue({ outcome: 'charged', costCny: 4.26 });
         const res = await handleEnterpriseV1(req('GET', '/v1/video/generations/cgt-e1'), '/video/generations/cgt-e1');
         expect(res.status).toBe(200);
-        expect(pollVideoWithKey).toHaveBeenCalledWith('cgt-e1', 'Bearer sk-upstream-u1');
+        expect(pollVideoWithKey).toHaveBeenCalledWith('cgt-e1', 'Bearer sk-upstream-u1', 'cn');
         expect(db.seedanceVideoTask.update).toHaveBeenCalledWith(
             expect.objectContaining({ data: { tokens: BigInt(108872), status: 'completed' } }),
         );

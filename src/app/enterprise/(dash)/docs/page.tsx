@@ -178,6 +178,65 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                     <li>生成失败不计费。提交时按预估价校验余额,不足返回 402(不会透支)。</li>
                     <li>消费明细实时可见:「计费流水」「调用日志」页,每笔带 token 数与金额。</li>
                 </ul>
+                <div className="mt-4 rounded-lg border border-indigo-200 bg-indigo-50 p-4 text-sm">
+                    <p className="font-semibold text-indigo-900">海外版(global)</p>
+                    <p className="mt-1 text-indigo-900">
+                        另有海外节点出片的同款模型:<Code>seedance-2-0-global</Code> /{' '}
+                        <Code>seedance-2-0-global-fast</Code> / <Code>seedance-2-0-global-mini</Code>
+                        。参数、分辨率档位、时长与费率<b>均与国内版完全一致</b>,仅生成与出片走海外
+                        节点(BytePlus),成片链接为海外 CDN(同样 ~24 小时有效)。调用需使用
+                        <b>海外版专用 API 密钥</b>(「API 密钥」页创建时选「海外版」),国内/海外密钥不互通;
+                        余额与国内版共享同一账户。
+                        <b>如果生成因敏感内容被审核拒绝(fail_reason 提示 sensitive),并非开白/权限原因,请尝试海外版。</b>
+                    </p>
+                </div>
+                <div className="mt-3 rounded-lg border border-purple-200 bg-purple-50 p-4 text-sm">
+                    <p className="font-semibold text-purple-900">海外版proMax(独立定价)</p>
+                    <p className="mt-1 text-purple-900">
+                        更高规格的海外出片系列:<Code>seedance-2-0-promax</Code> / <Code>seedance-2-0-promax-fast</Code>{' '}
+                        / <Code>seedance-2-0-promax-mini</Code>
+                        。调用方式同上(resolution 参数、参考输入自动识别),需<b>海外版proMax 专用密钥</b>; proMax
+                        fast/mini 仅 720p 档,promax(pro)支持 720p/1080p/4k。费率(¥/1M token):
+                    </p>
+                    <div className="mt-2 overflow-x-auto">
+                        <table className="w-full text-sm">
+                            <thead>
+                                <tr>
+                                    <Th>模型</Th>
+                                    <Th>分辨率</Th>
+                                    <Th>无视频输入</Th>
+                                    <Th>含视频输入</Th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <Td>
+                                        <Code>seedance-2-0-promax</Code>
+                                    </Td>
+                                    <Td>720p / 1080p / 4k</Td>
+                                    <Td>57.8 / 62.424 / 32.368</Td>
+                                    <Td>34.68 / 38.148 / 19.652</Td>
+                                </tr>
+                                <tr>
+                                    <Td>
+                                        <Code>seedance-2-0-promax-fast</Code>
+                                    </Td>
+                                    <Td>720p</Td>
+                                    <Td>46.24</Td>
+                                    <Td>27.9616</Td>
+                                </tr>
+                                <tr>
+                                    <Td>
+                                        <Code>seedance-2-0-promax-mini</Code>
+                                    </Td>
+                                    <Td>720p</Td>
+                                    <Td>28.9</Td>
+                                    <Td>17.34</Td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
             </Section>
 
             <Section id="generate" title="3. 视频生成 API">
@@ -564,6 +623,13 @@ curl -X POST ${BASE}/v1/video/generations \\
             </Section>
 
             <Section id="faq" title="7. FAQ">
+                <div>
+                    <p className="font-medium">Q:任务失败,fail_reason 提示 sensitive information?</p>
+                    <p className="text-gray-600">
+                        这是内容安全审核拦截(生成内容随机,同提示词重跑也可能通过),并非开白/权限原因 ——
+                        可换提示词重试;若仍被拦,请尝试海外版模型(seedance-2-0-global 系,审核策略不同)。 审核失败不计费。
+                    </p>
+                </div>
                 <div className="space-y-3">
                     <div>
                         <p className="font-medium text-gray-900">Q:一条 5 秒 720p 视频多少钱?</p>

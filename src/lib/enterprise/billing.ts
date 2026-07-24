@@ -10,7 +10,7 @@ import 'server-only';
 import { prisma } from '@/lib/db';
 import { applyLedgerEntry } from '@/lib/billing/ledger';
 import { computeCostCny, estimateTokens, type ChargeResult, type Resolution } from '@/lib/seedance/cn-billing';
-import { variantForModel, type SeedanceVariant } from '@/lib/seedance/cn-adapter';
+import { variantForModel, regionForModel, type SeedanceVariant, type SeedanceRegion } from '@/lib/seedance/cn-adapter';
 
 /** 企业门户任务在 seedance_video_tasks.tier 里的标记(区分 seedance-cn 渠道任务)。 */
 export const ENTERPRISE_TIER = 'enterprise-portal';
@@ -20,11 +20,13 @@ async function rateOverrideCnyPerM(
     variant: SeedanceVariant,
     resolution: Resolution,
     hasVideo: boolean,
+    region: SeedanceRegion,
 ): Promise<number | null> {
     const row = await prisma.enterpriseRateOverride.findUnique({
         where: {
-            user_id_variant_resolution_has_video: {
+            user_id_region_variant_resolution_has_video: {
                 user_id: userId,
+                region,
                 variant,
                 resolution,
                 has_video: hasVideo,
@@ -35,28 +37,30 @@ async function rateOverrideCnyPerM(
     return row ? Number(row.cny_per_m) : null;
 }
 
-/** 客户级整体折扣率(enterprise_upstream_keys.discount,1 = 无折扣)。查失败回 1(宁多收不漏收)。 */
-async function customerDiscount(userId: string): Promise<number> {
+/** 客户级整体折扣率(enterprise_upstream_keys.discount,每版本一行 → 国内/海外独立;
+ *  1 = 无折扣)。查失败回 1(宁多收不漏收)。 */
+async function customerDiscount(userId: string, region: SeedanceRegion): Promise<number> {
     const row = await prisma.enterpriseUpstreamKey.findUnique({
-        where: { user_id: userId },
+        where: { user_id_region: { user_id: userId, region } },
         select: { discount: true },
     });
     const d = row ? Number(row.discount) : 1;
     return Number.isFinite(d) && d > 0 ? d : 1;
 }
 
-/** 对客 ¥:议价覆盖(按 变体×分辨率×含视频,绝对单价不再乘折扣)优先;
- *  否则挂牌 × 客户折扣率(默认 1)。 */
+/** 对客 ¥:议价覆盖(按 版本×变体×分辨率×含视频,绝对单价不再乘折扣)优先;
+ *  否则挂牌 × 该版本客户折扣率(默认 1)。海外挂牌价 = 国内(2026-07-23 operator 拍板)。 */
 export async function computeEnterpriseCostCny(
     userId: string,
     tokens: number | bigint,
     resolution: Resolution,
     hasVideo: boolean,
     variant: SeedanceVariant = 'pro',
+    region: SeedanceRegion = 'cn',
 ): Promise<number> {
     const [override, discount] = await Promise.all([
-        rateOverrideCnyPerM(userId, variant, resolution, hasVideo),
-        customerDiscount(userId),
+        rateOverrideCnyPerM(userId, variant, resolution, hasVideo, region),
+        customerDiscount(userId, region),
     ]);
     const t = typeof tokens === 'bigint' ? Number(tokens) : tokens;
     if (override != null) return +((t / 1e6) * override).toFixed(6);
@@ -70,6 +74,7 @@ export async function estimateEnterpriseCostCny(
     duration: number,
     hasVideo: boolean,
     variant: SeedanceVariant = 'pro',
+    region: SeedanceRegion = 'cn',
 ): Promise<number> {
     const base = await computeEnterpriseCostCny(
         userId,
@@ -77,6 +82,7 @@ export async function estimateEnterpriseCostCny(
         resolution,
         hasVideo,
         variant,
+        region,
     );
     return hasVideo ? +(base * 1.5).toFixed(6) : base;
 }
@@ -98,6 +104,7 @@ export async function chargeEnterpriseVideoTask(taskId: string): Promise<ChargeR
         task.resolution as Resolution,
         task.has_video,
         variantForModel(task.model),
+        regionForModel(task.model),
     );
 
     const claim = await prisma.seedanceVideoTask.updateMany({

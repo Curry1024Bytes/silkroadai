@@ -24,8 +24,12 @@ export const runtime = 'nodejs';
 const onboardSchema = z.object({
     email: z.string().trim().email().max(50),
     name: z.string().trim().min(1).max(50).optional(), // 客户名(nickname + key 名前缀)
-    upstream_key: z.string().trim().min(8).max(200), // 该客户独立的 token.xinhankr key
+    upstream_key: z.string().trim().min(8).max(200), // 该客户国内版上游 key(token.xinhankr)
     upstream_note: z.string().trim().max(200).optional(), // 上游侧对账备注
+    // 海外上游 key(2026-07-24):global 与 promax 两渠道同 base 同 key(ai.artsmcp),
+    // 填一把即同时写 global + promax 两行(各自独立折扣,默认 1)。可空 = 只开国内。
+    overseas_upstream_key: z.string().trim().min(8).max(200).optional(),
+    overseas_note: z.string().trim().max(200).optional(),
     credit_cny: z.number().positive().max(1_000_000).optional(), // 首笔入账(可选)
     note: z.string().trim().max(500).optional(), // 入账备注
 });
@@ -47,7 +51,8 @@ export async function POST(request: NextRequest) {
             { status: 400 },
         );
     }
-    const { email, name, upstream_key, upstream_note, credit_cny, note } = parsed.data;
+    const { email, name, upstream_key, upstream_note, overseas_upstream_key, overseas_note, credit_cny, note } =
+        parsed.data;
 
     const existing = await prisma.user.findUnique({ where: { email }, select: { id: true } });
     if (existing) {
@@ -56,8 +61,10 @@ export async function POST(request: NextRequest) {
 
     // 加密先行(env 未配 → 明确报错,不建半套账户)
     let upstreamEnc: string;
+    let overseasEnc: string | null = null;
     try {
         upstreamEnc = encryptUpstreamKey(upstream_key);
+        if (overseas_upstream_key) overseasEnc = encryptUpstreamKey(overseas_upstream_key);
     } catch (e) {
         return NextResponse.json({ error: 'enc_key_not_configured', detail: String(e) }, { status: 500 });
     }
@@ -76,8 +83,21 @@ export async function POST(request: NextRequest) {
             select: { id: true, tenant_id: true },
         });
         await tx.enterpriseUpstreamKey.create({
-            data: { user_id: u.id, upstream_key_enc: upstreamEnc, note: upstream_note ?? null },
+            data: { user_id: u.id, region: 'cn', upstream_key_enc: upstreamEnc, note: upstream_note ?? null },
         });
+        if (overseasEnc) {
+            // global 与 promax 同 base 同 key,一把写两行(折扣各自独立,默认 1)
+            for (const region of ['global', 'promax'] as const) {
+                await tx.enterpriseUpstreamKey.create({
+                    data: {
+                        user_id: u.id,
+                        region,
+                        upstream_key_enc: overseasEnc,
+                        note: overseas_note ?? '海外(global+proMax 共用)',
+                    },
+                });
+            }
+        }
         await tx.enterpriseKey.create({
             data: {
                 user_id: u.id,
@@ -112,6 +132,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
         user_id: user.id,
         email,
+        regions: overseasEnc ? ['cn', 'global', 'promax'] : ['cn'],
         // ⚠️ 明文 key 只在这里返回一次(DB 只存 sha256)—— 保存后即无法找回,只能重发。
         key: generated.key,
         key_prefix: generated.prefix,

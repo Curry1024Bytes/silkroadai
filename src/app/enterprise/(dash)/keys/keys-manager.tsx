@@ -11,6 +11,7 @@ export interface KeyRow {
     id: string;
     name: string;
     key_prefix: string;
+    region: string;
     status: string;
     created_at: string;
     last_used_at: string | null;
@@ -24,6 +25,7 @@ function fmtTime(iso: string | null): string {
 export function KeysManager({ initialKeys }: { initialKeys: KeyRow[] }) {
     const [keys, setKeys] = useState(initialKeys);
     const [name, setName] = useState('');
+    const [region, setRegion] = useState<'cn' | 'global' | 'promax'>('cn');
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [freshKey, setFreshKey] = useState<string | null>(null);
@@ -38,11 +40,17 @@ export function KeysManager({ initialKeys }: { initialKeys: KeyRow[] }) {
             const res = await fetch('/api/enterprise/keys', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name: name.trim() || 'default' }),
+                body: JSON.stringify({ name: name.trim() || 'default', region }),
             });
             const j = (await res.json()) as { key?: string; row?: KeyRow; error?: string };
             if (!res.ok || !j.key || !j.row) {
-                setError(j.error === 'key_limit_reached' ? '密钥数量已达上限(10 个)' : '创建失败,请稍后重试');
+                setError(
+                    j.error === 'key_limit_reached'
+                        ? '密钥数量已达上限(10 个)'
+                        : j.error === 'region_not_enabled'
+                          ? '该版本尚未开通,请联系对接人开通后再创建密钥'
+                          : '创建失败,请稍后重试',
+                );
                 return;
             }
             setKeys((k) => [...k, j.row!]);
@@ -100,6 +108,7 @@ export function KeysManager({ initialKeys }: { initialKeys: KeyRow[] }) {
                             <tr>
                                 <th className="py-1 pr-4">名称</th>
                                 <th className="py-1 pr-4">密钥</th>
+                                <th className="py-1 pr-4">版本</th>
                                 <th className="py-1 pr-4">状态</th>
                                 <th className="py-1 pr-4">创建时间</th>
                                 <th className="py-1 pr-4">最近使用</th>
@@ -111,6 +120,21 @@ export function KeysManager({ initialKeys }: { initialKeys: KeyRow[] }) {
                                 <tr key={k.id} className="border-t border-gray-100">
                                     <td className="py-2 pr-4">{k.name}</td>
                                     <td className="py-2 pr-4 font-mono text-xs text-gray-500">{k.key_prefix}…</td>
+                                    <td className="py-2 pr-4">
+                                        {k.region === 'promax' ? (
+                                            <span className="rounded bg-purple-50 px-1.5 py-0.5 text-xs font-medium text-purple-700">
+                                                海外版proMax
+                                            </span>
+                                        ) : k.region === 'global' ? (
+                                            <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-xs font-medium text-indigo-700">
+                                                海外版
+                                            </span>
+                                        ) : (
+                                            <span className="rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-600">
+                                                国内版
+                                            </span>
+                                        )}
+                                    </td>
                                     <td className="py-2 pr-4">
                                         {k.status === 'active' ? (
                                             <span className="text-green-700">启用</span>
@@ -147,6 +171,15 @@ export function KeysManager({ initialKeys }: { initialKeys: KeyRow[] }) {
                         maxLength={50}
                         className="w-64 rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
                     />
+                    <select
+                        value={region}
+                        onChange={(e) => setRegion(e.target.value as 'cn' | 'global' | 'promax')}
+                        className="rounded-md border border-gray-300 px-2 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                    >
+                        <option value="cn">国内版</option>
+                        <option value="global">海外版(global)</option>
+                        <option value="promax">海外版proMax</option>
+                    </select>
                     <button
                         type="submit"
                         disabled={busy}
@@ -156,7 +189,12 @@ export function KeysManager({ initialKeys }: { initialKeys: KeyRow[] }) {
                     </button>
                 </form>
                 {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
-                <p className="mt-2 text-xs text-gray-400">密钥明文只在创建时显示一次;服务端仅存哈希,无法找回。</p>
+                <p className="mt-2 text-xs text-gray-400">
+                    密钥明文只在创建时显示一次;服务端仅存哈希,无法找回。海外版密钥调 seedance-2-0-global
+                    系模型(参数/价格与国内一致,海外节点出片);海外版proMax 密钥调 seedance-2-0-promax
+                    系模型(独立定价,见文档)。各版本密钥不互通。 如果生成因敏感内容被审核拒绝(fail_reason 提示
+                    sensitive),并非开白/权限原因,请尝试海外版。
+                </p>
             </section>
         </div>
     );

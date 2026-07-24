@@ -19,13 +19,14 @@ const json = (obj: unknown, status = 200) =>
     new Response(JSON.stringify(obj), { status, headers: { 'content-type': 'application/json' } });
 
 const UP = 'https://token.xinhankr.com';
+const INTL = 'https://ai.artsmcp.com';
 const mockFetch = vi.fn();
 beforeEach(() => {
     vi.clearAllMocks();
     mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
         const u = String(url);
         const method = (init?.method || 'GET').toUpperCase();
-        if (u === `${UP}/v1/video/generations` && method === 'POST') {
+        if ((u === `${UP}/v1/video/generations` || u === `${INTL}/v1/video/generations`) && method === 'POST') {
             return json({ id: 'cgt-test-1', task_id: 'cgt-test-1', object: 'video.generation', status: 'pending' });
         }
         if (/\/v1\/video\/generations\/[^/]+$/.test(u) && method === 'GET') {
@@ -201,6 +202,27 @@ describe('seedance-cn adapter submit', () => {
         expect(b.generate_audio).toBe(false);
     });
 
+    it('global 长名 → 打海外 base(ai.artsmcp.com)+ 上游 intl 模型名', async () => {
+        const res = await submitVideo(makeReq({ model: 'seedance2.0-global-mini-720p', prompt: 'x', duration: 5 }));
+        expect(res.status).toBe(200);
+        const call = mockFetch.mock.calls.find((c) => String(c[0]).startsWith(INTL));
+        expect(call).toBeTruthy();
+        const b = JSON.parse(String((call![1] as RequestInit).body)) as Record<string, unknown>;
+        expect(b.model).toBe('artsdance2-0-mini-intl-260701');
+        expect(b.resolution).toBe('720p');
+        // 国内 base 未被打
+        expect(mockFetch.mock.calls.every((c) => !String(c[0]).startsWith(`${UP}/v1/video/generations`))).toBe(true);
+    });
+
+    it('promax 长名 → 海外 base + dreamina 上游模型名;variantForModel promax 系判序正确', async () => {
+        const res = await submitVideo(makeReq({ model: 'seedance2.0-promax-mini-720p', prompt: 'x', duration: 5 }));
+        expect(res.status).toBe(200);
+        const call = mockFetch.mock.calls.find((c) => String(c[0]).startsWith(INTL));
+        expect(call).toBeTruthy();
+        const b = JSON.parse(String((call![1] as RequestInit).body)) as Record<string, unknown>;
+        expect(b.model).toBe('dreamina-seedance-2-0-mini-260615');
+    });
+
     it('duration 15 放行;非法值(7)回落 5', async () => {
         await submitVideo(makeReq({ model: 'seedance2.0-pro-720p', prompt: 'x', duration: 15 }));
         expect(submitBody().duration).toBe(15);
@@ -240,5 +262,18 @@ describe('seedance-cn adapter poll', () => {
         const res = await submitVideo(makeReq({ model: 'seedance2.0-pro-2k', prompt: 'x' }));
         expect(res.status).toBe(400);
         expect(((await res.json()) as { error: { code: string } }).error.code).toBe('model_not_found');
+    });
+});
+
+describe('promax 判定(2026-07-23)', () => {
+    it('variantForModel:promax 系先于 -fast/-mini;regionForModel:-promax → promax', async () => {
+        const { variantForModel, regionForModel } = await import('../cn-adapter');
+        expect(variantForModel('seedance-2-0-promax')).toBe('promax');
+        expect(variantForModel('seedance-2-0-promax-fast')).toBe('promax-fast');
+        expect(variantForModel('seedance-2-0-promax-mini')).toBe('promax-mini');
+        expect(variantForModel('seedance-2-0-global-fast')).toBe('fast');
+        expect(regionForModel('seedance-2-0-promax-mini')).toBe('promax');
+        expect(regionForModel('seedance-2-0-global')).toBe('global');
+        expect(regionForModel('seedance-2-0')).toBe('cn');
     });
 });
