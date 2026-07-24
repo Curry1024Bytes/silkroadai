@@ -16,6 +16,7 @@ interface CustomerRow {
     spent_cny: number;
     active_keys: number;
     upstream_note: string | null;
+    regions?: string[];
     created_at: string;
 }
 
@@ -108,6 +109,7 @@ export function AdminPanel() {
             email: String(form.get('email') || '').trim(),
             name: String(form.get('name') || '').trim() || undefined,
             upstream_key: String(form.get('upstream_key') || '').trim(),
+            overseas_upstream_key: String(form.get('overseas_upstream_key') || '').trim() || undefined,
             credit_cny: Number(form.get('credit_cny')) || undefined,
             note: String(form.get('note') || '').trim() || undefined,
         };
@@ -240,7 +242,12 @@ export function AdminPanel() {
                     <input
                         name="upstream_key"
                         required
-                        placeholder="该客户上游 key *"
+                        placeholder="国内版上游 key *(token.xinhankr)"
+                        className="rounded-md border border-gray-300 px-3 py-2 text-sm"
+                    />
+                    <input
+                        name="overseas_upstream_key"
+                        placeholder="海外上游 key(可空;global+proMax 共用一把)"
                         className="rounded-md border border-gray-300 px-3 py-2 text-sm"
                     />
                     <input
@@ -264,7 +271,9 @@ export function AdminPanel() {
                     </button>
                 </form>
                 <p className="mt-2 text-xs text-gray-400">
-                    开户后记得点客户行 → 「设密码」下发控制台登录密码。上游 key 建议向 token.xinhankr 按客户单独申请。
+                    开户后记得点客户行 → 「设密码」下发控制台登录密码。国内 key 向 token.xinhankr、海外 key 向
+                    ai.artsmcp 按客户单独申请;海外 key 填一把即同时开通 global + proMax 两渠道(详情页可 单独换 key /
+                    设折扣)。没填海外 key 的客户后续在详情页「开通」补配。
                 </p>
             </section>
 
@@ -288,6 +297,7 @@ export function AdminPanel() {
                                 <th className="py-1 pr-4">余额</th>
                                 <th className="py-1 pr-4">累计消费</th>
                                 <th className="py-1 pr-4">启用密钥</th>
+                                <th className="py-1 pr-4">已开版本</th>
                                 <th className="py-1 pr-4">上游备注</th>
                                 <th className="py-1">开户时间</th>
                             </tr>
@@ -304,6 +314,16 @@ export function AdminPanel() {
                                     <td className="py-2 pr-4 font-medium">{fmtCny(c.balance_cny)}</td>
                                     <td className="py-2 pr-4 text-gray-600">{fmtCny(c.spent_cny)}</td>
                                     <td className="py-2 pr-4">{c.active_keys}</td>
+                                    <td className="py-2 pr-4">
+                                        {(c.regions ?? ['cn']).map((rg) => (
+                                            <span
+                                                key={rg}
+                                                className={`mr-1 rounded px-1.5 py-0.5 text-[11px] font-medium ${rg === 'cn' ? 'bg-gray-100 text-gray-600' : rg === 'global' ? 'bg-indigo-50 text-indigo-700' : 'bg-purple-50 text-purple-700'}`}
+                                            >
+                                                {rg === 'cn' ? '国内' : rg === 'global' ? '海外' : 'proMax'}
+                                            </span>
+                                        ))}
+                                    </td>
                                     <td className="py-2 pr-4 text-gray-500">{c.upstream_note ?? '—'}</td>
                                     <td className="py-2 text-gray-600">{fmtTime(c.created_at)}</td>
                                 </tr>

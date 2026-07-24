@@ -56,6 +56,16 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'key_limit_reached' }, { status: 400 });
     }
 
+    // 版本开通门(2026-07-24):该版本没配上游 key 就不让建 —— 否则客户拿到 key 一调就 503,
+    // 且看不出原因。开通 = 运营后台给该客户写对应 region 的上游 key 行。
+    const enabled = await prisma.enterpriseUpstreamKey.findUnique({
+        where: { user_id_region: { user_id: user.id, region: parsed.data.region } },
+        select: { id: true },
+    });
+    if (!enabled) {
+        return NextResponse.json({ error: 'region_not_enabled' }, { status: 400 });
+    }
+
     const g = generateEnterpriseKey();
     const row = await prisma.enterpriseKey.create({
         data: {

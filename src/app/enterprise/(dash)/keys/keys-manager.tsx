@@ -44,7 +44,13 @@ export function KeysManager({ initialKeys }: { initialKeys: KeyRow[] }) {
             });
             const j = (await res.json()) as { key?: string; row?: KeyRow; error?: string };
             if (!res.ok || !j.key || !j.row) {
-                setError(j.error === 'key_limit_reached' ? '密钥数量已达上限(10 个)' : '创建失败,请稍后重试');
+                setError(
+                    j.error === 'key_limit_reached'
+                        ? '密钥数量已达上限(10 个)'
+                        : j.error === 'region_not_enabled'
+                          ? '该版本尚未开通,请联系对接人开通后再创建密钥'
+                          : '创建失败,请稍后重试',
+                );
                 return;
             }
             setKeys((k) => [...k, j.row!]);
