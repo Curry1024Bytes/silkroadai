@@ -265,6 +265,44 @@ describe('seedance-cn adapter poll', () => {
     });
 });
 
+describe('安全:上游信息不外泄(2026-07-24)', () => {
+    it('上游不可达 → message 不含 base URL(xinhankr/artsmcp),只通用文案', async () => {
+        mockFetch.mockReset();
+        mockFetch.mockRejectedValueOnce(new Error('connect ECONNREFUSED token.xinhankr.com:443'));
+        const res = await submitVideo(makeReq({ model: 'seedance2.0-pro-720p', prompt: 'x' }));
+        const j = (await res.json()) as { error: { message: string } };
+        expect(res.status).toBe(502);
+        expect(j.error.message).toBe('upstream temporarily unavailable, please retry');
+        expect(j.error.message).not.toMatch(/xinhankr|artsmcp|http/i);
+    });
+
+    it('上游返回非 2xx(含内部标识)→ 不透传上游 body,只通用文案', async () => {
+        mockFetch.mockReset();
+        mockFetch.mockResolvedValueOnce(
+            json({ error: { message: 'nginx/1.25 upstream token.xinhankr.com internal fault' } }, 500),
+        );
+        const res = await submitVideo(makeReq({ model: 'seedance2.0-pro-720p', prompt: 'x' }));
+        const j = (await res.json()) as { error: { message: string } };
+        expect(j.error.message).toBe('upstream rejected the request');
+        expect(j.error.message).not.toMatch(/xinhankr|nginx|artsmcp/i);
+    });
+
+    it('轮询上游不可达 / 非 2xx → 同样不外泄', async () => {
+        mockFetch.mockReset();
+        mockFetch.mockRejectedValueOnce(new Error('getaddrinfo ENOTFOUND ai.artsmcp.com'));
+        let res = await pollVideo(pollReq(), 'cgt-x');
+        let j = (await res.json()) as { error: { message: string } };
+        expect(j.error.message).not.toMatch(/artsmcp|ENOTFOUND/i);
+
+        mockFetch.mockReset();
+        mockFetch.mockResolvedValueOnce(json({ error: { message: 'artsmcp gateway 502' } }, 502));
+        res = await pollVideo(pollReq(), 'cgt-x');
+        j = (await res.json()) as { error: { message: string } };
+        expect(j.error.message).toBe('upstream rejected the request');
+        expect(j.error.message).not.toMatch(/artsmcp/i);
+    });
+});
+
 describe('promax 判定(2026-07-23)', () => {
     it('variantForModel:promax 系先于 -fast/-mini;regionForModel:-promax → promax', async () => {
         const { variantForModel, regionForModel } = await import('../cn-adapter');
