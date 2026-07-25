@@ -32,6 +32,21 @@ export interface EnterpriseCustomer {
     upstreamKey: string;
 }
 
+/** 对账器用:按 (user, region) 直取解密后的上游 key(无 sk-ent 语境)。缺行/解密失败 → null。 */
+export async function getUpstreamKeyForUser(userId: string, region: string): Promise<string | null> {
+    const up = await prisma.enterpriseUpstreamKey.findUnique({
+        where: { user_id_region: { user_id: userId, region } },
+        select: { upstream_key_enc: true },
+    });
+    if (!up) return null;
+    try {
+        return decryptUpstreamKey(up.upstream_key_enc);
+    } catch (e) {
+        console.error('[enterprise-keys] reconcile decrypt failed', { userId, region, err: String(e) });
+        return null;
+    }
+}
+
 export type ResolveResult =
     | { ok: true; customer: EnterpriseCustomer }
     | { ok: false; status: number; code: string; message: string };

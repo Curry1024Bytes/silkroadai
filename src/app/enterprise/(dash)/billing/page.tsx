@@ -1,5 +1,6 @@
 /**
- * 企业门户计费流水页(P2):LedgerEntry 明细(充值/扣费/调整)+ 余额快照。最近 100 条。
+ * 企业门户计费流水页(完整版 2026-07-24):LedgerEntry 明细(充值/扣费/调整)+ 余额快照。
+ * 分页(50/页)+ 日期范围搜索 + 类型筛选。
  */
 import { prisma } from '@/lib/db';
 import { getEnterpriseSessionUser } from '@/lib/enterprise/session';
@@ -9,6 +10,8 @@ export const dynamic = 'force-dynamic';
 
 export const metadata = { title: 'Seedance 企业端口 · 计费流水' };
 
+const PAGE_SIZE = 50;
+
 const KIND_LABEL: Record<string, string> = {
     recharge: '充值',
     charge: '消费',
@@ -16,19 +19,58 @@ const KIND_LABEL: Record<string, string> = {
     migration: '迁移',
 };
 
-export default async function EnterpriseBillingPage() {
+function parseDay(s: string | undefined, endOfDay = false): Date | null {
+    if (!s || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+    const d = new Date(`${s}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}+08:00`);
+    return Number.isNaN(d.getTime()) ? null : d;
+}
+
+export default async function EnterpriseBillingPage({
+    searchParams,
+}: {
+    searchParams: Promise<{ page?: string; from?: string; to?: string; kind?: string }>;
+}) {
     const user = (await getEnterpriseSessionUser())!;
+    const sp = await searchParams;
     const account = await prisma.account.findUnique({
         where: { user_id: user.id },
         select: { id: true, balance_cny: true },
     });
-    const entries = account
-        ? await prisma.ledgerEntry.findMany({
-              where: { account_id: account.id },
-              orderBy: { created_at: 'desc' },
-              take: 100,
-          })
-        : [];
+
+    const page = Math.max(1, Math.min(10_000, Number(sp.page) || 1));
+    const from = parseDay(sp.from);
+    const to = parseDay(sp.to, true);
+    const kindFilter = ['recharge', 'charge', 'adjustment', 'migration'].includes(sp.kind ?? '') ? sp.kind : undefined;
+
+    const where = account
+        ? {
+              account_id: account.id,
+              ...(kindFilter ? { kind: kindFilter } : {}),
+              ...(from || to ? { created_at: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } } : {}),
+          }
+        : null;
+
+    const [total, entries] = account
+        ? await Promise.all([
+              prisma.ledgerEntry.count({ where: where! }),
+              prisma.ledgerEntry.findMany({
+                  where: where!,
+                  orderBy: { created_at: 'desc' },
+                  skip: (page - 1) * PAGE_SIZE,
+                  take: PAGE_SIZE,
+              }),
+          ])
+        : [0, []];
+    const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+
+    const qs = (p: number) => {
+        const params = new URLSearchParams();
+        if (sp.from) params.set('from', sp.from);
+        if (sp.to) params.set('to', sp.to);
+        if (kindFilter) params.set('kind', kindFilter);
+        params.set('page', String(p));
+        return `?${params.toString()}`;
+    };
 
     return (
         <div className="space-y-4">
@@ -40,7 +82,47 @@ export default async function EnterpriseBillingPage() {
                 <p className="mt-1 text-xs text-gray-400">充值走对公转账,打款确认后由商务入账。</p>
             </div>
             <section className="rounded-xl border border-gray-200 bg-white p-5">
-                <h2 className="mb-3 text-sm font-semibold text-gray-900">流水明细(最近 100 条)</h2>
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                    <h2 className="text-sm font-semibold text-gray-900">
+                        流水明细(共 {total.toLocaleString('en-US')} 条)
+                    </h2>
+                    <form method="get" className="flex flex-wrap items-center gap-2 text-sm">
+                        <input
+                            type="date"
+                            name="from"
+                            defaultValue={sp.from}
+                            className="rounded-md border border-gray-300 px-2 py-1.5 text-sm"
+                        />
+                        <span className="text-gray-400">—</span>
+                        <input
+                            type="date"
+                            name="to"
+                            defaultValue={sp.to}
+                            className="rounded-md border border-gray-300 px-2 py-1.5 text-sm"
+                        />
+                        <select
+                            name="kind"
+                            defaultValue={kindFilter ?? ''}
+                            className="rounded-md border border-gray-300 px-2 py-1.5 text-sm"
+                        >
+                            <option value="">全部类型</option>
+                            <option value="charge">消费</option>
+                            <option value="recharge">充值</option>
+                            <option value="adjustment">调整</option>
+                        </select>
+                        <button
+                            type="submit"
+                            className="rounded-md bg-gray-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-700"
+                        >
+                            查询
+                        </button>
+                        {(sp.from || sp.to || kindFilter) && (
+                            <a href="?" className="text-xs text-blue-600 hover:underline">
+                                清除
+                            </a>
+                        )}
+                    </form>
+                </div>
                 {entries.length === 0 ? (
                     <p className="text-sm text-gray-500">暂无流水。</p>
                 ) : (
@@ -72,6 +154,27 @@ export default async function EnterpriseBillingPage() {
                                 })}
                             </tbody>
                         </table>
+                    </div>
+                )}
+                {totalPages > 1 && (
+                    <div className="mt-3 flex items-center gap-3 text-sm">
+                        {page > 1 ? (
+                            <a href={qs(page - 1)} className="text-blue-600 hover:underline">
+                                ← 上一页
+                            </a>
+                        ) : (
+                            <span className="text-gray-300">← 上一页</span>
+                        )}
+                        <span className="text-gray-500">
+                            {page} / {totalPages}
+                        </span>
+                        {page < totalPages ? (
+                            <a href={qs(page + 1)} className="text-blue-600 hover:underline">
+                                下一页 →
+                            </a>
+                        ) : (
+                            <span className="text-gray-300">下一页 →</span>
+                        )}
                     </div>
                 )}
             </section>

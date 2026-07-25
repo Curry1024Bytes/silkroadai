@@ -468,10 +468,12 @@ describe('轮询', () => {
 
     it('失败 → 标 failed 不计费', async () => {
         db.seedanceVideoTask.findUnique.mockResolvedValue(task);
-        pollVideoWithKey.mockResolvedValue(NextResponse.json({ id: 'cgt-e1', status: 'failed' }));
+        pollVideoWithKey.mockResolvedValue(
+            NextResponse.json({ id: 'cgt-e1', status: 'failed', fail_reason: 'sensitive content' }),
+        );
         await handleEnterpriseV1(req('GET', '/v1/video/generations/cgt-e1'), '/video/generations/cgt-e1');
         expect(db.seedanceVideoTask.update).toHaveBeenCalledWith(
-            expect.objectContaining({ data: { status: 'failed' } }),
+            expect.objectContaining({ data: { status: 'failed', fail_reason: 'sensitive content' } }),
         );
         expect(chargeEnterpriseVideoTask).not.toHaveBeenCalled();
     });

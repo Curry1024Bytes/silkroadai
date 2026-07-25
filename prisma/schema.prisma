@@ -1199,6 +1199,7 @@ model SeedanceVideoTask {
   has_video      Boolean   @default(false) // 输入含参考视频 → 含视频费率档
   duration       Int       @default(5)
   tokens         BigInt? // 完成时 usage.completion_tokens
+  fail_reason    String? // 失败原因(上游 fail_reason / 过期终态;2026-07-24 企业权责透明)
   cost_cny       Decimal?  @db.Decimal(20, 8) // 完成时算出的对客 ¥
   billed         Boolean   @default(false) // 幂等:已扣费
   status         String    @default("queued") // queued | completed | failed

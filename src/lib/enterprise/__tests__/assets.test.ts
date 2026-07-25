@@ -76,7 +76,7 @@ describe('storeAsset', () => {
     });
 
     it('素材数达上限 → QuotaExceeded', async () => {
-        db.enterpriseAsset.count.mockResolvedValue(500);
+        db.enterpriseAsset.count.mockResolvedValue(5000);
         await expect(
             storeAsset({ userId: 'u1', assetType: 'image', name: 'x', bytes: Buffer.from('a'), mime: 'image/png' }),
         ).rejects.toMatchObject({ code: 'QuotaExceeded' });
