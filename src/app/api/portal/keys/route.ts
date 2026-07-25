@@ -7,11 +7,10 @@
  * /keys UI but a direct API call without a session must still 401 cleanly,
  * so the route does its own getCurrentUser check.
  *
- * Token CAP: MAX_TOKENS_PER_USER = 10 (W6 D4 — bumped from 5 in W4-2 D5
- * after multi-environment customers asked for more headroom). The UI
- * pre-disables the create button but the server enforces independently
- * (defense in depth). Future tier-based dynamic limit lives on a User
- * column, not this constant.
+ * Token cap: removed 2026-07-25 (was MAX_TOKENS_PER_USER=10 since W6 D4,
+ * 5 before that). Customers may create as many keys as they need; budget
+ * is still gated solely by user.quota (gotcha #12), so key count adds no
+ * spend exposure.
  *
  * Token defaults align with W3 D6 provisionNewCustomer:
  *   - unlimited_quota=true (gotcha #12 — predicates on user.quota, not per-token)
@@ -33,8 +32,6 @@ import { PORTAL_INTERNAL_TOKEN_NAME } from '@/lib/newapi/system-token';
 import { listEnabledChannelGroups, restrictGroupsForUser } from '@/lib/channel-group';
 
 export const runtime = 'nodejs';
-
-export const MAX_TOKENS_PER_USER = 10;
 
 const CreateKeySchema = z.object({
     // PR-T1 Phase 0e: reserve `portal-internal` for the server-managed
@@ -133,14 +130,6 @@ export async function POST(req: NextRequest) {
         );
     }
     const { alias, tier: requestedTier } = parsed.data;
-
-    // Server-side cap (UI also enforces, but defense in depth)
-    const activeCount = await prisma.newApiToken.count({
-        where: { user_id: user.id, status: 'active' },
-    });
-    if (activeCount >= MAX_TOKENS_PER_USER) {
-        return NextResponse.json({ error: 'token_limit_reached', max: MAX_TOKENS_PER_USER }, { status: 400 });
-    }
 
     // P3: resolve 档次 → new-api group(portal key 与 new-api group 解耦)。
     // pool→'default'(复用现有渠道,现有 token 已是 default);official→'official'。

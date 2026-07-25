@@ -46,7 +46,7 @@ vi.mock('@/lib/channel-group', async () => {
     };
 });
 
-import { GET, POST, MAX_TOKENS_PER_USER } from '@/app/api/portal/keys/route';
+import { GET, POST } from '@/app/api/portal/keys/route';
 
 const PORTAL_USER_ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 const NEWAPI_USER_ID = 7;
@@ -184,39 +184,28 @@ describe('POST /api/portal/keys', () => {
         expect(res.status).toBe(400);
     });
 
-    it('400 token_limit_reached when user already has MAX_TOKENS_PER_USER (10) active', async () => {
+    it('no per-user cap: 11th key (10 already active) still creates (limit removed 2026-07-25)', async () => {
+        // Under the old W6 D4 cap this returned 400 token_limit_reached.
+        // The cap is gone — the request goes straight to the new-api flow
+        // and the route never even counts existing tokens.
         mockGetCurrentUser.mockResolvedValue(SESSION_USER);
-        mockTokenCount.mockResolvedValue(MAX_TOKENS_PER_USER);
-
-        const res = await POST(makeReq({ method: 'POST', body: { alias: 'prod' } }));
-        expect(res.status).toBe(400);
-        const body = await res.json();
-        expect(body.error).toBe('token_limit_reached');
-        expect(body.max).toBe(MAX_TOKENS_PER_USER);
-        expect(MAX_TOKENS_PER_USER).toBe(10); // W6 D4 — bumped from 5
-        expect(mockCreateTokenForCustomer).not.toHaveBeenCalled();
-    });
-
-    it('W6 D4: 6th-9th keys still proceed past the count check (was blocked under W4-2 D5 cap of 5)', async () => {
-        // count=9 is below the W6 D4 cap of 10 → request should proceed
-        // through to the new-api flow (which we mock as success).
-        mockGetCurrentUser.mockResolvedValue(SESSION_USER);
-        mockTokenCount.mockResolvedValue(9);
+        mockTokenCount.mockResolvedValue(10);
         mockCreateTokenForCustomer.mockResolvedValue(undefined);
         mockListTokensForCustomer.mockResolvedValue({
-            items: [{ id: 100, name: 'tenth-key' }],
+            items: [{ id: 100, name: 'eleventh-key' }],
             total: 1,
         });
-        mockGetTokenKey.mockResolvedValue('sk-tenth-mint-1234');
+        mockGetTokenKey.mockResolvedValue('sk-eleventh-mint-1234');
         mockTokenCreate.mockResolvedValue({
-            id: 'tok-tenth',
-            key_alias: 'tenth-key',
-            created_at: new Date('2026-05-05T10:00:00Z'),
+            id: 'tok-eleventh',
+            key_alias: 'eleventh-key',
+            created_at: new Date('2026-07-25T10:00:00Z'),
         });
 
-        const res = await POST(makeReq({ method: 'POST', body: { alias: 'tenth-key' } }));
+        const res = await POST(makeReq({ method: 'POST', body: { alias: 'eleventh-key' } }));
         expect(res.status).toBe(200);
         expect(mockCreateTokenForCustomer).toHaveBeenCalled();
+        expect(mockTokenCount).not.toHaveBeenCalled();
     });
 
     it('happy: creates new-api token + returns full sk- ONCE in response', async () => {
