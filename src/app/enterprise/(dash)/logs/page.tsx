@@ -9,6 +9,7 @@ import { ENTERPRISE_TIER } from '@/lib/enterprise/billing';
 import { reconcileStaleTasks } from '@/lib/enterprise/reconcile';
 import { officialCostCny, type Resolution } from '@/lib/seedance/cn-billing';
 import { variantForModel } from '@/lib/seedance/cn-adapter';
+import { parseDay } from '@/lib/enterprise/query';
 import { fmtCnyPrecise, fmtTime, fmtTokens, taskStatusLabel } from '../format';
 
 export const dynamic = 'force-dynamic';
@@ -16,14 +17,6 @@ export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Seedance 企业端口 · 调用日志' };
 
 const PAGE_SIZE = 50;
-
-/** YYYY-MM-DD → Date(北京时区当日 00:00);非法返回 null。 */
-function parseDay(s: string | undefined, endOfDay = false): Date | null {
-    if (!s || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
-    // 北京时区解释客户输入的日期(gotcha #20 同源:客户心智是北京时间)
-    const d = new Date(`${s}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}+08:00`);
-    return Number.isNaN(d.getTime()) ? null : d;
-}
 
 export default async function EnterpriseLogsPage({
     searchParams,
@@ -111,6 +104,16 @@ export default async function EnterpriseLogsPage({
                             清除
                         </a>
                     )}
+                    <a
+                        href={`/api/enterprise/export/logs?${new URLSearchParams({
+                            ...(sp.from ? { from: sp.from } : {}),
+                            ...(sp.to ? { to: sp.to } : {}),
+                            ...(statusFilter ? { status: statusFilter } : {}),
+                        }).toString()}`}
+                        className="rounded-md border border-gray-300 px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50"
+                    >
+                        导出 CSV
+                    </a>
                 </form>
             </div>
             {tasks.length === 0 ? (

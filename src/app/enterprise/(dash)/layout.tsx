@@ -16,14 +16,14 @@ export default async function EnterpriseDashLayout({ children }: { children: Rea
     if (!user) redirect('/enterprise/login');
 
     return (
-        <div className="min-h-screen bg-paper">
-            <header className="border-b border-brand-border bg-surface">
+        <div className="min-h-screen bg-gray-50">
+            <header className="border-b border-gray-200 bg-white">
                 <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
                     <div>
-                        <span className="text-base font-semibold text-ink">Seedance 企业端口</span>
-                        <span className="ml-2 text-xs text-minor-ink">大客户控制台</span>
+                        <span className="text-base font-semibold text-gray-900">Seedance 企业端口</span>
+                        <span className="ml-2 text-xs text-gray-400">大客户控制台</span>
                     </div>
-                    <div className="flex items-center gap-3 text-sm text-muted-ink">
+                    <div className="flex items-center gap-3 text-sm text-gray-600">
                         <span>{user.email}</span>
                         <LogoutButton />
                     </div>

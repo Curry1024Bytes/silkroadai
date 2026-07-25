@@ -4,6 +4,7 @@
  */
 import { prisma } from '@/lib/db';
 import { getEnterpriseSessionUser } from '@/lib/enterprise/session';
+import { parseDay } from '@/lib/enterprise/query';
 import { fmtCny, fmtCnyPrecise, fmtTime } from '../format';
 
 export const dynamic = 'force-dynamic';
@@ -18,12 +19,6 @@ const KIND_LABEL: Record<string, string> = {
     adjustment: '调整',
     migration: '迁移',
 };
-
-function parseDay(s: string | undefined, endOfDay = false): Date | null {
-    if (!s || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
-    const d = new Date(`${s}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}+08:00`);
-    return Number.isNaN(d.getTime()) ? null : d;
-}
 
 export default async function EnterpriseBillingPage({
     searchParams,
@@ -121,6 +116,16 @@ export default async function EnterpriseBillingPage({
                                 清除
                             </a>
                         )}
+                        <a
+                            href={`/api/enterprise/export/billing?${new URLSearchParams({
+                                ...(sp.from ? { from: sp.from } : {}),
+                                ...(sp.to ? { to: sp.to } : {}),
+                                ...(kindFilter ? { kind: kindFilter } : {}),
+                            }).toString()}`}
+                            className="rounded-md border border-gray-300 px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50"
+                        >
+                            导出 CSV
+                        </a>
                     </form>
                 </div>
                 {entries.length === 0 ? (
