@@ -161,6 +161,11 @@ const GEMINI_IMAGE_MODELS: Record<string, '1K' | '2K' | '4K'> = {
     // 加进来后 proxy 翻译到 native generateContent(输入图转 inlineData + 注入 imageSize)→ 上游正常出图 + 落图床。
     'gemini-3.1-flash-image-adobe': '2K',
     'gemini-3-pro-image-adobe': '4K',
+    // 4K SKU(2026-07-27):ch67(amutes)上游支持 flash/pro 真 4K 出图。锁 4K(size 参数对它们无效),
+    // new-api 按别名单独计价(flash-4k ¥0.35 / pro-4k ¥0.55);ch67 model_mapping 翻回真名给上游。
+    // 见 configure-gemini-4k-skus.mjs。两者自身无候补(FAILOVER_MODELS 无此 key)。
+    'gemini-3.1-flash-image-preview-4k': '4K',
+    'gemini-3-pro-image-preview-4k': '4K',
 };
 
 /** 仅这些模型允许客户用 `size` 选 imageSize(其余按 GEMINI_IMAGE_MODELS 固定档,size 被忽略)。
@@ -243,6 +248,9 @@ GEMINI_ASPECT_RATIOS['gemini-3-pro-image-preview-2k'] = GEMINI_ASPECT_RATIOS['ge
 // ch96 adobe 逆向两款与 flash/pro 同底模 → 复用对应档白名单。
 GEMINI_ASPECT_RATIOS['gemini-3.1-flash-image-adobe'] = GEMINI_ASPECT_RATIOS['gemini-3.1-flash-image-preview'];
 GEMINI_ASPECT_RATIOS['gemini-3-pro-image-adobe'] = GEMINI_ASPECT_RATIOS['gemini-3-pro-image-preview'];
+// 4K SKU 与 flash/pro 同底模 → 复用对应档白名单。
+GEMINI_ASPECT_RATIOS['gemini-3.1-flash-image-preview-4k'] = GEMINI_ASPECT_RATIOS['gemini-3.1-flash-image-preview'];
+GEMINI_ASPECT_RATIOS['gemini-3-pro-image-preview-4k'] = GEMINI_ASPECT_RATIOS['gemini-3-pro-image-preview'];
 
 const CLAUDE_MAX_TOKENS_CAP = 4096;
 

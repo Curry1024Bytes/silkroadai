@@ -226,6 +226,30 @@ describe('/v1 proxy — Gemini image translation', () => {
         );
     });
 
+    // 4K SKU(ch67 amutes 上游):锁 4K 独立计价,proxy 用别名打 new-api(据此计费),ch67 mapping 翻真名。
+    it.each([['gemini-3.1-flash-image-preview-4k'], ['gemini-3-pro-image-preview-4k']])(
+        '客户直接调 %s → 翻译到 native + imageSize 4K + 落图床返托管 URL',
+        async (model) => {
+            mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+            const res = await POST(
+                makeReq('/chat/completions', {
+                    body: { model, messages: [{ role: 'user', content: 'a cat' }] },
+                    headers: { authorization: 'Bearer sk-test' },
+                }),
+                ctx('chat', 'completions'),
+            );
+            const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+            expect(url).toBe(`${NEWAPI_BASE}/v1beta/models/${model}:generateContent`);
+            const body = JSON.parse(String(init.body)) as { generationConfig: { imageConfig: { imageSize: string } } };
+            expect(body.generationConfig.imageConfig.imageSize).toBe('4K');
+            expect(res.headers.get('X-Silkroadai-Translated')).toBe('gemini-native');
+            const data = (await res.json()) as { choices: Array<{ message: { content: string } }> };
+            expect(data.choices[0].message.content).toMatch(
+                /^!\[image\]\(https:\/\/images\.silkroadai\.io\/gen\/\d{4}-\d{2}-\d{2}\/[0-9a-f-]+\.png\)$/,
+            );
+        },
+    );
+
     it('passes through upstream error status (e.g. 429) without translating', async () => {
         mockFetch.mockResolvedValueOnce(
             new Response(JSON.stringify({ error: { message: 'rate limited' } }), { status: 429 }),
