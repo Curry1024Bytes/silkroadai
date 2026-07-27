@@ -45,12 +45,6 @@ function maskKey(value: string): string {
     return `${value.slice(0, 7)}****${value.slice(-4)}`;
 }
 
-/** Brief: max 10 keys per user (W6 D4 — bumped from 5). Constant lives
- *  client-side too so the UI can disable the "create" button without a
- *  roundtrip; server enforces the same limit (POST /api/portal/keys
- *  returns 400 if exceeded). */
-const MAX_TOKENS_PER_USER = 10;
-
 /** How long to expose a freshly-revealed sk- before re-masking it. Defends
  *  against shoulder-surfing / forgotten browser tab scenarios. */
 const REVEAL_AUTOHIDE_MS = 10_000;
@@ -170,7 +164,6 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
         tier: defaultTier,
     });
 
-    const atLimit = rows.length >= MAX_TOKENS_PER_USER;
     const isOnlyKey = rows.length === 1;
 
     // Auto-hide revealed keys after REVEAL_AUTOHIDE_MS so a forgotten tab
@@ -367,7 +360,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                         <div className="min-w-0">
                             <h2 className="m-0 text-sm font-semibold text-portal-ink">访问密钥</h2>
                             <p className="m-0 mt-0.5 text-xs text-portal-subtle tabular-nums">
-                                已创建 {rows.length} / {MAX_TOKENS_PER_USER} 个
+                                已创建 {rows.length} 个
                             </p>
                         </div>
                     </div>
@@ -378,12 +371,12 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                         onClick={() =>
                             setCreate({ open: true, alias: '', submitting: false, error: null, tier: defaultTier })
                         }
-                        disabled={atLimit || create.open}
-                        title={atLimit ? `已达上限 (${MAX_TOKENS_PER_USER})` : '创建新的 API Key'}
+                        disabled={create.open}
+                        title="创建新的 API Key"
                         className="rounded-md"
                     >
-                        {!atLimit && <Plus size={15} strokeWidth={2} aria-hidden="true" />}
-                        <span>{atLimit ? `已达上限 (${MAX_TOKENS_PER_USER})` : '创建新 Key'}</span>
+                        <Plus size={15} strokeWidth={2} aria-hidden="true" />
+                        <span>创建新 Key</span>
                     </Button>
                 </div>
 

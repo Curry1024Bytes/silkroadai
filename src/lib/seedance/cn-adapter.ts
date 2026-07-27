@@ -389,7 +389,9 @@ export async function submitVideoWithKey(body: Record<string, unknown>, auth: st
             upstreamBase,
         );
     } catch (e) {
-        return err(502, 'upstream_unreachable', `${upstreamBase} unreachable: ${String(e)}`);
+        // 安全:不回显 upstreamBase / 异常文本(含上游域名/IP)给客户 —— 只落日志
+        console.warn('[seedance-cn-adapter] submit unreachable', { base: upstreamBase, err: String(e) });
+        return err(502, 'upstream_unreachable', 'upstream temporarily unavailable, please retry');
     }
     const text = await upstream.text();
     let j: { id?: string; task_id?: string; error?: { message?: string } } | null;
@@ -407,11 +409,8 @@ export async function submitVideoWithKey(body: Record<string, unknown>, auth: st
             status: upstream.status,
             body: text.slice(0, 2000),
         });
-        return err(
-            upstream.status >= 400 ? upstream.status : 502,
-            'upstream_error',
-            (j?.error?.message || text || 'submit failed').slice(0, 300),
-        );
+        // 安全:上游原始报错(可能含域名/server 标识)只落日志(见上 console.warn);客户拿通用文案 + status
+        return err(upstream.status >= 400 ? upstream.status : 502, 'upstream_error', 'upstream rejected the request');
     }
     return NextResponse.json(
         {
@@ -453,7 +452,8 @@ export async function pollVideoWithKey(id: string, auth: string, region: Seedanc
     try {
         upstream = await fetchXhk(`/v1/video/generations/${encodeURIComponent(id)}`, auth, {}, baseForRegion(region));
     } catch (e) {
-        return err(502, 'upstream_unreachable', String(e));
+        console.warn('[seedance-cn-adapter] poll unreachable', { id, err: String(e) });
+        return err(502, 'upstream_unreachable', 'upstream temporarily unavailable, please retry');
     }
     const text = await upstream.text();
     let j: Record<string, unknown> | null;
@@ -468,8 +468,9 @@ export async function pollVideoWithKey(id: string, auth: string, region: Seedanc
             status: upstream.status,
             body: text.slice(0, 2000),
         });
-        const msg = (j?.error as { message?: string } | undefined)?.message || text || 'poll failed';
-        return err(upstream.status >= 400 ? upstream.status : 502, 'upstream_error', String(msg).slice(0, 300));
+        // 安全:上游原始报错只落日志(见上 console.warn);客户拿通用文案。
+        // 注:内容审核失败走 HTTP 200 + status:failed + fail_reason(不经此分支),客户仍能看到审核提示。
+        return err(upstream.status >= 400 ? upstream.status : 502, 'upstream_error', 'upstream rejected the request');
     }
     const status = mapStatus(j.status);
     const videoUrl = firstVideoUrl(j.data);
@@ -506,7 +507,8 @@ export async function streamContent(req: NextRequest, id: string): Promise<Respo
     try {
         taskRes = await fetchXhk(`/v1/video/generations/${encodeURIComponent(id)}`, auth);
     } catch (e) {
-        return err(502, 'upstream_unreachable', String(e));
+        console.warn('[seedance-cn-adapter] streamContent poll unreachable', { id, err: String(e) });
+        return err(502, 'upstream_unreachable', 'upstream temporarily unavailable, please retry');
     }
     const j = (await taskRes.json().catch(() => null)) as { data?: unknown } | null;
     const videoUrl = firstVideoUrl(j?.data);
@@ -515,7 +517,8 @@ export async function streamContent(req: NextRequest, id: string): Promise<Respo
     try {
         vid = await fetch(videoUrl, { headers: { Authorization: auth } });
     } catch (e) {
-        return err(502, 'upstream_unreachable', `fetch video failed: ${String(e)}`);
+        console.warn('[seedance-cn-adapter] streamContent fetch video failed', { id, err: String(e) });
+        return err(502, 'upstream_unreachable', 'upstream temporarily unavailable, please retry');
     }
     if (!vid.ok || !vid.body) return err(502, 'upstream_error', `video fetch ${vid.status}`);
     const headers: Record<string, string> = { 'Content-Type': vid.headers.get('content-type') || 'video/mp4' };

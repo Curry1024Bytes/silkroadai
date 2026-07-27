@@ -8,7 +8,7 @@
  * W6 D4 additions:
  *   - usage subline (累计 + 最近调用) renders per row
  *   - "从未调用" copy when last_used_at is null
- *   - max bumped 5 → 10 (button label assertion)
+ *   - API key creation remains available regardless of the current count
  */
 import { describe, expect, it } from 'vitest';
 import { renderToString } from 'react-dom/server';
@@ -75,8 +75,8 @@ describe('<KeysList /> SSR smoke', () => {
         expect(html).not.toContain('sk-5678abc');
     });
 
-    it('disables + relabels create button when at MAX (10)', () => {
-        const fullList: KeyRow[] = Array.from({ length: 10 }, (_, i) => ({
+    it('keeps the create button enabled when the account already has 10+ keys', () => {
+        const fullList: KeyRow[] = Array.from({ length: 12 }, (_, i) => ({
             id: `tok-${i}`,
             key_alias: `key-${i}`,
             masked_key: `sk-aaaa****0000`,
@@ -87,23 +87,7 @@ describe('<KeysList /> SSR smoke', () => {
             tier: 'pool',
         }));
         const html = renderToString(<KeysList initialRows={fullList} />);
-        // Button text changes + disabled attr present (W6 D4 limit 10)
-        expect(html).toMatch(/>已达上限 \(10\)</);
-        expect(html).toMatch(/<button[^>]*disabled=""[^>]*>[\s\S]*?已达上限/);
-    });
-
-    it('does NOT disable create button at 9 keys (just below the 10 cap)', () => {
-        const nineKeys: KeyRow[] = Array.from({ length: 9 }, (_, i) => ({
-            id: `tok-${i}`,
-            key_alias: `key-${i}`,
-            masked_key: 'sk-aaaa****0000',
-            created_at: '2026-05-01T10:00:00.000Z',
-            used_quota: 0,
-            usedCny: 0,
-            last_used_at: null,
-            tier: 'pool',
-        }));
-        const html = renderToString(<KeysList initialRows={nineKeys} />);
+        expect(html).not.toContain('已达上限');
         expect(html).toContain('创建新 Key');
         // Tighten to the HTML `disabled=""` attribute (Tailwind utility
         // classes like `disabled:opacity-50` would false-match a looser

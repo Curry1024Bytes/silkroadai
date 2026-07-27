@@ -45,6 +45,7 @@ interface Detail {
         status: string;
         tokens: number | null;
         cost_cny: number | null;
+        fail_reason: string | null;
         billed: boolean;
         created_at: string;
     }>;
@@ -545,11 +546,22 @@ export function AdminPanel() {
                             <table className="w-full text-left text-xs">
                                 <tbody>
                                     {detail.tasks.map((t) => (
-                                        <tr key={t.id} className="border-t border-gray-100">
+                                        <tr key={t.id} className="border-t border-gray-100 align-top">
                                             <td className="py-1 pr-3 text-gray-500">{fmtTime(t.created_at)}</td>
                                             <td className="py-1 pr-3">{t.model}</td>
                                             <td className="py-1 pr-3">{t.resolution}</td>
-                                            <td className="py-1 pr-3">{t.status}</td>
+                                            <td className="py-1 pr-3">
+                                                {t.status === 'failed' ? (
+                                                    <span className="text-red-600">failed</span>
+                                                ) : (
+                                                    t.status
+                                                )}
+                                                {t.status === 'failed' && t.fail_reason && (
+                                                    <p className="mt-0.5 max-w-[220px] text-[11px] leading-snug text-red-500">
+                                                        {t.fail_reason}
+                                                    </p>
+                                                )}
+                                            </td>
                                             <td className="py-1 pr-3">
                                                 {t.tokens != null ? t.tokens.toLocaleString('en-US') : '—'}
                                             </td>

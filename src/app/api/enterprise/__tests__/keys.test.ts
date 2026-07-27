@@ -50,12 +50,11 @@ describe('GET /api/enterprise/keys', () => {
 });
 
 describe('POST /api/enterprise/keys', () => {
-    it('active 满 10 → 400 key_limit_reached', async () => {
-        db.enterpriseKey.count.mockResolvedValue(10);
+    it('无密钥数量上限(2026-07-26 取消):已有很多把也能继续建', async () => {
+        db.enterpriseKey.count.mockResolvedValue(50); // 即便远超旧 10 上限
         const res = await POST(req('POST', { name: 'prod' }));
-        expect(res.status).toBe(400);
-        expect(((await res.json()) as { error: string }).error).toBe('key_limit_reached');
-        expect(db.enterpriseKey.create).not.toHaveBeenCalled();
+        expect(res.status).toBe(200);
+        expect(db.enterpriseKey.create).toHaveBeenCalled();
     });
 
     it('happy:返明文 sk-ent- 一次 + row;DB 只存 hash', async () => {

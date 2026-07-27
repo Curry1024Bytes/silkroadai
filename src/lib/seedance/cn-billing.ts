@@ -66,6 +66,17 @@ export function computeCostCny(
     return +((t / 1e6) * rate).toFixed(6);
 }
 
+/** 火山官方挂牌 ¥(对账展示用):本表所有零售价恒 = 官方挂牌 × 0.85,故 ÷0.85 还原。
+ *  企业门户「官方价/折扣」对比列(2026-07-24)用;不参与扣费。 */
+export function officialCostCny(
+    tokens: number | bigint,
+    resolution: Resolution,
+    hasVideo: boolean,
+    variant: SeedanceVariant = 'pro',
+): number {
+    return +(computeCostCny(tokens, resolution, hasVideo, variant) / 0.85).toFixed(6);
+}
+
 /** 每秒 token(公式实测锚点:720p 5s=108872 → 21774/秒,∝像素)。仅用于【提交时余额预估】,
  *  实际扣费用轮询回来的真 usage.completion_tokens。 */
 const TOK_PER_SEC: Record<Resolution, number> = { '720p': 21774, '1080p': 48992, '4k': 195970 };

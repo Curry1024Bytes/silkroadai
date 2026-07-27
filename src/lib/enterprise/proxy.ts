@@ -296,8 +296,16 @@ async function handlePoll(req: NextRequest, taskId: string): Promise<NextRespons
             console.error('[enterprise-proxy] charge threw', e);
         }
     } else if (j && j.status === 'failed' && task.status !== 'failed') {
-        // 失败不计费(火山对失败不收费)
-        await prisma.seedanceVideoTask.update({ where: { id: taskId }, data: { status: 'failed' } }).catch(() => {});
+        // 失败不计费(火山对失败不收费);fail_reason 落库(2026-07-24 企业权责透明)
+        await prisma.seedanceVideoTask
+            .update({
+                where: { id: taskId },
+                data: {
+                    status: 'failed',
+                    fail_reason: typeof j.fail_reason === 'string' ? j.fail_reason.slice(0, 500) : null,
+                },
+            })
+            .catch(() => {});
     }
 
     return new NextResponse(text, { status: 200, headers: { 'Content-Type': 'application/json' } });

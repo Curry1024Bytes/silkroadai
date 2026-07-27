@@ -11,7 +11,6 @@ export const runtime = 'nodejs';
  * GET  → 本人密钥列表(prefix/状态/时间,永不回明文/哈希)。
  * POST → 创建(active 上限 10;明文只在本响应返一次)。
  */
-const MAX_ACTIVE_KEYS = 10;
 
 export async function GET(req: NextRequest) {
     const user = await requireEnterpriseUser(req);
@@ -51,10 +50,8 @@ export async function POST(req: NextRequest) {
     const parsed = createSchema.safeParse(body);
     if (!parsed.success) return NextResponse.json({ error: 'invalid_input' }, { status: 400 });
 
-    const activeCount = await prisma.enterpriseKey.count({ where: { user_id: user.id, status: 'active' } });
-    if (activeCount >= MAX_ACTIVE_KEYS) {
-        return NextResponse.json({ error: 'key_limit_reached' }, { status: 400 });
-    }
+    // 密钥数量不设上限(2026-07-26,operator 取消):企业客户按需多环境/多密钥,
+    // 与主站取消 key 上限 (#274) 同策。仅保留版本开通门。
 
     // 版本开通门(2026-07-24):该版本没配上游 key 就不让建 —— 否则客户拿到 key 一调就 503,
     // 且看不出原因。开通 = 运营后台给该客户写对应 region 的上游 key 行。

@@ -7,7 +7,8 @@
  * `token_id`.
  *
  * Why a separate cache (vs reading on every render): /keys server-renders
- * batches up to MAX_TOKENS_PER_USER (10) lookups. A 60s row cache absorbs
+ * one lookup per active key (per-user key cap removed 2026-07-25, so this
+ * count is unbounded in principle). A 60s row cache absorbs
  * normal pageviews into ≤1 new-api round-trip per user-tab, only hitting
  * the upstream when the dashboard is genuinely viewed > 60s apart.
  *

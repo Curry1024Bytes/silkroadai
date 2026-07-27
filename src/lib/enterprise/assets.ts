@@ -15,9 +15,11 @@ import { uploadImage, deleteImage } from '@/lib/r2/client';
 /** 配额(env 可调):素材数 / 总字节 / 单文件字节。 */
 export function assetLimits() {
     return {
-        maxAssets: Number(process.env.ENTERPRISE_MAX_ASSETS || 500),
-        maxTotalBytes: Number(process.env.ENTERPRISE_MAX_ASSET_BYTES || 5 * 1024 * 1024 * 1024),
-        maxFileBytes: Number(process.env.ENTERPRISE_MAX_ASSET_FILE_BYTES || 100 * 1024 * 1024),
+        // 2026-07-24 企业客户扩容(原 500/5GB/100MB 不够用;R2 存储便宜,先放宽,
+        // 火山官方素材库政策对齐留 operator 调研后再定)
+        maxAssets: Number(process.env.ENTERPRISE_MAX_ASSETS || 5000),
+        maxTotalBytes: Number(process.env.ENTERPRISE_MAX_ASSET_BYTES || 200 * 1024 * 1024 * 1024),
+        maxFileBytes: Number(process.env.ENTERPRISE_MAX_ASSET_FILE_BYTES || 500 * 1024 * 1024),
     };
 }
 

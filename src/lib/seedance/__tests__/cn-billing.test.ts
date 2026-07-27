@@ -20,7 +20,7 @@ vi.mock('@/lib/newapi/client', () => ({ getUser, addQuota }));
 // prod-ish:1e6 quota = ¥7 → cnyToQuota(¥) = ¥ × 1e6/7
 vi.mock('@/lib/newapi/quota-units', () => ({ cnyToQuota: (cny: number) => Math.round((cny * 1e6) / 7) }));
 
-import { computeCostCny, estimateCostCny, chargeSeedanceVideoTask } from '../cn-billing';
+import { computeCostCny, officialCostCny, estimateCostCny, chargeSeedanceVideoTask } from '../cn-billing';
 
 describe('computeCostCny 费率', () => {
     it('无视频档:720p ¥39.1/1M、1080p ¥43.35、4k ¥22.1', () => {
@@ -140,5 +140,17 @@ describe('chargeSeedanceVideoTask 幂等 + 双账本', () => {
         expect(db.seedanceVideoTask.updateMany).toHaveBeenCalledWith(
             expect.objectContaining({ where: { id: 'cgt-1', billed: false } }),
         );
+    });
+});
+
+describe('officialCostCny(对账官方价:零售 ÷ 0.85)', () => {
+    it('720p pro 零售 ¥39.1 → 官方 ¥46;promax-mini 零售 ¥28.9 → 官方 ¥34', () => {
+        expect(officialCostCny(1_000_000, '720p', false)).toBeCloseTo(46, 4);
+        expect(officialCostCny(1_000_000, '720p', false, 'promax-mini')).toBeCloseTo(34, 4);
+    });
+    it('折扣 = 零售 / 官方 = 0.85(85 折)', () => {
+        const retail = computeCostCny(1_000_000, '1080p', true, 'promax');
+        const official = officialCostCny(1_000_000, '1080p', true, 'promax');
+        expect(retail / official).toBeCloseTo(0.85, 6);
     });
 });
