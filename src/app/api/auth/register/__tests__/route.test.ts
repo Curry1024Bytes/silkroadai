@@ -105,7 +105,7 @@ describe('POST /api/auth/register (new-api)', () => {
         });
         mockUserCreate.mockResolvedValue({
             id: PORTAL_USER_ID,
-            email: 'happy@silkroadai.io',
+            email: 'happy@llmroute.club',
             nickname: 'Happy',
             email_verified: false,
             locale: 'zh-CN',
@@ -120,7 +120,7 @@ describe('POST /api/auth/register (new-api)', () => {
             newapi_token_value: 'sk-test-abc123def456ghi',
         });
 
-        const res = await POST(makeReq({ email: 'Happy@SilkRoadAI.io', password: 'goodpass123', nickname: 'Happy' }));
+        const res = await POST(makeReq({ email: 'Happy@LLmRoute.club', password: 'goodpass123', nickname: 'Happy' }));
         const body = await res.json();
 
         expect(res.status).toBe(200);
@@ -128,12 +128,12 @@ describe('POST /api/auth/register (new-api)', () => {
         expect(body.token).toMatch(/^eyJ/);
         expect(body.newapi_user_id).toBe(NEWAPI_USER_ID);
         expect(body.newapi_token_value).toBe('sk-test-abc123def456ghi');
-        expect(body.portal_user.email).toBe('happy@silkroadai.io');
+        expect(body.portal_user.email).toBe('happy@llmroute.club');
 
         // email lowercased on store
         expect(mockUserCreate).toHaveBeenCalledWith(
             expect.objectContaining({
-                data: expect.objectContaining({ email: 'happy@silkroadai.io' }),
+                data: expect.objectContaining({ email: 'happy@llmroute.club' }),
             }),
         );
         // never returns password_hash or access_token to client
@@ -167,7 +167,7 @@ describe('POST /api/auth/register (new-api)', () => {
             verifyUrl: string;
             expiresInHours: number;
         };
-        expect(mailArgs.to).toBe('happy@silkroadai.io');
+        expect(mailArgs.to).toBe('happy@llmroute.club');
         expect(mailArgs.verifyUrl).toMatch(/\/verify-email\?token=[a-f0-9]{64}$/);
         expect(mailArgs.expiresInHours).toBe(24);
     });
@@ -181,7 +181,7 @@ describe('POST /api/auth/register (new-api)', () => {
         });
         mockUserCreate.mockResolvedValue({
             id: PORTAL_USER_ID,
-            email: 'smtpdown@silkroadai.io',
+            email: 'smtpdown@llmroute.club',
             nickname: null,
             email_verified: false,
             locale: 'zh-CN',
@@ -198,7 +198,7 @@ describe('POST /api/auth/register (new-api)', () => {
         mockSendVerificationEmail.mockRejectedValue(new Error('SMTP unavailable'));
 
         const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-        const res = await POST(makeReq({ email: 'smtpdown@silkroadai.io', password: 'goodpass123' }));
+        const res = await POST(makeReq({ email: 'smtpdown@llmroute.club', password: 'goodpass123' }));
         const body = await res.json();
 
         expect(res.status).toBe(200);
@@ -214,7 +214,7 @@ describe('POST /api/auth/register (new-api)', () => {
     it('returns 409 when email already registered', async () => {
         mockUserFindUnique.mockResolvedValue({ id: 'existing' });
 
-        const res = await POST(makeReq({ email: 'taken@silkroadai.io', password: 'goodpass123' }));
+        const res = await POST(makeReq({ email: 'taken@llmroute.club', password: 'goodpass123' }));
         const body = await res.json();
 
         expect(res.status).toBe(409);
@@ -224,7 +224,7 @@ describe('POST /api/auth/register (new-api)', () => {
     });
 
     it('returns 400 when password is too short', async () => {
-        const res = await POST(makeReq({ email: 'short@silkroadai.io', password: 'tiny' }));
+        const res = await POST(makeReq({ email: 'short@llmroute.club', password: 'tiny' }));
         const body = await res.json();
 
         expect(res.status).toBe(400);
@@ -256,7 +256,7 @@ describe('POST /api/auth/register (new-api)', () => {
         mockUserFindUnique.mockResolvedValue(null);
         mockUserCreate.mockResolvedValue({
             id: PORTAL_USER_ID,
-            email: 'rollback@silkroadai.io',
+            email: 'rollback@llmroute.club',
             nickname: null,
             email_verified: false,
             locale: 'zh-CN',
@@ -267,7 +267,7 @@ describe('POST /api/auth/register (new-api)', () => {
 
         // searchUser returns the orphan that step 1 created
         mockSearchNewApiUser.mockResolvedValue({
-            items: [{ id: NEWAPI_USER_ID, username: 'c-aaaaaaaa', display_name: 'rollback@silkroadai.io' }],
+            items: [{ id: NEWAPI_USER_ID, username: 'c-aaaaaaaa', display_name: 'rollback@llmroute.club' }],
             total: 1,
         });
         mockDeleteNewApiUser.mockResolvedValue(undefined);
@@ -276,7 +276,7 @@ describe('POST /api/auth/register (new-api)', () => {
         const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
         const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-        const res = await POST(makeReq({ email: 'rollback@silkroadai.io', password: 'goodpass123' }));
+        const res = await POST(makeReq({ email: 'rollback@llmroute.club', password: 'goodpass123' }));
         const body = await res.json();
 
         expect(res.status).toBe(502);
@@ -298,7 +298,7 @@ describe('POST /api/auth/register (new-api)', () => {
         mockUserFindUnique.mockResolvedValue(null);
         mockUserCreate.mockResolvedValue({
             id: PORTAL_USER_ID,
-            email: 'step1@silkroadai.io',
+            email: 'step1@llmroute.club',
             nickname: null,
             email_verified: false,
             locale: 'zh-CN',
@@ -311,7 +311,7 @@ describe('POST /api/auth/register (new-api)', () => {
 
         const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-        const res = await POST(makeReq({ email: 'step1@silkroadai.io', password: 'goodpass123' }));
+        const res = await POST(makeReq({ email: 'step1@llmroute.club', password: 'goodpass123' }));
 
         expect(res.status).toBe(502);
         expect(mockSearchNewApiUser).toHaveBeenCalled();
@@ -330,7 +330,7 @@ describe('POST /api/auth/register (new-api)', () => {
         mockUserFindUnique.mockResolvedValue(null);
         mockUserCreate.mockResolvedValue({
             id: PORTAL_USER_ID,
-            email: 'linkage@silkroadai.io',
+            email: 'linkage@llmroute.club',
             nickname: null,
             email_verified: false,
             locale: 'zh-CN',
@@ -350,7 +350,7 @@ describe('POST /api/auth/register (new-api)', () => {
 
         const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-        const res = await POST(makeReq({ email: 'linkage@silkroadai.io', password: 'goodpass123' }));
+        const res = await POST(makeReq({ email: 'linkage@llmroute.club', password: 'goodpass123' }));
         const body = await res.json();
 
         expect(res.status).toBe(500);
@@ -394,7 +394,7 @@ describe('POST /api/auth/register (W7 D4 invite_code)', () => {
         });
         mockUserCreate.mockResolvedValue({
             id: PORTAL_USER_ID,
-            email: 'invited@silkroadai.io',
+            email: 'invited@llmroute.club',
             nickname: null,
             email_verified: false,
             locale: 'zh-CN',
@@ -411,7 +411,7 @@ describe('POST /api/auth/register (W7 D4 invite_code)', () => {
 
         const res = await POST(
             makeReq({
-                email: 'invited@silkroadai.io',
+                email: 'invited@llmroute.club',
                 password: 'goodpass123',
                 invite_code: 'LAUNCH-A',
             }),
@@ -436,7 +436,7 @@ describe('POST /api/auth/register (W7 D4 invite_code)', () => {
         });
         mockUserCreate.mockResolvedValue({
             id: PORTAL_USER_ID,
-            email: 'lower@silkroadai.io',
+            email: 'lower@llmroute.club',
             nickname: null,
             email_verified: false,
             locale: 'zh-CN',
@@ -453,7 +453,7 @@ describe('POST /api/auth/register (W7 D4 invite_code)', () => {
 
         const res = await POST(
             makeReq({
-                email: 'lower@silkroadai.io',
+                email: 'lower@llmroute.club',
                 password: 'goodpass123',
                 invite_code: 'launch-a',
             }),
@@ -475,7 +475,7 @@ describe('POST /api/auth/register (W7 D4 invite_code)', () => {
 
         const res = await POST(
             makeReq({
-                email: 'bad@silkroadai.io',
+                email: 'bad@llmroute.club',
                 password: 'goodpass123',
                 invite_code: 'NOT-IN-LIST',
             }),
@@ -505,7 +505,7 @@ describe('POST /api/auth/register (W7 D4 invite_code)', () => {
         });
         mockUserCreate.mockResolvedValue({
             id: PORTAL_USER_ID,
-            email: 'plain@silkroadai.io',
+            email: 'plain@llmroute.club',
             nickname: null,
             email_verified: false,
             locale: 'zh-CN',
@@ -520,7 +520,7 @@ describe('POST /api/auth/register (W7 D4 invite_code)', () => {
             newapi_token_value: 'sk-test-plain',
         });
 
-        const res = await POST(makeReq({ email: 'plain@silkroadai.io', password: 'goodpass123' }));
+        const res = await POST(makeReq({ email: 'plain@llmroute.club', password: 'goodpass123' }));
 
         expect(res.status).toBe(200);
         // invite_code should land as null (not undefined / not "" /
@@ -543,7 +543,7 @@ describe('POST /api/auth/register (W7 D4 invite_code)', () => {
         });
         mockUserCreate.mockResolvedValue({
             id: PORTAL_USER_ID,
-            email: 'spaces@silkroadai.io',
+            email: 'spaces@llmroute.club',
             nickname: null,
             email_verified: false,
             locale: 'zh-CN',
@@ -560,7 +560,7 @@ describe('POST /api/auth/register (W7 D4 invite_code)', () => {
 
         const res = await POST(
             makeReq({
-                email: 'spaces@silkroadai.io',
+                email: 'spaces@llmroute.club',
                 password: 'goodpass123',
                 invite_code: '   ',
             }),

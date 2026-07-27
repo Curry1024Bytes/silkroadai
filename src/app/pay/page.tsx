@@ -21,7 +21,7 @@ import { PayForm } from './pay-form';
 import { FirstRechargeBonusBanner } from './first-recharge-bonus-banner';
 
 export const dynamic = 'force-dynamic';
-export const metadata = { title: '充值 — Silk Road AI' };
+export const metadata = { title: '充值 — LLmRoute' };
 
 /** Bridge: getCurrentUser expects a NextRequest, but a server component only
  *  has the request via `headers()`. Reconstruct a thin NextRequest carrying
@@ -66,7 +66,7 @@ export default async function PayPage({
             <Card className="w-full max-w-lg p-8">
                 <header className="mb-6 flex items-center gap-3">
                     <Logo variant="primary-flat" size={28} />
-                    <p className="m-0 text-xs text-minor-ink">Connecting Global Intelligence.</p>
+                    <p className="m-0 text-xs text-minor-ink">One route. Every model.</p>
                 </header>
                 <h2 className="m-0 mb-4 text-base font-semibold text-navy">账户充值</h2>
                 <p className="m-0 mb-5 text-sm text-muted-ink">

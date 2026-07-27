@@ -17,7 +17,7 @@ import { AgreementDisclosure } from '@/components/reseller/AgreementDisclosure';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
 
 export const dynamic = 'force-dynamic';
-export const metadata = { title: '加入代理 — Silk Road AI' };
+export const metadata = { title: '加入代理 — LLmRoute' };
 
 async function getSessionUser() {
     const h = await headers();
@@ -68,7 +68,7 @@ export default async function ResellerEntryPage() {
                 <CardHeader>
                     <div className="flex flex-col gap-1">
                         <p className="text-xs uppercase tracking-wider text-muted-ink m-0">代理计划</p>
-                        <CardTitle as="h1">加入 Silk Road AI 代理</CardTitle>
+                        <CardTitle as="h1">加入 LLmRoute 代理</CardTitle>
                     </div>
                 </CardHeader>
                 <CardContent>

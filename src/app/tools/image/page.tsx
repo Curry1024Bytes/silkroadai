@@ -3,7 +3,7 @@ import { BackButton } from '@/components/BackButton';
 import { ImageTool } from './image-tool';
 
 export const metadata: Metadata = {
-    title: 'AI 生图测试工具 · Silk Road AI',
+    title: 'AI 生图测试工具 · LLmRoute',
     description:
         '填入你的 API Key,在线测试 AI 生图 —— 文生图 / 图生图,覆盖你这把 key 能用的全部生图模型(Gemini / GPT Image 等)。',
 };

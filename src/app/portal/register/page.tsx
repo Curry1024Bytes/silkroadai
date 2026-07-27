@@ -19,7 +19,7 @@ import { Card } from '@/components/ui/Card';
 import { RegisterForm } from './register-form';
 
 export const dynamic = 'force-dynamic';
-export const metadata = { title: '注册 — Silk Road AI' };
+export const metadata = { title: '注册 — LLmRoute' };
 
 async function getSessionUser() {
     const h = await headers();
@@ -43,7 +43,7 @@ export default async function RegisterPage() {
             <Card className="w-full max-w-md p-8">
                 <header className="mb-6 flex items-center gap-3">
                     <BrandLogo variant="primary-flat" size={28} />
-                    <p className="m-0 text-xs text-minor-ink">Connecting Global Intelligence.</p>
+                    <p className="m-0 text-xs text-minor-ink">One route. Every model.</p>
                 </header>
                 <h2 className="m-0 mb-1 text-base font-semibold text-navy">注册账户</h2>
                 <p className="m-0 mb-5 text-sm text-muted-ink">

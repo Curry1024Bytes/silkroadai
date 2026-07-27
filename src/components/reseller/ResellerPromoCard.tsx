@@ -45,7 +45,7 @@ export function ResellerPromoCard({ sourceStatus }: Props) {
                 <UsersRound size={19} strokeWidth={1.8} aria-hidden="true" />
             </span>
             <div className="min-w-0 flex-1">
-                <p className="m-0 text-base font-semibold text-portal-ink">邀请朋友充值,你也赚佣金</p>
+                <p className="m-0 font-display text-base font-semibold text-portal-ink">邀请朋友充值,你也赚佣金</p>
                 <p className="m-0 mt-1 text-sm leading-relaxed text-portal-muted">
                     阶梯佣金 <strong className="text-navy">10% / 15% / 20%</strong>,归因期{' '}
                     <strong className="text-navy">24 个月</strong>,月结打款。最低门槛,代理人人可申请。

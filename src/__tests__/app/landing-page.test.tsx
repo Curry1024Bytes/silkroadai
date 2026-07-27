@@ -24,7 +24,7 @@ vi.mock('next/font/google', () => ({
 
 // P6a: the landing header now uses the async <BrandLogo> (reads getCurrentTenant).
 // Render it as the default platform <Logo> (synchronous) so renderToString still
-// works and the brand-logo assertion (img alt="Silk Road AI" 28×112) holds.
+// works and the brand-logo assertion (img alt="LLmRoute" 28×112) holds.
 vi.mock('@/components/brand/BrandLogo', async () => {
     const actual = await vi.importActual<typeof import('@/components/brand/Logo')>('@/components/brand/Logo');
     return { BrandLogo: (props: Record<string, unknown>) => actual.Logo(props) };
@@ -97,7 +97,7 @@ describe('landing page — general rendering (post-permanent-pricing)', () => {
         // Distinctive copy that only ever lived in <Trust /> — not
         // surfaced anywhere else (Footer says "Connecting Global
         // Intelligence", not this string).
-        expect(html).not.toContain('由 Silk Road AI 运营团队维护');
+        expect(html).not.toContain('由 LLmRoute 运营团队维护');
         expect(html).not.toContain('海外节点部署 · HTTPS 全程加密');
     });
 
@@ -118,7 +118,7 @@ describe('landing page — general rendering (post-permanent-pricing)', () => {
         const Page = await loadPage();
         const tree = await Page({ searchParams: Promise.resolve({}) });
         const html = renderToString(tree);
-        expect(html).toContain('ai.silkroadai.io/v1/chat/completions');
+        expect(html).toContain('api.llmroute.club/v1/chat/completions');
         expect(html).toContain('sk-xxx');
         expect(html).toContain('claude-sonnet-4-6');
     });
@@ -127,19 +127,19 @@ describe('landing page — general rendering (post-permanent-pricing)', () => {
         const Page = await loadPage();
         const tree = await Page({ searchParams: Promise.resolve({}) });
         const html = renderToString(tree);
-        // PR #23's <Logo /> renders an <img alt="Silk Road AI" height width />
+        // PR #23's <Logo /> renders an <img alt="LLmRoute" height width />
         // whose width = height × 4 for the full-logo variants (96/24 aspect).
         // At size=28 → width=112. Vitest under Vite inlines the SVG as a
         // base64 data: URI rather than preserving the filename, so we check
         // the img dimensions (which are unique to the swap) instead.
-        expect(html).toMatch(/<img[^>]*alt="Silk Road AI"/);
+        expect(html).toMatch(/<img[^>]*alt="LLmRoute"/);
         expect(html).toMatch(/height="28"/);
         expect(html).toMatch(/width="112"/);
-        // The legacy text-wordmark was a <span> with literal "Silk Road AI"
+        // The legacy text-wordmark was a <span> with literal "LLmRoute"
         // text. The Logo asset has no inline text, so the only "Silk Road
         // AI" string left in the header is the img alt attribute (asserted
         // above) — there must be no plain text wordmark.
-        expect(html).not.toMatch(/<span[^>]*>Silk Road AI<\/span>/);
+        expect(html).not.toMatch(/<span[^>]*>LLmRoute<\/span>/);
     });
 
     it('renders the GPU 租赁 outline CTA in the header (W7 D4 PR-Q)', async () => {

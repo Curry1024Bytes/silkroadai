@@ -19,14 +19,14 @@ import Link from 'next/link';
 import { prisma } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
-export const metadata = { title: '支付结果 — Silk Road AI' };
+export const metadata = { title: '支付结果 — LLmRoute' };
 
 const containerStyle: React.CSSProperties = {
     minHeight: '100vh',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    background: '#f5f7fa',
+    background: '#f3f6f5',
     padding: 24,
 };
 const cardStyle: React.CSSProperties = {
@@ -36,12 +36,12 @@ const cardStyle: React.CSSProperties = {
     padding: 32,
     borderRadius: 8,
     boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
-    color: '#1a2540',
+    color: '#1d1d1f',
 };
 const buttonStyle: React.CSSProperties = {
     display: 'inline-block',
     marginTop: 16,
-    background: '#0a1535',
+    background: '#0e1715',
     color: '#fff',
     padding: '8px 16px',
     borderRadius: 4,
@@ -65,8 +65,8 @@ export default async function PayResultPage({
         return (
             <main style={containerStyle}>
                 <div style={cardStyle}>
-                    <h1 style={{ margin: 0, fontSize: 18, color: '#0a1535' }}>访问无效</h1>
-                    <p style={{ margin: '12px 0 0', fontSize: 13, color: '#5a6478' }}>缺少订单参数。</p>
+                    <h1 style={{ margin: 0, fontSize: 18, color: '#0e1715' }}>访问无效</h1>
+                    <p style={{ margin: '12px 0 0', fontSize: 13, color: '#53645f' }}>缺少订单参数。</p>
                     <Link href="/" style={buttonStyle}>
                         返回首页
                     </Link>
@@ -85,7 +85,7 @@ export default async function PayResultPage({
             <main style={containerStyle}>
                 <div style={cardStyle}>
                     <h1 style={{ margin: 0, fontSize: 18, color: 'var(--color-status-error-text)' }}>订单异常</h1>
-                    <p style={{ margin: '12px 0 0', fontSize: 13, color: '#5a6478' }}>
+                    <p style={{ margin: '12px 0 0', fontSize: 13, color: '#53645f' }}>
                         未找到该订单。如已付款请联系客服:微信 Globe_Ads。
                     </p>
                     <Link href="/" style={buttonStyle}>
@@ -115,7 +115,7 @@ export default async function PayResultPage({
                 >
                     {success ? '付款成功' : processing ? '付款已收到,处理中' : '订单异常'}
                 </h1>
-                <p style={{ margin: '12px 0 0', fontSize: 13, color: '#5a6478' }}>
+                <p style={{ margin: '12px 0 0', fontSize: 13, color: '#53645f' }}>
                     {success
                         ? `¥${Number(order.amount).toFixed(2)} 已到账,余额刷新可能延迟最多 60 秒。`
                         : processing

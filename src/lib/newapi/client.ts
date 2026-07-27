@@ -1,5 +1,5 @@
 /**
- * Silk Road AI Portal — new-api Admin Client
+ * LLmRoute Portal — new-api Admin Client
  * ===========================================
  *
  * Replaces src/lib/litellm/client.ts (W1 路线产物).

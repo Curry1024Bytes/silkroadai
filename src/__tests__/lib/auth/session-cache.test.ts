@@ -59,7 +59,7 @@ describe('getCurrentUser — behavioral (cache() impact transparent)', () => {
         mockVerifySession.mockResolvedValue({ userId: PORTAL_USER_ID, tokenVersion: 1 });
         mockUserFindUnique.mockResolvedValue({
             id: PORTAL_USER_ID,
-            email: 'happy@silkroadai.io',
+            email: 'happy@llmroute.club',
             session_token_version: 1,
         });
 

@@ -9,7 +9,7 @@
  *
  * Style contract (P1 design system):
  *   - small text in minor-ink (the prefix)
- *   - link in muted-ink + font-medium, hover transitions to brand-accent gold
+ *   - link in route blue, hover transitions to the stronger blue token
  *
  * The /portal/register page additionally has a top-of-card "已经有账户?
  * 前往登录" hint above the form (header subtitle); we cover the visibility
@@ -28,12 +28,12 @@ describe('<LoginForm /> footer CTA → /portal/register (W7 D4 PR-I)', () => {
         expect(html).toMatch(/<a[^>]*href="\/portal\/register"[^>]*>[^<]*创建账户/);
     });
 
-    it('applies the muted-ink + brand-accent hover style tokens', () => {
+    it('applies the route-blue handoff style tokens', () => {
         const html = renderToString(<LoginForm next="/dashboard" />);
         // Anchor carries the spec'd color tokens — covers regression if
         // someone "tidies" the className and drops the hover transition.
         expect(html).toMatch(
-            /<a[^>]*href="\/portal\/register"[^>]*class="[^"]*text-muted-ink[^"]*hover:text-brand-accent/,
+            /<a[^>]*href="\/portal\/register"[^>]*class="[^"]*text-brand-accent[^"]*hover:text-brand-accent-strong/,
         );
     });
 });

@@ -1,16 +1,14 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { Check, Clipboard, Eye, KeyRound, Plus, Trash2 } from 'lucide-react';
 // NOTE: this 'use client' island does NOT convert quota→¥ itself. quotaToCny
 // reads NEWAPI_QUOTA_PER_USD / USD_TO_CNY_RATE — server-only env that is
 // undefined in the browser bundle, so quota-units would fall back to stale
 // defaults (500k / 7.2) and over-display ¥ by ~2×. The server passes the
 // ready-to-render ¥ (KeyRow.usedCny) instead.
 import { Button } from '@/components/ui/Button';
-import { Card } from '@/components/ui/Card';
-import { EmptyState } from '@/components/ui/EmptyState';
 import { FormError } from '@/components/ui/FormError';
-import { Input } from '@/components/ui/Input';
 
 export interface KeyRow {
     id: string;
@@ -57,6 +55,10 @@ const MAX_TOKENS_PER_USER = 10;
  *  against shoulder-surfing / forgotten browser tab scenarios. */
 const REVEAL_AUTOHIDE_MS = 10_000;
 const COPIED_TOAST_MS = 2_000;
+const ACTION_BUTTON =
+    'flex h-11 w-11 shrink-0 items-center justify-center rounded-md border border-transparent text-portal-subtle sm:h-8 sm:w-8 ' +
+    'transition-colors hover:border-portal-line hover:bg-portal-soft hover:text-portal-ink ' +
+    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy/20 disabled:cursor-not-allowed disabled:opacity-40';
 
 /** Render `last_used_at` as a friendly Chinese relative-time string.
  *  Returns null sentinel for "never used" so callers can phrase it in
@@ -87,6 +89,66 @@ interface CreateState {
     submitting: boolean;
     error: string | null;
     tier: string;
+}
+
+function KeyActions({
+    row,
+    busy,
+    revealed,
+    copied,
+    onReveal,
+    onCopy,
+    onRevoke,
+}: {
+    row: KeyRow;
+    busy: boolean;
+    revealed: boolean;
+    copied: boolean;
+    onReveal: () => void;
+    onCopy: () => void;
+    onRevoke: () => void;
+}) {
+    return (
+        <span className="inline-flex shrink-0 justify-end gap-1">
+            <button
+                type="button"
+                onClick={onReveal}
+                disabled={busy || revealed}
+                className={ACTION_BUTTON}
+                aria-label={revealed ? `${row.key_alias} 已显示` : `显示 ${row.key_alias}`}
+                title={revealed ? '密钥已显示' : '显示密钥'}
+            >
+                <Eye size={15} strokeWidth={1.8} aria-hidden="true" />
+                <span className="sr-only">显示</span>
+            </button>
+            <button
+                type="button"
+                onClick={onCopy}
+                disabled={busy}
+                className={ACTION_BUTTON}
+                aria-label={copied ? `${row.key_alias} 已复制` : `复制 ${row.key_alias}`}
+                title={copied ? '已复制' : '复制密钥'}
+            >
+                {copied ? (
+                    <Check size={15} className="text-status-success-text" aria-hidden="true" />
+                ) : (
+                    <Clipboard size={15} strokeWidth={1.8} aria-hidden="true" />
+                )}
+                <span className="sr-only">复制</span>
+            </button>
+            <button
+                type="button"
+                onClick={onRevoke}
+                disabled={busy}
+                className={`${ACTION_BUTTON} hover:border-status-error-border hover:bg-status-error-bg hover:text-status-error-text`}
+                aria-label={`撤销 ${row.key_alias}`}
+                title="撤销密钥"
+            >
+                <Trash2 size={15} strokeWidth={1.8} aria-hidden="true" />
+                <span className="sr-only">撤销</span>
+            </button>
+        </span>
+    );
 }
 
 export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; tiers?: TierOption[] }) {
@@ -275,15 +337,13 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
     const tableHeader = useMemo(
         () => (
             <thead>
-                <tr className="bg-paper-muted text-muted-ink">
-                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">别名</th>
-                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
-                        API Key
-                    </th>
-                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                <tr className="bg-portal-soft text-portal-muted">
+                    <th className="border-b border-portal-line px-5 py-2.5 text-left text-xs font-semibold">别名</th>
+                    <th className="border-b border-portal-line px-5 py-2.5 text-left text-xs font-semibold">API Key</th>
+                    <th className="border-b border-portal-line px-5 py-2.5 text-left text-xs font-semibold">
                         创建时间
                     </th>
-                    <th className="text-right px-4 py-2.5 text-xs font-semibold border-b border-brand-border">操作</th>
+                    <th className="border-b border-portal-line px-5 py-2.5 text-right text-xs font-semibold">操作</th>
                 </tr>
             </thead>
         ),
@@ -291,156 +351,200 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
     );
 
     return (
-        <div>
-            <div className="flex justify-end mb-3">
-                <Button
-                    type="button"
-                    variant="primary"
-                    size="sm"
-                    onClick={() =>
-                        setCreate({ open: true, alias: '', submitting: false, error: null, tier: defaultTier })
-                    }
-                    disabled={atLimit || create.open}
-                    title={atLimit ? `已达上限 (${MAX_TOKENS_PER_USER})` : ''}
-                >
-                    {atLimit ? `已达上限 (${MAX_TOKENS_PER_USER})` : '+ 创建新 Key'}
-                </Button>
-            </div>
-
-            {create.open && (
-                <Card className="p-4 mb-4">
-                    <form onSubmit={handleCreate} className="flex gap-2 items-start">
-                        <div className="flex-1">
-                            <Input
-                                type="text"
-                                placeholder="例如 prod-openai / test-claude / dev-mobile"
-                                value={create.alias}
-                                onChange={(e) => setCreate((prev) => ({ ...prev, alias: e.target.value, error: null }))}
-                                maxLength={50}
-                                autoFocus
-                                error={!!create.error}
-                                className="text-sm"
-                            />
-                            <p className="m-0 mt-1.5 text-xs text-minor-ink">
-                                建议格式 <code className="font-mono text-xs">env-purpose</code> —
-                                方便区分不同环境与用途。
-                            </p>
-                            {showTierChoice && (
-                                <div className="mt-2.5">
-                                    <p className="m-0 mb-1 text-xs font-medium text-muted-ink">档次</p>
-                                    <div className="flex flex-wrap gap-3">
-                                        {tiers.map((t) => (
-                                            <label
-                                                key={t.key}
-                                                className="inline-flex cursor-pointer items-center gap-1.5 text-sm text-ink"
-                                            >
-                                                <input
-                                                    type="radio"
-                                                    name="key-tier"
-                                                    value={t.key}
-                                                    checked={create.tier === t.key}
-                                                    onChange={() => setCreate((prev) => ({ ...prev, tier: t.key }))}
-                                                />
-                                                <span>{t.display_name}</span>
-                                            </label>
-                                        ))}
-                                    </div>
-                                    <p className="m-0 mt-1 text-xs text-minor-ink">
-                                        {tiers.find((t) => t.key === create.tier)?.description ??
-                                            '官方稳定档更稳、价格更高;低价号池性价比高。档次建后不可改,换档请新建 key。'}
-                                    </p>
-                                </div>
-                            )}
-                            <FormError>{create.error}</FormError>
-                        </div>
-                        <Button
-                            type="submit"
-                            variant="primary"
-                            size="sm"
-                            loading={create.submitting}
-                            disabled={create.submitting || !create.alias.trim()}
-                        >
-                            {create.submitting ? '创建中…' : '创建'}
-                        </Button>
-                        <Button
-                            type="button"
-                            variant="secondary"
-                            size="sm"
-                            onClick={() =>
-                                setCreate({ open: false, alias: '', submitting: false, error: null, tier: defaultTier })
-                            }
-                            disabled={create.submitting}
-                        >
-                            取消
-                        </Button>
-                    </form>
-                </Card>
-            )}
-
+        <div className="space-y-4">
             {globalError ? (
-                <div className="mb-3">
+                <div>
                     <FormError severity="banner">{globalError}</FormError>
                 </div>
             ) : null}
 
-            {rows.length === 0 ? (
-                <Card>
-                    <EmptyState
-                        title="还没有 API Key"
-                        body={
-                            <>
-                                创建第一个 key 即可调用 Silk Road AI。点击右上角{' '}
-                                <code className="font-mono text-xs">+ 创建新 Key</code> 开始。
-                            </>
+            <section className="overflow-hidden rounded-lg border border-portal-line bg-portal-panel shadow-portal">
+                <div className="flex flex-col gap-3 border-b border-portal-line px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
+                    <div className="flex min-w-0 items-center gap-3">
+                        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-portal-gold-soft text-portal-gold">
+                            <KeyRound size={18} strokeWidth={1.8} aria-hidden="true" />
+                        </span>
+                        <div className="min-w-0">
+                            <h2 className="m-0 text-sm font-semibold text-portal-ink">访问密钥</h2>
+                            <p className="m-0 mt-0.5 text-xs text-portal-subtle tabular-nums">
+                                已创建 {rows.length} / {MAX_TOKENS_PER_USER} 个
+                            </p>
+                        </div>
+                    </div>
+                    <Button
+                        type="button"
+                        variant="primary"
+                        size="sm"
+                        onClick={() =>
+                            setCreate({ open: true, alias: '', submitting: false, error: null, tier: defaultTier })
                         }
-                    />
-                </Card>
-            ) : (
-                <Card className="overflow-hidden">
-                    <table className="w-full border-collapse">
-                        {tableHeader}
-                        <tbody>
-                            {rows.map((row, idx) => {
+                        disabled={atLimit || create.open}
+                        title={atLimit ? `已达上限 (${MAX_TOKENS_PER_USER})` : '创建新的 API Key'}
+                        className="rounded-md"
+                    >
+                        {!atLimit && <Plus size={15} strokeWidth={2} aria-hidden="true" />}
+                        <span>{atLimit ? `已达上限 (${MAX_TOKENS_PER_USER})` : '创建新 Key'}</span>
+                    </Button>
+                </div>
+
+                {create.open && (
+                    <form onSubmit={handleCreate} className="border-b border-portal-line bg-portal-soft p-4 sm:p-5">
+                        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+                            <div className="min-w-0">
+                                <label
+                                    htmlFor="new-key-alias"
+                                    className="mb-1.5 block text-xs font-medium text-portal-muted"
+                                >
+                                    密钥别名
+                                </label>
+                                <input
+                                    id="new-key-alias"
+                                    type="text"
+                                    placeholder="例如 prod-openai / test-claude / dev-mobile"
+                                    value={create.alias}
+                                    onChange={(e) =>
+                                        setCreate((prev) => ({ ...prev, alias: e.target.value, error: null }))
+                                    }
+                                    maxLength={50}
+                                    autoFocus
+                                    aria-invalid={!!create.error}
+                                    className="h-10 w-full rounded-md border border-portal-line bg-portal-panel px-3 text-sm text-portal-ink outline-none placeholder:text-portal-subtle focus:border-navy focus:ring-2 focus:ring-navy/10"
+                                />
+                                <p className="m-0 mt-1.5 text-xs text-portal-subtle">
+                                    建议采用{' '}
+                                    <code className="font-mono text-[11px] text-portal-muted">env-purpose</code>{' '}
+                                    格式，便于区分环境与用途。
+                                </p>
+                            </div>
+                            <div className="flex flex-col-reverse gap-2 sm:flex-row lg:pb-6">
+                                <Button
+                                    type="button"
+                                    variant="secondary"
+                                    size="sm"
+                                    onClick={() =>
+                                        setCreate({
+                                            open: false,
+                                            alias: '',
+                                            submitting: false,
+                                            error: null,
+                                            tier: defaultTier,
+                                        })
+                                    }
+                                    disabled={create.submitting}
+                                    className="rounded-md border-portal-line text-portal-muted"
+                                >
+                                    取消
+                                </Button>
+                                <Button
+                                    type="submit"
+                                    variant="primary"
+                                    size="sm"
+                                    loading={create.submitting}
+                                    disabled={create.submitting || !create.alias.trim()}
+                                    className="rounded-md"
+                                >
+                                    {create.submitting ? '创建中…' : '确认创建'}
+                                </Button>
+                            </div>
+                        </div>
+
+                        {showTierChoice && (
+                            <fieldset className="mt-4 border-0 p-0">
+                                <legend className="mb-2 text-xs font-medium text-portal-muted">调用档次</legend>
+                                <div className="flex flex-wrap gap-2">
+                                    {tiers.map((t) => {
+                                        const selected = create.tier === t.key;
+                                        return (
+                                            <label
+                                                key={t.key}
+                                                className={[
+                                                    'inline-flex h-9 cursor-pointer items-center rounded-md border px-3 text-sm transition-colors',
+                                                    selected
+                                                        ? 'border-navy bg-navy text-white'
+                                                        : 'border-portal-line bg-portal-panel text-portal-muted hover:bg-portal-active hover:text-portal-ink',
+                                                ].join(' ')}
+                                            >
+                                                <input
+                                                    className="sr-only"
+                                                    type="radio"
+                                                    name="key-tier"
+                                                    value={t.key}
+                                                    checked={selected}
+                                                    onChange={() => setCreate((prev) => ({ ...prev, tier: t.key }))}
+                                                />
+                                                {t.display_name}
+                                            </label>
+                                        );
+                                    })}
+                                </div>
+                                <p className="m-0 mt-2 text-xs text-portal-subtle">
+                                    {tiers.find((t) => t.key === create.tier)?.description ??
+                                        '官方稳定档更稳、价格更高；低价号池性价比高。档次创建后不可修改。'}
+                                </p>
+                            </fieldset>
+                        )}
+                        <FormError>{create.error}</FormError>
+                    </form>
+                )}
+
+                {rows.length === 0 ? (
+                    <div className="flex min-h-[250px] flex-col items-center justify-center px-6 py-10 text-center">
+                        <span className="flex h-11 w-11 items-center justify-center rounded-md bg-portal-gold-soft text-portal-gold">
+                            <KeyRound size={21} strokeWidth={1.7} aria-hidden="true" />
+                        </span>
+                        <h3 className="m-0 mt-4 text-base font-semibold text-portal-ink">还没有 API Key</h3>
+                        <p className="m-0 mt-1.5 max-w-sm text-sm leading-relaxed text-portal-muted">
+                            创建第一个 Key 后，即可通过兼容 OpenAI 与 Anthropic 的接口调用模型。
+                        </p>
+                    </div>
+                ) : (
+                    <>
+                        <div className="divide-y divide-portal-line sm:hidden">
+                            {rows.map((row) => {
                                 const revealed = reveal[row.id];
                                 const showCopied = copied[row.id];
                                 const busy = busyId === row.id;
-                                const isLast = idx === rows.length - 1;
-                                // W7 D4 PR-R Item C: rows are flat again.
-                                // The per-row "如何使用此 Key" panel that
-                                // PR-G stitched in was replaced by a single
-                                // unified 调用示例 panel below the table
-                                // (see <KeysSnippetsPanel /> rendered by
-                                // keys/page.tsx). Border treatment matches
-                                // the rest of the portal: every row except
-                                // the last gets a bottom border.
-                                const cell = `px-4 py-3 text-sm text-ink`;
-                                const borderClass = isLast ? '' : 'border-b border-brand-border';
                                 return (
-                                    <tr key={row.id}>
-                                        <td className={`${cell} ${borderClass}`}>
-                                            <div className="flex flex-wrap items-center gap-2">
-                                                <span>{row.key_alias}</span>
-                                                <span className="rounded-full bg-paper-muted px-2 py-0.5 text-[10px] font-medium text-muted-ink">
-                                                    {tierLabel(row.tier)}
-                                                </span>
+                                    <article key={row.id} className="p-4">
+                                        <div className="flex items-start justify-between gap-3">
+                                            <div className="min-w-0 pt-1">
+                                                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                                                    <h3 className="m-0 max-w-full truncate text-sm font-semibold text-portal-ink">
+                                                        {row.key_alias}
+                                                    </h3>
+                                                    <span className="rounded bg-portal-gold-soft px-2 py-0.5 text-[10px] font-semibold text-portal-gold">
+                                                        {tierLabel(row.tier)}
+                                                    </span>
+                                                </div>
+                                                <p className="m-0 mt-1 text-[11px] text-portal-subtle">
+                                                    创建于{' '}
+                                                    {new Date(row.created_at).toLocaleString('zh-CN', {
+                                                        timeZone: 'Asia/Shanghai',
+                                                    })}
+                                                </p>
                                             </div>
-                                        </td>
-                                        <td className={`${cell} ${borderClass}`}>
-                                            <div
+                                            <KeyActions
+                                                row={row}
+                                                busy={busy}
+                                                revealed={!!revealed}
+                                                copied={!!showCopied}
+                                                onReveal={() => handleReveal(row.id)}
+                                                onCopy={() => handleCopy(row.id)}
+                                                onRevoke={() => handleRevoke(row.id)}
+                                            />
+                                        </div>
+                                        <div className="mt-3 border-t border-portal-line pt-3">
+                                            <p
                                                 className={[
-                                                    'font-mono',
-                                                    revealed ? 'text-navy' : 'text-muted-ink',
+                                                    'm-0 break-all font-mono text-xs',
+                                                    revealed ? 'font-semibold text-portal-ink' : 'text-portal-muted',
                                                 ].join(' ')}
                                             >
                                                 {revealed ?? row.masked_key}
-                                            </div>
-                                            {/* W6 D4: per-key usage subline. Grey/small so it never
-                                             *  competes with the masked sk-. Renders null state
-                                             *  ("从未调用") explicitly so customers see the key exists
-                                             *  but isn't being hit. */}
-                                            <div className="mt-1 text-xs text-minor-ink tabular-nums">
+                                            </p>
+                                            <p className="m-0 mt-1.5 text-xs text-portal-subtle tabular-nums">
                                                 {row.used_quota === null ? (
-                                                    <span>用量数据暂不可用</span>
+                                                    '用量数据暂不可用'
                                                 ) : (
                                                     <>
                                                         累计 ¥{(row.usedCny ?? 0).toFixed(2)}
@@ -448,51 +552,96 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                                                         最近调用 {formatLastUsed(row.last_used_at)}
                                                     </>
                                                 )}
-                                            </div>
-                                        </td>
-                                        <td className={`${cell} ${borderClass} text-muted-ink`}>
-                                            {new Date(row.created_at).toLocaleString('zh-CN', {
-                                                timeZone: 'Asia/Shanghai',
-                                            })}
-                                        </td>
-                                        <td className={`${cell} ${borderClass} text-right`}>
-                                            <span className="inline-flex gap-1.5 justify-end">
-                                                <Button
-                                                    type="button"
-                                                    variant="secondary"
-                                                    size="sm"
-                                                    onClick={() => handleReveal(row.id)}
-                                                    disabled={busy || !!revealed}
-                                                >
-                                                    {revealed ? '已显示' : '显示'}
-                                                </Button>
-                                                <Button
-                                                    type="button"
-                                                    variant="secondary"
-                                                    size="sm"
-                                                    onClick={() => handleCopy(row.id)}
-                                                    disabled={busy}
-                                                >
-                                                    {showCopied ? '已复制 ✓' : '复制'}
-                                                </Button>
-                                                <Button
-                                                    type="button"
-                                                    variant="danger"
-                                                    size="sm"
-                                                    onClick={() => handleRevoke(row.id)}
-                                                    disabled={busy}
-                                                >
-                                                    撤销
-                                                </Button>
-                                            </span>
-                                        </td>
-                                    </tr>
+                                            </p>
+                                        </div>
+                                    </article>
                                 );
                             })}
-                        </tbody>
-                    </table>
-                </Card>
-            )}
+                        </div>
+
+                        <div className="hidden max-w-full overflow-x-auto overscroll-x-contain sm:block">
+                            <table className="w-full min-w-[860px] border-collapse">
+                                {tableHeader}
+                                <tbody>
+                                    {rows.map((row, idx) => {
+                                        const revealed = reveal[row.id];
+                                        const showCopied = copied[row.id];
+                                        const busy = busyId === row.id;
+                                        const isLast = idx === rows.length - 1;
+                                        // W7 D4 PR-R Item C: rows are flat again.
+                                        // The per-row "如何使用此 Key" panel that
+                                        // PR-G stitched in was replaced by a single
+                                        // unified 调用示例 panel below the table
+                                        // (see <KeysSnippetsPanel /> rendered by
+                                        // keys/page.tsx). Border treatment matches
+                                        // the rest of the portal: every row except
+                                        // the last gets a bottom border.
+                                        const cell = `px-5 py-3.5 text-sm text-portal-ink`;
+                                        const borderClass = isLast ? '' : 'border-b border-portal-line';
+                                        return (
+                                            <tr key={row.id} className="transition-colors hover:bg-portal-soft/70">
+                                                <td className={`${cell} ${borderClass}`}>
+                                                    <div className="flex flex-wrap items-center gap-2">
+                                                        <span className="font-medium">{row.key_alias}</span>
+                                                        <span className="rounded bg-portal-gold-soft px-2 py-0.5 text-[10px] font-semibold text-portal-gold">
+                                                            {tierLabel(row.tier)}
+                                                        </span>
+                                                    </div>
+                                                </td>
+                                                <td className={`${cell} ${borderClass}`}>
+                                                    <div
+                                                        className={[
+                                                            'font-mono text-xs',
+                                                            revealed
+                                                                ? 'font-semibold text-portal-ink'
+                                                                : 'text-portal-muted',
+                                                        ].join(' ')}
+                                                    >
+                                                        {revealed ?? row.masked_key}
+                                                    </div>
+                                                    {/* W6 D4: per-key usage subline. Grey/small so it never
+                                                     *  competes with the masked sk-. Renders null state
+                                                     *  ("从未调用") explicitly so customers see the key exists
+                                                     *  but isn't being hit. */}
+                                                    <div className="mt-1.5 text-xs text-portal-subtle tabular-nums">
+                                                        {row.used_quota === null ? (
+                                                            <span>用量数据暂不可用</span>
+                                                        ) : (
+                                                            <>
+                                                                累计 ¥{(row.usedCny ?? 0).toFixed(2)}
+                                                                <span className="mx-1.5">·</span>
+                                                                最近调用 {formatLastUsed(row.last_used_at)}
+                                                            </>
+                                                        )}
+                                                    </div>
+                                                </td>
+                                                <td
+                                                    className={`${cell} ${borderClass} whitespace-nowrap text-portal-muted`}
+                                                >
+                                                    {new Date(row.created_at).toLocaleString('zh-CN', {
+                                                        timeZone: 'Asia/Shanghai',
+                                                    })}
+                                                </td>
+                                                <td className={`${cell} ${borderClass} text-right`}>
+                                                    <KeyActions
+                                                        row={row}
+                                                        busy={busy}
+                                                        revealed={!!revealed}
+                                                        copied={!!showCopied}
+                                                        onReveal={() => handleReveal(row.id)}
+                                                        onCopy={() => handleCopy(row.id)}
+                                                        onRevoke={() => handleRevoke(row.id)}
+                                                    />
+                                                </td>
+                                            </tr>
+                                        );
+                                    })}
+                                </tbody>
+                            </table>
+                        </div>
+                    </>
+                )}
+            </section>
         </div>
     );
 }

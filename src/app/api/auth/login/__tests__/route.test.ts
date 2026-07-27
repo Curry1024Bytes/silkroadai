@@ -55,7 +55,7 @@ describe('POST /api/auth/login', () => {
             }
             return Promise.resolve({
                 id: PORTAL_USER_ID,
-                email: 'happy@silkroadai.io',
+                email: 'happy@llmroute.club',
                 password_hash: '$2a$12$realhashstoredinDB',
                 nickname: 'Happy',
                 email_verified: true,
@@ -75,20 +75,20 @@ describe('POST /api/auth/login', () => {
         });
         mockCompare.mockResolvedValue(true);
 
-        const res = await POST(makeReq({ email: 'Happy@SilkRoadAI.io', password: 'goodpass123' }));
+        const res = await POST(makeReq({ email: 'Happy@LLmRoute.club', password: 'goodpass123' }));
         const body = await res.json();
 
         expect(res.status).toBe(200);
         // findUnique called with normalized (lowercased + trimmed) email
         expect(mockUserFindUnique).toHaveBeenCalledWith(
-            expect.objectContaining({ where: { email: 'happy@silkroadai.io' } }),
+            expect.objectContaining({ where: { email: 'happy@llmroute.club' } }),
         );
         expect(mockCompare).toHaveBeenCalledTimes(1);
         expect(mockCompare).toHaveBeenCalledWith('goodpass123', '$2a$12$realhashstoredinDB');
 
         // shape: { user, apiKey }
         expect(body.user.id).toBe(PORTAL_USER_ID);
-        expect(body.user.email).toBe('happy@silkroadai.io');
+        expect(body.user.email).toBe('happy@llmroute.club');
         expect(body.user.newapi_user_id).toBe(8);
         expect(body.apiKey).toBe('sk-test-real-token-abc123');
 
@@ -122,7 +122,7 @@ describe('POST /api/auth/login', () => {
             }
             return Promise.resolve({
                 id: PORTAL_USER_ID,
-                email: 'happy@silkroadai.io',
+                email: 'happy@llmroute.club',
                 password_hash: '$2a$12$realhashstoredinDB',
                 nickname: 'Happy',
                 email_verified: true,
@@ -142,7 +142,7 @@ describe('POST /api/auth/login', () => {
                 'content-type': 'application/json',
                 'x-forwarded-for': '203.0.113.7, 10.0.0.1',
             },
-            body: JSON.stringify({ email: 'happy@silkroadai.io', password: 'goodpass123' }),
+            body: JSON.stringify({ email: 'happy@llmroute.club', password: 'goodpass123' }),
         });
         await POST(req);
 
@@ -159,14 +159,14 @@ describe('POST /api/auth/login', () => {
     it('401 when password wrong (no Set-Cookie, no last_login_at update)', async () => {
         mockUserFindUnique.mockResolvedValue({
             id: PORTAL_USER_ID,
-            email: 'wrongpass@silkroadai.io',
+            email: 'wrongpass@llmroute.club',
             password_hash: '$2a$12$realhashstoredinDB',
             status: 'active',
             keys: [],
         });
         mockCompare.mockResolvedValue(false);
 
-        const res = await POST(makeReq({ email: 'wrongpass@silkroadai.io', password: 'badguess' }));
+        const res = await POST(makeReq({ email: 'wrongpass@llmroute.club', password: 'badguess' }));
         const body = await res.json();
 
         expect(res.status).toBe(401);
@@ -180,7 +180,7 @@ describe('POST /api/auth/login', () => {
         mockUserFindUnique.mockResolvedValue(null);
         mockCompare.mockResolvedValue(false);
 
-        const res = await POST(makeReq({ email: 'ghost@silkroadai.io', password: 'whatever' }));
+        const res = await POST(makeReq({ email: 'ghost@llmroute.club', password: 'whatever' }));
         const body = await res.json();
 
         expect(res.status).toBe(401);
@@ -195,14 +195,14 @@ describe('POST /api/auth/login', () => {
     it('401 when account is disabled (no Set-Cookie even with right password)', async () => {
         mockUserFindUnique.mockResolvedValue({
             id: PORTAL_USER_ID,
-            email: 'banned@silkroadai.io',
+            email: 'banned@llmroute.club',
             password_hash: '$2a$12$realhashstoredinDB',
             status: 'banned',
             keys: [],
         });
         mockCompare.mockResolvedValue(true); // password is right but account is banned
 
-        const res = await POST(makeReq({ email: 'banned@silkroadai.io', password: 'rightpass' }));
+        const res = await POST(makeReq({ email: 'banned@llmroute.club', password: 'rightpass' }));
         const body = await res.json();
 
         expect(res.status).toBe(401);

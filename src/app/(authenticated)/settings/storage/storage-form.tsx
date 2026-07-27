@@ -184,7 +184,7 @@ export function StorageSettingsForm({ initialConfig }: Props) {
                         <span>
                             <span className="text-sm font-medium text-navy">默认存储(推荐)</span>
                             <span className="block text-xs text-muted-ink">
-                                Silk Road AI 托管,无需配置,URL 为 images.silkroadai.io
+                                LLmRoute 托管,无需配置,URL 为 images.llmroute.club
                             </span>
                         </span>
                     </label>

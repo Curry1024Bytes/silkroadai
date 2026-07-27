@@ -1,5 +1,5 @@
 /**
- * silkroadai.io public landing page (W7 D3 — Phase 6a).
+ * llmroute.club public landing page (W7 D3 — Phase 6a).
  *
  * Server-rendered, no client JS, minimal third-party deps. The promo
  * banner + pricing-table strikethroughs flip automatically at the W7
@@ -18,24 +18,25 @@ import { BrandLogo } from '@/components/brand/BrandLogo';
 // W8 D1.5 (2026-05-21): 新永久定价替换 W7 promo,landing 不再走 isPromoActive()。
 // import { isPromoActive } from '@/lib/promo'; — 留作日后审计参考
 import { InviteCodeBridge } from '@/components/marketing/InviteCodeBridge';
+import { OPENAI_API_BASE_URL } from '@/lib/public-config';
 
 // Inter is loaded globally via `next/font/google` in `src/app/layout.tsx`
 // (W7 P3) so the @theme `--font-sans` token resolves on every page. We
 // no longer need a landing-local import.
 
 export const metadata: Metadata = {
-    title: 'Silk Road AI · 一个 Key,接入 200+ AI 模型 | ChatGPT、Claude、Gemini 国内中转',
+    title: 'LLmRoute · 一个 Key,接入 200+ AI 模型 | ChatGPT、Claude、Gemini 国内中转',
     description: '国内开发者的 AI API 聚合网关。海外大模型直连,人民币付费,价格透明,5 分钟接入。',
     keywords: ['ChatGPT API', 'Claude API', 'Gemini API', 'AI API 中转', '国内调用 OpenAI', 'AI 网关'],
     openGraph: {
-        title: 'Silk Road AI · 一个 Key,接入 200+ AI 模型',
+        title: 'LLmRoute · 一个 Key,接入 200+ AI 模型',
         description: '国内直连 ChatGPT/Claude/Gemini · 人民币付费 · 价格透明',
-        url: 'https://silkroadai.io',
+        url: 'https://llmroute.club',
         type: 'website',
         // SVG placeholder — designer ships final 1200×630 PNG in a follow-up;
         // most crawlers honor SVG (Twitter / Discord), Facebook prefers PNG so
         // a binary swap is on the W7 finish list.
-        images: [{ url: 'https://silkroadai.io/og-image.svg', width: 1200, height: 630 }],
+        images: [{ url: 'https://llmroute.club/og-image.svg', width: 1200, height: 630 }],
     },
 };
 
@@ -63,7 +64,7 @@ export default async function LandingPage({
         >
             {oauthError ? <OAuthErrorBanner code={oauthError} /> : null}
             {/* fix/invite-landing: capture `?invite=X` if a reseller link
-             *  was shared as the old `silkroadai.io/?invite=X` form, so
+             *  was shared as the old `llmroute.club/?invite=X` form, so
              *  the register page can pick up the attribution on the
              *  customer's next navigation. No render — pure side effect. */}
             <InviteCodeBridge />
@@ -217,7 +218,7 @@ function Hero() {
                             fontWeight: 700,
                             margin: 0,
                             color: 'var(--color-navy)',
-                            letterSpacing: -0.5,
+                            letterSpacing: 0,
                         }}
                     >
                         一个 Key,接入 200+ AI 模型
@@ -333,9 +334,9 @@ function CodeExample() {
             </div>
             <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
                 <code>
-                    <span style={{ color: '#a3b3d1' }}>curl</span> https://ai.silkroadai.io/v1/chat/completions \{'\n'}
-                    {'  '}-H <span style={{ color: '#c9a961' }}>{'"Authorization: Bearer sk-xxx"'}</span> \{'\n'}
-                    {'  '}-d <span style={{ color: '#c9a961' }}>{'\'{"model": "claude-sonnet-4-6", ...}\''}</span>
+                    <span style={{ color: '#a9bbb5' }}>curl</span> {`${OPENAI_API_BASE_URL}/chat/completions`} \{'\n'}
+                    {'  '}-H <span style={{ color: '#2997ff' }}>{'"Authorization: Bearer sk-xxx"'}</span> \{'\n'}
+                    {'  '}-d <span style={{ color: '#2997ff' }}>{'\'{"model": "claude-sonnet-4-6", ...}\''}</span>
                 </code>
             </pre>
         </div>
@@ -551,7 +552,7 @@ const TOOLS: Tool[] = [
         icon: '⌨️',
         tag: '下载安装',
         title: 'OpenAI Codex 接入',
-        desc: 'Codex CLI / IDE 插件 / 桌面版接入 Silk Road AI,一份配置直连 ChatGPT,人民币计费。',
+        desc: 'Codex CLI / IDE 插件 / 桌面版接入 LLmRoute,一份配置直连 ChatGPT,人民币计费。',
         href: '/docs#codex-cli',
         cta: '下载 & 接入',
     },
@@ -559,7 +560,7 @@ const TOOLS: Tool[] = [
         icon: '🤖',
         tag: '下载安装',
         title: 'Claude Code 接入',
-        desc: 'Claude Code 桌面 / CLI 接入 Silk Road AI,配好 Base URL + Key 即用 Claude,人民币计费。',
+        desc: 'Claude Code 桌面 / CLI 接入 LLmRoute,配好 Base URL + Key 即用 Claude,人民币计费。',
         href: '/docs#claude-code',
         cta: '下载 & 接入',
     },
@@ -603,7 +604,7 @@ function Tools() {
                 工具箱
             </h2>
             <p style={{ margin: '8px 0 0', textAlign: 'center', fontSize: 15, color: 'var(--color-muted-ink)' }}>
-                开箱即用,更快用上 Silk Road AI · 更多工具陆续接入
+                开箱即用,更快用上 LLmRoute · 更多工具陆续接入
             </p>
             <div
                 className="lp-three-col"

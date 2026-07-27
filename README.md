@@ -1,27 +1,27 @@
-# Silk Road AI Portal
+# LLmRoute Portal
 
-> **客户层(Customer Portal)** for Silk Road AI - 一个面向开发者的 AI API 聚合平台
+> **LLmRoute 客户层(Customer Portal)** - 一个面向开发者与团队的 AI API 聚合平台
 >
-> 这个仓库是 [silkroadai.io](https://silkroadai.io) 的 portal 前端 + 业务编排层,
+> 这个仓库是 [llmroute.club](https://llmroute.club) 的站点、客户后台与业务编排层,
 > 后端模型路由 / 用户管理 / 计费由 [new-api](https://github.com/QuantumNous/new-api) 提供。
 
 ---
 
 ## 项目定位
 
-- **portal.silkroadai.io** — 客户登录、充值、Key 管理、用量查看
-- **chat.silkroadai.io** — 内置 Chat UI(基于 fork 的 LibreChat)
-- **api.silkroadai.io** — OpenAI-compatible API 端点(由 new-api 提供)
-- **admin.silkroadai.io** — new-api admin 后台(内部使用)
+- **llmroute.club** — 官网、登录、充值、Key 管理、用量与在线工具
+- **api.llmroute.club** — OpenAI / Anthropic 兼容 API 入口
+- **images.llmroute.club** — 生图与视频结果的公共资源域名
+- **new-api 管理后台** — 仅运营人员使用,不对客户暴露
 
-本仓库实现 portal.silkroadai.io。
+品牌规范见 [docs/LLMROUTE-BRAND.md](docs/LLMROUTE-BRAND.md)。
 
 ---
 
 ## 技术栈
 
 - **Framework**: Next.js 16 (App Router) + React 19 + TypeScript 5
-- **Styling**: TailwindCSS 4(深空赛博蓝主题)
+- **Styling**: TailwindCSS 4(LLmRoute 深海军蓝 / 金属米白设计系统)
 - **Database**: PostgreSQL 16 + Prisma 7
 - **Auth**: 自建 JWT (`jose`),bcrypt 密码哈希
 - **Backend integration**: new-api Admin API
@@ -45,13 +45,13 @@ W1 路线的代码作为 git history 保留,但 main 分支演进为 B3 路线�
 ## 部署架构
 
 ```
-silkroadai.io 客户(完全 Silk Road AI 品牌)
-            ↓
-   portal.silkroadai.io ← 本仓库
-            ↓
-   new-api(部署在同一 VPS,通过容器内网调用)
-            ↓
-   [Sub2API / SiliconFlow / Anthropic / OpenAI / 自建 GPU]
+llmroute.club / api.llmroute.club
+                 ↓
+       LLmRoute Portal(本仓库)
+                 ↓
+       new-api(同一 VPS / 容器内网)
+                 ↓
+ [Sub2API / SiliconFlow / Anthropic / OpenAI / 自建 GPU]
 ```
 
 ---
@@ -77,8 +77,8 @@ cp .env.example .env
 # - NEWAPI_BASE_URL:VPS 上 new-api 的内网地址(本地通过 SSH 隧道连)
 # - NEWAPI_ADMIN_TOKEN:在 new-api admin 后台创建的 admin token
 
-# 4. SSH 隧道连 VPS new-api
-ssh -fN -L 3000:localhost:3000 -o ServerAliveInterval=60 root@23.27.113.88
+# 4. SSH 隧道连测试 VPS 的 new-api + PostgreSQL
+ssh -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -N -L 13000:127.0.0.1:3000 -L 15433:127.0.0.1:5433 root@114.55.85.41
 
 # 5. 安装依赖
 pnpm install

@@ -43,7 +43,7 @@ describe('tools image download proxy', () => {
                     }),
             ),
         );
-        const r = await GET(reqFor(`${q('https://images.silkroadai.io/gen/abc')}&name=pic`));
+        const r = await GET(reqFor(`${q('https://images.llmroute.club/gen/abc')}&name=pic`));
         expect(r.status).toBe(200);
         expect(r.headers.get('content-type')).toBe('image/png');
         const cd = r.headers.get('content-disposition') || '';
@@ -64,6 +64,6 @@ describe('tools image download proxy', () => {
             'fetch',
             vi.fn(async () => new Response('', { status: 404 })),
         );
-        expect((await GET(reqFor(q('https://images.silkroadai.io/gen/missing')))).status).toBe(502);
+        expect((await GET(reqFor(q('https://images.llmroute.club/gen/missing')))).status).toBe(502);
     });
 });

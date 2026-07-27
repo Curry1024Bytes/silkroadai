@@ -21,7 +21,7 @@
  *   3. zod-validate { model, messages }.
  *   4. Resolve the customer's portal-internal system token
  *      (getOrCreateSystemToken) — the sk-… NEVER reaches the browser.
- *   5. Forward to https://ai.silkroadai.io/v1/chat/completions with
+ *   5. Forward to https://api.llmroute.club/v1/chat/completions with
  *      stream:true and pipe the upstream SSE ReadableStream straight
  *      back to the client (no buffering — same passthrough the /v1/*
  *      proxy uses).
@@ -50,7 +50,7 @@ export const dynamic = 'force-dynamic';
  *  the upstream AbortSignal below. */
 export const maxDuration = 300;
 
-const NEWAPI_PROXY_URL = process.env.NEWAPI_CUSTOMER_BASE_URL || 'https://ai.silkroadai.io';
+const NEWAPI_PROXY_URL = process.env.NEWAPI_CUSTOMER_BASE_URL || 'https://api.llmroute.club';
 
 /** Abort the upstream connection if it stalls. Generous — reasoning
  *  models legitimately think for a while before the first token. */

@@ -19,15 +19,15 @@ function tenant(over: Record<string, unknown> = {}) {
     return {
         id: PLATFORM_TENANT_ID,
         slug: 'silkroadai',
-        brand_name: 'Silk Road AI',
-        primary_domain: 'silkroadai.io',
+        brand_name: 'LLmRoute',
+        primary_domain: 'llmroute.club',
         status: 'active',
         prepaid_balance_cny: '0',
         logo_url: null,
-        primary_color: '#1a2540',
-        support_email: 'support@silkroadai.io',
+        primary_color: '#17201e',
+        support_email: 'support@llmroute.club',
         support_wechat: 'Global_Ads',
-        domains: ['silkroadai.io', 'www.silkroadai.io', 'ai.silkroadai.io'],
+        domains: ['llmroute.club', 'www.llmroute.club', 'api.llmroute.club'],
         signup_enabled: true,
         created_at: new Date(),
         updated_at: new Date(),
@@ -102,7 +102,7 @@ describe('resolveTenantByHost', () => {
         mockFindUnique.mockRejectedValue(new Error('db down'));
         const t = await resolveTenantByHost('totally-dead.example');
         expect(t.id).toBe(PLATFORM_TENANT_ID);
-        expect(t.brand_name).toBe('Silk Road AI');
-        expect(t.support_email).toBe('support@silkroadai.io');
+        expect(t.brand_name).toBe('LLmRoute');
+        expect(t.support_email).toBe('support@llmroute.club');
     });
 });

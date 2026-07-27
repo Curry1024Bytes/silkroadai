@@ -48,19 +48,19 @@ describe('POST /api/auth/resend-verification', () => {
     it('200 when unverified email exists: creates token + sends email', async () => {
         mockUserFindUnique.mockResolvedValue({
             id: PORTAL_USER_ID,
-            email: 'unverified@silkroadai.io',
+            email: 'unverified@llmroute.club',
             email_verified_at: null,
             status: 'active',
         });
         mockTokenFindFirst.mockResolvedValue(null);
 
-        const res = await POST(makeReq({ email: 'Unverified@SilkRoadAI.io' }));
+        const res = await POST(makeReq({ email: 'Unverified@LLmRoute.club' }));
         const body = await res.json();
 
         expect(res.status).toBe(200);
         expect(body).toEqual({ ok: true });
         expect(mockUserFindUnique).toHaveBeenCalledWith(
-            expect.objectContaining({ where: { email: 'unverified@silkroadai.io' } }),
+            expect.objectContaining({ where: { email: 'unverified@llmroute.club' } }),
         );
         expect(mockTokenCreate).toHaveBeenCalledTimes(1);
         const createArgs = mockTokenCreate.mock.calls[0][0] as {
@@ -76,7 +76,7 @@ describe('POST /api/auth/resend-verification', () => {
             verifyUrl: string;
             expiresInHours: number;
         };
-        expect(mailArgs.to).toBe('unverified@silkroadai.io');
+        expect(mailArgs.to).toBe('unverified@llmroute.club');
         expect(mailArgs.verifyUrl).toMatch(/\/verify-email\?token=[a-f0-9]{64}$/);
         expect(mailArgs.expiresInHours).toBe(24);
     });
@@ -84,12 +84,12 @@ describe('POST /api/auth/resend-verification', () => {
     it('200 when already verified: NO token, NO email (silent noop)', async () => {
         mockUserFindUnique.mockResolvedValue({
             id: PORTAL_USER_ID,
-            email: 'verified@silkroadai.io',
+            email: 'verified@llmroute.club',
             email_verified_at: new Date('2026-01-01T00:00:00Z'),
             status: 'active',
         });
 
-        const res = await POST(makeReq({ email: 'verified@silkroadai.io' }));
+        const res = await POST(makeReq({ email: 'verified@llmroute.club' }));
         const body = await res.json();
 
         expect(res.status).toBe(200);
@@ -101,7 +101,7 @@ describe('POST /api/auth/resend-verification', () => {
     it("200 when email doesn't exist: NO token, NO email", async () => {
         mockUserFindUnique.mockResolvedValue(null);
 
-        const res = await POST(makeReq({ email: 'ghost@silkroadai.io' }));
+        const res = await POST(makeReq({ email: 'ghost@llmroute.club' }));
         const body = await res.json();
 
         expect(res.status).toBe(200);
@@ -114,12 +114,12 @@ describe('POST /api/auth/resend-verification', () => {
     it('200 when banned: NO token, NO email', async () => {
         mockUserFindUnique.mockResolvedValue({
             id: PORTAL_USER_ID,
-            email: 'banned@silkroadai.io',
+            email: 'banned@llmroute.club',
             email_verified_at: null,
             status: 'banned',
         });
 
-        const res = await POST(makeReq({ email: 'banned@silkroadai.io' }));
+        const res = await POST(makeReq({ email: 'banned@llmroute.club' }));
 
         expect(res.status).toBe(200);
         expect(mockTokenCreate).not.toHaveBeenCalled();
@@ -129,15 +129,15 @@ describe('POST /api/auth/resend-verification', () => {
     it('throttle: 2 calls in 5min window → 1 token, 1 email', async () => {
         mockUserFindUnique.mockResolvedValue({
             id: PORTAL_USER_ID,
-            email: 'busy@silkroadai.io',
+            email: 'busy@llmroute.club',
             email_verified_at: null,
             status: 'active',
         });
         mockTokenFindFirst.mockResolvedValueOnce(null);
         mockTokenFindFirst.mockResolvedValueOnce({ id: 'tok-existing' });
 
-        const res1 = await POST(makeReq({ email: 'busy@silkroadai.io' }));
-        const res2 = await POST(makeReq({ email: 'busy@silkroadai.io' }));
+        const res1 = await POST(makeReq({ email: 'busy@llmroute.club' }));
+        const res2 = await POST(makeReq({ email: 'busy@llmroute.club' }));
 
         expect(res1.status).toBe(200);
         expect(res2.status).toBe(200);
@@ -148,7 +148,7 @@ describe('POST /api/auth/resend-verification', () => {
     it('200 when SMTP fails: token row stays for retry, response still 200', async () => {
         mockUserFindUnique.mockResolvedValue({
             id: PORTAL_USER_ID,
-            email: 'smtpdown@silkroadai.io',
+            email: 'smtpdown@llmroute.club',
             email_verified_at: null,
             status: 'active',
         });
@@ -156,7 +156,7 @@ describe('POST /api/auth/resend-verification', () => {
         mockSendVerificationEmail.mockRejectedValue(new Error('SMTP unavailable'));
         const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-        const res = await POST(makeReq({ email: 'smtpdown@silkroadai.io' }));
+        const res = await POST(makeReq({ email: 'smtpdown@llmroute.club' }));
 
         expect(res.status).toBe(200);
         expect(mockTokenCreate).toHaveBeenCalledTimes(1);

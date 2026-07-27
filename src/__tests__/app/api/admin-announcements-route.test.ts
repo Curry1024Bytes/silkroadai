@@ -107,7 +107,7 @@ describe('POST /api/admin/announcements', () => {
         const res = await POST(
             jsonReq('/api/admin/announcements', 'POST', {
                 title: 'hi',
-                link_url: 'https://silkroadai.io/pay',
+                link_url: 'https://llmroute.club/pay',
                 link_label: '去充值',
                 level: 'critical',
             }),
@@ -115,7 +115,7 @@ describe('POST /api/admin/announcements', () => {
         expect(res.status).toBe(201);
         const data = mockCreate.mock.calls[0][0].data;
         expect(data).toMatchObject({
-            link_url: 'https://silkroadai.io/pay',
+            link_url: 'https://llmroute.club/pay',
             link_label: '去充值',
             level: 'critical',
         });

@@ -48,7 +48,7 @@ export async function GET() {
         sameSite: 'lax' as const,
         path: '/',
         maxAge: COOKIE_MAX_AGE_SECONDS,
-        // W7 D3 amend: scope to BRAND_COOKIE_DOMAIN (".silkroadai.io" in
+        // W7 D3 amend: scope to BRAND_COOKIE_DOMAIN (".llmroute.club" in
         // prod) so the apex-issued state/pkce cookies survive the round-
         // trip through Google → callback at the same eTLD+1 even when the
         // callback URI host briefly differs from the start URI host

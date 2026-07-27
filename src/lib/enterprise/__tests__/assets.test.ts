@@ -27,7 +27,7 @@ beforeEach(() => {
     vi.clearAllMocks();
     db.enterpriseAsset.count.mockResolvedValue(0);
     db.enterpriseAsset.aggregate.mockResolvedValue({ _sum: { bytes: 0 } });
-    uploadImage.mockResolvedValue('https://images.silkroadai.io/enterprise-assets/u1/x.png');
+    uploadImage.mockResolvedValue('https://images.llmroute.club/enterprise-assets/u1/x.png');
 });
 
 describe('newAssetId', () => {

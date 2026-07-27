@@ -1,7 +1,7 @@
 /**
  * Portal /v1/* catch-all proxy (W9 D1, PR-A — task #33 Phase 1)
  *
- * 拦截所有 ai.silkroadai.io/v1/* 请求(Caddy 切流量到 portal :3002 后生效):
+ * 拦截所有 api.llmroute.club/v1/* 请求(Caddy 切流量到 portal :3002 后生效):
  *
  * 1. POST /v1/chat/completions + Gemini image 模型
  *    → 翻译到 new-api native `/v1beta/models/<model>:generateContent`
@@ -134,7 +134,7 @@ const FAILOVER_MODELS: Record<string, string> = {
  *  到点 abort 当作失败 → 切候补 -hq/ch42(快且稳),客户最多等 ~80s + 候补一次。
  *  仅对有候补的 flash 生效;pro(4K 合法耗时长、无候补)不设超时。operator:80s 自动切。 */
 const FLASH_TIMEOUT_MS = 80_000;
-// portal → new-api 图片上游 fetch 的超时,与 Caddy `ai.silkroadai.io` 的 response_header_timeout 600s 对齐。
+// portal → new-api 图片上游 fetch 的超时,与 Caddy `api.llmroute.club` 的 response_header_timeout 600s 对齐。
 // 不显式设的话吃 undici 默认 headersTimeout 300s:new-api 对图片 relay 无超时,会等满上游(慢渠道
 // 300-600s)出图【并计费】,但 portal 的 fetch 300s 就 abort → 客户「扣了费却拿到 fetch failed 没有图」
 // (见 2026-07-12 lkl1131888403 案例:ch83 大图 377/423s,new-api 计费、portal 300s 掐断)。

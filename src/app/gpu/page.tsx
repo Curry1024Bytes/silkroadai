@@ -29,7 +29,7 @@ import { ADVANTAGES, CONTACT, CUSTOMER_TYPES } from '@/data/gpu-pricing';
 import { t } from '@/i18n/gpu-page';
 
 export const metadata: Metadata = {
-    title: 'GPU 租赁 — H100 / H200 / B300 算力中心 | Silk Road AI',
+    title: 'GPU 租赁 — H100 / H200 / B300 算力中心 | LLmRoute',
     description:
         '专属 GPU 算力租赁:H100 80GB / H200 141GB / B300 288GB,月起 ¥80,000 起。' +
         '面向 AI 创业 / 模型训练 / 企业 R&D 团队,对接东数西算多区域算力中心。微信 Global_Ads 询价。',
@@ -44,7 +44,7 @@ export const metadata: Metadata = {
         '模型训练 GPU',
         'AI 创业',
         '私有化推理',
-        'Silk Road AI',
+        'LLmRoute',
     ],
     openGraph: {
         title: 'GPU 租赁 — H100 / H200 / B300 算力中心',
@@ -54,7 +54,7 @@ export const metadata: Metadata = {
     },
     twitter: {
         card: 'summary',
-        title: 'GPU 租赁 — Silk Road AI',
+        title: 'GPU 租赁 — LLmRoute',
         description: 'H100 / H200 / B300 算力租赁。月起 ¥80,000 起。微信 Global_Ads 询价。',
     },
     alternates: {
@@ -176,20 +176,20 @@ function Hero() {
                     <svg width="280" height="240" viewBox="0 0 280 240" role="img" aria-label="GPU 算力示意">
                         <defs>
                             <linearGradient id="gpu-rack-glow" x1="0" y1="0" x2="0" y2="1">
-                                <stop offset="0%" stopColor="#0EA5E9" stopOpacity="0.65" />
-                                <stop offset="100%" stopColor="#0EA5E9" stopOpacity="0" />
+                                <stop offset="0%" stopColor="#0E1A2A" stopOpacity="0.65" />
+                                <stop offset="100%" stopColor="#0E1A2A" stopOpacity="0" />
                             </linearGradient>
                         </defs>
-                        <rect x="50" y="40" width="180" height="160" rx="12" fill="#1E3A8A" />
+                        <rect x="50" y="40" width="180" height="160" rx="12" fill="#1D1D1F" />
                         <rect x="60" y="55" width="160" height="40" rx="6" fill="#FFFFFF" opacity="0.08" />
                         <rect x="60" y="100" width="160" height="40" rx="6" fill="#FFFFFF" opacity="0.08" />
                         <rect x="60" y="145" width="160" height="40" rx="6" fill="#FFFFFF" opacity="0.08" />
-                        <rect x="70" y="65" width="100" height="20" rx="3" fill="#0EA5E9" opacity="0.85" />
-                        <rect x="70" y="110" width="80" height="20" rx="3" fill="#0EA5E9" opacity="0.65" />
-                        <rect x="70" y="155" width="120" height="20" rx="3" fill="#0EA5E9" opacity="0.45" />
-                        <circle cx="200" cy="75" r="3" fill="#c9a961" />
-                        <circle cx="200" cy="120" r="3" fill="#c9a961" opacity="0.6" />
-                        <circle cx="200" cy="165" r="3" fill="#c9a961" opacity="0.4" />
+                        <rect x="70" y="65" width="100" height="20" rx="3" fill="#0E1A2A" opacity="0.85" />
+                        <rect x="70" y="110" width="80" height="20" rx="3" fill="#0E1A2A" opacity="0.65" />
+                        <rect x="70" y="155" width="120" height="20" rx="3" fill="#0E1A2A" opacity="0.45" />
+                        <circle cx="200" cy="75" r="3" fill="#0E1A2A" />
+                        <circle cx="200" cy="120" r="3" fill="#0E1A2A" opacity="0.6" />
+                        <circle cx="200" cy="165" r="3" fill="#0E1A2A" opacity="0.4" />
                         <rect x="50" y="30" width="180" height="20" fill="url(#gpu-rack-glow)" rx="12" />
                     </svg>
                 </div>

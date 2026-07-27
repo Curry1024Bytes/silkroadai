@@ -3,7 +3,7 @@ import { BackButton } from '@/components/BackButton';
 import { SeedanceTool } from './seedance-tool';
 
 export const metadata: Metadata = {
-    title: 'Seedance 视频测试工具 · Silk Road AI',
+    title: 'Seedance 视频测试工具 · LLmRoute',
     description:
         '填入你的 API Key,在线测试 Seedance 视频生成 —— 支持文生 / 图生 / 首尾帧 / 多图 / 参考音频,覆盖海外满血与逆向低价全部模型。',
 };

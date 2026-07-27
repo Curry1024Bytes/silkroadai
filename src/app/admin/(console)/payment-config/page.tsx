@@ -765,7 +765,7 @@ function PaymentConfigContent() {
                             value={rcPrefix}
                             onChange={(e) => setRcPrefix(e.target.value)}
                             className={inputCls}
-                            placeholder="Silk Road AI"
+                            placeholder="LLmRoute"
                         />
                     </div>
                     <div>
@@ -783,7 +783,7 @@ function PaymentConfigContent() {
                         <div
                             className={`rounded-lg border px-3 py-2 text-sm ${isDark ? 'border-slate-600 bg-slate-700 text-slate-300' : 'border-slate-300 bg-slate-50 text-slate-600'}`}
                         >
-                            {`${rcPrefix.trim() || 'Silk Road AI'} 100 ${rcSuffix.trim() || 'CNY'}`.trim()}
+                            {`${rcPrefix.trim() || 'LLmRoute'} 100 ${rcSuffix.trim() || 'CNY'}`.trim()}
                         </div>
                     </div>
                 </div>

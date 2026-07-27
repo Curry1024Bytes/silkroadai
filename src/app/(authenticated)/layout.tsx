@@ -10,15 +10,15 @@
  *
  * Placement note: the route group `(authenticated)` is path-invisible — the
  * URL stays `/dashboard` not `/(authenticated)/dashboard`. We picked this
- * over a `/portal/*` prefix so a future portal.silkroadai.io subdomain split
+ * over a `/portal/*` prefix so a future llmroute.club subdomain split
  * doesn't require URL rewrites.
  *
  * W7 P2 visual rebrand
  * --------------------
- * Header switched from filled-navy bar (#0a1535) to a paper-aligned
- * surface with a brand-border separator + primary-flat logo, matching the
- * landing page chrome. Mobile (<768px): sidebar collapses below the
- * header into a horizontal nav strip via the `Sidebar` component itself.
+ * The header stays on one neutral paper surface. Platform branding comes from
+ * the transparent plated-gold lockup itself; no separate dark logo panel is
+ * introduced. White-label tenants keep the same shell and supply their own
+ * logo or text wordmark through BrandLogo.
  */
 import type { ReactNode } from 'react';
 import { redirect } from 'next/navigation';
@@ -29,6 +29,7 @@ import { getCurrentUser } from '@/lib/auth/session';
 import { fetchResellerStatus } from '@/lib/reseller/fetch-status';
 import { BrandLogo } from '@/components/brand/BrandLogo';
 import { getCurrentTenant } from '@/lib/tenant/resolve';
+import { PLATFORM_TENANT_ID } from '@/lib/admin/tenant-scope';
 import { UnverifiedBanner } from './unverified-banner';
 import { AnnouncementBanner } from './announcement-banner';
 import { getActiveAnnouncements } from '@/lib/announcements/fetch-active';
@@ -73,10 +74,17 @@ export default async function AuthenticatedLayout({ children }: { children: Reac
     // DB round-trip.
     const { status: resellerStatus } = await fetchResellerStatus(user.id);
 
-    // P6a: tenant brand. Platform tenant's primary_color = #1a2540 (current navy) → no-op;
-    // a partner domain overrides --color-navy for this dashboard subtree.
+    // Tenant color is an interaction accent, never a body-text color. This
+    // keeps white-label themes legible while preserving the neutral console.
     const tenant = await getCurrentTenant();
-    const brandStyle = tenant.primary_color ? ({ ['--color-navy']: tenant.primary_color } as CSSProperties) : undefined;
+    const isPlatformTenant = tenant.id === PLATFORM_TENANT_ID;
+    const brandStyle =
+        !isPlatformTenant && tenant.primary_color
+            ? ({
+                  ['--color-brand-accent']: tenant.primary_color,
+                  ['--color-portal-gold']: tenant.primary_color,
+              } as CSSProperties)
+            : undefined;
 
     // 运营公告(顶部通栏)— 全局(tenant_id=null)+ 该客户所属租户;client island 按
     // localStorage 关闭。查询抽到 helper 便于 layout 单测 mock(不连 prisma)。
@@ -84,7 +92,7 @@ export default async function AuthenticatedLayout({ children }: { children: Reac
 
     return (
         <CustomerShell
-            logo={<BrandLogo variant="primary-flat" size={26} />}
+            logo={<BrandLogo variant="primary-flat" size={30} />}
             userEmail={user.email}
             resellerStatus={resellerStatus}
             brandStyle={brandStyle}

@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { Inter } from 'next/font/google';
+import { Inter, Manrope } from 'next/font/google';
 import { headers } from 'next/headers';
 import './globals.css';
 import { Footer } from '@/components/Footer';
@@ -26,11 +26,20 @@ const inter = Inter({
     variable: '--font-inter',
 });
 
+const manrope = Manrope({
+    subsets: ['latin'],
+    display: 'swap',
+    weight: ['500', '600', '700'],
+    variable: '--font-manrope',
+});
+
 export const metadata: Metadata = {
     // W5 D5: was "Sub2API Recharge" (W1 sub2apipay legacy). Pages override
     // their own titles in their `metadata` exports; this is just the fallback.
-    title: 'Silk Road AI Portal',
-    description: 'Silk Road AI — connecting global intelligence',
+    metadataBase: new URL(process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || 'https://llmroute.club'),
+    title: 'LLmRoute',
+    description: '一个入口，连接每个模型。',
+    applicationName: 'LLmRoute',
 };
 
 export default async function RootLayout({
@@ -48,7 +57,7 @@ export default async function RootLayout({
     // pages. The wrapper div around children takes flex: 1 so its content
     // (which often has its own min-height: 100vh) still fills the viewport.
     return (
-        <html lang={htmlLang} data-pathname={pathname} className={inter.variable}>
+        <html lang={htmlLang} data-pathname={pathname} className={`${inter.variable} ${manrope.variable}`}>
             <body className="antialiased" style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
                 <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>{children}</div>
                 <Footer />

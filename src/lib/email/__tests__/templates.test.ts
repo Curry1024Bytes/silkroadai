@@ -13,11 +13,11 @@ describe('balanceAlertTemplate (W6 D2)', () => {
         const c = balanceAlertTemplate({
             remainCny: 4.5,
             thresholdCny: 10,
-            topupUrl: 'https://portal.silkroadai.io/pay',
-            settingsUrl: 'https://portal.silkroadai.io/balance',
+            topupUrl: 'https://llmroute.club/pay',
+            settingsUrl: 'https://llmroute.club/balance',
         });
         // 2-decimal CNY formatting in the subject (predictable for ops grep)
-        expect(c.subject).toContain('Silk Road AI');
+        expect(c.subject).toContain('LLmRoute');
         expect(c.subject).toContain('¥4.50');
     });
 
@@ -25,33 +25,31 @@ describe('balanceAlertTemplate (W6 D2)', () => {
         const c = balanceAlertTemplate({
             remainCny: 2.13,
             thresholdCny: 20,
-            topupUrl: 'https://portal.silkroadai.io/pay',
-            settingsUrl: 'https://portal.silkroadai.io/balance',
+            topupUrl: 'https://llmroute.club/pay',
+            settingsUrl: 'https://llmroute.club/balance',
         });
         expect(c.text).toContain('¥20.00');
         expect(c.text).toContain('¥2.13');
-        expect(c.text).toContain('https://portal.silkroadai.io/pay');
-        expect(c.text).toContain('https://portal.silkroadai.io/balance');
+        expect(c.text).toContain('https://llmroute.club/pay');
+        expect(c.text).toContain('https://llmroute.club/balance');
     });
 
     it('html body has the same data + the brand 立即充值 CTA + settings link', () => {
         const c = balanceAlertTemplate({
             remainCny: 0,
             thresholdCny: 10,
-            topupUrl: 'https://portal.silkroadai.io/pay',
-            settingsUrl: 'https://portal.silkroadai.io/balance',
+            topupUrl: 'https://llmroute.club/pay',
+            settingsUrl: 'https://llmroute.club/balance',
         });
         expect(c.html).toContain('¥10.00');
         expect(c.html).toContain('¥0.00');
         // CTA button text + href
         expect(c.html).toMatch(/立即充值/);
-        expect(c.html).toContain('href="https://portal.silkroadai.io/pay"');
+        expect(c.html).toContain('href="https://llmroute.club/pay"');
         // Settings link to /balance
-        expect(c.html).toContain('href="https://portal.silkroadai.io/balance"');
-        // W7 D4: brand navy is #1a2540 (was #0a1535 in W6 D2; the original
-        // wasn't a design-system color, just a one-off). Both the body
-        // text and the CTA button reference it inline.
-        expect(c.html).toContain('#1a2540');
+        expect(c.html).toContain('href="https://llmroute.club/balance"');
+        expect(c.html).toContain('#1d1d1f');
+        expect(c.html).toContain('#0e1a2a');
     });
 });
 
@@ -73,37 +71,35 @@ describe('W7 D4 brand-shell consistency across all 3 templates', () => {
         } = await import('@/lib/email/templates');
         cases.push({
             name: 'verify-email',
-            html: emailVerificationTemplate('https://silkroadai.io/verify-email?token=x', 24).html,
+            html: emailVerificationTemplate('https://llmroute.club/verify-email?token=x', 24).html,
         });
         cases.push({
             name: 'reset-password',
-            html: passwordResetTemplate('https://silkroadai.io/reset-password?token=y', 30).html,
+            html: passwordResetTemplate('https://llmroute.club/reset-password?token=y', 30).html,
         });
         cases.push({
             name: 'balance-alert',
             html: bat({
                 remainCny: 4.5,
                 thresholdCny: 10,
-                topupUrl: 'https://silkroadai.io/pay',
-                settingsUrl: 'https://silkroadai.io/balance',
+                topupUrl: 'https://llmroute.club/pay',
+                settingsUrl: 'https://llmroute.club/balance',
             }).html,
         });
         for (const c of cases) {
             // Brand wordmark in the header strip
-            expect(c.html, c.name).toContain('Silk Road AI');
-            expect(c.html, c.name).toContain('Connecting Global Intelligence.');
-            // Paper bg on body element
-            expect(c.html, c.name).toMatch(/<body[^>]*background:#faf7f2/);
-            // Header's brand-accent gold border-bottom (the 1px hairline
-            // that ties the header to the landing's H2 underline aesthetic)
-            expect(c.html, c.name).toContain('#c9a961');
+            expect(c.html, c.name).toContain('LLmRoute');
+            expect(c.html, c.name).toContain('One route. Every model.');
+            // Neutral canvas + route-blue accent
+            expect(c.html, c.name).toMatch(/<body[^>]*background:#f5f5f7/);
+            expect(c.html, c.name).toContain('#0e1a2a');
             // Footer contact pair
             expect(c.html, c.name).toContain('Global_Ads');
-            expect(c.html, c.name).toContain('support@silkroadai.io');
+            expect(c.html, c.name).toContain('support@llmroute.club');
             // Footer legal triplet
-            expect(c.html, c.name).toMatch(/href="https:\/\/silkroadai\.io\/terms"/);
-            expect(c.html, c.name).toMatch(/href="https:\/\/silkroadai\.io\/privacy"/);
-            expect(c.html, c.name).toMatch(/href="https:\/\/silkroadai\.io\/refund"/);
+            expect(c.html, c.name).toMatch(/href="https:\/\/llmroute\.club\/terms"/);
+            expect(c.html, c.name).toMatch(/href="https:\/\/llmroute\.club\/privacy"/);
+            expect(c.html, c.name).toMatch(/href="https:\/\/llmroute\.club\/refund"/);
             // Copyright with current year (template renders at call time)
             expect(c.html, c.name).toContain(`© ${new Date().getFullYear()}`);
         }

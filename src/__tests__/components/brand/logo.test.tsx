@@ -29,10 +29,10 @@ describe('<Logo /> SSR (brand assets PR)', () => {
         // Wrapped in a Next Link (renders <a href>)
         expect(html).toMatch(/<a[^>]*href="\/"/);
         // Accessible label on the link
-        expect(html).toMatch(/aria-label="Silk Road AI"/);
+        expect(html).toMatch(/aria-label="LLmRoute"/);
         // <img> with alt + measured dims; full-logo aspect is 4:1, so
         // width = 4 × height = 96 at size=24.
-        expect(html).toMatch(/<img[^>]*alt="Silk Road AI"/);
+        expect(html).toMatch(/<img[^>]*alt="LLmRoute"/);
         expect(html).toMatch(/height="24"/);
         expect(html).toMatch(/width="96"/);
     });
@@ -40,7 +40,7 @@ describe('<Logo /> SSR (brand assets PR)', () => {
     it('linkHome={false} strips the wrapping anchor', () => {
         const html = renderToString(<Logo linkHome={false} />);
         expect(html).not.toContain('<a ');
-        expect(html).toMatch(/<img[^>]*alt="Silk Road AI"/);
+        expect(html).toMatch(/<img[^>]*alt="LLmRoute"/);
     });
 
     it('size prop scales height + width by intrinsic aspect', () => {

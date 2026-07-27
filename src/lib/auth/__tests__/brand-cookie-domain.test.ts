@@ -1,8 +1,8 @@
 /**
  * brandCookieDomain() — env-driven cookie domain helper.
  *
- * Background: W7 D3 collapsed OAuth from portal.silkroadai.io to apex
- * silkroadai.io. The state/pkce/session cookies were host-scoped (no
+ * Background: W7 D3 collapsed OAuth from llmroute.club to apex
+ * llmroute.club. The state/pkce/session cookies were host-scoped (no
  * Domain= attribute), so apex-issued state cookies were invisible at the
  * subdomain callback → state_mismatch. This helper centralizes the
  * Domain attribute so setSessionCookie + the four OAuth handlers
@@ -13,7 +13,7 @@
  * Contract:
  *   - BRAND_COOKIE_DOMAIN unset → undefined (host-scoped fallback)
  *   - BRAND_COOKIE_DOMAIN="" → undefined (explicit opt-out)
- *   - BRAND_COOKIE_DOMAIN=".silkroadai.io" → ".silkroadai.io"
+ *   - BRAND_COOKIE_DOMAIN=".llmroute.club" → ".llmroute.club"
  *   - Any non-empty string → returned verbatim (no parsing/validation)
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -42,26 +42,26 @@ describe('brandCookieDomain', () => {
         expect(brandCookieDomain()).toBeUndefined();
     });
 
-    it('returns ".silkroadai.io" when set to that exact value (prod default)', () => {
-        process.env.BRAND_COOKIE_DOMAIN = '.silkroadai.io';
-        expect(brandCookieDomain()).toBe('.silkroadai.io');
+    it('returns ".llmroute.club" when set to that exact value (prod default)', () => {
+        process.env.BRAND_COOKIE_DOMAIN = '.llmroute.club';
+        expect(brandCookieDomain()).toBe('.llmroute.club');
     });
 
     it('returns the staging eTLD+1 verbatim when set to a staging domain', () => {
-        process.env.BRAND_COOKIE_DOMAIN = '.staging.silkroadai.io';
-        expect(brandCookieDomain()).toBe('.staging.silkroadai.io');
+        process.env.BRAND_COOKIE_DOMAIN = '.staging.llmroute.club';
+        expect(brandCookieDomain()).toBe('.staging.llmroute.club');
     });
 
     it('does NOT validate or normalize the input — value passes through as-is', () => {
         // We intentionally avoid hostname parsing; if an operator sets a
         // bad value it surfaces immediately at runtime (browser refuses
         // the Set-Cookie) rather than getting silently rewritten.
-        process.env.BRAND_COOKIE_DOMAIN = 'silkroadai.io'; // no leading dot
-        expect(brandCookieDomain()).toBe('silkroadai.io');
+        process.env.BRAND_COOKIE_DOMAIN = 'llmroute.club'; // no leading dot
+        expect(brandCookieDomain()).toBe('llmroute.club');
     });
 
     it('treats whitespace as a real value (callers responsible for trimming)', () => {
-        process.env.BRAND_COOKIE_DOMAIN = ' .silkroadai.io ';
-        expect(brandCookieDomain()).toBe(' .silkroadai.io ');
+        process.env.BRAND_COOKIE_DOMAIN = ' .llmroute.club ';
+        expect(brandCookieDomain()).toBe(' .llmroute.club ');
     });
 });

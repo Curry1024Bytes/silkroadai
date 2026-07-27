@@ -44,9 +44,9 @@ export function CustomerShell({ logo, userEmail, resellerStatus, notices, brandS
                 跳到主要内容
             </a>
 
-            <header className="sticky top-0 z-40 h-16 border-b border-portal-line bg-portal-panel">
+            <header className="sticky top-0 z-40 h-[60px] border-b border-black/[0.08] bg-white/90 backdrop-blur-xl supports-[backdrop-filter]:bg-white/80">
                 <div className="flex h-full items-center">
-                    <div className="flex h-full w-auto items-center gap-3 px-4 md:w-[240px] md:border-r md:border-portal-line md:px-5">
+                    <div className="flex h-full w-auto items-center gap-3 px-3 md:w-[228px] md:border-r md:border-black/[0.07] md:px-5">
                         <button
                             type="button"
                             onClick={() => setMobileNavOpen(true)}
@@ -54,7 +54,7 @@ export function CustomerShell({ logo, userEmail, resellerStatus, notices, brandS
                             aria-controls="portal-mobile-navigation"
                             aria-expanded={mobileNavOpen}
                             title="打开导航"
-                            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-portal-muted transition-colors hover:bg-portal-active hover:text-portal-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy/30 md:hidden"
+                            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-portal-muted transition-colors duration-200 hover:bg-portal-soft hover:text-portal-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-accent/25 md:hidden"
                         >
                             <Menu size={20} strokeWidth={1.8} aria-hidden="true" />
                         </button>
@@ -62,13 +62,13 @@ export function CustomerShell({ logo, userEmail, resellerStatus, notices, brandS
                     </div>
 
                     <div className="hidden min-w-0 flex-1 items-center px-6 md:flex">
-                        <span className="text-sm font-medium text-portal-muted">客户控制台</span>
+                        <span className="font-display text-sm font-semibold text-portal-muted">工作台</span>
                     </div>
 
                     <div className="ml-auto flex h-full items-center gap-2 px-3 sm:gap-3 sm:px-5">
                         <div className="hidden min-w-0 items-center gap-2.5 sm:flex">
                             <span
-                                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-portal-active text-xs font-semibold text-portal-ink"
+                                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-brand-accent-soft text-xs font-semibold text-brand-accent"
                                 aria-hidden="true"
                             >
                                 {initial}
@@ -83,14 +83,14 @@ export function CustomerShell({ logo, userEmail, resellerStatus, notices, brandS
                 </div>
             </header>
 
-            <div className="flex min-h-[calc(100dvh-4rem)]">
+            <div className="flex min-h-[calc(100dvh-60px)]">
                 <Sidebar
                     resellerStatus={resellerStatus}
                     mobileOpen={mobileNavOpen}
                     onMobileClose={() => setMobileNavOpen(false)}
                 />
-                <main id="portal-main" className="min-w-0 flex-1 px-4 py-5 sm:px-6 sm:py-7 xl:px-8">
-                    <div className="mx-auto w-full max-w-[1440px]">
+                <main id="portal-main" className="min-w-0 flex-1 px-4 py-6 sm:px-7 sm:py-8 xl:px-10">
+                    <div className="mx-auto w-full max-w-[1320px]">
                         {notices}
                         {children}
                     </div>

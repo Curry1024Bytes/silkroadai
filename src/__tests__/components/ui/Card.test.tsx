@@ -19,11 +19,11 @@ describe('<Card />', () => {
         expect(html).toContain(hallmark);
     });
 
-    it('default variant has the warm shadow + brand-border', () => {
+    it('default variant has restrained depth + an 8px radius', () => {
         const html = renderToString(<Card>x</Card>);
         expect(html).toContain('shadow-card');
         expect(html).toContain('border-brand-border');
-        expect(html).toContain('rounded-xl');
+        expect(html).toContain('rounded-lg');
     });
 
     it('inset variant has no border + no shadow + no padding (flush)', () => {

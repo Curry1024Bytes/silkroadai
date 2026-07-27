@@ -60,7 +60,7 @@ export function ResetPasswordForm({ token }: { token: string }) {
             <div>
                 <p style={{ color: 'var(--color-status-success-text)' }}>{result.msg}</p>
                 <p>
-                    <a href="/login" style={{ color: '#0a1535' }}>
+                    <a href="/login" style={{ color: '#0e1715' }}>
                         前往登录
                     </a>
                 </p>
@@ -71,7 +71,7 @@ export function ResetPasswordForm({ token }: { token: string }) {
     return (
         <form onSubmit={onSubmit}>
             <label style={{ display: 'block', marginBottom: 12 }}>
-                <span style={{ fontSize: 13, color: '#5a6478' }}>新密码(至少 8 位)</span>
+                <span style={{ fontSize: 13, color: '#53645f' }}>新密码(至少 8 位)</span>
                 <input
                     type="password"
                     value={pw1}
@@ -90,7 +90,7 @@ export function ResetPasswordForm({ token }: { token: string }) {
                 />
             </label>
             <label style={{ display: 'block', marginBottom: 16 }}>
-                <span style={{ fontSize: 13, color: '#5a6478' }}>重复新密码</span>
+                <span style={{ fontSize: 13, color: '#53645f' }}>重复新密码</span>
                 <input
                     type="password"
                     value={pw2}
@@ -115,7 +115,7 @@ export function ResetPasswordForm({ token }: { token: string }) {
                 type="submit"
                 disabled={submitting}
                 style={{
-                    background: '#0a1535',
+                    background: '#0e1715',
                     color: '#fff',
                     padding: '10px 20px',
                     border: 'none',

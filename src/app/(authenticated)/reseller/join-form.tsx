@@ -39,7 +39,7 @@ export function JoinForm() {
         e.preventDefault();
         fireAnalytics('reseller_join_clicked', { agreement_checked: agreed });
         if (!agreed) {
-            setError('请先阅读并勾选同意《Silk Road AI 代理合作协议》');
+            setError('请先阅读并勾选同意《LLmRoute 代理合作协议》');
             return;
         }
         setError(null);
@@ -76,7 +76,7 @@ export function JoinForm() {
                     aria-describedby="agreement-hint"
                 />
                 <span className="text-sm text-ink leading-relaxed select-none">
-                    我已阅读并同意上方《Silk Road AI 代理合作协议》摘要
+                    我已阅读并同意上方《LLmRoute 代理合作协议》摘要
                 </span>
             </label>
             <p id="agreement-hint" className="text-xs text-muted-ink m-0">

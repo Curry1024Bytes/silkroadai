@@ -11,14 +11,12 @@ const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7;
  * Domain attribute applied to session + OAuth-state cookies so apex and
  * subdomain hosts share them.
  *
- * Why: prior to W7 D3 the portal lived only at portal.silkroadai.io and
- * cookies were host-scoped. After the W7 D3 apex landing came online,
- * OAuth start fires from silkroadai.io but the registered Google/GitHub
- * callback URI was still on the subdomain — the apex-scoped state cookie
- * was invisible at the subdomain callback → state_mismatch (see Caddyfile
- * + .env updates landing alongside this code change).
+ * Why: the portal historically served OAuth start and callback routes on
+ * different hosts. A host-scoped state cookie was invisible to the callback,
+ * producing state_mismatch. Keeping this configurable also supports the
+ * LLmRoute apex/API split without hard-coding a cookie domain in code.
  *
- * Set `BRAND_COOKIE_DOMAIN=.silkroadai.io` on prod to scope cookies to
+ * Set `BRAND_COOKIE_DOMAIN=.llmroute.club` on prod to scope cookies to
  * the eTLD+1, making both apex and (transient) subdomain happy. Leave
  * empty/unset in local dev — browsers refuse Domain attributes on
  * localhost. Empty string also opts out (host-scoped fallback).
@@ -114,7 +112,7 @@ export async function signSession(userId: string): Promise<string> {
  * Secure 属性:生产默认 true;`SESSION_COOKIE_SECURE=false` 显式关(独立门户裸 IP
  * HTTP 入口用 —— Secure cookie 在纯 HTTP 会被浏览器直接丢弃,登录永远回登录页。
  * 主站实例不设此 env,行为不变)。同实例还需 `BRAND_COOKIE_DOMAIN=` 置空:
- * `.silkroadai.io` 的 Domain 属性对 IP host 无效,浏览器整个拒收 cookie。
+ * `.llmroute.club` 的 Domain 属性对 IP host 无效,浏览器整个拒收 cookie。
  */
 function cookieSecure(): boolean {
     if (process.env.SESSION_COOKIE_SECURE === 'false') return false;

@@ -36,8 +36,8 @@ describe('<NotFound /> SSR (W7 D4)', () => {
     it('exposes contact pair (微信 Global_Ads + support email)', () => {
         const html = renderToString(<NotFound />);
         expect(html).toContain('Global_Ads');
-        expect(html).toContain('support@silkroadai.io');
-        expect(html).toMatch(/href="mailto:support@silkroadai\.io"/);
+        expect(html).toContain('support@llmroute.club');
+        expect(html).toMatch(/href="mailto:support@llmroute\.club"/);
     });
 
     it('uses W7 P1 design tokens (paper bg + brand-accent 404 + navy heading)', () => {
@@ -48,15 +48,15 @@ describe('<NotFound /> SSR (W7 D4)', () => {
         expect(html).toContain('text-brand-accent');
         expect(html).toContain('text-navy');
         // No legacy hex literals leaked
-        expect(html).not.toContain('#0a1535');
-        expect(html).not.toContain('#5a6478');
+        expect(html).not.toContain('#0e1715');
+        expect(html).not.toContain('#53645f');
     });
 
     it('renders the brand <Logo /> (primary-flat for light bg)', () => {
         const html = renderToString(<NotFound />);
-        // PR #23's <Logo /> renders <img alt="Silk Road AI">; size=32 →
+        // PR #23's <Logo /> renders <img alt="LLmRoute">; size=32 →
         // width=128 (4:1 aspect for full-logo variants).
-        expect(html).toMatch(/<img[^>]*alt="Silk Road AI"/);
+        expect(html).toMatch(/<img[^>]*alt="LLmRoute"/);
         expect(html).toMatch(/height="32"/);
         expect(html).toMatch(/width="128"/);
     });
@@ -115,8 +115,8 @@ describe('<ErrorBoundary /> (500) SSR (W7 D4)', () => {
     it('exposes contact pair (微信 Global_Ads + support email)', () => {
         const html = renderToString(<ErrorBoundary {...makeProps()} />);
         expect(html).toContain('Global_Ads');
-        expect(html).toContain('support@silkroadai.io');
-        expect(html).toMatch(/href="mailto:support@silkroadai\.io"/);
+        expect(html).toContain('support@llmroute.club');
+        expect(html).toMatch(/href="mailto:support@llmroute\.club"/);
     });
 
     it('uses W7 P1 design tokens', () => {
@@ -124,6 +124,6 @@ describe('<ErrorBoundary /> (500) SSR (W7 D4)', () => {
         expect(html).toContain('bg-paper');
         expect(html).toContain('text-brand-accent');
         expect(html).toContain('text-navy');
-        expect(html).not.toContain('#0a1535');
+        expect(html).not.toContain('#0e1715');
     });
 });

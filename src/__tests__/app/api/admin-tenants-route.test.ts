@@ -74,7 +74,7 @@ describe('POST /api/admin/tenants — create partner', () => {
         const data = mockCreate.mock.calls[0][0].data;
         expect(data.slug).toBe('acme');
         expect(data.domains).toEqual(['acme.com', 'www.acme.com']); // lowercased, port-stripped, deduped
-        expect(data.primary_color).toBeUndefined(); // → Prisma default #1E3A8A
+        expect(data.primary_color).toBeUndefined(); // → Prisma default #17201E
         expect(data.signup_enabled).toBe(true);
         expect(data.status).toBe('active');
     });

@@ -16,7 +16,7 @@ import { NextRequest } from 'next/server';
 
 // Phase 2:mock R2 client(真实现读 R2_* env + 打 S3 API)
 const mockUploadImage = vi.fn(
-    async (key: string, _body?: Buffer, _contentType?: string) => `https://images.silkroadai.io/${key}`,
+    async (key: string, _body?: Buffer, _contentType?: string) => `https://images.llmroute.club/${key}`,
 );
 vi.mock('@/lib/r2/client', () => ({
     uploadImage: (key: string, body: Buffer, contentType?: string) => mockUploadImage(key, body, contentType),
@@ -102,7 +102,7 @@ function makeReq(
     init: { method?: string; body?: unknown; headers?: Record<string, string> } = {},
 ): NextRequest {
     const { method = 'POST', body, headers = {} } = init;
-    return new NextRequest(`https://ai.silkroadai.io/v1${path}`, {
+    return new NextRequest(`https://api.llmroute.club/v1${path}`, {
         method,
         headers: { 'content-type': 'application/json', ...headers },
         body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -187,7 +187,7 @@ describe('/v1 proxy — Gemini image translation', () => {
         expect(data.object).toBe('chat.completion');
         // Phase 2:图片走 R2,content 是 markdown 公网 URL(非 base64 内联)
         expect(data.choices[0].message.content).toMatch(
-            /^!\[image\]\(https:\/\/images\.silkroadai\.io\/gen\/\d{4}-\d{2}-\d{2}\/[0-9a-f-]+\.png\)$/,
+            /^!\[image\]\(https:\/\/images\.llmroute\.club\/gen\/\d{4}-\d{2}-\d{2}\/[0-9a-f-]+\.png\)$/,
         );
         expect(data.usage.completion_tokens).toBe(1290);
     });
@@ -222,7 +222,7 @@ describe('/v1 proxy — Gemini image translation', () => {
         expect(res.headers.get('X-Silkroadai-Translated')).toBe('gemini-native');
         const data = (await res.json()) as { choices: Array<{ message: { content: string } }> };
         expect(data.choices[0].message.content).toMatch(
-            /^!\[image\]\(https:\/\/images\.silkroadai\.io\/gen\/\d{4}-\d{2}-\d{2}\/[0-9a-f-]+\.png\)$/,
+            /^!\[image\]\(https:\/\/images\.llmroute\.club\/gen\/\d{4}-\d{2}-\d{2}\/[0-9a-f-]+\.png\)$/,
         );
     });
 
@@ -928,7 +928,7 @@ describe('/v1 proxy — passthrough', () => {
     });
 
     it('returns 400 on invalid JSON body for chat/completions', async () => {
-        const req = new NextRequest('https://ai.silkroadai.io/v1/chat/completions', {
+        const req = new NextRequest('https://api.llmroute.club/v1/chat/completions', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: 'not-json{{{',
@@ -1239,7 +1239,7 @@ describe('/v1 proxy — Phase 2: image_url 入参 + R2 上传 (W9 D2)', () => {
         expect(key).toMatch(/^gen\/\d{4}-\d{2}-\d{2}\/[0-9a-f-]{36}\.png$/);
         expect(Buffer.isBuffer(body)).toBe(true);
         expect(contentType).toBe('image/png');
-        expect(data.choices[0].message.content).toBe(`![image](https://images.silkroadai.io/${key})`);
+        expect(data.choices[0].message.content).toBe(`![image](https://images.llmroute.club/${key})`);
         expect(data.choices[0].message.content).not.toContain('base64');
         expect(res.headers.get('X-Silkroadai-R2-Fallback')).toBeNull();
     });
@@ -1255,7 +1255,7 @@ describe('/v1 proxy — Phase 2: image_url 入参 + R2 上传 (W9 D2)', () => {
         const [key, , contentType] = mockUploadImage.mock.calls[0];
         expect(key).toMatch(/^gen\/\d{4}-\d{2}-\d{2}\/[0-9a-f-]{36}\.jpg$/);
         expect(contentType).toBe('image/jpeg');
-        expect(data.choices[0].message.content).toBe(`![image](https://images.silkroadai.io/${key})`);
+        expect(data.choices[0].message.content).toBe(`![image](https://images.llmroute.club/${key})`);
     });
 
     it('真 PNG 字节 → 保持 .png + image/png(嗅探不误伤正常图)', async () => {
@@ -1374,7 +1374,7 @@ describe('/v1 proxy — Phase 3: 客户自定义 OSS (W9 D3)', () => {
         expect(res.status).toBe(200); // 客户请求不失败
         expect(res.headers.get('X-Silkroadai-Oss-Fallback')).toBe('yes');
         expect(mockUploadImage).toHaveBeenCalledTimes(1);
-        expect(data.choices[0].message.content).toMatch(/^!\[image\]\(https:\/\/images\.silkroadai\.io\//);
+        expect(data.choices[0].message.content).toMatch(/^!\[image\]\(https:\/\/images\.llmroute\.club\//);
     });
 
     it('uses platform R2 directly when user has no OSS config (test 18)', async () => {
@@ -1413,7 +1413,7 @@ describe('/v1 proxy — Phase 3: 客户自定义 OSS (W9 D3)', () => {
 describe('/v1 proxy — Phase 4: DALL·E /v1/images/{edits,generations} (W9 D4)', () => {
     /** multipart 请求:body 传 FormData 让 Request 自动生成 multipart content-type + boundary。 */
     function makeMultipartReq(form: FormData, path = '/images/edits'): NextRequest {
-        return new NextRequest(`https://ai.silkroadai.io/v1${path}`, { method: 'POST', body: form });
+        return new NextRequest(`https://api.llmroute.club/v1${path}`, { method: 'POST', body: form });
     }
 
     function imageFile(bytes: number[], name = 'ref.png', type = 'image/png'): File {
@@ -1451,7 +1451,7 @@ describe('/v1 proxy — Phase 4: DALL·E /v1/images/{edits,generations} (W9 D4)'
         const data = (await res.json()) as { created: number; data: Array<{ url: string }> };
         expect(typeof data.created).toBe('number');
         expect(data.data).toHaveLength(1);
-        expect(data.data[0].url).toMatch(/^https:\/\/images\.silkroadai\.io\/gen\/\d{4}-\d{2}-\d{2}\/[0-9a-f-]+\.png$/);
+        expect(data.data[0].url).toMatch(/^https:\/\/images\.llmroute\.club\/gen\/\d{4}-\d{2}-\d{2}\/[0-9a-f-]+\.png$/);
     });
 
     // ch96 adobe 逆向两款:客户走 /images/edits。不在 GEMINI_IMAGE_MODELS 时 → passthrough →
@@ -1472,7 +1472,7 @@ describe('/v1 proxy — Phase 4: DALL·E /v1/images/{edits,generations} (W9 D4)'
         expect(res.status).toBe(200);
         expect(res.headers.get('X-Silkroadai-Translated')).toBe('gemini-native');
         const data = (await res.json()) as { data: Array<{ url: string }> };
-        expect(data.data[0].url).toMatch(/^https:\/\/images\.silkroadai\.io\/gen\/\d{4}-\d{2}-\d{2}\/[0-9a-f-]+\.png$/);
+        expect(data.data[0].url).toMatch(/^https:\/\/images\.llmroute\.club\/gen\/\d{4}-\d{2}-\d{2}\/[0-9a-f-]+\.png$/);
     });
 
     it('ch96 gemini-3-pro-image-adobe 经 /images/edits → imageSize 4K', async () => {
@@ -1526,7 +1526,7 @@ describe('/v1 proxy — Phase 4: DALL·E /v1/images/{edits,generations} (W9 D4)'
         expect(sent.contents[0].parts).toHaveLength(1);
         expect(sent.contents[0].parts[0].text).toBe('a sunset');
         const data = (await res.json()) as { data: Array<{ url: string }> };
-        expect(data.data[0].url).toMatch(/^https:\/\/images\.silkroadai\.io\/gen\//);
+        expect(data.data[0].url).toMatch(/^https:\/\/images\.llmroute\.club\/gen\//);
     });
 
     it('rejects unsupported aspect_ratio with 400, does not hit upstream (test D4-4)', async () => {
@@ -1897,7 +1897,7 @@ describe('/v1 proxy — img2img:auto 时输出比例跟随输入图(fix gemini-i
     }
 
     function multipartReq(form: FormData): NextRequest {
-        return new NextRequest('https://ai.silkroadai.io/v1/images/edits', { method: 'POST', body: form });
+        return new NextRequest('https://api.llmroute.club/v1/images/edits', { method: 'POST', body: form });
     }
 
     function editsForm(
@@ -2119,7 +2119,7 @@ describe('/v1 proxy — img2img:auto 时输出比例跟随输入图(fix gemini-i
 describe('/v1 proxy — pro imageSize 可选 (size param, feat/pro-image-size-select)', () => {
     // 仅 gemini-3-pro-image-preview 认 size;其余模型忽略 size 维持固定档。
     function makeMultipartReq(form: FormData, path = '/images/edits'): NextRequest {
-        return new NextRequest(`https://ai.silkroadai.io/v1${path}`, { method: 'POST', body: form });
+        return new NextRequest(`https://api.llmroute.club/v1${path}`, { method: 'POST', body: form });
     }
     function imageFile(bytes: number[], name = 'ref.png', type = 'image/png'): File {
         return new File([new Uint8Array(bytes)], name, { type });
@@ -2394,7 +2394,7 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
         form.append('model', 'gpt-image-2');
         form.append('prompt', '改成夜景');
         form.append('image', new File([new Uint8Array([1, 2, 3])], 'in.png', { type: 'image/png' }));
-        const req = new NextRequest('https://ai.silkroadai.io/v1/images/edits', { method: 'POST', body: form });
+        const req = new NextRequest('https://api.llmroute.club/v1/images/edits', { method: 'POST', body: form });
         const res = await POST(req, ctx('images', 'edits'));
         expect(res.status).toBe(200);
         const data = (await res.json()) as { size: string; usage: Usage };
@@ -2478,7 +2478,7 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
         form.append('prompt', 'add a bird');
         form.append('size', 'auto');
         form.append('image', new File([png], 'in.png', { type: 'image/png' }));
-        const req = new NextRequest('https://ai.silkroadai.io/v1/images/edits', { method: 'POST', body: form });
+        const req = new NextRequest('https://api.llmroute.club/v1/images/edits', { method: 'POST', body: form });
         const res = await POST(req, ctx('images', 'edits'));
         expect(res.status).toBe(200);
         expect(mockFetch).toHaveBeenCalledTimes(2);
@@ -2577,7 +2577,7 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
         form.append('model', 'gpt-image-2');
         form.append('prompt', '改成夜景');
         form.append('image', new File([new Uint8Array([1, 2, 3])], 'in.png', { type: 'image/png' }));
-        const req = new NextRequest('https://ai.silkroadai.io/v1/images/generations', { method: 'POST', body: form });
+        const req = new NextRequest('https://api.llmroute.club/v1/images/generations', { method: 'POST', body: form });
         const res = await POST(req, ctx('images', 'generations'));
         expect(res.status).toBe(200);
         const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
@@ -2592,7 +2592,7 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
         form.append('prompt', '把图2产品放进图1背景');
         form.append('image[]', new File([new Uint8Array([1, 2, 3])], 'bg.png', { type: 'image/png' }));
         form.append('image[]', new File([new Uint8Array([4, 5, 6])], 'obj.png', { type: 'image/png' }));
-        const req = new NextRequest('https://ai.silkroadai.io/v1/images/edits', { method: 'POST', body: form });
+        const req = new NextRequest('https://api.llmroute.club/v1/images/edits', { method: 'POST', body: form });
         const res = await POST(req, ctx('images', 'edits'));
         expect(res.status).toBe(200);
         const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
@@ -2605,7 +2605,7 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
         const form = new FormData();
         form.append('model', 'gpt-image-2');
         form.append('prompt', 'a red circle');
-        const req = new NextRequest('https://ai.silkroadai.io/v1/images/generations', { method: 'POST', body: form });
+        const req = new NextRequest('https://api.llmroute.club/v1/images/generations', { method: 'POST', body: form });
         const res = await POST(req, ctx('images', 'generations'));
         expect(res.status).toBe(200);
         expect((mockFetch.mock.calls[0] as [string])[0]).toBe(`${NEWAPI_BASE}/v1/images/generations`);
@@ -2617,7 +2617,7 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
         form.append('model', 'gpt-image-2');
         form.append('prompt', '改图');
         form.append('file', new File([new Uint8Array([1, 2, 3])], 'ref.png', { type: 'image/png' })); // 非 image/image[] 字段名
-        const req = new NextRequest('https://ai.silkroadai.io/v1/images/generations', { method: 'POST', body: form });
+        const req = new NextRequest('https://api.llmroute.club/v1/images/generations', { method: 'POST', body: form });
         const res = await POST(req, ctx('images', 'generations'));
         expect(res.status).toBe(200);
         expect((mockFetch.mock.calls[0] as [string])[0]).toBe(`${NEWAPI_BASE}/v1/images/edits`); // 有文件 → edits
@@ -2629,7 +2629,7 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
         form.append('model', 'az-gpt-image-2'); // ¥2.2 别名,应和 gpt-image-2 同样处理
         form.append('prompt', '改图');
         form.append('image', new File([new Uint8Array([1, 2, 3])], 'in.png', { type: 'image/png' }));
-        const req = new NextRequest('https://ai.silkroadai.io/v1/images/generations', { method: 'POST', body: form });
+        const req = new NextRequest('https://api.llmroute.club/v1/images/generations', { method: 'POST', body: form });
         const res = await POST(req, ctx('images', 'generations'));
         expect(res.status).toBe(200);
         const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
@@ -2696,7 +2696,7 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
         form.append('prompt', '改图');
         form.append('image', new File([new Uint8Array([1, 2, 3])], 'in.png', { type: 'image/png' }));
         await POST(
-            new NextRequest('https://ai.silkroadai.io/v1/images/edits', { method: 'POST', body: form }),
+            new NextRequest('https://api.llmroute.club/v1/images/edits', { method: 'POST', body: form }),
             ctx('images', 'edits'),
         );
         expect((mockFetch.mock.calls[1] as [string])[0]).toBe(`${NEWAPI_BASE}/v1/images/edits`);
@@ -2722,7 +2722,7 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
         form.append('prompt', 'x');
         form.append('n', '3');
         await POST(
-            new NextRequest('https://ai.silkroadai.io/v1/images/generations', { method: 'POST', body: form }),
+            new NextRequest('https://api.llmroute.club/v1/images/generations', { method: 'POST', body: form }),
             ctx('images', 'generations'),
         );
         const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
@@ -2747,7 +2747,7 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
         );
         expect(res.status).toBe(200);
         const data = (await res.json()) as { data: Array<{ url?: string; b64_json?: string }> };
-        expect(data.data[0].url).toMatch(/^https:\/\/images\.silkroadai\.io\/gen\/\d{4}-\d{2}-\d{2}\/[0-9a-f-]+\.png$/);
+        expect(data.data[0].url).toMatch(/^https:\/\/images\.llmroute\.club\/gen\/\d{4}-\d{2}-\d{2}\/[0-9a-f-]+\.png$/);
         expect(data.data[0].b64_json).toBeUndefined(); // b64 换成 url
     });
 
@@ -2778,7 +2778,7 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
 });
 
 describe('/v1 proxy — video poll customer-OSS rehost', () => {
-    const R2 = 'https://images.silkroadai.io';
+    const R2 = 'https://images.llmroute.club';
     const R2_VIDEO = `${R2}/seedance-video/task_abc.mp4`;
     const OSS_CONFIG = { status: 'active', public_url_prefix: 'https://cdn.customer.com' };
 
@@ -2894,7 +2894,7 @@ describe('/v1 proxy — gpt-image-2 response_format stripping (zhiyunai compat)'
         form.append('prompt', 'make it red');
         form.append('response_format', 'b64_json');
         form.append('image', new Blob([Buffer.from('x')], { type: 'image/png' }), 'in.png');
-        const req = new NextRequest('https://ai.silkroadai.io/v1/images/edits', {
+        const req = new NextRequest('https://api.llmroute.club/v1/images/edits', {
             method: 'POST',
             headers: { authorization: 'Bearer sk-test' },
             body: form,
@@ -2978,7 +2978,7 @@ describe('/v1 proxy — gpt-image-2 aspect_ratio → pixel size (zhiyunai compat
         form.append('prompt', 'a cat');
         form.append('aspect_ratio', '9:16');
         form.append('image', new Blob([Buffer.from('x')], { type: 'image/png' }), 'in.png');
-        const req = new NextRequest('https://ai.silkroadai.io/v1/images/edits', {
+        const req = new NextRequest('https://api.llmroute.club/v1/images/edits', {
             method: 'POST',
             headers: { authorization: 'Bearer sk-test' },
             body: form,
@@ -3022,7 +3022,7 @@ describe('/v1 proxy — gpt-image-2 via /chat/completions → images translation
             usage: { prompt_tokens: number; completion_tokens: number };
         };
         expect(data.object).toBe('chat.completion');
-        expect(data.choices[0].message.content).toMatch(/^!\[image\]\(https:\/\/images\.silkroadai\.io\//);
+        expect(data.choices[0].message.content).toMatch(/^!\[image\]\(https:\/\/images\.llmroute\.club\//);
         expect(data.usage.completion_tokens).toBe(196);
         expect(res.headers.get('X-Silkroadai-Translated')).toBe('gpt-image-chat');
     });
@@ -3336,7 +3336,7 @@ describe('/v1 proxy — gpt-4o-image chat 生图 URL 转存', () => {
         expect((mockFetch.mock.calls[1] as [string])[0]).toBe(CDN); // 取图
         const data = (await res.json()) as { choices: Array<{ message: { content: string } }> };
         const content = data.choices[0].message.content;
-        expect(content).toMatch(/https:\/\/images\.silkroadai\.io\/gen\/\d{4}-\d{2}-\d{2}\/[0-9a-f-]+\.png/); // 我们的 url
+        expect(content).toMatch(/https:\/\/images\.llmroute\.club\/gen\/\d{4}-\d{2}-\d{2}\/[0-9a-f-]+\.png/); // 我们的 url
         expect(content).not.toContain('pro.filesystem.site'); // 所有 CDN 链接被替换(含下载链接)
         expect(res.headers.get('X-Silkroadai-Translated')).toBe('gpt-4o-image-rehost');
     });
@@ -3378,7 +3378,7 @@ describe('/v1 proxy — 异步生图(?async=true)', () => {
         mockImageTaskUpdate.mockImplementation(async () => ({}));
         mockImageTaskFindUnique.mockImplementation(async () => null);
         mockFetch.mockResolvedValue(
-            new Response(JSON.stringify({ created: 1, data: [{ url: 'https://images.silkroadai.io/gen/x.png' }] }), {
+            new Response(JSON.stringify({ created: 1, data: [{ url: 'https://images.llmroute.club/gen/x.png' }] }), {
                 status: 200,
                 headers: { 'content-type': 'application/json' },
             }),
@@ -3421,7 +3421,7 @@ describe('/v1 proxy — 异步生图(?async=true)', () => {
         form.append('image', new File([new Uint8Array([1, 2, 3])], 'in.png', { type: 'image/png' }));
         form.append('prompt', '带上眼镜');
         form.append('model', 'gpt-image-2');
-        const req = new NextRequest('https://ai.silkroadai.io/v1/images/edits?async=true', {
+        const req = new NextRequest('https://api.llmroute.club/v1/images/edits?async=true', {
             method: 'POST',
             body: form,
         });
@@ -3467,7 +3467,7 @@ describe('/v1 proxy — 异步生图(?async=true)', () => {
         expect(success).toBeTruthy();
         const rj = (success![0] as { data: { result_json: { data: Array<{ url: string; b64_json: string }> } } }).data
             .result_json;
-        expect(rj.data[0].url).toMatch(/images\.silkroadai\.io\/gen\//);
+        expect(rj.data[0].url).toMatch(/images\.llmroute\.club\/gen\//);
         expect(rj.data[0].b64_json).toBe('');
     });
 
@@ -3489,7 +3489,7 @@ describe('/v1 proxy — 异步生图(?async=true)', () => {
                 result_json: {
                     created: 1,
                     model: 'gpt-image-2',
-                    data: [{ url: 'https://images.silkroadai.io/gen/x.png', b64_json: '' }],
+                    data: [{ url: 'https://images.llmroute.club/gen/x.png', b64_json: '' }],
                 },
             }),
         );
@@ -3499,7 +3499,7 @@ describe('/v1 proxy — 异步生图(?async=true)', () => {
         };
         expect(j.data.status).toBe('SUCCESS');
         expect(j.data.progress).toBe('100%');
-        expect(j.data.data.data[0].url).toBe('https://images.silkroadai.io/gen/x.png');
+        expect(j.data.data.data[0].url).toBe('https://images.llmroute.club/gen/x.png');
     });
 
     it('查询别人的 task(IDOR)→ not_found、data=null', async () => {
@@ -3550,7 +3550,7 @@ describe('/v1 proxy — 异步生图(?async=true)', () => {
             taskRow({
                 status: 'SUCCESS',
                 finished_at: new Date(),
-                result_json: { created: 1, data: [{ url: 'https://images.silkroadai.io/gen/x.png', b64_json: '' }] },
+                result_json: { created: 1, data: [{ url: 'https://images.llmroute.club/gen/x.png', b64_json: '' }] },
             }),
         );
         mockFetch.mockImplementation(async (u: unknown) => {
@@ -3576,7 +3576,7 @@ describe('/v1 proxy — 异步生图(?async=true)', () => {
         };
         expect(payload.topic).toBe('image_task_completed');
         expect(payload.data.status).toBe('SUCCESS');
-        expect(payload.data.data.data[0].url).toBe('https://images.silkroadai.io/gen/x.png');
+        expect(payload.data.data.data[0].url).toBe('https://images.llmroute.club/gen/x.png');
     });
 });
 
@@ -3668,8 +3668,8 @@ describe('/v1 proxy — 严格模式 Azure gpt-image 合规(opt-in)', () => {
 
 describe('/v1 proxy — 视频轮询 result_url 重写(2026-07-04 base_url 内网化致内容代理失效)', () => {
     const AUTH = { authorization: 'Bearer sk-test-video' };
-    const R2_URL = 'https://images.silkroadai.io/seedance-video/mvt-abc123.mp4';
-    const CONTENT_PROXY = 'https://ai.silkroadai.io/v1/videos/task_xyz/content';
+    const R2_URL = 'https://images.llmroute.club/seedance-video/mvt-abc123.mp4';
+    const CONTENT_PROXY = 'https://api.llmroute.club/v1/videos/task_xyz/content';
 
     function pollResponse(status: string, videoUrl: string | null) {
         const inner: Record<string, unknown> = { status: status === 'SUCCESS' ? 'completed' : 'running' };
@@ -3709,7 +3709,7 @@ describe('/v1 proxy — 视频轮询 result_url 重写(2026-07-04 base_url 内�
     });
 
     it('配了客户 OSS → result_url 跟随改写成客户 OSS 域名(与 video_url 一致)', async () => {
-        vi.stubEnv('R2_PUBLIC_URL', 'https://images.silkroadai.io');
+        vi.stubEnv('R2_PUBLIC_URL', 'https://images.llmroute.club');
         mockResolveUserId.mockResolvedValueOnce('user-1');
         mockGetOssConfig.mockResolvedValueOnce({ status: 'active', public_url_prefix: 'https://cdn.customer.com' });
         mockObjectExistsInOss.mockResolvedValueOnce(false);

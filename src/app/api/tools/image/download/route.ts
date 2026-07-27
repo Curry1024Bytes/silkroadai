@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 /**
  * 工具 — 生图结果下载代理(同源强制下载)。
  *
- * 跨源图片(R2 `images.silkroadai.io` / 客户自定义 OSS)用浏览器 `<a download>` 会被无视 ——
+ * 跨源图片(R2 `images.llmroute.club` / 客户自定义 OSS)用浏览器 `<a download>` 会被无视 ——
  * 只在新标签打开、不触发下载。这里服务端把图片拉下来、带 `Content-Disposition: attachment`
  * 同源回传,强制浏览器下载。data URL(b64_json)由客户端直接下载,不经过这里。
  *

@@ -39,8 +39,8 @@ const WORKSPACE_NAV: NavItem[] = [
 
 const RESOURCE_NAV: NavItem[] = [
     { href: '/settings/storage', label: '存储设置', icon: HardDrive },
-    { href: '/models', label: '模型清单', icon: Boxes },
-    { href: '/docs', label: '文档', icon: BookOpenText },
+    { href: '/workspace/models', label: '模型清单', icon: Boxes },
+    { href: '/workspace/docs', label: '文档', icon: BookOpenText },
 ];
 
 export interface SidebarProps {
@@ -75,26 +75,26 @@ function NavigationPanel({
     return (
         <>
             {mobile && (
-                <div className="flex h-16 items-center justify-between border-b border-portal-line px-5">
-                    <span className="text-sm font-semibold text-portal-ink">导航</span>
+                <div className="flex h-[60px] items-center justify-between border-b border-portal-line px-5">
+                    <span className="font-display text-sm font-semibold text-portal-ink">导航</span>
                     <button
                         type="button"
                         onClick={onClose}
                         aria-label="关闭导航"
                         title="关闭导航"
-                        className="flex h-9 w-9 items-center justify-center rounded-md text-portal-muted transition-colors hover:bg-portal-active hover:text-portal-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy/30"
+                        className="flex h-11 w-11 items-center justify-center rounded-lg text-portal-muted transition-colors hover:bg-portal-soft hover:text-portal-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-accent/25"
                     >
                         <X size={19} strokeWidth={1.8} aria-hidden="true" />
                     </button>
                 </div>
             )}
 
-            <nav className="min-h-0 flex-1 overflow-y-auto px-3 py-5" aria-label="客户后台导航">
-                <div className="space-y-6">
+            <nav className="min-h-0 flex-1 overflow-y-auto px-3 py-6" aria-label="客户后台导航">
+                <div className="space-y-7">
                     {groups.map((group) => (
                         <div key={group.label}>
-                            <p className="mb-2 px-3 text-[11px] font-semibold text-portal-subtle">{group.label}</p>
-                            <ul className="m-0 list-none space-y-1 p-0">
+                            <p className="mb-2 px-3 text-xs font-medium text-portal-subtle">{group.label}</p>
+                            <ul className="m-0 list-none space-y-1.5 p-0">
                                 {group.items.map((item) => {
                                     const active = isRouteActive(pathname, item.href);
                                     const Icon = item.icon;
@@ -106,19 +106,19 @@ function NavigationPanel({
                                                 data-status={item.status}
                                                 onClick={onNavigate}
                                                 className={[
-                                                    'flex h-10 items-center gap-3 rounded-md border-l-2 px-3 text-sm no-underline',
-                                                    'transition-colors duration-150 ease-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy/25',
+                                                    'flex h-11 items-center gap-3 rounded-lg border px-3 text-sm no-underline',
+                                                    'transition-[background-color,border-color,color,box-shadow] duration-200 ease-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-accent/25',
                                                     active
-                                                        ? 'border-l-navy bg-portal-active font-semibold text-portal-ink'
+                                                        ? 'border-portal-line bg-portal-panel font-semibold text-portal-ink shadow-card'
                                                         : item.muted
-                                                          ? 'border-l-transparent text-minor-ink/70 hover:bg-portal-soft hover:text-portal-muted'
-                                                          : 'border-l-transparent text-portal-muted hover:bg-portal-soft hover:text-portal-ink',
+                                                          ? 'border-transparent text-minor-ink/70 hover:bg-portal-soft hover:text-portal-muted'
+                                                          : 'border-transparent text-portal-muted hover:bg-portal-soft hover:text-portal-ink',
                                                 ].join(' ')}
                                             >
                                                 <Icon
                                                     size={17}
                                                     strokeWidth={active ? 2 : 1.7}
-                                                    className={active ? 'text-portal-gold' : 'text-portal-subtle'}
+                                                    className={active ? 'text-brand-accent' : 'text-portal-subtle'}
                                                     aria-hidden="true"
                                                 />
                                                 <span className="truncate">{item.label}</span>
@@ -136,7 +136,7 @@ function NavigationPanel({
                 <Link
                     href="/pay"
                     onClick={onNavigate}
-                    className="flex h-10 items-center justify-center gap-2 rounded-md bg-navy px-4 text-sm font-semibold text-white no-underline transition-colors hover:bg-navy-strong focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy/30"
+                    className="flex h-11 items-center justify-center gap-2 rounded-lg bg-brand-accent px-4 text-sm font-semibold text-white no-underline shadow-card transition-colors duration-200 hover:bg-brand-accent-strong focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-accent/30"
                 >
                     <CreditCard size={17} strokeWidth={1.8} aria-hidden="true" />
                     充值
@@ -169,7 +169,7 @@ export function Sidebar({ resellerStatus = null, mobileOpen = false, onMobileClo
 
     return (
         <>
-            <aside className="sticky top-16 hidden h-[calc(100dvh-4rem)] w-[240px] shrink-0 flex-col border-r border-portal-line bg-portal-panel md:flex">
+            <aside className="sticky top-[60px] hidden h-[calc(100dvh-60px)] w-[228px] shrink-0 flex-col border-r border-black/[0.07] bg-portal-canvas md:flex">
                 <NavigationPanel groups={groups} pathname={pathname} />
             </aside>
 
@@ -186,7 +186,7 @@ export function Sidebar({ resellerStatus = null, mobileOpen = false, onMobileClo
                         role="dialog"
                         aria-modal="true"
                         aria-label="客户后台导航"
-                        className="absolute inset-y-0 left-0 flex w-[min(82vw,300px)] flex-col bg-portal-panel shadow-2xl"
+                        className="absolute inset-y-0 left-0 flex w-[min(84vw,304px)] flex-col bg-portal-canvas shadow-card-strong"
                     >
                         <NavigationPanel
                             groups={groups}

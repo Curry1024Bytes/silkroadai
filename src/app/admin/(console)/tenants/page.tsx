@@ -41,7 +41,7 @@ const emptyForm: FormData = {
     primary_domain: '',
     domains: '',
     logo_url: '',
-    primary_color: '#1E3A8A',
+    primary_color: '#0E1A2A',
     support_email: '',
     support_wechat: '',
     signup_enabled: true,
@@ -186,7 +186,7 @@ function TenantsContent() {
             primary_domain: tn.primary_domain ?? '',
             domains: (tn.domains ?? []).join('\n'),
             logo_url: tn.logo_url ?? '',
-            primary_color: tn.primary_color ?? '#1E3A8A',
+            primary_color: tn.primary_color ?? '#0E1A2A',
             support_email: tn.support_email ?? '',
             support_wechat: tn.support_wechat ?? '',
             signup_enabled: tn.signup_enabled,
@@ -334,7 +334,7 @@ function TenantsContent() {
                                             <span className="inline-flex items-center gap-2">
                                                 <span
                                                     className="inline-block h-3 w-3 rounded-full border"
-                                                    style={{ background: tn.primary_color ?? '#1E3A8A' }}
+                                                    style={{ background: tn.primary_color ?? '#0E1A2A' }}
                                                 />
                                                 {tn.brand_name}
                                                 {isPlatform && (
@@ -453,7 +453,7 @@ function TenantsContent() {
                                         value={form.primary_color}
                                         onChange={(e) => setForm({ ...form, primary_color: e.target.value })}
                                         className={[inputCls, 'font-mono'].join(' ')}
-                                        placeholder="#1E3A8A"
+                                        placeholder="#0E1A2A"
                                     />
                                 </div>
                                 <div className="flex-1">

@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToString } from 'react-dom/server';
 import { UnverifiedBanner, callResendVerification } from '@/app/(authenticated)/unverified-banner';
 
-const TEST_EMAIL = 'happy@silkroadai.io';
+const TEST_EMAIL = 'happy@llmroute.club';
 
 describe('<UnverifiedBanner /> SSR smoke', () => {
     it('renders the soft-block copy + 重发验证邮件 button', () => {

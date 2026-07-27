@@ -15,7 +15,7 @@ import { FormError } from '@/components/ui/FormError';
 import { ChatConsole } from './chat-console';
 
 export const dynamic = 'force-dynamic';
-export const metadata = { title: 'AI 对话 — Silk Road AI' };
+export const metadata = { title: 'AI 对话 — LLmRoute' };
 
 export default async function ChatPage() {
     const { groups, flat, totalModels } = await listChatModels();

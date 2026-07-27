@@ -58,7 +58,7 @@ import { collapseRetriedFailures, sanitizeLogContent } from './format';
 import { isPerImageBilled } from '@/lib/newapi/log-display';
 
 export const dynamic = 'force-dynamic';
-export const metadata = { title: '概览 — Silk Road AI' };
+export const metadata = { title: '概览 — LLmRoute' };
 
 /** Recent-call fetch sizes for the detail table. The full-period TOTALS come
  *  from the aggregator (up to 50k rows); these two slices are only for the
@@ -128,13 +128,15 @@ function MetricCell({
 }) {
     return (
         <article className={['min-w-0 p-5 sm:p-6', className ?? ''].filter(Boolean).join(' ')}>
-            <div className="mb-6 flex items-center justify-between gap-3">
+            <div className="mb-7 flex items-center justify-between gap-3">
                 <p className="m-0 text-sm font-medium text-portal-muted">{label}</p>
-                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-portal-soft text-portal-subtle">
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand-accent-soft text-brand-accent">
                     <Icon size={16} strokeWidth={1.8} aria-hidden="true" />
                 </span>
             </div>
-            <p className="m-0 truncate text-2xl font-semibold text-portal-ink tabular-nums sm:text-[28px]">{value}</p>
+            <p className="m-0 truncate font-display text-2xl font-semibold text-portal-ink tabular-nums sm:text-[28px]">
+                {value}
+            </p>
             <p className="m-0 mt-2 text-xs text-portal-subtle tabular-nums">{detail}</p>
         </article>
     );
@@ -268,16 +270,18 @@ export default async function DashboardPage({
     const displayName = user.nickname || user.email.split('@')[0];
 
     return (
-        <section className="space-y-7">
+        <section className="space-y-8">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
                 <div>
-                    <p className="m-0 mb-1 text-xs font-semibold text-portal-gold">OVERVIEW</p>
-                    <h1 className="m-0 text-[28px] font-semibold leading-tight text-portal-ink">你好，{displayName}</h1>
-                    <p className="m-0 mt-2 text-sm text-portal-muted">查看账户余额、模型消费与最近调用。</p>
+                    <p className="m-0 mb-2 text-xs font-semibold text-brand-accent">账户概览</p>
+                    <h1 className="m-0 font-display text-[28px] font-semibold leading-tight text-portal-ink">
+                        你好，{displayName}
+                    </h1>
+                    <p className="m-0 mt-2 text-sm text-portal-muted">余额、用量和最近调用，一目了然。</p>
                 </div>
                 <div className="flex flex-wrap items-center gap-3">
                     <PeriodTabs active={period} />
-                    <Button href="/pay" size="md" className="rounded-md">
+                    <Button href="/pay" size="md">
                         <CreditCard size={17} strokeWidth={1.8} aria-hidden="true" />
                         充值
                     </Button>
@@ -299,42 +303,41 @@ export default async function DashboardPage({
             )}
 
             <div className="grid gap-4 lg:grid-cols-12">
-                <article className="relative overflow-hidden rounded-lg bg-navy p-6 text-white shadow-portal lg:col-span-4 lg:min-h-[220px]">
-                    <div className="absolute inset-x-0 top-0 h-1 bg-portal-gold" aria-hidden="true" />
+                <article className="relative overflow-hidden rounded-lg border border-portal-line bg-portal-panel p-6 shadow-portal lg:col-span-4 lg:min-h-[220px]">
                     <div className="flex items-start justify-between gap-4">
                         <div>
-                            <p className="m-0 text-sm font-medium text-white/70">当前余额</p>
+                            <p className="m-0 text-sm font-medium text-portal-muted">当前余额</p>
                             <div className="mt-4">
                                 {bal ? (
-                                    <p className="m-0 text-[38px] font-semibold leading-none text-white tabular-nums">
+                                    <p className="m-0 font-display text-[38px] font-semibold leading-none text-portal-ink tabular-nums">
                                         ¥{bal.balanceCny.toFixed(2)}
                                     </p>
                                 ) : (
-                                    <p className="m-0 text-base font-medium text-white/55">暂无数据</p>
+                                    <p className="m-0 text-base font-medium text-portal-subtle">暂无数据</p>
                                 )}
                             </div>
                             {bal && (
-                                <p className="m-0 mt-3 text-xs text-white/55 tabular-nums">
+                                <p className="m-0 mt-3 text-xs text-portal-subtle tabular-nums">
                                     ≈ ${(bal.balanceCny / USD_TO_CNY_RATE).toFixed(2)} USD
                                     {bal.quota && <> · {bal.quota.remain.toLocaleString('en-US')} quota</>}
                                 </p>
                             )}
                         </div>
-                        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-white/10 text-white/85">
+                        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-brand-accent-soft text-brand-accent">
                             <Wallet size={20} strokeWidth={1.7} aria-hidden="true" />
                         </span>
                     </div>
 
-                    <div className="mt-8 flex items-end justify-between gap-4 border-t border-white/15 pt-4">
+                    <div className="mt-8 flex items-end justify-between gap-4 border-t border-portal-line pt-4">
                         <div>
-                            <p className="m-0 text-xs text-white/55">历史消费</p>
-                            <p className="m-0 mt-1 text-lg font-semibold text-white tabular-nums">
+                            <p className="m-0 text-xs text-portal-subtle">历史消费</p>
+                            <p className="m-0 mt-1 font-display text-lg font-semibold text-portal-ink tabular-nums">
                                 {bal ? `¥${bal.spentCny.toFixed(2)}` : '暂无数据'}
                             </p>
                         </div>
                         <Link
                             href="/pay"
-                            className="inline-flex items-center gap-1 text-xs font-medium text-white/70 no-underline transition-colors hover:text-white"
+                            className="inline-flex items-center gap-1 text-xs font-semibold text-brand-accent no-underline transition-colors hover:text-brand-accent-strong"
                         >
                             账户充值 <ArrowUpRight size={14} aria-hidden="true" />
                         </Link>
@@ -395,7 +398,9 @@ export default async function DashboardPage({
                                     strokeWidth={1.8}
                                     aria-hidden="true"
                                 />
-                                <h2 className="m-0 text-base font-semibold text-portal-ink">模型消耗分布</h2>
+                                <h2 className="m-0 font-display text-base font-semibold text-portal-ink">
+                                    模型消耗分布
+                                </h2>
                             </div>
                             <p className="m-0 mt-1.5 text-xs text-portal-subtle">
                                 按日展示各模型消费趋势 · {periodLabel}
@@ -412,7 +417,7 @@ export default async function DashboardPage({
                 <aside className="rounded-lg border border-portal-line bg-portal-panel p-5 shadow-portal sm:p-6">
                     <div className="mb-4 flex items-center justify-between gap-3">
                         <div>
-                            <h2 className="m-0 text-base font-semibold text-portal-ink">热门模型</h2>
+                            <h2 className="m-0 font-display text-base font-semibold text-portal-ink">热门模型</h2>
                             <p className="m-0 mt-1 text-xs text-portal-subtle">按消费金额排序 · {periodLabel}</p>
                         </div>
                         <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-portal-gold-soft text-portal-gold">
@@ -475,7 +480,10 @@ export default async function DashboardPage({
                     <div>
                         <div className="flex items-center gap-2">
                             <Activity size={18} className="text-portal-gold" strokeWidth={1.8} aria-hidden="true" />
-                            <h2 id="recent-calls-title" className="m-0 text-base font-semibold text-portal-ink">
+                            <h2
+                                id="recent-calls-title"
+                                className="m-0 font-display text-base font-semibold text-portal-ink"
+                            >
                                 调用明细
                             </h2>
                         </div>
@@ -510,7 +518,7 @@ export default async function DashboardPage({
                                     strokeWidth={1.8}
                                     aria-hidden="true"
                                 />
-                                <h2 className="m-0 text-base font-semibold text-portal-ink">充值流水</h2>
+                                <h2 className="m-0 font-display text-base font-semibold text-portal-ink">充值流水</h2>
                             </div>
                             <p className="m-0 mt-1 text-xs text-portal-subtle">最近 {HISTORY_LIMIT} 笔账户入账记录</p>
                         </div>

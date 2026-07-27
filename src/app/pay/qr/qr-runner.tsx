@@ -181,7 +181,7 @@ export function QrPollRunner({ orderId, accessToken }: { orderId: string; access
             style={{
                 marginTop: 16,
                 padding: '10px 12px',
-                background: '#f5f7fa',
+                background: '#f3f6f5',
                 border: '1px solid #e5e8ee',
                 borderRadius: 6,
                 fontSize: 13,

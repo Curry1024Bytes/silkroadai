@@ -11,7 +11,7 @@
  *   2. Rate limit (in-memory sliding window, 10/min/user)
  *   3. Validate { prompt, model, count, size } via zod
  *   4. Resolve portal system token (lazy provision if needed)
- *   5. Forward to https://ai.silkroadai.io/v1/images/generations
+ *   5. Forward to https://api.llmroute.club/v1/images/generations
  *   6. Fetch each returned image URL → buffer (in parallel)
  *   7. Upload each buffer to R2 with deterministic key
  *   8. Insert ImageGeneration row
@@ -75,7 +75,7 @@ const GenerateSchema = z.object({
  *  as the hard delete trigger (with `is_favorite=false`). */
 const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
-const NEWAPI_PROXY_URL = process.env.NEWAPI_CUSTOMER_BASE_URL || 'https://ai.silkroadai.io';
+const NEWAPI_PROXY_URL = process.env.NEWAPI_CUSTOMER_BASE_URL || 'https://api.llmroute.club';
 
 const UPSTREAM_TIMEOUT_MS = 180_000;
 const URL_FETCH_TIMEOUT_MS = 60_000;

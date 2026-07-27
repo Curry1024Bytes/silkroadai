@@ -44,7 +44,7 @@ export const RESELLER_AGREEMENT_POINTS: readonly { title: string; body: string }
     },
     {
         title: '终止与修订',
-        body: 'Silk Road AI 保留终止合作的权利,已发生但未结佣金按规则照付;协议条款可调整,重大变更提前 30 天通知。',
+        body: 'LLmRoute 保留终止合作的权利,已发生但未结佣金按规则照付;协议条款可调整,重大变更提前 30 天通知。',
     },
 ] as const;
 
@@ -70,7 +70,7 @@ export function AgreementDisclosure({ defaultOpen = false }: Props) {
                     'rounded-xl',
                 ].join(' ')}
             >
-                <span>📜 《Silk Road AI 代理合作协议》摘要</span>
+                <span>📜 《LLmRoute 代理合作协议》摘要</span>
                 <span aria-hidden="true" className="text-xs text-muted-ink">
                     {open ? '收起 ▲' : '展开 ▼'}
                 </span>

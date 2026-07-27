@@ -47,10 +47,10 @@ describe('AdminConsoleLayout (server-side auth gate)', () => {
     });
 
     it('renders the shell (with admin email) for a staff+ admin, no redirect', async () => {
-        mockGetAdminUser.mockResolvedValue({ email: 'ops@silkroadai.io', role: 'superadmin' });
+        mockGetAdminUser.mockResolvedValue({ email: 'ops@llmroute.club', role: 'superadmin' });
         const tree = await AdminConsoleLayout({ children: <div>CHILD_OK</div> });
         const html = renderToString(tree);
-        expect(html).toContain('ops@silkroadai.io');
+        expect(html).toContain('ops@llmroute.club');
         expect(html).toContain('CHILD_OK');
         expect(mockRedirect).not.toHaveBeenCalled();
     });

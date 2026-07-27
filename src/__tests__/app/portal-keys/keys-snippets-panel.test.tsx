@@ -26,8 +26,8 @@ describe('<KeysSnippetsPanel /> initial render (curl tab)', () => {
 
     it('exposes both base URLs (OpenAI /v1 + Anthropic root)', () => {
         const html = renderToString(<KeysSnippetsPanel />);
-        expect(html).toContain('https://ai.silkroadai.io/v1');
-        expect(html).toContain('https://ai.silkroadai.io');
+        expect(html).toContain('https://api.llmroute.club/v1');
+        expect(html).toContain('https://api.llmroute.club');
         expect(html).toContain('OpenAI 兼容 Base URL');
         expect(html).toContain('Anthropic 兼容 Base URL');
     });
@@ -55,7 +55,7 @@ describe('<KeysSnippetsPanel /> initial render (curl tab)', () => {
         // the customer is hitting the right endpoint.
         expect(html).toContain('Authorization: Bearer YOUR_API_KEY');
         expect(html).toContain('claude-sonnet-4-6');
-        expect(html).toContain('ai.silkroadai.io/v1/chat/completions');
+        expect(html).toContain('api.llmroute.club/v1/chat/completions');
     });
 
     it('renders the in-snippet 复制 button (top-right of code block)', () => {
@@ -64,10 +64,10 @@ describe('<KeysSnippetsPanel /> initial render (curl tab)', () => {
         expect(html).toContain('>复制<');
     });
 
-    it('links the sample model to /models and the docs CTA to /docs', () => {
+    it('keeps resource links inside the authenticated workspace', () => {
         const html = renderToString(<KeysSnippetsPanel />);
-        expect(html).toMatch(/href="\/models"/);
-        expect(html).toMatch(/href="\/docs"/);
+        expect(html).toMatch(/href="\/workspace\/models"/);
+        expect(html).toMatch(/href="\/workspace\/docs"/);
         expect(html).toContain('完整集成指南');
     });
 

@@ -109,7 +109,7 @@ describe('createOrder — auth/user lookup early-return branches (W4-1 D2)', () 
     it('USER_INACTIVE 403 when portal user.status === "banned"', async () => {
         mockUserFindUnique.mockResolvedValue({
             id: VALID_USER_ID,
-            email: 'banned@silkroadai.io',
+            email: 'banned@llmroute.club',
             nickname: 'BannedUser',
             status: 'banned',
         });
@@ -130,7 +130,7 @@ describe('createOrder — auth/user lookup early-return branches (W4-1 D2)', () 
     it('USER_INACTIVE 403 when portal user.status === "disabled"', async () => {
         mockUserFindUnique.mockResolvedValue({
             id: VALID_USER_ID,
-            email: 'disabled@silkroadai.io',
+            email: 'disabled@llmroute.club',
             nickname: null, // exercises the email-localpart fallback in service.ts
             status: 'disabled',
         });

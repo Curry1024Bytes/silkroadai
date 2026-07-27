@@ -19,7 +19,7 @@ import { Card } from '@/components/ui/Card';
 import { AdminLoginForm } from './login-form';
 
 export const dynamic = 'force-dynamic';
-export const metadata = { title: '管理员登录 — Silk Road AI' };
+export const metadata = { title: '管理员登录 — LLmRoute' };
 
 async function getSession() {
     const h = await headers();

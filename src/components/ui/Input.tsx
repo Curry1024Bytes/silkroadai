@@ -22,12 +22,12 @@ export interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> 
 }
 
 const BASE_CLASSES =
-    'h-10 px-3.5 text-[15px] text-ink rounded-lg border bg-surface ' +
+    'h-11 px-3.5 text-[15px] text-ink rounded-lg border bg-surface ' +
     'placeholder:text-minor-ink ' +
-    'transition-shadow duration-150 ease-brand outline-none ' +
+    'transition-[border-color,box-shadow,background-color] duration-200 ease-brand outline-none ' +
     'disabled:opacity-50 disabled:cursor-not-allowed disabled:bg-paper-muted';
 
-const STATE_OK = 'border-brand-border ' + 'hover:border-muted-ink/40 ' + 'focus:border-navy focus:shadow-focus';
+const STATE_OK = 'border-brand-border ' + 'hover:border-muted-ink/45 ' + 'focus:border-brand-accent focus:shadow-focus';
 
 const STATE_ERR =
     'border-status-error-border ' + 'focus:border-status-error-text ' + 'focus:shadow-[0_0_0_3px_rgba(185,28,28,0.18)]';

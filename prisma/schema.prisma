@@ -193,7 +193,7 @@ model PaymentProviderInstance {
 }
 
 // ============================================
-// Silk Road AI Portal — B3 路线 (W2 D4)
+// LLmRoute Portal — B3 路线 (W2 D4)
 // ============================================
 // 后端从 LiteLLM 切到 new-api。User / Key / RechargeLog / Order 关系
 // 全部指向 new-api 的 user/token 模型。
@@ -215,7 +215,7 @@ model Tenant {
   // 客户侧按请求 Host 解析到 tenant 后,用这些字段渲染 header/logo/品牌色/客服联系。
   // 平台主体回填为现状值(见 migration),故平台域渲染不变。
   logo_url       String? // 客户 logo 图 URL;空 → 渲染默认(平台)logo
-  primary_color  String?  @default("#1E3A8A") // 品牌主色(覆盖 --color-navy);平台回填 #1a2540
+  primary_color  String?  @default("#1E3A8A") // 品牌交互色(覆盖 accent token,不覆盖正文色)
   support_email  String? // 客服邮箱(footer)
   support_wechat String? // 客服微信号(footer)
   // 多域名(partner 可能多个域名指向同一 tenant)。primary_domain 仍作主域。

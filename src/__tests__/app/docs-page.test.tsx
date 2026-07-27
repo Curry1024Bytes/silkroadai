@@ -17,18 +17,19 @@
 import { describe, expect, it } from 'vitest';
 import { renderToString } from 'react-dom/server';
 import DocsPage from '@/app/docs/page';
+import WorkspaceDocsPage from '@/app/(authenticated)/workspace/docs/page';
 
 describe('/docs page — header + chrome', () => {
     it('renders the brand <Logo /> and main heading 集成文档', () => {
         const html = renderToString(<DocsPage />);
-        expect(html).toMatch(/<img[^>]*alt="Silk Road AI"/);
+        expect(html).toMatch(/<img[^>]*alt="LLmRoute"/);
         expect(html).toContain('集成文档');
     });
 
     it('exposes both Anthropic + OpenAI base URLs in the 通用配置 card', () => {
         const html = renderToString(<DocsPage />);
-        expect(html).toContain('https://ai.silkroadai.io/v1');
-        expect(html).toContain('https://ai.silkroadai.io');
+        expect(html).toContain('https://api.llmroute.club/v1');
+        expect(html).toContain('https://api.llmroute.club');
         expect(html).toContain('OpenAI 兼容 Base URL');
         expect(html).toContain('Anthropic 兼容 Base URL');
     });
@@ -45,6 +46,16 @@ describe('/docs page — header + chrome', () => {
         // Now a <BackButton> (browser back) instead of a fixed href="/" link.
         expect(html).toContain('返回');
         expect(html).toMatch(/<button[^>]*>[\s\S]*返回/);
+    });
+});
+
+describe('/workspace/docs page — authenticated chrome', () => {
+    it('renders embedded docs without the public header and keeps model links in the workspace', () => {
+        const html = renderToString(<WorkspaceDocsPage />);
+        expect(html).toContain('DOCUMENTATION');
+        expect(html).not.toMatch(/<img[^>]*alt="LLmRoute"/);
+        expect(html).not.toContain('<span aria-hidden="true">←</span><span>返回</span>');
+        expect(html).toMatch(/href="\/workspace\/models"/);
     });
 });
 
@@ -101,7 +112,7 @@ describe('/docs page — code snippets ground-truthed', () => {
         // and `api_key`.
         expect(html).toContain('base_url=');
         expect(html).toContain('api_key=');
-        expect(html).toContain('https://ai.silkroadai.io/v1');
+        expect(html).toContain('https://api.llmroute.club/v1');
         expect(html).toContain('from openai import OpenAI');
     });
 

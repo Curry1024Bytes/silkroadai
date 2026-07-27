@@ -76,7 +76,14 @@ export function ModelsBrowser({ entries, totalModels, vendorCount }: Props) {
 
             {sections.length === 0 ? (
                 <Card>
-                    <EmptyState title={`没有匹配「${query}」的模型`} body="试试其他关键词,或清空搜索框查看全部。" />
+                    <EmptyState
+                        title={debouncedQuery ? `没有匹配「${query}」的模型` : '暂无可用模型'}
+                        body={
+                            debouncedQuery
+                                ? '试试其他关键词,或清空搜索框查看全部。'
+                                : '模型目录暂时不可用,请稍后刷新页面。'
+                        }
+                    />
                 </Card>
             ) : (
                 <div className="flex flex-col gap-10">
@@ -96,7 +103,7 @@ function VendorSectionBlock({ section }: { section: VendorSection }) {
             <header className="flex items-center gap-3 mb-4 pb-3 border-b border-brand-border">
                 <span
                     aria-hidden="true"
-                    className="flex items-center justify-center w-10 h-10 rounded-xl bg-navy text-paper font-semibold text-lg shrink-0"
+                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-navy text-lg font-semibold text-paper"
                 >
                     {meta.initial}
                 </span>
@@ -112,7 +119,7 @@ function VendorSectionBlock({ section }: { section: VendorSection }) {
             <div className="flex flex-col gap-5">
                 {section.types.map((bucket) => (
                     <div key={bucket.type}>
-                        <h3 className="m-0 mb-2.5 text-xs font-semibold uppercase tracking-wide text-muted-ink">
+                        <h3 className="m-0 mb-2.5 text-xs font-semibold text-muted-ink">
                             {TYPE_LABEL[bucket.type]}{' '}
                             <span className="text-minor-ink font-normal normal-case">· {bucket.entries.length}</span>
                         </h3>

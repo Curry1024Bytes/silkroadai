@@ -4,19 +4,19 @@
  */
 import { describe, expect, it } from 'vitest';
 import { renderToString } from 'react-dom/server';
-import ToolsIndexPage from '@/app/tools/page';
+import ToolsIndexPage from '@/app/(authenticated)/tools/page';
 
 describe('工具箱 /tools index', () => {
     it('renders the 5 tool cards with correct hrefs', () => {
         const html = renderToString(<ToolsIndexPage />);
         expect(html).toContain('工具箱');
-        expect(html).toContain('Seedance 视频测试工具');
-        expect(html).toContain('AI 对话测试工具');
-        expect(html).toContain('AI 生图测试工具');
+        expect(html).toContain('Seedance 视频测试');
+        expect(html).toContain('AI 对话测试');
+        expect(html).toContain('AI 生图测试');
         expect(html).toMatch(/href="\/tools\/seedance"/);
         expect(html).toMatch(/href="\/tools\/chat"/);
         expect(html).toMatch(/href="\/tools\/image"/);
-        expect(html).toMatch(/href="\/docs#codex-cli"/);
-        expect(html).toMatch(/href="\/docs#claude-code"/);
+        expect(html).toMatch(/href="\/workspace\/docs#codex-cli"/);
+        expect(html).toMatch(/href="\/workspace\/docs#claude-code"/);
     });
 });

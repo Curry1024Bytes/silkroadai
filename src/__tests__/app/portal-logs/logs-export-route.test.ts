@@ -57,7 +57,7 @@ function makeLog(o: LogOpt = {}) {
     };
 }
 
-const req = (qs = '') => new NextRequest(`https://ai.silkroadai.io/api/portal/logs/export${qs}`);
+const req = (qs = '') => new NextRequest(`https://api.llmroute.club/api/portal/logs/export${qs}`);
 const provisioned = { id: 'u1', newapi_user_id: 100, newapi_username: 'c-x' };
 /** 满页 100 行(触发继续翻页)。 */
 const fullPage = (offset = 0) => ({
@@ -94,7 +94,7 @@ describe('GET /api/portal/logs/export', () => {
         const res = await GET(req());
         expect(res.status).toBe(200);
         expect(res.headers.get('content-type')).toContain('text/csv');
-        expect(res.headers.get('content-disposition')).toMatch(/attachment; filename="silkroadai-logs-\d{12}\.csv"/);
+        expect(res.headers.get('content-disposition')).toMatch(/attachment; filename="llmroute-logs-\d{12}\.csv"/);
         // BOM 在字节层(EF BB BF);res.text() 按 fetch 规范解码时会剥掉它,故查原始字节。
         const bytes = new Uint8Array(await res.arrayBuffer());
         expect([bytes[0], bytes[1], bytes[2]]).toEqual([0xef, 0xbb, 0xbf]);

@@ -40,7 +40,7 @@ describe('AdminShell nav role-filter', () => {
 
     it('superadmin → all platform items visible (+ Customers)', () => {
         const html = renderToString(
-            <AdminShell adminEmail="ops@silkroadai.io" adminRole="superadmin">
+            <AdminShell adminEmail="ops@llmroute.club" adminRole="superadmin">
                 <div>child</div>
             </AdminShell>,
         );

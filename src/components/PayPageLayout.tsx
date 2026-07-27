@@ -68,7 +68,7 @@ export default function PayPageLayout({
                                 isDark ? 'bg-indigo-500/20 text-indigo-200' : 'bg-indigo-50 text-indigo-700',
                             ].join(' ')}
                         >
-                            {locale === 'en' ? 'Silk Road AI Secure Pay' : 'Silk Road AI 安全支付'}
+                            {locale === 'en' ? 'LLmRoute Secure Pay' : 'LLmRoute 安全支付'}
                         </div>
                         <h1
                             className={[

@@ -60,7 +60,7 @@ function user(
 ) {
     return {
         id: overrides.id ?? USER_A,
-        email: overrides.email ?? 'a@silkroadai.io',
+        email: overrides.email ?? 'a@llmroute.club',
         balance_alert_threshold_cny: new Prisma.Decimal(overrides.threshold ?? 10),
         balance_alert_last_sent_at: overrides.last_sent_at ?? null,
     };
@@ -77,8 +77,8 @@ beforeEach(() => {
     // escape hatch around Next's NEXT_PUBLIC_* build-time inlining).
     // Set both so the email CTA URLs match the prod-shape assertion
     // regardless of which one the helper picks first.
-    process.env.APP_URL = 'https://portal.silkroadai.io';
-    process.env.NEXT_PUBLIC_APP_URL = 'https://portal.silkroadai.io';
+    process.env.APP_URL = 'https://llmroute.club';
+    process.env.NEXT_PUBLIC_APP_URL = 'https://llmroute.club';
     // Default: claim succeeds (single-instance happy path).
     mockUserUpdateMany.mockResolvedValue({ count: 1 });
     mockSendBalanceAlertEmail.mockResolvedValue({ messageId: 'm-1' });
@@ -152,11 +152,11 @@ describe('scanAndAlert — send decisions', () => {
             topupUrl: string;
             settingsUrl: string;
         };
-        expect(emailArgs.to).toBe('a@silkroadai.io');
+        expect(emailArgs.to).toBe('a@llmroute.club');
         expect(emailArgs.remainCny).toBeCloseTo(3, 5);
         expect(emailArgs.thresholdCny).toBe(10);
-        expect(emailArgs.topupUrl).toBe('https://portal.silkroadai.io/pay');
-        expect(emailArgs.settingsUrl).toBe('https://portal.silkroadai.io/balance');
+        expect(emailArgs.topupUrl).toBe('https://llmroute.club/pay');
+        expect(emailArgs.settingsUrl).toBe('https://llmroute.club/balance');
         expect(r.alertsSent).toBe(1);
     });
 

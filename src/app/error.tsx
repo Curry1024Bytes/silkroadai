@@ -43,7 +43,7 @@ export default function ErrorBoundary({ error }: { error: Error & { digest?: str
                 <p
                     className="m-0 mb-3 text-brand-accent font-semibold tabular-nums"
                     aria-hidden="true"
-                    style={{ fontSize: 36, letterSpacing: '-0.02em' }}
+                    style={{ fontSize: 36, letterSpacing: 0 }}
                 >
                     500
                 </p>
@@ -71,8 +71,8 @@ export default function ErrorBoundary({ error }: { error: Error & { digest?: str
                         Global_Ads
                     </code>{' '}
                     · 邮箱{' '}
-                    <a href="mailto:support@silkroadai.io" className="text-navy no-underline hover:text-brand-accent">
-                        support@silkroadai.io
+                    <a href="mailto:support@llmroute.club" className="text-navy no-underline hover:text-brand-accent">
+                        support@llmroute.club
                     </a>
                 </p>
             </Card>

@@ -9,7 +9,7 @@
  * 动态 import 验证。
  */
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { REAL_USD_TO_CNY, USD_TO_CNY_RATE, quotaToRealUsd, quotaToUsd, quotaToCny } from '@/lib/newapi/quota-units';
+import { REAL_USD_TO_CNY, quotaToRealUsd, quotaToUsd, quotaToCny } from '@/lib/newapi/quota-units';
 
 describe('quota-units real-FX decoupling', () => {
     afterEach(() => {
@@ -17,9 +17,11 @@ describe('quota-units real-FX decoupling', () => {
         vi.resetModules();
     });
 
-    it('REAL_USD_TO_CNY_RATE 未设时回落 USD_TO_CNY_RATE(迁移前中性)', () => {
-        expect(process.env.REAL_USD_TO_CNY_RATE).toBeUndefined();
-        expect(REAL_USD_TO_CNY).toBe(USD_TO_CNY_RATE);
+    it('REAL_USD_TO_CNY_RATE 未设时回落 USD_TO_CNY_RATE(迁移前中性)', async () => {
+        vi.resetModules();
+        vi.stubEnv('REAL_USD_TO_CNY_RATE', '');
+        const mod = await import('@/lib/newapi/quota-units');
+        expect(mod.REAL_USD_TO_CNY).toBe(mod.USD_TO_CNY_RATE);
     });
 
     it('迁移前 quotaToRealUsd ≡ quotaToUsd', () => {

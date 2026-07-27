@@ -288,7 +288,7 @@ describe('GET /api/auth/oauth/github/callback', () => {
         // Behind reverse proxy in prod, request.url carries the container's
         // bind addr (0.0.0.0:3002) not the public hostname; the env var
         // pins the right base.
-        process.env.NEXT_PUBLIC_APP_URL = 'https://portal.silkroadai.io';
+        process.env.NEXT_PUBLIC_APP_URL = 'https://llmroute.club';
 
         // Success path → /dashboard
         mockExchange.mockResolvedValue({
@@ -306,11 +306,11 @@ describe('GET /api/auth/oauth/github/callback', () => {
                 cookies: { oauth_github_state: 'good' },
             }),
         );
-        expect(okRes.headers.get('location')).toBe('https://portal.silkroadai.io/dashboard');
+        expect(okRes.headers.get('location')).toBe('https://llmroute.club/dashboard');
 
         // Failure path → /?oauth_error=...
         const failRes = await GET(makeReq({ query: { code: 'c', state: 'qstate' } /* no cookies */ }));
-        expect(failRes.headers.get('location')).toBe('https://portal.silkroadai.io/?oauth_error=state_mismatch');
+        expect(failRes.headers.get('location')).toBe('https://llmroute.club/?oauth_error=state_mismatch');
     });
 
     it('W5 D3 fix-up #3: APP_URL takes priority over NEXT_PUBLIC_APP_URL', async () => {

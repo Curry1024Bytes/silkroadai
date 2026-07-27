@@ -43,7 +43,7 @@ async function sendTemplated(opts: {
 
     try {
         info = await getMailer().sendMail({
-            from: `"Silk Road AI" <${from}>`,
+            from: `"LLmRoute" <${from}>`,
             to: opts.to,
             subject: opts.content.subject,
             text: opts.content.text,

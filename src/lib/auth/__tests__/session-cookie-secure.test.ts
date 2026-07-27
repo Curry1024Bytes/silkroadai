@@ -25,6 +25,7 @@ function cookieOf(res: NextResponse) {
 describe('session cookie secure attribute', () => {
     it('production 默认 secure=true', () => {
         vi_setNodeEnv('production');
+        vi.stubEnv('SESSION_COOKIE_SECURE', '');
         const res = NextResponse.json({});
         setSessionCookie(res, 'tok');
         expect(cookieOf(res)?.secure).toBe(true);

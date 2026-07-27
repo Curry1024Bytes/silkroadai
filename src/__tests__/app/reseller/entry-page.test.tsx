@@ -58,7 +58,7 @@ describe('/reseller entry page', () => {
         mockFetchResellerStatus.mockResolvedValueOnce({ status: null, isReseller: false });
         const el = await ResellerEntryPage();
         const html = renderToString(el);
-        expect(html).toContain('加入 Silk Road AI 代理');
+        expect(html).toContain('加入 LLmRoute 代理');
         expect(html).toContain('代理合作协议'); // disclosure toggle
         expect(html).toContain('我已阅读并同意'); // join form checkbox
     });

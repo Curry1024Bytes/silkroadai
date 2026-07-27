@@ -1,7 +1,7 @@
 /**
  * /register — short-URL alias for /portal/register (fix/invite-landing).
  *
- * Reseller landing links go out as `silkroadai.io/register?invite=X` so
+ * Reseller landing links go out as `llmroute.club/register?invite=X` so
  * the URL the customer sees is short + memorable. Server-side redirect
  * to /portal/register preserves the query string and keeps the
  * implementation single-sourced.
@@ -13,7 +13,7 @@
 import { redirect } from 'next/navigation';
 
 export const dynamic = 'force-dynamic';
-export const metadata = { title: '注册 — Silk Road AI' };
+export const metadata = { title: '注册 — LLmRoute' };
 
 export default async function RegisterAliasPage({ searchParams }: { searchParams: Promise<{ invite?: string }> }) {
     const sp = await searchParams;

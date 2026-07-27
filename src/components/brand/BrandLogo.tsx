@@ -10,10 +10,10 @@ import { PLATFORM_TENANT_ID } from '@/lib/admin/tenant-scope';
  *
  * Resolves the request-domain tenant, then (in priority order):
  *   1. has `logo_url`           → render that image.
- *   2. platform tenant, no logo → default Silk Road AI `<Logo>` (unchanged — the
+ *   2. platform tenant, no logo → default LLmRoute `<Logo>` (the
  *      platform domain MUST render byte-identically; §3.1 zero-regression line).
  *   3. NON-platform, no logo    → the tenant's `brand_name` as a text wordmark
- *      (P6b-2 §3.1: a partner without a logo shows ITS brand name, not Silk Road's).
+ *      (P6b-2 §3.1: a partner without a logo shows its own brand name).
  *
  * Async server component (reads Host via getCurrentTenant). Only used in server-rendered
  * customer headers (landing / login / register / authenticated layout). Do NOT use in the
@@ -37,11 +37,12 @@ export async function BrandLogo({ variant = 'primary-flat', size = 24, linkHome 
         // Case 3 — non-platform tenant with no custom logo → brand_name text wordmark.
         const wordmarkStyle: CSSProperties = {
             fontSize: Math.round(size * 0.8),
-            fontWeight: 700,
+            fontFamily: 'var(--font-display)',
+            fontWeight: 650,
             lineHeight: 1,
-            letterSpacing: '-0.01em',
+            letterSpacing: 0,
             whiteSpace: 'nowrap',
-            color: tenant.primary_color ?? '#1E3A8A',
+            color: tenant.primary_color ?? '#1D1D1F',
         };
         const wordmark = (
             <span style={wordmarkStyle} className={linkHome ? undefined : className}>

@@ -38,7 +38,7 @@ export function VerifyEmailRunner({ token }: { token: string }) {
     }, [token]);
 
     if (status.phase === 'pending') {
-        return <p style={{ color: '#5a6478' }}>正在验证邮箱…</p>;
+        return <p style={{ color: '#53645f' }}>正在验证邮箱…</p>;
     }
 
     if (status.phase === 'success') {
@@ -46,7 +46,7 @@ export function VerifyEmailRunner({ token }: { token: string }) {
             <div>
                 <p style={{ color: 'var(--color-status-success-text)' }}>邮箱已验证 ✓</p>
                 <p>
-                    <a href="/login" style={{ color: '#0a1535' }}>
+                    <a href="/login" style={{ color: '#0e1715' }}>
                         前往登录
                     </a>
                 </p>
@@ -64,7 +64,7 @@ export function VerifyEmailRunner({ token }: { token: string }) {
     return (
         <div>
             <p style={{ color: 'var(--color-status-error-text)' }}>{msg}</p>
-            <p style={{ fontSize: 13, color: '#5a6478' }}>登录后可在客户后台重新发送验证邮件。</p>
+            <p style={{ fontSize: 13, color: '#53645f' }}>登录后可在客户后台重新发送验证邮件。</p>
         </div>
     );
 }

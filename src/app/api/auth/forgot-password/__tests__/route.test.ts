@@ -50,19 +50,19 @@ describe('POST /api/auth/forgot-password', () => {
     it('200 when email exists: creates token + sends email', async () => {
         mockUserFindUnique.mockResolvedValue({
             id: PORTAL_USER_ID,
-            email: 'real@silkroadai.io',
+            email: 'real@llmroute.club',
             status: 'active',
         });
         mockTokenFindFirst.mockResolvedValue(null); // no recent token
 
-        const res = await POST(makeReq({ email: 'Real@SilkRoadAI.io' }));
+        const res = await POST(makeReq({ email: 'Real@LLmRoute.club' }));
         const body = await res.json();
 
         expect(res.status).toBe(200);
         expect(body).toEqual({ ok: true });
         // email lowercased before lookup
         expect(mockUserFindUnique).toHaveBeenCalledWith(
-            expect.objectContaining({ where: { email: 'real@silkroadai.io' } }),
+            expect.objectContaining({ where: { email: 'real@llmroute.club' } }),
         );
         // token created
         expect(mockTokenCreate).toHaveBeenCalledTimes(1);
@@ -79,7 +79,7 @@ describe('POST /api/auth/forgot-password', () => {
             resetUrl: string;
             expiresInMinutes: number;
         };
-        expect(mailArgs.to).toBe('real@silkroadai.io');
+        expect(mailArgs.to).toBe('real@llmroute.club');
         expect(mailArgs.resetUrl).toMatch(/\/reset-password\?token=[a-f0-9]{64}$/);
         expect(mailArgs.expiresInMinutes).toBe(60);
     });
@@ -87,7 +87,7 @@ describe('POST /api/auth/forgot-password', () => {
     it("200 when email doesn't exist: NO token, NO email", async () => {
         mockUserFindUnique.mockResolvedValue(null);
 
-        const res = await POST(makeReq({ email: 'ghost@silkroadai.io' }));
+        const res = await POST(makeReq({ email: 'ghost@llmroute.club' }));
         const body = await res.json();
 
         expect(res.status).toBe(200);
@@ -100,11 +100,11 @@ describe('POST /api/auth/forgot-password', () => {
     it('200 when account banned: NO token, NO email (no recovery bypass)', async () => {
         mockUserFindUnique.mockResolvedValue({
             id: PORTAL_USER_ID,
-            email: 'banned@silkroadai.io',
+            email: 'banned@llmroute.club',
             status: 'banned',
         });
 
-        const res = await POST(makeReq({ email: 'banned@silkroadai.io' }));
+        const res = await POST(makeReq({ email: 'banned@llmroute.club' }));
         const body = await res.json();
 
         expect(res.status).toBe(200);
@@ -116,7 +116,7 @@ describe('POST /api/auth/forgot-password', () => {
     it('throttle: 2 calls in 5min window → 1 token created, 1 email sent', async () => {
         mockUserFindUnique.mockResolvedValue({
             id: PORTAL_USER_ID,
-            email: 'busy@silkroadai.io',
+            email: 'busy@llmroute.club',
             status: 'active',
         });
         // 1st call: no recent token
@@ -124,8 +124,8 @@ describe('POST /api/auth/forgot-password', () => {
         // 2nd call: existing recent token (throttled)
         mockTokenFindFirst.mockResolvedValueOnce({ id: 'tok-existing' });
 
-        const res1 = await POST(makeReq({ email: 'busy@silkroadai.io' }));
-        const res2 = await POST(makeReq({ email: 'busy@silkroadai.io' }));
+        const res1 = await POST(makeReq({ email: 'busy@llmroute.club' }));
+        const res2 = await POST(makeReq({ email: 'busy@llmroute.club' }));
 
         expect(res1.status).toBe(200);
         expect(res2.status).toBe(200);
@@ -136,14 +136,14 @@ describe('POST /api/auth/forgot-password', () => {
     it('200 when email send fails: token row stays for retry, response still 200', async () => {
         mockUserFindUnique.mockResolvedValue({
             id: PORTAL_USER_ID,
-            email: 'smtpdown@silkroadai.io',
+            email: 'smtpdown@llmroute.club',
             status: 'active',
         });
         mockTokenFindFirst.mockResolvedValue(null);
         mockSendPasswordResetEmail.mockRejectedValue(new Error('SMTP unavailable'));
         const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-        const res = await POST(makeReq({ email: 'smtpdown@silkroadai.io' }));
+        const res = await POST(makeReq({ email: 'smtpdown@llmroute.club' }));
 
         expect(res.status).toBe(200);
         expect(mockTokenCreate).toHaveBeenCalledTimes(1);

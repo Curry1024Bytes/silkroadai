@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 
 const mockUploadImage = vi.fn(
-    async (key: string, _body?: Buffer, _ct?: string) => `https://images.silkroadai.io/${key}`,
+    async (key: string, _body?: Buffer, _ct?: string) => `https://images.llmroute.club/${key}`,
 );
 vi.mock('@/lib/r2/client', () => ({
     uploadImage: (key: string, body: Buffer, ct?: string) => mockUploadImage(key, body, ct),
@@ -47,14 +47,14 @@ beforeEach(() => {
 });
 
 function makeReq(body: unknown, auth = 'Bearer sk-9066test'): NextRequest {
-    return new NextRequest('https://ai.silkroadai.io/seedance-cn-adapter/v1/videos', {
+    return new NextRequest('https://api.llmroute.club/seedance-cn-adapter/v1/videos', {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: auth },
         body: JSON.stringify(body),
     });
 }
 function pollReq(auth = 'Bearer sk-9066test'): NextRequest {
-    return new NextRequest('https://ai.silkroadai.io/seedance-cn-adapter/v1/videos/cgt-test-1', {
+    return new NextRequest('https://api.llmroute.club/seedance-cn-adapter/v1/videos/cgt-test-1', {
         method: 'GET',
         headers: { authorization: auth },
     });
@@ -137,7 +137,7 @@ describe('seedance-cn adapter submit', () => {
         const images = b.images as Array<{ url: string; role: string }>;
         expect(images).toHaveLength(1);
         expect(images[0].role).toBe('reference_image');
-        expect(images[0].url).toMatch(/^https:\/\/images\.silkroadai\.io\/seedance-cn-ref\//);
+        expect(images[0].url).toMatch(/^https:\/\/images\.llmroute\.club\/seedance-cn-ref\//);
     });
 
     it('参考档 http 图直链 → 原样透传上游(不转存)', async () => {

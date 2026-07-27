@@ -1,5 +1,5 @@
 /**
- * Silk Road AI Portal — LiteLLM Admin API Client
+ * LLmRoute Portal — LiteLLM Admin API Client
  * ================================================
  *
  * 替换原 src/lib/sub2api/client.ts

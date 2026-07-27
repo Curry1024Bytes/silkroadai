@@ -38,7 +38,7 @@ export function LogoutButton() {
             disabled={loggingOut}
             aria-label={loggingOut ? '退出中' : '退出登录'}
             title={loggingOut ? '退出中' : '退出登录'}
-            className="flex h-9 items-center justify-center gap-2 rounded-md px-2.5 text-sm text-portal-muted transition-colors hover:bg-portal-active hover:text-portal-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy/30 disabled:cursor-wait disabled:opacity-60"
+            className="flex h-10 items-center justify-center gap-2 rounded-lg px-3 text-sm text-portal-muted transition-colors duration-200 hover:bg-portal-soft hover:text-portal-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-accent/25 disabled:cursor-wait disabled:opacity-60"
         >
             {loggingOut ? (
                 <LoaderCircle size={17} className="animate-spin" aria-hidden="true" />

@@ -20,7 +20,7 @@ import { ImageStudio } from './image-studio';
 import type { ImageGenerationItem } from '@/components/image/types';
 
 export const dynamic = 'force-dynamic';
-export const metadata = { title: 'AI 生图 — Silk Road AI' };
+export const metadata = { title: 'AI 生图 — LLmRoute' };
 
 async function getSessionUser() {
     const h = await headers();

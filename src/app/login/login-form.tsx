@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { LogIn } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { FormError } from '@/components/ui/FormError';
 import { Input } from '@/components/ui/Input';
@@ -50,7 +51,7 @@ export function LoginForm({ next }: { next: string }) {
 
     return (
         <div>
-            <form onSubmit={handleSubmit} className="space-y-3.5">
+            <form onSubmit={handleSubmit} className="space-y-5">
                 <div>
                     <Label htmlFor="login-email">邮箱</Label>
                     <Input
@@ -75,10 +76,10 @@ export function LoginForm({ next }: { next: string }) {
                         onChange={(e) => setPassword(e.target.value)}
                         error={!!error}
                     />
-                    <div className="mt-1.5 text-right">
+                    <div className="mt-2 text-right">
                         <a
                             href="/forgot-password"
-                            className="text-xs text-minor-ink hover:text-brand-accent transition-colors"
+                            className="text-xs font-medium text-muted-ink no-underline transition-colors hover:text-brand-accent"
                         >
                             忘记密码?
                         </a>
@@ -86,13 +87,14 @@ export function LoginForm({ next }: { next: string }) {
                 </div>
                 <FormError>{error}</FormError>
                 <Button type="submit" block loading={submitting} disabled={submitting || !email || !password}>
+                    {!submitting ? <LogIn size={17} strokeWidth={1.8} aria-hidden="true" /> : null}
                     {submitting ? '登录中…' : '登录'}
                 </Button>
             </form>
 
-            <div className="flex items-center gap-3 my-5">
+            <div className="my-6 flex items-center gap-3">
                 <hr className="flex-1 border-0 border-t border-brand-border" />
-                <span className="text-xs text-minor-ink">或使用第三方登录</span>
+                <span className="text-xs text-minor-ink">其他登录方式</span>
                 <hr className="flex-1 border-0 border-t border-brand-border" />
             </div>
             <div className="flex flex-col gap-2">
@@ -104,11 +106,11 @@ export function LoginForm({ next }: { next: string }) {
                 </Button>
             </div>
 
-            <p className="m-0 mt-6 text-center text-sm text-minor-ink">
+            <p className="m-0 mt-7 text-center text-sm text-minor-ink">
                 还没账户?{' '}
                 <a
                     href="/portal/register"
-                    className="text-muted-ink font-medium hover:text-brand-accent transition-colors"
+                    className="font-semibold text-brand-accent no-underline transition-colors hover:text-brand-accent-strong"
                 >
                     创建账户 →
                 </a>

@@ -21,7 +21,7 @@ export function PeriodTabs({ active }: { active: UsagePeriod }) {
         <div
             role="tablist"
             aria-label="时间窗口"
-            className="inline-flex h-9 items-center rounded-md bg-portal-active p-1"
+            className="inline-flex h-11 items-center rounded-lg border border-portal-line bg-portal-panel p-1 shadow-card"
         >
             {TABS.map((tab) => {
                 const isActive = tab.key === active;
@@ -32,10 +32,10 @@ export function PeriodTabs({ active }: { active: UsagePeriod }) {
                         role="tab"
                         aria-selected={isActive}
                         className={[
-                            'flex h-7 items-center rounded px-3 text-xs font-medium no-underline',
-                            'transition-colors duration-150 ease-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy/25',
+                            'flex h-9 items-center rounded-md px-3 text-xs font-medium no-underline',
+                            'transition-colors duration-200 ease-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-accent/25',
                             isActive
-                                ? 'bg-portal-panel text-portal-ink shadow-portal'
+                                ? 'bg-brand-accent-soft font-semibold text-brand-accent'
                                 : 'text-portal-muted hover:text-portal-ink',
                         ].join(' ')}
                     >

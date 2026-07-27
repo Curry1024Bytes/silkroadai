@@ -7,7 +7,7 @@
  * `dangerouslySetInnerHTML` after passing through `marked` synchronously.
  *
  * Style baseline matches /login + /reset-password — inline style + brand
- * colors #0a1535 (primary) / #5a6478 (secondary) / #f5f7fa (page bg). The
+ * colors #0e1715 (primary) / #53645f (secondary) / #f3f6f5 (page bg). The
  * article width caps at 720px for comfortable line-length on prose.
  *
  * `marked.use({ async: false })` keeps the conversion synchronous so server
@@ -35,7 +35,7 @@ export async function LegalDocPage({ file }: LegalDocPageProps) {
         <main
             style={{
                 minHeight: '100vh',
-                background: '#f5f7fa',
+                background: '#f3f6f5',
                 padding: '24px 16px',
             }}
         >
@@ -56,32 +56,32 @@ export async function LegalDocPage({ file }: LegalDocPageProps) {
                         display: 'inline-block',
                         marginBottom: 16,
                         fontSize: 13,
-                        color: '#5a6478',
+                        color: '#53645f',
                         textDecoration: 'none',
                     }}
                 >
-                    ← 返回 Silk Road AI
+                    ← 返回 LLmRoute
                 </Link>
                 {/* Style the rendered HTML in-place via a wrapper class +
                  *  scoped <style>. dangerouslySetInnerHTML is safe here —
                  *  source markdown is repo-controlled (no user input). */}
                 <article className="legal-doc" dangerouslySetInnerHTML={{ __html: html }} />
                 <style>{`
-                    .legal-doc { color: #1a2540; line-height: 1.7; font-size: 14px; }
-                    .legal-doc h1 { font-size: 22px; color: #0a1535; margin: 8px 0 16px; }
-                    .legal-doc h2 { font-size: 17px; color: #0a1535; margin: 28px 0 12px; padding-top: 4px; border-top: 1px solid #e5e8ee; }
-                    .legal-doc h3 { font-size: 15px; color: #0a1535; margin: 20px 0 10px; }
-                    .legal-doc h4 { font-size: 14px; color: #0a1535; margin: 16px 0 8px; }
+                    .legal-doc { color: #1d1d1f; line-height: 1.7; font-size: 14px; }
+                    .legal-doc h1 { font-size: 22px; color: #0e1715; margin: 8px 0 16px; }
+                    .legal-doc h2 { font-size: 17px; color: #0e1715; margin: 28px 0 12px; padding-top: 4px; border-top: 1px solid #e5e8ee; }
+                    .legal-doc h3 { font-size: 15px; color: #0e1715; margin: 20px 0 10px; }
+                    .legal-doc h4 { font-size: 14px; color: #0e1715; margin: 16px 0 8px; }
                     .legal-doc p { margin: 8px 0 12px; }
                     .legal-doc ul, .legal-doc ol { padding-left: 22px; margin: 8px 0 12px; }
                     .legal-doc li { margin: 4px 0; }
-                    .legal-doc strong { color: #0a1535; }
-                    .legal-doc code { background: #f5f7fa; padding: 1px 6px; border-radius: 3px; font-size: 13px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-                    .legal-doc blockquote { border-left: 3px solid #0a1535; padding: 6px 14px; margin: 12px 0; background: #f5f7fa; color: #5a6478; font-size: 13px; }
-                    .legal-doc a { color: #0a1535; }
+                    .legal-doc strong { color: #0e1715; }
+                    .legal-doc code { background: #f3f6f5; padding: 1px 6px; border-radius: 3px; font-size: 13px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+                    .legal-doc blockquote { border-left: 3px solid #0e1715; padding: 6px 14px; margin: 12px 0; background: #f3f6f5; color: #53645f; font-size: 13px; }
+                    .legal-doc a { color: #0e1715; }
                     .legal-doc table { border-collapse: collapse; width: 100%; margin: 12px 0; }
                     .legal-doc th, .legal-doc td { border: 1px solid #e5e8ee; padding: 6px 10px; text-align: left; font-size: 13px; }
-                    .legal-doc th { background: #f5f7fa; }
+                    .legal-doc th { background: #f3f6f5; }
                     .legal-doc hr { border: none; border-top: 1px solid #e5e8ee; margin: 20px 0; }
                 `}</style>
             </div>

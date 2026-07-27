@@ -14,7 +14,7 @@ import { GPU_PAGE_STRINGS, t } from '@/i18n/gpu-page';
 describe('/gpu page — header + chrome', () => {
     it('renders the brand <Logo /> + 首页 + API 控制台 nav (W7 D4 PR-Q — no /pricing, no scattered "注册")', () => {
         const html = renderToString(<GpuPage />);
-        expect(html).toMatch(/<img[^>]*alt="Silk Road AI"/);
+        expect(html).toMatch(/<img[^>]*alt="LLmRoute"/);
         expect(html).toMatch(/href="\/"[^>]*>[^<]*首页/);
         expect(html).toMatch(/href="\/portal\/register"/);
         // Single brand-accent solid CTA replaced the old trio.
@@ -175,7 +175,7 @@ describe('/gpu page — contact section', () => {
 describe('/gpu page — meta tags + SEO', () => {
     it('exports metadata with title + description + GPU keywords', () => {
         expect(metadata.title).toMatch(/GPU 租赁/);
-        expect(metadata.title).toMatch(/Silk Road AI/);
+        expect(metadata.title).toMatch(/LLmRoute/);
         expect(typeof metadata.description).toBe('string');
         expect(metadata.description).toMatch(/H100/);
         expect(metadata.description).toMatch(/H200/);

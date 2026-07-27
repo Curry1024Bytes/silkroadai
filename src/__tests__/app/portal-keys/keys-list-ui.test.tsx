@@ -43,12 +43,12 @@ describe('<KeysList /> SSR smoke', () => {
         // W7 P2: empty-state copy moved into the <EmptyState> primitive.
         // Title + body together; the title is the primary affordance.
         expect(html).toContain('还没有 API Key');
-        expect(html).toContain('+ 创建新 Key');
+        expect(html).toContain('创建新 Key');
         // Create button present + enabled (no row count yet). Tighten the
         // regex to the actual HTML `disabled=""` attribute since the new
         // Tailwind class strings contain the substring "disabled" (in
         // utility classes like `disabled:opacity-50`).
-        expect(html).not.toMatch(/<button[^>]*disabled=""[^>]*>\+ 创建新 Key/);
+        expect(html).not.toMatch(/<button[^>]*disabled=""[^>]*>[\s\S]*?创建新 Key/);
     });
 
     it('renders one row per token with alias + masked key + 显示/复制/撤销 actions', () => {
@@ -57,13 +57,14 @@ describe('<KeysList /> SSR smoke', () => {
         expect(html).toContain('mobile-app');
         expect(html).toContain('sk-1234****abcd');
         expect(html).toContain('sk-5678****wxyz');
-        // 3 actions per row × 2 rows = 6 occurrences each
+        // Each row has one mobile and one desktop rendering; CSS exposes
+        // exactly one at a time, while SSR contains both responsive variants.
         const showCount = (html.match(/>显示</g) ?? []).length;
         const copyCount = (html.match(/>复制</g) ?? []).length;
         const revokeCount = (html.match(/>撤销</g) ?? []).length;
-        expect(showCount).toBe(2);
-        expect(copyCount).toBe(2);
-        expect(revokeCount).toBe(2);
+        expect(showCount).toBe(SAMPLE_ROWS.length * 2);
+        expect(copyCount).toBe(SAMPLE_ROWS.length * 2);
+        expect(revokeCount).toBe(SAMPLE_ROWS.length * 2);
     });
 
     it('does NOT leak full sk- in masked rendering (only the masked variant)', () => {
@@ -88,7 +89,7 @@ describe('<KeysList /> SSR smoke', () => {
         const html = renderToString(<KeysList initialRows={fullList} />);
         // Button text changes + disabled attr present (W6 D4 limit 10)
         expect(html).toMatch(/>已达上限 \(10\)</);
-        expect(html).toMatch(/<button[^>]*disabled=""[^>]*>已达上限/);
+        expect(html).toMatch(/<button[^>]*disabled=""[^>]*>[\s\S]*?已达上限/);
     });
 
     it('does NOT disable create button at 9 keys (just below the 10 cap)', () => {
@@ -103,11 +104,11 @@ describe('<KeysList /> SSR smoke', () => {
             tier: 'pool',
         }));
         const html = renderToString(<KeysList initialRows={nineKeys} />);
-        expect(html).toContain('+ 创建新 Key');
+        expect(html).toContain('创建新 Key');
         // Tighten to the HTML `disabled=""` attribute (Tailwind utility
         // classes like `disabled:opacity-50` would false-match a looser
         // `[^>]*disabled[^>]*` regex on the new className string).
-        expect(html).not.toMatch(/<button[^>]*disabled=""[^>]*>\+ 创建新 Key/);
+        expect(html).not.toMatch(/<button[^>]*disabled=""[^>]*>[\s\S]*?创建新 Key/);
     });
 
     it('does NOT auto-show the create form (open=false initially)', () => {

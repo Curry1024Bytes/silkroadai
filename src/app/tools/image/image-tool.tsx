@@ -101,7 +101,7 @@ export function ImageTool() {
     // 下载生成图:data URL 直接下;跨源 R2/OSS 链接走同源代理强制 attachment(浏览器对跨源
     // <a download> 只会打开不下载)。
     const downloadImage = useCallback((url: string, idx: number) => {
-        const name = `silkroadai-image-${idx + 1}`;
+        const name = `llmroute-image-${idx + 1}`;
         const a = document.createElement('a');
         if (url.startsWith('data:')) {
             a.href = url;

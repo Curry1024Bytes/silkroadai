@@ -30,8 +30,8 @@ import * as React from 'react';
 export type CardVariant = 'default' | 'muted' | 'inset';
 
 const VARIANT_CLASSES: Record<CardVariant, string> = {
-    default: 'bg-surface border border-brand-border shadow-card rounded-xl',
-    muted: 'bg-paper-muted border border-transparent rounded-xl',
+    default: 'bg-surface border border-brand-border shadow-card rounded-lg',
+    muted: 'bg-paper-muted border border-transparent rounded-lg',
     inset: 'bg-transparent border-0 rounded-none',
 };
 
@@ -73,7 +73,10 @@ export function CardTitle({
 }): React.ReactElement {
     const Tag = as as React.ElementType;
     return (
-        <Tag {...rest} className={['text-lg font-semibold text-navy', className ?? ''].filter(Boolean).join(' ')}>
+        <Tag
+            {...rest}
+            className={['font-display text-lg font-semibold text-navy', className ?? ''].filter(Boolean).join(' ')}
+        >
             {children}
         </Tag>
     );

@@ -78,7 +78,7 @@ const NEWAPI_USER_ID = 7;
 const NEWAPI_USERNAME = 'c-aaaaaaaa';
 const SAMPLE_USER = {
     id: PORTAL_USER_ID,
-    email: 'happy@silkroadai.io',
+    email: 'happy@llmroute.club',
     nickname: null,
     newapi_user_id: NEWAPI_USER_ID,
     newapi_username: NEWAPI_USERNAME,

@@ -3,7 +3,7 @@
  *
  * Both routes pull the public origin from `APP_URL` (preferred, runtime-
  * overridable) → `NEXT_PUBLIC_APP_URL` (build-inlined fallback) → a
- * hardcoded `https://silkroadai.io` default.
+ * hardcoded `https://llmroute.club` default.
  *
  * Background: Phase 6a's first prod deploy of the landing page baked
  * `https://localhost` into `sitemap.xml` because the Dockerfile only
@@ -44,14 +44,14 @@ async function loadRobots() {
 
 describe('sitemap.ts — host source precedence', () => {
     it('uses APP_URL when set (the prod path)', async () => {
-        process.env.APP_URL = 'https://silkroadai.io';
+        process.env.APP_URL = 'https://llmroute.club';
         process.env.NEXT_PUBLIC_APP_URL = 'https://localhost'; // Dockerfile build dummy
         const sitemap = await loadSitemap();
         const entries = sitemap();
         expect(entries.length).toBeGreaterThan(0);
         for (const e of entries) {
             expect(e.url, `entry ${JSON.stringify(e)} must use APP_URL host`).toMatch(
-                /^https:\/\/silkroadai\.io(\/|$)/,
+                /^https:\/\/llmroute\.club(\/|$)/,
             );
             expect(e.url).not.toContain('localhost');
         }
@@ -59,76 +59,76 @@ describe('sitemap.ts — host source precedence', () => {
 
     it('falls back to NEXT_PUBLIC_APP_URL when APP_URL is unset', async () => {
         delete process.env.APP_URL;
-        process.env.NEXT_PUBLIC_APP_URL = 'https://staging.silkroadai.io';
+        process.env.NEXT_PUBLIC_APP_URL = 'https://staging.llmroute.club';
         const sitemap = await loadSitemap();
         const entries = sitemap();
         for (const e of entries) {
-            expect(e.url).toMatch(/^https:\/\/staging\.silkroadai\.io(\/|$)/);
+            expect(e.url).toMatch(/^https:\/\/staging\.llmroute\.club(\/|$)/);
         }
     });
 
-    it('falls back to https://silkroadai.io default when both env vars are unset', async () => {
+    it('falls back to https://llmroute.club default when both env vars are unset', async () => {
         delete process.env.APP_URL;
         delete process.env.NEXT_PUBLIC_APP_URL;
         const sitemap = await loadSitemap();
         const entries = sitemap();
         for (const e of entries) {
-            expect(e.url).toMatch(/^https:\/\/silkroadai\.io(\/|$)/);
+            expect(e.url).toMatch(/^https:\/\/llmroute\.club(\/|$)/);
         }
     });
 
     it('strips trailing slash on the base URL (no double-slash in entries)', async () => {
-        process.env.APP_URL = 'https://silkroadai.io/';
+        process.env.APP_URL = 'https://llmroute.club/';
         const sitemap = await loadSitemap();
         const entries = sitemap();
         for (const e of entries) {
             // Entry URL is `${base}/path` — base must not carry the slash
             // through, so the URL pattern is exactly `https://host/path`,
             // never `https://host//path`.
-            expect(e.url).not.toMatch(/\/\/(?!silkroadai)/);
-            expect(e.url).toMatch(/^https:\/\/silkroadai\.io(\/|$)/);
+            expect(new URL(e.url).pathname).not.toContain('//');
+            expect(e.url).toMatch(/^https:\/\/llmroute\.club(\/|$)/);
         }
     });
 });
 
 describe('sitemap.ts — public-route inclusion', () => {
     it('includes the public routes (W7 D4: /portal/register + /docs)', async () => {
-        process.env.APP_URL = 'https://silkroadai.io';
+        process.env.APP_URL = 'https://llmroute.club';
         const sitemap = await loadSitemap();
         const urls = sitemap().map((e) => e.url);
 
         // Required entries — these pages exist in src/app and are public.
-        expect(urls).toContain('https://silkroadai.io/');
-        expect(urls).toContain('https://silkroadai.io/models');
-        expect(urls).toContain('https://silkroadai.io/login');
-        expect(urls).toContain('https://silkroadai.io/terms');
-        expect(urls).toContain('https://silkroadai.io/privacy');
-        expect(urls).toContain('https://silkroadai.io/refund');
+        expect(urls).toContain('https://llmroute.club/');
+        expect(urls).toContain('https://llmroute.club/models');
+        expect(urls).toContain('https://llmroute.club/login');
+        expect(urls).toContain('https://llmroute.club/terms');
+        expect(urls).toContain('https://llmroute.club/privacy');
+        expect(urls).toContain('https://llmroute.club/refund');
 
         // W7 D4: /portal/register added now that the real signup page
         // ships. PR #28 had this excluded as the page didn't exist yet.
-        expect(urls).toContain('https://silkroadai.io/portal/register');
+        expect(urls).toContain('https://llmroute.club/portal/register');
 
         // W7 D4 PR-G: public integration docs page.
-        expect(urls).toContain('https://silkroadai.io/docs');
+        expect(urls).toContain('https://llmroute.club/docs');
 
         // W7 PR-P: GPU rental landing — H100 / H200 / B300.
-        expect(urls).toContain('https://silkroadai.io/gpu');
+        expect(urls).toContain('https://llmroute.club/gpu');
     });
 
     it('declares /gpu at priority 0.7 (W7 PR-P public marketing tier)', async () => {
-        process.env.APP_URL = 'https://silkroadai.io';
+        process.env.APP_URL = 'https://llmroute.club';
         const sitemap = await loadSitemap();
-        const gpu = sitemap().find((e) => e.url === 'https://silkroadai.io/gpu');
+        const gpu = sitemap().find((e) => e.url === 'https://llmroute.club/gpu');
         expect(gpu, 'sitemap must include /gpu').toBeDefined();
         expect(gpu!.priority).toBe(0.7);
         expect(gpu!.changeFrequency).toBe('weekly');
     });
 
     it('declares / (apex) at priority 1.0 — the canonical landing surface', async () => {
-        process.env.APP_URL = 'https://silkroadai.io';
+        process.env.APP_URL = 'https://llmroute.club';
         const sitemap = await loadSitemap();
-        const root = sitemap().find((e) => e.url === 'https://silkroadai.io/');
+        const root = sitemap().find((e) => e.url === 'https://llmroute.club/');
         expect(root, 'sitemap must include the apex /').toBeDefined();
         expect(root!.priority).toBe(1.0);
     });
@@ -136,23 +136,23 @@ describe('sitemap.ts — public-route inclusion', () => {
 
 describe('robots.ts — host source precedence', () => {
     it('uses APP_URL for the Sitemap reference', async () => {
-        process.env.APP_URL = 'https://silkroadai.io';
+        process.env.APP_URL = 'https://llmroute.club';
         process.env.NEXT_PUBLIC_APP_URL = 'https://localhost';
         const robots = await loadRobots();
         const r = robots();
-        expect(r.sitemap).toBe('https://silkroadai.io/sitemap.xml');
+        expect(r.sitemap).toBe('https://llmroute.club/sitemap.xml');
     });
 
     it('falls back to NEXT_PUBLIC_APP_URL when APP_URL is unset', async () => {
         delete process.env.APP_URL;
-        process.env.NEXT_PUBLIC_APP_URL = 'https://staging.silkroadai.io';
+        process.env.NEXT_PUBLIC_APP_URL = 'https://staging.llmroute.club';
         const robots = await loadRobots();
         const r = robots();
-        expect(r.sitemap).toBe('https://staging.silkroadai.io/sitemap.xml');
+        expect(r.sitemap).toBe('https://staging.llmroute.club/sitemap.xml');
     });
 
     it('disallows the customer dashboard + admin + api surfaces', async () => {
-        process.env.APP_URL = 'https://silkroadai.io';
+        process.env.APP_URL = 'https://llmroute.club';
         const robots = await loadRobots();
         const rules = robots().rules;
         const rulesArray = Array.isArray(rules) ? rules : [rules];
@@ -165,7 +165,7 @@ describe('robots.ts — host source precedence', () => {
     });
 
     it('allows the public marketing routes including /gpu (W7 PR-P)', async () => {
-        process.env.APP_URL = 'https://silkroadai.io';
+        process.env.APP_URL = 'https://llmroute.club';
         const robots = await loadRobots();
         const rules = robots().rules;
         const rulesArray = Array.isArray(rules) ? rules : [rules];

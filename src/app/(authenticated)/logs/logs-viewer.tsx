@@ -9,7 +9,21 @@
  *
  * 只读、无副作用地展示;时间一律按 Asia/Shanghai 显示(gotcha #20)。
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
+import {
+    AlertCircle,
+    Check,
+    CheckCircle2,
+    ChevronDown,
+    ChevronLeft,
+    ChevronRight,
+    ChevronUp,
+    Clipboard,
+    Download,
+    LoaderCircle,
+    Search,
+    SlidersHorizontal,
+} from 'lucide-react';
 import { formatDuration, formatTokens, callResult } from '../dashboard/format';
 import type { LogRow } from '@/app/api/portal/logs/route';
 
@@ -54,9 +68,40 @@ function buildParams(f: Filters): URLSearchParams {
 }
 
 const INPUT =
-    'h-9 px-3 text-sm text-ink rounded-lg border border-brand-border bg-surface placeholder:text-minor-ink outline-none transition-shadow focus:border-navy focus:shadow-focus';
-const HEAD = 'text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border text-muted-ink';
-const CELL = 'px-4 py-3 text-sm text-ink border-b border-brand-border';
+    'h-10 w-full rounded-md border border-portal-line bg-portal-panel px-3 text-sm text-portal-ink outline-none ' +
+    'placeholder:text-portal-subtle transition-colors focus:border-navy focus:ring-2 focus:ring-navy/10';
+const HEAD =
+    'whitespace-nowrap border-b border-portal-line px-4 py-2.5 text-left text-xs font-semibold text-portal-muted';
+const CELL = 'border-b border-portal-line px-4 py-3 text-sm text-portal-ink';
+
+interface LogsResult {
+    rows: LogRow[];
+    hasMore: boolean;
+    error: string | null;
+}
+
+async function loadLogs(f: Filters, page: number, signal: AbortSignal): Promise<LogsResult | null> {
+    const params = buildParams(f);
+    params.set('page', String(page));
+    try {
+        const res = await fetch(`/api/portal/logs?${params.toString()}`, { signal });
+        const data = (await res.json()) as {
+            rows?: LogRow[];
+            hasMore?: boolean;
+            error?: string;
+        };
+        if (data.error === 'account_not_provisioned') {
+            return { rows: [], hasMore: false, error: '账号尚未开通,暂无调用日志。' };
+        }
+        if (data.error) {
+            return { rows: [], hasMore: false, error: '加载失败,请稍后重试。' };
+        }
+        return { rows: data.rows ?? [], hasMore: !!data.hasMore, error: null };
+    } catch {
+        if (signal.aborted) return null;
+        return { rows: [], hasMore: false, error: '加载失败,请稍后重试。' };
+    }
+}
 
 export function LogsViewer() {
     const dr = defaultRange();
@@ -72,154 +117,173 @@ export function LogsViewer() {
     const [applied, setApplied] = useState<Filters>(filters);
     const [page, setPage] = useState(1);
     const [rows, setRows] = useState<LogRow[]>([]);
-    const [loading, setLoading] = useState(false);
+    const [loading, setLoading] = useState(true);
     const [hasMore, setHasMore] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [expanded, setExpanded] = useState<number | null>(null);
 
-    const fetchLogs = useCallback(async (f: Filters, p: number) => {
-        setLoading(true);
-        setError(null);
-        const params = buildParams(f);
-        params.set('page', String(p));
-        try {
-            const res = await fetch(`/api/portal/logs?${params.toString()}`);
-            const data = (await res.json()) as {
-                rows?: LogRow[];
-                hasMore?: boolean;
-                error?: string;
-            };
-            if (data.error === 'account_not_provisioned') {
-                setError('账号尚未开通,暂无调用日志。');
-                setRows([]);
-                setHasMore(false);
-            } else if (data.error) {
-                setError('加载失败,请稍后重试。');
-                setRows([]);
-                setHasMore(false);
-            } else {
-                setRows(data.rows ?? []);
-                setHasMore(!!data.hasMore);
-            }
-        } catch {
-            setError('加载失败,请稍后重试。');
-            setRows([]);
-            setHasMore(false);
-        } finally {
-            setLoading(false);
-        }
-    }, []);
-
     useEffect(() => {
-        void fetchLogs(applied, page);
-    }, [applied, page, fetchLogs]);
+        const controller = new AbortController();
+        void loadLogs(applied, page, controller.signal).then((result) => {
+            if (!result || controller.signal.aborted) return;
+            setRows(result.rows);
+            setHasMore(result.hasMore);
+            setError(result.error);
+            setLoading(false);
+        });
+        return () => controller.abort();
+    }, [applied, page]);
 
     const onSearch = () => {
         setExpanded(null);
+        setError(null);
+        setLoading(true);
         setPage(1);
         setApplied({ ...filters });
+    };
+    const goToPage = (nextPage: number) => {
+        setExpanded(null);
+        setError(null);
+        setLoading(true);
+        setPage(nextPage);
     };
     const set = (k: keyof Filters, v: string) => setFilters((f) => ({ ...f, [k]: v }));
 
     return (
-        <div>
+        <div className="space-y-4">
             {/* 过滤条 */}
-            <div className="mb-4 rounded-xl border border-brand-border bg-surface p-4 shadow-card">
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                    <label className="flex flex-col gap-1 text-xs text-muted-ink">
-                        起始时间
-                        <input
-                            type="datetime-local"
-                            className={INPUT}
-                            value={filters.start}
-                            onChange={(ev) => set('start', ev.target.value)}
-                        />
-                    </label>
-                    <label className="flex flex-col gap-1 text-xs text-muted-ink">
-                        结束时间
-                        <input
-                            type="datetime-local"
-                            className={INPUT}
-                            value={filters.end}
-                            onChange={(ev) => set('end', ev.target.value)}
-                        />
-                    </label>
-                    <label className="flex flex-col gap-1 text-xs text-muted-ink">
-                        Request ID
-                        <input
-                            className={INPUT}
-                            placeholder="精确匹配"
-                            value={filters.requestId}
-                            onChange={(ev) => set('requestId', ev.target.value)}
-                        />
-                    </label>
-                    <label className="flex flex-col gap-1 text-xs text-muted-ink">
-                        令牌名(Key)
-                        <input
-                            className={INPUT}
-                            placeholder="如 prod-openai"
-                            value={filters.token}
-                            onChange={(ev) => set('token', ev.target.value)}
-                        />
-                    </label>
-                    <label className="flex flex-col gap-1 text-xs text-muted-ink">
-                        模型名
-                        <input
-                            className={INPUT}
-                            placeholder="如 gpt-image-2"
-                            value={filters.model}
-                            onChange={(ev) => set('model', ev.target.value)}
-                        />
-                    </label>
-                    <label className="flex flex-col gap-1 text-xs text-muted-ink">
-                        渠道 ID
-                        <input
-                            className={INPUT}
-                            placeholder="数字"
-                            inputMode="numeric"
-                            value={filters.channel}
-                            onChange={(ev) => set('channel', ev.target.value)}
-                        />
-                    </label>
+            <section className="overflow-hidden rounded-lg border border-portal-line bg-portal-panel shadow-portal">
+                <div className="flex items-center gap-2 border-b border-portal-line px-4 py-3.5 sm:px-5">
+                    <SlidersHorizontal size={17} className="text-portal-gold" strokeWidth={1.8} aria-hidden="true" />
+                    <div>
+                        <h2 className="m-0 text-sm font-semibold text-portal-ink">筛选条件</h2>
+                        <p className="m-0 mt-0.5 text-xs text-portal-subtle">默认查询最近 7 天</p>
+                    </div>
                 </div>
-                <div className="mt-3 flex items-center justify-end gap-2">
-                    <button
-                        type="button"
-                        onClick={() => {
-                            // 按当前过滤条件整段导出(服务端翻页拉全量);浏览器按
-                            // Content-Disposition 直接下载,不离开本页。
-                            window.location.assign(`/api/portal/logs/export?${buildParams(filters).toString()}`);
-                        }}
-                        title="按当前过滤条件导出 CSV(Excel 可直接打开)"
-                        className="inline-flex h-9 items-center rounded-lg border border-brand-border bg-surface px-4 text-sm font-medium text-navy transition-colors hover:bg-paper-muted"
-                    >
-                        导出 CSV
-                    </button>
-                    <button
-                        type="button"
-                        onClick={onSearch}
-                        disabled={loading}
-                        className="inline-flex h-9 items-center rounded-lg bg-navy px-5 text-sm font-medium text-paper transition-colors hover:bg-navy-strong disabled:opacity-50"
-                    >
-                        {loading ? '查询中…' : '搜索'}
-                    </button>
+                <div className="p-4 sm:p-5">
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                        <label className="flex flex-col gap-1.5 text-xs font-medium text-portal-muted">
+                            起始时间
+                            <input
+                                type="datetime-local"
+                                className={INPUT}
+                                value={filters.start}
+                                onChange={(ev) => set('start', ev.target.value)}
+                            />
+                        </label>
+                        <label className="flex flex-col gap-1.5 text-xs font-medium text-portal-muted">
+                            结束时间
+                            <input
+                                type="datetime-local"
+                                className={INPUT}
+                                value={filters.end}
+                                onChange={(ev) => set('end', ev.target.value)}
+                            />
+                        </label>
+                        <label className="flex flex-col gap-1.5 text-xs font-medium text-portal-muted">
+                            Request ID
+                            <input
+                                className={INPUT}
+                                placeholder="精确匹配"
+                                value={filters.requestId}
+                                onChange={(ev) => set('requestId', ev.target.value)}
+                            />
+                        </label>
+                        <label className="flex flex-col gap-1.5 text-xs font-medium text-portal-muted">
+                            令牌名(Key)
+                            <input
+                                className={INPUT}
+                                placeholder="如 prod-openai"
+                                value={filters.token}
+                                onChange={(ev) => set('token', ev.target.value)}
+                            />
+                        </label>
+                        <label className="flex flex-col gap-1.5 text-xs font-medium text-portal-muted">
+                            模型名
+                            <input
+                                className={INPUT}
+                                placeholder="如 gpt-image-2"
+                                value={filters.model}
+                                onChange={(ev) => set('model', ev.target.value)}
+                            />
+                        </label>
+                        <label className="flex flex-col gap-1.5 text-xs font-medium text-portal-muted">
+                            渠道 ID
+                            <input
+                                className={INPUT}
+                                placeholder="数字"
+                                inputMode="numeric"
+                                value={filters.channel}
+                                onChange={(ev) => set('channel', ev.target.value)}
+                            />
+                        </label>
+                    </div>
+                    <div className="mt-4 flex flex-col-reverse gap-2 border-t border-portal-line pt-4 sm:flex-row sm:items-center sm:justify-end">
+                        <button
+                            type="button"
+                            onClick={() => {
+                                // 按当前过滤条件整段导出(服务端翻页拉全量);浏览器按
+                                // Content-Disposition 直接下载,不离开本页。
+                                window.location.assign(`/api/portal/logs/export?${buildParams(filters).toString()}`);
+                            }}
+                            title="按当前过滤条件导出 CSV(Excel 可直接打开)"
+                            className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-portal-line bg-portal-panel px-4 text-sm font-medium text-portal-muted transition-colors hover:bg-portal-soft hover:text-portal-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy/20"
+                        >
+                            <Download size={16} strokeWidth={1.8} aria-hidden="true" />
+                            导出 CSV
+                        </button>
+                        <button
+                            type="button"
+                            onClick={onSearch}
+                            disabled={loading}
+                            className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-navy px-5 text-sm font-semibold text-white transition-colors hover:bg-navy-strong focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy/30 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                            {loading ? (
+                                <LoaderCircle size={16} className="animate-spin" aria-hidden="true" />
+                            ) : (
+                                <Search size={16} strokeWidth={1.8} aria-hidden="true" />
+                            )}
+                            {loading ? '查询中…' : '搜索'}
+                        </button>
+                    </div>
                 </div>
-            </div>
+            </section>
 
             {/* 结果表 */}
             {error ? (
-                <div className="rounded-xl border border-brand-border bg-surface px-4 py-8 text-center text-sm text-minor-ink shadow-card">
-                    {error}
+                <div className="flex min-h-40 flex-col items-center justify-center gap-3 rounded-lg border border-portal-line bg-portal-panel px-5 py-8 text-center shadow-portal">
+                    <span className="flex h-10 w-10 items-center justify-center rounded-md bg-status-error-bg text-status-error-text">
+                        <AlertCircle size={20} strokeWidth={1.8} aria-hidden="true" />
+                    </span>
+                    <div>
+                        <p className="m-0 text-sm font-semibold text-portal-ink">日志加载失败</p>
+                        <p className="m-0 mt-1 text-sm text-portal-muted">{error}</p>
+                    </div>
+                </div>
+            ) : loading && rows.length === 0 ? (
+                <div
+                    role="status"
+                    className="flex min-h-40 items-center justify-center gap-2 rounded-lg border border-portal-line bg-portal-panel px-5 py-8 text-sm text-portal-muted shadow-portal"
+                >
+                    <LoaderCircle size={18} className="animate-spin text-portal-gold" aria-hidden="true" />
+                    正在加载调用记录…
                 </div>
             ) : rows.length === 0 && !loading ? (
-                <div className="rounded-xl border border-brand-border bg-surface px-4 py-8 text-center text-sm text-minor-ink shadow-card">
-                    该时间段 / 条件下暂无调用记录
+                <div className="flex min-h-40 flex-col items-center justify-center gap-2 rounded-lg border border-portal-line bg-portal-panel px-5 py-8 text-center shadow-portal">
+                    <span className="flex h-10 w-10 items-center justify-center rounded-md bg-portal-gold-soft text-portal-gold">
+                        <Search size={19} strokeWidth={1.8} aria-hidden="true" />
+                    </span>
+                    <p className="m-0 text-sm font-semibold text-portal-ink">暂无调用记录</p>
+                    <p className="m-0 text-xs text-portal-subtle">请调整时间范围或筛选条件后重试</p>
                 </div>
             ) : (
-                <div className="overflow-x-auto rounded-xl border border-brand-border bg-surface shadow-card">
-                    <table className="w-full border-collapse">
+                <div
+                    className="overflow-x-auto rounded-lg border border-portal-line bg-portal-panel shadow-portal"
+                    aria-busy={loading}
+                >
+                    <table className="w-full min-w-[1080px] border-collapse">
                         <thead>
-                            <tr className="bg-paper-muted">
+                            <tr className="bg-portal-soft">
                                 <th className={HEAD}>时间</th>
                                 <th className={HEAD}>模型</th>
                                 <th className={HEAD}>Key</th>
@@ -250,26 +314,28 @@ export function LogsViewer() {
             )}
 
             {/* 分页(服务端)*/}
-            <div className="mt-3 flex items-center justify-between gap-3 text-xs text-muted-ink">
+            <div className="flex items-center justify-between gap-3 text-xs text-portal-muted">
                 <span className="tabular-nums">
                     第 {page} 页{loading ? ' · 加载中…' : ''}
                 </span>
                 <div className="flex gap-2">
                     <button
                         type="button"
-                        onClick={() => setPage((p) => Math.max(1, p - 1))}
+                        onClick={() => goToPage(Math.max(1, page - 1))}
                         disabled={page === 1 || loading}
-                        className="rounded-lg border border-brand-border bg-surface px-3 py-1.5 text-xs text-navy transition-colors hover:bg-paper-muted disabled:cursor-not-allowed disabled:text-minor-ink disabled:hover:bg-surface"
+                        className="inline-flex h-9 items-center gap-1.5 rounded-md border border-portal-line bg-portal-panel px-3 text-xs font-medium text-portal-muted transition-colors hover:bg-portal-soft hover:text-portal-ink disabled:cursor-not-allowed disabled:text-portal-subtle disabled:hover:bg-portal-panel"
                     >
+                        <ChevronLeft size={14} aria-hidden="true" />
                         上一页
                     </button>
                     <button
                         type="button"
-                        onClick={() => setPage((p) => p + 1)}
+                        onClick={() => goToPage(page + 1)}
                         disabled={!hasMore || loading}
-                        className="rounded-lg border border-brand-border bg-surface px-3 py-1.5 text-xs text-navy transition-colors hover:bg-paper-muted disabled:cursor-not-allowed disabled:text-minor-ink disabled:hover:bg-surface"
+                        className="inline-flex h-9 items-center gap-1.5 rounded-md border border-portal-line bg-portal-panel px-3 text-xs font-medium text-portal-muted transition-colors hover:bg-portal-soft hover:text-portal-ink disabled:cursor-not-allowed disabled:text-portal-subtle disabled:hover:bg-portal-panel"
                     >
                         下一页
+                        <ChevronRight size={14} aria-hidden="true" />
                     </button>
                 </div>
             </div>
@@ -279,10 +345,10 @@ export function LogsViewer() {
 
 function RequestIdCell({ value }: { value: string }) {
     const [copied, setCopied] = useState(false);
-    if (!value) return <span className="text-minor-ink">—</span>;
+    if (!value) return <span className="text-portal-subtle">—</span>;
     return (
         <span className="inline-flex items-center gap-1.5">
-            <span className="max-w-[150px] truncate font-mono text-xs text-muted-ink" title={value}>
+            <span className="max-w-[150px] truncate font-mono text-xs text-portal-muted" title={value}>
                 {value}
             </span>
             <button
@@ -296,10 +362,11 @@ function RequestIdCell({ value }: { value: string }) {
                         /* clipboard unavailable — no-op */
                     }
                 }}
-                title="复制完整 Request ID"
-                className="shrink-0 rounded border border-brand-border bg-surface px-1.5 py-0.5 text-[10px] text-muted-ink transition-colors hover:bg-paper-muted"
+                title={copied ? '已复制' : '复制完整 Request ID'}
+                aria-label={copied ? 'Request ID 已复制' : '复制完整 Request ID'}
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-portal-subtle transition-colors hover:bg-portal-active hover:text-portal-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy/20"
             >
-                {copied ? '已复制' : '复制'}
+                {copied ? <Check size={13} aria-hidden="true" /> : <Clipboard size={13} aria-hidden="true" />}
             </button>
         </span>
     );
@@ -318,8 +385,8 @@ function LogRowItem({
 }) {
     return (
         <>
-            <tr className={isOpen ? 'bg-paper-muted/40' : undefined}>
-                <td className={`${CELL} whitespace-nowrap text-muted-ink`}>
+            <tr className={isOpen ? 'bg-portal-soft' : 'transition-colors hover:bg-portal-soft/70'}>
+                <td className={`${CELL} whitespace-nowrap text-portal-muted`}>
                     {new Date(row.createdAt * 1000).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}
                 </td>
                 <td className={`${CELL} font-mono text-xs`}>{row.model || '<unknown>'}</td>
@@ -334,8 +401,8 @@ function LogRowItem({
                 <td className={CELL}>
                     <RequestIdCell value={row.requestId} />
                 </td>
-                <td className={`${CELL} text-right tabular-nums text-muted-ink`}>{formatDuration(row.useTimeMs)}</td>
-                <td className={`${CELL} text-right tabular-nums text-muted-ink`}>
+                <td className={`${CELL} text-right tabular-nums text-portal-muted`}>{formatDuration(row.useTimeMs)}</td>
+                <td className={`${CELL} text-right tabular-nums text-portal-muted`}>
                     {formatTokens(row.promptTokens, row.completionTokens, row.perImageBilled)}
                 </td>
                 <td className={`${CELL} text-right tabular-nums font-medium`}>¥{row.costCny.toFixed(2)}</td>
@@ -346,25 +413,29 @@ function LogRowItem({
                             onClick={onToggle}
                             title={row.content || '调用失败'}
                             aria-expanded={isOpen}
-                            className="inline-flex items-center gap-1 rounded border border-status-error-border bg-status-error-bg px-2 py-0.5 text-xs font-medium text-status-error-text"
+                            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-status-error-border bg-status-error-bg px-2 text-xs font-medium text-status-error-text transition-colors hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-status-error-text/20"
                         >
+                            <AlertCircle size={13} strokeWidth={1.9} aria-hidden="true" />
                             失败
-                            <span aria-hidden className="text-[10px]">
-                                {isOpen ? '▲' : '▼'}
-                            </span>
+                            {isOpen ? (
+                                <ChevronUp size={12} aria-hidden="true" />
+                            ) : (
+                                <ChevronDown size={12} aria-hidden="true" />
+                            )}
                         </button>
                     ) : (
-                        <span className="inline-flex items-center rounded border border-status-success-border bg-status-success-bg px-2 py-0.5 text-xs font-medium text-status-success-text">
+                        <span className="inline-flex h-7 items-center gap-1.5 rounded-md border border-status-success-border bg-status-success-bg px-2 text-xs font-medium text-status-success-text">
+                            <CheckCircle2 size={13} strokeWidth={1.9} aria-hidden="true" />
                             成功
                         </span>
                     )}
                 </td>
             </tr>
             {isError && isOpen && (
-                <tr className="bg-paper-muted/40">
-                    <td colSpan={8} className="border-b border-brand-border px-4 py-2.5">
+                <tr className="bg-portal-soft">
+                    <td colSpan={8} className="border-b border-portal-line px-4 py-3">
                         <p className="m-0 mb-1 text-xs font-medium text-status-error-text">错误详情</p>
-                        <pre className="m-0 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-paper-muted px-3 py-2 font-mono text-xs text-ink">
+                        <pre className="m-0 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md border border-portal-line bg-portal-panel px-3 py-2 font-mono text-xs text-portal-ink">
                             {row.content || '(无错误详情)'}
                         </pre>
                     </td>

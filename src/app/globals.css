@@ -1,134 +1,132 @@
 @import 'tailwindcss';
 
 /*
- * Silk Road AI design system — Option A warm white (W7 P1).
+ * LLmRoute interface system
  *
- * Tailwind v4 ships a complete default scale for spacing / radius / type /
- * shadow / easing. We DO NOT re-declare those defaults here; we layer
- * brand-specific overrides on top so `bg-paper`, `text-ink`, `shadow-card`,
- * `ease-brand` resolve to the warm-white palette while everything else stays
- * vanilla Tailwind. This keeps the diff small and predictable.
- *
- * Canon
- * -----
- *   Colors   — see token block below; semantic names (paper / ink / navy …)
- *              not hex. Hex literals in component code are an antipattern
- *              and should be flagged in review.
- *   Type     — Tailwind defaults (text-xs through text-5xl) PLUS
- *              `text-hero` for the landing-page h1. Body line-height is 1.7
- *              everywhere (set on body element below) to match the landing
- *              copy spec. Use Tailwind's `leading-*` utilities to override
- *              per-component when needed.
- *   Spacing  — Tailwind 4px baseline (gap-1=4, gap-2=8, gap-3=12 …). Do
- *              NOT use arbitrary values like `gap-[14px]` — round to a
- *              Tailwind step. The landing page's 14px is `gap-3.5`, 22px
- *              is `gap-5.5`, etc.
- *   Radius   — Tailwind defaults (rounded-sm/md/lg/xl/2xl). Cards land at
- *              `rounded-xl` (12px), buttons at `rounded-lg` (8px), chips
- *              at `rounded` (4px).
- *   Shadow   — `shadow-card` for primary surfaces, `shadow-card-strong`
- *              for elevated (modals, hovered cards). Default Tailwind
- *              shadows are too cool/blue against warm paper — use the
- *              brand variants below.
- *   Easing   — `ease-brand` (130ms cubic-bezier) for hover transitions.
- *              Default `ease-out` is fine for layout transitions.
- *
- * Pre-W7 pages still inheriting the legacy `--background / --foreground`
- * fallback are migrating in W7 P2. Once all 7 portal pages use the design
- * system, the fallback block below is deletable.
+ * Precision-first, Apple-inspired rather than Apple-imitating: neutral
+ * surfaces, restrained depth, deep-navy interaction color and typography
+ * doing most of the visual work. Existing semantic token names are retained
+ * so older product surfaces inherit the redesign without a risky class sweep.
  */
 @theme {
-    /* — Color tokens — */
-    --color-paper: #faf7f2;
-    --color-paper-muted: #f3ede1;
-    --color-brand-accent: #c9a961;
-    --color-navy: #1a2540;
-    --color-navy-strong: #131c34;
-    --color-ink: #1a2540;
-    --color-muted-ink: #3a4660;
-    --color-minor-ink: #6b7689;
-    --color-brand-border: #efe8dd;
-    /* Semantic surfaces — keep the warm palette on inputs / dialogs. */
+    /* Public surfaces */
+    --color-paper: #fbfbfd;
+    --color-paper-muted: #f5f5f7;
+    --color-brand-accent: #0e1a2a;
+    --color-brand-accent-strong: #08111e;
+    --color-brand-accent-soft: #eef1f4;
+    --color-brand-metal: #d8cfb7;
+    --color-brand-metal-light: #f3eedc;
+    --color-navy: #0e1a2a;
+    --color-navy-strong: #08111e;
+    --color-ink: #1d1d1f;
+    --color-muted-ink: #515154;
+    --color-minor-ink: #86868b;
+    --color-brand-border: #d9d9de;
     --color-surface: #ffffff;
-    --color-surface-muted: #f8f4ec;
-    /* Status — warm warm-white-friendly variants, not Tailwind's blue/red defaults. */
-    --color-status-warning-bg: #fff7ed;
-    --color-status-warning-border: #fed7aa;
-    --color-status-warning-text: #9a3412;
-    --color-status-error-bg: #fef2f2;
-    --color-status-error-border: #fecaca;
-    --color-status-error-text: #b91c1c;
-    --color-status-success-bg: #f0fdf4;
-    --color-status-success-border: #bbf7d0;
-    --color-status-success-text: #166534;
-    /* Info — calm blue for announcements / neutral notices (no warm-paper variant needed). */
-    --color-status-info-bg: #eff6ff;
-    --color-status-info-border: #bfdbfe;
-    --color-status-info-text: #1e40af;
+    --color-surface-muted: #f5f5f7;
 
-    /* Customer console — neutral operational canvas. Kept separate from the
-       warmer public-site palette so the dashboard can stay crisp and dense
-       without changing landing/auth surfaces. */
-    --color-portal-canvas: #f4f5f7;
+    /* Status colors */
+    --color-status-warning-bg: #fff8e7;
+    --color-status-warning-border: #f4d38b;
+    --color-status-warning-text: #7a4b00;
+    --color-status-error-bg: #fff2f2;
+    --color-status-error-border: #f2b8b5;
+    --color-status-error-text: #b42318;
+    --color-status-success-bg: #edf9f2;
+    --color-status-success-border: #a9dfbd;
+    --color-status-success-text: #19703d;
+    --color-status-info-bg: #eef6ff;
+    --color-status-info-border: #b9d9f8;
+    --color-status-info-text: #075a9c;
+
+    /* Customer console. Legacy `gold` names remain API-compatible aliases. */
+    --color-portal-canvas: #f5f5f7;
     --color-portal-panel: #ffffff;
-    --color-portal-ink: #171a21;
-    --color-portal-muted: #5d6675;
-    --color-portal-subtle: #8c94a1;
-    --color-portal-line: #e3e6ea;
-    --color-portal-soft: #f8f9fa;
-    --color-portal-active: #eff1f4;
-    --color-portal-gold: #a16207;
-    --color-portal-gold-soft: #f6f0e5;
+    --color-portal-ink: #1d1d1f;
+    --color-portal-muted: #5f5f63;
+    --color-portal-subtle: #86868b;
+    --color-portal-line: #dedee3;
+    --color-portal-soft: #f8f8fa;
+    --color-portal-active: #eef1f4;
+    --color-portal-gold: #0e1a2a;
+    --color-portal-gold-soft: #eef1f4;
 
-    /* — Typography —
-   * `--font-inter` is set by `next/font/google` in `src/app/layout.tsx`
-   * (W7 P3 hoisted from the landing's local import). When the woff2 is
-   * loaded it points at the woff2 family; before/until then it's
-   * undefined and the rest of the stack takes over. Either way, body
-   * text gets a sensible Inter-or-fallback rendering and Tailwind's
-   * `font-sans` utility resolves correctly. */
     --font-sans:
-        var(--font-inter), 'Inter', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'PingFang SC',
-        'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
-    --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
-    /* Hero size: clamp lets the landing h1 scale 32 → 52 with viewport
-   *  width. Used as `text-hero` (Tailwind v4 generates the class from the
-   *  --text-* token). */
+        var(--font-inter), -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+        'Microsoft YaHei', sans-serif;
+    --font-display:
+        var(--font-manrope), var(--font-inter), -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif;
+    --font-mono: ui-monospace, 'SFMono-Regular', 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+
     --text-hero: clamp(2rem, 5.4vw, 3.25rem);
-    --text-hero--line-height: 1.18;
-    --text-hero--letter-spacing: -0.0125em;
+    --text-hero--line-height: 1.12;
+    --text-hero--letter-spacing: 0;
 
-    /* — Shadows (warm-tuned) — */
-    --shadow-card: 0 1px 0 rgba(26, 37, 64, 0.03);
-    --shadow-card-strong: 0 6px 24px -8px rgba(26, 37, 64, 0.18);
-    --shadow-focus: 0 0 0 3px rgba(26, 37, 64, 0.18);
-    --shadow-portal: 0 1px 2px rgba(23, 26, 33, 0.04);
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.035), 0 10px 30px rgba(0, 0, 0, 0.035);
+    --shadow-card-strong: 0 16px 44px rgba(0, 0, 0, 0.1);
+    --shadow-focus: 0 0 0 3px rgba(14, 26, 42, 0.2);
+    --shadow-portal: 0 1px 2px rgba(0, 0, 0, 0.025), 0 8px 24px rgba(0, 0, 0, 0.025);
 
-    /* — Easing — */
-    --ease-brand: cubic-bezier(0.32, 0.72, 0.32, 1);
+    --ease-brand: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 :root {
-    --background: #f9fafb;
-    --foreground: #111827;
+    --background: #f5f5f7;
+    --foreground: #1d1d1f;
+    color-scheme: light;
+}
+
+* {
+    box-sizing: border-box;
+    scrollbar-width: thin;
+    scrollbar-color: #c7c7cc transparent;
+}
+
+html {
+    background: var(--background);
+    text-rendering: optimizeLegibility;
 }
 
 body {
+    margin: 0;
     background: var(--background);
     color: var(--foreground);
-    /* Use the @theme `--font-sans` so Inter actually shows up in non-landing
-   *  pages too — used to be locked to system fonts which created the
-   *  landing↔portal typography break. */
     font-family: var(--font-sans);
-    line-height: 1.7;
+    font-size: 15px;
+    line-height: 1.5;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
 }
 
-/* Scrollbar - Light theme (default) */
-* {
-    scrollbar-width: thin;
-    scrollbar-color: #cbd5e1 #f1f5f9;
+h1,
+h2,
+h3,
+h4 {
+    font-family: var(--font-display);
+    letter-spacing: 0;
+}
+
+/* Keep legacy utility classes from reintroducing inconsistent tracking. */
+.tracking-tighter,
+.tracking-tight,
+.tracking-wide,
+.tracking-wider,
+.tracking-widest {
+    letter-spacing: 0;
+}
+
+button,
+input,
+select,
+textarea {
+    font: inherit;
+    letter-spacing: 0;
+}
+
+::selection {
+    background: rgba(14, 26, 42, 0.14);
+    color: #1d1d1f;
 }
 
 *::-webkit-scrollbar {
@@ -136,41 +134,40 @@ body {
     height: 8px;
 }
 
-*::-webkit-scrollbar-track {
-    background: #f1f5f9;
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner {
+    background: transparent;
 }
 
 *::-webkit-scrollbar-thumb {
-    background: #cbd5e1;
-    border-radius: 4px;
+    background: #c7c7cc;
+    border: 2px solid transparent;
+    border-radius: 999px;
+    background-clip: padding-box;
 }
 
 *::-webkit-scrollbar-thumb:hover {
-    background: #94a3b8;
+    background: #a7a7ac;
+    background-clip: padding-box;
 }
 
-*::-webkit-scrollbar-corner {
-    background: #f1f5f9;
-}
-
-/* Scrollbar - Dark theme */
 [data-theme='dark'],
 [data-theme='dark'] * {
-    scrollbar-color: #475569 #1e293b;
-}
-
-[data-theme='dark'] *::-webkit-scrollbar-track {
-    background: #1e293b;
+    scrollbar-color: #52525a transparent;
 }
 
 [data-theme='dark'] *::-webkit-scrollbar-thumb {
-    background: #475569;
+    background: #52525a;
+    background-clip: padding-box;
 }
 
-[data-theme='dark'] *::-webkit-scrollbar-thumb:hover {
-    background: #64748b;
-}
-
-[data-theme='dark'] *::-webkit-scrollbar-corner {
-    background: #1e293b;
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        scroll-behavior: auto !important;
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
 }

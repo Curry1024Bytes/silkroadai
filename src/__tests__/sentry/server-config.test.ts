@@ -94,7 +94,7 @@ describe('sentry.server.config — beforeSend scrubber', () => {
         const event = {
             request: {
                 data: {
-                    email: 'happy@silkroadai.io',
+                    email: 'happy@llmroute.club',
                     password: 'plain-text-pw',
                     newPassword: 'shouldnt-survive',
                     token: 'reset-token-secret',
@@ -111,7 +111,7 @@ describe('sentry.server.config — beforeSend scrubber', () => {
         expect(out.request.data.apiKey).toBe('[REDACTED]');
         expect(out.request.data.newapi_token_value).toBe('[REDACTED]');
         // Non-sensitive untouched
-        expect(out.request.data.email).toBe('happy@silkroadai.io');
+        expect(out.request.data.email).toBe('happy@llmroute.club');
         expect(out.request.data.safeField).toBe('kept');
     });
 

@@ -79,10 +79,10 @@ function client(): S3Client {
  *  SigV4 — the legacy implementation (PR-T1) returned that URL and got
  *  400 InvalidArgument on every browser fetch (post-launch smoke
  *  diagnosis 2026-05-09). The right URL pattern for public access is
- *  either a custom domain bound to the bucket (`images.silkroadai.io`,
+ *  either a custom domain bound to the bucket (`images.llmroute.club`,
  *  what operator picked) or the `pub-<hash>.r2.dev` subdomain.
  *
- *  Reads `R2_PUBLIC_URL` (e.g. `https://images.silkroadai.io`) and
+ *  Reads `R2_PUBLIC_URL` (e.g. `https://images.llmroute.club`) and
  *  composes `${R2_PUBLIC_URL}/${key}`. Throws if env unset rather than
  *  silently returning the broken S3-endpoint URL — a missing config
  *  should fail loudly, not produce 100% broken images.
@@ -92,7 +92,7 @@ export function getPublicUrl(key: string): string {
     if (!base) {
         throw new Error(
             'R2_PUBLIC_URL not set — public R2 access requires the bound custom domain or pub-*.r2.dev. ' +
-                'Add to .env: R2_PUBLIC_URL=https://images.silkroadai.io',
+                'Add to .env: R2_PUBLIC_URL=https://images.llmroute.club',
         );
     }
     // Normalize: strip trailing slash if present so a config typo doesn't

@@ -1,7 +1,7 @@
 /**
  * /v1beta/* — Gemini 原生格式透传(native 面)。
  *
- * 背景:Caddy 目前把 `ai.silkroadai.io/v1beta/*` 直接送 new-api :3000,portal 完全
+ * 背景:Caddy 目前把 `api.llmroute.club/v1beta/*` 直接送 new-api :3000,portal 完全
  * 看不见 —— 请求日志盲区(数据存储线 memory:≈6 直连调用/7d)、无 keep-alive、无
  * 失败观测。本路由补一条与 /v1/* 同款的轻量透传:forwardHeaders + reqlog capture +
  * stream-guard(shape=null:只做静默期 keep-alive 注释;Gemini native SSE 的错误事件
@@ -11,7 +11,7 @@
  * 兼容面做归一,native 面直通)。finish_reason 归一、翻译、图床改写都只在 /v1/*。
  *
  * ⚠️ 部署配套(今晚维护窗口):
- *  1. Caddy `ai.silkroadai.io` 把 `@portalv1 path /v1/*` 扩成 `path /v1/* /v1beta/*`
+ *  1. Caddy `api.llmroute.club` 把 `@portalv1 path /v1/*` 扩成 `path /v1/* /v1beta/*`
  *     (或加同款第二条 matcher)→ portal :3002;切之前本路由无流量,纯 dormant。
  *  2. middleware.ts matcher 已同步排除 `v1beta/`(Next 对命中 middleware 的路由会
  *     buffer 请求体且 10MB 截断 —— Gemini native 的 inlineData 大图必炸,见 PR #113)。

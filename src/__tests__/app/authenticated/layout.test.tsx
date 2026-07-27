@@ -10,6 +10,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToString } from 'react-dom/server';
+import { PLATFORM_TENANT_ID } from '@/lib/admin/tenant-scope';
 
 const mockHeadersGet = vi.fn<(name: string) => string | null>();
 vi.mock('next/headers', () => ({
@@ -45,9 +46,14 @@ vi.mock('@/lib/announcements/fetch-active', () => ({
 
 // P6a: layout now reads getCurrentTenant (brand color) + renders async <BrandLogo>.
 // Mock the tenant (platform values → no-op color) and render BrandLogo as the
-// default <Logo> (sync) so renderToString works + the "Silk Road AI" alt holds.
+// default <Logo> (sync) so renderToString works + the "LLmRoute" alt holds.
 vi.mock('@/lib/tenant/resolve', () => ({
-    getCurrentTenant: vi.fn(async () => ({ primary_color: '#1a2540', logo_url: null, brand_name: 'Silk Road AI' })),
+    getCurrentTenant: vi.fn(async () => ({
+        id: PLATFORM_TENANT_ID,
+        primary_color: '#0e1a2a',
+        logo_url: null,
+        brand_name: 'LLmRoute',
+    })),
 }));
 vi.mock('@/components/brand/BrandLogo', async () => {
     const actual = await vi.importActual<typeof import('@/components/brand/Logo')>('@/components/brand/Logo');
@@ -58,7 +64,7 @@ import AuthenticatedLayout from '@/app/(authenticated)/layout';
 
 const VERIFIED_USER = {
     id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
-    email: 'happy@silkroadai.io',
+    email: 'happy@llmroute.club',
     nickname: 'Happy',
     email_verified: true,
     status: 'active',
@@ -107,8 +113,10 @@ describe('<AuthenticatedLayout />', () => {
         const html = renderToString(tree);
 
         // Header chrome
-        expect(html).toContain('Silk Road AI');
-        expect(html).toContain('happy@silkroadai.io');
+        expect(html).toContain('LLmRoute');
+        expect(html).toContain('logo-primary-flat');
+        expect(html).not.toContain('data-platform-brand');
+        expect(html).toContain('happy@llmroute.club');
         expect(html).toContain('退出');
         // Sidebar nav items
         expect(html).toContain('概览');
@@ -133,7 +141,7 @@ describe('<AuthenticatedLayout />', () => {
         expect(html).toContain('重发验证邮件');
         expect(html).toMatch(/role="alert"/);
         // Header + sidebar still rendered (soft-block — user can still browse)
-        expect(html).toContain('happy@silkroadai.io');
+        expect(html).toContain('happy@llmroute.club');
         expect(html).toContain('CHILD_OK');
         expect(mockRedirect).not.toHaveBeenCalled();
     });

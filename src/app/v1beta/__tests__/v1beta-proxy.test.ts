@@ -23,7 +23,7 @@ vi.mock('@/lib/reqlog/capture', () => ({
 
 import { GET, POST, OPTIONS } from '../[...path]/route';
 
-const NEWAPI_BASE = 'http://localhost:3000';
+const NEWAPI_BASE = process.env.NEWAPI_BASE_URL || 'http://localhost:3000';
 
 const mockFetch = vi.fn();
 beforeEach(() => {
@@ -36,7 +36,7 @@ function makeReq(
     init: { method?: string; body?: unknown; headers?: Record<string, string>; search?: string } = {},
 ): NextRequest {
     const { method = 'POST', body, headers = {}, search = '' } = init;
-    return new NextRequest(`https://ai.silkroadai.io/v1beta${path}${search}`, {
+    return new NextRequest(`https://api.llmroute.club/v1beta${path}${search}`, {
         method,
         headers: { 'content-type': 'application/json', authorization: 'Bearer sk-test', ...headers },
         body: body !== undefined ? JSON.stringify(body) : undefined,

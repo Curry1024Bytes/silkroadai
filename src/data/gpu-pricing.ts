@@ -172,6 +172,6 @@ export const CUSTOMER_TYPES: string[] = [
 /** Contact channels surfaced on the page. */
 export const CONTACT = {
     wechat: 'Global_Ads',
-    email: 'support@silkroadai.io',
+    email: 'support@llmroute.club',
     overseasNote: '海外客户暂仅微信,后续开通 Discord 详询',
 } as const;

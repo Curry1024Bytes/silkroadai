@@ -14,7 +14,7 @@ import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 
 export const metadata = {
-    title: '页面没找到 — Silk Road AI',
+    title: '页面没找到 — LLmRoute',
 };
 
 export default function NotFound() {
@@ -27,7 +27,7 @@ export default function NotFound() {
                 <p
                     className="m-0 mb-3 text-brand-accent font-semibold tabular-nums"
                     aria-hidden="true"
-                    style={{ fontSize: 36, letterSpacing: '-0.02em' }}
+                    style={{ fontSize: 36, letterSpacing: 0 }}
                 >
                     404
                 </p>
@@ -47,8 +47,8 @@ export default function NotFound() {
                         Global_Ads
                     </code>{' '}
                     · 邮箱{' '}
-                    <a href="mailto:support@silkroadai.io" className="text-navy no-underline hover:text-brand-accent">
-                        support@silkroadai.io
+                    <a href="mailto:support@llmroute.club" className="text-navy no-underline hover:text-brand-accent">
+                        support@llmroute.club
                     </a>
                 </p>
             </Card>

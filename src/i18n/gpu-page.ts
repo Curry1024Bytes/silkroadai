@@ -50,7 +50,7 @@ export const GPU_PAGE_STRINGS: Record<string, GpuPageString> = {
     flow_section_subtitle: { zh: '4 步从询价到上线' },
 
     // ─── Section: 资源优势 ───────────────────────────────────────────
-    advantages_section_title: { zh: '为什么选 Silk Road AI' },
+    advantages_section_title: { zh: '为什么选 LLmRoute' },
 
     // ─── Section: 适用客户 ───────────────────────────────────────────
     customers_section_title: { zh: '适用客户' },

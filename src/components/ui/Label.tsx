@@ -18,7 +18,7 @@ export function Label({ required, className, children, ...rest }: LabelProps): R
     return (
         <label
             {...rest}
-            className={['text-sm font-medium text-muted-ink mb-1.5 block', className ?? ''].filter(Boolean).join(' ')}
+            className={['mb-2 block text-sm font-medium text-ink', className ?? ''].filter(Boolean).join(' ')}
         >
             {children}
             {required ? (

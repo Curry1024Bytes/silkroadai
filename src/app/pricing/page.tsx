@@ -28,9 +28,9 @@ import { categorizeByVendor, HIDDEN_MODELS, VENDOR_META, VENDOR_ORDER, type Vend
 
 export const revalidate = 60;
 export const metadata = {
-    title: '模型价格 — Silk Road AI',
+    title: '模型价格 — LLmRoute',
     description:
-        'Silk Road AI 模型价格总表:Claude / GPT / Gemini 等按百万 token 计费,生图模型按张计费,全部人民币标价,按档次(号池 / 官方稳定 / 专属)分列。',
+        'LLmRoute 模型价格总表:Claude / GPT / Gemini 等按百万 token 计费,生图模型按张计费,全部人民币标价,按档次(号池 / 官方稳定 / 专属)分列。',
 };
 
 interface PriceCell {
@@ -138,7 +138,7 @@ export default async function PricingPage() {
                     </BackButton>
                     <div className="flex items-center gap-3">
                         <Logo variant="primary-flat" size={28} />
-                        <p className="m-0 text-xs text-minor-ink">Connecting Global Intelligence.</p>
+                        <p className="m-0 text-xs text-minor-ink">One route. Every model.</p>
                     </div>
                     <h1 className="m-0 text-3xl font-semibold text-navy">模型价格</h1>
                     <p className="m-0 text-sm text-muted-ink leading-relaxed max-w-3xl">

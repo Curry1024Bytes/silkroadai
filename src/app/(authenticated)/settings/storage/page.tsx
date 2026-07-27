@@ -55,8 +55,8 @@ export default async function StorageSettingsPage() {
         <div className="max-w-3xl">
             <h1 className="text-2xl font-semibold text-navy">存储设置</h1>
             <p className="mt-2 text-sm text-muted-ink">
-                AI 生图(Gemini 系列)与 AI 视频(Seedance 系列)的输出默认存储在 Silk Road AI 的对象存储,返回
-                <code className="mx-1 font-mono text-xs">images.silkroadai.io</code>
+                AI 生图(Gemini 系列)与 AI 视频(Seedance 系列)的输出默认存储在 LLmRoute 的对象存储,返回
+                <code className="mx-1 font-mono text-xs">images.llmroute.club</code>
                 URL;gpt-image-2 默认返回 base64,请求传
                 <code className="mx-1 font-mono text-xs">response_format: url</code>
                 时同样走对象存储、返回 URL。你也可以配置自己的对象存储(Cloudflare R2 / 阿里云 OSS / 腾讯云 COS / AWS S3

@@ -1,7 +1,7 @@
 /**
  * BrandLogo fallback priority:
  *   1. logo_url              → custom <img>
- *   2. platform, no logo     → default Silk Road AI <Logo> (platform unchanged)
+ *   2. platform, no logo     → default LLmRoute <Logo> (platform unchanged)
  *   3. non-platform, no logo → brand_name text wordmark (P6b-2 §3.1)
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -23,8 +23,8 @@ describe('BrandLogo', () => {
         mockGetCurrentTenant.mockResolvedValue({
             id: PLATFORM_TENANT_ID,
             logo_url: null,
-            brand_name: 'Silk Road AI',
-            primary_color: '#1a2540',
+            brand_name: 'LLmRoute',
+            primary_color: '#17201e',
         });
         const el: El = await BrandLogo({ variant: 'primary-flat', size: 28 });
         expect(el.type).toBe(Logo);
@@ -56,7 +56,7 @@ describe('BrandLogo', () => {
         const span: El = el.props.children; // Link > span
         expect(span.type).toBe('span');
         expect(span.props.children).toBe('Acme AI');
-        expect(span.props.style.color).toBe('#1E3A8A'); // wordmark default color
+        expect(span.props.style.color).toBe('#1D1D1F'); // neutral wordmark default
     });
 
     it('logo_url set → custom <img> wrapped in a home link, alt = brand_name', async () => {

@@ -16,12 +16,12 @@ import { renderToString } from 'react-dom/server';
 import { LegalDocPage } from '@/components/LegalDocPage';
 
 describe('/terms page SSR (via LegalDocPage)', () => {
-    it('renders Silk Road AI 服务条款 + version + effective date 2026-05-05 + back link', async () => {
+    it('renders LLmRoute 服务条款 + version + effective date 2026-05-05 + back link', async () => {
         const tree = await LegalDocPage({ file: 'service-terms.md' });
         const html = renderToString(tree);
-        expect(html).toContain('Silk Road AI 服务条款');
+        expect(html).toContain('LLmRoute 服务条款');
         expect(html).toContain('2026-05-05');
-        expect(html).toMatch(/<a[^>]*href="\/"[^>]*>← 返回 Silk Road AI<\/a>/);
+        expect(html).toMatch(/<a[^>]*href="\/"[^>]*>← 返回 LLmRoute<\/a>/);
         // marked output: at least one <h2> tag (legal doc has many sections)
         expect(html).toMatch(/<h2[^>]*>/);
     });
@@ -31,11 +31,11 @@ describe('/privacy page SSR (via LegalDocPage)', () => {
     it('renders 隐私政策 + 联系方式 + support email', async () => {
         const tree = await LegalDocPage({ file: 'privacy-policy.md' });
         const html = renderToString(tree);
-        expect(html).toContain('Silk Road AI 隐私政策');
+        expect(html).toContain('LLmRoute 隐私政策');
         expect(html).toContain('2026-05-05');
-        expect(html).toContain('support@silkroadai.io');
+        expect(html).toContain('support@llmroute.club');
         expect(html).toContain('Global_Ads');
-        expect(html).toMatch(/<a[^>]*href="\/"[^>]*>← 返回 Silk Road AI<\/a>/);
+        expect(html).toMatch(/<a[^>]*href="\/"[^>]*>← 返回 LLmRoute<\/a>/);
     });
 });
 
@@ -43,9 +43,9 @@ describe('/refund page SSR (via LegalDocPage)', () => {
     it('renders 退款政策 + version + back link', async () => {
         const tree = await LegalDocPage({ file: 'refund-policy.md' });
         const html = renderToString(tree);
-        expect(html).toContain('Silk Road AI 退款政策');
+        expect(html).toContain('LLmRoute 退款政策');
         expect(html).toContain('2026-05-05');
-        expect(html).toMatch(/<a[^>]*href="\/"[^>]*>← 返回 Silk Road AI<\/a>/);
+        expect(html).toMatch(/<a[^>]*href="\/"[^>]*>← 返回 LLmRoute<\/a>/);
     });
 });
 

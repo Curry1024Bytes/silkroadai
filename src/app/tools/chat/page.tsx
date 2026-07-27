@@ -3,7 +3,7 @@ import { BackButton } from '@/components/BackButton';
 import { ChatTool } from './chat-tool';
 
 export const metadata: Metadata = {
-    title: 'AI 对话测试工具 · Silk Road AI',
+    title: 'AI 对话测试工具 · LLmRoute',
     description:
         '填入你的 API Key,在线测试 AI 对话(流式)—— 覆盖你这把 key 能用的全部对话模型(GPT / Claude / Gemini / DeepSeek 等)。',
 };

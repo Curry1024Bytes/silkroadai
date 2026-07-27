@@ -1,4 +1,4 @@
-# Silk Road AI Portal — Codex Project Context
+# LLmRoute Portal — Codex Project Context
 
 > 这份文档由 Codex 自动加载,作为项目永久上下文。
 > 每次启动 `Codex` 时都会读取,不需要重复说项目背景。
@@ -7,11 +7,16 @@
 
 ## 项目身份
 
-- **名字**: Silk Road AI Portal (silkroadai-portal)
+- **名字**: LLmRoute Portal (`llmroute-portal`)
 - **GitHub**: https://github.com/yexioy/silkroadai
 - **角色**: new-api 客户层(Customer Portal)— W2 D3 已切到 B3 路线
 - **来源**: Fork 自 [touwaeriol/sub2apipay](https://github.com/touwaeriol/sub2apipay)(已归档)
-- **目标域名**: portal.silkroadai.io
+- **站点域名**: `llmroute.club`
+- **客户 API**: `api.llmroute.club`
+- **资源域名**: `images.llmroute.club`
+
+> 2026-07-24 品牌由 Silk Road AI 迁移为 LLmRoute。历史进度中的旧域名保留作审计记录;
+> `X-Silkroadai-*`、`silkroadai` 元数据命名空间与 JWT issuer 暂时保留为兼容契约。
 
 ---
 

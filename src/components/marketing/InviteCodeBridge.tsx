@@ -3,7 +3,7 @@
 /**
  * InviteCodeBridge — fix/invite-landing fallback.
  *
- * When someone shares an older `https://silkroadai.io/?invite=X` link
+ * When someone shares an older `https://llmroute.club/?invite=X` link
  * (pre-fix, or copy-pasted to an app that strips the path), we don't
  * want to drop the attribution. This client island reads the query
  * string on landing, stores the code in sessionStorage, then the

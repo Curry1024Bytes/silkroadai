@@ -18,6 +18,7 @@ vi.mock('@/lib/newapi/client', async () => {
 });
 
 import ModelsPage from '@/app/models/page';
+import WorkspaceModelsPage from '@/app/(authenticated)/workspace/models/page';
 import { ModelsBrowser } from '@/app/models/models-browser';
 import { classifyModels } from '@/lib/models/categorize';
 
@@ -50,7 +51,7 @@ describe('<ModelsPage /> SSR', () => {
         // 8 models, 4 vendors (strong tags carry class="text-navy").
         expect(html).toMatch(/<strong[^>]*>8<\/strong>\s*个模型/);
         expect(html).toMatch(/<strong[^>]*>4<\/strong>\s*个厂商/);
-        expect(html).toContain('https://ai.silkroadai.io');
+        expect(html).toContain('https://api.llmroute.club');
     });
 
     it('renders one section per vendor (vendor-first grouping)', async () => {
@@ -75,7 +76,7 @@ describe('<ModelsPage /> SSR', () => {
         expect(html).toContain('视频生成');
     });
 
-    it('renders the search input + ai.silkroadai.io reference', async () => {
+    it('renders the search input + api.llmroute.club reference', async () => {
         mockListAvailableModels.mockResolvedValue(SAMPLE);
         const el = await ModelsPage();
         const html = renderToString(el);
@@ -108,6 +109,18 @@ describe('<ModelsPage /> SSR', () => {
         // Now a <BackButton> (browser back) instead of a fixed href="/" link.
         expect(html).toContain('返回');
         expect(html).toMatch(/<button[^>]*>[\s\S]*返回/);
+    });
+});
+
+describe('<WorkspaceModelsPage /> SSR', () => {
+    it('renders the catalog without public-page chrome', async () => {
+        mockListAvailableModels.mockResolvedValue(SAMPLE);
+        const el = await WorkspaceModelsPage();
+        const html = renderToString(el);
+        expect(html).toContain('模型清单');
+        expect(html).toContain('CATALOG');
+        expect(html).not.toMatch(/<img[^>]*alt="LLmRoute"/);
+        expect(html).not.toContain('<span aria-hidden="true">←</span><span>返回</span>');
     });
 });
 

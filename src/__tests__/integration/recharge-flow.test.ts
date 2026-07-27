@@ -334,7 +334,7 @@ function buildNotifyUrl(
         trade_no: opts.tradeNo ?? TRADE_NO,
         out_trade_no: opts.orderId ?? ORDER_ID,
         type: 'alipay',
-        name: 'Silk Road AI 余额充值',
+        name: 'LLmRoute 余额充值',
         money: (opts.amount ?? CNY_AMOUNT).toFixed(2),
         trade_status: 'TRADE_SUCCESS',
         inst: opts.instId ?? 'test-inst-1',
@@ -368,7 +368,7 @@ function seedPaidOrder(amount = CNY_AMOUNT, opts: { first_recharge_bonus_granted
     state.orders.set(row.id, row);
     state.users.set(PORTAL_USER_ID, {
         id: PORTAL_USER_ID,
-        email: 'happy@silkroadai.io',
+        email: 'happy@llmroute.club',
         newapi_user_id: NEWAPI_USER_ID,
         status: 'active',
         // W6 D1: integration default is "already granted" so legacy assertions

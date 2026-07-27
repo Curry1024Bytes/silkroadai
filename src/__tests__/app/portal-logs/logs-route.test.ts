@@ -58,7 +58,7 @@ function makeLog(o: LogOpt = {}) {
     };
 }
 
-const req = (qs = '') => new NextRequest(`https://ai.silkroadai.io/api/portal/logs${qs}`);
+const req = (qs = '') => new NextRequest(`https://api.llmroute.club/api/portal/logs${qs}`);
 const provisioned = { id: 'u1', newapi_user_id: 100, newapi_username: 'c-x' };
 
 beforeEach(() => vi.clearAllMocks());

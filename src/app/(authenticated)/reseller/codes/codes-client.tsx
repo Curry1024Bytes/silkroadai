@@ -5,7 +5,7 @@
  *
  * Lists active + inactive codes (inactive grayed out), provides:
  *   - + 创建新邀请码 modal (code input + optional label)
- *   - 复制 button per row → 复制 https://silkroadai.io/register?invite=CODE
+ *   - 复制 button per row → 复制 https://llmroute.club/register?invite=CODE
  *   - 删除 button per active row → soft-delete via DELETE /codes/[id]
  *
  * MAX_CODES_PER_RESELLER mirrors the server-side cap (10 active) so the

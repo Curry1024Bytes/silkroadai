@@ -1,16 +1,19 @@
 /**
- * Silk Road AI brand <Logo /> component.
+ * LLmRoute brand <Logo /> component.
  *
  * Renders the canonical brand mark + wordmark from `src/assets/brand/`.
+ * The supplied 1024px brand master is preserved in that directory; the SVG
+ * delivery assets embed alpha-matted derivatives so the exact routed-circuit
+ * geometry and metallic finish survive across browsers and operating systems.
  * Picks the right variant for the surface (light vs dark, full-color vs
  * mono, full-logo vs mark) and sizes via the `size` prop (height in px,
  * default 24 — the "header" baseline).
  *
  * Asset choice cheat-sheet
  * ------------------------
- *   primary       — light backgrounds, ≥ 48px tall (gradient looks great)
- *   primary-flat  — light backgrounds, < 48px tall (gradient aliases at small sizes)
- *   inverse       — dark backgrounds (e.g. #0a1535 portal navy header)
+ *   primary       — light backgrounds, larger brand placements
+ *   primary-flat  — compact UI headers and controls
+ *   inverse       — dark backgrounds
  *   mono-dark     — print, fax, grayscale renders
  *   mono-light    — reverse on photos / arbitrary dark imagery
  *   mark          — favicon / app-icon / context where the wordmark is implied
@@ -72,7 +75,7 @@ function assetUrl(asset: unknown): string {
 interface VariantConfig {
     src: string;
     /** width / height — drives the rendered <img> width given the
-     *  caller's `size` (height) prop. Hand-set to match the SVG
+     *  caller's `size` (height) prop. Hand-set to match the SVG delivery
      *  viewBox so we don't depend on the bundler reporting it. */
     aspect: number;
     /** Visible label fallback for screen readers / image-blocking. */
@@ -80,12 +83,12 @@ interface VariantConfig {
 }
 
 const VARIANTS: Record<LogoVariant, VariantConfig> = {
-    primary: { src: assetUrl(logoPrimaryAsset), aspect: 96 / 24, alt: 'Silk Road AI' },
-    'primary-flat': { src: assetUrl(logoPrimaryFlatAsset), aspect: 96 / 24, alt: 'Silk Road AI' },
-    inverse: { src: assetUrl(logoInverseAsset), aspect: 96 / 24, alt: 'Silk Road AI' },
-    'mono-dark': { src: assetUrl(logoMonoDarkAsset), aspect: 96 / 24, alt: 'Silk Road AI' },
-    'mono-light': { src: assetUrl(logoMonoLightAsset), aspect: 96 / 24, alt: 'Silk Road AI' },
-    mark: { src: assetUrl(markOnlyAsset), aspect: 1, alt: 'Silk Road AI' },
+    primary: { src: assetUrl(logoPrimaryAsset), aspect: 96 / 24, alt: 'LLmRoute' },
+    'primary-flat': { src: assetUrl(logoPrimaryFlatAsset), aspect: 96 / 24, alt: 'LLmRoute' },
+    inverse: { src: assetUrl(logoInverseAsset), aspect: 96 / 24, alt: 'LLmRoute' },
+    'mono-dark': { src: assetUrl(logoMonoDarkAsset), aspect: 96 / 24, alt: 'LLmRoute' },
+    'mono-light': { src: assetUrl(logoMonoLightAsset), aspect: 96 / 24, alt: 'LLmRoute' },
+    mark: { src: assetUrl(markOnlyAsset), aspect: 1, alt: 'LLmRoute' },
 };
 
 export function Logo({ variant = 'primary', size = 24, linkHome = true, className }: LogoProps) {
@@ -96,10 +99,9 @@ export function Logo({ variant = 'primary', size = 24, linkHome = true, classNam
         // Intentionally `<img>` rather than next/image's <Image>. Next's
         // <Image> wraps in a sizing wrapper, generates blur placeholders,
         // and runs the URL through the image-optimizer endpoint — all
-        // designed for raster photos. For a 1 KB vector logo that's
-        // already at-or-near final byte size and can't be down-sampled,
-        // <img> is the simpler + faster choice and avoids the optimizer
-        // round-trip.
+        // designed for raster photos. These compact, local logo assets already
+        // have exact dimensions, so <img> avoids an unnecessary optimizer
+        // round-trip while preserving deterministic rendering.
         // eslint-disable-next-line @next/next/no-img-element
         <img
             src={config.src}

@@ -40,7 +40,7 @@ export function EmptyState({ icon, title, body, action, className }: EmptyStateP
                     {icon}
                 </div>
             ) : null}
-            <h3 className="text-lg font-semibold text-navy m-0">{title}</h3>
+            <h3 className="font-display text-lg font-semibold text-navy m-0">{title}</h3>
             {body ? <p className="text-sm text-muted-ink m-0 max-w-sm leading-relaxed">{body}</p> : null}
             {action ? <div className="mt-2">{action}</div> : null}
         </div>

@@ -4,10 +4,10 @@
  * callxyq(api.callxyq.xyz)本身是原生 OpenAI-video(POST /v1/videos 提交 / GET /v1/videos/{id} 轮询),
  * 所以本适配器**只做透传**,不像海外满血(service-inference.ai 自定义 API)需要翻译。
  * 唯一额外动作:轮询出片后把成片**转存我们 R2**(复用 [@/lib/seedance/adapter].mirrorVideoToR2),
- * video_url 返回 images.silkroadai.io 公网永久直链(藏上游 niuma + 不过期 + 浏览器可开),
+ * video_url 返回 images.llmroute.club 公网永久直链(藏上游 niuma + 不过期 + 浏览器可开),
  * 否则客户拿到的是 app.niuma.me 临时裸链。见 project_seedance_reverse_lowprice。
  *
- * 渠道 ch38 base_url 指到本适配器(https://silkroadai.io/seedance-reverse-adapter,过 443 公网 + new-api SSRF 白名单);
+ * 渠道 ch38 base_url 指到本适配器(https://llmroute.club/seedance-reverse-adapter,过 443 公网 + new-api SSRF 白名单);
  * 模型名路由由 new-api model_mapping 在转发前完成(seedance-2.0-720 → sora-v3-pro),适配器收到已是上游名。
  */
 import { NextRequest, NextResponse } from 'next/server';

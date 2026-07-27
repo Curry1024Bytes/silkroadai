@@ -31,7 +31,7 @@ import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
 import { DashboardViewBeacon } from './view-beacon';
 
 export const dynamic = 'force-dynamic';
-export const metadata = { title: '代理后台 — Silk Road AI' };
+export const metadata = { title: '代理后台 — LLmRoute' };
 
 async function getSessionUser() {
     const h = await headers();

@@ -73,7 +73,7 @@ export function BalanceAlertForm({ initialThreshold }: Props) {
             <div className="border-b border-portal-line px-5 py-4 sm:px-6">
                 <div className="flex items-center gap-2">
                     <BellRing size={17} className="text-portal-gold" strokeWidth={1.8} aria-hidden="true" />
-                    <h2 className="m-0 text-base font-semibold text-portal-ink">余额提醒设置</h2>
+                    <h2 className="m-0 font-display text-base font-semibold text-portal-ink">余额提醒设置</h2>
                 </div>
                 <p className="m-0 mt-1 text-xs text-portal-subtle">账户保护</p>
             </div>
@@ -97,7 +97,7 @@ export function BalanceAlertForm({ initialThreshold }: Props) {
                             }}
                             aria-label="余额提醒阈值"
                             block={false}
-                            className="w-32 rounded-md border-portal-line tabular-nums"
+                            className="w-32 border-portal-line tabular-nums"
                         />
                     </div>
                     <Button
@@ -107,7 +107,6 @@ export function BalanceAlertForm({ initialThreshold }: Props) {
                         onClick={handleSave}
                         loading={status === 'saving'}
                         disabled={!canSave}
-                        className="rounded-md"
                     >
                         {status === 'saving' ? '保存中…' : '保存'}
                     </Button>

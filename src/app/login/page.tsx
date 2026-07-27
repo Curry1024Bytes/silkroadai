@@ -24,7 +24,7 @@ import { FormError } from '@/components/ui/FormError';
 import { LoginForm } from './login-form';
 
 export const dynamic = 'force-dynamic';
-export const metadata = { title: '登录 — Silk Road AI' };
+export const metadata = { title: '登录 — LLmRoute' };
 
 async function getSessionUser() {
     const h = await headers();
@@ -75,22 +75,27 @@ export default async function LoginPage({
         : null;
 
     return (
-        <main className="min-h-screen flex items-center justify-center bg-paper px-4 py-10">
-            <Card className="w-full max-w-md p-8">
-                <header className="mb-6 flex items-center gap-3">
-                    <BrandLogo variant="primary-flat" size={28} />
-                    <p className="m-0 text-xs text-minor-ink">Connecting Global Intelligence.</p>
+        <main className="flex min-h-[calc(100dvh-64px)] items-center justify-center bg-paper-muted px-4 py-12 sm:px-6">
+            <div className="w-full max-w-[420px]">
+                <header className="mb-8 flex flex-col items-center text-center">
+                    <BrandLogo variant="primary-flat" size={32} />
+                    <p className="m-0 mt-3 text-sm text-minor-ink">One route. Every model.</p>
                 </header>
-                <h2 className="m-0 mb-4 text-base font-semibold text-navy">登录</h2>
-                {oauthMessage ? (
-                    <div className="mb-4">
-                        <FormError severity="banner">{oauthMessage}</FormError>
+                <Card className="w-full p-7 sm:p-8">
+                    <div className="mb-7">
+                        <h1 className="m-0 font-display text-2xl font-semibold leading-tight text-navy">欢迎回来</h1>
+                        <p className="m-0 mt-2 text-sm text-muted-ink">登录你的 LLmRoute 账户。</p>
                     </div>
-                ) : null}
-                <Suspense fallback={<p className="text-sm text-muted-ink">加载中…</p>}>
-                    <LoginForm next={next} />
-                </Suspense>
-            </Card>
+                    {oauthMessage ? (
+                        <div className="mb-4">
+                            <FormError severity="banner">{oauthMessage}</FormError>
+                        </div>
+                    ) : null}
+                    <Suspense fallback={<p className="text-sm text-muted-ink">加载中…</p>}>
+                        <LoginForm next={next} />
+                    </Suspense>
+                </Card>
+            </div>
         </main>
     );
 }

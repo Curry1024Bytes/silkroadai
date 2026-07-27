@@ -35,22 +35,22 @@ describe('getAppUrl — precedence', () => {
     });
 
     it('APP_URL alone → wins', () => {
-        process.env.APP_URL = 'https://silkroadai.io';
-        expect(getAppUrl()).toBe('https://silkroadai.io');
+        process.env.APP_URL = 'https://llmroute.club';
+        expect(getAppUrl()).toBe('https://llmroute.club');
     });
 
     it('NEXT_PUBLIC_APP_URL alone → used (build-time fallback)', () => {
-        process.env.NEXT_PUBLIC_APP_URL = 'https://silkroadai.io';
-        expect(getAppUrl()).toBe('https://silkroadai.io');
+        process.env.NEXT_PUBLIC_APP_URL = 'https://llmroute.club';
+        expect(getAppUrl()).toBe('https://llmroute.club');
     });
 
     it('both set → APP_URL wins (this is the prod case post-fix)', () => {
         // Mirrors the live container: .env sets both, but
         // NEXT_PUBLIC_APP_URL was poisoned at build time with a
         // localhost placeholder. APP_URL is the runtime escape hatch.
-        process.env.APP_URL = 'https://silkroadai.io';
+        process.env.APP_URL = 'https://llmroute.club';
         process.env.NEXT_PUBLIC_APP_URL = 'https://localhost';
-        expect(getAppUrl()).toBe('https://silkroadai.io');
+        expect(getAppUrl()).toBe('https://llmroute.club');
     });
 
     it('neither set → dev fallback (so e2e debug logs stay readable)', () => {
@@ -61,8 +61,8 @@ describe('getAppUrl — precedence', () => {
         // `||` semantics — empty string is falsy. Defensive behaviour
         // for `APP_URL=` (declared but not assigned) lines in .env.
         process.env.APP_URL = '';
-        process.env.NEXT_PUBLIC_APP_URL = 'https://silkroadai.io';
-        expect(getAppUrl()).toBe('https://silkroadai.io');
+        process.env.NEXT_PUBLIC_APP_URL = 'https://llmroute.club';
+        expect(getAppUrl()).toBe('https://llmroute.club');
     });
 
     it('empty-string both → dev fallback', () => {

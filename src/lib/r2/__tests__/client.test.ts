@@ -51,7 +51,7 @@ beforeEach(() => {
     process.env.R2_ACCESS_KEY_ID = 'key-id-stub';
     process.env.R2_SECRET_ACCESS_KEY = 'secret-stub';
     process.env.R2_BUCKET_NAME = 'silkroadai-image-gen';
-    process.env.R2_PUBLIC_URL = 'https://images.silkroadai.io';
+    process.env.R2_PUBLIC_URL = 'https://images.llmroute.club';
     captured = [];
     mockSend.mockReset();
     mockSend.mockResolvedValue(undefined);
@@ -75,13 +75,13 @@ describe('imageKey', () => {
 
 describe('getPublicUrl (PR-T2 v2 — env-driven public URL)', () => {
     it('uses R2_PUBLIC_URL env as the base (custom domain happy path)', () => {
-        process.env.R2_PUBLIC_URL = 'https://images.silkroadai.io';
-        expect(getPublicUrl('image-gen/u/g/0.png')).toBe('https://images.silkroadai.io/image-gen/u/g/0.png');
+        process.env.R2_PUBLIC_URL = 'https://images.llmroute.club';
+        expect(getPublicUrl('image-gen/u/g/0.png')).toBe('https://images.llmroute.club/image-gen/u/g/0.png');
     });
 
     it("strips a trailing slash from R2_PUBLIC_URL so a typo doesn't produce //", () => {
-        process.env.R2_PUBLIC_URL = 'https://images.silkroadai.io/';
-        expect(getPublicUrl('image-gen/u/g/0.png')).toBe('https://images.silkroadai.io/image-gen/u/g/0.png');
+        process.env.R2_PUBLIC_URL = 'https://images.llmroute.club/';
+        expect(getPublicUrl('image-gen/u/g/0.png')).toBe('https://images.llmroute.club/image-gen/u/g/0.png');
     });
 
     it('also accepts r2.dev subdomain (the alternate public-access shape)', () => {
@@ -101,7 +101,7 @@ describe('uploadImage', () => {
         const url = await uploadImage('image-gen/u/g/0.png', buf);
         // PR-T2 v2: returned URL uses R2_PUBLIC_URL, NOT the S3-endpoint
         // hostname (which requires SigV4 and 400s in the browser).
-        expect(url).toBe('https://images.silkroadai.io/image-gen/u/g/0.png');
+        expect(url).toBe('https://images.llmroute.club/image-gen/u/g/0.png');
         expect(mockSend).toHaveBeenCalledTimes(1);
         expect(captured).toHaveLength(1);
         expect(captured[0].type).toBe('Put');

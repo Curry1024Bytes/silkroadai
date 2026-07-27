@@ -148,7 +148,7 @@ export async function GET(req: NextRequest) {
     return new NextResponse(csv, {
         headers: {
             'Content-Type': 'text/csv; charset=utf-8',
-            'Content-Disposition': `attachment; filename="silkroadai-logs-${stamp}.csv"`,
+            'Content-Disposition': `attachment; filename="llmroute-logs-${stamp}.csv"`,
             'Cache-Control': 'no-store',
             ...(truncated ? { 'X-Export-Truncated': '1' } : {}),
         },

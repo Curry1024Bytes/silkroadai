@@ -2,6 +2,8 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
+import { ArrowUpRight, Check, Code2, Copy } from 'lucide-react';
+import { ANTHROPIC_API_BASE_URL, OPENAI_API_BASE_URL } from '@/lib/public-config';
 
 /**
  * Unified bottom "调用示例" panel for /keys (W7 D4 PR-R Item C).
@@ -25,8 +27,8 @@ import Link from 'next/link';
  * everyone (matches chat.b.ai/key's design).
  */
 
-const OPENAI_BASE = 'https://ai.silkroadai.io/v1';
-const ANTHROPIC_BASE = 'https://ai.silkroadai.io';
+const OPENAI_BASE = OPENAI_API_BASE_URL;
+const ANTHROPIC_BASE = ANTHROPIC_API_BASE_URL;
 const SAMPLE_MODEL = 'claude-sonnet-4-6';
 const PLACEHOLDER = 'YOUR_API_KEY';
 
@@ -110,28 +112,36 @@ export function KeysSnippetsPanel() {
     return (
         <section
             aria-labelledby="keys-snippets-heading"
-            className="mt-8 rounded-xl border border-brand-border bg-surface overflow-hidden"
+            className="overflow-hidden rounded-lg border border-portal-line bg-portal-panel shadow-portal"
         >
-            <header className="px-5 py-4 border-b border-brand-border bg-paper-muted">
-                <h2 id="keys-snippets-heading" className="m-0 text-base font-semibold text-navy">
-                    调用示例
-                </h2>
-                <p className="m-0 mt-1 text-xs text-muted-ink">
-                    复制代码 · 把{' '}
-                    <code className="font-mono text-xs bg-surface px-1 py-0.5 rounded border border-brand-border text-navy">
-                        {PLACEHOLDER}
-                    </code>{' '}
-                    换成上方表格里 <strong className="text-navy">显示</strong> +{' '}
-                    <strong className="text-navy">复制</strong> 到的 sk-… 即可。
-                </p>
+            <header className="flex items-start gap-3 border-b border-portal-line px-4 py-4 sm:px-5">
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-portal-gold-soft text-portal-gold">
+                    <Code2 size={18} strokeWidth={1.8} aria-hidden="true" />
+                </span>
+                <div className="min-w-0">
+                    <h2 id="keys-snippets-heading" className="m-0 text-sm font-semibold text-portal-ink">
+                        调用示例
+                    </h2>
+                    <p className="m-0 mt-1 text-xs leading-relaxed text-portal-muted">
+                        复制代码后，将{' '}
+                        <code className="rounded bg-portal-soft px-1.5 py-0.5 font-mono text-[11px] text-portal-ink">
+                            {PLACEHOLDER}
+                        </code>{' '}
+                        替换为上方复制的密钥。
+                    </p>
+                </div>
             </header>
 
-            <div className="px-5 pt-4 pb-2 grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 border-b border-portal-line bg-portal-soft sm:grid-cols-2 sm:divide-x sm:divide-portal-line">
                 <BaseUrlChip label="OpenAI 兼容 Base URL" value={OPENAI_BASE} />
                 <BaseUrlChip label="Anthropic 兼容 Base URL" value={ANTHROPIC_BASE} />
             </div>
 
-            <div role="tablist" aria-label="代码示例语言" className="px-5 pt-3 flex gap-1 border-b border-brand-border">
+            <div
+                role="tablist"
+                aria-label="代码示例语言"
+                className="flex gap-1 border-b border-portal-line px-4 pt-3 sm:px-5"
+            >
                 {TABS.map((t) => {
                     const isActive = t.id === active;
                     return (
@@ -147,12 +157,12 @@ export function KeysSnippetsPanel() {
                                 setCopied(false);
                             }}
                             className={[
-                                'px-3 py-2 text-sm font-medium cursor-pointer',
+                                'cursor-pointer px-3 py-2 text-sm font-medium',
                                 'border-0 bg-transparent border-b-2',
                                 'transition-colors duration-150 ease-brand',
                                 isActive
-                                    ? 'text-navy border-brand-accent'
-                                    : 'text-muted-ink border-transparent hover:text-navy',
+                                    ? 'border-portal-gold text-portal-ink'
+                                    : 'border-transparent text-portal-muted hover:text-portal-ink',
                             ].join(' ')}
                         >
                             {t.label}
@@ -172,16 +182,17 @@ export function KeysSnippetsPanel() {
                     onClick={handleCopy}
                     aria-label={`复制 ${tab.label} 示例代码`}
                     className={[
-                        'absolute top-3 right-3 z-10 text-xs px-2.5 py-1 rounded cursor-pointer',
+                        'absolute right-3 top-3 z-10 inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium',
                         'transition-colors duration-150 ease-brand',
                         copied
-                            ? 'bg-status-success-text text-paper'
-                            : 'bg-white/10 text-paper-muted hover:bg-brand-accent hover:text-navy-strong',
+                            ? 'border-status-success-text bg-status-success-text text-white'
+                            : 'border-white/15 bg-white/10 text-white/75 hover:bg-white/15 hover:text-white',
                     ].join(' ')}
                 >
-                    {copied ? '已复制 ✓' : '复制'}
+                    {copied ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
+                    <span>{copied ? '已复制' : '复制'}</span>
                 </button>
-                <pre className="m-0 px-5 py-4 bg-navy-strong overflow-x-auto text-xs leading-relaxed">
+                <pre className="m-0 min-h-[210px] overflow-x-auto bg-navy-strong px-4 py-5 pr-24 text-xs leading-relaxed sm:px-5">
                     <code
                         className="font-mono text-paper-muted block"
                         style={{ whiteSpace: 'pre', wordBreak: 'normal' }}
@@ -191,17 +202,24 @@ export function KeysSnippetsPanel() {
                 </pre>
             </div>
 
-            <footer className="px-5 py-3 border-t border-brand-border text-xs text-muted-ink flex flex-wrap gap-x-4 gap-y-1">
+            <footer className="flex flex-wrap gap-x-5 gap-y-2 border-t border-portal-line px-4 py-3 text-xs text-portal-muted sm:px-5">
                 <span>
-                    模型示例 →{' '}
-                    <Link href="/models" className="text-navy font-medium hover:text-brand-accent">
+                    模型示例{' '}
+                    <Link
+                        href="/workspace/models"
+                        className="inline-flex items-center gap-0.5 font-medium text-portal-ink hover:text-portal-gold"
+                    >
                         {SAMPLE_MODEL}
+                        <ArrowUpRight size={12} aria-hidden="true" />
                     </Link>
                 </span>
                 <span>
-                    完整集成指南 →{' '}
-                    <Link href="/docs" className="text-navy font-medium hover:text-brand-accent">
-                        /docs
+                    <Link
+                        href="/workspace/docs"
+                        className="inline-flex items-center gap-0.5 font-medium text-portal-ink hover:text-portal-gold"
+                    >
+                        完整集成指南
+                        <ArrowUpRight size={12} aria-hidden="true" />
                     </Link>
                 </span>
             </footer>
@@ -211,10 +229,10 @@ export function KeysSnippetsPanel() {
 
 function BaseUrlChip({ label, value }: { label: string; value: string }) {
     return (
-        <div className="flex items-center gap-2 bg-paper-muted border border-brand-border rounded-lg px-3 py-2">
-            <div className="flex-1 min-w-0">
-                <p className="m-0 text-xs text-muted-ink">{label}</p>
-                <p className="m-0 font-mono text-sm text-navy truncate" title={value}>
+        <div className="min-w-0 px-4 py-3 sm:px-5">
+            <div className="min-w-0">
+                <p className="m-0 text-[11px] font-medium text-portal-subtle">{label}</p>
+                <p className="m-0 mt-1 truncate font-mono text-xs text-portal-ink" title={value}>
                     {value}
                 </p>
             </div>

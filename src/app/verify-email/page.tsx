@@ -2,7 +2,7 @@ import { Suspense } from 'react';
 import { Logo } from '@/components/brand/Logo';
 import { VerifyEmailRunner } from './verify-email-runner';
 
-export const metadata = { title: '邮箱验证 — Silk Road AI' };
+export const metadata = { title: '邮箱验证 — LLmRoute' };
 
 export default function VerifyEmailPage({ searchParams }: { searchParams: Promise<{ token?: string }> }) {
     return (
@@ -12,7 +12,7 @@ export default function VerifyEmailPage({ searchParams }: { searchParams: Promis
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                background: '#f5f7fa',
+                background: '#f3f6f5',
                 padding: 24,
             }}
         >
@@ -28,9 +28,9 @@ export default function VerifyEmailPage({ searchParams }: { searchParams: Promis
             >
                 <header style={{ marginBottom: 24 }}>
                     <Logo variant="primary" size={28} />
-                    <p style={{ margin: '6px 0 0', fontSize: 12, color: '#5a6478' }}>Connecting Global Intelligence.</p>
+                    <p style={{ margin: '6px 0 0', fontSize: 12, color: '#53645f' }}>One route. Every model.</p>
                 </header>
-                <h2 style={{ fontSize: 16, color: '#0a1535', margin: '0 0 16px' }}>邮箱验证</h2>
+                <h2 style={{ fontSize: 16, color: '#0e1715', margin: '0 0 16px' }}>邮箱验证</h2>
                 <Suspense fallback={<p>加载中…</p>}>
                     <VerifyEmailRunnerWrapper searchParamsPromise={searchParams} />
                 </Suspense>

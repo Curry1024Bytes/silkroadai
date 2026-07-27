@@ -18,6 +18,7 @@ vi.mock('next/navigation', () => ({
 import { Sidebar } from '@/app/(authenticated)/sidebar';
 import { LogoutButton } from '@/app/(authenticated)/logout-button';
 import { UnverifiedBanner } from '@/app/(authenticated)/unverified-banner';
+import { CustomerShell } from '@/app/(authenticated)/customer-shell';
 // All four authenticated pages have been replaced with real implementations:
 //   /keys (W4-2 D5) → src/__tests__/app/portal-keys/
 //   /balance (W4-2 D6) → src/__tests__/app/portal-balance/
@@ -53,6 +54,8 @@ describe('<Sidebar />', () => {
         expect(html).toMatch(/href="\/pay"/);
         // 工具箱 → 独立页 /tools(不跳落地页);旧 AI 对话 / AI 生图 控制台路由已下线
         expect(html).toMatch(/href="\/tools"/);
+        expect(html).toMatch(/href="\/workspace\/models"/);
+        expect(html).toMatch(/href="\/workspace\/docs"/);
         expect(html).not.toMatch(/href="\/chat"/);
         expect(html).not.toMatch(/href="\/image"/);
     });
@@ -84,6 +87,34 @@ describe('<Sidebar />', () => {
         // /pay is the bottom CTA, not in the 4 nav items, so nothing active
         expect(html.match(/aria-current="page"/g) ?? []).toHaveLength(0);
     });
+
+    it('marks an authenticated resource route as active', () => {
+        mockUsePathname.mockReturnValue('/workspace/docs');
+        const html = renderToString(<Sidebar />);
+        expect(html.match(/aria-current="page"/g) ?? []).toHaveLength(1);
+        expect(html).toMatch(/<a[^>]*aria-current="page"[^>]*href="\/workspace\/docs"/);
+    });
+});
+
+describe('<CustomerShell />', () => {
+    it('keeps the logo area on the same neutral header surface', () => {
+        mockUsePathname.mockReturnValue('/dashboard');
+        const html = renderToString(
+            <CustomerShell
+                logo={<span>LLmRoute</span>}
+                userEmail="happy@llmroute.club"
+                resellerStatus={undefined}
+                notices={null}
+            >
+                <div>CONTENT</div>
+            </CustomerShell>,
+        );
+
+        expect(html).toContain('bg-white/90');
+        expect(html).toContain('md:border-black/[0.07]');
+        expect(html).not.toContain('data-platform-brand');
+        expect(html).not.toContain('md:border-white/[0.08]');
+    });
 });
 
 describe('<LogoutButton />', () => {
@@ -102,7 +133,7 @@ describe('<UnverifiedBanner />', () => {
         // The dedicated unverified-banner.test.tsx exercises the email
         // field flowing into the fetch body; here we just need a stub
         // to render the markup.
-        const html = renderToString(<UnverifiedBanner email="happy@silkroadai.io" />);
+        const html = renderToString(<UnverifiedBanner email="happy@llmroute.club" />);
         expect(html).toMatch(/role="alert"/);
         expect(html).toContain('邮箱未验证');
         expect(html).toContain('重发验证邮件');

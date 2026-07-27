@@ -57,28 +57,28 @@ export type ButtonProps = ButtonAsButton | ButtonAsAnchor;
 
 const VARIANT_CLASSES: Record<ButtonVariant, string> = {
     primary:
-        'bg-navy text-paper hover:bg-navy-strong border border-navy ' +
-        'shadow-card focus-visible:ring-2 focus-visible:ring-navy/30',
+        'bg-brand-accent text-white hover:bg-brand-accent-strong border border-brand-accent ' +
+        'shadow-card focus-visible:ring-2 focus-visible:ring-brand-accent/30',
     secondary:
-        'bg-paper text-navy border border-navy hover:bg-paper-muted ' +
-        'focus-visible:ring-2 focus-visible:ring-navy/30',
+        'bg-surface text-ink border border-brand-border hover:bg-paper-muted hover:border-minor-ink/50 ' +
+        'focus-visible:ring-2 focus-visible:ring-brand-accent/25',
     ghost:
-        'bg-transparent text-muted-ink hover:bg-paper-muted hover:text-navy ' +
-        'border border-transparent focus-visible:ring-2 focus-visible:ring-navy/30',
+        'bg-transparent text-muted-ink hover:bg-paper-muted hover:text-ink ' +
+        'border border-transparent focus-visible:ring-2 focus-visible:ring-brand-accent/25',
     danger:
         'bg-status-error-text text-paper border border-status-error-text ' +
         'hover:opacity-90 focus-visible:ring-2 focus-visible:ring-status-error-text/30',
 };
 
 const SIZE_CLASSES: Record<ButtonSize, string> = {
-    sm: 'h-8 px-3 text-sm',
-    md: 'h-10 px-5 text-[15px]',
+    sm: 'h-9 px-3.5 text-sm',
+    md: 'h-11 px-5 text-[15px]',
     lg: 'h-12 px-6 text-base',
 };
 
 const BASE_CLASSES =
-    'inline-flex items-center justify-center gap-2 rounded-lg font-medium ' +
-    'transition-colors duration-150 ease-brand outline-none ' +
+    'inline-flex items-center justify-center gap-2 rounded-lg font-semibold ' +
+    'transition-[background-color,border-color,color,box-shadow] duration-200 ease-brand outline-none ' +
     'disabled:opacity-50 disabled:cursor-not-allowed ' +
     'select-none whitespace-nowrap no-underline';
 

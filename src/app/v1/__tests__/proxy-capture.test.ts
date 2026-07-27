@@ -59,7 +59,7 @@ vi.mock('@/lib/reqlog/identity', () => ({
 
 // route 顶层 import 的图像/OSS 依赖(本套测试用不到出图,给空实现避免触真 prisma/S3)
 vi.mock('@/lib/r2/client', () => ({
-    uploadImage: vi.fn(async (key: string) => `https://images.silkroadai.io/${key}`),
+    uploadImage: vi.fn(async (key: string) => `https://images.llmroute.club/${key}`),
 }));
 vi.mock('@/lib/oss/store', () => ({
     resolveUserIdFromAuthHeader: vi.fn(async () => null),
@@ -78,7 +78,7 @@ function makeReq(
     init: { method?: string; body?: unknown; headers?: Record<string, string> } = {},
 ): NextRequest {
     const { method = 'POST', body, headers = {} } = init;
-    return new NextRequest(`https://ai.silkroadai.io/v1${path}`, {
+    return new NextRequest(`https://api.llmroute.club/v1${path}`, {
         method,
         headers: { 'content-type': 'application/json', authorization: 'Bearer sk-TESTKEY', ...headers },
         body: body !== undefined ? JSON.stringify(body) : undefined,

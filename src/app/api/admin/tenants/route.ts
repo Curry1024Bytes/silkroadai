@@ -82,7 +82,7 @@ export async function POST(request: NextRequest) {
             primary_domain: primaryDomain,
             domains: normalizeDomains(d.domains),
             logo_url: d.logo_url ?? null,
-            primary_color: d.primary_color ?? undefined, // undefined → schema default #1E3A8A
+            primary_color: d.primary_color ?? undefined, // undefined → schema default #17201E
             support_email: d.support_email ?? null,
             support_wechat: d.support_wechat ?? null,
             signup_enabled: d.signup_enabled,

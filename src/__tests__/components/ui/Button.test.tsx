@@ -35,8 +35,8 @@ describe('<Button />', () => {
     });
 
     it.each([
-        ['primary', 'bg-navy'],
-        ['secondary', 'border-navy'],
+        ['primary', 'bg-brand-accent'],
+        ['secondary', 'border-brand-border'],
         ['ghost', 'bg-transparent'],
         ['danger', 'bg-status-error-text'],
     ] as const)('variant=%s applies its hallmark class (%s)', (variant, hallmark) => {
@@ -45,8 +45,8 @@ describe('<Button />', () => {
     });
 
     it.each([
-        ['sm', 'h-8'],
-        ['md', 'h-10'],
+        ['sm', 'h-9'],
+        ['md', 'h-11'],
         ['lg', 'h-12'],
     ] as const)('size=%s sets the matching height class (%s)', (size, hallmark) => {
         const html = renderToString(<Button size={size}>X</Button>);
@@ -87,6 +87,6 @@ describe('<Button />', () => {
         const html = renderToString(<Button className="my-custom">X</Button>);
         expect(html).toContain('my-custom');
         // Hallmark of primary variant should still be there.
-        expect(html).toContain('bg-navy');
+        expect(html).toContain('bg-brand-accent');
     });
 });

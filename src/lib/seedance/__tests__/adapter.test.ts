@@ -11,7 +11,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 
 const mockUploadImage = vi.fn(
-    async (key: string, _body?: Buffer, _ct?: string) => `https://images.silkroadai.io/${key}`,
+    async (key: string, _body?: Buffer, _ct?: string) => `https://images.llmroute.club/${key}`,
 );
 vi.mock('@/lib/r2/client', () => ({
     uploadImage: (key: string, body: Buffer, ct?: string) => mockUploadImage(key, body, ct),
@@ -46,7 +46,7 @@ beforeEach(() => {
 });
 
 function makeReq(body: unknown, auth = 'Bearer sk-inf-test'): NextRequest {
-    return new NextRequest('https://ai.silkroadai.io/seedance-adapter/v1/videos', {
+    return new NextRequest('https://api.llmroute.club/seedance-adapter/v1/videos', {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: auth },
         body: JSON.stringify(body),
@@ -75,7 +75,7 @@ describe('seedance overseas adapter — 参考图 http URL 转存 R2', () => {
         // 720p-ref → hc → 新 /v1/sd/assets 流;喂给上游的是我们 R2 链接(字段 URL),不是客户原 URL
         const assetCall = mockFetch.mock.calls.find((c) => String(c[0]).endsWith('/v1/sd/assets'));
         const sentUrl = JSON.parse(String((assetCall![1] as RequestInit).body)).URL as string;
-        expect(sentUrl.startsWith('https://images.silkroadai.io/seedance-ref/')).toBe(true);
+        expect(sentUrl.startsWith('https://images.llmroute.club/seedance-ref/')).toBe(true);
         expect(sentUrl).not.toContain('cloudflarestorage');
     });
 
@@ -158,7 +158,7 @@ describe('seedance overseas adapter — 参考图 http URL 转存 R2', () => {
         const assetCall = mockFetch.mock.calls.find((c) => String(c[0]).endsWith('/v1/sd/assets'));
         const assetBody = JSON.parse(String((assetCall![1] as RequestInit).body));
         expect(assetBody.AssetType).toBe('Video');
-        expect(String(assetBody.URL).startsWith('https://images.silkroadai.io/seedance-ref/')).toBe(true);
+        expect(String(assetBody.URL).startsWith('https://images.llmroute.club/seedance-ref/')).toBe(true);
         // content 含 video_url + role reference_video,url 是 asset://(非直链)
         const content = upstreamBody('/v1/video/generate').content as Array<{
             type: string;

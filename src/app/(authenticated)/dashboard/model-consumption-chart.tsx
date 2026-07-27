@@ -32,7 +32,7 @@ const OTHER_LABEL = '其他';
 
 /** Stack colors. '其他' is always the muted grey; real models cycle the
  *  brand-leaning palette by index. */
-const PALETTE = ['#1e3a8a', '#a16207', '#0f766e', '#b45309', '#6d28d9', '#be123c'];
+const PALETTE = ['#0071e3', '#32ade6', '#2ea66f', '#d97a00', '#d4483f', '#5e5ce6'];
 const OTHER_COLOR = '#8c94a1';
 
 function colorFor(model: string, idx: number): string {

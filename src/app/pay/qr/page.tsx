@@ -18,7 +18,7 @@ import { prisma } from '@/lib/db';
 import { QrPollRunner } from './qr-runner';
 
 export const dynamic = 'force-dynamic';
-export const metadata = { title: '扫码支付 — Silk Road AI' };
+export const metadata = { title: '扫码支付 — LLmRoute' };
 
 const PAYMENT_TYPE_LABEL: Record<string, string> = {
     alipay: '支付宝',
@@ -27,7 +27,7 @@ const PAYMENT_TYPE_LABEL: Record<string, string> = {
 
 const containerStyle: React.CSSProperties = {
     minHeight: '100vh',
-    background: '#f5f7fa',
+    background: '#f3f6f5',
     padding: '24px 16px',
     display: 'flex',
     justifyContent: 'center',
@@ -40,7 +40,7 @@ const cardStyle: React.CSSProperties = {
     borderRadius: 8,
     padding: '28px 24px',
     boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
-    color: '#1a2540',
+    color: '#1d1d1f',
     textAlign: 'center',
 };
 
@@ -73,8 +73,8 @@ export default async function PayQrPage({
             <main style={containerStyle}>
                 <div style={cardStyle}>
                     <h1 style={{ margin: 0, fontSize: 18, color: 'var(--color-status-error-text)' }}>订单不存在</h1>
-                    <p style={{ margin: '12px 0 16px', fontSize: 13, color: '#5a6478' }}>请返回重新发起支付。</p>
-                    <Link href="/pay" style={{ color: '#0a1535' }}>
+                    <p style={{ margin: '12px 0 16px', fontSize: 13, color: '#53645f' }}>请返回重新发起支付。</p>
+                    <Link href="/pay" style={{ color: '#0e1715' }}>
                         ← 返回 /pay
                     </Link>
                 </div>
@@ -90,8 +90,8 @@ export default async function PayQrPage({
             <main style={containerStyle}>
                 <div style={cardStyle}>
                     <h1 style={{ margin: 0, fontSize: 18, color: 'var(--color-status-error-text)' }}>支付方式不匹配</h1>
-                    <p style={{ margin: '12px 0 16px', fontSize: 13, color: '#5a6478' }}>当前订单不是扫码支付。</p>
-                    <Link href="/pay" style={{ color: '#0a1535' }}>
+                    <p style={{ margin: '12px 0 16px', fontSize: 13, color: '#53645f' }}>当前订单不是扫码支付。</p>
+                    <Link href="/pay" style={{ color: '#0e1715' }}>
                         ← 返回 /pay
                     </Link>
                 </div>
@@ -108,8 +108,8 @@ export default async function PayQrPage({
     return (
         <main style={containerStyle}>
             <div style={cardStyle}>
-                <h1 style={{ margin: '0 0 4px', fontSize: 18, color: '#0a1535' }}>使用{typeLabel}扫码支付</h1>
-                <p style={{ margin: '0 0 20px', fontSize: 13, color: '#5a6478' }}>
+                <h1 style={{ margin: '0 0 4px', fontSize: 18, color: '#0e1715' }}>使用{typeLabel}扫码支付</h1>
+                <p style={{ margin: '0 0 20px', fontSize: 13, color: '#53645f' }}>
                     打开{typeLabel}「扫一扫」对准下方二维码完成付款
                 </p>
 
@@ -137,7 +137,7 @@ export default async function PayQrPage({
                         margin: '16px 0 4px',
                         fontSize: 24,
                         fontWeight: 600,
-                        color: '#0a1535',
+                        color: '#0e1715',
                         fontVariantNumeric: 'tabular-nums',
                     }}
                 >
@@ -165,7 +165,7 @@ export default async function PayQrPage({
                         paddingTop: 16,
                         borderTop: '1px solid #e5e8ee',
                         fontSize: 12,
-                        color: '#5a6478',
+                        color: '#53645f',
                     }}
                 >
                     付款后此页面会自动跳转。如果长时间未跳转,请检查{typeLabel}是否已完成付款。
