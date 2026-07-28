@@ -1,12 +1,15 @@
 /**
  * Next.js 启动钩子(每个 runtime 启动时调用一次 register)。
  *
- * ⚠️ 单一事实源 —— 全仓只能有【这一个】instrumentation.ts(根目录)。
- * 历史事故(2026-07-13..07-28):PR #231 在根目录新建本文件装 undici dispatcher,
- * 而调度器 bootstrap 活在 `src/instrumentation.ts` —— Turbopack 编译时根文件
- * 静默【顶掉】src 文件,五个调度器(订单超时 / 余额提醒 / 图片清理 / 分销结算 /
- * shadow meter)全部停摆 15 天(铁证:usage_records 最后一行 = #231 部署时刻)。
- * 本文件现在是两者的合并;不要再建 src/instrumentation.ts。
+ * ⚠️ 单一事实源 —— 全仓只能有【这一个】instrumentation.ts,且必须在 **src/**。
+ * 实测(Next 16 + Turbopack,2026-07-28 两次部署验证):
+ *  - 只有根目录 instrumentation.ts → 钩子【完全不编译】,register 不跑
+ *    (.next/server 里连 instrumentation 产物都没有)
+ *  - 根 + src 并存 → 钩子启用但编译解析到【根】文件,src 内容被静默丢弃
+ *    (PR #231 由此让五个调度器停摆 15 天:订单超时 / 余额提醒 / 图片清理 /
+ *    分销结算 / shadow meter;铁证 = usage_records 最后一行停在 #231 部署时刻)
+ *  - 只有 src/instrumentation.ts → 正确(#231 之前的长期形态)
+ * 所以:不要在仓库根再建 instrumentation.ts,任何 register 逻辑都加在这里。
  *
  * ── Part 1:undici dispatcher(PR #231)──
  * 给 Node 内置 fetch 把 headersTimeout / bodyTimeout 从默认 300s 提到 600s。
@@ -36,7 +39,8 @@ export async function register() {
 
     // W5 D4: Sentry server-side init. Conditional on SENTRY_DSN — empty env
     // keeps SDK in no-op mode so dev / test runs don't ship anywhere.
-    await import('./sentry.server.config');
+    // (config 在项目根,本文件在 src/ 下 → ../)
+    await import('../sentry.server.config');
 
     // 调度器门(见文件头 Part 2)
     if (process.env.PORTAL_FLAVOR === 'seedance-enterprise') return;
