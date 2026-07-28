@@ -28,7 +28,9 @@
  * load 不读任何 env,vitest / typecheck / dev boot 在 env 未配时不炸。
  */
 import 'server-only';
+import { Agent as HttpsAgent } from 'node:https';
 import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { NodeHttpHandler } from '@smithy/node-http-handler';
 
 /** 所有请求日志对象的统一键前缀(列举 / lifecycle rule 按这个前缀圈)。 */
 export const REQLOG_PREFIX = 'reqlog';
@@ -79,6 +81,13 @@ export function isLogStoreConfigured(): boolean {
 let _client: S3Client | null = null;
 let _envSig: string | null = null;
 
+/** 日志落盘走高并发小对象写,默认 NodeHttpHandler 的 50 socket 在客户
+ *  API 洪峰下必然排队(2026-07-28 事故:单客户 2,600 并发 /v1/messages,
+ *  smithy 队列积压 2,700+ put,每项攥着完整请求/响应体 → portal 进程 GC
+ *  打满全站超时)。日志是 best-effort,put 卡死不如快速失败让捕获层的
+ *  背压丢弃(capture.ts REQUEST_LOGGING_MAX_PENDING)兜底。 */
+const LOG_STORE_MAX_SOCKETS = 256;
+
 function client(): S3Client {
     const env = readEnv();
     const sig = `${env.accountId}|${env.accessKeyId}|${env.bucket}`;
@@ -90,6 +99,11 @@ function client(): S3Client {
                 accessKeyId: env.accessKeyId,
                 secretAccessKey: env.secretAccessKey,
             },
+            requestHandler: new NodeHttpHandler({
+                connectionTimeout: 8_000,
+                requestTimeout: 25_000,
+                httpsAgent: new HttpsAgent({ keepAlive: true, maxSockets: LOG_STORE_MAX_SOCKETS }),
+            }),
         });
         _envSig = sig;
     }
