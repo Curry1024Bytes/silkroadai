@@ -11,6 +11,7 @@ import {
     storeAsset,
     type AssetType,
 } from '@/lib/enterprise/assets';
+import { RealPersonError, createVisualValidateSession, getVisualValidateGroupId } from '@/lib/enterprise/real-person';
 
 export const runtime = 'nodejs';
 
@@ -290,10 +291,27 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
                     PageSize: p.data.PageSize,
                 });
             }
+            // ── 真人视觉认证(「火山」渠道,翻译到新 provider REST;不计费)──────────
+            case 'CreateVisualValidateSession': {
+                // 客户端 body 含 CallbackURL/ProjectName,上游 /sessions 无入参,忽略之
+                const s = await createVisualValidateSession();
+                return ok(action, {
+                    BytedToken: s.bytedToken,
+                    H5Link: s.h5Link,
+                    ...(s.expiresIn !== undefined ? { ExpiresIn: s.expiresIn } : {}),
+                });
+            }
+            case 'GetVisualValidateResult': {
+                const p = z.object({ BytedToken: z.string().trim().min(1).max(200) }).safeParse(body);
+                if (!p.success) return fail(action, 400, 'InvalidParameter', 'BytedToken 必填');
+                const groupId = await getVisualValidateGroupId(p.data.BytedToken);
+                return ok(action, { GroupId: groupId });
+            }
             default:
                 return fail(action, 400, 'InvalidAction', `不支持的 Action: ${action}`);
         }
     } catch (e) {
+        if (e instanceof RealPersonError) return fail(action, e.status, e.code, e.message);
         if (e instanceof AssetError) return fail(action, e.status, e.code, e.message);
         console.error('[asset-api] internal error', action, e);
         return fail(action, 500, 'InternalError', 'internal error');
