@@ -29,6 +29,7 @@ export function middleware(request: NextRequest) {
             p === '/enterprise-admin' || // 运营后台(superadmin session 守门)
             p.startsWith('/enterprise-admin/') ||
             p === '/api' || // P3 素材库 Action API(火山形 /api?Action=…,sk-ent 鉴权)
+            p.startsWith('/api/v3/') || // 火山方舟形视频 API(/api/v3/contents/generations/tasks)
             p === '/api/auth/login' ||
             p === '/api/auth/logout' ||
             p.startsWith('/api/enterprise/') ||
@@ -58,7 +59,8 @@ export const config = {
     // 客户 seedance 图生视频实测)。纯 API 中继,不需页面安全头。
     // api/enterprise/assets 一并排除:P3 dashboard 素材上传(multipart 视频可 >10MB,
     // 避开 middleware body 缓冲截断)。纯 API(cookie 鉴权在 route 内),不需页面安全头。
+    // api/v3/* 一并排除:火山方舟形视频提交(2026-07-26)body 带参考图 base64 可能 >10MB。
     matcher: [
-        '/((?!v1/|v1beta/|seedance-adapter/|api/tools/|api/enterprise/assets|_next/static|_next/image|favicon.ico).*)',
+        '/((?!v1/|v1beta/|seedance-adapter/|api/tools/|api/enterprise/assets|api/v3/|_next/static|_next/image|favicon.ico).*)',
     ],
 };

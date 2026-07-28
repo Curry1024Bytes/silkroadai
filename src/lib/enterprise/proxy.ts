@@ -27,6 +27,10 @@ import {
 import { resolveEnterpriseCustomer, type EnterpriseCustomer } from './keys';
 import { ENTERPRISE_TIER, estimateEnterpriseCostCny, chargeEnterpriseVideoTask } from './billing';
 import { AssetError, resolveAssetRefs } from './assets';
+import { normalizeArkModel, stripAssetUri, arkStatus, buildArkTaskResponse } from './ark-format';
+
+/** 对客响应形态:'v1' = 我们现有形;'ark' = 火山方舟官方形(/api/v3/…)。 */
+export type ClientFormat = 'v1' | 'ark';
 
 /** 企业门户对客模型名(2026-07-20 归一,operator 拍板):按量计费下分辨率是参数不是模型名。
  *  `resolution` 参数选 720p/1080p/4k(默认 720p;4k 仅 pro),带参考图/视频/音频自动识别
@@ -112,6 +116,42 @@ export async function handleEnterpriseV1(req: NextRequest, path: string): Promis
     return errJson(404, 'not_found', 'this endpoint is not available on the seedance enterprise portal');
 }
 
+/**
+ * 火山方舟(Ark)形态入口:/api/v3/*(对齐 docs.volcengine.com/docs/82379)。
+ * 内部复用 handleSubmit/handlePoll 核心,仅出口序列化为火山形。models 形态与 v1 一致。
+ */
+export async function handleEnterpriseArkV3(req: NextRequest, path: string): Promise<NextResponse> {
+    if (req.method === 'GET' && path === '/models') {
+        // 火山形 models:列火山 id + owned_by=doubao;仍保留我们短名可调
+        return NextResponse.json({
+            object: 'list',
+            data: [
+                { id: 'doubao-seedance-2-0-260128', object: 'model', owned_by: 'doubao', type: 'video_generation' },
+                {
+                    id: 'doubao-seedance-2-0-fast-260128',
+                    object: 'model',
+                    owned_by: 'doubao',
+                    type: 'video_generation',
+                },
+                {
+                    id: 'doubao-seedance-2-0-mini-260615',
+                    object: 'model',
+                    owned_by: 'doubao',
+                    type: 'video_generation',
+                },
+            ],
+        });
+    }
+    if (req.method === 'POST' && path === '/contents/generations/tasks') {
+        return handleSubmit(req, 'ark');
+    }
+    const poll = /^\/contents\/generations\/tasks\/([^/]+)$/.exec(path);
+    if (req.method === 'GET' && poll) {
+        return handlePoll(req, decodeURIComponent(poll[1]), 'ark');
+    }
+    return errJson(404, 'not_found', 'this endpoint is not available');
+}
+
 async function resolveOr401(req: NextRequest, expectedRegion?: string): Promise<EnterpriseCustomer | NextResponse> {
     let r: Awaited<ReturnType<typeof resolveEnterpriseCustomer>>;
     try {
@@ -125,13 +165,18 @@ async function resolveOr401(req: NextRequest, expectedRegion?: string): Promise<
 }
 
 /** 提交:key 鉴权(绑版本)→ 模型门 → 余额门(¥账本)→ 直调适配器核心(客户上游 key)→ 记任务(fail closed)。 */
-async function handleSubmit(req: NextRequest): Promise<NextResponse> {
+async function handleSubmit(req: NextRequest, format: ClientFormat = 'v1'): Promise<NextResponse> {
     let body: Record<string, unknown>;
     try {
         body = (await req.json()) as Record<string, unknown>;
     } catch {
         return errJson(400, 'invalid_json', 'request body must be JSON');
     }
+
+    // 入口归一(对 v1 也安全):火山 model id(doubao-…)→ 内部短名;剥 asset:// 前缀。
+    // v1 客户传的短名不含 doubao、asset 引用是裸 id,归一后不变。
+    body = stripAssetUri(body);
+    body.model = normalizeArkModel(String(body.model || ''));
 
     const model = String(body.model || '');
     // 版本先于鉴权确定(模型名承载):key 与模型版本必须一致(单独 key,operator 决策),
@@ -238,13 +283,15 @@ async function handleSubmit(req: NextRequest): Promise<NextResponse> {
         console.error('[enterprise-proxy] task record failed, rejecting submit', e);
         return errJson(503, 'temporarily_unavailable', 'billing record failed, please retry');
     }
+    // 火山形提交成功仅返 { id }(前缀 cgt-);v1 形返完整对象。
+    if (format === 'ark') return NextResponse.json({ id: taskId });
     return j
         ? NextResponse.json(j)
         : new NextResponse(text, { status: 200, headers: { 'Content-Type': 'application/json' } });
 }
 
 /** 轮询:归属 + tier + 版本三门(IDOR)→ 直调适配器核心(按版本 base)→ 完成写 tokens + 幂等扣费 → 透传响应。 */
-async function handlePoll(req: NextRequest, taskId: string): Promise<NextResponse> {
+async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat = 'v1'): Promise<NextResponse> {
     const cust = await resolveOr401(req);
     if (cust instanceof NextResponse) return cust;
 
@@ -306,6 +353,32 @@ async function handlePoll(req: NextRequest, taskId: string): Promise<NextRespons
                 },
             })
             .catch(() => {});
+    }
+
+    // 火山形查询响应:status 翻译 + video_url/last_frame_url 挪进 content + 元数据回填。
+    if (format === 'ark') {
+        const ourStatus = typeof j?.status === 'string' ? j.status : task.status;
+        const usage = (j?.usage ?? null) as { completion_tokens?: number; total_tokens?: number } | null;
+        const failReason =
+            typeof j?.fail_reason === 'string'
+                ? j.fail_reason
+                : typeof task.fail_reason === 'string'
+                  ? task.fail_reason
+                  : null;
+        return NextResponse.json(
+            buildArkTaskResponse({
+                taskId,
+                internalModel: task.model,
+                status: arkStatus(String(ourStatus)),
+                videoUrl: typeof j?.video_url === 'string' ? j.video_url : ((j?.url as string | undefined) ?? null),
+                lastFrameUrl: typeof j?.last_frame_url === 'string' ? j.last_frame_url : null,
+                usage,
+                failReason,
+                createdAt: task.created_at,
+                resolution: task.resolution,
+                duration: task.duration,
+            }),
+        );
     }
 
     return new NextResponse(text, { status: 200, headers: { 'Content-Type': 'application/json' } });
