@@ -1,9 +1,16 @@
 #
 # Silk Road AI Portal — production stack
 #
-# Two services:
-#   1. portal — Next.js app (built from local Dockerfile)
-#   2. portal-postgres — Postgres 16 (named volume for durability)
+# Services:
+#   1. portal — Next.js 主站实例(website + 调度器;Caddy 网页流量 → :3002)
+#   2. portal-api-{1..3} — /v1 API 数据面副本(2026-07-28):同镜像,
+#      PORTAL_SCHEDULERS=off,只绑 127.0.0.1:3011-3013;Caddy 把
+#      ai.silkroadai.io 的 /v1/* /v1beta/* least_conn 负载均衡到这三个。
+#      背景:单 Node 进程单线程事件循环是天花板 —— 单客户 2,600 并发
+#      opus-5(每请求数 MB JSON/SSE)把 website + API 一锅端(80 核瞎闲)。
+#      副本抬吞吐 ~3×,website 与客户 API 洪峰彻底隔离。
+#   3. seedance-portal — seedance 大客户独立门户(PORTAL_FLAVOR 切形态)
+#   4. portal-postgres — Postgres 16 (named volume for durability)
 #
 # The portal container reaches new-api (running on the VPS host, NOT in this
 # compose stack) via host.docker.internal:3000. extra_hosts maps that name
@@ -20,6 +27,29 @@
 # All app secrets (DATABASE_URL, NEWAPI_*, PORTAL_JWT_SECRET, SMTP_*, etc)
 # come in via env_file at portal service runtime — NOT propagated to
 # postgres which only sees POSTGRES_*.
+
+# /v1 API 副本的公共块(build/env/网络与 portal 完全一致,差异只有
+# container_name + host 端口 + PORTAL_SCHEDULERS=off)。
+# ⚠️ networks 必须保留 gw_priority(见 portal 服务内注释,#281 事故)。
+x-portal-api-common: &portal-api-common
+    build:
+        context: .
+        dockerfile: Dockerfile
+    env_file: .env
+    environment:
+        # 调度器只在主站 portal 单实例跑(instrumentation.ts 的门),
+        # 副本双跑会 meter 游标竞态 / 余额提醒双发。
+        PORTAL_SCHEDULERS: 'off'
+    extra_hosts:
+        - 'host.docker.internal:host-gateway'
+    depends_on:
+        portal-postgres:
+            condition: service_healthy
+    networks:
+        silkroadai-portal-net:
+            gw_priority: 1
+        newapi-net: {}
+    restart: unless-stopped
 
 services:
     portal:
@@ -50,6 +80,27 @@ services:
             # 只用于同网段直达 new-api-db:5432,不承载默认路由。
             newapi-net: {}
         restart: unless-stopped
+
+    # ── /v1 API 数据面副本(2026-07-28,见文件头 #2)──
+    # 只绑 127.0.0.1 —— 公网入口只有 Caddy(ai.silkroadai.io /v1/* /v1beta/*
+    # least_conn → 3011/3012/3013)。website 域名仍指 :3002,不受 API 洪峰影响。
+    portal-api-1:
+        <<: *portal-api-common
+        container_name: silkroadai-portal-api-1
+        ports:
+            - '127.0.0.1:3011:3002'
+
+    portal-api-2:
+        <<: *portal-api-common
+        container_name: silkroadai-portal-api-2
+        ports:
+            - '127.0.0.1:3012:3002'
+
+    portal-api-3:
+        <<: *portal-api-common
+        container_name: silkroadai-portal-api-3
+        ports:
+            - '127.0.0.1:3013:3002'
 
     # ── seedance 大客户独立门户(P1,seedance-enterprise-portal-design.md)──
     # 同镜像同库,PORTAL_FLAVOR 切形态:/v1 只服务 seedance 视频端点,主站页面/API 404,
