@@ -49,6 +49,8 @@ const REQUIRES_GUARD = [
     'pricing-sync.ts',
     // P2.5: pure logic, but imports server-only pricing-sync → guarded too.
     'import-catalog.ts',
+    // 日志导出:pg 直连 new-api 日志库(NEWAPI_LOGS_DATABASE_URL)。
+    'logs-db.ts',
 ];
 
 /**
