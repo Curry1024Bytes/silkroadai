@@ -38,10 +38,17 @@ services:
             portal-postgres:
                 condition: service_healthy
         networks:
-            - silkroadai-portal-net
+            # ⚠️ gw_priority 必须留在 portal-net:portal 出网到 host.docker.internal:3000
+            # (new-api)靠默认路由。不设优先级时 docker 按网络名排序选默认网关,
+            # new-api_* 排在 silkroadai_* 前 → 默认路由切到 new-api 网桥 → 访问宿主
+            # 发布端口变成同网桥 hairpin,被 docker 的 `! -i br-x` 放行规则拒 →
+            # 全部 /v1/* 客户请求 10s 连接超时(2026-07-28 事故,10:44-10:54 北京)。
+            silkroadai-portal-net:
+                gw_priority: 1
             # 只读直连 new-api 日志库(admin 日志导出),见 src/lib/newapi/logs-db.ts。
-            # external 网络由 new-api 的 compose 栈创建,portal 只是加入。
-            - newapi-net
+            # external 网络由 new-api 的 compose 栈创建,portal 只是加入;
+            # 只用于同网段直达 new-api-db:5432,不承载默认路由。
+            newapi-net: {}
         restart: unless-stopped
 
     # ── seedance 大客户独立门户(P1,seedance-enterprise-portal-design.md)──
