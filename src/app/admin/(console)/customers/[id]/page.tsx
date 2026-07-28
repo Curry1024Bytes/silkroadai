@@ -203,6 +203,13 @@ function getTexts(locale: Locale) {
               nuDailyTruncated: 'Showing the most recent 90 rows only.',
               nuColDate: 'Date',
               nuColUnit: '¥/call',
+              exportTitle: 'Export call logs (CSV)',
+              exportNote:
+                  'Customer-safe columns only (time / model / tokens / duration / cost). Billed calls within the range; day boundaries in Beijing time.',
+              exportStart: 'Start',
+              exportEnd: 'End',
+              exportModelPh: 'Model (optional, exact name)',
+              exportBtn: 'Download CSV',
           }
         : {
               back: '← 客户列表',
@@ -312,6 +319,12 @@ function getTexts(locale: Locale) {
               nuDailyTruncated: '仅显示最近 90 行。',
               nuColDate: '日期',
               nuColUnit: '¥/次',
+              exportTitle: '导出调用日志(CSV)',
+              exportNote: '仅客户可见字段(时间/模型/tokens/耗时/金额),只含计费成功的调用,天界按北京时间。',
+              exportStart: '开始日期',
+              exportEnd: '结束日期',
+              exportModelPh: '模型(可选,精确名)',
+              exportBtn: '下载 CSV',
           };
 }
 
@@ -322,6 +335,9 @@ const fmtCny4 = (n: number): string =>
 // gotcha #20: server TZ is UTC — pin Asia/Shanghai explicitly everywhere we render a time.
 const fmtDate = (iso: string): string =>
     new Date(iso).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
+// 北京时间的 YYYY-MM-DD(offsetDays 天前)— 日志导出日期默认值用。
+const beijingDay = (offsetDays: number): string =>
+    new Date(Date.now() - offsetDays * 86_400_000).toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' });
 
 function DetailContent() {
     const params = useParams<{ id: string }>();
@@ -397,6 +413,19 @@ function DetailContent() {
     useEffect(() => {
         if (id) fetchNewApiUsage(id);
     }, [fetchNewApiUsage, id]);
+
+    // ── 日志导出(CSV,任意时段;后端 /logs-export 直读 new-api 日志库)──
+    const [exportStart, setExportStart] = useState(() => beijingDay(30));
+    const [exportEnd, setExportEnd] = useState(() => beijingDay(0));
+    const [exportModel, setExportModel] = useState('');
+    const exportDisabled = !exportStart || !exportEnd || exportStart > exportEnd;
+    const handleExport = useCallback(() => {
+        if (!id || exportDisabled) return;
+        const qs = new URLSearchParams({ start: exportStart, end: exportEnd });
+        const m = exportModel.trim();
+        if (m) qs.set('model', m);
+        window.open(`/api/admin/customers/${id}/logs-export?${qs.toString()}`, '_blank');
+    }, [id, exportDisabled, exportStart, exportEnd, exportModel]);
 
     // ── P4c-1 余额调整(走 /balance-adjust → applyLedgerEntry,成功后重拉详情)──
     const [adjustAmount, setAdjustAmount] = useState('');
@@ -1053,6 +1082,45 @@ function DetailContent() {
                                 )}
                             </div>
                         )}
+
+                        {/* 日志导出(CSV,任意时段) */}
+                        <div className={`mt-4 rounded-xl border p-4 ${card}`}>
+                            <div className={`text-sm font-medium ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>
+                                {t.exportTitle}
+                            </div>
+                            <div className={`mt-1 text-xs ${muted}`}>{t.exportNote}</div>
+                            <div className="mt-3 flex flex-wrap items-center gap-2">
+                                <label className={`text-xs ${muted}`}>{t.exportStart}</label>
+                                <input
+                                    type="date"
+                                    value={exportStart}
+                                    onChange={(e) => setExportStart(e.target.value)}
+                                    className={`rounded-lg border px-3 py-1.5 text-sm ${isDark ? 'border-slate-600 bg-slate-900 text-slate-100' : 'border-slate-300 bg-white text-slate-900'}`}
+                                />
+                                <label className={`text-xs ${muted}`}>{t.exportEnd}</label>
+                                <input
+                                    type="date"
+                                    value={exportEnd}
+                                    onChange={(e) => setExportEnd(e.target.value)}
+                                    className={`rounded-lg border px-3 py-1.5 text-sm ${isDark ? 'border-slate-600 bg-slate-900 text-slate-100' : 'border-slate-300 bg-white text-slate-900'}`}
+                                />
+                                <input
+                                    type="text"
+                                    value={exportModel}
+                                    onChange={(e) => setExportModel(e.target.value)}
+                                    placeholder={t.exportModelPh}
+                                    className={`w-56 rounded-lg border px-3 py-1.5 text-sm ${isDark ? 'border-slate-600 bg-slate-900 text-slate-100' : 'border-slate-300 bg-white text-slate-900'}`}
+                                />
+                                <button
+                                    type="button"
+                                    onClick={handleExport}
+                                    disabled={exportDisabled}
+                                    className="rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-indigo-700 disabled:opacity-50"
+                                >
+                                    {t.exportBtn}
+                                </button>
+                            </div>
+                        </div>
                     </div>
 
                     {/* Usage by model */}
