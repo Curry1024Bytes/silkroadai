@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
-import { resolveEnterpriseCustomer } from '@/lib/enterprise/keys';
+import { resolveEnterpriseAuth } from '@/lib/enterprise/keys';
 import {
     AssetError,
     deleteAsset,
@@ -121,12 +121,20 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const action = req.nextUrl.searchParams.get('Action') || '';
     if (!action) return fail('Unknown', 400, 'MissingParameter', 'query 参数 Action 必填');
 
-    const auth = await resolveEnterpriseCustomer(req.headers.get('authorization'));
+    // AK/SK 火山签名验签需要原始 body,故先读 body 再鉴权(sk-ent Bearer 不受影响)。
+    const raw = await req.text();
+    const auth = await resolveEnterpriseAuth({
+        authorization: req.headers.get('authorization'),
+        method: req.method,
+        path: req.nextUrl.pathname, // /api
+        query: req.nextUrl.searchParams,
+        headers: req.headers,
+        rawBody: raw,
+    });
     if (!auth.ok) return fail(action, auth.status, 'UnauthorizedOperation', auth.message);
     const userId = auth.customer.userId;
 
     let body: unknown = {};
-    const raw = await req.text();
     if (raw.trim()) {
         try {
             body = JSON.parse(raw);

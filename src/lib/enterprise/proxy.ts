@@ -24,7 +24,7 @@ import {
     type SeedanceVariant,
     type SeedanceRegion,
 } from '@/lib/seedance/cn-adapter';
-import { resolveEnterpriseCustomer, type EnterpriseCustomer } from './keys';
+import { resolveEnterpriseAuth, type EnterpriseCustomer } from './keys';
 import { ENTERPRISE_TIER, estimateEnterpriseCostCny, chargeEnterpriseVideoTask } from './billing';
 import { AssetError, resolveAssetRefs } from './assets';
 import { normalizeArkModel, stripAssetUri, arkStatus, buildArkTaskResponse } from './ark-format';
@@ -152,10 +152,25 @@ export async function handleEnterpriseArkV3(req: NextRequest, path: string): Pro
     return errJson(404, 'not_found', 'this endpoint is not available');
 }
 
-async function resolveOr401(req: NextRequest, expectedRegion?: string): Promise<EnterpriseCustomer | NextResponse> {
-    let r: Awaited<ReturnType<typeof resolveEnterpriseCustomer>>;
+/** 双通道鉴权(Bearer sk-ent / 火山 SignerV4 AK/SK)。AK/SK 验签需原始 body,故 caller 传 rawBody。 */
+async function resolveOr401(
+    req: NextRequest,
+    expectedRegion?: string,
+    rawBody = '',
+): Promise<EnterpriseCustomer | NextResponse> {
+    let r: Awaited<ReturnType<typeof resolveEnterpriseAuth>>;
     try {
-        r = await resolveEnterpriseCustomer(req.headers.get('authorization'), expectedRegion);
+        r = await resolveEnterpriseAuth(
+            {
+                authorization: req.headers.get('authorization'),
+                method: req.method,
+                path: req.nextUrl.pathname,
+                query: req.nextUrl.searchParams,
+                headers: req.headers,
+                rawBody,
+            },
+            expectedRegion,
+        );
     } catch (e) {
         console.error('[enterprise-proxy] resolve customer failed', e);
         return errJson(503, 'temporarily_unavailable', 'account lookup failed, please retry');
@@ -166,9 +181,11 @@ async function resolveOr401(req: NextRequest, expectedRegion?: string): Promise<
 
 /** 提交:key 鉴权(绑版本)→ 模型门 → 余额门(¥账本)→ 直调适配器核心(客户上游 key)→ 记任务(fail closed)。 */
 async function handleSubmit(req: NextRequest, format: ClientFormat = 'v1'): Promise<NextResponse> {
+    // 先读原始 body(AK/SK 验签对原始字节算 hash),再解析 + 归一。
+    const rawBody = await req.text();
     let body: Record<string, unknown>;
     try {
-        body = (await req.json()) as Record<string, unknown>;
+        body = rawBody.trim() ? (JSON.parse(rawBody) as Record<string, unknown>) : {};
     } catch {
         return errJson(400, 'invalid_json', 'request body must be JSON');
     }
@@ -181,7 +198,8 @@ async function handleSubmit(req: NextRequest, format: ClientFormat = 'v1'): Prom
     const model = String(body.model || '');
     // 版本先于鉴权确定(模型名承载):key 与模型版本必须一致(单独 key,operator 决策),
     // 上游 key 也按版本行解密。未知模型按 cn 解析,后续 model_not_found 分支照常 400。
-    const cust = await resolveOr401(req, regionForModel(model));
+    // AK/SK 验签用原始 body(客户签的是含 doubao 名的原始字节,不能用归一后的)。
+    const cust = await resolveOr401(req, regionForModel(model), rawBody);
     if (cust instanceof NextResponse) return cust;
 
     // P3 素材库引用:asset-…/group-… → R2 公网 URL(必须在 ref/hasVideo 检测之前,

@@ -4,7 +4,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 
-const { db, resolveEnterpriseCustomer, fetchAssetFromUrl, storeAsset, deleteAssetFn } = vi.hoisted(() => ({
+const { db, resolveEnterpriseAuth, fetchAssetFromUrl, storeAsset, deleteAssetFn } = vi.hoisted(() => ({
     db: {
         enterpriseAsset: {
             findFirst: vi.fn(),
@@ -22,13 +22,13 @@ const { db, resolveEnterpriseCustomer, fetchAssetFromUrl, storeAsset, deleteAsse
         },
         $transaction: vi.fn(),
     },
-    resolveEnterpriseCustomer: vi.fn(),
+    resolveEnterpriseAuth: vi.fn(),
     fetchAssetFromUrl: vi.fn(),
     storeAsset: vi.fn(),
     deleteAssetFn: vi.fn(),
 }));
 vi.mock('@/lib/db', () => ({ prisma: db }));
-vi.mock('@/lib/enterprise/keys', () => ({ resolveEnterpriseCustomer }));
+vi.mock('@/lib/enterprise/keys', () => ({ resolveEnterpriseAuth }));
 vi.mock('@/lib/enterprise/assets', async (importOriginal) => {
     const mod = await importOriginal<typeof import('@/lib/enterprise/assets')>();
     return { ...mod, fetchAssetFromUrl, storeAsset, deleteAsset: deleteAssetFn };
@@ -48,7 +48,7 @@ function req(action: string, body?: unknown): NextRequest {
 
 beforeEach(() => {
     vi.clearAllMocks();
-    resolveEnterpriseCustomer.mockResolvedValue(CUSTOMER);
+    resolveEnterpriseAuth.mockResolvedValue(CUSTOMER);
 });
 
 describe('envelope + 守门', () => {
@@ -60,7 +60,7 @@ describe('envelope + 守门', () => {
     });
 
     it('key 无效 → 401,火山 Error envelope', async () => {
-        resolveEnterpriseCustomer.mockResolvedValue({ ok: false, status: 401, code: 'x', message: 'bad key' });
+        resolveEnterpriseAuth.mockResolvedValue({ ok: false, status: 401, code: 'x', message: 'bad key' });
         const res = await POST(req('ListAssets', {}));
         expect(res.status).toBe(401);
         const j = (await res.json()) as { ResponseMetadata: { Error: { Code: string } } };

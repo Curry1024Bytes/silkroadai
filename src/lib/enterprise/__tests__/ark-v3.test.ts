@@ -10,7 +10,7 @@ import { NextRequest, NextResponse } from 'next/server';
 
 const {
     db,
-    resolveEnterpriseCustomer,
+    resolveEnterpriseAuth,
     submitVideoWithKey,
     pollVideoWithKey,
     estimateEnterpriseCostCny,
@@ -20,14 +20,14 @@ const {
         seedanceVideoTask: { create: vi.fn(), findUnique: vi.fn(), update: vi.fn() },
         account: { findUnique: vi.fn() },
     },
-    resolveEnterpriseCustomer: vi.fn(),
+    resolveEnterpriseAuth: vi.fn(),
     submitVideoWithKey: vi.fn(),
     pollVideoWithKey: vi.fn(),
     estimateEnterpriseCostCny: vi.fn(),
     chargeEnterpriseVideoTask: vi.fn(),
 }));
 vi.mock('@/lib/db', () => ({ prisma: db }));
-vi.mock('../keys', () => ({ resolveEnterpriseCustomer }));
+vi.mock('../keys', () => ({ resolveEnterpriseAuth }));
 vi.mock('@/lib/seedance/cn-adapter', async (importOriginal) => {
     const mod = await importOriginal<typeof import('@/lib/seedance/cn-adapter')>();
     return { ...mod, submitVideoWithKey, pollVideoWithKey };
@@ -67,7 +67,7 @@ function req(method: string, url: string, body?: unknown): NextRequest {
 
 beforeEach(() => {
     vi.clearAllMocks();
-    resolveEnterpriseCustomer.mockResolvedValue({ ok: true, customer: CUSTOMER });
+    resolveEnterpriseAuth.mockResolvedValue({ ok: true, customer: CUSTOMER });
     db.account.findUnique.mockResolvedValue({ balance_cny: '100' });
     estimateEnterpriseCostCny.mockResolvedValue(4.26);
     db.seedanceVideoTask.create.mockResolvedValue({});
