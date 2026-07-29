@@ -3580,12 +3580,45 @@ else:
                         ② 实际扣费:先拿 request_id,再查 /v1/usage
                     </h3>
                     <p className="m-0 mb-2 text-sm text-ink leading-relaxed">
-                        扣费是请求结束后记账的,所以不在响应体里 —— 但每个响应都带{' '}
-                        <code className="font-mono text-xs">x-oneapi-request-id</code> 响应头(部分接口也在响应体返{' '}
-                        <code className="font-mono text-xs">request_id</code>),拿它查{' '}
+                        扣费是请求结束后记账的,所以不在响应体里 —— 拿每次调用的{' '}
+                        <code className="font-mono text-xs">request_id</code> 查{' '}
                         <code className="font-mono text-xs">/v1/usage</code> 就是这一单实际扣的钱。记账通常在响应结束后
-                        1-2 秒内完成。
+                        1-2 秒内完成。request_id 从哪拿(两种协议不同):
                     </p>
+                    <div className="mb-3 rounded-lg overflow-hidden border border-brand-border bg-surface">
+                        <table className="w-full border-collapse text-sm">
+                            <tbody>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 text-navy align-top whitespace-nowrap">
+                                        OpenAI 兼容
+                                        <br />
+                                        <code className="font-mono text-xs">/v1/chat/completions</code>
+                                    </td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        用<strong className="text-navy">响应体的 </strong>
+                                        <code className="font-mono text-xs">id</code> 字段(形如{' '}
+                                        <code className="font-mono text-xs">chatcmpl-2026…</code>,带不带{' '}
+                                        <code className="font-mono text-xs">chatcmpl-</code> 前缀都能查;流式的每个 chunk
+                                        也带同一个 id)。⚠️ 响应头{' '}
+                                        <code className="font-mono text-xs">x-oneapi-request-id</code> 是网关侧的另一个
+                                        ID,调用成功时查不到账 —— 别用它
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-2.5 text-navy align-top whitespace-nowrap">
+                                        Anthropic 兼容
+                                        <br />
+                                        <code className="font-mono text-xs">/v1/messages</code>
+                                    </td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        用<strong className="text-navy">响应头 </strong>
+                                        <code className="font-mono text-xs">x-oneapi-request-id</code>(响应体的{' '}
+                                        <code className="font-mono text-xs">msg_…</code> 是 Anthropic 自己的 ID,查不到)
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
                     <ConfigList
                         items={[
                             ['端点', `GET ${OPENAI_BASE}/usage`],
@@ -3610,8 +3643,10 @@ else:
                                 <tr className="border-b border-brand-border">
                                     <td className="px-4 py-2.5 font-mono text-xs text-navy align-top">request_id</td>
                                     <td className="px-4 py-2.5 text-ink">
-                                        单条对账:响应头 <code className="font-mono text-xs">x-oneapi-request-id</code>{' '}
-                                        的值。命中返回该条;还没入账返 404(带明确提示,稍等 1-2 秒重试即可)
+                                        单条对账:OpenAI 兼容协议用响应体 <code className="font-mono text-xs">id</code>(
+                                        <code className="font-mono text-xs">chatcmpl-</code> 前缀可带可不带);Anthropic
+                                        兼容协议用响应头 <code className="font-mono text-xs">x-oneapi-request-id</code>
+                                        。命中返回该条;还没入账返 404(带明确提示,稍等 1-2 秒重试即可)
                                     </td>
                                 </tr>
                                 <tr className="border-b border-brand-border">
@@ -3655,15 +3690,15 @@ else:
 
                     <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">单条对账(curl)</p>
                     <CodeBlock language="bash">
-                        {`# 1. 调用时抓响应头里的 request_id
-curl -sD - ${OPENAI_BASE}/chat/completions \\
+                        {`# 1. 调用,拿响应体的 id(OpenAI 兼容协议)
+curl -s ${OPENAI_BASE}/chat/completions \\
   -H "Authorization: Bearer sk-…" -H "Content-Type: application/json" \\
   -d '{"model":"${SAMPLE_OPENAI_MODEL}","messages":[{"role":"user","content":"你好"}]}' \\
-  | grep -i x-oneapi-request-id
-# x-oneapi-request-id: 20260729103000123456789
+  | jq -r .id
+# chatcmpl-20260729103000123456789
 
-# 2. 查这一单实际扣费
-curl -s "${OPENAI_BASE}/usage?request_id=20260729103000123456789" \\
+# 2. 查这一单实际扣费(id 直接整段贴上,chatcmpl- 前缀可带可不带)
+curl -s "${OPENAI_BASE}/usage?request_id=chatcmpl-20260729103000123456789" \\
   -H "Authorization: Bearer sk-…"`}
                     </CodeBlock>
                     <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">响应示例</p>
@@ -3787,7 +3822,10 @@ print(f'合计 ¥{sum(s["cny"] for s in by_model.values()):.4f}')`}
                                 <tr className="border-b border-brand-border">
                                     <td className="px-4 py-2.5 text-navy align-top">request_id 查询返 404?</td>
                                     <td className="px-4 py-2.5 text-ink">
-                                        账还没落(通常 1-2 秒),稍等重试即可。若几分钟后仍 404,确认 request_id
+                                        最常见原因:OpenAI 兼容协议误用了响应头{' '}
+                                        <code className="font-mono text-xs">x-oneapi-request-id</code>(要用响应体{' '}
+                                        <code className="font-mono text-xs">id</code>,见上表)。其次是账还没落(通常 1-2
+                                        秒),稍等重试即可。若几分钟后仍 404,确认 request_id
                                         是否完整、调用是否真的成功(失败调用在{' '}
                                         <code className="font-mono text-xs">type=error</code> 里)。
                                     </td>

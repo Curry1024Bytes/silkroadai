@@ -289,6 +289,13 @@ describe('GET /v1/usage — request_id 单查', () => {
         expect(mockQueryLogs).toHaveBeenCalledWith(expect.objectContaining({ request_id: 'ABC123' }));
     });
 
+    it('带 chatcmpl- 前缀(客户整段贴响应体 id)→ 剥前缀后查询', async () => {
+        mockQueryLogs.mockResolvedValue({ items: [makeLog({ request_id: 'ABC123' })], total: 1 });
+        const res = await handleUsageQuery(req('?request_id=chatcmpl-ABC123'));
+        expect(res.status).toBe(200);
+        expect(mockQueryLogs).toHaveBeenCalledWith(expect.objectContaining({ request_id: 'ABC123' }));
+    });
+
     it('未命中 → 404 + 提示账可能还没落、可重试', async () => {
         mockQueryLogs.mockResolvedValue({ items: [], total: 0 });
         const res = await handleUsageQuery(req('?request_id=NOTYET'));
