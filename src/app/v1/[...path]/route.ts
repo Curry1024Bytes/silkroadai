@@ -77,6 +77,7 @@ import {
     translateAnthropicSseToOpenAi,
 } from './claude-chat-cache';
 import { withKeepalive } from './keepalive';
+import { handleAnthropicMessages } from './messages-stream-hold';
 import { handleUsageQuery } from './usage';
 import {
     isSeedanceCnModel,
@@ -2432,7 +2433,13 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
         return handleModelsEnriched(req, search, cap);
     }
 
-    // 其他路径(/messages /embeddings …)全部透传
+    // Anthropic 原生 /messages POST:流式走「持头转发」(假 200 → 真错误码 + failover
+    // 重试 + 失败流自动退款,2026-07-29 根治件①②);非流式在 handler 内与原透传等价。
+    if (path === '/messages' && req.method === 'POST') {
+        return handleAnthropicMessages(req, path, search, cap);
+    }
+
+    // 其他路径(/embeddings …)全部透传
     return forwardToNewApi(req, null, path, search, cap);
 }
 
