@@ -312,6 +312,23 @@ describe('归一短名(2026-07-20)', () => {
         expect(pollVideoWithKey).toHaveBeenCalledWith('cgt-g1', 'Bearer sk-upstream-u1', 'global');
     });
 
+    it('volc 任务轮询:AK/SK 默认 region=cn 也不误判 region_mismatch,走 pollVolcVideo', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({
+            id: 'task_v9',
+            user_id: 'u1',
+            tier: 'enterprise-portal',
+            model: 'doubao-seedance-2.0',
+            tokens: null,
+            status: 'queued',
+        });
+        pollVolcVideo.mockResolvedValue(NextResponse.json({ id: 'task_v9', status: 'in_progress', progress: 50 }));
+        // CUSTOMER.region = 'cn'(AK/SK 账号级默认),但 volc 任务不应 403
+        const res = await handleEnterpriseV1(req('GET', '/v1/video/generations/task_v9'), '/video/generations/task_v9');
+        expect(res.status).toBe(200);
+        expect(pollVolcVideo).toHaveBeenCalledWith('task_v9');
+        expect(pollVideoWithKey).not.toHaveBeenCalled();
+    });
+
     it('promax 短名:鉴权 region=promax,长名 seedance2.0-promax-mini-720p;1080p → 400(仅 720p)', async () => {
         resolveEnterpriseAuth.mockResolvedValue({ ok: true, customer: { ...CUSTOMER, region: 'promax' } });
         submitVideoWithKey.mockImplementation(() =>

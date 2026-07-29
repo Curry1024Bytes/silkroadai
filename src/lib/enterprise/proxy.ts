@@ -352,7 +352,9 @@ async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat
         return errJson(404, 'not_found', 'task not found');
     }
     const taskRegion: SeedanceRegion = regionForModel(task.model);
-    if (cust.region !== taskRegion) {
+    // volc 轮询用平台 env 上游(不依赖 cust.upstreamKey / cust.region),归属已由 user_id 把关 →
+    // 跳过版本门(否则 AK/SK 账号级鉴权默认 region='cn',会把自己的 volc 任务误判 region_mismatch)。
+    if (taskRegion !== 'volc' && cust.region !== taskRegion) {
         // 本人任务但 key 版本不符:提示换对应版本 key(不藏 404,自己的任务无枚举风险)
         return errJson(
             403,
