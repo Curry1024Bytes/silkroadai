@@ -145,7 +145,24 @@ export async function resolveEnterpriseAuth(parts: AuthRequestParts, expectedReg
             return { ok: false, status: 401, code: 'UnauthorizedOperation', message: 'signature verification failed' };
         }
         prisma.enterpriseAkSk.update({ where: { id: row.id }, data: { last_used_at: new Date() } }).catch(() => {});
-        return loadUpstreamCustomer(row.user_id, row.tenant_id, row.id, expectedRegion ?? 'cn');
+        // 账号级操作(/api 素材库 / 真人认证,caller 不传 expectedRegion):不绑某 region 上游 key ——
+        // 素材库走平台 R2 或 provider、真人认证走平台 provider,都不消费 cust.upstreamKey,只需账号身份。
+        // 故不强制 cn 已开通(纯火山客户没开 cn 也能用真人认证/素材库)。region 名义 'cn',/api 不读它。
+        if (expectedRegion === undefined) {
+            return {
+                ok: true,
+                customer: {
+                    userId: row.user_id,
+                    tenantId: row.tenant_id,
+                    keyId: row.id,
+                    region: 'cn',
+                    upstreamKey: '',
+                },
+            };
+        }
+        // 视频(caller 传 model 的 region):仍要求该 region 上游 key 已配(volc 用平台 env 视频 key,
+        // 其余用客户上游 key)。
+        return loadUpstreamCustomer(row.user_id, row.tenant_id, row.id, expectedRegion);
     }
     // Bearer sk-ent
     return resolveEnterpriseCustomer(auth, expectedRegion);
