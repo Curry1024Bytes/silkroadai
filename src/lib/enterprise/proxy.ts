@@ -26,7 +26,7 @@ import {
     type SeedanceRegion,
 } from '@/lib/seedance/cn-adapter';
 import { submitVolcVideo, pollVolcVideo } from '@/lib/seedance/volc-adapter';
-import { resolveEnterpriseAuth, type EnterpriseCustomer } from './keys';
+import { resolveEnterpriseAuth, getUpstreamKeyForUser, type EnterpriseCustomer } from './keys';
 import { ENTERPRISE_TIER, estimateEnterpriseCostCny, chargeEnterpriseVideoTask } from './billing';
 import { AssetError, resolveAssetRefs } from './assets';
 import { normalizeArkModel, stripAssetUri, arkStatus, buildArkTaskResponse } from './ark-format';
@@ -352,10 +352,9 @@ async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat
         return errJson(404, 'not_found', 'task not found');
     }
     const taskRegion: SeedanceRegion = regionForModel(task.model);
-    // volc 轮询用平台 env 上游(不依赖 cust.upstreamKey / cust.region),归属已由 user_id 把关 →
-    // 跳过版本门(否则 AK/SK 账号级鉴权默认 region='cn',会把自己的 volc 任务误判 region_mismatch)。
-    if (taskRegion !== 'volc' && cust.region !== taskRegion) {
-        // 本人任务但 key 版本不符:提示换对应版本 key(不藏 404,自己的任务无枚举风险)
+    // 版本门只对 sk-ent(绑 region)生效:本人任务但 key 版本不符 → 提示换对应版本 key。
+    // volc 用平台 env、AK/SK 账号级(能查自己所有渠道任务)→ 不做版本门(归属已由 user_id 把关)。
+    if (taskRegion !== 'volc' && !cust.accountLevel && cust.region !== taskRegion) {
         return errJson(
             403,
             'region_mismatch',
@@ -363,10 +362,19 @@ async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat
         );
     }
 
+    // 非 volc 轮询要打客户上游:sk-ent 用鉴权时装载的 cust.upstreamKey;AK/SK 账号级(/api 轮询
+    // 未按 region 装载,cust.upstreamKey='')→ 按【任务的 region】补加载客户上游 key。
+    let upstreamKey = cust.upstreamKey;
+    if (taskRegion !== 'volc' && cust.accountLevel) {
+        const k = await getUpstreamKeyForUser(cust.userId, taskRegion);
+        if (!k) return errJson(503, 'account_not_configured', 'no upstream key configured for this region');
+        upstreamKey = k;
+    }
+
     const res =
         taskRegion === 'volc'
             ? await pollVolcVideo(taskId)
-            : await pollVideoWithKey(taskId, `Bearer ${cust.upstreamKey}`, taskRegion);
+            : await pollVideoWithKey(taskId, `Bearer ${upstreamKey}`, taskRegion);
     const text = await res.text();
     if (!res.ok) {
         console.warn('[enterprise-proxy] poll error', {

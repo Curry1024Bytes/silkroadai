@@ -7,6 +7,7 @@ import { NextRequest, NextResponse } from 'next/server';
 const {
     db,
     resolveEnterpriseAuth,
+    getUpstreamKeyForUser,
     submitVideoWithKey,
     pollVideoWithKey,
     submitVolcVideo,
@@ -19,6 +20,7 @@ const {
         account: { findUnique: vi.fn() },
     },
     resolveEnterpriseAuth: vi.fn(),
+    getUpstreamKeyForUser: vi.fn(),
     submitVideoWithKey: vi.fn(),
     pollVideoWithKey: vi.fn(),
     submitVolcVideo: vi.fn(),
@@ -27,7 +29,7 @@ const {
     chargeEnterpriseVideoTask: vi.fn(),
 }));
 vi.mock('@/lib/db', () => ({ prisma: db }));
-vi.mock('../keys', () => ({ resolveEnterpriseAuth }));
+vi.mock('../keys', () => ({ resolveEnterpriseAuth, getUpstreamKeyForUser }));
 vi.mock('@/lib/seedance/cn-adapter', async (importOriginal) => {
     const mod = await importOriginal<typeof import('@/lib/seedance/cn-adapter')>();
     return { ...mod, submitVideoWithKey, pollVideoWithKey };
@@ -64,6 +66,7 @@ beforeEach(() => {
     db.seedanceVideoTask.create.mockResolvedValue({});
     db.seedanceVideoTask.update.mockResolvedValue({});
     resolveAssetRefs.mockImplementation((body: Record<string, unknown>) => Promise.resolve(body));
+    getUpstreamKeyForUser.mockResolvedValue('sk-upstream-by-region');
 });
 
 describe('火山渠道(volc)路由', () => {
@@ -327,6 +330,28 @@ describe('归一短名(2026-07-20)', () => {
         expect(res.status).toBe(200);
         expect(pollVolcVideo).toHaveBeenCalledWith('task_v9');
         expect(pollVideoWithKey).not.toHaveBeenCalled();
+    });
+
+    it('AK/SK 账号级轮询非 volc 任务:无版本门 + 按【任务 region】补加载上游 key(修 #294 回归)', async () => {
+        // AK/SK 账号级:accountLevel=true,region 名义 'cn',upstreamKey='' (/api 未装载)
+        resolveEnterpriseAuth.mockResolvedValue({
+            ok: true,
+            customer: { ...CUSTOMER, region: 'cn', upstreamKey: '', accountLevel: true },
+        });
+        db.seedanceVideoTask.findUnique.mockResolvedValue({
+            id: 'cgt-g9',
+            user_id: 'u1',
+            tier: 'enterprise-portal',
+            model: 'seedance-2-0-global', // global 任务
+            tokens: null,
+            status: 'queued',
+        });
+        pollVideoWithKey.mockResolvedValue(NextResponse.json({ id: 'cgt-g9', status: 'in_progress', progress: 50 }));
+        const res = await handleEnterpriseV1(req('GET', '/v1/video/generations/cgt-g9'), '/video/generations/cgt-g9');
+        expect(res.status).toBe(200); // 不因 region 名义 cn ≠ global 而 403
+        // 按任务 region 'global' 补加载上游 key,而不是用空的 cust.upstreamKey
+        expect(getUpstreamKeyForUser).toHaveBeenCalledWith('u1', 'global');
+        expect(pollVideoWithKey).toHaveBeenCalledWith('cgt-g9', 'Bearer sk-upstream-by-region', 'global');
     });
 
     it('promax 短名:鉴权 region=promax,长名 seedance2.0-promax-mini-720p;1080p → 400(仅 720p)', async () => {

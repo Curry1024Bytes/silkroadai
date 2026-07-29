@@ -36,10 +36,12 @@ export interface EnterpriseCustomer {
     userId: string;
     tenantId: string | null;
     keyId: string;
-    /** 本 key 绑定的版本('cn' | 'global',2026-07-23)。 */
+    /** 本 key 绑定的版本('cn' | 'global',2026-07-23)。AK/SK 账号级时为名义值。 */
     region: string;
-    /** 该客户对应版本的独立上游 key(已解密)。 */
+    /** 该客户对应版本的独立上游 key(已解密)。AK/SK 走 /api 时为空(不消费)。 */
     upstreamKey: string;
+    /** AK/SK 账号级鉴权(非按 region 绑定):轮询时无版本门、按任务 region 补加载上游 key。 */
+    accountLevel?: boolean;
 }
 
 /** 对账器用:按 (user, region) 直取解密后的上游 key(无 sk-ent 语境)。缺行/解密失败 → null。 */
@@ -157,12 +159,15 @@ export async function resolveEnterpriseAuth(parts: AuthRequestParts, expectedReg
                     keyId: row.id,
                     region: 'cn',
                     upstreamKey: '',
+                    accountLevel: true,
                 },
             };
         }
         // 视频(caller 传 model 的 region):仍要求该 region 上游 key 已配(volc 用平台 env 视频 key,
-        // 其余用客户上游 key)。
-        return loadUpstreamCustomer(row.user_id, row.tenant_id, row.id, expectedRegion);
+        // 其余用客户上游 key)。标 accountLevel:AK/SK 账号级,轮询无版本门。
+        const r = await loadUpstreamCustomer(row.user_id, row.tenant_id, row.id, expectedRegion);
+        if (r.ok) r.customer.accountLevel = true;
+        return r;
     }
     // Bearer sk-ent
     return resolveEnterpriseCustomer(auth, expectedRegion);
