@@ -107,7 +107,7 @@ export default function EnterpriseAssetsDocsPage() {
                                     <Code>CreateAsset</Code>
                                 </Td>
                                 <Td>
-                                    AssetType(image/video/audio)、URL(公网直链,≤100MB)、Name(≤100)、Description?、
+                                    AssetType(Image/Video/Audio,对齐火山官方;大小写均兼容)、URL(公网直链,≤100MB)、Name(≤100)、Description?、
                                     GroupId?
                                 </Td>
                                 <Td>{`{Id:"asset-…", Status:"active", URL:"托管直链"}`}</Td>
@@ -184,7 +184,7 @@ export default function EnterpriseAssetsDocsPage() {
                 <Pre>{`# 注册素材(URL 需公网可抓;本地文件请在控制台「素材库」页直接上传)
 curl -X POST "${BASE}/api?Action=CreateAsset&Version=2024-01-01&ns=asset_manager" \\
   -H "Authorization: Bearer sk-ent-…" -H "Content-Type: application/json" \\
-  -d '{"AssetType":"image","URL":"https://…/hero.png","Name":"主角图"}'
+  -d '{"AssetType":"Image","URL":"https://…/hero.png","Name":"主角图"}'
 # → Result.Id = "asset-…"
 
 # 建素材组
