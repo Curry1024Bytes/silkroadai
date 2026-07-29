@@ -3753,3 +3753,13 @@ describe('/v1 proxy — 视频轮询 result_url 重写(2026-07-04 base_url 内�
         vi.unstubAllEnvs();
     });
 });
+
+// GET /v1/usage 拦截接线冒烟(端点本体逻辑在 usage-endpoint.test.ts):
+// new-api 无此端点,拦截纯增量 —— 无鉴权就该在 portal 层 401,绝不透传上游。
+describe('/v1 proxy — GET /usage 拦截', () => {
+    it('无 Authorization → portal 层 401,不打上游', async () => {
+        const res = await GET(makeReq('/usage', { method: 'GET' }), ctx('usage'));
+        expect(res.status).toBe(401);
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+});

@@ -129,6 +129,11 @@ const AGENTS: AgentSection[] = [
         label: 'Key 自查 · 余额监控',
         blurb: 'GET /v1/key 拿 sk- 直接自查:别名 / 档次 / 账户余额(含 stale 标志)/ 近期用量 — 余额告警脚本必备,不用登后台。',
     },
+    {
+        id: 'api-usage',
+        label: '用量与扣费查询 · 逐请求对账',
+        blurb: '响应里拿 token usage + request_id,GET /v1/usage 查每次调用实际扣了多少 ¥ — 单条对账 / 按时间段批量拉,程序化账单核对。',
+    },
 ];
 
 const OPENAI_BASE = 'https://ai.silkroadai.io/v1';
@@ -3524,6 +3529,284 @@ else:
                                     <td className="px-4 py-2.5 text-navy align-top">会被限流吗?</td>
                                     <td className="px-4 py-2.5 text-ink">
                                         不限流,但余额数据有约 60 秒缓存 —— 高于每分钟一次的轮询不会拿到更新的数字。
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+
+                <section id="api-usage" className="mt-12 mb-10 scroll-mt-20">
+                    <div className="flex items-baseline justify-between flex-wrap gap-2 mb-4 pb-3 border-b-2 border-brand-accent">
+                        <h2 className="m-0 text-2xl font-semibold text-navy">
+                            <span className="text-brand-accent font-bold mr-3 tabular-nums">21</span>
+                            用量与扣费查询 · 逐请求对账
+                        </h2>
+                    </div>
+                    <p className="m-0 mb-4 text-sm text-ink leading-relaxed">
+                        每次调用花了多少 token、实际扣了多少钱,都可以程序化拿到:
+                        <strong className="text-navy">token 用量在响应体里</strong>(OpenAI 标准{' '}
+                        <code className="font-mono text-xs">usage</code> 字段);
+                        <strong className="text-navy">实际扣费用 </strong>
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            GET /v1/usage
+                        </code>{' '}
+                        查询(按 <code className="font-mono text-xs">request_id</code> 单条对账,或按时间段批量拉账单)。
+                    </p>
+
+                    <h3 className="m-0 mt-6 mb-2 text-base font-semibold text-navy">① Token 用量:响应里就有</h3>
+                    <p className="m-0 mb-2 text-sm text-ink leading-relaxed">
+                        非流式调用的响应体自带 <code className="font-mono text-xs">usage</code>;流式(
+                        <code className="font-mono text-xs">stream: true</code>)默认不带,加一个参数即可让最后一个 chunk
+                        返回用量:
+                    </p>
+                    <CodeBlock language="json">
+                        {`{
+  "model": "${SAMPLE_OPENAI_MODEL}",
+  "stream": true,
+  "stream_options": { "include_usage": true },
+  "messages": [{ "role": "user", "content": "你好" }]
+}
+// 最后一个 SSE chunk:
+// { "choices": [], "usage": { "prompt_tokens": 12, "completion_tokens": 340, "total_tokens": 352 } }`}
+                    </CodeBlock>
+                    <p className="m-0 mt-3 mb-2 text-xs text-minor-ink leading-relaxed">
+                        Anthropic 兼容协议(<code className="font-mono text-xs">/v1/messages</code>)同理:响应 / SSE
+                        事件里自带 <code className="font-mono text-xs">usage.input_tokens</code> /{' '}
+                        <code className="font-mono text-xs">output_tokens</code>,无需额外参数。
+                    </p>
+
+                    <h3 className="m-0 mt-6 mb-2 text-base font-semibold text-navy">
+                        ② 实际扣费:先拿 request_id,再查 /v1/usage
+                    </h3>
+                    <p className="m-0 mb-2 text-sm text-ink leading-relaxed">
+                        扣费是请求结束后记账的,所以不在响应体里 —— 但每个响应都带{' '}
+                        <code className="font-mono text-xs">x-oneapi-request-id</code> 响应头(部分接口也在响应体返{' '}
+                        <code className="font-mono text-xs">request_id</code>),拿它查{' '}
+                        <code className="font-mono text-xs">/v1/usage</code> 就是这一单实际扣的钱。记账通常在响应结束后
+                        1-2 秒内完成。
+                    </p>
+                    <ConfigList
+                        items={[
+                            ['端点', `GET ${OPENAI_BASE}/usage`],
+                            ['认证', 'Authorization: Bearer sk-…(与调模型同一个 key)'],
+                            ['错误', '401 = key 无效/已撤销 · 404 = request_id 还没入账(稍后重试) · 503 = 暂不可用'],
+                        ]}
+                    />
+                    <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">查询参数(全部可选)</p>
+                    <div className="rounded-lg overflow-hidden border border-brand-border bg-surface">
+                        <table className="w-full border-collapse text-sm">
+                            <thead>
+                                <tr className="bg-paper-muted text-muted-ink">
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        参数
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        说明
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy align-top">request_id</td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        单条对账:响应头 <code className="font-mono text-xs">x-oneapi-request-id</code>{' '}
+                                        的值。命中返回该条;还没入账返 404(带明确提示,稍等 1-2 秒重试即可)
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy align-top">
+                                        start_time / end_time
+                                    </td>
+                                    <td className="px-4 py-2.5 text-ink">时间窗(unix 秒,UTC),批量拉账单用</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy align-top">model</td>
+                                    <td className="px-4 py-2.5 text-ink">只看某个模型(精确匹配)</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy align-top">
+                                        page / page_size
+                                    </td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        分页;page_size 默认 50、上限 100。响应{' '}
+                                        <code className="font-mono text-xs">has_more: true</code> 表示还有下一页
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy align-top">type</td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        <code className="font-mono text-xs">consume</code>(默认,成功扣费)·{' '}
+                                        <code className="font-mono text-xs">error</code>(失败调用)·{' '}
+                                        <code className="font-mono text-xs">refund</code>(退款,如视频任务失败退回)·{' '}
+                                        <code className="font-mono text-xs">all</code>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy align-top">key_only</td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        <code className="font-mono text-xs">true</code> = 只看当前这把 key
+                                        的调用(默认返回整个账户所有 key)
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">单条对账(curl)</p>
+                    <CodeBlock language="bash">
+                        {`# 1. 调用时抓响应头里的 request_id
+curl -sD - ${OPENAI_BASE}/chat/completions \\
+  -H "Authorization: Bearer sk-…" -H "Content-Type: application/json" \\
+  -d '{"model":"${SAMPLE_OPENAI_MODEL}","messages":[{"role":"user","content":"你好"}]}' \\
+  | grep -i x-oneapi-request-id
+# x-oneapi-request-id: 20260729103000123456789
+
+# 2. 查这一单实际扣费
+curl -s "${OPENAI_BASE}/usage?request_id=20260729103000123456789" \\
+  -H "Authorization: Bearer sk-…"`}
+                    </CodeBlock>
+                    <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">响应示例</p>
+                    <CodeBlock language="json">
+                        {`{
+  "object": "list",
+  "data": [
+    {
+      "request_id": "20260729103000123456789",
+      "created_at": 1753797003,
+      "type": "consume",
+      "model": "${SAMPLE_OPENAI_MODEL}",
+      "token_name": "prod-openai",
+      "is_stream": true,
+      "duration_ms": 3000,
+      "usage": { "prompt_tokens": 12, "completion_tokens": 340, "total_tokens": 352 },
+      "billing": "per_token",
+      "cost_cny": 0.023800,
+      "cost_usd": 0.003400,
+      "quota": 11900,
+      "content": "模型倍率 0.36,分组倍率 1.20,补全倍率 5.00"
+    }
+  ],
+  "page": 1,
+  "page_size": 50,
+  "has_more": false
+}`}
+                    </CodeBlock>
+                    <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">字段说明</p>
+                    <div className="rounded-lg overflow-hidden border border-brand-border bg-surface">
+                        <table className="w-full border-collapse text-sm">
+                            <tbody>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy align-top">cost_cny</td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        <strong className="text-navy">这一单实际扣的人民币</strong>(权威值,来自计费系统;
+                                        <code className="font-mono text-xs">cost_usd</code>{' '}
+                                        为按真实汇率折算的美元参考值)。
+                                        <code className="font-mono text-xs">type=refund</code> 的行为负数 = 退回
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy align-top">usage</td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        计费用的 token 数(prompt / completion / total),与响应体{' '}
+                                        <code className="font-mono text-xs">usage</code> 同源
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy align-top">billing</td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        <code className="font-mono text-xs">per_token</code> = 按 token 计费(LLM /
+                                        gpt-image 系),usage 就是计费依据;
+                                        <code className="font-mono text-xs">per_call</code> = 按次/按张计费(Gemini
+                                        生图等固定单价),此时 token 数是上游噪声、仅供参考,以{' '}
+                                        <code className="font-mono text-xs">cost_cny</code> 为准
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy align-top">
+                                        created_at / duration_ms
+                                    </td>
+                                    <td className="px-4 py-2.5 text-ink">入账时间(unix 秒,UTC)/ 调用耗时(毫秒)</td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-2.5 font-mono text-xs text-navy align-top">content</td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        计费说明(倍率明细)或失败原因(
+                                        <code className="font-mono text-xs">type=error</code> 时)
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">Python:拉当天账单,按模型汇总</p>
+                    <CodeBlock language="python">
+                        {`import requests, time
+
+BASE = "${OPENAI_BASE}"
+KEY = {"Authorization": "Bearer sk-…"}
+
+start = int(time.time()) - 86400   # 近 24 小时
+rows, page = [], 1
+while True:
+    r = requests.get(f"{BASE}/usage", headers=KEY, params={
+        "start_time": start, "page": page, "page_size": 100,
+    })
+    r.raise_for_status()
+    body = r.json()
+    rows += body["data"]
+    if not body["has_more"]:
+        break
+    page += 1
+
+by_model = {}
+for row in rows:
+    m = by_model.setdefault(row["model"], {"calls": 0, "cny": 0.0, "tokens": 0})
+    m["calls"] += 1
+    m["cny"] += row["cost_cny"]
+    m["tokens"] += row["usage"]["total_tokens"]
+
+for model, s in sorted(by_model.items(), key=lambda kv: -kv[1]["cny"]):
+    print(f'{model}: {s["calls"]} 次 · {s["tokens"]} tokens · ¥{s["cny"]:.4f}')
+print(f'合计 ¥{sum(s["cny"] for s in by_model.values()):.4f}')`}
+                    </CodeBlock>
+
+                    <p className="m-0 mt-6 mb-2 text-sm font-medium text-navy">常见问题</p>
+                    <div className="rounded-lg overflow-hidden border border-brand-border bg-surface">
+                        <table className="w-full border-collapse text-sm">
+                            <tbody>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 text-navy align-top">为什么扣费不直接放在模型响应里?</td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        计费在请求结束后才结算(流式尤其如此,响应发完账才落)。响应里的{' '}
+                                        <code className="font-mono text-xs">usage</code> 是实时的;金额请以{' '}
+                                        <code className="font-mono text-xs">/v1/usage</code> 查询为准 —— 两者用同一个
+                                        request_id 关联。
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 text-navy align-top">request_id 查询返 404?</td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        账还没落(通常 1-2 秒),稍等重试即可。若几分钟后仍 404,确认 request_id
+                                        是否完整、调用是否真的成功(失败调用在{' '}
+                                        <code className="font-mono text-xs">type=error</code> 里)。
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-2.5 text-navy align-top">
+                                        cost_cny 加总和余额变化对得上吗?
+                                    </td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        对得上:<code className="font-mono text-xs">consume</code> 行合计 −{' '}
+                                        <code className="font-mono text-xs">refund</code> 行合计 =
+                                        账户净消费,与控制台「概览」和 <code className="font-mono text-xs">/v1/key</code>{' '}
+                                        的 spent_cny 同口径。
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-2.5 text-navy align-top">会被限流吗?</td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        不限流。批量对账建议按时间窗分页拉取(每页最多 100 条),而不是逐条查 request_id。
                                     </td>
                                 </tr>
                             </tbody>
