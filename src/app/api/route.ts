@@ -12,6 +12,7 @@ import {
     type AssetType,
 } from '@/lib/enterprise/assets';
 import { RealPersonError, createVisualValidateSession, getVisualValidateGroupId } from '@/lib/enterprise/real-person';
+import { handleVolcAssetAction, VOLC_ASSET_ACTIONS } from '@/lib/enterprise/volc-assets';
 
 export const runtime = 'nodejs';
 
@@ -135,16 +136,16 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     if (!auth.ok) return fail(action, auth.status, 'UnauthorizedOperation', auth.message);
     const userId = auth.customer.userId;
 
-    // 真人认证是「火山」渠道专属服务:客户需已开通 volc(有 volc 上游 key 行)才可调。
-    // AK/SK 是账号级(非按 region),故按"客户是否开通 volc"判定,而非具体 key 的 region。
-    if (action === 'CreateVisualValidateSession' || action === 'GetVisualValidateResult') {
-        const volc = await prisma.enterpriseUpstreamKey.findUnique({
-            where: { user_id_region: { user_id: userId, region: 'volc' } },
-            select: { id: true },
-        });
-        if (!volc) {
-            return fail(action, 403, 'ChannelNotEnabled', '真人认证为「火山」渠道专属服务,请先开通火山渠道');
-        }
+    // 「火山」渠道客户?= 已开通 volc(有 volc 上游 key 行)。AK/SK 是账号级(非按 region),
+    // 故按"客户是否开通 volc"判定。volc 客户的真人认证 + 素材库都走 provider(专属服务)。
+    const isVolc = !!(await prisma.enterpriseUpstreamKey.findUnique({
+        where: { user_id_region: { user_id: userId, region: 'volc' } },
+        select: { id: true },
+    }));
+
+    // 真人认证是「火山」渠道专属服务:未开通 volc → 403。
+    if ((action === 'CreateVisualValidateSession' || action === 'GetVisualValidateResult') && !isVolc) {
+        return fail(action, 403, 'ChannelNotEnabled', '真人认证为「火山」渠道专属服务,请先开通火山渠道');
     }
 
     let body: unknown = {};
@@ -157,6 +158,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
 
     try {
+        // volc 客户的素材库走 provider REST(返火山直链),不走我们 R2 —— 让真人 GroupId /
+        // 素材 / volc 视频(asset://id)全在同一 provider 账号内自洽(Phase 2b)。
+        if (isVolc && VOLC_ASSET_ACTIONS.has(action)) {
+            return ok(action, await handleVolcAssetAction(action, body));
+        }
         switch (action) {
             case 'CreateAsset': {
                 const p = createAssetSchema.safeParse(body);
