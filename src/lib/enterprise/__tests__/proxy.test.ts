@@ -9,6 +9,8 @@ const {
     resolveEnterpriseAuth,
     submitVideoWithKey,
     pollVideoWithKey,
+    submitVolcVideo,
+    pollVolcVideo,
     estimateEnterpriseCostCny,
     chargeEnterpriseVideoTask,
 } = vi.hoisted(() => ({
@@ -19,6 +21,8 @@ const {
     resolveEnterpriseAuth: vi.fn(),
     submitVideoWithKey: vi.fn(),
     pollVideoWithKey: vi.fn(),
+    submitVolcVideo: vi.fn(),
+    pollVolcVideo: vi.fn(),
     estimateEnterpriseCostCny: vi.fn(),
     chargeEnterpriseVideoTask: vi.fn(),
 }));
@@ -28,6 +32,7 @@ vi.mock('@/lib/seedance/cn-adapter', async (importOriginal) => {
     const mod = await importOriginal<typeof import('@/lib/seedance/cn-adapter')>();
     return { ...mod, submitVideoWithKey, pollVideoWithKey };
 });
+vi.mock('@/lib/seedance/volc-adapter', () => ({ submitVolcVideo, pollVolcVideo }));
 vi.mock('../billing', async (importOriginal) => {
     const mod = await importOriginal<typeof import('../billing')>();
     return { ...mod, estimateEnterpriseCostCny, chargeEnterpriseVideoTask };
@@ -59,6 +64,31 @@ beforeEach(() => {
     db.seedanceVideoTask.create.mockResolvedValue({});
     db.seedanceVideoTask.update.mockResolvedValue({});
     resolveAssetRefs.mockImplementation((body: Record<string, unknown>) => Promise.resolve(body));
+});
+
+describe('火山渠道(volc)路由', () => {
+    it('model doubao-seedance-2.0 → 走 volc 适配器(不走 cn),任务落库 resolution 参数化', async () => {
+        submitVolcVideo.mockResolvedValue(NextResponse.json({ id: 'task_v1', task_id: 'task_v1', status: 'queued' }));
+        const res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', {
+                model: 'doubao-seedance-2.0',
+                prompt: '一只猫',
+                resolution: '1080p',
+            }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(200);
+        expect(submitVolcVideo).toHaveBeenCalledWith(expect.objectContaining({ prompt: '一只猫' }), '1080p', 5);
+        expect(submitVideoWithKey).not.toHaveBeenCalled();
+        expect(db.seedanceVideoTask.create).toHaveBeenCalledWith({
+            data: expect.objectContaining({
+                id: 'task_v1',
+                model: 'doubao-seedance-2.0',
+                tier: 'enterprise-portal',
+                resolution: '1080p',
+            }),
+        });
+    });
 });
 
 describe('isEnterpriseFlavor', () => {

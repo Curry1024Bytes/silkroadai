@@ -135,6 +135,18 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     if (!auth.ok) return fail(action, auth.status, 'UnauthorizedOperation', auth.message);
     const userId = auth.customer.userId;
 
+    // 真人认证是「火山」渠道专属服务:客户需已开通 volc(有 volc 上游 key 行)才可调。
+    // AK/SK 是账号级(非按 region),故按"客户是否开通 volc"判定,而非具体 key 的 region。
+    if (action === 'CreateVisualValidateSession' || action === 'GetVisualValidateResult') {
+        const volc = await prisma.enterpriseUpstreamKey.findUnique({
+            where: { user_id_region: { user_id: userId, region: 'volc' } },
+            select: { id: true },
+        });
+        if (!volc) {
+            return fail(action, 403, 'ChannelNotEnabled', '真人认证为「火山」渠道专属服务,请先开通火山渠道');
+        }
+    }
+
     let body: unknown = {};
     if (raw.trim()) {
         try {

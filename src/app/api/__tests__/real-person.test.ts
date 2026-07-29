@@ -5,12 +5,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 
-const { resolveEnterpriseAuth, createSession, getGroupId } = vi.hoisted(() => ({
+const { db, resolveEnterpriseAuth, createSession, getGroupId } = vi.hoisted(() => ({
+    db: { enterpriseUpstreamKey: { findUnique: vi.fn() } },
     resolveEnterpriseAuth: vi.fn(),
     createSession: vi.fn(),
     getGroupId: vi.fn(),
 }));
-vi.mock('@/lib/db', () => ({ prisma: {} }));
+vi.mock('@/lib/db', () => ({ prisma: db }));
 vi.mock('@/lib/enterprise/keys', () => ({ resolveEnterpriseAuth }));
 vi.mock('@/lib/enterprise/assets', () => ({
     AssetError: class AssetError extends Error {},
@@ -40,6 +41,8 @@ function req(action: string, body?: unknown): NextRequest {
 beforeEach(() => {
     vi.clearAllMocks();
     resolveEnterpriseAuth.mockResolvedValue(CUSTOMER);
+    // 默认客户已开通 volc(有 volc 上游 key 行)
+    db.enterpriseUpstreamKey.findUnique.mockResolvedValue({ id: 'up-volc' });
 });
 
 describe('CreateVisualValidateSession', () => {
@@ -71,6 +74,15 @@ describe('CreateVisualValidateSession', () => {
         resolveEnterpriseAuth.mockResolvedValue({ ok: false, status: 401, code: 'x', message: 'bad key' });
         const res = await POST(req('CreateVisualValidateSession', {}));
         expect(res.status).toBe(401);
+        expect(createSession).not.toHaveBeenCalled();
+    });
+
+    it('未开通火山渠道 → 403 ChannelNotEnabled,不打上游', async () => {
+        db.enterpriseUpstreamKey.findUnique.mockResolvedValue(null);
+        const res = await POST(req('CreateVisualValidateSession', {}));
+        expect(res.status).toBe(403);
+        const j = (await res.json()) as { ResponseMetadata: { Error: { Code: string } } };
+        expect(j.ResponseMetadata.Error.Code).toBe('ChannelNotEnabled');
         expect(createSession).not.toHaveBeenCalled();
     });
 });

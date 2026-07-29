@@ -14,6 +14,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
 import {
     MODEL_MAP,
+    VOLC_MODEL,
     extractImageUrls,
     extractVideoUrls,
     extractAudioUrls,
@@ -24,6 +25,7 @@ import {
     type SeedanceVariant,
     type SeedanceRegion,
 } from '@/lib/seedance/cn-adapter';
+import { submitVolcVideo, pollVolcVideo } from '@/lib/seedance/volc-adapter';
 import { resolveEnterpriseAuth, type EnterpriseCustomer } from './keys';
 import { ENTERPRISE_TIER, estimateEnterpriseCostCny, chargeEnterpriseVideoTask } from './billing';
 import { AssetError, resolveAssetRefs } from './assets';
@@ -57,6 +59,30 @@ function resolveEnterpriseModel(
     body: Record<string, unknown>,
 ): { spec: SeedanceModelSpec; longName: string } | { error: NextResponse } | null {
     const lower = rawModel.toLowerCase();
+    // 「火山」渠道:单模型 doubao-seedance-2.0,pro 档,resolution 参数 + ref 自动识别。
+    // 走独立 provider(火山方舟原生),不经 MODEL_MAP 长名机制。
+    if (lower === VOLC_MODEL) {
+        const resRaw = String(body.resolution ?? '720p').toLowerCase();
+        if (!(RESOLUTIONS as readonly string[]).includes(resRaw)) {
+            return { error: errJson(400, 'invalid_request', 'resolution 仅支持 720p / 1080p / 4k') };
+        }
+        const hasRefs =
+            extractImageUrls(body).length > 0 ||
+            extractVideoUrls(body).length > 0 ||
+            extractAudioUrls(body).length > 0 ||
+            (typeof body.first_frame === 'string' && body.first_frame !== '') ||
+            (typeof body.last_frame === 'string' && body.last_frame !== '');
+        return {
+            spec: {
+                resolution: resRaw as '720p' | '1080p' | '4k',
+                ref: hasRefs,
+                variant: 'pro',
+                upstream: VOLC_MODEL,
+                region: 'volc',
+            },
+            longName: VOLC_MODEL,
+        };
+    }
     const variant = ENTERPRISE_MODELS[lower];
     if (!variant) return null;
     const region = lower.includes('-promax') ? 'promax' : lower.includes('-global') ? 'global' : 'cn';
@@ -202,14 +228,19 @@ async function handleSubmit(req: NextRequest, format: ClientFormat = 'v1'): Prom
     const cust = await resolveOr401(req, regionForModel(model), rawBody);
     if (cust instanceof NextResponse) return cust;
 
+    const isVolc = regionForModel(model) === 'volc';
+
     // P3 素材库引用:asset-…/group-… → R2 公网 URL(必须在 ref/hasVideo 检测之前,
     // 视频素材引用也要计入含视频费率档)。未知/非本人 id → 400。
-    try {
-        body = await resolveAssetRefs(body, cust.userId);
-    } catch (e) {
-        if (e instanceof AssetError) return errJson(e.status, e.code, e.message);
-        console.error('[enterprise-proxy] asset ref resolve failed', e);
-        return errJson(503, 'temporarily_unavailable', 'asset lookup failed, please retry');
+    // 「火山」渠道跳过:volc 真人素材在 provider 自有素材库(非我们 R2),asset id 由上游解析。
+    if (!isVolc) {
+        try {
+            body = await resolveAssetRefs(body, cust.userId);
+        } catch (e) {
+            if (e instanceof AssetError) return errJson(e.status, e.code, e.message);
+            console.error('[enterprise-proxy] asset ref resolve failed', e);
+            return errJson(503, 'temporarily_unavailable', 'asset lookup failed, please retry');
+        }
     }
 
     // 模型解析:归一短名(seedance-2-0[-fast|-mini] + resolution 参数 + ref 自动识别)
@@ -259,7 +290,10 @@ async function handleSubmit(req: NextRequest, format: ClientFormat = 'v1'): Prom
         console.warn('[enterprise-proxy] balance gate skipped (lookup failed)', e);
     }
 
-    const res = await submitVideoWithKey({ ...body, model: adapterModel }, `Bearer ${cust.upstreamKey}`);
+    const res =
+        map.region === 'volc'
+            ? await submitVolcVideo(body, map.resolution, duration)
+            : await submitVideoWithKey({ ...body, model: adapterModel }, `Bearer ${cust.upstreamKey}`);
     const text = await res.text();
     if (!res.ok) {
         // 带客户身份落日志(适配器层只有上游视角):upstream_error 投诉可直接定位到人
@@ -327,7 +361,10 @@ async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat
         );
     }
 
-    const res = await pollVideoWithKey(taskId, `Bearer ${cust.upstreamKey}`, taskRegion);
+    const res =
+        taskRegion === 'volc'
+            ? await pollVolcVideo(taskId)
+            : await pollVideoWithKey(taskId, `Bearer ${cust.upstreamKey}`, taskRegion);
     const text = await res.text();
     if (!res.ok) {
         console.warn('[enterprise-proxy] poll error', {
