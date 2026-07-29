@@ -1235,6 +1235,24 @@ model EnterpriseKey {
   @@map("enterprise_keys")
 }
 
+// 客户 AK/SK 凭据(2026-07-28):火山 SignerV4 签名鉴权用(素材库 /api + /api/v3 视频)。
+// AK 明文(签名 Credential 里可见),SK AES-256-GCM 加密存(验签时解出重算比对)。
+// 与 sk-ent Bearer 并存:一个客户可同时有多把 sk-ent 和多对 AK/SK。
+model EnterpriseAkSk {
+  id            String    @id @default(uuid()) @db.Uuid
+  tenant_id     String?   @db.Uuid
+  user_id       String    @db.Uuid
+  access_key    String    @unique // ak_ent_<24hex>,签名 Credential 里明文出现
+  secret_key_enc String // AES-256-GCM(iv‖tag‖ct base64),key=ENTERPRISE_UPSTREAM_ENC_KEY
+  name          String
+  status        String    @default("active") // active | disabled
+  created_at    DateTime  @default(now())
+  last_used_at  DateTime?
+
+  @@index([user_id])
+  @@map("enterprise_ak_sk")
+}
+
 model EnterpriseUpstreamKey {
   id               String   @id @default(uuid()) @db.Uuid
   user_id          String   @db.Uuid

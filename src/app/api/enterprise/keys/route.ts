@@ -34,7 +34,7 @@ export async function GET(req: NextRequest) {
 const createSchema = z.object({
     name: z.string().trim().min(1).max(50),
     // 版本绑定(2026-07-23 海外版):key 只能调对应版本模型
-    region: z.enum(['cn', 'global', 'promax']).default('cn'),
+    region: z.enum(['cn', 'global', 'promax', 'volc']).default('cn'),
 });
 
 export async function POST(req: NextRequest) {

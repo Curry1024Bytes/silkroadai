@@ -14,7 +14,7 @@ export const runtime = 'nodejs';
  */
 const schema = z.object({
     user_id: z.string().uuid(),
-    region: z.enum(['cn', 'global', 'promax']),
+    region: z.enum(['cn', 'global', 'promax', 'volc']),
     upstream_key: z.string().trim().min(8).max(200),
     note: z.string().trim().max(200).optional(),
 });

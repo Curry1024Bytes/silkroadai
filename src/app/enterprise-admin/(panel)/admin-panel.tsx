@@ -54,7 +54,7 @@ interface Detail {
 const fmtTime = (iso: string) => new Date(iso).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
 const fmtCny = (n: number) => `¥${n.toFixed(2)}`;
 const KIND_LABEL: Record<string, string> = { recharge: '充值', charge: '消费', adjustment: '调整', migration: '迁移' };
-const REGION_LABEL: Record<string, string> = { cn: '国内版', global: '海外版', promax: '海外版proMax' };
+const REGION_LABEL: Record<string, string> = { cn: '国内版', global: '海外版', promax: '海外版proMax', volc: '火山' };
 
 async function post(url: string, body: unknown, method = 'POST') {
     const res = await fetch(url, {
@@ -319,9 +319,15 @@ export function AdminPanel() {
                                         {(c.regions ?? ['cn']).map((rg) => (
                                             <span
                                                 key={rg}
-                                                className={`mr-1 rounded px-1.5 py-0.5 text-[11px] font-medium ${rg === 'cn' ? 'bg-gray-100 text-gray-600' : rg === 'global' ? 'bg-indigo-50 text-indigo-700' : 'bg-purple-50 text-purple-700'}`}
+                                                className={`mr-1 rounded px-1.5 py-0.5 text-[11px] font-medium ${rg === 'cn' ? 'bg-gray-100 text-gray-600' : rg === 'global' ? 'bg-indigo-50 text-indigo-700' : rg === 'volc' ? 'bg-orange-50 text-orange-700' : 'bg-purple-50 text-purple-700'}`}
                                             >
-                                                {rg === 'cn' ? '国内' : rg === 'global' ? '海外' : 'proMax'}
+                                                {rg === 'cn'
+                                                    ? '国内'
+                                                    : rg === 'global'
+                                                      ? '海外'
+                                                      : rg === 'volc'
+                                                        ? '火山'
+                                                        : 'proMax'}
                                             </span>
                                         ))}
                                     </td>
@@ -375,7 +381,7 @@ export function AdminPanel() {
                     <div className="rounded-lg border border-gray-200 p-3">
                         <h3 className="mb-2 text-xs font-semibold text-gray-500">版本配置(上游 key / 折扣率)</h3>
                         <div className="flex flex-wrap gap-6">
-                            {(['cn', 'global', 'promax'] as const).map((rg) => {
+                            {(['cn', 'global', 'promax', 'volc'] as const).map((rg) => {
                                 const row = detail.upstreams.find((u) => u.region === rg);
                                 const label = `${REGION_LABEL[rg]}(${rg})`;
                                 return (
@@ -427,7 +433,11 @@ export function AdminPanel() {
                                                 {k.key_prefix}…
                                                 {k.region !== 'cn' && (
                                                     <span className="ml-1 rounded bg-indigo-50 px-1 py-0.5 text-[10px] font-sans text-indigo-700">
-                                                        {k.region === 'promax' ? '海外proMax' : '海外'}
+                                                        {k.region === 'promax'
+                                                            ? '海外proMax'
+                                                            : k.region === 'volc'
+                                                              ? '火山'
+                                                              : '海外'}
                                                     </span>
                                                 )}
                                             </td>
@@ -483,6 +493,7 @@ export function AdminPanel() {
                                     <option value="cn">国内</option>
                                     <option value="global">海外</option>
                                     <option value="promax">海外proMax</option>
+                                    <option value="volc">火山</option>
                                 </select>
                                 <select name="variant" className="rounded border border-gray-300 px-2 py-1.5 text-sm">
                                     <option value="pro">pro</option>

@@ -77,6 +77,7 @@ import {
     translateAnthropicSseToOpenAi,
 } from './claude-chat-cache';
 import { withKeepalive } from './keepalive';
+import { handleUsageQuery } from './usage';
 import {
     isSeedanceCnModel,
     isSeedanceCnTask,
@@ -2309,6 +2310,11 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
     // key 自查(OpenRouter GET /api/v1/key 模式)。同余额查询:capture 之前拦截,不记日志。
     if (req.method === 'GET' && path === '/key') {
         return handleKeySelfInspect(req);
+    }
+
+    // 逐请求用量 + 实际扣费查询(sk- 鉴权机读版,见 ./usage)。同上:capture 之前拦截。
+    if (req.method === 'GET' && path === '/usage') {
+        return handleUsageQuery(req);
     }
 
     // 请求日志捕获(数据存储 Phase 1 第②步)。开关 off → null → 下面全程与今天

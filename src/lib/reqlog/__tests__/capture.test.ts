@@ -10,14 +10,38 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 let logStoreConfigured = true;
+// 背压测试要挂起 put:impl 可替换,默认立即 resolve
+let putImpl: () => Promise<void> = async () => {};
 vi.mock('@/lib/r2/log-store', () => ({
     isLogStoreConfigured: () => logStoreConfigured,
-    putLogObject: vi.fn(),
+    putLogObject: () => putImpl(),
     reqlogInputKey: (id: string) => `reqlog/in/${id}`,
     reqlogOutputKey: (id: string) => `reqlog/out/${id}`,
 }));
 
-import { shouldCapture, parseUsage, parseModelAndStream } from '@/lib/reqlog/capture';
+// finalizeCapture 懒加载的两个模块(背压测试驱动真 finalize,不能触真 prisma)
+vi.mock('@/lib/db', () => ({
+    prisma: { requestLog: { create: async () => ({}) } },
+}));
+vi.mock('@/lib/reqlog/identity', () => ({
+    resolveLogIdentity: async () => ({
+        user_id: null,
+        token_id: null,
+        tenant_id: null,
+        newapi_token_hash: null,
+    }),
+}));
+
+import { NextRequest } from 'next/server';
+import {
+    shouldCapture,
+    parseUsage,
+    parseModelAndStream,
+    beginCapture,
+    captureJsonResponse,
+    __flushReqlogForTest,
+    __resetReqlogBackpressureForTest,
+} from '@/lib/reqlog/capture';
 
 beforeEach(() => {
     logStoreConfigured = true;
@@ -131,5 +155,69 @@ describe('parseUsage', () => {
     it('non-JSON body (e.g. error html / binary) → null/null, never throws', () => {
         expect(parseUsage('<html>500</html>', 'text/html')).toEqual({ inputTokens: null, outputTokens: null });
         expect(parseUsage('', null)).toEqual({ inputTokens: null, outputTokens: null });
+    });
+});
+
+describe('backpressure (REQUEST_LOGGING_MAX_PENDING)', () => {
+    const makeReq = () =>
+        new NextRequest('https://ai.silkroadai.io/v1/messages', {
+            method: 'POST',
+            headers: { authorization: 'Bearer sk-TESTKEY' },
+        });
+    // 共享 gate:put 全部挂在同一个 promise 上,openGate() 对已发出和未来的
+    // put 一起放行(finalize 到达 putLogObject 的时机晚于测试同步代码,
+    // 逐个 resolver 收集会在放行后才出现 → 永远排不干)
+    let openGate: () => void;
+    let gate: Promise<void>;
+
+    beforeEach(() => {
+        process.env.REQUEST_LOGGING = 'on';
+        process.env.REQUEST_LOGGING_MAX_PENDING = '3';
+        gate = new Promise<void>((r) => {
+            openGate = r;
+        });
+        putImpl = () => gate;
+        __resetReqlogBackpressureForTest();
+        vi.spyOn(console, 'warn').mockImplementation(() => {});
+    });
+    afterEach(async () => {
+        // 排干挂着的 finalize,不让 pending 泄漏到别的用例
+        openGate();
+        await __flushReqlogForTest();
+        putImpl = async () => {};
+        delete process.env.REQUEST_LOGGING_MAX_PENDING;
+    });
+
+    it('drops capture when pending finalizes hit the limit, recovers after drain', async () => {
+        for (let i = 0; i < 3; i++) {
+            const cap = beginCapture(makeReq(), '/messages');
+            expect(cap).not.toBeNull();
+            captureJsonResponse(cap!, 200, { i });
+        }
+        // 3 个 finalize 全挂在 R2 put 上 → 第 4 个直接丢(返 null,零 buffer)
+        expect(beginCapture(makeReq(), '/messages')).toBeNull();
+        expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('backlog full'));
+        // 放行 + 排干 → 恢复捕获
+        openGate();
+        await __flushReqlogForTest();
+        expect(beginCapture(makeReq(), '/messages')).not.toBeNull();
+    });
+
+    it('garbage / unset limit falls back to default 100 (small backlog never drops)', () => {
+        process.env.REQUEST_LOGGING_MAX_PENDING = 'abc';
+        const cap = beginCapture(makeReq(), '/messages');
+        expect(cap).not.toBeNull();
+        captureJsonResponse(cap!, 200, {});
+        // 1 pending < 默认 100 → 不丢
+        expect(beginCapture(makeReq(), '/messages')).not.toBeNull();
+    });
+
+    it('drop warn is rate-limited (first + every 500th), not one per drop', () => {
+        for (let i = 0; i < 3; i++) {
+            const cap = beginCapture(makeReq(), '/messages');
+            captureJsonResponse(cap!, 200, { i });
+        }
+        for (let i = 0; i < 10; i++) expect(beginCapture(makeReq(), '/messages')).toBeNull();
+        expect(vi.mocked(console.warn).mock.calls.filter((c) => String(c[0]).includes('backlog full'))).toHaveLength(1);
     });
 });

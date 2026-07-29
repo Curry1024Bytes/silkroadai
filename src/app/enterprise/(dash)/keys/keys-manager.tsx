@@ -25,7 +25,7 @@ function fmtTime(iso: string | null): string {
 export function KeysManager({ initialKeys }: { initialKeys: KeyRow[] }) {
     const [keys, setKeys] = useState(initialKeys);
     const [name, setName] = useState('');
-    const [region, setRegion] = useState<'cn' | 'global' | 'promax'>('cn');
+    const [region, setRegion] = useState<'cn' | 'global' | 'promax' | 'volc'>('cn');
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [freshKey, setFreshKey] = useState<string | null>(null);
@@ -119,7 +119,11 @@ export function KeysManager({ initialKeys }: { initialKeys: KeyRow[] }) {
                                     <td className="py-2 pr-4">{k.name}</td>
                                     <td className="py-2 pr-4 font-mono text-xs text-gray-500">{k.key_prefix}…</td>
                                     <td className="py-2 pr-4">
-                                        {k.region === 'promax' ? (
+                                        {k.region === 'volc' ? (
+                                            <span className="rounded bg-orange-50 px-1.5 py-0.5 text-xs font-medium text-orange-700">
+                                                火山
+                                            </span>
+                                        ) : k.region === 'promax' ? (
                                             <span className="rounded bg-purple-50 px-1.5 py-0.5 text-xs font-medium text-purple-700">
                                                 海外版proMax
                                             </span>
@@ -171,12 +175,13 @@ export function KeysManager({ initialKeys }: { initialKeys: KeyRow[] }) {
                     />
                     <select
                         value={region}
-                        onChange={(e) => setRegion(e.target.value as 'cn' | 'global' | 'promax')}
+                        onChange={(e) => setRegion(e.target.value as 'cn' | 'global' | 'promax' | 'volc')}
                         className="rounded-md border border-gray-300 px-2 py-2 text-sm focus:border-blue-500 focus:outline-none"
                     >
                         <option value="cn">国内版</option>
                         <option value="global">海外版(global)</option>
                         <option value="promax">海外版proMax</option>
+                        <option value="volc">火山(真人认证/单模型)</option>
                     </select>
                     <button
                         type="submit"

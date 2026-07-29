@@ -6,9 +6,11 @@ import { NextRequest, NextResponse } from 'next/server';
 
 const {
     db,
-    resolveEnterpriseCustomer,
+    resolveEnterpriseAuth,
     submitVideoWithKey,
     pollVideoWithKey,
+    submitVolcVideo,
+    pollVolcVideo,
     estimateEnterpriseCostCny,
     chargeEnterpriseVideoTask,
 } = vi.hoisted(() => ({
@@ -16,18 +18,21 @@ const {
         seedanceVideoTask: { create: vi.fn(), findUnique: vi.fn(), update: vi.fn() },
         account: { findUnique: vi.fn() },
     },
-    resolveEnterpriseCustomer: vi.fn(),
+    resolveEnterpriseAuth: vi.fn(),
     submitVideoWithKey: vi.fn(),
     pollVideoWithKey: vi.fn(),
+    submitVolcVideo: vi.fn(),
+    pollVolcVideo: vi.fn(),
     estimateEnterpriseCostCny: vi.fn(),
     chargeEnterpriseVideoTask: vi.fn(),
 }));
 vi.mock('@/lib/db', () => ({ prisma: db }));
-vi.mock('../keys', () => ({ resolveEnterpriseCustomer }));
+vi.mock('../keys', () => ({ resolveEnterpriseAuth }));
 vi.mock('@/lib/seedance/cn-adapter', async (importOriginal) => {
     const mod = await importOriginal<typeof import('@/lib/seedance/cn-adapter')>();
     return { ...mod, submitVideoWithKey, pollVideoWithKey };
 });
+vi.mock('@/lib/seedance/volc-adapter', () => ({ submitVolcVideo, pollVolcVideo }));
 vi.mock('../billing', async (importOriginal) => {
     const mod = await importOriginal<typeof import('../billing')>();
     return { ...mod, estimateEnterpriseCostCny, chargeEnterpriseVideoTask };
@@ -53,12 +58,37 @@ function req(method: string, url: string, body?: unknown): NextRequest {
 
 beforeEach(() => {
     vi.clearAllMocks();
-    resolveEnterpriseCustomer.mockResolvedValue({ ok: true, customer: CUSTOMER });
+    resolveEnterpriseAuth.mockResolvedValue({ ok: true, customer: CUSTOMER });
     db.account.findUnique.mockResolvedValue({ balance_cny: '100' });
     estimateEnterpriseCostCny.mockResolvedValue(4.26);
     db.seedanceVideoTask.create.mockResolvedValue({});
     db.seedanceVideoTask.update.mockResolvedValue({});
     resolveAssetRefs.mockImplementation((body: Record<string, unknown>) => Promise.resolve(body));
+});
+
+describe('火山渠道(volc)路由', () => {
+    it('model doubao-seedance-2.0 → 走 volc 适配器(不走 cn),任务落库 resolution 参数化', async () => {
+        submitVolcVideo.mockResolvedValue(NextResponse.json({ id: 'task_v1', task_id: 'task_v1', status: 'queued' }));
+        const res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', {
+                model: 'doubao-seedance-2.0',
+                prompt: '一只猫',
+                resolution: '1080p',
+            }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(200);
+        expect(submitVolcVideo).toHaveBeenCalledWith(expect.objectContaining({ prompt: '一只猫' }), '1080p', 5);
+        expect(submitVideoWithKey).not.toHaveBeenCalled();
+        expect(db.seedanceVideoTask.create).toHaveBeenCalledWith({
+            data: expect.objectContaining({
+                id: 'task_v1',
+                model: 'doubao-seedance-2.0',
+                tier: 'enterprise-portal',
+                resolution: '1080p',
+            }),
+        });
+    });
 });
 
 describe('isEnterpriseFlavor', () => {
@@ -105,7 +135,7 @@ describe('提交', () => {
     const goodBody = { model: 'seedance2.0-pro-720p', prompt: '一只猫' };
 
     it('key 无效 → 401 透传 resolve 结果', async () => {
-        resolveEnterpriseCustomer.mockResolvedValue({
+        resolveEnterpriseAuth.mockResolvedValue({
             ok: false,
             status: 401,
             code: 'invalid_api_key',
@@ -235,7 +265,7 @@ describe('归一短名(2026-07-20)', () => {
     });
 
     it('global 短名(2026-07-23):鉴权带 region=global,适配器收 global 长名,回显短名', async () => {
-        resolveEnterpriseCustomer.mockResolvedValue({ ok: true, customer: { ...CUSTOMER, region: 'global' } });
+        resolveEnterpriseAuth.mockResolvedValue({ ok: true, customer: { ...CUSTOMER, region: 'global' } });
         submitVideoWithKey.mockResolvedValue(
             NextResponse.json({
                 id: 'cgt-g1',
@@ -249,7 +279,7 @@ describe('归一短名(2026-07-20)', () => {
             '/video/generations',
         );
         expect(res.status).toBe(200);
-        expect(resolveEnterpriseCustomer).toHaveBeenCalledWith(expect.any(String), 'global');
+        expect(resolveEnterpriseAuth).toHaveBeenCalledWith(expect.anything(), 'global');
         expect(submitVideoWithKey).toHaveBeenCalledWith(
             expect.objectContaining({ model: 'seedance2.0-global-mini-720p' }),
             'Bearer sk-upstream-u1',
@@ -275,15 +305,32 @@ describe('归一短名(2026-07-20)', () => {
         expect(res.status).toBe(403);
         expect(pollVideoWithKey).not.toHaveBeenCalled();
         // global key → 透传轮询,base 走海外
-        resolveEnterpriseCustomer.mockResolvedValue({ ok: true, customer: { ...CUSTOMER, region: 'global' } });
+        resolveEnterpriseAuth.mockResolvedValue({ ok: true, customer: { ...CUSTOMER, region: 'global' } });
         pollVideoWithKey.mockResolvedValue(NextResponse.json({ id: 'cgt-g1', status: 'in_progress', progress: 50 }));
         res = await handleEnterpriseV1(req('GET', '/v1/video/generations/cgt-g1'), '/video/generations/cgt-g1');
         expect(res.status).toBe(200);
         expect(pollVideoWithKey).toHaveBeenCalledWith('cgt-g1', 'Bearer sk-upstream-u1', 'global');
     });
 
+    it('volc 任务轮询:AK/SK 默认 region=cn 也不误判 region_mismatch,走 pollVolcVideo', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({
+            id: 'task_v9',
+            user_id: 'u1',
+            tier: 'enterprise-portal',
+            model: 'doubao-seedance-2.0',
+            tokens: null,
+            status: 'queued',
+        });
+        pollVolcVideo.mockResolvedValue(NextResponse.json({ id: 'task_v9', status: 'in_progress', progress: 50 }));
+        // CUSTOMER.region = 'cn'(AK/SK 账号级默认),但 volc 任务不应 403
+        const res = await handleEnterpriseV1(req('GET', '/v1/video/generations/task_v9'), '/video/generations/task_v9');
+        expect(res.status).toBe(200);
+        expect(pollVolcVideo).toHaveBeenCalledWith('task_v9');
+        expect(pollVideoWithKey).not.toHaveBeenCalled();
+    });
+
     it('promax 短名:鉴权 region=promax,长名 seedance2.0-promax-mini-720p;1080p → 400(仅 720p)', async () => {
-        resolveEnterpriseCustomer.mockResolvedValue({ ok: true, customer: { ...CUSTOMER, region: 'promax' } });
+        resolveEnterpriseAuth.mockResolvedValue({ ok: true, customer: { ...CUSTOMER, region: 'promax' } });
         submitVideoWithKey.mockImplementation(() =>
             Promise.resolve(NextResponse.json({ id: 'cgt-pm1', task_id: 'cgt-pm1', status: 'queued' })),
         );
@@ -292,7 +339,7 @@ describe('归一短名(2026-07-20)', () => {
             '/video/generations',
         );
         expect(res.status).toBe(200);
-        expect(resolveEnterpriseCustomer).toHaveBeenCalledWith(expect.any(String), 'promax');
+        expect(resolveEnterpriseAuth).toHaveBeenCalledWith(expect.anything(), 'promax');
         expect(submitVideoWithKey).toHaveBeenCalledWith(
             expect.objectContaining({ model: 'seedance2.0-promax-mini-720p' }),
             'Bearer sk-upstream-u1',

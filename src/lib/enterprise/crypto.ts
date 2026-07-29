@@ -45,3 +45,7 @@ export function decryptUpstreamKey(ciphertext: string): string {
     decipher.setAuthTag(tag);
     return Buffer.concat([decipher.update(ct), decipher.final()]).toString('utf8');
 }
+
+/** 通用 secret 加解密(同一把 ENTERPRISE_UPSTREAM_ENC_KEY;AK/SK 的 SK 用,2026-07-28)。 */
+export const encryptSecret = encryptUpstreamKey;
+export const decryptSecret = decryptUpstreamKey;

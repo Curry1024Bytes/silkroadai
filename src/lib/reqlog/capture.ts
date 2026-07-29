@@ -37,6 +37,34 @@ export const CAPTURE_VERSION = 1;
  *  记已累积部分 + error 标记 — 防超大流式响应把内存撑爆。 */
 const MAX_ACCUM_BYTES = 25 * 1024 * 1024;
 
+/** 在途写存(finalize)背压上限的默认值(env `REQUEST_LOGGING_MAX_PENDING`
+ *  可调)。R2 变慢 / 断线时 finalize 会堆积,每个都攥着完整请求+响应体 —
+ *  2026-07-28 事故:单客户 opus-5 洪峰(45k 请求/20min,请求体数 MB)把
+ *  smithy put 队列堆到 2,700+,portal 进程 4.5G RES + GC 打满 → 全站超时。
+ *  超上限时 beginCapture 直接返 null(不 buffer、不排队),丢日志保服务。 */
+const DEFAULT_MAX_PENDING_FINALIZE = 100;
+
+function maxPendingFinalize(): number {
+    const raw = process.env.REQUEST_LOGGING_MAX_PENDING;
+    if (raw == null || raw === '') return DEFAULT_MAX_PENDING_FINALIZE;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 1) return DEFAULT_MAX_PENDING_FINALIZE;
+    return Math.floor(n);
+}
+
+let __droppedCaptures = 0;
+
+/** 丢弃计一次数 + 限频 warn(首个 + 每 500 个),不刷爆日志。 */
+function noteDroppedCapture(): void {
+    __droppedCaptures++;
+    if (__droppedCaptures === 1 || __droppedCaptures % 500 === 0) {
+        console.warn(
+            `[reqlog] finalize backlog full (${__pending.size} pending, limit ${maxPendingFinalize()}) — ` +
+                `dropping capture, request unaffected (total dropped: ${__droppedCaptures})`,
+        );
+    }
+}
+
 /** 不往客户端回传的响应头(body 已被重新分块时这些头会撒谎,与 route.ts 对齐)。 */
 const STRIP_RESPONSE_HEADERS = new Set(['content-length', 'content-encoding', 'transfer-encoding', 'connection']);
 
@@ -112,6 +140,12 @@ export interface CaptureCtx {
 export function beginCapture(req: NextRequest, path: string): CaptureCtx | null {
     if (!shouldCapture()) return null;
     if (isMediaCaptureSkipped() && isMediaGenPath(path)) return null;
+    // 背压:在途写存堆积(R2 慢 / 断)时丢弃本次捕获 — 零 buffer、零排队,
+    // 客户请求走与开关 off 一致的 passthrough 路径。
+    if (__pending.size >= maxPendingFinalize()) {
+        noteDroppedCapture();
+        return null;
+    }
     const startedAt = Date.now();
     return {
         id: randomUUID(),
@@ -297,6 +331,11 @@ export async function __flushReqlogForTest(): Promise<void> {
     }
 }
 
+/** 测试钩子:重置背压丢弃计数(warn 限频依赖它)。 */
+export function __resetReqlogBackpressureForTest(): void {
+    __droppedCaptures = 0;
+}
+
 function decodeChunks(chunks: Uint8Array[]): string {
     if (chunks.length === 0) return '';
     return Buffer.concat(chunks.map((c) => Buffer.from(c))).toString('utf8');
@@ -362,6 +401,7 @@ async function finalizeCapture(cap: CaptureCtx): Promise<void> {
         const [{ prisma }, { resolveLogIdentity }] = await Promise.all([import('@/lib/db'), import('./identity')]);
 
         const outBody = cap.responseBodyString ?? decodeChunks(cap.chunks);
+        cap.chunks = []; // 解码完立刻放掉原始 chunk 引用,排队等 R2 时少攥一份内存
         const outBytes = cap.responseBodyString != null ? Buffer.byteLength(cap.responseBodyString) : cap.accumBytes;
         const usage = parseUsage(outBody, cap.responseContentType);
         const ident = await resolveLogIdentity(cap.authHeader);

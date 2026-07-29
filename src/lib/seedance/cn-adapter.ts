@@ -41,11 +41,15 @@ const UPSTREAM_PROMAX_PRO = 'dreamina-seedance-2-0-260128';
 const UPSTREAM_PROMAX_FAST = 'dreamina-seedance-2-0-fast-260128';
 const UPSTREAM_PROMAX_MINI = 'dreamina-seedance-2-0-mini-260615';
 
-/** 版本 → 上游 base URL(global 与 promax 同为 intl 端口,仅模型名/费率不同)。 */
-export type SeedanceRegion = 'cn' | 'global' | 'promax';
+/** 版本 → 上游 base URL(global 与 promax 同为 intl 端口,仅模型名/费率不同)。
+ *  volc(火山渠道,2026-07-29)走独立 provider + 火山方舟原生协议,不经此函数(见 volc-adapter)。 */
+export type SeedanceRegion = 'cn' | 'global' | 'promax' | 'volc';
 export function baseForRegion(region: SeedanceRegion): string {
     return region === 'global' || region === 'promax' ? INTL_BASE : XHK_BASE;
 }
+
+/** 「火山」渠道唯一对客模型名(provider 文档 doubao-seedance-2.0,火山方舟原生协议)。 */
+export const VOLC_MODEL = 'doubao-seedance-2.0';
 
 const MAX_REF_IMAGES = 9;
 const MAX_REF_VIDEOS = 3;
@@ -122,6 +126,7 @@ export function regionForModel(model: string): SeedanceRegion {
     const hit = MODEL_MAP[model]?.region;
     if (hit) return hit;
     const m = String(model || '').toLowerCase();
+    if (m === VOLC_MODEL) return 'volc';
     if (m.includes('-promax')) return 'promax';
     if (m.includes('-global')) return 'global';
     return 'cn';
@@ -133,6 +138,7 @@ export function variantForModel(model: string): SeedanceVariant {
     const hit = MODEL_MAP[model]?.variant;
     if (hit) return hit;
     const m = model.toLowerCase();
+    if (m === VOLC_MODEL) return 'pro'; // 火山渠道单模型走 pro 档(国内版同价)
     if (m.includes('-promax')) {
         // promax 系费率独立,必须先于 -fast/-mini 判(seedance-2-0-promax-fast 含 '-fast')
         if (m.includes('-fast')) return 'promax-fast';

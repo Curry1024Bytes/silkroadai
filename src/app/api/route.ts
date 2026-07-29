@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
-import { resolveEnterpriseCustomer } from '@/lib/enterprise/keys';
+import { resolveEnterpriseAuth } from '@/lib/enterprise/keys';
 import {
     AssetError,
     deleteAsset,
@@ -11,6 +11,8 @@ import {
     storeAsset,
     type AssetType,
 } from '@/lib/enterprise/assets';
+import { RealPersonError, createVisualValidateSession, getVisualValidateGroupId } from '@/lib/enterprise/real-person';
+import { handleVolcAssetAction, VOLC_ASSET_ACTIONS } from '@/lib/enterprise/volc-assets';
 
 export const runtime = 'nodejs';
 
@@ -121,12 +123,32 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const action = req.nextUrl.searchParams.get('Action') || '';
     if (!action) return fail('Unknown', 400, 'MissingParameter', 'query 参数 Action 必填');
 
-    const auth = await resolveEnterpriseCustomer(req.headers.get('authorization'));
+    // AK/SK 火山签名验签需要原始 body,故先读 body 再鉴权(sk-ent Bearer 不受影响)。
+    const raw = await req.text();
+    const auth = await resolveEnterpriseAuth({
+        authorization: req.headers.get('authorization'),
+        method: req.method,
+        path: req.nextUrl.pathname, // /api
+        query: req.nextUrl.searchParams,
+        headers: req.headers,
+        rawBody: raw,
+    });
     if (!auth.ok) return fail(action, auth.status, 'UnauthorizedOperation', auth.message);
     const userId = auth.customer.userId;
 
+    // 「火山」渠道客户?= 已开通 volc(有 volc 上游 key 行)。AK/SK 是账号级(非按 region),
+    // 故按"客户是否开通 volc"判定。volc 客户的真人认证 + 素材库都走 provider(专属服务)。
+    const isVolc = !!(await prisma.enterpriseUpstreamKey.findUnique({
+        where: { user_id_region: { user_id: userId, region: 'volc' } },
+        select: { id: true },
+    }));
+
+    // 真人认证是「火山」渠道专属服务:未开通 volc → 403。
+    if ((action === 'CreateVisualValidateSession' || action === 'GetVisualValidateResult') && !isVolc) {
+        return fail(action, 403, 'ChannelNotEnabled', '真人认证为「火山」渠道专属服务,请先开通火山渠道');
+    }
+
     let body: unknown = {};
-    const raw = await req.text();
     if (raw.trim()) {
         try {
             body = JSON.parse(raw);
@@ -136,6 +158,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
 
     try {
+        // volc 客户的素材库走 provider REST(返火山直链),不走我们 R2 —— 让真人 GroupId /
+        // 素材 / volc 视频(asset://id)全在同一 provider 账号内自洽(Phase 2b)。
+        if (isVolc && VOLC_ASSET_ACTIONS.has(action)) {
+            return ok(action, await handleVolcAssetAction(action, body));
+        }
         switch (action) {
             case 'CreateAsset': {
                 const p = createAssetSchema.safeParse(body);
@@ -282,10 +309,27 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
                     PageSize: p.data.PageSize,
                 });
             }
+            // ── 真人视觉认证(「火山」渠道,翻译到新 provider REST;不计费)──────────
+            case 'CreateVisualValidateSession': {
+                // 客户端 body 含 CallbackURL/ProjectName,上游 /sessions 无入参,忽略之
+                const s = await createVisualValidateSession();
+                return ok(action, {
+                    BytedToken: s.bytedToken,
+                    H5Link: s.h5Link,
+                    ...(s.expiresIn !== undefined ? { ExpiresIn: s.expiresIn } : {}),
+                });
+            }
+            case 'GetVisualValidateResult': {
+                const p = z.object({ BytedToken: z.string().trim().min(1).max(200) }).safeParse(body);
+                if (!p.success) return fail(action, 400, 'InvalidParameter', 'BytedToken 必填');
+                const groupId = await getVisualValidateGroupId(p.data.BytedToken);
+                return ok(action, { GroupId: groupId });
+            }
             default:
                 return fail(action, 400, 'InvalidAction', `不支持的 Action: ${action}`);
         }
     } catch (e) {
+        if (e instanceof RealPersonError) return fail(action, e.status, e.code, e.message);
         if (e instanceof AssetError) return fail(action, e.status, e.code, e.message);
         console.error('[asset-api] internal error', action, e);
         return fail(action, 500, 'InternalError', 'internal error');
