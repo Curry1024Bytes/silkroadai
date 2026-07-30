@@ -134,6 +134,34 @@ describe('ListAssets', () => {
         const sent = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
         expect(sent.statuses).toEqual(['ACTIVE']);
     });
+
+    it('Filter.Name → provider assetName(精确匹配过滤)', async () => {
+        const fetchMock = vi
+            .spyOn(global, 'fetch')
+            .mockResolvedValue(okResp({ result: [], total: 0, pageNo: 1, pageSize: 5 }));
+        await handleVolcAssetAction('ListAssets', {
+            Filter: { GroupIds: ['g1'], GroupType: 'AIGC', Name: 'flow-asset-updated-x' },
+            PageNumber: 1,
+            PageSize: 5,
+        });
+        const sent = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+        expect(sent.assetName).toBe('flow-asset-updated-x');
+        expect(sent.groupName).toBeUndefined();
+    });
+
+    it('ListAssetGroups Filter.Name → provider groupName(精确匹配过滤)', async () => {
+        const fetchMock = vi
+            .spyOn(global, 'fetch')
+            .mockResolvedValue(okResp({ result: [], total: 0, pageNo: 1, pageSize: 5 }));
+        await handleVolcAssetAction('ListAssetGroups', {
+            Filter: { GroupIds: ['g1'], GroupType: 'AIGC', Name: 'flow-group-updated-x' },
+            PageNumber: 1,
+            PageSize: 5,
+        });
+        const sent = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+        expect(sent.groupName).toBe('flow-group-updated-x');
+        expect(sent.assetName).toBeUndefined();
+    });
 });
 
 describe('Update 响应回 Id(对齐火山官方,客户脚本据此确认更新对象)', () => {
