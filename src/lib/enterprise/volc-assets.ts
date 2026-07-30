@@ -173,7 +173,7 @@ export async function handleVolcAssetAction(action: string, body: unknown): Prom
                     pageSize: p.data.PageSize,
                     ...(p.data.Filter?.GroupIds ? { groupIds: p.data.Filter.GroupIds } : {}),
                     ...(p.data.Filter?.GroupType ? { groupType: p.data.Filter.GroupType } : {}),
-                    // 火山官方 Filter.Name → provider 包装层 groupName(精确匹配,2026-07-30 真机探测证实)
+                    // 火山官方 Filter.Name → provider 包装层 groupName(官方 727 文档:模糊搜索)
                     ...(p.data.Filter?.Name ? { groupName: p.data.Filter.Name } : {}),
                 },
             );
@@ -236,7 +236,7 @@ export async function handleVolcAssetAction(action: string, body: unknown): Prom
                     ...(p.data.Filter?.Statuses
                         ? { statuses: p.data.Filter.Statuses.map((s) => s.toUpperCase()) }
                         : {}),
-                    // 火山官方 Filter.Name → provider 包装层 assetName(精确匹配,2026-07-30 真机探测证实)
+                    // 火山官方 Filter.Name → provider 包装层 assetName(官方 727 文档:模糊搜索)
                     ...(p.data.Filter?.Name ? { assetName: p.data.Filter.Name } : {}),
                 },
             );

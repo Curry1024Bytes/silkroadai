@@ -135,7 +135,7 @@ describe('ListAssets', () => {
         expect(sent.statuses).toEqual(['ACTIVE']);
     });
 
-    it('Filter.Name → provider assetName(精确匹配过滤)', async () => {
+    it('Filter.Name → provider assetName(模糊搜索过滤)', async () => {
         const fetchMock = vi
             .spyOn(global, 'fetch')
             .mockResolvedValue(okResp({ result: [], total: 0, pageNo: 1, pageSize: 5 }));
@@ -149,7 +149,7 @@ describe('ListAssets', () => {
         expect(sent.groupName).toBeUndefined();
     });
 
-    it('ListAssetGroups Filter.Name → provider groupName(精确匹配过滤)', async () => {
+    it('ListAssetGroups Filter.Name → provider groupName(模糊搜索过滤)', async () => {
         const fetchMock = vi
             .spyOn(global, 'fetch')
             .mockResolvedValue(okResp({ result: [], total: 0, pageNo: 1, pageSize: 5 }));
