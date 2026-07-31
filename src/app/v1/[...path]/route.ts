@@ -1511,8 +1511,10 @@ async function reshapeOpenAiImageResponse(
  * 成功补 OpenAI gpt-image 形的顶层 `size` + 估算 `usage`(上游不回 usage),上游报错原样透传。
  *
  * 边界与已知取舍(对照官方 DALL·E 的有意差异):
- * - `n`(多图):不支持,固定返 1 张(Gemini generateContent 单次出 1 图)。
- *   客户传 n>1 我们忽略。需多图后续迭代。
+ * - `n`(多图):Gemini generateContent 单次只出 1 图(candidateCount 对生图不生效),
+ *   proxy 层 fan-out n 个并行请求实现。clamp 1-4;每个请求独立过 new-api 计费,
+ *   n 张 = n 次扣费。部分失败返成功子集(200 + X-Silkroadai-Images-Failed 头),
+ *   全失败沿用单张语义(上游错误原样透传)。非 Gemini 模型的 n 原样透传上游。
  * - `size`:仅 `gemini-3-pro-image-preview` 可选(`2K`/`4K`,或 `2048x2048`/`4096x4096`,
  *   默认 4K),其余模型忽略 size 维持固定档(2.5→1K / 3.1-flash→2K);
  *   pro 传无法识别的 size → 400。比例仍由 aspect_ratio 决定。
@@ -1538,6 +1540,7 @@ async function handleImagesDalle(
     let responseFormat = 'url';
     let aspectRatio = '';
     let sizeRaw = '';
+    let nRaw = '';
     // gpt-image 默认返回 b64_json(OpenAI 契约);仅当客户显式 response_format:url 才存图床返 URL(opt-in)。
     let wantHostedUrl = false;
     const inputParts: GeminiInputPart[] = [];
@@ -1551,6 +1554,7 @@ async function handleImagesDalle(
             wantHostedUrl = String(form.get('response_format') ?? '').toLowerCase() === 'url';
             aspectRatio = String(form.get('aspect_ratio') ?? '');
             sizeRaw = String(form.get('size') ?? '');
+            nRaw = String(form.get('n') ?? '');
             // model 非我们的 Gemini 生图 → 重建 FormData 透传(保留 gpt-image-2 等)
             if (!(model in GEMINI_IMAGE_MODELS)) {
                 // gpt-image:剥 response_format + 把比例(aspect_ratio / "16:9" 形态 size)翻成像素 size
@@ -1640,6 +1644,7 @@ async function handleImagesDalle(
             wantHostedUrl = String(body.response_format ?? '').toLowerCase() === 'url';
             aspectRatio = String(body.aspect_ratio ?? '');
             sizeRaw = String(body.size ?? '');
+            nRaw = String(body.n ?? '');
             if (cap) recordRequestBody(cap, JSON.stringify(body), model, false);
             if (!(model in GEMINI_IMAGE_MODELS)) {
                 // gpt-image:剥 response_format(zhiyunai 拒收 →400)+ 比例→像素 size(zhiyunai 不认
@@ -1731,38 +1736,71 @@ async function handleImagesDalle(
     if (inputParts.length >= 2) {
         parts.push({ text: wantsAuto ? MULTI_IMAGE_ASPECT_INSTRUCTION : explicitAspectInstruction(aspectRatio) });
     }
-    const upstream = await geminiGenerateWithFailover(
-        req,
-        model,
-        JSON.stringify({ contents: [{ role: 'user', parts }], generationConfig: { imageConfig } }),
-    );
-    if (!upstream.ok) return cap ? captureResponse(cap, upstream) : passthroughResponse(upstream);
+    // n(多图):Gemini 单次只出 1 图 → fan-out n 个并行请求(clamp 1-4,防大 n 打爆并发/账单;
+    // 非整数 / 缺省 / 非法值一律按 1)。每个请求独立过 new-api 计费,n 张 = n 次扣费。
+    const nParsed = Number(nRaw);
+    const n = Number.isFinite(nParsed) && nParsed >= 1 ? Math.min(4, Math.trunc(nParsed)) : 1;
 
-    const upstreamData = (await upstream.json()) as {
-        candidates?: Array<{ content?: { parts?: GeminiPart[] } }>;
-    };
-    const inlineData = (upstreamData.candidates?.[0]?.content?.parts ?? []).find((p) => p.inlineData)?.inlineData;
-    if (!inlineData) {
+    const requestBody = JSON.stringify({ contents: [{ role: 'user', parts }], generationConfig: { imageConfig } });
+    const settled = await Promise.allSettled(
+        Array.from({ length: n }, () => geminiGenerateWithFailover(req, model, requestBody)),
+    );
+
+    // 汇总:成功的收图;失败的记数,留第一个非 2xx 响应做「全失败」时的透传载体
+    // (n=1 时与旧单张行为逐字节一致:上游错误原样透传,含 status/body)。
+    const images: Array<{ mimeType: string; data: string }> = [];
+    let firstErrorResponse: Response | null = null;
+    let failedCount = 0;
+    for (const s of settled) {
+        if (s.status === 'rejected') {
+            failedCount++;
+            continue;
+        }
+        const upstream = s.value;
+        if (!upstream.ok) {
+            failedCount++;
+            if (!firstErrorResponse) firstErrorResponse = upstream;
+            continue;
+        }
+        try {
+            const upstreamData = (await upstream.json()) as {
+                candidates?: Array<{ content?: { parts?: GeminiPart[] } }>;
+            };
+            const inlineData = (upstreamData.candidates?.[0]?.content?.parts ?? []).find(
+                (p) => p.inlineData,
+            )?.inlineData;
+            if (inlineData) images.push(inlineData);
+            else failedCount++;
+        } catch {
+            failedCount++;
+        }
+    }
+
+    if (images.length === 0) {
+        if (firstErrorResponse) {
+            return cap ? captureResponse(cap, firstErrorResponse) : passthroughResponse(firstErrorResponse);
+        }
         return imageError('no image generated', 502, cap);
     }
 
-    // ---- 包成 DALL·E 响应 ----
-    const { mimeType, data: b64 } = inlineData;
+    // ---- 包成 DALL·E 响应(部分失败 → 返成功子集 200 + 头标失败数)----
     const respHeaders: Record<string, string> = { 'X-Silkroadai-Translated': 'gemini-native' };
-    let datum: JsonRecord;
-
+    if (failedCount > 0) respHeaders['X-Silkroadai-Images-Failed'] = String(failedCount);
+    const data: JsonRecord[] = [];
     let refs: string[] = [];
-    if (responseFormat === 'b64_json') {
-        datum = { b64_json: b64 };
-    } else {
-        const stored = await storeGeneratedImage(req, Buffer.from(b64, 'base64'), mimeType, b64);
-        datum = { url: stored.url };
-        if (stored.ossFallback) respHeaders['X-Silkroadai-Oss-Fallback'] = 'yes';
-        if (stored.r2Fallback) respHeaders['X-Silkroadai-R2-Fallback'] = 'yes';
-        refs = hostedRefs(stored);
+    for (const { mimeType, data: b64 } of images) {
+        if (responseFormat === 'b64_json') {
+            data.push({ b64_json: b64 });
+        } else {
+            const stored = await storeGeneratedImage(req, Buffer.from(b64, 'base64'), mimeType, b64);
+            data.push({ url: stored.url });
+            if (stored.ossFallback) respHeaders['X-Silkroadai-Oss-Fallback'] = 'yes';
+            if (stored.r2Fallback) respHeaders['X-Silkroadai-R2-Fallback'] = 'yes';
+            refs = refs.concat(hostedRefs(stored));
+        }
     }
 
-    const dalleResp = { created: Math.floor(Date.now() / 1000), data: [datum] };
+    const dalleResp = { created: Math.floor(Date.now() / 1000), data };
     if (cap) captureJsonResponse(cap, 200, dalleResp, refs);
     return NextResponse.json(dalleResp, { status: 200, headers: respHeaders });
 }
