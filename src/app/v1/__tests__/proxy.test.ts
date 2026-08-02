@@ -3785,7 +3785,7 @@ describe('/v1 proxy — images n 参数(多图 fan-out)', () => {
         const data = (await res.json()) as { data: Array<{ url: string }> };
         expect(data.data).toHaveLength(3);
         for (const d of data.data) {
-            expect(d.url).toMatch(/^https:\/\/images\.silkroadai\.io\/gen\//);
+            expect(d.url).toMatch(/^https:\/\/images\.llmroute\.club\/gen\//);
         }
         expect(res.headers.get('X-Silkroadai-Images-Failed')).toBeNull();
         expect(mockUploadImage).toHaveBeenCalledTimes(3);
