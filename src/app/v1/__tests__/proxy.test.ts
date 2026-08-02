@@ -3875,3 +3875,120 @@ describe('/v1 proxy — images n 参数(多图 fan-out)', () => {
         expect(mockUploadImage).not.toHaveBeenCalled();
     });
 });
+
+describe('/v1 proxy — chat/completions 请求体守门(把 new-api 的 500 变成 400/成功)', () => {
+    /** 上游一律 200,便于断言「我们有没有放行」。 */
+    function upstreamOk() {
+        mockFetch.mockResolvedValue(
+            new Response('{"choices":[]}', { status: 200, headers: { 'content-type': 'application/json' } }),
+        );
+    }
+    function chat(extra: Record<string, unknown>) {
+        return makeReq('/chat/completions', {
+            body: { model: 'kimi-k3', messages: [{ role: 'user', content: 'hi' }], ...extra },
+        });
+    }
+    async function forwarded(): Promise<Record<string, unknown>> {
+        const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        return JSON.parse(String(init.body)) as Record<string, unknown>;
+    }
+
+    // ── 第 1 段:无歧义强转 → 请求照常成功 ──
+    it('max_tokens:"100" → 强转成数字 100 并放行', async () => {
+        upstreamOk();
+        const res = await POST(chat({ max_tokens: '100' }), ctx('chat', 'completions'));
+        expect(res.status).toBe(200);
+        expect((await forwarded()).max_tokens).toBe(100);
+    });
+
+    it('stream:"true" → 强转成布尔 true 并放行', async () => {
+        upstreamOk();
+        const res = await POST(chat({ stream: 'true' }), ctx('chat', 'completions'));
+        expect(res.status).toBe(200);
+        expect((await forwarded()).stream).toBe(true);
+    });
+
+    it('temperature:"0.6" → 强转成数字 0.6 并放行', async () => {
+        upstreamOk();
+        await POST(chat({ temperature: '0.6' }), ctx('chat', 'completions'));
+        expect((await forwarded()).temperature).toBe(0.6);
+    });
+
+    // ── 第 2 段:强转不了的 → 400,且不打上游 ──
+    it('max_tokens:-1 → 400,不打上游(实测四家渠道此处均 500)', async () => {
+        const res = await POST(chat({ max_tokens: -1 }), ctx('chat', 'completions'));
+        expect(res.status).toBe(400);
+        const j = (await res.json()) as { error: { type: string; param: string } };
+        expect(j.error.type).toBe('invalid_request_error');
+        expect(j.error.param).toBe('max_tokens');
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('messages 传字符串 → 400,不打上游', async () => {
+        const res = await POST(
+            makeReq('/chat/completions', { body: { model: 'kimi-k3', messages: 'hi' } }),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error: { param: string } }).error.param).toBe('messages');
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('logprobs 传整数(chat 规范是 bool)→ 400', async () => {
+        const res = await POST(chat({ logprobs: 2 }), ctx('chat', 'completions'));
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error: { param: string } }).error.param).toBe('logprobs');
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('model 传数字 → 400', async () => {
+        const res = await POST(
+            makeReq('/chat/completions', { body: { model: 123, messages: [] } }),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error: { param: string } }).error.param).toBe('model');
+    });
+
+    it('max_tokens 小数 → 400(uint 解析会 500)', async () => {
+        const res = await POST(chat({ max_tokens: 1.5 }), ctx('chat', 'completions'));
+        expect(res.status).toBe(400);
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    // ── 零回归:今天能跑通的一律不受影响 ──
+    it('null 视为未传,不拦(SDK 常把可选字段发成 null)', async () => {
+        upstreamOk();
+        const res = await POST(
+            chat({ max_tokens: null, temperature: null, stream: null, tools: null }),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(200);
+        expect(mockFetch).toHaveBeenCalled();
+    });
+
+    it('合法请求原样放行,字段不被改写', async () => {
+        upstreamOk();
+        const res = await POST(
+            chat({ max_tokens: 1024, temperature: 0.7, stream: false, seed: -5, n: 1 }),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(200);
+        const f = await forwarded();
+        expect(f.max_tokens).toBe(1024);
+        expect(f.temperature).toBe(0.7);
+        expect(f.stream).toBe(false);
+        expect(f.seed).toBe(-5); // seed 允许负数,只要是整数
+        expect(f.n).toBe(1);
+    });
+
+    it('守门只作用于 /chat/completions —— /messages 仍原样透传', async () => {
+        upstreamOk();
+        const res = await POST(
+            makeReq('/messages', { body: { model: 'kimi-k3', max_tokens: -1, messages: 'hi' } }),
+            ctx('messages'),
+        );
+        expect(res.status).toBe(200);
+        expect(mockFetch).toHaveBeenCalled();
+    });
+});
