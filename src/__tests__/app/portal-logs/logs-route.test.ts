@@ -90,6 +90,31 @@ describe('GET /api/portal/logs', () => {
         expect(d.rows[0].id).toBe(1); // 100 > 90
     });
 
+    it('缓存读写:other 有 cache_tokens/cache_creation_tokens → row 带 cacheReadTokens/cacheWriteTokens;缺省 0/0', async () => {
+        mockGetCurrentUser.mockResolvedValue(provisioned);
+        mockQueryLogs.mockResolvedValue({
+            items: [
+                makeLog({
+                    id: 1,
+                    type: 2,
+                    created_at: 100,
+                    model_name: 'claude-opus-5',
+                    // 线上实测形态:prompt_tokens=2 而缓存读 127,885(Anthropic 面 prompt 不含缓存)
+                    other: '{"model_price":-1,"cache_ratio":0.1,"cache_tokens":127885,"cache_creation_tokens":178}',
+                    prompt_tokens: 2,
+                    completion_tokens: 272,
+                }),
+                makeLog({ id: 2, type: 2, created_at: 90 }),
+            ],
+            total: 2,
+        });
+        const d = (await (await GET(req())).json()) as {
+            rows: Array<{ cacheReadTokens: number; cacheWriteTokens: number }>;
+        };
+        expect(d.rows[0]).toMatchObject({ cacheReadTokens: 127_885, cacheWriteTokens: 178 });
+        expect(d.rows[1]).toMatchObject({ cacheReadTokens: 0, cacheWriteTokens: 0 });
+    });
+
     it('折叠:failover 失败与成功同 request_id → 失败被藏', async () => {
         mockGetCurrentUser.mockResolvedValue(provisioned);
         mockQueryLogs.mockResolvedValue({

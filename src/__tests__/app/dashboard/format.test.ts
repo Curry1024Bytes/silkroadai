@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import {
     formatDuration,
     formatTokens,
+    formatCacheTokens,
     callResult,
     collapseRetriedFailures,
     sanitizeLogContent,
@@ -68,6 +69,30 @@ describe('formatTokens', () => {
         expect(formatTokens(100, 200)).toBe('100 / 200');
         expect(formatTokens(100, 0)).toBe('100 / 0');
         expect(formatTokens(0, 50)).toBe('0 / 50');
+    });
+});
+
+describe('formatCacheTokens', () => {
+    it('读写都 0(绝大多数调用)→ ""(不渲染副行)', () => {
+        expect(formatCacheTokens(0, 0)).toBe('');
+    });
+
+    it('读写都有 → "缓存读 X · 缓存写 Y"(千分位)', () => {
+        expect(formatCacheTokens(127_885, 1_304)).toBe('缓存读 127,885 · 缓存写 1,304');
+    });
+
+    it('只有读 / 只有写 → 单段(不显示 0 的那半)', () => {
+        expect(formatCacheTokens(127_885, 0)).toBe('缓存读 127,885');
+        expect(formatCacheTokens(0, 178)).toBe('缓存写 178');
+    });
+
+    it('按张计费(perImageBilled=true)→ ""(与主行 "—" 同语义)', () => {
+        expect(formatCacheTokens(127_885, 178, true)).toBe('');
+    });
+
+    it('负数 / 非有限值 → 按 0 处理', () => {
+        expect(formatCacheTokens(-5, NaN)).toBe('');
+        expect(formatCacheTokens(Infinity, 10)).toBe('缓存写 10');
     });
 });
 

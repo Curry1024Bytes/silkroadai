@@ -64,6 +64,26 @@ export function parseModelPrice(other: string | null | undefined): number | null
     }
 }
 
+/** 从日志行 `other` 取缓存 token 数:`cache_tokens` = 缓存读(命中),`cache_creation_tokens` =
+ *  缓存写(创建)。取不到 / 解析失败 → 0/0。注意语义随上游而异:Anthropic 面(usage_semantic=
+ *  anthropic)`prompt_tokens` 不含缓存部分(读写单列),OpenAI 面 cached 含在 prompt 里 ——
+ *  展示层只如实分列显示,不做加总推断。 */
+export function parseCacheTokens(other: string | null | undefined): { read: number; write: number } {
+    if (!other) return { read: 0, write: 0 };
+    try {
+        const o = JSON.parse(other) as { cache_tokens?: unknown; cache_creation_tokens?: unknown };
+        return {
+            read: typeof o.cache_tokens === 'number' && o.cache_tokens > 0 ? o.cache_tokens : 0,
+            write:
+                typeof o.cache_creation_tokens === 'number' && o.cache_creation_tokens > 0
+                    ? o.cache_creation_tokens
+                    : 0,
+        };
+    } catch {
+        return { read: 0, write: 0 };
+    }
+}
+
 /** 这次调用是否「按张计费」(生图 ModelPrice 定价)。
  *   - `true`  → token 数是噪声(上游回报极不一致)→ 展示层显示 "—"(如 Gemini 生图)。
  *   - `false` → 按 token 计费(ModelRatio,含 gpt-image-2 / az-gpt-image-2 / 所有 LLM)→ token 就是

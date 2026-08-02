@@ -22,7 +22,7 @@
  * 所有 LLM)token 就是计费依据 → 如实显示。¥ + 结果照常清晰。
  */
 import { useState } from 'react';
-import { formatDuration, formatTokens, callResult } from './format';
+import { formatDuration, formatTokens, formatCacheTokens, callResult } from './format';
 
 export interface CallRow {
     id: number;
@@ -36,6 +36,11 @@ export interface CallRow {
     useTimeMs: number;
     promptTokens: number;
     completionTokens: number;
+    /** 缓存读(命中)tokens — server 端从 `other.cache_tokens` 解析(缺省 0)。
+     *  Anthropic 面 promptTokens 不含这部分,是"输入 2 却 ¥0.07"的解释。 */
+    cacheReadTokens: number;
+    /** 缓存写(创建)tokens — server 端从 `other.cache_creation_tokens` 解析(缺省 0)。 */
+    cacheWriteTokens: number;
     /** 按张计费(生图 ModelPrice)→ token 列显示 "—"(token 是噪声);false = 按 token 计费
      *  (gpt-image-2 / LLM 等)→ 显示真实 token。由 server 端按 `other.model_price` 算好传入。 */
     perImageBilled: boolean;
@@ -167,6 +172,13 @@ function RequestIdCell({ value }: { value: string }) {
     );
 }
 
+/** 缓存读写副行(参照 new-api):仅当该调用真用了 prompt cache 才渲染,灰色小字不抢主信息。 */
+function CacheTokensLine({ row }: { row: CallRow }) {
+    const text = formatCacheTokens(row.cacheReadTokens, row.cacheWriteTokens, row.perImageBilled);
+    if (!text) return null;
+    return <span className="mt-0.5 block text-[11px] leading-tight text-minor-ink">{text}</span>;
+}
+
 /** A call row + its optional expanded error-detail sub-row. */
 function CallRowItem({
     row,
@@ -201,6 +213,7 @@ function CallRowItem({
                 <td className={`${cell} text-right tabular-nums text-muted-ink`}>{formatDuration(row.useTimeMs)}</td>
                 <td className={`${cell} text-right tabular-nums text-muted-ink`}>
                     {formatTokens(row.promptTokens, row.completionTokens, row.perImageBilled)}
+                    <CacheTokensLine row={row} />
                 </td>
                 <td className={`${cell} text-right tabular-nums font-medium`}>¥{row.costCny.toFixed(2)}</td>
                 <td className={`${cell} text-center`}>

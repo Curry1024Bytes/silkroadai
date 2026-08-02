@@ -18,7 +18,12 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { getCurrentUser } from '@/lib/auth/session';
 import { queryLogs, quotaToCny, type NewApiUsageLog } from '@/lib/newapi/client';
-import { collapseRetriedFailures, sanitizeLogContent, isPerImageBilled } from '@/lib/newapi/log-display';
+import {
+    collapseRetriedFailures,
+    sanitizeLogContent,
+    isPerImageBilled,
+    parseCacheTokens,
+} from '@/lib/newapi/log-display';
 
 export const runtime = 'nodejs';
 
@@ -50,6 +55,9 @@ export interface LogRow {
     useTimeMs: number;
     promptTokens: number;
     completionTokens: number;
+    /** 缓存读 / 缓存写 tokens(other.cache_tokens / cache_creation_tokens,缺省 0)。 */
+    cacheReadTokens: number;
+    cacheWriteTokens: number;
     /** 按张计费(生图 ModelPrice)→ token 列显示 "—";false = 按 token 计费 → 显示真实 token。 */
     perImageBilled: boolean;
     quota: number;
@@ -59,6 +67,7 @@ export interface LogRow {
 }
 
 function toLogRow(log: NewApiUsageLog): LogRow {
+    const cache = parseCacheTokens(log.other);
     return {
         id: log.id,
         createdAt: log.created_at,
@@ -68,6 +77,8 @@ function toLogRow(log: NewApiUsageLog): LogRow {
         useTimeMs: log.use_time * 1000, // new-api use_time 是【秒】
         promptTokens: log.prompt_tokens,
         completionTokens: log.completion_tokens,
+        cacheReadTokens: cache.read,
+        cacheWriteTokens: cache.write,
         perImageBilled: isPerImageBilled(log.other, log.model_name), // 按张计费才藏 token
         quota: log.quota,
         costCny: quotaToCny(log.quota),

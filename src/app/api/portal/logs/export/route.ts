@@ -17,7 +17,12 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { getCurrentUser } from '@/lib/auth/session';
 import { queryLogs, quotaToCny, type NewApiUsageLog } from '@/lib/newapi/client';
-import { collapseRetriedFailures, sanitizeLogContent, isPerImageBilled } from '@/lib/newapi/log-display';
+import {
+    collapseRetriedFailures,
+    sanitizeLogContent,
+    isPerImageBilled,
+    parseCacheTokens,
+} from '@/lib/newapi/log-display';
 
 export const runtime = 'nodejs';
 
@@ -48,6 +53,8 @@ const HEADER = [
     '时长(秒)',
     '输入 Tokens',
     '输出 Tokens',
+    '缓存读 Tokens',
+    '缓存写 Tokens',
     '消耗(元)',
     '结果',
     '详情',
@@ -78,6 +85,7 @@ function csvCell(value: string | number): string {
 
 function toCsvRow(log: NewApiUsageLog): string {
     const perImage = isPerImageBilled(log.other, log.model_name);
+    const cache = parseCacheTokens(log.other);
     return [
         BEIJING_TIME.format(new Date(log.created_at * 1000)),
         log.model_name || '',
@@ -87,6 +95,9 @@ function toCsvRow(log: NewApiUsageLog): string {
         // 按张计费(生图 ModelPrice)时 token 是噪声,与日志页 "—" 同语义 → 留空
         perImage ? '' : log.prompt_tokens,
         perImage ? '' : log.completion_tokens,
+        // 缓存读写与页面同语义:按张计费留空;0 也如实写 0(CSV 是对账口径,不藏)
+        perImage ? '' : cache.read,
+        perImage ? '' : cache.write,
         quotaToCny(log.quota).toFixed(4),
         log.type === 5 ? '失败' : '成功',
         log.type === 5 ? sanitizeLogContent(log.content) : '',

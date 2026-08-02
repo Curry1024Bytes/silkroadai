@@ -104,6 +104,8 @@ describe('GET /api/portal/logs/export', () => {
             .trimEnd()
             .split('\r\n');
         expect(lines[0]).toContain('时间(北京)');
+        expect(lines[0]).toContain('缓存读 Tokens');
+        expect(lines[0]).toContain('缓存写 Tokens');
         expect(lines[0]).toContain('消耗(元)');
         expect(lines).toHaveLength(3); // 表头 + 2 行
         expect(lines[1]).toContain('gpt-5.5'); // created_at 100 > 90 → 靠前
