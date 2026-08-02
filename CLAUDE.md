@@ -411,6 +411,15 @@ LiteLLM 同时支持 user-level 和 key-level 预算。我们只用 key-level(�
 
 ---
 
+## 分支与发布规则 — **必读**
+
+- **`main`**:只用于同步上游变更,保持为 upstream mirror。不要在 `main` 上做本项目业务改动,也不要从 `main` 直接上线。
+- **`dev`**:日常开发与集成分支。本项目自研改动、从上游同步来的变更、merge/rebase 冲突解决,都在 `dev` 完成。
+- **`prod`**:线上发布分支。只有 `dev` 测试通过后,才把确认要上线的内容同步到 `prod`;VPS 生产部署必须拉 `prod`。
+- **发布顺序**:upstream → `main` → 合入 `dev` 并解决冲突 → 测试验证 → 同步到 `prod` → VPS 手动部署。
+
+---
+
 ## 编码规范
 
 - **TypeScript strict** — 不允许 `any`,用 `unknown` + zod 校验
@@ -421,7 +430,7 @@ LiteLLM 同时支持 user-level 和 key-level 预算。我们只用 key-level(�
     - `feat(auth): add login endpoint`
     - `fix(litellm): handle key not found`
     - `chore: update deps`
-- **分支** — 主分支 `main`,功能分支 `feat/xxx`
+- **临时分支** — 需要拆任务时用 `feat/xxx` / `fix/xxx`,最终先合回 `dev`;不要绕过 `dev` 直接进 `prod`
 
 ---
 
@@ -463,11 +472,23 @@ pnpm lint
 # 部署到 VPS(上线后)
 # ⚠️ CI 实际**不**自动部署 — `.github/workflows/ci.yml` 只跑 typecheck/lint/test;
 #    `release.yml` 仅在 `v*` tag 触发 Docker 镜像 push 到 dockerhub。
-#    main push 后必须手动 deploy(W7 D4 PR-R 实测确认 — 2026-05-09):
-ssh vps "cd /opt/silkroadai-portal && git pull && docker compose -f docker-compose.prod.yml up -d --build portal"
+#    prod 更新后必须手动 deploy(W7 D4 PR-R 实测确认 — 2026-05-09):
+ssh vps "cd /opt/silkroadai-portal && git checkout prod && git pull --ff-only origin prod && docker compose -f docker-compose.prod.yml up -d --build portal"
 # 注:实际 VPS 路径是 /opt/silkroadai-portal(不是 silkroad-portal),
-#     实际 compose 文件是 docker-compose.prod.yml,服务名 portal。
+#     实际 compose 文件是 docker-compose.prod.yml,服务名 portal。线上不从 main 发布。
 ```
+
+上线前配置检查提醒:
+
+- 用户说「上线前检查」「部署前检查」时,必须核对 VPS 真实配置 `/opt/silkroadai-portal/.env`,不要只看仓库模板。
+- 新服务器可先 `cp .env.prod.example .env`,但所有 `CHANGE_ME` 必须人工填真实值。
+- Google/GitHub 登录必查:`APP_URL` / `NEXT_PUBLIC_APP_URL` / `BRAND_COOKIE_DOMAIN` / `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` / `GOOGLE_OAUTH_REDIRECT_URI` / `GITHUB_OAUTH_CLIENT_ID` / `GITHUB_OAUTH_CLIENT_SECRET` / `GITHUB_OAUTH_REDIRECT_URI`。
+- 生产 Google redirect 必须逐字为 `https://llmroute.club/api/auth/oauth/google/callback`,并且 Google Cloud Console OAuth Web Client 里也要填同一个 URI。
+- 生产 GitHub callback 必须逐字为 `https://llmroute.club/api/auth/oauth/github/callback`,并且 GitHub OAuth App 的 Authorization callback URL 里也要填同一个 URI。
+- OAuth 变量是运行时变量,改完重启 portal 即可;如果同时改了 `NEXT_PUBLIC_APP_URL`,必须 `docker compose -f docker-compose.prod.yml up -d --build portal`。
+- 验证命令:`curl -I https://llmroute.club/api/auth/oauth/google/start`,期望 302 到 `accounts.google.com`;`curl -I https://llmroute.club/api/auth/oauth/github/start`,期望 302 到 `github.com/login/oauth/authorize`。
+- 支付上线必查:`PAYMENT_PROVIDERS=easypay` / `ENABLED_PAYMENT_TYPES=alipay,wxpay` / `EASY_PAY_PID=2026072211025295` / `EASY_PAY_PKEY` / `EASY_PAY_API_BASE=https://zpayz.cn` / `EASY_PAY_NOTIFY_URL=https://llmroute.club/api/easy-pay/notify` / `EASY_PAY_RETURN_URL=https://llmroute.club/pay/result`。`EASY_PAY_API_BASE` 不带末尾 `/`;`EASY_PAY_PKEY` 不进 git,只填 VPS `.env`。
+- zpayz 易支付对应关系:创建支付走 `POST /mapi.php`(不是 `/submit.php`),notify 是 `GET /api/easy-pay/notify?...` 且必须返回纯 `success`;成功响应的 `payurl` / `qrcode` / `img` 都已兼容。zpayz 文档订单查询示例是 GET 带 `key`,代码当前为避免密钥进 URL 日志用 POST 查询;查询不是入账主路径,上线 smoke 若发现不兼容再调整。
 
 ---
 
