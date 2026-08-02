@@ -50,7 +50,8 @@ export default function EnterpriseDocsPage() {
                     ['models', '模型与计费'],
                     ['generate', '视频生成 API'],
                     ['refs', '参考输入'],
-                    ['assets', '素材库'],
+                    ['volc', '火山渠道'],
+                    ['realperson', '真人认证'],
                     ['errors', '错误码'],
                     ['faq', 'FAQ'],
                 ].map(([id, label]) => (
@@ -58,6 +59,9 @@ export default function EnterpriseDocsPage() {
                         {label}
                     </a>
                 ))}
+                <a href="/enterprise/docs/assets" className="mr-3 font-medium text-blue-600 hover:underline">
+                    素材库文档 →
+                </a>
             </nav>
 
             <Section id="quickstart" title="1. 快速开始">
@@ -378,7 +382,7 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
             <Section id="refs" title="4. 参考输入(图生 / 首尾帧 / 多图 / 视频 / 音频)">
                 <p>
                     带任意参考输入即自动进入参考模式,无需改模型名。图片/视频/音频均支持公网 URL、base64 data URL、或素材
-                    ID(第 5 节)。
+                    ID(见素材库文档)。
                 </p>
                 <div className="overflow-x-auto">
                     <table className="w-full text-sm">
@@ -434,144 +438,142 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                 <p>参考图建议短边 ≥512px、jpg/png 格式;尺寸过小或格式异常会被上游拒绝并提示。</p>
             </Section>
 
-            <Section id="assets" title="5. 素材库">
+            <Section id="volc" title="5. 火山渠道(volc · 火山方舟原生 + AK/SK 签名)">
                 <p>
-                    素材库用于集中管理生成要用的参考图/视频/音频:上传一次,在任意生成请求中用素材 ID
-                    反复引用,并可打组管理 (对标火山方舟素材库 API)。两种用法:
+                    <b>火山渠道</b>是独立渠道(与国内/海外/proMax 平级),提供<b>真人视觉认证</b>与单模型{' '}
+                    <Code>doubao-seedance-2.0</Code> 视频,采用<b>火山方舟原生接口形态</b> +{' '}
+                    <b>火山官方 AK/SK 签名(SignerV4)</b>鉴权 —— 现有火山官方 SDK / 脚本可零改动接入。需在「API
+                    密钥」页开通并生成 AK/SK,专用密钥,与 sk-ent 并存互不影响。
                 </p>
+                <p className="font-medium text-gray-900">config 关键字段(以火山官方素材库/方舟脚本为例):</p>
+                <Pre>{`{
+  "API_URL":     "${BASE}",
+  "API_HOST":    "${BASE.replace(/^https?:\/\//, '')}",
+  "API_PROTOCOL":"http",
+  "API_PATH":    "/api",          // 素材库接口用 /api;视频接口签名时用 /api/v3/...(见下)
+  "API_SERVICE": "ark",
+  "API_VERSION": "2024-01-01",
+  "API_REGION":  "cn-beijing",
+  "API_AK":      "ak_ent_…",      // 「API 密钥」页生成
+  "API_SK":      "sk_ent_…"       // 只显示一次,请立即保存
+}`}</Pre>
                 <ul className="list-disc space-y-1 pl-5">
                     <li>
-                        <b>控制台</b>:「素材库」页上传本地文件、建组、改名、删除、一键复制素材 ID;
+                        <b>AK/SK 不是 Bearer</b> —— 必须做完整 SignerV4 签名(火山官方脚本自带)。切勿把 SK 当作{' '}
+                        <Code>Bearer &lt;SK&gt;</Code> 直接使用,否则 401。
                     </li>
                     <li>
-                        <b>API</b>:<Code>{`POST ${BASE}/api?Action=<action>&Version=2024-01-01&ns=asset_manager`}</Code>
-                        ,JSON body,同一把 <Code>Bearer sk-ent-…</Code> 鉴权,响应为{' '}
-                        <Code>{`{ResponseMetadata, Result}`}</Code> 结构。
+                        签名的 <Code>path</Code> 用各接口真实路径:素材库 <Code>/api</Code>、视频提交{' '}
+                        <Code>/api/v3/contents/generations/tasks</Code>、视频查询{' '}
+                        <Code>{'/api/v3/contents/generations/tasks/{id}'}</Code>。
                     </li>
                 </ul>
-                <p className="font-medium text-gray-900">生成中引用(核心用法):</p>
-                <Pre>{`# 素材 ID(asset-…)可放进任意媒体字段;素材组 ID(group-…)放进 images 数组按序展开全部成员
-{"model":"seedance-2-0","prompt":"…","images":["asset-20260719153358-db513a"]}
-{"model":"seedance-2-0","prompt":"…","first_frame":"asset-20260719153358-db513a"}
-{"model":"seedance-2-0-fast","prompt":"…","images":["group-20260719153506-b945c6"]}`}</Pre>
                 <p className="font-medium text-gray-900">
-                    Action 一览(公共参数:query 里 Action 必填、Version=2024-01-01、ns=asset_manager):
+                    视频(火山方舟形):<Code>POST /api/v3/contents/generations/tasks</Code>
+                </p>
+                <Pre>{`# body 为火山方舟原生形(model + content 数组);签名 path=/api/v3/contents/generations/tasks
+{
+  "model": "doubao-seedance-2.0",
+  "content": [{"type": "text", "text": "一只橘猫在窗台上打哈欠"}],
+  "resolution": "720p",     // 720p / 1080p / 4k
+  "duration": 5             // 5 / 10 / 15
+}
+# → {"id":"task_…"}   然后 GET /api/v3/contents/generations/tasks/{id} 轮询
+# → {"status":"succeeded","content":{"video_url":"https://…火山直链…"}}`}</Pre>
+                <ul className="list-disc space-y-1 pl-5">
+                    <li>
+                        单模型 <Code>doubao-seedance-2.0</Code>,计费与国内版同价(按 <Code>usage.completion_tokens</Code>
+                        )。参考图/视频/音频写进 <Code>content</Code> 数组(<Code>image_url</Code> /{' '}
+                        <Code>video_url</Code> / <Code>audio_url</Code>,<Code>url</Code> 支持公网直链、素材 ID)。
+                    </li>
+                    <li>
+                        成片 <Code>content.video_url</Code> 为<b>火山官方签名直链</b>(有有效期,请及时下载转存)。
+                    </li>
+                </ul>
+            </Section>
+
+            <Section id="realperson" title="6. 火山渠道 · 真人视觉认证">
+                <p>
+                    在 AIGC 视频里使用<b>真人的脸</b>时,火山要求先由本人完成一次<b>活体认证授权</b>(合规,无法绕过)。
+                    火山渠道专属,采用 AK/SK 签名(Action 形态),两步:
                 </p>
                 <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                         <thead>
                             <tr>
-                                <Th>Action</Th>
-                                <Th>请求体</Th>
-                                <Th>返回 Result</Th>
+                                <Th>步骤</Th>
+                                <Th>Action(POST /api)</Th>
+                                <Th>说明</Th>
                             </tr>
                         </thead>
                         <tbody>
                             <tr>
+                                <Td>1. 建会话</Td>
                                 <Td>
-                                    <Code>CreateAsset</Code>
+                                    <Code>CreateVisualValidateSession</Code>
                                 </Td>
                                 <Td>
-                                    AssetType(image/video/audio)、URL(公网直链,≤100MB)、Name(≤100)、Description?、
-                                    GroupId?
+                                    返回 <Code>BytedToken</Code> + <Code>H5Link</Code>(约 120s 有效)+{' '}
+                                    <Code>ExpiresIn</Code>
                                 </Td>
-                                <Td>{`{Id:"asset-…", Status:"active", URL:"托管直链"}`}</Td>
                             </tr>
                             <tr>
+                                <Td>2. 真人核身</Td>
+                                <Td>—</Td>
                                 <Td>
-                                    <Code>GetAsset</Code>
+                                    被拍摄<b>本人</b>用手机打开 <Code>H5Link</Code>
+                                    ,登录自己的火山账号完成人脸活体(此步无法用 API 替代)
                                 </Td>
-                                <Td>Id</Td>
-                                <Td>素材详情(Name/AssetType/URL/Bytes/GroupId/CreatedAt)</Td>
                             </tr>
                             <tr>
+                                <Td>3. 取结果</Td>
                                 <Td>
-                                    <Code>UpdateAsset</Code>
+                                    <Code>GetVisualValidateResult</Code>
                                 </Td>
-                                <Td>Id、Name?、Description?、GroupId?(null 解组)</Td>
-                                <Td>{`{}`}</Td>
-                            </tr>
-                            <tr>
                                 <Td>
-                                    <Code>DeleteAsset</Code>
+                                    入参 <Code>BytedToken</Code> → 返回真人素材组 <Code>GroupId</Code>(未完成/过期返
+                                    ValidateNotReady,可轮询)
                                 </Td>
-                                <Td>Id</Td>
-                                <Td>{`{}`}(引用它的后续生成会报素材不存在)</Td>
-                            </tr>
-                            <tr>
-                                <Td>
-                                    <Code>ListAssets</Code>
-                                </Td>
-                                <Td>GroupId?、AssetType?、PageNumber?(默认1)、PageSize?(默认20,≤100)</Td>
-                                <Td>{`{Items:[…], Total, PageNumber, PageSize}`}</Td>
-                            </tr>
-                            <tr>
-                                <Td>
-                                    <Code>CreateAssetGroup</Code>
-                                </Td>
-                                <Td>Name(≤100)、Description?</Td>
-                                <Td>{`{Id:"group-…"}`}</Td>
-                            </tr>
-                            <tr>
-                                <Td>
-                                    <Code>GetAssetGroup</Code>
-                                </Td>
-                                <Td>Id</Td>
-                                <Td>组详情 + AssetCount</Td>
-                            </tr>
-                            <tr>
-                                <Td>
-                                    <Code>UpdateAssetGroup</Code>
-                                </Td>
-                                <Td>Id、Name?、Description?</Td>
-                                <Td>{`{}`}</Td>
-                            </tr>
-                            <tr>
-                                <Td>
-                                    <Code>DeleteAssetGroup</Code>
-                                </Td>
-                                <Td>Id</Td>
-                                <Td>{`{}`}(仅解散组,素材保留为未分组)</Td>
-                            </tr>
-                            <tr>
-                                <Td>
-                                    <Code>ListAssetGroups</Code>
-                                </Td>
-                                <Td>PageNumber?、PageSize?</Td>
-                                <Td>{`{Items:[…], Total, …}`}</Td>
                             </tr>
                         </tbody>
                     </table>
                 </div>
-                <p className="font-medium text-gray-900">示例:注册素材 → 建组 → 归组 → 生成引用</p>
-                <Pre>{`# 注册素材(URL 需公网可抓;本地文件请在控制台「素材库」页直接上传)
-curl -X POST "${BASE}/api?Action=CreateAsset&Version=2024-01-01&ns=asset_manager" \\
-  -H "Authorization: Bearer sk-ent-…" -H "Content-Type: application/json" \\
-  -d '{"AssetType":"image","URL":"https://…/hero.png","Name":"主角图"}'
-# → Result.Id = "asset-…"
+                <p className="font-medium text-gray-900">拿到 GroupId 之后(真人素材 → 视频):</p>
+                <ul className="list-disc space-y-1 pl-5">
+                    <li>
+                        往该 <Code>GroupId</Code> 用 <Code>CreateAsset</Code> 上传真人的图/视频,轮询至 ACTIVE,拿到{' '}
+                        <Code>asset-…</Code> 素材 ID(素材库 API 见{' '}
+                        <a href="/enterprise/docs/assets" className="text-blue-600 hover:underline">
+                            素材库文档
+                        </a>
+                        );
+                    </li>
+                    <li>
+                        视频生成时在 <Code>content</Code> 里用 <Code>{`"image_url":{"url":"asset-…"}`}</Code>{' '}
+                        引用该真人素材(role 可设 <Code>reference_image</Code> / <Code>first_frame</Code>);
+                    </li>
+                    <li>同一演员每个资产组只需认证一次,后续换妆造不必重认证。</li>
+                </ul>
+                <Pre>{`# 1) 建会话(火山官方脚本 CreateVisualValidateSession,AK/SK 签名,path=/api)
+# → Result: {"BytedToken":"…","H5Link":"https://ark.volcengine.com/…","ExpiresIn":120}
 
-# 建素材组
-curl -X POST "${BASE}/api?Action=CreateAssetGroup&Version=2024-01-01&ns=asset_manager" \\
-  -H "Authorization: Bearer sk-ent-…" -H "Content-Type: application/json" \\
-  -d '{"Name":"主角参考组"}'
-# → Result.Id = "group-…"
+# 2) 把 H5Link 交给真人用手机打开、登录火山账号完成活体
 
-# 素材归组
-curl -X POST "${BASE}/api?Action=UpdateAsset&Version=2024-01-01&ns=asset_manager" \\
-  -H "Authorization: Bearer sk-ent-…" -H "Content-Type: application/json" \\
-  -d '{"Id":"asset-…","GroupId":"group-…"}'
-
-# 生成里引用整组
-curl -X POST ${BASE}/v1/video/generations \\
-  -H "Authorization: Bearer sk-ent-…" -H "Content-Type: application/json" \\
-  -d '{"model":"seedance-2-0","prompt":"主角在雨中行走","images":["group-…"]}'`}</Pre>
-                <p>
-                    配额:默认 500 个素材 / 总量 5GB / 单文件
-                    100MB(需扩容联系对接人)。素材托管在平台对象存储,长期有效(区别于成片直链 24h)。
-                </p>
+# 3) 取结果 GetVisualValidateResult(入参 BytedToken)
+# → Result: {"GroupId":"group-…"}    (真人素材组,GroupType=LivenessFace)`}</Pre>
             </Section>
 
-            <Section id="errors" title="6. 错误码">
+            <div className="rounded-xl border border-blue-200 bg-blue-50 p-5 text-sm">
+                <p className="font-semibold text-blue-900">素材库文档已独立成页</p>
+                <p className="mt-1 text-blue-900">
+                    素材库(上传/建组/引用/Action 一览/真人素材)完整说明见{' '}
+                    <a href="/enterprise/docs/assets" className="font-medium text-blue-700 underline">
+                        素材库文档 →
+                    </a>
+                </p>
+            </div>
+
+            <Section id="errors" title="7. 错误码">
                 <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                         <thead>
@@ -608,13 +610,19 @@ curl -X POST ${BASE}/v1/video/generations \\
                                 <Td>服务端瞬时问题或账号配置未完成 —— 稍后重试,持续出现联系对接人</Td>
                             </tr>
                             <tr>
+                                <Td>403</Td>
+                                <Td>ChannelNotEnabled</Td>
+                                <Td>(火山渠道)真人认证等专属服务未开通 volc —— 联系对接人开通火山渠道</Td>
+                            </tr>
+                            <tr>
                                 <Td>4xx/5xx</Td>
                                 <Td>
-                                    (素材库)UnauthorizedOperation / InvalidParameter / AssetNotFound / GroupNotFound /
-                                    QuotaExceeded
+                                    (素材库/火山)UnauthorizedOperation / InvalidParameter / AssetNotFound /
+                                    GroupNotFound / ValidateNotReady / QuotaExceeded
                                 </Td>
                                 <Td>
-                                    素材库 API 的错误在 <Code>ResponseMetadata.Error</Code> 里({`{Code, Message}`})
+                                    火山 Action 形接口的错误在 <Code>ResponseMetadata.Error</Code> 里(
+                                    {`{Code, Message}`})
                                 </Td>
                             </tr>
                         </tbody>
@@ -622,7 +630,7 @@ curl -X POST ${BASE}/v1/video/generations \\
                 </div>
             </Section>
 
-            <Section id="faq" title="7. FAQ">
+            <Section id="faq" title="8. FAQ">
                 <div>
                     <p className="font-medium">Q:任务失败,fail_reason 提示 sensitive information?</p>
                     <p className="text-gray-600">

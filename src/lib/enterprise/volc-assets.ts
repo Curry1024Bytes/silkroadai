@@ -63,9 +63,20 @@ async function call<T>(method: string, path: string, body?: Record<string, unkno
 const createAssetSchema = z.object({
     AssetType: z.enum(['Image', 'Video', 'Audio']),
     URL: z.string().min(1).max(2000),
-    Name: z.string().trim().min(1).max(64),
+    // 火山官方 Name 可选(不传时从 URL 文件名派生,始终给 provider 一个 assetName)
+    Name: z.string().trim().min(1).max(64).optional(),
     GroupId: z.string().trim().min(1).max(80),
 });
+
+/** Name 缺省时从 URL 末段文件名派生素材名(provider 侧 assetName 恒非空)。 */
+function deriveAssetName(url: string): string {
+    try {
+        const base = new URL(url).pathname.split('/').filter(Boolean).pop() || '';
+        return decodeURIComponent(base).slice(0, 64) || 'asset';
+    } catch {
+        return 'asset';
+    }
+}
 const idSchema = z.object({ Id: z.string().trim().min(1).max(80) });
 const listAssetsSchema = z.object({
     GroupId: z.string().trim().max(80).optional(),
@@ -75,6 +86,7 @@ const listAssetsSchema = z.object({
             GroupIds: z.array(z.string()).optional(),
             GroupType: z.string().optional(),
             Statuses: z.array(z.string()).optional(),
+            Name: z.string().optional(),
         })
         .optional(),
     PageNumber: z.coerce.number().int().min(1).default(1),
@@ -89,7 +101,13 @@ const updateGroupSchema = idSchema.extend({
     Description: z.string().trim().max(300).nullable().optional(),
 });
 const listGroupsSchema = z.object({
-    Filter: z.object({ GroupIds: z.array(z.string()).optional(), GroupType: z.string().optional() }).optional(),
+    Filter: z
+        .object({
+            GroupIds: z.array(z.string()).optional(),
+            GroupType: z.string().optional(),
+            Name: z.string().optional(),
+        })
+        .optional(),
     PageNumber: z.coerce.number().int().min(1).default(1),
     PageSize: z.coerce.number().int().min(1).max(100).default(20),
 });
@@ -155,6 +173,8 @@ export async function handleVolcAssetAction(action: string, body: unknown): Prom
                     pageSize: p.data.PageSize,
                     ...(p.data.Filter?.GroupIds ? { groupIds: p.data.Filter.GroupIds } : {}),
                     ...(p.data.Filter?.GroupType ? { groupType: p.data.Filter.GroupType } : {}),
+                    // 火山官方 Filter.Name → provider 包装层 groupName(官方 727 文档:模糊搜索)
+                    ...(p.data.Filter?.Name ? { groupName: p.data.Filter.Name } : {}),
                 },
             );
             return {
@@ -177,7 +197,8 @@ export async function handleVolcAssetAction(action: string, body: unknown): Prom
                 ...(p.data.Name !== undefined ? { groupName: p.data.Name } : {}),
                 ...(p.data.Description !== undefined ? { description: p.data.Description } : {}),
             });
-            return {};
+            // 火山官方 Update 返回被更新对象的 Id(客户脚本据此从响应体确认更新目标)
+            return { Id: p.data.Id };
         }
         case 'DeleteAssetGroup': {
             const p = idSchema.safeParse(body);
@@ -192,10 +213,11 @@ export async function handleVolcAssetAction(action: string, body: unknown): Prom
                 groupId: p.data.GroupId,
                 assetUrl: p.data.URL,
                 assetType: p.data.AssetType,
-                assetName: p.data.Name,
+                assetName: p.data.Name ?? deriveAssetName(p.data.URL),
             });
-            // provider CreateAsset data 为 assetId 字符串(素材处理中,status=PROCESSING)
-            return { Id: d, Status: 'PROCESSING' };
+            // 火山官方 CreateAsset 仅返 Id(异步处理中,URL/状态经 GetAsset 轮询获取)。不带
+            // Status 等额外字段 —— 客户脚本按官方契约严格校验 Result 仅含 Id。
+            return { Id: d };
         }
         case 'ListAssets': {
             const p = listAssetsSchema.safeParse(body);
@@ -209,7 +231,13 @@ export async function handleVolcAssetAction(action: string, body: unknown): Prom
                     pageSize: p.data.PageSize,
                     ...(groupIds ? { groupIds } : {}),
                     ...(p.data.Filter?.GroupType ? { groupType: p.data.Filter.GroupType } : {}),
-                    ...(p.data.Filter?.Statuses ? { statuses: p.data.Filter.Statuses } : {}),
+                    // provider 状态枚举为大写(PROCESSING/ACTIVE/FAILED);客户脚本按火山官方
+                    // 发 Title-case(Active/Processing/Failed)→ 归一大写再转发,免 provider 400。
+                    ...(p.data.Filter?.Statuses
+                        ? { statuses: p.data.Filter.Statuses.map((s) => s.toUpperCase()) }
+                        : {}),
+                    // 火山官方 Filter.Name → provider 包装层 assetName(官方 727 文档:模糊搜索)
+                    ...(p.data.Filter?.Name ? { assetName: p.data.Filter.Name } : {}),
                 },
             );
             return {
@@ -229,7 +257,8 @@ export async function handleVolcAssetAction(action: string, body: unknown): Prom
             const p = idSchema.extend({ Name: z.string().trim().min(1).max(64) }).safeParse(body);
             if (!p.success) badParam();
             await call('PUT', `/api/v1/asset/${encodeURIComponent(p.data.Id)}`, { assetName: p.data.Name });
-            return {};
+            // 火山官方 Update 返回被更新对象的 Id(客户脚本据此从响应体确认更新目标)
+            return { Id: p.data.Id };
         }
         case 'DeleteAsset': {
             const p = idSchema.safeParse(body);

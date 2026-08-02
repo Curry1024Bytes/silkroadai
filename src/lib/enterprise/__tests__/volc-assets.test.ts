@@ -18,15 +18,15 @@ afterEach(() => {
 const okResp = (data: unknown) => new Response(JSON.stringify({ code: 0, message: 'success', data }), { status: 200 });
 
 describe('CreateAsset', () => {
-    it('翻译到 POST /api/v1/asset + 返 provider assetId,Status=PROCESSING', async () => {
+    it('翻译到 POST /api/v1/asset + Result 仅含 Id(对齐火山官方,不带 Status)', async () => {
         const fetchMock = vi.spyOn(global, 'fetch').mockResolvedValue(okResp('asset-20260729-xyz'));
         const r = (await handleVolcAssetAction('CreateAsset', {
             GroupId: 'group-1',
             URL: 'https://x/a.png',
             AssetType: 'Image',
             Name: 'face.png',
-        })) as { Id: string; Status: string };
-        expect(r).toEqual({ Id: 'asset-20260729-xyz', Status: 'PROCESSING' });
+        })) as { Id: string };
+        expect(r).toEqual({ Id: 'asset-20260729-xyz' }); // 仅 Id,无 Status/URL 等额外字段
         const [url, init] = fetchMock.mock.calls[0];
         expect(url).toBe(`${BASE}/api/v1/asset`);
         const sent = JSON.parse((init as RequestInit).body as string);
@@ -37,6 +37,18 @@ describe('CreateAsset', () => {
             assetName: 'face.png',
         });
         expect((init as RequestInit).headers).toMatchObject({ Authorization: 'Bearer ak-test' });
+    });
+
+    it('不传 Name → 从 URL 文件名派生 assetName(火山官方 Name 可选)', async () => {
+        const fetchMock = vi.spyOn(global, 'fetch').mockResolvedValue(okResp('asset-1'));
+        const r = (await handleVolcAssetAction('CreateAsset', {
+            GroupId: 'group-1',
+            URL: 'https://bk.tos-cn-beijing.volces.com/ai/111/5197975902814d19b23d9449483b1fac.jpg',
+            AssetType: 'Image',
+        })) as { Id: string };
+        expect(r).toEqual({ Id: 'asset-1' });
+        const sent = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+        expect(sent.assetName).toBe('5197975902814d19b23d9449483b1fac.jpg');
     });
 
     it('缺 GroupId → 400 InvalidParameter,不打上游', async () => {
@@ -108,6 +120,61 @@ describe('ListAssets', () => {
             groupType: 'LivenessFace',
             statuses: ['ACTIVE'],
         });
+    });
+
+    it('Statuses Title-case(Active)→ 归一大写转发 provider(免 400)', async () => {
+        const fetchMock = vi
+            .spyOn(global, 'fetch')
+            .mockResolvedValue(okResp({ result: [], total: 0, pageNo: 1, pageSize: 5 }));
+        await handleVolcAssetAction('ListAssets', {
+            Filter: { GroupIds: ['g1'], GroupType: 'AIGC', Statuses: ['Active'] },
+            PageNumber: 1,
+            PageSize: 5,
+        });
+        const sent = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+        expect(sent.statuses).toEqual(['ACTIVE']);
+    });
+
+    it('Filter.Name → provider assetName(模糊搜索过滤)', async () => {
+        const fetchMock = vi
+            .spyOn(global, 'fetch')
+            .mockResolvedValue(okResp({ result: [], total: 0, pageNo: 1, pageSize: 5 }));
+        await handleVolcAssetAction('ListAssets', {
+            Filter: { GroupIds: ['g1'], GroupType: 'AIGC', Name: 'flow-asset-updated-x' },
+            PageNumber: 1,
+            PageSize: 5,
+        });
+        const sent = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+        expect(sent.assetName).toBe('flow-asset-updated-x');
+        expect(sent.groupName).toBeUndefined();
+    });
+
+    it('ListAssetGroups Filter.Name → provider groupName(模糊搜索过滤)', async () => {
+        const fetchMock = vi
+            .spyOn(global, 'fetch')
+            .mockResolvedValue(okResp({ result: [], total: 0, pageNo: 1, pageSize: 5 }));
+        await handleVolcAssetAction('ListAssetGroups', {
+            Filter: { GroupIds: ['g1'], GroupType: 'AIGC', Name: 'flow-group-updated-x' },
+            PageNumber: 1,
+            PageSize: 5,
+        });
+        const sent = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+        expect(sent.groupName).toBe('flow-group-updated-x');
+        expect(sent.assetName).toBeUndefined();
+    });
+});
+
+describe('Update 响应回 Id(对齐火山官方,客户脚本据此确认更新对象)', () => {
+    it('UpdateAsset → Result.Id == 被更新素材 Id', async () => {
+        vi.spyOn(global, 'fetch').mockResolvedValue(okResp(true));
+        const r = await handleVolcAssetAction('UpdateAsset', { Id: 'asset-9', Name: '新名' });
+        expect(r).toEqual({ Id: 'asset-9' });
+    });
+
+    it('UpdateAssetGroup → Result.Id == 被更新组 Id', async () => {
+        vi.spyOn(global, 'fetch').mockResolvedValue(okResp(true));
+        const r = await handleVolcAssetAction('UpdateAssetGroup', { Id: 'group-9', Name: '新组名' });
+        expect(r).toEqual({ Id: 'group-9' });
     });
 });
 

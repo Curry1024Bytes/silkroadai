@@ -4,8 +4,8 @@
  * 客户诉求:API 返回 token usage 跟实际扣费。token usage 响应体里本来就有
  * (OpenAI 形 `usage` 字段;流式加 `stream_options.include_usage`);但【实际扣费】
  * 是 new-api 请求结束后 post-flight 记账的,响应发出时账还没落 —— 没法放进响应本身。
- * 所以给查询式:响应头 `x-oneapi-request-id` ↔ 日志行 `request_id` 对账,
- * 本端点按 request_id 单查 / 按时间段批量拉,逐条返回 token 数 + 实际扣的 ¥/$。
+ * 所以给查询式:客户拿调用的 request_id(来源见 QuerySchema.request_id 注释,
+ * 两协议不同)对账,本端点单查 / 按时间段批量拉,逐条返回 token 数 + 实际扣的 ¥/$。
  *
  * 与 /api/portal/logs(cookie 鉴权、网页版)同源同口径:queryLogs(/api/log/)、
  * username 主过滤 + user_id 二次防越权(gotcha #15:/api/log/ 忽略 user_id)、
@@ -33,12 +33,23 @@ import { sanitizeLogContent, isPerImageBilled } from '@/lib/newapi/log-display';
 const MAX_PAGE_SIZE = 100;
 
 const QuerySchema = z.object({
-    /** 单条对账:响应头 `x-oneapi-request-id` 的值。 */
+    /** 单条对账 ID。真机实测(2026-07-29)两协议来源不同:
+     *  - OpenAI 兼容 /chat/completions:响应体 `id`(`chatcmpl-<request_id>`)才对得上
+     *    账单行;响应头 x-oneapi-request-id 是网关侧另一个 ID,relay 成功时【不】入账。
+     *  - Anthropic 兼容 /v1/messages:响应头 `x-oneapi-request-id` 就是账单行 ID
+     *    (body id 是 Anthropic 的 msg_…,查不到)。
+     *  容客户直接整段贴响应体 id → 服务端剥 `chatcmpl-` 前缀。 */
     request_id: z
         .string()
         .trim()
-        .max(80)
-        .regex(/^[A-Za-z0-9]+$/)
+        .max(90)
+        .transform((s) => s.replace(/^chatcmpl-/, ''))
+        .pipe(
+            z
+                .string()
+                .max(80)
+                .regex(/^[A-Za-z0-9]+$/),
+        )
         .optional(),
     /** 时间窗(unix 秒)。 */
     start_time: z.coerce.number().int().nonnegative().optional(),

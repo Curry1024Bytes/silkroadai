@@ -213,3 +213,31 @@ describe('volc 客户素材库路由', () => {
         expect(handleVolcAssetAction).not.toHaveBeenCalled();
     });
 });
+
+describe('AssetType 大写对齐火山官方', () => {
+    it('CreateAsset 传大写 Image → 接受,归一小写存 R2', async () => {
+        db.enterpriseUpstreamKey.findUnique.mockResolvedValue(null); // 非 volc → R2
+        fetchAssetFromUrl.mockResolvedValue({ bytes: Buffer.from('x'), mime: 'image/png' });
+        storeAsset.mockResolvedValue({ id: 'asset-up-1', public_url: 'https://r2/a.png' });
+        const res = await POST(req('CreateAsset', { AssetType: 'Image', URL: 'https://x/a.png', Name: '主角' }));
+        expect(res.status).toBe(200);
+        expect(storeAsset).toHaveBeenCalledWith(expect.objectContaining({ assetType: 'image' }));
+    });
+
+    it('GetAsset 输出 AssetType 回大写(对齐官方)', async () => {
+        db.enterpriseAsset.findFirst.mockResolvedValue({
+            id: 'asset-1',
+            name: 'a',
+            description: null,
+            asset_type: 'video',
+            group_id: null,
+            public_url: 'https://r2/a.mp4',
+            bytes: 1,
+            mime: 'video/mp4',
+            created_at: new Date(),
+        });
+        const res = await POST(req('GetAsset', { Id: 'asset-1' }));
+        const j = (await res.json()) as { Result: { AssetType: string } };
+        expect(j.Result.AssetType).toBe('Video');
+    });
+});

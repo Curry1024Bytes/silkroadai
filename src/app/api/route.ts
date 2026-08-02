@@ -52,9 +52,16 @@ const fail = (action: string, status: number, code: string, message: string) =>
     NextResponse.json({ ResponseMetadata: { ...meta(action), Error: { Code: code, Message: message } } }, { status });
 
 const ASSET_TYPES = ['image', 'video', 'audio'] as const;
+// 对齐火山官方 AssetType 大写(Image/Video/Audio):入口大小写都收、归一小写(内部/DB 存小写,
+// 兼容历史数据);出口用 ASSET_TYPE_OUT 统一回大写。
+const assetTypeInput = z
+    .string()
+    .transform((s) => s.toLowerCase())
+    .pipe(z.enum(ASSET_TYPES));
+const ASSET_TYPE_OUT: Record<string, string> = { image: 'Image', video: 'Video', audio: 'Audio' };
 
 const createAssetSchema = z.object({
-    AssetType: z.enum(ASSET_TYPES),
+    AssetType: assetTypeInput,
     URL: z.string().min(1).max(2000),
     Name: z.string().trim().min(1).max(100),
     Description: z.string().trim().max(500).optional(),
@@ -68,7 +75,7 @@ const updateAssetSchema = idSchema.extend({
 });
 const listAssetsSchema = z.object({
     GroupId: z.string().trim().max(60).optional(),
-    AssetType: z.enum(ASSET_TYPES).optional(),
+    AssetType: assetTypeInput.optional(),
     PageNumber: z.number().int().min(1).default(1),
     PageSize: z.number().int().min(1).max(100).default(20),
 });
@@ -100,7 +107,7 @@ function assetResult(a: {
         Id: a.id,
         Name: a.name,
         Description: a.description ?? undefined,
-        AssetType: a.asset_type,
+        AssetType: ASSET_TYPE_OUT[a.asset_type] ?? a.asset_type,
         GroupId: a.group_id ?? undefined,
         Status: 'active',
         URL: a.public_url,

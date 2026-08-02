@@ -49,7 +49,7 @@ describe('AK/SK 火山签名路径', () => {
         signature: 'abc',
     };
 
-    it('签名有效 + AK 命中 → 客户,上游 key 装载(默认 region=cn)', async () => {
+    it('签名有效 + 无 expectedRegion(/api 账号级)→ 身份直返,不绑/不查任何 region 上游 key', async () => {
         parseVolcAuthorization.mockReturnValue(PARSED);
         db.enterpriseAkSk.findUnique.mockResolvedValue({
             id: 'ak1',
@@ -63,12 +63,11 @@ describe('AK/SK 火山签名路径', () => {
         expect(r.ok).toBe(true);
         if (r.ok) {
             expect(r.customer.userId).toBe('u1');
-            expect(r.customer.region).toBe('cn');
-            expect(r.customer.upstreamKey).toBe('sk-upstream');
+            expect(r.customer.keyId).toBe('ak1');
+            expect(r.customer.upstreamKey).toBe(''); // /api 不消费上游 key
         }
-        expect(db.enterpriseUpstreamKey.findUnique).toHaveBeenCalledWith(
-            expect.objectContaining({ where: { user_id_region: { user_id: 'u1', region: 'cn' } } }),
-        );
+        // 关键:纯火山客户没开 cn 也能用真人认证/素材库 —— 不查 region 上游 key
+        expect(db.enterpriseUpstreamKey.findUnique).not.toHaveBeenCalled();
     });
 
     it('AK 未命中/禁用 → 401 UnauthorizedOperation,不验签', async () => {

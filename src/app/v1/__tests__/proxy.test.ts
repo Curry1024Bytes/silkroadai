@@ -3763,3 +3763,115 @@ describe('/v1 proxy — GET /usage 拦截', () => {
         expect(mockFetch).not.toHaveBeenCalled();
     });
 });
+
+// n 参数(多图 fan-out):Gemini generateContent 单次只出 1 图,proxy 层并行发 n 个请求。
+// clamp 1-4;部分失败返成功子集 200 + X-Silkroadai-Images-Failed;全失败透传第一个上游错误。
+// 用 gemini-2.5-flash-image(无 FAILOVER_MODELS 候补)保证 fetch 次数与 n 一一对应。
+describe('/v1 proxy — images n 参数(多图 fan-out)', () => {
+    it('generations JSON n=3 → 3 个并行上游请求,data 3 张托管 URL', async () => {
+        mockFetch
+            .mockResolvedValueOnce(geminiNativeResponse())
+            .mockResolvedValueOnce(geminiNativeResponse())
+            .mockResolvedValueOnce(geminiNativeResponse());
+        const res = await POST(
+            makeReq('/images/generations', { body: { model: 'gemini-2.5-flash-image', prompt: 'a sunset', n: 3 } }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        expect(mockFetch).toHaveBeenCalledTimes(3);
+        for (const call of mockFetch.mock.calls) {
+            expect(call[0]).toBe(`${NEWAPI_BASE}/v1beta/models/gemini-2.5-flash-image:generateContent`);
+        }
+        const data = (await res.json()) as { data: Array<{ url: string }> };
+        expect(data.data).toHaveLength(3);
+        for (const d of data.data) {
+            expect(d.url).toMatch(/^https:\/\/images\.silkroadai\.io\/gen\//);
+        }
+        expect(res.headers.get('X-Silkroadai-Images-Failed')).toBeNull();
+        expect(mockUploadImage).toHaveBeenCalledTimes(3);
+    });
+
+    it('n=9 clamp 到 4;n=0 / 非数字 / 缺省 → 1', async () => {
+        for (let i = 0; i < 4; i++) mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const res = await POST(
+            makeReq('/images/generations', { body: { model: 'gemini-2.5-flash-image', prompt: 'x', n: 9 } }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        expect(mockFetch).toHaveBeenCalledTimes(4);
+        expect(((await res.json()) as { data: unknown[] }).data).toHaveLength(4);
+
+        for (const bad of [0, 'abc', undefined]) {
+            mockFetch.mockClear();
+            mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+            const r = await POST(
+                makeReq('/images/generations', {
+                    body: { model: 'gemini-2.5-flash-image', prompt: 'x', ...(bad !== undefined ? { n: bad } : {}) },
+                }),
+                ctx('images', 'generations'),
+            );
+            expect(r.status).toBe(200);
+            expect(mockFetch).toHaveBeenCalledTimes(1);
+            expect(((await r.json()) as { data: unknown[] }).data).toHaveLength(1);
+        }
+    });
+
+    it('edits multipart n=2 → 2 张,form 里的 n 被解析', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse()).mockResolvedValueOnce(geminiNativeResponse());
+        const form = new FormData();
+        form.append('model', 'gemini-2.5-flash-image');
+        form.append('prompt', 'make it blue');
+        form.append('n', '2');
+        form.append('image', new File([new Uint8Array([0xff, 0xd8, 0xff, 0xe0])], 'in.jpg', { type: 'image/jpeg' }));
+        const res = await POST(
+            new NextRequest('https://ai.silkroadai.io/v1/images/edits', { method: 'POST', body: form }),
+            ctx('images', 'edits'),
+        );
+        expect(res.status).toBe(200);
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+        expect(((await res.json()) as { data: unknown[] }).data).toHaveLength(2);
+    });
+
+    it('n=3 部分失败(1 个上游 500)→ 200 成功子集 2 张 + X-Silkroadai-Images-Failed=1', async () => {
+        mockFetch
+            .mockResolvedValueOnce(geminiNativeResponse())
+            .mockResolvedValueOnce(new Response('upstream boom', { status: 500 }))
+            .mockResolvedValueOnce(geminiNativeResponse());
+        const res = await POST(
+            makeReq('/images/generations', { body: { model: 'gemini-2.5-flash-image', prompt: 'x', n: 3 } }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        expect(res.headers.get('X-Silkroadai-Images-Failed')).toBe('1');
+        expect(((await res.json()) as { data: unknown[] }).data).toHaveLength(2);
+    });
+
+    it('n=2 全失败 → 透传第一个上游错误(status + body)', async () => {
+        mockFetch
+            .mockResolvedValueOnce(
+                new Response(JSON.stringify({ error: { message: 'quota exhausted' } }), { status: 402 }),
+            )
+            .mockResolvedValueOnce(new Response('other error', { status: 500 }));
+        const res = await POST(
+            makeReq('/images/generations', { body: { model: 'gemini-2.5-flash-image', prompt: 'x', n: 2 } }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(402);
+        expect(await res.text()).toContain('quota exhausted');
+    });
+
+    it('n=2 + response_format=b64_json → 2 个 b64,不走图床', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse()).mockResolvedValueOnce(geminiNativeResponse());
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gemini-2.5-flash-image', prompt: 'x', n: 2, response_format: 'b64_json' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        const data = (await res.json()) as { data: Array<{ b64_json?: string }> };
+        expect(data.data).toHaveLength(2);
+        expect(data.data.every((d) => d.b64_json === 'QkFTRTY0')).toBe(true);
+        expect(mockUploadImage).not.toHaveBeenCalled();
+    });
+});
