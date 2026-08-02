@@ -178,6 +178,17 @@ async function call<T>(
 }
 
 /**
+ * Extract the customer session cookie from new-api's login response.
+ *
+ * Older new-api releases used `session`; current releases use
+ * `new_api_refresh`. Keep both names supported because the portal may be
+ * deployed against either version during a rolling upgrade.
+ */
+export function extractNewApiSessionCookie(setCookie: string): string | null {
+    return setCookie.match(/((?:session|new_api_refresh)=[^;]+)/)?.[1] ?? null;
+}
+
+/**
  * Login as a customer with username + password.
  *
  * Returns the session cookie (already in `name=value` form, ready to set
@@ -213,12 +224,12 @@ async function loginAsUser(args: { username: string; password: string }): Promis
     }
 
     const setCookie = res.headers.get('set-cookie') ?? '';
-    const sessionMatch = setCookie.match(/(session=[^;]+)/);
-    if (!sessionMatch) {
+    const sessionCookie = extractNewApiSessionCookie(setCookie);
+    if (!sessionCookie) {
         throw new NewApiError(res.status, 'POST /api/user/login', data, 'Login OK but no session cookie returned');
     }
     return {
-        cookie: sessionMatch[1],
+        cookie: sessionCookie,
         user: data!.data!,
     };
 }
