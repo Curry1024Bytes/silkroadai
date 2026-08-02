@@ -25,13 +25,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { forwardHeaders, passthroughResponse, STRIP_RESPONSE_HEADERS } from '@/lib/proxy/forward';
 import { guardSseStream } from '@/lib/sse/stream-guard';
 import { scheduleStreamFailRefund } from '@/lib/billing/stream-fail-refund';
-import {
-    type CaptureCtx,
-    captureJsonResponse,
-    captureResponse,
-    parseModelAndStream,
-    recordRequestBody,
-} from '@/lib/reqlog/capture';
+import { type CaptureCtx, captureJsonResponse, captureResponse, recordRequestBody } from '@/lib/reqlog/capture';
+import { ANTHROPIC_SPEC, guardRawBody, violationBody } from '@/lib/proxy/body-guard';
 
 const NEWAPI_BASE_URL = process.env.NEWAPI_BASE_URL || 'http://localhost:3000';
 
@@ -53,12 +48,19 @@ export async function handleAnthropicMessages(
     cap: CaptureCtx | null,
 ): Promise<NextResponse> {
     const raw = await req.text();
-    const pm = parseModelAndStream(raw);
-    if (cap) recordRequestBody(cap, raw, pm.model, pm.streamed);
+
+    // 请求体守门(见 @/lib/proxy/body-guard):ClaudeRequest 对负数 uint 同样抛 500,
+    // 而 /messages 占 97.4% 流量 —— 这是这套守门收益最大的一条面。零额外成本:体本来
+    // 就要读(判 stream 标志),解析结果顺手复用,省掉原来 parseModelAndStream 的二次解析。
+    // guardRawBody 永不抛异常;不可解析的体照旧原样放行交给 new-api 报错。
+    const g = guardRawBody(raw, ANTHROPIC_SPEC);
+    if (g.violation) return NextResponse.json(violationBody(g.violation), { status: 400 });
+    const pm = { model: g.model, streamed: g.streamed };
+    if (cap) recordRequestBody(cap, raw, pm.model, pm.streamed); // 记【原始】输入,不记强转后的
 
     const url = `${NEWAPI_BASE_URL}/v1${path}${search}`;
     const doFetch = () =>
-        fetch(url, { method: 'POST', headers: forwardHeaders(req), body: raw, duplex: 'half' } as RequestInit & {
+        fetch(url, { method: 'POST', headers: forwardHeaders(req), body: g.body, duplex: 'half' } as RequestInit & {
             duplex: 'half';
         });
 

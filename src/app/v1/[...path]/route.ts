@@ -88,6 +88,7 @@ import {
 import { isEnterpriseFlavor, handleEnterpriseV1 } from '@/lib/enterprise/proxy';
 import { guardSseResponse, guardSseStream, type SseErrorShape } from '@/lib/sse/stream-guard';
 import { forwardHeaders, passthroughResponse, STRIP_RESPONSE_HEADERS } from '@/lib/proxy/forward';
+import { CHAT_SPEC, RESPONSES_SPEC, coerceAndValidate, guardRawBody, violationBody } from '@/lib/proxy/body-guard';
 import { stripAdobeImageMetadataB64 } from '@/lib/proxy/image-metadata';
 import { normalizeOpenAiResponse, normalizeChoices } from '@/lib/proxy/finish-reason';
 import { loadCatalogMeta, resolveTierFromAuthHeader, enrichModelList } from '@/lib/models/machine-catalog';
@@ -367,6 +368,8 @@ async function forwardToNewApi(
     path: string,
     search: string,
     cap: CaptureCtx | null = null,
+    /** 出口 C:调用方已读过体(如 /responses 守门),直接给出口串 —— 不再读 req,也不重复记 capture。 */
+    rawOverride?: string,
 ): Promise<NextResponse> {
     const url = `${NEWAPI_BASE_URL}/v1${path}${search}`;
     const hasBody = req.method !== 'GET' && req.method !== 'HEAD';
@@ -385,7 +388,9 @@ async function forwardToNewApi(
     }
 
     let outgoingBody: BodyInit | undefined;
-    if (bodyOverride) {
+    if (rawOverride !== undefined) {
+        outgoingBody = rawOverride;
+    } else if (bodyOverride) {
         outgoingBody = JSON.stringify(bodyOverride);
     } else if (hasBody) {
         if (cap) {
@@ -1274,86 +1279,6 @@ function coerceImageIntFields(obj: JsonRecord): void {
         if (typeof v === 'string' && /^\d+$/.test(v.trim())) obj[k] = Number(v.trim());
     }
 }
-/* ── /chat/completions 请求体守门 ──────────────────────────────────────────────
- * new-api 在转发前把请求反序列化进自己的 Go 结构体,解析失败直接抛 **500**
- * (`json: cannot unmarshal ... into Go struct field ...`)。这是客户端错误,按 HTTP
- * 语义必须 4xx —— 5xx 会让 SDK / 网关退避重试,一个永远不可能成功的请求被反复重打,
- * 白烧配额与连接数。实测四家 new-api 系渠道(aws.baby ×2 / xingai.ai / 207.244.233.138)
- * 报错字符串逐字一致,确认是 new-api 公共行为,换上游解决不了 → 在本层兜住。
- *
- * 两段式,与既有 coerceImageIntFields 同思路:
- *   1. 语义无歧义的就地强转("100"→100、"true"→true),客户请求照常成功;
- *   2. 强转不了的(类型错、uint 收到负数)→ 400,不打上游。
- * 只覆盖 /chat/completions;/messages 与 legacy /completions 目前请求体是流式直传、
- * 未解析,要覆盖需额外缓冲(多模态大 body 有内存代价),留后续单独评估。 */
-
-/** uint 类字段:new-api 按无符号整型解析,负数/小数/非数字串都会 500。 */
-const CHAT_UINT_FIELDS = ['max_tokens', 'max_completion_tokens', 'n', 'top_logprobs'] as const;
-/** float 类字段:非数字串会 500。 */
-const CHAT_FLOAT_FIELDS = ['temperature', 'top_p', 'presence_penalty', 'frequency_penalty'] as const;
-/** bool 类字段:字符串 / 数字都会 500(chat 的 logprobs 按 OpenAI 规范就是 bool)。 */
-const CHAT_BOOL_FIELDS = ['stream', 'logprobs'] as const;
-
-/** null / undefined 一律视为「未传」——  Go 对 JSON null 解析进标量是安全的,不能误判成非法。 */
-function isAbsent(v: unknown): boolean {
-    return v === null || v === undefined;
-}
-
-/** 第 1 段:语义无歧义的字符串就地强转,让本来会 500 的请求直接成功。 */
-function coerceChatScalarFields(body: JsonRecord): void {
-    for (const k of [...CHAT_UINT_FIELDS, ...CHAT_FLOAT_FIELDS, 'seed']) {
-        const v = body[k];
-        if (typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v.trim()))) {
-            body[k] = Number(v.trim());
-        }
-    }
-    for (const k of CHAT_BOOL_FIELDS) {
-        const v = body[k];
-        if (typeof v === 'string') {
-            const s = v.trim().toLowerCase();
-            if (s === 'true') body[k] = true;
-            else if (s === 'false') body[k] = false;
-        }
-    }
-}
-
-/** 第 2 段:强转后仍会让 new-api 反序列化失败的值 → 400(而不是让它 500)。
- *  只拒「本来就必然 500」的输入,不新增任何今天能跑通的请求的拒绝。 */
-function validateChatBody(body: JsonRecord): { param: string; message: string } | null {
-    if (!isAbsent(body.messages) && !Array.isArray(body.messages)) {
-        return { param: 'messages', message: "'messages' must be an array" };
-    }
-    if (!isAbsent(body.model) && typeof body.model !== 'string') {
-        return { param: 'model', message: "'model' must be a string" };
-    }
-    if (!isAbsent(body.tools) && !Array.isArray(body.tools)) {
-        return { param: 'tools', message: "'tools' must be an array" };
-    }
-    for (const k of CHAT_BOOL_FIELDS) {
-        if (!isAbsent(body[k]) && typeof body[k] !== 'boolean') {
-            return { param: k, message: `'${k}' must be a boolean` };
-        }
-    }
-    for (const k of CHAT_UINT_FIELDS) {
-        const v = body[k];
-        if (isAbsent(v)) continue;
-        if (typeof v !== 'number' || !Number.isInteger(v) || v < 0) {
-            return { param: k, message: `'${k}' must be a non-negative integer` };
-        }
-    }
-    for (const k of CHAT_FLOAT_FIELDS) {
-        const v = body[k];
-        if (isAbsent(v)) continue;
-        if (typeof v !== 'number' || !Number.isFinite(v)) {
-            return { param: k, message: `'${k}' must be a number` };
-        }
-    }
-    if (!isAbsent(body.seed) && (typeof body.seed !== 'number' || !Number.isInteger(body.seed))) {
-        return { param: 'seed', message: "'seed' must be an integer" };
-    }
-    return null;
-}
-
 /** gpt-image JSON 规整:剥 response_format(zhiyunai 拒收 →400)+ 比例→像素 size(默认出方图)。 */
 function normalizeGptImageJson(body: JsonRecord): void {
     delete body.response_format;
@@ -2452,22 +2377,9 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
         }
 
         // 请求体守门:先就地强转无歧义的字符串标量,再把仍会让 new-api 500 的输入挡成 400。
-        // 见 coerceChatScalarFields / validateChatBody 的说明。
-        coerceChatScalarFields(body);
-        const invalid = validateChatBody(body);
-        if (invalid) {
-            return NextResponse.json(
-                {
-                    error: {
-                        message: invalid.message,
-                        type: 'invalid_request_error',
-                        param: invalid.param,
-                        code: 'invalid_request_error',
-                    },
-                },
-                { status: 400 },
-            );
-        }
+        // 见 @/lib/proxy/body-guard(三条面共用同一引擎,按面用不同 spec)。
+        const { violation } = coerceAndValidate(body, CHAT_SPEC);
+        if (violation) return NextResponse.json(violationBody(violation), { status: 400 });
 
         const model = String(body.model ?? '');
 
@@ -2574,6 +2486,17 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
     // 重试 + 失败流自动退款,2026-07-29 根治件①②);非流式在 handler 内与原透传等价。
     if (path === '/messages' && req.method === 'POST') {
         return handleAnthropicMessages(req, path, search, cap);
+    }
+
+    // Responses 面 POST:请求体守门(OpenAIResponsesRequest 同样会对负数 uint 抛 500,
+    // 实测 `max_output_tokens:-1` → 500 unmarshal)。守门要先读体 —— capture 打开时
+    // forwardToNewApi 的透传分支本来就 buffer,这里读完直接把串交给它,不重复读。
+    if (path === '/responses' && req.method === 'POST') {
+        const raw = await req.text();
+        const g = guardRawBody(raw, RESPONSES_SPEC);
+        if (g.violation) return NextResponse.json(violationBody(g.violation), { status: 400 });
+        if (cap) recordRequestBody(cap, raw, g.model, g.streamed); // 记【原始】输入
+        return forwardToNewApi(req, null, path, search, cap, g.body);
     }
 
     // 其他路径(/embeddings …)全部透传
