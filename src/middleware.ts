@@ -18,22 +18,31 @@ export function middleware(request: NextRequest) {
     //  - /api/admin/enterprise/*    admin break-glass(x-admin-token,VPS 本机 curl)
     //  - /login → 302 /enterprise/login(next.config 把 / 先 307 到 /login,借道进门)
     // 主站实例(env 未设)零影响。
-    if (process.env.PORTAL_FLAVOR === 'seedance-enterprise') {
-        const p = request.nextUrl.pathname;
-        // 火山官方 Action API 形态兼容(2026-08-02):官方 endpoint 是根路径
-        // `/?Action=…`(官方 SDK 默认拼 path "/";客户把 base 配成 …/api 时客户端
-        // 也会拼出 /api/)。两种都 rewrite 到 /api(rewrite 非 redirect,POST body
-        // 不丢)。原始 path 经内部头传给 route —— AK/SK SignerV4 验签必须用客户实际
-        // 签名的 path,rewrite 后不还原会把签名用户全打成 401。根路径仅带 Action
-        // query 时改写,浏览器访问 / 照旧跳登录页。
-        if (p === '/api/' || (p === '/' && request.nextUrl.searchParams.has('Action'))) {
-            // 用普通 URL 构造(不 clone nextUrl):NextURL 会记住原路径的尾斜杠标志,
-            // pathname 赋值后序列化仍被补回 /api/,rewrite 就白做了。
-            const url = new URL('/api' + request.nextUrl.search, request.url);
-            const headers = new Headers(request.headers);
-            headers.set('x-enterprise-orig-path', p);
-            return NextResponse.rewrite(url, { request: { headers } });
-        }
+    const pathname = request.nextUrl.pathname;
+    const isEnterprise = process.env.PORTAL_FLAVOR === 'seedance-enterprise';
+    // 火山官方 Action API 形态兼容(2026-08-02,仅企业实例):官方 endpoint 是根路径
+    // `/?Action=…`(官方 SDK 默认拼 path "/";客户把 base 配成 …/api 时客户端也会拼出
+    // /api/)。两种都 rewrite 到 /api(rewrite 非 redirect,POST body 不丢)。原始 path
+    // 经内部头传给 route —— AK/SK SignerV4 验签必须用客户实际签名的 path,rewrite 后
+    // 不还原会把签名用户全打成 401(也因此 /api/ 不能走下面的尾斜杠 308:redirect 会
+    // 改 path,签名同样作废)。根路径仅带 Action query 时改写,浏览器访问 / 照旧跳登录。
+    // 注意:根路径形态还依赖 next.config 的 / → /login redirect 对带 Action 的请求放行
+    // (config redirects 跑在 middleware 之前),两处必须配套。
+    if (isEnterprise && (pathname === '/api/' || (pathname === '/' && request.nextUrl.searchParams.has('Action')))) {
+        // 用普通 URL 构造(不 clone nextUrl):NextURL 会记住原路径的尾斜杠标志,
+        // pathname 赋值后序列化仍被补回 /api/,rewrite 就白做了。
+        const url = new URL('/api' + request.nextUrl.search, request.url);
+        const headers = new Headers(request.headers);
+        headers.set('x-enterprise-orig-path', pathname);
+        return NextResponse.rewrite(url, { request: { headers } });
+    }
+    // next.config skipTrailingSlashRedirect=true 关掉了框架内置尾斜杠 308(为让上面的
+    // /api/ rewrite 先于重定向拿到请求)—— 这里复刻默认行为,主站/企业其余路径不变。
+    if (pathname.length > 1 && pathname.endsWith('/')) {
+        return NextResponse.redirect(new URL(pathname.slice(0, -1) + request.nextUrl.search, request.url), 308);
+    }
+    if (isEnterprise) {
+        const p = pathname;
         if (p === '/login' || p === '/') {
             return NextResponse.redirect(new URL('/enterprise/login', request.url));
         }

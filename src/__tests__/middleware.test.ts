@@ -92,6 +92,20 @@ describe('middleware — 独立门户形态门(PORTAL_FLAVOR=seedance-enterprise
         }
     });
 
+    it('尾斜杠 308 复刻(skipTrailingSlashRedirect 后由 middleware 承担,主站/企业一致)', () => {
+        // 主站:/models/ → 308 /models(query 保留)—— 与框架默认行为一致
+        const r1 = middleware(req('/models/?a=1'));
+        expect(r1.status).toBe(308);
+        expect(r1.headers.get('location')).toBe('http://localhost/models?a=1');
+        // 企业实例:非 /api/ 的尾斜杠同样 308(/api/ 是 rewrite,上面已测)
+        process.env.PORTAL_FLAVOR = 'seedance-enterprise';
+        const r2 = middleware(req('/enterprise/billing/'));
+        expect(r2.status).toBe(308);
+        expect(r2.headers.get('location')).toBe('http://localhost/enterprise/billing');
+        // 根路径 "/" 不受尾斜杠逻辑影响(length>1 守门)
+        expect(middleware(req('/')).status).toBe(307);
+    });
+
     it('主站实例(env 未设):行为不变', () => {
         expect(middleware(req('/dashboard')).status).not.toBe(404);
     });
