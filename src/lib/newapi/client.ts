@@ -177,15 +177,49 @@ async function call<T>(
     return (data?.data ?? null) as T;
 }
 
+interface NewApiLoginUser {
+    id: number;
+    username: string;
+    role: number;
+}
+
+export interface NewApiLoginResult {
+    user: NewApiLoginUser;
+    accessToken: string | null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null;
+}
+
+function parseNewApiLoginUser(value: unknown): NewApiLoginUser | null {
+    if (!isRecord(value)) return null;
+    if (typeof value.id !== 'number' || typeof value.username !== 'string' || typeof value.role !== 'number') {
+        return null;
+    }
+    return { id: value.id, username: value.username, role: value.role };
+}
+
 /**
- * Extract the customer session cookie from new-api's login response.
+ * Normalize old and current new-api login payloads.
  *
- * Older new-api releases used `session`; current releases use
- * `new_api_refresh`. Keep both names supported because the portal may be
- * deployed against either version during a rolling upgrade.
+ * Older releases put the user fields directly in `data` and required a
+ * `session` cookie for the next call. Current releases put the user under
+ * `data.user` and return a usable `data.access_token`; their
+ * `new_api_refresh` cookie is only a refresh credential and must not be sent
+ * to access-token endpoints as if it were a session.
  */
+export function parseNewApiLoginResult(data: unknown): NewApiLoginResult | null {
+    if (!isRecord(data)) return null;
+    const user = parseNewApiLoginUser(data.user) ?? parseNewApiLoginUser(data);
+    if (!user) return null;
+    const accessToken = typeof data.access_token === 'string' && data.access_token ? data.access_token : null;
+    return { user, accessToken };
+}
+
+/** Extract the legacy customer session cookie from new-api's login response. */
 export function extractNewApiSessionCookie(setCookie: string): string | null {
-    return setCookie.match(/((?:session|new_api_refresh)=[^;]+)/)?.[1] ?? null;
+    return setCookie.match(/(session=[^;]+)/)?.[1] ?? null;
 }
 
 /**
@@ -201,8 +235,9 @@ export function extractNewApiSessionCookie(setCookie: string): string | null {
  * ignores the field — so we must go through login.
  */
 async function loginAsUser(args: { username: string; password: string }): Promise<{
-    cookie: string;
-    user: { id: number; username: string; role: number };
+    cookie: string | null;
+    user: NewApiLoginUser;
+    accessToken: string | null;
 }> {
     const url = new URL('/api/user/login', NEWAPI_BASE_URL);
     const res = await fetch(url, {
@@ -211,7 +246,7 @@ async function loginAsUser(args: { username: string; password: string }): Promis
         body: JSON.stringify({ username: args.username, password: args.password }),
     });
     const text = await res.text();
-    let data: NewApiEnvelope<{ id: number; username: string; role: number }> | null = null;
+    let data: NewApiEnvelope<unknown> | null = null;
     try {
         data = text ? JSON.parse(text) : null;
     } catch {
@@ -223,14 +258,20 @@ async function loginAsUser(args: { username: string; password: string }): Promis
         throw new NewApiError(res.status, 'POST /api/user/login', data, String(msg));
     }
 
-    const setCookie = res.headers.get('set-cookie') ?? '';
-    const sessionCookie = extractNewApiSessionCookie(setCookie);
-    if (!sessionCookie) {
-        throw new NewApiError(res.status, 'POST /api/user/login', data, 'Login OK but no session cookie returned');
+    const login = parseNewApiLoginResult(data?.data);
+    const sessionCookie = extractNewApiSessionCookie(res.headers.get('set-cookie') ?? '');
+    if (!login || (!login.accessToken && !sessionCookie)) {
+        throw new NewApiError(
+            res.status,
+            'POST /api/user/login',
+            data,
+            'Login OK but no access token or legacy session cookie returned',
+        );
     }
     return {
         cookie: sessionCookie,
-        user: data!.data!,
+        user: login.user,
+        accessToken: login.accessToken,
     };
 }
 
@@ -734,9 +775,9 @@ export interface ProvisionedCustomer {
  *
  * 流程(empirically verified against new-api v1.0.0-rc.2):
  *   1. POST /api/user/             admin 创建 new-api user
- *   2. POST /api/user/login        portal 用刚生成的密码登录该 user,拿 session cookie
- *                                  (顺便从响应里拿到 user.id,省掉一次 search)
- *   3. GET  /api/user/token        以 session 身份拿(并 rotate)access_token
+ *   2. POST /api/user/login        portal 用刚生成的密码登录该 user
+ *                                  新版直接返回 access_token + user；旧版返回 session cookie
+ *   3. GET  /api/user/token        仅旧版回退：以 session 身份拿(并 rotate)access_token
  *                                  ⚠️ 这个端点 admin 调不动:必须用该用户自己的 session
  *                                     PUT /api/user/ 里的 access_token 字段是被静默忽略的
  *   4. POST /api/token/            以 customer 的 access_token 身份创建第一个 token
@@ -760,15 +801,18 @@ export async function provisionNewCustomer(args: {
     // the full email in the email field (which has a 50-char limit).
     await createUser({ username, password, display_name: username, email: args.email });
 
-    // Step 2: log in as the customer to obtain a session cookie + their user.id.
-    const session = await loginAsUser({ username, password });
-    const userId = session.user.id;
+    // Step 2: log in as the customer. Current new-api returns the access token
+    // directly; older versions only returned a session cookie.
+    const login = await loginAsUser({ username, password });
+    const userId = login.user.id;
 
-    // Step 3: ask new-api to (re)generate this user's access_token. Returns
-    // the new token; the previous value (if any) is invalidated server-side.
-    const accessToken = await call<string>('GET', '/api/user/token', undefined, undefined, {
-        cookie: { value: session.cookie, userId },
-    });
+    // Step 3: older new-api versions require a session-only rotate endpoint;
+    // current versions already issued the usable token during login.
+    const accessToken =
+        login.accessToken ??
+        (await call<string>('GET', '/api/user/token', undefined, undefined, {
+            cookie: { value: login.cookie!, userId },
+        }));
 
     // Step 4: create the first token. Must act-as the customer.
     //
