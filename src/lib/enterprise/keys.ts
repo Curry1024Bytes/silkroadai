@@ -169,6 +169,35 @@ export async function resolveEnterpriseAuth(parts: AuthRequestParts, expectedReg
         if (r.ok) r.customer.accountLevel = true;
         return r;
     }
+    // Bearer sk_ent_…(下划线 = AK/SK 对里的 SK 直接当 API key 用,2026-07-30,对齐 727
+    // provider 的 Bearer 形态)。命中即等同 AK/SK 验签通过:账号级、不绑版本、同 user 同账。
+    const bearer = auth?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
+    if (bearer?.startsWith('sk_ent_')) {
+        const row = await prisma.enterpriseAkSk.findUnique({
+            where: { secret_key_hash: hashEnterpriseKey(bearer) },
+            select: { id: true, user_id: true, tenant_id: true, status: true },
+        });
+        if (!row || row.status !== 'active') {
+            return { ok: false, status: 401, code: 'UnauthorizedOperation', message: 'invalid or inactive secret key' };
+        }
+        prisma.enterpriseAkSk.update({ where: { id: row.id }, data: { last_used_at: new Date() } }).catch(() => {});
+        if (expectedRegion === undefined) {
+            return {
+                ok: true,
+                customer: {
+                    userId: row.user_id,
+                    tenantId: row.tenant_id,
+                    keyId: row.id,
+                    region: 'cn',
+                    upstreamKey: '',
+                    accountLevel: true,
+                },
+            };
+        }
+        const r = await loadUpstreamCustomer(row.user_id, row.tenant_id, row.id, expectedRegion);
+        if (r.ok) r.customer.accountLevel = true;
+        return r;
+    }
     // Bearer sk-ent
     return resolveEnterpriseCustomer(auth, expectedRegion);
 }

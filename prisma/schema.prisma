@@ -1244,6 +1244,7 @@ model EnterpriseAkSk {
   user_id       String    @db.Uuid
   access_key    String    @unique // ak_ent_<24hex>,签名 Credential 里明文出现
   secret_key_enc String // AES-256-GCM(iv‖tag‖ct base64),key=ENTERPRISE_UPSTREAM_ENC_KEY
+  secret_key_hash String? @unique // sha256(SK 明文),SK 直接当 Bearer key 用的查找索引(2026-07-30;存量行由 backfill 脚本补)
   name          String
   status        String    @default("active") // active | disabled
   created_at    DateTime  @default(now())

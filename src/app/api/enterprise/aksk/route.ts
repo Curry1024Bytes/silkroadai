@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { requireEnterpriseUser } from '@/lib/enterprise/session';
-import { generateAkSk } from '@/lib/enterprise/keys';
+import { generateAkSk, hashEnterpriseKey } from '@/lib/enterprise/keys';
 import { encryptSecret } from '@/lib/enterprise/crypto';
 
 export const runtime = 'nodejs';
@@ -45,6 +45,7 @@ export async function POST(req: NextRequest) {
             tenant_id: user.tenant_id,
             access_key: accessKey,
             secret_key_enc: encryptSecret(secretKey),
+            secret_key_hash: hashEnterpriseKey(secretKey), // SK 可直接当 Bearer key 用(2026-07-30)
             name: parsed.data.name,
         },
         select: { id: true, access_key: true, name: true, status: true, created_at: true, last_used_at: true },

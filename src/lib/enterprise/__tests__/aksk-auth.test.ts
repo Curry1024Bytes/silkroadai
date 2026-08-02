@@ -116,6 +116,58 @@ describe('AK/SK 火山签名路径', () => {
     });
 });
 
+describe('Bearer sk_ent_(SK 直接当 API key,2026-07-30)', () => {
+    const SK = 'sk_ent_' + 'b'.repeat(48);
+
+    it('有效 SK + 无 expectedRegion(/api 账号级)→ 身份直返,按 hash 查、不解密不验签', async () => {
+        parseVolcAuthorization.mockReturnValue(null);
+        db.enterpriseAkSk.findUnique.mockResolvedValue({ id: 'ak1', user_id: 'u1', tenant_id: null, status: 'active' });
+        const r = await resolveEnterpriseAuth(parts(`Bearer ${SK}`));
+        expect(r.ok).toBe(true);
+        if (r.ok) {
+            expect(r.customer.userId).toBe('u1');
+            expect(r.customer.accountLevel).toBe(true);
+            expect(r.customer.upstreamKey).toBe('');
+        }
+        // 按 sha256(SK) 查 secret_key_hash,全程不碰解密/验签
+        const where = db.enterpriseAkSk.findUnique.mock.calls[0][0].where;
+        expect(where.secret_key_hash).toMatch(/^[0-9a-f]{64}$/);
+        expect(decryptSecret).not.toHaveBeenCalled();
+        expect(verifyVolcSignature).not.toHaveBeenCalled();
+        expect(db.enterpriseUpstreamKey.findUnique).not.toHaveBeenCalled();
+        // 不落到 sk-ent 表
+        expect(db.enterpriseKey.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('SK 未命中 / 禁用 → 401', async () => {
+        parseVolcAuthorization.mockReturnValue(null);
+        db.enterpriseAkSk.findUnique.mockResolvedValue(null);
+        const r1 = await resolveEnterpriseAuth(parts(`Bearer ${SK}`));
+        expect(r1.ok).toBe(false);
+        if (!r1.ok) expect(r1.status).toBe(401);
+        db.enterpriseAkSk.findUnique.mockResolvedValue({
+            id: 'ak1',
+            user_id: 'u1',
+            tenant_id: null,
+            status: 'disabled',
+        });
+        const r2 = await resolveEnterpriseAuth(parts(`Bearer ${SK}`));
+        expect(r2.ok).toBe(false);
+        if (!r2.ok) expect(r2.code).toBe('UnauthorizedOperation');
+    });
+
+    it('expectedRegion 传入(视频)→ 按该 region 取上游 key + accountLevel(同 AK/SK 语义)', async () => {
+        parseVolcAuthorization.mockReturnValue(null);
+        db.enterpriseAkSk.findUnique.mockResolvedValue({ id: 'ak1', user_id: 'u1', tenant_id: null, status: 'active' });
+        const r = await resolveEnterpriseAuth(parts(`Bearer ${SK}`), 'volc');
+        expect(r.ok).toBe(true);
+        if (r.ok) expect(r.customer.accountLevel).toBe(true);
+        expect(db.enterpriseUpstreamKey.findUnique).toHaveBeenCalledWith(
+            expect.objectContaining({ where: { user_id_region: { user_id: 'u1', region: 'volc' } } }),
+        );
+    });
+});
+
 describe('Bearer sk-ent 路径(委托 resolveEnterpriseCustomer)', () => {
     it('parseVolc 返 null → 走 sk-ent;有效 key → 客户', async () => {
         parseVolcAuthorization.mockReturnValue(null);
