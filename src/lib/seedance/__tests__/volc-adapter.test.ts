@@ -16,14 +16,15 @@ afterEach(() => {
 });
 
 describe('submitVolcVideo', () => {
-    it('提交火山方舟形 body 到 provider,返归一 {id,status:queued}', async () => {
+    it('提交火山方舟形 body 到 provider,返归一 {id,status:queued},task_ id 伪装成 cgt-', async () => {
         const fetchMock = vi
             .spyOn(global, 'fetch')
             .mockResolvedValue(new Response(JSON.stringify({ id: 'task_abc', status: 'queued' }), { status: 200 }));
         const res = await submitVolcVideo({ prompt: '一只猫', ratio: '16:9' }, '1080p', 5);
         expect(res.status).toBe(200);
-        const j = (await res.json()) as { id: string; status: string; model: string };
-        expect(j.id).toBe('task_abc');
+        const j = (await res.json()) as { id: string; task_id: string; status: string; model: string };
+        expect(j.id).toBe('cgt-abc');
+        expect(j.task_id).toBe('cgt-abc');
         expect(j.status).toBe('queued');
         expect(j.model).toBe('doubao-seedance-2.0');
         // 打的是 provider 火山方舟原生端点 + Bearer 平台 key + body 含 model/content/resolution
@@ -67,11 +68,22 @@ describe('submitVolcVideo', () => {
         const res = await submitVolcVideo({ prompt: 'x' }, '720p', 5);
         expect(res.status).toBe(400);
     });
+
+    it('return_last_frame 透传上游;非 task_ 形上游 id 原样返回', async () => {
+        const fetchMock = vi
+            .spyOn(global, 'fetch')
+            .mockResolvedValue(new Response(JSON.stringify({ id: 'cgt-native-1' }), { status: 200 }));
+        const res = await submitVolcVideo({ prompt: 'x', return_last_frame: true }, '720p', 5);
+        const sent = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+        expect(sent.return_last_frame).toBe(true);
+        const j = (await res.json()) as { id: string };
+        expect(j.id).toBe('cgt-native-1');
+    });
 });
 
 describe('pollVolcVideo', () => {
-    it('完成 → 归一 status:completed + 火山直链原样透传 + usage', async () => {
-        vi.spyOn(global, 'fetch').mockResolvedValue(
+    it('完成 → 归一 status:completed + 火山直链原样透传 + usage;cgt- 形还原 task_ 打上游、回显 cgt-', async () => {
+        const fetchMock = vi.spyOn(global, 'fetch').mockResolvedValue(
             new Response(
                 JSON.stringify({
                     id: 'task_abc',
@@ -82,17 +94,47 @@ describe('pollVolcVideo', () => {
                 { status: 200 },
             ),
         );
-        const res = await pollVolcVideo('task_abc');
+        const res = await pollVolcVideo('cgt-abc');
+        expect(fetchMock.mock.calls[0][0]).toBe(`${BASE}/doubao/api/v3/contents/generations/tasks/task_abc`);
         const j = (await res.json()) as {
+            id: string;
+            task_id: string;
             status: string;
             video_url: string;
             last_frame_url: string;
             usage: { completion_tokens: number };
         };
+        expect(j.id).toBe('cgt-abc');
+        expect(j.task_id).toBe('cgt-abc');
         expect(j.status).toBe('completed');
         expect(j.video_url).toBe('https://volc-cdn/out.mp4');
         expect(j.last_frame_url).toBe('https://volc-cdn/last.png');
         expect(j.usage.completion_tokens).toBe(191254);
+    });
+
+    it('历史 task_ 形 id 不转换,原样打上游(老任务兼容)', async () => {
+        const fetchMock = vi
+            .spyOn(global, 'fetch')
+            .mockResolvedValue(new Response(JSON.stringify({ id: 'task_old', status: 'queued' }), { status: 200 }));
+        const res = await pollVolcVideo('task_old');
+        expect(fetchMock.mock.calls[0][0]).toBe(`${BASE}/doubao/api/v3/contents/generations/tasks/task_old`);
+        expect(((await res.json()) as { id: string }).id).toBe('task_old');
+    });
+
+    it('还原后 404 → 用原始 cgt- id 回退一次(上游原生 cgt- id 兜底)', async () => {
+        const fetchMock = vi
+            .spyOn(global, 'fetch')
+            .mockResolvedValueOnce(new Response(JSON.stringify({ error: 'not found' }), { status: 404 }))
+            .mockResolvedValueOnce(
+                new Response(JSON.stringify({ id: 'cgt-native-1', status: 'running' }), { status: 200 }),
+            );
+        const res = await pollVolcVideo('cgt-native-1');
+        expect(fetchMock.mock.calls[0][0]).toBe(`${BASE}/doubao/api/v3/contents/generations/tasks/task_native-1`);
+        expect(fetchMock.mock.calls[1][0]).toBe(`${BASE}/doubao/api/v3/contents/generations/tasks/cgt-native-1`);
+        expect(res.status).toBe(200);
+        const j = (await res.json()) as { id: string; status: string };
+        expect(j.id).toBe('cgt-native-1');
+        expect(j.status).toBe('in_progress');
     });
 
     it('失败 → status:failed + fail_reason,无 usage', async () => {

@@ -30,6 +30,18 @@ function getConfig(): { base: string; key: string } | null {
 
 const ALLOWED_RATIOS = new Set(['16:9', '9:16', '4:3', '3:4', '1:1', '21:9']);
 
+/** 对客 task id 伪装(2026-08-03):上游 provider(new-api 形)把火山真实 cgt- id 映射成了
+ *  自己的 task_ id,但客户脚本按火山官方契约校验 id 必须 cgt- 开头 → 在本适配器边界做
+ *  确定性双向映射:上游 task_X ↔ 对客 cgt-X。伪装后的 id 同时是 seedance_video_tasks 主键,
+ *  proxy 归属门 / 计费 / dashboard 全链路一致。非 task_ 前缀的上游 id 原样透传(轮询侧有
+ *  404 回退兜底);历史 task_ 形 id 轮询不转换,老任务继续可查。 */
+function disguiseTaskId(upstreamId: string): string {
+    return upstreamId.startsWith('task_') ? `cgt-${upstreamId.slice(5)}` : upstreamId;
+}
+function undisguiseTaskId(clientId: string): string {
+    return clientId.startsWith('cgt-') ? `task_${clientId.slice(4)}` : clientId;
+}
+
 /** 从客户 body 抽 content 数组(火山方舟形);无则用 prompt 兜底成单条 text。 */
 function buildContent(body: Record<string, unknown>): unknown[] | null {
     if (Array.isArray(body.content) && body.content.length > 0) return body.content;
@@ -66,6 +78,7 @@ export async function submitVolcVideo(
     if (typeof body.camera_fixed === 'boolean') upstreamBody.camera_fixed = body.camera_fixed;
     if (typeof body.seed === 'number') upstreamBody.seed = body.seed;
     if (typeof body.watermark === 'boolean') upstreamBody.watermark = body.watermark;
+    if (typeof body.return_last_frame === 'boolean') upstreamBody.return_last_frame = body.return_last_frame;
 
     let upstream: Response;
     try {
@@ -91,8 +104,9 @@ export async function submitVolcVideo(
         console.warn('[volc-adapter] submit failed', { status: upstream.status, body: text.slice(0, 2000) });
         return err(upstream.status >= 400 ? upstream.status : 502, 'upstream_error', 'upstream rejected the request');
     }
+    const clientTaskId = disguiseTaskId(taskId);
     return NextResponse.json(
-        { id: taskId, task_id: taskId, object: 'video', model: VOLC_MODEL, status: 'queued', progress: 0 },
+        { id: clientTaskId, task_id: clientTaskId, object: 'video', model: VOLC_MODEL, status: 'queued', progress: 0 },
         { status: 200 },
     );
 }
@@ -105,17 +119,24 @@ function mapStatus(s: unknown): 'queued' | 'in_progress' | 'completed' | 'failed
     return 'in_progress';
 }
 
-/** 轮询:GET provider task → 归一形 {status, video_url, usage}。video_url 是火山直链,原样透传。 */
+/** 轮询:GET provider task → 归一形 {status, video_url, usage}。video_url 是火山直链,原样透传。
+ *  入参 id 是对客形(cgt-X):打上游前还原成 task_X;404 时用原始 id 回退一次
+ *  (兜住上游本来就返 cgt- 形 id 被我们原样透传的罕见情形)。响应回显对客形 id。 */
 export async function pollVolcVideo(id: string): Promise<NextResponse> {
     const cfg = getConfig();
     if (!cfg) return err(503, 'temporarily_unavailable', '火山渠道未配置,请联系服务方');
 
-    let upstream: Response;
-    try {
-        upstream = await fetch(`${cfg.base}/doubao/api/v3/contents/generations/tasks/${encodeURIComponent(id)}`, {
+    const fetchTask = (taskId: string) =>
+        fetch(`${cfg.base}/doubao/api/v3/contents/generations/tasks/${encodeURIComponent(taskId)}`, {
             headers: { Authorization: `Bearer ${cfg.key}`, Accept: 'application/json' },
             signal: AbortSignal.timeout(20000),
         });
+
+    const upstreamId = undisguiseTaskId(id);
+    let upstream: Response;
+    try {
+        upstream = await fetchTask(upstreamId);
+        if (upstream.status === 404 && upstreamId !== id) upstream = await fetchTask(id);
     } catch (e) {
         console.warn('[volc-adapter] poll unreachable', { id, err: String(e) });
         return err(502, 'upstream_unreachable', 'upstream temporarily unavailable, please retry');
