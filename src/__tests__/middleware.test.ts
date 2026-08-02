@@ -67,6 +67,31 @@ describe('middleware — 独立门户形态门(PORTAL_FLAVOR=seedance-enterprise
         }
     });
 
+    it('enterprise 实例:/api/(尾斜杠)与 /?Action=(火山官方根路径形态)rewrite 到 /api + 原始 path 头', () => {
+        process.env.PORTAL_FLAVOR = 'seedance-enterprise';
+        // 客户端把 base …/api 拼上 "/" → /api/(有无 Action 都 rewrite,path 无歧义)
+        const r1 = middleware(req('/api/?Action=CreateAsset&Version=2024-01-01'));
+        expect(r1.headers.get('x-middleware-rewrite')).toContain('/api?');
+        expect(r1.headers.get('x-middleware-request-x-enterprise-orig-path')).toBe('/api/');
+        // 火山官方 SDK 形态:根路径 + Action query
+        const r2 = middleware(req('/?Action=CreateAsset&Version=2024-01-01'));
+        expect(r2.headers.get('x-middleware-rewrite')).toContain('/api?');
+        expect(r2.headers.get('x-middleware-request-x-enterprise-orig-path')).toBe('/');
+        // query 原样保留(Action/Version 不丢)
+        expect(r2.headers.get('x-middleware-rewrite')).toContain('Action=CreateAsset');
+        // 根路径【不带】Action → 仍是浏览器访问,照旧 307 登录页
+        const r3 = middleware(req('/'));
+        expect(r3.status).toBe(307);
+        expect(r3.headers.get('location')).toContain('/enterprise/login');
+    });
+
+    it('主站实例(env 未设):/api/ 与 /?Action= 不 rewrite(行为不变)', () => {
+        for (const p of ['/api/?Action=CreateAsset', '/?Action=CreateAsset']) {
+            const res = middleware(req(p));
+            expect(res.headers.get('x-middleware-rewrite')).toBeNull();
+        }
+    });
+
     it('主站实例(env 未设):行为不变', () => {
         expect(middleware(req('/dashboard')).status).not.toBe(404);
     });

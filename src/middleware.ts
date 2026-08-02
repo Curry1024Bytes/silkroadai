@@ -20,6 +20,20 @@ export function middleware(request: NextRequest) {
     // 主站实例(env 未设)零影响。
     if (process.env.PORTAL_FLAVOR === 'seedance-enterprise') {
         const p = request.nextUrl.pathname;
+        // 火山官方 Action API 形态兼容(2026-08-02):官方 endpoint 是根路径
+        // `/?Action=…`(官方 SDK 默认拼 path "/";客户把 base 配成 …/api 时客户端
+        // 也会拼出 /api/)。两种都 rewrite 到 /api(rewrite 非 redirect,POST body
+        // 不丢)。原始 path 经内部头传给 route —— AK/SK SignerV4 验签必须用客户实际
+        // 签名的 path,rewrite 后不还原会把签名用户全打成 401。根路径仅带 Action
+        // query 时改写,浏览器访问 / 照旧跳登录页。
+        if (p === '/api/' || (p === '/' && request.nextUrl.searchParams.has('Action'))) {
+            // 用普通 URL 构造(不 clone nextUrl):NextURL 会记住原路径的尾斜杠标志,
+            // pathname 赋值后序列化仍被补回 /api/,rewrite 就白做了。
+            const url = new URL('/api' + request.nextUrl.search, request.url);
+            const headers = new Headers(request.headers);
+            headers.set('x-enterprise-orig-path', p);
+            return NextResponse.rewrite(url, { request: { headers } });
+        }
         if (p === '/login' || p === '/') {
             return NextResponse.redirect(new URL('/enterprise/login', request.url));
         }
