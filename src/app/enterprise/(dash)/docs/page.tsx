@@ -477,7 +477,7 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
   "model": "doubao-seedance-2.0",
   "content": [{"type": "text", "text": "一只橘猫在窗台上打哈欠"}],
   "resolution": "720p",     // 480p / 720p / 1080p / 4k
-  "duration": 5             // 5 / 10 / 15
+  "duration": 5             // 4-15 任意整数秒(仅本渠道;其他渠道 5/10/15)
 }
 # → {"id":"task_…"}   然后 GET /api/v3/contents/generations/tasks/{id} 轮询
 # → {"status":"succeeded","content":{"video_url":"https://…火山直链…"}}`}</Pre>

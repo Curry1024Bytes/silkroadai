@@ -126,6 +126,60 @@ describe('火山渠道(volc)路由', () => {
         });
     });
 
+    it('volc 支持 4-15 任意整数秒(2026-08-03 开放):7 秒透传适配器 + 落库', async () => {
+        submitVolcVideo.mockResolvedValue(NextResponse.json({ id: 'task_d7', task_id: 'task_d7', status: 'queued' }));
+        const res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { model: 'doubao-seedance-2.0', prompt: 'x', duration: 7 }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(200);
+        expect(submitVolcVideo).toHaveBeenCalledWith(expect.anything(), '720p', 7);
+        expect(db.seedanceVideoTask.create).toHaveBeenCalledWith({
+            data: expect.objectContaining({ duration: 7 }),
+        });
+    });
+
+    it('volc duration 边界:4 和 15 接受,3 / 16 / 7.5 → 400;缺省 = 5', async () => {
+        submitVolcVideo.mockImplementation(() =>
+            Promise.resolve(NextResponse.json({ id: 'task_db', task_id: 'task_db', status: 'queued' })),
+        );
+        for (const ok of [4, 15]) {
+            const res = await handleEnterpriseV1(
+                req('POST', '/v1/video/generations', { model: 'doubao-seedance-2.0', prompt: 'x', duration: ok }),
+                '/video/generations',
+            );
+            expect(res.status).toBe(200);
+            expect(submitVolcVideo).toHaveBeenLastCalledWith(expect.anything(), '720p', ok);
+        }
+        for (const bad of [3, 16, 7.5]) {
+            const res = await handleEnterpriseV1(
+                req('POST', '/v1/video/generations', { model: 'doubao-seedance-2.0', prompt: 'x', duration: bad }),
+                '/video/generations',
+            );
+            expect(res.status).toBe(400);
+            const body = await res.json();
+            expect(body.error.message).toContain('4-15');
+        }
+        const res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { model: 'doubao-seedance-2.0', prompt: 'x' }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(200);
+        expect(submitVolcVideo).toHaveBeenLastCalledWith(expect.anything(), '720p', 5);
+    });
+
+    it('非 volc 渠道 duration 行为不变:7 秒仍归到 5(5/10/15 三档)', async () => {
+        submitVideoWithKey.mockResolvedValue(NextResponse.json({ id: 'cgt-d1', task_id: 'cgt-d1', status: 'queued' }));
+        const res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { model: 'seedance-2-0', prompt: 'x', duration: 7 }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(200);
+        expect(db.seedanceVideoTask.create).toHaveBeenCalledWith({
+            data: expect.objectContaining({ duration: 5 }),
+        });
+    });
+
     it('volc 非法 resolution(360p)→ 400,错误文案含 480p 白名单', async () => {
         const res = await handleEnterpriseV1(
             req('POST', '/v1/video/generations', {
