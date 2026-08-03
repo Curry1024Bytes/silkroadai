@@ -267,20 +267,16 @@ async function handleSubmit(req: NextRequest, format: ClientFormat = 'v1'): Prom
     }
 
     const hasVideo = extractVideoUrls(body).length > 0;
+    // duration:全渠道 4-15 任意整数秒(2026-08-03 探测:volc/cn/global 上游 3s/16s 皆 400,
+    // 4s 全变体真出片)。缺省 5;显式非法值 400(不静默改秒数 —— 计费按 token,静默换时长=换价)。
     const durRaw = Number(body.duration ?? body.seconds);
     let duration: number;
-    if (map.region === 'volc') {
-        // volc 上游(火山方舟原生)支持 4-15 任意整数秒(2026-08-03 探测:3s/16s 上游 400,4s/7s 真出片)。
-        // 缺省 5;显式非法值 400(不静默改秒数 —— 计费按 token,静默换时长=换价)。
-        if (body.duration == null && body.seconds == null) {
-            duration = 5;
-        } else if (Number.isInteger(durRaw) && durRaw >= 4 && durRaw <= 15) {
-            duration = durRaw;
-        } else {
-            return errJson(400, 'invalid_request', 'duration 仅支持 4-15 之间的整数秒');
-        }
+    if (body.duration == null && body.seconds == null) {
+        duration = 5;
+    } else if (Number.isInteger(durRaw) && durRaw >= 4 && durRaw <= 15) {
+        duration = durRaw;
     } else {
-        duration = durRaw === 10 || durRaw === 15 ? durRaw : 5; // 与 cn-adapter 同步:5/10/15 三档
+        return errJson(400, 'invalid_request', 'duration 仅支持 4-15 之间的整数秒');
     }
 
     // 余额门(视频后付费,提交时按估价挡,防大额透支)。企业客户余额 = Account.balance_cny 唯一真相。

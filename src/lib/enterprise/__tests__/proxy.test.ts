@@ -168,16 +168,25 @@ describe('火山渠道(volc)路由', () => {
         expect(submitVolcVideo).toHaveBeenLastCalledWith(expect.anything(), '720p', 5);
     });
 
-    it('非 volc 渠道 duration 行为不变:7 秒仍归到 5(5/10/15 三档)', async () => {
-        submitVideoWithKey.mockResolvedValue(NextResponse.json({ id: 'cgt-d1', task_id: 'cgt-d1', status: 'queued' }));
+    it('cn/global 渠道也开 4-15(2026-08-03 探测):7 秒落库 7;3 秒 → 400', async () => {
+        submitVideoWithKey.mockImplementation(() =>
+            Promise.resolve(NextResponse.json({ id: 'cgt-d1', task_id: 'cgt-d1', status: 'queued' })),
+        );
         const res = await handleEnterpriseV1(
             req('POST', '/v1/video/generations', { model: 'seedance-2-0', prompt: 'x', duration: 7 }),
             '/video/generations',
         );
         expect(res.status).toBe(200);
         expect(db.seedanceVideoTask.create).toHaveBeenCalledWith({
-            data: expect.objectContaining({ duration: 5 }),
+            data: expect.objectContaining({ duration: 7 }),
         });
+        const bad = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { model: 'seedance-2-0-global', prompt: 'x', duration: 3 }),
+            '/video/generations',
+        );
+        expect(bad.status).toBe(400);
+        const body = await bad.json();
+        expect(body.error.message).toContain('4-15');
     });
 
     it('volc 非法 resolution(360p)→ 400,错误文案含 480p 白名单', async () => {
