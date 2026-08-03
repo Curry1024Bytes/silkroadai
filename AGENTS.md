@@ -103,6 +103,10 @@
   `/v1beta/*` 到 Portal `127.0.0.1:3002`,其余路径 JSON 404;SSE 禁用 buffering/cache,650s timeout,
   access log 不记 query string。生产 `.env` 还必须补
   `NEWAPI_CUSTOMER_BASE_URL=http://127.0.0.1:3002`;真实 VPS `nginx -t` 和公网 smoke 通过前仍标 pending。
+- 2026-08-03 VPS 配置审计发现主站 Nginx `server_name` 只有 apex,`www` 目前靠 default 443 匹配。
+  待发布 `deploy/nginx/llmroute-web.conf` 将 apex/`www` 显式纳入同一主站 virtual host;API 模板的
+  listener 参数与现有 AlmaLinux Nginx 对齐,不在 origin 侧额外启用 HTTP/2。主站/API access log
+  均只记 `$uri`,防止 OAuth code、reset token、支付签名和 Gemini `?key=` 落盘。
 - 2026-08-03 待发布批次:客服微信改为 `LLmRoute`(代码/forward migration 已进 `prod`,VPS 尚待重建验收),
   以及 `main@da510e7 -> dev` 的 10 个上游提交。合并后完整验证为 244 files / 2644 passed / 1 skipped。
 - new-api rc.22 登录兼容决策:优先直接使用登录响应的 `data.access_token`;仅旧版本 `session=` cookie 走 fallback。
