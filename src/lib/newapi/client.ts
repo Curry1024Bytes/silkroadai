@@ -116,16 +116,26 @@ export interface NewApiEnvelope<T> {
     data?: T;
 }
 
+/**
+ * Session credential returned by POST /api/user/login.
+ *
+ * new-api ≤ rc.2 sets a gorilla `session=` cookie; rc.22+ dropped that
+ * entirely and instead returns a short-lived (~15 min) JWT in the response
+ * body (`data.access_token`), meant to be sent as `Authorization: Bearer`.
+ * Provisioning uses whichever the server handed back.
+ */
+export type LoginSessionAuth = { kind: 'cookie'; cookie: string } | { kind: 'bearer'; jwt: string };
+
 interface CallOptions {
     /** 用哪个 access_token + user_id 调用。默认用 admin。 */
     asUser?: { accessToken: string; userId: number };
     /**
-     * Use a session cookie instead of an access_token (still requires
-     * New-Api-User header to be set explicitly via cookieUser).
-     * Used during provisioning to fetch a freshly-created customer's
-     * access_token via GET /api/user/token (which requires session auth).
+     * Use a login-session credential (cookie or Bearer JWT, see
+     * LoginSessionAuth) instead of a long-lived access_token. Used during
+     * provisioning to fetch a freshly-created customer's access_token via
+     * GET /api/user/token (which requires session auth, not admin scope).
      */
-    cookie?: { value: string; userId: number };
+    session?: { auth: LoginSessionAuth; userId: number };
 }
 
 async function call<T>(
@@ -143,9 +153,13 @@ async function call<T>(
     }
 
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (options.cookie) {
-        headers['Cookie'] = options.cookie.value;
-        headers['New-Api-User'] = String(options.cookie.userId);
+    if (options.session) {
+        if (options.session.auth.kind === 'cookie') {
+            headers['Cookie'] = options.session.auth.cookie;
+        } else {
+            headers['Authorization'] = `Bearer ${options.session.auth.jwt}`;
+        }
+        headers['New-Api-User'] = String(options.session.userId);
     } else {
         let auth = options.asUser;
         if (!auth) {
@@ -180,8 +194,8 @@ async function call<T>(
 /**
  * Login as a customer with username + password.
  *
- * Returns the session cookie (already in `name=value` form, ready to set
- * on the `Cookie` request header) and the logged-in user payload.
+ * Returns a session credential (legacy `session=` cookie on ≤ rc.2, Bearer
+ * JWT from the response body on rc.22+) and the logged-in user payload.
  *
  * Used during provisioning: after admin creates the customer, portal logs
  * in as them so it can call GET /api/user/token (which requires session
@@ -189,8 +203,20 @@ async function call<T>(
  * cannot set someone else's access_token — PUT /api/user/ silently
  * ignores the field — so we must go through login.
  */
+const LoginUserSchema = z.object({
+    id: z.number().int(),
+    username: z.string(),
+    role: z.number().int(),
+});
+
+// rc.22+ login payload: user nested, short-lived session JWT alongside.
+const LoginJwtPayloadSchema = z.object({
+    access_token: z.string().min(1),
+    user: LoginUserSchema,
+});
+
 async function loginAsUser(args: { username: string; password: string }): Promise<{
-    cookie: string;
+    auth: LoginSessionAuth;
     user: { id: number; username: string; role: number };
 }> {
     const url = new URL('/api/user/login', NEWAPI_BASE_URL);
@@ -200,7 +226,7 @@ async function loginAsUser(args: { username: string; password: string }): Promis
         body: JSON.stringify({ username: args.username, password: args.password }),
     });
     const text = await res.text();
-    let data: NewApiEnvelope<{ id: number; username: string; role: number }> | null = null;
+    let data: NewApiEnvelope<unknown> | null = null;
     try {
         data = text ? JSON.parse(text) : null;
     } catch {
@@ -212,15 +238,30 @@ async function loginAsUser(args: { username: string; password: string }): Promis
         throw new NewApiError(res.status, 'POST /api/user/login', data, String(msg));
     }
 
+    const jwtPayload = LoginJwtPayloadSchema.safeParse(data?.data);
+    if (jwtPayload.success) {
+        return {
+            auth: { kind: 'bearer', jwt: jwtPayload.data.access_token },
+            user: jwtPayload.data.user,
+        };
+    }
+
     const setCookie = res.headers.get('set-cookie') ?? '';
     const sessionMatch = setCookie.match(/(session=[^;]+)/);
-    if (!sessionMatch) {
-        throw new NewApiError(res.status, 'POST /api/user/login', data, 'Login OK but no session cookie returned');
+    const legacyUser = LoginUserSchema.safeParse(data?.data);
+    if (sessionMatch && legacyUser.success) {
+        return {
+            auth: { kind: 'cookie', cookie: sessionMatch[1] },
+            user: legacyUser.data,
+        };
     }
-    return {
-        cookie: sessionMatch[1],
-        user: data!.data!,
-    };
+
+    throw new NewApiError(
+        res.status,
+        'POST /api/user/login',
+        data,
+        'Login OK but no session credential returned (neither rc.22 body JWT nor legacy session cookie)',
+    );
 }
 
 // ============================================
@@ -346,7 +387,7 @@ export async function searchUser(
  * 更新 user。new-api 的 PUT 接受部分字段,但有些字段它会静默忽略——
  * 实测 access_token 是其中之一(2026-05 W2 D6 验证;new-api v1.0.0-rc.2)。
  * 要 (re)generate 客户的 access_token,得让那个客户自己 GET /api/user/token
- * (走 session cookie),不能 admin 改。
+ * (走 login session 凭据:≤rc.2 cookie / rc.22+ Bearer JWT),不能 admin 改。
  *
  * 别用这个改 username — 内部似乎走 INSERT-or-UPDATE,空字段会和已有
  * username='' 行冲突触发 unique violation。fetch + merge 后 PUT 才稳。
@@ -723,7 +764,8 @@ export interface ProvisionedCustomer {
  *
  * 流程(empirically verified against new-api v1.0.0-rc.2):
  *   1. POST /api/user/             admin 创建 new-api user
- *   2. POST /api/user/login        portal 用刚生成的密码登录该 user,拿 session cookie
+ *   2. POST /api/user/login        portal 用刚生成的密码登录该 user,拿 session 凭据
+ *                                  (≤rc.2: session cookie;rc.22+: 响应体短效 Bearer JWT)
  *                                  (顺便从响应里拿到 user.id,省掉一次 search)
  *   3. GET  /api/user/token        以 session 身份拿(并 rotate)access_token
  *                                  ⚠️ 这个端点 admin 调不动:必须用该用户自己的 session
@@ -749,14 +791,15 @@ export async function provisionNewCustomer(args: {
     // the full email in the email field (which has a 50-char limit).
     await createUser({ username, password, display_name: username, email: args.email });
 
-    // Step 2: log in as the customer to obtain a session cookie + their user.id.
+    // Step 2: log in as the customer to obtain a session credential
+    // (cookie ≤ rc.2, Bearer JWT on rc.22+) + their user.id.
     const session = await loginAsUser({ username, password });
     const userId = session.user.id;
 
     // Step 3: ask new-api to (re)generate this user's access_token. Returns
     // the new token; the previous value (if any) is invalidated server-side.
     const accessToken = await call<string>('GET', '/api/user/token', undefined, undefined, {
-        cookie: { value: session.cookie, userId },
+        session: { auth: session.auth, userId },
     });
 
     // Step 4: create the first token. Must act-as the customer.
