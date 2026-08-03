@@ -42,7 +42,7 @@ replaces U+201C/U+201D smart quotes with straight `"`).
 # 1. Clone
 ssh vps "mkdir -p /opt/silkroadai-portal && cd /opt/silkroadai-portal && \
          git clone https://github.com/yexioy/silkroadai.git . && \
-         git checkout main"
+         git checkout prod"
 
 # 2. Upload + sanitize .env, append POSTGRES_PASSWORD for compose interpolation
 scp ~/Desktop/silkroadai-prod-env.txt vps:/opt/silkroadai-portal/.env.raw
@@ -109,10 +109,11 @@ curl -sS -o /dev/null -w "HTTP %{http_code}  cert: %{ssl_verify_result}\n" \
 
 ## 2. Rolling update(future code changes)
 
-After merging a PR to main:
+Only deploy a tested commit already fast-forwarded from `dev` to `prod`.
+`main` is an upstream-only mirror and must never be deployed directly.
 
 ```bash
-ssh vps "cd /opt/silkroadai-portal && git pull --ff-only origin main && \
+ssh vps "cd /opt/silkroadai-portal && git pull --ff-only origin prod && \
          docker compose -f docker-compose.prod.yml up -d --build portal"
 # start.sh runs migrate deploy on container start — Postgres untouched.
 ```
