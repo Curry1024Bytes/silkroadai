@@ -165,15 +165,19 @@ export function synthUsage(inp: SynthUsageInput): Record<string, unknown> {
 // ============ 错误与守门响应 ============
 
 /** 5xx = 让 new-api 重试/failover 到其它 gpt-image-2 渠道(4xx 会被当终态甩给客户)。
- *  文案保持中性:所有渠道全挂时这段才会透出到客户。 */
-function failover(code: string, detail: string): NextResponse {
+ *
+ *  【响应体恒定中性,分类码与原因串只进服务端日志】—— new-api 在自己的错误里会把上游 body 原文
+ *  嵌进去(建渠道时测试按钮把整页 404 HTML 塞进 message 即实证),所以 gpt-image-2 全部渠道同时
+ *  挂时,这里写进 body 的任何内容都可能被客户读到:`size_not_served` 这类分类码会泄漏"按尺寸分档
+ *  路由"的内部结构,原因串还可能带出上游错误原文里 sanitizeAdapterError 正则没覆盖到的字眼。 */
+function failover(code: string, reason: string): NextResponse {
+    console.warn('[image-adapter] failover', { code, reason });
     return NextResponse.json(
         {
             error: {
                 message: 'The server is temporarily unable to process this request, please retry later.',
                 type: 'server_error',
-                code,
-                detail,
+                code: 'upstream_unavailable',
             },
         },
         { status: 503 },

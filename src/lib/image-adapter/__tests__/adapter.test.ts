@@ -164,7 +164,32 @@ describe('handleAdapterImage 守门(调上游之前拒,返 503 让 new-api failo
         expect(res.status).toBe(503);
         expect(fetchMock).not.toHaveBeenCalled();
         const body = await res.json();
-        expect(body.error.code).toBe('size_not_served');
+        expect(body.error.code).toBe('upstream_unavailable');
+    });
+
+    it('503 响应体不含任何内部信息(全渠道挂时 new-api 会把它原文透给客户)', async () => {
+        // 守门拒(带 size/tier 上下文)+ 上游错误(带上游原文)两类都验
+        fetchMock.mockResolvedValue(
+            new Response(
+                JSON.stringify({ error: { message: 'ominiapi says: bad image, contact ops@omini.example' } }),
+                {
+                    status: 400,
+                },
+            ),
+        );
+        const cases = await Promise.all([
+            handleAdapterImage(jsonReq(URL_GEN, { prompt: 'x', size: '1024x1024' }), 'generations', 'ominiapi'),
+            handleAdapterImage(jsonReq(URL_GEN, { prompt: 'x', size: '3840x2160' }), 'generations', 'ominiapi'),
+        ]);
+        for (const res of cases) {
+            expect(res.status).toBe(503);
+            const body = await res.json();
+            expect(Object.keys(body.error).sort()).toEqual(['code', 'message', 'type']);
+            const text = JSON.stringify(body).toLowerCase();
+            for (const leak of ['omini', 'tier', 'size', 'quality', 'channel', 'adapter', 'provider', 'ops@']) {
+                expect(text).not.toContain(leak);
+            }
+        }
     });
 
     it('2K + high 放行', async () => {
@@ -252,7 +277,7 @@ describe('handleAdapterImage 成功路径', () => {
             'ominiapi',
         );
         expect(res.status).toBe(503);
-        expect((await res.json()).error.code).toBe('upstream_image_unreachable');
+        expect((await res.json()).error.code).toBe('upstream_unavailable');
     });
 
     it('n>1 按上游真实出图张数累加 ct', async () => {
@@ -330,7 +355,7 @@ describe('handleAdapterImage 失败路径(不合成 usage → new-api 不扣费)
             'ominiapi',
         );
         expect(res.status).toBe(503);
-        expect((await res.json()).error.code).toBe('upstream_no_image');
+        expect((await res.json()).error.code).toBe('upstream_unavailable');
     });
 
     it('未知 provider → 503(配置错也走 failover,客户无感)', async () => {
