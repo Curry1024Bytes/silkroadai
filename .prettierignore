@@ -9,6 +9,8 @@ _bootstrap
 # Worktrees + harness state. .claude/ may also contain in-flight
 # transcripts the operator hasn't closed yet — never format.
 .claude
+# Codex skills are standalone tooling with their own document/code style.
+.codex
 # Generated Next build artifacts (separate from .next listed above).
 .next/dev
 .next/types

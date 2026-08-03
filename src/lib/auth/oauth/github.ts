@@ -161,10 +161,7 @@ export async function fetchGitHubVerifiedPrimaryEmail(accessToken: string): Prom
 /* ────────────── error class ────────────── */
 
 export type GitHubOAuthErrorCode =
-    | 'token_exchange_failed'
-    | 'user_fetch_failed'
-    | 'email_fetch_failed'
-    | 'email_not_verified';
+    'token_exchange_failed' | 'user_fetch_failed' | 'email_fetch_failed' | 'email_not_verified';
 
 export class GitHubOAuthError extends Error {
     constructor(

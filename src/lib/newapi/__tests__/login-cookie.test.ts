@@ -3,9 +3,7 @@ import { extractNewApiSessionCookie, parseNewApiLoginResult } from '../client';
 
 describe('extractNewApiSessionCookie', () => {
     it('keeps compatibility with the legacy session cookie', () => {
-        expect(
-            extractNewApiSessionCookie('session=abc123; Path=/; HttpOnly; SameSite=Strict'),
-        ).toBe('session=abc123');
+        expect(extractNewApiSessionCookie('session=abc123; Path=/; HttpOnly; SameSite=Strict')).toBe('session=abc123');
     });
 
     it('does not treat the current refresh cookie as an API session', () => {

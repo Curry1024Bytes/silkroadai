@@ -107,8 +107,7 @@ function lastCreateData(): Record<string, unknown> {
 /** 找到写 in.json / out.json 的 putLogObject 调用(真实键形如 reqlog/yyyy/mm/dd/{id}.in.json） */
 function findPut(kind: 'in' | 'out'): [string, Buffer | string, (string | undefined)?] | undefined {
     return mockPutLogObject.mock.calls.find((c) => String(c[0]).endsWith(`.${kind}.json`)) as
-        | [string, Buffer | string, (string | undefined)?]
-        | undefined;
+        [string, Buffer | string, (string | undefined)?] | undefined;
 }
 
 beforeEach(() => {

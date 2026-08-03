@@ -111,8 +111,7 @@ function extractPrompt(body: Record<string, unknown>): string {
     const messages = body.messages;
     if (Array.isArray(messages)) {
         const lastUser = [...messages].reverse().find((m) => (m as { role?: string })?.role === 'user') as
-            | { content?: unknown }
-            | undefined;
+            { content?: unknown } | undefined;
         const mc = lastUser?.content;
         if (typeof mc === 'string') return mc;
         if (Array.isArray(mc)) {

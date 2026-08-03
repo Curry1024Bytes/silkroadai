@@ -95,6 +95,8 @@
   隔离;默认只启动 Portal + PostgreSQL。标准发布仍显式指定 `portal`,当前服务器不要启用可选 profile。
 - 2026-08-03 `dev` 待发布的构建加固:Dockerfile 默认公开域名改为 LLmRoute,Compose 从服务器 `.env`
   传入全部公开 build args;上线前仍需经 `dev -> prod` 发布门。
+- 2026-08-03 lint 基线:项目未启用 React Compiler,其 compiler-only 诊断保留为 warning;`.codex/**`
+  是独立技能工具,不纳入应用 ESLint。`pnpm lint` 必须保持 0 error,并继续作为 CI/发布门。
 - 2026-08-03 待发布批次:客服微信改为 `LLmRoute`(代码/forward migration 已进 `prod`,VPS 尚待重建验收),
   以及 `main@da510e7 -> dev` 的 10 个上游提交。合并后完整验证为 244 files / 2644 passed / 1 skipped。
 - new-api rc.22 登录兼容决策:优先直接使用登录响应的 `data.access_token`;仅旧版本 `session=` cookie 走 fallback。
