@@ -155,6 +155,44 @@ export async function listEnabledChannelGroups(tenantId: string | null) {
     });
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// 档次倍率:同步 new-api `GroupRatio`(与 new-api 自家分组下拉的「Nx 倍率」徽章
+// 同源)。60s 进程内缓存(镜像上面 UserUsableGroups 同步节流);new-api 不可达 /
+// option 缺失 / JSON 坏 → 返上一次好值(无则空表),/keys 页降级为不显示倍率,
+// 不阻塞档次选择。
+// ─────────────────────────────────────────────────────────────────────────
+
+let ratioCache: Record<string, number> = {};
+let ratioFetchedAt = 0;
+
+/** 测试专用:清空倍率缓存。 */
+export function __resetGroupRatioCacheForTests(): void {
+    ratioCache = {};
+    ratioFetchedAt = 0;
+}
+
+/** new-api 组名 → GroupRatio 倍率(如 { 'cc-kiro': 0.4 })。失败时返上次缓存。 */
+export async function getGroupRatios(): Promise<Record<string, number>> {
+    if (Date.now() - ratioFetchedAt < SYNC_TTL_MS) return ratioCache;
+    try {
+        const raw = await getOption('GroupRatio');
+        if (raw != null) {
+            const parsed: unknown = JSON.parse(raw);
+            if (parsed != null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                const next: Record<string, number> = {};
+                for (const [group, ratio] of Object.entries(parsed as Record<string, unknown>)) {
+                    if (typeof ratio === 'number' && Number.isFinite(ratio)) next[group] = ratio;
+                }
+                ratioCache = next;
+            }
+        }
+        ratioFetchedAt = Date.now(); // option 缺失也压节流,别每请求都打 new-api
+    } catch {
+        ratioFetchedAt = Date.now(); // 失败同样压节流,返 stale
+    }
+    return ratioCache;
+}
+
 /**
  * Per-customer 档次门:若 user.allowed_tier_keys 非空,把可见/可建档次收窄到
  * 这些 key;空数组 = 不限制(看本 tenant 全部 enabled,现状)。

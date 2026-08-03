@@ -16,7 +16,7 @@ import { prisma } from '@/lib/db';
 import { getTokenUsageWithCache } from '@/lib/newapi/token-usage';
 import { quotaToCny } from '@/lib/newapi/quota-units';
 import { formatTokenForDisplay } from '@/lib/newapi/token-format';
-import { listEnabledChannelGroups, restrictGroupsForUser } from '@/lib/channel-group';
+import { listEnabledChannelGroups, restrictGroupsForUser, getGroupRatios } from '@/lib/channel-group';
 import { KeysList, type KeyRow } from './keys-list';
 import { KeysSnippetsPanel } from './keys-snippets-panel';
 
@@ -106,11 +106,16 @@ export default async function KeysPage() {
     // 客户 tenant 下 enabled 的 ChannelGroup,再按 per-customer 白名单收窄
     // (allowed_tier_keys 非空 → 只显示这些档;空 → 全部)。
     const tierGroups = restrictGroupsForUser(await listEnabledChannelGroups(user.tenant_id), user.allowed_tier_keys);
+    // 倍率与 new-api 自家分组下拉的「Nx 倍率」徽章同源(GroupRatio,60s 缓存);
+    // new-api 不可达时降级为 null(下拉不显示徽章,不阻塞建 key)。
+    const ratios = await getGroupRatios();
     const tiers = tierGroups.map((g) => ({
         key: g.key,
         display_name: g.display_name,
         description: g.description,
         is_default: g.is_default,
+        newapi_group: g.newapi_group,
+        ratio: ratios[g.newapi_group] ?? null,
     }));
 
     return (

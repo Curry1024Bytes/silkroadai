@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 // NOTE: this 'use client' island does NOT convert quota→¥ itself. quotaToCny
 // reads NEWAPI_QUOTA_PER_USD / USD_TO_CNY_RATE — server-only env that is
 // undefined in the browser bundle, so quota-units would fall back to stale
@@ -38,6 +38,10 @@ export interface TierOption {
     display_name: string;
     description: string | null;
     is_default: boolean;
+    /** new-api 组名(下拉副行展示,与 new-api 分组下拉同款信息)。 */
+    newapi_group: string;
+    /** new-api GroupRatio 倍率(server 端同步);new-api 不可达 → null,不显示徽章。 */
+    ratio: number | null;
 }
 
 /** Mirror of the server-side mask helper. Used when we receive a freshly
@@ -80,12 +84,142 @@ interface CreateState {
     alias: string;
     submitting: boolean;
     error: string | null;
-    tier: string;
+    /** null = 尚未选档(多档时必选,不预选;单档 / 无档配置时自动定)。 */
+    tier: string | null;
+}
+
+/** 倍率徽章文案:0.4 → "0.4x 倍率"(与 new-api 分组下拉同款)。 */
+function ratioBadgeText(ratio: number | null): string | null {
+    return ratio == null ? null : `${ratio}x 倍率`;
+}
+
+/**
+ * 档次下拉(样式参照 new-api 的分组选择):触发钮 + 搜索框 + 选项列表。
+ * 每行 = 显示名 + 副行介绍(new-api 组名 · portal 描述)+ 「Nx 倍率」徽章;
+ * 必选 —— 多档时无预选,placeholder「选择一个档次」。
+ */
+export function TierSelect({
+    tiers,
+    value,
+    onChange,
+    disabled,
+}: {
+    tiers: TierOption[];
+    value: string | null;
+    onChange: (key: string) => void;
+    disabled?: boolean;
+}) {
+    const [open, setOpen] = useState(false);
+    const [query, setQuery] = useState('');
+    const rootRef = useRef<HTMLDivElement | null>(null);
+
+    // 点外面 / Escape 关闭
+    useEffect(() => {
+        if (!open) return;
+        const onDown = (e: MouseEvent) => {
+            if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+        };
+        const onKey = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') setOpen(false);
+        };
+        document.addEventListener('mousedown', onDown);
+        document.addEventListener('keydown', onKey);
+        return () => {
+            document.removeEventListener('mousedown', onDown);
+            document.removeEventListener('keydown', onKey);
+        };
+    }, [open]);
+
+    const q = query.trim().toLowerCase();
+    const filtered = q
+        ? tiers.filter((t) =>
+              [t.key, t.display_name, t.description ?? '', t.newapi_group].some((s) => s.toLowerCase().includes(q)),
+          )
+        : tiers;
+    const selected = value != null ? tiers.find((t) => t.key === value) : undefined;
+
+    return (
+        <div ref={rootRef} className="relative">
+            <button
+                type="button"
+                disabled={disabled}
+                aria-haspopup="listbox"
+                aria-expanded={open}
+                onClick={() => {
+                    setQuery('');
+                    setOpen((v) => !v);
+                }}
+                className={`flex w-full items-center justify-between gap-2 rounded-lg border px-3 py-2 text-left text-sm transition-colors ${
+                    open ? 'border-navy' : 'border-brand-border'
+                } bg-surface hover:bg-paper-muted disabled:cursor-not-allowed disabled:opacity-60`}
+            >
+                {selected ? (
+                    <span className="flex min-w-0 items-center gap-2">
+                        <span className="truncate text-ink">{selected.display_name}</span>
+                        {ratioBadgeText(selected.ratio) && (
+                            <span className="shrink-0 rounded-full border border-status-success-border bg-status-success-bg px-2 py-0.5 text-[11px] font-medium text-status-success-text">
+                                {ratioBadgeText(selected.ratio)}
+                            </span>
+                        )}
+                    </span>
+                ) : (
+                    <span className="text-minor-ink">选择一个档次</span>
+                )}
+                <span aria-hidden className="shrink-0 text-[10px] text-minor-ink">
+                    {open ? '▲' : '▼'}
+                </span>
+            </button>
+            {open && (
+                <div className="absolute left-0 right-0 top-full z-20 mt-1 overflow-hidden rounded-lg border border-brand-border bg-surface shadow-card">
+                    <div className="border-b border-brand-border p-2">
+                        <input
+                            type="text"
+                            value={query}
+                            onChange={(e) => setQuery(e.target.value)}
+                            placeholder="搜索…"
+                            autoFocus
+                            className="w-full rounded-md border border-brand-border bg-paper-muted px-2.5 py-1.5 text-sm text-ink outline-none focus:border-navy"
+                        />
+                    </div>
+                    <ul role="listbox" className="m-0 max-h-64 list-none overflow-y-auto p-1">
+                        {filtered.length === 0 && <li className="px-3 py-2 text-sm text-minor-ink">无匹配档次</li>}
+                        {filtered.map((t) => (
+                            <li key={t.key} role="option" aria-selected={t.key === value}>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        onChange(t.key);
+                                        setOpen(false);
+                                    }}
+                                    className={`flex w-full items-center justify-between gap-3 rounded-md px-3 py-2 text-left transition-colors hover:bg-paper-muted ${
+                                        t.key === value ? 'bg-paper-muted' : ''
+                                    }`}
+                                >
+                                    <span className="min-w-0">
+                                        <span className="block truncate text-sm text-ink">{t.display_name}</span>
+                                        <span className="mt-0.5 block truncate text-xs text-minor-ink">
+                                            {[t.newapi_group, t.description].filter(Boolean).join(' · ')}
+                                        </span>
+                                    </span>
+                                    {ratioBadgeText(t.ratio) && (
+                                        <span className="shrink-0 rounded-full border border-status-success-border bg-status-success-bg px-2 py-0.5 text-[11px] font-medium text-status-success-text">
+                                            {ratioBadgeText(t.ratio)}
+                                        </span>
+                                    )}
+                                </button>
+                            </li>
+                        ))}
+                    </ul>
+                </div>
+            )}
+        </div>
+    );
 }
 
 export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; tiers?: TierOption[] }) {
-    // P3: 默认档 = is_default 的 ChannelGroup(pool);label / 单选项从 tiers 派生。
-    const defaultTier = tiers.find((t) => t.is_default)?.key ?? tiers[0]?.key ?? 'pool';
+    // P3: 多档时【必选】不预选(null);单档自动定;无档配置(老部署)回落 'pool'
+    // 由 server 端解析默认档。
+    const initialTier: string | null = tiers.length > 1 ? null : (tiers[0]?.key ?? 'pool');
     const showTierChoice = tiers.length > 1;
     const tierLabel = (key: string) => tiers.find((t) => t.key === key)?.display_name ?? key;
 
@@ -99,7 +233,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
         alias: '',
         submitting: false,
         error: null,
-        tier: defaultTier,
+        tier: initialTier,
     });
 
     const isOnlyKey = rows.length === 1;
@@ -213,13 +347,17 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
             setCreate((prev) => ({ ...prev, error: '请填写 Key 别名' }));
             return;
         }
+        if (showTierChoice && !create.tier) {
+            setCreate((prev) => ({ ...prev, error: '请选择档次' }));
+            return;
+        }
         setCreate((prev) => ({ ...prev, submitting: true, error: null }));
         try {
             const r = await fetch('/api/portal/keys', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'same-origin',
-                body: JSON.stringify({ alias, tier: create.tier }),
+                body: JSON.stringify({ alias, ...(create.tier ? { tier: create.tier } : {}) }),
             });
             if (!r.ok) {
                 const data = await r.json().catch(() => ({}));
@@ -246,7 +384,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                 used_quota: 0,
                 usedCny: 0,
                 last_used_at: null,
-                tier: data.tier ?? create.tier,
+                tier: data.tier ?? create.tier ?? 'pool',
             };
             setRows((prev) => [...prev, newRow]);
             // Auto-reveal the brand-new key so the customer can copy it
@@ -255,7 +393,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
             // was removed; the unified bottom 调用示例 panel covers all
             // keys, so there's no per-row panel to auto-expand here.)
             setReveal((prev) => ({ ...prev, [data.id]: data.key }));
-            setCreate({ open: false, alias: '', submitting: false, error: null, tier: defaultTier });
+            setCreate({ open: false, alias: '', submitting: false, error: null, tier: initialTier });
         } catch (err) {
             setCreate((prev) => ({
                 ...prev,
@@ -291,7 +429,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                     variant="primary"
                     size="sm"
                     onClick={() =>
-                        setCreate({ open: true, alias: '', submitting: false, error: null, tier: defaultTier })
+                        setCreate({ open: true, alias: '', submitting: false, error: null, tier: initialTier })
                     }
                     disabled={create.open}
                 >
@@ -318,28 +456,18 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                                 方便区分不同环境与用途。
                             </p>
                             {showTierChoice && (
-                                <div className="mt-2.5">
-                                    <p className="m-0 mb-1 text-xs font-medium text-muted-ink">档次</p>
-                                    <div className="flex flex-wrap gap-3">
-                                        {tiers.map((t) => (
-                                            <label
-                                                key={t.key}
-                                                className="inline-flex cursor-pointer items-center gap-1.5 text-sm text-ink"
-                                            >
-                                                <input
-                                                    type="radio"
-                                                    name="key-tier"
-                                                    value={t.key}
-                                                    checked={create.tier === t.key}
-                                                    onChange={() => setCreate((prev) => ({ ...prev, tier: t.key }))}
-                                                />
-                                                <span>{t.display_name}</span>
-                                            </label>
-                                        ))}
-                                    </div>
+                                <div className="mt-2.5 max-w-md">
+                                    <p className="m-0 mb-1 text-xs font-medium text-muted-ink">
+                                        档次 <span className="text-status-error-text">*</span>
+                                    </p>
+                                    <TierSelect
+                                        tiers={tiers}
+                                        value={create.tier}
+                                        onChange={(key) => setCreate((prev) => ({ ...prev, tier: key, error: null }))}
+                                        disabled={create.submitting}
+                                    />
                                     <p className="m-0 mt-1 text-xs text-minor-ink">
-                                        {tiers.find((t) => t.key === create.tier)?.description ??
-                                            '官方稳定档更稳、价格更高;低价号池性价比高。档次建后不可改,换档请新建 key。'}
+                                        档次决定路由与倍率,建后不可改,换档请新建 key。
                                     </p>
                                 </div>
                             )}
@@ -350,7 +478,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                             variant="primary"
                             size="sm"
                             loading={create.submitting}
-                            disabled={create.submitting || !create.alias.trim()}
+                            disabled={create.submitting || !create.alias.trim() || (showTierChoice && !create.tier)}
                         >
                             {create.submitting ? '创建中…' : '创建'}
                         </Button>
@@ -359,7 +487,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                             variant="secondary"
                             size="sm"
                             onClick={() =>
-                                setCreate({ open: false, alias: '', submitting: false, error: null, tier: defaultTier })
+                                setCreate({ open: false, alias: '', submitting: false, error: null, tier: initialTier })
                             }
                             disabled={create.submitting}
                         >
