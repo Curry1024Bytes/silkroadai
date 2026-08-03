@@ -49,7 +49,7 @@
 
 通过以下任一方式提交退款申请:
 
-- **微信**:`Global_Ads`(主推荐,响应较快)
+- **微信**:`LLmRoute`(主推荐,响应较快)
 - **邮箱**:`support@llmroute.club`
 
 申请时请**清楚说明**:
@@ -97,7 +97,7 @@
 
 ## 八、联系方式
 
-- **微信**:`Global_Ads`
+- **微信**:`LLmRoute`
 - **邮箱**:`support@llmroute.club`
 
 ---

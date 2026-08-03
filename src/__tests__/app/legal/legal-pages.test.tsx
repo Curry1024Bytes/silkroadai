@@ -34,7 +34,7 @@ describe('/privacy page SSR (via LegalDocPage)', () => {
         expect(html).toContain('LLmRoute 隐私政策');
         expect(html).toContain('2026-05-05');
         expect(html).toContain('support@llmroute.club');
-        expect(html).toContain('Global_Ads');
+        expect(html).toContain('LLmRoute');
         expect(html).toMatch(/<a[^>]*href="\/"[^>]*>← 返回 LLmRoute<\/a>/);
     });
 });

@@ -17,6 +17,7 @@
  */
 import Link from 'next/link';
 import { prisma } from '@/lib/db';
+import { SUPPORT_WECHAT } from '@/lib/public-config';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: '支付结果 — LLmRoute' };
@@ -86,7 +87,7 @@ export default async function PayResultPage({
                 <div style={cardStyle}>
                     <h1 style={{ margin: 0, fontSize: 18, color: 'var(--color-status-error-text)' }}>订单异常</h1>
                     <p style={{ margin: '12px 0 0', fontSize: 13, color: '#53645f' }}>
-                        未找到该订单。如已付款请联系客服:微信 Globe_Ads。
+                        未找到该订单。如已付款请联系客服:微信 {SUPPORT_WECHAT}。
                     </p>
                     <Link href="/" style={buttonStyle}>
                         返回首页
@@ -120,7 +121,7 @@ export default async function PayResultPage({
                         ? `¥${Number(order.amount).toFixed(2)} 已到账,余额刷新可能延迟最多 60 秒。`
                         : processing
                           ? `¥${Number(order.amount).toFixed(2)} 已确认,正在到账,通常几秒内完成。`
-                          : '订单状态异常,如已付款请联系客服:微信 Globe_Ads。'}
+                          : `订单状态异常,如已付款请联系客服:微信 ${SUPPORT_WECHAT}。`}
                 </p>
                 <Link href={success || processing ? '/balance' : '/'} style={buttonStyle}>
                     {success || processing ? '返回 /balance' : '返回首页'}

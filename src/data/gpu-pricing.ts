@@ -22,6 +22,7 @@
  * No CNY ↔ raw-quota conversion happens here — these are CNY rental
  * monthly fees, not API call ratios. Different unit, different system.
  */
+import { SUPPORT_WECHAT } from '@/lib/public-config';
 
 export type LeaseTerm = 'monthly' | 'quarterly' | 'yearly';
 
@@ -114,7 +115,7 @@ export const SERVICE_STEPS: ServiceStep[] = [
         id: 'inquire',
         n: 1,
         title: '微信询价',
-        body: '加 Global_Ads,告诉我们用途 / 卡型号 / 起租期。',
+        body: '告诉我们用途 / 卡型号 / 起租期。',
     },
     {
         id: 'quote',
@@ -171,7 +172,7 @@ export const CUSTOMER_TYPES: string[] = [
 
 /** Contact channels surfaced on the page. */
 export const CONTACT = {
-    wechat: 'Global_Ads',
+    wechat: SUPPORT_WECHAT,
     email: 'support@llmroute.club',
     overseasNote: '海外客户暂仅微信,后续开通 Discord 详询',
 } as const;

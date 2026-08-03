@@ -16,6 +16,7 @@
 import { Card } from '@/components/ui/Card';
 import { GPU_SKUS, LEASE_TERM_LABEL, type GpuSku } from '@/data/gpu-pricing';
 import { t } from '@/i18n/gpu-page';
+import { SUPPORT_WECHAT } from '@/lib/public-config';
 
 export interface PricingCardProps {
     sku: GpuSku;
@@ -94,7 +95,8 @@ export function PricingCard({ sku }: PricingCardProps) {
             <div className="px-6 py-4 border-t border-brand-border bg-paper-muted/40">
                 <p className="m-0 text-sm text-navy font-medium">{t('pricing_card_cta')}</p>
                 <p className="m-0 mt-1 text-xs text-minor-ink">
-                    微信号 <code className="font-mono px-1.5 py-0.5 bg-surface rounded text-navy">Global_Ads</code>
+                    微信号{' '}
+                    <code className="font-mono px-1.5 py-0.5 bg-surface rounded text-navy">{SUPPORT_WECHAT}</code>
                 </p>
             </div>
         </Card>

@@ -39,14 +39,14 @@ describe('<PayResultPage /> SSR smoke (W5 D2)', () => {
         expect(mockOrderFindUnique).not.toHaveBeenCalled();
     });
 
-    it('"订单异常" + 微信 Globe_Ads when order not found in DB', async () => {
+    it('"订单异常" + 微信 LLmRoute when order not found in DB', async () => {
         mockOrderFindUnique.mockResolvedValue(null);
 
         const html = renderToString(
             await PayResultPage({ searchParams: Promise.resolve({ order_id: 'nonexistent' }) }),
         );
         expect(html).toContain('订单异常');
-        expect(html).toContain('Globe_Ads');
+        expect(html).toContain('LLmRoute');
         expect(mockOrderFindUnique).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'nonexistent' } }));
     });
 
@@ -98,7 +98,7 @@ describe('<PayResultPage /> SSR smoke (W5 D2)', () => {
 
             const html = renderToString(await PayResultPage({ searchParams: Promise.resolve({ order_id: ORDER_ID }) }));
             expect(html).toContain('订单异常');
-            expect(html).toContain('Globe_Ads');
+            expect(html).toContain('LLmRoute');
         }
     });
 

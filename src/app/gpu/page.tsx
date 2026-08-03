@@ -27,12 +27,13 @@ import { PricingCardsGrid } from '@/components/gpu/PricingCard';
 import { ServiceFlow } from '@/components/gpu/ServiceFlow';
 import { ADVANTAGES, CONTACT, CUSTOMER_TYPES } from '@/data/gpu-pricing';
 import { t } from '@/i18n/gpu-page';
+import { SUPPORT_WECHAT } from '@/lib/public-config';
 
 export const metadata: Metadata = {
     title: 'GPU 租赁 — H100 / H200 / B300 算力中心 | LLmRoute',
     description:
         '专属 GPU 算力租赁:H100 80GB / H200 141GB / B300 288GB,月起 ¥80,000 起。' +
-        '面向 AI 创业 / 模型训练 / 企业 R&D 团队,对接东数西算多区域算力中心。微信 Global_Ads 询价。',
+        `面向 AI 创业 / 模型训练 / 企业 R&D 团队,对接东数西算多区域算力中心。微信 ${SUPPORT_WECHAT} 询价。`,
     keywords: [
         'GPU 租赁',
         'H100 租赁',
@@ -55,7 +56,7 @@ export const metadata: Metadata = {
     twitter: {
         card: 'summary',
         title: 'GPU 租赁 — LLmRoute',
-        description: 'H100 / H200 / B300 算力租赁。月起 ¥80,000 起。微信 Global_Ads 询价。',
+        description: `H100 / H200 / B300 算力租赁。月起 ¥80,000 起。微信 ${SUPPORT_WECHAT} 询价。`,
     },
     alternates: {
         canonical: '/gpu',
@@ -164,7 +165,7 @@ function Hero() {
                         <span className="text-sm text-minor-ink">
                             {t('hero_cta_hint')}{' '}
                             <code className="font-mono px-2 py-0.5 bg-paper-muted rounded text-navy">
-                                {CONTACT.wechat}
+                                {SUPPORT_WECHAT}
                             </code>
                         </span>
                     </div>
@@ -282,7 +283,7 @@ function ContactSection() {
                 <div className="mt-6 max-w-md mx-auto text-center text-base text-muted-ink space-y-2.5">
                     <p className="m-0">
                         <strong className="text-navy">{t('contact_wechat_label')}</strong>:{' '}
-                        <code className="font-mono px-2 py-0.5 bg-paper-muted rounded text-navy">{CONTACT.wechat}</code>
+                        <code className="font-mono px-2 py-0.5 bg-paper-muted rounded text-navy">{SUPPORT_WECHAT}</code>
                     </p>
                     <p className="m-0">
                         <strong className="text-navy">{t('contact_email_label')}</strong>:{' '}

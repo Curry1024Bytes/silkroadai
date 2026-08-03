@@ -14,6 +14,7 @@
  * affordance as the existing landing flow card.
  */
 import { SERVICE_STEPS } from '@/data/gpu-pricing';
+import { SUPPORT_WECHAT } from '@/lib/public-config';
 
 export function ServiceFlow() {
     return (
@@ -27,7 +28,15 @@ export function ServiceFlow() {
                         {step.n}
                     </div>
                     <h3 className="m-0 mt-3 mb-1 text-base font-semibold text-navy">{step.title}</h3>
-                    <p className="m-0 text-sm text-muted-ink leading-relaxed">{step.body}</p>
+                    <p className="m-0 text-sm text-muted-ink leading-relaxed">
+                        {step.id === 'inquire' ? (
+                            <>
+                                加 <code className="font-mono text-xs text-navy">{SUPPORT_WECHAT}</code>,{step.body}
+                            </>
+                        ) : (
+                            step.body
+                        )}
+                    </p>
                 </article>
             ))}
         </div>

@@ -26,7 +26,7 @@ const PLATFORM_FALLBACK: Tenant = {
     logo_url: null,
     primary_color: '#0e1a2a',
     support_email: 'support@llmroute.club',
-    support_wechat: 'Global_Ads',
+    support_wechat: 'LLmRoute',
     domains: [
         'llmroute.club',
         'www.llmroute.club',

@@ -38,6 +38,7 @@ import 'server-only';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { getCurrentUser } from '@/lib/auth/session';
+import { SUPPORT_WECHAT } from '@/lib/public-config';
 import { getOrCreateSystemToken, PortalSystemTokenError } from '@/lib/newapi/system-token';
 import { runWebSearch } from '@/lib/chat/web-search';
 import { resolveModelGroup } from '@/lib/chat/model-groups';
@@ -154,7 +155,7 @@ export async function POST(req: NextRequest): Promise<Response> {
                     error: err.code,
                     message:
                         err.code === 'user_not_provisioned'
-                            ? '账户未完成 new-api 关联,联系客服 Global_Ads'
+                            ? `账户未完成 new-api 关联,联系客服 ${SUPPORT_WECHAT}`
                             : '对话服务暂不可用,请稍后再试',
                 },
                 { status },

@@ -20,4 +20,4 @@ export const IMAGE_CDN_BASE_URL = withoutTrailingSlash(
     process.env.NEXT_PUBLIC_IMAGE_URL || 'https://images.llmroute.club',
 );
 export const SUPPORT_EMAIL = process.env.NEXT_PUBLIC_SUPPORT_EMAIL || 'support@llmroute.club';
-export const SUPPORT_WECHAT = process.env.NEXT_PUBLIC_SUPPORT_WECHAT || 'Global_Ads';
+export const SUPPORT_WECHAT = process.env.NEXT_PUBLIC_SUPPORT_WECHAT || 'LLmRoute';

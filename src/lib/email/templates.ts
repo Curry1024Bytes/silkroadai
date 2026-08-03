@@ -19,6 +19,8 @@
  * text-body content, and template-variable contracts are unchanged from
  * the W3 D4 / W3 D5 / W6 D2 versions.
  */
+import { SUPPORT_WECHAT } from '@/lib/public-config';
+
 export interface EmailContent {
     subject: string;
     text: string;
@@ -67,7 +69,7 @@ function brandShell({ heading, bodyHtml }: ShellOpts): string {
 
     <!-- Footer -->
     <div style="background:#f5f5f7;border:1px solid #d9d9de;border-top:none;border-radius:0 0 8px 8px;padding:16px 24px;font-size:12px;color:#515154;">
-      <p style="margin:0 0 6px;">客服:微信 <code style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;background:#ffffff;padding:1px 6px;border:1px solid #d9d9de;border-radius:3px;color:#1d1d1f;">Global_Ads</code> · 邮箱 <a href="mailto:support@llmroute.club" style="color:#0e1a2a;text-decoration:none;">support@llmroute.club</a></p>
+      <p style="margin:0 0 6px;">客服:微信 <code style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;background:#ffffff;padding:1px 6px;border:1px solid #d9d9de;border-radius:3px;color:#1d1d1f;">${SUPPORT_WECHAT}</code> · 邮箱 <a href="mailto:support@llmroute.club" style="color:#0e1a2a;text-decoration:none;">support@llmroute.club</a></p>
       <p style="margin:0 0 6px;"><a href="https://llmroute.club/terms" style="color:#515154;text-decoration:none;">服务条款</a> · <a href="https://llmroute.club/privacy" style="color:#515154;text-decoration:none;">隐私政策</a> · <a href="https://llmroute.club/refund" style="color:#515154;text-decoration:none;">退款政策</a></p>
       <p style="margin:0;color:#86868b;">© ${year} LLmRoute · <a href="https://llmroute.club" style="color:#86868b;text-decoration:none;">llmroute.club</a></p>
     </div>

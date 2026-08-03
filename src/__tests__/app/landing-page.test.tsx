@@ -87,7 +87,7 @@ describe('landing page — general rendering (post-permanent-pricing)', () => {
 
     // W7 D4 PR-R Item B — the legacy in-page <Trust /> prose row
     // duplicated the global <Footer />'s contact + legal-link block.
-    // Trust is gone; the global footer covers Global_Ads / support@ /
+    // Trust is gone; the global footer covers the support contacts.
     // /terms / /privacy / /refund (asserted in
     // src/__tests__/components/footer.test.tsx).
     it('does NOT render the legacy in-page Trust prose row (PR-R)', async () => {

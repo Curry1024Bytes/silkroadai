@@ -12,6 +12,7 @@
 import { Logo } from '@/components/brand/Logo';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
+import { SUPPORT_WECHAT } from '@/lib/public-config';
 
 export const metadata = {
     title: '页面没找到 — LLmRoute',
@@ -44,7 +45,7 @@ export default function NotFound() {
                 <p className="m-0 mt-6 text-xs text-minor-ink">
                     需要帮助?微信{' '}
                     <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
-                        Global_Ads
+                        {SUPPORT_WECHAT}
                     </code>{' '}
                     · 邮箱{' '}
                     <a href="mailto:support@llmroute.club" className="text-navy no-underline hover:text-brand-accent">

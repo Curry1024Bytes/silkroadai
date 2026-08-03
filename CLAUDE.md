@@ -550,7 +550,7 @@ APP_PORT=3002
 
 - **战略决策、架构变更、跨服务排查、外部调研** → 用 Cowork(silkroadai-project-memory.md 那个对话)
 - **项目内部具体编码、debug、重构、git 操作、跑命令** → 用 Claude Code(就是你)
-- **客户跑过来问业务问题** → 用户自己处理(Globe_Ads 微信)
+- **客户跑过来问业务问题** → 用户自己处理(LLmRoute 微信)
 
 ---
 

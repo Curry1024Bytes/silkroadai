@@ -94,7 +94,7 @@ describe('W7 D4 brand-shell consistency across all 3 templates', () => {
             expect(c.html, c.name).toMatch(/<body[^>]*background:#f5f5f7/);
             expect(c.html, c.name).toContain('#0e1a2a');
             // Footer contact pair
-            expect(c.html, c.name).toContain('Global_Ads');
+            expect(c.html, c.name).toContain('LLmRoute');
             expect(c.html, c.name).toContain('support@llmroute.club');
             // Footer legal triplet
             expect(c.html, c.name).toMatch(/href="https:\/\/llmroute\.club\/terms"/);

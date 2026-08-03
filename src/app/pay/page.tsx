@@ -14,6 +14,7 @@ import { redirect } from 'next/navigation';
 import { headers } from 'next/headers';
 import { NextRequest } from 'next/server';
 import { getCurrentUser } from '@/lib/auth/session';
+import { SUPPORT_WECHAT } from '@/lib/public-config';
 import { getEnabledPaymentTypes } from '@/lib/payment/resolve-enabled-types';
 import { Logo } from '@/components/brand/Logo';
 import { Card } from '@/components/ui/Card';
@@ -82,7 +83,8 @@ export default async function PayPage({
                  *  给客户一个人工兜底渠道。文案与微信号按 operator 提供的原样展示,
                  *  微信号 select-all 方便一键复制。 */}
                 <p className="m-0 mt-6 pt-4 border-t border-brand-border text-center text-xs text-muted-ink">
-                    充值遇到问题?请联系微信客服 <span className="font-medium text-navy select-all">lambda_yyh充值</span>
+                    充值遇到问题?请联系微信客服{' '}
+                    <span className="font-medium text-navy select-all">{SUPPORT_WECHAT}</span>
                 </p>
             </Card>
         </main>

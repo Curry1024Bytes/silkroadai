@@ -26,9 +26,9 @@ describe('<Footer />', () => {
         expect(html).toMatch(/<a[^>]*href="\/refund"[^>]*>退款政策<\/a>/);
     });
 
-    it('shows customer support contacts (微信 Global_Ads + support email)', () => {
+    it('shows customer support contacts (微信 LLmRoute + support email)', () => {
         const html = renderToString(<Footer />);
-        expect(html).toContain('Global_Ads');
+        expect(html).toContain('LLmRoute');
         expect(html).toMatch(/href="mailto:support@llmroute\.club"/);
         expect(html).toContain('support@llmroute.club');
     });

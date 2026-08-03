@@ -26,7 +26,7 @@ function tenant(over: Record<string, unknown> = {}) {
         logo_url: null,
         primary_color: '#17201e',
         support_email: 'support@llmroute.club',
-        support_wechat: 'Global_Ads',
+        support_wechat: 'LLmRoute',
         domains: ['llmroute.club', 'www.llmroute.club', 'api.llmroute.club'],
         signup_enabled: true,
         created_at: new Date(),

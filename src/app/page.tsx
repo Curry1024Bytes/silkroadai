@@ -18,7 +18,7 @@ import { BrandLogo } from '@/components/brand/BrandLogo';
 // W8 D1.5 (2026-05-21): 新永久定价替换 W7 promo,landing 不再走 isPromoActive()。
 // import { isPromoActive } from '@/lib/promo'; — 留作日后审计参考
 import { InviteCodeBridge } from '@/components/marketing/InviteCodeBridge';
-import { OPENAI_API_BASE_URL } from '@/lib/public-config';
+import { OPENAI_API_BASE_URL, SUPPORT_WECHAT } from '@/lib/public-config';
 
 // Inter is loaded globally via `next/font/google` in `src/app/layout.tsx`
 // (W7 P3) so the @theme `--font-sans` token resolves on every page. We
@@ -1145,7 +1145,7 @@ function PricingTeaser({ promoActive: _promoActive }: { promoActive: boolean }) 
                 <Link href="/models" style={{ color: 'var(--color-navy)', fontWeight: 500 }}>
                     /models
                 </Link>{' '}
-                · 企业合作微信 <strong style={{ color: 'var(--color-navy)' }}>Global_Ads</strong>
+                · 企业合作微信 <strong style={{ color: 'var(--color-navy)' }}>{SUPPORT_WECHAT}</strong>
             </p>
         </Section>
     );

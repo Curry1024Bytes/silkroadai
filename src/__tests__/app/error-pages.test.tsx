@@ -33,9 +33,9 @@ describe('<NotFound /> SSR (W7 D4)', () => {
         expect(html).toMatch(/href="\/models"/);
     });
 
-    it('exposes contact pair (微信 Global_Ads + support email)', () => {
+    it('exposes contact pair (微信 LLmRoute + support email)', () => {
         const html = renderToString(<NotFound />);
-        expect(html).toContain('Global_Ads');
+        expect(html).toContain('LLmRoute');
         expect(html).toContain('support@llmroute.club');
         expect(html).toMatch(/href="mailto:support@llmroute\.club"/);
     });
@@ -112,9 +112,9 @@ describe('<ErrorBoundary /> (500) SSR (W7 D4)', () => {
         expect(html).not.toContain('test failure');
     });
 
-    it('exposes contact pair (微信 Global_Ads + support email)', () => {
+    it('exposes contact pair (微信 LLmRoute + support email)', () => {
         const html = renderToString(<ErrorBoundary {...makeProps()} />);
-        expect(html).toContain('Global_Ads');
+        expect(html).toContain('LLmRoute');
         expect(html).toContain('support@llmroute.club');
         expect(html).toMatch(/href="mailto:support@llmroute\.club"/);
     });

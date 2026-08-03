@@ -26,7 +26,7 @@ import Link from 'next/link';
 import { BackButton } from '@/components/BackButton';
 import { Logo } from '@/components/brand/Logo';
 import { Card } from '@/components/ui/Card';
-import { ANTHROPIC_API_BASE_URL, OPENAI_API_BASE_URL } from '@/lib/public-config';
+import { ANTHROPIC_API_BASE_URL, OPENAI_API_BASE_URL, SUPPORT_WECHAT } from '@/lib/public-config';
 
 export const DOCS_METADATA = {
     title: '集成文档 — LLmRoute',
@@ -3857,7 +3857,7 @@ print(f'合计 ¥{sum(s["cny"] for s in by_model.values()):.4f}')`}
                     <p className="m-0 text-sm text-muted-ink">
                         微信{' '}
                         <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
-                            Global_Ads
+                            {SUPPORT_WECHAT}
                         </code>{' '}
                         · 邮箱{' '}
                         <a

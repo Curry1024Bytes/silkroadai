@@ -215,7 +215,7 @@ DNS / Caddy:
 □ Caddy HTTPS 全部正常
 □ portal / chat / api / admin 4 个域名都通
 □ 错误监控配好(Sentry 或类似)
-□ 客服渠道:微信 Globe_Ads
+□ 客服渠道:微信 LLmRoute
 □ 第一批种子客户名单(5-10 人)
 ```
 
