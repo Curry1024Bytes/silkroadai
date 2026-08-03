@@ -87,7 +87,9 @@
 - new-api:容器 `new-api`,宿主机绑定 `172.17.0.1:3000`,网络 `new-api_new-api-net`,数据目录 `/opt/new-api/data`;
   MySQL 8 容器为 `new-api-mysql`。Portal 用 `http://host.docker.internal:3000` 访问。
 - 当前公网已验收:`llmroute.club` / `www.llmroute.club`、Google OAuth、GitHub OAuth、zpayz 支付宝充值及余额入账。
-- 当前未完成:SMTP、平台 R2/OSS、Sentry、Tavily、`api.llmroute.club` Nginx 路由、SSH key-only 加固、异机备份/恢复演练。
+- 当前未完成:SMTP、平台 R2/OSS、Sentry、Tavily、`api.llmroute.club` 显式 API-only Nginx 路由、
+  SSH key-only 加固、异机备份/恢复演练。API 域名虽已解析且 `/v1`、`/v1beta` 能到达 Portal/new-api,
+  但目前会错误暴露主站 `/login`/`/admin/login`,所以尚未通过生产验收。
 - 支付收款主体由 zpayz 商户/渠道决定;当前个人支付宝收款不是 Portal 代码问题,企业主体仍需渠道侧办理。
 - 当前 new-api 使用 MySQL;上游 `NEWAPI_LOGS_DATABASE_URL` 直连全量导出仅支持 PostgreSQL,所以保持未设置并使用
   10,000 行 API fallback,不能填一个 PostgreSQL 伪连接串。
@@ -97,6 +99,10 @@
   传入全部公开 build args;上线前仍需经 `dev -> prod` 发布门。
 - 2026-08-03 lint 基线:项目未启用 React Compiler,其 compiler-only 诊断保留为 warning;`.codex/**`
   是独立技能工具,不纳入应用 ESLint。`pnpm lint` 必须保持 0 error,并继续作为 CI/发布门。
+- 2026-08-03 `dev` 待发布的 API 入口加固:`deploy/nginx/llmroute-api.conf` 只放行 `/v1/*` 和
+  `/v1beta/*` 到 Portal `127.0.0.1:3002`,其余路径 JSON 404;SSE 禁用 buffering/cache,650s timeout,
+  access log 不记 query string。生产 `.env` 还必须补
+  `NEWAPI_CUSTOMER_BASE_URL=http://127.0.0.1:3002`;真实 VPS `nginx -t` 和公网 smoke 通过前仍标 pending。
 - 2026-08-03 待发布批次:客服微信改为 `LLmRoute`(代码/forward migration 已进 `prod`,VPS 尚待重建验收),
   以及 `main@da510e7 -> dev` 的 10 个上游提交。合并后完整验证为 244 files / 2644 passed / 1 skipped。
 - new-api rc.22 登录兼容决策:优先直接使用登录响应的 `data.access_token`;仅旧版本 `session=` cookie 走 fallback。
@@ -559,12 +565,13 @@ LiteLLM 时代的 `LITELLM_*` 变量保留作 fallback,W3 D1 关停后可删。
 ## 项目外部依赖说明
 
 - **new-api**: 当前部署在 `82.29.71.122`,容器端口发布到宿主机 `172.17.0.1:3000`,Portal 通过
-  `host.docker.internal:3000` 访问;公网 `api.llmroute.club` 路由尚未完成
+  `host.docker.internal:3000` 访问;公网 `api.llmroute.club` 已解析,但 API-only Nginx virtual host 尚待部署验收
 - ~~**LiteLLM**~~ — Stopped at W3 D1 (2026-05-02), container deprecated, config archived
 - **Sub2API**: 部署在 VPS,作为 new-api 的一个 Custom 渠道上游(portal 不直接调)
 - **易支付**: zpayz (`https://zpayz.cn`),支付宝充值/callback 已在当前生产验证;PID/KEY 只放生产 `.env`
 - **SMTP**: 代码支持腾讯企业邮箱,但当前新服务器账号/密码为空,验证与找回邮件不可用
-- **Cloudflare**: apex/`www` 已橙云 + Full (strict);平台 R2、`images` 子域仍待配置
+- **Cloudflare**: apex/`www` 已橙云 + Full (strict);`api` 已解析但还需确认显式 DNS 记录与 cache bypass;
+  平台 R2、`images` 子域仍待配置
 
 ---
 

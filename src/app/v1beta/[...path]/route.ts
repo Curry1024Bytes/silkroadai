@@ -1,18 +1,17 @@
 /**
  * /v1beta/* — Gemini 原生格式透传(native 面)。
  *
- * 背景:Caddy 目前把 `api.llmroute.club/v1beta/*` 直接送 new-api :3000,portal 完全
- * 看不见 —— 请求日志盲区(数据存储线 memory:≈6 直连调用/7d)、无 keep-alive、无
- * 失败观测。本路由补一条与 /v1/* 同款的轻量透传:forwardHeaders + reqlog capture +
+ * 背景:旧反向代理曾把 `api.llmroute.club/v1beta/*` 直接送 new-api :3000,portal 完全
+ * 看不见 —— 请求日志盲区、无 keep-alive、无失败观测。本路由补一条与 /v1/*
+ * 同款的轻量透传:forwardHeaders + reqlog capture +
  * stream-guard(shape=null:只做静默期 keep-alive 注释;Gemini native SSE 的错误事件
  * 格式不注入,上游错误照旧传播)。
  *
  * 【一个字节不改写】—— native 面的意义就是原汁原味(对齐 OpenRouter 的做法:OpenAI
  * 兼容面做归一,native 面直通)。finish_reason 归一、翻译、图床改写都只在 /v1/*。
  *
- * ⚠️ 部署配套(今晚维护窗口):
- *  1. Caddy `api.llmroute.club` 把 `@portalv1 path /v1/*` 扩成 `path /v1/* /v1beta/*`
- *     (或加同款第二条 matcher)→ portal :3002;切之前本路由无流量,纯 dormant。
+ * 部署配套:
+ *  1. 宿主机 Nginx 把 `/v1/*`、`/v1beta/*` 都转到 portal :3002。
  *  2. middleware.ts matcher 已同步排除 `v1beta/`(Next 对命中 middleware 的路由会
  *     buffer 请求体且 10MB 截断 —— Gemini native 的 inlineData 大图必炸,见 PR #113)。
  */
@@ -120,7 +119,7 @@ export async function DELETE(req: NextRequest, ctx: RouteContext) {
 }
 /** CORS 预检必须透传:浏览器端 Gemini SDK(application/json + x-goog-api-key 必触发
  *  preflight)今天由 new-api 直接应答(204 + Access-Control-Allow-*,实测)。不导出
- *  OPTIONS 的话 Next 自动应答只带 Allow 头、无 CORS 头 → 今晚 Caddy 切流后浏览器
+ *  OPTIONS 的话 Next 自动应答只带 Allow 头、无 CORS 头 → Nginx 切流后浏览器
  *  客户端全灭。转发给 new-api 让它继续按原样应答。 */
 export async function OPTIONS(req: NextRequest, ctx: RouteContext) {
     return handleRequest(req, ctx.params);

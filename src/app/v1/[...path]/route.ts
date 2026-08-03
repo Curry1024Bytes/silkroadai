@@ -1,7 +1,7 @@
 /**
  * Portal /v1/* catch-all proxy (W9 D1, PR-A — task #33 Phase 1)
  *
- * 拦截所有 api.llmroute.club/v1/* 请求(Caddy 切流量到 portal :3002 后生效):
+ * 拦截所有 api.llmroute.club/v1/* 请求(宿主机 Nginx 转到 portal :3002):
  *
  * 1. POST /v1/chat/completions + Gemini image 模型
  *    → 翻译到 new-api native `/v1beta/models/<model>:generateContent`
@@ -44,7 +44,7 @@
  * - 本文件不做鉴权 — Authorization 头原样透传,new-api 自己校验 sk-xxx。
  * - DB 访问仅限 Phase 3 的客户 OSS 查询(read-only,且任何 DB 故障都
  *   静默回退平台 R2,绝不阻断客户请求);其余路径不触 DB。
- * - 回滚 = Caddy reverse_proxy 切回 new-api :3000(见 handoff 1.3)。
+ * - 回滚 = Nginx 临时把 /v1/* 切回 new-api :3000;会失去本文件全部增强能力。
  *
  * Phase 3(W9 D3):出图存储按优先级:
  *   1. 客户自定义 OSS(/settings/storage 配置,status='active')
@@ -137,7 +137,7 @@ const FAILOVER_MODELS: Record<string, string> = {
  *  到点 abort 当作失败 → 切候补 -hq/ch42(快且稳),客户最多等 ~80s + 候补一次。
  *  仅对有候补的 flash 生效;pro(4K 合法耗时长、无候补)不设超时。operator:80s 自动切。 */
 const FLASH_TIMEOUT_MS = 80_000;
-// portal → new-api 图片上游 fetch 的超时,与 Caddy `api.llmroute.club` 的 response_header_timeout 600s 对齐。
+// portal → new-api 图片上游 fetch 的超时,与 Nginx `api.llmroute.club` 的 proxy_read_timeout 650s 对齐。
 // 不显式设的话吃 undici 默认 headersTimeout 300s:new-api 对图片 relay 无超时,会等满上游(慢渠道
 // 300-600s)出图【并计费】,但 portal 的 fetch 300s 就 abort → 客户「扣了费却拿到 fetch failed 没有图」
 // (见 2026-07-12 lkl1131888403 案例:ch83 大图 377/423s,new-api 计费、portal 300s 掐断)。
@@ -2363,7 +2363,8 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
 
     // 请求日志捕获(数据存储 Phase 1 第②步)。开关 off → null → 下面全程与今天
     // 字节级一致;on → 旁路捕获,best-effort,绝不影响客户请求(见 capture.ts)。
-    const cap = beginCapture(req, path);
+    // OPTIONS 只是浏览器 CORS 预检,没有业务语义,不写请求日志。
+    const cap = req.method === 'OPTIONS' ? null : beginCapture(req, path);
 
     if (path === '/chat/completions' && req.method === 'POST') {
         let body: JsonRecord;
@@ -2582,5 +2583,10 @@ export async function PUT(req: NextRequest, ctx: RouteContext) {
     return handleRequest(req, ctx.params);
 }
 export async function DELETE(req: NextRequest, ctx: RouteContext) {
+    return handleRequest(req, ctx.params);
+}
+/** 浏览器直连 OpenAI 兼容接口时会先发 CORS 预检。透传给 new-api,
+ * 复用它现有的 Access-Control-* 策略,与 /v1beta/* 保持一致。 */
+export async function OPTIONS(req: NextRequest, ctx: RouteContext) {
     return handleRequest(req, ctx.params);
 }

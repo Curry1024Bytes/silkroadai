@@ -88,7 +88,7 @@ vi.mock('@/lib/newapi/token-usage', () => ({
     getTokenUsageWithCache: (...a: unknown[]) => mockGetTokenUsage(...a),
 }));
 
-import { GET, POST } from '../[...path]/route';
+import { GET, OPTIONS, POST } from '../[...path]/route';
 import { USD_TO_CNY_RATE, quotaToCny } from '@/lib/newapi/quota-units';
 
 const NEWAPI_BASE = process.env.NEWAPI_BASE_URL || 'http://localhost:3000';
@@ -672,6 +672,38 @@ describe('/v1 proxy — GET /key 自查', () => {
 });
 
 describe('/v1 proxy — passthrough', () => {
+    it('OPTIONS(CORS 预检)透传 new-api 的 Access-Control-* 响应头', async () => {
+        mockFetch.mockResolvedValueOnce(
+            new Response(null, {
+                status: 204,
+                headers: {
+                    'access-control-allow-origin': '*',
+                    'access-control-allow-headers': '*',
+                    'access-control-allow-methods': 'GET, POST, PUT, DELETE, OPTIONS',
+                },
+            }),
+        );
+
+        const res = await OPTIONS(
+            makeReq('/chat/completions', {
+                method: 'OPTIONS',
+                headers: {
+                    origin: 'https://app.example.com',
+                    'access-control-request-method': 'POST',
+                    'access-control-request-headers': 'authorization,content-type',
+                },
+            }),
+            ctx('chat', 'completions'),
+        );
+
+        const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(url).toBe(`${NEWAPI_BASE}/v1/chat/completions`);
+        expect(init.method).toBe('OPTIONS');
+        expect(res.status).toBe(204);
+        expect(res.headers.get('access-control-allow-origin')).toBe('*');
+        expect(res.headers.get('access-control-allow-headers')).toBe('*');
+    });
+
     it('forwards GPT-5.4 chat/completions untouched, no translation headers', async () => {
         mockFetch.mockResolvedValueOnce(
             new Response(JSON.stringify({ id: 'chatcmpl-x' }), {
