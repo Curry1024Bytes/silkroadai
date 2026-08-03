@@ -92,6 +92,42 @@ describe('火山渠道(volc)路由', () => {
             }),
         });
     });
+
+    it('volc 提交:content 里的 asset:// 前缀不剥(上游契约整串 asset://<id>,剥了必 400)', async () => {
+        submitVolcVideo.mockResolvedValue(NextResponse.json({ id: 'cgt-a1', task_id: 'cgt-a1', status: 'queued' }));
+        const content = [
+            { type: 'text', text: '让画面动起来' },
+            { type: 'image_url', image_url: { url: 'asset://asset-20260803095838-5n989' }, role: 'first_frame' },
+        ];
+        const res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { model: 'doubao-seedance-2.0', content, resolution: '720p' }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(200);
+        expect(submitVolcVideo).toHaveBeenCalledWith(expect.objectContaining({ content }), '720p', 5);
+        // volc 不走 R2 素材解析
+        expect(resolveAssetRefs).not.toHaveBeenCalled();
+    });
+
+    it('非 volc 提交仍剥 asset:// 前缀(resolveAssetRefs 收到裸 id)', async () => {
+        submitVideoWithKey.mockResolvedValue(NextResponse.json({ id: 'cgt-c1', task_id: 'cgt-c1', status: 'queued' }));
+        const res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', {
+                model: 'seedance-2-0',
+                content: [
+                    { type: 'text', text: 'x' },
+                    { type: 'image_url', image_url: { url: 'asset://asset-1' }, role: 'first_frame' },
+                ],
+                resolution: '720p',
+            }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(200);
+        const passed = resolveAssetRefs.mock.calls[0][0] as {
+            content: Array<{ image_url?: { url: string } }>;
+        };
+        expect(passed.content[1].image_url?.url).toBe('asset-1');
+    });
 });
 
 describe('isEnterpriseFlavor', () => {

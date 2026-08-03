@@ -216,19 +216,23 @@ async function handleSubmit(req: NextRequest, format: ClientFormat = 'v1'): Prom
         return errJson(400, 'invalid_json', 'request body must be JSON');
     }
 
-    // 入口归一(对 v1 也安全):火山 model id(doubao-…)→ 内部短名;剥 asset:// 前缀。
-    // v1 客户传的短名不含 doubao、asset 引用是裸 id,归一后不变。
-    body = stripAssetUri(body);
+    // 入口归一:火山 model id(doubao-…)→ 内部短名(先归一 model 才能判 region)。
     body.model = normalizeArkModel(String(body.model || ''));
 
     const model = String(body.model || '');
+    const isVolc = regionForModel(model) === 'volc';
+
+    // 剥 asset:// 前缀(对 v1 也安全:v1 客户素材引用是裸 id,归一后不变)——
+    // 仅非 volc:后面 resolveAssetRefs 认裸 asset-…。「火山」渠道素材由上游 provider
+    // 解析,契约就是 asset://<id> 整串,剥了前缀上游按 URL 解析必 400
+    // (`content[N].image_url is not valid`,2026-08-03 客户实测)。
+    if (!isVolc) body = stripAssetUri(body);
+
     // 版本先于鉴权确定(模型名承载):key 与模型版本必须一致(单独 key,operator 决策),
     // 上游 key 也按版本行解密。未知模型按 cn 解析,后续 model_not_found 分支照常 400。
     // AK/SK 验签用原始 body(客户签的是含 doubao 名的原始字节,不能用归一后的)。
     const cust = await resolveOr401(req, regionForModel(model), rawBody);
     if (cust instanceof NextResponse) return cust;
-
-    const isVolc = regionForModel(model) === 'volc';
 
     // P3 素材库引用:asset-…/group-… → R2 公网 URL(必须在 ref/hasVideo 检测之前,
     // 视频素材引用也要计入含视频费率档)。未知/非本人 id → 400。
