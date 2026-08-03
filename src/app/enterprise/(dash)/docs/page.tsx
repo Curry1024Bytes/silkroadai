@@ -459,8 +459,9 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
 }`}</Pre>
                 <ul className="list-disc space-y-1 pl-5">
                     <li>
-                        <b>AK/SK 不是 Bearer</b> —— 必须做完整 SignerV4 签名(火山官方脚本自带)。切勿把 SK 当作{' '}
-                        <Code>Bearer &lt;SK&gt;</Code> 直接使用,否则 401。
+                        <b>两种用法任选</b>:① 完整 SignerV4 签名(火山官方脚本自带,AK/SK 都参与);② SK 直接当 API key ——{' '}
+                        <Code>Authorization: Bearer &lt;SK&gt;</Code>
+                        (即 <Code>Bearer sk_ent_…</Code>,无需签名,与 727 形态一致)。两种方式等价, 同账号同计费。
                     </li>
                     <li>
                         签名的 <Code>path</Code> 用各接口真实路径:素材库 <Code>/api</Code>、视频提交{' '}

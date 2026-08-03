@@ -9,7 +9,7 @@
  *
  * 只读、无副作用地展示;时间一律按 Asia/Shanghai 显示(gotcha #20)。
  */
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
     AlertCircle,
     Check,
@@ -24,7 +24,7 @@ import {
     Search,
     SlidersHorizontal,
 } from 'lucide-react';
-import { formatDuration, formatTokens, callResult } from '../dashboard/format';
+import { formatDuration, formatTokens, formatCacheTokens, callResult } from '../dashboard/format';
 import type { LogRow } from '@/app/api/portal/logs/route';
 
 interface Filters {
@@ -404,6 +404,17 @@ function LogRowItem({
                 <td className={`${CELL} text-right tabular-nums text-portal-muted`}>{formatDuration(row.useTimeMs)}</td>
                 <td className={`${CELL} text-right tabular-nums text-portal-muted`}>
                     {formatTokens(row.promptTokens, row.completionTokens, row.perImageBilled)}
+                    {(() => {
+                        // 缓存读写副行(参照 new-api):只有真用了 prompt cache 才渲染
+                        const cacheText = formatCacheTokens(
+                            row.cacheReadTokens,
+                            row.cacheWriteTokens,
+                            row.perImageBilled,
+                        );
+                        return cacheText ? (
+                            <span className="mt-0.5 block text-[11px] leading-tight text-minor-ink">{cacheText}</span>
+                        ) : null;
+                    })()}
                 </td>
                 <td className={`${CELL} text-right tabular-nums font-medium`}>¥{row.costCny.toFixed(2)}</td>
                 <td className={`${CELL} text-center`}>

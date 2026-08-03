@@ -88,6 +88,7 @@ import {
 import { isEnterpriseFlavor, handleEnterpriseV1 } from '@/lib/enterprise/proxy';
 import { guardSseResponse, guardSseStream, type SseErrorShape } from '@/lib/sse/stream-guard';
 import { forwardHeaders, passthroughResponse, STRIP_RESPONSE_HEADERS } from '@/lib/proxy/forward';
+import { CHAT_SPEC, RESPONSES_SPEC, coerceAndValidate, guardRawBody, violationBody } from '@/lib/proxy/body-guard';
 import { stripAdobeImageMetadataB64 } from '@/lib/proxy/image-metadata';
 import { normalizeOpenAiResponse, normalizeChoices } from '@/lib/proxy/finish-reason';
 import { loadCatalogMeta, resolveTierFromAuthHeader, enrichModelList } from '@/lib/models/machine-catalog';
@@ -367,6 +368,8 @@ async function forwardToNewApi(
     path: string,
     search: string,
     cap: CaptureCtx | null = null,
+    /** 出口 C:调用方已读过体(如 /responses 守门),直接给出口串 —— 不再读 req,也不重复记 capture。 */
+    rawOverride?: string,
 ): Promise<NextResponse> {
     const url = `${NEWAPI_BASE_URL}/v1${path}${search}`;
     const hasBody = req.method !== 'GET' && req.method !== 'HEAD';
@@ -385,7 +388,9 @@ async function forwardToNewApi(
     }
 
     let outgoingBody: BodyInit | undefined;
-    if (bodyOverride) {
+    if (rawOverride !== undefined) {
+        outgoingBody = rawOverride;
+    } else if (bodyOverride) {
         outgoingBody = JSON.stringify(bodyOverride);
     } else if (hasBody) {
         if (cap) {
@@ -2370,6 +2375,12 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
                 { status: 400 },
             );
         }
+
+        // 请求体守门:先就地强转无歧义的字符串标量,再把仍会让 new-api 500 的输入挡成 400。
+        // 见 @/lib/proxy/body-guard(三条面共用同一引擎,按面用不同 spec)。
+        const { violation } = coerceAndValidate(body, CHAT_SPEC);
+        if (violation) return NextResponse.json(violationBody(violation), { status: 400 });
+
         const model = String(body.model ?? '');
 
         // Branch 1: Gemini image → native endpoint 翻译。
@@ -2475,6 +2486,17 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
     // 重试 + 失败流自动退款,2026-07-29 根治件①②);非流式在 handler 内与原透传等价。
     if (path === '/messages' && req.method === 'POST') {
         return handleAnthropicMessages(req, path, search, cap);
+    }
+
+    // Responses 面 POST:请求体守门(OpenAIResponsesRequest 同样会对负数 uint 抛 500,
+    // 实测 `max_output_tokens:-1` → 500 unmarshal)。守门要先读体 —— capture 打开时
+    // forwardToNewApi 的透传分支本来就 buffer,这里读完直接把串交给它,不重复读。
+    if (path === '/responses' && req.method === 'POST') {
+        const raw = await req.text();
+        const g = guardRawBody(raw, RESPONSES_SPEC);
+        if (g.violation) return NextResponse.json(violationBody(g.violation), { status: 400 });
+        if (cap) recordRequestBody(cap, raw, g.model, g.streamed); // 记【原始】输入
+        return forwardToNewApi(req, null, path, search, cap, g.body);
     }
 
     // 其他路径(/embeddings …)全部透传

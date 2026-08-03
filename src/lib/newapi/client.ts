@@ -116,16 +116,18 @@ export interface NewApiEnvelope<T> {
     data?: T;
 }
 
+/** Legacy session credential used only when login does not return an access token. */
+export type LoginSessionAuth = { kind: 'cookie'; cookie: string };
+
 interface CallOptions {
     /** 用哪个 access_token + user_id 调用。默认用 admin。 */
     asUser?: { accessToken: string; userId: number };
     /**
-     * Use a session cookie instead of an access_token (still requires
-     * New-Api-User header to be set explicitly via cookieUser).
-     * Used during provisioning to fetch a freshly-created customer's
-     * access_token via GET /api/user/token (which requires session auth).
+     * Use a legacy login-session cookie instead of a long-lived access token.
+     * Older new-api releases require it for GET /api/user/token during
+     * provisioning.
      */
-    cookie?: { value: string; userId: number };
+    session?: { auth: LoginSessionAuth; userId: number };
 }
 
 async function call<T>(
@@ -143,9 +145,9 @@ async function call<T>(
     }
 
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (options.cookie) {
-        headers['Cookie'] = options.cookie.value;
-        headers['New-Api-User'] = String(options.cookie.userId);
+    if (options.session) {
+        headers['Cookie'] = options.session.auth.cookie;
+        headers['New-Api-User'] = String(options.session.userId);
     } else {
         let auth = options.asUser;
         if (!auth) {
@@ -222,18 +224,7 @@ export function extractNewApiSessionCookie(setCookie: string): string | null {
     return setCookie.match(/(session=[^;]+)/)?.[1] ?? null;
 }
 
-/**
- * Login as a customer with username + password.
- *
- * Returns the session cookie (already in `name=value` form, ready to set
- * on the `Cookie` request header) and the logged-in user payload.
- *
- * Used during provisioning: after admin creates the customer, portal logs
- * in as them so it can call GET /api/user/token (which requires session
- * auth, not admin scope) to obtain the customer's access_token. Admin
- * cannot set someone else's access_token — PUT /api/user/ silently
- * ignores the field — so we must go through login.
- */
+/** Login as a customer and normalize current plus legacy response shapes. */
 async function loginAsUser(args: { username: string; password: string }): Promise<{
     cookie: string | null;
     user: NewApiLoginUser;
@@ -398,7 +389,7 @@ export async function searchUser(
  * 更新 user。new-api 的 PUT 接受部分字段,但有些字段它会静默忽略——
  * 实测 access_token 是其中之一(2026-05 W2 D6 验证;new-api v1.0.0-rc.2)。
  * 要 (re)generate 客户的 access_token,得让那个客户自己 GET /api/user/token
- * (走 session cookie),不能 admin 改。
+ * (走 login session 凭据:≤rc.2 cookie / rc.22+ Bearer JWT),不能 admin 改。
  *
  * 别用这个改 username — 内部似乎走 INSERT-or-UPDATE,空字段会和已有
  * username='' 行冲突触发 unique violation。fetch + merge 后 PUT 才稳。
@@ -775,9 +766,8 @@ export interface ProvisionedCustomer {
  *
  * 流程(empirically verified against new-api v1.0.0-rc.2):
  *   1. POST /api/user/             admin 创建 new-api user
- *   2. POST /api/user/login        portal 用刚生成的密码登录该 user
- *                                  新版直接返回 access_token + user；旧版返回 session cookie
- *   3. GET  /api/user/token        仅旧版回退：以 session 身份拿(并 rotate)access_token
+ *   2. POST /api/user/login        新版直接返回 access_token + user;旧版返回 session cookie
+ *   3. GET  /api/user/token        仅旧版回退:以 session 身份拿(并 rotate)access_token
  *                                  ⚠️ 这个端点 admin 调不动:必须用该用户自己的 session
  *                                     PUT /api/user/ 里的 access_token 字段是被静默忽略的
  *   4. POST /api/token/            以 customer 的 access_token 身份创建第一个 token
@@ -811,7 +801,7 @@ export async function provisionNewCustomer(args: {
     const accessToken =
         login.accessToken ??
         (await call<string>('GET', '/api/user/token', undefined, undefined, {
-            cookie: { value: login.cookie!, userId },
+            session: { auth: { kind: 'cookie', cookie: login.cookie! }, userId },
         }));
 
     // Step 4: create the first token. Must act-as the customer.

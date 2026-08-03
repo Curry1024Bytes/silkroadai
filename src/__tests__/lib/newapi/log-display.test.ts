@@ -6,7 +6,7 @@
  * 判据优先用每条请求真实计费口径 other.model_price,缺失才回退模型名(gpt-image 族恒按 token)。
  */
 import { describe, expect, it } from 'vitest';
-import { parseModelPrice, isPerImageBilled, isImageModel } from '@/lib/newapi/log-display';
+import { parseModelPrice, isPerImageBilled, isImageModel, parseCacheTokens } from '@/lib/newapi/log-display';
 
 // 线上实测样本(见诊断):gpt-image-2 model_price=-1 / model_ratio=0.9286;gemini 生图 model_price 设值 / ratio=0
 const GPT_IMAGE_OTHER = '{"model_price":-1,"model_ratio":0.9285714285714286,"completion_ratio":6}';
@@ -45,6 +45,30 @@ describe('isPerImageBilled', () => {
         expect(isPerImageBilled(undefined, 'gemini-3-pro-image-preview')).toBe(true); // 名字生图 → 藏
         expect(isPerImageBilled(null, 'dall-e-3')).toBe(true); // 名字生图 → 藏
         expect(isPerImageBilled(null, 'gpt-5.4')).toBe(false); // LLM → 显示
+    });
+});
+
+describe('parseCacheTokens', () => {
+    // 线上实测样本(claude prompt-cache 行):prompt_tokens=2 而缓存读 127,885 —— 缓存单列才说得清费用
+    const CLAUDE_CACHE_OTHER =
+        '{"cache_ratio":0.1,"cache_tokens":127885,"cache_creation_ratio":1.25,"cache_creation_tokens":178,"claude":true}';
+
+    it('从 other JSON 取 cache_tokens(读)/ cache_creation_tokens(写)', () => {
+        expect(parseCacheTokens(CLAUDE_CACHE_OTHER)).toEqual({ read: 127_885, write: 178 });
+    });
+
+    it('无缓存字段 / 空串 / null / 解析失败 → 0/0', () => {
+        expect(parseCacheTokens('{"model_price":-1}')).toEqual({ read: 0, write: 0 });
+        expect(parseCacheTokens('')).toEqual({ read: 0, write: 0 });
+        expect(parseCacheTokens(null)).toEqual({ read: 0, write: 0 });
+        expect(parseCacheTokens('not-json')).toEqual({ read: 0, write: 0 });
+    });
+
+    it('非数值 / 负数 → 按 0(防御上游脏数据)', () => {
+        expect(parseCacheTokens('{"cache_tokens":"127885","cache_creation_tokens":-3}')).toEqual({
+            read: 0,
+            write: 0,
+        });
     });
 });
 

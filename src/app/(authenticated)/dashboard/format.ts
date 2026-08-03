@@ -58,6 +58,23 @@ export function formatTokens(promptTokens: number, completionTokens: number, per
     return `${p.toLocaleString('en-US')} / ${c.toLocaleString('en-US')}`;
 }
 
+/**
+ * 缓存读写副行(参照 new-api 日志的缓存展示)。主行 输入/输出 之下的灰色小字:
+ *   - 读写都 0(绝大多数调用)或按张计费 → ''(不渲染副行,表格不加噪)
+ *   - 只有读 → "缓存读 127,885";只有写 → "缓存写 1,304";都有 → "缓存读 X · 缓存写 Y"
+ * 背景:Anthropic 面 prompt_tokens 不含缓存部分 —— prompt-cache 重度用户(如 CCMAX)
+ * 会看到"输入 2 却 ¥0.07",缓存行就是解释。
+ */
+export function formatCacheTokens(cacheReadTokens: number, cacheWriteTokens: number, perImageBilled = false): string {
+    if (perImageBilled) return '';
+    const r = Number.isFinite(cacheReadTokens) && cacheReadTokens > 0 ? cacheReadTokens : 0;
+    const w = Number.isFinite(cacheWriteTokens) && cacheWriteTokens > 0 ? cacheWriteTokens : 0;
+    const parts: string[] = [];
+    if (r > 0) parts.push(`缓存读 ${r.toLocaleString('en-US')}`);
+    if (w > 0) parts.push(`缓存写 ${w.toLocaleString('en-US')}`);
+    return parts.join(' · ');
+}
+
 // 日志展示 helpers 都在共享 lib(dashboard 页 + /logs 页 + /api/portal/logs 复用),此处 re-export
 // 保持既有 import 不变(折叠重试失败 / 错误脱敏 / 计费口径判断)。
 export { collapseRetriedFailures, sanitizeLogContent, isImageModel } from '@/lib/newapi/log-display';

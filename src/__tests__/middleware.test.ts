@@ -67,6 +67,45 @@ describe('middleware — 独立门户形态门(PORTAL_FLAVOR=seedance-enterprise
         }
     });
 
+    it('enterprise 实例:/api/(尾斜杠)与 /?Action=(火山官方根路径形态)rewrite 到 /api + 原始 path 头', () => {
+        process.env.PORTAL_FLAVOR = 'seedance-enterprise';
+        // 客户端把 base …/api 拼上 "/" → /api/(有无 Action 都 rewrite,path 无歧义)
+        const r1 = middleware(req('/api/?Action=CreateAsset&Version=2024-01-01'));
+        expect(r1.headers.get('x-middleware-rewrite')).toContain('/api?');
+        expect(r1.headers.get('x-middleware-request-x-enterprise-orig-path')).toBe('/api/');
+        // 火山官方 SDK 形态:根路径 + Action query
+        const r2 = middleware(req('/?Action=CreateAsset&Version=2024-01-01'));
+        expect(r2.headers.get('x-middleware-rewrite')).toContain('/api?');
+        expect(r2.headers.get('x-middleware-request-x-enterprise-orig-path')).toBe('/');
+        // query 原样保留(Action/Version 不丢)
+        expect(r2.headers.get('x-middleware-rewrite')).toContain('Action=CreateAsset');
+        // 根路径【不带】Action → 仍是浏览器访问,照旧 307 登录页
+        const r3 = middleware(req('/'));
+        expect(r3.status).toBe(307);
+        expect(r3.headers.get('location')).toContain('/enterprise/login');
+    });
+
+    it('主站实例(env 未设):/api/ 与 /?Action= 不 rewrite(行为不变)', () => {
+        for (const p of ['/api/?Action=CreateAsset', '/?Action=CreateAsset']) {
+            const res = middleware(req(p));
+            expect(res.headers.get('x-middleware-rewrite')).toBeNull();
+        }
+    });
+
+    it('尾斜杠 308 复刻(skipTrailingSlashRedirect 后由 middleware 承担,主站/企业一致)', () => {
+        // 主站:/models/ → 308 /models(query 保留)—— 与框架默认行为一致
+        const r1 = middleware(req('/models/?a=1'));
+        expect(r1.status).toBe(308);
+        expect(r1.headers.get('location')).toBe('http://localhost/models?a=1');
+        // 企业实例:非 /api/ 的尾斜杠同样 308(/api/ 是 rewrite,上面已测)
+        process.env.PORTAL_FLAVOR = 'seedance-enterprise';
+        const r2 = middleware(req('/enterprise/billing/'));
+        expect(r2.status).toBe(308);
+        expect(r2.headers.get('location')).toBe('http://localhost/enterprise/billing');
+        // 根路径 "/" 不受尾斜杠逻辑影响(length>1 守门)
+        expect(middleware(req('/')).status).toBe(307);
+    });
+
     it('主站实例(env 未设):行为不变', () => {
         expect(middleware(req('/dashboard')).status).not.toBe(404);
     });

@@ -61,7 +61,9 @@ export default function EnterpriseAssetsDocsPage() {
                     </li>
                     <li>
                         <b>API</b>:<Code>{`POST ${BASE}/api?Action=<action>&Version=2024-01-01&ns=asset_manager`}</Code>
-                        ,JSON body,响应为 <Code>{`{ResponseMetadata, Result}`}</Code> 结构。
+                        ,JSON body,响应为 <Code>{`{ResponseMetadata, Result}`}</Code> 结构。路径 <Code>/api</Code>、
+                        <Code>/api/</Code>、<Code>/?Action=…</Code>
+                        (火山官方根路径形态,SDK 只换 endpoint 即可)三种写法等价。
                     </li>
                 </ul>
                 <p className="font-medium text-gray-900">鉴权(两种,任选其一):</p>

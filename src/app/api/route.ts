@@ -132,10 +132,14 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
     // AK/SK 火山签名验签需要原始 body,故先读 body 再鉴权(sk-ent Bearer 不受影响)。
     const raw = await req.text();
+    // middleware 把 `/`(火山官方根路径形态)/ `/api/`(尾斜杠)rewrite 到本路由,
+    // 原始 path 在 x-enterprise-orig-path —— SignerV4 客户签的是实际请求 path,验签
+    // 必须用它。只信白名单值(外部伪造该头拿不到任何好处,签名仍要过 HMAC)。
+    const origPath = req.headers.get('x-enterprise-orig-path');
     const auth = await resolveEnterpriseAuth({
         authorization: req.headers.get('authorization'),
         method: req.method,
-        path: req.nextUrl.pathname, // /api
+        path: origPath === '/' || origPath === '/api/' ? origPath : req.nextUrl.pathname,
         query: req.nextUrl.searchParams,
         headers: req.headers,
         rawBody: raw,

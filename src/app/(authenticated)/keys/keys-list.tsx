@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Check, Clipboard, Eye, KeyRound, Plus, Trash2 } from 'lucide-react';
 // NOTE: this 'use client' island does NOT convert quota→¥ itself. quotaToCny
 // reads NEWAPI_QUOTA_PER_USD / USD_TO_CNY_RATE — server-only env that is
@@ -36,6 +36,10 @@ export interface TierOption {
     display_name: string;
     description: string | null;
     is_default: boolean;
+    /** new-api group name, shown as the selector's secondary label. */
+    newapi_group: string;
+    /** Group multiplier; null when new-api cannot be reached. */
+    ratio: number | null;
 }
 
 /** Mirror of the server-side mask helper. Used when we receive a freshly
@@ -82,7 +86,133 @@ interface CreateState {
     alias: string;
     submitting: boolean;
     error: string | null;
-    tier: string;
+    tier: string | null;
+}
+
+function ratioBadgeText(ratio: number | null): string | null {
+    return ratio == null ? null : `${ratio}x 倍率`;
+}
+
+/** Searchable group selector. Multiple groups intentionally start unselected. */
+export function TierSelect({
+    tiers,
+    value,
+    onChange,
+    disabled,
+}: {
+    tiers: TierOption[];
+    value: string | null;
+    onChange: (key: string) => void;
+    disabled?: boolean;
+}) {
+    const [open, setOpen] = useState(false);
+    const [query, setQuery] = useState('');
+    const rootRef = useRef<HTMLDivElement | null>(null);
+
+    useEffect(() => {
+        if (!open) return;
+        const onDown = (e: MouseEvent) => {
+            if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+        };
+        const onKey = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') setOpen(false);
+        };
+        document.addEventListener('mousedown', onDown);
+        document.addEventListener('keydown', onKey);
+        return () => {
+            document.removeEventListener('mousedown', onDown);
+            document.removeEventListener('keydown', onKey);
+        };
+    }, [open]);
+
+    const normalizedQuery = query.trim().toLowerCase();
+    const filtered = normalizedQuery
+        ? tiers.filter((tier) =>
+              [tier.key, tier.display_name, tier.description ?? '', tier.newapi_group].some((value) =>
+                  value.toLowerCase().includes(normalizedQuery),
+              ),
+          )
+        : tiers;
+    const selected = value == null ? undefined : tiers.find((tier) => tier.key === value);
+
+    return (
+        <div ref={rootRef} className="relative">
+            <button
+                type="button"
+                disabled={disabled}
+                aria-haspopup="listbox"
+                aria-expanded={open}
+                onClick={() => {
+                    setQuery('');
+                    setOpen((current) => !current);
+                }}
+                className={`flex w-full items-center justify-between gap-2 rounded-md border px-3 py-2 text-left text-sm transition-colors ${
+                    open ? 'border-navy' : 'border-portal-line'
+                } bg-portal-panel hover:bg-portal-soft disabled:cursor-not-allowed disabled:opacity-60`}
+            >
+                {selected ? (
+                    <span className="flex min-w-0 items-center gap-2">
+                        <span className="truncate text-portal-ink">{selected.display_name}</span>
+                        {ratioBadgeText(selected.ratio) && (
+                            <span className="shrink-0 rounded border border-status-success-border bg-status-success-bg px-1.5 py-0.5 text-[11px] font-medium text-status-success-text">
+                                {ratioBadgeText(selected.ratio)}
+                            </span>
+                        )}
+                    </span>
+                ) : (
+                    <span className="text-portal-subtle">选择一个档次</span>
+                )}
+                <span aria-hidden className="shrink-0 text-[10px] text-portal-subtle">
+                    {open ? '▲' : '▼'}
+                </span>
+            </button>
+            {open && (
+                <div className="absolute left-0 right-0 top-full z-20 mt-1 overflow-hidden rounded-md border border-portal-line bg-portal-panel shadow-portal">
+                    <div className="border-b border-portal-line p-2">
+                        <input
+                            type="text"
+                            value={query}
+                            onChange={(e) => setQuery(e.target.value)}
+                            placeholder="搜索…"
+                            autoFocus
+                            className="w-full rounded-md border border-portal-line bg-portal-soft px-2.5 py-1.5 text-sm text-portal-ink outline-none focus:border-navy"
+                        />
+                    </div>
+                    <ul role="listbox" className="m-0 max-h-64 list-none overflow-y-auto p-1">
+                        {filtered.length === 0 && <li className="px-3 py-2 text-sm text-portal-subtle">无匹配档次</li>}
+                        {filtered.map((tier) => (
+                            <li key={tier.key} role="option" aria-selected={tier.key === value}>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        onChange(tier.key);
+                                        setOpen(false);
+                                    }}
+                                    className={`flex w-full items-center justify-between gap-3 rounded-md px-3 py-2 text-left transition-colors hover:bg-portal-soft ${
+                                        tier.key === value ? 'bg-portal-soft' : ''
+                                    }`}
+                                >
+                                    <span className="min-w-0">
+                                        <span className="block truncate text-sm text-portal-ink">
+                                            {tier.display_name}
+                                        </span>
+                                        <span className="mt-0.5 block truncate text-xs text-portal-subtle">
+                                            {[tier.newapi_group, tier.description].filter(Boolean).join(' · ')}
+                                        </span>
+                                    </span>
+                                    {ratioBadgeText(tier.ratio) && (
+                                        <span className="shrink-0 rounded border border-status-success-border bg-status-success-bg px-1.5 py-0.5 text-[11px] font-medium text-status-success-text">
+                                            {ratioBadgeText(tier.ratio)}
+                                        </span>
+                                    )}
+                                </button>
+                            </li>
+                        ))}
+                    </ul>
+                </div>
+            )}
+        </div>
+    );
 }
 
 function KeyActions({
@@ -146,8 +276,9 @@ function KeyActions({
 }
 
 export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; tiers?: TierOption[] }) {
-    // P3: 默认档 = is_default 的 ChannelGroup(pool);label / 单选项从 tiers 派生。
-    const defaultTier = tiers.find((t) => t.is_default)?.key ?? tiers[0]?.key ?? 'pool';
+    // Multi-tier accounts must deliberately select a group. A single group
+    // (and legacy deployments without configured groups) remains automatic.
+    const initialTier: string | null = tiers.length > 1 ? null : (tiers[0]?.key ?? 'pool');
     const showTierChoice = tiers.length > 1;
     const tierLabel = (key: string) => tiers.find((t) => t.key === key)?.display_name ?? key;
 
@@ -161,7 +292,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
         alias: '',
         submitting: false,
         error: null,
-        tier: defaultTier,
+        tier: initialTier,
     });
 
     const isOnlyKey = rows.length === 1;
@@ -271,17 +402,18 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
         e.preventDefault();
         if (create.submitting) return;
         const alias = create.alias.trim();
-        if (!alias) {
-            setCreate((prev) => ({ ...prev, error: '请填写 Key 别名' }));
+        if (!alias || (showTierChoice && !create.tier)) {
+            setCreate((prev) => ({ ...prev, error: !alias ? '请填写 Key 别名' : '请选择调用档次' }));
             return;
         }
+        const tier = create.tier ?? 'pool';
         setCreate((prev) => ({ ...prev, submitting: true, error: null }));
         try {
             const r = await fetch('/api/portal/keys', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'same-origin',
-                body: JSON.stringify({ alias, tier: create.tier }),
+                body: JSON.stringify({ alias, tier }),
             });
             if (!r.ok) {
                 const data = await r.json().catch(() => ({}));
@@ -308,7 +440,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                 used_quota: 0,
                 usedCny: 0,
                 last_used_at: null,
-                tier: data.tier ?? create.tier,
+                tier: data.tier ?? tier,
             };
             setRows((prev) => [...prev, newRow]);
             // Auto-reveal the brand-new key so the customer can copy it
@@ -317,7 +449,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
             // was removed; the unified bottom 调用示例 panel covers all
             // keys, so there's no per-row panel to auto-expand here.)
             setReveal((prev) => ({ ...prev, [data.id]: data.key }));
-            setCreate({ open: false, alias: '', submitting: false, error: null, tier: defaultTier });
+            setCreate({ open: false, alias: '', submitting: false, error: null, tier: initialTier });
         } catch (err) {
             setCreate((prev) => ({
                 ...prev,
@@ -369,7 +501,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                         variant="primary"
                         size="sm"
                         onClick={() =>
-                            setCreate({ open: true, alias: '', submitting: false, error: null, tier: defaultTier })
+                            setCreate({ open: true, alias: '', submitting: false, error: null, tier: initialTier })
                         }
                         disabled={create.open}
                         title="创建新的 API Key"
@@ -420,7 +552,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                                             alias: '',
                                             submitting: false,
                                             error: null,
-                                            tier: defaultTier,
+                                            tier: initialTier,
                                         })
                                     }
                                     disabled={create.submitting}
@@ -433,7 +565,9 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                                     variant="primary"
                                     size="sm"
                                     loading={create.submitting}
-                                    disabled={create.submitting || !create.alias.trim()}
+                                    disabled={
+                                        create.submitting || !create.alias.trim() || (showTierChoice && !create.tier)
+                                    }
                                     className="rounded-md"
                                 >
                                     {create.submitting ? '创建中…' : '确认创建'}
@@ -444,35 +578,15 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                         {showTierChoice && (
                             <fieldset className="mt-4 border-0 p-0">
                                 <legend className="mb-2 text-xs font-medium text-portal-muted">调用档次</legend>
-                                <div className="flex flex-wrap gap-2">
-                                    {tiers.map((t) => {
-                                        const selected = create.tier === t.key;
-                                        return (
-                                            <label
-                                                key={t.key}
-                                                className={[
-                                                    'inline-flex h-9 cursor-pointer items-center rounded-md border px-3 text-sm transition-colors',
-                                                    selected
-                                                        ? 'border-navy bg-navy text-white'
-                                                        : 'border-portal-line bg-portal-panel text-portal-muted hover:bg-portal-active hover:text-portal-ink',
-                                                ].join(' ')}
-                                            >
-                                                <input
-                                                    className="sr-only"
-                                                    type="radio"
-                                                    name="key-tier"
-                                                    value={t.key}
-                                                    checked={selected}
-                                                    onChange={() => setCreate((prev) => ({ ...prev, tier: t.key }))}
-                                                />
-                                                {t.display_name}
-                                            </label>
-                                        );
-                                    })}
-                                </div>
+                                <TierSelect
+                                    tiers={tiers}
+                                    value={create.tier}
+                                    onChange={(tier) => setCreate((prev) => ({ ...prev, tier, error: null }))}
+                                    disabled={create.submitting}
+                                />
                                 <p className="m-0 mt-2 text-xs text-portal-subtle">
                                     {tiers.find((t) => t.key === create.tier)?.description ??
-                                        '官方稳定档更稳、价格更高；低价号池性价比高。档次创建后不可修改。'}
+                                        '请选择档次。档次决定路由与倍率，创建后不可修改。'}
                                 </p>
                             </fieldset>
                         )}

@@ -12,7 +12,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { renderToString } from 'react-dom/server';
-import { KeysList, type KeyRow } from '@/app/(authenticated)/keys/keys-list';
+import { KeysList, TierSelect, type KeyRow } from '@/app/(authenticated)/keys/keys-list';
 
 const SAMPLE_ROWS: KeyRow[] = [
     {
@@ -179,8 +179,22 @@ describe('<KeysList /> W6 D4 — alias placeholder hint', () => {
 
 describe('<KeysList /> P3 — 档次 badge', () => {
     const TIERS = [
-        { key: 'pool', display_name: '低价号池', description: null, is_default: true },
-        { key: 'official', display_name: '官方稳定', description: '更稳更贵', is_default: false },
+        {
+            key: 'pool',
+            display_name: '低价号池',
+            description: null,
+            is_default: true,
+            newapi_group: 'default',
+            ratio: 1.3,
+        },
+        {
+            key: 'official',
+            display_name: '官方稳定',
+            description: '更稳更贵',
+            is_default: false,
+            newapi_group: 'official',
+            ratio: 3.5,
+        },
     ];
 
     it('renders the tier display_name badge per row', () => {
@@ -226,5 +240,27 @@ describe('<KeysList /> P3 — 档次 badge', () => {
         ];
         const html = renderToString(<KeysList initialRows={rows} tiers={TIERS} />);
         expect(html).toContain('legacy');
+    });
+
+    // ── TierSelect(new-api 风格档次下拉)SSR 渲染 ──
+    // 交互(开合 / 搜索 / 点选)是 client 行为,SSR smoke 只守渲染契约。
+
+    it('TierSelect 未选(必选态)→ placeholder「选择一个档次」,不预选任何档', () => {
+        const html = renderToString(<TierSelect tiers={TIERS} value={null} onChange={() => {}} />);
+        expect(html).toContain('选择一个档次');
+        expect(html).not.toContain('低价号池'); // 关闭态不渲染选项列表
+    });
+
+    it('TierSelect 已选 → 显示名 + 「Nx 倍率」徽章(与 new-api 同款)', () => {
+        const html = renderToString(<TierSelect tiers={TIERS} value="official" onChange={() => {}} />);
+        expect(html).toContain('官方稳定');
+        expect(html).toContain('3.5x 倍率');
+    });
+
+    it('ratio=null(new-api 不可达降级)→ 不渲染倍率徽章', () => {
+        const tiers = [{ ...TIERS[0], ratio: null }];
+        const html = renderToString(<TierSelect tiers={tiers} value="pool" onChange={() => {}} />);
+        expect(html).toContain('低价号池');
+        expect(html).not.toContain('倍率');
     });
 });

@@ -22,6 +22,8 @@ function row(o: Partial<CallRow> = {}): CallRow {
         useTimeMs: o.useTimeMs ?? 1200,
         promptTokens: o.promptTokens ?? 100,
         completionTokens: o.completionTokens ?? 200,
+        cacheReadTokens: o.cacheReadTokens ?? 0,
+        cacheWriteTokens: o.cacheWriteTokens ?? 0,
         perImageBilled: o.perImageBilled ?? false,
         quota: o.quota ?? 500_000,
         costCny: o.costCny ?? 0.2,
@@ -97,6 +99,27 @@ describe('<CallDetailTable /> SSR', () => {
         );
         expect(html).toContain('gpt-image-2');
         expect(html).toContain('3,054 / 196');
+    });
+
+    it('有缓存读写 → Tokens 列渲染缓存副行(参照 new-api;prompt-cache 重度用户"输入 2 却 ¥0.07"的解释)', () => {
+        const html = renderToString(
+            renderRow({
+                model: 'claude-opus-5',
+                promptTokens: 2,
+                completionTokens: 272,
+                cacheReadTokens: 127_885,
+                cacheWriteTokens: 178,
+            }),
+        );
+        expect(html).toContain('2 / 272');
+        expect(html).toContain('缓存读 127,885');
+        expect(html).toContain('缓存写 178');
+    });
+
+    it('无缓存(读写都 0,绝大多数调用)→ 不渲染缓存副行(表格不加噪)', () => {
+        const html = renderToString(renderRow({ cacheReadTokens: 0, cacheWriteTokens: 0 }));
+        expect(html).not.toContain('缓存读');
+        expect(html).not.toContain('缓存写');
     });
 
     it('paginates — first 20 rows only, pager controls present', () => {

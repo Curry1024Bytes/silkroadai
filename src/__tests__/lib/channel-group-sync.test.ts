@@ -31,6 +31,8 @@ vi.mock('@/lib/db', () => ({
 
 import {
     __resetChannelGroupSyncForTests,
+    __resetGroupRatioCacheForTests,
+    getGroupRatios,
     listEnabledChannelGroups,
     syncChannelGroupsFromNewApi,
 } from '@/lib/channel-group';
@@ -236,5 +238,47 @@ describe('listEnabledChannelGroups sync trigger', () => {
             where: { tenant_id: '11111111-2222-3333-4444-555555555555', enabled: true },
             orderBy: { tier_level: 'asc' },
         });
+    });
+});
+
+describe('getGroupRatios(GroupRatio 倍率同步,/keys 档次下拉「Nx 倍率」徽章数据源)', () => {
+    beforeEach(() => {
+        __resetGroupRatioCacheForTests();
+    });
+
+    it('解析 GroupRatio option 为 组名→倍率 字典(非数值条目丢弃)', async () => {
+        mockGetOption.mockResolvedValue(JSON.stringify({ 'cc-kiro': 0.4, default: 1.3, bad: 'x' }));
+        const ratios = await getGroupRatios();
+        expect(ratios).toEqual({ 'cc-kiro': 0.4, default: 1.3 });
+        expect(mockGetOption).toHaveBeenCalledWith('GroupRatio');
+    });
+
+    it('60s 内二次调用不再打 new-api(节流缓存)', async () => {
+        mockGetOption.mockResolvedValue(JSON.stringify({ default: 1.3 }));
+        await getGroupRatios();
+        await getGroupRatios();
+        expect(mockGetOption).toHaveBeenCalledTimes(1);
+    });
+
+    it('缓存过期后 getOption 抛错 → 返上次好值(stale),不抛出', async () => {
+        vi.useFakeTimers();
+        try {
+            mockGetOption.mockResolvedValueOnce(JSON.stringify({ default: 1.3 }));
+            await getGroupRatios();
+            vi.advanceTimersByTime(61_000); // 过节流窗口
+            mockGetOption.mockRejectedValueOnce(new Error('new-api down'));
+            expect(await getGroupRatios()).toEqual({ default: 1.3 });
+            expect(mockGetOption).toHaveBeenCalledTimes(2);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('option 缺失 / JSON 坏 → 空表 + 不抛,且同样压节流', async () => {
+        mockGetOption.mockResolvedValue(null);
+        expect(await getGroupRatios()).toEqual({});
+        mockGetOption.mockResolvedValue('not-json');
+        expect(await getGroupRatios()).toEqual({}); // 节流窗口内,不重打
+        expect(mockGetOption).toHaveBeenCalledTimes(1);
     });
 });

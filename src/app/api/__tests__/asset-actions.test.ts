@@ -75,6 +75,33 @@ describe('envelope + 守门', () => {
         expect(j.ResponseMetadata.Error.Code).toBe('UnauthorizedOperation');
     });
 
+    it('x-enterprise-orig-path(middleware rewrite)→ 验签 path 用原始值;非白名单值忽略', async () => {
+        db.enterpriseAssetGroup.count.mockResolvedValue(0);
+        db.enterpriseAssetGroup.findMany.mockResolvedValue([]);
+        const mk = (orig?: string) =>
+            new NextRequest('http://128.241.232.23/api?Action=ListAssetGroups&Version=2024-01-01', {
+                method: 'POST',
+                headers: {
+                    authorization: 'Bearer sk-ent-' + 'a'.repeat(48),
+                    'content-type': 'application/json',
+                    ...(orig ? { 'x-enterprise-orig-path': orig } : {}),
+                },
+                body: '{}',
+            });
+        // 火山官方根路径形态:客户签的是 "/"
+        await POST(mk('/'));
+        expect(resolveEnterpriseAuth.mock.calls[0][0].path).toBe('/');
+        // 尾斜杠形态:客户签的是 "/api/"
+        await POST(mk('/api/'));
+        expect(resolveEnterpriseAuth.mock.calls[1][0].path).toBe('/api/');
+        // 外部伪造任意值 → 忽略,回落真实 pathname
+        await POST(mk('/evil'));
+        expect(resolveEnterpriseAuth.mock.calls[2][0].path).toBe('/api');
+        // 无头 → 原行为
+        await POST(mk());
+        expect(resolveEnterpriseAuth.mock.calls[3][0].path).toBe('/api');
+    });
+
     it('未知 Action → 400 InvalidAction;成功响应带完整 ResponseMetadata', async () => {
         const res = await POST(req('DoWeirdThing', {}));
         expect(res.status).toBe(400);
