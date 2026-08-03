@@ -109,6 +109,47 @@ describe('火山渠道(volc)路由', () => {
         expect(resolveAssetRefs).not.toHaveBeenCalled();
     });
 
+    it('volc 支持 480p(2026-08-03 开放):透传适配器 + 任务落库 480p', async () => {
+        submitVolcVideo.mockResolvedValue(NextResponse.json({ id: 'task_v2', task_id: 'task_v2', status: 'queued' }));
+        const res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', {
+                model: 'doubao-seedance-2.0',
+                prompt: '一只猫',
+                resolution: '480p',
+            }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(200);
+        expect(submitVolcVideo).toHaveBeenCalledWith(expect.objectContaining({ prompt: '一只猫' }), '480p', 5);
+        expect(db.seedanceVideoTask.create).toHaveBeenCalledWith({
+            data: expect.objectContaining({ model: 'doubao-seedance-2.0', resolution: '480p' }),
+        });
+    });
+
+    it('volc 非法 resolution(360p)→ 400,错误文案含 480p 白名单', async () => {
+        const res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', {
+                model: 'doubao-seedance-2.0',
+                prompt: 'x',
+                resolution: '360p',
+            }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(400);
+        const body = await res.json();
+        expect(body.error.message).toContain('480p');
+        expect(submitVolcVideo).not.toHaveBeenCalled();
+    });
+
+    it('480p 仅 volc 开放:cn 短名 seedance-2-0 传 480p 仍 400', async () => {
+        const res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { model: 'seedance-2-0', prompt: 'x', resolution: '480p' }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(400);
+        expect(submitVideoWithKey).not.toHaveBeenCalled();
+    });
+
     it('非 volc 提交仍剥 asset:// 前缀(resolveAssetRefs 收到裸 id)', async () => {
         submitVideoWithKey.mockResolvedValue(NextResponse.json({ id: 'cgt-c1', task_id: 'cgt-c1', status: 'queued' }));
         const res = await handleEnterpriseV1(

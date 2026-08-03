@@ -52,6 +52,9 @@ export const ENTERPRISE_MODELS: Record<string, SeedanceVariant> = {
 };
 
 const RESOLUTIONS = ['720p', '1080p', '4k'] as const;
+// volc 上游(火山方舟原生)实测支持 480p(2026-08-03 探测:5s 480p 出片 864×496);
+// cn/global/promax 长名档位无 480p SKU,仍走上面的三档白名单。
+const VOLC_RESOLUTIONS = ['480p', '720p', '1080p', '4k'] as const;
 
 /** 短名 + body 参数 → 内部长名规格。非短名返回 null(走长名/未知分支)。 */
 function resolveEnterpriseModel(
@@ -63,8 +66,8 @@ function resolveEnterpriseModel(
     // 走独立 provider(火山方舟原生),不经 MODEL_MAP 长名机制。
     if (lower === VOLC_MODEL) {
         const resRaw = String(body.resolution ?? '720p').toLowerCase();
-        if (!(RESOLUTIONS as readonly string[]).includes(resRaw)) {
-            return { error: errJson(400, 'invalid_request', 'resolution 仅支持 720p / 1080p / 4k') };
+        if (!(VOLC_RESOLUTIONS as readonly string[]).includes(resRaw)) {
+            return { error: errJson(400, 'invalid_request', 'resolution 仅支持 480p / 720p / 1080p / 4k') };
         }
         const hasRefs =
             extractImageUrls(body).length > 0 ||
@@ -74,7 +77,7 @@ function resolveEnterpriseModel(
             (typeof body.last_frame === 'string' && body.last_frame !== '');
         return {
             spec: {
-                resolution: resRaw as '720p' | '1080p' | '4k',
+                resolution: resRaw as '480p' | '720p' | '1080p' | '4k',
                 ref: hasRefs,
                 variant: 'pro',
                 upstream: VOLC_MODEL,

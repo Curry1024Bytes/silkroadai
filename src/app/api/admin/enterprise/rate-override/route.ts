@@ -17,7 +17,7 @@ const schema = z.object({
     user_id: z.string().uuid(),
     region: z.enum(['cn', 'global', 'promax', 'volc']).default('cn'),
     variant: z.enum(['pro', 'fast', 'mini']).default('pro'),
-    resolution: z.enum(['720p', '1080p', '4k']),
+    resolution: z.enum(['480p', '720p', '1080p', '4k']),
     has_video: z.boolean(),
     cny_per_m: z.number().positive().max(10_000).nullable(),
 });

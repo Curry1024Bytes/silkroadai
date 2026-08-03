@@ -59,7 +59,8 @@ const MAX_REF_VIDEOS = 3;
 export type SeedanceVariant = 'pro' | 'fast' | 'mini' | 'promax' | 'promax-fast' | 'promax-mini';
 
 export interface SeedanceModelSpec {
-    resolution: '720p' | '1080p' | '4k';
+    /** 480p 仅 volc 渠道开放(2026-08-03);cn/global/promax 长名档位仍 720p/1080p/4k。 */
+    resolution: '480p' | '720p' | '1080p' | '4k';
     ref: boolean;
     variant: SeedanceVariant;
     /** 该档实际发给上游的模型 id(分辨率/参考模式由请求体承载)。 */

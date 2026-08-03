@@ -55,7 +55,7 @@ function buildContent(body: Record<string, unknown>): unknown[] | null {
  *  resolution 由 caller(proxy 短名解析)传入;返回归一形 {id, task_id, status} 供 handleSubmit 记账。 */
 export async function submitVolcVideo(
     body: Record<string, unknown>,
-    resolution: '720p' | '1080p' | '4k',
+    resolution: '480p' | '720p' | '1080p' | '4k',
     duration: number,
 ): Promise<NextResponse> {
     const cfg = getConfig();
