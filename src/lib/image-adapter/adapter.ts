@@ -122,9 +122,12 @@ function imageDimensions(buf: Buffer): { w: number; h: number } | null {
     return null;
 }
 
-/** 单张输入图 token(edits 输入侧):85 + 每 MP 1500(校准到 prod edit avg pt≈1831)。 */
+/** 单张输入图 token(edits 输入侧):85 + 每 MP 1500(校准到 prod edit avg pt≈1831),
+ *  MP 封顶 2 —— azure 真实口径会把大输入图降采样,pt 很少超 5k;不封顶时 4K 输入图会算到
+ *  1.3万 token/张,多图 edits 合成 pt 5.8万、比 azure 贵近一倍(2026-08-04 首灰实测,
+ *  c-ff22024e 2K-high 多图单次 ¥1.08 vs azure 同类 ~¥0.59)。 */
 function inputImageTokens(dims: { w: number; h: number } | null): number {
-    const mp = dims ? Math.max(1, Math.ceil((dims.w * dims.h) / 1_000_000)) : 1;
+    const mp = dims ? Math.min(2, Math.max(1, Math.ceil((dims.w * dims.h) / 1_000_000))) : 1;
     return 85 + mp * 1500;
 }
 

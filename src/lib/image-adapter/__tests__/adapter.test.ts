@@ -113,7 +113,7 @@ describe('synthUsage(合成数值 = OUT_TOKENS 口径)', () => {
         expect(mk('4k', 'low').output_tokens).toBe(1000);
         expect(mk('2k', 'high').output_tokens).toBe(12000);
     });
-    it('多图 ct×张数;edits 输入图计入 input(85 + MP×1500,读不出按 1MP)', () => {
+    it('多图 ct×张数;edits 输入图计入 input(85 + MP×1500,MP 封顶 2,读不出按 1MP)', () => {
         const u = synthUsage({
             mode: 'edits',
             tier: '4k',
@@ -123,10 +123,28 @@ describe('synthUsage(合成数值 = OUT_TOKENS 口径)', () => {
             imageCount: 2,
         });
         expect(u.output_tokens).toBe(3800 * 2);
-        // 2048²=4.19MP→ceil 5 → 85+7500;null→1MP → 85+1500
-        expect(u.input_tokens).toBe(estimateTextTokens('edit') + (85 + 5 * 1500) + (85 + 1500));
+        // 2048²=4.19MP→ceil 5→封顶 2 → 85+3000;null→1MP → 85+1500
+        expect(u.input_tokens).toBe(estimateTextTokens('edit') + (85 + 2 * 1500) + (85 + 1500));
         const details = u.input_tokens_details as { text_tokens: number; image_tokens: number };
-        expect(details.image_tokens).toBe(85 + 7500 + 85 + 1500);
+        expect(details.image_tokens).toBe(85 + 3000 + 85 + 1500);
+    });
+
+    it('4K 输入图 MP 封顶:8.3MP 也只算 2MP(azure 会降采样,防多图 edits 计费爆表)', () => {
+        const u = synthUsage({
+            mode: 'edits',
+            tier: '2k',
+            quality: 'high',
+            prompt: 'x',
+            inputImageDims: [
+                { w: 3840, h: 2160 },
+                { w: 3840, h: 2160 },
+                { w: 3840, h: 2160 },
+                { w: 3840, h: 2160 },
+            ],
+            imageCount: 1,
+        });
+        const details = u.input_tokens_details as { text_tokens: number; image_tokens: number };
+        expect(details.image_tokens).toBe(4 * (85 + 3000)); // 不封顶时是 4×13585=54340
     });
 });
 
