@@ -2,14 +2,11 @@
  * W7 D4 PR-J Bug 1 — `getAppUrl()` env precedence.
  *
  * Background: Next.js inlines `NEXT_PUBLIC_*` env reads at build time as
- * string literals (server-side too, in standalone builds). The Dockerfile
- * bakes `NEXT_PUBLIC_APP_URL="https://localhost"` so the build doesn't
- * crash on a missing env, which means at runtime every server-side read
- * of `process.env.NEXT_PUBLIC_APP_URL` returns `"https://localhost"` —
- * regardless of what the running container's env says. The helper reads
- * `APP_URL` first (a *non*-NEXT_PUBLIC var that's a true runtime read)
- * with NEXT_PUBLIC_APP_URL as a build-time fallback and a hardcoded dev
- * default last. These tests pin the precedence.
+ * string literals (server-side too, in standalone builds). Compose supplies
+ * the correct production value during the build, while `APP_URL` remains the
+ * runtime override. The helper reads APP_URL first, with NEXT_PUBLIC_APP_URL
+ * as a build-time fallback and a hardcoded dev default last. These tests pin
+ * that precedence even when an image was built for a different origin.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { DEV_FALLBACK_APP_URL, getAppUrl } from '../app-url';
@@ -45,11 +42,10 @@ describe('getAppUrl — precedence', () => {
     });
 
     it('both set → APP_URL wins (this is the prod case post-fix)', () => {
-        // Mirrors the live container: .env sets both, but
-        // NEXT_PUBLIC_APP_URL was poisoned at build time with a
-        // localhost placeholder. APP_URL is the runtime escape hatch.
+        // APP_URL is the runtime escape hatch when an image was built for a
+        // different public origin.
         process.env.APP_URL = 'https://llmroute.club';
-        process.env.NEXT_PUBLIC_APP_URL = 'https://localhost';
+        process.env.NEXT_PUBLIC_APP_URL = 'https://build-origin.example.com';
         expect(getAppUrl()).toBe('https://llmroute.club');
     });
 

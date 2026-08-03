@@ -41,9 +41,9 @@ const PROVIDER = 'google';
  *      `next build` time (Next.js does this so SSR + CSR see the same
  *      value). Changing NEXT_PUBLIC_APP_URL on the running container has
  *      no effect on server-side reads — they resolve to whatever was set
- *      during build (in our Dockerfile: the `https://localhost` build
- *      dummy). So we read APP_URL first (a plain runtime env var, picked
- *      up live from docker-compose env_file) and fall back to
+ *      during build. Compose now supplies the production value to the image,
+ *      but APP_URL still comes first as a plain runtime env var picked up
+ *      from docker-compose env_file. We then fall back to
  *      NEXT_PUBLIC_APP_URL (matches build-time value if APP_URL unset)
  *      and finally to reqUrl (keeps unit tests + non-proxied dev green).
  */

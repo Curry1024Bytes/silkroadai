@@ -91,8 +91,10 @@
 - 支付收款主体由 zpayz 商户/渠道决定;当前个人支付宝收款不是 Portal 代码问题,企业主体仍需渠道侧办理。
 - 当前 new-api 使用 MySQL;上游 `NEWAPI_LOGS_DATABASE_URL` 直连全量导出仅支持 PostgreSQL,所以保持未设置并使用
   10,000 行 API fallback,不能填一个 PostgreSQL 伪连接串。
-- `docker-compose.prod.yml` 还含上游 API 副本和 Seedance 服务。当前服务器发布必须显式指定 `portal`,
-  禁止不带服务名执行 `docker compose ... up`,避免误启动额外服务。
+- `docker-compose.prod.yml` 还含上游 API 副本和 Seedance 服务,分别受 `api-replicas` / `seedance` profile
+  隔离;默认只启动 Portal + PostgreSQL。标准发布仍显式指定 `portal`,当前服务器不要启用可选 profile。
+- 2026-08-03 `dev` 待发布的构建加固:Dockerfile 默认公开域名改为 LLmRoute,Compose 从服务器 `.env`
+  传入全部公开 build args;上线前仍需经 `dev -> prod` 发布门。
 - 2026-08-03 待发布批次:客服微信改为 `LLmRoute`(代码/forward migration 已进 `prod`,VPS 尚待重建验收),
   以及 `main@da510e7 -> dev` 的 10 个上游提交。合并后完整验证为 244 files / 2644 passed / 1 skipped。
 - new-api rc.22 登录兼容决策:优先直接使用登录响应的 `data.access_token`;仅旧版本 `session=` cookie 走 fallback。
@@ -498,11 +500,11 @@ ssh -4 root@82.29.71.122
 # 登录后按 deploy/部署与运维手册.md 执行备份,再显式 build/up portal:
 cd /opt/silkroadai-portal
 git switch prod && git pull --ff-only origin prod
-docker compose -f docker-compose.prod.yml build --build-arg APP_URL=https://llmroute.club portal
+docker compose -f docker-compose.prod.yml build portal
 docker compose -f docker-compose.prod.yml up -d portal
 # 注:实际 VPS 路径是 /opt/silkroadai-portal(不是 silkroad-portal),
 #     实际 compose 文件是 docker-compose.prod.yml,服务名 portal。线上不从 main 发布。
-#     禁止省略 portal 服务名,否则会误启动 compose 中的 API 副本/Seedance 服务。
+#     API 副本/Seedance 已由 profile 隔离;标准发布仍显式写 portal,不要启用可选 profile。
 ```
 
 上线前配置检查提醒:
@@ -513,7 +515,7 @@ docker compose -f docker-compose.prod.yml up -d portal
 - 生产 Google redirect 必须逐字为 `https://llmroute.club/api/auth/oauth/google/callback`,并且 Google Cloud Console OAuth Web Client 里也要填同一个 URI。
 - 生产 GitHub callback 必须逐字为 `https://llmroute.club/api/auth/oauth/github/callback`,并且 GitHub OAuth App 的 Authorization callback URL 里也要填同一个 URI。
 - OAuth 变量是运行时变量,改完重启 portal 即可;如果同时改了任意 `NEXT_PUBLIC_*`,必须按
-  `deploy/部署与运维手册.md` 显式传 `APP_URL=https://llmroute.club` 重新 build,再 `up -d portal`。
+  `deploy/部署与运维手册.md` 重新 `build portal`,再 `up -d portal`。Compose 会从 `.env` 传公开 build args。
 - 验证命令:`curl -I https://llmroute.club/api/auth/oauth/google/start`,期望 302 到 `accounts.google.com`;`curl -I https://llmroute.club/api/auth/oauth/github/start`,期望 302 到 `github.com/login/oauth/authorize`。
 - 支付上线必查:`PAYMENT_PROVIDERS=easypay` / `ENABLED_PAYMENT_TYPES=alipay,wxpay` / `EASY_PAY_PID=2026072211025295` / `EASY_PAY_PKEY` / `EASY_PAY_API_BASE=https://zpayz.cn` / `EASY_PAY_NOTIFY_URL=https://llmroute.club/api/easy-pay/notify` / `EASY_PAY_RETURN_URL=https://llmroute.club/pay/result`。`EASY_PAY_API_BASE` 不带末尾 `/`;`EASY_PAY_PKEY` 不进 git,只填 VPS `.env`。
 - zpayz 易支付对应关系:创建支付走 `POST /mapi.php`(不是 `/submit.php`),notify 是 `GET /api/easy-pay/notify?...` 且必须返回纯 `success`;成功响应的 `payurl` / `qrcode` / `img` 都已兼容。zpayz 文档订单查询示例是 GET 带 `key`,代码当前为避免密钥进 URL 日志用 POST 查询;查询不是入账主路径,上线 smoke 若发现不兼容再调整。

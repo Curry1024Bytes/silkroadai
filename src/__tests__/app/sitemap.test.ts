@@ -5,12 +5,10 @@
  * overridable) → `NEXT_PUBLIC_APP_URL` (build-inlined fallback) → a
  * hardcoded `https://llmroute.club` default.
  *
- * Background: Phase 6a's first prod deploy of the landing page baked
- * `https://localhost` into `sitemap.xml` because the Dockerfile only
- * passed a `NEXT_PUBLIC_APP_URL` build dummy and Next prerenders
- * sitemap.xml at build time. The fix wires a real `APP_URL` build-arg
- * through the Dockerfile; this test guards the precedence so the regression
- * can't sneak back via either env var being clobbered.
+ * Background: Phase 6a's first production build used a placeholder origin in
+ * `sitemap.xml`. Compose now supplies all public build args, while this test
+ * continues guarding APP_URL precedence when an image was built for another
+ * origin.
  *
  * The test re-imports the module under a fresh env so each precedence
  * path can be exercised — a single import would cache whichever value
@@ -45,7 +43,7 @@ async function loadRobots() {
 describe('sitemap.ts — host source precedence', () => {
     it('uses APP_URL when set (the prod path)', async () => {
         process.env.APP_URL = 'https://llmroute.club';
-        process.env.NEXT_PUBLIC_APP_URL = 'https://localhost'; // Dockerfile build dummy
+        process.env.NEXT_PUBLIC_APP_URL = 'https://build-origin.example.com';
         const sitemap = await loadSitemap();
         const entries = sitemap();
         expect(entries.length).toBeGreaterThan(0);
@@ -137,7 +135,7 @@ describe('sitemap.ts — public-route inclusion', () => {
 describe('robots.ts — host source precedence', () => {
     it('uses APP_URL for the Sitemap reference', async () => {
         process.env.APP_URL = 'https://llmroute.club';
-        process.env.NEXT_PUBLIC_APP_URL = 'https://localhost';
+        process.env.NEXT_PUBLIC_APP_URL = 'https://build-origin.example.com';
         const robots = await loadRobots();
         const r = robots();
         expect(r.sitemap).toBe('https://llmroute.club/sitemap.xml');

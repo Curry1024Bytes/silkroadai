@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 #
-# Silk Road AI Portal — production image
+# LLmRoute Portal — production image
 #
 # Multi-stage build for Next.js 16 standalone output:
 #   1. base   — pnpm-enabled node:22-alpine
@@ -10,7 +10,7 @@
 #   4. runner — minimal alpine image with .next/standalone + start.sh
 #
 # Container port: 3002 (matches docker-compose.prod.yml host mapping). The
-# host-Caddy proxies https://portal.silkroadai.io → host:3002 → container:3002.
+# host Nginx proxies https://llmroute.club → host:3002 → container:3002.
 #
 # start.sh runs `prisma migrate deploy` once on container start, then exec's
 # `node server.js`. So the runtime needs DATABASE_URL pointing at a reachable
@@ -32,16 +32,17 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN pnpm prisma generate
 
-# APP_URL is the canonical public origin baked into statically-prerendered
-# surfaces (sitemap.xml, robots.txt, og:url defaults). Default is the prod
-# apex; staging / preview builds override via:
-#   docker build --build-arg APP_URL=https://staging.silkroadai.io ...
-#
-# At runtime the .env passed via docker-compose env_file CAN re-override
-# `APP_URL` for server-side helpers, but statically-prerendered files
-# (sitemap.ts / robots.ts) freeze whatever value was present at build time
-# — so this ARG is what controls the host in those files.
-ARG APP_URL=https://silkroadai.io
+# Public values used by Next.js during `next build`. Compose maps the server
+# .env into these build args; the defaults keep a direct `docker build`
+# LLmRoute-safe as well. NEXT_PUBLIC_* values are compiled into client assets
+# and cannot be changed by only restarting the finished container.
+ARG APP_URL=https://llmroute.club
+ARG NEXT_PUBLIC_APP_URL=https://llmroute.club
+ARG NEXT_PUBLIC_API_URL=https://api.llmroute.club
+ARG NEXT_PUBLIC_IMAGE_URL=https://images.llmroute.club
+ARG NEXT_PUBLIC_SUPPORT_EMAIL=support@llmroute.club
+ARG NEXT_PUBLIC_SUPPORT_WECHAT=LLmRoute
+ARG NEXT_PUBLIC_ENTERPRISE_BASE_URL=http://128.241.232.23
 
 # next build prerenders some routes that import modules touching env at load
 # time (newapi/client.ts checks NEWAPI_ADMIN_TOKEN, jwt.ts checks
@@ -49,8 +50,8 @@ ARG APP_URL=https://silkroadai.io
 # are NEVER used at runtime — the real values come from .env via docker-
 # compose env_file.
 #
-# `APP_URL` (real, from build-arg) wins over the `NEXT_PUBLIC_APP_URL`
-# placeholder per the precedence in `src/app/sitemap.ts` and `robots.ts`.
+# APP_URL remains available at runtime through compose env_file for server-side
+# helpers. The values below only make the build deterministic.
 RUN DATABASE_URL="postgresql://x:x@localhost:5432/x" \
     NEWAPI_BASE_URL="http://localhost:3000" \
     NEWAPI_ADMIN_TOKEN="build-dummy-token" \
@@ -58,7 +59,12 @@ RUN DATABASE_URL="postgresql://x:x@localhost:5432/x" \
     PORTAL_JWT_SECRET="build-dummy-jwt-secret-at-least-32-chars-padding-padding" \
     ADMIN_TOKEN="build-dummy-admin-token" \
     APP_URL="${APP_URL}" \
-    NEXT_PUBLIC_APP_URL="https://localhost" \
+    NEXT_PUBLIC_APP_URL="${NEXT_PUBLIC_APP_URL}" \
+    NEXT_PUBLIC_API_URL="${NEXT_PUBLIC_API_URL}" \
+    NEXT_PUBLIC_IMAGE_URL="${NEXT_PUBLIC_IMAGE_URL}" \
+    NEXT_PUBLIC_SUPPORT_EMAIL="${NEXT_PUBLIC_SUPPORT_EMAIL}" \
+    NEXT_PUBLIC_SUPPORT_WECHAT="${NEXT_PUBLIC_SUPPORT_WECHAT}" \
+    NEXT_PUBLIC_ENTERPRISE_BASE_URL="${NEXT_PUBLIC_ENTERPRISE_BASE_URL}" \
     pnpm build
 
 # ── runner ─────────────────────────────────────────────────────────────

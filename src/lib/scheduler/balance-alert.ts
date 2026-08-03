@@ -45,10 +45,9 @@ let timer: ReturnType<typeof setInterval> | null = null;
 
 // Caller-environment URL for the email CTA. Delegates to the shared
 // `getAppUrl()` helper so we use the same APP_URL > NEXT_PUBLIC_APP_URL >
-// dev-fallback precedence as the auth-email senders. (W7 D4 PR-J fix —
-// Dockerfile L61 bakes a localhost placeholder into NEXT_PUBLIC_APP_URL,
-// which surfaced in W7 launch e2e as "https://localhost" CTAs in alert
-// mails.)
+// dev-fallback precedence as the auth-email senders. This also preserves the
+// W7 D4 fix for older images whose build-time public URL was an invalid
+// placeholder and leaked into alert email CTAs.
 
 export interface BalanceAlertScanResult {
     candidates: number;
