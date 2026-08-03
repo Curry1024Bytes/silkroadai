@@ -8,7 +8,8 @@
 ## 项目身份
 
 - **名字**: LLmRoute Portal (`llmroute-portal`)
-- **GitHub**: https://github.com/yexioy/silkroadai
+- **GitHub Fork(本项目)**: https://github.com/Curry1024Bytes/silkroadai
+- **上游仓库**: https://github.com/yexioy/silkroadai
 - **角色**: new-api 客户层(Customer Portal)— W2 D3 已切到 B3 路线
 - **来源**: Fork 自 [touwaeriol/sub2apipay](https://github.com/touwaeriol/sub2apipay)(已归档)
 - **站点域名**: `llmroute.club`
@@ -70,6 +71,32 @@
     - 与当前 `dev` 的提交差异和预判冲突文件。
 3. 报告输出后，执行 `main -> dev` 合并；在 `dev` 解决冲突、运行 `typecheck` 和完整测试。
 4. 测试通过后，fast-forward `dev -> prod`，但只有在 operator 明确安排部署时才登录 VPS 发布。
+
+---
+
+## 当前生产环境快照(2026-08-03)— 必读
+
+当前环境与 2026-05/06 的旧 VPS 不同。今后的生产操作以
+[`deploy/部署与运维手册.md`](deploy/部署与运维手册.md)为唯一权威手册;
+`docs/W5-DEPLOY-RUNBOOK.md` 是旧 `portal.silkroadai.io` / Caddy 环境的历史归档,不能照它操作当前服务器。
+
+- 服务器:`82.29.71.122`,AlmaLinux 9.7,SSH `root:22`,项目目录 `/opt/silkroadai-portal`。
+- 入口:Cloudflare 橙云 + Full (strict) → 宿主机 Nginx → Portal `127.0.0.1:3002`。
+- TLS:Cloudflare Origin Certificate 在 `/etc/nginx/ssl/llmroute.club.{pem,key}`,私钥权限 600。
+- Portal:容器 `silkroadai-portal`;PostgreSQL 16 容器 `silkroadai-portal-db`,仅回环 `127.0.0.1:5432`。
+- new-api:容器 `new-api`,宿主机绑定 `172.17.0.1:3000`,网络 `new-api_new-api-net`,数据目录 `/opt/new-api/data`;
+  MySQL 8 容器为 `new-api-mysql`。Portal 用 `http://host.docker.internal:3000` 访问。
+- 当前公网已验收:`llmroute.club` / `www.llmroute.club`、Google OAuth、GitHub OAuth、zpayz 支付宝充值及余额入账。
+- 当前未完成:SMTP、平台 R2/OSS、Sentry、Tavily、`api.llmroute.club` Nginx 路由、SSH key-only 加固、异机备份/恢复演练。
+- 支付收款主体由 zpayz 商户/渠道决定;当前个人支付宝收款不是 Portal 代码问题,企业主体仍需渠道侧办理。
+- 当前 new-api 使用 MySQL;上游 `NEWAPI_LOGS_DATABASE_URL` 直连全量导出仅支持 PostgreSQL,所以保持未设置并使用
+  10,000 行 API fallback,不能填一个 PostgreSQL 伪连接串。
+- `docker-compose.prod.yml` 还含上游 API 副本和 Seedance 服务。当前服务器发布必须显式指定 `portal`,
+  禁止不带服务名执行 `docker compose ... up`,避免误启动额外服务。
+- 2026-08-03 待发布批次:客服微信改为 `LLmRoute`(代码/forward migration 已进 `prod`,VPS 尚待重建验收),
+  以及 `main@da510e7 -> dev` 的 10 个上游提交。合并后完整验证为 244 files / 2644 passed / 1 skipped。
+- new-api rc.22 登录兼容决策:优先直接使用登录响应的 `data.access_token`;仅旧版本 `session=` cookie 走 fallback。
+  该路径已通过 Google/GitHub 真实开户验证,不要把 `new_api_refresh` 当 session。
 
 ---
 
@@ -141,14 +168,14 @@ silkroadai/
 - [x] D3 — login 端点上线 ✅(2026-05-03,见 `docs/W3-D3-LOGIN-VERIFICATION.md`)— `POST /api/auth/login` cookie session(JWT httpOnly SameSite=Lax 7d)+ apiKey 在 response,timing 防御 + banned 拒绝;6/6 单测 + 4 e2e 状态码全对 + cookie 反解 + apiKey 真打 ai.silkroadai.io 200
 - [x] D4 — forgot password + reset password ✅(2026-05-03,见 `docs/W3-D4-FORGOT-PASSWORD-VERIFICATION.md`)— `POST /api/auth/{forgot,reset}-password` + 独立 `PasswordResetToken` 表 + 邮件基础设施 `src/lib/email/*` + JWT `session_token_version` 踢登机制 + `/reset-password` UI 页;14 单测 + 6 jwt 单测 + 7 真实 e2e PASS;SMTP 凭据 F1 已修(SMTP_HOST 配错成个人 QQ 邮箱,改成 `smtp.exmail.qq.com` + verify=true + 真实送达 1226627765@qq.com 收到)
 - [x] D5 — register 邮箱验证(soft-block)✅(2026-05-03,见 `docs/W3-D5-EMAIL-VERIFICATION-VERIFICATION.md`)— `POST /api/auth/{verify-email,resend-verification}` + 独立 `EmailVerificationToken` 表 + register 注册时异步发邮件 + `/verify-email?token=` UI 页(自动 POST + StrictMode 防双消)+ User 加 `email_verified_at` 时间戳;同 migration 一并 drop W1 sub2apipay 4 个 stale 字段 + backfill 已有 user 视为已验证;21 新单测 + 6 真实 e2e 步骤 PASS;login 未改,**敏感操作 enforcement 留 W4 客户后台**
-- [x] D6 — Google OAuth(OIDC)✅(2026-05-02,见 `docs/W3-D6-GOOGLE-OAUTH-VERIFICATION.md`)— `GET /api/auth/oauth/google/{start,callback}` + 新表 `oauth_accounts(provider, provider_account_id)` unique + `User.password_hash` 改 nullable;DIY with `jose`(零新依赖,不引 `openid-client`);state CSRF + S256 PKCE 双 cookie;5-branch email 冲突策略(login / link-verified / bootstrap-unverified / fresh-signup-with-provision-rollback / sub-conflict);15 单测 PASS,348 全套 PASS,**真实浏览器 smoke 待用户跑**(F4)
-- [x] D7 — GitHub OAuth(原生 OAuth2)✅(2026-05-02,见 `docs/W3-D7-GITHUB-OAUTH-VERIFICATION.md`)— `GET /api/auth/oauth/github/{start,callback}` 复用 D6 的 `oauth_accounts` 表(`provider='github'`);**纯 fetch 实现,零新依赖**(没 id_token / 没 PKCE);state CSRF cookie 单守门;email 走 `/user/emails` 挑 `primary && verified`,无则拒;5-branch 冲突逻辑抽出共用 helper `src/lib/auth/oauth/account-link.ts`,GitHub callback 调用之,**Google callback 暂未改造**(D7 brief 不动 google,F1 sweep 留 W4-W5);39 新单测 + 全套 389/390 PASS / **0 fail**;**真实浏览器 smoke 待用户跑**
+- [x] D6 — Google OAuth(OIDC)✅(2026-05-02,见 `docs/W3-D6-GOOGLE-OAUTH-VERIFICATION.md`)— `GET /api/auth/oauth/google/{start,callback}` + 新表 `oauth_accounts(provider, provider_account_id)` unique + `User.password_hash` 改 nullable;DIY with `jose`(零新依赖,不引 `openid-client`);state CSRF + S256 PKCE 双 cookie;5-branch email 冲突策略(login / link-verified / bootstrap-unverified / fresh-signup-with-provision-rollback / sub-conflict);15 单测 PASS,348 全套 PASS;**2026-08-03 新生产环境真实浏览器登录与 new-api 开户已通过**
+- [x] D7 — GitHub OAuth(原生 OAuth2)✅(2026-05-02,见 `docs/W3-D7-GITHUB-OAUTH-VERIFICATION.md`)— `GET /api/auth/oauth/github/{start,callback}` 复用 D6 的 `oauth_accounts` 表(`provider='github'`);**纯 fetch 实现,零新依赖**(没 id_token / 没 PKCE);state CSRF cookie 单守门;email 走 `/user/emails` 挑 `primary && verified`,无则拒;5-branch 冲突逻辑抽出共用 helper `src/lib/auth/oauth/account-link.ts`,GitHub callback 调用之,**Google callback 暂未改造**(D7 brief 不动 google,F1 sweep 留 W4-W5);39 新单测 + 全套 389/390 PASS / **0 fail**;**2026-08-03 新生产环境真实浏览器登录与 new-api 开户已通过**
 
 ### W4-1(充值流改造 — portal-internal /pay + new-api add_quota)
 
 - [x] D1 — `executeRecharge` 切 new-api `applyTopup` ✅(2026-05-03)— 删 W1 LiteLLM `createAndRedeem` stub(W3 D6 起会 throw deprecation,导致每个支付成功的 order 都 PAID→FAILED);CAS lock(PAID/FAILED → RECHARGING → COMPLETED)做主 idempotency,RechargeLog `findFirst` by `(order_id, source='payment')` 做二级 dedup(防"上轮 add_quota 成功但 status flip 前 crash");balance_before/after 用 `getUser(newapi_user_id).quota` 读,失败 fallback before+delta;9 新 `execute-recharge.test.ts` PASS
 - [x] D2 — `createOrder` + `/api/orders` cookie auth + portal `/pay` `/login` 页 ✅(2026-05-03)— `createOrder` 切 `prisma.user.findUnique`(替 litellm shim getUser);新错误码 `AUTH_REQUIRED` 401 / `USER_NOT_FOUND` 404 / `USER_INACTIVE` 403(banned/disabled);`/api/orders` POST 改 cookie session(`getCurrentUser(req)`)删 `token` 字段;新 `/pay/page.tsx` server component 守门 + `/pay/pay-form.tsx` 5-tier(¥10/30/100/300/1000)+ custom amount + provider radio + window.location 跳网关;新 `/login/page.tsx` + `/login/login-form.tsx` 邮箱密码 + Google + GitHub 三选一(白名单 next 防 open-redirect);W1 1160 行 `/pay/page.tsx` 重命名 `page.legacy.tsx`(Next 自动忽略,留 reference);`src/app/page.tsx` forward 全 query(原仅 lang,影响 OAuth `?oauth_error=` 穿透);20 新单测(create-order auth 5 + /api/orders POST 6 + pay/login UI SSR smoke 9)
-- [x] D3 — 集成测 + Google sweep + 易支付 sig alert ✅(2026-05-04,见 `docs/W4-1-RECHARGE-VERIFICATION.md`)— 5 集成测 `recharge-flow.test.ts`(happy / duplicate / defensive dedup / sig fail / applyTopup throw),用 `vi.hoisted()` + 内存 prisma mock + 真签名验证(`generateSign` 测试 pkey);Google callback refactored 改用共用 `linkOrCreateOAuthUser` helper(335→138 行,删 createUserFromGoogle + inline 5-branch),与 GitHub callback 走同一 code path,**D6 全套 15/15 仍 PASS 证明行为等价**;易支付 `verifyNotification` 失败现 `console.warn('[easy-pay/notify] signature verification failed', { instId, out_trade_no, pid, signPrefix })` + body `'success'`(silent ignore + ops 信号,W6 接 Sentry);全套 vitest **43 files / 423 PASS / 1 skip / 0 fail**;**真实易支付沙箱 ¥10 smoke 待用户跑**
+- [x] D3 — 集成测 + Google sweep + 易支付 sig alert ✅(2026-05-04,见 `docs/W4-1-RECHARGE-VERIFICATION.md`)— 5 集成测 `recharge-flow.test.ts`(happy / duplicate / defensive dedup / sig fail / applyTopup throw),用 `vi.hoisted()` + 内存 prisma mock + 真签名验证(`generateSign` 测试 pkey);Google callback refactored 改用共用 `linkOrCreateOAuthUser` helper(335→138 行,删 createUserFromGoogle + inline 5-branch),与 GitHub callback 走同一 code path,**D6 全套 15/15 仍 PASS 证明行为等价**;易支付 `verifyNotification` 失败现 `console.warn('[easy-pay/notify] signature verification failed', { instId, out_trade_no, pid, signPrefix })` + body `'success'`(silent ignore + ops 信号,W6 接 Sentry);全套 vitest **43 files / 423 PASS / 1 skip / 0 fail**;**2026-08-03 新生产环境 zpayz 支付宝真实充值、notify 与余额入账已通过**
 
 ### W4-2(客户后台 MVP — `(authenticated)` route group + Keys / Balance / Usage)
 
@@ -159,7 +186,7 @@ silkroadai/
 
 ### W5(Ops Hardening + Legal + 易支付 QR)— 见对应 verification doc 系列
 
-- [x] D1-D6 — Sentry / last_login_ip / DB backup cron / 法律页 / 易支付 QR display 等(详见 `docs/W5-DEPLOY-RUNBOOK.md` + 各 PR)
+- [x] D1-D6 — Sentry / last_login_ip / DB backup cron / 法律页 / 易支付 QR display 等(旧环境记录见 `docs/W5-DEPLOY-RUNBOOK.md` + 各 PR;当前生产运维只看 `deploy/部署与运维手册.md`)
 
 ### W6(Client Polish + Retention Sprint — 5-day stack)
 
@@ -310,7 +337,8 @@ LiteLLM 同时支持 user-level 和 key-level 预算。我们只用 key-level(�
 - 永远不调 `GET /api/user/token`,除非你**主动**想 rotate。
 - portal `.env` 里的 `NEWAPI_ADMIN_TOKEN` **完全人工管理**:在 1Password,不要从 API 拿。
 - 客户的 access_token 我们也只在 `provisionNewCustomer` 里 rotate **一次**(注册时),之后存 DB,后续 act-as 都用 DB 里的值,不再调这个端点。
-  **W3 runbook 必读**:任何运维操作前先确认是否会触发 rotate。如果 admin token 真的丢了,流程是"在 admin.silkroadai.io UI 重新生成 → 写回 .env → 重启 dev/prod"(不要从 API 试图重新拿)。
+  **W3 runbook 必读**:任何运维操作前先确认是否会触发 rotate。如果 admin token 真的丢了,流程是
+  "通过 SSH 隧道进入当前 new-api 后台 UI 重新生成 → 写回服务器 .env → 重启 Portal"(不要从 API 试图重新拿)。
   **修复 commit**:`ad401af` (W2 D6) — 在 `_bootstrap/src/lib/newapi/client.ts` 的注释里也标了。
 
 ### 14. 一个上游多种 API 格式 → 必须配多个渠道
@@ -326,7 +354,7 @@ LiteLLM 同时支持 user-level 和 key-level 预算。我们只用 key-level(�
 - `sub2api`(Anthropic Codex type)— `Codex-opus-4-7` / `Codex-sonnet-4-6` / etc
 - `sub2api-openai`(OpenAI type)— `gpt-5.4` / `gpt-5.4-pro` / `codex` / `gpt-image-2`
 - `SiliconFlow`(OpenAI type)— 余下的开源模型(deepseek/qwen/glm/kimi/...)
-  **修复 commit**:运维操作,无 portal commit;在 admin.silkroadai.io UI 配置。
+  **修复 commit**:运维操作,无 portal commit;在当前 new-api 后台 UI 配置。
 
 ### 15. 渠道 model_mapping 短名在渠道编辑/扩容后可能失效
 
@@ -445,7 +473,7 @@ pnpm vitest                                     # watch 模式
 pnpm vitest run                                 # 单次
 pnpm vitest run src/lib/newapi                  # 跑某目录(B3 之后)
 # 真实 new-api 烟雾测试需要 SSH 隧道:
-ssh -fN -L 3000:localhost:3000 -o ServerAliveInterval=60 vps
+ssh -4 -fN -L 3000:127.0.0.1:3000 -o ServerAliveInterval=60 root@82.29.71.122
 
 # 渠道 model_mapping 重建(防 gotcha #15 回归)
 pnpm tsx scripts/rebuild-channel-model-mapping.ts <channel_id>           # dry-run 看 diff
@@ -462,13 +490,19 @@ EMAIL_DEBUG_LOG=/tmp/mail-debug.log pnpm dev
 pnpm tsc --noEmit
 pnpm lint
 
-# 部署到 VPS(上线后)
+# 部署到当前 VPS(上线后)
 # ⚠️ CI 实际**不**自动部署 — `.github/workflows/ci.yml` 只跑 typecheck/lint/test;
 #    `release.yml` 仅在 `v*` tag 触发 Docker 镜像 push 到 dockerhub。
 #    prod 更新后必须手动 deploy(W7 D4 PR-R 实测确认 — 2026-05-09):
-ssh vps "cd /opt/silkroadai-portal && git checkout prod && git pull --ff-only origin prod && docker compose -f docker-compose.prod.yml up -d --build portal"
+ssh -4 root@82.29.71.122
+# 登录后按 deploy/部署与运维手册.md 执行备份,再显式 build/up portal:
+cd /opt/silkroadai-portal
+git switch prod && git pull --ff-only origin prod
+docker compose -f docker-compose.prod.yml build --build-arg APP_URL=https://llmroute.club portal
+docker compose -f docker-compose.prod.yml up -d portal
 # 注:实际 VPS 路径是 /opt/silkroadai-portal(不是 silkroad-portal),
 #     实际 compose 文件是 docker-compose.prod.yml,服务名 portal。线上不从 main 发布。
+#     禁止省略 portal 服务名,否则会误启动 compose 中的 API 副本/Seedance 服务。
 ```
 
 上线前配置检查提醒:
@@ -478,7 +512,8 @@ ssh vps "cd /opt/silkroadai-portal && git checkout prod && git pull --ff-only or
 - Google/GitHub 登录必查:`APP_URL` / `NEXT_PUBLIC_APP_URL` / `BRAND_COOKIE_DOMAIN` / `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` / `GOOGLE_OAUTH_REDIRECT_URI` / `GITHUB_OAUTH_CLIENT_ID` / `GITHUB_OAUTH_CLIENT_SECRET` / `GITHUB_OAUTH_REDIRECT_URI`。
 - 生产 Google redirect 必须逐字为 `https://llmroute.club/api/auth/oauth/google/callback`,并且 Google Cloud Console OAuth Web Client 里也要填同一个 URI。
 - 生产 GitHub callback 必须逐字为 `https://llmroute.club/api/auth/oauth/github/callback`,并且 GitHub OAuth App 的 Authorization callback URL 里也要填同一个 URI。
-- OAuth 变量是运行时变量,改完重启 portal 即可;如果同时改了 `NEXT_PUBLIC_APP_URL`,必须 `docker compose -f docker-compose.prod.yml up -d --build portal`。
+- OAuth 变量是运行时变量,改完重启 portal 即可;如果同时改了任意 `NEXT_PUBLIC_*`,必须按
+  `deploy/部署与运维手册.md` 显式传 `APP_URL=https://llmroute.club` 重新 build,再 `up -d portal`。
 - 验证命令:`curl -I https://llmroute.club/api/auth/oauth/google/start`,期望 302 到 `accounts.google.com`;`curl -I https://llmroute.club/api/auth/oauth/github/start`,期望 302 到 `github.com/login/oauth/authorize`。
 - 支付上线必查:`PAYMENT_PROVIDERS=easypay` / `ENABLED_PAYMENT_TYPES=alipay,wxpay` / `EASY_PAY_PID=2026072211025295` / `EASY_PAY_PKEY` / `EASY_PAY_API_BASE=https://zpayz.cn` / `EASY_PAY_NOTIFY_URL=https://llmroute.club/api/easy-pay/notify` / `EASY_PAY_RETURN_URL=https://llmroute.club/pay/result`。`EASY_PAY_API_BASE` 不带末尾 `/`;`EASY_PAY_PKEY` 不进 git,只填 VPS `.env`。
 - zpayz 易支付对应关系:创建支付走 `POST /mapi.php`(不是 `/submit.php`),notify 是 `GET /api/easy-pay/notify?...` 且必须返回纯 `success`;成功响应的 `payurl` / `qrcode` / `img` 都已兼容。zpayz 文档订单查询示例是 GET 带 `key`,代码当前为避免密钥进 URL 日志用 POST 查询;查询不是入账主路径,上线 smoke 若发现不兼容再调整。
@@ -493,9 +528,9 @@ ssh vps "cd /opt/silkroadai-portal && git checkout prod && git pull --ff-only or
 DATABASE_URL="postgresql://portal:devpass123@localhost:5433/silkroadai_portal_dev"
 
 # new-api 后端(B3 主链路)— 本地通过 SSH 隧道:
-#   ssh -fN -L 3000:localhost:3000 -o ServerAliveInterval=60 vps
+#   ssh -4 -fN -L 3000:127.0.0.1:3000 -o ServerAliveInterval=60 root@82.29.71.122
 NEWAPI_BASE_URL="http://localhost:3000"
-NEWAPI_ADMIN_TOKEN="<在 admin.silkroadai.io 个人设置生成,1Password 存档>"
+NEWAPI_ADMIN_TOKEN="<在当前 new-api 后台个人设置生成,密码管理器存档>"
 NEWAPI_ADMIN_USER_ID=1                            # root 通常是 1
 NEWAPI_QUOTA_PER_USD=500000                       # 1 USD = 500k quota(new-api 默认)
 USD_TO_CNY_RATE=7.2
@@ -512,17 +547,20 @@ NEXT_PUBLIC_APP_URL="http://localhost:3002"
 APP_PORT=3002
 ```
 
-完整列表见 `.env.example`。LiteLLM 时代的 `LITELLM_*` 变量保留作 fallback,W3 D1 关停后可删。
+完整列表见 `.env.example`;生产模板见 `.env.prod.example`,当前生产操作见 `deploy/部署与运维手册.md`。
+LiteLLM 时代的 `LITELLM_*` 变量保留作 fallback,W3 D1 关停后可删。
 
 ---
 
 ## 项目外部依赖说明
 
-- **new-api**: 部署在 VPS 23.27.113.88:3000(admin.silkroadai.io),本地通过 SSH 隧道访问
+- **new-api**: 当前部署在 `82.29.71.122`,容器端口发布到宿主机 `172.17.0.1:3000`,Portal 通过
+  `host.docker.internal:3000` 访问;公网 `api.llmroute.club` 路由尚未完成
 - ~~**LiteLLM**~~ — Stopped at W3 D1 (2026-05-02), container deprecated, config archived
 - **Sub2API**: 部署在 VPS,作为 new-api 的一个 Custom 渠道上游(portal 不直接调)
-- **易支付**: 公开网关,需要 PID/KEY,callback 必须公网可达
-- **QQ SMTP**: 邮件验证用(W3 启用)
+- **易支付**: zpayz (`https://zpayz.cn`),支付宝充值/callback 已在当前生产验证;PID/KEY 只放生产 `.env`
+- **SMTP**: 代码支持腾讯企业邮箱,但当前新服务器账号/密码为空,验证与找回邮件不可用
+- **Cloudflare**: apex/`www` 已橙云 + Full (strict);平台 R2、`images` 子域仍待配置
 
 ---
 
@@ -547,5 +585,5 @@ APP_PORT=3002
 
 ---
 
-**版本**: 2.2
-**最后更新**: 2026-06-08
+**版本**: 2.3
+**最后更新**: 2026-08-03

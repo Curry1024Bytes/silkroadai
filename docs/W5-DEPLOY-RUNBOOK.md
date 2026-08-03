@@ -1,4 +1,12 @@
-# W5 Deploy Runbook — portal.silkroadai.io
+# W5 Deploy Runbook(历史归档)— portal.silkroadai.io
+
+> [!WARNING]
+> 本文记录 2026-05 的旧 VPS `23.27.113.88`、旧域名 `portal.silkroadai.io` 和 Caddy 部署,
+> **不适用于当前 `llmroute.club` 生产服务器**。请勿复制本文命令到当前 VPS。
+>
+> 当前生产环境是 `82.29.71.122` / AlmaLinux 9.7 / Nginx / Cloudflare Full (strict),
+> 唯一权威步骤见 [`../deploy/部署与运维手册.md`](../deploy/部署与运维手册.md)。
+> 本文件仅保留作历史审计,其中 IP、域名、证书、反向代理和首次部署步骤均视为过期。
 
 **Target**: VPS `vps` (= root@23.27.113.88)
 **App URL**: `https://portal.silkroadai.io`
