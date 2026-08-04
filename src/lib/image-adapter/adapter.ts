@@ -142,8 +142,18 @@ export interface SynthUsageInput {
     imageCount: number;
 }
 
-/** 按请求参数合成 usage(彻底丢弃上游 token)。两套字段名都给:new-api openai_image 计费读
- *  input_tokens/output_tokens;中继型客户读 prompt_tokens/completion_tokens(同 /v1 route 先例)。 */
+/** 按请求参数合成 usage(彻底丢弃上游 token)。
+ *
+ *  【只发 OpenAI images 官方那套字段】—— `input_tokens` / `output_tokens` / `total_tokens` / `*_details`。
+ *  曾经额外附送 chat 形别名 `prompt_tokens` / `completion_tokens`(照搬 /v1 route 的
+ *  `buildEstimatedUsage` 先例),结果中继型客户把 images 家族【加】进 chat 家族做归一化 → 两套同值
+ *  相加 → 客户账面 token 翻倍(2026-08-04 实测:input 709/output 14000 被报成 prompt 1418/
+ *  completion 28000,而 total 仍是单份 14709 —— 正是"加了两遍"的签名)。我方计费不受影响
+ *  (new-api 从 input/output 取值),但客户侧统计虚高。
+ *
+ *  别名也没有存在的必要:azure 渠道(ch83/ch153)上游自带 usage → `buildEstimatedUsage` 不触发 →
+ *  它们本来就只返回官方字段。适配器多送一套反而让【同一个模型不同渠道 usage 形状不一致】。
+ *  `buildEstimatedUsage` 那处保持不动 —— 它只在上游完全不回 usage 时兜底,是另一个场景(PR #134)。 */
 export function synthUsage(inp: SynthUsageInput): Record<string, unknown> {
     const perImage = OUT_TOKENS[inp.tier][inp.quality];
     const ct = perImage * Math.max(1, inp.imageCount);
@@ -157,8 +167,6 @@ export function synthUsage(inp: SynthUsageInput): Record<string, unknown> {
         output_tokens: ct,
         output_tokens_details: { image_tokens: ct, text_tokens: 0 },
         total_tokens: pt + ct,
-        prompt_tokens: pt,
-        completion_tokens: ct,
     };
 }
 
