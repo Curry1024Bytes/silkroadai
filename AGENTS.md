@@ -86,7 +86,8 @@
 - Portal:容器 `silkroadai-portal`;PostgreSQL 16 容器 `silkroadai-portal-db`,仅回环 `127.0.0.1:5432`。
 - new-api:容器 `new-api`,宿主机绑定 `172.17.0.1:3000`,网络 `new-api_new-api-net`,数据目录 `/opt/new-api/data`;
   MySQL 8 容器为 `new-api-mysql`。Portal 用 `http://host.docker.internal:3000` 访问。
-- 当前生产代码:`prod@a166b28`(2026-08-04 部署),回滚代码 SHA 为 `59410da`。本次发布前已备份
+- VPS Git 工作区:`prod@149d9c4`;当前 Portal 镜像仍是 `a166b28` 构建产物(`149d9c4` 之后仅含文档和
+  备份脚本,未重建容器),Portal 回滚代码 SHA 为 `59410da`。本次发布前已备份
   `.env`、Nginx 配置和 Portal PostgreSQL,数据库备份为
   `/opt/backups/silkroadai-portal/portal-20260804-030647.sql.gz` 且 `gzip -t` 通过。
 - 当前公网已验收:`llmroute.club` / `www.llmroute.club`、Google OAuth、GitHub OAuth、zpayz 支付宝充值及
@@ -97,6 +98,9 @@
 - 2026-08-04 SSH 已完成 key-only 加固:`PermitRootLogin prohibit-password`、`PasswordAuthentication no`、
   `KbdInteractiveAuthentication no`,原生 OpenSSH 与 Xterminal 新会话均验证成功。`fail2ban` 的 `sshd`
   jail 已启用(10 分钟 5 次失败先封 1 小时,重复触发递增到 24 小时),启动后已实际捕获并封禁攻击 IP。
+- 2026-08-04 Portal PostgreSQL 本机备份 cron 已启用:每日北京时间 02:00 执行
+  `scripts/backup-db.sh`,保留 7 天;脚本使用无 TTY dump、0600 临时文件、`gzip -t`、原子重命名和
+  `flock`。已在 cron 最小环境中手工执行成功并验证 0600。异机副本与隔离恢复演练仍未完成。
 - 支付收款主体由 zpayz 商户/渠道决定;当前个人支付宝收款不是 Portal 代码问题,企业主体仍需渠道侧办理。
 - 当前 new-api 使用 MySQL;上游 `NEWAPI_LOGS_DATABASE_URL` 直连全量导出仅支持 PostgreSQL,所以保持未设置并使用
   10,000 行 API fallback,不能填一个 PostgreSQL 伪连接串。
