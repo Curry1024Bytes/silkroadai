@@ -98,6 +98,11 @@
 - 2026-08-04 SSH 已完成 key-only 加固:`PermitRootLogin prohibit-password`、`PasswordAuthentication no`、
   `KbdInteractiveAuthentication no`,原生 OpenSSH 与 Xterminal 新会话均验证成功。`fail2ban` 的 `sshd`
   jail 已启用(10 分钟 5 次失败先封 1 小时,重复触发递增到 24 小时),启动后已实际捕获并封禁攻击 IP。
+- 2026-08-04 new-api SSH 隧道卡死根因已定位为 VPS -> operator 中国电信网络的高下行丢包:
+  服务端 `ss -ti` 观察到约 17%-28% 重传,CUBIC `cwnd` 塌至 2-4,MSS/PMTU 正常;纯 SSH 和 HTTP/80
+  对照均复现,排除浏览器、new-api、Docker、forwarding 与 MTU。VPS 已持久化 `tcp_bbr` + `fq`;
+  同一 5 MB SSH 下行由 5 分 32 秒降至 8.29 秒,3.42 MB new-api 主脚本 3.91 秒完成,Chrome 整页无错误。
+  配置与 Mac 隧道命令见 `deploy/部署与运维手册.md` 7.3/9 节;切换拥塞算法后必须重建旧 SSH 连接。
 - 2026-08-04 Portal PostgreSQL 本机备份 cron 已启用:每日北京时间 02:00 执行
   `scripts/backup-db.sh`,保留 7 天;脚本使用无 TTY dump、0600 临时文件、`gzip -t`、原子重命名和
   `flock`。已在 cron 最小环境中手工执行成功并验证 0600;最新备份已恢复到临时隔离数据库,40 张表、
@@ -127,6 +132,11 @@
 - `main@eb1258a` 新增 `/image-adapter/{provider}/*` 内部上游适配器。公网主站 Nginx 已验证返回 404,
   Docker 内部访问无 Authorization 时返回预期 401。未来 new-api 渠道应通过共享网络 Base URL
   `http://silkroadai-portal:3002/image-adapter/ominiapi` 调用,不能绕 Cloudflare。该渠道未配置时功能 dormant。
+- 2026-08-04 上游 `main@b5d3f5e` 的 1 个提交已 clean merge 到 `dev`(`d87301d`):图片适配器合成
+  `usage` 只保留 OpenAI Images 官方 5 个字段,删除 `prompt_tokens` / `completion_tokens` Chat 别名,
+  避免中继客户把两套字段相加造成 token 统计翻倍。无 migration/env/依赖/Nginx 变化;验证为
+  245 files / 2681 passed / 1 skipped、typecheck/format/lint 0 error 且生产构建通过。该批次尚未部署,
+  当前 VPS 镜像仍为 `a166b28`;图片适配器渠道未配置时功能继续 dormant。
 - new-api rc.22 登录兼容决策:优先直接使用登录响应的 `data.access_token`;仅旧版本 `session=` cookie 走 fallback。
   该路径已通过 Google/GitHub 真实开户验证,不要把 `new_api_refresh` 当 session。
 
