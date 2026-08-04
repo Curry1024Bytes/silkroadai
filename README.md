@@ -10,7 +10,7 @@
 ## 项目定位
 
 - **llmroute.club / www.llmroute.club** — 已上线的官网、登录、充值、Key 管理、用量与在线工具
-- **api.llmroute.club** — 规划中的 OpenAI / Anthropic 兼容 API 入口,当前尚未完成 Nginx 路由与公网验收
+- **api.llmroute.club** — 已上线的 API-only OpenAI / Gemini 兼容入口;正式模型调用待 new-api 渠道上货后验收
 - **images.llmroute.club** — 规划中的生图与视频公共资源域名,当前平台 R2 尚未配置
 - **new-api 管理后台** — 仅运营人员使用,不对客户暴露
 
@@ -54,9 +54,11 @@ llmroute.club / www.llmroute.club
                  ↓
  [Sub2API / SiliconFlow / Anthropic / OpenAI / 自建 GPU]
 
-api.llmroute.club / images.llmroute.club
-                 ↓
-          待完成公网路由与存储配置
+api.llmroute.club                         images.llmroute.club
+        ↓ Cloudflare + API-only Nginx             ↓
+   Portal /v1 + /v1beta proxy               待完成平台 R2 配置
+        ↓
+      new-api
 ```
 
 ---
@@ -83,7 +85,9 @@ cp .env.local.example .env
 # - NEWAPI_ADMIN_TOKEN:在 new-api admin 后台创建的 admin token
 
 # 4. SSH 隧道连测试 VPS 的 new-api + PostgreSQL
-ssh -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -N -L 13000:127.0.0.1:3000 -L 15433:127.0.0.1:5433 root@114.55.85.41
+ssh -4 -i "$HOME/.ssh/llmroute_ed25519" -o IdentitiesOnly=yes \
+  -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+  -N -L 13000:172.17.0.1:3000 -L 15433:127.0.0.1:5432 root@82.29.71.122
 
 # 5. 安装依赖
 pnpm install

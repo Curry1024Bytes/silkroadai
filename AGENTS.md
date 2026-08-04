@@ -80,7 +80,7 @@
 [`deploy/部署与运维手册.md`](deploy/部署与运维手册.md)为唯一权威手册;
 `docs/W5-DEPLOY-RUNBOOK.md` 是旧 `portal.silkroadai.io` / Caddy 环境的历史归档,不能照它操作当前服务器。
 
-- 服务器:`82.29.71.122`,AlmaLinux 9.7,SSH `root:22`,项目目录 `/opt/silkroadai-portal`。
+- 服务器:`82.29.71.122`,AlmaLinux 9.7,SSH `root:22` key-only,项目目录 `/opt/silkroadai-portal`。
 - 入口:Cloudflare 橙云 + Full (strict) → 宿主机 Nginx → Portal `127.0.0.1:3002`。
 - TLS:Cloudflare Origin Certificate 在 `/etc/nginx/ssl/llmroute.club.{pem,key}`,私钥权限 600。
 - Portal:容器 `silkroadai-portal`;PostgreSQL 16 容器 `silkroadai-portal-db`,仅回环 `127.0.0.1:5432`。
@@ -92,8 +92,11 @@
 - 当前公网已验收:`llmroute.club` / `www.llmroute.club`、Google OAuth、GitHub OAuth、zpayz 支付宝充值及
   幂等入账。`api.llmroute.club` 已使用显式 API-only Nginx virtual host,只放行 `/v1/*`、`/v1beta/*`;
   假 Key 为 401,两类 CORS 预检为 204,`/login` / `/admin/login` 和主站 `/image-adapter/*` 均为 404。
-- 当前未完成:SMTP、平台 R2/OSS、Sentry、Tavily、SSH key-only 加固、异机备份/恢复演练。new-api 尚未
+- 当前未完成:SMTP、平台 R2/OSS、Sentry、Tavily、异机备份/恢复演练。new-api 尚未
   配置正式渠道/模型,所以真实客户 Key 模型调用验收明确为 pending,不能误报已经完成。
+- 2026-08-04 SSH 已完成 key-only 加固:`PermitRootLogin prohibit-password`、`PasswordAuthentication no`、
+  `KbdInteractiveAuthentication no`,原生 OpenSSH 与 Xterminal 新会话均验证成功。`fail2ban` 的 `sshd`
+  jail 已启用(10 分钟 5 次失败先封 1 小时,重复触发递增到 24 小时),启动后已实际捕获并封禁攻击 IP。
 - 支付收款主体由 zpayz 商户/渠道决定;当前个人支付宝收款不是 Portal 代码问题,企业主体仍需渠道侧办理。
 - 当前 new-api 使用 MySQL;上游 `NEWAPI_LOGS_DATABASE_URL` 直连全量导出仅支持 PostgreSQL,所以保持未设置并使用
   10,000 行 API fallback,不能填一个 PostgreSQL 伪连接串。
