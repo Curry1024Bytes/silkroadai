@@ -93,14 +93,15 @@
 - 当前公网已验收:`llmroute.club` / `www.llmroute.club`、Google OAuth、GitHub OAuth、zpayz 支付宝充值及
   幂等入账。`api.llmroute.club` 已使用显式 API-only Nginx virtual host,只放行 `/v1/*`、`/v1beta/*`;
   假 Key 为 401,两类 CORS 预检为 204,`/login` / `/admin/login` 和主站 `/image-adapter/*` 均为 404。
-- 当前未完成:SMTP、平台 R2/OSS、Sentry、Tavily、异机备份/恢复演练。new-api 尚未
+- 当前未完成:SMTP、平台 R2/OSS、Sentry、Tavily、异机备份/跨主机恢复演练。new-api 尚未
   配置正式渠道/模型,所以真实客户 Key 模型调用验收明确为 pending,不能误报已经完成。
 - 2026-08-04 SSH 已完成 key-only 加固:`PermitRootLogin prohibit-password`、`PasswordAuthentication no`、
   `KbdInteractiveAuthentication no`,原生 OpenSSH 与 Xterminal 新会话均验证成功。`fail2ban` 的 `sshd`
   jail 已启用(10 分钟 5 次失败先封 1 小时,重复触发递增到 24 小时),启动后已实际捕获并封禁攻击 IP。
 - 2026-08-04 Portal PostgreSQL 本机备份 cron 已启用:每日北京时间 02:00 执行
   `scripts/backup-db.sh`,保留 7 天;脚本使用无 TTY dump、0600 临时文件、`gzip -t`、原子重命名和
-  `flock`。已在 cron 最小环境中手工执行成功并验证 0600。异机副本与隔离恢复演练仍未完成。
+  `flock`。已在 cron 最小环境中手工执行成功并验证 0600;最新备份已恢复到临时隔离数据库,40 张表、
+  60 条 migration 与生产一致且 5 个用户可读,测试库随后删除。异机副本与跨主机恢复演练仍未完成。
 - 支付收款主体由 zpayz 商户/渠道决定;当前个人支付宝收款不是 Portal 代码问题,企业主体仍需渠道侧办理。
 - 当前 new-api 使用 MySQL;上游 `NEWAPI_LOGS_DATABASE_URL` 直连全量导出仅支持 PostgreSQL,所以保持未设置并使用
   10,000 行 API fallback,不能填一个 PostgreSQL 伪连接串。
