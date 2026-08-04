@@ -74,7 +74,7 @@
 
 ---
 
-## 当前生产环境快照(2026-08-03)— 必读
+## 当前生产环境快照(2026-08-04)— 必读
 
 当前环境与 2026-05/06 的旧 VPS 不同。今后的生产操作以
 [`deploy/部署与运维手册.md`](deploy/部署与运维手册.md)为唯一权威手册;
@@ -86,32 +86,36 @@
 - Portal:容器 `silkroadai-portal`;PostgreSQL 16 容器 `silkroadai-portal-db`,仅回环 `127.0.0.1:5432`。
 - new-api:容器 `new-api`,宿主机绑定 `172.17.0.1:3000`,网络 `new-api_new-api-net`,数据目录 `/opt/new-api/data`;
   MySQL 8 容器为 `new-api-mysql`。Portal 用 `http://host.docker.internal:3000` 访问。
-- 当前公网已验收:`llmroute.club` / `www.llmroute.club`、Google OAuth、GitHub OAuth、zpayz 支付宝充值及余额入账。
-- 当前未完成:SMTP、平台 R2/OSS、Sentry、Tavily、`api.llmroute.club` 显式 API-only Nginx 路由、
-  SSH key-only 加固、异机备份/恢复演练。API 域名虽已解析且 `/v1`、`/v1beta` 能到达 Portal/new-api,
-  但目前会错误暴露主站 `/login`/`/admin/login`,所以尚未通过生产验收。
+- 当前生产代码:`prod@a166b28`(2026-08-04 部署),回滚代码 SHA 为 `59410da`。本次发布前已备份
+  `.env`、Nginx 配置和 Portal PostgreSQL,数据库备份为
+  `/opt/backups/silkroadai-portal/portal-20260804-030647.sql.gz` 且 `gzip -t` 通过。
+- 当前公网已验收:`llmroute.club` / `www.llmroute.club`、Google OAuth、GitHub OAuth、zpayz 支付宝充值及
+  幂等入账。`api.llmroute.club` 已使用显式 API-only Nginx virtual host,只放行 `/v1/*`、`/v1beta/*`;
+  假 Key 为 401,两类 CORS 预检为 204,`/login` / `/admin/login` 和主站 `/image-adapter/*` 均为 404。
+- 当前未完成:SMTP、平台 R2/OSS、Sentry、Tavily、SSH key-only 加固、异机备份/恢复演练。new-api 尚未
+  配置正式渠道/模型,所以真实客户 Key 模型调用验收明确为 pending,不能误报已经完成。
 - 支付收款主体由 zpayz 商户/渠道决定;当前个人支付宝收款不是 Portal 代码问题,企业主体仍需渠道侧办理。
 - 当前 new-api 使用 MySQL;上游 `NEWAPI_LOGS_DATABASE_URL` 直连全量导出仅支持 PostgreSQL,所以保持未设置并使用
   10,000 行 API fallback,不能填一个 PostgreSQL 伪连接串。
 - `docker-compose.prod.yml` 还含上游 API 副本和 Seedance 服务,分别受 `api-replicas` / `seedance` profile
   隔离;默认只启动 Portal + PostgreSQL。标准发布仍显式指定 `portal`,当前服务器不要启用可选 profile。
-- 2026-08-03 `dev` 待发布的构建加固:Dockerfile 默认公开域名改为 LLmRoute,Compose 从服务器 `.env`
-  传入全部公开 build args;上线前仍需经 `dev -> prod` 发布门。
+- 2026-08-04 已部署构建加固:Dockerfile 默认公开域名改为 LLmRoute,Compose 从服务器 `.env`
+  传入全部公开 build args;生产 `.env` 已补齐 `NEXT_PUBLIC_API_URL`、`NEXT_PUBLIC_IMAGE_URL`、
+  `NEXT_PUBLIC_SUPPORT_WECHAT` 和 `NEWAPI_CUSTOMER_BASE_URL`。
 - 2026-08-03 lint 基线:项目未启用 React Compiler,其 compiler-only 诊断保留为 warning;`.codex/**`
   是独立技能工具,不纳入应用 ESLint。`pnpm lint` 必须保持 0 error,并继续作为 CI/发布门。
-- 2026-08-03 `dev` 待发布的 API 入口加固:`deploy/nginx/llmroute-api.conf` 只放行 `/v1/*` 和
-  `/v1beta/*` 到 Portal `127.0.0.1:3002`,其余路径 JSON 404;SSE 禁用 buffering/cache,650s timeout,
-  access log 不记 query string。生产 `.env` 还必须补
-  `NEWAPI_CUSTOMER_BASE_URL=http://127.0.0.1:3002`;真实 VPS `nginx -t` 和公网 smoke 通过前仍标 pending。
-- 2026-08-03 VPS 配置审计发现主站 Nginx `server_name` 只有 apex,`www` 目前靠 default 443 匹配。
-  待发布 `deploy/nginx/llmroute-web.conf` 将 apex/`www` 显式纳入同一主站 virtual host;API 模板的
-  listener 参数与现有 AlmaLinux Nginx 对齐,不在 origin 侧额外启用 HTTP/2。主站/API access log
-  均只记 `$uri`,防止 OAuth code、reset token、支付签名和 Gemini `?key=` 落盘。
-- 2026-08-03/04 待发布批次:客服微信、构建/Nginx 加固与 `main@da510e7` 的前一批上游变更已进
-  `prod@36e9cc3`,VPS 尚未拉取重建。随后同步的 `main@eb1258a` 共 7 个提交已 clean merge 到 `dev`
-  (`6f8d1c9`),合并后完整验证为 245 files / 2681 passed / 1 skipped,生产构建通过;本轮尚待同步 `prod`。
-- `main@eb1258a` 新增 `/image-adapter/{provider}/*` 内部上游适配器。公网主站 Nginx 必须 404
-  `/image-adapter/*`;未来 new-api 渠道应通过共享网络 Base URL
+- 2026-08-04 已部署 API 入口加固:`deploy/nginx/llmroute-api.conf` 只放行 `/v1/*` 和 `/v1beta/*`
+  到 Portal `127.0.0.1:3002`,其余路径 JSON 404;SSE 禁用 buffering/cache,650s timeout,access log 只记
+  `$uri`。VPS `nginx -t`、源站和 Cloudflare 公网 smoke、Gemini query-string 日志脱敏均已通过。
+- 2026-08-04 已部署 `deploy/nginx/llmroute-web.conf`:apex/`www` 显式纳入同一主站 virtual host,不再依赖
+  default 443 偶然匹配;主站 access log 只记 `$uri`。Cloudflare 已启用规则 `Bypass LLmRoute API`,条件
+  `http.host eq "api.llmroute.club"`,动作为 Bypass cache。
+- 2026-08-04 发布批次:客服微信、构建/Nginx 加固及 `main@eb1258a` 的 7 个上游提交已 clean merge 到
+  `dev`(`6f8d1c9`),验证为 245 files / 2681 passed / 1 skipped 且生产构建通过;随后 fast-forward 到
+  `prod@a166b28` 并完成 VPS 重建。两个 forward migration 均成功,`enterprise_ak_sk.secret_key_hash`
+  缺失计数为 0,无需 backfill。
+- `main@eb1258a` 新增 `/image-adapter/{provider}/*` 内部上游适配器。公网主站 Nginx 已验证返回 404,
+  Docker 内部访问无 Authorization 时返回预期 401。未来 new-api 渠道应通过共享网络 Base URL
   `http://silkroadai-portal:3002/image-adapter/ominiapi` 调用,不能绕 Cloudflare。该渠道未配置时功能 dormant。
 - new-api rc.22 登录兼容决策:优先直接使用登录响应的 `data.access_token`;仅旧版本 `session=` cookie 走 fallback。
   该路径已通过 Google/GitHub 真实开户验证,不要把 `new_api_refresh` 当 session。
@@ -573,13 +577,14 @@ LiteLLM 时代的 `LITELLM_*` 变量保留作 fallback,W3 D1 关停后可删。
 ## 项目外部依赖说明
 
 - **new-api**: 当前部署在 `82.29.71.122`,容器端口发布到宿主机 `172.17.0.1:3000`,Portal 通过
-  `host.docker.internal:3000` 访问;公网 `api.llmroute.club` 已解析,但 API-only Nginx virtual host 尚待部署验收
+  `host.docker.internal:3000` 访问;公网 `api.llmroute.club` 已启用 API-only Nginx virtual host 和
+  Cloudflare cache bypass。正式渠道/模型尚未上货,真实模型调用待配置后验收
 - ~~**LiteLLM**~~ — Stopped at W3 D1 (2026-05-02), container deprecated, config archived
 - **Sub2API**: 部署在 VPS,作为 new-api 的一个 Custom 渠道上游(portal 不直接调)
 - **易支付**: zpayz (`https://zpayz.cn`),支付宝充值/callback 已在当前生产验证;PID/KEY 只放生产 `.env`
 - **SMTP**: 代码支持腾讯企业邮箱,但当前新服务器账号/密码为空,验证与找回邮件不可用
-- **Cloudflare**: apex/`www` 已橙云 + Full (strict);`api` 已解析但还需确认显式 DNS 记录与 cache bypass;
-  平台 R2、`images` 子域仍待配置
+- **Cloudflare**: apex/`www`/`api` 均为显式 A 记录、橙云 + Full (strict);`api` 已启用 Cache Rule
+  `Bypass LLmRoute API`;平台 R2、`images` 子域仍待配置
 
 ---
 
