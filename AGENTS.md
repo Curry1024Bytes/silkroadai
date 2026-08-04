@@ -107,8 +107,12 @@
   待发布 `deploy/nginx/llmroute-web.conf` 将 apex/`www` 显式纳入同一主站 virtual host;API 模板的
   listener 参数与现有 AlmaLinux Nginx 对齐,不在 origin 侧额外启用 HTTP/2。主站/API access log
   均只记 `$uri`,防止 OAuth code、reset token、支付签名和 Gemini `?key=` 落盘。
-- 2026-08-03 待发布批次:客服微信改为 `LLmRoute`(代码/forward migration 已进 `prod`,VPS 尚待重建验收),
-  以及 `main@da510e7 -> dev` 的 10 个上游提交。合并后完整验证为 244 files / 2644 passed / 1 skipped。
+- 2026-08-03/04 待发布批次:客服微信、构建/Nginx 加固与 `main@da510e7` 的前一批上游变更已进
+  `prod@36e9cc3`,VPS 尚未拉取重建。随后同步的 `main@eb1258a` 共 7 个提交已 clean merge 到 `dev`
+  (`6f8d1c9`),合并后完整验证为 245 files / 2681 passed / 1 skipped,生产构建通过;本轮尚待同步 `prod`。
+- `main@eb1258a` 新增 `/image-adapter/{provider}/*` 内部上游适配器。公网主站 Nginx 必须 404
+  `/image-adapter/*`;未来 new-api 渠道应通过共享网络 Base URL
+  `http://silkroadai-portal:3002/image-adapter/ominiapi` 调用,不能绕 Cloudflare。该渠道未配置时功能 dormant。
 - new-api rc.22 登录兼容决策:优先直接使用登录响应的 `data.access_token`;仅旧版本 `session=` cookie 走 fallback。
   该路径已通过 Google/GitHub 真实开户验证,不要把 `new_api_refresh` 当 session。
 
