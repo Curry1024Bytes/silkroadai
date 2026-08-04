@@ -16,7 +16,7 @@ import { syncNewapiGate } from '@/lib/billing/newapi-gate';
 import { getUser, addQuota } from '@/lib/newapi/client';
 import { cnyToQuota } from '@/lib/newapi/quota-units';
 
-export type Resolution = '720p' | '1080p' | '4k';
+export type Resolution = '480p' | '720p' | '1080p' | '4k';
 export type { SeedanceVariant } from './cn-adapter';
 import { variantForModel, type SeedanceVariant } from './cn-adapter';
 
@@ -24,6 +24,8 @@ import { variantForModel, type SeedanceVariant } from './cn-adapter';
  *  2026-07-19 加 fast/mini(上游仅 720p/1080p 两档):fast 挂牌 37/22、mini 挂牌 23/14。 */
 const RETAIL_CNY_PER_M: Record<SeedanceVariant, Partial<Record<Resolution, { noVideo: number; withVideo: number }>>> = {
     pro: {
+        // 480p(2026-08-03 volc 渠道开放):火山官方挂牌不分档统一价,与 720p 同费率
+        '480p': { noVideo: 46 * 0.85, withVideo: 28 * 0.85 }, // 39.1 / 23.8
         '720p': { noVideo: 46 * 0.85, withVideo: 28 * 0.85 }, // 39.1 / 23.8
         '1080p': { noVideo: 51 * 0.85, withVideo: 31 * 0.85 }, // 43.35 / 26.35
         '4k': { noVideo: 26 * 0.85, withVideo: 16 * 0.85 }, // 22.1 / 13.6
@@ -77,9 +79,9 @@ export function officialCostCny(
     return +(computeCostCny(tokens, resolution, hasVideo, variant) / 0.85).toFixed(6);
 }
 
-/** 每秒 token(公式实测锚点:720p 5s=108872 → 21774/秒,∝像素)。仅用于【提交时余额预估】,
+/** 每秒 token(公式实测锚点:720p 5s=108872 → 21774/秒,480p 5s=50638 → 10128/秒,∝像素)。仅用于【提交时余额预估】,
  *  实际扣费用轮询回来的真 usage.completion_tokens。 */
-const TOK_PER_SEC: Record<Resolution, number> = { '720p': 21774, '1080p': 48992, '4k': 195970 };
+const TOK_PER_SEC: Record<Resolution, number> = { '480p': 10128, '720p': 21774, '1080p': 48992, '4k': 195970 };
 
 /** 估算 token 数(预估用;独立门户 enterprise/billing 也复用同一锚点)。 */
 export function estimateTokens(resolution: Resolution, duration: number): number {

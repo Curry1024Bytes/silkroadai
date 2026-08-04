@@ -186,7 +186,7 @@ describe('seedance-cn adapter submit', () => {
         expect(((await res.json()) as { error: { message: string } }).error.message).toMatch(/audio requires/);
     });
 
-    it('duration 归一到 5/10/15;ratio 白名单外回落 16:9;generate_audio:false 关', async () => {
+    it('duration 合法值透传;ratio 白名单外回落 16:9;generate_audio:false 关', async () => {
         await submitVideo(
             makeReq({
                 model: 'seedance2.0-pro-720p',
@@ -223,12 +223,19 @@ describe('seedance-cn adapter submit', () => {
         expect(b.model).toBe('dreamina-seedance-2-0-mini-260615');
     });
 
-    it('duration 15 放行;非法值(7)回落 5', async () => {
-        await submitVideo(makeReq({ model: 'seedance2.0-pro-720p', prompt: 'x', duration: 15 }));
-        expect(submitBody().duration).toBe(15);
-        mockFetch.mockClear(); // submitBody 取首个 submit 调用,读第二次前先清
-        await submitVideo(makeReq({ model: 'seedance2.0-pro-720p', prompt: 'x', duration: 7 }));
-        expect(submitBody().duration).toBe(5);
+    it('duration 4-15 整数透传(2026-08-03 探测放开);范围外(3/16/7.5)回落 5', async () => {
+        for (const [input, expected] of [
+            [15, 15],
+            [4, 4],
+            [7, 7],
+            [3, 5],
+            [16, 5],
+            [7.5, 5],
+        ] as Array<[number, number]>) {
+            mockFetch.mockClear(); // submitBody 取首个 submit 调用,读下一次前先清
+            await submitVideo(makeReq({ model: 'seedance2.0-pro-720p', prompt: 'x', duration: input }));
+            expect(submitBody().duration).toBe(expected);
+        }
     });
 
     it('XHK_KEY 配置时精确校验:错 key → 401', async () => {

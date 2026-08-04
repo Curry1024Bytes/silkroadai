@@ -50,6 +50,14 @@ describe('computeCostCny 费率', () => {
     it('720p 5s(108872 token)无视频 ≈ ¥4.26', () => {
         expect(computeCostCny(108872, '720p', false)).toBeCloseTo(4.257, 2);
     });
+    it('480p(2026-08-03 volc 开放):与 720p 同费率 无视 ¥39.1 / 含视 ¥23.8;5s(50638 token)≈ ¥1.98', () => {
+        expect(computeCostCny(1_000_000, '480p', false)).toBeCloseTo(39.1, 4);
+        expect(computeCostCny(1_000_000, '480p', true)).toBeCloseTo(23.8, 4);
+        expect(computeCostCny(50638, '480p', false)).toBeCloseTo(1.98, 2);
+    });
+    it('480p 预估锚点:10128 token/秒(实测 5s=50638)', () => {
+        expect(estimateCostCny('480p', 5, false)).toBeCloseTo((10128 * 5 * 39.1) / 1e6, 4);
+    });
     it('estimate:含视频加 1.5× 缓冲', () => {
         expect(estimateCostCny('720p', 5, true)).toBeGreaterThan(estimateCostCny('720p', 5, false) * 0.6);
     });

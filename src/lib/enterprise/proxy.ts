@@ -52,6 +52,9 @@ export const ENTERPRISE_MODELS: Record<string, SeedanceVariant> = {
 };
 
 const RESOLUTIONS = ['720p', '1080p', '4k'] as const;
+// volc 上游(火山方舟原生)实测支持 480p(2026-08-03 探测:5s 480p 出片 864×496);
+// cn/global/promax 长名档位无 480p SKU,仍走上面的三档白名单。
+const VOLC_RESOLUTIONS = ['480p', '720p', '1080p', '4k'] as const;
 
 /** 短名 + body 参数 → 内部长名规格。非短名返回 null(走长名/未知分支)。 */
 function resolveEnterpriseModel(
@@ -63,8 +66,8 @@ function resolveEnterpriseModel(
     // 走独立 provider(火山方舟原生),不经 MODEL_MAP 长名机制。
     if (lower === VOLC_MODEL) {
         const resRaw = String(body.resolution ?? '720p').toLowerCase();
-        if (!(RESOLUTIONS as readonly string[]).includes(resRaw)) {
-            return { error: errJson(400, 'invalid_request', 'resolution 仅支持 720p / 1080p / 4k') };
+        if (!(VOLC_RESOLUTIONS as readonly string[]).includes(resRaw)) {
+            return { error: errJson(400, 'invalid_request', 'resolution 仅支持 480p / 720p / 1080p / 4k') };
         }
         const hasRefs =
             extractImageUrls(body).length > 0 ||
@@ -74,7 +77,7 @@ function resolveEnterpriseModel(
             (typeof body.last_frame === 'string' && body.last_frame !== '');
         return {
             spec: {
-                resolution: resRaw as '720p' | '1080p' | '4k',
+                resolution: resRaw as '480p' | '720p' | '1080p' | '4k',
                 ref: hasRefs,
                 variant: 'pro',
                 upstream: VOLC_MODEL,
@@ -216,19 +219,23 @@ async function handleSubmit(req: NextRequest, format: ClientFormat = 'v1'): Prom
         return errJson(400, 'invalid_json', 'request body must be JSON');
     }
 
-    // 入口归一(对 v1 也安全):火山 model id(doubao-…)→ 内部短名;剥 asset:// 前缀。
-    // v1 客户传的短名不含 doubao、asset 引用是裸 id,归一后不变。
-    body = stripAssetUri(body);
+    // 入口归一:火山 model id(doubao-…)→ 内部短名(先归一 model 才能判 region)。
     body.model = normalizeArkModel(String(body.model || ''));
 
     const model = String(body.model || '');
+    const isVolc = regionForModel(model) === 'volc';
+
+    // 剥 asset:// 前缀(对 v1 也安全:v1 客户素材引用是裸 id,归一后不变)——
+    // 仅非 volc:后面 resolveAssetRefs 认裸 asset-…。「火山」渠道素材由上游 provider
+    // 解析,契约就是 asset://<id> 整串,剥了前缀上游按 URL 解析必 400
+    // (`content[N].image_url is not valid`,2026-08-03 客户实测)。
+    if (!isVolc) body = stripAssetUri(body);
+
     // 版本先于鉴权确定(模型名承载):key 与模型版本必须一致(单独 key,operator 决策),
     // 上游 key 也按版本行解密。未知模型按 cn 解析,后续 model_not_found 分支照常 400。
     // AK/SK 验签用原始 body(客户签的是含 doubao 名的原始字节,不能用归一后的)。
     const cust = await resolveOr401(req, regionForModel(model), rawBody);
     if (cust instanceof NextResponse) return cust;
-
-    const isVolc = regionForModel(model) === 'volc';
 
     // P3 素材库引用:asset-…/group-… → R2 公网 URL(必须在 ref/hasVideo 检测之前,
     // 视频素材引用也要计入含视频费率档)。未知/非本人 id → 400。
@@ -260,8 +267,17 @@ async function handleSubmit(req: NextRequest, format: ClientFormat = 'v1'): Prom
     }
 
     const hasVideo = extractVideoUrls(body).length > 0;
+    // duration:全渠道 4-15 任意整数秒(2026-08-03 探测:volc/cn/global 上游 3s/16s 皆 400,
+    // 4s 全变体真出片)。缺省 5;显式非法值 400(不静默改秒数 —— 计费按 token,静默换时长=换价)。
     const durRaw = Number(body.duration ?? body.seconds);
-    const duration = durRaw === 10 || durRaw === 15 ? durRaw : 5; // 与 cn-adapter 同步:5/10/15 三档
+    let duration: number;
+    if (body.duration == null && body.seconds == null) {
+        duration = 5;
+    } else if (Number.isInteger(durRaw) && durRaw >= 4 && durRaw <= 15) {
+        duration = durRaw;
+    } else {
+        return errJson(400, 'invalid_request', 'duration 仅支持 4-15 之间的整数秒');
+    }
 
     // 余额门(视频后付费,提交时按估价挡,防大额透支)。企业客户余额 = Account.balance_cny 唯一真相。
     try {

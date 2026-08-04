@@ -92,6 +92,146 @@ describe('火山渠道(volc)路由', () => {
             }),
         });
     });
+
+    it('volc 提交:content 里的 asset:// 前缀不剥(上游契约整串 asset://<id>,剥了必 400)', async () => {
+        submitVolcVideo.mockResolvedValue(NextResponse.json({ id: 'cgt-a1', task_id: 'cgt-a1', status: 'queued' }));
+        const content = [
+            { type: 'text', text: '让画面动起来' },
+            { type: 'image_url', image_url: { url: 'asset://asset-20260803095838-5n989' }, role: 'first_frame' },
+        ];
+        const res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { model: 'doubao-seedance-2.0', content, resolution: '720p' }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(200);
+        expect(submitVolcVideo).toHaveBeenCalledWith(expect.objectContaining({ content }), '720p', 5);
+        // volc 不走 R2 素材解析
+        expect(resolveAssetRefs).not.toHaveBeenCalled();
+    });
+
+    it('volc 支持 480p(2026-08-03 开放):透传适配器 + 任务落库 480p', async () => {
+        submitVolcVideo.mockResolvedValue(NextResponse.json({ id: 'task_v2', task_id: 'task_v2', status: 'queued' }));
+        const res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', {
+                model: 'doubao-seedance-2.0',
+                prompt: '一只猫',
+                resolution: '480p',
+            }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(200);
+        expect(submitVolcVideo).toHaveBeenCalledWith(expect.objectContaining({ prompt: '一只猫' }), '480p', 5);
+        expect(db.seedanceVideoTask.create).toHaveBeenCalledWith({
+            data: expect.objectContaining({ model: 'doubao-seedance-2.0', resolution: '480p' }),
+        });
+    });
+
+    it('volc 支持 4-15 任意整数秒(2026-08-03 开放):7 秒透传适配器 + 落库', async () => {
+        submitVolcVideo.mockResolvedValue(NextResponse.json({ id: 'task_d7', task_id: 'task_d7', status: 'queued' }));
+        const res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { model: 'doubao-seedance-2.0', prompt: 'x', duration: 7 }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(200);
+        expect(submitVolcVideo).toHaveBeenCalledWith(expect.anything(), '720p', 7);
+        expect(db.seedanceVideoTask.create).toHaveBeenCalledWith({
+            data: expect.objectContaining({ duration: 7 }),
+        });
+    });
+
+    it('volc duration 边界:4 和 15 接受,3 / 16 / 7.5 → 400;缺省 = 5', async () => {
+        submitVolcVideo.mockImplementation(() =>
+            Promise.resolve(NextResponse.json({ id: 'task_db', task_id: 'task_db', status: 'queued' })),
+        );
+        for (const ok of [4, 15]) {
+            const res = await handleEnterpriseV1(
+                req('POST', '/v1/video/generations', { model: 'doubao-seedance-2.0', prompt: 'x', duration: ok }),
+                '/video/generations',
+            );
+            expect(res.status).toBe(200);
+            expect(submitVolcVideo).toHaveBeenLastCalledWith(expect.anything(), '720p', ok);
+        }
+        for (const bad of [3, 16, 7.5]) {
+            const res = await handleEnterpriseV1(
+                req('POST', '/v1/video/generations', { model: 'doubao-seedance-2.0', prompt: 'x', duration: bad }),
+                '/video/generations',
+            );
+            expect(res.status).toBe(400);
+            const body = await res.json();
+            expect(body.error.message).toContain('4-15');
+        }
+        const res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { model: 'doubao-seedance-2.0', prompt: 'x' }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(200);
+        expect(submitVolcVideo).toHaveBeenLastCalledWith(expect.anything(), '720p', 5);
+    });
+
+    it('cn/global 渠道也开 4-15(2026-08-03 探测):7 秒落库 7;3 秒 → 400', async () => {
+        submitVideoWithKey.mockImplementation(() =>
+            Promise.resolve(NextResponse.json({ id: 'cgt-d1', task_id: 'cgt-d1', status: 'queued' })),
+        );
+        const res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { model: 'seedance-2-0', prompt: 'x', duration: 7 }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(200);
+        expect(db.seedanceVideoTask.create).toHaveBeenCalledWith({
+            data: expect.objectContaining({ duration: 7 }),
+        });
+        const bad = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { model: 'seedance-2-0-global', prompt: 'x', duration: 3 }),
+            '/video/generations',
+        );
+        expect(bad.status).toBe(400);
+        const body = await bad.json();
+        expect(body.error.message).toContain('4-15');
+    });
+
+    it('volc 非法 resolution(360p)→ 400,错误文案含 480p 白名单', async () => {
+        const res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', {
+                model: 'doubao-seedance-2.0',
+                prompt: 'x',
+                resolution: '360p',
+            }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(400);
+        const body = await res.json();
+        expect(body.error.message).toContain('480p');
+        expect(submitVolcVideo).not.toHaveBeenCalled();
+    });
+
+    it('480p 仅 volc 开放:cn 短名 seedance-2-0 传 480p 仍 400', async () => {
+        const res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { model: 'seedance-2-0', prompt: 'x', resolution: '480p' }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(400);
+        expect(submitVideoWithKey).not.toHaveBeenCalled();
+    });
+
+    it('非 volc 提交仍剥 asset:// 前缀(resolveAssetRefs 收到裸 id)', async () => {
+        submitVideoWithKey.mockResolvedValue(NextResponse.json({ id: 'cgt-c1', task_id: 'cgt-c1', status: 'queued' }));
+        const res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', {
+                model: 'seedance-2-0',
+                content: [
+                    { type: 'text', text: 'x' },
+                    { type: 'image_url', image_url: { url: 'asset://asset-1' }, role: 'first_frame' },
+                ],
+                resolution: '720p',
+            }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(200);
+        const passed = resolveAssetRefs.mock.calls[0][0] as {
+            content: Array<{ image_url?: { url: string } }>;
+        };
+        expect(passed.content[1].image_url?.url).toBe('asset-1');
+    });
 });
 
 describe('isEnterpriseFlavor', () => {

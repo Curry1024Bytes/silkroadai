@@ -288,7 +288,7 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                                 </Td>
                                 <Td>int</Td>
                                 <Td>否</Td>
-                                <Td>5(默认)/ 10 / 15,单位秒</Td>
+                                <Td>4-15 任意整数秒,默认 5</Td>
                             </tr>
                             <tr>
                                 <Td>
@@ -476,15 +476,16 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
 {
   "model": "doubao-seedance-2.0",
   "content": [{"type": "text", "text": "一只橘猫在窗台上打哈欠"}],
-  "resolution": "720p",     // 720p / 1080p / 4k
-  "duration": 5             // 5 / 10 / 15
+  "resolution": "720p",     // 480p / 720p / 1080p / 4k
+  "duration": 5             // 4-15 任意整数秒
 }
 # → {"id":"task_…"}   然后 GET /api/v3/contents/generations/tasks/{id} 轮询
 # → {"status":"succeeded","content":{"video_url":"https://…火山直链…"}}`}</Pre>
                 <ul className="list-disc space-y-1 pl-5">
                     <li>
                         单模型 <Code>doubao-seedance-2.0</Code>,计费与国内版同价(按 <Code>usage.completion_tokens</Code>
-                        )。参考图/视频/音频写进 <Code>content</Code> 数组(<Code>image_url</Code> /{' '}
+                        )。480p 与 720p 同费率(token 量约为 720p 的一半,整条更便宜);480p
+                        仅本渠道支持。参考图/视频/音频写进 <Code>content</Code> 数组(<Code>image_url</Code> /{' '}
                         <Code>video_url</Code> / <Code>audio_url</Code>,<Code>url</Code> 支持公网直链、素材 ID)。
                     </li>
                     <li>
