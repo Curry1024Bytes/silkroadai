@@ -102,7 +102,16 @@ describe('synthUsage(合成数值 = OUT_TOKENS 口径)', () => {
             imageCount: 1,
         });
         expect(u.output_tokens).toBe(3800);
-        expect(u.completion_tokens).toBe(3800); // 中继别名字段
+        // 只发 OpenAI images 官方字段:多送 chat 别名会被中继客户【加】进 chat 家族 → 账面翻倍
+        expect(Object.keys(u).sort()).toEqual([
+            'input_tokens',
+            'input_tokens_details',
+            'output_tokens',
+            'output_tokens_details',
+            'total_tokens',
+        ]);
+        expect(u.prompt_tokens).toBeUndefined();
+        expect(u.completion_tokens).toBeUndefined();
         expect(u.input_tokens).toBe(estimateTextTokens('a cat'));
         expect(u.total_tokens).toBe(3800 + estimateTextTokens('a cat'));
     });
