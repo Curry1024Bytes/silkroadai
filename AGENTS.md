@@ -137,6 +137,9 @@
   避免中继客户把两套字段相加造成 token 统计翻倍。无 migration/env/依赖/Nginx 变化;验证为
   245 files / 2681 passed / 1 skipped、typecheck/format/lint 0 error 且生产构建通过。该批次尚未部署,
   当前 VPS 镜像仍为 `a166b28`;图片适配器渠道未配置时功能继续 dormant。
+- 2026-08-04 `dev` 待发布的后台去旧化:移除已停用的 Sub2API/LiteLLM `渠道管理`、`订阅管理`
+  导航入口;`/admin/channels` 重定向到当前 `/admin/models`,`/admin/subscriptions` 重定向到
+  `/admin`。旧 API、数据库表和历史订单读取暂时保留,本批次不做破坏性删除。
 - new-api rc.22 登录兼容决策:优先直接使用登录响应的 `data.access_token`;仅旧版本 `session=` cookie 走 fallback。
   该路径已通过 Google/GitHub 真实开户验证,不要把 `new_api_refresh` 当 session。
 

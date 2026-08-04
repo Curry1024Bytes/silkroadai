@@ -19,12 +19,10 @@ const NAV_ITEMS: NavItem[] = [
     // P6b-2: read-only customer view — visible to ALL admins (partner backend main page).
     { path: '/admin/customers', label: { zh: '客户管理', en: 'Customers' } },
     { path: '/admin/payment-config', label: { zh: '支付配置', en: 'Payment Config' }, superadminOnly: true },
-    { path: '/admin/channels', label: { zh: '渠道管理', en: 'Channels' }, superadminOnly: true },
     { path: '/admin/channel-groups', label: { zh: '渠道分组', en: 'Channel Groups' }, superadminOnly: true },
     { path: '/admin/models', label: { zh: '模型管理', en: 'Models' }, superadminOnly: true },
     { path: '/admin/pricing', label: { zh: '定价', en: 'Pricing' }, superadminOnly: true },
     { path: '/admin/billing-shadow', label: { zh: '影子计量', en: 'Shadow Metering' }, superadminOnly: true },
-    { path: '/admin/subscriptions', label: { zh: '订阅管理', en: 'Subscriptions' }, superadminOnly: true },
     { path: '/admin/tenants', label: { zh: '租户管理', en: 'Tenants' }, superadminOnly: true },
     { path: '/admin/announcements', label: { zh: '公告管理', en: 'Announcements' }, superadminOnly: true },
     // 数据存储第③步:请求日志查看(全量客户内容,最高敏感)。

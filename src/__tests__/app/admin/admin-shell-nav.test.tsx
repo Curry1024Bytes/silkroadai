@@ -12,17 +12,8 @@ vi.mock('next/navigation', () => ({
 
 import { AdminShell } from '@/app/admin/(console)/admin-shell';
 
-const PLATFORM_LABELS = [
-    '支付配置',
-    '渠道管理',
-    '渠道分组',
-    '模型管理',
-    '定价',
-    '影子计量',
-    '订阅管理',
-    '租户管理',
-    '公告管理',
-];
+const PLATFORM_LABELS = ['支付配置', '渠道分组', '模型管理', '定价', '影子计量', '租户管理', '公告管理'];
+const RETIRED_LABELS = ['渠道管理', '订阅管理'];
 
 describe('AdminShell nav role-filter', () => {
     it('partner admin (role=admin) → Dashboard + Orders + Customers, no platform items', () => {
@@ -36,6 +27,7 @@ describe('AdminShell nav role-filter', () => {
         // P6b-2: read-only customers view is visible to partner admins (not superadminOnly).
         expect(html).toContain('客户管理');
         for (const label of PLATFORM_LABELS) expect(html).not.toContain(label);
+        for (const label of RETIRED_LABELS) expect(html).not.toContain(label);
     });
 
     it('superadmin → all platform items visible (+ Customers)', () => {
@@ -47,5 +39,6 @@ describe('AdminShell nav role-filter', () => {
         expect(html).toContain('数据概览');
         expect(html).toContain('客户管理');
         for (const label of PLATFORM_LABELS) expect(html).toContain(label);
+        for (const label of RETIRED_LABELS) expect(html).not.toContain(label);
     });
 });

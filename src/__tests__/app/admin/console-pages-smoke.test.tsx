@@ -14,9 +14,7 @@ vi.mock('next/navigation', () => ({
 import AdminHome from '@/app/admin/(console)/page';
 import AdminDashboard from '@/app/admin/(console)/dashboard/page';
 import AdminOrders from '@/app/admin/(console)/orders/page';
-import AdminChannels from '@/app/admin/(console)/channels/page';
 import AdminPaymentConfig from '@/app/admin/(console)/payment-config/page';
-import AdminSubscriptions from '@/app/admin/(console)/subscriptions/page';
 import AdminBillingShadow from '@/app/admin/(console)/billing-shadow/page';
 import AdminTenants from '@/app/admin/(console)/tenants/page';
 import AdminAnnouncements from '@/app/admin/(console)/announcements/page';
@@ -25,9 +23,7 @@ const PAGES = [
     ['/admin', AdminHome],
     ['/admin/dashboard', AdminDashboard],
     ['/admin/orders', AdminOrders],
-    ['/admin/channels', AdminChannels],
     ['/admin/payment-config', AdminPaymentConfig],
-    ['/admin/subscriptions', AdminSubscriptions],
     ['/admin/billing-shadow', AdminBillingShadow],
     ['/admin/tenants', AdminTenants],
     ['/admin/announcements', AdminAnnouncements],
