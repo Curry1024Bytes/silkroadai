@@ -106,13 +106,15 @@ export const MODEL_MAP: Record<string, SeedanceModelSpec> = {
             ),
         ),
     ),
-    // ── 海外版(global,2026-07-23):档位与国内一致(operator 拍板同 4k/15s/定价),仅上游不同 ──
+    // ── 海外版(global,2026-07-23):档位与国内一致(operator 拍板同 4k/15s/定价),仅上游不同。
+    //    ⚠️ 无 480p:intl 上游三变体实测均拒「当前分辨率 480p 不支持」(2026-08-06),
+    //    proxy 对 global+480p 返带指引的 400。 ──
     ...Object.fromEntries(
         (
             [
-                ['pro', UPSTREAM_INTL_PRO, ['480p', '720p', '1080p', '4k']],
-                ['fast', UPSTREAM_INTL_FAST, ['480p', '720p', '1080p']],
-                ['mini', UPSTREAM_INTL_MINI, ['480p', '720p', '1080p']],
+                ['pro', UPSTREAM_INTL_PRO, ['720p', '1080p', '4k']],
+                ['fast', UPSTREAM_INTL_FAST, ['720p', '1080p']],
+                ['mini', UPSTREAM_INTL_MINI, ['720p', '1080p']],
             ] as Array<[SeedanceVariant, string, Array<'480p' | '720p' | '1080p' | '4k'>]>
         ).flatMap(([variant, upstream, resolutions]) =>
             resolutions.flatMap((resolution) =>

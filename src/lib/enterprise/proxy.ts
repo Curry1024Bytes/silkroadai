@@ -92,8 +92,19 @@ function resolveEnterpriseModel(
     if (!(RESOLUTIONS as readonly string[]).includes(resRaw)) {
         return { error: errJson(400, 'invalid_request', 'resolution 仅支持 480p / 720p / 1080p / 4k') };
     }
+    // 海外版(global)上游无 480p(intl 三变体实测均拒,2026-08-06);国内/proMax/火山有
+    if (region === 'global' && resRaw === '480p') {
+        return {
+            error: errJson(
+                400,
+                'invalid_request',
+                `${rawModel} 无 480p 档(海外版仅 720p / 1080p / 4k);480p 请用国内版或 proMax`,
+            ),
+        };
+    }
     if (resRaw === '4k' && variant !== 'pro' && variant !== 'promax') {
-        return { error: errJson(400, 'invalid_request', `${rawModel} 无 4k 档(resolution 仅 480p / 720p / 1080p)`) };
+        const tiers = region === 'global' ? '720p / 1080p' : '480p / 720p / 1080p';
+        return { error: errJson(400, 'invalid_request', `${rawModel} 无 4k 档(resolution 仅 ${tiers})`) };
     }
     if ((variant === 'promax-fast' || variant === 'promax-mini') && resRaw !== '480p' && resRaw !== '720p') {
         return { error: errJson(400, 'invalid_request', `${rawModel} 仅支持 480p / 720p 档`) };

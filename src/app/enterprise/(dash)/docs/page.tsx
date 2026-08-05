@@ -179,8 +179,8 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                         720p 的 2.25 倍 token。
                     </li>
                     <li>
-                        <b>480p 与 720p 同费率</b>(单价一样,但 token 量 ∝ 像素,480p 整条约为 720p
-                        的一半价),全部模型均支持。
+                        <b>480p 与 720p 同费率</b>(单价一样,但 token 量 ∝ 像素,480p 整条约为 720p 的一半价)。国内版 /
+                        proMax / 火山渠道支持;海外版(global)上游无 480p。
                     </li>
                     <li>「含视频输入」(参考视频)费率更低,但输入视频的时长也计入 token。图片参考不额外计 token。</li>
                     <li>生成失败不计费。提交时按预估价校验余额,不足返回 402(不会透支)。</li>
@@ -191,8 +191,8 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                     <p className="mt-1 text-indigo-900">
                         另有海外节点出片的同款模型:<Code>seedance-2-0-global</Code> /{' '}
                         <Code>seedance-2-0-global-fast</Code> / <Code>seedance-2-0-global-mini</Code>
-                        。参数、分辨率档位、时长与费率<b>均与国内版完全一致</b>,仅生成与出片走海外
-                        节点(BytePlus),成片链接为海外 CDN(同样 ~24 小时有效)。调用需使用
+                        。参数、分辨率档位、时长与费率<b>均与国内版一致(唯一例外:无 480p 档)</b>
+                        ,仅生成与出片走海外 节点(BytePlus),成片链接为海外 CDN(同样 ~24 小时有效)。调用需使用
                         <b>海外版专用 API 密钥</b>(「API 密钥」页创建时选「海外版」),国内/海外密钥不互通;
                         余额与国内版共享同一账户。
                         <b>如果生成因敏感内容被审核拒绝(fail_reason 提示 sensitive),并非开白/权限原因,请尝试海外版。</b>

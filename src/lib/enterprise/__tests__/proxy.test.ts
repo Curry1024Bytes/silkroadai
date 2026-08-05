@@ -250,23 +250,17 @@ describe('火山渠道(volc)路由', () => {
         expect(bad.status).toBe(400);
     });
 
-    it('global mini 480p 放行 → 长名 seedance2.0-global-mini-480p', async () => {
-        submitVideoWithKey.mockResolvedValue(
-            NextResponse.json({ id: 'cgt-g480', task_id: 'cgt-g480', status: 'queued' }),
-        );
-        const res = await handleEnterpriseV1(
-            req('POST', '/v1/video/generations', {
-                model: 'seedance-2-0-global-mini',
-                prompt: 'x',
-                resolution: '480p',
-            }),
-            '/video/generations',
-        );
-        expect(res.status).toBe(200);
-        expect(submitVideoWithKey).toHaveBeenCalledWith(
-            expect.objectContaining({ model: 'seedance2.0-global-mini-480p' }),
-            expect.any(String),
-        );
+    it('global 无 480p(intl 上游实测拒,2026-08-06):三变体 480p 均 400 带指引,不打上游', async () => {
+        for (const model of ['seedance-2-0-global', 'seedance-2-0-global-fast', 'seedance-2-0-global-mini']) {
+            const res = await handleEnterpriseV1(
+                req('POST', '/v1/video/generations', { model, prompt: 'x', resolution: '480p' }),
+                '/video/generations',
+            );
+            expect(res.status).toBe(400);
+            const body = (await res.json()) as { error: { message: string } };
+            expect(body.error.message).toContain('proMax');
+        }
+        expect(submitVideoWithKey).not.toHaveBeenCalled();
     });
 
     it('非 volc 提交仍剥 asset:// 前缀(resolveAssetRefs 收到裸 id)', async () => {
