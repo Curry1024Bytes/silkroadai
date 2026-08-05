@@ -163,8 +163,11 @@ interface DbLogRow {
  * 折叠规则下推到 SQL(与 log-display.collapseRetriedFailures 同语义,但作用于
  * 【整个筛选范围】而不是单页 —— 比回退路径更准):
  *   规则 1(failover 中间失败):type=5 且同 request_id 存在 type=2 成功 → 藏;
- *   规则 2(proxy 尺寸重试):type=5 且 content 含 "size must use" 且 180s 内有成功 → 藏。
- * 两条 EXISTS 分别吃 idx_logs_request_id / idx_created_at_type,失败行占比小,代价可控。
+ *   规则 2(proxy 尺寸重试):type=5 且 content 含 "size must use" 且 180s 内有成功 → 藏;
+ *   规则 3(image-adapter 守门拒):type=5 且 other 带 error_code=upstream_unavailable → 藏
+ *          (见 log-display.isAdapterFailoverNoise 的安全性论证)。
+ * 两条 EXISTS 分别吃 idx_logs_request_id / idx_created_at_type,失败行占比小,代价可控;
+ * 规则 3 是纯行内字符串判断,先于 EXISTS 短路掉大量行,反而更快。
  */
 function exportFromLogsDb(pool: Pool, newapiUserId: number, q: z.infer<typeof QuerySchema>): Response {
     const encoder = new TextEncoder();
@@ -200,6 +203,7 @@ function exportFromLogsDb(pool: Pool, newapiUserId: number, q: z.infer<typeof Qu
                                      WHERE s2.user_id = l.user_id AND s2.type = 2
                                        AND s2.created_at >= l.created_at
                                        AND s2.created_at <= l.created_at + 180))
+                            AND NOT (l.type = 5 AND l.other LIKE '%"error_code":"upstream_unavailable"%')
                             AND l.id < $8
                           ORDER BY l.id DESC
                           LIMIT $9`,
