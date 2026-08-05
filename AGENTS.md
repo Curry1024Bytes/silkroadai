@@ -86,10 +86,9 @@
 - Portal:容器 `silkroadai-portal`;PostgreSQL 16 容器 `silkroadai-portal-db`,仅回环 `127.0.0.1:5432`。
 - new-api:容器 `new-api`,宿主机绑定 `172.17.0.1:3000`,网络 `new-api_new-api-net`,数据目录 `/opt/new-api/data`;
   MySQL 8 容器为 `new-api-mysql`。Portal 用 `http://host.docker.internal:3000` 访问。
-- VPS Git 工作区:`prod@149d9c4`;当前 Portal 镜像仍是 `a166b28` 构建产物(`149d9c4` 之后仅含文档和
-  备份脚本,未重建容器),Portal 回滚代码 SHA 为 `59410da`。本次发布前已备份
-  `.env`、Nginx 配置和 Portal PostgreSQL,数据库备份为
-  `/opt/backups/silkroadai-portal/portal-20260804-030647.sql.gz` 且 `gzip -t` 通过。
+- VPS Git 工作区和 Portal 运行镜像均为 `prod@b480b09`,Portal 回滚代码 SHA 为 `149d9c4`。
+  2026-08-05 发布前已生成 0600 的 `.env.bak.20260805-114701` 和 Portal PostgreSQL 备份
+  `/opt/backups/silkroadai-portal/portal-20260805-034701.sql.gz`,后者 `gzip -t` 通过。
 - 当前公网已验收:`llmroute.club` / `www.llmroute.club`、Google OAuth、GitHub OAuth、zpayz 支付宝充值及
   幂等入账。`api.llmroute.club` 已使用显式 API-only Nginx virtual host,只放行 `/v1/*`、`/v1beta/*`;
   假 Key 为 401,两类 CORS 预检为 204,`/login` / `/admin/login` 和主站 `/image-adapter/*` 均为 404。
@@ -135,17 +134,22 @@
 - 2026-08-04 上游 `main@b5d3f5e` 的 1 个提交已 clean merge 到 `dev`(`d87301d`):图片适配器合成
   `usage` 只保留 OpenAI Images 官方 5 个字段,删除 `prompt_tokens` / `completion_tokens` Chat 别名,
   避免中继客户把两套字段相加造成 token 统计翻倍。无 migration/env/依赖/Nginx 变化;验证为
-  245 files / 2681 passed / 1 skipped、typecheck/format/lint 0 error 且生产构建通过。该批次尚未部署,
-  当前 VPS 镜像仍为 `a166b28`;图片适配器渠道未配置时功能继续 dormant。
+  245 files / 2681 passed / 1 skipped、typecheck/format/lint 0 error 且生产构建通过;已随
+  `prod@b480b09` 于 2026-08-05 部署。图片适配器渠道未配置时功能继续 dormant。
 - 2026-08-05 上游 `main@27ef9c8` 的 1 个提交已 clean merge 到 `dev`(`2f0e3f9`):图片适配器对
   ominiapi 的 `n > 1` 请求改为最多 10 路并发单图扇出,每次重建 JSON/FormData,合并成功图片并按
   实际张数合成 usage;部分失败返回已有图片,全失败才 503 failover。无 migration/env/依赖/Nginx
   变化;验证为 245 files / 2687 passed / 1 skipped、适配器 32/32、typecheck/format/lint 0 error 且
-  生产构建通过。主要运行风险是单请求最多放大为 10 个上游并发及 4K 图片内存占用;该批次尚未部署,
-  该渠道未配置时功能继续 dormant。
-- 2026-08-05 `dev` 待发布的后台降噪:仅隐藏已停用的 Sub2API/LiteLLM `渠道管理`、`订阅管理`
+  生产构建通过;已随 `prod@b480b09` 于 2026-08-05 部署。主要运行风险是单请求最多放大为 10 个
+  上游并发及 4K 图片内存占用;该渠道未配置时功能继续 dormant。
+- 2026-08-05 已部署后台降噪:仅隐藏已停用的 Sub2API/LiteLLM `渠道管理`、`订阅管理`
   导航入口;两个页面的完整实现和 `/admin/channels`、`/admin/subscriptions` 直达地址继续保留,
   旧 API、数据库表及历史订单读取也不删除。需要排查或恢复入口时无需从 Git 历史找回代码。
+- 2026-08-05 `prod@b480b09` 发布验收:Portal/PostgreSQL healthy、Portal restart count 0、60 条
+  migration 无 pending;Portal -> new-api 200;apex/`www` 登录页 200、API 假 Key 401、主站
+  `/image-adapter/*` 404、Google/GitHub OAuth start 302。生产 `BILLING_SOURCE` 未设置(默认
+  `newapi`),数据库 5 个用户全部 `billing_mode=newapi`;Portal 计费未启用。new-api 仍未上货,
+  所以真实客户 Key 推理验收继续 pending。
 - new-api rc.22 登录兼容决策:优先直接使用登录响应的 `data.access_token`;仅旧版本 `session=` cookie 走 fallback。
   该路径已通过 Google/GitHub 真实开户验证,不要把 `new_api_refresh` 当 session。
 
