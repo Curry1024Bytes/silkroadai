@@ -35,7 +35,7 @@ import { normalizeArkModel, stripAssetUri, arkStatus, buildArkTaskResponse } fro
 export type ClientFormat = 'v1' | 'ark';
 
 /** 企业门户对客模型名(2026-07-20 归一,operator 拍板):按量计费下分辨率是参数不是模型名。
- *  `resolution` 参数选 720p/1080p/4k(默认 720p;4k 仅 pro),带参考图/视频/音频自动识别
+ *  `resolution` 参数选 480p/720p/1080p/4k(默认 720p;4k 仅 pro;480p 与 720p 同费率),带参考图/视频/音频自动识别
  *  (不再需要 -ref 后缀)。旧 14 个长名(seedance2.0-pro-720p 等)保留兼容,不再对外宣传。 */
 export const ENTERPRISE_MODELS: Record<string, SeedanceVariant> = {
     'seedance-2-0': 'pro',
@@ -45,16 +45,15 @@ export const ENTERPRISE_MODELS: Record<string, SeedanceVariant> = {
     'seedance-2-0-global': 'pro',
     'seedance-2-0-global-fast': 'fast',
     'seedance-2-0-global-mini': 'mini',
-    // 海外版proMax(2026-07-23):dreamina 系,费率独立(挂牌更高 ×0.85);fast/mini 仅 720p
+    // 海外版proMax(2026-07-23):dreamina 系,费率独立(挂牌更高 ×0.85);fast/mini 仅 480p/720p
     'seedance-2-0-promax': 'promax',
     'seedance-2-0-promax-fast': 'promax-fast',
     'seedance-2-0-promax-mini': 'promax-mini',
 };
 
-const RESOLUTIONS = ['720p', '1080p', '4k'] as const;
-// volc 上游(火山方舟原生)实测支持 480p(2026-08-03 探测:5s 480p 出片 864×496);
-// cn/global/promax 长名档位无 480p SKU,仍走上面的三档白名单。
-const VOLC_RESOLUTIONS = ['480p', '720p', '1080p', '4k'] as const;
+// 2026-08-03 全线四档:volc 实测 480p 出片 864×496;cn/global/promax 上游挂牌本就含
+// 480p(与 720p 统一价),MODEL_MAP 已加 480p SKU。
+const RESOLUTIONS = ['480p', '720p', '1080p', '4k'] as const;
 
 /** 短名 + body 参数 → 内部长名规格。非短名返回 null(走长名/未知分支)。 */
 function resolveEnterpriseModel(
@@ -66,7 +65,7 @@ function resolveEnterpriseModel(
     // 走独立 provider(火山方舟原生),不经 MODEL_MAP 长名机制。
     if (lower === VOLC_MODEL) {
         const resRaw = String(body.resolution ?? '720p').toLowerCase();
-        if (!(VOLC_RESOLUTIONS as readonly string[]).includes(resRaw)) {
+        if (!(RESOLUTIONS as readonly string[]).includes(resRaw)) {
             return { error: errJson(400, 'invalid_request', 'resolution 仅支持 480p / 720p / 1080p / 4k') };
         }
         const hasRefs =
@@ -91,13 +90,13 @@ function resolveEnterpriseModel(
     const region = lower.includes('-promax') ? 'promax' : lower.includes('-global') ? 'global' : 'cn';
     const resRaw = String(body.resolution ?? '720p').toLowerCase();
     if (!(RESOLUTIONS as readonly string[]).includes(resRaw)) {
-        return { error: errJson(400, 'invalid_request', 'resolution 仅支持 720p / 1080p / 4k') };
+        return { error: errJson(400, 'invalid_request', 'resolution 仅支持 480p / 720p / 1080p / 4k') };
     }
     if (resRaw === '4k' && variant !== 'pro' && variant !== 'promax') {
-        return { error: errJson(400, 'invalid_request', `${rawModel} 无 4k 档(resolution 仅 720p / 1080p)`) };
+        return { error: errJson(400, 'invalid_request', `${rawModel} 无 4k 档(resolution 仅 480p / 720p / 1080p)`) };
     }
-    if ((variant === 'promax-fast' || variant === 'promax-mini') && resRaw !== '720p') {
-        return { error: errJson(400, 'invalid_request', `${rawModel} 仅支持 720p 档`) };
+    if ((variant === 'promax-fast' || variant === 'promax-mini') && resRaw !== '480p' && resRaw !== '720p') {
+        return { error: errJson(400, 'invalid_request', `${rawModel} 仅支持 480p / 720p 档`) };
     }
     const hasRefs =
         extractImageUrls(body).length > 0 ||
