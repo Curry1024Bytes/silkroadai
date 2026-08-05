@@ -19,6 +19,7 @@ const NAV_ITEMS: NavItem[] = [
     // P6b-2: read-only customer view — visible to ALL admins (partner backend main page).
     { path: '/admin/customers', label: { zh: '客户管理', en: 'Customers' } },
     { path: '/admin/payment-config', label: { zh: '支付配置', en: 'Payment Config' }, superadminOnly: true },
+    // Legacy Sub2API consoles remain routable but are intentionally omitted from navigation.
     { path: '/admin/channel-groups', label: { zh: '渠道分组', en: 'Channel Groups' }, superadminOnly: true },
     { path: '/admin/models', label: { zh: '模型管理', en: 'Models' }, superadminOnly: true },
     { path: '/admin/pricing', label: { zh: '定价', en: 'Pricing' }, superadminOnly: true },
