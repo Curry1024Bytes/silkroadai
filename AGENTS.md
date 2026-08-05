@@ -137,6 +137,12 @@
   避免中继客户把两套字段相加造成 token 统计翻倍。无 migration/env/依赖/Nginx 变化;验证为
   245 files / 2681 passed / 1 skipped、typecheck/format/lint 0 error 且生产构建通过。该批次尚未部署,
   当前 VPS 镜像仍为 `a166b28`;图片适配器渠道未配置时功能继续 dormant。
+- 2026-08-05 上游 `main@27ef9c8` 的 1 个提交已 clean merge 到 `dev`(`2f0e3f9`):图片适配器对
+  ominiapi 的 `n > 1` 请求改为最多 10 路并发单图扇出,每次重建 JSON/FormData,合并成功图片并按
+  实际张数合成 usage;部分失败返回已有图片,全失败才 503 failover。无 migration/env/依赖/Nginx
+  变化;验证为 245 files / 2687 passed / 1 skipped、适配器 32/32、typecheck/format/lint 0 error 且
+  生产构建通过。主要运行风险是单请求最多放大为 10 个上游并发及 4K 图片内存占用;该批次尚未部署,
+  该渠道未配置时功能继续 dormant。
 - 2026-08-05 `dev` 待发布的后台降噪:仅隐藏已停用的 Sub2API/LiteLLM `渠道管理`、`订阅管理`
   导航入口;两个页面的完整实现和 `/admin/channels`、`/admin/subscriptions` 直达地址继续保留,
   旧 API、数据库表及历史订单读取也不删除。需要排查或恢复入口时无需从 Git 历史找回代码。
