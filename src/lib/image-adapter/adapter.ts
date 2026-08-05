@@ -15,11 +15,14 @@
  * 图片存储 / C2PA 脱敏不在这层做 —— 客户代理回程(/v1 route reshape)已做,这层只返 b64+usage。
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { IMAGE_PROVIDERS } from './providers';
+import { IMAGE_PROVIDERS, type ImageProvider } from './providers';
 
 export type ImageMode = 'generations' | 'edits';
 
 const UPSTREAM_TIMEOUT_MS = 300_000; // 实测 ominiapi 4K 出图 54-92s,给足余量
+/** n>1 扇出的上限(对齐 OpenAI images 的 n≤10)。超出只钳制不报错 —— 客户仍拿到 10 张,
+ *  也挡住 n=100 这种把单请求内存推到 GB 级(4K 单张 b64 ~12-17MB)的用法。 */
+const MAX_FANOUT = 10;
 
 // ============ token 合成表(核心计费杠杆)============
 // 1k/1.5k 行 = OpenAI 官方 gpt-image 输出 token 表(azure 口径);2k/4k 行按 prod 实测校准:
@@ -279,6 +282,112 @@ async function fetchImageAsB64(url: string): Promise<string | null> {
     }
 }
 
+/**
+ * 单次上游调用 → 返回该次拿到的图片 b64 数组;任何失败返 null(原因已记日志,调用方决定是否 failover)。
+ *
+ * 【为什么每次只要 1 张】ominiapi 实测**完全忽略 `n`**(传 n=2 仍只回 1 张,2026-08-04 直连验证),
+ * 而 azure 渠道是支持 n 的 —— 适配器 prio 25 截走 4K/2K-high 后,客户的多图请求只能拿到 1 张
+ * (今天 71 条请求 / 4 个客户中招)。所以 n>1 由适配器【并发扇出 n 次单图请求】自己实现。
+ * 同 prompt 重复调用返回的图确实不同(实测两次字节与 hash 均不同),扇出有意义。
+ * 计费天然正确:synthUsage 按【实际拿到的张数】算,部分失败就按少的张数收。
+ */
+async function callUpstreamOnce(
+    provider: ImageProvider,
+    providerName: string,
+    mode: ImageMode,
+    parsed: ParsedRequest,
+    auth: string,
+): Promise<string[] | null> {
+    const url = `${provider.baseUrl}/v1/images/${mode}`;
+    // body 每次重建(FormData 一次性语义),且【不传 n】—— 每次调用只取 1 张
+    let upstreamBody: BodyInit;
+    const headers: Record<string, string> = { authorization: auth };
+    if (mode === 'edits') {
+        const f = new FormData();
+        f.append('model', 'gpt-image-2');
+        f.append('prompt', parsed.prompt);
+        f.append('size', parsed.size.trim());
+        f.append('response_format', 'b64_json'); // 不带时 ominiapi 返自家 OSS url(上游身份泄漏),显式要 b64
+        if (parsed.quality) f.append('quality', normQuality(parsed.quality));
+        for (const [k, v] of Object.entries(parsed.extras)) f.append(k, v);
+        for (const img of parsed.images)
+            f.append('image', new Blob([new Uint8Array(img.buf)], { type: img.type }), img.name);
+        upstreamBody = f; // fetch 自动生成 multipart boundary(不能手写 content-type,gotcha #21)
+    } else {
+        const j: Record<string, unknown> = {
+            model: 'gpt-image-2',
+            prompt: parsed.prompt,
+            size: parsed.size.trim(),
+            response_format: 'b64_json', // 同上:2026-08-04 smoke 实测缺省返 url
+        };
+        if (parsed.quality) j.quality = normQuality(parsed.quality);
+        Object.assign(j, parsed.extras);
+        upstreamBody = JSON.stringify(j);
+        headers['content-type'] = 'application/json';
+    }
+
+    const started = Date.now();
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), UPSTREAM_TIMEOUT_MS);
+    let upstream: Response;
+    try {
+        upstream = await fetch(url, { method: 'POST', headers, body: upstreamBody, signal: ctrl.signal });
+    } catch (e) {
+        console.warn('[image-adapter] upstream fetch failed', {
+            provider: providerName,
+            mode,
+            ms: Date.now() - started,
+            err: e instanceof Error ? e.message : String(e),
+        });
+        return null;
+    } finally {
+        clearTimeout(timer);
+    }
+
+    if (!upstream.ok) {
+        // 上游是网关:它的 4xx/5xx 不终态化,交由调用方 503 让 new-api 切别的渠道兜底。
+        const errText = await upstream.text().catch(() => '');
+        console.warn('[image-adapter] upstream error', {
+            provider: providerName,
+            mode,
+            status: upstream.status,
+            ms: Date.now() - started,
+            body: sanitizeAdapterError(errText.slice(0, 500), provider.brand),
+        });
+        return null;
+    }
+
+    const data = (await upstream.json().catch(() => null)) as {
+        data?: Array<{ b64_json?: string; url?: string }>;
+    } | null;
+    const rawItems = Array.isArray(data?.data) ? data.data.filter((it) => it && (it.b64_json || it.url)) : [];
+    if (rawItems.length === 0) {
+        console.warn('[image-adapter] upstream returned no image', {
+            provider: providerName,
+            mode,
+            ms: Date.now() - started,
+        });
+        return null;
+    }
+
+    // 上游 URL 一律不外泄(response_format 被无视时仍可能返 url —— 它指向上游自家 OSS,
+    // 直接透传 = azure 伪装穿帮 + cache 链接会过期)→ 这里拉下来转 b64;拉不动 → 本次算失败。
+    const out: string[] = [];
+    for (const it of rawItems) {
+        if (it.b64_json) {
+            out.push(it.b64_json);
+            continue;
+        }
+        const b64 = await fetchImageAsB64(it.url as string);
+        if (!b64) {
+            console.warn('[image-adapter] url→b64 fetch failed', { provider: providerName, mode });
+            return null;
+        }
+        out.push(b64);
+    }
+    return out;
+}
+
 // ============ 主流程 ============
 
 export async function handleAdapterImage(
@@ -309,95 +418,27 @@ export async function handleAdapterImage(
         );
     }
 
-    // ---- 调真实上游 ----
-    const url = `${provider.baseUrl}/v1/images/${mode}`;
-    let upstreamBody: BodyInit;
-    const headers: Record<string, string> = { authorization: auth };
-    if (mode === 'edits') {
-        const f = new FormData();
-        f.append('model', 'gpt-image-2');
-        f.append('prompt', parsed.prompt);
-        f.append('size', parsed.size.trim());
-        f.append('response_format', 'b64_json'); // 不带时 ominiapi 返自家 OSS url(上游身份泄漏),显式要 b64
-        if (parsed.quality) f.append('quality', normQuality(parsed.quality));
-        if (parsed.n > 1) f.append('n', String(parsed.n));
-        for (const [k, v] of Object.entries(parsed.extras)) f.append(k, v);
-        for (const img of parsed.images)
-            f.append('image', new Blob([new Uint8Array(img.buf)], { type: img.type }), img.name);
-        upstreamBody = f; // fetch 自动生成 multipart boundary(不能手写 content-type,gotcha #21)
-    } else {
-        const j: Record<string, unknown> = {
-            model: 'gpt-image-2',
-            prompt: parsed.prompt,
-            size: parsed.size.trim(),
-            response_format: 'b64_json', // 同上:2026-08-04 smoke 实测缺省返 url
-        };
-        if (parsed.quality) j.quality = normQuality(parsed.quality);
-        if (parsed.n > 1) j.n = parsed.n;
-        Object.assign(j, parsed.extras);
-        upstreamBody = JSON.stringify(j);
-        headers['content-type'] = 'application/json';
-    }
-
+    // ---- 调真实上游(n>1 时并发扇出,见 callUpstreamOnce 头部注释)----
     const started = Date.now();
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), UPSTREAM_TIMEOUT_MS);
-    let upstream: Response;
-    try {
-        upstream = await fetch(url, { method: 'POST', headers, body: upstreamBody, signal: ctrl.signal });
-    } catch (e) {
-        console.warn('[image-adapter] upstream fetch failed', {
+    const fanout = Math.min(parsed.n, MAX_FANOUT);
+    if (parsed.n > MAX_FANOUT) {
+        console.warn('[image-adapter] n clamped', { provider: providerName, requested: parsed.n, used: MAX_FANOUT });
+    }
+    const results = await Promise.all(
+        Array.from({ length: fanout }, () => callUpstreamOnce(provider, providerName, mode, parsed, auth)),
+    );
+    const items = results.flatMap((b64s) => (b64s ?? []).map((b64_json) => ({ b64_json })));
+    if (items.length === 0) {
+        // 全军覆没才 failover(部分成功 → 返回拿到的那几张,按张计费)
+        return failover('upstream_error', `all ${fanout} upstream call(s) failed`);
+    }
+    if (items.length < fanout) {
+        console.warn('[image-adapter] partial fanout', {
             provider: providerName,
             mode,
-            ms: Date.now() - started,
-            err: e instanceof Error ? e.message : String(e),
+            requested: fanout,
+            got: items.length,
         });
-        return failover('upstream_unreachable', 'upstream fetch failed or timed out');
-    } finally {
-        clearTimeout(timer);
-    }
-
-    if (!upstream.ok) {
-        // 上游是网关:它的 4xx/5xx 一律 503 让 new-api 切别的渠道兜底(不合成 usage = 不扣费)。
-        const errText = await upstream.text().catch(() => '');
-        console.warn('[image-adapter] upstream error', {
-            provider: providerName,
-            mode,
-            status: upstream.status,
-            ms: Date.now() - started,
-            body: errText.slice(0, 500),
-        });
-        return failover('upstream_error', sanitizeAdapterError(errText.slice(0, 300), provider.brand));
-    }
-
-    const data = (await upstream.json().catch(() => null)) as {
-        created?: number;
-        data?: Array<{ b64_json?: string; url?: string; revised_prompt?: string }>;
-    } | null;
-    const rawItems = Array.isArray(data?.data) ? data.data.filter((it) => it && (it.b64_json || it.url)) : [];
-    if (rawItems.length === 0) {
-        console.warn('[image-adapter] upstream returned no image', {
-            provider: providerName,
-            mode,
-            ms: Date.now() - started,
-        });
-        return failover('upstream_no_image', 'upstream returned no image');
-    }
-
-    // 上游 URL 一律不外泄(response_format 被无视时仍可能返 url —— 它指向上游自家 OSS,
-    // 直接透传 = azure 伪装穿帮 + cache 链接会过期)→ 这里拉下来转 b64;拉不动 → 503 failover。
-    const items: Array<{ b64_json: string }> = [];
-    for (const it of rawItems) {
-        if (it.b64_json) {
-            items.push({ b64_json: it.b64_json });
-            continue;
-        }
-        const b64 = await fetchImageAsB64(it.url as string);
-        if (!b64) {
-            console.warn('[image-adapter] url→b64 fetch failed', { provider: providerName, mode });
-            return failover('upstream_image_unreachable', 'failed to retrieve generated image');
-        }
-        items.push({ b64_json: b64 });
     }
 
     // ---- 合成 usage(丢弃上游假 token)----
@@ -415,10 +456,11 @@ export async function handleAdapterImage(
         size: parsed.size,
         tier,
         quality,
+        nRequested: parsed.n,
         images: items.length,
         pt: usage.input_tokens,
         ct: usage.output_tokens,
         ms: Date.now() - started,
     });
-    return NextResponse.json({ created: data?.created ?? Math.floor(Date.now() / 1000), data: items, usage });
+    return NextResponse.json({ created: Math.floor(Date.now() / 1000), data: items, usage });
 }

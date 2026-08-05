@@ -52,17 +52,22 @@ afterEach(() => {
     vi.unstubAllGlobals();
 });
 
+/** ⚠️ 必须 mockImplementation 每次造【新】Response:Response body 只能读一次,
+ *  用 mockResolvedValue 复用同一个对象会让扇出的第 2..n 次调用读 body 失败(伪装成"上游失败"),
+ *  测试会以错误的理由通过。 */
 function okUpstream(nImages = 1) {
-    fetchMock.mockResolvedValue(
-        new Response(
+    let seq = 0;
+    fetchMock.mockImplementation(async () => {
+        const s = seq++;
+        return new Response(
             JSON.stringify({
                 created: 1234,
-                data: Array.from({ length: nImages }, (_, i) => ({ b64_json: `img${i}` })),
+                data: Array.from({ length: nImages }, (_, i) => ({ b64_json: `img${s}-${i}` })),
                 usage: { input_tokens: 1, output_tokens: 1120, total_tokens: 1121 }, // 上游假 usage,必须被丢弃
             }),
             { status: 200, headers: { 'content-type': 'application/json' } },
-        ),
-    );
+        );
+    });
 }
 
 describe('sizeTier / isProfitable(守门口径)', () => {
@@ -236,7 +241,7 @@ describe('handleAdapterImage 成功路径', () => {
         );
         expect(res.status).toBe(200);
         const body = await res.json();
-        expect(body.data).toEqual([{ b64_json: 'img0' }]);
+        expect(body.data).toEqual([{ b64_json: 'img0-0' }]);
         expect(body.usage.output_tokens).toBe(3800); // 不是上游的 1120
         expect(body.usage.input_tokens).toBe(estimateTextTokens('a 4k cat'));
         // 上游收到的请求:model 强制 gpt-image-2、JSON content-type、Authorization 透传
@@ -289,15 +294,111 @@ describe('handleAdapterImage 成功路径', () => {
         expect((await res.json()).error.code).toBe('upstream_unavailable');
     });
 
-    it('n>1 按上游真实出图张数累加 ct', async () => {
-        okUpstream(3);
+    it('n=1 只打一次上游', async () => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160' }),
+            'generations',
+            'ominiapi',
+        );
+        expect(res.status).toBe(200);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe('handleAdapterImage n>1 并发扇出(ominiapi 忽略 n,只能自己扇)', () => {
+    it('n=4 → 打 4 次上游、返 4 张、ct 按 4 张算,且不给上游传 n', async () => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160', n: 4 }),
+            'generations',
+            'ominiapi',
+        );
+        expect(res.status).toBe(200);
+        expect(fetchMock).toHaveBeenCalledTimes(4);
+        const body = await res.json();
+        expect(body.data).toHaveLength(4);
+        expect(new Set(body.data.map((d: { b64_json: string }) => d.b64_json)).size).toBe(4); // 4 张互不相同
+        expect(body.usage.output_tokens).toBe(3800 * 4);
+        // 每次上游调用都只要 1 张 —— 传 n 给 ominiapi 无效,反而会混淆
+        for (const [, init] of fetchMock.mock.calls) {
+            expect(JSON.parse(init.body as string).n).toBeUndefined();
+        }
+    });
+
+    it('n 任意值都生效(不是写死 4):n=2 / n=7', async () => {
+        for (const n of [2, 7]) {
+            fetchMock.mockReset();
+            okUpstream();
+            const res = await handleAdapterImage(
+                jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160', n }),
+                'generations',
+                'ominiapi',
+            );
+            expect(fetchMock).toHaveBeenCalledTimes(n);
+            expect((await res.json()).usage.output_tokens).toBe(3800 * n);
+        }
+    });
+
+    it('n 超过 10 钳到 10(不报错,防单请求内存爆表)', async () => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160', n: 50 }),
+            'generations',
+            'ominiapi',
+        );
+        expect(fetchMock).toHaveBeenCalledTimes(10);
+        expect((await res.json()).data).toHaveLength(10);
+    });
+
+    it('部分失败 → 返回拿到的那几张,按实际张数计费(不 failover)', async () => {
+        let call = 0;
+        fetchMock.mockImplementation(async () => {
+            const i = call++;
+            if (i % 2 === 0) return new Response('{"error":{"message":"busy"}}', { status: 429 });
+            return new Response(JSON.stringify({ data: [{ b64_json: `ok${i}` }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            });
+        });
+        const res = await handleAdapterImage(
+            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160', n: 4 }),
+            'generations',
+            'ominiapi',
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data).toHaveLength(2);
+        expect(body.usage.output_tokens).toBe(3800 * 2); // 只收 2 张的钱
+    });
+
+    it('全部失败 → 503 failover(不合成 usage)', async () => {
+        fetchMock.mockImplementation(async () => new Response('{"error":{}}', { status: 500 }));
         const res = await handleAdapterImage(
             jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160', n: 3 }),
             'generations',
             'ominiapi',
         );
-        const body = await res.json();
-        expect(body.usage.output_tokens).toBe(3800 * 3);
+        expect(res.status).toBe(503);
+        expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
+
+    it('multipart edits 扇出:每次都重建 FormData 且带齐输入图', async () => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            formReq(URL_EDIT, { prompt: 'e', size: '3840x2160', quality: 'high', n: '3' }, [TINY_PNG]),
+            'edits',
+            'ominiapi',
+        );
+        expect(res.status).toBe(200);
+        expect(fetchMock).toHaveBeenCalledTimes(3);
+        for (const [, init] of fetchMock.mock.calls) {
+            const f = init.body as FormData;
+            expect(f).toBeInstanceOf(FormData);
+            expect(f.getAll('image')).toHaveLength(1);
+            expect(f.get('n')).toBeNull();
+        }
+        expect((await res.json()).usage.output_tokens).toBe(14000 * 3);
     });
 
     it('multipart edits:解析 prompt/size/quality + 输入图透传上游 + 输入图 token 计入', async () => {
