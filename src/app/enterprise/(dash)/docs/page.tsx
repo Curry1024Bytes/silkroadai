@@ -2,9 +2,23 @@
  * 企业门户客户接入文档页(2026-07-20)。全量内容(参数表/示例/素材库契约/错误码/FAQ),
  * 不做删减版 —— 客户技术对接人看这一页即可完成接入。静态 JSX(镜像主站 /docs 模式)。
  */
+import { officialCostCny } from '@/lib/seedance/cn-billing';
+import type { SeedanceVariant } from '@/lib/seedance/cn-adapter';
+
 export const dynamic = 'force-dynamic';
 
 export const metadata = { title: 'Seedance 企业端口 · 接入文档' };
+
+/** 官方挂牌价(¥/1M token)—— 从费率表推导(零售 ÷ 0.85),避免文档硬编码漂移。
+ *  实付 = 挂牌 × 客户折扣率(默认 8.5 折),明细见「计费流水」页三列口径。 */
+function listPrices(variant: SeedanceVariant, resolutions: string[], hasVideo: boolean): string {
+    return resolutions
+        .map((r) => {
+            const v = officialCostCny(1_000_000, r as never, hasVideo, variant);
+            return Number.isInteger(v) ? String(v) : String(+v.toFixed(3));
+        })
+        .join(' / ');
+}
 
 const BASE = process.env.NEXT_PUBLIC_ENTERPRISE_BASE_URL || 'http://128.241.232.23';
 
@@ -124,7 +138,9 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
 
             <Section id="models" title="2. 模型与计费">
                 <p>
-                    三个模型,分辨率用 <Code>resolution</Code> 参数选,带参考图/视频自动识别 —— 无需切换模型名:
+                    三个模型,分辨率用 <Code>resolution</Code> 参数选,带参考图/视频自动识别 —— 无需切换模型名。
+                    <b>下表为官方挂牌价</b>;实际结算按您账户的折扣率计算,「计费流水」页每笔均标注
+                    <b>官方价 / 折扣 / 实付</b>三列。
                 </p>
                 <div className="overflow-x-auto">
                     <table className="w-full text-sm">
@@ -133,8 +149,8 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                                 <Th>模型</Th>
                                 <Th>说明</Th>
                                 <Th>分辨率</Th>
-                                <Th>无视频输入(¥/1M token)</Th>
-                                <Th>含视频输入(¥/1M token)</Th>
+                                <Th>无视频输入(官方价 ¥/1M token)</Th>
+                                <Th>含视频输入(官方价 ¥/1M token)</Th>
                             </tr>
                         </thead>
                         <tbody>
@@ -144,8 +160,8 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                                 </Td>
                                 <Td>旗舰(Pro)</Td>
                                 <Td>480p / 720p / 1080p / 4k</Td>
-                                <Td>39.1 / 39.1 / 43.35 / 22.1</Td>
-                                <Td>23.8 / 23.8 / 26.35 / 13.6</Td>
+                                <Td>{listPrices('pro', ['480p', '720p', '1080p', '4k'], false)}</Td>
+                                <Td>{listPrices('pro', ['480p', '720p', '1080p', '4k'], true)}</Td>
                             </tr>
                             <tr>
                                 <Td>
@@ -153,8 +169,8 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                                 </Td>
                                 <Td>快速档</Td>
                                 <Td>480p / 720p / 1080p</Td>
-                                <Td>31.45</Td>
-                                <Td>18.7</Td>
+                                <Td>{listPrices('fast', ['720p'], false)}</Td>
+                                <Td>{listPrices('fast', ['720p'], true)}</Td>
                             </tr>
                             <tr>
                                 <Td>
@@ -162,8 +178,8 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                                 </Td>
                                 <Td>轻量档</Td>
                                 <Td>480p / 720p / 1080p</Td>
-                                <Td>19.55</Td>
-                                <Td>11.9</Td>
+                                <Td>{listPrices('mini', ['720p'], false)}</Td>
+                                <Td>{listPrices('mini', ['720p'], true)}</Td>
                             </tr>
                         </tbody>
                     </table>
@@ -175,8 +191,8 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                         1024,与分辨率、时长线性相关)。
                     </li>
                     <li>
-                        参考:720p 5 秒 ≈ 108,872 token → seedance-2-0 约 ¥4.26、fast 约 ¥3.42、mini 约 ¥2.13;1080p ≈
-                        720p 的 2.25 倍 token。
+                        参考:720p 5 秒 ≈ 108,872 token → 按官方价 seedance-2-0 约 ¥5.01、fast 约 ¥4.03、mini 约
+                        ¥2.50(折后按您的折扣率,如 8.5 折则分别约 ¥4.26 / ¥3.42 / ¥2.13);1080p ≈ 720p 的 2.25 倍 token。
                     </li>
                     <li>
                         <b>480p 与 720p 同费率</b>(单价一样,但 token 量 ∝ 像素,480p 整条约为 720p 的一半价)。国内版 /
@@ -213,8 +229,8 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                                 <tr>
                                     <Th>模型</Th>
                                     <Th>分辨率</Th>
-                                    <Th>无视频输入</Th>
-                                    <Th>含视频输入</Th>
+                                    <Th>无视频输入(官方价)</Th>
+                                    <Th>含视频输入(官方价)</Th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -223,24 +239,24 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                                         <Code>seedance-2-0-promax</Code>
                                     </Td>
                                     <Td>480p / 720p / 1080p / 4k</Td>
-                                    <Td>57.8 / 57.8 / 62.424 / 32.368</Td>
-                                    <Td>34.68 / 34.68 / 38.148 / 19.652</Td>
+                                    <Td>{listPrices('promax', ['480p', '720p', '1080p', '4k'], false)}</Td>
+                                    <Td>{listPrices('promax', ['480p', '720p', '1080p', '4k'], true)}</Td>
                                 </tr>
                                 <tr>
                                     <Td>
                                         <Code>seedance-2-0-promax-fast</Code>
                                     </Td>
                                     <Td>480p / 720p</Td>
-                                    <Td>46.24</Td>
-                                    <Td>27.9616</Td>
+                                    <Td>{listPrices('promax-fast', ['720p'], false)}</Td>
+                                    <Td>{listPrices('promax-fast', ['720p'], true)}</Td>
                                 </tr>
                                 <tr>
                                     <Td>
                                         <Code>seedance-2-0-promax-mini</Code>
                                     </Td>
                                     <Td>480p / 720p</Td>
-                                    <Td>28.9</Td>
-                                    <Td>17.34</Td>
+                                    <Td>{listPrices('promax-mini', ['720p'], false)}</Td>
+                                    <Td>{listPrices('promax-mini', ['720p'], true)}</Td>
                                 </tr>
                             </tbody>
                         </table>
