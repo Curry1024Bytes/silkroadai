@@ -1285,6 +1285,9 @@ model EnterpriseAssetGroup {
   user_id     String   @db.Uuid
   name        String
   description String?
+  // 2026-08-06:对齐火山官方 GroupType(AIGC | LivenessFace)。真人素材四渠道通用,
+  // 与 AIGC 一样平台托管;列表按类型过滤(官方语义缺省 AIGC)。存量行 backfill AIGC。
+  group_type  String   @default("AIGC")
   created_at  DateTime @default(now())
   updated_at  DateTime @updatedAt
 

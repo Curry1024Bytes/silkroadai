@@ -105,8 +105,8 @@ describe('火山渠道(volc)路由', () => {
         );
         expect(res.status).toBe(200);
         expect(submitVolcVideo).toHaveBeenCalledWith(expect.objectContaining({ content }), '720p', 5);
-        // volc 不走 R2 素材解析
-        expect(resolveAssetRefs).not.toHaveBeenCalled();
+        // volc 走【混合解析】(lenient):平台素材换直链,认不出的 asset:// 原样透传(mock 原样返回)
+        expect(resolveAssetRefs).toHaveBeenCalledWith(expect.anything(), 'u1', { lenient: true });
     });
 
     it('volc 支持 480p(2026-08-03 开放):透传适配器 + 任务落库 480p', async () => {
@@ -418,6 +418,7 @@ describe('提交', () => {
         expect(resolveAssetRefs).toHaveBeenCalledWith(
             expect.objectContaining({ images: ['asset-20260719120000-aaaaaa'] }),
             'u1',
+            undefined, // 非 volc:严格模式
         );
         expect(submitVideoWithKey).toHaveBeenCalledWith(substituted, 'Bearer sk-upstream-u1');
     });

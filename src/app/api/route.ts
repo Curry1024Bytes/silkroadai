@@ -12,7 +12,6 @@ import {
     type AssetType,
 } from '@/lib/enterprise/assets';
 import { RealPersonError, createVisualValidateSession, getVisualValidateGroupId } from '@/lib/enterprise/real-person';
-import { handleVolcAssetAction, VOLC_ASSET_ACTIONS } from '@/lib/enterprise/volc-assets';
 
 export const runtime = 'nodejs';
 
@@ -73,21 +72,29 @@ const updateAssetSchema = idSchema.extend({
     Description: z.string().trim().max(500).nullable().optional(),
     GroupId: z.string().trim().max(60).nullable().optional(),
 });
+const groupTypeInput = z.enum(['AIGC', 'LivenessFace']);
 const listAssetsSchema = z.object({
     GroupId: z.string().trim().max(60).optional(),
     AssetType: assetTypeInput.optional(),
+    GroupType: groupTypeInput.optional(),
+    Filter: z.object({ GroupType: groupTypeInput.optional() }).optional(),
     PageNumber: z.number().int().min(1).default(1),
     PageSize: z.number().int().min(1).max(100).default(20),
 });
 const createGroupSchema = z.object({
     Name: z.string().trim().min(1).max(100),
     Description: z.string().trim().max(500).optional(),
+    // 对齐火山官方:AIGC(虚拟/生成素材,缺省)| LivenessFace(真人素材,四渠道通用,平台托管)
+    GroupType: groupTypeInput.default('AIGC'),
 });
 const updateGroupSchema = idSchema.extend({
     Name: z.string().trim().min(1).max(100).optional(),
     Description: z.string().trim().max(500).nullable().optional(),
 });
 const listGroupsSchema = z.object({
+    // 官方语义:query 缺省只列 AIGC,真人组须显式 GroupType=LivenessFace
+    GroupType: groupTypeInput.optional(),
+    Filter: z.object({ GroupType: groupTypeInput.optional() }).optional(),
     PageNumber: z.number().int().min(1).default(1),
     PageSize: z.number().int().min(1).max(100).default(20),
 });
@@ -117,11 +124,18 @@ function assetResult(a: {
     };
 }
 
-function groupResult(g: { id: string; name: string; description: string | null; created_at: Date }) {
+function groupResult(g: {
+    id: string;
+    name: string;
+    description: string | null;
+    group_type: string;
+    created_at: Date;
+}) {
     return {
         Id: g.id,
         Name: g.name,
         Description: g.description ?? undefined,
+        GroupType: g.group_type,
         CreatedAt: g.created_at.toISOString(),
     };
 }
@@ -168,12 +182,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         }
     }
 
+    // 素材库(2026-08-06 v3,operator 拍板):【全部素材统一平台托管】—— 真人素材四渠道
+    // 通用,LivenessFace 只是分组类型不再决定存储位置;727 provider 素材路由下线
+    // (volc-assets.ts 保留未挂接,provider 账号复活后如需可重接)。volc 生成引用平台
+    // 素材走 lenient 混合解析(见 enterprise/proxy)。
     try {
-        // volc 客户的素材库走 provider REST(返火山直链),不走我们 R2 —— 让真人 GroupId /
-        // 素材 / volc 视频(asset://id)全在同一 provider 账号内自洽(Phase 2b)。
-        if (isVolc && VOLC_ASSET_ACTIONS.has(action)) {
-            return ok(action, await handleVolcAssetAction(action, body));
-        }
         switch (action) {
             case 'CreateAsset': {
                 const p = createAssetSchema.safeParse(body);
@@ -231,9 +244,25 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             case 'ListAssets': {
                 const p = listAssetsSchema.safeParse(body);
                 if (!p.success) return fail(action, 400, 'InvalidParameter', p.error.issues[0]?.message || 'invalid');
+                // GroupType 过滤(官方语义,显式 GroupId 时以组为准跳过):LivenessFace →
+                // 仅真人组内;AIGC/缺省 → 排除真人组(含未分组)。
+                const at = p.data.GroupType ?? p.data.Filter?.GroupType ?? 'AIGC';
+                let typeCond: Record<string, unknown> = {};
+                if (!p.data.GroupId) {
+                    const liveness = await prisma.enterpriseAssetGroup.findMany({
+                        where: { user_id: userId, group_type: 'LivenessFace' },
+                        select: { id: true },
+                    });
+                    const ids = liveness.map((g) => g.id);
+                    if (at === 'LivenessFace') {
+                        typeCond = { group_id: { in: ids } };
+                    } else if (ids.length) {
+                        typeCond = { OR: [{ group_id: null }, { group_id: { notIn: ids } }] };
+                    }
+                }
                 const where = {
                     user_id: userId,
-                    ...(p.data.GroupId ? { group_id: p.data.GroupId } : {}),
+                    ...(p.data.GroupId ? { group_id: p.data.GroupId } : typeCond),
                     ...(p.data.AssetType ? { asset_type: p.data.AssetType } : {}),
                 };
                 const [total, items] = await Promise.all([
@@ -261,6 +290,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
                         user_id: userId,
                         name: p.data.Name,
                         description: p.data.Description ?? null,
+                        group_type: p.data.GroupType,
                     },
                 });
                 return ok(action, { Id: g.id });
@@ -304,10 +334,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             case 'ListAssetGroups': {
                 const p = listGroupsSchema.safeParse(body);
                 if (!p.success) return fail(action, 400, 'InvalidParameter', p.error.issues[0]?.message || 'invalid');
+                // 官方语义:缺省列 AIGC;真人组须显式 GroupType=LivenessFace
+                const gt = p.data.GroupType ?? p.data.Filter?.GroupType ?? 'AIGC';
+                const gWhere = { user_id: userId, group_type: gt };
                 const [total, items] = await Promise.all([
-                    prisma.enterpriseAssetGroup.count({ where: { user_id: userId } }),
+                    prisma.enterpriseAssetGroup.count({ where: gWhere }),
                     prisma.enterpriseAssetGroup.findMany({
-                        where: { user_id: userId },
+                        where: gWhere,
                         orderBy: { created_at: 'desc' },
                         skip: (p.data.PageNumber - 1) * p.data.PageSize,
                         take: p.data.PageSize,
