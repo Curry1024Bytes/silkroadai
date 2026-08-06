@@ -74,7 +74,7 @@
 
 ---
 
-## 当前生产环境快照(2026-08-04)— 必读
+## 当前生产环境快照(2026-08-06)— 必读
 
 当前环境与 2026-05/06 的旧 VPS 不同。今后的生产操作以
 [`deploy/部署与运维手册.md`](deploy/部署与运维手册.md)为唯一权威手册;
@@ -86,9 +86,9 @@
 - Portal:容器 `silkroadai-portal`;PostgreSQL 16 容器 `silkroadai-portal-db`,仅回环 `127.0.0.1:5432`。
 - new-api:容器 `new-api`,宿主机绑定 `172.17.0.1:3000`,网络 `new-api_new-api-net`,数据目录 `/opt/new-api/data`;
   MySQL 8 容器为 `new-api-mysql`。Portal 用 `http://host.docker.internal:3000` 访问。
-- VPS Git 工作区和 Portal 运行镜像均为 `prod@b480b09`,Portal 回滚代码 SHA 为 `149d9c4`。
-  2026-08-05 发布前已生成 0600 的 `.env.bak.20260805-114701` 和 Portal PostgreSQL 备份
-  `/opt/backups/silkroadai-portal/portal-20260805-034701.sql.gz`,后者 `gzip -t` 通过。
+- VPS Git 工作区和 Portal 运行镜像均为 `prod@53d30a3`,Portal 回滚代码 SHA 为 `b480b09`。
+  2026-08-06 发布前已生成 0600 的 `.env.bak.20260806-211143` 和 Portal PostgreSQL 备份
+  `/opt/backups/silkroadai-portal/portal-20260806-131143.sql.gz`,后者 `gzip -t` 通过。
 - 当前公网已验收:`llmroute.club` / `www.llmroute.club`、Google OAuth、GitHub OAuth、zpayz 支付宝充值及
   幂等入账。`api.llmroute.club` 已使用显式 API-only Nginx virtual host,只放行 `/v1/*`、`/v1beta/*`;
   假 Key 为 401,两类 CORS 预检为 204,`/login` / `/admin/login` 和主站 `/image-adapter/*` 均为 404。
@@ -156,7 +156,7 @@
   保持 720p/1080p[/4k],请求 480p 时 Portal 直接返回带替代指引的 400。无 migration/env/依赖/
   Docker/Nginx/Cloudflare 变化;定向 125/125、CI 245 files / 2693 passed / 1 skipped、typecheck/
   format/lint 0 error 且生产构建通过。完整测试另有 2 个联机 smoke 因本机未开 `127.0.0.1:13000`
-  VPS 隧道而 `ECONNREFUSED`,不属于代码回归。该批次尚未部署,VPS 镜像仍为 `prod@b480b09`。
+  VPS 隧道而 `ECONNREFUSED`,不属于代码回归;已随 `prod@53d30a3` 于 2026-08-06 部署。
 - 2026-08-06 同步期间上游又前进到 `main@35036ed`,新增 2 个提交并 clean merge 到 `dev`
   (`d5cd281`):`/v1/responses` 遇上游 5xx 时同请求体最多重 POST 一次并回传 failover 状态头(4xx、
   `/chat/completions`、`/messages` 不重试);Enterprise `/api/v3` 查询响应补齐火山/BytePlus 官方字段,
@@ -164,18 +164,25 @@
   `20260806040000_add_seedance_task_submit_params`,向 `seedance_video_tasks` 加 3 个可空回显字段,
   无 backfill;部署新镜像前必须执行 migration。无 env/依赖/Docker/Nginx/Cloudflare 变化;Prisma
   validate、定向 381/381、CI 245 files / 2700 passed / 1 skipped、typecheck/format/lint 0 error 且
-  生产构建通过。完整测试为 2701 passed / 1 skipped / 2 个上述联机 smoke 失败。该批次尚未部署,
-  VPS 镜像仍为 `prod@b480b09`。
+  生产构建通过。完整测试为 2701 passed / 1 skipped / 2 个上述联机 smoke 失败;已随
+  `prod@53d30a3` 于 2026-08-06 部署。
 - 2026-08-06 上游 `main@ccae480` 的 3 个提交已 clean merge 到 `dev`(`c5a5a55`):Enterprise
   素材库经两轮分流修正后最终统一为平台 R2 托管,AIGC 与 `LivenessFace` 真人素材四渠道通用,
   727 provider 素材 Action 路由下线;素材组新增 `GroupType` 白名单与官方缺省筛选语义,火山生成
   继续以 lenient 模式解析平台素材引用。新增 migration `20260806120000_add_asset_group_type`,给
   `enterprise_asset_groups` 增加非空、默认 `AIGC` 的 `group_type`,无数据删除。无新 env/依赖/
   Docker/Nginx/Cloudflare 变化,但部署前必须确认现有 `R2_*` 凭据、bucket、公开域名及真人素材
-  访问/保留/删除策略;当前生产快照的平台 R2/OSS 仍未完成,不能跳过该前置条件。Prisma validate、
+  访问/保留/删除策略。Prisma validate、
   定向 88/88、CI 245 files / 2708 passed / 1 skipped、typecheck/format/lint 0 error 且生产构建通过;
-  完整测试为 2709 passed / 1 skipped / 2 个上述联机 smoke 失败。该批次尚未部署,VPS 镜像仍为
-  `prod@b480b09`。
+  完整测试为 2709 passed / 1 skipped / 2 个上述联机 smoke 失败;已随 `prod@53d30a3` 于
+  2026-08-06 部署。生产 `R2_ACCOUNT_ID` / Access Key / Secret 仍未设置,所以 Enterprise 素材上传
+  明确不可用,不能误报已验收;普通注册、充值和 API 路径不依赖该功能。
+- 2026-08-06 `prod@53d30a3` 发布验收:新镜像先构建成功再切换,Portal/PostgreSQL healthy、Portal
+  restart count 0、数据库 62 migrations applied / 0 pending / 0 rolled back,5 个用户可读;新增
+  Seedance 3 个回显列存在,素材组 `group_type` 无 NULL。Portal -> new-api 宿主机/容器链路均 200;
+  Nginx 配置通过,apex/`www` 登录页与模型页 200、API 假 Key 401、API 非白名单路径与主站
+  `/image-adapter/*` 404、两类 CORS 204 且 allow headers 完整、Google/GitHub OAuth start 302。
+  本次未重复执行真实 OAuth 登录、真实支付或真实模型调用;沿用既有验收,new-api 未上货状态不变。
 - new-api rc.22 登录兼容决策:优先直接使用登录响应的 `data.access_token`;仅旧版本 `session=` cookie 走 fallback。
   该路径已通过 Google/GitHub 真实开户验证,不要把 `new_api_refresh` 当 session。
 
