@@ -157,6 +157,15 @@
   Docker/Nginx/Cloudflare 变化;定向 125/125、CI 245 files / 2693 passed / 1 skipped、typecheck/
   format/lint 0 error 且生产构建通过。完整测试另有 2 个联机 smoke 因本机未开 `127.0.0.1:13000`
   VPS 隧道而 `ECONNREFUSED`,不属于代码回归。该批次尚未部署,VPS 镜像仍为 `prod@b480b09`。
+- 2026-08-06 同步期间上游又前进到 `main@35036ed`,新增 2 个提交并 clean merge 到 `dev`
+  (`d5cd281`):`/v1/responses` 遇上游 5xx 时同请求体最多重 POST 一次并回传 failover 状态头(4xx、
+  `/chat/completions`、`/messages` 不重试);Enterprise `/api/v3` 查询响应补齐火山/BytePlus 官方字段,
+  proMax 接受并回显 `byteplus/seedance-2.0*` 别名。新增 migration
+  `20260806040000_add_seedance_task_submit_params`,向 `seedance_video_tasks` 加 3 个可空回显字段,
+  无 backfill;部署新镜像前必须执行 migration。无 env/依赖/Docker/Nginx/Cloudflare 变化;Prisma
+  validate、定向 381/381、CI 245 files / 2700 passed / 1 skipped、typecheck/format/lint 0 error 且
+  生产构建通过。完整测试为 2701 passed / 1 skipped / 2 个上述联机 smoke 失败。该批次尚未部署,
+  VPS 镜像仍为 `prod@b480b09`。
 - new-api rc.22 登录兼容决策:优先直接使用登录响应的 `data.access_token`;仅旧版本 `session=` cookie 走 fallback。
   该路径已通过 Google/GitHub 真实开户验证,不要把 `new_api_refresh` 当 session。
 
