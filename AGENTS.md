@@ -166,6 +166,16 @@
   validate、定向 381/381、CI 245 files / 2700 passed / 1 skipped、typecheck/format/lint 0 error 且
   生产构建通过。完整测试为 2701 passed / 1 skipped / 2 个上述联机 smoke 失败。该批次尚未部署,
   VPS 镜像仍为 `prod@b480b09`。
+- 2026-08-06 上游 `main@ccae480` 的 3 个提交已 clean merge 到 `dev`(`c5a5a55`):Enterprise
+  素材库经两轮分流修正后最终统一为平台 R2 托管,AIGC 与 `LivenessFace` 真人素材四渠道通用,
+  727 provider 素材 Action 路由下线;素材组新增 `GroupType` 白名单与官方缺省筛选语义,火山生成
+  继续以 lenient 模式解析平台素材引用。新增 migration `20260806120000_add_asset_group_type`,给
+  `enterprise_asset_groups` 增加非空、默认 `AIGC` 的 `group_type`,无数据删除。无新 env/依赖/
+  Docker/Nginx/Cloudflare 变化,但部署前必须确认现有 `R2_*` 凭据、bucket、公开域名及真人素材
+  访问/保留/删除策略;当前生产快照的平台 R2/OSS 仍未完成,不能跳过该前置条件。Prisma validate、
+  定向 88/88、CI 245 files / 2708 passed / 1 skipped、typecheck/format/lint 0 error 且生产构建通过;
+  完整测试为 2709 passed / 1 skipped / 2 个上述联机 smoke 失败。该批次尚未部署,VPS 镜像仍为
+  `prod@b480b09`。
 - new-api rc.22 登录兼容决策:优先直接使用登录响应的 `data.access_token`;仅旧版本 `session=` cookie 走 fallback。
   该路径已通过 Google/GitHub 真实开户验证,不要把 `new_api_refresh` 当 session。
 
