@@ -210,8 +210,12 @@ describe('素材组', () => {
     });
 });
 
-describe('volc 客户素材库路由', () => {
-    it('已开通 volc → CreateAsset 走 provider(handleVolcAssetAction),不走 R2', async () => {
+describe('volc 客户素材库路由(2026-08-06 起按请求密钥渠道分流)', () => {
+    it('已开通 volc + volc 区 sk-ent key → CreateAsset 走 provider(handleVolcAssetAction),不走 R2', async () => {
+        resolveEnterpriseAuth.mockResolvedValue({
+            ok: true,
+            customer: { userId: 'u1', tenantId: null, keyId: 'k1', upstreamKey: 'up', region: 'volc' },
+        });
         db.enterpriseUpstreamKey.findUnique.mockResolvedValue({ id: 'up-volc' });
         handleVolcAssetAction.mockResolvedValue({ Id: 'asset-provider-1', Status: 'PROCESSING' });
         const res = await POST(
@@ -225,6 +229,37 @@ describe('volc 客户素材库路由', () => {
             expect.objectContaining({ GroupId: 'group-1' }),
         );
         // 非 volc 的 R2 路径未被触发
+        expect(storeAsset).not.toHaveBeenCalled();
+    });
+
+    it('已开通 volc + promax 区 sk-ent key → CreateAsset 走 R2(素材要给 promax 生成引用)', async () => {
+        resolveEnterpriseAuth.mockResolvedValue({
+            ok: true,
+            customer: { userId: 'u1', tenantId: null, keyId: 'k1', upstreamKey: 'up', region: 'promax' },
+        });
+        db.enterpriseUpstreamKey.findUnique.mockResolvedValue({ id: 'up-volc' }); // 账号开通过 volc
+        fetchAssetFromUrl.mockResolvedValue({ bytes: 100, mime: 'image/png' });
+        storeAsset.mockResolvedValue({ id: 'asset-r2-2', public_url: 'https://r2/b.png' });
+        const res = await POST(
+            req('CreateAsset', { GroupId: 'group-1', URL: 'https://x/b.png', AssetType: 'Image', Name: 'b.png' }),
+        );
+        expect(res.status).toBe(200);
+        expect(storeAsset).toHaveBeenCalled();
+        expect(handleVolcAssetAction).not.toHaveBeenCalled();
+    });
+
+    it('已开通 volc + AK/SK 账号级(727 火山对齐面)→ 仍走 provider', async () => {
+        resolveEnterpriseAuth.mockResolvedValue({
+            ok: true,
+            customer: { userId: 'u1', tenantId: null, keyId: 'ak1', upstreamKey: '', region: 'cn', accountLevel: true },
+        });
+        db.enterpriseUpstreamKey.findUnique.mockResolvedValue({ id: 'up-volc' });
+        handleVolcAssetAction.mockResolvedValue({ Id: 'asset-provider-2' });
+        const res = await POST(
+            req('CreateAsset', { GroupId: 'group-1', URL: 'https://x/c.png', AssetType: 'Image', Name: 'c.png' }),
+        );
+        expect(res.status).toBe(200);
+        expect(handleVolcAssetAction).toHaveBeenCalled();
         expect(storeAsset).not.toHaveBeenCalled();
     });
 

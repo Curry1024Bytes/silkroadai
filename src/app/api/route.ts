@@ -168,10 +168,18 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         }
     }
 
+    // 素材库分流(2026-08-06 改按【请求密钥的渠道】,替代 Phase 2b 的账号级一刀切 ——
+    // 一刀切让"开通 volc 但在测 promax"的客户素材也被劫持到 provider,而 promax/cn/global
+    // 生成的 asset:// 引用解析的是我们 R2 库,素材传了也用不上,还吃 provider 配额):
+    //  - volc 区 sk-ent key → provider REST(火山直链;与真人 GroupId / volc 视频 asset:// 同一
+    //    provider 账号自洽,Phase 2b 语义不变)
+    //  - cn/global/promax 区 sk-ent key → 我们 R2 库(这三个渠道生成时 resolveAssetRefs 查的就是它)
+    //  - AK/SK / sk_ent_(账号级,727 火山对齐面,无渠道绑定)→ 开通 volc 即走 provider
+    //    (存量火山客户 AK/SK 脚本的 asset:// 视频引用依赖 provider 账号,不能断)
+    const useVolcAssets = isVolc && (auth.customer.accountLevel === true || auth.customer.region === 'volc');
+
     try {
-        // volc 客户的素材库走 provider REST(返火山直链),不走我们 R2 —— 让真人 GroupId /
-        // 素材 / volc 视频(asset://id)全在同一 provider 账号内自洽(Phase 2b)。
-        if (isVolc && VOLC_ASSET_ACTIONS.has(action)) {
+        if (useVolcAssets && VOLC_ASSET_ACTIONS.has(action)) {
             return ok(action, await handleVolcAssetAction(action, body));
         }
         switch (action) {
