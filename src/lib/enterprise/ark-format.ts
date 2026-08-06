@@ -24,12 +24,20 @@ const ARK_TO_INTERNAL: Record<string, string> = {
     seedance2: 'seedance-2-0',
     'seedance-2.0': 'seedance-2-0',
     'doubao-seedance-2-0': 'seedance-2-0',
+    // BytePlus ModelArk 形别名(2026-08-06 客户样例:海外 promax 系 = byteplus/ 前缀)
+    'byteplus/seedance-2.0': 'seedance-2-0-promax',
+    'byteplus/seedance-2.0-fast': 'seedance-2-0-promax-fast',
+    'byteplus/seedance-2.0-mini': 'seedance-2-0-promax-mini',
 };
-/** 内部短名 → 回显给客户的火山 model id(查询响应 model 字段用火山名)。 */
+/** 内部短名 → 回显给客户的火山 model id(查询响应 model 字段用火山名;
+ *  promax 系回显 BytePlus ModelArk 形 byteplus/…,对齐客户样例)。 */
 const INTERNAL_TO_ARK: Record<string, string> = {
     'seedance-2-0': 'doubao-seedance-2-0-260128',
     'seedance-2-0-fast': 'doubao-seedance-2-0-fast-260128',
     'seedance-2-0-mini': 'doubao-seedance-2-0-mini-260615',
+    'seedance-2-0-promax': 'byteplus/seedance-2.0',
+    'seedance-2-0-promax-fast': 'byteplus/seedance-2.0-fast',
+    'seedance-2-0-promax-mini': 'byteplus/seedance-2.0-mini',
 };
 
 /** 火山/别名 model → 内部归一名;认不出的原样返回(交给后续 model_not_found)。 */
@@ -105,9 +113,16 @@ export interface ArkTaskResponseInput {
     createdAt: Date;
     resolution?: string | null;
     duration?: number | null;
+    /** 提交参数回显(task 行新列,2026-08-06;存量行 NULL → 缺省)。 */
+    ratio?: string | null;
+    seed?: number | bigint | null;
+    generateAudio?: boolean | null;
 }
 
-/** 组装火山方舟查询任务响应体。 */
+/** 组装火山方舟查询任务响应体。2026-08-06 逐字段对齐客户样例(BytePlus ModelArk 形):
+ *  全字段常驻(draft/execution_expires_after/framespersecond/service_tier/tools/tool_usage),
+ *  error 恒为 {code,message} 对象(成功/进行中 = 空串,非 null —— 客户解析器按对象取值);
+ *  ratio/seed/generate_audio 从 task 行回显,存量 NULL 行用缺省(16:9 / 0 / true)。 */
 export function buildArkTaskResponse(inp: ArkTaskResponseInput): Record<string, unknown> {
     const nowSec = Math.floor(Date.now() / 1000);
     const base: Record<string, unknown> = {
@@ -116,6 +131,14 @@ export function buildArkTaskResponse(inp: ArkTaskResponseInput): Record<string, 
         status: inp.status,
         created_at: Math.floor(inp.createdAt.getTime() / 1000),
         updated_at: nowSec,
+        draft: false,
+        execution_expires_after: 0,
+        framespersecond: 0,
+        service_tier: '',
+        tools: null,
+        ratio: inp.ratio || '16:9',
+        seed: inp.seed != null ? Number(inp.seed) : 0,
+        generate_audio: inp.generateAudio ?? true,
     };
     if (inp.resolution) base.resolution = inp.resolution;
     if (inp.duration != null) base.duration = inp.duration;
@@ -128,17 +151,19 @@ export function buildArkTaskResponse(inp: ArkTaskResponseInput): Record<string, 
         if (inp.usage) {
             base.usage = {
                 completion_tokens: inp.usage.completion_tokens ?? inp.usage.total_tokens ?? 0,
+                tool_usage: { web_search: 0 },
                 total_tokens: inp.usage.total_tokens ?? inp.usage.completion_tokens ?? 0,
             };
         }
-        base.error = null;
+        base.error = { code: '', message: '' };
     } else if (inp.status === 'failed') {
         base.content = {};
-        base.error = arkFailError(inp.failReason);
+        const e = arkFailError(inp.failReason);
+        base.error = { code: e.code, message: e.message };
     } else {
         // queued / running
         base.content = {};
-        base.error = null;
+        base.error = { code: '', message: '' };
     }
     return base;
 }

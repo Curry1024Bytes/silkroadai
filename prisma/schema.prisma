@@ -1205,6 +1205,11 @@ model SeedanceVideoTask {
   status         String    @default("queued") // queued | completed | failed
   created_at     DateTime  @default(now())
   billed_at      DateTime?
+  // 提交参数回显(2026-08-06,火山方舟形查询响应逐字段对齐客户样例):轮询是独立请求,
+  // 要回显 ratio/seed/generate_audio 必须落库。存量行 NULL → 响应用缺省(16:9 / 0 / true)。
+  ratio          String?
+  seed           BigInt?
+  generate_audio Boolean?
 
   @@index([user_id, created_at])
   @@index([billed])

@@ -171,7 +171,7 @@ describe('GET /api/v3/contents/generations/tasks/{id}', () => {
         expect(j.model).toBe('doubao-seedance-2-0-260128');
         expect(j.content.video_url).toBe('https://vod/x.mp4');
         expect(j.usage!.completion_tokens).toBe(108872);
-        expect(j.error).toBeNull();
+        expect(j.error).toEqual({ code: '', message: '' });
         expect(j.resolution).toBe('720p');
         expect(typeof j.created_at).toBe('number');
     });

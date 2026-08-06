@@ -4170,3 +4170,65 @@ describe('/v1 proxy — 请求体守门接线:/messages 与 /responses(第二步
         expect(res.status).toBe(200); // /embeddings 等其余路径不受影响
     });
 });
+
+describe('/v1 proxy — /responses 同组 failover(上游 5xx 重 POST 一次)', () => {
+    const RESP_BODY = { model: 'gpt-5.6-sol', input: 'hi' };
+    function err(status: number, body = '<!DOCTYPE html>bad gateway') {
+        return new Response(body, { status, headers: { 'content-type': 'text/html', 'x-oneapi-request-id': 'rid-1' } });
+    }
+    function ok() {
+        return new Response('{"id":"resp_1","status":"completed"}', {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+        });
+    }
+
+    it('上游 502 → 自动重试一次,第二次 200 → 返回 200 + X-Silkroadai-Failover 头', async () => {
+        mockFetch.mockResolvedValueOnce(err(502)).mockResolvedValueOnce(ok());
+        const res = await POST(makeReq('/responses', { body: RESP_BODY }), ctx('responses'));
+        expect(res.status).toBe(200);
+        expect(res.headers.get('x-silkroadai-failover')).toBe('attempt=2');
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+        // 两次发出的体一致(原始字节重发)
+        const b1 = String((mockFetch.mock.calls[0] as [string, RequestInit])[1].body);
+        const b2 = String((mockFetch.mock.calls[1] as [string, RequestInit])[1].body);
+        expect(b2).toBe(b1);
+    });
+
+    it('重试仍 5xx → 透传第二次的真实错误码 + exhausted 头,不再第三次', async () => {
+        mockFetch.mockResolvedValueOnce(err(502)).mockResolvedValueOnce(err(503, 'still down'));
+        const res = await POST(makeReq('/responses', { body: RESP_BODY }), ctx('responses'));
+        expect(res.status).toBe(503);
+        expect(res.headers.get('x-silkroadai-failover')).toBe('exhausted=2');
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+        expect(await res.text()).toBe('still down');
+    });
+
+    it('524(CF 超时)同样触发重试', async () => {
+        mockFetch.mockResolvedValueOnce(err(524)).mockResolvedValueOnce(ok());
+        const res = await POST(makeReq('/responses', { body: RESP_BODY }), ctx('responses'));
+        expect(res.status).toBe(200);
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('4xx(429/400)不重试,原样透传', async () => {
+        for (const status of [429, 400]) {
+            mockFetch.mockReset();
+            mockFetch.mockResolvedValueOnce(err(status, '{"error":"no"}'));
+            const res = await POST(makeReq('/responses', { body: RESP_BODY }), ctx('responses'));
+            expect(res.status).toBe(status);
+            expect(res.headers.get('x-silkroadai-failover')).toBeNull();
+            expect(mockFetch).toHaveBeenCalledTimes(1);
+        }
+    });
+
+    it('/chat/completions 5xx 不受影响(failover 只开在 /responses)', async () => {
+        mockFetch.mockResolvedValueOnce(err(502));
+        const res = await POST(
+            makeReq('/chat/completions', { body: { model: 'gpt-5.5', messages: [{ role: 'user', content: 'hi' }] } }),
+            ctx('chat/completions'),
+        );
+        expect(res.status).toBe(502);
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+});
