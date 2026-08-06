@@ -126,6 +126,64 @@ function groupResult(g: { id: string; name: string; description: string | null; 
     };
 }
 
+/** 素材 Action 是否路由到 volc provider(仅在客户已开通 volc 时调用)。
+ *  规则(2026-08-06 v2,按素材内容归属):LivenessFace(真人)→ provider;
+ *  按 id 操作时平台库查不到本人行 → provider(真人 GroupId / 存量 provider 素材);
+ *  其余(AIGC 建组/上素材/缺省列表)→ 平台库。body 是已 parse 的 unknown,防御性取值。 */
+async function assetActionGoesToProvider(action: string, body: unknown, userId: string): Promise<boolean> {
+    const b = (body ?? {}) as Record<string, unknown>;
+    const filter = (b.Filter ?? {}) as Record<string, unknown>;
+    const groupType = (b.GroupType ?? filter.GroupType) as string | undefined;
+    const id = typeof b.Id === 'string' ? b.Id.replace(/^asset:\/\//, '') : '';
+    switch (action) {
+        case 'CreateAssetGroup':
+        case 'ListAssetGroups':
+            return groupType === 'LivenessFace';
+        case 'ListAssets': {
+            if (groupType === 'LivenessFace') return true;
+            const rawIds = Array.isArray(filter.GroupIds)
+                ? (filter.GroupIds as unknown[])
+                : typeof b.GroupId === 'string'
+                  ? [b.GroupId]
+                  : [];
+            const gids = rawIds.filter((x): x is string => typeof x === 'string');
+            if (!gids.length) return false; // 缺省列平台库
+            const ours = await prisma.enterpriseAssetGroup.count({ where: { id: { in: gids }, user_id: userId } });
+            return ours === 0; // 全非平台组 → provider(真人组等)
+        }
+        case 'CreateAsset': {
+            const gid = typeof b.GroupId === 'string' ? b.GroupId : '';
+            if (!gid) return false; // 无组 → 平台库
+            const ours = await prisma.enterpriseAssetGroup.findFirst({
+                where: { id: gid, user_id: userId },
+                select: { id: true },
+            });
+            return !ours; // 上进 provider 组(真人组)→ provider
+        }
+        case 'GetAsset':
+        case 'UpdateAsset':
+        case 'DeleteAsset': {
+            if (!id) return false;
+            const ours = await prisma.enterpriseAsset.findFirst({
+                where: { id, user_id: userId },
+                select: { id: true },
+            });
+            return !ours;
+        }
+        case 'GetAssetGroup':
+        case 'UpdateAssetGroup':
+        case 'DeleteAssetGroup': {
+            if (!id) return false;
+            const ours = await prisma.enterpriseAssetGroup.findFirst({
+                where: { id, user_id: userId },
+                select: { id: true },
+            });
+            return !ours;
+        }
+    }
+    return false;
+}
+
 export async function POST(req: NextRequest): Promise<NextResponse> {
     const action = req.nextUrl.searchParams.get('Action') || '';
     if (!action) return fail('Unknown', 400, 'MissingParameter', 'query 参数 Action 必填');
@@ -168,18 +226,15 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         }
     }
 
-    // 素材库分流(2026-08-06 改按【请求密钥的渠道】,替代 Phase 2b 的账号级一刀切 ——
-    // 一刀切让"开通 volc 但在测 promax"的客户素材也被劫持到 provider,而 promax/cn/global
-    // 生成的 asset:// 引用解析的是我们 R2 库,素材传了也用不上,还吃 provider 配额):
-    //  - volc 区 sk-ent key → provider REST(火山直链;与真人 GroupId / volc 视频 asset:// 同一
-    //    provider 账号自洽,Phase 2b 语义不变)
-    //  - cn/global/promax 区 sk-ent key → 我们 R2 库(这三个渠道生成时 resolveAssetRefs 查的就是它)
-    //  - AK/SK / sk_ent_(账号级,727 火山对齐面,无渠道绑定)→ 开通 volc 即走 provider
-    //    (存量火山客户 AK/SK 脚本的 asset:// 视频引用依赖 provider 账号,不能断)
-    const useVolcAssets = isVolc && (auth.customer.accountLevel === true || auth.customer.region === 'volc');
-
     try {
-        if (useVolcAssets && VOLC_ASSET_ACTIONS.has(action)) {
+        // 素材库分流(2026-08-06 v2:按【素材内容归属】,与鉴权方式无关 —— AK/SK 通吃
+        // 全渠道,不能按密钥判;operator 拍板:AIGC 素材一律平台库,provider 只留真人):
+        //  - GroupType=LivenessFace(真人素材,火山专属)→ provider
+        //  - AIGC / 缺省 → 平台 R2 库(全渠道生成引用都解析于此;volc 生成走混合解析,
+        //    平台素材换直链、真人素材 asset:// 透传 provider)
+        //  - 按 id 的操作:id 在平台库 → 平台;不在且开通 volc → provider(兜住真人
+        //    GroupId + 存量 provider 素材,id 尾缀 5 位与平台 6-hex 可区分但不依赖)
+        if (VOLC_ASSET_ACTIONS.has(action) && isVolc && (await assetActionGoesToProvider(action, body, userId))) {
             return ok(action, await handleVolcAssetAction(action, body));
         }
         switch (action) {

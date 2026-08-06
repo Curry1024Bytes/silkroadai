@@ -199,11 +199,17 @@ const GROUP_REF = /^group-\d{14}-[0-9a-f]{6}$/;
 /** 不做引用替换的字段(纯文本/控制字段,防 prompt 恰好长得像 id 被误替换)。 */
 const SKIP_KEYS = new Set(['prompt', 'model', 'text', 'name', 'description']);
 
+/** 剥 asset:// 前缀取裸 id(volc 面 body 不做全局 stripAssetUri,引用可能带前缀)。 */
+function bareRef(v: string): string {
+    return v.startsWith('asset://') ? v.slice('asset://'.length) : v;
+}
+
 function collectRefs(value: unknown, key: string | null, out: { assets: Set<string>; groups: Set<string> }): void {
     if (typeof value === 'string') {
         if (key && SKIP_KEYS.has(key)) return;
-        if (ASSET_REF.test(value)) out.assets.add(value);
-        else if (GROUP_REF.test(value)) out.groups.add(value);
+        const bare = bareRef(value);
+        if (ASSET_REF.test(bare)) out.assets.add(bare);
+        else if (GROUP_REF.test(bare)) out.groups.add(bare);
         return;
     }
     if (Array.isArray(value)) {
@@ -216,16 +222,22 @@ function collectRefs(value: unknown, key: string | null, out: { assets: Set<stri
 }
 
 /**
- * 把生成请求体里的 asset-… / group-… 引用换成 R2 公网 URL(深遍历,整串精确匹配)。
+ * 把生成请求体里的 asset-… / group-… 引用换成 R2 公网 URL(深遍历,整串精确匹配;
+ * asset://<id> 前缀形同样识别)。
  * - asset id:任意字符串位置(标量字段 / 数组元素 / {url:} 值)直接替换;
  * - group id:仅允许出现在【数组】里,按 created_at 升序展开为成员 URL 序列
  *   (对标火山「多图参考指定素材组」;标量位置的 group 引用 → 报错);
- * - 未知 / 非本人 id → AssetError('AssetNotFound')。无引用时原样返回。
+ * - 未知 / 非本人 id → 默认 AssetError('AssetNotFound');`lenient: true`(volc 面,
+ *   2026-08-06)则原样保留 —— 平台库素材换直链,认不出的(真人素材 / 存量 provider
+ *   素材,id 尾缀 5 位不匹配我们 6-hex 正则,或已删)透传给上游 provider 解析。
+ * 无引用时原样返回。
  */
 export async function resolveAssetRefs(
     body: Record<string, unknown>,
     userId: string,
+    opts?: { lenient?: boolean },
 ): Promise<Record<string, unknown>> {
+    const lenient = opts?.lenient === true;
     const refs = { assets: new Set<string>(), groups: new Set<string>() };
     collectRefs(body, null, refs);
     if (refs.assets.size === 0 && refs.groups.size === 0) return body;
@@ -253,27 +265,34 @@ export async function resolveAssetRefs(
         list.push(a.public_url);
         groupUrls.set(a.group_id, list);
     }
-    for (const id of refs.assets) {
-        if (!assetUrl.has(id)) throw new AssetError('AssetNotFound', `素材不存在: ${id}`, 400);
+    const knownGroups = new Set<string>();
+    if (!lenient) {
+        for (const id of refs.assets) {
+            if (!assetUrl.has(id)) throw new AssetError('AssetNotFound', `素材不存在: ${id}`, 400);
+        }
     }
     if (refs.groups.size) {
-        // group 必须真实存在且属于本人(空组也允许?空组展开为 0 张图会被档位门控拒 → 明确报错更友好)
         const owned = await prisma.enterpriseAssetGroup.findMany({
             where: { id: { in: [...refs.groups] }, user_id: userId },
             select: { id: true },
         });
-        const ownedSet = new Set(owned.map((g) => g.id));
-        for (const id of refs.groups) {
-            if (!ownedSet.has(id)) throw new AssetError('GroupNotFound', `素材组不存在: ${id}`, 400);
-            if (!groupUrls.get(id)?.length) throw new AssetError('InvalidParameter', `素材组为空: ${id}`, 400);
+        for (const g of owned) knownGroups.add(g.id);
+        if (!lenient) {
+            // group 必须真实存在且属于本人(空组展开为 0 张图会被档位门控拒 → 明确报错更友好)
+            for (const id of refs.groups) {
+                if (!knownGroups.has(id)) throw new AssetError('GroupNotFound', `素材组不存在: ${id}`, 400);
+                if (!groupUrls.get(id)?.length) throw new AssetError('InvalidParameter', `素材组为空: ${id}`, 400);
+            }
         }
     }
 
     function transform(value: unknown, key: string | null): unknown {
         if (typeof value === 'string') {
             if (key && SKIP_KEYS.has(key)) return value;
-            if (ASSET_REF.test(value)) return assetUrl.get(value) ?? value;
-            if (GROUP_REF.test(value)) {
+            const bare = bareRef(value);
+            if (ASSET_REF.test(bare)) return assetUrl.get(bare) ?? value;
+            if (GROUP_REF.test(bare)) {
+                if (lenient && !knownGroups.has(bare)) return value; // 非平台组(真人/provider)透传
                 throw new AssetError('InvalidParameter', `素材组引用只能放在数组字段里: ${value}`, 400);
             }
             return value;
@@ -281,8 +300,9 @@ export async function resolveAssetRefs(
         if (Array.isArray(value)) {
             const out: unknown[] = [];
             for (const v of value) {
-                if (typeof v === 'string' && GROUP_REF.test(v)) {
-                    for (const u of groupUrls.get(v) ?? []) out.push(u);
+                const bare = typeof v === 'string' ? bareRef(v) : '';
+                if (typeof v === 'string' && GROUP_REF.test(bare) && (!lenient || knownGroups.has(bare))) {
+                    for (const u of groupUrls.get(bare) ?? []) out.push(u);
                 } else {
                     out.push(transform(v, key));
                 }

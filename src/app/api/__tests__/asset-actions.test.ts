@@ -210,60 +210,106 @@ describe('素材组', () => {
     });
 });
 
-describe('volc 客户素材库路由(2026-08-06 起按请求密钥渠道分流)', () => {
-    it('已开通 volc + volc 区 sk-ent key → CreateAsset 走 provider(handleVolcAssetAction),不走 R2', async () => {
-        resolveEnterpriseAuth.mockResolvedValue({
-            ok: true,
-            customer: { userId: 'u1', tenantId: null, keyId: 'k1', upstreamKey: 'up', region: 'volc' },
+describe('volc 客户素材库路由(2026-08-06 v2:按素材内容归属,与鉴权方式无关)', () => {
+    const VOLC_ON = { id: 'up-volc' };
+
+    it('volc 客户 + AIGC 建组(缺省 GroupType,AK/SK 也一样)→ 平台库', async () => {
+        db.enterpriseUpstreamKey.findUnique.mockResolvedValue(VOLC_ON);
+        db.enterpriseAssetGroup.count.mockResolvedValue(0);
+        db.enterpriseAssetGroup.create.mockResolvedValue({
+            id: 'group-r2-1',
+            name: 'g',
+            description: null,
+            created_at: new Date(),
         });
-        db.enterpriseUpstreamKey.findUnique.mockResolvedValue({ id: 'up-volc' });
-        handleVolcAssetAction.mockResolvedValue({ Id: 'asset-provider-1', Status: 'PROCESSING' });
-        const res = await POST(
-            req('CreateAsset', { GroupId: 'group-1', URL: 'https://x/a.png', AssetType: 'Image', Name: 'f.png' }),
-        );
+        const res = await POST(req('CreateAssetGroup', { Name: 'g' }));
         expect(res.status).toBe(200);
-        const j = (await res.json()) as { Result: { Id: string } };
-        expect(j.Result.Id).toBe('asset-provider-1');
-        expect(handleVolcAssetAction).toHaveBeenCalledWith(
-            'CreateAsset',
-            expect.objectContaining({ GroupId: 'group-1' }),
-        );
-        // 非 volc 的 R2 路径未被触发
-        expect(storeAsset).not.toHaveBeenCalled();
+        expect(db.enterpriseAssetGroup.create).toHaveBeenCalled();
+        expect(handleVolcAssetAction).not.toHaveBeenCalled();
     });
 
-    it('已开通 volc + promax 区 sk-ent key → CreateAsset 走 R2(素材要给 promax 生成引用)', async () => {
-        resolveEnterpriseAuth.mockResolvedValue({
-            ok: true,
-            customer: { userId: 'u1', tenantId: null, keyId: 'k1', upstreamKey: 'up', region: 'promax' },
-        });
-        db.enterpriseUpstreamKey.findUnique.mockResolvedValue({ id: 'up-volc' }); // 账号开通过 volc
+    it('volc 客户 + GroupType=LivenessFace 建组(真人)→ provider', async () => {
+        db.enterpriseUpstreamKey.findUnique.mockResolvedValue(VOLC_ON);
+        handleVolcAssetAction.mockResolvedValue({ Id: 'group-provider-1' });
+        const res = await POST(req('CreateAssetGroup', { Name: 'g', GroupType: 'LivenessFace' }));
+        expect(res.status).toBe(200);
+        expect(handleVolcAssetAction).toHaveBeenCalledWith(
+            'CreateAssetGroup',
+            expect.objectContaining({ GroupType: 'LivenessFace' }),
+        );
+        expect(db.enterpriseAssetGroup.create).not.toHaveBeenCalled();
+    });
+
+    it('volc 客户 + CreateAsset 进平台组 → R2;进非平台组(真人/provider)→ provider', async () => {
+        db.enterpriseUpstreamKey.findUnique.mockResolvedValue(VOLC_ON);
+        // 平台组命中
+        db.enterpriseAssetGroup.findFirst.mockResolvedValueOnce({ id: 'group-ours' });
         fetchAssetFromUrl.mockResolvedValue({ bytes: 100, mime: 'image/png' });
         storeAsset.mockResolvedValue({ id: 'asset-r2-2', public_url: 'https://r2/b.png' });
-        const res = await POST(
-            req('CreateAsset', { GroupId: 'group-1', URL: 'https://x/b.png', AssetType: 'Image', Name: 'b.png' }),
+        let res = await POST(
+            req('CreateAsset', { GroupId: 'group-ours', URL: 'https://x/b.png', AssetType: 'Image', Name: 'b.png' }),
         );
         expect(res.status).toBe(200);
         expect(storeAsset).toHaveBeenCalled();
         expect(handleVolcAssetAction).not.toHaveBeenCalled();
-    });
-
-    it('已开通 volc + AK/SK 账号级(727 火山对齐面)→ 仍走 provider', async () => {
-        resolveEnterpriseAuth.mockResolvedValue({
-            ok: true,
-            customer: { userId: 'u1', tenantId: null, keyId: 'ak1', upstreamKey: '', region: 'cn', accountLevel: true },
-        });
-        db.enterpriseUpstreamKey.findUnique.mockResolvedValue({ id: 'up-volc' });
-        handleVolcAssetAction.mockResolvedValue({ Id: 'asset-provider-2' });
-        const res = await POST(
-            req('CreateAsset', { GroupId: 'group-1', URL: 'https://x/c.png', AssetType: 'Image', Name: 'c.png' }),
+        // 非平台组
+        db.enterpriseAssetGroup.findFirst.mockResolvedValueOnce(null);
+        handleVolcAssetAction.mockResolvedValue({ Id: 'asset-provider-1' });
+        res = await POST(
+            req('CreateAsset', {
+                GroupId: 'group-20260806171100-74vfz',
+                URL: 'https://x/c.png',
+                AssetType: 'Image',
+                Name: 'c.png',
+            }),
         );
         expect(res.status).toBe(200);
-        expect(handleVolcAssetAction).toHaveBeenCalled();
-        expect(storeAsset).not.toHaveBeenCalled();
+        expect(handleVolcAssetAction).toHaveBeenCalledWith('CreateAsset', expect.anything());
     });
 
-    it('非 volc 客户 → CreateAsset 仍走 R2(storeAsset)', async () => {
+    it('volc 客户 + GetAsset:id 在平台库 → R2;不在 → provider', async () => {
+        db.enterpriseUpstreamKey.findUnique.mockResolvedValue(VOLC_ON);
+        // 平台命中(gate findFirst + R2 路径 findFirst 各一次)
+        db.enterpriseAsset.findFirst.mockResolvedValue({
+            id: 'asset-ours',
+            user_id: 'u1',
+            asset_type: 'image',
+            name: 'a',
+            description: null,
+            group_id: null,
+            public_url: 'https://r2/a.png',
+            bytes: 1,
+            mime: 'image/png',
+            created_at: new Date(),
+        });
+        let res = await POST(req('GetAsset', { Id: 'asset-ours' }));
+        expect(res.status).toBe(200);
+        expect(handleVolcAssetAction).not.toHaveBeenCalled();
+        // 非平台 id → provider
+        db.enterpriseAsset.findFirst.mockResolvedValue(null);
+        handleVolcAssetAction.mockResolvedValue({ Id: 'asset-20260731141456-79gk9' });
+        res = await POST(req('GetAsset', { Id: 'asset-20260731141456-79gk9' }));
+        expect(res.status).toBe(200);
+        expect(handleVolcAssetAction).toHaveBeenCalledWith('GetAsset', expect.anything());
+    });
+
+    it('volc 客户 + ListAssets Filter.GroupType=LivenessFace → provider;缺省 → 平台库', async () => {
+        db.enterpriseUpstreamKey.findUnique.mockResolvedValue(VOLC_ON);
+        handleVolcAssetAction.mockResolvedValue({ Items: [], Total: 0 });
+        let res = await POST(req('ListAssets', { Filter: { GroupType: 'LivenessFace' } }));
+        expect(res.status).toBe(200);
+        expect(handleVolcAssetAction).toHaveBeenCalledWith('ListAssets', expect.anything());
+        vi.clearAllMocks();
+        resolveEnterpriseAuth.mockResolvedValue(CUSTOMER);
+        db.enterpriseUpstreamKey.findUnique.mockResolvedValue(VOLC_ON);
+        db.enterpriseAsset.findMany.mockResolvedValue([]);
+        db.enterpriseAsset.count.mockResolvedValue(0);
+        res = await POST(req('ListAssets', {}));
+        expect(res.status).toBe(200);
+        expect(handleVolcAssetAction).not.toHaveBeenCalled();
+    });
+
+    it('非 volc 客户 → CreateAsset 仍走 R2(storeAsset),gate 不打 DB', async () => {
         db.enterpriseUpstreamKey.findUnique.mockResolvedValue(null);
         fetchAssetFromUrl.mockResolvedValue({ bytes: 100, mime: 'image/png' });
         storeAsset.mockResolvedValue({ id: 'asset-r2-1', public_url: 'https://r2/a.png' });

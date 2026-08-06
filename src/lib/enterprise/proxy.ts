@@ -249,15 +249,15 @@ async function handleSubmit(req: NextRequest, format: ClientFormat = 'v1'): Prom
 
     // P3 素材库引用:asset-…/group-… → R2 公网 URL(必须在 ref/hasVideo 检测之前,
     // 视频素材引用也要计入含视频费率档)。未知/非本人 id → 400。
-    // 「火山」渠道跳过:volc 真人素材在 provider 自有素材库(非我们 R2),asset id 由上游解析。
-    if (!isVolc) {
-        try {
-            body = await resolveAssetRefs(body, cust.userId);
-        } catch (e) {
-            if (e instanceof AssetError) return errJson(e.status, e.code, e.message);
-            console.error('[enterprise-proxy] asset ref resolve failed', e);
-            return errJson(503, 'temporarily_unavailable', 'asset lookup failed, please retry');
-        }
+    // 「火山」渠道走【混合解析】(lenient,2026-08-06):平台库素材(AIGC,全渠道共用)
+    // 换 R2 直链发上游;认不出的引用(真人素材 / 存量 provider 素材,asset:// 整串)
+    // 原样透传给 provider 解析 —— volc 也能用平台库素材,真人素材链路不变。
+    try {
+        body = await resolveAssetRefs(body, cust.userId, isVolc ? { lenient: true } : undefined);
+    } catch (e) {
+        if (e instanceof AssetError) return errJson(e.status, e.code, e.message);
+        console.error('[enterprise-proxy] asset ref resolve failed', e);
+        return errJson(503, 'temporarily_unavailable', 'asset lookup failed, please retry');
     }
 
     // 模型解析:归一短名(seedance-2-0[-fast|-mini] + resolution 参数 + ref 自动识别)

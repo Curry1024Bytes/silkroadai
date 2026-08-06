@@ -217,10 +217,10 @@ curl -X POST ${BASE}/v1/video/generations \\
                 </p>
                 <ul className="list-disc space-y-1 pl-5">
                     <li>
-                        <b>按请求密钥分流</b>:用<b>火山区 sk-ent 密钥</b>或 <b>AK/SK</b> 调素材 Action →
-                        火山原生素材库(供火山视频 <Code>asset://</Code> 引用);用
-                        <b>国内 / 海外 / proMax 区 sk-ent 密钥</b> → 平台素材库(供对应渠道生成引用)。
-                        同一账号两边互不相通 —— 给哪个渠道用的素材,就用哪个渠道的密钥上传。
+                        <b>按素材内容分流(与鉴权方式无关,AK/SK / sk-ent 均一致)</b>:<b>真人素材</b>(
+                        <Code>{`"GroupType":"LivenessFace"`}</Code>)托管在火山原生素材库;
+                        <b>AIGC 素材(缺省)</b>一律进平台素材库,<b>全部渠道</b>(国内 / 海外 / proMax / 火山) 生成时都可用{' '}
+                        <Code>asset://素材ID</Code> 引用。按 Id 操作时自动按素材归属路由。
                     </li>
                     <li>
                         真人素材的完整流程(真人认证 → 素材组 → 上传真人素材 → 视频引用)见{' '}

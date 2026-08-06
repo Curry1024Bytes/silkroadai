@@ -181,4 +181,54 @@ describe('resolveAssetRefs(生成引用)', () => {
         expect(out.prompt).toBe(A1);
         expect((out.images as string[])[0]).toBe('https://r2/a1.png');
     });
+
+    describe('lenient 模式(volc 混合解析,2026-08-06)', () => {
+        it('asset:// 前缀形的平台素材 → 换 R2 直链;认不出的(provider 5 位尾缀)原样保留', async () => {
+            db.enterpriseAsset.findMany.mockResolvedValue([{ id: A1, public_url: 'https://r2/a1.png' }]);
+            const out = await resolveAssetRefs(
+                {
+                    model: 'doubao-seedance-2.0',
+                    content: [
+                        { type: 'image_url', image_url: { url: `asset://${A1}` } },
+                        { type: 'image_url', image_url: { url: 'asset://asset-20260731141456-79gk9' } },
+                    ],
+                },
+                'u1',
+                { lenient: true },
+            );
+            const c = out.content as Array<{ image_url: { url: string } }>;
+            expect(c[0].image_url.url).toBe('https://r2/a1.png');
+            expect(c[1].image_url.url).toBe('asset://asset-20260731141456-79gk9');
+        });
+
+        it('lenient:平台格式但查不到的 id 不抛,原样保留(交上游报错)', async () => {
+            db.enterpriseAsset.findMany.mockResolvedValue([]);
+            const out = await resolveAssetRefs({ model: 'm', images: [`asset://${A1}`] }, 'u1', { lenient: true });
+            expect((out.images as string[])[0]).toBe(`asset://${A1}`);
+        });
+
+        it('lenient:平台 group 引用照常展开;未知 group 原样保留不抛', async () => {
+            db.enterpriseAsset.findMany.mockResolvedValue([
+                { group_id: G1, public_url: 'https://r2/g1-1.png' },
+                { group_id: G1, public_url: 'https://r2/g1-2.png' },
+            ]);
+            db.enterpriseAssetGroup.findMany.mockResolvedValue([{ id: G1 }]);
+            const out = await resolveAssetRefs(
+                { model: 'm', images: [G1, 'asset://group-20260806171100-74vfz'] },
+                'u1',
+                { lenient: true },
+            );
+            expect(out.images).toEqual([
+                'https://r2/g1-1.png',
+                'https://r2/g1-2.png',
+                'asset://group-20260806171100-74vfz',
+            ]);
+        });
+
+        it('严格模式(缺省)对 asset:// 前缀形同样解析(cn/global/promax 客户也可带前缀)', async () => {
+            db.enterpriseAsset.findMany.mockResolvedValue([{ id: A1, public_url: 'https://r2/a1.png' }]);
+            const out = await resolveAssetRefs({ model: 'm', images: [`asset://${A1}`] }, 'u1');
+            expect((out.images as string[])[0]).toBe('https://r2/a1.png');
+        });
+    });
 });
