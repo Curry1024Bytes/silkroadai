@@ -6,7 +6,7 @@
  * 账单口径:官方价(本表)× 客户折扣率 = 实付;默认折扣 8.5 折 = computeCostCny。
  */
 import { describe, expect, it } from 'vitest';
-import { computeCostCny, officialCostCny } from '../cn-billing';
+import { computeCostCny, officialCostCny, RETAIL_RATIO } from '../cn-billing';
 import type { SeedanceVariant } from '../cn-adapter';
 
 /** 官方挂牌价(¥/1M token):[变体][分辨率] = [无视频, 含视频]。来源 = 费率表注释里的挂牌值。 */
@@ -34,6 +34,16 @@ describe('官方挂牌价 = 文档价目表口径', () => {
         for (const [variant, res, noVideo] of OFFICIAL) {
             expect(computeCostCny(1_000_000, res as never, false, variant)).toBeCloseTo(noVideo * 0.85, 3);
         }
+    });
+
+    it('口径守护:seedance-cn 零售 = 官方 × RETAIL_RATIO;企业门户折扣直乘官方(不得折上折)', () => {
+        expect(RETAIL_RATIO).toBe(0.85);
+        // computeCostCny 只做零售一次折扣;若谁把 0.85 又烘焙回表里,本断言会红
+        expect(computeCostCny(1_000_000, '720p' as never, false, 'pro')).toBeCloseTo(46 * RETAIL_RATIO, 4);
+        expect(officialCostCny(1_000_000, '720p' as never, false, 'pro')).toBeCloseTo(46, 4);
+        // 企业门户口径:官方 × discount。0.85 = 标准零售(与 cn 渠道同价),0.9 = 官方九折
+        expect(officialCostCny(1_000_000, '720p' as never, false, 'pro') * 0.85).toBeCloseTo(39.1, 4);
+        expect(officialCostCny(1_000_000, '720p' as never, false, 'pro') * 0.9).toBeCloseTo(41.4, 4);
     });
 
     it('480p 与 720p 官方价同价(全变体)', () => {

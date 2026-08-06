@@ -1269,7 +1269,9 @@ model EnterpriseUpstreamKey {
   note             String? // 上游侧对账备注(key 名/账户)
   // 客户级整体折扣率(2026-07-20):挂牌价 × discount,全变体×分辨率生效;
   // 1 = 无折扣。单档 enterprise_rate_overrides 是绝对单价,优先且【不】再乘折扣。
-  discount         Decimal  @default(1) @db.Decimal(6, 4)
+  // 【口径 2026-08-07】相对【官方挂牌价】的折扣率:0.85 = 标准零售(默认),0.9 = 官方价九折。
+  // 此前语义是「零售价(挂牌×0.85)再乘」→ 折上折,已随 migration 重锚。
+  discount         Decimal  @default(0.85) @db.Decimal(6, 4)
   created_at       DateTime @default(now())
 
   @@unique([user_id, region])

@@ -161,7 +161,8 @@ export function AdminPanel() {
     async function onDiscount(userId: string, region: string, current: number) {
         const label = REGION_LABEL[region] || region;
         const raw = window.prompt(
-            `${label}整体折扣率(0.05~2;1=无折扣,0.9=全线九折;单档议价不受影响):`,
+            `${label}折扣率 —— 相对【官方挂牌价】(0.05~2):0.85=标准零售价(默认),` +
+                `0.9=官方价九折,1=按官方原价不打折;单档议价不受影响。当前值:`,
             String(current),
         );
         if (raw === null || raw.trim() === '') return;
@@ -351,12 +352,13 @@ export function AdminPanel() {
                             累计消费 {fmtCny(detail.spent_cny)}
                             {detail.upstreams.map(
                                 (u) =>
-                                    u.discount !== 1 && (
+                                    u.discount !== 0.85 && (
                                         <span
                                             key={u.region}
                                             className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-800"
                                         >
-                                            {REGION_LABEL[u.region] || u.region}折扣 ×{u.discount}
+                                            {REGION_LABEL[u.region] || u.region}折扣 ×{u.discount}(官方价
+                                            {(u.discount * 10).toFixed(2).replace(/0+$/, '').replace(/\.$/, '')}折)
                                         </span>
                                     ),
                             )}
@@ -390,7 +392,12 @@ export function AdminPanel() {
                                         {row ? (
                                             <>
                                                 <span className="ml-2 text-gray-500">
-                                                    折扣 ×{row.discount}
+                                                    折扣 ×{row.discount}(官方价
+                                                    {(row.discount * 10)
+                                                        .toFixed(2)
+                                                        .replace(/0+$/, '')
+                                                        .replace(/\.$/, '')}
+                                                    折{row.discount === 0.85 ? ',标准价' : ''})
                                                     {row.note ? ` · ${row.note}` : ''}
                                                 </span>
                                                 <button

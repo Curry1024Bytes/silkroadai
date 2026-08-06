@@ -9,7 +9,7 @@
 import 'server-only';
 import { prisma } from '@/lib/db';
 import { applyLedgerEntry } from '@/lib/billing/ledger';
-import { computeCostCny, estimateTokens, type ChargeResult, type Resolution } from '@/lib/seedance/cn-billing';
+import { officialCostCny, estimateTokens, type ChargeResult, type Resolution } from '@/lib/seedance/cn-billing';
 import { variantForModel, regionForModel, type SeedanceVariant, type SeedanceRegion } from '@/lib/seedance/cn-adapter';
 
 /** 企业门户任务在 seedance_video_tasks.tier 里的标记(区分 seedance-cn 渠道任务)。 */
@@ -37,8 +37,9 @@ async function rateOverrideCnyPerM(
     return row ? Number(row.cny_per_m) : null;
 }
 
-/** 客户级整体折扣率(enterprise_upstream_keys.discount,每版本一行 → 国内/海外独立;
- *  1 = 无折扣)。查失败回 1(宁多收不漏收)。 */
+/** 客户级折扣率(enterprise_upstream_keys.discount,每版本一行 → 国内/海外独立)。
+ *  【口径 2026-08-07 重锚】相对【官方挂牌价】:0.85 = 标准零售(默认),0.9 = 官方价九折,
+ *  1 = 按官方原价。查失败回 1(宁多收不漏收)。 */
 async function customerDiscount(userId: string, region: SeedanceRegion): Promise<number> {
     const row = await prisma.enterpriseUpstreamKey.findUnique({
         where: { user_id_region: { user_id: userId, region } },
@@ -49,7 +50,8 @@ async function customerDiscount(userId: string, region: SeedanceRegion): Promise
 }
 
 /** 对客 ¥:议价覆盖(按 版本×变体×分辨率×含视频,绝对单价不再乘折扣)优先;
- *  否则挂牌 × 该版本客户折扣率(默认 1)。海外挂牌价 = 国内(2026-07-23 operator 拍板)。 */
+ *  否则【官方挂牌价 × 该版本客户折扣率】。海外挂牌价 = 国内(2026-07-23 operator 拍板)。
+ *  ⚠️ 2026-08-07 前是「零售价(挂牌×0.85)× discount」= 折上折;现改为单一口径。 */
 export async function computeEnterpriseCostCny(
     userId: string,
     tokens: number | bigint,
@@ -64,7 +66,7 @@ export async function computeEnterpriseCostCny(
     ]);
     const t = typeof tokens === 'bigint' ? Number(tokens) : tokens;
     if (override != null) return +((t / 1e6) * override).toFixed(6);
-    return +(computeCostCny(t, resolution, hasVideo, variant) * discount).toFixed(6);
+    return +(officialCostCny(t, resolution, hasVideo, variant) * discount).toFixed(6);
 }
 
 /** 提交前成本预估(余额门)。含视频 1.5× 缓冲,同 cn-billing 语义。 */

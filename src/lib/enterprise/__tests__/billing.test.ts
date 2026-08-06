@@ -28,11 +28,12 @@ import {
 beforeEach(() => {
     vi.clearAllMocks();
     db.enterpriseRateOverride.findUnique.mockResolvedValue(null);
-    db.enterpriseUpstreamKey.findUnique.mockResolvedValue({ discount: '1' });
+    // 新口径(2026-08-07):discount 相对【官方挂牌价】,0.85 = 标准零售(= 旧口径 discount:1)
+    db.enterpriseUpstreamKey.findUnique.mockResolvedValue({ discount: '0.85' });
 });
 
 describe('computeEnterpriseCostCny', () => {
-    it('无覆盖 → 默认挂牌(720p 无视频 ¥39.1/1M)', async () => {
+    it('无覆盖 → 官方价 × 标准折扣 0.85(720p 无视频 46×0.85=¥39.1/1M)', async () => {
         expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false)).toBeCloseTo(39.1, 4);
     });
 
@@ -54,7 +55,7 @@ describe('computeEnterpriseCostCny', () => {
         );
     });
 
-    it('fast/mini 变体默认挂牌(¥31.45/18.7 与 ¥19.55/11.9),覆盖键按变体隔离', async () => {
+    it('fast/mini 变体标准价(37/23 官方 ×0.85 = ¥31.45 / ¥19.55),覆盖键按变体隔离', async () => {
         expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false, 'fast')).toBeCloseTo(31.45, 4);
         expect(await computeEnterpriseCostCny('u1', 1_000_000, '1080p', true, 'fast')).toBeCloseTo(18.7, 4);
         expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false, 'mini')).toBeCloseTo(19.55, 4);
@@ -68,10 +69,10 @@ describe('computeEnterpriseCostCny', () => {
         );
     });
 
-    it('客户级折扣率 0.9 → 挂牌 × 0.9(720p pro ¥39.1 → ¥35.19)', async () => {
+    it('客户折扣率相对官方价:0.9 → 官方 46 × 0.9 = ¥41.4(不再折上折)', async () => {
         db.enterpriseUpstreamKey.findUnique.mockResolvedValue({ discount: '0.9' });
-        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false)).toBeCloseTo(35.19, 4);
-        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false, 'mini')).toBeCloseTo(17.595, 4);
+        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false)).toBeCloseTo(41.4, 4);
+        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false, 'mini')).toBeCloseTo(20.7, 4); // 23×0.9
     });
 
     it('单档覆盖是绝对单价,不再乘折扣(覆盖 ¥30 + 折扣 0.5 → 仍 ¥30)', async () => {
@@ -82,14 +83,16 @@ describe('computeEnterpriseCostCny', () => {
 
     it('无 upstream key 行 / 非法折扣值 → 回落 1(不打折)', async () => {
         db.enterpriseUpstreamKey.findUnique.mockResolvedValue(null);
-        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false)).toBeCloseTo(39.1, 4);
+        // 回落 1 = 官方原价(宁多收不漏收)
+        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false)).toBeCloseTo(46, 4);
         db.enterpriseUpstreamKey.findUnique.mockResolvedValue({ discount: '0' });
-        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false)).toBeCloseTo(39.1, 4);
+        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false)).toBeCloseTo(46, 4);
     });
 
     it('global 版本:折扣/覆盖按 region 行查(user_id_region),挂牌价同国内', async () => {
         db.enterpriseUpstreamKey.findUnique.mockResolvedValue({ discount: '0.8' });
-        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false, 'mini', 'global')).toBeCloseTo(15.64, 4);
+        // 官方 mini 23 × 0.8 = 18.4(旧口径为 19.55×0.8=15.64,折上折)
+        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false, 'mini', 'global')).toBeCloseTo(18.4, 4);
         expect(db.enterpriseUpstreamKey.findUnique).toHaveBeenLastCalledWith(
             expect.objectContaining({ where: { user_id_region: { user_id: 'u1', region: 'global' } } }),
         );
@@ -124,7 +127,7 @@ describe('computeEnterpriseCostCny', () => {
         );
     });
 
-    it('promax 系费率(挂牌×0.85):mini 28.9 / fast 46.24 / pro 4k 32.368;含视 17.34', async () => {
+    it('promax 系标准价(官方×0.85):mini 28.9 / fast 46.24 / pro 4k 32.368;含视 17.34', async () => {
         expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false, 'promax-mini', 'promax')).toBeCloseTo(
             28.9,
             4,
