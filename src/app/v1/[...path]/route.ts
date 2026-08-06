@@ -370,6 +370,9 @@ async function forwardToNewApi(
     cap: CaptureCtx | null = null,
     /** 出口 C:调用方已读过体(如 /responses 守门),直接给出口串 —— 不再读 req,也不重复记 capture。 */
     rawOverride?: string,
+    /** 同组 failover:上游 ≥500 时重 POST 一次(new-api 重新走渠道选择)。仅在出口体
+     *  是字符串(可重发)时生效;目前只有 /responses 打开。 */
+    failoverOn5xx = false,
 ): Promise<NextResponse> {
     const url = `${NEWAPI_BASE_URL}/v1${path}${search}`;
     const hasBody = req.method !== 'GET' && req.method !== 'HEAD';
@@ -410,6 +413,23 @@ async function forwardToNewApi(
         duplex: 'half',
     };
     let upstream = await fetch(url, init);
+    // /responses 同组 failover(2026-08-06 luwei Codex 502 诊断):new-api 收到上游
+    // 5xx 不重试不换渠道(亲和钉渠道),号池网关瞬断(502 HTML 页 / 524 CF 超时)直接
+    // 透传给客户。这里在体可重发(字符串)时重 POST 一次让 new-api 重新选渠道,仍败
+    // 透传第二次的真实错误码。429 不重试(限流下立刻重发只会加剧);非 2xx new-api
+    // 不记消费日志,重试无重复计费风险。SSE 假 200 后死流不在本层(/messages 有持头
+    // 转发覆盖,Responses 面观测到的失败全是干净 5xx)。
+    if (failoverOn5xx && typeof outgoingBody === 'string' && upstream.status >= 500) {
+        console.warn(`[proxy${path}] upstream 5xx, same-group failover retry`, {
+            status: upstream.status,
+            requestId: upstream.headers.get('x-oneapi-request-id'),
+        });
+        void upstream.body?.cancel().catch(() => {});
+        upstream = await fetch(url, init);
+        const h = new Headers(upstream.headers);
+        h.set('X-Silkroadai-Failover', upstream.status < 500 ? 'attempt=2' : 'exhausted=2');
+        upstream = new Response(upstream.body, { status: upstream.status, headers: h });
+    }
     // 临时诊断(HDR_CAPTURE=1):记上游错误响应,与 [HDRCAP] 请求头按 tokFp+时间对应,
     // 用于坐实客户报的 profileArn 到底哪些请求触发。查完撤。
     if (process.env.HDR_CAPTURE === '1' && upstream.status >= 400) {
@@ -2496,7 +2516,7 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
         const g = guardRawBody(raw, RESPONSES_SPEC);
         if (g.violation) return NextResponse.json(violationBody(g.violation), { status: 400 });
         if (cap) recordRequestBody(cap, raw, g.model, g.streamed); // 记【原始】输入
-        return forwardToNewApi(req, null, path, search, cap, g.body);
+        return forwardToNewApi(req, null, path, search, cap, g.body, /* failoverOn5xx */ true);
     }
 
     // 其他路径(/embeddings …)全部透传
