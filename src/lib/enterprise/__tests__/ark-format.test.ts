@@ -25,7 +25,14 @@ describe('arkModelEcho', () => {
     it('内部短名 → 火山 id 回显;非映射项原样', () => {
         expect(arkModelEcho('seedance-2-0')).toBe('doubao-seedance-2-0-260128');
         expect(arkModelEcho('seedance-2-0-mini')).toBe('doubao-seedance-2-0-mini-260615');
-        expect(arkModelEcho('seedance-2-0-promax')).toBe('seedance-2-0-promax');
+        // promax 系回显 BytePlus ModelArk 形(2026-08-06 客户样例)
+        expect(arkModelEcho('seedance-2-0-promax')).toBe('byteplus/seedance-2.0');
+        expect(arkModelEcho('seedance-2-0-promax-fast')).toBe('byteplus/seedance-2.0-fast');
+        expect(arkModelEcho('seedance-2-0-global')).toBe('seedance-2-0-global');
+    });
+
+    it('byteplus/ 形别名可作入参(normalizeArkModel)', () => {
+        expect(normalizeArkModel('byteplus/seedance-2.0-fast')).toBe('seedance-2-0-promax-fast');
     });
 });
 
@@ -69,7 +76,7 @@ describe('arkFailError', () => {
 
 describe('buildArkTaskResponse', () => {
     const createdAt = new Date('2026-07-24T02:00:00Z');
-    it('succeeded:video_url 嵌套 content + usage + error:null + 元数据平铺', () => {
+    it('succeeded:video_url 嵌套 content + usage + error 空串对象 + 全字段常驻(2026-08-06 对齐客户样例)', () => {
         const r = buildArkTaskResponse({
             taskId: 'cgt-1',
             internalModel: 'seedance-2-0',
@@ -87,11 +94,42 @@ describe('buildArkTaskResponse', () => {
         expect((r.content as Record<string, unknown>).video_url).toBe('https://vod/x.mp4');
         expect((r.content as Record<string, unknown>).last_frame_url).toBe('https://vod/last.png');
         expect((r.usage as Record<string, unknown>).completion_tokens).toBe(108872);
-        expect(r.error).toBeNull();
+        expect((r.usage as Record<string, unknown>).tool_usage).toEqual({ web_search: 0 });
+        expect(r.error).toEqual({ code: '', message: '' });
         expect(r.resolution).toBe('720p');
         expect(r.duration).toBe(5);
         expect(typeof r.created_at).toBe('number');
         expect(r.created_at).toBe(Math.floor(createdAt.getTime() / 1000));
+        // 常驻字段(客户解析器按对象取值)
+        expect(r.draft).toBe(false);
+        expect(r.execution_expires_after).toBe(0);
+        expect(r.framespersecond).toBe(0);
+        expect(r.service_tier).toBe('');
+        expect(r.tools).toBeNull();
+        // 提交参数缺省回显(存量行 NULL)
+        expect(r.ratio).toBe('16:9');
+        expect(r.seed).toBe(0);
+        expect(r.generate_audio).toBe(true);
+    });
+
+    it('提交参数落库后回显:ratio/seed/generate_audio 用 task 行真值', () => {
+        const r = buildArkTaskResponse({
+            taskId: 'cgt-4',
+            internalModel: 'seedance-2-0-promax-fast',
+            status: 'succeeded',
+            videoUrl: 'https://vod/y.mp4',
+            usage: { completion_tokens: 281700, total_tokens: 281700 },
+            createdAt,
+            resolution: '720p',
+            duration: 13,
+            ratio: '16:9',
+            seed: BigInt(74196),
+            generateAudio: false,
+        });
+        expect(r.model).toBe('byteplus/seedance-2.0-fast');
+        expect(r.seed).toBe(74196);
+        expect(r.generate_audio).toBe(false);
+        expect(r.ratio).toBe('16:9');
     });
     it('failed:error 对象带火山码,content 空', () => {
         const r = buildArkTaskResponse({
@@ -103,9 +141,11 @@ describe('buildArkTaskResponse', () => {
         });
         expect(r.status).toBe('failed');
         expect((r.error as Record<string, unknown>).code).toBe('SensitiveContentDetected');
+        // error 形对齐客户样例:仅 {code,message} 两键
+        expect(Object.keys(r.error as Record<string, unknown>).sort()).toEqual(['code', 'message']);
         expect(r.content).toEqual({});
     });
-    it('running:content 空 error null,无 usage', () => {
+    it('running:content 空 error 空串对象,无 usage', () => {
         const r = buildArkTaskResponse({
             taskId: 'cgt-3',
             internalModel: 'seedance-2-0',
@@ -114,7 +154,7 @@ describe('buildArkTaskResponse', () => {
         });
         expect(r.status).toBe('running');
         expect(r.content).toEqual({});
-        expect(r.error).toBeNull();
+        expect(r.error).toEqual({ code: '', message: '' });
         expect(r.usage).toBeUndefined();
     });
 });

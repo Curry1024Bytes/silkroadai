@@ -343,6 +343,8 @@ async function handleSubmit(req: NextRequest, format: ClientFormat = 'v1'): Prom
     if (j && j.model && j.model !== model) j.model = model;
 
     try {
+        // 提交参数落库(2026-08-06):火山方舟形查询响应要逐字段回显 ratio/seed/generate_audio
+        const ratioRaw = String(body.ratio || body.aspect_ratio || '16:9');
         await prisma.seedanceVideoTask.create({
             data: {
                 id: taskId,
@@ -354,6 +356,10 @@ async function handleSubmit(req: NextRequest, format: ClientFormat = 'v1'): Prom
                 resolution: map.resolution,
                 has_video: hasVideo,
                 duration,
+                ratio: ratioRaw.slice(0, 16),
+                seed:
+                    typeof body.seed === 'number' && Number.isFinite(body.seed) ? BigInt(Math.trunc(body.seed)) : null,
+                generate_audio: body.generate_audio !== false,
             },
         });
     } catch (e) {
@@ -468,6 +474,9 @@ async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat
                 createdAt: task.created_at,
                 resolution: task.resolution,
                 duration: task.duration,
+                ratio: task.ratio,
+                seed: task.seed,
+                generateAudio: task.generate_audio,
             }),
         );
     }
