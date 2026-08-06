@@ -143,16 +143,16 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                                     <Code>seedance-2-0</Code>
                                 </Td>
                                 <Td>旗舰(Pro)</Td>
-                                <Td>720p / 1080p / 4k</Td>
-                                <Td>39.1 / 43.35 / 22.1</Td>
-                                <Td>23.8 / 26.35 / 13.6</Td>
+                                <Td>480p / 720p / 1080p / 4k</Td>
+                                <Td>39.1 / 39.1 / 43.35 / 22.1</Td>
+                                <Td>23.8 / 23.8 / 26.35 / 13.6</Td>
                             </tr>
                             <tr>
                                 <Td>
                                     <Code>seedance-2-0-fast</Code>
                                 </Td>
                                 <Td>快速档</Td>
-                                <Td>720p / 1080p</Td>
+                                <Td>480p / 720p / 1080p</Td>
                                 <Td>31.45</Td>
                                 <Td>18.7</Td>
                             </tr>
@@ -161,7 +161,7 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                                     <Code>seedance-2-0-mini</Code>
                                 </Td>
                                 <Td>轻量档</Td>
-                                <Td>720p / 1080p</Td>
+                                <Td>480p / 720p / 1080p</Td>
                                 <Td>19.55</Td>
                                 <Td>11.9</Td>
                             </tr>
@@ -178,6 +178,10 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                         参考:720p 5 秒 ≈ 108,872 token → seedance-2-0 约 ¥4.26、fast 约 ¥3.42、mini 约 ¥2.13;1080p ≈
                         720p 的 2.25 倍 token。
                     </li>
+                    <li>
+                        <b>480p 与 720p 同费率</b>(单价一样,但 token 量 ∝ 像素,480p 整条约为 720p 的一半价)。国内版 /
+                        proMax / 火山渠道支持;海外版(global)上游无 480p。
+                    </li>
                     <li>「含视频输入」(参考视频)费率更低,但输入视频的时长也计入 token。图片参考不额外计 token。</li>
                     <li>生成失败不计费。提交时按预估价校验余额,不足返回 402(不会透支)。</li>
                     <li>消费明细实时可见:「计费流水」「调用日志」页,每笔带 token 数与金额。</li>
@@ -187,8 +191,8 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                     <p className="mt-1 text-indigo-900">
                         另有海外节点出片的同款模型:<Code>seedance-2-0-global</Code> /{' '}
                         <Code>seedance-2-0-global-fast</Code> / <Code>seedance-2-0-global-mini</Code>
-                        。参数、分辨率档位、时长与费率<b>均与国内版完全一致</b>,仅生成与出片走海外
-                        节点(BytePlus),成片链接为海外 CDN(同样 ~24 小时有效)。调用需使用
+                        。参数、分辨率档位、时长与费率<b>均与国内版一致(唯一例外:无 480p 档)</b>
+                        ,仅生成与出片走海外 节点(BytePlus),成片链接为海外 CDN(同样 ~24 小时有效)。调用需使用
                         <b>海外版专用 API 密钥</b>(「API 密钥」页创建时选「海外版」),国内/海外密钥不互通;
                         余额与国内版共享同一账户。
                         <b>如果生成因敏感内容被审核拒绝(fail_reason 提示 sensitive),并非开白/权限原因,请尝试海外版。</b>
@@ -200,7 +204,8 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                         更高规格的海外出片系列:<Code>seedance-2-0-promax</Code> / <Code>seedance-2-0-promax-fast</Code>{' '}
                         / <Code>seedance-2-0-promax-mini</Code>
                         。调用方式同上(resolution 参数、参考输入自动识别),需<b>海外版proMax 专用密钥</b>; proMax
-                        fast/mini 仅 720p 档,promax(pro)支持 720p/1080p/4k。费率(¥/1M token):
+                        fast/mini 支持 480p/720p 档,promax(pro)支持 480p/720p/1080p/4k(480p 与 720p 同费率)。费率(¥/1M
+                        token):
                     </p>
                     <div className="mt-2 overflow-x-auto">
                         <table className="w-full text-sm">
@@ -217,15 +222,15 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                                     <Td>
                                         <Code>seedance-2-0-promax</Code>
                                     </Td>
-                                    <Td>720p / 1080p / 4k</Td>
-                                    <Td>57.8 / 62.424 / 32.368</Td>
-                                    <Td>34.68 / 38.148 / 19.652</Td>
+                                    <Td>480p / 720p / 1080p / 4k</Td>
+                                    <Td>57.8 / 57.8 / 62.424 / 32.368</Td>
+                                    <Td>34.68 / 34.68 / 38.148 / 19.652</Td>
                                 </tr>
                                 <tr>
                                     <Td>
                                         <Code>seedance-2-0-promax-fast</Code>
                                     </Td>
-                                    <Td>720p</Td>
+                                    <Td>480p / 720p</Td>
                                     <Td>46.24</Td>
                                     <Td>27.9616</Td>
                                 </tr>
@@ -233,7 +238,7 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                                     <Td>
                                         <Code>seedance-2-0-promax-mini</Code>
                                     </Td>
-                                    <Td>720p</Td>
+                                    <Td>480p / 720p</Td>
                                     <Td>28.9</Td>
                                     <Td>17.34</Td>
                                 </tr>
@@ -280,7 +285,7 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                                 </Td>
                                 <Td>string</Td>
                                 <Td>否</Td>
-                                <Td>720p(默认)/ 1080p / 4k(4k 仅 seedance-2-0)</Td>
+                                <Td>480p / 720p(默认)/ 1080p / 4k(4k 仅 seedance-2-0;480p 与 720p 同费率)</Td>
                             </tr>
                             <tr>
                                 <Td>
@@ -479,14 +484,14 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
   "resolution": "720p",     // 480p / 720p / 1080p / 4k
   "duration": 5             // 4-15 任意整数秒
 }
-# → {"id":"task_…"}   然后 GET /api/v3/contents/generations/tasks/{id} 轮询
+# → {"id":"cgt-…"}   然后 GET /api/v3/contents/generations/tasks/{id} 轮询
 # → {"status":"succeeded","content":{"video_url":"https://…火山直链…"}}`}</Pre>
                 <ul className="list-disc space-y-1 pl-5">
                     <li>
                         单模型 <Code>doubao-seedance-2.0</Code>,计费与国内版同价(按 <Code>usage.completion_tokens</Code>
-                        )。480p 与 720p 同费率(token 量约为 720p 的一半,整条更便宜);480p
-                        仅本渠道支持。参考图/视频/音频写进 <Code>content</Code> 数组(<Code>image_url</Code> /{' '}
-                        <Code>video_url</Code> / <Code>audio_url</Code>,<Code>url</Code> 支持公网直链、素材 ID)。
+                        )。480p 与 720p 同费率(token 量约为 720p 的一半,整条更便宜)。参考图/视频/音频写进{' '}
+                        <Code>content</Code> 数组(<Code>image_url</Code> / <Code>video_url</Code> /{' '}
+                        <Code>audio_url</Code>,<Code>url</Code> 支持公网直链、素材 ID)。
                     </li>
                     <li>
                         成片 <Code>content.video_url</Code> 为<b>火山官方签名直链</b>(有有效期,请及时下载转存)。

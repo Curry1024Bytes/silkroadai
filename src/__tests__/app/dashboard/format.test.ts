@@ -136,6 +136,44 @@ describe('collapseRetriedFailures', () => {
         const errors = [mk('rid-err', 120, 'adobe content rejected image_unsafe')];
         expect(collapseRetriedFailures(consume, errors)).toHaveLength(1);
     });
+
+    // 规则 3:image-adapter 守门拒(单日 42.6 万条)—— 不依赖分页配对,无条件藏
+    const ADAPTER_OTHER =
+        '{"admin_info":{"use_channel":["154"]},"channel_id":154,"error_code":"upstream_unavailable","status_code":503}';
+
+    it('适配器守门拒 → 藏掉,即使窗口里没有对应的成功行', () => {
+        const errors = [
+            {
+                request_id: 'rid-x',
+                created_at: 120,
+                content:
+                    'status_code=503, The server is temporarily unable to process this request, please retry later.',
+                other: ADAPTER_OTHER,
+            },
+        ];
+        expect(collapseRetriedFailures([], errors)).toHaveLength(0);
+    });
+
+    it('别的 5xx 不被误伤(只认 error_code=upstream_unavailable)', () => {
+        const errors = [
+            {
+                request_id: 'rid-y',
+                created_at: 120,
+                content: 'status_code=503, upstream overloaded',
+                other: '{"channel_id":83,"error_code":"upstream_overloaded","status_code":503}',
+            },
+        ];
+        expect(collapseRetriedFailures([], errors)).toHaveLength(1);
+    });
+
+    it('other 缺失 / 非 JSON 不炸,按保留处理', () => {
+        const errors = [
+            { request_id: 'a', created_at: 1, content: 'boom' },
+            { request_id: 'b', created_at: 2, content: 'boom', other: null },
+            { request_id: 'c', created_at: 3, content: 'boom', other: 'upstream_unavailable{{{ 坏 JSON' },
+        ];
+        expect(collapseRetriedFailures([], errors)).toHaveLength(3);
+    });
 });
 
 describe('sanitizeLogContent', () => {

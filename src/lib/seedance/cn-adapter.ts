@@ -11,7 +11,7 @@
  * 客户须及时下载/转存(不像 R2 永久)。见 /docs 说明。
  *
  * 计费:【按 token 量】—— 上游按 token 计价(usage.completion_tokens 权威),我们对客 = 实际 token ×
- * 零售单价(官方价 × 0.85;上游给我们 0.75)。分辨率(720p/1080p/4k,共 6 个模型名 = 3×{无参考,-ref})
+ * 零售单价(官方价 × 0.85;上游给我们 0.75)。分辨率(480p/720p/1080p/4k,-ref 后缀 = 带参考输入)
  * 决定每-token 费率档;pollVideo 回传 usage 供 new-api ModelRatio 或适配器自扣计费(见按 token 计费方案)。
  * ⚠️ 参考视频档(输入视频也计 token)成本高于无视频,不能按无视频档收 —— 待接入含视频费率档(off-peak)。
  * 适配器强制档位与实际输入一致(无参考档带图 → 400;参考档不带图/视频 → 400),防止客户挑便宜档串用。
@@ -35,7 +35,7 @@ const UPSTREAM_INTL_PRO = 'artsdance2-0-pro-intl-260701';
 const UPSTREAM_INTL_FAST = 'artsdance2-0-fast-intl-260701';
 const UPSTREAM_INTL_MINI = 'artsdance2-0-mini-intl-260701';
 // 海外版proMax(2026-07-23):同 intl base/key,dreamina 系上游模型(挂牌更高,零售=挂牌×0.85)。
-// pro 有 720p/1080p/4k,fast/mini 上游仅 480p/720p → 门户只开 720p。mini 实测 token 基数
+// pro 有 480p/720p/1080p/4k,fast/mini 上游仅 480p/720p。mini 实测 token 基数
 // 与现有渠道一致(720p 5s = 108,900);计费按 usage 实报,基数差异不影响正确性。
 const UPSTREAM_PROMAX_PRO = 'dreamina-seedance-2-0-260128';
 const UPSTREAM_PROMAX_FAST = 'dreamina-seedance-2-0-fast-260128';
@@ -59,7 +59,6 @@ const MAX_REF_VIDEOS = 3;
 export type SeedanceVariant = 'pro' | 'fast' | 'mini' | 'promax' | 'promax-fast' | 'promax-mini';
 
 export interface SeedanceModelSpec {
-    /** 480p 仅 volc 渠道开放(2026-08-03);cn/global/promax 长名档位仍 720p/1080p/4k。 */
     resolution: '480p' | '720p' | '1080p' | '4k';
     ref: boolean;
     variant: SeedanceVariant;
@@ -69,31 +68,35 @@ export interface SeedanceModelSpec {
     region?: SeedanceRegion;
 }
 
-/** 客户/new-api 档位模型名 → 档位规格。pro 3 分辨率 × {无参考,-ref} = 6 名;
- *  fast/mini 上游只有 720p/1080p(无 4k)各 4 名 → 共 14 名。2k 已下线(2026-07-15)。 */
+/** 客户/new-api 档位模型名 → 档位规格(每档 × {无参考,-ref} 两名)。2k 已下线(2026-07-15)。
+ *  2026-08-03 全线加 480p:上游(artsdance 国内/intl + dreamina)挂牌本就含 480p,
+ *  与 720p 统一价(token ∝ 像素,整条约半价)。 */
 export const MODEL_MAP: Record<string, SeedanceModelSpec> = {
-    'seedance2.0-pro-720p': { resolution: '720p', ref: false, variant: 'pro', upstream: UPSTREAM_MODEL },
-    'seedance2.0-pro-1080p': { resolution: '1080p', ref: false, variant: 'pro', upstream: UPSTREAM_MODEL },
-    'seedance2.0-pro-4k': { resolution: '4k', ref: false, variant: 'pro', upstream: UPSTREAM_MODEL },
-    'seedance2.0-pro-720p-ref': { resolution: '720p', ref: true, variant: 'pro', upstream: UPSTREAM_MODEL },
-    'seedance2.0-pro-1080p-ref': { resolution: '1080p', ref: true, variant: 'pro', upstream: UPSTREAM_MODEL },
-    'seedance2.0-pro-4k-ref': { resolution: '4k', ref: true, variant: 'pro', upstream: UPSTREAM_MODEL },
-    'seedance2.0-fast-720p': { resolution: '720p', ref: false, variant: 'fast', upstream: UPSTREAM_FAST },
-    'seedance2.0-fast-1080p': { resolution: '1080p', ref: false, variant: 'fast', upstream: UPSTREAM_FAST },
-    'seedance2.0-fast-720p-ref': { resolution: '720p', ref: true, variant: 'fast', upstream: UPSTREAM_FAST },
-    'seedance2.0-fast-1080p-ref': { resolution: '1080p', ref: true, variant: 'fast', upstream: UPSTREAM_FAST },
-    'seedance2.0-mini-720p': { resolution: '720p', ref: false, variant: 'mini', upstream: UPSTREAM_MINI },
-    'seedance2.0-mini-1080p': { resolution: '1080p', ref: false, variant: 'mini', upstream: UPSTREAM_MINI },
-    'seedance2.0-mini-720p-ref': { resolution: '720p', ref: true, variant: 'mini', upstream: UPSTREAM_MINI },
-    'seedance2.0-mini-1080p-ref': { resolution: '1080p', ref: true, variant: 'mini', upstream: UPSTREAM_MINI },
-    // ── 海外版proMax(promax,2026-07-23):dreamina 系,费率独立;pro 3 档,fast/mini 仅 720p ──
+    // ── 国内(cn):pro 4 档,fast/mini 480p/720p/1080p ──
     ...Object.fromEntries(
         (
             [
-                ['promax', UPSTREAM_PROMAX_PRO, ['720p', '1080p', '4k']],
-                ['promax-fast', UPSTREAM_PROMAX_FAST, ['720p']],
-                ['promax-mini', UPSTREAM_PROMAX_MINI, ['720p']],
-            ] as Array<[SeedanceVariant, string, Array<'720p' | '1080p' | '4k'>]>
+                ['pro', UPSTREAM_MODEL, ['480p', '720p', '1080p', '4k']],
+                ['fast', UPSTREAM_FAST, ['480p', '720p', '1080p']],
+                ['mini', UPSTREAM_MINI, ['480p', '720p', '1080p']],
+            ] as Array<[SeedanceVariant, string, Array<'480p' | '720p' | '1080p' | '4k'>]>
+        ).flatMap(([variant, upstream, resolutions]) =>
+            resolutions.flatMap((resolution) =>
+                [false, true].map((ref) => [
+                    `seedance2.0-${variant}-${resolution}${ref ? '-ref' : ''}`,
+                    { resolution, ref, variant, upstream },
+                ]),
+            ),
+        ),
+    ),
+    // ── 海外版proMax(promax,2026-07-23):dreamina 系,费率独立;pro 4 档,fast/mini 480p/720p ──
+    ...Object.fromEntries(
+        (
+            [
+                ['promax', UPSTREAM_PROMAX_PRO, ['480p', '720p', '1080p', '4k']],
+                ['promax-fast', UPSTREAM_PROMAX_FAST, ['480p', '720p']],
+                ['promax-mini', UPSTREAM_PROMAX_MINI, ['480p', '720p']],
+            ] as Array<[SeedanceVariant, string, Array<'480p' | '720p' | '1080p' | '4k'>]>
         ).flatMap(([variant, upstream, resolutions]) =>
             resolutions.flatMap((resolution) =>
                 [false, true].map((ref) => [
@@ -103,14 +106,16 @@ export const MODEL_MAP: Record<string, SeedanceModelSpec> = {
             ),
         ),
     ),
-    // ── 海外版(global,2026-07-23):档位与国内一致(operator 拍板同 4k/15s/定价),仅上游不同 ──
+    // ── 海外版(global,2026-07-23):档位与国内一致(operator 拍板同 4k/15s/定价),仅上游不同。
+    //    ⚠️ 无 480p:intl 上游三变体实测均拒「当前分辨率 480p 不支持」(2026-08-06),
+    //    proxy 对 global+480p 返带指引的 400。 ──
     ...Object.fromEntries(
         (
             [
                 ['pro', UPSTREAM_INTL_PRO, ['720p', '1080p', '4k']],
                 ['fast', UPSTREAM_INTL_FAST, ['720p', '1080p']],
                 ['mini', UPSTREAM_INTL_MINI, ['720p', '1080p']],
-            ] as Array<[SeedanceVariant, string, Array<'720p' | '1080p' | '4k'>]>
+            ] as Array<[SeedanceVariant, string, Array<'480p' | '720p' | '1080p' | '4k'>]>
         ).flatMap(([variant, upstream, resolutions]) =>
             resolutions.flatMap((resolution) =>
                 [false, true].map((ref) => [

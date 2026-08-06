@@ -21,34 +21,38 @@ export type { SeedanceVariant } from './cn-adapter';
 import { variantForModel, type SeedanceVariant } from './cn-adapter';
 
 /** 零售单价(元/1M token):[变体][分辨率][是否含视频输入]。挂牌 × 0.85(上游给我们 0.75)。
- *  2026-07-19 加 fast/mini(上游仅 720p/1080p 两档):fast 挂牌 37/22、mini 挂牌 23/14。 */
+ *  2026-07-19 加 fast/mini;2026-08-03 全变体加 480p(上游挂牌 480p 与 720p 统一价,
+ *  见 artsdance/dreamina 定价页 —— token 量 ∝ 像素,480p 整条约为 720p 的一半价)。 */
 const RETAIL_CNY_PER_M: Record<SeedanceVariant, Partial<Record<Resolution, { noVideo: number; withVideo: number }>>> = {
     pro: {
-        // 480p(2026-08-03 volc 渠道开放):火山官方挂牌不分档统一价,与 720p 同费率
-        '480p': { noVideo: 46 * 0.85, withVideo: 28 * 0.85 }, // 39.1 / 23.8
+        '480p': { noVideo: 46 * 0.85, withVideo: 28 * 0.85 }, // 39.1 / 23.8(与 720p 同费率)
         '720p': { noVideo: 46 * 0.85, withVideo: 28 * 0.85 }, // 39.1 / 23.8
         '1080p': { noVideo: 51 * 0.85, withVideo: 31 * 0.85 }, // 43.35 / 26.35
         '4k': { noVideo: 26 * 0.85, withVideo: 16 * 0.85 }, // 22.1 / 13.6
     },
     fast: {
+        '480p': { noVideo: 37 * 0.85, withVideo: 22 * 0.85 }, // 31.45 / 18.7(与 720p 同费率)
         '720p': { noVideo: 37 * 0.85, withVideo: 22 * 0.85 }, // 31.45 / 18.7
         '1080p': { noVideo: 37 * 0.85, withVideo: 22 * 0.85 }, // 31.45 / 18.7
     },
     mini: {
+        '480p': { noVideo: 23 * 0.85, withVideo: 14 * 0.85 }, // 19.55 / 11.9(与 720p 同费率)
         '720p': { noVideo: 23 * 0.85, withVideo: 14 * 0.85 }, // 19.55 / 11.9
         '1080p': { noVideo: 23 * 0.85, withVideo: 14 * 0.85 }, // 19.55 / 11.9
     },
     // 海外版proMax(2026-07-23,dreamina 系):挂牌 × 0.85(上游对我们 9 折,operator 定零售 85 折)。
-    // fast/mini 上游仅 480p/720p → 门户只开 720p 档。
     promax: {
+        '480p': { noVideo: 68 * 0.85, withVideo: 40.8 * 0.85 }, // 57.8 / 34.68(与 720p 同费率)
         '720p': { noVideo: 68 * 0.85, withVideo: 40.8 * 0.85 }, // 57.8 / 34.68
         '1080p': { noVideo: 73.44 * 0.85, withVideo: 44.88 * 0.85 }, // 62.424 / 38.148
         '4k': { noVideo: 38.08 * 0.85, withVideo: 23.12 * 0.85 }, // 32.368 / 19.652
     },
     'promax-fast': {
+        '480p': { noVideo: 54.4 * 0.85, withVideo: 32.896 * 0.85 }, // 46.24 / 27.9616(与 720p 同费率)
         '720p': { noVideo: 54.4 * 0.85, withVideo: 32.896 * 0.85 }, // 46.24 / 27.9616
     },
     'promax-mini': {
+        '480p': { noVideo: 34 * 0.85, withVideo: 20.4 * 0.85 }, // 28.9 / 17.34(与 720p 同费率)
         '720p': { noVideo: 34 * 0.85, withVideo: 20.4 * 0.85 }, // 28.9 / 17.34
     },
 };

@@ -1,22 +1,49 @@
 /**
  * 客户日志【展示层】纯helpers —— 折叠重试中间失败 + 错误文案脱敏。
  *
- * 客户看到的调用日志会被两类"中间失败"噪音污染:
+ * 客户看到的调用日志会被三类"中间失败"噪音污染:
  *   1. new-api 内部 failover:同一请求多次尝试用【同一 request_id】记多行(失败渠道 + 成功渠道);
- *   2. proxy 尺寸重试(#224):是【新 request_id】。
+ *   2. proxy 尺寸重试(#224):是【新 request_id】;
+ *   3. image-adapter 守门拒(#317 起):按张计费渠道只接盈利档,其余一律 503 让 new-api 换渠道。
  * 折叠后只保留最终结果;并把错误文案脱敏(隐藏 adobe / we-token 等上游来源)成友好中文。
  * 纯函数、client-safe、无副作用 —— dashboard 页 + /logs 页 + /api/portal/logs 都复用。
  */
 
 /**
+ * 该失败行是不是 image-adapter 的内部 failover 信号(客户不该看见)。
+ *
+ * 适配器(ch154 ominiapi 按张计费)priority 最高 → **全站 97% 的 gpt-image 请求先打它**,
+ * 非盈利档(1k / 2k-低质)当场 503 让 new-api 换 azure 渠道 —— 客户照常拿到图,但 new-api
+ * 会为这次尝试记一条 type=5。08-04 单日 **42.6 万条**,把客户日志页刷屏。
+ *
+ * 只认适配器独有的 `other.error_code === 'upstream_unavailable'`,不会误伤别的 5xx。
+ * 规则 1(request_id 配对)理论上能吃掉它们,但**依赖失败行与成功行落在同一取数窗口**:
+ * dashboard 分开取 type=2 / type=5(150 / 50 条),这类噪音把 50 条错误位全占满、对应成功
+ * 却在窗口外 → 折叠不掉。所以这里改成不依赖分页的无条件规则。
+ *
+ * 安全性:实测抽样 500 条中 94% 有同 request_id 的成功行(本就该藏);剩余 6%(全渠道都失败)
+ * **100% 在别的渠道另有同 request_id 的错误行** —— 那条带真实原因(内容安全 / 坏图)且已被
+ * sanitizeLogContent 友好化,所以藏掉本行不会让客户失去唯一解释。
+ */
+function isAdapterFailoverNoise(other: string | null | undefined): boolean {
+    if (!other || !other.includes('upstream_unavailable')) return false; // 快路径:绝大多数行直接跳过 JSON.parse
+    try {
+        return (JSON.parse(other) as { error_code?: unknown }).error_code === 'upstream_unavailable';
+    } catch {
+        return false;
+    }
+}
+
+/**
  * 折叠"失败了但重试 / failover 成功"的中间失败行。规则:
  *   1. 失败行的 request_id 出现在成功集合里 = 该请求最终成功 → 藏掉失败行(new-api failover);
- *   2. 失败行是 "size must use"(proxy 尺寸重试)且同期(180s 内)有成功 → 藏掉。
+ *   2. 失败行是 "size must use"(proxy 尺寸重试)且同期(180s 内)有成功 → 藏掉;
+ *   3. 失败行是 image-adapter 守门拒(见 isAdapterFailoverNoise)→ 无条件藏掉。
  * 真失败(内容拒绝等,独立 request_id、无对应成功)照常返回。仅影响展示,不改计费 / 结果判定。
  */
 export function collapseRetriedFailures<
     S extends { request_id: string; created_at: number },
-    E extends { request_id: string; created_at: number; content: string },
+    E extends { request_id: string; created_at: number; content: string; other?: string | null },
 >(consume: readonly S[], errors: readonly E[]): E[] {
     const succeededRids = new Set(consume.map((l) => l.request_id).filter(Boolean));
     const successTimes = consume.map((l) => l.created_at).sort((a, b) => a - b);
@@ -24,6 +51,7 @@ export function collapseRetriedFailures<
     return errors.filter((e) => {
         if (e.request_id && succeededRids.has(e.request_id)) return false; // failover 中间失败
         if (/size must use/i.test(e.content) && hasSuccessWithin(e.created_at, 180)) return false; // proxy 尺寸重试
+        if (isAdapterFailoverNoise(e.other)) return false; // image-adapter 守门拒
         return true;
     });
 }

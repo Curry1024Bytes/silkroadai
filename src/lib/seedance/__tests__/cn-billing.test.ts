@@ -58,6 +58,16 @@ describe('computeCostCny 费率', () => {
     it('480p 预估锚点:10128 token/秒(实测 5s=50638)', () => {
         expect(estimateCostCny('480p', 5, false)).toBeCloseTo((10128 * 5 * 39.1) / 1e6, 4);
     });
+    it('480p 全变体开放(2026-08-03):各变体 480p = 各自 720p 同费率', () => {
+        expect(computeCostCny(1_000_000, '480p', false, 'fast')).toBeCloseTo(31.45, 4);
+        expect(computeCostCny(1_000_000, '480p', true, 'fast')).toBeCloseTo(18.7, 4);
+        expect(computeCostCny(1_000_000, '480p', false, 'mini')).toBeCloseTo(19.55, 4);
+        expect(computeCostCny(1_000_000, '480p', true, 'mini')).toBeCloseTo(11.9, 4);
+        expect(computeCostCny(1_000_000, '480p', false, 'promax')).toBeCloseTo(57.8, 4);
+        expect(computeCostCny(1_000_000, '480p', true, 'promax')).toBeCloseTo(34.68, 4);
+        expect(computeCostCny(1_000_000, '480p', false, 'promax-fast')).toBeCloseTo(46.24, 4);
+        expect(computeCostCny(1_000_000, '480p', false, 'promax-mini')).toBeCloseTo(28.9, 4);
+    });
     it('estimate:含视频加 1.5× 缓冲', () => {
         expect(estimateCostCny('720p', 5, true)).toBeGreaterThan(estimateCostCny('720p', 5, false) * 0.6);
     });
