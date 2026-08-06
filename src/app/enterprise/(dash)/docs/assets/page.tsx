@@ -1,6 +1,6 @@
 /**
  * 企业门户素材库文档页(2026-07-29)—— 从主接入文档拆出独立成页。
- * 覆盖标准素材库(sk-ent / 平台托管)+ 火山渠道真人素材库(AK/SK / provider 直链)。
+ * 全部素材统一平台托管(2026-08-06 v3):AIGC 与真人(LivenessFace 分组)同库,四渠道通用。
  * 静态 JSX(镜像主 docs 模式)。
  */
 export const dynamic = 'force-dynamic';
@@ -139,14 +139,17 @@ export default function EnterpriseAssetsDocsPage() {
                                 <Td>
                                     <Code>ListAssets</Code>
                                 </Td>
-                                <Td>GroupId?、AssetType?、PageNumber?(默认1)、PageSize?(默认20,≤100)</Td>
+                                <Td>
+                                    GroupId?、AssetType?、GroupType?(缺省 AIGC;查真人素材须显式
+                                    LivenessFace)、PageNumber?(默认1)、PageSize?(默认20,≤100)
+                                </Td>
                                 <Td>{`{Items:[…], Total, PageNumber, PageSize}`}</Td>
                             </tr>
                             <tr>
                                 <Td>
                                     <Code>CreateAssetGroup</Code>
                                 </Td>
-                                <Td>Name(≤100)、Description?</Td>
+                                <Td>Name(≤100)、Description?、GroupType?(AIGC 默认 / LivenessFace 真人)</Td>
                                 <Td>{`{Id:"group-…"}`}</Td>
                             </tr>
                             <tr>
@@ -174,7 +177,7 @@ export default function EnterpriseAssetsDocsPage() {
                                 <Td>
                                     <Code>ListAssetGroups</Code>
                                 </Td>
-                                <Td>PageNumber?、PageSize?</Td>
+                                <Td>GroupType?(缺省 AIGC)、PageNumber?、PageSize?</Td>
                                 <Td>{`{Items:[…], Total, …}`}</Td>
                             </tr>
                         </tbody>
@@ -210,30 +213,26 @@ curl -X POST ${BASE}/v1/video/generations \\
                 </p>
             </Section>
 
-            <Section id="volc-assets" title="5. 火山渠道素材库(真人素材)">
+            <Section id="volc-assets" title="5. 真人素材(LivenessFace 分组)">
                 <p>
-                    <b>火山渠道</b>(volc)客户的素材库为<b>真人素材专用</b>:同样的 Action API,但素材托管在火山原生
-                    素材库、返回<b>火山官方直链</b>,并可承接<b>真人视觉认证</b>产出的真人素材组。
+                    <b>全部素材统一平台托管(与鉴权方式、渠道无关)</b>:AIGC 与真人素材(
+                    <Code>{`"GroupType":"LivenessFace"`}</Code> 分组)都存平台素材库,<b>全部渠道</b>
+                    (国内 / 海外 / proMax / 火山)生成时均可用 <Code>asset://素材ID</Code> 引用。
                 </p>
                 <ul className="list-disc space-y-1 pl-5">
                     <li>
-                        <b>按素材内容分流(与鉴权方式无关,AK/SK / sk-ent 均一致)</b>:<b>真人素材</b>(
-                        <Code>{`"GroupType":"LivenessFace"`}</Code>)托管在火山原生素材库;
-                        <b>AIGC 素材(缺省)</b>一律进平台素材库,<b>全部渠道</b>(国内 / 海外 / proMax / 火山) 生成时都可用{' '}
-                        <Code>asset://素材ID</Code> 引用。按 Id 操作时自动按素材归属路由。
+                        建组时传 <Code>{`"GroupType":"LivenessFace"`}</Code> 即真人素材组(缺省 <Code>AIGC</Code>
+                        );列表对齐火山官方语义 —— <b>缺省只列 AIGC</b>,查真人组/素材须显式传{' '}
+                        <Code>{`"GroupType":"LivenessFace"`}</Code>(顶层或 <Code>Filter</Code> 内均可)。
                     </li>
                     <li>
-                        真人素材的完整流程(真人认证 → 素材组 → 上传真人素材 → 视频引用)见{' '}
+                        真人视觉认证流程(火山渠道)见{' '}
                         <a href="/enterprise/docs#realperson" className="text-blue-600 hover:underline">
                             接入文档「火山渠道 · 真人认证」
                         </a>
                         。
                     </li>
-                    <li>
-                        列出真人(活体认证)素材/组时,火山官方 <Code>Filter</Code> 内传{' '}
-                        <Code>{`"GroupType":"LivenessFace"`}</Code>(默认只列 <Code>AIGC</Code> 虚拟人像组)。
-                    </li>
-                    <li>Action 契约与上表一致;素材 URL 为火山官方签名直链(有有效期,请及时下载转存)。</li>
+                    <li>Action 契约与上表一致;素材 URL 为平台直链(长期有效)。</li>
                 </ul>
             </Section>
         </div>
