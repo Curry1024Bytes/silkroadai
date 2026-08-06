@@ -150,6 +150,13 @@
   `/image-adapter/*` 404、Google/GitHub OAuth start 302。生产 `BILLING_SOURCE` 未设置(默认
   `newapi`),数据库 5 个用户全部 `billing_mode=newapi`;Portal 计费未启用。new-api 仍未上货,
   所以真实客户 Key 推理验收继续 pending。
+- 2026-08-06 上游 `main@cbc00af` 的 3 个提交已 clean merge 到 `dev`(`cb5c01f`):客户日志展示、
+  `/api/portal/logs` 与 CSV 导出无条件隐藏 image-adapter 专用 `upstream_unavailable` 503 中间态;
+  Enterprise 国内版/proMax/火山新增 480p(每 token 与 720p 同费率),global 因 intl 上游真机不支持而
+  保持 720p/1080p[/4k],请求 480p 时 Portal 直接返回带替代指引的 400。无 migration/env/依赖/
+  Docker/Nginx/Cloudflare 变化;定向 125/125、CI 245 files / 2693 passed / 1 skipped、typecheck/
+  format/lint 0 error 且生产构建通过。完整测试另有 2 个联机 smoke 因本机未开 `127.0.0.1:13000`
+  VPS 隧道而 `ECONNREFUSED`,不属于代码回归。该批次尚未部署,VPS 镜像仍为 `prod@b480b09`。
 - new-api rc.22 登录兼容决策:优先直接使用登录响应的 `data.access_token`;仅旧版本 `session=` cookie 走 fallback。
   该路径已通过 Google/GitHub 真实开户验证,不要把 `new_api_refresh` 当 session。
 
