@@ -109,10 +109,10 @@ export default function EnterpriseAssetsDocsPage() {
                                     <Code>CreateAsset</Code>
                                 </Td>
                                 <Td>
-                                    AssetType(Image/Video/Audio,对齐火山官方;大小写均兼容)、URL(公网直链,≤100MB)、Name(≤100)、Description?、
-                                    GroupId?
+                                    AssetType(Image/Video/Audio,对齐火山官方;大小写均兼容)、URL(公网直链,≤100MB)、Name?(≤100,缺省取
+                                    URL 文件名)、Description?、GroupId?
                                 </Td>
-                                <Td>{`{Id:"asset-…", Status:"active", URL:"托管直链"}`}</Td>
+                                <Td>{`{Id:"asset-…"}`}(URL/详情经 GetAsset 查)</Td>
                             </tr>
                             <tr>
                                 <Td>
@@ -126,7 +126,7 @@ export default function EnterpriseAssetsDocsPage() {
                                     <Code>UpdateAsset</Code>
                                 </Td>
                                 <Td>Id、Name?、Description?、GroupId?(null 解组)</Td>
-                                <Td>{`{}`}</Td>
+                                <Td>{`{Id}`}</Td>
                             </tr>
                             <tr>
                                 <Td>
@@ -164,7 +164,7 @@ export default function EnterpriseAssetsDocsPage() {
                                     <Code>UpdateAssetGroup</Code>
                                 </Td>
                                 <Td>Id、Name?、Description?</Td>
-                                <Td>{`{}`}</Td>
+                                <Td>{`{Id}`}</Td>
                             </tr>
                             <tr>
                                 <Td>

@@ -117,22 +117,34 @@ describe('envelope + 守门', () => {
 });
 
 describe('CreateAsset', () => {
-    it('happy:抓 URL → storeAsset → Result {Id, Status, URL}', async () => {
+    it('happy:抓 URL → storeAsset → Result 仅 {Id}(火山官方,URL/状态经 GetAsset 查)', async () => {
         fetchAssetFromUrl.mockResolvedValue({ bytes: Buffer.from('img'), mime: 'image/png' });
         storeAsset.mockResolvedValue({ id: 'asset-20260719120000-abcdef', public_url: 'https://r2/a.png' });
         const res = await POST(
             req('CreateAsset', { AssetType: 'image', URL: 'https://example.com/a.png', Name: '主角图' }),
         );
         expect(res.status).toBe(200);
-        const j = (await res.json()) as { Result: { Id: string; Status: string; URL: string } };
-        expect(j.Result.Id).toMatch(/^asset-/);
-        expect(j.Result.Status).toBe('active');
+        const j = (await res.json()) as { Result: Record<string, unknown> };
+        expect(j.Result).toEqual({ Id: 'asset-20260719120000-abcdef' });
         expect(storeAsset).toHaveBeenCalledWith(
             expect.objectContaining({ userId: 'u1', assetType: 'image', sourceUrl: 'https://example.com/a.png' }),
         );
     });
 
-    it('AssetType 非法 / 缺 Name → 400 InvalidParameter,不抓 URL', async () => {
+    it('Name 可选(火山官方):缺省从 URL 文件名派生;zod 报错带字段路径', async () => {
+        fetchAssetFromUrl.mockResolvedValue({ bytes: Buffer.from('img'), mime: 'image/png' });
+        storeAsset.mockResolvedValue({ id: 'asset-20260806000000-abcdef', public_url: 'https://r2/b.png' });
+        const res = await POST(req('CreateAsset', { AssetType: 'Image', URL: 'https://example.com/照片.png' }));
+        expect(res.status).toBe(200);
+        expect(storeAsset).toHaveBeenCalledWith(expect.objectContaining({ name: '照片.png' }));
+        // 缺 URL → 400 且 message 带字段名(客户 Go 报错可定位)
+        const bad = await POST(req('CreateAsset', { AssetType: 'Image', Name: 'x' }));
+        expect(bad.status).toBe(400);
+        const j = (await bad.json()) as { ResponseMetadata: { Error: { Message: string } } };
+        expect(j.ResponseMetadata.Error.Message).toContain('URL');
+    });
+
+    it('AssetType 非法 → 400 InvalidParameter,不抓 URL', async () => {
         const res = await POST(req('CreateAsset', { AssetType: 'doc', URL: 'https://x.com/a', Name: 'x' }));
         expect(res.status).toBe(400);
         expect(fetchAssetFromUrl).not.toHaveBeenCalled();
