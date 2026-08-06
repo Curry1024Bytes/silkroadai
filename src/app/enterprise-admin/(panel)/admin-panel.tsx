@@ -161,8 +161,8 @@ export function AdminPanel() {
     async function onDiscount(userId: string, region: string, current: number) {
         const label = REGION_LABEL[region] || region;
         const raw = window.prompt(
-            `${label}折扣率 —— 相对【官方挂牌价】(0.05~2):0.85=标准零售价(默认),` +
-                `0.9=官方价九折,1=按官方原价不打折;单档议价不受影响。当前值:`,
+            `${label}折扣率 —— 相对【官方挂牌价】(0.05~2):1=官方原价(新户默认),` +
+                `0.85=85 折,0.9=九折;要给折扣必须显式设置,单档议价不受影响。当前值:`,
             String(current),
         );
         if (raw === null || raw.trim() === '') return;
@@ -352,7 +352,7 @@ export function AdminPanel() {
                             累计消费 {fmtCny(detail.spent_cny)}
                             {detail.upstreams.map(
                                 (u) =>
-                                    u.discount !== 0.85 && (
+                                    u.discount !== 1 && (
                                         <span
                                             key={u.region}
                                             className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-800"
@@ -397,7 +397,7 @@ export function AdminPanel() {
                                                         .toFixed(2)
                                                         .replace(/0+$/, '')
                                                         .replace(/\.$/, '')}
-                                                    折{row.discount === 0.85 ? ',标准价' : ''})
+                                                    折{row.discount === 1 ? ',官方原价' : ''})
                                                     {row.note ? ` · ${row.note}` : ''}
                                                 </span>
                                                 <button

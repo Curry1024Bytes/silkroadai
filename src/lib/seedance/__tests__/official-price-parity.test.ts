@@ -55,3 +55,16 @@ describe('官方挂牌价 = 文档价目表口径', () => {
         }
     });
 });
+
+/** 新开户默认折扣 = 1(官方原价,2026-08-07 operator 拍板:折扣必须显式设置)。
+ *  schema 默认值是唯一来源(onboard / upstream-key upsert 都不显式传 discount),
+ *  故直接断言 schema —— 被改回 0.85 时本测试会红。 */
+describe('新开户默认折扣', () => {
+    it('prisma schema 里 EnterpriseUpstreamKey.discount 默认 1(官方原价)', async () => {
+        const fs = await import('node:fs');
+        const schema = fs.readFileSync(new URL('../../../../prisma/schema.prisma', import.meta.url), 'utf8');
+        const line = schema.split('\n').find((l) => l.includes('discount') && l.includes('@default'));
+        expect(line).toBeTruthy();
+        expect(line).toContain('@default(1)');
+    });
+});
