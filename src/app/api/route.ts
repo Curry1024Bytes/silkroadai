@@ -47,13 +47,14 @@ function meta(action: string) {
 
 const ok = (action: string, result: unknown) => NextResponse.json({ ResponseMetadata: meta(action), Result: result });
 
-/** zod 校验失败 → 带字段路径的报错文案(客户 2026-08-06 反馈裸 message 看不出缺哪个字段)+ 落日志。 */
+/** zod 校验失败 → 带字段路径的报错文案 + 落日志。多条错误按官方语义用 \n 逐条列出
+ *  (727 文档:「一次请求存在多个校验错误时,message 中以换行符 \n 分隔逐条列出」)。 */
 function zodFail(action: string, err: z.ZodError): NextResponse {
-    const issue = err.issues[0];
-    const path = issue?.path?.length ? issue.path.join('.') : 'body';
-    const msg = `${path}: ${issue?.message || 'invalid'}`;
+    const msg = err.issues
+        .map((i) => `${i.path?.length ? i.path.join('.') : 'body'}: ${i.message || 'invalid'}`)
+        .join('\n');
     console.warn('[enterprise-action] InvalidParameter', { action, msg });
-    return fail(action, 400, 'InvalidParameter', msg);
+    return fail(action, 400, 'InvalidParameter', msg || 'invalid request');
 }
 
 const fail = (action: string, status: number, code: string, message: string) =>
@@ -72,9 +73,9 @@ const createAssetSchema = z.object({
     AssetType: assetTypeInput,
     URL: z.string().min(1).max(2000),
     // 火山官方 Name 可选(#300 曾在 volc 翻译层修过,R2 路径 2026-08-06 统一托管后同步):
-    // 缺省从 URL 文件名派生
-    Name: z.string().trim().min(1).max(100).optional(),
-    Description: z.string().trim().max(500).optional(),
+    // 缺省从 URL 文件名派生。长度上限对齐官方:名称 64、描述 300。
+    Name: z.string().trim().min(1).max(64).optional(),
+    Description: z.string().trim().max(300).optional(),
     GroupId: z.string().trim().max(60).optional(),
 });
 
@@ -89,8 +90,8 @@ function deriveAssetName(url: string): string {
 }
 const idSchema = z.object({ Id: z.string().trim().min(1).max(60) });
 const updateAssetSchema = idSchema.extend({
-    Name: z.string().trim().min(1).max(100).optional(),
-    Description: z.string().trim().max(500).nullable().optional(),
+    Name: z.string().trim().min(1).max(64).optional(),
+    Description: z.string().trim().max(300).nullable().optional(),
     GroupId: z.string().trim().max(60).nullable().optional(),
 });
 const groupTypeInput = z.enum(['AIGC', 'LivenessFace']);
@@ -103,14 +104,14 @@ const listAssetsSchema = z.object({
     PageSize: z.number().int().min(1).max(100).default(20),
 });
 const createGroupSchema = z.object({
-    Name: z.string().trim().min(1).max(100),
-    Description: z.string().trim().max(500).optional(),
+    Name: z.string().trim().min(1).max(64),
+    Description: z.string().trim().max(300).optional(),
     // 对齐火山官方:AIGC(虚拟/生成素材,缺省)| LivenessFace(真人素材,四渠道通用,平台托管)
     GroupType: groupTypeInput.default('AIGC'),
 });
 const updateGroupSchema = idSchema.extend({
-    Name: z.string().trim().min(1).max(100).optional(),
-    Description: z.string().trim().max(500).nullable().optional(),
+    Name: z.string().trim().min(1).max(64).optional(),
+    Description: z.string().trim().max(300).nullable().optional(),
 });
 const listGroupsSchema = z.object({
     // 官方语义:query 缺省只列 AIGC,真人组须显式 GroupType=LivenessFace

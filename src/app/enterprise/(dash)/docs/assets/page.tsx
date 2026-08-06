@@ -88,14 +88,19 @@ export default function EnterpriseAssetsDocsPage() {
                 </p>
                 <ul className="list-disc space-y-1 pl-5">
                     <li>
-                        <b>图片</b>:&lt;30MB;宽高均在 <b>300–6000px</b>;宽高比 <b>0.4–2.5</b>; 格式 PNG / JPEG / WebP /
-                        GIF。
+                        <b>图片</b>:JPEG / PNG / WebP / BMP / TIFF / GIF;&lt;30MB;宽高均在 <b>300–6000px</b>
+                        (开区间);宽高比 <b>0.4–2.5</b>(开区间)。
                     </li>
                     <li>
-                        <b>视频</b>:≤50MB;<b>MP4 / MOV</b>;时长 <b>2–15 秒</b>。
+                        <b>视频</b>:MP4 / MOV;≤50MB;时长 <b>2–15 秒</b>;宽高 300–6000px;宽高比 0.4–2.5;总像素{' '}
+                        <b>409,600–2,086,876</b>;帧率 <b>24–60 FPS</b>。
                     </li>
                     <li>
-                        <b>音频</b>:≤15MB。
+                        <b>音频</b>:MP3 / WAV;≤15MB;时长 <b>2–15 秒</b>。
+                    </li>
+                    <li>
+                        名称长度 ≤64 字符,描述 ≤300 字符(素材组同)。一次请求有多条不合规时,<Code>Message</Code>{' '}
+                        内按换行符逐条列出。
                     </li>
                 </ul>
             </Section>
@@ -127,7 +132,7 @@ export default function EnterpriseAssetsDocsPage() {
                                     <Code>CreateAsset</Code>
                                 </Td>
                                 <Td>
-                                    AssetType(Image/Video/Audio,对齐火山官方;大小写均兼容)、URL(公网直链,≤100MB)、Name?(≤100,缺省取
+                                    AssetType(Image/Video/Audio,对齐火山官方;大小写均兼容)、URL(公网直链)、Name?(≤64,缺省取
                                     URL 文件名)、Description?、GroupId?
                                 </Td>
                                 <Td>{`{Id:"asset-…"}`}(URL/详情经 GetAsset 查)</Td>
@@ -167,7 +172,7 @@ export default function EnterpriseAssetsDocsPage() {
                                 <Td>
                                     <Code>CreateAssetGroup</Code>
                                 </Td>
-                                <Td>Name(≤100)、Description?、GroupType?(AIGC 默认 / LivenessFace 真人)</Td>
+                                <Td>Name(≤64)、Description?(≤300)、GroupType?(AIGC 默认 / LivenessFace 真人)</Td>
                                 <Td>{`{Id:"group-…"}`}</Td>
                             </tr>
                             <tr>

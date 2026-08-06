@@ -39,6 +39,8 @@ const EXT_BY_MIME: Record<string, string> = {
     'image/jpeg': 'jpg',
     'image/webp': 'webp',
     'image/gif': 'gif',
+    'image/bmp': 'bmp',
+    'image/tiff': 'tif',
     'video/mp4': 'mp4',
     'video/quicktime': 'mov',
     'video/webm': 'webm',
@@ -49,14 +51,34 @@ const EXT_BY_MIME: Record<string, string> = {
 
 export type AssetType = 'image' | 'video' | 'audio';
 
-// ── 火山官方媒体校验(2026-08-06,客户反馈:官方直传会拒的图我们收了还标 active)──
-// 官方要求(727 文档审计):图 <30MB、宽高 300-6000px、宽高比 0.4-2.5;
-// 视频 MP4/MOV ≤50MB、2-15s(帧率/总像素上游生成时仍会校验,这里不解析);音频 ≤15MB。
-// 单点挂在 storeAsset —— Action API 与控制台上传同享。
+// ── 火山官方媒体校验(2026-08-06;#331 首版 → 本次全量对齐官方规则表)──
+// 官方规则(727 文档「媒体校验规则」):
+//   图片 JPEG/PNG/WEBP/BMP/TIFF/GIF;<30MB;宽高比 (0.4,2.5);宽高均 (300,6000)px
+//   视频 MP4/MOV;≤50MB;时长 [2,15]s;宽高比 [0.4,2.5];宽高均 [300,6000]px;
+//        总像素 [409600,2086876];帧率 [24,60]FPS
+//   音频 MP3/WAV;≤15MB;时长 [2,15]s
+// 多条错误按官方语义用 \n 逐条列出(客户脚本按行解析)。单点挂在 storeAsset ——
+// Action API 与控制台上传同享。解析不出的维度(如 MP3 时长)跳过,不误杀。
 
 const IMAGE_MAX_BYTES = 30 * 1024 * 1024;
 const VIDEO_MAX_BYTES = 50 * 1024 * 1024;
 const AUDIO_MAX_BYTES = 15 * 1024 * 1024;
+const MIN_PX = 300;
+const MAX_PX = 6000;
+const MIN_RATIO = 0.4;
+const MAX_RATIO = 2.5;
+const MIN_DUR = 2;
+const MAX_DUR = 15;
+const VIDEO_MIN_TOTAL_PX = 409600;
+const VIDEO_MAX_TOTAL_PX = 2086876;
+const MIN_FPS = 24;
+const MAX_FPS = 60;
+/** 官方允许的 mime(按类型);key 已归一小写去参数。 */
+const ALLOWED_MIME: Record<AssetType, string[]> = {
+    image: ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/bmp', 'image/tiff', 'image/gif'],
+    video: ['video/mp4', 'video/quicktime'],
+    audio: ['audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/x-wav', 'audio/wave'],
+};
 
 /** 从图片字节头读宽高(dep-free:PNG / JPEG / WebP / GIF)。认不出 → null。 */
 export function readImageDims(buf: Buffer): { w: number; h: number } | null {
@@ -103,7 +125,154 @@ export function readImageDims(buf: Buffer): { w: number; h: number } | null {
             return { w: buf.readUIntLE(24, 3) + 1, h: buf.readUIntLE(27, 3) + 1 };
         }
     }
+    // BMP:'BM' + DIB header(BITMAPINFOHEADER 起宽高为 int32 小端 @18/22)
+    if (buf.length >= 26 && buf[0] === 0x42 && buf[1] === 0x4d) {
+        const w = buf.readInt32LE(18);
+        const h = Math.abs(buf.readInt32LE(22)); // 负高 = 自顶向下
+        if (w > 0 && h > 0) return { w, h };
+        return null;
+    }
+    // TIFF:II*\0(小端)/ MM\0*(大端)→ IFD 里找 tag 256(宽) / 257(高)
+    if (buf.length >= 8) {
+        const le = buf.toString('latin1', 0, 4) === 'II\u002a\u0000';
+        const be = buf.toString('latin1', 0, 4) === 'MM\u0000\u002a';
+        if (le || be) {
+            const u16 = (o: number) => (le ? buf.readUInt16LE(o) : buf.readUInt16BE(o));
+            const u32 = (o: number) => (le ? buf.readUInt32LE(o) : buf.readUInt32BE(o));
+            try {
+                const ifd = u32(4);
+                if (ifd + 2 > buf.length) return null;
+                const n = u16(ifd);
+                let w = 0;
+                let h = 0;
+                for (let i = 0; i < n; i++) {
+                    const e = ifd + 2 + i * 12;
+                    if (e + 12 > buf.length) break;
+                    const tag = u16(e);
+                    const type = u16(e + 2);
+                    // SHORT(3)取低 16 位,LONG(4)取 32 位;值内联在 offset 8 处
+                    const val = type === 3 ? u16(e + 8) : u32(e + 8);
+                    if (tag === 256) w = val;
+                    else if (tag === 257) h = val;
+                }
+                if (w > 0 && h > 0) return { w, h };
+            } catch {
+                return null;
+            }
+        }
+    }
     return null;
+}
+
+/** MP4/MOV 顶层 box 扫描器(共享给时长 / 维度 / 帧率解析)。 */
+function findBox(buf: Buffer, start: number, end: number, want: string): { start: number; end: number } | null {
+    let off = start;
+    while (off + 8 <= end) {
+        let size = buf.readUInt32BE(off);
+        const type = buf.toString('latin1', off + 4, off + 8);
+        let header = 8;
+        if (size === 1) {
+            if (off + 16 > end) return null;
+            const big = buf.readBigUInt64BE(off + 8);
+            if (big > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+            size = Number(big);
+            header = 16;
+        } else if (size === 0) {
+            size = end - off;
+        }
+        if (size < header || off + size > end) return null;
+        if (type === want) return { start: off + header, end: off + size };
+        off += size;
+    }
+    return null;
+}
+
+/** 视频宽高(moov→trak→tkhd 的 width/height,16.16 定点)+ 帧率(stts:样本数/时长)。
+ *  多 trak 时取第一个有非零宽高的(视频轨)。认不出的维度返 null,调用方跳过该项校验。 */
+export function readVideoMeta(buf: Buffer): { w?: number; h?: number; fps?: number } {
+    const out: { w?: number; h?: number; fps?: number } = {};
+    try {
+        const moov = findBox(buf, 0, buf.length, 'moov');
+        if (!moov) return out;
+        // 逐个 trak 找视频轨
+        let off = moov.start;
+        while (off + 8 <= moov.end) {
+            const trak = findBox(buf, off, moov.end, 'trak');
+            if (!trak) break;
+            const tkhd = findBox(buf, trak.start, trak.end, 'tkhd');
+            if (tkhd) {
+                const version = buf[tkhd.start];
+                // v0: 后 8 字节 = width/height(16.16);v1 同结构但前面多 12 字节
+                const tail = tkhd.end - 8;
+                if (tail > tkhd.start) {
+                    const w = buf.readUInt32BE(tail) / 65536;
+                    const h = buf.readUInt32BE(tail + 4) / 65536;
+                    if (w >= 1 && h >= 1) {
+                        out.w = Math.round(w);
+                        out.h = Math.round(h);
+                        // 同轨取帧率:mdia→minf→stbl→stts(样本总数 / 总时长)+ mdhd timescale
+                        const mdia = findBox(buf, trak.start, trak.end, 'mdia');
+                        const mdhd = mdia && findBox(buf, mdia.start, mdia.end, 'mdhd');
+                        const minf = mdia && findBox(buf, mdia.start, mdia.end, 'minf');
+                        const stbl = minf && findBox(buf, minf.start, minf.end, 'stbl');
+                        const stts = stbl && findBox(buf, stbl.start, stbl.end, 'stts');
+                        if (mdhd && stts) {
+                            const mv = buf[mdhd.start];
+                            const timescale =
+                                mv === 1 ? buf.readUInt32BE(mdhd.start + 20) : buf.readUInt32BE(mdhd.start + 12);
+                            const entries = buf.readUInt32BE(stts.start + 4);
+                            let samples = 0;
+                            let ticks = 0;
+                            for (let i = 0; i < entries; i++) {
+                                const e = stts.start + 8 + i * 8;
+                                if (e + 8 > stts.end) break;
+                                const count = buf.readUInt32BE(e);
+                                const delta = buf.readUInt32BE(e + 4);
+                                samples += count;
+                                ticks += count * delta;
+                            }
+                            if (timescale > 0 && ticks > 0 && samples > 0) {
+                                out.fps = (samples * timescale) / ticks;
+                            }
+                        }
+                        break; // 视频轨已拿到
+                    }
+                }
+            }
+            off = trak.end;
+        }
+    } catch {
+        /* best-effort */
+    }
+    return out;
+}
+
+/** WAV 时长(RIFF/fmt 采样率 + data 块大小)。非 WAV / 认不出 → null(MP3 不解析)。 */
+export function readWavDurationSec(buf: Buffer): number | null {
+    try {
+        if (buf.length < 44 || buf.toString('latin1', 0, 4) !== 'RIFF' || buf.toString('latin1', 8, 12) !== 'WAVE') {
+            return null;
+        }
+        let off = 12;
+        let byteRate = 0;
+        let dataLen = 0;
+        while (off + 8 <= buf.length) {
+            const id = buf.toString('latin1', off, off + 4);
+            const size = buf.readUInt32LE(off + 4);
+            if (id === 'fmt ' && off + 16 <= buf.length) byteRate = buf.readUInt32LE(off + 16);
+            else if (id === 'data') {
+                // 声明长度超出实际字节 = 文件不全 → 判不出时长(返 null 跳过),
+                // 不按截断长度算(会把完整文件误判成过短而误杀)
+                if (size > buf.length - off - 8) return null;
+                dataLen = size;
+                break;
+            }
+            off += 8 + size + (size % 2);
+        }
+        return byteRate > 0 && dataLen > 0 ? dataLen / byteRate : null;
+    } catch {
+        return null;
+    }
 }
 
 /** 从 MP4/MOV 字节读时长秒(顶层扫 box 找 moov→mvhd;best-effort,认不出 → null)。 */
@@ -148,48 +317,67 @@ export function readMp4DurationSec(buf: Buffer): number | null {
     }
 }
 
-/** 上传时按火山官方要求校验媒体;不合格 → AssetError('InvalidParameter')(400,带具体原因)。 */
+/** 上传时按火山官方规则校验媒体;不合格 → AssetError('InvalidParameter')。
+ *  多条错误按官方语义用 \n 逐条列出(客户脚本按行解析);解析不出的维度跳过(不误杀)。 */
 export function validateAssetMedia(assetType: AssetType, bytes: Buffer, mime: string): void {
-    const mb = (n: number) => `${Math.round(n / 1024 / 1024)}MB`;
+    const mb = (n: number) => `${(n / 1024 / 1024).toFixed(1)}MB`;
+    const errs: string[] = [];
+    const m = mime.toLowerCase().split(';')[0].trim();
+    if (!ALLOWED_MIME[assetType].includes(m)) {
+        const label = { image: 'JPEG/PNG/WEBP/BMP/TIFF/GIF', video: 'MP4/MOV', audio: 'MP3/WAV' }[assetType];
+        errs.push(`${assetType} 仅支持 ${label}(火山官方要求),实际 ${mime}`);
+    }
+
     if (assetType === 'image') {
-        if (bytes.length >= IMAGE_MAX_BYTES) {
-            throw new AssetError('InvalidParameter', `图片超出火山官方上限 30MB(实际 ${mb(bytes.length)})`);
-        }
+        if (bytes.length >= IMAGE_MAX_BYTES) errs.push(`图片需小于 30MB(火山官方要求),实际 ${mb(bytes.length)}`);
         const dims = readImageDims(bytes);
         if (!dims) {
-            throw new AssetError('InvalidParameter', '无法解析图片尺寸(仅支持 PNG / JPEG / WebP / GIF,且文件需完整)');
+            errs.push('无法解析图片尺寸(文件需完整且为 JPEG/PNG/WEBP/BMP/TIFF/GIF)');
+        } else {
+            const { w, h } = dims;
+            if (w <= MIN_PX || h <= MIN_PX || w >= MAX_PX || h >= MAX_PX) {
+                errs.push(`图片宽高需在 ${MIN_PX}-${MAX_PX}px(火山官方要求),实际 ${w}×${h}`);
+            }
+            const ratio = w / h;
+            if (ratio <= MIN_RATIO || ratio >= MAX_RATIO) {
+                errs.push(`图片宽高比需在 ${MIN_RATIO}-${MAX_RATIO}(火山官方要求),实际 ${ratio.toFixed(2)}(${w}×${h})`);
+            }
         }
-        const { w, h } = dims;
-        if (w < 300 || h < 300 || w > 6000 || h > 6000) {
-            throw new AssetError('InvalidParameter', `图片宽高需在 300-6000px(火山官方要求),实际 ${w}×${h}`);
-        }
-        const ratio = w / h;
-        if (ratio < 0.4 || ratio > 2.5) {
-            throw new AssetError(
-                'InvalidParameter',
-                `图片宽高比需在 0.4-2.5(火山官方要求),实际 ${ratio.toFixed(2)}(${w}×${h})`,
-            );
-        }
-        return;
-    }
-    if (assetType === 'video') {
-        if (bytes.length > VIDEO_MAX_BYTES) {
-            throw new AssetError('InvalidParameter', `视频超出火山官方上限 50MB(实际 ${mb(bytes.length)})`);
-        }
-        const m = mime.toLowerCase();
-        if (!m.includes('mp4') && !m.includes('quicktime')) {
-            throw new AssetError('InvalidParameter', `视频仅支持 MP4 / MOV(火山官方要求),实际 ${mime}`);
-        }
+    } else if (assetType === 'video') {
+        if (bytes.length > VIDEO_MAX_BYTES) errs.push(`视频不超过 50MB(火山官方要求),实际 ${mb(bytes.length)}`);
         const dur = readMp4DurationSec(bytes);
-        if (dur != null && (dur < 2 || dur > 15)) {
-            throw new AssetError('InvalidParameter', `视频时长需 2-15 秒(火山官方要求),实际 ${dur.toFixed(1)} 秒`);
+        if (dur != null && (dur < MIN_DUR || dur > MAX_DUR)) {
+            errs.push(`视频时长需 ${MIN_DUR}-${MAX_DUR} 秒(火山官方要求),实际 ${dur.toFixed(1)} 秒`);
         }
-        return;
+        const meta = readVideoMeta(bytes);
+        if (meta.w && meta.h) {
+            const { w, h } = meta;
+            if (w < MIN_PX || h < MIN_PX || w > MAX_PX || h > MAX_PX) {
+                errs.push(`视频宽高需在 ${MIN_PX}-${MAX_PX}px(火山官方要求),实际 ${w}×${h}`);
+            }
+            const ratio = w / h;
+            if (ratio < MIN_RATIO || ratio > MAX_RATIO) {
+                errs.push(`视频宽高比需在 ${MIN_RATIO}-${MAX_RATIO}(火山官方要求),实际 ${ratio.toFixed(2)}`);
+            }
+            const total = w * h;
+            if (total < VIDEO_MIN_TOTAL_PX || total > VIDEO_MAX_TOTAL_PX) {
+                errs.push(
+                    `视频总像素需在 ${VIDEO_MIN_TOTAL_PX}-${VIDEO_MAX_TOTAL_PX}(火山官方要求),实际 ${total}(${w}×${h})`,
+                );
+            }
+        }
+        if (meta.fps != null && (meta.fps < MIN_FPS - 0.5 || meta.fps > MAX_FPS + 0.5)) {
+            errs.push(`视频帧率需在 ${MIN_FPS}-${MAX_FPS} FPS(火山官方要求),实际 ${meta.fps.toFixed(1)}`);
+        }
+    } else {
+        if (bytes.length > AUDIO_MAX_BYTES) errs.push(`音频不超过 15MB(火山官方要求),实际 ${mb(bytes.length)}`);
+        const dur = readWavDurationSec(bytes); // MP3 时长不解析(无解码依赖),跳过
+        if (dur != null && (dur < MIN_DUR || dur > MAX_DUR)) {
+            errs.push(`音频时长需 ${MIN_DUR}-${MAX_DUR} 秒(火山官方要求),实际 ${dur.toFixed(1)} 秒`);
+        }
     }
-    // audio
-    if (bytes.length > AUDIO_MAX_BYTES) {
-        throw new AssetError('InvalidParameter', `音频超出火山官方上限 15MB(实际 ${mb(bytes.length)})`);
-    }
+
+    if (errs.length) throw new AssetError('InvalidParameter', errs.join('\n'));
 }
 
 function pad(n: number): string {

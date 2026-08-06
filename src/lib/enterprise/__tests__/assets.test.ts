@@ -79,37 +79,96 @@ function pngOf(w: number, h: number): Buffer {
 }
 const OK_PNG = pngOf(1024, 768);
 
-describe('validateAssetMedia(火山官方媒体要求,2026-08-06)', () => {
-    it('合规图放行;宽高 <300 / >6000 → 400 带实际尺寸', () => {
+/** 造一段最小 WAV(fmt byteRate + data 长度决定时长)。 */
+function wavOf(byteRate: number, dataLen: number): Buffer {
+    const b = Buffer.alloc(44 + dataLen); // data 实长 = 声明长度(截断文件按不可判处理)
+    b.write('RIFF', 0, 'latin1');
+    b.write('WAVE', 8, 'latin1');
+    b.write('fmt ', 12, 'latin1');
+    b.writeUInt32LE(16, 16); // fmt chunk size
+    b.writeUInt32LE(byteRate, 28); // offset 12+16 = 28
+    b.write('data', 36, 'latin1');
+    b.writeUInt32LE(dataLen, 40);
+    return b;
+}
+
+describe('validateAssetMedia(火山官方媒体规则全量对齐,2026-08-06)', () => {
+    it('合规图放行;宽高越界 → 400 带实际尺寸(官方开区间 300-6000)', () => {
         expect(() => validateAssetMedia('image', OK_PNG, 'image/png')).not.toThrow();
         expect(() => validateAssetMedia('image', pngOf(200, 200), 'image/png')).toThrow(/300-6000/);
         expect(() => validateAssetMedia('image', pngOf(7000, 1000), 'image/png')).toThrow(/300-6000/);
+        // 开区间:恰好 300 / 6000 也拒
+        expect(() => validateAssetMedia('image', pngOf(300, 400), 'image/png')).toThrow(/300-6000/);
     });
 
-    it('宽高比越界(<0.4 / >2.5)→ 400 带实际比例', () => {
+    it('宽高比越界 → 400 带实际比例;边界内放行(官方开区间 0.4-2.5)', () => {
         expect(() => validateAssetMedia('image', pngOf(3000, 400), 'image/png')).toThrow(/宽高比/);
         expect(() => validateAssetMedia('image', pngOf(400, 3000), 'image/png')).toThrow(/宽高比/);
-        // 边界内放行
-        expect(() => validateAssetMedia('image', pngOf(2500, 1000), 'image/png')).not.toThrow();
+        expect(() => validateAssetMedia('image', pngOf(2500, 1000), 'image/png')).toThrow(/宽高比/); // 恰好 2.5
+        expect(() => validateAssetMedia('image', pngOf(2400, 1000), 'image/png')).not.toThrow(); // 2.4 放行
+    });
+
+    it('图片格式白名单含 BMP/TIFF(官方);非白名单 → 400', () => {
+        expect(() => validateAssetMedia('image', pngOf(1024, 768), 'image/bmp')).not.toThrow();
+        expect(() => validateAssetMedia('image', pngOf(1024, 768), 'image/tiff')).not.toThrow();
+        expect(() => validateAssetMedia('image', pngOf(1024, 768), 'image/svg+xml')).toThrow(/BMP\/TIFF/);
+    });
+
+    it('多条错误按官方语义用 \\n 逐条列出', () => {
+        try {
+            validateAssetMedia('image', pngOf(100, 8000), 'image/svg+xml');
+            throw new Error('should have thrown');
+        } catch (e) {
+            const msg = (e as Error).message;
+            expect(msg.split('\n').length).toBeGreaterThanOrEqual(3); // 格式 + 宽高 + 比例
+            expect(msg).toMatch(/宽高/);
+            expect(msg).toMatch(/宽高比/);
+        }
     });
 
     it('解析不出尺寸(非图/截断)→ 400,不静默放行', () => {
         expect(() => validateAssetMedia('image', Buffer.from('not-an-image'), 'image/png')).toThrow(/无法解析图片尺寸/);
     });
 
-    it('视频:非 MP4/MOV → 400;音频只查大小', () => {
-        expect(() => validateAssetMedia('video', Buffer.alloc(1000), 'video/webm')).toThrow(/MP4 \/ MOV/);
+    it('视频:格式白名单 + 大小;认不出的维度跳过不误杀', () => {
+        expect(() => validateAssetMedia('video', Buffer.alloc(1000), 'video/webm')).toThrow(/MP4\/MOV/);
+        // 零字节 MP4:时长/维度/帧率都解析不出 → 只过格式与大小,不误杀
         expect(() => validateAssetMedia('video', Buffer.alloc(1000), 'video/mp4')).not.toThrow();
-        expect(() => validateAssetMedia('audio', Buffer.alloc(1000), 'audio/mpeg')).not.toThrow();
+        expect(() => validateAssetMedia('video', Buffer.alloc(60 * 1024 * 1024), 'video/mp4')).toThrow(/50MB/);
     });
 
-    it('readImageDims 认 PNG / JPEG / GIF / WebP(VP8X)', () => {
+    it('音频:格式白名单 + 大小;WAV 时长可校验,MP3 跳过', () => {
+        expect(() => validateAssetMedia('audio', Buffer.alloc(1000), 'audio/mpeg')).not.toThrow();
+        expect(() => validateAssetMedia('audio', Buffer.alloc(1000), 'audio/ogg')).toThrow(/MP3\/WAV/);
+        // 1 秒 WAV(byteRate 44100,data 44100)→ 短于官方 2 秒下限
+        expect(() => validateAssetMedia('audio', wavOf(44100, 44100), 'audio/wav')).toThrow(/时长/);
+        // 5 秒放行
+        expect(() => validateAssetMedia('audio', wavOf(44100, 44100 * 5), 'audio/wav')).not.toThrow();
+    });
+
+    it('readImageDims 认 PNG / GIF / BMP / TIFF', () => {
         expect(readImageDims(pngOf(800, 600))).toEqual({ w: 800, h: 600 });
         const gif = Buffer.alloc(10);
         gif.write('GIF89a', 0, 'latin1');
         gif.writeUInt16LE(640, 6);
         gif.writeUInt16LE(480, 8);
         expect(readImageDims(gif)).toEqual({ w: 640, h: 480 });
+        const bmp = Buffer.alloc(26);
+        bmp.write('BM', 0, 'latin1');
+        bmp.writeInt32LE(1920, 18);
+        bmp.writeInt32LE(-1080, 22); // 负高 = 自顶向下
+        expect(readImageDims(bmp)).toEqual({ w: 1920, h: 1080 });
+        const tif = Buffer.alloc(40);
+        tif.write('II*\u0000', 0, 'latin1');
+        tif.writeUInt32LE(8, 4);
+        tif.writeUInt16LE(2, 8); // 2 entries
+        tif.writeUInt16LE(256, 10);
+        tif.writeUInt16LE(4, 12);
+        tif.writeUInt32LE(1200, 18);
+        tif.writeUInt16LE(257, 22);
+        tif.writeUInt16LE(4, 24);
+        tif.writeUInt32LE(900, 30);
+        expect(readImageDims(tif)).toEqual({ w: 1200, h: 900 });
         expect(readImageDims(Buffer.from('xx'))).toBeNull();
     });
 });
