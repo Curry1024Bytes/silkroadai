@@ -21,7 +21,16 @@ const { db, uploadImage, deleteImage } = vi.hoisted(() => ({
 vi.mock('@/lib/db', () => ({ prisma: db }));
 vi.mock('@/lib/r2/client', () => ({ uploadImage, deleteImage }));
 
-import { AssetError, assertSafeExternalUrl, newAssetId, storeAsset, deleteAsset, resolveAssetRefs } from '../assets';
+import {
+    AssetError,
+    assertSafeExternalUrl,
+    newAssetId,
+    storeAsset,
+    deleteAsset,
+    resolveAssetRefs,
+    validateAssetMedia,
+    readImageDims,
+} from '../assets';
 
 beforeEach(() => {
     vi.clearAllMocks();
@@ -58,6 +67,53 @@ describe('assertSafeExternalUrl(SSRF 守门)', () => {
     });
 });
 
+/** 造一张合规的最小 PNG(仅签名 + IHDR,宽高可控 —— 媒体校验只读头)。 */
+function pngOf(w: number, h: number): Buffer {
+    const b = Buffer.alloc(24);
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(b, 0);
+    b.writeUInt32BE(13, 8);
+    b.write('IHDR', 12, 'latin1');
+    b.writeUInt32BE(w, 16);
+    b.writeUInt32BE(h, 20);
+    return b;
+}
+const OK_PNG = pngOf(1024, 768);
+
+describe('validateAssetMedia(火山官方媒体要求,2026-08-06)', () => {
+    it('合规图放行;宽高 <300 / >6000 → 400 带实际尺寸', () => {
+        expect(() => validateAssetMedia('image', OK_PNG, 'image/png')).not.toThrow();
+        expect(() => validateAssetMedia('image', pngOf(200, 200), 'image/png')).toThrow(/300-6000/);
+        expect(() => validateAssetMedia('image', pngOf(7000, 1000), 'image/png')).toThrow(/300-6000/);
+    });
+
+    it('宽高比越界(<0.4 / >2.5)→ 400 带实际比例', () => {
+        expect(() => validateAssetMedia('image', pngOf(3000, 400), 'image/png')).toThrow(/宽高比/);
+        expect(() => validateAssetMedia('image', pngOf(400, 3000), 'image/png')).toThrow(/宽高比/);
+        // 边界内放行
+        expect(() => validateAssetMedia('image', pngOf(2500, 1000), 'image/png')).not.toThrow();
+    });
+
+    it('解析不出尺寸(非图/截断)→ 400,不静默放行', () => {
+        expect(() => validateAssetMedia('image', Buffer.from('not-an-image'), 'image/png')).toThrow(/无法解析图片尺寸/);
+    });
+
+    it('视频:非 MP4/MOV → 400;音频只查大小', () => {
+        expect(() => validateAssetMedia('video', Buffer.alloc(1000), 'video/webm')).toThrow(/MP4 \/ MOV/);
+        expect(() => validateAssetMedia('video', Buffer.alloc(1000), 'video/mp4')).not.toThrow();
+        expect(() => validateAssetMedia('audio', Buffer.alloc(1000), 'audio/mpeg')).not.toThrow();
+    });
+
+    it('readImageDims 认 PNG / JPEG / GIF / WebP(VP8X)', () => {
+        expect(readImageDims(pngOf(800, 600))).toEqual({ w: 800, h: 600 });
+        const gif = Buffer.alloc(10);
+        gif.write('GIF89a', 0, 'latin1');
+        gif.writeUInt16LE(640, 6);
+        gif.writeUInt16LE(480, 8);
+        expect(readImageDims(gif)).toEqual({ w: 640, h: 480 });
+        expect(readImageDims(Buffer.from('xx'))).toBeNull();
+    });
+});
+
 describe('storeAsset', () => {
     it('happy:R2 key 按约定,create 落库带公网 URL', async () => {
         db.enterpriseAsset.create.mockImplementation(({ data }: { data: Record<string, unknown> }) =>
@@ -67,7 +123,7 @@ describe('storeAsset', () => {
             userId: 'u1',
             assetType: 'image',
             name: '猫',
-            bytes: Buffer.from('png-bytes'),
+            bytes: OK_PNG,
             mime: 'image/png',
         })) as unknown as Record<string, unknown>;
         expect(String(row.id)).toMatch(/^asset-/);
@@ -78,7 +134,7 @@ describe('storeAsset', () => {
     it('素材数达上限 → QuotaExceeded', async () => {
         db.enterpriseAsset.count.mockResolvedValue(5000);
         await expect(
-            storeAsset({ userId: 'u1', assetType: 'image', name: 'x', bytes: Buffer.from('a'), mime: 'image/png' }),
+            storeAsset({ userId: 'u1', assetType: 'image', name: 'x', bytes: OK_PNG, mime: 'image/png' }),
         ).rejects.toMatchObject({ code: 'QuotaExceeded' });
     });
 
@@ -90,7 +146,7 @@ describe('storeAsset', () => {
                 assetType: 'image',
                 name: 'x',
                 groupId: 'group-20260719000000-abcdef',
-                bytes: Buffer.from('a'),
+                bytes: OK_PNG,
                 mime: 'image/png',
             }),
         ).rejects.toMatchObject({ code: 'GroupNotFound' });

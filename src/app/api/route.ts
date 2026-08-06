@@ -137,7 +137,8 @@ function assetResult(a: {
         Description: a.description ?? undefined,
         AssetType: ASSET_TYPE_OUT[a.asset_type] ?? a.asset_type,
         GroupId: a.group_id ?? undefined,
-        Status: 'active',
+        // 火山官方 Status 枚举 Title-case;平台校验在上传时同步完成,入库即 Active
+        Status: 'Active',
         URL: a.public_url,
         Bytes: a.bytes,
         MimeType: a.mime ?? undefined,

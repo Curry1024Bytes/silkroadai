@@ -49,6 +49,149 @@ const EXT_BY_MIME: Record<string, string> = {
 
 export type AssetType = 'image' | 'video' | 'audio';
 
+// ── 火山官方媒体校验(2026-08-06,客户反馈:官方直传会拒的图我们收了还标 active)──
+// 官方要求(727 文档审计):图 <30MB、宽高 300-6000px、宽高比 0.4-2.5;
+// 视频 MP4/MOV ≤50MB、2-15s(帧率/总像素上游生成时仍会校验,这里不解析);音频 ≤15MB。
+// 单点挂在 storeAsset —— Action API 与控制台上传同享。
+
+const IMAGE_MAX_BYTES = 30 * 1024 * 1024;
+const VIDEO_MAX_BYTES = 50 * 1024 * 1024;
+const AUDIO_MAX_BYTES = 15 * 1024 * 1024;
+
+/** 从图片字节头读宽高(dep-free:PNG / JPEG / WebP / GIF)。认不出 → null。 */
+export function readImageDims(buf: Buffer): { w: number; h: number } | null {
+    // PNG:8 字节签名 + IHDR,宽高大端在 offset 16/20
+    if (buf.length >= 24 && buf[0] === 0x89 && buf[1] === 0x50 && buf.toString('latin1', 12, 16) === 'IHDR') {
+        return { w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) };
+    }
+    // JPEG:扫 SOF0/SOF2 段
+    if (buf.length >= 4 && buf[0] === 0xff && buf[1] === 0xd8) {
+        let off = 2;
+        while (off + 9 < buf.length) {
+            if (buf[off] !== 0xff) {
+                off++;
+                continue;
+            }
+            const marker = buf[off + 1];
+            if (marker === 0xd8 || (marker >= 0xd0 && marker <= 0xd9)) {
+                off += 2;
+                continue;
+            }
+            const len = buf.readUInt16BE(off + 2);
+            if ((marker >= 0xc0 && marker <= 0xc3) || (marker >= 0xc5 && marker <= 0xc7)) {
+                return { h: buf.readUInt16BE(off + 5), w: buf.readUInt16BE(off + 7) };
+            }
+            off += 2 + len;
+        }
+        return null;
+    }
+    // GIF:6 字节签名 + LSD 宽高小端
+    if (buf.length >= 10 && (buf.toString('latin1', 0, 6) === 'GIF87a' || buf.toString('latin1', 0, 6) === 'GIF89a')) {
+        return { w: buf.readUInt16LE(6), h: buf.readUInt16LE(8) };
+    }
+    // WebP:RIFF + VP8 / VP8L / VP8X
+    if (buf.length >= 30 && buf.toString('latin1', 0, 4) === 'RIFF' && buf.toString('latin1', 8, 12) === 'WEBP') {
+        const chunk = buf.toString('latin1', 12, 16);
+        if (chunk === 'VP8 ' && buf[23] === 0x9d && buf[24] === 0x01 && buf[25] === 0x2a) {
+            return { w: buf.readUInt16LE(26) & 0x3fff, h: buf.readUInt16LE(28) & 0x3fff };
+        }
+        if (chunk === 'VP8L' && buf[20] === 0x2f) {
+            const b = buf.readUInt32LE(21);
+            return { w: (b & 0x3fff) + 1, h: ((b >> 14) & 0x3fff) + 1 };
+        }
+        if (chunk === 'VP8X') {
+            return { w: buf.readUIntLE(24, 3) + 1, h: buf.readUIntLE(27, 3) + 1 };
+        }
+    }
+    return null;
+}
+
+/** 从 MP4/MOV 字节读时长秒(顶层扫 box 找 moov→mvhd;best-effort,认不出 → null)。 */
+export function readMp4DurationSec(buf: Buffer): number | null {
+    function scan(start: number, end: number, want: string): { start: number; end: number } | null {
+        let off = start;
+        while (off + 8 <= end) {
+            let size = buf.readUInt32BE(off);
+            const type = buf.toString('latin1', off + 4, off + 8);
+            let header = 8;
+            if (size === 1) {
+                if (off + 16 > end) return null;
+                const big = buf.readBigUInt64BE(off + 8);
+                if (big > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+                size = Number(big);
+                header = 16;
+            } else if (size === 0) {
+                size = end - off;
+            }
+            if (size < header || off + size > end) return null;
+            if (type === want) return { start: off + header, end: off + size };
+            off += size;
+        }
+        return null;
+    }
+    try {
+        const moov = scan(0, buf.length, 'moov');
+        if (!moov) return null;
+        const mvhd = scan(moov.start, moov.end, 'mvhd');
+        if (!mvhd) return null;
+        const version = buf[mvhd.start];
+        if (version === 1) {
+            const timescale = buf.readUInt32BE(mvhd.start + 20);
+            const duration = Number(buf.readBigUInt64BE(mvhd.start + 24));
+            return timescale > 0 ? duration / timescale : null;
+        }
+        const timescale = buf.readUInt32BE(mvhd.start + 12);
+        const duration = buf.readUInt32BE(mvhd.start + 16);
+        return timescale > 0 ? duration / timescale : null;
+    } catch {
+        return null;
+    }
+}
+
+/** 上传时按火山官方要求校验媒体;不合格 → AssetError('InvalidParameter')(400,带具体原因)。 */
+export function validateAssetMedia(assetType: AssetType, bytes: Buffer, mime: string): void {
+    const mb = (n: number) => `${Math.round(n / 1024 / 1024)}MB`;
+    if (assetType === 'image') {
+        if (bytes.length >= IMAGE_MAX_BYTES) {
+            throw new AssetError('InvalidParameter', `图片超出火山官方上限 30MB(实际 ${mb(bytes.length)})`);
+        }
+        const dims = readImageDims(bytes);
+        if (!dims) {
+            throw new AssetError('InvalidParameter', '无法解析图片尺寸(仅支持 PNG / JPEG / WebP / GIF,且文件需完整)');
+        }
+        const { w, h } = dims;
+        if (w < 300 || h < 300 || w > 6000 || h > 6000) {
+            throw new AssetError('InvalidParameter', `图片宽高需在 300-6000px(火山官方要求),实际 ${w}×${h}`);
+        }
+        const ratio = w / h;
+        if (ratio < 0.4 || ratio > 2.5) {
+            throw new AssetError(
+                'InvalidParameter',
+                `图片宽高比需在 0.4-2.5(火山官方要求),实际 ${ratio.toFixed(2)}(${w}×${h})`,
+            );
+        }
+        return;
+    }
+    if (assetType === 'video') {
+        if (bytes.length > VIDEO_MAX_BYTES) {
+            throw new AssetError('InvalidParameter', `视频超出火山官方上限 50MB(实际 ${mb(bytes.length)})`);
+        }
+        const m = mime.toLowerCase();
+        if (!m.includes('mp4') && !m.includes('quicktime')) {
+            throw new AssetError('InvalidParameter', `视频仅支持 MP4 / MOV(火山官方要求),实际 ${mime}`);
+        }
+        const dur = readMp4DurationSec(bytes);
+        if (dur != null && (dur < 2 || dur > 15)) {
+            throw new AssetError('InvalidParameter', `视频时长需 2-15 秒(火山官方要求),实际 ${dur.toFixed(1)} 秒`);
+        }
+        return;
+    }
+    // audio
+    if (bytes.length > AUDIO_MAX_BYTES) {
+        throw new AssetError('InvalidParameter', `音频超出火山官方上限 15MB(实际 ${mb(bytes.length)})`);
+    }
+}
+
 function pad(n: number): string {
     return String(n).padStart(2, '0');
 }
@@ -121,6 +264,7 @@ export interface StoreAssetInput {
 
 /** 字节 → R2 + 落库(两套表面共用)。groupId 传入时校验归属。 */
 export async function storeAsset(input: StoreAssetInput) {
+    validateAssetMedia(input.assetType, input.bytes, input.mime);
     if (input.groupId) {
         const g = await prisma.enterpriseAssetGroup.findFirst({
             where: { id: input.groupId, user_id: input.userId },

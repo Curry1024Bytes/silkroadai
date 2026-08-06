@@ -82,6 +82,24 @@ export default function EnterpriseAssetsDocsPage() {
                 </ul>
             </Section>
 
+            <Section id="limits" title="1.5 媒体要求(上传即校验)">
+                <p>
+                    上传时按<b>火山官方素材要求</b>校验,不合格直接 400 并说明原因(不会先收下、到生成时才失败):
+                </p>
+                <ul className="list-disc space-y-1 pl-5">
+                    <li>
+                        <b>图片</b>:&lt;30MB;宽高均在 <b>300–6000px</b>;宽高比 <b>0.4–2.5</b>; 格式 PNG / JPEG / WebP /
+                        GIF。
+                    </li>
+                    <li>
+                        <b>视频</b>:≤50MB;<b>MP4 / MOV</b>;时长 <b>2–15 秒</b>。
+                    </li>
+                    <li>
+                        <b>音频</b>:≤15MB。
+                    </li>
+                </ul>
+            </Section>
+
             <Section id="reference" title="2. 生成中引用(核心用法)">
                 <p>
                     素材 ID(<Code>asset-…</Code>)可放进任意媒体字段;素材组 ID(<Code>group-…</Code>)放进{' '}
