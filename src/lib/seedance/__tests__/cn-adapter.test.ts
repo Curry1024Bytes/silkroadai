@@ -322,3 +322,28 @@ describe('promax 判定(2026-07-23)', () => {
         expect(regionForModel('seedance-2-0')).toBe('cn');
     });
 });
+
+describe('seedance 2.5 判定(2026-08-07,国内版新代)', () => {
+    it('variantForModel:短名/长名/上游名都 → 2.5(不落 pro 兜底);regionForModel → cn', async () => {
+        const { variantForModel, regionForModel } = await import('../cn-adapter');
+        expect(variantForModel('seedance-2-5')).toBe('2.5'); // 客户短名(任务行存这个)
+        expect(variantForModel('seedance2.5-720p')).toBe('2.5'); // 内部长名
+        expect(variantForModel('seedance2.5-480p-ref')).toBe('2.5');
+        expect(variantForModel('doubao-seedance-2-5-260628')).toBe('2.5'); // 上游名
+        // 不误伤既有 2.0 系
+        expect(variantForModel('seedance-2-0')).toBe('pro');
+        expect(regionForModel('seedance-2-5')).toBe('cn');
+    });
+
+    it('MODEL_MAP:仅 480p/720p × {无ref,-ref} 四档,上游 = doubao-seedance-2-5-260628,region 缺省 cn', async () => {
+        const { MODEL_MAP } = await import('../cn-adapter');
+        for (const name of ['seedance2.5-480p', 'seedance2.5-480p-ref', 'seedance2.5-720p', 'seedance2.5-720p-ref']) {
+            expect(MODEL_MAP[name]).toBeTruthy();
+            expect(MODEL_MAP[name].variant).toBe('2.5');
+            expect(MODEL_MAP[name].upstream).toBe('doubao-seedance-2-5-260628');
+            expect(MODEL_MAP[name].region).toBeUndefined(); // 缺省 = cn base
+        }
+        expect(MODEL_MAP['seedance2.5-1080p']).toBeUndefined(); // 无 1080p
+        expect(MODEL_MAP['seedance2.5-4k']).toBeUndefined(); // 无 4k
+    });
+});

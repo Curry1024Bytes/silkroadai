@@ -250,6 +250,53 @@ describe('火山渠道(volc)路由', () => {
         expect(bad.status).toBe(400);
     });
 
+    it('seedance-2-5(国内版新代):720p → 长名 seedance2.5-720p,任务行存短名', async () => {
+        submitVideoWithKey.mockResolvedValue(
+            NextResponse.json({ id: 'cgt-25a', task_id: 'cgt-25a', status: 'queued' }),
+        );
+        const res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { model: 'seedance-2-5', prompt: 'x', resolution: '720p' }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(200);
+        expect(submitVideoWithKey).toHaveBeenCalledWith(
+            expect.objectContaining({ model: 'seedance2.5-720p' }),
+            expect.any(String),
+        );
+        expect(db.seedanceVideoTask.create).toHaveBeenCalledWith({
+            data: expect.objectContaining({ model: 'seedance-2-5', resolution: '720p' }),
+        });
+    });
+
+    it('seedance-2-5 带参考图 → -ref 长名(seedance2.5-480p-ref)', async () => {
+        submitVideoWithKey.mockResolvedValue(
+            NextResponse.json({ id: 'cgt-25b', task_id: 'cgt-25b', status: 'queued' }),
+        );
+        const res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', {
+                model: 'seedance-2-5',
+                prompt: 'x',
+                resolution: '480p',
+                image: 'https://example.com/a.jpg',
+            }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(200);
+        expect(submitVideoWithKey).toHaveBeenCalledWith(
+            expect.objectContaining({ model: 'seedance2.5-480p-ref' }),
+            expect.any(String),
+        );
+    });
+
+    it('seedance-2-5 无 1080p/4k:传 1080p → 400,不打上游', async () => {
+        const res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { model: 'seedance-2-5', prompt: 'x', resolution: '1080p' }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(400);
+        expect(submitVideoWithKey).not.toHaveBeenCalled();
+    });
+
     it('global 无 480p(intl 上游实测拒,2026-08-06):三变体 480p 均 400 带指引,不打上游', async () => {
         for (const model of ['seedance-2-0-global', 'seedance-2-0-global-fast', 'seedance-2-0-global-mini']) {
             const res = await handleEnterpriseV1(
@@ -295,7 +342,7 @@ describe('isEnterpriseFlavor', () => {
 });
 
 describe('分发白名单', () => {
-    it('GET /models → 9 个归一短名(国内 3 + global 3 + promax 3)', async () => {
+    it('GET /models → 10 个归一短名(国内 3 + 2.5 + global 3 + promax 3)', async () => {
         const res = await handleEnterpriseV1(req('GET', '/v1/models'), '/models');
         const j = (await res.json()) as { data: Array<{ id: string }> };
         expect(res.status).toBe(200);
@@ -303,6 +350,7 @@ describe('分发白名单', () => {
             'seedance-2-0',
             'seedance-2-0-fast',
             'seedance-2-0-mini',
+            'seedance-2-5',
             'seedance-2-0-global',
             'seedance-2-0-global-fast',
             'seedance-2-0-global-mini',

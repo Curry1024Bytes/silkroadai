@@ -12,6 +12,7 @@
  *   - 企业门户(enterprise/billing):官方价 × 客户 discount(discount 即「相对官方价」的折扣率,
  *     标准零售 = 0.85,迁移已把原 discount=1 的行改写为 0.85 → 实付不变)
  * 官方挂牌(元/1M token):无视频 720p ¥46 / 1080p ¥51 / 4k ¥26;含视频 ¥28 / ¥31 / ¥16。
+ *   seedance 2.5(国内版新代,仅 480p/720p):无视频 ¥70 / 含视频 ¥42。
  * 实际 token 数 = 上游 usage.completion_tokens(权威);成本 = token/1e6 × 费率。
  */
 import { prisma } from '@/lib/db';
@@ -47,6 +48,11 @@ const OFFICIAL_CNY_PER_M: Record<
         '480p': { noVideo: 23, withVideo: 14 }, // 官方挂牌(与 720p 同费率)
         '720p': { noVideo: 23, withVideo: 14 }, // 官方挂牌
         '1080p': { noVideo: 23, withVideo: 14 }, // 官方挂牌
+    },
+    // 国内版 seedance 2.5(2026-08-07):上游新代模型,仅 480p/720p(官方挂牌 480p 与 720p 同费率)。
+    '2.5': {
+        '480p': { noVideo: 70, withVideo: 42 }, // 官方挂牌(与 720p 同费率)
+        '720p': { noVideo: 70, withVideo: 42 }, // 官方挂牌
     },
     // 海外版proMax(2026-07-23,dreamina 系):dreamina 官方挂牌(上游对我们 9 折)。
     promax: {

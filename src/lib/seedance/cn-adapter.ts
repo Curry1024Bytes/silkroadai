@@ -40,6 +40,9 @@ const UPSTREAM_INTL_MINI = 'artsdance2-0-mini-intl-260701';
 const UPSTREAM_PROMAX_PRO = 'dreamina-seedance-2-0-260128';
 const UPSTREAM_PROMAX_FAST = 'dreamina-seedance-2-0-fast-260128';
 const UPSTREAM_PROMAX_MINI = 'dreamina-seedance-2-0-mini-260615';
+// 国内版 seedance 2.5(2026-08-07):国内版渠道(token.xinhankr)上游放出的新代模型,
+// 单模型、仅 480p/720p、费率独立(含视/无视两档)。上游 id 用火山 doubao 命名(与旧 artsdance 名不同)。
+const UPSTREAM_XHK_25 = process.env.SEEDANCE_XHK_MODEL_25 || 'doubao-seedance-2-5-260628';
 
 /** 版本 → 上游 base URL(global 与 promax 同为 intl 端口,仅模型名/费率不同)。
  *  volc(火山渠道,2026-07-29)走独立 provider + 火山方舟原生协议,不经此函数(见 volc-adapter)。 */
@@ -54,9 +57,9 @@ export const VOLC_MODEL = 'doubao-seedance-2.0';
 const MAX_REF_IMAGES = 9;
 const MAX_REF_VIDEOS = 3;
 
-/** seedance 变体(2026-07-19 加 fast/mini;2026-07-23 加 promax 系,费率独立):
- *  费率按 variant × resolution × 含视频 分档。 */
-export type SeedanceVariant = 'pro' | 'fast' | 'mini' | 'promax' | 'promax-fast' | 'promax-mini';
+/** seedance 变体(2026-07-19 加 fast/mini;2026-07-23 加 promax 系,费率独立;
+ *  2026-08-07 加 '2.5' = 国内版新代模型,费率独立):费率按 variant × resolution × 含视频 分档。 */
+export type SeedanceVariant = 'pro' | 'fast' | 'mini' | '2.5' | 'promax' | 'promax-fast' | 'promax-mini';
 
 export interface SeedanceModelSpec {
     resolution: '480p' | '720p' | '1080p' | '4k';
@@ -87,6 +90,15 @@ export const MODEL_MAP: Record<string, SeedanceModelSpec> = {
                     { resolution, ref, variant, upstream },
                 ]),
             ),
+        ),
+    ),
+    // ── 国内 seedance 2.5(cn,2026-08-07):新代单模型,仅 480p/720p,费率独立 ──
+    ...Object.fromEntries(
+        (['480p', '720p'] as const).flatMap((resolution) =>
+            [false, true].map((ref) => [
+                `seedance2.5-${resolution}${ref ? '-ref' : ''}`,
+                { resolution, ref, variant: '2.5' as const, upstream: UPSTREAM_XHK_25 },
+            ]),
         ),
     ),
     // ── 海外版proMax(promax,2026-07-23):dreamina 系,费率独立;pro 4 档,fast/mini 480p/720p ──
@@ -145,6 +157,9 @@ export function variantForModel(model: string): SeedanceVariant {
     if (hit) return hit;
     const m = model.toLowerCase();
     if (m === VOLC_MODEL) return 'pro'; // 火山渠道单模型走 pro 档(国内版同价)
+    // 2.5 系(短名 seedance-2-5 / 长名 seedance2.5-… / 上游 doubao-seedance-2-5-…):费率独立,
+    // 须先于 fast/mini 判(避免落到 pro 兜底导致按 pro 计价)。
+    if (m.includes('2-5') || m.includes('2.5')) return '2.5';
     if (m.includes('-promax')) {
         // promax 系费率独立,必须先于 -fast/-mini 判(seedance-2-0-promax-fast 含 '-fast')
         if (m.includes('-fast')) return 'promax-fast';

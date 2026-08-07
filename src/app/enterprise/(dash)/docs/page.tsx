@@ -138,7 +138,7 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
 
             <Section id="models" title="2. 模型与计费">
                 <p>
-                    三个模型,分辨率用 <Code>resolution</Code> 参数选,带参考图/视频自动识别 —— 无需切换模型名。
+                    国内版模型,分辨率用 <Code>resolution</Code> 参数选,带参考图/视频自动识别 —— 无需切换模型名。
                     <b>下表为官方挂牌价</b>;若您的账户有协议折扣,实际结算 = 官方价 × 折扣率, 「计费流水」页每笔均标注
                     <b>官方价 / 折扣 / 实付</b>三列。
                 </p>
@@ -180,6 +180,15 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                                 <Td>480p / 720p / 1080p</Td>
                                 <Td>{listPrices('mini', ['720p'], false)}</Td>
                                 <Td>{listPrices('mini', ['720p'], true)}</Td>
+                            </tr>
+                            <tr>
+                                <Td>
+                                    <Code>seedance-2-5</Code>
+                                </Td>
+                                <Td>新代模型(国内版)</Td>
+                                <Td>480p / 720p</Td>
+                                <Td>{listPrices('2.5', ['720p'], false)}</Td>
+                                <Td>{listPrices('2.5', ['720p'], true)}</Td>
                             </tr>
                         </tbody>
                     </table>
@@ -285,7 +294,9 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                                 </Td>
                                 <Td>string</Td>
                                 <Td>是</Td>
-                                <Td>seedance-2-0 / seedance-2-0-fast / seedance-2-0-mini(大小写不敏感)</Td>
+                                <Td>
+                                    seedance-2-0 / seedance-2-0-fast / seedance-2-0-mini / seedance-2-5(大小写不敏感)
+                                </Td>
                             </tr>
                             <tr>
                                 <Td>
@@ -301,7 +312,10 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                                 </Td>
                                 <Td>string</Td>
                                 <Td>否</Td>
-                                <Td>480p / 720p(默认)/ 1080p / 4k(4k 仅 seedance-2-0;480p 与 720p 同费率)</Td>
+                                <Td>
+                                    480p / 720p(默认)/ 1080p / 4k(4k 仅 seedance-2-0;seedance-2-5 仅 480p / 720p;480p 与
+                                    720p 同费率)
+                                </Td>
                             </tr>
                             <tr>
                                 <Td>

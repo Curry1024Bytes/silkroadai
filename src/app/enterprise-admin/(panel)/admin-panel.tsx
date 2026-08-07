@@ -506,6 +506,7 @@ export function AdminPanel() {
                                     <option value="pro">pro</option>
                                     <option value="fast">fast</option>
                                     <option value="mini">mini</option>
+                                    <option value="2.5">2.5</option>
                                 </select>
                                 <select
                                     name="resolution"
