@@ -347,3 +347,50 @@ describe('seedance 2.5 判定(2026-08-07,国内版新代)', () => {
         expect(MODEL_MAP['seedance2.5-4k']).toBeUndefined(); // 无 4k
     });
 });
+
+describe('单次输入上限(按变体,2026-08-07)', () => {
+    const urls = (n: number, p: string) => Array.from({ length: n }, (_, i) => `https://cdn/${p}${i}.jpg`);
+
+    it('seedance 2.5:30 图 + 10 视频 放行(旧档 9/3 会拒的量)', async () => {
+        const res = await submitVideo(
+            makeReq({
+                model: 'seedance2.5-720p-ref',
+                prompt: 'x',
+                images: urls(30, 'img'),
+                reference_videos: urls(10, 'vid'),
+            }),
+        );
+        expect(res.status).toBe(200);
+        const b = submitBody();
+        expect((b.images as unknown[]).length).toBe(30);
+        expect((b.videos as unknown[]).length).toBe(10);
+    });
+
+    it('seedance 2.5:超 30 图 → 400 at most 30 images', async () => {
+        const res = await submitVideo(makeReq({ model: 'seedance2.5-720p-ref', prompt: 'x', images: urls(31, 'img') }));
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error: { message: string } }).error.message).toMatch(/at most 30 images/);
+    });
+
+    it('seedance 2.5:超 10 视频 → 400;超 10 音频 → 400', async () => {
+        let res = await submitVideo(
+            makeReq({ model: 'seedance2.5-720p-ref', prompt: 'x', reference_videos: urls(11, 'v') }),
+        );
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error: { message: string } }).error.message).toMatch(/at most 10 videos/);
+        mockFetch.mockClear();
+        res = await submitVideo(
+            makeReq({ model: 'seedance2.5-720p-ref', prompt: 'x', image: 'https://cdn/a.jpg', audios: urls(11, 'a') }),
+        );
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error: { message: string } }).error.message).toMatch(/at most 10 audios/);
+    });
+
+    it('旧档(pro)仍 9 图 / 3 视频上限,不被放开:pro -ref 10 图 → 400 at most 9 images', async () => {
+        const res = await submitVideo(
+            makeReq({ model: 'seedance2.0-pro-720p-ref', prompt: 'x', images: urls(10, 'img') }),
+        );
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error: { message: string } }).error.message).toMatch(/at most 9 images/);
+    });
+});

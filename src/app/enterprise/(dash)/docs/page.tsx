@@ -433,7 +433,7 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                                 <Td>
                                     <Code>images</Code>
                                 </Td>
-                                <Td>string[](≤9)</Td>
+                                <Td>string[](≤9;seedance-2-5 ≤30)</Td>
                                 <Td>参考图(多图参考/主体一致性);素材组 ID 会按序展开为组内全部图</Td>
                             </tr>
                             <tr>
@@ -447,14 +447,14 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                                 <Td>
                                     <Code>reference_videos</Code>
                                 </Td>
-                                <Td>string[](≤3)</Td>
+                                <Td>string[](≤3;seedance-2-5 ≤10)</Td>
                                 <Td>参考视频(风格/运动参考;输入视频时长计入 token,费率走「含视频输入」档,更低)</Td>
                             </tr>
                             <tr>
                                 <Td>
                                     <Code>audios</Code>
                                 </Td>
-                                <Td>string[]</Td>
+                                <Td>string[](seedance-2-5 ≤10)</Td>
                                 <Td>参考音频(需至少配一张参考图)</Td>
                             </tr>
                         </tbody>

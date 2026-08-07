@@ -54,12 +54,23 @@ export function baseForRegion(region: SeedanceRegion): string {
 /** 「火山」渠道唯一对客模型名(provider 文档 doubao-seedance-2.0,火山方舟原生协议)。 */
 export const VOLC_MODEL = 'doubao-seedance-2.0';
 
+// 默认单次输入上限(旧档 pro/fast/mini/promax…):9 图 / 3 视频 / 音频不限数(仅需配图)。
 const MAX_REF_IMAGES = 9;
 const MAX_REF_VIDEOS = 3;
 
 /** seedance 变体(2026-07-19 加 fast/mini;2026-07-23 加 promax 系,费率独立;
  *  2026-08-07 加 '2.5' = 国内版新代模型,费率独立):费率按 variant × resolution × 含视频 分档。 */
 export type SeedanceVariant = 'pro' | 'fast' | 'mini' | '2.5' | 'promax' | 'promax-fast' | 'promax-mini';
+
+/** 单次输入素材上限(按变体)。seedance 2.5(2026-08-07 上游放宽):30 图 + 10 视频 + 10 音频;
+ *  其余档沿用默认 9 图 / 3 视频 / 音频不限数(Infinity —— 保留旧行为,只需「音频需配图」约束)。
+ *  上限比上游宽或等 —— 超限我们先 400 给清晰文案,不白打上游。 */
+const REF_LIMITS: Partial<Record<SeedanceVariant, { images: number; videos: number; audios: number }>> = {
+    '2.5': { images: 30, videos: 10, audios: 10 },
+};
+function refLimitsFor(variant: SeedanceVariant): { images: number; videos: number; audios: number } {
+    return REF_LIMITS[variant] ?? { images: MAX_REF_IMAGES, videos: MAX_REF_VIDEOS, audios: Infinity };
+}
 
 export interface SeedanceModelSpec {
     resolution: '480p' | '720p' | '1080p' | '4k';
@@ -341,8 +352,11 @@ export async function submitVideoWithKey(body: Record<string, unknown>, auth: st
     // 音频需配 ≥1 张图(对齐上游文档)
     if (rawAudios.length > 0 && totalImages === 0)
         return err(400, 'invalid_request', 'audio requires at least one reference image (image / first_frame)');
-    if (totalImages > MAX_REF_IMAGES) return err(400, 'invalid_request', `at most ${MAX_REF_IMAGES} images`);
-    if (rawVideos.length > MAX_REF_VIDEOS) return err(400, 'invalid_request', `at most ${MAX_REF_VIDEOS} videos`);
+    // 单次输入上限按变体(seedance 2.5 = 30 图 / 10 视频 / 10 音频;其余 9 图 / 3 视频 / 音频不限数)
+    const limits = refLimitsFor(map.variant);
+    if (totalImages > limits.images) return err(400, 'invalid_request', `at most ${limits.images} images`);
+    if (rawVideos.length > limits.videos) return err(400, 'invalid_request', `at most ${limits.videos} videos`);
+    if (rawAudios.length > limits.audios) return err(400, 'invalid_request', `at most ${limits.audios} audios`);
 
     // duration:4-15 任意整数秒(2026-08-03 探测:pro/fast/mini 上游 4s 全接受,3s/16s 400);
     // 范围外/非整数回落 5(new-api 面保持宽容,不改存量行为;企业 proxy 层已显式 400)。
