@@ -328,22 +328,22 @@ describe('seedance 2.5 判定(2026-08-07,国内版新代)', () => {
         const { variantForModel, regionForModel } = await import('../cn-adapter');
         expect(variantForModel('seedance-2-5')).toBe('2.5'); // 客户短名(任务行存这个)
         expect(variantForModel('seedance2.5-720p')).toBe('2.5'); // 内部长名
-        expect(variantForModel('seedance2.5-480p-ref')).toBe('2.5');
-        expect(variantForModel('doubao-seedance-2-5-260628')).toBe('2.5'); // 上游名
+        expect(variantForModel('seedance2.5-1080p-ref')).toBe('2.5');
+        expect(variantForModel('artsdance-2-5-pro-260801')).toBe('2.5'); // 上游名
         // 不误伤既有 2.0 系
         expect(variantForModel('seedance-2-0')).toBe('pro');
         expect(regionForModel('seedance-2-5')).toBe('cn');
     });
 
-    it('MODEL_MAP:仅 480p/720p × {无ref,-ref} 四档,上游 = doubao-seedance-2-5-260628,region 缺省 cn', async () => {
+    it('MODEL_MAP:仅 720p/1080p × {无ref,-ref} 四档,上游 = artsdance-2-5-pro-260801,region 缺省 cn', async () => {
         const { MODEL_MAP } = await import('../cn-adapter');
-        for (const name of ['seedance2.5-480p', 'seedance2.5-480p-ref', 'seedance2.5-720p', 'seedance2.5-720p-ref']) {
+        for (const name of ['seedance2.5-720p', 'seedance2.5-720p-ref', 'seedance2.5-1080p', 'seedance2.5-1080p-ref']) {
             expect(MODEL_MAP[name]).toBeTruthy();
             expect(MODEL_MAP[name].variant).toBe('2.5');
-            expect(MODEL_MAP[name].upstream).toBe('doubao-seedance-2-5-260628');
+            expect(MODEL_MAP[name].upstream).toBe('artsdance-2-5-pro-260801');
             expect(MODEL_MAP[name].region).toBeUndefined(); // 缺省 = cn base
         }
-        expect(MODEL_MAP['seedance2.5-1080p']).toBeUndefined(); // 无 1080p
+        expect(MODEL_MAP['seedance2.5-480p']).toBeUndefined(); // 上游不支持 480p
         expect(MODEL_MAP['seedance2.5-4k']).toBeUndefined(); // 无 4k
     });
 });

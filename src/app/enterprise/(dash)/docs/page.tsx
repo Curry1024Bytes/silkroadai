@@ -186,9 +186,9 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                                     <Code>seedance-2-5</Code>
                                 </Td>
                                 <Td>新代模型(国内版)</Td>
-                                <Td>480p / 720p</Td>
-                                <Td>{listPrices('2.5', ['720p'], false)}</Td>
-                                <Td>{listPrices('2.5', ['720p'], true)}</Td>
+                                <Td>720p / 1080p</Td>
+                                <Td>{listPrices('2.5', ['720p', '1080p'], false)}</Td>
+                                <Td>{listPrices('2.5', ['720p', '1080p'], true)}</Td>
                             </tr>
                         </tbody>
                     </table>
@@ -313,8 +313,8 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                                 <Td>string</Td>
                                 <Td>否</Td>
                                 <Td>
-                                    480p / 720p(默认)/ 1080p / 4k(4k 仅 seedance-2-0;seedance-2-5 仅 480p / 720p;480p 与
-                                    720p 同费率)
+                                    480p / 720p(默认)/ 1080p / 4k(4k 仅 seedance-2-0;seedance-2-5 仅 720p / 1080p;480p
+                                    与 720p 同费率)
                                 </Td>
                             </tr>
                             <tr>

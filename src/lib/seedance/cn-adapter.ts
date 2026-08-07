@@ -40,9 +40,10 @@ const UPSTREAM_INTL_MINI = 'artsdance2-0-mini-intl-260701';
 const UPSTREAM_PROMAX_PRO = 'dreamina-seedance-2-0-260128';
 const UPSTREAM_PROMAX_FAST = 'dreamina-seedance-2-0-fast-260128';
 const UPSTREAM_PROMAX_MINI = 'dreamina-seedance-2-0-mini-260615';
-// 国内版 seedance 2.5(2026-08-07):国内版渠道(token.xinhankr)上游放出的新代模型,
-// 单模型、仅 480p/720p、费率独立(含视/无视两档)。上游 id 用火山 doubao 命名(与旧 artsdance 名不同)。
-const UPSTREAM_XHK_25 = process.env.SEEDANCE_XHK_MODEL_25 || 'doubao-seedance-2-5-260628';
+// 国内版 seedance 2.5(2026-08-07):国内版渠道(token.xinhankr)上游新代模型。
+// 上游名 2026-08-08 由 doubao-seedance-2-5-260628 换成 artsdance-2-5-pro-260801
+// (实测:新名支持 720p/1080p、【不支持 480p】;旧名支持 480p/720p)。费率独立(含视/无视两档)。
+const UPSTREAM_XHK_25 = process.env.SEEDANCE_XHK_MODEL_25 || 'artsdance-2-5-pro-260801';
 
 /** 版本 → 上游 base URL(global 与 promax 同为 intl 端口,仅模型名/费率不同)。
  *  volc(火山渠道,2026-07-29)走独立 provider + 火山方舟原生协议,不经此函数(见 volc-adapter)。 */
@@ -103,9 +104,9 @@ export const MODEL_MAP: Record<string, SeedanceModelSpec> = {
             ),
         ),
     ),
-    // ── 国内 seedance 2.5(cn,2026-08-07):新代单模型,仅 480p/720p,费率独立 ──
+    // ── 国内 seedance 2.5(cn):新代单模型,仅 720p/1080p(上游 artsdance-2-5-pro 不支持 480p),费率独立 ──
     ...Object.fromEntries(
-        (['480p', '720p'] as const).flatMap((resolution) =>
+        (['720p', '1080p'] as const).flatMap((resolution) =>
             [false, true].map((ref) => [
                 `seedance2.5-${resolution}${ref ? '-ref' : ''}`,
                 { resolution, ref, variant: '2.5' as const, upstream: UPSTREAM_XHK_25 },

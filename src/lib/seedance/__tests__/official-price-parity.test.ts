@@ -17,8 +17,8 @@ const OFFICIAL: Array<[SeedanceVariant, string, number, number]> = [
     ['pro', '4k', 26, 16],
     ['fast', '720p', 37, 22],
     ['mini', '720p', 23, 14],
-    ['2.5', '480p', 70, 42],
     ['2.5', '720p', 70, 42],
+    ['2.5', '1080p', 90, 54],
     ['promax', '720p', 68, 40.8],
     ['promax', '1080p', 73.44, 44.88],
     ['promax', '4k', 38.08, 23.12],
@@ -49,7 +49,8 @@ describe('官方挂牌价 = 文档价目表口径', () => {
     });
 
     it('480p 与 720p 官方价同价(全变体)', () => {
-        for (const v of ['pro', 'fast', 'mini', '2.5', 'promax', 'promax-fast', 'promax-mini'] as SeedanceVariant[]) {
+        // 2.5 无 480p 档(上游 artsdance-2-5-pro 不支持),不参与 480p==720p 同价校验
+        for (const v of ['pro', 'fast', 'mini', 'promax', 'promax-fast', 'promax-mini'] as SeedanceVariant[]) {
             expect(officialCostCny(1_000_000, '480p' as never, false, v)).toBeCloseTo(
                 officialCostCny(1_000_000, '720p' as never, false, v),
                 3,

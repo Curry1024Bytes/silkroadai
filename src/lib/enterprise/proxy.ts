@@ -111,9 +111,9 @@ function resolveEnterpriseModel(
     if ((variant === 'promax-fast' || variant === 'promax-mini') && resRaw !== '480p' && resRaw !== '720p') {
         return { error: errJson(400, 'invalid_request', `${rawModel} 仅支持 480p / 720p 档`) };
     }
-    // seedance 2.5(国内版新代):上游仅 480p / 720p
-    if (variant === '2.5' && resRaw !== '480p' && resRaw !== '720p') {
-        return { error: errJson(400, 'invalid_request', `${rawModel} 仅支持 480p / 720p 档`) };
+    // seedance 2.5(上游 artsdance-2-5-pro):仅 720p / 1080p(不支持 480p)
+    if (variant === '2.5' && resRaw !== '720p' && resRaw !== '1080p') {
+        return { error: errJson(400, 'invalid_request', `${rawModel} 仅支持 720p / 1080p 档`) };
     }
     const hasRefs =
         extractImageUrls(body).length > 0 ||
