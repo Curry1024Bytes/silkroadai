@@ -322,3 +322,75 @@ describe('promax 判定(2026-07-23)', () => {
         expect(regionForModel('seedance-2-0')).toBe('cn');
     });
 });
+
+describe('seedance 2.5 判定(2026-08-07,国内版新代)', () => {
+    it('variantForModel:短名/长名/上游名都 → 2.5(不落 pro 兜底);regionForModel → cn', async () => {
+        const { variantForModel, regionForModel } = await import('../cn-adapter');
+        expect(variantForModel('seedance-2-5')).toBe('2.5'); // 客户短名(任务行存这个)
+        expect(variantForModel('seedance2.5-720p')).toBe('2.5'); // 内部长名
+        expect(variantForModel('seedance2.5-1080p-ref')).toBe('2.5');
+        expect(variantForModel('artsdance-2-5-pro-260801')).toBe('2.5'); // 上游名
+        // 不误伤既有 2.0 系
+        expect(variantForModel('seedance-2-0')).toBe('pro');
+        expect(regionForModel('seedance-2-5')).toBe('cn');
+    });
+
+    it('MODEL_MAP:仅 720p/1080p × {无ref,-ref} 四档,上游 = artsdance-2-5-pro-260801,region 缺省 cn', async () => {
+        const { MODEL_MAP } = await import('../cn-adapter');
+        for (const name of ['seedance2.5-720p', 'seedance2.5-720p-ref', 'seedance2.5-1080p', 'seedance2.5-1080p-ref']) {
+            expect(MODEL_MAP[name]).toBeTruthy();
+            expect(MODEL_MAP[name].variant).toBe('2.5');
+            expect(MODEL_MAP[name].upstream).toBe('artsdance-2-5-pro-260801');
+            expect(MODEL_MAP[name].region).toBeUndefined(); // 缺省 = cn base
+        }
+        expect(MODEL_MAP['seedance2.5-480p']).toBeUndefined(); // 上游不支持 480p
+        expect(MODEL_MAP['seedance2.5-4k']).toBeUndefined(); // 无 4k
+    });
+});
+
+describe('单次输入上限(按变体,2026-08-07)', () => {
+    const urls = (n: number, p: string) => Array.from({ length: n }, (_, i) => `https://cdn/${p}${i}.jpg`);
+
+    it('seedance 2.5:30 图 + 10 视频 放行(旧档 9/3 会拒的量)', async () => {
+        const res = await submitVideo(
+            makeReq({
+                model: 'seedance2.5-720p-ref',
+                prompt: 'x',
+                images: urls(30, 'img'),
+                reference_videos: urls(10, 'vid'),
+            }),
+        );
+        expect(res.status).toBe(200);
+        const b = submitBody();
+        expect((b.images as unknown[]).length).toBe(30);
+        expect((b.videos as unknown[]).length).toBe(10);
+    });
+
+    it('seedance 2.5:超 30 图 → 400 at most 30 images', async () => {
+        const res = await submitVideo(makeReq({ model: 'seedance2.5-720p-ref', prompt: 'x', images: urls(31, 'img') }));
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error: { message: string } }).error.message).toMatch(/at most 30 images/);
+    });
+
+    it('seedance 2.5:超 10 视频 → 400;超 10 音频 → 400', async () => {
+        let res = await submitVideo(
+            makeReq({ model: 'seedance2.5-720p-ref', prompt: 'x', reference_videos: urls(11, 'v') }),
+        );
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error: { message: string } }).error.message).toMatch(/at most 10 videos/);
+        mockFetch.mockClear();
+        res = await submitVideo(
+            makeReq({ model: 'seedance2.5-720p-ref', prompt: 'x', image: 'https://cdn/a.jpg', audios: urls(11, 'a') }),
+        );
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error: { message: string } }).error.message).toMatch(/at most 10 audios/);
+    });
+
+    it('旧档(pro)仍 9 图 / 3 视频上限,不被放开:pro -ref 10 图 → 400 at most 9 images', async () => {
+        const res = await submitVideo(
+            makeReq({ model: 'seedance2.0-pro-720p-ref', prompt: 'x', images: urls(10, 'img') }),
+        );
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error: { message: string } }).error.message).toMatch(/at most 9 images/);
+    });
+});

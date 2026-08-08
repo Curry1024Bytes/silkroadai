@@ -40,6 +40,10 @@ const UPSTREAM_INTL_MINI = 'artsdance2-0-mini-intl-260701';
 const UPSTREAM_PROMAX_PRO = 'dreamina-seedance-2-0-260128';
 const UPSTREAM_PROMAX_FAST = 'dreamina-seedance-2-0-fast-260128';
 const UPSTREAM_PROMAX_MINI = 'dreamina-seedance-2-0-mini-260615';
+// 国内版 seedance 2.5(2026-08-07):国内版渠道(token.xinhankr)上游新代模型。
+// 上游名 2026-08-08 由 doubao-seedance-2-5-260628 换成 artsdance-2-5-pro-260801
+// (实测:新名支持 720p/1080p、【不支持 480p】;旧名支持 480p/720p)。费率独立(含视/无视两档)。
+const UPSTREAM_XHK_25 = process.env.SEEDANCE_XHK_MODEL_25 || 'artsdance-2-5-pro-260801';
 
 /** 版本 → 上游 base URL(global 与 promax 同为 intl 端口,仅模型名/费率不同)。
  *  volc(火山渠道,2026-07-29)走独立 provider + 火山方舟原生协议,不经此函数(见 volc-adapter)。 */
@@ -51,12 +55,23 @@ export function baseForRegion(region: SeedanceRegion): string {
 /** 「火山」渠道唯一对客模型名(provider 文档 doubao-seedance-2.0,火山方舟原生协议)。 */
 export const VOLC_MODEL = 'doubao-seedance-2.0';
 
+// 默认单次输入上限(旧档 pro/fast/mini/promax…):9 图 / 3 视频 / 音频不限数(仅需配图)。
 const MAX_REF_IMAGES = 9;
 const MAX_REF_VIDEOS = 3;
 
-/** seedance 变体(2026-07-19 加 fast/mini;2026-07-23 加 promax 系,费率独立):
- *  费率按 variant × resolution × 含视频 分档。 */
-export type SeedanceVariant = 'pro' | 'fast' | 'mini' | 'promax' | 'promax-fast' | 'promax-mini';
+/** seedance 变体(2026-07-19 加 fast/mini;2026-07-23 加 promax 系,费率独立;
+ *  2026-08-07 加 '2.5' = 国内版新代模型,费率独立):费率按 variant × resolution × 含视频 分档。 */
+export type SeedanceVariant = 'pro' | 'fast' | 'mini' | '2.5' | 'promax' | 'promax-fast' | 'promax-mini';
+
+/** 单次输入素材上限(按变体)。seedance 2.5(2026-08-07 上游放宽):30 图 + 10 视频 + 10 音频;
+ *  其余档沿用默认 9 图 / 3 视频 / 音频不限数(Infinity —— 保留旧行为,只需「音频需配图」约束)。
+ *  上限比上游宽或等 —— 超限我们先 400 给清晰文案,不白打上游。 */
+const REF_LIMITS: Partial<Record<SeedanceVariant, { images: number; videos: number; audios: number }>> = {
+    '2.5': { images: 30, videos: 10, audios: 10 },
+};
+function refLimitsFor(variant: SeedanceVariant): { images: number; videos: number; audios: number } {
+    return REF_LIMITS[variant] ?? { images: MAX_REF_IMAGES, videos: MAX_REF_VIDEOS, audios: Infinity };
+}
 
 export interface SeedanceModelSpec {
     resolution: '480p' | '720p' | '1080p' | '4k';
@@ -87,6 +102,15 @@ export const MODEL_MAP: Record<string, SeedanceModelSpec> = {
                     { resolution, ref, variant, upstream },
                 ]),
             ),
+        ),
+    ),
+    // ── 国内 seedance 2.5(cn):新代单模型,仅 720p/1080p(上游 artsdance-2-5-pro 不支持 480p),费率独立 ──
+    ...Object.fromEntries(
+        (['720p', '1080p'] as const).flatMap((resolution) =>
+            [false, true].map((ref) => [
+                `seedance2.5-${resolution}${ref ? '-ref' : ''}`,
+                { resolution, ref, variant: '2.5' as const, upstream: UPSTREAM_XHK_25 },
+            ]),
         ),
     ),
     // ── 海外版proMax(promax,2026-07-23):dreamina 系,费率独立;pro 4 档,fast/mini 480p/720p ──
@@ -145,6 +169,9 @@ export function variantForModel(model: string): SeedanceVariant {
     if (hit) return hit;
     const m = model.toLowerCase();
     if (m === VOLC_MODEL) return 'pro'; // 火山渠道单模型走 pro 档(国内版同价)
+    // 2.5 系(短名 seedance-2-5 / 长名 seedance2.5-… / 上游 doubao-seedance-2-5-…):费率独立,
+    // 须先于 fast/mini 判(避免落到 pro 兜底导致按 pro 计价)。
+    if (m.includes('2-5') || m.includes('2.5')) return '2.5';
     if (m.includes('-promax')) {
         // promax 系费率独立,必须先于 -fast/-mini 判(seedance-2-0-promax-fast 含 '-fast')
         if (m.includes('-fast')) return 'promax-fast';
@@ -325,8 +352,11 @@ export async function submitVideoWithKey(body: Record<string, unknown>, auth: st
     // 音频需配 ≥1 张图(对齐上游文档)
     if (rawAudios.length > 0 && totalImages === 0)
         return err(400, 'invalid_request', 'audio requires at least one reference image (image / first_frame)');
-    if (totalImages > MAX_REF_IMAGES) return err(400, 'invalid_request', `at most ${MAX_REF_IMAGES} images`);
-    if (rawVideos.length > MAX_REF_VIDEOS) return err(400, 'invalid_request', `at most ${MAX_REF_VIDEOS} videos`);
+    // 单次输入上限按变体(seedance 2.5 = 30 图 / 10 视频 / 10 音频;其余 9 图 / 3 视频 / 音频不限数)
+    const limits = refLimitsFor(map.variant);
+    if (totalImages > limits.images) return err(400, 'invalid_request', `at most ${limits.images} images`);
+    if (rawVideos.length > limits.videos) return err(400, 'invalid_request', `at most ${limits.videos} videos`);
+    if (rawAudios.length > limits.audios) return err(400, 'invalid_request', `at most ${limits.audios} audios`);
 
     // duration:4-15 任意整数秒(2026-08-03 探测:pro/fast/mini 上游 4s 全接受,3s/16s 400);
     // 范围外/非整数回落 5(new-api 面保持宽容,不改存量行为;企业 proxy 层已显式 400)。

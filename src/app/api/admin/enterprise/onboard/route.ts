@@ -22,7 +22,13 @@ export const runtime = 'nodejs';
  * ⚠️ 不碰 new-api:不 provisionNewCustomer、无 newapi_user_id —— 独立门户全链路脱离 new-api(决策①)。
  */
 const onboardSchema = z.object({
-    email: z.string().trim().email().max(50),
+    // 与 login/register 一致小写归一:login 按小写精确查,若这里存大写会永远登不进(2026-08-07 修)
+    email: z
+        .string()
+        .trim()
+        .email()
+        .max(50)
+        .transform((s) => s.toLowerCase()),
     name: z.string().trim().min(1).max(50).optional(), // 客户名(nickname + key 名前缀)
     upstream_key: z.string().trim().min(8).max(200), // 该客户国内版上游 key(token.xinhankr)
     upstream_note: z.string().trim().max(200).optional(), // 上游侧对账备注

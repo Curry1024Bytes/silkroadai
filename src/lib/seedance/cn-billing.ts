@@ -5,9 +5,14 @@
  * (含参考视频输入视频时长)只能由 /v1 代理绕过 new-api 直连上游、自己扣费。本文件是钱敏感核心:
  * 费率表 + 成本计算 + 幂等双账本扣费(portal ¥ 账本 / newapi quota override)。
  *
- * 费率(元/1M token,= 火山官方挂牌 × 0.85 零售;上游给我们 0.75 → ~13.3% 毛利):
- *   无视频输入(文生/图生/首尾帧/多图):720p ¥46 / 1080p ¥51 / 4k ¥26  ×0.85
- *   含视频输入(参考视频,输入视频时长也计 token → 上游更便宜档):720p ¥28 / 1080p ¥31 / 4k ¥16 ×0.85
+ * 费率口径(2026-08-07 重锚,operator 拍板方案 B):**表里存火山官方挂牌价**,
+ * 折扣显式外乘,不再烘焙进表 —— 此前表存零售价(挂牌×0.85),企业门户又乘一次
+ * 客户 discount,导致「后台设 0.9」实为 0.765 的折上折。现在:
+ *   - seedance-cn 渠道(chargeSeedanceVideoTask):官方价 × RETAIL_RATIO(0.85)= 零售,价格不变
+ *   - 企业门户(enterprise/billing):官方价 × 客户 discount(discount 即「相对官方价」的折扣率,
+ *     标准零售 = 0.85,迁移已把原 discount=1 的行改写为 0.85 → 实付不变)
+ * 官方挂牌(元/1M token):无视频 720p ¥46 / 1080p ¥51 / 4k ¥26;含视频 ¥28 / ¥31 / ¥16。
+ *   seedance 2.5(国内版新代,仅 720p/1080p):720p 无视频 ¥70/含视频 ¥42;1080p ¥90/¥54。
  * 实际 token 数 = 上游 usage.completion_tokens(权威);成本 = token/1e6 × 费率。
  */
 import { prisma } from '@/lib/db';
@@ -20,67 +25,80 @@ export type Resolution = '480p' | '720p' | '1080p' | '4k';
 export type { SeedanceVariant } from './cn-adapter';
 import { variantForModel, type SeedanceVariant } from './cn-adapter';
 
-/** 零售单价(元/1M token):[变体][分辨率][是否含视频输入]。挂牌 × 0.85(上游给我们 0.75)。
+/** 【火山官方挂牌价】(元/1M token):[变体][分辨率][是否含视频输入]。上游给我们 0.75。
  *  2026-07-19 加 fast/mini;2026-08-03 全变体加 480p(上游挂牌 480p 与 720p 统一价,
- *  见 artsdance/dreamina 定价页 —— token 量 ∝ 像素,480p 整条约为 720p 的一半价)。 */
-const RETAIL_CNY_PER_M: Record<SeedanceVariant, Partial<Record<Resolution, { noVideo: number; withVideo: number }>>> = {
+ *  见 artsdance/dreamina 定价页 —— token 量 ∝ 像素,480p 整条约为 720p 的一半价)。
+ *  ⚠️ 此表【不含任何折扣】;零售/客户折扣由调用方显式乘(见文件头口径说明)。 */
+const OFFICIAL_CNY_PER_M: Record<
+    SeedanceVariant,
+    Partial<Record<Resolution, { noVideo: number; withVideo: number }>>
+> = {
     pro: {
-        '480p': { noVideo: 46 * 0.85, withVideo: 28 * 0.85 }, // 39.1 / 23.8(与 720p 同费率)
-        '720p': { noVideo: 46 * 0.85, withVideo: 28 * 0.85 }, // 39.1 / 23.8
-        '1080p': { noVideo: 51 * 0.85, withVideo: 31 * 0.85 }, // 43.35 / 26.35
-        '4k': { noVideo: 26 * 0.85, withVideo: 16 * 0.85 }, // 22.1 / 13.6
+        '480p': { noVideo: 46, withVideo: 28 }, // 官方挂牌(与 720p 同费率)
+        '720p': { noVideo: 46, withVideo: 28 }, // 官方挂牌
+        '1080p': { noVideo: 51, withVideo: 31 }, // 官方挂牌
+        '4k': { noVideo: 26, withVideo: 16 }, // 官方挂牌
     },
     fast: {
-        '480p': { noVideo: 37 * 0.85, withVideo: 22 * 0.85 }, // 31.45 / 18.7(与 720p 同费率)
-        '720p': { noVideo: 37 * 0.85, withVideo: 22 * 0.85 }, // 31.45 / 18.7
-        '1080p': { noVideo: 37 * 0.85, withVideo: 22 * 0.85 }, // 31.45 / 18.7
+        '480p': { noVideo: 37, withVideo: 22 }, // 官方挂牌(与 720p 同费率)
+        '720p': { noVideo: 37, withVideo: 22 }, // 官方挂牌
+        '1080p': { noVideo: 37, withVideo: 22 }, // 官方挂牌
     },
     mini: {
-        '480p': { noVideo: 23 * 0.85, withVideo: 14 * 0.85 }, // 19.55 / 11.9(与 720p 同费率)
-        '720p': { noVideo: 23 * 0.85, withVideo: 14 * 0.85 }, // 19.55 / 11.9
-        '1080p': { noVideo: 23 * 0.85, withVideo: 14 * 0.85 }, // 19.55 / 11.9
+        '480p': { noVideo: 23, withVideo: 14 }, // 官方挂牌(与 720p 同费率)
+        '720p': { noVideo: 23, withVideo: 14 }, // 官方挂牌
+        '1080p': { noVideo: 23, withVideo: 14 }, // 官方挂牌
     },
-    // 海外版proMax(2026-07-23,dreamina 系):挂牌 × 0.85(上游对我们 9 折,operator 定零售 85 折)。
+    // 国内版 seedance 2.5(上游 artsdance-2-5-pro):仅 720p/1080p(不支持 480p)。
+    '2.5': {
+        '720p': { noVideo: 70, withVideo: 42 }, // 官方挂牌
+        '1080p': { noVideo: 90, withVideo: 54 }, // 官方挂牌
+    },
+    // 海外版proMax(2026-07-23,dreamina 系):dreamina 官方挂牌(上游对我们 9 折)。
     promax: {
-        '480p': { noVideo: 68 * 0.85, withVideo: 40.8 * 0.85 }, // 57.8 / 34.68(与 720p 同费率)
-        '720p': { noVideo: 68 * 0.85, withVideo: 40.8 * 0.85 }, // 57.8 / 34.68
-        '1080p': { noVideo: 73.44 * 0.85, withVideo: 44.88 * 0.85 }, // 62.424 / 38.148
-        '4k': { noVideo: 38.08 * 0.85, withVideo: 23.12 * 0.85 }, // 32.368 / 19.652
+        '480p': { noVideo: 68, withVideo: 40.8 }, // 官方挂牌(与 720p 同费率)
+        '720p': { noVideo: 68, withVideo: 40.8 }, // 官方挂牌
+        '1080p': { noVideo: 73.44, withVideo: 44.88 }, // 官方挂牌
+        '4k': { noVideo: 38.08, withVideo: 23.12 }, // 官方挂牌
     },
     'promax-fast': {
-        '480p': { noVideo: 54.4 * 0.85, withVideo: 32.896 * 0.85 }, // 46.24 / 27.9616(与 720p 同费率)
-        '720p': { noVideo: 54.4 * 0.85, withVideo: 32.896 * 0.85 }, // 46.24 / 27.9616
+        '480p': { noVideo: 54.4, withVideo: 32.896 }, // 官方挂牌(与 720p 同费率)
+        '720p': { noVideo: 54.4, withVideo: 32.896 }, // 官方挂牌
     },
     'promax-mini': {
-        '480p': { noVideo: 34 * 0.85, withVideo: 20.4 * 0.85 }, // 28.9 / 17.34(与 720p 同费率)
-        '720p': { noVideo: 34 * 0.85, withVideo: 20.4 * 0.85 }, // 28.9 / 17.34
+        '480p': { noVideo: 34, withVideo: 20.4 }, // 官方挂牌(与 720p 同费率)
+        '720p': { noVideo: 34, withVideo: 20.4 }, // 官方挂牌
     },
 };
 
-/** 对客 ¥ = 实际 token / 1e6 × 费率(变体 × 分辨率 × 是否含视频)。
- *  variant 缺省 pro(兼容存量调用/历史任务行);该变体没有的分辨率档回落 pro 档(防漏收)。 */
-export function computeCostCny(
-    tokens: number | bigint,
-    resolution: Resolution,
-    hasVideo: boolean,
-    variant: SeedanceVariant = 'pro',
-): number {
-    const rate = (RETAIL_CNY_PER_M[variant][resolution] ?? RETAIL_CNY_PER_M.pro[resolution]!)[
-        hasVideo ? 'withVideo' : 'noVideo'
-    ];
-    const t = typeof tokens === 'bigint' ? Number(tokens) : tokens;
-    return +((t / 1e6) * rate).toFixed(6);
-}
+/** 标准零售折扣率:seedance-cn 渠道对客价 = 官方挂牌 × 本比例(operator 定 85 折)。
+ *  企业门户【不】用它 —— 那边按客户 discount 显式乘(见 enterprise/billing)。 */
+export const RETAIL_RATIO = 0.85;
 
-/** 火山官方挂牌 ¥(对账展示用):本表所有零售价恒 = 官方挂牌 × 0.85,故 ÷0.85 还原。
- *  企业门户「官方价/折扣」对比列(2026-07-24)用;不参与扣费。 */
+/** 官方挂牌价成本 ¥ = token / 1e6 × 官方单价(变体 × 分辨率 × 是否含视频)。
+ *  是计费与展示的单一基准:seedance-cn 再乘 RETAIL_RATIO,企业门户再乘客户 discount。
+ *  variant 缺省 pro(兼容存量调用/历史任务行);该变体没有的分辨率档回落 pro 档(防漏收)。 */
 export function officialCostCny(
     tokens: number | bigint,
     resolution: Resolution,
     hasVideo: boolean,
     variant: SeedanceVariant = 'pro',
 ): number {
-    return +(computeCostCny(tokens, resolution, hasVideo, variant) / 0.85).toFixed(6);
+    const rate = (OFFICIAL_CNY_PER_M[variant][resolution] ?? OFFICIAL_CNY_PER_M.pro[resolution]!)[
+        hasVideo ? 'withVideo' : 'noVideo'
+    ];
+    const t = typeof tokens === 'bigint' ? Number(tokens) : tokens;
+    return +((t / 1e6) * rate).toFixed(6);
+}
+
+/** seedance-cn 渠道对客 ¥ = 官方价 × 标准零售折扣(0.85)。企业门户不走这里。 */
+export function computeCostCny(
+    tokens: number | bigint,
+    resolution: Resolution,
+    hasVideo: boolean,
+    variant: SeedanceVariant = 'pro',
+): number {
+    return +(officialCostCny(tokens, resolution, hasVideo, variant) * RETAIL_RATIO).toFixed(6);
 }
 
 /** 每秒 token(公式实测锚点:720p 5s=108872 → 21774/秒,480p 5s=50638 → 10128/秒,∝像素)。仅用于【提交时余额预估】,

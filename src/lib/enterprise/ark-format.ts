@@ -20,6 +20,10 @@ const ARK_TO_INTERNAL: Record<string, string> = {
     'doubao-seedance-2-0-260128': 'seedance-2-0',
     'doubao-seedance-2-0-fast-260128': 'seedance-2-0-fast',
     'doubao-seedance-2-0-mini-260615': 'seedance-2-0-mini',
+    // 国内版 seedance 2.5(2026-08-07)
+    'doubao-seedance-2-5-260628': 'seedance-2-5',
+    'doubao-seedance-2-5': 'seedance-2-5',
+    'seedance-2.5': 'seedance-2-5',
     // 常见简写别名(客户可能直接传)
     seedance2: 'seedance-2-0',
     'seedance-2.0': 'seedance-2-0',
@@ -35,6 +39,7 @@ const INTERNAL_TO_ARK: Record<string, string> = {
     'seedance-2-0': 'doubao-seedance-2-0-260128',
     'seedance-2-0-fast': 'doubao-seedance-2-0-fast-260128',
     'seedance-2-0-mini': 'doubao-seedance-2-0-mini-260615',
+    'seedance-2-5': 'doubao-seedance-2-5-260628',
     'seedance-2-0-promax': 'byteplus/seedance-2.0',
     'seedance-2-0-promax-fast': 'byteplus/seedance-2.0-fast',
     'seedance-2-0-promax-mini': 'byteplus/seedance-2.0-mini',

@@ -59,4 +59,12 @@ describe('POST /api/admin/enterprise/set-password', () => {
             data: { password_hash: '$2a$12$hashed', session_token_version: { increment: 1 } },
         });
     });
+
+    it('email 大小写归一:混合大小写按小写查(与 login/register 一致,2026-08-07)', async () => {
+        db.user.findFirst.mockResolvedValue({ id: 'u1', email: 'mixed@case.com' });
+        db.user.update.mockResolvedValue({});
+        const res = await POST(req({ email: 'Mixed@Case.COM', password: 'longenough' }));
+        expect(res.status).toBe(200);
+        expect(db.user.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { email: 'mixed@case.com' } }));
+    });
 });

@@ -41,6 +41,8 @@ export const ENTERPRISE_MODELS: Record<string, SeedanceVariant> = {
     'seedance-2-0': 'pro',
     'seedance-2-0-fast': 'fast',
     'seedance-2-0-mini': 'mini',
+    // 国内版 seedance 2.5(2026-08-07):新代模型,仅 480p/720p,费率独立
+    'seedance-2-5': '2.5',
     // 海外版(2026-07-23):同厂商国际端口,协议/档位/定价与国内一致,仅出片节点在海外(BytePlus)
     'seedance-2-0-global': 'pro',
     'seedance-2-0-global-fast': 'fast',
@@ -109,14 +111,22 @@ function resolveEnterpriseModel(
     if ((variant === 'promax-fast' || variant === 'promax-mini') && resRaw !== '480p' && resRaw !== '720p') {
         return { error: errJson(400, 'invalid_request', `${rawModel} 仅支持 480p / 720p 档`) };
     }
+    // seedance 2.5(上游 artsdance-2-5-pro):仅 720p / 1080p(不支持 480p)
+    if (variant === '2.5' && resRaw !== '720p' && resRaw !== '1080p') {
+        return { error: errJson(400, 'invalid_request', `${rawModel} 仅支持 720p / 1080p 档`) };
+    }
     const hasRefs =
         extractImageUrls(body).length > 0 ||
         extractVideoUrls(body).length > 0 ||
         extractAudioUrls(body).length > 0 ||
         (typeof body.first_frame === 'string' && body.first_frame !== '') ||
         (typeof body.last_frame === 'string' && body.last_frame !== '');
-    // 长名:global 前缀在 variant 前;promax 系 variant 自带前缀(seedance2.0-promax[-fast|-mini]-…)
-    const longName = `seedance2.0-${region === 'global' ? 'global-' : ''}${variant}-${resRaw}${hasRefs ? '-ref' : ''}`;
+    // 长名:2.5 是新代独立前缀(seedance2.5-{res}[-ref]);其余走 seedance2.0-… 老机制
+    // (global 前缀在 variant 前;promax 系 variant 自带前缀)。
+    const longName =
+        variant === '2.5'
+            ? `seedance2.5-${resRaw}${hasRefs ? '-ref' : ''}`
+            : `seedance2.0-${region === 'global' ? 'global-' : ''}${variant}-${resRaw}${hasRefs ? '-ref' : ''}`;
     const spec = MODEL_MAP[longName];
     if (!spec) {
         // 组合表齐全时到不了这里;防御性兜底
@@ -178,6 +188,7 @@ export async function handleEnterpriseArkV3(req: NextRequest, path: string): Pro
                     owned_by: 'doubao',
                     type: 'video_generation',
                 },
+                { id: 'doubao-seedance-2-5-260628', object: 'model', owned_by: 'doubao', type: 'video_generation' },
             ],
         });
     }

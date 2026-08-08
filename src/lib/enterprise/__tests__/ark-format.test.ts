@@ -14,6 +14,8 @@ describe('normalizeArkModel', () => {
         expect(normalizeArkModel('doubao-seedance-2-0-260128')).toBe('seedance-2-0');
         expect(normalizeArkModel('DOUBAO-SEEDANCE-2-0-FAST-260128')).toBe('seedance-2-0-fast');
         expect(normalizeArkModel('doubao-seedance-2-0-mini-260615')).toBe('seedance-2-0-mini');
+        expect(normalizeArkModel('doubao-seedance-2-5-260628')).toBe('seedance-2-5');
+        expect(normalizeArkModel('SEEDANCE-2.5')).toBe('seedance-2-5');
     });
     it('未知/我们自己的名 → 原样(交后续 model_not_found)', () => {
         expect(normalizeArkModel('seedance-2-0-global')).toBe('seedance-2-0-global');
@@ -25,6 +27,7 @@ describe('arkModelEcho', () => {
     it('内部短名 → 火山 id 回显;非映射项原样', () => {
         expect(arkModelEcho('seedance-2-0')).toBe('doubao-seedance-2-0-260128');
         expect(arkModelEcho('seedance-2-0-mini')).toBe('doubao-seedance-2-0-mini-260615');
+        expect(arkModelEcho('seedance-2-5')).toBe('doubao-seedance-2-5-260628');
         // promax 系回显 BytePlus ModelArk 形(2026-08-06 客户样例)
         expect(arkModelEcho('seedance-2-0-promax')).toBe('byteplus/seedance-2.0');
         expect(arkModelEcho('seedance-2-0-promax-fast')).toBe('byteplus/seedance-2.0-fast');

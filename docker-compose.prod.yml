@@ -61,6 +61,31 @@ x-portal-api-common: &portal-api-common
         newapi-net: {}
     restart: unless-stopped
 
+# ── seedance 企业门户数据面(2026-08-07,大客户上量前扩容)──
+# 单实例 → 3 副本(least_conn,Caddy 在 128.241.232.23 分流 3003/3004/3005),
+# 去单点 + 分摊重参考素材(base64→R2)CPU + 故障转移。企业 flavor 本就不跑定时任务
+# (instrumentation 门),再显式 PORTAL_SCHEDULERS=off 兜底防副本双跑。
+x-seedance-portal-common: &seedance-portal-common
+    profiles: ['seedance']
+    build: *portal-build
+    env_file: .env
+    environment:
+        PORTAL_FLAVOR: seedance-enterprise
+        PORTAL_SCHEDULERS: 'off'
+        # 裸 IP 入口的 cookie 修正:Domain=.silkroadai.io 对 IP host 无效(浏览器拒收)
+        # → 置空回 host-scoped;HTTP 下 Secure cookie 被丢弃 → 显式关。
+        BRAND_COOKIE_DOMAIN: ''
+        SESSION_COOKIE_SECURE: 'false'
+    extra_hosts:
+        - 'host.docker.internal:host-gateway'
+    depends_on:
+        portal-postgres:
+            condition: service_healthy
+    networks:
+        - silkroadai-portal-net
+        - newapi-net
+    restart: unless-stopped
+
 services:
     portal:
         build: *portal-build
@@ -114,32 +139,27 @@ services:
 
     # ── seedance 大客户独立门户(P1,seedance-enterprise-portal-design.md)──
     # 同镜像同库,PORTAL_FLAVOR 切形态:/v1 只服务 seedance 视频端点,主站页面/API 404,
-    # 定时任务不跑(instrumentation 门)。只绑 127.0.0.1:3003 —— 公网入口由 Caddy 在
-    # 128.241.232.23(HTTP :80 + tls internal :443)只放 /v1/* 反代进来,其余 Caddy 404。
+    # 定时任务不跑(instrumentation 门)。三个实例只绑 127.0.0.1:3003-3005 —— 公网入口由
+    # Caddy 在 128.241.232.23(HTTP :80 + tls internal :443)least_conn 分流,其余路径 404。
+    # 继承 seedance profile,默认发布不会启动企业门户副本。
+    # seedance 企业门户三副本无状态(共享数据库),任意副本可处理任意提交/轮询。
     seedance-portal:
-        profiles: ['seedance']
-        build: *portal-build
+        <<: *seedance-portal-common
         container_name: silkroadai-seedance-portal
         ports:
             - '127.0.0.1:3003:3002'
-        env_file: .env
-        environment:
-            PORTAL_FLAVOR: seedance-enterprise
-            # 裸 IP 入口的 cookie 修正(P2):Domain=.silkroadai.io 对 IP host 无效
-            # (浏览器拒收)→ 置空回 host-scoped;HTTP 下 Secure cookie 被丢弃 → 显式关。
-            BRAND_COOKIE_DOMAIN: ''
-            SESSION_COOKIE_SECURE: 'false'
-        extra_hosts:
-            - 'host.docker.internal:host-gateway'
-        depends_on:
-            portal-postgres:
-                condition: service_healthy
-        networks:
-            - silkroadai-portal-net
-            # 只读直连 new-api 日志库(admin 日志导出),见 src/lib/newapi/logs-db.ts。
-            # external 网络由 new-api 的 compose 栈创建,portal 只是加入。
-            - newapi-net
-        restart: unless-stopped
+
+    seedance-portal-2:
+        <<: *seedance-portal-common
+        container_name: silkroadai-seedance-portal-2
+        ports:
+            - '127.0.0.1:3004:3002'
+
+    seedance-portal-3:
+        <<: *seedance-portal-common
+        container_name: silkroadai-seedance-portal-3
+        ports:
+            - '127.0.0.1:3005:3002'
 
     portal-postgres:
         image: postgres:16-alpine

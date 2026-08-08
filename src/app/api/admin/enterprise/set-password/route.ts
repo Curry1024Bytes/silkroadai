@@ -17,7 +17,12 @@ export const runtime = 'nodejs';
 const schema = z
     .object({
         user_id: z.string().uuid().optional(),
-        email: z.string().trim().email().optional(),
+        email: z
+            .string()
+            .trim()
+            .email()
+            .transform((s) => s.toLowerCase())
+            .optional(),
         password: z.string().min(8).max(128),
     })
     .refine((d) => d.user_id || d.email, { message: 'user_id 或 email 必须给一个' });

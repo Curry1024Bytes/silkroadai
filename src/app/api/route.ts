@@ -47,6 +47,16 @@ function meta(action: string) {
 
 const ok = (action: string, result: unknown) => NextResponse.json({ ResponseMetadata: meta(action), Result: result });
 
+/** zod 校验失败 → 带字段路径的报错文案 + 落日志。多条错误按官方语义用 \n 逐条列出
+ *  (727 文档:「一次请求存在多个校验错误时,message 中以换行符 \n 分隔逐条列出」)。 */
+function zodFail(action: string, err: z.ZodError): NextResponse {
+    const msg = err.issues
+        .map((i) => `${i.path?.length ? i.path.join('.') : 'body'}: ${i.message || 'invalid'}`)
+        .join('\n');
+    console.warn('[enterprise-action] InvalidParameter', { action, msg });
+    return fail(action, 400, 'InvalidParameter', msg || 'invalid request');
+}
+
 const fail = (action: string, status: number, code: string, message: string) =>
     NextResponse.json({ ResponseMetadata: { ...meta(action), Error: { Code: code, Message: message } } }, { status });
 
@@ -62,14 +72,26 @@ const ASSET_TYPE_OUT: Record<string, string> = { image: 'Image', video: 'Video',
 const createAssetSchema = z.object({
     AssetType: assetTypeInput,
     URL: z.string().min(1).max(2000),
-    Name: z.string().trim().min(1).max(100),
-    Description: z.string().trim().max(500).optional(),
+    // 火山官方 Name 可选(#300 曾在 volc 翻译层修过,R2 路径 2026-08-06 统一托管后同步):
+    // 缺省从 URL 文件名派生。长度上限对齐官方:名称 64、描述 300。
+    Name: z.string().trim().min(1).max(64).optional(),
+    Description: z.string().trim().max(300).optional(),
     GroupId: z.string().trim().max(60).optional(),
 });
+
+/** Name 缺省时从 URL 末段文件名派生素材名(对齐火山官方 Name 可选语义)。 */
+function deriveAssetName(url: string): string {
+    try {
+        const base = new URL(url).pathname.split('/').filter(Boolean).pop() || '';
+        return decodeURIComponent(base).slice(0, 64) || 'asset';
+    } catch {
+        return 'asset';
+    }
+}
 const idSchema = z.object({ Id: z.string().trim().min(1).max(60) });
 const updateAssetSchema = idSchema.extend({
-    Name: z.string().trim().min(1).max(100).optional(),
-    Description: z.string().trim().max(500).nullable().optional(),
+    Name: z.string().trim().min(1).max(64).optional(),
+    Description: z.string().trim().max(300).nullable().optional(),
     GroupId: z.string().trim().max(60).nullable().optional(),
 });
 const groupTypeInput = z.enum(['AIGC', 'LivenessFace']);
@@ -82,14 +104,14 @@ const listAssetsSchema = z.object({
     PageSize: z.number().int().min(1).max(100).default(20),
 });
 const createGroupSchema = z.object({
-    Name: z.string().trim().min(1).max(100),
-    Description: z.string().trim().max(500).optional(),
+    Name: z.string().trim().min(1).max(64),
+    Description: z.string().trim().max(300).optional(),
     // 对齐火山官方:AIGC(虚拟/生成素材,缺省)| LivenessFace(真人素材,四渠道通用,平台托管)
     GroupType: groupTypeInput.default('AIGC'),
 });
 const updateGroupSchema = idSchema.extend({
-    Name: z.string().trim().min(1).max(100).optional(),
-    Description: z.string().trim().max(500).nullable().optional(),
+    Name: z.string().trim().min(1).max(64).optional(),
+    Description: z.string().trim().max(300).nullable().optional(),
 });
 const listGroupsSchema = z.object({
     // 官方语义:query 缺省只列 AIGC,真人组须显式 GroupType=LivenessFace
@@ -116,7 +138,8 @@ function assetResult(a: {
         Description: a.description ?? undefined,
         AssetType: ASSET_TYPE_OUT[a.asset_type] ?? a.asset_type,
         GroupId: a.group_id ?? undefined,
-        Status: 'active',
+        // 火山官方 Status 枚举 Title-case;平台校验在上传时同步完成,入库即 Active
+        Status: 'Active',
         URL: a.public_url,
         Bytes: a.bytes,
         MimeType: a.mime ?? undefined,
@@ -190,31 +213,32 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         switch (action) {
             case 'CreateAsset': {
                 const p = createAssetSchema.safeParse(body);
-                if (!p.success) return fail(action, 400, 'InvalidParameter', p.error.issues[0]?.message || 'invalid');
+                if (!p.success) return zodFail(action, p.error);
                 const { AssetType: at, URL, Name, Description, GroupId } = p.data;
                 const fetched = await fetchAssetFromUrl(URL, at as AssetType);
                 const row = await storeAsset({
                     userId,
                     assetType: at as AssetType,
-                    name: Name,
+                    name: Name ?? deriveAssetName(URL),
                     description: Description,
                     groupId: GroupId,
                     bytes: fetched.bytes,
                     mime: fetched.mime,
                     sourceUrl: URL,
                 });
-                return ok(action, { Id: row.id, Status: 'active', URL: row.public_url });
+                // 火山官方 CreateAsset Result 仅返 {Id}(客户脚本严格校验;URL/状态经 GetAsset 查,#300 同步)
+                return ok(action, { Id: row.id });
             }
             case 'GetAsset': {
                 const p = idSchema.safeParse(body);
-                if (!p.success) return fail(action, 400, 'InvalidParameter', 'Id 必填');
+                if (!p.success) return zodFail(action, p.error);
                 const a = await prisma.enterpriseAsset.findFirst({ where: { id: p.data.Id, user_id: userId } });
                 if (!a) return fail(action, 404, 'AssetNotFound', `素材不存在: ${p.data.Id}`);
                 return ok(action, assetResult(a));
             }
             case 'UpdateAsset': {
                 const p = updateAssetSchema.safeParse(body);
-                if (!p.success) return fail(action, 400, 'InvalidParameter', p.error.issues[0]?.message || 'invalid');
+                if (!p.success) return zodFail(action, p.error);
                 const { Id, Name, Description, GroupId } = p.data;
                 if (GroupId) {
                     const g = await prisma.enterpriseAssetGroup.findFirst({
@@ -232,18 +256,19 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
                     },
                 });
                 if (r.count === 0) return fail(action, 404, 'AssetNotFound', `素材不存在: ${Id}`);
-                return ok(action, {});
+                // 火山官方 UpdateAsset Result 返 {Id}(客户脚本据此确认更新对象,#300 同步)
+                return ok(action, { Id });
             }
             case 'DeleteAsset': {
                 const p = idSchema.safeParse(body);
-                if (!p.success) return fail(action, 400, 'InvalidParameter', 'Id 必填');
+                if (!p.success) return zodFail(action, p.error);
                 const done = await deleteAsset(userId, p.data.Id);
                 if (!done) return fail(action, 404, 'AssetNotFound', `素材不存在: ${p.data.Id}`);
                 return ok(action, {});
             }
             case 'ListAssets': {
                 const p = listAssetsSchema.safeParse(body);
-                if (!p.success) return fail(action, 400, 'InvalidParameter', p.error.issues[0]?.message || 'invalid');
+                if (!p.success) return zodFail(action, p.error);
                 // GroupType 过滤(官方语义,显式 GroupId 时以组为准跳过):LivenessFace →
                 // 仅真人组内;AIGC/缺省 → 排除真人组(含未分组)。
                 const at = p.data.GroupType ?? p.data.Filter?.GroupType ?? 'AIGC';
@@ -283,7 +308,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             }
             case 'CreateAssetGroup': {
                 const p = createGroupSchema.safeParse(body);
-                if (!p.success) return fail(action, 400, 'InvalidParameter', p.error.issues[0]?.message || 'invalid');
+                if (!p.success) return zodFail(action, p.error);
                 const g = await prisma.enterpriseAssetGroup.create({
                     data: {
                         id: newAssetId('group'),
@@ -297,7 +322,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             }
             case 'GetAssetGroup': {
                 const p = idSchema.safeParse(body);
-                if (!p.success) return fail(action, 400, 'InvalidParameter', 'Id 必填');
+                if (!p.success) return zodFail(action, p.error);
                 const g = await prisma.enterpriseAssetGroup.findFirst({ where: { id: p.data.Id, user_id: userId } });
                 if (!g) return fail(action, 404, 'GroupNotFound', `素材组不存在: ${p.data.Id}`);
                 const count = await prisma.enterpriseAsset.count({ where: { group_id: g.id } });
@@ -305,7 +330,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             }
             case 'UpdateAssetGroup': {
                 const p = updateGroupSchema.safeParse(body);
-                if (!p.success) return fail(action, 400, 'InvalidParameter', p.error.issues[0]?.message || 'invalid');
+                if (!p.success) return zodFail(action, p.error);
                 const r = await prisma.enterpriseAssetGroup.updateMany({
                     where: { id: p.data.Id, user_id: userId },
                     data: {
@@ -314,11 +339,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
                     },
                 });
                 if (r.count === 0) return fail(action, 404, 'GroupNotFound', `素材组不存在: ${p.data.Id}`);
-                return ok(action, {});
+                // 火山官方 UpdateAssetGroup Result 返 {Id}(#300 同步)
+                return ok(action, { Id: p.data.Id });
             }
             case 'DeleteAssetGroup': {
                 const p = idSchema.safeParse(body);
-                if (!p.success) return fail(action, 400, 'InvalidParameter', 'Id 必填');
+                if (!p.success) return zodFail(action, p.error);
                 const g = await prisma.enterpriseAssetGroup.findFirst({
                     where: { id: p.data.Id, user_id: userId },
                     select: { id: true },
@@ -333,7 +359,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             }
             case 'ListAssetGroups': {
                 const p = listGroupsSchema.safeParse(body);
-                if (!p.success) return fail(action, 400, 'InvalidParameter', p.error.issues[0]?.message || 'invalid');
+                if (!p.success) return zodFail(action, p.error);
                 // 官方语义:缺省列 AIGC;真人组须显式 GroupType=LivenessFace
                 const gt = p.data.GroupType ?? p.data.Filter?.GroupType ?? 'AIGC';
                 const gWhere = { user_id: userId, group_type: gt };

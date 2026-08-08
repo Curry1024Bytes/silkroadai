@@ -18,7 +18,12 @@ export const runtime = 'nodejs';
 const creditSchema = z
     .object({
         user_id: z.string().uuid().optional(),
-        email: z.string().trim().email().optional(),
+        email: z
+            .string()
+            .trim()
+            .email()
+            .transform((s) => s.toLowerCase())
+            .optional(),
         amount_cny: z
             .number()
             .refine((n) => Number.isFinite(n) && n !== 0, { message: 'amount_cny 不能为 0' })
