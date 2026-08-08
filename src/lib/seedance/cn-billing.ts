@@ -42,7 +42,7 @@ const OFFICIAL_CNY_PER_M: Record<
     fast: {
         '480p': { noVideo: 37, withVideo: 22 }, // 官方挂牌(与 720p 同费率)
         '720p': { noVideo: 37, withVideo: 22 }, // 官方挂牌
-        '1080p': { noVideo: 37, withVideo: 22 }, // 官方挂牌
+        '1080p': { noVideo: 40.5, withVideo: 24.5 }, // 官方挂牌(1080p 单独档,2026-08-08 修正)
     },
     mini: {
         '480p': { noVideo: 23, withVideo: 14 }, // 官方挂牌(与 720p 同费率)

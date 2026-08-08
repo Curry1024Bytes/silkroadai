@@ -169,8 +169,8 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                                 </Td>
                                 <Td>快速档</Td>
                                 <Td>480p / 720p / 1080p</Td>
-                                <Td>{listPrices('fast', ['720p'], false)}</Td>
-                                <Td>{listPrices('fast', ['720p'], true)}</Td>
+                                <Td>{listPrices('fast', ['480p', '720p', '1080p'], false)}</Td>
+                                <Td>{listPrices('fast', ['480p', '720p', '1080p'], true)}</Td>
                             </tr>
                             <tr>
                                 <Td>

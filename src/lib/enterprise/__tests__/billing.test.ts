@@ -57,7 +57,9 @@ describe('computeEnterpriseCostCny', () => {
 
     it('fast/mini 变体标准价(37/23 官方 ×0.85 = ¥31.45 / ¥19.55),覆盖键按变体隔离', async () => {
         expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false, 'fast')).toBeCloseTo(31.45, 4);
-        expect(await computeEnterpriseCostCny('u1', 1_000_000, '1080p', true, 'fast')).toBeCloseTo(18.7, 4);
+        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', true, 'fast')).toBeCloseTo(18.7, 4);
+        // fast 1080p 是单独档(挂牌 40.5/24.5,2026-08-08):无视 34.425 / 含视 20.825
+        expect(await computeEnterpriseCostCny('u1', 1_000_000, '1080p', false, 'fast')).toBeCloseTo(34.425, 4);
         expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false, 'mini')).toBeCloseTo(19.55, 4);
         expect(await computeEnterpriseCostCny('u1', 1_000_000, '1080p', true, 'mini')).toBeCloseTo(11.9, 4);
         expect(db.enterpriseRateOverride.findUnique).toHaveBeenLastCalledWith(
