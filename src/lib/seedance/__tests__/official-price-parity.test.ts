@@ -18,6 +18,7 @@ const OFFICIAL: Array<[SeedanceVariant, string, number, number]> = [
     ['fast', '720p', 37, 22],
     ['fast', '1080p', 40.5, 24.5],
     ['mini', '720p', 23, 14],
+    ['mini', '1080p', 25.5, 15.5],
     ['2.5', '720p', 70, 42],
     ['2.5', '1080p', 90, 54],
     ['promax', '720p', 68, 40.8],

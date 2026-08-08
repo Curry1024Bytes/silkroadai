@@ -61,7 +61,9 @@ describe('computeEnterpriseCostCny', () => {
         // fast 1080p 是单独档(挂牌 40.5/24.5,2026-08-08):无视 34.425 / 含视 20.825
         expect(await computeEnterpriseCostCny('u1', 1_000_000, '1080p', false, 'fast')).toBeCloseTo(34.425, 4);
         expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false, 'mini')).toBeCloseTo(19.55, 4);
-        expect(await computeEnterpriseCostCny('u1', 1_000_000, '1080p', true, 'mini')).toBeCloseTo(11.9, 4);
+        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', true, 'mini')).toBeCloseTo(11.9, 4);
+        // mini 1080p 单独档(挂牌 25.5/15.5,2026-08-08):含视 13.175
+        expect(await computeEnterpriseCostCny('u1', 1_000_000, '1080p', true, 'mini')).toBeCloseTo(13.175, 4);
         expect(db.enterpriseRateOverride.findUnique).toHaveBeenLastCalledWith(
             expect.objectContaining({
                 where: expect.objectContaining({

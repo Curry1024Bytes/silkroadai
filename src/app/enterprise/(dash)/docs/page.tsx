@@ -178,8 +178,8 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                                 </Td>
                                 <Td>轻量档</Td>
                                 <Td>480p / 720p / 1080p</Td>
-                                <Td>{listPrices('mini', ['720p'], false)}</Td>
-                                <Td>{listPrices('mini', ['720p'], true)}</Td>
+                                <Td>{listPrices('mini', ['480p', '720p', '1080p'], false)}</Td>
+                                <Td>{listPrices('mini', ['480p', '720p', '1080p'], true)}</Td>
                             </tr>
                             <tr>
                                 <Td>
