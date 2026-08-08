@@ -108,8 +108,9 @@ function resolveEnterpriseModel(
         const tiers = region === 'global' ? '720p / 1080p' : '480p / 720p / 1080p';
         return { error: errJson(400, 'invalid_request', `${rawModel} 无 4k 档(resolution 仅 ${tiers})`) };
     }
-    if ((variant === 'promax-fast' || variant === 'promax-mini') && resRaw !== '480p' && resRaw !== '720p') {
-        return { error: errJson(400, 'invalid_request', `${rawModel} 仅支持 480p / 720p 档`) };
+    // proMax fast/mini(上游 artsdance intl,2026-08-08)仅 720p
+    if ((variant === 'promax-fast' || variant === 'promax-mini') && resRaw !== '720p') {
+        return { error: errJson(400, 'invalid_request', `${rawModel} 仅支持 720p 档`) };
     }
     // seedance 2.5(上游 artsdance-2-5-pro):仅 720p / 1080p(不支持 480p)
     if (variant === '2.5' && resRaw !== '720p' && resRaw !== '1080p') {

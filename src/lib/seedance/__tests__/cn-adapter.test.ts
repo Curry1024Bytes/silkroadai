@@ -214,13 +214,13 @@ describe('seedance-cn adapter submit', () => {
         expect(mockFetch.mock.calls.every((c) => !String(c[0]).startsWith(`${UP}/v1/video/generations`))).toBe(true);
     });
 
-    it('promax 长名 → 海外 base + dreamina 上游模型名;variantForModel promax 系判序正确', async () => {
+    it('promax 长名 → 海外 base + 上游模型名(fast/mini 走 artsdance intl,2026-08-08);variantForModel promax 系判序正确', async () => {
         const res = await submitVideo(makeReq({ model: 'seedance2.0-promax-mini-720p', prompt: 'x', duration: 5 }));
         expect(res.status).toBe(200);
         const call = mockFetch.mock.calls.find((c) => String(c[0]).startsWith(INTL));
         expect(call).toBeTruthy();
         const b = JSON.parse(String((call![1] as RequestInit).body)) as Record<string, unknown>;
-        expect(b.model).toBe('dreamina-seedance-2-0-mini-260615');
+        expect(b.model).toBe('artsdance2-0-mini-intl-260701');
     });
 
     it('duration 4-15 整数透传(2026-08-03 探测放开);范围外(3/16/7.5)回落 5', async () => {

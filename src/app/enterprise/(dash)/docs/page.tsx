@@ -229,8 +229,7 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                         更高规格的海外出片系列:<Code>seedance-2-0-promax</Code> / <Code>seedance-2-0-promax-fast</Code>{' '}
                         / <Code>seedance-2-0-promax-mini</Code>
                         。调用方式同上(resolution 参数、参考输入自动识别),需<b>海外版proMax 专用密钥</b>; proMax
-                        fast/mini 支持 480p/720p 档,promax(pro)支持 480p/720p/1080p/4k(480p 与 720p 同费率)。费率(¥/1M
-                        token):
+                        fast/mini 仅 720p 档,promax(pro)支持 480p/720p/1080p/4k(480p 与 720p 同费率)。费率(¥/1M token):
                     </p>
                     <div className="mt-2 overflow-x-auto">
                         <table className="w-full text-sm">
@@ -255,7 +254,7 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                                     <Td>
                                         <Code>seedance-2-0-promax-fast</Code>
                                     </Td>
-                                    <Td>480p / 720p</Td>
+                                    <Td>720p</Td>
                                     <Td>{listPrices('promax-fast', ['720p'], false)}</Td>
                                     <Td>{listPrices('promax-fast', ['720p'], true)}</Td>
                                 </tr>
@@ -263,7 +262,7 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                                     <Td>
                                         <Code>seedance-2-0-promax-mini</Code>
                                     </Td>
-                                    <Td>480p / 720p</Td>
+                                    <Td>720p</Td>
                                     <Td>{listPrices('promax-mini', ['720p'], false)}</Td>
                                     <Td>{listPrices('promax-mini', ['720p'], true)}</Td>
                                 </tr>
