@@ -303,7 +303,7 @@ describe('火山渠道(volc)路由', () => {
             );
             expect(res.status).toBe(400);
             const body = (await res.json()) as { error: { message: string } };
-            expect(body.error.message).toContain('proMax');
+            expect(body.error.message).toContain('国内版'); // proMax 2026-08-08 起也无 480p,指引改为国内版
         }
         expect(submitVideoWithKey).not.toHaveBeenCalled();
     });
@@ -627,6 +627,14 @@ describe('归一短名(2026-07-20)', () => {
             expect.objectContaining({ model: 'seedance2.0-promax-4k' }),
             'Bearer sk-upstream-u1',
         );
+        // promax(pro)480p → 400(上游 artsdance intl 不支持,2026-08-08),不打上游
+        submitVideoWithKey.mockClear();
+        res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { model: 'seedance-2-0-promax', prompt: 'x', resolution: '480p' }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(400);
+        expect(submitVideoWithKey).not.toHaveBeenCalled();
     });
 
     it('resolution 参数选档 + 带参考图自动加 -ref:mini@1080p+images → seedance2.0-mini-1080p-ref', async () => {

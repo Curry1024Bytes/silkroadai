@@ -94,13 +94,23 @@ function resolveEnterpriseModel(
     if (!(RESOLUTIONS as readonly string[]).includes(resRaw)) {
         return { error: errJson(400, 'invalid_request', 'resolution 仅支持 480p / 720p / 1080p / 4k') };
     }
-    // 海外版(global)上游无 480p(intl 三变体实测均拒,2026-08-06);国内/proMax/火山有
+    // 海外版(global)上游无 480p(intl 三变体实测均拒,2026-08-06);国内/火山有 480p,proMax 2026-08-08 起也无
     if (region === 'global' && resRaw === '480p') {
         return {
             error: errJson(
                 400,
                 'invalid_request',
-                `${rawModel} 无 480p 档(海外版仅 720p / 1080p / 4k);480p 请用国内版或 proMax`,
+                `${rawModel} 无 480p 档(海外版仅 720p / 1080p / 4k);480p 请用国内版`,
+            ),
+        };
+    }
+    // proMax 上游 2026-08-08 全档迁到 artsdance intl,不支持 480p(pro=720p/1080p/4k,fast/mini=仅720p)
+    if (region === 'promax' && resRaw === '480p') {
+        return {
+            error: errJson(
+                400,
+                'invalid_request',
+                `${rawModel} 无 480p 档(proMax pro 支持 720p / 1080p / 4k,fast/mini 仅 720p)`,
             ),
         };
     }

@@ -37,9 +37,9 @@ const UPSTREAM_INTL_MINI = 'artsdance2-0-mini-intl-260701';
 // 海外版proMax(2026-07-23):同 intl base/key,dreamina 系上游模型(挂牌更高,零售=挂牌×0.85)。
 // pro 有 480p/720p/1080p/4k,fast/mini 上游仅 480p/720p。mini 实测 token 基数
 // 与现有渠道一致(720p 5s = 108,900);计费按 usage 实报,基数差异不影响正确性。
-const UPSTREAM_PROMAX_PRO = 'dreamina-seedance-2-0-260128';
-// proMax fast/mini 上游 2026-08-08 由 dreamina 系换成 artsdance intl 系(= global-fast/mini 同一上游名,
-// 生产已验证)。artsdance intl 不支持 480p → proMax fast/mini 仅保留 720p。价格不变。
+// proMax 三档 2026-08-08 全部由 dreamina 系迁到 artsdance intl 系(= global 同一上游名,生产已验证)。
+// artsdance intl 不支持 480p → proMax 全档去 480p:pro 保留 720p/1080p/4k,fast/mini 仅 720p。价格不变。
+const UPSTREAM_PROMAX_PRO = 'artsdance2-0-pro-intl-260701';
 const UPSTREAM_PROMAX_FAST = 'artsdance2-0-fast-intl-260701';
 const UPSTREAM_PROMAX_MINI = 'artsdance2-0-mini-intl-260701';
 // 国内版 seedance 2.5(2026-08-07):国内版渠道(token.xinhankr)上游新代模型。
@@ -119,7 +119,7 @@ export const MODEL_MAP: Record<string, SeedanceModelSpec> = {
     ...Object.fromEntries(
         (
             [
-                ['promax', UPSTREAM_PROMAX_PRO, ['480p', '720p', '1080p', '4k']],
+                ['promax', UPSTREAM_PROMAX_PRO, ['720p', '1080p', '4k']], // artsdance intl:无 480p
                 ['promax-fast', UPSTREAM_PROMAX_FAST, ['720p']], // artsdance intl:仅 720p
                 ['promax-mini', UPSTREAM_PROMAX_MINI, ['720p']], // artsdance intl:仅 720p
             ] as Array<[SeedanceVariant, string, Array<'480p' | '720p' | '1080p' | '4k'>]>

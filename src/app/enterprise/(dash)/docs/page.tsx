@@ -204,8 +204,8 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                         ¥2.50(折后按您的折扣率,如 8.5 折则分别约 ¥4.26 / ¥3.42 / ¥2.13);1080p ≈ 720p 的 2.25 倍 token。
                     </li>
                     <li>
-                        <b>480p 与 720p 同费率</b>(单价一样,但 token 量 ∝ 像素,480p 整条约为 720p 的一半价)。国内版 /
-                        proMax / 火山渠道支持;海外版(global)上游无 480p。
+                        <b>480p 与 720p 同费率</b>(单价一样,但 token 量 ∝ 像素,480p 整条约为 720p 的一半价)。仅
+                        国内版(seedance-2-0 系)/ 火山渠道支持 480p;海外版(global)与 proMax 上游无 480p。
                     </li>
                     <li>「含视频输入」(参考视频)费率更低,但输入视频的时长也计入 token。图片参考不额外计 token。</li>
                     <li>生成失败不计费。提交时按预估价校验余额,不足返回 402(不会透支)。</li>
@@ -229,7 +229,7 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                         更高规格的海外出片系列:<Code>seedance-2-0-promax</Code> / <Code>seedance-2-0-promax-fast</Code>{' '}
                         / <Code>seedance-2-0-promax-mini</Code>
                         。调用方式同上(resolution 参数、参考输入自动识别),需<b>海外版proMax 专用密钥</b>; proMax
-                        fast/mini 仅 720p 档,promax(pro)支持 480p/720p/1080p/4k(480p 与 720p 同费率)。费率(¥/1M token):
+                        fast/mini 仅 720p 档,promax(pro)支持 720p/1080p/4k(均无 480p)。费率(¥/1M token):
                     </p>
                     <div className="mt-2 overflow-x-auto">
                         <table className="w-full text-sm">
@@ -246,9 +246,9 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                                     <Td>
                                         <Code>seedance-2-0-promax</Code>
                                     </Td>
-                                    <Td>480p / 720p / 1080p / 4k</Td>
-                                    <Td>{listPrices('promax', ['480p', '720p', '1080p', '4k'], false)}</Td>
-                                    <Td>{listPrices('promax', ['480p', '720p', '1080p', '4k'], true)}</Td>
+                                    <Td>720p / 1080p / 4k</Td>
+                                    <Td>{listPrices('promax', ['720p', '1080p', '4k'], false)}</Td>
+                                    <Td>{listPrices('promax', ['720p', '1080p', '4k'], true)}</Td>
                                 </tr>
                                 <tr>
                                     <Td>
