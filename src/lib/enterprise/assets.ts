@@ -201,7 +201,6 @@ export function readVideoMeta(buf: Buffer): { w?: number; h?: number; fps?: numb
             if (!trak) break;
             const tkhd = findBox(buf, trak.start, trak.end, 'tkhd');
             if (tkhd) {
-                const version = buf[tkhd.start];
                 // v0: 后 8 字节 = width/height(16.16);v1 同结构但前面多 12 字节
                 const tail = tkhd.end - 8;
                 if (tail > tkhd.start) {
