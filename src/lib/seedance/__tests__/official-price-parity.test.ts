@@ -26,6 +26,8 @@ const OFFICIAL: Array<[SeedanceVariant, string, number, number]> = [
     ['promax', '4k', 38.08, 23.12],
     ['promax-fast', '720p', 54.4, 32.896],
     ['promax-mini', '720p', 34, 20.4],
+    ['promax-2.5', '720p', 72.76, 43.52],
+    ['promax-2.5', '1080p', 80.24, 47.94],
 ];
 
 describe('官方挂牌价 = 文档价目表口径', () => {

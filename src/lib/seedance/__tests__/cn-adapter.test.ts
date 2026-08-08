@@ -323,6 +323,26 @@ describe('promax 判定(2026-07-23)', () => {
     });
 });
 
+describe('proMax 2.5 判定(2026-08-08)', () => {
+    it('variantForModel:promax-2.5 先于纯 2.5 与 promax(短名/长名/上游名);regionForModel → promax', async () => {
+        const { variantForModel, regionForModel, MODEL_MAP } = await import('../cn-adapter');
+        expect(variantForModel('seedance-2-5-promax')).toBe('promax-2.5'); // 客户短名(任务行存这个)
+        expect(variantForModel('seedance2.5-promax-1080p')).toBe('promax-2.5'); // 内部长名
+        // 不误伤:cn 2.5 仍 '2.5',promax pro 仍 'promax'
+        expect(variantForModel('seedance-2-5')).toBe('2.5');
+        expect(variantForModel('seedance-2-0-promax')).toBe('promax');
+        expect(regionForModel('seedance-2-5-promax')).toBe('promax');
+        // MODEL_MAP:仅 720p/1080p × {无ref,-ref},上游 artsdance2-5-intl-260628,region promax
+        for (const n of ['seedance2.5-promax-720p', 'seedance2.5-promax-1080p-ref']) {
+            expect(MODEL_MAP[n].variant).toBe('promax-2.5');
+            expect(MODEL_MAP[n].upstream).toBe('artsdance2-5-intl-260628');
+            expect(MODEL_MAP[n].region).toBe('promax');
+        }
+        expect(MODEL_MAP['seedance2.5-promax-480p']).toBeUndefined();
+        expect(MODEL_MAP['seedance2.5-promax-4k']).toBeUndefined();
+    });
+});
+
 describe('seedance 2.5 判定(2026-08-07,国内版新代)', () => {
     it('variantForModel:短名/长名/上游名都 → 2.5(不落 pro 兜底);regionForModel → cn', async () => {
         const { variantForModel, regionForModel } = await import('../cn-adapter');

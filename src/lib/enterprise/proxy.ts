@@ -51,6 +51,8 @@ export const ENTERPRISE_MODELS: Record<string, SeedanceVariant> = {
     'seedance-2-0-promax': 'promax',
     'seedance-2-0-promax-fast': 'promax-fast',
     'seedance-2-0-promax-mini': 'promax-mini',
+    // 海外版 proMax seedance 2.5(2026-08-08):intl 新代,仅 720p/1080p,费率独立(按原价挂牌)
+    'seedance-2-5-promax': 'promax-2.5',
 };
 
 // 2026-08-03 全线四档:volc 实测 480p 出片 864×496;cn/global/promax 上游挂牌本就含
@@ -132,12 +134,15 @@ function resolveEnterpriseModel(
         extractAudioUrls(body).length > 0 ||
         (typeof body.first_frame === 'string' && body.first_frame !== '') ||
         (typeof body.last_frame === 'string' && body.last_frame !== '');
-    // 长名:2.5 是新代独立前缀(seedance2.5-{res}[-ref]);其余走 seedance2.0-… 老机制
-    // (global 前缀在 variant 前;promax 系 variant 自带前缀)。
+    // 长名:2.5 系是新代独立前缀 seedance2.5-…(cn = seedance2.5-{res};proMax = seedance2.5-promax-{res});
+    // 其余走 seedance2.0-… 老机制(global 前缀在 variant 前;promax 系 variant 自带前缀)。
+    const ref = hasRefs ? '-ref' : '';
     const longName =
         variant === '2.5'
-            ? `seedance2.5-${resRaw}${hasRefs ? '-ref' : ''}`
-            : `seedance2.0-${region === 'global' ? 'global-' : ''}${variant}-${resRaw}${hasRefs ? '-ref' : ''}`;
+            ? `seedance2.5-${resRaw}${ref}`
+            : variant === 'promax-2.5'
+              ? `seedance2.5-promax-${resRaw}${ref}`
+              : `seedance2.0-${region === 'global' ? 'global-' : ''}${variant}-${resRaw}${ref}`;
     const spec = MODEL_MAP[longName];
     if (!spec) {
         // 组合表齐全时到不了这里;防御性兜底
