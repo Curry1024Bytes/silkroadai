@@ -33,6 +33,48 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 }
 
 /**
+ * DELETE /api/admin/enterprise/customers/[id] — 软删除账号(2026-08-08)。守门:superadmin。
+ * 撤销全部访问 + 从客户列表隐藏,但【保留】流水/任务/余额/素材(审计/对账),可人工恢复。
+ *   1. enterprise_upstream_keys: 全部行 deleted_at=now(隐藏 + account-level 拒调用)
+ *   2. enterprise_keys / enterprise_ak_sk: 全部 status=disabled(sk-ent / AK-SK 立即 401)
+ *   3. users.status=disabled(dashboard 登录立即被拒)
+ * 幂等:重复删无副作用。
+ */
+export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+    const admin = await resolveAdmin(request, 'superadmin');
+    if (!admin) return unauthorizedResponse(request);
+    const { id } = await params;
+
+    // 必须是企业客户(有 upstream key 行);否则 404
+    const upCount = await prisma.enterpriseUpstreamKey.count({ where: { user_id: id } });
+    if (upCount === 0) return NextResponse.json({ error: 'not_found' }, { status: 404 });
+
+    const now = new Date();
+    const [ups, keys, aksk] = await prisma.$transaction([
+        prisma.enterpriseUpstreamKey.updateMany({
+            where: { user_id: id, deleted_at: null },
+            data: { deleted_at: now },
+        }),
+        prisma.enterpriseKey.updateMany({
+            where: { user_id: id, status: { not: 'disabled' } },
+            data: { status: 'disabled' },
+        }),
+        prisma.enterpriseAkSk.updateMany({
+            where: { user_id: id, status: { not: 'disabled' } },
+            data: { status: 'disabled' },
+        }),
+        prisma.user.updateMany({ where: { id, status: { not: 'disabled' } }, data: { status: 'disabled' } }),
+    ]);
+    return NextResponse.json({
+        ok: true,
+        deleted: true,
+        upstream_regions_marked: ups.count,
+        keys_disabled: keys.count,
+        aksk_disabled: aksk.count,
+    });
+}
+
+/**
  * GET /api/admin/enterprise/customers/[id] — 单客户详情(运营后台):
  * 余额/累计消费 + keys + 议价覆盖 + 最近流水 10 + 最近任务 10。守门:superadmin。
  */

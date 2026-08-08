@@ -8,6 +8,7 @@ const { db, applyLedgerEntry } = vi.hoisted(() => ({
         seedanceVideoTask: { findUnique: vi.fn(), updateMany: vi.fn() },
         enterpriseRateOverride: { findUnique: vi.fn() },
         enterpriseUpstreamKey: { findUnique: vi.fn() },
+        enterpriseGlobalDiscount: { findUnique: vi.fn() },
     },
     applyLedgerEntry: vi.fn(),
 }));
@@ -30,6 +31,7 @@ beforeEach(() => {
     db.enterpriseRateOverride.findUnique.mockResolvedValue(null);
     // 新口径(2026-08-07):discount 相对【官方挂牌价】,0.85 = 标准零售(= 旧口径 discount:1)
     db.enterpriseUpstreamKey.findUnique.mockResolvedValue({ discount: '0.85' });
+    db.enterpriseGlobalDiscount.findUnique.mockResolvedValue(null); // 默认无全局折扣
 });
 
 describe('computeEnterpriseCostCny', () => {
@@ -83,6 +85,34 @@ describe('computeEnterpriseCostCny', () => {
         db.enterpriseUpstreamKey.findUnique.mockResolvedValue({ discount: '0.5' });
         db.enterpriseRateOverride.findUnique.mockResolvedValue({ cny_per_m: '30' });
         expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false)).toBeCloseTo(30, 4);
+    });
+
+    it('全局折扣【覆盖】客户折扣率(客户 0.85,全局 0.6 → 官方 37×0.6=¥22.2/1M,fast)', async () => {
+        db.enterpriseUpstreamKey.findUnique.mockResolvedValue({ discount: '0.85' });
+        db.enterpriseGlobalDiscount.findUnique.mockResolvedValue({ discount: '0.6', expires_at: null });
+        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false, 'fast')).toBeCloseTo(22.2, 4);
+    });
+
+    it('全局折扣按 (region, variant) 查(隔离到目标模型)', async () => {
+        db.enterpriseGlobalDiscount.findUnique.mockResolvedValue({ discount: '0.6', expires_at: null });
+        await computeEnterpriseCostCny('u1', 1_000_000, '720p', false, 'fast', 'cn');
+        expect(db.enterpriseGlobalDiscount.findUnique).toHaveBeenCalledWith(
+            expect.objectContaining({ where: { region_variant: { region: 'cn', variant: 'fast' } } }),
+        );
+    });
+
+    it('全局折扣已过期(expires_at 已过)→ 失效,回落客户折扣 0.85', async () => {
+        db.enterpriseGlobalDiscount.findUnique.mockResolvedValue({
+            discount: '0.6',
+            expires_at: new Date(Date.now() - 1000),
+        });
+        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false, 'fast')).toBeCloseTo(31.45, 4); // 37×0.85
+    });
+
+    it('议价绝对单价 > 全局折扣(有覆盖 ¥30 + 全局 0.6 → 仍 ¥30)', async () => {
+        db.enterpriseRateOverride.findUnique.mockResolvedValue({ cny_per_m: '30' });
+        db.enterpriseGlobalDiscount.findUnique.mockResolvedValue({ discount: '0.6', expires_at: null });
+        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false, 'fast')).toBeCloseTo(30, 4);
     });
 
     it('无 upstream key 行 / 非法折扣值 → 回落 1(不打折)', async () => {

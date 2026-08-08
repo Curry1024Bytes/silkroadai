@@ -51,6 +51,15 @@ interface Detail {
     }>;
 }
 
+type GlobalDiscount = {
+    region: string;
+    variant: string;
+    discount: number;
+    expires_at: string | null;
+    expired: boolean;
+    note: string | null;
+};
+
 const fmtTime = (iso: string) => new Date(iso).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
 const fmtCny = (n: number) => `¥${n.toFixed(2)}`;
 const KIND_LABEL: Record<string, string> = { recharge: '充值', charge: '消费', adjustment: '调整', migration: '迁移' };
@@ -72,10 +81,15 @@ export function AdminPanel() {
     const [detail, setDetail] = useState<Detail | null>(null);
     const [msg, setMsg] = useState<string | null>(null);
     const [freshKey, setFreshKey] = useState<string | null>(null);
+    const [globalDiscounts, setGlobalDiscounts] = useState<GlobalDiscount[]>([]);
 
     const loadList = useCallback(async () => {
         const res = await fetch('/api/admin/enterprise/customers');
         if (res.ok) setCustomers(((await res.json()) as { customers: CustomerRow[] }).customers);
+    }, []);
+    const loadGlobalDiscounts = useCallback(async () => {
+        const res = await fetch('/api/admin/enterprise/global-discount');
+        if (res.ok) setGlobalDiscounts(((await res.json()) as { discounts: GlobalDiscount[] }).discounts);
     }, []);
     const loadDetail = useCallback(async (id: string) => {
         setSelected(id);
@@ -86,9 +100,13 @@ export function AdminPanel() {
     useEffect(() => {
         let alive = true;
         void (async () => {
-            const res = await fetch('/api/admin/enterprise/customers');
-            if (!alive || !res.ok) return;
-            setCustomers(((await res.json()) as { customers: CustomerRow[] }).customers);
+            const [cRes, gRes] = await Promise.all([
+                fetch('/api/admin/enterprise/customers'),
+                fetch('/api/admin/enterprise/global-discount'),
+            ]);
+            if (!alive) return;
+            if (cRes.ok) setCustomers(((await cRes.json()) as { customers: CustomerRow[] }).customers);
+            if (gRes.ok) setGlobalDiscounts(((await gRes.json()) as { discounts: GlobalDiscount[] }).discounts);
         })();
         return () => {
             alive = false;
@@ -190,6 +208,52 @@ export function AdminPanel() {
         flash(r.ok ? (to === 'active' ? '密钥已启用' : '密钥已禁用(立即 401)') : `失败(${r.status})`);
         await refresh();
     }
+    async function onDeleteAccount(userId: string, email: string) {
+        if (
+            !window.confirm(
+                `确认删除账号 ${email}?\n\n将【禁用全部密钥 + 停用登录 + 从客户列表隐藏】;` +
+                    `流水/任务/余额/素材历史保留(审计,可人工恢复)。`,
+            )
+        )
+            return;
+        const r = await post(`/api/admin/enterprise/customers/${userId}`, {}, 'DELETE');
+        if (r.ok) {
+            flash(`账号已删除(软删):${email}`);
+            setSelected(null);
+            setDetail(null);
+            await loadList();
+        } else {
+            flash(`删除失败(${r.status}):${JSON.stringify(r.j).slice(0, 120)}`);
+        }
+    }
+    async function onSetGlobalDiscount(form: FormData) {
+        const rawExpires = String(form.get('expires_at') || '').trim();
+        const body = {
+            region: String(form.get('region') || 'cn'),
+            variant: String(form.get('variant')),
+            discount: Number(form.get('discount')),
+            expires_at: rawExpires ? new Date(rawExpires).toISOString() : null,
+            note: String(form.get('note') || '').trim() || undefined,
+        };
+        if (!Number.isFinite(body.discount) || body.discount < 0.05 || body.discount > 2) {
+            flash('折扣率须为 0.05~2 的数字');
+            return;
+        }
+        const r = await post('/api/admin/enterprise/global-discount', body);
+        flash(
+            r.ok
+                ? `全局折扣已设:${REGION_LABEL[body.region] || body.region} × ${body.variant} → ×${body.discount}`
+                : `失败(${r.status}):${JSON.stringify(r.j).slice(0, 120)}`,
+        );
+        await loadGlobalDiscounts();
+    }
+    async function onClearGlobalDiscount(region: string, variant: string) {
+        if (!window.confirm(`清除全局折扣 ${REGION_LABEL[region] || region} × ${variant}?(回落各客户自己的折扣率)`))
+            return;
+        const r = await post('/api/admin/enterprise/global-discount', { region, variant, discount: null });
+        flash(r.ok ? `已清除:${region} × ${variant}` : `失败(${r.status})`);
+        await loadGlobalDiscounts();
+    }
 
     return (
         <div className="space-y-5">
@@ -277,6 +341,108 @@ export function AdminPanel() {
                     ai.artsmcp 按客户单独申请;海外 key 填一把即同时开通 global + proMax 两渠道(详情页可 单独换 key /
                     设折扣)。没填海外 key 的客户后续在详情页「开通」补配。
                 </p>
+            </section>
+
+            {/* 全局折扣(按 渠道×模型) */}
+            <section className="rounded-xl border border-gray-200 bg-white p-5">
+                <h2 className="mb-1 text-sm font-semibold text-gray-900">全局折扣(按 渠道 × 模型)</h2>
+                <p className="mb-3 text-xs text-gray-400">
+                    临时促销(如上游 fast/mini 降价一个月我们跟降)。优先级:客户议价(绝对单价)&gt; 全局折扣 &gt;
+                    客户折扣率 —— 即全局折扣<b>覆盖客户折扣率</b>,但不动已议价的绝对单价,且<b>只影响所选模型</b>。
+                    到期时间到点自动失效(回落客户折扣);留空 = 手动清除前长期有效。
+                </p>
+                {globalDiscounts.length > 0 && (
+                    <div className="mb-3 overflow-x-auto">
+                        <table className="w-full text-sm">
+                            <thead>
+                                <tr className="text-left text-xs text-gray-500">
+                                    <th className="py-1 pr-3">渠道</th>
+                                    <th className="py-1 pr-3">模型</th>
+                                    <th className="py-1 pr-3">折扣</th>
+                                    <th className="py-1 pr-3">到期</th>
+                                    <th className="py-1 pr-3">备注</th>
+                                    <th className="py-1 pr-3"></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {globalDiscounts.map((g) => (
+                                    <tr key={`${g.region}-${g.variant}`} className="border-t border-gray-100">
+                                        <td className="py-1 pr-3">{REGION_LABEL[g.region] || g.region}</td>
+                                        <td className="py-1 pr-3 font-mono text-xs">{g.variant}</td>
+                                        <td className="py-1 pr-3">×{g.discount}</td>
+                                        <td className="py-1 pr-3 text-xs">
+                                            {g.expires_at ? (
+                                                <span className={g.expired ? 'text-red-500' : 'text-gray-600'}>
+                                                    {fmtTime(g.expires_at)}
+                                                    {g.expired ? '(已失效)' : ''}
+                                                </span>
+                                            ) : (
+                                                <span className="text-gray-400">长期</span>
+                                            )}
+                                        </td>
+                                        <td className="py-1 pr-3 text-xs text-gray-500">{g.note || '—'}</td>
+                                        <td className="py-1 pr-3">
+                                            <button
+                                                onClick={() => void onClearGlobalDiscount(g.region, g.variant)}
+                                                className="text-xs text-red-500 hover:underline"
+                                            >
+                                                清除
+                                            </button>
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                )}
+                <form
+                    onSubmit={(e) => {
+                        e.preventDefault();
+                        void onSetGlobalDiscount(new FormData(e.currentTarget));
+                    }}
+                    className="flex flex-wrap items-center gap-2 text-sm"
+                >
+                    <select name="region" defaultValue="cn" className="rounded border border-gray-300 px-2 py-1.5">
+                        <option value="cn">国内版</option>
+                        <option value="global">海外版</option>
+                        <option value="promax">海外proMax</option>
+                        <option value="volc">火山</option>
+                    </select>
+                    <select name="variant" defaultValue="fast" className="rounded border border-gray-300 px-2 py-1.5">
+                        <option value="pro">pro</option>
+                        <option value="fast">fast</option>
+                        <option value="mini">mini</option>
+                        <option value="2.5">2.5</option>
+                        <option value="promax">promax</option>
+                        <option value="promax-fast">promax-fast</option>
+                        <option value="promax-mini">promax-mini</option>
+                        <option value="promax-2.5">promax-2.5</option>
+                    </select>
+                    <input
+                        name="discount"
+                        type="number"
+                        step="0.01"
+                        min="0.05"
+                        max="2"
+                        placeholder="折扣 0.05~2"
+                        required
+                        className="w-28 rounded border border-gray-300 px-2 py-1.5"
+                    />
+                    <input
+                        name="expires_at"
+                        type="datetime-local"
+                        title="到期时间(可空=长期)"
+                        className="rounded border border-gray-300 px-2 py-1.5"
+                    />
+                    <input
+                        name="note"
+                        placeholder="备注(如:上游 8 月促销)"
+                        className="w-48 rounded border border-gray-300 px-2 py-1.5"
+                    />
+                    <button className="rounded bg-gray-900 px-3 py-1.5 text-white hover:bg-gray-700">
+                        设置 / 更新
+                    </button>
+                </form>
             </section>
 
             {/* 客户列表 */}
@@ -376,6 +542,12 @@ export function AdminPanel() {
                                 className="rounded-md border border-gray-300 px-3 py-1.5 text-xs hover:bg-gray-50"
                             >
                                 设密码
+                            </button>
+                            <button
+                                onClick={() => void onDeleteAccount(detail.user.id, detail.user.email)}
+                                className="rounded-md border border-red-300 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50"
+                            >
+                                删除账号
                             </button>
                         </div>
                     </div>

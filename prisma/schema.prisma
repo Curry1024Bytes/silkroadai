@@ -1273,6 +1273,9 @@ model EnterpriseUpstreamKey {
   // ⚠️ 重锚前语义是「零售价(挂牌×0.85)再乘 discount」→ 折上折,见 migration 20260807030000。
   discount         Decimal  @default(1) @db.Decimal(6, 4)
   created_at       DateTime @default(now())
+  // 软删除标记(2026-08-08):删账号 = 该客户全部行置 deleted_at + 禁用 keys/aksk + User.status=disabled。
+  // 保留流水/任务/余额历史(审计),客户列表默认过滤 deleted_at IS NULL。
+  deleted_at       DateTime?
 
   @@unique([user_id, region])
   @@map("enterprise_upstream_keys")
@@ -1331,4 +1334,23 @@ model EnterpriseRateOverride {
 
   @@unique([user_id, region, variant, resolution, has_video])
   @@map("enterprise_rate_overrides")
+}
+
+// 全局折扣(2026-08-08):按 渠道×模型 的临时促销折扣(如上游 fast/mini 降价一个月,我们跟降)。
+// 计价优先级:客户议价(enterprise_rate_overrides 绝对单价)> 全局折扣 > 客户折扣率
+// (enterprise_upstream_keys.discount)。即全局折扣【覆盖客户折扣率】但不覆盖已议价的绝对单价;
+// 按 (region, variant) 隔离 —— 只影响目标模型(如 cn×fast),不动其它模型的议价/折扣。
+// expires_at 到期【读时判定】自动失效(不需定时任务),回落客户折扣。仅企业门户计价用。
+model EnterpriseGlobalDiscount {
+  id         String    @id @default(uuid()) @db.Uuid
+  region     String // cn | global | promax | volc
+  variant    String // pro | fast | mini | 2.5 | promax | promax-fast | promax-mini | promax-2.5
+  discount   Decimal   @db.Decimal(6, 4) // 官方挂牌 × discount
+  expires_at DateTime? // 到期时间(空 = 手动撤销前长期有效)
+  note       String?
+  created_at DateTime  @default(now())
+  created_by String?   @db.Uuid
+
+  @@unique([region, variant])
+  @@map("enterprise_global_discounts")
 }
