@@ -207,9 +207,9 @@ function parseNewApiLoginUser(value: unknown): NewApiLoginUser | null {
  *
  * Older releases put the user fields directly in `data` and required a
  * `session` cookie for the next call. Current releases put the user under
- * `data.user` and return a usable `data.access_token`; their
- * `new_api_refresh` cookie is only a refresh credential and must not be sent
- * to access-token endpoints as if it were a session.
+ * `data.user` and return a short-lived session JWT in `data.access_token`;
+ * exchange it through GET /api/user/token before persisting. Their
+ * `new_api_refresh` cookie is not a legacy session cookie.
  */
 export function parseNewApiLoginResult(data: unknown): NewApiLoginResult | null {
     if (!isRecord(data)) return null;
@@ -766,8 +766,8 @@ export interface ProvisionedCustomer {
  *
  * 流程(empirically verified against new-api v1.0.0-rc.2):
  *   1. POST /api/user/             admin 创建 new-api user
- *   2. POST /api/user/login        新版直接返回 access_token + user;旧版返回 session cookie
- *   3. GET  /api/user/token        仅旧版回退:以 session 身份拿(并 rotate)access_token
+ *   2. POST /api/user/login        新版返回短效 JWT + user;旧版返回 session cookie
+ *   3. GET  /api/user/token        以 JWT/cookie 换取(并 rotate)持久 access_token
  *                                  ⚠️ 这个端点 admin 调不动:必须用该用户自己的 session
  *                                     PUT /api/user/ 里的 access_token 字段是被静默忽略的
  *   4. POST /api/token/            以 customer 的 access_token 身份创建第一个 token

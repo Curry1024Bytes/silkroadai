@@ -72,6 +72,17 @@
 3. 报告输出后，执行 `main -> dev` 合并；在 `dev` 解决冲突、运行 `typecheck` 和完整测试。
 4. 测试通过后，fast-forward `dev -> prod`，但只有在 operator 明确安排部署时才登录 VPS 发布。
 
+### 冲突解决语义审计（2026-08-09 事故后强制）
+
+- 每个冲突文件必须三方对比：`dev` 合并前版本、`main` 上游版本、最终 merge result；报告逐文件写明
+  采用了哪一侧的业务语义、放弃了什么，不能只确认冲突标记消失或代码能编译。
+- 上游新增的 bug 回归测试默认必须原样保留。若修改测试名称、调用次数、关键断言或把“必须调用”改为
+  “不得调用”，必须在同步报告中单列理由并重新复现上游原始故障；不得用改测试来证明冲突解决正确。
+- 认证、支付、计费、API Key、数据库 migration 属于高风险路径：合并后除完整测试外，必须验证上游修复
+  所针对的真实时序/失败场景，并检查生产不变量；“立即成功”不能替代过期、重试、回调或延迟后的验证。
+- 修复类上游提交在 merge 后必须用 `git diff <upstream-fix>..<merge-result> -- <affected-files>` 审计，确认
+  核心行为没有被本项目已有实现覆盖。测试全过不等于语义合并正确。
+
 ---
 
 ## 当前生产环境快照(2026-08-06)— 必读
@@ -183,8 +194,14 @@
   Nginx 配置通过,apex/`www` 登录页与模型页 200、API 假 Key 401、API 非白名单路径与主站
   `/image-adapter/*` 404、两类 CORS 204 且 allow headers 完整、Google/GitHub OAuth start 302。
   本次未重复执行真实 OAuth 登录、真实支付或真实模型调用;沿用既有验收,new-api 未上货状态不变。
-- new-api rc.22 登录兼容决策:优先直接使用登录响应的 `data.access_token`;仅旧版本 `session=` cookie 走 fallback。
-  该路径已通过 Google/GitHub 真实开户验证,不要把 `new_api_refresh` 当 session。
+- 2026-08-09 new-api rc.22 持久授权事故与最终决策：登录响应的 `data.access_token` 是短效会话 JWT，
+  **不能直接持久化为** `User.newapi_access_token`。开户必须用该 JWT 调 `GET /api/user/token` 换取 32 字符
+  持久访问令牌；旧版本用 `session=` cookie 调同一端点。`new_api_refresh` 仍不是 legacy session。
+  上游正确修复 `da510e7` 曾在 `main -> dev` merge `29f2371` 中被错误冲突处理覆盖：最终代码跳过
+  `/api/user/token`，并把上游回归测试反向改成断言“不调用”。注册后立即建默认 Key 因 JWT 尚未过期而
+  通过，之后新建/删除 Key 才 401，Portal 表现为 502。最终修复 `6da611d` 恢复换取持久 token，并将生产
+  5 个存量用户的 389/391 字符 JWT 全部重签为 32 字符持久令牌；`GPT-特惠反代` 创建/删除 Key smoke
+  通过。发布验收需检查所有已开户用户 `length(newapi_access_token)=32`，不能再出现约 389 字符 JWT。
 
 ---
 
@@ -329,8 +346,8 @@ silkroadai/
 | 操作                         | 函数                      | new-api 端点                                          |
 | ---------------------------- | ------------------------- | ----------------------------------------------------- |
 | 注册时建 new-api user(admin) | `createUser`              | `POST /api/user/`                                     |
-| 反查 user / 拿登录 cookie    | `loginAsUser`(内部)       | `POST /api/user/login`                                |
-| Rotate 出客户 access_token   | (用 cookie 调 call)       | `GET /api/user/token` ⚠️ **是 rotate 不是 read**      |
+| 反查 user / 拿登录凭据       | `loginAsUser`(内部)       | `POST /api/user/login`                                |
+| Rotate 出客户 access_token   | (用 JWT/cookie 调 call)   | `GET /api/user/token` ⚠️ **是 rotate 不是 read**      |
 | 给 user 创建 token           | `createTokenForCustomer`  | `POST /api/token/` (act-as customer)                  |
 | 拿 token 真实 key            | `getTokenKey`             | `POST /api/token/{id}/key` (返回 `{key:"sk-..."}`)    |
 | 列出客户的 tokens            | `listTokensForCustomer`   | `GET /api/token/?p=&page_size=` (act-as)              |
@@ -395,8 +412,8 @@ LiteLLM 同时支持 user-level 和 key-level 预算。我们只用 key-level(�
 **真实行为**:`PUT /api/user/` **静默丢弃** `access_token` 字段,doc 没说。其他字段(group/role/quota)是真改的,所以错觉很强。
 **解决**:不能 admin 改,要让客户自己 rotate:
 
-1. `POST /api/user/login` 用 portal 持有的 username+password → 拿 session cookie + user.id
-2. `GET /api/user/token` 带 cookie + `New-Api-User: <user.id>` → 返回新生成的 access_token
+1. `POST /api/user/login` 用 portal 持有的 username+password → 新版拿短效 JWT + user.id；旧版拿 session cookie
+2. `GET /api/user/token` 带新版 JWT（Authorization）或旧版 cookie，再带 `New-Api-User: <user.id>` → 返回新生成的 32 字符持久 access_token
 3. portal 把这个 access_token 存 DB,以后 act-as 该客户用
    **修复 commit**:`ad401af` (W2 D6) — 见 `provisionNewCustomer` 重写后的 6 步流程。
 
@@ -675,5 +692,5 @@ LiteLLM 时代的 `LITELLM_*` 变量保留作 fallback,W3 D1 关停后可删。
 
 ---
 
-**版本**: 2.3
-**最后更新**: 2026-08-03
+**版本**: 2.4
+**最后更新**: 2026-08-10
