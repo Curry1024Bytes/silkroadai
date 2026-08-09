@@ -51,6 +51,8 @@ export const ENTERPRISE_MODELS: Record<string, SeedanceVariant> = {
     'seedance-2-0-promax': 'promax',
     'seedance-2-0-promax-fast': 'promax-fast',
     'seedance-2-0-promax-mini': 'promax-mini',
+    // 海外版 proMax seedance 2.5(2026-08-08):intl 新代,仅 720p/1080p,费率独立(按原价挂牌)
+    'seedance-2-5-promax': 'promax-2.5',
 };
 
 // 2026-08-03 全线四档:volc 实测 480p 出片 864×496;cn/global/promax 上游挂牌本就含
@@ -94,13 +96,23 @@ function resolveEnterpriseModel(
     if (!(RESOLUTIONS as readonly string[]).includes(resRaw)) {
         return { error: errJson(400, 'invalid_request', 'resolution 仅支持 480p / 720p / 1080p / 4k') };
     }
-    // 海外版(global)上游无 480p(intl 三变体实测均拒,2026-08-06);国内/proMax/火山有
+    // 海外版(global)上游无 480p(intl 三变体实测均拒,2026-08-06);国内/火山有 480p,proMax 2026-08-08 起也无
     if (region === 'global' && resRaw === '480p') {
         return {
             error: errJson(
                 400,
                 'invalid_request',
-                `${rawModel} 无 480p 档(海外版仅 720p / 1080p / 4k);480p 请用国内版或 proMax`,
+                `${rawModel} 无 480p 档(海外版仅 720p / 1080p / 4k);480p 请用国内版`,
+            ),
+        };
+    }
+    // proMax 上游 2026-08-08 全档迁到 artsdance intl,不支持 480p(pro=720p/1080p/4k,fast/mini=仅720p)
+    if (region === 'promax' && resRaw === '480p') {
+        return {
+            error: errJson(
+                400,
+                'invalid_request',
+                `${rawModel} 无 480p 档(proMax pro 支持 720p / 1080p / 4k,fast/mini 仅 720p)`,
             ),
         };
     }
@@ -108,8 +120,9 @@ function resolveEnterpriseModel(
         const tiers = region === 'global' ? '720p / 1080p' : '480p / 720p / 1080p';
         return { error: errJson(400, 'invalid_request', `${rawModel} 无 4k 档(resolution 仅 ${tiers})`) };
     }
-    if ((variant === 'promax-fast' || variant === 'promax-mini') && resRaw !== '480p' && resRaw !== '720p') {
-        return { error: errJson(400, 'invalid_request', `${rawModel} 仅支持 480p / 720p 档`) };
+    // proMax fast/mini(上游 artsdance intl,2026-08-08)仅 720p
+    if ((variant === 'promax-fast' || variant === 'promax-mini') && resRaw !== '720p') {
+        return { error: errJson(400, 'invalid_request', `${rawModel} 仅支持 720p 档`) };
     }
     // seedance 2.5(上游 artsdance-2-5-pro):仅 720p / 1080p(不支持 480p)
     if (variant === '2.5' && resRaw !== '720p' && resRaw !== '1080p') {
@@ -121,12 +134,15 @@ function resolveEnterpriseModel(
         extractAudioUrls(body).length > 0 ||
         (typeof body.first_frame === 'string' && body.first_frame !== '') ||
         (typeof body.last_frame === 'string' && body.last_frame !== '');
-    // 长名:2.5 是新代独立前缀(seedance2.5-{res}[-ref]);其余走 seedance2.0-… 老机制
-    // (global 前缀在 variant 前;promax 系 variant 自带前缀)。
+    // 长名:2.5 系是新代独立前缀 seedance2.5-…(cn = seedance2.5-{res};proMax = seedance2.5-promax-{res});
+    // 其余走 seedance2.0-… 老机制(global 前缀在 variant 前;promax 系 variant 自带前缀)。
+    const ref = hasRefs ? '-ref' : '';
     const longName =
         variant === '2.5'
-            ? `seedance2.5-${resRaw}${hasRefs ? '-ref' : ''}`
-            : `seedance2.0-${region === 'global' ? 'global-' : ''}${variant}-${resRaw}${hasRefs ? '-ref' : ''}`;
+            ? `seedance2.5-${resRaw}${ref}`
+            : variant === 'promax-2.5'
+              ? `seedance2.5-promax-${resRaw}${ref}`
+              : `seedance2.0-${region === 'global' ? 'global-' : ''}${variant}-${resRaw}${ref}`;
     const spec = MODEL_MAP[longName];
     if (!spec) {
         // 组合表齐全时到不了这里;防御性兜底

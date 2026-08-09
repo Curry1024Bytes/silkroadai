@@ -37,9 +37,13 @@ const UPSTREAM_INTL_MINI = 'artsdance2-0-mini-intl-260701';
 // 海外版proMax(2026-07-23):同 intl base/key,dreamina 系上游模型(挂牌更高,零售=挂牌×0.85)。
 // pro 有 480p/720p/1080p/4k,fast/mini 上游仅 480p/720p。mini 实测 token 基数
 // 与现有渠道一致(720p 5s = 108,900);计费按 usage 实报,基数差异不影响正确性。
-const UPSTREAM_PROMAX_PRO = 'dreamina-seedance-2-0-260128';
-const UPSTREAM_PROMAX_FAST = 'dreamina-seedance-2-0-fast-260128';
-const UPSTREAM_PROMAX_MINI = 'dreamina-seedance-2-0-mini-260615';
+// proMax 三档 2026-08-08 全部由 dreamina 系迁到 artsdance intl 系(= global 同一上游名,生产已验证)。
+// artsdance intl 不支持 480p → proMax 全档去 480p:pro 保留 720p/1080p/4k,fast/mini 仅 720p。价格不变。
+const UPSTREAM_PROMAX_PRO = 'artsdance2-0-pro-intl-260701';
+const UPSTREAM_PROMAX_FAST = 'artsdance2-0-fast-intl-260701';
+const UPSTREAM_PROMAX_MINI = 'artsdance2-0-mini-intl-260701';
+// 海外版 proMax seedance 2.5(2026-08-08):intl 新代模型,仅 720p/1080p,费率独立(按原价挂牌)。
+const UPSTREAM_PROMAX_25 = process.env.SEEDANCE_PROMAX_MODEL_25 || 'artsdance2-5-intl-260628';
 // 国内版 seedance 2.5(2026-08-07):国内版渠道(token.xinhankr)上游新代模型。
 // 上游名 2026-08-08 由 doubao-seedance-2-5-260628 换成 artsdance-2-5-pro-260801
 // (实测:新名支持 720p/1080p、【不支持 480p】;旧名支持 480p/720p)。费率独立(含视/无视两档)。
@@ -61,7 +65,7 @@ const MAX_REF_VIDEOS = 3;
 
 /** seedance 变体(2026-07-19 加 fast/mini;2026-07-23 加 promax 系,费率独立;
  *  2026-08-07 加 '2.5' = 国内版新代模型,费率独立):费率按 variant × resolution × 含视频 分档。 */
-export type SeedanceVariant = 'pro' | 'fast' | 'mini' | '2.5' | 'promax' | 'promax-fast' | 'promax-mini';
+export type SeedanceVariant = 'pro' | 'fast' | 'mini' | '2.5' | 'promax' | 'promax-fast' | 'promax-mini' | 'promax-2.5';
 
 /** 单次输入素材上限(按变体)。seedance 2.5(2026-08-07 上游放宽):30 图 + 10 视频 + 10 音频;
  *  其余档沿用默认 9 图 / 3 视频 / 音频不限数(Infinity —— 保留旧行为,只需「音频需配图」约束)。
@@ -113,13 +117,28 @@ export const MODEL_MAP: Record<string, SeedanceModelSpec> = {
             ]),
         ),
     ),
+    // ── 海外版 proMax seedance 2.5(2026-08-08):intl 新代模型,仅 720p/1080p,费率独立(按原价挂牌)──
+    ...Object.fromEntries(
+        (['720p', '1080p'] as const).flatMap((resolution) =>
+            [false, true].map((ref) => [
+                `seedance2.5-promax-${resolution}${ref ? '-ref' : ''}`,
+                {
+                    resolution,
+                    ref,
+                    variant: 'promax-2.5' as const,
+                    upstream: UPSTREAM_PROMAX_25,
+                    region: 'promax' as const,
+                },
+            ]),
+        ),
+    ),
     // ── 海外版proMax(promax,2026-07-23):dreamina 系,费率独立;pro 4 档,fast/mini 480p/720p ──
     ...Object.fromEntries(
         (
             [
-                ['promax', UPSTREAM_PROMAX_PRO, ['480p', '720p', '1080p', '4k']],
-                ['promax-fast', UPSTREAM_PROMAX_FAST, ['480p', '720p']],
-                ['promax-mini', UPSTREAM_PROMAX_MINI, ['480p', '720p']],
+                ['promax', UPSTREAM_PROMAX_PRO, ['720p', '1080p', '4k']], // artsdance intl:无 480p
+                ['promax-fast', UPSTREAM_PROMAX_FAST, ['720p']], // artsdance intl:仅 720p
+                ['promax-mini', UPSTREAM_PROMAX_MINI, ['720p']], // artsdance intl:仅 720p
             ] as Array<[SeedanceVariant, string, Array<'480p' | '720p' | '1080p' | '4k'>]>
         ).flatMap(([variant, upstream, resolutions]) =>
             resolutions.flatMap((resolution) =>
@@ -169,9 +188,11 @@ export function variantForModel(model: string): SeedanceVariant {
     if (hit) return hit;
     const m = model.toLowerCase();
     if (m === VOLC_MODEL) return 'pro'; // 火山渠道单模型走 pro 档(国内版同价)
-    // 2.5 系(短名 seedance-2-5 / 长名 seedance2.5-… / 上游 doubao-seedance-2-5-…):费率独立,
-    // 须先于 fast/mini 判(避免落到 pro 兜底导致按 pro 计价)。
-    if (m.includes('2-5') || m.includes('2.5')) return '2.5';
+    // 2.5 系:费率独立。promax-2.5 含 '2-5' 且 '-promax',必须【先于】纯 2.5 与 promax 判,
+    // 否则会落到 cn '2.5' 或 'promax' 档按错价计费。
+    const is25 = m.includes('2-5') || m.includes('2.5');
+    if (is25 && m.includes('-promax')) return 'promax-2.5';
+    if (is25) return '2.5';
     if (m.includes('-promax')) {
         // promax 系费率独立,必须先于 -fast/-mini 判(seedance-2-0-promax-fast 含 '-fast')
         if (m.includes('-fast')) return 'promax-fast';

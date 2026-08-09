@@ -6,13 +6,21 @@ import { NextRequest } from 'next/server';
 
 const { db, resolveAdmin } = vi.hoisted(() => ({
     db: {
-        enterpriseUpstreamKey: { findMany: vi.fn(), findUnique: vi.fn(), updateMany: vi.fn(), upsert: vi.fn() },
+        enterpriseUpstreamKey: {
+            findMany: vi.fn(),
+            findUnique: vi.fn(),
+            updateMany: vi.fn(),
+            upsert: vi.fn(),
+            count: vi.fn(),
+        },
         enterpriseKey: { groupBy: vi.fn(), findMany: vi.fn(), updateMany: vi.fn() },
+        enterpriseAkSk: { updateMany: vi.fn() },
         enterpriseRateOverride: { findMany: vi.fn() },
-        user: { findMany: vi.fn(), findUnique: vi.fn() },
+        user: { findMany: vi.fn(), findUnique: vi.fn(), updateMany: vi.fn() },
         account: { findMany: vi.fn(), findUnique: vi.fn() },
         ledgerEntry: { groupBy: vi.fn(), aggregate: vi.fn(), findMany: vi.fn() },
         seedanceVideoTask: { findMany: vi.fn() },
+        $transaction: vi.fn((ops: Promise<unknown>[]) => Promise.all(ops)),
     },
     resolveAdmin: vi.fn(),
 }));
@@ -24,7 +32,7 @@ vi.mock('@/lib/admin-auth', () => ({
 vi.mock('@/lib/enterprise/crypto', () => ({ encryptUpstreamKey: (k: string) => `enc(${k})` }));
 
 import { GET as listGET } from '../customers/route';
-import { GET as detailGET, PATCH as customerPATCH } from '../customers/[id]/route';
+import { GET as detailGET, PATCH as customerPATCH, DELETE as customerDELETE } from '../customers/[id]/route';
 import { PATCH as keyPATCH } from '../keys/[id]/route';
 import { POST as upstreamKeyPOST } from '../upstream-key/route';
 
@@ -183,5 +191,49 @@ describe('POST /api/admin/enterprise/upstream-key(版本上游 key upsert)', () 
             (await upstreamKeyPOST(req('/x', 'POST', { user_id: UID, region: 'global', upstream_key: 'sk-x-123456' })))
                 .status,
         ).toBe(401);
+    });
+});
+
+describe('DELETE /api/admin/enterprise/customers/[id] — 软删除账号', () => {
+    const UID = '11111111-1111-4111-8111-111111111111';
+    const p = { params: Promise.resolve({ id: UID }) };
+
+    it('软删除:置 deleted_at + 禁 keys/aksk + user.status=disabled;保留历史', async () => {
+        db.enterpriseUpstreamKey.count.mockResolvedValue(2);
+        db.enterpriseUpstreamKey.updateMany.mockResolvedValue({ count: 2 });
+        db.enterpriseKey.updateMany.mockResolvedValue({ count: 3 });
+        db.enterpriseAkSk.updateMany.mockResolvedValue({ count: 1 });
+        db.user.updateMany.mockResolvedValue({ count: 1 });
+        const res = await customerDELETE(req(`/${UID}`, 'DELETE'), p);
+        expect(res.status).toBe(200);
+        expect((await res.json()).deleted).toBe(true);
+        // upstream keys 置 deleted_at(仅未删的行)
+        expect(db.enterpriseUpstreamKey.updateMany).toHaveBeenCalledWith(
+            expect.objectContaining({
+                where: { user_id: UID, deleted_at: null },
+                data: expect.objectContaining({ deleted_at: expect.any(Date) }),
+            }),
+        );
+        // keys / aksk 禁用
+        expect(db.enterpriseKey.updateMany).toHaveBeenCalledWith(
+            expect.objectContaining({ data: { status: 'disabled' } }),
+        );
+        expect(db.enterpriseAkSk.updateMany).toHaveBeenCalledWith(
+            expect.objectContaining({ data: { status: 'disabled' } }),
+        );
+        // user 停用(登录被拒)
+        expect(db.user.updateMany).toHaveBeenCalledWith(
+            expect.objectContaining({ where: expect.objectContaining({ id: UID }), data: { status: 'disabled' } }),
+        );
+    });
+
+    it('非企业客户(无 upstream key 行)→ 404', async () => {
+        db.enterpriseUpstreamKey.count.mockResolvedValue(0);
+        expect((await customerDELETE(req(`/${UID}`, 'DELETE'), p)).status).toBe(404);
+    });
+
+    it('非 superadmin → 401', async () => {
+        resolveAdmin.mockResolvedValue(null);
+        expect((await customerDELETE(req(`/${UID}`, 'DELETE'), p)).status).toBe(401);
     });
 });

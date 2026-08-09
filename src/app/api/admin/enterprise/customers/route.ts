@@ -14,7 +14,10 @@ export async function GET(request: NextRequest) {
     const admin = await resolveAdmin(request, 'superadmin');
     if (!admin) return unauthorizedResponse(request);
 
+    // 软删除账号(deleted_at 非空)默认不列出;?includeDeleted=1 可显示全部
+    const includeDeleted = request.nextUrl.searchParams.get('includeDeleted') === '1';
     const ups = await prisma.enterpriseUpstreamKey.findMany({
+        where: includeDeleted ? undefined : { deleted_at: null },
         select: { user_id: true, region: true, note: true, discount: true },
         orderBy: { created_at: 'asc' },
     });

@@ -32,6 +32,7 @@ const ARK_TO_INTERNAL: Record<string, string> = {
     'byteplus/seedance-2.0': 'seedance-2-0-promax',
     'byteplus/seedance-2.0-fast': 'seedance-2-0-promax-fast',
     'byteplus/seedance-2.0-mini': 'seedance-2-0-promax-mini',
+    'byteplus/seedance-2.5': 'seedance-2-5-promax',
 };
 /** 内部短名 → 回显给客户的火山 model id(查询响应 model 字段用火山名;
  *  promax 系回显 BytePlus ModelArk 形 byteplus/…,对齐客户样例)。 */
@@ -43,6 +44,7 @@ const INTERNAL_TO_ARK: Record<string, string> = {
     'seedance-2-0-promax': 'byteplus/seedance-2.0',
     'seedance-2-0-promax-fast': 'byteplus/seedance-2.0-fast',
     'seedance-2-0-promax-mini': 'byteplus/seedance-2.0-mini',
+    'seedance-2-5-promax': 'byteplus/seedance-2.5',
 };
 
 /** 火山/别名 model → 内部归一名;认不出的原样返回(交给后续 model_not_found)。 */

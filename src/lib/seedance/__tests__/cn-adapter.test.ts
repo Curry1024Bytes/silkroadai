@@ -214,13 +214,13 @@ describe('seedance-cn adapter submit', () => {
         expect(mockFetch.mock.calls.every((c) => !String(c[0]).startsWith(`${UP}/v1/video/generations`))).toBe(true);
     });
 
-    it('promax 长名 → 海外 base + dreamina 上游模型名;variantForModel promax 系判序正确', async () => {
+    it('promax 长名 → 海外 base + 上游模型名(fast/mini 走 artsdance intl,2026-08-08);variantForModel promax 系判序正确', async () => {
         const res = await submitVideo(makeReq({ model: 'seedance2.0-promax-mini-720p', prompt: 'x', duration: 5 }));
         expect(res.status).toBe(200);
         const call = mockFetch.mock.calls.find((c) => String(c[0]).startsWith(INTL));
         expect(call).toBeTruthy();
         const b = JSON.parse(String((call![1] as RequestInit).body)) as Record<string, unknown>;
-        expect(b.model).toBe('dreamina-seedance-2-0-mini-260615');
+        expect(b.model).toBe('artsdance2-0-mini-intl-260701');
     });
 
     it('duration 4-15 整数透传(2026-08-03 探测放开);范围外(3/16/7.5)回落 5', async () => {
@@ -320,6 +320,26 @@ describe('promax 判定(2026-07-23)', () => {
         expect(regionForModel('seedance-2-0-promax-mini')).toBe('promax');
         expect(regionForModel('seedance-2-0-global')).toBe('global');
         expect(regionForModel('seedance-2-0')).toBe('cn');
+    });
+});
+
+describe('proMax 2.5 判定(2026-08-08)', () => {
+    it('variantForModel:promax-2.5 先于纯 2.5 与 promax(短名/长名/上游名);regionForModel → promax', async () => {
+        const { variantForModel, regionForModel, MODEL_MAP } = await import('../cn-adapter');
+        expect(variantForModel('seedance-2-5-promax')).toBe('promax-2.5'); // 客户短名(任务行存这个)
+        expect(variantForModel('seedance2.5-promax-1080p')).toBe('promax-2.5'); // 内部长名
+        // 不误伤:cn 2.5 仍 '2.5',promax pro 仍 'promax'
+        expect(variantForModel('seedance-2-5')).toBe('2.5');
+        expect(variantForModel('seedance-2-0-promax')).toBe('promax');
+        expect(regionForModel('seedance-2-5-promax')).toBe('promax');
+        // MODEL_MAP:仅 720p/1080p × {无ref,-ref},上游 artsdance2-5-intl-260628,region promax
+        for (const n of ['seedance2.5-promax-720p', 'seedance2.5-promax-1080p-ref']) {
+            expect(MODEL_MAP[n].variant).toBe('promax-2.5');
+            expect(MODEL_MAP[n].upstream).toBe('artsdance2-5-intl-260628');
+            expect(MODEL_MAP[n].region).toBe('promax');
+        }
+        expect(MODEL_MAP['seedance2.5-promax-480p']).toBeUndefined();
+        expect(MODEL_MAP['seedance2.5-promax-4k']).toBeUndefined();
     });
 });
 

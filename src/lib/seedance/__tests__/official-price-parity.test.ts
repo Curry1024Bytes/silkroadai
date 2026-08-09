@@ -16,7 +16,9 @@ const OFFICIAL: Array<[SeedanceVariant, string, number, number]> = [
     ['pro', '1080p', 51, 31],
     ['pro', '4k', 26, 16],
     ['fast', '720p', 37, 22],
+    ['fast', '1080p', 40.5, 24.5],
     ['mini', '720p', 23, 14],
+    ['mini', '1080p', 25.5, 15.5],
     ['2.5', '720p', 70, 42],
     ['2.5', '1080p', 90, 54],
     ['promax', '720p', 68, 40.8],
@@ -24,6 +26,8 @@ const OFFICIAL: Array<[SeedanceVariant, string, number, number]> = [
     ['promax', '4k', 38.08, 23.12],
     ['promax-fast', '720p', 54.4, 32.896],
     ['promax-mini', '720p', 34, 20.4],
+    ['promax-2.5', '720p', 72.76, 43.52],
+    ['promax-2.5', '1080p', 80.24, 47.94],
 ];
 
 describe('官方挂牌价 = 文档价目表口径', () => {

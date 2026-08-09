@@ -875,22 +875,28 @@ function imageError(message: string, status = 400, cap: CaptureCtx | null = null
     return NextResponse.json(obj, { status });
 }
 
+/** 真·内容审核拒绝的标记(上游确定性输入拒)。⚠️ 不含 `adobe` —— 仅提到品牌名的错误
+ *  (如 adobe 线路超时)不是审核拒绝,冒充审核文案会误导客户排查方向(2026-08-05 错误
+ *  报告 F 项:超时被误显示成审核文案)。 */
+const IMAGE_SAFETY_RE = /image_unsafe|content rejected|appear to be unsafe/i;
+
+const IMAGE_SAFETY_BODY = JSON.stringify({
+    error: {
+        message:
+            'Your request was rejected by the content safety system. The generated image may not comply with the content policy — please modify your prompt and try again.',
+        type: 'invalid_request_error',
+        code: 'content_policy_violation',
+    },
+});
+
 /** 转发上游图片错误给客户前脱敏:候补源(Adobe/we-token 等)的内容安全拒绝会带上来源名
  *  (如 `adobe content rejected: ... image_unsafe`),不能暴露给客户。命中内容安全类 → 统一改写成
- *  中性的 content_policy_violation;其余错误里残留的上游品牌名兜底抹掉。仅作用于图片错误【响应体】,
- *  内部 reqlog 仍记原文(便于运维排障)。 */
-function sanitizeImageErrorBody(text: string): string {
-    if (/\badobe\b|image_unsafe|content rejected|appear to be unsafe/i.test(text)) {
-        return JSON.stringify({
-            error: {
-                message:
-                    'Your request was rejected by the content safety system. The generated image may not comply with the content policy — please modify your prompt and try again.',
-                type: 'invalid_request_error',
-                code: 'content_policy_violation',
-            },
-        });
-    }
-    return text.replace(/\badobe\b/gi, 'the provider');
+ *  中性的 content_policy_violation + **status 恒 400**(号池个别成员把拒绝包在 HTTP 200 体里,
+ *  透传上游 status 会变成「200 + 审核报错」,客户网关按成功入账 —— 2026-08-08 客户反馈实例);
+ *  其余错误只抹上游品牌名、status 沿用上游。仅作用于图片错误【响应体】,内部 reqlog 仍记原文。 */
+function sanitizeImageError(text: string, upstreamStatus: number): { body: string; status: number } {
+    if (IMAGE_SAFETY_RE.test(text)) return { body: IMAGE_SAFETY_BODY, status: 400 };
+    return { body: text.replace(/\badobe\b/gi, 'the provider'), status: upstreamStatus };
 }
 
 /** gpt-image-2 是图片模型,zhiyunai/Azure 只支持 Images 接口 —— 客户用 /v1/chat/completions
@@ -958,7 +964,7 @@ async function handleGptImageChat(
     }
 
     if (!upstream.ok) {
-        // 上游错误:脱敏(隐藏 adobe 等来源)后透传 status;内部 reqlog 记原文
+        // 上游错误:脱敏(隐藏 adobe 等来源)后透传 status(审核类恒 400);内部 reqlog 记原文
         const errText = await upstream.text();
         let errJson: JsonRecord | null = null;
         try {
@@ -967,8 +973,9 @@ async function handleGptImageChat(
             errJson = null;
         }
         if (cap) captureJsonResponse(cap, upstream.status, errJson ?? { _raw: errText.slice(0, 500) });
-        return new NextResponse(sanitizeImageErrorBody(errText), {
-            status: upstream.status,
+        const sanitized = sanitizeImageError(errText, upstream.status);
+        return new NextResponse(sanitized.body, {
+            status: sanitized.status,
             headers: { 'content-type': 'application/json' },
         });
     }
@@ -1442,7 +1449,8 @@ function buildEstimatedUsage(prompt: string, outSize: string): JsonRecord {
 }
 
 /** 非 Gemini 图片模型(gpt-image-2 等)透传 + 响应整形:
- *  - 上游报错(非 2xx)/ 非预期形态 → 原样透传 status+体(**绝不隐藏报错**,客户要求)。
+ *  - 上游报错(非 2xx)/ 非预期形态 → 透传 status+体(**绝不隐藏报错**,客户要求),
+ *    仅两个例外:审核拒绝统一文案 + 恒 400;上游 200 包 error 体 → 502(见分支内注释)。
  *  - 成功 → 补 OpenAI gpt-image 形的顶层 `size` + 估算 `usage`(上游不回 usage;若上游
  *    已带则保留不覆盖)。data[].b64_json 等字段原样保留。 */
 async function reshapeOpenAiImageResponse(
@@ -1468,10 +1476,29 @@ async function reshapeOpenAiImageResponse(
     }
     const data = json && Array.isArray((json as { data?: unknown }).data) ? (json.data as JsonRecord[]) : null;
 
-    // 上游报错 / 形态非预期(非 JSON、无 data)→ 原样透传,不加 usage、不改体。
+    // 上游报错 / 形态非预期(非 JSON、无 data)→ 透传为主,例外见下。
     if (!upstream.ok || !data) {
         if (cap) captureJsonResponse(cap, upstream.status, (json ?? { _raw: text.slice(0, 500) }) as JsonRecord);
-        return new NextResponse(sanitizeImageErrorBody(text), { status: upstream.status, headers });
+        if (upstream.ok) {
+            // 上游 200 但体不是标准图片 JSON,三分:
+            // - 含审核标记(号池个别成员把拒绝包在 HTTP 200 体里)→ 统一审核文案 + 400,
+            //   绝不让「200 + 错误体」出门 —— 客户网关会按成功入账(2026-08-08 客户反馈实例);
+            // - 体带 error 字段(200 假成功,非审核类)→ 502,客户按失败重试;
+            // - 其余(stream:true 的 SSE 成功体等)原样透传 200,连品牌替换都不做
+            //   (\badobe\b 的 \b 会命中 b64 里 `/adobe+` 这类片段,替换会写坏图)。
+            if (IMAGE_SAFETY_RE.test(text)) {
+                headers.set('content-type', 'application/json');
+                return new NextResponse(IMAGE_SAFETY_BODY, { status: 400, headers });
+            }
+            if (json && (json as { error?: unknown }).error) {
+                headers.set('content-type', 'application/json');
+                return new NextResponse(text.replace(/\badobe\b/gi, 'the provider'), { status: 502, headers });
+            }
+            return new NextResponse(text, { status: 200, headers });
+        }
+        const sanitized = sanitizeImageError(text, upstream.status);
+        if (sanitized.body !== text) headers.set('content-type', 'application/json');
+        return new NextResponse(sanitized.body, { status: sanitized.status, headers });
     }
 
     // 成功:补顶层 size + 估算 usage(保留上游已有的)。

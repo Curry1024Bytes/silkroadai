@@ -42,12 +42,12 @@ const OFFICIAL_CNY_PER_M: Record<
     fast: {
         '480p': { noVideo: 37, withVideo: 22 }, // 官方挂牌(与 720p 同费率)
         '720p': { noVideo: 37, withVideo: 22 }, // 官方挂牌
-        '1080p': { noVideo: 37, withVideo: 22 }, // 官方挂牌
+        '1080p': { noVideo: 40.5, withVideo: 24.5 }, // 官方挂牌(1080p 单独档,2026-08-08 修正)
     },
     mini: {
         '480p': { noVideo: 23, withVideo: 14 }, // 官方挂牌(与 720p 同费率)
         '720p': { noVideo: 23, withVideo: 14 }, // 官方挂牌
-        '1080p': { noVideo: 23, withVideo: 14 }, // 官方挂牌
+        '1080p': { noVideo: 25.5, withVideo: 15.5 }, // 官方挂牌(1080p 单独档,2026-08-08 修正)
     },
     // 国内版 seedance 2.5(上游 artsdance-2-5-pro):仅 720p/1080p(不支持 480p)。
     '2.5': {
@@ -68,6 +68,11 @@ const OFFICIAL_CNY_PER_M: Record<
     'promax-mini': {
         '480p': { noVideo: 34, withVideo: 20.4 }, // 官方挂牌(与 720p 同费率)
         '720p': { noVideo: 34, withVideo: 20.4 }, // 官方挂牌
+    },
+    // 海外版 proMax seedance 2.5(2026-08-08,上游 artsdance2-5-intl):仅 720p/1080p,按原价(划线价)挂牌。
+    'promax-2.5': {
+        '720p': { noVideo: 72.76, withVideo: 43.52 }, // 官方挂牌(原价)
+        '1080p': { noVideo: 80.24, withVideo: 47.94 }, // 官方挂牌(原价)
     },
 };
 

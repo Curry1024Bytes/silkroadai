@@ -49,9 +49,24 @@ async function customerDiscount(userId: string, region: SeedanceRegion): Promise
     return Number.isFinite(d) && d > 0 ? d : 1;
 }
 
-/** 对客 ¥:议价覆盖(按 版本×变体×分辨率×含视频,绝对单价不再乘折扣)优先;
- *  否则【官方挂牌价 × 该版本客户折扣率】。海外挂牌价 = 国内(2026-07-23 operator 拍板)。
- *  ⚠️ 2026-08-07 前是「零售价(挂牌×0.85)× discount」= 折上折;现改为单一口径。 */
+/** 全局折扣(enterprise_global_discounts,按 渠道×模型 的临时促销)。
+ *  返回有效折扣率;无行 / 已过期(读时判定)/ 非法值 → null(回落客户折扣)。 */
+async function globalDiscountFor(region: SeedanceRegion, variant: SeedanceVariant): Promise<number | null> {
+    const row = await prisma.enterpriseGlobalDiscount.findUnique({
+        where: { region_variant: { region, variant } },
+        select: { discount: true, expires_at: true },
+    });
+    if (!row) return null;
+    if (row.expires_at && row.expires_at.getTime() <= Date.now()) return null; // 到期自动失效
+    const d = Number(row.discount);
+    return Number.isFinite(d) && d > 0 ? d : null;
+}
+
+/** 对客 ¥ 计价优先级(2026-08-08 起三层):
+ *   1. 议价覆盖(enterprise_rate_overrides 绝对单价)—— 客户协议价,最高优先,不受促销影响;
+ *   2. 全局折扣(enterprise_global_discounts 按 渠道×模型)—— 促销期【覆盖】客户折扣率,仅目标模型;
+ *   3. 客户折扣率(enterprise_upstream_keys.discount)—— 缺省。
+ *  实付 = 官方挂牌价 × 生效折扣(全局折扣存在则用之,否则客户折扣)。海外挂牌价 = 国内(operator 拍板)。 */
 export async function computeEnterpriseCostCny(
     userId: string,
     tokens: number | bigint,
@@ -60,12 +75,15 @@ export async function computeEnterpriseCostCny(
     variant: SeedanceVariant = 'pro',
     region: SeedanceRegion = 'cn',
 ): Promise<number> {
-    const [override, discount] = await Promise.all([
+    const [override, customerDisc, globalDisc] = await Promise.all([
         rateOverrideCnyPerM(userId, variant, resolution, hasVideo, region),
         customerDiscount(userId, region),
+        globalDiscountFor(region, variant),
     ]);
     const t = typeof tokens === 'bigint' ? Number(tokens) : tokens;
     if (override != null) return +((t / 1e6) * override).toFixed(6);
+    // 全局折扣覆盖客户折扣(按模型隔离,不影响其它模型;不覆盖上面的绝对议价)
+    const discount = globalDisc ?? customerDisc;
     return +(officialCostCny(t, resolution, hasVideo, variant) * discount).toFixed(6);
 }
 

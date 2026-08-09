@@ -72,9 +72,11 @@ async function loadUpstreamCustomer(
 ): Promise<ResolveResult> {
     const up = await prisma.enterpriseUpstreamKey.findUnique({
         where: { user_id_region: { user_id: userId, region } },
-        select: { upstream_key_enc: true },
+        select: { upstream_key_enc: true, deleted_at: true },
     });
-    if (!up) {
+    // 软删除账号(2026-08-08):行仍在但 deleted_at 已置 → 视同无 key(拒绝调用)。
+    // sk-ent / AK-SK 通常已被 delete 流程禁用而 401,这里是 account-level 补一道门。
+    if (!up || up.deleted_at) {
         return {
             ok: false,
             status: 503,
