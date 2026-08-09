@@ -483,7 +483,15 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                 </div>
             ) : null}
 
-            <section className="overflow-hidden rounded-lg border border-portal-line bg-portal-panel shadow-portal">
+            <section
+                className={[
+                    'rounded-lg border border-portal-line bg-portal-panel shadow-portal',
+                    // The tier menu is an absolute overlay. Let it escape the
+                    // card while the create form is open, otherwise the card's
+                    // overflow clipping cuts off the options at its bottom edge.
+                    create.open ? 'relative z-20 overflow-visible' : 'overflow-hidden',
+                ].join(' ')}
+            >
                 <div className="flex flex-col gap-3 border-b border-portal-line px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
                     <div className="flex min-w-0 items-center gap-3">
                         <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-portal-gold-soft text-portal-gold">
