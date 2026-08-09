@@ -1,13 +1,13 @@
 /**
  * provisionNewCustomer login-session regression tests (2026-08-03).
  *
- * Current new-api returns the usable customer access token in the login body
+ * Current new-api returns a short-lived login JWT in the body
  * (data.access_token, with the user nested under data.user) and does not set
- * the legacy gorilla `session=` cookie. Older releases still require the
- * cookie-only /api/user/token fallback.
+ * the legacy gorilla `session=` cookie. Both current and older releases must
+ * exchange their login credential for the durable /api/user/token value.
  *
  * Covers:
- *   - current shape: body access token → act-as calls use it directly
+ *   - current shape: body JWT → durable access token → act-as calls
  *   - legacy shape: session cookie → step 3 uses `Cookie: session=...`
  *   - neither present → NewApiError (no silent fallthrough)
  *
@@ -117,16 +117,19 @@ const LEGACY_LOGIN_BODY = {
 };
 
 describe('provisionNewCustomer login session handling', () => {
-    it('current new-api: uses the body access token directly and skips the legacy rotate endpoint', async () => {
+    it('current new-api: exchanges the body JWT for a durable access token', async () => {
         installFetchMock({ loginBody: CURRENT_LOGIN_BODY });
 
         const result = await provisionNewCustomer({ portal_user_id: PORTAL_USER_ID, email: EMAIL });
 
         const rotate = recorded.find((r) => r.method === 'GET' && r.path === '/api/user/token');
-        expect(rotate).toBeUndefined();
+        expect(rotate).toBeDefined();
+        expect(rotate!.headers['authorization']).toBe('rc22.session.jwt');
+        expect(rotate!.headers['cookie']).toBeUndefined();
+        expect(rotate!.headers['new-api-user']).toBe(String(NEWAPI_USER_ID));
 
         expect(result.newapi_user_id).toBe(NEWAPI_USER_ID);
-        expect(result.newapi_access_token).toBe('rc22.session.jwt');
+        expect(result.newapi_access_token).toBe('classic-access-token-xyz');
         expect(result.newapi_token_value).toBe('sk-real-key-123');
     });
 
@@ -157,14 +160,14 @@ describe('provisionNewCustomer login session handling', () => {
         expect(rotate).toBeUndefined();
     });
 
-    it('act-as steps 4-6 use the current body access token without a Bearer prefix', async () => {
+    it('act-as steps 4-6 use the durable access token without a Bearer prefix', async () => {
         installFetchMock({ loginBody: CURRENT_LOGIN_BODY });
 
         await provisionNewCustomer({ portal_user_id: PORTAL_USER_ID, email: EMAIL });
 
         const createToken = recorded.find((r) => r.method === 'POST' && r.path === '/api/token/');
         expect(createToken).toBeDefined();
-        expect(createToken!.headers['authorization']).toBe('rc22.session.jwt');
+        expect(createToken!.headers['authorization']).toBe('classic-access-token-xyz');
         expect(createToken!.headers['new-api-user']).toBe(String(NEWAPI_USER_ID));
     });
 });

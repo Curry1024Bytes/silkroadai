@@ -791,18 +791,22 @@ export async function provisionNewCustomer(args: {
     // the full email in the email field (which has a 50-char limit).
     await createUser({ username, password, display_name: username, email: args.email });
 
-    // Step 2: log in as the customer. Current new-api returns the access token
-    // directly; older versions only returned a session cookie.
+    // Step 2: log in as the customer. Current new-api returns a short-lived
+    // session JWT; older versions only return a session cookie.
     const login = await loginAsUser({ username, password });
     const userId = login.user.id;
 
-    // Step 3: older new-api versions require a session-only rotate endpoint;
-    // current versions already issued the usable token during login.
-    const accessToken =
-        login.accessToken ??
-        (await call<string>('GET', '/api/user/token', undefined, undefined, {
-            session: { auth: { kind: 'cookie', cookie: login.cookie! }, userId },
-        }));
+    // Step 3: exchange the login credential for new-api's persistent access
+    // token. Saving the login JWT here makes Portal key management fail once
+    // that short-lived session expires. Current releases accept the JWT;
+    // older releases require the legacy session cookie.
+    const accessToken = login.accessToken
+        ? await call<string>('GET', '/api/user/token', undefined, undefined, {
+              asUser: { accessToken: login.accessToken, userId },
+          })
+        : await call<string>('GET', '/api/user/token', undefined, undefined, {
+              session: { auth: { kind: 'cookie', cookie: login.cookie! }, userId },
+          });
 
     // Step 4: create the first token. Must act-as the customer.
     //
