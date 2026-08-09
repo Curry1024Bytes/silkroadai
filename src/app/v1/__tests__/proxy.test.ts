@@ -2574,6 +2574,74 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
         expect(data.error.type).toBe('invalid_request_error');
     });
 
+    it('上游 200 包审核拒绝体(号池假成功)→ 恒 400 content_policy_violation,绝不 200 出门', async () => {
+        mockFetch.mockResolvedValueOnce(
+            new Response(
+                JSON.stringify({
+                    error: { message: 'adobe content rejected: status 451 {"error_code":"image_unsafe"}' },
+                }),
+                { status: 200, headers: { 'content-type': 'application/json' } },
+            ),
+        );
+        const res = await POST(
+            makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x' } }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(400); // 核心:上游 200 也不透传
+        const text = await res.text();
+        expect(text.toLowerCase()).not.toContain('adobe');
+        expect((JSON.parse(text) as { error: { code: string } }).error.code).toBe('content_policy_violation');
+    });
+
+    it('上游 200 包非审核 error 体 → 502(客户按失败重试),品牌名脱敏', async () => {
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ error: { message: 'adobe upstream busy, retry later' } }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const res = await POST(
+            makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x' } }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(502);
+        const text = await res.text();
+        expect(text.toLowerCase()).not.toContain('adobe');
+        expect(text).toContain('the provider');
+    });
+
+    it('上游 200 SSE 成功体(stream:true)→ 原样透传 200,体一字不改', async () => {
+        const sse =
+            'event: image_generation.completed\ndata: {"type":"image_generation.completed","b64_json":"aGk="}\n\n';
+        mockFetch.mockResolvedValueOnce(
+            new Response(sse, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+        );
+        const res = await POST(
+            makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x', stream: true } }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        expect(await res.text()).toBe(sse); // 不做任何替换(替换可能写坏 b64)
+    });
+
+    it('仅提到 adobe 的非审核错误(如超时)→ 不冒充审核文案,status 透传 + 品牌脱敏', async () => {
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ error: { message: 'adobe upstream timeout after 300s' } }), {
+                status: 504,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const res = await POST(
+            makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x' } }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(504);
+        const text = await res.text();
+        expect(text).not.toContain('content safety system'); // 超时不再误显示为审核拒绝
+        expect(text.toLowerCase()).not.toContain('adobe');
+        expect(text).toContain('timeout');
+    });
+
     it('连不上 new-api(网络异常)→ 502 透出真实原因,不被兜底成笼统 400', async () => {
         mockFetch.mockRejectedValueOnce(new Error('ECONNREFUSED'));
         const res = await POST(
