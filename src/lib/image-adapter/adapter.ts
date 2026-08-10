@@ -2,13 +2,16 @@
  * 按张计费图片上游 → azure gpt-image-2 伪装适配器(W10,设计见 image2-per-image-adapter-brief.md)。
  *
  * new-api 把 gpt-image-2 的请求(OpenAI Images 形)按渠道路由到这里,适配器:
- *  1. 【守门】只接盈利档 —— size=4K 全档、或 2K 且 quality=high(operator 2026-08-03 拍板)。
- *     其余(1k/2k-low/med、size 不明)→ 503,new-api RetryTimes failover 回 azure 渠道,
- *     客户无感;调上游【之前】拒,不花钱。4xx 会被 new-api 当终态甩给客户,所以守门必须 5xx。
+ *  1. 【守门】只接盈利档 —— 合成售价 ≥ 守门线(≈¥0.15,高于上游按张成本 ¥0.1;operator
+ *     2026-08-11 拍板售价制,档位随官方公式自动划分:high 各尺寸都过线,low/auto/standard
+ *     与小尺寸 medium 全在线下)。线下的 + size 不明的 → 503,new-api RetryTimes failover
+ *     回 adobe 渠道,客户无感;调上游【之前】拒,不花钱。4xx 会被 new-api 当终态甩给客户,
+ *     所以守门必须 5xx。
  *  2. 调真实上游拿图(Authorization 透传 = 渠道 key 就是上游 key)。
- *  3. 【合成 usage】丢弃上游的假 token(ominiapi 恒报 1120,按现口径计费必亏),按请求参数
- *     查 OUT_TOKENS[size 档][quality] 合成 —— 与现有真 4K 渠道账单口径对齐(4k·medium≈3800
- *     校准到实测 avg_ct=3777 ≈ ¥0.25/张)。new-api 读 usage.input_tokens/output_tokens 计费。
+ *  3. 【合成 usage】丢弃上游的假 token(ominiapi 恒报 1120,按现口径计费必亏),按
+ *     officialOutputTokens(官方计算器逐 token 精确公式)合成 —— 客户拿官方文档的
+ *     计算器核对分毫不差(2026-08-11 之前是 4 档打平表,4K 恒 14000 被客户识破)。
+ *     new-api 读 usage.input_tokens/output_tokens 计费。
  *  4. 上游任何失败(非 2xx / 无图 / 超时)→ 不合成 usage(不扣客户)+ 503 让 new-api 切渠道。
  *     上游是网关,按 memory failover-error-taxonomy:网关拒终态化零收益,一律让 azure 兜底。
  *
@@ -24,52 +27,49 @@ const UPSTREAM_TIMEOUT_MS = 300_000; // 实测 ominiapi 4K 出图 54-92s,给足�
  *  也挡住 n=100 这种把单请求内存推到 GB 级(4K 单张 b64 ~12-17MB)的用法。 */
 const MAX_FANOUT = 10;
 
-// ============ token 合成表(核心计费杠杆)============
-// 1k/1.5k 行 = OpenAI 官方 gpt-image 输出 token 表(azure 口径);2k/4k 行按 prod 实测校准:
-// 4k·medium=3800 ≈ 真 4K 渠道 avg_ct 3777(售价 ~¥0.25/张);high=14000 对应实测图生图
-// high 的上万 token 尾巴。守门放行的只有 4k 全档 + 2k-high,其余行留作后续放宽时的口径。
+// ============ 官方 token 公式(核心计费杠杆)============
+// 2026-08-11 从官方计算器组件源码提取(developers.openai.com 的
+// GptImage2TokenCalculator.react.*.js),226 个采样点(含 16px 细步长扫描)逐 token 一致:
+// 长边固定 16/48/96 个 patch(按 quality),短边按长短比取整,token = ceil(patch 数 ×
+// (2e6 + w·h) / 4e6)。任意合法尺寸都适用(官方约束:16 整除、边 ≤3840、比例 ≤3:1、
+// 总像素 65.5 万~829.4 万);约束外的尺寸上游本来就会拒,这里不重复校验。
+// adobe 链路在 ≤1.5K 尺寸与此公式逐点相等,2K+ 才是它自己的刻度(4K-high 19,755 vs 官方 13,342)。
 type Quality = 'low' | 'medium' | 'high';
-type SizeTier = '1k' | '1.5k' | '2k' | '4k';
-const OUT_TOKENS: Record<SizeTier, Record<Quality, number>> = {
-    '1k': { low: 272, medium: 1056, high: 4160 },
-    '1.5k': { low: 400, medium: 1568, high: 6208 },
-    '2k': { low: 800, medium: 3000, high: 12000 },
-    '4k': { low: 1000, medium: 3800, high: 14000 },
-};
-// 档位面积锚点(万像素):1024²=1.05M / 1536×1024=1.57M / 2048²=4.19M / 3840×2160=8.29M
-const TIER_AREA: Array<{ tier: SizeTier; area: number }> = [
-    { tier: '1k', area: 1024 * 1024 },
-    { tier: '1.5k', area: 1536 * 1024 },
-    { tier: '2k', area: 2048 * 2048 },
-    { tier: '4k', area: 3840 * 2160 },
-];
+const QUALITY_GRID: Record<Quality, number> = { low: 16, medium: 48, high: 96 };
 
-/** "3840x2160" → 就近档位;非 WxH(auto/缺省/比例串)→ null(守门按不明处理)。 */
-export function sizeTier(size: string): SizeTier | null {
+export function officialOutputTokens(w: number, h: number, quality: Quality): number {
+    const long = Math.max(w, h);
+    const short = Math.min(w, h);
+    const grid = QUALITY_GRID[quality];
+    const patches = grid * Math.round((grid * short) / long);
+    return Math.ceil((patches * (2_000_000 + w * h)) / 4_000_000);
+}
+
+/** "3840x2160" → {w,h};非 WxH(auto/缺省/比例串)→ null(守门按不明处理)。 */
+export function parseSize(size: string): { w: number; h: number } | null {
     const m = /^(\d{2,4})x(\d{2,4})$/.exec(size.trim());
     if (!m) return null;
-    const area = Number(m[1]) * Number(m[2]);
-    if (!(area > 0)) return null;
-    let best: SizeTier = '1k';
-    let bestDiff = Infinity;
-    for (const { tier, area: a } of TIER_AREA) {
-        const diff = Math.abs(area - a);
-        if (diff < bestDiff) {
-            bestDiff = diff;
-            best = tier;
-        }
-    }
-    return best;
+    const w = Number(m[1]);
+    const h = Number(m[2]);
+    return w > 0 && h > 0 ? { w, h } : null;
 }
 
 function normQuality(q: string): Quality {
     const s = q.trim().toLowerCase();
-    return s === 'low' || s === 'high' ? s : 'medium'; // auto/缺省/未知 → medium(与 OpenAI 缺省一致)
+    // auto/standard/缺省/未知 → low:上游对 auto 实测按 low 刻度计费(2026-08-06 发现按 medium
+    // 归档时同请求价差 6.9×)。low 必在守门线下 → 这类请求全部交 failover 渠道,适配器不再超收。
+    return s === 'medium' || s === 'high' ? s : 'low';
 }
 
-/** 守门:只接「合成售价 > 上游单张成本」的档。operator 拍板 = 4K 全档 + 2K-high。 */
-export function isProfitable(tier: SizeTier | null, quality: Quality): boolean {
-    return tier === '4k' || (tier === '2k' && quality === 'high');
+/** 守门线:合成售价必须显著高于上游按张成本(¥0.1/张)。
+ *  售价 ≈ ct × CompletionRatio(6) × ModelRatio(2.5) × GroupRatio(≈1.3) / 500k(500k quota=¥1),
+ *  ¥0.15 ⇒ 3,846 token。线下:low/auto/standard 全族(≤659)、小尺寸 medium(1K=1,756、
+ *  4K=3,336);线上:high 常用尺寸全部(1024²=7,024 起)、大方图 medium(2560²=4,927 起)。
+ *  调价只动这一个数,档位随官方公式自动跟着走。 */
+const MIN_SYNTH_CT = 3_846;
+
+export function isProfitable(perImageCt: number): boolean {
+    return perImageCt >= MIN_SYNTH_CT;
 }
 
 // ============ usage 合成 ============
@@ -136,7 +136,9 @@ function inputImageTokens(dims: { w: number; h: number } | null): number {
 
 export interface SynthUsageInput {
     mode: ImageMode;
-    tier: SizeTier;
+    /** 请求的输出尺寸(已通过 parseSize 解析;守门保证到这里必有值)。 */
+    w: number;
+    h: number;
     quality: Quality;
     prompt: string;
     /** edits 输入图的尺寸(读不出的项传 null,按 1MP 兜底)。 */
@@ -158,7 +160,7 @@ export interface SynthUsageInput {
  *  它们本来就只返回官方字段。适配器多送一套反而让【同一个模型不同渠道 usage 形状不一致】。
  *  `buildEstimatedUsage` 那处保持不动 —— 它只在上游完全不回 usage 时兜底,是另一个场景(PR #134)。 */
 export function synthUsage(inp: SynthUsageInput): Record<string, unknown> {
-    const perImage = OUT_TOKENS[inp.tier][inp.quality];
+    const perImage = officialOutputTokens(inp.w, inp.h, inp.quality);
     const ct = perImage * Math.max(1, inp.imageCount);
     const textTokens = estimateTextTokens(inp.prompt);
     let imgTokens = 0;
@@ -408,13 +410,20 @@ export async function handleAdapterImage(
     if (!parsed) return failover('bad_request_body', 'unparseable request body');
 
     // ---- 守门(调上游之前,不花钱)----
-    const tier = sizeTier(parsed.size);
+    const dims = parseSize(parsed.size);
     const quality = normQuality(parsed.quality);
-    if (!tier || !isProfitable(tier, quality)) {
-        console.log('[image-adapter] gate reject', { provider: providerName, mode, size: parsed.size, tier, quality });
+    const perImageCt = dims ? officialOutputTokens(dims.w, dims.h, quality) : 0;
+    if (!dims || !isProfitable(perImageCt)) {
+        console.log('[image-adapter] gate reject', {
+            provider: providerName,
+            mode,
+            size: parsed.size,
+            quality,
+            perImageCt,
+        });
         return failover(
-            'size_not_served',
-            `size tier ${tier ?? 'unknown'} / quality ${quality} not served on this channel`,
+            'below_gate',
+            `size ${parsed.size || 'unknown'} / quality ${quality} (ct ${perImageCt}) below sell-price gate`,
         );
     }
 
@@ -444,7 +453,8 @@ export async function handleAdapterImage(
     // ---- 合成 usage(丢弃上游假 token)----
     const usage = synthUsage({
         mode,
-        tier,
+        w: dims.w,
+        h: dims.h,
         quality,
         prompt: parsed.prompt,
         inputImageDims: parsed.images.map((img) => imageDimensions(img.buf)),
@@ -454,7 +464,6 @@ export async function handleAdapterImage(
         provider: providerName,
         mode,
         size: parsed.size,
-        tier,
         quality,
         nRequested: parsed.n,
         images: items.length,

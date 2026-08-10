@@ -1,13 +1,14 @@
 /**
  * image-adapter(按张计费上游伪装 azure gpt-image-2)单测。
- * 覆盖:守门(4K 全档 + 2K-high,其余 503 failover)、usage 合成数值(OUT_TOKENS 口径)、
- * 上游失败不合成 usage、multipart edits 解析、错误脱敏、透传字段。
+ * 覆盖:守门(合成售价 ≥ 守门线,线下 503 failover)、usage 合成数值(官方计算器公式,
+ * 逐 token 对齐)、上游失败不合成 usage、multipart edits 解析、错误脱敏、透传字段。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { NextRequest } from 'next/server';
 import {
     handleAdapterImage,
-    sizeTier,
+    parseSize,
+    officialOutputTokens,
     isProfitable,
     synthUsage,
     estimateTextTokens,
@@ -70,43 +71,74 @@ function okUpstream(nImages = 1) {
     });
 }
 
-describe('sizeTier / isProfitable(守门口径)', () => {
-    it('按面积就近分档', () => {
-        expect(sizeTier('1024x1024')).toBe('1k');
-        expect(sizeTier('1536x1024')).toBe('1.5k');
-        expect(sizeTier('2048x2048')).toBe('2k');
-        expect(sizeTier('3840x2160')).toBe('4k');
-        expect(sizeTier('3200x2000')).toBe('4k'); // 6.4MP 靠近 8.29M
+describe('parseSize', () => {
+    it('WxH → 宽高', () => {
+        expect(parseSize('1024x1024')).toEqual({ w: 1024, h: 1024 });
+        expect(parseSize('2160x3840')).toEqual({ w: 2160, h: 3840 });
+        expect(parseSize(' 3840x2160 ')).toEqual({ w: 3840, h: 2160 });
     });
     it('auto / 缺省 / 比例串 → null(不明确不放行)', () => {
-        expect(sizeTier('auto')).toBe(null);
-        expect(sizeTier('')).toBe(null);
-        expect(sizeTier('16:9')).toBe(null);
-    });
-    it('4K 全档放行;2K 仅 high;其余全拒', () => {
-        expect(isProfitable('4k', 'low')).toBe(true);
-        expect(isProfitable('4k', 'medium')).toBe(true);
-        expect(isProfitable('4k', 'high')).toBe(true);
-        expect(isProfitable('2k', 'high')).toBe(true);
-        expect(isProfitable('2k', 'medium')).toBe(false);
-        expect(isProfitable('2k', 'low')).toBe(false);
-        expect(isProfitable('1k', 'high')).toBe(false);
-        expect(isProfitable('1.5k', 'high')).toBe(false);
-        expect(isProfitable(null, 'high')).toBe(false);
+        expect(parseSize('auto')).toBe(null);
+        expect(parseSize('')).toBe(null);
+        expect(parseSize('16:9')).toBe(null);
     });
 });
 
-describe('synthUsage(合成数值 = OUT_TOKENS 口径)', () => {
-    it('4k·medium 单图 = 3800 输出 token(≈真 4K 渠道 avg_ct 3777,售价锚 ¥0.25)', () => {
+describe('officialOutputTokens(官方计算器逐 token 口径,2026-08-11 采样验证)', () => {
+    // 每一行都是官方计算器实采的 ground truth,不是自算的期望值
+    it.each([
+        [1024, 1024, 'low', 196],
+        [1024, 1024, 'medium', 1756],
+        [1024, 1024, 'high', 7024],
+        [1536, 1024, 'high', 5488],
+        [1024, 1536, 'medium', 1372],
+        [2048, 1152, 'high', 5650],
+        [2048, 2048, 'high', 14272],
+        [2560, 1440, 'high', 7370],
+        [1280, 720, 'high', 3787],
+        [3840, 2160, 'low', 371],
+        [3840, 2160, 'medium', 3336],
+        [3840, 2160, 'high', 13342],
+        [2160, 3840, 'high', 13342], // 客户实拍案例(2026-08-11 投诉截图):必须与官方计算器一致
+    ] as const)('%dx%d %s = %d', (w, h, q, expected) => {
+        expect(officialOutputTokens(w, h, q)).toBe(expected);
+    });
+    it('宽高对称', () => {
+        expect(officialOutputTokens(1536, 1024, 'medium')).toBe(officialOutputTokens(1024, 1536, 'medium'));
+    });
+});
+
+describe('isProfitable(守门线 = 合成售价 ≥ ¥0.15 ≈ 3,846 token)', () => {
+    it('high 常用尺寸全过线;low/auto/standard 与小尺寸 medium 全在线下', () => {
+        const ct = (w: number, h: number, q: 'low' | 'medium' | 'high') => officialOutputTokens(w, h, q);
+        // 过线:high 家族 + 大方图 medium
+        expect(isProfitable(ct(3840, 2160, 'high'))).toBe(true);
+        expect(isProfitable(ct(2048, 2048, 'high'))).toBe(true);
+        expect(isProfitable(ct(1024, 1024, 'high'))).toBe(true); // 新扩:1K-high(adobe 上超时重灾区)
+        expect(isProfitable(ct(1536, 1024, 'high'))).toBe(true);
+        expect(isProfitable(ct(2560, 2560, 'medium'))).toBe(true);
+        // 线下:低档全族 + 小尺寸 medium(回 adobe 兜底)
+        expect(isProfitable(ct(3840, 2160, 'low'))).toBe(false); // 371 —— 旧守门放行 4K 全档,现在拒
+        expect(isProfitable(ct(3840, 2160, 'medium'))).toBe(false); // 3,336,差一点
+        expect(isProfitable(ct(1024, 1024, 'medium'))).toBe(false);
+        expect(isProfitable(ct(2048, 2048, 'medium'))).toBe(false);
+        expect(isProfitable(ct(1280, 720, 'high'))).toBe(false); // 3,787 < 3,846,极小 high 也不亏收
+        expect(isProfitable(0)).toBe(false);
+    });
+});
+
+describe('synthUsage(合成数值 = 官方公式口径)', () => {
+    it('4K·high 单图 = 13,342 输出 token(与官方计算器一致)+ 只发 OpenAI images 官方字段', () => {
         const u = synthUsage({
             mode: 'generations',
-            tier: '4k',
-            quality: 'medium',
+            w: 3840,
+            h: 2160,
+            quality: 'high',
             prompt: 'a cat',
             inputImageDims: [],
             imageCount: 1,
         });
-        expect(u.output_tokens).toBe(3800);
+        expect(u.output_tokens).toBe(13342);
         // 只发 OpenAI images 官方字段:多送 chat 别名会被中继客户【加】进 chat 家族 → 账面翻倍
         expect(Object.keys(u).sort()).toEqual([
             'input_tokens',
@@ -118,25 +150,26 @@ describe('synthUsage(合成数值 = OUT_TOKENS 口径)', () => {
         expect(u.prompt_tokens).toBeUndefined();
         expect(u.completion_tokens).toBeUndefined();
         expect(u.input_tokens).toBe(estimateTextTokens('a cat'));
-        expect(u.total_tokens).toBe(3800 + estimateTextTokens('a cat'));
+        expect(u.total_tokens).toBe(13342 + estimateTextTokens('a cat'));
     });
-    it('4k·high=14000 / 4k·low=1000 / 2k·high=12000', () => {
-        const mk = (tier: '2k' | '4k', quality: 'low' | 'medium' | 'high') =>
-            synthUsage({ mode: 'generations', tier, quality, prompt: 'x', inputImageDims: [], imageCount: 1 });
-        expect(mk('4k', 'high').output_tokens).toBe(14000);
-        expect(mk('4k', 'low').output_tokens).toBe(1000);
-        expect(mk('2k', 'high').output_tokens).toBe(12000);
+    it('尺寸不同数值不同(告别打平表:2048² 与 2560×1440 同为 high 但不同价)', () => {
+        const mk = (w: number, h: number) =>
+            synthUsage({ mode: 'generations', w, h, quality: 'high', prompt: 'x', inputImageDims: [], imageCount: 1 });
+        expect(mk(2048, 2048).output_tokens).toBe(14272);
+        expect(mk(2560, 1440).output_tokens).toBe(7370);
+        expect(mk(2160, 3840).output_tokens).toBe(13342);
     });
     it('多图 ct×张数;edits 输入图计入 input(85 + MP×1500,MP 封顶 2,读不出按 1MP)', () => {
         const u = synthUsage({
             mode: 'edits',
-            tier: '4k',
-            quality: 'medium',
+            w: 3840,
+            h: 2160,
+            quality: 'high',
             prompt: 'edit',
             inputImageDims: [{ w: 2048, h: 2048 }, null],
             imageCount: 2,
         });
-        expect(u.output_tokens).toBe(3800 * 2);
+        expect(u.output_tokens).toBe(13342 * 2);
         // 2048²=4.19MP→ceil 5→封顶 2 → 85+3000;null→1MP → 85+1500
         expect(u.input_tokens).toBe(estimateTextTokens('edit') + (85 + 2 * 1500) + (85 + 1500));
         const details = u.input_tokens_details as { text_tokens: number; image_tokens: number };
@@ -146,7 +179,8 @@ describe('synthUsage(合成数值 = OUT_TOKENS 口径)', () => {
     it('4K 输入图 MP 封顶:8.3MP 也只算 2MP(azure 会降采样,防多图 edits 计费爆表)', () => {
         const u = synthUsage({
             mode: 'edits',
-            tier: '2k',
+            w: 2048,
+            h: 2048,
             quality: 'high',
             prompt: 'x',
             inputImageDims: [
@@ -164,11 +198,16 @@ describe('synthUsage(合成数值 = OUT_TOKENS 口径)', () => {
 
 describe('handleAdapterImage 守门(调上游之前拒,返 503 让 new-api failover)', () => {
     it.each([
-        ['1k', { size: '1024x1024' }],
-        ['2k medium', { size: '2048x2048' }],
+        ['1k 缺省 quality(→low)', { size: '1024x1024' }],
+        ['1k medium', { size: '1024x1024', quality: 'medium' }],
+        ['2k medium', { size: '2048x2048', quality: 'medium' }],
         ['2k low', { size: '2048x2048', quality: 'low' }],
-        ['size auto', { size: 'auto' }],
-        ['size 缺省', {}],
+        ['4K low(旧守门放行,售价制拒)', { size: '3840x2160', quality: 'low' }],
+        ['4K auto(→low)', { size: '3840x2160', quality: 'auto' }],
+        ['4K standard(→low)', { size: '3840x2160', quality: 'standard' }],
+        ['4K 缺省 quality(→low)', { size: '3840x2160' }],
+        ['size auto', { size: 'auto', quality: 'high' }],
+        ['size 缺省', { quality: 'high' }],
     ])('%s → 503 且不打上游', async (_label, extra) => {
         const res = await handleAdapterImage(
             jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', ...extra }),
@@ -182,7 +221,7 @@ describe('handleAdapterImage 守门(调上游之前拒,返 503 让 new-api failo
     });
 
     it('503 响应体不含任何内部信息(全渠道挂时 new-api 会把它原文透给客户)', async () => {
-        // 守门拒(带 size/tier 上下文)+ 上游错误(带上游原文)两类都验
+        // 守门拒(带 size/ct 上下文)+ 上游错误(带上游原文)两类都验
         fetchMock.mockResolvedValue(
             new Response(
                 JSON.stringify({ error: { message: 'ominiapi says: bad image, contact ops@omini.example' } }),
@@ -193,41 +232,39 @@ describe('handleAdapterImage 守门(调上游之前拒,返 503 让 new-api failo
         );
         const cases = await Promise.all([
             handleAdapterImage(jsonReq(URL_GEN, { prompt: 'x', size: '1024x1024' }), 'generations', 'ominiapi'),
-            handleAdapterImage(jsonReq(URL_GEN, { prompt: 'x', size: '3840x2160' }), 'generations', 'ominiapi'),
+            handleAdapterImage(
+                jsonReq(URL_GEN, { prompt: 'x', size: '3840x2160', quality: 'high' }),
+                'generations',
+                'ominiapi',
+            ),
         ]);
         for (const res of cases) {
             expect(res.status).toBe(503);
             const body = await res.json();
             expect(Object.keys(body.error).sort()).toEqual(['code', 'message', 'type']);
             const text = JSON.stringify(body).toLowerCase();
-            for (const leak of ['omini', 'tier', 'size', 'quality', 'channel', 'adapter', 'provider', 'ops@']) {
+            for (const leak of ['omini', 'gate', 'size', 'quality', 'channel', 'adapter', 'provider', 'ops@']) {
                 expect(text).not.toContain(leak);
             }
         }
     });
 
-    it('2K + high 放行', async () => {
+    it.each([
+        ['2K high', '2048x2048', 14272],
+        ['1K high(新扩:adobe 超时重灾区)', '1024x1024', 7024],
+        ['1.5K high(新扩)', '1536x1024', 5488],
+        ['大方图 medium(新扩)', '2560x2560', 4927],
+    ])('%s 放行', async (_label, size, expectedCt) => {
         okUpstream();
+        const quality = size === '2560x2560' ? 'medium' : 'high';
         const res = await handleAdapterImage(
-            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '2048x2048', quality: 'high' }),
+            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size, quality }),
             'generations',
             'ominiapi',
         );
         expect(res.status).toBe(200);
         const body = await res.json();
-        expect(body.usage.output_tokens).toBe(12000);
-    });
-
-    it('4K + low 放行(operator 拍板全档)', async () => {
-        okUpstream();
-        const res = await handleAdapterImage(
-            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160', quality: 'low' }),
-            'generations',
-            'ominiapi',
-        );
-        expect(res.status).toBe(200);
-        const body = await res.json();
-        expect(body.usage.output_tokens).toBe(1000);
+        expect(body.usage.output_tokens).toBe(expectedCt);
     });
 });
 
@@ -235,14 +272,14 @@ describe('handleAdapterImage 成功路径', () => {
     it('4K generations:上游假 usage 被替换成合成值,data 原样透传', async () => {
         okUpstream();
         const res = await handleAdapterImage(
-            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'a 4k cat', size: '3840x2160' }),
+            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'a 4k cat', size: '3840x2160', quality: 'high' }),
             'generations',
             'ominiapi',
         );
         expect(res.status).toBe(200);
         const body = await res.json();
         expect(body.data).toEqual([{ b64_json: 'img0-0' }]);
-        expect(body.usage.output_tokens).toBe(3800); // 不是上游的 1120
+        expect(body.usage.output_tokens).toBe(13342); // 不是上游的 1120
         expect(body.usage.input_tokens).toBe(estimateTextTokens('a 4k cat'));
         // 上游收到的请求:model 强制 gpt-image-2、JSON content-type、Authorization 透传
         const [url, init] = fetchMock.mock.calls[0];
@@ -252,6 +289,7 @@ describe('handleAdapterImage 成功路径', () => {
         const sent = JSON.parse(init.body as string);
         expect(sent.model).toBe('gpt-image-2');
         expect(sent.size).toBe('3840x2160');
+        expect(sent.quality).toBe('high');
         expect(sent.response_format).toBe('b64_json'); // 缺省时 ominiapi 返自家 OSS url,必须显式要 b64
     });
 
@@ -265,7 +303,7 @@ describe('handleAdapterImage 成功路径', () => {
             )
             .mockResolvedValueOnce(new Response(Buffer.from('pngbytes'), { status: 200 }));
         const res = await handleAdapterImage(
-            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160' }),
+            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160', quality: 'high' }),
             'generations',
             'ominiapi',
         );
@@ -286,7 +324,7 @@ describe('handleAdapterImage 成功路径', () => {
             )
             .mockResolvedValueOnce(new Response('gone', { status: 404 }));
         const res = await handleAdapterImage(
-            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160' }),
+            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160', quality: 'high' }),
             'generations',
             'ominiapi',
         );
@@ -297,7 +335,7 @@ describe('handleAdapterImage 成功路径', () => {
     it('n=1 只打一次上游', async () => {
         okUpstream();
         const res = await handleAdapterImage(
-            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160' }),
+            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160', quality: 'high' }),
             'generations',
             'ominiapi',
         );
@@ -310,7 +348,7 @@ describe('handleAdapterImage n>1 并发扇出(ominiapi 忽略 n,只能自己扇)
     it('n=4 → 打 4 次上游、返 4 张、ct 按 4 张算,且不给上游传 n', async () => {
         okUpstream();
         const res = await handleAdapterImage(
-            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160', n: 4 }),
+            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160', quality: 'high', n: 4 }),
             'generations',
             'ominiapi',
         );
@@ -319,7 +357,7 @@ describe('handleAdapterImage n>1 并发扇出(ominiapi 忽略 n,只能自己扇)
         const body = await res.json();
         expect(body.data).toHaveLength(4);
         expect(new Set(body.data.map((d: { b64_json: string }) => d.b64_json)).size).toBe(4); // 4 张互不相同
-        expect(body.usage.output_tokens).toBe(3800 * 4);
+        expect(body.usage.output_tokens).toBe(13342 * 4);
         // 每次上游调用都只要 1 张 —— 传 n 给 ominiapi 无效,反而会混淆
         for (const [, init] of fetchMock.mock.calls) {
             expect(JSON.parse(init.body as string).n).toBeUndefined();
@@ -331,19 +369,19 @@ describe('handleAdapterImage n>1 并发扇出(ominiapi 忽略 n,只能自己扇)
             fetchMock.mockReset();
             okUpstream();
             const res = await handleAdapterImage(
-                jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160', n }),
+                jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160', quality: 'high', n }),
                 'generations',
                 'ominiapi',
             );
             expect(fetchMock).toHaveBeenCalledTimes(n);
-            expect((await res.json()).usage.output_tokens).toBe(3800 * n);
+            expect((await res.json()).usage.output_tokens).toBe(13342 * n);
         }
     });
 
     it('n 超过 10 钳到 10(不报错,防单请求内存爆表)', async () => {
         okUpstream();
         const res = await handleAdapterImage(
-            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160', n: 50 }),
+            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160', quality: 'high', n: 50 }),
             'generations',
             'ominiapi',
         );
@@ -362,20 +400,20 @@ describe('handleAdapterImage n>1 并发扇出(ominiapi 忽略 n,只能自己扇)
             });
         });
         const res = await handleAdapterImage(
-            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160', n: 4 }),
+            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160', quality: 'high', n: 4 }),
             'generations',
             'ominiapi',
         );
         expect(res.status).toBe(200);
         const body = await res.json();
         expect(body.data).toHaveLength(2);
-        expect(body.usage.output_tokens).toBe(3800 * 2); // 只收 2 张的钱
+        expect(body.usage.output_tokens).toBe(13342 * 2); // 只收 2 张的钱
     });
 
     it('全部失败 → 503 failover(不合成 usage)', async () => {
         fetchMock.mockImplementation(async () => new Response('{"error":{}}', { status: 500 }));
         const res = await handleAdapterImage(
-            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160', n: 3 }),
+            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160', quality: 'high', n: 3 }),
             'generations',
             'ominiapi',
         );
@@ -398,7 +436,7 @@ describe('handleAdapterImage n>1 并发扇出(ominiapi 忽略 n,只能自己扇)
             expect(f.getAll('image')).toHaveLength(1);
             expect(f.get('n')).toBeNull();
         }
-        expect((await res.json()).usage.output_tokens).toBe(14000 * 3);
+        expect((await res.json()).usage.output_tokens).toBe(13342 * 3);
     });
 
     it('multipart edits:解析 prompt/size/quality + 输入图透传上游 + 输入图 token 计入', async () => {
@@ -412,7 +450,7 @@ describe('handleAdapterImage n>1 并发扇出(ominiapi 忽略 n,只能自己扇)
         );
         expect(res.status).toBe(200);
         const body = await res.json();
-        expect(body.usage.output_tokens).toBe(14000);
+        expect(body.usage.output_tokens).toBe(13342);
         // 1×1 PNG → 1MP 兜底:85+1500
         expect(body.usage.input_tokens_details.image_tokens).toBe(85 + 1500);
         // 上游收到 multipart(fetch 自动 boundary;不能手写 content-type)
@@ -433,7 +471,7 @@ describe('handleAdapterImage 失败路径(不合成 usage → new-api 不扣费)
             new Response(JSON.stringify({ error: { message: 'ominiapi quota exceeded' } }), { status: 402 }),
         );
         const res = await handleAdapterImage(
-            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160' }),
+            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160', quality: 'high' }),
             'generations',
             'ominiapi',
         );
@@ -445,7 +483,7 @@ describe('handleAdapterImage 失败路径(不合成 usage → new-api 不扣费)
     it('上游 fetch 抛错(超时/断连)→ 503', async () => {
         fetchMock.mockRejectedValue(new Error('network down'));
         const res = await handleAdapterImage(
-            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160' }),
+            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160', quality: 'high' }),
             'generations',
             'ominiapi',
         );
@@ -460,7 +498,7 @@ describe('handleAdapterImage 失败路径(不合成 usage → new-api 不扣费)
             }),
         );
         const res = await handleAdapterImage(
-            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160' }),
+            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160', quality: 'high' }),
             'generations',
             'ominiapi',
         );
@@ -473,6 +511,7 @@ describe('handleAdapterImage 失败路径(不合成 usage → new-api 不扣费)
             jsonReq('http://portal.test/image-adapter/nope/v1/images/generations', {
                 prompt: 'x',
                 size: '3840x2160',
+                quality: 'high',
             }),
             'generations',
             'nope',
@@ -485,7 +524,7 @@ describe('handleAdapterImage 失败路径(不合成 usage → new-api 不扣费)
         const req = new NextRequest(URL_GEN, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ prompt: 'x', size: '3840x2160' }),
+            body: JSON.stringify({ prompt: 'x', size: '3840x2160', quality: 'high' }),
         });
         const res = await handleAdapterImage(req, 'generations', 'ominiapi');
         expect(res.status).toBe(401);
