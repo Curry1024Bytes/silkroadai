@@ -64,6 +64,8 @@ vi.mock('@/lib/db', () => ({
         },
         // seedance-cn 视频任务表:默认返 null → isSeedanceCnTask=false → 视频轮询走 new-api 原路径。
         seedanceVideoTask: { findUnique: async () => null },
+        // kling 视频任务表:同上,默认非 kling 任务 → 轮询走 new-api 原路径。
+        klingVideoTask: { findUnique: async () => null },
     },
 }));
 const mockGetCustomerBalance = vi.fn();

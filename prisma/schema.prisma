@@ -1216,6 +1216,31 @@ model SeedanceVideoTask {
   @@map("seedance_video_tasks")
 }
 
+// Kling 视频任务(2026-08-10):portal /v1 代理透传 token.xinhankr.com(上游格式 =
+// new-api 统一视频格式,零翻译),new-api 无法中继该上游(Kling 渠道类型路径/格式全不合,
+// 见 PR 描述),故镜像 SeedanceVideoTask 模式端到端自扣:提交时算定价(¥/秒 × 时长)落库
+// + 余额门,轮询 completed 时 CAS 幂等扣费,failed 不收费。
+model KlingVideoTask {
+  id             String    @id // 上游任务 id(客户轮询也用它)
+  tenant_id      String?   @db.Uuid
+  user_id        String    @db.Uuid // portal User.id
+  newapi_user_id Int? // newapi 账本扣费用(override quota)
+  model          String // kling-v3 / kling-v3-omni / kling-video-o1 / kling-3.0-turbo
+  resolution     String // 720p | 1080p | 2k | 4k
+  generate_audio Boolean   @default(false) // 有声档费率
+  has_video      Boolean   @default(false) // 输入含参考视频 → 含视频费率档(v3-omni)
+  duration       Int       @default(5)
+  cost_cny       Decimal?  @db.Decimal(20, 8) // 提交时按价表算定的对客 ¥(时长计费,完成即此价)
+  billed         Boolean   @default(false) // 幂等:已扣费
+  status         String    @default("queued") // queued | completed | failed
+  created_at     DateTime  @default(now())
+  billed_at      DateTime?
+
+  @@index([user_id, created_at])
+  @@index([billed])
+  @@map("kling_video_tasks")
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // seedance 大客户独立门户 P1(2026-07-19,设计见 seedance-enterprise-portal-design.md)。
 // 独立部署(PORTAL_FLAVOR=seedance-enterprise,裸 IP 128.241.232.23),门户自发

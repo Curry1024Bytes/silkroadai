@@ -26,7 +26,7 @@ export function isSeedanceCnModel(model: string): boolean {
     return model in MODEL_MAP;
 }
 
-interface Customer {
+export interface Customer {
     userId: string;
     tenantId: string | null;
     billingMode: string;
@@ -35,8 +35,8 @@ interface Customer {
     active: boolean;
 }
 
-/** 客户 sk → { 用户, 档次, 状态, billing_mode }。找不到返 null。 */
-async function resolveCustomer(auth: string | null): Promise<Customer | null> {
+/** 客户 sk → { 用户, 档次, 状态, billing_mode }。找不到返 null。(kling/proxy 复用) */
+export async function resolveCustomer(auth: string | null): Promise<Customer | null> {
     const m = auth?.match(/^Bearer\s+(.+)$/i);
     if (!m) return null;
     const raw = m[1].startsWith('sk-') ? m[1].slice(3) : m[1];

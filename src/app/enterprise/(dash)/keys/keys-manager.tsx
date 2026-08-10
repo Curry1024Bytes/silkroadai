@@ -181,7 +181,7 @@ export function KeysManager({ initialKeys }: { initialKeys: KeyRow[] }) {
                         <option value="cn">国内版</option>
                         <option value="global">海外版(global)</option>
                         <option value="promax">海外版proMax</option>
-                        <option value="volc">火山(真人认证/单模型)</option>
+                        <option value="volc">火山</option>
                     </select>
                     <button
                         type="submit"
