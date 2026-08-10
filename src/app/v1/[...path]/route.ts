@@ -85,6 +85,7 @@ import {
     handleSeedanceVideoSubmit,
     handleSeedanceVideoPoll,
 } from '@/lib/seedance/cn-proxy';
+import { isKlingVideoModel, isKlingVideoTask, handleKlingVideoSubmit, handleKlingVideoPoll } from '@/lib/kling/proxy';
 import { isEnterpriseFlavor, handleEnterpriseV1 } from '@/lib/enterprise/proxy';
 import { guardSseResponse, guardSseStream, type SseErrorShape } from '@/lib/sse/stream-guard';
 import { forwardHeaders, passthroughResponse, STRIP_RESPONSE_HEADERS } from '@/lib/proxy/forward';
@@ -2512,6 +2513,11 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
         if (isSeedanceCnModel(String(vbody.model ?? ''))) {
             return handleSeedanceVideoSubmit(req, vbody);
         }
+        // kling 视频:同款端到端自扣,直连 token.xinhankr.com(new-api 无法中继该上游,
+        // 格式恰为统一视频格式 → 纯转发;见 @/lib/kling/proxy 文件头)。
+        if (isKlingVideoModel(String(vbody.model ?? ''))) {
+            return handleKlingVideoSubmit(req, vbody);
+        }
         return forwardToNewApi(req, vbody, path, search, cap);
     }
 
@@ -2519,7 +2525,15 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
     if (req.method === 'GET' && /^\/video\/generations\/[^/]+$/.test(path)) {
         const taskId = path.slice(path.lastIndexOf('/') + 1);
         if (await isSeedanceCnTask(taskId)) return handleSeedanceVideoPoll(req, taskId);
+        if (await isKlingVideoTask(taskId)) return handleKlingVideoPoll(req, taskId);
         return handleVideoPoll(req, path, search);
+    }
+
+    // 任务查询别名:GET /v1/tasks/{id}(kling 上游文档提供的第二条轮询路径)。
+    // 只拦我们记录过的 kling 任务;其余原样透传 new-api(维持既有行为)。
+    if (req.method === 'GET' && /^\/tasks\/[^/]+$/.test(path)) {
+        const taskId = path.slice(path.lastIndexOf('/') + 1);
+        if (await isKlingVideoTask(taskId)) return handleKlingVideoPoll(req, taskId);
     }
 
     // 机器可读模型目录(OpenRouter /api/v1/models 模式):GET /models 的上游列表
