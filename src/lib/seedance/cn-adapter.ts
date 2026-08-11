@@ -4,7 +4,7 @@
  * 上游网关「与 OpenAI 官方视频规范完全对齐」:提交 POST /v1/video/generations、
  * 轮询 GET /v1/video/generations/{task_id}、完成响应 { status, data:[{url}], usage }。
  * 因此本适配器比海外档(service-inference.ai 自定义 API)简单得多 —— 近乎透传,
- * 只做两件事:①档位模型名 → 上游单模型 artsdance2.0-pro-260701 + resolution + 参考模式门控;
+ * 只做两件事:①档位模型名 → 上游单模型 artsdance-2-0-pro-260801 + resolution + 参考模式门控;
  * ②入参图/视频/音频 data URL 先转存我们 R2(上游 images[]/videos[]/audios[] 只吃 http(s) 直链)。
  * 成片【不转存】,直接返回火山 volcvideo.com 原始直链(operator 要「真实感」:客户看到火山官方
  * VOD 域名,已隐藏 token.xinhankr 上游、只露 Volcengine=火山方舟)。⚠️ 火山直链是【签名 URL ~24h 过期】,
@@ -24,9 +24,10 @@ import { uploadImage } from '@/lib/r2/client';
 
 const XHK_BASE = process.env.SEEDANCE_XHK_BASE_URL || 'https://token.xinhankr.com';
 /** 上游 pro 模型名(SEEDANCE_XHK_MODEL 仅覆盖 pro;fast/mini 上游 id 固定)。 */
-const UPSTREAM_MODEL = process.env.SEEDANCE_XHK_MODEL || 'artsdance2.0-pro-260701';
-const UPSTREAM_FAST = 'artsdance2.0-fast-260701';
-const UPSTREAM_MINI = 'artsdance2.0-mini-260701';
+// 上游 2026-08-11 升级到 260801 版(连字符命名,同 2.5;480p/720p/1080p/4k 分辨率支持与旧 260701 一致,实测)。
+const UPSTREAM_MODEL = process.env.SEEDANCE_XHK_MODEL || 'artsdance-2-0-pro-260801';
+const UPSTREAM_FAST = 'artsdance-2-0-fast-260801';
+const UPSTREAM_MINI = 'artsdance-2-0-mini-260801';
 // 海外版(2026-07-23,同上游厂商的国际端口 BytePlus 出片;协议与国内完全一致,实测见
 // seedance-enterprise-intl-design.md):仅 base/key/模型名不同。key 按客户存
 // enterprise_upstream_keys(region='global') 行。

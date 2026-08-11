@@ -76,7 +76,7 @@ describe('seedance-cn adapter submit', () => {
         expect(j.task_id).toBe('cgt-test-1');
         expect(j.model).toBe('seedance2.0-pro-1080p');
         const b = submitBody();
-        expect(b.model).toBe('artsdance2.0-pro-260701');
+        expect(b.model).toBe('artsdance-2-0-pro-260801');
         expect(b.resolution).toBe('1080p');
         expect(b.images).toBeUndefined();
         expect(b.generate_audio).toBe(true);
@@ -91,13 +91,13 @@ describe('seedance-cn adapter submit', () => {
     it('fast/mini 变体(2026-07-19):按档映射到各自上游模型 id', async () => {
         let res = await submitVideo(makeReq({ model: 'seedance2.0-fast-720p', prompt: '一只猫' }));
         expect(res.status).toBe(200);
-        expect(submitBody().model).toBe('artsdance2.0-fast-260701');
+        expect(submitBody().model).toBe('artsdance-2-0-fast-260801');
         expect(submitBody().resolution).toBe('720p');
 
         mockFetch.mockClear(); // 只清调用记录,mockImplementation 仍在
         res = await submitVideo(makeReq({ model: 'seedance2.0-mini-1080p', prompt: '一只猫' }));
         expect(res.status).toBe(200);
-        expect(submitBody().model).toBe('artsdance2.0-mini-260701');
+        expect(submitBody().model).toBe('artsdance-2-0-mini-260801');
         expect(submitBody().resolution).toBe('1080p');
     });
 
