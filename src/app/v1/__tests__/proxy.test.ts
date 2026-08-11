@@ -2428,6 +2428,91 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
         expect(data.usage.output_tokens_details.image_tokens).toBeGreaterThan(0);
     });
 
+    // ── quality / background / output_format 回显(官方 gpt-image 响应形;客户兼容测试校验)──
+    function upstreamNoEcho(): Response {
+        // 模拟真实链路:ch154 适配器 / new-api 重组体都不带 quality/background/output_format
+        return new Response(JSON.stringify({ created: 1, data: [{ b64_json: 'QUJD', size: '1024x1024' }] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+        });
+    }
+    type EchoBody = { quality?: string; background?: string; output_format?: string };
+
+    it('JSON generations 传 quality:high → 响应顶层回显 quality + 官方缺省 background/output_format', async () => {
+        mockFetch.mockResolvedValueOnce(upstreamNoEcho());
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2', prompt: 'x', size: '2160x3840', quality: 'high' },
+            }),
+            ctx('images', 'generations'),
+        );
+        const data = (await res.json()) as EchoBody;
+        expect(data.quality).toBe('high');
+        expect(data.background).toBe('opaque');
+        expect(data.output_format).toBe('png');
+    });
+
+    it('gpt-image 没传 quality → 按官方缺省回显 auto', async () => {
+        mockFetch.mockResolvedValueOnce(upstreamNoEcho());
+        const res = await POST(
+            makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x' } }),
+            ctx('images', 'generations'),
+        );
+        const data = (await res.json()) as EchoBody;
+        expect(data.quality).toBe('auto');
+    });
+
+    it('multipart edits 传 quality → 同样回显(大小写归一)', async () => {
+        mockFetch.mockResolvedValueOnce(upstreamNoEcho());
+        const form = new FormData();
+        form.append('model', 'gpt-image-2');
+        form.append('prompt', '改成夜景');
+        form.append('quality', 'High');
+        form.append('image', new File([new Uint8Array([1, 2, 3])], 'in.png', { type: 'image/png' }));
+        const req = new NextRequest('https://ai.silkroadai.io/v1/images/edits', { method: 'POST', body: form });
+        const res = await POST(req, ctx('images', 'edits'));
+        const data = (await res.json()) as EchoBody;
+        expect(data.quality).toBe('high');
+    });
+
+    it('上游已带 quality → 保留不覆盖', async () => {
+        mockFetch.mockResolvedValueOnce(
+            new Response(
+                JSON.stringify({ created: 1, quality: 'medium', data: [{ b64_json: 'QUJD', size: '1024x1024' }] }),
+                { status: 200, headers: { 'content-type': 'application/json' } },
+            ),
+        );
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2', prompt: 'x', quality: 'high' },
+            }),
+            ctx('images', 'generations'),
+        );
+        const data = (await res.json()) as EchoBody;
+        expect(data.quality).toBe('medium');
+    });
+
+    it('非 gpt-image 模型:没传不注入缺省,显式传了才回显', async () => {
+        mockFetch.mockResolvedValueOnce(upstreamNoEcho());
+        let res = await POST(
+            makeReq('/images/generations', { body: { model: 'seedream-4.0', prompt: 'x' } }),
+            ctx('images', 'generations'),
+        );
+        let data = (await res.json()) as EchoBody;
+        expect(data.quality).toBeUndefined();
+        expect(data.background).toBeUndefined();
+        expect(data.output_format).toBeUndefined();
+
+        mockFetch.mockResolvedValueOnce(upstreamNoEcho());
+        res = await POST(
+            makeReq('/images/generations', { body: { model: 'seedream-4.0', prompt: 'x', quality: 'high' } }),
+            ctx('images', 'generations'),
+        );
+        data = (await res.json()) as EchoBody;
+        expect(data.quality).toBe('high');
+        expect(data.background).toBeUndefined();
+    });
+
     // ── retry-on-rejection:直签渠道(zhiyunai/ch44)收 auto 照旧、体验不变;仅当上游回 "size must use"
     //    (只有候补 Adobe/ch83 会)才补明确 size 重试一次(edits 跟随输入图、文生图 1024²)。──
     it('直签路径 size:auto → 原样透传(不重试、不被归一,ch44 体验不变)', async () => {

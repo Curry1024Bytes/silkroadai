@@ -1449,11 +1449,15 @@ function buildEstimatedUsage(prompt: string, outSize: string): JsonRecord {
     };
 }
 
+/** 请求侧待回显的 images 顶层字段(OpenAI gpt-image 官方响应形:quality/background/output_format)。
+ *  gptDefaults=true(gpt-image 系)时客户没传也按官方缺省补齐;否则只回显客户显式传的值。 */
+type ImageEchoFields = { quality: string; background: string; outputFormat: string; gptDefaults: boolean };
+
 /** 非 Gemini 图片模型(gpt-image-2 等)透传 + 响应整形:
  *  - 上游报错(非 2xx)/ 非预期形态 → 透传 status+体(**绝不隐藏报错**,客户要求),
  *    仅两个例外:审核拒绝统一文案 + 恒 400;上游 200 包 error 体 → 502(见分支内注释)。
- *  - 成功 → 补 OpenAI gpt-image 形的顶层 `size` + 估算 `usage`(上游不回 usage;若上游
- *    已带则保留不覆盖)。data[].b64_json 等字段原样保留。 */
+ *  - 成功 → 补 OpenAI gpt-image 形的顶层 `size` + 估算 `usage` + 回显 `quality` /
+ *    `background` / `output_format`(上游已带则保留不覆盖)。data[].b64_json 等字段原样保留。 */
 async function reshapeOpenAiImageResponse(
     upstream: Response,
     prompt: string,
@@ -1462,6 +1466,7 @@ async function reshapeOpenAiImageResponse(
     req: NextRequest | null = null,
     storeToUrl = false,
     transcodeJpeg = false,
+    echo: ImageEchoFields | null = null,
 ): Promise<NextResponse> {
     const text = await upstream.text();
     const headers = new Headers();
@@ -1509,6 +1514,21 @@ async function reshapeOpenAiImageResponse(
     const out: JsonRecord = { ...j };
     if (out.size === undefined && outSize) out.size = outSize;
     if (out.usage === undefined) out.usage = buildEstimatedUsage(prompt, outSize);
+
+    // 回显 quality / background / output_format(官方 gpt-image 响应顶层字段)。链路上没有一层会带:
+    // ch154 适配器只合成 {created,data,usage},new-api 重组体只加 request_id/size —— 客户的官方
+    // 兼容测试校验响应回显 quality,2026-08-11 反馈缺失。上游已带则不覆盖。
+    if (echo) {
+        const fields: Array<['quality' | 'background' | 'output_format', string, string]> = [
+            ['quality', echo.quality, 'auto'],
+            ['background', echo.background, 'opaque'],
+            ['output_format', echo.outputFormat, 'png'],
+        ];
+        for (const [key, requested, dflt] of fields) {
+            const v = requested.trim().toLowerCase() || (echo.gptDefaults ? dflt : '');
+            if (out[key] === undefined && v) out[key] = v;
+        }
+    }
 
     // 候补 adobe(Firefly)出图内嵌 C2PA 会暴露真实上游 → 剥离图内元数据(自定向:仅命中 adobe/
     // firefly 标识的图才剥,azure/gemini 出图不含该标识 → 字节原样)。放在 transcode/存图/返回之前,
@@ -1634,6 +1654,12 @@ async function handleImagesDalle(
                         model,
                         false,
                     );
+                const echo: ImageEchoFields = {
+                    quality: String(form.get('quality') ?? ''),
+                    background: String(form.get('background') ?? ''),
+                    outputFormat: String(form.get('output_format') ?? ''),
+                    gptDefaults: isGptImageModel(model),
+                };
                 try {
                     // 统一入口:gpt-image 按有无输入图分流到上游 edits/generations(与调用 path 无关);
                     // 其余非 Gemini 图片模型仍按调用 path 原样透传 multipart。
@@ -1648,6 +1674,7 @@ async function handleImagesDalle(
                         req,
                         isGptImageModel(model) && wantHostedUrl,
                         wantJpeg,
+                        echo,
                     );
                 } catch (e) {
                     if (e instanceof ImageUrlError) return imageError(e.message, 400, cap);
@@ -1718,6 +1745,12 @@ async function handleImagesDalle(
                     normalizeGptImageJson(body);
                     sizeRaw = typeof body.size === 'string' ? body.size : '';
                 }
+                const echo: ImageEchoFields = {
+                    quality: typeof body.quality === 'string' ? body.quality : '',
+                    background: typeof body.background === 'string' ? body.background : '',
+                    outputFormat: typeof body.output_format === 'string' ? body.output_format : '',
+                    gptDefaults: isGptImageModel(model),
+                };
                 try {
                     // 统一入口:gpt-image body 里带 image/image_url → 图生图 edits;否则文生图 generations。
                     const upstream = isGptImageModel(model)
@@ -1731,6 +1764,7 @@ async function handleImagesDalle(
                         req,
                         isGptImageModel(model) && wantHostedUrl,
                         wantJpeg,
+                        echo,
                     );
                 } catch (e) {
                     if (e instanceof ImageUrlError) return imageError(e.message, 400, cap);
