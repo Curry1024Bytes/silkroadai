@@ -414,3 +414,48 @@ describe('单次输入上限(按变体,2026-08-07)', () => {
         expect(((await res.json()) as { error: { message: string } }).error.message).toMatch(/at most 9 images/);
     });
 });
+
+describe('上游报错友好化(2026-08-11):审核类给可操作提示,且不泄露上游身份', () => {
+    const submitWith400 = async (upstreamBody: unknown) => {
+        mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+            const u = String(url);
+            if (u.endsWith('/v1/video/generations') && (init?.method || '').toUpperCase() === 'POST') {
+                return json(upstreamBody, 400);
+            }
+            return new Response('', { status: 200 });
+        });
+        // 文生(无参考)避免 media fetch;上游 400 → 走 submit failed 分支
+        return submitVideo(makeReq({ model: 'seedance2.0-pro-720p', prompt: '一只猫' }));
+    };
+
+    it('版权类(copyright)→ 提示更换参考图,状态 400', async () => {
+        const res = await submitWith400({
+            error: { message: '素材处理失败: input image may be related to copyright restrictions' },
+        });
+        expect(res.status).toBe(400);
+        const m = ((await res.json()) as { error: { message: string } }).error.message;
+        expect(m).toMatch(/版权/);
+        expect(m).toMatch(/更换参考图|重试/);
+    });
+
+    it('敏感类(sensitive)→ 提示调整提示词/素材', async () => {
+        const res = await submitWith400({ error: { message: 'the input may contain sensitive information' } });
+        const m = ((await res.json()) as { error: { message: string } }).error.message;
+        expect(m).toMatch(/敏感/);
+    });
+
+    it('其它上游错误 → 通用文案(不分类)', async () => {
+        const res = await submitWith400({ error: { message: 'internal upstream failure xyz' } });
+        expect(((await res.json()) as { error: { message: string } }).error.message).toBe(
+            'upstream rejected the request',
+        );
+    });
+
+    it('安全:分类文案不泄露上游身份(不含 xinhankr/artsmcp/域名/原始 body)', async () => {
+        const res = await submitWith400({
+            error: { message: 'copyright restriction at token.xinhankr.com Request ID: abc123 nginx' },
+        });
+        const m = ((await res.json()) as { error: { message: string } }).error.message;
+        expect(m).not.toMatch(/xinhankr|artsmcp|nginx|Request ID|abc123|\.com/);
+    });
+});

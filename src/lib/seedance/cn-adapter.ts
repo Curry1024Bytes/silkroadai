@@ -210,6 +210,17 @@ function err(status: number, code: string, message: string) {
     return NextResponse.json({ error: { code, message, type: 'seedance_cn_adapter_error' } }, { status });
 }
 
+/** 上游 400/5xx 报错体 → 对客【友好且不泄露上游身份】的文案(#271:只按关键词分类,绝不回原始 body/域名)。
+ *  审核类(版权/敏感)给可操作提示;其余回通用文案。原始 body 已在调用处 console.warn 落日志。 */
+function friendlyUpstreamError(body: string): string {
+    const b = (body || '').toLowerCase();
+    if (b.includes('copyright') || b.includes('版权'))
+        return '参考图/内容疑似涉及版权,被上游审核拒绝 —— 请更换参考图或调整提示词后重试';
+    if (b.includes('sensitive') || b.includes('敏感') || b.includes('sensitivecontent'))
+        return '内容被上游安全审核拒绝(疑似敏感)—— 请调整提示词或参考素材后重试';
+    return 'upstream rejected the request';
+}
+
 function isAuthorized(auth: string): boolean {
     const key = auth.replace(/^Bearer\s+/i, '').trim();
     // 渠道 key(= new-api 下发的 channel key)。设了 SEEDANCE_XHK_KEY 就精确校验,防路由被外部直接打;
@@ -473,8 +484,9 @@ export async function submitVideoWithKey(body: Record<string, unknown>, auth: st
             status: upstream.status,
             body: text.slice(0, 2000),
         });
-        // 安全:上游原始报错(可能含域名/server 标识)只落日志(见上 console.warn);客户拿通用文案 + status
-        return err(upstream.status >= 400 ? upstream.status : 502, 'upstream_error', 'upstream rejected the request');
+        // 安全:上游原始报错(可能含域名/server 标识)只落日志(见上 console.warn);
+        // 客户拿【分类后】文案 —— 审核类(版权/敏感)给可操作提示,其余通用。不回原始 body。
+        return err(upstream.status >= 400 ? upstream.status : 502, 'upstream_error', friendlyUpstreamError(text));
     }
     return NextResponse.json(
         {
@@ -532,9 +544,9 @@ export async function pollVideoWithKey(id: string, auth: string, region: Seedanc
             status: upstream.status,
             body: text.slice(0, 2000),
         });
-        // 安全:上游原始报错只落日志(见上 console.warn);客户拿通用文案。
+        // 安全:上游原始报错只落日志(见上 console.warn);客户拿【分类后】文案(审核类给提示)。
         // 注:内容审核失败走 HTTP 200 + status:failed + fail_reason(不经此分支),客户仍能看到审核提示。
-        return err(upstream.status >= 400 ? upstream.status : 502, 'upstream_error', 'upstream rejected the request');
+        return err(upstream.status >= 400 ? upstream.status : 502, 'upstream_error', friendlyUpstreamError(text));
     }
     const status = mapStatus(j.status);
     const videoUrl = firstVideoUrl(j.data);
