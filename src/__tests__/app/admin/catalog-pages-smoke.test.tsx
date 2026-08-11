@@ -32,4 +32,12 @@ describe('admin catalog pages — SSR smoke (P2)', () => {
         expect(html).toMatch(/<button[^>]*type="button"[^>]*data-testid="pricing-calculator-reset"/);
         expect(html).not.toMatch(/<button[^>]*disabled=""[^>]*data-testid="pricing-calculator-reset"/);
     });
+
+    it('keeps the operator view in Chinese and avoids misleading summed-token copy', () => {
+        const html = renderToString(<PricingCalculatorPage />);
+        expect(html).toContain('成本 = 官方价格');
+        expect(html).toContain('这条请求预计扣费');
+        expect(html).toContain('高级：new-api 核对值');
+        expect(html).not.toContain('per 1M token categories total');
+    });
 });

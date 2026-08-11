@@ -142,108 +142,128 @@ function getTexts(locale: Locale) {
     if (locale === 'en') {
         return {
             title: 'Pricing calculator',
-            subtitle: 'Upstream cost → retail price → new-api ratios. Preview only.',
-            safe: 'Preview only — this page does not save prices or write new-api options.',
-            upstream: 'Upstream economics',
-            upstreamCredits: 'Upstream credit / ¥1',
-            upstreamCreditsHint: '¥1 → how many upstream USD credits',
+            subtitle: 'Estimate upstream cost, customer charge, and profit. Preview only.',
+            safe: 'This calculator only estimates prices. It does not change any live setting.',
+            formula: 'Cost = official price × upstream ratio ÷ credits per ¥1. Retail = cost × (1 + markup).',
+            upstream: '1. Upstream cost',
+            upstreamNote: 'Enter the price and rules from this upstream.',
+            upstreamCredits: 'Credits from ¥1 recharge',
+            upstreamCreditsHint: 'For 1:10, enter 10.',
             upstreamRatio: 'Upstream channel ratio',
-            markup: 'Target markup (%)',
+            upstreamRatioHint: 'For 10x, enter 10.',
             official: 'Official token prices',
+            officialNote: 'USD per 1 million tokens. Copy these from the upstream model page.',
             input: 'Input',
             output: 'Output',
             cacheRead: 'Cache read',
             cacheWrite: 'Cache write / 5m',
-            perMillion: '$ / 1M token',
-            group: 'Portal tier',
-            groupRatio: 'GroupRatio',
-            portal: 'Portal conversion context',
-            chatFx: '¥ / 1M quota',
-            quotaPerUsd: 'Quota / USD',
-            usdToCny: 'Live Portal USD→CNY',
-            sample: 'Sample request',
-            tokens: 'tokens',
+            group: 'Customer group',
+            groupRatio: 'Current group multiplier (GroupRatio)',
+            groupRatioHint: 'Usually loaded from new-api. Only edit for a simulation.',
+            sales: '2. Sales plan',
+            salesNote: 'Choose the group used by this customer and set your target markup.',
+            markup: 'Target markup (%)',
+            portal: 'Advanced system values',
+            chatFx: 'CNY value of 1M quota',
+            quotaPerUsd: 'Quota per technical USD',
+            usdToCny: 'Current Portal USD/CNY',
+            sample: '3. Verify with a real request',
+            sampleNote: 'Optional. Enter a request log to check its expected deduction.',
+            tokens: 'Token count',
             model: 'Model label',
-            result: 'Calculated result',
+            result: 'Token price comparison',
+            resultNote: 'Each row is a separate price per 1 million tokens; they are not added together.',
             cost: 'Upstream cost',
-            retail: 'Retail price',
+            retail: 'Customer charge',
             profit: 'Profit',
             margin: 'Margin',
-            ratio: 'Ratios to sync',
-            sampleResult: 'Sample charge',
+            ratio: 'Advanced new-api check',
+            ratioNote: 'These values only verify current new-api pricing. This page does not save them.',
+            sampleResult: 'Expected deduction for this request',
             category: 'Token type',
             officialPrice: 'Official $/1M',
             costCny: 'Cost ¥/1M',
-            retailCny: 'Retail ¥/1M',
+            retailCny: 'Charge ¥/1M',
             profitCny: 'Profit ¥/1M',
-            modelRatio: 'ModelRatio',
-            completionRatio: 'CompletionRatio',
-            cacheRatio: 'CacheRatio',
-            createCacheRatio: 'CreateCacheRatio',
+            modelRatio: 'Input multiplier (ModelRatio)',
+            completionRatio: 'Output multiplier (CompletionRatio)',
+            cacheRatio: 'Cache read multiplier (CacheRatio)',
+            createCacheRatio: 'Cache write multiplier',
             sampleUpstream: 'Upstream cost',
             sampleRetail: 'Customer charge',
             sampleProfit: 'Profit',
-            technicalUsd: 'new-api technical USD',
-            quota: 'Raw quota',
+            technicalUsd: 'Technical USD equivalent',
+            quota: 'Deducted quota',
             reset: 'Reset',
             resetComplete: 'Default sample restored.',
-            loadingContext: 'Loading live GroupRatio…',
-            contextError: 'Live context unavailable; editable defaults are being used.',
+            loadingContext: 'Loading current group settings…',
+            contextError: 'Current group settings are unavailable; editable defaults are being used.',
             invalid: 'Enter valid positive prices and ratios to calculate.',
-            note: 'The cost column is derived from upstream rules. The Admin pricing page should receive the Retail ¥/1M values, not the official USD prices.',
+            note: 'Use the charge column when entering prices in Admin → Pricing.',
+            advanced: 'Advanced settings',
         };
     }
     return {
         title: '定价计算器',
-        subtitle: '上游成本 → 用户零售价 → new-api 倍率，只读预览',
-        safe: '仅预览：本页面不会保存价格，也不会写入 new-api 配置。',
-        upstream: '上游经济参数',
+        subtitle: '算清上游成本、用户扣费和利润，只做预览',
+        safe: '本页只计算，不会保存或修改任何线上价格。',
+        formula: '成本 = 官方价格 × 上游渠道倍率 ÷ 充值 ¥1 获得的额度；售价 = 成本 ×（1 + 加价率）。',
+        upstream: '1. 填上游成本',
+        upstreamNote: '按当前上游的充值规则、渠道倍率和模型价格填写。',
         upstreamCredits: '充值 ¥1 获得上游额度',
         upstreamCreditsHint: '例如 1:10 就填 10',
         upstreamRatio: '上游渠道倍率',
-        markup: '目标加价率 (%)',
+        upstreamRatioHint: '例如 10x 就填 10',
         official: '官方 Token 价格',
+        officialNote: '单位均为 美元 / 100 万 token，请从上游模型广场抄入。',
         input: '普通输入',
         output: '输出',
         cacheRead: '缓存读取',
         cacheWrite: '缓存写入 / 5 分钟',
-        perMillion: '$ / 100 万 token',
-        group: 'Portal 档次',
-        groupRatio: 'GroupRatio',
-        portal: 'Portal 换算上下文',
-        chatFx: '每 100 万 quota 对应 ¥',
-        quotaPerUsd: 'quota / USD',
-        usdToCny: 'Portal USD→CNY',
-        sample: '样例请求',
-        tokens: 'token 数',
-        model: '模型备注',
-        result: '计算结果',
+        group: '用户销售分组',
+        groupRatio: '当前分组倍率（GroupRatio）',
+        groupRatioHint: '通常自动从 new-api 读取；仅临时模拟时才手动修改。',
+        sales: '2. 设置售价',
+        salesNote: '选择用户所在分组，再填期望加价率。',
+        markup: '目标加价率 (%)',
+        portal: '高级：系统换算参数',
+        chatFx: '每 100 万 quota 对应人民币',
+        quotaPerUsd: '每技术 USD 对应 quota',
+        usdToCny: '当前 Portal 美元兑人民币',
+        sample: '3. 用真实请求核对',
+        sampleNote: '可选。填入一条日志的 Token 数，核对预计扣费。',
+        tokens: 'Token 数量',
+        model: '模型名称',
+        result: '每类 Token 单价对照',
+        resultNote: '每行都是单独的“每 100 万 token”价格，不能相加。',
         cost: '上游成本',
-        retail: '用户零售价',
+        retail: '用户扣费',
         profit: '利润',
         margin: '毛利率',
-        ratio: '建议同步倍率',
-        sampleResult: '样例扣费',
+        ratio: '高级：new-api 核对值',
+        ratioNote: '只用于核对当前 new-api 定价，不会自动保存或修改。',
+        sampleResult: '这条请求预计扣费',
         category: 'Token 类型',
-        officialPrice: '官方 $/1M',
-        costCny: '成本 ¥/1M',
-        retailCny: '零售 ¥/1M',
-        profitCny: '利润 ¥/1M',
-        modelRatio: 'ModelRatio',
-        completionRatio: 'CompletionRatio',
-        cacheRatio: 'CacheRatio',
-        createCacheRatio: 'CreateCacheRatio',
+        officialPrice: '官方价格（美元/百万）',
+        costCny: '成本（元/百万）',
+        retailCny: '用户扣费（元/百万）',
+        profitCny: '利润（元/百万）',
+        modelRatio: '输入倍率（ModelRatio）',
+        completionRatio: '输出倍率（CompletionRatio）',
+        cacheRatio: '缓存读取倍率（CacheRatio）',
+        createCacheRatio: '缓存写入倍率',
         sampleUpstream: '上游成本',
         sampleRetail: '用户扣费',
         sampleProfit: '利润',
-        technicalUsd: 'new-api 技术 USD',
-        quota: 'Raw quota',
+        technicalUsd: '技术 USD',
+        quota: '实际扣减 quota',
         reset: '重置',
         resetComplete: '已恢复默认计算样例。',
-        loadingContext: '正在读取 live GroupRatio…',
-        contextError: '无法读取 live 上下文，当前使用可编辑的默认值。',
+        loadingContext: '正在读取当前分组设置…',
+        contextError: '无法读取当前分组设置，已使用可编辑的默认值。',
         invalid: '请输入有效的正数价格和倍率后再计算。',
-        note: '成本由上游规则推导。真正填入 Admin「定价」页面的应是“零售 ¥/1M”，不是官方美元价格。',
+        note: '将“用户扣费 ¥/1M”一列填入 Admin「定价」页面。',
+        advanced: '高级参数',
     };
 }
 
@@ -302,7 +322,17 @@ function Field({
     );
 }
 
-function Panel({ title, children, isDark }: { title: string; children: ReactNode; isDark: boolean }) {
+function Panel({
+    title,
+    note,
+    children,
+    isDark,
+}: {
+    title: string;
+    note?: string;
+    children: ReactNode;
+    isDark: boolean;
+}) {
     return (
         <section
             className={[
@@ -313,6 +343,11 @@ function Panel({ title, children, isDark }: { title: string; children: ReactNode
             <h2 className={['mb-4 text-sm font-semibold', isDark ? 'text-slate-100' : 'text-slate-900'].join(' ')}>
                 {title}
             </h2>
+            {note && (
+                <p className={['-mt-2 mb-4 text-xs leading-5', isDark ? 'text-slate-400' : 'text-slate-500'].join(' ')}>
+                    {note}
+                </p>
+            )}
             {children}
         </section>
     );
@@ -446,6 +481,17 @@ export default function PricingCalculatorPage() {
                 <span className="ml-2 opacity-80">{t.note}</span>
             </div>
 
+            <div
+                className={[
+                    'mb-5 rounded-lg border px-4 py-3 text-xs leading-5',
+                    isDark
+                        ? 'border-slate-700 bg-slate-900/60 text-slate-300'
+                        : 'border-slate-200 bg-slate-50 text-slate-600',
+                ].join(' ')}
+            >
+                {t.formula}
+            </div>
+
             {resetComplete && (
                 <p className={['-mt-2 mb-4 text-sm text-emerald-700', isDark ? 'text-emerald-300' : ''].join(' ')}>
                     {t.resetComplete}
@@ -471,7 +517,7 @@ export default function PricingCalculatorPage() {
 
             <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(360px,0.9fr)_minmax(560px,1.5fr)]">
                 <div className="space-y-5">
-                    <Panel title={t.upstream} isDark={isDark}>
+                    <Panel title={t.upstream} note={t.upstreamNote} isDark={isDark}>
                         <div className={inputClass}>
                             <Field
                                 label={t.model}
@@ -489,22 +535,15 @@ export default function PricingCalculatorPage() {
                             />
                             <Field
                                 label={t.upstreamRatio}
+                                hint={t.upstreamRatioHint}
                                 value={form.upstreamChannelRatio}
                                 onChange={(value) => update('upstreamChannelRatio', value)}
                                 isDark={isDark}
                             />
-                            <Field
-                                label={t.markup}
-                                value={form.markupPercent}
-                                onChange={(value) => update('markupPercent', value)}
-                                isDark={isDark}
-                                step="1"
-                            />
                         </div>
                     </Panel>
 
-                    <Panel title={t.official} isDark={isDark}>
-                        <div className="mb-3 text-xs text-slate-500">{t.perMillion}</div>
+                    <Panel title={t.official} note={t.officialNote} isDark={isDark}>
                         <div className={inputClass}>
                             <Field
                                 label={t.input}
@@ -533,25 +572,8 @@ export default function PricingCalculatorPage() {
                         </div>
                     </Panel>
 
-                    <Panel title={t.portal} isDark={isDark}>
-                        {context && (
-                            <div className={['mb-3 text-xs', muted].join(' ')}>
-                                {t.usdToCny}: {decimal(context.usd_to_cny_rate, 4)}
-                            </div>
-                        )}
+                    <Panel title={t.sales} note={t.salesNote} isDark={isDark}>
                         <div className={inputClass}>
-                            <Field
-                                label={t.chatFx}
-                                value={form.chatFx}
-                                onChange={(value) => update('chatFx', value)}
-                                isDark={isDark}
-                            />
-                            <Field
-                                label={t.quotaPerUsd}
-                                value={form.quotaPerUsd}
-                                onChange={(value) => update('quotaPerUsd', value)}
-                                isDark={isDark}
-                            />
                             <div>
                                 <label className={['mb-1 block text-xs font-medium', muted].join(' ')}>{t.group}</label>
                                 <select
@@ -584,16 +606,61 @@ export default function PricingCalculatorPage() {
                                 </select>
                             </div>
                             <Field
-                                label={t.groupRatio}
-                                value={form.groupRatio}
-                                onChange={(value) => update('groupRatio', value)}
+                                label={t.markup}
+                                value={form.markupPercent}
+                                onChange={(value) => update('markupPercent', value)}
                                 isDark={isDark}
+                                step="1"
                             />
                         </div>
                     </Panel>
 
-                    <Panel title={t.sample} isDark={isDark}>
-                        <div className="mb-3 text-xs text-slate-500">{t.tokens}</div>
+                    <details
+                        className={[
+                            'rounded-xl border p-4',
+                            isDark ? 'border-slate-700 bg-slate-900/70' : 'border-slate-200 bg-white shadow-sm',
+                        ].join(' ')}
+                    >
+                        <summary
+                            className={[
+                                'cursor-pointer text-sm font-semibold',
+                                isDark ? 'text-slate-100' : 'text-slate-900',
+                            ].join(' ')}
+                        >
+                            {t.advanced}
+                        </summary>
+                        <div className="mt-4">
+                            <p className={['mb-4 text-xs leading-5', muted].join(' ')}>{t.portal}</p>
+                            {context && (
+                                <div className={['mb-3 text-xs', muted].join(' ')}>
+                                    {t.usdToCny}: {decimal(context.usd_to_cny_rate, 4)}
+                                </div>
+                            )}
+                            <div className={inputClass}>
+                                <Field
+                                    label={t.chatFx}
+                                    value={form.chatFx}
+                                    onChange={(value) => update('chatFx', value)}
+                                    isDark={isDark}
+                                />
+                                <Field
+                                    label={t.quotaPerUsd}
+                                    value={form.quotaPerUsd}
+                                    onChange={(value) => update('quotaPerUsd', value)}
+                                    isDark={isDark}
+                                />
+                                <Field
+                                    label={t.groupRatio}
+                                    hint={t.groupRatioHint}
+                                    value={form.groupRatio}
+                                    onChange={(value) => update('groupRatio', value)}
+                                    isDark={isDark}
+                                />
+                            </div>
+                        </div>
+                    </details>
+
+                    <Panel title={t.sample} note={t.sampleNote} isDark={isDark}>
                         <div className={inputClass}>
                             <Field
                                 label={t.input}
@@ -632,27 +699,36 @@ export default function PricingCalculatorPage() {
                         <div className={['rounded-xl border p-6 text-sm', card, muted].join(' ')}>{t.invalid}</div>
                     ) : (
                         <>
-                            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-                                {[
-                                    [t.cost, money(result.upstreamCostCnyPer1m.total)],
-                                    [t.retail, money(result.retailCnyPer1m.total)],
-                                    [t.profit, money(result.profitCnyPer1m.total)],
-                                    [
-                                        t.margin,
-                                        `${((result.profitCnyPer1m.total / result.retailCnyPer1m.total) * 100).toFixed(2)}%`,
-                                    ],
-                                ].map(([label, value]) => (
-                                    <div key={label} className={['rounded-xl border p-4', card].join(' ')}>
-                                        <div className={['text-xs', muted].join(' ')}>{label}</div>
-                                        <div className={['mt-1 text-xl font-semibold', strong].join(' ')}>{value}</div>
-                                        <div className={['mt-1 text-[11px]', muted].join(' ')}>
-                                            per 1M token categories total
-                                        </div>
+                            <Panel title={t.sampleResult} isDark={isDark}>
+                                {result.sample && (
+                                    <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+                                        {[
+                                            [t.sampleUpstream, money(result.sample.upstreamCostCny, 6)],
+                                            [t.sampleRetail, money(result.sample.retailCny, 6)],
+                                            [t.sampleProfit, money(result.sample.profitCny, 6)],
+                                            [t.margin, `${(result.sample.marginRate * 100).toFixed(2)}%`],
+                                        ].map(([label, value], index) => (
+                                            <div key={label}>
+                                                <div className={['text-xs', muted].join(' ')}>{label}</div>
+                                                <div
+                                                    className={[
+                                                        'mt-1 text-lg font-semibold',
+                                                        index === 1
+                                                            ? isDark
+                                                                ? 'text-emerald-300'
+                                                                : 'text-emerald-700'
+                                                            : strong,
+                                                    ].join(' ')}
+                                                >
+                                                    {value}
+                                                </div>
+                                            </div>
+                                        ))}
                                     </div>
-                                ))}
-                            </div>
+                                )}
+                            </Panel>
 
-                            <Panel title={t.result} isDark={isDark}>
+                            <Panel title={t.result} note={t.resultNote} isDark={isDark}>
                                 <div className="overflow-x-auto">
                                     <table className="w-full min-w-[600px] text-sm">
                                         <thead
@@ -698,7 +774,21 @@ export default function PricingCalculatorPage() {
                                 </div>
                             </Panel>
 
-                            <Panel title={t.ratio} isDark={isDark}>
+                            <details
+                                className={[
+                                    'rounded-xl border p-4',
+                                    isDark ? 'border-slate-700 bg-slate-900/70' : 'border-slate-200 bg-white shadow-sm',
+                                ].join(' ')}
+                            >
+                                <summary
+                                    className={[
+                                        'cursor-pointer text-sm font-semibold',
+                                        isDark ? 'text-slate-100' : 'text-slate-900',
+                                    ].join(' ')}
+                                >
+                                    {t.ratio}
+                                </summary>
+                                <p className={['mb-4 mt-3 text-xs leading-5', muted].join(' ')}>{t.ratioNote}</p>
                                 <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
                                     {[
                                         [t.modelRatio, result.ratios.modelRatio],
@@ -724,31 +814,13 @@ export default function PricingCalculatorPage() {
                                         </div>
                                     ))}
                                 </div>
-                                <p className={['mt-3 text-xs', muted].join(' ')}>
-                                    {locale === 'en'
-                                        ? 'Use the Retail ¥/1M input and output values on the Admin Pricing page. These ratios are a consistency preview; this calculator does not apply them.'
-                                        : '把上面的“零售 ¥/1M”输入价和输出价填入 Admin「定价」页面。这里的倍率只是核对结果，本页面不会应用它们。'}
-                                </p>
-                            </Panel>
-
-                            <Panel title={t.sampleResult} isDark={isDark}>
                                 {result.sample && (
-                                    <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
-                                        {[
-                                            [t.sampleUpstream, money(result.sample.upstreamCostCny, 6)],
-                                            [t.sampleRetail, money(result.sample.retailCny, 6)],
-                                            [t.sampleProfit, money(result.sample.profitCny, 6)],
-                                            [t.technicalUsd, `$${result.sample.technicalUsd.toFixed(6)}`],
-                                            [t.quota, result.sample.quota.toLocaleString('en-US')],
-                                        ].map(([label, value]) => (
-                                            <div key={label}>
-                                                <div className={['text-xs', muted].join(' ')}>{label}</div>
-                                                <div className={['mt-1 font-semibold', strong].join(' ')}>{value}</div>
-                                            </div>
-                                        ))}
-                                    </div>
+                                    <p className={['mt-4 text-xs leading-5', muted].join(' ')}>
+                                        {t.technicalUsd}: ${result.sample.technicalUsd.toFixed(6)} · {t.quota}:{' '}
+                                        {result.sample.quota.toLocaleString('en-US')}
+                                    </p>
                                 )}
-                            </Panel>
+                            </details>
                         </>
                     )}
                 </div>
