@@ -15,26 +15,20 @@ import { variantForModel, regionForModel, type SeedanceVariant, type SeedanceReg
 /** 企业门户任务在 seedance_video_tasks.tier 里的标记(区分 seedance-cn 渠道任务)。 */
 export const ENTERPRISE_TIER = 'enterprise-portal';
 
-async function rateOverrideCnyPerM(
+/** 客户 per-模型议价折扣(enterprise_model_discounts,按 客户×渠道×模型档)。【优先级最高】。
+ *  返回折扣率;无行 / 非法值 → null(回落全局折扣 / 客户整体折扣)。 */
+async function modelDiscountFor(
     userId: string,
     variant: SeedanceVariant,
-    resolution: Resolution,
-    hasVideo: boolean,
     region: SeedanceRegion,
 ): Promise<number | null> {
-    const row = await prisma.enterpriseRateOverride.findUnique({
-        where: {
-            user_id_region_variant_resolution_has_video: {
-                user_id: userId,
-                region,
-                variant,
-                resolution,
-                has_video: hasVideo,
-            },
-        },
-        select: { cny_per_m: true },
+    const row = await prisma.enterpriseModelDiscount.findUnique({
+        where: { user_id_region_variant: { user_id: userId, region, variant } },
+        select: { discount: true },
     });
-    return row ? Number(row.cny_per_m) : null;
+    if (!row) return null;
+    const d = Number(row.discount);
+    return Number.isFinite(d) && d > 0 ? d : null;
 }
 
 /** 客户级折扣率(enterprise_upstream_keys.discount,每版本一行 → 国内/海外独立)。
@@ -62,11 +56,11 @@ async function globalDiscountFor(region: SeedanceRegion, variant: SeedanceVarian
     return Number.isFinite(d) && d > 0 ? d : null;
 }
 
-/** 对客 ¥ 计价优先级(2026-08-08 起三层):
- *   1. 议价覆盖(enterprise_rate_overrides 绝对单价)—— 客户协议价,最高优先,不受促销影响;
- *   2. 全局折扣(enterprise_global_discounts 按 渠道×模型)—— 促销期【覆盖】客户折扣率,仅目标模型;
- *   3. 客户折扣率(enterprise_upstream_keys.discount)—— 缺省。
- *  实付 = 官方挂牌价 × 生效折扣(全局折扣存在则用之,否则客户折扣)。海外挂牌价 = 国内(operator 拍板)。 */
+/** 对客 ¥ 计价优先级(2026-08-11 起,全折扣制三层,取第一个命中):
+ *   1. per-模型议价折扣(enterprise_model_discounts 按 客户×渠道×模型)—— 【最高】,客户协议价;
+ *   2. 全局折扣(enterprise_global_discounts 按 渠道×模型)—— 促销,覆盖客户整体折扣,按模型隔离;
+ *   3. 客户整体折扣(enterprise_upstream_keys.discount)—— 缺省。
+ *  实付 = 官方挂牌价 × 生效折扣。三层都按 (渠道×模型) 隔离,不影响其它模型。海外挂牌价 = 国内(operator 拍板)。 */
 export async function computeEnterpriseCostCny(
     userId: string,
     tokens: number | bigint,
@@ -75,15 +69,14 @@ export async function computeEnterpriseCostCny(
     variant: SeedanceVariant = 'pro',
     region: SeedanceRegion = 'cn',
 ): Promise<number> {
-    const [override, customerDisc, globalDisc] = await Promise.all([
-        rateOverrideCnyPerM(userId, variant, resolution, hasVideo, region),
-        customerDiscount(userId, region),
+    const [modelDisc, globalDisc, customerDisc] = await Promise.all([
+        modelDiscountFor(userId, variant, region),
         globalDiscountFor(region, variant),
+        customerDiscount(userId, region),
     ]);
     const t = typeof tokens === 'bigint' ? Number(tokens) : tokens;
-    if (override != null) return +((t / 1e6) * override).toFixed(6);
-    // 全局折扣覆盖客户折扣(按模型隔离,不影响其它模型;不覆盖上面的绝对议价)
-    const discount = globalDisc ?? customerDisc;
+    // per-模型议价 > 全局折扣 > 客户整体折扣(取第一个非空)
+    const discount = modelDisc ?? globalDisc ?? customerDisc;
     return +(officialCostCny(t, resolution, hasVideo, variant) * discount).toFixed(6);
 }
 

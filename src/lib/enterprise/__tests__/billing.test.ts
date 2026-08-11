@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const { db, applyLedgerEntry } = vi.hoisted(() => ({
     db: {
         seedanceVideoTask: { findUnique: vi.fn(), updateMany: vi.fn() },
-        enterpriseRateOverride: { findUnique: vi.fn() },
+        enterpriseModelDiscount: { findUnique: vi.fn() },
         enterpriseUpstreamKey: { findUnique: vi.fn() },
         enterpriseGlobalDiscount: { findUnique: vi.fn() },
     },
@@ -28,7 +28,7 @@ import {
 
 beforeEach(() => {
     vi.clearAllMocks();
-    db.enterpriseRateOverride.findUnique.mockResolvedValue(null);
+    db.enterpriseModelDiscount.findUnique.mockResolvedValue(null); // 默认无 per-模型议价折扣
     // 新口径(2026-08-07):discount 相对【官方挂牌价】,0.85 = 标准零售(= 旧口径 discount:1)
     db.enterpriseUpstreamKey.findUnique.mockResolvedValue({ discount: '0.85' });
     db.enterpriseGlobalDiscount.findUnique.mockResolvedValue(null); // 默认无全局折扣
@@ -39,20 +39,12 @@ describe('computeEnterpriseCostCny', () => {
         expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false)).toBeCloseTo(39.1, 4);
     });
 
-    it('有覆盖 → 按覆盖价(¥30/1M),覆盖键带 variant(缺省 pro)', async () => {
-        db.enterpriseRateOverride.findUnique.mockResolvedValue({ cny_per_m: '30' });
-        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false)).toBeCloseTo(30, 4);
-        expect(db.enterpriseRateOverride.findUnique).toHaveBeenCalledWith(
+    it('per-模型议价折扣 → 官方 × 该折扣(优先级最高;pro 0.8 → 46×0.8=¥36.8),按 (user,region,variant) 查', async () => {
+        db.enterpriseModelDiscount.findUnique.mockResolvedValue({ discount: '0.8' });
+        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false)).toBeCloseTo(36.8, 4);
+        expect(db.enterpriseModelDiscount.findUnique).toHaveBeenCalledWith(
             expect.objectContaining({
-                where: {
-                    user_id_region_variant_resolution_has_video: {
-                        user_id: 'u1',
-                        region: 'cn',
-                        variant: 'pro',
-                        resolution: '720p',
-                        has_video: false,
-                    },
-                },
+                where: { user_id_region_variant: { user_id: 'u1', region: 'cn', variant: 'pro' } },
             }),
         );
     });
@@ -66,10 +58,10 @@ describe('computeEnterpriseCostCny', () => {
         expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', true, 'mini')).toBeCloseTo(11.9, 4);
         // mini 1080p 单独档(挂牌 25.5/15.5,2026-08-08):含视 13.175
         expect(await computeEnterpriseCostCny('u1', 1_000_000, '1080p', true, 'mini')).toBeCloseTo(13.175, 4);
-        expect(db.enterpriseRateOverride.findUnique).toHaveBeenLastCalledWith(
+        expect(db.enterpriseModelDiscount.findUnique).toHaveBeenLastCalledWith(
             expect.objectContaining({
                 where: expect.objectContaining({
-                    user_id_region_variant_resolution_has_video: expect.objectContaining({ variant: 'mini' }),
+                    user_id_region_variant: expect.objectContaining({ variant: 'mini' }),
                 }),
             }),
         );
@@ -81,10 +73,10 @@ describe('computeEnterpriseCostCny', () => {
         expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false, 'mini')).toBeCloseTo(20.7, 4); // 23×0.9
     });
 
-    it('单档覆盖是绝对单价,不再乘折扣(覆盖 ¥30 + 折扣 0.5 → 仍 ¥30)', async () => {
+    it('per-模型议价折扣覆盖客户整体折扣(客户 0.5,议价 0.8 → 官方 46×0.8=¥36.8,不折上折)', async () => {
         db.enterpriseUpstreamKey.findUnique.mockResolvedValue({ discount: '0.5' });
-        db.enterpriseRateOverride.findUnique.mockResolvedValue({ cny_per_m: '30' });
-        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false)).toBeCloseTo(30, 4);
+        db.enterpriseModelDiscount.findUnique.mockResolvedValue({ discount: '0.8' });
+        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false)).toBeCloseTo(36.8, 4);
     });
 
     it('全局折扣【覆盖】客户折扣率(客户 0.85,全局 0.6 → 官方 37×0.6=¥22.2/1M,fast)', async () => {
@@ -109,10 +101,10 @@ describe('computeEnterpriseCostCny', () => {
         expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false, 'fast')).toBeCloseTo(31.45, 4); // 37×0.85
     });
 
-    it('议价绝对单价 > 全局折扣(有覆盖 ¥30 + 全局 0.6 → 仍 ¥30)', async () => {
-        db.enterpriseRateOverride.findUnique.mockResolvedValue({ cny_per_m: '30' });
+    it('per-模型议价折扣 > 全局折扣(议价 0.8 + 全局 0.6 → 官方 37×0.8=¥29.6,fast,议价胜)', async () => {
+        db.enterpriseModelDiscount.findUnique.mockResolvedValue({ discount: '0.8' });
         db.enterpriseGlobalDiscount.findUnique.mockResolvedValue({ discount: '0.6', expires_at: null });
-        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false, 'fast')).toBeCloseTo(30, 4);
+        expect(await computeEnterpriseCostCny('u1', 1_000_000, '720p', false, 'fast')).toBeCloseTo(29.6, 4);
     });
 
     it('无 upstream key 行 / 非法折扣值 → 回落 1(不打折)', async () => {
@@ -130,11 +122,9 @@ describe('computeEnterpriseCostCny', () => {
         expect(db.enterpriseUpstreamKey.findUnique).toHaveBeenLastCalledWith(
             expect.objectContaining({ where: { user_id_region: { user_id: 'u1', region: 'global' } } }),
         );
-        expect(db.enterpriseRateOverride.findUnique).toHaveBeenLastCalledWith(
+        expect(db.enterpriseModelDiscount.findUnique).toHaveBeenLastCalledWith(
             expect.objectContaining({
-                where: expect.objectContaining({
-                    user_id_region_variant_resolution_has_video: expect.objectContaining({ region: 'global' }),
-                }),
+                where: { user_id_region_variant: expect.objectContaining({ region: 'global' }) },
             }),
         );
     });
@@ -237,15 +227,14 @@ describe('computeEnterpriseCostCny', () => {
         expect(r.costCny).toBeCloseTo(31.45, 4);
     });
 
-    it('覆盖按 (resolution, has_video) 分档独立', async () => {
-        db.enterpriseRateOverride.findUnique.mockResolvedValue(null);
-        // 4k 含视频默认 ¥13.6/1M
+    it('无议价折扣 → 官方 4k 含视 × 0.85(pro 4k 含视 16 × 0.85 = 13.6/1M)', async () => {
+        db.enterpriseModelDiscount.findUnique.mockResolvedValue(null);
         expect(await computeEnterpriseCostCny('u1', 2_000_000, '4k', true)).toBeCloseTo(27.2, 4);
     });
 
     it('estimate:含视频 1.5× 缓冲', async () => {
         const noVideo = await estimateEnterpriseCostCny('u1', '720p', 5, false);
-        db.enterpriseRateOverride.findUnique.mockResolvedValue(null);
+        db.enterpriseModelDiscount.findUnique.mockResolvedValue(null);
         const withVideo = await estimateEnterpriseCostCny('u1', '720p', 5, true);
         expect(noVideo).toBeGreaterThan(0);
         expect(withVideo).toBeGreaterThan(0);
@@ -312,13 +301,13 @@ describe('chargeEnterpriseVideoTask', () => {
         expect(db.seedanceVideoTask.updateMany).toHaveBeenCalledTimes(1);
     });
 
-    it('议价覆盖生效于扣费:覆盖 ¥30/1M → 扣 ¥30', async () => {
+    it('per-模型议价折扣生效于扣费:pro 议价 0.8 → 官方 46×0.8=扣 ¥36.8', async () => {
         db.seedanceVideoTask.findUnique.mockResolvedValue(task);
         db.seedanceVideoTask.updateMany.mockResolvedValue({ count: 1 });
-        db.enterpriseRateOverride.findUnique.mockResolvedValue({ cny_per_m: '30' });
+        db.enterpriseModelDiscount.findUnique.mockResolvedValue({ discount: '0.8' });
         applyLedgerEntry.mockResolvedValue({ balance_after: { toFixed: () => '0.00' } });
         const r = await chargeEnterpriseVideoTask('cgt-1');
-        expect(r.costCny).toBeCloseTo(30, 4);
-        expect(applyLedgerEntry).toHaveBeenCalledWith('u1', expect.objectContaining({ amount_cny: -30 }));
+        expect(r.costCny).toBeCloseTo(36.8, 4);
+        expect(applyLedgerEntry).toHaveBeenCalledWith('u1', expect.objectContaining({ amount_cny: -36.8 }));
     });
 });

@@ -7,19 +7,20 @@ import { resolveAdmin } from '@/lib/admin/auth';
 export const runtime = 'nodejs';
 
 /**
- * POST /api/admin/enterprise/rate-override — 大客户议价费率 upsert/删除(P1,决策 Q4)。
+ * POST /api/admin/enterprise/rate-override — 客户 per-模型议价折扣 upsert/删除(2026-08-11 重构)。
  *
- * cny_per_m 传数字 = upsert 该 (user, resolution, has_video) 档的元/1M token;
- * 传 null = 删除覆盖(回落 cn-billing 默认挂牌)。守门:superadmin。
- * ⚠️ 只影响【下一次扣费】(轮询完成时算价);已 billed 任务不重算。
+ * 旧版是按 分辨率×含视 的绝对单价;现改为按 (客户, 渠道, 模型档) 的【折扣率】,优先级最高
+ * (覆盖全局折扣与客户整体折扣,按模型隔离)。discount 传数字 = upsert;传 null = 删除(回落
+ * 全局折扣 / 客户整体折扣)。守门:superadmin。⚠️ 只影响【下一次扣费】,已 billed 任务不重算。
  */
 const schema = z.object({
     user_id: z.string().uuid(),
     region: z.enum(['cn', 'global', 'promax', 'volc']).default('cn'),
-    variant: z.enum(['pro', 'fast', 'mini', '2.5']).default('pro'),
-    resolution: z.enum(['480p', '720p', '1080p', '4k']),
-    has_video: z.boolean(),
-    cny_per_m: z.number().positive().max(10_000).nullable(),
+    variant: z
+        .enum(['pro', 'fast', 'mini', '2.5', 'promax', 'promax-fast', 'promax-mini', 'promax-2.5'])
+        .default('pro'),
+    // 0.05~2(>1 = 上浮);null = 删除该 (客户,渠道,模型) 议价折扣
+    discount: z.number().min(0.05).max(2).nullable(),
 });
 
 export async function POST(request: NextRequest) {
@@ -39,19 +40,16 @@ export async function POST(request: NextRequest) {
             { status: 400 },
         );
     }
-    const { user_id, region, variant, resolution, has_video, cny_per_m } = parsed.data;
-    const where = {
-        user_id_region_variant_resolution_has_video: { user_id, region, variant, resolution, has_video },
-    };
+    const { user_id, region, variant, discount } = parsed.data;
 
-    if (cny_per_m === null) {
-        await prisma.enterpriseRateOverride.deleteMany({ where: { user_id, region, variant, resolution, has_video } });
-        return NextResponse.json({ user_id, region, variant, resolution, has_video, cny_per_m: null, deleted: true });
+    if (discount === null) {
+        await prisma.enterpriseModelDiscount.deleteMany({ where: { user_id, region, variant } });
+        return NextResponse.json({ user_id, region, variant, discount: null, deleted: true });
     }
-    await prisma.enterpriseRateOverride.upsert({
-        where,
-        create: { user_id, region, variant, resolution, has_video, cny_per_m },
-        update: { cny_per_m },
+    await prisma.enterpriseModelDiscount.upsert({
+        where: { user_id_region_variant: { user_id, region, variant } },
+        create: { user_id, region, variant, discount },
+        update: { discount },
     });
-    return NextResponse.json({ user_id, region, variant, resolution, has_video, cny_per_m });
+    return NextResponse.json({ user_id, region, variant, discount });
 }
