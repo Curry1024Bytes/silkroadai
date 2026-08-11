@@ -25,4 +25,11 @@ describe('admin catalog pages — SSR smoke (P2)', () => {
         const html = renderToString(<Page />);
         expect(html.length).toBeGreaterThan(0);
     });
+
+    it('renders an enabled reset control for the pricing calculator', () => {
+        const html = renderToString(<PricingCalculatorPage />);
+        expect(html).toContain('data-testid="pricing-calculator-reset"');
+        expect(html).toMatch(/<button[^>]*type="button"[^>]*data-testid="pricing-calculator-reset"/);
+        expect(html).not.toMatch(/<button[^>]*disabled=""[^>]*data-testid="pricing-calculator-reset"/);
+    });
 });

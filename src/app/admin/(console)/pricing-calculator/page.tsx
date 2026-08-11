@@ -64,6 +64,21 @@ const DEFAULT_FORM: FormState = {
     sampleCacheWrite: '7867',
 };
 
+function formWithLiveContext(context: CalculatorContext): FormState {
+    const defaultGroup =
+        context.groups.find((group) => group.key === DEFAULT_FORM.groupKey) ??
+        context.groups.find((group) => group.is_default);
+
+    return {
+        ...DEFAULT_FORM,
+        chatFx: String(context.chat_fx_cny_per_1m_quota),
+        quotaPerUsd: String(context.quota_per_usd),
+        ...(defaultGroup?.group_ratio != null
+            ? { groupKey: defaultGroup.key, groupRatio: String(defaultGroup.group_ratio) }
+            : {}),
+    };
+}
+
 function num(value: string): number | null {
     if (!value.trim()) return null;
     const parsed = Number(value);
@@ -171,6 +186,7 @@ function getTexts(locale: Locale) {
             technicalUsd: 'new-api technical USD',
             quota: 'Raw quota',
             reset: 'Reset',
+            resetComplete: 'Default sample restored.',
             loadingContext: 'Loading live GroupRatio…',
             contextError: 'Live context unavailable; editable defaults are being used.',
             invalid: 'Enter valid positive prices and ratios to calculate.',
@@ -223,6 +239,7 @@ function getTexts(locale: Locale) {
         technicalUsd: 'new-api 技术 USD',
         quota: 'Raw quota',
         reset: '重置',
+        resetComplete: '已恢复默认计算样例。',
         loadingContext: '正在读取 live GroupRatio…',
         contextError: '无法读取 live 上下文，当前使用可编辑的默认值。',
         invalid: '请输入有效的正数价格和倍率后再计算。',
@@ -307,6 +324,8 @@ export default function PricingCalculatorPage() {
     const isDark = searchParams.get('theme') === 'dark';
     const t = getTexts(locale);
     const [form, setForm] = useState<FormState>(DEFAULT_FORM);
+    const [resetForm, setResetForm] = useState<FormState>(DEFAULT_FORM);
+    const [resetComplete, setResetComplete] = useState(false);
     const [context, setContext] = useState<CalculatorContext | null>(null);
     const [contextError, setContextError] = useState(false);
 
@@ -320,17 +339,9 @@ export default function PricingCalculatorPage() {
             .then((next) => {
                 if (cancelled) return;
                 setContext(next);
-                const defaultGroup =
-                    next.groups.find((group) => group.key === DEFAULT_FORM.groupKey) ??
-                    next.groups.find((group) => group.is_default);
-                setForm((current) => ({
-                    ...current,
-                    chatFx: String(next.chat_fx_cny_per_1m_quota),
-                    quotaPerUsd: String(next.quota_per_usd),
-                    ...(defaultGroup?.group_ratio != null
-                        ? { groupKey: defaultGroup.key, groupRatio: String(defaultGroup.group_ratio) }
-                        : {}),
-                }));
+                const nextForm = formWithLiveContext(next);
+                setForm(nextForm);
+                setResetForm(nextForm);
             })
             .catch(() => {
                 if (!cancelled) setContextError(true);
@@ -341,6 +352,7 @@ export default function PricingCalculatorPage() {
     }, []);
 
     const update = useCallback((key: keyof FormState, value: string) => {
+        setResetComplete(false);
         setForm((current) => ({ ...current, [key]: value }));
     }, []);
 
@@ -354,7 +366,10 @@ export default function PricingCalculatorPage() {
         }
     }, [form]);
 
-    const reset = () => setForm({ ...DEFAULT_FORM });
+    const reset = () => {
+        setForm({ ...resetForm });
+        setResetComplete(true);
+    };
     const card = isDark ? 'border-slate-700 bg-slate-900/70' : 'border-slate-200 bg-white shadow-sm';
     const muted = isDark ? 'text-slate-400' : 'text-slate-500';
     const strong = isDark ? 'text-slate-100' : 'text-slate-900';
@@ -406,8 +421,9 @@ export default function PricingCalculatorPage() {
                     onClick={reset}
                     title={t.reset}
                     aria-label={t.reset}
+                    data-testid="pricing-calculator-reset"
                     className={[
-                        'inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-medium transition-colors',
+                        'relative z-10 inline-flex cursor-pointer items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/60',
                         isDark
                             ? 'border-slate-600 text-slate-300 hover:bg-slate-800'
                             : 'border-slate-300 text-slate-700 hover:bg-slate-100',
@@ -429,6 +445,12 @@ export default function PricingCalculatorPage() {
                 <strong>{t.safe}</strong>
                 <span className="ml-2 opacity-80">{t.note}</span>
             </div>
+
+            {resetComplete && (
+                <p className={['-mt-2 mb-4 text-sm text-emerald-700', isDark ? 'text-emerald-300' : ''].join(' ')}>
+                    {t.resetComplete}
+                </p>
+            )}
 
             {(contextError || !context) && (
                 <div
@@ -538,6 +560,7 @@ export default function PricingCalculatorPage() {
                                         const group = context?.groups.find(
                                             (candidate) => candidate.key === event.target.value,
                                         );
+                                        setResetComplete(false);
                                         setForm((current) => ({
                                             ...current,
                                             groupKey: event.target.value,
