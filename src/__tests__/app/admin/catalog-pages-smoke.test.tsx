@@ -12,10 +12,12 @@ vi.mock('next/navigation', () => ({
 
 import ModelsPage from '@/app/admin/(console)/models/page';
 import PricingPage from '@/app/admin/(console)/pricing/page';
+import PricingCalculatorPage from '@/app/admin/(console)/pricing-calculator/page';
 
 const PAGES = [
     ['/admin/models', ModelsPage],
     ['/admin/pricing', PricingPage],
+    ['/admin/pricing-calculator', PricingCalculatorPage],
 ] as const;
 
 describe('admin catalog pages — SSR smoke (P2)', () => {
