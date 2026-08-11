@@ -95,11 +95,21 @@ const updateAssetSchema = idSchema.extend({
     GroupId: z.string().trim().max(60).nullable().optional(),
 });
 const groupTypeInput = z.enum(['AIGC', 'LivenessFace']);
+// 火山官方 Status 枚举(Title-case);平台侧素材上传即 Active,无 Processing/Failed 生命周期
+const assetStatusInput = z.enum(['Active', 'Processing', 'Failed']);
 const listAssetsSchema = z.object({
     GroupId: z.string().trim().max(60).optional(),
     AssetType: assetTypeInput.optional(),
     GroupType: groupTypeInput.optional(),
-    Filter: z.object({ GroupType: groupTypeInput.optional() }).optional(),
+    Filter: z
+        .object({
+            GroupType: groupTypeInput.optional(),
+            // 对齐火山官方 ListAssets.Filter:名称模糊 / 状态 / 组 id 数组
+            Name: z.string().trim().max(64).optional(),
+            Statuses: z.array(assetStatusInput).max(10).optional(),
+            GroupIds: z.array(z.string().trim().max(60)).max(50).optional(),
+        })
+        .optional(),
     PageNumber: z.number().int().min(1).default(1),
     PageSize: z.number().int().min(1).max(100).default(20),
 });
@@ -116,7 +126,13 @@ const updateGroupSchema = idSchema.extend({
 const listGroupsSchema = z.object({
     // 官方语义:query 缺省只列 AIGC,真人组须显式 GroupType=LivenessFace
     GroupType: groupTypeInput.optional(),
-    Filter: z.object({ GroupType: groupTypeInput.optional() }).optional(),
+    Filter: z
+        .object({
+            GroupType: groupTypeInput.optional(),
+            // 对齐火山官方 ListAssetGroups.Filter:组名称模糊
+            Name: z.string().trim().max(64).optional(),
+        })
+        .optional(),
     PageNumber: z.number().int().min(1).default(1),
     PageSize: z.number().int().min(1).max(100).default(20),
 });
@@ -269,11 +285,25 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             case 'ListAssets': {
                 const p = listAssetsSchema.safeParse(body);
                 if (!p.success) return zodFail(action, p.error);
-                // GroupType 过滤(官方语义,显式 GroupId 时以组为准跳过):LivenessFace →
+                // 平台素材上传即 Active,无 Processing/Failed。Statuses 显式指定且不含
+                // Active → 必然空集,直接短路返回(对齐官方筛选语义,不误返 Active 素材)。
+                const statuses = p.data.Filter?.Statuses;
+                if (statuses && statuses.length && !statuses.includes('Active')) {
+                    return ok(action, {
+                        Items: [],
+                        Total: 0,
+                        PageNumber: p.data.PageNumber,
+                        PageSize: p.data.PageSize,
+                    });
+                }
+                // 组过滤优先级:顶层 GroupId > Filter.GroupIds(数组)> GroupType 语义。
+                const groupIds = p.data.Filter?.GroupIds?.filter(Boolean) ?? [];
+                const explicitGroup = Boolean(p.data.GroupId) || groupIds.length > 0;
+                // GroupType 过滤(官方语义,显式指定组时以组为准跳过):LivenessFace →
                 // 仅真人组内;AIGC/缺省 → 排除真人组(含未分组)。
                 const at = p.data.GroupType ?? p.data.Filter?.GroupType ?? 'AIGC';
                 let typeCond: Record<string, unknown> = {};
-                if (!p.data.GroupId) {
+                if (!explicitGroup) {
                     const liveness = await prisma.enterpriseAssetGroup.findMany({
                         where: { user_id: userId, group_type: 'LivenessFace' },
                         select: { id: true },
@@ -285,10 +315,18 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
                         typeCond = { OR: [{ group_id: null }, { group_id: { notIn: ids } }] };
                     }
                 }
+                const groupCond = p.data.GroupId
+                    ? { group_id: p.data.GroupId }
+                    : groupIds.length
+                      ? { group_id: { in: groupIds } }
+                      : typeCond;
+                const name = p.data.Filter?.Name;
                 const where = {
                     user_id: userId,
-                    ...(p.data.GroupId ? { group_id: p.data.GroupId } : typeCond),
+                    ...groupCond,
                     ...(p.data.AssetType ? { asset_type: p.data.AssetType } : {}),
+                    // 名称模糊(不区分大小写),对齐火山官方 Filter.Name
+                    ...(name ? { name: { contains: name, mode: 'insensitive' as const } } : {}),
                 };
                 const [total, items] = await Promise.all([
                     prisma.enterpriseAsset.count({ where }),
@@ -362,7 +400,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
                 if (!p.success) return zodFail(action, p.error);
                 // 官方语义:缺省列 AIGC;真人组须显式 GroupType=LivenessFace
                 const gt = p.data.GroupType ?? p.data.Filter?.GroupType ?? 'AIGC';
-                const gWhere = { user_id: userId, group_type: gt };
+                const gName = p.data.Filter?.Name;
+                const gWhere = {
+                    user_id: userId,
+                    group_type: gt,
+                    // 组名称模糊(不区分大小写),对齐火山官方 Filter.Name
+                    ...(gName ? { name: { contains: gName, mode: 'insensitive' as const } } : {}),
+                };
                 const [total, items] = await Promise.all([
                     prisma.enterpriseAssetGroup.count({ where: gWhere }),
                     prisma.enterpriseAssetGroup.findMany({
