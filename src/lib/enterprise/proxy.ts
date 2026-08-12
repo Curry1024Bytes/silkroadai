@@ -489,6 +489,10 @@ async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat
                 : typeof task.fail_reason === 'string'
                   ? task.fail_reason
                   : null;
+        // 按渠道分形:global/promax = BytePlus ModelArk 形(带扩展字段,#326);
+        // cn/volc = 火山方舟官方形(只出官方声明字段,客户严格白名单校验用)。
+        const taskRegion = regionForModel(task.model);
+        const extended = taskRegion === 'global' || taskRegion === 'promax';
         return NextResponse.json(
             buildArkTaskResponse({
                 taskId,
@@ -504,6 +508,7 @@ async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat
                 ratio: task.ratio,
                 seed: task.seed,
                 generateAudio: task.generate_audio,
+                extended,
             }),
         );
     }

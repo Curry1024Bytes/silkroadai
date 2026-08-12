@@ -124,12 +124,18 @@ export interface ArkTaskResponseInput {
     ratio?: string | null;
     seed?: number | bigint | null;
     generateAudio?: boolean | null;
+    /** BytePlus ModelArk 形(global/promax,#326 客户样例)带扩展字段;火山方舟官方形
+     *  (cn/volc,docs.volcengine.com/82379)只出官方声明字段。缺省 false = 官方形。 */
+    extended?: boolean;
 }
 
-/** 组装火山方舟查询任务响应体。2026-08-06 逐字段对齐客户样例(BytePlus ModelArk 形):
- *  全字段常驻(draft/execution_expires_after/framespersecond/service_tier/tools/tool_usage),
- *  error 恒为 {code,message} 对象(成功/进行中 = 空串,非 null —— 客户解析器按对象取值);
- *  ratio/seed/generate_audio 从 task 行回显,存量 NULL 行用缺省(16:9 / 0 / true)。 */
+/** 组装查询任务响应体 —— 按渠道分形(2026-08-12):
+ *  - 火山方舟官方形(cn/volc,extended=false):只出 docs.volcengine.com/82379 声明的字段集
+ *    {id, model, status, content, error, created_at, updated_at, resolution, ratio, duration, usage},
+ *    客户严格白名单校验会拒未声明字段,故不带 draft/service_tier/seed 等。
+ *  - BytePlus ModelArk 形(global/promax,extended=true,#326 客户样例):额外常驻
+ *    draft/execution_expires_after/framespersecond/service_tier/tools/seed/generate_audio + usage.tool_usage。
+ *  两形共有:error 恒为 {code,message} 对象(成功/进行中 = 空串,非 null);ratio 从 task 行回显。 */
 export function buildArkTaskResponse(inp: ArkTaskResponseInput): Record<string, unknown> {
     const nowSec = Math.floor(Date.now() / 1000);
     const base: Record<string, unknown> = {
@@ -138,15 +144,18 @@ export function buildArkTaskResponse(inp: ArkTaskResponseInput): Record<string, 
         status: inp.status,
         created_at: Math.floor(inp.createdAt.getTime() / 1000),
         updated_at: nowSec,
-        draft: false,
-        execution_expires_after: 0,
-        framespersecond: 0,
-        service_tier: '',
-        tools: null,
         ratio: inp.ratio || '16:9',
-        seed: inp.seed != null ? Number(inp.seed) : 0,
-        generate_audio: inp.generateAudio ?? true,
     };
+    // BytePlus 形专属扩展字段(火山官方形不带,否则客户白名单校验拒)。
+    if (inp.extended) {
+        base.draft = false;
+        base.execution_expires_after = 0;
+        base.framespersecond = 0;
+        base.service_tier = '';
+        base.tools = null;
+        base.seed = inp.seed != null ? Number(inp.seed) : 0;
+        base.generate_audio = inp.generateAudio ?? true;
+    }
     if (inp.resolution) base.resolution = inp.resolution;
     if (inp.duration != null) base.duration = inp.duration;
 
@@ -156,11 +165,12 @@ export function buildArkTaskResponse(inp: ArkTaskResponseInput): Record<string, 
         if (inp.lastFrameUrl) content.last_frame_url = inp.lastFrameUrl;
         base.content = content;
         if (inp.usage) {
-            base.usage = {
-                completion_tokens: inp.usage.completion_tokens ?? inp.usage.total_tokens ?? 0,
-                tool_usage: { web_search: 0 },
-                total_tokens: inp.usage.total_tokens ?? inp.usage.completion_tokens ?? 0,
-            };
+            const completion = inp.usage.completion_tokens ?? inp.usage.total_tokens ?? 0;
+            const total = inp.usage.total_tokens ?? inp.usage.completion_tokens ?? 0;
+            // tool_usage 是 BytePlus 形专属子字段;火山官方形只出 completion/total_tokens。
+            base.usage = inp.extended
+                ? { completion_tokens: completion, tool_usage: { web_search: 0 }, total_tokens: total }
+                : { completion_tokens: completion, total_tokens: total };
         }
         base.error = { code: '', message: '' };
     } else if (inp.status === 'failed') {
