@@ -175,8 +175,9 @@ describe('<DashboardPage /> merged console — happy path', () => {
         expect(html).toMatch(/¥(<!-- -->)?8\.64/); // period spend (600k quota)
         expect(html).toContain('20,000'); // total tokens (combined token_used)
         expect(html).toContain('输入+输出'); // token card subline (no per-side split from /api/data/)
-        // raw quota sub-display present in newapi mode
-        expect(html).toContain('500,000');
+        // Customer-facing balance uses RMB only; internal quota units stay hidden.
+        expect(html).not.toContain('500,000');
+        expect(html).not.toContain('quota');
     });
 
     it('passes chartModels to the chart + renders the 热门模型 breakdown', async () => {
