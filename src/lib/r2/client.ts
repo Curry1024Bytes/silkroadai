@@ -17,7 +17,13 @@
  * typecheck don't blow up when env is unset.
  */
 import 'server-only';
-import { DeleteObjectCommand, DeleteObjectsCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import {
+    DeleteObjectCommand,
+    DeleteObjectsCommand,
+    HeadObjectCommand,
+    PutObjectCommand,
+    S3Client,
+} from '@aws-sdk/client-s3';
 import { storageRequestHandler } from '@/lib/storage/proxy-request-handler';
 
 interface R2EnvSnapshot {
@@ -119,6 +125,18 @@ export async function uploadImage(key: string, body: Buffer, contentType: string
         }),
     );
     return getPublicUrl(key);
+}
+
+/** True if an object exists at `key` (HEAD). Any error (404 / 403 / network)
+ *  → false. Used for idempotent mirroring (skip re-upload if already present). */
+export async function objectExists(key: string): Promise<boolean> {
+    const env = readEnv();
+    try {
+        await client().send(new HeadObjectCommand({ Bucket: env.bucket, Key: key }));
+        return true;
+    } catch {
+        return false;
+    }
 }
 
 /** Delete a single R2 object. Idempotent — deleting a non-existent
