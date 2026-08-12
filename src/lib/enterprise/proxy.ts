@@ -30,6 +30,7 @@ import { resolveEnterpriseAuth, getUpstreamKeyForUser, type EnterpriseCustomer }
 import { ENTERPRISE_TIER, estimateEnterpriseCostCny, chargeEnterpriseVideoTask } from './billing';
 import { AssetError, resolveAssetRefs } from './assets';
 import { normalizeArkModel, stripAssetUri, arkStatus, buildArkTaskResponse } from './ark-format';
+import { maybeBrandVideoUrl } from '@/lib/seedance/volc-brand';
 
 /** 对客响应形态:'v1' = 我们现有形;'ark' = 火山方舟官方形(/api/v3/…)。 */
 export type ClientFormat = 'v1' | 'ark';
@@ -493,12 +494,19 @@ async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat
         // cn/volc = 火山方舟官方形(只出官方声明字段,客户严格白名单校验用)。
         const taskRegion = regionForModel(task.model);
         const extended = taskRegion === 'global' || taskRegion === 'promax';
+        let videoUrl = typeof j?.video_url === 'string' ? j.video_url : ((j?.url as string | undefined) ?? null);
+        // 火山形视频 URL 品牌化(仅国内渠道 + 白名单客户;env 双开关都设才生效,否则内部直接返 null)。
+        // 转存成片到我们 R2 + 返回火山形域名 URL;任何失败回退原上游直链(不断流)。
+        if (videoUrl && taskRegion === 'cn' && arkStatus(String(ourStatus)) === 'succeeded') {
+            const branded = await maybeBrandVideoUrl({ userId: cust.userId, taskId, upstreamUrl: videoUrl });
+            if (branded) videoUrl = branded;
+        }
         return NextResponse.json(
             buildArkTaskResponse({
                 taskId,
                 internalModel: task.model,
                 status: arkStatus(String(ourStatus)),
-                videoUrl: typeof j?.video_url === 'string' ? j.video_url : ((j?.url as string | undefined) ?? null),
+                videoUrl,
                 lastFrameUrl: typeof j?.last_frame_url === 'string' ? j.last_frame_url : null,
                 usage,
                 failReason,
