@@ -42,7 +42,6 @@ import { prisma } from '@/lib/db';
 import { getCustomerBalance, type CustomerBalance } from '@/lib/billing/customer-balance';
 import { getUsageAggregate, unionSeedanceUsage, type UsageAggregateSnapshot } from '@/lib/newapi/usage-aggregate';
 import { queryLogs, quotaToCny, type NewApiUsageLog } from '@/lib/newapi/client';
-import { USD_TO_CNY_RATE } from '@/lib/newapi/quota-units';
 import { Button } from '@/components/ui/Button';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { FormError } from '@/components/ui/FormError';
@@ -320,12 +319,6 @@ export default async function DashboardPage({
                                     <p className="m-0 text-base font-medium text-portal-subtle">暂无数据</p>
                                 )}
                             </div>
-                            {bal && (
-                                <p className="m-0 mt-3 text-xs text-portal-subtle tabular-nums">
-                                    ≈ ${(bal.balanceCny / USD_TO_CNY_RATE).toFixed(2)} USD
-                                    {bal.quota && <> · {bal.quota.remain.toLocaleString('en-US')} quota</>}
-                                </p>
-                            )}
                         </div>
                         <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-brand-accent-soft text-brand-accent">
                             <Wallet size={20} strokeWidth={1.7} aria-hidden="true" />
