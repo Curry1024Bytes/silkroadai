@@ -36,7 +36,7 @@ interface Detail {
         created_at: string;
         last_used_at: string | null;
     }>;
-    overrides: Array<{ region: string; variant: string; resolution: string; has_video: boolean; cny_per_m: number }>;
+    overrides: Array<{ region: string; variant: string; discount: number }>;
     ledger: Array<{ kind: string; amount_cny: number; balance_after: number; note: string | null; created_at: string }>;
     tasks: Array<{
         id: string;
@@ -157,21 +157,23 @@ export function AdminPanel() {
         flash(r.ok ? '密码已设置' : `失败(${r.status}):${JSON.stringify(r.j).slice(0, 120)}`);
     }
     async function onOverride(userId: string, form: FormData) {
-        const raw = String(form.get('cny_per_m') || '').trim();
+        const raw = String(form.get('discount') || '').trim();
         const body = {
             user_id: userId,
             region: String(form.get('region') || 'cn'),
             variant: String(form.get('variant')),
-            resolution: String(form.get('resolution')),
-            has_video: String(form.get('has_video')) === 'true',
-            cny_per_m: raw === '' ? null : Number(raw),
+            discount: raw === '' ? null : Number(raw),
         };
+        if (body.discount !== null && (!Number.isFinite(body.discount) || body.discount < 0.05 || body.discount > 2)) {
+            flash('折扣率须为 0.05~2 的数字(留空 = 清除)');
+            return;
+        }
         const r = await post('/api/admin/enterprise/rate-override', body);
         flash(
             r.ok
-                ? body.cny_per_m === null
-                    ? '覆盖已清除(回落挂牌)'
-                    : `议价已设:¥${body.cny_per_m}/1M`
+                ? body.discount === null
+                    ? '议价折扣已清除(回落全局/客户整体折扣)'
+                    : `议价折扣已设:${REGION_LABEL[body.region] || body.region} × ${body.variant} → ×${body.discount}`
                 : `失败(${r.status})`,
         );
         await refresh();
@@ -347,8 +349,8 @@ export function AdminPanel() {
             <section className="rounded-xl border border-gray-200 bg-white p-5">
                 <h2 className="mb-1 text-sm font-semibold text-gray-900">全局折扣(按 渠道 × 模型)</h2>
                 <p className="mb-3 text-xs text-gray-400">
-                    临时促销(如上游 fast/mini 降价一个月我们跟降)。优先级:客户议价(绝对单价)&gt; 全局折扣 &gt;
-                    客户折扣率 —— 即全局折扣<b>覆盖客户折扣率</b>,但不动已议价的绝对单价,且<b>只影响所选模型</b>。
+                    临时促销(如上游 fast/mini 降价一个月我们跟降)。优先级:客户议价折扣(per-模型)&gt; 全局折扣 &gt;
+                    客户整体折扣 —— 即全局折扣<b>覆盖客户整体折扣</b>,但不动客户 per-模型议价,且<b>只影响所选模型</b>。
                     到期时间到点自动失效(回落客户折扣);留空 = 手动清除前长期有效。
                 </p>
                 {globalDiscounts.length > 0 && (
@@ -646,17 +648,17 @@ export function AdminPanel() {
                             </table>
                         </div>
 
-                        {/* 议价 */}
+                        {/* 议价折扣(per-模型,优先级最高) */}
                         <div>
                             <h3 className="mb-2 text-xs font-semibold text-gray-500">
-                                议价覆盖(¥/1M token;留空提交 = 清除回落挂牌)
+                                议价折扣(按 渠道 × 模型;优先级最高,覆盖全局折扣与客户整体折扣;留空提交 = 清除回落)
                             </h3>
                             {detail.overrides.length > 0 && (
                                 <ul className="mb-2 space-y-0.5 text-sm text-gray-700">
                                     {detail.overrides.map((o, i) => (
                                         <li key={i}>
-                                            {REGION_LABEL[o.region] || o.region} · {o.variant} · {o.resolution} ·{' '}
-                                            {o.has_video ? '含视频' : '无视频'} → <b>¥{o.cny_per_m}</b>/1M
+                                            {REGION_LABEL[o.region] || o.region} · {o.variant} → 折扣{' '}
+                                            <b>×{o.discount}</b>
                                         </li>
                                     ))}
                                 </ul>
@@ -679,28 +681,19 @@ export function AdminPanel() {
                                     <option value="fast">fast</option>
                                     <option value="mini">mini</option>
                                     <option value="2.5">2.5</option>
-                                </select>
-                                <select
-                                    name="resolution"
-                                    defaultValue="720p"
-                                    className="rounded border border-gray-300 px-2 py-1.5 text-sm"
-                                >
-                                    <option value="480p">480p</option>
-                                    <option value="720p">720p</option>
-                                    <option value="1080p">1080p</option>
-                                    <option value="4k">4k</option>
-                                </select>
-                                <select name="has_video" className="rounded border border-gray-300 px-2 py-1.5 text-sm">
-                                    <option value="false">无视频</option>
-                                    <option value="true">含视频</option>
+                                    <option value="promax">promax</option>
+                                    <option value="promax-fast">promax-fast</option>
+                                    <option value="promax-mini">promax-mini</option>
+                                    <option value="promax-2.5">promax-2.5</option>
                                 </select>
                                 <input
-                                    name="cny_per_m"
+                                    name="discount"
                                     type="number"
                                     step="0.01"
-                                    min="0"
-                                    placeholder="¥/1M(空=清除)"
-                                    className="w-32 rounded border border-gray-300 px-2 py-1.5 text-sm"
+                                    min="0.05"
+                                    max="2"
+                                    placeholder="折扣 0.05~2(空=清除)"
+                                    className="w-40 rounded border border-gray-300 px-2 py-1.5 text-sm"
                                 />
                                 <button
                                     type="submit"

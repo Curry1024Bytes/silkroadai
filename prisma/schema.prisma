@@ -1347,18 +1347,20 @@ model EnterpriseAsset {
 
 // 大客户议价:per-customer 费率覆盖(元/1M token)。查不到 → cn-billing 默认挂牌。
 // 2026-07-19 加 variant 维度(pro/fast/mini):同客户可按变体分别议价。
-model EnterpriseRateOverride {
+// 客户 per-模型议价折扣(2026-08-11 重构,替代旧 enterprise_rate_overrides 绝对单价):
+// per-(客户, 渠道, 模型档)的折扣率,【优先级最高】—— 覆盖全局折扣 与 客户整体折扣。
+// 场景:客户 cn 整体 0.85,但竞品在 pro 系给更低折 → 单给该客户 cn/pro 设 0.8,cn/2.5 无此行仍用 0.85。
+// 计价:实付 = 官方挂牌 × discount。查不到 → 回落全局折扣 / 客户整体折扣(见 billing.computeEnterpriseCostCny)。
+model EnterpriseModelDiscount {
   id         String   @id @default(uuid()) @db.Uuid
   user_id    String   @db.Uuid
-  region     String   @default("cn") // 'cn' | 'global'(2026-07-23 海外版)
-  variant    String   @default("pro") // pro | fast | mini
-  resolution String // 720p | 1080p | 4k
-  has_video  Boolean
-  cny_per_m  Decimal  @db.Decimal(12, 4)
+  region     String   @default("cn") // cn | global | promax | volc
+  variant    String   @default("pro") // pro | fast | mini | 2.5 | promax | promax-fast | promax-mini | promax-2.5
+  discount   Decimal  @db.Decimal(6, 4) // 官方挂牌 × discount(0.05~2)
   created_at DateTime @default(now())
 
-  @@unique([user_id, region, variant, resolution, has_video])
-  @@map("enterprise_rate_overrides")
+  @@unique([user_id, region, variant])
+  @@map("enterprise_model_discounts")
 }
 
 // 全局折扣(2026-08-08):按 渠道×模型 的临时促销折扣(如上游 fast/mini 降价一个月,我们跟降)。

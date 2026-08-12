@@ -119,10 +119,10 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
                 last_used_at: true,
             },
         }),
-        prisma.enterpriseRateOverride.findMany({
+        prisma.enterpriseModelDiscount.findMany({
             where: { user_id: id },
-            orderBy: [{ region: 'asc' }, { variant: 'asc' }, { resolution: 'asc' }],
-            select: { region: true, variant: true, resolution: true, has_video: true, cny_per_m: true },
+            orderBy: [{ region: 'asc' }, { variant: 'asc' }],
+            select: { region: true, variant: true, discount: true },
         }),
         account
             ? prisma.ledgerEntry.findMany({
@@ -167,7 +167,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
             created_at: k.created_at.toISOString(),
             last_used_at: k.last_used_at?.toISOString() ?? null,
         })),
-        overrides: overrides.map((o) => ({ ...o, cny_per_m: Number(o.cny_per_m) })),
+        overrides: overrides.map((o) => ({ region: o.region, variant: o.variant, discount: Number(o.discount) })),
         ledger: ledger.map((l) => ({
             kind: l.kind,
             amount_cny: Number(l.amount_cny),

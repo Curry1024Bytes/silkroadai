@@ -15,7 +15,7 @@ const { db, resolveAdmin } = vi.hoisted(() => ({
         },
         enterpriseKey: { groupBy: vi.fn(), findMany: vi.fn(), updateMany: vi.fn() },
         enterpriseAkSk: { updateMany: vi.fn() },
-        enterpriseRateOverride: { findMany: vi.fn() },
+        enterpriseModelDiscount: { findMany: vi.fn() },
         user: { findMany: vi.fn(), findUnique: vi.fn(), updateMany: vi.fn() },
         account: { findMany: vi.fn(), findUnique: vi.fn() },
         ledgerEntry: { groupBy: vi.fn(), aggregate: vi.fn(), findMany: vi.fn() },
@@ -105,16 +105,14 @@ describe('GET /api/admin/enterprise/customers/[id]', () => {
                 last_used_at: null,
             },
         ]);
-        db.enterpriseRateOverride.findMany.mockResolvedValue([
-            { variant: 'mini', resolution: '720p', has_video: false, cny_per_m: '15' },
-        ]);
+        db.enterpriseModelDiscount.findMany.mockResolvedValue([{ region: 'cn', variant: 'mini', discount: '0.8' }]);
         db.ledgerEntry.findMany.mockResolvedValue([]);
         db.seedanceVideoTask.findMany.mockResolvedValue([]);
         const res = await detailGET(req('/x'), params);
         expect(res.status).toBe(200);
         const j = (await res.json()) as Record<string, unknown>;
         expect((j.keys as unknown[]).length).toBe(1);
-        expect((j.overrides as Array<{ cny_per_m: number }>)[0].cny_per_m).toBe(15);
+        expect((j.overrides as Array<{ discount: number }>)[0].discount).toBe(0.8);
         expect(j.spent_cny).toBeCloseTo(4.25, 4);
     });
 });

@@ -330,6 +330,79 @@ describe('素材库统一平台托管(2026-08-06 v3:真人素材四渠道通用,
     });
 });
 
+describe('ListAssets / ListAssetGroups Filter(对齐火山官方 Name / Statuses / GroupIds)', () => {
+    it('ListAssets Filter.Name → 名称模糊(不区分大小写)', async () => {
+        db.enterpriseAssetGroup.findMany.mockResolvedValue([]); // 无真人组
+        db.enterpriseAsset.count.mockResolvedValue(0);
+        db.enterpriseAsset.findMany.mockResolvedValue([]);
+        const res = await POST(req('ListAssets', { Filter: { Name: '测试' } }));
+        expect(res.status).toBe(200);
+        expect(db.enterpriseAsset.findMany).toHaveBeenCalledWith(
+            expect.objectContaining({
+                where: expect.objectContaining({ name: { contains: '测试', mode: 'insensitive' } }),
+            }),
+        );
+    });
+
+    it('ListAssets Filter.Statuses 不含 Active → 短路空集,不查库(平台素材恒 Active)', async () => {
+        const res = await POST(req('ListAssets', { Filter: { Statuses: ['Processing', 'Failed'] } }));
+        expect(res.status).toBe(200);
+        const j = (await res.json()) as { Result: { Items: unknown[]; Total: number } };
+        expect(j.Result.Items).toEqual([]);
+        expect(j.Result.Total).toBe(0);
+        expect(db.enterpriseAsset.findMany).not.toHaveBeenCalled();
+        expect(db.enterpriseAsset.count).not.toHaveBeenCalled();
+    });
+
+    it('ListAssets Filter.Statuses 含 Active → 正常查库', async () => {
+        db.enterpriseAssetGroup.findMany.mockResolvedValue([]);
+        db.enterpriseAsset.count.mockResolvedValue(1);
+        db.enterpriseAsset.findMany.mockResolvedValue([]);
+        const res = await POST(req('ListAssets', { Filter: { Statuses: ['Active'] } }));
+        expect(res.status).toBe(200);
+        expect(db.enterpriseAsset.findMany).toHaveBeenCalled();
+    });
+
+    it('ListAssets Filter.GroupIds(数组)→ group_id in,跳过 GroupType 语义(不查真人组)', async () => {
+        db.enterpriseAsset.count.mockResolvedValue(0);
+        db.enterpriseAsset.findMany.mockResolvedValue([]);
+        const res = await POST(req('ListAssets', { Filter: { GroupIds: ['group-a', 'group-b'] } }));
+        expect(res.status).toBe(200);
+        // 显式组 → 不做真人组排除查询
+        expect(db.enterpriseAssetGroup.findMany).not.toHaveBeenCalled();
+        expect(db.enterpriseAsset.findMany).toHaveBeenCalledWith(
+            expect.objectContaining({
+                where: expect.objectContaining({ group_id: { in: ['group-a', 'group-b'] } }),
+            }),
+        );
+    });
+
+    it('顶层 GroupId 优先于 Filter.GroupIds', async () => {
+        db.enterpriseAsset.count.mockResolvedValue(0);
+        db.enterpriseAsset.findMany.mockResolvedValue([]);
+        const res = await POST(req('ListAssets', { GroupId: 'group-top', Filter: { GroupIds: ['group-a'] } }));
+        expect(res.status).toBe(200);
+        expect(db.enterpriseAsset.findMany).toHaveBeenCalledWith(
+            expect.objectContaining({ where: expect.objectContaining({ group_id: 'group-top' }) }),
+        );
+    });
+
+    it('ListAssetGroups Filter.Name → 组名称模糊', async () => {
+        db.enterpriseAssetGroup.count.mockResolvedValue(0);
+        db.enterpriseAssetGroup.findMany.mockResolvedValue([]);
+        const res = await POST(req('ListAssetGroups', { Filter: { Name: 'v-group' } }));
+        expect(res.status).toBe(200);
+        expect(db.enterpriseAssetGroup.findMany).toHaveBeenCalledWith(
+            expect.objectContaining({
+                where: expect.objectContaining({
+                    group_type: 'AIGC',
+                    name: { contains: 'v-group', mode: 'insensitive' },
+                }),
+            }),
+        );
+    });
+});
+
 describe('AssetType 大写对齐火山官方', () => {
     it('CreateAsset 传大写 Image → 接受,归一小写存 R2', async () => {
         db.enterpriseUpstreamKey.findUnique.mockResolvedValue(null); // 非 volc → R2
