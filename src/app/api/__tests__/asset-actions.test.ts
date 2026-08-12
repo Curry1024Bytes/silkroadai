@@ -401,6 +401,21 @@ describe('ListAssets / ListAssetGroups Filter(对齐火山官方 Name / Statuses
             }),
         );
     });
+
+    it('ListAssetGroups Filter.GroupIds(数组)→ id in', async () => {
+        db.enterpriseAssetGroup.count.mockResolvedValue(0);
+        db.enterpriseAssetGroup.findMany.mockResolvedValue([]);
+        const res = await POST(req('ListAssetGroups', { Filter: { GroupIds: ['group-a', 'group-b'] } }));
+        expect(res.status).toBe(200);
+        expect(db.enterpriseAssetGroup.findMany).toHaveBeenCalledWith(
+            expect.objectContaining({
+                where: expect.objectContaining({
+                    group_type: 'AIGC',
+                    id: { in: ['group-a', 'group-b'] },
+                }),
+            }),
+        );
+    });
 });
 
 describe('AssetType 大写对齐火山官方', () => {

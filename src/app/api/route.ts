@@ -131,6 +131,8 @@ const listGroupsSchema = z.object({
             GroupType: groupTypeInput.optional(),
             // 对齐火山官方 ListAssetGroups.Filter:组名称模糊
             Name: z.string().trim().max(64).optional(),
+            // 对齐火山官方 ListAssetGroups.Filter:按组 id 数组过滤
+            GroupIds: z.array(z.string().trim().max(60)).max(50).optional(),
         })
         .optional(),
     PageNumber: z.number().int().min(1).default(1),
@@ -401,9 +403,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
                 // 官方语义:缺省列 AIGC;真人组须显式 GroupType=LivenessFace
                 const gt = p.data.GroupType ?? p.data.Filter?.GroupType ?? 'AIGC';
                 const gName = p.data.Filter?.Name;
+                const gGroupIds = p.data.Filter?.GroupIds?.filter(Boolean) ?? [];
                 const gWhere = {
                     user_id: userId,
                     group_type: gt,
+                    // 按组 id 数组过滤,对齐火山官方 Filter.GroupIds
+                    ...(gGroupIds.length ? { id: { in: gGroupIds } } : {}),
                     // 组名称模糊(不区分大小写),对齐火山官方 Filter.Name
                     ...(gName ? { name: { contains: gName, mode: 'insensitive' as const } } : {}),
                 };
