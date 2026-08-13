@@ -283,7 +283,7 @@ describe('handleAdapterImage 成功路径', () => {
         expect(body.usage.input_tokens).toBe(estimateTextTokens('a 4k cat'));
         // 上游收到的请求:model 强制 gpt-image-2、JSON content-type、Authorization 透传
         const [url, init] = fetchMock.mock.calls[0];
-        expect(url).toBe('https://www.ominiapi.com/v1/images/generations');
+        expect(url).toBe('https://api.ominiapi.com/v1/images/generations');
         expect(init.headers['content-type']).toBe('application/json');
         expect(init.headers.authorization).toBe('Bearer sk-upstream-test');
         const sent = JSON.parse(init.body as string);
@@ -455,7 +455,7 @@ describe('handleAdapterImage n>1 并发扇出(ominiapi 忽略 n,只能自己扇)
         expect(body.usage.input_tokens_details.image_tokens).toBe(85 + 1500);
         // 上游收到 multipart(fetch 自动 boundary;不能手写 content-type)
         const [url, init] = fetchMock.mock.calls[0];
-        expect(url).toBe('https://www.ominiapi.com/v1/images/edits');
+        expect(url).toBe('https://api.ominiapi.com/v1/images/edits');
         expect(init.body).toBeInstanceOf(FormData);
         expect(init.headers['content-type']).toBeUndefined();
         const sentForm = init.body as FormData;
