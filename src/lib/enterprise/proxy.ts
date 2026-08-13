@@ -187,6 +187,51 @@ export async function handleEnterpriseV1(req: NextRequest, path: string): Promis
  * 火山方舟(Ark)形态入口:/api/v3/*(对齐 docs.volcengine.com/docs/82379)。
  * 内部复用 handleSubmit/handlePoll 核心,仅出口序列化为火山形。models 形态与 v1 一致。
  */
+/** GET /api/v3/contents/generations/tasks —— 查询该客户的任务列表(火山官方形)。
+ *  从 seedance_video_tasks 按 user_id 分页返回;成片 URL 不落库 → 列表项 content 留空,
+ *  客户查单个任务(GET .../tasks/{id})时实时取直链。分页 page_num/page_size,可选 status/model 过滤。 */
+async function handleListTasks(req: NextRequest): Promise<NextResponse> {
+    const cust = await resolveOr401(req);
+    if (cust instanceof NextResponse) return cust;
+    const sp = req.nextUrl.searchParams;
+    const pageNum = Math.max(1, Math.trunc(Number(sp.get('page_num')) || 1));
+    const pageSize = Math.min(500, Math.max(1, Math.trunc(Number(sp.get('page_size')) || 10)));
+    const where: Record<string, unknown> = { user_id: cust.userId, tier: ENTERPRISE_TIER };
+    const modelFilter = sp.get('model');
+    if (modelFilter) where.model = normalizeArkModel(modelFilter);
+    const statusFilter = sp.get('status');
+    if (statusFilter) where.status = ARK_STATUS_TO_INTERNAL[statusFilter] ?? statusFilter;
+    const [total, rows] = await Promise.all([
+        prisma.seedanceVideoTask.count({ where }),
+        prisma.seedanceVideoTask.findMany({
+            where,
+            orderBy: { created_at: 'desc' },
+            skip: (pageNum - 1) * pageSize,
+            take: pageSize,
+        }),
+    ]);
+    const items = rows.map((t) => {
+        const region = regionForModel(t.model);
+        return buildArkTaskResponse({
+            taskId: t.id,
+            internalModel: t.model,
+            status: arkStatus(t.status),
+            videoUrl: null, // 成片不落库,列表不逐个回源;查单个任务取直链
+            lastFrameUrl: null,
+            usage: t.tokens ? { completion_tokens: Number(t.tokens), total_tokens: Number(t.tokens) } : null,
+            failReason: t.fail_reason,
+            createdAt: t.created_at,
+            resolution: t.resolution,
+            duration: t.duration,
+            ratio: t.ratio,
+            seed: t.seed,
+            generateAudio: t.generate_audio,
+            extended: region === 'global' || region === 'promax',
+        });
+    });
+    return NextResponse.json({ items, total, page_num: pageNum, page_size: pageSize });
+}
+
 export async function handleEnterpriseArkV3(req: NextRequest, path: string): Promise<NextResponse> {
     if (req.method === 'GET' && path === '/models') {
         // 火山形 models:列火山 id + owned_by=doubao;仍保留我们短名可调
@@ -212,6 +257,10 @@ export async function handleEnterpriseArkV3(req: NextRequest, path: string): Pro
     }
     if (req.method === 'POST' && path === '/contents/generations/tasks') {
         return handleSubmit(req, 'ark');
+    }
+    // 任务列表(火山官方 GET /contents/generations/tasks,不带 id)——须在单任务 poll 正则之前判。
+    if (req.method === 'GET' && path === '/contents/generations/tasks') {
+        return handleListTasks(req);
     }
     const poll = /^\/contents\/generations\/tasks\/([^/]+)$/.exec(path);
     if (req.method === 'GET' && poll) {
@@ -247,6 +296,60 @@ async function resolveOr401(
     return r.customer;
 }
 
+// ── 火山方舟形(ark)严格契约校验(仅 /api/v3 面;/v1 与主站保持宽松,不误伤存量宽松客户)──
+/** 火山官方输出宽高比枚举(2.0/2.5 同集)。非法值 → 400(不再静默纠正成 16:9)。 */
+const ARK_ALLOWED_RATIOS = new Set(['21:9', '16:9', '4:3', '1:1', '3:4', '9:16', 'adaptive']);
+/** ark 提交接受的顶层字段白名单(火山官方字段 + 我们支持的 OpenAI 形别名)。
+ *  未声明字段 → 400(对齐火山严格校验;客户契约测试要求)。 */
+const ARK_ALLOWED_FIELDS = new Set([
+    // 火山官方
+    'model',
+    'content',
+    'resolution',
+    'ratio',
+    'duration',
+    'seed',
+    'camera_fixed',
+    'generate_audio',
+    'watermark',
+    'omni_reference_task_type',
+    'output_format',
+    'return_last_frame',
+    'callback_url',
+    'safety_identifier',
+    'service_tier',
+    'priority',
+    // 我们支持的别名/OpenAI 形入参(保留兼容,均为已知字段)
+    'prompt',
+    'seconds',
+    'aspect_ratio',
+    'first_frame',
+    'last_frame',
+    'video_config',
+    'image',
+    'image_url',
+    'images',
+    'image_urls',
+    'reference_image_urls',
+    'video',
+    'video_url',
+    'videos',
+    'reference_video',
+    'reference_videos',
+    'audio',
+    'audio_url',
+    'audios',
+    'reference_audios',
+]);
+
+/** 火山 status(查询列表 filter 用)→ 我们内部 task.status(反向映射,对齐 arkStatus)。 */
+const ARK_STATUS_TO_INTERNAL: Record<string, string> = {
+    succeeded: 'completed',
+    running: 'in_progress',
+    queued: 'queued',
+    failed: 'failed',
+};
+
 /** 提交:key 鉴权(绑版本)→ 模型门 → 余额门(¥账本)→ 直调适配器核心(客户上游 key)→ 记任务(fail closed)。 */
 async function handleSubmit(req: NextRequest, format: ClientFormat = 'v1'): Promise<NextResponse> {
     // 先读原始 body(AK/SK 验签对原始字节算 hash),再解析 + 归一。
@@ -256,6 +359,14 @@ async function handleSubmit(req: NextRequest, format: ClientFormat = 'v1'): Prom
         body = rawBody.trim() ? (JSON.parse(rawBody) as Record<string, unknown>) : {};
     } catch {
         return errJson(400, 'invalid_json', 'request body must be JSON');
+    }
+
+    // ark 面严格契约:未声明顶层字段 → 400(在任何 body 变换前,按原始键判)。
+    if (format === 'ark') {
+        const unknown = Object.keys(body).filter((k) => !ARK_ALLOWED_FIELDS.has(k));
+        if (unknown.length) {
+            return errJson(400, 'invalid_request', `unknown parameter(s): ${unknown.join(', ')}`);
+        }
     }
 
     // 入口归一:火山 model id(doubao-…)→ 内部短名(先归一 model 才能判 region)。
@@ -303,6 +414,14 @@ async function handleSubmit(req: NextRequest, format: ClientFormat = 'v1'): Prom
         adapterModel = model;
     } else {
         return errJson(400, 'model_not_found', `unknown seedance model: ${model}`);
+    }
+
+    // ark 面严格契约:非法 ratio 值 → 400(不再静默纠正成 16:9;v1 面仍宽松纠正)。
+    if (format === 'ark') {
+        const rr = body.ratio ?? body.aspect_ratio;
+        if (rr != null && !ARK_ALLOWED_RATIOS.has(String(rr))) {
+            return errJson(400, 'invalid_request', `ratio 仅支持 ${[...ARK_ALLOWED_RATIOS].join(' / ')}`);
+        }
     }
 
     const hasVideo = extractVideoUrls(body).length > 0;

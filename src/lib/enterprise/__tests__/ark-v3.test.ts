@@ -17,7 +17,13 @@ const {
     chargeEnterpriseVideoTask,
 } = vi.hoisted(() => ({
     db: {
-        seedanceVideoTask: { create: vi.fn(), findUnique: vi.fn(), update: vi.fn() },
+        seedanceVideoTask: {
+            create: vi.fn(),
+            findUnique: vi.fn(),
+            update: vi.fn(),
+            count: vi.fn(),
+            findMany: vi.fn(),
+        },
         account: { findUnique: vi.fn() },
     },
     resolveEnterpriseAuth: vi.fn(),
@@ -203,5 +209,110 @@ describe('GET /api/v3/contents/generations/tasks/{id}', () => {
             '/contents/generations/tasks/cgt-ark1',
         );
         expect(res.status).toBe(404);
+    });
+});
+
+describe('GET /api/v3/contents/generations/tasks(任务列表,火山官方契约)', () => {
+    const rowOf = (id: string, status = 'completed') => ({
+        id,
+        model: 'seedance-2-0',
+        status,
+        resolution: '720p',
+        duration: 5,
+        ratio: '16:9',
+        seed: null,
+        generate_audio: true,
+        tokens: BigInt(108872),
+        fail_reason: null,
+        created_at: new Date('2026-08-13T00:00:00Z'),
+    });
+
+    it('返回火山列表信封 {items,total,page_num,page_size} + 按 user_id 过滤', async () => {
+        db.seedanceVideoTask.count.mockResolvedValue(2);
+        db.seedanceVideoTask.findMany.mockResolvedValue([rowOf('cgt-a'), rowOf('cgt-b')]);
+        const res = await handleEnterpriseArkV3(
+            req('GET', '/api/v3/contents/generations/tasks?page_num=1&page_size=10'),
+            '/contents/generations/tasks',
+        );
+        expect(res.status).toBe(200);
+        const j = (await res.json()) as {
+            items: Array<{ id: string; status: string }>;
+            total: number;
+            page_num: number;
+            page_size: number;
+        };
+        expect(j.total).toBe(2);
+        expect(j.page_num).toBe(1);
+        expect(j.page_size).toBe(10);
+        expect(j.items.map((i) => i.id)).toEqual(['cgt-a', 'cgt-b']);
+        expect(j.items[0].status).toBe('succeeded'); // completed → 火山 succeeded
+        // 查询按 user_id + 分页
+        expect(db.seedanceVideoTask.findMany).toHaveBeenCalledWith(
+            expect.objectContaining({
+                where: expect.objectContaining({ user_id: 'u1' }),
+                skip: 0,
+                take: 10,
+            }),
+        );
+    });
+
+    it('status 过滤(火山 succeeded → 内部 completed);model 过滤归一 doubao 名', async () => {
+        db.seedanceVideoTask.count.mockResolvedValue(0);
+        db.seedanceVideoTask.findMany.mockResolvedValue([]);
+        await handleEnterpriseArkV3(
+            req('GET', '/api/v3/contents/generations/tasks?status=succeeded&model=doubao-seedance-2-0-260128'),
+            '/contents/generations/tasks',
+        );
+        expect(db.seedanceVideoTask.findMany).toHaveBeenCalledWith(
+            expect.objectContaining({
+                where: expect.objectContaining({ status: 'completed', model: 'seedance-2-0' }),
+            }),
+        );
+    });
+});
+
+describe('/api/v3 严格契约校验(仅 ark 面)', () => {
+    it('非法 ratio(2:3)→ 400,不创建任务', async () => {
+        const res = await handleEnterpriseArkV3(
+            req('POST', '/api/v3/contents/generations/tasks', {
+                model: 'doubao-seedance-2-5-260628',
+                content: [{ type: 'text', text: '一只猫' }],
+                duration: 5,
+                ratio: '2:3',
+            }),
+            '/contents/generations/tasks',
+        );
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error: { message: string } }).error.message).toContain('ratio');
+        expect(submitVideoWithKey).not.toHaveBeenCalled();
+    });
+
+    it('合法 ratio(adaptive)不被拦', async () => {
+        submitVideoWithKey.mockResolvedValue(NextResponse.json({ id: 'cgt-ok', status: 'queued' }));
+        const res = await handleEnterpriseArkV3(
+            req('POST', '/api/v3/contents/generations/tasks', {
+                model: 'doubao-seedance-2-5-260628',
+                content: [{ type: 'text', text: 'x' }],
+                duration: 5,
+                ratio: 'adaptive',
+            }),
+            '/contents/generations/tasks',
+        );
+        expect(res.status).toBe(200);
+    });
+
+    it('未声明参数(frames)→ 400,不创建任务', async () => {
+        const res = await handleEnterpriseArkV3(
+            req('POST', '/api/v3/contents/generations/tasks', {
+                model: 'doubao-seedance-2-5-260628',
+                content: [{ type: 'text', text: '一只猫' }],
+                frames: 30,
+                ratio: '1:1',
+            }),
+            '/contents/generations/tasks',
+        );
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error: { message: string } }).error.message).toContain('frames');
+        expect(submitVideoWithKey).not.toHaveBeenCalled();
     });
 });
