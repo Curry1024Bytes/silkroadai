@@ -314,11 +314,15 @@ async function handleSubmit(req: NextRequest, format: ClientFormat = 'v1'): Prom
     let duration: number;
     if (body.duration == null && body.seconds == null) {
         duration = 5;
+    } else if (durRaw === -1) {
+        duration = -1; // 智能时长(上游自选,落库 -1;余额门按上限估价)
     } else if (Number.isInteger(durRaw) && durRaw >= 4 && durRaw <= maxDur) {
         duration = durRaw;
     } else {
-        return errJson(400, 'invalid_request', `duration 仅支持 4-${maxDur} 之间的整数秒`);
+        return errJson(400, 'invalid_request', `duration 仅支持 4-${maxDur} 之间的整数秒或 -1(智能时长)`);
     }
+    // 余额门:-1 时长未定,按【上限】估价挡防欠扣(最终按 token 结算,不受影响)。
+    const estDuration = duration === -1 ? maxDur : duration;
 
     // 余额门(视频后付费,提交时按估价挡,防大额透支)。企业客户余额 = Account.balance_cny 唯一真相。
     try {
@@ -330,7 +334,7 @@ async function handleSubmit(req: NextRequest, format: ClientFormat = 'v1'): Prom
         const est = await estimateEnterpriseCostCny(
             cust.userId,
             map.resolution,
-            duration,
+            estDuration,
             hasVideo,
             map.variant,
             map.region ?? 'cn',

@@ -211,7 +211,8 @@ export function maxDurationForVariant(v: SeedanceVariant): number {
     return v === '2.5' || v === 'promax-2.5' ? 30 : 15;
 }
 
-const ALLOWED_RATIOS = new Set(['16:9', '9:16', '4:3', '3:4', '1:1', '21:9']);
+// 火山官方 2.5 支持 adaptive(首尾帧/视频编辑/延长任务【必须】adaptive → 输出跟随输入宽高比)。
+const ALLOWED_RATIOS = new Set(['16:9', '9:16', '4:3', '3:4', '1:1', '21:9', 'adaptive']);
 
 function err(status: number, code: string, message: string) {
     return NextResponse.json({ error: { code, message, type: 'seedance_cn_adapter_error' } }, { status });
@@ -272,6 +273,30 @@ function pushUrl(list: string[], u: unknown) {
     if (typeof u === 'string' && u) list.push(u);
     else if (u && typeof u === 'object' && typeof (u as { url?: unknown }).url === 'string')
         list.push((u as { url: string }).url);
+}
+
+function urlOf(u: unknown): string {
+    if (typeof u === 'string') return u;
+    if (u && typeof u === 'object' && typeof (u as { url?: unknown }).url === 'string')
+        return (u as { url: string }).url;
+    return '';
+}
+
+/** 从 content 数组抽出图片项 + 其显式 role(火山官方形:first_frame / last_frame / reference_image)。
+ *  用于保留客户在 content-item 上显式指定的帧角色;未识别的 role 归一为 reference_image。 */
+export function extractImageRolesFromContent(body: Record<string, unknown>): Array<{ url: string; role: string }> {
+    const out: Array<{ url: string; role: string }> = [];
+    const content = body.content;
+    if (!Array.isArray(content)) return out;
+    for (const c of content) {
+        const o = c as { type?: string; image_url?: unknown; role?: unknown };
+        if (o?.type !== 'image_url' && o?.type !== 'input_image') continue;
+        const url = urlOf(o.image_url);
+        if (!url) continue;
+        const r = typeof o.role === 'string' ? o.role : '';
+        out.push({ url, role: r === 'first_frame' || r === 'last_frame' ? r : 'reference_image' });
+    }
+    return out;
 }
 
 /** 入参图 URL(顶层 image_url / image / images / reference_image_urls + content[].image_url)。 */
@@ -398,11 +423,11 @@ export async function submitVideoWithKey(body: Record<string, unknown>, auth: st
     if (rawVideos.length > limits.videos) return err(400, 'invalid_request', `at most ${limits.videos} videos`);
     if (rawAudios.length > limits.audios) return err(400, 'invalid_request', `at most ${limits.audios} audios`);
 
-    // duration:2.5 系 4-30s,2.0 系 4-15s(火山官方 2026-08 提升 2.5 至 30s);
-    // 范围外/非整数回落 5(new-api 面保持宽容,不改存量行为;企业 proxy 层已显式 400)。
+    // duration:2.5 系 4-30s,2.0 系 4-15s(火山官方 2026-08 提升 2.5 至 30s);-1 = 智能时长
+    // (上游在有效范围内自选,火山官方全系支持)。范围外/非整数回落 5。
     const durRaw = Number(body.duration ?? body.seconds);
     const maxDur = maxDurationForVariant(map.variant);
-    const duration = Number.isInteger(durRaw) && durRaw >= 4 && durRaw <= maxDur ? durRaw : 5;
+    const duration = durRaw === -1 ? -1 : Number.isInteger(durRaw) && durRaw >= 4 && durRaw <= maxDur ? durRaw : 5;
     let ratio = String(body.ratio || body.aspect_ratio || '16:9');
     if (!ALLOWED_RATIOS.has(ratio)) ratio = '16:9';
     const generateAudio = body.generate_audio !== false; // 满血企业档默认出声;传 false 关(音频零额外 token 成本)
@@ -418,13 +443,28 @@ export async function submitVideoWithKey(body: Record<string, unknown>, auth: st
     };
     if (typeof body.camera_fixed === 'boolean') upstreamBody.camera_fixed = body.camera_fixed;
     if (typeof body.seed === 'number') upstreamBody.seed = body.seed;
+    // 全模态参考任务类型引导(火山官方 2.5:auto/edit/extend);有则透传,上游做特殊参数校验。
+    if (
+        typeof body.omni_reference_task_type === 'string' &&
+        ['auto', 'edit', 'extend'].includes(body.omni_reference_task_type)
+    )
+        upstreamBody.omni_reference_task_type = body.omni_reference_task_type;
+    // 输出格式(火山官方 2.5 新增 mov;缺省 mp4);有则透传。
+    if (typeof body.output_format === 'string' && ['mp4', 'mov'].includes(body.output_format.toLowerCase()))
+        upstreamBody.output_format = body.output_format.toLowerCase();
 
     if (map.ref) {
         try {
             const images: Array<{ url: string; role: string }> = [];
+            // 客户在 content-item 上显式指定 role(first_frame/last_frame/reference_image)时原样保留
+            // (火山官方形);否则回落到顶层 first_frame/last_frame + reference_mode + 智能模式(存量行为)。
+            const contentRoled = extractImageRolesFromContent(body);
+            const hasContentFrameRole = contentRoled.some((i) => i.role === 'first_frame' || i.role === 'last_frame');
             if (explicitFirst) images.push({ url: await toHttpMediaUrl(explicitFirst), role: 'first_frame' });
             if (explicitLast) images.push({ url: await toHttpMediaUrl(explicitLast), role: 'last_frame' });
-            if (!explicitFirst && !explicitLast && refMode === 'start_frame' && rawImages.length >= 1) {
+            if (!explicitFirst && !explicitLast && hasContentFrameRole) {
+                for (const it of contentRoled) images.push({ url: await toHttpMediaUrl(it.url), role: it.role });
+            } else if (!explicitFirst && !explicitLast && refMode === 'start_frame' && rawImages.length >= 1) {
                 images.push({ url: await toHttpMediaUrl(rawImages[0]), role: 'first_frame' });
             } else if (!explicitFirst && !explicitLast && refMode === 'start_end' && rawImages.length >= 2) {
                 images.push({ url: await toHttpMediaUrl(rawImages[0]), role: 'first_frame' });

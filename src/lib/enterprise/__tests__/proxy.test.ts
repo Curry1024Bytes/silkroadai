@@ -222,6 +222,25 @@ describe('火山渠道(volc)路由', () => {
         expect(body.error.message).toContain('4-30');
     });
 
+    it('duration=-1(智能时长)接受并落库 -1(余额门按上限估价,不 400)', async () => {
+        submitVideoWithKey.mockImplementation(() =>
+            Promise.resolve(NextResponse.json({ id: 'cgt-neg1', task_id: 'cgt-neg1', status: 'queued' })),
+        );
+        const res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', {
+                model: 'seedance-2-5',
+                prompt: 'x',
+                resolution: '720p',
+                duration: -1,
+            }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(200);
+        expect(db.seedanceVideoTask.create).toHaveBeenLastCalledWith({
+            data: expect.objectContaining({ duration: -1 }),
+        });
+    });
+
     it('volc 非法 resolution(360p)→ 400,错误文案含 480p 白名单', async () => {
         const res = await handleEnterpriseV1(
             req('POST', '/v1/video/generations', {
