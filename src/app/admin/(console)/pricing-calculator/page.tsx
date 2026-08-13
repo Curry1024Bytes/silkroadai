@@ -26,6 +26,23 @@ interface CalculatorContext {
     groups: GroupContext[];
 }
 
+interface OfficialPriceMatch {
+    model: string;
+    provider: string | null;
+    inputUsdPer1m: number;
+    outputUsdPer1m: number;
+    cacheReadUsdPer1m: number;
+    cacheWrite5mUsdPer1m: number;
+    cacheWrite1hUsdPer1m: number | null;
+}
+
+interface OfficialPriceResponse {
+    source: string;
+    source_label: string;
+    fetched_at: string;
+    models: OfficialPriceMatch[];
+}
+
 interface FormState {
     modelName: string;
     upstreamCreditsPerCny: string;
@@ -152,7 +169,18 @@ function getTexts(locale: Locale) {
             upstreamRatio: 'Upstream channel ratio',
             upstreamRatioHint: 'For 10x, enter 10.',
             official: 'Official token prices',
-            officialNote: 'USD per 1 million tokens. Copy these from the upstream model page.',
+            officialNote:
+                'USD per 1 million tokens. Look up a LiteLLM reference price, then verify important models against the provider.',
+            officialLookup: 'Look up reference price',
+            officialLookupHint: 'Searches the LiteLLM public price catalog. It does not change any live price.',
+            officialLookupAction: 'Look up',
+            officialLookupLoading: 'Looking up…',
+            officialLookupEmpty: 'No matching token-priced model was found. You can still enter a price manually.',
+            officialLookupError:
+                'The reference price source is temporarily unavailable. Enter the price manually or try again.',
+            officialLookupSource: 'Reference source',
+            officialApply: 'Fill selected price',
+            officialApplied: 'Reference price filled into this calculator. It has not been saved.',
             input: 'Input',
             output: 'Output',
             cacheRead: 'Cache read',
@@ -215,7 +243,16 @@ function getTexts(locale: Locale) {
         upstreamRatio: '上游渠道倍率',
         upstreamRatioHint: '例如 10x 就填 10',
         official: '官方 Token 价格',
-        officialNote: '单位均为 美元 / 100 万 token，请从上游模型广场抄入。',
+        officialNote: '单位均为 美元 / 100 万 token。可查询 LiteLLM 基准价；重点模型仍请与厂商官方价格核对。',
+        officialLookup: '查询官方基准价',
+        officialLookupHint: '查询 LiteLLM 公开价格表，只会填入当前计算器，不会修改任何线上价格。',
+        officialLookupAction: '查询',
+        officialLookupLoading: '查询中…',
+        officialLookupEmpty: '没有找到可按 Token 计价的匹配模型，仍可手动填写。',
+        officialLookupError: '官方基准价数据暂时不可用，请稍后重试或手动填写。',
+        officialLookupSource: '基准价来源',
+        officialApply: '填入选中价格',
+        officialApplied: '已填入当前计算器，尚未保存或修改任何线上价格。',
         input: '普通输入',
         output: '输出',
         cacheRead: '缓存读取',
@@ -266,8 +303,6 @@ function getTexts(locale: Locale) {
         advanced: '高级参数',
     };
 }
-
-type Texts = ReturnType<typeof getTexts>;
 
 function Field({
     label,
@@ -353,6 +388,51 @@ function Panel({
     );
 }
 
+function OfficialPriceDetail({
+    model,
+    locale,
+    muted,
+}: {
+    model: OfficialPriceMatch | null;
+    locale: Locale;
+    muted: string;
+}) {
+    if (!model) return null;
+    const labels =
+        locale === 'zh'
+            ? {
+                  input: '普通输入',
+                  output: '输出',
+                  cacheRead: '缓存读取',
+                  cacheWrite5m: '缓存写入 5 分钟',
+                  cacheWrite1h: '缓存写入 1 小时',
+              }
+            : {
+                  input: 'Input',
+                  output: 'Output',
+                  cacheRead: 'Cache read',
+                  cacheWrite5m: 'Cache write 5m',
+                  cacheWrite1h: 'Cache write 1h',
+              };
+    const rows: Array<readonly [string, number]> = [
+        [labels.input, model.inputUsdPer1m],
+        [labels.output, model.outputUsdPer1m],
+        [labels.cacheRead, model.cacheReadUsdPer1m],
+        [labels.cacheWrite5m, model.cacheWrite5mUsdPer1m],
+        ...(model.cacheWrite1hUsdPer1m === null ? [] : [[labels.cacheWrite1h, model.cacheWrite1hUsdPer1m] as const]),
+    ];
+
+    return (
+        <div className={['grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]', muted].join(' ')}>
+            {rows.map(([label, value]) => (
+                <span key={label}>
+                    {label}: ${decimal(value, 6)} / 1M
+                </span>
+            ))}
+        </div>
+    );
+}
+
 export default function PricingCalculatorPage() {
     const searchParams = useSearchParams();
     const locale = resolveLocale(searchParams.get('lang'));
@@ -363,6 +443,13 @@ export default function PricingCalculatorPage() {
     const [resetComplete, setResetComplete] = useState(false);
     const [context, setContext] = useState<CalculatorContext | null>(null);
     const [contextError, setContextError] = useState(false);
+    const [officialMatches, setOfficialMatches] = useState<OfficialPriceMatch[]>([]);
+    const [selectedOfficialModel, setSelectedOfficialModel] = useState('');
+    const [officialSource, setOfficialSource] = useState<string | null>(null);
+    const [officialLoading, setOfficialLoading] = useState(false);
+    const [officialLookupError, setOfficialLookupError] = useState(false);
+    const [officialLookupComplete, setOfficialLookupComplete] = useState(false);
+    const [officialApplied, setOfficialApplied] = useState(false);
 
     useEffect(() => {
         let cancelled = false;
@@ -390,6 +477,51 @@ export default function PricingCalculatorPage() {
         setResetComplete(false);
         setForm((current) => ({ ...current, [key]: value }));
     }, []);
+
+    async function lookupOfficialPrice() {
+        const query = form.modelName.trim();
+        if (!query) return;
+        setOfficialLoading(true);
+        setOfficialLookupError(false);
+        setOfficialLookupComplete(false);
+        setOfficialApplied(false);
+        try {
+            const response = await fetch(
+                `/api/admin/pricing-calculator/official-prices?q=${encodeURIComponent(query)}`,
+                { credentials: 'same-origin' },
+            );
+            if (!response.ok) throw new Error('official price request failed');
+            const body = (await response.json()) as OfficialPriceResponse;
+            setOfficialMatches(body.models);
+            setSelectedOfficialModel(body.models[0]?.model ?? '');
+            const fetchedAt = new Date(body.fetched_at);
+            setOfficialSource(
+                `${body.source_label}${Number.isNaN(fetchedAt.getTime()) ? '' : ` · ${fetchedAt.toLocaleString(locale === 'zh' ? 'zh-CN' : 'en-US')}`}`,
+            );
+            setOfficialLookupComplete(true);
+        } catch {
+            setOfficialMatches([]);
+            setSelectedOfficialModel('');
+            setOfficialSource(null);
+            setOfficialLookupError(true);
+        } finally {
+            setOfficialLoading(false);
+        }
+    }
+
+    const applyOfficialPrice = useCallback(() => {
+        const selected = officialMatches.find((model) => model.model === selectedOfficialModel);
+        if (!selected) return;
+        setResetComplete(false);
+        setForm((current) => ({
+            ...current,
+            inputUsdPer1m: String(selected.inputUsdPer1m),
+            outputUsdPer1m: String(selected.outputUsdPer1m),
+            cacheReadUsdPer1m: String(selected.cacheReadUsdPer1m),
+            cacheWriteUsdPer1m: String(selected.cacheWrite5mUsdPer1m),
+        }));
+        setOfficialApplied(true);
+    }, [officialMatches, selectedOfficialModel]);
 
     const calculation = useMemo((): { result: PricingCalculatorResult | null; invalid: boolean } => {
         const input = buildInput(form);
@@ -544,6 +676,92 @@ export default function PricingCalculatorPage() {
                     </Panel>
 
                     <Panel title={t.official} note={t.officialNote} isDark={isDark}>
+                        <div
+                            className={[
+                                'mb-4 rounded-lg border p-3',
+                                isDark ? 'border-slate-700 bg-slate-800/60' : 'border-slate-200 bg-slate-50',
+                            ].join(' ')}
+                        >
+                            <div className={['mb-2 text-xs font-medium', strong].join(' ')}>{t.officialLookup}</div>
+                            <p className={['mb-3 text-[11px] leading-5', muted].join(' ')}>{t.officialLookupHint}</p>
+                            <button
+                                type="button"
+                                onClick={() => void lookupOfficialPrice()}
+                                disabled={officialLoading || !form.modelName.trim()}
+                                className={[
+                                    'inline-flex h-8 items-center rounded-md border px-3 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+                                    isDark
+                                        ? 'border-emerald-700 bg-emerald-950/50 text-emerald-300 hover:bg-emerald-900/60'
+                                        : 'border-emerald-700 bg-white text-emerald-800 hover:bg-emerald-50',
+                                ].join(' ')}
+                            >
+                                {officialLoading ? t.officialLookupLoading : t.officialLookupAction}
+                            </button>
+
+                            {officialLookupError && (
+                                <p className="mt-3 text-xs text-rose-600">{t.officialLookupError}</p>
+                            )}
+                            {officialLookupComplete && officialMatches.length === 0 && (
+                                <p className={['mt-3 text-xs', muted].join(' ')}>{t.officialLookupEmpty}</p>
+                            )}
+                            {officialMatches.length > 0 && (
+                                <div className="mt-3 space-y-2">
+                                    <select
+                                        value={selectedOfficialModel}
+                                        onChange={(event) => {
+                                            setSelectedOfficialModel(event.target.value);
+                                            setOfficialApplied(false);
+                                        }}
+                                        aria-label={t.officialLookup}
+                                        className={[
+                                            'w-full rounded-md border px-2.5 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500/40',
+                                            isDark
+                                                ? 'border-slate-600 bg-slate-800 text-slate-100'
+                                                : 'border-slate-300 bg-white text-slate-900',
+                                        ].join(' ')}
+                                    >
+                                        {officialMatches.map((model) => (
+                                            <option key={model.model} value={model.model}>
+                                                {model.model} · ${model.inputUsdPer1m}/${model.outputUsdPer1m} / 1M
+                                            </option>
+                                        ))}
+                                    </select>
+                                    <button
+                                        type="button"
+                                        onClick={applyOfficialPrice}
+                                        className={[
+                                            'inline-flex h-8 items-center rounded-md border px-3 text-xs font-medium transition-colors',
+                                            isDark
+                                                ? 'border-slate-600 text-slate-200 hover:bg-slate-700'
+                                                : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-100',
+                                        ].join(' ')}
+                                    >
+                                        {t.officialApply}
+                                    </button>
+                                    {officialSource && (
+                                        <p className={['text-[11px] leading-5', muted].join(' ')}>
+                                            {t.officialLookupSource}: {officialSource}
+                                        </p>
+                                    )}
+                                    {selectedOfficialModel && (
+                                        <OfficialPriceDetail
+                                            model={
+                                                officialMatches.find(
+                                                    (model) => model.model === selectedOfficialModel,
+                                                ) ?? null
+                                            }
+                                            locale={locale}
+                                            muted={muted}
+                                        />
+                                    )}
+                                </div>
+                            )}
+                            {officialApplied && (
+                                <p className="mt-3 text-xs text-emerald-700 dark:text-emerald-300">
+                                    {t.officialApplied}
+                                </p>
+                            )}
+                        </div>
                         <div className={inputClass}>
                             <Field
                                 label={t.input}
