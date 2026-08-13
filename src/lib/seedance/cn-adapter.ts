@@ -205,6 +205,12 @@ export function variantForModel(model: string): SeedanceVariant {
     return 'pro';
 }
 
+/** 单次生成时长上限(秒):seedance 2.5 系 = 30s(火山官方 2026-08 提升,4~30);
+ *  2.0 全系仍 15s(4~15)。低于 4 或超上限 → 调用方回落缺省 5(cn-adapter/cn-proxy)或 400(proxy)。 */
+export function maxDurationForVariant(v: SeedanceVariant): number {
+    return v === '2.5' || v === 'promax-2.5' ? 30 : 15;
+}
+
 const ALLOWED_RATIOS = new Set(['16:9', '9:16', '4:3', '3:4', '1:1', '21:9']);
 
 function err(status: number, code: string, message: string) {
@@ -392,10 +398,11 @@ export async function submitVideoWithKey(body: Record<string, unknown>, auth: st
     if (rawVideos.length > limits.videos) return err(400, 'invalid_request', `at most ${limits.videos} videos`);
     if (rawAudios.length > limits.audios) return err(400, 'invalid_request', `at most ${limits.audios} audios`);
 
-    // duration:4-15 任意整数秒(2026-08-03 探测:pro/fast/mini 上游 4s 全接受,3s/16s 400);
+    // duration:2.5 系 4-30s,2.0 系 4-15s(火山官方 2026-08 提升 2.5 至 30s);
     // 范围外/非整数回落 5(new-api 面保持宽容,不改存量行为;企业 proxy 层已显式 400)。
     const durRaw = Number(body.duration ?? body.seconds);
-    const duration = Number.isInteger(durRaw) && durRaw >= 4 && durRaw <= 15 ? durRaw : 5;
+    const maxDur = maxDurationForVariant(map.variant);
+    const duration = Number.isInteger(durRaw) && durRaw >= 4 && durRaw <= maxDur ? durRaw : 5;
     let ratio = String(body.ratio || body.aspect_ratio || '16:9');
     if (!ALLOWED_RATIOS.has(ratio)) ratio = '16:9';
     const generateAudio = body.generate_audio !== false; // 满血企业档默认出声;传 false 关(音频零额外 token 成本)

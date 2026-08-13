@@ -238,6 +238,20 @@ describe('seedance-cn adapter submit', () => {
         }
     });
 
+    it('seedance 2.5 系 duration 上限 30(4-30):16/30 透传,31/3 回落 5', async () => {
+        for (const [input, expected] of [
+            [30, 30],
+            [16, 16],
+            [4, 4],
+            [31, 5],
+            [3, 5],
+        ] as Array<[number, number]>) {
+            mockFetch.mockClear();
+            await submitVideo(makeReq({ model: 'seedance2.5-720p', prompt: 'x', duration: input }));
+            expect(submitBody().duration).toBe(expected);
+        }
+    });
+
     it('XHK_KEY 配置时精确校验:错 key → 401', async () => {
         const prev = process.env.SEEDANCE_XHK_KEY;
         process.env.SEEDANCE_XHK_KEY = 'sk-correct';
