@@ -238,6 +238,86 @@ describe('seedance-cn adapter submit', () => {
         }
     });
 
+    it('seedance 2.5 系 duration 上限 30(4-30):16/30 透传,31/3 回落 5', async () => {
+        for (const [input, expected] of [
+            [30, 30],
+            [16, 16],
+            [4, 4],
+            [31, 5],
+            [3, 5],
+        ] as Array<[number, number]>) {
+            mockFetch.mockClear();
+            await submitVideo(makeReq({ model: 'seedance2.5-720p', prompt: 'x', duration: input }));
+            expect(submitBody().duration).toBe(expected);
+        }
+    });
+
+    it('duration=-1(智能时长)原样透传上游', async () => {
+        mockFetch.mockClear();
+        await submitVideo(makeReq({ model: 'seedance2.5-720p', prompt: 'x', duration: -1 }));
+        expect(submitBody().duration).toBe(-1);
+    });
+
+    it('ratio=adaptive 透传(不再被强制成 16:9);非法比例仍回落 16:9', async () => {
+        mockFetch.mockClear();
+        await submitVideo(makeReq({ model: 'seedance2.5-720p', prompt: 'x', ratio: 'adaptive' }));
+        expect(submitBody().ratio).toBe('adaptive');
+        mockFetch.mockClear();
+        await submitVideo(makeReq({ model: 'seedance2.5-720p', prompt: 'x', ratio: '99:99' }));
+        expect(submitBody().ratio).toBe('16:9');
+    });
+
+    it('omni_reference_task_type + output_format 透传(白名单外忽略)', async () => {
+        mockFetch.mockClear();
+        await submitVideo(
+            makeReq({ model: 'seedance2.5-720p', prompt: 'x', omni_reference_task_type: 'edit', output_format: 'mov' }),
+        );
+        let b = submitBody();
+        expect(b.omni_reference_task_type).toBe('edit');
+        expect(b.output_format).toBe('mov');
+        mockFetch.mockClear();
+        await submitVideo(
+            makeReq({
+                model: 'seedance2.5-720p',
+                prompt: 'x',
+                omni_reference_task_type: 'bogus',
+                output_format: 'avi',
+            }),
+        );
+        b = submitBody();
+        expect(b.omni_reference_task_type).toBeUndefined();
+        expect(b.output_format).toBeUndefined();
+    });
+
+    it('content-item 显式 role(first_frame/last_frame)原样保留;无 role 时按 reference_image', async () => {
+        mockFetch.mockClear();
+        await submitVideo(
+            makeReq({
+                model: 'seedance2.5-720p-ref',
+                content: [
+                    { type: 'text', text: 'x' },
+                    { type: 'image_url', image_url: { url: 'https://x/a.jpg' }, role: 'first_frame' },
+                    { type: 'image_url', image_url: { url: 'https://x/b.jpg' }, role: 'last_frame' },
+                ],
+            }),
+        );
+        const imgs = submitBody().images as Array<{ url: string; role: string }>;
+        expect(imgs.map((i) => i.role)).toEqual(['first_frame', 'last_frame']);
+        // 无 role → 智能模式仍按 reference_image(存量行为不变)
+        mockFetch.mockClear();
+        await submitVideo(
+            makeReq({
+                model: 'seedance2.5-720p-ref',
+                content: [
+                    { type: 'text', text: 'x' },
+                    { type: 'image_url', image_url: { url: 'https://x/a.jpg' } },
+                ],
+            }),
+        );
+        const imgs2 = submitBody().images as Array<{ url: string; role: string }>;
+        expect(imgs2.map((i) => i.role)).toEqual(['reference_image']);
+    });
+
     it('XHK_KEY 配置时精确校验:错 key → 401', async () => {
         const prev = process.env.SEEDANCE_XHK_KEY;
         process.env.SEEDANCE_XHK_KEY = 'sk-correct';

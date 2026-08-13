@@ -12,7 +12,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
 import { getCustomerBalance } from '@/lib/billing/customer-balance';
-import { MODEL_MAP, extractVideoUrls } from './cn-adapter';
+import { MODEL_MAP, extractVideoUrls, maxDurationForVariant } from './cn-adapter';
 import { chargeSeedanceVideoTask, estimateCostCny, type Resolution } from './cn-billing';
 
 /** 适配器内网地址(同 portal 进程自调);渠道 base_url 同款,默认自指 127.0.0.1。 */
@@ -97,13 +97,16 @@ export async function handleSeedanceVideoSubmit(
 
     const hasVideo = extractVideoUrls(body).length > 0;
     const durRaw = Number(body.duration ?? body.seconds);
-    // 与 cn-adapter 同步:4-15 整数透传,其余回落 5(估价必须和适配器实际转发值一致)
-    const duration = Number.isInteger(durRaw) && durRaw >= 4 && durRaw <= 15 ? durRaw : 5;
+    // 与 cn-adapter 同步:2.5 系 4-30 / 2.0 系 4-15 整数透传,其余回落 5(估价必须和适配器实际转发值一致);
+    // -1 = 智能时长(上游自选,落库 -1)。余额门按【上限】估价挡(-1 时长未定,防欠扣;最终按 token 结算)。
+    const maxDur = maxDurationForVariant(map.variant);
+    const duration = durRaw === -1 ? -1 : Number.isInteger(durRaw) && durRaw >= 4 && durRaw <= maxDur ? durRaw : 5;
+    const estDuration = duration === -1 ? maxDur : duration;
 
     // 2) 余额门(视频后付费 + 绕过 new-api,提交时先估价挡,防大额透支)
     try {
         const bal = await getCustomerBalance(cust.userId);
-        const est = estimateCostCny(map.resolution as Resolution, duration, hasVideo, map.variant);
+        const est = estimateCostCny(map.resolution as Resolution, estDuration, hasVideo, map.variant);
         if (bal.balanceCny < est)
             return errJson(
                 402,
