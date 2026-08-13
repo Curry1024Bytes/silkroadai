@@ -18,4 +18,7 @@ export interface ImageProvider {
 export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
     // ominiapi:1k/2k/4k 统一 ¥0.1/张 → 只值得接 4K 全档 + 2K-high(守门在 adapter.ts)
     ominiapi: { baseUrl: 'https://www.ominiapi.com', brand: /\bomini(?:api)?\b/gi },
+    // codexvip:同源 Adobe Firefly 转售(usage_source=adobe2api,出图带 Firefly C2PA →
+    // stripAdobeImageMetadataB64 自动剥),¥0.06/张(比 ominiapi 便宜)。与 ch154 同 prio 分流承压。
+    codexvip: { baseUrl: 'https://subdirect.aicodexvip.top', brand: /\b(?:aicodexvip|aicodex|codexvip|adobe2api)\b/gi },
 };

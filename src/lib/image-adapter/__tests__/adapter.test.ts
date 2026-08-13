@@ -538,3 +538,38 @@ describe('sanitizeAdapterError', () => {
         expect(out.toLowerCase()).not.toContain('adobe');
     });
 });
+
+describe('codexvip provider(第二家 Adobe Firefly 转售,与 ch154 同 prio 分流)', () => {
+    it('注册表解析到正确 base_url,请求路由到该上游', async () => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/codexvip/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'a 4k cat',
+                size: '3840x2160',
+                quality: 'high',
+            }),
+            'generations',
+            'codexvip',
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.usage.output_tokens).toBe(13342); // 上游假 usage 被合成值替换
+        const [url, init] = fetchMock.mock.calls[0];
+        expect(url).toBe('https://subdirect.aicodexvip.top/v1/images/generations');
+        expect(init.headers.authorization).toBe('Bearer sk-upstream-test'); // key 透传,portal 不存
+        expect(JSON.parse(init.body as string).response_format).toBe('b64_json');
+    });
+
+    it('brand 正则抹掉 aicodexvip / adobe2api 身份串', () => {
+        const out = sanitizeAdapterError(
+            'aicodexvip upstream error; usage_source=adobe2api; adobe firefly unsafe',
+            /\b(?:aicodexvip|aicodex|codexvip|adobe2api)\b/gi,
+        );
+        const lc = out.toLowerCase();
+        expect(lc).not.toContain('aicodex');
+        expect(lc).not.toContain('codexvip');
+        expect(lc).not.toContain('adobe2api');
+        expect(lc).not.toContain('adobe');
+    });
+});
