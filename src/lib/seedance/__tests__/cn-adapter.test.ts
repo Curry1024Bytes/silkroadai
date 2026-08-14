@@ -173,6 +173,32 @@ describe('seedance-cn adapter submit', () => {
         expect(b.images[0].url).not.toMatch(/popreels/);
     });
 
+    it('海外档多图【并行】转存:全部转存 R2,顺序 + role 保持不变', async () => {
+        const res = await submitVideo(
+            makeReq({
+                model: 'seedance2.0-promax-720p-ref',
+                content: [
+                    { type: 'text', text: 'x' },
+                    { type: 'image_url', image_url: { url: 'https://res.popreels.cn/1.png' }, role: 'first_frame' },
+                    { type: 'image_url', image_url: { url: 'https://res.popreels.cn/2.png' }, role: 'reference_image' },
+                    { type: 'image_url', image_url: { url: 'https://res.popreels.cn/3.png' }, role: 'reference_image' },
+                ],
+            }),
+        );
+        expect(res.status).toBe(200);
+        // 三张都转存(seedance-input 前缀)
+        expect(mockUploadImage.mock.calls.filter((c) => String(c[0]).startsWith('seedance-input/'))).toHaveLength(3);
+        const call = mockFetch.mock.calls.find(
+            (c) => String(c[0]) === `${INTL}/v1/video/generations` && (c[1] as RequestInit)?.method === 'POST',
+        );
+        const b = JSON.parse(String((call![1] as RequestInit).body)) as {
+            images: Array<{ url: string; role: string }>;
+        };
+        expect(b.images).toHaveLength(3);
+        expect(b.images.map((i) => i.role)).toEqual(['first_frame', 'reference_image', 'reference_image']);
+        for (const im of b.images) expect(im.url).toMatch(/^https:\/\/images\.silkroadai\.io\/seedance-input\//);
+    });
+
     it('reference_mode start_end → 首尾帧角色', async () => {
         const res = await submitVideo(
             makeReq({

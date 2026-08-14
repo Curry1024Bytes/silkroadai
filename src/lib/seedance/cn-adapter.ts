@@ -508,32 +508,34 @@ export async function submitVideoWithKey(body: Record<string, unknown>, auth: st
             // 国内版(cn)上游在境内、能直拉,保持透传。data URL 各档本就转存 R2。
             const rehost = map.region === 'global' || map.region === 'promax';
             const toUrl = (u: string) => toHttpMediaUrl(u, { rehostHttp: rehost });
-            const images: Array<{ url: string; role: string }> = [];
+            // 先只确定每张图的(原始 url, role),不做 IO;再把图/视频/音频【全部并行】转存(保序 + role 不变)。
+            // 海外档多图串行转存会累加延迟(13 图 × ~4s ≈ 50s);并行后 ≈ 单张耗时。
             // 客户在 content-item 上显式指定 role(first_frame/last_frame/reference_image)时原样保留
             // (火山官方形);否则回落到顶层 first_frame/last_frame + reference_mode + 智能模式(存量行为)。
             const contentRoled = extractImageRolesFromContent(body);
             const hasContentFrameRole = contentRoled.some((i) => i.role === 'first_frame' || i.role === 'last_frame');
-            if (explicitFirst) images.push({ url: await toUrl(explicitFirst), role: 'first_frame' });
-            if (explicitLast) images.push({ url: await toUrl(explicitLast), role: 'last_frame' });
+            const imageSpecs: Array<{ url: string; role: string }> = [];
+            if (explicitFirst) imageSpecs.push({ url: explicitFirst, role: 'first_frame' });
+            if (explicitLast) imageSpecs.push({ url: explicitLast, role: 'last_frame' });
             if (!explicitFirst && !explicitLast && hasContentFrameRole) {
-                for (const it of contentRoled) images.push({ url: await toUrl(it.url), role: it.role });
+                for (const it of contentRoled) imageSpecs.push({ url: it.url, role: it.role });
             } else if (!explicitFirst && !explicitLast && refMode === 'start_frame' && rawImages.length >= 1) {
-                images.push({ url: await toUrl(rawImages[0]), role: 'first_frame' });
+                imageSpecs.push({ url: rawImages[0], role: 'first_frame' });
             } else if (!explicitFirst && !explicitLast && refMode === 'start_end' && rawImages.length >= 2) {
-                images.push({ url: await toUrl(rawImages[0]), role: 'first_frame' });
-                images.push({ url: await toUrl(rawImages[1]), role: 'last_frame' });
+                imageSpecs.push({ url: rawImages[0], role: 'first_frame' });
+                imageSpecs.push({ url: rawImages[1], role: 'last_frame' });
             } else if (!explicitFirst && !explicitLast) {
-                for (const u of rawImages) images.push({ url: await toUrl(u), role: 'reference_image' });
+                for (const u of rawImages) imageSpecs.push({ url: u, role: 'reference_image' });
             }
-            if (images.length) upstreamBody.images = images;
-            if (rawVideos.length) {
-                const videos = await Promise.all(rawVideos.map((u) => toUrl(u)));
-                upstreamBody.videos = videos;
-            }
-            if (rawAudios.length) {
-                const audios = await Promise.all(rawAudios.map((u) => toUrl(u)));
-                upstreamBody.audios = audios;
-            }
+            const [imageUrls, videos, audios] = await Promise.all([
+                Promise.all(imageSpecs.map((s) => toUrl(s.url))),
+                Promise.all(rawVideos.map((u) => toUrl(u))),
+                Promise.all(rawAudios.map((u) => toUrl(u))),
+            ]);
+            if (imageSpecs.length)
+                upstreamBody.images = imageSpecs.map((s, i) => ({ url: imageUrls[i], role: s.role }));
+            if (videos.length) upstreamBody.videos = videos;
+            if (audios.length) upstreamBody.audios = audios;
         } catch (e) {
             return err(400, 'invalid_request', `reference media processing failed: ${String(e).slice(0, 160)}`);
         }
