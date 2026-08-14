@@ -48,12 +48,16 @@ export default async function EnterpriseStoragePage() {
         <div className="max-w-3xl">
             <h1 className="text-xl font-semibold text-gray-900">自定义存储</h1>
             <p className="mt-2 text-sm text-gray-600">
-                Seedance 视频成片默认存储在 Silk Road AI 的对象存储,返回平台域名 URL(有效期约 24
-                小时)。你可以配置自己的对象存储(Cloudflare R2 / 阿里云 OSS / 腾讯云 COS / AWS S3 / 自建 S3
-                兼容),配置生效后成片将直接上传到你的
-                bucket,返回你自己域名下的永久链接。未配置或任何故障时自动回退平台存储,不影响出片。
+                默认情况下,Seedance 视频成片返回<strong>上游生成直链</strong>(有效期约 24
+                小时,请及时下载或转存)。你可以配置自己的对象存储(Cloudflare R2 / 阿里云 OSS / 腾讯云 COS / AWS S3 / 自建
+                S3 兼容),配置生效后成片将直接上传到你的
+                bucket、返回你自己域名下的永久链接,数据完全归属你。未配置或任何故障时自动回退上游直链,不影响出片。
             </p>
-            <StorageSettingsForm initialConfig={initialConfig} apiBase="/api/enterprise/oss" />
+            <StorageSettingsForm
+                initialConfig={initialConfig}
+                apiBase="/api/enterprise/oss"
+                defaultModeHint="无需配置,成片返回上游生成直链(有效期约 24 小时,请及时下载或转存)"
+            />
         </div>
     );
 }

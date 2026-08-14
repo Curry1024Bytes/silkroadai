@@ -34,6 +34,9 @@ interface Props {
     /** OSS 配置 API 前缀。默认主站 /api/portal/oss;企业门户传 /api/enterprise/oss
      *  (企业裸 IP 门户 Caddy 只放行 /api/enterprise/*)。 */
     apiBase?: string;
+    /** 「默认存储」单选项的说明文案。主站生图默认落平台 R2(images.silkroadai.io);
+     *  Seedance 企业视频默认【返回上游直链】(不落平台),故文案不同,由调用方传入。 */
+    defaultModeHint?: string;
 }
 
 const PROVIDERS: Array<{ value: string; label: string; endpointHint: string }> = [
@@ -47,7 +50,11 @@ const PROVIDERS: Array<{ value: string; label: string; endpointHint: string }> =
 type TestState = { state: 'idle' | 'testing' } | { state: 'ok' } | { state: 'fail'; message: string };
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
 
-export function StorageSettingsForm({ initialConfig, apiBase = '/api/portal/oss' }: Props) {
+export function StorageSettingsForm({
+    initialConfig,
+    apiBase = '/api/portal/oss',
+    defaultModeHint = 'Silk Road AI 托管,无需配置,URL 为 images.silkroadai.io',
+}: Props) {
     const [mode, setMode] = useState<'default' | 'custom'>(initialConfig ? 'custom' : 'default');
     const [provider, setProvider] = useState(initialConfig?.provider ?? 'r2');
     const [endpoint, setEndpoint] = useState(initialConfig?.endpoint ?? '');
@@ -186,9 +193,7 @@ export function StorageSettingsForm({ initialConfig, apiBase = '/api/portal/oss'
                         />
                         <span>
                             <span className="text-sm font-medium text-navy">默认存储(推荐)</span>
-                            <span className="block text-xs text-muted-ink">
-                                Silk Road AI 托管,无需配置,URL 为 images.silkroadai.io
-                            </span>
+                            <span className="block text-xs text-muted-ink">{defaultModeHint}</span>
                         </span>
                     </label>
                     <label className="flex items-start gap-2 cursor-pointer">
