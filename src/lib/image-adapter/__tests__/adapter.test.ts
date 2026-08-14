@@ -209,15 +209,39 @@ describe('handleAdapterImage 守门(调上游之前拒,返 503 让 new-api failo
         ['size auto', { size: 'auto', quality: 'high' }],
         ['size 缺省', { quality: 'high' }],
     ])('%s → 503 且不打上游', async (_label, extra) => {
+        // codexvip 仍走盈利档守门(ominiapi 已 openAllTiers,不再被这些低档拒)
         const res = await handleAdapterImage(
             jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', ...extra }),
             'generations',
-            'ominiapi',
+            'codexvip',
         );
         expect(res.status).toBe(503);
         expect(fetchMock).not.toHaveBeenCalled();
         const body = await res.json();
         expect(body.error.code).toBe('upstream_unavailable');
+    });
+
+    it('ominiapi openAllTiers:低档(1024 low)不再被守门拒,直接打上游', async () => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', quality: 'low' }),
+            'generations',
+            'ominiapi',
+        );
+        expect(res.status).toBe(200);
+        expect(fetchMock).toHaveBeenCalledTimes(1); // 过闸 → 打上游
+        const [url] = fetchMock.mock.calls[0];
+        expect(url).toBe('https://api.ominiapi.com/v1/images/generations');
+    });
+
+    it('ominiapi openAllTiers:size 不可解析(auto)仍拒(守门只放行可解析尺寸)', async () => {
+        const res = await handleAdapterImage(
+            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: 'auto', quality: 'high' }),
+            'generations',
+            'ominiapi',
+        );
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
     });
 
     it('503 响应体不含任何内部信息(全渠道挂时 new-api 会把它原文透给客户)', async () => {
@@ -231,7 +255,8 @@ describe('handleAdapterImage 守门(调上游之前拒,返 503 让 new-api failo
             ),
         );
         const cases = await Promise.all([
-            handleAdapterImage(jsonReq(URL_GEN, { prompt: 'x', size: '1024x1024' }), 'generations', 'ominiapi'),
+            // 守门拒案例用 codexvip(ominiapi 已 openAllTiers 不再守门拒 1024)
+            handleAdapterImage(jsonReq(URL_GEN, { prompt: 'x', size: '1024x1024' }), 'generations', 'codexvip'),
             handleAdapterImage(
                 jsonReq(URL_GEN, { prompt: 'x', size: '3840x2160', quality: 'high' }),
                 'generations',

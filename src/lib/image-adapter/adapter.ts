@@ -410,10 +410,11 @@ export async function handleAdapterImage(
     if (!parsed) return failover('bad_request_body', 'unparseable request body');
 
     // ---- 守门(调上游之前,不花钱)----
+    // provider.openAllTiers = true → 跳过盈利档守门,放行所有分辨率(仍要求 size 可解析)。
     const dims = parseSize(parsed.size);
     const quality = normQuality(parsed.quality);
     const perImageCt = dims ? officialOutputTokens(dims.w, dims.h, quality) : 0;
-    if (!dims || !isProfitable(perImageCt)) {
+    if (!dims || (!provider.openAllTiers && !isProfitable(perImageCt))) {
         console.log('[image-adapter] gate reject', {
             provider: providerName,
             mode,

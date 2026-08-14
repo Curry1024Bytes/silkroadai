@@ -13,12 +13,16 @@ export interface ImageProvider {
     baseUrl: string;
     /** 错误脱敏:出现在客户可见错误体里要抹掉的品牌名。 */
     brand: RegExp;
+    /** true = 跳过 isProfitable 守门,放行所有分辨率/品质(仅要求 size 可解析)。
+     *  默认(缺省)= 只放行盈利档(4K 全档 + 2K-high),其余 503 failover。 */
+    openAllTiers?: boolean;
 }
 
 export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
-    // ominiapi:1k/2k/4k 统一 ¥0.1/张 → 只值得接 4K 全档 + 2K-high(守门在 adapter.ts)
+    // ominiapi:1k/2k/4k 统一 ¥0.1/张。
     // 2026-08-14:上游端点 www. → api.(api. 连接更快;www 仍活,非强制迁移)。
-    ominiapi: { baseUrl: 'https://api.ominiapi.com', brand: /\bomini(?:api)?\b/gi },
+    // 2026-08-14 紧急放开守门 → 接【所有分辨率】(operator 拍板,不再只收盈利档)。
+    ominiapi: { baseUrl: 'https://api.ominiapi.com', brand: /\bomini(?:api)?\b/gi, openAllTiers: true },
     // codexvip:同源 Adobe Firefly 转售(usage_source=adobe2api,出图带 Firefly C2PA →
     // stripAdobeImageMetadataB64 自动剥),¥0.06/张(比 ominiapi 便宜)。与 ch154 同 prio 分流承压。
     codexvip: { baseUrl: 'https://subdirect.aicodexvip.top', brand: /\b(?:aicodexvip|aicodex|codexvip|adobe2api)\b/gi },
