@@ -370,7 +370,8 @@ describe('安全:上游信息不外泄(2026-07-24)', () => {
         );
         const res = await submitVideo(makeReq({ model: 'seedance2.0-pro-720p', prompt: 'x' }));
         const j = (await res.json()) as { error: { message: string } };
-        expect(j.error.message).toBe('upstream rejected the request');
+        // 上游 5xx = 瞬时,给可重试文案(不再泛化成 rejected);仍不泄露上游身份
+        expect(j.error.message).toBe('上游暂时不可用,请稍后重试');
         expect(j.error.message).not.toMatch(/xinhankr|nginx|artsmcp/i);
     });
 
@@ -385,7 +386,8 @@ describe('安全:上游信息不外泄(2026-07-24)', () => {
         mockFetch.mockResolvedValueOnce(json({ error: { message: 'artsmcp gateway 502' } }, 502));
         res = await pollVideo(pollReq(), 'cgt-x');
         j = (await res.json()) as { error: { message: string } };
-        expect(j.error.message).toBe('upstream rejected the request');
+        // 上游 5xx = 瞬时可重试文案;仍不泄露上游身份
+        expect(j.error.message).toBe('上游暂时不可用,请稍后重试');
         expect(j.error.message).not.toMatch(/artsmcp/i);
     });
 });
@@ -529,6 +531,23 @@ describe('上游报错友好化(2026-08-11):审核类给可操作提示,且不�
         expect(((await res.json()) as { error: { message: string } }).error.message).toBe(
             'upstream rejected the request',
         );
+    });
+
+    it('任务不存在(上游清任务)→ 任务已失效提示(不再泛化 rejected)', async () => {
+        const res = await submitWith400({ error: { code: '400', message: '任务不存在' } });
+        expect(((await res.json()) as { error: { message: string } }).error.message).toMatch(/任务已失效|不存在/);
+    });
+
+    it('上游 5xx → 可重试文案(不是 rejected)', async () => {
+        mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+            const u = String(url);
+            if (u.endsWith('/v1/video/generations') && (init?.method || '').toUpperCase() === 'POST') {
+                return json({ error: { message: 'boom' } }, 503);
+            }
+            return new Response('', { status: 200 });
+        });
+        const res = await submitVideo(makeReq({ model: 'seedance2.0-pro-720p', prompt: 'x' }));
+        expect(((await res.json()) as { error: { message: string } }).error.message).toBe('上游暂时不可用,请稍后重试');
     });
 
     it('安全:分类文案不泄露上游身份(不含 xinhankr/artsmcp/域名/原始 body)', async () => {

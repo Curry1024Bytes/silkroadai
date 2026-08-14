@@ -210,6 +210,25 @@ describe('GET /api/v3/contents/generations/tasks/{id}', () => {
         );
         expect(res.status).toBe(404);
     });
+
+    it('已 failed 任务:直接返库里 fail_reason(不重打上游)+ 版权码', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({
+            ...task,
+            status: 'failed',
+            fail_reason: 'The request failed because the output video may be related to copyright restrictions.',
+        });
+        const res = await handleEnterpriseArkV3(
+            req('GET', '/api/v3/contents/generations/tasks/cgt-ark1'),
+            '/contents/generations/tasks/cgt-ark1',
+        );
+        expect(res.status).toBe(200);
+        const j = (await res.json()) as ArkResp & { error: { code: string; message: string } };
+        expect(j.status).toBe('failed');
+        expect(j.error.code).toBe('CopyrightViolationDetected');
+        expect(j.error.message).toMatch(/copyright/i);
+        // 关键:不重打上游
+        expect(pollVideoWithKey).not.toHaveBeenCalled();
+    });
 });
 
 describe('GET /api/v3/contents/generations/tasks(任务列表,火山官方契约)', () => {

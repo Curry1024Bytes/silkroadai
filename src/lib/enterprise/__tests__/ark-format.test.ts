@@ -75,6 +75,12 @@ describe('arkFailError', () => {
         expect(arkFailError('some upstream glitch').code).toBe('InternalServiceError');
         expect(arkFailError(null).code).toBe('InternalServiceError');
     });
+    it('版权类 fail_reason → CopyrightViolationDetected,message 保留原因', () => {
+        const e = arkFailError('The request failed because the output video may be related to copyright restrictions.');
+        expect(e.code).toBe('CopyrightViolationDetected');
+        expect(e.message).toMatch(/copyright/i);
+        expect(arkFailError('内容涉及版权').code).toBe('CopyrightViolationDetected');
+    });
 });
 
 describe('buildArkTaskResponse', () => {

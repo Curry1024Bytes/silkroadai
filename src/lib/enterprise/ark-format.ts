@@ -91,6 +91,14 @@ export function stripAssetUri<T>(v: T): T {
 /** fail_reason → 火山错误对象 {code,message,type}。审核类映射到火山 SensitiveContentDetected 家族。 */
 export function arkFailError(reason: string | null | undefined): { code: string; message: string; type: string } {
     const r = String(reason || '').toLowerCase();
+    if (r.includes('copyright') || r.includes('版权')) {
+        // 版权审核拒绝(火山 output/input 版权限制),对齐火山 CopyrightViolationDetected 家族
+        return {
+            code: 'CopyrightViolationDetected',
+            message: reason || 'The request failed because the content may be related to copyright restrictions.',
+            type: 'BadRequest',
+        };
+    }
     if (r.includes('sensitive') || r.includes('审核') || r.includes('violat')) {
         // 无法从上游文案精确还原火山子码,统一归到 SensitiveContentDetected(HTTP 400 BadRequest)
         return {

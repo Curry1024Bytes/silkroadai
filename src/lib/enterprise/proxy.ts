@@ -548,6 +548,39 @@ async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat
         );
     }
 
+    // 已终态失败短路:任务在我们库里已 failed 时,直接返库里存的 fail_reason,不再重打上游。
+    // 上游会把失败任务清除,再轮询它返「任务不存在」→ 泛化成 "upstream rejected the request",
+    // 真实原因(版权/敏感等)反而丢失。库里 fail_reason 是权威,直接透传(火山形 arkFailError 分类)。
+    if (task.status === 'failed') {
+        const failReason = task.fail_reason || 'generation failed';
+        if (format === 'ark') {
+            const extended = taskRegion === 'global' || taskRegion === 'promax';
+            return NextResponse.json(
+                buildArkTaskResponse({
+                    taskId,
+                    internalModel: task.model,
+                    status: 'failed',
+                    failReason,
+                    createdAt: task.created_at,
+                    resolution: task.resolution,
+                    duration: task.duration,
+                    ratio: task.ratio,
+                    seed: task.seed,
+                    generateAudio: task.generate_audio,
+                    extended,
+                }),
+            );
+        }
+        return NextResponse.json({
+            id: taskId,
+            task_id: taskId,
+            object: 'video',
+            status: 'failed',
+            progress: 100,
+            fail_reason: failReason,
+        });
+    }
+
     // 非 volc 轮询要打客户上游:sk-ent 用鉴权时装载的 cust.upstreamKey;AK/SK 账号级(/api 轮询
     // 未按 region 装载,cust.upstreamKey='')→ 按【任务的 region】补加载客户上游 key。
     let upstreamKey = cust.upstreamKey;
