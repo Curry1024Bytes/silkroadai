@@ -140,13 +140,63 @@ describe('seedance-cn adapter submit', () => {
         expect(images[0].url).toMatch(/^https:\/\/images\.llmroute\.club\/seedance-cn-ref\//);
     });
 
-    it('参考档 http 图直链 → 原样透传上游(不转存)', async () => {
+    it('参考档 http 图直链 → 国内档原样透传上游(不转存)', async () => {
         const res = await submitVideo(
             makeReq({ model: 'seedance2.0-pro-720p-ref', prompt: 'x', image: 'https://cdn/a.png' }),
         );
         expect(res.status).toBe(200);
         const images = submitBody().images as Array<{ url: string; role: string }>;
         expect(images[0].url).toBe('https://cdn/a.png');
+        expect(mockUploadImage).not.toHaveBeenCalled(); // 国内档不转存
+    });
+
+    it('海外档(promax)http 输入图 → 转存 Cloudflare R2(避免海外上游跨境拉国内图超时)', async () => {
+        // submitBody 取 INTL base 的 submit;为此 promax 用的是 ai.artsmcp.com
+        const res = await submitVideo(
+            makeReq({ model: 'seedance2.0-promax-720p-ref', prompt: 'x', image: 'https://res.popreels.cn/a/b/c.png' }),
+        );
+        expect(res.status).toBe(200);
+        // 转存到 R2(seedance-input/ 前缀)
+        expect(mockUploadImage).toHaveBeenCalledWith(
+            expect.stringMatching(/^seedance-input\//),
+            expect.any(Buffer),
+            expect.any(String),
+        );
+        // 上游拿到的是我们 R2 URL,不是原国内 CDN
+        const call = mockFetch.mock.calls.find(
+            (c) => String(c[0]) === `${INTL}/v1/video/generations` && (c[1] as RequestInit)?.method === 'POST',
+        );
+        const b = JSON.parse(String((call![1] as RequestInit).body)) as {
+            images: Array<{ url: string }>;
+        };
+        expect(b.images[0].url).toMatch(/^https:\/\/images\.llmroute\.club\/seedance-input\//);
+        expect(b.images[0].url).not.toMatch(/popreels/);
+    });
+
+    it('海外档多图【并行】转存:全部转存 R2,顺序 + role 保持不变', async () => {
+        const res = await submitVideo(
+            makeReq({
+                model: 'seedance2.0-promax-720p-ref',
+                content: [
+                    { type: 'text', text: 'x' },
+                    { type: 'image_url', image_url: { url: 'https://res.popreels.cn/1.png' }, role: 'first_frame' },
+                    { type: 'image_url', image_url: { url: 'https://res.popreels.cn/2.png' }, role: 'reference_image' },
+                    { type: 'image_url', image_url: { url: 'https://res.popreels.cn/3.png' }, role: 'reference_image' },
+                ],
+            }),
+        );
+        expect(res.status).toBe(200);
+        // 三张都转存(seedance-input 前缀)
+        expect(mockUploadImage.mock.calls.filter((c) => String(c[0]).startsWith('seedance-input/'))).toHaveLength(3);
+        const call = mockFetch.mock.calls.find(
+            (c) => String(c[0]) === `${INTL}/v1/video/generations` && (c[1] as RequestInit)?.method === 'POST',
+        );
+        const b = JSON.parse(String((call![1] as RequestInit).body)) as {
+            images: Array<{ url: string; role: string }>;
+        };
+        expect(b.images).toHaveLength(3);
+        expect(b.images.map((i) => i.role)).toEqual(['first_frame', 'reference_image', 'reference_image']);
+        for (const im of b.images) expect(im.url).toMatch(/^https:\/\/images\.llmroute\.club\/seedance-input\//);
     });
 
     it('reference_mode start_end → 首尾帧角色', async () => {
@@ -370,7 +420,8 @@ describe('安全:上游信息不外泄(2026-07-24)', () => {
         );
         const res = await submitVideo(makeReq({ model: 'seedance2.0-pro-720p', prompt: 'x' }));
         const j = (await res.json()) as { error: { message: string } };
-        expect(j.error.message).toBe('upstream rejected the request');
+        // 上游 5xx = 瞬时,给可重试文案(不再泛化成 rejected);仍不泄露上游身份
+        expect(j.error.message).toBe('上游暂时不可用,请稍后重试');
         expect(j.error.message).not.toMatch(/xinhankr|nginx|artsmcp/i);
     });
 
@@ -385,7 +436,8 @@ describe('安全:上游信息不外泄(2026-07-24)', () => {
         mockFetch.mockResolvedValueOnce(json({ error: { message: 'artsmcp gateway 502' } }, 502));
         res = await pollVideo(pollReq(), 'cgt-x');
         j = (await res.json()) as { error: { message: string } };
-        expect(j.error.message).toBe('upstream rejected the request');
+        // 上游 5xx = 瞬时可重试文案;仍不泄露上游身份
+        expect(j.error.message).toBe('上游暂时不可用,请稍后重试');
         expect(j.error.message).not.toMatch(/artsmcp/i);
     });
 });
@@ -529,6 +581,33 @@ describe('上游报错友好化(2026-08-11):审核类给可操作提示,且不�
         expect(((await res.json()) as { error: { message: string } }).error.message).toBe(
             'upstream rejected the request',
         );
+    });
+
+    it('任务不存在(上游清任务)→ 任务已失效提示(不再泛化 rejected)', async () => {
+        const res = await submitWith400({ error: { code: '400', message: '任务不存在' } });
+        expect(((await res.json()) as { error: { message: string } }).error.message).toMatch(/任务已失效|不存在/);
+    });
+
+    it('素材下载失败 → 提示链接不可达/换国内版(不泛化 rejected)', async () => {
+        const res = await submitWith400({
+            error: {
+                code: '400',
+                message: '素材转换失败: Failed to download media from the provided URL. Gateway Time-out',
+            },
+        });
+        expect(((await res.json()) as { error: { message: string } }).error.message).toMatch(/素材下载失败|不可达/);
+    });
+
+    it('上游 5xx → 可重试文案(不是 rejected)', async () => {
+        mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+            const u = String(url);
+            if (u.endsWith('/v1/video/generations') && (init?.method || '').toUpperCase() === 'POST') {
+                return json({ error: { message: 'boom' } }, 503);
+            }
+            return new Response('', { status: 200 });
+        });
+        const res = await submitVideo(makeReq({ model: 'seedance2.0-pro-720p', prompt: 'x' }));
+        expect(((await res.json()) as { error: { message: string } }).error.message).toBe('上游暂时不可用,请稍后重试');
     });
 
     it('安全:分类文案不泄露上游身份(不含 xinhankr/artsmcp/域名/原始 body)', async () => {

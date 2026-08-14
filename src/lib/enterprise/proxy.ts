@@ -20,18 +20,20 @@ import {
     extractAudioUrls,
     submitVideoWithKey,
     pollVideoWithKey,
+    cancelVideoWithKey,
     regionForModel,
     maxDurationForVariant,
     type SeedanceModelSpec,
     type SeedanceVariant,
     type SeedanceRegion,
 } from '@/lib/seedance/cn-adapter';
-import { submitVolcVideo, pollVolcVideo } from '@/lib/seedance/volc-adapter';
+import { submitVolcVideo, pollVolcVideo, cancelVolcVideo } from '@/lib/seedance/volc-adapter';
 import { resolveEnterpriseAuth, getUpstreamKeyForUser, type EnterpriseCustomer } from './keys';
 import { ENTERPRISE_TIER, estimateEnterpriseCostCny, chargeEnterpriseVideoTask } from './billing';
 import { AssetError, resolveAssetRefs } from './assets';
 import { normalizeArkModel, stripAssetUri, arkStatus, buildArkTaskResponse } from './ark-format';
 import { maybeBrandVideoUrl } from '@/lib/seedance/volc-brand';
+import { maybeStoreVideoToCustomerOss } from '@/lib/seedance/customer-oss-video';
 
 /** 对客响应形态:'v1' = 我们现有形;'ark' = 火山方舟官方形(/api/v3/…)。 */
 export type ClientFormat = 'v1' | 'ark';
@@ -232,6 +234,50 @@ async function handleListTasks(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ items, total, page_num: pageNum, page_size: pageSize });
 }
 
+/** DELETE /api/v3/contents/generations/tasks/{task_id} —— 取消排队中的任务 / 删除任务记录(火山官方)。
+ *  归属校验:仅本人任务(IDOR-safe),未找到 → 404;版本门与轮询一致(sk-ent 绑 region)。
+ *  非终态(queued/in_progress)→ 尽力取消上游(停止排队/生成,从而不产生 completed 计费);上游不支持
+ *  或报错都不阻断客户删除,也绝不透传上游报错(#271)。一律删库任务记录(火山「删除任务记录」语义);
+ *  已计费任务的对客 ¥ 账本条目在 ledger 独立留存,删任务行不影响对账。成功 → 204 无体。 */
+async function handleDeleteTask(req: NextRequest, taskId: string): Promise<NextResponse> {
+    const cust = await resolveOr401(req);
+    if (cust instanceof NextResponse) return cust;
+
+    const task = await prisma.seedanceVideoTask.findUnique({ where: { id: taskId } });
+    if (!task || task.tier !== ENTERPRISE_TIER || task.user_id !== cust.userId) {
+        return errJson(404, 'not_found', 'task not found');
+    }
+    const taskRegion: SeedanceRegion = regionForModel(task.model);
+    if (taskRegion !== 'volc' && !cust.accountLevel && cust.region !== taskRegion) {
+        return errJson(
+            403,
+            'region_mismatch',
+            `this task belongs to the ${taskRegion} region; use your ${taskRegion} API key to delete it`,
+        );
+    }
+
+    // 非终态才需取消上游(终态任务已无排队可取消)。best-effort:任何失败只落日志,不阻断删除。
+    if (task.status !== 'completed' && task.status !== 'failed') {
+        try {
+            if (taskRegion === 'volc') {
+                await cancelVolcVideo(taskId);
+            } else {
+                let upstreamKey = cust.upstreamKey;
+                if (cust.accountLevel) upstreamKey = (await getUpstreamKeyForUser(cust.userId, taskRegion)) ?? '';
+                if (upstreamKey) await cancelVideoWithKey(taskId, `Bearer ${upstreamKey}`, taskRegion);
+            }
+        } catch (e) {
+            console.warn('[enterprise-proxy] upstream cancel best-effort failed', { taskId, err: String(e) });
+        }
+    }
+
+    await prisma.seedanceVideoTask
+        .delete({ where: { id: taskId } })
+        .catch((e) => console.warn('[enterprise-proxy] delete task row failed', { taskId, err: String(e) }));
+
+    return new NextResponse(null, { status: 204 });
+}
+
 export async function handleEnterpriseArkV3(req: NextRequest, path: string): Promise<NextResponse> {
     if (req.method === 'GET' && path === '/models') {
         // 火山形 models:列火山 id + owned_by=doubao;仍保留我们短名可调
@@ -265,6 +311,10 @@ export async function handleEnterpriseArkV3(req: NextRequest, path: string): Pro
     const poll = /^\/contents\/generations\/tasks\/([^/]+)$/.exec(path);
     if (req.method === 'GET' && poll) {
         return handlePoll(req, decodeURIComponent(poll[1]), 'ark');
+    }
+    // 取消排队中的任务 / 删除任务记录(火山官方 DELETE .../tasks/{id},204=成功)。
+    if (req.method === 'DELETE' && poll) {
+        return handleDeleteTask(req, decodeURIComponent(poll[1]));
     }
     return errJson(404, 'not_found', 'this endpoint is not available');
 }
@@ -548,6 +598,39 @@ async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat
         );
     }
 
+    // 已终态失败短路:任务在我们库里已 failed 时,直接返库里存的 fail_reason,不再重打上游。
+    // 上游会把失败任务清除,再轮询它返「任务不存在」→ 泛化成 "upstream rejected the request",
+    // 真实原因(版权/敏感等)反而丢失。库里 fail_reason 是权威,直接透传(火山形 arkFailError 分类)。
+    if (task.status === 'failed') {
+        const failReason = task.fail_reason || 'generation failed';
+        if (format === 'ark') {
+            const extended = taskRegion === 'global' || taskRegion === 'promax';
+            return NextResponse.json(
+                buildArkTaskResponse({
+                    taskId,
+                    internalModel: task.model,
+                    status: 'failed',
+                    failReason,
+                    createdAt: task.created_at,
+                    resolution: task.resolution,
+                    duration: task.duration,
+                    ratio: task.ratio,
+                    seed: task.seed,
+                    generateAudio: task.generate_audio,
+                    extended,
+                }),
+            );
+        }
+        return NextResponse.json({
+            id: taskId,
+            task_id: taskId,
+            object: 'video',
+            status: 'failed',
+            progress: 100,
+            fail_reason: failReason,
+        });
+    }
+
     // 非 volc 轮询要打客户上游:sk-ent 用鉴权时装载的 cust.upstreamKey;AK/SK 账号级(/api 轮询
     // 未按 region 装载,cust.upstreamKey='')→ 按【任务的 region】补加载客户上游 key。
     let upstreamKey = cust.upstreamKey;
@@ -606,6 +689,19 @@ async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat
             .catch(() => {});
     }
 
+    // 成片落客户自定义 OSS(客户在 /enterprise/storage 配了自己的桶时):把上游成片(火山签名直链,
+    // ~24h 过期)转存客户 bucket,返回客户域名下的永久 URL。region/format 无关,ark + v1 两个面共用;
+    // 未配置 / 任何失败 → null,回退上游直链(不断流)。幂等 by taskId(helper 内 HEAD 客户桶)。
+    const rawVideoUrl = typeof j?.video_url === 'string' ? j.video_url : ((j?.url as string | undefined) ?? null);
+    let customerOssVideoUrl: string | null = null;
+    if (rawVideoUrl && j?.status === 'completed') {
+        customerOssVideoUrl = await maybeStoreVideoToCustomerOss({
+            userId: cust.userId,
+            taskId,
+            upstreamUrl: rawVideoUrl,
+        });
+    }
+
     // 火山形查询响应:status 翻译 + video_url/last_frame_url 挪进 content + 元数据回填。
     if (format === 'ark') {
         const ourStatus = typeof j?.status === 'string' ? j.status : task.status;
@@ -620,10 +716,11 @@ async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat
         // cn/volc = 火山方舟官方形(只出官方声明字段,客户严格白名单校验用)。
         const taskRegion = regionForModel(task.model);
         const extended = taskRegion === 'global' || taskRegion === 'promax';
-        let videoUrl = typeof j?.video_url === 'string' ? j.video_url : ((j?.url as string | undefined) ?? null);
+        // 优先客户自定义 OSS(落客户自己的桶);未配才回退火山形品牌化,再回退上游直链。
+        let videoUrl = customerOssVideoUrl ?? rawVideoUrl;
         // 火山形视频 URL 品牌化(仅国内渠道 + 白名单客户;env 双开关都设才生效,否则内部直接返 null)。
         // 转存成片到我们 R2 + 返回火山形域名 URL;任何失败回退原上游直链(不断流)。
-        if (videoUrl && taskRegion === 'cn' && arkStatus(String(ourStatus)) === 'succeeded') {
+        if (!customerOssVideoUrl && videoUrl && taskRegion === 'cn' && arkStatus(String(ourStatus)) === 'succeeded') {
             const branded = await maybeBrandVideoUrl({ userId: cust.userId, taskId, upstreamUrl: videoUrl });
             if (branded) videoUrl = branded;
         }
@@ -647,5 +744,12 @@ async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat
         );
     }
 
+    // v1(OpenAI-video)形:成片落客户 OSS 时,把 video_url/url 换成客户域名 URL 再回序列化;
+    // 否则原样透传上游归一 JSON。
+    if (customerOssVideoUrl && j) {
+        j.video_url = customerOssVideoUrl;
+        j.url = customerOssVideoUrl;
+        return NextResponse.json(j, { status: 200 });
+    }
     return new NextResponse(text, { status: 200, headers: { 'Content-Type': 'application/json' } });
 }

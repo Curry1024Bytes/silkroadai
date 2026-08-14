@@ -283,7 +283,7 @@ describe('handleAdapterImage 成功路径', () => {
         expect(body.usage.input_tokens).toBe(estimateTextTokens('a 4k cat'));
         // 上游收到的请求:model 强制 gpt-image-2、JSON content-type、Authorization 透传
         const [url, init] = fetchMock.mock.calls[0];
-        expect(url).toBe('https://www.ominiapi.com/v1/images/generations');
+        expect(url).toBe('https://api.ominiapi.com/v1/images/generations');
         expect(init.headers['content-type']).toBe('application/json');
         expect(init.headers.authorization).toBe('Bearer sk-upstream-test');
         const sent = JSON.parse(init.body as string);
@@ -455,7 +455,7 @@ describe('handleAdapterImage n>1 并发扇出(ominiapi 忽略 n,只能自己扇)
         expect(body.usage.input_tokens_details.image_tokens).toBe(85 + 1500);
         // 上游收到 multipart(fetch 自动 boundary;不能手写 content-type)
         const [url, init] = fetchMock.mock.calls[0];
-        expect(url).toBe('https://www.ominiapi.com/v1/images/edits');
+        expect(url).toBe('https://api.ominiapi.com/v1/images/edits');
         expect(init.body).toBeInstanceOf(FormData);
         expect(init.headers['content-type']).toBeUndefined();
         const sentForm = init.body as FormData;
@@ -536,5 +536,40 @@ describe('sanitizeAdapterError', () => {
         const out = sanitizeAdapterError('OminiAPI rejected; adobe unsafe', /\bomini(?:api)?\b/gi);
         expect(out.toLowerCase()).not.toContain('omini');
         expect(out.toLowerCase()).not.toContain('adobe');
+    });
+});
+
+describe('codexvip provider(第二家 Adobe Firefly 转售,与 ch154 同 prio 分流)', () => {
+    it('注册表解析到正确 base_url,请求路由到该上游', async () => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/codexvip/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'a 4k cat',
+                size: '3840x2160',
+                quality: 'high',
+            }),
+            'generations',
+            'codexvip',
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.usage.output_tokens).toBe(13342); // 上游假 usage 被合成值替换
+        const [url, init] = fetchMock.mock.calls[0];
+        expect(url).toBe('https://subdirect.aicodexvip.top/v1/images/generations');
+        expect(init.headers.authorization).toBe('Bearer sk-upstream-test'); // key 透传,portal 不存
+        expect(JSON.parse(init.body as string).response_format).toBe('b64_json');
+    });
+
+    it('brand 正则抹掉 aicodexvip / adobe2api 身份串', () => {
+        const out = sanitizeAdapterError(
+            'aicodexvip upstream error; usage_source=adobe2api; adobe firefly unsafe',
+            /\b(?:aicodexvip|aicodex|codexvip|adobe2api)\b/gi,
+        );
+        const lc = out.toLowerCase();
+        expect(lc).not.toContain('aicodex');
+        expect(lc).not.toContain('codexvip');
+        expect(lc).not.toContain('adobe2api');
+        expect(lc).not.toContain('adobe');
     });
 });

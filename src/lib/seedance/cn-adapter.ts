@@ -220,12 +220,20 @@ function err(status: number, code: string, message: string) {
 
 /** 上游 400/5xx 报错体 → 对客【友好且不泄露上游身份】的文案(#271:只按关键词分类,绝不回原始 body/域名)。
  *  审核类(版权/敏感)给可操作提示;其余回通用文案。原始 body 已在调用处 console.warn 落日志。 */
-function friendlyUpstreamError(body: string): string {
+function friendlyUpstreamError(body: string, status?: number): string {
     const b = (body || '').toLowerCase();
     if (b.includes('copyright') || b.includes('版权'))
         return '参考图/内容疑似涉及版权,被上游审核拒绝 —— 请更换参考图或调整提示词后重试';
     if (b.includes('sensitive') || b.includes('敏感') || b.includes('sensitivecontent'))
         return '内容被上游安全审核拒绝(疑似敏感)—— 请调整提示词或参考素材后重试';
+    // 上游把已失败/已清除的任务返「任务不存在」——不是请求被拒,是任务已失效
+    if (b.includes('任务不存在') || b.includes('not found') || b.includes('does not exist'))
+        return '任务已失效或不存在,请重新提交';
+    // 输入素材(图/视频/音频)上游拉取失败:链接不可达 / 跨境超时(如国内 CDN 走海外档)
+    if (b.includes('素材') || b.includes('failed to download media') || b.includes('gateway time-out'))
+        return '输入素材下载失败(链接不可达或超时)—— 请确认图片/视频链接公网可访问;海外档拉国内链接易超时,可改用国内版';
+    // 上游 5xx = 瞬时内部错误,可重试(不是请求本身被拒)
+    if (status && status >= 500) return '上游暂时不可用,请稍后重试';
     return 'upstream rejected the request';
 }
 
@@ -351,7 +359,41 @@ export function extractAudioUrls(body: Record<string, unknown>): string[] {
 
 /** media URL → 上游能抓的 http(s) 直链。data URL 解码上传我们 R2(无扩展名,content-type 权威);
  *  http(s) 原样透传(上游 Volcengine 抓取器直接吃网络直链)。 */
-async function toHttpMediaUrl(url: string): Promise<string> {
+/** 已是我们 R2 公网域名(转存过 / 生图产出)→ 不再重复转存。 */
+function isOurR2Url(u: string): boolean {
+    const base = (process.env.R2_PUBLIC_URL || '').replace(/\/+$/, '');
+    return !!base && u.startsWith(base);
+}
+
+/** 把 http(s) 输入媒体转存到 Cloudflare R2(全球 CDN,海外上游可达),返回 R2 直链;
+ *  任何失败(拉取超时/非 2xx/超限)→ null,调用方回退原 URL(不硬失败)。 */
+async function rehostHttpMediaToR2(url: string): Promise<string | null> {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 25_000);
+    try {
+        const res = await fetch(url, { signal: ctrl.signal });
+        if (!res.ok) return null;
+        const len = Number(res.headers.get('content-length') || 0);
+        if (len > 50 * 1024 * 1024) return null; // >50MB 不转存(参考视频兜底上限)
+        const buf = Buffer.from(await res.arrayBuffer());
+        if (buf.length === 0 || buf.length > 50 * 1024 * 1024) return null;
+        let ct = res.headers.get('content-type') || '';
+        if (!/^(image|video|audio)\//.test(ct)) {
+            ct = /\.(mp4|mov|webm)(\?|$)/i.test(url)
+                ? 'video/mp4'
+                : /\.(mp3|wav|m4a|aac)(\?|$)/i.test(url)
+                  ? 'audio/mpeg'
+                  : 'image/jpeg';
+        }
+        return await uploadImage(`seedance-input/${randomUUID()}`, buf, ct);
+    } catch {
+        return null;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+async function toHttpMediaUrl(url: string, opts?: { rehostHttp?: boolean }): Promise<string> {
     const u = url.trim();
     const m = /^data:((?:image|audio|video)\/[a-z0-9.+-]+);base64,(.+)$/i.exec(u);
     if (m) {
@@ -360,6 +402,12 @@ async function toHttpMediaUrl(url: string): Promise<string> {
         return uploadImage(`seedance-cn-ref/${randomUUID()}`, buf, m[1]);
     }
     if (!/^https?:\/\//i.test(u)) throw new Error('media must be an http(s) URL or a base64 data URL');
+    // 海外档(global/promax):把 http 输入媒体转存 Cloudflare R2,避免海外上游跨境拉国内 CDN
+    // (popreels.cn 等)超时(Gateway Time-out)。已是我们 R2 域名的跳过;转存失败回退原 URL。
+    if (opts?.rehostHttp && !isOurR2Url(u)) {
+        const rehosted = await rehostHttpMediaToR2(u);
+        if (rehosted) return rehosted;
+    }
     return u;
 }
 
@@ -454,32 +502,39 @@ export async function submitVideoWithKey(body: Record<string, unknown>, auth: st
 
     if (map.ref) {
         try {
-            const images: Array<{ url: string; role: string }> = [];
+            // 海外档(global/promax)上游在境外,拉国内 CDN(popreels.cn 等)输入图会跨境超时 →
+            // 先把 http 输入媒体转存 Cloudflare R2(全球 CDN),让海外上游从配置的平台资源域名拉。
+            // 国内版(cn)上游在境内、能直拉,保持透传。data URL 各档本就转存 R2。
+            const rehost = map.region === 'global' || map.region === 'promax';
+            const toUrl = (u: string) => toHttpMediaUrl(u, { rehostHttp: rehost });
+            // 先只确定每张图的(原始 url, role),不做 IO;再把图/视频/音频【全部并行】转存(保序 + role 不变)。
+            // 海外档多图串行转存会累加延迟(13 图 × ~4s ≈ 50s);并行后 ≈ 单张耗时。
             // 客户在 content-item 上显式指定 role(first_frame/last_frame/reference_image)时原样保留
             // (火山官方形);否则回落到顶层 first_frame/last_frame + reference_mode + 智能模式(存量行为)。
             const contentRoled = extractImageRolesFromContent(body);
             const hasContentFrameRole = contentRoled.some((i) => i.role === 'first_frame' || i.role === 'last_frame');
-            if (explicitFirst) images.push({ url: await toHttpMediaUrl(explicitFirst), role: 'first_frame' });
-            if (explicitLast) images.push({ url: await toHttpMediaUrl(explicitLast), role: 'last_frame' });
+            const imageSpecs: Array<{ url: string; role: string }> = [];
+            if (explicitFirst) imageSpecs.push({ url: explicitFirst, role: 'first_frame' });
+            if (explicitLast) imageSpecs.push({ url: explicitLast, role: 'last_frame' });
             if (!explicitFirst && !explicitLast && hasContentFrameRole) {
-                for (const it of contentRoled) images.push({ url: await toHttpMediaUrl(it.url), role: it.role });
+                for (const it of contentRoled) imageSpecs.push({ url: it.url, role: it.role });
             } else if (!explicitFirst && !explicitLast && refMode === 'start_frame' && rawImages.length >= 1) {
-                images.push({ url: await toHttpMediaUrl(rawImages[0]), role: 'first_frame' });
+                imageSpecs.push({ url: rawImages[0], role: 'first_frame' });
             } else if (!explicitFirst && !explicitLast && refMode === 'start_end' && rawImages.length >= 2) {
-                images.push({ url: await toHttpMediaUrl(rawImages[0]), role: 'first_frame' });
-                images.push({ url: await toHttpMediaUrl(rawImages[1]), role: 'last_frame' });
+                imageSpecs.push({ url: rawImages[0], role: 'first_frame' });
+                imageSpecs.push({ url: rawImages[1], role: 'last_frame' });
             } else if (!explicitFirst && !explicitLast) {
-                for (const u of rawImages) images.push({ url: await toHttpMediaUrl(u), role: 'reference_image' });
+                for (const u of rawImages) imageSpecs.push({ url: u, role: 'reference_image' });
             }
-            if (images.length) upstreamBody.images = images;
-            if (rawVideos.length) {
-                const videos = await Promise.all(rawVideos.map((u) => toHttpMediaUrl(u)));
-                upstreamBody.videos = videos;
-            }
-            if (rawAudios.length) {
-                const audios = await Promise.all(rawAudios.map((u) => toHttpMediaUrl(u)));
-                upstreamBody.audios = audios;
-            }
+            const [imageUrls, videos, audios] = await Promise.all([
+                Promise.all(imageSpecs.map((s) => toUrl(s.url))),
+                Promise.all(rawVideos.map((u) => toUrl(u))),
+                Promise.all(rawAudios.map((u) => toUrl(u))),
+            ]);
+            if (imageSpecs.length)
+                upstreamBody.images = imageSpecs.map((s, i) => ({ url: imageUrls[i], role: s.role }));
+            if (videos.length) upstreamBody.videos = videos;
+            if (audios.length) upstreamBody.audios = audios;
         } catch (e) {
             return err(400, 'invalid_request', `reference media processing failed: ${String(e).slice(0, 160)}`);
         }
@@ -533,7 +588,11 @@ export async function submitVideoWithKey(body: Record<string, unknown>, auth: st
         });
         // 安全:上游原始报错(可能含域名/server 标识)只落日志(见上 console.warn);
         // 客户拿【分类后】文案 —— 审核类(版权/敏感)给可操作提示,其余通用。不回原始 body。
-        return err(upstream.status >= 400 ? upstream.status : 502, 'upstream_error', friendlyUpstreamError(text));
+        return err(
+            upstream.status >= 400 ? upstream.status : 502,
+            'upstream_error',
+            friendlyUpstreamError(text, upstream.status),
+        );
     }
     return NextResponse.json(
         {
@@ -569,6 +628,18 @@ export async function pollVideo(req: NextRequest, id: string): Promise<NextRespo
     return pollVideoWithKey(id, req.headers.get('authorization') || '');
 }
 
+/** DELETE 取消/删除:token.xinhankr.com /v1/video/generations/{id}(火山官方 cancel/delete 语义)。
+ *  尽力而为——上游支持则真取消排队任务;不支持/报错由调用方决定不阻断客户,且绝不透传上游 body(#271)。
+ *  返回原始 upstream Response(调用方一般只看是否 2xx)。 */
+export async function cancelVideoWithKey(id: string, auth: string, region: SeedanceRegion = 'cn'): Promise<Response> {
+    return fetchXhk(
+        `/v1/video/generations/${encodeURIComponent(id)}`,
+        auth,
+        { method: 'DELETE' },
+        baseForRegion(region),
+    );
+}
+
 /** 轮询核心(独立门户直调:id + 上游 key 授权头;region 决定打哪个 base,缺省国内)。 */
 export async function pollVideoWithKey(id: string, auth: string, region: SeedanceRegion = 'cn'): Promise<NextResponse> {
     let upstream: Response;
@@ -593,7 +664,11 @@ export async function pollVideoWithKey(id: string, auth: string, region: Seedanc
         });
         // 安全:上游原始报错只落日志(见上 console.warn);客户拿【分类后】文案(审核类给提示)。
         // 注:内容审核失败走 HTTP 200 + status:failed + fail_reason(不经此分支),客户仍能看到审核提示。
-        return err(upstream.status >= 400 ? upstream.status : 502, 'upstream_error', friendlyUpstreamError(text));
+        return err(
+            upstream.status >= 400 ? upstream.status : 502,
+            'upstream_error',
+            friendlyUpstreamError(text, upstream.status),
+        );
     }
     const status = mapStatus(j.status);
     const videoUrl = firstVideoUrl(j.data);
