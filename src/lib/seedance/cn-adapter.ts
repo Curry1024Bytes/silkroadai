@@ -629,6 +629,18 @@ export async function pollVideo(req: NextRequest, id: string): Promise<NextRespo
     return pollVideoWithKey(id, req.headers.get('authorization') || '');
 }
 
+/** DELETE 取消/删除:token.xinhankr.com /v1/video/generations/{id}(火山官方 cancel/delete 语义)。
+ *  尽力而为——上游支持则真取消排队任务;不支持/报错由调用方决定不阻断客户,且绝不透传上游 body(#271)。
+ *  返回原始 upstream Response(调用方一般只看是否 2xx)。 */
+export async function cancelVideoWithKey(id: string, auth: string, region: SeedanceRegion = 'cn'): Promise<Response> {
+    return fetchXhk(
+        `/v1/video/generations/${encodeURIComponent(id)}`,
+        auth,
+        { method: 'DELETE' },
+        baseForRegion(region),
+    );
+}
+
 /** 轮询核心(独立门户直调:id + 上游 key 授权头;region 决定打哪个 base,缺省国内)。 */
 export async function pollVideoWithKey(id: string, auth: string, region: SeedanceRegion = 'cn'): Promise<NextResponse> {
     let upstream: Response;

@@ -11,8 +11,11 @@ import { NextRequest, NextResponse } from 'next/server';
 const {
     db,
     resolveEnterpriseAuth,
+    getUpstreamKeyForUser,
     submitVideoWithKey,
     pollVideoWithKey,
+    cancelVideoWithKey,
+    cancelVolcVideo,
     estimateEnterpriseCostCny,
     chargeEnterpriseVideoTask,
 } = vi.hoisted(() => ({
@@ -21,23 +24,32 @@ const {
             create: vi.fn(),
             findUnique: vi.fn(),
             update: vi.fn(),
+            delete: vi.fn(),
             count: vi.fn(),
             findMany: vi.fn(),
         },
         account: { findUnique: vi.fn() },
     },
     resolveEnterpriseAuth: vi.fn(),
+    getUpstreamKeyForUser: vi.fn(),
     submitVideoWithKey: vi.fn(),
     pollVideoWithKey: vi.fn(),
+    cancelVideoWithKey: vi.fn(),
+    cancelVolcVideo: vi.fn(),
     estimateEnterpriseCostCny: vi.fn(),
     chargeEnterpriseVideoTask: vi.fn(),
 }));
 vi.mock('@/lib/db', () => ({ prisma: db }));
-vi.mock('../keys', () => ({ resolveEnterpriseAuth }));
+vi.mock('../keys', () => ({ resolveEnterpriseAuth, getUpstreamKeyForUser }));
 vi.mock('@/lib/seedance/cn-adapter', async (importOriginal) => {
     const mod = await importOriginal<typeof import('@/lib/seedance/cn-adapter')>();
-    return { ...mod, submitVideoWithKey, pollVideoWithKey };
+    return { ...mod, submitVideoWithKey, pollVideoWithKey, cancelVideoWithKey };
 });
+vi.mock('@/lib/seedance/volc-adapter', () => ({
+    submitVolcVideo: vi.fn(),
+    pollVolcVideo: vi.fn(),
+    cancelVolcVideo,
+}));
 vi.mock('../billing', async (importOriginal) => {
     const mod = await importOriginal<typeof import('../billing')>();
     return { ...mod, estimateEnterpriseCostCny, chargeEnterpriseVideoTask };
@@ -78,6 +90,10 @@ beforeEach(() => {
     estimateEnterpriseCostCny.mockResolvedValue(4.26);
     db.seedanceVideoTask.create.mockResolvedValue({});
     db.seedanceVideoTask.update.mockResolvedValue({});
+    db.seedanceVideoTask.delete.mockResolvedValue({});
+    cancelVideoWithKey.mockResolvedValue(new Response(null, { status: 200 }));
+    cancelVolcVideo.mockResolvedValue(new Response(null, { status: 200 }));
+    getUpstreamKeyForUser.mockResolvedValue('sk-upstream-by-region');
     resolveAssetRefs.mockImplementation((b: Record<string, unknown>) => Promise.resolve(b));
 });
 
@@ -333,5 +349,77 @@ describe('/api/v3 严格契约校验(仅 ark 面)', () => {
         expect(res.status).toBe(400);
         expect(((await res.json()) as { error: { message: string } }).error.message).toContain('frames');
         expect(submitVideoWithKey).not.toHaveBeenCalled();
+    });
+});
+
+describe('DELETE /api/v3/contents/generations/tasks/{id}', () => {
+    const baseTask = {
+        id: 'cgt-del1',
+        user_id: 'u1',
+        tier: 'enterprise-portal',
+        model: 'seedance-2-0',
+        resolution: '720p',
+        duration: 5,
+        tokens: null,
+        status: 'queued',
+        fail_reason: null,
+        created_at: new Date('2026-08-14T02:00:00Z'),
+    };
+    const del = () =>
+        handleEnterpriseArkV3(
+            req('DELETE', '/api/v3/contents/generations/tasks/cgt-del1'),
+            '/contents/generations/tasks/cgt-del1',
+        );
+
+    it('排队中任务 → 取消上游 + 删库记录 + 204 无体', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({ ...baseTask, status: 'queued' });
+        const res = await del();
+        expect(res.status).toBe(204);
+        expect(await res.text()).toBe('');
+        expect(cancelVideoWithKey).toHaveBeenCalledWith('cgt-del1', 'Bearer sk-upstream-u1', 'cn');
+        expect(db.seedanceVideoTask.delete).toHaveBeenCalledWith({ where: { id: 'cgt-del1' } });
+    });
+
+    it('已完成任务 → 仅删记录,不取消上游(无排队可取消),仍 204', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({ ...baseTask, status: 'completed' });
+        const res = await del();
+        expect(res.status).toBe(204);
+        expect(cancelVideoWithKey).not.toHaveBeenCalled();
+        expect(db.seedanceVideoTask.delete).toHaveBeenCalledWith({ where: { id: 'cgt-del1' } });
+    });
+
+    it('上游取消失败 → best-effort 不阻断,仍删记录 + 204', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({ ...baseTask, status: 'in_progress' });
+        cancelVideoWithKey.mockRejectedValue(new Error('upstream boom'));
+        const res = await del();
+        expect(res.status).toBe(204);
+        expect(db.seedanceVideoTask.delete).toHaveBeenCalledWith({ where: { id: 'cgt-del1' } });
+    });
+
+    it('非本人任务 → 404,不取消不删除', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({ ...baseTask, user_id: 'other' });
+        const res = await del();
+        expect(res.status).toBe(404);
+        expect(cancelVideoWithKey).not.toHaveBeenCalled();
+        expect(db.seedanceVideoTask.delete).not.toHaveBeenCalled();
+    });
+
+    it('任务不存在 → 404', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue(null);
+        const res = await del();
+        expect(res.status).toBe(404);
+        expect(db.seedanceVideoTask.delete).not.toHaveBeenCalled();
+    });
+
+    it('本人任务但 sk-ent 版本不符(cn key 删 promax 任务)→ 403,不删除', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({
+            ...baseTask,
+            model: 'seedance2.0-promax-720p-ref',
+            status: 'queued',
+        });
+        const res = await del();
+        expect(res.status).toBe(403);
+        expect(cancelVideoWithKey).not.toHaveBeenCalled();
+        expect(db.seedanceVideoTask.delete).not.toHaveBeenCalled();
     });
 });

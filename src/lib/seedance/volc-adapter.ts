@@ -178,3 +178,16 @@ export async function pollVolcVideo(id: string): Promise<NextResponse> {
         { status: 200 },
     );
 }
+
+/** DELETE 取消/删除火山方舟视频任务(尽力而为)。缺配置 → null;否则返回原始 upstream Response。
+ *  对客 id(cgt-X)打上游前还原成 task_X(与轮询一致)。上游报错由调用方吞掉、不透传。 */
+export async function cancelVolcVideo(id: string): Promise<Response | null> {
+    const cfg = getConfig();
+    if (!cfg) return null;
+    const upstreamId = undisguiseTaskId(id);
+    return fetch(`${cfg.base}/doubao/api/v3/contents/generations/tasks/${encodeURIComponent(upstreamId)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${cfg.key}`, Accept: 'application/json' },
+        signal: AbortSignal.timeout(20000),
+    });
+}
