@@ -33,6 +33,7 @@ import { ENTERPRISE_TIER, estimateEnterpriseCostCny, chargeEnterpriseVideoTask }
 import { AssetError, resolveAssetRefs } from './assets';
 import { normalizeArkModel, stripAssetUri, arkStatus, buildArkTaskResponse } from './ark-format';
 import { maybeBrandVideoUrl } from '@/lib/seedance/volc-brand';
+import { maybeStoreVideoToCustomerOss } from '@/lib/seedance/customer-oss-video';
 
 /** 对客响应形态:'v1' = 我们现有形;'ark' = 火山方舟官方形(/api/v3/…)。 */
 export type ClientFormat = 'v1' | 'ark';
@@ -688,6 +689,19 @@ async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat
             .catch(() => {});
     }
 
+    // 成片落客户自定义 OSS(客户在 /enterprise/storage 配了自己的桶时):把上游成片(火山签名直链,
+    // ~24h 过期)转存客户 bucket,返回客户域名下的永久 URL。region/format 无关,ark + v1 两个面共用;
+    // 未配置 / 任何失败 → null,回退上游直链(不断流)。幂等 by taskId(helper 内 HEAD 客户桶)。
+    const rawVideoUrl = typeof j?.video_url === 'string' ? j.video_url : ((j?.url as string | undefined) ?? null);
+    let customerOssVideoUrl: string | null = null;
+    if (rawVideoUrl && j?.status === 'completed') {
+        customerOssVideoUrl = await maybeStoreVideoToCustomerOss({
+            userId: cust.userId,
+            taskId,
+            upstreamUrl: rawVideoUrl,
+        });
+    }
+
     // 火山形查询响应:status 翻译 + video_url/last_frame_url 挪进 content + 元数据回填。
     if (format === 'ark') {
         const ourStatus = typeof j?.status === 'string' ? j.status : task.status;
@@ -702,10 +716,11 @@ async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat
         // cn/volc = 火山方舟官方形(只出官方声明字段,客户严格白名单校验用)。
         const taskRegion = regionForModel(task.model);
         const extended = taskRegion === 'global' || taskRegion === 'promax';
-        let videoUrl = typeof j?.video_url === 'string' ? j.video_url : ((j?.url as string | undefined) ?? null);
+        // 优先客户自定义 OSS(落客户自己的桶);未配才回退火山形品牌化,再回退上游直链。
+        let videoUrl = customerOssVideoUrl ?? rawVideoUrl;
         // 火山形视频 URL 品牌化(仅国内渠道 + 白名单客户;env 双开关都设才生效,否则内部直接返 null)。
         // 转存成片到我们 R2 + 返回火山形域名 URL;任何失败回退原上游直链(不断流)。
-        if (videoUrl && taskRegion === 'cn' && arkStatus(String(ourStatus)) === 'succeeded') {
+        if (!customerOssVideoUrl && videoUrl && taskRegion === 'cn' && arkStatus(String(ourStatus)) === 'succeeded') {
             const branded = await maybeBrandVideoUrl({ userId: cust.userId, taskId, upstreamUrl: videoUrl });
             if (branded) videoUrl = branded;
         }
@@ -729,5 +744,12 @@ async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat
         );
     }
 
+    // v1(OpenAI-video)形:成片落客户 OSS 时,把 video_url/url 换成客户域名 URL 再回序列化;
+    // 否则原样透传上游归一 JSON。
+    if (customerOssVideoUrl && j) {
+        j.video_url = customerOssVideoUrl;
+        j.url = customerOssVideoUrl;
+        return NextResponse.json(j, { status: 200 });
+    }
     return new NextResponse(text, { status: 200, headers: { 'Content-Type': 'application/json' } });
 }

@@ -9,6 +9,7 @@ const TABS = [
     { href: '/enterprise/logs', label: '调用日志' },
     { href: '/enterprise/keys', label: 'API 密钥' },
     { href: '/enterprise/assets', label: '素材库' },
+    { href: '/enterprise/storage', label: '自定义存储' },
     { href: '/enterprise/docs', label: '文档' },
 ];
 

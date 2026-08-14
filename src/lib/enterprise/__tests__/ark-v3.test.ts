@@ -59,8 +59,10 @@ vi.mock('../assets', async (importOriginal) => {
     const mod = await importOriginal<typeof import('../assets')>();
     return { ...mod, resolveAssetRefs };
 });
+const { maybeStoreVideoToCustomerOss } = vi.hoisted(() => ({ maybeStoreVideoToCustomerOss: vi.fn() }));
+vi.mock('@/lib/seedance/customer-oss-video', () => ({ maybeStoreVideoToCustomerOss }));
 
-import { handleEnterpriseArkV3 } from '../proxy';
+import { handleEnterpriseArkV3, handleEnterpriseV1 } from '../proxy';
 
 type ArkResp = {
     id: string;
@@ -94,6 +96,7 @@ beforeEach(() => {
     cancelVideoWithKey.mockResolvedValue(new Response(null, { status: 200 }));
     cancelVolcVideo.mockResolvedValue(new Response(null, { status: 200 }));
     getUpstreamKeyForUser.mockResolvedValue('sk-upstream-by-region');
+    maybeStoreVideoToCustomerOss.mockResolvedValue(null); // 默认未配 OSS → 回退上游直链
     resolveAssetRefs.mockImplementation((b: Record<string, unknown>) => Promise.resolve(b));
 });
 
@@ -421,5 +424,91 @@ describe('DELETE /api/v3/contents/generations/tasks/{id}', () => {
         expect(res.status).toBe(403);
         expect(cancelVideoWithKey).not.toHaveBeenCalled();
         expect(db.seedanceVideoTask.delete).not.toHaveBeenCalled();
+    });
+});
+
+describe('成片落客户自定义 OSS(轮询完成时转存)', () => {
+    const task = {
+        id: 'cgt-oss1',
+        user_id: 'u1',
+        tier: 'enterprise-portal',
+        model: 'seedance-2-0',
+        resolution: '720p',
+        duration: 5,
+        tokens: null,
+        status: 'queued',
+        fail_reason: null,
+        created_at: new Date('2026-08-14T02:00:00Z'),
+        ratio: null,
+        seed: null,
+        generate_audio: null,
+    };
+
+    it('ark 面:客户配了 OSS → content.video_url = 客户桶 URL(不透传上游直链)', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue(task);
+        chargeEnterpriseVideoTask.mockResolvedValue({ outcome: 'charged', costCny: 4.26 });
+        pollVideoWithKey.mockResolvedValue(
+            NextResponse.json({
+                id: 'cgt-oss1',
+                status: 'completed',
+                video_url: 'https://ark-signed.volces.com/out.mp4?sig=xyz',
+                usage: { completion_tokens: 1000, total_tokens: 1000 },
+            }),
+        );
+        maybeStoreVideoToCustomerOss.mockResolvedValue('https://cdn.customer.com/seedance/cgt-oss1.mp4');
+        const res = await handleEnterpriseArkV3(
+            req('GET', '/api/v3/contents/generations/tasks/cgt-oss1'),
+            '/contents/generations/tasks/cgt-oss1',
+        );
+        const j = (await res.json()) as ArkResp;
+        expect(j.content.video_url).toBe('https://cdn.customer.com/seedance/cgt-oss1.mp4');
+        expect(maybeStoreVideoToCustomerOss).toHaveBeenCalledWith({
+            userId: 'u1',
+            taskId: 'cgt-oss1',
+            upstreamUrl: 'https://ark-signed.volces.com/out.mp4?sig=xyz',
+        });
+    });
+
+    it('ark 面:客户未配 OSS → content.video_url 保持上游直链', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue(task);
+        chargeEnterpriseVideoTask.mockResolvedValue({ outcome: 'charged', costCny: 4.26 });
+        pollVideoWithKey.mockResolvedValue(
+            NextResponse.json({
+                id: 'cgt-oss1',
+                status: 'completed',
+                video_url: 'https://ark-signed.volces.com/out.mp4?sig=xyz',
+                usage: { completion_tokens: 1000, total_tokens: 1000 },
+            }),
+        );
+        maybeStoreVideoToCustomerOss.mockResolvedValue(null);
+        const res = await handleEnterpriseArkV3(
+            req('GET', '/api/v3/contents/generations/tasks/cgt-oss1'),
+            '/contents/generations/tasks/cgt-oss1',
+        );
+        const j = (await res.json()) as ArkResp;
+        expect(j.content.video_url).toBe('https://ark-signed.volces.com/out.mp4?sig=xyz');
+    });
+
+    it('v1 面:客户配了 OSS → video_url + url 都换成客户桶 URL', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue(task);
+        chargeEnterpriseVideoTask.mockResolvedValue({ outcome: 'charged', costCny: 4.26 });
+        pollVideoWithKey.mockResolvedValue(
+            NextResponse.json({
+                id: 'cgt-oss1',
+                task_id: 'cgt-oss1',
+                object: 'video',
+                status: 'completed',
+                video_url: 'https://ark-signed.volces.com/out.mp4?sig=xyz',
+                url: 'https://ark-signed.volces.com/out.mp4?sig=xyz',
+            }),
+        );
+        maybeStoreVideoToCustomerOss.mockResolvedValue('https://cdn.customer.com/seedance/cgt-oss1.mp4');
+        const res = await handleEnterpriseV1(
+            req('GET', '/v1/video/generations/cgt-oss1'),
+            '/video/generations/cgt-oss1',
+        );
+        const j = (await res.json()) as { video_url: string; url: string };
+        expect(j.video_url).toBe('https://cdn.customer.com/seedance/cgt-oss1.mp4');
+        expect(j.url).toBe('https://cdn.customer.com/seedance/cgt-oss1.mp4');
     });
 });
