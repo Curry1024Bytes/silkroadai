@@ -31,6 +31,9 @@ export interface OssConfigView {
 
 interface Props {
     initialConfig: OssConfigView | null;
+    /** OSS 配置 API 前缀。默认主站 /api/portal/oss;企业门户传 /api/enterprise/oss
+     *  (企业裸 IP 门户 Caddy 只放行 /api/enterprise/*)。 */
+    apiBase?: string;
 }
 
 const PROVIDERS: Array<{ value: string; label: string; endpointHint: string }> = [
@@ -44,7 +47,7 @@ const PROVIDERS: Array<{ value: string; label: string; endpointHint: string }> =
 type TestState = { state: 'idle' | 'testing' } | { state: 'ok' } | { state: 'fail'; message: string };
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
 
-export function StorageSettingsForm({ initialConfig }: Props) {
+export function StorageSettingsForm({ initialConfig, apiBase = '/api/portal/oss' }: Props) {
     const [mode, setMode] = useState<'default' | 'custom'>(initialConfig ? 'custom' : 'default');
     const [provider, setProvider] = useState(initialConfig?.provider ?? 'r2');
     const [endpoint, setEndpoint] = useState(initialConfig?.endpoint ?? '');
@@ -95,7 +98,7 @@ export function StorageSettingsForm({ initialConfig }: Props) {
     async function handleTest() {
         setTest({ state: 'testing' });
         try {
-            const res = await fetch('/api/portal/oss/test-connection', {
+            const res = await fetch(`${apiBase}/test-connection`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(buildPayload()),
@@ -115,7 +118,7 @@ export function StorageSettingsForm({ initialConfig }: Props) {
         setSave('saving');
         setSaveErr(null);
         try {
-            const res = await fetch('/api/portal/oss', {
+            const res = await fetch(apiBase, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(buildPayload()),
@@ -149,7 +152,7 @@ export function StorageSettingsForm({ initialConfig }: Props) {
         setSave('saving');
         setSaveErr(null);
         try {
-            const res = await fetch('/api/portal/oss', { method: 'DELETE' });
+            const res = await fetch(apiBase, { method: 'DELETE' });
             if (res.ok) {
                 setSavedConfig(null);
                 setMode('default');

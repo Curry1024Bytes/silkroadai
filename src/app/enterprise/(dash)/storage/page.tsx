@@ -53,7 +53,7 @@ export default async function EnterpriseStoragePage() {
                 兼容),配置生效后成片将直接上传到你的
                 bucket,返回你自己域名下的永久链接。未配置或任何故障时自动回退平台存储,不影响出片。
             </p>
-            <StorageSettingsForm initialConfig={initialConfig} />
+            <StorageSettingsForm initialConfig={initialConfig} apiBase="/api/enterprise/oss" />
         </div>
     );
 }
