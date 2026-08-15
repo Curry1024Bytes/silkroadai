@@ -13,6 +13,10 @@ export interface ImageProvider {
     baseUrl: string;
     /** 错误脱敏:出现在客户可见错误体里要抹掉的品牌名。 */
     brand: RegExp;
+    /** true = 跳过盈利档/形状守门,放行【所有】可解析尺寸(仍要求 size 可解析)。
+     *  用于"官方账单"上游(we-token 系):azure 直连对几乎所有非标准尺寸超收 5~229%,客户对不上
+     *  官方计算器 → 全量走适配器合成官方 usage。默认(缺省)= 走 isProfitable/isElongated 守门。 */
+    openAllTiers?: boolean;
 }
 
 export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
@@ -22,8 +26,18 @@ export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
     // codexvip:同源 Adobe Firefly 转售(usage_source=adobe2api,出图带 Firefly C2PA →
     // stripAdobeImageMetadataB64 自动剥),¥0.06/张(比 ominiapi 便宜)。与 ch154 同 prio 分流承压。
     codexvip: { baseUrl: 'https://subdirect.aicodexvip.top', brand: /\b(?:aicodexvip|aicodex|codexvip|adobe2api)\b/gi },
-    // wetoken(us-la.we-token.cc):同 ch153 那条 US 线的 adobe Firefly 转售,直连按面积刻度计费
-    // (4K-high 19,755)。挂适配器后【丢弃上游面积 usage、合成官方 usage】(4K-high 13,342)→ 客户拿
-    // 官方标准账单、可对账。健康度好,new-api 渠道 prio 压过 ch154(25)兜住过守门的请求。C2PA 由 proxy 剥。
-    wetoken: { baseUrl: 'https://us-la.we-token.cc', brand: /\bwe-?token\b|\badobe\b|\bfirefly\b/gi },
+    // wetoken(us-la.we-token.cc)= ch153 那条 US 线上游;wetokenasia(asian-acc.we-token.cc)= ch83 上游。
+    // 两条都是 adobe Firefly 转售,直连按【面积刻度】超收(非标准尺寸 +5~229%,客户对不上官方计算器)。
+    // 2026-08-15 operator 拍板 ch83+ch153 全量走适配器 → openAllTiers 放行所有尺寸、合成官方 usage → 官方
+    // 标准账单可对账。key 由各自 new-api 渠道透传(代码不存)。C2PA 由 proxy 剥。
+    wetoken: {
+        baseUrl: 'https://us-la.we-token.cc',
+        brand: /\bwe-?token\b|\badobe\b|\bfirefly\b/gi,
+        openAllTiers: true,
+    },
+    wetokenasia: {
+        baseUrl: 'https://asian-acc.we-token.cc',
+        brand: /\bwe-?token\b|\badobe\b|\bfirefly\b/gi,
+        openAllTiers: true,
+    },
 };

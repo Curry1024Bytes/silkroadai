@@ -421,13 +421,15 @@ export async function handleAdapterImage(
     if (!parsed) return failover('bad_request_body', 'unparseable request body');
 
     // ---- 守门(调上游之前,不花钱)----
-    // 狭长形(16:9 类,长/短 > 1.5)不论盈利档一律放行 → 走适配器拿官方合成账单
-    // (azure 面积刻度对狭长图高收 48~86%,客户对不上官方计算器;方图/3:2 仍按盈利档守门)。
+    // 放行规则(要求 size 可解析):
+    //  - provider.openAllTiers(we-token 官方账单上游)→ 放行所有尺寸;
+    //  - 否则狭长形(16:9 类,长/短 > 1.5)不论盈利档放行(azure 面积刻度对狭长高收);
+    //  - 否则走盈利档守门(方图/3:2 与 azure 本就吻合,不值得占适配器)。
     const dims = parseSize(parsed.size);
     const quality = normQuality(parsed.quality);
     const perImageCt = dims ? officialOutputTokens(dims.w, dims.h, quality) : 0;
     const elongated = dims ? isElongated(dims.w, dims.h) : false;
-    if (!dims || (!elongated && !isProfitable(perImageCt))) {
+    if (!dims || (!provider.openAllTiers && !elongated && !isProfitable(perImageCt))) {
         console.log('[image-adapter] gate reject', {
             provider: providerName,
             mode,

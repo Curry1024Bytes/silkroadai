@@ -632,7 +632,8 @@ describe('wetoken provider(us-la.we-token.cc,adobe 上游挂适配器 → 合成
         expect(url).toBe('https://us-la.we-token.cc/v1/images/generations');
     });
 
-    it('守门仍生效(1024 low → 503,不打上游)—— 只兜过守门的档', async () => {
+    it('openAllTiers:1024 low(方图)也放行打上游、合成官方 196(全量官方账单)', async () => {
+        okUpstream();
         const res = await handleAdapterImage(
             jsonReq('http://portal.test/image-adapter/wetoken/v1/images/generations', {
                 model: 'gpt-image-2',
@@ -643,8 +644,59 @@ describe('wetoken provider(us-la.we-token.cc,adobe 上游挂适配器 → 合成
             'generations',
             'wetoken',
         );
+        expect(res.status).toBe(200);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        const body = await res.json();
+        expect(body.usage.output_tokens).toBe(196); // 官方 low 196(不是上游面积)
+    });
+
+    it('openAllTiers:4:3(1344x1008 low,客户对账重灾区)也放行、合成官方 162', async () => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/wetoken/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '1344x1008',
+                quality: 'low',
+            }),
+            'generations',
+            'wetoken',
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.usage.output_tokens).toBe(162); // 官方 162(azure 直连是 223)
+    });
+
+    it('openAllTiers:size 不可解析(auto)仍拒(合成计费无依据)', async () => {
+        const res = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/wetoken/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: 'auto',
+                quality: 'low',
+            }),
+            'generations',
+            'wetoken',
+        );
         expect(res.status).toBe(503);
         expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('wetokenasia(asian-acc)路由 + openAllTiers 放行方图 low', async () => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/wetokenasia/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '1024x1024',
+                quality: 'low',
+            }),
+            'generations',
+            'wetokenasia',
+        );
+        expect(res.status).toBe(200);
+        const [url] = fetchMock.mock.calls[0];
+        expect(url).toBe('https://asian-acc.we-token.cc/v1/images/generations');
     });
 
     it('brand 正则抹掉 we-token / adobe / firefly 身份串', () => {
