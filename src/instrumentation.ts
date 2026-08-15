@@ -34,6 +34,10 @@ export async function register() {
         new Agent({
             headersTimeout: 600_000, // 与 Caddy response_header_timeout 600s 对齐
             bodyTimeout: 600_000,
+            // keep-alive 连接复用:默认空闲 4s 就断,导致图片上游(we-token,请求慢、并发高)疯狂建连
+            // (上游反馈:150s 新建 133 条,建连开销大 + 频繁 client-side RST)。拉长空闲保活 → 复用连接。
+            keepAliveTimeout: 60_000, // 空闲连接保活 60s 供复用(默认 4s)
+            keepAliveMaxTimeout: 600_000,
         }),
     );
 

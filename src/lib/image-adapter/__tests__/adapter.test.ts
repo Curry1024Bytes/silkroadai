@@ -320,6 +320,28 @@ describe('handleAdapterImage 守门(调上游之前拒,返 503 让 new-api failo
 });
 
 describe('handleAdapterImage 成功路径', () => {
+    it('JSON generations:output_compression 数字/数字串 → 上游 body 里是 number(修类型 bug)', async () => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            jsonReq(URL_GEN, {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '3840x2160',
+                quality: 'high',
+                output_compression: 75, // 客户传数字
+                output_format: 'webp', // 非整型字段仍原样透传
+            }),
+            'generations',
+            'ominiapi',
+        );
+        expect(res.status).toBe(200);
+        const [, init] = fetchMock.mock.calls[0];
+        const sent = JSON.parse(init.body as string);
+        expect(sent.output_compression).toBe(75); // number,不是 "75"
+        expect(typeof sent.output_compression).toBe('number');
+        expect(sent.output_format).toBe('webp'); // 字符串字段照旧
+    });
+
     it('4K generations:上游假 usage 被替换成合成值,data 原样透传', async () => {
         okUpstream();
         const res = await handleAdapterImage(

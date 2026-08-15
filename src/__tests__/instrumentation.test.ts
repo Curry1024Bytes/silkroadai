@@ -52,7 +52,12 @@ describe('instrumentation register()', () => {
         process.env.NEXT_RUNTIME = 'nodejs';
         const { register } = await import('../instrumentation');
         await register();
-        expect(Agent).toHaveBeenCalledWith({ headersTimeout: 600_000, bodyTimeout: 600_000 });
+        expect(Agent).toHaveBeenCalledWith({
+            headersTimeout: 600_000,
+            bodyTimeout: 600_000,
+            keepAliveTimeout: 60_000,
+            keepAliveMaxTimeout: 600_000,
+        });
         expect(setGlobalDispatcher).toHaveBeenCalledTimes(1);
     });
 

@@ -227,6 +227,9 @@ interface ParsedRequest {
 }
 
 const FORWARD_EXTRAS = new Set(['output_format', 'output_compression', 'background', 'user']);
+/** 透传给 JSON body 时必须是【整数】的字段(客户常传数字,extras 存成字符串,JSON 路径要转回 number;
+ *  否则上游报 "invalid output_compression field type",纯字符串会被拒)。multipart 无类型不受影响。 */
+const INT_EXTRAS = new Set(['output_compression']);
 
 async function parseIncoming(req: NextRequest, mode: ImageMode): Promise<ParsedRequest | null> {
     const ct = (req.headers.get('content-type') || '').toLowerCase();
@@ -334,7 +337,10 @@ async function callUpstreamOnce(
             response_format: 'b64_json', // 同上:2026-08-04 smoke 实测缺省返 url
         };
         if (parsed.quality) j.quality = normQuality(parsed.quality);
-        Object.assign(j, parsed.extras);
+        // extras 存成字符串;JSON body 里整型字段(output_compression)要转回 number,否则上游拒
+        for (const [k, v] of Object.entries(parsed.extras)) {
+            j[k] = INT_EXTRAS.has(k) && /^\d+$/.test(v) ? Number(v) : v;
+        }
         upstreamBody = JSON.stringify(j);
         headers['content-type'] = 'application/json';
     }
