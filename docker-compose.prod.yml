@@ -40,6 +40,9 @@ x-portal-api-common: &portal-api-common
         # 调度器只在主站 portal 单实例跑(instrumentation.ts 的门),
         # 副本双跑会 meter 游标竞态 / 余额提醒双发。
         PORTAL_SCHEDULERS: 'off'
+        # 2026-08-15: Node 默认堆上限 ~4.1GB。reqlog 背压队列(100 个在途)每个
+        # 攥着完整请求+响应体,大 body 并发时容易打满 → OOM。3 副本共担 /v1,各 6GB。
+        NODE_OPTIONS: '--max-old-space-size=6144'
     extra_hosts:
         - 'host.docker.internal:host-gateway'
     depends_on:
@@ -86,6 +89,12 @@ services:
         ports:
             - '3002:3002'
         env_file: .env
+        environment:
+            # 2026-08-15: 本实例曾因 apex /v1 流量未分流(Caddy 已加 @portalv1 →
+            # 3011-3013)每 ~10 分钟 OOM 一次。单实例 + 跑全部调度器,不可替代 →
+            # 堆上限抬到 8GB 兜底。⚠️ Caddy 那半边改动【不在本仓库】,见
+            # /etc/caddy/Caddyfile.bak-apex-v1-split-*。
+            NODE_OPTIONS: '--max-old-space-size=8192'
         extra_hosts:
             # Linux Docker doesn't auto-add host.docker.internal; this maps it to
             # the gateway so portal can reach new-api on the VPS host port 3000.

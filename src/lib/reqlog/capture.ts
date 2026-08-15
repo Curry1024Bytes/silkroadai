@@ -33,9 +33,36 @@ import { isLogStoreConfigured, putLogObject, reqlogInputKey, reqlogOutputKey } f
 /** 本步捕获实现版本(第①步 schema 默认 0;第②步起写 1)。 */
 export const CAPTURE_VERSION = 1;
 
-/** 累积响应体的内存软上限。超过则停止累积(仍原样转发给客户),out.json
- *  记已累积部分 + error 标记 — 防超大流式响应把内存撑爆。 */
-const MAX_ACCUM_BYTES = 25 * 1024 * 1024;
+/** 累积响应体的内存软上限(env `REQUEST_LOGGING_MAX_OUTPUT_BYTES` 可调)。
+ *  超过则停止累积(仍原样转发给客户),out.json 记已累积部分 + error 标记 —
+ *  防超大流式响应把内存撑爆。 */
+const DEFAULT_MAX_ACCUM_BYTES = 25 * 1024 * 1024;
+
+/** 保留【请求体】的内存上限(env `REQUEST_LOGGING_MAX_INPUT_BYTES` 可调)。
+ *  超过则不攥住 body 字符串(不写 R2、in_r2_key=null),但 input_bytes / model /
+ *  usage 等元数据照常入库 —— 日志少一份原文,服务不掉。
+ *  2026-08-15 事故:客户把 /v1 打在 apex(Caddy 未分流)全落网站单实例,
+ *  请求体实测到 18.6MB,而当时【请求侧完全没有上限】(只有响应侧的 25MB),
+ *  背压上限 100 个在途 × 数 MB 就把 4GB 堆打满 → 每 ~10 分钟 OOM 一次。
+ *  2MB 足够覆盖正常文本 LLM 调用;超过的基本是内联图/大附件,原文价值低。 */
+const DEFAULT_MAX_INPUT_BYTES = 2 * 1024 * 1024;
+
+/** 读一个"字节上限"类 env:未配 / 非法 / <1 → 回默认值。 */
+function byteLimitFromEnv(name: string, fallback: number): number {
+    const raw = process.env[name];
+    if (raw == null || raw === '') return fallback;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 1) return fallback;
+    return Math.floor(n);
+}
+
+function maxAccumBytes(): number {
+    return byteLimitFromEnv('REQUEST_LOGGING_MAX_OUTPUT_BYTES', DEFAULT_MAX_ACCUM_BYTES);
+}
+
+function maxInputBytes(): number {
+    return byteLimitFromEnv('REQUEST_LOGGING_MAX_INPUT_BYTES', DEFAULT_MAX_INPUT_BYTES);
+}
 
 /** 在途写存(finalize)背压上限的默认值(env `REQUEST_LOGGING_MAX_PENDING`
  *  可调)。R2 变慢 / 断线时 finalize 会堆积,每个都攥着完整请求+响应体 —
@@ -171,10 +198,20 @@ export function beginCapture(req: NextRequest, path: string): CaptureCtx | null 
     };
 }
 
-/** 记请求体(原始字符串)+ model + 是否流式请求。 */
+/** 记请求体(原始字符串)+ model + 是否流式请求。
+ *  超 `maxInputBytes()` 的大体【不保留原文】(requestBody=null → 不写 R2、
+ *  in_r2_key 落 null),只留真实字节数 + `in-too-large` 标记 —— 元数据行照常入库,
+ *  背压队列里每个 ctx 攥住的内存因此有确定上界。见 DEFAULT_MAX_INPUT_BYTES 注释。 */
 export function recordRequestBody(cap: CaptureCtx, raw: string, model: string | null, streamed: boolean): void {
-    cap.requestBody = raw;
-    cap.inputBytes = Buffer.byteLength(raw);
+    const bytes = Buffer.byteLength(raw);
+    const limit = maxInputBytes();
+    if (bytes > limit) {
+        cap.requestBody = null;
+        cap.errorParts.push(`in-too-large:${bytes}>${limit}`);
+    } else {
+        cap.requestBody = raw;
+    }
+    cap.inputBytes = bytes;
     if (model) cap.model = model;
     cap.streamedRequested = streamed;
 }
@@ -237,6 +274,7 @@ export function captureJsonResponse(cap: CaptureCtx, status: number, bodyObj: un
 /** pull-based tee:enqueue 给客户 + 累积;done 在 close/cancel/error 各 resolve 一次。 */
 function teeStream(cap: CaptureCtx, body: ReadableStream<Uint8Array>): { stream: ReadableStream; done: Promise<void> } {
     const reader = body.getReader();
+    const accumLimit = maxAccumBytes(); // 每条流读一次 env,不在 per-chunk 热路径上读
     let resolveDone!: () => void;
     const done = new Promise<void>((r) => {
         resolveDone = r;
@@ -264,7 +302,7 @@ function teeStream(cap: CaptureCtx, body: ReadableStream<Uint8Array>): { stream:
             try {
                 if (!cap.truncated) {
                     cap.accumBytes += res.value.byteLength;
-                    if (cap.accumBytes > MAX_ACCUM_BYTES) {
+                    if (cap.accumBytes > accumLimit) {
                         cap.truncated = true;
                         cap.errorParts.push('out-truncated');
                     } else {
