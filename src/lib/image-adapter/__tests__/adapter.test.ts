@@ -197,15 +197,16 @@ describe('synthUsage(合成数值 = 官方公式口径)', () => {
 });
 
 describe('handleAdapterImage 守门(调上游之前拒,返 503 让 new-api failover)', () => {
+    // 方图 / 3:2(长/短 ≤ 1.5,非狭长)不过盈利档 → 拒。狭长图(16:9)另见下方 shape-aware 测试。
     it.each([
         ['1k 缺省 quality(→low)', { size: '1024x1024' }],
         ['1k medium', { size: '1024x1024', quality: 'medium' }],
         ['2k medium', { size: '2048x2048', quality: 'medium' }],
         ['2k low', { size: '2048x2048', quality: 'low' }],
-        ['4K low(旧守门放行,售价制拒)', { size: '3840x2160', quality: 'low' }],
-        ['4K auto(→low)', { size: '3840x2160', quality: 'auto' }],
-        ['4K standard(→low)', { size: '3840x2160', quality: 'standard' }],
-        ['4K 缺省 quality(→low)', { size: '3840x2160' }],
+        ['大方图 low(2880² low)', { size: '2880x2880', quality: 'low' }],
+        ['大方图 auto(2880²→low)', { size: '2880x2880', quality: 'auto' }],
+        ['3:2 low(1536x1024,比 1.5 不算狭长)', { size: '1536x1024', quality: 'low' }],
+        ['3:2 standard(→low)', { size: '1536x1024', quality: 'standard' }],
         ['size auto', { size: 'auto', quality: 'high' }],
         ['size 缺省', { quality: 'high' }],
     ])('%s → 503 且不打上游', async (_label, extra) => {
@@ -218,6 +219,43 @@ describe('handleAdapterImage 守门(调上游之前拒,返 503 让 new-api failo
         expect(fetchMock).not.toHaveBeenCalled();
         const body = await res.json();
         expect(body.error.code).toBe('upstream_unavailable');
+    });
+
+    // shape-aware:狭长图(16:9,长/短 > 1.5)不论盈利档一律放行 → 走适配器拿官方账单
+    it.each([
+        ['4K 16:9 low', { size: '3840x2160', quality: 'low' }],
+        ['4K 16:9 auto(→low)', { size: '2160x3840', quality: 'auto' }],
+        ['4K 16:9 medium', { size: '3840x2160', quality: 'medium' }],
+        ['2560x1440 medium(重灾区 +79%)', { size: '2560x1440', quality: 'medium' }],
+        ['1024x1792 low', { size: '1024x1792', quality: 'low' }],
+    ])('狭长 %s → 过闸打上游(官方账单)', async (_label, extra) => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', ...extra }),
+            'generations',
+            'ominiapi',
+        );
+        expect(res.status).toBe(200);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('狭长阈值边界:3:2(1.5)不算狭长仍守门拒,16:10(1.6)算狭长放行', async () => {
+        // 3:2 low → 拒(不打上游)
+        const r32 = await handleAdapterImage(
+            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '1536x1024', quality: 'low' }),
+            'generations',
+            'ominiapi',
+        );
+        expect(r32.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+        // 16:10(1600x1000=1.6)low → 放行打上游
+        okUpstream();
+        const r1610 = await handleAdapterImage(
+            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '1600x1000', quality: 'low' }),
+            'generations',
+            'ominiapi',
+        );
+        expect(r1610.status).toBe(200);
     });
 
     it('503 响应体不含任何内部信息(全渠道挂时 new-api 会把它原文透给客户)', async () => {

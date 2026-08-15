@@ -72,6 +72,17 @@ export function isProfitable(perImageCt: number): boolean {
     return perImageCt >= MIN_SYNTH_CT;
 }
 
+/** 长图阈值:长/短边比 > 1.5 视为"狭长"(16:9=1.778 命中;3:2=1.5 及方图不命中)。
+ *  依据:azure 按面积计费、官方按 patch 网格(长边罚 patch),两者在方图/3:2 逐点吻合,
+ *  从比 3:2 更狭长起 azure 明显偏高(16:9 高 48~86%)。狭长图恰是"客户对不上官方账单"的重灾区。 */
+const ELONGATED_RATIO = 1.5;
+
+/** 狭长形(长/短 > 1.5)→ 该走适配器拿【官方合成账单】,不论盈利档。
+ *  方图/3:2 与 azure 本就吻合,无账单收益 → 仍按盈利档守门(isProfitable)。 */
+export function isElongated(w: number, h: number): boolean {
+    return Math.max(w, h) / Math.min(w, h) > ELONGATED_RATIO;
+}
+
 // ============ usage 合成 ============
 
 /** prompt 文本 token 粗估(CJK ~1.5 tok/字,其余 ~1 tok/4 字符;同 /v1 route 口径)。 */
@@ -410,10 +421,13 @@ export async function handleAdapterImage(
     if (!parsed) return failover('bad_request_body', 'unparseable request body');
 
     // ---- 守门(调上游之前,不花钱)----
+    // 狭长形(16:9 类,长/短 > 1.5)不论盈利档一律放行 → 走适配器拿官方合成账单
+    // (azure 面积刻度对狭长图高收 48~86%,客户对不上官方计算器;方图/3:2 仍按盈利档守门)。
     const dims = parseSize(parsed.size);
     const quality = normQuality(parsed.quality);
     const perImageCt = dims ? officialOutputTokens(dims.w, dims.h, quality) : 0;
-    if (!dims || !isProfitable(perImageCt)) {
+    const elongated = dims ? isElongated(dims.w, dims.h) : false;
+    if (!dims || (!elongated && !isProfitable(perImageCt))) {
         console.log('[image-adapter] gate reject', {
             provider: providerName,
             mode,
