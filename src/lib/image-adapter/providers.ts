@@ -22,4 +22,8 @@ export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
     // codexvip:同源 Adobe Firefly 转售(usage_source=adobe2api,出图带 Firefly C2PA →
     // stripAdobeImageMetadataB64 自动剥),¥0.06/张(比 ominiapi 便宜)。与 ch154 同 prio 分流承压。
     codexvip: { baseUrl: 'https://subdirect.aicodexvip.top', brand: /\b(?:aicodexvip|aicodex|codexvip|adobe2api)\b/gi },
+    // wetoken(us-la.we-token.cc):同 ch153 那条 US 线的 adobe Firefly 转售,直连按面积刻度计费
+    // (4K-high 19,755)。挂适配器后【丢弃上游面积 usage、合成官方 usage】(4K-high 13,342)→ 客户拿
+    // 官方标准账单、可对账。健康度好,new-api 渠道 prio 压过 ch154(25)兜住过守门的请求。C2PA 由 proxy 剥。
+    wetoken: { baseUrl: 'https://us-la.we-token.cc', brand: /\bwe-?token\b|\badobe\b|\bfirefly\b/gi },
 };

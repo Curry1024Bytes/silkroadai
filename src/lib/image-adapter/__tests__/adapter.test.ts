@@ -573,3 +573,50 @@ describe('codexvip provider(第二家 Adobe Firefly 转售,与 ch154 同 prio �
         expect(lc).not.toContain('adobe');
     });
 });
+
+describe('wetoken provider(us-la.we-token.cc,adobe 上游挂适配器 → 合成官方 usage)', () => {
+    it('路由到 us-la.we-token.cc,上游面积 usage 被丢弃、返回官方合成值', async () => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/wetoken/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'a 4k cat',
+                size: '3840x2160',
+                quality: 'high',
+            }),
+            'generations',
+            'wetoken',
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.usage.output_tokens).toBe(13342); // 官方公式,不是上游面积 19755
+        const [url] = fetchMock.mock.calls[0];
+        expect(url).toBe('https://us-la.we-token.cc/v1/images/generations');
+    });
+
+    it('守门仍生效(1024 low → 503,不打上游)—— 只兜过守门的档', async () => {
+        const res = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/wetoken/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '1024x1024',
+                quality: 'low',
+            }),
+            'generations',
+            'wetoken',
+        );
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('brand 正则抹掉 we-token / adobe / firefly 身份串', () => {
+        const out = sanitizeAdapterError(
+            'we-token.cc upstream error; adobe firefly content unsafe',
+            /\bwe-?token\b|\badobe\b|\bfirefly\b/gi,
+        );
+        const lc = out.toLowerCase();
+        expect(lc).not.toContain('we-token');
+        expect(lc).not.toContain('adobe');
+        expect(lc).not.toContain('firefly');
+    });
+});
