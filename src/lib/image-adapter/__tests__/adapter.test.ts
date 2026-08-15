@@ -553,6 +553,53 @@ describe('handleAdapterImage 失败路径(不合成 usage → new-api 不扣费)
         expect(text.toLowerCase()).not.toContain('omini');
     });
 
+    it('内容安全(451 image_unsafe)→ 终态 400 content_policy_violation(不 failover)', async () => {
+        fetchMock.mockResolvedValue(
+            new Response(JSON.stringify({ error: { error_code: 'image_unsafe', message: 'appear to be unsafe' } }), {
+                status: 451,
+            }),
+        );
+        const res = await handleAdapterImage(
+            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160', quality: 'high' }),
+            'generations',
+            'ominiapi',
+        );
+        expect(res.status).toBe(400); // 终态,不是 503
+        const body = await res.json();
+        expect(body.error.code).toBe('content_policy_violation');
+        expect(fetchMock).toHaveBeenCalledTimes(1); // 只打一次,没被重复扇出
+        // body 含 'content rejected' 标记(供代理 IMAGE_SAFETY_RE 命中),身份中性
+        expect(JSON.stringify(body).toLowerCase()).toContain('content rejected');
+        expect(JSON.stringify(body).toLowerCase()).not.toContain('omini');
+    });
+
+    it('请求本身错(prompt is required,400)→ 终态 400 invalid_request(不 failover)', async () => {
+        fetchMock.mockResolvedValue(
+            new Response(JSON.stringify({ error: { message: 'prompt is required' } }), { status: 400 }),
+        );
+        const res = await handleAdapterImage(
+            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: '', size: '3840x2160', quality: 'high' }),
+            'generations',
+            'ominiapi',
+        );
+        expect(res.status).toBe(400);
+        expect((await res.json()).error.code).toBe('invalid_request');
+    });
+
+    it('渠道特定(no available channel,400)→ 仍 503 failover(换渠道有意义)', async () => {
+        fetchMock.mockResolvedValue(
+            new Response(JSON.stringify({ error: { code: 'model_not_found', message: 'No available channel' } }), {
+                status: 400,
+            }),
+        );
+        const res = await handleAdapterImage(
+            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160', quality: 'high' }),
+            'generations',
+            'ominiapi',
+        );
+        expect(res.status).toBe(503);
+    });
+
     it('上游 fetch 抛错(超时/断连)→ 503', async () => {
         fetchMock.mockRejectedValue(new Error('network down'));
         const res = await handleAdapterImage(

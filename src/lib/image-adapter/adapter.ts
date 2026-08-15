@@ -213,6 +213,59 @@ export function sanitizeAdapterError(text: string, brand: RegExp): string {
     return text.replace(brand, 'the provider').replace(/\badobe\b/gi, 'the provider');
 }
 
+// ── 上游 4xx 分类:终态 vs failover ──
+// 之前把上游一切 4xx/5xx 都 failover(当"网关错不终态化"),但【内容安全 / 请求本身的问题】换任何
+// 渠道都会被同样拒 → 白重试全部渠道 + 客户最终拿到中性 503(而非明确原因)。改为:
+//  - 内容安全(image_unsafe / content rejected)→ 终态 content_policy_violation(代理 IMAGE_SAFETY_RE
+//    命中会进一步改写成统一友好文案);
+//  - 请求本身错(prompt 缺失 / 输入图坏 / 参数非法)→ 终态 invalid_request(身份中性,不透上游原文);
+//  - 渠道特定(无可用渠道 / model_not_found)+ 5xx / 连接失败 → 仍 failover 换渠道。
+const UPSTREAM_SAFETY_RE = /image_unsafe|content rejected|appear to be unsafe/i;
+const UPSTREAM_BADREQ_RE = /prompt is required|invalid image|bad_request|validation_error|undefined mention/i;
+const UPSTREAM_CHANNEL_RE = /no available channel|model_not_found/i;
+
+type TerminalReject = { terminal: 'safety' | 'bad_request' };
+function isTerminalReject(x: string[] | TerminalReject | null): x is TerminalReject {
+    return x !== null && !Array.isArray(x);
+}
+
+/** 上游 4xx → 是否终态化(不 failover)+ 归类。5xx / 渠道特定 → null(failover)。 */
+function classifyUpstreamError(status: number, text: string): TerminalReject | null {
+    if (status >= 500) return null; // 5xx → failover
+    if (UPSTREAM_CHANNEL_RE.test(text)) return null; // 渠道特定(换渠道有意义)→ failover
+    if (UPSTREAM_SAFETY_RE.test(text)) return { terminal: 'safety' };
+    if (UPSTREAM_BADREQ_RE.test(text)) return { terminal: 'bad_request' };
+    return null; // 其余 4xx 保守 failover(不确定是否终态)
+}
+
+/** 终态错误响应(4xx,new-api 不 failover):内容安全 / 请求本身错。body 身份中性。 */
+function terminalReject(kind: 'safety' | 'bad_request'): NextResponse {
+    console.warn('[image-adapter] terminal reject (no failover)', { kind });
+    if (kind === 'safety') {
+        // 含 'content rejected' 标记 → 代理层 IMAGE_SAFETY_RE 命中 → 改写成统一 content_policy_violation
+        return NextResponse.json(
+            {
+                error: {
+                    message: 'content rejected: the image was flagged as unsafe by the content safety system',
+                    type: 'invalid_request_error',
+                    code: 'content_policy_violation',
+                },
+            },
+            { status: 400 },
+        );
+    }
+    return NextResponse.json(
+        {
+            error: {
+                message: 'invalid request: the prompt, image, or parameters were rejected — please check your request',
+                type: 'invalid_request_error',
+                code: 'invalid_request',
+            },
+        },
+        { status: 400 },
+    );
+}
+
 // ============ 入参解析 ============
 
 interface ParsedRequest {
@@ -313,7 +366,7 @@ async function callUpstreamOnce(
     mode: ImageMode,
     parsed: ParsedRequest,
     auth: string,
-): Promise<string[] | null> {
+): Promise<string[] | TerminalReject | null> {
     const url = `${provider.baseUrl}/v1/images/${mode}`;
     // body 每次重建(FormData 一次性语义),且【不传 n】—— 每次调用只取 1 张
     let upstreamBody: BodyInit;
@@ -364,7 +417,6 @@ async function callUpstreamOnce(
     }
 
     if (!upstream.ok) {
-        // 上游是网关:它的 4xx/5xx 不终态化,交由调用方 503 让 new-api 切别的渠道兜底。
         const errText = await upstream.text().catch(() => '');
         console.warn('[image-adapter] upstream error', {
             provider: providerName,
@@ -373,7 +425,8 @@ async function callUpstreamOnce(
             ms: Date.now() - started,
             body: sanitizeAdapterError(errText.slice(0, 500), provider.brand),
         });
-        return null;
+        // 内容安全 / 请求本身错 → 终态化(换渠道也拒);渠道特定 / 5xx → null 让调用方 failover。
+        return classifyUpstreamError(upstream.status, errText);
     }
 
     const data = (await upstream.json().catch(() => null)) as {
@@ -458,7 +511,10 @@ export async function handleAdapterImage(
     const results = await Promise.all(
         Array.from({ length: fanout }, () => callUpstreamOnce(provider, providerName, mode, parsed, auth)),
     );
-    const items = results.flatMap((b64s) => (b64s ?? []).map((b64_json) => ({ b64_json })));
+    // 任一扇出返回【终态】(内容安全 / 请求本身错)→ 立即终态化,不 failover(换渠道也拒,别浪费重试位)。
+    const terminal = results.find(isTerminalReject);
+    if (terminal) return terminalReject(terminal.terminal);
+    const items = results.flatMap((r) => (Array.isArray(r) ? r : []).map((b64_json) => ({ b64_json })));
     if (items.length === 0) {
         // 全军覆没才 failover(部分成功 → 返回拿到的那几张,按张计费)
         return failover('upstream_error', `all ${fanout} upstream call(s) failed`);
