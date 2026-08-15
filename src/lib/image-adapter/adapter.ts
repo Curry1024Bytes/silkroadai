@@ -421,15 +421,15 @@ export async function handleAdapterImage(
     if (!parsed) return failover('bad_request_body', 'unparseable request body');
 
     // ---- 守门(调上游之前,不花钱)----
-    // 放行规则(要求 size 可解析):
-    //  - provider.openAllTiers(we-token 官方账单上游)→ 放行所有尺寸;
-    //  - 否则狭长形(16:9 类,长/短 > 1.5)不论盈利档放行(azure 面积刻度对狭长高收);
-    //  - 否则走盈利档守门(方图/3:2 与 azure 本就吻合,不值得占适配器)。
+    // 放行规则:
+    //  - provider.openAllTiers(we-token 官方账单上游)→ 放行所有请求,含 size=auto/不可解析
+    //    (OpenAI 默认 size 就是 auto;这类无法预先算 token,透传上游后按【返回图实际尺寸】合成官方账单);
+    //  - 否则要求 size 可解析,且:狭长形(长/短 > 1.5)不论盈利档放行,其余走盈利档守门。
     const dims = parseSize(parsed.size);
     const quality = normQuality(parsed.quality);
     const perImageCt = dims ? officialOutputTokens(dims.w, dims.h, quality) : 0;
     const elongated = dims ? isElongated(dims.w, dims.h) : false;
-    if (!dims || (!provider.openAllTiers && !elongated && !isProfitable(perImageCt))) {
+    if (!provider.openAllTiers && (!dims || (!elongated && !isProfitable(perImageCt)))) {
         console.log('[image-adapter] gate reject', {
             provider: providerName,
             mode,
@@ -466,11 +466,22 @@ export async function handleAdapterImage(
         });
     }
 
-    // ---- 合成 usage(丢弃上游假 token)----
+    // ---- 计费尺寸:size 可解析用请求值;auto/不可解析(仅 openAllTiers 会走到)→ 解码返回图实际尺寸 ----
+    let billW = dims?.w ?? 0;
+    let billH = dims?.h ?? 0;
+    if (!dims) {
+        const out0 = items[0]?.b64_json;
+        const d0 = out0 ? imageDimensions(Buffer.from(out0, 'base64')) : null;
+        if (!d0) return failover('unbillable_auto', 'auto size but output image dimensions unreadable');
+        billW = d0.w;
+        billH = d0.h;
+    }
+
+    // ---- 合成 usage(丢弃上游假 token,按官方公式)----
     const usage = synthUsage({
         mode,
-        w: dims.w,
-        h: dims.h,
+        w: billW,
+        h: billH,
         quality,
         prompt: parsed.prompt,
         inputImageDims: parsed.images.map((img) => imageDimensions(img.buf)),
@@ -479,7 +490,7 @@ export async function handleAdapterImage(
     console.log('[image-adapter] ok', {
         provider: providerName,
         mode,
-        size: parsed.size,
+        size: dims ? parsed.size : `auto→${billW}x${billH}`,
         quality,
         nRequested: parsed.n,
         images: items.length,

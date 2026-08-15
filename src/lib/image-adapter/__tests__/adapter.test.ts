@@ -24,6 +24,19 @@ const TINY_PNG = Buffer.from(
     'base64',
 );
 
+/** 造一个仅 PNG 签名 + IHDR(w×h)的最小 buffer 的 base64 —— 够 imageDimensions 读出尺寸(测 auto 计费)。 */
+function pngB64(w: number, h: number): string {
+    const buf = Buffer.alloc(24);
+    buf[0] = 0x89;
+    buf[1] = 0x50;
+    buf[2] = 0x4e;
+    buf[3] = 0x47;
+    buf.write('IHDR', 12, 'latin1');
+    buf.writeUInt32BE(w, 16);
+    buf.writeUInt32BE(h, 20);
+    return buf.toString('base64');
+}
+
 function jsonReq(url: string, body: unknown): NextRequest {
     return new NextRequest(url, {
         method: 'POST',
@@ -667,7 +680,15 @@ describe('wetoken provider(us-la.we-token.cc,adobe 上游挂适配器 → 合成
         expect(body.usage.output_tokens).toBe(162); // 官方 162(azure 直连是 223)
     });
 
-    it('openAllTiers:size 不可解析(auto)仍拒(合成计费无依据)', async () => {
+    it('openAllTiers:size=auto → 透传上游、按返回图实际尺寸(1344x1008)合成官方 162', async () => {
+        // 上游把 auto 解析成 1344x1008 并返回该尺寸的 PNG;适配器解码 IHDR 得实际尺寸再计费
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(1344, 1008) }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
         const res = await handleAdapterImage(
             jsonReq('http://portal.test/image-adapter/wetoken/v1/images/generations', {
                 model: 'gpt-image-2',
@@ -677,6 +698,39 @@ describe('wetoken provider(us-la.we-token.cc,adobe 上游挂适配器 → 合成
             }),
             'generations',
             'wetoken',
+        );
+        expect(res.status).toBe(200);
+        expect(fetchMock).toHaveBeenCalledTimes(1); // 不再守门拒,打了上游
+        const body = await res.json();
+        expect(body.usage.output_tokens).toBe(162); // = officialOutputTokens(1344,1008,low)
+    });
+
+    it('openAllTiers:size=auto 但上游返回图无法解码尺寸 → failover(不瞎计费)', async () => {
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: 'bm90LXBuZw==' }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+        const res = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/wetoken/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: 'auto',
+                quality: 'low',
+            }),
+            'generations',
+            'wetoken',
+        );
+        expect(res.status).toBe(503);
+    });
+
+    it('非 openAllTiers(ominiapi):size=auto 仍守门拒(auto 只走 openAllTiers 上游)', async () => {
+        const res = await handleAdapterImage(
+            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: 'auto', quality: 'high' }),
+            'generations',
+            'ominiapi',
         );
         expect(res.status).toBe(503);
         expect(fetchMock).not.toHaveBeenCalled();
