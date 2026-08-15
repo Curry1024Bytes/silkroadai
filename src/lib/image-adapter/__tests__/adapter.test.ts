@@ -625,6 +625,72 @@ describe('codexvip provider(第二家 Adobe Firefly 转售,与 ch154 同 prio �
     });
 });
 
+describe('wetokengated provider(同 us-la 上游但不带 openAllTiers = ch154 式守门,给 ch175 用)', () => {
+    it('路由到 us-la.we-token.cc(与 wetoken 同上游)', async () => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/wetokengated/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '3840x2160',
+                quality: 'high',
+            }),
+            'generations',
+            'wetokengated',
+        );
+        expect(res.status).toBe(200);
+        const [url] = fetchMock.mock.calls[0];
+        expect(url).toBe('https://us-la.we-token.cc/v1/images/generations');
+        expect(((await res.json()) as { usage: { output_tokens: number } }).usage.output_tokens).toBe(13342);
+    });
+
+    it('守门:方图 1024 low → 503 拒(不打上游),与 ch154 一致', async () => {
+        const res = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/wetokengated/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '1024x1024',
+                quality: 'low',
+            }),
+            'generations',
+            'wetokengated',
+        );
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('守门:狭长 16:9 low → 放行(与 ch154 shape-aware 一致)', async () => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/wetokengated/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '2560x1440',
+                quality: 'low',
+            }),
+            'generations',
+            'wetokengated',
+        );
+        expect(res.status).toBe(200);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('守门:size=auto → 503 拒(非 openAllTiers,与 ch154 一致)', async () => {
+        const res = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/wetokengated/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: 'auto',
+                quality: 'high',
+            }),
+            'generations',
+            'wetokengated',
+        );
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+});
+
 describe('wetoken provider(us-la.we-token.cc,adobe 上游挂适配器 → 合成官方 usage)', () => {
     it('路由到 us-la.we-token.cc,上游面积 usage 被丢弃、返回官方合成值', async () => {
         okUpstream();

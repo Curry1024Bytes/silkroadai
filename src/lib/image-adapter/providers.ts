@@ -40,4 +40,7 @@ export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
         brand: /\bwe-?token\b|\badobe\b|\bfirefly\b/gi,
         openAllTiers: true,
     },
+    // wetokengated:同 us-la.we-token.cc 上游,但【不带 openAllTiers】→ 走盈利档+狭长守门(= ch154/ominiapi
+    // 那套)。给 ch175 用:让它只接狭长/盈利档,方图低档/auto 拒 → 走 ch176/ch177。2026-08-15 operator 指定。
+    wetokengated: { baseUrl: 'https://us-la.we-token.cc', brand: /\bwe-?token\b|\badobe\b|\bfirefly\b/gi },
 };
