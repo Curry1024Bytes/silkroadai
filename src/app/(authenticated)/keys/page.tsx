@@ -55,28 +55,37 @@ export default async function KeysPage() {
             newapi_token_id: true,
             tier: true,
             created_at: true,
+            // 2026-08-15:把 60s 行缓存的两列一并捞出来传给 getTokenUsageWithCache,
+            // 省掉它内部对【刚查过的同一行】再做一次 findUnique(N 个 key = N 次多余往返)。
+            cached_used_quota: true,
+            cached_used_at: true,
         },
     });
 
-    // W6 D4: parallel per-token usage fetch. Each call goes through the
-    // 60s row cache so this is at most one batched new-api round-trip per
-    // tab — and zero when the cache is fresh. Failures per-token are
-    // contained to that row's snapshot (logged + null usage shown).
-    const usageSnaps = await Promise.all(
-        tokens.map(async (t) => {
-            if (user.newapi_user_id == null) return null;
-            try {
-                return await getTokenUsageWithCache({
-                    prismaTokenId: t.id,
-                    newapiUserId: user.newapi_user_id,
-                    newapiTokenId: t.newapi_token_id,
-                });
-            } catch (err) {
-                console.warn(`[keys] usage fetch failed for token ${t.id}:`, err);
-                return null;
-            }
-        }),
-    );
+    // W6 D4: parallel per-token usage fetch,每 token 走各自的 60s 行缓存
+    // (⚠️ 不是批量合并的,冷缓存时是 N 发上游,见 token-usage.ts 头注释)。
+    // 单个 token 失败只影响该行快照(记 warn + 该行不显示用量)。
+    // 2026-08-15:档次/倍率两项本来串在这段之后白等一个 RTT,一并并到这里。
+    const [usageSnaps, tierGroupsRaw, ratios] = await Promise.all([
+        Promise.all(
+            tokens.map(async (t) => {
+                if (user.newapi_user_id == null) return null;
+                try {
+                    return await getTokenUsageWithCache({
+                        prismaTokenId: t.id,
+                        newapiUserId: user.newapi_user_id,
+                        newapiTokenId: t.newapi_token_id,
+                        cachedRow: { cached_used_quota: t.cached_used_quota, cached_used_at: t.cached_used_at },
+                    });
+                } catch (err) {
+                    console.warn(`[keys] usage fetch failed for token ${t.id}:`, err);
+                    return null;
+                }
+            }),
+        ),
+        listEnabledChannelGroups(user.tenant_id),
+        getGroupRatios(),
+    ]);
 
     const rows: KeyRow[] = tokens.map((t, i) => {
         const snap = usageSnaps[i];
@@ -105,10 +114,10 @@ export default async function KeysPage() {
     // P3: enabled 档次(低价号池 / 官方稳定)供建 key 时单选。数据驱动 —
     // 客户 tenant 下 enabled 的 ChannelGroup,再按 per-customer 白名单收窄
     // (allowed_tier_keys 非空 → 只显示这些档;空 → 全部)。
-    const tierGroups = restrictGroupsForUser(await listEnabledChannelGroups(user.tenant_id), user.allowed_tier_keys);
     // 倍率与 new-api 自家分组下拉的「Nx 倍率」徽章同源(GroupRatio,60s 缓存);
     // new-api 不可达时降级为 null(下拉不显示徽章,不阻塞建 key)。
-    const ratios = await getGroupRatios();
+    // 两者的 fetch 已并进上面的 Promise.all,这里只做纯内存的收窄/拼装。
+    const tierGroups = restrictGroupsForUser(tierGroupsRaw, user.allowed_tier_keys);
     const tiers = tierGroups.map((g) => ({
         key: g.key,
         display_name: g.display_name,

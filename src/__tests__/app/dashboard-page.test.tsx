@@ -72,6 +72,7 @@ vi.mock('@/app/(authenticated)/dashboard/model-consumption-chart', () => ({
 }));
 
 import DashboardPage from '@/app/(authenticated)/dashboard/page';
+import { __resetLogsCacheForTest } from '@/lib/newapi/logs-cache';
 
 const PORTAL_USER_ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 const NEWAPI_USER_ID = 7;
@@ -148,6 +149,9 @@ function setLogs(consume: ReturnType<typeof makeLog>[], errors: ReturnType<typeo
 
 beforeEach(() => {
     vi.clearAllMocks();
+    // dashboard 的日志明细走 logs-cache 的 30s 进程内缓存(2026-08-15)。
+    // 缓存是模块级的,不清就会把上个用例的结果带进下个用例。
+    __resetLogsCacheForTest();
     mockHeadersGet.mockReturnValue('silkroad_session=fake-jwt');
     mockGetCurrentUser.mockResolvedValue(SAMPLE_USER);
     mockGetCustomerBalance.mockResolvedValue(newapiBal());

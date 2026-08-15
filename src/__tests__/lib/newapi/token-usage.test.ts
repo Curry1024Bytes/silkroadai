@@ -264,3 +264,67 @@ describe('getTokenUsageWithCache — log filtering correctness', () => {
         expect(mockTokenUpdate).toHaveBeenCalled();
     });
 });
+
+// 2026-08-15:/keys 的 N+1 修复 —— 调用方把列表查询里已经读到的缓存两列
+// 直接传进来,不再让本函数对【同一行】重复 findUnique。
+describe('getTokenUsageWithCache — cachedRow(省掉重复单行读)', () => {
+    it('给了 cachedRow 且新鲜 → 不查 DB、不打上游', async () => {
+        const r = await getTokenUsageWithCache({
+            prismaTokenId: PRISMA_TOKEN_ID,
+            newapiUserId: NEWAPI_USER_ID,
+            newapiTokenId: NEWAPI_TOKEN_ID,
+            now: NOW,
+            cachedRow: {
+                cached_used_quota: BigInt(555),
+                cached_used_at: new Date(NOW.getTime() - 30_000), // fresh
+            },
+        });
+
+        expect(r).toEqual({
+            used_quota: BigInt(555),
+            last_used_at: new Date(NOW.getTime() - 30_000),
+            source: 'cache',
+        });
+        expect(mockTokenFindUnique).not.toHaveBeenCalled(); // 这就是被省掉的那次往返
+        expect(mockQueryLogs).not.toHaveBeenCalled();
+    });
+
+    it('给了 cachedRow 但已过期 → 仍不查 DB,照常打上游 + 写回', async () => {
+        mockQueryLogs.mockResolvedValue({
+            items: [{ token_id: NEWAPI_TOKEN_ID, quota: 90, created_at: 1767225600, user_id: NEWAPI_USER_ID, type: 2 }],
+        });
+
+        const r = await getTokenUsageWithCache({
+            prismaTokenId: PRISMA_TOKEN_ID,
+            newapiUserId: NEWAPI_USER_ID,
+            newapiTokenId: NEWAPI_TOKEN_ID,
+            now: NOW,
+            cachedRow: {
+                cached_used_quota: BigInt(1),
+                cached_used_at: new Date(NOW.getTime() - TTL_MS - 1), // stale
+            },
+        });
+
+        expect(r.source).toBe('live');
+        expect(r.used_quota).toBe(BigInt(90));
+        expect(mockTokenFindUnique).not.toHaveBeenCalled();
+        expect(mockTokenUpdate).toHaveBeenCalled();
+    });
+
+    it('不给 cachedRow → 维持原行为,自己 findUnique(proxy 热路径等单点调用方不受影响)', async () => {
+        mockTokenFindUnique.mockResolvedValue({
+            cached_used_quota: BigInt(77),
+            cached_used_at: new Date(NOW.getTime() - 30_000),
+        });
+
+        const r = await getTokenUsageWithCache({
+            prismaTokenId: PRISMA_TOKEN_ID,
+            newapiUserId: NEWAPI_USER_ID,
+            newapiTokenId: NEWAPI_TOKEN_ID,
+            now: NOW,
+        });
+
+        expect(r.used_quota).toBe(BigInt(77));
+        expect(mockTokenFindUnique).toHaveBeenCalledTimes(1);
+    });
+});

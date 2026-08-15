@@ -8,9 +8,15 @@
  *
  * Why a separate cache (vs reading on every render): /keys server-renders
  * one lookup per active key (per-user key cap removed 2026-07-25, so this
- * count is unbounded in principle). A 60s row cache absorbs
- * normal pageviews into ≤1 new-api round-trip per user-tab, only hitting
- * the upstream when the dashboard is genuinely viewed > 60s apart.
+ * count is unbounded in principle). The 60s row cache means a token that
+ * was refreshed within the window costs zero upstream round-trips.
+ *
+ * ⚠️ 注意这【不是】批量的:每个 token 各有各的 `cached_used_at`,过期时刻
+ * 互相错开,所以一次 /keys 渲染最坏是 N 发 `GET /api/log/`(N = 活跃 key 数)。
+ * 上游那条 `/api/log/` 会触发 new-api 的分页 `count(*)`,在 3600 万行的
+ * logs 表上是重活 —— 想砍上游压力要从减少 N 或拉长 TTL 入手,别指望这里
+ * 会自动合并请求。(2026-08-15:此前本注释声称 "≤1 round-trip per tab",
+ * 与实现不符,已更正。)
  *
  * Limits:
  *   - We pull the most recent `LOG_PAGE_SIZE` entries via queryLogs and
@@ -60,16 +66,22 @@ export async function getTokenUsageWithCache(args: {
     newapiUserId: number;
     newapiTokenId: number;
     now?: Date;
+    /** 调用方【已经】读到的缓存两列(如 /keys 的列表查询)。给了就跳过这里
+     *  的 findUnique —— 否则 N 个 token 会重复 N 次刚查过的单行读。
+     *  不给则维持原行为(自己读),proxy 热路径等单点调用方不受影响。 */
+    cachedRow?: { cached_used_quota: bigint; cached_used_at: Date | null };
 }): Promise<TokenUsageSnapshot> {
     const now = args.now ?? new Date();
 
-    const row = await prisma.newApiToken.findUnique({
-        where: { id: args.prismaTokenId },
-        select: {
-            cached_used_quota: true,
-            cached_used_at: true,
-        },
-    });
+    const row =
+        args.cachedRow ??
+        (await prisma.newApiToken.findUnique({
+            where: { id: args.prismaTokenId },
+            select: {
+                cached_used_quota: true,
+                cached_used_at: true,
+            },
+        }));
     if (!row) {
         throw new Error(`token ${args.prismaTokenId} not found`);
     }
