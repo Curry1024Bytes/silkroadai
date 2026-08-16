@@ -21,6 +21,8 @@ function listPrices(variant: SeedanceVariant, resolutions: string[], hasVideo: b
 }
 
 const BASE = process.env.ENTERPRISE_BASE_URL || 'http://128.241.232.23';
+// 兼容入口:上域名前的裸 IP,现有客户继续可用(保留,不强制迁移)。
+const LEGACY_BASE = 'http://128.241.232.23';
 
 function Code({ children }: { children: string }) {
     return <code className="rounded bg-gray-100 px-1 py-0.5 font-mono text-[13px]">{children}</code>;
@@ -84,7 +86,12 @@ export default function EnterpriseDocsPage() {
                         <tr>
                             <Td>Base URL</Td>
                             <Td>
-                                <Code>{`${BASE}/v1`}</Code>
+                                <div>
+                                    主域名(推荐,受信 HTTPS):<Code>{`${BASE}/v1`}</Code>
+                                </div>
+                                <div className="mt-1">
+                                    兼容(裸 IP,旧客户保留):<Code>{`${LEGACY_BASE}/v1`}</Code>
+                                </div>
                             </Td>
                         </tr>
                         <tr>
@@ -96,8 +103,9 @@ export default function EnterpriseDocsPage() {
                         <tr>
                             <Td>协议</Td>
                             <Td>
-                                HTTP;HTTPS(:443)为自签证书,需关闭证书校验(curl <Code>-k</Code> / Python{' '}
-                                <Code>verify=False</Code>)
+                                主域名为<b>受信 HTTPS</b>,直接调用无需额外配置(推荐)。裸 IP 入口的
+                                HTTPS(:443)是自签证书, 需关闭证书校验(curl <Code>-k</Code> / Python{' '}
+                                <Code>verify=False</Code>)或改用 HTTP。
                             </Td>
                         </tr>
                     </tbody>
@@ -492,7 +500,7 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                 <Pre>{`{
   "API_URL":     "${BASE}",
   "API_HOST":    "${BASE.replace(/^https?:\/\//, '')}",
-  "API_PROTOCOL":"http",
+  "API_PROTOCOL":"${BASE.startsWith('https') ? 'https' : 'http'}",
   "API_PATH":    "/api",          // 素材库接口用 /api;视频接口签名时用 /api/v3/...(见下)
   "API_SERVICE": "ark",
   "API_VERSION": "2024-01-01",

@@ -8,6 +8,8 @@ export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Seedance 企业端口 · 素材库文档' };
 
 const BASE = process.env.ENTERPRISE_BASE_URL || 'http://128.241.232.23';
+// 兼容入口:上域名前的裸 IP,现有客户继续可用(保留,不强制迁移)。
+const LEGACY_BASE = 'http://128.241.232.23';
 
 function Code({ children }: { children: string }) {
     return <code className="rounded bg-gray-100 px-1 py-0.5 font-mono text-[13px]">{children}</code>;
@@ -64,6 +66,10 @@ export default function EnterpriseAssetsDocsPage() {
                         ,JSON body,响应为 <Code>{`{ResponseMetadata, Result}`}</Code> 结构。路径 <Code>/api</Code>、
                         <Code>/api/</Code>、<Code>/?Action=…</Code>
                         (火山官方根路径形态,SDK 只换 endpoint 即可)三种写法等价。
+                    </li>
+                    <li>
+                        <b>Base URL</b>:主域名(推荐,受信 HTTPS)<Code>{BASE}</Code>;兼容裸 IP(旧客户保留){' '}
+                        <Code>{LEGACY_BASE}</Code>。
                     </li>
                 </ul>
                 <p className="font-medium text-gray-900">鉴权(两种,任选其一):</p>
