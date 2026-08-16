@@ -20,7 +20,7 @@ function listPrices(variant: SeedanceVariant, resolutions: string[], hasVideo: b
         .join(' / ');
 }
 
-const BASE = process.env.NEXT_PUBLIC_ENTERPRISE_BASE_URL || 'http://128.241.232.23';
+const BASE = process.env.ENTERPRISE_BASE_URL || 'http://128.241.232.23';
 
 function Code({ children }: { children: string }) {
     return <code className="rounded bg-gray-100 px-1 py-0.5 font-mono text-[13px]">{children}</code>;

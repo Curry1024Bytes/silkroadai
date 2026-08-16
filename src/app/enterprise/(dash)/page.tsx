@@ -15,7 +15,7 @@ export const dynamic = 'force-dynamic';
 
 export const metadata = { title: 'Seedance 企业端口 · 概览' };
 
-const ENTRY_BASE = process.env.NEXT_PUBLIC_ENTERPRISE_BASE_URL || 'http://128.241.232.23';
+const ENTRY_BASE = process.env.ENTERPRISE_BASE_URL || 'http://128.241.232.23';
 const CHART_DAYS = 30;
 const TOP_MODELS = 5;
 
