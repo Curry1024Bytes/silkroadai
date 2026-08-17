@@ -45,11 +45,10 @@ vi.mock('@/lib/seedance/cn-adapter', async (importOriginal) => {
     const mod = await importOriginal<typeof import('@/lib/seedance/cn-adapter')>();
     return { ...mod, submitVideoWithKey, pollVideoWithKey, cancelVideoWithKey };
 });
-vi.mock('@/lib/seedance/volc-adapter', () => ({
-    submitVolcVideo: vi.fn(),
-    pollVolcVideo: vi.fn(),
-    cancelVolcVideo,
-}));
+vi.mock('@/lib/seedance/kuaizi-adapter', async (importOriginal) => {
+    const mod = await importOriginal<typeof import('@/lib/seedance/kuaizi-adapter')>();
+    return { ...mod, submitVolcVideo: vi.fn(), pollVolcVideo: vi.fn(), cancelVolcVideo };
+});
 vi.mock('../billing', async (importOriginal) => {
     const mod = await importOriginal<typeof import('../billing')>();
     return { ...mod, estimateEnterpriseCostCny, chargeEnterpriseVideoTask };

@@ -491,10 +491,49 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
 
             <Section id="volc" title="5. 火山渠道(volc · 火山方舟原生 + AK/SK 签名)">
                 <p>
-                    <b>火山渠道</b>是独立渠道(与国内/海外/proMax 平级),提供<b>真人视觉认证</b>与单模型{' '}
-                    <Code>doubao-seedance-2.0</Code> 视频,采用<b>火山方舟原生接口形态</b> +{' '}
-                    <b>火山官方 AK/SK 签名(SignerV4)</b>鉴权 —— 现有火山官方 SDK / 脚本可零改动接入。需在「API
-                    密钥」页开通并生成 AK/SK,专用密钥,与 sk-ent 并存互不影响。
+                    <b>火山渠道</b>是独立渠道(与国内/海外/proMax 平级),提供<b>真人视觉认证</b>与{' '}
+                    <b>seedance 全系四档</b>视频,采用<b>火山方舟原生接口形态</b> + <b>火山官方 AK/SK 签名(SignerV4)</b>
+                    鉴权 —— 现有火山官方 SDK / 脚本可零改动接入。需在「API 密钥」页开通并生成 AK/SK,专用密钥,与 sk-ent
+                    并存互不影响。
+                </p>
+                <p className="font-medium text-gray-900">可用模型与参数上限:</p>
+                <div className="overflow-x-auto">
+                    <table className="min-w-full text-sm">
+                        <thead>
+                            <tr className="border-b border-gray-200 text-left text-gray-500">
+                                <th className="py-1.5 pr-4 font-medium">model</th>
+                                <th className="py-1.5 pr-4 font-medium">resolution</th>
+                                <th className="py-1.5 pr-4 font-medium">duration(秒)</th>
+                                <th className="py-1.5 pr-4 font-medium">参考图 / 视频 / 音频</th>
+                            </tr>
+                        </thead>
+                        <tbody className="text-gray-700">
+                            {[
+                                ['doubao-seedance-2.0', '480p / 720p / 1080p / 4k', '4~15 或 -1', '9 / 3 / 3'],
+                                ['doubao-seedance-2.0-fast', '480p / 720p / 1080p', '4~15 或 -1', '9 / 3 / 3'],
+                                ['doubao-seedance-2.0-mini', '480p / 720p / 1080p', '4~15 或 -1', '9 / 3 / 3'],
+                                ['doubao-seedance-2.5', '480p / 720p', '4~30 或 -1', '30 / 10 / 10'],
+                            ].map(([m, r, d, refs]) => (
+                                <tr key={m} className="border-b border-gray-100">
+                                    <td className="py-1.5 pr-4">
+                                        <Code>{m}</Code>
+                                    </td>
+                                    <td className="py-1.5 pr-4">{r}</td>
+                                    <td className="py-1.5 pr-4">{d}</td>
+                                    <td className="py-1.5 pr-4">{refs}</td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+                <p className="text-gray-600">
+                    <Code>duration: -1</Code> = 智能时长(由模型在有效区间内自选)。<Code>4k</Code> 仅{' '}
+                    <Code>doubao-seedance-2.0</Code> 支持。
+                    <b>
+                        <Code>doubao-seedance-2.5</Code> 的首帧/首尾帧、视频编辑、视频延长三类任务仅支持{' '}
+                        <Code>ratio: &quot;adaptive&quot;</Code>
+                    </b>
+                    (输出宽高比自动跟随输入素材);视频编辑任务的 <Code>duration</Code> 还须为 <Code>-1</Code>。
                 </p>
                 <p className="font-medium text-gray-900">config 关键字段(以火山官方素材库/方舟脚本为例):</p>
                 <Pre>{`{
@@ -527,14 +566,14 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
 {
   "model": "doubao-seedance-2.0",
   "content": [{"type": "text", "text": "一只橘猫在窗台上打哈欠"}],
-  "resolution": "720p",     // 480p / 720p / 1080p / 4k
-  "duration": 5             // 4-15 任意整数秒
+  "resolution": "720p",     // 见上表(按 model 而定)
+  "duration": 5             // 见上表;-1 = 智能时长
 }
 # → {"id":"cgt-…"}   然后 GET /api/v3/contents/generations/tasks/{id} 轮询
 # → {"status":"succeeded","content":{"video_url":"https://…火山直链…"}}`}</Pre>
                 <ul className="list-disc space-y-1 pl-5">
                     <li>
-                        单模型 <Code>doubao-seedance-2.0</Code>,计费与国内版同价(按 <Code>usage.completion_tokens</Code>
+                        四档模型计费与国内版同名档位同价(按 <Code>usage.completion_tokens</Code>
                         )。480p 与 720p 同费率(token 量约为 720p 的一半,整条更便宜)。参考图/视频/音频写进{' '}
                         <Code>content</Code> 数组(<Code>image_url</Code> / <Code>video_url</Code> /{' '}
                         <Code>audio_url</Code>,<Code>url</Code> 支持公网直链、素材 ID)。

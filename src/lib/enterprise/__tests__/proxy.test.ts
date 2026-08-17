@@ -34,7 +34,10 @@ vi.mock('@/lib/seedance/cn-adapter', async (importOriginal) => {
     const mod = await importOriginal<typeof import('@/lib/seedance/cn-adapter')>();
     return { ...mod, submitVideoWithKey, pollVideoWithKey };
 });
-vi.mock('@/lib/seedance/volc-adapter', () => ({ submitVolcVideo, pollVolcVideo }));
+vi.mock('@/lib/seedance/kuaizi-adapter', async (importOriginal) => {
+    const mod = await importOriginal<typeof import('@/lib/seedance/kuaizi-adapter')>();
+    return { ...mod, submitVolcVideo, pollVolcVideo };
+});
 vi.mock('../billing', async (importOriginal) => {
     const mod = await importOriginal<typeof import('../billing')>();
     return { ...mod, estimateEnterpriseCostCny, chargeEnterpriseVideoTask };
@@ -81,7 +84,11 @@ describe('火山渠道(volc)路由', () => {
             '/video/generations',
         );
         expect(res.status).toBe(200);
-        expect(submitVolcVideo).toHaveBeenCalledWith(expect.objectContaining({ prompt: '一只猫' }), '1080p', 5);
+        expect(submitVolcVideo).toHaveBeenCalledWith(expect.objectContaining({ prompt: '一只猫' }), {
+            clientModel: 'doubao-seedance-2.0',
+            resolution: '1080p',
+            duration: 5,
+        });
         expect(submitVideoWithKey).not.toHaveBeenCalled();
         expect(db.seedanceVideoTask.create).toHaveBeenCalledWith({
             data: expect.objectContaining({
@@ -104,7 +111,11 @@ describe('火山渠道(volc)路由', () => {
             '/video/generations',
         );
         expect(res.status).toBe(200);
-        expect(submitVolcVideo).toHaveBeenCalledWith(expect.objectContaining({ content }), '720p', 5);
+        expect(submitVolcVideo).toHaveBeenCalledWith(expect.objectContaining({ content }), {
+            clientModel: 'doubao-seedance-2.0',
+            resolution: '720p',
+            duration: 5,
+        });
         // volc 走【混合解析】(lenient):平台素材换直链,认不出的 asset:// 原样透传(mock 原样返回)
         expect(resolveAssetRefs).toHaveBeenCalledWith(expect.anything(), 'u1', { lenient: true });
     });
@@ -120,7 +131,11 @@ describe('火山渠道(volc)路由', () => {
             '/video/generations',
         );
         expect(res.status).toBe(200);
-        expect(submitVolcVideo).toHaveBeenCalledWith(expect.objectContaining({ prompt: '一只猫' }), '480p', 5);
+        expect(submitVolcVideo).toHaveBeenCalledWith(expect.objectContaining({ prompt: '一只猫' }), {
+            clientModel: 'doubao-seedance-2.0',
+            resolution: '480p',
+            duration: 5,
+        });
         expect(db.seedanceVideoTask.create).toHaveBeenCalledWith({
             data: expect.objectContaining({ model: 'doubao-seedance-2.0', resolution: '480p' }),
         });
@@ -133,7 +148,10 @@ describe('火山渠道(volc)路由', () => {
             '/video/generations',
         );
         expect(res.status).toBe(200);
-        expect(submitVolcVideo).toHaveBeenCalledWith(expect.anything(), '720p', 7);
+        expect(submitVolcVideo).toHaveBeenCalledWith(
+            expect.anything(),
+            expect.objectContaining({ resolution: '720p', duration: 7 }),
+        );
         expect(db.seedanceVideoTask.create).toHaveBeenCalledWith({
             data: expect.objectContaining({ duration: 7 }),
         });
@@ -149,7 +167,10 @@ describe('火山渠道(volc)路由', () => {
                 '/video/generations',
             );
             expect(res.status).toBe(200);
-            expect(submitVolcVideo).toHaveBeenLastCalledWith(expect.anything(), '720p', ok);
+            expect(submitVolcVideo).toHaveBeenLastCalledWith(
+                expect.anything(),
+                expect.objectContaining({ resolution: '720p', duration: ok }),
+            );
         }
         for (const bad of [3, 16, 7.5]) {
             const res = await handleEnterpriseV1(
@@ -165,7 +186,10 @@ describe('火山渠道(volc)路由', () => {
             '/video/generations',
         );
         expect(res.status).toBe(200);
-        expect(submitVolcVideo).toHaveBeenLastCalledWith(expect.anything(), '720p', 5);
+        expect(submitVolcVideo).toHaveBeenLastCalledWith(
+            expect.anything(),
+            expect.objectContaining({ resolution: '720p', duration: 5 }),
+        );
     });
 
     it('cn/global 渠道也开 4-15(2026-08-03 探测):7 秒落库 7;3 秒 → 400', async () => {
@@ -884,5 +908,120 @@ describe('轮询', () => {
             expect.objectContaining({ data: { status: 'failed', fail_reason: 'sensitive content' } }),
         );
         expect(chargeEnterpriseVideoTask).not.toHaveBeenCalled();
+    });
+});
+
+describe('火山渠道(volc)四档模型 —— 上游换筷子开放平台后开放 fast/mini/2.5(2026-08-17)', () => {
+    beforeEach(() => {
+        submitVolcVideo.mockImplementation(() =>
+            Promise.resolve(NextResponse.json({ id: 'cgt-m1', task_id: 'cgt-m1', status: 'queued' })),
+        );
+    });
+
+    it.each([
+        ['doubao-seedance-2.0-fast', 'fast'],
+        ['doubao-seedance-2.0-mini', 'mini'],
+        ['doubao-seedance-2.5', '2.5'],
+    ])('%s 走 volc 适配器(不走 cn),按对客名落库', async (model) => {
+        const res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { model, prompt: 'x', resolution: '720p' }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(200);
+        expect(submitVolcVideo).toHaveBeenCalledWith(
+            expect.anything(),
+            expect.objectContaining({ clientModel: model, resolution: '720p' }),
+        );
+        expect(submitVideoWithKey).not.toHaveBeenCalled();
+        expect(db.seedanceVideoTask.create).toHaveBeenCalledWith({ data: expect.objectContaining({ model }) });
+    });
+
+    it('分辨率按档位门控:fast/mini 无 4k、2.5 仅 480p/720p → 400 且不打上游', async () => {
+        for (const [model, res_] of [
+            ['doubao-seedance-2.0-fast', '4k'],
+            ['doubao-seedance-2.0-mini', '4k'],
+            ['doubao-seedance-2.5', '1080p'],
+            ['doubao-seedance-2.5', '4k'],
+        ] as const) {
+            const res = await handleEnterpriseV1(
+                req('POST', '/v1/video/generations', { model, prompt: 'x', resolution: res_ }),
+                '/video/generations',
+            );
+            expect(res.status).toBe(400);
+            expect((await res.json()).error.message).toContain('resolution 仅支持');
+        }
+        expect(submitVolcVideo).not.toHaveBeenCalled();
+    });
+
+    it('pro 保留 4k;2.5 时长上限 30(31 → 400 文案含 4-30)', async () => {
+        const ok = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { model: 'doubao-seedance-2.0', prompt: 'x', resolution: '4k' }),
+            '/video/generations',
+        );
+        expect(ok.status).toBe(200);
+
+        const good = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { model: 'doubao-seedance-2.5', prompt: 'x', duration: 30 }),
+            '/video/generations',
+        );
+        expect(good.status).toBe(200);
+        expect(submitVolcVideo).toHaveBeenLastCalledWith(
+            expect.anything(),
+            expect.objectContaining({ clientModel: 'doubao-seedance-2.5', duration: 30 }),
+        );
+
+        const bad = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { model: 'doubao-seedance-2.5', prompt: 'x', duration: 31 }),
+            '/video/generations',
+        );
+        expect(bad.status).toBe(400);
+        expect((await bad.json()).error.message).toContain('4-30');
+    });
+
+    it('参考素材数量按档位封顶:2.0 系 >9 图 400,2.5 放宽到 30 图', async () => {
+        const urls = (n: number) => Array.from({ length: n }, (_, i) => `https://cdn.test/${i}.jpg`);
+        const over = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', {
+                model: 'doubao-seedance-2.0',
+                prompt: 'x',
+                images: urls(10),
+            }),
+            '/video/generations',
+        );
+        expect(over.status).toBe(400);
+        expect((await over.json()).error.message).toContain('最多 9 张参考图');
+        expect(submitVolcVideo).not.toHaveBeenCalled();
+
+        const ok = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { model: 'doubao-seedance-2.5', prompt: 'x', images: urls(10) }),
+            '/video/generations',
+        );
+        expect(ok.status).toBe(200);
+    });
+
+    it('2.5 首帧/首尾帧任务非 adaptive → 400 前置拦截(上游创建时同步拒)', async () => {
+        const bad = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', {
+                model: 'doubao-seedance-2.5',
+                prompt: 'x',
+                first_frame: 'https://cdn.test/a.jpg',
+                ratio: '16:9',
+            }),
+            '/video/generations',
+        );
+        expect(bad.status).toBe(400);
+        expect((await bad.json()).error.message).toContain('adaptive');
+        expect(submitVolcVideo).not.toHaveBeenCalled();
+
+        const ok = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', {
+                model: 'doubao-seedance-2.5',
+                prompt: 'x',
+                first_frame: 'https://cdn.test/a.jpg',
+                ratio: 'adaptive',
+            }),
+            '/video/generations',
+        );
+        expect(ok.status).toBe(200);
     });
 });

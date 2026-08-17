@@ -49,8 +49,11 @@ const OFFICIAL_CNY_PER_M: Record<
         '720p': { noVideo: 23, withVideo: 14 }, // 官方挂牌
         '1080p': { noVideo: 25.5, withVideo: 15.5 }, // 官方挂牌(1080p 单独档,2026-08-08 修正)
     },
-    // 国内版 seedance 2.5(上游 artsdance-2-5-pro):仅 720p/1080p(不支持 480p)。
+    // seedance 2.5:国内版渠道(上游 artsdance-2-5-pro)仅 720p/1080p;火山渠道(上游筷子
+    // 开放平台,2026-08-17)仅 480p/720p —— 两渠道同一费率表(同为火山官方挂牌),取并集。
+    // 480p 与 720p 同费率(与 2.0 全系一致:token ∝ 像素,整条约半价,不是费率档不同)。
     '2.5': {
+        '480p': { noVideo: 70, withVideo: 42 }, // 官方挂牌(与 720p 同费率)
         '720p': { noVideo: 70, withVideo: 42 }, // 官方挂牌
         '1080p': { noVideo: 90, withVideo: 54 }, // 官方挂牌
     },

@@ -1,6 +1,7 @@
 /**
  * 企业门户素材库文档页(2026-07-29)—— 从主接入文档拆出独立成页。
- * 全部素材统一平台托管(2026-08-06 v3):AIGC 与真人(LivenessFace 分组)同库,四渠道通用。
+ * 素材托管(2026-08-17 起):cn/global/promax 三渠道 + 全渠道真人素材(LivenessFace)= 平台库
+ * (R2 + user_id 行级归属,2026-08-06 v3);火山渠道的 AIGC 素材 = 筷子私域库(与视频面同账号)。
  * 静态 JSX(镜像主 docs 模式)。
  */
 export const dynamic = 'force-dynamic';
@@ -242,11 +243,50 @@ curl -X POST ${BASE}/v1/video/generations \\
                 </p>
             </Section>
 
+            <Section id="volc-channel-assets" title="4.5 火山渠道的素材库(与其它渠道不同,请注意)">
+                <p>
+                    若您使用的是<b>火山渠道</b>(<Code>doubao-seedance-*</Code> 系模型),上述 10 个 Action
+                    的契约、字段、调用方式<b>完全一致</b>,但素材存放在<b>火山方舟私域素材库</b>
+                    (与视频生成同一账号),因此有三点差异:
+                </p>
+                <ul className="list-disc space-y-1 pl-5">
+                    <li>
+                        <b>素材 ID 形态</b>:十进制数字串(如 <Code>1800657071180349888</Code>),不是 <Code>asset-…</Code>{' '}
+                        前缀形。请原样保存与回传。生成时同样用 <Code>asset://1800657071180349888</Code> 引用。
+                    </li>
+                    <li>
+                        <b>
+                            <Code>CreateAsset</Code> 是异步的
+                        </b>
+                        :落库即返 <Code>Id</Code>,素材需轮询 <Code>GetAsset</Code> 至 <Code>{`"Status":"Active"`}</Code>{' '}
+                        后方可在生成中使用(<Code>Processing</Code> 期间引用会被拒)。
+                    </li>
+                    <li>
+                        <b>
+                            素材 <Code>URL</Code> 是签名链,约 12 小时过期
+                        </b>
+                        (非长期直链)。<b>请勿缓存 URL</b> —— 需要时现调 <Code>GetAsset</Code> / <Code>ListAssets</Code>{' '}
+                        取最新地址。素材本身不会过期,只是访问链接会。
+                    </li>
+                </ul>
+                <p>
+                    组类型仅支持 <Code>AIGC</Code>(传其它值报 <Code>InvalidParameter</Code>);
+                    <Code>SortBy</Code> / <Code>SortOrder</Code> 接受但忽略。真人素材见下一节。
+                </p>
+            </Section>
+
             <Section id="volc-assets" title="5. 真人素材(LivenessFace 分组)">
                 <p>
-                    <b>全部素材统一平台托管(与鉴权方式、渠道无关)</b>:AIGC 与真人素材(
-                    <Code>{`"GroupType":"LivenessFace"`}</Code> 分组)都存平台素材库,<b>全部渠道</b>
-                    (国内 / 海外 / proMax / 火山)生成时均可用 <Code>asset://素材ID</Code> 引用。
+                    <b>
+                        真人素材(<Code>{`"GroupType":"LivenessFace"`}</Code> 分组)始终由平台托管
+                    </b>
+                    ,与鉴权方式、渠道无关 —— <b>全部渠道</b>(国内 / 海外 / proMax / 火山)生成时均可用{' '}
+                    <Code>asset://素材ID</Code> 引用,素材 URL 为平台直链(长期有效)。
+                </p>
+                <p className="text-gray-600">
+                    即使在火山渠道(其 AIGC 素材走火山私域库,见 4.5),只要显式传{' '}
+                    <Code>{`"GroupType":"LivenessFace"`}</Code>,真人素材仍走平台库;已有的 <Code>asset-…</Code> /{' '}
+                    <Code>group-…</Code> 形素材按 ID 操作也照旧命中平台库。
                 </p>
                 <ul className="list-disc space-y-1 pl-5">
                     <li>

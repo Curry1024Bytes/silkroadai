@@ -12,6 +12,7 @@ import {
     type AssetType,
 } from '@/lib/enterprise/assets';
 import { RealPersonError, createVisualValidateSession, getVisualValidateGroupId } from '@/lib/enterprise/real-person';
+import { handleKuaiziAssetAction, kuaiziAssetsEnabled, shouldUseKuaiziAssets } from '@/lib/enterprise/kuaizi-assets';
 
 export const runtime = 'nodejs';
 
@@ -227,6 +228,22 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // 通用,LivenessFace 只是分组类型不再决定存储位置;727 provider 素材路由下线
     // (volc-assets.ts 保留未挂接,provider 账号复活后如需可重接)。volc 生成引用平台
     // 素材走 lenient 混合解析(见 enterprise/proxy)。
+    //
+    // 例外(2026-08-17,**缺省开**):volc 渠道客户的 10 个素材 Action 走筷子开放平台自有
+    // 素材库 —— 与视频面同一个筷子账号自洽,asset://<Id> 上游能直接解析。火山渠道是单客户
+    // 专属,故共享 ApiKey 账号无行级隔离不构成问题;接第二个客户前置 ENTERPRISE_KUAIZI_ASSETS=0
+    // 回落平台库(取舍详见 kuaizi-assets.ts 文件头)。cn/global/promax 不受影响。
+    // 三种情况仍回落平台库(真人素材 / 平台形 Id / 平台形 GroupId)—— 见 shouldUseKuaiziAssets。
+    if (kuaiziAssetsEnabled() && isVolc && shouldUseKuaiziAssets(action, body)) {
+        try {
+            return ok(action, await handleKuaiziAssetAction(action, body));
+        } catch (e) {
+            if (e instanceof RealPersonError) return fail(action, e.status, e.code, e.message);
+            console.error('[asset-api] kuaizi asset error', action, e);
+            return fail(action, 500, 'InternalError', 'internal error');
+        }
+    }
+
     try {
         switch (action) {
             case 'CreateAsset': {
