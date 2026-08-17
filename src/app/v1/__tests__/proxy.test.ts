@@ -1746,7 +1746,7 @@ describe('/v1 proxy — Phase 4: DALL·E /v1/images/{edits,generations} (W9 D4)'
         expect(res.status).toBe(502);
         const data = (await res.json()) as { error: { type: string; message: string } };
         expect(data.error.message).toBe('no image generated');
-        expect(data.error.type).toBe('invalid_request_error');
+        expect(data.error.type).toBe('server_error');
     });
 
     it('honors customer OSS on the DALL·E path too (storeGeneratedImage shared)', async () => {
@@ -2694,7 +2694,8 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
         expect(res.status).toBe(502);
         const text = await res.text();
         expect(text.toLowerCase()).not.toContain('adobe');
-        expect(text).toContain('the provider');
+        const data = (JSON.parse(text) as { error: { type: string } }).error;
+        expect(data.type).toBe('server_error'); // 归一成官方 server_error 体,不再透传上游原文
     });
 
     it('上游 200 SSE 成功体(stream:true)→ 原样透传 200,体一字不改', async () => {
@@ -2726,7 +2727,7 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
         const text = await res.text();
         expect(text).not.toContain('content safety system'); // 超时不再误显示为审核拒绝
         expect(text.toLowerCase()).not.toContain('adobe');
-        expect(text).toContain('timeout');
+        expect((JSON.parse(text) as { error: { type: string } }).error.type).toBe('server_error');
     });
 
     it('连不上 new-api(网络异常)→ 502 透出真实原因,不被兜底成笼统 400', async () => {
@@ -2738,7 +2739,7 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
         expect(res.status).toBe(502);
         const data = (await res.json()) as { error: { message: string; type: string } };
         expect(data.error.message).toContain('ECONNREFUSED');
-        expect(data.error.type).toBe('invalid_request_error');
+        expect(data.error.type).toBe('server_error');
     });
 
     // ── 统一入口:文生图 + 图生图合并到同一路径,代理按【有无输入图】分流到上游,
