@@ -48,6 +48,9 @@ export async function register() {
             new Agent({
                 headersTimeout: 600_000, // 与 Caddy response_header_timeout 600s 对齐
                 bodyTimeout: 600_000,
+                // 默认空闲 4s 就断;延长至 60s 可复用图片上游连接,减少建连与 client-side RST。
+                keepAliveTimeout: 60_000,
+                keepAliveMaxTimeout: 600_000,
             }),
         );
     }

@@ -184,6 +184,6 @@ export async function GET(req: NextRequest) {
 
     const sessionToken = await signSession(userId);
     const res = buildResponse(req.url);
-    setSessionCookie(res, sessionToken);
+    setSessionCookie(res, sessionToken, req);
     return res;
 }

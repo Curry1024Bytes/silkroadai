@@ -24,6 +24,19 @@ const TINY_PNG = Buffer.from(
     'base64',
 );
 
+/** 造一个仅 PNG 签名 + IHDR(w×h)的最小 buffer 的 base64 —— 够 imageDimensions 读出尺寸(测 auto 计费)。 */
+function pngB64(w: number, h: number): string {
+    const buf = Buffer.alloc(24);
+    buf[0] = 0x89;
+    buf[1] = 0x50;
+    buf[2] = 0x4e;
+    buf[3] = 0x47;
+    buf.write('IHDR', 12, 'latin1');
+    buf.writeUInt32BE(w, 16);
+    buf.writeUInt32BE(h, 20);
+    return buf.toString('base64');
+}
+
 function jsonReq(url: string, body: unknown): NextRequest {
     return new NextRequest(url, {
         method: 'POST',
@@ -197,15 +210,16 @@ describe('synthUsage(合成数值 = 官方公式口径)', () => {
 });
 
 describe('handleAdapterImage 守门(调上游之前拒,返 503 让 new-api failover)', () => {
+    // 方图 / 3:2(长/短 ≤ 1.5,非狭长)不过盈利档 → 拒。狭长图(16:9)另见下方 shape-aware 测试。
     it.each([
         ['1k 缺省 quality(→low)', { size: '1024x1024' }],
         ['1k medium', { size: '1024x1024', quality: 'medium' }],
         ['2k medium', { size: '2048x2048', quality: 'medium' }],
         ['2k low', { size: '2048x2048', quality: 'low' }],
-        ['4K low(旧守门放行,售价制拒)', { size: '3840x2160', quality: 'low' }],
-        ['4K auto(→low)', { size: '3840x2160', quality: 'auto' }],
-        ['4K standard(→low)', { size: '3840x2160', quality: 'standard' }],
-        ['4K 缺省 quality(→low)', { size: '3840x2160' }],
+        ['大方图 low(2880² low)', { size: '2880x2880', quality: 'low' }],
+        ['大方图 auto(2880²→low)', { size: '2880x2880', quality: 'auto' }],
+        ['3:2 low(1536x1024,比 1.5 不算狭长)', { size: '1536x1024', quality: 'low' }],
+        ['3:2 standard(→low)', { size: '1536x1024', quality: 'standard' }],
         ['size auto', { size: 'auto', quality: 'high' }],
         ['size 缺省', { quality: 'high' }],
     ])('%s → 503 且不打上游', async (_label, extra) => {
@@ -218,6 +232,43 @@ describe('handleAdapterImage 守门(调上游之前拒,返 503 让 new-api failo
         expect(fetchMock).not.toHaveBeenCalled();
         const body = await res.json();
         expect(body.error.code).toBe('upstream_unavailable');
+    });
+
+    // shape-aware:狭长图(16:9,长/短 > 1.5)不论盈利档一律放行 → 走适配器拿官方账单
+    it.each([
+        ['4K 16:9 low', { size: '3840x2160', quality: 'low' }],
+        ['4K 16:9 auto(→low)', { size: '2160x3840', quality: 'auto' }],
+        ['4K 16:9 medium', { size: '3840x2160', quality: 'medium' }],
+        ['2560x1440 medium(重灾区 +79%)', { size: '2560x1440', quality: 'medium' }],
+        ['1024x1792 low', { size: '1024x1792', quality: 'low' }],
+    ])('狭长 %s → 过闸打上游(官方账单)', async (_label, extra) => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', ...extra }),
+            'generations',
+            'ominiapi',
+        );
+        expect(res.status).toBe(200);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('狭长阈值边界:3:2(1.5)不算狭长仍守门拒,16:10(1.6)算狭长放行', async () => {
+        // 3:2 low → 拒(不打上游)
+        const r32 = await handleAdapterImage(
+            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '1536x1024', quality: 'low' }),
+            'generations',
+            'ominiapi',
+        );
+        expect(r32.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+        // 16:10(1600x1000=1.6)low → 放行打上游
+        okUpstream();
+        const r1610 = await handleAdapterImage(
+            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '1600x1000', quality: 'low' }),
+            'generations',
+            'ominiapi',
+        );
+        expect(r1610.status).toBe(200);
     });
 
     it('503 响应体不含任何内部信息(全渠道挂时 new-api 会把它原文透给客户)', async () => {
@@ -269,6 +320,28 @@ describe('handleAdapterImage 守门(调上游之前拒,返 503 让 new-api failo
 });
 
 describe('handleAdapterImage 成功路径', () => {
+    it('JSON generations:output_compression 数字/数字串 → 上游 body 里是 number(修类型 bug)', async () => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            jsonReq(URL_GEN, {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '3840x2160',
+                quality: 'high',
+                output_compression: 75, // 客户传数字
+                output_format: 'webp', // 非整型字段仍原样透传
+            }),
+            'generations',
+            'ominiapi',
+        );
+        expect(res.status).toBe(200);
+        const [, init] = fetchMock.mock.calls[0];
+        const sent = JSON.parse(init.body as string);
+        expect(sent.output_compression).toBe(75); // number,不是 "75"
+        expect(typeof sent.output_compression).toBe('number');
+        expect(sent.output_format).toBe('webp'); // 字符串字段照旧
+    });
+
     it('4K generations:上游假 usage 被替换成合成值,data 原样透传', async () => {
         okUpstream();
         const res = await handleAdapterImage(
@@ -480,6 +553,53 @@ describe('handleAdapterImage 失败路径(不合成 usage → new-api 不扣费)
         expect(text.toLowerCase()).not.toContain('omini');
     });
 
+    it('内容安全(451 image_unsafe)→ 终态 400 content_policy_violation(不 failover)', async () => {
+        fetchMock.mockResolvedValue(
+            new Response(JSON.stringify({ error: { error_code: 'image_unsafe', message: 'appear to be unsafe' } }), {
+                status: 451,
+            }),
+        );
+        const res = await handleAdapterImage(
+            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160', quality: 'high' }),
+            'generations',
+            'ominiapi',
+        );
+        expect(res.status).toBe(400); // 终态,不是 503
+        const body = await res.json();
+        expect(body.error.code).toBe('content_policy_violation');
+        expect(fetchMock).toHaveBeenCalledTimes(1); // 只打一次,没被重复扇出
+        // body 含 'content rejected' 标记(供代理 IMAGE_SAFETY_RE 命中),身份中性
+        expect(JSON.stringify(body).toLowerCase()).toContain('content rejected');
+        expect(JSON.stringify(body).toLowerCase()).not.toContain('omini');
+    });
+
+    it('请求本身错(prompt is required,400)→ 终态 400 invalid_request(不 failover)', async () => {
+        fetchMock.mockResolvedValue(
+            new Response(JSON.stringify({ error: { message: 'prompt is required' } }), { status: 400 }),
+        );
+        const res = await handleAdapterImage(
+            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: '', size: '3840x2160', quality: 'high' }),
+            'generations',
+            'ominiapi',
+        );
+        expect(res.status).toBe(400);
+        expect((await res.json()).error.code).toBe('invalid_request');
+    });
+
+    it('渠道特定(no available channel,400)→ 仍 503 failover(换渠道有意义)', async () => {
+        fetchMock.mockResolvedValue(
+            new Response(JSON.stringify({ error: { code: 'model_not_found', message: 'No available channel' } }), {
+                status: 400,
+            }),
+        );
+        const res = await handleAdapterImage(
+            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160', quality: 'high' }),
+            'generations',
+            'ominiapi',
+        );
+        expect(res.status).toBe(503);
+    });
+
     it('上游 fetch 抛错(超时/断连)→ 503', async () => {
         fetchMock.mockRejectedValue(new Error('network down'));
         const res = await handleAdapterImage(
@@ -571,5 +691,211 @@ describe('codexvip provider(第二家 Adobe Firefly 转售,与 ch154 同 prio �
         expect(lc).not.toContain('codexvip');
         expect(lc).not.toContain('adobe2api');
         expect(lc).not.toContain('adobe');
+    });
+});
+
+describe('wetokengated provider(同 us-la 上游但不带 openAllTiers = ch154 式守门,给 ch175 用)', () => {
+    it('路由到 us-la.we-token.cc(与 wetoken 同上游)', async () => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/wetokengated/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '3840x2160',
+                quality: 'high',
+            }),
+            'generations',
+            'wetokengated',
+        );
+        expect(res.status).toBe(200);
+        const [url] = fetchMock.mock.calls[0];
+        expect(url).toBe('https://us-la.we-token.cc/v1/images/generations');
+        expect(((await res.json()) as { usage: { output_tokens: number } }).usage.output_tokens).toBe(13342);
+    });
+
+    it('守门:方图 1024 low → 503 拒(不打上游),与 ch154 一致', async () => {
+        const res = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/wetokengated/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '1024x1024',
+                quality: 'low',
+            }),
+            'generations',
+            'wetokengated',
+        );
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('守门:狭长 16:9 low → 放行(与 ch154 shape-aware 一致)', async () => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/wetokengated/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '2560x1440',
+                quality: 'low',
+            }),
+            'generations',
+            'wetokengated',
+        );
+        expect(res.status).toBe(200);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('守门:size=auto → 503 拒(非 openAllTiers,与 ch154 一致)', async () => {
+        const res = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/wetokengated/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: 'auto',
+                quality: 'high',
+            }),
+            'generations',
+            'wetokengated',
+        );
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+});
+
+describe('wetoken provider(us-la.we-token.cc,adobe 上游挂适配器 → 合成官方 usage)', () => {
+    it('路由到 us-la.we-token.cc,上游面积 usage 被丢弃、返回官方合成值', async () => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/wetoken/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'a 4k cat',
+                size: '3840x2160',
+                quality: 'high',
+            }),
+            'generations',
+            'wetoken',
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.usage.output_tokens).toBe(13342); // 官方公式,不是上游面积 19755
+        const [url] = fetchMock.mock.calls[0];
+        expect(url).toBe('https://us-la.we-token.cc/v1/images/generations');
+    });
+
+    it('openAllTiers:1024 low(方图)也放行打上游、合成官方 196(全量官方账单)', async () => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/wetoken/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '1024x1024',
+                quality: 'low',
+            }),
+            'generations',
+            'wetoken',
+        );
+        expect(res.status).toBe(200);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        const body = await res.json();
+        expect(body.usage.output_tokens).toBe(196); // 官方 low 196(不是上游面积)
+    });
+
+    it('openAllTiers:4:3(1344x1008 low,客户对账重灾区)也放行、合成官方 162', async () => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/wetoken/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '1344x1008',
+                quality: 'low',
+            }),
+            'generations',
+            'wetoken',
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.usage.output_tokens).toBe(162); // 官方 162(azure 直连是 223)
+    });
+
+    it('openAllTiers:size=auto → 透传上游、按返回图实际尺寸(1344x1008)合成官方 162', async () => {
+        // 上游把 auto 解析成 1344x1008 并返回该尺寸的 PNG;适配器解码 IHDR 得实际尺寸再计费
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(1344, 1008) }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+        const res = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/wetoken/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: 'auto',
+                quality: 'low',
+            }),
+            'generations',
+            'wetoken',
+        );
+        expect(res.status).toBe(200);
+        expect(fetchMock).toHaveBeenCalledTimes(1); // 不再守门拒,打了上游
+        const body = await res.json();
+        expect(body.usage.output_tokens).toBe(162); // = officialOutputTokens(1344,1008,low)
+    });
+
+    it('openAllTiers:size=auto 但上游返回图无法解码尺寸 → failover(不瞎计费)', async () => {
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: 'bm90LXBuZw==' }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+        const res = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/wetoken/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: 'auto',
+                quality: 'low',
+            }),
+            'generations',
+            'wetoken',
+        );
+        expect(res.status).toBe(503);
+    });
+
+    it('非 openAllTiers(ominiapi):size=auto 仍守门拒(auto 只走 openAllTiers 上游)', async () => {
+        const res = await handleAdapterImage(
+            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: 'auto', quality: 'high' }),
+            'generations',
+            'ominiapi',
+        );
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('wetokenasia(asian-acc)路由 + openAllTiers 放行方图 low', async () => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/wetokenasia/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '1024x1024',
+                quality: 'low',
+            }),
+            'generations',
+            'wetokenasia',
+        );
+        expect(res.status).toBe(200);
+        const [url] = fetchMock.mock.calls[0];
+        expect(url).toBe('https://asian-acc.we-token.cc/v1/images/generations');
+    });
+
+    it('brand 正则抹掉 we-token / adobe / firefly 身份串', () => {
+        const out = sanitizeAdapterError(
+            'we-token.cc upstream error; adobe firefly content unsafe',
+            /\bwe-?token\b|\badobe\b|\bfirefly\b/gi,
+        );
+        const lc = out.toLowerCase();
+        expect(lc).not.toContain('we-token');
+        expect(lc).not.toContain('adobe');
+        expect(lc).not.toContain('firefly');
     });
 });

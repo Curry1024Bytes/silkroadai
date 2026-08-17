@@ -51,6 +51,9 @@ const REQUIRES_GUARD = [
     'import-catalog.ts',
     // 日志导出:pg 直连 new-api 日志库(NEWAPI_LOGS_DATABASE_URL)。
     'logs-db.ts',
+    // dashboard 明细日志的 30s 进程内缓存:包着 server-only 的 client.queryLogs,
+    // 且缓存必须只活在服务端进程里(客户端各开一份既无意义又漏别人数据)。
+    'logs-cache.ts',
 ];
 
 /**

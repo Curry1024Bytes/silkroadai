@@ -57,6 +57,21 @@ import 'server-only';
 
 const NEWAPI_BASE_URL = process.env.NEWAPI_BASE_URL || 'http://localhost:3000';
 
+/** 管理面 `call()` 的单次请求超时(env `NEWAPI_CALL_TIMEOUT_MS` 可调)。
+ *  30s 远高于正常值(实测 /api/user 4ms、/api/token 8ms、最慢的 /api/log/
+ *  在 3600 万行 logs 表上约 2s),只用来兜住上游卡死,不误杀慢查询。
+ *  ⚠️ 只作用于这个管理面 helper;客户 /v1 代理走 route.ts 自己的 fetch,
+ *  有独立的 600s 超时(instrumentation.ts 的 undici Agent),不受影响。 */
+const DEFAULT_CALL_TIMEOUT_MS = 30_000;
+
+function callTimeoutMs(): number {
+    const raw = process.env.NEWAPI_CALL_TIMEOUT_MS;
+    if (raw == null || raw === '') return DEFAULT_CALL_TIMEOUT_MS;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 1) return DEFAULT_CALL_TIMEOUT_MS;
+    return Math.floor(n);
+}
+
 // new-api 默认 1 USD = 500,000 quota — 这两个常量从 quota-units 重新导出,
 // 保留所有现有 import 路径(`from '@/lib/newapi/client'`)继续工作。
 export {
@@ -160,10 +175,22 @@ async function call<T>(
         headers['New-Api-User'] = String(auth.userId); // required by all endpoints
     }
 
-    const init: RequestInit = { method, headers };
+    const init: RequestInit = { method, headers, signal: AbortSignal.timeout(callTimeoutMs()) };
     if (body !== undefined) init.body = JSON.stringify(body);
 
-    const res = await fetch(url, init);
+    let res: Response;
+    try {
+        res = await fetch(url, init);
+    } catch (e) {
+        // 超时在这里现形。此前 call() 无 timeout —— new-api 一慢,SSR 的
+        // server component 就无限期挂住(Promise.allSettled 也等不出结果,
+        // 它只等 settle 不设 deadline),客户看到的是页面一直转圈。
+        // 归一成 NewApiError 504,让既有的 try/catch + 降级分支能接住。
+        if (e instanceof Error && (e.name === 'TimeoutError' || e.name === 'AbortError')) {
+            throw new NewApiError(504, `${method} ${path}`, null, `new-api timeout after ${callTimeoutMs()}ms`);
+        }
+        throw e;
+    }
     const text = await res.text();
     let data: NewApiEnvelope<T> | null = null;
     try {

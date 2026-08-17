@@ -50,6 +50,9 @@ x-portal-api-common: &portal-api-common
         # 调度器只在主站 portal 单实例跑(instrumentation.ts 的门),
         # 副本双跑会 meter 游标竞态 / 余额提醒双发。
         PORTAL_SCHEDULERS: 'off'
+        # 2026-08-15: Node 默认堆上限 ~4.1GB。reqlog 背压队列(100 个在途)每个
+        # 攥着完整请求+响应体,大 body 并发时容易打满 → OOM。3 副本共担 /v1,各 6GB。
+        NODE_OPTIONS: '--max-old-space-size=6144'
     extra_hosts:
         - 'host.docker.internal:host-gateway'
     depends_on:
@@ -74,8 +77,14 @@ x-seedance-portal-common: &seedance-portal-common
         PORTAL_SCHEDULERS: 'off'
         # 裸 IP 入口的 cookie 修正:Domain=.silkroadai.io 对 IP host 无效(浏览器拒收)
         # → 置空回 host-scoped;HTTP 下 Secure cookie 被丢弃 → 显式关。
+        # cookie Secure 现按 X-Forwarded-Proto 决定(域名 HTTPS → true;裸 IP-HTTP → 本 env=false),
+        # 见 src/lib/auth/session.ts cookieSecureForRequest。
         BRAND_COOKIE_DOMAIN: ''
         SESSION_COOKIE_SECURE: 'false'
+        # 企业门户对客展示的 API base URL(docs/概览页的示例 endpoint)。服务端运行时读取
+        # (非 NEXT_PUBLIC → 不在 build 期烘焙,改 .env 后重启即可)。启用此可选 profile
+        # 前必须配置本项目实际对客域名;未配时沿用应用既有的裸 IP 兼容回退。
+        ENTERPRISE_BASE_URL: '${ENTERPRISE_BASE_URL:-http://128.241.232.23}'
     extra_hosts:
         - 'host.docker.internal:host-gateway'
     depends_on:
@@ -95,6 +104,12 @@ services:
             # Caddy/nginx reverse proxy, never hit the container port directly.
             - '127.0.0.1:3002:3002'
         env_file: .env
+        environment:
+            # 2026-08-15: 本实例曾因 apex /v1 流量未分流(Caddy 已加 @portalv1 →
+            # 3011-3013)每 ~10 分钟 OOM 一次。单实例 + 跑全部调度器,不可替代 →
+            # 堆上限抬到 8GB 兜底。⚠️ Caddy 那半边改动【不在本仓库】,见
+            # /etc/caddy/Caddyfile.bak-apex-v1-split-*。
+            NODE_OPTIONS: '--max-old-space-size=8192'
         extra_hosts:
             # Linux Docker doesn't auto-add host.docker.internal; this maps it to
             # the gateway so portal can reach new-api on the VPS host port 3000.

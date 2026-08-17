@@ -111,6 +111,6 @@ async function handleLogin(req: NextRequest) {
         },
         apiKey,
     });
-    setSessionCookie(res, sessionToken);
+    setSessionCookie(res, sessionToken, req);
     return res;
 }

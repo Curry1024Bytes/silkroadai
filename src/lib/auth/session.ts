@@ -119,12 +119,26 @@ function cookieSecure(): boolean {
     return process.env.NODE_ENV === 'production';
 }
 
-export function setSessionCookie(res: NextResponse, token: string): void {
+/**
+ * 本请求是否应发 Secure cookie。真实 HTTPS 入口(`X-Forwarded-Proto: https`,由 Caddy 注入)
+ * → **强制 true**,不受 `SESSION_COOKIE_SECURE=false` env 影响;否则回落 env 判定。
+ *
+ * 目的:同一批企业实例同时服务【裸 IP-HTTP 入口】(env 设 false 才能登录)和【域名-HTTPS 入口】
+ * (独立 HTTPS 域名,应发 Secure cookie)。按请求协议决定 → 域名客户拿到 Secure cookie(安全到位)、
+ * 裸 IP 客户照常登录。实例只绑 127.0.0.1、Caddy 为唯一入口 → 该头可信,客户端无法伪造。
+ * 主站恒 HTTPS(xfp=https)→ 恒 true,行为与改动前一致。
+ */
+export function cookieSecureForRequest(req: NextRequest): boolean {
+    const xfp = req.headers.get('x-forwarded-proto')?.split(',')[0]?.trim().toLowerCase();
+    return xfp === 'https' ? true : cookieSecure();
+}
+
+export function setSessionCookie(res: NextResponse, token: string, req?: NextRequest): void {
     res.cookies.set({
         name: SESSION_COOKIE_NAME,
         value: token,
         httpOnly: true,
-        secure: cookieSecure(),
+        secure: req ? cookieSecureForRequest(req) : cookieSecure(),
         sameSite: 'lax',
         path: '/',
         maxAge: SESSION_MAX_AGE_SECONDS,

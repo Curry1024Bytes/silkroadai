@@ -15,7 +15,9 @@ export const dynamic = 'force-dynamic';
 
 export const metadata = { title: 'Seedance 企业端口 · 概览' };
 
-const ENTRY_BASE = process.env.NEXT_PUBLIC_ENTERPRISE_BASE_URL || 'http://128.241.232.23';
+const ENTRY_BASE = process.env.ENTERPRISE_BASE_URL || 'http://128.241.232.23';
+// 兼容入口:上域名前的裸 IP,现有客户继续可用(保留,不强制迁移)。
+const LEGACY_BASE = 'http://128.241.232.23';
 const CHART_DAYS = 30;
 const TOP_MODELS = 5;
 
@@ -201,6 +203,7 @@ export default async function EnterpriseOverviewPage() {
                     <div>
                         <dt className="inline font-medium text-gray-800">Base URL:</dt>{' '}
                         <dd className="inline font-mono">{ENTRY_BASE}/v1</dd>
+                        <span className="ml-1 text-xs text-gray-400">(兼容裸 IP {LEGACY_BASE}/v1,旧客户保留)</span>
                     </div>
                     <div>
                         <dt className="inline font-medium text-gray-800">提交:</dt>{' '}

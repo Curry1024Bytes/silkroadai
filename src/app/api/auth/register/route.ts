@@ -363,6 +363,6 @@ export async function POST(req: NextRequest) {
             created_at: user.created_at,
         },
     });
-    setSessionCookie(res, token);
+    setSessionCookie(res, token, req);
     return res;
 }

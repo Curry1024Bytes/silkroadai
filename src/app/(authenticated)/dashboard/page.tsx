@@ -41,7 +41,8 @@ import { getCurrentUser } from '@/lib/auth/session';
 import { prisma } from '@/lib/db';
 import { getCustomerBalance, type CustomerBalance } from '@/lib/billing/customer-balance';
 import { getUsageAggregate, unionSeedanceUsage, type UsageAggregateSnapshot } from '@/lib/newapi/usage-aggregate';
-import { queryLogs, quotaToCny, type NewApiUsageLog } from '@/lib/newapi/client';
+import { quotaToCny, type NewApiUsageLog } from '@/lib/newapi/client';
+import { queryLogsCached } from '@/lib/newapi/logs-cache';
 import { Button } from '@/components/ui/Button';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { FormError } from '@/components/ui/FormError';
@@ -187,7 +188,7 @@ export default async function DashboardPage({
         // fetched separately, then merged + sorted desc for the detail table.
         const [aggSettled, consumeSettled, errorSettled, taskFailSettled] = await Promise.allSettled([
             getUsageAggregate({ portalUserId: user.id, newapiUserId, newapiUsername, period }),
-            queryLogs({
+            queryLogsCached({
                 username: newapiUsername,
                 type: 2,
                 start_timestamp: range.start || undefined,
@@ -195,7 +196,7 @@ export default async function DashboardPage({
                 page: 1,
                 page_size: CONSUME_FETCH_SIZE,
             }),
-            queryLogs({
+            queryLogsCached({
                 username: newapiUsername,
                 type: 5,
                 start_timestamp: range.start || undefined,
@@ -203,7 +204,7 @@ export default async function DashboardPage({
                 page: 1,
                 page_size: ERROR_FETCH_SIZE,
             }),
-            queryLogs({
+            queryLogsCached({
                 username: newapiUsername,
                 type: 6, // 视频异步任务失败 → 退还预扣 quota;用来把对应 type=2 消费标成失败·已退款
                 start_timestamp: range.start || undefined,

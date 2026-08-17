@@ -72,6 +72,17 @@ export function isProfitable(perImageCt: number): boolean {
     return perImageCt >= MIN_SYNTH_CT;
 }
 
+/** 长图阈值:长/短边比 > 1.5 视为"狭长"(16:9=1.778 命中;3:2=1.5 及方图不命中)。
+ *  依据:azure 按面积计费、官方按 patch 网格(长边罚 patch),两者在方图/3:2 逐点吻合,
+ *  从比 3:2 更狭长起 azure 明显偏高(16:9 高 48~86%)。狭长图恰是"客户对不上官方账单"的重灾区。 */
+const ELONGATED_RATIO = 1.5;
+
+/** 狭长形(长/短 > 1.5)→ 该走适配器拿【官方合成账单】,不论盈利档。
+ *  方图/3:2 与 azure 本就吻合,无账单收益 → 仍按盈利档守门(isProfitable)。 */
+export function isElongated(w: number, h: number): boolean {
+    return Math.max(w, h) / Math.min(w, h) > ELONGATED_RATIO;
+}
+
 // ============ usage 合成 ============
 
 /** prompt 文本 token 粗估(CJK ~1.5 tok/字,其余 ~1 tok/4 字符;同 /v1 route 口径)。 */
@@ -202,6 +213,59 @@ export function sanitizeAdapterError(text: string, brand: RegExp): string {
     return text.replace(brand, 'the provider').replace(/\badobe\b/gi, 'the provider');
 }
 
+// ── 上游 4xx 分类:终态 vs failover ──
+// 之前把上游一切 4xx/5xx 都 failover(当"网关错不终态化"),但【内容安全 / 请求本身的问题】换任何
+// 渠道都会被同样拒 → 白重试全部渠道 + 客户最终拿到中性 503(而非明确原因)。改为:
+//  - 内容安全(image_unsafe / content rejected)→ 终态 content_policy_violation(代理 IMAGE_SAFETY_RE
+//    命中会进一步改写成统一友好文案);
+//  - 请求本身错(prompt 缺失 / 输入图坏 / 参数非法)→ 终态 invalid_request(身份中性,不透上游原文);
+//  - 渠道特定(无可用渠道 / model_not_found)+ 5xx / 连接失败 → 仍 failover 换渠道。
+const UPSTREAM_SAFETY_RE = /image_unsafe|content rejected|appear to be unsafe/i;
+const UPSTREAM_BADREQ_RE = /prompt is required|invalid image|bad_request|validation_error|undefined mention/i;
+const UPSTREAM_CHANNEL_RE = /no available channel|model_not_found/i;
+
+type TerminalReject = { terminal: 'safety' | 'bad_request' };
+function isTerminalReject(x: string[] | TerminalReject | null): x is TerminalReject {
+    return x !== null && !Array.isArray(x);
+}
+
+/** 上游 4xx → 是否终态化(不 failover)+ 归类。5xx / 渠道特定 → null(failover)。 */
+function classifyUpstreamError(status: number, text: string): TerminalReject | null {
+    if (status >= 500) return null; // 5xx → failover
+    if (UPSTREAM_CHANNEL_RE.test(text)) return null; // 渠道特定(换渠道有意义)→ failover
+    if (UPSTREAM_SAFETY_RE.test(text)) return { terminal: 'safety' };
+    if (UPSTREAM_BADREQ_RE.test(text)) return { terminal: 'bad_request' };
+    return null; // 其余 4xx 保守 failover(不确定是否终态)
+}
+
+/** 终态错误响应(4xx,new-api 不 failover):内容安全 / 请求本身错。body 身份中性。 */
+function terminalReject(kind: 'safety' | 'bad_request'): NextResponse {
+    console.warn('[image-adapter] terminal reject (no failover)', { kind });
+    if (kind === 'safety') {
+        // 含 'content rejected' 标记 → 代理层 IMAGE_SAFETY_RE 命中 → 改写成统一 content_policy_violation
+        return NextResponse.json(
+            {
+                error: {
+                    message: 'content rejected: the image was flagged as unsafe by the content safety system',
+                    type: 'invalid_request_error',
+                    code: 'content_policy_violation',
+                },
+            },
+            { status: 400 },
+        );
+    }
+    return NextResponse.json(
+        {
+            error: {
+                message: 'invalid request: the prompt, image, or parameters were rejected — please check your request',
+                type: 'invalid_request_error',
+                code: 'invalid_request',
+            },
+        },
+        { status: 400 },
+    );
+}
+
 // ============ 入参解析 ============
 
 interface ParsedRequest {
@@ -216,6 +280,9 @@ interface ParsedRequest {
 }
 
 const FORWARD_EXTRAS = new Set(['output_format', 'output_compression', 'background', 'user']);
+/** 透传给 JSON body 时必须是【整数】的字段(客户常传数字,extras 存成字符串,JSON 路径要转回 number;
+ *  否则上游报 "invalid output_compression field type",纯字符串会被拒)。multipart 无类型不受影响。 */
+const INT_EXTRAS = new Set(['output_compression']);
 
 async function parseIncoming(req: NextRequest, mode: ImageMode): Promise<ParsedRequest | null> {
     const ct = (req.headers.get('content-type') || '').toLowerCase();
@@ -299,7 +366,7 @@ async function callUpstreamOnce(
     mode: ImageMode,
     parsed: ParsedRequest,
     auth: string,
-): Promise<string[] | null> {
+): Promise<string[] | TerminalReject | null> {
     const url = `${provider.baseUrl}/v1/images/${mode}`;
     // body 每次重建(FormData 一次性语义),且【不传 n】—— 每次调用只取 1 张
     let upstreamBody: BodyInit;
@@ -323,7 +390,10 @@ async function callUpstreamOnce(
             response_format: 'b64_json', // 同上:2026-08-04 smoke 实测缺省返 url
         };
         if (parsed.quality) j.quality = normQuality(parsed.quality);
-        Object.assign(j, parsed.extras);
+        // extras 存成字符串;JSON body 里整型字段(output_compression)要转回 number,否则上游拒
+        for (const [k, v] of Object.entries(parsed.extras)) {
+            j[k] = INT_EXTRAS.has(k) && /^\d+$/.test(v) ? Number(v) : v;
+        }
         upstreamBody = JSON.stringify(j);
         headers['content-type'] = 'application/json';
     }
@@ -347,7 +417,6 @@ async function callUpstreamOnce(
     }
 
     if (!upstream.ok) {
-        // 上游是网关:它的 4xx/5xx 不终态化,交由调用方 503 让 new-api 切别的渠道兜底。
         const errText = await upstream.text().catch(() => '');
         console.warn('[image-adapter] upstream error', {
             provider: providerName,
@@ -356,7 +425,8 @@ async function callUpstreamOnce(
             ms: Date.now() - started,
             body: sanitizeAdapterError(errText.slice(0, 500), provider.brand),
         });
-        return null;
+        // 内容安全 / 请求本身错 → 终态化(换渠道也拒);渠道特定 / 5xx → null 让调用方 failover。
+        return classifyUpstreamError(upstream.status, errText);
     }
 
     const data = (await upstream.json().catch(() => null)) as {
@@ -410,10 +480,15 @@ export async function handleAdapterImage(
     if (!parsed) return failover('bad_request_body', 'unparseable request body');
 
     // ---- 守门(调上游之前,不花钱)----
+    // 放行规则:
+    //  - provider.openAllTiers(we-token 官方账单上游)→ 放行所有请求,含 size=auto/不可解析
+    //    (OpenAI 默认 size 就是 auto;这类无法预先算 token,透传上游后按【返回图实际尺寸】合成官方账单);
+    //  - 否则要求 size 可解析,且:狭长形(长/短 > 1.5)不论盈利档放行,其余走盈利档守门。
     const dims = parseSize(parsed.size);
     const quality = normQuality(parsed.quality);
     const perImageCt = dims ? officialOutputTokens(dims.w, dims.h, quality) : 0;
-    if (!dims || !isProfitable(perImageCt)) {
+    const elongated = dims ? isElongated(dims.w, dims.h) : false;
+    if (!provider.openAllTiers && (!dims || (!elongated && !isProfitable(perImageCt)))) {
         console.log('[image-adapter] gate reject', {
             provider: providerName,
             mode,
@@ -436,7 +511,10 @@ export async function handleAdapterImage(
     const results = await Promise.all(
         Array.from({ length: fanout }, () => callUpstreamOnce(provider, providerName, mode, parsed, auth)),
     );
-    const items = results.flatMap((b64s) => (b64s ?? []).map((b64_json) => ({ b64_json })));
+    // 任一扇出返回【终态】(内容安全 / 请求本身错)→ 立即终态化,不 failover(换渠道也拒,别浪费重试位)。
+    const terminal = results.find(isTerminalReject);
+    if (terminal) return terminalReject(terminal.terminal);
+    const items = results.flatMap((r) => (Array.isArray(r) ? r : []).map((b64_json) => ({ b64_json })));
     if (items.length === 0) {
         // 全军覆没才 failover(部分成功 → 返回拿到的那几张,按张计费)
         return failover('upstream_error', `all ${fanout} upstream call(s) failed`);
@@ -450,11 +528,22 @@ export async function handleAdapterImage(
         });
     }
 
-    // ---- 合成 usage(丢弃上游假 token)----
+    // ---- 计费尺寸:size 可解析用请求值;auto/不可解析(仅 openAllTiers 会走到)→ 解码返回图实际尺寸 ----
+    let billW = dims?.w ?? 0;
+    let billH = dims?.h ?? 0;
+    if (!dims) {
+        const out0 = items[0]?.b64_json;
+        const d0 = out0 ? imageDimensions(Buffer.from(out0, 'base64')) : null;
+        if (!d0) return failover('unbillable_auto', 'auto size but output image dimensions unreadable');
+        billW = d0.w;
+        billH = d0.h;
+    }
+
+    // ---- 合成 usage(丢弃上游假 token,按官方公式)----
     const usage = synthUsage({
         mode,
-        w: dims.w,
-        h: dims.h,
+        w: billW,
+        h: billH,
         quality,
         prompt: parsed.prompt,
         inputImageDims: parsed.images.map((img) => imageDimensions(img.buf)),
@@ -463,7 +552,7 @@ export async function handleAdapterImage(
     console.log('[image-adapter] ok', {
         provider: providerName,
         mode,
-        size: parsed.size,
+        size: dims ? parsed.size : `auto→${billW}x${billH}`,
         quality,
         nRequested: parsed.n,
         images: items.length,

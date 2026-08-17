@@ -12,16 +12,30 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 let logStoreConfigured = true;
 // 背压测试要挂起 put:impl 可替换,默认立即 resolve
 let putImpl: () => Promise<void> = async () => {};
+// 大体上限测试要断言"输入那次 put 根本没发生" → 记下每次 put 的 key
+const putKeys: string[] = [];
 vi.mock('@/lib/r2/log-store', () => ({
     isLogStoreConfigured: () => logStoreConfigured,
-    putLogObject: () => putImpl(),
+    putLogObject: (key: string) => {
+        putKeys.push(key);
+        return putImpl();
+    },
     reqlogInputKey: (id: string) => `reqlog/in/${id}`,
     reqlogOutputKey: (id: string) => `reqlog/out/${id}`,
 }));
 
 // finalizeCapture 懒加载的两个模块(背压测试驱动真 finalize,不能触真 prisma)
+// create 的入参留档,供大体上限用例断言落库的元数据。
+const prismaCreates: Array<Record<string, unknown>> = [];
 vi.mock('@/lib/db', () => ({
-    prisma: { requestLog: { create: async () => ({}) } },
+    prisma: {
+        requestLog: {
+            create: async (args: { data: Record<string, unknown> }) => {
+                prismaCreates.push(args.data);
+                return {};
+            },
+        },
+    },
 }));
 vi.mock('@/lib/reqlog/identity', () => ({
     resolveLogIdentity: async () => ({
@@ -39,6 +53,7 @@ import {
     parseModelAndStream,
     beginCapture,
     captureJsonResponse,
+    recordRequestBody,
     __flushReqlogForTest,
     __resetReqlogBackpressureForTest,
 } from '@/lib/reqlog/capture';
@@ -219,5 +234,84 @@ describe('backpressure (REQUEST_LOGGING_MAX_PENDING)', () => {
         }
         for (let i = 0; i < 10; i++) expect(beginCapture(makeReq(), '/messages')).toBeNull();
         expect(vi.mocked(console.warn).mock.calls.filter((c) => String(c[0]).includes('backlog full'))).toHaveLength(1);
+    });
+});
+
+describe('large request body cap (REQUEST_LOGGING_MAX_INPUT_BYTES)', () => {
+    const makeReq = () =>
+        new NextRequest('https://ai.silkroadai.io/v1/messages', {
+            method: 'POST',
+            headers: { authorization: 'Bearer sk-TESTKEY' },
+        });
+    const newCap = () => {
+        const cap = beginCapture(makeReq(), '/messages');
+        expect(cap).not.toBeNull();
+        return cap!;
+    };
+
+    beforeEach(() => {
+        process.env.REQUEST_LOGGING = 'on';
+        putKeys.length = 0;
+        prismaCreates.length = 0;
+    });
+    afterEach(() => {
+        delete process.env.REQUEST_LOGGING_MAX_INPUT_BYTES;
+    });
+
+    it('keeps the body when under the limit', () => {
+        process.env.REQUEST_LOGGING_MAX_INPUT_BYTES = '100';
+        const cap = newCap();
+        recordRequestBody(cap, '{"model":"claude-opus-4-8"}', 'claude-opus-4-8', false);
+        expect(cap.requestBody).toBe('{"model":"claude-opus-4-8"}');
+        expect(cap.inputBytes).toBe(27);
+        expect(cap.errorParts).toEqual([]);
+    });
+
+    it('drops the body over the limit but keeps true byte count + model + stream flag', () => {
+        process.env.REQUEST_LOGGING_MAX_INPUT_BYTES = '10';
+        const cap = newCap();
+        recordRequestBody(cap, 'x'.repeat(5000), 'claude-opus-4-8', true);
+        expect(cap.requestBody).toBeNull(); // 不攥住大字符串 = 背压队列内存有上界
+        expect(cap.inputBytes).toBe(5000); // 元数据仍是真实字节数
+        expect(cap.model).toBe('claude-opus-4-8');
+        expect(cap.streamedRequested).toBe(true);
+        expect(cap.errorParts).toEqual(['in-too-large:5000>10']);
+    });
+
+    it('multi-byte chars count as bytes, not chars (limit is a memory bound)', () => {
+        process.env.REQUEST_LOGGING_MAX_INPUT_BYTES = '10';
+        const cap = newCap();
+        recordRequestBody(cap, '中'.repeat(5), null, false); // 5 字 = 15 字节 > 10
+        expect(cap.inputBytes).toBe(15);
+        expect(cap.requestBody).toBeNull();
+    });
+
+    it('garbage / unset limit falls back to the 2MB default', () => {
+        process.env.REQUEST_LOGGING_MAX_INPUT_BYTES = 'abc';
+        const under = newCap();
+        recordRequestBody(under, 'x'.repeat(1024 * 1024), null, false); // 1MB < 2MB
+        expect(under.requestBody).not.toBeNull();
+
+        delete process.env.REQUEST_LOGGING_MAX_INPUT_BYTES;
+        const over = newCap();
+        recordRequestBody(over, 'x'.repeat(3 * 1024 * 1024), null, false); // 3MB > 2MB
+        expect(over.requestBody).toBeNull();
+    });
+
+    it('oversized body → no input R2 put, row still written with input_bytes + error mark', async () => {
+        process.env.REQUEST_LOGGING_MAX_INPUT_BYTES = '10';
+        const cap = newCap();
+        recordRequestBody(cap, 'x'.repeat(5000), 'claude-opus-4-8', false);
+        captureJsonResponse(cap, 200, { ok: true });
+        await __flushReqlogForTest();
+
+        expect(putKeys.filter((k) => k.startsWith('reqlog/in/'))).toHaveLength(0); // 输入没上传
+        expect(putKeys.filter((k) => k.startsWith('reqlog/out/'))).toHaveLength(1); // 输出照常
+        expect(prismaCreates).toHaveLength(1);
+        const row = prismaCreates[0];
+        expect(row.input_r2_key).toBeNull();
+        expect(row.input_bytes).toBe(5000);
+        expect(row.model).toBe('claude-opus-4-8');
+        expect(String(row.error)).toContain('in-too-large');
     });
 });
