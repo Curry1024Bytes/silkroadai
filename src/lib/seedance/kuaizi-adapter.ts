@@ -27,7 +27,8 @@
  */
 import 'server-only';
 import { NextResponse } from 'next/server';
-import { friendlyUpstreamError, type SeedanceVariant } from './cn-adapter';
+import { type SeedanceVariant } from './cn-adapter';
+import { classifyUpstreamError } from './upstream-error';
 
 const DEFAULT_BASE = 'https://aiopenapi.kuaizi.cn';
 const TASKS_PATH = '/ai-open-platform-api/api/v3/contents/generations/tasks';
@@ -172,17 +173,15 @@ export async function submitVolcVideo(body: Record<string, unknown>, opts: Kuaiz
     const taskId = j?.id;
     if (!upstream.ok || !taskId) {
         // 上游原始报错体(含 request_id / 上游域名)只落日志;对客给【分类后】文案(#271)。
+        const cls = classifyUpstreamError(text, upstream.status);
         console.warn('[kuaizi-adapter] submit failed', {
             model: opts.clientModel,
             upstream_model: spec.upstream,
             status: upstream.status,
+            category: cls.category,
             body: text.slice(0, 2000),
         });
-        return err(
-            upstream.status >= 400 ? upstream.status : 502,
-            'upstream_error',
-            friendlyUpstreamError(text, upstream.status),
-        );
+        return err(upstream.status >= 400 ? upstream.status : 502, 'upstream_error', cls.message);
     }
     const clientTaskId = disguiseTaskId(taskId);
     return NextResponse.json(
@@ -238,12 +237,14 @@ export async function pollVolcVideo(id: string): Promise<NextResponse> {
         j = null;
     }
     if (!upstream.ok || !j) {
-        console.warn('[kuaizi-adapter] poll failed', { id, status: upstream.status, body: text.slice(0, 2000) });
-        return err(
-            upstream.status >= 400 ? upstream.status : 502,
-            'upstream_error',
-            friendlyUpstreamError(text, upstream.status),
-        );
+        const cls = classifyUpstreamError(text, upstream.status);
+        console.warn('[kuaizi-adapter] poll failed', {
+            id,
+            status: upstream.status,
+            category: cls.category,
+            body: text.slice(0, 2000),
+        });
+        return err(upstream.status >= 400 ? upstream.status : 502, 'upstream_error', cls.message);
     }
     const status = mapStatus(j.status);
     const contentObj = (j.content ?? undefined) as
