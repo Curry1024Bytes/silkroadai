@@ -995,7 +995,7 @@ async function handleGptImageChat(
     } else if (item?.url) {
         content = `![image](${item.url})`;
     } else {
-        return imageError('upstream returned no image', 502, cap, { type: 'server_error' });
+        return imageError('upstream returned no image', 500, cap, { type: 'server_error' });
     }
 
     const usage = data?.usage ?? {};
@@ -1037,7 +1037,7 @@ async function handleGpt4oImageChat(
             body: JSON.stringify({ ...body, stream: false }), // 非流才能取出 url 转存
         });
     } catch (e) {
-        return imageError(`upstream request failed: ${e instanceof Error ? e.message : String(e)}`, 502, cap, {
+        return imageError(`upstream request failed: ${e instanceof Error ? e.message : String(e)}`, 500, cap, {
             type: 'server_error',
         });
     }
@@ -1455,7 +1455,7 @@ type ImageEchoFields = { quality: string; background: string; outputFormat: stri
 
 /** 非 Gemini 图片模型(gpt-image-2 等)透传 + 响应整形:
  *  - 上游报错(非 2xx)/ 非预期形态 → 透传 status+体(**绝不隐藏报错**,客户要求),
- *    仅两个例外:审核拒绝统一文案 + 恒 400;上游 200 包 error 体 → 502(见分支内注释)。
+ *    仅两个例外:审核拒绝统一文案 + 恒 400;上游 200 包 error 体 → 500(见分支内注释)。
  *  - 成功 → 补 OpenAI gpt-image 形的顶层 `size` + 估算 `usage` + 回显 `quality` /
  *    `background` / `output_format`(上游已带则保留不覆盖)。data[].b64_json 等字段原样保留。 */
 async function reshapeOpenAiImageResponse(
@@ -1489,7 +1489,7 @@ async function reshapeOpenAiImageResponse(
             // 上游 200 但体不是标准图片 JSON,三分:
             // - 含审核标记(号池个别成员把拒绝包在 HTTP 200 体里)→ 统一审核文案 + 400,
             //   绝不让「200 + 错误体」出门 —— 客户网关会按成功入账(2026-08-08 客户反馈实例);
-            // - 体带 error 字段(200 假成功,非审核类)→ 502,客户按失败重试;
+            // - 体带 error 字段(200 假成功,非审核类)→ 500 server_error,客户按失败重试;
             // - 其余(stream:true 的 SSE 成功体等)原样透传 200,连品牌替换都不做
             //   (\badobe\b 的 \b 会命中 b64 里 `/adobe+` 这类片段,替换会写坏图)。
             if (IMAGE_SAFETY_RE.test(text)) {
@@ -1497,10 +1497,10 @@ async function reshapeOpenAiImageResponse(
                 return new NextResponse(IMAGE_SAFETY_BODY, { status: 400, headers });
             }
             if (json && (json as { error?: unknown }).error) {
-                // 200 假成功(非审核类)→ 按临时错归一(status 502 让分类器走 server_error 桶)
+                // 200 假成功(非审核类)→ 按临时错归一(500 server_error 桶)
                 const fake = normalizeImageError(text, 502);
                 headers.set('content-type', 'application/json');
-                return new NextResponse(fake.body, { status: 502, headers });
+                return new NextResponse(fake.body, { status: fake.status, headers });
             }
             return new NextResponse(text, { status: 200, headers });
         }
@@ -1685,7 +1685,7 @@ async function handleImagesDalle(
                     // 连不上 new-api 等网络异常:透出真实原因(不被外层 catch 兜底成笼统 400)
                     return imageError(
                         `upstream request failed: ${e instanceof Error ? e.message : String(e)}`,
-                        502,
+                        500,
                         cap,
                         { type: 'server_error' },
                     );
@@ -1776,7 +1776,7 @@ async function handleImagesDalle(
                         return imageError(e.message, 400, cap, { code: 'invalid_image', param: 'image' });
                     return imageError(
                         `upstream request failed: ${e instanceof Error ? e.message : String(e)}`,
-                        502,
+                        500,
                         cap,
                         { type: 'server_error' },
                     );
@@ -1879,7 +1879,7 @@ async function handleImagesDalle(
         if (firstErrorResponse) {
             return cap ? captureResponse(cap, firstErrorResponse) : passthroughResponse(firstErrorResponse);
         }
-        return imageError('no image generated', 502, cap, { type: 'server_error' });
+        return imageError('no image generated', 500, cap, { type: 'server_error' });
     }
 
     // ---- 包成 DALL·E 响应(部分失败 → 返成功子集 200 + 头标失败数)----

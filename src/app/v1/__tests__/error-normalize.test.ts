@@ -1,5 +1,5 @@
 /**
- * image2 错误统一分类器(第 1 步:只统一错误体,status 保持现状)。
+ * image2 错误统一分类器(第 2 步终态:错误体 + 状态码全对齐官方)。
  * fixture 全部取自 2026-08-11 ~ 08-17 生产日志真实文案(见 image2-error-code-unification-brief.md)。
  */
 import { describe, it, expect } from 'vitest';
@@ -33,13 +33,13 @@ describe('normalizeImageError — 内容审核(恒 400 统一体)', () => {
         ['Your request was rejected by the safety system. If you believe this is an error, contact us', 500],
         ['Your request was rejected as a result of our safety system.', 400],
     ];
-    it.each(cases)('%s → 400 content_policy_violation', (text, status) => {
+    it.each(cases)('%s → 400 moderation_blocked', (text, status) => {
         const r = normalizeImageError(text, status);
         expect(r.status).toBe(400);
         expect(r.body).toBe(IMAGE_SAFETY_BODY);
         const e = parse(r.body);
-        expect(e.code).toBe('content_policy_violation');
-        expect(e.type).toBe('invalid_request_error');
+        expect(e.code).toBe('moderation_blocked');
+        expect(e.type).toBe('user_error');
         expectNoLeak(r.body);
     });
 
@@ -49,15 +49,15 @@ describe('normalizeImageError — 内容审核(恒 400 统一体)', () => {
 });
 
 describe('normalizeImageError — 余额/鉴权', () => {
-    it('quota is not enough → insufficient_quota(status 保持 403)', () => {
+    it('quota is not enough → 429 insufficient_quota(官方计费语义,new-api 原生 403)', () => {
         const r = normalizeImageError('quota is not enough', 403);
-        expect(r.status).toBe(403);
+        expect(r.status).toBe(429);
         const e = parse(r.body);
         expect(e.code).toBe('insufficient_quota');
         expect(e.type).toBe('insufficient_quota');
     });
 
-    it.each([['Invalid token (request id: X)'], ['无效的令牌']])('%s → invalid_api_key(status 保持 401)', (text) => {
+    it.each([['Invalid token (request id: X)'], ['无效的令牌']])('%s → 401 invalid_api_key', (text) => {
         const r = normalizeImageError(text, 401);
         expect(r.status).toBe(401);
         const e = parse(r.body);
@@ -67,9 +67,9 @@ describe('normalizeImageError — 余额/鉴权', () => {
 });
 
 describe('normalizeImageError — 限流(rate_limit_exceeded + Retry-After)', () => {
-    it('we-token throttled retry-after=3s → 提取退避秒数,status 暂保持 408', () => {
+    it('we-token throttled retry-after=3s → 429 + 提取退避秒数(此前对客 408)', () => {
         const r = normalizeImageError('adobe throttled: status 429 retry-after=3s envoy=true', 408);
-        expect(r.status).toBe(408);
+        expect(r.status).toBe(429);
         expect(r.retryAfter).toBe(3);
         const e = parse(r.body);
         expect(e.code).toBe('rate_limit_exceeded');
@@ -87,9 +87,9 @@ describe('normalizeImageError — 限流(rate_limit_exceeded + Retry-After)', ()
         ['Image generation concurrency limit exceeded, please retry later', 429],
         ['Your requests to gpt-image-2 for gpt-image-2 in westus3 have exceeded rate limit.', 429],
     ];
-    it.each(plain)('%s → rate_limit_exceeded,缺省退避 30', (text, status) => {
+    it.each(plain)('%s → 429 rate_limit_exceeded,缺省退避 30', (text, status) => {
         const r = normalizeImageError(text, status);
-        expect(r.status).toBe(status);
+        expect(r.status).toBe(429);
         expect(r.retryAfter).toBe(30);
         expect(parse(r.body).code).toBe('rate_limit_exceeded');
         expectNoLeak(r.body);
@@ -133,9 +133,9 @@ describe('normalizeImageError — 容量(overloaded)', () => {
         ['The server is temporarily unable to process this request, please retry later.', 503],
         ['Service temporarily unavailable', 503],
     ];
-    it.each(cases)('%s → server_error overloaded(status 保持)', (text, status) => {
+    it.each(cases)('%s → 503 server_error overloaded', (text, status) => {
         const r = normalizeImageError(text, status);
-        expect(r.status).toBe(status);
+        expect(r.status).toBe(503);
         const e = parse(r.body);
         expect(e.type).toBe('server_error');
         expect(e.code).toBeNull();
@@ -154,9 +154,9 @@ describe('normalizeImageError — 上游临时错(server_error,raw 原文不出�
         ['read tcp 10.0.0.1:35870->1.2.3.4:443: read: connection reset by peer', 500],
         ['some never-seen-before upstream failure', 502], // 未识别 5xx 也进 server_error 桶
     ];
-    it.each(cases)('%s → server_error(status 保持)', (text, status) => {
+    it.each(cases)('%s → 500 server_error', (text, status) => {
         const r = normalizeImageError(text, status);
-        expect(r.status).toBe(status);
+        expect(r.status).toBe(500);
         const e = parse(r.body);
         expect(e.type).toBe('server_error');
         expect(e.code).toBeNull();

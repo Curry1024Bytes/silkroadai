@@ -72,7 +72,7 @@ const AGENTS: AgentSection[] = [
     {
         id: 'errors',
         label: '常见错误码',
-        blurb: '401 / 403 insufficient_user_quota / 503 no available channel — body code 优先于 status。',
+        blurb: '通用错误码 + 图片 API 官方对齐契约(moderation_blocked / rate_limit_exceeded / Retry-After)。',
     },
     {
         id: 'api-endpoints',
@@ -710,6 +710,147 @@ console.log(resp.choices[0].message.content);`}
                             </tbody>
                         </table>
                     </div>
+
+                    {/* 图片 API 错误契约 — 2026-08-18 起对齐 OpenAI 官方(错误体 + 状态码统一,见 error-normalize.ts) */}
+                    <h3 className="m-0 mt-8 mb-2 text-base font-semibold text-navy">
+                        图片 API(gpt-image-2)错误码 · 对齐 OpenAI 官方(2026-08-18 起)
+                    </h3>
+                    <p className="m-0 mb-3 text-sm text-ink leading-relaxed">
+                        图片接口(
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            /v1/images/generations
+                        </code>
+                        {' / '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            /v1/images/edits
+                        </code>
+                        )的错误已统一为 OpenAI 官方契约:错误体恒为{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            {'{"error":{"message","type","param","code"}}'}
+                        </code>
+                        四字段形,程序请按 <strong className="text-navy">HTTP status + error.code</strong> 分支(message
+                        只用于人读,措辞可能调整)。官方 openai SDK 的异常分类(
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            RateLimitError
+                        </code>{' '}
+                        /{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            BadRequestError
+                        </code>{' '}
+                        等)开箱即用。<strong className="text-navy">所有报错请求一律不计费。</strong>
+                    </p>
+                    <div className="rounded-lg overflow-hidden border border-brand-border bg-surface">
+                        <table className="w-full border-collapse text-sm">
+                            <thead>
+                                <tr className="bg-paper-muted text-muted-ink">
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        HTTP
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        error.type / error.code
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        含义 / 处理
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-navy align-top">400</td>
+                                    <td className="px-4 py-3 font-mono text-navy align-top">
+                                        user_error / moderation_blocked
+                                    </td>
+                                    <td className="px-4 py-3 text-ink">
+                                        <strong className="text-navy">内容安全审核拒绝</strong>
+                                        (提示词或参考图触发安全策略)。原样重发无效,请改写提示词或更换素材。
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-navy align-top">400</td>
+                                    <td className="px-4 py-3 font-mono text-navy align-top">
+                                        invalid_request_error / invalid_image · invalid_value · invalid_request
+                                    </td>
+                                    <td className="px-4 py-3 text-ink">
+                                        请求本身的问题:参考图损坏或格式不支持(
+                                        <code className="font-mono text-xs">invalid_image</code>
+                                        ,多图时 message 会标注第几张)、尺寸/参数非法(
+                                        <code className="font-mono text-xs">invalid_value</code>,
+                                        <code className="font-mono text-xs">param</code> 指向出错字段)。修正请求后重发。
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-navy align-top">401</td>
+                                    <td className="px-4 py-3 font-mono text-navy align-top">
+                                        invalid_request_error / invalid_api_key
+                                    </td>
+                                    <td className="px-4 py-3 text-ink">
+                                        API key 无效或已禁用。到{' '}
+                                        <a href="/keys" className="text-navy font-medium hover:text-brand-accent">
+                                            /keys
+                                        </a>{' '}
+                                        重新复制完整 key。
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-navy align-top">429</td>
+                                    <td className="px-4 py-3 font-mono text-navy align-top">
+                                        insufficient_quota / insufficient_quota
+                                    </td>
+                                    <td className="px-4 py-3 text-ink">
+                                        账户余额不足。前往{' '}
+                                        <Link href="/pay" className="text-navy font-medium hover:text-brand-accent">
+                                            /pay
+                                        </Link>{' '}
+                                        充值后重试。
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-navy align-top">429</td>
+                                    <td className="px-4 py-3 font-mono text-navy align-top">
+                                        rate_limit_error / rate_limit_exceeded
+                                    </td>
+                                    <td className="px-4 py-3 text-ink">
+                                        限流/并发排队。按响应头{' '}
+                                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                                            Retry-After
+                                        </code>{' '}
+                                        的秒数退避后重发(密集立即重发会加剧排队)。
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-navy align-top">500</td>
+                                    <td className="px-4 py-3 font-mono text-navy align-top">server_error / —</td>
+                                    <td className="px-4 py-3 text-ink">
+                                        平台或上游临时错误(超时、网络抖动、空返回)。直接重试即可。
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-3 font-mono text-navy align-top">503</td>
+                                    <td className="px-4 py-3 font-mono text-navy align-top">server_error / —</td>
+                                    <td className="px-4 py-3 text-ink">线路繁忙(overloaded)。稍等 30 秒以上再重试。</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <p className="m-0 mt-3 mb-3 text-sm text-ink leading-relaxed">错误体示例(审核拒绝):</p>
+                    <CodeBlock language="json">
+                        {`{
+  "error": {
+    "message": "Your request was rejected as a result of our safety system. Your request may contain content that is not allowed by our safety system.",
+    "type": "user_error",
+    "param": null,
+    "code": "moderation_blocked"
+  }
+}`}
+                    </CodeBlock>
+                    <p className="m-0 mt-3 mb-3 text-sm text-ink leading-relaxed">
+                        <strong className="text-navy">2026-08-18 前接入的存量代码请注意</strong>
+                        :旧行为中限流曾以 408 返回、临时错误散落在 400/404/502/504、审核拒绝的 code 为{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            content_policy_violation
+                        </code>
+                        ,均已按上表统一;若你的代码曾按这些旧值分支,请对照迁移。
+                    </p>
 
                     {/* 流式(SSE)契约 — W10 #209/#210:keep-alive 注释 + 流中断错误帧 + finish_reason 标准集 */}
                     <h3 className="m-0 mt-8 mb-2 text-base font-semibold text-navy">
