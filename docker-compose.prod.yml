@@ -142,6 +142,28 @@ services:
         ports:
             - '127.0.0.1:3013:3002'
 
+    # 2026-08-16 扩容 3→6:全量图片流量走【适配器+代理双跳】,每张图两边都做 CPU 密集处理
+    # (大 b64 解码 / C2PA 剥离 / 多 MB 响应 JSON 解析)→ Node 单线程事件循环饱和(3 副本各 95-127% CPU)
+    # → 异步 fetch 完成被推迟到 100s+(直连仅 22s)→ 客户 5-16min 超时。宿主机 80 核 load 4.35 余量足,
+    # 加副本分摊事件循环即可。Caddy 三个 @portalv1/适配器 LB 池需同步加 3014/3015/3016。
+    portal-api-4:
+        <<: *portal-api-common
+        container_name: silkroadai-portal-api-4
+        ports:
+            - '127.0.0.1:3014:3002'
+
+    portal-api-5:
+        <<: *portal-api-common
+        container_name: silkroadai-portal-api-5
+        ports:
+            - '127.0.0.1:3015:3002'
+
+    portal-api-6:
+        <<: *portal-api-common
+        container_name: silkroadai-portal-api-6
+        ports:
+            - '127.0.0.1:3016:3002'
+
     # ── seedance 大客户独立门户(P1,seedance-enterprise-portal-design.md)──
     # 同镜像同库,PORTAL_FLAVOR 切形态:/v1 只服务 seedance 视频端点,主站页面/API 404,
     # 定时任务不跑(instrumentation 门)。只绑 127.0.0.1:3003 —— 公网入口由 Caddy 在
