@@ -34,10 +34,10 @@ export async function register() {
         new Agent({
             headersTimeout: 600_000, // 与 Caddy response_header_timeout 600s 对齐
             bodyTimeout: 600_000,
-            // keep-alive 连接复用:默认空闲 4s 就断,导致图片上游(we-token,请求慢、并发高)疯狂建连
-            // (上游反馈:150s 新建 133 条,建连开销大 + 频繁 client-side RST)。拉长空闲保活 → 复用连接。
-            keepAliveTimeout: 60_000, // 空闲连接保活 60s 供复用(默认 4s)
-            keepAliveMaxTimeout: 600_000,
+            // ⚠️ 不要设 keepAliveTimeout 拉长空闲保活(#378 曾设 60s)—— 实测导致走适配器的图片请求
+            // 【慢 5 倍】(直连 we-token 22s,走适配器 107-115s 且递增)+ 客户 5-16min 超时(重试叠加)。
+            // 复用连接反而拖慢(疑与 we-token HTTP/1.1 + 慢请求下的连接队头阻塞有关)。回退到 undici 默认
+            // keep-alive(4s):建连开销略高,但适配器路径恢复直连速度。2026-08-15 回退(hotfix)。
         }),
     );
 
