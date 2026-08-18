@@ -181,6 +181,8 @@ describe('GET /api/admin/customers/[id] (detail — IDOR-safe)', () => {
             newapi_quota_cache: BigInt(500_000),
             newapi_used_quota_cache: BigInt(250_000),
             newapi_cached_at: null,
+            newapi_user_id: 13,
+            newapi_username: 'c-4e23b655',
         });
         mockTokenFindMany.mockResolvedValue([
             { id: 'k1', key_alias: 'prod', tier: 'pool', status: 'active', created_at: new Date('2026-01-02Z') },
@@ -197,7 +199,13 @@ describe('GET /api/admin/customers/[id] (detail — IDOR-safe)', () => {
         expect(res.status).toBe(200);
         expect(mockUserFindFirst.mock.calls[0][0].where).toMatchObject({ id: 'u1' });
         expect(mockUserFindFirst.mock.calls[0][0].where.tenant_id).toBeUndefined();
-        expect(body.customer).toMatchObject({ email: 'a@x.com', balance_cny: 7.2, used_cny: 3.6 });
+        expect(body.customer).toMatchObject({
+            email: 'a@x.com',
+            balance_cny: 7.2,
+            used_cny: 3.6,
+            newapi_user_id: 13,
+            newapi_username: 'c-4e23b655',
+        });
         expect(body.keys).toHaveLength(1);
         expect(body.keys[0]).toMatchObject({ key_alias: 'prod', tier: 'pool' });
         expect(body.usage_by_model[0]).toMatchObject({ model_slug: 'gpt-5.5', calls: 3, cost_cny: 0.5 });

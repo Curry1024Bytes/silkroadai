@@ -39,6 +39,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
             newapi_quota_cache: true,
             newapi_used_quota_cache: true,
             newapi_cached_at: true,
+            newapi_user_id: true,
+            newapi_username: true,
             billing_mode: true, // P4c-4: 决定显示「迁移到 portal」还是「回滚到 newapi」
         },
     });
@@ -118,6 +120,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
             balance_cny: balanceCny,
             used_cny: usedCny,
             balance_cached_at: balanceCachedAt,
+            newapi_user_id: user.newapi_user_id,
+            newapi_username: user.newapi_username,
             billing_mode: user.billing_mode, // P4c-4: 'newapi' | 'portal'
         },
         // flip-guardrail:全局闸是否为 portal。前端据此灰掉「迁移到 portal」钮(闸关时翻 portal 路由 409)。

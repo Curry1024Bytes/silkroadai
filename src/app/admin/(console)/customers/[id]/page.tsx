@@ -17,6 +17,8 @@ interface CustomerDetail {
     balance_cny: number;
     used_cny: number;
     balance_cached_at: string | null;
+    newapi_user_id: number | null;
+    newapi_username: string | null;
     billing_mode: 'newapi' | 'portal'; // P4c-4: which billing source this customer is on
 }
 interface KeyRow {
@@ -103,6 +105,9 @@ function getTexts(locale: Locale) {
               loadFailed: 'Failed to load customer',
               profile: 'Profile',
               email: 'Email',
+              newapiUserId: 'new-api user ID',
+              newapiUsername: 'new-api username',
+              notLinked: 'not linked',
               status: 'Status',
               joined: 'Joined',
               lastLogin: 'Last login',
@@ -220,6 +225,9 @@ function getTexts(locale: Locale) {
               loadFailed: '加载客户详情失败',
               profile: '基本信息',
               email: '邮箱',
+              newapiUserId: 'new-api 用户 ID',
+              newapiUsername: 'new-api 用户名',
+              notLinked: '未关联',
               status: '状态',
               joined: '注册时间',
               lastLogin: '最近登录',
@@ -592,6 +600,14 @@ function DetailContent() {
                             <div>
                                 <div className={labelCls}>{t.email}</div>
                                 <div className={valueCls}>{data.customer.email}</div>
+                            </div>
+                            <div>
+                                <div className={labelCls}>{t.newapiUserId}</div>
+                                <div className={valueCls}>{data.customer.newapi_user_id ?? t.notLinked}</div>
+                            </div>
+                            <div>
+                                <div className={labelCls}>{t.newapiUsername}</div>
+                                <div className={valueCls}>{data.customer.newapi_username ?? t.notLinked}</div>
                             </div>
                             <div>
                                 <div className={labelCls}>{t.status}</div>
