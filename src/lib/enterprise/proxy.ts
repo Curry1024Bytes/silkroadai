@@ -42,6 +42,7 @@ import { normalizeArkModel, stripAssetUri, arkStatus, buildArkTaskResponse } fro
 import { maybeBrandVideoUrl } from '@/lib/seedance/volc-brand';
 import { maybeStoreVideoToCustomerOss } from '@/lib/seedance/customer-oss-video';
 import { isTerminalTaskFailure, type UpstreamErrorCategory } from '@/lib/seedance/upstream-error';
+import { invalidatePollCache, pollWithCache } from './poll-cache';
 
 /** 对客响应形态:'v1' = 我们现有形;'ark' = 火山方舟官方形(/api/v3/…)。 */
 export type ClientFormat = 'v1' | 'ark';
@@ -720,11 +721,18 @@ async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat
         upstreamKey = k;
     }
 
-    const res =
-        taskRegion === 'volc'
-            ? await pollVolcVideo(taskId)
-            : await pollVideoWithKey(taskId, `Bearer ${upstreamKey}`, taskRegion);
-    const text = await res.text();
+    // 短 TTL 缓存 + 同任务并发合流:客户的轮询频率不再 1:1 传导到上游(见 poll-cache 头部)。
+    // 缓存的是原始 (status, text),下游逻辑照常全跑 —— 落 tokens / 幂等扣费 / 客户 OSS 转存
+    // 一个不少,对客语义完全不变。
+    const { result: upstream, cached } = await pollWithCache(taskId, async () => {
+        const r =
+            taskRegion === 'volc'
+                ? await pollVolcVideo(taskId)
+                : await pollVideoWithKey(taskId, `Bearer ${upstreamKey}`, taskRegion);
+        return { status: r.status, text: await r.text() };
+    });
+    const res = { ok: upstream.status < 400, status: upstream.status };
+    const text = upstream.text;
     if (!res.ok) {
         // 上游用 HTTP 4xx 表达【任务已废】(如 seedance 2.5 的 TaskTypeConstraint、内容审核、
         // 参数不合法):这类再轮询多少次都是同一个错。以前我们一律当「轮询瞬时失败」透传,
@@ -752,6 +760,7 @@ async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat
             status: res.status,
             category,
             terminal,
+            cached,
             body: text.slice(0, 2000),
         });
         if (terminal) {
@@ -759,6 +768,7 @@ async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat
             await prisma.seedanceVideoTask
                 .updateMany({ where: { id: taskId }, data: { status: 'failed', fail_reason: reason.slice(0, 500) } })
                 .catch((e) => console.warn('[enterprise-proxy] terminalize failed', { taskId, err: String(e) }));
+            invalidatePollCache(taskId);
             return failedResponse(reason);
         }
         // 【瞬时】失败(上游限流 429 / 5xx / 不可达)→ 降级返库内最后已知状态,不把错误抛给客户。

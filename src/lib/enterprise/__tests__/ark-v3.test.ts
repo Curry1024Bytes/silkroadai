@@ -62,6 +62,7 @@ const { maybeStoreVideoToCustomerOss } = vi.hoisted(() => ({ maybeStoreVideoToCu
 vi.mock('@/lib/seedance/customer-oss-video', () => ({ maybeStoreVideoToCustomerOss }));
 
 import { handleEnterpriseArkV3, handleEnterpriseV1 } from '../proxy';
+import { __resetPollCache } from '../poll-cache';
 
 type ArkResp = {
     id: string;
@@ -86,6 +87,7 @@ function req(method: string, url: string, body?: unknown): NextRequest {
 
 beforeEach(() => {
     vi.clearAllMocks();
+    __resetPollCache();
     resolveEnterpriseAuth.mockResolvedValue({ ok: true, customer: CUSTOMER });
     db.account.findUnique.mockResolvedValue({ balance_cny: '100' });
     estimateEnterpriseCostCny.mockResolvedValue(4.26);

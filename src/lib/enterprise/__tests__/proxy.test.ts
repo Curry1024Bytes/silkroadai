@@ -50,6 +50,7 @@ vi.mock('../assets', async (importOriginal) => {
 import { AssetError } from '../assets';
 
 import { handleEnterpriseArkV3, handleEnterpriseV1, isEnterpriseFlavor } from '../proxy';
+import { __resetPollCache } from '../poll-cache';
 
 const CUSTOMER = { userId: 'u1', tenantId: null, keyId: 'k1', region: 'cn', upstreamKey: 'sk-upstream-u1' };
 
@@ -63,6 +64,7 @@ function req(method: string, url: string, body?: unknown): NextRequest {
 
 beforeEach(() => {
     vi.clearAllMocks();
+    __resetPollCache();
     resolveEnterpriseAuth.mockResolvedValue({ ok: true, customer: CUSTOMER });
     db.account.findUnique.mockResolvedValue({ balance_cny: '100' });
     estimateEnterpriseCostCny.mockResolvedValue(4.26);
