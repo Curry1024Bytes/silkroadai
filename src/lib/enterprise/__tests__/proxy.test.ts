@@ -49,7 +49,7 @@ vi.mock('../assets', async (importOriginal) => {
 });
 import { AssetError } from '../assets';
 
-import { handleEnterpriseV1, isEnterpriseFlavor } from '../proxy';
+import { handleEnterpriseArkV3, handleEnterpriseV1, isEnterpriseFlavor } from '../proxy';
 
 const CUSTOMER = { userId: 'u1', tenantId: null, keyId: 'k1', region: 'cn', upstreamKey: 'sk-upstream-u1' };
 
@@ -1093,23 +1093,66 @@ describe('轮询遇上游 4xx —— 终态化 vs 瞬时(2026-08-18,8925 次轮�
         expect(db.seedanceVideoTask.updateMany).toHaveBeenCalled();
     });
 
-    it('502(瞬时)→ 原样透传,【不】落库 failed(任务还在跑,不能误杀)', async () => {
+    it('502(瞬时)→ 降级返库内状态,【不】落库 failed(任务还在跑,不能误杀)', async () => {
         pollVideoWithKey.mockResolvedValue(adapterErr('upstream_unavailable', '上游暂时不可用,请稍后重试', 502));
         const res = await handleEnterpriseV1(
             req('GET', '/v1/video/generations/cgt-ttc1'),
             '/video/generations/cgt-ttc1',
         );
-        expect(res.status).toBe(502);
+        // 轮询失败 ≠ 任务失败:给 200 + 库内状态,客户脚本照常轮询而不是当异常中断整条流水线
+        expect(res.status).toBe(200);
+        expect(res.headers.get('X-Silkroadai-Poll-Degraded')).toBe('1');
+        expect(((await res.json()) as { status: string }).status).toBe('queued');
         expect(db.seedanceVideoTask.updateMany).not.toHaveBeenCalled();
     });
 
-    it('429(限流)→ 原样透传,不误杀', async () => {
+    it('429(限流)→ 同样降级,不误杀', async () => {
         pollVideoWithKey.mockResolvedValue(adapterErr('rate_limited', '请求过于频繁,请稍后重试', 429));
         const res = await handleEnterpriseV1(
             req('GET', '/v1/video/generations/cgt-ttc1'),
             '/video/generations/cgt-ttc1',
         );
-        expect(res.status).toBe(429);
+        expect(res.status).toBe(200);
+        expect(res.headers.get('X-Silkroadai-Poll-Degraded')).toBe('1');
+        expect(db.seedanceVideoTask.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('降级回显库里的真实进度:in_progress 不会被说成 queued', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({ ...task, status: 'in_progress' });
+        pollVideoWithKey.mockResolvedValue(adapterErr('upstream_unavailable', '上游暂时不可用', 503));
+        const res = await handleEnterpriseV1(
+            req('GET', '/v1/video/generations/cgt-ttc1'),
+            '/video/generations/cgt-ttc1',
+        );
+        const j = (await res.json()) as { status: string; progress: number };
+        expect(j.status).toBe('in_progress');
+        expect(j.progress).toBe(50);
+    });
+
+    it('火山形(ark)降级走官方 status 词表(running),不吐我们的内部词', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({
+            ...task,
+            status: 'in_progress',
+            model: 'doubao-seedance-2.5',
+        });
+        pollVolcVideo.mockResolvedValue(adapterErr('rate_limited', '请求过于频繁', 429));
+        const res = await handleEnterpriseArkV3(
+            req('GET', '/api/v3/contents/generations/tasks/cgt-ttc1'),
+            '/contents/generations/tasks/cgt-ttc1',
+        );
+        expect(res.status).toBe(200);
+        expect(res.headers.get('X-Silkroadai-Poll-Degraded')).toBe('1');
+        expect(((await res.json()) as { status: string }).status).toBe('running');
+    });
+
+    it('4xx 的 unknown 仍原样透传 —— 对它降级会造出新的无限轮询', async () => {
+        pollVideoWithKey.mockResolvedValue(adapterErr('unknown', '上游拒绝了本次请求 —— 未知原因', 400));
+        const res = await handleEnterpriseV1(
+            req('GET', '/v1/video/generations/cgt-ttc1'),
+            '/video/generations/cgt-ttc1',
+        );
+        expect(res.status).toBe(400);
+        expect(res.headers.get('X-Silkroadai-Poll-Degraded')).toBeNull();
         expect(db.seedanceVideoTask.updateMany).not.toHaveBeenCalled();
     });
 

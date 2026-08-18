@@ -671,6 +671,40 @@ async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat
         });
     };
 
+    /**
+     * 上游轮询【瞬时】失败时的降级响应:返回库里最后已知状态(queued / in_progress)。
+     *
+     * 轮询失败 ≠ 任务失败 —— 上游 429/5xx 时任务多半还在跑,但客户脚本拿到 4xx/5xx
+     * 往往直接当异常中断整条流水线(2026-08-18 客户就是这么报障的)。降级后客户照常轮询,
+     * 任务真出片时自然拿到结果。响应带 `X-Silkroadai-Poll-Degraded: 1` 供我们排查区分。
+     */
+    const lastKnownResponse = (): NextResponse => {
+        const headers = { 'X-Silkroadai-Poll-Degraded': '1' };
+        const our = task.status === 'in_progress' ? 'in_progress' : 'queued';
+        if (format === 'ark') {
+            const extended = taskRegion === 'global' || taskRegion === 'promax';
+            return NextResponse.json(
+                buildArkTaskResponse({
+                    taskId,
+                    internalModel: task.model,
+                    status: arkStatus(our),
+                    createdAt: task.created_at,
+                    resolution: task.resolution,
+                    duration: task.duration,
+                    ratio: task.ratio,
+                    seed: task.seed,
+                    generateAudio: task.generate_audio,
+                    extended,
+                }),
+                { headers },
+            );
+        }
+        return NextResponse.json(
+            { id: taskId, task_id: taskId, object: 'video', status: our, progress: our === 'queued' ? 0 : 50 },
+            { headers },
+        );
+    };
+
     // 已终态失败短路:库里已 failed 就不再打上游(上游会清除失败任务,再查返「任务不存在」,
     // 真实原因反而丢失)。
     if (task.status === 'failed') {
@@ -726,6 +760,12 @@ async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat
                 .updateMany({ where: { id: taskId }, data: { status: 'failed', fail_reason: reason.slice(0, 500) } })
                 .catch((e) => console.warn('[enterprise-proxy] terminalize failed', { taskId, err: String(e) }));
             return failedResponse(reason);
+        }
+        // 【瞬时】失败(上游限流 429 / 5xx / 不可达)→ 降级返库内最后已知状态,不把错误抛给客户。
+        // 只认这两类明确的瞬时信号:4xx 的 unknown / task_gone 仍照常透传 —— 对那些降级会造出
+        // 新的无限轮询(客户永远拿到 in_progress、却永远等不到完成)。
+        if (res.status === 429 || res.status >= 500) {
+            return lastKnownResponse();
         }
         return new NextResponse(text, { status: res.status, headers: { 'Content-Type': 'application/json' } });
     }
