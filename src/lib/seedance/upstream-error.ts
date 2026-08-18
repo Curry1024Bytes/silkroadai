@@ -37,6 +37,7 @@ const VENDOR_TOKENS = [
 /** 对客错误分类(机器可读,用于日志/统计;不直接展示)。 */
 export type UpstreamErrorCategory =
     | 'content_safety'
+    | 'task_type_constraint'
     | 'copyright'
     | 'media_fetch'
     | 'resolution'
@@ -52,6 +53,18 @@ export interface UpstreamErrorInfo {
     /** 对客文案(已脱敏)。 */
     message: string;
     category: UpstreamErrorCategory;
+}
+
+/** 抽上游错误码(TaskTypeConstraint 这类只出现在 code 字段,不在 message 里)。 */
+function extractUpstreamCode(body: string): string {
+    try {
+        const j = JSON.parse((body || '').trim()) as Record<string, unknown>;
+        const err = j.error as Record<string, unknown> | undefined;
+        const c = (typeof err === 'object' && err ? err.code : undefined) ?? j.code;
+        return typeof c === 'string' ? c : '';
+    } catch {
+        return '';
+    }
 }
 
 /** 从上游响应体里抽出「人话」部分。上游各家信封不一,按常见形态依次试。 */
@@ -140,7 +153,8 @@ function detail(s: string): string {
 export function classifyUpstreamError(body: string, status?: number): UpstreamErrorInfo {
     const extracted = extractUpstreamMessage(body);
     const clean = sanitizeUpstreamText(extracted);
-    const lower = (extracted || '').toLowerCase();
+    // 分类信号 = 错误码 + 人话(码里才有 TaskTypeConstraint 这类结构化信息)
+    const lower = `${extractUpstreamCode(body)} ${extracted || ''}`.toLowerCase();
 
     // ── 内容安全 / 版权:最需要精确到「哪一类输入」,客户才知道改什么 ──
     // ⚠️ 必须先于「素材」判 —— 上游把审核结果包在「素材转换失败: …sensitive…」里,
@@ -168,6 +182,15 @@ export function classifyUpstreamError(body: string, status?: number): UpstreamEr
         };
     }
 
+    // 全模态任务类型约束(seedance 2.5):模型按【提示词意图】把任务判成「视频编辑/延长」,
+    // 这两类要求 ratio=adaptive(编辑还要 duration=-1)。上游【异步】判定 → 提交时收不到,
+    // 轮询才报,且再轮询多少次都是同一个错。2026-08-18 有一条这样的任务被客户轮询了 8925 次。
+    if (/tasktypeconstraint|identified your task as/.test(lower)) {
+        return {
+            category: 'task_type_constraint',
+            message: `模型按提示词判定本次为「视频编辑 / 视频延长」任务 —— 该类型要求 ratio 必须为 adaptive(视频编辑还需 duration=-1)。请调整参数后重新提交${detail(clean)}`,
+        };
+    }
     // ── 任务态 ──
     if (/任务不存在|task .*not exist|not found|does not exist/.test(lower)) {
         return { category: 'task_gone', message: '任务已失效或不存在,请重新提交' };
@@ -219,6 +242,34 @@ export function classifyUpstreamError(body: string, status?: number): UpstreamEr
         };
     }
     return { category: 'unknown', message: `上游拒绝了本次请求 —— ${clean}` };
+}
+
+/**
+ * 这些 category = **任务本身已废**,再轮询多少次都是同一个结果 → 必须终态化,
+ * 否则客户脚本会无限重试(2026-08-18:8925 次/22 小时,还顺带把上游打到 429)。
+ * 共同点:它们描述的是【这次请求本身不合法】,不会因为等待而变好。
+ */
+const TERMINAL_CATEGORIES: ReadonlySet<UpstreamErrorCategory> = new Set([
+    'content_safety',
+    'copyright',
+    'task_type_constraint',
+    'invalid_parameter',
+    'resolution',
+    'duration',
+    'media_fetch',
+]);
+
+/**
+ * 本次上游轮询失败,是「任务已废」(终态)还是「瞬时抖动」(可重试)?
+ *
+ * 只有 **4xx 且非 429** + 终态类 category 才算已废:
+ *  - 5xx / 429 / 上游账户异常 → 瞬时,任务多半还活着,**绝不能**误杀;
+ *  - `task_gone`(任务不存在)**刻意排除** —— 它描述的是上游状态而非请求本身,
+ *    一次查询抖动就终态化风险太大;这类交给对账器的 48h 过期兜底。
+ */
+export function isTerminalTaskFailure(category: UpstreamErrorCategory, status?: number): boolean {
+    if (!status || status < 400 || status >= 500 || status === 429) return false;
+    return TERMINAL_CATEGORIES.has(category);
 }
 
 /** 兼容旧签名(只要文案)。新代码建议用 classifyUpstreamError 拿 category 一起落日志。 */

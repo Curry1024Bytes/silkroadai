@@ -15,6 +15,7 @@
 import 'server-only';
 import { prisma } from '@/lib/db';
 import { pollVideoWithKey, regionForModel } from '@/lib/seedance/cn-adapter';
+import { isTerminalTaskFailure, type UpstreamErrorCategory } from '@/lib/seedance/upstream-error';
 import { getUpstreamKeyForUser } from './keys';
 import { ENTERPRISE_TIER, chargeEnterpriseVideoTask } from './billing';
 
@@ -65,8 +66,20 @@ export async function reconcileStaleTasks(userId: string): Promise<void> {
             const res = await pollVideoWithKey(task.id, `Bearer ${upstreamKey}`, region);
             const j = (await res.json().catch(() => null)) as Record<string, unknown> | null;
             if (!res.ok || !j) {
-                // 上游查不到/报错(如上游内部 key 轮换后 task 失联):超保留期 → 过期终态
-                if (expired) await markExpired(task.id);
+                // 上游用 4xx 表达【任务已废】(TaskTypeConstraint / 内容审核 / 参数不合法)→ 直接终态化。
+                // 以前这里只在超 48h 保留期时才终态化,所以这类任务能在 queued 卡满两天,
+                // 客户脚本一直重试(2026-08-18:一条卡了 22 小时、被轮询 8925 次)。
+                // 5xx / 429 等瞬时错仍然只是「这次没查到」,留给下次对账。
+                const e = (j as { error?: { category?: string; message?: string } } | null)?.error;
+                if (isTerminalTaskFailure((e?.category ?? '') as UpstreamErrorCategory, res.status)) {
+                    await prisma.seedanceVideoTask.updateMany({
+                        where: { id: task.id },
+                        data: { status: 'failed', fail_reason: (e?.message || '上游判定任务失败').slice(0, 500) },
+                    });
+                    console.log('[enterprise-reconcile] terminalized', { id: task.id, category: e?.category });
+                } else if (expired) {
+                    await markExpired(task.id);
+                }
                 continue;
             }
             const status = String(j.status || '');

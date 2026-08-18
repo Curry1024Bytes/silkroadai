@@ -16,7 +16,7 @@ const {
     chargeEnterpriseVideoTask,
 } = vi.hoisted(() => ({
     db: {
-        seedanceVideoTask: { create: vi.fn(), findUnique: vi.fn(), update: vi.fn() },
+        seedanceVideoTask: { create: vi.fn(), findUnique: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
         account: { findUnique: vi.fn() },
     },
     resolveEnterpriseAuth: vi.fn(),
@@ -1023,5 +1023,110 @@ describe('火山渠道(volc)四档模型 —— 上游换筷子开放平台后�
             '/video/generations',
         );
         expect(ok.status).toBe(200);
+    });
+});
+
+describe('轮询遇上游 4xx —— 终态化 vs 瞬时(2026-08-18,8925 次轮询事故)', () => {
+    const task = {
+        id: 'cgt-ttc1',
+        tier: 'enterprise-portal',
+        user_id: 'u1',
+        model: 'seedance-2-5',
+        resolution: '720p',
+        has_video: false,
+        status: 'queued',
+        tokens: null,
+        created_at: new Date('2026-08-17T08:19:22Z'),
+        duration: 4,
+        ratio: '16:9',
+        seed: null,
+        generate_audio: true,
+        fail_reason: null,
+    };
+    /** 适配器对上游 4xx 的归一错误体(带 category)。 */
+    const adapterErr = (category: string, message: string, status: number) =>
+        new NextResponse(JSON.stringify({ error: { code: 'upstream_error', message, category } }), {
+            status,
+            headers: { 'Content-Type': 'application/json' },
+        });
+
+    beforeEach(() => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue(task);
+        db.seedanceVideoTask.updateMany.mockResolvedValue({ count: 1 });
+    });
+
+    it('TaskTypeConstraint(4xx 终态)→ 落库 failed + 返回 status:failed,客户据此停止轮询', async () => {
+        pollVideoWithKey.mockResolvedValue(
+            adapterErr(
+                'task_type_constraint',
+                '模型按提示词判定本次为「视频编辑 / 视频延长」任务 —— ratio 必须为 adaptive',
+                400,
+            ),
+        );
+        const res = await handleEnterpriseV1(
+            req('GET', '/v1/video/generations/cgt-ttc1'),
+            '/video/generations/cgt-ttc1',
+        );
+
+        // 关键:HTTP 200 + status=failed(不是把 400 抛给客户 —— 那会被脚本当异常然后无限重试)
+        expect(res.status).toBe(200);
+        const j = (await res.json()) as { status: string; fail_reason: string };
+        expect(j.status).toBe('failed');
+        expect(j.fail_reason).toContain('adaptive');
+        // 且已终态化落库,下次轮询走短路、根本不再打上游
+        expect(db.seedanceVideoTask.updateMany).toHaveBeenCalledWith(
+            expect.objectContaining({
+                where: { id: 'cgt-ttc1' },
+                data: expect.objectContaining({ status: 'failed' }),
+            }),
+        );
+    });
+
+    it('内容审核(4xx 终态)同样终态化', async () => {
+        pollVideoWithKey.mockResolvedValue(adapterErr('content_safety', '提示词未通过内容安全审核', 400));
+        const res = await handleEnterpriseV1(
+            req('GET', '/v1/video/generations/cgt-ttc1'),
+            '/video/generations/cgt-ttc1',
+        );
+        expect(res.status).toBe(200);
+        expect(((await res.json()) as { status: string }).status).toBe('failed');
+        expect(db.seedanceVideoTask.updateMany).toHaveBeenCalled();
+    });
+
+    it('502(瞬时)→ 原样透传,【不】落库 failed(任务还在跑,不能误杀)', async () => {
+        pollVideoWithKey.mockResolvedValue(adapterErr('upstream_unavailable', '上游暂时不可用,请稍后重试', 502));
+        const res = await handleEnterpriseV1(
+            req('GET', '/v1/video/generations/cgt-ttc1'),
+            '/video/generations/cgt-ttc1',
+        );
+        expect(res.status).toBe(502);
+        expect(db.seedanceVideoTask.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('429(限流)→ 原样透传,不误杀', async () => {
+        pollVideoWithKey.mockResolvedValue(adapterErr('rate_limited', '请求过于频繁,请稍后重试', 429));
+        const res = await handleEnterpriseV1(
+            req('GET', '/v1/video/generations/cgt-ttc1'),
+            '/video/generations/cgt-ttc1',
+        );
+        expect(res.status).toBe(429);
+        expect(db.seedanceVideoTask.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('已 failed 的任务短路,压根不打上游(终态化后的稳态)', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({
+            ...task,
+            status: 'failed',
+            fail_reason: 'ratio 必须 adaptive',
+        });
+        const res = await handleEnterpriseV1(
+            req('GET', '/v1/video/generations/cgt-ttc1'),
+            '/video/generations/cgt-ttc1',
+        );
+        expect(res.status).toBe(200);
+        const j = (await res.json()) as { status: string; fail_reason: string };
+        expect(j.status).toBe('failed');
+        expect(j.fail_reason).toBe('ratio 必须 adaptive');
+        expect(pollVideoWithKey).not.toHaveBeenCalled();
     });
 });

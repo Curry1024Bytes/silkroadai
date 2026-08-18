@@ -37,8 +37,12 @@ const TASKS_PATH = '/ai-open-platform-api/api/v3/contents/generations/tasks';
 const UPSTREAM_ID_PREFIX = 'kz-cgt-';
 const CLIENT_ID_PREFIX = 'cgt-';
 
-function err(status: number, code: string, message: string) {
-    return NextResponse.json({ error: { code, message, type: 'seedance_volc_adapter_error' } }, { status });
+/** category:机器可读分类,供调用方判定终态 / 瞬时(见 upstream-error.isTerminalTaskFailure)。 */
+function err(status: number, code: string, message: string, category?: string) {
+    return NextResponse.json(
+        { error: { code, message, type: 'seedance_volc_adapter_error', ...(category ? { category } : {}) } },
+        { status },
+    );
 }
 
 export function getKuaiziConfig(): { base: string; key: string } | null {
@@ -181,7 +185,7 @@ export async function submitVolcVideo(body: Record<string, unknown>, opts: Kuaiz
             category: cls.category,
             body: text.slice(0, 2000),
         });
-        return err(upstream.status >= 400 ? upstream.status : 502, 'upstream_error', cls.message);
+        return err(upstream.status >= 400 ? upstream.status : 502, 'upstream_error', cls.message, cls.category);
     }
     const clientTaskId = disguiseTaskId(taskId);
     return NextResponse.json(
@@ -244,7 +248,7 @@ export async function pollVolcVideo(id: string): Promise<NextResponse> {
             category: cls.category,
             body: text.slice(0, 2000),
         });
-        return err(upstream.status >= 400 ? upstream.status : 502, 'upstream_error', cls.message);
+        return err(upstream.status >= 400 ? upstream.status : 502, 'upstream_error', cls.message, cls.category);
     }
     const status = mapStatus(j.status);
     const contentObj = (j.content ?? undefined) as

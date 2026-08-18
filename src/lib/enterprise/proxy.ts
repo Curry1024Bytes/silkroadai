@@ -41,6 +41,7 @@ import { AssetError, resolveAssetRefs } from './assets';
 import { normalizeArkModel, stripAssetUri, arkStatus, buildArkTaskResponse } from './ark-format';
 import { maybeBrandVideoUrl } from '@/lib/seedance/volc-brand';
 import { maybeStoreVideoToCustomerOss } from '@/lib/seedance/customer-oss-video';
+import { isTerminalTaskFailure, type UpstreamErrorCategory } from '@/lib/seedance/upstream-error';
 
 /** 对客响应形态:'v1' = 我们现有形;'ark' = 火山方舟官方形(/api/v3/…)。 */
 export type ClientFormat = 'v1' | 'ark';
@@ -640,11 +641,8 @@ async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat
         );
     }
 
-    // 已终态失败短路:任务在我们库里已 failed 时,直接返库里存的 fail_reason,不再重打上游。
-    // 上游会把失败任务清除,再轮询它返「任务不存在」→ 泛化成 "upstream rejected the request",
-    // 真实原因(版权/敏感等)反而丢失。库里 fail_reason 是权威,直接透传(火山形 arkFailError 分类)。
-    if (task.status === 'failed') {
-        const failReason = task.fail_reason || 'generation failed';
+    /** 失败终态的对客响应(v1 形 / 火山形)。库里 fail_reason 是权威。 */
+    const failedResponse = (failReason: string): NextResponse => {
         if (format === 'ark') {
             const extended = taskRegion === 'global' || taskRegion === 'promax';
             return NextResponse.json(
@@ -671,6 +669,12 @@ async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat
             progress: 100,
             fail_reason: failReason,
         });
+    };
+
+    // 已终态失败短路:库里已 failed 就不再打上游(上游会清除失败任务,再查返「任务不存在」,
+    // 真实原因反而丢失)。
+    if (task.status === 'failed') {
+        return failedResponse(task.fail_reason || 'generation failed');
     }
 
     // 非 volc 轮询要打客户上游:sk-ent 用鉴权时装载的 cust.upstreamKey;AK/SK 账号级(/api 轮询
@@ -688,12 +692,41 @@ async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat
             : await pollVideoWithKey(taskId, `Bearer ${upstreamKey}`, taskRegion);
     const text = await res.text();
     if (!res.ok) {
+        // 上游用 HTTP 4xx 表达【任务已废】(如 seedance 2.5 的 TaskTypeConstraint、内容审核、
+        // 参数不合法):这类再轮询多少次都是同一个错。以前我们一律当「轮询瞬时失败」透传,
+        // 任务永远停在 queued,客户脚本无限重试 —— 2026-08-18 实测一条这样的任务被轮询了
+        // 8925 次 / 22 小时,还顺带把上游打到 429。现在:终态化落库 + 返回 status=failed,
+        // 客户拿到终态自然停止。5xx / 429 / 上游账户异常仍按瞬时透传,绝不误杀在跑的任务。
+        const category = (() => {
+            try {
+                return (JSON.parse(text) as { error?: { category?: string } })?.error?.category ?? '';
+            } catch {
+                return '';
+            }
+        })();
+        const failMsg = (() => {
+            try {
+                return (JSON.parse(text) as { error?: { message?: string } })?.error?.message ?? '';
+            } catch {
+                return '';
+            }
+        })();
+        const terminal = isTerminalTaskFailure(category as UpstreamErrorCategory, res.status);
         console.warn('[enterprise-proxy] poll error', {
             user_id: cust.userId,
             task_id: taskId,
             status: res.status,
+            category,
+            terminal,
             body: text.slice(0, 2000),
         });
+        if (terminal) {
+            const reason = failMsg || '上游判定任务失败';
+            await prisma.seedanceVideoTask
+                .updateMany({ where: { id: taskId }, data: { status: 'failed', fail_reason: reason.slice(0, 500) } })
+                .catch((e) => console.warn('[enterprise-proxy] terminalize failed', { taskId, err: String(e) }));
+            return failedResponse(reason);
+        }
         return new NextResponse(text, { status: res.status, headers: { 'Content-Type': 'application/json' } });
     }
     let j: Record<string, unknown> | null;

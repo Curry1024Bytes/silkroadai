@@ -7,7 +7,12 @@
  *  ② 兜底分支也要说人话(带脱敏后的上游原因,或明说「上游没给原因」)。
  */
 import { describe, expect, it } from 'vitest';
-import { classifyUpstreamError, friendlyUpstreamError, sanitizeUpstreamText } from '../upstream-error';
+import {
+    classifyUpstreamError,
+    friendlyUpstreamError,
+    isTerminalTaskFailure,
+    sanitizeUpstreamText,
+} from '../upstream-error';
 
 /** 真实上游报文语料(逐字,勿改)。 */
 const REAL = {
@@ -156,5 +161,62 @@ describe('兜底也要说人话(本次事故的核心痛点)', () => {
         expect(classifyUpstreamError('{"error":{"message":"internal error"}}', 500).category).toBe(
             'upstream_unavailable',
         );
+    });
+});
+
+describe('终态 vs 瞬时 —— 决定要不要停止轮询(2026-08-18,8925 次轮询事故)', () => {
+    // 真实报文:seedance 2.5 被模型判成「视频延长/编辑」,ratio 必须 adaptive
+    const TTC_EXTEND =
+        '{"created_at":1786954781,"error":{"code":"InvalidParameter.TaskTypeConstraint","message":"The parameter `ratio` specified in the request is not valid. Seedance identified your task as video extension based on your prompt. Issues: [0] `ratio` must be `adaptive`. Request id: 0217869547816410000"}}';
+    const TTC_EDIT =
+        '{"error":{"code":"InvalidParameter.TaskTypeConstraint","message":"Seedance identified your task as video editing based on your prompt. Issues: [0] `ratio` must be `adaptive`. [1] `duration` must be -1."}}';
+
+    it('TaskTypeConstraint 单独成类,且【延长】与【编辑】两种文案都命中', () => {
+        for (const body of [TTC_EXTEND, TTC_EDIT]) {
+            const r = classifyUpstreamError(body, 400);
+            expect(r.category).toBe('task_type_constraint');
+            expect(r.message).toContain('adaptive');
+            expect(r.message).toContain('视频编辑');
+        }
+    });
+
+    it('「编辑」变体含 duration 字样,但不能被 duration 分支截胡(分支顺序守护)', () => {
+        expect(classifyUpstreamError(TTC_EDIT, 400).category).not.toBe('duration');
+    });
+
+    it('4xx + 请求本身不合法 → 终态(客户应停止轮询)', () => {
+        for (const c of [
+            'task_type_constraint',
+            'content_safety',
+            'copyright',
+            'invalid_parameter',
+            'resolution',
+            'duration',
+            'media_fetch',
+        ] as const) {
+            expect(isTerminalTaskFailure(c, 400)).toBe(true);
+        }
+    });
+
+    it('5xx / 429 / 上游账户异常 → 瞬时,绝不误杀在跑的任务', () => {
+        expect(isTerminalTaskFailure('upstream_unavailable', 502)).toBe(false);
+        expect(isTerminalTaskFailure('rate_limited', 429)).toBe(false);
+        expect(isTerminalTaskFailure('upstream_account', 400)).toBe(false);
+        // 即便 category 是终态类,5xx / 429 也不终态化(状态码优先)
+        expect(isTerminalTaskFailure('content_safety', 500)).toBe(false);
+        expect(isTerminalTaskFailure('content_safety', 429)).toBe(false);
+    });
+
+    it('task_gone 刻意【不】终态化 —— 一次查询抖动不该杀任务,交给 48h 过期兜底', () => {
+        expect(isTerminalTaskFailure('task_gone', 400)).toBe(false);
+    });
+
+    it('unknown 不终态化(没把握就别杀)', () => {
+        expect(isTerminalTaskFailure('unknown', 400)).toBe(false);
+    });
+
+    it('无状态码 / 2xx → 不终态化', () => {
+        expect(isTerminalTaskFailure('content_safety', undefined)).toBe(false);
+        expect(isTerminalTaskFailure('content_safety', 200)).toBe(false);
     });
 });

@@ -230,8 +230,13 @@ export function maxDurationForVariant(v: SeedanceVariant): number {
 // 火山官方 2.5 支持 adaptive(首尾帧/视频编辑/延长任务【必须】adaptive → 输出跟随输入宽高比)。
 const ALLOWED_RATIOS = new Set(['16:9', '9:16', '4:3', '3:4', '1:1', '21:9', 'adaptive']);
 
-function err(status: number, code: string, message: string) {
-    return NextResponse.json({ error: { code, message, type: 'seedance_cn_adapter_error' } }, { status });
+/** category:机器可读分类。调用方(enterprise proxy / 对账器)据此判定
+ *  「任务已废」还是「瞬时抖动」—— 见 upstream-error.isTerminalTaskFailure。 */
+function err(status: number, code: string, message: string, category?: string) {
+    return NextResponse.json(
+        { error: { code, message, type: 'seedance_cn_adapter_error', ...(category ? { category } : {}) } },
+        { status },
+    );
 }
 
 // 上游报错体 → 对客文案的分类/脱敏已抽到 ./upstream-error(2026-08-17 重写,见该文件头部
@@ -592,7 +597,7 @@ export async function submitVideoWithKey(body: Record<string, unknown>, auth: st
         });
         // 安全:上游原始报错(可能含域名/server 标识)只落日志(见上 console.warn);
         // 客户拿【分类 + 脱敏】后的文案 —— 带主体(提示词/参考图/…)与脱敏后的上游原因。
-        return err(upstream.status >= 400 ? upstream.status : 502, 'upstream_error', cls.message);
+        return err(upstream.status >= 400 ? upstream.status : 502, 'upstream_error', cls.message, cls.category);
     }
     return NextResponse.json(
         {
@@ -666,7 +671,7 @@ export async function pollVideoWithKey(id: string, auth: string, region: Seedanc
         });
         // 安全:上游原始报错只落日志(见上 console.warn);客户拿【分类 + 脱敏】后的文案。
         // 注:内容审核失败走 HTTP 200 + status:failed + fail_reason(不经此分支),客户仍能看到审核提示。
-        return err(upstream.status >= 400 ? upstream.status : 502, 'upstream_error', cls.message);
+        return err(upstream.status >= 400 ? upstream.status : 502, 'upstream_error', cls.message, cls.category);
     }
     const status = mapStatus(j.status);
     const videoUrl = firstVideoUrl(j.data);
