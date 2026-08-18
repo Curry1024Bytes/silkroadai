@@ -3,17 +3,20 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { db, pollVideoWithKey, getUpstreamKeyForUser, chargeEnterpriseVideoTask } = vi.hoisted(() => ({
+const { db, pollVideoWithKey, pollVolcVideo, getUpstreamKeyForUser, chargeEnterpriseVideoTask } = vi.hoisted(() => ({
     db: { seedanceVideoTask: { findMany: vi.fn(), updateMany: vi.fn() } },
     pollVideoWithKey: vi.fn(),
+    pollVolcVideo: vi.fn(),
     getUpstreamKeyForUser: vi.fn(),
     chargeEnterpriseVideoTask: vi.fn(),
 }));
 vi.mock('@/lib/db', () => ({ prisma: db }));
 vi.mock('@/lib/seedance/cn-adapter', () => ({
     pollVideoWithKey,
-    regionForModel: (m: string) => (m.includes('-promax') ? 'promax' : m.includes('-global') ? 'global' : 'cn'),
+    regionForModel: (m: string) =>
+        m.startsWith('doubao-') ? 'volc' : m.includes('-promax') ? 'promax' : m.includes('-global') ? 'global' : 'cn',
 }));
+vi.mock('@/lib/seedance/kuaizi-adapter', () => ({ pollVolcVideo }));
 vi.mock('../keys', () => ({ getUpstreamKeyForUser }));
 vi.mock('../billing', () => ({ ENTERPRISE_TIER: 'enterprise-portal', chargeEnterpriseVideoTask }));
 
@@ -82,5 +85,61 @@ describe('reconcileStaleTasks', () => {
             data: { status: 'failed', fail_reason: expect.stringContaining('过期') },
         });
         expect(chargeEnterpriseVideoTask).not.toHaveBeenCalled();
+    });
+});
+
+describe('火山渠道(volc)分流 —— 2026-08-18 修复', () => {
+    /** volc 任务:上游是筷子开放平台 + 平台共享 env key,不是客户的 per-region key。 */
+    const volcTask = { id: 'cgt-19197088188', model: 'doubao-seedance-2.5', created_at: oldDate };
+
+    it('volc 任务走 pollVolcVideo,【不】走 cn 的 pollVideoWithKey,也不取客户 key', async () => {
+        db.seedanceVideoTask.findMany.mockResolvedValue([volcTask]);
+        pollVolcVideo.mockResolvedValue({ ok: true, json: async () => ({ status: 'in_progress' }) });
+        await reconcileStaleTasks('u1');
+        expect(pollVolcVideo).toHaveBeenCalledWith('cgt-19197088188');
+        expect(pollVideoWithKey).not.toHaveBeenCalled();
+        // volc 用平台 env key,不该去查客户的上游 key
+        expect(getUpstreamKeyForUser).not.toHaveBeenCalled();
+    });
+
+    it('volc 任务被上游判废(4xx 终态)→ 终态化落库(修复前永远查不到、卡在 queued)', async () => {
+        db.seedanceVideoTask.findMany.mockResolvedValue([volcTask]);
+        pollVolcVideo.mockResolvedValue({
+            ok: false,
+            status: 400,
+            json: async () => ({
+                error: { category: 'task_type_constraint', message: 'ratio 必须为 adaptive' },
+            }),
+        });
+        await reconcileStaleTasks('u1');
+        expect(db.seedanceVideoTask.updateMany).toHaveBeenCalledWith(
+            expect.objectContaining({
+                where: { id: 'cgt-19197088188' },
+                data: expect.objectContaining({ status: 'failed', fail_reason: 'ratio 必须为 adaptive' }),
+            }),
+        );
+    });
+
+    it('volc 任务上游 5xx(瞬时)→ 不落库,留给下次对账', async () => {
+        db.seedanceVideoTask.findMany.mockResolvedValue([volcTask]);
+        pollVolcVideo.mockResolvedValue({
+            ok: false,
+            status: 502,
+            json: async () => ({ error: { category: 'upstream_unavailable', message: '上游暂时不可用' } }),
+        });
+        await reconcileStaleTasks('u1');
+        expect(db.seedanceVideoTask.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('volc 与 cn 任务混在一批时各走各的上游', async () => {
+        db.seedanceVideoTask.findMany.mockResolvedValue([
+            volcTask,
+            { id: 'cgt-cn1', model: 'seedance-2-0', created_at: oldDate },
+        ]);
+        pollVolcVideo.mockResolvedValue({ ok: true, json: async () => ({ status: 'in_progress' }) });
+        pollVideoWithKey.mockResolvedValue({ ok: true, json: async () => ({ status: 'in_progress' }) });
+        await reconcileStaleTasks('u1');
+        expect(pollVolcVideo).toHaveBeenCalledWith('cgt-19197088188');
+        expect(pollVideoWithKey).toHaveBeenCalledWith('cgt-cn1', 'Bearer sk-upstream', 'cn');
     });
 });

@@ -15,6 +15,7 @@
 import 'server-only';
 import { prisma } from '@/lib/db';
 import { pollVideoWithKey, regionForModel } from '@/lib/seedance/cn-adapter';
+import { pollVolcVideo } from '@/lib/seedance/kuaizi-adapter';
 import { isTerminalTaskFailure, type UpstreamErrorCategory } from '@/lib/seedance/upstream-error';
 import { getUpstreamKeyForUser } from './keys';
 import { ENTERPRISE_TIER, chargeEnterpriseVideoTask } from './billing';
@@ -52,18 +53,29 @@ export async function reconcileStaleTasks(userId: string): Promise<void> {
         try {
             const expired = Date.now() - task.created_at.getTime() > EXPIRE_AFTER_MS;
             const region = regionForModel(task.model);
-            let upstreamKey = keyCache.get(region);
-            if (upstreamKey === undefined) {
-                upstreamKey = await getUpstreamKeyForUser(userId, region);
-                keyCache.set(region, upstreamKey);
-            }
-            if (!upstreamKey) {
-                // 该版本上游 key 已被移除:老任务无法回查。超保留期的直接过期终态。
-                if (expired) await markExpired(task.id);
-                continue;
-            }
 
-            const res = await pollVideoWithKey(task.id, `Bearer ${upstreamKey}`, region);
+            // 「火山」渠道(volc)走【独立上游 + 平台共享 env key】(筷子开放平台),
+            // 不是客户的 per-region key,端点也不是 cn/intl 那套 —— 必须分流到 kuaizi-adapter。
+            // ⚠️ 2026-08-18 修复:此前对账器对所有 region 一律走 pollVideoWithKey,而
+            // baseForRegion('volc') 回落国内 base,等于拿筷子的 task id 去 token.xinhankr 查,
+            // 永远查不到 → volc 任务在对账器这条路上【从来没能被终态化】(只能靠客户轮询自愈)。
+            // 分流逻辑与 enterprise/proxy 的 handlePoll 保持一致。
+            let res: Awaited<ReturnType<typeof pollVideoWithKey>>;
+            if (region === 'volc') {
+                res = await pollVolcVideo(task.id);
+            } else {
+                let upstreamKey = keyCache.get(region);
+                if (upstreamKey === undefined) {
+                    upstreamKey = await getUpstreamKeyForUser(userId, region);
+                    keyCache.set(region, upstreamKey);
+                }
+                if (!upstreamKey) {
+                    // 该版本上游 key 已被移除:老任务无法回查。超保留期的直接过期终态。
+                    if (expired) await markExpired(task.id);
+                    continue;
+                }
+                res = await pollVideoWithKey(task.id, `Bearer ${upstreamKey}`, region);
+            }
             const j = (await res.json().catch(() => null)) as Record<string, unknown> | null;
             if (!res.ok || !j) {
                 // 上游用 4xx 表达【任务已废】(TaskTypeConstraint / 内容审核 / 参数不合法)→ 直接终态化。
