@@ -1,7 +1,7 @@
 /** 「火山」渠道视频适配器单测(上游 = 筷子开放平台,2026-08-17 换上游):
  *  方舟原生提交/轮询 + kz-cgt- ↔ cgt- id 伪装 + 成片直链优先级 + 未配置降级。 */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { submitVolcVideo, pollVolcVideo, cancelVolcVideo, VOLC_MODELS } from '../kuaizi-adapter';
+import { submitVolcVideo, pollVolcVideo, cancelVolcVideo, VOLC_MODELS, VOLC_RESOLUTIONS } from '../kuaizi-adapter';
 
 const BASE = 'http://kuaizi.test';
 const KEY = 'kz-test-key';
@@ -172,7 +172,7 @@ describe('pollVolcVideo', () => {
         };
         expect(j.id).toBe('cgt-abc');
         expect(j.status).toBe('completed');
-        // 优先方舟原始直链(客户只看到火山官方 VOD 域名);kz_video_url 会泄露上游身份,不用
+        // 优先方舟原始直链(客户只看到火山官方 TOS 域名);kz_video_url 会泄露上游身份,不用
         expect(j.video_url).toBe('https://ark-acg-cn-beijing.tos-cn-beijing.volces.com/out.mp4');
         expect(j.last_frame_url).toBe('https://volc-cdn/last.png');
         expect(j.usage.completion_tokens).toBe(108900);
@@ -241,5 +241,50 @@ describe('cancelVolcVideo', () => {
         const fetchMock = vi.spyOn(global, 'fetch');
         expect(await cancelVolcVideo('cgt-x')).toBeNull();
         expect(fetchMock).not.toHaveBeenCalled();
+    });
+});
+
+describe('vendor_task_id 透传(上游文档 v1.3,2026-08-19)', () => {
+    const poll = (extra: Record<string, unknown>) =>
+        new Response(JSON.stringify({ id: 'kz-cgt-abc', status: 'running', ...extra }), { status: 200 });
+
+    afterEach(() => delete process.env.ENTERPRISE_VENDOR_TASK_ID_ARK_ONLY);
+
+    it('火山原生形(cgt-)→ 透传', async () => {
+        vi.spyOn(global, 'fetch').mockResolvedValue(poll({ vendor_task_id: 'cgt-20260817125256-tfv79' }));
+        const j = (await (await pollVolcVideo('cgt-abc')).json()) as { vendor_task_id?: string };
+        expect(j.vendor_task_id).toBe('cgt-20260817125256-tfv79');
+    });
+
+    it('三方渠道形(tsk-)→ 默认也透传(operator 拍板:下游就是要这个号)', async () => {
+        vi.spyOn(global, 'fetch').mockResolvedValue(poll({ vendor_task_id: 'tsk-ghubt0mgm8impt83' }));
+        const j = (await (await pollVolcVideo('cgt-abc')).json()) as { vendor_task_id?: string };
+        expect(j.vendor_task_id).toBe('tsk-ghubt0mgm8impt83');
+    });
+
+    it('逃生阀 ENTERPRISE_VENDOR_TASK_ID_ARK_ONLY=1 → 只透 cgt-,tsk- 连响应体都不含', async () => {
+        process.env.ENTERPRISE_VENDOR_TASK_ID_ARK_ONLY = '1';
+        vi.spyOn(global, 'fetch').mockResolvedValue(poll({ vendor_task_id: 'tsk-ghubt0mgm8impt83' }));
+        const body = await (await pollVolcVideo('cgt-abc')).text();
+        expect(JSON.parse(body).vendor_task_id).toBeUndefined();
+        expect(body).not.toContain('tsk-ghubt0mgm8impt83');
+
+        vi.restoreAllMocks();
+        vi.spyOn(global, 'fetch').mockResolvedValue(poll({ vendor_task_id: 'cgt-x1' }));
+        const j = (await (await pollVolcVideo('cgt-abc')).json()) as { vendor_task_id?: string };
+        expect(j.vendor_task_id).toBe('cgt-x1'); // 开关只挡非 cgt- 形
+    });
+
+    it('未开通 / running 早期上游不给该字段 → 不报错,响应里也没有', async () => {
+        vi.spyOn(global, 'fetch').mockResolvedValue(poll({}));
+        const j = (await (await pollVolcVideo('cgt-abc')).json()) as { vendor_task_id?: string };
+        expect(j.vendor_task_id).toBeUndefined();
+    });
+});
+
+describe('seedance 2.5 放开 1080p(上游文档 v1.2,实测确认)', () => {
+    it('2.5 档位表 = 480p / 720p / 1080p,仍无 4k', () => {
+        expect(VOLC_RESOLUTIONS['2.5']).toEqual(['480p', '720p', '1080p']);
+        expect(VOLC_RESOLUTIONS['2.5']).not.toContain('4k');
     });
 });

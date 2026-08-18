@@ -512,7 +512,7 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                                 ['doubao-seedance-2.0', '480p / 720p / 1080p / 4k', '4~15 或 -1', '9 / 3 / 3'],
                                 ['doubao-seedance-2.0-fast', '480p / 720p / 1080p', '4~15 或 -1', '9 / 3 / 3'],
                                 ['doubao-seedance-2.0-mini', '480p / 720p / 1080p', '4~15 或 -1', '9 / 3 / 3'],
-                                ['doubao-seedance-2.5', '480p / 720p', '4~30 或 -1', '30 / 10 / 10'],
+                                ['doubao-seedance-2.5', '480p / 720p / 1080p', '4~30 或 -1', '30 / 10 / 10'],
                             ].map(([m, r, d, refs]) => (
                                 <tr key={m} className="border-b border-gray-100">
                                     <td className="py-1.5 pr-4">
@@ -528,7 +528,7 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                 </div>
                 <p className="text-gray-600">
                     <Code>duration: -1</Code> = 智能时长(由模型在有效区间内自选)。<Code>4k</Code> 仅{' '}
-                    <Code>doubao-seedance-2.0</Code> 支持。
+                    <Code>doubao-seedance-2.0</Code> 支持(<Code>doubao-seedance-2.5</Code> 无 4k)。
                     <b>
                         <Code>doubao-seedance-2.5</Code> 的首帧/首尾帧、视频编辑、视频延长三类任务仅支持{' '}
                         <Code>ratio: &quot;adaptive&quot;</Code>

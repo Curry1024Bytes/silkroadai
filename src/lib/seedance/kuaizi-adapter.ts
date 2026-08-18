@@ -14,7 +14,9 @@
  *    边界做确定性双向映射 kz-cgt-X ↔ cgt-X(同 #308 的 task_ ↔ cgt- 伪装,换了前缀而已)。
  *  - 【成片 URL】上游给两条:`content.video_url`(方舟原始签名直链,~24h 过期)与
  *    `content.kz_video_url`(上游转存的持久链)。对客【优先 video_url】—— 保持客户只看到
- *    火山官方 VOD 域名(operator 的「真实感」要求),且 kz_video_url 路径含 `ai_openapi/`
+ *    火山官方 TOS 域名(operator 的「真实感」要求;实测 ark-acg-cn-beijing.tos-cn-beijing.volces.com
+ *    + X-Tos-Signature —— 是火山【对象存储 TOS】,不是 cn 渠道那条 VOD/volcvideo.com,两者别混),
+ *    且 kz_video_url 路径含 `ai_openapi/`
  *    + 上游 task id,会泄露上游身份。仅 video_url 缺失时兜底用 kz_video_url。
  *  - 【无取消端点】筷子文档只有建/查两个接口 → cancel 返 null(proxy 侧 best-effort,不阻断删除)。
  *
@@ -51,6 +53,28 @@ export function getKuaiziConfig(): { base: string; key: string } | null {
     return { base: (process.env.ENTERPRISE_KUAIZI_BASE_URL || DEFAULT_BASE).replace(/\/$/, ''), key };
 }
 
+/**
+ * 上游 `vendor_task_id`(渠道侧原始任务 id,文档 v1.3 起 running 阶段即返回)→ 对客透传。
+ *
+ * **默认全量透传**(operator 2026-08-19 拍板:下游就是要这个号)。
+ *
+ * ⚠️ 已知取舍 —— 它**不总是**火山原生 id:上游按渠道路由,字节方舟渠道给 `cgt-…`
+ * (= 火山官方 id,可拿去跟火山对账),**其它三方渠道给该渠道自己的 id**
+ * (实测 `tsk-ghubt0mgm8impt83`,同一 model/分辨率昨天还是 cgt- 形)。后者:
+ *  ① 拿去跟火山对账查不到 —— 对「对账」这个用途无效;
+ *  ② 形态上暴露「这单没走火山官方直连」,与 #271 隐藏中间商的口径有张力。
+ * operator 知悉后仍要求透传,故默认放行;`ENTERPRISE_VENDOR_TASK_ID_ARK_ONLY=1`
+ * 可收紧成「只透 cgt- 形」(逃生阀,改 env 即可,不用发版)。
+ *
+ * 注:成片域名与本字段无关 —— 两种形态实测都返回火山 TOS
+ * (ark-acg-cn-beijing.tos-cn-beijing.volces.com);cn 渠道那条才是 VOD/volcvideo.com。
+ */
+function publicVendorTaskId(raw: unknown): string | undefined {
+    if (typeof raw !== 'string' || !raw) return undefined;
+    if (process.env.ENTERPRISE_VENDOR_TASK_ID_ARK_ONLY === '1' && !raw.startsWith('cgt-')) return undefined;
+    return raw;
+}
+
 /** 上游 kz-cgt-X → 对客 cgt-X。非该前缀原样透传(轮询侧有 404 回退兜底)。 */
 function disguiseTaskId(upstreamId: string): string {
     return upstreamId.startsWith(UPSTREAM_ID_PREFIX)
@@ -82,7 +106,9 @@ export const VOLC_RESOLUTIONS: Record<SeedanceVariant, ReadonlyArray<'480p' | '7
     pro: ['480p', '720p', '1080p', '4k'],
     fast: ['480p', '720p', '1080p'],
     mini: ['480p', '720p', '1080p'],
-    '2.5': ['480p', '720p'],
+    // 上游 2026-08-18(文档 v1.2)放开 1080p;4k 仍不支持(实测错误文案
+    // 「invalid resolution "4k" for mode seedance2.5, allowed: 480p, 720p, 1080p」)。
+    '2.5': ['480p', '720p', '1080p'],
     // proMax 系不在 volc 渠道(海外档,走 cn-adapter);列全只为类型完整。
     promax: [],
     'promax-fast': [],
@@ -254,7 +280,7 @@ export async function pollVolcVideo(id: string): Promise<NextResponse> {
     const contentObj = (j.content ?? undefined) as
         | { video_url?: unknown; kz_video_url?: unknown; last_frame_url?: unknown }
         | undefined;
-    // 优先方舟原始直链(客户只看到火山官方 VOD 域名);缺失才兜底上游转存链。
+    // 优先方舟原始直链(客户只看到火山官方 TOS 域名);缺失才兜底上游转存链。
     const videoUrl =
         typeof contentObj?.video_url === 'string'
             ? contentObj.video_url
@@ -268,6 +294,11 @@ export async function pollVolcVideo(id: string): Promise<NextResponse> {
             : '';
     if (failReason) console.warn('[kuaizi-adapter] task failed upstream', { id, fail_reason: failReason });
     const usage = (j.usage ?? undefined) as Record<string, unknown> | undefined;
+    // 渠道侧原始任务 id:全量落日志(排查/对账用),对客只透火山原生形(见 publicVendorTaskId)。
+    const vendorRaw = j.vendor_task_id;
+    if (typeof vendorRaw === 'string' && vendorRaw && !vendorRaw.startsWith('cgt-')) {
+        console.log('[kuaizi-adapter] non-ark vendor task', { id, vendor_task_id: vendorRaw });
+    }
     return NextResponse.json(
         {
             id,
@@ -280,6 +311,7 @@ export async function pollVolcVideo(id: string): Promise<NextResponse> {
             last_frame_url: lastFrameUrl,
             fail_reason: failReason || undefined,
             usage: status === 'completed' ? usage : undefined,
+            vendor_task_id: publicVendorTaskId(vendorRaw),
         },
         { status: 200 },
     );

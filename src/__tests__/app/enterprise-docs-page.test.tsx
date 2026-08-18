@@ -18,12 +18,14 @@ describe('/enterprise/docs 火山渠道章节', () => {
     });
 
     it('分辨率矩阵与适配器的实际门控一致(文档不漂移)', () => {
-        // 2.5 仅 480p/720p,不宣传 1080p/4k;pro 才有 4k —— 与 VOLC_RESOLUTIONS 同源
-        expect(VOLC_RESOLUTIONS['2.5']).toEqual(['480p', '720p']);
+        // 2.5 = 480p/720p/1080p(上游 v1.2 放开 1080p),仍无 4k;pro 才有 4k —— 与 VOLC_RESOLUTIONS 同源
+        expect(VOLC_RESOLUTIONS['2.5']).toEqual(['480p', '720p', '1080p']);
+        expect(VOLC_RESOLUTIONS['2.5']).not.toContain('4k');
         expect(VOLC_RESOLUTIONS.pro).toContain('4k');
         expect(VOLC_RESOLUTIONS.fast).not.toContain('4k');
         expect(html).toContain('480p / 720p / 1080p / 4k');
         expect(html).toContain('4~30 或 -1');
+        expect(html).toContain('480p / 720p / 1080p');
         // 2.5 首帧/首尾帧任务的 adaptive 约束必须写进文档(上游创建时同步拒)
         expect(html).toContain('adaptive');
     });

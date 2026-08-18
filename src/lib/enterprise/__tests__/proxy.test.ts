@@ -938,11 +938,11 @@ describe('火山渠道(volc)四档模型 —— 上游换筷子开放平台后�
         expect(db.seedanceVideoTask.create).toHaveBeenCalledWith({ data: expect.objectContaining({ model }) });
     });
 
-    it('分辨率按档位门控:fast/mini 无 4k、2.5 仅 480p/720p → 400 且不打上游', async () => {
+    it('分辨率按档位门控:fast/mini 无 4k、2.5 无 4k → 400 且不打上游', async () => {
+        // ⚠️ 2.5 的 1080p 上游 2026-08-18(文档 v1.2)已放开,不再在此列 —— 见下一条用例
         for (const [model, res_] of [
             ['doubao-seedance-2.0-fast', '4k'],
             ['doubao-seedance-2.0-mini', '4k'],
-            ['doubao-seedance-2.5', '1080p'],
             ['doubao-seedance-2.5', '4k'],
         ] as const) {
             const res = await handleEnterpriseV1(
@@ -953,6 +953,23 @@ describe('火山渠道(volc)四档模型 —— 上游换筷子开放平台后�
             expect((await res.json()).error.message).toContain('resolution 仅支持');
         }
         expect(submitVolcVideo).not.toHaveBeenCalled();
+    });
+
+    it('2.5 @1080p 现在放行(上游 v1.2 放开,实测确认)', async () => {
+        const res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', {
+                model: 'doubao-seedance-2.5',
+                prompt: 'x',
+                resolution: '1080p',
+                ratio: 'adaptive',
+            }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(200);
+        expect(submitVolcVideo).toHaveBeenCalledWith(
+            expect.anything(),
+            expect.objectContaining({ clientModel: 'doubao-seedance-2.5', resolution: '1080p' }),
+        );
     });
 
     it('pro 保留 4k;2.5 时长上限 30(31 → 400 文案含 4-30)', async () => {
@@ -1173,5 +1190,61 @@ describe('轮询遇上游 4xx —— 终态化 vs 瞬时(2026-08-18,8925 次轮�
         expect(j.status).toBe('failed');
         expect(j.fail_reason).toBe('ratio 必须 adaptive');
         expect(pollVideoWithKey).not.toHaveBeenCalled();
+    });
+});
+
+describe('vendor_task_id 出口(2026-08-19)', () => {
+    const t = {
+        id: 'cgt-v1',
+        tier: 'enterprise-portal',
+        user_id: 'u1',
+        model: 'doubao-seedance-2.5',
+        resolution: '720p',
+        has_video: false,
+        status: 'in_progress',
+        tokens: null,
+        created_at: new Date('2026-08-19T02:00:00Z'),
+        duration: 4,
+        ratio: 'adaptive',
+        seed: null,
+        generate_audio: true,
+        fail_reason: null,
+    };
+    const running = (vendor?: string) =>
+        NextResponse.json({
+            id: 'cgt-v1',
+            task_id: 'cgt-v1',
+            object: 'video',
+            status: 'in_progress',
+            progress: 50,
+            ...(vendor ? { vendor_task_id: vendor } : {}),
+        });
+
+    beforeEach(() => db.seedanceVideoTask.findUnique.mockResolvedValue(t));
+
+    it('v1 形:body 带 vendor_task_id + 响应头', async () => {
+        pollVolcVideo.mockResolvedValue(running('cgt-20260817125256-tfv79'));
+        const res = await handleEnterpriseV1(req('GET', '/v1/video/generations/cgt-v1'), '/video/generations/cgt-v1');
+        expect(res.headers.get('X-Silkroadai-Vendor-Task-Id')).toBe('cgt-20260817125256-tfv79');
+        expect(((await res.json()) as { vendor_task_id?: string }).vendor_task_id).toBe('cgt-20260817125256-tfv79');
+    });
+
+    it('火山形(ark):只走响应头,body 保持官方字段集不变(#326 严格白名单)', async () => {
+        pollVolcVideo.mockResolvedValue(running('cgt-20260817125256-tfv79'));
+        const res = await handleEnterpriseArkV3(
+            req('GET', '/api/v3/contents/generations/tasks/cgt-v1'),
+            '/contents/generations/tasks/cgt-v1',
+        );
+        expect(res.headers.get('X-Silkroadai-Vendor-Task-Id')).toBe('cgt-20260817125256-tfv79');
+        const body = (await res.json()) as Record<string, unknown>;
+        expect(body).not.toHaveProperty('vendor_task_id'); // body 一个多余键都不能加
+        expect(body.status).toBe('running');
+    });
+
+    it('上游没给(未开通 / 早期)→ 不加头,也不崩', async () => {
+        pollVolcVideo.mockResolvedValue(running());
+        const res = await handleEnterpriseV1(req('GET', '/v1/video/generations/cgt-v1'), '/video/generations/cgt-v1');
+        expect(res.status).toBe(200);
+        expect(res.headers.get('X-Silkroadai-Vendor-Task-Id')).toBeNull();
     });
 });

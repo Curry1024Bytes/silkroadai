@@ -827,6 +827,14 @@ async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat
         });
     }
 
+    // 渠道侧原始任务 id(仅火山原生 cgt- 形会被 adapter 放出来,见 publicVendorTaskId)。
+    // 走【响应头】而不是塞进火山形 body —— 火山官方响应里没有这个字段,#326 起 cn/volc 面
+    // 只出官方声明字段(客户按严格白名单校验,多一个键就拒)。头对 schema 校验零风险。
+    const vendorHeaders: Record<string, string> =
+        typeof j?.vendor_task_id === 'string' && j.vendor_task_id
+            ? { 'X-Silkroadai-Vendor-Task-Id': j.vendor_task_id }
+            : {};
+
     // 火山形查询响应:status 翻译 + video_url/last_frame_url 挪进 content + 元数据回填。
     if (format === 'ark') {
         const ourStatus = typeof j?.status === 'string' ? j.status : task.status;
@@ -866,6 +874,7 @@ async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat
                 generateAudio: task.generate_audio,
                 extended,
             }),
+            { headers: vendorHeaders },
         );
     }
 
@@ -874,7 +883,10 @@ async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat
     if (customerOssVideoUrl && j) {
         j.video_url = customerOssVideoUrl;
         j.url = customerOssVideoUrl;
-        return NextResponse.json(j, { status: 200 });
+        return NextResponse.json(j, { status: 200, headers: vendorHeaders });
     }
-    return new NextResponse(text, { status: 200, headers: { 'Content-Type': 'application/json' } });
+    return new NextResponse(text, {
+        status: 200,
+        headers: { 'Content-Type': 'application/json', ...vendorHeaders },
+    });
 }
