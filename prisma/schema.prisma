@@ -234,6 +234,8 @@ model Tenant {
   catalog_models             CatalogModel[]
   channel_groups             ChannelGroup[]
   announcements              Announcement[]
+  upstream_cost_imports      UpstreamCostImport[] @relation("UpstreamCostImportTenant")
+  upstream_cost_entries      UpstreamCostEntry[]  @relation("UpstreamCostEntryTenant")
 
   @@map("tenants")
 }
@@ -1055,6 +1057,85 @@ model UsageMeterCursor {
   last_run_at DateTime?
 
   @@map("usage_meter_cursor")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// 真实上游成本台账(P1)。这是运营/财务的只读对账事实，不参与客户计费：
+// 不写 new-api，不改 quota / 余额 / 路由。成本证据采用 append-only 明细，CSV
+// 文件本身按 SHA-256 去重，并保留导入批次、操作者和原始金额换算快照，避免未来
+// 汇率、折扣或供应商价格变化后重算历史。
+// ─────────────────────────────────────────────────────────────────────────
+enum UpstreamCostStatus {
+  verified // 已有供应商实扣证据且已关联到请求
+  estimated // 基于规则/官方价的估算，不能冒充实扣
+  unmatched // 有供应商成本，但尚未可靠关联到 portal/new-api 请求
+}
+
+enum UpstreamCostSource {
+  manual     // 管理员逐条录入
+  csv_import // 管理员导入的供应商账单/导出
+  upstream_api // 预留：未来供应商只读 API 同步
+}
+
+model UpstreamCostImport {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenant_id   String?  @db.Uuid
+  tenant      Tenant?  @relation("UpstreamCostImportTenant", fields: [tenant_id], references: [id])
+  filename    String   @db.VarChar(255)
+  file_sha256 String   @db.Char(64)
+  row_count   Int
+  created_by  String?  @db.Uuid // break-glass 时 null
+  created_at  DateTime @default(now())
+
+  entries UpstreamCostEntry[]
+
+  // 同一租户的同一原始文件只允许入账一次；遇到重复导入时返回本批次。
+  @@unique([tenant_id, file_sha256])
+  @@index([tenant_id, created_at])
+  @@map("upstream_cost_imports")
+}
+
+model UpstreamCostEntry {
+  id        String  @id @default(uuid()) @db.Uuid
+  tenant_id String? @db.Uuid
+  tenant    Tenant? @relation("UpstreamCostEntryTenant", fields: [tenant_id], references: [id])
+
+  import_id         String?             @db.Uuid
+  import            UpstreamCostImport? @relation(fields: [import_id], references: [id], onDelete: Restrict)
+  import_row_number Int?
+
+  status UpstreamCostStatus
+  source UpstreamCostSource
+
+  // 优先用稳定 ID 关联；无法可靠关联时保留 upstream 证据，状态必须为 unmatched。
+  newapi_log_id        Int?
+  newapi_request_id    String? @db.VarChar(256)
+  upstream_request_id  String? @db.VarChar(256)
+  upstream_provider    String? @db.VarChar(128)
+  upstream_route       String  @db.VarChar(160)
+  upstream_model       String? @db.VarChar(160)
+
+  // 保留原始金额以及计算当时的换算参数。cost_cny 只能由这三个快照计算得出。
+  upstream_amount Decimal @db.Decimal(20, 8)
+  currency        String  @db.Char(3)
+  cny_per_unit    Decimal @db.Decimal(20, 8)
+  cost_multiplier Decimal @default(1) @db.Decimal(20, 8)
+  cost_cny        Decimal @db.Decimal(20, 8)
+
+  // 不存供应商密钥/原始账单；只存可审计的脱敏说明与可选证据哈希。
+  evidence_hash    String? @db.VarChar(128)
+  evidence_summary String? @db.Text
+  created_by       String? @db.Uuid
+  created_at       DateTime @default(now())
+
+  // CSV 每个行号只能生成一条记录；手工记录的 import_id / row 为 null，不受影响。
+  @@unique([import_id, import_row_number])
+  @@index([tenant_id, created_at])
+  @@index([tenant_id, status, created_at])
+  @@index([newapi_log_id])
+  @@index([newapi_request_id])
+  @@index([upstream_request_id])
+  @@map("upstream_cost_entries")
 }
 
 // ─────────────────────────────────────────────────────────────────────────
