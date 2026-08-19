@@ -30,6 +30,7 @@
 import 'server-only';
 import { NextResponse } from 'next/server';
 import { type SeedanceVariant } from './cn-adapter';
+import { rememberVolcId, toUpstreamId } from '@/lib/enterprise/volc-id-map';
 import { classifyUpstreamError } from './upstream-error';
 
 const DEFAULT_BASE = 'https://aiopenapi.kuaizi.cn';
@@ -53,27 +54,73 @@ export function getKuaiziConfig(): { base: string; key: string } | null {
     return { base: (process.env.ENTERPRISE_KUAIZI_BASE_URL || DEFAULT_BASE).replace(/\/$/, ''), key };
 }
 
-/**
- * 上游 `vendor_task_id`(渠道侧原始任务 id,文档 v1.3 起 running 阶段即返回)→ 对客透传。
- *
- * **默认全量透传**(operator 2026-08-19 拍板:下游就是要这个号)。
- *
- * ⚠️ 已知取舍 —— 它**不总是**火山原生 id:上游按渠道路由,字节方舟渠道给 `cgt-…`
- * (= 火山官方 id,可拿去跟火山对账),**其它三方渠道给该渠道自己的 id**
- * (实测 `tsk-ghubt0mgm8impt83`,同一 model/分辨率昨天还是 cgt- 形)。后者:
- *  ① 拿去跟火山对账查不到 —— 对「对账」这个用途无效;
- *  ② 形态上暴露「这单没走火山官方直连」,与 #271 隐藏中间商的口径有张力。
- * operator 知悉后仍要求透传,故默认放行;`ENTERPRISE_VENDOR_TASK_ID_ARK_ONLY=1`
- * 可收紧成「只透 cgt- 形」(逃生阀,改 env 即可,不用发版)。
- *
- * 注:成片域名与本字段无关 —— 两种形态实测都返回火山 TOS
- * (ark-acg-cn-beijing.tos-cn-beijing.volces.com);cn 渠道那条才是 VOD/volcvideo.com。
- */
-function publicVendorTaskId(raw: unknown): string | undefined {
-    if (typeof raw !== 'string' || !raw) return undefined;
-    if (process.env.ENTERPRISE_VENDOR_TASK_ID_ARK_ONLY === '1' && !raw.startsWith('cgt-')) return undefined;
-    return raw;
+// 上游 `vendor_task_id` = 渠道侧原始任务号。落方舟时它就是**火山官方任务 id**(cgt-…),
+// 也正是我们要对客暴露的号 —— 见 waitForVendorTaskId。
+
+/** 火山原生任务号的形态(方舟 id)。非该形态 = 任务没落方舟。 */
+function isArkTaskId(v: unknown): v is string {
+    return typeof v === 'string' && v.startsWith('cgt-');
 }
+
+const VENDOR_TASK_POLL_MS = 2000;
+function vendorWaitMs(): number {
+    const raw = Number(process.env.ENTERPRISE_VOLC_VENDOR_WAIT_MS);
+    return Number.isFinite(raw) && raw > 0 ? raw : 60_000;
+}
+
+/**
+ * 提交后压住等**火山官方任务号**出现,拿到了再吐给客户。
+ *
+ * volc 对客承诺的是原生火山体验,所以任务 id 必须是火山自己的号,而不是上游发的
+ * `kz-cgt-…`。上游受理任务后才会给出 `vendor_task_id` —— 实测 ~10.5s(不必等出片,
+ * running 期间就有)。这段等待消不掉,只能我们压着(operator 2026-08-19 拍板)。
+ *
+ * 两种失败都**报错**,不吐一个非火山的号:
+ *  - 超时:上游已受理,任务会照跑并计入我们的上游账单 → 我们自己吃掉,客户不收费。
+ *  - 拿到非 `cgt-` 号:说明任务没落方舟(fast/mini 就是这样,已在 #397 下架)。
+ *    在售的 2.0 / 2.5 出现这个 = 上游路由变了,必须立刻知道 → console.error 报警。
+ */
+async function waitForVendorTaskId(
+    upstreamId: string,
+    fetchTask: (id: string) => Promise<Response>,
+    clientModel: string,
+): Promise<string> {
+    const deadline = Date.now() + vendorWaitMs();
+    for (;;) {
+        try {
+            const res = await fetchTask(upstreamId);
+            const j = (await res.json()) as { vendor_task_id?: unknown; status?: unknown };
+            const vendor = j.vendor_task_id;
+            if (typeof vendor === 'string' && vendor) {
+                if (!isArkTaskId(vendor)) {
+                    console.error('[kuaizi-adapter] 在售档位落到【非方舟】渠道 —— 上游路由可能变了', {
+                        model: clientModel,
+                        upstreamId,
+                        vendor_task_id: vendor,
+                    });
+                    throw new NonArkTaskError();
+                }
+                return vendor;
+            }
+        } catch (e) {
+            if (e instanceof NonArkTaskError) throw e;
+            // 轮询本身抖动不算失败,继续等到 deadline。
+            console.warn('[kuaizi-adapter] vendor task id poll error', { upstreamId, err: String(e) });
+        }
+        if (Date.now() + VENDOR_TASK_POLL_MS > deadline) {
+            console.error('[kuaizi-adapter] vendor task id 超时(上游已受理,对客报错 → 我们自己吃掉这条)', {
+                model: clientModel,
+                upstreamId,
+                waitedMs: vendorWaitMs(),
+            });
+            throw new VendorTaskTimeoutError();
+        }
+        await new Promise((r) => setTimeout(r, VENDOR_TASK_POLL_MS));
+    }
+}
+
+class NonArkTaskError extends Error {}
+class VendorTaskTimeoutError extends Error {}
 
 /** 上游 kz-cgt-X → 对客 cgt-X。非该前缀原样透传(轮询侧有 404 回退兜底)。 */
 function disguiseTaskId(upstreamId: string): string {
@@ -241,7 +288,31 @@ export async function submitVolcVideo(body: Record<string, unknown>, opts: Kuaiz
         });
         return err(upstream.status >= 400 ? upstream.status : 502, 'upstream_error', cls.message, cls.category);
     }
-    const clientTaskId = disguiseTaskId(taskId);
+    // 对客 id = **火山官方任务号**(压着等上游受理后给出)。拿不到就报错,不吐非火山的号。
+    const fetchTask = (tid: string) =>
+        fetch(`${cfg.base}${TASKS_PATH}/${encodeURIComponent(tid)}`, {
+            headers: { Authorization: `Bearer ${cfg.key}`, Accept: 'application/json' },
+            signal: AbortSignal.timeout(20000),
+        });
+    let clientTaskId: string;
+    try {
+        clientTaskId = await waitForVendorTaskId(taskId, fetchTask, opts.clientModel);
+    } catch (e) {
+        if (e instanceof NonArkTaskError) {
+            return err(
+                502,
+                'upstream_error',
+                '该任务未由火山方舟受理,已为您中止 —— 请稍后重试或联系服务方',
+                'non_ark_route',
+            );
+        }
+        if (e instanceof VendorTaskTimeoutError) {
+            return err(504, 'upstream_timeout', '上游受理超时(未返回任务编号)—— 请稍后重新提交');
+        }
+        throw e;
+    }
+    // 火山号 → 上游号(轮询时换回去打上游)。
+    await rememberVolcId(clientTaskId, disguiseTaskId(taskId), 'task');
     return NextResponse.json(
         {
             id: clientTaskId,
@@ -278,11 +349,15 @@ export async function pollVolcVideo(id: string): Promise<NextResponse> {
             signal: AbortSignal.timeout(20000),
         });
 
-    const upstreamId = undisguiseTaskId(id);
+    // 对客 id 现在是火山官方任务号 → 先换回上游号(存量任务查不到映射,原样返回,
+    // 再走 undisguise 老路径 —— 宽进,老 id 继续能用)。
+    const mapped = await toUpstreamId(id);
+    const upstreamId = undisguiseTaskId(mapped);
     let upstream: Response;
     try {
         upstream = await fetchTask(upstreamId);
         if (upstream.status === 404 && upstreamId !== id) upstream = await fetchTask(id);
+        if (upstream.status === 404 && mapped !== id && mapped !== upstreamId) upstream = await fetchTask(mapped);
     } catch (e) {
         console.warn('[kuaizi-adapter] poll unreachable', { id, err: String(e) });
         return err(502, 'upstream_unreachable', 'upstream temporarily unavailable, please retry');
@@ -322,10 +397,12 @@ export async function pollVolcVideo(id: string): Promise<NextResponse> {
             : '';
     if (failReason) console.warn('[kuaizi-adapter] task failed upstream', { id, fail_reason: failReason });
     const usage = (j.usage ?? undefined) as Record<string, unknown> | undefined;
-    // 渠道侧原始任务 id:全量落日志(排查/对账用),对客只透火山原生形(见 publicVendorTaskId)。
+    // ⚠️ 不再对客暴露 vendor_task_id —— 客户拿到的 `id` 本身就是火山官方任务号了
+    // (提交时压着等来的,见 waitForVendorTaskId),再多一个键反而不原生:
+    // 火山官方响应里根本没有 vendor_task_id 这个字段。仍落日志供排查。
     const vendorRaw = j.vendor_task_id;
-    if (typeof vendorRaw === 'string' && vendorRaw && !vendorRaw.startsWith('cgt-')) {
-        console.log('[kuaizi-adapter] non-ark vendor task', { id, vendor_task_id: vendorRaw });
+    if (typeof vendorRaw === 'string' && vendorRaw && !isArkTaskId(vendorRaw)) {
+        console.warn('[kuaizi-adapter] non-ark vendor task', { id, vendor_task_id: vendorRaw });
     }
     return NextResponse.json(
         {
@@ -339,7 +416,6 @@ export async function pollVolcVideo(id: string): Promise<NextResponse> {
             last_frame_url: lastFrameUrl,
             fail_reason: failReason || undefined,
             usage: status === 'completed' ? usage : undefined,
-            vendor_task_id: publicVendorTaskId(vendorRaw),
         },
         { status: 200 },
     );

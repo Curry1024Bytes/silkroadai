@@ -30,6 +30,7 @@
 import 'server-only';
 import { z } from 'zod';
 import { RealPersonError } from './real-person';
+import { rememberVolcId, toUpstreamId, toUpstreamIds, toVendorId } from './volc-id-map';
 
 const DEFAULT_BASE = 'https://aiopenapi.kuaizi.cn';
 const ASSET_PATH = '/ai-open-platform-api/api/support/v1/asset';
@@ -160,8 +161,109 @@ function pageResult<T>(d: UpstreamPage<T>, fallbackPage: number, fallbackSize: n
     };
 }
 
+// ── 火山原生 id 归一(2026-08-19)────────────────────────────────────────────────
+//
+// volc 卖的是「完全原生的火山体验」,所以对客只暴露【火山自己的号和链接】:
+//   Id  ← VendorAssetId / VendorGroupId   (火山原生 id)
+//   URL ← VendorAssetUrl                  (火山 TOS 签名链)
+// 并把 Vendor* 三个键**撤掉** —— 火山官方响应里根本没有这些键,留着反而不原生。
+//
+// ⚠️ 为什么 URL 也要换:实测上游的 `URL` 字段是**客户创建时传入链接的原样回显**
+//    (传 picsum.photos/512/512.jpg 进去,查回来还是它),并不指向已入库的素材本体;
+//    真正能取到素材的只有 VendorAssetUrl(ark-media-asset.tos-cn-beijing.volces.com)。
+//    所以这不只是「更原生」,是修一个残废字段。
+
+/** 上游一行素材/组的原始形(只列我们要动的键)。 */
+interface UpstreamRow {
+    Id?: unknown;
+    GroupId?: unknown;
+    URL?: unknown;
+    VendorAssetId?: unknown;
+    VendorGroupId?: unknown;
+    VendorAssetUrl?: unknown;
+    [k: string]: unknown;
+}
+
+function str(v: unknown): string | undefined {
+    return typeof v === 'string' && v ? v : undefined;
+}
+
+/**
+ * 一行上游响应 → 对客原生形。同时把 (火山 id ↔ 上游 id) 回填进映射表(自愈)。
+ *
+ * 拿不到 vendor id 时**原样返回** —— 例如素材还在 Processing 早期、或本次改动之前
+ * 建的存量行。客户拿到的仍是它本来就认识的那个号,不算倒退。
+ */
+async function nativeRow(row: UpstreamRow, kind: 'asset' | 'group', userId?: string): Promise<UpstreamRow> {
+    const { VendorAssetId, VendorGroupId, VendorAssetUrl, ...rest } = row;
+    const out: UpstreamRow = { ...rest };
+    const upstreamId = str(row.Id);
+    const vendorId = str(kind === 'asset' ? VendorAssetId : VendorGroupId);
+    if (upstreamId && vendorId) {
+        out.Id = vendorId;
+        await rememberVolcId(vendorId, upstreamId, kind, userId);
+    }
+    const vendorUrl = str(VendorAssetUrl);
+    if (vendorUrl) out.URL = vendorUrl;
+    // 素材行上的 GroupId 也要回显成火山组号(整份响应里不能混两套命名空间)。
+    const groupUpstream = str(row.GroupId);
+    if (groupUpstream) out.GroupId = await toVendorId(groupUpstream);
+    return out;
+}
+
+/** 列表 Result 逐行原生化。 */
+async function nativePage<T extends UpstreamRow>(
+    d: UpstreamPage<T>,
+    kind: 'asset' | 'group',
+    fallbackPage: number,
+    fallbackSize: number,
+    userId?: string,
+) {
+    const base = pageResult(d, fallbackPage, fallbackSize);
+    return { ...base, Items: await Promise.all(base.Items.map((it) => nativeRow(it, kind, userId))) };
+}
+
+/**
+ * CreateAsset 后压住等火山 id 出现,拿到了再吐给客户。
+ *
+ * 上游 CreateAsset 是异步的,落库即返**上游 id**,火山 id(VendorAssetId)要等火山那边
+ * 真正受理才有 —— 实测 ~7.5s,且 **Status 还是 Processing 时就已经有了**(上游文档写
+ * 「素材到达终态后才有」不准)。既然对客承诺的是原生火山号,这段等待只能我们压着。
+ *
+ * 超时 → **报错**(operator 2026-08-19 拍板:宁可报错,也不吐一个非火山的号)。
+ * 已知代价:上游那条素材已经建好了,报错后它变成孤儿,客户重试会重复建一条。
+ */
+const VENDOR_ID_POLL_MS = 1500;
+function vendorWaitMs(): number {
+    const raw = Number(process.env.ENTERPRISE_VOLC_VENDOR_WAIT_MS);
+    return Number.isFinite(raw) && raw > 0 ? raw : 60_000;
+}
+
+async function waitForVendorAssetId(upstreamId: string): Promise<string> {
+    const deadline = Date.now() + vendorWaitMs();
+    let last: UpstreamRow = {};
+    for (;;) {
+        last = await call<UpstreamRow>('GetAsset', { Id: upstreamId });
+        const vendorId = str(last.VendorAssetId);
+        if (vendorId) return vendorId;
+        // 素材已终态却仍无火山号 = 上游那边根本没受理成功,再等也不会有。
+        if (last.Status === 'Failed') {
+            throw new RealPersonError(502, 'AssetCreateFailed', '素材入库失败,请检查素材链接后重试');
+        }
+        if (Date.now() + VENDOR_ID_POLL_MS > deadline) {
+            console.error('[kuaizi-assets] vendor asset id timeout (上游已建,对客报错 → 孤儿素材)', {
+                upstreamId,
+                status: last.Status,
+                waitedMs: vendorWaitMs(),
+            });
+            throw new RealPersonError(504, 'AssetPending', '素材入库超时 —— 上游尚未返回素材编号,请稍后重新上传');
+        }
+        await new Promise((r) => setTimeout(r, VENDOR_ID_POLL_MS));
+    }
+}
+
 /** volc 素材库 Action 分发。返回火山 Result 对象(route 层包信封);失败抛 RealPersonError。 */
-export async function handleKuaiziAssetAction(action: string, body: unknown): Promise<unknown> {
+export async function handleKuaiziAssetAction(action: string, body: unknown, userId?: string): Promise<unknown> {
     switch (action) {
         case 'CreateAssetGroup': {
             const p = createGroupSchema.safeParse(body);
@@ -171,31 +273,39 @@ export async function handleKuaiziAssetAction(action: string, body: unknown): Pr
                 GroupType: p.data.GroupType,
                 ...(p.data.Description !== undefined ? { Description: p.data.Description } : {}),
             });
-            // VendorGroupId = 渠道侧真实素材组 id(建组是同步渠道调用,创建即返回)。
-            // 其余查询类 Action 我们原样转发 Result,vendor 字段天然带出;只有这里
-            // 曾经写死只挑 Id 把它丢了(2026-08-19 实测发现)。
-            return { Id: d.Id, ...(d.VendorGroupId ? { VendorGroupId: d.VendorGroupId } : {}) };
+            // 建组是【同步】渠道调用,火山组号创建即返回 —— 不必像 CreateAsset 那样压着等。
+            const gUp = str(d.Id);
+            const gVendor = str(d.VendorGroupId);
+            if (!gUp) throw new RealPersonError(502, 'UpstreamError', '素材组创建失败(上游未返回编号)');
+            if (!gVendor) {
+                // 对客承诺的是火山原生号,拿不到就报错 —— 不吐一个非火山的号(2026-08-19 拍板)。
+                console.error('[kuaizi-assets] CreateAssetGroup 未返回 VendorGroupId', { upstreamId: gUp });
+                throw new RealPersonError(502, 'UpstreamError', '素材组创建失败(上游未返回火山编号),请重试');
+            }
+            await rememberVolcId(gVendor, gUp, 'group', userId);
+            return { Id: gVendor };
         }
         case 'ListAssetGroups': {
             const p = listGroupsSchema.safeParse(body);
             if (!p.success) badParam(p.error);
-            const d = await call<UpstreamPage<unknown>>('ListAssetGroups', {
+            const d = await call<UpstreamPage<UpstreamRow>>('ListAssetGroups', {
                 PageNumber: p.data.PageNumber,
                 PageSize: p.data.PageSize,
                 ...(p.data.Filter ? { Filter: p.data.Filter } : {}),
             });
-            return pageResult(d, p.data.PageNumber, p.data.PageSize);
+            return nativePage(d, 'group', p.data.PageNumber, p.data.PageSize, userId);
         }
         case 'GetAssetGroup': {
             const p = idSchema.safeParse(body);
             if (!p.success) badParam(p.error);
-            return call<unknown>('GetAssetGroup', { Id: p.data.Id });
+            const g = await call<UpstreamRow>('GetAssetGroup', { Id: await toUpstreamId(p.data.Id) });
+            return nativeRow(g, 'group', userId);
         }
         case 'UpdateAssetGroup': {
             const p = updateGroupSchema.safeParse(body);
             if (!p.success) badParam(p.error);
             await call('UpdateAssetGroup', {
-                Id: p.data.Id,
+                Id: await toUpstreamId(p.data.Id),
                 ...(p.data.Name !== undefined ? { Name: p.data.Name } : {}),
                 ...(p.data.Description !== undefined ? { Description: p.data.Description } : {}),
             });
@@ -204,52 +314,58 @@ export async function handleKuaiziAssetAction(action: string, body: unknown): Pr
         case 'DeleteAssetGroup': {
             const p = idSchema.safeParse(body);
             if (!p.success) badParam(p.error);
-            await call('DeleteAssetGroup', { Id: p.data.Id });
+            await call('DeleteAssetGroup', { Id: await toUpstreamId(p.data.Id) });
             return {};
         }
         case 'CreateAsset': {
             const p = createAssetSchema.safeParse(body);
             if (!p.success) badParam(p.error);
             const d = await call<{ Id?: string }>('CreateAsset', {
-                GroupId: p.data.GroupId,
+                GroupId: await toUpstreamId(p.data.GroupId),
                 URL: p.data.URL,
                 AssetType: p.data.AssetType,
                 ...(p.data.Name !== undefined ? { Name: p.data.Name } : {}),
             });
-            // 上游 CreateAsset 是异步的:落库即返 Id,素材需轮询 GetAsset 到 Status=Active。
-            return { Id: d.Id };
+            const aUp = str(d.Id);
+            if (!aUp) throw new RealPersonError(502, 'UpstreamError', '素材创建失败(上游未返回编号)');
+            // 压住等火山素材号(实测 ~7.5s);拿到才吐给客户 —— 见 waitForVendorAssetId。
+            const aVendor = await waitForVendorAssetId(aUp);
+            await rememberVolcId(aVendor, aUp, 'asset', userId);
+            return { Id: aVendor };
         }
         case 'ListAssets': {
             const p = listAssetsSchema.safeParse(body);
             if (!p.success) badParam(p.error);
-            const groupIds = p.data.Filter?.GroupIds ?? (p.data.GroupId ? [p.data.GroupId] : undefined);
+            const groupIdsRaw = p.data.Filter?.GroupIds ?? (p.data.GroupId ? [p.data.GroupId] : undefined);
+            const groupIds = groupIdsRaw ? await toUpstreamIds(groupIdsRaw) : undefined;
             const filter = {
                 ...(groupIds ? { GroupIds: groupIds } : {}),
                 ...(p.data.Filter?.Statuses ? { Statuses: p.data.Filter.Statuses } : {}),
                 ...(p.data.Filter?.Name ? { Name: p.data.Filter.Name } : {}),
             };
-            const d = await call<UpstreamPage<unknown>>('ListAssets', {
+            const d = await call<UpstreamPage<UpstreamRow>>('ListAssets', {
                 PageNumber: p.data.PageNumber,
                 PageSize: p.data.PageSize,
                 ...(Object.keys(filter).length ? { Filter: filter } : {}),
             });
-            return pageResult(d, p.data.PageNumber, p.data.PageSize);
+            return nativePage(d, 'asset', p.data.PageNumber, p.data.PageSize, userId);
         }
         case 'GetAsset': {
             const p = idSchema.safeParse(body);
             if (!p.success) badParam(p.error);
-            return call<unknown>('GetAsset', { Id: p.data.Id });
+            const a = await call<UpstreamRow>('GetAsset', { Id: await toUpstreamId(p.data.Id) });
+            return nativeRow(a, 'asset', userId);
         }
         case 'UpdateAsset': {
             const p = updateAssetSchema.safeParse(body);
             if (!p.success) badParam(p.error);
-            await call('UpdateAsset', { Id: p.data.Id, Name: p.data.Name });
+            await call('UpdateAsset', { Id: await toUpstreamId(p.data.Id), Name: p.data.Name });
             return { Id: p.data.Id };
         }
         case 'DeleteAsset': {
             const p = idSchema.safeParse(body);
             if (!p.success) badParam(p.error);
-            await call('DeleteAsset', { Id: p.data.Id });
+            await call('DeleteAsset', { Id: await toUpstreamId(p.data.Id) });
             return {};
         }
         default:

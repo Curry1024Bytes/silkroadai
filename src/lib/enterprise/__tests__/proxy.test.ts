@@ -1249,29 +1249,26 @@ describe('vendor_task_id 出口(2026-08-19)', () => {
 
     beforeEach(() => db.seedanceVideoTask.findUnique.mockResolvedValue(t));
 
-    it('v1 形:body 带 vendor_task_id + 响应头', async () => {
+    // 2026-08-19 原生化:客户拿到的 `id` 本身就是火山官方任务号(提交时压着等来的),
+    // 既不再单出「渠道侧原始 id」响应头,body 也不加键 —— 火山官方两者都没有。
+    it.each([
+        ['v1 形', handleEnterpriseV1, '/video/generations/cgt-v1'],
+        ['火山形(ark)', handleEnterpriseArkV3, '/contents/generations/tasks/cgt-v1'],
+    ] as const)('%s:不再有 X-Silkroadai-Vendor-Task-Id 头', async (_label, handler, sub) => {
         pollVolcVideo.mockResolvedValue(running('cgt-20260817125256-tfv79'));
-        const res = await handleEnterpriseV1(req('GET', '/v1/video/generations/cgt-v1'), '/video/generations/cgt-v1');
-        expect(res.headers.get('X-Silkroadai-Vendor-Task-Id')).toBe('cgt-20260817125256-tfv79');
-        expect(((await res.json()) as { vendor_task_id?: string }).vendor_task_id).toBe('cgt-20260817125256-tfv79');
+        const res = await handler(req('GET', `/api/v3${sub}`), sub);
+        expect(res.status).toBe(200);
+        expect(res.headers.get('X-Silkroadai-Vendor-Task-Id')).toBeNull();
     });
 
-    it('火山形(ark):只走响应头,body 保持官方字段集不变(#326 严格白名单)', async () => {
+    it('火山形(ark)body 仍是官方字段集(#326 严格白名单)', async () => {
         pollVolcVideo.mockResolvedValue(running('cgt-20260817125256-tfv79'));
         const res = await handleEnterpriseArkV3(
             req('GET', '/api/v3/contents/generations/tasks/cgt-v1'),
             '/contents/generations/tasks/cgt-v1',
         );
-        expect(res.headers.get('X-Silkroadai-Vendor-Task-Id')).toBe('cgt-20260817125256-tfv79');
         const body = (await res.json()) as Record<string, unknown>;
-        expect(body).not.toHaveProperty('vendor_task_id'); // body 一个多余键都不能加
+        expect(body).not.toHaveProperty('vendor_task_id');
         expect(body.status).toBe('running');
-    });
-
-    it('上游没给(未开通 / 早期)→ 不加头,也不崩', async () => {
-        pollVolcVideo.mockResolvedValue(running());
-        const res = await handleEnterpriseV1(req('GET', '/v1/video/generations/cgt-v1'), '/video/generations/cgt-v1');
-        expect(res.status).toBe(200);
-        expect(res.headers.get('X-Silkroadai-Vendor-Task-Id')).toBeNull();
     });
 });

@@ -7,6 +7,15 @@ import {
     KUAIZI_ASSET_ACTIONS,
 } from '../kuaizi-assets';
 import { RealPersonError } from '../real-person';
+import { rememberVolcId, toUpstreamId, toVendorId } from '../volc-id-map';
+
+// 映射表是翻译层,单测里 stub 掉 —— 本文件验的是 Action 契约,不是持久化。
+vi.mock('../volc-id-map', () => ({
+    rememberVolcId: vi.fn(async () => {}),
+    toUpstreamId: vi.fn(async (id: string) => id),
+    toUpstreamIds: vi.fn(async (ids: string[]) => ids),
+    toVendorId: vi.fn(async (id: string) => id),
+}));
 
 const BASE = 'http://kuaizi.test';
 const KEY = 'kz-test-key';
@@ -18,6 +27,13 @@ beforeEach(() => {
     process.env.ENTERPRISE_KUAIZI_BASE_URL = BASE;
     process.env.ENTERPRISE_KUAIZI_KEY = KEY;
     vi.restoreAllMocks();
+    vi.mocked(rememberVolcId).mockClear();
+    vi.mocked(toUpstreamId)
+        .mockReset()
+        .mockImplementation(async (id: string) => id);
+    vi.mocked(toVendorId)
+        .mockReset()
+        .mockImplementation(async (id: string) => id);
 });
 afterEach(() => {
     delete process.env.ENTERPRISE_KUAIZI_BASE_URL;
@@ -78,17 +94,33 @@ describe('shouldUseKuaiziAssets —— volc 客户的分流规则', () => {
 });
 
 describe('handleKuaiziAssetAction', () => {
-    it('CreateAsset:打 Action 单入口 + ApiKey 头(非 Bearer),AssetType 归一 Title-case,只返 Id', async () => {
-        const fetchMock = vi
-            .spyOn(global, 'fetch')
-            .mockResolvedValue(new Response(envelope({ Id: '1800657071180349888' }), { status: 200 }));
+    it('CreateAsset:打 Action 单入口 + ApiKey 头(非 Bearer),AssetType 归一 Title-case,返【火山素材号】', async () => {
+        // CreateAsset 后适配器会压着轮询 GetAsset 等火山素材号(实测 ~7.5s,Processing 期就有)
+        const fetchMock = vi.spyOn(global, 'fetch').mockImplementation((_u, init) => {
+            const action = String(_u).includes('Action=CreateAsset') ? 'create' : 'get';
+            void init;
+            return Promise.resolve(
+                new Response(
+                    envelope(
+                        action === 'create'
+                            ? { Id: '1800657071180349888' }
+                            : {
+                                  Id: '1800657071180349888',
+                                  Status: 'Processing',
+                                  VendorAssetId: 'asset-20260819105009-jvndn',
+                              },
+                    ),
+                    { status: 200 },
+                ),
+            );
+        });
         const r = await handleKuaiziAssetAction('CreateAsset', {
             GroupId: '1800657071180349525',
             URL: 'https://cdn.test/a.jpg',
             AssetType: 'image',
             Name: '封面图',
         });
-        expect(r).toEqual({ Id: '1800657071180349888' });
+        expect(r).toEqual({ Id: 'asset-20260819105009-jvndn' });
         const [url, init] = fetchMock.mock.calls[0];
         expect(url).toBe(`${ENDPOINT}?Action=CreateAsset&Version=2024-01-01`);
         expect((init as RequestInit).headers).toMatchObject({ ApiKey: KEY });
@@ -189,33 +221,94 @@ describe('handleKuaiziAssetAction', () => {
     });
 });
 
-describe('vendor 字段透传 + id 判据收紧(上游文档 2026-08-19)', () => {
-    it('CreateAssetGroup 带出 VendorGroupId(此前被写死只挑 Id 丢掉)', async () => {
+describe('CreateAsset 压着等火山素材号(2026-08-19)', () => {
+    const create = () => new Response(envelope({ Id: '1800657071180349888' }), { status: 200 });
+
+    it('上游迟迟不给 VendorAssetId → 504,不吐一个非火山的号', async () => {
+        process.env.ENTERPRISE_VOLC_VENDOR_WAIT_MS = '1';
+        vi.spyOn(global, 'fetch').mockImplementation((u) =>
+            Promise.resolve(
+                String(u).includes('Action=CreateAsset')
+                    ? create()
+                    : new Response(envelope({ Id: '1800657071180349888', Status: 'Processing' }), { status: 200 }),
+            ),
+        );
+        await expect(
+            handleKuaiziAssetAction('CreateAsset', { GroupId: 'g', URL: 'https://x/a.jpg', AssetType: 'image' }),
+        ).rejects.toMatchObject({ status: 504 });
+        delete process.env.ENTERPRISE_VOLC_VENDOR_WAIT_MS;
+    });
+
+    it('素材已 Failed 却仍无火山号 → 立刻报错,不空等到超时', async () => {
+        process.env.ENTERPRISE_VOLC_VENDOR_WAIT_MS = '60000';
+        vi.spyOn(global, 'fetch').mockImplementation((u) =>
+            Promise.resolve(
+                String(u).includes('Action=CreateAsset')
+                    ? create()
+                    : new Response(envelope({ Id: '1800657071180349888', Status: 'Failed' }), { status: 200 }),
+            ),
+        );
+        await expect(
+            handleKuaiziAssetAction('CreateAsset', { GroupId: 'g', URL: 'https://x/a.jpg', AssetType: 'image' }),
+        ).rejects.toMatchObject({ status: 502, code: 'AssetCreateFailed' });
+        delete process.env.ENTERPRISE_VOLC_VENDOR_WAIT_MS;
+    });
+});
+
+describe('火山原生 id / URL 归一(2026-08-19)+ id 判据收紧', () => {
+    // volc 卖的是原生火山体验 → 对客只出火山自己的号和链接,Vendor* 三个键全部撤掉
+    // (火山官方响应里根本没有这些键,留着反而不原生)。
+
+    it('CreateAssetGroup 返【火山组号】,不返上游号,也不留 VendorGroupId 键', async () => {
         vi.spyOn(global, 'fetch').mockResolvedValue(
             new Response(envelope({ Id: '191950112983875603', VendorGroupId: 'group-20260819085158-kkp5p' }), {
                 status: 200,
             }),
         );
         expect(await handleKuaiziAssetAction('CreateAssetGroup', { Name: 'g' })).toEqual({
-            Id: '191950112983875603',
-            VendorGroupId: 'group-20260819085158-kkp5p',
+            Id: 'group-20260819085158-kkp5p',
+        });
+        expect(rememberVolcId).toHaveBeenCalledWith(
+            'group-20260819085158-kkp5p',
+            '191950112983875603',
+            'group',
+            undefined,
+        );
+    });
+
+    it('上游没给 VendorGroupId → 报错,不吐一个非火山的号', async () => {
+        vi.spyOn(global, 'fetch').mockResolvedValue(new Response(envelope({ Id: '1' }), { status: 200 }));
+        await expect(handleKuaiziAssetAction('CreateAssetGroup', { Name: 'g' })).rejects.toMatchObject({
+            status: 502,
         });
     });
 
-    it('上游没给 VendorGroupId(能力未开通)→ 不加空字段', async () => {
-        vi.spyOn(global, 'fetch').mockResolvedValue(new Response(envelope({ Id: '1' }), { status: 200 }));
-        expect(await handleKuaiziAssetAction('CreateAssetGroup', { Name: 'g' })).toEqual({ Id: '1' });
-    });
-
-    it('GetAsset / GetAssetGroup 原样转发 Result → vendor 字段天然带出', async () => {
-        const asset = {
+    it('GetAsset:Id ← VendorAssetId、URL ← VendorAssetUrl,Vendor* 键全撤掉', async () => {
+        // ⚠️ 上游的 URL 是【客户创建时传入链接的原样回显】,不指向素材本体 ——
+        //    真正能取到素材的只有 VendorAssetUrl。所以换掉它不只是更原生,是修个残废字段。
+        const upstream = {
             Id: '1800657071180349888',
             Status: 'Active',
+            URL: 'https://picsum.photos/512/512.jpg',
             VendorAssetId: 'asset-20260819085202-247l9',
             VendorAssetUrl: 'https://ark-media-asset.tos-cn-beijing.volces.com/x?X-Tos-Signature=y',
         };
-        vi.spyOn(global, 'fetch').mockResolvedValue(new Response(envelope(asset), { status: 200 }));
-        expect(await handleKuaiziAssetAction('GetAsset', { Id: '1800657071180349888' })).toEqual(asset);
+        vi.spyOn(global, 'fetch').mockResolvedValue(new Response(envelope(upstream), { status: 200 }));
+        expect(await handleKuaiziAssetAction('GetAsset', { Id: 'asset-20260819085202-247l9' })).toEqual({
+            Id: 'asset-20260819085202-247l9',
+            Status: 'Active',
+            URL: 'https://ark-media-asset.tos-cn-beijing.volces.com/x?X-Tos-Signature=y',
+        });
+    });
+
+    it('打上游前把火山号换回上游号(上游不认火山号,实测 invalid Id)', async () => {
+        vi.mocked(toUpstreamId).mockResolvedValueOnce('1800657071180349888');
+        const fetchMock = vi
+            .spyOn(global, 'fetch')
+            .mockResolvedValue(new Response(envelope({ Id: '1800657071180349888' }), { status: 200 }));
+        await handleKuaiziAssetAction('GetAsset', { Id: 'asset-20260819085202-247l9' });
+        const sent = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+        expect(sent.Id).toBe('1800657071180349888');
     });
 
     it('平台库 id 判据:只有【6 位十六进制】后缀算我们的,筷子 vendor id 不算', () => {

@@ -9,6 +9,13 @@ import {
     VOLC_MODELS,
     VOLC_RESOLUTIONS,
 } from '../kuaizi-adapter';
+import { rememberVolcId } from '@/lib/enterprise/volc-id-map';
+
+// 映射表只是翻译层,单测里 stub 掉 —— 本文件验的是适配器契约,不是持久化。
+vi.mock('@/lib/enterprise/volc-id-map', () => ({
+    rememberVolcId: vi.fn(async () => {}),
+    toUpstreamId: vi.fn(async (id: string) => id),
+}));
 
 const BASE = 'http://kuaizi.test';
 const KEY = 'kz-test-key';
@@ -31,16 +38,32 @@ const opts = (over: Partial<Parameters<typeof submitVolcVideo>[1]> = {}) => ({
     ...over,
 });
 
+/**
+ * 提交后适配器会【压着轮询】等火山任务号(waitForVendorTaskId),所以要给两段响应:
+ *   POST …/tasks      → 上游受理,返上游 id
+ *   GET  …/tasks/{id} → 返 vendor_task_id(火山官方任务号)
+ */
+function mockSubmitThenVendor(upstreamId = 'kz-cgt-abc', vendorId = 'cgt-20260819224039-bfjdv') {
+    return vi
+        .spyOn(global, 'fetch')
+        .mockImplementation((input) =>
+            Promise.resolve(
+                String(input).endsWith('/tasks')
+                    ? new Response(JSON.stringify({ id: upstreamId, status: 'queued' }), { status: 200 })
+                    : new Response(JSON.stringify({ vendor_task_id: vendorId, status: 'running' }), { status: 200 }),
+            ),
+        );
+}
+
 describe('submitVolcVideo', () => {
-    it('打筷子方舟端点 + Bearer key,model 换成上游方舟 Model ID,kz-cgt- id 伪装成 cgt-', async () => {
-        const fetchMock = vi
-            .spyOn(global, 'fetch')
-            .mockResolvedValue(new Response(JSON.stringify({ id: 'kz-cgt-abc', status: 'queued' }), { status: 200 }));
+    it('打筷子方舟端点 + Bearer key,model 换成上游方舟 Model ID,对客 id = 火山官方任务号', async () => {
+        const fetchMock = mockSubmitThenVendor();
         const res = await submitVolcVideo({ prompt: '一只猫', ratio: '16:9' }, opts({ resolution: '1080p' }));
         expect(res.status).toBe(200);
         const j = (await res.json()) as { id: string; task_id: string; status: string; model: string };
-        expect(j.id).toBe('cgt-abc');
-        expect(j.task_id).toBe('cgt-abc');
+        // 对客 id = 火山官方任务号(压着等来的),不是上游发的 kz-cgt-
+        expect(j.id).toBe('cgt-20260819224039-bfjdv');
+        expect(j.task_id).toBe('cgt-20260819224039-bfjdv');
         expect(j.status).toBe('queued');
         // 对客回显客户调用的名字,不泄露上游 Model ID
         expect(j.model).toBe('doubao-seedance-2.0');
@@ -59,9 +82,7 @@ describe('submitVolcVideo', () => {
         const onSale = Object.entries(VOLC_MODELS).filter(([m]) => !isVolcModelWithdrawn(m));
         expect(onSale.map(([m]) => m)).toEqual(['doubao-seedance-2.0', 'doubao-seedance-2.5']);
         for (const [clientModel, spec] of onSale) {
-            const fetchMock = vi
-                .spyOn(global, 'fetch')
-                .mockResolvedValue(new Response(JSON.stringify({ id: 'kz-cgt-x' }), { status: 200 }));
+            const fetchMock = mockSubmitThenVendor();
             await submitVolcVideo({ prompt: 'x' }, opts({ clientModel }));
             const sent = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
             expect(sent.model).toBe(spec.upstream);
@@ -83,9 +104,7 @@ describe('submitVolcVideo', () => {
 
     it('逃生阀 ENTERPRISE_VOLC_ALLOW_LOW_TIERS=1 → 下架档位恢复可用(上游锁方舟后用它验证)', async () => {
         vi.stubEnv('ENTERPRISE_VOLC_ALLOW_LOW_TIERS', '1');
-        const fetchMock = vi
-            .spyOn(global, 'fetch')
-            .mockResolvedValue(new Response(JSON.stringify({ id: 'kz-cgt-x' }), { status: 200 }));
+        const fetchMock = mockSubmitThenVendor();
         const res = await submitVolcVideo({ prompt: 'x' }, opts({ clientModel: 'doubao-seedance-2.0-mini' }));
         expect(res.status).toBe(200);
         expect(JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string).model).toBe(
@@ -94,9 +113,7 @@ describe('submitVolcVideo', () => {
     });
 
     it('透传客户 content 数组(多模态)+ 火山官方可选字段', async () => {
-        const fetchMock = vi
-            .spyOn(global, 'fetch')
-            .mockResolvedValue(new Response(JSON.stringify({ id: 'kz-cgt-x' }), { status: 200 }));
+        const fetchMock = mockSubmitThenVendor();
         const content = [
             { type: 'text', text: '让她跳舞' },
             { type: 'image_url', image_url: { url: 'asset://1800657071180349888' }, role: 'first_frame' },
@@ -125,9 +142,7 @@ describe('submitVolcVideo', () => {
     });
 
     it('duration=-1(智能时长)原样透传上游', async () => {
-        const fetchMock = vi
-            .spyOn(global, 'fetch')
-            .mockResolvedValue(new Response(JSON.stringify({ id: 'kz-cgt-x' }), { status: 200 }));
+        const fetchMock = mockSubmitThenVendor();
         await submitVolcVideo({ prompt: 'x' }, opts({ duration: -1 }));
         const sent = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
         expect(sent.duration).toBe(-1);
@@ -168,12 +183,44 @@ describe('submitVolcVideo', () => {
         expect(JSON.stringify(body)).not.toContain('7f9a72b7');
     });
 
-    it('非 kz-cgt- 形上游 id 原样返回', async () => {
-        vi.spyOn(global, 'fetch').mockResolvedValue(
-            new Response(JSON.stringify({ id: 'cgt-native-1' }), { status: 200 }),
+    // ── 对客 id = 火山官方任务号(2026-08-19)──────────────────────────────────
+    // volc 卖的是原生火山体验,所以 id 必须是火山自己的号。上游受理后才给得出
+    // (实测 ~10.5s),这段等待消不掉,只能我们压着;拿不到就报错,不吐非火山的号。
+
+    it('落到非方舟(vendor 非 cgt- 形)→ 502 non_ark_route,不把非火山任务交给客户', async () => {
+        vi.spyOn(global, 'fetch').mockImplementation((input) =>
+            Promise.resolve(
+                String(input).endsWith('/tasks')
+                    ? new Response(JSON.stringify({ id: 'kz-cgt-x' }), { status: 200 })
+                    : new Response(JSON.stringify({ vendor_task_id: 'tsk-ghuya22ne4tyq74q' }), { status: 200 }),
+            ),
         );
         const res = await submitVolcVideo({ prompt: 'x' }, opts());
-        expect(((await res.json()) as { id: string }).id).toBe('cgt-native-1');
+        expect(res.status).toBe(502);
+        const b = (await res.json()) as { error: { category?: string; message: string } };
+        expect(b.error.category).toBe('non_ark_route');
+        // 上游的号不能回显给客户(#271)
+        expect(JSON.stringify(b)).not.toContain('tsk-ghuya22ne4tyq74q');
+    });
+
+    it('上游迟迟不给任务号 → 504,不吐一个非火山的号', async () => {
+        process.env.ENTERPRISE_VOLC_VENDOR_WAIT_MS = '1';
+        vi.spyOn(global, 'fetch').mockImplementation((input) =>
+            Promise.resolve(
+                String(input).endsWith('/tasks')
+                    ? new Response(JSON.stringify({ id: 'kz-cgt-x' }), { status: 200 })
+                    : new Response(JSON.stringify({ status: 'queued' }), { status: 200 }),
+            ),
+        );
+        const res = await submitVolcVideo({ prompt: 'x' }, opts());
+        expect(res.status).toBe(504);
+        delete process.env.ENTERPRISE_VOLC_VENDOR_WAIT_MS;
+    });
+
+    it('拿到火山号后写映射表(轮询时要换回上游号)', async () => {
+        mockSubmitThenVendor('kz-cgt-abc', 'cgt-20260819224039-bfjdv');
+        await submitVolcVideo({ prompt: 'x' }, opts());
+        expect(rememberVolcId).toHaveBeenCalledWith('cgt-20260819224039-bfjdv', 'cgt-abc', 'task');
     });
 });
 
@@ -277,41 +324,26 @@ describe('cancelVolcVideo', () => {
     });
 });
 
-describe('vendor_task_id 透传(上游文档 v1.3,2026-08-19)', () => {
+describe('vendor_task_id 不再对客暴露(2026-08-19 原生化)', () => {
     const poll = (extra: Record<string, unknown>) =>
         new Response(JSON.stringify({ id: 'kz-cgt-abc', status: 'running', ...extra }), { status: 200 });
 
-    afterEach(() => delete process.env.ENTERPRISE_VENDOR_TASK_ID_ARK_ONLY);
+    // 客户拿到的 `id` 本身就是火山官方任务号了(提交时压着等来的),再多一个
+    // vendor_task_id 键反而不原生 —— 火山官方响应里根本没有这个字段。
+    it.each([['cgt-20260817125256-tfv79'], ['tsk-ghubt0mgm8impt83']])(
+        '上游给 %s → 响应体里【没有】 vendor_task_id 键',
+        async (vendor) => {
+            vi.spyOn(global, 'fetch').mockResolvedValue(poll({ vendor_task_id: vendor }));
+            const body = await (await pollVolcVideo('cgt-abc')).text();
+            expect(JSON.parse(body).vendor_task_id).toBeUndefined();
+            expect(body).not.toContain('vendor_task_id');
+        },
+    );
 
-    it('火山原生形(cgt-)→ 透传', async () => {
-        vi.spyOn(global, 'fetch').mockResolvedValue(poll({ vendor_task_id: 'cgt-20260817125256-tfv79' }));
-        const j = (await (await pollVolcVideo('cgt-abc')).json()) as { vendor_task_id?: string };
-        expect(j.vendor_task_id).toBe('cgt-20260817125256-tfv79');
-    });
-
-    it('三方渠道形(tsk-)→ 默认也透传(operator 拍板:下游就是要这个号)', async () => {
-        vi.spyOn(global, 'fetch').mockResolvedValue(poll({ vendor_task_id: 'tsk-ghubt0mgm8impt83' }));
-        const j = (await (await pollVolcVideo('cgt-abc')).json()) as { vendor_task_id?: string };
-        expect(j.vendor_task_id).toBe('tsk-ghubt0mgm8impt83');
-    });
-
-    it('逃生阀 ENTERPRISE_VENDOR_TASK_ID_ARK_ONLY=1 → 只透 cgt-,tsk- 连响应体都不含', async () => {
-        process.env.ENTERPRISE_VENDOR_TASK_ID_ARK_ONLY = '1';
-        vi.spyOn(global, 'fetch').mockResolvedValue(poll({ vendor_task_id: 'tsk-ghubt0mgm8impt83' }));
-        const body = await (await pollVolcVideo('cgt-abc')).text();
-        expect(JSON.parse(body).vendor_task_id).toBeUndefined();
-        expect(body).not.toContain('tsk-ghubt0mgm8impt83');
-
-        vi.restoreAllMocks();
-        vi.spyOn(global, 'fetch').mockResolvedValue(poll({ vendor_task_id: 'cgt-x1' }));
-        const j = (await (await pollVolcVideo('cgt-abc')).json()) as { vendor_task_id?: string };
-        expect(j.vendor_task_id).toBe('cgt-x1'); // 开关只挡非 cgt- 形
-    });
-
-    it('未开通 / running 早期上游不给该字段 → 不报错,响应里也没有', async () => {
+    it('上游根本不给该字段 → 照常返回,不报错', async () => {
         vi.spyOn(global, 'fetch').mockResolvedValue(poll({}));
-        const j = (await (await pollVolcVideo('cgt-abc')).json()) as { vendor_task_id?: string };
-        expect(j.vendor_task_id).toBeUndefined();
+        const j = (await (await pollVolcVideo('cgt-abc')).json()) as { status: string };
+        expect(j.status).toBe('in_progress');
     });
 });
 

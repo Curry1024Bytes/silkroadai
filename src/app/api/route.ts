@@ -236,7 +236,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // 三种情况仍回落平台库(真人素材 / 平台形 Id / 平台形 GroupId)—— 见 shouldUseKuaiziAssets。
     if (kuaiziAssetsEnabled() && isVolc && shouldUseKuaiziAssets(action, body)) {
         try {
-            return ok(action, await handleKuaiziAssetAction(action, body));
+            return ok(action, await handleKuaiziAssetAction(action, body, userId));
         } catch (e) {
             if (e instanceof RealPersonError) return fail(action, e.status, e.code, e.message);
             console.error('[asset-api] kuaizi asset error', action, e);

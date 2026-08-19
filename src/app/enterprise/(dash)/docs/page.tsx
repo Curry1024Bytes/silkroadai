@@ -587,58 +587,23 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                     </li>
                 </ul>
 
-                <p className="font-medium text-gray-900">渠道侧原始任务 ID(vendor_task_id)</p>
+                <p className="font-medium text-gray-900">任务 ID 就是火山官方任务号</p>
                 <p>
-                    查询任务时会额外给出<b>渠道侧的原始任务号</b>,便于您与渠道日志/工单对齐排查。
-                    <b>渠道受理任务后即有</b>(<Code>running</Code> 期间就能拿到),不必等出片。
+                    提交返回的 <Code>id</Code> / <Code>task_id</Code> 是<b>火山官方的任务编号</b>(<Code>cgt-</Code>{' '}
+                    开头)—— 与您在火山侧看到的是<b>同一个号</b>,可直接用于对账、 工单与日志核对,无需再做任何映射。
                 </p>
-                <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
-                        <thead>
-                            <tr>
-                                <Th>调用面</Th>
-                                <Th>怎么取</Th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <tr>
-                                <Td>
-                                    <Code>{'GET /v1/video/generations/{id}'}</Code>
-                                </Td>
-                                <Td>
-                                    响应体字段 <Code>vendor_task_id</Code>,同时也在响应头{' '}
-                                    <Code>X-Silkroadai-Vendor-Task-Id</Code>
-                                </Td>
-                            </tr>
-                            <tr>
-                                <Td>
-                                    <Code>{'GET /api/v3/contents/generations/tasks/{id}'}</Code>(火山形)
-                                </Td>
-                                <Td>
-                                    <b>只在响应头</b> <Code>X-Silkroadai-Vendor-Task-Id</Code> —— 火山官方响应体没有这个
-                                    字段,为不破坏严格字段校验,我们不往 body 里加键
-                                </Td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-                <Pre>{`curl -i ${BASE}/v1/video/generations/cgt-… \\
+                <Pre>{`curl ${BASE}/v1/video/generations/cgt-20260819224039-bfjdv \\
   -H "Authorization: Bearer sk-ent-您的密钥"
-# 响应头: X-Silkroadai-Vendor-Task-Id: cgt-20260817125256-tfv79
-# 响应体: {"status":"in_progress", "vendor_task_id":"cgt-20260817125256-tfv79", …}`}</Pre>
-                <ul className="list-disc space-y-1 pl-5">
+# → {"status":"in_progress", "id":"cgt-20260819224039-bfjdv", …}`}</Pre>
+                <ul className="list-disc space-y-1 pl-5 text-gray-600">
                     <li>
-                        <b>这个号只能看、不能拿来调接口。</b> 查询任务、对账计费一律用我们返回的 <Code>id</Code>(
-                        <Code>cgt-</Code> 开头);把 <Code>vendor_task_id</Code> 填进查询接口会返回{' '}
-                        <Code>404 task not found</Code>
-                        。它的唯一用途:当您需要和我们(或火山)核对某一条具体任务时,报这个号能更快定位到渠道侧日志。
+                        <b>提交会等上游受理后再返回</b>(通常十几秒)—— 火山那边分配出任务号我们才应答,
+                        这样您拿到的从第一刻起就是火山官方的号。
                     </li>
                     <li>
-                        形态<b>不固定</b>:任务落在字节方舟渠道时为 <Code>cgt-…</Code>(火山官方任务号,可与火山侧对账);
-                        落在其它渠道时为该渠道自己的编号(如 <Code>tsk-…</Code>),
-                        <b>后者无法与火山对账</b>,仅供我们排查。
+                        若上游迟迟未受理,提交返回 <Code>504</Code> —— 请稍后重新提交。
+                        <b>这种情况不计费。</b>
                     </li>
-                    <li>任务刚创建、渠道尚未受理时该字段可能缺失,属正常,稍后重试即可。</li>
                 </ul>
             </Section>
 

@@ -1269,35 +1269,35 @@ model EnterpriseKey {
 // AK 明文(签名 Credential 里可见),SK AES-256-GCM 加密存(验签时解出重算比对)。
 // 与 sk-ent Bearer 并存:一个客户可同时有多把 sk-ent 和多对 AK/SK。
 model EnterpriseAkSk {
-  id            String    @id @default(uuid()) @db.Uuid
-  tenant_id     String?   @db.Uuid
-  user_id       String    @db.Uuid
-  access_key    String    @unique // ak_ent_<24hex>,签名 Credential 里明文出现
-  secret_key_enc String // AES-256-GCM(iv‖tag‖ct base64),key=ENTERPRISE_UPSTREAM_ENC_KEY
-  secret_key_hash String? @unique // sha256(SK 明文),SK 直接当 Bearer key 用的查找索引(2026-07-30;存量行由 backfill 脚本补)
-  name          String
-  status        String    @default("active") // active | disabled
-  created_at    DateTime  @default(now())
-  last_used_at  DateTime?
+  id              String    @id @default(uuid()) @db.Uuid
+  tenant_id       String?   @db.Uuid
+  user_id         String    @db.Uuid
+  access_key      String    @unique // ak_ent_<24hex>,签名 Credential 里明文出现
+  secret_key_enc  String // AES-256-GCM(iv‖tag‖ct base64),key=ENTERPRISE_UPSTREAM_ENC_KEY
+  secret_key_hash String?   @unique // sha256(SK 明文),SK 直接当 Bearer key 用的查找索引(2026-07-30;存量行由 backfill 脚本补)
+  name            String
+  status          String    @default("active") // active | disabled
+  created_at      DateTime  @default(now())
+  last_used_at    DateTime?
 
   @@index([user_id])
   @@map("enterprise_ak_sk")
 }
 
 model EnterpriseUpstreamKey {
-  id               String   @id @default(uuid()) @db.Uuid
-  user_id          String   @db.Uuid
+  id               String    @id @default(uuid()) @db.Uuid
+  user_id          String    @db.Uuid
   // 版本(2026-07-23 海外版):'cn' | 'global',每客户每版本一把上游 key。
   // discount 挂本行 → 国内/海外折扣天然独立。
-  region           String   @default("cn")
+  region           String    @default("cn")
   upstream_key_enc String // AES-256-GCM(iv‖tag‖ct base64),key=ENTERPRISE_UPSTREAM_ENC_KEY
   note             String? // 上游侧对账备注(key 名/账户)
   // 客户级整体折扣率(2026-07-20 引入;口径 2026-08-07 重锚):【官方挂牌价 × discount】,
   // 全变体×分辨率生效。1 = 官方原价(新户默认,operator 拍板 —— 要给折扣必须显式设置);
   // 0.85 = 85 折,0.9 = 九折。单档 enterprise_rate_overrides 是绝对单价,优先且【不】再乘折扣。
   // ⚠️ 重锚前语义是「零售价(挂牌×0.85)再乘 discount」→ 折上折,见 migration 20260807030000。
-  discount         Decimal  @default(1) @db.Decimal(6, 4)
-  created_at       DateTime @default(now())
+  discount         Decimal   @default(1) @db.Decimal(6, 4)
+  created_at       DateTime  @default(now())
   // 软删除标记(2026-08-08):删账号 = 该客户全部行置 deleted_at + 禁用 keys/aksk + User.status=disabled。
   // 保留流水/任务/余额历史(审计),客户列表默认过滤 deleted_at IS NULL。
   deleted_at       DateTime?
@@ -1343,6 +1343,31 @@ model EnterpriseAsset {
   @@index([user_id, created_at])
   @@index([group_id])
   @@map("enterprise_assets")
+}
+
+// volc 渠道「火山原生 id」映射表(2026-08-19)。
+//
+// 背景:volc 卖的是「完全原生的火山体验」,所以对客暴露的必须是火山自己的号
+// (素材 asset-YYYYMMDDHHMMSS-xxxxx / 任务 cgt-…),而不是中间上游发的号。
+// 但上游【不认】火山的号(实测 GetAsset 传 VendorAssetId → InvalidParameter:
+// invalid Id),所以打上游前必须换回上游 id —— 这张表就是那次换算。
+//
+// vendor_id  = 对客暴露的火山原生 id(主键;火山侧全局唯一)
+// upstream_id= 打上游用的 id(素材为十进制串;任务为 kz-cgt-… 还原前的对客形)
+// kind       = asset | group | task
+//
+// ⚠️ 不是单点故障:上游 ListAssets 每行同时带 Id 与 VendorAssetId,查询类响应
+//    经过时会顺手 upsert 回填(自愈),表丢了也能重建。
+model VolcIdMap {
+  vendor_id   String   @id
+  upstream_id String
+  kind        String
+  user_id     String?  @db.Uuid
+  created_at  DateTime @default(now())
+
+  @@index([upstream_id])
+  @@index([user_id])
+  @@map("volc_id_map")
 }
 
 // 大客户议价:per-customer 费率覆盖(元/1M token)。查不到 → cn-billing 默认挂牌。

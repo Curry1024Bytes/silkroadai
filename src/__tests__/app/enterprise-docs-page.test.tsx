@@ -6,15 +6,17 @@ import { describe, expect, it } from 'vitest';
 import { renderToString } from 'react-dom/server';
 
 import EnterpriseDocsPage from '@/app/enterprise/(dash)/docs/page';
-import { VOLC_MODELS, VOLC_RESOLUTIONS } from '@/lib/seedance/kuaizi-adapter';
+import { isVolcModelWithdrawn, VOLC_MODELS, VOLC_RESOLUTIONS } from '@/lib/seedance/kuaizi-adapter';
 
 describe('/enterprise/docs 火山渠道章节', () => {
     const html = renderToString(<EnterpriseDocsPage />);
 
-    it('四档对客模型名全部出现在文档里', () => {
+    it('在售档位都在文档里;下架档位写明停售(不能悄悄消失,客户会以为是自己写错了)', () => {
         for (const model of Object.keys(VOLC_MODELS)) {
             expect(html).toContain(model);
         }
+        expect(Object.keys(VOLC_MODELS).some(isVolcModelWithdrawn)).toBe(true);
+        expect(html).toContain('暂停服务');
     });
 
     it('分辨率矩阵与适配器的实际门控一致(文档不漂移)', () => {
@@ -30,10 +32,16 @@ describe('/enterprise/docs 火山渠道章节', () => {
         expect(html).toContain('adaptive');
     });
 
-    it('vendor_task_id 的两种取法都要写进文档(ark 面只在响应头,不写客户找不到)', () => {
-        expect(html).toContain('vendor_task_id');
-        expect(html).toContain('X-Silkroadai-Vendor-Task-Id');
-        // 形态不固定这条必须说明,否则客户拿 tsk- 去找火山对账会白跑
-        expect(html).toContain('tsk-');
+    // 2026-08-19 原生化:任务 id 本身就是火山官方任务号了 —— 既没有 vendor_task_id 字段,
+    // 也没有「渠道侧原始 id」响应头。文档里不能再提这两样,否则客户去找一个不存在的字段。
+    it('不再出现 vendor_task_id / 渠道侧原始 id 响应头', () => {
+        expect(html).not.toContain('vendor_task_id');
+        expect(html).not.toContain('X-Silkroadai-Vendor-Task-Id');
+    });
+
+    it('写明「任务 ID 就是火山官方任务号」+ 提交会等上游受理', () => {
+        expect(html).toContain('火山官方的任务编号');
+        expect(html).toContain('同一个号');
+        expect(html).toContain('提交会等上游受理后再返回');
     });
 });

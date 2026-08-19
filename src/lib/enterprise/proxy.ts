@@ -834,13 +834,10 @@ async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat
         });
     }
 
-    // 渠道侧原始任务 id(仅火山原生 cgt- 形会被 adapter 放出来,见 publicVendorTaskId)。
-    // 走【响应头】而不是塞进火山形 body —— 火山官方响应里没有这个字段,#326 起 cn/volc 面
-    // 只出官方声明字段(客户按严格白名单校验,多一个键就拒)。头对 schema 校验零风险。
-    const vendorHeaders: Record<string, string> =
-        typeof j?.vendor_task_id === 'string' && j.vendor_task_id
-            ? { 'X-Silkroadai-Vendor-Task-Id': j.vendor_task_id }
-            : {};
+    // 2026-08-19 起不再有 X-Silkroadai-Vendor-Task-Id 头 —— volc 客户拿到的 `id` 本身
+    // 就是火山官方任务号了(提交时压着等来的),再单出一个「渠道侧原始 id」既冗余、
+    // 也提示了中间层的存在。火山官方既没有这个头也没有这个字段。
+    const vendorHeaders: Record<string, string> = {};
 
     // 火山形查询响应:status 翻译 + video_url/last_frame_url 挪进 content + 元数据回填。
     if (format === 'ark') {
