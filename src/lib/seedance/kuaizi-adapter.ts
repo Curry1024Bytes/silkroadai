@@ -69,22 +69,20 @@ function vendorWaitMs(): number {
 }
 
 /**
- * 提交后压住等**火山官方任务号**出现,拿到了再吐给客户。
+ * 提交后压住等**渠道侧任务号**出现,判断这条任务到底落没落火山方舟。
  *
- * volc 对客承诺的是原生火山体验,所以任务 id 必须是火山自己的号,而不是上游发的
- * `kz-cgt-…`。上游受理任务后才会给出 `vendor_task_id` —— 实测 ~10.5s(不必等出片,
- * running 期间就有)。这段等待消不掉,只能我们压着(operator 2026-08-19 拍板)。
+ * 落方舟时 `vendor_task_id` 就是**火山官方任务号**(cgt-…),正是我们要对客暴露的号;
+ * 落别家时是那家自己的号(tsk-…)。上游受理后才给得出 —— 实测 ~10.5s(不必等出片)。
+ * 这段等待消不掉,只能我们压着(operator 2026-08-19 拍板)。
  *
- * 两种失败都**报错**,不吐一个非火山的号:
- *  - 超时:上游已受理,任务会照跑并计入我们的上游账单 → 我们自己吃掉,客户不收费。
- *  - 拿到非 `cgt-` 号:说明任务没落方舟(fast/mini 就是这样,已在 #397 下架)。
- *    在售的 2.0 / 2.5 出现这个 = 上游路由变了,必须立刻知道 → console.error 报警。
+ * 返回 `{ vendorId, isArk }`;**只有超时才抛**(上游已受理,任务会照跑并计入我们的上游
+ * 账单 → 我们自己吃掉,客户不收费)。落没落方舟由调用方决定怎么处理 —— 见 submitVolcVideo。
  */
 async function waitForVendorTaskId(
     upstreamId: string,
     fetchTask: (id: string) => Promise<Response>,
     clientModel: string,
-): Promise<string> {
+): Promise<{ vendorId: string; isArk: boolean }> {
     const deadline = Date.now() + vendorWaitMs();
     for (;;) {
         try {
@@ -92,18 +90,9 @@ async function waitForVendorTaskId(
             const j = (await res.json()) as { vendor_task_id?: unknown; status?: unknown };
             const vendor = j.vendor_task_id;
             if (typeof vendor === 'string' && vendor) {
-                if (!isArkTaskId(vendor)) {
-                    console.error('[kuaizi-adapter] 在售档位落到【非方舟】渠道 —— 上游路由可能变了', {
-                        model: clientModel,
-                        upstreamId,
-                        vendor_task_id: vendor,
-                    });
-                    throw new NonArkTaskError();
-                }
-                return vendor;
+                return { vendorId: vendor, isArk: isArkTaskId(vendor) };
             }
         } catch (e) {
-            if (e instanceof NonArkTaskError) throw e;
             // 轮询本身抖动不算失败,继续等到 deadline。
             console.warn('[kuaizi-adapter] vendor task id poll error', { upstreamId, err: String(e) });
         }
@@ -119,8 +108,12 @@ async function waitForVendorTaskId(
     }
 }
 
-class NonArkTaskError extends Error {}
 class VendorTaskTimeoutError extends Error {}
+
+/** 严格模式:落非方舟直接 502 拒掉(缺省【关】,operator 2026-08-19 决定先放开)。 */
+function requireArk(): boolean {
+    return process.env.ENTERPRISE_VOLC_REQUIRE_ARK === '1';
+}
 
 /** 上游 kz-cgt-X → 对客 cgt-X。非该前缀原样透传(轮询侧有 404 回退兜底)。 */
 function disguiseTaskId(upstreamId: string): string {
@@ -294,11 +287,36 @@ export async function submitVolcVideo(body: Record<string, unknown>, opts: Kuaiz
             headers: { Authorization: `Bearer ${cfg.key}`, Accept: 'application/json' },
             signal: AbortSignal.timeout(20000),
         });
-    let clientTaskId: string;
+    const fallbackTaskId = disguiseTaskId(taskId);
+    let vendor: { vendorId: string; isArk: boolean };
     try {
-        clientTaskId = await waitForVendorTaskId(taskId, fetchTask, opts.clientModel);
+        vendor = await waitForVendorTaskId(taskId, fetchTask, opts.clientModel);
     } catch (e) {
-        if (e instanceof NonArkTaskError) {
+        if (e instanceof VendorTaskTimeoutError) {
+            return err(504, 'upstream_timeout', '上游受理超时(未返回任务编号)—— 请稍后重新提交');
+        }
+        throw e;
+    }
+
+    let clientTaskId: string;
+    if (vendor.isArk) {
+        clientTaskId = vendor.vendorId;
+    } else {
+        // 上游把这条任务路由到了【非方舟】渠道 —— 它给的号是那家自己的(tsk-…),不是火山号。
+        //
+        // 2026-08-19 实测:路由会漂,同一模型同参数 45 分钟内就从 cgt- 变成 tsk-,
+        // 所以静态名单靠不住,只能每条实时判。operator 决定【先放行、同时向上游反馈】,
+        // 因此这里不拒掉,而是**降级回火山方舟形的伪装号**(#398 之前的行为):
+        //   - 不能把 tsk- 直接给客户 —— 破坏火山 SDK 的形态预期,还暴露了第三方(#271)
+        //   - 落方舟的任务仍拿【真】火山号,#398 的收益不受影响
+        // 严格模式 ENTERPRISE_VOLC_REQUIRE_ARK=1 恢复直接 502(上游修好后用它守回归)。
+        console.error('[kuaizi-adapter] NON_ARK_ROUTE 任务未落火山方舟(已降级放行)', {
+            model: opts.clientModel,
+            upstreamId: taskId,
+            vendor_task_id: vendor.vendorId,
+            clientTaskId: fallbackTaskId,
+        });
+        if (requireArk()) {
             return err(
                 502,
                 'upstream_error',
@@ -306,13 +324,10 @@ export async function submitVolcVideo(body: Record<string, unknown>, opts: Kuaiz
                 'non_ark_route',
             );
         }
-        if (e instanceof VendorTaskTimeoutError) {
-            return err(504, 'upstream_timeout', '上游受理超时(未返回任务编号)—— 请稍后重新提交');
-        }
-        throw e;
+        clientTaskId = fallbackTaskId;
     }
-    // 火山号 → 上游号(轮询时换回去打上游)。
-    await rememberVolcId(clientTaskId, disguiseTaskId(taskId), 'task');
+    // 火山号 → 上游号(轮询时换回去打上游)。降级形与上游形相同,remember 会自行跳过。
+    await rememberVolcId(clientTaskId, fallbackTaskId, 'task');
     return NextResponse.json(
         {
             id: clientTaskId,

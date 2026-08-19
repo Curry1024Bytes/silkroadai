@@ -589,8 +589,9 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
 
                 <p className="font-medium text-gray-900">任务 ID 就是火山官方任务号</p>
                 <p>
-                    提交返回的 <Code>id</Code> / <Code>task_id</Code> 是<b>火山官方的任务编号</b>(<Code>cgt-</Code>{' '}
-                    开头)—— 与您在火山侧看到的是<b>同一个号</b>,可直接用于对账、 工单与日志核对,无需再做任何映射。
+                    提交返回的 <Code>id</Code> / <Code>task_id</Code> 为<b>火山方舟形</b>(<Code>cgt-</Code>{' '}
+                    开头)。由火山方舟受理的任务,该编号<b>即火山官方任务号</b> —— 与您在火山侧看到的是
+                    <b>同一个号</b>,可直接用于对账、工单与日志核对,无需再做任何映射。
                 </p>
                 <Pre>{`curl ${BASE}/v1/video/generations/cgt-20260819224039-bfjdv \\
   -H "Authorization: Bearer sk-ent-您的密钥"

@@ -40,7 +40,7 @@ describe('/enterprise/docs 火山渠道章节', () => {
     });
 
     it('写明「任务 ID 就是火山官方任务号」+ 提交会等上游受理', () => {
-        expect(html).toContain('火山官方的任务编号');
+        expect(html).toContain('即火山官方任务号');
         expect(html).toContain('同一个号');
         expect(html).toContain('提交会等上游受理后再返回');
     });

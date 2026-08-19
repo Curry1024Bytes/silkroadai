@@ -187,20 +187,42 @@ describe('submitVolcVideo', () => {
     // volc 卖的是原生火山体验,所以 id 必须是火山自己的号。上游受理后才给得出
     // (实测 ~10.5s),这段等待消不掉,只能我们压着;拿不到就报错,不吐非火山的号。
 
-    it('落到非方舟(vendor 非 cgt- 形)→ 502 non_ark_route,不把非火山任务交给客户', async () => {
-        vi.spyOn(global, 'fetch').mockImplementation((input) =>
-            Promise.resolve(
-                String(input).endsWith('/tasks')
-                    ? new Response(JSON.stringify({ id: 'kz-cgt-x' }), { status: 200 })
-                    : new Response(JSON.stringify({ vendor_task_id: 'tsk-ghuya22ne4tyq74q' }), { status: 200 }),
-            ),
-        );
+    // 落非方舟:operator 2026-08-19 决定【先放行、同时向上游反馈】。
+    // 但绝不能把 tsk- 直接给客户 —— 破坏火山 SDK 的形态预期,还暴露第三方(#271)。
+    const nonArk = () =>
+        vi
+            .spyOn(global, 'fetch')
+            .mockImplementation((input) =>
+                Promise.resolve(
+                    String(input).endsWith('/tasks')
+                        ? new Response(JSON.stringify({ id: 'kz-cgt-x' }), { status: 200 })
+                        : new Response(JSON.stringify({ vendor_task_id: 'tsk-ghuya22ne4tyq74q' }), { status: 200 }),
+                ),
+            );
+
+    it('落到非方舟 → 放行,但降级回火山方舟形伪装号(绝不把 tsk- 给客户)', async () => {
+        nonArk();
+        const res = await submitVolcVideo({ prompt: 'x' }, opts());
+        expect(res.status).toBe(200);
+        const body = await res.text();
+        expect(JSON.parse(body).id).toBe('cgt-x');
+        expect(body).not.toContain('tsk-ghuya22ne4tyq74q');
+    });
+
+    it('严格模式 ENTERPRISE_VOLC_REQUIRE_ARK=1 → 落非方舟直接 502(上游修好后用它守回归)', async () => {
+        vi.stubEnv('ENTERPRISE_VOLC_REQUIRE_ARK', '1');
+        nonArk();
         const res = await submitVolcVideo({ prompt: 'x' }, opts());
         expect(res.status).toBe(502);
-        const b = (await res.json()) as { error: { category?: string; message: string } };
+        const b = (await res.json()) as { error: { category?: string } };
         expect(b.error.category).toBe('non_ark_route');
-        // 上游的号不能回显给客户(#271)
         expect(JSON.stringify(b)).not.toContain('tsk-ghuya22ne4tyq74q');
+    });
+
+    it('落方舟 → 仍拿【真】火山号(#398 的收益不受放行影响)', async () => {
+        mockSubmitThenVendor('kz-cgt-x', 'cgt-20260819224039-bfjdv');
+        const res = await submitVolcVideo({ prompt: 'x' }, opts());
+        expect(((await res.json()) as { id: string }).id).toBe('cgt-20260819224039-bfjdv');
     });
 
     it('上游迟迟不给任务号 → 504,不吐一个非火山的号', async () => {
