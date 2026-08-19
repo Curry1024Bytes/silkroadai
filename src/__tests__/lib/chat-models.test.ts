@@ -18,12 +18,18 @@ vi.mock('@/lib/chat/model-groups', () => ({
     getModelGroupMap: () => mockGetModelGroupMap(),
 }));
 
+const mockListUserTierMultipliers = vi.fn();
+vi.mock('@/lib/newapi/user-tier-multiplier', () => ({
+    listUserTierMultipliers: (...args: unknown[]) => mockListUserTierMultipliers(...args),
+}));
+
 import { listChatModels, _collapseChatModelsForTest } from '@/lib/chat/models';
 import { groupModels } from '@/lib/models/categorize';
 
 beforeEach(() => {
     vi.clearAllMocks();
     mockGetModelGroupMap.mockResolvedValue(new Map()); // default: no group augmentation
+    mockListUserTierMultipliers.mockResolvedValue([]);
 });
 
 describe('collapseChatModels', () => {
@@ -96,5 +102,19 @@ describe('listChatModels', () => {
         expect(byId['gpt-5.4'].priceMultiplier).toBe(1);
         expect(byId['claude-fable-5'].group).toBe('official');
         expect(byId['claude-fable-5'].priceMultiplier).toBeCloseTo(2.4615, 3);
+    });
+
+    it('shows the signed-in customer their effective 0.18 rate while another user keeps the public 0.20 rate', async () => {
+        mockListAvailableModels.mockResolvedValue(['gpt-5.4']);
+        mockGetModelGroupMap.mockResolvedValue(
+            new Map([['gpt-5.4', { group: 'GPT-Pro20x(企业级)', ratio: 0.2, multiplier: 1 }]]),
+        );
+        mockListUserTierMultipliers.mockResolvedValueOnce([
+            { tier_key: 'gpt-pro20x', newapi_billing_group: 'GPT-Pro20x(企业级)', multiplier: 0.18 },
+        ]);
+        expect((await listChatModels('customer-a')).flat[0].effectiveRatio).toBe(0.18);
+
+        mockListUserTierMultipliers.mockResolvedValueOnce([]);
+        expect((await listChatModels('customer-b')).flat[0].effectiveRatio).toBe(0.2);
     });
 });

@@ -458,12 +458,20 @@ function ModelPicker({
                 {currentModel?.vendor && (
                     <span className="hidden text-[11px] text-minor-ink sm:inline">· {currentModel.vendor}</span>
                 )}
-                {currentPremium && currentModel?.priceMultiplier != null && (
+                {currentModel?.effectiveRatio == null && currentPremium && currentModel?.priceMultiplier != null && (
                     <span
                         title={`官方稳定渠道,计费约为普通池的 ${formatMultiplier(currentModel.priceMultiplier)} 倍`}
                         className="rounded bg-amber-50 px-1 text-[10px] font-medium text-amber-700 ring-1 ring-amber-200"
                     >
                         官方 {formatMultiplier(currentModel.priceMultiplier)}×
+                    </span>
+                )}
+                {currentModel?.effectiveRatio != null && (
+                    <span
+                        title="该客户的专属有效倍率"
+                        className="rounded bg-emerald-50 px-1 text-[10px] font-medium text-emerald-700 ring-1 ring-emerald-200"
+                    >
+                        倍率 {formatMultiplier(currentModel.effectiveRatio)}×
                     </span>
                 )}
                 <span aria-hidden className="text-minor-ink">
@@ -499,12 +507,22 @@ function ModelPicker({
                                     >
                                         <span className="truncate">{m.id}</span>
                                         <span className="flex shrink-0 items-center gap-1">
-                                            {m.priceMultiplier != null && m.priceMultiplier > 1.05 && (
+                                            {m.effectiveRatio == null &&
+                                                m.priceMultiplier != null &&
+                                                m.priceMultiplier > 1.05 && (
+                                                    <span
+                                                        title={`官方稳定渠道,计费约为普通池的 ${formatMultiplier(m.priceMultiplier)} 倍`}
+                                                        className="rounded bg-amber-50 px-1 text-[10px] font-medium text-amber-700 ring-1 ring-amber-200"
+                                                    >
+                                                        官方 {formatMultiplier(m.priceMultiplier)}×
+                                                    </span>
+                                                )}
+                                            {m.effectiveRatio != null && (
                                                 <span
-                                                    title={`官方稳定渠道,计费约为普通池的 ${formatMultiplier(m.priceMultiplier)} 倍`}
-                                                    className="rounded bg-amber-50 px-1 text-[10px] font-medium text-amber-700 ring-1 ring-amber-200"
+                                                    title="该客户的专属有效倍率"
+                                                    className="rounded bg-emerald-50 px-1 text-[10px] font-medium text-emerald-700 ring-1 ring-emerald-200"
                                                 >
-                                                    官方 {formatMultiplier(m.priceMultiplier)}×
+                                                    倍率 {formatMultiplier(m.effectiveRatio)}×
                                                 </span>
                                             )}
                                             {m.vision && (

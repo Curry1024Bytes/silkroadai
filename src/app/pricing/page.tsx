@@ -19,12 +19,17 @@
  *  - tier labels come from ChannelGroup.display_name, ordered by tier_level.
  */
 import Link from 'next/link';
+import { headers } from 'next/headers';
+import { NextRequest } from 'next/server';
 import { BackButton } from '@/components/BackButton';
 import { Logo } from '@/components/brand/Logo';
 import { FormError } from '@/components/ui/FormError';
 import { prisma } from '@/lib/db';
 import { PLATFORM_TENANT_ID } from '@/lib/admin/tenant-scope';
 import { categorizeByVendor, HIDDEN_MODELS, VENDOR_META, VENDOR_ORDER, type VendorName } from '@/lib/models/categorize';
+import { getCurrentUser } from '@/lib/auth/session';
+import { getOption } from '@/lib/newapi/client';
+import { listUserTierMultipliers } from '@/lib/newapi/user-tier-multiplier';
 
 export const revalidate = 60;
 export const metadata = {
@@ -33,12 +38,28 @@ export const metadata = {
         'LLmRoute 模型价格总表:Claude / GPT / Gemini 等按百万 token 计费,生图模型按张计费,全部人民币标价,按档次(号池 / 官方稳定 / 专属)分列。',
 };
 
+async function getPricingUserId(): Promise<string | undefined> {
+    try {
+        const h = await headers();
+        const user = await getCurrentUser(
+            new NextRequest('http://internal/pricing', { headers: { cookie: h.get('cookie') ?? '' } }),
+        );
+        return user?.id;
+    } catch {
+        // Unit renders and static tooling have no request scope; public
+        // pricing simply falls back to the public GroupRatio in that case.
+        return undefined;
+    }
+}
+
 interface PriceCell {
     tierKey: string;
     tierLabel: string;
     inputCny: number | null;
     outputCny: number | null;
     perImageCny: number | null;
+    publicMultiplier: number | null;
+    effectiveMultiplier: number | null;
 }
 
 interface ModelBlock {
@@ -57,8 +78,17 @@ function fmtCny(n: number): string {
     return n.toFixed(4).replace(/\.?0+$/, '');
 }
 
-async function loadPricingSheet(): Promise<{ vendors: VendorBlock[]; modelCount: number }> {
-    const [models, groups] = await Promise.all([
+async function getGroupRatioSafe(): Promise<string | null> {
+    try {
+        return await getOption('GroupRatio');
+    } catch (err) {
+        console.warn('[pricing] public GroupRatio lookup failed:', err);
+        return null;
+    }
+}
+
+async function loadPricingSheet(userId?: string): Promise<{ vendors: VendorBlock[]; modelCount: number }> {
+    const [models, groups, groupRatioRaw, overrides] = await Promise.all([
         prisma.catalogModel.findMany({
             // 锁平台主体 —— slug 仅在 tenant 内唯一,与 machine-catalog / billing meter 同标准。
             where: { enabled: true, tenant_id: PLATFORM_TENANT_ID },
@@ -75,7 +105,30 @@ async function loadPricingSheet(): Promise<{ vendors: VendorBlock[]; modelCount:
             where: { enabled: true, tenant_id: PLATFORM_TENANT_ID },
             orderBy: [{ tier_level: 'asc' }, { key: 'asc' }],
         }),
+        getGroupRatioSafe(),
+        userId
+            ? listUserTierMultipliers(userId).catch((err) => {
+                  console.warn(`[pricing] dedicated multiplier lookup failed for user ${userId}:`, err);
+                  return [];
+              })
+            : Promise.resolve([]),
     ]);
+
+    let groupRatios: Record<string, number> = {};
+    try {
+        const parsed = groupRatioRaw ? JSON.parse(groupRatioRaw) : null;
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            groupRatios = Object.fromEntries(
+                Object.entries(parsed).filter(([, value]) => typeof value === 'number' && Number.isFinite(value)),
+            ) as Record<string, number>;
+        }
+    } catch {
+        // Public pricing remains usable when the upstream option is malformed.
+    }
+    const overridesByGroup = new Map(
+        overrides.map((override) => [override.newapi_billing_group, Number(override.multiplier)]),
+    );
+    const groupByTier = new Map(groups.map((group) => [group.key, group.newapi_group]));
 
     const tierLabel = new Map<string, string>();
     const tierRank = new Map<string, number>();
@@ -100,6 +153,11 @@ async function loadPricingSheet(): Promise<{ vendors: VendorBlock[]; modelCount:
                 inputCny: p.input_cny_per_1m == null ? null : Number(p.input_cny_per_1m),
                 outputCny: p.output_cny_per_1m == null ? null : Number(p.output_cny_per_1m),
                 perImageCny: p.per_image_cny == null ? null : Number(p.per_image_cny),
+                publicMultiplier: groupRatios[groupByTier.get(p.tier) ?? ''] ?? null,
+                effectiveMultiplier:
+                    overridesByGroup.get(groupByTier.get(p.tier) ?? '') ??
+                    groupRatios[groupByTier.get(p.tier) ?? ''] ??
+                    null,
             });
         }
         if (rows.length === 0) continue; // 无任何可展示价 → 不上表
@@ -121,7 +179,7 @@ export default async function PricingPage() {
     let sheet: Awaited<ReturnType<typeof loadPricingSheet>> | null = null;
     let fetchErr = false;
     try {
-        sheet = await loadPricingSheet();
+        sheet = await loadPricingSheet(await getPricingUserId());
     } catch (err) {
         // 与 /models 同哲学:DB 抖动不炸公开页,渲染 chrome + 错误横幅。
         fetchErr = true;
@@ -203,6 +261,7 @@ function VendorPriceSection({ block }: { block: VendorBlock }) {
                             <th className="py-2 pr-4 font-semibold text-right">输入 ¥/1M</th>
                             <th className="py-2 pr-4 font-semibold text-right">输出 ¥/1M</th>
                             <th className="py-2 font-semibold text-right">生图 ¥/张</th>
+                            <th className="py-2 pl-4 font-semibold text-right">有效倍率</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -224,6 +283,9 @@ function VendorPriceSection({ block }: { block: VendorBlock }) {
                                     </td>
                                     <td className="py-2.5 text-right text-navy tabular-nums">
                                         {row.perImageCny != null ? `¥${fmtCny(row.perImageCny)}` : '—'}
+                                    </td>
+                                    <td className="py-2.5 pl-4 text-right text-navy tabular-nums">
+                                        {row.effectiveMultiplier != null ? `${row.effectiveMultiplier}x` : '—'}
                                     </td>
                                 </tr>
                             )),

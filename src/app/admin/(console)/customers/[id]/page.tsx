@@ -5,6 +5,7 @@ import { useParams, useSearchParams } from 'next/navigation';
 import { useState, useEffect, useCallback, Suspense } from 'react';
 import PayPageLayout from '@/components/PayPageLayout';
 import { resolveLocale, type Locale } from '@/lib/locale';
+import { RateOverridesPanel } from './rate-overrides-panel';
 
 // ── Types (mirror /api/admin/customers/[id]) ──
 interface CustomerDetail {
@@ -633,6 +634,8 @@ function DetailContent() {
                             </div>
                         </div>
                     </div>
+
+                    <RateOverridesPanel customerId={data.customer.id} isDark={isDark} locale={locale} />
 
                     {/* P4c-1 Ledger balance + adjust */}
                     <div>

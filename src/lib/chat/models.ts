@@ -19,6 +19,7 @@ import 'server-only';
 import { listAvailableModels } from '@/lib/newapi/client';
 import { groupModels, VENDOR_ORDER, type TypeName, type VendorName, type GroupedModels } from '@/lib/models/categorize';
 import { getModelGroupMap } from './model-groups';
+import { listUserTierMultipliers } from '@/lib/newapi/user-tier-multiplier';
 
 /** Type buckets that are valid chat targets. Vision models accept text
  *  prompts, so they belong here; everything else does not. */
@@ -39,6 +40,8 @@ export interface ChatModel {
     /** Price multiplier vs the default group (>1 ⇒ premium tier). Drives the
      *  picker's price badge so customers aren't surprise-billed. */
     priceMultiplier?: number;
+    /** Customer-specific absolute multiplier for this billing group. */
+    effectiveRatio?: number;
 }
 
 export interface ChatModelGroup {
@@ -95,7 +98,7 @@ function collapseChatModels(grouped: GroupedModels): ChatModelList {
  * new-api hiccup it returns an empty list so the page can render an
  * error/empty state instead of crashing (mirrors /models page behavior).
  */
-export async function listChatModels(): Promise<ChatModelList> {
+export async function listChatModels(userId?: string): Promise<ChatModelList> {
     let raw: string[] = [];
     try {
         raw = await listAvailableModels();
@@ -110,12 +113,28 @@ export async function listChatModels(): Promise<ChatModelList> {
     // the picker can flag pricier models. `flat` and `groups` share the same
     // ChatModel object refs, so one pass updates both. Best-effort —
     // getModelGroupMap never throws; on a miss the model just has no badge.
-    const gmap = await getModelGroupMap();
+    const [gmap, overrides] = await Promise.all([
+        getModelGroupMap(),
+        userId
+            ? listUserTierMultipliers(userId).catch((err) => {
+                  console.warn(`[chat/models] dedicated multiplier lookup failed for user ${userId}:`, err);
+                  return [];
+              })
+            : Promise.resolve([]),
+    ]);
+    const effectiveByGroup = new Map(
+        overrides.map((override) => [override.newapi_billing_group, Number(override.multiplier)]),
+    );
     for (const m of list.flat) {
         const info = gmap.get(m.id);
         if (info) {
             m.group = info.group;
             m.priceMultiplier = info.multiplier;
+            // Authenticated chat shows the absolute effective GroupRatio for
+            // both ordinary customers (public 0.20) and override customers
+            // (for example 0.18). Public callers omit userId and retain the
+            // existing premium-relative badge behavior.
+            if (userId) m.effectiveRatio = effectiveByGroup.get(info.group) ?? info.ratio;
         }
     }
     return list;

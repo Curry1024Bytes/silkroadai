@@ -17,6 +17,7 @@ import { getTokenUsageWithCache } from '@/lib/newapi/token-usage';
 import { quotaToCny } from '@/lib/newapi/quota-units';
 import { formatTokenForDisplay } from '@/lib/newapi/token-format';
 import { listEnabledChannelGroups, restrictGroupsForUser, getGroupRatios } from '@/lib/channel-group';
+import { listUserTierMultipliers } from '@/lib/newapi/user-tier-multiplier';
 import { KeysList, type KeyRow } from './keys-list';
 import { KeysSnippetsPanel } from './keys-snippets-panel';
 
@@ -66,7 +67,7 @@ export default async function KeysPage() {
     // (⚠️ 不是批量合并的,冷缓存时是 N 发上游,见 token-usage.ts 头注释)。
     // 单个 token 失败只影响该行快照(记 warn + 该行不显示用量)。
     // 2026-08-15:档次/倍率两项本来串在这段之后白等一个 RTT,一并并到这里。
-    const [usageSnaps, tierGroupsRaw, ratios] = await Promise.all([
+    const [usageSnaps, tierGroupsRaw, ratios, overrides] = await Promise.all([
         Promise.all(
             tokens.map(async (t) => {
                 if (user.newapi_user_id == null) return null;
@@ -85,7 +86,14 @@ export default async function KeysPage() {
         ),
         listEnabledChannelGroups(user.tenant_id),
         getGroupRatios(),
+        listUserTierMultipliers(user.id).catch((err) => {
+            console.warn(`[keys] dedicated multiplier lookup failed for user ${user.id}:`, err);
+            return [];
+        }),
     ]);
+
+    const overrideByTier = new Map(overrides.map((override) => [override.tier_key, Number(override.multiplier)]));
+    const newApiGroupByTier = new Map(tierGroupsRaw.map((group) => [group.key, group.newapi_group]));
 
     const rows: KeyRow[] = tokens.map((t, i) => {
         const snap = usageSnaps[i];
@@ -108,6 +116,7 @@ export default async function KeysPage() {
             usedCny: snap ? quotaToCny(Number(snap.used_quota)) : null,
             last_used_at: snap?.last_used_at ? snap.last_used_at.toISOString() : null,
             tier: t.tier,
+            effective_ratio: overrideByTier.get(t.tier) ?? ratios[newApiGroupByTier.get(t.tier) ?? ''] ?? null,
         };
     });
 
@@ -124,7 +133,7 @@ export default async function KeysPage() {
         description: g.description,
         is_default: g.is_default,
         newapi_group: g.newapi_group,
-        ratio: ratios[g.newapi_group] ?? null,
+        ratio: overrideByTier.get(g.key) ?? ratios[g.newapi_group] ?? null,
     }));
 
     return (

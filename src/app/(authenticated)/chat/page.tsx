@@ -13,12 +13,19 @@
 import { listChatModels } from '@/lib/chat/models';
 import { FormError } from '@/components/ui/FormError';
 import { ChatConsole } from './chat-console';
+import { headers } from 'next/headers';
+import { NextRequest } from 'next/server';
+import { getCurrentUser } from '@/lib/auth/session';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'AI 对话 — LLmRoute' };
 
 export default async function ChatPage() {
-    const { groups, flat, totalModels } = await listChatModels();
+    const h = await headers();
+    const user = await getCurrentUser(
+        new NextRequest('http://internal/chat', { headers: { cookie: h.get('cookie') ?? '' } }),
+    );
+    const { groups, flat, totalModels } = await listChatModels(user?.id);
 
     return (
         <section>

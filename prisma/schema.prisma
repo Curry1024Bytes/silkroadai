@@ -345,6 +345,7 @@ model User {
   analytics_events          AnalyticsEvent[]
   oss_config                UserOssConfig?
   account                   Account? // P4c-1 ¥账本(零客户影响,默认无 row)
+  tier_multipliers          UserTierMultiplier[]
 
   // ── session 失效控制 ──
   // JWT payload 带 tv = session_token_version。verifySession 时如果 token tv
@@ -980,6 +981,32 @@ model ChannelGroup {
   @@unique([tenant_id, key])
   @@index([tenant_id, enabled])
   @@map("channel_groups")
+}
+
+// ── 客户专属 new-api 分组倍率 ─────────────────────────────────────────────
+// new-api 仍是实际计费事实源。每一行镜像其 GroupGroupRatio 的一条规则:
+//   user.group(newapi_user_group) × token.group(newapi_billing_group) → multiplier
+// Portal 只把客户的 User.group 改为确定性的内部组;已发/新发 Token.group 保持
+// ChannelGroup 对应的公开计费组。因此不修改公共 GroupRatio,也不新增公开档次。
+// original_newapi_user_group 仅在该用户最后一条启用规则取消时用于精确恢复。
+model UserTierMultiplier {
+  id                       String   @id @default(uuid()) @db.Uuid
+  user_id                  String   @db.Uuid
+  user                     User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  tier_key                 String
+  newapi_billing_group     String
+  newapi_user_group        String
+  original_newapi_user_group String
+  multiplier               Decimal  @db.Decimal(10, 6)
+  enabled                  Boolean  @default(true)
+  synced_at                DateTime?
+  created_by               String?  @db.Uuid
+  created_at               DateTime @default(now())
+  updated_at               DateTime @updatedAt
+
+  @@unique([user_id, tier_key])
+  @@index([user_id, enabled])
+  @@map("user_tier_multipliers")
 }
 
 // ─────────────────────────────────────────────────────────────────────────

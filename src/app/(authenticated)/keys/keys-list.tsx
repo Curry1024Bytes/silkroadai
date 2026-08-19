@@ -28,6 +28,8 @@ export interface KeyRow {
     last_used_at: string | null;
     /** P3: portal 档次 key('pool' | 'official' | …). */
     tier: string;
+    /** Effective GroupGroupRatio for the signed-in customer, if configured. */
+    effective_ratio?: number | null;
 }
 
 /** P3: a selectable tier (an enabled ChannelGroup), passed from the server page. */
@@ -441,6 +443,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                 usedCny: 0,
                 last_used_at: null,
                 tier: data.tier ?? tier,
+                effective_ratio: tiers.find((option) => option.key === (data.tier ?? tier))?.ratio ?? null,
             };
             setRows((prev) => [...prev, newRow]);
             // Auto-reveal the brand-new key so the customer can copy it
@@ -630,6 +633,11 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                                                     <span className="rounded bg-portal-gold-soft px-2 py-0.5 text-[10px] font-semibold text-portal-gold">
                                                         {tierLabel(row.tier)}
                                                     </span>
+                                                    {ratioBadgeText(row.effective_ratio ?? null) && (
+                                                        <span className="rounded border border-status-success-border bg-status-success-bg px-2 py-0.5 text-[10px] font-medium text-status-success-text">
+                                                            {ratioBadgeText(row.effective_ratio ?? null)}
+                                                        </span>
+                                                    )}
                                                 </div>
                                                 <p className="m-0 mt-1 text-[11px] text-portal-subtle">
                                                     创建于{' '}
@@ -701,6 +709,11 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                                                         <span className="rounded bg-portal-gold-soft px-2 py-0.5 text-[10px] font-semibold text-portal-gold">
                                                             {tierLabel(row.tier)}
                                                         </span>
+                                                        {ratioBadgeText(row.effective_ratio ?? null) && (
+                                                            <span className="rounded border border-status-success-border bg-status-success-bg px-2 py-0.5 text-[10px] font-medium text-status-success-text">
+                                                                {ratioBadgeText(row.effective_ratio ?? null)}
+                                                            </span>
+                                                        )}
                                                     </div>
                                                 </td>
                                                 <td className={`${cell} ${borderClass}`}>
