@@ -88,6 +88,21 @@ function ratioOptionJson(value: GroupGroupRatio): string {
     return JSON.stringify(value);
 }
 
+function equalGroupGroupRatios(left: GroupGroupRatio, right: GroupGroupRatio): boolean {
+    const leftGroups = Object.keys(left);
+    const rightGroups = Object.keys(right);
+    if (leftGroups.length !== rightGroups.length) return false;
+
+    return leftGroups.every((userGroup) => {
+        const leftRules = left[userGroup];
+        const rightRules = right[userGroup];
+        if (!rightRules) return false;
+        const leftBillingGroups = Object.keys(leftRules);
+        if (leftBillingGroups.length !== Object.keys(rightRules).length) return false;
+        return leftBillingGroups.every((billingGroup) => leftRules[billingGroup] === rightRules[billingGroup]);
+    });
+}
+
 export function internalNewApiUserGroup(portalUserId: string): string {
     // Full UUID removes the collision risk of a short prefix while staying
     // well below new-api User.group's 64-character storage limit.
@@ -143,6 +158,59 @@ function parseFlatRatioMap(raw: string | null): Record<string, number> {
     return decoded as Record<string, number>;
 }
 
+/**
+ * A timeout can mean either "new-api rejected the write" or "new-api committed
+ * it but the response was lost". Read back the exact state before deciding
+ * whether Portal may continue or compensate.
+ */
+async function updateUserGroupWithReadback(args: {
+    user: NewApiUser;
+    group: string;
+    operation: string;
+    force?: boolean;
+}): Promise<boolean> {
+    if (!args.force && args.user.group === args.group) return false;
+
+    try {
+        await updateUser({ ...args.user, group: args.group });
+        return true;
+    } catch (writeErr) {
+        try {
+            const reloaded = await getUser(args.user.id);
+            if (reloaded.group === args.group) return true;
+        } catch (readErr) {
+            console.error('[user-tier-multiplier] CRITICAL cannot reconcile uncertain new-api user write', {
+                operation: args.operation,
+                userId: args.user.id,
+                writeError: writeErr instanceof Error ? writeErr.message : String(writeErr),
+                readError: readErr instanceof Error ? readErr.message : String(readErr),
+            });
+        }
+        throw writeErr;
+    }
+}
+
+async function putGroupGroupRatioWithReadback(args: { value: string; operation: string }): Promise<boolean> {
+    const expected = parseGroupGroupRatio(args.value);
+    try {
+        await putOption(GROUP_GROUP_RATIO_OPTION, args.value);
+        return true;
+    } catch (writeErr) {
+        try {
+            const actual = parseGroupGroupRatio(await getOption(GROUP_GROUP_RATIO_OPTION));
+            if (equalGroupGroupRatios(actual, expected)) return true;
+        } catch (readErr) {
+            console.error('[user-tier-multiplier] CRITICAL cannot reconcile uncertain new-api option write', {
+                operation: args.operation,
+                option: GROUP_GROUP_RATIO_OPTION,
+                writeError: writeErr instanceof Error ? writeErr.message : String(writeErr),
+                readError: readErr instanceof Error ? readErr.message : String(readErr),
+            });
+        }
+        throw writeErr;
+    }
+}
+
 async function rollbackNewApiState(args: {
     user: NewApiUser;
     originalRatioJson: string;
@@ -153,14 +221,22 @@ async function rollbackNewApiState(args: {
     const failures: unknown[] = [];
     if (args.changedRatio) {
         try {
-            await putOption(GROUP_GROUP_RATIO_OPTION, args.originalRatioJson);
+            await putGroupGroupRatioWithReadback({
+                value: args.originalRatioJson,
+                operation: `${args.operation}-restore-option`,
+            });
         } catch (err) {
             failures.push(err);
         }
     }
     if (args.changedUser) {
         try {
-            await updateUser(args.user);
+            await updateUserGroupWithReadback({
+                user: args.user,
+                group: args.user.group,
+                operation: `${args.operation}-restore-user`,
+                force: true,
+            });
         } catch (err) {
             failures.push(err);
         }
@@ -279,11 +355,20 @@ async function saveUserTierMultiplierUnlocked(args: {
     let changedRatio = false;
     try {
         if (newApiUser.group !== internalGroup) {
-            await updateUser({ ...newApiUser, group: internalGroup });
+            // Mark before the network call: a failed response is ambiguous,
+            // so compensation must assume new-api may have committed it.
             changedUser = true;
+            await updateUserGroupWithReadback({
+                user: newApiUser,
+                group: internalGroup,
+                operation: 'save-set-user-group',
+            });
         }
-        await putOption(GROUP_GROUP_RATIO_OPTION, nextRatioJson);
         changedRatio = true;
+        await putGroupGroupRatioWithReadback({
+            value: nextRatioJson,
+            operation: 'save-set-option',
+        });
         await verifyNewApiState({
             userId: args.user.newapi_user_id,
             userGroup: internalGroup,
@@ -399,17 +484,24 @@ async function disableUserTierMultiplierUnlocked(args: {
     let changedUser = false;
     let changedRatio = false;
     try {
-        if (isLastRule && newApiUser.group !== restoredGroup) {
-            await updateUser({ ...newApiUser, group: restoredGroup });
-            changedUser = true;
+        if (isLastRule) {
+            changedUser = newApiUser.group !== restoredGroup;
+            await updateUserGroupWithReadback({
+                user: newApiUser,
+                group: restoredGroup,
+                operation: 'delete-restore-user-group',
+            });
         }
-        await putOption(GROUP_GROUP_RATIO_OPTION, nextRatioJson);
         changedRatio = true;
+        await putGroupGroupRatioWithReadback({
+            value: nextRatioJson,
+            operation: 'delete-remove-option',
+        });
         await verifyNewApiState({
             userId: args.user.newapi_user_id,
             userGroup: restoredGroup,
             billingGroup: override.newapi_billing_group,
-            expectedRatio: undefined,
+            expectedRatio: nextRatios[restoredGroup]?.[override.newapi_billing_group],
         });
 
         try {

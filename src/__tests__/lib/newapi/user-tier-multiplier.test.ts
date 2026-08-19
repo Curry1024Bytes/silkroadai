@@ -160,6 +160,74 @@ describe('new-api dedicated group multiplier sync', () => {
         expect(mockOverrideUpsert).not.toHaveBeenCalled();
     });
 
+    it('continues when new-api committed the user-group write before its response failed', async () => {
+        mockUpdateUser.mockImplementationOnce(async (next: Record<string, unknown>) => {
+            liveUser = { ...next };
+            throw new Error('connection reset after user write');
+        });
+
+        await saveUserTierMultiplier({
+            user: portalUser,
+            tierKey: 'gpt-pro20x',
+            multiplier: 0.18,
+            createdBy: 'admin-1',
+        });
+
+        expect(liveUser.group).toBe(internalGroup);
+        expect(mockOverrideUpsert).toHaveBeenCalledTimes(1);
+    });
+
+    it('attempts compensation when an uncertain user-group write cannot be read back', async () => {
+        mockUpdateUser.mockRejectedValueOnce(new Error('connection reset after user write'));
+        mockGetUser
+            .mockImplementationOnce(async () => ({ ...liveUser }))
+            .mockRejectedValueOnce(new Error('new-api unavailable during readback'));
+
+        await expect(
+            saveUserTierMultiplier({ user: portalUser, tierKey: 'gpt-pro20x', multiplier: 0.18, createdBy: 'admin-1' }),
+        ).rejects.toThrow('connection reset after user write');
+
+        expect(mockUpdateUser).toHaveBeenCalledTimes(2);
+        expect(mockPutOption).not.toHaveBeenCalled();
+        expect(mockOverrideUpsert).not.toHaveBeenCalled();
+    });
+
+    it('continues when new-api committed the GroupGroupRatio write before its response failed', async () => {
+        mockPutOption.mockImplementationOnce(async (key: string, value: string) => {
+            options[key] = value;
+            throw new Error('connection reset after option write');
+        });
+
+        await saveUserTierMultiplier({
+            user: portalUser,
+            tierKey: 'gpt-pro20x',
+            multiplier: 0.18,
+            createdBy: 'admin-1',
+        });
+
+        expect(JSON.parse(options[GROUP_GROUP_RATIO_OPTION])[internalGroup]['GPT-Pro20x(企业级)']).toBe(0.18);
+        expect(mockOverrideUpsert).toHaveBeenCalledTimes(1);
+    });
+
+    it('attempts compensation when an uncertain GroupGroupRatio write cannot be read back', async () => {
+        let specialRatioReads = 0;
+        mockGetOption.mockImplementation(async (key: string) => {
+            if (key === GROUP_GROUP_RATIO_OPTION && ++specialRatioReads === 2) {
+                throw new Error('new-api unavailable during option readback');
+            }
+            return options[key] ?? null;
+        });
+        mockPutOption.mockRejectedValueOnce(new Error('connection reset after option write'));
+
+        await expect(
+            saveUserTierMultiplier({ user: portalUser, tierKey: 'gpt-pro20x', multiplier: 0.18, createdBy: 'admin-1' }),
+        ).rejects.toThrow('connection reset after option write');
+
+        expect(mockPutOption).toHaveBeenCalledTimes(2);
+        expect(liveUser.group).toBe('default');
+        expect(mockOverrideUpsert).not.toHaveBeenCalled();
+    });
+
     it('rolls back the new-api user group when the option update fails', async () => {
         mockPutOption.mockRejectedValueOnce(new Error('option write failed'));
 
@@ -208,5 +276,23 @@ describe('new-api dedicated group multiplier sync', () => {
         expect(mockOverrideUpdate).toHaveBeenCalledWith(
             expect.objectContaining({ where: { id: 'override-1' }, data: expect.objectContaining({ enabled: false }) }),
         );
+    });
+
+    it('preserves a pre-existing rule on the original user group when removing the final override', async () => {
+        liveUser.group = internalGroup;
+        options[GROUP_GROUP_RATIO_OPTION] = JSON.stringify({
+            default: { 'GPT-Pro20x(企业级)': 0.15 },
+            [internalGroup]: { 'GPT-Pro20x(企业级)': 0.18 },
+        });
+        mockOverrideFindFirst.mockResolvedValue(row());
+        mockOverrideFindMany.mockResolvedValue([]);
+
+        await disableUserTierMultiplier({ user: portalUser, overrideId: 'override-1' });
+
+        expect(liveUser.group).toBe('default');
+        expect(JSON.parse(options[GROUP_GROUP_RATIO_OPTION])).toEqual({
+            default: { 'GPT-Pro20x(企业级)': 0.15 },
+        });
+        expect(mockOverrideUpdate).toHaveBeenCalledTimes(1);
     });
 });
