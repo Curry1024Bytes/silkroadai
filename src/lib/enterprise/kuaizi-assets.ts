@@ -166,12 +166,15 @@ export async function handleKuaiziAssetAction(action: string, body: unknown): Pr
         case 'CreateAssetGroup': {
             const p = createGroupSchema.safeParse(body);
             if (!p.success) badParam(p.error);
-            const d = await call<{ Id?: string }>('CreateAssetGroup', {
+            const d = await call<{ Id?: string; VendorGroupId?: string }>('CreateAssetGroup', {
                 Name: p.data.Name,
                 GroupType: p.data.GroupType,
                 ...(p.data.Description !== undefined ? { Description: p.data.Description } : {}),
             });
-            return { Id: d.Id };
+            // VendorGroupId = 渠道侧真实素材组 id(建组是同步渠道调用,创建即返回)。
+            // 其余查询类 Action 我们原样转发 Result,vendor 字段天然带出;只有这里
+            // 曾经写死只挑 Id 把它丢了(2026-08-19 实测发现)。
+            return { Id: d.Id, ...(d.VendorGroupId ? { VendorGroupId: d.VendorGroupId } : {}) };
         }
         case 'ListAssetGroups': {
             const p = listGroupsSchema.safeParse(body);
@@ -277,9 +280,19 @@ export function shouldUseKuaiziAssets(action: string, body: unknown): boolean {
     return true;
 }
 
-/** 平台库 id 形(`asset-YYYYMMDDHHMMSS-xxxxxx` / `group-…`);筷子 id 是纯十进制串。 */
+/**
+ * 是否【我们平台库】的 id。
+ *
+ * ⚠️ 不能只看 `asset-` / `group-` 前缀 —— 筷子的 **vendor id 跟我们撞前缀**:
+ *   我们平台库   `asset-{14位时间戳}-{6位十六进制}`   (newAssetId: randomBytes(3).toString('hex'))
+ *   筷子 vendor  `asset-{14位时间戳}-{5位字母数字}`   (实测 asset-20260819085202-247l9,含非 hex 字符)
+ *   筷子平台 Id  纯十进制                              (191950112983875603)
+ * 客户若把 VendorAssetId 当句柄传回来,只看前缀会把它误路由到平台库 → 404 且报错指错方向。
+ * 故按【完整形态】匹配:只有 6 位十六进制后缀才算我们的。
+ */
+const PLATFORM_ASSET_ID = /^(?:asset|group)-\d{14}-[0-9a-f]{6}$/;
 function isPlatformAssetId(v: unknown): boolean {
-    return typeof v === 'string' && (v.startsWith('asset-') || v.startsWith('group-'));
+    return typeof v === 'string' && PLATFORM_ASSET_ID.test(v);
 }
 
 /** 筷子素材库接管的 Action 集合(route 层据此在 volc 客户上分流)。 */

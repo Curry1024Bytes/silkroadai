@@ -29,4 +29,11 @@ describe('/enterprise/docs 火山渠道章节', () => {
         // 2.5 首帧/首尾帧任务的 adaptive 约束必须写进文档(上游创建时同步拒)
         expect(html).toContain('adaptive');
     });
+
+    it('vendor_task_id 的两种取法都要写进文档(ark 面只在响应头,不写客户找不到)', () => {
+        expect(html).toContain('vendor_task_id');
+        expect(html).toContain('X-Silkroadai-Vendor-Task-Id');
+        // 形态不固定这条必须说明,否则客户拿 tsk- 去找火山对账会白跑
+        expect(html).toContain('tsk-');
+    });
 });

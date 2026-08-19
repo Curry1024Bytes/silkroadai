@@ -447,8 +447,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             }
             // ── 真人视觉认证(「火山」渠道,翻译到新 provider REST;不计费)──────────
             case 'CreateVisualValidateSession': {
-                // 客户端 body 含 CallbackURL/ProjectName,上游 /sessions 无入参,忽略之
-                const s = await createVisualValidateSession();
+                // 筷子上游【必填】CallbackURL(活体完成后的跳转目标);客户没传就由
+                // real-person 层用门户域名兜底。ProjectName 上游不支持,忽略。
+                const cb = z.object({ CallbackURL: z.string().trim().url().max(2000).optional() }).safeParse(body);
+                if (!cb.success) return zodFail(action, cb.error);
+                const s = await createVisualValidateSession(cb.data.CallbackURL);
                 return ok(action, {
                     BytedToken: s.bytedToken,
                     H5Link: s.h5Link,

@@ -56,7 +56,10 @@ describe('shouldUseKuaiziAssets —— volc 客户的分流规则', () => {
     });
 
     it('平台形 id(asset-… / group-…)回落平台库,存量素材按 Id 仍可 CRUD', () => {
-        expect(shouldUseKuaiziAssets('GetAsset', { Id: 'asset-20260803095838-5n989' })).toBe(false);
+        // ⚠️ 平台形 = 6 位【十六进制】后缀(newAssetId: randomBytes(3))。
+        // 旧用例这里写的 `asset-20260803095838-5n989` 其实是 5 位且含 'n' —— 那是
+        // 筷子 vendor id 的形态,不是我们的;2026-08-19 收紧判据后已更正。
+        expect(shouldUseKuaiziAssets('GetAsset', { Id: 'asset-20260803095838-5e9891' })).toBe(false);
         expect(shouldUseKuaiziAssets('DeleteAssetGroup', { Id: 'group-20260719153506-b945c6' })).toBe(false);
         // CreateAsset 指定平台形 GroupId → 跟着组走
         expect(
@@ -183,5 +186,46 @@ describe('handleKuaiziAssetAction', () => {
             status: 400,
             code: 'InvalidAction',
         });
+    });
+});
+
+describe('vendor 字段透传 + id 判据收紧(上游文档 2026-08-19)', () => {
+    it('CreateAssetGroup 带出 VendorGroupId(此前被写死只挑 Id 丢掉)', async () => {
+        vi.spyOn(global, 'fetch').mockResolvedValue(
+            new Response(envelope({ Id: '191950112983875603', VendorGroupId: 'group-20260819085158-kkp5p' }), {
+                status: 200,
+            }),
+        );
+        expect(await handleKuaiziAssetAction('CreateAssetGroup', { Name: 'g' })).toEqual({
+            Id: '191950112983875603',
+            VendorGroupId: 'group-20260819085158-kkp5p',
+        });
+    });
+
+    it('上游没给 VendorGroupId(能力未开通)→ 不加空字段', async () => {
+        vi.spyOn(global, 'fetch').mockResolvedValue(new Response(envelope({ Id: '1' }), { status: 200 }));
+        expect(await handleKuaiziAssetAction('CreateAssetGroup', { Name: 'g' })).toEqual({ Id: '1' });
+    });
+
+    it('GetAsset / GetAssetGroup 原样转发 Result → vendor 字段天然带出', async () => {
+        const asset = {
+            Id: '1800657071180349888',
+            Status: 'Active',
+            VendorAssetId: 'asset-20260819085202-247l9',
+            VendorAssetUrl: 'https://ark-media-asset.tos-cn-beijing.volces.com/x?X-Tos-Signature=y',
+        };
+        vi.spyOn(global, 'fetch').mockResolvedValue(new Response(envelope(asset), { status: 200 }));
+        expect(await handleKuaiziAssetAction('GetAsset', { Id: '1800657071180349888' })).toEqual(asset);
+    });
+
+    it('平台库 id 判据:只有【6 位十六进制】后缀算我们的,筷子 vendor id 不算', () => {
+        // 我们平台库(newAssetId: randomBytes(3) → 6 hex)
+        expect(shouldUseKuaiziAssets('GetAsset', { Id: 'asset-20260819085202-a1b2c3' })).toBe(false);
+        expect(shouldUseKuaiziAssets('GetAssetGroup', { Id: 'group-20260819085158-0f9e8d' })).toBe(false);
+        // 筷子 vendor id:同前缀但 5 位且含非 hex 字符 → 必须仍走筷子,不能误路由到平台库
+        expect(shouldUseKuaiziAssets('GetAsset', { Id: 'asset-20260819085202-247l9' })).toBe(true);
+        expect(shouldUseKuaiziAssets('GetAssetGroup', { Id: 'group-20260819085158-kkp5p' })).toBe(true);
+        // 筷子平台 Id(纯十进制)照旧走筷子
+        expect(shouldUseKuaiziAssets('GetAsset', { Id: '1800657071180349888' })).toBe(true);
     });
 });

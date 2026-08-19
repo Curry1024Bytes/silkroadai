@@ -310,7 +310,12 @@ describe('素材库统一平台托管(2026-08-06 v3:真人素材四渠道通用,
         fetchAssetFromUrl.mockResolvedValue({ bytes: 100, mime: 'image/png' });
         storeAsset.mockResolvedValue({ id: 'asset-r2-2', public_url: 'https://r2/b.png' });
         const res = await POST(
-            req('CreateAsset', { GroupId: 'group-1', URL: 'https://x/b.png', AssetType: 'Image', Name: 'b.png' }),
+            req('CreateAsset', {
+                GroupId: 'group-20260806120000-a1b2c3',
+                URL: 'https://x/b.png',
+                AssetType: 'Image',
+                Name: 'b.png',
+            }),
         );
         expect(res.status).toBe(200);
         expect(storeAsset).toHaveBeenCalled();
@@ -322,7 +327,12 @@ describe('素材库统一平台托管(2026-08-06 v3:真人素材四渠道通用,
         fetchAssetFromUrl.mockResolvedValue({ bytes: 100, mime: 'image/png' });
         storeAsset.mockResolvedValue({ id: 'asset-r2-1', public_url: 'https://r2/a.png' });
         const res = await POST(
-            req('CreateAsset', { GroupId: 'group-1', URL: 'https://x/a.png', AssetType: 'image', Name: 'f.png' }),
+            req('CreateAsset', {
+                GroupId: 'group-20260806120000-a1b2c3',
+                URL: 'https://x/a.png',
+                AssetType: 'image',
+                Name: 'f.png',
+            }),
         );
         expect(res.status).toBe(200);
         expect(storeAsset).toHaveBeenCalled();
