@@ -913,7 +913,7 @@ describe('轮询', () => {
     });
 });
 
-describe('火山渠道(volc)四档模型 —— 上游换筷子开放平台后开放 fast/mini/2.5(2026-08-17)', () => {
+describe('火山渠道(volc)模型档位 —— fast/mini 已下架(2026-08-19),仅 2.0 / 2.5 在售', () => {
     beforeEach(() => {
         submitVolcVideo.mockImplementation(() =>
             Promise.resolve(NextResponse.json({ id: 'cgt-m1', task_id: 'cgt-m1', status: 'queued' })),
@@ -921,8 +921,7 @@ describe('火山渠道(volc)四档模型 —— 上游换筷子开放平台后�
     });
 
     it.each([
-        ['doubao-seedance-2.0-fast', 'fast'],
-        ['doubao-seedance-2.0-mini', 'mini'],
+        ['doubao-seedance-2.0', 'pro'],
         ['doubao-seedance-2.5', '2.5'],
     ])('%s 走 volc 适配器(不走 cn),按对客名落库', async (model) => {
         const res = await handleEnterpriseV1(
@@ -938,13 +937,9 @@ describe('火山渠道(volc)四档模型 —— 上游换筷子开放平台后�
         expect(db.seedanceVideoTask.create).toHaveBeenCalledWith({ data: expect.objectContaining({ model }) });
     });
 
-    it('分辨率按档位门控:fast/mini 无 4k、2.5 无 4k → 400 且不打上游', async () => {
+    it('分辨率按档位门控:2.5 无 4k → 400 且不打上游', async () => {
         // ⚠️ 2.5 的 1080p 上游 2026-08-18(文档 v1.2)已放开,不再在此列 —— 见下一条用例
-        for (const [model, res_] of [
-            ['doubao-seedance-2.0-fast', '4k'],
-            ['doubao-seedance-2.0-mini', '4k'],
-            ['doubao-seedance-2.5', '4k'],
-        ] as const) {
+        for (const [model, res_] of [['doubao-seedance-2.5', '4k']] as const) {
             const res = await handleEnterpriseV1(
                 req('POST', '/v1/video/generations', { model, prompt: 'x', resolution: res_ }),
                 '/video/generations',
@@ -952,6 +947,38 @@ describe('火山渠道(volc)四档模型 —— 上游换筷子开放平台后�
             expect(res.status).toBe(400);
             expect((await res.json()).error.message).toContain('resolution 仅支持');
         }
+        expect(submitVolcVideo).not.toHaveBeenCalled();
+    });
+
+    // 2026-08-19 实测:fast/mini 的 vendor_task_id 返 tsk-…(非方舟),pro/2.5 返 cgt-…(方舟)。
+    // 本渠道卖的是原生火山 —— 这两档的片子不是火山出的,先下架。
+    it.each(['doubao-seedance-2.0-fast', 'doubao-seedance-2.0-mini'])(
+        '%s 已下架 → 400 model_unavailable,且【不打上游】(不白花钱)',
+        async (model) => {
+            const res = await handleEnterpriseV1(
+                req('POST', '/v1/video/generations', { model, prompt: 'x', resolution: '720p' }),
+                '/video/generations',
+            );
+            expect(res.status).toBe(400);
+            const j = await res.json();
+            expect(j.error.code).toBe('model_unavailable');
+            expect(j.error.message).toContain('doubao-seedance-2.5');
+            expect(submitVolcVideo).not.toHaveBeenCalled();
+            expect(submitVideoWithKey).not.toHaveBeenCalled();
+            expect(db.seedanceVideoTask.create).not.toHaveBeenCalled();
+        },
+    );
+
+    it('下架对火山方舟形(ark)入口同样生效 —— 两个调用面共用同一道闸', async () => {
+        const res = await handleEnterpriseArkV3(
+            req('POST', '/api/v3/contents/generations/tasks', {
+                model: 'doubao-seedance-2.0-mini',
+                content: [{ type: 'text', text: 'x' }],
+                resolution: '720p',
+            }),
+            '/contents/generations/tasks',
+        );
+        expect(res.status).toBe(400);
         expect(submitVolcVideo).not.toHaveBeenCalled();
     });
 

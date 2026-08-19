@@ -34,6 +34,8 @@ import {
     volcRefLimits,
     VOLC_MODELS,
     VOLC_RESOLUTIONS,
+    isVolcModelWithdrawn,
+    WITHDRAWN_VOLC_HINT,
 } from '@/lib/seedance/kuaizi-adapter';
 import { resolveEnterpriseAuth, getUpstreamKeyForUser, type EnterpriseCustomer } from './keys';
 import { ENTERPRISE_TIER, estimateEnterpriseCostCny, chargeEnterpriseVideoTask } from './billing';
@@ -81,6 +83,11 @@ function resolveEnterpriseModel(
     // 「火山」渠道:四档模型(doubao-seedance-2.0 / -fast / -mini / doubao-seedance-2.5),
     // resolution 参数 + ref 自动识别。走独立 adapter(火山方舟原生),不经 MODEL_MAP 长名机制。
     if (isVolcModel(lower)) {
+        // 下架档位(fast/mini 实测不落方舟,见 kuaizi-adapter 的 WITHDRAWN_VOLC_MODELS)——
+        // 在解析最前面拦掉,连参数校验都不必走。
+        if (isVolcModelWithdrawn(lower)) {
+            return { error: errJson(400, 'model_unavailable', `${rawModel}:${WITHDRAWN_VOLC_HINT}`) };
+        }
         const volc = VOLC_MODELS[lower];
         const allowed = VOLC_RESOLUTIONS[volc.variant];
         const resRaw = String(body.resolution ?? '720p').toLowerCase();

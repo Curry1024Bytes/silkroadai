@@ -1,7 +1,14 @@
 /** 「火山」渠道视频适配器单测(上游 = 筷子开放平台,2026-08-17 换上游):
  *  方舟原生提交/轮询 + kz-cgt- ↔ cgt- id 伪装 + 成片直链优先级 + 未配置降级。 */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { submitVolcVideo, pollVolcVideo, cancelVolcVideo, VOLC_MODELS, VOLC_RESOLUTIONS } from '../kuaizi-adapter';
+import {
+    submitVolcVideo,
+    pollVolcVideo,
+    cancelVolcVideo,
+    isVolcModelWithdrawn,
+    VOLC_MODELS,
+    VOLC_RESOLUTIONS,
+} from '../kuaizi-adapter';
 
 const BASE = 'http://kuaizi.test';
 const KEY = 'kz-test-key';
@@ -48,8 +55,10 @@ describe('submitVolcVideo', () => {
         expect(sent.content).toEqual([{ type: 'text', text: '一只猫' }]);
     });
 
-    it('四档模型各自映射到对应上游 Model ID', async () => {
-        for (const [clientModel, spec] of Object.entries(VOLC_MODELS)) {
+    it('在售档位各自映射到对应上游 Model ID', async () => {
+        const onSale = Object.entries(VOLC_MODELS).filter(([m]) => !isVolcModelWithdrawn(m));
+        expect(onSale.map(([m]) => m)).toEqual(['doubao-seedance-2.0', 'doubao-seedance-2.5']);
+        for (const [clientModel, spec] of onSale) {
             const fetchMock = vi
                 .spyOn(global, 'fetch')
                 .mockResolvedValue(new Response(JSON.stringify({ id: 'kz-cgt-x' }), { status: 200 }));
@@ -58,6 +67,30 @@ describe('submitVolcVideo', () => {
             expect(sent.model).toBe(spec.upstream);
             vi.restoreAllMocks();
         }
+    });
+
+    // 2026-08-19:fast/mini 实测不落方舟(vendor_task_id 返 tsk-),与「原生火山」定位不符 → 下架。
+    it.each(['doubao-seedance-2.0-fast', 'doubao-seedance-2.0-mini'])(
+        '下架档位 %s → 400 model_unavailable,且【一个字节都不发上游】',
+        async (clientModel) => {
+            const fetchMock = vi.spyOn(global, 'fetch');
+            const res = await submitVolcVideo({ prompt: 'x' }, opts({ clientModel }));
+            expect(res.status).toBe(400);
+            expect((await res.json()).error.code).toBe('model_unavailable');
+            expect(fetchMock).not.toHaveBeenCalled();
+        },
+    );
+
+    it('逃生阀 ENTERPRISE_VOLC_ALLOW_LOW_TIERS=1 → 下架档位恢复可用(上游锁方舟后用它验证)', async () => {
+        vi.stubEnv('ENTERPRISE_VOLC_ALLOW_LOW_TIERS', '1');
+        const fetchMock = vi
+            .spyOn(global, 'fetch')
+            .mockResolvedValue(new Response(JSON.stringify({ id: 'kz-cgt-x' }), { status: 200 }));
+        const res = await submitVolcVideo({ prompt: 'x' }, opts({ clientModel: 'doubao-seedance-2.0-mini' }));
+        expect(res.status).toBe(200);
+        expect(JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string).model).toBe(
+            'doubao-seedance-2-0-mini-260615',
+        );
     });
 
     it('透传客户 content 数组(多模态)+ 火山官方可选字段', async () => {

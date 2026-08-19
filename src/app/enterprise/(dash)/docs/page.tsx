@@ -492,7 +492,8 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
             <Section id="volc" title="5. 火山渠道(volc · 火山方舟原生 + AK/SK 签名)">
                 <p>
                     <b>火山渠道</b>是独立渠道(与国内/海外/proMax 平级),提供<b>真人视觉认证</b>与{' '}
-                    <b>seedance 全系四档</b>视频,采用<b>火山方舟原生接口形态</b> + <b>火山官方 AK/SK 签名(SignerV4)</b>
+                    <b>seedance 2.0 / 2.5 两档</b>视频,采用<b>火山方舟原生接口形态</b> +{' '}
+                    <b>火山官方 AK/SK 签名(SignerV4)</b>
                     鉴权 —— 现有火山官方 SDK / 脚本可零改动接入。需在「API 密钥」页开通并生成 AK/SK,专用密钥,与 sk-ent
                     并存互不影响。
                 </p>
@@ -510,8 +511,6 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                         <tbody className="text-gray-700">
                             {[
                                 ['doubao-seedance-2.0', '480p / 720p / 1080p / 4k', '4~15 或 -1', '9 / 3 / 3'],
-                                ['doubao-seedance-2.0-fast', '480p / 720p / 1080p', '4~15 或 -1', '9 / 3 / 3'],
-                                ['doubao-seedance-2.0-mini', '480p / 720p / 1080p', '4~15 或 -1', '9 / 3 / 3'],
                                 ['doubao-seedance-2.5', '480p / 720p / 1080p', '4~30 或 -1', '30 / 10 / 10'],
                             ].map(([m, r, d, refs]) => (
                                 <tr key={m} className="border-b border-gray-100">
@@ -526,6 +525,11 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                         </tbody>
                     </table>
                 </div>
+                <p className="text-gray-600">
+                    <Code>doubao-seedance-2.0-fast</Code> / <Code>doubao-seedance-2.0-mini</Code> <b>暂停服务</b> ——
+                    这两档当前不由火山方舟出片,与本渠道「原生火山」的定位不符, 恢复前请改用{' '}
+                    <Code>doubao-seedance-2.0</Code> 或 <Code>doubao-seedance-2.5</Code>。
+                </p>
                 <p className="text-gray-600">
                     <Code>duration: -1</Code> = 智能时长(由模型在有效区间内自选)。<Code>4k</Code> 仅{' '}
                     <Code>doubao-seedance-2.0</Code> 支持(<Code>doubao-seedance-2.5</Code> 无 4k)。

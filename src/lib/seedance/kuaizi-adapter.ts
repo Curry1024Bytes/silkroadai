@@ -101,6 +101,32 @@ export const VOLC_MODELS: Record<string, { upstream: string; variant: SeedanceVa
     'doubao-seedance-2.5': { upstream: 'doubao-seedance-2-5-260628', variant: '2.5' },
 };
 
+/**
+ * 【2026-08-19 暂时下架】fast / mini 两档。
+ *
+ * 实测(每档一条 480p/4s 真机任务,mini 两次独立复现):
+ *   doubao-seedance-2.0    → vendor_task_id = cgt-…  ✅ 落火山方舟
+ *   doubao-seedance-2.5    → vendor_task_id = cgt-…  ✅ 落火山方舟
+ *   doubao-seedance-2.0-fast → vendor_task_id = tsk-…  ❌ 非方舟渠道
+ *   doubao-seedance-2.0-mini → vendor_task_id = tsk-…  ❌ 非方舟渠道
+ * 切分是确定性的(贵的两档走火山、便宜的两档走别家),不是随机负载均衡。
+ *
+ * 本渠道的产品定义是「完全原生的火山体验」,而这两档的成片根本不是火山出的 ——
+ * 属货不对板,先下架,待上游把我们这条线锁死在方舟渠道后再放开。
+ * 逃生阀 `ENTERPRISE_VOLC_ALLOW_LOW_TIERS=1`:上游修好后先用它验证 vendor_task_id
+ * 确实回到 cgt-,再删掉这一段。
+ */
+const WITHDRAWN_VOLC_MODELS = new Set(['doubao-seedance-2.0-fast', 'doubao-seedance-2.0-mini']);
+
+/** 该 volc 模型是否已下架(见 WITHDRAWN_VOLC_MODELS)。 */
+export function isVolcModelWithdrawn(model: string): boolean {
+    if (process.env.ENTERPRISE_VOLC_ALLOW_LOW_TIERS === '1') return false;
+    return WITHDRAWN_VOLC_MODELS.has(String(model || '').toLowerCase());
+}
+
+/** 下架档位的对客文案(proxy 与 adapter 两处共用,口径一致)。 */
+export const WITHDRAWN_VOLC_HINT = '该档位暂停服务 —— 请改用 doubao-seedance-2.0 或 doubao-seedance-2.5';
+
 /** 各档位支持的分辨率(上游「分档参数矩阵」):2.5 仅 480p/720p;4k 仅 pro。 */
 export const VOLC_RESOLUTIONS: Record<SeedanceVariant, ReadonlyArray<'480p' | '720p' | '1080p' | '4k'>> = {
     pro: ['480p', '720p', '1080p', '4k'],
@@ -148,6 +174,8 @@ export async function submitVolcVideo(body: Record<string, unknown>, opts: Kuaiz
 
     const spec = VOLC_MODELS[opts.clientModel];
     if (!spec) return err(400, 'model_not_found', `unknown model: ${opts.clientModel}`);
+    // 兜底(主闸在 proxy 的 resolveEnterpriseModel):下架档位不打上游,避免白花钱。
+    if (isVolcModelWithdrawn(opts.clientModel)) return err(400, 'model_unavailable', WITHDRAWN_VOLC_HINT);
 
     const content = buildContent(body);
     if (!content) return err(400, 'invalid_request', 'prompt (text) or content is required');
