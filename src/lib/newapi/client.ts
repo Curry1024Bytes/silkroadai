@@ -330,6 +330,12 @@ export const NewApiTokenSchema = z.object({
     model_limits: z.string(), // CSV
     used_quota: z.number().int(),
     group: z.string(),
+    // These fields are writable through PUT /api/token/. Keep them in the
+    // customer-facing model so an administrative group migration preserves
+    // every other token setting.
+    allow_ips: z.string().nullable().optional(),
+    cross_group_retry: z.boolean().optional().default(false),
+    auto_groups: z.array(z.string()).nullable().optional().default(null),
 });
 export type NewApiToken = z.infer<typeof NewApiTokenSchema>;
 
@@ -502,6 +508,50 @@ export async function listTokensForCustomer(
     pageSize = 20,
 ): Promise<{ items: NewApiToken[]; total: number }> {
     return await call('GET', '/api/token/', undefined, { p: page, page_size: pageSize }, { asUser: customerAuth });
+}
+
+/** Read one customer token, including its current billing group, for post-write verification. */
+export async function getTokenForCustomer(
+    customerAuth: { accessToken: string; userId: number },
+    tokenId: number,
+): Promise<NewApiToken> {
+    return await call('GET', `/api/token/${tokenId}`, undefined, undefined, { asUser: customerAuth });
+}
+
+/**
+ * Update a customer token while preserving its existing editable settings.
+ *
+ * new-api's PUT endpoint is `/api/token/` (not `/api/token/:id`) and replaces
+ * all editable token fields. Deliberately omit `key`: new-api loads the
+ * existing token first, so this changes settings without rotating the API key.
+ */
+export async function updateTokenForCustomer(
+    customerAuth: { accessToken: string; userId: number },
+    token: NewApiToken,
+): Promise<void> {
+    await call<null>(
+        'PUT',
+        '/api/token/',
+        {
+            id: token.id,
+            status: token.status,
+            name: token.name,
+            expired_time: token.expired_time,
+            remain_quota: token.remain_quota,
+            unlimited_quota: token.unlimited_quota,
+            model_limits_enabled: token.model_limits_enabled,
+            model_limits: token.model_limits,
+            allow_ips: token.allow_ips ?? null,
+            group: token.group,
+            // Target groups used by Portal are concrete groups, not `auto`.
+            // Explicitly retain this field for completeness; new-api itself
+            // clears it when the selected group is non-auto.
+            cross_group_retry: token.cross_group_retry,
+            auto_groups: token.auto_groups,
+        },
+        undefined,
+        { asUser: customerAuth },
+    );
 }
 
 /** 拿 token 的真实 key(masked 之外)

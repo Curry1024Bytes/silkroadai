@@ -32,8 +32,10 @@ export function RateOverridesPanel({ customerId, isDark, locale }: RateOverrideP
     const [overrides, setOverrides] = useState<RateOverride[]>([]);
     const [selectedTier, setSelectedTier] = useState('');
     const [multiplier, setMultiplier] = useState('');
+    const [activeKeyCount, setActiveKeyCount] = useState(0);
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
+    const [migrating, setMigrating] = useState(false);
     const [error, setError] = useState('');
     const [notice, setNotice] = useState('');
 
@@ -49,9 +51,14 @@ export function RateOverridesPanel({ customerId, isDark, locale }: RateOverrideP
                 credentials: 'same-origin',
             });
             if (!response.ok) throw new Error();
-            const data = (await response.json()) as { tiers: RateTier[]; overrides: RateOverride[] };
+            const data = (await response.json()) as {
+                tiers: RateTier[];
+                overrides: RateOverride[];
+                active_key_count: number;
+            };
             setTiers(data.tiers);
             setOverrides(data.overrides);
+            setActiveKeyCount(data.active_key_count);
             setSelectedTier((current) => current || data.tiers[0]?.key || '');
         } catch {
             setError(zh ? '专属倍率读取失败' : 'Failed to load dedicated multipliers');
@@ -127,6 +134,45 @@ export function RateOverridesPanel({ customerId, isDark, locale }: RateOverrideP
         }
     };
 
+    const migrateKeys = async () => {
+        if (!activeOverride || !selectedTier || activeKeyCount === 0) return;
+        const confirmation = zh
+            ? `确认将该客户现有的 ${activeKeyCount} 把活跃 API Key 迁移到“${selected?.display_name ?? selectedTier}”吗？\n\nKey 值不会变化，但请求路由和实际计费将立即按该档次生效。`
+            : `Move all ${activeKeyCount} active API keys to “${selected?.display_name ?? selectedTier}”?\n\nKey values will not change, but routing and actual billing will apply this tier immediately.`;
+        if (!window.confirm(confirmation)) return;
+
+        setMigrating(true);
+        setError('');
+        setNotice('');
+        try {
+            const response = await fetch(
+                `/api/admin/customers/${encodeURIComponent(customerId)}/rate-overrides/migrate-keys`,
+                {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tier_key: selectedTier }),
+                },
+            );
+            const data = (await response.json().catch(() => ({}))) as {
+                error?: string;
+                migrated_count?: number;
+                already_target_count?: number;
+            };
+            if (!response.ok) throw new Error(data.error || 'key migration failed');
+            setNotice(
+                zh
+                    ? `已迁移 ${data.migrated_count ?? 0} 把 Key；${data.already_target_count ?? 0} 把原本已在该档次。`
+                    : `Migrated ${data.migrated_count ?? 0} key(s); ${data.already_target_count ?? 0} already used this tier.`,
+            );
+            await load();
+        } catch (err) {
+            setError(err instanceof Error ? err.message : zh ? '历史 API Key 迁移失败' : 'Key migration failed');
+        } finally {
+            setMigrating(false);
+        }
+    };
+
     const card = isDark ? 'border-slate-700 bg-slate-800/70' : 'border-slate-200 bg-white shadow-sm';
     const muted = isDark ? 'text-slate-400' : 'text-slate-500';
     const value = isDark ? 'text-slate-100' : 'text-slate-900';
@@ -137,8 +183,8 @@ export function RateOverridesPanel({ customerId, isDark, locale }: RateOverrideP
             <div className={`mb-2 text-sm font-semibold ${value}`}>{zh ? '专属计费设置' : 'Dedicated billing'}</div>
             <div className={`mb-2 text-xs ${muted}`}>
                 {zh
-                    ? '仅调整该客户的有效倍率；公共档次和 API Key 的计费分组保持不变。'
-                    : 'Adjusts this customer only; public tiers and API key billing groups stay unchanged.'}
+                    ? '保存倍率只影响该客户；公共档次保持不变。历史 Key 需在下方单独迁移计费分组。'
+                    : 'Saving affects this customer only and keeps public tiers unchanged. Migrate existing keys separately below.'}
             </div>
             <div className={`rounded-xl border p-4 ${card}`}>
                 {loading ? (
@@ -158,7 +204,7 @@ export function RateOverridesPanel({ customerId, isDark, locale }: RateOverrideP
                                     value={selectedTier}
                                     onChange={(event) => setSelectedTier(event.target.value)}
                                     className={`h-10 w-full rounded-lg border px-3 text-sm ${input}`}
-                                    disabled={saving}
+                                    disabled={saving || migrating}
                                 >
                                     {tiers.map((tier) => (
                                         <option key={tier.key} value={tier.key}>
@@ -184,14 +230,14 @@ export function RateOverridesPanel({ customerId, isDark, locale }: RateOverrideP
                                             : String(selected.public_multiplier)
                                     }
                                     className={`h-10 w-full rounded-lg border px-3 text-sm ${input}`}
-                                    disabled={saving}
+                                    disabled={saving || migrating}
                                 />
                             </label>
                             <div className="flex gap-2">
                                 <button
                                     type="button"
                                     onClick={save}
-                                    disabled={saving}
+                                    disabled={saving || migrating}
                                     className="h-10 rounded-lg bg-indigo-600 px-3 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
                                 >
                                     {saving ? (zh ? '同步中...' : 'Syncing...') : zh ? '保存并同步' : 'Save & sync'}
@@ -200,7 +246,7 @@ export function RateOverridesPanel({ customerId, isDark, locale }: RateOverrideP
                                     <button
                                         type="button"
                                         onClick={remove}
-                                        disabled={saving}
+                                        disabled={saving || migrating}
                                         className={`h-10 rounded-lg border px-3 text-sm font-medium disabled:opacity-50 ${isDark ? 'border-amber-700 text-amber-300 hover:bg-amber-950/40' : 'border-amber-400 text-amber-700 hover:bg-amber-50'}`}
                                     >
                                         {zh ? '取消专属' : 'Remove'}
@@ -228,6 +274,36 @@ export function RateOverridesPanel({ customerId, isDark, locale }: RateOverrideP
                                 </div>
                             </div>
                         </div>
+                        {activeOverride && (
+                            <div
+                                className={`flex flex-col gap-3 border-t pt-4 sm:flex-row sm:items-center sm:justify-between ${isDark ? 'border-slate-700' : 'border-slate-200'}`}
+                            >
+                                <div className="min-w-0">
+                                    <div className={`text-sm font-medium ${value}`}>
+                                        {zh ? '历史 API Key 迁移' : 'Existing API key migration'}
+                                    </div>
+                                    <div className={`mt-1 text-xs ${muted}`}>
+                                        {zh
+                                            ? `${activeKeyCount} 把活跃 Key 将改用当前档次的计费分组；Key 值保持不变。`
+                                            : `${activeKeyCount} active key(s) will use this tier's billing group; key values stay unchanged.`}
+                                    </div>
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={migrateKeys}
+                                    disabled={saving || migrating || activeKeyCount === 0}
+                                    className={`h-10 shrink-0 rounded-lg border px-3 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50 ${isDark ? 'border-cyan-700 text-cyan-300 hover:bg-cyan-950/40' : 'border-cyan-600 text-cyan-700 hover:bg-cyan-50'}`}
+                                >
+                                    {migrating
+                                        ? zh
+                                            ? '迁移中...'
+                                            : 'Migrating...'
+                                        : zh
+                                          ? `迁移全部 ${activeKeyCount} 把活跃 Key`
+                                          : `Migrate all ${activeKeyCount} active key(s)`}
+                                </button>
+                            </div>
+                        )}
                     </div>
                 )}
                 {error && <div className={`mt-3 text-sm ${isDark ? 'text-red-400' : 'text-red-600'}`}>{error}</div>}

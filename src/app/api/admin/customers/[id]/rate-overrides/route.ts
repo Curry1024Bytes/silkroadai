@@ -34,7 +34,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     if (!admin) return unauthorizedResponse(request);
     if (!customer) return NextResponse.json({ error: '客户不存在' }, { status: 404 });
 
-    const [overrides, tiers, ratios] = await Promise.all([
+    const [overrides, tiers, ratios, activeKeyCount] = await Promise.all([
         listUserTierMultipliers(customer.id),
         prisma.channelGroup.findMany({
             where: { tenant_id: customer.tenant_id ?? PLATFORM_TENANT_ID, enabled: true },
@@ -42,6 +42,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
             select: { key: true, display_name: true, newapi_group: true },
         }),
         getGroupRatios(),
+        prisma.newApiToken.count({ where: { user_id: customer.id, status: 'active' } }),
     ]);
     const overrideByTier = new Map(overrides.map((row) => [row.tier_key, row]));
 
@@ -62,6 +63,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
                 ? Number(overrideByTier.get(tier.key)!.multiplier)
                 : (ratios[tier.newapi_group] ?? null),
         })),
+        active_key_count: activeKeyCount,
     });
 }
 

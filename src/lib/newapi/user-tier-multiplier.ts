@@ -2,7 +2,17 @@ import 'server-only';
 
 import { prisma } from '@/lib/db';
 import { PLATFORM_TENANT_ID } from '@/lib/admin/tenant-scope';
-import { getOption, getUser, putOption, updateUser, type NewApiUser } from '@/lib/newapi/client';
+import {
+    getOption,
+    getTokenForCustomer,
+    getUser,
+    listTokensForCustomer,
+    putOption,
+    updateTokenForCustomer,
+    updateUser,
+    type NewApiToken,
+    type NewApiUser,
+} from '@/lib/newapi/client';
 
 export const GROUP_GROUP_RATIO_OPTION = 'GroupGroupRatio';
 const PORTAL_PERSISTENCE_FAILURE =
@@ -13,11 +23,26 @@ const PORTAL_PERSISTENCE_FAILURE =
 // lose each other's rules. new-api has no CAS/ETag for this option; native
 // admin edits remain an operational conflict and are post-write verified.
 let optionSyncTail: Promise<void> = Promise.resolve();
+let keyMigrationTail: Promise<void> = Promise.resolve();
 
 async function withOptionSyncLock<T>(work: () => Promise<T>): Promise<T> {
     const previous = optionSyncTail;
     let release: () => void = () => undefined;
     optionSyncTail = new Promise<void>((resolve) => {
+        release = resolve;
+    });
+    await previous;
+    try {
+        return await work();
+    } finally {
+        release();
+    }
+}
+
+async function withKeyMigrationLock<T>(work: () => Promise<T>): Promise<T> {
+    const previous = keyMigrationTail;
+    let release: () => void = () => undefined;
+    keyMigrationTail = new Promise<void>((resolve) => {
         release = resolve;
     });
     await previous;
@@ -542,4 +567,229 @@ export function saveUserTierMultiplier(args: Parameters<typeof saveUserTierMulti
 /** Serialize deletes with saves so global-option updates cannot interleave. */
 export function disableUserTierMultiplier(args: Parameters<typeof disableUserTierMultiplierUnlocked>[0]) {
     return withOptionSyncLock(() => disableUserTierMultiplierUnlocked(args));
+}
+
+type KeyMigrationUser = {
+    id: string;
+    tenant_id: string | null;
+    newapi_user_id: number | null;
+    newapi_access_token: string | null;
+};
+
+type TokenSnapshot = {
+    portalId: string;
+    upstream: NewApiToken;
+};
+
+async function listAllCustomerTokens(customerAuth: { accessToken: string; userId: number }): Promise<NewApiToken[]> {
+    const pageSize = 100;
+    const result: NewApiToken[] = [];
+    const seen = new Set<number>();
+    for (let page = 1; page <= 10_000; page += 1) {
+        const response = await listTokensForCustomer(customerAuth, page, pageSize);
+        for (const token of response.items) {
+            if (!seen.has(token.id)) {
+                seen.add(token.id);
+                result.push(token);
+            }
+        }
+        if (result.length >= response.total || response.items.length === 0) return result;
+    }
+    throw new UserTierMultiplierError('new-api returned too many token pages; refusing partial migration', 502);
+}
+
+async function updateTokenGroupWithReadback(args: {
+    customerAuth: { accessToken: string; userId: number };
+    token: NewApiToken;
+    group: string;
+    operation: string;
+}): Promise<void> {
+    const next = { ...args.token, group: args.group };
+    try {
+        await updateTokenForCustomer(args.customerAuth, next);
+    } catch (writeErr) {
+        try {
+            const actual = await getTokenForCustomer(args.customerAuth, args.token.id);
+            if (actual.group === args.group) return;
+        } catch (readErr) {
+            console.error('[user-tier-multiplier] CRITICAL cannot reconcile uncertain new-api token write', {
+                operation: args.operation,
+                tokenId: args.token.id,
+                writeError: writeErr instanceof Error ? writeErr.message : String(writeErr),
+                readError: readErr instanceof Error ? readErr.message : String(readErr),
+            });
+        }
+        throw writeErr;
+    }
+
+    const actual = await getTokenForCustomer(args.customerAuth, args.token.id);
+    if (actual.group !== args.group) {
+        throw new UserTierMultiplierError(
+            `new-api token ${args.token.id} did not persist billing group ${args.group}`,
+            502,
+        );
+    }
+}
+
+async function compensateTokenGroups(args: {
+    customerAuth: { accessToken: string; userId: number };
+    snapshots: TokenSnapshot[];
+    operation: string;
+}): Promise<void> {
+    const failures: Array<{ tokenId: number; err: unknown }> = [];
+    for (const snapshot of args.snapshots) {
+        try {
+            await updateTokenGroupWithReadback({
+                customerAuth: args.customerAuth,
+                token: snapshot.upstream,
+                group: snapshot.upstream.group,
+                operation: `${args.operation}-restore-${snapshot.upstream.id}`,
+            });
+        } catch (err) {
+            failures.push({ tokenId: snapshot.upstream.id, err });
+        }
+    }
+    if (failures.length > 0) {
+        console.error('[user-tier-multiplier] CRITICAL token migration rollback failed', {
+            operation: args.operation,
+            failures: failures.map(({ tokenId, err }) => ({
+                tokenId,
+                error: err instanceof Error ? err.message : String(err),
+            })),
+        });
+    }
+}
+
+async function migrateUserKeysToTierUnlocked(args: { user: KeyMigrationUser; tierKey: string }) {
+    if (args.user.newapi_user_id == null || !args.user.newapi_access_token) {
+        throw new UserTierMultiplierError('Customer has no linked new-api account', 409);
+    }
+
+    const tier = await prisma.channelGroup.findFirst({
+        where: { tenant_id: args.user.tenant_id ?? PLATFORM_TENANT_ID, key: args.tierKey, enabled: true },
+        select: { key: true, newapi_group: true, display_name: true },
+    });
+    if (!tier) throw new UserTierMultiplierError('Selected Portal tier is unavailable', 400);
+
+    const override = await prisma.userTierMultiplier.findFirst({
+        where: {
+            user_id: args.user.id,
+            tier_key: tier.key,
+            newapi_billing_group: tier.newapi_group,
+            enabled: true,
+        },
+        select: { id: true, multiplier: true, newapi_user_group: true },
+    });
+    if (!override) {
+        throw new UserTierMultiplierError('Selected tier has no active dedicated multiplier', 409);
+    }
+
+    const portalKeys = await prisma.newApiToken.findMany({
+        where: { user_id: args.user.id, status: 'active' },
+        select: { id: true, newapi_token_id: true, tier: true },
+        orderBy: { created_at: 'asc' },
+    });
+    const customerAuth = { accessToken: args.user.newapi_access_token, userId: args.user.newapi_user_id };
+    if (portalKeys.length === 0) {
+        return {
+            tier_key: tier.key,
+            tier_display_name: tier.display_name,
+            migrated_count: 0,
+            already_target_count: 0,
+            total_active_keys: 0,
+        };
+    }
+
+    const [newApiUser, upstreamTokens, groupGroupRatioRaw] = await Promise.all([
+        getUser(args.user.newapi_user_id),
+        listAllCustomerTokens(customerAuth),
+        getOption(GROUP_GROUP_RATIO_OPTION),
+    ]);
+    if (newApiUser.group !== override.newapi_user_group) {
+        throw new UserTierMultiplierError('new-api user group does not match the active dedicated multiplier', 409);
+    }
+    const currentRatios = parseGroupGroupRatio(groupGroupRatioRaw);
+    if (currentRatios[override.newapi_user_group]?.[tier.newapi_group] !== Number(override.multiplier)) {
+        throw new UserTierMultiplierError(
+            'new-api dedicated multiplier is out of sync; save it again before migrating keys',
+            409,
+        );
+    }
+    const upstreamById = new Map(upstreamTokens.map((token) => [token.id, token]));
+    const snapshots: TokenSnapshot[] = [];
+    for (const portalKey of portalKeys) {
+        const token = upstreamById.get(portalKey.newapi_token_id);
+        if (!token || token.status !== 1 || token.user_id !== args.user.newapi_user_id) {
+            throw new UserTierMultiplierError(
+                `Active Portal key ${portalKey.id} is missing or inactive in new-api; no keys were changed`,
+                409,
+            );
+        }
+        snapshots.push({ portalId: portalKey.id, upstream: token });
+    }
+
+    const toMigrate = snapshots.filter(({ upstream }) => upstream.group !== tier.newapi_group);
+    const alreadyTargetCount = snapshots.length - toMigrate.length;
+    const attempted: TokenSnapshot[] = [];
+    try {
+        for (const snapshot of toMigrate) {
+            attempted.push(snapshot);
+            await updateTokenGroupWithReadback({
+                customerAuth,
+                token: snapshot.upstream,
+                group: tier.newapi_group,
+                operation: `migrate-${snapshot.upstream.id}`,
+            });
+        }
+
+        const verified = await Promise.all(
+            snapshots.map(async (snapshot) => {
+                const current = await getTokenForCustomer(customerAuth, snapshot.upstream.id);
+                return current.group === tier.newapi_group;
+            }),
+        );
+        if (verified.some((value) => !value)) throw new UserTierMultiplierError('Token group verification failed', 502);
+
+        try {
+            const updated = await prisma.$transaction(async (tx) => {
+                const result = await tx.newApiToken.updateMany({
+                    where: { id: { in: snapshots.map(({ portalId }) => portalId) }, status: 'active' },
+                    data: { tier: tier.key },
+                });
+                if (result.count !== snapshots.length) {
+                    throw new UserTierMultiplierError(
+                        'Some active Portal keys changed while migration was running',
+                        409,
+                    );
+                }
+                return result.count;
+            });
+            return {
+                tier_key: tier.key,
+                tier_display_name: tier.display_name,
+                migrated_count: toMigrate.length,
+                already_target_count: alreadyTargetCount,
+                total_active_keys: updated,
+            };
+        } catch {
+            await compensateTokenGroups({ customerAuth, snapshots: attempted, operation: 'persist' });
+            throw new UserTierMultiplierError('Portal persistence failed; token migration was rolled back', 502);
+        }
+    } catch (err) {
+        if (!(
+            err instanceof UserTierMultiplierError &&
+            err.message === 'Portal persistence failed; token migration was rolled back'
+        )) {
+            await compensateTokenGroups({ customerAuth, snapshots: attempted, operation: 'migrate' });
+        }
+        throw err;
+    }
+}
+
+/** Move existing active customer keys to a tier with an active dedicated multiplier. */
+export function migrateUserKeysToTier(args: Parameters<typeof migrateUserKeysToTierUnlocked>[0]) {
+    // The migration depends on the matching User.group + GroupGroupRatio
+    // rule remaining active throughout, so serialize it with rule saves and
+    // removals as well as with other migrations.
+    return withOptionSyncLock(() => withKeyMigrationLock(() => migrateUserKeysToTierUnlocked(args)));
 }

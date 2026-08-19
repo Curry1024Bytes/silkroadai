@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from 'next/server';
 const mockResolveAdmin = vi.fn();
 const mockUserFindFirst = vi.fn();
 const mockGroupFindMany = vi.fn();
+const mockNewApiTokenCount = vi.fn();
 const mockGetGroupRatios = vi.fn();
 const mockList = vi.fn();
 const mockSave = vi.fn();
@@ -17,6 +18,7 @@ vi.mock('@/lib/db', () => ({
     prisma: {
         user: { findFirst: (...args: unknown[]) => mockUserFindFirst(...args) },
         channelGroup: { findMany: (...args: unknown[]) => mockGroupFindMany(...args) },
+        newApiToken: { count: (...args: unknown[]) => mockNewApiTokenCount(...args) },
     },
 }));
 vi.mock('@/lib/channel-group', () => ({ getGroupRatios: (...args: unknown[]) => mockGetGroupRatios(...args) }));
@@ -56,6 +58,7 @@ beforeEach(() => {
         { key: 'gpt-pro20x', display_name: 'GPT-Pro20x（企业级）', newapi_group: 'GPT-Pro20x(企业级)' },
     ]);
     mockGetGroupRatios.mockResolvedValue({ 'GPT-Pro20x(企业级)': 0.2 });
+    mockNewApiTokenCount.mockResolvedValue(2);
     mockList.mockResolvedValue([
         {
             id: 'override-1',
@@ -122,6 +125,7 @@ describe('admin customer rate overrides', () => {
             },
         ]);
         expect(JSON.stringify(body)).not.toContain('portal-user-');
+        expect(body.active_key_count).toBe(2);
     });
 
     it('returns the public 0.20 rate for a customer without an override', async () => {
