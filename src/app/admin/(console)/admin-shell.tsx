@@ -25,7 +25,6 @@ const NAV_ITEMS: NavItem[] = [
     { path: '/admin/pricing', label: { zh: '定价', en: 'Pricing' }, superadminOnly: true },
     { path: '/admin/pricing-calculator', label: { zh: '定价计算器', en: 'Pricing Calculator' }, superadminOnly: true },
     { path: '/admin/billing-shadow', label: { zh: '影子计量', en: 'Shadow Metering' }, superadminOnly: true },
-    { path: '/admin/upstream-costs', label: { zh: '上游成本台账', en: 'Upstream Costs' }, superadminOnly: true },
     { path: '/admin/tenants', label: { zh: '租户管理', en: 'Tenants' }, superadminOnly: true },
     { path: '/admin/announcements', label: { zh: '公告管理', en: 'Announcements' }, superadminOnly: true },
     // 数据存储第③步:请求日志查看(全量客户内容,最高敏感)。
