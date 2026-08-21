@@ -888,6 +888,83 @@ describe('wetoken provider(us-la.we-token.cc,adobe 上游挂适配器 → 合成
         expect(url).toBe('https://asian-acc.we-token.cc/v1/images/generations');
     });
 
+    it('ominiapifull(ominiapi 另一个账号,全量线)路由到 www. + openAllTiers 放行方图 low', async () => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/ominiapifull/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '1024x1024',
+                quality: 'low',
+            }),
+            'generations',
+            'ominiapifull',
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.usage.output_tokens).toBe(196); // 官方 low,不是上游值
+        const [url] = fetchMock.mock.calls[0];
+        expect(url).toBe('https://www.ominiapi.com/v1/images/generations'); // 与 gated 的 api. 是两条独立线
+    });
+
+    it('frimodel 路由到 api.frimodel.com(platform. 是控制台,/v1/* 恒 403)+ openAllTiers 放行方图 low', async () => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/frimodel/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '1024x1024',
+                quality: 'low',
+            }),
+            'generations',
+            'frimodel',
+        );
+        expect(res.status).toBe(200);
+        expect((await res.json()).usage.output_tokens).toBe(196);
+        const [url] = fetchMock.mock.calls[0];
+        expect(url).toBe('https://api.frimodel.com/v1/images/generations');
+    });
+
+    it('frimodel 生图恒返预签名 S3 url(无视 response_format)→ 拉回转 b64,URL 不外泄', async () => {
+        const s3 = 'https://pre-signed-firefly-prod.s3-accelerate.amazonaws.com/images/abc?X-Amz-Signature=deadbeef';
+        fetchMock
+            .mockResolvedValueOnce(
+                new Response(JSON.stringify({ created: 1, data: [{ url: s3 }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+            )
+            .mockResolvedValueOnce(new Response(Buffer.from(pngB64(1024, 1024), 'base64'), { status: 200 }));
+        const res = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/frimodel/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '1024x1024',
+                quality: 'low',
+            }),
+            'generations',
+            'frimodel',
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data).toEqual([{ b64_json: pngB64(1024, 1024) }]);
+        const raw = JSON.stringify(body);
+        expect(raw).not.toContain('amazonaws');
+        expect(raw).not.toContain('firefly');
+        expect(fetchMock.mock.calls[1][0]).toBe(s3);
+    });
+
+    it('frimodel brand 正则抹掉 frimodel / firefly / S3 桶名', () => {
+        const out = sanitizeAdapterError(
+            'frimodel gateway error from pre-signed-firefly-prod.s3-accelerate.amazonaws.com: firefly said no',
+            /\bfri-?model\b|\bfirefly\b|\bs3-accelerate\.amazonaws\.com\b/gi,
+        );
+        const lc = out.toLowerCase();
+        expect(lc).not.toContain('frimodel');
+        expect(lc).not.toContain('firefly');
+        expect(lc).not.toContain('amazonaws');
+    });
+
     it('brand 正则抹掉 we-token / adobe / firefly 身份串', () => {
         const out = sanitizeAdapterError(
             'we-token.cc upstream error; adobe firefly content unsafe',

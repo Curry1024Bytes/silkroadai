@@ -43,4 +43,17 @@ export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
     // wetokengated:同 us-la.we-token.cc 上游,但【不带 openAllTiers】→ 走盈利档+狭长守门(= ch154/ominiapi
     // 那套)。给 ch175 用:让它只接狭长/盈利档,方图低档/auto 拒 → 走 ch176/ch177。2026-08-15 operator 指定。
     wetokengated: { baseUrl: 'https://us-la.we-token.cc', brand: /\bwe-?token\b|\badobe\b|\bfirefly\b/gi },
+    // ---- 2026-08-21 operator 新接两家【全量】上游,给 ch176/ch177 那条全量线扩容 ----
+    // ominiapifull:ominiapi 平台【另一个账号的 key】(与上面 gated 的 `ominiapi` 是两条独立渠道,别混),
+    // 端点用 operator 给的 www.(api. 同样 200,留 www 以免与另一账号的线路混淆)。同为 Firefly 转售:
+    // 直连 b64_json 生效,出图带 adobe/firefly C2PA(proxy 回程剥)。openAllTiers = 全量接、合成官方 usage。
+    ominiapifull: { baseUrl: 'https://www.ominiapi.com', brand: /\bomini(?:api)?\b/gi, openAllTiers: true },
+    // frimodel:new-api 型网关,**API host 是 api.frimodel.com**(operator 给的 platform. 是控制台,
+    // nginx 对 /v1/* 恒 403)。同为 Adobe Firefly 转售。契约差异:generations【无视 response_format】恒返
+    // 预签名 S3 url(适配器 url→b64 兜底拉回,绝不外泄),edits 才直接给 b64;size/quality 均如实生效。
+    frimodel: {
+        baseUrl: 'https://api.frimodel.com',
+        brand: /\bfri-?model\b|\bfirefly\b|\bs3-accelerate\.amazonaws\.com\b/gi,
+        openAllTiers: true,
+    },
 };
