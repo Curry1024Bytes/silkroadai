@@ -53,8 +53,59 @@ interface KuaiziEnvelope<T> {
     Result?: T;
 }
 
+/**
+ * 上游错误 → 对客错误。做两件事:**归一到火山官方口径** + **剥掉内部细节**。
+ *
+ * 上游对「资源不存在」返的是:
+ *   HTTP 500  Code=InternalError
+ *   Message="get asset failed: rpc error: code = NotFound desc = asset not found: id=192612151255367695"
+ * 三处不合格:
+ *  ① 状态码错 —— 火山官方对不存在的资源返 404,不是 500。500 还会让客户的重试逻辑
+ *    误判成「服务端故障可重试」,实际是终态,白重试。
+ *  ② 错误码错 —— InternalError 不是「不存在」的语义;平台素材库面用的是
+ *    AssetNotFound / GroupNotFound(见 app/api/route.ts),volc 面必须同口径。
+ *  ③ **泄露上游内部 id**(`id=192612151255367695` 是上游的十进制号)——
+ *    #398 刚把对客 id 全换成火山号,错误信息又把上游号漏出去,等于白做(#271)。
+ *
+ * 2026-08-22 客户实测报障:删素材 / 删组后再查,拿到 500 而非 404。
+ */
+function mapUpstreamError(
+    action: string,
+    status: number,
+    code: string | undefined,
+    message: string | undefined,
+    clientId?: string,
+): RealPersonError {
+    const raw = message || '';
+    const isGroup = action.includes('Group');
+    // NotFound 语义:上游同时出现在 gRPC code 与文案里,两种都认。
+    if (/not\s*found/i.test(raw) || /notfound/i.test(code || '')) {
+        const what = isGroup ? '素材组' : '素材';
+        return new RealPersonError(
+            404,
+            isGroup ? 'GroupNotFound' : 'AssetNotFound',
+            `${what}不存在${clientId ? `: ${clientId}` : ''}`,
+        );
+    }
+    // 其余:剥掉 rpc 内部串与上游内部 id 再对客(#271)。
+    const clean = sanitizeUpstreamMessage(raw);
+    if (status >= 500) {
+        return new RealPersonError(502, 'UpstreamError', clean || '素材库上游暂时异常,请稍后重试');
+    }
+    return new RealPersonError(status >= 400 ? status : 400, code || 'AssetOperationFailed', clean || '素材操作失败');
+}
+
+/** 剥上游报错里的实现细节:gRPC 包装、内部十进制 id。 */
+function sanitizeUpstreamMessage(raw: string): string {
+    return raw
+        .replace(/rpc error:.*?desc\s*=\s*/gi, '')
+        .replace(/\bid=\d+/g, '')
+        .replace(/\s*:\s*$/, '')
+        .trim();
+}
+
 /** 调一个 Action。失败抛 RealPersonError(route 层统一映射成火山 Error 信封)。 */
-async function call<T>(action: string, body: Record<string, unknown>): Promise<T> {
+async function call<T>(action: string, body: Record<string, unknown>, clientId?: string): Promise<T> {
     const { base, key } = getConfig();
     let res: Response;
     try {
@@ -81,12 +132,13 @@ async function call<T>(action: string, body: Record<string, unknown>): Promise<T
             console.error('[kuaizi-assets] upstream auth failed (platform credential)', { action });
             throw new RealPersonError(502, 'UpstreamError', '素材库上游鉴权失败(平台凭证问题),请联系服务方');
         }
-        console.warn('[kuaizi-assets] action failed', { action, status: res.status, code: upErr?.Code });
-        throw new RealPersonError(
-            res.status >= 400 ? res.status : 400,
-            upErr?.Code || 'AssetOperationFailed',
-            upErr?.Message || '素材操作失败',
-        );
+        console.warn('[kuaizi-assets] action failed', {
+            action,
+            status: res.status,
+            code: upErr?.Code,
+            message: upErr?.Message,
+        });
+        throw mapUpstreamError(action, res.status, upErr?.Code, upErr?.Message, clientId);
     }
     return (j.Result ?? {}) as T;
 }
@@ -298,23 +350,27 @@ export async function handleKuaiziAssetAction(action: string, body: unknown, use
         case 'GetAssetGroup': {
             const p = idSchema.safeParse(body);
             if (!p.success) badParam(p.error);
-            const g = await call<UpstreamRow>('GetAssetGroup', { Id: await toUpstreamId(p.data.Id) });
+            const g = await call<UpstreamRow>('GetAssetGroup', { Id: await toUpstreamId(p.data.Id) }, p.data.Id);
             return nativeRow(g, 'group', userId);
         }
         case 'UpdateAssetGroup': {
             const p = updateGroupSchema.safeParse(body);
             if (!p.success) badParam(p.error);
-            await call('UpdateAssetGroup', {
-                Id: await toUpstreamId(p.data.Id),
-                ...(p.data.Name !== undefined ? { Name: p.data.Name } : {}),
-                ...(p.data.Description !== undefined ? { Description: p.data.Description } : {}),
-            });
+            await call(
+                'UpdateAssetGroup',
+                {
+                    Id: await toUpstreamId(p.data.Id),
+                    ...(p.data.Name !== undefined ? { Name: p.data.Name } : {}),
+                    ...(p.data.Description !== undefined ? { Description: p.data.Description } : {}),
+                },
+                p.data.Id,
+            );
             return { Id: p.data.Id };
         }
         case 'DeleteAssetGroup': {
             const p = idSchema.safeParse(body);
             if (!p.success) badParam(p.error);
-            await call('DeleteAssetGroup', { Id: await toUpstreamId(p.data.Id) });
+            await call('DeleteAssetGroup', { Id: await toUpstreamId(p.data.Id) }, p.data.Id);
             return {};
         }
         case 'CreateAsset': {
@@ -353,19 +409,19 @@ export async function handleKuaiziAssetAction(action: string, body: unknown, use
         case 'GetAsset': {
             const p = idSchema.safeParse(body);
             if (!p.success) badParam(p.error);
-            const a = await call<UpstreamRow>('GetAsset', { Id: await toUpstreamId(p.data.Id) });
+            const a = await call<UpstreamRow>('GetAsset', { Id: await toUpstreamId(p.data.Id) }, p.data.Id);
             return nativeRow(a, 'asset', userId);
         }
         case 'UpdateAsset': {
             const p = updateAssetSchema.safeParse(body);
             if (!p.success) badParam(p.error);
-            await call('UpdateAsset', { Id: await toUpstreamId(p.data.Id), Name: p.data.Name });
+            await call('UpdateAsset', { Id: await toUpstreamId(p.data.Id), Name: p.data.Name }, p.data.Id);
             return { Id: p.data.Id };
         }
         case 'DeleteAsset': {
             const p = idSchema.safeParse(body);
             if (!p.success) badParam(p.error);
-            await call('DeleteAsset', { Id: await toUpstreamId(p.data.Id) });
+            await call('DeleteAsset', { Id: await toUpstreamId(p.data.Id) }, p.data.Id);
             return {};
         }
         default:

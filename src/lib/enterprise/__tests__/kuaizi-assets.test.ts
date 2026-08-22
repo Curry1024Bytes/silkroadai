@@ -157,7 +157,9 @@ describe('handleKuaiziAssetAction', () => {
         expect(fetchMock.mock.calls[1][0]).toContain('Action=DeleteAsset');
     });
 
-    it('上游 Error 信封 → RealPersonError(code/message 透传给客户)', async () => {
+    // 上游的 not-found 错误码有好几种写法(ResourceNotFound / InternalError+rpc NotFound…)——
+    // 一律归到平台素材库同款的 AssetNotFound / GroupNotFound,两套库对客一个口径。
+    it('上游 Error 信封 → RealPersonError;not-found 类归一到 AssetNotFound', async () => {
         vi.spyOn(global, 'fetch').mockResolvedValue(
             new Response(
                 JSON.stringify({
@@ -168,8 +170,8 @@ describe('handleKuaiziAssetAction', () => {
         );
         await expect(handleKuaiziAssetAction('GetAsset', { Id: '9' })).rejects.toMatchObject({
             status: 404,
-            code: 'ResourceNotFound',
-            message: '素材不存在',
+            code: 'AssetNotFound',
+            message: '素材不存在: 9',
         });
     });
 
@@ -217,6 +219,76 @@ describe('handleKuaiziAssetAction', () => {
         await expect(handleKuaiziAssetAction('Nope', {})).rejects.toMatchObject({
             status: 400,
             code: 'InvalidAction',
+        });
+    });
+});
+
+describe('上游错误归一(2026-08-22 客户实测报障)', () => {
+    // 客户测的是「删掉再查」,上游对不存在的资源返:
+    //   HTTP 500  Code=InternalError
+    //   Message="get asset failed: rpc error: code = NotFound desc = asset not found: id=192612151255367695"
+    // 三处不合格:状态码该 404、错误码该是 NotFound 语义、且**泄露了上游内部十进制 id**。
+    const upstreamErr = (status: number, code: string, message: string) =>
+        new Response(
+            JSON.stringify({ ResponseMetadata: { RequestId: 'r1', Error: { Code: code, Message: message } } }),
+            {
+                status,
+            },
+        );
+
+    it('删掉的素材再查 → 404 AssetNotFound(不是 500),且回显【客户自己的号】', async () => {
+        vi.spyOn(global, 'fetch').mockResolvedValue(
+            upstreamErr(
+                500,
+                'InternalError',
+                'get asset failed: rpc error: code = NotFound desc = asset not found: id=192612151255367695',
+            ),
+        );
+        await expect(handleKuaiziAssetAction('GetAsset', { Id: 'asset-20260822022949-s844p' })).rejects.toMatchObject({
+            status: 404,
+            code: 'AssetNotFound',
+            message: '素材不存在: asset-20260822022949-s844p',
+        });
+    });
+
+    it('删掉的素材组再查 → 404 GroupNotFound', async () => {
+        vi.spyOn(global, 'fetch').mockResolvedValue(
+            upstreamErr(
+                500,
+                'InternalError',
+                'get asset group failed: rpc error: code = NotFound desc = asset group not found: id=192612150533947407',
+            ),
+        );
+        await expect(
+            handleKuaiziAssetAction('GetAssetGroup', { Id: 'group-20260822022948-kbfr7' }),
+        ).rejects.toMatchObject({ status: 404, code: 'GroupNotFound' });
+    });
+
+    it('绝不把上游内部 id / rpc 细节回显给客户(#271)', async () => {
+        vi.spyOn(global, 'fetch').mockResolvedValue(
+            upstreamErr(
+                500,
+                'InternalError',
+                'boom: rpc error: code = Internal desc = 内部依赖异常: id=192612151255367695',
+            ),
+        );
+        let caught: RealPersonError | undefined;
+        try {
+            await handleKuaiziAssetAction('GetAsset', { Id: 'asset-x' });
+        } catch (x) {
+            caught = x as RealPersonError;
+        }
+        expect(caught?.status).toBe(502);
+        expect(caught?.message).not.toContain('192612151255367695');
+        expect(caught?.message).not.toContain('rpc error');
+        expect(caught?.message).toContain('内部依赖异常');
+    });
+
+    it('非 NotFound 的 4xx 仍按原状态码 + 上游 code 透出(参数错还是要让客户看见)', async () => {
+        vi.spyOn(global, 'fetch').mockResolvedValue(upstreamErr(400, 'InvalidParameter', 'invalid Id: asset-x'));
+        await expect(handleKuaiziAssetAction('GetAsset', { Id: 'asset-x' })).rejects.toMatchObject({
+            status: 400,
+            code: 'InvalidParameter',
         });
     });
 });

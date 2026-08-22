@@ -717,8 +717,14 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                             </tr>
                             <tr>
                                 <Td>404</Td>
-                                <Td>not_found</Td>
-                                <Td>任务 ID 不存在(或不属于当前账号)</Td>
+                                <Td>
+                                    not_found / AssetNotFound / <br />
+                                    GroupNotFound
+                                </Td>
+                                <Td>
+                                    任务 ID 不存在(或不属于当前账号);素材 / 素材组不存在或已删除。
+                                    <b>资源不存在一律 404</b> —— 是终态,重试不会变好。
+                                </Td>
                             </tr>
                             <tr>
                                 <Td>503</Td>
