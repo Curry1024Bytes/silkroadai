@@ -39,6 +39,11 @@ vi.mock('@/lib/newapi/client', () => ({
     deleteUser: (...args: unknown[]) => mockDeleteUser(...args),
 }));
 
+const mockGetDefaultChannelGroup = vi.fn();
+vi.mock('@/lib/channel-group', () => ({
+    getDefaultChannelGroup: (...args: unknown[]) => mockGetDefaultChannelGroup(...args),
+}));
+
 import { linkOrCreateOAuthUser } from '../account-link';
 
 const PROVIDER = 'github';
@@ -49,6 +54,12 @@ const PORTAL_USER_ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 beforeEach(() => {
     vi.clearAllMocks();
     mockTransaction.mockImplementation(async (ops: unknown[]) => Promise.all(ops));
+    mockGetDefaultChannelGroup.mockResolvedValue({
+        key: 'gpt特惠分组',
+        newapi_group: 'GPT-特惠反代',
+        is_default: true,
+        enabled: true,
+    });
 });
 
 describe('linkOrCreateOAuthUser (5-branch policy)', () => {
@@ -188,13 +199,33 @@ describe('linkOrCreateOAuthUser (5-branch policy)', () => {
                 }),
             }),
         );
-        expect(mockProvision).toHaveBeenCalledWith(
-            expect.objectContaining({
-                portal_user_id: NEW_USER_ID,
-                email: 'newbie@example.com',
-                initial_quota: 0,
-            }),
+        expect(mockProvision).toHaveBeenCalledWith({
+            portal_user_id: NEW_USER_ID,
+            email: 'newbie@example.com',
+            newapi_group: 'GPT-特惠反代',
+            initial_quota: 0,
+        });
+        expect(mockTokenCreate).toHaveBeenCalledWith(
+            expect.objectContaining({ data: expect.objectContaining({ tier: 'gpt特惠分组' }) }),
         );
+    });
+
+    it('Branch 4 rejects before creating a user when the default tier is invalid', async () => {
+        mockOAuthFindUnique.mockResolvedValue(null);
+        mockUserFindUnique.mockResolvedValue(null);
+        mockGetDefaultChannelGroup.mockRejectedValue(new Error('duplicate defaults'));
+        const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+        const result = await linkOrCreateOAuthUser({
+            provider: PROVIDER,
+            providerAccountId: ACCOUNT_ID,
+            email: 'no-tier@example.com',
+        });
+
+        expect(result).toEqual({ ok: false, error: 'provisioning_failed' });
+        expect(mockUserCreate).not.toHaveBeenCalled();
+        expect(mockProvision).not.toHaveBeenCalled();
+        errSpy.mockRestore();
     });
 
     it('Branch 4 nameHint truncated to 64 chars', async () => {
@@ -220,6 +251,31 @@ describe('linkOrCreateOAuthUser (5-branch policy)', () => {
             expect.objectContaining({
                 data: expect.objectContaining({ nickname: 'x'.repeat(64) }),
             }),
+        );
+    });
+
+    it('Branch 4 Google signup uses the same resolved default group and tier', async () => {
+        mockOAuthFindUnique.mockResolvedValue(null);
+        mockUserFindUnique.mockResolvedValue(null);
+        mockUserCreate.mockResolvedValue({ id: 'google-new-id' });
+        mockProvision.mockResolvedValue({
+            newapi_user_id: 8,
+            newapi_username: 'c-google-',
+            newapi_access_token: 'access',
+            newapi_token_id: 9,
+            newapi_token_value: 'sk-google',
+        });
+
+        const result = await linkOrCreateOAuthUser({
+            provider: 'google',
+            providerAccountId: 'google-sub-1',
+            email: 'google-new@example.com',
+        });
+
+        expect(result).toEqual({ ok: true, userId: 'google-new-id', branch: 4 });
+        expect(mockProvision).toHaveBeenCalledWith(expect.objectContaining({ newapi_group: 'GPT-特惠反代' }));
+        expect(mockTokenCreate).toHaveBeenCalledWith(
+            expect.objectContaining({ data: expect.objectContaining({ tier: 'gpt特惠分组' }) }),
         );
     });
 

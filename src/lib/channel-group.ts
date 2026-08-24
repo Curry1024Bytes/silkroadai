@@ -155,6 +155,27 @@ export async function listEnabledChannelGroups(tenantId: string | null) {
     });
 }
 
+export class DefaultChannelGroupConfigurationError extends Error {
+    constructor(tenantId: string, count: number) {
+        super(`tenant ${tenantId} must have exactly one enabled default channel group (found ${count})`);
+        this.name = 'DefaultChannelGroupConfigurationError';
+    }
+}
+
+/**
+ * 新开户首个 Key 必须显式使用 tenant 唯一启用的默认档次。配置缺失或重复时
+ * 直接失败,避免退回 new-api 的 `default` group 并生成一个表面成功、实际 403 的 Key。
+ */
+export async function getDefaultChannelGroup(tenantId: string | null) {
+    const resolvedTenantId = tenantId ?? PLATFORM_TENANT_ID;
+    const groups = await listEnabledChannelGroups(tenantId);
+    const defaults = groups.filter((group) => group.is_default);
+    if (defaults.length !== 1) {
+        throw new DefaultChannelGroupConfigurationError(resolvedTenantId, defaults.length);
+    }
+    return defaults[0];
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // 档次倍率:同步 new-api `GroupRatio`(与 new-api 自家分组下拉的「Nx 倍率」徽章
 // 同源)。60s 进程内缓存(镜像上面 UserUsableGroups 同步节流);new-api 不可达 /

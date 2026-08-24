@@ -32,6 +32,8 @@ vi.mock('@/lib/db', () => ({
 import {
     __resetChannelGroupSyncForTests,
     __resetGroupRatioCacheForTests,
+    DefaultChannelGroupConfigurationError,
+    getDefaultChannelGroup,
     getGroupRatios,
     listEnabledChannelGroups,
     syncChannelGroupsFromNewApi,
@@ -238,6 +240,32 @@ describe('listEnabledChannelGroups sync trigger', () => {
             where: { tenant_id: '11111111-2222-3333-4444-555555555555', enabled: true },
             orderBy: { tier_level: 'asc' },
         });
+    });
+});
+
+describe('getDefaultChannelGroup', () => {
+    const tenantId = '11111111-2222-3333-4444-555555555555';
+
+    it('returns the sole enabled is_default group', async () => {
+        const defaultGroup = row({ tenant_id: tenantId, key: 'sale', newapi_group: 'GPT-特惠反代', is_default: true });
+        mockFindMany.mockResolvedValue([defaultGroup, row({ tenant_id: tenantId, key: 'pro', is_default: false })]);
+
+        await expect(getDefaultChannelGroup(tenantId)).resolves.toEqual(defaultGroup);
+    });
+
+    it('rejects when no enabled default group exists', async () => {
+        mockFindMany.mockResolvedValue([row({ tenant_id: tenantId, key: 'sale', is_default: false })]);
+
+        await expect(getDefaultChannelGroup(tenantId)).rejects.toBeInstanceOf(DefaultChannelGroupConfigurationError);
+    });
+
+    it('rejects ambiguous duplicate defaults', async () => {
+        mockFindMany.mockResolvedValue([
+            row({ tenant_id: tenantId, key: 'sale', is_default: true }),
+            row({ tenant_id: tenantId, key: 'pro', is_default: true }),
+        ]);
+
+        await expect(getDefaultChannelGroup(tenantId)).rejects.toThrow('found 2');
     });
 });
 

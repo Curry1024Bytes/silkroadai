@@ -53,6 +53,9 @@ export async function POST(request: NextRequest) {
     }
     const data = parsed.data;
     const tenant_id = tenantForInsert(admin);
+    if (data.is_default && !data.enabled) {
+        return NextResponse.json({ error: 'default_tier_must_be_enabled' }, { status: 400 });
+    }
 
     const dup = await prisma.channelGroup.findFirst({ where: { tenant_id, key: data.key } });
     if (dup) {

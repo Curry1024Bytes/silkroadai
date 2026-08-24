@@ -64,6 +64,11 @@ vi.mock('@/lib/newapi/client', () => ({
     deleteUser: (...args: unknown[]) => mockDeleteUser(...args),
 }));
 
+const mockGetDefaultChannelGroup = vi.fn();
+vi.mock('@/lib/channel-group', () => ({
+    getDefaultChannelGroup: (...args: unknown[]) => mockGetDefaultChannelGroup(...args),
+}));
+
 // session.ts uses real signSession; .env from vitest setup provides
 // PORTAL_JWT_SECRET. To avoid signSession's own DB read for token version,
 // we make user.findUnique return { session_token_version: 1 } when called
@@ -105,6 +110,12 @@ beforeEach(() => {
     mockTransaction.mockImplementation(async (ops: unknown[]) => Promise.all(ops));
     // last_login_at update + signSession DB read default
     mockUserUpdate.mockResolvedValue({});
+    mockGetDefaultChannelGroup.mockResolvedValue({
+        key: 'gpt特惠分组',
+        newapi_group: 'GPT-特惠反代',
+        is_default: true,
+        enabled: true,
+    });
 });
 
 afterEach(() => {

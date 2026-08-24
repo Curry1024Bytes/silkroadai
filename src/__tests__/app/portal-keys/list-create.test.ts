@@ -184,6 +184,34 @@ describe('POST /api/portal/keys', () => {
         expect(res.status).toBe(400);
     });
 
+    it('503 without calling new-api when the tenant has no enabled tier', async () => {
+        mockGetCurrentUser.mockResolvedValue(SESSION_USER);
+        mockListEnabledChannelGroups.mockResolvedValue([]);
+        const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+        const res = await POST(makeReq({ method: 'POST', body: { alias: 'broken-default' } }));
+
+        expect(res.status).toBe(503);
+        expect((await res.json()).error).toBe('tier_unavailable');
+        expect(mockCreateTokenForCustomer).not.toHaveBeenCalled();
+        errSpy.mockRestore();
+    });
+
+    it('503 without calling new-api when no enabled tier is marked as default', async () => {
+        mockGetCurrentUser.mockResolvedValue(SESSION_USER);
+        mockListEnabledChannelGroups.mockResolvedValue([
+            { key: 'sale', newapi_group: 'GPT-特惠反代', is_default: false },
+        ]);
+        const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+        const res = await POST(makeReq({ method: 'POST', body: { alias: 'missing-default' } }));
+
+        expect(res.status).toBe(503);
+        expect((await res.json()).error).toBe('default_tier_unavailable');
+        expect(mockCreateTokenForCustomer).not.toHaveBeenCalled();
+        errSpy.mockRestore();
+    });
+
     it('no per-user cap: 11th key (10 already active) still creates (limit removed 2026-07-25)', async () => {
         // Under the old W6 D4 cap this returned 400 token_limit_reached.
         // The cap is gone — the request goes straight to the new-api flow

@@ -20,8 +20,9 @@ import { NewApiError, provisionNewCustomer } from '../client';
 const PORTAL_USER_ID = 'deadbeef-1111-4222-8333-444455556666';
 const EMAIL = 'rc22-test@example.com';
 const NEWAPI_USER_ID = 758;
+const NEWAPI_GROUP = 'GPT-特惠反代';
 
-type RecordedRequest = { method: string; path: string; headers: Record<string, string> };
+type RecordedRequest = { method: string; path: string; headers: Record<string, string>; body?: unknown };
 
 const recorded: RecordedRequest[] = [];
 
@@ -47,7 +48,8 @@ function installFetchMock(opts: { loginBody: unknown; loginHeaders?: Record<stri
             for (const [k, v] of Object.entries((init?.headers ?? {}) as Record<string, string>)) {
                 headers[k.toLowerCase()] = v;
             }
-            recorded.push({ method, path: url.pathname, headers });
+            const body = typeof init?.body === 'string' ? JSON.parse(init.body) : undefined;
+            recorded.push({ method, path: url.pathname, headers, body });
 
             if (method === 'POST' && url.pathname === '/api/user/') {
                 return jsonResponse({ success: true, message: '' });
@@ -120,7 +122,11 @@ describe('provisionNewCustomer login session handling', () => {
     it('current new-api: exchanges the body JWT for a durable access token', async () => {
         installFetchMock({ loginBody: CURRENT_LOGIN_BODY });
 
-        const result = await provisionNewCustomer({ portal_user_id: PORTAL_USER_ID, email: EMAIL });
+        const result = await provisionNewCustomer({
+            portal_user_id: PORTAL_USER_ID,
+            email: EMAIL,
+            newapi_group: NEWAPI_GROUP,
+        });
 
         const rotate = recorded.find((r) => r.method === 'GET' && r.path === '/api/user/token');
         expect(rotate).toBeDefined();
@@ -131,6 +137,8 @@ describe('provisionNewCustomer login session handling', () => {
         expect(result.newapi_user_id).toBe(NEWAPI_USER_ID);
         expect(result.newapi_access_token).toBe('classic-access-token-xyz');
         expect(result.newapi_token_value).toBe('sk-real-key-123');
+        const createToken = recorded.find((r) => r.method === 'POST' && r.path === '/api/token/');
+        expect(createToken?.body).toEqual(expect.objectContaining({ group: NEWAPI_GROUP }));
     });
 
     it('legacy (≤ rc.2): still uses the session cookie for GET /api/user/token', async () => {
@@ -139,7 +147,11 @@ describe('provisionNewCustomer login session handling', () => {
             loginHeaders: { 'Set-Cookie': 'session=legacy-session-value; Path=/; HttpOnly' },
         });
 
-        const result = await provisionNewCustomer({ portal_user_id: PORTAL_USER_ID, email: EMAIL });
+        const result = await provisionNewCustomer({
+            portal_user_id: PORTAL_USER_ID,
+            email: EMAIL,
+            newapi_group: NEWAPI_GROUP,
+        });
 
         const rotate = recorded.find((r) => r.method === 'GET' && r.path === '/api/user/token');
         expect(rotate).toBeDefined();
@@ -153,9 +165,9 @@ describe('provisionNewCustomer login session handling', () => {
     it('login 200 with neither JWT nor cookie → NewApiError, no further steps', async () => {
         installFetchMock({ loginBody: LEGACY_LOGIN_BODY }); // no Set-Cookie, no access_token
 
-        await expect(provisionNewCustomer({ portal_user_id: PORTAL_USER_ID, email: EMAIL })).rejects.toThrow(
-            NewApiError,
-        );
+        await expect(
+            provisionNewCustomer({ portal_user_id: PORTAL_USER_ID, email: EMAIL, newapi_group: NEWAPI_GROUP }),
+        ).rejects.toThrow(NewApiError);
         const rotate = recorded.find((r) => r.method === 'GET' && r.path === '/api/user/token');
         expect(rotate).toBeUndefined();
     });
@@ -163,7 +175,7 @@ describe('provisionNewCustomer login session handling', () => {
     it('act-as steps 4-6 use the durable access token without a Bearer prefix', async () => {
         installFetchMock({ loginBody: CURRENT_LOGIN_BODY });
 
-        await provisionNewCustomer({ portal_user_id: PORTAL_USER_ID, email: EMAIL });
+        await provisionNewCustomer({ portal_user_id: PORTAL_USER_ID, email: EMAIL, newapi_group: NEWAPI_GROUP });
 
         const createToken = recorded.find((r) => r.method === 'POST' && r.path === '/api/token/');
         expect(createToken).toBeDefined();

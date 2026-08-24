@@ -52,6 +52,11 @@ vi.mock('@/lib/newapi/client', () => ({
     searchUser: (...args: unknown[]) => mockSearchNewApiUser(...args),
 }));
 
+const mockGetDefaultChannelGroup = vi.fn();
+vi.mock('@/lib/channel-group', () => ({
+    getDefaultChannelGroup: (...args: unknown[]) => mockGetDefaultChannelGroup(...args),
+}));
+
 const mockSendVerificationEmail = vi.fn();
 vi.mock('@/lib/email/send', () => ({
     sendVerificationEmail: (...args: unknown[]) => mockSendVerificationEmail(...args),
@@ -91,6 +96,12 @@ beforeEach(() => {
     mockResellerCodeFindUnique.mockResolvedValue(null);
     mockUserCount.mockResolvedValue(0);
     mockAnalyticsEventCreate.mockResolvedValue({});
+    mockGetDefaultChannelGroup.mockResolvedValue({
+        key: 'gpt特惠分组',
+        newapi_group: 'GPT-特惠反代',
+        is_default: true,
+        enabled: true,
+    });
 });
 
 describe('POST /api/auth/register (new-api)', () => {
@@ -129,6 +140,15 @@ describe('POST /api/auth/register (new-api)', () => {
         expect(body.newapi_user_id).toBe(NEWAPI_USER_ID);
         expect(body.newapi_token_value).toBe('sk-test-abc123def456ghi');
         expect(body.portal_user.email).toBe('happy@llmroute.club');
+        expect(mockProvision).toHaveBeenCalledWith({
+            portal_user_id: PORTAL_USER_ID,
+            email: 'happy@llmroute.club',
+            newapi_group: 'GPT-特惠反代',
+            initial_quota: 0,
+        });
+        expect(mockTokenCreate).toHaveBeenCalledWith(
+            expect.objectContaining({ data: expect.objectContaining({ tier: 'gpt特惠分组' }) }),
+        );
 
         // email lowercased on store
         expect(mockUserCreate).toHaveBeenCalledWith(
@@ -221,6 +241,20 @@ describe('POST /api/auth/register (new-api)', () => {
         expect(body.error).toBe('email_already_registered');
         expect(mockUserCreate).not.toHaveBeenCalled();
         expect(mockProvision).not.toHaveBeenCalled();
+    });
+
+    it('returns 503 without creating a user when the tenant has no valid default tier', async () => {
+        mockUserFindUnique.mockResolvedValue(null);
+        mockGetDefaultChannelGroup.mockRejectedValue(new Error('no enabled default'));
+        const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+        const res = await POST(makeReq({ email: 'no-tier@llmroute.club', password: 'goodpass123' }));
+
+        expect(res.status).toBe(503);
+        expect((await res.json()).error).toBe('default_tier_unavailable');
+        expect(mockUserCreate).not.toHaveBeenCalled();
+        expect(mockProvision).not.toHaveBeenCalled();
+        errSpy.mockRestore();
     });
 
     it('returns 400 when password is too short', async () => {

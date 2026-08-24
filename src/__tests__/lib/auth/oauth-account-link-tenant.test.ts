@@ -31,6 +31,10 @@ vi.mock('@/lib/newapi/client', () => ({
     deleteUser: vi.fn(),
     searchUser: vi.fn(),
 }));
+const mockGetDefaultChannelGroup = vi.fn();
+vi.mock('@/lib/channel-group', () => ({
+    getDefaultChannelGroup: (...a: unknown[]) => mockGetDefaultChannelGroup(...a),
+}));
 vi.mock('@/lib/newapi/system-token', () => ({
     getOrCreateSystemToken: (...a: unknown[]) => mockGetOrCreateSystemToken(...a),
 }));
@@ -53,6 +57,12 @@ beforeEach(() => {
     });
     mockTransaction.mockResolvedValue([]);
     mockGetOrCreateSystemToken.mockResolvedValue(undefined);
+    mockGetDefaultChannelGroup.mockResolvedValue({
+        key: 'gpt特惠分组',
+        newapi_group: 'GPT-特惠反代',
+        is_default: true,
+        enabled: true,
+    });
 });
 
 describe('linkOrCreateOAuthUser — tenant attribution (branch 4)', () => {
@@ -60,6 +70,7 @@ describe('linkOrCreateOAuthUser — tenant attribution (branch 4)', () => {
         const out = await linkOrCreateOAuthUser(IDENTITY, 'tenant-7');
         expect(out).toEqual({ ok: true, userId: 'u1', branch: 4 });
         expect(mockUserCreate.mock.calls[0][0].data.tenant_id).toBe('tenant-7');
+        expect(mockGetDefaultChannelGroup).toHaveBeenCalledWith('tenant-7');
     });
 
     it('no tenantId → tenant_id null (back-compat)', async () => {

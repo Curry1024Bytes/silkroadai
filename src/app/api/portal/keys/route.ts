@@ -139,22 +139,26 @@ export async function POST(req: NextRequest) {
     const enabled = await listEnabledChannelGroups(user.tenant_id);
     const groups = restrictGroupsForUser(enabled, user.allowed_tier_keys);
     const restricted = user.allowed_tier_keys.length > 0;
-    let tier = 'pool';
-    let newapiGroup = 'default';
-    if (groups.length > 0) {
-        const chosen = requestedTier
-            ? groups.find((g) => g.key === requestedTier)
-            : (groups.find((g) => g.is_default) ?? groups[0]);
-        if (!chosen) {
-            return NextResponse.json({ error: 'invalid_tier', allowed: groups.map((g) => g.key) }, { status: 400 });
+    if (groups.length === 0) {
+        // 无启用档次时绝不回退 new-api default/pool;该 Key 会创建成功却在调用时 403。
+        if (!restricted) {
+            console.error(`[portal/keys POST] tenant ${user.tenant_id ?? 'platform'} has no enabled channel groups`);
+            return NextResponse.json({ error: 'tier_unavailable' }, { status: 503 });
         }
-        tier = chosen.key;
-        newapiGroup = chosen.newapi_group;
-    } else if (restricted || (requestedTier && requestedTier !== 'pool')) {
-        // 受限客户的白名单解析为空(配置问题),或无档次配置却要非 pool 档:
-        // 不静默降级到 default(那会给受限客户发出一个默认档 key),直接拒。
         return NextResponse.json({ error: 'invalid_tier', allowed: groups.map((g) => g.key) }, { status: 400 });
     }
+    const chosen = requestedTier
+        ? groups.find((g) => g.key === requestedTier)
+        : (groups.find((g) => g.is_default) ?? (restricted ? groups[0] : undefined));
+    if (!chosen) {
+        if (!requestedTier) {
+            console.error(`[portal/keys POST] tenant ${user.tenant_id ?? 'platform'} has no enabled default tier`);
+            return NextResponse.json({ error: 'default_tier_unavailable' }, { status: 503 });
+        }
+        return NextResponse.json({ error: 'invalid_tier', allowed: groups.map((g) => g.key) }, { status: 400 });
+    }
+    const tier = chosen.key;
+    const newapiGroup = chosen.newapi_group;
 
     const customerAuth = {
         accessToken: user.newapi_access_token,

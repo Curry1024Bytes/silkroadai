@@ -50,6 +50,17 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
 
     const existing = await prisma.channelGroup.findFirst({ where: { id, ...tenantScope(admin) } });
     if (!existing) return NextResponse.json({ error: '渠道分组不存在' }, { status: 404 });
+    const nextIsDefault = parsed.data.is_default ?? existing.is_default;
+    const nextEnabled = parsed.data.enabled ?? existing.enabled;
+    if (nextIsDefault && !nextEnabled) {
+        return NextResponse.json({ error: 'default_tier_must_be_enabled' }, { status: 409 });
+    }
+    if (existing.is_default && existing.enabled && !nextIsDefault) {
+        return NextResponse.json(
+            { error: 'active_default_tier_required', message: '请先将另一档次设为默认档' },
+            { status: 409 },
+        );
+    }
 
     // 单一默认档不变式:把本档设为默认时,清掉同租户其它默认。
     const group = await prisma.$transaction(async (tx) => {
@@ -71,6 +82,12 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
     const { id } = await params;
     const existing = await prisma.channelGroup.findFirst({ where: { id, ...tenantScope(admin) } });
     if (!existing) return NextResponse.json({ error: '渠道分组不存在' }, { status: 404 });
+    if (existing.is_default && existing.enabled) {
+        return NextResponse.json(
+            { error: 'active_default_tier_required', message: '请先将另一档次设为默认档' },
+            { status: 409 },
+        );
+    }
 
     // 注:删档次不影响已建 token(其 new-api group 已下发、照常工作);只是新建
     // key 不能再选该档,且列表里该 tier 的标签回退显示原 key。已建 token 不动。

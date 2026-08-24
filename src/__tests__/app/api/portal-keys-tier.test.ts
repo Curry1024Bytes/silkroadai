@@ -114,12 +114,15 @@ describe('POST /api/portal/keys — P3 档次 → new-api group (decoupled)', ()
         expect(mockCreateTokenForCustomer.mock.calls[0][1].unlimited_quota).toBe(true);
     });
 
-    it('zero ChannelGroups + no tier → safe fallback pool/default (does not break key creation)', async () => {
+    it('zero ChannelGroups + no tier → 503 without creating an unusable pool/default key', async () => {
         mockListEnabledChannelGroups.mockResolvedValue([]);
+        const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
         const res = await POST(req({ alias: 'k' }));
-        expect(res.status).toBe(200);
-        expect(mockCreateTokenForCustomer.mock.calls[0][1].group).toBe('default');
-        expect(mockTokenCreate.mock.calls[0][0].data.tier).toBe('pool');
+        expect(res.status).toBe(503);
+        expect((await res.json()).error).toBe('tier_unavailable');
+        expect(mockCreateTokenForCustomer).not.toHaveBeenCalled();
+        expect(mockTokenCreate).not.toHaveBeenCalled();
+        errSpy.mockRestore();
     });
 });
 

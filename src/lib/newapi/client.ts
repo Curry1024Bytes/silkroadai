@@ -853,10 +853,12 @@ export interface ProvisionedCustomer {
  *
  * @param portal_user_id portal 自己 User 表的 UUID(作为 username 后缀确保唯一)
  * @param email  客户邮箱
+ * @param newapi_group 首个客户 Key 使用的 new-api 计费分组
  */
 export async function provisionNewCustomer(args: {
     portal_user_id: string;
     email: string;
+    newapi_group: string;
     initial_quota?: number; // 默认 0
 }): Promise<ProvisionedCustomer> {
     const username = `c-${args.portal_user_id.slice(0, 8)}`; // c-25a69821
@@ -900,6 +902,7 @@ export async function provisionNewCustomer(args: {
         unlimited_quota: true,
         remain_quota: args.initial_quota ?? 0,
         expired_time: -1,
+        group: args.newapi_group,
     });
 
     // Step 5: look up token.id (create doesn't return it).

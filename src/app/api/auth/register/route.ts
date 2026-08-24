@@ -17,6 +17,7 @@ import { extractClientIP } from '@/lib/auth/extract-ip';
 import { resolveInviteCode, checkIpThrottleAndFlag } from '@/lib/reseller/register-helper';
 import { record as recordAnalytics } from '@/lib/analytics/recorder';
 import { resolveTenantByHost } from '@/lib/tenant/resolve';
+import { getDefaultChannelGroup } from '@/lib/channel-group';
 
 const VERIFICATION_TOKEN_TTL_HOURS = 24;
 const VERIFICATION_TOKEN_BYTES = 32;
@@ -149,6 +150,17 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'email_already_registered' }, { status: 409 });
     }
 
+    let defaultGroup;
+    try {
+        defaultGroup = await getDefaultChannelGroup(tenant.id);
+    } catch (err) {
+        console.error(`[register] default channel group unavailable for tenant ${tenant.id}:`, err);
+        return NextResponse.json(
+            { error: 'default_tier_unavailable', message: 'Account provisioning is temporarily unavailable' },
+            { status: 503 },
+        );
+    }
+
     const password_hash = await hash(password, BCRYPT_ROUNDS);
 
     // PR-U1: capture register-time IP + UA on the User row. Both fields are
@@ -197,6 +209,7 @@ export async function POST(req: NextRequest) {
         provisioned = await provisionNewCustomer({
             portal_user_id: user.id,
             email: user.email,
+            newapi_group: defaultGroup.newapi_group,
             initial_quota: 0,
         });
     } catch (provisionErr) {
@@ -237,6 +250,7 @@ export async function POST(req: NextRequest) {
                     newapi_token_id: provisioned.newapi_token_id,
                     newapi_token_value: provisioned.newapi_token_value,
                     key_alias: `default-${user.id.slice(0, 8)}`,
+                    tier: defaultGroup.key,
                 },
             }),
         ]);

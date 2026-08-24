@@ -29,6 +29,7 @@ import {
     searchUser as searchNewApiUser,
     type ProvisionedCustomer,
 } from '@/lib/newapi/client';
+import { getDefaultChannelGroup } from '@/lib/channel-group';
 
 export interface OAuthIdentity {
     /** 'google', 'github', etc — matches `oauth_accounts.provider`. */
@@ -78,6 +79,18 @@ async function cleanupOrphanNewApiUser(portalUserId: string, contextEmail: strin
  * 'provisioning_failed').
  */
 async function createUserFromIdentity(identity: OAuthIdentity, tenantId?: string): Promise<string | null> {
+    let defaultGroup;
+    try {
+        defaultGroup = await getDefaultChannelGroup(tenantId ?? null);
+    } catch (err) {
+        console.error(
+            `[oauth/account-link] default channel group unavailable for tenant ${tenantId ?? 'platform'} ` +
+                `(provider=${identity.provider}):`,
+            err,
+        );
+        return null;
+    }
+
     let user;
     try {
         user = await prisma.user.create({
@@ -111,6 +124,7 @@ async function createUserFromIdentity(identity: OAuthIdentity, tenantId?: string
         provisioned = await provisionNewCustomer({
             portal_user_id: user.id,
             email: identity.email,
+            newapi_group: defaultGroup.newapi_group,
             initial_quota: 0,
         });
     } catch (provisionErr) {
@@ -141,6 +155,7 @@ async function createUserFromIdentity(identity: OAuthIdentity, tenantId?: string
                     newapi_token_id: provisioned.newapi_token_id,
                     newapi_token_value: provisioned.newapi_token_value,
                     key_alias: `default-${user.id.slice(0, 8)}`,
+                    tier: defaultGroup.key,
                 },
             }),
         ]);

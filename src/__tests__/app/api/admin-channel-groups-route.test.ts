@@ -107,6 +107,13 @@ describe('POST /api/admin/channel-groups', () => {
         expect(mockUpdateMany).toHaveBeenCalledWith(expect.objectContaining({ data: { is_default: false } }));
         expect(mockCreate).toHaveBeenCalled();
     });
+
+    it('rejects creating a disabled default tier', async () => {
+        const res = await POST(req('POST', { ...VALID, is_default: true, enabled: false }));
+        expect(res.status).toBe(400);
+        expect((await res.json()).error).toBe('default_tier_must_be_enabled');
+        expect(mockCreate).not.toHaveBeenCalled();
+    });
 });
 
 describe('PUT/DELETE /api/admin/channel-groups/[id]', () => {
@@ -119,7 +126,13 @@ describe('PUT/DELETE /api/admin/channel-groups/[id]', () => {
     });
 
     it('PUT updates a tenant-owned group; setting default clears siblings', async () => {
-        mockFindFirst.mockResolvedValue({ id: 'cg1', tenant_id: PLATFORM_TENANT_ID, key: 'official' });
+        mockFindFirst.mockResolvedValue({
+            id: 'cg1',
+            tenant_id: PLATFORM_TENANT_ID,
+            key: 'official',
+            is_default: false,
+            enabled: true,
+        });
         const res = await PUT(
             req('PUT', { is_default: true, display_name: '官方' }, 'https://x/api/admin/channel-groups/cg1'),
             {
@@ -135,6 +148,33 @@ describe('PUT/DELETE /api/admin/channel-groups/[id]', () => {
             }),
         );
         expect(mockUpdate).toHaveBeenCalled();
+    });
+
+    it.each([{ is_default: false }, { enabled: false }])(
+        'PUT rejects removing the active default directly: %j',
+        async (change) => {
+            mockFindFirst.mockResolvedValue({
+                id: 'cg1',
+                tenant_id: PLATFORM_TENANT_ID,
+                key: 'pool',
+                is_default: true,
+                enabled: true,
+            });
+            const res = await PUT(req('PUT', change, 'https://x/api/admin/channel-groups/cg1'), { params: params() });
+            expect(res.status).toBe(409);
+            expect((await res.json()).error).toMatch(/active_default_tier_required|default_tier_must_be_enabled/);
+            expect(mockUpdate).not.toHaveBeenCalled();
+        },
+    );
+
+    it('DELETE rejects the active default until another tier becomes default', async () => {
+        mockFindFirst.mockResolvedValue({ id: 'cg1', key: 'pool', is_default: true, enabled: true });
+        const res = await DELETE(req('DELETE', undefined, 'https://x/api/admin/channel-groups/cg1'), {
+            params: params(),
+        });
+        expect(res.status).toBe(409);
+        expect((await res.json()).error).toBe('active_default_tier_required');
+        expect(mockDelete).not.toHaveBeenCalled();
     });
 
     it('DELETE 404 when not found, else removes the tenant-owned group', async () => {
