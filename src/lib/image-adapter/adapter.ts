@@ -6,7 +6,9 @@
  *     2026-08-11 拍板售价制,档位随官方公式自动划分:high 各尺寸都过线,low/auto/standard
  *     与小尺寸 medium 全在线下)。线下的 + size 不明的 → 503,new-api RetryTimes failover
  *     回 adobe 渠道,客户无感;调上游【之前】拒,不花钱。4xx 会被 new-api 当终态甩给客户,
- *     所以守门必须 5xx。
+ *     所以守门必须 5xx。2026-08-24 起 provider 可带 gateMinCt 自定义守门线(纯盈利档、
+ *     无狭长放行,见 providers.ts 字段注释);计费尺寸一律优先按【返回图实际尺寸】合成
+ *     (防上游对约束外尺寸静默降级导致按请求值超收,oaidist 实测中招)。
  *  2. 调真实上游拿图(Authorization 透传 = 渠道 key 就是上游 key)。
  *  3. 【合成 usage】丢弃上游的假 token(ominiapi 恒报 1120,按现口径计费必亏),按
  *     officialOutputTokens(官方计算器逐 token 精确公式)合成 —— 客户拿官方文档的
@@ -490,12 +492,20 @@ export async function handleAdapterImage(
     // 放行规则:
     //  - provider.openAllTiers(we-token 官方账单上游)→ 放行所有请求,含 size=auto/不可解析
     //    (OpenAI 默认 size 就是 auto;这类无法预先算 token,透传上游后按【返回图实际尺寸】合成官方账单);
-    //  - 否则要求 size 可解析,且:狭长形(长/短 > 1.5)不论盈利档放行,其余走盈利档守门。
+    //  - provider.gateMinCt(oaidist 等新守门上游)→ 要求 size 可解析,纯盈利档:合成 ct ≥ 该线放行,
+    //    【无】狭长放行条款(兜底线全是 openAllTiers 官方账单,狭长图落下去照样对得上账);
+    //  - 否则(存量 gated provider)要求 size 可解析,且:狭长形(长/短 > 1.5)不论盈利档放行,
+    //    其余走盈利档守门(行为不变)。
     const dims = parseSize(parsed.size);
     const quality = normQuality(parsed.quality);
     const perImageCt = dims ? officialOutputTokens(dims.w, dims.h, quality) : 0;
     const elongated = dims ? isElongated(dims.w, dims.h) : false;
-    if (!provider.openAllTiers && (!dims || (!elongated && !isProfitable(perImageCt)))) {
+    const gatePass = dims
+        ? provider.gateMinCt !== undefined
+            ? perImageCt >= provider.gateMinCt
+            : elongated || isProfitable(perImageCt)
+        : false;
+    if (!provider.openAllTiers && !gatePass) {
         console.log('[image-adapter] gate reject', {
             provider: providerName,
             mode,
@@ -535,15 +545,31 @@ export async function handleAdapterImage(
         });
     }
 
-    // ---- 计费尺寸:size 可解析用请求值;auto/不可解析(仅 openAllTiers 会走到)→ 解码返回图实际尺寸 ----
-    let billW = dims?.w ?? 0;
-    let billH = dims?.h ?? 0;
-    if (!dims) {
-        const out0 = items[0]?.b64_json;
-        const d0 = out0 ? imageDimensions(Buffer.from(out0, 'base64')) : null;
-        if (!d0) return failover('unbillable_auto', 'auto size but output image dimensions unreadable');
-        billW = d0.w;
-        billH = d0.h;
+    // ---- 计费尺寸:一律优先【返回图实际尺寸】(解码 IHDR/SOF,~毫秒级)----
+    // 之前 size 可解析时直接按请求值计费,依据是"约束外尺寸上游本来就会拒"。oaidist 打破了这个
+    // 假设:约束外请求(实测 7000²)它不拒,200 静默降级出 2048² —— 按请求值合成会 38 倍超收。
+    // 改为:实际尺寸读得出 → 按实际(对如实出图的上游逐字节等价,天然免疫任何上游的静默降级);
+    // 读不出(webp 等非 PNG/JPEG)→ size 可解析退回请求值(旧行为),auto → 无从计费,failover。
+    const out0 = items[0]?.b64_json;
+    const actualDims = out0 ? imageDimensions(Buffer.from(out0, 'base64')) : null;
+    let billW: number;
+    let billH: number;
+    if (actualDims) {
+        billW = actualDims.w;
+        billH = actualDims.h;
+        if (dims && (dims.w !== actualDims.w || dims.h !== actualDims.h)) {
+            console.warn('[image-adapter] upstream coerced size, billing by actual', {
+                provider: providerName,
+                mode,
+                requested: parsed.size,
+                actual: `${actualDims.w}x${actualDims.h}`,
+            });
+        }
+    } else if (dims) {
+        billW = dims.w;
+        billH = dims.h;
+    } else {
+        return failover('unbillable_auto', 'auto size but output image dimensions unreadable');
     }
 
     // ---- 合成 usage(丢弃上游假 token,按官方公式)----
@@ -559,7 +585,7 @@ export async function handleAdapterImage(
     console.log('[image-adapter] ok', {
         provider: providerName,
         mode,
-        size: dims ? parsed.size : `auto→${billW}x${billH}`,
+        size: dims && dims.w === billW && dims.h === billH ? parsed.size : `${parsed.size || 'auto'}→${billW}x${billH}`,
         quality,
         nRequested: parsed.n,
         images: items.length,

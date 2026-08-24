@@ -35,6 +35,15 @@ const CABX_ADOBE = pngChunk(
     ),
 );
 const CABX_MSFT = pngChunk('caBX', Buffer.from('jumbfc2pa...claim_generator Microsoft...azure openai...contentauth'));
+// OpenAI 原生签名版(oaidist 上游 2026-08-24 实测形态:claim_generator=OpenAI Media Service API +
+// `OpenAI OpCo, LLC` 签名证书 + OpenAI TSA 时间戳链,全程无 adobe/firefly 串)
+const CABX_OPENAI = pngChunk(
+    'caBX',
+    Buffer.from(
+        'jumbfc2pa...claim_generator_info OpenAI Media Service API...gpt-image v2.0...' +
+            'OpenAI OpCo, LLC...OpenAI Media Service...OpenAI TSA Root CA...contentauth',
+    ),
+);
 
 function jpegSeg(marker: number, data: Buffer): Buffer {
     const len = Buffer.alloc(2);
@@ -75,6 +84,15 @@ describe('stripAdobeImageMetadata — PNG', () => {
         const input = mkPng(IHDR, CABX_MSFT, IDAT, IEND);
         const out = stripAdobeImageMetadata(input);
         expect(out).toBe(input); // 引用不变(未改动)
+    });
+
+    it('OpenAI 原生签名(oaidist 上游)【保留】:字节完全一致、同一引用返回 —— 客户可验官方凭证', () => {
+        // operator 政策(2026-08-24):OpenAI 签名 = 卖点,保留;adobe 剥。内容自定向机制天然满足:
+        // OpenAI 的 caBX 不含 adobe/firefly 标识 → 不触发剥离。此测试把该政策固化,防未来改成全剥。
+        const input = mkPng(IHDR, CABX_OPENAI, IDAT, IEND);
+        const out = stripAdobeImageMetadata(input);
+        expect(out).toBe(input); // 引用不变,C2PA 证书链原样到客户手里
+        expect(out.toString('latin1')).toContain('OpenAI OpCo, LLC');
     });
 
     it('无元数据的普通 PNG 不动', () => {

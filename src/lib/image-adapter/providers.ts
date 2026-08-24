@@ -17,6 +17,11 @@ export interface ImageProvider {
      *  用于"官方账单"上游(we-token 系):azure 直连对几乎所有非标准尺寸超收 5~229%,客户对不上
      *  官方计算器 → 全量走适配器合成官方 usage。默认(缺省)= 走 isProfitable/isElongated 守门。 */
     openAllTiers?: boolean;
+    /** 自定义守门线(合成售价 token 数,≥ 放行)——设了此值走【纯盈利档】守门,**不带**狭长放行条款
+     *  (2026-08-24 起兜底线全是 openAllTiers 官方账单上游,狭长图落下去照样拿官方账单,狭长条款
+     *  已无账单意义,只会把亏钱的狭长低档放进来)。缺省 = 旧守门(MIN_SYNTH_CT 3,846 + 狭长放行),
+     *  存量 provider 行为不动。 */
+    gateMinCt?: number;
 }
 
 export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
@@ -55,5 +60,19 @@ export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
         baseUrl: 'https://api.frimodel.com',
         brand: /\bfri-?model\b|\bfirefly\b|\bs3-accelerate\.amazonaws\.com\b/gi,
         openAllTiers: true,
+    },
+    // ---- 2026-08-24 operator 新接【真 OpenAI 签名】守门上游(new-api 型分销网关,IP 直连)----
+    // oaidist:出图带 OpenAI 原生 C2PA 证书链(签名证书 `OpenAI OpCo, LLC` + OpenAI TSA 时间戳链,
+    // 10/10 实测无 adobe/firefly 痕迹 → 回程剥离层不触发,签名【保留】= 客户可验官方凭证)。
+    // 上游只用它的 gpt-image-2(它还挂着 gemini/seedance 等,渠道 models 列表只配 gpt-image-2)。
+    // 守门:gateMinCt 1,756(¥0.06/张 成本保本线,operator 2026-08-24 拍板)= 1024² medium 起放行、
+    // 1280×1024 medium(1,510)及以下拒;纯盈利档,无狭长放行(见 gateMinCt 字段注释)。
+    // ⚠️ 该上游对约束外尺寸【不拒反而静默降级】(7000² 请求 200 返 2048² 实测)→ 计费必须按
+    // 返回图实际尺寸合成(adapter.ts 已改为全 provider 按实际尺寸,防超收)。
+    // 错误体是 new-api 通用形("new_api_error"/"(distributor)"),无独特品牌,brand 兜 IP + 该词。
+    oaidist: {
+        baseUrl: 'http://64.32.31.178:3009',
+        brand: /\bdistributor\b|64\.32\.31\.178/gi,
+        gateMinCt: 1_756,
     },
 };

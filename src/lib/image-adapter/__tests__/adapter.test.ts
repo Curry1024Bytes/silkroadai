@@ -976,3 +976,137 @@ describe('wetoken provider(us-la.we-token.cc,adobe 上游挂适配器 → 合成
         expect(lc).not.toContain('firefly');
     });
 });
+
+describe('oaidist provider(真 OpenAI 签名分销网关,gateMinCt 1,756 纯盈利档守门)', () => {
+    const URL_OAIDIST = 'http://portal.test/image-adapter/oaidist/v1/images/generations';
+
+    it('路由到 64.32.31.178:3009,key 透传,model 强制 gpt-image-2 + 显式 b64_json', async () => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            jsonReq(URL_OAIDIST, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', quality: 'medium' }),
+            'generations',
+            'oaidist',
+        );
+        expect(res.status).toBe(200);
+        const [url, init] = fetchMock.mock.calls[0];
+        expect(url).toBe('http://64.32.31.178:3009/v1/images/generations');
+        expect(init.headers.authorization).toBe('Bearer sk-upstream-test');
+        const sent = JSON.parse(init.body as string);
+        expect(sent.model).toBe('gpt-image-2');
+        expect(sent.response_format).toBe('b64_json');
+    });
+
+    // 守门线 1,756 = ¥0.06/张成本保本线(operator 2026-08-24):1024² medium 恰好放行,
+    // 线下第一档 1280×1024 medium(1,510)拒;low 族天花板 659,永远在线下。
+    it.each([
+        ['1024² medium(=1,756 恰好过线)', { size: '1024x1024', quality: 'medium' }],
+        ['2560×1440 medium(1,843)', { size: '2560x1440', quality: 'medium' }],
+        ['1024² high(7,024)', { size: '1024x1024', quality: 'high' }],
+        ['4K high(13,342)', { size: '3840x2160', quality: 'high' }],
+    ])('放行:%s', async (_label, extra) => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            jsonReq(URL_OAIDIST, { model: 'gpt-image-2', prompt: 'x', ...extra }),
+            'generations',
+            'oaidist',
+        );
+        expect(res.status).toBe(200);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+        ['1280×1024 medium(1,510,线下第一档)', { size: '1280x1024', quality: 'medium' }],
+        ['1024² low(196)', { size: '1024x1024', quality: 'low' }],
+        ['1024² 缺省 quality(→low)', { size: '1024x1024' }],
+        ['4K low(371,旧守门也拒)', { size: '3840x2160', quality: 'low' }],
+        ['size=auto(非 openAllTiers 不收)', { size: 'auto', quality: 'high' }],
+    ])('拒(503 不打上游):%s', async (_label, extra) => {
+        const res = await handleAdapterImage(
+            jsonReq(URL_OAIDIST, { model: 'gpt-image-2', prompt: 'x', ...extra }),
+            'generations',
+            'oaidist',
+        );
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('【无狭长放行】狭长 16:9 low(2560×1440 low = 205)→ 拒;同尺寸存量 wetokengated 仍放行', async () => {
+        // gateMinCt provider:狭长低档 = 亏钱档,拒(兜底 openAllTiers 线接走,照样官方账单)
+        const rNew = await handleAdapterImage(
+            jsonReq(URL_OAIDIST, { model: 'gpt-image-2', prompt: 'x', size: '2560x1440', quality: 'low' }),
+            'generations',
+            'oaidist',
+        );
+        expect(rNew.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+        // 存量 gated provider 行为不动:同请求狭长条款放行
+        okUpstream();
+        const rOld = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/wetokengated/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '2560x1440',
+                quality: 'low',
+            }),
+            'generations',
+            'wetokengated',
+        );
+        expect(rOld.status).toBe(200);
+    });
+
+    it('上游静默降级尺寸 → 按【返回图实际尺寸】计费(7000² 式超收根治)', async () => {
+        // 请求 2048² high(过线),上游"降级"返 1024² 的图 → 计费必须是 1024² high 7,024,
+        // 不是请求值 2048² high 14,272
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(1024, 1024) }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+        const res = await handleAdapterImage(
+            jsonReq(URL_OAIDIST, { model: 'gpt-image-2', prompt: 'x', size: '2048x2048', quality: 'high' }),
+            'generations',
+            'oaidist',
+        );
+        expect(res.status).toBe(200);
+        expect((await res.json()).usage.output_tokens).toBe(7024);
+    });
+
+    it('返回图实际尺寸 = 请求值 → 计费与旧口径逐 token 一致(如实上游零变化)', async () => {
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(3840, 2160) }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+        const res = await handleAdapterImage(
+            jsonReq(URL_OAIDIST, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160', quality: 'high' }),
+            'generations',
+            'oaidist',
+        );
+        expect((await res.json()).usage.output_tokens).toBe(13342);
+    });
+
+    it('返回图解不出尺寸(非 PNG/JPEG)→ 退回按请求值计费(旧行为兜底,不失败)', async () => {
+        okUpstream(); // b64_json = "img0-0",解码不是图
+        const res = await handleAdapterImage(
+            jsonReq(URL_OAIDIST, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', quality: 'medium' }),
+            'generations',
+            'oaidist',
+        );
+        expect(res.status).toBe(200);
+        expect((await res.json()).usage.output_tokens).toBe(1756);
+    });
+
+    it('brand 正则抹掉 distributor 与上游 IP', () => {
+        const out = sanitizeAdapterError(
+            'No available channel for model x under group default (distributor); upstream 64.32.31.178 refused',
+            /\bdistributor\b|64\.32\.31\.178/gi,
+        );
+        const lc = out.toLowerCase();
+        expect(lc).not.toContain('distributor');
+        expect(lc).not.toContain('64.32.31.178');
+    });
+});
