@@ -22,7 +22,14 @@ import { IMAGE_PROVIDERS, type ImageProvider } from './providers';
 
 export type ImageMode = 'generations' | 'edits';
 
-const UPSTREAM_TIMEOUT_MS = 300_000; // 实测 ominiapi 4K 出图 54-92s,给足余量
+// 2026-08-23:300s → 600s。大客户(多图 n>1,completion_tokens 1 万+)的单次生成实测要
+// 250-300+ 秒,擦着 300s 线被我们自己 abort,再 failover 换渠道又等 300s —— 一次请求叠出
+// 6-12 分钟,而上游其实是正常的。实测证据:同批日志里 ok 记录 ms=287685(287s 成功)与
+// fetch failed ms=300001 aborted 并存;95% 的失败是本超时掐的,不是上游拒绝。改后实测
+// 一次成功率 70.6% → 92.7%,需重试的请求降约 78%。
+// 600s 与链路其余各层对齐(Caddy 3010 response_header_timeout 600s、instrumentation.ts
+// 的 undici dispatcher 600s),本常量原是整条链最短的一环。
+const UPSTREAM_TIMEOUT_MS = 600_000;
 /** n>1 扇出的上限(对齐 OpenAI images 的 n≤10)。超出只钳制不报错 —— 客户仍拿到 10 张,
  *  也挡住 n=100 这种把单请求内存推到 GB 级(4K 单张 b64 ~12-17MB)的用法。 */
 const MAX_FANOUT = 10;

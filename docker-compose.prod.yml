@@ -216,6 +216,15 @@ networks:
     silkroadai-portal-net:
         name: silkroadai-portal-net
         driver: bridge
+        # 2026-08-24:固定网段。Docker 默认按创建顺序分配 172.1x,换机器就会漂。
+        # ⚠️ 真正要命的是【new-api 那个栈】的网段:new-api 库里 6 条 image2 渠道
+        #    (154/176/177/178/186/187)的 base_url 硬编码了 http://172.20.0.1:3010/...,
+        #    那是 new-api-net 的网关,也是 Caddy image-adapter 入口的绑定地址。网段一漂
+        #    这 6 条渠道全部静默失联,gpt-image-2 直接全灭(2026-08-21 迁 server2 时踩到)。
+        #    new-api 的 compose 不在本仓库(部署在 /opt/new-api),那边也要同样固定 172.20.0.0/16。
+        ipam:
+            config:
+                - subnet: 172.21.0.0/16
     newapi-net:
         name: new-api_new-api-net
         external: true
