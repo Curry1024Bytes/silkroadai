@@ -83,13 +83,15 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
 COPY --from=builder /app/node_modules/.pnpm ./node_modules/.pnpm
-COPY --from=builder /app/prisma ./prisma
-COPY --from=builder /app/prisma.config.ts ./prisma.config.ts
-COPY --from=builder /app/start.sh ./start.sh
+COPY --from=builder --chown=nextjs:nodejs /app/prisma ./prisma
+COPY --from=builder --chown=nextjs:nodejs /app/prisma.config.ts ./prisma.config.ts
+COPY --from=builder --chown=nextjs:nodejs /app/start.sh ./start.sh
 
 # Resolve the prisma CLI from .pnpm (path includes a content hash so we
 # can't hardcode it) and symlink to a stable location for start.sh.
-RUN chmod +x start.sh && \
+RUN chmod -R a+rX prisma && \
+    chmod a+r prisma.config.ts && \
+    chmod +x start.sh && \
     PRISMA_PKG=$(find node_modules/.pnpm -path '*/prisma/build/index.js' -type f | head -1 | sed 's|/build/index.js||') && \
     ln -s /app/$PRISMA_PKG node_modules/prisma
 
