@@ -30,7 +30,25 @@ describe('pricing calculator', () => {
         });
         expect(result.sample?.retailCny).toBeCloseTo(0.322135, 6);
         expect(result.sample?.upstreamCostCny).toBeCloseTo(0.2684455, 7);
-        expect(result.sample?.quota).toBe(11185);
+        expect(result.sample?.technicalUnit).toBeCloseTo(0.044741, 6);
+        expect(result.sample?.quota).toBe(22370);
+    });
+
+    it('converts the verified request charge through the 1M-quota scale', () => {
+        const result = calculatePricing({
+            upstreamCreditsPerCny: 10,
+            upstreamChannelRatio: 10,
+            official: { inputUsdPer1m: 12, outputUsdPer1m: 12, cacheReadUsdPer1m: 0, cacheWriteUsdPer1m: 0 },
+            markupRate: 0.2,
+            groupRatio: 1,
+            portalChatFxCnyPer1mQuota: 14.4,
+            quotaPerUsd: 500_000,
+            sample: { input: 6552, output: 0, cacheRead: 0, cacheWrite: 0 },
+        });
+
+        expect(result.sample?.retailCny).toBeCloseTo(0.0943488, 7);
+        expect(result.sample?.technicalUnit).toBeCloseTo(0.013104, 6);
+        expect(result.sample?.quota).toBe(6552);
     });
 
     it('keeps the recharge ratio explicit and rejects ambiguous invalid input', () => {

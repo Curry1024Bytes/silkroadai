@@ -928,7 +928,8 @@ export async function provisionNewCustomer(args: {
  * @param cnyAmount       充值人民币金额
  *
  * 注意:这是 ADD(增量),不是 SET。
- * 配额单位换算:1 USD = QUOTA_PER_USD(默认 500_000)quota,1 USD = USD_TO_CNY_RATE 元
+ * 配额单位换算:1 个技术计费单位 = QUOTA_PER_USD(默认 500_000)quota,
+ * 1 个技术计费单位 = USD_TO_CNY_RATE 元。变量/函数中的 USD 命名仅为历史兼容。
  */
 export async function applyTopup(args: {
     newapi_user_id: number;

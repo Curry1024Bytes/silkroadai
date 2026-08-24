@@ -193,8 +193,8 @@ function getTexts(locale: Locale) {
             markup: 'Target markup (%)',
             portal: 'Advanced system values',
             chatFx: 'CNY value of 1M quota',
-            quotaPerUsd: 'Quota per technical USD',
-            usdToCny: 'Current Portal USD/CNY',
+            quotaPerUsd: 'Quota per technical billing unit',
+            usdToCny: 'Portal billing unit to CNY',
             sample: '3. Verify with a real request',
             sampleNote: 'Optional. Enter a request log to check its expected deduction.',
             tokens: 'Token count',
@@ -220,7 +220,7 @@ function getTexts(locale: Locale) {
             sampleUpstream: 'Upstream cost',
             sampleRetail: 'Customer charge',
             sampleProfit: 'Profit',
-            technicalUsd: 'Technical USD equivalent',
+            technicalUnit: 'Technical billing units',
             quota: 'Deducted quota',
             reset: 'Reset',
             resetComplete: 'Default sample restored.',
@@ -265,8 +265,8 @@ function getTexts(locale: Locale) {
         markup: '目标加价率 (%)',
         portal: '高级：系统换算参数',
         chatFx: '每 100 万 quota 对应人民币',
-        quotaPerUsd: '每技术 USD 对应 quota',
-        usdToCny: '当前 Portal 美元兑人民币',
+        quotaPerUsd: '每技术计费单位对应 quota',
+        usdToCny: 'Portal 计费单位兑人民币',
         sample: '3. 用真实请求核对',
         sampleNote: '可选。填入一条日志的 Token 数，核对预计扣费。',
         tokens: 'Token 数量',
@@ -292,7 +292,7 @@ function getTexts(locale: Locale) {
         sampleUpstream: '上游成本',
         sampleRetail: '用户扣费',
         sampleProfit: '利润',
-        technicalUsd: '技术 USD',
+        technicalUnit: '技术计费单位',
         quota: '实际扣减 quota',
         reset: '重置',
         resetComplete: '已恢复默认计算样例。',
@@ -1034,7 +1034,7 @@ export default function PricingCalculatorPage() {
                                 </div>
                                 {result.sample && (
                                     <p className={['mt-4 text-xs leading-5', muted].join(' ')}>
-                                        {t.technicalUsd}: ${result.sample.technicalUsd.toFixed(6)} · {t.quota}:{' '}
+                                        {t.technicalUnit}: {result.sample.technicalUnit.toFixed(6)} · {t.quota}:{' '}
                                         {result.sample.quota.toLocaleString('en-US')}
                                     </p>
                                 )}

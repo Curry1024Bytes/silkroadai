@@ -20,8 +20,10 @@ describe('quota-units real-FX decoupling', () => {
     it('REAL_USD_TO_CNY_RATE 未设时回落 USD_TO_CNY_RATE(迁移前中性)', async () => {
         vi.resetModules();
         vi.stubEnv('REAL_USD_TO_CNY_RATE', '');
+        vi.stubEnv('USD_TO_CNY_RATE', '');
         const mod = await import('@/lib/newapi/quota-units');
         expect(mod.REAL_USD_TO_CNY).toBe(mod.USD_TO_CNY_RATE);
+        expect(mod.REAL_USD_TO_CNY).toBe(7.2);
     });
 
     it('迁移前 quotaToRealUsd ≡ quotaToUsd', () => {

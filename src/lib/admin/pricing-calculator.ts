@@ -54,7 +54,7 @@ export interface PricingCalculatorResult {
         retailCny: number;
         profitCny: number;
         marginRate: number;
-        technicalUsd: number;
+        technicalUnit: number;
         quota: number;
     };
 }
@@ -139,14 +139,18 @@ export function calculatePricing(input: PricingCalculatorInput): PricingCalculat
                 input.sample.cacheRead * retailCnyPer1m.cacheRead +
                 input.sample.cacheWrite * retailCnyPer1m.cacheWrite) /
             1_000_000;
-        const technicalUsd = sampleRetail / input.portalChatFxCnyPer1mQuota;
+        // portalChatFxCnyPer1mQuota is the CNY value of 1M raw quota. Convert
+        // the request charge back to raw quota first, then express it in
+        // new-api technical billing units (QuotaPerUnit). The old formula
+        // skipped the 1M-quota scale and therefore under-reported both values.
+        const rawQuota = (sampleRetail / input.portalChatFxCnyPer1mQuota) * 1_000_000;
         sample = {
             upstreamCostCny: sampleCost,
             retailCny: sampleRetail,
             profitCny: sampleRetail - sampleCost,
             marginRate: sampleRetail > 0 ? (sampleRetail - sampleCost) / sampleRetail : 0,
-            technicalUsd,
-            quota: Math.round(technicalUsd * input.quotaPerUsd),
+            technicalUnit: rawQuota / input.quotaPerUsd,
+            quota: Math.round(rawQuota),
         };
     }
 

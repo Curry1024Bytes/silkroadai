@@ -20,14 +20,15 @@
  *   the boundary at build time.
  *
  * Env knobs (read at module load, but only constants — no I/O):
- *   - NEWAPI_QUOTA_PER_USD: how many raw quota = 1 USD (new-api default 500_000)
- *   - USD_TO_CNY_RATE:      FX rate from new-api admin / market rate
+ *   - NEWAPI_QUOTA_PER_USD: raw quota in one new-api technical billing unit
+ *   - USD_TO_CNY_RATE:      legacy-named conversion from that unit to CNY
+ *   - REAL_USD_TO_CNY_RATE: real market FX used only for USD display
  */
 
 export const QUOTA_PER_USD = parseInt(process.env.NEWAPI_QUOTA_PER_USD || '500000', 10);
 export const USD_TO_CNY_RATE = parseFloat(process.env.USD_TO_CNY_RATE || '7.2');
 
-/** quota → USD */
+/** quota → legacy-named new-api technical billing units */
 export function quotaToUsd(quota: number): number {
     return quota / QUOTA_PER_USD;
 }
@@ -37,7 +38,7 @@ export function quotaToCny(quota: number): number {
     return quotaToUsd(quota) * USD_TO_CNY_RATE;
 }
 
-/** USD → quota */
+/** legacy-named new-api technical billing units → quota */
 export function usdToQuota(usd: number): number {
     return Math.round(usd * QUOTA_PER_USD);
 }
@@ -56,7 +57,7 @@ export function cnyToQuota(cny: number): number {
  * 用本常量。未设 `REAL_USD_TO_CNY_RATE` 时回落 `USD_TO_CNY_RATE`,所以迁移前
  * 两者同值、行为零变化。
  */
-export const REAL_USD_TO_CNY = parseFloat(process.env.REAL_USD_TO_CNY_RATE || process.env.USD_TO_CNY_RATE || '7');
+export const REAL_USD_TO_CNY = parseFloat(process.env.REAL_USD_TO_CNY_RATE || String(USD_TO_CNY_RATE));
 
 /** quota → 真实 USD(先折 ¥ 再按真汇率折 $,展示用;迁移前等价于 quotaToUsd) */
 export function quotaToRealUsd(quota: number): number {

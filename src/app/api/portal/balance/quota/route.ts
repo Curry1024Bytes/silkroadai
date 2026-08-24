@@ -23,7 +23,7 @@ import 'server-only';
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth/session';
 import { getCustomerBalance } from '@/lib/billing/customer-balance';
-import { USD_TO_CNY_RATE } from '@/lib/newapi/quota-units';
+import { REAL_USD_TO_CNY } from '@/lib/newapi/quota-units';
 
 export const runtime = 'nodejs';
 
@@ -41,8 +41,8 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
                 // ¥ 统一口径(portal=Account.balance_cny;newapi=quotaToCny)。USD = ¥ / FX。
                 remain_cny: bal.balanceCny,
                 used_cny: bal.spentCny,
-                remain_usd: bal.balanceCny / USD_TO_CNY_RATE,
-                used_usd: bal.spentCny / USD_TO_CNY_RATE,
+                remain_usd: bal.balanceCny / REAL_USD_TO_CNY,
+                used_usd: bal.spentCny / REAL_USD_TO_CNY,
                 // raw quota 仅 newapi 有意义;portal 的 new-api quota 是哑门开关,不暴露(0)。
                 remain_quota: bal.quota?.remain ?? 0,
                 used_quota: bal.quota?.used ?? 0,
