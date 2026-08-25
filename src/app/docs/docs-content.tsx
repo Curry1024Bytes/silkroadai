@@ -93,7 +93,7 @@ const AGENTS: AgentSection[] = [
     {
         id: 'api-gpt-image',
         label: 'GPT image-2 生图',
-        blurb: 'gpt-image-2 · OpenAI Images API · 文生图 + 图生图 · Azure 官方稳定 · 高并发 · 按 token 计费(¥1.3=官方$1)。',
+        blurb: 'gpt-image-2-1k / -2k / -4k · OpenAI Images API · 文生图 + 图生图 · 按张固定价。',
     },
     {
         id: 'api-async-image',
@@ -910,7 +910,7 @@ data: [DONE]`}
                                         /v1/images/generations
                                     </td>
                                     <td className="px-4 py-3 text-ink align-top">OpenAI 图像兼容</td>
-                                    <td className="px-4 py-3 text-ink">gpt-image-2 / DALL·E 系</td>
+                                    <td className="px-4 py-3 text-ink">gpt-image-2-{`{1,2,4}`}k / DALL·E 系</td>
                                 </tr>
                                 <tr className="border-b border-brand-border">
                                     <td className="px-4 py-3 font-mono text-xs text-navy align-top">
@@ -1334,7 +1334,7 @@ curl ${OPENAI_BASE}/images/edits \\
                                 <tr className="border-b border-brand-border">
                                     <td className="px-4 py-3 font-mono text-xs text-navy align-top">model</td>
                                     <td className="px-4 py-3 text-ink align-top">见上表 Gemini 生图模型</td>
-                                    <td className="px-4 py-3 text-ink">非 Gemini 模型(gpt-image-2 等)原样透传上游</td>
+                                    <td className="px-4 py-3 text-ink">非 Gemini 模型经 Images 兼容处理后透传上游</td>
                                 </tr>
                                 <tr className="border-b border-brand-border">
                                     <td className="px-4 py-3 font-mono text-xs text-navy align-top">prompt</td>
@@ -1531,68 +1531,58 @@ curl ${OPENAI_BASE}/images/edits \\
                         </code>{' '}
                         图生图。现有 OpenAI SDK 改一行 base_url 即可。返回{' '}
                         <strong className="text-navy">b64_json</strong>(Base64 PNG)。后端为
-                        <strong className="text-navy"> Azure 官方 gpt-image,稳定 + 抗高并发</strong>(实测 100 并发 100%
-                        成功)。
-                        <strong className="text-navy"> 请用「image2官方稳定高并发」档的 API Key</strong> 调用。
+                        <strong className="text-navy"> GPT image-2 上游</strong>。
+                        <strong className="text-navy"> 请用「图片模型」档的 API Key</strong> 调用。
                     </p>
 
                     <div className="mt-1 mb-3 rounded-lg border-l-4 border-brand-accent bg-paper-muted px-4 py-3 text-sm text-ink">
-                        💰 <strong className="text-navy">计价:按 token 计费,¥1.3 = 官方 $1</strong> —— 按官方 gpt-image
-                        的真实 token 用量结算(官方价:输入 $5 / 图像输入 $8 / 输出 $30,每百万
-                        token;图生图的参考图算图像输入)。
-                        <strong className="text-navy">
-                            成本主要由{' '}
-                            <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
-                                quality
-                            </code>{' '}
-                            决定
-                        </strong>
-                        (下表),尺寸(size)影响很小。
+                        <strong className="text-navy">计价:按张固定价</strong> —— 模型名就是分辨率档位。 请求{' '}
+                        <code className="font-mono text-xs">n</code> 张按实际张数倍增;
+                        <code className="font-mono text-xs">quality</code> 不改变该档固定单价。
                     </div>
                     <div className="rounded-lg overflow-hidden border border-brand-border bg-surface mb-2">
                         <table className="w-full border-collapse text-sm">
                             <thead>
                                 <tr className="bg-paper-muted text-muted-ink">
                                     <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
-                                        情形
+                                        模型
                                     </th>
                                     <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
-                                        大致输出 token
+                                        固定尺寸
                                     </th>
                                     <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
-                                        约 ¥ / 张
+                                        ¥ / 张
                                     </th>
                                 </tr>
                             </thead>
                             <tbody>
                                 <tr className="border-b border-brand-border">
-                                    <td className="px-4 py-3 text-ink align-top">简单 prompt · quality 默认(auto)</td>
-                                    <td className="px-4 py-3 text-ink align-top">~200–400</td>
-                                    <td className="px-4 py-3 text-navy align-top font-medium">¥0.008–0.026</td>
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">gpt-image-2-1k</td>
+                                    <td className="px-4 py-3 text-ink align-top">1024x1024</td>
+                                    <td className="px-4 py-3 text-navy align-top font-medium">¥1.00</td>
                                 </tr>
                                 <tr className="border-b border-brand-border">
-                                    <td className="px-4 py-3 text-ink align-top">复杂 prompt · auto(自动提质)</td>
-                                    <td className="px-4 py-3 text-ink align-top">~2000–4000</td>
-                                    <td className="px-4 py-3 text-navy align-top font-medium">¥0.065–0.16</td>
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">gpt-image-2-2k</td>
+                                    <td className="px-4 py-3 text-ink align-top">2048x2048</td>
+                                    <td className="px-4 py-3 text-navy align-top font-medium">¥1.50</td>
                                 </tr>
                                 <tr>
-                                    <td className="px-4 py-3 text-ink align-top">quality=high(1024²)</td>
-                                    <td className="px-4 py-3 text-ink align-top">~7000</td>
-                                    <td className="px-4 py-3 text-navy align-top font-medium">~¥0.27</td>
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">gpt-image-2-4k</td>
+                                    <td className="px-4 py-3 text-ink align-top">3840x2160</td>
+                                    <td className="px-4 py-3 text-navy align-top font-medium">¥2.00</td>
                                 </tr>
                             </tbody>
                         </table>
                     </div>
                     <p className="m-0 mb-4 text-xs text-minor-ink">
-                        单一模型{' '}
+                        不要调用 canonical{' '}
                         <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
                             gpt-image-2
                         </code>
-                        ,分辨率由{' '}
-                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
-                            size
-                        </code>{' '}
-                        控制(最高 3840×2160);上表为估算,实际以响应 usage / 账单为准。
+                        。三个公开 SKU 会自动注入表中尺寸;请省略
+                        <code className="font-mono text-xs"> size </code>和
+                        <code className="font-mono text-xs"> aspect_ratio</code>。显式参数与档位冲突时返回
+                        400,不会静默降档。
                     </p>
 
                     <p className="m-0 mb-2 text-sm font-medium text-navy">文生图 · /v1/images/generations(JSON)</p>
@@ -1615,7 +1605,9 @@ curl ${OPENAI_BASE}/images/edits \\
                                 <tr className="border-b border-brand-border">
                                     <td className="px-4 py-3 font-mono text-xs text-navy align-top">model</td>
                                     <td className="px-4 py-3 text-ink align-top">✓</td>
-                                    <td className="px-4 py-3 text-ink">gpt-image-2</td>
+                                    <td className="px-4 py-3 text-ink">
+                                        gpt-image-2-1k / gpt-image-2-2k / gpt-image-2-4k
+                                    </td>
                                 </tr>
                                 <tr className="border-b border-brand-border">
                                     <td className="px-4 py-3 font-mono text-xs text-navy align-top">prompt</td>
@@ -1626,16 +1618,13 @@ curl ${OPENAI_BASE}/images/edits \\
                                     <td className="px-4 py-3 font-mono text-xs text-navy align-top">quality</td>
                                     <td className="px-4 py-3 text-ink align-top">—</td>
                                     <td className="px-4 py-3 text-ink">
-                                        low / medium / high / auto(默认)——{' '}
-                                        <strong className="text-navy">直接决定成本</strong>,见上表
+                                        low / medium / high / auto(默认);不改变已选 SKU 的按张价
                                     </td>
                                 </tr>
                                 <tr className="border-b border-brand-border">
                                     <td className="px-4 py-3 font-mono text-xs text-navy align-top">size</td>
                                     <td className="px-4 py-3 text-ink align-top">—</td>
-                                    <td className="px-4 py-3 text-ink">
-                                        1024x1024 / 1536x1024 / 1024x1536 / auto;最高 3840x2160
-                                    </td>
+                                    <td className="px-4 py-3 text-ink">建议省略;与模型档位冲突时返回 400</td>
                                 </tr>
                                 <tr className="border-b border-brand-border">
                                     <td className="px-4 py-3 font-mono text-xs text-navy align-top">output_format</td>
@@ -1645,7 +1634,7 @@ curl ${OPENAI_BASE}/images/edits \\
                                 <tr className="border-b border-brand-border">
                                     <td className="px-4 py-3 font-mono text-xs text-navy align-top">n</td>
                                     <td className="px-4 py-3 text-ink align-top">—</td>
-                                    <td className="px-4 py-3 text-ink">张数,默认 1(建议 1,多张分多次更稳)</td>
+                                    <td className="px-4 py-3 text-ink">张数,默认 1;费用按 n 倍增</td>
                                 </tr>
                                 <tr>
                                     <td className="px-4 py-3 font-mono text-xs text-navy align-top">response_format</td>
@@ -1664,10 +1653,8 @@ curl ${OPENAI_BASE}/images/edits \\
   -H "Authorization: Bearer sk-你的KEY" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "model": "gpt-image-2",
-    "prompt": "一只戴圣诞帽的橘猫,工作室灯光,高细节",
-    "size": "1536x1024",
-    "quality": "high"
+    "model": "gpt-image-2-2k",
+    "prompt": "一只戴圣诞帽的橘猫,工作室灯光,高细节"
   }'`}
                     </CodeBlock>
                     <CodeBlock language="python">
@@ -1677,9 +1664,8 @@ import base64
 client = OpenAI(api_key="sk-你的KEY", base_url="${OPENAI_BASE}")
 
 resp = client.images.generate(
-    model="gpt-image-2",
+    model="gpt-image-2-2k",
     prompt="一只戴圣诞帽的橘猫,工作室灯光,高细节",
-    size="1536x1024",
 )
 with open("out.png", "wb") as f:
     f.write(base64.b64decode(resp.data[0].b64_json))`}
@@ -1691,9 +1677,8 @@ import fs from "node:fs";
 const client = new OpenAI({ apiKey: "sk-你的KEY", baseURL: "${OPENAI_BASE}" });
 
 const resp = await client.images.generate({
-  model: "gpt-image-2",
+  model: "gpt-image-2-2k",
   prompt: "一只戴圣诞帽的橘猫,工作室灯光,高细节",
-  size: "1536x1024",
 });
 fs.writeFileSync("out.png", Buffer.from(resp.data[0].b64_json, "base64"));`}
                     </CodeBlock>
@@ -1721,7 +1706,9 @@ fs.writeFileSync("out.png", Buffer.from(resp.data[0].b64_json, "base64"));`}
                                 <tr className="border-b border-brand-border">
                                     <td className="px-4 py-3 font-mono text-xs text-navy align-top">model</td>
                                     <td className="px-4 py-3 text-ink align-top">✓</td>
-                                    <td className="px-4 py-3 text-ink">gpt-image-2(或专用档)</td>
+                                    <td className="px-4 py-3 text-ink">
+                                        gpt-image-2-1k / gpt-image-2-2k / gpt-image-2-4k
+                                    </td>
                                 </tr>
                                 <tr className="border-b border-brand-border">
                                     <td className="px-4 py-3 font-mono text-xs text-navy align-top">prompt</td>
@@ -1737,7 +1724,7 @@ fs.writeFileSync("out.png", Buffer.from(resp.data[0].b64_json, "base64"));`}
                                     <td className="px-4 py-3 font-mono text-xs text-navy align-top">quality / size</td>
                                     <td className="px-4 py-3 text-ink align-top">—</td>
                                     <td className="px-4 py-3 text-ink">
-                                        同文生图;默认回 b64_json,传{' '}
+                                        尺寸由 model 档位绑定;默认回 b64_json,传{' '}
                                         <code className="font-mono text-xs">response_format: url</code> 存图床返 URL
                                     </td>
                                 </tr>
@@ -1747,7 +1734,7 @@ fs.writeFileSync("out.png", Buffer.from(resp.data[0].b64_json, "base64"));`}
                     <CodeBlock language="bash">
                         {`curl ${OPENAI_BASE}/images/edits \\
   -H "Authorization: Bearer sk-你的KEY" \\
-  -F model=gpt-image-2 \\
+  -F model=gpt-image-2-2k \\
   -F prompt="把背景换成雪景" \\
   -F image=@cat.png`}
                     </CodeBlock>
@@ -1758,7 +1745,7 @@ import base64
 client = OpenAI(api_key="sk-你的KEY", base_url="${OPENAI_BASE}")
 
 resp = client.images.edit(
-    model="gpt-image-2",
+    model="gpt-image-2-2k",
     prompt="把背景换成雪景",
     image=open("cat.png", "rb"),
 )
@@ -1787,8 +1774,8 @@ with open("edited.png", "wb") as f:
                         <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
                             {`"response_format": "url"`}
                         </code>
-                        。<strong className="text-navy">按 token 计费(¥1.3 = 官方 $1)</strong>,成本由 quality
-                        主导(见上表), 响应 usage 即真实 token 用量。上游报错
+                        。<strong className="text-navy">按所选 1K / 2K / 4K SKU 固定按张计费</strong>; 账单中的 token
+                        数不是这组 SKU 的计费依据。上游报错
                         <strong className="text-navy">原样透传</strong>(状态码 + OpenAI 错误体)。
                     </div>
 
@@ -1821,7 +1808,7 @@ with open("edited.png", "wb") as f:
                     <div className="mt-3 mb-3 rounded-lg border-l-4 border-brand-accent bg-paper-muted px-4 py-3 text-sm text-ink">
                         ⏱️ <strong className="text-navy">4K(size=3840x2160)又慢又大</strong>:单张约 7–8MB、生成最长约
                         120s。接入务必把<strong className="text-navy">超时设到 ≥ 180s</strong>{' '}
-                        并对偶发断连重试一次;不强求 4K 时用默认 size 更快更省;4K 配 quality=high 的 token 成本最高。
+                        并对偶发断连重试一次;不需要 4K 时直接选 1K 或 2K SKU,不要在 4K SKU 上改 size。
                         <span className="block mt-1.5 text-xs text-minor-ink">
                             Python:
                             <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
@@ -1899,13 +1886,13 @@ with open("edited.png", "wb") as f:
                         <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
                             POST /v1/images/edits
                         </code>{' '}
-                        · 模型 gpt-image-2(自适应,推荐)/ -1k / -2k / -4k · 返回 data[0].b64_json(PNG)· 按
-                        token(¥1.3=$1)· 4K 超时 ≥180s + 重试 · Key 用 image2 分组。
+                        · 模型 gpt-image-2-1k / gpt-image-2-2k / gpt-image-2-4k · 返回 data[0].b64_json(PNG)· 固定价 ¥1
+                        / ¥1.5 / ¥2 每张 · 4K 超时 ≥180s + 重试 · Key 用图片模型分组。
                     </div>
 
                     <h3 className="m-0 mt-8 mb-2 text-base font-semibold text-navy">严格模式 · Azure 标准校验(可选)</h3>
                     <p className="m-0 mb-3 text-sm text-ink leading-relaxed">
-                        默认对不支持的参数「尽量出图」(静默忽略 / 自动调整尺寸)。若你需要
+                        固定价 SKU 的尺寸约束始终生效,不需要本开关:档位与 size / aspect_ratio 冲突必定 400。 若还需要
                         <strong className="text-navy">严格对标 Azure gpt-image 行为</strong>
                         (不支持的参数明确报 400、而非静默改),给请求加一个开关即可:请求头{' '}
                         <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
@@ -1915,8 +1902,7 @@ with open("edited.png", "wb") as f:
                         <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
                             ?strict=true
                         </code>
-                        。
-                        <strong className="text-navy">不加这个开关 = 保持现在的宽容行为,现有代码完全不受影响。</strong>
+                        。<strong className="text-navy">该开关只额外校验输出格式、透明背景等参数。</strong>
                     </p>
                     <p className="m-0 mb-2 text-sm font-medium text-navy">开启后</p>
                     <div className="rounded-lg overflow-hidden border border-brand-border bg-surface mb-3">
@@ -1946,7 +1932,9 @@ with open("edited.png", "wb") as f:
                                 </tr>
                                 <tr className="border-b border-brand-border">
                                     <td className="px-4 py-3 font-mono text-xs text-navy align-top">size</td>
-                                    <td className="px-4 py-3 text-ink">非法尺寸 → 400(默认:静默四舍五入),规则见下</td>
+                                    <td className="px-4 py-3 text-ink">
+                                        与固定价 SKU 尺寸不一致 → 400(无论是否开启严格模式)
+                                    </td>
                                 </tr>
                                 <tr>
                                     <td className="px-4 py-3 font-mono text-xs text-navy align-top">
@@ -1960,14 +1948,8 @@ with open("edited.png", "wb") as f:
                         </table>
                     </div>
                     <div className="mt-1 mb-3 rounded-lg border-l-4 border-brand-accent bg-paper-muted px-4 py-3 text-sm text-ink">
-                        📐 <strong className="text-navy">合规尺寸规则</strong>:宽、高都是{' '}
-                        <strong className="text-navy">16 的倍数</strong> · 长边{' '}
-                        <strong className="text-navy">1024~3840</strong> · 短边{' '}
-                        <strong className="text-navy">≤ 2160</strong> · 长宽比{' '}
-                        <strong className="text-navy">≤ 3:1</strong>。
-                        <br />
-                        合规例:1024x1024 / 1536x1024 / 3072x1024 / 3840x2160;非法例:3200x1024(比例 &gt;
-                        3:1)、3840x2176(短边 &gt; 2160)、1024x641(非 16 倍数)。
+                        <strong className="text-navy">固定对应</strong>:1K = 1024x1024 · 2K = 2048x2048 · 4K =
+                        3840x2160。省略 size 最稳妥,Portal 会自动注入。
                     </div>
                     <CodeBlock language="bash">
                         {`# 严格模式:非法参数直接 400,不再静默出图
@@ -1975,13 +1957,13 @@ curl ${OPENAI_BASE}/images/generations \\
   -H "Authorization: Bearer sk-你的KEY" \\
   -H "X-Silkroadai-Strict: true" \\
   -H "Content-Type: application/json" \\
-  -d '{ "model": "gpt-image-2", "prompt": "...", "size": "3200x1024" }'
-# → 400  invalid size '3200x1024': aspect ratio must be within 3:1
+  -d '{ "model": "gpt-image-2-1k", "prompt": "...", "size": "2048x2048" }'
+# → 400  model "gpt-image-2-1k" has fixed size "1024x1024"
 
 # output_format=jpeg 在严格模式下真正返回 JPEG(也可用 ?strict=true 开关)
 curl "${OPENAI_BASE}/images/generations?strict=true" \\
   -H "Authorization: Bearer sk-你的KEY" -H "Content-Type: application/json" \\
-  -d '{ "model": "gpt-image-2", "prompt": "...", "output_format": "jpeg" }'`}
+  -d '{ "model": "gpt-image-2-1k", "prompt": "...", "output_format": "jpeg" }'`}
                     </CodeBlock>
                 </section>
 
@@ -2002,7 +1984,7 @@ curl "${OPENAI_BASE}/images/generations?strict=true" \\
                         <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
                             /v1/images/*
                         </code>{' '}
-                        的模型都生效(gpt-image-2、Gemini 生图等),文生图 / 图生图都支持。
+                        的模型都生效(gpt-image-2-1k / -2k / -4k、Gemini 生图等),文生图 / 图生图都支持。
                     </p>
 
                     <div className="mt-1 mb-4 rounded-lg border-l-4 border-brand-accent bg-paper-muted px-4 py-3 text-sm text-ink">
@@ -2100,7 +2082,7 @@ curl "${OPENAI_BASE}/images/generations?strict=true" \\
 curl "${OPENAI_BASE}/images/generations?async=true" \\
   -H "Authorization: Bearer sk-你的KEY" \\
   -H "Content-Type: application/json" \\
-  -d '{ "model": "gpt-image-2", "prompt": "一只在炒菜的小猫", "size": "1024x1024" }'
+  -d '{ "model": "gpt-image-2-1k", "prompt": "一只在炒菜的小猫" }'
 # → { "code":"success", "data":{ "task_id":"3dad96708a77…", "status":"IN_PROGRESS" } }
 
 # ② 轮询(每几秒一次,直到 status = SUCCESS / FAILURE)
@@ -2121,7 +2103,7 @@ curl "${OPENAI_BASE}/images/tasks/3dad96708a77…" \\
     "progress": "100%",
     "data": {                         // ← 内层 = 标准图片结果
       "data": [ { "url": "https://images.llmroute.club/gen/xxxx.png" } ],
-      "model": "gpt-image-2",
+      "model": "gpt-image-2-1k",
       "created": 1758993885
     }
   }
@@ -2138,7 +2120,7 @@ H = {"Authorization": "Bearer sk-你的KEY"}
 # 提交
 task_id = requests.post(
     f"{BASE}/images/generations?async=true", headers=H,
-    json={"model": "gpt-image-2", "prompt": "一只在炒菜的小猫", "size": "1024x1024"},
+    json={"model": "gpt-image-2-1k", "prompt": "一只在炒菜的小猫"},
 ).json()["data"]["task_id"]
 
 # 轮询
@@ -2162,7 +2144,7 @@ while True:
                     <CodeBlock language="bash">
                         {`curl "${OPENAI_BASE}/images/generations?async=true&webhook=https://你的域名/callback" \\
   -H "Authorization: Bearer sk-你的KEY" -H "Content-Type: application/json" \\
-  -d '{ "model": "gpt-image-2", "prompt": "一只在炒菜的小猫" }'`}
+  -d '{ "model": "gpt-image-2-1k", "prompt": "一只在炒菜的小猫" }'`}
                     </CodeBlock>
                     <p className="m-0 mb-2 mt-3 text-sm text-ink leading-relaxed">我们 POST 到你 webhook 的内容:</p>
                     <CodeBlock language="json">

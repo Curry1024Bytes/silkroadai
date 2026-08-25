@@ -23,13 +23,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { Logo } from '@/components/brand/Logo';
-import {
-    BRAND_NAME,
-    BRAND_TAGLINE,
-    NEW_API_MODIFIED_SOURCE_URL,
-    SUPPORT_EMAIL,
-    SUPPORT_WECHAT,
-} from '@/lib/public-config';
+import { BRAND_NAME, BRAND_TAGLINE, SUPPORT_EMAIL, SUPPORT_WECHAT } from '@/lib/public-config';
 
 const CUSTOMER_WORKSPACE_ROOTS = [
     '/balance',
@@ -80,14 +74,6 @@ export function Footer() {
                         <Link href="/refund" className="no-underline transition-colors hover:text-navy">
                             退款政策
                         </Link>
-                        <a
-                            href={NEW_API_MODIFIED_SOURCE_URL}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="no-underline transition-colors hover:text-navy"
-                        >
-                            修改版源码
-                        </a>
                     </nav>
                 </div>
 

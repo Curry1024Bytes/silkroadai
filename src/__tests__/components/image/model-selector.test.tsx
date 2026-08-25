@@ -1,7 +1,7 @@
 /**
  * PR-T2 — ModelSelector SSR smoke.
  *
- * Closed state asserts: 5 entries available, default badge visible,
+ * Closed state asserts: Studio-safe entries available,
  * collapsed dropdown shows the selected model's label + ¥ price.
  */
 import { describe, expect, it } from 'vitest';
@@ -12,14 +12,11 @@ import { IMAGE_MODEL_OPTIONS, DEFAULT_IMAGE_MODEL_ID } from '@/data/image-models
 describe('<ModelSelector /> closed state', () => {
     it('shows the selected model label + ¥ price', () => {
         const html = renderToString(<ModelSelector value={DEFAULT_IMAGE_MODEL_ID} onChange={() => {}} />);
-        // W8 D7 PR #67: 默认 [0] = OpenAI 国外旗舰 gpt-image-2(label 'GPT image-2')
-        // 2026-06-15 主渠道切到 ch36/czeq:ModelPrice[gpt-image-2] = 0.00714 USD
-        //   → ¥0.05/张(零售)。
-        expect(html).toContain('GPT image-2');
+        expect(html).toContain('Nano Banana');
         // Closed dropdown shows ¥ in the trigger button. React 19 SSR
         // inserts <!-- --> between literal + interpolated text, so we
         // tolerate the comments inside the regex.
-        expect(html).toMatch(/¥(?:<!-- -->)?0\.05(?:<!-- -->)?\/张/);
+        expect(html).toMatch(/¥(?:<!-- -->)?0\.02(?:<!-- -->)?\/张/);
     });
 
     it('toggle button has aria-haspopup + aria-expanded=false initially', () => {

@@ -1,9 +1,9 @@
 /**
  * log-display 计费口径判断 —— 决定「调用日志」Tokens 列显不显示。
  *
- * 核心:gpt-image-2 / az-gpt-image-2 是【按 token 计费】(ModelRatio,model_price=-1),token 就是
- * 计费依据,必须显示;Gemini 生图是【按张计费】(ModelPrice≥0),token 是噪声,显示 "—"。
- * 判据优先用每条请求真实计费口径 other.model_price,缺失才回退模型名(gpt-image 族恒按 token)。
+ * 核心:gpt-image-2 / az-gpt-image-2 是【按 token 计费】(ModelRatio,model_price=-1),
+ * gpt-image-2-{1,2,4}k 是【按张计费】(ModelPrice≥0)。判据优先用每条请求真实口径,
+ * 缺失才回退到这三个明确的固定价别名。
  */
 import { describe, expect, it } from 'vitest';
 import { parseModelPrice, isPerImageBilled, isImageModel, parseCacheTokens } from '@/lib/newapi/log-display';
@@ -39,12 +39,19 @@ describe('isPerImageBilled', () => {
         expect(isPerImageBilled(GPT_IMAGE_OTHER, 'gpt-image-2')).toBe(false);
     });
 
-    it('other 缺失 → 回退模型名;gpt-image 族恒按 token(即使缺 other 也显示)', () => {
+    it('other 缺失 → 三个固定价别名按张,canonical/az 仍按 token', () => {
         expect(isPerImageBilled(null, 'gpt-image-2')).toBe(false); // gpt-image 族 → 显示
         expect(isPerImageBilled('', 'az-gpt-image-2')).toBe(false); // gpt-image 族 → 显示
+        for (const model of ['gpt-image-2-1k', 'gpt-image-2-2k', 'gpt-image-2-4k']) {
+            expect(isPerImageBilled(null, model), model).toBe(true);
+        }
         expect(isPerImageBilled(undefined, 'gemini-3-pro-image-preview')).toBe(true); // 名字生图 → 藏
         expect(isPerImageBilled(null, 'dall-e-3')).toBe(true); // 名字生图 → 藏
         expect(isPerImageBilled(null, 'gpt-5.4')).toBe(false); // LLM → 显示
+    });
+
+    it('other.model_price 始终优先:别名真实走 -1 时仍显示 token', () => {
+        expect(isPerImageBilled(GPT_IMAGE_OTHER, 'gpt-image-2-4k')).toBe(false);
     });
 });
 

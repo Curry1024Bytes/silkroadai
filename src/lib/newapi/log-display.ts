@@ -117,11 +117,13 @@ export function parseCacheTokens(other: string | null | undefined): { read: numb
  *   - `false` → 按 token 计费(ModelRatio,含 gpt-image-2 / az-gpt-image-2 / 所有 LLM)→ token 就是
  *     计费依据,要如实显示。
  *  判据优先用【每条请求真实计费口径】`other.model_price`(≥0 按张、-1/缺省按 token);`other` 解析不出
- *  才回退模型名 —— 名字像生图【且不是 gpt-image 族】才算按张(gpt-image 族确定按 token,不能凭名字藏)。 */
+ *  才回退模型名 —— gpt-image-2-{1,2,4}k 是明确的 ModelPrice 固定价 SKU;
+ *  canonical gpt-image-2 / az-gpt-image 族仍按 token 展示。 */
 export function isPerImageBilled(other: string | null | undefined, model: string): boolean {
     const mp = parseModelPrice(other);
     if (mp != null) return mp >= 0;
     const m = (model || '').toLowerCase();
+    if (/^gpt-image-2-[124]k$/.test(m)) return true;
     if (m.includes('gpt-image')) return false; // gpt-image 族按 token 计费,即使缺 other 也要显示 token
     return isImageModel(m);
 }

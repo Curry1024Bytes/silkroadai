@@ -3,6 +3,9 @@ import { categorizeByType, HIDDEN_MODELS } from '@/lib/models/categorize';
 
 // 工具 — 生图模型列表(用客户 key 拉 /v1/models,只回 image-gen 类)。
 const BASE = process.env.NEWAPI_BASE_URL || 'http://localhost:3000';
+// GPT image-2 的三个固定价 SKU 由 model 名绑定尺寸。当前工具页仍会单独发
+// aspect_ratio/size 且允许直接编辑 JSON,先不展示这组 SKU;标准 /v1 API 不受影响。
+const GPT_IMAGE_FIXED_PRICE_MODELS = /^gpt-image-2(?:-[124]k)?$/i;
 
 export async function GET(req: NextRequest) {
     const auth = req.headers.get('authorization') || '';
@@ -25,6 +28,7 @@ export async function GET(req: NextRequest) {
     const img = ids
         .filter((id) => !HIDDEN_MODELS.has(id))
         .filter((id) => categorizeByType(id) === 'image-gen')
+        .filter((id) => !GPT_IMAGE_FIXED_PRICE_MODELS.test(id))
         .sort();
     return NextResponse.json({ models: img });
 }

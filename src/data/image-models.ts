@@ -50,32 +50,15 @@ function cny(usd: number): number {
 /** Order = display order in the dropdown. Default selection is the
  *  first entry (`Nano Banana`). Cheapest + most marketable name.
  *
- *  Price math (2026-05-22 修订):
- *    Gemini 家族 = wholesale_USD × 1.5 (¥1.5 抵官方 $1 规则,operator 2026-05-22 决策)
- *    gpt-image-2 = 维持 0% markup 不动(等 operator 决定是否纳入 ChatGPT 一档 ¥0.5/$1)
+ *  GPT image-2 已切到 API Key 专用的 1K/2K/4K 固定价 SKU;本 Studio 仍有可变
+ *  size 控件,不能在这里暴露它们,否则会制造档位/尺寸冲突。等 Studio 改为档位绑定后再单独接入。
  *
  *  Wholesale USD 数字来自 _bootstrap/apply-pr-s-pricing.ts(PR-S, 2026-05-10)。
  *  对应后端 new-api global ModelRatio 通过 scripts/apply-new-pricing-global-2026-05-22.mjs
  *  同步更新(× 1.5/7 = × 0.2143 公式)。 */
 // W8 D7(2026-05-26)按厂商(vendor)分类,国外前排。
-// W8 D7 二次更新(2026-05-26 晚):前端 5 个图像价格同步到 2026-05-22 第二轮降价规则。
-//   ChatGPT 系(gpt-image-2):¥0.2/$1 → pricePerImageUsd = official × 0.2 / 7
-//   Gemini 系(4 个):¥0.5/$1 → pricePerImageUsd = official × 0.5 / 7
-// 顺序 = 客户在下拉里看到的从上到下顺序。OpenAI 首选 → Google 系 → 后续国内系。
+// 当前 Studio 只展示可与其独立 size 控件兼容的 Google 系模型。
 export const IMAGE_MODEL_OPTIONS: ImageModelOption[] = [
-    // ── OpenAI(国外旗舰)── per-image 固定价(2026-06-15:主渠道切到 ch36/czeq)
-    // 注意:不是 token 公式 — gpt-image-2 在 new-api 走 ModelPrice 固定每张价
-    // 后端 ModelPrice[gpt-image-2] = 0.00714 USD = ¥0.05/张(prod QPU 1e6 / FX ¥7)
-    {
-        id: 'gpt-image-2',
-        label: 'GPT image-2',
-        pricePerImageUsd: 0.00714, // = ¥0.05 / 7
-        pricePerImageCny: cny(0.00714), // ¥0.05
-        blurb: 'OpenAI · GPT-5 多模态图像生成',
-        badge: '推荐',
-        vendor: 'OpenAI',
-        foreign: true,
-    },
     // ── Google(国外)── ¥0.5/$1
     {
         id: 'gemini-2.5-flash-image',

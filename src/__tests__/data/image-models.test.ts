@@ -17,8 +17,8 @@ import {
 import { IMAGE_MODEL_IDS } from '@/lib/image-gen/models';
 
 describe('IMAGE_MODEL_OPTIONS', () => {
-    it('lists 5 models per the operator brief', () => {
-        expect(IMAGE_MODEL_OPTIONS).toHaveLength(5);
+    it('lists the 4 Studio-safe models', () => {
+        expect(IMAGE_MODEL_OPTIONS).toHaveLength(4);
     });
 
     it('every option references an id in the server-side whitelist', () => {
@@ -27,13 +27,10 @@ describe('IMAGE_MODEL_OPTIONS', () => {
         }
     });
 
-    it('default selection is the first entry (GPT image-2)', () => {
+    it('default selection is the first Studio-safe entry', () => {
         expect(DEFAULT_IMAGE_MODEL_ID).toBe(IMAGE_MODEL_OPTIONS[0].id);
-        // W8 D7 (PR #67) reorder by vendor: OpenAI 国外旗舰首选 — gpt-image-2 → [0]。
-        // 2026-06-15 主渠道切到 ch36/czeq:后端 ModelPrice[gpt-image-2]
-        // = 0.00714 USD = ¥0.05/张(prod QPU 1e6 / FX ¥7)。
-        expect(IMAGE_MODEL_OPTIONS[0].label).toBe('GPT image-2');
-        expect(IMAGE_MODEL_OPTIONS[0].pricePerImageCny).toBeCloseTo(0.05, 2);
+        expect(IMAGE_MODEL_OPTIONS[0].label).toBe('Nano Banana');
+        expect(IMAGE_MODEL_OPTIONS.some((m) => m.id.startsWith('gpt-image-2'))).toBe(false);
     });
 
     it('CNY prices are USD × 7 (within rounding)', () => {

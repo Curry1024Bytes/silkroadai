@@ -3284,14 +3284,14 @@ describe('/v1 proxy — gpt-image-2 via /chat/completions → images translation
     });
 });
 
-describe('/v1 proxy — gpt-image-2-{1,2,4}k variant names → gpt-image-2 + size', () => {
+describe('/v1 proxy — gpt-image-2-{1,2,4}k fixed-price variants retain billing identity', () => {
     const imgResp = () =>
         new Response(JSON.stringify({ data: [{ b64_json: 'QkFTRTY0' }] }), {
             status: 200,
             headers: { 'content-type': 'application/json' },
         });
 
-    it('images/generations: gpt-image-2-4k (no size) → model gpt-image-2 + size 3840x2160', async () => {
+    it('images/generations: gpt-image-2-4k (no size) → alias retained + fixed size 3840x2160', async () => {
         mockFetch.mockResolvedValueOnce(imgResp());
         await POST(
             makeReq('/images/generations', {
@@ -3301,11 +3301,11 @@ describe('/v1 proxy — gpt-image-2-{1,2,4}k variant names → gpt-image-2 + siz
             ctx('images', 'generations'),
         );
         const sent = JSON.parse(String((mockFetch.mock.calls[0][1] as RequestInit).body)) as Record<string, unknown>;
-        expect(sent.model).toBe('gpt-image-2');
+        expect(sent.model).toBe('gpt-image-2-4k');
         expect(sent.size).toBe('3840x2160');
     });
 
-    it('images/generations: gpt-image-2-2k → size 2048x2048', async () => {
+    it('images/generations: gpt-image-2-2k → alias retained + fixed size 2048x2048', async () => {
         mockFetch.mockResolvedValueOnce(imgResp());
         await POST(
             makeReq('/images/generations', {
@@ -3315,25 +3315,144 @@ describe('/v1 proxy — gpt-image-2-{1,2,4}k variant names → gpt-image-2 + siz
             ctx('images', 'generations'),
         );
         const sent = JSON.parse(String((mockFetch.mock.calls[0][1] as RequestInit).body)) as Record<string, unknown>;
-        expect(sent.model).toBe('gpt-image-2');
+        expect(sent.model).toBe('gpt-image-2-2k');
         expect(sent.size).toBe('2048x2048');
     });
 
-    it('explicit size wins over the variant default', async () => {
+    it('images/generations: gpt-image-2-1k + n=2 → alias/size/count all reach new-api', async () => {
         mockFetch.mockResolvedValueOnce(imgResp());
-        await POST(
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2-1k', prompt: 'a cat', n: 2 },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        const sent = JSON.parse(String((mockFetch.mock.calls[0][1] as RequestInit).body)) as Record<string, unknown>;
+        expect(sent).toMatchObject({ model: 'gpt-image-2-1k', size: '1024x1024', n: 2 });
+    });
+
+    it('trailing slash still passes through the fixed-price resolver', async () => {
+        mockFetch.mockResolvedValueOnce(imgResp());
+        const res = await POST(
+            makeReq('/images/generations/', {
+                body: { model: 'gpt-image-2-2k', prompt: 'a cat' },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations', ''),
+        );
+        expect(res.status).toBe(200);
+        const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(url).toContain('/v1/images/generations');
+        const sent = JSON.parse(String(init.body)) as Record<string, unknown>;
+        expect(sent).toMatchObject({ model: 'gpt-image-2-2k', size: '2048x2048' });
+    });
+
+    it('matching explicit size is accepted and normalized to the fixed value', async () => {
+        mockFetch.mockResolvedValueOnce(imgResp());
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2-4k', prompt: 'a cat', size: '3840x2160' },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        const sent = JSON.parse(String((mockFetch.mock.calls[0][1] as RequestInit).body)) as Record<string, unknown>;
+        expect(sent).toMatchObject({ model: 'gpt-image-2-4k', size: '3840x2160' });
+    });
+
+    it('uppercase K is canonicalized so it still hits the configured ModelPrice key', async () => {
+        mockFetch.mockResolvedValueOnce(imgResp());
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2-2K', prompt: 'a cat' },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        const sent = JSON.parse(String((mockFetch.mock.calls[0][1] as RequestInit).body)) as Record<string, unknown>;
+        expect(sent).toMatchObject({ model: 'gpt-image-2-2k', size: '2048x2048' });
+    });
+
+    it('conflicting explicit size is rejected before new-api to prevent under/over-billing', async () => {
+        const res = await POST(
             makeReq('/images/generations', {
                 body: { model: 'gpt-image-2-4k', prompt: 'a cat', size: '1536x1024' },
                 headers: { authorization: 'Bearer sk-test' },
             }),
             ctx('images', 'generations'),
         );
-        const sent = JSON.parse(String((mockFetch.mock.calls[0][1] as RequestInit).body)) as Record<string, unknown>;
-        expect(sent.model).toBe('gpt-image-2');
-        expect(sent.size).toBe('1536x1024');
+        expect(res.status).toBe(400);
+        expect(await res.json()).toMatchObject({
+            error: { message: expect.stringContaining('fixed size "3840x2160"') },
+        });
+        expect(mockFetch).not.toHaveBeenCalled();
     });
 
-    it('chat/completions: gpt-image-2-4k → images/generations with gpt-image-2 + 3840x2160', async () => {
+    it.each(['16:9', 'auto'])('explicit aspect_ratio=%s is rejected for a fixed-price SKU', async (aspectRatio) => {
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2-2k', prompt: 'a cat', aspect_ratio: aspectRatio },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(400);
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('multipart edits retains the alias and injects its fixed size', async () => {
+        mockFetch.mockResolvedValueOnce(imgResp());
+        const form = new FormData();
+        form.append('model', 'gpt-image-2-2k');
+        form.append('prompt', 'make it red');
+        form.append('image', new Blob([Buffer.from('x')], { type: 'image/png' }), 'in.png');
+        const req = new NextRequest('https://api.llmroute.club/v1/images/edits', {
+            method: 'POST',
+            headers: { authorization: 'Bearer sk-test' },
+            body: form,
+        });
+        const res = await POST(req, ctx('images', 'edits'));
+        expect(res.status).toBe(200);
+        const sent = (mockFetch.mock.calls[0][1] as RequestInit).body as FormData;
+        expect(sent.get('model')).toBe('gpt-image-2-2k');
+        expect(sent.get('size')).toBe('2048x2048');
+    });
+
+    it('fixed-price alias never retries a size error with a 1K fallback', async () => {
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ error: { message: 'size must use <width>x<height> format' } }), {
+                status: 400,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2-4k', prompt: 'a cat' },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(400);
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('images/generations rejects stream=true before dispatch', async () => {
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2-1k', prompt: 'a cat', stream: true },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(400);
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('chat/completions: gpt-image-2-4k → images/generations with alias + 3840x2160', async () => {
         mockFetch.mockResolvedValueOnce(imgResp());
         const res = await POST(
             makeReq('/chat/completions', {
@@ -3346,8 +3465,64 @@ describe('/v1 proxy — gpt-image-2-{1,2,4}k variant names → gpt-image-2 + siz
         const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
         expect(url).toContain('/v1/images/generations');
         const sent = JSON.parse(String(init.body)) as Record<string, unknown>;
-        expect(sent.model).toBe('gpt-image-2');
+        expect(sent.model).toBe('gpt-image-2-4k');
         expect(sent.size).toBe('3840x2160');
+    });
+
+    it('chat/completions rejects a conflicting size before dispatch', async () => {
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: {
+                    model: 'gpt-image-2-1k',
+                    size: '2048x2048',
+                    messages: [{ role: 'user', content: 'a cat' }],
+                },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(400);
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('chat size conflict is rejected before downloading an external image_url', async () => {
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: {
+                    model: 'gpt-image-2-1k',
+                    size: '2048x2048',
+                    messages: [
+                        {
+                            role: 'user',
+                            content: [
+                                { type: 'text', text: 'edit it' },
+                                { type: 'image_url', image_url: { url: 'https://example.com/input.png' } },
+                            ],
+                        },
+                    ],
+                },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(400);
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('chat/completions rejects stream=true for a fixed-price alias', async () => {
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: {
+                    model: 'gpt-image-2-1k',
+                    stream: true,
+                    messages: [{ role: 'user', content: 'a cat' }],
+                },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(400);
+        expect(mockFetch).not.toHaveBeenCalled();
     });
 });
 
@@ -3621,6 +3796,34 @@ describe('/v1 proxy — 异步生图(?async=true)', () => {
         expect(j.data.status).toBe('IN_PROGRESS');
         expect(j.data.task_id).toMatch(/^[0-9a-f]{32}$/);
         expect(mockImageTaskCreate).toHaveBeenCalledTimes(1);
+    });
+
+    it('异步后台仍把固定价别名和尺寸一起传到 new-api', async () => {
+        const res = await POST(
+            makeReq('/images/generations?async=true', {
+                body: { model: 'gpt-image-2-2k', prompt: 'a cat', n: 2 },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 0));
+        const upstreamCall = mockFetch.mock.calls.find((c) => String(c[0]).endsWith('/v1/images/generations')) as
+            [string, RequestInit] | undefined;
+        expect(upstreamCall).toBeTruthy();
+        const sent = JSON.parse(String(upstreamCall![1].body)) as Record<string, unknown>;
+        expect(sent).toMatchObject({ model: 'gpt-image-2-2k', size: '2048x2048', n: 2 });
+    });
+
+    it('固定价别名尺寸冲突在创建异步任务前直接 400', async () => {
+        const res = await POST(
+            makeReq('/images/generations?async=true', {
+                body: { model: 'gpt-image-2-4k', prompt: 'a cat', size: '1024x1024' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(400);
+        expect(mockImageTaskCreate).not.toHaveBeenCalled();
+        expect(mockFetch).not.toHaveBeenCalled();
     });
 
     it('提交图生图异步(multipart)→ 200 + task_id', async () => {

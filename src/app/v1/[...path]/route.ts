@@ -904,13 +904,36 @@ function sanitizeImageError(text: string, upstreamStatus: number): { body: strin
  *  调它会被上游 400「The requested operation is unsupported」。这里把 chat 请求翻成
  *  /v1/images/{generations,edits}(messages 带 image_url → edits,否则 generations),出图存图床
  *  后包成 chat.completion 回复(content = markdown 图 url),与 Gemini 生图(handleGeminiImage)一致。
- *  计费照常由 new-api 按该 images 调用扣(token 计费)。stream:true 同 Gemini 返回非流 JSON。 */
+ *  计费照常由 new-api 按该 images 调用扣。固定价别名必须原样传到 new-api,
+ *  否则 ModelPrice 会丢失分辨率档位。固定价别名不支持 stream:true。 */
 async function handleGptImageChat(
     req: NextRequest,
     body: JsonRecord,
     model: string,
     cap: CaptureCtx | null = null,
 ): Promise<NextResponse> {
+    // 先校验计费档位,再解析 messages。toGeminiContents 可能下载外部 image_url,
+    // 尺寸冲突必须在任何出站请求之前返回 400。
+    const variant = gptImageVariant(model);
+    if (variant && body.stream === true) {
+        return imageError('stream=true is not supported for fixed-price gpt-image-2 variants', 400, cap);
+    }
+    const sizeRaw = (typeof body.size === 'string' ? body.size : '').trim();
+    let size: string | undefined;
+    if (variant) {
+        try {
+            size = resolveGptImageVariantSize(
+                model,
+                sizeRaw,
+                typeof body.aspect_ratio === 'string' ? body.aspect_ratio : '',
+            );
+        } catch (e) {
+            if (e instanceof ImageSizeError) return imageError(e.message, 400, cap);
+            throw e;
+        }
+    } else if (/^\d{2,4}x\d{2,4}$/.test(sizeRaw)) size = sizeRaw;
+    else if (ASPECT_RATIO_RE.test(sizeRaw)) size = aspectToPixelSize(sizeRaw) ?? undefined;
+
     let contents: Array<{ role: string; parts: GeminiInputPart[] }>;
     try {
         contents = await toGeminiContents(body.messages);
@@ -929,15 +952,8 @@ async function handleGptImageChat(
         return imageError('messages 里需要文字 prompt 或图片', 400, cap);
     }
 
-    // 旧变体名(gpt-image-2-4k 等)→ gpt-image-2 + 对应像素 size(未显式给 size 时)
-    const variant = gptImageVariant(model);
-    const effModel = variant ? variant.base : model;
-    // chat 形态一般不带 size;带了就认像素 size,或把比例("16:9")翻成像素,其余走变体 / 上游默认。
-    const sizeRaw = (typeof body.size === 'string' ? body.size : '').trim();
-    let size: string | undefined;
-    if (/^\d{2,4}x\d{2,4}$/.test(sizeRaw)) size = sizeRaw;
-    else if (ASPECT_RATIO_RE.test(sizeRaw)) size = aspectToPixelSize(sizeRaw) ?? undefined;
-    if (!size && variant) size = variant.size;
+    // 固定价别名同时是 new-api 的计费 key:只注入对应像素 size,不能改回真模型名。
+    const effModel = variant?.alias ?? model;
     const quality = typeof body.quality === 'string' ? body.quality : undefined;
 
     let upstream: Response;
@@ -1228,6 +1244,9 @@ async function gptImageUpstreamWithSizeRetry(
 ): Promise<Response> {
     const first = await gptImageUpstream(req, form, body, search);
     if (first.ok) return first;
+    // 付费档位已绑定固定尺寸;不得在重试时降到 1K,否则请求模型名与实际图像不一致。
+    const requestModel = String(form?.get('model') ?? body?.model ?? '');
+    if (gptImageVariant(requestModel)) return first;
     const errText = await first.text();
     if (!/size must use/i.test(errText)) {
         // 非尺寸格式错(含内容安全 / 上游饱和)→ 不重试,重建 Response 供上层 reshape/脱敏读取。
@@ -1289,14 +1308,34 @@ function ratioToSize(aspectRatio: string, size: string): string | null {
 function isGptImageModel(model: string): boolean {
     return model.startsWith('gpt-image') || model.startsWith('az-gpt-image');
 }
-/** 旧 czeq SKU 名 gpt-image-2-{1,2,4}k 只是别名(zhiyunai 上游只有 gpt-image-2 一个模型,分辨率靠
- *  size 像素控制)→ 翻成 gpt-image-2 + 对应像素 size(1k→1024² / 2k→2048² / 4k→3840x2160)。
- *  返回 null = 非变体名。 */
-function gptImageVariant(model: string): { base: string; size: string } | null {
-    const m = /^(gpt-image-2)-([124])[kK]$/.exec(model);
+/** gpt-image-2-{1,2,4}k 是客户可见的固定价 SKU。new-api 先按这个原始名查 ModelPrice,
+ *  再通过渠道 model_mapping 翻成 gpt-image-2 发给上游;因此 Portal 只能注入尺寸,
+ *  绝不能在进入 new-api 前改掉模型名。返回 null = 非固定价别名。 */
+function gptImageVariant(model: string): { alias: string; size: string } | null {
+    const m = /^gpt-image-2-([124])[kK]$/.exec(model);
     if (!m) return null;
-    const size = m[2] === '1' ? '1024x1024' : m[2] === '2' ? '2048x2048' : '3840x2160';
-    return { base: m[1], size };
+    const size = m[1] === '1' ? '1024x1024' : m[1] === '2' ? '2048x2048' : '3840x2160';
+    return { alias: `gpt-image-2-${m[1]}k`, size };
+}
+
+/** 固定价 SKU 的尺寸守门。size 缺省/auto 会注入固定尺寸;
+ *  aspect_ratio 不适用于已绑定像素尺寸的 SKU,只要显式传入就拒绝。 */
+function resolveGptImageVariantSize(model: string, sizeRaw: string, aspectRatioRaw: string): string {
+    const variant = gptImageVariant(model);
+    if (!variant) return sizeRaw;
+    const aspectRatio = aspectRatioRaw.trim();
+    if (aspectRatio) {
+        throw new ImageSizeError(
+            `model "${model}" has fixed size "${variant.size}"; omit aspect_ratio and size, or use that exact size.`,
+        );
+    }
+    const size = sizeRaw.trim();
+    if (size && size.toLowerCase() !== 'auto' && size.toLowerCase() !== variant.size.toLowerCase()) {
+        throw new ImageSizeError(
+            `model "${model}" has fixed size "${variant.size}"; omit size or use that exact size.`,
+        );
+    }
+    return variant.size;
 }
 /** OpenAI images 的整型字段(n / output_compression)—— 客户端可能发成字符串(`"n":"1"`),
  *  或 multipart→JSON 转换把 form 值(恒字符串)搬进 JSON —— new-api 按 uint 解析 JSON 会 500
@@ -1310,18 +1349,23 @@ function coerceImageIntFields(obj: JsonRecord): void {
 /** gpt-image JSON 规整:剥 response_format(zhiyunai 拒收 →400)+ 比例→像素 size(默认出方图)。 */
 function normalizeGptImageJson(body: JsonRecord): void {
     delete body.response_format;
-    const vm = typeof body.model === 'string' ? gptImageVariant(body.model) : null;
+    const model = typeof body.model === 'string' ? body.model : '';
+    const vm = gptImageVariant(model);
     if (vm) {
-        body.model = vm.base;
-        const s = typeof body.size === 'string' ? body.size.trim() : '';
-        if (!s || s.toLowerCase() === 'auto') body.size = vm.size; // 未显式给 size → 用变体默认
-    }
-    const ar = typeof body.aspect_ratio === 'string' ? body.aspect_ratio : '';
-    const sz = typeof body.size === 'string' ? body.size : '';
-    if (ASPECT_RATIO_RE.test(ar.trim()) || ASPECT_RATIO_RE.test(sz.trim())) {
-        const px = ratioToSize(ar, sz);
-        if (px) body.size = px;
-        else delete body.size;
+        body.model = vm.alias;
+        body.size = resolveGptImageVariantSize(
+            model,
+            typeof body.size === 'string' ? body.size : '',
+            typeof body.aspect_ratio === 'string' ? body.aspect_ratio : '',
+        );
+    } else {
+        const ar = typeof body.aspect_ratio === 'string' ? body.aspect_ratio : '';
+        const sz = typeof body.size === 'string' ? body.size : '';
+        if (ASPECT_RATIO_RE.test(ar.trim()) || ASPECT_RATIO_RE.test(sz.trim())) {
+            const px = ratioToSize(ar, sz);
+            if (px) body.size = px;
+            else delete body.size;
+        }
     }
     delete body.aspect_ratio;
     coerceImageIntFields(body);
@@ -1329,18 +1373,22 @@ function normalizeGptImageJson(body: JsonRecord): void {
 /** gpt-image multipart 规整(同 normalizeGptImageJson,作用于 FormData)。 */
 function normalizeGptImageForm(form: FormData): void {
     form.delete('response_format');
-    const vm = gptImageVariant(String(form.get('model') ?? ''));
+    const model = String(form.get('model') ?? '');
+    const vm = gptImageVariant(model);
     if (vm) {
-        form.set('model', vm.base);
-        const s = String(form.get('size') ?? '').trim();
-        if (!s || s.toLowerCase() === 'auto') form.set('size', vm.size);
-    }
-    const ar = String(form.get('aspect_ratio') ?? '');
-    const sz = String(form.get('size') ?? '');
-    if (ASPECT_RATIO_RE.test(ar.trim()) || ASPECT_RATIO_RE.test(sz.trim())) {
-        const px = ratioToSize(ar, sz);
-        if (px) form.set('size', px);
-        else form.delete('size');
+        form.set('model', vm.alias);
+        form.set(
+            'size',
+            resolveGptImageVariantSize(model, String(form.get('size') ?? ''), String(form.get('aspect_ratio') ?? '')),
+        );
+    } else {
+        const ar = String(form.get('aspect_ratio') ?? '');
+        const sz = String(form.get('size') ?? '');
+        if (ASPECT_RATIO_RE.test(ar.trim()) || ASPECT_RATIO_RE.test(sz.trim())) {
+            const px = ratioToSize(ar, sz);
+            if (px) form.set('size', px);
+            else form.delete('size');
+        }
     }
     form.delete('aspect_ratio');
 }
@@ -1633,6 +1681,13 @@ async function handleImagesDalle(
                 // gpt-image:剥 response_format + 把比例(aspect_ratio / "16:9" 形态 size)翻成像素 size
                 let wantJpeg = false;
                 if (isGptImageModel(model)) {
+                    if (gptImageVariant(model) && String(form.get('stream') ?? '').toLowerCase() === 'true') {
+                        return imageError(
+                            'stream=true is not supported for fixed-price gpt-image-2 variants',
+                            400,
+                            cap,
+                        );
+                    }
                     // 严格模式(opt-in):先按 Azure 标准校验 output_format/background/size,不合规 → 400
                     if (isStrictImageMode(req, search)) {
                         const err = strictGptImageError(
@@ -1731,6 +1786,13 @@ async function handleImagesDalle(
                 // aspect_ratio / "16:9" 形态 size,默认出方图)。见 normalizeGptImageJson。
                 let wantJpeg = false;
                 if (isGptImageModel(model)) {
+                    if (gptImageVariant(model) && body.stream === true) {
+                        return imageError(
+                            'stream=true is not supported for fixed-price gpt-image-2 variants',
+                            400,
+                            cap,
+                        );
+                    }
                     // 严格模式(opt-in):先按 Azure 标准校验 output_format/background/size,不合规 → 400
                     if (isStrictImageMode(req, search)) {
                         const err = strictGptImageError(
@@ -1784,6 +1846,7 @@ async function handleImagesDalle(
         }
     } catch (e) {
         if (e instanceof ImageUrlError) return imageError(e.message, 400, cap);
+        if (e instanceof ImageSizeError) return imageError(e.message, 400, cap);
         return imageError('invalid request body', 400, cap);
     }
 
@@ -2234,6 +2297,41 @@ function sniffModel(contentType: string, bodyBuf: ArrayBuffer): string | null {
     }
 }
 
+/** 异步提交在建任务前执行固定价 SKU 守门。后台才发现尺寸冲突会让客户先收到 200/task_id,
+ *  随后任务失败;这与同步接口的 400 契约不一致,也会制造无意义任务。 */
+async function validateAsyncFixedPriceImage(contentType: string, bodyBuf: ArrayBuffer): Promise<string | null> {
+    try {
+        let model = '';
+        let size = '';
+        let aspectRatio = '';
+        let stream = false;
+        const parsed = new Request('http://internal/async-image-preflight', {
+            method: 'POST',
+            headers: { 'content-type': contentType },
+            body: bodyBuf.slice(0),
+        });
+        if (contentType.includes('multipart/form-data')) {
+            const form = await parsed.formData();
+            model = String(form.get('model') ?? '');
+            size = String(form.get('size') ?? '');
+            aspectRatio = String(form.get('aspect_ratio') ?? '');
+            stream = String(form.get('stream') ?? '').toLowerCase() === 'true';
+        } else if (contentType.includes('application/json')) {
+            const body = (await parsed.json()) as JsonRecord;
+            model = typeof body.model === 'string' ? body.model : '';
+            size = typeof body.size === 'string' ? body.size : '';
+            aspectRatio = typeof body.aspect_ratio === 'string' ? body.aspect_ratio : '';
+            stream = body.stream === true;
+        }
+        if (!gptImageVariant(model)) return null;
+        if (stream) return 'stream=true is not supported for fixed-price gpt-image-2 variants';
+        resolveGptImageVariantSize(model, size, aspectRatio);
+        return null;
+    } catch (e) {
+        return e instanceof ImageSizeError ? e.message : null;
+    }
+}
+
 function sniffImageMime(buf: Buffer): string {
     if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
     if (buf.length >= 12 && buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP')
@@ -2331,6 +2429,8 @@ async function handleAsyncImageSubmit(req: NextRequest, path: string, search: st
     const headers = new Headers(req.headers);
     const endpoint: ImageTaskEndpoint = path === '/images/edits' ? 'edits' : 'generations';
     const model = sniffModel(req.headers.get('content-type') || '', bodyBuf);
+    const fixedPriceError = await validateAsyncFixedPriceImage(req.headers.get('content-type') || '', bodyBuf);
+    if (fixedPriceError) return imageError(fixedPriceError, 400);
     const taskId = newImageTaskId();
     const submitTime = new Date();
     try {
@@ -2519,13 +2619,16 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
         return forwardToNewApi(req, body, path, search, cap);
     }
 
-    // DALL·E 兼容图像接口:Gemini 生图模型翻译,其余(gpt-image-2 等)透传
-    if ((path === '/images/edits' || path === '/images/generations') && req.method === 'POST') {
+    // DALL·E 兼容图像接口:Gemini 生图模型翻译,其余(gpt-image-2 等)透传。
+    // next.config 关闭了尾斜杠重定向,所以这里显式规范化图片接口,避免 `/generations/`
+    // 落到通用透传后绕过固定价尺寸守门。
+    const imagePath = path.length > 1 ? path.replace(/\/+$/, '') : path;
+    if ((imagePath === '/images/edits' || imagePath === '/images/generations') && req.method === 'POST') {
         // opt-in 异步:?async=true → 秒回 task_id,后台生图。不带 async 完全走原同步路径(字节不变)。
         if (new URLSearchParams(search).get('async') === 'true') {
-            return handleAsyncImageSubmit(req, path, search);
+            return handleAsyncImageSubmit(req, imagePath, search);
         }
-        return withKeepalive(handleImagesDalle(req, path, search, cap));
+        return withKeepalive(handleImagesDalle(req, imagePath, search, cap));
     }
 
     // 异步生图结果查询:GET /v1/images/tasks/{task_id}
