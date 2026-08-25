@@ -262,18 +262,17 @@ async function validateExclusiveTargetChannels(channelIds) {
                 }
             }
             let model = exposedModel;
-            const seen = new Set();
-            for (let hop = 0; hop < 32; hop++) {
+            const seen = new Set([model]);
+            for (;;) {
                 if (model === CANONICAL) {
                     const allowed = targetIds.has(Number(channel.id)) && TARGET_MODELS.has(exposedModel);
                     if (!allowed) unexpected.push(`#${channel.id} ${exposedModel}->${CANONICAL}`);
                     break;
                 }
-                if (seen.has(model)) break;
-                seen.add(model);
                 const next = mapping[model];
-                if (typeof next !== 'string' || !next.trim()) break;
-                model = next.trim();
+                if (typeof next !== 'string' || next === '' || seen.has(next)) break;
+                seen.add(next);
+                model = next;
             }
         }
     }

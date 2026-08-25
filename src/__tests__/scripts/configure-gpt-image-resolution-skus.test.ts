@@ -300,6 +300,28 @@ describe('configure-gpt-image-resolution-skus.mjs', () => {
         expect(channelPuts).toHaveLength(0);
     });
 
+    it('audits model-mapping chains beyond 32 hops using official rc.23 semantics', async () => {
+        const originalPrice = { ...modelPrice };
+        const mapping: Record<string, string> = {};
+        for (let hop = 0; hop < 40; hop++) {
+            mapping[`long-chain-${hop}`] = hop === 39 ? 'gpt-image-2' : `long-chain-${hop + 1}`;
+        }
+        extraChannels.push({
+            ...channel,
+            id: 13,
+            name: 'deep mapping upstream',
+            group: 'default',
+            models: 'long-chain-0',
+            model_mapping: JSON.stringify(mapping),
+        });
+
+        await expect(run('--phase=pricing', '--apply')).rejects.toMatchObject({
+            stderr: expect.stringContaining('#13 long-chain-0->gpt-image-2'),
+        });
+        expect(modelPrice).toEqual(originalPrice);
+        expect(channelPuts).toHaveLength(0);
+    });
+
     it('fails closed on unsupported new-api versions and competing billing overrides', async () => {
         version = 'v1.0.0-rc.24';
         await expect(run('--phase=pricing')).rejects.toMatchObject({
