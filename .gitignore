@@ -46,6 +46,7 @@ next-env.d.ts
 
 # third-party source code (local reference only)
 /third-party
+/new-api-custom-full
 
 # Claude Code per-user workspace (worktrees, plans, etc.)
 # Note: CLAUDE.md (project context) is intentionally TRACKED, not ignored —

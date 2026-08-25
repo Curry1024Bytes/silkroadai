@@ -70,6 +70,13 @@ describe('<Footer />', () => {
         expect(html).toMatch(/<a[^>]*href="\/docs"[^>]*>文档<\/a>/);
     });
 
+    it('offers the exact modified new-api source version', () => {
+        const html = renderToString(<Footer />);
+        expect(html).toContain('href="https://github.com/Curry1024Bytes/new-api/tree/v1.0.0-rc.23-llmroute.1"');
+        expect(html).toContain('修改版源码');
+        expect(html).toContain('rel="noopener noreferrer"');
+    });
+
     it('does not append a public footer below the authenticated workspace shell', () => {
         mockUsePathname.mockReturnValue('/dashboard');
         const html = renderToString(<Footer />);

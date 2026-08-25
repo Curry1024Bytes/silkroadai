@@ -14,6 +14,8 @@ const eslintConfig = defineConfig([
         'next-env.d.ts',
         // Codex skills are standalone tooling with their own runtime/style.
         '.codex/**',
+        // Supplier new-api fork is local reference source, not Portal code.
+        'new-api-custom-full/**',
         // Git submodules:
         'vendor/**',
     ]),

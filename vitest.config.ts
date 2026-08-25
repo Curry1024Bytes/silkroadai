@@ -6,7 +6,7 @@ export default defineConfig({
     test: {
         globals: true,
         environment: 'node',
-        exclude: ['**/node_modules/**', '**/third-party/**', '**/vendor/**', '.claude/**'],
+        exclude: ['**/node_modules/**', '**/third-party/**', '**/vendor/**', '**/new-api-custom-full/**', '.claude/**'],
         setupFiles: ['dotenv/config'],
     },
     resolve: {

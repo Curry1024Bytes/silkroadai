@@ -2,6 +2,7 @@ node_modules
 .next
 .git
 third-party
+new-api-custom-full
 .env
 .env.local
 *.md

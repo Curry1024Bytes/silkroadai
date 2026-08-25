@@ -21,3 +21,5 @@ export const IMAGE_CDN_BASE_URL = withoutTrailingSlash(
 );
 export const SUPPORT_EMAIL = process.env.NEXT_PUBLIC_SUPPORT_EMAIL || 'support@llmroute.club';
 export const SUPPORT_WECHAT = process.env.NEXT_PUBLIC_SUPPORT_WECHAT || 'LLmRoute';
+export const NEW_API_MODIFIED_SOURCE_VERSION = 'v1.0.0-rc.23-llmroute.1';
+export const NEW_API_MODIFIED_SOURCE_URL = `https://github.com/Curry1024Bytes/new-api/tree/${NEW_API_MODIFIED_SOURCE_VERSION}`;
