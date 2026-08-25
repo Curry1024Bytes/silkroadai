@@ -1110,3 +1110,53 @@ describe('oaidist provider(真 OpenAI 签名分销网关,gateMinCt 1,756 纯盈�
         expect(lc).not.toContain('64.32.31.178');
     });
 });
+
+describe('oaidistfull provider(oaidist 同上游同 key 的全量线,openAllTiers)', () => {
+    const URL_FULL = 'http://portal.test/image-adapter/oaidistfull/v1/images/generations';
+
+    it('路由到同一上游 64.32.31.178:3009 + openAllTiers 放行方图 low(合成官方 196)', async () => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            jsonReq(URL_FULL, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', quality: 'low' }),
+            'generations',
+            'oaidistfull',
+        );
+        expect(res.status).toBe(200);
+        expect((await res.json()).usage.output_tokens).toBe(196);
+        const [url] = fetchMock.mock.calls[0];
+        expect(url).toBe('http://64.32.31.178:3009/v1/images/generations');
+    });
+
+    it('size=auto → 透传上游,按返回图实际尺寸(1344x1008 low)合成官方 162', async () => {
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(1344, 1008) }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+        const res = await handleAdapterImage(
+            jsonReq(URL_FULL, { model: 'gpt-image-2', prompt: 'x', size: 'auto', quality: 'low' }),
+            'generations',
+            'oaidistfull',
+        );
+        expect(res.status).toBe(200);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect((await res.json()).usage.output_tokens).toBe(162);
+    });
+
+    it('同为守门线的 oaidist 对照:同请求(1024² low)在 gated 线仍 503 拒', async () => {
+        const res = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/oaidist/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '1024x1024',
+                quality: 'low',
+            }),
+            'generations',
+            'oaidist',
+        );
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+});

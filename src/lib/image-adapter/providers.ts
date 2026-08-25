@@ -75,4 +75,12 @@ export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
         brand: /\bdistributor\b|64\.32\.31\.178/gi,
         gateMinCt: 1_756,
     },
+    // oaidistfull:oaidist 同一上游、同一 key 的【全量】线(镜像 wetokengated/wetoken 双线玩法):
+    // openAllTiers 放行所有档位含 size=auto,合成官方 usage 兜住被守门线拒下来的低档/auto 流量。
+    // 上游对约束外尺寸静默降级的坑由"按返回图实际尺寸计费"(#403)兜底,auto 同样按实际尺寸。
+    oaidistfull: {
+        baseUrl: 'http://64.32.31.178:3009',
+        brand: /\bdistributor\b|64\.32\.31\.178/gi,
+        openAllTiers: true,
+    },
 };
