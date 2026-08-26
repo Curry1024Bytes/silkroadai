@@ -185,6 +185,52 @@ async function solidPngB64(width: number, height: number): Promise<string> {
     return Buffer.from(buf).toString('base64');
 }
 
+async function solidJpegWithExifB64(width: number, height: number, orientation: number): Promise<string> {
+    const { Jimp } = await import('jimp');
+    const jpeg = Buffer.from(
+        await new Jimp({ width, height, color: 0x336699ff }).getBuffer('image/jpeg', { quality: 90 }),
+    );
+    const app1 = Buffer.from([
+        0xff,
+        0xe1,
+        0x00,
+        0x22,
+        0x45,
+        0x78,
+        0x69,
+        0x66,
+        0x00,
+        0x00,
+        0x49,
+        0x49,
+        0x2a,
+        0x00,
+        0x08,
+        0x00,
+        0x00,
+        0x00,
+        0x01,
+        0x00,
+        0x12,
+        0x01,
+        0x03,
+        0x00,
+        0x01,
+        0x00,
+        0x00,
+        0x00,
+        orientation & 0xff,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+    ]);
+    return Buffer.concat([jpeg.subarray(0, 2), app1, jpeg.subarray(2)]).toString('base64');
+}
+
 describe('/v1 proxy — Gemini image translation', () => {
     it('translates chat/completions to native generateContent with imageSize injected', async () => {
         mockFetch.mockResolvedValueOnce(geminiNativeResponse());
@@ -3359,8 +3405,27 @@ describe('/v1 proxy — gpt-image-2-{1,2,4}k fixed-price variants retain billing
         expect(sent.size).toBe('2048x2048');
     });
 
-    it('images/generations: gpt-image-2-1k + n=2 → alias/size/count all reach new-api', async () => {
-        mockFetch.mockResolvedValueOnce(imgResp());
+    it('fixed n=1 keeps the original response classifier for a 200 safety error body', async () => {
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ error: { message: 'content rejected: image_unsafe' } }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2-1k', prompt: 'a cat', n: 1 },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(400);
+        expect(await res.json()).toMatchObject({ error: { code: 'content_policy_violation' } });
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('images/generations: fixed n=2 fans out into two independently billed n=1 calls', async () => {
+        mockFetch.mockResolvedValueOnce(imgResp()).mockResolvedValueOnce(imgResp());
         const res = await POST(
             makeReq('/images/generations', {
                 body: { model: 'gpt-image-2-1k', prompt: 'a cat', n: 2 },
@@ -3369,8 +3434,242 @@ describe('/v1 proxy — gpt-image-2-{1,2,4}k fixed-price variants retain billing
             ctx('images', 'generations'),
         );
         expect(res.status).toBe(200);
-        const sent = JSON.parse(String((mockFetch.mock.calls[0][1] as RequestInit).body)) as Record<string, unknown>;
-        expect(sent).toMatchObject({ model: 'gpt-image-2-1k', size: '1024x1024', n: 2 });
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+        for (const [, init] of mockFetch.mock.calls as Array<[string, RequestInit]>) {
+            const sent = JSON.parse(String(init.body)) as Record<string, unknown>;
+            expect(sent).toMatchObject({ model: 'gpt-image-2-1k', size: '1024x1024', n: 1 });
+        }
+        const body = (await res.json()) as {
+            data: Array<{ b64_json: string }>;
+            usage: { output_tokens: number; completion_tokens: number };
+        };
+        expect(body.data).toHaveLength(2);
+        expect(body.usage.output_tokens).toBe(1474);
+        expect(body.usage.completion_tokens).toBe(1474);
+    });
+
+    it('fixed fan-out returns every image that new-api may have charged for', async () => {
+        const exact = pngHeaderB64(1024, 1024);
+        mockFetch
+            .mockResolvedValueOnce(
+                new Response(JSON.stringify({ data: [{ b64_json: exact }, { b64_json: exact }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+            )
+            .mockResolvedValueOnce(imgResp());
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2-1k', prompt: 'a cat', n: 2 },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        expect(((await res.json()) as { data: unknown[] }).data).toHaveLength(3);
+    });
+
+    it('fixed n=2 resizes every successful child image independently', async () => {
+        const first = await solidPngB64(1254, 1254);
+        const second = await solidPngB64(640, 480);
+        for (const b64 of [first, second]) {
+            mockFetch.mockResolvedValueOnce(
+                new Response(JSON.stringify({ data: [{ b64_json: b64 }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+            );
+        }
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2-1k', prompt: 'a cat', n: 2 },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { data: Array<{ b64_json: string; size: string }> };
+        expect(body.data).toHaveLength(2);
+        const { Jimp } = await import('jimp');
+        for (const item of body.data) {
+            const output = await Jimp.read(Buffer.from(item.b64_json, 'base64'));
+            expect([output.width, output.height]).toEqual([1024, 1024]);
+            expect(item.size).toBe('1024x1024');
+        }
+    });
+
+    it('fixed fan-out keeps partial success and reports the failed child count', async () => {
+        mockFetch.mockResolvedValueOnce(imgResp()).mockResolvedValueOnce(
+            new Response(JSON.stringify({ error: { message: 'busy' } }), {
+                status: 503,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2-1k', prompt: 'a cat', n: 2 },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        expect(res.headers.get('X-Silkroadai-Images-Failed')).toBe('1');
+        expect(((await res.json()) as { data: unknown[] }).data).toHaveLength(1);
+    });
+
+    it('fixed fan-out all-failure preserves the first upstream error', async () => {
+        mockFetch
+            .mockResolvedValueOnce(
+                new Response(JSON.stringify({ error: { message: 'first failure' } }), {
+                    status: 429,
+                    headers: { 'content-type': 'application/json' },
+                }),
+            )
+            .mockResolvedValueOnce(
+                new Response(JSON.stringify({ error: { message: 'second failure' } }), {
+                    status: 503,
+                    headers: { 'content-type': 'application/json' },
+                }),
+            );
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2-1k', prompt: 'a cat', n: 2 },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(429);
+        expect(await res.json()).toMatchObject({ error: { message: 'first failure' } });
+    });
+
+    it('fixed fan-out classifies all-200 safety error bodies as content policy failures', async () => {
+        for (let i = 0; i < 2; i++) {
+            mockFetch.mockResolvedValueOnce(
+                new Response(JSON.stringify({ error: { message: 'content rejected: image_unsafe' } }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+            );
+        }
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2-1k', prompt: 'a cat', n: 2 },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(400);
+        expect(await res.json()).toMatchObject({ error: { code: 'content_policy_violation' } });
+    });
+
+    it('fixed fan-out preserves the first all-200 ordinary error for retry diagnostics', async () => {
+        mockFetch
+            .mockResolvedValueOnce(
+                new Response(JSON.stringify({ error: { message: 'adobe pool overloaded' } }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+            )
+            .mockResolvedValueOnce(
+                new Response(JSON.stringify({ error: { message: 'later failure' } }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+            );
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2-1k', prompt: 'a cat', n: 2 },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(502);
+        expect(await res.json()).toMatchObject({ error: { message: 'the provider pool overloaded' } });
+    });
+
+    it('fixed fan-out with no usable payload returns 502 instead of a false success', async () => {
+        mockFetch
+            .mockResolvedValueOnce(
+                new Response(JSON.stringify({ data: [] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+            )
+            .mockResolvedValueOnce(
+                new Response('not json', { status: 200, headers: { 'content-type': 'text/plain' } }),
+            );
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2-1k', prompt: 'a cat', n: 2 },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(502);
+        expect(await res.json()).toMatchObject({ error: { message: 'upstream returned no image payload' } });
+    });
+
+    it.each([0, -1, 1.9, 5, 99, '0x4', '2.0', 'abc'])(
+        'fixed n=%s is rejected before any billable request',
+        async (n) => {
+            const res = await POST(
+                makeReq('/images/generations', {
+                    body: { model: 'gpt-image-2-1k', prompt: 'a cat', n },
+                    headers: { authorization: 'Bearer sk-test' },
+                }),
+                ctx('images', 'generations'),
+            );
+            expect(res.status).toBe(400);
+            expect(await res.json()).toMatchObject({ error: { message: expect.stringContaining('between 1 and 4') } });
+            expect(mockFetch).not.toHaveBeenCalled();
+        },
+    );
+
+    it('canonical gpt-image keeps its single upstream n=2 request', async () => {
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ data: [{ b64_json: 'QUJD' }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2', prompt: 'a cat', n: 2 },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+        const canonicalSent = JSON.parse(String((mockFetch.mock.calls[0][1] as RequestInit).body)) as { n: number };
+        expect(canonicalSent.n).toBe(2);
+    });
+
+    it('canonical single-request n=2 estimates one prompt and two image outputs', async () => {
+        const response = (count: number) =>
+            new Response(
+                JSON.stringify({
+                    data: Array.from({ length: count }, () => ({ b64_json: 'QUJD', size: '1024x1024' })),
+                }),
+                { status: 200, headers: { 'content-type': 'application/json' } },
+            );
+        mockFetch.mockResolvedValueOnce(response(2)).mockResolvedValueOnce(response(1));
+        const multi = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2', prompt: 'same prompt', size: '1024x1024', n: 2 },
+            }),
+            ctx('images', 'generations'),
+        );
+        const single = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2', prompt: 'same prompt', size: '1024x1024', n: 1 },
+            }),
+            ctx('images', 'generations'),
+        );
+        const multiUsage = ((await multi.json()) as { usage: { input_tokens: number; output_tokens: number } }).usage;
+        const singleUsage = ((await single.json()) as { usage: { input_tokens: number; output_tokens: number } }).usage;
+        expect(multiUsage.input_tokens).toBe(singleUsage.input_tokens);
+        expect(multiUsage.output_tokens).toBe(singleUsage.output_tokens * 2);
     });
 
     it('fixed 1K resizes a mismatched upstream image and reports the real output size', async () => {
@@ -3421,12 +3720,19 @@ describe('/v1 proxy — gpt-image-2-{1,2,4}k fixed-price variants retain billing
     it('fixed n=2 resizes every returned image, not only the first item', async () => {
         const firstB64 = await solidPngB64(1254, 1254);
         const secondB64 = await solidPngB64(640, 480);
-        mockFetch.mockResolvedValueOnce(
-            new Response(JSON.stringify({ data: [{ b64_json: firstB64 }, { b64_json: secondB64 }] }), {
-                status: 200,
-                headers: { 'content-type': 'application/json' },
-            }),
-        );
+        mockFetch
+            .mockResolvedValueOnce(
+                new Response(JSON.stringify({ data: [{ b64_json: firstB64 }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+            )
+            .mockResolvedValueOnce(
+                new Response(JSON.stringify({ data: [{ b64_json: secondB64 }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+            );
         const res = await POST(
             makeReq('/images/generations', {
                 body: { model: 'gpt-image-2-1k', prompt: 'two cats', n: 2 },
@@ -3447,12 +3753,19 @@ describe('/v1 proxy — gpt-image-2-{1,2,4}k fixed-price variants retain billing
 
     it('fixed n=2 keeps a usable image when another returned item has no payload', async () => {
         const validB64 = await solidPngB64(1254, 1254);
-        mockFetch.mockResolvedValueOnce(
-            new Response(JSON.stringify({ data: [{ b64_json: validB64 }, {}] }), {
-                status: 200,
-                headers: { 'content-type': 'application/json' },
-            }),
-        );
+        mockFetch
+            .mockResolvedValueOnce(
+                new Response(JSON.stringify({ data: [{ b64_json: validB64 }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+            )
+            .mockResolvedValueOnce(
+                new Response(JSON.stringify({ data: [{}] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+            );
         const res = await POST(
             makeReq('/images/generations', {
                 body: { model: 'gpt-image-2-1k', prompt: 'two cats', n: 2 },
@@ -3461,7 +3774,8 @@ describe('/v1 proxy — gpt-image-2-{1,2,4}k fixed-price variants retain billing
             ctx('images', 'generations'),
         );
         expect(res.status).toBe(200);
-        expect(res.headers.get('X-Silkroadai-Image-Resize')).toBe('unverified-original-returned');
+        expect(res.headers.get('X-Silkroadai-Images-Failed')).toBe('1');
+        expect(res.headers.get('X-Silkroadai-Image-Resize')).toBeNull();
         const body = (await res.json()) as { size: string; data: Array<{ b64_json: string; size: string }> };
         expect(body.size).toBe('1024x1024');
         expect(body.data).toHaveLength(1);
@@ -3627,6 +3941,31 @@ describe('/v1 proxy — gpt-image-2-{1,2,4}k fixed-price variants retain billing
         const { Jimp } = await import('jimp');
         const output = await Jimp.read(outputBytes);
         expect([output.width, output.height]).toEqual([1024, 1024]);
+    });
+
+    it('fixed 4K normalizes an EXIF-rotated JPEG to the promised display dimensions', async () => {
+        const upstreamB64 = await solidJpegWithExifB64(3840, 2160, 6);
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ data: [{ b64_json: upstreamB64 }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2-4k', prompt: 'a cat' },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { size: string; data: Array<{ b64_json: string; size: string }> };
+        expect(body.size).toBe('3840x2160');
+        expect(body.data[0].size).toBe('3840x2160');
+        expect(body.data[0].b64_json).not.toBe(upstreamB64);
+        const { Jimp } = await import('jimp');
+        const output = await Jimp.read(Buffer.from(body.data[0].b64_json, 'base64'));
+        expect([output.width, output.height]).toEqual([3840, 2160]);
     });
 
     it('fixed strict JPEG transcode failure reports the actual retained format', async () => {
@@ -3820,6 +4159,46 @@ describe('/v1 proxy — gpt-image-2-{1,2,4}k fixed-price variants retain billing
         expect(body.data[0].size).toBe('1024x1024');
     });
 
+    it('multipart fixed n=2 uses two n=1 edits calls and resizes both outputs', async () => {
+        const firstB64 = await solidPngB64(640, 480);
+        const secondB64 = await solidPngB64(1254, 1254);
+        for (const b64 of [firstB64, secondB64]) {
+            mockFetch.mockResolvedValueOnce(
+                new Response(JSON.stringify({ data: [{ b64_json: b64 }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+            );
+        }
+        const form = new FormData();
+        form.append('model', 'gpt-image-2-1k');
+        form.append('prompt', 'make it red');
+        form.append('n', '2');
+        form.append('image', new Blob([Buffer.from('x')], { type: 'image/png' }), 'in.png');
+        const req = new NextRequest('https://api.llmroute.club/v1/images/edits', {
+            method: 'POST',
+            headers: { authorization: 'Bearer sk-test' },
+            body: form,
+        });
+        const res = await POST(req, ctx('images', 'edits'));
+        expect(res.status).toBe(200);
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+        for (const [url, init] of mockFetch.mock.calls as Array<[string, RequestInit]>) {
+            expect(url).toContain('/v1/images/edits');
+            const sent = init.body as FormData;
+            expect(sent.get('model')).toBe('gpt-image-2-1k');
+            expect(sent.get('size')).toBe('1024x1024');
+            expect(sent.get('n')).toBe('1');
+        }
+        const body = (await res.json()) as { data: Array<{ b64_json: string }> };
+        expect(body.data).toHaveLength(2);
+        const { Jimp } = await import('jimp');
+        for (const item of body.data) {
+            const output = await Jimp.read(Buffer.from(item.b64_json, 'base64'));
+            expect([output.width, output.height]).toEqual([1024, 1024]);
+        }
+    });
+
     it('fixed-price alias never retries a size error with a 1K fallback', async () => {
         mockFetch.mockResolvedValueOnce(
             new Response(JSON.stringify({ error: { message: 'size must use <width>x<height> format' } }), {
@@ -3943,6 +4322,23 @@ describe('/v1 proxy — gpt-image-2-{1,2,4}k fixed-price variants retain billing
             ctx('chat', 'completions'),
         );
         expect(res.status).toBe(400);
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('chat/completions rejects fixed n=2 instead of silently returning one charged image', async () => {
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: {
+                    model: 'gpt-image-2-1k',
+                    n: 2,
+                    messages: [{ role: 'user', content: 'a cat' }],
+                },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(400);
+        expect(await res.json()).toMatchObject({ error: { message: expect.stringContaining('images/generations') } });
         expect(mockFetch).not.toHaveBeenCalled();
     });
 });
@@ -4219,13 +4615,16 @@ describe('/v1 proxy — 异步生图(?async=true)', () => {
         expect(mockImageTaskCreate).toHaveBeenCalledTimes(1);
     });
 
-    it('异步后台仍把固定价别名和尺寸一起传到 new-api', async () => {
-        mockFetch.mockResolvedValueOnce(
-            new Response(JSON.stringify({ data: [{ b64_json: pngHeaderB64(2048, 2048) }] }), {
-                status: 200,
-                headers: { 'content-type': 'application/json' },
-            }),
-        );
+    it('异步后台也把 fixed n=2 拆成两次独立 n=1 计费调用', async () => {
+        mockFetch.mockReset();
+        for (let i = 0; i < 2; i++) {
+            mockFetch.mockResolvedValueOnce(
+                new Response(JSON.stringify({ data: [{ b64_json: pngHeaderB64(2048, 2048) }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+            );
+        }
         const res = await POST(
             makeReq('/images/generations?async=true', {
                 body: { model: 'gpt-image-2-2k', prompt: 'a cat', n: 2 },
@@ -4233,12 +4632,61 @@ describe('/v1 proxy — 异步生图(?async=true)', () => {
             ctx('images', 'generations'),
         );
         expect(res.status).toBe(200);
-        for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 0));
-        const upstreamCall = mockFetch.mock.calls.find((c) => String(c[0]).endsWith('/v1/images/generations')) as
-            [string, RequestInit] | undefined;
-        expect(upstreamCall).toBeTruthy();
-        const sent = JSON.parse(String(upstreamCall![1].body)) as Record<string, unknown>;
-        expect(sent).toMatchObject({ model: 'gpt-image-2-2k', size: '2048x2048', n: 2 });
+        await vi.waitFor(() => {
+            const upstreamCalls = mockFetch.mock.calls.filter((call) =>
+                String(call[0]).endsWith('/v1/images/generations'),
+            );
+            expect(upstreamCalls).toHaveLength(2);
+        });
+        const upstreamCalls = mockFetch.mock.calls.filter((call) =>
+            String(call[0]).endsWith('/v1/images/generations'),
+        ) as Array<[string, RequestInit]>;
+        for (const [, init] of upstreamCalls) {
+            const sent = JSON.parse(String(init.body)) as Record<string, unknown>;
+            expect(sent).toMatchObject({ model: 'gpt-image-2-2k', size: '2048x2048', n: 1 });
+        }
+        await vi.waitFor(() => {
+            const success = mockImageTaskUpdate.mock.calls.find(
+                (call) => (call[0] as { data?: { status?: string } })?.data?.status === 'SUCCESS',
+            );
+            expect(success).toBeTruthy();
+            const result = (success![0] as { data: { result_json: { data: unknown[] } } }).data.result_json;
+            expect(result.data).toHaveLength(2);
+        });
+    });
+
+    it('异步 fixed 部分成功时把失败图片数写入任务结果', async () => {
+        mockFetch.mockReset();
+        mockFetch
+            .mockResolvedValueOnce(
+                new Response(
+                    JSON.stringify({ data: [{ url: 'https://images.llmroute.club/gen/partial-success.png' }] }),
+                    { status: 200, headers: { 'content-type': 'application/json' } },
+                ),
+            )
+            .mockResolvedValueOnce(
+                new Response(JSON.stringify({ error: { message: 'busy' } }), {
+                    status: 503,
+                    headers: { 'content-type': 'application/json' },
+                }),
+            );
+        const res = await POST(
+            makeReq('/images/generations?async=true', {
+                body: { model: 'gpt-image-2-1k', prompt: 'a cat', n: 2 },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        await vi.waitFor(() => {
+            const success = mockImageTaskUpdate.mock.calls.find(
+                (call) => (call[0] as { data?: { status?: string } })?.data?.status === 'SUCCESS',
+            );
+            expect(success).toBeTruthy();
+            const result = (success![0] as { data: { result_json: { failed_images: number; data: unknown[] } } }).data
+                .result_json;
+            expect(result.failed_images).toBe(1);
+            expect(result.data).toHaveLength(1);
+        });
     });
 
     it('异步后台把固定 1K 的错尺寸响应缩放后才落 SUCCESS', async () => {
@@ -4281,6 +4729,18 @@ describe('/v1 proxy — 异步生图(?async=true)', () => {
         const res = await POST(
             makeReq('/images/generations?async=true', {
                 body: { model: 'gpt-image-2-4k', prompt: 'a cat', size: '1024x1024' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(400);
+        expect(mockImageTaskCreate).not.toHaveBeenCalled();
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('固定价别名非法 n 在创建异步任务前直接 400', async () => {
+        const res = await POST(
+            makeReq('/images/generations?async=true', {
+                body: { model: 'gpt-image-2-1k', prompt: 'a cat', n: 5 },
             }),
             ctx('images', 'generations'),
         );

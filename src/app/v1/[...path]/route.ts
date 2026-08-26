@@ -143,6 +143,8 @@ const FLASH_TIMEOUT_MS = 80_000;
 // 300-600s)出图【并计费】,但 portal 的 fetch 300s 就 abort → 客户「扣了费却拿到 fetch failed 没有图」
 // (见 2026-07-12 lkl1131888403 案例:ch83 大图 377/423s,new-api 计费、portal 300s 掐断)。
 const UPSTREAM_IMAGE_TIMEOUT_MS = 600_000;
+/** 与现有 Gemini images fan-out 一致:单个客户请求最多放大为 4 个独立计费请求。 */
+const FIXED_GPT_IMAGE_MAX_N = 4;
 
 /** 主请求非 2xx 后读错误 body(做终态分类)的超时:逆向渠道可能 headers 到了、body 滴流不完,
  *  不设钟会把本该立即切候补的兜底卡死。到点 abort → 当读不出 → 照旧兜底。 */
@@ -187,6 +189,9 @@ function normalizeImageSize(raw: string): '1K' | '2K' | '4K' | null {
 
 /** 客户传的 size 非法时抛此错,调用方转 400 invalid_request_error。 */
 class ImageSizeError extends Error {}
+
+/** 固定价图片档的 n 非法时抛此错,调用方转 400 invalid_request_error。 */
+class ImageCountError extends Error {}
 
 /** model + 客户传的 size 原始值 → 最终 imageSize。
  *  非 size-selectable 模型(或客户没传 size):忽略 size,返回该模型固定档。
@@ -918,6 +923,20 @@ async function handleGptImageChat(
     if (variant && body.stream === true) {
         return imageError('stream=true is not supported for fixed-price gpt-image-2 variants', 400, cap);
     }
+    if (variant) {
+        try {
+            if (fixedImageCount(body.n) !== 1) {
+                return imageError(
+                    'n greater than 1 is not supported for fixed-price images on chat/completions; use images/generations',
+                    400,
+                    cap,
+                );
+            }
+        } catch (e) {
+            if (e instanceof ImageCountError) return imageError(e.message, 400, cap);
+            throw e;
+        }
+    }
     const sizeRaw = (typeof body.size === 'string' ? body.size : '').trim();
     let size: string | undefined;
     if (variant) {
@@ -1281,6 +1300,173 @@ async function gptImageUpstreamWithSizeRetry(
     if (form) form.set('size', explicit);
     else if (body) body.size = explicit;
     return gptImageUpstream(req, form, body, search);
+}
+
+function cloneImageFormData(form: FormData): FormData {
+    const clone = new FormData();
+    for (const [key, value] of form.entries()) clone.append(key, value);
+    return clone;
+}
+
+function fixedImageCount(raw: unknown): number {
+    if (raw === undefined || raw === null || raw === '') return 1;
+    const value = typeof raw === 'string' ? raw.trim() : String(raw);
+    const parsed = Number(value);
+    if (!/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(parsed) || parsed > FIXED_GPT_IMAGE_MAX_N) {
+        throw new ImageCountError(`n must be an integer between 1 and ${FIXED_GPT_IMAGE_MAX_N}`);
+    }
+    return parsed;
+}
+
+function sumImageUsage(records: JsonRecord[]): JsonRecord {
+    const sum = (values: unknown[]): unknown => {
+        if (values.every((value) => typeof value === 'number')) {
+            return (values as number[]).reduce((total, value) => total + value, 0);
+        }
+        if (values.every((value) => value && typeof value === 'object' && !Array.isArray(value))) {
+            const objects = values as JsonRecord[];
+            const keys = [...new Set(objects.flatMap((value) => Object.keys(value)))];
+            return Object.fromEntries(keys.map((key) => [key, sum(objects.map((value) => value[key] ?? 0))]));
+        }
+        return values[0];
+    };
+    return sum(records) as JsonRecord;
+}
+
+type FixedVariantFanoutResult = { response: Response; successfulRequests: number };
+
+/** 固定价别名的 n 必须拆成独立 new-api 请求,否则部分上游会静默只出 1 图且只扣 1 次。
+ * 每路强制 n=1,最多 4 路并发(与 Gemini images 现有上限一致)。部分失败保留成功子集并带
+ * 失败数头;全失败透传首个非 2xx,没有可透传响应时合成 502。若上游违反 n=1 契约返回
+ * 多张,new-api 会按实际 data 数计费,所以必须全部交付,不能静默丢掉已收费图片。 */
+async function fixedVariantImageFanout(
+    req: NextRequest,
+    form: FormData | null,
+    body: JsonRecord | null,
+    search: string,
+    n: number,
+): Promise<FixedVariantFanoutResult> {
+    const settled = await Promise.allSettled(
+        Array.from({ length: n }, () => {
+            if (form) {
+                const child = cloneImageFormData(form);
+                child.set('n', '1');
+                return gptImageUpstreamWithSizeRetry(req, child, null, search);
+            }
+            return gptImageUpstreamWithSizeRetry(req, null, { ...(body ?? {}), n: 1 }, search);
+        }),
+    );
+
+    const images: JsonRecord[] = [];
+    const successBodies: JsonRecord[] = [];
+    let firstSuccessHeaders: Headers | null = null;
+    const errorResponses: Response[] = [];
+    let firstClassifiableFailure: Response | null = null;
+    let firstFailureMessage = '';
+    let failedCount = 0;
+
+    for (const result of settled) {
+        if (result.status === 'rejected') {
+            failedCount++;
+            if (!firstFailureMessage) {
+                firstFailureMessage = result.reason instanceof Error ? result.reason.message : String(result.reason);
+            }
+            continue;
+        }
+        const response = result.value;
+        if (!response.ok) {
+            failedCount++;
+            errorResponses.push(response);
+            if (!firstClassifiableFailure) firstClassifiableFailure = response;
+            continue;
+        }
+        const responseText = await response.text();
+        let parsed: JsonRecord | null = null;
+        try {
+            parsed = JSON.parse(responseText) as JsonRecord;
+        } catch {
+            parsed = null;
+        }
+        const payload = parsed && Array.isArray(parsed.data) ? (parsed.data as JsonRecord[]) : [];
+        const childImages = payload.filter(
+            (item) =>
+                item &&
+                ((typeof item.b64_json === 'string' && item.b64_json) || (typeof item.url === 'string' && item.url)),
+        );
+        if (!parsed || childImages.length === 0) {
+            failedCount++;
+            if (!firstFailureMessage) firstFailureMessage = 'upstream returned no image payload';
+            if (
+                !firstClassifiableFailure &&
+                ((parsed && Boolean(parsed.error)) || IMAGE_SAFETY_RE.test(responseText))
+            ) {
+                const headers = new Headers(response.headers);
+                headers.delete('content-encoding');
+                headers.delete('content-length');
+                firstClassifiableFailure = new Response(responseText, { status: response.status, headers });
+            }
+            continue;
+        }
+        if (!firstSuccessHeaders) firstSuccessHeaders = new Headers(response.headers);
+        images.push(...childImages);
+        successBodies.push(parsed);
+    }
+
+    if (images.length === 0) {
+        if (firstClassifiableFailure) {
+            await Promise.all(
+                errorResponses
+                    .filter((response) => response !== firstClassifiableFailure)
+                    .map(async (response) => {
+                        try {
+                            await response.body?.cancel();
+                        } catch {
+                            // best-effort:the selected response remains intact for passthrough below
+                        }
+                    }),
+            );
+            return { response: firstClassifiableFailure, successfulRequests: 0 };
+        }
+        return {
+            response: new Response(
+                JSON.stringify({
+                    error: {
+                        message: firstFailureMessage || 'all fixed-price image requests failed',
+                        type: 'upstream_error',
+                    },
+                }),
+                { status: 502, headers: { 'content-type': 'application/json' } },
+            ),
+            successfulRequests: 0,
+        };
+    }
+
+    await Promise.all(
+        errorResponses.map(async (response) => {
+            try {
+                await response.body?.cancel();
+            } catch {
+                // Partial success has a usable payload; an unused error body must not hold the connection.
+            }
+        }),
+    );
+
+    const aggregate: JsonRecord = { ...successBodies[0], data: images };
+    const usages = successBodies
+        .map((value) => value.usage)
+        .filter((value): value is JsonRecord => Boolean(value && typeof value === 'object' && !Array.isArray(value)));
+    if (usages.length === successBodies.length) aggregate.usage = sumImageUsage(usages);
+    else delete aggregate.usage;
+
+    const headers = firstSuccessHeaders ?? new Headers();
+    headers.delete('content-encoding');
+    headers.delete('content-length');
+    headers.set('content-type', 'application/json');
+    if (failedCount > 0) headers.set('X-Silkroadai-Images-Failed', String(failedCount));
+    return {
+        response: new Response(JSON.stringify(aggregate), { status: 200, headers }),
+        successfulRequests: successBodies.length,
+    };
 }
 
 /** OpenAI gpt-image 用像素 size,不认 aspect_ratio / 比例串("16:9")—— 客户传比例时上游静默
@@ -1648,9 +1834,9 @@ function estimateImageTokens(sizeStr: string): number {
  *     记 token** —— 客户把我们的 key 接进自己的 new-api 当上游时,它的调用日志读
  *     prompt/completion_tokens,缺了就显示 0,见客户反馈)。
  *  两套共用 `total_tokens`。 */
-function buildEstimatedUsage(prompt: string, outSize: string): JsonRecord {
-    const textTokens = estimateTextTokens(prompt);
-    const outImageTokens = estimateImageTokens(outSize);
+function buildEstimatedUsage(prompt: string, outSize: string, imageCount = 1, promptCount = 1): JsonRecord {
+    const textTokens = estimateTextTokens(prompt) * Math.max(1, promptCount);
+    const outImageTokens = estimateImageTokens(outSize) * Math.max(1, imageCount);
     return {
         // gpt-image-1 形
         input_tokens: textTokens,
@@ -1683,6 +1869,7 @@ async function reshapeOpenAiImageResponse(
     transcodeJpeg = false,
     echo: ImageEchoFields | null = null,
     fixedVariant: GptImageVariant | null = null,
+    estimatedPromptCount = 1,
 ): Promise<NextResponse> {
     const text = await upstream.text();
     const headers = new Headers();
@@ -1772,7 +1959,9 @@ async function reshapeOpenAiImageResponse(
     }
 
     const usageSize = typeof out.size === 'string' ? out.size : fixedVariant ? '' : outSize;
-    if (out.usage === undefined) out.usage = buildEstimatedUsage(prompt, usageSize);
+    if (out.usage === undefined) {
+        out.usage = buildEstimatedUsage(prompt, usageSize, data.length, estimatedPromptCount);
+    }
 
     // 严格模式 output_format=jpeg:zhiyunai 恒返 png,服务端 png→jpeg 转码(就地改 data[].b64_json,
     // out.data 同一引用会一并反映)。失败回退原 png(pngToJpegB64 永不抛)。
@@ -1819,7 +2008,7 @@ async function reshapeOpenAiImageResponse(
             newData.push(d);
             if (stored.ossFallback) headers.set('X-Silkroadai-Oss-Fallback', 'yes');
             if (stored.r2Fallback) headers.set('X-Silkroadai-R2-Fallback', 'yes');
-            refs = hostedRefs(stored);
+            refs = refs.concat(hostedRefs(stored));
         }
         out.data = newData;
     }
@@ -1886,13 +2075,23 @@ async function handleImagesDalle(
             if (!(model in GEMINI_IMAGE_MODELS)) {
                 // gpt-image:剥 response_format + 把比例(aspect_ratio / "16:9" 形态 size)翻成像素 size
                 let wantJpeg = false;
+                const fixedVariant = gptImageVariant(model);
+                let fixedN = 1;
                 if (isGptImageModel(model)) {
-                    if (gptImageVariant(model) && String(form.get('stream') ?? '').toLowerCase() === 'true') {
+                    if (fixedVariant && String(form.get('stream') ?? '').toLowerCase() === 'true') {
                         return imageError(
                             'stream=true is not supported for fixed-price gpt-image-2 variants',
                             400,
                             cap,
                         );
+                    }
+                    if (fixedVariant) {
+                        try {
+                            fixedN = fixedImageCount(nRaw);
+                        } catch (e) {
+                            if (e instanceof ImageCountError) return imageError(e.message, 400, cap);
+                            throw e;
+                        }
                     }
                     // 严格模式(opt-in):先按 Azure 标准校验 output_format/background/size,不合规 → 400
                     if (isStrictImageMode(req, search)) {
@@ -1924,9 +2123,19 @@ async function handleImagesDalle(
                 try {
                     // 统一入口:gpt-image 按有无输入图分流到上游 edits/generations(与调用 path 无关);
                     // 其余非 Gemini 图片模型仍按调用 path 原样透传 multipart。
-                    const upstream = isGptImageModel(model)
-                        ? await gptImageUpstreamWithSizeRetry(req, form, null, search)
-                        : await fetchUpstreamMultipart(req, form, path, search);
+                    let upstream: Response;
+                    let estimatedPromptCount = 1;
+                    if (isGptImageModel(model)) {
+                        if (fixedVariant && fixedN > 1) {
+                            const fanout = await fixedVariantImageFanout(req, form, null, search, fixedN);
+                            upstream = fanout.response;
+                            estimatedPromptCount = fanout.successfulRequests;
+                        } else {
+                            upstream = await gptImageUpstreamWithSizeRetry(req, form, null, search);
+                        }
+                    } else {
+                        upstream = await fetchUpstreamMultipart(req, form, path, search);
+                    }
                     return await reshapeOpenAiImageResponse(
                         upstream,
                         prompt,
@@ -1936,7 +2145,8 @@ async function handleImagesDalle(
                         isGptImageModel(model) && wantHostedUrl,
                         wantJpeg,
                         echo,
-                        gptImageVariant(model),
+                        fixedVariant,
+                        estimatedPromptCount,
                     );
                 } catch (e) {
                     if (e instanceof ImageUrlError) return imageError(e.message, 400, cap);
@@ -1992,13 +2202,23 @@ async function handleImagesDalle(
                 // gpt-image:剥 response_format(zhiyunai 拒收 →400)+ 比例→像素 size(zhiyunai 不认
                 // aspect_ratio / "16:9" 形态 size,默认出方图)。见 normalizeGptImageJson。
                 let wantJpeg = false;
+                const fixedVariant = gptImageVariant(model);
+                let fixedN = 1;
                 if (isGptImageModel(model)) {
-                    if (gptImageVariant(model) && body.stream === true) {
+                    if (fixedVariant && body.stream === true) {
                         return imageError(
                             'stream=true is not supported for fixed-price gpt-image-2 variants',
                             400,
                             cap,
                         );
+                    }
+                    if (fixedVariant) {
+                        try {
+                            fixedN = fixedImageCount(nRaw);
+                        } catch (e) {
+                            if (e instanceof ImageCountError) return imageError(e.message, 400, cap);
+                            throw e;
+                        }
                     }
                     // 严格模式(opt-in):先按 Azure 标准校验 output_format/background/size,不合规 → 400
                     if (isStrictImageMode(req, search)) {
@@ -2022,9 +2242,19 @@ async function handleImagesDalle(
                 };
                 try {
                     // 统一入口:gpt-image body 里带 image/image_url → 图生图 edits;否则文生图 generations。
-                    const upstream = isGptImageModel(model)
-                        ? await gptImageUpstreamWithSizeRetry(req, null, body, search)
-                        : await fetchUpstreamJson(req, body, path, search);
+                    let upstream: Response;
+                    let estimatedPromptCount = 1;
+                    if (isGptImageModel(model)) {
+                        if (fixedVariant && fixedN > 1) {
+                            const fanout = await fixedVariantImageFanout(req, null, body, search, fixedN);
+                            upstream = fanout.response;
+                            estimatedPromptCount = fanout.successfulRequests;
+                        } else {
+                            upstream = await gptImageUpstreamWithSizeRetry(req, null, body, search);
+                        }
+                    } else {
+                        upstream = await fetchUpstreamJson(req, body, path, search);
+                    }
                     return await reshapeOpenAiImageResponse(
                         upstream,
                         prompt,
@@ -2034,7 +2264,8 @@ async function handleImagesDalle(
                         isGptImageModel(model) && wantHostedUrl,
                         wantJpeg,
                         echo,
-                        gptImageVariant(model),
+                        fixedVariant,
+                        estimatedPromptCount,
                     );
                 } catch (e) {
                     if (e instanceof ImageUrlError) return imageError(e.message, 400, cap);
@@ -2054,7 +2285,7 @@ async function handleImagesDalle(
         }
     } catch (e) {
         if (e instanceof ImageUrlError) return imageError(e.message, 400, cap);
-        if (e instanceof ImageSizeError) return imageError(e.message, 400, cap);
+        if (e instanceof ImageSizeError || e instanceof ImageCountError) return imageError(e.message, 400, cap);
         return imageError('invalid request body', 400, cap);
     }
 
@@ -2513,6 +2744,7 @@ async function validateAsyncFixedPriceImage(contentType: string, bodyBuf: ArrayB
         let size = '';
         let aspectRatio = '';
         let stream = false;
+        let n: unknown = '';
         const parsed = new Request('http://internal/async-image-preflight', {
             method: 'POST',
             headers: { 'content-type': contentType },
@@ -2524,19 +2756,22 @@ async function validateAsyncFixedPriceImage(contentType: string, bodyBuf: ArrayB
             size = String(form.get('size') ?? '');
             aspectRatio = String(form.get('aspect_ratio') ?? '');
             stream = String(form.get('stream') ?? '').toLowerCase() === 'true';
+            n = String(form.get('n') ?? '');
         } else if (contentType.includes('application/json')) {
             const body = (await parsed.json()) as JsonRecord;
             model = typeof body.model === 'string' ? body.model : '';
             size = typeof body.size === 'string' ? body.size : '';
             aspectRatio = typeof body.aspect_ratio === 'string' ? body.aspect_ratio : '';
             stream = body.stream === true;
+            n = body.n;
         }
         if (!gptImageVariant(model)) return null;
         if (stream) return 'stream=true is not supported for fixed-price gpt-image-2 variants';
+        fixedImageCount(n);
         resolveGptImageVariantSize(model, size, aspectRatio);
         return null;
     } catch (e) {
-        return e instanceof ImageSizeError ? e.message : null;
+        return e instanceof ImageSizeError || e instanceof ImageCountError ? e.message : null;
     }
 }
 
@@ -2588,6 +2823,8 @@ async function runAsyncImageTask(
             await saveImageTaskFailure(taskId, `upstream ${resp.status}: ${bodyText.slice(0, 1000)}`);
             return;
         }
+        const failedImages = Number(resp.headers.get('X-Silkroadai-Images-Failed'));
+        if (Number.isInteger(failedImages) && failedImages > 0) json.failed_images = failedImages;
         // 确保每个 data 项都有图床 url(任何内联 b64_json → 转存换成稳定 url)
         const data = Array.isArray(json.data) ? (json.data as Array<Record<string, unknown>>) : [];
         for (const item of data) {
