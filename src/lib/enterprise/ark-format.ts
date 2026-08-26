@@ -155,9 +155,42 @@ export interface ArkTaskResponseInput {
     seed?: number | bigint | null;
     generateAudio?: boolean | null;
     /** BytePlus ModelArk 形(global/promax,#326 客户样例)带扩展字段;火山方舟官方形
-     *  (cn/volc,docs.volcengine.com/82379)只出官方声明字段。缺省 false = 官方形。 */
+     *  (cn,docs.volcengine.com/82379)只出官方声明字段。缺省 false = 官方形。 */
     extended?: boolean;
+    /**
+     * volc 渠道:上游(= 火山方舟本身)返回的**真实**元数据,原样带给客户。
+     *
+     * 2026-08-27 客户契约测试报障:期望 framespersecond=24 / generate_audio=true /
+     * execution_expires_after=172800 / draft=false / service_tier='default',我们一个没给 ——
+     * 这批字段被关在 `extended` 分支里,而 extended 只对 global/promax 为真。
+     * 实测上游完成态确实返回 framespersecond / generate_audio / execution_expires_after /
+     * seed / tools,是我们在出口砍掉的。
+     *
+     * ⚠️ 不能简单改成让 volc 也走 `extended` —— 那个分支里的值是**硬编码占位**
+     * (framespersecond: 0、execution_expires_after: 0、service_tier: ''),打开了也对不上基准。
+     * 必须用上游真值,上游没给的项才走火山官方默认值。
+     */
+    volcMeta?: VolcArkMeta | null;
 }
+
+/** volc 渠道从上游带出来的元数据(上游未给的项走火山官方默认值)。 */
+export interface VolcArkMeta {
+    framespersecond?: number | null;
+    generateAudio?: boolean | null;
+    executionExpiresAfter?: number | null;
+    seed?: number | null;
+    tools?: unknown;
+    /** 上游的任务创建/更新时间(unix 秒)。上游未受理时为 0 → 回落我们的库值。 */
+    createdAt?: number | null;
+    updatedAt?: number | null;
+    /** 上游给了就跟随(火山成功态恒有该键,无尾帧时为空串)。 */
+    lastFrameUrl?: string | null;
+}
+
+/** 火山官方默认值 —— 任务未完成时上游不返回这几项,但客户契约要求字段恒在。 */
+const VOLC_DEFAULT_FPS = 24;
+const VOLC_DEFAULT_EXPIRES_AFTER = 172800; // 48h
+const VOLC_DEFAULT_SERVICE_TIER = 'default';
 
 /** 组装查询任务响应体 —— 按渠道分形(2026-08-12):
  *  - 火山方舟官方形(cn/volc,extended=false):只出 docs.volcengine.com/82379 声明的字段集
@@ -186,6 +219,23 @@ export function buildArkTaskResponse(inp: ArkTaskResponseInput): Record<string, 
         base.seed = inp.seed != null ? Number(inp.seed) : 0;
         base.generate_audio = inp.generateAudio ?? true;
     }
+    // volc:火山官方字段集(值优先取上游真值,上游未给的走火山官方默认值)。
+    if (inp.volcMeta) {
+        const m = inp.volcMeta;
+        base.draft = false;
+        base.service_tier = VOLC_DEFAULT_SERVICE_TIER;
+        base.framespersecond = m.framespersecond ?? VOLC_DEFAULT_FPS;
+        base.execution_expires_after = m.executionExpiresAfter ?? VOLC_DEFAULT_EXPIRES_AFTER;
+        base.generate_audio = m.generateAudio ?? inp.generateAudio ?? true;
+        base.seed = m.seed ?? (inp.seed != null ? Number(inp.seed) : 0);
+        base.tools = m.tools ?? [];
+        // 时间戳以**上游**为准。此前用的是我们库行的 created_at + Date.now():
+        //  - created_at 与上游差几秒(我们落库晚于上游受理)
+        //  - updated_at 是 Date.now() → **客户每查一次就变一次**,根本不是"任务更新时间"
+        // 上游未受理时返 0(running 早期),那时才回落库值。
+        if (m.createdAt) base.created_at = m.createdAt;
+        if (m.updatedAt) base.updated_at = m.updatedAt;
+    }
     if (inp.resolution) base.resolution = inp.resolution;
     if (inp.duration != null) base.duration = inp.duration;
 
@@ -193,6 +243,11 @@ export function buildArkTaskResponse(inp: ArkTaskResponseInput): Record<string, 
         const content: Record<string, unknown> = {};
         if (inp.videoUrl) content.video_url = inp.videoUrl;
         if (inp.lastFrameUrl) content.last_frame_url = inp.lastFrameUrl;
+        // volc:火山成功态 content 恒有 last_frame_url 键(无尾帧时为空串)——
+        // 客户按基准比对时"键缺失"和"值为空"是两回事。
+        else if (inp.volcMeta && inp.volcMeta.lastFrameUrl != null) {
+            content.last_frame_url = inp.volcMeta.lastFrameUrl;
+        }
         base.content = content;
         if (inp.usage) {
             const completion = inp.usage.completion_tokens ?? inp.usage.total_tokens ?? 0;

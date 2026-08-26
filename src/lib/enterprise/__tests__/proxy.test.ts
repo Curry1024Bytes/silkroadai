@@ -1304,6 +1304,110 @@ describe('vendor_task_id 出口(2026-08-19)', () => {
         expect(body.ratio).toBe('9:16');
     });
 
+    // 2026-08-27 客户契约测试报障:volc 的 ark 响应缺 5 个火山官方字段。
+    // 基准(客户给的):framespersecond=24 / generate_audio=true / draft=false /
+    //                service_tier='default' / execution_expires_after=172800
+    it('volc:火山官方字段集要出齐,值取【上游真值】', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({ ...t, duration: 4, ratio: '16:9' });
+        pollVolcVideo.mockResolvedValue(
+            NextResponse.json({
+                id: 'cgt-v1',
+                task_id: 'cgt-v1',
+                object: 'video',
+                status: 'completed',
+                video_url: 'https://v/1.mp4',
+                usage: { completion_tokens: 40594, total_tokens: 40594 },
+                duration: 4,
+                ratio: '16:9',
+                resolution: '480p',
+                framespersecond: 24,
+                generate_audio: true,
+                execution_expires_after: 172800,
+                seed: 26206,
+                tools: [],
+            }),
+        );
+        const res = await handleEnterpriseArkV3(
+            req('GET', '/api/v3/contents/generations/tasks/cgt-v1'),
+            '/contents/generations/tasks/cgt-v1',
+        );
+        const b = (await res.json()) as Record<string, unknown>;
+        expect(b.framespersecond).toBe(24);
+        expect(b.generate_audio).toBe(true);
+        expect(b.execution_expires_after).toBe(172800);
+        expect(b.draft).toBe(false);
+        expect(b.service_tier).toBe('default');
+        expect(b.seed).toBe(26206);
+        expect(b.tools).toEqual([]);
+        // 客户基准里已匹配的三项不能回归
+        expect(b.resolution).toBe('480p');
+        expect(b.ratio).toBe('16:9');
+        expect(b.duration).toBe(4);
+    });
+
+    it('volc:时间戳以上游为准(updated_at 不再是每查一次就变的 Date.now())', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({ ...t, created_at: new Date(1700000000000) });
+        pollVolcVideo.mockResolvedValue(
+            NextResponse.json({
+                id: 'cgt-v1',
+                task_id: 'cgt-v1',
+                object: 'video',
+                status: 'completed',
+                video_url: 'https://v/1.mp4',
+                usage: { completion_tokens: 1, total_tokens: 1 },
+                upstream_created_at: 1787763028,
+                upstream_updated_at: 1787763201,
+                last_frame_url: '',
+            }),
+        );
+        const res = await handleEnterpriseArkV3(
+            req('GET', '/api/v3/contents/generations/tasks/cgt-v1'),
+            '/contents/generations/tasks/cgt-v1',
+        );
+        const b = (await res.json()) as Record<string, unknown>;
+        expect(b.created_at).toBe(1787763028);
+        expect(b.updated_at).toBe(1787763201);
+        // 无尾帧时键要在、值为空串
+        expect((b.content as Record<string, unknown>).last_frame_url).toBe('');
+    });
+
+    it('volc:上游未受理(时间戳为 0)→ 回落我们的库值,不给客户 0', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({ ...t, created_at: new Date(1700000000000) });
+        pollVolcVideo.mockResolvedValue(
+            NextResponse.json({
+                id: 'cgt-v1',
+                task_id: 'cgt-v1',
+                object: 'video',
+                status: 'in_progress',
+                upstream_created_at: 0,
+                upstream_updated_at: 0,
+            }),
+        );
+        const res = await handleEnterpriseArkV3(
+            req('GET', '/api/v3/contents/generations/tasks/cgt-v1'),
+            '/contents/generations/tasks/cgt-v1',
+        );
+        const b = (await res.json()) as Record<string, unknown>;
+        expect(b.created_at).toBe(1700000000);
+        expect(b.updated_at).not.toBe(0);
+    });
+
+    it('volc:上游还没给(running / 降级)→ 字段仍恒在,走火山官方默认值', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({ ...t, status: 'in_progress' });
+        pollVolcVideo.mockResolvedValue(
+            NextResponse.json({ id: 'cgt-v1', task_id: 'cgt-v1', object: 'video', status: 'in_progress' }),
+        );
+        const res = await handleEnterpriseArkV3(
+            req('GET', '/api/v3/contents/generations/tasks/cgt-v1'),
+            '/contents/generations/tasks/cgt-v1',
+        );
+        const b = (await res.json()) as Record<string, unknown>;
+        expect(b.framespersecond).toBe(24);
+        expect(b.execution_expires_after).toBe(172800);
+        expect(b.service_tier).toBe('default');
+        expect(b.draft).toBe(false);
+    });
+
     it('火山形(ark)body 仍是官方字段集(#326 严格白名单)', async () => {
         pollVolcVideo.mockResolvedValue(running('cgt-20260817125256-tfv79'));
         const res = await handleEnterpriseArkV3(

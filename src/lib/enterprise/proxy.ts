@@ -686,6 +686,8 @@ async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat
                     seed: task.seed,
                     generateAudio: task.generate_audio,
                     extended,
+                    // 失败态也要出齐火山官方字段集(客户契约校验不分成功失败)。
+                    volcMeta: taskRegion === 'volc' ? {} : null,
                 }),
             );
         }
@@ -723,6 +725,8 @@ async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat
                     seed: task.seed,
                     generateAudio: task.generate_audio,
                     extended,
+                    // 降级路径同样要出齐字段(值走火山官方默认,上游此刻无数据)。
+                    volcMeta: taskRegion === 'volc' ? {} : null,
                 }),
                 { headers },
             );
@@ -901,6 +905,21 @@ async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat
                 seed: task.seed,
                 generateAudio: task.generate_audio,
                 extended,
+                // volc = 原生火山:火山官方字段集要齐(客户按基准做契约校验)。
+                // 其余渠道传 null,行为逐字不变。
+                volcMeta:
+                    taskRegion === 'volc'
+                        ? {
+                              framespersecond: upstreamNum(j?.framespersecond),
+                              generateAudio: typeof j?.generate_audio === 'boolean' ? j.generate_audio : null,
+                              executionExpiresAfter: upstreamNum(j?.execution_expires_after),
+                              seed: upstreamNum(j?.seed),
+                              tools: Array.isArray(j?.tools) ? j.tools : null,
+                              createdAt: upstreamNum(j?.upstream_created_at),
+                              updatedAt: upstreamNum(j?.upstream_updated_at),
+                              lastFrameUrl: typeof j?.last_frame_url === 'string' ? j.last_frame_url : null,
+                          }
+                        : null,
             }),
             { headers: vendorHeaders },
         );

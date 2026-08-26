@@ -133,14 +133,15 @@ describe('handleKuaiziAssetAction', () => {
         });
     });
 
-    it('ListAssets:平铺 GroupId 归一成 Filter.GroupIds;TotalCount → Total', async () => {
+    it('ListAssets:平铺 GroupId 归一成 Filter.GroupIds;分页壳保持火山官方形 TotalCount', async () => {
         const fetchMock = vi.spyOn(global, 'fetch').mockResolvedValue(
             new Response(envelope({ Items: [{ Id: '1' }], TotalCount: 1, PageNumber: 1, PageSize: 20 }), {
                 status: 200,
             }),
         );
         const r = await handleKuaiziAssetAction('ListAssets', { GroupId: '1800657071180349525' });
-        expect(r).toEqual({ Items: [{ Id: '1' }], Total: 1, PageNumber: 1, PageSize: 20 });
+        // volc = 原生火山:分页总数用上游的 TotalCount,不改名成平台库面的 Total
+        expect(r).toEqual({ Items: [{ Id: '1' }], TotalCount: 1, PageNumber: 1, PageSize: 20 });
         const sent = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
         expect(sent.Filter).toEqual({ GroupIds: ['1800657071180349525'] });
         expect(sent.PageNumber).toBe(1);

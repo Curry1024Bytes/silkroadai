@@ -418,12 +418,113 @@ describe('上游已推导的元数据优先(2026-08-26 客户报障:-1 一直回
         expect(j.resolution).toBe('480p');
     });
 
+    it('火山官方字段集从上游透出来(客户契约校验用)', async () => {
+        vi.spyOn(global, 'fetch').mockResolvedValue(
+            poll({
+                framespersecond: 24,
+                generate_audio: true,
+                execution_expires_after: 172800,
+                seed: 26206,
+                tools: [],
+            }),
+        );
+        const j = (await (await pollVolcVideo('cgt-abc')).json()) as Record<string, unknown>;
+        expect(j.framespersecond).toBe(24);
+        expect(j.generate_audio).toBe(true);
+        expect(j.execution_expires_after).toBe(172800);
+        expect(j.seed).toBe(26206);
+        expect(j.tools).toEqual([]);
+    });
+
     it('上游还没推导出来(running 期)→ 不带这些键,交给上层回落库值', async () => {
         vi.spyOn(global, 'fetch').mockResolvedValue(
             new Response(JSON.stringify({ id: 'kz-cgt-abc', status: 'running' }), { status: 200 }),
         );
         const j = (await (await pollVolcVideo('cgt-abc')).json()) as Record<string, unknown>;
         for (const k of ['duration', 'ratio', 'resolution']) expect(j).not.toHaveProperty(k);
+    });
+});
+
+/**
+ * 【契约守护】上游真实响应 fixture —— 2026-08-27 直连筷子抓的完成态原文。
+ *
+ * 客户对 volc 做响应基准比对,已经两轮报障(#408 缺 5 个字段、本轮时间戳/尾帧键不一致),
+ * 根子都是同一个:**我们逐字段重建响应,上游加一个字段我们就漏一个**。
+ * 这条测试把「上游有什么」钉死 —— 上游字段没被透出,又不在明示丢弃名单里,CI 直接红。
+ * 上游将来加字段时,更新 fixture 就会自动暴露我们没适配。
+ */
+const UPSTREAM_DONE_SAMPLE = {
+    content: {
+        kz_video_url: 'https://bk-hs-p-bj-lizhen.tos-cn-beijing.volces.com/x.mp4?sig=1',
+        last_frame_url: '',
+        video_url: 'https://ark-acg-cn-beijing.tos-cn-beijing.volces.com/y.mp4?sig=2',
+    },
+    created_at: 1787763028,
+    duration: 4,
+    execution_expires_after: 172800,
+    framespersecond: 24,
+    generate_audio: true,
+    id: 'kz-cgt-abc',
+    model: 'doubao-seedance-2-0-260128',
+    ratio: '16:9',
+    resolution: '480p',
+    seed: 12345,
+    status: 'succeeded',
+    tools: [],
+    updated_at: 1787763201,
+    usage: { completion_tokens: 40594, total_tokens: 40594 },
+    vendor_task_id: 'cgt-20260827005028-fdwbz',
+};
+
+/** 明示【不】原样透出的上游字段,每条都要有理由。 */
+const INTENTIONALLY_NOT_PASSED: Record<string, string> = {
+    id: '换成我们的对客任务号(客户拿到的是火山原生号,见 volc-id-map)',
+    vendor_task_id: '对客不暴露 —— 客户的 id 本身就是火山号,再给一个既冗余又提示中间层(#271)',
+    status: '经我们的状态机归一后再翻回火山态(queued/running/succeeded/failed)',
+    model: '回显客户调用的名字(ark 面回显火山原生 id)',
+    usage: '按我们的计费口径归一(completion/total_tokens)',
+    content: '逐键处理:video_url 可能换客户 OSS;kz_video_url 是上游转存域名,绝不外泄(#271)',
+};
+
+describe('上游字段契约守护(2026-08-27:客户基准比对连续两轮报障)', () => {
+    it('上游响应的每个字段,要么被透出,要么在明示丢弃名单里', async () => {
+        vi.spyOn(global, 'fetch').mockResolvedValue(
+            new Response(JSON.stringify(UPSTREAM_DONE_SAMPLE), { status: 200 }),
+        );
+        const out = (await (await pollVolcVideo('cgt-abc')).json()) as Record<string, unknown>;
+        // 适配器透出的键(含 upstream_ 前缀的时间戳)
+        const surfaced = new Set(Object.keys(out).map((k) => k.replace(/^upstream_/, '')));
+        const missing = Object.keys(UPSTREAM_DONE_SAMPLE).filter(
+            (k) => !surfaced.has(k) && !(k in INTENTIONALLY_NOT_PASSED),
+        );
+        expect(missing).toEqual([]);
+    });
+
+    it('上游转存域名(kz_video_url)绝不外泄,成片用火山官方直链', async () => {
+        vi.spyOn(global, 'fetch').mockResolvedValue(
+            new Response(JSON.stringify(UPSTREAM_DONE_SAMPLE), { status: 200 }),
+        );
+        const body = await (await pollVolcVideo('cgt-abc')).text();
+        expect(body).not.toContain('bk-hs-p-bj-lizhen');
+        expect(body).not.toContain('kz_video_url');
+        expect(JSON.parse(body).video_url).toContain('ark-acg-cn-beijing');
+    });
+
+    it('时间戳取上游真值(此前 updated_at 是 Date.now(),客户每查一次都变)', async () => {
+        vi.spyOn(global, 'fetch').mockResolvedValue(
+            new Response(JSON.stringify(UPSTREAM_DONE_SAMPLE), { status: 200 }),
+        );
+        const out = (await (await pollVolcVideo('cgt-abc')).json()) as Record<string, unknown>;
+        expect(out.upstream_created_at).toBe(1787763028);
+        expect(out.upstream_updated_at).toBe(1787763201);
+    });
+
+    it('无尾帧时 last_frame_url 是空串而非缺键(基准比对里两者不等价)', async () => {
+        vi.spyOn(global, 'fetch').mockResolvedValue(
+            new Response(JSON.stringify(UPSTREAM_DONE_SAMPLE), { status: 200 }),
+        );
+        const out = (await (await pollVolcVideo('cgt-abc')).json()) as Record<string, unknown>;
+        expect(out.last_frame_url).toBe('');
     });
 });
 

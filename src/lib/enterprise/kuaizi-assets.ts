@@ -207,7 +207,10 @@ interface UpstreamPage<T> {
 function pageResult<T>(d: UpstreamPage<T>, fallbackPage: number, fallbackSize: number) {
     return {
         Items: d.Items ?? [],
-        Total: d.TotalCount ?? 0,
+        // 火山官方形用 TotalCount —— volc 卖的是原生火山,不能改名成我们平台库面的 Total。
+        // (2026-08-27 审计发现:客户按火山基准比对会直接判为字段缺失。平台库面 assets.ts
+        //  仍用 Total,两套面各自对齐各自的契约,互不影响。)
+        TotalCount: d.TotalCount ?? 0,
         PageNumber: d.PageNumber ?? fallbackPage,
         PageSize: d.PageSize ?? fallbackSize,
     };
