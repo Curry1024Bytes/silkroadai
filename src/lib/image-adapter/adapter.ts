@@ -107,6 +107,19 @@ export function estimateTextTokens(s: string): number {
     return Math.max(1, Math.ceil(cjk * 1.5 + other / 4));
 }
 
+/** 返图是否带真 alpha 通道:PNG colortype 6(RGBA)/ 4(灰+alpha)→ true;PNG 其他 colortype
+ *  与 JPEG(无 alpha 概念)→ false;识别不出的格式(webp 等)→ null(存疑放行,不误杀)。
+ *  用于 background=transparent 的出图校验 —— ominiapi 等号池型上游【同账号 50/50 随机】:
+ *  一部分子账号真出 RGBA,另一部分 200 返回画进像素的假棋盘格(2026-08-26 实测 3 连发 2 真 1 假)。 */
+function imageHasAlpha(buf: Buffer): boolean | null {
+    if (buf.length >= 26 && buf[0] === 0x89 && buf[1] === 0x50 && buf.toString('latin1', 12, 16) === 'IHDR') {
+        const ctype = buf[25];
+        return ctype === 6 || ctype === 4;
+    }
+    if (buf.length > 2 && buf[0] === 0xff && buf[1] === 0xd8) return false; // JPEG 恒无 alpha
+    return null;
+}
+
 /** dep-free 尺寸解析(PNG IHDR / JPEG SOF),读不出 → null(输入 token 按 1MP 兜底)。 */
 function imageDimensions(buf: Buffer): { w: number; h: number } | null {
     if (
@@ -493,7 +506,8 @@ export async function handleAdapterImage(
     // 【画进像素的假棋盘格】(rgb24 无 alpha)—— 客户拿废图还被计费,比失败更糟。未验证的
     // provider(providers.ts noTransparentBackground)对这类请求 503 让 new-api 换渠道。
     // 参数本身在 FORWARD_EXTRAS 里,支持透明的上游正常透传。
-    if (provider.noTransparentBackground && (parsed.extras.background || '').trim().toLowerCase() === 'transparent') {
+    const wantsTransparent = (parsed.extras.background || '').trim().toLowerCase() === 'transparent';
+    if (provider.noTransparentBackground && wantsTransparent) {
         console.log('[image-adapter] transparent not served', { provider: providerName, mode });
         return failover('transparent_not_served', 'provider not verified for background=transparent');
     }
@@ -541,7 +555,7 @@ export async function handleAdapterImage(
     // 任一扇出返回【终态】(内容安全 / 请求本身错)→ 立即终态化,不 failover(换渠道也拒,别浪费重试位)。
     const terminal = results.find(isTerminalReject);
     if (terminal) return terminalReject(terminal.terminal);
-    const items = results.flatMap((r) => (Array.isArray(r) ? r : []).map((b64_json) => ({ b64_json })));
+    let items = results.flatMap((r) => (Array.isArray(r) ? r : []).map((b64_json) => ({ b64_json })));
     if (items.length === 0) {
         // 全军覆没才 failover(部分成功 → 返回拿到的那几张,按张计费)
         return failover('upstream_error', `all ${fanout} upstream call(s) failed`);
@@ -560,6 +574,25 @@ export async function handleAdapterImage(
     // 假设:约束外请求(实测 7000²)它不拒,200 静默降级出 2048² —— 按请求值合成会 38 倍超收。
     // 改为:实际尺寸读得出 → 按实际(对如实出图的上游逐字节等价,天然免疫任何上游的静默降级);
     // 读不出(webp 等非 PNG/JPEG)→ size 可解析退回请求值(旧行为),auto → 无从计费,failover。
+    // ---- 透明出图校验:transparent 请求只把【真带 alpha 通道】的图交给客户 ----
+    // 支持名单内的上游也可能是号池(ominiapi 同账号 50/50 随机),假棋盘格按上游失败处理:
+    // 丢弃无 alpha 的张,全军覆没则 503 让 new-api 重试/换渠道把骰子摇到真透明。
+    if (wantsTransparent) {
+        const kept = items.filter((it) => imageHasAlpha(Buffer.from(it.b64_json, 'base64')) !== false);
+        if (kept.length < items.length) {
+            console.warn('[image-adapter] transparent verify dropped opaque image(s)', {
+                provider: providerName,
+                mode,
+                dropped: items.length - kept.length,
+                kept: kept.length,
+            });
+        }
+        if (kept.length === 0) {
+            return failover('transparent_not_delivered', 'upstream returned image(s) without alpha channel');
+        }
+        items = kept;
+    }
+
     const out0 = items[0]?.b64_json;
     const actualDims = out0 ? imageDimensions(Buffer.from(out0, 'base64')) : null;
     let billW: number;

@@ -24,9 +24,10 @@ const TINY_PNG = Buffer.from(
     'base64',
 );
 
-/** 造一个仅 PNG 签名 + IHDR(w×h)的最小 buffer 的 base64 —— 够 imageDimensions 读出尺寸(测 auto 计费)。 */
-function pngB64(w: number, h: number): string {
-    const buf = Buffer.alloc(24);
+/** 造一个仅 PNG 签名 + IHDR(w×h + colortype)的最小 buffer 的 base64 —— 够 imageDimensions
+ *  读尺寸(测 auto 计费)+ imageHasAlpha 读 colortype(测透明出图校验;缺省 6 = RGBA)。 */
+function pngB64(w: number, h: number, colorType = 6): string {
+    const buf = Buffer.alloc(26);
     buf[0] = 0x89;
     buf[1] = 0x50;
     buf[2] = 0x4e;
@@ -34,6 +35,8 @@ function pngB64(w: number, h: number): string {
     buf.write('IHDR', 12, 'latin1');
     buf.writeUInt32BE(w, 16);
     buf.writeUInt32BE(h, 20);
+    buf[24] = 8; // bit depth
+    buf[25] = colorType;
     return buf.toString('base64');
 }
 
@@ -1222,5 +1225,84 @@ describe('background:transparent 路由(未验证上游 503 让路,支持的正�
         const res = await gen('oaidist', { background: 'transparent', quality: 'medium' });
         expect(res.status).toBe(200);
         expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).background).toBe('transparent');
+    });
+});
+
+describe('background:transparent 出图校验(号池型上游 50/50 随机,假棋盘格不放行)', () => {
+    const URL_FULL2 = 'http://portal.test/image-adapter/ominiapifull/v1/images/generations';
+    const upstreamReturning = (b64s: string[]) => {
+        let i = 0;
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: b64s[i++ % b64s.length] }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+    };
+
+    it('transparent 请求返回 colortype=2(无 alpha)→ 全丢 503(不给客户假棋盘格,不计费)', async () => {
+        upstreamReturning([pngB64(1024, 1024, 2)]);
+        const res = await handleAdapterImage(
+            jsonReq(URL_FULL2, {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '1024x1024',
+                quality: 'low',
+                background: 'transparent',
+            }),
+            'generations',
+            'ominiapifull',
+        );
+        expect(res.status).toBe(503);
+        expect((await res.json()).error.code).toBe('upstream_unavailable');
+    });
+
+    it('n=2 一真一假 → 只返真 RGBA 那张,按 1 张计费', async () => {
+        upstreamReturning([pngB64(1024, 1024, 6), pngB64(1024, 1024, 2)]);
+        const res = await handleAdapterImage(
+            jsonReq(URL_FULL2, {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '1024x1024',
+                quality: 'low',
+                background: 'transparent',
+                n: 2,
+            }),
+            'generations',
+            'ominiapifull',
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data).toHaveLength(1);
+        expect(body.data[0].b64_json).toBe(pngB64(1024, 1024, 6));
+        expect(body.usage.output_tokens).toBe(196); // 1 张,不是 2 张
+    });
+
+    it('不带 transparent 时 colortype=2 照常放行(校验只对透明请求生效)', async () => {
+        upstreamReturning([pngB64(1024, 1024, 2)]);
+        const res = await handleAdapterImage(
+            jsonReq(URL_FULL2, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', quality: 'low' }),
+            'generations',
+            'ominiapifull',
+        );
+        expect(res.status).toBe(200);
+        expect((await res.json()).data).toHaveLength(1);
+    });
+
+    it('transparent + 识别不出的格式(非 PNG/JPEG)→ 存疑放行不误杀', async () => {
+        upstreamReturning([Buffer.from('RIFFxxxxWEBPVP8 fake-webp-bytes-here').toString('base64')]);
+        const res = await handleAdapterImage(
+            jsonReq(URL_FULL2, {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '1024x1024',
+                quality: 'low',
+                background: 'transparent',
+            }),
+            'generations',
+            'ominiapifull',
+        );
+        expect(res.status).toBe(200);
     });
 });
