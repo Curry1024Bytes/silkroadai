@@ -544,8 +544,13 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                     <Code>callback_url</Code> 暂不支持,请改用轮询。)
                 </p>
                 <p className="text-gray-600">
-                    <Code>duration: -1</Code> = 智能时长(由模型在有效区间内自选)。<Code>4k</Code> 仅{' '}
-                    <Code>doubao-seedance-2-0-260128</Code> 支持(<Code>doubao-seedance-2-5-260628</Code> 无 4k)。
+                    <Code>duration: -1</Code> = 智能时长(由模型在有效区间内自选)——{' '}
+                    <b>
+                        任务完成后查询响应里的 <Code>duration</Code> 是模型实际选定的秒数
+                    </b>
+                    (不再回显 <Code>-1</Code>);生成中尚未定,暂显提交值。<Code>ratio</Code> 同理,
+                    完成后以实际采用的比例为准。<Code>4k</Code> 仅 <Code>doubao-seedance-2-0-260128</Code> 支持(
+                    <Code>doubao-seedance-2-5-260628</Code> 无 4k)。
                 </p>
                 <p className="text-gray-600">
                     <Code>doubao-seedance-2-0-fast-260128</Code> / <Code>doubao-seedance-2-0-mini-260615</Code>{' '}

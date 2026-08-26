@@ -452,6 +452,15 @@ const ARK_STATUS_TO_INTERNAL: Record<string, string> = {
 };
 
 /** 提交:key 鉴权(绑版本)→ 模型门 → 余额门(¥账本)→ 直调适配器核心(客户上游 key)→ 记任务(fail closed)。 */
+/** 上游回的已推导值(字符串);缺失/非法 → null,交由调用方回落库值。 */
+function upstreamStr(v: unknown): string | null {
+    return typeof v === 'string' && v ? v : null;
+}
+/** 上游回的已推导值(数字);缺失/非法 → null。 */
+function upstreamNum(v: unknown): number | null {
+    return typeof v === 'number' && Number.isFinite(v) ? v : null;
+}
+
 async function handleSubmit(req: NextRequest, format: ClientFormat = 'v1'): Promise<NextResponse> {
     // 先读原始 body(AK/SK 验签对原始字节算 hash),再解析 + 归一。
     const rawBody = await req.text();
@@ -882,9 +891,13 @@ async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat
                 usage,
                 failReason,
                 createdAt: task.created_at,
-                resolution: task.resolution,
-                duration: task.duration,
-                ratio: task.ratio,
+                // 上游给了【已推导】的值就用它,库里的提交参数只作兜底。
+                // 客户传 duration=-1(智能时长)时,库里存的就是 -1,一直回显 -1 是错的 ——
+                // 上游完成时会给模型真正选的秒数(2026-08-26 客户报障)。ratio 同理。
+                // 其余渠道的适配器不返回这几个字段 → 自动回落 task.*,行为不变。
+                resolution: upstreamStr(j?.resolution) ?? task.resolution,
+                duration: upstreamNum(j?.duration) ?? task.duration,
+                ratio: upstreamStr(j?.ratio) ?? task.ratio,
                 seed: task.seed,
                 generateAudio: task.generate_audio,
                 extended,

@@ -1264,6 +1264,46 @@ describe('vendor_task_id 出口(2026-08-19)', () => {
         expect(res.headers.get('X-Silkroadai-Vendor-Task-Id')).toBeNull();
     });
 
+    // 2026-08-26 客户报障:提交 duration=-1(智能时长),响应一直回显 -1。
+    // 库里存的就是提交参数,而上游在完成时会给出模型真正选的秒数 —— 该以上游为准。
+    it('ark 回显优先用上游【已推导】的 duration / ratio,而不是库里的提交参数', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({ ...t, duration: -1, ratio: '16:9' });
+        pollVolcVideo.mockResolvedValue(
+            NextResponse.json({
+                id: 'cgt-v1',
+                task_id: 'cgt-v1',
+                object: 'video',
+                status: 'completed',
+                progress: 100,
+                video_url: 'https://v/1.mp4',
+                usage: { completion_tokens: 100, total_tokens: 100 },
+                duration: 5,
+                ratio: 'adaptive',
+            }),
+        );
+        const res = await handleEnterpriseArkV3(
+            req('GET', '/api/v3/contents/generations/tasks/cgt-v1'),
+            '/contents/generations/tasks/cgt-v1',
+        );
+        const body = (await res.json()) as Record<string, unknown>;
+        expect(body.duration).toBe(5);
+        expect(body.ratio).toBe('adaptive');
+    });
+
+    it('上游没给(running 期 / 其它渠道适配器)→ 回落库里的值,行为不变', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({ ...t, duration: 8, ratio: '9:16' });
+        pollVolcVideo.mockResolvedValue(
+            NextResponse.json({ id: 'cgt-v1', task_id: 'cgt-v1', object: 'video', status: 'in_progress' }),
+        );
+        const res = await handleEnterpriseArkV3(
+            req('GET', '/api/v3/contents/generations/tasks/cgt-v1'),
+            '/contents/generations/tasks/cgt-v1',
+        );
+        const body = (await res.json()) as Record<string, unknown>;
+        expect(body.duration).toBe(8);
+        expect(body.ratio).toBe('9:16');
+    });
+
     it('火山形(ark)body 仍是官方字段集(#326 严格白名单)', async () => {
         pollVolcVideo.mockResolvedValue(running('cgt-20260817125256-tfv79'));
         const res = await handleEnterpriseArkV3(

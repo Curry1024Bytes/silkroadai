@@ -513,6 +513,17 @@ export async function pollVolcVideo(id: string): Promise<NextResponse> {
     if (typeof vendorRaw === 'string' && vendorRaw && !isArkTaskId(vendorRaw)) {
         console.warn('[kuaizi-adapter] non-ark vendor task', { id, vendor_task_id: vendorRaw });
     }
+    // 上游【已推导】的元数据 —— 必须优先于我们库里存的提交参数。
+    //
+    // 典型:客户传 duration=-1(智能时长),我们却一直回显 -1;上游在任务完成时会给出
+    // 模型真正选的秒数(实测提交 -1 → 完成时 duration=5)。ratio 同理:客户不传时
+    // 我们库里存的是补的 '16:9',而上游给的是实际采用的比例。
+    // (2026-08-26 客户报障:「-1 推导响应给的还是 -1」。)
+    const upstreamMeta: Record<string, unknown> = {};
+    if (typeof j.duration === 'number') upstreamMeta.duration = j.duration;
+    if (typeof j.ratio === 'string' && j.ratio) upstreamMeta.ratio = j.ratio;
+    if (typeof j.resolution === 'string' && j.resolution) upstreamMeta.resolution = j.resolution;
+
     return NextResponse.json(
         {
             id,
@@ -525,6 +536,7 @@ export async function pollVolcVideo(id: string): Promise<NextResponse> {
             last_frame_url: lastFrameUrl,
             fail_reason: failReason || undefined,
             usage: status === 'completed' ? usage : undefined,
+            ...upstreamMeta,
         },
         { status: 200 },
     );

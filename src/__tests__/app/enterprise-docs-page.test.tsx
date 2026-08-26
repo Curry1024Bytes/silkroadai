@@ -50,6 +50,8 @@ describe('/enterprise/docs 火山渠道章节', () => {
     it('写明 ratio 不传=不指定、火山官方参数一律透传', () => {
         expect(html).toContain('不传就是「不指定」');
         expect(html).toContain('火山官方参数一律透传');
+        // duration:-1 完成后要回显真实秒数(2026-08-26 客户报障)
+        expect(html).toContain('模型实际选定的秒数');
         expect(html).toContain('bitrate_mode');
         expect(html).toContain('camera_fixed');
     });

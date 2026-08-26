@@ -406,6 +406,27 @@ describe('cancelVolcVideo', () => {
     });
 });
 
+describe('上游已推导的元数据优先(2026-08-26 客户报障:-1 一直回显 -1)', () => {
+    const poll = (extra: Record<string, unknown>) =>
+        new Response(JSON.stringify({ id: 'kz-cgt-abc', status: 'succeeded', ...extra }), { status: 200 });
+
+    it('上游给出推导后的 duration → 透出来(客户传 -1,模型实选 5)', async () => {
+        vi.spyOn(global, 'fetch').mockResolvedValue(poll({ duration: 5, ratio: '16:9', resolution: '480p' }));
+        const j = (await (await pollVolcVideo('cgt-abc')).json()) as Record<string, unknown>;
+        expect(j.duration).toBe(5);
+        expect(j.ratio).toBe('16:9');
+        expect(j.resolution).toBe('480p');
+    });
+
+    it('上游还没推导出来(running 期)→ 不带这些键,交给上层回落库值', async () => {
+        vi.spyOn(global, 'fetch').mockResolvedValue(
+            new Response(JSON.stringify({ id: 'kz-cgt-abc', status: 'running' }), { status: 200 }),
+        );
+        const j = (await (await pollVolcVideo('cgt-abc')).json()) as Record<string, unknown>;
+        for (const k of ['duration', 'ratio', 'resolution']) expect(j).not.toHaveProperty(k);
+    });
+});
+
 describe('vendor_task_id 不再对客暴露(2026-08-19 原生化)', () => {
     const poll = (extra: Record<string, unknown>) =>
         new Response(JSON.stringify({ id: 'kz-cgt-abc', status: 'running', ...extra }), { status: 200 });
