@@ -147,6 +147,44 @@ function geminiImgResponse(mimeType: string, data: Buffer) {
 const JPEG_MAGIC = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46]);
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
 
+function pngHeaderB64(width: number, height: number): string {
+    const buf = Buffer.alloc(24);
+    PNG_MAGIC.subarray(0, 8).copy(buf);
+    buf.writeUInt32BE(13, 8);
+    buf.write('IHDR', 12, 'latin1');
+    buf.writeUInt32BE(width, 16);
+    buf.writeUInt32BE(height, 20);
+    return buf.toString('base64');
+}
+
+function unsupportedWebpHeaderB64(width: number, height: number): string {
+    const buf = Buffer.alloc(30);
+    buf.write('RIFF', 0, 'latin1');
+    buf.writeUInt32LE(22, 4);
+    buf.write('WEBPVP8X', 8, 'latin1');
+    buf.writeUInt32LE(10, 16);
+    buf.writeUIntLE(width - 1, 24, 3);
+    buf.writeUIntLE(height - 1, 27, 3);
+    return buf.toString('base64');
+}
+
+function withAdobePngMetadata(b64: string): string {
+    const png = Buffer.from(b64, 'base64');
+    const ihdrEnd = 8 + 12 + png.readUInt32BE(8);
+    const data = Buffer.from('Adobe Firefly C2PA');
+    const chunk = Buffer.alloc(12 + data.length);
+    chunk.writeUInt32BE(data.length, 0);
+    chunk.write('caBX', 4, 'latin1');
+    data.copy(chunk, 8);
+    return Buffer.concat([png.subarray(0, ihdrEnd), chunk, png.subarray(ihdrEnd)]).toString('base64');
+}
+
+async function solidPngB64(width: number, height: number): Promise<string> {
+    const { Jimp } = await import('jimp');
+    const buf = await new Jimp({ width, height, color: 0x336699ff }).getBuffer('image/png');
+    return Buffer.from(buf).toString('base64');
+}
+
 describe('/v1 proxy — Gemini image translation', () => {
     it('translates chat/completions to native generateContent with imageSize injected', async () => {
         mockFetch.mockResolvedValueOnce(geminiNativeResponse());
@@ -3285,14 +3323,16 @@ describe('/v1 proxy — gpt-image-2 via /chat/completions → images translation
 });
 
 describe('/v1 proxy — gpt-image-2-{1,2,4}k fixed-price variants retain billing identity', () => {
-    const imgResp = () =>
-        new Response(JSON.stringify({ data: [{ b64_json: 'QkFTRTY0' }] }), {
+    const imgResp = (size = '1024x1024') => {
+        const [width, height] = size.split('x').map(Number);
+        return new Response(JSON.stringify({ data: [{ b64_json: pngHeaderB64(width, height) }] }), {
             status: 200,
             headers: { 'content-type': 'application/json' },
         });
+    };
 
     it('images/generations: gpt-image-2-4k (no size) → alias retained + fixed size 3840x2160', async () => {
-        mockFetch.mockResolvedValueOnce(imgResp());
+        mockFetch.mockResolvedValueOnce(imgResp('3840x2160'));
         await POST(
             makeReq('/images/generations', {
                 body: { model: 'gpt-image-2-4k', prompt: 'a cat' },
@@ -3306,7 +3346,7 @@ describe('/v1 proxy — gpt-image-2-{1,2,4}k fixed-price variants retain billing
     });
 
     it('images/generations: gpt-image-2-2k → alias retained + fixed size 2048x2048', async () => {
-        mockFetch.mockResolvedValueOnce(imgResp());
+        mockFetch.mockResolvedValueOnce(imgResp('2048x2048'));
         await POST(
             makeReq('/images/generations', {
                 body: { model: 'gpt-image-2-2k', prompt: 'a cat' },
@@ -3333,8 +3373,340 @@ describe('/v1 proxy — gpt-image-2-{1,2,4}k fixed-price variants retain billing
         expect(sent).toMatchObject({ model: 'gpt-image-2-1k', size: '1024x1024', n: 2 });
     });
 
+    it('fixed 1K resizes a mismatched upstream image and reports the real output size', async () => {
+        const upstreamB64 = await solidPngB64(1254, 1254);
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ data: [{ b64_json: upstreamB64, size: '1254x1254' }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2-1k', prompt: 'a cat' },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { size: string; data: Array<{ b64_json: string; size?: string }> };
+        expect(body.size).toBe('1024x1024');
+        expect(body.data[0].size).toBe('1024x1024');
+        expect(body.data[0].b64_json).not.toBe(upstreamB64);
+        const { Jimp } = await import('jimp');
+        const output = await Jimp.read(Buffer.from(body.data[0].b64_json, 'base64'));
+        expect([output.width, output.height]).toEqual([1024, 1024]);
+    });
+
+    it('fixed 1K keeps an already exact b64 image byte-for-byte', async () => {
+        const exactB64 = await solidPngB64(1024, 1024);
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ data: [{ b64_json: exactB64 }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2-1k', prompt: 'a cat' },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { data: Array<{ b64_json: string }> };
+        expect(body.data[0].b64_json).toBe(exactB64);
+    });
+
+    it('fixed n=2 resizes every returned image, not only the first item', async () => {
+        const firstB64 = await solidPngB64(1254, 1254);
+        const secondB64 = await solidPngB64(640, 480);
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ data: [{ b64_json: firstB64 }, { b64_json: secondB64 }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2-1k', prompt: 'two cats', n: 2 },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { data: Array<{ b64_json: string; size: string }> };
+        expect(body.data).toHaveLength(2);
+        const { Jimp } = await import('jimp');
+        for (const item of body.data) {
+            const output = await Jimp.read(Buffer.from(item.b64_json, 'base64'));
+            expect([output.width, output.height]).toEqual([1024, 1024]);
+            expect(item.size).toBe('1024x1024');
+        }
+    });
+
+    it('fixed n=2 keeps a usable image when another returned item has no payload', async () => {
+        const validB64 = await solidPngB64(1254, 1254);
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ data: [{ b64_json: validB64 }, {}] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2-1k', prompt: 'two cats', n: 2 },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        expect(res.headers.get('X-Silkroadai-Image-Resize')).toBe('unverified-original-returned');
+        const body = (await res.json()) as { size: string; data: Array<{ b64_json: string; size: string }> };
+        expect(body.size).toBe('1024x1024');
+        expect(body.data).toHaveLength(1);
+        const { Jimp } = await import('jimp');
+        const output = await Jimp.read(Buffer.from(body.data[0].b64_json, 'base64'));
+        expect([output.width, output.height]).toEqual([1024, 1024]);
+    });
+
+    it('canonical gpt-image-2 never resizes its response', async () => {
+        const upstreamB64 = await solidPngB64(37, 23);
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ data: [{ b64_json: upstreamB64 }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2', prompt: 'a cat', size: '1024x1024' },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { data: Array<{ b64_json: string }> };
+        expect(body.data[0].b64_json).toBe(upstreamB64);
+    });
+
+    it('fixed URL-only upstream output is downloaded safely and resized into b64_json', async () => {
+        const upstreamB64 = await solidPngB64(64, 64);
+        mockFetch
+            .mockResolvedValueOnce(
+                new Response(JSON.stringify({ data: [{ url: 'https://upstream.example/out.png' }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+            )
+            .mockResolvedValueOnce(
+                new Response(Buffer.from(upstreamB64, 'base64'), {
+                    status: 200,
+                    headers: { 'content-type': 'image/png' },
+                }),
+            );
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2-1k', prompt: 'a cat' },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { data: Array<{ b64_json: string; url?: string }> };
+        expect(body.data[0].url).toBeUndefined();
+        const { Jimp } = await import('jimp');
+        const output = await Jimp.read(Buffer.from(body.data[0].b64_json, 'base64'));
+        expect([output.width, output.height]).toEqual([1024, 1024]);
+    });
+
+    it('fixed URL-only output strips Adobe metadata after download', async () => {
+        const cleanB64 = await solidPngB64(1024, 1024);
+        const taintedB64 = withAdobePngMetadata(cleanB64);
+        expect(Buffer.from(taintedB64, 'base64').includes(Buffer.from('Adobe Firefly'))).toBe(true);
+        mockFetch
+            .mockResolvedValueOnce(
+                new Response(JSON.stringify({ data: [{ url: 'https://upstream.example/out.png' }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+            )
+            .mockResolvedValueOnce(
+                new Response(Buffer.from(taintedB64, 'base64'), {
+                    status: 200,
+                    headers: { 'content-type': 'image/png' },
+                }),
+            );
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2-1k', prompt: 'a cat' },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { data: Array<{ b64_json: string }> };
+        expect(body.data[0].b64_json).toBe(cleanB64);
+        expect(Buffer.from(body.data[0].b64_json, 'base64').includes(Buffer.from('Adobe Firefly'))).toBe(false);
+    });
+
+    it('fixed URL verification failure preserves the upstream URL without claiming the target size', async () => {
+        const upstreamUrl = 'https://upstream.example/out.png';
+        mockFetch
+            .mockResolvedValueOnce(
+                new Response(JSON.stringify({ data: [{ url: upstreamUrl, size: '1024x1024' }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+            )
+            .mockRejectedValueOnce(new Error('download failed'));
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2-1k', prompt: 'a cat' },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        expect(res.headers.get('X-Silkroadai-Image-Resize')).toBe('unverified-original-returned');
+        const body = (await res.json()) as {
+            size?: string;
+            output_format?: string;
+            data: Array<{ url: string; size?: string }>;
+        };
+        expect(body.size).toBeUndefined();
+        expect(body.output_format).toBeUndefined();
+        expect(body.data[0]).toEqual({ url: upstreamUrl });
+    });
+
+    it('fixed response_format=url uploads the resized bytes, not the mismatched upstream bytes', async () => {
+        const upstreamB64 = await solidPngB64(64, 64);
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ data: [{ b64_json: upstreamB64 }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2-1k', prompt: 'a cat', response_format: 'url' },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { data: Array<{ url: string; b64_json?: string }> };
+        expect(body.data[0].url).toMatch(/^https:\/\/images\.llmroute\.club\//);
+        expect(body.data[0].b64_json).toBeUndefined();
+        const uploaded = mockUploadImage.mock.calls[0][1] as Buffer;
+        const { Jimp } = await import('jimp');
+        const output = await Jimp.read(uploaded);
+        expect([output.width, output.height]).toEqual([1024, 1024]);
+    });
+
+    it('fixed strict JPEG resizes first and returns an exact-size JPEG', async () => {
+        const upstreamB64 = await solidPngB64(64, 64);
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ data: [{ b64_json: upstreamB64 }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const res = await POST(
+            makeReq('/images/generations?strict=true', {
+                body: { model: 'gpt-image-2-1k', prompt: 'a cat', output_format: 'jpeg' },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { output_format: string; data: Array<{ b64_json: string }> };
+        expect(body.output_format).toBe('jpeg');
+        const outputBytes = Buffer.from(body.data[0].b64_json, 'base64');
+        expect([...outputBytes.subarray(0, 2)]).toEqual([0xff, 0xd8]);
+        const { Jimp } = await import('jimp');
+        const output = await Jimp.read(outputBytes);
+        expect([output.width, output.height]).toEqual([1024, 1024]);
+    });
+
+    it('fixed strict JPEG transcode failure reports the actual retained format', async () => {
+        const originalB64 = unsupportedWebpHeaderB64(1024, 1024);
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ data: [{ b64_json: originalB64 }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const res = await POST(
+            makeReq('/images/generations?strict=true', {
+                body: { model: 'gpt-image-2-1k', prompt: 'a cat', output_format: 'jpeg' },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        expect(res.headers.get('X-Silkroadai-Image-Format')).toBe('conversion-failed-original-returned');
+        const body = (await res.json()) as { output_format: string; data: Array<{ b64_json: string }> };
+        expect(body.output_format).toBe('webp');
+        expect(body.data[0].b64_json).toBe(originalB64);
+    });
+
+    it('unrecognized fixed output is returned without a fake size or post-charge 502', async () => {
+        const originalB64 = 'bm90LWFuLWltYWdl';
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ data: [{ b64_json: originalB64, size: '1024x1024' }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2-1k', prompt: 'a cat' },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        expect(res.headers.get('X-Silkroadai-Image-Resize')).toBe('unverified-original-returned');
+        const body = (await res.json()) as {
+            size?: string;
+            output_format?: string;
+            data: Array<{ b64_json: string; size?: string }>;
+        };
+        expect(body.size).toBeUndefined();
+        expect(body.output_format).toBeUndefined();
+        expect(body.data[0]).toEqual({ b64_json: originalB64 });
+    });
+
+    it('known-size resize failure returns the original with truthful size instead of a post-charge 502', async () => {
+        const originalB64 = unsupportedWebpHeaderB64(1254, 1254);
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ data: [{ b64_json: originalB64 }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2-1k', prompt: 'a cat' },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        expect(res.headers.get('X-Silkroadai-Image-Resize')).toBe('failed-original-returned');
+        const body = (await res.json()) as {
+            size: string;
+            output_format: string;
+            data: Array<{ b64_json: string; size: string }>;
+        };
+        expect(body.size).toBe('1254x1254');
+        expect(body.output_format).toBe('webp');
+        expect(body.data[0]).toMatchObject({ b64_json: originalB64, size: '1254x1254' });
+    });
+
     it('trailing slash still passes through the fixed-price resolver', async () => {
-        mockFetch.mockResolvedValueOnce(imgResp());
+        mockFetch.mockResolvedValueOnce(imgResp('2048x2048'));
         const res = await POST(
             makeReq('/images/generations/', {
                 body: { model: 'gpt-image-2-2k', prompt: 'a cat' },
@@ -3350,7 +3722,7 @@ describe('/v1 proxy — gpt-image-2-{1,2,4}k fixed-price variants retain billing
     });
 
     it('matching explicit size is accepted and normalized to the fixed value', async () => {
-        mockFetch.mockResolvedValueOnce(imgResp());
+        mockFetch.mockResolvedValueOnce(imgResp('3840x2160'));
         const res = await POST(
             makeReq('/images/generations', {
                 body: { model: 'gpt-image-2-4k', prompt: 'a cat', size: '3840x2160' },
@@ -3364,7 +3736,7 @@ describe('/v1 proxy — gpt-image-2-{1,2,4}k fixed-price variants retain billing
     });
 
     it('uppercase K is canonicalized so it still hits the configured ModelPrice key', async () => {
-        mockFetch.mockResolvedValueOnce(imgResp());
+        mockFetch.mockResolvedValueOnce(imgResp('2048x2048'));
         const res = await POST(
             makeReq('/images/generations', {
                 body: { model: 'gpt-image-2-2K', prompt: 'a cat' },
@@ -3405,7 +3777,7 @@ describe('/v1 proxy — gpt-image-2-{1,2,4}k fixed-price variants retain billing
     });
 
     it('multipart edits retains the alias and injects its fixed size', async () => {
-        mockFetch.mockResolvedValueOnce(imgResp());
+        mockFetch.mockResolvedValueOnce(imgResp('2048x2048'));
         const form = new FormData();
         form.append('model', 'gpt-image-2-2k');
         form.append('prompt', 'make it red');
@@ -3420,6 +3792,32 @@ describe('/v1 proxy — gpt-image-2-{1,2,4}k fixed-price variants retain billing
         const sent = (mockFetch.mock.calls[0][1] as RequestInit).body as FormData;
         expect(sent.get('model')).toBe('gpt-image-2-2k');
         expect(sent.get('size')).toBe('2048x2048');
+    });
+
+    it('multipart edits also resizes a mismatched fixed 1K response', async () => {
+        const upstreamB64 = await solidPngB64(1254, 1254);
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ data: [{ b64_json: upstreamB64 }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const form = new FormData();
+        form.append('model', 'gpt-image-2-1k');
+        form.append('prompt', 'make it red');
+        form.append('image', new Blob([Buffer.from('x')], { type: 'image/png' }), 'in.png');
+        const req = new NextRequest('https://api.llmroute.club/v1/images/edits', {
+            method: 'POST',
+            headers: { authorization: 'Bearer sk-test' },
+            body: form,
+        });
+        const res = await POST(req, ctx('images', 'edits'));
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { data: Array<{ b64_json: string; size: string }> };
+        const { Jimp } = await import('jimp');
+        const output = await Jimp.read(Buffer.from(body.data[0].b64_json, 'base64'));
+        expect([output.width, output.height]).toEqual([1024, 1024]);
+        expect(body.data[0].size).toBe('1024x1024');
     });
 
     it('fixed-price alias never retries a size error with a 1K fallback', async () => {
@@ -3453,7 +3851,7 @@ describe('/v1 proxy — gpt-image-2-{1,2,4}k fixed-price variants retain billing
     });
 
     it('chat/completions: gpt-image-2-4k → images/generations with alias + 3840x2160', async () => {
-        mockFetch.mockResolvedValueOnce(imgResp());
+        mockFetch.mockResolvedValueOnce(imgResp('3840x2160'));
         const res = await POST(
             makeReq('/chat/completions', {
                 body: { model: 'gpt-image-2-4k', messages: [{ role: 'user', content: 'a cat' }] },
@@ -3467,6 +3865,29 @@ describe('/v1 proxy — gpt-image-2-{1,2,4}k fixed-price variants retain billing
         const sent = JSON.parse(String(init.body)) as Record<string, unknown>;
         expect(sent.model).toBe('gpt-image-2-4k');
         expect(sent.size).toBe('3840x2160');
+    });
+
+    it('chat/completions resizes a mismatched fixed 1K image before hosting it', async () => {
+        const upstreamB64 = await solidPngB64(1254, 1254);
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ data: [{ b64_json: upstreamB64 }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: { model: 'gpt-image-2-1k', messages: [{ role: 'user', content: 'a cat' }] },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(200);
+        expect(res.headers.get('X-Silkroadai-Image-Resize')).toBeNull();
+        const uploaded = mockUploadImage.mock.calls[0][1] as Buffer;
+        const { Jimp } = await import('jimp');
+        const output = await Jimp.read(uploaded);
+        expect([output.width, output.height]).toEqual([1024, 1024]);
     });
 
     it('chat/completions rejects a conflicting size before dispatch', async () => {
@@ -3799,6 +4220,12 @@ describe('/v1 proxy — 异步生图(?async=true)', () => {
     });
 
     it('异步后台仍把固定价别名和尺寸一起传到 new-api', async () => {
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ data: [{ b64_json: pngHeaderB64(2048, 2048) }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
         const res = await POST(
             makeReq('/images/generations?async=true', {
                 body: { model: 'gpt-image-2-2k', prompt: 'a cat', n: 2 },
@@ -3812,6 +4239,42 @@ describe('/v1 proxy — 异步生图(?async=true)', () => {
         expect(upstreamCall).toBeTruthy();
         const sent = JSON.parse(String(upstreamCall![1].body)) as Record<string, unknown>;
         expect(sent).toMatchObject({ model: 'gpt-image-2-2k', size: '2048x2048', n: 2 });
+    });
+
+    it('异步后台把固定 1K 的错尺寸响应缩放后才落 SUCCESS', async () => {
+        const upstreamB64 = await solidPngB64(1254, 1254);
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ created: 1, data: [{ b64_json: upstreamB64 }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const res = await POST(
+            makeReq('/images/generations?async=true', {
+                body: { model: 'gpt-image-2-1k', prompt: 'a cat' },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        await vi.waitFor(() => {
+            expect(
+                mockImageTaskUpdate.mock.calls.some(
+                    (call) => (call[0] as { data?: { status?: string } })?.data?.status === 'SUCCESS',
+                ),
+            ).toBe(true);
+        });
+        const uploaded = mockUploadImage.mock.calls[0][1] as Buffer;
+        const { Jimp } = await import('jimp');
+        const output = await Jimp.read(uploaded);
+        expect([output.width, output.height]).toEqual([1024, 1024]);
+        const success = mockImageTaskUpdate.mock.calls.find(
+            (call) => (call[0] as { data?: { status?: string } })?.data?.status === 'SUCCESS',
+        );
+        const result = (success![0] as { data: { result_json: { size: string; data: Array<{ size: string }> } } }).data
+            .result_json;
+        expect(result.size).toBe('1024x1024');
+        expect(result.data[0].size).toBe('1024x1024');
     });
 
     it('固定价别名尺寸冲突在创建异步任务前直接 400', async () => {

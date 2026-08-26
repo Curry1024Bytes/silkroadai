@@ -997,18 +997,38 @@ async function handleGptImageChat(
         });
     }
     const data = (await upstream.json().catch(() => null)) as {
-        data?: Array<{ b64_json?: string; url?: string }>;
+        data?: Array<{ b64_json?: string; url?: string; size?: string }>;
         usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number };
     } | null;
+    let fixedResizeWarning: string | null = null;
+    if (data?.data) {
+        for (const image of data.data) {
+            if (image.b64_json) image.b64_json = stripAdobeImageMetadataB64(image.b64_json);
+        }
+        if (variant) {
+            try {
+                const result = await enforceFixedVariantImageOutput(data.data, variant);
+                if (result.fallbacks.length > 0) {
+                    fixedResizeWarning = result.unverified
+                        ? 'unverified-original-returned'
+                        : 'failed-original-returned';
+                }
+            } catch (e) {
+                return imageError(e instanceof Error ? e.message : String(e), 502, cap);
+            }
+        }
+    }
     const item = data?.data?.[0];
 
     let content: string;
     let stored: StoredImage | null = null;
     if (item?.b64_json) {
-        // 先剥 adobe(Firefly)C2PA 元数据(azure/gemini 不含标识 → 字节原样),再走
-        // 客户 OSS → 平台 R2 → data URL 三级降级(同 handleGeminiImage)
-        const rawB64 = stripAdobeImageMetadataB64(item.b64_json);
-        stored = await storeGeneratedImage(req, Buffer.from(rawB64, 'base64'), 'image/png', rawB64);
+        // adobe(Firefly)C2PA 已在上方剥离;固定价 SKU 也已校正真实像素。再走
+        // 客户 OSS → 平台 R2 → data URL 三级降级(同 handleGeminiImage)。
+        const rawB64 = item.b64_json;
+        const bytes = Buffer.from(rawB64, 'base64');
+        const mime = imageFormatMime(detectImageOutputFormat(bytes), 'image/png');
+        stored = await storeGeneratedImage(req, bytes, mime, rawB64);
         content = `![image](${stored.url})`;
     } else if (item?.url) {
         content = `![image](${item.url})`;
@@ -1030,6 +1050,7 @@ async function handleGptImageChat(
         },
     };
     const respHeaders: Record<string, string> = { 'X-Silkroadai-Translated': 'gpt-image-chat' };
+    if (fixedResizeWarning) respHeaders['X-Silkroadai-Image-Resize'] = fixedResizeWarning;
     if (stored?.ossFallback) respHeaders['X-Silkroadai-Oss-Fallback'] = 'yes';
     if (stored?.r2Fallback) respHeaders['X-Silkroadai-R2-Fallback'] = 'yes';
     if (cap) captureJsonResponse(cap, 200, openaiResp, hostedRefs(stored));
@@ -1311,11 +1332,13 @@ function isGptImageModel(model: string): boolean {
 /** gpt-image-2-{1,2,4}k 是客户可见的固定价 SKU。new-api 先按这个原始名查 ModelPrice,
  *  再通过渠道 model_mapping 翻成 gpt-image-2 发给上游;因此 Portal 只能注入尺寸,
  *  绝不能在进入 new-api 前改掉模型名。返回 null = 非固定价别名。 */
-function gptImageVariant(model: string): { alias: string; size: string } | null {
+type GptImageVariant = { alias: string; size: string; width: number; height: number };
+
+function gptImageVariant(model: string): GptImageVariant | null {
     const m = /^gpt-image-2-([124])[kK]$/.exec(model);
     if (!m) return null;
-    const size = m[1] === '1' ? '1024x1024' : m[1] === '2' ? '2048x2048' : '3840x2160';
-    return { alias: `gpt-image-2-${m[1]}k`, size };
+    const [width, height] = m[1] === '1' ? [1024, 1024] : m[1] === '2' ? [2048, 2048] : [3840, 2160];
+    return { alias: `gpt-image-2-${m[1]}k`, size: `${width}x${height}`, width, height };
 }
 
 /** 固定价 SKU 的尺寸守门。size 缺省/auto 会注入固定尺寸;
@@ -1432,17 +1455,161 @@ function strictGptImageError(outputFormat: string, background: string, size: str
     return gptImageSizeError(size);
 }
 
-/** png base64 → jpeg base64(jimp,纯 JS 无 native 依赖,失败回退原 png,永不抛)。 */
-async function pngToJpegB64(pngB64: string): Promise<string> {
+type ImageOutputFormat = 'png' | 'jpeg' | 'webp';
+
+function detectImageOutputFormat(buf: Buffer): ImageOutputFormat | null {
+    if (buf.length >= 8 && buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])))
+        return 'png';
+    if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'jpeg';
+    if (buf.length >= 12 && buf.toString('latin1', 0, 4) === 'RIFF' && buf.toString('latin1', 8, 12) === 'WEBP')
+        return 'webp';
+    return null;
+}
+
+function imageFormatMime(format: ImageOutputFormat | null, fallback = 'application/octet-stream'): string {
+    return format ? `image/${format}` : fallback;
+}
+
+/** png base64 → jpeg base64(jimp,纯 JS 无 native 依赖,失败回退原字节并显式报告)。 */
+async function pngToJpegB64(pngB64: string): Promise<{ b64: string; converted: boolean }> {
     try {
         const { Jimp } = await import('jimp');
         const img = await Jimp.read(Buffer.from(pngB64, 'base64'));
         const jpegBuf = await img.getBuffer('image/jpeg', { quality: 92 });
-        return Buffer.from(jpegBuf).toString('base64');
+        return { b64: Buffer.from(jpegBuf).toString('base64'), converted: true };
     } catch (e) {
         console.warn('[gpt-image] png→jpeg transcode failed, keeping png:', e instanceof Error ? e.message : e);
-        return pngB64;
+        return { b64: pngB64, converted: false };
     }
+}
+
+type FixedVariantImageItem = { b64_json?: unknown; url?: unknown; size?: unknown };
+type FixedVariantEnforcement = { sizes: Array<string | null>; fallbacks: string[]; unverified: boolean };
+
+/** 固定价 SKU 的响应像素守门。上游会静默忽略 1K size(实测返 1254x1254),因此不能只
+ * 回显请求尺寸。能从字节头确认已精确命中时不解码、不重编码,保留原 b64 字节;只有尺寸
+ * 不符时才用 Jimp resize。URL 响应先经现有 SSRF/大小守门下载,再进入同一校验路径。
+ * 已知真实尺寸但本地缩放失败时返回原图和真实 size;格式无法识别时也返回原图但删除 size。
+ * 两者都带 warning header,避免上游已扣费后再返回 502 诱发重复扣费。只有完全没有图片载荷
+ * 才抛错,且任何失败都不会把错误或未知尺寸伪装成目标尺寸。 */
+async function enforceFixedVariantImageOutput(
+    items: FixedVariantImageItem[],
+    variant: GptImageVariant,
+): Promise<FixedVariantEnforcement> {
+    if (items.length === 0) throw new Error(`model "${variant.alias}" upstream returned no images`);
+    const sizes: Array<string | null> = [];
+    const fallbacks: string[] = [];
+    let unverified = false;
+    const usableItems: FixedVariantImageItem[] = [];
+    for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        let b64 = typeof item.b64_json === 'string' && item.b64_json ? stripAdobeImageMetadataB64(item.b64_json) : '';
+
+        if (!b64 && typeof item.url === 'string' && item.url) {
+            try {
+                const part = await imageUrlToInlinePart(item.url);
+                if (!('inlineData' in part)) throw new Error('download did not produce image bytes');
+                b64 = stripAdobeImageMetadataB64(part.inlineData.data);
+            } catch (e) {
+                const reason = e instanceof Error ? e.message : String(e);
+                console.error('[gpt-image] fixed variant URL could not be verified; returning original URL', {
+                    model: variant.alias,
+                    item: i + 1,
+                    targetSize: variant.size,
+                    error: reason,
+                });
+                delete item.size;
+                sizes.push(null);
+                fallbacks.push(`${i + 1}:unverified-url`);
+                unverified = true;
+                usableItems.push(item);
+                continue;
+            }
+        }
+        if (!b64) {
+            console.error('[gpt-image] fixed variant item has no image payload; dropping item', {
+                model: variant.alias,
+                item: i + 1,
+                targetSize: variant.size,
+            });
+            fallbacks.push(`${i + 1}:missing`);
+            unverified = true;
+            continue;
+        }
+
+        const input = Buffer.from(b64, 'base64');
+        const headerDims = imageDimensions(input);
+        if (headerDims?.w === variant.width && headerDims.h === variant.height) {
+            item.b64_json = b64;
+            delete item.url;
+            item.size = variant.size;
+            sizes.push(variant.size);
+            usableItems.push(item);
+            continue;
+        }
+
+        let decodedDims: { w: number; h: number } | null = null;
+        try {
+            const { Jimp } = await import('jimp');
+            const image = await Jimp.read(input);
+            decodedDims = { w: image.width, h: image.height };
+            // imageDimensions intentionally recognizes only PNG/JPEG/WebP. Jimp may recognize another
+            // format; if it is already exact, keep its original bytes too.
+            if (image.width !== variant.width || image.height !== variant.height) {
+                image.resize({ w: variant.width, h: variant.height });
+                const resized = await image.getBuffer('image/png');
+                const resizedDims = imageDimensions(Buffer.from(resized));
+                if (resizedDims?.w !== variant.width || resizedDims.h !== variant.height) {
+                    throw new Error(`resize produced ${resizedDims?.w ?? '?'}x${resizedDims?.h ?? '?'}`);
+                }
+                b64 = Buffer.from(resized).toString('base64');
+            }
+        } catch (e) {
+            const actual = decodedDims ?? headerDims;
+            if (actual) {
+                const actualSize = `${actual.w}x${actual.h}`;
+                const reason = e instanceof Error ? e.message : String(e);
+                console.error('[gpt-image] fixed variant resize failed; returning original image', {
+                    model: variant.alias,
+                    item: i + 1,
+                    actualSize,
+                    targetSize: variant.size,
+                    error: reason,
+                });
+                item.b64_json = b64;
+                delete item.url;
+                item.size = actualSize;
+                sizes.push(actualSize);
+                fallbacks.push(`${i + 1}:${actualSize}`);
+                usableItems.push(item);
+                continue;
+            }
+            const reason = e instanceof Error ? e.message : String(e);
+            console.error('[gpt-image] fixed variant image could not be verified; returning original image', {
+                model: variant.alias,
+                item: i + 1,
+                targetSize: variant.size,
+                error: reason,
+            });
+            item.b64_json = b64;
+            delete item.url;
+            delete item.size;
+            sizes.push(null);
+            fallbacks.push(`${i + 1}:unverified`);
+            unverified = true;
+            usableItems.push(item);
+            continue;
+        }
+
+        item.b64_json = b64;
+        delete item.url;
+        item.size = variant.size;
+        sizes.push(variant.size);
+        usableItems.push(item);
+    }
+    if (usableItems.length === 0) throw new Error(`model "${variant.alias}" upstream returned no usable images`);
+    items.splice(0, items.length, ...usableItems);
+    return { sizes, fallbacks, unverified };
 }
 
 /** OpenAI gpt-image 图片输出 token 估算系数:~703 tok/百万像素(校准到 1536×1024≈1106,
@@ -1515,6 +1682,7 @@ async function reshapeOpenAiImageResponse(
     storeToUrl = false,
     transcodeJpeg = false,
     echo: ImageEchoFields | null = null,
+    fixedVariant: GptImageVariant | null = null,
 ): Promise<NextResponse> {
     const text = await upstream.text();
     const headers = new Headers();
@@ -1558,10 +1726,10 @@ async function reshapeOpenAiImageResponse(
     // 成功:补顶层 size + 估算 usage(保留上游已有的)。
     const j = json as JsonRecord; // data 非空 ⇒ json 非空
     const firstSize = typeof data[0]?.size === 'string' ? (data[0].size as string) : '';
-    const outSize = (typeof j.size === 'string' && j.size) || firstSize || requestedSize || '';
+    const outSize = fixedVariant?.size || (typeof j.size === 'string' && j.size) || firstSize || requestedSize || '';
     const out: JsonRecord = { ...j };
-    if (out.size === undefined && outSize) out.size = outSize;
-    if (out.usage === undefined) out.usage = buildEstimatedUsage(prompt, outSize);
+    if (fixedVariant) out.size = fixedVariant.size;
+    else if (out.size === undefined && outSize) out.size = outSize;
 
     // 回显 quality / background / output_format(官方 gpt-image 响应顶层字段)。链路上没有一层会带:
     // ch154 适配器只合成 {created,data,usage},new-api 重组体只加 request_id/size —— 客户的官方
@@ -1585,15 +1753,51 @@ async function reshapeOpenAiImageResponse(
         if (typeof it.b64_json === 'string' && it.b64_json) it.b64_json = stripAdobeImageMetadataB64(it.b64_json);
     }
 
+    if (fixedVariant) {
+        try {
+            const result = await enforceFixedVariantImageOutput(data, fixedVariant);
+            if (result.fallbacks.length > 0) {
+                headers.set(
+                    'X-Silkroadai-Image-Resize',
+                    result.unverified ? 'unverified-original-returned' : 'failed-original-returned',
+                );
+                const knownSizes = result.sizes.filter((size): size is string => size !== null);
+                const uniqueSizes = [...new Set(knownSizes)];
+                if (knownSizes.length === data.length && uniqueSizes.length === 1) out.size = uniqueSizes[0];
+                else delete out.size;
+            }
+        } catch (e) {
+            return imageError(e instanceof Error ? e.message : String(e), 502, cap);
+        }
+    }
+
+    const usageSize = typeof out.size === 'string' ? out.size : fixedVariant ? '' : outSize;
+    if (out.usage === undefined) out.usage = buildEstimatedUsage(prompt, usageSize);
+
     // 严格模式 output_format=jpeg:zhiyunai 恒返 png,服务端 png→jpeg 转码(就地改 data[].b64_json,
     // out.data 同一引用会一并反映)。失败回退原 png(pngToJpegB64 永不抛)。
     const imgMime = transcodeJpeg ? 'image/jpeg' : 'image/png';
     if (transcodeJpeg) {
         for (const item of data) {
             if (typeof item.b64_json === 'string' && item.b64_json) {
-                item.b64_json = await pngToJpegB64(item.b64_json);
+                const converted = await pngToJpegB64(item.b64_json);
+                item.b64_json = converted.b64;
+                if (!converted.converted) {
+                    headers.set('X-Silkroadai-Image-Format', 'conversion-failed-original-returned');
+                }
             }
         }
+    }
+
+    if (fixedVariant) {
+        const formats = data.map((item) => {
+            if (typeof item.b64_json !== 'string' || !item.b64_json) return null;
+            return detectImageOutputFormat(Buffer.from(item.b64_json, 'base64'));
+        });
+        const knownFormats = formats.filter((format): format is ImageOutputFormat => format !== null);
+        const uniqueFormats = [...new Set(knownFormats)];
+        if (knownFormats.length === data.length && uniqueFormats.length === 1) out.output_format = uniqueFormats[0];
+        else delete out.output_format;
     }
 
     // opt-in(response_format:url):把 b64_json 存客户 OSS→平台 R2,响应改回 url(镜像 Gemini 生图)。
@@ -1607,7 +1811,9 @@ async function reshapeOpenAiImageResponse(
                 newData.push(item);
                 continue;
             }
-            const stored = await storeGeneratedImage(req, Buffer.from(b64, 'base64'), imgMime, b64);
+            const bytes = Buffer.from(b64, 'base64');
+            const actualMime = imageFormatMime(detectImageOutputFormat(bytes), imgMime);
+            const stored = await storeGeneratedImage(req, bytes, actualMime, b64);
             const d: JsonRecord = { ...item, url: stored.url };
             delete d.b64_json;
             newData.push(d);
@@ -1730,6 +1936,7 @@ async function handleImagesDalle(
                         isGptImageModel(model) && wantHostedUrl,
                         wantJpeg,
                         echo,
+                        gptImageVariant(model),
                     );
                 } catch (e) {
                     if (e instanceof ImageUrlError) return imageError(e.message, 400, cap);
@@ -1827,6 +2034,7 @@ async function handleImagesDalle(
                         isGptImageModel(model) && wantHostedUrl,
                         wantJpeg,
                         echo,
+                        gptImageVariant(model),
                     );
                 } catch (e) {
                     if (e instanceof ImageUrlError) return imageError(e.message, 400, cap);
@@ -2333,10 +2541,7 @@ async function validateAsyncFixedPriceImage(contentType: string, bodyBuf: ArrayB
 }
 
 function sniffImageMime(buf: Buffer): string {
-    if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
-    if (buf.length >= 12 && buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP')
-        return 'image/webp';
-    return 'image/png';
+    return imageFormatMime(detectImageOutputFormat(buf), 'image/png');
 }
 
 /** 后台跑生图:用捕获的请求重建 Request → handleImagesDalle → 确保出图床 URL(b64 转存)→ 落库。 */
