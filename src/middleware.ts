@@ -85,7 +85,9 @@ export const config = {
     // api/v3/* 一并排除:火山方舟形视频提交(2026-07-26)body 带参考图 base64 可能 >10MB。
     // image-adapter/* 一并排除:按张计费图片上游适配器(W10),edits multipart 带 4K 输入图
     // 轻松 >10MB,必须避开 middleware body 缓冲截断。纯内部 API 中继,不需页面安全头。
+    // minimax-adapter/* 一并排除:MiniMax-H3 视频中继(2026-08-26),参考图 data URL base64
+    // 可能 >10MB,同样避开 middleware body 缓冲截断。纯内部 API 中继,不需页面安全头。
     matcher: [
-        '/((?!v1/|v1beta/|seedance-adapter/|image-adapter/|api/tools/|api/enterprise/assets|api/v3/|_next/static|_next/image|favicon.ico).*)',
+        '/((?!v1/|v1beta/|seedance-adapter/|image-adapter/|minimax-adapter/|api/tools/|api/enterprise/assets|api/v3/|_next/static|_next/image|favicon.ico).*)',
     ],
 };

@@ -133,6 +133,7 @@ export function categorizeByType(modelName: string): TypeName {
         n.includes('veo') ||
         n.includes('kling') ||
         n.includes('hailuo') ||
+        n.includes('minimax-h') || // MiniMax H 系 = 海螺视频(MiniMax-H3);M 系文本不受影响
         n.includes('runway') ||
         n.includes('cogvideo') ||
         n.includes('mochi') ||
