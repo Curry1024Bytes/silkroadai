@@ -1160,3 +1160,67 @@ describe('oaidistfull provider(oaidist 同上游同 key 的全量线,openAllTier
         expect(fetchMock).not.toHaveBeenCalled();
     });
 });
+
+describe('background:transparent 路由(未验证上游 503 让路,支持的正常透传)', () => {
+    const gen = (provider: string, body: Record<string, unknown>) =>
+        handleAdapterImage(
+            jsonReq(`http://portal.test/image-adapter/${provider}/v1/images/generations`, {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '1024x1024',
+                quality: 'low',
+                ...body,
+            }),
+            'generations',
+            provider,
+        );
+
+    it('wetoken(openAllTiers 但未验证透明)→ 503 不打上游(flag 压过 openAllTiers)', async () => {
+        const res = await gen('wetoken', { background: 'transparent' });
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect((await res.json()).error.code).toBe('upstream_unavailable'); // body 恒中性
+    });
+
+    it('大小写/空白不敏感:" Transparent " 同样拒', async () => {
+        const res = await gen('wetokengated', { background: ' Transparent ', quality: 'high', size: '3840x2160' });
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('multipart edits 带 background=transparent → 未验证上游同样 503', async () => {
+        const res = await handleAdapterImage(
+            formReq(
+                'http://portal.test/image-adapter/frimodel/v1/images/edits',
+                { prompt: 'e', size: '1024x1024', quality: 'low', background: 'transparent' },
+                [TINY_PNG],
+            ),
+            'edits',
+            'frimodel',
+        );
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('wetoken 不带 background / background=opaque → 照常放行(不误伤)', async () => {
+        okUpstream();
+        expect((await gen('wetoken', {})).status).toBe(200);
+        okUpstream();
+        expect((await gen('wetoken', { background: 'opaque' })).status).toBe(200);
+    });
+
+    it('ominiapifull(实测支持)→ 放行且 background=transparent 透传进上游 body', async () => {
+        okUpstream();
+        const res = await gen('ominiapifull', { background: 'transparent' });
+        expect(res.status).toBe(200);
+        const [, init] = fetchMock.mock.calls[0];
+        expect(JSON.parse(init.body as string).background).toBe('transparent');
+    });
+
+    it('oaidist(信任支持,gated)→ 过守门档位带 transparent 正常放行透传', async () => {
+        okUpstream();
+        const res = await gen('oaidist', { background: 'transparent', quality: 'medium' });
+        expect(res.status).toBe(200);
+        expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).background).toBe('transparent');
+    });
+});

@@ -488,6 +488,16 @@ export async function handleAdapterImage(
     const parsed = await parseIncoming(req, mode);
     if (!parsed) return failover('bad_request_body', 'unparseable request body');
 
+    // ---- 透明背景路由(调上游之前,不花钱)----
+    // `background:"transparent"` 只能交给验证过真出 alpha 的上游:不支持的上游会 200 返回
+    // 【画进像素的假棋盘格】(rgb24 无 alpha)—— 客户拿废图还被计费,比失败更糟。未验证的
+    // provider(providers.ts noTransparentBackground)对这类请求 503 让 new-api 换渠道。
+    // 参数本身在 FORWARD_EXTRAS 里,支持透明的上游正常透传。
+    if (provider.noTransparentBackground && (parsed.extras.background || '').trim().toLowerCase() === 'transparent') {
+        console.log('[image-adapter] transparent not served', { provider: providerName, mode });
+        return failover('transparent_not_served', 'provider not verified for background=transparent');
+    }
+
     // ---- 守门(调上游之前,不花钱)----
     // 放行规则:
     //  - provider.openAllTiers(we-token 官方账单上游)→ 放行所有请求,含 size=auto/不可解析
