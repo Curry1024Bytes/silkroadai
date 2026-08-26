@@ -45,11 +45,33 @@ const INTERNAL_TO_ARK: Record<string, string> = {
     'seedance-2-0-promax-fast': 'byteplus/seedance-2.0-fast',
     'seedance-2-0-promax-mini': 'byteplus/seedance-2.0-mini',
     'seedance-2-5-promax': 'byteplus/seedance-2.5',
+    // volc 渠道:对客一律回显火山原生 id(该渠道的卖点就是原生形态)
+    'doubao-seedance-2.0': 'doubao-seedance-2-0-260128',
+    'doubao-seedance-2.0-fast': 'doubao-seedance-2-0-fast-260128',
+    'doubao-seedance-2.0-mini': 'doubao-seedance-2-0-mini-260615',
+    'doubao-seedance-2.5': 'doubao-seedance-2-5-260628',
 };
 
-/** 火山/别名 model → 内部归一名;认不出的原样返回(交给后续 model_not_found)。 */
-export function normalizeArkModel(model: string): string {
-    return ARK_TO_INTERNAL[String(model || '').toLowerCase()] ?? model;
+/**
+ * 火山原生 model id → **volc 渠道**对客名(2026-08-26)。
+ *
+ * 同一个 `doubao-seedance-2-5-260628`,cn 客户用它调国内版、volc 客户用它调火山渠道 ——
+ * 靠调用方凭据区分(见 keys.ts 的 callerHasVolc)。volc 卖的是「原生火山」,
+ * 客户本来就该能直接用上游原生名,不该被迫改成我们发明的点分名。
+ */
+const ARK_TO_VOLC: Record<string, string> = {
+    'doubao-seedance-2-0-260128': 'doubao-seedance-2.0',
+    'doubao-seedance-2-0-fast-260128': 'doubao-seedance-2.0-fast',
+    'doubao-seedance-2-0-mini-260615': 'doubao-seedance-2.0-mini',
+    'doubao-seedance-2-5-260628': 'doubao-seedance-2.5',
+};
+
+/** 火山/别名 model → 内部归一名;认不出的原样返回(交给后续 model_not_found)。
+ *  `callerIsVolc` 时优先按火山渠道解释(原生 id 直接可用)。 */
+export function normalizeArkModel(model: string, callerIsVolc = false): string {
+    const lower = String(model || '').toLowerCase();
+    if (callerIsVolc && ARK_TO_VOLC[lower]) return ARK_TO_VOLC[lower];
+    return ARK_TO_INTERNAL[lower] ?? model;
 }
 
 /** 内部名 → 火山 model id 回显;非映射项(如 -global/-promax)原样回显。 */

@@ -29,7 +29,10 @@ const {
     chargeEnterpriseVideoTask: vi.fn(),
 }));
 vi.mock('@/lib/db', () => ({ prisma: db }));
-vi.mock('../keys', () => ({ resolveEnterpriseAuth, getUpstreamKeyForUser }));
+// callerHasVolc:鉴权前的「调用方是不是 volc 客户」探测(决定火山原生模型名按哪个渠道解释)。
+// 缺省 false = 按 cn 解释,与既有用例的期望一致;需要 volc 语义的用例自行 mockResolvedValue(true)。
+const { callerHasVolc } = vi.hoisted(() => ({ callerHasVolc: vi.fn(async () => false) }));
+vi.mock('../keys', () => ({ resolveEnterpriseAuth, getUpstreamKeyForUser, callerHasVolc }));
 vi.mock('@/lib/seedance/cn-adapter', async (importOriginal) => {
     const mod = await importOriginal<typeof import('@/lib/seedance/cn-adapter')>();
     return { ...mod, submitVideoWithKey, pollVideoWithKey };

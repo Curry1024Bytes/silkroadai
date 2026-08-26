@@ -87,12 +87,28 @@ async function waitForVendorTaskId(
     for (;;) {
         try {
             const res = await fetchTask(upstreamId);
-            const j = (await res.json()) as { vendor_task_id?: unknown; status?: unknown };
+            const j = (await res.json()) as {
+                vendor_task_id?: unknown;
+                status?: unknown;
+                error?: unknown;
+                message?: unknown;
+            };
             const vendor = j.vendor_task_id;
             if (typeof vendor === 'string' && vendor) {
                 return { vendorId: vendor, isArk: isArkTaskId(vendor) };
             }
+            // 任务已终态失败却还没给任务号(素材不合格等)→ 立刻把**真实原因**返回,
+            // 别空等满 60 秒再给一句笼统的「受理超时」。2026-08-26 实测:引用了一个
+            // 入库失败的素材,客户等 60s 只拿到 upstream_timeout,看不出到底哪错了。
+            if (mapStatus(j.status) === 'failed') {
+                const reason = String(
+                    (j.error as { message?: string } | undefined)?.message || j.message || 'generation failed',
+                );
+                throw new EarlyTaskFailure(classifyUpstreamError(reason, 400).message);
+            }
         } catch (e) {
+            // 任务已确定失败 —— 不是抖动,直接抛出去(带真实原因)。
+            if (e instanceof EarlyTaskFailure) throw e;
             // 轮询本身抖动不算失败,继续等到 deadline。
             console.warn('[kuaizi-adapter] vendor task id poll error', { upstreamId, err: String(e) });
         }
@@ -109,6 +125,8 @@ async function waitForVendorTaskId(
 }
 
 class VendorTaskTimeoutError extends Error {}
+/** 等任务号期间任务就已失败 —— 带着上游的真实原因短路出去。 */
+class EarlyTaskFailure extends Error {}
 
 /** 严格模式:落非方舟直接 502 拒掉(缺省【关】,operator 2026-08-19 决定先放开)。 */
 function requireArk(): boolean {
@@ -187,6 +205,49 @@ export function volcRefLimits(variant: SeedanceVariant): { images: number; video
     return variant === '2.5' ? { images: 30, videos: 10, audios: 10 } : { images: 9, videos: 3, audios: 3 };
 }
 
+/**
+ * 我们自己消费 / 翻译掉的键 —— 不能再原样透传给上游(会撞上游校验或语义重复)。
+ * 不在这张表里的一律透传(见 submitVolcVideo 尾部的「原生透传」)。
+ */
+const CONSUMED_BODY_KEYS = new Set([
+    // 我们显式构造的
+    'model',
+    'content',
+    'prompt',
+    'resolution',
+    'duration',
+    'seconds',
+    'ratio',
+    'aspect_ratio',
+    'generate_audio',
+    'moderation_options',
+    // 参考输入的各种别名 —— proxy 已把它们并进 content,再透传上游会重复
+    'first_frame',
+    'last_frame',
+    'image',
+    'image_url',
+    'images',
+    'image_urls',
+    'reference_image_urls',
+    'video',
+    'video_url',
+    'videos',
+    'reference_video',
+    'reference_videos',
+    'audio',
+    'audio_url',
+    'audios',
+    'reference_audios',
+    'video_config',
+]);
+
+/**
+ * 认识但**故意不透传**的键。
+ * `callback_url`:上游会直接回调客户,回调体里带的是上游自己的任务号(kz-cgt-…),
+ * 既拆穿了原生形态也泄露了中间层(#271)。要支持得我们自己中转,另起一件事做。
+ */
+const NEVER_FORWARD_KEYS = new Set(['callback_url']);
+
 /** 从客户 body 抽 content 数组(火山方舟形);无则用 prompt 兜底成单条 text。 */
 function buildContent(body: Record<string, unknown>): unknown[] | null {
     if (Array.isArray(body.content) && body.content.length > 0) return body.content;
@@ -220,17 +281,24 @@ export async function submitVolcVideo(body: Record<string, unknown>, opts: Kuaiz
     const content = buildContent(body);
     if (!content) return err(400, 'invalid_request', 'prompt (text) or content is required');
 
-    let ratio = String(body.ratio || body.aspect_ratio || '16:9');
-    if (!ALLOWED_RATIOS.has(ratio)) ratio = '16:9';
+    // ratio:**客户没传就不注入**,由上游按任务类型自己定。
+    //
+    // 此前硬塞 16:9 —— 这会主动打断「视频续写 / 视频编辑」:那两类任务上游只接受
+    // ratio=adaptive,客户按火山官方用法不传 ratio,我们却替他填了 16:9 → 上游拒。
+    // (2026-08-26 客户实测报障;与 images 面 `aspect_ratio=auto` 那次是同一个教训:
+    //  「不指定」是一种有意义的取值,不能被我们的默认值吃掉。)
+    const ratioRaw = body.ratio ?? body.aspect_ratio;
+    const ratio = ratioRaw == null || ratioRaw === '' ? undefined : String(ratioRaw);
 
     const upstreamBody: Record<string, unknown> = {
         model: spec.upstream,
         content,
         resolution: opts.resolution,
-        ratio,
         duration: opts.duration,
         generate_audio: body.generate_audio !== false,
     };
+    // 显式传了才注入;非法值仍按 v1 面的宽松口径纠正成 16:9(ark 面有独立的严格校验)。
+    if (ratio !== undefined) upstreamBody.ratio = ALLOWED_RATIOS.has(ratio) ? ratio : '16:9';
     if (typeof body.seed === 'number') upstreamBody.seed = body.seed;
     if (typeof body.watermark === 'boolean') upstreamBody.watermark = body.watermark;
     if (typeof body.return_last_frame === 'boolean') upstreamBody.return_last_frame = body.return_last_frame;
@@ -248,6 +316,24 @@ export async function submitVolcVideo(body: Record<string, unknown>, opts: Kuaiz
     // 版权放行:只透传 ips(上游明确【不接受】ip_mode,由平台统一控制)。
     const mod = body.moderation_options as { ips?: unknown } | undefined;
     if (mod && Array.isArray(mod.ips) && mod.ips.length) upstreamBody.moderation_options = { ips: mod.ips };
+
+    // 其余字段【一律透传】给上游 —— 本渠道卖的是「原生火山」,能不能用由火山判,不由我们判。
+    //
+    // 起因:逐个列白名单必然落后于上游。2026-08-26 实测发现 5 个火山官方字段被我们吃掉:
+    //   bitrate_mode / camera_fixed / service_tier / priority / callback_url
+    // 其中 camera_fixed 我们【文档里明确写了支持】,客户传了以为生效,实际根本没到上游。
+    // 改成反向白名单:只挡我们自己消费或翻译掉的键,其余原样过去。
+    const extras: string[] = [];
+    for (const [k, v] of Object.entries(body)) {
+        if (CONSUMED_BODY_KEYS.has(k) || k in upstreamBody || v === undefined) continue;
+        if (NEVER_FORWARD_KEYS.has(k)) {
+            console.warn('[kuaizi-adapter] 该字段需要单独适配,未透传', { field: k });
+            continue;
+        }
+        upstreamBody[k] = v;
+        extras.push(k);
+    }
+    if (extras.length) console.log('[kuaizi-adapter] 透传客户额外字段', { fields: extras });
 
     let upstream: Response;
     try {
@@ -292,6 +378,14 @@ export async function submitVolcVideo(body: Record<string, unknown>, opts: Kuaiz
     try {
         vendor = await waitForVendorTaskId(taskId, fetchTask, opts.clientModel);
     } catch (e) {
+        if (e instanceof EarlyTaskFailure) {
+            console.warn('[kuaizi-adapter] 任务在拿到任务号前就失败', {
+                model: opts.clientModel,
+                upstreamId: taskId,
+                reason: e.message,
+            });
+            return err(400, 'upstream_error', e.message);
+        }
         if (e instanceof VendorTaskTimeoutError) {
             return err(504, 'upstream_timeout', '上游受理超时(未返回任务编号)—— 请稍后重新提交');
         }

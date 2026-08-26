@@ -37,7 +37,7 @@ import {
     isVolcModelWithdrawn,
     WITHDRAWN_VOLC_HINT,
 } from '@/lib/seedance/kuaizi-adapter';
-import { resolveEnterpriseAuth, getUpstreamKeyForUser, type EnterpriseCustomer } from './keys';
+import { callerHasVolc, resolveEnterpriseAuth, getUpstreamKeyForUser, type EnterpriseCustomer } from './keys';
 import { ENTERPRISE_TIER, estimateEnterpriseCostCny, chargeEnterpriseVideoTask } from './billing';
 import { AssetError, resolveAssetRefs } from './assets';
 import { normalizeArkModel, stripAssetUri, arkStatus, buildArkTaskResponse } from './ark-format';
@@ -462,16 +462,27 @@ async function handleSubmit(req: NextRequest, format: ClientFormat = 'v1'): Prom
         return errJson(400, 'invalid_json', 'request body must be JSON');
     }
 
+    // 调用方是不是 volc 客户?(鉴权前的探测,只用来决定「模型名与未知字段按哪个渠道处理」)
+    // ⚠️ 同一个火山原生 id 对 cn 客户与 volc 客户是两个意思 —— 2026-08-26 客户实测:
+    // volc 客户传 doubao-seedance-2-5-260628 被按 cn 解释,直接 403 region_mismatch。
+    const callerIsVolc = await callerHasVolc(req.headers.get('authorization'));
+
     // ark 面严格契约:未声明顶层字段 → 400(在任何 body 变换前,按原始键判)。
     if (format === 'ark') {
         const unknown = Object.keys(body).filter((k) => !ARK_ALLOWED_FIELDS.has(k));
-        if (unknown.length) {
+        // volc =「原生火山」渠道:未知字段不由我们判,原样交给火山判 —— 我们的白名单
+        // 只会越来越落后于上游(2026-08-26 实测:bitrate_mode / camera_fixed /
+        // service_tier / priority 四个官方字段我们要么 400 要么静默丢)。只落日志。
+        if (unknown.length && callerIsVolc) {
+            console.log('[enterprise-proxy] volc 透传未声明字段给上游', { fields: unknown });
+        } else if (unknown.length) {
             return errJson(400, 'invalid_request', `unknown parameter(s): ${unknown.join(', ')}`);
         }
     }
 
     // 入口归一:火山 model id(doubao-…)→ 内部短名(先归一 model 才能判 region)。
-    body.model = normalizeArkModel(String(body.model || ''));
+    // volc 客户下原生 id 解释成火山渠道对客名(见上面的 callerIsVolc)。
+    body.model = normalizeArkModel(String(body.model || ''), callerIsVolc);
 
     const model = String(body.model || '');
     const isVolc = regionForModel(model) === 'volc';

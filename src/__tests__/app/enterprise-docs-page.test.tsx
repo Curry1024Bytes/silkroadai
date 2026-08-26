@@ -11,9 +11,10 @@ import { isVolcModelWithdrawn, VOLC_MODELS, VOLC_RESOLUTIONS } from '@/lib/seeda
 describe('/enterprise/docs 火山渠道章节', () => {
     const html = renderToString(<EnterpriseDocsPage />);
 
-    it('在售档位都在文档里;下架档位写明停售(不能悄悄消失,客户会以为是自己写错了)', () => {
-        for (const model of Object.keys(VOLC_MODELS)) {
-            expect(html).toContain(model);
+    it('文档用【火山原生 Model ID】;下架档位写明停售(不能悄悄消失,客户会以为是自己写错了)', () => {
+        // 2026-08-26 客户要求:模型名直接用上游原生的,不要我们发明的点分名。
+        for (const upstream of Object.values(VOLC_MODELS).map((m) => m.upstream)) {
+            expect(html).toContain(upstream);
         }
         expect(Object.keys(VOLC_MODELS).some(isVolcModelWithdrawn)).toBe(true);
         expect(html).toContain('暂停服务');
@@ -43,5 +44,13 @@ describe('/enterprise/docs 火山渠道章节', () => {
         expect(html).toContain('即火山官方任务号');
         expect(html).toContain('同一个号');
         expect(html).toContain('提交会等上游受理后再返回');
+    });
+
+    // 2026-08-26 客户实测报障的三条,文档都要写清楚,否则同样的问题会再来一遍。
+    it('写明 ratio 不传=不指定、火山官方参数一律透传', () => {
+        expect(html).toContain('不传就是「不指定」');
+        expect(html).toContain('火山官方参数一律透传');
+        expect(html).toContain('bitrate_mode');
+        expect(html).toContain('camera_fixed');
     });
 });

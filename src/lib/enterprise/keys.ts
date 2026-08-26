@@ -113,6 +113,59 @@ export interface AuthRequestParts {
  * AK/SK 无版本绑定(账户级),region 由调用面决定(expectedRegion,缺省 cn)。
  * expectedRegion 只对 sk-ent 做版本门(不匹配 403);AK/SK 直接按 expectedRegion 取上游 key。
  */
+/**
+ * 【只用来决定「模型名按哪个渠道解释」】调用方是不是 volc 客户?
+ *
+ * 起因:火山原生模型 id(`doubao-seedance-2-5-260628`)对 **cn 客户**和 **volc 客户**
+ * 是两个意思 —— cn 客户走 ark 面用它调国内版,volc 客户用它调火山渠道。同一个字符串,
+ * 只能靠**调用方的凭据**区分。此前一律按 cn 解释,volc 客户传原生名直接 403
+ * region_mismatch(2026-08-26 客户实测报障)。
+ *
+ * ⚠️ 这是**鉴权前的探测**,不验签、不授权 —— 拿错了最多让模型名按 volc 解释,
+ * 随后真正的鉴权仍会照常拒。故安全上无影响。
+ */
+export async function callerHasVolc(authorization: string | null): Promise<boolean> {
+    try {
+        const parsed = parseVolcAuthorization(authorization);
+        if (parsed) {
+            const row = await prisma.enterpriseAkSk.findUnique({
+                where: { access_key: parsed.accessKey },
+                select: { user_id: true, status: true },
+            });
+            return row?.status === 'active' ? hasVolcUpstream(row.user_id) : false;
+        }
+        const bearer = authorization?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
+        if (!bearer) return false;
+        if (bearer.startsWith('sk_ent_')) {
+            const row = await prisma.enterpriseAkSk.findUnique({
+                where: { secret_key_hash: hashEnterpriseKey(bearer) },
+                select: { user_id: true, status: true },
+            });
+            return row?.status === 'active' ? hasVolcUpstream(row.user_id) : false;
+        }
+        if (bearer.startsWith('sk-ent-')) {
+            const row = await prisma.enterpriseKey.findUnique({
+                where: { key_hash: hashEnterpriseKey(bearer) },
+                select: { region: true, status: true },
+            });
+            return row?.status === 'active' && row.region === 'volc';
+        }
+        return false;
+    } catch (e) {
+        console.warn('[enterprise-keys] callerHasVolc peek failed', { err: String(e) });
+        return false;
+    }
+}
+
+/** AK/SK 是账号级、不绑区 —— 看该账号有没有开通 volc 上游。 */
+async function hasVolcUpstream(userId: string): Promise<boolean> {
+    const row = await prisma.enterpriseUpstreamKey.findUnique({
+        where: { user_id_region: { user_id: userId, region: 'volc' } },
+        select: { user_id: true },
+    });
+    return !!row;
+}
+
 export async function resolveEnterpriseAuth(parts: AuthRequestParts, expectedRegion?: string): Promise<ResolveResult> {
     const auth = parts.authorization;
     // 火山 SignerV4 AK/SK

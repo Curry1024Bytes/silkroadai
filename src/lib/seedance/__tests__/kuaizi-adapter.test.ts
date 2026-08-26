@@ -112,6 +112,66 @@ describe('submitVolcVideo', () => {
         );
     });
 
+    // ── 2026-08-26 客户实测报障:三条适配缺口 ──────────────────────────────────
+
+    it('客户不传 ratio → 【不注入】,由上游按任务类型自己定(视频续写必须这样)', async () => {
+        const fetchMock = mockSubmitThenVendor();
+        await submitVolcVideo({ prompt: '续写结尾后的场景' }, opts({ clientModel: 'doubao-seedance-2.5' }));
+        const sent = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+        expect(sent).not.toHaveProperty('ratio');
+    });
+
+    it('客户显式传 ratio → 照常注入', async () => {
+        const fetchMock = mockSubmitThenVendor();
+        await submitVolcVideo({ prompt: 'x', ratio: 'adaptive' }, opts());
+        expect(JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string).ratio).toBe('adaptive');
+    });
+
+    it('火山官方字段一律透传(此前 bitrate_mode / camera_fixed 等被静默丢掉)', async () => {
+        const fetchMock = mockSubmitThenVendor();
+        await submitVolcVideo(
+            { prompt: 'x', bitrate_mode: 'vbr', camera_fixed: true, service_tier: 'default', priority: 1 },
+            opts(),
+        );
+        const sent = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+        expect(sent.bitrate_mode).toBe('vbr');
+        expect(sent.camera_fixed).toBe(true);
+        expect(sent.service_tier).toBe('default');
+        expect(sent.priority).toBe(1);
+    });
+
+    it('我们消费/翻译掉的键不重复透传(prompt / first_frame 等已并进 content)', async () => {
+        const fetchMock = mockSubmitThenVendor();
+        await submitVolcVideo({ prompt: 'x', first_frame: 'https://a/1.jpg', seconds: 8 }, opts());
+        const sent = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+        for (const k of ['prompt', 'first_frame', 'seconds']) expect(sent).not.toHaveProperty(k);
+    });
+
+    it('callback_url 不透传 —— 上游会直接回调客户并带上游任务号(#271)', async () => {
+        const fetchMock = mockSubmitThenVendor();
+        await submitVolcVideo({ prompt: 'x', callback_url: 'https://客户/cb' }, opts());
+        expect(JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)).not.toHaveProperty(
+            'callback_url',
+        );
+    });
+
+    it('等任务号期间任务已失败 → 立刻返回【真实原因】,不空等到 504', async () => {
+        vi.stubEnv('ENTERPRISE_VOLC_VENDOR_WAIT_MS', '60000');
+        vi.spyOn(global, 'fetch').mockImplementation((input) =>
+            Promise.resolve(
+                String(input).endsWith('/tasks')
+                    ? new Response(JSON.stringify({ id: 'kz-cgt-x' }), { status: 200 })
+                    : new Response(
+                          JSON.stringify({ status: 'failed', error: { message: '素材转换失败: sensitive' } }),
+                          { status: 200 },
+                      ),
+            ),
+        );
+        const res = await submitVolcVideo({ prompt: 'x' }, opts());
+        expect(res.status).toBe(400);
+        expect((await res.json()).error.message).toContain('内容安全审核');
+    });
+
     it('透传客户 content 数组(多模态)+ 火山官方可选字段', async () => {
         const fetchMock = mockSubmitThenVendor();
         const content = [

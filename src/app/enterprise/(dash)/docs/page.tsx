@@ -510,8 +510,8 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                         </thead>
                         <tbody className="text-gray-700">
                             {[
-                                ['doubao-seedance-2.0', '480p / 720p / 1080p / 4k', '4~15 或 -1', '9 / 3 / 3'],
-                                ['doubao-seedance-2.5', '480p / 720p / 1080p', '4~30 或 -1', '30 / 10 / 10'],
+                                ['doubao-seedance-2-0-260128', '480p / 720p / 1080p / 4k', '4~15 或 -1', '9 / 3 / 3'],
+                                ['doubao-seedance-2-5-260628', '480p / 720p / 1080p', '4~30 或 -1', '30 / 10 / 10'],
                             ].map(([m, r, d, refs]) => (
                                 <tr key={m} className="border-b border-gray-100">
                                     <td className="py-1.5 pr-4">
@@ -526,18 +526,30 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                     </table>
                 </div>
                 <p className="text-gray-600">
-                    <Code>doubao-seedance-2.0-fast</Code> / <Code>doubao-seedance-2.0-mini</Code> <b>暂停服务</b> ——
-                    这两档当前不由火山方舟出片,与本渠道「原生火山」的定位不符, 恢复前请改用{' '}
-                    <Code>doubao-seedance-2.0</Code> 或 <Code>doubao-seedance-2.5</Code>。
+                    <b>模型名直接用火山原生 Model ID</b>(上表)—— 与火山官方文档逐字一致,现有脚本不必改。
+                    我们早期用过的点分别名(<Code>doubao-seedance-2.0</Code> / <Code>doubao-seedance-2.5</Code>)
+                    继续兼容,新接入建议一律用原生 ID。
+                </p>
+                <p className="text-gray-600">
+                    <b>
+                        <Code>ratio</Code> 不传就是「不指定」
+                    </b>
+                    —— 由模型按任务类型自己定。<b>视频续写 / 视频编辑必须这样</b>(这两类只接受 <Code>adaptive</Code>
+                    ),不要为了「保险」显式填 <Code>16:9</Code>。<Code>doubao-seedance-2-5-260628</Code>{' '}
+                    的首帧/首尾帧任务同理;视频编辑任务的 <Code>duration</Code> 还须为 <Code>-1</Code>。
+                </p>
+                <p className="text-gray-600">
+                    <b>火山官方参数一律透传</b> —— <Code>bitrate_mode</Code> / <Code>camera_fixed</Code> /{' '}
+                    <Code>service_tier</Code> / <Code>priority</Code> 等按火山文档传即可,能不能用由火山判。(
+                    <Code>callback_url</Code> 暂不支持,请改用轮询。)
                 </p>
                 <p className="text-gray-600">
                     <Code>duration: -1</Code> = 智能时长(由模型在有效区间内自选)。<Code>4k</Code> 仅{' '}
-                    <Code>doubao-seedance-2.0</Code> 支持(<Code>doubao-seedance-2.5</Code> 无 4k)。
-                    <b>
-                        <Code>doubao-seedance-2.5</Code> 的首帧/首尾帧、视频编辑、视频延长三类任务仅支持{' '}
-                        <Code>ratio: &quot;adaptive&quot;</Code>
-                    </b>
-                    (输出宽高比自动跟随输入素材);视频编辑任务的 <Code>duration</Code> 还须为 <Code>-1</Code>。
+                    <Code>doubao-seedance-2-0-260128</Code> 支持(<Code>doubao-seedance-2-5-260628</Code> 无 4k)。
+                </p>
+                <p className="text-gray-600">
+                    <Code>doubao-seedance-2-0-fast-260128</Code> / <Code>doubao-seedance-2-0-mini-260615</Code>{' '}
+                    <b>暂停服务</b> —— 这两档当前不由火山方舟出片,与本渠道「原生火山」的定位不符, 恢复前请改用上表两档。
                 </p>
                 <p className="font-medium text-gray-900">config 关键字段(以火山官方素材库/方舟脚本为例):</p>
                 <Pre>{`{
@@ -568,7 +580,7 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                 </p>
                 <Pre>{`# body 为火山方舟原生形(model + content 数组);签名 path=/api/v3/contents/generations/tasks
 {
-  "model": "doubao-seedance-2.0",
+  "model": "doubao-seedance-2-0-260128",
   "content": [{"type": "text", "text": "一只橘猫在窗台上打哈欠"}],
   "resolution": "720p",     // 见上表(按 model 而定)
   "duration": 5             // 见上表;-1 = 智能时长
