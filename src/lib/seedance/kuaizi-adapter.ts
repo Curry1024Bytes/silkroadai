@@ -104,6 +104,14 @@ async function waitForVendorTaskId(
                 const reason = String(
                     (j.error as { message?: string } | undefined)?.message || j.message || 'generation failed',
                 );
+                // ⚠️ 日志必须留【上游原文】—— 此前只记分类后的文案,把真实原因盖住了:
+                // 上游说「asset … is not found」,日志里只剩「任务已失效」,排查时完全看不出
+                // 是素材引用的问题(2026-08-28 客户契约脚本 04 的教训)。
+                console.warn('[kuaizi-adapter] 任务在拿到任务号前就失败(上游原文)', {
+                    upstreamId,
+                    model: clientModel,
+                    upstream_reason: reason.slice(0, 500),
+                });
                 throw new EarlyTaskFailure(classifyUpstreamError(reason, 400).message);
             }
         } catch (e) {

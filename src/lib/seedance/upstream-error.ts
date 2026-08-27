@@ -191,8 +191,23 @@ export function classifyUpstreamError(body: string, status?: number): UpstreamEr
             message: `模型按提示词判定本次为「视频编辑 / 视频延长」任务 —— 该类型要求 ratio 必须为 adaptive(视频编辑还需 duration=-1)。请调整参数后重新提交${detail(clean)}`,
         };
     }
+    // ── 素材不存在(必须【先于】任务态判)────────────────────────────────────────
+    // 上游文案:「The specified asset asset-… is not found」。task_gone 那条正则里有个
+    // 裸的 `not found`,会把它吞掉,然后回一句「任务已失效或不存在,请重新提交」——
+    // 客户照着重提交一百次也没用,真正的原因(素材引用无效)被完全盖住。
+    // 2026-08-28 客户契约脚本 04 就是这样卡住的。
+    if (/specified asset .* is not found|asset .* not found|素材不存在/i.test(lower)) {
+        const id = clean.match(/asset[-\w]*[\s]+([A-Za-z0-9_-]+)[\s]+is not found/i)?.[1];
+        return {
+            category: 'invalid_parameter',
+            message: `引用的素材不存在或不可用${id ? `(${id})` : ''} —— 请确认素材已创建且 Status=Active,再用返回的素材 Id 引用`,
+        };
+    }
+
     // ── 任务态 ──
-    if (/任务不存在|task .*not exist|not found|does not exist/.test(lower)) {
+    // ⚠️ 不能用裸 `not found` —— 上游有大量「xxx is not found」的报错(素材/资源/模型),
+    //    只有明确说「任务」的才算任务态。
+    if (/任务不存在|task .*not exist|task .*not found|does not exist/.test(lower)) {
         return { category: 'task_gone', message: '任务已失效或不存在,请重新提交' };
     }
 

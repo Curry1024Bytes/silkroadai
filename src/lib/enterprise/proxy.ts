@@ -38,6 +38,7 @@ import {
     WITHDRAWN_VOLC_HINT,
 } from '@/lib/seedance/kuaizi-adapter';
 import { callerHasVolc, resolveEnterpriseAuth, getUpstreamKeyForUser, type EnterpriseCustomer } from './keys';
+import { toUpstreamId } from './volc-id-map';
 import { ENTERPRISE_TIER, estimateEnterpriseCostCny, chargeEnterpriseVideoTask } from './billing';
 import { AssetError, resolveAssetRefs } from './assets';
 import { normalizeArkModel, stripAssetUri, arkStatus, buildArkTaskResponse } from './ark-format';
@@ -461,6 +462,38 @@ function upstreamNum(v: unknown): number | null {
     return typeof v === 'number' && Number.isFinite(v) ? v : null;
 }
 
+/**
+ * 深走 body,把所有 `asset://<对客号>` 换成 `asset://<上游号>`(volc 专用)。
+ *
+ * 引用可能出现在 content[].image_url.url / video_url.url / audio_url.url,也可能出现在
+ * 顶层 images[] / first_frame 等别名里 —— 与其逐个字段列举(必然漏),不如整棵树扫一遍:
+ * 只有恰好以 `asset://` 开头的字符串会被改写,其余原样。
+ */
+const ASSET_URI = /^asset:\/\/(.+)$/;
+async function translateVolcAssetRefs(body: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const seen = new Map<string, string>();
+    const walk = async (v: unknown): Promise<unknown> => {
+        if (typeof v === 'string') {
+            const m = v.match(ASSET_URI);
+            if (!m) return v;
+            const id = m[1];
+            if (!seen.has(id)) seen.set(id, await toUpstreamId(id));
+            return `asset://${seen.get(id)}`;
+        }
+        if (Array.isArray(v)) return Promise.all(v.map(walk));
+        if (v && typeof v === 'object') {
+            const out: Record<string, unknown> = {};
+            for (const [k, val] of Object.entries(v as Record<string, unknown>)) out[k] = await walk(val);
+            return out;
+        }
+        return v;
+    };
+    const translated = (await walk(body)) as Record<string, unknown>;
+    const changed = [...seen.entries()].filter(([a, b]) => a !== b);
+    if (changed.length) console.log('[enterprise-proxy] volc 素材引用翻回上游号', { count: changed.length });
+    return translated;
+}
+
 async function handleSubmit(req: NextRequest, format: ClientFormat = 'v1'): Promise<NextResponse> {
     // 先读原始 body(AK/SK 验签对原始字节算 hash),再解析 + 归一。
     const rawBody = await req.text();
@@ -501,6 +534,14 @@ async function handleSubmit(req: NextRequest, format: ClientFormat = 'v1'): Prom
     // 解析,契约就是 asset://<id> 整串,剥了前缀上游按 URL 解析必 400
     // (`content[N].image_url is not valid`,2026-08-03 客户实测)。
     if (!isVolc) body = stripAssetUri(body);
+    // volc:把 asset://<火山素材号> 翻回上游素材号再发上游。
+    //
+    // #398 把对客素材号换成了火山形(asset-YYYYMMDDHHMMSS-xxxxx),但生成请求里的
+    // asset:// 引用当时没跟着翻译 —— **上游只认它自己的十进制号**,于是任务被上游判
+    // failed:「The specified asset asset-… is not found」。
+    // 更糟的是那句报错又被错误分类成「任务已失效」,真相被盖了两周(2026-08-28 客户
+    // 契约脚本 04 暴露)。A/B 实测:火山号 → failed;上游号 → succeeded。
+    if (isVolc) body = await translateVolcAssetRefs(body);
 
     // 版本先于鉴权确定(模型名承载):key 与模型版本必须一致(单独 key,operator 决策),
     // 上游 key 也按版本行解密。未知模型按 cn 解析,后续 model_not_found 分支照常 400。

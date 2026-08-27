@@ -33,6 +33,8 @@ vi.mock('@/lib/db', () => ({ prisma: db }));
 // 缺省 false = 按 cn 解释,与既有用例的期望一致;需要 volc 语义的用例自行 mockResolvedValue(true)。
 const { callerHasVolc } = vi.hoisted(() => ({ callerHasVolc: vi.fn(async () => false) }));
 vi.mock('../keys', () => ({ resolveEnterpriseAuth, getUpstreamKeyForUser, callerHasVolc }));
+const { toUpstreamId } = vi.hoisted(() => ({ toUpstreamId: vi.fn(async (id: string) => id) }));
+vi.mock('../volc-id-map', () => ({ toUpstreamId }));
 vi.mock('@/lib/seedance/cn-adapter', async (importOriginal) => {
     const mod = await importOriginal<typeof import('@/lib/seedance/cn-adapter')>();
     return { ...mod, submitVideoWithKey, pollVideoWithKey };
@@ -1347,6 +1349,55 @@ describe('vendor_task_id 出口(2026-08-19)', () => {
 
     // 2026-08-27 客户契约脚本:从查询响应读 upstream_id,用 ^cgt-\d{14}-[A-Za-z0-9]+$ 校验,
     // 缺了就判整轮失败。值 = 我们的对客 id(#398 起它本身就是火山官方任务号)。
+    // 2026-08-28 客户契约脚本 04 暴露的 #398 回归:对客素材号换成火山形后,
+    // 生成请求里的 asset:// 引用没跟着翻回上游号 → 上游 failed「asset … is not found」。
+    // A/B 实测:火山号 failed、上游号 succeeded。
+    it('volc:asset:// 引用翻回上游素材号再发上游(深走 content 与顶层别名)', async () => {
+        vi.mocked(toUpstreamId).mockImplementation(async (id: string) =>
+            id === 'asset-20260828014656-n7mc9' ? '193477566093328454' : id,
+        );
+        submitVolcVideo.mockImplementation(() =>
+            Promise.resolve(NextResponse.json({ id: 'cgt-x', task_id: 'cgt-x', status: 'queued' })),
+        );
+        await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', {
+                model: 'doubao-seedance-2.5',
+                resolution: '720p',
+                content: [
+                    { type: 'text', text: 'x' },
+                    {
+                        type: 'image_url',
+                        image_url: { url: 'asset://asset-20260828014656-n7mc9' },
+                        role: 'reference_image',
+                    },
+                ],
+            }),
+            '/video/generations',
+        );
+        const sent = submitVolcVideo.mock.calls[0][0] as { content: Array<Record<string, never>> };
+        expect(JSON.stringify(sent)).toContain('asset://193477566093328454');
+        expect(JSON.stringify(sent)).not.toContain('asset-20260828014656-n7mc9');
+    });
+
+    it('volc:映射查不到的引用原样透传(存量客户手里的上游号继续能用)', async () => {
+        vi.mocked(toUpstreamId).mockImplementation(async (id: string) => id);
+        submitVolcVideo.mockImplementation(() =>
+            Promise.resolve(NextResponse.json({ id: 'cgt-x', task_id: 'cgt-x', status: 'queued' })),
+        );
+        await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', {
+                model: 'doubao-seedance-2.5',
+                resolution: '720p',
+                content: [
+                    { type: 'text', text: 'x' },
+                    { type: 'video_url', video_url: { url: 'asset://193477566093328454' }, role: 'reference_video' },
+                ],
+            }),
+            '/video/generations',
+        );
+        expect(JSON.stringify(submitVolcVideo.mock.calls[0][0])).toContain('asset://193477566093328454');
+    });
+
     it('volc:查询响应带 upstream_id,且等于对客 id(客户脚本正则要求)', async () => {
         pollVolcVideo.mockResolvedValue(
             NextResponse.json({ id: 'cgt-v1', task_id: 'cgt-v1', object: 'video', status: 'in_progress' }),

@@ -219,4 +219,26 @@ describe('终态 vs 瞬时 —— 决定要不要停止轮询(2026-08-18,8925 �
         expect(isTerminalTaskFailure('content_safety', undefined)).toBe(false);
         expect(isTerminalTaskFailure('content_safety', 200)).toBe(false);
     });
+
+    // 2026-08-28 客户契约脚本 04:上游说「素材不存在」,我们回「任务已失效,请重新提交」——
+    // 客户照着重提交多少次都没用。裸 `not found` 正则把它吞进了 task_gone。
+    it('素材不存在 → invalid_parameter,不能被 task_gone 吞掉', () => {
+        const r = classifyUpstreamError(
+            JSON.stringify({
+                code: 'InternalError',
+                message:
+                    'The parameter `content[1].image_url.url` specified in the request is not valid: The specified asset asset-20260828014656-n7mc9 is not found. Request id: 021787852843',
+            }),
+            400,
+        );
+        expect(r.category).toBe('invalid_parameter');
+        expect(r.message).toContain('素材不存在或不可用');
+        expect(r.message).toContain('asset-20260828014656-n7mc9');
+        expect(r.message).not.toContain('任务已失效');
+    });
+
+    it('真的任务不存在 → 仍归 task_gone', () => {
+        expect(classifyUpstreamError('{"message":"task not found"}', 404).category).toBe('task_gone');
+        expect(classifyUpstreamError('{"message":"任务不存在"}', 404).category).toBe('task_gone');
+    });
 });
