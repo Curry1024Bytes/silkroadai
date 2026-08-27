@@ -95,12 +95,13 @@ export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
     // 实测契约:尺寸分毫不差(1024²/4K 均精确)、generations 直返 b64、edits 恒返 Firefly S3 预签名
     // url(url→b64 兜底接住)、quality 参数上游钉死 medium 刻度、透明不支持(colortype=2 假图)。
     // 守门:onlyQualities=['medium'] —— operator 2026-08-27 拍板【所有 medium 请求】走这条(任意
-    // 尺寸含 auto);low/high/auto(→low)503 让路。客户按 medium 计费、拿 -high 线产物。
-    // 选 -high 不选 -adobe:quality 反正钉死,给客户品质更高的一条;要换 -adobe 改 upstreamModel 一行。
+    // 尺寸含 auto);low/high/auto(→low)503 让路。客户按 medium 计费。
+    // 模型名用 -adobe:上游明确建议(稳定线);-high 实测契约相同(quality 同样钉死 medium 刻度),
+    // 要换回改 upstreamModel 一行。
     frimodelmedium: {
         baseUrl: 'https://api.frimodel.com',
         brand: /\bfri-?model\b|\bfirefly\b|\bs3-accelerate\.amazonaws\.com\b/gi,
-        upstreamModel: 'gpt-image-2-high',
+        upstreamModel: 'gpt-image-2-adobe',
         onlyQualities: ['medium'],
         noTransparentBackground: true, // 实测 colortype=2 假图(2026-08-27)
     },

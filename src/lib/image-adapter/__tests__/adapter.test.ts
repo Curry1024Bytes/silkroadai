@@ -1316,13 +1316,13 @@ describe('frimodelmedium provider(frimodel 新账号,onlyQualities=[medium] + up
             'frimodelmedium',
         );
 
-    it('medium 放行:路由 api.frimodel.com,上游 model 覆盖成 gpt-image-2-high', async () => {
+    it('medium 放行:路由 api.frimodel.com,上游 model 覆盖成 gpt-image-2-adobe', async () => {
         okUpstream();
         const res = await gen({ quality: 'medium' });
         expect(res.status).toBe(200);
         const [url, init] = fetchMock.mock.calls[0];
         expect(url).toBe('https://api.frimodel.com/v1/images/generations');
-        expect(JSON.parse(init.body as string).model).toBe('gpt-image-2-high');
+        expect(JSON.parse(init.body as string).model).toBe('gpt-image-2-adobe');
     });
 
     it('medium 不看尺寸:4K medium / 狭长 medium / size=auto medium 全放行', async () => {
@@ -1357,7 +1357,7 @@ describe('frimodelmedium provider(frimodel 新账号,onlyQualities=[medium] + up
         expect(fetchMock).not.toHaveBeenCalled();
     });
 
-    it('multipart edits medium → 放行且 form model 覆盖成 gpt-image-2-high', async () => {
+    it('multipart edits medium → 放行且 form model 覆盖成 gpt-image-2-adobe', async () => {
         okUpstream();
         const res = await handleAdapterImage(
             formReq(
@@ -1369,7 +1369,7 @@ describe('frimodelmedium provider(frimodel 新账号,onlyQualities=[medium] + up
             'frimodelmedium',
         );
         expect(res.status).toBe(200);
-        expect((fetchMock.mock.calls[0][1].body as FormData).get('model')).toBe('gpt-image-2-high');
+        expect((fetchMock.mock.calls[0][1].body as FormData).get('model')).toBe('gpt-image-2-adobe');
     });
 
     it('medium + background=transparent → 503(实测该上游出假图,flag 拒)', async () => {
