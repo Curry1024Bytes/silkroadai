@@ -1388,3 +1388,74 @@ describe('frimodelmedium provider(frimodel 新账号,onlyQualities=[medium] + up
         expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).model).toBe('gpt-image-2');
     });
 });
+
+describe('frimodellow provider(frimodel 第三账号,onlyQualities=[low] + gpt-image-2-low)', () => {
+    const URL_FL = 'http://portal.test/image-adapter/frimodellow/v1/images/generations';
+    const gen = (body: Record<string, unknown>) =>
+        handleAdapterImage(
+            jsonReq(URL_FL, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', ...body }),
+            'generations',
+            'frimodellow',
+        );
+
+    it.each([
+        ['显式 low', { quality: 'low' }],
+        ['auto(→low)', { quality: 'auto' }],
+        ['standard(→low)', { quality: 'standard' }],
+        ['缺省(→low)', {}],
+    ])('low 族放行:%s → 上游 model 覆盖成 gpt-image-2-low', async (_label, extra) => {
+        fetchMock.mockReset();
+        okUpstream();
+        const res = await gen(extra);
+        expect(res.status).toBe(200);
+        const [url, init] = fetchMock.mock.calls[0];
+        expect(url).toBe('https://api.frimodel.com/v1/images/generations');
+        expect(JSON.parse(init.body as string).model).toBe('gpt-image-2-low');
+    });
+
+    it.each([
+        ['medium', { quality: 'medium' }],
+        ['high', { quality: 'high' }],
+    ])('非 low 拒(503 不打上游):%s', async (_label, extra) => {
+        const res = await gen(extra);
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('low + size=auto → 放行,按返回图实际尺寸合成官方 low(196)', async () => {
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(1024, 1024) }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+        const res = await gen({ quality: 'low', size: 'auto' });
+        expect(res.status).toBe(200);
+        expect((await res.json()).usage.output_tokens).toBe(196);
+    });
+
+    it('low + background=transparent → 503(frimodel 家族不出真 alpha)', async () => {
+        const res = await gen({ quality: 'low', background: 'transparent' });
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('与 frimodelmedium 互斥不重叠:medium 归 204 线,low 归本线', async () => {
+        okUpstream();
+        const rMed = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/frimodelmedium/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '1024x1024',
+                quality: 'low',
+            }),
+            'generations',
+            'frimodelmedium',
+        );
+        expect(rMed.status).toBe(503); // medium 线拒 low
+        fetchMock.mockReset();
+        okUpstream();
+        expect((await gen({ quality: 'low' })).status).toBe(200); // low 线收 low
+    });
+});

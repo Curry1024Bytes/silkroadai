@@ -105,6 +105,19 @@ export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
         onlyQualities: ['medium'],
         noTransparentBackground: true, // 实测 colortype=2 假图(2026-08-27)
     },
+    // frimodellow:frimodel 平台【第三个账号】(2026-08-28 接入,挂 low/adobe/medium/high 四变体)。
+    // 守门:onlyQualities=['low'] —— operator 拍板【所有 low 请求】走这条;注意 normQuality 把
+    // auto/standard/缺省也归一成 low,所以这条线承接的是 low + auto + 缺省的全部流量(占比最大)。
+    // upstreamModel=gpt-image-2-low(上游指定)。契约按 frimodel 家族推定(-adobe 同 key 实测:
+    // adobe C2PA、尺寸如实、b64 直返);⚠️ 接入当天 -low 线路上游侧 500 do_request_failed
+    // (同 key -adobe 正常 → 是它家 low 上游断,非账号问题),渠道先建停用,上游修好再开。
+    frimodellow: {
+        baseUrl: 'https://api.frimodel.com',
+        brand: /\bfri-?model\b|\bfirefly\b|\bs3-accelerate\.amazonaws\.com\b/gi,
+        upstreamModel: 'gpt-image-2-low',
+        onlyQualities: ['low'],
+        noTransparentBackground: true, // frimodel 家族实测不出真 alpha
+    },
     // ---- 2026-08-24 operator 新接【真 OpenAI 签名】守门上游(new-api 型分销网关,IP 直连)----
     // oaidist:出图带 OpenAI 原生 C2PA 证书链(签名证书 `OpenAI OpCo, LLC` + OpenAI TSA 时间戳链,
     // 10/10 实测无 adobe/firefly 痕迹 → 回程剥离层不触发,签名【保留】= 客户可验官方凭证)。
