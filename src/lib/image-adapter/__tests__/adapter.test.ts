@@ -1306,3 +1306,85 @@ describe('background:transparent 出图校验(号池型上游 50/50 随机,假�
         expect(res.status).toBe(200);
     });
 });
+
+describe('frimodelmedium provider(frimodel 新账号,onlyQualities=[medium] + upstreamModel 覆盖)', () => {
+    const URL_FM = 'http://portal.test/image-adapter/frimodelmedium/v1/images/generations';
+    const gen = (body: Record<string, unknown>) =>
+        handleAdapterImage(
+            jsonReq(URL_FM, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', ...body }),
+            'generations',
+            'frimodelmedium',
+        );
+
+    it('medium 放行:路由 api.frimodel.com,上游 model 覆盖成 gpt-image-2-high', async () => {
+        okUpstream();
+        const res = await gen({ quality: 'medium' });
+        expect(res.status).toBe(200);
+        const [url, init] = fetchMock.mock.calls[0];
+        expect(url).toBe('https://api.frimodel.com/v1/images/generations');
+        expect(JSON.parse(init.body as string).model).toBe('gpt-image-2-high');
+    });
+
+    it('medium 不看尺寸:4K medium / 狭长 medium / size=auto medium 全放行', async () => {
+        for (const size of ['3840x2160', '2560x1440']) {
+            fetchMock.mockReset();
+            okUpstream();
+            expect((await gen({ quality: 'medium', size })).status).toBe(200);
+        }
+        // auto:上游返真图,按实际尺寸计费(官方 1024² medium = 1756)
+        fetchMock.mockReset();
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(1024, 1024) }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+        const res = await gen({ quality: 'medium', size: 'auto' });
+        expect(res.status).toBe(200);
+        expect((await res.json()).usage.output_tokens).toBe(1756);
+    });
+
+    it.each([
+        ['low', { quality: 'low' }],
+        ['high', { quality: 'high' }],
+        ['auto(→low)', { quality: 'auto' }],
+        ['standard(→low)', { quality: 'standard' }],
+        ['缺省(→low)', {}],
+    ])('非 medium 拒(503 不打上游):%s', async (_label, extra) => {
+        const res = await gen(extra);
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('multipart edits medium → 放行且 form model 覆盖成 gpt-image-2-high', async () => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            formReq(
+                'http://portal.test/image-adapter/frimodelmedium/v1/images/edits',
+                { prompt: 'e', size: '1024x1024', quality: 'medium' },
+                [TINY_PNG],
+            ),
+            'edits',
+            'frimodelmedium',
+        );
+        expect(res.status).toBe(200);
+        expect((fetchMock.mock.calls[0][1].body as FormData).get('model')).toBe('gpt-image-2-high');
+    });
+
+    it('medium + background=transparent → 503(实测该上游出假图,flag 拒)', async () => {
+        const res = await gen({ quality: 'medium', background: 'transparent' });
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('存量 provider 上游 model 名不受影响(仍送 gpt-image-2)', async () => {
+        okUpstream();
+        await handleAdapterImage(
+            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160', quality: 'high' }),
+            'generations',
+            'ominiapi',
+        );
+        expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).model).toBe('gpt-image-2');
+    });
+});

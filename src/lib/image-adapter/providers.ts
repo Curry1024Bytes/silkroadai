@@ -22,6 +22,14 @@ export interface ImageProvider {
      *  已无账单意义,只会把亏钱的狭长低档放进来)。缺省 = 旧守门(MIN_SYNTH_CT 3,846 + 狭长放行),
      *  存量 provider 行为不动。 */
     gateMinCt?: number;
+    /** 上游模型名覆盖:适配器默认给上游送 `model: "gpt-image-2"`;个别上游账号只认自家变体名
+     *  (frimodel 新账号只挂 `gpt-image-2-high` / `gpt-image-2-adobe`)→ 在这里指定。 */
+    upstreamModel?: string;
+    /** 质量档守门:设了此值 → 只接归一后 quality 在列表内的请求(任意尺寸,含 size=auto,
+     *  计费走"返回图实际尺寸"),其余 503 让路。与 openAllTiers / gateMinCt 互斥使用
+     *  (onlyQualities 优先)。注意 normQuality 把 auto/standard/缺省归一成 low ——
+     *  "所有 medium 请求" = 客户显式传 quality=medium 的请求。 */
+    onlyQualities?: ReadonlyArray<'low' | 'medium' | 'high'>;
     /** true = 该上游【未验证/不支持】`background:"transparent"` → 带此参数的请求直接 503 让
      *  new-api failover 到支持透明的渠道(调上游之前拒,不花钱)。动机(2026-08-26 客户实测):
      *  不支持的上游会 200 返回【画进像素里的假棋盘格】(rgb24 无 alpha),客户拿到废图还被计费,
@@ -81,6 +89,20 @@ export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
         brand: /\bfri-?model\b|\bfirefly\b|\bs3-accelerate\.amazonaws\.com\b/gi,
         openAllTiers: true,
         noTransparentBackground: true, // 未验证真出 alpha(2026-08-26),验证通过再翻
+    },
+    // frimodelmedium:frimodel 平台【新账号】(2026-08-27 接入,与上面老账号 key 不同、模型编排不同:
+    // 只挂 gpt-image-2-high / gpt-image-2-adobe 两个变体名,不认裸 gpt-image-2 → upstreamModel 覆盖)。
+    // 实测契约:尺寸分毫不差(1024²/4K 均精确)、generations 直返 b64、edits 恒返 Firefly S3 预签名
+    // url(url→b64 兜底接住)、quality 参数上游钉死 medium 刻度、透明不支持(colortype=2 假图)。
+    // 守门:onlyQualities=['medium'] —— operator 2026-08-27 拍板【所有 medium 请求】走这条(任意
+    // 尺寸含 auto);low/high/auto(→low)503 让路。客户按 medium 计费、拿 -high 线产物。
+    // 选 -high 不选 -adobe:quality 反正钉死,给客户品质更高的一条;要换 -adobe 改 upstreamModel 一行。
+    frimodelmedium: {
+        baseUrl: 'https://api.frimodel.com',
+        brand: /\bfri-?model\b|\bfirefly\b|\bs3-accelerate\.amazonaws\.com\b/gi,
+        upstreamModel: 'gpt-image-2-high',
+        onlyQualities: ['medium'],
+        noTransparentBackground: true, // 实测 colortype=2 假图(2026-08-27)
     },
     // ---- 2026-08-24 operator 新接【真 OpenAI 签名】守门上游(new-api 型分销网关,IP 直连)----
     // oaidist:出图带 OpenAI 原生 C2PA 证书链(签名证书 `OpenAI OpCo, LLC` + OpenAI TSA 时间戳链,

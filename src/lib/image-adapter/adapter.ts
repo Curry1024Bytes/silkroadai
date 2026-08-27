@@ -395,7 +395,7 @@ async function callUpstreamOnce(
     const headers: Record<string, string> = { authorization: auth };
     if (mode === 'edits') {
         const f = new FormData();
-        f.append('model', 'gpt-image-2');
+        f.append('model', provider.upstreamModel ?? 'gpt-image-2');
         f.append('prompt', parsed.prompt);
         f.append('size', parsed.size.trim());
         f.append('response_format', 'b64_json'); // 不带时 ominiapi 返自家 OSS url(上游身份泄漏),显式要 b64
@@ -406,7 +406,7 @@ async function callUpstreamOnce(
         upstreamBody = f; // fetch 自动生成 multipart boundary(不能手写 content-type,gotcha #21)
     } else {
         const j: Record<string, unknown> = {
-            model: 'gpt-image-2',
+            model: provider.upstreamModel ?? 'gpt-image-2',
             prompt: parsed.prompt,
             size: parsed.size.trim(),
             response_format: 'b64_json', // 同上:2026-08-04 smoke 实测缺省返 url
@@ -524,11 +524,15 @@ export async function handleAdapterImage(
     const quality = normQuality(parsed.quality);
     const perImageCt = dims ? officialOutputTokens(dims.w, dims.h, quality) : 0;
     const elongated = dims ? isElongated(dims.w, dims.h) : false;
-    const gatePass = dims
-        ? provider.gateMinCt !== undefined
-            ? perImageCt >= provider.gateMinCt
-            : elongated || isProfitable(perImageCt)
-        : false;
+    //  - provider.onlyQualities(frimodelmedium 等按档收的上游)→ 只看归一后 quality,不看尺寸
+    //    (任意尺寸含 auto 都收,计费走"返回图实际尺寸");其余档 503 让路。
+    const gatePass = provider.onlyQualities
+        ? (provider.onlyQualities as readonly string[]).includes(quality)
+        : dims
+          ? provider.gateMinCt !== undefined
+              ? perImageCt >= provider.gateMinCt
+              : elongated || isProfitable(perImageCt)
+          : false;
     if (!provider.openAllTiers && !gatePass) {
         console.log('[image-adapter] gate reject', {
             provider: providerName,
