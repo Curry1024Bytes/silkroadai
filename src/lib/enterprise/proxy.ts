@@ -643,7 +643,11 @@ async function handleSubmit(req: NextRequest, format: ClientFormat = 'v1'): Prom
         return errJson(503, 'temporarily_unavailable', 'billing record failed, please retry');
     }
     // 火山形提交成功仅返 { id }(前缀 cgt-);v1 形返完整对象。
-    if (format === 'ark') return NextResponse.json({ id: taskId });
+    // volc 提交响应同样带 upstream_id(客户脚本 create 与 query 两处都读)。
+    // 其余渠道保持火山官方形「提交只返 {id}」不变。
+    if (format === 'ark') {
+        return NextResponse.json(map.region === 'volc' ? { id: taskId, upstream_id: taskId } : { id: taskId });
+    }
     return j
         ? NextResponse.json(j)
         : new NextResponse(text, { status: 200, headers: { 'Content-Type': 'application/json' } });

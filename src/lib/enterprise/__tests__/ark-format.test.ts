@@ -207,4 +207,29 @@ describe('buildArkTaskResponse', () => {
         expect(arkModelEcho('doubao-seedance-2.5')).toBe('doubao-seedance-2-5-260628');
         expect(arkModelEcho('doubao-seedance-2.0')).toBe('doubao-seedance-2-0-260128');
     });
+
+    // 其余渠道(cn/global/promax)不带 upstream_id —— 火山官方形没有这个字段,
+    // 它只是给 volc 客户契约脚本的别名。
+    it('非 volc 渠道不带 upstream_id', () => {
+        const r = buildArkTaskResponse({
+            taskId: 'cgt-x',
+            internalModel: 'seedance-2-0',
+            status: 'running',
+            createdAt: new Date(1700000000000),
+        });
+        expect(r).not.toHaveProperty('upstream_id');
+    });
+
+    it('volc 渠道带 upstream_id 且等于 id', () => {
+        const r = buildArkTaskResponse({
+            taskId: 'cgt-20260827125333-rjzv8',
+            internalModel: 'doubao-seedance-2.5',
+            status: 'running',
+            createdAt: new Date(1700000000000),
+            volcMeta: {},
+        });
+        expect(r.upstream_id).toBe('cgt-20260827125333-rjzv8');
+        // 客户脚本的正则
+        expect(String(r.upstream_id)).toMatch(/^cgt-\d{14}-[A-Za-z0-9]+$/);
+    });
 });

@@ -1345,6 +1345,40 @@ describe('vendor_task_id 出口(2026-08-19)', () => {
         expect(b.duration).toBe(4);
     });
 
+    // 2026-08-27 客户契约脚本:从查询响应读 upstream_id,用 ^cgt-\d{14}-[A-Za-z0-9]+$ 校验,
+    // 缺了就判整轮失败。值 = 我们的对客 id(#398 起它本身就是火山官方任务号)。
+    it('volc:查询响应带 upstream_id,且等于对客 id(客户脚本正则要求)', async () => {
+        pollVolcVideo.mockResolvedValue(
+            NextResponse.json({ id: 'cgt-v1', task_id: 'cgt-v1', object: 'video', status: 'in_progress' }),
+        );
+        const res = await handleEnterpriseArkV3(
+            req('GET', '/api/v3/contents/generations/tasks/cgt-v1'),
+            '/contents/generations/tasks/cgt-v1',
+        );
+        const b = (await res.json()) as Record<string, unknown>;
+        expect(b.upstream_id).toBe(b.id);
+        expect(b.upstream_id).toBe('cgt-v1');
+    });
+
+    it('volc:upstream_id 绝不是上游的 vendor_task_id(落非方舟时那是 tsk-,会泄露中间层)', async () => {
+        pollVolcVideo.mockResolvedValue(
+            NextResponse.json({
+                id: 'cgt-v1',
+                task_id: 'cgt-v1',
+                object: 'video',
+                status: 'in_progress',
+                vendor_task_id: 'tsk-ghuya22ne4tyq74q',
+            }),
+        );
+        const res = await handleEnterpriseArkV3(
+            req('GET', '/api/v3/contents/generations/tasks/cgt-v1'),
+            '/contents/generations/tasks/cgt-v1',
+        );
+        const body = await res.text();
+        expect(JSON.parse(body).upstream_id).toBe('cgt-v1');
+        expect(body).not.toContain('tsk-ghuya22ne4tyq74q');
+    });
+
     it('volc:时间戳以上游为准(updated_at 不再是每查一次就变的 Date.now())', async () => {
         db.seedanceVideoTask.findUnique.mockResolvedValue({ ...t, created_at: new Date(1700000000000) });
         pollVolcVideo.mockResolvedValue(

@@ -203,6 +203,13 @@ export function buildArkTaskResponse(inp: ArkTaskResponseInput): Record<string, 
     const nowSec = Math.floor(Date.now() / 1000);
     const base: Record<string, unknown> = {
         id: inp.taskId,
+        // volc:客户的契约脚本从查询响应里读 upstream_id 做「火山官方任务号格式」校验
+        //(^cgt-\d{14}-[A-Za-z0-9]+$),缺了就判整轮失败(2026-08-27 客户实测反馈)。
+        //
+        // 值就是 inp.taskId ——#398 起对客 id 本身就是火山官方任务号,这个字段纯粹是
+        // 给客户脚本的**别名**,不引入第二套号。⚠️ 绝不能填上游的 vendor_task_id:
+        // 落非方舟时那是 tsk-… 形,既过不了客户正则,又泄露中间层(#271)。
+        ...(inp.volcMeta ? { upstream_id: inp.taskId } : {}),
         model: arkModelEcho(inp.internalModel),
         status: inp.status,
         created_at: Math.floor(inp.createdAt.getTime() / 1000),
