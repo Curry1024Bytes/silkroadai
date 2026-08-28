@@ -1459,3 +1459,62 @@ describe('frimodellow provider(frimodel 第三账号,onlyQualities=[low] + gpt-i
         expect((await gen({ quality: 'low' })).status).toBe(200); // low 线收 low
     });
 });
+
+describe('pandatk provider(Adobe Firefly 转售,openAllTiers 全量线)', () => {
+    const URL_PD = 'http://portal.test/image-adapter/pandatk/v1/images/generations';
+
+    it('openAllTiers:方图 low 放行,路由 api.pandatk.com,model 仍送裸 gpt-image-2', async () => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            jsonReq(URL_PD, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', quality: 'low' }),
+            'generations',
+            'pandatk',
+        );
+        expect(res.status).toBe(200);
+        const [url, init] = fetchMock.mock.calls[0];
+        expect(url).toBe('https://api.pandatk.com/v1/images/generations');
+        expect(JSON.parse(init.body as string).model).toBe('gpt-image-2');
+        expect((await res.json()).usage.output_tokens).toBe(196); // 官方合成,不是上游 medium 托底值
+    });
+
+    it('size=auto → 放行,按返回图实际尺寸合成', async () => {
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(2048, 2048) }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+        const res = await handleAdapterImage(
+            jsonReq(URL_PD, { model: 'gpt-image-2', prompt: 'x', size: 'auto', quality: 'medium' }),
+            'generations',
+            'pandatk',
+        );
+        expect(res.status).toBe(200);
+        expect((await res.json()).usage.output_tokens).toBe(3568);
+    });
+
+    it('background=transparent → 503 拒(Firefly 家族 fail-closed)', async () => {
+        const res = await handleAdapterImage(
+            jsonReq(URL_PD, {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '1024x1024',
+                quality: 'medium',
+                background: 'transparent',
+            }),
+            'generations',
+            'pandatk',
+        );
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('brand 正则抹掉 pandatk / firefly(adobe 由 sanitize 内建兜)', () => {
+        const out = sanitizeAdapterError('pandatk gateway: adobe firefly rejected', /\bpandatk\b|\bfirefly\b/gi);
+        const lc = out.toLowerCase();
+        expect(lc).not.toContain('pandatk');
+        expect(lc).not.toContain('firefly');
+        expect(lc).not.toContain('adobe');
+    });
+});
