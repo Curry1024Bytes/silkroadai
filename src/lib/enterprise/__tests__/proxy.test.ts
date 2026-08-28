@@ -35,6 +35,10 @@ const { callerHasVolc } = vi.hoisted(() => ({ callerHasVolc: vi.fn(async () => f
 vi.mock('../keys', () => ({ resolveEnterpriseAuth, getUpstreamKeyForUser, callerHasVolc }));
 const { toUpstreamId } = vi.hoisted(() => ({ toUpstreamId: vi.fn(async (id: string) => id) }));
 vi.mock('../volc-id-map', () => ({ toUpstreamId }));
+const { uploadImage } = vi.hoisted(() => ({
+    uploadImage: vi.fn(async (key: string) => `https://images.silkroadai.io/${key}.jpg`),
+}));
+vi.mock('@/lib/r2/client', () => ({ uploadImage }));
 vi.mock('@/lib/seedance/cn-adapter', async (importOriginal) => {
     const mod = await importOriginal<typeof import('@/lib/seedance/cn-adapter')>();
     return { ...mod, submitVideoWithKey, pollVideoWithKey };
@@ -1377,6 +1381,50 @@ describe('vendor_task_id 出口(2026-08-19)', () => {
         const sent = submitVolcVideo.mock.calls[0][0] as { content: Array<Record<string, never>> };
         expect(JSON.stringify(sent)).toContain('asset://193477566093328454');
         expect(JSON.stringify(sent)).not.toContain('asset-20260828014656-n7mc9');
+    });
+
+    // 2026-08-28 客户列为「明确不兼容项」:上游对 content[].*_url.url 有 4000 字符硬上限
+    // (实测原文 `is too long (6118 chars, max 4000)`),真实图片的 base64 根本进不去。
+    // cn 渠道早就替客户把 data URL 转存 R2,volc 之前没做 —— 同平台两条渠道能力不一致。
+    it('volc:内联 base64 转存 R2 后再发上游(上游 url 有 4000 字符硬上限)', async () => {
+        vi.mocked(toUpstreamId).mockImplementation(async (id: string) => id);
+        submitVolcVideo.mockImplementation(() =>
+            Promise.resolve(NextResponse.json({ id: 'cgt-x', task_id: 'cgt-x', status: 'queued' })),
+        );
+        const big = 'data:image/png;base64,' + 'A'.repeat(8000);
+        await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', {
+                model: 'doubao-seedance-2.5',
+                resolution: '720p',
+                content: [
+                    { type: 'text', text: 'x' },
+                    { type: 'image_url', image_url: { url: big }, role: 'reference_image' },
+                ],
+            }),
+            '/video/generations',
+        );
+        const sent = JSON.stringify(submitVolcVideo.mock.calls[0][0]);
+        expect(sent).not.toContain('data:image/png;base64');
+        expect(sent).toContain('https://images.silkroadai.io/seedance-volc-ref/');
+        expect(uploadImage).toHaveBeenCalled();
+    });
+
+    it('volc:内联 base64 超 20MB → 400,给可操作提示(不静默塞给上游)', async () => {
+        vi.mocked(toUpstreamId).mockImplementation(async (id: string) => id);
+        const huge = 'data:image/png;base64,' + 'A'.repeat(30 * 1024 * 1024);
+        const res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', {
+                model: 'doubao-seedance-2.5',
+                resolution: '720p',
+                content: [
+                    { type: 'text', text: 'x' },
+                    { type: 'image_url', image_url: { url: huge }, role: 'reference_image' },
+                ],
+            }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(400);
+        expect((await res.json()).error.message).toContain('20MB');
     });
 
     it('volc:映射查不到的引用原样透传(存量客户手里的上游号继续能用)', async () => {

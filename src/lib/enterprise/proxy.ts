@@ -39,6 +39,8 @@ import {
 } from '@/lib/seedance/kuaizi-adapter';
 import { callerHasVolc, resolveEnterpriseAuth, getUpstreamKeyForUser, type EnterpriseCustomer } from './keys';
 import { toUpstreamId } from './volc-id-map';
+import { uploadImage } from '@/lib/r2/client';
+import { randomUUID } from 'crypto';
 import { ENTERPRISE_TIER, estimateEnterpriseCostCny, chargeEnterpriseVideoTask } from './billing';
 import { AssetError, resolveAssetRefs } from './assets';
 import { normalizeArkModel, stripAssetUri, arkStatus, buildArkTaskResponse } from './ark-format';
@@ -470,10 +472,45 @@ function upstreamNum(v: unknown): number | null {
  * 只有恰好以 `asset://` 开头的字符串会被改写,其余原样。
  */
 const ASSET_URI = /^asset:\/\/(.+)$/;
+const DATA_URI = /^data:((?:image|audio|video)\/[a-z0-9.+-]+);base64,(.+)$/i;
+
+/**
+ * base64 data URL → 我们 R2 直链(volc)。
+ *
+ * 上游对 `content[].*_url.url` 有 **4000 字符硬上限**(实测原文:
+ * `content[1].image_url.url is too long (6118 chars, max 4000)`),
+ * 等于任何真实图片/音频的 base64 都进不去。而 cn 渠道早就支持 base64 —— 我们替客户
+ * 转存 R2 再把直链发上游。volc 此前没做,同一个平台两条渠道能力不一致
+ * (2026-08-28 客户列为「明确不兼容项」)。
+ *
+ * 这不违背「原生火山」:火山官方同样吃不下 6KB 的 base64,我们是**做了超集**,
+ * 不是改了契约。上游看到的是普通 http 直链,与客户直接传 URL 无差别。
+ */
+const MAX_INLINE_MEDIA_BYTES = 20 * 1024 * 1024;
+async function dataUrlToR2(dataUrl: string): Promise<string> {
+    const m = dataUrl.match(DATA_URI);
+    if (!m) return dataUrl;
+    const buf = Buffer.from(m[2], 'base64');
+    if (buf.length === 0) throw new AssetError('invalid_request', 'base64 媒体内容为空', 400);
+    if (buf.length > MAX_INLINE_MEDIA_BYTES) {
+        throw new AssetError(
+            'invalid_request',
+            `内联 base64 媒体超过 20MB(实际 ${Math.round(buf.length / 1024 / 1024)}MB)—— 请改用公网 URL 或素材库`,
+            400,
+        );
+    }
+    return uploadImage(`seedance-volc-ref/${randomUUID()}`, buf, m[1]);
+}
+
 async function translateVolcAssetRefs(body: Record<string, unknown>): Promise<Record<string, unknown>> {
     const seen = new Map<string, string>();
+    let inlined = 0;
     const walk = async (v: unknown): Promise<unknown> => {
         if (typeof v === 'string') {
+            if (DATA_URI.test(v)) {
+                inlined += 1;
+                return dataUrlToR2(v);
+            }
             const m = v.match(ASSET_URI);
             if (!m) return v;
             const id = m[1];
@@ -491,6 +528,7 @@ async function translateVolcAssetRefs(body: Record<string, unknown>): Promise<Re
     const translated = (await walk(body)) as Record<string, unknown>;
     const changed = [...seen.entries()].filter(([a, b]) => a !== b);
     if (changed.length) console.log('[enterprise-proxy] volc 素材引用翻回上游号', { count: changed.length });
+    if (inlined) console.log('[enterprise-proxy] volc 内联 base64 媒体转存 R2', { count: inlined });
     return translated;
 }
 
@@ -534,14 +572,6 @@ async function handleSubmit(req: NextRequest, format: ClientFormat = 'v1'): Prom
     // 解析,契约就是 asset://<id> 整串,剥了前缀上游按 URL 解析必 400
     // (`content[N].image_url is not valid`,2026-08-03 客户实测)。
     if (!isVolc) body = stripAssetUri(body);
-    // volc:把 asset://<火山素材号> 翻回上游素材号再发上游。
-    //
-    // #398 把对客素材号换成了火山形(asset-YYYYMMDDHHMMSS-xxxxx),但生成请求里的
-    // asset:// 引用当时没跟着翻译 —— **上游只认它自己的十进制号**,于是任务被上游判
-    // failed:「The specified asset asset-… is not found」。
-    // 更糟的是那句报错又被错误分类成「任务已失效」,真相被盖了两周(2026-08-28 客户
-    // 契约脚本 04 暴露)。A/B 实测:火山号 → failed;上游号 → succeeded。
-    if (isVolc) body = await translateVolcAssetRefs(body);
 
     // 版本先于鉴权确定(模型名承载):key 与模型版本必须一致(单独 key,operator 决策),
     // 上游 key 也按版本行解密。未知模型按 cn 解析,后续 model_not_found 分支照常 400。
@@ -554,6 +584,19 @@ async function handleSubmit(req: NextRequest, format: ClientFormat = 'v1'): Prom
     // 「火山」渠道走【混合解析】(lenient,2026-08-06):平台库素材(AIGC,全渠道共用)
     // 换 R2 直链发上游;认不出的引用(真人素材 / 存量 provider 素材,asset:// 整串)
     // 原样透传给 provider 解析 —— volc 也能用平台库素材,真人素材链路不变。
+    // volc 入参归一(**必须在鉴权之后** —— 里面会往 R2 上传,未鉴权不能触发):
+    //  ① asset://<火山素材号> → asset://<上游号>:#398 把对客素材号换成火山形后,
+    //    生成请求里的引用没跟着翻,上游只认自己的十进制号 → 任务 failed
+    //    「The specified asset … is not found」(2026-08-28 客户契约脚本 04 暴露)。
+    //  ② 内联 base64 → 我们 R2 直链:上游 url 有 4000 字符硬上限,真实图片根本进不去。
+    try {
+        if (isVolc) body = await translateVolcAssetRefs(body);
+    } catch (e) {
+        if (e instanceof AssetError) return errJson(e.status, e.code, e.message);
+        console.error('[enterprise-proxy] volc 入参归一失败', e);
+        return errJson(503, 'temporarily_unavailable', 'media staging failed, please retry');
+    }
+
     try {
         body = await resolveAssetRefs(body, cust.userId, isVolc ? { lenient: true } : undefined);
     } catch (e) {

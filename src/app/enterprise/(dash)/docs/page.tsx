@@ -539,6 +539,10 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                     的首帧/首尾帧任务同理;视频编辑任务的 <Code>duration</Code> 还须为 <Code>-1</Code>。
                 </p>
                 <p className="text-gray-600">
+                    <b>参考素材可直接内联 base64</b>(<Code>data:image/png;base64,…</Code>)—— 我们会自动转存并
+                    换成直链再发上游,单个媒体上限 20MB。也可继续用公网 URL 或素材库 <Code>asset://</Code> 引用。
+                </p>
+                <p className="text-gray-600">
                     <b>火山官方参数一律透传</b> —— <Code>bitrate_mode</Code> / <Code>camera_fixed</Code> /{' '}
                     <Code>service_tier</Code> / <Code>priority</Code> 等按火山文档传即可,能不能用由火山判。(
                     <Code>callback_url</Code> 暂不支持,请改用轮询。)
