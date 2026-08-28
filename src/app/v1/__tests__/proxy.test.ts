@@ -2452,14 +2452,23 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
         expect(data.output_format).toBe('png');
     });
 
-    it('gpt-image 没传 quality → 按官方缺省回显 auto', async () => {
+    it('gpt-image 没传 quality → 回显官方枚举 low(不是非官方的 auto)', async () => {
         mockFetch.mockResolvedValueOnce(upstreamNoEcho());
         const res = await POST(
             makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x' } }),
             ctx('images', 'generations'),
         );
         const data = (await res.json()) as EchoBody;
-        expect(data.quality).toBe('auto');
+        expect(data.quality).toBe('low'); // 客户 2026-08-27 反馈:auto 非官方标准,应归一 low
+    });
+
+    it('gpt-image 传 quality=auto → 归一回显 low(官方响应无 auto 枚举)', async () => {
+        mockFetch.mockResolvedValueOnce(upstreamNoEcho());
+        const res = await POST(
+            makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x', quality: 'auto' } }),
+            ctx('images', 'generations'),
+        );
+        expect(((await res.json()) as EchoBody).quality).toBe('low');
     });
 
     it('multipart edits 传 quality → 同样回显(大小写归一)', async () => {
@@ -2475,7 +2484,8 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
         expect(data.quality).toBe('high');
     });
 
-    it('上游已带 quality → 保留不覆盖', async () => {
+    it('上游带合法 quality(medium)→ 按请求归一回显(以客户请求为准,high)', async () => {
+        // 回显反映【客户请求的档位】(归一后),不再被上游漏带的值左右;high 是合法枚举 → high
         mockFetch.mockResolvedValueOnce(
             new Response(
                 JSON.stringify({ created: 1, quality: 'medium', data: [{ b64_json: 'QUJD', size: '1024x1024' }] }),
@@ -2488,8 +2498,21 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
             }),
             ctx('images', 'generations'),
         );
-        const data = (await res.json()) as EchoBody;
-        expect(data.quality).toBe('medium');
+        expect(((await res.json()) as EchoBody).quality).toBe('high');
+    });
+
+    it('上游带非官方 quality(standard)→ 被纠正成官方枚举 low(不透传旧词)', async () => {
+        mockFetch.mockResolvedValueOnce(
+            new Response(
+                JSON.stringify({ created: 1, quality: 'standard', data: [{ b64_json: 'QUJD', size: '1024x1024' }] }),
+                { status: 200, headers: { 'content-type': 'application/json' } },
+            ),
+        );
+        const res = await POST(
+            makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x' } }),
+            ctx('images', 'generations'),
+        );
+        expect(((await res.json()) as EchoBody).quality).toBe('low'); // 客户缺省→low,上游 standard 被覆盖
     });
 
     it('非 gpt-image 模型:没传不注入缺省,显式传了才回显', async () => {

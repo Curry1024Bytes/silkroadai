@@ -177,3 +177,53 @@ describe('normalizeImageError — default 桶(未识别 4xx 原样透传,仅抹�
         expect(normalizeImageError(body, 400).body).toBe(body);
     });
 });
+
+describe('normalizeImageError — model_not_found(#18 未知 model 客户反馈)', () => {
+    it('上游显式 model_not_found → 400 invalid_request_error + code model_not_found + param model', () => {
+        const r = normalizeImageError('{"error":{"code":"model_not_found","message":"..."}}', 404);
+        expect(r.status).toBe(400);
+        const e = parse(r.body);
+        expect(e.type).toBe('invalid_request_error');
+        expect(e.code).toBe('model_not_found');
+        expect(e.param).toBe('model');
+    });
+
+    it.each(['the model `dall-e-3` does not exist', '模型不存在', 'model is not supported by this endpoint'])(
+        '显式 model 未知措辞 → 400 model_not_found: %s',
+        (text) => {
+            const r = normalizeImageError(text, 400);
+            expect(r.status).toBe(400);
+            expect(parse(r.body).code).toBe('model_not_found');
+        },
+    );
+
+    it('歧义的 `no available channel for model X`:默认(已知 model 渠道耗尽)→ 503 容量', () => {
+        const r = normalizeImageError('no available channel for model gpt-image-2 under group default', 503);
+        expect(r.status).toBe(503);
+        expect(parse(r.body).type).toBe('server_error');
+    });
+
+    it('歧义的 `no available channel for model X` + unrecognizedModel → 400 model_not_found', () => {
+        const r = normalizeImageError('no available channel for model dall-e-3 under group default', 503, {
+            unrecognizedModel: true,
+        });
+        expect(r.status).toBe(400);
+        expect(parse(r.body).code).toBe('model_not_found');
+        expectNoLeak(r.body);
+    });
+});
+
+describe('normalizeImageError — too_many_images(#7 超 16 图)', () => {
+    it.each([
+        'too many images provided',
+        'a maximum of 16 images is allowed',
+        'the number of images exceeds the limit',
+    ])('%s → 400 too_many_images param image', (text) => {
+        const r = normalizeImageError(text, 400);
+        expect(r.status).toBe(400);
+        const e = parse(r.body);
+        expect(e.type).toBe('invalid_request_error');
+        expect(e.code).toBe('too_many_images');
+        expect(e.param).toBe('image');
+    });
+});

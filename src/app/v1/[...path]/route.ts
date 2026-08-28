@@ -1458,6 +1458,50 @@ type ImageEchoFields = { quality: string; background: string; outputFormat: stri
  *    仅两个例外:审核拒绝统一文案 + 恒 400;上游 200 包 error 体 → 500(见分支内注释)。
  *  - 成功 → 补 OpenAI gpt-image 形的顶层 `size` + 估算 `usage` + 回显 `quality` /
  *    `background` / `output_format`(上游已带则保留不覆盖)。data[].b64_json 等字段原样保留。 */
+/** 官方 gpt-image 响应 quality 枚举只有 low/medium/high。入参 auto/standard/缺省/未知按官方语义
+ *  归一成 low(与适配器计费口径 normQuality 同源)。gptDefaults=false(非 gpt-image 模型)时缺省
+ *  不回显。返回 '' = 不回显。 */
+export function normalizeEchoQuality(requested: string, gptDefaults: boolean): string {
+    const s = requested.trim().toLowerCase();
+    if (s === 'medium' || s === 'high' || s === 'low') return s;
+    // auto / standard / hd / 空 / 未知 → low(gpt-image 模型才补,其余不回显)
+    return gptDefaults ? 'low' : '';
+}
+
+/** 官方 background 枚举 opaque/transparent;缺省补 opaque(仅 gpt-image),非法值不回显。 */
+export function normalizeEchoBackground(requested: string, gptDefaults: boolean): string {
+    const s = requested.trim().toLowerCase();
+    if (s === 'transparent' || s === 'opaque') return s;
+    if (s === 'auto' || s === '') return gptDefaults ? 'opaque' : '';
+    return ''; // 非法值不回显(不鹦鹉学舌)
+}
+
+/** output_format 请求侧归一(仅在无法从字节 sniff 时兜底);官方枚举 png/jpeg/webp。 */
+export function normalizeEchoOutputFormat(requested: string, gptDefaults: boolean): string {
+    const s = requested.trim().toLowerCase();
+    if (s === 'png' || s === 'jpeg' || s === 'webp') return s;
+    if (s === 'jpg') return 'jpeg';
+    return gptDefaults ? 'png' : '';
+}
+
+/** 按【返回图实际首字节魔数】判定 output_format(PNG/JPEG/WebP)——回显以字节为准,消解"请求
+ *  声称一种、上游出另一种"的不一致(F1/F2)。读不出(URL 模式无 b64 / 非常见格式)→ ''(退回请求侧)。 */
+export function sniffImageFormat(data: JsonRecord[]): string {
+    const b64 = typeof data[0]?.b64_json === 'string' ? (data[0].b64_json as string) : '';
+    if (!b64) return '';
+    let head: Buffer;
+    try {
+        head = Buffer.from(b64.slice(0, 24), 'base64');
+    } catch {
+        return '';
+    }
+    if (head.length >= 8 && head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e && head[3] === 0x47) return 'png';
+    if (head.length >= 3 && head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) return 'jpeg';
+    if (head.length >= 12 && head.toString('latin1', 0, 4) === 'RIFF' && head.toString('latin1', 8, 12) === 'WEBP')
+        return 'webp';
+    return '';
+}
+
 async function reshapeOpenAiImageResponse(
     upstream: Response,
     prompt: string,
@@ -1482,6 +1526,10 @@ async function reshapeOpenAiImageResponse(
     }
     const data = json && Array.isArray((json as { data?: unknown }).data) ? (json.data as JsonRecord[]) : null;
 
+    // model 未被我们特殊处理(非 gpt-image)→ 上游报「无渠道」时判为未知 model(400 model_not_found)
+    // 而非容量 503;gpt-image 模型的无渠道仍是容量 503(不误终态化真实的临时缺渠道)。
+    const unrecognizedModel = echo ? !echo.gptDefaults : false;
+
     // 上游报错 / 形态非预期(非 JSON、无 data)→ 透传为主,例外见下。
     if (!upstream.ok || !data) {
         if (cap) captureJsonResponse(cap, upstream.status, (json ?? { _raw: text.slice(0, 500) }) as JsonRecord);
@@ -1504,7 +1552,7 @@ async function reshapeOpenAiImageResponse(
             }
             return new NextResponse(text, { status: 200, headers });
         }
-        const sanitized = normalizeImageError(text, upstream.status);
+        const sanitized = normalizeImageError(text, upstream.status, { unrecognizedModel });
         if (sanitized.body !== text) headers.set('content-type', 'application/json');
         if (sanitized.retryAfter) headers.set('retry-after', String(sanitized.retryAfter));
         return new NextResponse(sanitized.body, { status: sanitized.status, headers });
@@ -1517,21 +1565,6 @@ async function reshapeOpenAiImageResponse(
     const out: JsonRecord = { ...j };
     if (out.size === undefined && outSize) out.size = outSize;
     if (out.usage === undefined) out.usage = buildEstimatedUsage(prompt, outSize);
-
-    // 回显 quality / background / output_format(官方 gpt-image 响应顶层字段)。链路上没有一层会带:
-    // ch154 适配器只合成 {created,data,usage},new-api 重组体只加 request_id/size —— 客户的官方
-    // 兼容测试校验响应回显 quality,2026-08-11 反馈缺失。上游已带则不覆盖。
-    if (echo) {
-        const fields: Array<['quality' | 'background' | 'output_format', string, string]> = [
-            ['quality', echo.quality, 'auto'],
-            ['background', echo.background, 'opaque'],
-            ['output_format', echo.outputFormat, 'png'],
-        ];
-        for (const [key, requested, dflt] of fields) {
-            const v = requested.trim().toLowerCase() || (echo.gptDefaults ? dflt : '');
-            if (out[key] === undefined && v) out[key] = v;
-        }
-    }
 
     // 候补 adobe(Firefly)出图内嵌 C2PA 会暴露真实上游 → 剥离图内元数据(自定向:仅命中 adobe/
     // firefly 标识的图才剥,azure/gemini 出图不含该标识 → 字节原样)。放在 transcode/存图/返回之前,
@@ -1549,6 +1582,25 @@ async function reshapeOpenAiImageResponse(
                 item.b64_json = await pngToJpegB64(item.b64_json);
             }
         }
+    }
+
+    // 回显 quality / background / output_format(官方 gpt-image 响应顶层字段)。链路上没有一层会带:
+    // 适配器只合成 {created,data,usage},new-api 重组体只加 request_id/size —— 客户官方兼容测试校验
+    // 回显(2026-08-11 反馈缺失)。⚠️ 回显值必须是【官方枚举】,不是鹦鹉学舌请求原值:
+    //  - quality:官方响应枚举只有 low/medium/high;入参 auto/standard/缺省按官方语义归一成 low
+    //    (与适配器计费口径 normQuality 同源)。客户传 auto 曾回 "auto"、上游漏 "standard" 都非法。
+    //  - output_format:按【返回图实际字节】判定(PNG/JPEG/WebP 魔数;放在 transcode 之后 = 交付真形态),
+    //    消解"请求 webp、上游出 png、却回显 webp"的不一致(F1/F2)。sniff 不出(URL 模式)退回请求侧归一。
+    //  - background:opaque/transparent 枚举;非法值不回显,缺省补 opaque。
+    // 覆盖上游带的非法值(不再 `undefined 才补`):上游把 quality 漏成 standard 等旧词也纠正。
+    if (echo) {
+        const sniffed = sniffImageFormat(data);
+        const q = normalizeEchoQuality(echo.quality, echo.gptDefaults);
+        if (q) out.quality = q;
+        const bg = normalizeEchoBackground(echo.background, echo.gptDefaults);
+        if (bg) out.background = bg;
+        const of = sniffed || normalizeEchoOutputFormat(echo.outputFormat, echo.gptDefaults);
+        if (of) out.output_format = of;
     }
 
     // opt-in(response_format:url):把 b64_json 存客户 OSS→平台 R2,响应改回 url(镜像 Gemini 生图)。
