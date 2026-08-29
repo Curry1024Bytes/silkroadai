@@ -35,7 +35,7 @@ import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { FormError } from '@/components/ui/FormError';
-import { fetchResellerStatus } from '@/lib/reseller/fetch-status';
+import { fetchResellerStatus, type ResellerStatusSnap } from '@/lib/reseller/fetch-status';
 import { ResellerPromoCard } from '@/components/reseller/ResellerPromoCard';
 import { parsePeriod, periodToRange, type UsagePeriod } from './period';
 import { PeriodTabs } from './period-tabs';
@@ -138,57 +138,66 @@ export default async function DashboardPage({
     const range = periodToRange(period);
     const periodLabel = PERIOD_LABEL[period];
 
-    // ── Balance (P4c-3.5 fork — never read quota directly) ──
-    let bal: CustomerBalance | null = null;
-    let balErr = false;
-    try {
-        bal = await getCustomerBalance(user.id);
-    } catch (err) {
-        balErr = true;
-        console.warn(`[dashboard] getCustomerBalance failed for user ${user.id}:`, err);
-    }
-
-    // ── Usage aggregate + per-call logs (period-scoped) ──
+    // ── All independent fetches in ONE parallel wave ──
+    // balance / 充值流水 / reseller gate / 用量聚合 / 3 个 call-log 切片互相
+    // 独立;此前分 4 波串行 await,TTFB = 各波之和(跨机 new-api 调用叠本地
+    // DB,页面切换明显卡顿)。打包成一波后 TTFB = 最慢单项;allSettled 保留
+    // 原有分区降级 — 单项失败只影响自己的区块,不拖垮整页。
     const newapiUserId = user.newapi_user_id;
     const newapiUsername = user.newapi_username;
     let agg: UsageAggregateSnapshot | null = null;
     let usageErr: 'account_not_provisioned' | 'fetch_failed' | null = null;
     let calls: CallRow[] = [];
 
-    if (newapiUserId == null || newapiUsername == null) {
+    // username is the dimension new-api honors under admin auth (gotcha
+    // #15 — user_id is silently dropped); we still post-filter every row
+    // by user_id for defence-in-depth. type=2 (成功) + type=5 (失败) are
+    // fetched separately, then merged + sorted desc for the detail table.
+    const logWindow = {
+        start_timestamp: range.start || undefined,
+        end_timestamp: range.end,
+        page: 1,
+    };
+    const usageWave =
+        newapiUserId != null && newapiUsername != null
+            ? Promise.allSettled([
+                  getUsageAggregate({ portalUserId: user.id, newapiUserId, newapiUsername, period }),
+                  queryLogsCached({ username: newapiUsername, type: 2, ...logWindow, page_size: CONSUME_FETCH_SIZE }),
+                  queryLogsCached({ username: newapiUsername, type: 5, ...logWindow, page_size: ERROR_FETCH_SIZE }),
+                  // type=6 视频异步任务失败 → 退还预扣 quota;用来把对应 type=2 消费标成失败·已退款
+                  queryLogsCached({ username: newapiUsername, type: 6, ...logWindow, page_size: TASKFAIL_FETCH_SIZE }),
+              ])
+            : null;
+
+    const [coreSettled, usageSettled] = await Promise.all([
+        Promise.allSettled([
+            // Balance (P4c-3.5 fork — never read quota directly)
+            getCustomerBalance(user.id),
+            prisma.rechargeLog.findMany({
+                where: { user_id: user.id },
+                orderBy: { created_at: 'desc' },
+                take: HISTORY_LIMIT,
+                select: { id: true, order_id: true, amount: true, source: true, created_at: true },
+            }),
+            fetchResellerStatus(user.id),
+        ]),
+        usageWave,
+    ]);
+    const [balSettled, historySettled, resellerSettled] = coreSettled;
+
+    let bal: CustomerBalance | null = null;
+    let balErr = false;
+    if (balSettled.status === 'fulfilled') {
+        bal = balSettled.value;
+    } else {
+        balErr = true;
+        console.warn(`[dashboard] getCustomerBalance failed for user ${user.id}:`, balSettled.reason);
+    }
+
+    if (usageSettled == null) {
         usageErr = 'account_not_provisioned';
     } else {
-        // username is the dimension new-api honors under admin auth (gotcha
-        // #15 — user_id is silently dropped); we still post-filter every row
-        // by user_id for defence-in-depth. type=2 (成功) + type=5 (失败) are
-        // fetched separately, then merged + sorted desc for the detail table.
-        const [aggSettled, consumeSettled, errorSettled, taskFailSettled] = await Promise.allSettled([
-            getUsageAggregate({ portalUserId: user.id, newapiUserId, newapiUsername, period }),
-            queryLogsCached({
-                username: newapiUsername,
-                type: 2,
-                start_timestamp: range.start || undefined,
-                end_timestamp: range.end,
-                page: 1,
-                page_size: CONSUME_FETCH_SIZE,
-            }),
-            queryLogsCached({
-                username: newapiUsername,
-                type: 5,
-                start_timestamp: range.start || undefined,
-                end_timestamp: range.end,
-                page: 1,
-                page_size: ERROR_FETCH_SIZE,
-            }),
-            queryLogsCached({
-                username: newapiUsername,
-                type: 6, // 视频异步任务失败 → 退还预扣 quota;用来把对应 type=2 消费标成失败·已退款
-                start_timestamp: range.start || undefined,
-                end_timestamp: range.end,
-                page: 1,
-                page_size: TASKFAIL_FETCH_SIZE,
-            }),
-        ]);
+        const [aggSettled, consumeSettled, errorSettled, taskFailSettled] = usageSettled;
 
         if (aggSettled.status === 'fulfilled') {
             // seedance-cn 视频绕过 new-api、不进其日志,这里补进聚合让它在 dashboard 可见。
@@ -236,14 +245,16 @@ export default async function DashboardPage({
             });
     }
 
-    // ── Recharge history + reseller promo gate (preserved features) ──
-    const history = await prisma.rechargeLog.findMany({
-        where: { user_id: user.id },
-        orderBy: { created_at: 'desc' },
-        take: HISTORY_LIMIT,
-        select: { id: true, order_id: true, amount: true, source: true, created_at: true },
-    });
-    const resellerSnap = await fetchResellerStatus(user.id);
+    // ── Recharge history + reseller promo gate (fetched in the wave above) ──
+    const history = historySettled.status === 'fulfilled' ? historySettled.value : [];
+    if (historySettled.status === 'rejected') {
+        console.warn(`[dashboard] rechargeLog history fetch failed for user ${user.id}:`, historySettled.reason);
+    }
+    const resellerSnap: ResellerStatusSnap =
+        resellerSettled.status === 'fulfilled' ? resellerSettled.value : { status: null, isReseller: false };
+    if (resellerSettled.status === 'rejected') {
+        console.warn(`[dashboard] fetchResellerStatus failed for user ${user.id}:`, resellerSettled.reason);
+    }
 
     const byModel = agg ? agg.byModel.slice(0, TOP_MODELS) : [];
     const totalTokens = agg ? agg.totalTokens : 0;
