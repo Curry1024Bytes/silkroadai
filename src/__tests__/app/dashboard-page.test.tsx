@@ -16,7 +16,9 @@
  *   - graceful degradation: balErr / usageErr / account_not_provisioned
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { renderToString } from 'react-dom/server';
+import type { ReactNode } from 'react';
+import { Writable } from 'node:stream';
+import { renderToPipeableStream } from 'react-dom/server';
 
 const mockHeadersGet = vi.fn<(name: string) => string | null>();
 vi.mock('next/headers', () => ({
@@ -73,6 +75,34 @@ vi.mock('@/app/(authenticated)/dashboard/model-consumption-chart', () => ({
 
 import DashboardPage from '@/app/(authenticated)/dashboard/page';
 import { __resetLogsCacheForTest } from '@/lib/newapi/logs-cache';
+
+/** P1 streaming(2026-08-29):页面拆成 Suspense + async sections 后,
+ *  renderToString 渲不动 async 组件 —— 改用 Fizz 流式渲染,onAllReady 时
+ *  所有 Suspense 均已 resolve,拿到完整最终 HTML(原有断言语义不变)。 */
+function renderFull(el: ReactNode): Promise<string> {
+    return new Promise((resolve, reject) => {
+        let html = '';
+        const sink = new Writable({
+            write(chunk, _enc, cb) {
+                html += chunk;
+                cb();
+            },
+        });
+        sink.on('finish', () => resolve(html));
+        const { pipe } = renderToPipeableStream(el, {
+            onAllReady() {
+                pipe(sink);
+            },
+            onError(err) {
+                reject(err);
+            },
+        });
+    });
+}
+
+async function renderPage(searchParams: Record<string, string | string[] | undefined> = {}) {
+    return renderFull(await DashboardPage({ searchParams: Promise.resolve(searchParams) }));
+}
 
 const PORTAL_USER_ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 const NEWAPI_USER_ID = 7;
@@ -166,7 +196,7 @@ afterEach(() => {
 
 describe('<DashboardPage /> merged console — happy path', () => {
     it('renders all 5 summary cards with their numbers', async () => {
-        const html = renderToString(await DashboardPage({ searchParams: Promise.resolve({}) }));
+        const html = await renderPage({});
         // labels
         expect(html).toContain('当前余额');
         expect(html).toContain('历史消费');
@@ -184,7 +214,7 @@ describe('<DashboardPage /> merged console — happy path', () => {
     });
 
     it('passes chartModels to the chart + renders the 按模型 breakdown', async () => {
-        const html = renderToString(await DashboardPage({ searchParams: Promise.resolve({}) }));
+        const html = await renderPage({});
         expect(html).toContain('模型消耗分布');
         expect(html).toContain('chart-models:gpt-5.4|claude-opus-4-8|gemini-3-pro-image-preview');
         expect(html).toContain('按模型 Top');
@@ -235,7 +265,7 @@ describe('<DashboardPage /> merged console — happy path', () => {
             ],
         );
 
-        const html = renderToString(await DashboardPage({ searchParams: Promise.resolve({}) }));
+        const html = await renderPage({});
         expect(html).toContain('调用明细');
         expect(html).toContain('成功');
         expect(html).toContain('失败');
@@ -265,7 +295,7 @@ describe('<DashboardPage /> merged console — happy path', () => {
             },
         ]);
 
-        const html = renderToString(await DashboardPage({ searchParams: Promise.resolve({}) }));
+        const html = await renderPage({});
         // recharge history
         expect(html).toContain('充值流水');
         expect(html).toContain('在线支付');
@@ -291,7 +321,7 @@ describe('<DashboardPage /> P4c-3.5 balance fork', () => {
             stale: false,
             quota: null,
         });
-        const html = renderToString(await DashboardPage({ searchParams: Promise.resolve({}) }));
+        const html = await renderPage({});
         expect(html).toMatch(/¥(<!-- -->)?33\.50/);
         expect(html).toMatch(/¥(<!-- -->)?6\.50/);
         // portal has no new-api quota → the "quota" sub-display is absent
@@ -300,7 +330,7 @@ describe('<DashboardPage /> P4c-3.5 balance fork', () => {
 
     it('shows stale hint when balance source is fallback', async () => {
         mockGetCustomerBalance.mockResolvedValue(newapiBal({ stale: true }));
-        const html = renderToString(await DashboardPage({ searchParams: Promise.resolve({}) }));
+        const html = await renderPage({});
         expect(html).toContain('余额数据暂时不可更新');
     });
 });
@@ -343,7 +373,7 @@ describe('<DashboardPage /> graceful degradation', () => {
     it('balErr → banner + 暂无数据 on balance cards, usage still renders', async () => {
         mockGetCustomerBalance.mockRejectedValue(new Error('account fetch failed'));
         const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-        const html = renderToString(await DashboardPage({ searchParams: Promise.resolve({}) }));
+        const html = await renderPage({});
         expect(html).toContain('当前无法获取余额');
         expect(html).toContain('暂无数据');
         // usage-derived cards still show numbers
@@ -354,7 +384,7 @@ describe('<DashboardPage /> graceful degradation', () => {
     it('usage aggregate hard-fail → usageErr banner + 暂无数据, balance still renders', async () => {
         mockGetUsageAggregate.mockRejectedValue(new Error('usage aggregate fetch failed'));
         const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-        const html = renderToString(await DashboardPage({ searchParams: Promise.resolve({}) }));
+        const html = await renderPage({});
         expect(html).toContain('当前无法获取用量数据');
         expect(html).toMatch(/¥(<!-- -->)?7\.20/); // balance intact
         warn.mockRestore();
@@ -362,7 +392,7 @@ describe('<DashboardPage /> graceful degradation', () => {
 
     it('account_not_provisioned (no newapi_user_id) → banner + queryLogs NOT called', async () => {
         mockGetCurrentUser.mockResolvedValue({ ...SAMPLE_USER, newapi_user_id: null });
-        const html = renderToString(await DashboardPage({ searchParams: Promise.resolve({}) }));
+        const html = await renderPage({});
         expect(html).toContain('账户尚未关联到上游');
         expect(mockQueryLogs).not.toHaveBeenCalled();
         // balance still renders
