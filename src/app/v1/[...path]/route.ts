@@ -80,6 +80,7 @@ import { withKeepalive } from './keepalive';
 import { IMAGE_SAFETY_RE, IMAGE_SAFETY_BODY, normalizeImageError } from './error-normalize';
 import { handleAnthropicMessages } from './messages-stream-hold';
 import { handleUsageQuery } from './usage';
+import { handleBatchApi } from './batches';
 import {
     isSeedanceCnModel,
     isSeedanceCnTask,
@@ -2574,6 +2575,13 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
     // 逐请求用量 + 实际扣费查询(sk- 鉴权机读版,见 ./usage)。同上:capture 之前拦截。
     if (req.method === 'GET' && path === '/usage') {
         return handleUsageQuery(req);
+    }
+
+    // OpenAI Batch API 兼容(/v1/files + /v1/batches):portal 自答,不打 new-api
+    // (new-api 无这两组端点,原先兜底透传全是它的 404)。管理面端点不捕获请求日志
+    // —— 批任务逐行执行时 worker self-fetch 回 /v1/images/*,那一跳照常走 capture。
+    if (path === '/files' || path.startsWith('/files/') || path === '/batches' || path.startsWith('/batches/')) {
+        return handleBatchApi(req, path, search);
     }
 
     // 请求日志捕获(数据存储 Phase 1 第②步)。开关 off → null → 下面全程与今天

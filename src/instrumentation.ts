@@ -70,4 +70,9 @@ export async function register() {
     // CatalogPrice). Pure observation, no billing/balance impact. 10m cadence.
     const { startShadowMeterScheduler } = await import('@/lib/scheduler/shadow-meter');
     startShadowMeterScheduler();
+
+    // OpenAI Batch API 兼容 worker:领 /v1/batches 批任务,逐行 self-fetch 重放
+    // /v1/images/* 同步管线(计费在那条腿,worker 零计费逻辑)。5s cadence + 重入守卫。
+    const { startBatchScheduler } = await import('@/lib/batch/worker');
+    startBatchScheduler();
 }

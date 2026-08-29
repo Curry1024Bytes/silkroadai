@@ -20,11 +20,13 @@ const startBalanceAlertScheduler = vi.fn();
 const startImageCleanupScheduler = vi.fn();
 const startResellerCommissionScheduler = vi.fn();
 const startShadowMeterScheduler = vi.fn();
+const startBatchScheduler = vi.fn();
 vi.mock('@/lib/order/timeout', () => ({ startTimeoutScheduler }));
 vi.mock('@/lib/scheduler/balance-alert', () => ({ startBalanceAlertScheduler }));
 vi.mock('@/lib/scheduler/image-cleanup', () => ({ startImageCleanupScheduler }));
 vi.mock('@/lib/scheduler/reseller-commission', () => ({ startResellerCommissionScheduler }));
 vi.mock('@/lib/scheduler/shadow-meter', () => ({ startShadowMeterScheduler }));
+vi.mock('@/lib/batch/worker', () => ({ startBatchScheduler }));
 
 const ALL_SCHEDULERS = [
     startTimeoutScheduler,
@@ -32,6 +34,7 @@ const ALL_SCHEDULERS = [
     startImageCleanupScheduler,
     startResellerCommissionScheduler,
     startShadowMeterScheduler,
+    startBatchScheduler,
 ];
 
 describe('instrumentation register()', () => {
@@ -56,7 +59,7 @@ describe('instrumentation register()', () => {
         expect(setGlobalDispatcher).toHaveBeenCalledTimes(1);
     });
 
-    it('nodejs runtime(主站,无门)→ 5 个调度器全部启动', async () => {
+    it('nodejs runtime(主站,无门)→ 6 个调度器全部启动', async () => {
         process.env.NEXT_RUNTIME = 'nodejs';
         const { register } = await import('../instrumentation');
         await register();

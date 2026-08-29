@@ -1406,3 +1406,63 @@ model EnterpriseGlobalDiscount {
   @@unique([region, variant])
   @@map("enterprise_global_discounts")
 }
+
+// ── OpenAI Batch API 兼容(/v1/files + /v1/batches,2026-08-29)──
+// 客户上传 JSONL(每行一个 /v1/images/* 请求)→ 建 batch → worker 逐行重放现有
+// 同步生图管线(计费/failover/错误归一全复用)→ 结果组装成 output JSONL 供下载。
+// 文件内容存 PG Bytes(不走平台 R2 —— image bucket 是公开读,客户 prompt 不能落公开桶);
+// 入口有 MAX_BATCH_INPUT_BYTES 上限,输出行是 URL 形(b64 被改写),体积可控。
+
+model BatchFile {
+  id         String   @id // file-{24hex}(OpenAI 形 id)
+  user_id    String   @db.Uuid // 上传者(IDOR)
+  purpose    String // batch | batch_output | batch_error
+  filename   String
+  bytes      Int
+  content    Bytes // JSONL 原文(TOAST 承载;入口限 MAX_BATCH_INPUT_BYTES)
+  created_at DateTime @default(now())
+
+  @@index([user_id, created_at])
+  @@map("batch_files")
+}
+
+model Batch {
+  id               String    @id // batch_{24hex}
+  user_id          String    @db.Uuid
+  endpoint         String // /v1/images/generations | /v1/images/edits
+  input_file_id    String
+  status           String    @default("validating") // validating|failed|in_progress|finalizing|completed|expired|cancelling|cancelled
+  output_file_id   String?
+  error_file_id    String?
+  total_count      Int       @default(0)
+  completed_count  Int       @default(0)
+  failed_count     Int       @default(0)
+  errors_json      Json? // 校验失败明细(OpenAI batch.errors 形)
+  metadata_json    Json? // 客户传入 metadata 原样回显
+  cancel_requested Boolean   @default(false)
+  auth_header      String // 客户提交时的 Authorization(worker 逐行重放用;敏感度等同已存的 NewApiToken 值)
+  created_at       DateTime  @default(now())
+  started_at       DateTime? // → in_progress_at
+  finished_at      DateTime? // 终态时刻(completed/failed/expired/cancelled)
+  updated_at       DateTime  @updatedAt
+
+  @@index([user_id, created_at])
+  @@index([status, created_at])
+  @@map("batches")
+}
+
+// 逐行执行结果(worker 重启续跑的依据:已有行跳过)。终态组装完 output/error 文件后保留
+// (审计/排查),体积由行数上限控制。
+model BatchRequestResult {
+  batch_id      String
+  line_no       Int // 输入 JSONL 的 0-based 行号
+  custom_id     String
+  status_code   Int
+  response_json Json? // 2xx 的响应体
+  error_json    Json? // 非 2xx 的错误体
+  created_at    DateTime @default(now())
+
+  @@id([batch_id, line_no])
+  @@index([batch_id])
+  @@map("batch_request_results")
+}

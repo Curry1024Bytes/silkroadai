@@ -203,6 +203,10 @@ silkroadai/
 - [x] #212 — **GET /v1/key 自查端点**(new-api 无此路径,拦截纯增量):sk- 自查别名/状态/档次(显示名按 key 主人 tenant)/账户余额(round4 + `stale` 标志)/近期用量。评审 major:`last_used_at` 缓存命中时是缓存写入时间 → 只 `source==='live'` 才给;`recent_used_cny` 命名不冒充对账口径。余额挂 → 503;次要信息 best-effort null。
 - [ ] `/docs` 章节(流式契约 / silkroadai 字段 / /v1/key)另起 PR;enriched 头 + 真实逐 token 流式待有余额 key 验证(unauth 通路已证)。
 
+### OpenAI Batch API 兼容(/v1/files + /v1/batches — 2026-08-29)
+
+- [x] 客户 SDK `client.files.create(purpose='batch')` + `client.batches.*` 直接可用(此前 /v1/batches 兜底透传 new-api 全 404)。MVP 只收 `endpoint` = `/v1/images/{generations,edits}`;JSONL 逐行由 worker(`src/lib/batch/worker.ts`,挂 instrumentation 第 6 调度器,5s cadence + 重入守卫)**self-fetch 重放本实例 /v1/images/\* 同步管线** —— 计费/渠道 failover/错误归一/图床 URL 全走客户直调同一条路,worker 零计费逻辑。文件内容存 **PG Bytes**(公开读 image bucket 放不得客户 prompt),上限 20MB / 1000 行(env `BATCH_MAX_*` 可调);`response_format=b64_json` 校验时就地删掉(输出 URL 形,防 output 文件 GB 级)。**不做官方 5 折**(上游成本没变,按同步价计费)。migration `20260829120000_add_batch_api`(3 表全 additive,SQL 与 `prisma migrate diff --from-empty` 权威输出逐字核对)。逐行结果落 `batch_request_results`(唯一键幂等)→ 重启续跑;24h 超窗 → expired(带部分结果);每用户在途 5 批上限。39 新测(validate 10 / worker 10 / HTTP 面 19)+ instrumentation 测试更新;全套与基线红绿完全对齐。
+
 ### 企业门户「火山」渠道换上游 → 筷子开放平台(2026-08-17 上线)
 
 - [x] PR #386 merge `7cbb77f` + 部署 + 生产真机 smoke ✅ — volc region 上游从 new-api 形 provider(`ENTERPRISE_VOLC_VIDEO_*`)换成 **筷子 AI 开放平台** `https://aiopenapi.kuaizi.cn`。筷子对齐火山方舟官方 `contents/generations/tasks` 契约 → 对客方舟形接口近乎直通,**proxy 主干 / 计费 / 对客契约 / region 键全不变**,差异全吸收在适配器边界。
