@@ -1407,15 +1407,35 @@ function strictGptImageError(outputFormat: string, background: string, size: str
     return gptImageSizeError(size);
 }
 
-/** png base64 → jpeg base64(jimp,纯 JS 无 native 依赖,失败回退原 png,永不抛)。 */
-async function pngToJpegB64(pngB64: string): Promise<string> {
+/** 客户请求的 output_format → 需要服务端转码的目标(gpt-image 上游恒返 png、无视 output_format)。
+ *  jpeg/jpg → 'jpeg'(本地转码交付);png/空/webp/未知 → null。
+ *  ⚠️ webp 不转:jimp 1.6.1 不支持 webp 编码,不为它引 native 依赖 —— webp 请求交付 png、
+ *  回显按实际字节 sniff 成 png(诚实,#418 行为)。客户当前反馈只涉及 jpeg(#9/#13)。 */
+function gptImageTranscodeTarget(outputFormat: string): 'jpeg' | null {
+    const s = outputFormat.trim().toLowerCase();
+    return s === 'jpeg' || s === 'jpg' ? 'jpeg' : null;
+}
+
+/** output_compression(OpenAI:0-100 百分比,越大文件越大质量越高)→ jimp quality(1-100)。
+ *  缺省/非法 → 默认质量 90(贴近官方观感)。 */
+function transcodeQuality(compression: number | undefined): number {
+    if (typeof compression === 'number' && compression >= 0 && compression <= 100) {
+        return Math.max(1, Math.round(compression)); // 0 会被 jimp 当"最低质量",钳到 1 避免全糊
+    }
+    return 90;
+}
+
+/** png base64 → jpeg base64(jimp,纯 JS 无 native 依赖,失败回退原 png,永不抛)。
+ *  上游恒返 png,客户请求 jpeg 时在此本地转码【真交付】(#9/#13,2026-08-29 客户反馈:请求 JPEG
+ *  却拿到 PNG)。副带把 png 里的 adobe C2PA 一并丢弃(重编码不保留 PNG 辅助块)。 */
+async function transcodePngB64(pngB64: string, target: 'jpeg', compression?: number): Promise<string> {
     try {
         const { Jimp } = await import('jimp');
         const img = await Jimp.read(Buffer.from(pngB64, 'base64'));
-        const jpegBuf = await img.getBuffer('image/jpeg', { quality: 92 });
-        return Buffer.from(jpegBuf).toString('base64');
+        const buf = await img.getBuffer('image/jpeg', { quality: transcodeQuality(compression) });
+        return Buffer.from(buf).toString('base64');
     } catch (e) {
-        console.warn('[gpt-image] png→jpeg transcode failed, keeping png:', e instanceof Error ? e.message : e);
+        console.warn(`[gpt-image] png→${target} transcode failed, keeping png:`, e instanceof Error ? e.message : e);
         return pngB64;
     }
 }
@@ -1532,8 +1552,9 @@ async function reshapeOpenAiImageResponse(
     cap: CaptureCtx | null,
     req: NextRequest | null = null,
     storeToUrl = false,
-    transcodeJpeg = false,
+    transcodeTo: 'jpeg' | null = null,
     echo: ImageEchoFields | null = null,
+    transcodeCompression?: number,
 ): Promise<NextResponse> {
     const text = await upstream.text();
     const headers = new Headers();
@@ -1608,13 +1629,14 @@ async function reshapeOpenAiImageResponse(
         if (typeof it.b64_json === 'string' && it.b64_json) it.b64_json = stripAdobeImageMetadataB64(it.b64_json);
     }
 
-    // 严格模式 output_format=jpeg:zhiyunai 恒返 png,服务端 png→jpeg 转码(就地改 data[].b64_json,
-    // out.data 同一引用会一并反映)。失败回退原 png(pngToJpegB64 永不抛)。
-    const imgMime = transcodeJpeg ? 'image/jpeg' : 'image/png';
-    if (transcodeJpeg) {
+    // output_format=jpeg/webp:上游恒返 png、无视该参数 → 服务端 png→目标格式转码【真交付】(#9/#13,
+    // 就地改 data[].b64_json,out.data 同一引用会一并反映)。失败回退原 png(transcodePngB64 永不抛)。
+    // 客户请求 jpeg/webp 就真给 jpeg/webp,不再谎报也不再只回 png。output_compression → 转码 quality。
+    const imgMime = transcodeTo === 'jpeg' ? 'image/jpeg' : 'image/png';
+    if (transcodeTo) {
         for (const item of data) {
             if (typeof item.b64_json === 'string' && item.b64_json) {
-                item.b64_json = await pngToJpegB64(item.b64_json);
+                item.b64_json = await transcodePngB64(item.b64_json, transcodeTo, transcodeCompression);
             }
         }
     }
@@ -1721,7 +1743,8 @@ async function handleImagesDalle(
             // model 非我们的 Gemini 生图 → 重建 FormData 透传(保留 gpt-image-2 等)
             if (!(model in GEMINI_IMAGE_MODELS)) {
                 // gpt-image:剥 response_format + 把比例(aspect_ratio / "16:9" 形态 size)翻成像素 size
-                let wantJpeg = false;
+                let transcodeTo: 'jpeg' | null = null;
+                let transcodeCompression: number | undefined;
                 if (isGptImageModel(model)) {
                     // 严格模式(opt-in):先按 Azure 标准校验 output_format/background/size,不合规 → 400
                     if (isStrictImageMode(req, search)) {
@@ -1731,8 +1754,12 @@ async function handleImagesDalle(
                             sizeRaw,
                         );
                         if (err) return imageError(err, 400, cap, { code: 'invalid_value' });
-                        wantJpeg = String(form.get('output_format') ?? '').toLowerCase() === 'jpeg';
                     }
+                    // 严格 / 非严格都做:请求 jpeg/webp → 服务端转码交付(上游恒返 png、无视 output_format)
+                    transcodeTo = gptImageTranscodeTarget(String(form.get('output_format') ?? ''));
+                    const c = Number(form.get('output_compression'));
+                    transcodeCompression =
+                        Number.isFinite(c) && String(form.get('output_compression') ?? '') !== '' ? c : undefined;
                     normalizeGptImageForm(form);
                     sizeRaw = String(form.get('size') ?? '');
                 }
@@ -1763,8 +1790,9 @@ async function handleImagesDalle(
                         cap,
                         req,
                         isGptImageModel(model) && wantHostedUrl,
-                        wantJpeg,
+                        transcodeTo,
                         echo,
+                        transcodeCompression,
                     );
                 } catch (e) {
                     if (e instanceof ImageUrlError)
@@ -1821,7 +1849,8 @@ async function handleImagesDalle(
             if (!(model in GEMINI_IMAGE_MODELS)) {
                 // gpt-image:剥 response_format(zhiyunai 拒收 →400)+ 比例→像素 size(zhiyunai 不认
                 // aspect_ratio / "16:9" 形态 size,默认出方图)。见 normalizeGptImageJson。
-                let wantJpeg = false;
+                let transcodeTo: 'jpeg' | null = null;
+                let transcodeCompression: number | undefined;
                 if (isGptImageModel(model)) {
                     // 严格模式(opt-in):先按 Azure 标准校验 output_format/background/size,不合规 → 400
                     if (isStrictImageMode(req, search)) {
@@ -1831,9 +1860,13 @@ async function handleImagesDalle(
                             sizeRaw,
                         );
                         if (err) return imageError(err, 400, cap, { code: 'invalid_value' });
-                        wantJpeg =
-                            (typeof body.output_format === 'string' ? body.output_format : '').toLowerCase() === 'jpeg';
                     }
+                    // 严格 / 非严格都做:请求 jpeg/webp → 服务端转码交付(上游恒返 png、无视 output_format)
+                    transcodeTo = gptImageTranscodeTarget(
+                        typeof body.output_format === 'string' ? body.output_format : '',
+                    );
+                    transcodeCompression =
+                        typeof body.output_compression === 'number' ? body.output_compression : undefined;
                     normalizeGptImageJson(body);
                     sizeRaw = typeof body.size === 'string' ? body.size : '';
                 }
@@ -1855,8 +1888,9 @@ async function handleImagesDalle(
                         cap,
                         req,
                         isGptImageModel(model) && wantHostedUrl,
-                        wantJpeg,
+                        transcodeTo,
                         echo,
+                        transcodeCompression,
                     );
                 } catch (e) {
                     if (e instanceof ImageUrlError)

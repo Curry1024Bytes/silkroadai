@@ -3869,6 +3869,95 @@ describe('/v1 proxy — 严格模式 Azure gpt-image 合规(opt-in)', () => {
     });
 });
 
+describe('/v1 proxy — 非严格模式 output_format=jpeg 真交付(客户 #9/#13:请求 JPEG 却拿 PNG)', () => {
+    async function pngB64(): Promise<string> {
+        const { Jimp } = await import('jimp');
+        const buf = await new Jimp({ width: 8, height: 8, color: 0x00ff00ff }).getBuffer('image/png');
+        return Buffer.from(buf).toString('base64');
+    }
+    function upstreamPng(b64: string) {
+        return new Response(JSON.stringify({ created: 1, size: '1024x1024', data: [{ b64_json: b64 }] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+        });
+    }
+    const magic = (b64: string) => Array.from(Buffer.from(b64, 'base64').subarray(0, 3));
+
+    it('JSON generations output_format=jpeg(无 strict)→ 真返 JPEG 字节 + 回显 jpeg', async () => {
+        mockFetch.mockResolvedValueOnce(upstreamPng(await pngB64()));
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: {
+                    model: 'gpt-image-2',
+                    prompt: 'x',
+                    size: '1024x1024',
+                    quality: 'medium',
+                    output_format: 'jpeg',
+                },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        const j = (await res.json()) as { data: Array<{ b64_json: string }>; output_format?: string };
+        expect(magic(j.data[0].b64_json).slice(0, 2)).toEqual([0xff, 0xd8]); // 真 JPEG,不是 PNG
+        expect(j.output_format).toBe('jpeg'); // 回显与字节一致
+    });
+
+    it('output_format=jpeg + output_compression=30 → 比 95 质量低(文件更小),仍是 JPEG', async () => {
+        const src = await pngB64();
+        const jpegLen = async (compression: number): Promise<number> => {
+            mockFetch.mockResolvedValueOnce(upstreamPng(src));
+            const res = await POST(
+                makeReq('/images/generations', {
+                    body: {
+                        model: 'gpt-image-2',
+                        prompt: 'x',
+                        size: '1024x1024',
+                        output_format: 'jpeg',
+                        output_compression: compression,
+                    },
+                    headers: { authorization: 'Bearer sk-test' },
+                }),
+                ctx('images', 'generations'),
+            );
+            const b64 = ((await res.json()) as { data: { b64_json: string }[] }).data[0].b64_json;
+            expect(magic(b64).slice(0, 2)).toEqual([0xff, 0xd8]); // 都是 JPEG
+            return Buffer.from(b64, 'base64').length;
+        };
+        expect(await jpegLen(30)).toBeLessThan(await jpegLen(95));
+    });
+
+    it('output_format=png(或缺省)→ 不转码,原样 PNG', async () => {
+        const src = await pngB64();
+        mockFetch.mockResolvedValueOnce(upstreamPng(src));
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', output_format: 'png' },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        const j = (await res.json()) as { data: Array<{ b64_json: string }>; output_format?: string };
+        expect(magic(j.data[0].b64_json).slice(0, 1)).toEqual([0x89]); // PNG
+        expect(j.output_format).toBe('png');
+    });
+
+    it('output_format=webp(jimp 不支持)→ 交付 png + 诚实回显 png(不谎报 webp)', async () => {
+        mockFetch.mockResolvedValueOnce(upstreamPng(await pngB64()));
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', output_format: 'webp' },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        const j = (await res.json()) as { data: Array<{ b64_json: string }>; output_format?: string };
+        expect(magic(j.data[0].b64_json).slice(0, 1)).toEqual([0x89]); // PNG 字节
+        expect(j.output_format).toBe('png'); // sniff 出 png,不谎报 webp
+    });
+});
+
 describe('/v1 proxy — 视频轮询 result_url 重写(2026-07-04 base_url 内网化致内容代理失效)', () => {
     const AUTH = { authorization: 'Bearer sk-test-video' };
     const R2_URL = 'https://images.silkroadai.io/seedance-video/mvt-abc123.mp4';
