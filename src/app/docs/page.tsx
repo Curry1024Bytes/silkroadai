@@ -134,6 +134,11 @@ const AGENTS: AgentSection[] = [
         label: '用量与扣费查询 · 逐请求对账',
         blurb: '响应里拿 token usage + request_id,GET /v1/usage 查每次调用实际扣了多少 ¥ — 单条对账 / 按时间段批量拉,程序化账单核对。',
     },
+    {
+        id: 'api-batch',
+        label: 'Batch API · 批量生图',
+        blurb: 'OpenAI Batch API 兼容(/v1/files + /v1/batches):上传 JSONL → 创建批任务 → 轮询 → 下载结果文件;官方 SDK client.batches.* 直接可用,当前支持批量文生图 / 图生图。',
+    },
 ];
 
 const OPENAI_BASE = 'https://ai.silkroadai.io/v1';
@@ -1036,10 +1041,17 @@ data: [DONE]`}
                                         你的 key 可用的模型 + 价格/模态元数据(见第 18 章)
                                     </td>
                                 </tr>
-                                <tr>
+                                <tr className="border-b border-brand-border">
                                     <td className="px-4 py-3 font-mono text-xs text-navy align-top">GET /v1/key</td>
                                     <td className="px-4 py-3 text-ink align-top">Silk Road 扩展</td>
                                     <td className="px-4 py-3 text-ink">key 自查:档次 / 账户余额 / 用量(见第 19 章)</td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">
+                                        /v1/files + /v1/batches
+                                    </td>
+                                    <td className="px-4 py-3 text-ink align-top">OpenAI Batch 兼容</td>
+                                    <td className="px-4 py-3 text-ink">批量生图:JSONL 批任务(见第 22 章)</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -3990,6 +4002,489 @@ print(f'合计 ¥{sum(s["cny"] for s in by_model.values()):.4f}')`}
                                 </tr>
                             </tbody>
                         </table>
+                    </div>
+                </section>
+
+                {/* ─── 22 · Batch API · 批量生图(#422 OpenAI Batch 兼容:/v1/files + /v1/batches)─── */}
+                <section id="api-batch" className="mt-12 mb-10 scroll-mt-20">
+                    <div className="flex items-baseline justify-between flex-wrap gap-2 mb-4 pb-3 border-b-2 border-brand-accent">
+                        <h2 className="m-0 text-2xl font-semibold text-navy">
+                            <span className="text-brand-accent font-bold mr-3 tabular-nums">22</span>
+                            Batch API · 批量生图
+                        </h2>
+                    </div>
+                    <p className="m-0 mb-4 text-sm text-ink leading-relaxed">
+                        完整兼容 OpenAI Batch API:把成百上千个生图请求写进一个{' '}
+                        <strong className="text-navy">JSONL 文件</strong>一次提交,我们在后台逐行执行,你只需
+                        <strong className="text-navy">轮询状态、最后下载结果文件</strong> ——
+                        不用自己维护并发队列和重试逻辑。官方 openai SDK 的{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            client.files.*
+                        </code>{' '}
+                        /{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            client.batches.*
+                        </code>{' '}
+                        直接可用,认证用同一个 sk- key。当前支持的批任务端点:
+                        <strong className="text-navy">文生图 /v1/images/generations 与图生图 /v1/images/edits</strong>
+                        (其它端点暂不支持,提交会 400)。
+                    </p>
+
+                    <p className="m-0 mb-2 text-sm font-medium text-navy">四步流程</p>
+                    <div className="rounded-lg overflow-hidden border border-brand-border bg-surface mb-4">
+                        <table className="w-full border-collapse text-sm">
+                            <thead>
+                                <tr className="bg-paper-muted text-muted-ink">
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        步骤
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        接口
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        说明
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 text-ink align-top whitespace-nowrap">① 上传</td>
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">POST /v1/files</td>
+                                    <td className="px-4 py-3 text-ink">
+                                        multipart 上传 JSONL 文件,
+                                        <code className="font-mono text-xs bg-paper-muted px-1 rounded text-navy">
+                                            purpose=batch
+                                        </code>
+                                        ,返回 file-… id
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 text-ink align-top whitespace-nowrap">② 创建</td>
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">
+                                        POST /v1/batches
+                                    </td>
+                                    <td className="px-4 py-3 text-ink">
+                                        带{' '}
+                                        <code className="font-mono text-xs bg-paper-muted px-1 rounded text-navy">
+                                            input_file_id
+                                        </code>{' '}
+                                        +{' '}
+                                        <code className="font-mono text-xs bg-paper-muted px-1 rounded text-navy">
+                                            endpoint
+                                        </code>
+                                        ,返回 batch_… 对象(status=validating)
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 text-ink align-top whitespace-nowrap">③ 轮询</td>
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">
+                                        GET /v1/batches/{'{batch_id}'}
+                                    </td>
+                                    <td className="px-4 py-3 text-ink">
+                                        看 status +{' '}
+                                        <code className="font-mono text-xs bg-paper-muted px-1 rounded text-navy">
+                                            request_counts
+                                        </code>{' '}
+                                        进度,直到终态(completed / failed / expired / cancelled)
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-3 text-ink align-top whitespace-nowrap">④ 下载</td>
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">
+                                        GET /v1/files/{'{file_id}'}/content
+                                    </td>
+                                    <td className="px-4 py-3 text-ink">
+                                        用 batch 对象里的{' '}
+                                        <code className="font-mono text-xs bg-paper-muted px-1 rounded text-navy">
+                                            output_file_id
+                                        </code>
+                                        (成功行)/{' '}
+                                        <code className="font-mono text-xs bg-paper-muted px-1 rounded text-navy">
+                                            error_file_id
+                                        </code>
+                                        (失败行)取回 JSONL 结果
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <p className="m-0 mb-4 text-xs text-minor-ink">
+                        其余管理接口:GET /v1/files、GET /v1/files/{'{id}'}、DELETE /v1/files/{'{id}'}、GET
+                        /v1/batches(列表)、POST /v1/batches/{'{id}'}/cancel(取消)。文件与批任务只有你自己的账号可见。
+                    </p>
+
+                    <h3 className="m-0 mt-6 mb-2 text-base font-semibold text-navy">JSONL 行格式</h3>
+                    <p className="m-0 mb-3 text-sm text-ink leading-relaxed">
+                        每行一个独立请求,格式与 OpenAI 官方一致(四个字段都必填):
+                    </p>
+                    <div className="rounded-lg overflow-hidden border border-brand-border bg-surface mb-4">
+                        <table className="w-full border-collapse text-sm">
+                            <thead>
+                                <tr className="bg-paper-muted text-muted-ink">
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        字段
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        说明
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">custom_id</td>
+                                    <td className="px-4 py-3 text-ink">
+                                        你自己的请求编号(非空字符串,<strong className="text-navy">全文件唯一</strong>
+                                        );结果乱序返回时靠它对回原请求
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">method</td>
+                                    <td className="px-4 py-3 text-ink">
+                                        固定{' '}
+                                        <code className="font-mono text-xs bg-paper-muted px-1 rounded text-navy">
+                                            &quot;POST&quot;
+                                        </code>
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">url</td>
+                                    <td className="px-4 py-3 text-ink">
+                                        必须与创建 batch 时的{' '}
+                                        <code className="font-mono text-xs bg-paper-muted px-1 rounded text-navy">
+                                            endpoint
+                                        </code>{' '}
+                                        完全一致 —— 一个 batch 里不能混用 generations 和 edits
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">body</td>
+                                    <td className="px-4 py-3 text-ink">
+                                        与同步调用同一接口时的请求 body 完全一样(model 必填;prompt / aspect_ratio / size
+                                        / n 等照常,见第 12、13 章)
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <p className="m-0 mb-2 text-sm font-medium text-navy">示例 batch.jsonl(文生图)</p>
+                    <CodeBlock language="json">
+                        {`{"custom_id": "img-1", "method": "POST", "url": "/v1/images/generations", "body": {"model": "gemini-3.1-flash-image-preview", "prompt": "一只在丝绸之路上骑骆驼的小猫", "aspect_ratio": "16:9"}}
+{"custom_id": "img-2", "method": "POST", "url": "/v1/images/generations", "body": {"model": "gpt-image-2", "prompt": "水墨风格的敦煌壁画", "size": "1024x1024"}}`}
+                    </CodeBlock>
+                    <p className="m-0 mb-2 mt-4 text-sm font-medium text-navy">图生图(/v1/images/edits)的行</p>
+                    <p className="m-0 mb-2 text-sm text-ink leading-relaxed">
+                        batch 行是 JSON,没法放 multipart 文件 —— 输入图用{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            image
+                        </code>{' '}
+                        字段传<strong className="text-navy">公网 URL 或 data URL</strong>
+                        (字符串;多参考图传数组),与第 12 章 JSON 形图生图完全一致:
+                    </p>
+                    <CodeBlock language="json">
+                        {`{"custom_id": "edit-1", "method": "POST", "url": "/v1/images/edits", "body": {"model": "gemini-3.1-flash-image-preview", "prompt": "把背景换成星空", "image": "https://你的图床/input.png"}}`}
+                    </CodeBlock>
+
+                    <h3 className="m-0 mt-6 mb-2 text-base font-semibold text-navy">Python(openai SDK,完整四步)</h3>
+                    <CodeBlock language="python">
+                        {`import json, time
+from openai import OpenAI
+
+client = OpenAI(api_key="sk-你的KEY", base_url="${OPENAI_BASE}")
+
+# ① 上传 JSONL
+batch_file = client.files.create(file=open("batch.jsonl", "rb"), purpose="batch")
+
+# ② 创建批任务
+batch = client.batches.create(
+    input_file_id=batch_file.id,
+    endpoint="/v1/images/generations",
+    completion_window="24h",          # 只支持 24h
+)
+print(batch.id, batch.status)         # batch_xxxx validating
+
+# ③ 轮询(生图逐张真实执行,大批建议 30–60 秒一次)
+while batch.status not in ("completed", "failed", "expired", "cancelled"):
+    time.sleep(30)
+    batch = client.batches.retrieve(batch.id)
+    print(batch.status, batch.request_counts)  # completed/failed 计数即进度
+
+# ④ 下载结果
+if batch.output_file_id:
+    for line in client.files.content(batch.output_file_id).text.splitlines():
+        r = json.loads(line)
+        print(r["custom_id"], r["response"]["body"]["data"][0]["url"])
+if batch.error_file_id:               # 失败行(含逐行错误信息)
+    print(client.files.content(batch.error_file_id).text)
+if batch.status == "failed":          # JSONL 本身没过校验(一行都没执行)
+    print(batch.errors)`}
+                    </CodeBlock>
+
+                    <p className="m-0 mb-2 mt-4 text-sm font-medium text-navy">curl 版</p>
+                    <CodeBlock language="bash">
+                        {`# ① 上传
+curl "${OPENAI_BASE}/files" \\
+  -H "Authorization: Bearer sk-你的KEY" \\
+  -F purpose=batch -F file=@batch.jsonl
+# → { "id": "file-xxxx", "object": "file", "purpose": "batch", ... }
+
+# ② 创建
+curl "${OPENAI_BASE}/batches" \\
+  -H "Authorization: Bearer sk-你的KEY" -H "Content-Type: application/json" \\
+  -d '{ "input_file_id": "file-xxxx", "endpoint": "/v1/images/generations", "completion_window": "24h" }'
+# → { "id": "batch_xxxx", "status": "validating", ... }
+
+# ③ 轮询
+curl "${OPENAI_BASE}/batches/batch_xxxx" -H "Authorization: Bearer sk-你的KEY"
+# → status: validating → in_progress → completed;request_counts = {total, completed, failed}
+
+# ④ 下载(id 来自 ③ 响应的 output_file_id / error_file_id)
+curl "${OPENAI_BASE}/files/file-yyyy/content" \\
+  -H "Authorization: Bearer sk-你的KEY" -o output.jsonl`}
+                    </CodeBlock>
+
+                    <p className="m-0 mb-2 mt-4 text-sm font-medium text-navy">输出文件的一行长这样</p>
+                    <CodeBlock language="json">
+                        {`{
+  "id": "batch_req_xxxx_0",
+  "custom_id": "img-1",
+  "response": {
+    "status_code": 200,
+    "request_id": null,
+    "body": { "created": 1756450000, "data": [ { "url": "https://images.silkroadai.io/gen/xxxx.png" } ] }
+  },
+  "error": null
+}
+// 失败行进 error 文件,结构相同:response.body 是完整错误体,
+// error = { "code": "request_failed", "message": "…失败原因…" }`}
+                    </CodeBlock>
+
+                    <h3 className="m-0 mt-6 mb-2 text-base font-semibold text-navy">状态机</h3>
+                    <div className="rounded-lg overflow-hidden border border-brand-border bg-surface mb-4">
+                        <table className="w-full border-collapse text-sm">
+                            <thead>
+                                <tr className="bg-paper-muted text-muted-ink">
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        status
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        含义
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">validating</td>
+                                    <td className="px-4 py-3 text-ink">已创建,等待校验 JSONL(通常几秒内进入下一态)</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">failed</td>
+                                    <td className="px-4 py-3 text-ink">
+                                        JSONL 校验不过,<strong className="text-navy">一行都没执行、不扣费</strong>
+                                        ;逐行错误(code + 行号,最多报 20 条)在 batch 对象的{' '}
+                                        <code className="font-mono text-xs bg-paper-muted px-1 rounded text-navy">
+                                            errors
+                                        </code>{' '}
+                                        字段
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">in_progress</td>
+                                    <td className="px-4 py-3 text-ink">
+                                        逐行执行中,
+                                        <code className="font-mono text-xs bg-paper-muted px-1 rounded text-navy">
+                                            request_counts
+                                        </code>{' '}
+                                        实时增长
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">completed</td>
+                                    <td className="px-4 py-3 text-ink">
+                                        全部行有结果;成功行在 output_file_id,失败行在 error_file_id(
+                                        <strong className="text-navy">个别行失败不影响整批完成</strong>)
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">
+                                        cancelling / cancelled
+                                    </td>
+                                    <td className="px-4 py-3 text-ink">
+                                        调 POST /v1/batches/{'{id}'}/cancel 后:已执行的行照常出结果文件,未执行的行不再跑
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">expired</td>
+                                    <td className="px-4 py-3 text-ink">
+                                        创建 24 小时内没跑完 → 按已完成的部分出结果文件,剩余行不再执行
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <h3 className="m-0 mt-6 mb-2 text-base font-semibold text-navy">限制与注意</h3>
+                    <div className="rounded-lg overflow-hidden border border-brand-border bg-surface mb-4">
+                        <table className="w-full border-collapse text-sm">
+                            <thead>
+                                <tr className="bg-paper-muted text-muted-ink">
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        项
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        限制
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 text-ink align-top">输入文件大小</td>
+                                    <td className="px-4 py-3 text-ink">≤ 20MB(超出上传直接 413)</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 text-ink align-top">每批行数</td>
+                                    <td className="px-4 py-3 text-ink">≤ 1000 行(超出校验失败 → status=failed)</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 text-ink align-top">每账号在途批次</td>
+                                    <td className="px-4 py-3 text-ink">
+                                        ≤ 5 个(validating / in_progress / cancelling 计数;超出创建返 429,等一批完成再提)
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 text-ink align-top">完成窗口</td>
+                                    <td className="px-4 py-3 text-ink">
+                                        <code className="font-mono text-xs bg-paper-muted px-1 rounded text-navy">
+                                            completion_window
+                                        </code>{' '}
+                                        只支持 &quot;24h&quot;;超窗 → expired(保留已完成部分)
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 text-ink align-top">输出格式</td>
+                                    <td className="px-4 py-3 text-ink">
+                                        <code className="font-mono text-xs bg-paper-muted px-1 rounded text-navy">
+                                            response_format: &quot;b64_json&quot;
+                                        </code>{' '}
+                                        会被忽略,出图一律<strong className="text-navy">图床 URL</strong>
+                                        (1000 行 base64 会把结果文件撑到 GB 级);配了自定义 OSS 则照常传你的 bucket(见第
+                                        12 章)
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 text-ink align-top">计费</td>
+                                    <td className="px-4 py-3 text-ink">
+                                        与同步调用<strong className="text-navy">同价、同渠道、同计费语义</strong>
+                                        ,逐行执行时实时扣;<strong className="text-navy">没有官方那种 5 折批量价</strong>
+                                        (上游成本没变)—— Batch 的价值是省你自己的队列/重试工程
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-3 text-ink align-top">执行速度</td>
+                                    <td className="px-4 py-3 text-ink">
+                                        后台小并发逐张生成,数百行的批按小时级预期(24h
+                                        窗口内完成);要更快的单张时效用同步或 ?async=true(第 14 章)
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <h3 className="m-0 mt-6 mb-2 text-base font-semibold text-navy">常见错误</h3>
+                    <div className="rounded-lg overflow-hidden border border-brand-border bg-surface mb-4">
+                        <table className="w-full border-collapse text-sm">
+                            <thead>
+                                <tr className="bg-paper-muted text-muted-ink">
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        错误
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        原因 / 处理
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">
+                                        400 unsupported_endpoint
+                                    </td>
+                                    <td className="px-4 py-3 text-ink">
+                                        endpoint 不是 /v1/images/generations 或 /v1/images/edits(chat
+                                        等其它端点暂不支持批量)
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">
+                                        400 unsupported_purpose
+                                    </td>
+                                    <td className="px-4 py-3 text-ink">
+                                        上传文件时 purpose 不是 &quot;batch&quot;(只支持这一种)
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">
+                                        413 file_too_large
+                                    </td>
+                                    <td className="px-4 py-3 text-ink">文件超 20MB,拆成多个文件分批提交</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">
+                                        429 batch_limit_reached
+                                    </td>
+                                    <td className="px-4 py-3 text-ink">在途批次已达 5 个,等其中一个到终态再创建</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">
+                                        status=failed + errors
+                                    </td>
+                                    <td className="px-4 py-3 text-ink">
+                                        JSONL 校验错:invalid_json_line(某行不是合法 JSON)/ missing_custom_id /
+                                        duplicate_custom_id / invalid_method / invalid_url(行内 url ≠ batch endpoint)/
+                                        missing_model / batch_too_large / empty_batch;每条带 1-based
+                                        行号,修完重新上传再建 batch
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">
+                                        行级失败 → error 文件
+                                    </td>
+                                    <td className="px-4 py-3 text-ink">
+                                        单行执行失败(如模型名写错 / key 档次不含该模型 → 503 no available
+                                        channel,或图片内容被上游拒)只影响该行:进 error_file_id,batch 照常
+                                        completed。修好 body 后把失败行重新组一个小 batch 提交即可
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">404 not_found</td>
+                                    <td className="px-4 py-3 text-ink">
+                                        file / batch id 不存在,或不属于当前 key 所在账号(id 之间不互通)
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div className="rounded-lg border-l-4 border-brand-accent bg-paper-muted px-4 py-3 text-sm text-ink">
+                        📌 <strong className="text-navy">速查</strong>:JSONL(custom_id / method / url / body)→{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            POST /v1/files
+                        </code>{' '}
+                        (purpose=batch) →{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            POST /v1/batches
+                        </code>{' '}
+                        → 轮询{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            GET /v1/batches/{'{id}'}
+                        </code>{' '}
+                        → completed 后下载{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            output_file_id
+                        </code>{' '}
+                        /{' '}
+                        <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            error_file_id
+                        </code>{' '}
+                        · 限 20MB / 1000 行 / 在途 5 批 / 24h 窗口 · 出图一律 URL · 按同步价计费。
                     </div>
                 </section>
 
