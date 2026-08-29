@@ -91,7 +91,7 @@ import { isEnterpriseFlavor, handleEnterpriseV1 } from '@/lib/enterprise/proxy';
 import { guardSseResponse, guardSseStream, type SseErrorShape } from '@/lib/sse/stream-guard';
 import { forwardHeaders, passthroughResponse, STRIP_RESPONSE_HEADERS } from '@/lib/proxy/forward';
 import { CHAT_SPEC, RESPONSES_SPEC, coerceAndValidate, guardRawBody, violationBody } from '@/lib/proxy/body-guard';
-import { stripAdobeImageMetadataB64 } from '@/lib/proxy/image-metadata';
+import { stripAdobeImageMetadata, stripAdobeImageMetadataB64 } from '@/lib/proxy/image-metadata';
 import { normalizeOpenAiResponse, normalizeChoices } from '@/lib/proxy/finish-reason';
 import { loadCatalogMeta, resolveTierFromAuthHeader, enrichModelList } from '@/lib/models/machine-catalog';
 import {
@@ -774,6 +774,26 @@ async function storeGeneratedImage(
     }
 }
 
+/** gpt-image-2 上游返回【图片 URL】(而非 b64)时:拉下来 → 剥 adobe C2PA → 转存我们的图床,
+ *  返回我们的稳定 url。绝不把上游 url 原样透传给客户 —— 它既暴露上游域名,又携带 adobe C2PA
+ *  凭证(2026-08-29 客户 contentcredentials 读到 "Adobe Inc." 的泄漏路径:直连 adobe 渠道返 url
+ *  时,handleGptImageChat / reshape 的 url 分支原样透传,绕过了只作用于 b64 的剥离)。
+ *  拉取失败 → 返 null,调用方决定兜底(极少见;失败时宁可让请求走原逻辑也不静默丢图)。 */
+async function rehostStrippedImageUrl(req: NextRequest, url: string): Promise<StoredImage | null> {
+    try {
+        const r = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(30_000) });
+        if (!r.ok) return null;
+        const buf = Buffer.from(await r.arrayBuffer());
+        if (buf.length === 0 || buf.length > 50 * 1024 * 1024) return null;
+        const stripped = stripAdobeImageMetadata(buf);
+        const b64 = stripped.toString('base64');
+        return await storeGeneratedImage(req, stripped, sniffImageMime(stripped), b64);
+    } catch (e) {
+        console.warn('[v1-proxy] rehostStrippedImageUrl failed', e instanceof Error ? e.message : e);
+        return null;
+    }
+}
+
 async function handleGeminiImage(
     req: NextRequest,
     body: JsonRecord,
@@ -993,7 +1013,10 @@ async function handleGptImageChat(
         stored = await storeGeneratedImage(req, Buffer.from(rawB64, 'base64'), 'image/png', rawB64);
         content = `![image](${stored.url})`;
     } else if (item?.url) {
-        content = `![image](${item.url})`;
+        // 上游返 url(直连 adobe 渠道等):拉下来剥 C2PA + 转存,绝不透传上游 url(带 adobe 凭证)。
+        // 拉取失败(极少)才退回上游 url —— 不静默丢图。
+        stored = await rehostStrippedImageUrl(req, item.url);
+        content = `![image](${stored?.url ?? item.url})`;
     } else {
         return imageError('upstream returned no image', 500, cap, { type: 'server_error' });
     }
@@ -1565,6 +1588,18 @@ async function reshapeOpenAiImageResponse(
     const out: JsonRecord = { ...j };
     if (out.size === undefined && outSize) out.size = outSize;
     if (out.usage === undefined) out.usage = buildEstimatedUsage(prompt, outSize);
+
+    // gpt-image-2 上游返【url】(而非 b64,直连 adobe 渠道会这样)→ 拉下来剥 C2PA + 转存,把 url
+    // 替换成我们的干净 url。绝不透传上游 url(带 adobe 凭证 + 暴露上游域名)。仅 gpt-image(gptDefaults)
+    // 且拿得到 req 时做,不碰 gemini / 其它透传模型;拉取失败保留上游 url(极少见,不静默丢图)。
+    if (echo?.gptDefaults && req) {
+        for (const it of data) {
+            if (!it.b64_json && typeof it.url === 'string' && it.url) {
+                const stored = await rehostStrippedImageUrl(req, it.url);
+                if (stored) it.url = stored.url;
+            }
+        }
+    }
 
     // 候补 adobe(Firefly)出图内嵌 C2PA 会暴露真实上游 → 剥离图内元数据(自定向:仅命中 adobe/
     // firefly 标识的图才剥,azure/gemini 出图不含该标识 → 字节原样)。放在 transcode/存图/返回之前,

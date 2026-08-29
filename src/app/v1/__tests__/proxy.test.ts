@@ -4383,3 +4383,115 @@ describe('/v1 proxy — /responses 同组 failover(上游 5xx 重 POST 一次)',
         expect(mockFetch).toHaveBeenCalledTimes(1);
     });
 });
+
+describe('/v1 proxy — gpt-image-2 上游返 url 时剥 C2PA 转存(客户 2026-08-29 adobe 泄漏修复)', () => {
+    // 造一张带 adobe Firefly caBX(C2PA)的最小 PNG
+    function adobePng(): Buffer {
+        const MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+        const chunk = (type: string, data: Buffer): Buffer => {
+            const len = Buffer.alloc(4);
+            len.writeUInt32BE(data.length, 0);
+            return Buffer.concat([len, Buffer.from(type, 'latin1'), data, Buffer.alloc(4)]);
+        };
+        return Buffer.concat([
+            MAGIC,
+            chunk('IHDR', Buffer.alloc(13, 7)),
+            chunk('caBX', Buffer.from('jumbfc2pa claim_generator Adobe_Firefly ... Adobe Systems Incorporated')),
+            chunk('IDAT', Buffer.from('PIXELDATA-not-metadata')),
+            chunk('IEND', Buffer.alloc(0)),
+        ]);
+    }
+
+    beforeEach(() => {
+        mockUploadImage.mockClear();
+        mockResolveUserId.mockResolvedValue(null); // 无客户 OSS → 平台 R2
+    });
+
+    it('chat/completions gpt-image-2 上游返 url → 客户拿我们的 url,存入字节已剥 adobe', async () => {
+        const adobe = adobePng();
+        mockFetch
+            // 1) 上游 images/generations 返回 url(而非 b64)—— 直连 adobe 渠道形态
+            .mockResolvedValueOnce(
+                new Response(JSON.stringify({ created: 1, data: [{ url: 'https://upstream-adobe.example/x.png' }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+            )
+            // 2) 我们 fetch 上游 url 拿到带 adobe C2PA 的 PNG
+            .mockResolvedValueOnce(
+                new Response(new Uint8Array(adobe), { status: 200, headers: { 'content-type': 'image/png' } }),
+            );
+
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: { model: 'gpt-image-2', messages: [{ role: 'user', content: 'a golden retriever puppy' }] },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(200);
+        const data = (await res.json()) as { choices: Array<{ message: { content: string } }> };
+        // 客户拿到的是我们的图床 url,不是上游 adobe url
+        expect(data.choices[0].message.content).toMatch(/^!\[image\]\(https:\/\/images\.silkroadai\.io\//);
+        expect(data.choices[0].message.content).not.toContain('upstream-adobe');
+        // 存入 R2 的字节已剥 adobe(caBX 去掉)
+        expect(mockUploadImage).toHaveBeenCalled();
+        const storedBuf = mockUploadImage.mock.calls[0][1] as Buffer;
+        expect(storedBuf.toString('latin1').toLowerCase()).not.toContain('adobe');
+        expect(storedBuf.toString('latin1').toLowerCase()).not.toContain('firefly');
+        expect(storedBuf.includes(Buffer.from('PIXELDATA-not-metadata'))).toBe(true); // 像素无损
+    });
+
+    it('images/generations gpt-image-2 上游返 url item → out.data.url 是我们的 url,字节已剥', async () => {
+        const adobe = adobePng();
+        mockFetch
+            .mockResolvedValueOnce(
+                new Response(
+                    JSON.stringify({
+                        created: 1,
+                        size: '1024x1024',
+                        data: [{ url: 'https://upstream-adobe.example/y.png' }],
+                    }),
+                    { status: 200, headers: { 'content-type': 'application/json' } },
+                ),
+            )
+            .mockResolvedValueOnce(
+                new Response(new Uint8Array(adobe), { status: 200, headers: { 'content-type': 'image/png' } }),
+            );
+
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2', prompt: 'a puppy', size: '1024x1024', quality: 'medium' },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        const j = (await res.json()) as { data: Array<{ url?: string }> };
+        expect(j.data[0].url).toMatch(/^https:\/\/images\.silkroadai\.io\//);
+        expect(j.data[0].url).not.toContain('upstream-adobe');
+        const storedBuf = mockUploadImage.mock.calls[0][1] as Buffer;
+        expect(storedBuf.toString('latin1').toLowerCase()).not.toContain('adobe');
+    });
+
+    it('上游返 url 拉取失败 → 退回上游 url(不静默丢图),不 crash', async () => {
+        mockFetch
+            .mockResolvedValueOnce(
+                new Response(JSON.stringify({ created: 1, data: [{ url: 'https://upstream-adobe.example/z.png' }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+            )
+            .mockRejectedValueOnce(new Error('network down'));
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: { model: 'gpt-image-2', messages: [{ role: 'user', content: 'x' }] },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(200);
+        const data = (await res.json()) as { choices: Array<{ message: { content: string } }> };
+        expect(data.choices[0].message.content).toContain('upstream-adobe.example/z.png'); // 兜底保留
+    });
+});
