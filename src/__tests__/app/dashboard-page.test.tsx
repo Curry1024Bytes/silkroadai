@@ -25,9 +25,11 @@ vi.mock('next/headers', () => ({
     headers: vi.fn(async () => ({ get: mockHeadersGet })),
 }));
 
-// PeriodTabs (real, rendered) is a client component using usePathname.
+// PeriodTabs (real, rendered) is a client component using usePathname +
+// useRouter(P2:useTransition + router.push 换掉 Link)。
 vi.mock('next/navigation', () => ({
     usePathname: () => '/dashboard',
+    useRouter: () => ({ push: vi.fn() }),
 }));
 
 const mockGetCurrentUser = vi.fn();
@@ -67,8 +69,9 @@ vi.mock('@/lib/reseller/fetch-status', () => ({
 }));
 
 // Stub the recharts chart — assert it receives the right stack keys.
-vi.mock('@/app/(authenticated)/dashboard/model-consumption-chart', () => ({
-    ModelConsumptionChart: ({ models }: { models: string[] }) => (
+// P2 起 sections.tsx 走懒加载壳(model-consumption-chart-lazy),mock 壳本身。
+vi.mock('@/app/(authenticated)/dashboard/model-consumption-chart-lazy', () => ({
+    ModelConsumptionChartLazy: ({ models }: { models: string[] }) => (
         <div data-testid="chart">{`chart-models:${models.join('|')}`}</div>
     ),
 }));

@@ -20,7 +20,7 @@ import { queryLogsCached } from '@/lib/newapi/logs-cache';
 import { USD_TO_CNY_RATE } from '@/lib/newapi/quota-units';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { FormError } from '@/components/ui/FormError';
-import { ModelConsumptionChart } from './model-consumption-chart';
+import { ModelConsumptionChartLazy } from './model-consumption-chart-lazy';
 import { CallDetailTable, type CallRow } from './call-detail-table';
 import { matchFailedVideoConsumes } from './failed-video-match';
 import { collapseRetriedFailures, sanitizeLogContent } from './format';
@@ -306,7 +306,7 @@ export async function UsageBody({ data, periodLabel }: { data: Promise<UsageData
             {/* 2. Model consumption chart */}
             <h2 className="m-0 mb-3 text-base font-semibold text-navy">模型消耗分布 · {periodLabel}</h2>
             <div className="mb-6">
-                <ModelConsumptionChart
+                <ModelConsumptionChartLazy
                     byDay={agg?.byDay ?? []}
                     models={agg?.chartModels ?? []}
                     cnyPerQuota={quotaToCny(1)}
