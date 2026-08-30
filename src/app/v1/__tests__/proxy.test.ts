@@ -4824,3 +4824,77 @@ describe('/v1 proxy — gpt-image 伪流式(stream:true → 官方 SSE completed
         expect(res.headers.get('content-type') || '').not.toContain('text/event-stream');
     });
 });
+
+describe('/v1 proxy — CORS(浏览器前端直调,对标 api.openai.com)', () => {
+    it('OPTIONS 预检 → 204 + ACAO * + 回显 request-headers(authorization 不吃通配符)', async () => {
+        const { OPTIONS } = await import('../[...path]/route');
+        const res = await OPTIONS(
+            new NextRequest('https://ai.silkroadai.io/v1/images/generations', {
+                method: 'OPTIONS',
+                headers: {
+                    origin: 'https://customer-app.example',
+                    'access-control-request-method': 'POST',
+                    'access-control-request-headers': 'authorization,content-type,x-silkroadai-strict',
+                },
+            }),
+        );
+        expect(res.status).toBe(204);
+        expect(res.headers.get('access-control-allow-origin')).toBe('*');
+        expect(res.headers.get('access-control-allow-methods')).toContain('POST');
+        expect(res.headers.get('access-control-allow-headers')).toBe('authorization,content-type,x-silkroadai-strict');
+        expect(res.headers.get('access-control-max-age')).toBe('86400');
+        expect(mockFetch).not.toHaveBeenCalled(); // 预检不打上游
+    });
+
+    it('OPTIONS 无 request-headers → 兜底 authorization, content-type', async () => {
+        const { OPTIONS } = await import('../[...path]/route');
+        const res = await OPTIONS(
+            new NextRequest('https://ai.silkroadai.io/v1/chat/completions', { method: 'OPTIONS' }),
+        );
+        expect(res.headers.get('access-control-allow-headers')).toBe('authorization, content-type');
+    });
+
+    it('portal 自答响应(variations 400)也带 ACAO *,且无 allow-credentials', async () => {
+        const res = await POST(
+            makeReq('/images/variations', { body: { model: 'gpt-image-2', image: 'x' } }),
+            ctx('images', 'variations'),
+        );
+        expect(res.status).toBe(400);
+        expect(res.headers.get('access-control-allow-origin')).toBe('*');
+        expect(res.headers.get('access-control-allow-credentials')).toBeNull();
+    });
+
+    it('透传响应:new-api 的 allow-credentials 被剥、ACAO 归一为 *', async () => {
+        mockFetch.mockResolvedValueOnce(
+            new Response('{}', {
+                status: 200,
+                headers: {
+                    'content-type': 'application/json',
+                    'access-control-allow-origin': 'https://foo.example',
+                    'access-control-allow-credentials': 'true',
+                },
+            }),
+        );
+        const res = await POST(
+            makeReq('/embeddings', { body: { model: 'text-embedding-3-small', input: 'x' } }),
+            ctx('embeddings'),
+        );
+        expect(res.headers.get('access-control-allow-origin')).toBe('*');
+        expect(res.headers.get('access-control-allow-credentials')).toBeNull();
+    });
+
+    it('伪流式 SSE 响应也带 ACAO *', async () => {
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ created: 1, data: [{ b64_json: 'QUJD' }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const res = await POST(
+            makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x', stream: true } }),
+            ctx('images', 'generations'),
+        );
+        expect(res.headers.get('content-type')).toContain('text/event-stream');
+        expect(res.headers.get('access-control-allow-origin')).toBe('*');
+    });
+});

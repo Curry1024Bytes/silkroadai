@@ -2999,15 +2999,45 @@ async function withDeadline<T>(p: Promise<T>, ms: number): Promise<T> {
 
 type RouteContext = { params: Promise<{ path: string[] }> };
 
+// ============ CORS(对标 api.openai.com:浏览器前端可直调 /v1)============
+// 鉴权是 Bearer sk-key 不是 cookie,`Access-Control-Allow-Origin: *` 且【不带 credentials】
+// 没有 CSRF 面(浏览器对 * + credentials 组合本就拒绝)。此前预检 OPTIONS 被 Next 自动应答成
+// 裸 204(无 Allow-* 头)→ 浏览器直接拦,前端客户全灭;真实响应只有透传路径继承了 new-api 的
+// ACAO 头,portal 自答的(校验 400 / 生图 reshape / 伪流式 SSE / balance / batch 面)都没带。
+// 这里统一:预检自答 + 四个方法出口全部补头。
+
+function withCors(resp: NextResponse): NextResponse {
+    resp.headers.set('access-control-allow-origin', '*');
+    // 透传自 new-api 的 allow-credentials 与 * 是 spec 非法组合(浏览器忽略),删掉防未来
+    // 有人把 * 改成回显 origin 时意外打开带 cookie 的跨域。
+    resp.headers.delete('access-control-allow-credentials');
+    resp.headers.set('access-control-expose-headers', '*');
+    return resp;
+}
+
+export async function OPTIONS(req: NextRequest) {
+    return new NextResponse(null, {
+        status: 204,
+        headers: {
+            'access-control-allow-origin': '*',
+            'access-control-allow-methods': 'GET, POST, PUT, DELETE, OPTIONS',
+            // authorization 不被通配符覆盖(spec),必须回显请求要求的头
+            'access-control-allow-headers':
+                req.headers.get('access-control-request-headers') || 'authorization, content-type',
+            'access-control-max-age': '86400',
+        },
+    });
+}
+
 export async function GET(req: NextRequest, ctx: RouteContext) {
-    return handleRequest(req, ctx.params);
+    return withCors(await handleRequest(req, ctx.params));
 }
 export async function POST(req: NextRequest, ctx: RouteContext) {
-    return handleRequest(req, ctx.params);
+    return withCors(await handleRequest(req, ctx.params));
 }
 export async function PUT(req: NextRequest, ctx: RouteContext) {
-    return handleRequest(req, ctx.params);
+    return withCors(await handleRequest(req, ctx.params));
 }
 export async function DELETE(req: NextRequest, ctx: RouteContext) {
-    return handleRequest(req, ctx.params);
+    return withCors(await handleRequest(req, ctx.params));
 }
