@@ -2721,18 +2721,20 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
         expect(data.type).toBe('server_error'); // 归一成官方 server_error 体,不再透传上游原文
     });
 
-    it('上游 200 SSE 成功体(stream:true)→ 原样透传 200,体一字不改', async () => {
-        const sse =
+    it('上游 200 非 JSON 体(非流请求)→ 原样透传 200,体一字不改(不做替换防写坏 b64)', async () => {
+        // stream 参数现被剥掉 + 伪流由代理层实现,上游不应再返 SSE;此测保住的是
+        // 「200 但体不是标准 JSON」的防御透传(不误改、不误 500)。
+        const weird =
             'event: image_generation.completed\ndata: {"type":"image_generation.completed","b64_json":"aGk="}\n\n';
         mockFetch.mockResolvedValueOnce(
-            new Response(sse, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+            new Response(weird, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
         );
         const res = await POST(
-            makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x', stream: true } }),
+            makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x' } }),
             ctx('images', 'generations'),
         );
         expect(res.status).toBe(200);
-        expect(await res.text()).toBe(sse); // 不做任何替换(替换可能写坏 b64)
+        expect(await res.text()).toBe(weird);
     });
 
     it('仅提到 adobe 的非审核错误(如超时)→ 不冒充审核文案,归一 500 + 品牌脱敏', async () => {
@@ -4728,5 +4730,97 @@ describe('/v1 proxy — gpt-image 官方契约对齐(variations 拦 / 流参数�
             ctx('images', 'generations'),
         );
         expect(ok.status).toBe(200);
+    });
+});
+
+describe('/v1 proxy — gpt-image 伪流式(stream:true → 官方 SSE completed 事件)', () => {
+    function makeMultipartReq(form: FormData, path = '/images/edits'): NextRequest {
+        return new NextRequest(`https://ai.silkroadai.io/v1${path}`, { method: 'POST', body: form });
+    }
+    function imageFile(bytes: number[], name = 'ref.png', type = 'image/png'): File {
+        return new File([new Uint8Array(bytes)], name, { type });
+    }
+    function okImageResp(): Response {
+        return new Response(JSON.stringify({ created: 777, data: [{ b64_json: 'QUJD' }] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+        });
+    }
+
+    it('JSON generations + stream:true → 200 SSE,image_generation.completed 带 b64/usage/size', async () => {
+        mockFetch.mockResolvedValueOnce(okImageResp());
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', stream: true },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        expect(res.headers.get('content-type')).toContain('text/event-stream');
+        expect(res.headers.get('X-Silkroadai-Pseudo-Stream')).toBe('image_generation');
+        const text = await res.text();
+        expect(text).toContain('event: image_generation.completed');
+        const data = JSON.parse(text.split('data: ')[1].split('\n')[0]) as Record<string, unknown>;
+        expect(data.type).toBe('image_generation.completed');
+        expect(data.b64_json).toBe('QUJD');
+        expect(data.created_at).toBe(777);
+        expect(data.size).toBe('1024x1024');
+        expect(data.usage).toBeTruthy(); // 估算 usage 兜底照常生效
+        // 上游那腿收到的是非流请求(stream 已剥)
+        const sent = JSON.parse(String((mockFetch.mock.calls[0][1] as RequestInit).body)) as Record<string, unknown>;
+        expect(sent.stream).toBeUndefined();
+    });
+
+    it('multipart edits + stream=true → image_edit.completed 事件族', async () => {
+        mockFetch.mockResolvedValueOnce(okImageResp());
+        const form = new FormData();
+        form.append('model', 'gpt-image-2');
+        form.append('prompt', 'x');
+        form.append('stream', 'true');
+        form.append('image', imageFile([1, 2, 3]));
+        const res = await POST(makeMultipartReq(form), ctx('images', 'edits'));
+        expect(res.headers.get('content-type')).toContain('text/event-stream');
+        const text = await res.text();
+        expect(text).toContain('event: image_edit.completed');
+    });
+
+    it('stream + 上游报错 → SSE error 事件(归一后的错误体,不是断流)', async () => {
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ error: { message: 'no available channel for model gpt-image-2' } }), {
+                status: 503,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const res = await POST(
+            makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x', stream: true } }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200); // SSE 已开,错误走事件
+        const text = await res.text();
+        expect(text).toContain('event: error');
+        const data = JSON.parse(text.split('data: ')[1].split('\n')[0]) as {
+            type: string;
+            error: { message: string };
+        };
+        expect(data.type).toBe('error');
+        expect(data.error.message).toBeTruthy();
+    });
+
+    it('stream + n=2 → 400(伪流限单图),不打上游', async () => {
+        const res = await POST(
+            makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x', stream: true, n: 2 } }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(400);
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('非 gpt-image 模型 + stream → 行为不变(不进伪流)', async () => {
+        mockFetch.mockResolvedValueOnce(okImageResp());
+        const res = await POST(
+            makeReq('/images/generations', { body: { model: 'z-image-turbo', prompt: 'x', stream: true } }),
+            ctx('images', 'generations'),
+        );
+        expect(res.headers.get('content-type') || '').not.toContain('text/event-stream');
     });
 });

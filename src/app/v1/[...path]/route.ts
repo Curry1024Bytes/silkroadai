@@ -1371,8 +1371,8 @@ function gptImageNError(n: unknown): string | null {
     return null;
 }
 /** gpt-image JSON 规整:剥 response_format(zhiyunai 拒收 →400)+ 比例→像素 size(默认出方图)。
- *  一并剥 stream / partial_images:images 路径的流式尚未实现(伪流式另做),留着会让上游真返
- *  SSE 时原样 200 透传、绕过 C2PA 剥离 / 转码 / 图床整条后处理链 —— 先剥掉保证恒走非流。 */
+ *  一并剥 stream / partial_images:上游恒走非流(留着会让上游真返 SSE 时原样 200 透传、绕过
+ *  C2PA 剥离 / 转码 / 图床整条后处理链);客户要的流式由代理层伪流实现(gptImageSseResponse)。 */
 function normalizeGptImageJson(body: JsonRecord): void {
     delete body.response_format;
     delete body.stream;
@@ -1412,6 +1412,104 @@ function normalizeGptImageForm(form: FormData): void {
         else form.delete('size');
     }
     form.delete('aspect_ratio');
+}
+
+// ============ 伪流式(官方 Images streaming 契约,gpt-image)============
+// 官方:`stream:true` → SSE,0-N 个 partial_image 事件 + 每张图一个 completed 事件。我们的
+// 上游不产渐进图 → 不发 partial(官方 SDK 按事件驱动解析,少 partial 不破);连接立即 200 开流,
+// 生成期间每 15s 注 SSE 注释保活(CF ~100s 空闲掐线,慢图 300s+ —— 这条路天然不需要 withKeepalive
+// 的「85s 后变 200」妥协),完成后发 completed(字段对齐官方:b64_json / created_at / size /
+// quality / background / output_format / usage;`response_format=url` 扩展时带 url)。失败 → 官方
+// error 事件(SSE 已开、状态码回不去了,与官方流中错误行为一致)。
+
+const IMAGE_SSE_KEEPALIVE_MS = 15_000;
+
+/** 把非流式 images 流程(reshape 后的 NextResponse promise)包成官方形 SSE。
+ *  事件族按客户调用的 path:/images/edits → image_edit.*,其余 → image_generation.*。 */
+function gptImageSseResponse(work: Promise<NextResponse>, clientPath: string): NextResponse {
+    const family = clientPath === '/images/edits' ? 'image_edit' : 'image_generation';
+    const enc = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+            let closed = false;
+            const emit = (chunk: string): void => {
+                if (closed) return;
+                try {
+                    controller.enqueue(enc.encode(chunk));
+                } catch {
+                    closed = true; // 客户断开:别让后续 enqueue 抛到未处理 rejection
+                }
+            };
+            const send = (event: string, data: Record<string, unknown>): void =>
+                emit(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+            const keep = setInterval(() => emit(': keep-alive\n\n'), IMAGE_SSE_KEEPALIVE_MS);
+            void work
+                .then(async (resp) => {
+                    let j: JsonRecord | null = null;
+                    try {
+                        j = (await resp.json()) as JsonRecord;
+                    } catch {
+                        j = null;
+                    }
+                    const items = j && Array.isArray(j.data) ? (j.data as Array<Record<string, unknown>>) : [];
+                    if (resp.status >= 200 && resp.status < 300 && j && items.length > 0) {
+                        for (const it of items) {
+                            send(`${family}.completed`, {
+                                type: `${family}.completed`,
+                                ...(typeof it.b64_json === 'string' && it.b64_json ? { b64_json: it.b64_json } : {}),
+                                ...(typeof it.url === 'string' && it.url ? { url: it.url } : {}),
+                                created_at: j.created ?? Math.floor(Date.now() / 1000),
+                                size: j.size ?? null,
+                                quality: j.quality ?? null,
+                                background: j.background ?? null,
+                                output_format: j.output_format ?? null,
+                                usage: j.usage ?? null,
+                            });
+                        }
+                    } else {
+                        const err = (j?.error as Record<string, unknown> | undefined) ?? {
+                            message: `image request failed with status ${resp.status}`,
+                            type: 'server_error',
+                            param: null,
+                            code: null,
+                        };
+                        send('error', { type: 'error', error: err });
+                    }
+                })
+                .catch((e: unknown) => {
+                    send('error', {
+                        type: 'error',
+                        error: {
+                            message: e instanceof Error ? e.message : String(e),
+                            type: 'server_error',
+                            param: null,
+                            code: null,
+                        },
+                    });
+                })
+                .finally(() => {
+                    clearInterval(keep);
+                    closed = true;
+                    try {
+                        controller.close();
+                    } catch {
+                        /* 已因客户断开而关 */
+                    }
+                });
+        },
+        cancel() {
+            /* 客户断开:work 继续跑完(上游已在扣费),结果丢弃即可 */
+        },
+    });
+    return new NextResponse(stream, {
+        status: 200,
+        headers: {
+            'content-type': 'text/event-stream; charset=utf-8',
+            'cache-control': 'no-cache',
+            'x-accel-buffering': 'no',
+            'X-Silkroadai-Pseudo-Stream': family,
+        },
+    });
 }
 
 // ============ 严格模式(opt-in,对标 Azure gpt-image 契约)============
@@ -1793,7 +1891,9 @@ async function handleImagesDalle(
                 // gpt-image:剥 response_format + 把比例(aspect_ratio / "16:9" 形态 size)翻成像素 size
                 let transcodeTo: 'jpeg' | null = null;
                 let transcodeCompression: number | undefined;
+                let wantStream = false;
                 if (isGptImageModel(model)) {
+                    wantStream = String(form.get('stream') ?? '').toLowerCase() === 'true';
                     // 严格模式(opt-in):先按 Azure 标准校验 output_format/background/size,不合规 → 400
                     if (isStrictImageMode(req, search)) {
                         const err = strictGptImageError(
@@ -1807,6 +1907,10 @@ async function handleImagesDalle(
                     // n 范围门(官方 1-10):两模式都拦 —— n=1000 打上游是真金白银
                     const nErr = gptImageNError(form.get('n') == null ? undefined : String(form.get('n')));
                     if (nErr) return imageError(nErr, 400, cap, { code: 'invalid_value', param: 'n' });
+                    // 伪流式限 n=1(completed 事件按官方单图形;多图流式官方也没有稳定语义)
+                    const nVal = String(form.get('n') ?? '').trim();
+                    if (wantStream && nVal !== '' && Number(nVal) > 1)
+                        return imageError('stream supports n=1 only', 400, cap, { code: 'invalid_value', param: 'n' });
                     // 严格 / 非严格都做:请求 jpeg/webp → 服务端转码交付(上游恒返 png、无视 output_format)
                     transcodeTo = gptImageTranscodeTarget(String(form.get('output_format') ?? ''));
                     const c = Number(form.get('output_compression'));
@@ -1829,34 +1933,39 @@ async function handleImagesDalle(
                     outputFormat: String(form.get('output_format') ?? ''),
                     gptDefaults: isGptImageModel(model),
                 };
-                try {
-                    // 统一入口:gpt-image 按有无输入图分流到上游 edits/generations(与调用 path 无关);
-                    // 其余非 Gemini 图片模型仍按调用 path 原样透传 multipart。
-                    const upstream = isGptImageModel(model)
-                        ? await gptImageUpstreamWithSizeRetry(req, form, null, search)
-                        : await fetchUpstreamMultipart(req, form, path, search);
-                    return await reshapeOpenAiImageResponse(
-                        upstream,
-                        prompt,
-                        sizeRaw,
-                        cap,
-                        req,
-                        isGptImageModel(model) && wantHostedUrl,
-                        transcodeTo,
-                        echo,
-                        transcodeCompression,
-                    );
-                } catch (e) {
-                    if (e instanceof ImageUrlError)
-                        return imageError(e.message, 400, cap, { code: 'invalid_image', param: 'image' });
-                    // 连不上 new-api 等网络异常:透出真实原因(不被外层 catch 兜底成笼统 400)
-                    return imageError(
-                        `upstream request failed: ${e instanceof Error ? e.message : String(e)}`,
-                        500,
-                        cap,
-                        { type: 'server_error' },
-                    );
-                }
+                const run = async (): Promise<NextResponse> => {
+                    try {
+                        // 统一入口:gpt-image 按有无输入图分流到上游 edits/generations(与调用 path 无关);
+                        // 其余非 Gemini 图片模型仍按调用 path 原样透传 multipart。
+                        const upstream = isGptImageModel(model)
+                            ? await gptImageUpstreamWithSizeRetry(req, form, null, search)
+                            : await fetchUpstreamMultipart(req, form, path, search);
+                        return await reshapeOpenAiImageResponse(
+                            upstream,
+                            prompt,
+                            sizeRaw,
+                            cap,
+                            req,
+                            isGptImageModel(model) && wantHostedUrl,
+                            transcodeTo,
+                            echo,
+                            transcodeCompression,
+                        );
+                    } catch (e) {
+                        if (e instanceof ImageUrlError)
+                            return imageError(e.message, 400, cap, { code: 'invalid_image', param: 'image' });
+                        // 连不上 new-api 等网络异常:透出真实原因(不被外层 catch 兜底成笼统 400)
+                        return imageError(
+                            `upstream request failed: ${e instanceof Error ? e.message : String(e)}`,
+                            500,
+                            cap,
+                            { type: 'server_error' },
+                        );
+                    }
+                };
+                // 伪流式:gpt-image + stream:true → 立即 200 开 SSE 保活,完成后发 completed 事件
+                if (wantStream && isGptImageModel(model)) return gptImageSseResponse(run(), path);
+                return await run();
             }
             for (const file of formImageFiles(form)) {
                 if (file instanceof File && file.size > 0) {
@@ -1903,7 +2012,9 @@ async function handleImagesDalle(
                 // aspect_ratio / "16:9" 形态 size,默认出方图)。见 normalizeGptImageJson。
                 let transcodeTo: 'jpeg' | null = null;
                 let transcodeCompression: number | undefined;
+                let wantStream = false;
                 if (isGptImageModel(model)) {
+                    wantStream = body.stream === true || body.stream === 'true';
                     // 严格模式(opt-in):先按 Azure 标准校验 output_format/background/size,不合规 → 400
                     if (isStrictImageMode(req, search)) {
                         const err = strictGptImageError(
@@ -1917,6 +2028,9 @@ async function handleImagesDalle(
                     // n 范围门(官方 1-10):两模式都拦 —— n=1000 打上游是真金白银
                     const nErr = gptImageNError(body.n);
                     if (nErr) return imageError(nErr, 400, cap, { code: 'invalid_value', param: 'n' });
+                    // 伪流式限 n=1(completed 事件按官方单图形)
+                    if (wantStream && body.n != null && Number(body.n) > 1)
+                        return imageError('stream supports n=1 only', 400, cap, { code: 'invalid_value', param: 'n' });
                     // 严格 / 非严格都做:请求 jpeg/webp → 服务端转码交付(上游恒返 png、无视 output_format)
                     transcodeTo = gptImageTranscodeTarget(
                         typeof body.output_format === 'string' ? body.output_format : '',
@@ -1932,32 +2046,37 @@ async function handleImagesDalle(
                     outputFormat: typeof body.output_format === 'string' ? body.output_format : '',
                     gptDefaults: isGptImageModel(model),
                 };
-                try {
-                    // 统一入口:gpt-image body 里带 image/image_url → 图生图 edits;否则文生图 generations。
-                    const upstream = isGptImageModel(model)
-                        ? await gptImageUpstreamWithSizeRetry(req, null, body, search)
-                        : await fetchUpstreamJson(req, body, path, search);
-                    return await reshapeOpenAiImageResponse(
-                        upstream,
-                        prompt,
-                        sizeRaw,
-                        cap,
-                        req,
-                        isGptImageModel(model) && wantHostedUrl,
-                        transcodeTo,
-                        echo,
-                        transcodeCompression,
-                    );
-                } catch (e) {
-                    if (e instanceof ImageUrlError)
-                        return imageError(e.message, 400, cap, { code: 'invalid_image', param: 'image' });
-                    return imageError(
-                        `upstream request failed: ${e instanceof Error ? e.message : String(e)}`,
-                        500,
-                        cap,
-                        { type: 'server_error' },
-                    );
-                }
+                const run = async (): Promise<NextResponse> => {
+                    try {
+                        // 统一入口:gpt-image body 里带 image/image_url → 图生图 edits;否则文生图 generations。
+                        const upstream = isGptImageModel(model)
+                            ? await gptImageUpstreamWithSizeRetry(req, null, body, search)
+                            : await fetchUpstreamJson(req, body, path, search);
+                        return await reshapeOpenAiImageResponse(
+                            upstream,
+                            prompt,
+                            sizeRaw,
+                            cap,
+                            req,
+                            isGptImageModel(model) && wantHostedUrl,
+                            transcodeTo,
+                            echo,
+                            transcodeCompression,
+                        );
+                    } catch (e) {
+                        if (e instanceof ImageUrlError)
+                            return imageError(e.message, 400, cap, { code: 'invalid_image', param: 'image' });
+                        return imageError(
+                            `upstream request failed: ${e instanceof Error ? e.message : String(e)}`,
+                            500,
+                            cap,
+                            { type: 'server_error' },
+                        );
+                    }
+                };
+                // 伪流式:gpt-image + stream:true → 立即 200 开 SSE 保活,完成后发 completed 事件
+                if (wantStream && isGptImageModel(model)) return gptImageSseResponse(run(), path);
+                return await run();
             }
             // JSON 形态的 image 可能是 data URL / 外部 URL 字符串或其数组(复用现有 helper)
             const imageField = body.image;
