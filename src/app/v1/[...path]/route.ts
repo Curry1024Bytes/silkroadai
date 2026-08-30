@@ -1117,13 +1117,25 @@ async function handleGpt4oImageChat(
     return NextResponse.json(data ?? {}, { status: 200, headers: respHeaders });
 }
 
+/** 上游 images URL 的 query:剥掉 portal 自有参数(strict;async/webhook 在异步分支已剥,
+ *  这里兜底再剥一次),其余原样保留 —— 别把我们的开关漏给上游当未知参数。 */
+function upstreamImageSearch(search: string): string {
+    if (!search) return '';
+    const sp = new URLSearchParams(search);
+    sp.delete('strict');
+    sp.delete('async');
+    sp.delete('webhook');
+    const s = sp.toString();
+    return s ? `?${s}` : '';
+}
+
 /** 非 Gemini 图片(gpt-image-2 等)multipart 转发 → 返回【原始】响应供 reshape。
  *  req.body 已被 formData() 消费,转发已解析的 FormData;删原 content-type 让 fetch
  *  按重建 FormData 重生 boundary。 */
 function fetchUpstreamMultipart(req: NextRequest, form: FormData, path: string, search: string): Promise<Response> {
     const headers = forwardHeaders(req);
     headers.delete('content-type');
-    return fetch(`${NEWAPI_BASE_URL}/v1${path}${search}`, {
+    return fetch(`${NEWAPI_BASE_URL}/v1${path}${upstreamImageSearch(search)}`, {
         method: 'POST',
         headers,
         body: form,
@@ -1133,7 +1145,7 @@ function fetchUpstreamMultipart(req: NextRequest, form: FormData, path: string, 
 
 /** 非 Gemini 图片 JSON 转发 → 返回【原始】响应供 reshape(CT 强制 json)。 */
 function fetchUpstreamJson(req: NextRequest, body: JsonRecord, path: string, search: string): Promise<Response> {
-    return fetch(`${NEWAPI_BASE_URL}/v1${path}${search}`, {
+    return fetch(`${NEWAPI_BASE_URL}/v1${path}${upstreamImageSearch(search)}`, {
         method: 'POST',
         headers: jsonForwardHeaders(req),
         body: JSON.stringify(body),
@@ -1163,7 +1175,10 @@ async function extractJsonInputImages(body: JsonRecord): Promise<Array<{ mimeTyp
  *  gpt-image 分支照常把整个 form 原样转发给 /images/edits(字段名不变,上游自己认 image/mask 等)。 */
 function formImageFiles(form: FormData): File[] {
     const files: File[] = [];
-    for (const v of form.values()) {
+    for (const [k, v] of form.entries()) {
+        // 官方 edits 的 `mask` 是蒙版不是输入图:不参与 edits/generations 分流判定、
+        // 也不做尺寸重试的基准(之前 mask 排在 image 前会按蒙版尺寸重试)。仍随 form 原样转发上游。
+        if (k === 'mask') continue;
         if (v instanceof File && v.size > 0) files.push(v);
     }
     return files;
@@ -1195,7 +1210,7 @@ async function gptImageUpstream(
     // 有图 → 图生图 edits(上游要 multipart):JSON 标量字段搬进 form + 图片作为文件部件
     const f = new FormData();
     for (const [k, v] of Object.entries(b)) {
-        if (k === 'image' || k === 'image_url') continue;
+        if (k === 'image' || k === 'image_url' || k === 'mask') continue;
         if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') f.append(k, String(v));
     }
     for (const img of imgs) {
@@ -1204,6 +1219,20 @@ async function gptImageUpstream(
             new Blob([Buffer.from(img.data, 'base64')], { type: img.mimeType || 'image/png' }),
             'image.png',
         );
+    }
+    // 官方 edits 的 mask:JSON 形里是 data URL / http(s) URL 字符串 → 转成文件部件。
+    // (此前被当标量文本 append 进 form,上游实际收不到蒙版、静默整图重绘。)
+    if (typeof b.mask === 'string' && b.mask.trim()) {
+        const part = await imageUrlToInlinePart(b.mask);
+        if ('inlineData' in part) {
+            f.append(
+                'mask',
+                new Blob([Buffer.from(part.inlineData.data, 'base64')], {
+                    type: part.inlineData.mimeType || 'image/png',
+                }),
+                'mask.png',
+            );
+        }
     }
     return fetchUpstreamMultipart(req, f, '/images/edits', search);
 }
@@ -1315,9 +1344,10 @@ function isGptImageModel(model: string): boolean {
 }
 /** 旧 czeq SKU 名 gpt-image-2-{1,2,4}k 只是别名(zhiyunai 上游只有 gpt-image-2 一个模型,分辨率靠
  *  size 像素控制)→ 翻成 gpt-image-2 + 对应像素 size(1k→1024² / 2k→2048² / 4k→3840x2160)。
+ *  az- 前缀别名(az-gpt-image-2-4k 等)同样翻:base 保留 az- 前缀(new-api 按 az 名计费/映射)。
  *  返回 null = 非变体名。 */
 function gptImageVariant(model: string): { base: string; size: string } | null {
-    const m = /^(gpt-image-2)-([124])[kK]$/.exec(model);
+    const m = /^((?:az-)?gpt-image-2)-([124])[kK]$/.exec(model);
     if (!m) return null;
     const size = m[2] === '1' ? '1024x1024' : m[2] === '2' ? '2048x2048' : '3840x2160';
     return { base: m[1], size };
@@ -1331,9 +1361,22 @@ function coerceImageIntFields(obj: JsonRecord): void {
         if (typeof v === 'string' && /^\d+$/.test(v.trim())) obj[k] = Number(v.trim());
     }
 }
-/** gpt-image JSON 规整:剥 response_format(zhiyunai 拒收 →400)+ 比例→像素 size(默认出方图)。 */
+/** 官方 n 取值 = 1-10 的整数(空/缺省合法;字符串数字在 coerce 后到这)。非法 → 400 文案,合法 → null。
+ *  代理层不校验的话 `n:1000` 会原样打上游(适配器渠道才 clamp 10,直连渠道全靠上游自觉)。 */
+function gptImageNError(n: unknown): string | null {
+    if (n === undefined || n === null || n === '') return null;
+    const v = typeof n === 'string' && /^\d+$/.test(n.trim()) ? Number(n.trim()) : n;
+    if (typeof v !== 'number' || !Number.isInteger(v) || v < 1 || v > 10)
+        return `invalid n '${String(n)}': must be an integer between 1 and 10`;
+    return null;
+}
+/** gpt-image JSON 规整:剥 response_format(zhiyunai 拒收 →400)+ 比例→像素 size(默认出方图)。
+ *  一并剥 stream / partial_images:images 路径的流式尚未实现(伪流式另做),留着会让上游真返
+ *  SSE 时原样 200 透传、绕过 C2PA 剥离 / 转码 / 图床整条后处理链 —— 先剥掉保证恒走非流。 */
 function normalizeGptImageJson(body: JsonRecord): void {
     delete body.response_format;
+    delete body.stream;
+    delete body.partial_images;
     const vm = typeof body.model === 'string' ? gptImageVariant(body.model) : null;
     if (vm) {
         body.model = vm.base;
@@ -1353,6 +1396,8 @@ function normalizeGptImageJson(body: JsonRecord): void {
 /** gpt-image multipart 规整(同 normalizeGptImageJson,作用于 FormData)。 */
 function normalizeGptImageForm(form: FormData): void {
     form.delete('response_format');
+    form.delete('stream');
+    form.delete('partial_images');
     const vm = gptImageVariant(String(form.get('model') ?? ''));
     if (vm) {
         form.set('model', vm.base);
@@ -1400,11 +1445,13 @@ function gptImageSizeError(size: string): string | null {
     return null;
 }
 
-/** 严格模式下校验 gpt-image 入参(output_format / background / size)。返回 400 文案或 null。 */
-function strictGptImageError(outputFormat: string, background: string, size: string): string | null {
+/** 严格模式下校验 gpt-image 入参(output_format / background / size / moderation)。返回 400 文案或 null。 */
+function strictGptImageError(outputFormat: string, background: string, size: string, moderation = ''): string | null {
     const of = outputFormat.toLowerCase();
     if (of && of !== 'png' && of !== 'jpeg') return `output_format '${outputFormat}' not supported (only png / jpeg)`;
     if (background.toLowerCase() === 'transparent') return `background 'transparent' not supported`;
+    const mod = moderation.trim().toLowerCase();
+    if (mod && mod !== 'auto' && mod !== 'low') return `invalid moderation '${moderation}': must be 'auto' or 'low'`;
     return gptImageSizeError(size);
 }
 
@@ -1753,9 +1800,13 @@ async function handleImagesDalle(
                             String(form.get('output_format') ?? ''),
                             String(form.get('background') ?? ''),
                             sizeRaw,
+                            String(form.get('moderation') ?? ''),
                         );
                         if (err) return imageError(err, 400, cap, { code: 'invalid_value' });
                     }
+                    // n 范围门(官方 1-10):两模式都拦 —— n=1000 打上游是真金白银
+                    const nErr = gptImageNError(form.get('n') == null ? undefined : String(form.get('n')));
+                    if (nErr) return imageError(nErr, 400, cap, { code: 'invalid_value', param: 'n' });
                     // 严格 / 非严格都做:请求 jpeg/webp → 服务端转码交付(上游恒返 png、无视 output_format)
                     transcodeTo = gptImageTranscodeTarget(String(form.get('output_format') ?? ''));
                     const c = Number(form.get('output_compression'));
@@ -1859,9 +1910,13 @@ async function handleImagesDalle(
                             typeof body.output_format === 'string' ? body.output_format : '',
                             typeof body.background === 'string' ? body.background : '',
                             sizeRaw,
+                            typeof body.moderation === 'string' ? body.moderation : '',
                         );
                         if (err) return imageError(err, 400, cap, { code: 'invalid_value' });
                     }
+                    // n 范围门(官方 1-10):两模式都拦 —— n=1000 打上游是真金白银
+                    const nErr = gptImageNError(body.n);
+                    if (nErr) return imageError(nErr, 400, cap, { code: 'invalid_value', param: 'n' });
                     // 严格 / 非严格都做:请求 jpeg/webp → 服务端转码交付(上游恒返 png、无视 output_format)
                     transcodeTo = gptImageTranscodeTarget(
                         typeof body.output_format === 'string' ? body.output_format : '',
@@ -2657,6 +2712,23 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
 
         // Branch 3: 其他模型透传(body 已消费,重新序列化)
         return forwardToNewApi(req, body, path, search, cap);
+    }
+
+    // /images/variations:官方只有 dall-e-2 支持(我们不供),gpt-image 系不支持。此前裸透传
+    // new-api → 上游原始报错直漏客户(不走错误脱敏)。这里直接按官方口径 400。
+    if (path === '/images/variations' && req.method === 'POST') {
+        return NextResponse.json(
+            {
+                error: {
+                    message:
+                        'images/variations is only available for dall-e-2, which is not offered; use /v1/images/edits with gpt-image-2 instead',
+                    type: 'invalid_request_error',
+                    param: null,
+                    code: 'unsupported_endpoint',
+                },
+            },
+            { status: 400 },
+        );
     }
 
     // DALL·E 兼容图像接口:Gemini 生图模型翻译,其余(gpt-image-2 等)透传
