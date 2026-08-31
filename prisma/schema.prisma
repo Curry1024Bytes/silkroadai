@@ -1345,6 +1345,25 @@ model EnterpriseAsset {
   @@map("enterprise_assets")
 }
 
+// volc 渠道素材组【名字所有权】表(2026-08-31)。
+//
+// 背景:上游对组名建了唯一索引(uk_biz_ns_name),同名建组报 MySQL 1062;而火山官方
+// 允许重名(#客户契约测试暴露)。与其求上游改表,不如把「名字」这个属性收归我们:
+// 建组时发给上游的是机器名(g-{随机},永不重复),客户设的名字/描述存这张表,
+// 读回来时覆盖 —— 重名问题在结构上消失,顺带上游侧不再看到客户业务命名。
+//
+// 老组(本表无行)读取时回落上游名字(它们本就不重名),零迁移。
+model VolcGroupMeta {
+  vendor_id   String   @id // 对客组号(火山形 group-…)
+  user_id     String?  @db.Uuid
+  name        String
+  description String?
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  @@map("volc_group_meta")
+}
+
 // volc 渠道「火山原生 id」映射表(2026-08-19)。
 //
 // 背景:volc 卖的是「完全原生的火山体验」,所以对客暴露的必须是火山自己的号

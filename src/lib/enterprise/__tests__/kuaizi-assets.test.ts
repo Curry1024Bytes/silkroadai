@@ -9,6 +9,36 @@ import {
 import { RealPersonError } from '../real-person';
 import { rememberVolcId, toUpstreamId, toVendorId } from '../volc-id-map';
 
+// 组名所有权表:内存 mock(本文件验 Action 契约;持久化行为在 volc-group-meta 自身)。
+const { groupMetaStore, saveGroupMeta, updateGroupMeta, getGroupMeta, deleteGroupMeta } = vi.hoisted(() => {
+    const store = new Map<string, { name: string; description: string | null }>();
+    return {
+        groupMetaStore: store,
+        saveGroupMeta: vi.fn(async (id: string, _u: string | undefined, name: string, description?: string) => {
+            store.set(id, { name, description: description ?? null });
+        }),
+        updateGroupMeta: vi.fn(
+            async (
+                id: string,
+                _u: string | undefined,
+                patch: { name?: string; description?: string },
+                fallbackName: string,
+            ) => {
+                const cur = store.get(id) ?? { name: fallbackName, description: null };
+                store.set(id, {
+                    name: patch.name ?? cur.name,
+                    description: patch.description !== undefined ? patch.description : cur.description,
+                });
+            },
+        ),
+        getGroupMeta: vi.fn(async (id: string) => store.get(id) ?? null),
+        deleteGroupMeta: vi.fn(async (id: string) => {
+            store.delete(id);
+        }),
+    };
+});
+vi.mock('../volc-group-meta', () => ({ saveGroupMeta, updateGroupMeta, getGroupMeta, deleteGroupMeta }));
+
 // 映射表是翻译层,单测里 stub 掉 —— 本文件验的是 Action 契约,不是持久化。
 vi.mock('../volc-id-map', () => ({
     rememberVolcId: vi.fn(async () => {}),
@@ -34,6 +64,8 @@ beforeEach(() => {
     vi.mocked(toVendorId)
         .mockReset()
         .mockImplementation(async (id: string) => id);
+    groupMetaStore.clear();
+    vi.mocked(saveGroupMeta).mockClear();
 });
 afterEach(() => {
     delete process.env.ENTERPRISE_KUAIZI_BASE_URL;
@@ -332,21 +364,146 @@ describe('火山原生 id / URL 归一(2026-08-19)+ id 判据收紧', () => {
     // volc 卖的是原生火山体验 → 对客只出火山自己的号和链接,Vendor* 三个键全部撤掉
     // (火山官方响应里根本没有这些键,留着反而不原生)。
 
-    it('CreateAssetGroup 返【火山组号】,不返上游号,也不留 VendorGroupId 键', async () => {
-        vi.spyOn(global, 'fetch').mockResolvedValue(
+    it('CreateAssetGroup:上游只收【机器名】,客户名落我们的表;返火山组号', async () => {
+        const fetchMock = vi.spyOn(global, 'fetch').mockResolvedValue(
             new Response(envelope({ Id: '191950112983875603', VendorGroupId: 'group-20260819085158-kkp5p' }), {
                 status: 200,
             }),
         );
-        expect(await handleKuaiziAssetAction('CreateAssetGroup', { Name: 'g' })).toEqual({
+        expect(await handleKuaiziAssetAction('CreateAssetGroup', { Name: '我的素材组', Description: '备注' })).toEqual({
             Id: 'group-20260819085158-kkp5p',
         });
+        const sent = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+        expect(sent.Name).toMatch(/^g-[0-9a-f]{16}$/);
+        expect(JSON.stringify(sent)).not.toContain('我的素材组');
+        expect(saveGroupMeta).toHaveBeenCalledWith('group-20260819085158-kkp5p', undefined, '我的素材组', '备注');
         expect(rememberVolcId).toHaveBeenCalledWith(
             'group-20260819085158-kkp5p',
             '191950112983875603',
             'group',
             undefined,
         );
+    });
+
+    it('同名建组两次 → 都成功(火山官方允许重名;上游只见不重复的机器名)', async () => {
+        let n = 0;
+        vi.spyOn(global, 'fetch').mockImplementation(() => {
+            n += 1;
+            return Promise.resolve(
+                new Response(
+                    envelope({ Id: `19195011298387560${n}`, VendorGroupId: `group-2026083100000${n}-aaaa${n}` }),
+                    { status: 200 },
+                ),
+            );
+        });
+        const r1 = (await handleKuaiziAssetAction('CreateAssetGroup', { Name: '重名组' })) as { Id: string };
+        const r2 = (await handleKuaiziAssetAction('CreateAssetGroup', { Name: '重名组' })) as { Id: string };
+        expect(r1.Id).not.toBe(r2.Id);
+        expect(groupMetaStore.get(r1.Id)?.name).toBe('重名组');
+        expect(groupMetaStore.get(r2.Id)?.name).toBe('重名组');
+    });
+
+    it('GetAssetGroup:名字/描述以我们的表覆盖;老组无表行回落上游名', async () => {
+        groupMetaStore.set('group-20260831000001-aaaa1', { name: '客户名', description: '客户描述' });
+        vi.spyOn(global, 'fetch').mockImplementation(() =>
+            Promise.resolve(
+                new Response(
+                    envelope({
+                        Id: '191950112983875603',
+                        Name: 'g-0123456789abcdef',
+                        Title: 'g-0123456789abcdef',
+                        GroupType: 'AIGC',
+                        VendorGroupId: 'group-20260831000001-aaaa1',
+                    }),
+                    { status: 200 },
+                ),
+            ),
+        );
+        const r = (await handleKuaiziAssetAction('GetAssetGroup', { Id: 'group-20260831000001-aaaa1' })) as Record<
+            string,
+            unknown
+        >;
+        expect(r.Name).toBe('客户名');
+        expect(r.Title).toBe('客户名');
+        expect(r.Description).toBe('客户描述');
+        groupMetaStore.clear();
+        const r2 = (await handleKuaiziAssetAction('GetAssetGroup', { Id: 'group-20260831000001-aaaa1' })) as Record<
+            string,
+            unknown
+        >;
+        expect(r2.Name).toBe('g-0123456789abcdef');
+    });
+
+    it('UpdateAssetGroup:只写我们的表,不 PUT 上游(先 Get 校验存在性)', async () => {
+        const fetchMock = vi
+            .spyOn(global, 'fetch')
+            .mockResolvedValue(
+                new Response(
+                    envelope({ Id: '191950112983875603', Name: 'g-abc', VendorGroupId: 'group-20260831000001-aaaa1' }),
+                    { status: 200 },
+                ),
+            );
+        await handleKuaiziAssetAction('UpdateAssetGroup', { Id: 'group-20260831000001-aaaa1', Name: '新名字' });
+        const actions = fetchMock.mock.calls.map((c) => String(c[0]));
+        expect(actions.some((u) => u.includes('Action=GetAssetGroup'))).toBe(true);
+        expect(actions.some((u) => u.includes('Action=UpdateAssetGroup'))).toBe(false);
+        expect(groupMetaStore.get('group-20260831000001-aaaa1')?.name).toBe('新名字');
+    });
+
+    it('ListAssetGroups 带 Name 筛选 → 不转发上游,本地按覆盖后的名字过滤', async () => {
+        groupMetaStore.set('group-20260831000001-aaaa1', { name: '产品图', description: null });
+        groupMetaStore.set('group-20260831000002-aaaa2', { name: '头像', description: null });
+        const fetchMock = vi.spyOn(global, 'fetch').mockResolvedValue(
+            new Response(
+                envelope({
+                    Items: [
+                        { Id: '1', Name: 'g-x1', VendorGroupId: 'group-20260831000001-aaaa1' },
+                        { Id: '2', Name: 'g-x2', VendorGroupId: 'group-20260831000002-aaaa2' },
+                    ],
+                    TotalCount: 2,
+                    PageNumber: 1,
+                    PageSize: 100,
+                }),
+                { status: 200 },
+            ),
+        );
+        const r = (await handleKuaiziAssetAction('ListAssetGroups', {
+            PageNumber: 1,
+            PageSize: 20,
+            Filter: { Name: '产品' },
+        })) as { Items: Array<{ Name: string }>; TotalCount: number };
+        expect(r.TotalCount).toBe(1);
+        expect(r.Items[0].Name).toBe('产品图');
+        const sent = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+        expect(JSON.stringify(sent.Filter ?? {})).not.toContain('产品');
+    });
+
+    it('同名 1062 类 SQL 报错绝不对客裸奔', async () => {
+        vi.spyOn(global, 'fetch').mockResolvedValue(
+            new Response(
+                JSON.stringify({
+                    ResponseMetadata: {
+                        RequestId: 'r1',
+                        Error: {
+                            Code: 'InternalError',
+                            Message:
+                                "create asset failed: rpc error: code = Internal desc = save asset record failed: Error 1062 (23000): Duplicate entry '1-open_platform_api-x-0' for key 'asset.uk_biz_ns_name'",
+                        },
+                    },
+                }),
+                { status: 500 },
+            ),
+        );
+        let caught: RealPersonError | undefined;
+        try {
+            await handleKuaiziAssetAction('GetAsset', { Id: 'asset-x' });
+        } catch (x) {
+            caught = x as RealPersonError;
+        }
+        expect(caught?.message).toBe('名称已存在,请更换名称');
+        for (const leak of ['1062', 'uk_biz_ns_name', 'open_platform_api', 'Duplicate entry']) {
+            expect(caught?.message).not.toContain(leak);
+        }
     });
 
     it('上游没给 VendorGroupId → 报错,不吐一个非火山的号', async () => {

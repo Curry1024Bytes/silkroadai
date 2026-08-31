@@ -31,6 +31,8 @@ import 'server-only';
 import { z } from 'zod';
 import { RealPersonError } from './real-person';
 import { rememberVolcId, toUpstreamId, toUpstreamIds, toVendorId } from './volc-id-map';
+import { deleteGroupMeta, getGroupMeta, saveGroupMeta, updateGroupMeta } from './volc-group-meta';
+import { randomUUID } from 'crypto';
 
 const DEFAULT_BASE = 'https://aiopenapi.kuaizi.cn';
 const ASSET_PATH = '/ai-open-platform-api/api/support/v1/asset';
@@ -97,8 +99,13 @@ function mapUpstreamError(
 
 /** 剥上游报错里的实现细节:gRPC 包装、内部十进制 id。 */
 function sanitizeUpstreamMessage(raw: string): string {
+    // SQL 内幕(MySQL 错误码 / 索引名 / 'open_platform_api' 命名空间)绝不能对客 ——
+    // 2026-08-31 实测同名建组时上游裸奔 `Error 1062 … for key 'asset_group.uk_biz_ns_name'`。
+    if (/duplicate entry/i.test(raw)) return '名称已存在,请更换名称';
     return raw
         .replace(/rpc error:.*?desc\s*=\s*/gi, '')
+        .replace(/Error \d+ \(\d+\):.*$/g, '')
+        .replace(/save asset( group)? record failed:\s*/gi, '')
         .replace(/\bid=\d+/g, '')
         .replace(/\s*:\s*$/, '')
         .trim();
@@ -260,6 +267,15 @@ async function nativeRow(row: UpstreamRow, kind: 'asset' | 'group', userId?: str
     }
     const vendorUrl = str(VendorAssetUrl);
     if (vendorUrl) out.URL = vendorUrl;
+    // 组:名字/描述以我们的表为准(建组发给上游的是机器名)。无表行(老组 / 真人组)回落上游名。
+    if (kind === 'group') {
+        const meta = await getGroupMeta(str(out.Id) ?? '');
+        if (meta) {
+            out.Name = meta.name;
+            if ('Title' in out) out.Title = meta.name;
+            out.Description = meta.description ?? '';
+        }
+    }
     // 素材行上的 GroupId 也要回显成火山组号(整份响应里不能混两套命名空间)。
     const groupUpstream = str(row.GroupId);
     if (groupUpstream) out.GroupId = await toVendorId(groupUpstream);
@@ -323,10 +339,13 @@ export async function handleKuaiziAssetAction(action: string, body: unknown, use
         case 'CreateAssetGroup': {
             const p = createGroupSchema.safeParse(body);
             if (!p.success) badParam(p.error);
+            // 名字所有权归我们(2026-08-31):上游对组名有唯一索引、同名必 1062,而火山官方
+            // 允许重名 —— 上游只发【机器名】(永不重复),客户设的名字/描述存 volc_group_meta,
+            // 读回来时覆盖。重名问题在结构上消失。
+            const machineName = `g-${randomUUID().replace(/-/g, '').slice(0, 16)}`;
             const d = await call<{ Id?: string; VendorGroupId?: string }>('CreateAssetGroup', {
-                Name: p.data.Name,
+                Name: machineName,
                 GroupType: p.data.GroupType,
-                ...(p.data.Description !== undefined ? { Description: p.data.Description } : {}),
             });
             // 建组是【同步】渠道调用,火山组号创建即返回 —— 不必像 CreateAsset 那样压着等。
             const gUp = str(d.Id);
@@ -338,17 +357,47 @@ export async function handleKuaiziAssetAction(action: string, body: unknown, use
                 throw new RealPersonError(502, 'UpstreamError', '素材组创建失败(上游未返回火山编号),请重试');
             }
             await rememberVolcId(gVendor, gUp, 'group', userId);
+            await saveGroupMeta(gVendor, userId, p.data.Name, p.data.Description);
             return { Id: gVendor };
         }
         case 'ListAssetGroups': {
             const p = listGroupsSchema.safeParse(body);
             if (!p.success) badParam(p.error);
-            const d = await call<UpstreamPage<UpstreamRow>>('ListAssetGroups', {
+            const nameFilter = p.data.Filter?.Name;
+            const upFilter = p.data.Filter?.GroupType ? { GroupType: p.data.Filter.GroupType } : undefined;
+            if (!nameFilter) {
+                const d = await call<UpstreamPage<UpstreamRow>>('ListAssetGroups', {
+                    PageNumber: p.data.PageNumber,
+                    PageSize: p.data.PageSize,
+                    ...(upFilter ? { Filter: upFilter } : {}),
+                });
+                return nativePage(d, 'group', p.data.PageNumber, p.data.PageSize, userId);
+            }
+            // Name 筛选:名字归我们所有,上游只有机器名 —— Name 不能转发给上游,
+            // 改成拉全量(封顶 500)→ 覆盖名字 → 本地过滤(contains 语义)→ 本地分页。
+            const all: UpstreamRow[] = [];
+            for (let page = 1; page <= 5; page++) {
+                const d = await call<UpstreamPage<UpstreamRow>>('ListAssetGroups', {
+                    PageNumber: page,
+                    PageSize: 100,
+                    ...(upFilter ? { Filter: upFilter } : {}),
+                });
+                const items = d.Items ?? [];
+                all.push(...items);
+                if (items.length < 100 || all.length >= (d.TotalCount ?? 0)) break;
+            }
+            if (all.length >= 500) console.warn('[kuaizi-assets] ListAssetGroups Name 筛选触到 500 封顶');
+            const overlaid = await Promise.all(all.map((it) => nativeRow(it, 'group', userId)));
+            const filtered = overlaid.filter(
+                (g) => typeof g.Name === 'string' && (g.Name as string).includes(nameFilter),
+            );
+            const start = (p.data.PageNumber - 1) * p.data.PageSize;
+            return {
+                Items: filtered.slice(start, start + p.data.PageSize),
+                TotalCount: filtered.length,
                 PageNumber: p.data.PageNumber,
                 PageSize: p.data.PageSize,
-                ...(p.data.Filter ? { Filter: p.data.Filter } : {}),
-            });
-            return nativePage(d, 'group', p.data.PageNumber, p.data.PageSize, userId);
+            };
         }
         case 'GetAssetGroup': {
             const p = idSchema.safeParse(body);
@@ -359,14 +408,15 @@ export async function handleKuaiziAssetAction(action: string, body: unknown, use
         case 'UpdateAssetGroup': {
             const p = updateGroupSchema.safeParse(body);
             if (!p.success) badParam(p.error);
-            await call(
-                'UpdateAssetGroup',
-                {
-                    Id: await toUpstreamId(p.data.Id),
-                    ...(p.data.Name !== undefined ? { Name: p.data.Name } : {}),
-                    ...(p.data.Description !== undefined ? { Description: p.data.Description } : {}),
-                },
+            // 名字/描述归我们所有 —— 只写 volc_group_meta,不再 PUT 上游(上游那边是机器名,
+            // 改它没有意义)。先 GetAssetGroup 做两件事:① 组不存在时如实 404;② 拿上游名
+            // 当老组(无表行)首次改名时的回落名。
+            const cur = await call<UpstreamRow>('GetAssetGroup', { Id: await toUpstreamId(p.data.Id) }, p.data.Id);
+            await updateGroupMeta(
                 p.data.Id,
+                userId,
+                { name: p.data.Name, description: p.data.Description },
+                str(cur.Name) ?? p.data.Id,
             );
             return { Id: p.data.Id };
         }
@@ -374,6 +424,7 @@ export async function handleKuaiziAssetAction(action: string, body: unknown, use
             const p = idSchema.safeParse(body);
             if (!p.success) badParam(p.error);
             await call('DeleteAssetGroup', { Id: await toUpstreamId(p.data.Id) }, p.data.Id);
+            await deleteGroupMeta(p.data.Id);
             return {};
         }
         case 'CreateAsset': {
