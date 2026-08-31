@@ -21,6 +21,7 @@ vi.mock('@/lib/newapi/client', () => ({ getUser, addQuota }));
 vi.mock('@/lib/newapi/quota-units', () => ({ cnyToQuota: (cny: number) => Math.round((cny * 1e6) / 7) }));
 
 import { computeCostCny, officialCostCny, estimateCostCny, chargeSeedanceVideoTask } from '../cn-billing';
+import { variantForModel } from '../cn-adapter';
 
 describe('computeCostCny 费率', () => {
     it('无视频档:720p ¥39.1/1M、1080p ¥43.35、4k ¥22.1', () => {
@@ -172,5 +173,13 @@ describe('officialCostCny(对账官方价:零售 ÷ 0.85)', () => {
         const retail = computeCostCny(1_000_000, '1080p', true, 'promax');
         const official = officialCostCny(1_000_000, '1080p', true, 'promax');
         expect(retail / official).toBeCloseTo(0.85, 6);
+    });
+
+    // 2026-08-31 海外版 global 2.5:与 promax-2.5 同价(单一价源)。若这两行断言失败,
+    // 说明有人把 global 2.5 落到了 cn 2.5 档(70/90)—— 那是错价。
+    it('seedance-2-5-global 按 promax-2.5 费率计费,不是 cn 2.5', () => {
+        expect(variantForModel('seedance-2-5-global')).toBe('promax-2.5');
+        expect(officialCostCny(1_000_000, '720p', false, 'promax-2.5')).toBeCloseTo(72.76, 4);
+        expect(officialCostCny(1_000_000, '1080p', false, 'promax-2.5')).toBeCloseTo(80.24, 4);
     });
 });

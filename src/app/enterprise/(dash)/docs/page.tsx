@@ -223,12 +223,22 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                     <p className="font-semibold text-indigo-900">海外版(global)</p>
                     <p className="mt-1 text-indigo-900">
                         另有海外节点出片的同款模型:<Code>seedance-2-0-global</Code> /{' '}
-                        <Code>seedance-2-0-global-fast</Code> / <Code>seedance-2-0-global-mini</Code>
-                        。参数、分辨率档位、时长与费率<b>均与国内版一致(唯一例外:无 480p 档)</b>
+                        <Code>seedance-2-0-global-fast</Code> / <Code>seedance-2-0-global-mini</Code> /{' '}
+                        <Code>seedance-2-5-global</Code>(新代,2026-08-31 上线) 。2.0 系参数、分辨率档位、时长与费率
+                        <b>均与国内版一致(唯一例外:无 480p 档)</b>
                         ,仅生成与出片走海外 节点(BytePlus),成片链接为海外 CDN(同样 ~24 小时有效)。调用需使用
                         <b>海外版专用 API 密钥</b>(「API 密钥」页创建时选「海外版」),国内/海外密钥不互通;
                         余额与国内版共享同一账户。
                         <b>如果生成因敏感内容被审核拒绝(fail_reason 提示 sensitive),并非开白/权限原因,请尝试海外版。</b>
+                    </p>
+                    <p className="mt-1 text-indigo-900">
+                        ⚠️ <Code>seedance-2-5-global</Code> 仅 720p / 1080p,
+                        <b>
+                            费率与下方 proMax 的 <Code>seedance-2-5-promax</Code> 相同
+                        </b>
+                        ({listPrices('promax-2.5', ['720p', '1080p'], false)}
+                        ;含视频输入 {listPrices('promax-2.5', ['720p', '1080p'], true)}),
+                        <b>不同于国内版 seedance-2-5</b> —— 下单前请留意。
                     </p>
                 </div>
                 <div className="mt-3 rounded-lg border border-purple-200 bg-purple-50 p-4 text-sm">

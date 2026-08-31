@@ -427,7 +427,7 @@ describe('isEnterpriseFlavor', () => {
 });
 
 describe('分发白名单', () => {
-    it('GET /models → 11 个归一短名(国内 3 + 2.5 + global 3 + promax 3 + promax 2.5)', async () => {
+    it('GET /models → 12 个归一短名(国内 3 + 2.5 + global 3 + global 2.5 + promax 3 + promax 2.5)', async () => {
         const res = await handleEnterpriseV1(req('GET', '/v1/models'), '/models');
         const j = (await res.json()) as { data: Array<{ id: string }> };
         expect(res.status).toBe(200);
@@ -439,6 +439,7 @@ describe('分发白名单', () => {
             'seedance-2-0-global',
             'seedance-2-0-global-fast',
             'seedance-2-0-global-mini',
+            'seedance-2-5-global',
             'seedance-2-0-promax',
             'seedance-2-0-promax-fast',
             'seedance-2-0-promax-mini',
@@ -1349,6 +1350,38 @@ describe('vendor_task_id 出口(2026-08-19)', () => {
         expect(b.resolution).toBe('480p');
         expect(b.ratio).toBe('16:9');
         expect(b.duration).toBe(4);
+    });
+
+    // 2026-08-31 海外版(global)上 2.5:同上游 SKU,费率与 promax-2.5 同价(operator 拍板)。
+    describe('seedance-2-5-global(海外版 2.5)', () => {
+        beforeEach(() => {
+            submitVideoWithKey.mockResolvedValue(
+                new Response(JSON.stringify({ task_id: 'cgt-g25', status: 'queued' }), { status: 200 }),
+            );
+        });
+
+        it('720p 解析成 seedance2.5-global-720p,region=global(走客户 global key)', async () => {
+            const res = await handleEnterpriseV1(
+                req('POST', '/v1/video/generations', { model: 'seedance-2-5-global', prompt: 'x', resolution: '720p' }),
+                '/video/generations',
+            );
+            expect(res.status).toBe(200);
+            expect(submitVideoWithKey).toHaveBeenCalledWith(
+                expect.objectContaining({ model: 'seedance2.5-global-720p' }),
+                expect.anything(),
+            );
+        });
+
+        it('480p → 400(海外版无 480p);4k → 400(2.5 无 4k)', async () => {
+            for (const r of ['480p', '4k']) {
+                const res = await handleEnterpriseV1(
+                    req('POST', '/v1/video/generations', { model: 'seedance-2-5-global', prompt: 'x', resolution: r }),
+                    '/video/generations',
+                );
+                expect(res.status).toBe(400);
+            }
+            expect(submitVideoWithKey).not.toHaveBeenCalled();
+        });
     });
 
     // 2026-08-27 客户契约脚本:从查询响应读 upstream_id,用 ^cgt-\d{14}-[A-Za-z0-9]+$ 校验,

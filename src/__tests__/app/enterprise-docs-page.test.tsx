@@ -46,6 +46,11 @@ describe('/enterprise/docs 火山渠道章节', () => {
         expect(html).toContain('提交会等上游受理后再返回');
     });
 
+    it('海外版 global 2.5 在文档里,且写明费率=proMax 2.5(不同于国内版 2.5)', () => {
+        expect(html).toContain('seedance-2-5-global');
+        expect(html).toContain('不同于国内版 seedance-2-5');
+    });
+
     // 2026-08-26 客户实测报障的三条,文档都要写清楚,否则同样的问题会再来一遍。
     it('写明 ratio 不传=不指定、火山官方参数一律透传', () => {
         expect(html).toContain('不传就是「不指定」');

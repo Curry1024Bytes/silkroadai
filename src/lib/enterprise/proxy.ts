@@ -65,6 +65,9 @@ export const ENTERPRISE_MODELS: Record<string, SeedanceVariant> = {
     'seedance-2-0-global': 'pro',
     'seedance-2-0-global-fast': 'fast',
     'seedance-2-0-global-mini': 'mini',
+    // 海外版(global)seedance 2.5(2026-08-31):同上游 SKU、与 promax-2.5 同价(variant 复用),
+    // 仅 720p/1080p;走客户 global key
+    'seedance-2-5-global': 'promax-2.5',
     // 海外版proMax(2026-07-23):dreamina 系,费率独立(挂牌更高 ×0.85);fast/mini 仅 480p/720p
     'seedance-2-0-promax': 'promax',
     'seedance-2-0-promax-fast': 'promax-fast',
@@ -199,7 +202,9 @@ function resolveEnterpriseModel(
         variant === '2.5'
             ? `seedance2.5-${resRaw}${ref}`
             : variant === 'promax-2.5'
-              ? `seedance2.5-promax-${resRaw}${ref}`
+              ? region === 'global'
+                  ? `seedance2.5-global-${resRaw}${ref}`
+                  : `seedance2.5-promax-${resRaw}${ref}`
               : `seedance2.0-${region === 'global' ? 'global-' : ''}${variant}-${resRaw}${ref}`;
     const spec = MODEL_MAP[longName];
     if (!spec) {

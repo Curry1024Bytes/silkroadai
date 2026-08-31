@@ -46,6 +46,9 @@ const UPSTREAM_PROMAX_FAST = 'artsdance2-0-fast-intl-260701';
 const UPSTREAM_PROMAX_MINI = 'artsdance2-0-mini-intl-260701';
 // 海外版 proMax seedance 2.5(2026-08-08):intl 新代模型,仅 720p/1080p,费率独立(按原价挂牌)。
 const UPSTREAM_PROMAX_25 = process.env.SEEDANCE_PROMAX_MODEL_25 || 'artsdance2-5-intl-260628';
+// 海外版(global)seedance 2.5(2026-08-31):同一 intl 端口、同一上游 SKU,费率与 promax-2.5
+// 相同(operator 拍板)—— 差别只在走客户的 global key(而非 promax key)。
+const UPSTREAM_GLOBAL_25 = process.env.SEEDANCE_GLOBAL_MODEL_25 || UPSTREAM_PROMAX_25;
 // 国内版 seedance 2.5(2026-08-07):国内版渠道(token.xinhankr)上游新代模型。
 // 上游名 2026-08-08 由 doubao-seedance-2-5-260628 换成 artsdance-2-5-pro-260801
 // (实测:新名支持 720p/1080p、【不支持 480p】;旧名支持 480p/720p)。费率独立(含视/无视两档)。
@@ -147,6 +150,22 @@ export const MODEL_MAP: Record<string, SeedanceModelSpec> = {
             ]),
         ),
     ),
+    // ── 海外版(global)seedance 2.5(2026-08-31):仅 720p/1080p;variant 复用 promax-2.5
+    //    (费率同价、单一价源 —— promax 调价自动跟随);region=global 走客户 global key ──
+    ...Object.fromEntries(
+        (['720p', '1080p'] as const).flatMap((resolution) =>
+            [false, true].map((ref) => [
+                `seedance2.5-global-${resolution}${ref ? '-ref' : ''}`,
+                {
+                    resolution,
+                    ref,
+                    variant: 'promax-2.5' as const,
+                    upstream: UPSTREAM_GLOBAL_25,
+                    region: 'global' as const,
+                },
+            ]),
+        ),
+    ),
     // ── 海外版proMax(promax,2026-07-23):dreamina 系,费率独立;pro 4 档,fast/mini 480p/720p ──
     ...Object.fromEntries(
         (
@@ -209,6 +228,9 @@ export function variantForModel(model: string): SeedanceVariant {
     // 否则会落到 cn '2.5' 或 'promax' 档按错价计费。
     const is25 = m.includes('2-5') || m.includes('2.5');
     if (is25 && m.includes('-promax')) return 'promax-2.5';
+    // 海外版 global 2.5 与 promax-2.5 同费率(2026-08-31,operator 拍板同价)——
+    // 必须先于纯 2.5 判,否则落到 cn '2.5' 档(70/90)按错价计费。
+    if (is25 && m.includes('-global')) return 'promax-2.5';
     if (is25) return '2.5';
     if (m.includes('-promax')) {
         // promax 系费率独立,必须先于 -fast/-mini 判(seedance-2-0-promax-fast 含 '-fast')
