@@ -166,7 +166,7 @@
   Enterprise 国内版/proMax/火山新增 480p(每 token 与 720p 同费率),global 因 intl 上游真机不支持而
   保持 720p/1080p[/4k],请求 480p 时 Portal 直接返回带替代指引的 400。无 migration/env/依赖/
   Docker/Nginx/Cloudflare 变化;定向 125/125、CI 245 files / 2693 passed / 1 skipped、typecheck/
-  format/lint 0 error 且生产构建通过。完整测试另有 2 个联机 smoke 因本机未开 `127.0.0.1:13000`
+  format/lint 0 error 且生产构建通过。完整测试另有 2 个联机 smoke 因本机未开 `127.0.0.1:3000`
   VPS 隧道而 `ECONNREFUSED`,不属于代码回归;已随 `prod@53d30a3` 于 2026-08-06 部署。
 - 2026-08-06 同步期间上游又前进到 `main@35036ed`,新增 2 个提交并 clean merge 到 `dev`
   (`d5cd281`):`/v1/responses` 遇上游 5xx 时同请求体最多重 POST 一次并回传 failover 状态头(4xx、
@@ -229,7 +229,7 @@
 - 本轮无数据库 migration、无新依赖；仅新增 Kuaizi 环境变量模板。Kuaizi 素材库共享 ApiKey
   无客户级隔离，生产未配置凭据，采用前必须完成隔离、合规和真实链路审计。
 - 验证结果：Prisma validate 通过；typecheck 通过；lint 0 error(仅既有 warnings)；完整非 smoke
-  测试 `3145 passed / 1 skipped`；生产构建通过。构建时 `127.0.0.1:13000` 未建立本机隧道，
+  测试 `3145 passed / 1 skipped`；生产构建通过。构建时 `127.0.0.1:3000` 未建立本机隧道，
   pricing/models 产生预期 fetch 降级日志，不代表代码回归。
 - 工作区另有用户已有的未跟踪 `.newapi-config-snapshots/`、`new-api-custom-full/` 和
   `docs/真实性上游毛利报表-需求文档.md`；本次同步未修改、未提交这些内容。`dev`/`prod` 原有的
