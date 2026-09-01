@@ -231,9 +231,9 @@
 - 验证结果：Prisma validate 通过；typecheck 通过；lint 0 error(仅既有 warnings)；完整非 smoke
   测试 `3145 passed / 1 skipped`；生产构建通过。构建时 `127.0.0.1:13000` 未建立本机隧道，
   pricing/models 产生预期 fetch 降级日志，不代表代码回归。
-- 工作区另有用户已有的 `vendor/stripe-node` 子模块本地指针变化，以及未跟踪的
-  `.newapi-config-snapshots/`、`new-api-custom-full/` 和 `docs/真实性上游毛利报表-需求文档.md`；
-  本次同步未修改、未提交这些内容。
+- 工作区另有用户已有的未跟踪 `.newapi-config-snapshots/`、`new-api-custom-full/` 和
+  `docs/真实性上游毛利报表-需求文档.md`；本次同步未修改、未提交这些内容。`dev`/`prod` 原有的
+  `vendor/stripe-node` gitlink(`d3b8ecd`)也被保留，未被本轮 `main` 的旧 gitlink 覆盖。
 
 ## 目录结构
 
