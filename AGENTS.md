@@ -205,6 +205,36 @@
 
 ---
 
+## 上游同步记录(2026-09-01)
+
+- 本轮同步范围为 fork `origin/main@557681d` 的官方上游提交 #384–#390；本地 `main` 已
+  fast-forward 到该 SHA。官方 `upstream/main` 还领先 #391–#415，这 25 个提交尚未进入 fork，
+  不属于本轮合并范围。
+- 已将 `main` 合并到 `dev`，合并提交为 `5a8ed8e`(`merge(upstream): sync main #384-#390 into dev`)。
+  `prod` 仍为 `88af847`，未合并、未部署；`origin/dev` 尚未推送本次 merge commit。
+- 冲突语义取舍：
+  - `src/instrumentation.ts` 保留当前开发环境 `DEV_PROXY_URL`/`ProxyAgent` 分支，同时采用上游
+    #384 的默认 keep-alive 回退，仅保留 600s headers/body timeout。
+  - `src/app/docs/page.tsx` 保留 LLmRoute 的 `docs-content` 路由入口；#390 的图片错误 status/code
+    表已适配写入 `src/app/docs/docs-content.tsx`，未引入上游旧 Silk Road URL。
+  - `src/app/v1/[...path]/route.ts` 保留固定分辨率 SKU、失败计费和 LLmRoute 代理语义，同时接入
+    #389/#390 的图片错误归一与 `Retry-After`。
+  - `CLAUDE.md` 保留当前生产 Nginx/Cloudflare/LLmRoute 快照，仅记录 Kuaizi 为未配置、dormant
+    的候选上游；未把上游旧 Caddy 部署说明当作当前生产事实。
+  - `docker-compose.prod.yml` 接收 `portal-api-4..6`，但继续放在 `api-replicas` profile；当前
+    生产 Nginx 单实例未启用该 profile，也未改 Nginx 配置。
+- #390 导致的既有测试断言更新已单列审计：固定 SKU 的 200 审核错误改断言为
+  `moderation_blocked`，固定扇出普通错误/无 payload 改为 `500/server_error`；保留原测试场景和
+  上游新增回归测试，没有删除或反向修改上游测试。
+- 本轮无数据库 migration、无新依赖；仅新增 Kuaizi 环境变量模板。Kuaizi 素材库共享 ApiKey
+  无客户级隔离，生产未配置凭据，采用前必须完成隔离、合规和真实链路审计。
+- 验证结果：Prisma validate 通过；typecheck 通过；lint 0 error(仅既有 warnings)；完整非 smoke
+  测试 `3145 passed / 1 skipped`；生产构建通过。构建时 `127.0.0.1:13000` 未建立本机隧道，
+  pricing/models 产生预期 fetch 降级日志，不代表代码回归。
+- 工作区另有用户已有的 `vendor/stripe-node` 子模块本地指针变化，以及未跟踪的
+  `.newapi-config-snapshots/`、`new-api-custom-full/` 和 `docs/真实性上游毛利报表-需求文档.md`；
+  本次同步未修改、未提交这些内容。
+
 ## 目录结构
 
 ```
