@@ -48,9 +48,8 @@ export async function register() {
             new Agent({
                 headersTimeout: 600_000, // 与 Caddy response_header_timeout 600s 对齐
                 bodyTimeout: 600_000,
-                // 默认空闲 4s 就断;延长至 60s 可复用图片上游连接,减少建连与 client-side RST。
-                keepAliveTimeout: 60_000,
-                keepAliveMaxTimeout: 600_000,
+                // 不拉长空闲保活(#378):实测走适配器的图片请求会慢 5 倍。
+                // Undici 默认 keep-alive(约 4s)虽增加少量建连开销,但可避免慢请求队头阻塞。
             }),
         );
     }

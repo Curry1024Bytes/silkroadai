@@ -136,15 +136,13 @@ describe('/docs page — code snippets ground-truthed', () => {
 });
 
 describe('/docs page — W7 D4 PR-H Tier B common-errors section', () => {
-    it('renders the 常见错误码 heading + the 3 stable error codes', () => {
+    it('renders the 常见错误码 heading + the image API status/code contract', () => {
         const html = renderToString(<DocsPage />);
         // Section heading
         expect(html).toContain('常见错误码');
-        // 3 documented codes (these are stable regardless of how the
-        // 402-vs-403 status rewriting later resolves)
-        expect(html).toContain('invalid_authentication');
-        expect(html).toContain('insufficient_user_quota');
-        expect(html).toContain('no available channel');
+        expect(html).toContain('invalid_api_key');
+        expect(html).toContain('insufficient_quota');
+        expect(html).toContain('moderation_blocked');
     });
 
     it('links insufficient_user_quota to the recharge surface (/balance + /pay)', () => {

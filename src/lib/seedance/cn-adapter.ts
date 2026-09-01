@@ -21,6 +21,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
 import { uploadImage } from '@/lib/r2/client';
+import { classifyUpstreamError } from './upstream-error';
 
 const XHK_BASE = process.env.SEEDANCE_XHK_BASE_URL || 'https://token.xinhankr.com';
 /** 上游 pro 模型名(SEEDANCE_XHK_MODEL 仅覆盖 pro;fast/mini 上游 id 固定)。 */
@@ -51,14 +52,27 @@ const UPSTREAM_PROMAX_25 = process.env.SEEDANCE_PROMAX_MODEL_25 || 'artsdance2-5
 const UPSTREAM_XHK_25 = process.env.SEEDANCE_XHK_MODEL_25 || 'artsdance-2-5-pro-260801';
 
 /** 版本 → 上游 base URL(global 与 promax 同为 intl 端口,仅模型名/费率不同)。
- *  volc(火山渠道,2026-07-29)走独立 provider + 火山方舟原生协议,不经此函数(见 volc-adapter)。 */
+ *  volc(火山渠道)走独立上游 + 火山方舟原生协议,不经此函数(见 kuaizi-adapter)。 */
 export type SeedanceRegion = 'cn' | 'global' | 'promax' | 'volc';
 export function baseForRegion(region: SeedanceRegion): string {
     return region === 'global' || region === 'promax' ? INTL_BASE : XHK_BASE;
 }
 
-/** 「火山」渠道唯一对客模型名(provider 文档 doubao-seedance-2.0,火山方舟原生协议)。 */
+/** 「火山」渠道对客模型名(火山方舟点分形)。2026-08-17 换上游(筷子开放平台)后由单模型
+ *  扩到四档;上游 Model ID 与档位映射见 kuaizi-adapter 的 VOLC_MODELS。
+ *  ⚠️ 必须是点分形 —— 连字符形(doubao-seedance-2-0-260128 等)被 ark-format 归一到国内版
+ *  短名 seedance-2-0 系(cn 渠道),两套命名不能相撞。 */
 export const VOLC_MODEL = 'doubao-seedance-2.0';
+const VOLC_MODEL_NAMES = new Set([
+    VOLC_MODEL,
+    'doubao-seedance-2.0-fast',
+    'doubao-seedance-2.0-mini',
+    'doubao-seedance-2.5',
+]);
+/** 是否「火山」渠道对客模型名(点分形四档)。 */
+export function isVolcModel(model: string): boolean {
+    return VOLC_MODEL_NAMES.has(String(model || '').toLowerCase());
+}
 
 // 默认单次输入上限(旧档 pro/fast/mini/promax…):9 图 / 3 视频 / 音频不限数(仅需配图)。
 const MAX_REF_IMAGES = 9;
@@ -176,7 +190,7 @@ export function regionForModel(model: string): SeedanceRegion {
     const hit = MODEL_MAP[model]?.region;
     if (hit) return hit;
     const m = String(model || '').toLowerCase();
-    if (m === VOLC_MODEL) return 'volc';
+    if (isVolcModel(m)) return 'volc';
     if (m.includes('-promax')) return 'promax';
     if (m.includes('-global')) return 'global';
     return 'cn';
@@ -188,7 +202,9 @@ export function variantForModel(model: string): SeedanceVariant {
     const hit = MODEL_MAP[model]?.variant;
     if (hit) return hit;
     const m = model.toLowerCase();
-    if (m === VOLC_MODEL) return 'pro'; // 火山渠道单模型走 pro 档(国内版同价)
+    if (m === VOLC_MODEL) return 'pro'; // 火山渠道 2.0 主档 = pro(国内版同价)
+    // 火山渠道其余三档(doubao-seedance-2.0-fast / -mini / doubao-seedance-2.5)由下面的
+    // 通用后缀识别命中 fast / mini / '2.5',与国内版同费率表。
     // 2.5 系:费率独立。promax-2.5 含 '2-5' 且 '-promax',必须【先于】纯 2.5 与 promax 判,
     // 否则会落到 cn '2.5' 或 'promax' 档按错价计费。
     const is25 = m.includes('2-5') || m.includes('2.5');
@@ -218,24 +234,9 @@ function err(status: number, code: string, message: string) {
     return NextResponse.json({ error: { code, message, type: 'seedance_cn_adapter_error' } }, { status });
 }
 
-/** 上游 400/5xx 报错体 → 对客【友好且不泄露上游身份】的文案(#271:只按关键词分类,绝不回原始 body/域名)。
- *  审核类(版权/敏感)给可操作提示;其余回通用文案。原始 body 已在调用处 console.warn 落日志。 */
-function friendlyUpstreamError(body: string, status?: number): string {
-    const b = (body || '').toLowerCase();
-    if (b.includes('copyright') || b.includes('版权'))
-        return '参考图/内容疑似涉及版权,被上游审核拒绝 —— 请更换参考图或调整提示词后重试';
-    if (b.includes('sensitive') || b.includes('敏感') || b.includes('sensitivecontent'))
-        return '内容被上游安全审核拒绝(疑似敏感)—— 请调整提示词或参考素材后重试';
-    // 上游把已失败/已清除的任务返「任务不存在」——不是请求被拒,是任务已失效
-    if (b.includes('任务不存在') || b.includes('not found') || b.includes('does not exist'))
-        return '任务已失效或不存在,请重新提交';
-    // 输入素材(图/视频/音频)上游拉取失败:链接不可达 / 跨境超时(如国内 CDN 走海外档)
-    if (b.includes('素材') || b.includes('failed to download media') || b.includes('gateway time-out'))
-        return '输入素材下载失败(链接不可达或超时)—— 请确认图片/视频链接公网可访问;海外档拉国内链接易超时,可改用国内版';
-    // 上游 5xx = 瞬时内部错误,可重试(不是请求本身被拒)
-    if (status && status >= 500) return '上游暂时不可用,请稍后重试';
-    return 'upstream rejected the request';
-}
+// 上游报错体 → 对客文案的分类/脱敏已抽到 ./upstream-error(2026-08-17 重写,见该文件头部
+// 「为什么重写」)。此处 re-export 保持既有 import 路径不变。
+export { friendlyUpstreamError, classifyUpstreamError } from './upstream-error';
 
 function isAuthorized(auth: string): boolean {
     const key = auth.replace(/^Bearer\s+/i, '').trim();
@@ -580,19 +581,17 @@ export async function submitVideoWithKey(body: Record<string, unknown>, auth: st
     const taskId = j?.task_id || j?.id;
     if (!upstream.ok || !taskId) {
         // 上游原始报错体落日志(2000 字):客户投诉 upstream_error 时按时间点反查根因
+        const cls = classifyUpstreamError(text, upstream.status);
         console.warn('[seedance-cn-adapter] submit failed', {
             model,
             upstream_model: map.upstream,
             status: upstream.status,
+            category: cls.category,
             body: text.slice(0, 2000),
         });
         // 安全:上游原始报错(可能含域名/server 标识)只落日志(见上 console.warn);
-        // 客户拿【分类后】文案 —— 审核类(版权/敏感)给可操作提示,其余通用。不回原始 body。
-        return err(
-            upstream.status >= 400 ? upstream.status : 502,
-            'upstream_error',
-            friendlyUpstreamError(text, upstream.status),
-        );
+        // 客户拿【分类 + 脱敏】后的文案 —— 带主体(提示词/参考图/…)与脱敏后的上游原因。
+        return err(upstream.status >= 400 ? upstream.status : 502, 'upstream_error', cls.message);
     }
     return NextResponse.json(
         {
@@ -657,18 +656,16 @@ export async function pollVideoWithKey(id: string, auth: string, region: Seedanc
         j = null;
     }
     if (!upstream.ok || !j) {
+        const cls = classifyUpstreamError(text, upstream.status);
         console.warn('[seedance-cn-adapter] poll failed', {
             id,
             status: upstream.status,
+            category: cls.category,
             body: text.slice(0, 2000),
         });
-        // 安全:上游原始报错只落日志(见上 console.warn);客户拿【分类后】文案(审核类给提示)。
+        // 安全:上游原始报错只落日志(见上 console.warn);客户拿【分类 + 脱敏】后的文案。
         // 注:内容审核失败走 HTTP 200 + status:failed + fail_reason(不经此分支),客户仍能看到审核提示。
-        return err(
-            upstream.status >= 400 ? upstream.status : 502,
-            'upstream_error',
-            friendlyUpstreamError(text, upstream.status),
-        );
+        return err(upstream.status >= 400 ? upstream.status : 502, 'upstream_error', cls.message);
     }
     const status = mapStatus(j.status);
     const videoUrl = firstVideoUrl(j.data);

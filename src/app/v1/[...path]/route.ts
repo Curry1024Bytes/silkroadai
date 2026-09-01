@@ -77,6 +77,7 @@ import {
     translateAnthropicSseToOpenAi,
 } from './claude-chat-cache';
 import { withKeepalive } from './keepalive';
+import { IMAGE_SAFETY_RE, IMAGE_SAFETY_BODY, normalizeImageError } from './error-normalize';
 import { handleAnthropicMessages } from './messages-stream-hold';
 import { handleUsageQuery } from './usage';
 import {
@@ -789,7 +790,8 @@ async function handleGeminiImage(
     try {
         imageSize = resolveImageSize(model, String(body.size ?? ''));
     } catch (e) {
-        if (e instanceof ImageSizeError) return imageError(e.message, 400, cap);
+        if (e instanceof ImageSizeError)
+            return imageError(e.message, 400, cap, { code: 'invalid_value', param: 'size' });
         throw e;
     }
     let contents: Array<{ role: string; parts: GeminiInputPart[] }>;
@@ -874,35 +876,31 @@ function hostedRefs(stored: StoredImage | null): string[] {
     return stored && /^https?:\/\//.test(stored.url) ? [stored.url] : [];
 }
 
-/** DALL·E 形错误(默认 400 invalid_request_error)。cap 在手时一并捕获。 */
-function imageError(message: string, status = 400, cap: CaptureCtx | null = null): NextResponse {
-    const obj = { error: { message, type: 'invalid_request_error' } };
-    if (cap) captureJsonResponse(cap, status, obj);
-    return NextResponse.json(obj, { status });
+/** imageError 的细分定位(对齐官方错误体的 code/param;缺省 type=invalid_request_error)。 */
+interface ImageErrorOpts {
+    type?: string;
+    code?: string | null;
+    param?: string | null;
 }
 
-/** 真·内容审核拒绝的标记(上游确定性输入拒)。⚠️ 不含 `adobe` —— 仅提到品牌名的错误
- *  (如 adobe 线路超时)不是审核拒绝,冒充审核文案会误导客户排查方向(2026-08-05 错误
- *  报告 F 项:超时被误显示成审核文案)。 */
-const IMAGE_SAFETY_RE = /image_unsafe|content rejected|appear to be unsafe/i;
-
-const IMAGE_SAFETY_BODY = JSON.stringify({
-    error: {
-        message:
-            'Your request was rejected by the content safety system. The generated image may not comply with the content policy — please modify your prompt and try again.',
-        type: 'invalid_request_error',
-        code: 'content_policy_violation',
-    },
-});
-
-/** 转发上游图片错误给客户前脱敏:候补源(Adobe/we-token 等)的内容安全拒绝会带上来源名
- *  (如 `adobe content rejected: ... image_unsafe`),不能暴露给客户。命中内容安全类 → 统一改写成
- *  中性的 content_policy_violation + **status 恒 400**(号池个别成员把拒绝包在 HTTP 200 体里,
- *  透传上游 status 会变成「200 + 审核报错」,客户网关按成功入账 —— 2026-08-08 客户反馈实例);
- *  其余错误只抹上游品牌名、status 沿用上游。仅作用于图片错误【响应体】,内部 reqlog 仍记原文。 */
-function sanitizeImageError(text: string, upstreamStatus: number): { body: string; status: number } {
-    if (IMAGE_SAFETY_RE.test(text)) return { body: IMAGE_SAFETY_BODY, status: 400 };
-    return { body: text.replace(/\badobe\b/gi, 'the provider'), status: upstreamStatus };
+/** DALL·E 形错误(默认 400 invalid_request_error)。体恒为官方四字段形
+ *  `{message,type,param,code}`(param/code 没有就是 null)。cap 在手时一并捕获。 */
+function imageError(
+    message: string,
+    status = 400,
+    cap: CaptureCtx | null = null,
+    opts: ImageErrorOpts = {},
+): NextResponse {
+    const obj = {
+        error: {
+            message,
+            type: opts.type ?? 'invalid_request_error',
+            param: opts.param ?? null,
+            code: opts.code ?? null,
+        },
+    };
+    if (cap) captureJsonResponse(cap, status, obj);
+    return NextResponse.json(obj, { status });
 }
 
 /** gpt-image-2 是图片模型,zhiyunai/Azure 只支持 Images 接口 —— 客户用 /v1/chat/completions
@@ -957,7 +955,8 @@ async function handleGptImageChat(
     try {
         contents = await toGeminiContents(body.messages);
     } catch (e) {
-        if (e instanceof ImageUrlError) return imageError(e.message, 400, cap);
+        if (e instanceof ImageUrlError)
+            return imageError(e.message, 400, cap, { code: 'invalid_image', param: 'image' });
         throw e;
     }
     const parts = contents.flatMap((c) => c.parts);
@@ -968,7 +967,7 @@ async function handleGptImageChat(
         .trim();
     const inputImages = parts.flatMap((p) => ('inlineData' in p ? [p.inlineData] : []));
     if (!prompt && inputImages.length === 0) {
-        return imageError('messages 里需要文字 prompt 或图片', 400, cap);
+        return imageError('messages 里需要文字 prompt 或图片', 400, cap, { param: 'prompt' });
     }
 
     // 固定价别名同时是 new-api 的计费 key:只注入对应像素 size,不能改回真模型名。
@@ -1009,11 +1008,10 @@ async function handleGptImageChat(
             errJson = null;
         }
         if (cap) captureJsonResponse(cap, upstream.status, errJson ?? { _raw: errText.slice(0, 500) });
-        const sanitized = sanitizeImageError(errText, upstream.status);
-        return new NextResponse(sanitized.body, {
-            status: sanitized.status,
-            headers: { 'content-type': 'application/json' },
-        });
+        const sanitized = normalizeImageError(errText, upstream.status);
+        const errHeaders: Record<string, string> = { 'content-type': 'application/json' };
+        if (sanitized.retryAfter) errHeaders['retry-after'] = String(sanitized.retryAfter);
+        return new NextResponse(sanitized.body, { status: sanitized.status, headers: errHeaders });
     }
     const data = (await upstream.json().catch(() => null)) as {
         data?: Array<{ b64_json?: string; url?: string; size?: string }>;
@@ -1052,7 +1050,7 @@ async function handleGptImageChat(
     } else if (item?.url) {
         content = `![image](${item.url})`;
     } else {
-        return imageError('上游未返回图片', 502, cap);
+        return imageError('upstream returned no image', 500, cap, { type: 'server_error' });
     }
 
     const usage = data?.usage ?? {};
@@ -1095,7 +1093,9 @@ async function handleGpt4oImageChat(
             body: JSON.stringify({ ...body, stream: false }), // 非流才能取出 url 转存
         });
     } catch (e) {
-        return imageError(`upstream request failed: ${e instanceof Error ? e.message : String(e)}`, 502, cap);
+        return imageError(`upstream request failed: ${e instanceof Error ? e.message : String(e)}`, 500, cap, {
+            type: 'server_error',
+        });
     }
     if (!upstream.ok) return cap ? captureResponse(cap, upstream) : passthroughResponse(upstream);
 
@@ -1856,7 +1856,7 @@ type ImageEchoFields = { quality: string; background: string; outputFormat: stri
 
 /** 非 Gemini 图片模型(gpt-image-2 等)透传 + 响应整形:
  *  - 上游报错(非 2xx)/ 非预期形态 → 透传 status+体(**绝不隐藏报错**,客户要求),
- *    仅两个例外:审核拒绝统一文案 + 恒 400;上游 200 包 error 体 → 502(见分支内注释)。
+ *    仅两个例外:审核拒绝统一文案 + 恒 400;上游 200 包 error 体 → 500(见分支内注释)。
  *  - 成功 → 补 OpenAI gpt-image 形的顶层 `size` + 估算 `usage` + 回显 `quality` /
  *    `background` / `output_format`(上游已带则保留不覆盖)。data[].b64_json 等字段原样保留。 */
 async function reshapeOpenAiImageResponse(
@@ -1892,7 +1892,7 @@ async function reshapeOpenAiImageResponse(
             // 上游 200 但体不是标准图片 JSON,三分:
             // - 含审核标记(号池个别成员把拒绝包在 HTTP 200 体里)→ 统一审核文案 + 400,
             //   绝不让「200 + 错误体」出门 —— 客户网关会按成功入账(2026-08-08 客户反馈实例);
-            // - 体带 error 字段(200 假成功,非审核类)→ 502,客户按失败重试;
+            // - 体带 error 字段(200 假成功,非审核类)→ 500 server_error,客户按失败重试;
             // - 其余(stream:true 的 SSE 成功体等)原样透传 200,连品牌替换都不做
             //   (\badobe\b 的 \b 会命中 b64 里 `/adobe+` 这类片段,替换会写坏图)。
             if (IMAGE_SAFETY_RE.test(text)) {
@@ -1900,13 +1900,16 @@ async function reshapeOpenAiImageResponse(
                 return new NextResponse(IMAGE_SAFETY_BODY, { status: 400, headers });
             }
             if (json && (json as { error?: unknown }).error) {
+                // 200 假成功(非审核类)→ 按临时错归一(500 server_error 桶)
+                const fake = normalizeImageError(text, 502);
                 headers.set('content-type', 'application/json');
-                return new NextResponse(text.replace(/\badobe\b/gi, 'the provider'), { status: 502, headers });
+                return new NextResponse(fake.body, { status: fake.status, headers });
             }
             return new NextResponse(text, { status: 200, headers });
         }
-        const sanitized = sanitizeImageError(text, upstream.status);
+        const sanitized = normalizeImageError(text, upstream.status);
         if (sanitized.body !== text) headers.set('content-type', 'application/json');
+        if (sanitized.retryAfter) headers.set('retry-after', String(sanitized.retryAfter));
         return new NextResponse(sanitized.body, { status: sanitized.status, headers });
     }
 
@@ -2100,7 +2103,7 @@ async function handleImagesDalle(
                             String(form.get('background') ?? ''),
                             sizeRaw,
                         );
-                        if (err) return imageError(err, 400, cap);
+                        if (err) return imageError(err, 400, cap, { code: 'invalid_value' });
                         wantJpeg = String(form.get('output_format') ?? '').toLowerCase() === 'jpeg';
                     }
                     normalizeGptImageForm(form);
@@ -2149,12 +2152,14 @@ async function handleImagesDalle(
                         estimatedPromptCount,
                     );
                 } catch (e) {
-                    if (e instanceof ImageUrlError) return imageError(e.message, 400, cap);
+                    if (e instanceof ImageUrlError)
+                        return imageError(e.message, 400, cap, { code: 'invalid_image', param: 'image' });
                     // 连不上 new-api 等网络异常:透出真实原因(不被外层 catch 兜底成笼统 400)
                     return imageError(
                         `upstream request failed: ${e instanceof Error ? e.message : String(e)}`,
-                        502,
+                        500,
                         cap,
+                        { type: 'server_error' },
                     );
                 }
             }
@@ -2227,7 +2232,7 @@ async function handleImagesDalle(
                             typeof body.background === 'string' ? body.background : '',
                             sizeRaw,
                         );
-                        if (err) return imageError(err, 400, cap);
+                        if (err) return imageError(err, 400, cap, { code: 'invalid_value' });
                         wantJpeg =
                             (typeof body.output_format === 'string' ? body.output_format : '').toLowerCase() === 'jpeg';
                     }
@@ -2268,11 +2273,13 @@ async function handleImagesDalle(
                         estimatedPromptCount,
                     );
                 } catch (e) {
-                    if (e instanceof ImageUrlError) return imageError(e.message, 400, cap);
+                    if (e instanceof ImageUrlError)
+                        return imageError(e.message, 400, cap, { code: 'invalid_image', param: 'image' });
                     return imageError(
                         `upstream request failed: ${e instanceof Error ? e.message : String(e)}`,
-                        502,
+                        500,
                         cap,
+                        { type: 'server_error' },
                     );
                 }
             }
@@ -2284,8 +2291,11 @@ async function handleImagesDalle(
             }
         }
     } catch (e) {
-        if (e instanceof ImageUrlError) return imageError(e.message, 400, cap);
-        if (e instanceof ImageSizeError || e instanceof ImageCountError) return imageError(e.message, 400, cap);
+        if (e instanceof ImageUrlError)
+            return imageError(e.message, 400, cap, { code: 'invalid_image', param: 'image' });
+        if (e instanceof ImageSizeError)
+            return imageError(e.message, 400, cap, { code: 'invalid_value', param: 'size' });
+        if (e instanceof ImageCountError) return imageError(e.message, 400, cap, { code: 'invalid_value', param: 'n' });
         return imageError('invalid request body', 400, cap);
     }
 
@@ -2295,7 +2305,10 @@ async function handleImagesDalle(
     const wantsAuto = aspectRatio === '' || aspectRatio.toLowerCase() === 'auto';
     const allowed = GEMINI_ASPECT_RATIOS[model];
     if (aspectRatio && !wantsAuto && !allowed.has(aspectRatio)) {
-        return imageError(`unsupported aspect_ratio "${aspectRatio}" for ${model}`, 400, cap);
+        return imageError(`unsupported aspect_ratio "${aspectRatio}" for ${model}`, 400, cap, {
+            code: 'invalid_value',
+            param: 'aspect_ratio',
+        });
     }
 
     // size:仅 pro 可选 1K/2K/4K(默认 4K),其余模型忽略;非法值 → 400。
@@ -2303,7 +2316,8 @@ async function handleImagesDalle(
     try {
         imageSize = resolveImageSize(model, sizeRaw);
     } catch (e) {
-        if (e instanceof ImageSizeError) return imageError(e.message, 400, cap);
+        if (e instanceof ImageSizeError)
+            return imageError(e.message, 400, cap, { code: 'invalid_value', param: 'size' });
         throw e;
     }
 
@@ -2369,7 +2383,7 @@ async function handleImagesDalle(
         if (firstErrorResponse) {
             return cap ? captureResponse(cap, firstErrorResponse) : passthroughResponse(firstErrorResponse);
         }
-        return imageError('no image generated', 502, cap);
+        return imageError('no image generated', 500, cap, { type: 'server_error' });
     }
 
     // ---- 包成 DALL·E 响应(部分失败 → 返成功子集 200 + 头标失败数)----

@@ -233,6 +233,18 @@ silkroadai/
 - [x] #212 — **GET /v1/key 自查端点**(new-api 无此路径,拦截纯增量):sk- 自查别名/状态/档次(显示名按 key 主人 tenant)/账户余额(round4 + `stale` 标志)/近期用量。评审 major:`last_used_at` 缓存命中时是缓存写入时间 → 只 `source==='live'` 才给;`recent_used_cny` 命名不冒充对账口径。余额挂 → 503;次要信息 best-effort null。
 - [ ] `/docs` 章节(流式契约 / silkroadai 字段 / /v1/key)另起 PR;enriched 头 + 真实逐 token 流式待有余额 key 验证(unauth 通路已证)。
 
+### 企业门户「火山」渠道换上游 → 筷子开放平台(2026-08-17 上线)
+
+- [x] PR #386 merge `7cbb77f` + 部署 + 生产真机 smoke ✅ — volc region 上游从 new-api 形 provider(`ENTERPRISE_VOLC_VIDEO_*`)换成 **筷子 AI 开放平台** `https://aiopenapi.kuaizi.cn`。筷子对齐火山方舟官方 `contents/generations/tasks` 契约 → 对客方舟形接口近乎直通,**proxy 主干 / 计费 / 对客契约 / region 键全不变**,差异全吸收在适配器边界。
+    - **新 `src/lib/seedance/kuaizi-adapter.ts` 取代 `volc-adapter.ts`(已删)**:`POST/GET /ai-open-platform-api/api/v3/contents/generations/tasks` + `Authorization: Bearer kz-…`;上游 task id 是 **`kz-cgt-` 前缀** → 边界双向伪装成火山官方 `cgt-`(同 #308 思路),轮询 404 回退原始 id 兜旧任务;成片**优先 `content.video_url`**(火山官方 VOD 域名),上游另给的 `kz_video_url` 路径含 `ai_openapi/`+上游 task id **会泄露上游身份,只作兜底**(gotcha #21 同族口径);**上游无取消端点**(文档仅建/查两条)→ `cancelVolcVideo` 返 null,proxy best-effort 不阻断删任务;上游报错走 `friendlyUpstreamError`(从 cn-adapter 导出复用)不回原始 body/request_id(#271)。
+    - **单模型 → 四档**,对客用**点分形**(连字符形已被 `ark-format.normalizeArkModel` 归一到国内版短名走 cn 渠道,**两套命名不能相撞**):`doubao-seedance-2.0`(pro,480p/720p/1080p/4k)/ `-fast` / `-mini`(无 4k)/ `doubao-seedance-2.5`(**仅 480p/720p、4~30s、参考 30/10/10**;2.0 系 4~15s、9/3/3)。proxy 按档位**前置 400**,不白打上游;2.5 首帧/首尾帧任务的 `ratio=adaptive` 也前置拦(上游创建时同步拒),视频编辑/延长由模型按提示词意图判定判不了,仍由上游异步返 `InvalidParameter.TaskTypeConstraint`。
+    - **计费**:官方挂牌 × 客户 discount(volc 行**新户默认 1 = 火山官方原价**)。费率表补 `'2.5'` 的 **480p 档**(¥70/¥42,与 720p 同费率)—— 不补会回落 pro 档 ¥46 **少收**。
+    - **素材库**:新 `src/lib/enterprise/kuaizi-assets.ts`(10 个火山 Action → 筷子私域库,`ApiKey` 头 + Action 单入口 + 信封拆装)**缺省开**(operator 拍板:火山渠道是单客户专属;`ENTERPRISE_KUAIZI_ASSETS=0` 回落平台库)。**分流非一刀切**(`shouldUseKuaiziAssets`,沿用 #328 的 id 命名空间判据):真人素材(显式 `GroupType=LivenessFace`)、平台形 id(`asset-…`/`group-…`)、CreateAsset 带平台形 GroupId → **仍走平台库**;其余 AIGC → 筷子。筷子 id 是**纯十进制串**,与平台前缀形天然可辨。cn/global/promax 三渠道完全不受影响。
+    - **客户文档已同步**:`/enterprise/docs` 火山渠道章节(四档模型 × 分辨率/时长/参考数矩阵 + 2.5 的 adaptive 约束)、`/enterprise/docs/assets` 新「4.5 火山渠道的素材库」(id 十进制串 / **CreateAssetGroup·CreateAsset 异步需轮询到 `Status=Active`** / **URL 约 12h 过期别缓存**)+ 第 5 节真人素材措辞修正。
+    - **生产真机 smoke 全过**(throwaway 账号,测后已软删):`/api/v3` 提交 `doubao-seedance-2.0` 480p/4s → `{"id":"cgt-1919500961…"}` → ~3 分钟 succeeded → 成片落 `ark-acg-cn-beijing.tos-cn-beijing.volces.com/doubao-seedance-2-0/…`、`usage.completion_tokens=40594` → **实扣 ¥1.867324 = 40594/1e6 × 46 精确**(discount 1.0),重复轮询不二次扣费;素材库 `CreateAssetGroup` → `191950112983875603`(十进制=筷子)、`GroupType=LivenessFace` → `group-2026…`(回落平台库,真人线未断)。存量 liyan/xzp volc key 仍 active;主站无回归(`/chat` 307、`ai /v1` 401)。
+    - **部署方式**:只重建重启 3 个 `seedance-portal` 副本(改动全在 volc 分支,主站 portal + 6 个 API 副本未动);`.env` 备份 `.env.bak-kuaizi-upstream`,新增 `ENTERPRISE_KUAIZI_BASE_URL` + `ENTERPRISE_KUAIZI_KEY`;`ENTERPRISE_VOLC_VIDEO_*` 留着未删(代码已不读)。无 migration、无新依赖。
+- [ ] **待 operator 处理(部署时发现,均未擅自改)**:①**volc 实际有两个账号开通**(`liyan` 25 条任务 / `xzp` 1 条,都有 active volc key),与「单客户」前提不符 —— 素材库默认开后两家在筷子共享 ApiKey 账号里**互相可见**(实测已能看到筷子侧预存的 `user_621` 组)。要么收掉 xzp 的 volc key,要么置 `ENTERPRISE_KUAIZI_ASSETS=0`。②这两家 volc 行 `discount` 都是 **0.85**(#334 迁移写入),不是官方原价;改成 1 **是涨价需先通知客户**。
+
 ---
 
 ## 关键架构决策(决策已定,不要重新讨论)
@@ -571,6 +583,7 @@ LiteLLM 时代的 `LITELLM_*` 变量保留作 fallback,W3 D1 关停后可删。
 - **易支付**: zpayz (`https://zpayz.cn`),支付宝充值/callback 已在当前生产验证;PID/KEY 只放生产 `.env`
 - **SMTP**: 代码支持腾讯企业邮箱,但当前新服务器账号/密码为空,验证与找回邮件不可用
 - **Cloudflare**: apex/`www` 已橙云 + Full (strict);平台 R2、`images` 子域仍待配置
+- **筷子 AI 开放平台**(`aiopenapi.kuaizi.cn`,上游 #386): 企业门户「火山」渠道(volc region)的**视频 + 素材库**候选上游;平台级共享 ApiKey(`ENTERPRISE_KUAIZI_KEY`,仅企业实例需配)。⚠️ 素材库按 **ApiKey 账号**归属,无 user 级隔离,当前生产未配置凭据、功能保持 dormant；采用前必须完成隔离和合规审计。
 
 ---
 
@@ -596,4 +609,4 @@ LiteLLM 时代的 `LITELLM_*` 变量保留作 fallback,W3 D1 关停后可删。
 ---
 
 **版本**: 2.3
-**最后更新**: 2026-08-03(当前生产环境与上线状态同步)
+**最后更新**: 2026-09-01(同步上游 #384–#390；仅在 dev 合并，prod 未变)

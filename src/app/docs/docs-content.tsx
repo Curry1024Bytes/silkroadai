@@ -665,13 +665,8 @@ console.log(resp.choices[0].message.content);`}
                     </p>
                 </section>
 
-                {/* W7 D4 PR-H Tier B: surface the most common upstream
-                 *  error codes a customer will see + plain-language
-                 *  explanation. The 402-vs-403 status rewriting for
-                 *  `insufficient_user_quota` is queued under issue
-                 *  #27 (launch follow-up); for now the customer
-                 *  identifies the problem by the body code, which is
-                 *  stable regardless of HTTP status. */}
+                {/* W7 D4 PR-H + upstream #389/#390: image errors use a
+                 * stable OpenAI-shaped body and status/code contract. */}
                 <section id="errors" className="mt-12 mb-10 scroll-mt-20">
                     <div className="flex items-baseline justify-between flex-wrap gap-2 mb-4 pb-3 border-b-2 border-brand-accent">
                         <h2 className="m-0 text-2xl font-semibold text-navy">
@@ -684,7 +679,7 @@ console.log(resp.choices[0].message.content);`}
                         <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
                             error.code
                         </code>{' '}
-                        字段(比 HTTP status 更精准)。下表列出最常见的三种:
+                        字段。图片接口另遵循下方的 OpenAI 兼容 status/code 契约。
                     </p>
                     <div className="rounded-lg overflow-hidden border border-brand-border bg-surface">
                         <table className="w-full border-collapse text-sm">
@@ -703,46 +698,66 @@ console.log(resp.choices[0].message.content);`}
                             </thead>
                             <tbody>
                                 <tr className="border-b border-brand-border">
-                                    <td className="px-4 py-3 font-mono text-navy align-top">401</td>
-                                    <td className="px-4 py-3 font-mono text-navy align-top">invalid_authentication</td>
+                                    <td className="px-4 py-3 font-mono text-navy align-top">400</td>
+                                    <td className="px-4 py-3 font-mono text-navy align-top">
+                                        user_error / moderation_blocked
+                                    </td>
                                     <td className="px-4 py-3 text-ink">
-                                        API key 无效或缺 <code className="font-mono text-xs">sk-</code> 前缀。 portal{' '}
-                                        <a href="/keys" className="text-navy font-medium hover:text-brand-accent">
-                                            /keys
-                                        </a>{' '}
-                                        重新复制完整 51 字符串。
+                                        内容安全审核拒绝。修改提示词或参考素材后重试。
                                     </td>
                                 </tr>
                                 <tr className="border-b border-brand-border">
-                                    <td className="px-4 py-3 font-mono text-navy align-top">403</td>
-                                    <td className="px-4 py-3 font-mono text-navy align-top">insufficient_user_quota</td>
-                                    <td className="px-4 py-3 text-ink">
-                                        <strong className="text-navy">账户余额不足</strong>(注:HTTP 语义上更接近 402
-                                        Payment Required;新版会改 status 码,当前以 body 的 error.code 为准)。 前往{' '}
-                                        <Link href="/balance" className="text-navy font-medium hover:text-brand-accent">
-                                            /balance
-                                        </Link>{' '}
-                                        查看余额,
-                                        <Link href="/pay" className="text-navy font-medium hover:text-brand-accent">
-                                            /pay
-                                        </Link>{' '}
-                                        充值。
+                                    <td className="px-4 py-3 font-mono text-navy align-top">400</td>
+                                    <td className="px-4 py-3 font-mono text-navy align-top">
+                                        invalid_request_error / invalid_image / invalid_value
                                     </td>
+                                    <td className="px-4 py-3 text-ink">请求图片、尺寸或参数无效，修正请求后重试。</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-navy align-top">401</td>
+                                    <td className="px-4 py-3 font-mono text-navy align-top">
+                                        invalid_request_error / invalid_api_key
+                                    </td>
+                                    <td className="px-4 py-3 text-ink">
+                                        API key 无效或已禁用，请在{' '}
+                                        <Link href="/keys" className="text-navy font-medium hover:text-brand-accent">
+                                            /keys
+                                        </Link>{' '}
+                                        重新复制。
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-navy align-top">429</td>
+                                    <td className="px-4 py-3 font-mono text-navy align-top">insufficient_quota</td>
+                                    <td className="px-4 py-3 text-ink">余额不足，请充值后重试。</td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-navy align-top">429</td>
+                                    <td className="px-4 py-3 font-mono text-navy align-top">
+                                        rate_limit_error / rate_limit_exceeded
+                                    </td>
+                                    <td className="px-4 py-3 text-ink">
+                                        按 <code className="font-mono text-xs">Retry-After</code> 秒数退避后重试。
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-navy align-top">500</td>
+                                    <td className="px-4 py-3 font-mono text-navy align-top">server_error</td>
+                                    <td className="px-4 py-3 text-ink">平台或上游临时错误，稍后重试。</td>
                                 </tr>
                                 <tr>
                                     <td className="px-4 py-3 font-mono text-navy align-top">503</td>
-                                    <td className="px-4 py-3 font-mono text-navy align-top">no available channel</td>
-                                    <td className="px-4 py-3 text-ink">
-                                        模型名拼写错误,或该模型暂时下线。请用{' '}
-                                        <a href={modelsHref} className="text-navy font-medium hover:text-brand-accent">
-                                            /models
-                                        </a>{' '}
-                                        页搜索一下确认模型 id。
-                                    </td>
+                                    <td className="px-4 py-3 font-mono text-navy align-top">server_error</td>
+                                    <td className="px-4 py-3 text-ink">线路过载，等待后再重试。</td>
                                 </tr>
                             </tbody>
                         </table>
                     </div>
+                    <p className="m-0 mt-3 text-xs text-minor-ink">
+                        2026-08-18 起图片错误按 HTTP status + <code className="font-mono text-xs">error.code</code>{' '}
+                        分支；旧客户端若依赖 403/408/502/504 或{' '}
+                        <code className="font-mono text-xs">content_policy_violation</code>，请迁移到上表契约。
+                    </p>
 
                     {/* 流式(SSE)契约 — W10 #209/#210:keep-alive 注释 + 流中断错误帧 + finish_reason 标准集 */}
                     <h3 className="m-0 mt-8 mb-2 text-base font-semibold text-navy">

@@ -1855,10 +1855,10 @@ describe('/v1 proxy — Phase 4: DALL·E /v1/images/{edits,generations} (W9 D4)'
             makeReq('/images/generations', { body: { model: 'gemini-2.5-flash-image', prompt: 'x' } }),
             ctx('images', 'generations'),
         );
-        expect(res.status).toBe(502);
+        expect(res.status).toBe(500);
         const data = (await res.json()) as { error: { type: string; message: string } };
         expect(data.error.message).toBe('no image generated');
-        expect(data.error.type).toBe('invalid_request_error');
+        expect(data.error.type).toBe('server_error');
     });
 
     it('honors customer OSS on the DALL·E path too (storeGeneratedImage shared)', async () => {
@@ -2726,7 +2726,7 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
         expect(mockFetch).toHaveBeenCalledTimes(1); // 内容错误不重试
         const text = await res.text();
         expect(text.toLowerCase()).not.toContain('adobe'); // 仍脱敏
-        expect((JSON.parse(text) as { error: { code: string } }).error.code).toBe('content_policy_violation');
+        expect((JSON.parse(text) as { error: { code: string } }).error.code).toBe('moderation_blocked');
     });
 
     it('上游报错 → 原样透传 status + 错误体,不加 usage(不隐藏报错)', async () => {
@@ -2748,7 +2748,7 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
         expect(data.usage).toBeUndefined(); // 报错不加 usage
     });
 
-    it('上游 adobe 内容拒绝 → 脱敏成 content_policy_violation,不泄露 adobe 来源', async () => {
+    it('上游 adobe 内容拒绝 → 脱敏成官方 moderation_blocked,不泄露 adobe 来源', async () => {
         mockFetch.mockResolvedValueOnce(
             new Response(
                 JSON.stringify({
@@ -2769,11 +2769,11 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
         expect(text.toLowerCase()).not.toContain('adobe'); // 来源脱敏
         expect(text).not.toContain('image_unsafe');
         const data = JSON.parse(text) as { error: { code: string; type: string } };
-        expect(data.error.code).toBe('content_policy_violation');
-        expect(data.error.type).toBe('invalid_request_error');
+        expect(data.error.code).toBe('moderation_blocked');
+        expect(data.error.type).toBe('user_error');
     });
 
-    it('上游 200 包审核拒绝体(号池假成功)→ 恒 400 content_policy_violation,绝不 200 出门', async () => {
+    it('上游 200 包审核拒绝体(号池假成功)→ 恒 400 moderation_blocked,绝不 200 出门', async () => {
         mockFetch.mockResolvedValueOnce(
             new Response(
                 JSON.stringify({
@@ -2789,10 +2789,10 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
         expect(res.status).toBe(400); // 核心:上游 200 也不透传
         const text = await res.text();
         expect(text.toLowerCase()).not.toContain('adobe');
-        expect((JSON.parse(text) as { error: { code: string } }).error.code).toBe('content_policy_violation');
+        expect((JSON.parse(text) as { error: { code: string } }).error.code).toBe('moderation_blocked');
     });
 
-    it('上游 200 包非审核 error 体 → 502(客户按失败重试),品牌名脱敏', async () => {
+    it('上游 200 包非审核 error 体 → 500 server_error(客户按失败重试),品牌名脱敏', async () => {
         mockFetch.mockResolvedValueOnce(
             new Response(JSON.stringify({ error: { message: 'adobe upstream busy, retry later' } }), {
                 status: 200,
@@ -2803,10 +2803,11 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
             makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x' } }),
             ctx('images', 'generations'),
         );
-        expect(res.status).toBe(502);
+        expect(res.status).toBe(500);
         const text = await res.text();
         expect(text.toLowerCase()).not.toContain('adobe');
-        expect(text).toContain('the provider');
+        const data = (JSON.parse(text) as { error: { type: string } }).error;
+        expect(data.type).toBe('server_error'); // 归一成官方 server_error 体,不再透传上游原文
     });
 
     it('上游 200 SSE 成功体(stream:true)→ 原样透传 200,体一字不改', async () => {
@@ -2823,7 +2824,7 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
         expect(await res.text()).toBe(sse); // 不做任何替换(替换可能写坏 b64)
     });
 
-    it('仅提到 adobe 的非审核错误(如超时)→ 不冒充审核文案,status 透传 + 品牌脱敏', async () => {
+    it('仅提到 adobe 的非审核错误(如超时)→ 不冒充审核文案,归一 500 + 品牌脱敏', async () => {
         mockFetch.mockResolvedValueOnce(
             new Response(JSON.stringify({ error: { message: 'adobe upstream timeout after 300s' } }), {
                 status: 504,
@@ -2834,23 +2835,23 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
             makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x' } }),
             ctx('images', 'generations'),
         );
-        expect(res.status).toBe(504);
+        expect(res.status).toBe(500);
         const text = await res.text();
-        expect(text).not.toContain('content safety system'); // 超时不再误显示为审核拒绝
+        expect(text).not.toContain('safety system'); // 超时不再误显示为审核拒绝
         expect(text.toLowerCase()).not.toContain('adobe');
-        expect(text).toContain('timeout');
+        expect((JSON.parse(text) as { error: { type: string } }).error.type).toBe('server_error');
     });
 
-    it('连不上 new-api(网络异常)→ 502 透出真实原因,不被兜底成笼统 400', async () => {
+    it('连不上 new-api(网络异常)→ 500 透出真实原因,不被兜底成笼统 400', async () => {
         mockFetch.mockRejectedValueOnce(new Error('ECONNREFUSED'));
         const res = await POST(
             makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x' } }),
             ctx('images', 'generations'),
         );
-        expect(res.status).toBe(502);
+        expect(res.status).toBe(500);
         const data = (await res.json()) as { error: { message: string; type: string } };
         expect(data.error.message).toContain('ECONNREFUSED');
-        expect(data.error.type).toBe('invalid_request_error');
+        expect(data.error.type).toBe('server_error');
     });
 
     // ── 统一入口:文生图 + 图生图合并到同一路径,代理按【有无输入图】分流到上游,
@@ -3420,7 +3421,7 @@ describe('/v1 proxy — gpt-image-2-{1,2,4}k fixed-price variants retain billing
             ctx('images', 'generations'),
         );
         expect(res.status).toBe(400);
-        expect(await res.json()).toMatchObject({ error: { code: 'content_policy_violation' } });
+        expect(await res.json()).toMatchObject({ error: { code: 'moderation_blocked' } });
         expect(mockFetch).toHaveBeenCalledTimes(1);
     });
 
@@ -3559,7 +3560,7 @@ describe('/v1 proxy — gpt-image-2-{1,2,4}k fixed-price variants retain billing
             ctx('images', 'generations'),
         );
         expect(res.status).toBe(400);
-        expect(await res.json()).toMatchObject({ error: { code: 'content_policy_violation' } });
+        expect(await res.json()).toMatchObject({ error: { code: 'moderation_blocked' } });
     });
 
     it('fixed fan-out preserves the first all-200 ordinary error for retry diagnostics', async () => {
@@ -3583,11 +3584,11 @@ describe('/v1 proxy — gpt-image-2-{1,2,4}k fixed-price variants retain billing
             }),
             ctx('images', 'generations'),
         );
-        expect(res.status).toBe(502);
-        expect(await res.json()).toMatchObject({ error: { message: 'the provider pool overloaded' } });
+        expect(res.status).toBe(500);
+        expect(await res.json()).toMatchObject({ error: { type: 'server_error' } });
     });
 
-    it('fixed fan-out with no usable payload returns 502 instead of a false success', async () => {
+    it('fixed fan-out with no usable payload returns 500 instead of a false success', async () => {
         mockFetch
             .mockResolvedValueOnce(
                 new Response(JSON.stringify({ data: [] }), {
@@ -3605,8 +3606,8 @@ describe('/v1 proxy — gpt-image-2-{1,2,4}k fixed-price variants retain billing
             }),
             ctx('images', 'generations'),
         );
-        expect(res.status).toBe(502);
-        expect(await res.json()).toMatchObject({ error: { message: 'upstream returned no image payload' } });
+        expect(res.status).toBe(500);
+        expect(await res.json()).toMatchObject({ error: { type: 'server_error' } });
     });
 
     it.each([0, -1, 1.9, 5, 99, '0x4', '2.0', 'abc'])(

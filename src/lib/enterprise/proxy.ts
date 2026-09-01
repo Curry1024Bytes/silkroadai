@@ -14,7 +14,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
 import {
     MODEL_MAP,
-    VOLC_MODEL,
+    isVolcModel,
     extractImageUrls,
     extractVideoUrls,
     extractAudioUrls,
@@ -27,7 +27,14 @@ import {
     type SeedanceVariant,
     type SeedanceRegion,
 } from '@/lib/seedance/cn-adapter';
-import { submitVolcVideo, pollVolcVideo, cancelVolcVideo } from '@/lib/seedance/volc-adapter';
+import {
+    submitVolcVideo,
+    pollVolcVideo,
+    cancelVolcVideo,
+    volcRefLimits,
+    VOLC_MODELS,
+    VOLC_RESOLUTIONS,
+} from '@/lib/seedance/kuaizi-adapter';
 import { resolveEnterpriseAuth, getUpstreamKeyForUser, type EnterpriseCustomer } from './keys';
 import { ENTERPRISE_TIER, estimateEnterpriseCostCny, chargeEnterpriseVideoTask } from './billing';
 import { AssetError, resolveAssetRefs } from './assets';
@@ -69,28 +76,63 @@ function resolveEnterpriseModel(
     body: Record<string, unknown>,
 ): { spec: SeedanceModelSpec; longName: string } | { error: NextResponse } | null {
     const lower = rawModel.toLowerCase();
-    // 「火山」渠道:单模型 doubao-seedance-2.0,pro 档,resolution 参数 + ref 自动识别。
-    // 走独立 provider(火山方舟原生),不经 MODEL_MAP 长名机制。
-    if (lower === VOLC_MODEL) {
+    // 「火山」渠道:四档模型(doubao-seedance-2.0 / -fast / -mini / doubao-seedance-2.5),
+    // resolution 参数 + ref 自动识别。走独立 adapter(火山方舟原生),不经 MODEL_MAP 长名机制。
+    if (isVolcModel(lower)) {
+        const volc = VOLC_MODELS[lower];
+        const allowed = VOLC_RESOLUTIONS[volc.variant];
         const resRaw = String(body.resolution ?? '720p').toLowerCase();
-        if (!(RESOLUTIONS as readonly string[]).includes(resRaw)) {
-            return { error: errJson(400, 'invalid_request', 'resolution 仅支持 480p / 720p / 1080p / 4k') };
+        if (!(allowed as readonly string[]).includes(resRaw)) {
+            return {
+                error: errJson(400, 'invalid_request', `${rawModel} 的 resolution 仅支持 ${allowed.join(' / ')}`),
+            };
         }
-        const hasRefs =
-            extractImageUrls(body).length > 0 ||
-            extractVideoUrls(body).length > 0 ||
-            extractAudioUrls(body).length > 0 ||
-            (typeof body.first_frame === 'string' && body.first_frame !== '') ||
-            (typeof body.last_frame === 'string' && body.last_frame !== '');
+        const images = extractImageUrls(body);
+        const videos = extractVideoUrls(body);
+        const audios = extractAudioUrls(body);
+        const explicitFrames =
+            (typeof body.first_frame === 'string' && body.first_frame !== '' ? 1 : 0) +
+            (typeof body.last_frame === 'string' && body.last_frame !== '' ? 1 : 0);
+        // 单次输入素材上限(上游分档矩阵):超限先给清晰 400,不白打上游。
+        const limits = volcRefLimits(volc.variant);
+        const totalImages = images.length + explicitFrames;
+        if (totalImages > limits.images)
+            return { error: errJson(400, 'invalid_request', `${rawModel} 最多 ${limits.images} 张参考图`) };
+        if (videos.length > limits.videos)
+            return { error: errJson(400, 'invalid_request', `${rawModel} 最多 ${limits.videos} 个参考视频`) };
+        if (audios.length > limits.audios)
+            return { error: errJson(400, 'invalid_request', `${rawModel} 最多 ${limits.audios} 段参考音频`) };
+        // seedance 2.5 首帧/首尾帧任务上游仅支持 ratio=adaptive(创建时同步拒)。这里前置拦
+        // 一次,给出可操作文案 —— 视频编辑/延长两类由模型按提示词意图判定,我们判不了,
+        // 仍由上游异步返回 InvalidParameter.TaskTypeConstraint。
+        if (volc.variant === '2.5') {
+            const hasFrameRole =
+                explicitFrames > 0 ||
+                (Array.isArray(body.content) &&
+                    body.content.some((c) => {
+                        const role = (c as { role?: unknown })?.role;
+                        return role === 'first_frame' || role === 'last_frame';
+                    }));
+            const rr = body.ratio ?? body.aspect_ratio;
+            if (hasFrameRole && rr != null && String(rr) !== 'adaptive') {
+                return {
+                    error: errJson(
+                        400,
+                        'invalid_request',
+                        `${rawModel} 的首帧/首尾帧任务仅支持 ratio=adaptive(输出宽高比跟随输入素材),当前 "${String(rr)}"`,
+                    ),
+                };
+            }
+        }
         return {
             spec: {
                 resolution: resRaw as '480p' | '720p' | '1080p' | '4k',
-                ref: hasRefs,
-                variant: 'pro',
-                upstream: VOLC_MODEL,
+                ref: totalImages > 0 || videos.length > 0 || audios.length > 0,
+                variant: volc.variant,
+                upstream: volc.upstream,
                 region: 'volc',
             },
-            longName: VOLC_MODEL,
+            longName: lower,
         };
     }
     const variant = ENTERPRISE_MODELS[lower];
@@ -522,7 +564,7 @@ async function handleSubmit(req: NextRequest, format: ClientFormat = 'v1'): Prom
 
     const res =
         map.region === 'volc'
-            ? await submitVolcVideo(body, map.resolution, duration)
+            ? await submitVolcVideo(body, { clientModel: adapterModel, resolution: map.resolution, duration })
             : await submitVideoWithKey({ ...body, model: adapterModel }, `Bearer ${cust.upstreamKey}`);
     const text = await res.text();
     if (!res.ok) {
