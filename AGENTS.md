@@ -213,16 +213,16 @@
 - 已将 `main` 合并到 `dev`，合并提交为 `5a8ed8e`(`merge(upstream): sync main #384-#390 into dev`)。
   `prod` 仍为 `88af847`，未合并、未部署；`origin/dev` 尚未推送本次 merge commit。
 - 冲突语义取舍：
-  - `src/instrumentation.ts` 保留当前开发环境 `DEV_PROXY_URL`/`ProxyAgent` 分支，同时采用上游
-    #384 的默认 keep-alive 回退，仅保留 600s headers/body timeout。
-  - `src/app/docs/page.tsx` 保留 LLmRoute 的 `docs-content` 路由入口；#390 的图片错误 status/code
-    表已适配写入 `src/app/docs/docs-content.tsx`，未引入上游旧 Silk Road URL。
-  - `src/app/v1/[...path]/route.ts` 保留固定分辨率 SKU、失败计费和 LLmRoute 代理语义，同时接入
-    #389/#390 的图片错误归一与 `Retry-After`。
-  - `CLAUDE.md` 保留当前生产 Nginx/Cloudflare/LLmRoute 快照，仅记录 Kuaizi 为未配置、dormant
-    的候选上游；未把上游旧 Caddy 部署说明当作当前生产事实。
-  - `docker-compose.prod.yml` 接收 `portal-api-4..6`，但继续放在 `api-replicas` profile；当前
-    生产 Nginx 单实例未启用该 profile，也未改 Nginx 配置。
+    - `src/instrumentation.ts` 保留当前开发环境 `DEV_PROXY_URL`/`ProxyAgent` 分支，同时采用上游
+      #384 的默认 keep-alive 回退，仅保留 600s headers/body timeout。
+    - `src/app/docs/page.tsx` 保留 LLmRoute 的 `docs-content` 路由入口；#390 的图片错误 status/code
+      表已适配写入 `src/app/docs/docs-content.tsx`，未引入上游旧 Silk Road URL。
+    - `src/app/v1/[...path]/route.ts` 保留固定分辨率 SKU、失败计费和 LLmRoute 代理语义，同时接入
+      #389/#390 的图片错误归一与 `Retry-After`。
+    - `CLAUDE.md` 保留当前生产 Nginx/Cloudflare/LLmRoute 快照，仅记录 Kuaizi 为未配置、dormant
+      的候选上游；未把上游旧 Caddy 部署说明当作当前生产事实。
+    - `docker-compose.prod.yml` 接收 `portal-api-4..6`，但继续放在 `api-replicas` profile；当前
+      生产 Nginx 单实例未启用该 profile，也未改 Nginx 配置。
 - #390 导致的既有测试断言更新已单列审计：固定 SKU 的 200 审核错误改断言为
   `moderation_blocked`，固定扇出普通错误/无 payload 改为 `500/server_error`；保留原测试场景和
   上游新增回归测试，没有删除或反向修改上游测试。
