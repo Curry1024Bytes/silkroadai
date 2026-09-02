@@ -211,7 +211,7 @@
   fast-forward 到该 SHA。官方 `upstream/main` 还领先 #391–#415，这 25 个提交尚未进入 fork，
   不属于本轮合并范围。
 - 已将 `main` 合并到 `dev`，合并提交为 `5a8ed8e`(`merge(upstream): sync main #384-#390 into dev`)；
-  随后 `dev` fast-forward 到 `3b3dd1b` 并已发布到 `prod`/VPS。`origin/dev` 尚未推送本轮提交。
+  随后 `dev` fast-forward 到 `3b3dd1b` 并已发布到 `prod`/VPS，本轮提交已推送 `origin/dev`。
 - 冲突语义取舍：
     - `src/instrumentation.ts` 保留当前开发环境 `DEV_PROXY_URL`/`ProxyAgent` 分支，同时采用上游
       #384 的默认 keep-alive 回退，仅保留 600s headers/body timeout。
