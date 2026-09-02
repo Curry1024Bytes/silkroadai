@@ -210,8 +210,8 @@
 - 本轮同步范围为 fork `origin/main@557681d` 的官方上游提交 #384–#390；本地 `main` 已
   fast-forward 到该 SHA。官方 `upstream/main` 还领先 #391–#415，这 25 个提交尚未进入 fork，
   不属于本轮合并范围。
-- 已将 `main` 合并到 `dev`，合并提交为 `5a8ed8e`(`merge(upstream): sync main #384-#390 into dev`)。
-  `prod` 仍为 `88af847`，未合并、未部署；`origin/dev` 尚未推送本次 merge commit。
+- 已将 `main` 合并到 `dev`，合并提交为 `5a8ed8e`(`merge(upstream): sync main #384-#390 into dev`)；
+  随后 `dev` fast-forward 到 `3b3dd1b` 并已发布到 `prod`/VPS。`origin/dev` 尚未推送本轮提交。
 - 冲突语义取舍：
     - `src/instrumentation.ts` 保留当前开发环境 `DEV_PROXY_URL`/`ProxyAgent` 分支，同时采用上游
       #384 的默认 keep-alive 回退，仅保留 600s headers/body timeout。
@@ -231,6 +231,9 @@
 - 验证结果：Prisma validate 通过；typecheck 通过；lint 0 error(仅既有 warnings)；完整非 smoke
   测试 `3145 passed / 1 skipped`；生产构建通过。构建时 `127.0.0.1:3000` 未建立本机隧道，
   pricing/models 产生预期 fetch 降级日志，不代表代码回归。
+- 2026-09-02 发布验收：`prod@3b3dd1b` 已在 VPS 重建；Portal/PostgreSQL healthy、69 条 migration
+  无 pending、Portal→new-api 宿主机/容器链路均 200；Nginx 配置通过，主站登录页 origin/public
+  均 200，API `/v1/models` 假 Key 为 401，API `/login` 为 404。未执行真实模型调用。
 - 工作区另有用户已有的未跟踪 `.newapi-config-snapshots/`、`new-api-custom-full/` 和
   `docs/真实性上游毛利报表-需求文档.md`；本次同步未修改、未提交这些内容。`dev`/`prod` 原有的
   `vendor/stripe-node` gitlink(`d3b8ecd`)也被保留，未被本轮 `main` 的旧 gitlink 覆盖。
