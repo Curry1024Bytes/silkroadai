@@ -84,7 +84,10 @@ export default async function KeysPage() {
                 }
             }),
         ),
-        listEnabledChannelGroups(user.tenant_id),
+        listEnabledChannelGroups(user.tenant_id).catch((err) => {
+            console.error('[keys] invalid channel-group topology; disabling key creation', err);
+            return [];
+        }),
         getGroupRatios(),
         listUserTierMultipliers(user.id).catch((err) => {
             console.warn(`[keys] dedicated multiplier lookup failed for user ${user.id}:`, err);

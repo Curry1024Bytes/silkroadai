@@ -12,7 +12,18 @@
  */
 import { describe, expect, it } from 'vitest';
 import { renderToString } from 'react-dom/server';
-import { KeysList, TierSelect, type KeyRow } from '@/app/(authenticated)/keys/keys-list';
+import { KeysList, TierSelect, type KeyRow, type TierOption } from '@/app/(authenticated)/keys/keys-list';
+
+const VALID_TIERS: TierOption[] = [
+    {
+        key: 'pool',
+        display_name: '低价号池',
+        description: null,
+        is_default: true,
+        newapi_group: 'default',
+        ratio: 1,
+    },
+];
 
 const SAMPLE_ROWS: KeyRow[] = [
     {
@@ -39,7 +50,7 @@ const SAMPLE_ROWS: KeyRow[] = [
 
 describe('<KeysList /> SSR smoke', () => {
     it('renders empty-state hint when initialRows is []', () => {
-        const html = renderToString(<KeysList initialRows={[]} />);
+        const html = renderToString(<KeysList initialRows={[]} tiers={VALID_TIERS} />);
         // W7 P2: empty-state copy moved into the <EmptyState> primitive.
         // Title + body together; the title is the primary affordance.
         expect(html).toContain('还没有 API Key');
@@ -86,7 +97,7 @@ describe('<KeysList /> SSR smoke', () => {
             last_used_at: null,
             tier: 'pool',
         }));
-        const html = renderToString(<KeysList initialRows={fullList} />);
+        const html = renderToString(<KeysList initialRows={fullList} tiers={VALID_TIERS} />);
         expect(html).not.toContain('已达上限');
         expect(html).toContain('创建新 Key');
         // Tighten to the HTML `disabled=""` attribute (Tailwind utility

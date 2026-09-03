@@ -100,7 +100,7 @@ export function computeBatchCost(models: BatchModelLike[], params: BatchCostPara
         const isImage = modality === 'image';
         const base: 'input' | 'per_image' = isImage ? 'per_image' : 'input';
 
-        // deriveTierRows = upstream_map 档 ∪ 已有价档,每档取当前价(复用定价页同一逻辑)。
+        // deriveTierRows = upstream_map 当前可路由档,每档取当前价(复用定价页同一逻辑)。
         let tierRows = deriveTierRows(model);
         if (wantTier) tierRows = tierRows.filter((r) => r.tier === wantTier);
 

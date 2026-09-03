@@ -48,7 +48,7 @@ interface ImportChannelMenuItem {
     type: number | null;
     model_count: number;
     selected: boolean;
-    tier: string; // 该渠道会喂哪个档(pool / official)
+    tier: string | null; // null = 尚未登记到任何启用档次,不能导入
 }
 
 interface ImportCreatedRow {
@@ -74,7 +74,6 @@ interface ImportFlaggedRow {
 interface ImportPreview {
     dryRun: boolean;
     selectedChannelIds: number[];
-    officialRegistered: boolean; // false → 未登记官方渠道,全部进 pool 档
     channels: ImportChannelMenuItem[];
     channelErrors: { channel_id: number; error: string }[];
     created: ImportCreatedRow[];
@@ -85,11 +84,7 @@ interface ImportPreview {
 
 const MODALITIES: Modality[] = ['chat', 'image', 'embedding'];
 
-const DEFAULT_UPSTREAM_MAP = '{\n  "default": {\n    "channel_id": 3,\n    "upstream_model": "gpt-5.4"\n  }\n}';
-
-// 旗舰渠道默认集(与 import 端点的 DEFAULT_FLAGSHIP_CHANNEL_IDS 一致):
-// Claude(2)/ ChatGPT(3)/ Gemini 图片(17)。Gemini 文本渠道 id 未固定,operator 在渠道菜单勾选。
-const DEFAULT_IMPORT_CHANNEL_IDS = [2, 3, 17];
+const DEFAULT_UPSTREAM_MAP = '{}';
 
 // ── i18n ──
 
@@ -126,7 +121,7 @@ function getTexts(locale: Locale) {
               fieldEnabled: 'Enabled',
               fieldUpstreamMap: 'Upstream Map (JSON)',
               fieldUpstreamMapHint:
-                  'JSON object keyed by route (e.g. "default"), each value { "channel_id": number, "upstream_model": string }.',
+                  'JSON object keyed by an enabled Portal tier (e.g. "sale-tier"); each channel_id must be registered only to that tier.',
               cancel: 'Cancel',
               save: 'Save',
               saving: 'Saving...',
@@ -142,7 +137,7 @@ function getTexts(locale: Locale) {
                   'Reads model lists + current prices from the selected flagship channels and creates catalog entries. Already-existing models are skipped; image models are created without a price (set it on the Pricing page).',
               importChannels: 'Channels to import from',
               importSelectHint:
-                  "Defaults to Claude (2) / ChatGPT (3) / Gemini image (17). The Gemini text channel id isn't fixed — tick it below if present.",
+                  'Defaults to every channel registered to exactly one enabled tier. Unregistered channels cannot be imported.',
               importColModels: 'models',
               importPreviewing: 'Loading preview…',
               importRefresh: 'Re-preview',
@@ -156,8 +151,6 @@ function getTexts(locale: Locale) {
               importImageReason: 'Image model — set per-image price on the Pricing page',
               importNoRatioReason: 'No model_ratio in channel — set price manually',
               importRatioDefaulted: 'completion_ratio defaulted to 1 (in = out)',
-              importOfficialNotRegistered:
-                  'No official channels registered under /admin/channel-groups — everything imports as the pool tier. To capture official prices, register the official channels there first, then re-import.',
               importChannelErrors: 'Some channels could not be read',
               importConfirm: 'Confirm import',
               importImporting: 'Importing…',
@@ -198,7 +191,7 @@ function getTexts(locale: Locale) {
               fieldEnabled: '启用',
               fieldUpstreamMap: '上游映射(JSON)',
               fieldUpstreamMapHint:
-                  '以路由名为键的 JSON 对象(如 "default"),每个值为 { "channel_id": 数字, "upstream_model": 字符串 }。',
+                  '以启用的 Portal 档次 key 为键(如 "图片模型")；每个 channel_id 必须唯一登记在该档次下。',
               cancel: '取消',
               save: '保存',
               saving: '保存中...',
@@ -213,8 +206,7 @@ function getTexts(locale: Locale) {
               importIntro:
                   '从选中的旗舰渠道读取模型清单 + 当前价格,自动建好目录条目。已存在的模型会跳过;图片模型只建条目、价格留空(去「定价」页手填)。',
               importChannels: '从哪些渠道导入',
-              importSelectHint:
-                  '默认 Claude(2)/ ChatGPT(3)/ Gemini 图片(17)。Gemini 文本渠道 id 未固定 —— 若存在,在下方勾选。',
+              importSelectHint: '默认选择已明确归属某个启用档次的全部渠道;未登记渠道不能导入。',
               importColModels: '个模型',
               importPreviewing: '预览中…',
               importRefresh: '重新预览',
@@ -228,8 +220,6 @@ function getTexts(locale: Locale) {
               importImageReason: '图片模型 —— 价格需在「定价」页手填',
               importNoRatioReason: '渠道无 model_ratio —— 价格需手填',
               importRatioDefaulted: 'completion_ratio 缺省=1(输入=输出)',
-              importOfficialNotRegistered:
-                  '未在 /admin/channel-groups 登记 official 渠道,本次全部导入为 pool 档;要区分官方价请先登记官方渠道再导入。',
               importChannelErrors: '部分渠道读取失败',
               importConfirm: '确认导入',
               importImporting: '导入中…',
@@ -257,7 +247,7 @@ const emptyForm: ModelFormData = {
     modality: 'chat',
     context_window: '',
     sort_order: '0',
-    enabled: true,
+    enabled: false,
     upstream_map: DEFAULT_UPSTREAM_MAP,
 };
 
@@ -285,7 +275,7 @@ function ModelsContent() {
     // ── P2.5 import-from-new-api modal state ──
     const [importModalOpen, setImportModalOpen] = useState(false);
     const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
-    const [importChannelIds, setImportChannelIds] = useState<number[]>(DEFAULT_IMPORT_CHANNEL_IDS);
+    const [importChannelIds, setImportChannelIds] = useState<number[]>([]);
     const [importLoading, setImportLoading] = useState(false); // running a dry-run preview
     const [importing, setImporting] = useState(false); // running the real import
     const [importDoneResult, setImportDoneResult] = useState<ImportPreview | null>(null);
@@ -464,7 +454,7 @@ function ModelsContent() {
     // ── P2.5 import-from-new-api handlers ──
 
     // Dry-run preview: never writes. Returns the channel menu + what would be imported.
-    const runImportPreview = useCallback(async (channelIds: number[]) => {
+    const runImportPreview = useCallback(async (channelIds?: number[]) => {
         setImportLoading(true);
         setImportError('');
         setImportDoneResult(null);
@@ -473,7 +463,7 @@ function ModelsContent() {
                 method: 'POST',
                 credentials: 'same-origin',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ channel_ids: channelIds }),
+                body: JSON.stringify(channelIds ? { channel_ids: channelIds } : {}),
             });
             if (!res.ok) {
                 if (res.status === 401) {
@@ -500,8 +490,8 @@ function ModelsContent() {
         setImportPreview(null);
         setImportDoneResult(null);
         setImportError('');
-        setImportChannelIds(DEFAULT_IMPORT_CHANNEL_IDS);
-        runImportPreview(DEFAULT_IMPORT_CHANNEL_IDS);
+        setImportChannelIds([]);
+        runImportPreview();
     };
 
     const closeImportModal = () => setImportModalOpen(false);
@@ -975,7 +965,9 @@ function ModelsContent() {
                                                 type="checkbox"
                                                 checked={importChannelIds.includes(ch.id)}
                                                 onChange={() => toggleImportChannel(ch.id)}
-                                                disabled={importLoading || importing || !!importDoneResult}
+                                                disabled={
+                                                    importLoading || importing || !!importDoneResult || ch.tier == null
+                                                }
                                                 className="h-4 w-4 rounded border-slate-400 accent-emerald-500"
                                             />
                                             <span className="font-mono text-xs">#{ch.id}</span>
@@ -991,7 +983,7 @@ function ModelsContent() {
                                                           : 'bg-slate-100 text-slate-600'
                                                 }`}
                                             >
-                                                {ch.tier}
+                                                {ch.tier ?? (locale === 'en' ? 'unregistered' : '未登记')}
                                             </span>
                                             <span className={`text-xs ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
                                                 · {ch.model_count} {t.importColModels}
@@ -1004,7 +996,7 @@ function ModelsContent() {
                                 <button
                                     type="button"
                                     onClick={() => runImportPreview(importChannelIds)}
-                                    disabled={importLoading || importing}
+                                    disabled={importLoading || importing || importChannelIds.length === 0}
                                     className={[btnBase, 'mt-3 disabled:opacity-50'].join(' ')}
                                 >
                                     {importLoading ? t.importPreviewing : t.importRefresh}
@@ -1035,13 +1027,6 @@ function ModelsContent() {
                             </div>
                         ) : importPreview ? (
                             <div className="space-y-4">
-                                {!importPreview.officialRegistered && (
-                                    <div
-                                        className={`rounded-lg border p-3 text-xs ${isDark ? 'border-amber-700 bg-amber-950/40 text-amber-300' : 'border-amber-300 bg-amber-50 text-amber-800'}`}
-                                    >
-                                        ⚠️ {t.importOfficialNotRegistered}
-                                    </div>
-                                )}
                                 <div className={`text-sm font-medium ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>
                                     <span className="text-emerald-500">
                                         {t.importWillCreate} {importPreview.summary.created}

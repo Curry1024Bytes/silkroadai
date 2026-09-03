@@ -141,11 +141,16 @@ async function loadPricingSheet(userId?: string): Promise<{ vendors: VendorBlock
     let modelCount = 0;
     for (const m of models) {
         if (HIDDEN_MODELS.has(m.slug)) continue;
+        const upstreamMap =
+            m.upstream_map && typeof m.upstream_map === 'object' && !Array.isArray(m.upstream_map)
+                ? (m.upstream_map as Record<string, unknown>)
+                : {};
         const seen = new Set<string>();
         const rows: PriceCell[] = [];
         for (const p of m.prices) {
             if (seen.has(p.tier)) continue; // 降序首条 = 现行价
             seen.add(p.tier);
+            if (!Object.hasOwn(upstreamMap, p.tier)) continue; // 旧价只留审计,不能冒充当前可售档
             if (!tierLabel.has(p.tier)) continue; // 档次已停用 → 不挂公开价
             rows.push({
                 tierKey: p.tier,

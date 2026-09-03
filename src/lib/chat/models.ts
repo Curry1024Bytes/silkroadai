@@ -98,7 +98,7 @@ function collapseChatModels(grouped: GroupedModels): ChatModelList {
  * new-api hiccup it returns an empty list so the page can render an
  * error/empty state instead of crashing (mirrors /models page behavior).
  */
-export async function listChatModels(userId?: string): Promise<ChatModelList> {
+export async function listChatModels(userId?: string, tenantId: string | null = null): Promise<ChatModelList> {
     let raw: string[] = [];
     try {
         raw = await listAvailableModels();
@@ -114,7 +114,7 @@ export async function listChatModels(userId?: string): Promise<ChatModelList> {
     // ChatModel object refs, so one pass updates both. Best-effort —
     // getModelGroupMap never throws; on a miss the model just has no badge.
     const [gmap, overrides] = await Promise.all([
-        getModelGroupMap(),
+        getModelGroupMap(tenantId),
         userId
             ? listUserTierMultipliers(userId).catch((err) => {
                   console.warn(`[chat/models] dedicated multiplier lookup failed for user ${userId}:`, err);

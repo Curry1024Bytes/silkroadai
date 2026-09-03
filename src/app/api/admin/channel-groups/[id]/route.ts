@@ -7,6 +7,18 @@ import { tenantScope } from '@/lib/admin/tenant-scope';
 
 export const runtime = 'nodejs';
 
+async function enabledModelReferences(tenantId: string | null, tier: string) {
+    const models = await prisma.catalogModel.findMany({
+        where: { tenant_id: tenantId, enabled: true },
+        select: { id: true, slug: true, upstream_map: true },
+    });
+    return models.flatMap((model) => {
+        const map = model.upstream_map as Record<string, { channel_id?: unknown }>;
+        const channelId = map?.[tier]?.channel_id;
+        return typeof channelId === 'number' ? [{ id: model.id, slug: model.slug, channel_id: channelId }] : [];
+    });
+}
+
 // key 是档次标识(NewApiToken.tier 引用它),改了会让已建 key 的档次标签悬空 —
 // P3 不允许改 key(要换标识就新建一个档次)。其余字段可改。
 const updateSchema = z.object({
@@ -61,6 +73,61 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
             { status: 409 },
         );
     }
+    const nextChannelIds = parsed.data.newapi_channel_ids ?? existing.newapi_channel_ids ?? [];
+    if (nextEnabled && nextChannelIds.length === 0) {
+        return NextResponse.json({ error: 'active_tier_requires_channels' }, { status: 409 });
+    }
+    if (nextEnabled) {
+        const nextNewApiGroup = parsed.data.newapi_group ?? existing.newapi_group;
+        const conflicts = await prisma.channelGroup.findMany({
+            where: {
+                tenant_id: existing.tenant_id,
+                enabled: true,
+                NOT: { id: existing.id },
+                OR: [{ newapi_group: nextNewApiGroup }, { newapi_channel_ids: { hasSome: nextChannelIds } }],
+            },
+            select: { key: true, newapi_group: true, newapi_channel_ids: true },
+        });
+        const groupOwner = conflicts.find((group) => group.newapi_group === nextNewApiGroup);
+        if (groupOwner) {
+            return NextResponse.json(
+                { error: 'newapi_group_already_assigned', newapi_group: nextNewApiGroup, tier: groupOwner.key },
+                { status: 409 },
+            );
+        }
+        const overlaps = conflicts.filter((group) =>
+            group.newapi_channel_ids.some((id) => nextChannelIds.includes(id)),
+        );
+        if (overlaps.length > 0) {
+            return NextResponse.json(
+                {
+                    error: 'channel_already_assigned',
+                    conflicts: overlaps.map((group) => ({
+                        tier: group.key,
+                        channel_ids: group.newapi_channel_ids.filter((id) => nextChannelIds.includes(id)),
+                    })),
+                },
+                { status: 409 },
+            );
+        }
+    }
+
+    if (existing.enabled && (!nextEnabled || parsed.data.newapi_channel_ids !== undefined)) {
+        const modelRefs = await enabledModelReferences(existing.tenant_id, existing.key);
+        const brokenRefs = nextEnabled
+            ? modelRefs.filter((ref) => !nextChannelIds.includes(ref.channel_id))
+            : modelRefs;
+        if (brokenRefs.length > 0) {
+            return NextResponse.json(
+                {
+                    error: 'tier_in_use_by_enabled_models',
+                    message: '请先下架或改写引用该档次/渠道的模型',
+                    models: brokenRefs,
+                },
+                { status: 409 },
+            );
+        }
+    }
 
     // 单一默认档不变式:把本档设为默认时,清掉同租户其它默认。
     const group = await prisma.$transaction(async (tx) => {
@@ -89,8 +156,20 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
         );
     }
 
-    // 注:删档次不影响已建 token(其 new-api group 已下发、照常工作);只是新建
-    // key 不能再选该档,且列表里该 tier 的标签回退显示原 key。已建 token 不动。
+    const modelRefs = await enabledModelReferences(existing.tenant_id, existing.key);
+    if (modelRefs.length > 0) {
+        return NextResponse.json(
+            {
+                error: 'tier_in_use_by_enabled_models',
+                message: '请先下架或改写引用该档次的模型',
+                models: modelRefs,
+            },
+            { status: 409 },
+        );
+    }
+
+    // 已建 token 的 new-api group 已下发、照常工作；但启用模型不得留下悬空
+    // upstream_map，所以必须先下架或改写所有活动引用。
     await prisma.channelGroup.delete({ where: { id: existing.id } });
     return NextResponse.json({ success: true });
 }

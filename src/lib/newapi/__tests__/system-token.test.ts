@@ -70,13 +70,19 @@ beforeEach(() => {
     _resetGroupTokenCacheForTest();
 });
 
+it('requires an explicit routing group instead of inventing default', async () => {
+    await expect(getOrCreateSystemToken(USER_ID)).rejects.toMatchObject({ code: 'routing_group_required' });
+    expect(mockUserFindUnique).not.toHaveBeenCalled();
+    expect(mockCreateToken).not.toHaveBeenCalled();
+});
+
 describe('getOrCreateSystemToken — fast path', () => {
     it('returns the existing prefixed value without hitting new-api when system_token_value is set', async () => {
         mockUserFindUnique.mockResolvedValueOnce(
             userBase({ newapi_system_token_id: '777', newapi_system_token_value: 'a'.repeat(48) }),
         );
 
-        const result = await getOrCreateSystemToken(USER_ID);
+        const result = await getOrCreateSystemToken(USER_ID, 'default');
 
         // formatTokenForDisplay prepends sk- to the 48-char raw stored
         // value. The full string must therefore be sk- + 48 chars.
@@ -102,7 +108,7 @@ describe('getOrCreateSystemToken — first-time provision', () => {
         mockGetTokenKey.mockResolvedValueOnce('b'.repeat(48));
         mockUserUpdateMany.mockResolvedValueOnce({ count: 1 });
 
-        const result = await getOrCreateSystemToken(USER_ID);
+        const result = await getOrCreateSystemToken(USER_ID, 'default');
 
         expect(mockCreateToken).toHaveBeenCalledTimes(1);
         const [authArg, argsArg] = mockCreateToken.mock.calls[0];
@@ -140,7 +146,7 @@ describe('getOrCreateSystemToken — first-time provision', () => {
         mockGetTokenKey.mockResolvedValueOnce('c'.repeat(48));
         mockUserUpdateMany.mockResolvedValueOnce({ count: 1 });
 
-        await getOrCreateSystemToken(USER_ID);
+        await getOrCreateSystemToken(USER_ID, 'default');
 
         expect(mockGetTokenKey).toHaveBeenCalledWith(expect.anything(), 300);
     });
@@ -168,7 +174,7 @@ describe('getOrCreateSystemToken — race-loss path', () => {
         // Loser deletes its orphan token
         mockDeleteToken.mockResolvedValueOnce(undefined);
 
-        const result = await getOrCreateSystemToken(USER_ID);
+        const result = await getOrCreateSystemToken(USER_ID, 'default');
 
         expect(mockDeleteToken).toHaveBeenCalledWith(
             { accessToken: 'access-stub-32chars-padding-padding', userId: 99 },
@@ -189,21 +195,21 @@ describe('getOrCreateSystemToken — race-loss path', () => {
         mockUserFindUnique.mockResolvedValueOnce({ newapi_system_token_value: null });
         mockDeleteToken.mockResolvedValueOnce(undefined);
 
-        await expect(getOrCreateSystemToken(USER_ID)).rejects.toThrow(PortalSystemTokenError);
+        await expect(getOrCreateSystemToken(USER_ID, 'default')).rejects.toThrow(PortalSystemTokenError);
     });
 });
 
 describe('getOrCreateSystemToken — failure modes', () => {
     it('throws user_not_found for unknown user', async () => {
         mockUserFindUnique.mockResolvedValueOnce(null);
-        await expect(getOrCreateSystemToken(USER_ID)).rejects.toMatchObject({
+        await expect(getOrCreateSystemToken(USER_ID, 'default')).rejects.toMatchObject({
             code: 'user_not_found',
         });
     });
 
     it('throws user_not_provisioned for partially-onboarded user', async () => {
         mockUserFindUnique.mockResolvedValueOnce(userBase({ newapi_user_id: null, newapi_access_token: null }));
-        await expect(getOrCreateSystemToken(USER_ID)).rejects.toMatchObject({
+        await expect(getOrCreateSystemToken(USER_ID, 'default')).rejects.toMatchObject({
             code: 'user_not_provisioned',
         });
     });
@@ -211,7 +217,7 @@ describe('getOrCreateSystemToken — failure modes', () => {
     it('throws newapi_create_failed when createTokenForCustomer rejects', async () => {
         mockUserFindUnique.mockResolvedValueOnce(userBase());
         mockCreateToken.mockRejectedValueOnce(new Error('500'));
-        await expect(getOrCreateSystemToken(USER_ID)).rejects.toMatchObject({
+        await expect(getOrCreateSystemToken(USER_ID, 'default')).rejects.toMatchObject({
             code: 'newapi_create_failed',
         });
     });
@@ -220,7 +226,7 @@ describe('getOrCreateSystemToken — failure modes', () => {
         mockUserFindUnique.mockResolvedValueOnce(userBase());
         mockCreateToken.mockResolvedValueOnce(undefined);
         mockListTokens.mockRejectedValueOnce(new Error('502'));
-        await expect(getOrCreateSystemToken(USER_ID)).rejects.toMatchObject({
+        await expect(getOrCreateSystemToken(USER_ID, 'default')).rejects.toMatchObject({
             code: 'newapi_lookup_failed',
         });
     });
@@ -232,7 +238,7 @@ describe('getOrCreateSystemToken — failure modes', () => {
             items: [{ id: 1, name: 'random' }],
             total: 1,
         });
-        await expect(getOrCreateSystemToken(USER_ID)).rejects.toMatchObject({
+        await expect(getOrCreateSystemToken(USER_ID, 'default')).rejects.toMatchObject({
             code: 'newapi_lookup_failed',
         });
     });
@@ -245,7 +251,7 @@ describe('getOrCreateSystemToken — failure modes', () => {
             total: 1,
         });
         mockGetTokenKey.mockRejectedValueOnce(new Error('500'));
-        await expect(getOrCreateSystemToken(USER_ID)).rejects.toMatchObject({
+        await expect(getOrCreateSystemToken(USER_ID, 'default')).rejects.toMatchObject({
             code: 'newapi_lookup_failed',
         });
     });

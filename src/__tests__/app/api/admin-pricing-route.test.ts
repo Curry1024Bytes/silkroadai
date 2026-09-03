@@ -42,10 +42,11 @@ vi.mock('@/lib/newapi/pricing-sync', async (importOriginal) => {
 
 import { GET, POST } from '@/app/api/admin/pricing/route';
 import { POST as RESYNC } from '@/app/api/admin/pricing/[modelId]/resync/route';
+import { PLATFORM_TENANT_ID } from '@/lib/admin/tenant-scope';
 
 const SUPERADMIN = { role: 'superadmin', tenant_id: null, user: null, viaBreakGlass: true };
 const PARTNER = { role: 'admin', tenant_id: 'tenant-7', user: { id: 'admin-1' }, viaBreakGlass: false };
-const UPSTREAM = { default: { channel_id: 3, upstream_model: 'gpt-5.4' } };
+const UPSTREAM = { pool: { channel_id: 3, upstream_model: 'gpt-5.4' } };
 
 function req(method = 'GET', body?: object, url = 'https://x/api/admin/pricing') {
     return new NextRequest(url, {
@@ -59,10 +60,32 @@ beforeEach(() => {
     vi.clearAllMocks();
     mockResolveAdmin.mockResolvedValue(SUPERADMIN);
     mockModelFindMany.mockResolvedValue([]);
-    mockModelFindFirst.mockResolvedValue({ id: 'm1', upstream_map: UPSTREAM, prices: [] });
+    mockModelFindFirst.mockResolvedValue({
+        id: 'm1',
+        tenant_id: PLATFORM_TENANT_ID,
+        upstream_map: UPSTREAM,
+        prices: [],
+    });
     mockPriceCreate.mockImplementation(({ data }: { data: object }) => Promise.resolve({ id: 'p1', ...data }));
     mockChannelGroupFindFirst.mockResolvedValue({ key: 'pool', newapi_group: 'default' }); // is_default tier / GR 解析
-    mockChannelGroupFindMany.mockResolvedValue([{ key: 'pool', newapi_group: 'default' }]);
+    mockChannelGroupFindMany.mockResolvedValue([
+        {
+            key: 'pool',
+            newapi_group: 'default',
+            newapi_channel_ids: [3, 17, 20],
+            is_default: true,
+            enabled: true,
+            tier_level: 0,
+        },
+        {
+            key: 'official',
+            newapi_group: 'official',
+            newapi_channel_ids: [18],
+            is_default: false,
+            enabled: true,
+            tier_level: 1,
+        },
+    ]);
     mockSync.mockResolvedValue({
         ok: true,
         channel_id: 3,
@@ -86,7 +109,7 @@ describe('GET /api/admin/pricing', () => {
 describe('POST /api/admin/pricing (change price)', () => {
     const CHANGE = {
         model_id: '11111111-1111-4111-8111-111111111111',
-        tier: 'default',
+        tier: 'pool',
         input_cny_per_1m: 2.5,
         output_cny_per_1m: 10,
     };
@@ -114,21 +137,26 @@ describe('POST /api/admin/pricing (change price)', () => {
         // version row created with the new price + tier
         expect(mockPriceCreate.mock.calls[0][0].data).toMatchObject({
             model_id: 'm1',
-            tier: 'default',
+            tier: 'pool',
             input_cny_per_1m: 2.5,
             output_cny_per_1m: 10,
         });
         // sync called with the model's upstream_map + the new price
         expect(mockSync).toHaveBeenCalledWith(
             UPSTREAM,
-            expect.objectContaining({ tier: 'default', input_cny_per_1m: 2.5 }),
+            expect.objectContaining({ tier: 'pool', input_cny_per_1m: 2.5, tenant_id: PLATFORM_TENANT_ID }),
         );
         expect(data.sync.ok).toBe(true);
     });
 
     it('image change (per_image only) → persists per_image + triggers ModelPrice sync (P2.8, not skipped)', async () => {
         const IMG_MAP = { pool: { channel_id: 17, upstream_model: 'gpt-image-2' } };
-        mockModelFindFirst.mockResolvedValue({ id: 'm1', upstream_map: IMG_MAP, prices: [] });
+        mockModelFindFirst.mockResolvedValue({
+            id: 'm1',
+            tenant_id: PLATFORM_TENANT_ID,
+            upstream_map: IMG_MAP,
+            prices: [],
+        });
         mockSync.mockResolvedValue({ ok: true, image: true, upstream_model: 'gpt-image-2', modelPrice_usd: 0.01429 });
 
         const res = await POST(req('POST', { model_id: CHANGE.model_id, tier: 'pool', per_image_cny: 0.1 }));
@@ -148,7 +176,7 @@ describe('POST /api/admin/pricing (change price)', () => {
         expect(data.sync).toMatchObject({ ok: true, image: true, modelPrice_usd: 0.01429 });
     });
 
-    it('tier defaults to pool when omitted (P2.7 — never writes a "default" row)', async () => {
+    it('requires an explicit tier instead of silently writing pool', async () => {
         const res = await POST(
             req('POST', {
                 model_id: CHANGE.model_id,
@@ -156,8 +184,16 @@ describe('POST /api/admin/pricing (change price)', () => {
                 output_cny_per_1m: 10,
             }),
         );
-        expect(res.status).toBe(201);
-        expect(mockPriceCreate.mock.calls[0][0].data.tier).toBe('pool');
+        expect(res.status).toBe(400);
+        expect(mockPriceCreate).not.toHaveBeenCalled();
+    });
+
+    it('rejects pricing a historical tier that is no longer routable by the model', async () => {
+        const res = await POST(req('POST', { ...CHANGE, tier: 'official' }));
+        expect(res.status).toBe(409);
+        expect((await res.json()).error).toBe('channel_group_topology_invalid');
+        expect(mockPriceCreate).not.toHaveBeenCalled();
+        expect(mockSync).not.toHaveBeenCalled();
     });
 
     it('records created_by = the admin user id', async () => {
@@ -196,24 +232,30 @@ describe('POST /api/admin/pricing/[modelId]/resync', () => {
     });
 
     it('400 when the model has no prices', async () => {
-        mockModelFindFirst.mockResolvedValue({ id: 'm1', upstream_map: UPSTREAM, prices: [] });
+        mockModelFindFirst.mockResolvedValue({
+            id: 'm1',
+            tenant_id: PLATFORM_TENANT_ID,
+            upstream_map: UPSTREAM,
+            prices: [],
+        });
         expect((await RESYNC(req('POST', undefined, rurl), { params: rparams() })).status).toBe(400);
     });
 
     it('chat resync → resolves default tier then ONE global sync (P2.9; no per-tier loop)', async () => {
         mockModelFindFirst.mockResolvedValue({
             id: 'm1',
+            tenant_id: PLATFORM_TENANT_ID,
             upstream_map: UPSTREAM,
             prices: [
                 {
-                    tier: 'default',
+                    tier: 'pool',
                     input_cny_per_1m: '2.5',
                     output_cny_per_1m: '10',
                     per_image_cny: null,
                     effective_from: '2026-06-06T00:00:00Z',
                 },
                 {
-                    tier: 'default',
+                    tier: 'pool',
                     input_cny_per_1m: '3',
                     output_cny_per_1m: '12',
                     per_image_cny: null,
@@ -229,21 +271,21 @@ describe('POST /api/admin/pricing/[modelId]/resync', () => {
         expect(mockSync).toHaveBeenCalledWith(
             UPSTREAM,
             expect.objectContaining({
-                tier: 'default',
+                tier: 'pool',
                 input_cny_per_1m: 2.5,
                 output_cny_per_1m: 10,
                 per_image_cny: null,
             }),
         );
-        expect(data.results[0].tier).toBe('default');
-        // P2.9: chat resolves the default tier from ChannelGroup.is_default (global price can't tier).
-        expect(mockChannelGroupFindFirst.mock.calls[0][0].where.is_default).toBe(true);
+        expect(data.results[0].tier).toBe('pool');
+        expect(mockChannelGroupFindMany.mock.calls.some((call) => call[0].where.enabled === true)).toBe(true);
     });
 
     it('chat resync multi-tier divergent → default (pool) value + warn surfaced (P2.9)', async () => {
         mockChannelGroupFindFirst.mockResolvedValue({ key: 'pool' });
         mockModelFindFirst.mockResolvedValue({
             id: 'm1',
+            tenant_id: PLATFORM_TENANT_ID,
             upstream_map: {
                 pool: { channel_id: 20, upstream_model: 'claude-opus-4-7' },
                 official: { channel_id: 18, upstream_model: 'claude-opus-4-7' },
@@ -292,6 +334,7 @@ describe('POST /api/admin/pricing/[modelId]/resync', () => {
         mockChannelGroupFindFirst.mockResolvedValue({ key: 'pool' }); // is_default
         mockModelFindFirst.mockResolvedValue({
             id: 'm1',
+            tenant_id: PLATFORM_TENANT_ID,
             upstream_map: {
                 pool: { channel_id: 17, upstream_model: 'gpt-image-2' },
                 official: { channel_id: 18, upstream_model: 'gpt-image-2' },
@@ -329,8 +372,8 @@ describe('POST /api/admin/pricing/[modelId]/resync', () => {
                 output_cny_per_1m: null,
             }),
         );
-        // default tier resolved from ChannelGroup.is_default (not hardcoded).
-        expect(mockChannelGroupFindFirst.mock.calls[0][0].where.is_default).toBe(true);
+        // default tier came from the validated topology (not a literal fallback).
+        expect(mockChannelGroupFindMany.mock.calls.some((call) => call[0].where.enabled === true)).toBe(true);
         // divergent per_image across tiers → warn surfaced (real resolveImageModelPrice).
         expect(data.results).toHaveLength(1);
         expect(data.results[0].sync.warn).toContain('pool');

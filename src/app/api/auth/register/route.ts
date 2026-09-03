@@ -288,7 +288,7 @@ export async function POST(req: NextRequest) {
     // will retry. Idempotent + race-safe (CAS via WHERE … IS NULL).
     try {
         const { getOrCreateSystemToken } = await import('@/lib/newapi/system-token');
-        await getOrCreateSystemToken(user.id);
+        await getOrCreateSystemToken(user.id, defaultGroup.newapi_group);
     } catch (sysTokErr) {
         console.warn(
             `[register] portal system token eager-provision failed for ${user.id} (will retry lazily on first portal-managed call):`,

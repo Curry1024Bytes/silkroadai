@@ -139,7 +139,13 @@ export async function POST(req: NextRequest): Promise<Response> {
     // token. The group is resolved SERVER-SIDE (not trusting the client) from
     // channel data — the cheapest group serving the model; default-group
     // models keep the primary token. resolveModelGroup never throws.
-    const group = await resolveModelGroup(model);
+    const group = await resolveModelGroup(model, user.tenant_id);
+    if (!group) {
+        return NextResponse.json(
+            { error: 'model_route_unavailable', message: '当前模型没有可用的路由档次,请稍后重试' },
+            { status: 503 },
+        );
+    }
 
     // Resolve the customer's portal-internal sk-… token for that group
     // (lazy-provisions on first use). Failure maps to a friendly 4xx/503.

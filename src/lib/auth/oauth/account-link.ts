@@ -187,7 +187,7 @@ async function createUserFromIdentity(identity: OAuthIdentity, tenantId?: string
     // retries lazily.
     try {
         const { getOrCreateSystemToken } = await import('@/lib/newapi/system-token');
-        await getOrCreateSystemToken(user.id);
+        await getOrCreateSystemToken(user.id, defaultGroup.newapi_group);
     } catch (sysTokErr) {
         console.warn(
             `[oauth/account-link] portal system token eager-provision failed for ${user.id} (will retry lazily on first portal-managed call):`,

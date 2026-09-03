@@ -1006,6 +1006,10 @@ describe('/v1 proxy — passthrough', () => {
                 slug: 'claude-opus-4-8',
                 display_name: 'Claude Opus 4.8',
                 context_window: 200000,
+                upstream_map: {
+                    official: { channel_id: 8, upstream_model: 'claude-opus-4-8' },
+                    pool: { channel_id: 6, upstream_model: 'claude-opus-4-8' },
+                },
                 prices: [
                     { tier: 'official', input_cny_per_1m: 34, output_cny_per_1m: 170, per_image_cny: null },
                     { tier: 'pool', input_cny_per_1m: 22.5, output_cny_per_1m: 112.5, per_image_cny: null },

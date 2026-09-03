@@ -20,7 +20,7 @@ vi.mock('@/lib/db', () => ({
 import {
     computeRatios,
     retailFromRatios,
-    syncModelPriceToNewApi,
+    syncModelPriceToNewApi as syncModelPriceToNewApiImpl,
     resolveImageModelPrice,
     resolveChatTierPrice,
     getTierGroupRatio,
@@ -28,6 +28,12 @@ import {
     IMAGE_FX,
 } from '@/lib/newapi/pricing-sync';
 import { quotaToCny } from '@/lib/newapi/quota-units';
+
+const TEST_TENANT_ID = '00000000-0000-0000-0000-000000000001';
+const syncModelPriceToNewApi = (
+    upstreamMap: Parameters<typeof syncModelPriceToNewApiImpl>[0],
+    price: Omit<Parameters<typeof syncModelPriceToNewApiImpl>[1], 'tenant_id'>,
+) => syncModelPriceToNewApiImpl(upstreamMap, { ...price, tenant_id: TEST_TENANT_ID });
 
 beforeEach(() => {
     vi.clearAllMocks();
@@ -163,7 +169,7 @@ describe('syncModelPriceToNewApi — chat models → global ModelRatio + Complet
         expect(put['CompletionRatio']).toEqual({ 'gpt-5.4': 4 });
     });
 
-    it('edited tier lacks a mapping → falls back to any tier upstream_model (chat name is tier-agnostic)', async () => {
+    it('edited tier lacks a mapping → fails closed without touching global options', async () => {
         mockGetOption.mockImplementation(optionsByKey({}));
         mockPutOption.mockResolvedValue(undefined);
         const r = await syncModelPriceToNewApi(UPSTREAM, {
@@ -171,9 +177,9 @@ describe('syncModelPriceToNewApi — chat models → global ModelRatio + Complet
             input_cny_per_1m: 2.5,
             output_cny_per_1m: 10,
         });
-        expect(r.ok).toBe(true);
-        expect(r.upstream_model).toBe('gpt-5.4'); // resolved from the 'default' mapping
-        expect(putByKey()['ModelRatio']).toEqual({ 'gpt-5.4': 0.173611 });
+        expect(r.ok).toBe(false);
+        expect(r.error).toContain('upstream_map');
+        expect(mockPutOption).not.toHaveBeenCalled();
     });
 
     it('empty upstream_map → ok:false, never calls new-api', async () => {
@@ -252,7 +258,7 @@ describe('syncModelPriceToNewApi — image models → global ModelPrice (P2.8 Pa
         expect(JSON.parse(mockPutOption.mock.calls[0][1])).toEqual({ 'gemini-3-pro-image': 0.009722 }); // 0.07/7.2, 6dp
     });
 
-    it('edited tier lacks a mapping → falls back to any tier upstream_model (image names are tier-agnostic)', async () => {
+    it('edited tier lacks a mapping → fails closed without touching ModelPrice', async () => {
         mockGetOption.mockImplementation(optionsByKey({}));
         mockPutOption.mockResolvedValue(undefined);
         const r = await syncModelPriceToNewApi(IMG, {
@@ -261,9 +267,9 @@ describe('syncModelPriceToNewApi — image models → global ModelPrice (P2.8 Pa
             output_cny_per_1m: null,
             per_image_cny: 0.14,
         });
-        expect(r.ok).toBe(true);
-        expect(r.upstream_model).toBe('gpt-image-2'); // resolved from pool mapping
-        expect(JSON.parse(mockPutOption.mock.calls[0][1])).toEqual({ 'gpt-image-2': 0.019444 }); // 0.14/7.2, 6dp
+        expect(r.ok).toBe(false);
+        expect(r.error).toContain('upstream_map');
+        expect(mockPutOption).not.toHaveBeenCalled();
     });
 
     it('empty upstream_map → ok:false, image:true, never calls new-api', async () => {
@@ -426,18 +432,18 @@ describe('getTierGroupRatio + sync 按组倍率换算(GR 原生语义 2026-07-20
 
     it('getTierGroupRatio: tier key → channel_groups.newapi_group → GroupRatio 值', async () => {
         mockGetOption.mockImplementation(optionsByKey({}, { default: 1.2, 'pool-gpt': 0.2 }));
-        await expect(getTierGroupRatio('pool')).resolves.toBe(1.2); // pool 档挂 default 组
+        await expect(getTierGroupRatio(TEST_TENANT_ID, 'pool')).resolves.toBe(1.2); // pool 档挂 default 组
     });
 
     it('getTierGroupRatio: 档未登记 channel_groups → throw', async () => {
         mockChannelGroupFindFirst.mockResolvedValue(null);
         mockGetOption.mockImplementation(optionsByKey({}));
-        await expect(getTierGroupRatio('ghost')).rejects.toThrow('未在 channel_groups 登记');
+        await expect(getTierGroupRatio(TEST_TENANT_ID, 'ghost')).rejects.toThrow('未在 channel_groups 登记');
     });
 
     it('getTierGroupRatio: GroupRatio 缺组 → throw', async () => {
         mockGetOption.mockImplementation(optionsByKey({}, { other: 1 }));
-        await expect(getTierGroupRatio('official')).rejects.toThrow('缺组');
+        await expect(getTierGroupRatio(TEST_TENANT_ID, 'official')).rejects.toThrow('缺组');
     });
 
     it('chat sync ÷ 组倍率:default 档 GR=1.2,¥6/¥30 → mr 0.347222(= 6/(14.4×1.2)),cr 5', async () => {

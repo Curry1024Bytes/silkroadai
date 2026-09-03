@@ -2,21 +2,19 @@ import 'server-only';
 import { prisma } from '@/lib/db';
 import { PLATFORM_TENANT_ID } from '@/lib/admin/tenant-scope';
 import { getOption } from '@/lib/newapi/client';
+import { ChannelGroupTopology } from '@/lib/channel-group-topology';
 
 // ─────────────────────────────────────────────────────────────────────────
-// 档次同步:new-api `UserUsableGroups` 是唯一事实源(运维只改 new-api,portal
-// 60s 内跟进)。new-api 建 token 本来就要求 group ∈ UserUsableGroups(否则
-// 403「已被弃用」),所以以它为准同时消除「portal 展示了但 new-api 拒建」的
-// 潜在 403。同步规则:
-//   - 按 newapi_group 匹配已有行 → 更新 display_name + 置回 enabled(key 不动,
-//     已发 key 的 NewApiToken.tier / User.allowed_tier_keys 全不受影响)
-//   - new-api 新增的组 → 自动建行(key = 组名 slug,排到现有档次末尾)
+// 档次同步:new-api `UserUsableGroups` 只用于发现/下架,ChannelGroup 才是 Portal
+// 侧可售档次事实源。new-api 建 token 要求 group ∈ UserUsableGroups(否则 403),
+// 因此仍在读前做安全对账,但绝不能把一个没有渠道归属的上游组直接变成可售档次:
+//   - 按 newapi_group 匹配已有行 → 更新 display_name；不会自动复活 disabled 行
+//   - new-api 新增的组 → 自动建【disabled 候选】,待 operator 登记唯一渠道、默认
+//     关系后再启用
 //   - new-api 删掉的组 → enabled=false 软下架(老 key 照常工作,新建选不到)
 //   - 显示名以 "@" 开头 = 隐藏组:保留在 UserUsableGroups(new-api 建 token 的
 //     门,studio / chat 内部建 key 还要过它)但不对客户展示 —— 对应行软下架、
 //     也不自动建行。运维在 new-api 里给显示名加/去 "@" 即可隐/显。
-//   - 同一 newapi_group 对应多行 portal 档(如 geminit3 与 pool 都指 default)
-//     → 只管 enabled,不动 display_name(保留 portal 侧的别名区分)
 //   - tier_level / is_default / description 仍归 portal 管,不被同步覆盖
 // 防御:option 缺失 / JSON 坏 / 字典为空(疑似误清)→ 跳过本轮,DB 现状兜底。
 // ─────────────────────────────────────────────────────────────────────────
@@ -71,21 +69,12 @@ async function runSync(): Promise<void> {
     const usedKeys = new Set(rows.map((r) => r.key));
     let nextLevel = rows.reduce((max, r) => Math.max(max, r.tier_level), -1) + 1;
     const covered = new Set<string>();
-    const rowsPerGroup = new Map<string, number>();
-    for (const row of rows) {
-        rowsPerGroup.set(row.newapi_group, (rowsPerGroup.get(row.newapi_group) ?? 0) + 1);
-    }
-
     for (const row of rows) {
         const name = live.get(row.newapi_group);
         if (name !== undefined) {
             covered.add(row.newapi_group);
-            const data: { display_name?: string; enabled?: boolean } = {};
-            // 多行共用一个 newapi_group(portal 侧别名,如 geminit3/pool 都指
-            // default)时不动 display_name,否则会把别名改成同一个名字。
-            const soleRowForGroup = rowsPerGroup.get(row.newapi_group) === 1;
-            if (soleRowForGroup && row.display_name !== name) data.display_name = name;
-            if (!row.enabled) data.enabled = true;
+            const data: { display_name?: string } = {};
+            if (row.display_name !== name) data.display_name = name;
             if (Object.keys(data).length > 0) {
                 ops.push(prisma.channelGroup.update({ where: { id: row.id }, data }));
             }
@@ -108,7 +97,7 @@ async function runSync(): Promise<void> {
                     display_name: name,
                     newapi_group: group,
                     tier_level: nextLevel++,
-                    enabled: true,
+                    enabled: false,
                     is_default: false,
                 },
             }),
@@ -138,8 +127,9 @@ export async function syncChannelGroupsFromNewApi(): Promise<void> {
 }
 
 /**
- * 客户可选的档次 = 某 tenant 下 enabled 的 ChannelGroup,按 tier_level 升序
- * (pool=0 在前,official=1 在后)。null tenant_id → 平台主体。
+ * 客户可选的档次 = 某 tenant 下 enabled 的 ChannelGroup,按 tier_level 升序。
+ * null tenant_id → 平台主体。返回前统一验证:唯一默认档、每档至少一个渠道、
+ * channel_id 与 newapi_group 均不得跨档重复。配置错误直接抛出,禁止继续出售空壳档。
  *
  * 平台 tenant 读之前先跑一轮 new-api 同步(60s 节流 + 失败静默),让 new-api
  * 后台增删 UserUsableGroups 在一分钟内反映到 /keys 档次单选与建 key 校验。
@@ -149,31 +139,21 @@ export async function syncChannelGroupsFromNewApi(): Promise<void> {
 export async function listEnabledChannelGroups(tenantId: string | null) {
     const resolvedTenantId = tenantId ?? PLATFORM_TENANT_ID;
     if (resolvedTenantId === PLATFORM_TENANT_ID) await syncChannelGroupsFromNewApi();
-    return prisma.channelGroup.findMany({
+    const groups = await prisma.channelGroup.findMany({
         where: { tenant_id: resolvedTenantId, enabled: true },
         orderBy: { tier_level: 'asc' },
     });
-}
-
-export class DefaultChannelGroupConfigurationError extends Error {
-    constructor(tenantId: string, count: number) {
-        super(`tenant ${tenantId} must have exactly one enabled default channel group (found ${count})`);
-        this.name = 'DefaultChannelGroupConfigurationError';
-    }
+    new ChannelGroupTopology(resolvedTenantId, groups);
+    return groups;
 }
 
 /**
- * 新开户首个 Key 必须显式使用 tenant 唯一启用的默认档次。配置缺失或重复时
- * 直接失败,避免退回 new-api 的 `default` group 并生成一个表面成功、实际 403 的 Key。
+ * 新开户首个 Key 必须显式使用通过完整拓扑校验后的唯一默认档次。配置缺失、
+ * 重复或渠道归属不完整时直接失败,不退回任何写死的 new-api group。
  */
 export async function getDefaultChannelGroup(tenantId: string | null) {
-    const resolvedTenantId = tenantId ?? PLATFORM_TENANT_ID;
     const groups = await listEnabledChannelGroups(tenantId);
-    const defaults = groups.filter((group) => group.is_default);
-    if (defaults.length !== 1) {
-        throw new DefaultChannelGroupConfigurationError(resolvedTenantId, defaults.length);
-    }
-    return defaults[0];
+    return groups.find((group) => group.is_default)!;
 }
 
 // ─────────────────────────────────────────────────────────────────────────

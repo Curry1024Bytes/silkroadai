@@ -238,6 +238,39 @@
   `docs/真实性上游毛利报表-需求文档.md`；本次同步未修改、未提交这些内容。`dev`/`prod` 原有的
   `vendor/stripe-node` gitlink(`d3b8ecd`)也被保留，未被本轮 `main` 的旧 gitlink 覆盖。
 
+## 动态档次拓扑收口(2026-09-03，尚未部署)
+
+- 2026-09-03 深审确认“低价号池”幽灵行不是 new-api 源码功能，而是 Portal 历史实现同时存在
+  固定渠道 `2/3/17`、隐式 `pool/default/image2` 回退、价格历史反推活动档次，以及
+  `UserUsableGroups` 自动复活/启用空壳档次造成。修复只改 Portal，继续遵守“不改 new-api 源码”。
+- 新增 `src/lib/channel-group-topology.ts` 作为 Portal 档次拓扑单一校验入口：每租户必须恰好一个
+  启用默认档；启用档次必须至少登记一个渠道；`newapi_group` 和 channel id 均不得跨启用档重复；
+  模型 `upstream_map` 的 tier/channel 必须精确归属。未知、缺失或歧义配置一律 fail closed，禁止再
+  猜 `pool` / `default`。
+- 模型导入、模型 CRUD、定价保存/重同步、批量成本活动行、客户建 Key/开户、机器模型目录、聊天、
+  旧图片生成链路、系统 token 与 shadow meter 已统一接入动态语义：导入默认只选已登记渠道；
+  价格历史只保留审计，不再反向生成可编辑档，也不能在公开价格、机器目录或实时计量中冒充当前
+  可路由价格；聊天/生图无法解析真实 live group 时返回 503；
+  聊天/生图候选还必须命中当前租户已启用 Portal 档次；shadow meter 无法归档时写
+  `unresolved:<group>` 且 `matched=false`，不再记成 `pool`。
+- `UserUsableGroups` 同步现在只负责安全下架和发现候选：上游新增组只创建 `enabled=false` 的候选，
+  disabled 行不会自动复活；管理后台新建档次也默认停用，登记唯一 channel 后才能启用。数据库迁移
+  另加“启用档必须有渠道、每租户最多一个启用默认档、启用 newapi_group 唯一”等数据库可表达的
+  约束/索引；活动模型仍引用档次/渠道时，后台禁止移除、停用或删除该归属。
+- migration 为 `20260903090000_reconcile_catalog_tier_topology`：按真实启用 ChannelGroup 全量清洗
+  `CatalogModel.upstream_map`，不特殊处理某个档次；清洗后无路由的启用模型仅软下架；
+  `CatalogPrice` 历史一行不删；精确修复旧系统图片 token 造成的 8 条零成本 `pool` shadow 记录；
+  同时移除 `newapi_tokens`、`usage_records`、`seedance_video_tasks` 三个 tier 列的 DB `pool` 默认值。
+- 对生产 PostgreSQL 的只读预演结果：将移除 10 个错误映射，其中包括 9 个已删除的 `pool` 映射和
+  `kimi-k3` 错挂 `gpt特惠分组/ch10`；`gpt-5.3-codex-spark`、`gpt-5.5-pro` 因清洗后无路由会软下架；
+  8 条目标图片 shadow 记录全部满足窄修复条件。现有 5 个有效档次的坏默认/空渠道/重复
+  newapi_group/重复 channel 计数均为 0，能通过新约束。生产当前仍是旧版本，三个 tier 列仍默认
+  `pool`，必须等 operator 明确安排发布后才执行 migration。
+- 本地验证：Prisma validate、typecheck、生产构建通过；lint 0 error(91 个既有 warning)；完整非
+  smoke 测试 `267 files / 3173 passed / 1 skipped`。构建时本机未开 `127.0.0.1:3000` 隧道，
+  models/pricing 的预期降级日志不属于回归。此批改动只在本地 `dev`，未 push、未 fast-forward
+  `prod`、未登录 VPS 改数据；发布时仍需先备份、执行 migration，再做真实 Key/模型/图片计费验收。
+
 ## 目录结构
 
 ```

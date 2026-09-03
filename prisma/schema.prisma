@@ -477,11 +477,9 @@ model NewApiToken {
   status KeyStatus @default(active)
 
   // ── 档次(P3)──
-  // 客户建 key 时选的档次 = ChannelGroup.key('pool' | 'official')。决定建
-  // token 时下发给 new-api 的 group(经 ChannelGroup.newapi_group 解耦:
-  // pool→'default' 保现有,official→'official')。现有 token 全部回填 'pool',
-  // 其 new-api group 仍是 'default',零迁移、行为不变。
-  tier String @default("pool")
+  // 客户建 key 时选的档次 = 当前租户启用的 ChannelGroup.key。建 token 时必须
+  // 显式解析并下发 ChannelGroup.newapi_group；不存在写死的 pool/default 回退。
+  tier String
 
   orders    Order[]
   recharges RechargeLog[]
@@ -912,9 +910,9 @@ model CatalogModel {
   context_window Int?
   enabled        Boolean  @default(true)
   sort_order     Int      @default(0)
-  // 该模型在各档次下对应 new-api 的渠道 + 上游模型名(sync 用)。形如
-  // { "pool": { "channel_id": 3, "upstream_model": "gpt-5.4" }, "official": {...} }。
-  // P2 档次先用 'default' / 现有 channel,结构留好向 P3(pool/official)扩展。
+  // 该模型在各档次下对应 new-api 的渠道 + 上游模型名(sync 用)。对象 key 必须
+  // 是当前租户启用的 ChannelGroup.key，channel_id 必须由该档唯一持有；禁止
+  // 写死 pool/default 等兜底档次。
   upstream_map   Json
   created_at     DateTime @default(now())
   updated_at     DateTime @updatedAt
@@ -932,7 +930,7 @@ model CatalogPrice {
   id       String       @id @default(uuid()) @db.Uuid
   model_id String       @db.Uuid
   model    CatalogModel @relation(fields: [model_id], references: [id], onDelete: Cascade)
-  tier     String // 'pool' | 'official'(P2 先 'default')
+  tier     String // 对应创建该版本时真实存在的 ChannelGroup.key；旧行作为历史保留
 
   // 我们对客户的零售价(¥/1M token);图片模型用 per_image_cny。
   input_cny_per_1m  Decimal? @db.Decimal(12, 4)
@@ -953,27 +951,24 @@ model CatalogPrice {
 // ─────────────────────────────────────────────────────────────────────────
 // 渠道分组 / 档次(P3 — 管理后台 §4.3 + §6)
 // ─────────────────────────────────────────────────────────────────────────
-// 客户建 key 选档次(低价号池 pool / 官方稳定 official)。路由逻辑【零代码留在
-// new-api】(它原生按 token.group → channel.group 匹配)。portal 只:建 token 时
-// 把 group 设成该档的 newapi_group + 后台登记/展示。
-//
-// ⚠️ portal 档次 key 与 new-api group 名【解耦】:pool → 'default'(复用现有
-// 渠道组,现有 token 已是 default,零迁移);official → 'official'(运维在 new-api
-// 新建该 group 并把官方渠道归进去)。绝不批量改现有 token 的 group。
+// 客户建 key 选择当前租户启用的动态档次。路由逻辑【零代码留在 new-api】
+// (它原生按 token.group → channel.group 匹配)；Portal 只负责将 ChannelGroup.key
+// 映射为 newapi_group，并校验每个 channel_id 在启用档次中只能有一个归属。
+// Portal 档次 key 与 new-api group 名解耦，不得假设存在 pool/default/official。
 model ChannelGroup {
   id                 String   @id @default(uuid()) @db.Uuid
   tenant_id          String?  @db.Uuid // P1 tenant 维度;回填平台主体
   tenant             Tenant?  @relation(fields: [tenant_id], references: [id])
-  key                String // portal 档次标识:'pool' | 'official'
-  display_name       String // '低价号池' / '官方稳定'
+  key                String // portal 动态档次标识
+  display_name       String // 面向客户展示的档次名
   description        String?
   // 真正下发到 new-api token.group 的名字(与 portal key 解耦)。
   newapi_group       String
-  tier_level         Int      @default(0) // 排序 / 档位:pool=0, official=1
+  tier_level         Int      @default(0) // 排序 / 档位
   enabled            Boolean  @default(true)
-  is_default         Boolean  @default(false) // 客户不选时的默认档(设在 pool)
-  // 该档对应 new-api 哪些 channel id —— 运维登记,纯展示/审计;路由由 new-api
-  // 自己按 group 做,portal 不据此路由。
+  is_default         Boolean  @default(false) // 每租户启用档次中必须且只能有一个默认档
+  // 该档对应 new-api 哪些 channel id —— 是 Portal 模型映射/定价校验的事实源；
+  // 真正请求路由仍由 new-api 按 group 执行。
   newapi_channel_ids Int[]    @default([])
   created_at         DateTime @default(now())
   updated_at         DateTime @updatedAt
@@ -1028,7 +1023,7 @@ model UsageRecord {
   newapi_user_id Int // 冗余,排查用
 
   model_slug    String
-  tier          String @default("pool")
+  tier          String
   input_tokens  Int    @default(0)
   output_tokens Int    @default(0)
 
@@ -1220,7 +1215,7 @@ model SeedanceVideoTask {
   tenant_id      String?   @db.Uuid
   user_id        String    @db.Uuid // portal User.id
   newapi_user_id Int? // newapi 账本扣费用(override quota)
-  tier           String    @default("pool")
+  tier           String
   model          String // seedance2.0-pro-720p 等
   resolution     String // 720p | 1080p | 4k
   has_video      Boolean   @default(false) // 输入含参考视频 → 含视频费率档

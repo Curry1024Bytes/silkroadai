@@ -480,7 +480,7 @@ export async function createTokenForCustomer(
         model_limits_enabled?: boolean;
         model_limits?: string; // CSV "gpt-4,deepseek-v4-flash"
         allow_ips?: string | null; // newline-separated
-        group?: string; // 所属分组(决定计费倍率)
+        group: string; // 所属分组(决定计费倍率);必须由 ChannelGroup 显式解析
     },
 ): Promise<void> {
     await call<null>(
@@ -494,7 +494,7 @@ export async function createTokenForCustomer(
             model_limits_enabled: args.model_limits_enabled ?? false,
             model_limits: args.model_limits ?? '',
             allow_ips: args.allow_ips ?? null,
-            group: args.group ?? 'default',
+            group: args.group,
         },
         undefined,
         { asUser: customerAuth },

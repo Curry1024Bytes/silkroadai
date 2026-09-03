@@ -4,6 +4,12 @@ import { prisma } from '@/lib/db';
 import { unauthorizedResponse } from '@/lib/admin-auth';
 import { resolveAdmin } from '@/lib/admin/auth';
 import { tenantScope } from '@/lib/admin/tenant-scope';
+import {
+    ChannelGroupTopologyError,
+    loadChannelGroupTopology,
+    topologyErrorPayload,
+    type UpstreamMapLike,
+} from '@/lib/channel-group-topology';
 
 export const runtime = 'nodejs';
 
@@ -60,6 +66,19 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
 
     const existing = await prisma.catalogModel.findFirst({ where: { id, ...tenantScope(admin) } });
     if (!existing) return NextResponse.json({ error: '模型不存在' }, { status: 404 });
+
+    const nextMap = (parsed.data.upstream_map ?? existing.upstream_map) as UpstreamMapLike;
+    const nextEnabled = parsed.data.enabled ?? existing.enabled;
+    try {
+        const topology = await loadChannelGroupTopology(existing.tenant_id);
+        const issues = topology.validateUpstreamMap(nextMap, { allowEmpty: !nextEnabled });
+        if (issues.length > 0) throw new ChannelGroupTopologyError(topology.tenantId, issues);
+    } catch (error) {
+        if (error instanceof ChannelGroupTopologyError) {
+            return NextResponse.json(topologyErrorPayload(error), { status: 409 });
+        }
+        throw error;
+    }
 
     const model = await prisma.catalogModel.update({
         where: { id: existing.id },

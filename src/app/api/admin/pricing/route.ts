@@ -6,6 +6,12 @@ import { resolveAdmin } from '@/lib/admin/auth';
 import { tenantScope } from '@/lib/admin/tenant-scope';
 import { syncModelPriceToNewApi, CHAT_FX, IMAGE_FX, type UpstreamMap } from '@/lib/newapi/pricing-sync';
 import { getOption } from '@/lib/newapi/client';
+import {
+    ChannelGroupTopologyError,
+    loadChannelGroupTopology,
+    topologyErrorPayload,
+    type UpstreamMapLike,
+} from '@/lib/channel-group-topology';
 
 export const runtime = 'nodejs';
 
@@ -33,7 +39,7 @@ export async function GET(request: NextRequest) {
     try {
         const [cgs, raw] = await Promise.all([
             prisma.channelGroup.findMany({
-                where: { ...tenantScope(admin) },
+                where: { ...tenantScope(admin), enabled: true },
                 select: { key: true, newapi_group: true },
             }),
             getOption('GroupRatio'),
@@ -55,9 +61,7 @@ export async function GET(request: NextRequest) {
 const changePriceSchema = z
     .object({
         model_id: z.string().uuid(),
-        // P2.7: tier defaults to 'pool' (catch-all), never 'default' — the page always sends the
-        // row's real tier (pool/official), but no fallback path should ever write a 'default' row.
-        tier: z.string().min(1).default('pool'),
+        tier: z.string().trim().min(1),
         input_cny_per_1m: z.number().nonnegative().nullable().optional(),
         output_cny_per_1m: z.number().nonnegative().nullable().optional(),
         per_image_cny: z.number().nonnegative().nullable().optional(),
@@ -96,6 +100,23 @@ export async function POST(request: NextRequest) {
     const model = await prisma.catalogModel.findFirst({ where: { id: d.model_id, ...tenantScope(admin) } });
     if (!model) return NextResponse.json({ error: '模型不存在' }, { status: 404 });
 
+    let topologyTenantId: string;
+    try {
+        const topology = await loadChannelGroupTopology(model.tenant_id);
+        topologyTenantId = topology.tenantId;
+        const upstreamMap = model.upstream_map as unknown as UpstreamMapLike;
+        const issues = topology.validateUpstreamMap(upstreamMap);
+        if (issues.length > 0) throw new ChannelGroupTopologyError(topology.tenantId, issues);
+        if (!upstreamMap[d.tier]) {
+            throw new ChannelGroupTopologyError(topology.tenantId, [{ code: 'unknown_tier', tier: d.tier }]);
+        }
+    } catch (error) {
+        if (error instanceof ChannelGroupTopologyError) {
+            return NextResponse.json(topologyErrorPayload(error), { status: 409 });
+        }
+        throw error;
+    }
+
     // 插版本行(effective_from 默认 now;created_by = 改价的 admin,break-glass 为 null)。
     const price = await prisma.catalogPrice.create({
         data: {
@@ -114,6 +135,7 @@ export async function POST(request: NextRequest) {
     // 不分档。本路由是单档改价,按【本次编辑档】的值即时同步;全局价不分档(默认档归一 + 多档
     // warn 在「重新同步」里统一处理)。⚠️ 保存即改真实计费 —— operator 须先核对目录价。
     const sync = await syncModelPriceToNewApi(model.upstream_map as unknown as UpstreamMap, {
+        tenant_id: topologyTenantId,
         tier: d.tier,
         input_cny_per_1m: d.input_cny_per_1m ?? null,
         output_cny_per_1m: d.output_cny_per_1m ?? null,

@@ -25,7 +25,7 @@ export default async function ChatPage() {
     const user = await getCurrentUser(
         new NextRequest('http://internal/chat', { headers: { cookie: h.get('cookie') ?? '' } }),
     );
-    const { groups, flat, totalModels } = await listChatModels(user?.id);
+    const { groups, flat, totalModels } = await listChatModels(user?.id, user?.tenant_id);
 
     return (
         <section>

@@ -84,9 +84,9 @@ export function retailFromRatios(modelRatio: number, completionRatio: number, gr
  * 解析链:channel_groups.key → newapi_group → getOption('GroupRatio')[group]。
  * 任一环缺失 → throw(调用方转成 ok:false)——宁可同步失败,也不能按错的倍率写计费。
  */
-export async function getTierGroupRatio(tier: string): Promise<number> {
+export async function getTierGroupRatio(tenantId: string, tier: string): Promise<number> {
     const cg = await prisma.channelGroup.findFirst({
-        where: { key: tier },
+        where: { tenant_id: tenantId, key: tier, enabled: true },
         select: { newapi_group: true },
     });
     if (!cg) throw new Error(`档次「${tier}」未在 channel_groups 登记,无法解析组倍率`);
@@ -106,6 +106,8 @@ export interface UpstreamMapEntry {
 export type UpstreamMap = Record<string, UpstreamMapEntry>;
 
 export interface PriceInput {
+    /** Required: a missing tenant must never silently read another tenant's routing topology. */
+    tenant_id: string;
     tier: string;
     input_cny_per_1m: number | null;
     output_cny_per_1m: number | null;
@@ -163,7 +165,7 @@ export async function syncModelPriceToNewApi(upstreamMap: UpstreamMap, price: Pr
 
     // 既无 in/out 价又无 per_image —— 真的没有可同步的价格。
     if (price.input_cny_per_1m == null || price.output_cny_per_1m == null) {
-        const entry = upstreamMap?.[price.tier] ?? firstUpstreamEntry(upstreamMap);
+        const entry = upstreamMap?.[price.tier];
         return {
             ok: true,
             skipped: '无 in/out 价且无 per-image —— 没有可同步的价格',
@@ -189,8 +191,8 @@ export async function syncModelPriceToNewApi(upstreamMap: UpstreamMap, price: Pr
  * → PUT 整 dict(保留别的 ~293 条)。换算沿用 {@link computeRatios}(mr 6 位、cr 4 位,对齐现网精度)。
  */
 async function syncChatModelRatio(upstreamMap: UpstreamMap, price: PriceInput): Promise<SyncResult> {
-    // 模型名:本档映射优先;本档无映射则取任一档(chat 模型名各档一致,同图片 brief B.4)。
-    const entry = upstreamMap?.[price.tier] ?? firstUpstreamEntry(upstreamMap);
+    // 必须精确命中本档映射。跨档回退会把不可路由的价写进全局计费配置。
+    const entry = upstreamMap?.[price.tier];
     if (!entry || !entry.upstream_model) {
         return {
             ok: false,
@@ -199,7 +201,7 @@ async function syncChatModelRatio(upstreamMap: UpstreamMap, price: PriceInput): 
     }
     let groupRatio: number;
     try {
-        groupRatio = await getTierGroupRatio(price.tier);
+        groupRatio = await getTierGroupRatio(price.tenant_id, price.tier);
     } catch (err) {
         return {
             ok: false,
@@ -236,15 +238,6 @@ async function syncChatModelRatio(upstreamMap: UpstreamMap, price: PriceInput): 
     }
 }
 
-/** upstream_map 里第一个有效映射(图片模型各档同名 → 取任一档即可拿到模型名)。 */
-function firstUpstreamEntry(map: UpstreamMap): UpstreamMapEntry | undefined {
-    for (const k of Object.keys(map ?? {})) {
-        const e = map[k];
-        if (e && typeof e.channel_id === 'number' && e.upstream_model) return e;
-    }
-    return undefined;
-}
-
 /**
  * 图片模型 → new-api【全局 ModelPrice】同步(P2.8 Part B)。
  *
@@ -259,8 +252,8 @@ function firstUpstreamEntry(map: UpstreamMap): UpstreamMapEntry | undefined {
  * dict(只 PUT 自己那条会清掉别的模型的 ModelPrice 条目)。
  */
 async function syncImageModelPrice(upstreamMap: UpstreamMap, price: PriceInput): Promise<SyncResult> {
-    // 模型名:本档映射的 upstream_model 优先;本档无映射则取任一档(图片模型各档同名,brief B.4)。
-    const entry = upstreamMap?.[price.tier] ?? firstUpstreamEntry(upstreamMap);
+    // 必须精确命中本档映射,不能借用其他档次的模型名掩盖错误目录数据。
+    const entry = upstreamMap?.[price.tier];
     if (!entry || !entry.upstream_model) {
         return {
             ok: false,
@@ -272,7 +265,7 @@ async function syncImageModelPrice(upstreamMap: UpstreamMap, price: PriceInput):
     // = per_image ÷ (IMAGE_FX × 组倍率)。组倍率解析失败 → ok:false,绝不按错倍率写。
     let groupRatio: number;
     try {
-        groupRatio = await getTierGroupRatio(price.tier);
+        groupRatio = await getTierGroupRatio(price.tenant_id, price.tier);
     } catch (err) {
         return {
             ok: false,

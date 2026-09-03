@@ -26,7 +26,7 @@ export interface KeyRow {
     /** ISO timestamp of the most recent log entry attributable to this
      *  key, or null if it has never been used. */
     last_used_at: string | null;
-    /** P3: portal 档次 key('pool' | 'official' | …). */
+    /** P3: tenant-scoped dynamic ChannelGroup.key. */
     tier: string;
     /** Effective GroupGroupRatio for the signed-in customer, if configured. */
     effective_ratio?: number | null;
@@ -278,9 +278,9 @@ function KeyActions({
 }
 
 export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; tiers?: TierOption[] }) {
-    // Multi-tier accounts must deliberately select a group. A single group
-    // (and legacy deployments without configured groups) remains automatic.
-    const initialTier: string | null = tiers.length > 1 ? null : (tiers[0]?.key ?? 'pool');
+    // Multi-tier accounts must deliberately select a group. Missing topology
+    // is an operator error; never invent a legacy `pool` tier in the browser.
+    const initialTier: string | null = tiers.length === 1 ? tiers[0].key : null;
     const showTierChoice = tiers.length > 1;
     const tierLabel = (key: string) => tiers.find((t) => t.key === key)?.display_name ?? key;
 
@@ -404,11 +404,11 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
         e.preventDefault();
         if (create.submitting) return;
         const alias = create.alias.trim();
-        if (!alias || (showTierChoice && !create.tier)) {
+        if (!alias || !create.tier) {
             setCreate((prev) => ({ ...prev, error: !alias ? '请填写 Key 别名' : '请选择调用档次' }));
             return;
         }
-        const tier = create.tier ?? 'pool';
+        const tier = create.tier;
         setCreate((prev) => ({ ...prev, submitting: true, error: null }));
         try {
             const r = await fetch('/api/portal/keys', {
@@ -514,8 +514,8 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                         onClick={() =>
                             setCreate({ open: true, alias: '', submitting: false, error: null, tier: initialTier })
                         }
-                        disabled={create.open}
-                        title="创建新的 API Key"
+                        disabled={create.open || tiers.length === 0}
+                        title={tiers.length === 0 ? '当前没有可用档次,请联系管理员' : '创建新的 API Key'}
                         className="rounded-md"
                     >
                         <Plus size={15} strokeWidth={2} aria-hidden="true" />
@@ -576,9 +576,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                                     variant="primary"
                                     size="sm"
                                     loading={create.submitting}
-                                    disabled={
-                                        create.submitting || !create.alias.trim() || (showTierChoice && !create.tier)
-                                    }
+                                    disabled={create.submitting || !create.alias.trim() || !create.tier}
                                     className="rounded-md"
                                 >
                                     {create.submitting ? '创建中…' : '确认创建'}

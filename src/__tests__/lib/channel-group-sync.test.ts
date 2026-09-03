@@ -1,7 +1,7 @@
 /**
- * channel-group sync — new-api `UserUsableGroups` 为唯一事实源:
- *   - 按 newapi_group 匹配更新 display_name / 复活 enabled(key 不动)
- *   - new-api 新增组 → 自动建行(slug key + 末尾 tier_level)
+ * channel-group sync — UserUsableGroups 只用于发现/下架:
+ *   - 按 newapi_group 匹配只更新 display_name,不自动复活
+ *   - new-api 新增组 → 自动建 disabled 候选(slug key + 末尾 tier_level)
  *   - new-api 删掉组 → enabled=false 软下架
  *   - option 缺失 / JSON 坏 / 空字典 / getOption 抛 → 跳过,不写 DB、不抛
  *   - 60s 节流:窗口内第二次调用不再打 new-api
@@ -32,12 +32,12 @@ vi.mock('@/lib/db', () => ({
 import {
     __resetChannelGroupSyncForTests,
     __resetGroupRatioCacheForTests,
-    DefaultChannelGroupConfigurationError,
     getDefaultChannelGroup,
     getGroupRatios,
     listEnabledChannelGroups,
     syncChannelGroupsFromNewApi,
 } from '@/lib/channel-group';
+import { ChannelGroupTopologyError } from '@/lib/channel-group-topology';
 import { PLATFORM_TENANT_ID } from '@/lib/admin/tenant-scope';
 
 function row(partial: Record<string, unknown>) {
@@ -50,8 +50,8 @@ function row(partial: Record<string, unknown>) {
         newapi_group: 'default',
         tier_level: 0,
         enabled: true,
-        is_default: false,
-        newapi_channel_ids: [],
+        is_default: true,
+        newapi_channel_ids: [1],
         ...partial,
     };
 }
@@ -64,7 +64,7 @@ beforeEach(() => {
 });
 
 describe('syncChannelGroupsFromNewApi', () => {
-    it('updates display_name and re-enables an existing row matched by newapi_group, keeping its key', async () => {
+    it('updates display_name but does not re-enable a disabled row matched by newapi_group', async () => {
         mockFindMany.mockResolvedValue([
             row({ id: 'id-1', key: 'pool', newapi_group: 'default', display_name: '旧名', enabled: false }),
         ]);
@@ -74,7 +74,7 @@ describe('syncChannelGroupsFromNewApi', () => {
 
         expect(mockUpdate).toHaveBeenCalledWith({
             where: { id: 'id-1' },
-            data: { display_name: '默认分组', enabled: true },
+            data: { display_name: '默认分组' },
         });
         expect(mockCreate).not.toHaveBeenCalled();
         expect(mockTransaction).toHaveBeenCalledTimes(1);
@@ -96,7 +96,7 @@ describe('syncChannelGroupsFromNewApi', () => {
                 display_name: 'Claude官方稳定',
                 newapi_group: 'ccmax 蒸馏',
                 tier_level: 4,
-                enabled: true,
+                enabled: false,
                 is_default: false,
             },
         });
@@ -153,7 +153,7 @@ describe('syncChannelGroupsFromNewApi', () => {
         expect(mockCreate).not.toHaveBeenCalled();
     });
 
-    it('multiple portal rows sharing one newapi_group keep their distinct display names (only enabled is managed)', async () => {
+    it("never revives a legacy duplicate alias that shares another tier's newapi_group", async () => {
         mockFindMany.mockResolvedValue([
             row({ id: 'id-1', key: 'pool', newapi_group: 'default', display_name: '默认（号池为主）' }),
             row({ id: 'id-2', key: 'geminit3', newapi_group: 'default', display_name: 'geminit3', enabled: false }),
@@ -162,9 +162,10 @@ describe('syncChannelGroupsFromNewApi', () => {
 
         await syncChannelGroupsFromNewApi();
 
-        // 别名行只被复活,谁都不被改名成「默认分组」。
-        expect(mockUpdate).toHaveBeenCalledTimes(1);
-        expect(mockUpdate).toHaveBeenCalledWith({ where: { id: 'id-2' }, data: { enabled: true } });
+        expect(mockUpdate).toHaveBeenCalledTimes(2);
+        expect(mockUpdate).toHaveBeenCalledWith({ where: { id: 'id-1' }, data: { display_name: '默认分组' } });
+        expect(mockUpdate).toHaveBeenCalledWith({ where: { id: 'id-2' }, data: { display_name: '默认分组' } });
+        expect(mockUpdate.mock.calls.some((call) => 'enabled' in call[0].data)).toBe(false);
         expect(mockCreate).not.toHaveBeenCalled();
     });
 
@@ -221,6 +222,7 @@ describe('syncChannelGroupsFromNewApi', () => {
 
 describe('listEnabledChannelGroups sync trigger', () => {
     it('platform tenant (null) runs the sync before reading', async () => {
+        mockFindMany.mockResolvedValue([row({ display_name: '默认分组' })]);
         mockGetOption.mockResolvedValue(JSON.stringify({ default: '默认分组' }));
 
         await listEnabledChannelGroups(null);
@@ -233,6 +235,7 @@ describe('listEnabledChannelGroups sync trigger', () => {
     });
 
     it('non-platform tenant does not trigger the sync', async () => {
+        mockFindMany.mockResolvedValue([row({ tenant_id: '11111111-2222-3333-4444-555555555555' })]);
         await listEnabledChannelGroups('11111111-2222-3333-4444-555555555555');
 
         expect(mockGetOption).not.toHaveBeenCalled();
@@ -248,7 +251,16 @@ describe('getDefaultChannelGroup', () => {
 
     it('returns the sole enabled is_default group', async () => {
         const defaultGroup = row({ tenant_id: tenantId, key: 'sale', newapi_group: 'GPT-特惠反代', is_default: true });
-        mockFindMany.mockResolvedValue([defaultGroup, row({ tenant_id: tenantId, key: 'pro', is_default: false })]);
+        mockFindMany.mockResolvedValue([
+            defaultGroup,
+            row({
+                tenant_id: tenantId,
+                key: 'pro',
+                newapi_group: 'pro',
+                newapi_channel_ids: [2],
+                is_default: false,
+            }),
+        ]);
 
         await expect(getDefaultChannelGroup(tenantId)).resolves.toEqual(defaultGroup);
     });
@@ -256,13 +268,19 @@ describe('getDefaultChannelGroup', () => {
     it('rejects when no enabled default group exists', async () => {
         mockFindMany.mockResolvedValue([row({ tenant_id: tenantId, key: 'sale', is_default: false })]);
 
-        await expect(getDefaultChannelGroup(tenantId)).rejects.toBeInstanceOf(DefaultChannelGroupConfigurationError);
+        await expect(getDefaultChannelGroup(tenantId)).rejects.toBeInstanceOf(ChannelGroupTopologyError);
     });
 
     it('rejects ambiguous duplicate defaults', async () => {
         mockFindMany.mockResolvedValue([
             row({ tenant_id: tenantId, key: 'sale', is_default: true }),
-            row({ tenant_id: tenantId, key: 'pro', is_default: true }),
+            row({
+                tenant_id: tenantId,
+                key: 'pro',
+                newapi_group: 'pro',
+                newapi_channel_ids: [2],
+                is_default: true,
+            }),
         ]);
 
         await expect(getDefaultChannelGroup(tenantId)).rejects.toThrow('found 2');

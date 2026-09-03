@@ -30,6 +30,7 @@ import {
 import { formatTokenForDisplay } from '@/lib/newapi/token-format';
 import { PORTAL_INTERNAL_TOKEN_NAME } from '@/lib/newapi/system-token';
 import { listEnabledChannelGroups, restrictGroupsForUser } from '@/lib/channel-group';
+import { ChannelGroupTopologyError, topologyErrorPayload } from '@/lib/channel-group-topology';
 
 export const runtime = 'nodejs';
 
@@ -49,8 +50,8 @@ const CreateKeySchema = z.object({
         .refine((s) => !s.startsWith(PORTAL_INTERNAL_TOKEN_NAME), {
             message: `alias starting with "${PORTAL_INTERNAL_TOKEN_NAME}" is reserved`,
         }),
-    // P3: 档次 = ChannelGroup.key('pool' | 'official' | …)。可选;不传走默认档
-    // (is_default = pool)。值域不写死 enum —— 数据驱动 + 可白标扩展,handler 内
+    // P3:档次 = 当前租户启用的 ChannelGroup.key。可选;不传走唯一默认档。
+    // 值域不写死 enum —— 数据驱动 + 可白标扩展,handler 内
     // 按本 tenant 的 enabled 档次校验。
     tier: z.string().trim().min(1).max(50).optional(),
 });
@@ -131,12 +132,21 @@ export async function POST(req: NextRequest) {
     }
     const { alias, tier: requestedTier } = parsed.data;
 
-    // P3: resolve 档次 → new-api group(portal key 与 new-api group 解耦)。
-    // pool→'default'(复用现有渠道,现有 token 已是 default);official→'official'。
-    // 不传档次 → 默认档(is_default = pool)。非法档次 → 400。
+    // P3:resolve 档次 → new-api group(portal key 与 new-api group 解耦)。
+    // 不传档次 → 唯一默认档。非法档次 → 400。任何拓扑缺失都直接 503，
+    // 不会退回 pool/default 等历史字面量。
     // per-customer 白名单收窄(allowed_tier_keys 非空 → 只允许这些档)。与 /keys
     // 页用同一个 restrictGroupsForUser,展示与校验一致。
-    const enabled = await listEnabledChannelGroups(user.tenant_id);
+    let enabled: Awaited<ReturnType<typeof listEnabledChannelGroups>>;
+    try {
+        enabled = await listEnabledChannelGroups(user.tenant_id);
+    } catch (error) {
+        if (error instanceof ChannelGroupTopologyError) {
+            console.error('[portal/keys POST] invalid channel-group topology', error);
+            return NextResponse.json(topologyErrorPayload(error), { status: 503 });
+        }
+        throw error;
+    }
     const groups = restrictGroupsForUser(enabled, user.allowed_tier_keys);
     const restricted = user.allowed_tier_keys.length > 0;
     if (groups.length === 0) {
@@ -176,7 +186,7 @@ export async function POST(req: NextRequest) {
             name: alias,
             unlimited_quota: true, // gotcha #12 — quota lives on user, not token
             expired_time: -1,
-            group: newapiGroup, // P3: 档次下发的 new-api group(pool→default / official→official)
+            group: newapiGroup, // P3: 当前动态档次显式下发的 new-api group
         });
 
         // Find newly-created by name. Same-alias collisions are possible but

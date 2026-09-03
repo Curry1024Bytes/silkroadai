@@ -40,6 +40,7 @@ import { prisma } from '@/lib/db';
 import { getCurrentUser } from '@/lib/auth/session';
 import { SUPPORT_WECHAT } from '@/lib/public-config';
 import { getOrCreateSystemToken, PortalSystemTokenError } from '@/lib/newapi/system-token';
+import { resolveModelGroup } from '@/lib/chat/model-groups';
 import {
     findImageModel,
     IMAGE_COUNT_MAX,
@@ -207,13 +208,22 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const modelInfo = findImageModel(model)!;
     const costUsdPreview = modelInfo.pricePerImageUsd * count;
 
-    // Resolve the customer's portal-internal sk-… token, pinned to the model's
-    // new-api routing group when it declares one (gpt-image-2 → `image2` → ch36;
-    // 2026-06-15). Undefined group → the default-group primary token, as before.
+    // Resolve the live new-api group serving this model. The legacy registry
+    // used to pin gpt-image-2 to image2/ch36 and send everything else through
+    // literal default; both assumptions are stale and can misroute billing.
+    const group = await resolveModelGroup(model, user.tenant_id);
+    if (!group) {
+        return NextResponse.json(
+            { error: 'model_route_unavailable', message: '当前图片模型没有可用渠道,请稍后重试' },
+            { status: 503 },
+        );
+    }
+
+    // Resolve a portal-internal token pinned to that exact live group.
     // Lazy-provisions on first use; failures map to a 503 so the customer can retry.
     let systemToken: string;
     try {
-        systemToken = await getOrCreateSystemToken(user.id, modelInfo.group);
+        systemToken = await getOrCreateSystemToken(user.id, group);
     } catch (err) {
         const latencyMs = Date.now() - startedAt;
         if (err instanceof PortalSystemTokenError) {

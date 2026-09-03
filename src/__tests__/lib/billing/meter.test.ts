@@ -9,6 +9,7 @@ const mockUserFindUnique = vi.fn();
 const mockUserFindMany = vi.fn();
 const mockUserCount = vi.fn();
 const mockTokenFindUnique = vi.fn();
+const mockChannelGroupFindMany = vi.fn();
 const mockModelFindFirst = vi.fn();
 const mockUsageCreateMany = vi.fn();
 const mockUsageFindMany = vi.fn();
@@ -31,6 +32,7 @@ vi.mock('@/lib/db', () => ({
             count: (...a: unknown[]) => mockUserCount(...a),
         },
         newApiToken: { findUnique: (...a: unknown[]) => mockTokenFindUnique(...a) },
+        channelGroup: { findMany: (...a: unknown[]) => mockChannelGroupFindMany(...a) },
         catalogModel: { findFirst: (...a: unknown[]) => mockModelFindFirst(...a) },
         usageRecord: {
             createMany: (...a: unknown[]) => mockUsageCreateMany(...a),
@@ -58,6 +60,7 @@ function consumeLog(over: Partial<Record<string, unknown>> = {}) {
         prompt_tokens: 1_000_000,
         completion_tokens: 1_000_000,
         token_id: 7,
+        group: 'default',
         created_at: LOG_TS,
         type: 2,
         ...over,
@@ -85,7 +88,14 @@ beforeEach(() => {
     mockCursorUpdate.mockResolvedValue({});
     mockUserFindUnique.mockResolvedValue({ id: 'u1', tenant_id: PLATFORM_TENANT_ID });
     mockTokenFindUnique.mockResolvedValue({ id: 't1', tier: 'pool' });
-    mockModelFindFirst.mockResolvedValue({ prices: [poolPrice, officialPrice] });
+    mockChannelGroupFindMany.mockResolvedValue([{ key: 'pool' }]);
+    mockModelFindFirst.mockResolvedValue({
+        upstream_map: {
+            pool: { channel_id: 6, upstream_model: 'gpt-5.4' },
+            official: { channel_id: 8, upstream_model: 'gpt-5.4' },
+        },
+        prices: [poolPrice, officialPrice],
+    });
     mockUsageCreateMany.mockImplementation(({ data }: { data: unknown[] }) => Promise.resolve({ count: data.length }));
     // single page, fewer than PAGE_SIZE → stops after page 1
     mockQueryLogs.mockResolvedValue({ items: [consumeLog()], total: 1 });
@@ -153,14 +163,40 @@ describe('runShadowMeter — tier resolution', () => {
         });
     });
 
-    it('no token found → tier defaults to pool', async () => {
+    it('no token found → maps the log new-api group through ChannelGroup', async () => {
         mockTokenFindUnique.mockResolvedValue(null);
         await runShadowMeter();
         expect(mockUsageCreateMany.mock.calls[0][0].data[0]).toMatchObject({ tier: 'pool', token_id: null });
     });
+
+    it('unmapped system-token group is explicit and never defaults to pool', async () => {
+        mockTokenFindUnique.mockResolvedValue(null);
+        mockChannelGroupFindMany.mockResolvedValue([]);
+        await runShadowMeter();
+        expect(mockUsageCreateMany.mock.calls[0][0].data[0]).toMatchObject({
+            tier: 'unresolved:default',
+            token_id: null,
+            matched: false,
+        });
+    });
 });
 
 describe('runShadowMeter — unmatched + skip', () => {
+    it('does not match a historical price when the model no longer routes that tier', async () => {
+        mockModelFindFirst.mockResolvedValue({
+            upstream_map: { official: { channel_id: 8, upstream_model: 'gpt-5.4' } },
+            prices: [poolPrice, officialPrice],
+        });
+        const r = await runShadowMeter();
+        expect(mockUsageCreateMany.mock.calls[0][0].data[0]).toMatchObject({
+            tier: 'pool',
+            matched: false,
+            cost_cny: 0,
+            price_id: null,
+        });
+        expect(r.unmatched).toBe(1);
+    });
+
     it('no CatalogModel/price → matched=false, cost 0, still recorded (no throw)', async () => {
         mockModelFindFirst.mockResolvedValue(null);
         const r = await runShadowMeter();

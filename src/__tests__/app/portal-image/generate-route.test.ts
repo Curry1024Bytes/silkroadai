@@ -29,6 +29,11 @@ vi.mock('@/lib/newapi/system-token', () => {
     };
 });
 
+const mockResolveModelGroup = vi.fn();
+vi.mock('@/lib/chat/model-groups', () => ({
+    resolveModelGroup: (...args: unknown[]) => mockResolveModelGroup(...args),
+}));
+
 // Re-import the mocked class for typed throw in tests below.
 const { PortalSystemTokenError: _PortalSystemTokenError } = await import('@/lib/newapi/system-token');
 
@@ -59,12 +64,14 @@ import { POST } from '@/app/api/portal/image/generate/route';
 
 const USER = {
     id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+    tenant_id: 'tenant-a',
     newapi_user_id: 99,
     newapi_access_token: 'access-stub',
 };
 
 beforeEach(() => {
     vi.clearAllMocks();
+    mockResolveModelGroup.mockResolvedValue('图片模型');
 });
 
 afterEach(() => {
@@ -160,6 +167,15 @@ describe('POST /api/portal/image/generate — input validation', () => {
 });
 
 describe('POST /api/portal/image/generate — system token failure', () => {
+    it('503 when the image model has no priced live routing group', async () => {
+        mockGetCurrentUser.mockResolvedValueOnce(USER);
+        mockResolveModelGroup.mockResolvedValueOnce(null);
+        const res = await POST(makeReq(VALID_BODY));
+        expect(res.status).toBe(503);
+        expect(await res.json()).toMatchObject({ error: 'model_route_unavailable' });
+        expect(mockGetOrCreateSystemToken).not.toHaveBeenCalled();
+    });
+
     it('503 on transient newapi failures', async () => {
         mockGetCurrentUser.mockResolvedValueOnce(USER);
         mockGetOrCreateSystemToken.mockRejectedValueOnce(
@@ -207,9 +223,9 @@ describe('POST /api/portal/image/generate — happy path', () => {
         const body = await res.json();
         expect(body.id).toBe('gen-id');
         expect(body.image_urls).toHaveLength(1);
-        expect(body.cost_usd).toBeCloseTo(0.00714, 6); // gpt-image-2 ModelPrice ¥0.05 (2026-06-15 ch36)
-        // gpt-image-2 pins the image2 routing group (→ ch36)
-        expect(mockGetOrCreateSystemToken).toHaveBeenCalledWith(USER.id, 'image2');
+        expect(body.cost_usd).toBeCloseTo(0.00714, 6); // legacy UI preview; new-api charge remains authoritative
+        expect(mockResolveModelGroup).toHaveBeenCalledWith('gpt-image-2', USER.tenant_id);
+        expect(mockGetOrCreateSystemToken).toHaveBeenCalledWith(USER.id, '图片模型');
         expect(mockImgGenCreate).toHaveBeenCalledTimes(1);
         const createArgs = mockImgGenCreate.mock.calls[0][0];
         expect(createArgs.data.user_id).toBe(USER.id);
@@ -486,12 +502,11 @@ describe('POST /api/portal/image/generate — native Gemini resolution path (W8 
         const res = await POST(makeReq({ ...VALID_BODY, model: 'imagen-4.0-ultra-generate-001' }));
 
         expect(res.status).toBe(200);
-        // imagen declares neither imagesApiOnly nor a group → still probes chat
-        // first, falls back on the wrong-endpoint signal, and uses the default
-        // (undefined → primary) system token.
+        // Endpoint selection stays chat-first; token routing comes from the
+        // live server-side model→group resolver.
         expect(urls.some((u) => u.includes('/v1/chat/completions'))).toBe(true);
         expect(urls.some((u) => u.includes('/v1/images/generations'))).toBe(true);
-        expect(mockGetOrCreateSystemToken).toHaveBeenCalledWith(USER.id, undefined);
+        expect(mockGetOrCreateSystemToken).toHaveBeenCalledWith(USER.id, '图片模型');
 
         fetchSpy.mockRestore();
     });

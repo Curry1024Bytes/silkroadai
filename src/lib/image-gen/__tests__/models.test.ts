@@ -88,10 +88,10 @@ describe('geminiImageSize routing flag (W8 D8 — native /v1beta resolution)', (
     });
 });
 
-describe('routing pins (2026-06-15 — gpt-image-2 → image2 group / ch36)', () => {
-    it('gpt-image-2 pins the image2 group and is images-API-only', () => {
+describe('routing metadata', () => {
+    it('gpt-image-2 keeps endpoint metadata but no stale static group pin', () => {
         const m = findImageModel('gpt-image-2');
-        expect(m?.group).toBe('image2');
+        expect(m && 'group' in m).toBe(false);
         expect(m?.imagesApiOnly).toBe(true);
     });
 
@@ -99,10 +99,9 @@ describe('routing pins (2026-06-15 — gpt-image-2 → image2 group / ch36)', ()
         expect(findImageModel('gpt-image-2')?.pricePerImageUsd).toBeCloseTo(0.00714, 5);
     });
 
-    it('other SKUs declare no group pin and are not images-API-only (keep default token + auto-dispatch)', () => {
+    it('other SKUs are not images-API-only', () => {
         for (const m of IMAGE_MODELS) {
             if (m.id === 'gpt-image-2') continue;
-            expect(m.group).toBeUndefined();
             expect(m.imagesApiOnly).toBeUndefined();
         }
     });

@@ -29,11 +29,17 @@ beforeEach(() => {
 const catalogRow = (
     slug: string,
     prices: Array<{ tier: string; in?: number | null; out?: number | null; img?: number | null }>,
-    extra: { display_name?: string; context_window?: number | null } = {},
+    extra: { display_name?: string; context_window?: number | null; upstreamTiers?: string[] } = {},
 ) => ({
     slug,
     display_name: extra.display_name ?? slug,
     context_window: extra.context_window ?? null,
+    upstream_map: Object.fromEntries(
+        (extra.upstreamTiers ?? [...new Set(prices.map((price) => price.tier))]).map((tier) => [
+            tier,
+            { channel_id: 1, upstream_model: slug },
+        ]),
+    ),
     prices: prices.map((p) => ({
         tier: p.tier,
         input_cny_per_1m: p.in ?? null,
@@ -86,6 +92,21 @@ describe('loadCatalogMeta', () => {
         const meta = await loadCatalogMeta();
         expect(meta.get('gpt-image-2')!.pricesByTier.get('image2')!.per_image_cny).toBe(0.35);
     });
+
+    it('keeps historical price rows out when the current model route no longer has that tier', async () => {
+        mockFindManyCatalog.mockResolvedValue([
+            catalogRow(
+                'gpt-5.4',
+                [
+                    { tier: 'sale', in: 1, out: 5 },
+                    { tier: 'retired', in: 0.5, out: 2.5 },
+                ],
+                { upstreamTiers: ['sale'] },
+            ),
+        ]);
+        const meta = await loadCatalogMeta();
+        expect([...meta.get('gpt-5.4')!.pricesByTier.keys()]).toEqual(['sale']);
+    });
 });
 
 describe('resolveTierFromAuthHeader', () => {
@@ -98,11 +119,11 @@ describe('resolveTierFromAuthHeader', () => {
         });
     });
 
-    it('查不到(system token / 未知 key)→ 默认 pool;无头 → pool', async () => {
+    it('查不到(system token / 未知 key)或无头 → fail closed,不虚构 pool', async () => {
         mockFindUniqueToken.mockResolvedValue(null);
-        expect(await resolveTierFromAuthHeader('Bearer sk-unknown')).toBe('pool');
-        expect(await resolveTierFromAuthHeader(null)).toBe('pool');
-        expect(await resolveTierFromAuthHeader('Basic xyz')).toBe('pool');
+        await expect(resolveTierFromAuthHeader('Bearer sk-unknown')).rejects.toThrow('not a Portal customer token');
+        await expect(resolveTierFromAuthHeader(null)).rejects.toThrow('without a bearer token');
+        await expect(resolveTierFromAuthHeader('Basic xyz')).rejects.toThrow('without a bearer token');
     });
 
     it('DB 错误向上抛(由调用方整体回退透传)', async () => {

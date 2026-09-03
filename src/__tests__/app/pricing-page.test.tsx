@@ -30,6 +30,9 @@ const price = (tier: string, opts: { in?: number | null; out?: number | null; im
 const model = (slug: string, display_name: string, prices: ReturnType<typeof price>[]) => ({
     slug,
     display_name,
+    upstream_map: Object.fromEntries(
+        [...new Set(prices.map((row) => row.tier))].map((tier) => [tier, { channel_id: 1, upstream_model: slug }]),
+    ),
     prices,
 });
 
@@ -96,6 +99,18 @@ describe('<PricingPage /> SSR', () => {
         expect(html).not.toContain('gpt-5.2');
         // 已标价模型计数只数上表的(JSX 文本节点间有 <!-- --> 注释,用正则)
         expect(html).toMatch(/共 (<!-- -->)?1(<!-- -->)? 个已标价模型/);
+    });
+
+    it('does not publish a historical tier price after that tier is removed from upstream_map', async () => {
+        mockFindManyCatalog.mockResolvedValue([
+            {
+                ...model('gpt-5.5', 'Gpt 5.5', [price('pool', { in: 1, out: 6 })]),
+                upstream_map: {},
+            },
+        ]);
+        const html = renderToString(await PricingPage());
+        expect(html).not.toContain('gpt-5.5');
+        expect(html).toMatch(/共 (<!-- -->)?0(<!-- -->)? 个已标价模型/);
     });
 
     it('renders error banner (not a crash) when the DB read throws', async () => {

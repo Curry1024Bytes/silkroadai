@@ -49,7 +49,8 @@ export class PortalSystemTokenError extends Error {
             | 'user_not_provisioned'
             | 'newapi_create_failed'
             | 'newapi_lookup_failed'
-            | 'persistence_failed',
+            | 'persistence_failed'
+            | 'routing_group_required',
     ) {
         super(message);
         this.name = 'PortalSystemTokenError';
@@ -58,10 +59,11 @@ export class PortalSystemTokenError extends Error {
 
 /**
  * Resolve a customer's portal system token in wire format (`sk-…`),
- * optionally pinned to a new-api routing **group**.
+ * pinned to an explicit new-api routing **group**.
  *
- *   - group omitted / 'default' / '' → the primary token cached on the User
- *     row (group=default). Used by image-gen and the default chat path.
+ *   - missing / blank group → fail closed with `routing_group_required`.
+ *   - literal 'default' → the primary token cached on the User row. Callers
+ *     may only pass it after resolving that exact live group.
  *   - any other group (e.g. 'official') → a separate group-pinned token
  *     `portal-internal-{group}`, lazily find-or-created + process-cached.
  *     Lets the chat route premium / official-only models (group resolved
@@ -73,7 +75,13 @@ export class PortalSystemTokenError extends Error {
  */
 export async function getOrCreateSystemToken(userId: string, group?: string): Promise<string> {
     const g = (group ?? '').trim();
-    if (!g || g === 'default') return getPrimarySystemToken(userId);
+    if (!g) {
+        throw new PortalSystemTokenError(
+            `an explicit new-api routing group is required for user ${userId}`,
+            'routing_group_required',
+        );
+    }
+    if (g === 'default') return getPrimarySystemToken(userId);
     return getGroupSystemToken(userId, g);
 }
 
@@ -197,6 +205,7 @@ async function getPrimarySystemToken(userId: string): Promise<string> {
     try {
         await createTokenForCustomer(customerAuth, {
             name: PORTAL_INTERNAL_TOKEN_NAME,
+            group: 'default',
             unlimited_quota: true, // gotcha #12 — quota lives on user, not token
             expired_time: -1,
         });

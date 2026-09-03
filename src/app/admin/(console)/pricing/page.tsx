@@ -255,7 +255,7 @@ function computeRatios(
 }
 
 const emptyForm: PriceFormData = {
-    tier: 'pool',
+    tier: '',
     input_cny_per_1m: '',
     output_cny_per_1m: '',
     per_image_cny: '',
@@ -269,9 +269,8 @@ interface TierRow {
     current: CatalogPrice | null;
 }
 
-// Row derivation lives in @/lib/admin/pricing-tiers (deriveTierRows): a model's rows = the
-// tiers in its upstream_map ∪ the tiers of existing prices — so every routable tier
-// (pool/official) gets a row, even unpriced, and operator can price each separately (P2.7).
+// Row derivation lives in @/lib/admin/pricing-tiers (deriveTierRows): only tiers
+// in upstream_map are editable. Historical price-only tiers remain audit data.
 // Extracted there so it's unit-tested without the 'use client' page.
 
 /** Friendly tier name for the table/modal: pool→低价号池 / official→官方稳定 / else raw. */
@@ -377,13 +376,9 @@ function PricingContent() {
     const formOutput = toNum(form.output_cny_per_1m);
     const formImage = toNum(form.per_image_cny);
     // API requires (input AND output) OR per_image.
-    const formValid = (formInput !== null && formOutput !== null) || formImage !== null;
-    const liveRatios = computeRatios(
-        form.input_cny_per_1m,
-        form.output_cny_per_1m,
-        pricingCtx,
-        form.tier.trim() || 'pool',
-    );
+    const formValid =
+        form.tier.trim().length > 0 && ((formInput !== null && formOutput !== null) || formImage !== null);
+    const liveRatios = computeRatios(form.input_cny_per_1m, form.output_cny_per_1m, pricingCtx, form.tier.trim());
 
     const handleSave = async () => {
         if (!editingModel || !formValid) return;
@@ -393,7 +388,7 @@ function PricingContent() {
 
         const body: Record<string, unknown> = {
             model_id: editingModel.id,
-            tier: form.tier.trim() || 'pool',
+            tier: form.tier.trim(),
         };
         if (formInput !== null) body.input_cny_per_1m = formInput;
         if (formOutput !== null) body.output_cny_per_1m = formOutput;

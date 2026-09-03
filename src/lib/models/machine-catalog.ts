@@ -32,7 +32,7 @@ export interface TierPricing {
 export interface CatalogMetaEntry {
     display_name: string;
     context_window: number | null;
-    /** tier key('pool' | 'official' | …)→ 该档最新价(effective_from 最新的一版) */
+    /** dynamic ChannelGroup.key → 该档最新价(effective_from 最新的一版) */
     pricesByTier: Map<string, TierPricing>;
 }
 
@@ -86,8 +86,13 @@ export async function loadCatalogMeta(): Promise<Map<string, CatalogMetaEntry>> 
     const map = new Map<string, CatalogMetaEntry>();
     for (const row of rows) {
         const pricesByTier = new Map<string, TierPricing>();
+        const upstreamMap =
+            row.upstream_map && typeof row.upstream_map === 'object' && !Array.isArray(row.upstream_map)
+                ? (row.upstream_map as Record<string, unknown>)
+                : {};
         // prices 已按 effective_from 降序 → 每个 tier 第一条 = 现行价
         for (const p of row.prices) {
+            if (!Object.hasOwn(upstreamMap, p.tier)) continue; // 历史价不等于当前仍可路由
             if (pricesByTier.has(p.tier)) continue;
             pricesByTier.set(p.tier, {
                 input_cny_per_1m: toNum(p.input_cny_per_1m),
@@ -107,19 +112,20 @@ export async function loadCatalogMeta(): Promise<Map<string, CatalogMetaEntry>> 
 
 /**
  * 从 Authorization 头解析客户档次:sk- → NewApiToken.tier。
- * 查不到(system token / 未知 key / 无头)→ 默认档 'pool'(与建 key 默认一致)。
- * DB 错误向上抛,由调用方的整体 try/catch 回退透传。
+ * 查不到(system token / 未知 key / 无头)就失败关闭,由调用方整体回退原始
+ * new-api payload。价格缺失比展示错误档次的价格安全。
  */
 export async function resolveTierFromAuthHeader(authHeader: string | null): Promise<string> {
     const m = authHeader?.match(/^Bearer\s+(.+)$/i);
-    if (!m) return 'pool';
+    if (!m) throw new Error('cannot resolve catalog tier without a bearer token');
     const raw = m[1].startsWith('sk-') ? m[1].slice(3) : m[1];
-    if (!raw) return 'pool';
+    if (!raw) throw new Error('cannot resolve catalog tier from an empty bearer token');
     const token = await prisma.newApiToken.findUnique({
         where: { newapi_token_value: raw },
         select: { tier: true },
     });
-    return token?.tier ?? 'pool';
+    if (!token) throw new Error('bearer token is not a Portal customer token');
+    return token.tier;
 }
 
 /**

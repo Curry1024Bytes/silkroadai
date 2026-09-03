@@ -337,10 +337,10 @@ describe('出口 B — /messages 请求体 buffer + 捕获', () => {
         expect(d.model).toBe('claude-opus-4-8');
     });
 
-    it('GET /models(无 body)→ 捕获元数据,不写 in.json(增强成功 × capture 开)', async () => {
+    it('GET /models(无 body) with non-Portal token → 原样透传并捕获元数据,不写 in.json', async () => {
         mockFetch.mockResolvedValueOnce(jsonUpstream({ data: [] }));
         const res = await GET(makeReq('/models', { method: 'GET', body: undefined }), ctx('models'));
-        expect(res.headers.get('X-Silkroadai-Enriched')).toBe('models'); // 走的是增强成功路径
+        expect(res.headers.get('X-Silkroadai-Enriched')).toBeNull();
         await res.text(); // 消费响应驱动 tee 收尾(否则 done 不 resolve)
         await __flushReqlogForTest();
         expect(findPut('in')).toBeUndefined(); // 无请求体 → 不写 in.json

@@ -39,18 +39,20 @@ describe('deriveTierRows', () => {
         expect(rows[0].current).toBe(newest);
     });
 
-    it('empty / missing / non-object upstream_map → fallback single pool row', () => {
-        expect(deriveTierRows({ upstream_map: {}, prices: [] }).map((r) => r.tier)).toEqual(['pool']);
-        expect(deriveTierRows({ upstream_map: null, prices: [] }).map((r) => r.tier)).toEqual(['pool']);
-        expect(deriveTierRows({ upstream_map: ['x'], prices: [] }).map((r) => r.tier)).toEqual(['pool']);
+    it('empty / missing / non-object upstream_map with no prices → no invented pool row', () => {
+        expect(deriveTierRows({ upstream_map: {}, prices: [] })).toEqual([]);
+        expect(deriveTierRows({ upstream_map: null, prices: [] })).toEqual([]);
+        expect(deriveTierRows({ upstream_map: ['x'], prices: [] })).toEqual([]);
     });
 
-    it('legacy "default" price residue → union row appears (pool from upstream + default from prices)', () => {
+    it('empty upstream_map hides historical price-only tiers from editable rows', () => {
+        const historical = price('legacy-tier', { id: 'historical' });
+        expect(deriveTierRows({ upstream_map: {}, prices: [historical] })).toEqual([]);
+    });
+
+    it('legacy price residue stays historical and does not create an editable row', () => {
         const legacy = price('default', { id: 'legacy' });
         const rows = deriveTierRows({ upstream_map: { pool: {} }, prices: [legacy] });
-        // union, pool(0) before default(2)
-        expect(rows.map((r) => r.tier)).toEqual(['pool', 'default']);
-        expect(rows.find((r) => r.tier === 'default')!.current).toBe(legacy);
-        expect(rows.find((r) => r.tier === 'pool')!.current).toBeNull();
+        expect(rows).toEqual([{ tier: 'pool', current: null }]);
     });
 });

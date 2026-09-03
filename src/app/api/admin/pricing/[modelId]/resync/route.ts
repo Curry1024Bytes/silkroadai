@@ -10,6 +10,12 @@ import {
     getTierGroupRatio,
     type UpstreamMap,
 } from '@/lib/newapi/pricing-sync';
+import {
+    ChannelGroupTopologyError,
+    loadChannelGroupTopology,
+    topologyErrorPayload,
+    type UpstreamMapLike,
+} from '@/lib/channel-group-topology';
 
 export const runtime = 'nodejs';
 
@@ -33,9 +39,23 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     });
     if (!model) return NextResponse.json({ error: '模型不存在' }, { status: 404 });
 
+    let topology;
+    try {
+        topology = await loadChannelGroupTopology(model.tenant_id);
+        const issues = topology.validateUpstreamMap(model.upstream_map as unknown as UpstreamMapLike);
+        if (issues.length > 0) throw new ChannelGroupTopologyError(topology.tenantId, issues);
+    } catch (error) {
+        if (error instanceof ChannelGroupTopologyError) {
+            return NextResponse.json(topologyErrorPayload(error), { status: 409 });
+        }
+        throw error;
+    }
+
     // 每个档次取第一行(最新 = 当前价)。
     const currentByTier = new Map<string, (typeof model.prices)[number]>();
+    const routableTiers = new Set(Object.keys(model.upstream_map as unknown as UpstreamMapLike));
     for (const p of model.prices) {
+        if (!routableTiers.has(p.tier)) continue; // historical price only; never re-sync an orphan tier
         if (!currentByTier.has(p.tier)) currentByTier.set(p.tier, p);
     }
     if (currentByTier.size === 0) {
@@ -52,22 +72,14 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     );
 
     // 默认档 key(is_default,通常 pool):全局 option 不分档 → 每类用默认档值同步一次。读一次共用。
-    const defaultTier =
-        chatPrices.length > 0 || imagePrices.length > 0
-            ? ((
-                  await prisma.channelGroup.findFirst({
-                      where: { ...tenantScope(admin), is_default: true },
-                      select: { key: true },
-                  })
-              )?.key ?? 'pool')
-            : 'pool';
+    const defaultTier = topology.defaultGroup.key;
 
     // GR 原生语义:各档组倍率(用于一致性 warn —— 各档目录价应满足 ¥ ∝ 组倍率)。
     // 解析失败的档留空 → resolve* 对该档退回逐字比价/直接点名,不阻塞同步。
     const ratiosByTier: Record<string, number> = {};
     for (const t of new Set(current.map((p) => p.tier))) {
         try {
-            ratiosByTier[t] = await getTierGroupRatio(t);
+            ratiosByTier[t] = await getTierGroupRatio(topology.tenantId, t);
         } catch {
             /* 未登记档/GroupRatio 缺组 → 留空 */
         }
@@ -86,6 +98,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
             ratiosByTier,
         );
         const sync = await syncModelPriceToNewApi(upstreamMap, {
+            tenant_id: topology.tenantId,
             tier: picked.tier,
             input_cny_per_1m: picked.input_cny_per_1m,
             output_cny_per_1m: picked.output_cny_per_1m,
@@ -101,6 +114,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
             ratiosByTier,
         );
         const sync = await syncModelPriceToNewApi(upstreamMap, {
+            tenant_id: topology.tenantId,
             tier: picked.tier,
             input_cny_per_1m: null,
             output_cny_per_1m: null,

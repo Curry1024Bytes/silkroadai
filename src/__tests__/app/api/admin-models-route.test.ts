@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 
 const mockResolveAdmin = vi.fn();
 const mockFindMany = vi.fn();
+const mockGroupFindMany = vi.fn();
 const mockFindFirst = vi.fn();
 const mockCreate = vi.fn();
 const mockUpdate = vi.fn();
@@ -22,6 +23,7 @@ vi.mock('@/lib/db', () => ({
             update: (...a: unknown[]) => mockUpdate(...a),
             delete: (...a: unknown[]) => mockDelete(...a),
         },
+        channelGroup: { findMany: (...a: unknown[]) => mockGroupFindMany(...a) },
     },
 }));
 
@@ -45,13 +47,23 @@ const VALID_CREATE = {
     slug: 'gpt-5.4',
     display_name: 'GPT-5.4',
     vendor: 'openai',
-    upstream_map: { default: { channel_id: 3, upstream_model: 'gpt-5.4' } },
+    upstream_map: { pool: { channel_id: 3, upstream_model: 'gpt-5.4' } },
 };
 
 beforeEach(() => {
     vi.clearAllMocks();
     mockResolveAdmin.mockResolvedValue(SUPERADMIN);
     mockFindMany.mockResolvedValue([]);
+    mockGroupFindMany.mockResolvedValue([
+        {
+            key: 'pool',
+            newapi_group: 'default',
+            newapi_channel_ids: [3],
+            is_default: true,
+            enabled: true,
+            tier_level: 0,
+        },
+    ]);
     mockFindFirst.mockResolvedValue(null);
     mockCreate.mockImplementation(({ data }: { data: object }) => Promise.resolve({ id: 'm1', ...data }));
     mockUpdate.mockImplementation(({ data }: { data: object }) => Promise.resolve({ id: 'm1', ...data }));
@@ -103,6 +115,24 @@ describe('POST /api/admin/models', () => {
         await POST(req('POST', VALID_CREATE));
         expect(mockCreate.mock.calls[0][0].data.tenant_id).toBe('tenant-7');
     });
+
+    it('rejects an enabled model whose tier/channel mapping is not in the active topology', async () => {
+        const res = await POST(
+            req('POST', {
+                ...VALID_CREATE,
+                upstream_map: { ghost: { channel_id: 3, upstream_model: 'gpt-5.4' } },
+            }),
+        );
+        expect(res.status).toBe(409);
+        expect((await res.json()).error).toBe('channel_group_topology_invalid');
+        expect(mockCreate).not.toHaveBeenCalled();
+    });
+
+    it('allows a disabled draft model with an empty upstream map', async () => {
+        const res = await POST(req('POST', { ...VALID_CREATE, enabled: false, upstream_map: {} }));
+        expect(res.status).toBe(201);
+        expect(mockCreate).toHaveBeenCalled();
+    });
 });
 
 describe('GET/PUT/DELETE /api/admin/models/[id]', () => {
@@ -121,12 +151,44 @@ describe('GET/PUT/DELETE /api/admin/models/[id]', () => {
                 .status,
         ).toBe(404);
 
-        mockFindFirst.mockResolvedValue({ id: 'm1', slug: 'gpt-5.4' });
+        mockFindFirst.mockResolvedValue({
+            id: 'm1',
+            tenant_id: PLATFORM_TENANT_ID,
+            slug: 'gpt-5.4',
+            enabled: true,
+            upstream_map: VALID_CREATE.upstream_map,
+        });
         const res = await PUT(req('PUT', { display_name: 'New Name' }, 'https://x/api/admin/models/m1'), {
             params: params(),
         });
         expect(res.status).toBe(200);
         expect(mockUpdate.mock.calls[0][0].data.display_name).toBe('New Name');
+    });
+
+    it('PUT rejects moving an enabled model onto a channel owned by another tier', async () => {
+        mockFindFirst.mockResolvedValue({
+            id: 'm1',
+            tenant_id: PLATFORM_TENANT_ID,
+            slug: 'gpt-5.4',
+            enabled: true,
+            upstream_map: VALID_CREATE.upstream_map,
+        });
+        const res = await PUT(
+            req(
+                'PUT',
+                { upstream_map: { pool: { channel_id: 99, upstream_model: 'gpt-5.4' } } },
+                'https://x/api/admin/models/m1',
+            ),
+            { params: params() },
+        );
+        expect(res.status).toBe(409);
+        expect((await res.json()).issues).toContainEqual({
+            code: 'channel_not_owned_by_tier',
+            tier: 'pool',
+            channel_id: 99,
+            owner: null,
+        });
+        expect(mockUpdate).not.toHaveBeenCalled();
     });
 
     it('DELETE removes a tenant-owned model (404 otherwise)', async () => {

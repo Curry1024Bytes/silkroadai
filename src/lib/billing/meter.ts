@@ -40,7 +40,9 @@ export interface ShadowMeterResult {
 
 type ResolvedUser = { id: string; tenant_id: string | null } | null;
 type ResolvedToken = { id: string; tier: string } | null;
+type ResolvedLogGroup = { key: string } | null;
 type ModelWithPrices = {
+    upstream_map: unknown;
     prices: { id: string; tier: string; effective_from: Date; input_cny_per_1m: unknown; output_cny_per_1m: unknown }[];
 } | null;
 
@@ -85,6 +87,7 @@ export async function runShadowMeter(): Promise<ShadowMeterResult> {
     // 3) 逐条解析(user / token→tier / 生效价)并算成本。in-run 缓存避免重复查询。
     const userCache = new Map<number, ResolvedUser>();
     const tokenCache = new Map<number, ResolvedToken>();
+    const logGroupCache = new Map<string, ResolvedLogGroup>();
     const modelCache = new Map<string, ModelWithPrices>();
 
     const rows: Prisma.UsageRecordCreateManyInput[] = [];
@@ -107,7 +110,9 @@ export async function runShadowMeter(): Promise<ShadowMeterResult> {
             continue;
         }
 
-        // token → 档次(反查不到 → 默认 'pool')。
+        // token → 档次。系统 token 不在 Portal NewApiToken 表时,使用日志自身的
+        // new-api group 反查当前 tenant 的 ChannelGroup;仍无法唯一解析则写显式
+        // unresolved 标记且 matched=false,绝不虚构历史 `pool` 档。
         let token: ResolvedToken = null;
         if (log.token_id) {
             let cached = tokenCache.get(log.token_id);
@@ -120,7 +125,25 @@ export async function runShadowMeter(): Promise<ShadowMeterResult> {
             }
             token = cached;
         }
-        const tier = token?.tier ?? 'pool';
+        let tier = token?.tier;
+        if (!tier) {
+            const newapiGroup = typeof log.group === 'string' ? log.group.trim() : '';
+            const modelTenant = user.tenant_id ?? PLATFORM_TENANT_ID;
+            const cacheKey = `${modelTenant}\u0000${newapiGroup}`;
+            let resolved = logGroupCache.get(cacheKey);
+            if (resolved === undefined) {
+                const matches = newapiGroup
+                    ? await prisma.channelGroup.findMany({
+                          where: { tenant_id: modelTenant, enabled: true, newapi_group: newapiGroup },
+                          select: { key: true },
+                          take: 2,
+                      })
+                    : [];
+                resolved = matches.length === 1 ? matches[0] : null;
+                logGroupCache.set(cacheKey, resolved);
+            }
+            tier = resolved?.key ?? `unresolved:${newapiGroup || 'unknown'}`;
+        }
 
         // CatalogModel(按 user 的 tenant + slug)+ 其版本化价。
         const modelTenant = user.tenant_id ?? PLATFORM_TENANT_ID;
@@ -132,6 +155,7 @@ export async function runShadowMeter(): Promise<ShadowMeterResult> {
                 ? await prisma.catalogModel.findFirst({
                       where: { tenant_id: modelTenant, slug },
                       select: {
+                          upstream_map: true,
                           prices: {
                               select: {
                                   id: true,
@@ -148,19 +172,24 @@ export async function runShadowMeter(): Promise<ShadowMeterResult> {
         }
 
         const logTime = new Date(log.created_at * 1000);
-        const price = model
-            ? pickEffectivePrice(
-                  model.prices.map((p) => ({
-                      id: p.id,
-                      tier: p.tier,
-                      effective_from: p.effective_from,
-                      input_cny_per_1m: p.input_cny_per_1m as string | number | null,
-                      output_cny_per_1m: p.output_cny_per_1m as string | number | null,
-                  })),
-                  tier,
-                  logTime,
-              )
-            : null;
+        const upstreamMap =
+            model?.upstream_map && typeof model.upstream_map === 'object' && !Array.isArray(model.upstream_map)
+                ? (model.upstream_map as Record<string, unknown>)
+                : {};
+        const price =
+            model && Object.hasOwn(upstreamMap, tier)
+                ? pickEffectivePrice(
+                      model.prices.map((p) => ({
+                          id: p.id,
+                          tier: p.tier,
+                          effective_from: p.effective_from,
+                          input_cny_per_1m: p.input_cny_per_1m as string | number | null,
+                          output_cny_per_1m: p.output_cny_per_1m as string | number | null,
+                      })),
+                      tier,
+                      logTime,
+                  )
+                : null;
         const { costCny, matched } = computeUsageCost(price, log.prompt_tokens ?? 0, log.completion_tokens ?? 0);
         if (matched) result.matched++;
         else result.unmatched++;

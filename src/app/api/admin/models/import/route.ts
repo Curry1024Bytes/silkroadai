@@ -7,6 +7,11 @@ import { resolveAdmin } from '@/lib/admin/auth';
 import { tenantScope, tenantForInsert } from '@/lib/admin/tenant-scope';
 import { getChannel, getOption, listChannels, type NewApiChannel } from '@/lib/newapi/client';
 import { buildImportCandidates, type ChannelForImport, type ImportCandidate } from '@/lib/newapi/import-catalog';
+import {
+    ChannelGroupTopologyError,
+    loadChannelGroupTopology,
+    topologyErrorPayload,
+} from '@/lib/channel-group-topology';
 
 export const runtime = 'nodejs';
 
@@ -14,9 +19,8 @@ export const runtime = 'nodejs';
  * POST /api/admin/models/import — 从 new-api 旗舰渠道一键导入「模型 + 价格」到目录。
  *
  * P2.8 任意档次感知:按【所有 enabled ChannelGroup 的登记渠道表】判定每个渠道喂哪个档 ——
- * 渠道被哪个 group 登记(先到先得)就归哪档(支持 pool/official 之外的自定义档如 cc-kiro);
- * 没被任何档登记的渠道 → 默认档(is_default,通常 pool 的 catch-all)。档次 key 动态读取,
- * 不写死 'pool'/'official'(P2.6 曾写死二分 official/pool,漏掉自定义档 → 错映射到 pool)。
+ * 渠道必须被且只被一个 enabled ChannelGroup 登记。未登记、重复登记、无唯一默认档
+ * 都直接失败,绝不回退或虚构 pool/default 档次。
  *
  * 数据形态:一个 slug → 1 条 CatalogModel(upstream_map 按档填 {pool:…, official:…})
  * + 每档一条 CatalogPrice。同一模型从 pool 渠道 + official 渠道分别导入 → 自动合并
@@ -27,18 +31,14 @@ export const runtime = 'nodejs';
  *      skipped(价已存在)/ flagged(图片/无 ratio 需手填),【不写库】。
  *   2. ?dryRun=false → 真导入:$transaction 内建/合并模型 + 建缺失档的价,失败整体回滚。
  *
- * 幂等:per (slug, tier)。模型按 slug:不存在→建;已存在→merge upstream_map[tier]。
+ * 幂等:per (slug, tier)。模型按 slug:不存在→建;已存在→merge upstream_map[tier],
+ * 并清理同一渠道在旧 tier 下的残留映射(渠道改档后不再虚构两行)。
  * 价按 (model, tier):不存在→建;已存在→skip(不覆盖 operator 手改的价)。
  * 不回写 new-api;只读 GET 渠道 + 只读 ChannelGroup 判档(brief §2/§3)。
  */
 
-// 默认旗舰渠道:Claude(2,sub2api Anthropic)/ ChatGPT(3,sub2api-openai)/
-// Gemini 图片(17,nexaxis)。Gemini 文本渠道 id 未在 brief 钉死(探针见过 4/5),
-// operator 在导入预览的渠道菜单里勾选即可 —— 故【不硬编码】成默认,而是做成可配置入参。
-export const DEFAULT_FLAGSHIP_CHANNEL_IDS = [2, 3, 17];
-
 const bodySchema = z.object({
-    channel_ids: z.array(z.number().int().positive()).max(50).optional(),
+    channel_ids: z.array(z.number().int().positive()).min(1).max(50).optional(),
 });
 
 function errMsg(e: unknown): string {
@@ -96,21 +96,33 @@ export async function POST(request: NextRequest) {
             { status: 400 },
         );
     }
-    const channelIds =
-        parsed.data.channel_ids && parsed.data.channel_ids.length > 0
-            ? Array.from(new Set(parsed.data.channel_ids))
-            : DEFAULT_FLAGSHIP_CHANNEL_IDS;
-
-    // ── 读【所有 enabled ChannelGroup】的登记渠道表判档(P2.8;只读,不改 P3 任何数据)。
-    //    渠道被哪个 group 登记就归哪档(先到先得);未登记 → 默认档(is_default,通常 pool)。
-    //    档次 key 完全动态 —— 不写死 'pool'/'official',自定义档(cc-kiro 等)同样生效。 ──
-    const groups = await prisma.channelGroup.findMany({
-        where: { ...tenantScope(admin), enabled: true },
-        // tier_level→key 排序让"先到先得"确定:低档位先认领冲突渠道(pool=0 在前,
-        //「pool 自己登记的渠道明确归 pool」)。
-        orderBy: [{ tier_level: 'asc' }, { key: 'asc' }],
-        select: { key: true, newapi_channel_ids: true, is_default: true, tier_level: true, newapi_group: true },
-    });
+    const tenant_id = tenantForInsert(admin);
+    let topology;
+    try {
+        topology = await loadChannelGroupTopology(tenant_id);
+    } catch (error) {
+        if (error instanceof ChannelGroupTopologyError) {
+            return NextResponse.json(topologyErrorPayload(error), { status: 409 });
+        }
+        throw error;
+    }
+    const groups = topology.groups;
+    const registeredChannelIds = [...topology.channelOwner.keys()].sort((a, b) => a - b);
+    const channelIds = parsed.data.channel_ids ? Array.from(new Set(parsed.data.channel_ids)) : registeredChannelIds;
+    const unregistered = channelIds.filter((id) => !topology.channelOwner.has(id));
+    if (unregistered.length > 0) {
+        return NextResponse.json(
+            {
+                error: 'channel_group_topology_invalid',
+                message: `所选渠道未归属任何启用档次: ${unregistered.join(', ')}`,
+                issues: unregistered.map((channel_id) => ({
+                    code: 'unregistered_channel',
+                    channel_id,
+                })),
+            },
+            { status: 409 },
+        );
+    }
     // GR 原生语义(2026-07-20):档次 → 组倍率(¥ = mr × CHAT_FX × GR)。GroupRatio option
     // 读一次,best-effort —— 读不到 → 全部 null → chat 模型按 unpriced 留手填,不反推错价。
     let groupRatioDict: Record<string, number> = {};
@@ -126,22 +138,8 @@ export async function POST(request: NextRequest) {
         tierRatioByKey.set(g.key, typeof r === 'number' && Number.isFinite(r) && r > 0 ? r : null);
     }
     const tierRatio = (tier: string): number | null => tierRatioByKey.get(tier) ?? null;
-    const channelToTier = new Map<number, string>();
-    const channelTiersSeen = new Map<number, string[]>(); // 一渠道被几个档登记 → 供预览标冲突
-    for (const g of groups) {
-        for (const cid of g.newapi_channel_ids ?? []) {
-            if (!channelToTier.has(cid)) channelToTier.set(cid, g.key); // 先到先得,防一渠道多档
-            channelTiersSeen.set(cid, [...(channelTiersSeen.get(cid) ?? []), g.key]);
-        }
-    }
-    const defaultTier = groups.find((g) => g.is_default)?.key ?? 'pool';
-    const channelTier = (id: number): string => channelToTier.get(id) ?? defaultTier;
-    // 真有冲突(被 ≥2 个 enabled 档登记)的渠道 —— assigned 是先到先得的实际归属。
-    const tierConflicts = [...channelTiersSeen.entries()]
-        .filter(([, tiers]) => tiers.length > 1)
-        .map(([channel_id, tiers]) => ({ channel_id, tiers, assigned: channelToTier.get(channel_id)! }));
-    // 兼容旧导入预览横幅:'official' 档是否登记了渠道(纯 UI 提示信号,不参与判档逻辑)。
-    const officialRegistered = (groups.find((g) => g.key === 'official')?.newapi_channel_ids ?? []).length > 0;
+    const defaultTier = topology.defaultGroup.key;
+    const channelTier = (id: number): string | null => topology.channelOwner.get(id) ?? null;
 
     // ── 渠道菜单(best-effort):列出所有渠道 + 各自档次,让 operator 看到/挑选。
     //    失败不阻塞导入 —— 真正的导入按 id 逐个 getChannel。 ──
@@ -151,7 +149,7 @@ export async function POST(request: NextRequest) {
         type: number | null;
         model_count: number;
         selected: boolean;
-        tier: string;
+        tier: string | null;
     }[] = [];
     try {
         const all = await listChannels();
@@ -172,7 +170,8 @@ export async function POST(request: NextRequest) {
     const channelErrors: { channel_id: number; error: string }[] = [];
     for (const id of channelIds) {
         try {
-            channels.push(toChannelForImport(await getChannel(id), channelTier(id), tierRatio(channelTier(id))));
+            const tier = channelTier(id)!; // selected ids were validated above
+            channels.push(toChannelForImport(await getChannel(id), tier, tierRatio(tier)));
         } catch (e) {
             channelErrors.push({ channel_id: id, error: errMsg(e) });
         }
@@ -181,7 +180,6 @@ export async function POST(request: NextRequest) {
     const candidates = buildImportCandidates(channels);
 
     // ── 现有目录对账(per (slug,tier) 幂等)。带 upstream_map + 各档已有价 tier。 ──
-    const tenant_id = tenantForInsert(admin);
     const existingModels = await prisma.catalogModel.findMany({
         where: { ...tenantScope(admin) },
         select: { id: true, slug: true, sort_order: true, upstream_map: true, prices: { select: { tier: true } } },
@@ -255,10 +253,18 @@ export async function POST(request: NextRequest) {
         const existing = bySlug.get(slug) ?? null;
         const first = cands[0];
 
-        // 合并 upstream_map:从现有开始,叠加本次每档的映射(补/重指该档,不动其他档)。
+        // 合并 upstream_map:从现有开始,叠加本次每档的映射。一个 new-api 渠道
+        // 在当前 ChannelGroup 配置下只属于一档;如果渠道从 catch-all(pool)
+        // 调整到显式档次,同步删掉该渠道在旧档次的残留映射。
         const upstreamMap: UpstreamMap = existing ? { ...existing.upstream_map } : {};
         let upstreamMapChanged = existing === null; // 新模型必写
         for (const c of cands) {
+            for (const [oldTier, oldEntry] of Object.entries(upstreamMap)) {
+                if (oldTier !== c.tier && oldEntry.channel_id === c.channel_id) {
+                    delete upstreamMap[oldTier];
+                    upstreamMapChanged = true;
+                }
+            }
             const prev = upstreamMap[c.tier];
             if (!prev || prev.channel_id !== c.channel_id || prev.upstream_model !== c.upstream_model) {
                 upstreamMap[c.tier] = { channel_id: c.channel_id, upstream_model: c.upstream_model };
@@ -369,8 +375,6 @@ export async function POST(request: NextRequest) {
         dryRun,
         selectedChannelIds: channelIds,
         defaultTier,
-        tierConflicts,
-        officialRegistered,
         channels: menu,
         channelErrors,
         created,

@@ -47,7 +47,7 @@ vi.mock('@/lib/chat/model-groups', () => ({
 
 import { POST } from '@/app/api/portal/chat/stream/route';
 
-const USER = { id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' };
+const USER = { id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', tenant_id: 'tenant-a' };
 
 beforeEach(() => {
     vi.clearAllMocks();
@@ -107,6 +107,14 @@ describe('POST /api/portal/chat/stream', () => {
     it('400 on non-JSON body', async () => {
         const res = await POST(makeReq('not-json{'));
         expect(res.status).toBe(400);
+    });
+
+    it('503 when the model has no priced live routing group', async () => {
+        mockResolveModelGroup.mockResolvedValueOnce(null);
+        const res = await POST(makeReq(VALID_BODY));
+        expect(res.status).toBe(503);
+        expect(await res.json()).toMatchObject({ error: 'model_route_unavailable' });
+        expect(mockGetOrCreateSystemToken).not.toHaveBeenCalled();
     });
 
     it('503 when system token transiently unavailable', async () => {
@@ -273,7 +281,7 @@ describe('POST /api/portal/chat/stream', () => {
         const res = await POST(makeReq({ model: 'claude-fable-5', messages: [{ role: 'user', content: 'hi' }] }));
         expect(res.status).toBe(200);
         // group resolved from the model name (server-side, not client-supplied)
-        expect(mockResolveModelGroup).toHaveBeenCalledWith('claude-fable-5');
+        expect(mockResolveModelGroup).toHaveBeenCalledWith('claude-fable-5', USER.tenant_id);
         // …and the system token is requested for THAT group
         expect(mockGetOrCreateSystemToken).toHaveBeenCalledWith(USER.id, 'official');
     });

@@ -64,7 +64,7 @@ function getTexts(locale: Locale) {
               fieldDisplayName: 'Display Name',
               fieldNewapiGroup: 'new-api group',
               newapiGroupWarning:
-                  '⚠️ newapi_group is the new-api group name sent to new keys of this tier. It MUST match a group actually configured in new-api, or new keys will route to no channel. Do not change "default" for pool.',
+                  '⚠️ newapi_group is sent to new keys. It must exist in new-api and may belong to only one enabled Portal tier.',
               fieldDescription: 'Description',
               fieldDescriptionHint: 'Optional.',
               fieldTierLevel: 'Sort Order',
@@ -74,7 +74,7 @@ function getTexts(locale: Locale) {
               fieldIsDefaultHint: 'New keys default to this tier (only one tier can be the default).',
               fieldChannels: 'Registered channel ids',
               fieldChannelsHint:
-                  'Comma-separated new-api channel ids (e.g. 3, 5). Operator bookkeeping / audit only — routing is by group, not this list.',
+                  'Comma-separated new-api channel ids (e.g. 3, 5). At least one unique channel is required before enabling the tier.',
               cancel: 'Cancel',
               save: 'Save',
               saving: 'Saving...',
@@ -87,7 +87,7 @@ function getTexts(locale: Locale) {
         : {
               sessionExpired: '登录已过期,请重新登录',
               title: '渠道分组',
-              subtitle: '号池 / 官方分层 — 客户建 key 选档,new-api 按 group 路由',
+              subtitle: '动态档次配置 — 客户建 key 选档,new-api 按 group 路由',
               refresh: '刷新',
               loading: '加载中...',
               newGroup: '+ 新建档次',
@@ -111,7 +111,7 @@ function getTexts(locale: Locale) {
               fieldDisplayName: '显示名',
               fieldNewapiGroup: 'new-api group',
               newapiGroupWarning:
-                  '⚠️ newapi_group 是下发给新 token 的 new-api group 名,必须与 new-api 里实际配好的 group 对应,否则新 key 路由不到渠道。pool 的 default 不建议改。',
+                  '⚠️ newapi_group 会下发给本档新建 Key。它必须已存在于 new-api，且只能归属于一个启用的 Portal 档次。',
               fieldDescription: '描述',
               fieldDescriptionHint: '可选。',
               fieldTierLevel: '排序',
@@ -120,8 +120,7 @@ function getTexts(locale: Locale) {
               fieldIsDefault: '默认档次',
               fieldIsDefaultHint: '新建 key 默认选这一档(只能有一个档次为默认)。',
               fieldChannels: '登记渠道 id',
-              fieldChannelsHint:
-                  '逗号分隔的 new-api 渠道 id(如 3, 5)。仅供运营记账 / 审计 — 路由按 group,不看这个清单。',
+              fieldChannelsHint: '逗号分隔的 new-api 渠道 id(如 3, 5)。启用档次前至少登记一个唯一渠道。',
               cancel: '取消',
               save: '保存',
               saving: '保存中...',
@@ -151,7 +150,7 @@ const emptyForm: GroupFormData = {
     newapi_group: '',
     description: '',
     tier_level: '0',
-    enabled: true,
+    enabled: false,
     is_default: false,
     newapi_channel_ids: '',
 };
@@ -579,7 +578,7 @@ function ChannelGroupsContent() {
                                     onChange={(e) => setForm({ ...form, key: e.target.value })}
                                     className={editingGroup ? readonlyInputCls : [inputCls, 'font-mono'].join(' ')}
                                     readOnly={!!editingGroup}
-                                    placeholder="pool"
+                                    placeholder="sale-tier"
                                     required={!editingGroup}
                                 />
                                 <p className={`mt-1 text-xs ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
@@ -595,7 +594,7 @@ function ChannelGroupsContent() {
                                     value={form.display_name}
                                     onChange={(e) => setForm({ ...form, display_name: e.target.value })}
                                     className={inputCls}
-                                    placeholder={locale === 'en' ? 'Low-cost pool' : '低价号池'}
+                                    placeholder={locale === 'en' ? 'Promotional route' : '特惠线路'}
                                     required
                                 />
                             </div>
@@ -608,7 +607,7 @@ function ChannelGroupsContent() {
                                     value={form.newapi_group}
                                     onChange={(e) => setForm({ ...form, newapi_group: e.target.value })}
                                     className={[inputCls, 'font-mono'].join(' ')}
-                                    placeholder="default"
+                                    placeholder="GPT-特惠反代"
                                     required
                                 />
                                 <div
