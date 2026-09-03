@@ -195,13 +195,14 @@
   `/image-adapter/*` 404、两类 CORS 204 且 allow headers 完整、Google/GitHub OAuth start 302。
   本次未重复执行真实 OAuth 登录、真实支付或真实模型调用;沿用既有验收,new-api 未上货状态不变。
 - 2026-08-09 new-api rc.22 持久授权事故与最终决策：登录响应的 `data.access_token` 是短效会话 JWT，
-  **不能直接持久化为** `User.newapi_access_token`。开户必须用该 JWT 调 `GET /api/user/token` 换取 32 字符
-  持久访问令牌；旧版本用 `session=` cookie 调同一端点。`new_api_refresh` 仍不是 legacy session。
+  **不能直接持久化为** `User.newapi_access_token`。开户必须用该 JWT 调 `GET /api/user/token` 换取
+  opaque 持久访问令牌；旧版本用 `session=` cookie 调同一端点。`new_api_refresh` 仍不是 legacy session。
   上游正确修复 `da510e7` 曾在 `main -> dev` merge `29f2371` 中被错误冲突处理覆盖：最终代码跳过
   `/api/user/token`，并把上游回归测试反向改成断言“不调用”。注册后立即建默认 Key 因 JWT 尚未过期而
   通过，之后新建/删除 Key 才 401，Portal 表现为 502。最终修复 `6da611d` 恢复换取持久 token，并将生产
-  5 个存量用户的 389/391 字符 JWT 全部重签为 32 字符持久令牌；`GPT-特惠反代` 创建/删除 Key smoke
-  通过。发布验收需检查所有已开户用户 `length(newapi_access_token)=32`，不能再出现约 389 字符 JWT。
+  5 个存量用户的 389/391 字符 JWT 全部重签为当时签发的 32 字符持久令牌；`GPT-特惠反代` 创建/删除
+  Key smoke 通过。发布验收应验证 token 能通过 new-api 用户鉴权且不是 JWT，不能用固定长度判断；
+  2026-09-03 线上已实测一枚后续签发的 28 字符 token 可正常调用 `/api/user/self`（user id 11）。
 
 ---
 
@@ -238,7 +239,7 @@
   `docs/真实性上游毛利报表-需求文档.md`；本次同步未修改、未提交这些内容。`dev`/`prod` 原有的
   `vendor/stripe-node` gitlink(`d3b8ecd`)也被保留，未被本轮 `main` 的旧 gitlink 覆盖。
 
-## 动态档次拓扑收口(2026-09-03，尚未部署)
+## 动态档次拓扑收口与发布(2026-09-03)
 
 - 2026-09-03 深审确认“低价号池”幽灵行不是 new-api 源码功能，而是 Portal 历史实现同时存在
   固定渠道 `2/3/17`、隐式 `pool/default/image2` 回退、价格历史反推活动档次，以及
@@ -264,12 +265,24 @@
 - 对生产 PostgreSQL 的只读预演结果：将移除 10 个错误映射，其中包括 9 个已删除的 `pool` 映射和
   `kimi-k3` 错挂 `gpt特惠分组/ch10`；`gpt-5.3-codex-spark`、`gpt-5.5-pro` 因清洗后无路由会软下架；
   8 条目标图片 shadow 记录全部满足窄修复条件。现有 5 个有效档次的坏默认/空渠道/重复
-  newapi_group/重复 channel 计数均为 0，能通过新约束。生产当前仍是旧版本，三个 tier 列仍默认
-  `pool`，必须等 operator 明确安排发布后才执行 migration。
+  newapi_group/重复 channel 计数均为 0，能通过新约束。
 - 本地验证：Prisma validate、typecheck、生产构建通过；lint 0 error(91 个既有 warning)；完整非
   smoke 测试 `267 files / 3173 passed / 1 skipped`。构建时本机未开 `127.0.0.1:3000` 隧道，
-  models/pricing 的预期降级日志不属于回归。此批改动只在本地 `dev`，未 push、未 fast-forward
-  `prod`、未登录 VPS 改数据；发布时仍需先备份、执行 migration，再做真实 Key/模型/图片计费验收。
+  models/pricing 的预期降级日志不属于回归。代码提交为 `c91afcc`，已 push `origin/dev`，并按规则
+  fast-forward 到 `origin/prod`；发布过程中发现 `origin/main` 已前进到 `a79d6ba`，该批新上游提交未
+  混入本次已验证版本，后续仍须先出上游报告再单独执行 `main -> dev`。
+- 2026-09-03 生产发布：发布前 `.env` 备份为
+  `/opt/silkroadai-portal/.env.bak.20260903-144638`（0600），PostgreSQL 备份为
+  `/opt/backups/silkroadai-portal/portal-20260903-064638.sql.gz`（0600，`gzip -t` 通过）；先构建新镜像
+  再切换 Portal。migration `20260903090000_reconcile_catalog_tier_topology` 成功，数据库共 70 条
+  migration、0 pending/rolled back；10 个错误映射清零、8 条目标 shadow 记录改为 `图片模型`，三个
+  tier 列的 `pool` 默认值均已移除，启用模型无路由/活动 Key 悬空档次/启用空渠道档次计数均为 0。
+- 发布验收：Portal 容器 restart count 0、PostgreSQL healthy、Portal→new-api 200；Nginx 配置与服务
+  正常；主站 apex/`www` 登录页 origin/public 均 200，API 假 Key 401、`/login` 404、主站
+  `/image-adapter/*` 404，两类 CORS 204，Google/GitHub OAuth start 302；真实活动客户 Key 的公网
+  `/v1/models` 返回 200 并列出 7 个模型，公开 `/pricing` 不再出现“低价号池”。本次只做不计费的模型
+  列表验证，未发起真实图片生成或支付；Portal 部署后日志无 error/fatal，API access log 已验证不记录
+  query string。
 
 ## 目录结构
 
@@ -479,7 +492,7 @@ LiteLLM 同时支持 user-level 和 key-level 预算。我们只用 key-level(�
 **解决**:不能 admin 改,要让客户自己 rotate:
 
 1. `POST /api/user/login` 用 portal 持有的 username+password → 新版拿短效 JWT + user.id；旧版拿 session cookie
-2. `GET /api/user/token` 带新版 JWT（Authorization）或旧版 cookie，再带 `New-Api-User: <user.id>` → 返回新生成的 32 字符持久 access_token
+2. `GET /api/user/token` 带新版 JWT（Authorization）或旧版 cookie，再带 `New-Api-User: <user.id>` → 返回新生成的 opaque 持久 access_token（不要假设固定长度）
 3. portal 把这个 access_token 存 DB,以后 act-as 该客户用
    **修复 commit**:`ad401af` (W2 D6) — 见 `provisionNewCustomer` 重写后的 6 步流程。
 
@@ -758,5 +771,5 @@ LiteLLM 时代的 `LITELLM_*` 变量保留作 fallback,W3 D1 关停后可删。
 
 ---
 
-**版本**: 2.4
-**最后更新**: 2026-08-10
+**版本**: 2.5
+**最后更新**: 2026-09-03
