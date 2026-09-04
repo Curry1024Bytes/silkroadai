@@ -284,6 +284,22 @@
   列表验证，未发起真实图片生成或支付；Portal 部署后日志无 error/fatal，API access log 已验证不记录
   query string。
 
+## 生产模型真实 Smoke（2026-09-04）
+
+- 完整证据与逐模型结果见 [`docs/MODEL-SMOKE-2026-09-04.md`](docs/MODEL-SMOKE-2026-09-04.md)。本轮
+  只发生产测试请求，没有修改代码、new-api 源码、渠道或价格。生产换算为 `500000 quota = ¥1`
+  （`USD_TO_CNY_RATE=1`）；共 18 条唯一消费日志、18 个唯一 Request ID，总测试费 ¥5.026212，未发现
+  同一 Request ID 重复记账。
+- 可用：`kimi-k3`；GPT 基础型号 `gpt-5.4/5.5/5.6-sol/5.6-terra`；`codex-auto-review`；图片
+  `gpt-image-2-{1k,2k,4k}`、`gpt-image-2-cf`、`grok-imagine-image`。三个固定图片 SKU 实测尺寸与
+  ¥1/¥1.5/¥2 逐项一致，`gpt-image-2-cf` 单请求只写一条 ¥0.12 日志。
+- 不可用/必须先处理：两个 `*-openai-compact` 在 channel 5/6 均 503，却仍出现在 `/v1/models`；
+  CCMax 用真实 Claude Code 2.1.260 仍因 channel 9 `no available accounts` 失败；`Nano Banana 2`
+  两次 300s 上游超时后 503；`Nano Banana Pro` HTTP 200 但 `data=[]`、仍扣 ¥0.12。
+- 客户端断开不等于服务端取消：特惠 `gpt-5.6-sol` 在测试客户端 120s 超时后于 208s 完成并计费；一次
+  已启动的 `Nano Banana Pro` 在测试脚本被中断后也继续完成计费。今后的收费 smoke 禁止在超时后自动
+  进入下一个模型，必须先按 Request ID 等到服务端终态。
+
 ## 目录结构
 
 ```
