@@ -1071,7 +1071,7 @@ jpeg,字节/元数据一致。严格模式语义不动(它自己的 400 校验�
 
 1. (authenticated)/loading.tsx — 全组导航即时切换到骨架屏(header/sidebar
    由 layout 持有不动),数据到了再流入真页;同时让 force-dynamic 路由的
-     <Link> prefetch 生效。
+      <Link> prefetch 生效。
 2. /dashboard 把原来 4 波串行 await(balance → new-api 聚合+3 日志切片 →
    充值流水 → reseller)合并成一个并行 wave,TTFB 从各波之和降为最慢单项;
    allSettled 保留原有分区降级语义(单项失败只影响自己的区块)。
@@ -1822,3 +1822,31 @@ d1e838f add
 - prod 保持 `02cbf26`，不 fast-forward，不部署。完整联机 smoke 未通过，因此本轮只完成 dev 集成；后续修正本机 new-api 验证目标后，验证通过再按约定 dev → prod fast-forward。
 
 最终代码复验：`test:ci` 为 **281 files / 3586 passed / 1 skipped**；typecheck、lint（0 error / 93 warnings）与生产构建通过。上游所有新增回归案例保留，仅图床品牌断言按 LLmRoute 适配；两条补充代理边界测试通过。
+
+### 提交后的修复 SHA 审计
+
+合并提交为 `f555455`（父提交 `ce23083`、`1c94f20`）。逐个实际执行 `git diff <upstream-fix>..f555455 -- <affected-files>`，共 19 个 fix 提交；完整 diff 保存在本机 `/tmp/llmroute-sync-20260908/audit-*.diff`。上游后续提交对前序行为的替换按逐提交报告解释；最终与 main 的剩余差异逐文件审计如下。
+
+| 修复提交  | 最终语义检查                                                                                                                                    |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `40f521e` | 最终相对 main 差异限：`src/lib/seedance/cn-adapter.ts`、`src/lib/seedance/kuaizi-adapter.ts`；已按上文品牌/固定 SKU/UI/文档入口及格式语义复核。 |
+| `3a3b652` | 最终与 main 相同；中间差异来自本轮后续上游提交，核心修复未覆盖。                                                                                |
+| `acbb827` | 最终与 main 相同；中间差异来自本轮后续上游提交，核心修复未覆盖。                                                                                |
+| `8fcbaa4` | 最终相对 main 差异限：`.env.example`、`src/lib/seedance/kuaizi-adapter.ts`；已按上文品牌/固定 SKU/UI/文档入口及格式语义复核。                   |
+| `21ca10f` | 最终相对 main 差异限：`.env.example`、`src/lib/seedance/kuaizi-adapter.ts`；已按上文品牌/固定 SKU/UI/文档入口及格式语义复核。                   |
+| `4c4ea9c` | 最终与 main 相同；中间差异来自本轮后续上游提交，核心修复未覆盖。                                                                                |
+| `887a2c9` | 最终相对 main 差异限：`docker-compose.prod.yml`；已按上文品牌/固定 SKU/UI/文档入口及格式语义复核。                                              |
+| `fa19314` | 最终相对 main 差异限：`src/lib/enterprise/keys.ts`、`src/lib/seedance/kuaizi-adapter.ts`；已按上文品牌/固定 SKU/UI/文档入口及格式语义复核。     |
+| `8f2f3b2` | 最终相对 main 差异限：`src/lib/seedance/kuaizi-adapter.ts`；已按上文品牌/固定 SKU/UI/文档入口及格式语义复核。                                   |
+| `623712a` | 最终相对 main 差异限：`src/lib/seedance/kuaizi-adapter.ts`；已按上文品牌/固定 SKU/UI/文档入口及格式语义复核。                                   |
+| `49f6fdc` | 最终与 main 相同；中间差异来自本轮后续上游提交，核心修复未覆盖。                                                                                |
+| `9949729` | 最终相对 main 差异限：`src/lib/seedance/kuaizi-adapter.ts`；已按上文品牌/固定 SKU/UI/文档入口及格式语义复核。                                   |
+| `69bb59c` | 最终相对 main 差异限：`src/app/v1/[...path]/route.ts`、`src/app/v1/__tests__/proxy.test.ts`；已按上文品牌/固定 SKU/UI/文档入口及格式语义复核。  |
+| `656deaa` | 最终相对 main 差异限：`src/app/v1/[...path]/route.ts`、`src/app/v1/__tests__/proxy.test.ts`；已按上文品牌/固定 SKU/UI/文档入口及格式语义复核。  |
+| `df10d5e` | 最终相对 main 差异限：`src/app/v1/[...path]/route.ts`、`src/app/v1/__tests__/proxy.test.ts`；已按上文品牌/固定 SKU/UI/文档入口及格式语义复核。  |
+| `dd3c6a9` | 最终相对 main 差异限：`src/app/v1/[...path]/route.ts`、`src/app/v1/__tests__/proxy.test.ts`；已按上文品牌/固定 SKU/UI/文档入口及格式语义复核。  |
+| `d11f198` | 最终与 main 相同；中间差异来自本轮后续上游提交，核心修复未覆盖。                                                                                |
+| `3634baa` | 最终与 main 相同；中间差异来自本轮后续上游提交，核心修复未覆盖。                                                                                |
+| `2479875` | 最终相对 main 差异限：`src/lib/seedance/__tests__/cn-adapter.test.ts`；已按上文品牌/固定 SKU/UI/文档入口及格式语义复核。                        |
+
+分支最终处置：只推送 origin/dev；main 为 `1c94f20`，prod/origin/prod 保持 `02cbf26`。联机 smoke 与真实生产验收仍未通过/未执行，不宣称可以发布。用户 `.env` 修改与未跟踪需求文档仍留在工作区。
