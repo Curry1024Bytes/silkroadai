@@ -6,7 +6,9 @@
  *     2026-08-11 拍板售价制,档位随官方公式自动划分:high 各尺寸都过线,low/auto/standard
  *     与小尺寸 medium 全在线下)。线下的 + size 不明的 → 503,new-api RetryTimes failover
  *     回 adobe 渠道,客户无感;调上游【之前】拒,不花钱。4xx 会被 new-api 当终态甩给客户,
- *     所以守门必须 5xx。
+ *     所以守门必须 5xx。2026-08-24 起 provider 可带 gateMinCt 自定义守门线(纯盈利档、
+ *     无狭长放行,见 providers.ts 字段注释);计费尺寸一律优先按【返回图实际尺寸】合成
+ *     (防上游对约束外尺寸静默降级导致按请求值超收,oaidist 实测中招)。
  *  2. 调真实上游拿图(Authorization 透传 = 渠道 key 就是上游 key)。
  *  3. 【合成 usage】丢弃上游的假 token(ominiapi 恒报 1120,按现口径计费必亏),按
  *     officialOutputTokens(官方计算器逐 token 精确公式)合成 —— 客户拿官方文档的
@@ -18,11 +20,19 @@
  * 图片存储 / C2PA 脱敏不在这层做 —— 客户代理回程(/v1 route reshape)已做,这层只返 b64+usage。
  */
 import { NextRequest, NextResponse } from 'next/server';
+import { stripAdobeImageMetadataB64 } from '@/lib/proxy/image-metadata';
 import { IMAGE_PROVIDERS, type ImageProvider } from './providers';
 
 export type ImageMode = 'generations' | 'edits';
 
-const UPSTREAM_TIMEOUT_MS = 300_000; // 实测 ominiapi 4K 出图 54-92s,给足余量
+// 2026-08-23:300s → 600s。大客户(多图 n>1,completion_tokens 1 万+)的单次生成实测要
+// 250-300+ 秒,擦着 300s 线被我们自己 abort,再 failover 换渠道又等 300s —— 一次请求叠出
+// 6-12 分钟,而上游其实是正常的。实测证据:同批日志里 ok 记录 ms=287685(287s 成功)与
+// fetch failed ms=300001 aborted 并存;95% 的失败是本超时掐的,不是上游拒绝。改后实测
+// 一次成功率 70.6% → 92.7%,需重试的请求降约 78%。
+// 600s 与链路其余各层对齐(Caddy 3010 response_header_timeout 600s、instrumentation.ts
+// 的 undici dispatcher 600s),本常量原是整条链最短的一环。
+const UPSTREAM_TIMEOUT_MS = 600_000;
 /** n>1 扇出的上限(对齐 OpenAI images 的 n≤10)。超出只钳制不报错 —— 客户仍拿到 10 张,
  *  也挡住 n=100 这种把单请求内存推到 GB 级(4K 单张 b64 ~12-17MB)的用法。 */
 const MAX_FANOUT = 10;
@@ -98,8 +108,53 @@ export function estimateTextTokens(s: string): number {
     return Math.max(1, Math.ceil(cjk * 1.5 + other / 4));
 }
 
+/** 返图是否带真 alpha 通道:PNG colortype 6(RGBA)/ 4(灰+alpha)→ true;PNG 其他 colortype
+ *  与 JPEG(无 alpha 概念)→ false;识别不出的格式(webp 等)→ null(存疑放行,不误杀)。
+ *  用于 background=transparent 的出图校验 —— ominiapi 等号池型上游【同账号 50/50 随机】:
+ *  一部分子账号真出 RGBA,另一部分 200 返回画进像素的假棋盘格(2026-08-26 实测 3 连发 2 真 1 假)。 */
+function imageHasAlpha(buf: Buffer): boolean | null {
+    if (buf.length >= 26 && buf[0] === 0x89 && buf[1] === 0x50 && buf.toString('latin1', 12, 16) === 'IHDR') {
+        const ctype = buf[25];
+        return ctype === 6 || ctype === 4;
+    }
+    if (buf.length > 2 && buf[0] === 0xff && buf[1] === 0xd8) return false; // JPEG 恒无 alpha
+    return null;
+}
+
+// ============ 响应合规(echo 官方枚举 + jpeg 转码)下沉到适配器层(2026-09-06)============
+// 客户官方兼容测试要求响应回显 quality/background/output_format 官方枚举、output_format=jpeg 真出
+// jpeg 字节。此前只在 portal /v1 reshape 层做,直连 :3000 绕过 portal 的客户(如 c-70fd7c5f)拿不到。
+// 适配器是【所有 image2 渠道公共必经点】+ new-api 透传适配器顶层字段(created/usage 实测原样传出)
+// → 在这里补 echo/transcode = portal 与直连客户都覆盖。portal reshape 同逻辑保留作双重(值相同,幂等)。
+
+/** 按返回图首字节魔数判 output_format(PNG/JPEG/WebP);读不出 → ''(退回请求侧)。 */
+function sniffOutputFormat(buf: Buffer): string {
+    if (buf.length >= 4 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'png';
+    if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'jpeg';
+    if (buf.length >= 12 && buf.toString('latin1', 0, 4) === 'RIFF' && buf.toString('latin1', 8, 12) === 'WEBP')
+        return 'webp';
+    return '';
+}
+
+/** png/webp base64 → jpeg base64(jimp,纯 JS 无 native 依赖;失败回退原图,永不抛)。
+ *  客户 output_format=jpeg 时上游多恒返 png → 服务端转码成真 jpeg 字节(客户 #9 反馈)。 */
+async function toJpegB64(b64: string): Promise<string> {
+    try {
+        const { Jimp } = await import('jimp');
+        const img = await Jimp.read(Buffer.from(b64, 'base64'));
+        const jpeg = await img.getBuffer('image/jpeg', { quality: 92 });
+        return Buffer.from(jpeg).toString('base64');
+    } catch (e) {
+        console.warn(
+            '[image-adapter] png→jpeg transcode failed, keeping original:',
+            e instanceof Error ? e.message : e,
+        );
+        return b64;
+    }
+}
+
 /** dep-free 尺寸解析(PNG IHDR / JPEG SOF),读不出 → null(输入 token 按 1MP 兜底)。 */
-function imageDimensions(buf: Buffer): { w: number; h: number } | null {
+export function imageDimensions(buf: Buffer): { w: number; h: number } | null {
     if (
         buf.length >= 24 &&
         buf[0] === 0x89 &&
@@ -242,13 +297,17 @@ function classifyUpstreamError(status: number, text: string): TerminalReject | n
 function terminalReject(kind: 'safety' | 'bad_request'): NextResponse {
     console.warn('[image-adapter] terminal reject (no failover)', { kind });
     if (kind === 'safety') {
-        // 含 'content rejected' 标记 → 代理层 IMAGE_SAFETY_RE 命中 → 改写成统一 content_policy_violation
+        // 直接发【官方 gpt-image 现行审核形】moderation_blocked / user_error(2026-09-06 从旧
+        // content_policy_violation 对齐)—— 直连 :3000 绕过 portal 的客户也拿官方形。官方 message
+        // 含 "rejected as a result of our safety system" 仍命中 portal 的 IMAGE_SAFETY_RE → portal
+        // 再归一幂等(输出同一 moderation_blocked),portal 客户不受影响。
         return NextResponse.json(
             {
                 error: {
-                    message: 'content rejected: the image was flagged as unsafe by the content safety system',
-                    type: 'invalid_request_error',
-                    code: 'content_policy_violation',
+                    message:
+                        'Your request was rejected as a result of our safety system. Your request may contain content that is not allowed by our safety system.',
+                    type: 'user_error',
+                    code: 'moderation_blocked',
                 },
             },
             { status: 400 },
@@ -373,7 +432,7 @@ async function callUpstreamOnce(
     const headers: Record<string, string> = { authorization: auth };
     if (mode === 'edits') {
         const f = new FormData();
-        f.append('model', 'gpt-image-2');
+        f.append('model', provider.upstreamModel ?? 'gpt-image-2');
         f.append('prompt', parsed.prompt);
         f.append('size', parsed.size.trim());
         f.append('response_format', 'b64_json'); // 不带时 ominiapi 返自家 OSS url(上游身份泄漏),显式要 b64
@@ -384,7 +443,7 @@ async function callUpstreamOnce(
         upstreamBody = f; // fetch 自动生成 multipart boundary(不能手写 content-type,gotcha #21)
     } else {
         const j: Record<string, unknown> = {
-            model: 'gpt-image-2',
+            model: provider.upstreamModel ?? 'gpt-image-2',
             prompt: parsed.prompt,
             size: parsed.size.trim(),
             response_format: 'b64_json', // 同上:2026-08-04 smoke 实测缺省返 url
@@ -479,16 +538,39 @@ export async function handleAdapterImage(
     const parsed = await parseIncoming(req, mode);
     if (!parsed) return failover('bad_request_body', 'unparseable request body');
 
+    // ---- 透明背景路由(调上游之前,不花钱)----
+    // `background:"transparent"` 只能交给验证过真出 alpha 的上游:不支持的上游会 200 返回
+    // 【画进像素的假棋盘格】(rgb24 无 alpha)—— 客户拿废图还被计费,比失败更糟。未验证的
+    // provider(providers.ts noTransparentBackground)对这类请求 503 让 new-api 换渠道。
+    // 参数本身在 FORWARD_EXTRAS 里,支持透明的上游正常透传。
+    const wantsTransparent = (parsed.extras.background || '').trim().toLowerCase() === 'transparent';
+    if (provider.noTransparentBackground && wantsTransparent) {
+        console.log('[image-adapter] transparent not served', { provider: providerName, mode });
+        return failover('transparent_not_served', 'provider not verified for background=transparent');
+    }
+
     // ---- 守门(调上游之前,不花钱)----
     // 放行规则:
     //  - provider.openAllTiers(we-token 官方账单上游)→ 放行所有请求,含 size=auto/不可解析
     //    (OpenAI 默认 size 就是 auto;这类无法预先算 token,透传上游后按【返回图实际尺寸】合成官方账单);
-    //  - 否则要求 size 可解析,且:狭长形(长/短 > 1.5)不论盈利档放行,其余走盈利档守门。
+    //  - provider.gateMinCt(oaidist 等新守门上游)→ 要求 size 可解析,纯盈利档:合成 ct ≥ 该线放行,
+    //    【无】狭长放行条款(兜底线全是 openAllTiers 官方账单,狭长图落下去照样对得上账);
+    //  - 否则(存量 gated provider)要求 size 可解析,且:狭长形(长/短 > 1.5)不论盈利档放行,
+    //    其余走盈利档守门(行为不变)。
     const dims = parseSize(parsed.size);
     const quality = normQuality(parsed.quality);
     const perImageCt = dims ? officialOutputTokens(dims.w, dims.h, quality) : 0;
     const elongated = dims ? isElongated(dims.w, dims.h) : false;
-    if (!provider.openAllTiers && (!dims || (!elongated && !isProfitable(perImageCt)))) {
+    //  - provider.onlyQualities(frimodelmedium 等按档收的上游)→ 只看归一后 quality,不看尺寸
+    //    (任意尺寸含 auto 都收,计费走"返回图实际尺寸");其余档 503 让路。
+    const gatePass = provider.onlyQualities
+        ? (provider.onlyQualities as readonly string[]).includes(quality)
+        : dims
+          ? provider.gateMinCt !== undefined
+              ? perImageCt >= provider.gateMinCt
+              : elongated || isProfitable(perImageCt)
+          : false;
+    if (!provider.openAllTiers && !gatePass) {
         console.log('[image-adapter] gate reject', {
             provider: providerName,
             mode,
@@ -514,7 +596,7 @@ export async function handleAdapterImage(
     // 任一扇出返回【终态】(内容安全 / 请求本身错)→ 立即终态化,不 failover(换渠道也拒,别浪费重试位)。
     const terminal = results.find(isTerminalReject);
     if (terminal) return terminalReject(terminal.terminal);
-    const items = results.flatMap((r) => (Array.isArray(r) ? r : []).map((b64_json) => ({ b64_json })));
+    let items = results.flatMap((r) => (Array.isArray(r) ? r : []).map((b64_json) => ({ b64_json })));
     if (items.length === 0) {
         // 全军覆没才 failover(部分成功 → 返回拿到的那几张,按张计费)
         return failover('upstream_error', `all ${fanout} upstream call(s) failed`);
@@ -528,15 +610,50 @@ export async function handleAdapterImage(
         });
     }
 
-    // ---- 计费尺寸:size 可解析用请求值;auto/不可解析(仅 openAllTiers 会走到)→ 解码返回图实际尺寸 ----
-    let billW = dims?.w ?? 0;
-    let billH = dims?.h ?? 0;
-    if (!dims) {
-        const out0 = items[0]?.b64_json;
-        const d0 = out0 ? imageDimensions(Buffer.from(out0, 'base64')) : null;
-        if (!d0) return failover('unbillable_auto', 'auto size but output image dimensions unreadable');
-        billW = d0.w;
-        billH = d0.h;
+    // ---- 计费尺寸:一律优先【返回图实际尺寸】(解码 IHDR/SOF,~毫秒级)----
+    // 之前 size 可解析时直接按请求值计费,依据是"约束外尺寸上游本来就会拒"。oaidist 打破了这个
+    // 假设:约束外请求(实测 7000²)它不拒,200 静默降级出 2048² —— 按请求值合成会 38 倍超收。
+    // 改为:实际尺寸读得出 → 按实际(对如实出图的上游逐字节等价,天然免疫任何上游的静默降级);
+    // 读不出(webp 等非 PNG/JPEG)→ size 可解析退回请求值(旧行为),auto → 无从计费,failover。
+    // ---- 透明出图校验:transparent 请求只把【真带 alpha 通道】的图交给客户 ----
+    // 支持名单内的上游也可能是号池(ominiapi 同账号 50/50 随机),假棋盘格按上游失败处理:
+    // 丢弃无 alpha 的张,全军覆没则 503 让 new-api 重试/换渠道把骰子摇到真透明。
+    if (wantsTransparent) {
+        const kept = items.filter((it) => imageHasAlpha(Buffer.from(it.b64_json, 'base64')) !== false);
+        if (kept.length < items.length) {
+            console.warn('[image-adapter] transparent verify dropped opaque image(s)', {
+                provider: providerName,
+                mode,
+                dropped: items.length - kept.length,
+                kept: kept.length,
+            });
+        }
+        if (kept.length === 0) {
+            return failover('transparent_not_delivered', 'upstream returned image(s) without alpha channel');
+        }
+        items = kept;
+    }
+
+    const out0 = items[0]?.b64_json;
+    const actualDims = out0 ? imageDimensions(Buffer.from(out0, 'base64')) : null;
+    let billW: number;
+    let billH: number;
+    if (actualDims) {
+        billW = actualDims.w;
+        billH = actualDims.h;
+        if (dims && (dims.w !== actualDims.w || dims.h !== actualDims.h)) {
+            console.warn('[image-adapter] upstream coerced size, billing by actual', {
+                provider: providerName,
+                mode,
+                requested: parsed.size,
+                actual: `${actualDims.w}x${actualDims.h}`,
+            });
+        }
+    } else if (dims) {
+        billW = dims.w;
+        billH = dims.h;
+    } else {
+        return failover('unbillable_auto', 'auto size but output image dimensions unreadable');
     }
 
     // ---- 合成 usage(丢弃上游假 token,按官方公式)----
@@ -549,10 +666,34 @@ export async function handleAdapterImage(
         inputImageDims: parsed.images.map((img) => imageDimensions(img.buf)),
         imageCount: items.length,
     });
+    // ---- output_format=jpeg:服务端转码成真 jpeg 字节(客户 #9;dims/usage 已按原图算完,转码不改尺寸)----
+    const wantJpeg = (parsed.extras.output_format || '').trim().toLowerCase() === 'jpeg';
+    if (wantJpeg) {
+        for (const it of items) it.b64_json = await toJpegB64(it.b64_json);
+    }
+
+    // ---- C2PA 剥离下沉到适配器层(2026-09-06)----
+    // 候补 adobe(Firefly)出图内嵌 Adobe 私钥签名的 C2PA 会暴露真实上游。此前只在 portal /v1 reshape
+    // 层剥,但 new-api :3000 公网可直连、客户绕过 portal 就拿到带 Adobe C2PA 的图(见 memory
+    // ch83-adobe-c2pa-image-leak)。适配器是【所有 adobe 图片渠道的公共必经点】,在这里剥 = portal 与
+    // 直连客户都覆盖,也不用追每家上游的身份变化(oaidist 曾 OpenAI 签名、2026-09-06 静默变 Adobe)。
+    // 内容自定向:仅命中 adobe/firefly 标识的图才剥,OpenAI 原生/azure/gemini 出图字节原样(同一引用)。
+    // 放在 dims/alpha 读取与 usage 合成【之后】、jpeg 转码之后(转码 Jimp 重编码已丢元数据,strip 再兜底 png 路径)。
+    for (const it of items) {
+        it.b64_json = stripAdobeImageMetadataB64(it.b64_json);
+    }
+
+    // ---- 响应回显官方枚举(客户 #13:quality/background/output_format;下沉覆盖直连客户)----
+    // quality:normQuality 已归一 low/medium/high(auto/standard→low)。output_format:按最终字节 sniff
+    // (交付真形态,消解"请求 jpeg 出 png 却回显 jpeg")。background:透明校验通过则 transparent,否则 opaque。
+    // size:计费尺寸(= 返回图实际尺寸)。上游没这些字段,new-api 透传适配器顶层字段 → 直连客户也收到。
+    const outFmt = sniffOutputFormat(Buffer.from(items[0]?.b64_json ?? '', 'base64')) || (wantJpeg ? 'jpeg' : 'png');
+    const outBackground = wantsTransparent ? 'transparent' : 'opaque';
+    const respSize = `${billW}x${billH}`;
     console.log('[image-adapter] ok', {
         provider: providerName,
         mode,
-        size: dims ? parsed.size : `auto→${billW}x${billH}`,
+        size: dims && dims.w === billW && dims.h === billH ? parsed.size : `${parsed.size || 'auto'}→${billW}x${billH}`,
         quality,
         nRequested: parsed.n,
         images: items.length,
@@ -560,5 +701,13 @@ export async function handleAdapterImage(
         ct: usage.output_tokens,
         ms: Date.now() - started,
     });
-    return NextResponse.json({ created: Math.floor(Date.now() / 1000), data: items, usage });
+    return NextResponse.json({
+        created: Math.floor(Date.now() / 1000),
+        data: items,
+        usage,
+        size: respSize,
+        quality,
+        background: outBackground,
+        output_format: outFmt,
+    });
 }

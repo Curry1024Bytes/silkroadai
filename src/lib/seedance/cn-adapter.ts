@@ -46,10 +46,16 @@ const UPSTREAM_PROMAX_FAST = 'artsdance2-0-fast-intl-260701';
 const UPSTREAM_PROMAX_MINI = 'artsdance2-0-mini-intl-260701';
 // 海外版 proMax seedance 2.5(2026-08-08):intl 新代模型,仅 720p/1080p,费率独立(按原价挂牌)。
 const UPSTREAM_PROMAX_25 = process.env.SEEDANCE_PROMAX_MODEL_25 || 'artsdance2-5-intl-260628';
+// 海外版(global)seedance 2.5(2026-08-31):同一 intl 端口、同一上游 SKU,费率与 promax-2.5
+// 相同(operator 拍板)—— 差别只在走客户的 global key(而非 promax key)。
+const UPSTREAM_GLOBAL_25 = process.env.SEEDANCE_GLOBAL_MODEL_25 || UPSTREAM_PROMAX_25;
 // 国内版 seedance 2.5(2026-08-07):国内版渠道(token.xinhankr)上游新代模型。
 // 上游名 2026-08-08 由 doubao-seedance-2-5-260628 换成 artsdance-2-5-pro-260801
 // (实测:新名支持 720p/1080p、【不支持 480p】;旧名支持 480p/720p)。费率独立(含视/无视两档)。
 const UPSTREAM_XHK_25 = process.env.SEEDANCE_XHK_MODEL_25 || 'artsdance-2-5-pro-260801';
+// 480p 单档走原版 260628(pro 版 260801 拒 480p,2026-09-07 实测原版仍收;拿货 9.5 折毛利极薄
+// 且折扣 <0.95 的客户倒挂 —— operator 知悉后拍板照开)。同一对客名下 480p 与 720p+ 是两个上游版本。
+const UPSTREAM_XHK_25_480P = process.env.SEEDANCE_XHK_MODEL_25_480P || 'artsdance-2-5-260628';
 
 /** 版本 → 上游 base URL(global 与 promax 同为 intl 端口,仅模型名/费率不同)。
  *  volc(火山渠道)走独立上游 + 火山方舟原生协议,不经此函数(见 kuaizi-adapter)。 */
@@ -123,12 +129,18 @@ export const MODEL_MAP: Record<string, SeedanceModelSpec> = {
             ),
         ),
     ),
-    // ── 国内 seedance 2.5(cn):新代单模型,仅 720p/1080p(上游 artsdance-2-5-pro 不支持 480p),费率独立 ──
+    // ── 国内 seedance 2.5(cn):费率独立;720p/1080p 走 pro 版 260801,480p 走原版 260628
+    //    (pro 版拒 480p;2026-09-07 上真机实测原版收 480p,operator 拍板开档)──
     ...Object.fromEntries(
-        (['720p', '1080p'] as const).flatMap((resolution) =>
+        (['480p', '720p', '1080p'] as const).flatMap((resolution) =>
             [false, true].map((ref) => [
                 `seedance2.5-${resolution}${ref ? '-ref' : ''}`,
-                { resolution, ref, variant: '2.5' as const, upstream: UPSTREAM_XHK_25 },
+                {
+                    resolution,
+                    ref,
+                    variant: '2.5' as const,
+                    upstream: resolution === '480p' ? UPSTREAM_XHK_25_480P : UPSTREAM_XHK_25,
+                },
             ]),
         ),
     ),
@@ -143,6 +155,22 @@ export const MODEL_MAP: Record<string, SeedanceModelSpec> = {
                     variant: 'promax-2.5' as const,
                     upstream: UPSTREAM_PROMAX_25,
                     region: 'promax' as const,
+                },
+            ]),
+        ),
+    ),
+    // ── 海外版(global)seedance 2.5(2026-08-31):仅 720p/1080p;variant 复用 promax-2.5
+    //    (费率同价、单一价源 —— promax 调价自动跟随);region=global 走客户 global key ──
+    ...Object.fromEntries(
+        (['720p', '1080p'] as const).flatMap((resolution) =>
+            [false, true].map((ref) => [
+                `seedance2.5-global-${resolution}${ref ? '-ref' : ''}`,
+                {
+                    resolution,
+                    ref,
+                    variant: 'promax-2.5' as const,
+                    upstream: UPSTREAM_GLOBAL_25,
+                    region: 'global' as const,
                 },
             ]),
         ),
@@ -209,6 +237,9 @@ export function variantForModel(model: string): SeedanceVariant {
     // 否则会落到 cn '2.5' 或 'promax' 档按错价计费。
     const is25 = m.includes('2-5') || m.includes('2.5');
     if (is25 && m.includes('-promax')) return 'promax-2.5';
+    // 海外版 global 2.5 与 promax-2.5 同费率(2026-08-31,operator 拍板同价)——
+    // 必须先于纯 2.5 判,否则落到 cn '2.5' 档(70/90)按错价计费。
+    if (is25 && m.includes('-global')) return 'promax-2.5';
     if (is25) return '2.5';
     if (m.includes('-promax')) {
         // promax 系费率独立,必须先于 -fast/-mini 判(seedance-2-0-promax-fast 含 '-fast')
@@ -230,8 +261,13 @@ export function maxDurationForVariant(v: SeedanceVariant): number {
 // 火山官方 2.5 支持 adaptive(首尾帧/视频编辑/延长任务【必须】adaptive → 输出跟随输入宽高比)。
 const ALLOWED_RATIOS = new Set(['16:9', '9:16', '4:3', '3:4', '1:1', '21:9', 'adaptive']);
 
-function err(status: number, code: string, message: string) {
-    return NextResponse.json({ error: { code, message, type: 'seedance_cn_adapter_error' } }, { status });
+/** category:机器可读分类。调用方(enterprise proxy / 对账器)据此判定
+ *  「任务已废」还是「瞬时抖动」—— 见 upstream-error.isTerminalTaskFailure。 */
+function err(status: number, code: string, message: string, category?: string) {
+    return NextResponse.json(
+        { error: { code, message, type: 'seedance_cn_adapter_error', ...(category ? { category } : {}) } },
+        { status },
+    );
 }
 
 // 上游报错体 → 对客文案的分类/脱敏已抽到 ./upstream-error(2026-08-17 重写,见该文件头部
@@ -591,7 +627,7 @@ export async function submitVideoWithKey(body: Record<string, unknown>, auth: st
         });
         // 安全:上游原始报错(可能含域名/server 标识)只落日志(见上 console.warn);
         // 客户拿【分类 + 脱敏】后的文案 —— 带主体(提示词/参考图/…)与脱敏后的上游原因。
-        return err(upstream.status >= 400 ? upstream.status : 502, 'upstream_error', cls.message);
+        return err(upstream.status >= 400 ? upstream.status : 502, 'upstream_error', cls.message, cls.category);
     }
     return NextResponse.json(
         {
@@ -665,7 +701,7 @@ export async function pollVideoWithKey(id: string, auth: string, region: Seedanc
         });
         // 安全:上游原始报错只落日志(见上 console.warn);客户拿【分类 + 脱敏】后的文案。
         // 注:内容审核失败走 HTTP 200 + status:failed + fail_reason(不经此分支),客户仍能看到审核提示。
-        return err(upstream.status >= 400 ? upstream.status : 502, 'upstream_error', cls.message);
+        return err(upstream.status >= 400 ? upstream.status : 502, 'upstream_error', cls.message, cls.category);
     }
     const status = mapStatus(j.status);
     const videoUrl = firstVideoUrl(j.data);

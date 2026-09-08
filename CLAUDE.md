@@ -610,3 +610,7 @@ LiteLLM 时代的 `LITELLM_*` 变量保留作 fallback,W3 D1 关停后可删。
 
 **版本**: 2.3
 **最后更新**: 2026-09-01(同步上游 #384–#390；仅在 dev 合并，prod 未变)
+
+## 上游同步 2026-09-08
+
+已集成 #391–#448 的代码，详细语义审计见 `docs/UPSTREAM-SYNC-2026-09-08.md`。Batch 默认关闭；MiniMax/Seedream 仅内部适配器，未配置渠道或验收。上游 server1/server2/ch214 的部署记录不属于 LLmRoute；部署仍仅 prod、Nginx、主 Portal 单实例。

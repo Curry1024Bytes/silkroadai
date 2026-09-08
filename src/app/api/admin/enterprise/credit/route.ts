@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { unauthorizedResponse } from '@/lib/admin-auth';
-import { resolveAdmin } from '@/lib/admin/auth';
+import { resolveEnterpriseAdmin, auditAdminAction } from '@/lib/enterprise/admin-auth';
 import { applyLedgerEntry } from '@/lib/billing/ledger';
 
 export const runtime = 'nodejs';
@@ -33,7 +33,7 @@ const creditSchema = z
     .refine((d) => d.user_id || d.email, { message: 'user_id 或 email 必须给一个' });
 
 export async function POST(request: NextRequest) {
-    const admin = await resolveAdmin(request, 'superadmin');
+    const admin = await resolveEnterpriseAdmin(request);
     if (!admin) return unauthorizedResponse(request);
 
     let body: unknown;
@@ -69,6 +69,10 @@ export async function POST(request: NextRequest) {
         tenantId: user.tenant_id,
     });
 
+    auditAdminAction(request, admin, 'credit', {
+        target: user.email,
+        params: { user_id: user.id, email: user.email, amount_cny, note, balance_after: r.balance_after.toFixed(2) },
+    });
     return NextResponse.json({
         user_id: user.id,
         email: user.email,

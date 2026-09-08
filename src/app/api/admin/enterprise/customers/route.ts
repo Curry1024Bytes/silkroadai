@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
 import { unauthorizedResponse } from '@/lib/admin-auth';
-import { resolveAdmin } from '@/lib/admin/auth';
+import { resolveEnterpriseAdmin } from '@/lib/enterprise/admin-auth';
 
 export const runtime = 'nodejs';
 
@@ -11,7 +11,7 @@ export const runtime = 'nodejs';
  * 守门:superadmin(session 或 break-glass token)。
  */
 export async function GET(request: NextRequest) {
-    const admin = await resolveAdmin(request, 'superadmin');
+    const admin = await resolveEnterpriseAdmin(request);
     if (!admin) return unauthorizedResponse(request);
 
     // 软删除账号(deleted_at 非空)默认不列出;?includeDeleted=1 可显示全部

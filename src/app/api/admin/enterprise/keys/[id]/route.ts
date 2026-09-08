@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { unauthorizedResponse } from '@/lib/admin-auth';
-import { resolveAdmin } from '@/lib/admin/auth';
+import { resolveEnterpriseAdmin, auditAdminAction } from '@/lib/enterprise/admin-auth';
 
 export const runtime = 'nodejs';
 
@@ -10,7 +10,7 @@ export const runtime = 'nodejs';
 const schema = z.object({ status: z.enum(['active', 'disabled']) });
 
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-    const admin = await resolveAdmin(request, 'superadmin');
+    const admin = await resolveEnterpriseAdmin(request);
     if (!admin) return unauthorizedResponse(request);
     const { id } = await params;
 
@@ -25,5 +25,6 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     const r = await prisma.enterpriseKey.updateMany({ where: { id }, data: { status: parsed.data.status } });
     if (r.count === 0) return NextResponse.json({ error: 'not_found' }, { status: 404 });
+    auditAdminAction(request, admin, 'key_status', { target: id, params: { key_id: id, status: parsed.data.status } });
     return NextResponse.json({ ok: true, status: parsed.data.status });
 }

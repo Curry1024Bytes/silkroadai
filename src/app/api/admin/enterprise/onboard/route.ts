@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { unauthorizedResponse } from '@/lib/admin-auth';
-import { resolveAdmin } from '@/lib/admin/auth';
+import { resolveEnterpriseAdmin, auditAdminAction } from '@/lib/enterprise/admin-auth';
 import { applyLedgerEntry } from '@/lib/billing/ledger';
 import { encryptUpstreamKey } from '@/lib/enterprise/crypto';
 import { generateEnterpriseKey } from '@/lib/enterprise/keys';
@@ -41,7 +41,7 @@ const onboardSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-    const admin = await resolveAdmin(request, 'superadmin');
+    const admin = await resolveEnterpriseAdmin(request);
     if (!admin) return unauthorizedResponse(request);
 
     let body: unknown;
@@ -135,6 +135,18 @@ export async function POST(request: NextRequest) {
         }
     }
 
+    auditAdminAction(request, admin, 'onboard', {
+        target: email,
+        params: {
+            user_id: user.id,
+            email,
+            name: name ?? null,
+            regions: overseasEnc ? ['cn', 'global', 'promax'] : ['cn'],
+            credit_cny: credit_cny ?? null,
+            note: note ?? null,
+            upstream_key: '[redacted]',
+        },
+    });
     return NextResponse.json({
         user_id: user.id,
         email,

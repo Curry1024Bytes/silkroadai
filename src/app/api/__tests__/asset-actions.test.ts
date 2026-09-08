@@ -21,6 +21,7 @@ const { db, resolveEnterpriseAuth, fetchAssetFromUrl, storeAsset, deleteAssetFn 
             delete: vi.fn(),
         },
         enterpriseUpstreamKey: { findUnique: vi.fn() },
+        enterpriseRequestLog: { create: vi.fn(async () => ({})) },
         $transaction: vi.fn(),
     },
     resolveEnterpriseAuth: vi.fn(),
@@ -39,6 +40,14 @@ vi.mock('@/lib/enterprise/volc-assets', async (importOriginal) => {
     const mod = await importOriginal<typeof import('@/lib/enterprise/volc-assets')>();
     return { ...mod, handleVolcAssetAction };
 });
+// 筷子库入口 mock(分流判据 shouldUseKuaiziAssets 等保留真实现):volc 路径的上游细节
+// 落日志测试用 —— 默认不触发(上面 enterpriseUpstreamKey 默认 null = 非 volc 客户)。
+const { handleKuaiziAssetAction } = vi.hoisted(() => ({ handleKuaiziAssetAction: vi.fn() }));
+vi.mock('@/lib/enterprise/kuaizi-assets', async (importOriginal) => {
+    const mod = await importOriginal<typeof import('@/lib/enterprise/kuaizi-assets')>();
+    return { ...mod, handleKuaiziAssetAction };
+});
+import { RealPersonError } from '@/lib/enterprise/real-person';
 
 import { POST } from '../route';
 
@@ -310,7 +319,12 @@ describe('素材库统一平台托管(2026-08-06 v3:真人素材四渠道通用,
         fetchAssetFromUrl.mockResolvedValue({ bytes: 100, mime: 'image/png' });
         storeAsset.mockResolvedValue({ id: 'asset-r2-2', public_url: 'https://r2/b.png' });
         const res = await POST(
-            req('CreateAsset', { GroupId: 'group-1', URL: 'https://x/b.png', AssetType: 'Image', Name: 'b.png' }),
+            req('CreateAsset', {
+                GroupId: 'group-20260806120000-a1b2c3',
+                URL: 'https://x/b.png',
+                AssetType: 'Image',
+                Name: 'b.png',
+            }),
         );
         expect(res.status).toBe(200);
         expect(storeAsset).toHaveBeenCalled();
@@ -322,7 +336,12 @@ describe('素材库统一平台托管(2026-08-06 v3:真人素材四渠道通用,
         fetchAssetFromUrl.mockResolvedValue({ bytes: 100, mime: 'image/png' });
         storeAsset.mockResolvedValue({ id: 'asset-r2-1', public_url: 'https://r2/a.png' });
         const res = await POST(
-            req('CreateAsset', { GroupId: 'group-1', URL: 'https://x/a.png', AssetType: 'image', Name: 'f.png' }),
+            req('CreateAsset', {
+                GroupId: 'group-20260806120000-a1b2c3',
+                URL: 'https://x/a.png',
+                AssetType: 'image',
+                Name: 'f.png',
+            }),
         );
         expect(res.status).toBe(200);
         expect(storeAsset).toHaveBeenCalled();
@@ -443,5 +462,121 @@ describe('AssetType 大写对齐火山官方', () => {
         const res = await POST(req('GetAsset', { Id: 'asset-1' }));
         const j = (await res.json()) as { Result: { AssetType: string } };
         expect(j.Result.AssetType).toBe('Video');
+    });
+});
+
+describe('请求日志落库(P2 2026-09-04)', () => {
+    const flush = () => new Promise((r) => setTimeout(r, 0));
+    const reqlogRows = () =>
+        (db.enterpriseRequestLog.create.mock.calls as unknown as Array<[{ data: Record<string, unknown> }]>).map(
+            (c) => c[0].data,
+        );
+
+    it('CreateAsset 成功 → 全量落行(action / 归属 / 新建素材 id / 入参 / format=platform)', async () => {
+        fetchAssetFromUrl.mockResolvedValue({ bytes: Buffer.from('x'), mime: 'image/png' });
+        storeAsset.mockResolvedValue({ id: 'asset-20260904000000-abc123', public_url: 'https://r2/a.png' });
+        await POST(req('CreateAsset', { AssetType: 'image', URL: 'https://x/a.png', Name: '主角' }));
+        await flush();
+        const rows = reqlogRows();
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({
+            kind: 'asset_action',
+            action: 'CreateAsset',
+            format: 'platform',
+            user_id: 'u1',
+            key_id: 'k1',
+            resource_id: 'asset-20260904000000-abc123',
+            http_status: 200,
+        });
+        expect(String(rows[0].request_body)).toContain('https://x/a.png');
+        expect(typeof rows[0].duration_ms).toBe('number');
+    });
+
+    it('GetAsset 404 → 落行带 error_code(火山 envelope 的 Error.Code)+ 请求里的 Id', async () => {
+        db.enterpriseAsset.findFirst.mockResolvedValue(null);
+        await POST(req('GetAsset', { Id: 'asset-nope' }));
+        await flush();
+        const rows = reqlogRows();
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({
+            kind: 'asset_action',
+            action: 'GetAsset',
+            resource_id: 'asset-nope',
+            http_status: 404,
+            error_code: 'AssetNotFound',
+        });
+        expect(String(rows[0].error_message)).toContain('asset-nope');
+    });
+
+    it('鉴权失败(401)也落行:user 空 + UnauthorizedOperation', async () => {
+        resolveEnterpriseAuth.mockResolvedValue({ ok: false, status: 401, message: 'invalid key' });
+        await POST(req('ListAssets', {}));
+        await flush();
+        const rows = reqlogRows();
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({
+            kind: 'asset_action',
+            action: 'ListAssets',
+            user_id: null,
+            http_status: 401,
+            error_code: 'UnauthorizedOperation',
+        });
+    });
+
+    it('日志写失败不影响客户响应(fire-and-forget)', async () => {
+        db.enterpriseRequestLog.create.mockRejectedValue(new Error('db down'));
+        db.enterpriseAssetGroup.create.mockImplementation(({ data }: { data: { id: string } }) =>
+            Promise.resolve({ id: data.id }),
+        );
+        const res = await POST(req('CreateAssetGroup', { Name: 'g' }));
+        expect(res.status).toBe(200);
+        await flush();
+    });
+});
+
+describe('上游失败原因落请求日志(2026-09-04)', () => {
+    const flush = () => new Promise((r) => setTimeout(r, 0));
+    const reqlogRows = () =>
+        (db.enterpriseRequestLog.create.mock.calls as unknown as Array<[{ data: Record<string, unknown> }]>).map(
+            (c) => c[0].data,
+        );
+
+    it('筷子路径素材入库失败:上游原文进 upstream_body,对客响应【不】含上游原文(#271)', async () => {
+        db.enterpriseUpstreamKey.findUnique.mockResolvedValue({ id: 'up-volc' }); // volc 客户
+        handleKuaiziAssetAction.mockRejectedValue(
+            new RealPersonError(502, 'AssetCreateFailed', '素材入库失败,请检查素材链接后重试').withUpstream(
+                200,
+                '{"Status":"Failed","Reason":"download image failed: connect timeout kz-internal"}',
+            ),
+        );
+        const res = await POST(
+            req('CreateAsset', { GroupId: '1800657071180349888', URL: 'https://x/a.png', AssetType: 'image' }),
+        );
+        expect(res.status).toBe(502);
+        const bodyText = JSON.stringify(await res.json());
+        expect(bodyText).toContain('素材入库失败');
+        expect(bodyText).not.toContain('kz-internal'); // 上游原文只进日志,不对客
+        await flush();
+        const rows = reqlogRows();
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({
+            kind: 'asset_action',
+            action: 'CreateAsset',
+            format: 'kuaizi',
+            http_status: 502,
+            error_code: 'AssetCreateFailed',
+            upstream_status: 200,
+        });
+        expect(String(rows[0].upstream_body)).toContain('download image failed');
+    });
+
+    it('无 upstream 细节的失败照旧落行(upstream_* 空,不炸)', async () => {
+        db.enterpriseUpstreamKey.findUnique.mockResolvedValue({ id: 'up-volc' });
+        handleKuaiziAssetAction.mockRejectedValue(new RealPersonError(503, 'ServiceUnavailable', '未配置'));
+        const res = await POST(req('ListAssets', {}));
+        expect(res.status).toBe(503);
+        await flush();
+        const rows = reqlogRows();
+        expect(rows[0]).toMatchObject({ error_code: 'ServiceUnavailable', upstream_status: null, upstream_body: null });
     });
 });

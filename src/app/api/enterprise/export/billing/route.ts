@@ -59,8 +59,9 @@ export async function GET(req: NextRequest) {
         Number(e.amount_cny).toFixed(4),
         Number(e.balance_after).toFixed(4),
         e.note ?? '',
+        e.ref ?? '',
     ]);
-    const csv = toCsv(['时间(北京)', '类型', '金额(¥)', '余额快照(¥)', '备注'], rows);
+    const csv = toCsv(['时间(北京)', '类型', '金额(¥)', '余额快照(¥)', '备注', '关联任务ID'], rows);
     const stamp = bjTimeStr(new Date()).slice(0, 10);
     return new NextResponse(csv, {
         headers: {

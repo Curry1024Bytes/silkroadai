@@ -194,9 +194,9 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                                     <Code>seedance-2-5</Code>
                                 </Td>
                                 <Td>新代模型(国内版)</Td>
-                                <Td>720p / 1080p</Td>
-                                <Td>{listPrices('2.5', ['720p', '1080p'], false)}</Td>
-                                <Td>{listPrices('2.5', ['720p', '1080p'], true)}</Td>
+                                <Td>480p / 720p / 1080p</Td>
+                                <Td>{listPrices('2.5', ['480p', '720p', '1080p'], false)}</Td>
+                                <Td>{listPrices('2.5', ['480p', '720p', '1080p'], true)}</Td>
                             </tr>
                         </tbody>
                     </table>
@@ -209,11 +209,12 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                     </li>
                     <li>
                         参考:720p 5 秒 ≈ 108,872 token → 按官方价 seedance-2-0 约 ¥5.01、fast 约 ¥4.03、mini 约
-                        ¥2.50(折后按您的折扣率,如 8.5 折则分别约 ¥4.26 / ¥3.42 / ¥2.13);1080p ≈ 720p 的 2.25 倍 token。
+                        ¥2.50、seedance-2-5 约 ¥7.62(折后按您的折扣率,如 8.5 折则分别约 ¥4.26 / ¥3.42 / ¥2.13 /
+                        ¥6.48);1080p ≈ 720p 的 2.25 倍 token,480p ≈ 720p 的一半。
                     </li>
                     <li>
                         <b>480p 与 720p 同费率</b>(单价一样,但 token 量 ∝ 像素,480p 整条约为 720p 的一半价)。仅
-                        国内版(seedance-2-0 系)/ 火山渠道支持 480p;海外版(global)与 proMax 上游无 480p。
+                        国内版(seedance-2-0 系 / seedance-2-5)/ 火山渠道支持 480p;海外版(global)与 proMax 上游无 480p。
                     </li>
                     <li>「含视频输入」(参考视频)费率更低,但输入视频的时长也计入 token。图片参考不额外计 token。</li>
                     <li>生成失败不计费。提交时按预估价校验余额,不足返回 402(不会透支)。</li>
@@ -223,12 +224,22 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                     <p className="font-semibold text-indigo-900">海外版(global)</p>
                     <p className="mt-1 text-indigo-900">
                         另有海外节点出片的同款模型:<Code>seedance-2-0-global</Code> /{' '}
-                        <Code>seedance-2-0-global-fast</Code> / <Code>seedance-2-0-global-mini</Code>
-                        。参数、分辨率档位、时长与费率<b>均与国内版一致(唯一例外:无 480p 档)</b>
+                        <Code>seedance-2-0-global-fast</Code> / <Code>seedance-2-0-global-mini</Code> /{' '}
+                        <Code>seedance-2-5-global</Code>(新代,2026-08-31 上线) 。2.0 系参数、分辨率档位、时长与费率
+                        <b>均与国内版一致(唯一例外:无 480p 档)</b>
                         ,仅生成与出片走海外 节点(BytePlus),成片链接为海外 CDN(同样 ~24 小时有效)。调用需使用
                         <b>海外版专用 API 密钥</b>(「API 密钥」页创建时选「海外版」),国内/海外密钥不互通;
                         余额与国内版共享同一账户。
                         <b>如果生成因敏感内容被审核拒绝(fail_reason 提示 sensitive),并非开白/权限原因,请尝试海外版。</b>
+                    </p>
+                    <p className="mt-1 text-indigo-900">
+                        ⚠️ <Code>seedance-2-5-global</Code> 仅 720p / 1080p,
+                        <b>
+                            费率与下方 proMax 的 <Code>seedance-2-5-promax</Code> 相同
+                        </b>
+                        ({listPrices('promax-2.5', ['720p', '1080p'], false)}
+                        ;含视频输入 {listPrices('promax-2.5', ['720p', '1080p'], true)}),
+                        <b>不同于国内版 seedance-2-5</b> —— 下单前请留意。
                     </p>
                 </div>
                 <div className="mt-3 rounded-lg border border-purple-200 bg-purple-50 p-4 text-sm">
@@ -328,10 +339,7 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                                 </Td>
                                 <Td>string</Td>
                                 <Td>否</Td>
-                                <Td>
-                                    480p / 720p(默认)/ 1080p / 4k(4k 仅 seedance-2-0;seedance-2-5 仅 720p / 1080p;480p
-                                    与 720p 同费率)
-                                </Td>
+                                <Td>480p / 720p(默认)/ 1080p / 4k(4k 仅 seedance-2-0;480p 与 720p 同费率)</Td>
                             </tr>
                             <tr>
                                 <Td>
@@ -339,7 +347,10 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                                 </Td>
                                 <Td>int</Td>
                                 <Td>否</Td>
-                                <Td>4-15 任意整数秒,默认 5</Td>
+                                <Td>
+                                    任意整数秒,默认 5:2.0 系 4-15,seedance-2-5 系 4-30;-1 =
+                                    智能时长(模型在有效区间内自选)
+                                </Td>
                             </tr>
                             <tr>
                                 <Td>
@@ -492,7 +503,8 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
             <Section id="volc" title="5. 火山渠道(volc · 火山方舟原生 + AK/SK 签名)">
                 <p>
                     <b>火山渠道</b>是独立渠道(与国内/海外/proMax 平级),提供<b>真人视觉认证</b>与{' '}
-                    <b>seedance 全系四档</b>视频,采用<b>火山方舟原生接口形态</b> + <b>火山官方 AK/SK 签名(SignerV4)</b>
+                    <b>seedance 2.0 / 2.5 两档</b>视频,采用<b>火山方舟原生接口形态</b> +{' '}
+                    <b>火山官方 AK/SK 签名(SignerV4)</b>
                     鉴权 —— 现有火山官方 SDK / 脚本可零改动接入。需在「API 密钥」页开通并生成 AK/SK,专用密钥,与 sk-ent
                     并存互不影响。
                 </p>
@@ -509,10 +521,8 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                         </thead>
                         <tbody className="text-gray-700">
                             {[
-                                ['doubao-seedance-2.0', '480p / 720p / 1080p / 4k', '4~15 或 -1', '9 / 3 / 3'],
-                                ['doubao-seedance-2.0-fast', '480p / 720p / 1080p', '4~15 或 -1', '9 / 3 / 3'],
-                                ['doubao-seedance-2.0-mini', '480p / 720p / 1080p', '4~15 或 -1', '9 / 3 / 3'],
-                                ['doubao-seedance-2.5', '480p / 720p', '4~30 或 -1', '30 / 10 / 10'],
+                                ['doubao-seedance-2-0-260128', '480p / 720p / 1080p / 4k', '4~15 或 -1', '9 / 3 / 3'],
+                                ['doubao-seedance-2-5-260628', '480p / 720p / 1080p', '4~30 或 -1', '30 / 10 / 10'],
                             ].map(([m, r, d, refs]) => (
                                 <tr key={m} className="border-b border-gray-100">
                                     <td className="py-1.5 pr-4">
@@ -527,13 +537,39 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                     </table>
                 </div>
                 <p className="text-gray-600">
-                    <Code>duration: -1</Code> = 智能时长(由模型在有效区间内自选)。<Code>4k</Code> 仅{' '}
-                    <Code>doubao-seedance-2.0</Code> 支持。
+                    <b>模型名直接用火山原生 Model ID</b>(上表)—— 与火山官方文档逐字一致,现有脚本不必改。
+                    我们早期用过的点分别名(<Code>doubao-seedance-2.0</Code> / <Code>doubao-seedance-2.5</Code>)
+                    继续兼容,新接入建议一律用原生 ID。
+                </p>
+                <p className="text-gray-600">
                     <b>
-                        <Code>doubao-seedance-2.5</Code> 的首帧/首尾帧、视频编辑、视频延长三类任务仅支持{' '}
-                        <Code>ratio: &quot;adaptive&quot;</Code>
+                        <Code>ratio</Code> 不传就是「不指定」
                     </b>
-                    (输出宽高比自动跟随输入素材);视频编辑任务的 <Code>duration</Code> 还须为 <Code>-1</Code>。
+                    —— 由模型按任务类型自己定。<b>视频续写 / 视频编辑必须这样</b>(这两类只接受 <Code>adaptive</Code>
+                    ),不要为了「保险」显式填 <Code>16:9</Code>。<Code>doubao-seedance-2-5-260628</Code>{' '}
+                    的首帧/首尾帧任务同理;视频编辑任务的 <Code>duration</Code> 还须为 <Code>-1</Code>。
+                </p>
+                <p className="text-gray-600">
+                    <b>参考素材可直接内联 base64</b>(<Code>data:image/png;base64,…</Code>)—— 我们会自动转存并
+                    换成直链再发上游,单个媒体上限 20MB。也可继续用公网 URL 或素材库 <Code>asset://</Code> 引用。
+                </p>
+                <p className="text-gray-600">
+                    <b>火山官方参数一律透传</b> —— <Code>bitrate_mode</Code> / <Code>camera_fixed</Code> /{' '}
+                    <Code>service_tier</Code> / <Code>priority</Code> 等按火山文档传即可,能不能用由火山判。(
+                    <Code>callback_url</Code> 暂不支持,请改用轮询。)
+                </p>
+                <p className="text-gray-600">
+                    <Code>duration: -1</Code> = 智能时长(由模型在有效区间内自选)——{' '}
+                    <b>
+                        任务完成后查询响应里的 <Code>duration</Code> 是模型实际选定的秒数
+                    </b>
+                    (不再回显 <Code>-1</Code>);生成中尚未定,暂显提交值。<Code>ratio</Code> 同理,
+                    完成后以实际采用的比例为准。<Code>4k</Code> 仅 <Code>doubao-seedance-2-0-260128</Code> 支持(
+                    <Code>doubao-seedance-2-5-260628</Code> 无 4k)。
+                </p>
+                <p className="text-gray-600">
+                    <Code>doubao-seedance-2-0-fast-260128</Code> / <Code>doubao-seedance-2-0-mini-260615</Code>{' '}
+                    <b>暂停服务</b> —— 这两档当前不由火山方舟出片,与本渠道「原生火山」的定位不符, 恢复前请改用上表两档。
                 </p>
                 <p className="font-medium text-gray-900">config 关键字段(以火山官方素材库/方舟脚本为例):</p>
                 <Pre>{`{
@@ -564,7 +600,7 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                 </p>
                 <Pre>{`# body 为火山方舟原生形(model + content 数组);签名 path=/api/v3/contents/generations/tasks
 {
-  "model": "doubao-seedance-2.0",
+  "model": "doubao-seedance-2-0-260128",
   "content": [{"type": "text", "text": "一只橘猫在窗台上打哈欠"}],
   "resolution": "720p",     // 见上表(按 model 而定)
   "duration": 5             // 见上表;-1 = 智能时长
@@ -580,6 +616,26 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                     </li>
                     <li>
                         成片 <Code>content.video_url</Code> 为<b>火山官方签名直链</b>(有有效期,请及时下载转存)。
+                    </li>
+                </ul>
+
+                <p className="font-medium text-gray-900">任务 ID 就是火山官方任务号</p>
+                <p>
+                    提交返回的 <Code>id</Code> / <Code>task_id</Code> 为<b>火山方舟形</b>(<Code>cgt-</Code>{' '}
+                    开头)。由火山方舟受理的任务,该编号<b>即火山官方任务号</b> —— 与您在火山侧看到的是
+                    <b>同一个号</b>,可直接用于对账、工单与日志核对,无需再做任何映射。
+                </p>
+                <Pre>{`curl ${BASE}/v1/video/generations/cgt-20260819224039-bfjdv \\
+  -H "Authorization: Bearer sk-ent-您的密钥"
+# → {"status":"in_progress", "id":"cgt-20260819224039-bfjdv", …}`}</Pre>
+                <ul className="list-disc space-y-1 pl-5 text-gray-600">
+                    <li>
+                        <b>提交会等上游受理后再返回</b>(通常十几秒)—— 火山那边分配出任务号我们才应答,
+                        这样您拿到的从第一刻起就是火山官方的号。
+                    </li>
+                    <li>
+                        若上游迟迟未受理,提交返回 <Code>504</Code> —— 请稍后重新提交。
+                        <b>这种情况不计费。</b>
                     </li>
                 </ul>
             </Section>
@@ -693,8 +749,14 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                             </tr>
                             <tr>
                                 <Td>404</Td>
-                                <Td>not_found</Td>
-                                <Td>任务 ID 不存在(或不属于当前账号)</Td>
+                                <Td>
+                                    not_found / AssetNotFound / <br />
+                                    GroupNotFound
+                                </Td>
+                                <Td>
+                                    任务 ID 不存在(或不属于当前账号);素材 / 素材组不存在或已删除。
+                                    <b>资源不存在一律 404</b> —— 是终态,重试不会变好。
+                                </Td>
                             </tr>
                             <tr>
                                 <Td>503</Td>
@@ -734,8 +796,9 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                     <div>
                         <p className="font-medium text-gray-900">Q:一条 5 秒 720p 视频多少钱?</p>
                         <p>
-                            720p 5s ≈ 108,872 token:seedance-2-0 约 ¥4.26,fast 约 ¥3.42,mini 约 ¥2.13。10 秒约为 2
-                            倍;1080p 约为 720p 的 2.25 倍 token。精确金额以完成后的「调用日志」为准。
+                            720p 5s ≈ 108,872 token:seedance-2-0 约 ¥4.26,fast 约 ¥3.42,mini 约 ¥2.13,seedance-2-5 约
+                            ¥6.48(8.5 折示例,实际按您的折扣率)。10 秒约为 2 倍;1080p 约为 720p 的 2.25 倍 token,480p
+                            约为一半。精确金额以完成后的「调用日志」为准。
                         </p>
                     </div>
                     <div>
@@ -749,8 +812,9 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                     <div>
                         <p className="font-medium text-gray-900">Q:HTTPS 证书报错?</p>
                         <p>
-                            当前入口为独立 IP,HTTPS 使用自签证书:curl 加 <Code>-k</Code>,Python requests 加{' '}
-                            <Code>verify=False</Code>;或直接使用 HTTP(服务器对服务器场景)。
+                            请改用主域名(受信 HTTPS,无需任何特殊配置)。裸 IP 兼容入口的 HTTPS 是自签证书:curl 加{' '}
+                            <Code>-k</Code>,Python requests 加 <Code>verify=False</Code>;或直接使用
+                            HTTP(服务器对服务器场景)。
                         </p>
                     </div>
                     <div>

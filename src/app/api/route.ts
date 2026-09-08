@@ -13,6 +13,13 @@ import {
 } from '@/lib/enterprise/assets';
 import { RealPersonError, createVisualValidateSession, getVisualValidateGroupId } from '@/lib/enterprise/real-person';
 import { handleKuaiziAssetAction, kuaiziAssetsEnabled, shouldUseKuaiziAssets } from '@/lib/enterprise/kuaizi-assets';
+import { decryptUpstreamKey } from '@/lib/enterprise/crypto';
+import {
+    newRequestLogCtx,
+    sanitizeRequestBody,
+    writeRequestLog,
+    type RequestLogCtx,
+} from '@/lib/enterprise/request-log';
 
 export const runtime = 'nodejs';
 
@@ -183,11 +190,23 @@ function groupResult(g: {
 }
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
+    // 请求日志 P2(2026-09-04):素材库 Action 全量落库(量级远低于视频轮询)。
+    // wrapper 形与 enterprise/proxy 的 handleSubmit 一致 —— inner 沿途填 ctx,这里统一写行
+    // (fire-and-forget,绝不影响客户响应)。
+    const ctx = newRequestLogCtx('asset_action', undefined, req);
+    const res = await handleAssetAction(req, ctx);
+    writeRequestLog(ctx, res);
+    return res;
+}
+
+async function handleAssetAction(req: NextRequest, ctx: RequestLogCtx): Promise<NextResponse> {
     const action = req.nextUrl.searchParams.get('Action') || '';
+    ctx.action = action || null;
     if (!action) return fail('Unknown', 400, 'MissingParameter', 'query 参数 Action 必填');
 
     // AK/SK 火山签名验签需要原始 body,故先读 body 再鉴权(sk-ent Bearer 不受影响)。
     const raw = await req.text();
+    ctx.requestBody = sanitizeRequestBody(raw);
     // middleware 把 `/`(火山官方根路径形态)/ `/api/`(尾斜杠)rewrite 到本路由,
     // 原始 path 在 x-enterprise-orig-path —— SignerV4 客户签的是实际请求 path,验签
     // 必须用它。只信白名单值(外部伪造该头拿不到任何好处,签名仍要过 HMAC)。
@@ -202,13 +221,26 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     });
     if (!auth.ok) return fail(action, auth.status, 'UnauthorizedOperation', auth.message);
     const userId = auth.customer.userId;
+    ctx.userId = userId;
+    ctx.keyId = auth.customer.keyId;
 
     // 「火山」渠道客户?= 已开通 volc(有 volc 上游 key 行)。AK/SK 是账号级(非按 region),
     // 故按"客户是否开通 volc"判定。volc 客户的真人认证 + 素材库都走 provider(专属服务)。
-    const isVolc = !!(await prisma.enterpriseUpstreamKey.findUnique({
+    // 客户 volc 行 + 自己的筷子 key(2026-09-04 起支持按客户;占位符行 → undefined 走平台 env key)。
+    const volcRow = await prisma.enterpriseUpstreamKey.findUnique({
         where: { user_id_region: { user_id: userId, region: 'volc' } },
-        select: { id: true },
-    }));
+        select: { id: true, upstream_key_enc: true },
+    });
+    const isVolc = !!volcRow;
+    let custKuaiziKey: string | undefined;
+    if (volcRow) {
+        try {
+            const k = decryptUpstreamKey(volcRow.upstream_key_enc);
+            if (k.startsWith('kz-')) custKuaiziKey = k;
+        } catch (e) {
+            console.warn('[asset-api] volc key decrypt failed, fallback env', { userId, err: String(e) });
+        }
+    }
 
     // 真人认证是「火山」渠道专属服务:未开通 volc → 403。
     if ((action === 'CreateVisualValidateSession' || action === 'GetVisualValidateResult') && !isVolc) {
@@ -223,6 +255,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             return fail(action, 400, 'InvalidParameter', '请求体必须是 JSON');
         }
     }
+    // 素材/组 id 单列落库(检索 q 命中);创建类 Action 在成功后回填新建 id。
+    {
+        const rid = (body as { Id?: unknown })?.Id;
+        if (typeof rid === 'string' && rid) ctx.resourceId = rid;
+    }
 
     // 素材库(2026-08-06 v3,operator 拍板):【全部素材统一平台托管】—— 真人素材四渠道
     // 通用,LivenessFace 只是分组类型不再决定存储位置;727 provider 素材路由下线
@@ -235,15 +272,29 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // 回落平台库(取舍详见 kuaizi-assets.ts 文件头)。cn/global/promax 不受影响。
     // 三种情况仍回落平台库(真人素材 / 平台形 Id / 平台形 GroupId)—— 见 shouldUseKuaiziAssets。
     if (kuaiziAssetsEnabled() && isVolc && shouldUseKuaiziAssets(action, body)) {
+        ctx.format = 'kuaizi'; // 素材落筷子自有库(volc 渠道缺省)
         try {
-            return ok(action, await handleKuaiziAssetAction(action, body));
+            const result = await handleKuaiziAssetAction(action, body, userId, custKuaiziKey);
+            const rid = (result as { Id?: unknown } | null)?.Id;
+            if (typeof rid === 'string' && rid) ctx.resourceId = rid;
+            return ok(action, result);
         } catch (e) {
-            if (e instanceof RealPersonError) return fail(action, e.status, e.code, e.message);
+            if (e instanceof RealPersonError) {
+                // 上游侧原因落请求日志(2026-09-04):admin 日志详情页可直接看到上游为什么拒
+                if (e.upstream) {
+                    ctx.upstreamStatus = e.upstream.status ?? null;
+                    ctx.upstreamBody = e.upstream.body ?? null;
+                }
+                return fail(action, e.status, e.code, e.message);
+            }
             console.error('[asset-api] kuaizi asset error', action, e);
             return fail(action, 500, 'InternalError', 'internal error');
         }
     }
 
+    // 真人认证走 provider(筷子),其余平台 R2 托管库
+    ctx.format =
+        action === 'CreateVisualValidateSession' || action === 'GetVisualValidateResult' ? 'kuaizi' : 'platform';
     try {
         switch (action) {
             case 'CreateAsset': {
@@ -262,6 +313,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
                     sourceUrl: URL,
                 });
                 // 火山官方 CreateAsset Result 仅返 {Id}(客户脚本严格校验;URL/状态经 GetAsset 查,#300 同步)
+                ctx.resourceId = row.id;
                 return ok(action, { Id: row.id });
             }
             case 'GetAsset': {
@@ -375,6 +427,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
                         group_type: p.data.GroupType,
                     },
                 });
+                ctx.resourceId = g.id;
                 return ok(action, { Id: g.id });
             }
             case 'GetAssetGroup': {
@@ -447,8 +500,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             }
             // ── 真人视觉认证(「火山」渠道,翻译到新 provider REST;不计费)──────────
             case 'CreateVisualValidateSession': {
-                // 客户端 body 含 CallbackURL/ProjectName,上游 /sessions 无入参,忽略之
-                const s = await createVisualValidateSession();
+                // 筷子上游【必填】CallbackURL(活体完成后的跳转目标);客户没传就由
+                // real-person 层用门户域名兜底。ProjectName 上游不支持,忽略。
+                const cb = z.object({ CallbackURL: z.string().trim().url().max(2000).optional() }).safeParse(body);
+                if (!cb.success) return zodFail(action, cb.error);
+                const s = await createVisualValidateSession(cb.data.CallbackURL, custKuaiziKey);
                 return ok(action, {
                     BytedToken: s.bytedToken,
                     H5Link: s.h5Link,
@@ -458,14 +514,20 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             case 'GetVisualValidateResult': {
                 const p = z.object({ BytedToken: z.string().trim().min(1).max(200) }).safeParse(body);
                 if (!p.success) return fail(action, 400, 'InvalidParameter', 'BytedToken 必填');
-                const groupId = await getVisualValidateGroupId(p.data.BytedToken);
+                const groupId = await getVisualValidateGroupId(p.data.BytedToken, custKuaiziKey);
                 return ok(action, { GroupId: groupId });
             }
             default:
                 return fail(action, 400, 'InvalidAction', `不支持的 Action: ${action}`);
         }
     } catch (e) {
-        if (e instanceof RealPersonError) return fail(action, e.status, e.code, e.message);
+        if (e instanceof RealPersonError) {
+            if (e.upstream) {
+                ctx.upstreamStatus = e.upstream.status ?? null;
+                ctx.upstreamBody = e.upstream.body ?? null;
+            }
+            return fail(action, e.status, e.code, e.message);
+        }
         if (e instanceof AssetError) return fail(action, e.status, e.code, e.message);
         console.error('[asset-api] internal error', action, e);
         return fail(action, 500, 'InternalError', 'internal error');

@@ -16,8 +16,9 @@ const {
     chargeEnterpriseVideoTask,
 } = vi.hoisted(() => ({
     db: {
-        seedanceVideoTask: { create: vi.fn(), findUnique: vi.fn(), update: vi.fn() },
+        seedanceVideoTask: { create: vi.fn(), findUnique: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
         account: { findUnique: vi.fn() },
+        enterpriseRequestLog: { create: vi.fn(async () => ({})) },
     },
     resolveEnterpriseAuth: vi.fn(),
     getUpstreamKeyForUser: vi.fn(),
@@ -29,7 +30,16 @@ const {
     chargeEnterpriseVideoTask: vi.fn(),
 }));
 vi.mock('@/lib/db', () => ({ prisma: db }));
-vi.mock('../keys', () => ({ resolveEnterpriseAuth, getUpstreamKeyForUser }));
+// callerHasVolc:鉴权前的「调用方是不是 volc 客户」探测(决定火山原生模型名按哪个渠道解释)。
+// 缺省 false = 按 cn 解释,与既有用例的期望一致;需要 volc 语义的用例自行 mockResolvedValue(true)。
+const { callerHasVolc } = vi.hoisted(() => ({ callerHasVolc: vi.fn(async () => false) }));
+vi.mock('../keys', () => ({ resolveEnterpriseAuth, getUpstreamKeyForUser, callerHasVolc }));
+const { toUpstreamId } = vi.hoisted(() => ({ toUpstreamId: vi.fn(async (id: string) => id) }));
+vi.mock('../volc-id-map', () => ({ toUpstreamId }));
+const { uploadImage } = vi.hoisted(() => ({
+    uploadImage: vi.fn(async (key: string) => `https://images.silkroadai.io/${key}.jpg`),
+}));
+vi.mock('@/lib/r2/client', () => ({ uploadImage }));
 vi.mock('@/lib/seedance/cn-adapter', async (importOriginal) => {
     const mod = await importOriginal<typeof import('@/lib/seedance/cn-adapter')>();
     return { ...mod, submitVideoWithKey, pollVideoWithKey };
@@ -49,7 +59,8 @@ vi.mock('../assets', async (importOriginal) => {
 });
 import { AssetError } from '../assets';
 
-import { handleEnterpriseV1, isEnterpriseFlavor } from '../proxy';
+import { handleEnterpriseArkV3, handleEnterpriseV1, isEnterpriseFlavor } from '../proxy';
+import { __resetPollCache } from '../poll-cache';
 
 const CUSTOMER = { userId: 'u1', tenantId: null, keyId: 'k1', region: 'cn', upstreamKey: 'sk-upstream-u1' };
 
@@ -63,6 +74,7 @@ function req(method: string, url: string, body?: unknown): NextRequest {
 
 beforeEach(() => {
     vi.clearAllMocks();
+    __resetPollCache();
     resolveEnterpriseAuth.mockResolvedValue({ ok: true, customer: CUSTOMER });
     db.account.findUnique.mockResolvedValue({ balance_cny: '100' });
     estimateEnterpriseCostCny.mockResolvedValue(4.26);
@@ -362,9 +374,27 @@ describe('火山渠道(volc)路由', () => {
         );
     });
 
-    it('seedance-2-5 无 480p/4k(上游 artsdance-2-5-pro 不支持):传 480p → 400,不打上游', async () => {
+    it('seedance-2-5 480p(2026-09-07 开档,走原版 260628 上游):→ 长名 seedance2.5-480p', async () => {
+        submitVideoWithKey.mockResolvedValue(
+            NextResponse.json({ id: 'cgt-25c', task_id: 'cgt-25c', status: 'queued' }),
+        );
         const res = await handleEnterpriseV1(
             req('POST', '/v1/video/generations', { model: 'seedance-2-5', prompt: 'x', resolution: '480p' }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(200);
+        expect(submitVideoWithKey).toHaveBeenCalledWith(
+            expect.objectContaining({ model: 'seedance2.5-480p' }),
+            expect.any(String),
+        );
+        expect(db.seedanceVideoTask.create).toHaveBeenCalledWith({
+            data: expect.objectContaining({ model: 'seedance-2-5', resolution: '480p' }),
+        });
+    });
+
+    it('seedance-2-5 无 4k:传 4k → 400,不打上游', async () => {
+        const res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { model: 'seedance-2-5', prompt: 'x', resolution: '4k' }),
             '/video/generations',
         );
         expect(res.status).toBe(400);
@@ -416,7 +446,7 @@ describe('isEnterpriseFlavor', () => {
 });
 
 describe('分发白名单', () => {
-    it('GET /models → 11 个归一短名(国内 3 + 2.5 + global 3 + promax 3 + promax 2.5)', async () => {
+    it('GET /models → 12 个归一短名(国内 3 + 2.5 + global 3 + global 2.5 + promax 3 + promax 2.5)', async () => {
         const res = await handleEnterpriseV1(req('GET', '/v1/models'), '/models');
         const j = (await res.json()) as { data: Array<{ id: string }> };
         expect(res.status).toBe(200);
@@ -428,6 +458,7 @@ describe('分发白名单', () => {
             'seedance-2-0-global',
             'seedance-2-0-global-fast',
             'seedance-2-0-global-mini',
+            'seedance-2-5-global',
             'seedance-2-0-promax',
             'seedance-2-0-promax-fast',
             'seedance-2-0-promax-mini',
@@ -512,6 +543,56 @@ describe('提交', () => {
         const res = await handleEnterpriseV1(req('POST', '/v1/video/generations', goodBody), '/video/generations');
         expect(res.status).toBe(403);
         expect(db.seedanceVideoTask.create).not.toHaveBeenCalled();
+    });
+
+    it('到达日志:每个提交(含后续 401 的)都记 submit received + client_request_id', async () => {
+        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+        resolveEnterpriseAuth.mockResolvedValue({
+            ok: false,
+            status: 401,
+            code: 'invalid_api_key',
+            message: 'invalid or inactive API key',
+        });
+        const res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { ...goodBody, client_request_id: 'cli-req-42' }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(401);
+        expect(logSpy).toHaveBeenCalledWith(
+            '[enterprise-proxy] submit received',
+            expect.objectContaining({ client_request_id: 'cli-req-42', model: 'seedance2.0-pro-720p' }),
+        );
+        logSpy.mockRestore();
+    });
+
+    it('非 JSON body → 400 invalid_json + 留痕(以前无日志,对账盲区)', async () => {
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const r = new NextRequest('http://128.241.232.23/v1/video/generations', {
+            method: 'POST',
+            headers: { authorization: 'Bearer sk-ent-' + 'a'.repeat(48), 'content-type': 'application/json' },
+            body: '{broken',
+        });
+        const res = await handleEnterpriseV1(r, '/video/generations');
+        expect(res.status).toBe(400);
+        expect(warnSpy).toHaveBeenCalledWith(
+            '[enterprise-proxy] submit body not JSON',
+            expect.objectContaining({ bytes: 7 }),
+        );
+        warnSpy.mockRestore();
+    });
+
+    it('body 读失败(传输中断)→ 400 + 留痕,不打上游', async () => {
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const r = req('POST', '/v1/video/generations', goodBody);
+        vi.spyOn(r, 'text').mockRejectedValue(new Error('aborted'));
+        const res = await handleEnterpriseV1(r, '/video/generations');
+        expect(res.status).toBe(400);
+        expect(warnSpy).toHaveBeenCalledWith(
+            '[enterprise-proxy] submit body read failed(传输中断)',
+            expect.objectContaining({ error: 'aborted' }),
+        );
+        expect(submitVideoWithKey).not.toHaveBeenCalled();
+        warnSpy.mockRestore();
     });
 
     it('任务落库失败 → 503 fail closed(防生成了收不到钱)', async () => {
@@ -642,7 +723,7 @@ describe('归一短名(2026-07-20)', () => {
         // CUSTOMER.region = 'cn'(AK/SK 账号级默认),但 volc 任务不应 403
         const res = await handleEnterpriseV1(req('GET', '/v1/video/generations/task_v9'), '/video/generations/task_v9');
         expect(res.status).toBe(200);
-        expect(pollVolcVideo).toHaveBeenCalledWith('task_v9');
+        expect(pollVolcVideo).toHaveBeenCalledWith('task_v9', undefined);
         expect(pollVideoWithKey).not.toHaveBeenCalled();
     });
 
@@ -911,7 +992,7 @@ describe('轮询', () => {
     });
 });
 
-describe('火山渠道(volc)四档模型 —— 上游换筷子开放平台后开放 fast/mini/2.5(2026-08-17)', () => {
+describe('火山渠道(volc)模型档位 —— fast/mini 已下架(2026-08-19),仅 2.0 / 2.5 在售', () => {
     beforeEach(() => {
         submitVolcVideo.mockImplementation(() =>
             Promise.resolve(NextResponse.json({ id: 'cgt-m1', task_id: 'cgt-m1', status: 'queued' })),
@@ -919,8 +1000,7 @@ describe('火山渠道(volc)四档模型 —— 上游换筷子开放平台后�
     });
 
     it.each([
-        ['doubao-seedance-2.0-fast', 'fast'],
-        ['doubao-seedance-2.0-mini', 'mini'],
+        ['doubao-seedance-2.0', 'pro'],
         ['doubao-seedance-2.5', '2.5'],
     ])('%s 走 volc 适配器(不走 cn),按对客名落库', async (model) => {
         const res = await handleEnterpriseV1(
@@ -936,13 +1016,9 @@ describe('火山渠道(volc)四档模型 —— 上游换筷子开放平台后�
         expect(db.seedanceVideoTask.create).toHaveBeenCalledWith({ data: expect.objectContaining({ model }) });
     });
 
-    it('分辨率按档位门控:fast/mini 无 4k、2.5 仅 480p/720p → 400 且不打上游', async () => {
-        for (const [model, res_] of [
-            ['doubao-seedance-2.0-fast', '4k'],
-            ['doubao-seedance-2.0-mini', '4k'],
-            ['doubao-seedance-2.5', '1080p'],
-            ['doubao-seedance-2.5', '4k'],
-        ] as const) {
+    it('分辨率按档位门控:2.5 无 4k → 400 且不打上游', async () => {
+        // ⚠️ 2.5 的 1080p 上游 2026-08-18(文档 v1.2)已放开,不再在此列 —— 见下一条用例
+        for (const [model, res_] of [['doubao-seedance-2.5', '4k']] as const) {
             const res = await handleEnterpriseV1(
                 req('POST', '/v1/video/generations', { model, prompt: 'x', resolution: res_ }),
                 '/video/generations',
@@ -951,6 +1027,55 @@ describe('火山渠道(volc)四档模型 —— 上游换筷子开放平台后�
             expect((await res.json()).error.message).toContain('resolution 仅支持');
         }
         expect(submitVolcVideo).not.toHaveBeenCalled();
+    });
+
+    // 2026-08-19 实测:fast/mini 的 vendor_task_id 返 tsk-…(非方舟),pro/2.5 返 cgt-…(方舟)。
+    // 本渠道卖的是原生火山 —— 这两档的片子不是火山出的,先下架。
+    it.each(['doubao-seedance-2.0-fast', 'doubao-seedance-2.0-mini'])(
+        '%s 已下架 → 400 model_unavailable,且【不打上游】(不白花钱)',
+        async (model) => {
+            const res = await handleEnterpriseV1(
+                req('POST', '/v1/video/generations', { model, prompt: 'x', resolution: '720p' }),
+                '/video/generations',
+            );
+            expect(res.status).toBe(400);
+            const j = await res.json();
+            expect(j.error.code).toBe('model_unavailable');
+            expect(j.error.message).toContain('doubao-seedance-2.5');
+            expect(submitVolcVideo).not.toHaveBeenCalled();
+            expect(submitVideoWithKey).not.toHaveBeenCalled();
+            expect(db.seedanceVideoTask.create).not.toHaveBeenCalled();
+        },
+    );
+
+    it('下架对火山方舟形(ark)入口同样生效 —— 两个调用面共用同一道闸', async () => {
+        const res = await handleEnterpriseArkV3(
+            req('POST', '/api/v3/contents/generations/tasks', {
+                model: 'doubao-seedance-2.0-mini',
+                content: [{ type: 'text', text: 'x' }],
+                resolution: '720p',
+            }),
+            '/contents/generations/tasks',
+        );
+        expect(res.status).toBe(400);
+        expect(submitVolcVideo).not.toHaveBeenCalled();
+    });
+
+    it('2.5 @1080p 现在放行(上游 v1.2 放开,实测确认)', async () => {
+        const res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', {
+                model: 'doubao-seedance-2.5',
+                prompt: 'x',
+                resolution: '1080p',
+                ratio: 'adaptive',
+            }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(200);
+        expect(submitVolcVideo).toHaveBeenCalledWith(
+            expect.anything(),
+            expect.objectContaining({ clientModel: 'doubao-seedance-2.5', resolution: '1080p' }),
+        );
     });
 
     it('pro 保留 4k;2.5 时长上限 30(31 → 400 文案含 4-30)', async () => {
@@ -1023,5 +1148,655 @@ describe('火山渠道(volc)四档模型 —— 上游换筷子开放平台后�
             '/video/generations',
         );
         expect(ok.status).toBe(200);
+    });
+});
+
+describe('轮询遇上游 4xx —— 终态化 vs 瞬时(2026-08-18,8925 次轮询事故)', () => {
+    const task = {
+        id: 'cgt-ttc1',
+        tier: 'enterprise-portal',
+        user_id: 'u1',
+        model: 'seedance-2-5',
+        resolution: '720p',
+        has_video: false,
+        status: 'queued',
+        tokens: null,
+        created_at: new Date('2026-08-17T08:19:22Z'),
+        duration: 4,
+        ratio: '16:9',
+        seed: null,
+        generate_audio: true,
+        fail_reason: null,
+    };
+    /** 适配器对上游 4xx 的归一错误体(带 category)。 */
+    const adapterErr = (category: string, message: string, status: number) =>
+        new NextResponse(JSON.stringify({ error: { code: 'upstream_error', message, category } }), {
+            status,
+            headers: { 'Content-Type': 'application/json' },
+        });
+
+    beforeEach(() => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue(task);
+        db.seedanceVideoTask.updateMany.mockResolvedValue({ count: 1 });
+    });
+
+    it('TaskTypeConstraint(4xx 终态)→ 落库 failed + 返回 status:failed,客户据此停止轮询', async () => {
+        pollVideoWithKey.mockResolvedValue(
+            adapterErr(
+                'task_type_constraint',
+                '模型按提示词判定本次为「视频编辑 / 视频延长」任务 —— ratio 必须为 adaptive',
+                400,
+            ),
+        );
+        const res = await handleEnterpriseV1(
+            req('GET', '/v1/video/generations/cgt-ttc1'),
+            '/video/generations/cgt-ttc1',
+        );
+
+        // 关键:HTTP 200 + status=failed(不是把 400 抛给客户 —— 那会被脚本当异常然后无限重试)
+        expect(res.status).toBe(200);
+        const j = (await res.json()) as { status: string; fail_reason: string };
+        expect(j.status).toBe('failed');
+        expect(j.fail_reason).toContain('adaptive');
+        // 且已终态化落库,下次轮询走短路、根本不再打上游
+        expect(db.seedanceVideoTask.updateMany).toHaveBeenCalledWith(
+            expect.objectContaining({
+                where: { id: 'cgt-ttc1' },
+                data: expect.objectContaining({ status: 'failed' }),
+            }),
+        );
+    });
+
+    it('内容审核(4xx 终态)同样终态化', async () => {
+        pollVideoWithKey.mockResolvedValue(adapterErr('content_safety', '提示词未通过内容安全审核', 400));
+        const res = await handleEnterpriseV1(
+            req('GET', '/v1/video/generations/cgt-ttc1'),
+            '/video/generations/cgt-ttc1',
+        );
+        expect(res.status).toBe(200);
+        expect(((await res.json()) as { status: string }).status).toBe('failed');
+        expect(db.seedanceVideoTask.updateMany).toHaveBeenCalled();
+    });
+
+    it('502(瞬时)→ 降级返库内状态,【不】落库 failed(任务还在跑,不能误杀)', async () => {
+        pollVideoWithKey.mockResolvedValue(adapterErr('upstream_unavailable', '上游暂时不可用,请稍后重试', 502));
+        const res = await handleEnterpriseV1(
+            req('GET', '/v1/video/generations/cgt-ttc1'),
+            '/video/generations/cgt-ttc1',
+        );
+        // 轮询失败 ≠ 任务失败:给 200 + 库内状态,客户脚本照常轮询而不是当异常中断整条流水线
+        expect(res.status).toBe(200);
+        expect(res.headers.get('X-Silkroadai-Poll-Degraded')).toBe('1');
+        expect(((await res.json()) as { status: string }).status).toBe('queued');
+        expect(db.seedanceVideoTask.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('429(限流)→ 同样降级,不误杀', async () => {
+        pollVideoWithKey.mockResolvedValue(adapterErr('rate_limited', '请求过于频繁,请稍后重试', 429));
+        const res = await handleEnterpriseV1(
+            req('GET', '/v1/video/generations/cgt-ttc1'),
+            '/video/generations/cgt-ttc1',
+        );
+        expect(res.status).toBe(200);
+        expect(res.headers.get('X-Silkroadai-Poll-Degraded')).toBe('1');
+        expect(db.seedanceVideoTask.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('降级回显库里的真实进度:in_progress 不会被说成 queued', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({ ...task, status: 'in_progress' });
+        pollVideoWithKey.mockResolvedValue(adapterErr('upstream_unavailable', '上游暂时不可用', 503));
+        const res = await handleEnterpriseV1(
+            req('GET', '/v1/video/generations/cgt-ttc1'),
+            '/video/generations/cgt-ttc1',
+        );
+        const j = (await res.json()) as { status: string; progress: number };
+        expect(j.status).toBe('in_progress');
+        expect(j.progress).toBe(50);
+    });
+
+    it('火山形(ark)降级走官方 status 词表(running),不吐我们的内部词', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({
+            ...task,
+            status: 'in_progress',
+            model: 'doubao-seedance-2.5',
+        });
+        pollVolcVideo.mockResolvedValue(adapterErr('rate_limited', '请求过于频繁', 429));
+        const res = await handleEnterpriseArkV3(
+            req('GET', '/api/v3/contents/generations/tasks/cgt-ttc1'),
+            '/contents/generations/tasks/cgt-ttc1',
+        );
+        expect(res.status).toBe(200);
+        expect(res.headers.get('X-Silkroadai-Poll-Degraded')).toBe('1');
+        expect(((await res.json()) as { status: string }).status).toBe('running');
+    });
+
+    it('4xx 的 unknown 仍原样透传 —— 对它降级会造出新的无限轮询', async () => {
+        pollVideoWithKey.mockResolvedValue(adapterErr('unknown', '上游拒绝了本次请求 —— 未知原因', 400));
+        const res = await handleEnterpriseV1(
+            req('GET', '/v1/video/generations/cgt-ttc1'),
+            '/video/generations/cgt-ttc1',
+        );
+        expect(res.status).toBe(400);
+        expect(res.headers.get('X-Silkroadai-Poll-Degraded')).toBeNull();
+        expect(db.seedanceVideoTask.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('已 failed 的任务短路,压根不打上游(终态化后的稳态)', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({
+            ...task,
+            status: 'failed',
+            fail_reason: 'ratio 必须 adaptive',
+        });
+        const res = await handleEnterpriseV1(
+            req('GET', '/v1/video/generations/cgt-ttc1'),
+            '/video/generations/cgt-ttc1',
+        );
+        expect(res.status).toBe(200);
+        const j = (await res.json()) as { status: string; fail_reason: string };
+        expect(j.status).toBe('failed');
+        expect(j.fail_reason).toBe('ratio 必须 adaptive');
+        expect(pollVideoWithKey).not.toHaveBeenCalled();
+    });
+});
+
+describe('vendor_task_id 出口(2026-08-19)', () => {
+    const t = {
+        id: 'cgt-v1',
+        tier: 'enterprise-portal',
+        user_id: 'u1',
+        model: 'doubao-seedance-2.5',
+        resolution: '720p',
+        has_video: false,
+        status: 'in_progress',
+        tokens: null,
+        created_at: new Date('2026-08-19T02:00:00Z'),
+        duration: 4,
+        ratio: 'adaptive',
+        seed: null,
+        generate_audio: true,
+        fail_reason: null,
+    };
+    const running = (vendor?: string) =>
+        NextResponse.json({
+            id: 'cgt-v1',
+            task_id: 'cgt-v1',
+            object: 'video',
+            status: 'in_progress',
+            progress: 50,
+            ...(vendor ? { vendor_task_id: vendor } : {}),
+        });
+
+    beforeEach(() => db.seedanceVideoTask.findUnique.mockResolvedValue(t));
+
+    // 2026-08-19 原生化:客户拿到的 `id` 本身就是火山官方任务号(提交时压着等来的),
+    // 既不再单出「渠道侧原始 id」响应头,body 也不加键 —— 火山官方两者都没有。
+    it.each([
+        ['v1 形', handleEnterpriseV1, '/video/generations/cgt-v1'],
+        ['火山形(ark)', handleEnterpriseArkV3, '/contents/generations/tasks/cgt-v1'],
+    ] as const)('%s:不再有 X-Silkroadai-Vendor-Task-Id 头', async (_label, handler, sub) => {
+        pollVolcVideo.mockResolvedValue(running('cgt-20260817125256-tfv79'));
+        const res = await handler(req('GET', `/api/v3${sub}`), sub);
+        expect(res.status).toBe(200);
+        expect(res.headers.get('X-Silkroadai-Vendor-Task-Id')).toBeNull();
+    });
+
+    // 2026-08-26 客户报障:提交 duration=-1(智能时长),响应一直回显 -1。
+    // 库里存的就是提交参数,而上游在完成时会给出模型真正选的秒数 —— 该以上游为准。
+    it('ark 回显优先用上游【已推导】的 duration / ratio,而不是库里的提交参数', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({ ...t, duration: -1, ratio: '16:9' });
+        pollVolcVideo.mockResolvedValue(
+            NextResponse.json({
+                id: 'cgt-v1',
+                task_id: 'cgt-v1',
+                object: 'video',
+                status: 'completed',
+                progress: 100,
+                video_url: 'https://v/1.mp4',
+                usage: { completion_tokens: 100, total_tokens: 100 },
+                duration: 5,
+                ratio: 'adaptive',
+            }),
+        );
+        const res = await handleEnterpriseArkV3(
+            req('GET', '/api/v3/contents/generations/tasks/cgt-v1'),
+            '/contents/generations/tasks/cgt-v1',
+        );
+        const body = (await res.json()) as Record<string, unknown>;
+        expect(body.duration).toBe(5);
+        expect(body.ratio).toBe('adaptive');
+    });
+
+    it('上游没给(running 期 / 其它渠道适配器)→ 回落库里的值,行为不变', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({ ...t, duration: 8, ratio: '9:16' });
+        pollVolcVideo.mockResolvedValue(
+            NextResponse.json({ id: 'cgt-v1', task_id: 'cgt-v1', object: 'video', status: 'in_progress' }),
+        );
+        const res = await handleEnterpriseArkV3(
+            req('GET', '/api/v3/contents/generations/tasks/cgt-v1'),
+            '/contents/generations/tasks/cgt-v1',
+        );
+        const body = (await res.json()) as Record<string, unknown>;
+        expect(body.duration).toBe(8);
+        expect(body.ratio).toBe('9:16');
+    });
+
+    // 2026-08-27 客户契约测试报障:volc 的 ark 响应缺 5 个火山官方字段。
+    // 基准(客户给的):framespersecond=24 / generate_audio=true / draft=false /
+    //                service_tier='default' / execution_expires_after=172800
+    it('volc:火山官方字段集要出齐,值取【上游真值】', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({ ...t, duration: 4, ratio: '16:9' });
+        pollVolcVideo.mockResolvedValue(
+            NextResponse.json({
+                id: 'cgt-v1',
+                task_id: 'cgt-v1',
+                object: 'video',
+                status: 'completed',
+                video_url: 'https://v/1.mp4',
+                usage: { completion_tokens: 40594, total_tokens: 40594 },
+                duration: 4,
+                ratio: '16:9',
+                resolution: '480p',
+                framespersecond: 24,
+                generate_audio: true,
+                execution_expires_after: 172800,
+                seed: 26206,
+                tools: [],
+            }),
+        );
+        const res = await handleEnterpriseArkV3(
+            req('GET', '/api/v3/contents/generations/tasks/cgt-v1'),
+            '/contents/generations/tasks/cgt-v1',
+        );
+        const b = (await res.json()) as Record<string, unknown>;
+        expect(b.framespersecond).toBe(24);
+        expect(b.generate_audio).toBe(true);
+        expect(b.execution_expires_after).toBe(172800);
+        expect(b.draft).toBe(false);
+        expect(b.service_tier).toBe('default');
+        expect(b.seed).toBe(26206);
+        expect(b.tools).toEqual([]);
+        // 客户基准里已匹配的三项不能回归
+        expect(b.resolution).toBe('480p');
+        expect(b.ratio).toBe('16:9');
+        expect(b.duration).toBe(4);
+    });
+
+    // 2026-08-31 海外版(global)上 2.5:同上游 SKU,费率与 promax-2.5 同价(operator 拍板)。
+    describe('seedance-2-5-global(海外版 2.5)', () => {
+        beforeEach(() => {
+            submitVideoWithKey.mockResolvedValue(
+                new Response(JSON.stringify({ task_id: 'cgt-g25', status: 'queued' }), { status: 200 }),
+            );
+        });
+
+        it('720p 解析成 seedance2.5-global-720p,region=global(走客户 global key)', async () => {
+            const res = await handleEnterpriseV1(
+                req('POST', '/v1/video/generations', { model: 'seedance-2-5-global', prompt: 'x', resolution: '720p' }),
+                '/video/generations',
+            );
+            expect(res.status).toBe(200);
+            expect(submitVideoWithKey).toHaveBeenCalledWith(
+                expect.objectContaining({ model: 'seedance2.5-global-720p' }),
+                expect.anything(),
+            );
+        });
+
+        it('480p → 400(海外版无 480p);4k → 400(2.5 无 4k)', async () => {
+            for (const r of ['480p', '4k']) {
+                const res = await handleEnterpriseV1(
+                    req('POST', '/v1/video/generations', { model: 'seedance-2-5-global', prompt: 'x', resolution: r }),
+                    '/video/generations',
+                );
+                expect(res.status).toBe(400);
+            }
+            expect(submitVideoWithKey).not.toHaveBeenCalled();
+        });
+    });
+
+    // 2026-08-27 客户契约脚本:从查询响应读 upstream_id,用 ^cgt-\d{14}-[A-Za-z0-9]+$ 校验,
+    // 缺了就判整轮失败。值 = 我们的对客 id(#398 起它本身就是火山官方任务号)。
+    // 2026-08-28 客户契约脚本 04 暴露的 #398 回归:对客素材号换成火山形后,
+    // 生成请求里的 asset:// 引用没跟着翻回上游号 → 上游 failed「asset … is not found」。
+    // A/B 实测:火山号 failed、上游号 succeeded。
+    it('volc:asset:// 引用翻回上游素材号再发上游(深走 content 与顶层别名)', async () => {
+        vi.mocked(toUpstreamId).mockImplementation(async (id: string) =>
+            id === 'asset-20260828014656-n7mc9' ? '193477566093328454' : id,
+        );
+        submitVolcVideo.mockImplementation(() =>
+            Promise.resolve(NextResponse.json({ id: 'cgt-x', task_id: 'cgt-x', status: 'queued' })),
+        );
+        await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', {
+                model: 'doubao-seedance-2.5',
+                resolution: '720p',
+                content: [
+                    { type: 'text', text: 'x' },
+                    {
+                        type: 'image_url',
+                        image_url: { url: 'asset://asset-20260828014656-n7mc9' },
+                        role: 'reference_image',
+                    },
+                ],
+            }),
+            '/video/generations',
+        );
+        const sent = submitVolcVideo.mock.calls[0][0] as { content: Array<Record<string, never>> };
+        expect(JSON.stringify(sent)).toContain('asset://193477566093328454');
+        expect(JSON.stringify(sent)).not.toContain('asset-20260828014656-n7mc9');
+    });
+
+    // 2026-08-28 客户列为「明确不兼容项」:上游对 content[].*_url.url 有 4000 字符硬上限
+    // (实测原文 `is too long (6118 chars, max 4000)`),真实图片的 base64 根本进不去。
+    // cn 渠道早就替客户把 data URL 转存 R2,volc 之前没做 —— 同平台两条渠道能力不一致。
+    it('volc:内联 base64 转存 R2 后再发上游(上游 url 有 4000 字符硬上限)', async () => {
+        vi.mocked(toUpstreamId).mockImplementation(async (id: string) => id);
+        submitVolcVideo.mockImplementation(() =>
+            Promise.resolve(NextResponse.json({ id: 'cgt-x', task_id: 'cgt-x', status: 'queued' })),
+        );
+        const big = 'data:image/png;base64,' + 'A'.repeat(8000);
+        await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', {
+                model: 'doubao-seedance-2.5',
+                resolution: '720p',
+                content: [
+                    { type: 'text', text: 'x' },
+                    { type: 'image_url', image_url: { url: big }, role: 'reference_image' },
+                ],
+            }),
+            '/video/generations',
+        );
+        const sent = JSON.stringify(submitVolcVideo.mock.calls[0][0]);
+        expect(sent).not.toContain('data:image/png;base64');
+        expect(sent).toContain('https://images.silkroadai.io/seedance-volc-ref/');
+        expect(uploadImage).toHaveBeenCalled();
+    });
+
+    it('volc:内联 base64 超 20MB → 400,给可操作提示(不静默塞给上游)', async () => {
+        vi.mocked(toUpstreamId).mockImplementation(async (id: string) => id);
+        const huge = 'data:image/png;base64,' + 'A'.repeat(30 * 1024 * 1024);
+        const res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', {
+                model: 'doubao-seedance-2.5',
+                resolution: '720p',
+                content: [
+                    { type: 'text', text: 'x' },
+                    { type: 'image_url', image_url: { url: huge }, role: 'reference_image' },
+                ],
+            }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(400);
+        expect((await res.json()).error.message).toContain('20MB');
+    });
+
+    it('volc:映射查不到的引用原样透传(存量客户手里的上游号继续能用)', async () => {
+        vi.mocked(toUpstreamId).mockImplementation(async (id: string) => id);
+        submitVolcVideo.mockImplementation(() =>
+            Promise.resolve(NextResponse.json({ id: 'cgt-x', task_id: 'cgt-x', status: 'queued' })),
+        );
+        await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', {
+                model: 'doubao-seedance-2.5',
+                resolution: '720p',
+                content: [
+                    { type: 'text', text: 'x' },
+                    { type: 'video_url', video_url: { url: 'asset://193477566093328454' }, role: 'reference_video' },
+                ],
+            }),
+            '/video/generations',
+        );
+        expect(JSON.stringify(submitVolcVideo.mock.calls[0][0])).toContain('asset://193477566093328454');
+    });
+
+    it('volc:查询响应带 upstream_id,且等于对客 id(客户脚本正则要求)', async () => {
+        pollVolcVideo.mockResolvedValue(
+            NextResponse.json({ id: 'cgt-v1', task_id: 'cgt-v1', object: 'video', status: 'in_progress' }),
+        );
+        const res = await handleEnterpriseArkV3(
+            req('GET', '/api/v3/contents/generations/tasks/cgt-v1'),
+            '/contents/generations/tasks/cgt-v1',
+        );
+        const b = (await res.json()) as Record<string, unknown>;
+        expect(b.upstream_id).toBe(b.id);
+        expect(b.upstream_id).toBe('cgt-v1');
+    });
+
+    it('volc:upstream_id 绝不是上游的 vendor_task_id(落非方舟时那是 tsk-,会泄露中间层)', async () => {
+        pollVolcVideo.mockResolvedValue(
+            NextResponse.json({
+                id: 'cgt-v1',
+                task_id: 'cgt-v1',
+                object: 'video',
+                status: 'in_progress',
+                vendor_task_id: 'tsk-ghuya22ne4tyq74q',
+            }),
+        );
+        const res = await handleEnterpriseArkV3(
+            req('GET', '/api/v3/contents/generations/tasks/cgt-v1'),
+            '/contents/generations/tasks/cgt-v1',
+        );
+        const body = await res.text();
+        expect(JSON.parse(body).upstream_id).toBe('cgt-v1');
+        expect(body).not.toContain('tsk-ghuya22ne4tyq74q');
+    });
+
+    it('volc:时间戳以上游为准(updated_at 不再是每查一次就变的 Date.now())', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({ ...t, created_at: new Date(1700000000000) });
+        pollVolcVideo.mockResolvedValue(
+            NextResponse.json({
+                id: 'cgt-v1',
+                task_id: 'cgt-v1',
+                object: 'video',
+                status: 'completed',
+                video_url: 'https://v/1.mp4',
+                usage: { completion_tokens: 1, total_tokens: 1 },
+                upstream_created_at: 1787763028,
+                upstream_updated_at: 1787763201,
+                last_frame_url: '',
+            }),
+        );
+        const res = await handleEnterpriseArkV3(
+            req('GET', '/api/v3/contents/generations/tasks/cgt-v1'),
+            '/contents/generations/tasks/cgt-v1',
+        );
+        const b = (await res.json()) as Record<string, unknown>;
+        expect(b.created_at).toBe(1787763028);
+        expect(b.updated_at).toBe(1787763201);
+        // 无尾帧时键要在、值为空串
+        expect((b.content as Record<string, unknown>).last_frame_url).toBe('');
+    });
+
+    it('volc:上游未受理(时间戳为 0)→ 回落我们的库值,不给客户 0', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({ ...t, created_at: new Date(1700000000000) });
+        pollVolcVideo.mockResolvedValue(
+            NextResponse.json({
+                id: 'cgt-v1',
+                task_id: 'cgt-v1',
+                object: 'video',
+                status: 'in_progress',
+                upstream_created_at: 0,
+                upstream_updated_at: 0,
+            }),
+        );
+        const res = await handleEnterpriseArkV3(
+            req('GET', '/api/v3/contents/generations/tasks/cgt-v1'),
+            '/contents/generations/tasks/cgt-v1',
+        );
+        const b = (await res.json()) as Record<string, unknown>;
+        expect(b.created_at).toBe(1700000000);
+        expect(b.updated_at).not.toBe(0);
+    });
+
+    it('volc:上游还没给(running / 降级)→ 字段仍恒在,走火山官方默认值', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({ ...t, status: 'in_progress' });
+        pollVolcVideo.mockResolvedValue(
+            NextResponse.json({ id: 'cgt-v1', task_id: 'cgt-v1', object: 'video', status: 'in_progress' }),
+        );
+        const res = await handleEnterpriseArkV3(
+            req('GET', '/api/v3/contents/generations/tasks/cgt-v1'),
+            '/contents/generations/tasks/cgt-v1',
+        );
+        const b = (await res.json()) as Record<string, unknown>;
+        expect(b.framespersecond).toBe(24);
+        expect(b.execution_expires_after).toBe(172800);
+        expect(b.service_tier).toBe('default');
+        expect(b.draft).toBe(false);
+    });
+
+    it('火山形(ark)body 仍是官方字段集(#326 严格白名单)', async () => {
+        pollVolcVideo.mockResolvedValue(running('cgt-20260817125256-tfv79'));
+        const res = await handleEnterpriseArkV3(
+            req('GET', '/api/v3/contents/generations/tasks/cgt-v1'),
+            '/contents/generations/tasks/cgt-v1',
+        );
+        const body = (await res.json()) as Record<string, unknown>;
+        expect(body).not.toHaveProperty('vendor_task_id');
+        expect(body.status).toBe('running');
+    });
+});
+
+describe('请求日志落库(2026-09-03)', () => {
+    const flush = () => new Promise((r) => setTimeout(r, 0));
+    const reqlogRows = () =>
+        (db.enterpriseRequestLog.create.mock.calls as unknown as Array<[{ data: Record<string, unknown> }]>).map(
+            (c) => c[0].data,
+        );
+
+    it('submit happy → 全量落行(归属/渠道/任务/上游/入参)', async () => {
+        submitVideoWithKey.mockResolvedValue(NextResponse.json({ id: 'cgt-e1', task_id: 'cgt-e1', status: 'queued' }));
+        await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', {
+                model: 'seedance-2-0',
+                prompt: '一只猫',
+                client_request_id: 'cli-7',
+            }),
+            '/video/generations',
+        );
+        await flush();
+        const rows = reqlogRows();
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({
+            kind: 'submit',
+            format: 'v1',
+            user_id: 'u1',
+            key_id: 'k1',
+            region: 'cn',
+            model: 'seedance-2-0',
+            task_id: 'cgt-e1',
+            client_request_id: 'cli-7',
+            http_status: 200,
+            upstream_status: 200,
+        });
+        expect(String(rows[0].request_body)).toContain('一只猫');
+        expect(typeof rows[0].duration_ms).toBe('number');
+        expect(typeof rows[0].upstream_ms).toBe('number');
+    });
+
+    it('submit 被拒(401,没打上游)也落行:user 空 + error_code 是客户看到的', async () => {
+        resolveEnterpriseAuth.mockResolvedValue({
+            ok: false,
+            status: 401,
+            code: 'invalid_api_key',
+            message: 'invalid or inactive API key',
+        });
+        await handleEnterpriseV1(req('POST', '/v1/video/generations', { model: 'seedance-2-0' }), '/video/generations');
+        await flush();
+        const rows = reqlogRows();
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({
+            kind: 'submit',
+            user_id: null,
+            http_status: 401,
+            upstream_status: null,
+            error_code: 'invalid_api_key',
+        });
+    });
+
+    it('submit 入参里的 base64 data URL 脱媒后落库(不存媒体字节)', async () => {
+        submitVideoWithKey.mockResolvedValue(NextResponse.json({ id: 'cgt-e2', status: 'queued' }));
+        resolveAssetRefs.mockImplementation(async (b: Record<string, unknown>) => b);
+        await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', {
+                model: 'seedance-2-0',
+                prompt: 'x',
+                image: `data:image/png;base64,${'Z'.repeat(50_000)}`,
+            }),
+            '/video/generations',
+        );
+        await flush();
+        const body = String(reqlogRows()[0].request_body);
+        expect(body).not.toContain('ZZZZ');
+        expect(body).toContain('[data-url image/png');
+    });
+
+    it('poll 例行(in_progress,状态没变)→ 不落行', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({
+            id: 'cgt-e1',
+            user_id: 'u1',
+            tier: 'enterprise-portal',
+            model: 'seedance-2-0',
+            tokens: null,
+            status: 'queued',
+        });
+        pollVideoWithKey.mockResolvedValue(NextResponse.json({ id: 'cgt-e1', status: 'in_progress' }));
+        const res = await handleEnterpriseV1(req('GET', '/v1/video/generations/cgt-e1'), '/video/generations/cgt-e1');
+        expect(res.status).toBe(200);
+        await flush();
+        expect(db.enterpriseRequestLog.create).not.toHaveBeenCalled();
+    });
+
+    it('poll 首次完成(queued→completed)→ 落行,outcome=completed + 上游 usage 原文', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({
+            id: 'cgt-e1',
+            user_id: 'u1',
+            tier: 'enterprise-portal',
+            model: 'seedance-2-0',
+            tokens: null,
+            status: 'queued',
+        });
+        pollVideoWithKey.mockResolvedValue(
+            NextResponse.json({ id: 'cgt-e1', status: 'completed', usage: { completion_tokens: 108872 } }),
+        );
+        chargeEnterpriseVideoTask.mockResolvedValue({ outcome: 'charged', costCny: 4.26 });
+        await handleEnterpriseV1(req('GET', '/v1/video/generations/cgt-e1'), '/video/generations/cgt-e1');
+        await flush();
+        const rows = reqlogRows();
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({
+            kind: 'poll',
+            user_id: 'u1',
+            task_id: 'cgt-e1',
+            region: 'cn',
+            outcome: 'completed',
+            http_status: 200,
+            upstream_status: 200,
+        });
+        expect(String(rows[0].upstream_body)).toContain('108872');
+    });
+
+    it('poll 任务不存在(404,没打上游)→ 落行', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue(null);
+        await handleEnterpriseV1(req('GET', '/v1/video/generations/cgt-nope'), '/video/generations/cgt-nope');
+        await flush();
+        const rows = reqlogRows();
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({
+            kind: 'poll',
+            task_id: 'cgt-nope',
+            http_status: 404,
+            error_code: 'not_found',
+            upstream_status: null,
+        });
+    });
+
+    it('日志写失败不影响客户响应(fire-and-forget)', async () => {
+        db.enterpriseRequestLog.create.mockRejectedValue(new Error('db down'));
+        submitVideoWithKey.mockResolvedValue(NextResponse.json({ id: 'cgt-e3', status: 'queued' }));
+        const res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { model: 'seedance-2-0', prompt: 'x' }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(200);
+        await flush();
     });
 });

@@ -7,7 +7,12 @@
  *  ② 兜底分支也要说人话(带脱敏后的上游原因,或明说「上游没给原因」)。
  */
 import { describe, expect, it } from 'vitest';
-import { classifyUpstreamError, friendlyUpstreamError, sanitizeUpstreamText } from '../upstream-error';
+import {
+    classifyUpstreamError,
+    friendlyUpstreamError,
+    isTerminalTaskFailure,
+    sanitizeUpstreamText,
+} from '../upstream-error';
 
 /** 真实上游报文语料(逐字,勿改)。 */
 const REAL = {
@@ -68,26 +73,27 @@ describe('脱敏(#271 硬约束)', () => {
 });
 
 describe('分类精度 —— 客户要能照着报错自己改', () => {
-    it('提示词被安全审核拒 → 说明是【提示词】,不是图', () => {
+    // 2026-09-05 起文案原生化:有火山风格原文就直出,分类职责在 category 上。
+    it('提示词被安全审核拒 → 归 content_safety,直出原文(无中文封装前缀)', () => {
         const r = classifyUpstreamError(REAL.sensitiveText, 400);
         expect(r.category).toBe('content_safety');
-        expect(r.message).toContain('提示词');
-        expect(r.message).not.toContain('参考图');
+        expect(r.message).toContain('sensitive');
+        expect(r.message).not.toContain('上游原因');
+        expect(r.message).not.toContain('——');
     });
 
-    it('参考图被安全审核拒 → 说明是【参考图】并带上素材 id', () => {
+    it('参考图被安全审核拒 → 归 content_safety(不误判下载失败),原文保留素材 id', () => {
         const r = classifyUpstreamError(REAL.sensitiveImage, 400);
         expect(r.category).toBe('content_safety');
-        expect(r.message).toContain('参考图');
-        // 审核必须先于「素材」判 —— 否则会被误报成下载失败
         expect(r.message).not.toContain('下载失败');
         expect(r.message).toContain('asset-20260817133221-8kb6b');
+        expect(r.message).not.toContain('上游原因');
     });
 
-    it('素材真的拉不到 → 才是下载失败', () => {
+    it('素材真的拉不到 → 归 media_fetch,直出原文', () => {
         const r = classifyUpstreamError(REAL.mediaFetch, 400);
         expect(r.category).toBe('media_fetch');
-        expect(r.message).toContain('下载失败');
+        expect(r.message.toLowerCase()).toContain('download');
     });
 
     it('分辨率不支持 → 分辨率类,且带上游原因', () => {
@@ -97,11 +103,10 @@ describe('分类精度 —— 客户要能照着报错自己改', () => {
         expect(r.message).toContain('720p');
     });
 
-    it('duration 按模式不合法 → 提示参考模式会影响可选时长', () => {
+    it('duration 按模式不合法 → 归 duration,直出原文', () => {
         const r = classifyUpstreamError(REAL.durationMode, 400);
         expect(r.category).toBe('duration');
-        expect(r.message).toContain('时长');
-        expect(r.message).toContain('参考');
+        expect(r.message.toLowerCase()).toContain('duration');
     });
 
     it('上游账户余额问题 → 归到服务方,不让客户以为是自己余额', () => {
@@ -117,10 +122,13 @@ describe('分类精度 —— 客户要能照着报错自己改', () => {
         expect(classifyUpstreamError('{"message":"whatever"}', 429).category).toBe('rate_limited');
     });
 
-    it('版权 → 版权类', () => {
+    it('版权 → 版权类(原文直出;无原文才回中文兜底)', () => {
         const r = classifyUpstreamError('{"error":{"message":"copyright violation detected in input image"}}', 400);
         expect(r.category).toBe('copyright');
-        expect(r.message).toContain('版权');
+        expect(r.message).toContain('copyright violation');
+        const fb = classifyUpstreamError('{"error":{"code":"CopyrightViolationDetected","message":""}}', 400);
+        expect(fb.category).toBe('copyright');
+        expect(fb.message).toContain('版权');
     });
 
     it('任务不存在 → 任务失效', () => {
@@ -148,13 +156,112 @@ describe('兜底也要说人话(本次事故的核心痛点)', () => {
             '<html><head><title>502 Bad Gateway</title></head><body>nginx</body></html>',
             502,
         );
+        // HTML 错误页不是给人看的文案 —— 整页丢弃走中文兜底,一个标签都不能透
         expect(r.message).not.toContain('nginx');
-        expect(r.message).toContain('上游暂时不可用');
+        expect(r.message).not.toContain('<');
+        expect(r.message).toContain('暂时不可用');
     });
 
     it('5xx → 可重试', () => {
         expect(classifyUpstreamError('{"error":{"message":"internal error"}}', 500).category).toBe(
             'upstream_unavailable',
         );
+    });
+});
+
+describe('终态 vs 瞬时 —— 决定要不要停止轮询(2026-08-18,8925 次轮询事故)', () => {
+    // 真实报文:seedance 2.5 被模型判成「视频延长/编辑」,ratio 必须 adaptive
+    const TTC_EXTEND =
+        '{"created_at":1786954781,"error":{"code":"InvalidParameter.TaskTypeConstraint","message":"The parameter `ratio` specified in the request is not valid. Seedance identified your task as video extension based on your prompt. Issues: [0] `ratio` must be `adaptive`. Request id: 0217869547816410000"}}';
+    const TTC_EDIT =
+        '{"error":{"code":"InvalidParameter.TaskTypeConstraint","message":"Seedance identified your task as video editing based on your prompt. Issues: [0] `ratio` must be `adaptive`. [1] `duration` must be -1."}}';
+
+    it('TaskTypeConstraint 单独成类,且【延长】与【编辑】两种文案都命中', () => {
+        for (const body of [TTC_EXTEND, TTC_EDIT]) {
+            const r = classifyUpstreamError(body, 400);
+            expect(r.category).toBe('task_type_constraint');
+            expect(r.message).toContain('adaptive');
+        }
+    });
+
+    it('「编辑」变体含 duration 字样,但不能被 duration 分支截胡(分支顺序守护)', () => {
+        expect(classifyUpstreamError(TTC_EDIT, 400).category).not.toBe('duration');
+    });
+
+    it('4xx + 请求本身不合法 → 终态(客户应停止轮询)', () => {
+        for (const c of [
+            'task_type_constraint',
+            'content_safety',
+            'copyright',
+            'invalid_parameter',
+            'resolution',
+            'duration',
+            'media_fetch',
+        ] as const) {
+            expect(isTerminalTaskFailure(c, 400)).toBe(true);
+        }
+    });
+
+    it('5xx / 429 / 上游账户异常 → 瞬时,绝不误杀在跑的任务', () => {
+        expect(isTerminalTaskFailure('upstream_unavailable', 502)).toBe(false);
+        expect(isTerminalTaskFailure('rate_limited', 429)).toBe(false);
+        expect(isTerminalTaskFailure('upstream_account', 400)).toBe(false);
+        // 即便 category 是终态类,5xx / 429 也不终态化(状态码优先)
+        expect(isTerminalTaskFailure('content_safety', 500)).toBe(false);
+        expect(isTerminalTaskFailure('content_safety', 429)).toBe(false);
+    });
+
+    it('task_gone 刻意【不】终态化 —— 一次查询抖动不该杀任务,交给 48h 过期兜底', () => {
+        expect(isTerminalTaskFailure('task_gone', 400)).toBe(false);
+    });
+
+    it('unknown 不终态化(没把握就别杀)', () => {
+        expect(isTerminalTaskFailure('unknown', 400)).toBe(false);
+    });
+
+    it('无状态码 / 2xx → 不终态化', () => {
+        expect(isTerminalTaskFailure('content_safety', undefined)).toBe(false);
+        expect(isTerminalTaskFailure('content_safety', 200)).toBe(false);
+    });
+
+    // 2026-08-28 客户契约脚本 04:上游说「素材不存在」,我们回「任务已失效,请重新提交」——
+    // 客户照着重提交多少次都没用。裸 `not found` 正则把它吞进了 task_gone。
+    it('素材不存在 → invalid_parameter,不能被 task_gone 吞掉', () => {
+        const r = classifyUpstreamError(
+            JSON.stringify({
+                code: 'InternalError',
+                message:
+                    'The parameter `content[1].image_url.url` specified in the request is not valid: The specified asset asset-20260828014656-n7mc9 is not found. Request id: 021787852843',
+            }),
+            400,
+        );
+        expect(r.category).toBe('invalid_parameter');
+        expect(r.message).toContain('asset-20260828014656-n7mc9');
+        expect(r.message).toContain('is not found');
+        expect(r.message).not.toContain('任务已失效');
+    });
+
+    it('真的任务不存在 → 仍归 task_gone', () => {
+        expect(classifyUpstreamError('{"message":"task not found"}', 404).category).toBe('task_gone');
+        expect(classifyUpstreamError('{"message":"任务不存在"}', 404).category).toBe('task_gone');
+    });
+
+    // 2026-09-05 客户投诉的原始报文,钉死最终输出:三层壳(我们的中文前缀、「上游原因」、
+    // 中间层的「资源同步失败: url= :」)全剥,只留火山那句原文 —— 像火山自己返回的一样。
+    it('客户投诉案例:内容安全报错直出火山原文,零封装痕迹', () => {
+        const r = classifyUpstreamError(
+            JSON.stringify({
+                error: {
+                    message:
+                        '资源同步失败: url=https://x.example.com/a.jpg : The request failed because the input image may contain sensitive information',
+                },
+            }),
+            400,
+        );
+        expect(r.category).toBe('content_safety');
+        expect(r.message).toBe('The request failed because the input image may contain sensitive information');
+        for (const leak of ['上游原因', '资源同步失败', 'url=', '——', '未通过内容安全审核']) {
+            expect(r.message).not.toContain(leak);
+        }
     });
 });

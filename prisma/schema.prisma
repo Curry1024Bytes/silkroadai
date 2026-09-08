@@ -1291,35 +1291,35 @@ model EnterpriseKey {
 // AK 明文(签名 Credential 里可见),SK AES-256-GCM 加密存(验签时解出重算比对)。
 // 与 sk-ent Bearer 并存:一个客户可同时有多把 sk-ent 和多对 AK/SK。
 model EnterpriseAkSk {
-  id            String    @id @default(uuid()) @db.Uuid
-  tenant_id     String?   @db.Uuid
-  user_id       String    @db.Uuid
-  access_key    String    @unique // ak_ent_<24hex>,签名 Credential 里明文出现
-  secret_key_enc String // AES-256-GCM(iv‖tag‖ct base64),key=ENTERPRISE_UPSTREAM_ENC_KEY
-  secret_key_hash String? @unique // sha256(SK 明文),SK 直接当 Bearer key 用的查找索引(2026-07-30;存量行由 backfill 脚本补)
-  name          String
-  status        String    @default("active") // active | disabled
-  created_at    DateTime  @default(now())
-  last_used_at  DateTime?
+  id              String    @id @default(uuid()) @db.Uuid
+  tenant_id       String?   @db.Uuid
+  user_id         String    @db.Uuid
+  access_key      String    @unique // ak_ent_<24hex>,签名 Credential 里明文出现
+  secret_key_enc  String // AES-256-GCM(iv‖tag‖ct base64),key=ENTERPRISE_UPSTREAM_ENC_KEY
+  secret_key_hash String?   @unique // sha256(SK 明文),SK 直接当 Bearer key 用的查找索引(2026-07-30;存量行由 backfill 脚本补)
+  name            String
+  status          String    @default("active") // active | disabled
+  created_at      DateTime  @default(now())
+  last_used_at    DateTime?
 
   @@index([user_id])
   @@map("enterprise_ak_sk")
 }
 
 model EnterpriseUpstreamKey {
-  id               String   @id @default(uuid()) @db.Uuid
-  user_id          String   @db.Uuid
+  id               String    @id @default(uuid()) @db.Uuid
+  user_id          String    @db.Uuid
   // 版本(2026-07-23 海外版):'cn' | 'global',每客户每版本一把上游 key。
   // discount 挂本行 → 国内/海外折扣天然独立。
-  region           String   @default("cn")
+  region           String    @default("cn")
   upstream_key_enc String // AES-256-GCM(iv‖tag‖ct base64),key=ENTERPRISE_UPSTREAM_ENC_KEY
   note             String? // 上游侧对账备注(key 名/账户)
   // 客户级整体折扣率(2026-07-20 引入;口径 2026-08-07 重锚):【官方挂牌价 × discount】,
   // 全变体×分辨率生效。1 = 官方原价(新户默认,operator 拍板 —— 要给折扣必须显式设置);
   // 0.85 = 85 折,0.9 = 九折。单档 enterprise_rate_overrides 是绝对单价,优先且【不】再乘折扣。
   // ⚠️ 重锚前语义是「零售价(挂牌×0.85)再乘 discount」→ 折上折,见 migration 20260807030000。
-  discount         Decimal  @default(1) @db.Decimal(6, 4)
-  created_at       DateTime @default(now())
+  discount         Decimal   @default(1) @db.Decimal(6, 4)
+  created_at       DateTime  @default(now())
   // 软删除标记(2026-08-08):删账号 = 该客户全部行置 deleted_at + 禁用 keys/aksk + User.status=disabled。
   // 保留流水/任务/余额历史(审计),客户列表默认过滤 deleted_at IS NULL。
   deleted_at       DateTime?
@@ -1367,6 +1367,50 @@ model EnterpriseAsset {
   @@map("enterprise_assets")
 }
 
+// volc 渠道素材组【名字所有权】表(2026-08-31)。
+//
+// 背景:上游对组名建了唯一索引(uk_biz_ns_name),同名建组报 MySQL 1062;而火山官方
+// 允许重名(#客户契约测试暴露)。与其求上游改表,不如把「名字」这个属性收归我们:
+// 建组时发给上游的是机器名(g-{随机},永不重复),客户设的名字/描述存这张表,
+// 读回来时覆盖 —— 重名问题在结构上消失,顺带上游侧不再看到客户业务命名。
+//
+// 老组(本表无行)读取时回落上游名字(它们本就不重名),零迁移。
+model VolcGroupMeta {
+  vendor_id   String   @id // 对客组号(火山形 group-…)
+  user_id     String?  @db.Uuid
+  name        String
+  description String?
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  @@map("volc_group_meta")
+}
+
+// volc 渠道「火山原生 id」映射表(2026-08-19)。
+//
+// 背景:volc 卖的是「完全原生的火山体验」,所以对客暴露的必须是火山自己的号
+// (素材 asset-YYYYMMDDHHMMSS-xxxxx / 任务 cgt-…),而不是中间上游发的号。
+// 但上游【不认】火山的号(实测 GetAsset 传 VendorAssetId → InvalidParameter:
+// invalid Id),所以打上游前必须换回上游 id —— 这张表就是那次换算。
+//
+// vendor_id  = 对客暴露的火山原生 id(主键;火山侧全局唯一)
+// upstream_id= 打上游用的 id(素材为十进制串;任务为 kz-cgt-… 还原前的对客形)
+// kind       = asset | group | task
+//
+// ⚠️ 不是单点故障:上游 ListAssets 每行同时带 Id 与 VendorAssetId,查询类响应
+//    经过时会顺手 upsert 回填(自愈),表丢了也能重建。
+model VolcIdMap {
+  vendor_id   String   @id
+  upstream_id String
+  kind        String
+  user_id     String?  @db.Uuid
+  created_at  DateTime @default(now())
+
+  @@index([upstream_id])
+  @@index([user_id])
+  @@map("volc_id_map")
+}
+
 // 大客户议价:per-customer 费率覆盖(元/1M token)。查不到 → cn-billing 默认挂牌。
 // 2026-07-19 加 variant 维度(pro/fast/mini):同客户可按变体分别议价。
 // 客户 per-模型议价折扣(2026-08-11 重构,替代旧 enterprise_rate_overrides 绝对单价):
@@ -1402,4 +1446,140 @@ model EnterpriseGlobalDiscount {
 
   @@unique([region, variant])
   @@map("enterprise_global_discounts")
+}
+
+// ── 企业门户请求日志(2026-09-03)──
+// ── 企业运营后台 次级管理员 + 管理员操作审计(2026-09-04)──
+// 次级管理员 = enterprise_admins 有行的 User(与全局 UserRole 解耦 —— 不给 staff/admin
+// role,避免权限外溢到主站 /admin;superadmin 天然全权,不需要行)。
+// 守门/审计统一走 src/lib/enterprise/admin-auth.ts。
+model EnterpriseAdmin {
+  user_id    String   @id @db.Uuid
+  note       String? // 备注(是谁,哪个业务线)
+  created_at DateTime @default(now())
+  created_by String?  @db.Uuid // 授予人(superadmin)
+
+  @@map("enterprise_admins")
+}
+
+// 管理员操作审计:企业运营后台每个【成功的写操作】一行(入账/开户/改折扣/启停 key/
+// 设密码/删账号/授予撤销管理员…)。superadmin-only 查看(/enterprise-admin/audit)。
+// params 落库前脱敏(password/key/secret/token 字段值 → [redacted])+ 截断。
+// admin_email 冗余存一份:账号以后删了,日志还能读。永久保留(低量,不清理)。
+model AdminAuditLog {
+  id            String   @id @default(uuid()) @db.Uuid
+  created_at    DateTime @default(now())
+  admin_user_id String?  @db.Uuid // break-glass token 操作 → null
+  admin_email   String?
+  level         String // super | secondary | break_glass
+  action        String // credit / onboard / customer_update / key_status / …
+  method        String
+  path          String
+  target        String? // 目标客户 user_id / key id / email 等
+  params        String? // 脱敏 + 截断后的入参 JSON
+  client_ip     String?
+  user_agent    String?
+
+  @@index([created_at])
+  @@index([admin_user_id, created_at])
+  @@map("admin_audit_logs")
+}
+
+// 一条对客请求一行(submit 全量;poll 只记有信息量的:出错/状态迁移/终态,含没打到上游
+// 就被拒的 401/403/404/400;reconcile = 对账器补的终态动作)。admin-only:upstream_body
+// 含上游中间商域名(xinhankr/artsmcp),绝不接客户面(#271 红线)。
+// request_body 落库前脱媒(base64/data URL → 占位符)+ 截断,防一张图撑爆行。
+// 保留期 ENTERPRISE_REQLOG_RETENTION_DAYS(默认 60 天),主站实例定时清理(企业实例
+// instrumentation 门不跑 cron,两实例同库)。
+model EnterpriseRequestLog {
+  id                String   @id @default(uuid()) @db.Uuid
+  created_at        DateTime @default(now())
+  kind              String // submit | poll | reconcile | asset_action(素材库 Action,P2 2026-09-04)
+  format            String? // v1 | ark(对客面);asset_action 行 = platform | kuaizi(素材落哪个库)
+  user_id           String?  @db.Uuid // 鉴权失败的请求可空(也要记 —— 对账要数得到被拒的)
+  key_id            String?  @db.Uuid // 哪把 sk-ent / AK-SK 行
+  region            String? // cn | global | promax | volc(显式落库,不再从 model 反推)
+  model             String? // 客户实际调用的对客模型名
+  task_id           String?
+  vendor_task_id    String? // 上游渠道侧原始任务 id(轮询响应带时落库)
+  client_request_id String? // 客户自带请求号(到达对账,#432)
+  action            String? // 素材库 Action 名(CreateAsset / ListAssets / …;asset_action 行专用)
+  resource_id       String? // 素材/素材组 id(asset-… / group-… / 筷子十进制号;asset_action 行专用)
+  http_status       Int? // 我们返给客户的(reconcile 行为 null)
+  upstream_status   Int? // 上游 HTTP status(没打上游 → null)
+  cache_hit         Boolean  @default(false) // poll 短 TTL 缓存命中(#394)
+  outcome           String? // 本行的结果:poll 终态迁移(completed/failed)/ reconcile 动作(back_charged/terminalized/expired)
+  error_code        String? // 我们返给客户的错误码(insufficient_balance / model_not_found …)
+  error_message     String?
+  duration_ms       Int? // handler 总耗时
+  upstream_ms       Int? // 上游 fetch 耗时
+  request_body      String? // 脱媒 + 截断后的入参 JSON(≤32KB)
+  upstream_body     String? // 上游响应截断(≤32KB;admin-only,见头注)
+  client_ip         String?
+  user_agent        String?
+
+  @@index([created_at])
+  @@index([user_id, created_at])
+  @@index([task_id])
+  @@map("enterprise_request_logs")
+}
+
+// ── OpenAI Batch API 兼容(/v1/files + /v1/batches,2026-08-29)──
+// 客户上传 JSONL(每行一个 /v1/images/* 请求)→ 建 batch → worker 逐行重放现有
+// 同步生图管线(计费/failover/错误归一全复用)→ 结果组装成 output JSONL 供下载。
+// 文件内容存 PG Bytes(不走平台 R2 —— image bucket 是公开读,客户 prompt 不能落公开桶);
+// 入口有 MAX_BATCH_INPUT_BYTES 上限,输出行是 URL 形(b64 被改写),体积可控。
+
+model BatchFile {
+  id         String   @id // file-{24hex}(OpenAI 形 id)
+  user_id    String   @db.Uuid // 上传者(IDOR)
+  purpose    String // batch | batch_output | batch_error
+  filename   String
+  bytes      Int
+  content    Bytes // JSONL 原文(TOAST 承载;入口限 MAX_BATCH_INPUT_BYTES)
+  created_at DateTime @default(now())
+
+  @@index([user_id, created_at])
+  @@map("batch_files")
+}
+
+model Batch {
+  id               String    @id // batch_{24hex}
+  user_id          String    @db.Uuid
+  endpoint         String // /v1/images/generations | /v1/images/edits
+  input_file_id    String
+  status           String    @default("validating") // validating|failed|in_progress|finalizing|completed|expired|cancelling|cancelled
+  output_file_id   String?
+  error_file_id    String?
+  total_count      Int       @default(0)
+  completed_count  Int       @default(0)
+  failed_count     Int       @default(0)
+  errors_json      Json? // 校验失败明细(OpenAI batch.errors 形)
+  metadata_json    Json? // 客户传入 metadata 原样回显
+  cancel_requested Boolean   @default(false)
+  auth_header      String // 客户提交时的 Authorization(worker 逐行重放用;敏感度等同已存的 NewApiToken 值)
+  created_at       DateTime  @default(now())
+  started_at       DateTime? // → in_progress_at
+  finished_at      DateTime? // 终态时刻(completed/failed/expired/cancelled)
+  updated_at       DateTime  @updatedAt
+
+  @@index([user_id, created_at])
+  @@index([status, created_at])
+  @@map("batches")
+}
+
+// 逐行执行结果(worker 重启续跑的依据:已有行跳过)。终态组装完 output/error 文件后保留
+// (审计/排查),体积由行数上限控制。
+model BatchRequestResult {
+  batch_id      String
+  line_no       Int // 输入 JSONL 的 0-based 行号
+  custom_id     String
+  status_code   Int
+  response_json Json? // 2xx 的响应体
+  error_json    Json? // 非 2xx 的错误体
+  created_at    DateTime @default(now())
+
+  @@id([batch_id, line_no])
+  @@index([batch_id])
+  @@map("batch_request_results")
 }

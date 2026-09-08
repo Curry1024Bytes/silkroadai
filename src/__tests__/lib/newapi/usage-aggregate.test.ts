@@ -6,7 +6,7 @@
  * 4-path cache mirror + the roll-up (count / quota / token_used → totals +
  * byModel + byDay + chartModels) + the legacy-payload token fallback.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockCacheFindUnique = vi.fn();
 const mockCacheUpsert = vi.fn();
@@ -31,7 +31,12 @@ vi.mock('@sentry/nextjs', () => ({
     captureException: (...args: unknown[]) => mockSentryCapture(...args),
 }));
 
-import { getUsageAggregate, periodToTimeRange, type UsagePeriod } from '@/lib/newapi/usage-aggregate';
+import {
+    __awaitBackgroundRevalidationsForTest,
+    getUsageAggregate,
+    periodToTimeRange,
+    type UsagePeriod,
+} from '@/lib/newapi/usage-aggregate';
 
 const PORTAL_USER_ID = 'aaaa1111-1111-4111-8111-111111111111';
 const NEWAPI_USER_ID = 7;
@@ -42,6 +47,11 @@ beforeEach(() => {
     vi.clearAllMocks();
     mockCacheUpsert.mockResolvedValue({});
     mockFetchUserRefunds.mockResolvedValue([]); // 默认无退款 → 净=毛(现有断言不变)
+});
+
+afterEach(async () => {
+    // SWR 后台重算是 fire-and-forget —— 用例结束前排干,防它把 mock 调用漏进下个用例
+    await __awaitBackgroundRevalidationsForTest();
 });
 
 /** One `/api/data/` bucket (day × model). */
@@ -155,11 +165,37 @@ describe('getUsageAggregate — cache paths', () => {
         expect(mockCacheUpsert).toHaveBeenCalledTimes(1);
     });
 
-    it('STALE (computed_at > TTL) → fetch live + write back', async () => {
+    it('STALE within SWR window → 立即返回 stale(source=cache)+ 后台重算写回', async () => {
         mockCacheFindUnique.mockResolvedValue({
             user_id: PORTAL_USER_ID,
             period: 'all',
             computed_at: new Date(NOW.getTime() - (TTL_MS + 60_000)),
+            payload: { totalUsedQuota: 50, totalCalls: 1, totalTokens: 5, byModel: [], byDay: [], chartModels: [] },
+        });
+        mockGetUsageDashboard.mockResolvedValue([]);
+
+        const r = await getUsageAggregate({
+            portalUserId: PORTAL_USER_ID,
+            newapiUserId: NEWAPI_USER_ID,
+            newapiUsername: NEWAPI_USERNAME,
+            period: 'all',
+            now: NOW,
+        });
+
+        // stale 立即返回,调用方不同步等全量重算(P1 stale-while-revalidate)
+        expect(r.source).toBe('cache');
+        expect(r.totalCalls).toBe(1);
+        // 后台重算落地:live fetch + write-back 都发生了
+        await __awaitBackgroundRevalidationsForTest();
+        expect(mockGetUsageDashboard).toHaveBeenCalled();
+        expect(mockCacheUpsert).toHaveBeenCalled();
+    });
+
+    it('STALE beyond SWR window(>30min)→ 同步 live 重算 + write back', async () => {
+        mockCacheFindUnique.mockResolvedValue({
+            user_id: PORTAL_USER_ID,
+            period: 'all',
+            computed_at: new Date(NOW.getTime() - 31 * 60_000),
             payload: { totalUsedQuota: 50, totalCalls: 1, totalTokens: 5, byModel: [], byDay: [], chartModels: [] },
         });
         mockGetUsageDashboard.mockResolvedValue([]);
@@ -177,11 +213,38 @@ describe('getUsageAggregate — cache paths', () => {
         expect(mockCacheUpsert).toHaveBeenCalled();
     });
 
+    it('SWR 去重:同 (user, period) 并发两次 stale 命中 → 只触发一次后台重算', async () => {
+        mockCacheFindUnique.mockResolvedValue({
+            user_id: PORTAL_USER_ID,
+            period: 'all',
+            computed_at: new Date(NOW.getTime() - (TTL_MS + 60_000)),
+            payload: { totalUsedQuota: 50, totalCalls: 1, totalTokens: 5, byModel: [], byDay: [], chartModels: [] },
+        });
+        // 慢 live fetch,保证第二次调用发生在第一次后台重算仍在飞时
+        let release!: () => void;
+        mockGetUsageDashboard.mockImplementation(() => new Promise((res) => (release = () => res([]))));
+
+        const argsBase = {
+            portalUserId: PORTAL_USER_ID,
+            newapiUserId: NEWAPI_USER_ID,
+            newapiUsername: NEWAPI_USERNAME,
+            period: 'all' as const,
+            now: NOW,
+        };
+        const [r1, r2] = await Promise.all([getUsageAggregate(argsBase), getUsageAggregate(argsBase)]);
+        expect(r1.source).toBe('cache');
+        expect(r2.source).toBe('cache');
+        release();
+        await __awaitBackgroundRevalidationsForTest();
+        expect(mockGetUsageDashboard).toHaveBeenCalledTimes(1);
+    });
+
     it('FALLBACK: live fail with stale cache → return stale + source=fallback', async () => {
         mockCacheFindUnique.mockResolvedValue({
             user_id: PORTAL_USER_ID,
             period: 'last_month',
-            computed_at: new Date(NOW.getTime() - 30 * 60_000),
+            // 超出 SWR 窗口(30min)→ 走同步重算路径,失败才落 fallback
+            computed_at: new Date(NOW.getTime() - 31 * 60_000),
             payload: {
                 totalUsedQuota: 12345,
                 totalCalls: 99,

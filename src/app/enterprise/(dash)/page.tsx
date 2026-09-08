@@ -8,7 +8,7 @@ import { prisma } from '@/lib/db';
 import { getEnterpriseSessionUser } from '@/lib/enterprise/session';
 import { ENTERPRISE_TIER } from '@/lib/enterprise/billing';
 import { reconcileStaleTasks } from '@/lib/enterprise/reconcile';
-import { ModelConsumptionChart } from '@/app/(authenticated)/dashboard/model-consumption-chart';
+import { ModelConsumptionChartLazy } from '@/app/(authenticated)/dashboard/model-consumption-chart-lazy';
 import { fmtCny, fmtCnyPrecise, fmtTime, fmtTokens, taskStatusLabel } from './format';
 
 export const dynamic = 'force-dynamic';
@@ -125,7 +125,7 @@ export default async function EnterpriseOverviewPage() {
             <section className="rounded-xl border border-gray-200 bg-white p-5">
                 <h2 className="mb-3 text-sm font-semibold text-gray-900">模型消耗分布 · 近 {CHART_DAYS} 天</h2>
                 {totalChartCny > 0 ? (
-                    <ModelConsumptionChart byDay={chartByDay} models={chartModels} cnyPerQuota={1} />
+                    <ModelConsumptionChartLazy byDay={chartByDay} models={chartModels} cnyPerQuota={1} />
                 ) : (
                     <p className="text-sm text-gray-500">近 {CHART_DAYS} 天暂无消费。</p>
                 )}

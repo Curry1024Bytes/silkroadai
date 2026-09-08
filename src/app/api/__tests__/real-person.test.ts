@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 
 const { db, resolveEnterpriseAuth, createSession, getGroupId } = vi.hoisted(() => ({
-    db: { enterpriseUpstreamKey: { findUnique: vi.fn() } },
+    db: { enterpriseUpstreamKey: { findUnique: vi.fn() }, enterpriseRequestLog: { create: vi.fn(async () => ({})) } },
     resolveEnterpriseAuth: vi.fn(),
     createSession: vi.fn(),
     getGroupId: vi.fn(),
@@ -94,7 +94,7 @@ describe('GetVisualValidateResult', () => {
         expect(res.status).toBe(200);
         const j = (await res.json()) as { Result: { GroupId: string } };
         expect(j.Result.GroupId).toBe('group-20260729-abc');
-        expect(getGroupId).toHaveBeenCalledWith('byted-x');
+        expect(getGroupId).toHaveBeenCalledWith('byted-x', undefined);
     });
 
     it('缺 BytedToken → 400', async () => {

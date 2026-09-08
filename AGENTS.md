@@ -300,6 +300,14 @@
   已启动的 `Nano Banana Pro` 在测试脚本被中断后也继续完成计费。今后的收费 smoke 禁止在超时后自动
   进入下一个模型，必须先按 Request ID 等到服务端终态。
 
+## 上游同步 2026-09-08（dev 集成，尚未发布）
+
+- main 已 fast-forward 到 `1c94f20`（#391–#448，58 提交）；合并前先输出 `docs/UPSTREAM-SYNC-2026-09-08.md`，其中含逐提交行为与三方冲突审计。
+- 保留 LLmRoute 固定 SKU 计费/尺寸、动态拓扑、持久 token 与 UI；接入上游图片兼容、视频终态/轮询、Enterprise 日志与权限等。Compose 不采用上游固定网段；Nginx 增加 MiniMax/Seedream 内部路径公网隔离。
+- Batch 实现保留但默认关闭（`PORTAL_BATCH_ENABLED=false`）：上游 worker 有收费调用与结果落库间崩溃重放风险，且 auth_header 明文保存；完成收费安全恢复与凭据保护后才能另行启用。新渠道未配置或验收。
+- PostgreSQL 16 隔离库从合法合并前拓扑的 70 migration 升至 76，全成功且 schema 无差异；历史空库种子存在启用空渠道，原 topology migration 会拒绝，预演仅在隔离库准备合法 fixture，未改历史 migration。
+- CI、类型、lint 0 error、构建通过；完整测试另有既有模型列表联机 smoke 失败，本机 3000 返回 HTML，不能当真实 new-api 验收。prod 保持 `02cbf26`，本轮未推进 prod、未登录 VPS 部署。具体最终计数和 SHA 见同步报告。
+
 ## 目录结构
 
 ```

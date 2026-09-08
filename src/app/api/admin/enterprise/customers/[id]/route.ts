@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { unauthorizedResponse } from '@/lib/admin-auth';
-import { resolveAdmin } from '@/lib/admin/auth';
+import { resolveEnterpriseAdmin, auditAdminAction } from '@/lib/enterprise/admin-auth';
 import { ENTERPRISE_TIER } from '@/lib/enterprise/billing';
 
 export const runtime = 'nodejs';
@@ -16,7 +16,7 @@ const PatchSchema = z.object({
 
 /** PATCH /api/admin/enterprise/customers/[id] — 设客户级折扣率(按版本)。守门:superadmin。 */
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-    const admin = await resolveAdmin(request, 'superadmin');
+    const admin = await resolveEnterpriseAdmin(request);
     if (!admin) return unauthorizedResponse(request);
     const { id } = await params;
 
@@ -29,6 +29,10 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         data: { discount: parsed.data.discount },
     });
     if (updated.count === 0) return NextResponse.json({ error: 'not_found' }, { status: 404 });
+    auditAdminAction(request, admin, 'customer_discount', {
+        target: id,
+        params: { user_id: id, region: parsed.data.region, discount: parsed.data.discount },
+    });
     return NextResponse.json({ ok: true, region: parsed.data.region, discount: parsed.data.discount });
 }
 
@@ -41,7 +45,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
  * 幂等:重复删无副作用。
  */
 export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-    const admin = await resolveAdmin(request, 'superadmin');
+    const admin = await resolveEnterpriseAdmin(request);
     if (!admin) return unauthorizedResponse(request);
     const { id } = await params;
 
@@ -65,6 +69,15 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
         }),
         prisma.user.updateMany({ where: { id, status: { not: 'disabled' } }, data: { status: 'disabled' } }),
     ]);
+    auditAdminAction(request, admin, 'customer_delete', {
+        target: id,
+        params: {
+            user_id: id,
+            upstream_regions_marked: ups.count,
+            keys_disabled: keys.count,
+            aksk_disabled: aksk.count,
+        },
+    });
     return NextResponse.json({
         ok: true,
         deleted: true,
@@ -79,7 +92,7 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
  * 余额/累计消费 + keys + 议价覆盖 + 最近流水 10 + 最近任务 10。守门:superadmin。
  */
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-    const admin = await resolveAdmin(request, 'superadmin');
+    const admin = await resolveEnterpriseAdmin(request);
     if (!admin) return unauthorizedResponse(request);
     const { id } = await params;
 

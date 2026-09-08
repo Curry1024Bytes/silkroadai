@@ -128,6 +128,10 @@ export default async function EnterpriseBillingPage({
                         </a>
                     </form>
                 </div>
+                <p className="mb-2 text-xs text-gray-400">
+                    消费的「时间」为任务<b>完成扣费</b>的时刻(视频生成需数分钟,晚于「调用日志」里的任务创建时间);
+                    对账请以「关联任务」列的任务 ID 为准。
+                </p>
                 {entries.length === 0 ? (
                     <p className="text-sm text-gray-500">暂无流水。</p>
                 ) : (
@@ -139,7 +143,8 @@ export default async function EnterpriseBillingPage({
                                     <th className="py-1 pr-4">类型</th>
                                     <th className="py-1 pr-4">金额</th>
                                     <th className="py-1 pr-4">余额快照</th>
-                                    <th className="py-1">备注</th>
+                                    <th className="py-1 pr-4">备注</th>
+                                    <th className="py-1">关联任务</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -153,7 +158,8 @@ export default async function EnterpriseBillingPage({
                                                 {amt < 0 ? fmtCnyPrecise(amt) : `+${fmtCny(amt)}`}
                                             </td>
                                             <td className="py-2 pr-4 text-gray-600">{fmtCny(e.balance_after)}</td>
-                                            <td className="py-2 text-gray-500">{e.note ?? '—'}</td>
+                                            <td className="py-2 pr-4 text-gray-500">{e.note ?? '—'}</td>
+                                            <td className="py-2 font-mono text-xs text-gray-500">{e.ref ?? '—'}</td>
                                         </tr>
                                     );
                                 })}

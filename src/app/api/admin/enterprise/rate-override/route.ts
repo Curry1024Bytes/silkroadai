@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { unauthorizedResponse } from '@/lib/admin-auth';
-import { resolveAdmin } from '@/lib/admin/auth';
+import { resolveEnterpriseAdmin, auditAdminAction } from '@/lib/enterprise/admin-auth';
 
 export const runtime = 'nodejs';
 
@@ -24,7 +24,7 @@ const schema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-    const admin = await resolveAdmin(request, 'superadmin');
+    const admin = await resolveEnterpriseAdmin(request);
     if (!admin) return unauthorizedResponse(request);
 
     let body: unknown;
@@ -44,12 +44,20 @@ export async function POST(request: NextRequest) {
 
     if (discount === null) {
         await prisma.enterpriseModelDiscount.deleteMany({ where: { user_id, region, variant } });
+        auditAdminAction(request, admin, 'rate_override', {
+            target: user_id,
+            params: { user_id, region, variant, discount: null },
+        });
         return NextResponse.json({ user_id, region, variant, discount: null, deleted: true });
     }
     await prisma.enterpriseModelDiscount.upsert({
         where: { user_id_region_variant: { user_id, region, variant } },
         create: { user_id, region, variant, discount },
         update: { discount },
+    });
+    auditAdminAction(request, admin, 'rate_override', {
+        target: user_id,
+        params: { user_id, region, variant, discount },
     });
     return NextResponse.json({ user_id, region, variant, discount });
 }

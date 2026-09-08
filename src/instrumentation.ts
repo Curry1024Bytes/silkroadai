@@ -83,4 +83,14 @@ export async function register() {
     // CatalogPrice). Pure observation, no billing/balance impact. 10m cadence.
     const { startShadowMeterScheduler } = await import('@/lib/scheduler/shadow-meter');
     startShadowMeterScheduler();
+
+    // OpenAI Batch API 兼容 worker:领 /v1/batches 批任务,逐行 self-fetch 重放
+    // /v1/images/* 同步管线(计费在那条腿,worker 零计费逻辑)。5s cadence + 重入守卫。
+    const { startBatchScheduler } = await import('@/lib/batch/worker');
+    startBatchScheduler();
+
+    // 企业请求日志保留期清理(2026-09-03):enterprise_request_logs 滚动删 60 天前的行。
+    // 企业实例不跑 cron(上面的门),但同库 —— 由主站实例代为清理。12h cadence。
+    const { startEnterpriseReqlogCleanupScheduler } = await import('@/lib/scheduler/enterprise-reqlog-cleanup');
+    startEnterpriseReqlogCleanupScheduler();
 }

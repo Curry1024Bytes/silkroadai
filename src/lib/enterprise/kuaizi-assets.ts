@@ -30,6 +30,9 @@
 import 'server-only';
 import { z } from 'zod';
 import { RealPersonError } from './real-person';
+import { rememberVolcId, toUpstreamId, toUpstreamIds, toVendorId } from './volc-id-map';
+import { deleteGroupMeta, getGroupMeta, saveGroupMeta, updateGroupMeta } from './volc-group-meta';
+import { randomUUID } from 'crypto';
 
 const DEFAULT_BASE = 'https://aiopenapi.kuaizi.cn';
 const ASSET_PATH = '/ai-open-platform-api/api/support/v1/asset';
@@ -41,8 +44,8 @@ export function kuaiziAssetsEnabled(): boolean {
     return process.env.ENTERPRISE_KUAIZI_ASSETS !== '0';
 }
 
-function getConfig(): { base: string; key: string } {
-    const key = process.env.ENTERPRISE_KUAIZI_KEY;
+function getConfig(overrideKey?: string): { base: string; key: string } {
+    const key = overrideKey || process.env.ENTERPRISE_KUAIZI_KEY;
     if (!key) throw new RealPersonError(503, 'ServiceUnavailable', '火山渠道素材库未配置,请联系服务方');
     return { base: (process.env.ENTERPRISE_KUAIZI_BASE_URL || DEFAULT_BASE).replace(/\/$/, ''), key };
 }
@@ -52,9 +55,65 @@ interface KuaiziEnvelope<T> {
     Result?: T;
 }
 
+/**
+ * 上游错误 → 对客错误。做两件事:**归一到火山官方口径** + **剥掉内部细节**。
+ *
+ * 上游对「资源不存在」返的是:
+ *   HTTP 500  Code=InternalError
+ *   Message="get asset failed: rpc error: code = NotFound desc = asset not found: id=192612151255367695"
+ * 三处不合格:
+ *  ① 状态码错 —— 火山官方对不存在的资源返 404,不是 500。500 还会让客户的重试逻辑
+ *    误判成「服务端故障可重试」,实际是终态,白重试。
+ *  ② 错误码错 —— InternalError 不是「不存在」的语义;平台素材库面用的是
+ *    AssetNotFound / GroupNotFound(见 app/api/route.ts),volc 面必须同口径。
+ *  ③ **泄露上游内部 id**(`id=192612151255367695` 是上游的十进制号)——
+ *    #398 刚把对客 id 全换成火山号,错误信息又把上游号漏出去,等于白做(#271)。
+ *
+ * 2026-08-22 客户实测报障:删素材 / 删组后再查,拿到 500 而非 404。
+ */
+function mapUpstreamError(
+    action: string,
+    status: number,
+    code: string | undefined,
+    message: string | undefined,
+    clientId?: string,
+): RealPersonError {
+    const raw = message || '';
+    const isGroup = action.includes('Group');
+    // NotFound 语义:上游同时出现在 gRPC code 与文案里,两种都认。
+    if (/not\s*found/i.test(raw) || /notfound/i.test(code || '')) {
+        const what = isGroup ? '素材组' : '素材';
+        return new RealPersonError(
+            404,
+            isGroup ? 'GroupNotFound' : 'AssetNotFound',
+            `${what}不存在${clientId ? `: ${clientId}` : ''}`,
+        );
+    }
+    // 其余:剥掉 rpc 内部串与上游内部 id 再对客(#271)。
+    const clean = sanitizeUpstreamMessage(raw);
+    if (status >= 500) {
+        return new RealPersonError(502, 'UpstreamError', clean || '素材库上游暂时异常,请稍后重试');
+    }
+    return new RealPersonError(status >= 400 ? status : 400, code || 'AssetOperationFailed', clean || '素材操作失败');
+}
+
+/** 剥上游报错里的实现细节:gRPC 包装、内部十进制 id。 */
+function sanitizeUpstreamMessage(raw: string): string {
+    // SQL 内幕(MySQL 错误码 / 索引名 / 'open_platform_api' 命名空间)绝不能对客 ——
+    // 2026-08-31 实测同名建组时上游裸奔 `Error 1062 … for key 'asset_group.uk_biz_ns_name'`。
+    if (/duplicate entry/i.test(raw)) return '名称已存在,请更换名称';
+    return raw
+        .replace(/rpc error:.*?desc\s*=\s*/gi, '')
+        .replace(/Error \d+ \(\d+\):.*$/g, '')
+        .replace(/save asset( group)? record failed:\s*/gi, '')
+        .replace(/\bid=\d+/g, '')
+        .replace(/\s*:\s*$/, '')
+        .trim();
+}
+
 /** 调一个 Action。失败抛 RealPersonError(route 层统一映射成火山 Error 信封)。 */
-async function call<T>(action: string, body: Record<string, unknown>): Promise<T> {
-    const { base, key } = getConfig();
+async function call<T>(action: string, body: Record<string, unknown>, clientId?: string, apiKey?: string): Promise<T> {
+    const { base, key } = getConfig(apiKey);
     let res: Response;
     try {
         res = await fetch(`${base}${ASSET_PATH}?Action=${encodeURIComponent(action)}&Version=${VERSION}`, {
@@ -65,26 +124,43 @@ async function call<T>(action: string, body: Record<string, unknown>): Promise<T
         });
     } catch (e) {
         console.warn('[kuaizi-assets] unreachable', { action, err: String(e) });
-        throw new RealPersonError(503, 'ServiceUnavailable', '素材库上游暂时不可达,请稍后重试');
+        throw new RealPersonError(503, 'ServiceUnavailable', '素材库上游暂时不可达,请稍后重试').withUpstream(
+            undefined,
+            String(e),
+        );
     }
+    // 上游原文(2026-09-04):失败时随错误带出去落请求日志 upstream_body —— 此前这里的
+    // 真实原因只在 docker logs(容器重建即丢),admin 在日志页看不到任何上游信息。
+    const text = await res.text();
     let j: KuaiziEnvelope<T>;
     try {
-        j = (await res.json()) as KuaiziEnvelope<T>;
+        j = JSON.parse(text) as KuaiziEnvelope<T>;
     } catch {
-        throw new RealPersonError(502, 'UpstreamError', `素材库上游返回非 JSON(HTTP ${res.status})`);
+        throw new RealPersonError(502, 'UpstreamError', `素材库上游返回非 JSON(HTTP ${res.status})`).withUpstream(
+            res.status,
+            text,
+        );
     }
     const upErr = j.ResponseMetadata?.Error;
     if (upErr?.Code || !res.ok) {
         // 401 = 我们的平台凭证问题,不是客户的错 —— 不把上游文案原样抛给客户。
         if (res.status === 401) {
             console.error('[kuaizi-assets] upstream auth failed (platform credential)', { action });
-            throw new RealPersonError(502, 'UpstreamError', '素材库上游鉴权失败(平台凭证问题),请联系服务方');
+            throw new RealPersonError(
+                502,
+                'UpstreamError',
+                '素材库上游鉴权失败(平台凭证问题),请联系服务方',
+            ).withUpstream(res.status, text);
         }
-        console.warn('[kuaizi-assets] action failed', { action, status: res.status, code: upErr?.Code });
-        throw new RealPersonError(
-            res.status >= 400 ? res.status : 400,
-            upErr?.Code || 'AssetOperationFailed',
-            upErr?.Message || '素材操作失败',
+        console.warn('[kuaizi-assets] action failed', {
+            action,
+            status: res.status,
+            code: upErr?.Code,
+            message: upErr?.Message,
+        });
+        throw mapUpstreamError(action, res.status, upErr?.Code, upErr?.Message, clientId).withUpstream(
+            res.status,
+            text,
         );
     }
     return (j.Result ?? {}) as T;
@@ -134,7 +210,13 @@ const listAssetsSchema = z.object({
 });
 const listGroupsSchema = z.object({
     Filter: z
-        .object({ Name: z.string().trim().max(64).optional(), GroupType: z.literal('AIGC').optional() })
+        .object({
+            Name: z.string().trim().max(64).optional(),
+            GroupType: z.literal('AIGC').optional(),
+            // 火山官方支持按组 id 列表过滤(2026-09-04 客户契约测试指出我们静默忽略)。
+            // 上游实测【也】忽略该参数 → 与 Name 同样走本地过滤。
+            GroupIds: z.array(z.string().trim().min(1).max(80)).max(50).optional(),
+        })
         .optional(),
     ...pageSchema,
 });
@@ -154,99 +236,313 @@ interface UpstreamPage<T> {
 function pageResult<T>(d: UpstreamPage<T>, fallbackPage: number, fallbackSize: number) {
     return {
         Items: d.Items ?? [],
-        Total: d.TotalCount ?? 0,
+        // 火山官方形用 TotalCount —— volc 卖的是原生火山,不能改名成我们平台库面的 Total。
+        // (2026-08-27 审计发现:客户按火山基准比对会直接判为字段缺失。平台库面 assets.ts
+        //  仍用 Total,两套面各自对齐各自的契约,互不影响。)
+        TotalCount: d.TotalCount ?? 0,
         PageNumber: d.PageNumber ?? fallbackPage,
         PageSize: d.PageSize ?? fallbackSize,
     };
 }
 
+// ── 火山原生 id 归一(2026-08-19)────────────────────────────────────────────────
+//
+// volc 卖的是「完全原生的火山体验」,所以对客只暴露【火山自己的号和链接】:
+//   Id  ← VendorAssetId / VendorGroupId   (火山原生 id)
+//   URL ← VendorAssetUrl                  (火山 TOS 签名链)
+// 并把 Vendor* 三个键**撤掉** —— 火山官方响应里根本没有这些键,留着反而不原生。
+//
+// ⚠️ 为什么 URL 也要换:实测上游的 `URL` 字段是**客户创建时传入链接的原样回显**
+//    (传 picsum.photos/512/512.jpg 进去,查回来还是它),并不指向已入库的素材本体;
+//    真正能取到素材的只有 VendorAssetUrl(ark-media-asset.tos-cn-beijing.volces.com)。
+//    所以这不只是「更原生」,是修一个残废字段。
+
+/** 上游一行素材/组的原始形(只列我们要动的键)。 */
+interface UpstreamRow {
+    Id?: unknown;
+    GroupId?: unknown;
+    URL?: unknown;
+    VendorAssetId?: unknown;
+    VendorGroupId?: unknown;
+    VendorAssetUrl?: unknown;
+    [k: string]: unknown;
+}
+
+function str(v: unknown): string | undefined {
+    return typeof v === 'string' && v ? v : undefined;
+}
+
+/**
+ * 一行上游响应 → 对客原生形。同时把 (火山 id ↔ 上游 id) 回填进映射表(自愈)。
+ *
+ * 拿不到 vendor id 时**原样返回** —— 例如素材还在 Processing 早期、或本次改动之前
+ * 建的存量行。客户拿到的仍是它本来就认识的那个号,不算倒退。
+ */
+async function nativeRow(row: UpstreamRow, kind: 'asset' | 'group', userId?: string): Promise<UpstreamRow> {
+    const { VendorAssetId, VendorGroupId, VendorAssetUrl, ...rest } = row;
+    const out: UpstreamRow = { ...rest };
+    const upstreamId = str(row.Id);
+    const vendorId = str(kind === 'asset' ? VendorAssetId : VendorGroupId);
+    if (upstreamId && vendorId) {
+        out.Id = vendorId;
+        await rememberVolcId(vendorId, upstreamId, kind, userId);
+    }
+    const vendorUrl = str(VendorAssetUrl);
+    if (vendorUrl) out.URL = vendorUrl;
+    // 组:名字/描述以我们的表为准(建组发给上游的是机器名)。无表行(老组 / 真人组)回落上游名。
+    if (kind === 'group') {
+        const meta = await getGroupMeta(str(out.Id) ?? '');
+        if (meta) {
+            out.Name = meta.name;
+            if ('Title' in out) out.Title = meta.name;
+            out.Description = meta.description ?? '';
+        }
+    }
+    // 素材行上的 GroupId 也要回显成火山组号(整份响应里不能混两套命名空间)。
+    const groupUpstream = str(row.GroupId);
+    if (groupUpstream) out.GroupId = await toVendorId(groupUpstream);
+    return out;
+}
+
+/** 列表 Result 逐行原生化。 */
+async function nativePage<T extends UpstreamRow>(
+    d: UpstreamPage<T>,
+    kind: 'asset' | 'group',
+    fallbackPage: number,
+    fallbackSize: number,
+    userId?: string,
+) {
+    const base = pageResult(d, fallbackPage, fallbackSize);
+    return { ...base, Items: await Promise.all(base.Items.map((it) => nativeRow(it, kind, userId))) };
+}
+
+/**
+ * CreateAsset 后压住等火山 id 出现,拿到了再吐给客户。
+ *
+ * 上游 CreateAsset 是异步的,落库即返**上游 id**,火山 id(VendorAssetId)要等火山那边
+ * 真正受理才有 —— 实测 ~7.5s,且 **Status 还是 Processing 时就已经有了**(上游文档写
+ * 「素材到达终态后才有」不准)。既然对客承诺的是原生火山号,这段等待只能我们压着。
+ *
+ * 超时 → **报错**(operator 2026-08-19 拍板:宁可报错,也不吐一个非火山的号)。
+ * 已知代价:上游那条素材已经建好了,报错后它变成孤儿,客户重试会重复建一条。
+ */
+const VENDOR_ID_POLL_MS = 1500;
+function vendorWaitMs(): number {
+    const raw = Number(process.env.ENTERPRISE_VOLC_VENDOR_WAIT_MS);
+    return Number.isFinite(raw) && raw > 0 ? raw : 60_000;
+}
+
+async function waitForVendorAssetId(upstreamId: string, apiKey?: string): Promise<string> {
+    const deadline = Date.now() + vendorWaitMs();
+    let last: UpstreamRow = {};
+    for (;;) {
+        last = await call<UpstreamRow>('GetAsset', { Id: upstreamId }, undefined, apiKey);
+        const vendorId = str(last.VendorAssetId);
+        if (vendorId) return vendorId;
+        // 素材已终态却仍无火山号 = 上游那边根本没受理成功,再等也不会有。
+        // 上游行原文(可能含具体失败原因字段)落 docker 日志 + 随错误带进请求日志 ——
+        // 2026-09-04 之前这里静默抛错,admin 在日志页只见「素材入库失败」四个字,查无可查。
+        if (last.Status === 'Failed') {
+            const row = JSON.stringify(last);
+            console.warn('[kuaizi-assets] asset ingest FAILED upstream(原文)', {
+                upstreamId,
+                row: row.slice(0, 2000),
+            });
+            throw new RealPersonError(502, 'AssetCreateFailed', '素材入库失败,请检查素材链接后重试').withUpstream(
+                200,
+                row,
+            );
+        }
+        if (Date.now() + VENDOR_ID_POLL_MS > deadline) {
+            console.error('[kuaizi-assets] vendor asset id timeout (上游已建,对客报错 → 孤儿素材)', {
+                upstreamId,
+                status: last.Status,
+                waitedMs: vendorWaitMs(),
+            });
+            throw new RealPersonError(
+                504,
+                'AssetPending',
+                '素材入库超时 —— 上游尚未返回素材编号,请稍后重新上传',
+            ).withUpstream(200, JSON.stringify(last));
+        }
+        await new Promise((r) => setTimeout(r, VENDOR_ID_POLL_MS));
+    }
+}
+
 /** volc 素材库 Action 分发。返回火山 Result 对象(route 层包信封);失败抛 RealPersonError。 */
-export async function handleKuaiziAssetAction(action: string, body: unknown): Promise<unknown> {
+export async function handleKuaiziAssetAction(
+    action: string,
+    body: unknown,
+    userId?: string,
+    apiKey?: string,
+): Promise<unknown> {
+    // 客户自己的筷子 key(2026-09-04 起支持按客户);缺省平台 env key。
+    const kcall = <T>(a: string, b: Record<string, unknown>, cid?: string) => call<T>(a, b, cid, apiKey);
     switch (action) {
         case 'CreateAssetGroup': {
             const p = createGroupSchema.safeParse(body);
             if (!p.success) badParam(p.error);
-            const d = await call<{ Id?: string }>('CreateAssetGroup', {
-                Name: p.data.Name,
+            // 名字所有权归我们(2026-08-31):上游对组名有唯一索引、同名必 1062,而火山官方
+            // 允许重名 —— 上游只发【机器名】(永不重复),客户设的名字/描述存 volc_group_meta,
+            // 读回来时覆盖。重名问题在结构上消失。
+            const machineName = `g-${randomUUID().replace(/-/g, '').slice(0, 16)}`;
+            const d = await kcall<{ Id?: string; VendorGroupId?: string }>('CreateAssetGroup', {
+                Name: machineName,
                 GroupType: p.data.GroupType,
-                ...(p.data.Description !== undefined ? { Description: p.data.Description } : {}),
             });
-            return { Id: d.Id };
+            // 建组是【同步】渠道调用,火山组号创建即返回 —— 不必像 CreateAsset 那样压着等。
+            const gUp = str(d.Id);
+            const gVendor = str(d.VendorGroupId);
+            if (!gUp)
+                throw new RealPersonError(502, 'UpstreamError', '素材组创建失败(上游未返回编号)').withUpstream(
+                    200,
+                    JSON.stringify(d),
+                );
+            if (!gVendor) {
+                // 对客承诺的是火山原生号,拿不到就报错 —— 不吐一个非火山的号(2026-08-19 拍板)。
+                console.error('[kuaizi-assets] CreateAssetGroup 未返回 VendorGroupId', { upstreamId: gUp });
+                throw new RealPersonError(
+                    502,
+                    'UpstreamError',
+                    '素材组创建失败(上游未返回火山编号),请重试',
+                ).withUpstream(200, JSON.stringify(d));
+            }
+            await rememberVolcId(gVendor, gUp, 'group', userId);
+            await saveGroupMeta(gVendor, userId, p.data.Name, p.data.Description);
+            return { Id: gVendor };
         }
         case 'ListAssetGroups': {
             const p = listGroupsSchema.safeParse(body);
             if (!p.success) badParam(p.error);
-            const d = await call<UpstreamPage<unknown>>('ListAssetGroups', {
+            const nameFilter = p.data.Filter?.Name;
+            const idFilter = p.data.Filter?.GroupIds;
+            const upFilter = p.data.Filter?.GroupType ? { GroupType: p.data.Filter.GroupType } : undefined;
+            if (!nameFilter && !idFilter?.length) {
+                const d = await kcall<UpstreamPage<UpstreamRow>>('ListAssetGroups', {
+                    PageNumber: p.data.PageNumber,
+                    PageSize: p.data.PageSize,
+                    ...(upFilter ? { Filter: upFilter } : {}),
+                });
+                return nativePage(d, 'group', p.data.PageNumber, p.data.PageSize, userId);
+            }
+            // Name / GroupIds 筛选一律本地做:
+            //  - Name:名字归我们所有,上游只有机器名,转发必查空
+            //  - GroupIds:火山官方支持,上游实测【忽略】该参数(返回全量)—— 转发无效
+            // 拉全量(封顶 500)→ 覆盖 → 过滤 → 本地分页。
+            const all: UpstreamRow[] = [];
+            for (let page = 1; page <= 5; page++) {
+                const d = await kcall<UpstreamPage<UpstreamRow>>('ListAssetGroups', {
+                    PageNumber: page,
+                    PageSize: 100,
+                    ...(upFilter ? { Filter: upFilter } : {}),
+                });
+                const items = d.Items ?? [];
+                all.push(...items);
+                if (items.length < 100 || all.length >= (d.TotalCount ?? 0)) break;
+            }
+            if (all.length >= 500) console.warn('[kuaizi-assets] ListAssetGroups Name 筛选触到 500 封顶');
+            const pairs = await Promise.all(
+                all.map(async (it) => ({ rawId: str(it.Id), row: await nativeRow(it, 'group', userId) })),
+            );
+            const wanted = new Set(idFilter ?? []);
+            const filtered = pairs
+                .filter(({ rawId, row }) => {
+                    if (nameFilter && !(typeof row.Name === 'string' && (row.Name as string).includes(nameFilter)))
+                        return false;
+                    // GroupIds:火山组号(对客形)与上游号(存量客户手里的)都认 —— 与「宽进」一致
+                    if (wanted.size && !(wanted.has(str(row.Id) ?? '') || wanted.has(rawId ?? ''))) return false;
+                    return true;
+                })
+                .map(({ row }) => row);
+            const start = (p.data.PageNumber - 1) * p.data.PageSize;
+            return {
+                Items: filtered.slice(start, start + p.data.PageSize),
+                TotalCount: filtered.length,
                 PageNumber: p.data.PageNumber,
                 PageSize: p.data.PageSize,
-                ...(p.data.Filter ? { Filter: p.data.Filter } : {}),
-            });
-            return pageResult(d, p.data.PageNumber, p.data.PageSize);
+            };
         }
         case 'GetAssetGroup': {
             const p = idSchema.safeParse(body);
             if (!p.success) badParam(p.error);
-            return call<unknown>('GetAssetGroup', { Id: p.data.Id });
+            const g = await kcall<UpstreamRow>('GetAssetGroup', { Id: await toUpstreamId(p.data.Id) }, p.data.Id);
+            return nativeRow(g, 'group', userId);
         }
         case 'UpdateAssetGroup': {
             const p = updateGroupSchema.safeParse(body);
             if (!p.success) badParam(p.error);
-            await call('UpdateAssetGroup', {
-                Id: p.data.Id,
-                ...(p.data.Name !== undefined ? { Name: p.data.Name } : {}),
-                ...(p.data.Description !== undefined ? { Description: p.data.Description } : {}),
-            });
+            // 名字/描述归我们所有 —— 只写 volc_group_meta,不再 PUT 上游(上游那边是机器名,
+            // 改它没有意义)。先 GetAssetGroup 做两件事:① 组不存在时如实 404;② 拿上游名
+            // 当老组(无表行)首次改名时的回落名。
+            const cur = await kcall<UpstreamRow>('GetAssetGroup', { Id: await toUpstreamId(p.data.Id) }, p.data.Id);
+            await updateGroupMeta(
+                p.data.Id,
+                userId,
+                { name: p.data.Name, description: p.data.Description },
+                str(cur.Name) ?? p.data.Id,
+            );
             return { Id: p.data.Id };
         }
         case 'DeleteAssetGroup': {
             const p = idSchema.safeParse(body);
             if (!p.success) badParam(p.error);
-            await call('DeleteAssetGroup', { Id: p.data.Id });
+            await kcall('DeleteAssetGroup', { Id: await toUpstreamId(p.data.Id) }, p.data.Id);
+            await deleteGroupMeta(p.data.Id);
             return {};
         }
         case 'CreateAsset': {
             const p = createAssetSchema.safeParse(body);
             if (!p.success) badParam(p.error);
-            const d = await call<{ Id?: string }>('CreateAsset', {
-                GroupId: p.data.GroupId,
+            const d = await kcall<{ Id?: string }>('CreateAsset', {
+                GroupId: await toUpstreamId(p.data.GroupId),
                 URL: p.data.URL,
                 AssetType: p.data.AssetType,
                 ...(p.data.Name !== undefined ? { Name: p.data.Name } : {}),
             });
-            // 上游 CreateAsset 是异步的:落库即返 Id,素材需轮询 GetAsset 到 Status=Active。
-            return { Id: d.Id };
+            const aUp = str(d.Id);
+            if (!aUp)
+                throw new RealPersonError(502, 'UpstreamError', '素材创建失败(上游未返回编号)').withUpstream(
+                    200,
+                    JSON.stringify(d),
+                );
+            // 压住等火山素材号(实测 ~7.5s);拿到才吐给客户 —— 见 waitForVendorAssetId。
+            const aVendor = await waitForVendorAssetId(aUp, apiKey);
+            await rememberVolcId(aVendor, aUp, 'asset', userId);
+            return { Id: aVendor };
         }
         case 'ListAssets': {
             const p = listAssetsSchema.safeParse(body);
             if (!p.success) badParam(p.error);
-            const groupIds = p.data.Filter?.GroupIds ?? (p.data.GroupId ? [p.data.GroupId] : undefined);
+            const groupIdsRaw = p.data.Filter?.GroupIds ?? (p.data.GroupId ? [p.data.GroupId] : undefined);
+            const groupIds = groupIdsRaw ? await toUpstreamIds(groupIdsRaw) : undefined;
             const filter = {
                 ...(groupIds ? { GroupIds: groupIds } : {}),
                 ...(p.data.Filter?.Statuses ? { Statuses: p.data.Filter.Statuses } : {}),
                 ...(p.data.Filter?.Name ? { Name: p.data.Filter.Name } : {}),
             };
-            const d = await call<UpstreamPage<unknown>>('ListAssets', {
+            const d = await kcall<UpstreamPage<UpstreamRow>>('ListAssets', {
                 PageNumber: p.data.PageNumber,
                 PageSize: p.data.PageSize,
                 ...(Object.keys(filter).length ? { Filter: filter } : {}),
             });
-            return pageResult(d, p.data.PageNumber, p.data.PageSize);
+            return nativePage(d, 'asset', p.data.PageNumber, p.data.PageSize, userId);
         }
         case 'GetAsset': {
             const p = idSchema.safeParse(body);
             if (!p.success) badParam(p.error);
-            return call<unknown>('GetAsset', { Id: p.data.Id });
+            const a = await kcall<UpstreamRow>('GetAsset', { Id: await toUpstreamId(p.data.Id) }, p.data.Id);
+            return nativeRow(a, 'asset', userId);
         }
         case 'UpdateAsset': {
             const p = updateAssetSchema.safeParse(body);
             if (!p.success) badParam(p.error);
-            await call('UpdateAsset', { Id: p.data.Id, Name: p.data.Name });
+            await kcall('UpdateAsset', { Id: await toUpstreamId(p.data.Id), Name: p.data.Name }, p.data.Id);
             return { Id: p.data.Id };
         }
         case 'DeleteAsset': {
             const p = idSchema.safeParse(body);
             if (!p.success) badParam(p.error);
-            await call('DeleteAsset', { Id: p.data.Id });
+            await kcall('DeleteAsset', { Id: await toUpstreamId(p.data.Id) }, p.data.Id);
             return {};
         }
         default:
@@ -277,9 +573,19 @@ export function shouldUseKuaiziAssets(action: string, body: unknown): boolean {
     return true;
 }
 
-/** 平台库 id 形(`asset-YYYYMMDDHHMMSS-xxxxxx` / `group-…`);筷子 id 是纯十进制串。 */
+/**
+ * 是否【我们平台库】的 id。
+ *
+ * ⚠️ 不能只看 `asset-` / `group-` 前缀 —— 筷子的 **vendor id 跟我们撞前缀**:
+ *   我们平台库   `asset-{14位时间戳}-{6位十六进制}`   (newAssetId: randomBytes(3).toString('hex'))
+ *   筷子 vendor  `asset-{14位时间戳}-{5位字母数字}`   (实测 asset-20260819085202-247l9,含非 hex 字符)
+ *   筷子平台 Id  纯十进制                              (191950112983875603)
+ * 客户若把 VendorAssetId 当句柄传回来,只看前缀会把它误路由到平台库 → 404 且报错指错方向。
+ * 故按【完整形态】匹配:只有 6 位十六进制后缀才算我们的。
+ */
+const PLATFORM_ASSET_ID = /^(?:asset|group)-\d{14}-[0-9a-f]{6}$/;
 function isPlatformAssetId(v: unknown): boolean {
-    return typeof v === 'string' && (v.startsWith('asset-') || v.startsWith('group-'));
+    return typeof v === 'string' && PLATFORM_ASSET_ID.test(v);
 }
 
 /** 筷子素材库接管的 Action 集合(route 层据此在 volc 客户上分流)。 */

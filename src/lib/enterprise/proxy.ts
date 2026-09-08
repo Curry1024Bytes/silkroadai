@@ -31,16 +31,31 @@ import {
     submitVolcVideo,
     pollVolcVideo,
     cancelVolcVideo,
+    customerKuaiziKey,
     volcRefLimits,
     VOLC_MODELS,
     VOLC_RESOLUTIONS,
+    isVolcModelWithdrawn,
+    WITHDRAWN_VOLC_HINT,
 } from '@/lib/seedance/kuaizi-adapter';
-import { resolveEnterpriseAuth, getUpstreamKeyForUser, type EnterpriseCustomer } from './keys';
+import { callerHasVolc, resolveEnterpriseAuth, getUpstreamKeyForUser, type EnterpriseCustomer } from './keys';
+import { toUpstreamId } from './volc-id-map';
+import { uploadImage } from '@/lib/r2/client';
+import { randomUUID } from 'crypto';
 import { ENTERPRISE_TIER, estimateEnterpriseCostCny, chargeEnterpriseVideoTask } from './billing';
 import { AssetError, resolveAssetRefs } from './assets';
 import { normalizeArkModel, stripAssetUri, arkStatus, buildArkTaskResponse } from './ark-format';
 import { maybeBrandVideoUrl } from '@/lib/seedance/volc-brand';
 import { maybeStoreVideoToCustomerOss } from '@/lib/seedance/customer-oss-video';
+import { isTerminalTaskFailure, type UpstreamErrorCategory } from '@/lib/seedance/upstream-error';
+import { invalidatePollCache, pollWithCache } from './poll-cache';
+import {
+    newRequestLogCtx,
+    sanitizeRequestBody,
+    shouldLogPoll,
+    writeRequestLog,
+    type RequestLogCtx,
+} from './request-log';
 
 /** 对客响应形态:'v1' = 我们现有形;'ark' = 火山方舟官方形(/api/v3/…)。 */
 export type ClientFormat = 'v1' | 'ark';
@@ -58,6 +73,9 @@ export const ENTERPRISE_MODELS: Record<string, SeedanceVariant> = {
     'seedance-2-0-global': 'pro',
     'seedance-2-0-global-fast': 'fast',
     'seedance-2-0-global-mini': 'mini',
+    // 海外版(global)seedance 2.5(2026-08-31):同上游 SKU、与 promax-2.5 同价(variant 复用),
+    // 仅 720p/1080p;走客户 global key
+    'seedance-2-5-global': 'promax-2.5',
     // 海外版proMax(2026-07-23):dreamina 系,费率独立(挂牌更高 ×0.85);fast/mini 仅 480p/720p
     'seedance-2-0-promax': 'promax',
     'seedance-2-0-promax-fast': 'promax-fast',
@@ -79,6 +97,11 @@ function resolveEnterpriseModel(
     // 「火山」渠道:四档模型(doubao-seedance-2.0 / -fast / -mini / doubao-seedance-2.5),
     // resolution 参数 + ref 自动识别。走独立 adapter(火山方舟原生),不经 MODEL_MAP 长名机制。
     if (isVolcModel(lower)) {
+        // 下架档位(fast/mini 实测不落方舟,见 kuaizi-adapter 的 WITHDRAWN_VOLC_MODELS)——
+        // 在解析最前面拦掉,连参数校验都不必走。
+        if (isVolcModelWithdrawn(lower)) {
+            return { error: errJson(400, 'model_unavailable', `${rawModel}:${WITHDRAWN_VOLC_HINT}`) };
+        }
         const volc = VOLC_MODELS[lower];
         const allowed = VOLC_RESOLUTIONS[volc.variant];
         const resRaw = String(body.resolution ?? '720p').toLowerCase();
@@ -170,10 +193,7 @@ function resolveEnterpriseModel(
     if ((variant === 'promax-fast' || variant === 'promax-mini') && resRaw !== '720p') {
         return { error: errJson(400, 'invalid_request', `${rawModel} 仅支持 720p 档`) };
     }
-    // seedance 2.5(上游 artsdance-2-5-pro):仅 720p / 1080p(不支持 480p)
-    if (variant === '2.5' && resRaw !== '720p' && resRaw !== '1080p') {
-        return { error: errJson(400, 'invalid_request', `${rawModel} 仅支持 720p / 1080p 档`) };
-    }
+    // seedance 2.5(cn):480p / 720p / 1080p(480p 走原版 260628 上游,2026-09-07 开档;4k 由上方通用门拦)
     const hasRefs =
         extractImageUrls(body).length > 0 ||
         extractVideoUrls(body).length > 0 ||
@@ -187,7 +207,9 @@ function resolveEnterpriseModel(
         variant === '2.5'
             ? `seedance2.5-${resRaw}${ref}`
             : variant === 'promax-2.5'
-              ? `seedance2.5-promax-${resRaw}${ref}`
+              ? region === 'global'
+                  ? `seedance2.5-global-${resRaw}${ref}`
+                  : `seedance2.5-promax-${resRaw}${ref}`
               : `seedance2.0-${region === 'global' ? 'global-' : ''}${variant}-${resRaw}${ref}`;
     const spec = MODEL_MAP[longName];
     if (!spec) {
@@ -443,29 +465,151 @@ const ARK_STATUS_TO_INTERNAL: Record<string, string> = {
 };
 
 /** 提交:key 鉴权(绑版本)→ 模型门 → 余额门(¥账本)→ 直调适配器核心(客户上游 key)→ 记任务(fail closed)。 */
+/** 上游回的已推导值(字符串);缺失/非法 → null,交由调用方回落库值。 */
+function upstreamStr(v: unknown): string | null {
+    return typeof v === 'string' && v ? v : null;
+}
+/** 上游回的已推导值(数字);缺失/非法 → null。 */
+function upstreamNum(v: unknown): number | null {
+    return typeof v === 'number' && Number.isFinite(v) ? v : null;
+}
+
+/**
+ * 深走 body,把所有 `asset://<对客号>` 换成 `asset://<上游号>`(volc 专用)。
+ *
+ * 引用可能出现在 content[].image_url.url / video_url.url / audio_url.url,也可能出现在
+ * 顶层 images[] / first_frame 等别名里 —— 与其逐个字段列举(必然漏),不如整棵树扫一遍:
+ * 只有恰好以 `asset://` 开头的字符串会被改写,其余原样。
+ */
+const ASSET_URI = /^asset:\/\/(.+)$/;
+const DATA_URI = /^data:((?:image|audio|video)\/[a-z0-9.+-]+);base64,(.+)$/i;
+
+/**
+ * base64 data URL → 我们 R2 直链(volc)。
+ *
+ * 上游对 `content[].*_url.url` 有 **4000 字符硬上限**(实测原文:
+ * `content[1].image_url.url is too long (6118 chars, max 4000)`),
+ * 等于任何真实图片/音频的 base64 都进不去。而 cn 渠道早就支持 base64 —— 我们替客户
+ * 转存 R2 再把直链发上游。volc 此前没做,同一个平台两条渠道能力不一致
+ * (2026-08-28 客户列为「明确不兼容项」)。
+ *
+ * 这不违背「原生火山」:火山官方同样吃不下 6KB 的 base64,我们是**做了超集**,
+ * 不是改了契约。上游看到的是普通 http 直链,与客户直接传 URL 无差别。
+ */
+const MAX_INLINE_MEDIA_BYTES = 20 * 1024 * 1024;
+async function dataUrlToR2(dataUrl: string): Promise<string> {
+    const m = dataUrl.match(DATA_URI);
+    if (!m) return dataUrl;
+    const buf = Buffer.from(m[2], 'base64');
+    if (buf.length === 0) throw new AssetError('invalid_request', 'base64 媒体内容为空', 400);
+    if (buf.length > MAX_INLINE_MEDIA_BYTES) {
+        throw new AssetError(
+            'invalid_request',
+            `内联 base64 媒体超过 20MB(实际 ${Math.round(buf.length / 1024 / 1024)}MB)—— 请改用公网 URL 或素材库`,
+            400,
+        );
+    }
+    return uploadImage(`seedance-volc-ref/${randomUUID()}`, buf, m[1]);
+}
+
+async function translateVolcAssetRefs(body: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const seen = new Map<string, string>();
+    let inlined = 0;
+    const walk = async (v: unknown): Promise<unknown> => {
+        if (typeof v === 'string') {
+            if (DATA_URI.test(v)) {
+                inlined += 1;
+                return dataUrlToR2(v);
+            }
+            const m = v.match(ASSET_URI);
+            if (!m) return v;
+            const id = m[1];
+            if (!seen.has(id)) seen.set(id, await toUpstreamId(id));
+            return `asset://${seen.get(id)}`;
+        }
+        if (Array.isArray(v)) return Promise.all(v.map(walk));
+        if (v && typeof v === 'object') {
+            const out: Record<string, unknown> = {};
+            for (const [k, val] of Object.entries(v as Record<string, unknown>)) out[k] = await walk(val);
+            return out;
+        }
+        return v;
+    };
+    const translated = (await walk(body)) as Record<string, unknown>;
+    const changed = [...seen.entries()].filter(([a, b]) => a !== b);
+    if (changed.length) console.log('[enterprise-proxy] volc 素材引用翻回上游号', { count: changed.length });
+    if (inlined) console.log('[enterprise-proxy] volc 内联 base64 媒体转存 R2', { count: inlined });
+    return translated;
+}
+
 async function handleSubmit(req: NextRequest, format: ClientFormat = 'v1'): Promise<NextResponse> {
+    // 请求日志(2026-09-03):submit 全量落库(含被拒的)。wrapper 形 —— inner 沿途填 ctx,
+    // 这里统一写行(fire-and-forget,绝不影响客户响应)。
+    const ctx = newRequestLogCtx('submit', format, req);
+    const res = await handleSubmitInner(req, format, ctx);
+    writeRequestLog(ctx, res);
+    return res;
+}
+
+async function handleSubmitInner(req: NextRequest, format: ClientFormat, ctx: RequestLogCtx): Promise<NextResponse> {
     // 先读原始 body(AK/SK 验签对原始字节算 hash),再解析 + 归一。
-    const rawBody = await req.text();
+    // 到达对账三连(2026-09-03 weirdo 5 并发只见 4 个,无日志只能间接推断):
+    // ① body 读失败(客户端上行中断/超时)② 非 JSON ③ 正常到达 —— 三条路都留痕,
+    // 「客户说发了 N 个我们收到 M 个」以后直接数 submit received + client_request_id 对账。
+    let rawBody: string;
+    try {
+        rawBody = await req.text();
+    } catch (e) {
+        console.warn('[enterprise-proxy] submit body read failed(传输中断)', {
+            format,
+            content_length: req.headers.get('content-length'),
+            error: e instanceof Error ? e.message : String(e),
+        });
+        return errJson(400, 'invalid_request', 'request body incomplete');
+    }
     let body: Record<string, unknown>;
     try {
         body = rawBody.trim() ? (JSON.parse(rawBody) as Record<string, unknown>) : {};
     } catch {
+        console.warn('[enterprise-proxy] submit body not JSON', { format, bytes: rawBody.length });
         return errJson(400, 'invalid_json', 'request body must be JSON');
     }
+    console.log('[enterprise-proxy] submit received', {
+        format,
+        model: typeof body.model === 'string' ? body.model : null,
+        client_request_id: typeof body.client_request_id === 'string' ? body.client_request_id : undefined,
+        bytes: rawBody.length,
+    });
+    // 入参落日志(脱媒 + 截断,客户传的原始参数形);client_request_id 单列供对账精确检索
+    ctx.requestBody = sanitizeRequestBody(rawBody);
+    ctx.clientRequestId = typeof body.client_request_id === 'string' ? body.client_request_id : null;
+
+    // 调用方是不是 volc 客户?(鉴权前的探测,只用来决定「模型名与未知字段按哪个渠道处理」)
+    // ⚠️ 同一个火山原生 id 对 cn 客户与 volc 客户是两个意思 —— 2026-08-26 客户实测:
+    // volc 客户传 doubao-seedance-2-5-260628 被按 cn 解释,直接 403 region_mismatch。
+    const callerIsVolc = await callerHasVolc(req.headers.get('authorization'));
 
     // ark 面严格契约:未声明顶层字段 → 400(在任何 body 变换前,按原始键判)。
     if (format === 'ark') {
         const unknown = Object.keys(body).filter((k) => !ARK_ALLOWED_FIELDS.has(k));
-        if (unknown.length) {
+        // volc =「原生火山」渠道:未知字段不由我们判,原样交给火山判 —— 我们的白名单
+        // 只会越来越落后于上游(2026-08-26 实测:bitrate_mode / camera_fixed /
+        // service_tier / priority 四个官方字段我们要么 400 要么静默丢)。只落日志。
+        if (unknown.length && callerIsVolc) {
+            console.log('[enterprise-proxy] volc 透传未声明字段给上游', { fields: unknown });
+        } else if (unknown.length) {
             return errJson(400, 'invalid_request', `unknown parameter(s): ${unknown.join(', ')}`);
         }
     }
 
     // 入口归一:火山 model id(doubao-…)→ 内部短名(先归一 model 才能判 region)。
-    body.model = normalizeArkModel(String(body.model || ''));
+    // volc 客户下原生 id 解释成火山渠道对客名(见上面的 callerIsVolc)。
+    body.model = normalizeArkModel(String(body.model || ''), callerIsVolc);
 
     const model = String(body.model || '');
     const isVolc = regionForModel(model) === 'volc';
+    ctx.model = model || null;
+    ctx.region = regionForModel(model);
 
     // 剥 asset:// 前缀(对 v1 也安全:v1 客户素材引用是裸 id,归一后不变)——
     // 仅非 volc:后面 resolveAssetRefs 认裸 asset-…。「火山」渠道素材由上游 provider
@@ -478,12 +622,27 @@ async function handleSubmit(req: NextRequest, format: ClientFormat = 'v1'): Prom
     // AK/SK 验签用原始 body(客户签的是含 doubao 名的原始字节,不能用归一后的)。
     const cust = await resolveOr401(req, regionForModel(model), rawBody);
     if (cust instanceof NextResponse) return cust;
+    ctx.userId = cust.userId;
+    ctx.keyId = cust.keyId;
 
     // P3 素材库引用:asset-…/group-… → R2 公网 URL(必须在 ref/hasVideo 检测之前,
     // 视频素材引用也要计入含视频费率档)。未知/非本人 id → 400。
     // 「火山」渠道走【混合解析】(lenient,2026-08-06):平台库素材(AIGC,全渠道共用)
     // 换 R2 直链发上游;认不出的引用(真人素材 / 存量 provider 素材,asset:// 整串)
     // 原样透传给 provider 解析 —— volc 也能用平台库素材,真人素材链路不变。
+    // volc 入参归一(**必须在鉴权之后** —— 里面会往 R2 上传,未鉴权不能触发):
+    //  ① asset://<火山素材号> → asset://<上游号>:#398 把对客素材号换成火山形后,
+    //    生成请求里的引用没跟着翻,上游只认自己的十进制号 → 任务 failed
+    //    「The specified asset … is not found」(2026-08-28 客户契约脚本 04 暴露)。
+    //  ② 内联 base64 → 我们 R2 直链:上游 url 有 4000 字符硬上限,真实图片根本进不去。
+    try {
+        if (isVolc) body = await translateVolcAssetRefs(body);
+    } catch (e) {
+        if (e instanceof AssetError) return errJson(e.status, e.code, e.message);
+        console.error('[enterprise-proxy] volc 入参归一失败', e);
+        return errJson(503, 'temporarily_unavailable', 'media staging failed, please retry');
+    }
+
     try {
         body = await resolveAssetRefs(body, cust.userId, isVolc ? { lenient: true } : undefined);
     } catch (e) {
@@ -562,11 +721,21 @@ async function handleSubmit(req: NextRequest, format: ClientFormat = 'v1'): Prom
         console.warn('[enterprise-proxy] balance gate skipped (lookup failed)', e);
     }
 
+    ctx.region = map.region ?? 'cn';
+    const upstreamT0 = Date.now();
     const res =
         map.region === 'volc'
-            ? await submitVolcVideo(body, { clientModel: adapterModel, resolution: map.resolution, duration })
+            ? await submitVolcVideo(body, {
+                  clientModel: adapterModel,
+                  resolution: map.resolution,
+                  duration,
+                  upstreamKey: customerKuaiziKey(cust.upstreamKey),
+              })
             : await submitVideoWithKey({ ...body, model: adapterModel }, `Bearer ${cust.upstreamKey}`);
     const text = await res.text();
+    ctx.upstreamMs = Date.now() - upstreamT0;
+    ctx.upstreamStatus = res.status;
+    ctx.upstreamBody = text;
     if (!res.ok) {
         // 带客户身份落日志(适配器层只有上游视角):upstream_error 投诉可直接定位到人
         console.warn('[enterprise-proxy] submit error', {
@@ -585,6 +754,7 @@ async function handleSubmit(req: NextRequest, format: ClientFormat = 'v1'): Prom
     }
     const taskId = j?.task_id || j?.id;
     if (!taskId) return errJson(502, 'upstream_error', 'no task_id from upstream');
+    ctx.taskId = taskId;
     // 响应 model 回显客户调用的名字(短名路径下适配器回显的是内部长名)
     if (j && j.model && j.model !== model) j.model = model;
 
@@ -614,7 +784,11 @@ async function handleSubmit(req: NextRequest, format: ClientFormat = 'v1'): Prom
         return errJson(503, 'temporarily_unavailable', 'billing record failed, please retry');
     }
     // 火山形提交成功仅返 { id }(前缀 cgt-);v1 形返完整对象。
-    if (format === 'ark') return NextResponse.json({ id: taskId });
+    // volc 提交响应同样带 upstream_id(客户脚本 create 与 query 两处都读)。
+    // 其余渠道保持火山官方形「提交只返 {id}」不变。
+    if (format === 'ark') {
+        return NextResponse.json(map.region === 'volc' ? { id: taskId, upstream_id: taskId } : { id: taskId });
+    }
     return j
         ? NextResponse.json(j)
         : new NextResponse(text, { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -622,14 +796,34 @@ async function handleSubmit(req: NextRequest, format: ClientFormat = 'v1'): Prom
 
 /** 轮询:归属 + tier + 版本三门(IDOR)→ 直调适配器核心(按版本 base)→ 完成写 tokens + 幂等扣费 → 透传响应。 */
 async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat = 'v1'): Promise<NextResponse> {
+    // 请求日志(2026-09-03):poll 只落有信息量的行(终态迁移 / 上游真报错 / 我们拒的),
+    // 判定见 shouldLogPoll —— 例行轮询高峰 350 次/分钟,全量落库没意义。
+    const ctx = newRequestLogCtx('poll', format, req);
+    ctx.taskId = taskId;
+    const res = await handlePollInner(req, taskId, format, ctx);
+    if (shouldLogPoll(ctx, res.status)) writeRequestLog(ctx, res);
+    return res;
+}
+
+async function handlePollInner(
+    req: NextRequest,
+    taskId: string,
+    format: ClientFormat,
+    ctx: RequestLogCtx,
+): Promise<NextResponse> {
     const cust = await resolveOr401(req);
     if (cust instanceof NextResponse) return cust;
+    ctx.userId = cust.userId;
+    ctx.keyId = cust.keyId;
 
     const task = await prisma.seedanceVideoTask.findUnique({ where: { id: taskId } });
     if (!task || task.tier !== ENTERPRISE_TIER || task.user_id !== cust.userId) {
         return errJson(404, 'not_found', 'task not found');
     }
     const taskRegion: SeedanceRegion = regionForModel(task.model);
+    ctx.model = task.model;
+    ctx.region = taskRegion;
+    ctx.statusBefore = task.status;
     // 版本门只对 sk-ent(绑 region)生效:本人任务但 key 版本不符 → 提示换对应版本 key。
     // volc 用平台 env、AK/SK 账号级(能查自己所有渠道任务)→ 不做版本门(归属已由 user_id 把关)。
     if (taskRegion !== 'volc' && !cust.accountLevel && cust.region !== taskRegion) {
@@ -640,11 +834,8 @@ async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat
         );
     }
 
-    // 已终态失败短路:任务在我们库里已 failed 时,直接返库里存的 fail_reason,不再重打上游。
-    // 上游会把失败任务清除,再轮询它返「任务不存在」→ 泛化成 "upstream rejected the request",
-    // 真实原因(版权/敏感等)反而丢失。库里 fail_reason 是权威,直接透传(火山形 arkFailError 分类)。
-    if (task.status === 'failed') {
-        const failReason = task.fail_reason || 'generation failed';
+    /** 失败终态的对客响应(v1 形 / 火山形)。库里 fail_reason 是权威。 */
+    const failedResponse = (failReason: string): NextResponse => {
         if (format === 'ark') {
             const extended = taskRegion === 'global' || taskRegion === 'promax';
             return NextResponse.json(
@@ -660,6 +851,8 @@ async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat
                     seed: task.seed,
                     generateAudio: task.generate_audio,
                     extended,
+                    // 失败态也要出齐火山官方字段集(客户契约校验不分成功失败)。
+                    volcMeta: taskRegion === 'volc' ? {} : null,
                 }),
             );
         }
@@ -671,6 +864,49 @@ async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat
             progress: 100,
             fail_reason: failReason,
         });
+    };
+
+    /**
+     * 上游轮询【瞬时】失败时的降级响应:返回库里最后已知状态(queued / in_progress)。
+     *
+     * 轮询失败 ≠ 任务失败 —— 上游 429/5xx 时任务多半还在跑,但客户脚本拿到 4xx/5xx
+     * 往往直接当异常中断整条流水线(2026-08-18 客户就是这么报障的)。降级后客户照常轮询,
+     * 任务真出片时自然拿到结果。响应带 `X-Silkroadai-Poll-Degraded: 1` 供我们排查区分。
+     */
+    const lastKnownResponse = (): NextResponse => {
+        const headers = { 'X-Silkroadai-Poll-Degraded': '1' };
+        const our = task.status === 'in_progress' ? 'in_progress' : 'queued';
+        if (format === 'ark') {
+            const extended = taskRegion === 'global' || taskRegion === 'promax';
+            return NextResponse.json(
+                buildArkTaskResponse({
+                    taskId,
+                    internalModel: task.model,
+                    status: arkStatus(our),
+                    createdAt: task.created_at,
+                    resolution: task.resolution,
+                    duration: task.duration,
+                    ratio: task.ratio,
+                    seed: task.seed,
+                    generateAudio: task.generate_audio,
+                    extended,
+                    // 降级路径同样要出齐字段(值走火山官方默认,上游此刻无数据)。
+                    volcMeta: taskRegion === 'volc' ? {} : null,
+                }),
+                { headers },
+            );
+        }
+        return NextResponse.json(
+            { id: taskId, task_id: taskId, object: 'video', status: our, progress: our === 'queued' ? 0 : 50 },
+            { headers },
+        );
+    };
+
+    // 已终态失败短路:库里已 failed 就不再打上游(上游会清除失败任务,再查返「任务不存在」,
+    // 真实原因反而丢失)。
+    if (task.status === 'failed') {
+        ctx.statusAfter = 'failed'; // 与 statusBefore 相同 → 不落行(终态迁移那次已记过)
+        return failedResponse(task.fail_reason || 'generation failed');
     }
 
     // 非 volc 轮询要打客户上游:sk-ent 用鉴权时装载的 cust.upstreamKey;AK/SK 账号级(/api 轮询
@@ -682,18 +918,68 @@ async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat
         upstreamKey = k;
     }
 
-    const res =
-        taskRegion === 'volc'
-            ? await pollVolcVideo(taskId)
-            : await pollVideoWithKey(taskId, `Bearer ${upstreamKey}`, taskRegion);
-    const text = await res.text();
+    // 短 TTL 缓存 + 同任务并发合流:客户的轮询频率不再 1:1 传导到上游(见 poll-cache 头部)。
+    // 缓存的是原始 (status, text),下游逻辑照常全跑 —— 落 tokens / 幂等扣费 / 客户 OSS 转存
+    // 一个不少,对客语义完全不变。
+    const pollT0 = Date.now();
+    const { result: upstream, cached } = await pollWithCache(taskId, async () => {
+        const r =
+            taskRegion === 'volc'
+                ? await pollVolcVideo(taskId, customerKuaiziKey(cust.upstreamKey))
+                : await pollVideoWithKey(taskId, `Bearer ${upstreamKey}`, taskRegion);
+        return { status: r.status, text: await r.text() };
+    });
+    const res = { ok: upstream.status < 400, status: upstream.status };
+    const text = upstream.text;
+    ctx.upstreamMs = Date.now() - pollT0;
+    ctx.upstreamStatus = upstream.status;
+    ctx.upstreamBody = text;
+    ctx.cacheHit = cached;
     if (!res.ok) {
+        // 上游用 HTTP 4xx 表达【任务已废】(如 seedance 2.5 的 TaskTypeConstraint、内容审核、
+        // 参数不合法):这类再轮询多少次都是同一个错。以前我们一律当「轮询瞬时失败」透传,
+        // 任务永远停在 queued,客户脚本无限重试 —— 2026-08-18 实测一条这样的任务被轮询了
+        // 8925 次 / 22 小时,还顺带把上游打到 429。现在:终态化落库 + 返回 status=failed,
+        // 客户拿到终态自然停止。5xx / 429 / 上游账户异常仍按瞬时透传,绝不误杀在跑的任务。
+        const category = (() => {
+            try {
+                return (JSON.parse(text) as { error?: { category?: string } })?.error?.category ?? '';
+            } catch {
+                return '';
+            }
+        })();
+        const failMsg = (() => {
+            try {
+                return (JSON.parse(text) as { error?: { message?: string } })?.error?.message ?? '';
+            } catch {
+                return '';
+            }
+        })();
+        const terminal = isTerminalTaskFailure(category as UpstreamErrorCategory, res.status);
         console.warn('[enterprise-proxy] poll error', {
             user_id: cust.userId,
             task_id: taskId,
             status: res.status,
+            category,
+            terminal,
+            cached,
             body: text.slice(0, 2000),
         });
+        if (terminal) {
+            ctx.statusAfter = 'failed';
+            const reason = failMsg || '上游判定任务失败';
+            await prisma.seedanceVideoTask
+                .updateMany({ where: { id: taskId }, data: { status: 'failed', fail_reason: reason.slice(0, 500) } })
+                .catch((e) => console.warn('[enterprise-proxy] terminalize failed', { taskId, err: String(e) }));
+            invalidatePollCache(taskId);
+            return failedResponse(reason);
+        }
+        // 【瞬时】失败(上游限流 429 / 5xx / 不可达)→ 降级返库内最后已知状态,不把错误抛给客户。
+        // 只认这两类明确的瞬时信号:4xx 的 unknown / task_gone 仍照常透传 —— 对那些降级会造出
+        // 新的无限轮询(客户永远拿到 in_progress、却永远等不到完成)。
+        if (res.status === 429 || res.status >= 500) {
+            return lastKnownResponse();
+        }
         return new NextResponse(text, { status: res.status, headers: { 'Content-Type': 'application/json' } });
     }
     let j: Record<string, unknown> | null;
@@ -702,6 +988,8 @@ async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat
     } catch {
         j = null;
     }
+    ctx.statusAfter = typeof j?.status === 'string' ? j.status : task.status;
+    if (typeof j?.vendor_task_id === 'string') ctx.vendorTaskId = j.vendor_task_id;
 
     if (j && j.status === 'completed') {
         const usage = j.usage as { completion_tokens?: number; total_tokens?: number } | undefined;
@@ -744,6 +1032,11 @@ async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat
         });
     }
 
+    // 2026-08-19 起不再有 X-Silkroadai-Vendor-Task-Id 头 —— volc 客户拿到的 `id` 本身
+    // 就是火山官方任务号了(提交时压着等来的),再单出一个「渠道侧原始 id」既冗余、
+    // 也提示了中间层的存在。火山官方既没有这个头也没有这个字段。
+    const vendorHeaders: Record<string, string> = {};
+
     // 火山形查询响应:status 翻译 + video_url/last_frame_url 挪进 content + 元数据回填。
     if (format === 'ark') {
         const ourStatus = typeof j?.status === 'string' ? j.status : task.status;
@@ -776,13 +1069,33 @@ async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat
                 usage,
                 failReason,
                 createdAt: task.created_at,
-                resolution: task.resolution,
-                duration: task.duration,
-                ratio: task.ratio,
+                // 上游给了【已推导】的值就用它,库里的提交参数只作兜底。
+                // 客户传 duration=-1(智能时长)时,库里存的就是 -1,一直回显 -1 是错的 ——
+                // 上游完成时会给模型真正选的秒数(2026-08-26 客户报障)。ratio 同理。
+                // 其余渠道的适配器不返回这几个字段 → 自动回落 task.*,行为不变。
+                resolution: upstreamStr(j?.resolution) ?? task.resolution,
+                duration: upstreamNum(j?.duration) ?? task.duration,
+                ratio: upstreamStr(j?.ratio) ?? task.ratio,
                 seed: task.seed,
                 generateAudio: task.generate_audio,
                 extended,
+                // volc = 原生火山:火山官方字段集要齐(客户按基准做契约校验)。
+                // 其余渠道传 null,行为逐字不变。
+                volcMeta:
+                    taskRegion === 'volc'
+                        ? {
+                              framespersecond: upstreamNum(j?.framespersecond),
+                              generateAudio: typeof j?.generate_audio === 'boolean' ? j.generate_audio : null,
+                              executionExpiresAfter: upstreamNum(j?.execution_expires_after),
+                              seed: upstreamNum(j?.seed),
+                              tools: Array.isArray(j?.tools) ? j.tools : null,
+                              createdAt: upstreamNum(j?.upstream_created_at),
+                              updatedAt: upstreamNum(j?.upstream_updated_at),
+                              lastFrameUrl: typeof j?.last_frame_url === 'string' ? j.last_frame_url : null,
+                          }
+                        : null,
             }),
+            { headers: vendorHeaders },
         );
     }
 
@@ -791,7 +1104,10 @@ async function handlePoll(req: NextRequest, taskId: string, format: ClientFormat
     if (customerOssVideoUrl && j) {
         j.video_url = customerOssVideoUrl;
         j.url = customerOssVideoUrl;
-        return NextResponse.json(j, { status: 200 });
+        return NextResponse.json(j, { status: 200, headers: vendorHeaders });
     }
-    return new NextResponse(text, { status: 200, headers: { 'Content-Type': 'application/json' } });
+    return new NextResponse(text, {
+        status: 200,
+        headers: { 'Content-Type': 'application/json', ...vendorHeaders },
+    });
 }

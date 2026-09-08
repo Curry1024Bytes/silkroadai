@@ -15,8 +15,33 @@
 import 'server-only';
 import { prisma } from '@/lib/db';
 import { pollVideoWithKey, regionForModel } from '@/lib/seedance/cn-adapter';
+import { customerKuaiziKey, pollVolcVideo } from '@/lib/seedance/kuaizi-adapter';
+import { isTerminalTaskFailure, type UpstreamErrorCategory } from '@/lib/seedance/upstream-error';
 import { getUpstreamKeyForUser } from './keys';
 import { ENTERPRISE_TIER, chargeEnterpriseVideoTask } from './billing';
+import { writeRequestLog, type RequestLogCtx } from './request-log';
+
+/** 对账动作落请求日志(kind='reconcile'):僵尸任务是谁补扣/标失败的,后台可查可导。 */
+function logReconcile(
+    task: { id: string; model: string },
+    userId: string,
+    startedAt: number,
+    outcome: string,
+    upstream?: { status?: number | null; body?: string | null },
+): void {
+    const ctx: RequestLogCtx = {
+        kind: 'reconcile',
+        startedAt,
+        userId,
+        taskId: task.id,
+        model: task.model,
+        region: regionForModel(task.model),
+        outcome,
+        upstreamStatus: upstream?.status ?? null,
+        upstreamBody: upstream?.body ?? null,
+    };
+    writeRequestLog(ctx);
+}
 
 const STALE_AFTER_MS = 90 * 1000; // 提交 90s 内的任务不管(客户大概率还在正常轮询)
 const EXPIRE_AFTER_MS = 48 * 60 * 60 * 1000; // 上游结果保留期
@@ -49,24 +74,63 @@ export async function reconcileStaleTasks(userId: string): Promise<void> {
     const keyCache = new Map<string, string | null>();
     for (const task of stale) {
         try {
+            const t0 = Date.now();
             const expired = Date.now() - task.created_at.getTime() > EXPIRE_AFTER_MS;
             const region = regionForModel(task.model);
-            let upstreamKey = keyCache.get(region);
-            if (upstreamKey === undefined) {
-                upstreamKey = await getUpstreamKeyForUser(userId, region);
-                keyCache.set(region, upstreamKey);
-            }
-            if (!upstreamKey) {
-                // 该版本上游 key 已被移除:老任务无法回查。超保留期的直接过期终态。
-                if (expired) await markExpired(task.id);
-                continue;
-            }
 
-            const res = await pollVideoWithKey(task.id, `Bearer ${upstreamKey}`, region);
+            // 「火山」渠道(volc)走【独立上游 + 平台共享 env key】(筷子开放平台),
+            // 不是客户的 per-region key,端点也不是 cn/intl 那套 —— 必须分流到 kuaizi-adapter。
+            // ⚠️ 2026-08-18 修复:此前对账器对所有 region 一律走 pollVideoWithKey,而
+            // baseForRegion('volc') 回落国内 base,等于拿筷子的 task id 去 token.xinhankr 查,
+            // 永远查不到 → volc 任务在对账器这条路上【从来没能被终态化】(只能靠客户轮询自愈)。
+            // 分流逻辑与 enterprise/proxy 的 handlePoll 保持一致。
+            let res: Awaited<ReturnType<typeof pollVideoWithKey>>;
+            if (region === 'volc') {
+                // 按客户 key 轮询(2026-09-04):客户配了自己的筷子 key 时,任务在【他的】
+                // 筷子账号里,用平台 env key 查必 404 task_gone → 误终态化。占位符行回落 env。
+                let volcCustKey = keyCache.get('volc');
+                if (volcCustKey === undefined) {
+                    volcCustKey = await getUpstreamKeyForUser(userId, 'volc').catch(() => null);
+                    keyCache.set('volc', volcCustKey);
+                }
+                res = await pollVolcVideo(task.id, customerKuaiziKey(volcCustKey));
+            } else {
+                let upstreamKey = keyCache.get(region);
+                if (upstreamKey === undefined) {
+                    upstreamKey = await getUpstreamKeyForUser(userId, region);
+                    keyCache.set(region, upstreamKey);
+                }
+                if (!upstreamKey) {
+                    // 该版本上游 key 已被移除:老任务无法回查。超保留期的直接过期终态。
+                    if (expired) {
+                        await markExpired(task.id);
+                        logReconcile(task, userId, t0, 'expired');
+                    }
+                    continue;
+                }
+                res = await pollVideoWithKey(task.id, `Bearer ${upstreamKey}`, region);
+            }
             const j = (await res.json().catch(() => null)) as Record<string, unknown> | null;
             if (!res.ok || !j) {
-                // 上游查不到/报错(如上游内部 key 轮换后 task 失联):超保留期 → 过期终态
-                if (expired) await markExpired(task.id);
+                // 上游用 4xx 表达【任务已废】(TaskTypeConstraint / 内容审核 / 参数不合法)→ 直接终态化。
+                // 以前这里只在超 48h 保留期时才终态化,所以这类任务能在 queued 卡满两天,
+                // 客户脚本一直重试(2026-08-18:一条卡了 22 小时、被轮询 8925 次)。
+                // 5xx / 429 等瞬时错仍然只是「这次没查到」,留给下次对账。
+                const e = (j as { error?: { category?: string; message?: string } } | null)?.error;
+                if (isTerminalTaskFailure((e?.category ?? '') as UpstreamErrorCategory, res.status)) {
+                    await prisma.seedanceVideoTask.updateMany({
+                        where: { id: task.id },
+                        data: { status: 'failed', fail_reason: (e?.message || '上游判定任务失败').slice(0, 500) },
+                    });
+                    console.log('[enterprise-reconcile] terminalized', { id: task.id, category: e?.category });
+                    logReconcile(task, userId, t0, 'terminalized', {
+                        status: res.status,
+                        body: j ? JSON.stringify(j) : null,
+                    });
+                } else if (expired) {
+                    await markExpired(task.id);
+                    logReconcile(task, userId, t0, 'expired', { status: res.status });
+                }
                 continue;
             }
             const status = String(j.status || '');
@@ -81,6 +145,10 @@ export async function reconcileStaleTasks(userId: string): Promise<void> {
                     const r = await chargeEnterpriseVideoTask(task.id);
                     if (r.outcome === 'charged') {
                         console.log('[enterprise-reconcile] back-charged', { id: task.id, cost: r.costCny });
+                        logReconcile(task, userId, t0, 'back_charged', {
+                            status: res.status,
+                            body: JSON.stringify(j),
+                        });
                     }
                 }
             } else if (status === 'failed') {
@@ -91,8 +159,10 @@ export async function reconcileStaleTasks(userId: string): Promise<void> {
                         fail_reason: typeof j.fail_reason === 'string' ? j.fail_reason.slice(0, 500) : null,
                     },
                 });
+                logReconcile(task, userId, t0, 'marked_failed', { status: res.status, body: JSON.stringify(j) });
             } else if (expired) {
                 await markExpired(task.id);
+                logReconcile(task, userId, t0, 'expired', { status: res.status });
             }
             // 仍在跑且未超保留期 → 留给下次
         } catch (e) {

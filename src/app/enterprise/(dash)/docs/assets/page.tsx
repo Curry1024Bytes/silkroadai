@@ -251,22 +251,26 @@ curl -X POST ${BASE}/v1/video/generations \\
                 </p>
                 <ul className="list-disc space-y-1 pl-5">
                     <li>
-                        <b>素材 ID 形态</b>:十进制数字串(如 <Code>1800657071180349888</Code>),不是 <Code>asset-…</Code>{' '}
-                        前缀形。请原样保存与回传。生成时同样用 <Code>asset://1800657071180349888</Code> 引用。
+                        <b>素材 ID 与 URL 都是火山官方的</b> —— ID 形如 <Code>asset-20260819105009-jvndn</Code>、组 ID
+                        形如 <Code>group-20260819215915-j5dxc</Code>,URL 为火山 TOS 签名直链。与您在火山侧看到的
+                        是同一套标识,可直接用于对账与工单核对。生成时用 <Code>asset://asset-20260819105009-jvndn</Code>{' '}
+                        引用。
                     </li>
                     <li>
                         <b>
-                            <Code>CreateAsset</Code> 是异步的
+                            <Code>CreateAsset</Code> 会等火山分配出素材编号再返回
                         </b>
-                        :落库即返 <Code>Id</Code>,素材需轮询 <Code>GetAsset</Code> 至 <Code>{`"Status":"Active"`}</Code>{' '}
-                        后方可在生成中使用(<Code>Processing</Code> 期间引用会被拒)。
+                        (通常十几秒),这样您拿到的从第一刻起就是火山官方的号。返回后素材仍在 <Code>Processing</Code>
+                        ,需轮询 <Code>GetAsset</Code> 至 <Code>{`"Status":"Active"`}</Code> 才可在生成中使用(
+                        <Code>Processing</Code> 期间引用会被拒)。 若上游迟迟未分配编号,返回{' '}
+                        <Code>504 AssetPending</Code> —— 请稍后重新上传。
                     </li>
                     <li>
                         <b>
                             素材 <Code>URL</Code> 是签名链,约 12 小时过期
                         </b>
-                        (非长期直链)。<b>请勿缓存 URL</b> —— 需要时现调 <Code>GetAsset</Code> / <Code>ListAssets</Code>{' '}
-                        取最新地址。素材本身不会过期,只是访问链接会。
+                        (火山 TOS 签名地址,非长期直链)。<b>请勿缓存 URL</b> —— 需要时现调 <Code>GetAsset</Code> /{' '}
+                        <Code>ListAssets</Code> 取最新地址。素材本身不会过期,只是访问链接会。
                     </li>
                 </ul>
                 <p>

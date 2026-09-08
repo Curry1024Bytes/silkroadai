@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { hash } from 'bcryptjs';
 import { prisma } from '@/lib/db';
 import { unauthorizedResponse } from '@/lib/admin-auth';
-import { resolveAdmin } from '@/lib/admin/auth';
+import { resolveEnterpriseAdmin, auditAdminAction } from '@/lib/enterprise/admin-auth';
 
 export const runtime = 'nodejs';
 
@@ -28,7 +28,7 @@ const schema = z
     .refine((d) => d.user_id || d.email, { message: 'user_id 或 email 必须给一个' });
 
 export async function POST(request: NextRequest) {
-    const admin = await resolveAdmin(request, 'superadmin');
+    const admin = await resolveEnterpriseAdmin(request);
     if (!admin) return unauthorizedResponse(request);
 
     let body: unknown;
@@ -53,6 +53,10 @@ export async function POST(request: NextRequest) {
     await prisma.user.update({
         where: { id: user.id },
         data: { password_hash, session_token_version: { increment: 1 } },
+    });
+    auditAdminAction(request, admin, 'set_password', {
+        target: user.email,
+        params: { user_id: user.id, email: user.email, password: '[redacted]' },
     });
     return NextResponse.json({ user_id: user.id, email: user.email, ok: true });
 }

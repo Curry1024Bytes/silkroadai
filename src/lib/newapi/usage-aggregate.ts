@@ -24,6 +24,9 @@ import { fetchUserRefunds, getUsageDashboard } from './client';
 import { cnyToQuota } from './quota-units';
 
 const TTL_MS = 5 * 60 * 1_000;
+/** stale-while-revalidate 窗口(P1 2026-08-29):缓存超过 TTL 但小于此上限
+ *  → 先立即返回 stale,后台异步重算写回;更老的缓存视为太旧,回到同步重算。 */
+const SWR_MAX_AGE_MS = 30 * 60 * 1_000;
 /** How many distinct models get their own stack in the 模型消耗分布图; the
  *  rest collapse into a single '其他' series so the chart + cached payload
  *  stay bounded regardless of how many models a power user touches. */
@@ -141,44 +144,23 @@ export async function getUsageAggregate(args: {
         };
     }
 
-    // Miss / stale — try live, fall back to stale on failure.
-    try {
-        const aggregate = await fetchLiveAggregate({
-            newapiUserId: args.newapiUserId,
-            newapiUsername: args.newapiUsername,
+    // stale-while-revalidate:超 TTL 但仍在 SWR 窗口 → 先立即返回 stale,
+    // 后台异步重算写回。此前每 5 分钟第一个访客要同步扛最多 50 页 × 1000
+    // 行的全量拉取,dashboard 那一次切换会卡好几秒;现在这份代价挪到后台,
+    // 任何请求都不再同步等重算(除非缓存太旧或完全没有)。
+    if (cached !== null && cacheAge < SWR_MAX_AGE_MS) {
+        scheduleBackgroundRevalidate(args, now);
+        return {
+            ...readPayload(cached.payload),
             period: args.period,
-            now,
-        });
-        // Write-back. Failures here aren't fatal — we still return live.
-        await prisma.usageAggregateCache
-            .upsert({
-                where: {
-                    user_id_period: {
-                        user_id: args.portalUserId,
-                        period: args.period,
-                    },
-                },
-                update: {
-                    payload: aggregate as unknown as Parameters<
-                        typeof prisma.usageAggregateCache.upsert
-                    >[0]['update']['payload'],
-                    computed_at: now,
-                },
-                create: {
-                    user_id: args.portalUserId,
-                    period: args.period,
-                    payload: aggregate as unknown as Parameters<
-                        typeof prisma.usageAggregateCache.upsert
-                    >[0]['create']['payload'],
-                    computed_at: now,
-                },
-            })
-            .catch((err) => {
-                console.warn(
-                    `[usage-aggregate] write-back failed for user ${args.portalUserId} period=${args.period}:`,
-                    err,
-                );
-            });
+            computedAt: cached.computed_at,
+            source: 'cache',
+        };
+    }
+
+    // Miss / too-stale — compute synchronously, fall back to stale on failure.
+    try {
+        const aggregate = await computeAndStore(args, now);
         return {
             ...aggregate,
             period: args.period,
@@ -206,6 +188,80 @@ export async function getUsageAggregate(args: {
             `usage aggregate fetch failed for user ${args.portalUserId} period=${args.period}: ${err instanceof Error ? err.message : String(err)}`,
         );
     }
+}
+
+/** Live compute + best-effort write-back(同步 miss 路径与后台 revalidate 共用)。 */
+async function computeAndStore(
+    args: { portalUserId: string; newapiUserId: number; newapiUsername: string; period: UsagePeriod },
+    now: Date,
+): Promise<UsageAggregate> {
+    const aggregate = await fetchLiveAggregate({
+        newapiUserId: args.newapiUserId,
+        newapiUsername: args.newapiUsername,
+        period: args.period,
+        now,
+    });
+    // Write-back. Failures here aren't fatal — we still return live.
+    await prisma.usageAggregateCache
+        .upsert({
+            where: {
+                user_id_period: {
+                    user_id: args.portalUserId,
+                    period: args.period,
+                },
+            },
+            update: {
+                payload: aggregate as unknown as Parameters<
+                    typeof prisma.usageAggregateCache.upsert
+                >[0]['update']['payload'],
+                computed_at: now,
+            },
+            create: {
+                user_id: args.portalUserId,
+                period: args.period,
+                payload: aggregate as unknown as Parameters<
+                    typeof prisma.usageAggregateCache.upsert
+                >[0]['create']['payload'],
+                computed_at: now,
+            },
+        })
+        .catch((err) => {
+            console.warn(
+                `[usage-aggregate] write-back failed for user ${args.portalUserId} period=${args.period}:`,
+                err,
+            );
+        });
+    return aggregate;
+}
+
+/** 进程内去重的后台重算:同 (user, period) 已有在飞的重算就跳过。网站面
+ *  portal 是单实例,Map 去重足够;多实例最坏也只是重复算一次,无正确性
+ *  问题。永不向上抛 —— stale 已经返回给了调用方,失败只 warn。 */
+const inFlightRevalidations = new Map<string, Promise<void>>();
+
+function scheduleBackgroundRevalidate(
+    args: { portalUserId: string; newapiUserId: number; newapiUsername: string; period: UsagePeriod },
+    now: Date,
+): void {
+    const key = `${args.portalUserId}:${args.period}`;
+    if (inFlightRevalidations.has(key)) return;
+    const task = computeAndStore(args, now)
+        .then(() => undefined)
+        .catch((err) => {
+            console.warn(
+                `[usage-aggregate] background revalidate failed for user ${args.portalUserId} period=${args.period}:`,
+                err,
+            );
+        })
+        .finally(() => {
+            inFlightRevalidations.delete(key);
+        });
+    inFlightRevalidations.set(key, task);
+}
+
+/** 测试钩子:等所有在飞的后台重算落定(防用例间脏状态)。 */
+export async function __awaitBackgroundRevalidationsForTest(): Promise<void> {
+    await Promise.all([...inFlightRevalidations.values()]);
 }
 
 /** Defensive payload reader — Prisma JsonValue is `unknown` for type

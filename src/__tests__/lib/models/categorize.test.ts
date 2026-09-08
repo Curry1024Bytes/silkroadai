@@ -71,6 +71,9 @@ describe('categorizeByType', () => {
         expect(categorizeByType('dreamina-seedance-2-0-fast-720p')).toBe('video');
         expect(categorizeByType('sora-2')).toBe('video');
         expect(categorizeByType('veo-3.1')).toBe('video');
+        // MiniMax H 系 = 海螺视频;M 系文本模型不受影响(仍走 chat 兜底)
+        expect(categorizeByType('MiniMax-H3')).toBe('video');
+        expect(categorizeByType('MiniMaxAI/MiniMax-M2.5')).toBe('chat');
     });
 
     it('image-gen: dall-e / flux / gpt-image / *-image / *_image_* → image-gen', () => {

@@ -37,6 +37,7 @@ const VENDOR_TOKENS = [
 /** 对客错误分类(机器可读,用于日志/统计;不直接展示)。 */
 export type UpstreamErrorCategory =
     | 'content_safety'
+    | 'task_type_constraint'
     | 'copyright'
     | 'media_fetch'
     | 'resolution'
@@ -52,6 +53,18 @@ export interface UpstreamErrorInfo {
     /** 对客文案(已脱敏)。 */
     message: string;
     category: UpstreamErrorCategory;
+}
+
+/** 抽上游错误码(TaskTypeConstraint 这类只出现在 code 字段,不在 message 里)。 */
+function extractUpstreamCode(body: string): string {
+    try {
+        const j = JSON.parse((body || '').trim()) as Record<string, unknown>;
+        const err = j.error as Record<string, unknown> | undefined;
+        const c = (typeof err === 'object' && err ? err.code : undefined) ?? j.code;
+        return typeof c === 'string' ? c : '';
+    } catch {
+        return '';
+    }
 }
 
 /** 从上游响应体里抽出「人话」部分。上游各家信封不一,按常见形态依次试。 */
@@ -128,9 +141,33 @@ const SUBJECT_CN: Record<string, string> = {
     output: '生成结果',
 };
 
-/** 细节后缀:有脱敏后原文就带上(客户据此自查),没有就空。 */
-function detail(s: string): string {
-    return s ? `(上游原因:${s})` : '';
+/**
+ * 剥掉【中间层自己的包装】,只留火山风格的原文(2026-09-05 客户反馈:
+ * 「参考图未通过内容安全审核 —— 请修改参考图后重试(上游原因:资源同步失败: url= :
+ *  The request failed because the input image may contain sensitive information)」
+ * 封装味太重 —— 三层壳:我们的中文前缀、「上游原因」四个字、中间层的「资源同步失败:
+ * url= :」前缀。原生做法:把壳全剥掉,直出火山那句原文,就像火山自己返回的一样)。
+ */
+function stripVendorWrapping(s: string): string {
+    return s
+        .replace(/rpc error:.*?desc\s*=\s*/gi, '')
+        .replace(/(资源同步失败|素材转换失败|素材处理失败|下载资源失败)[:：]?\s*/g, '')
+        .replace(/create [\w ]+ failed[:：]\s*/gi, '')
+        .replace(/\burl\s*=\s*[:：]?\s*/gi, '')
+        .replace(/^[\s:：,，.。;;-]+/, '')
+        .replace(/[\s:：,，;;-]+$/, '')
+        .trim();
+}
+
+/**
+ * 对客文案 = 【火山风格原文优先】,拿不到才用我们的中文兜底。
+ * 不再有「上游原因:」这种自曝中间层的括号后缀(detail() 已删,2026-09-05)。
+ */
+function nativeOr(clean: string, fallback: string): string {
+    // HTML 错误页(nginx 502 等)不是给人看的文案 —— 当作没有原文,走中文兜底。
+    if (/<\s*(!doctype|html|head|body|title)\b/i.test(clean) || clean.trimStart().startsWith('<')) return fallback;
+    const native = stripVendorWrapping(clean);
+    return native || fallback;
 }
 
 /**
@@ -140,7 +177,8 @@ function detail(s: string): string {
 export function classifyUpstreamError(body: string, status?: number): UpstreamErrorInfo {
     const extracted = extractUpstreamMessage(body);
     const clean = sanitizeUpstreamText(extracted);
-    const lower = (extracted || '').toLowerCase();
+    // 分类信号 = 错误码 + 人话(码里才有 TaskTypeConstraint 这类结构化信息)
+    const lower = `${extractUpstreamCode(body)} ${extracted || ''}`.toLowerCase();
 
     // ── 内容安全 / 版权:最需要精确到「哪一类输入」,客户才知道改什么 ──
     // ⚠️ 必须先于「素材」判 —— 上游把审核结果包在「素材转换失败: …sensitive…」里,
@@ -151,25 +189,59 @@ export function classifyUpstreamError(body: string, status?: number): UpstreamEr
         const who = subjectCn || '输入内容';
         return {
             category: 'copyright',
-            message:
+            message: nativeOr(
+                clean,
                 subject === 'output'
-                    ? `生成结果因版权/肖像限制被上游拦截 —— 请调整提示词或更换参考素材后重试${detail(clean)}`
-                    : `${who}疑似涉及版权/肖像限制,被上游审核拒绝 —— 请更换${who}或调整提示词后重试${detail(clean)}`,
+                    ? '生成结果因版权/肖像限制被拦截 —— 请调整提示词或更换参考素材后重试'
+                    : `${who}疑似涉及版权/肖像限制被审核拒绝 —— 请更换${who}或调整提示词后重试`,
+            ),
         };
     }
     if (/sensitive|敏感|安全审核|risk\s*control|violat|不合规|违规/.test(lower)) {
         const who = subjectCn || '输入内容';
         return {
             category: 'content_safety',
-            message:
+            message: nativeOr(
+                clean,
                 subject === 'output'
-                    ? `生成结果未通过内容安全审核 —— 请调整提示词或更换参考素材后重试${detail(clean)}`
-                    : `${who}未通过内容安全审核 —— 请修改${who}后重试${detail(clean)}`,
+                    ? '生成结果未通过内容安全审核 —— 请调整提示词或更换参考素材后重试'
+                    : `${who}未通过内容安全审核 —— 请修改${who}后重试`,
+            ),
+        };
+    }
+
+    // 全模态任务类型约束(seedance 2.5):模型按【提示词意图】把任务判成「视频编辑/延长」,
+    // 这两类要求 ratio=adaptive(编辑还要 duration=-1)。上游【异步】判定 → 提交时收不到,
+    // 轮询才报,且再轮询多少次都是同一个错。2026-08-18 有一条这样的任务被客户轮询了 8925 次。
+    if (/tasktypeconstraint|identified your task as/.test(lower)) {
+        return {
+            category: 'task_type_constraint',
+            message: nativeOr(
+                clean,
+                '模型按提示词判定本次为「视频编辑 / 视频延长」任务 —— 该类型要求 ratio 必须为 adaptive(视频编辑还需 duration=-1),请调整参数后重新提交',
+            ),
+        };
+    }
+    // ── 素材不存在(必须【先于】任务态判)────────────────────────────────────────
+    // 上游文案:「The specified asset asset-… is not found」。task_gone 那条正则里有个
+    // 裸的 `not found`,会把它吞掉,然后回一句「任务已失效或不存在,请重新提交」——
+    // 客户照着重提交一百次也没用,真正的原因(素材引用无效)被完全盖住。
+    // 2026-08-28 客户契约脚本 04 就是这样卡住的。
+    if (/specified asset .* is not found|asset .* not found|素材不存在/i.test(lower)) {
+        const id = clean.match(/asset[-\w]*[\s]+([A-Za-z0-9_-]+)[\s]+is not found/i)?.[1];
+        return {
+            category: 'invalid_parameter',
+            message: nativeOr(
+                clean,
+                `引用的素材不存在或不可用${id ? `(${id})` : ''} —— 请确认素材已创建且 Status=Active`,
+            ),
         };
     }
 
     // ── 任务态 ──
-    if (/任务不存在|task .*not exist|not found|does not exist/.test(lower)) {
+    // ⚠️ 不能用裸 `not found` —— 上游有大量「xxx is not found」的报错(素材/资源/模型),
+    //    只有明确说「任务」的才算任务态。
+    if (/任务不存在|task .*not exist|task .*not found|does not exist/.test(lower)) {
         return { category: 'task_gone', message: '任务已失效或不存在,请重新提交' };
     }
 
@@ -177,7 +249,7 @@ export function classifyUpstreamError(body: string, status?: number): UpstreamEr
     if (/failed to download media|下载失败|素材|media.*(unreachable|timeout)|gateway time-?out/.test(lower)) {
         return {
             category: 'media_fetch',
-            message: `输入素材下载失败(链接不可达或超时)—— 请确认图片/视频链接公网可访问;海外档拉国内链接易超时,可改用国内版${detail(clean)}`,
+            message: nativeOr(clean, '输入素材下载失败(链接不可达或超时)—— 请确认图片/视频链接公网可访问'),
         };
     }
 
@@ -185,17 +257,17 @@ export function classifyUpstreamError(body: string, status?: number): UpstreamEr
     if (/分辨率|resolution/.test(lower)) {
         return {
             category: 'resolution',
-            message: `所选分辨率不被当前模型档位接受 —— 请改用该档位支持的分辨率${detail(clean)}`,
+            message: nativeOr(clean, '所选分辨率不被当前模型档位接受 —— 请改用该档位支持的分辨率'),
         };
     }
     if (/duration|时长/.test(lower)) {
         return {
             category: 'duration',
-            message: `时长参数不被当前模型/参考模式接受(带参考图与纯文生的可选时长可能不同)—— 请调整 duration 后重试${detail(clean)}`,
+            message: nativeOr(clean, '时长参数不被当前模型/参考模式接受 —— 请调整 duration 后重试'),
         };
     }
     if (/invalid\s*parameter|invalidparameter|参数|invalid|bad\s*request/.test(lower)) {
-        return { category: 'invalid_parameter', message: `请求参数被上游拒绝${detail(clean) || ',请检查请求参数'}` };
+        return { category: 'invalid_parameter', message: nativeOr(clean, '请求参数无效,请检查后重试') };
     }
 
     // ── 限流 / 上游账户 / 上游故障 ──
@@ -207,7 +279,7 @@ export function classifyUpstreamError(body: string, status?: number): UpstreamEr
         return { category: 'upstream_account', message: '服务方上游账户异常,已通知处理 —— 请稍后重试或联系服务方' };
     }
     if (status && status >= 500) {
-        return { category: 'upstream_unavailable', message: `上游暂时不可用,请稍后重试${detail(clean)}` };
+        return { category: 'upstream_unavailable', message: nativeOr(clean, '生成服务暂时不可用,请稍后重试') };
     }
 
     // ── 兜底:也要说人话 ──
@@ -215,10 +287,38 @@ export function classifyUpstreamError(body: string, status?: number): UpstreamEr
     if (!clean) {
         return {
             category: 'unknown',
-            message: `上游拒绝了本次请求但未返回具体原因${status ? `(HTTP ${status})` : ''} —— 请稍后重试;若持续失败请联系服务方并提供请求时间`,
+            message: `请求被拒绝但未返回具体原因${status ? `(HTTP ${status})` : ''} —— 请稍后重试;若持续失败请联系服务方并提供请求时间`,
         };
     }
-    return { category: 'unknown', message: `上游拒绝了本次请求 —— ${clean}` };
+    return { category: 'unknown', message: nativeOr(clean, '请求被拒绝,请稍后重试') };
+}
+
+/**
+ * 这些 category = **任务本身已废**,再轮询多少次都是同一个结果 → 必须终态化,
+ * 否则客户脚本会无限重试(2026-08-18:8925 次/22 小时,还顺带把上游打到 429)。
+ * 共同点:它们描述的是【这次请求本身不合法】,不会因为等待而变好。
+ */
+const TERMINAL_CATEGORIES: ReadonlySet<UpstreamErrorCategory> = new Set([
+    'content_safety',
+    'copyright',
+    'task_type_constraint',
+    'invalid_parameter',
+    'resolution',
+    'duration',
+    'media_fetch',
+]);
+
+/**
+ * 本次上游轮询失败,是「任务已废」(终态)还是「瞬时抖动」(可重试)?
+ *
+ * 只有 **4xx 且非 429** + 终态类 category 才算已废:
+ *  - 5xx / 429 / 上游账户异常 → 瞬时,任务多半还活着,**绝不能**误杀;
+ *  - `task_gone`(任务不存在)**刻意排除** —— 它描述的是上游状态而非请求本身,
+ *    一次查询抖动就终态化风险太大;这类交给对账器的 48h 过期兜底。
+ */
+export function isTerminalTaskFailure(category: UpstreamErrorCategory, status?: number): boolean {
+    if (!status || status < 400 || status >= 500 || status === 429) return false;
+    return TERMINAL_CATEGORIES.has(category);
 }
 
 /** 兼容旧签名(只要文案)。新代码建议用 classifyUpstreamError 拿 category 一起落日志。 */

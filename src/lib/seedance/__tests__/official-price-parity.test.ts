@@ -53,8 +53,8 @@ describe('官方挂牌价 = 文档价目表口径', () => {
     });
 
     it('480p 与 720p 官方价同价(全变体)', () => {
-        // 2.5 无 480p 档(上游 artsdance-2-5-pro 不支持),不参与 480p==720p 同价校验
-        for (const v of ['pro', 'fast', 'mini', 'promax', 'promax-fast', 'promax-mini'] as SeedanceVariant[]) {
+        // 2.5 的 480p 2026-09-07 开档(走原版 260628 上游,费率与 720p 同价)
+        for (const v of ['pro', 'fast', 'mini', '2.5', 'promax', 'promax-fast', 'promax-mini'] as SeedanceVariant[]) {
             expect(officialCostCny(1_000_000, '480p' as never, false, v)).toBeCloseTo(
                 officialCostCny(1_000_000, '720p' as never, false, v),
                 3,

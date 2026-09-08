@@ -45,11 +45,33 @@ const INTERNAL_TO_ARK: Record<string, string> = {
     'seedance-2-0-promax-fast': 'byteplus/seedance-2.0-fast',
     'seedance-2-0-promax-mini': 'byteplus/seedance-2.0-mini',
     'seedance-2-5-promax': 'byteplus/seedance-2.5',
+    // volc 渠道:对客一律回显火山原生 id(该渠道的卖点就是原生形态)
+    'doubao-seedance-2.0': 'doubao-seedance-2-0-260128',
+    'doubao-seedance-2.0-fast': 'doubao-seedance-2-0-fast-260128',
+    'doubao-seedance-2.0-mini': 'doubao-seedance-2-0-mini-260615',
+    'doubao-seedance-2.5': 'doubao-seedance-2-5-260628',
 };
 
-/** 火山/别名 model → 内部归一名;认不出的原样返回(交给后续 model_not_found)。 */
-export function normalizeArkModel(model: string): string {
-    return ARK_TO_INTERNAL[String(model || '').toLowerCase()] ?? model;
+/**
+ * 火山原生 model id → **volc 渠道**对客名(2026-08-26)。
+ *
+ * 同一个 `doubao-seedance-2-5-260628`,cn 客户用它调国内版、volc 客户用它调火山渠道 ——
+ * 靠调用方凭据区分(见 keys.ts 的 callerHasVolc)。volc 卖的是「原生火山」,
+ * 客户本来就该能直接用上游原生名,不该被迫改成我们发明的点分名。
+ */
+const ARK_TO_VOLC: Record<string, string> = {
+    'doubao-seedance-2-0-260128': 'doubao-seedance-2.0',
+    'doubao-seedance-2-0-fast-260128': 'doubao-seedance-2.0-fast',
+    'doubao-seedance-2-0-mini-260615': 'doubao-seedance-2.0-mini',
+    'doubao-seedance-2-5-260628': 'doubao-seedance-2.5',
+};
+
+/** 火山/别名 model → 内部归一名;认不出的原样返回(交给后续 model_not_found)。
+ *  `callerIsVolc` 时优先按火山渠道解释(原生 id 直接可用)。 */
+export function normalizeArkModel(model: string, callerIsVolc = false): string {
+    const lower = String(model || '').toLowerCase();
+    if (callerIsVolc && ARK_TO_VOLC[lower]) return ARK_TO_VOLC[lower];
+    return ARK_TO_INTERNAL[lower] ?? model;
 }
 
 /** 内部名 → 火山 model id 回显;非映射项(如 -global/-promax)原样回显。 */
@@ -133,9 +155,42 @@ export interface ArkTaskResponseInput {
     seed?: number | bigint | null;
     generateAudio?: boolean | null;
     /** BytePlus ModelArk 形(global/promax,#326 客户样例)带扩展字段;火山方舟官方形
-     *  (cn/volc,docs.volcengine.com/82379)只出官方声明字段。缺省 false = 官方形。 */
+     *  (cn,docs.volcengine.com/82379)只出官方声明字段。缺省 false = 官方形。 */
     extended?: boolean;
+    /**
+     * volc 渠道:上游(= 火山方舟本身)返回的**真实**元数据,原样带给客户。
+     *
+     * 2026-08-27 客户契约测试报障:期望 framespersecond=24 / generate_audio=true /
+     * execution_expires_after=172800 / draft=false / service_tier='default',我们一个没给 ——
+     * 这批字段被关在 `extended` 分支里,而 extended 只对 global/promax 为真。
+     * 实测上游完成态确实返回 framespersecond / generate_audio / execution_expires_after /
+     * seed / tools,是我们在出口砍掉的。
+     *
+     * ⚠️ 不能简单改成让 volc 也走 `extended` —— 那个分支里的值是**硬编码占位**
+     * (framespersecond: 0、execution_expires_after: 0、service_tier: ''),打开了也对不上基准。
+     * 必须用上游真值,上游没给的项才走火山官方默认值。
+     */
+    volcMeta?: VolcArkMeta | null;
 }
+
+/** volc 渠道从上游带出来的元数据(上游未给的项走火山官方默认值)。 */
+export interface VolcArkMeta {
+    framespersecond?: number | null;
+    generateAudio?: boolean | null;
+    executionExpiresAfter?: number | null;
+    seed?: number | null;
+    tools?: unknown;
+    /** 上游的任务创建/更新时间(unix 秒)。上游未受理时为 0 → 回落我们的库值。 */
+    createdAt?: number | null;
+    updatedAt?: number | null;
+    /** 上游给了就跟随(火山成功态恒有该键,无尾帧时为空串)。 */
+    lastFrameUrl?: string | null;
+}
+
+/** 火山官方默认值 —— 任务未完成时上游不返回这几项,但客户契约要求字段恒在。 */
+const VOLC_DEFAULT_FPS = 24;
+const VOLC_DEFAULT_EXPIRES_AFTER = 172800; // 48h
+const VOLC_DEFAULT_SERVICE_TIER = 'default';
 
 /** 组装查询任务响应体 —— 按渠道分形(2026-08-12):
  *  - 火山方舟官方形(cn/volc,extended=false):只出 docs.volcengine.com/82379 声明的字段集
@@ -148,6 +203,13 @@ export function buildArkTaskResponse(inp: ArkTaskResponseInput): Record<string, 
     const nowSec = Math.floor(Date.now() / 1000);
     const base: Record<string, unknown> = {
         id: inp.taskId,
+        // volc:客户的契约脚本从查询响应里读 upstream_id 做「火山官方任务号格式」校验
+        //(^cgt-\d{14}-[A-Za-z0-9]+$),缺了就判整轮失败(2026-08-27 客户实测反馈)。
+        //
+        // 值就是 inp.taskId ——#398 起对客 id 本身就是火山官方任务号,这个字段纯粹是
+        // 给客户脚本的**别名**,不引入第二套号。⚠️ 绝不能填上游的 vendor_task_id:
+        // 落非方舟时那是 tsk-… 形,既过不了客户正则,又泄露中间层(#271)。
+        ...(inp.volcMeta ? { upstream_id: inp.taskId } : {}),
         model: arkModelEcho(inp.internalModel),
         status: inp.status,
         created_at: Math.floor(inp.createdAt.getTime() / 1000),
@@ -164,6 +226,23 @@ export function buildArkTaskResponse(inp: ArkTaskResponseInput): Record<string, 
         base.seed = inp.seed != null ? Number(inp.seed) : 0;
         base.generate_audio = inp.generateAudio ?? true;
     }
+    // volc:火山官方字段集(值优先取上游真值,上游未给的走火山官方默认值)。
+    if (inp.volcMeta) {
+        const m = inp.volcMeta;
+        base.draft = false;
+        base.service_tier = VOLC_DEFAULT_SERVICE_TIER;
+        base.framespersecond = m.framespersecond ?? VOLC_DEFAULT_FPS;
+        base.execution_expires_after = m.executionExpiresAfter ?? VOLC_DEFAULT_EXPIRES_AFTER;
+        base.generate_audio = m.generateAudio ?? inp.generateAudio ?? true;
+        base.seed = m.seed ?? (inp.seed != null ? Number(inp.seed) : 0);
+        base.tools = m.tools ?? [];
+        // 时间戳以**上游**为准。此前用的是我们库行的 created_at + Date.now():
+        //  - created_at 与上游差几秒(我们落库晚于上游受理)
+        //  - updated_at 是 Date.now() → **客户每查一次就变一次**,根本不是"任务更新时间"
+        // 上游未受理时返 0(running 早期),那时才回落库值。
+        if (m.createdAt) base.created_at = m.createdAt;
+        if (m.updatedAt) base.updated_at = m.updatedAt;
+    }
     if (inp.resolution) base.resolution = inp.resolution;
     if (inp.duration != null) base.duration = inp.duration;
 
@@ -171,6 +250,11 @@ export function buildArkTaskResponse(inp: ArkTaskResponseInput): Record<string, 
         const content: Record<string, unknown> = {};
         if (inp.videoUrl) content.video_url = inp.videoUrl;
         if (inp.lastFrameUrl) content.last_frame_url = inp.lastFrameUrl;
+        // volc:火山成功态 content 恒有 last_frame_url 键(无尾帧时为空串)——
+        // 客户按基准比对时"键缺失"和"值为空"是两回事。
+        else if (inp.volcMeta && inp.volcMeta.lastFrameUrl != null) {
+            content.last_frame_url = inp.volcMeta.lastFrameUrl;
+        }
         base.content = content;
         if (inp.usage) {
             const completion = inp.usage.completion_tokens ?? inp.usage.total_tokens ?? 0;

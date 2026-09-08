@@ -47,7 +47,14 @@ const AUTH_RE = /invalid token|invalid api key|incorrect api key|无效的令牌
 const THROTTLE_RE =
     /throttled|rate.?limit|retry-after|system under load|concurrency limit exceeded|too many pending requests|bad response status code 408/i;
 const UPSTREAM_BADREQ_RE =
-    /invalid image file|invalid input image|unable to process input image|bad request to openai|validation_error|undefined mention|prompt is required/i;
+    /invalid image file|invalid input image|unable to process input image|bad request to openai|validation_error|undefined mention|prompt is required|too many images|maximum of \d+ images|number of images/i;
+/** 未知/不支持的 model → 官方 400 invalid_request_error + code model_not_found + param model。
+ *  ⚠️ 只匹配【显式】的 model-not-found 措辞,【不】含 `no available channel for model X`——
+ *  后者在「已知 model 但渠道全挂」时字面相同(应 503 可重试容量),无法从文本区分。未知 model
+ *  的确定性拦截放在 proxy 入口(已知 model 白名单),不靠解析歧义上游文本。此正则只兜住上游
+ *  自己就明确报 model_not_found 的形态(部分 new-api 型网关会)。 */
+const MODEL_NOT_FOUND_RE =
+    /model_not_found|(?:model|模型).{0,40}(?:not found|not supported|does not exist|is not available|不存在|不支持|未找到)/i;
 const CAPACITY_RE =
     /no available channel|无可用渠道|temporarily unable to process|service temporarily unavailable|currently overloaded/i;
 const TRANSIENT_RE =
@@ -67,8 +74,19 @@ function parseRetryAfter(text: string): number {
     return n > 0 && n <= 600 ? n : 30;
 }
 
+export interface NormalizeImageOpts {
+    /** 客户请求的 model 不是我们特殊处理的图片模型(非 gpt-image / 非 gemini 图片模型)。
+     *  为 true 时,歧义的 `no available channel for model X`(已知 model 渠道耗尽 vs 未知 model
+     *  字面相同)判为【未知 model】→ 400 model_not_found;缺省 false 时仍按容量 503。 */
+    unrecognizedModel?: boolean;
+}
+
 /** 转发上游图片错误给客户前统一归类 + 脱敏。内部 reqlog 仍记原文(调用方先 capture 再 normalize)。 */
-export function normalizeImageError(text: string, upstreamStatus: number): NormalizedImageError {
+export function normalizeImageError(
+    text: string,
+    upstreamStatus: number,
+    opts: NormalizeImageOpts = {},
+): NormalizedImageError {
     // 1. 内容审核 → 恒 400 moderation_blocked(号池个别成员把拒绝包在 HTTP 200 体里,透传 status
     //    会被客户网关按成功入账 —— 2026-08-08 客户反馈实例;azure 审核原文也出现过 500 形态)
     if (IMAGE_SAFETY_RE.test(text)) return { body: IMAGE_SAFETY_BODY, status: 400 };
@@ -135,11 +153,37 @@ export function normalizeImageError(text: string, upstreamStatus: number): Norma
                 status: 400,
             };
         }
+        if (/too many images|maximum of \d+ images|number of images/i.test(text)) {
+            return {
+                body: officialBody(
+                    'Too many images provided. gpt-image-2 accepts at most 16 input images.',
+                    OFFICIAL_TYPES.invalidRequest,
+                    'too_many_images',
+                    'image',
+                ),
+                status: 400,
+            };
+        }
         return {
             body: officialBody(
                 'Invalid request: the prompt, image, or parameters were rejected — please check your request.',
                 OFFICIAL_TYPES.invalidRequest,
                 'invalid_request',
+            ),
+            status: 400,
+        };
+    }
+
+    // 5b. 上游【显式】报 model 未知/不支持,或【调用方标注 model 未识别】且上游报无渠道 →
+    //     400 model_not_found(排在容量桶之前)。后者消解 `no available channel for model X` 的歧义:
+    //     已知 model 渠道耗尽仍走容量 503,只有我们本就不认的 model 才归此类。
+    if (MODEL_NOT_FOUND_RE.test(text) || (opts.unrecognizedModel && /no available channel for model/i.test(text))) {
+        return {
+            body: officialBody(
+                'The model requested is not supported by this endpoint.',
+                OFFICIAL_TYPES.invalidRequest,
+                'model_not_found',
+                'model',
             ),
             status: 400,
         };

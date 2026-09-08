@@ -24,9 +24,10 @@ const TINY_PNG = Buffer.from(
     'base64',
 );
 
-/** 造一个仅 PNG 签名 + IHDR(w×h)的最小 buffer 的 base64 —— 够 imageDimensions 读出尺寸(测 auto 计费)。 */
-function pngB64(w: number, h: number): string {
-    const buf = Buffer.alloc(24);
+/** 造一个仅 PNG 签名 + IHDR(w×h + colortype)的最小 buffer 的 base64 —— 够 imageDimensions
+ *  读尺寸(测 auto 计费)+ imageHasAlpha 读 colortype(测透明出图校验;缺省 6 = RGBA)。 */
+function pngB64(w: number, h: number, colorType = 6): string {
+    const buf = Buffer.alloc(26);
     buf[0] = 0x89;
     buf[1] = 0x50;
     buf[2] = 0x4e;
@@ -34,6 +35,8 @@ function pngB64(w: number, h: number): string {
     buf.write('IHDR', 12, 'latin1');
     buf.writeUInt32BE(w, 16);
     buf.writeUInt32BE(h, 20);
+    buf[24] = 8; // bit depth
+    buf[25] = colorType;
     return buf.toString('base64');
 }
 
@@ -553,7 +556,7 @@ describe('handleAdapterImage 失败路径(不合成 usage → new-api 不扣费)
         expect(text.toLowerCase()).not.toContain('omini');
     });
 
-    it('内容安全(451 image_unsafe)→ 终态 400 content_policy_violation(不 failover)', async () => {
+    it('内容安全(451 image_unsafe)→ 终态 400 官方 moderation_blocked(不 failover)', async () => {
         fetchMock.mockResolvedValue(
             new Response(JSON.stringify({ error: { error_code: 'image_unsafe', message: 'appear to be unsafe' } }), {
                 status: 451,
@@ -566,10 +569,11 @@ describe('handleAdapterImage 失败路径(不合成 usage → new-api 不扣费)
         );
         expect(res.status).toBe(400); // 终态,不是 503
         const body = await res.json();
-        expect(body.error.code).toBe('content_policy_violation');
+        // 直接发官方现行审核形(直连绕过客户也拿官方形);message 含 "safety system" → portal 再归一幂等
+        expect(body.error.code).toBe('moderation_blocked');
+        expect(body.error.type).toBe('user_error');
         expect(fetchMock).toHaveBeenCalledTimes(1); // 只打一次,没被重复扇出
-        // body 含 'content rejected' 标记(供代理 IMAGE_SAFETY_RE 命中),身份中性
-        expect(JSON.stringify(body).toLowerCase()).toContain('content rejected');
+        expect(JSON.stringify(body).toLowerCase()).toContain('safety system');
         expect(JSON.stringify(body).toLowerCase()).not.toContain('omini');
     });
 
@@ -888,6 +892,83 @@ describe('wetoken provider(us-la.we-token.cc,adobe 上游挂适配器 → 合成
         expect(url).toBe('https://asian-acc.we-token.cc/v1/images/generations');
     });
 
+    it('ominiapifull(ominiapi 另一个账号,全量线)路由到 www. + openAllTiers 放行方图 low', async () => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/ominiapifull/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '1024x1024',
+                quality: 'low',
+            }),
+            'generations',
+            'ominiapifull',
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.usage.output_tokens).toBe(196); // 官方 low,不是上游值
+        const [url] = fetchMock.mock.calls[0];
+        expect(url).toBe('https://www.ominiapi.com/v1/images/generations'); // 与 gated 的 api. 是两条独立线
+    });
+
+    it('frimodel 路由到 api.frimodel.com(platform. 是控制台,/v1/* 恒 403)+ openAllTiers 放行方图 low', async () => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/frimodel/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '1024x1024',
+                quality: 'low',
+            }),
+            'generations',
+            'frimodel',
+        );
+        expect(res.status).toBe(200);
+        expect((await res.json()).usage.output_tokens).toBe(196);
+        const [url] = fetchMock.mock.calls[0];
+        expect(url).toBe('https://api.frimodel.com/v1/images/generations');
+    });
+
+    it('frimodel 生图恒返预签名 S3 url(无视 response_format)→ 拉回转 b64,URL 不外泄', async () => {
+        const s3 = 'https://pre-signed-firefly-prod.s3-accelerate.amazonaws.com/images/abc?X-Amz-Signature=deadbeef';
+        fetchMock
+            .mockResolvedValueOnce(
+                new Response(JSON.stringify({ created: 1, data: [{ url: s3 }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+            )
+            .mockResolvedValueOnce(new Response(Buffer.from(pngB64(1024, 1024), 'base64'), { status: 200 }));
+        const res = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/frimodel/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '1024x1024',
+                quality: 'low',
+            }),
+            'generations',
+            'frimodel',
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data).toEqual([{ b64_json: pngB64(1024, 1024) }]);
+        const raw = JSON.stringify(body);
+        expect(raw).not.toContain('amazonaws');
+        expect(raw).not.toContain('firefly');
+        expect(fetchMock.mock.calls[1][0]).toBe(s3);
+    });
+
+    it('frimodel brand 正则抹掉 frimodel / firefly / S3 桶名', () => {
+        const out = sanitizeAdapterError(
+            'frimodel gateway error from pre-signed-firefly-prod.s3-accelerate.amazonaws.com: firefly said no',
+            /\bfri-?model\b|\bfirefly\b|\bs3-accelerate\.amazonaws\.com\b/gi,
+        );
+        const lc = out.toLowerCase();
+        expect(lc).not.toContain('frimodel');
+        expect(lc).not.toContain('firefly');
+        expect(lc).not.toContain('amazonaws');
+    });
+
     it('brand 正则抹掉 we-token / adobe / firefly 身份串', () => {
         const out = sanitizeAdapterError(
             'we-token.cc upstream error; adobe firefly content unsafe',
@@ -897,5 +978,708 @@ describe('wetoken provider(us-la.we-token.cc,adobe 上游挂适配器 → 合成
         expect(lc).not.toContain('we-token');
         expect(lc).not.toContain('adobe');
         expect(lc).not.toContain('firefly');
+    });
+});
+
+describe('oaidist provider(真 OpenAI 签名分销网关,gateMinCt 1,756 纯盈利档守门)', () => {
+    const URL_OAIDIST = 'http://portal.test/image-adapter/oaidist/v1/images/generations';
+
+    it('路由到 llmway.ai,key 透传,model 强制 gpt-image-2 + 显式 b64_json', async () => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            jsonReq(URL_OAIDIST, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', quality: 'medium' }),
+            'generations',
+            'oaidist',
+        );
+        expect(res.status).toBe(200);
+        const [url, init] = fetchMock.mock.calls[0];
+        expect(url).toBe('https://llmway.ai/v1/images/generations');
+        expect(init.headers.authorization).toBe('Bearer sk-upstream-test');
+        const sent = JSON.parse(init.body as string);
+        expect(sent.model).toBe('gpt-image-2');
+        expect(sent.response_format).toBe('b64_json');
+    });
+
+    // 守门线 1,756 = ¥0.06/张成本保本线(operator 2026-08-24):1024² medium 恰好放行,
+    // 线下第一档 1280×1024 medium(1,510)拒;low 族天花板 659,永远在线下。
+    it.each([
+        ['1024² medium(=1,756 恰好过线)', { size: '1024x1024', quality: 'medium' }],
+        ['2560×1440 medium(1,843)', { size: '2560x1440', quality: 'medium' }],
+        ['1024² high(7,024)', { size: '1024x1024', quality: 'high' }],
+        ['4K high(13,342)', { size: '3840x2160', quality: 'high' }],
+    ])('放行:%s', async (_label, extra) => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            jsonReq(URL_OAIDIST, { model: 'gpt-image-2', prompt: 'x', ...extra }),
+            'generations',
+            'oaidist',
+        );
+        expect(res.status).toBe(200);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+        ['1280×1024 medium(1,510,线下第一档)', { size: '1280x1024', quality: 'medium' }],
+        ['1024² low(196)', { size: '1024x1024', quality: 'low' }],
+        ['1024² 缺省 quality(→low)', { size: '1024x1024' }],
+        ['4K low(371,旧守门也拒)', { size: '3840x2160', quality: 'low' }],
+        ['size=auto(非 openAllTiers 不收)', { size: 'auto', quality: 'high' }],
+    ])('拒(503 不打上游):%s', async (_label, extra) => {
+        const res = await handleAdapterImage(
+            jsonReq(URL_OAIDIST, { model: 'gpt-image-2', prompt: 'x', ...extra }),
+            'generations',
+            'oaidist',
+        );
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('【无狭长放行】狭长 16:9 low(2560×1440 low = 205)→ 拒;同尺寸存量 wetokengated 仍放行', async () => {
+        // gateMinCt provider:狭长低档 = 亏钱档,拒(兜底 openAllTiers 线接走,照样官方账单)
+        const rNew = await handleAdapterImage(
+            jsonReq(URL_OAIDIST, { model: 'gpt-image-2', prompt: 'x', size: '2560x1440', quality: 'low' }),
+            'generations',
+            'oaidist',
+        );
+        expect(rNew.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+        // 存量 gated provider 行为不动:同请求狭长条款放行
+        okUpstream();
+        const rOld = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/wetokengated/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '2560x1440',
+                quality: 'low',
+            }),
+            'generations',
+            'wetokengated',
+        );
+        expect(rOld.status).toBe(200);
+    });
+
+    it('上游静默降级尺寸 → 按【返回图实际尺寸】计费(7000² 式超收根治)', async () => {
+        // 请求 2048² high(过线),上游"降级"返 1024² 的图 → 计费必须是 1024² high 7,024,
+        // 不是请求值 2048² high 14,272
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(1024, 1024) }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+        const res = await handleAdapterImage(
+            jsonReq(URL_OAIDIST, { model: 'gpt-image-2', prompt: 'x', size: '2048x2048', quality: 'high' }),
+            'generations',
+            'oaidist',
+        );
+        expect(res.status).toBe(200);
+        expect((await res.json()).usage.output_tokens).toBe(7024);
+    });
+
+    it('返回图实际尺寸 = 请求值 → 计费与旧口径逐 token 一致(如实上游零变化)', async () => {
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(3840, 2160) }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+        const res = await handleAdapterImage(
+            jsonReq(URL_OAIDIST, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160', quality: 'high' }),
+            'generations',
+            'oaidist',
+        );
+        expect((await res.json()).usage.output_tokens).toBe(13342);
+    });
+
+    it('返回图解不出尺寸(非 PNG/JPEG)→ 退回按请求值计费(旧行为兜底,不失败)', async () => {
+        okUpstream(); // b64_json = "img0-0",解码不是图
+        const res = await handleAdapterImage(
+            jsonReq(URL_OAIDIST, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', quality: 'medium' }),
+            'generations',
+            'oaidist',
+        );
+        expect(res.status).toBe(200);
+        expect((await res.json()).usage.output_tokens).toBe(1756);
+    });
+
+    it('brand 正则抹掉 llmway / distributor / 旧上游 IP', () => {
+        const out = sanitizeAdapterError(
+            'llmway.ai gateway: No available channel under group default (distributor); upstream 64.32.31.178 refused',
+            /\bllmway\b|\bdistributor\b|64\.32\.31\.178/gi,
+        );
+        const lc = out.toLowerCase();
+        expect(lc).not.toContain('llmway');
+        expect(lc).not.toContain('distributor');
+        expect(lc).not.toContain('64.32.31.178');
+    });
+});
+
+describe('oaidistfull provider(oaidist 同上游同 key 的全量线,openAllTiers)', () => {
+    const URL_FULL = 'http://portal.test/image-adapter/oaidistfull/v1/images/generations';
+
+    it('路由到同一上游 llmway.ai + openAllTiers 放行方图 low(合成官方 196)', async () => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            jsonReq(URL_FULL, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', quality: 'low' }),
+            'generations',
+            'oaidistfull',
+        );
+        expect(res.status).toBe(200);
+        expect((await res.json()).usage.output_tokens).toBe(196);
+        const [url] = fetchMock.mock.calls[0];
+        expect(url).toBe('https://llmway.ai/v1/images/generations');
+    });
+
+    it('size=auto → 透传上游,按返回图实际尺寸(1344x1008 low)合成官方 162', async () => {
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(1344, 1008) }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+        const res = await handleAdapterImage(
+            jsonReq(URL_FULL, { model: 'gpt-image-2', prompt: 'x', size: 'auto', quality: 'low' }),
+            'generations',
+            'oaidistfull',
+        );
+        expect(res.status).toBe(200);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect((await res.json()).usage.output_tokens).toBe(162);
+    });
+
+    it('同为守门线的 oaidist 对照:同请求(1024² low)在 gated 线仍 503 拒', async () => {
+        const res = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/oaidist/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '1024x1024',
+                quality: 'low',
+            }),
+            'generations',
+            'oaidist',
+        );
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+});
+
+describe('background:transparent 路由(未验证上游 503 让路,支持的正常透传)', () => {
+    const gen = (provider: string, body: Record<string, unknown>) =>
+        handleAdapterImage(
+            jsonReq(`http://portal.test/image-adapter/${provider}/v1/images/generations`, {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '1024x1024',
+                quality: 'low',
+                ...body,
+            }),
+            'generations',
+            provider,
+        );
+
+    it('wetoken(openAllTiers 但未验证透明)→ 503 不打上游(flag 压过 openAllTiers)', async () => {
+        const res = await gen('wetoken', { background: 'transparent' });
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect((await res.json()).error.code).toBe('upstream_unavailable'); // body 恒中性
+    });
+
+    it('大小写/空白不敏感:" Transparent " 同样拒', async () => {
+        const res = await gen('wetokengated', { background: ' Transparent ', quality: 'high', size: '3840x2160' });
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('multipart edits 带 background=transparent → 未验证上游同样 503', async () => {
+        const res = await handleAdapterImage(
+            formReq(
+                'http://portal.test/image-adapter/frimodel/v1/images/edits',
+                { prompt: 'e', size: '1024x1024', quality: 'low', background: 'transparent' },
+                [TINY_PNG],
+            ),
+            'edits',
+            'frimodel',
+        );
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('wetoken 不带 background / background=opaque → 照常放行(不误伤)', async () => {
+        okUpstream();
+        expect((await gen('wetoken', {})).status).toBe(200);
+        okUpstream();
+        expect((await gen('wetoken', { background: 'opaque' })).status).toBe(200);
+    });
+
+    it('ominiapifull(实测支持)→ 放行且 background=transparent 透传进上游 body', async () => {
+        okUpstream();
+        const res = await gen('ominiapifull', { background: 'transparent' });
+        expect(res.status).toBe(200);
+        const [, init] = fetchMock.mock.calls[0];
+        expect(JSON.parse(init.body as string).background).toBe('transparent');
+    });
+
+    it('oaidist(信任支持,gated)→ 过守门档位带 transparent 正常放行透传', async () => {
+        okUpstream();
+        const res = await gen('oaidist', { background: 'transparent', quality: 'medium' });
+        expect(res.status).toBe(200);
+        expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).background).toBe('transparent');
+    });
+});
+
+describe('background:transparent 出图校验(号池型上游 50/50 随机,假棋盘格不放行)', () => {
+    const URL_FULL2 = 'http://portal.test/image-adapter/ominiapifull/v1/images/generations';
+    const upstreamReturning = (b64s: string[]) => {
+        let i = 0;
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: b64s[i++ % b64s.length] }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+    };
+
+    it('transparent 请求返回 colortype=2(无 alpha)→ 全丢 503(不给客户假棋盘格,不计费)', async () => {
+        upstreamReturning([pngB64(1024, 1024, 2)]);
+        const res = await handleAdapterImage(
+            jsonReq(URL_FULL2, {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '1024x1024',
+                quality: 'low',
+                background: 'transparent',
+            }),
+            'generations',
+            'ominiapifull',
+        );
+        expect(res.status).toBe(503);
+        expect((await res.json()).error.code).toBe('upstream_unavailable');
+    });
+
+    it('n=2 一真一假 → 只返真 RGBA 那张,按 1 张计费', async () => {
+        upstreamReturning([pngB64(1024, 1024, 6), pngB64(1024, 1024, 2)]);
+        const res = await handleAdapterImage(
+            jsonReq(URL_FULL2, {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '1024x1024',
+                quality: 'low',
+                background: 'transparent',
+                n: 2,
+            }),
+            'generations',
+            'ominiapifull',
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data).toHaveLength(1);
+        expect(body.data[0].b64_json).toBe(pngB64(1024, 1024, 6));
+        expect(body.usage.output_tokens).toBe(196); // 1 张,不是 2 张
+    });
+
+    it('不带 transparent 时 colortype=2 照常放行(校验只对透明请求生效)', async () => {
+        upstreamReturning([pngB64(1024, 1024, 2)]);
+        const res = await handleAdapterImage(
+            jsonReq(URL_FULL2, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', quality: 'low' }),
+            'generations',
+            'ominiapifull',
+        );
+        expect(res.status).toBe(200);
+        expect((await res.json()).data).toHaveLength(1);
+    });
+
+    it('transparent + 识别不出的格式(非 PNG/JPEG)→ 存疑放行不误杀', async () => {
+        upstreamReturning([Buffer.from('RIFFxxxxWEBPVP8 fake-webp-bytes-here').toString('base64')]);
+        const res = await handleAdapterImage(
+            jsonReq(URL_FULL2, {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '1024x1024',
+                quality: 'low',
+                background: 'transparent',
+            }),
+            'generations',
+            'ominiapifull',
+        );
+        expect(res.status).toBe(200);
+    });
+});
+
+describe('frimodelmedium provider(frimodel 新账号,onlyQualities=[medium] + upstreamModel 覆盖)', () => {
+    const URL_FM = 'http://portal.test/image-adapter/frimodelmedium/v1/images/generations';
+    const gen = (body: Record<string, unknown>) =>
+        handleAdapterImage(
+            jsonReq(URL_FM, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', ...body }),
+            'generations',
+            'frimodelmedium',
+        );
+
+    it('medium 放行:路由 api.frimodel.com,上游 model 覆盖成 gpt-image-2-adobe', async () => {
+        okUpstream();
+        const res = await gen({ quality: 'medium' });
+        expect(res.status).toBe(200);
+        const [url, init] = fetchMock.mock.calls[0];
+        expect(url).toBe('https://api.frimodel.com/v1/images/generations');
+        expect(JSON.parse(init.body as string).model).toBe('gpt-image-2-adobe');
+    });
+
+    it('medium 不看尺寸:4K medium / 狭长 medium / size=auto medium 全放行', async () => {
+        for (const size of ['3840x2160', '2560x1440']) {
+            fetchMock.mockReset();
+            okUpstream();
+            expect((await gen({ quality: 'medium', size })).status).toBe(200);
+        }
+        // auto:上游返真图,按实际尺寸计费(官方 1024² medium = 1756)
+        fetchMock.mockReset();
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(1024, 1024) }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+        const res = await gen({ quality: 'medium', size: 'auto' });
+        expect(res.status).toBe(200);
+        expect((await res.json()).usage.output_tokens).toBe(1756);
+    });
+
+    it.each([
+        ['low', { quality: 'low' }],
+        ['high', { quality: 'high' }],
+        ['auto(→low)', { quality: 'auto' }],
+        ['standard(→low)', { quality: 'standard' }],
+        ['缺省(→low)', {}],
+    ])('非 medium 拒(503 不打上游):%s', async (_label, extra) => {
+        const res = await gen(extra);
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('multipart edits medium → 放行且 form model 覆盖成 gpt-image-2-adobe', async () => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            formReq(
+                'http://portal.test/image-adapter/frimodelmedium/v1/images/edits',
+                { prompt: 'e', size: '1024x1024', quality: 'medium' },
+                [TINY_PNG],
+            ),
+            'edits',
+            'frimodelmedium',
+        );
+        expect(res.status).toBe(200);
+        expect((fetchMock.mock.calls[0][1].body as FormData).get('model')).toBe('gpt-image-2-adobe');
+    });
+
+    it('medium + background=transparent → 503(实测该上游出假图,flag 拒)', async () => {
+        const res = await gen({ quality: 'medium', background: 'transparent' });
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('存量 provider 上游 model 名不受影响(仍送 gpt-image-2)', async () => {
+        okUpstream();
+        await handleAdapterImage(
+            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160', quality: 'high' }),
+            'generations',
+            'ominiapi',
+        );
+        expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).model).toBe('gpt-image-2');
+    });
+});
+
+describe('frimodellow provider(frimodel 第三账号,onlyQualities=[low] + gpt-image-2-low)', () => {
+    const URL_FL = 'http://portal.test/image-adapter/frimodellow/v1/images/generations';
+    const gen = (body: Record<string, unknown>) =>
+        handleAdapterImage(
+            jsonReq(URL_FL, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', ...body }),
+            'generations',
+            'frimodellow',
+        );
+
+    it.each([
+        ['显式 low', { quality: 'low' }],
+        ['auto(→low)', { quality: 'auto' }],
+        ['standard(→low)', { quality: 'standard' }],
+        ['缺省(→low)', {}],
+    ])('low 族放行:%s → 上游 model 覆盖成 gpt-image-2-low', async (_label, extra) => {
+        fetchMock.mockReset();
+        okUpstream();
+        const res = await gen(extra);
+        expect(res.status).toBe(200);
+        const [url, init] = fetchMock.mock.calls[0];
+        expect(url).toBe('https://api.frimodel.com/v1/images/generations');
+        expect(JSON.parse(init.body as string).model).toBe('gpt-image-2-low');
+    });
+
+    it.each([
+        ['medium', { quality: 'medium' }],
+        ['high', { quality: 'high' }],
+    ])('非 low 拒(503 不打上游):%s', async (_label, extra) => {
+        const res = await gen(extra);
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('low + size=auto → 放行,按返回图实际尺寸合成官方 low(196)', async () => {
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(1024, 1024) }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+        const res = await gen({ quality: 'low', size: 'auto' });
+        expect(res.status).toBe(200);
+        expect((await res.json()).usage.output_tokens).toBe(196);
+    });
+
+    it('low + background=transparent → 503(frimodel 家族不出真 alpha)', async () => {
+        const res = await gen({ quality: 'low', background: 'transparent' });
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('与 frimodelmedium 互斥不重叠:medium 归 204 线,low 归本线', async () => {
+        okUpstream();
+        const rMed = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/frimodelmedium/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '1024x1024',
+                quality: 'low',
+            }),
+            'generations',
+            'frimodelmedium',
+        );
+        expect(rMed.status).toBe(503); // medium 线拒 low
+        fetchMock.mockReset();
+        okUpstream();
+        expect((await gen({ quality: 'low' })).status).toBe(200); // low 线收 low
+    });
+});
+
+describe('pandatk provider(Adobe Firefly 转售,openAllTiers 全量线)', () => {
+    const URL_PD = 'http://portal.test/image-adapter/pandatk/v1/images/generations';
+
+    it('openAllTiers:方图 low 放行,路由 api.pandatk.com,model 仍送裸 gpt-image-2', async () => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            jsonReq(URL_PD, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', quality: 'low' }),
+            'generations',
+            'pandatk',
+        );
+        expect(res.status).toBe(200);
+        const [url, init] = fetchMock.mock.calls[0];
+        expect(url).toBe('https://api.pandatk.com/v1/images/generations');
+        expect(JSON.parse(init.body as string).model).toBe('gpt-image-2');
+        expect((await res.json()).usage.output_tokens).toBe(196); // 官方合成,不是上游 medium 托底值
+    });
+
+    it('size=auto → 放行,按返回图实际尺寸合成', async () => {
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(2048, 2048) }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+        const res = await handleAdapterImage(
+            jsonReq(URL_PD, { model: 'gpt-image-2', prompt: 'x', size: 'auto', quality: 'medium' }),
+            'generations',
+            'pandatk',
+        );
+        expect(res.status).toBe(200);
+        expect((await res.json()).usage.output_tokens).toBe(3568);
+    });
+
+    it('background=transparent → 503 拒(Firefly 家族 fail-closed)', async () => {
+        const res = await handleAdapterImage(
+            jsonReq(URL_PD, {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '1024x1024',
+                quality: 'medium',
+                background: 'transparent',
+            }),
+            'generations',
+            'pandatk',
+        );
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('brand 正则抹掉 pandatk / firefly(adobe 由 sanitize 内建兜)', () => {
+        const out = sanitizeAdapterError('pandatk gateway: adobe firefly rejected', /\bpandatk\b|\bfirefly\b/gi);
+        const lc = out.toLowerCase();
+        expect(lc).not.toContain('pandatk');
+        expect(lc).not.toContain('firefly');
+        expect(lc).not.toContain('adobe');
+    });
+});
+
+describe('适配器层 C2PA 剥离(2026-09-06 下沉,堵 :3000 绕过客户的 adobe 图泄漏)', () => {
+    // 带 adobe Firefly caBX(C2PA)的最小 PNG,colorType 6(RGBA)以过透明校验/尺寸解析
+    function adobePngB64(w = 1024, h = 1024): string {
+        const MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+        const chunk = (type: string, data: Buffer): Buffer => {
+            const len = Buffer.alloc(4);
+            len.writeUInt32BE(data.length, 0);
+            return Buffer.concat([len, Buffer.from(type, 'latin1'), data, Buffer.alloc(4)]);
+        };
+        const ihdr = Buffer.alloc(13);
+        ihdr.writeUInt32BE(w, 0);
+        ihdr.writeUInt32BE(h, 4);
+        ihdr[8] = 8; // bit depth
+        ihdr[9] = 6; // colorType RGBA
+        return Buffer.concat([
+            MAGIC,
+            chunk('IHDR', ihdr),
+            chunk('caBX', Buffer.from('jumbf c2pa claim_generator Adobe_Firefly ... Adobe Systems Incorporated')),
+            chunk('IDAT', Buffer.from('PIXELS-not-metadata')),
+            chunk('IEND', Buffer.alloc(0)),
+        ]).toString('base64');
+    }
+
+    it('上游返 adobe C2PA 图 → 适配器返回的 b64 已剥,像素无损', async () => {
+        const adobe = adobePngB64();
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: adobe }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+        // openAllTiers 上游(wetoken)放行方图 low,拿到出图
+        const res = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/wetoken/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '1024x1024',
+                quality: 'low',
+            }),
+            'generations',
+            'wetoken',
+        );
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { data: Array<{ b64_json: string }> };
+        const out = Buffer.from(body.data[0].b64_json, 'base64').toString('latin1').toLowerCase();
+        expect(out).not.toContain('adobe');
+        expect(out).not.toContain('firefly');
+        expect(out).not.toContain('cabx');
+        // 像素块保留(无损)
+        expect(Buffer.from(body.data[0].b64_json, 'base64').includes(Buffer.from('PIXELS-not-metadata'))).toBe(true);
+    });
+
+    it('OpenAI 原生/无 adobe 标识的图 → 字节原样不动(内容自定向,不误剥)', async () => {
+        // pngB64 造的最小 PNG 无 adobe 标识
+        const clean = pngB64(1024, 1024);
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: clean }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+        const res = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/wetoken/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '1024x1024',
+                quality: 'low',
+            }),
+            'generations',
+            'wetoken',
+        );
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { data: Array<{ b64_json: string }> };
+        expect(body.data[0].b64_json).toBe(clean); // 原样
+    });
+});
+
+describe('适配器响应合规下沉(echo 官方枚举 + jpeg 转码,覆盖直连绕过客户 2026-09-06)', () => {
+    const genW = (body: Record<string, unknown>) =>
+        handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/wetoken/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '1024x1024',
+                ...body,
+            }),
+            'generations',
+            'wetoken',
+        );
+    // wetoken openAllTiers 放行所有档;上游返回真 PNG(pngB64 造)
+    const upstreamPng = (w = 1024, h = 1024) =>
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(w, h) }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+
+    it('响应顶层回显 quality(归一 low)/ background(opaque)/ output_format(png,按字节)/ size', async () => {
+        upstreamPng(1024, 1024);
+        const res = await genW({ quality: 'auto' });
+        expect(res.status).toBe(200);
+        const b = (await res.json()) as Record<string, string>;
+        expect(b.quality).toBe('low'); // auto→low 官方枚举
+        expect(b.background).toBe('opaque');
+        expect(b.output_format).toBe('png'); // sniff pngB64 字节
+        expect(b.size).toBe('1024x1024');
+    });
+
+    it('quality=high 回显 high', async () => {
+        upstreamPng();
+        const res = await genW({ quality: 'high' });
+        expect(((await res.json()) as Record<string, string>).quality).toBe('high');
+    });
+
+    it('background=transparent(ominiapifull 支持透明)→ 回显 transparent', async () => {
+        // ominiapifull 无 noTransparentBackground,返回带 alpha 的图(colorType 6)过透明校验
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(1024, 1024, 6) }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+        const res = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/ominiapifull/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '1024x1024',
+                quality: 'low',
+                background: 'transparent',
+            }),
+            'generations',
+            'ominiapifull',
+        );
+        expect(res.status).toBe(200);
+        expect(((await res.json()) as Record<string, string>).background).toBe('transparent');
+    });
+
+    it('output_format=jpeg → 转码真 jpeg 字节 + 回显 jpeg', async () => {
+        // 造一张真 PNG(jimp 能解码),上游返回它
+        const { Jimp } = await import('jimp');
+        const png = Buffer.from(await new Jimp({ width: 8, height: 8, color: 0xff0000ff }).getBuffer('image/png'));
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: png.toString('base64') }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+        const res = await genW({ quality: 'low', output_format: 'jpeg' });
+        expect(res.status).toBe(200);
+        const b = (await res.json()) as { data: Array<{ b64_json: string }>; output_format: string };
+        const outBuf = Buffer.from(b.data[0].b64_json, 'base64');
+        expect(outBuf[0]).toBe(0xff); // JPEG SOI
+        expect(outBuf[1]).toBe(0xd8);
+        expect(b.output_format).toBe('jpeg');
     });
 });

@@ -420,11 +420,10 @@ describe('安全:上游信息不外泄(2026-07-24)', () => {
         );
         const res = await submitVideo(makeReq({ model: 'seedance2.0-pro-720p', prompt: 'x' }));
         const j = (await res.json()) as { error: { message: string } };
-        // 上游 5xx = 瞬时,给可重试文案(不再泛化成 rejected);仍不泄露上游身份。
-        // 2026-08-17 起文案后可带【脱敏后】的上游原因 —— 故用 startsWith 而非全等,
-        // 但「不含上游身份」这条断言一个字都不放松。
-        expect(j.error.message.startsWith('上游暂时不可用,请稍后重试')).toBe(true);
+        // 原生化(2026-09-05):5xx 有脱敏原文就直出;「不含上游身份」这条断言一个字都不放松。
+        expect(j.error.message.length).toBeGreaterThan(0);
         expect(j.error.message).not.toMatch(/xinhankr|nginx|artsmcp/i);
+        expect(j.error.message).not.toContain('上游原因');
     });
 
     it('轮询上游不可达 / 非 2xx → 同样不外泄', async () => {
@@ -438,8 +437,8 @@ describe('安全:上游信息不外泄(2026-07-24)', () => {
         mockFetch.mockResolvedValueOnce(json({ error: { message: 'artsmcp gateway 502' } }, 502));
         res = await pollVideo(pollReq(), 'cgt-x');
         j = (await res.json()) as { error: { message: string } };
-        // 上游 5xx = 瞬时可重试文案;仍不泄露上游身份(文案后可带脱敏后的上游原因)
-        expect(j.error.message.startsWith('上游暂时不可用,请稍后重试')).toBe(true);
+        // 原生化(2026-09-05):有脱敏原文就直出;不泄露上游身份这条不放松
+        expect(j.error.message.length).toBeGreaterThan(0);
         expect(j.error.message).not.toMatch(/artsmcp/i);
     });
 });
@@ -489,7 +488,7 @@ describe('seedance 2.5 判定(2026-08-07,国内版新代)', () => {
         expect(regionForModel('seedance-2-5')).toBe('cn');
     });
 
-    it('MODEL_MAP:仅 720p/1080p × {无ref,-ref} 四档,上游 = artsdance-2-5-pro-260801,region 缺省 cn', async () => {
+    it('MODEL_MAP:480p/720p/1080p × {无ref,-ref} 六档;720p+ 走 pro 版、480p 走原版 260628,region 缺省 cn', async () => {
         const { MODEL_MAP } = await import('../cn-adapter');
         for (const name of ['seedance2.5-720p', 'seedance2.5-720p-ref', 'seedance2.5-1080p', 'seedance2.5-1080p-ref']) {
             expect(MODEL_MAP[name]).toBeTruthy();
@@ -497,7 +496,13 @@ describe('seedance 2.5 判定(2026-08-07,国内版新代)', () => {
             expect(MODEL_MAP[name].upstream).toBe('artsdance-2-5-pro-260801');
             expect(MODEL_MAP[name].region).toBeUndefined(); // 缺省 = cn base
         }
-        expect(MODEL_MAP['seedance2.5-480p']).toBeUndefined(); // 上游不支持 480p
+        // 480p 单档走原版(pro 版上游拒 480p,2026-09-07 开档)
+        for (const name of ['seedance2.5-480p', 'seedance2.5-480p-ref']) {
+            expect(MODEL_MAP[name]).toBeTruthy();
+            expect(MODEL_MAP[name].variant).toBe('2.5');
+            expect(MODEL_MAP[name].upstream).toBe('artsdance-2-5-260628');
+            expect(MODEL_MAP[name].region).toBeUndefined();
+        }
         expect(MODEL_MAP['seedance2.5-4k']).toBeUndefined(); // 无 4k
     });
 });
@@ -568,15 +573,16 @@ describe('上游报错友好化(2026-08-11):审核类给可操作提示,且不�
         });
         expect(res.status).toBe(400);
         const m = ((await res.json()) as { error: { message: string } }).error.message;
-        expect(m).toMatch(/版权/);
-        expect(m).toMatch(/更换参考图|重试/);
+        // 原生化(2026-09-05):有原文就直出(剥掉「素材处理失败:」这类中间层包装)
+        expect(m).toContain('copyright restrictions');
+        expect(m).not.toContain('素材处理失败');
     });
 
     it('敏感类(sensitive)→ 内容安全审核文案;上游没点明主体时归「输入内容」', async () => {
         const res = await submitWith400({ error: { message: 'the input may contain sensitive information' } });
         const m = ((await res.json()) as { error: { message: string } }).error.message;
-        expect(m).toMatch(/内容安全审核/);
-        expect(m).toMatch(/输入内容/);
+        expect(m).toContain('sensitive information');
+        expect(m).not.toContain('上游原因');
     });
 
     it('敏感类能点明主体:提示词 vs 参考图(2026-08-17,popreels 事故)', async () => {
@@ -586,22 +592,22 @@ describe('上游报错友好化(2026-08-11):审核类给可操作提示,且不�
             },
         });
         const tm = ((await t.json()) as { error: { message: string } }).error.message;
-        expect(tm).toMatch(/提示词/);
-        expect(tm).not.toMatch(/参考图/);
+        expect(tm).toContain('input text');
+        expect(tm).toContain('sensitive');
 
         const i = await submitWith400({
             error: { message: 'The request failed because the input image may contain sensitive information' },
         });
         const im = ((await i.json()) as { error: { message: string } }).error.message;
-        expect(im).toMatch(/参考图/);
+        expect(im).toContain('input image');
     });
 
     it('其它上游错误 → 兜底文案【带脱敏后的上游原因】(2026-08-17:不再吞掉)', async () => {
         const res = await submitWith400({ error: { message: 'internal upstream failure xyz' } });
         const m = ((await res.json()) as { error: { message: string } }).error.message;
-        expect(m).toMatch(/上游拒绝了本次请求/);
-        expect(m).toContain('internal upstream failure xyz'); // 原因带出来,客户不用再来回捞日志
-        expect(m).not.toBe('upstream rejected the request');
+        // 原生化:未知类直接给脱敏原文,不再套「上游拒绝了本次请求 ——」前缀
+        expect(m).toContain('internal upstream failure xyz');
+        expect(m).not.toContain('上游');
     });
 
     it('上游连原因都不给 → 明说「未返回具体原因」', async () => {
@@ -622,7 +628,10 @@ describe('上游报错友好化(2026-08-11):审核类给可操作提示,且不�
                 message: '素材转换失败: Failed to download media from the provided URL. Gateway Time-out',
             },
         });
-        expect(((await res.json()) as { error: { message: string } }).error.message).toMatch(/素材下载失败|不可达/);
+        const dm = ((await res.json()) as { error: { message: string } }).error.message;
+        // 原文直出,且「素材转换失败:」中间层前缀被剥掉
+        expect(dm).toContain('Failed to download media');
+        expect(dm).not.toContain('素材转换失败');
     });
 
     it('上游 5xx → 可重试文案(不是 rejected)', async () => {
@@ -635,7 +644,8 @@ describe('上游报错友好化(2026-08-11):审核类给可操作提示,且不�
         });
         const res = await submitVideo(makeReq({ model: 'seedance2.0-pro-720p', prompt: 'x' }));
         const m = ((await res.json()) as { error: { message: string } }).error.message;
-        expect(m.startsWith('上游暂时不可用,请稍后重试')).toBe(true);
+        // 5xx 且上游给了文案('boom')→ 原文直出;HTML/空才回中文兜底
+        expect(m).toBe('boom');
         expect(m).toContain('boom'); // 脱敏后的上游原因照样带出来
     });
 

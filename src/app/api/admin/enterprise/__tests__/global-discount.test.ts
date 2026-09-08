@@ -11,7 +11,11 @@ const { db, resolveAdmin } = vi.hoisted(() => ({
     resolveAdmin: vi.fn(),
 }));
 vi.mock('@/lib/db', () => ({ prisma: db }));
-vi.mock('@/lib/admin/auth', () => ({ resolveAdmin }));
+// 2026-09-04 起路由守门换到 enterprise/admin-auth(两级管理员);测试沿用 resolveAdmin 变量名
+vi.mock('@/lib/enterprise/admin-auth', () => ({
+    resolveEnterpriseAdmin: resolveAdmin,
+    auditAdminAction: vi.fn(),
+}));
 vi.mock('@/lib/admin-auth', () => ({ unauthorizedResponse: () => new Response(null, { status: 401 }) }));
 
 import { GET, POST } from '../global-discount/route';

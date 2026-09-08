@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { unauthorizedResponse } from '@/lib/admin-auth';
-import { resolveAdmin } from '@/lib/admin/auth';
+import { resolveEnterpriseAdmin, auditAdminAction } from '@/lib/enterprise/admin-auth';
 import { encryptUpstreamKey } from '@/lib/enterprise/crypto';
 
 export const runtime = 'nodejs';
@@ -20,7 +20,7 @@ const schema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-    const admin = await resolveAdmin(request, 'superadmin');
+    const admin = await resolveEnterpriseAdmin(request);
     if (!admin) return unauthorizedResponse(request);
 
     let body: unknown;
@@ -46,6 +46,10 @@ export async function POST(request: NextRequest) {
         where: { user_id_region: { user_id, region } },
         create: { user_id, region, upstream_key_enc: enc, note: note ?? null },
         update: { upstream_key_enc: enc, ...(note !== undefined ? { note } : {}) },
+    });
+    auditAdminAction(request, admin, 'upstream_key_set', {
+        target: user_id,
+        params: { user_id, region, note: note ?? null, upstream_key: '[redacted]' },
     });
     return NextResponse.json({ ok: true, user_id, region });
 }
