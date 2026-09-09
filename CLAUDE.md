@@ -620,3 +620,5 @@ LiteLLM 时代的 `LITELLM_*` 变量保留作 fallback,W3 D1 关停后可删。
 已按先报告后合并的顺序集成 `main@fd6b2cd`（#449–#451），见 `docs/UPSTREAM-SYNC-2026-09-09.md`。保留固定 SKU 计费与尺寸，接入 Seedance 2.5 费率/480p 默认上游名修正及独立 Image 2.5 适配器。`/image-adapter25/` 已加入仓库 Nginx 公网隔离配置，provider 未配置或真实验收。operator 已暂停上线；完整测试仅本机 new-api 目标返回 HTML 的既有联机 smoke 失败，prod 保持 `02cbf26`，本轮未登录 VPS。
 
 随后完成发布准备：Image 2.5 增加默认关闭开关 `PORTAL_IMAGE_ADAPTER25_ENABLED=false`，Batch 继续关闭；新供应商内部缺陷尚未修复，不能启用。operator 恢复 SSH 隧道后，完整测试含真实只读联机检查全部通过（287 files / 3680 passed / 1 既有 skipped），类型/构建通过、lint 0 error / 93 warnings。prod 仍保持 `02cbf26`，未部署；后续迁移、Nginx 和生产验收要求见 `docs/RELEASE-READINESS-2026-09-09.md`。
+
+operator 随后重新安排上线，`prod@d3c60d3` 已于北京时间 2026-09-09 15:33 在 VPS 发布。76 条 migration 全部完成，50 项源站/公网检查通过，12 个持久用户 token 与真实客户 Key 模型列表鉴权通过，三档图片价格未变；Image 2.5/Batch 显式关闭。切换约 6 秒短暂不可用后恢复，Portal restart count 0，数据库和 new-api 未重建。生产配置备份与回滚镜像均保留，详细结果及现有 Cloudflare Python-urllib 1010 限制见 `docs/DEPLOY-2026-09-09.md`。之后仅文档跟进，不重建运行镜像。

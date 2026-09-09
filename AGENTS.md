@@ -324,6 +324,15 @@
 - 新 Image 2.5 的多图计费、WebP、远程图片下载、body 超时与 mask 限制仍待修复，不能因为默认关闭就宣称已验收。后续上线仍需备份、6 条 migration、Nginx 内部路径隔离与生产检查。
 - operator 的暂停部署指令仍有效，prod 保持 `02cbf26`；详细证据与后续步骤见 `docs/RELEASE-READINESS-2026-09-09.md`。
 
+## 生产发布 2026-09-09（已上线）
+
+- operator 重新明确安排上线后，`dev@d3c60d3` fast-forward 到 prod 并在 VPS 发布；运行镜像为 `sha256:04126eede7e98d51848700b95a9242170583d2f48efb384e4c51efdf2f9572e5`。北京时间 15:33 切换，本机探测约 6 秒短暂不可用后恢复，Portal restart count 0。后续文档提交不重建镜像。
+- 六条增量 migration 全部成功，生产共 76 applied / 0 unfinished / 0 rolled back、checksum 均一致；Nginx 四类内部适配器路径在主站/www/API 源站及公网均 404。PostgreSQL/new-api/MySQL 容器与启动时间未变。
+- 备份：`.env.bak.20260909-072006`、`/opt/backups/silkroadai-portal/portal-20260909-072006.sql.gz`（0600、gzip 通过）及 release 目录中的 Nginx 归档；保留旧镜像 `silkroadai-portal-portal:rollback-20260909-072006`，回滚代码为 `02cbf26`。
+- 服务器存在 24 份 `.env.bak.*`，现有 `.dockerignore` 无法覆盖它们；本次通过 Git 归档的干净目录构建，排除全部 `.env*`，公开 build args 仍取生产 Compose。镜像检查确认没有 `.env*` 文件；以后构建须继续避免把生产备份带入上下文。
+- 50 项源站/公网检查通过；真实管理员客户 Key `/v1/models` 200（本档 4 模型），12/12 用户非 JWT 持久 token 鉴权通过；动态拓扑不变量全为 0，三档图片价格仍 ¥1/¥1.5/¥2，Portal 启动后日志无 error。生产两个功能开关显式为 false，Image 2.5/Batch 均验证返回 503。
+- 没有收费生成、支付或真实浏览器 OAuth 登录；Python-urllib 默认客户端仍会遇到 Cloudflare 403/1010，相关策略未改。Gemini CORS 仅验收无 Cookie 的 `x-goog-api-key` 模式，不扩大为任意凭据模式。详见 `docs/DEPLOY-2026-09-09.md`。
+
 ## 目录结构
 
 ```
