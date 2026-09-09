@@ -316,6 +316,14 @@
 - Nginx 增加 `/image-adapter25/` 公网 404，本机隔离验证通过；新 provider 未配置、未做收费真机验收。上轮 Batch 默认关闭、6 条待发布 migration 和生产单 Portal 规则继续保持。
 - 定向 574 passed；完整测试 3656 passed / 1 skipped / 1 failed，仅原有模型列表 smoke 因本机 3000 返回 HTML 而失败。类型、lint（0 error / 93 warnings）、生产构建通过；详细审计、格式检查和最终 SHA 见本轮报告。prod 保持 `02cbf26`。
 
+## 发布准备 2026-09-09（联机检查已恢复，仍暂停上线）
+
+- 在 `dev@9f9036b` 基础上给 Image 2.5 两个内部入口增加 `PORTAL_IMAGE_ADAPTER25_ENABLED`，仅显式 `true` 才启用；默认关闭时在读 body/调用供应商之前返回中性 503。Batch 继续关闭。实际 `.env` 未改，上游适配器实现与原回归测试未改。
+- 给原 new-api smoke 增加无凭据 `/api/status` 结构前置检查，保留三项原测试的名称、调用和断言。先拒绝 HBuilderX 的 HTML；operator 恢复 SSH 后，明确以 `http://127.0.0.1:3000` 完成真实 GET 状态/模型列表鉴权，未执行收费请求或生产写操作。
+- 完整测试 287 files / 3680 passed / 1 既有 skipped；typecheck、生产构建通过，lint 0 error / 93 个既有 warnings。新增 10 项入口开关与 13 项目标检查测试。
+- 新 Image 2.5 的多图计费、WebP、远程图片下载、body 超时与 mask 限制仍待修复，不能因为默认关闭就宣称已验收。后续上线仍需备份、6 条 migration、Nginx 内部路径隔离与生产检查。
+- operator 的暂停部署指令仍有效，prod 保持 `02cbf26`；详细证据与后续步骤见 `docs/RELEASE-READINESS-2026-09-09.md`。
+
 ## 目录结构
 
 ```

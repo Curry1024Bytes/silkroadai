@@ -618,3 +618,5 @@ LiteLLM 时代的 `LITELLM_*` 变量保留作 fallback,W3 D1 关停后可删。
 ## 上游同步 2026-09-09
 
 已按先报告后合并的顺序集成 `main@fd6b2cd`（#449–#451），见 `docs/UPSTREAM-SYNC-2026-09-09.md`。保留固定 SKU 计费与尺寸，接入 Seedance 2.5 费率/480p 默认上游名修正及独立 Image 2.5 适配器。`/image-adapter25/` 已加入仓库 Nginx 公网隔离配置，provider 未配置或真实验收。operator 已暂停上线；完整测试仅本机 new-api 目标返回 HTML 的既有联机 smoke 失败，prod 保持 `02cbf26`，本轮未登录 VPS。
+
+随后完成发布准备：Image 2.5 增加默认关闭开关 `PORTAL_IMAGE_ADAPTER25_ENABLED=false`，Batch 继续关闭；新供应商内部缺陷尚未修复，不能启用。operator 恢复 SSH 隧道后，完整测试含真实只读联机检查全部通过（287 files / 3680 passed / 1 既有 skipped），类型/构建通过、lint 0 error / 93 warnings。prod 仍保持 `02cbf26`，未部署；后续迁移、Nginx 和生产验收要求见 `docs/RELEASE-READINESS-2026-09-09.md`。

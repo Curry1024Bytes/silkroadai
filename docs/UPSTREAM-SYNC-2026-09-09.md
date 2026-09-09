@@ -293,3 +293,9 @@ d1e838f add
 | `fd6b2cd` #451 | 仅公共图片代理有 715 行既有定制差异；独立适配器、注册表、两个路由、middleware、上游新增测试均与该提交一致。公共代理已逐字证明等于合并前 dev 加本次七处上游 echo 修改，固定 SKU、图床、JPEG compression、Batch gate 语义未丢失。 |
 
 最终相关文档和新增测试的 Prettier 检查通过；此前 1186 文件检查发现的唯一格式问题已修正。用户 `.env` 与原未跟踪需求文档的 SHA-256 与开工前相同；未提交用户内容。prod / origin/prod 仍为 `02cbf26`，不会因本轮合并自动发布。
+
+### 同日发布准备后续
+
+以上记录保留本次上游 merge 完成时的结果。后续在 `dev@9f9036b` 上为 Image 2.5 入口加默认关闭开关，并为原 smoke 加无凭据目标检查；没有改动上游适配器/价格/echo 回归。原 smoke 的三个名称、调用与断言也均保留，新增前置条件的原因与失败对照见 [发布准备记录](RELEASE-READINESS-2026-09-09.md)。
+
+operator 恢复 SSH 隧道后，完整测试已真实通过：287 files / 3680 passed / 1 既有 skipped，包含原三项联机 smoke。此前的 HTML 目标问题已解除；prod 仍为 `02cbf26`，暂停上线指令仍有效。新 Image 2.5 与 Batch 继续关闭，待正式发布的 migration、Nginx 与生产验收要求未取消。

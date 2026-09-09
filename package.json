@@ -14,6 +14,7 @@
         "format:check": "prettier --check .",
         "test": "vitest run",
         "test:ci": "vitest run --exclude=**/*.smoke.test.*",
+        "test:smoke": "vitest run src/lib/newapi/__tests__/client.smoke.test.ts",
         "test:watch": "vitest"
     },
     "dependencies": {
