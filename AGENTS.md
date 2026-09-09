@@ -339,10 +339,18 @@
   （`d3b136c9eda64005baf0a43257a793b1`）：仅 `api.llmroute.club` 的 `/v1/`、`/v1beta/` 路径前缀
   设置 `bic: false`，全局 BIC 与其他安全设置未改。默认 urllib 真实 Key 模型列表 200、假 Key 401，
   CORS 204、主站原 BIC 与 API 路径隔离等 16 项检查通过，没有重建应用。
-- 官方 OpenAI Python SDK 3.10.0 默认 UA 仍被 `Manage AI bots` managed rule
-  `7bd01eeccb6b420fa0be30264603a5cb` 拦截，尚未解决。Free 控制台未提供单条例外入口；未关闭整站
-  AI 防护、未跳过全部 managed rules、未升级套餐。专用 UA 的临时办法已验证能到达假 Key 401；
-  后续精确例外仍需合适的配置通道与实际验证。证据与回滚见 `docs/CLOUDFLARE-API-COMPAT-2026-09-09.md`。
+- 官方 SDK 默认 UA 随后确认被 `Manage AI bots`（Rule `7bd01eeccb6b420fa0be30264603a5cb`）拦截，
+  实际属于 `http_request_sbfm`。单规则例外预校验被拒绝；operator 要求继续处理后，于 21:23 启用
+  `LLmRoute API - Skip SBFM bot checks`（Rule `5804effbe8504e7386f78e6715d4bccb`，ruleset
+  `c66d62c0ae7541caa27328d72174649c`），与 BIC 相同 host/path 范围，只跳过 SBFM 阶段并开启匹配日志。
+  该范围会跳过整个 SBFM 阶段的现有及未来规则，未跳过 WAF、限流、DDoS；Free Bot Fight Mode 不可
+  据此跳过，主站及原有其他 ruleset 版本未改，也未升级套餐或新增自定义限流。
+- OpenAI Python SDK 3.10.0 默认头真实管理员客户 Key 模型列表 200（4 模型）；OpenAI/Anthropic
+  默认 SDK 的假 Key GET/POST 401，六项 SDK 鉴权检查与 16 项服务器边界检查通过。没有收费生成/SSE
+  验收；临时 WAF 管理 Token 已于 21:27 主动撤销，API verify 401 且本机凭据已清理。
+- Claude 桌面客户端的渠道限制仍独立待办：21:24 只读复核六条渠道，只有 channel 9 `CCMax稳定满血`
+  提供 Claude，现有上游报错要求 Claude Code；需通用客户端权限或兼容渠道后再验收，没有改渠道或伪装
+  客户端。证据、权限边界及逐条回滚见 `docs/CLOUDFLARE-API-COMPAT-2026-09-09.md`。
 
 ## 目录结构
 
