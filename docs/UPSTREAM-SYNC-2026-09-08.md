@@ -1071,7 +1071,7 @@ jpeg,字节/元数据一致。严格模式语义不动(它自己的 400 校验�
 
 1. (authenticated)/loading.tsx — 全组导航即时切换到骨架屏(header/sidebar
    由 layout 持有不动),数据到了再流入真页;同时让 force-dynamic 路由的
-      <Link> prefetch 生效。
+   `<Link>` prefetch 生效。
 2. /dashboard 把原来 4 波串行 await(balance → new-api 聚合+3 日志切片 →
    充值流水 → reseller)合并成一个并行 wave,TTFB 从各波之和降为最慢单项;
    allSettled 保留原有分区降级语义(单项失败只影响自己的区块)。

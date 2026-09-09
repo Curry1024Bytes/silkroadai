@@ -308,6 +308,14 @@
 - PostgreSQL 16 隔离库从合法合并前拓扑的 70 migration 升至 76，全成功且 schema 无差异；历史空库种子存在启用空渠道，原 topology migration 会拒绝，预演仅在隔离库准备合法 fixture，未改历史 migration。
 - CI、类型、lint 0 error、构建通过；完整测试另有既有模型列表联机 smoke 失败，本机 3000 返回 HTML，不能当真实 new-api 验收。prod 保持 `02cbf26`，本轮未推进 prod、未登录 VPS 部署。具体最终计数和 SHA 见同步报告。
 
+## 上游同步 2026-09-09（dev 集成，暂停发布）
+
+- 已先输出 `docs/UPSTREAM-SYNC-2026-09-09.md`，再将 `main@fd6b2cd` 的 #449–#451 合入 dev；main 与 origin/main、upstream/main 相同。operator 明确「先不上线」，本轮没有登录 VPS 或部署。
+- #449 将 Seedance 2.5/1080p 基准改为 ¥77/¥46（每百万 token）；#450 将国内 480p 默认上游名改为 `doubao-seedance-2-5-260628`；#451 新增独立 Image 2.5 适配器和五档 quality 回显。没有新 migration/env/依赖。
+- 唯一文本冲突在公共图片代理：保留 LLmRoute 固定 SKU 原名、固定尺寸、计费、扇出及禁流逻辑，接入上游 2.5 echo 七处修改。上游新增回归原样保留，另补 20 个请求/结算/超时/middleware 场景。
+- Nginx 增加 `/image-adapter25/` 公网 404，本机隔离验证通过；新 provider 未配置、未做收费真机验收。上轮 Batch 默认关闭、6 条待发布 migration 和生产单 Portal 规则继续保持。
+- 定向 574 passed；完整测试 3656 passed / 1 skipped / 1 failed，仅原有模型列表 smoke 因本机 3000 返回 HTML 而失败。类型、lint（0 error / 93 warnings）、生产构建通过；详细审计、格式检查和最终 SHA 见本轮报告。prod 保持 `02cbf26`。
+
 ## 目录结构
 
 ```

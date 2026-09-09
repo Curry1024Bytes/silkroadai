@@ -53,9 +53,11 @@ const UPSTREAM_GLOBAL_25 = process.env.SEEDANCE_GLOBAL_MODEL_25 || UPSTREAM_PROM
 // 上游名 2026-08-08 由 doubao-seedance-2-5-260628 换成 artsdance-2-5-pro-260801
 // (实测:新名支持 720p/1080p、【不支持 480p】;旧名支持 480p/720p)。费率独立(含视/无视两档)。
 const UPSTREAM_XHK_25 = process.env.SEEDANCE_XHK_MODEL_25 || 'artsdance-2-5-pro-260801';
-// 480p 单档走原版 260628(pro 版 260801 拒 480p,2026-09-07 实测原版仍收;拿货 9.5 折毛利极薄
-// 且折扣 <0.95 的客户倒挂 —— operator 知悉后拍板照开)。同一对客名下 480p 与 720p+ 是两个上游版本。
-const UPSTREAM_XHK_25_480P = process.env.SEEDANCE_XHK_MODEL_25_480P || 'artsdance-2-5-260628';
+// 480p 单档走 260628(pro 版 260801 拒 480p)。⚠️ 用 doubao- 前缀名而非 artsdance- 名:
+// 2026-09-09 实测 artsdance-2-5-260628 @480p 后端只有 ~50% 支持(12 打 6 随机「480p 不支持」,
+// 720p 却 100% 稳),doubao-seedance-2-5-260628 @480p 是 28/28 全稳(含 audio=false)——
+// 同一底模,doubao- 名路由到全支持 480p 的稳定后端。720p/1080p 仍走 pro 版 260801。
+const UPSTREAM_XHK_25_480P = process.env.SEEDANCE_XHK_MODEL_25_480P || 'doubao-seedance-2-5-260628';
 
 /** 版本 → 上游 base URL(global 与 promax 同为 intl 端口,仅模型名/费率不同)。
  *  volc(火山渠道)走独立上游 + 火山方舟原生协议,不经此函数(见 kuaizi-adapter)。 */
@@ -129,8 +131,8 @@ export const MODEL_MAP: Record<string, SeedanceModelSpec> = {
             ),
         ),
     ),
-    // ── 国内 seedance 2.5(cn):费率独立;720p/1080p 走 pro 版 260801,480p 走原版 260628
-    //    (pro 版拒 480p;2026-09-07 上真机实测原版收 480p,operator 拍板开档)──
+    // ── 国内 seedance 2.5(cn):费率独立;720p/1080p 走 pro 版 260801,480p 走 doubao-260628
+    //    (pro 版拒 480p;480p 用 doubao- 名走稳定后端,见 UPSTREAM_XHK_25_480P 注释)──
     ...Object.fromEntries(
         (['480p', '720p', '1080p'] as const).flatMap((resolution) =>
             [false, true].map((ref) => [

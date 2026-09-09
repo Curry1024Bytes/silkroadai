@@ -137,6 +137,8 @@ describe('middleware — matcher excludes /v1/* (body-buffering 10MB cap)', () =
         '/v1beta/models/gemini-3-pro-image-preview:generateContent',
         '/v1beta/models',
         '/seedance-adapter/v1/videos',
+        '/image-adapter25/wetokenasia25/v1/images/generations',
+        '/image-adapter25/wetokenasia25/v1/images/edits',
         // 2026-07-05:工具箱各工具的提交入口带参考图 base64,>10MB 被缓冲截断 →
         // new-api 报 "unexpected end of JSON input"(seedance 图生视频客户实测)。
         '/api/tools/seedance/submit',

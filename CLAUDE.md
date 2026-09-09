@@ -614,3 +614,7 @@ LiteLLM 时代的 `LITELLM_*` 变量保留作 fallback,W3 D1 关停后可删。
 ## 上游同步 2026-09-08
 
 已集成 #391–#448 的代码，详细语义审计见 `docs/UPSTREAM-SYNC-2026-09-08.md`。Batch 默认关闭；MiniMax/Seedream 仅内部适配器，未配置渠道或验收。上游 server1/server2/ch214 的部署记录不属于 LLmRoute；部署仍仅 prod、Nginx、主 Portal 单实例。
+
+## 上游同步 2026-09-09
+
+已按先报告后合并的顺序集成 `main@fd6b2cd`（#449–#451），见 `docs/UPSTREAM-SYNC-2026-09-09.md`。保留固定 SKU 计费与尺寸，接入 Seedance 2.5 费率/480p 默认上游名修正及独立 Image 2.5 适配器。`/image-adapter25/` 已加入仓库 Nginx 公网隔离配置，provider 未配置或真实验收。operator 已暂停上线；完整测试仅本机 new-api 目标返回 HTML 的既有联机 smoke 失败，prod 保持 `02cbf26`，本轮未登录 VPS。

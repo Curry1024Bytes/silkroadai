@@ -79,3 +79,17 @@ describe('sniffImageFormat — 按返回图实际首字节判定(消解请求/�
         expect(sniffImageFormat([])).toBe('');
     });
 });
+
+describe('normalizeEchoQuality — gpt-image-2.5 tier5 门控(xhigh/max 只对 2.5 放行)', () => {
+    it.each([
+        ['xhigh', true, 'xhigh'],
+        ['max', true, 'max'],
+        ['MAX', true, 'max'],
+        ['xhigh', false, 'low'], // 2.0 不认 → 归一 low(与 2.0 适配器计费口径一致)
+        ['max', false, 'low'],
+        ['auto', true, 'low'], // 2.5 的 auto 同样归一 low(上游按 196 计)
+        ['high', true, 'high'],
+    ])('%s tier5=%s → %s', (input, tier5, expected) => {
+        expect(normalizeEchoQuality(input, true, tier5)).toBe(expected);
+    });
+});

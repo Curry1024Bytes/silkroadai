@@ -87,7 +87,10 @@ export const config = {
     // 轻松 >10MB,必须避开 middleware body 缓冲截断。纯内部 API 中继,不需页面安全头。
     // minimax-adapter/* 一并排除:MiniMax-H3 视频中继(2026-08-26),参考图 data URL base64
     // 可能 >10MB,同样避开 middleware body 缓冲截断。纯内部 API 中继,不需页面安全头。
+    // image-adapter25/* 一并排除:gpt-image-2.5 独立适配器(2026-09-09),同 image-adapter 收大图
+    // multipart edits。⚠️ `image-adapter/` 的负向断言是字面匹配(含斜杠),匹配不到 `image-adapter25/`
+    // (…adapter2 ≠ …adapter/),必须单列,否则新入口被 10MB 缓冲截断。
     matcher: [
-        '/((?!v1/|v1beta/|seedance-adapter/|image-adapter/|minimax-adapter/|seedream-adapter/|api/tools/|api/enterprise/assets|api/v3/|_next/static|_next/image|favicon.ico).*)',
+        '/((?!v1/|v1beta/|seedance-adapter/|image-adapter/|image-adapter25/|minimax-adapter/|seedream-adapter/|api/tools/|api/enterprise/assets|api/v3/|_next/static|_next/image|favicon.ico).*)',
     ],
 };

@@ -6042,6 +6042,67 @@ describe('/v1 proxy — CORS(浏览器前端直调,对标 api.openai.com)', () =
     });
 });
 
+describe('/v1 proxy — Image 2.5 quality integration', () => {
+    it.each([
+        ['gpt-image-2.5-flare', 'xhigh', 'xhigh'],
+        ['gpt-image-2.5-sunburst', 'max', 'max'],
+        ['gpt-image-2', 'max', 'low'],
+        ['gpt-image-2-1k', 'xhigh', 'low'],
+    ])('JSON %s keeps its model and echoes %s as %s', async (model, quality, expected) => {
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ data: [{ b64_json: pngHeaderB64(1024, 1024) }] }), {
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model, prompt: 'a blue square', quality, size: '1024x1024', response_format: 'b64_json' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        expect((await res.json()).quality).toBe(expected);
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+        const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(url).toBe(`${NEWAPI_BASE}/v1/images/generations`);
+        const sent = JSON.parse(String(init.body));
+        expect(sent.model).toBe(model);
+        expect(sent.size).toBe('1024x1024');
+    });
+
+    it.each([
+        ['gpt-image-2.5-flare', 'xhigh'],
+        ['gpt-image-2.5-sunburst', 'max'],
+    ])('multipart edits for %s retain %s and adapter usage', async (model, quality) => {
+        const usage = { input_tokens: 1025, output_tokens: 7024, total_tokens: 8049 };
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ data: [{ b64_json: pngHeaderB64(1024, 1024) }], usage }), {
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const form = new FormData();
+        for (const [key, value] of Object.entries({ model, prompt: 'edit', quality, response_format: 'b64_json' }))
+            form.set(key, value);
+        form.set('image', new Blob([new Uint8Array(Buffer.from(pngHeaderB64(1024, 1024), 'base64'))]), 'in.png');
+        const res = await POST(
+            new NextRequest('https://api.llmroute.club/v1/images/edits', { method: 'POST', body: form }),
+            ctx('images', 'edits'),
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.quality).toBe(quality);
+        expect(body.usage).toEqual(usage);
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+        const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(url).toBe(`${NEWAPI_BASE}/v1/images/edits`);
+        const sent = init.body as FormData;
+        expect(sent.get('model')).toBe(model);
+        expect(sent.get('quality')).toBe(quality);
+        expect(sent.get('response_format')).toBeNull();
+        expect(sent.getAll('image')).toHaveLength(1);
+    });
+});
+
 // ── Seedream 5.0 Pro(seedream-5-0-pro,portal seedream-adapter 经 new-api)代理层钩子 ──
 describe('/v1 proxy — seedream-5-0-pro 钩子', () => {
     const SD = 'seedream-5-0-pro';

@@ -477,6 +477,26 @@ describe('proMax 2.5 判定(2026-08-08)', () => {
 });
 
 describe('seedance 2.5 判定(2026-08-07,国内版新代)', () => {
+    it.each([
+        ['seedance2.5-480p', '480p', 'doubao-seedance-2-5-260628'],
+        ['seedance2.5-480p-ref', '480p', 'doubao-seedance-2-5-260628'],
+        ['seedance2.5-720p', '720p', 'artsdance-2-5-pro-260801'],
+        ['seedance2.5-1080p', '1080p', 'artsdance-2-5-pro-260801'],
+    ])('%s sends the intended upstream model without retrying', async (model, resolution, upstream) => {
+        const res = await submitVideo(
+            makeReq({
+                model,
+                prompt: 'a blue square',
+                generate_audio: false,
+                ...(model.endsWith('-ref') ? { image: 'https://cdn.example.com/input.png' } : {}),
+            }),
+        );
+        expect(res.status).toBe(200);
+        expect(submitBody()).toMatchObject({ model: upstream, resolution, generate_audio: false });
+        const submissions = mockFetch.mock.calls.filter((call) => (call[1] as RequestInit)?.method === 'POST');
+        expect(submissions).toHaveLength(1);
+    });
+
     it('variantForModel:短名/长名/上游名都 → 2.5(不落 pro 兜底);regionForModel → cn', async () => {
         const { variantForModel, regionForModel } = await import('../cn-adapter');
         expect(variantForModel('seedance-2-5')).toBe('2.5'); // 客户短名(任务行存这个)
@@ -500,7 +520,7 @@ describe('seedance 2.5 判定(2026-08-07,国内版新代)', () => {
         for (const name of ['seedance2.5-480p', 'seedance2.5-480p-ref']) {
             expect(MODEL_MAP[name]).toBeTruthy();
             expect(MODEL_MAP[name].variant).toBe('2.5');
-            expect(MODEL_MAP[name].upstream).toBe('artsdance-2-5-260628');
+            expect(MODEL_MAP[name].upstream).toBe('doubao-seedance-2-5-260628');
             expect(MODEL_MAP[name].region).toBeUndefined();
         }
         expect(MODEL_MAP['seedance2.5-4k']).toBeUndefined(); // 无 4k
