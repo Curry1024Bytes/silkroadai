@@ -333,6 +333,17 @@
 - 50 项源站/公网检查通过；真实管理员客户 Key `/v1/models` 200（本档 4 模型），12/12 用户非 JWT 持久 token 鉴权通过；动态拓扑不变量全为 0，三档图片价格仍 ¥1/¥1.5/¥2，Portal 启动后日志无 error。生产两个功能开关显式为 false，Image 2.5/Batch 均验证返回 503。
 - 没有收费生成、支付或真实浏览器 OAuth 登录；Python-urllib 默认客户端仍会遇到 Cloudflare 403/1010，相关策略未改。Gemini CORS 仅验收无 Cookie 的 `x-goog-api-key` 模式，不扩大为任意凭据模式。详见 `docs/DEPLOY-2026-09-09.md`。
 
+## Cloudflare API 客户端兼容 2026-09-09
+
+- 发布后经 operator 明确批准，启用 Configuration Rule `LLmRoute API - Disable Browser Integrity Check`
+  （`d3b136c9eda64005baf0a43257a793b1`）：仅 `api.llmroute.club` 的 `/v1/`、`/v1beta/` 路径前缀
+  设置 `bic: false`，全局 BIC 与其他安全设置未改。默认 urllib 真实 Key 模型列表 200、假 Key 401，
+  CORS 204、主站原 BIC 与 API 路径隔离等 16 项检查通过，没有重建应用。
+- 官方 OpenAI Python SDK 3.10.0 默认 UA 仍被 `Manage AI bots` managed rule
+  `7bd01eeccb6b420fa0be30264603a5cb` 拦截，尚未解决。Free 控制台未提供单条例外入口；未关闭整站
+  AI 防护、未跳过全部 managed rules、未升级套餐。专用 UA 的临时办法已验证能到达假 Key 401；
+  后续精确例外仍需合适的配置通道与实际验证。证据与回滚见 `docs/CLOUDFLARE-API-COMPAT-2026-09-09.md`。
+
 ## 目录结构
 
 ```
