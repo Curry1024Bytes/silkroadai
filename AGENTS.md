@@ -352,6 +352,17 @@
   提供 Claude，现有上游报错要求 Claude Code；需通用客户端权限或兼容渠道后再验收，没有改渠道或伪装
   客户端。证据、权限边界及逐条回滚见 `docs/CLOUDFLARE-API-COMPAT-2026-09-09.md`。
 
+## CCMax 渠道替换 2026-09-10
+
+- new-api 原渠道 9 已不存在；operator 创建同名同分组的渠道 14 后，Portal 登记曾为 `[9,14]`，但
+  10 个启用 Claude 模型仍引用 9，因而移除 9 被 `tier_in_use_by_enabled_models` 正常拦截。
+- 北京时间 12:14 已在备份后通过现有 Portal 管理 API 迁移这 10 个模型的渠道引用 `9 → 14`，再将
+  `ccmax稳定满血` 登记收敛为 `[14]`；逐项回读及原后台校验通过。旧引用为 0，默认导入预览无错误，
+  管理员现有 CCMax Key 公网模型列表 200（11 模型）。原 5 条价格历史和该档 2 条凭据记录的摘要未变。
+- 备份在 `/opt/backups/silkroadai-portal/channel-replacement-20260910-041150/`（0700，数据库 gzip
+  0600 且完整）；未修改 new-api、未新增目录模型/价格、未部署应用或收费推理。渠道 13 仍属 default，
+  未纳入这次登记；供应商账号池/客户端限制仍需另外验收。见 `docs/CHANNEL-REPLACEMENT-2026-09-10.md`。
+
 ## 目录结构
 
 ```
