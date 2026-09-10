@@ -49,6 +49,7 @@ interface ImportChannelMenuItem {
     model_count: number;
     selected: boolean;
     tier: string | null; // null = 尚未登记到任何启用档次,不能导入
+    unavailable?: boolean;
 }
 
 interface ImportCreatedRow {
@@ -80,6 +81,14 @@ interface ImportPreview {
     skipped: { slug: string; tier: string; reason: string }[];
     flagged: ImportFlaggedRow[];
     summary: { created: number; skipped: number; flagged: number };
+    changes: {
+        newModels: string[];
+        mappingUpdates: { slug: string; tier: string; from: UpstreamEntry | null; to: UpstreamEntry | null }[];
+        updatedModels: number;
+        newPrices: number;
+        preservedPrices: number;
+        hasWork: boolean;
+    };
 }
 
 const MODALITIES: Modality[] = ['chat', 'image', 'embedding'];
@@ -134,16 +143,16 @@ function getTexts(locale: Locale) {
               importBtn: 'Import from new-api',
               importTitle: 'Import models from new-api',
               importIntro:
-                  'Reads model lists + current prices from the selected flagship channels and creates catalog entries. Already-existing models are skipped; image models are created without a price (set it on the Pricing page).',
+                  'Imports new models and missing prices, and updates existing model mappings. Existing prices are preserved. Set missing image prices on the Pricing page.',
               importChannels: 'Channels to import from',
               importSelectHint:
                   'Defaults to every channel registered to exactly one enabled tier. Unregistered channels cannot be imported.',
               importColModels: 'models',
               importPreviewing: 'Loading preview…',
               importRefresh: 'Re-preview',
-              importWillCreate: 'Will create',
+              importWillCreate: 'New prices',
               importNeedsPrice: 'Needs manual price',
-              importSkippedExists: 'Skipped (price already exists)',
+              importSkippedExists: 'Existing prices preserved',
               importColTier: 'Tier',
               importColIn: '¥ in / 1M',
               importColOut: '¥ out / 1M',
@@ -154,8 +163,8 @@ function getTexts(locale: Locale) {
               importChannelErrors: 'Some channels could not be read',
               importConfirm: 'Confirm import',
               importImporting: 'Importing…',
-              importDone: (s: { created: number; skipped: number; flagged: number }) =>
-                  `Import complete — created ${s.created}, skipped ${s.skipped}, needs price ${s.flagged}.`,
+              importDone: (s: ImportPreview) =>
+                  `Import complete: ${s.changes.newModels.length} new models, ${s.changes.updatedModels} models updated, ${s.changes.newPrices} new prices, ${s.changes.preservedPrices} existing prices preserved; ${s.summary.flagged} need pricing.`,
               importFailed: 'Import failed',
               importNothing: 'Nothing to import (all already exist, or no channels loaded).',
               importClose: 'Close',
@@ -204,15 +213,15 @@ function getTexts(locale: Locale) {
               importBtn: '从 new-api 导入',
               importTitle: '从 new-api 导入模型',
               importIntro:
-                  '从选中的旗舰渠道读取模型清单 + 当前价格,自动建好目录条目。已存在的模型会跳过;图片模型只建条目、价格留空(去「定价」页手填)。',
+                  '导入新模型、补充缺失价格，并更新已有模型的渠道映射。已有价格保留；图片模型缺失的价格请到「定价」页填写。',
               importChannels: '从哪些渠道导入',
               importSelectHint: '默认选择已明确归属某个启用档次的全部渠道;未登记渠道不能导入。',
               importColModels: '个模型',
               importPreviewing: '预览中…',
               importRefresh: '重新预览',
-              importWillCreate: '将创建',
+              importWillCreate: '新增价格',
               importNeedsPrice: '需手填价',
-              importSkippedExists: '跳过(价已存在)',
+              importSkippedExists: '保留已有价格',
               importColTier: '档次',
               importColIn: '¥ 输入 / 1M',
               importColOut: '¥ 输出 / 1M',
@@ -223,8 +232,8 @@ function getTexts(locale: Locale) {
               importChannelErrors: '部分渠道读取失败',
               importConfirm: '确认导入',
               importImporting: '导入中…',
-              importDone: (s: { created: number; skipped: number; flagged: number }) =>
-                  `导入完成 —— 新建 ${s.created},跳过 ${s.skipped},需手填价 ${s.flagged}。`,
+              importDone: (s: ImportPreview) =>
+                  `导入完成：新增 ${s.changes.newModels.length} 个模型，更新 ${s.changes.updatedModels} 个模型映射，新增 ${s.changes.newPrices} 条价格，保留 ${s.changes.preservedPrices} 条已有价格；${s.summary.flagged} 项需填写价格。`,
               importFailed: '导入失败',
               importNothing: '没有可导入的模型(都已存在,或没有渠道加载成功)。',
               importClose: '关闭',
@@ -471,7 +480,7 @@ function ModelsContent() {
                     return;
                 }
                 const data = await res.json().catch(() => ({}));
-                setImportError(data.error || t.importFailed);
+                setImportError(data.message || data.error || t.importFailed);
                 return;
             }
             const data = (await res.json()) as ImportPreview;
@@ -504,6 +513,7 @@ function ModelsContent() {
 
     // Real import: writes inside a transaction, then refreshes the table behind the modal.
     const confirmImport = async () => {
+        if (!importPreview?.changes.hasWork || importSelectionChanged || importPreview.channelErrors.length > 0) return;
         setImporting(true);
         setImportError('');
         try {
@@ -519,7 +529,7 @@ function ModelsContent() {
                     return;
                 }
                 const data = await res.json().catch(() => ({}));
-                setImportError(data.error || t.importFailed);
+                setImportError(data.message || data.error || t.importFailed);
                 return;
             }
             const data = (await res.json()) as ImportPreview;
@@ -536,6 +546,10 @@ function ModelsContent() {
     const flaggedReasonText = (reason: string) =>
         reason === 'image_model_manual_price' ? t.importImageReason : t.importNoRatioReason;
     const fmtPrice = (n: number | null) => (n == null ? '—' : `¥${n.toFixed(2)}`);
+    const importSelectionChanged =
+        !!importPreview &&
+        (importChannelIds.length !== importPreview.selectedChannelIds.length ||
+            importChannelIds.some((id) => !importPreview.selectedChannelIds.includes(id)));
 
     // ── Shared styles ──
 
@@ -940,7 +954,7 @@ function ModelsContent() {
                             <div
                                 className={`mb-4 rounded-lg border p-3 text-sm ${isDark ? 'border-emerald-800 bg-emerald-950/40 text-emerald-300' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}
                             >
-                                {t.importDone(importDoneResult.summary)}
+                                {t.importDone(importDoneResult)}
                             </div>
                         )}
 
@@ -971,7 +985,19 @@ function ModelsContent() {
                                                 className="h-4 w-4 rounded border-slate-400 accent-emerald-500"
                                             />
                                             <span className="font-mono text-xs">#{ch.id}</span>
-                                            <span>{ch.name ?? '—'}</span>
+                                            <span>
+                                                {ch.name ??
+                                                    (ch.unavailable
+                                                        ? locale === 'en'
+                                                            ? 'Not in new-api list'
+                                                            : '未在 new-api 列表中'
+                                                        : '—')}
+                                            </span>
+                                            {ch.unavailable && (
+                                                <span className={isDark ? 'text-amber-300' : 'text-amber-800'}>
+                                                    {locale === 'en' ? 'Check channel' : '需核对渠道'}
+                                                </span>
+                                            )}
                                             <span
                                                 className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
                                                     ch.tier === 'official'
@@ -1007,6 +1033,7 @@ function ModelsContent() {
                         {/* channel load errors */}
                         {importPreview && importPreview.channelErrors.length > 0 && (
                             <div
+                                role="alert"
                                 className={`mb-4 rounded-lg border p-3 text-xs ${isDark ? 'border-amber-800 bg-amber-950/40 text-amber-300' : 'border-amber-200 bg-amber-50 text-amber-700'}`}
                             >
                                 <div className="font-medium">{t.importChannelErrors}</div>
@@ -1017,6 +1044,17 @@ function ModelsContent() {
                                         </li>
                                     ))}
                                 </ul>
+                                <p className="mt-2">
+                                    {locale === 'en'
+                                        ? 'If an old channel was removed, replace it in Channel Groups. To import other channels first, deselect the failed items and re-preview.'
+                                        : '旧渠道已删除时，请到「渠道分组」使用「替换渠道」。若先导入其他渠道，取消勾选失败项后重新预览。'}
+                                </p>
+                                <a
+                                    className="mt-2 inline-block underline"
+                                    href={`/admin/channel-groups?lang=${locale}&theme=${theme}`}
+                                >
+                                    {locale === 'en' ? 'Open Channel Groups' : '前往渠道分组'}
+                                </a>
                             </div>
                         )}
 
@@ -1028,6 +1066,16 @@ function ModelsContent() {
                         ) : importPreview ? (
                             <div className="space-y-4">
                                 <div className={`text-sm font-medium ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>
+                                    <span>
+                                        {locale === 'en' ? 'New models' : '新增模型'}{' '}
+                                        {importPreview.changes.newModels.length}
+                                    </span>
+                                    {'  ·  '}
+                                    <span>
+                                        {locale === 'en' ? 'Updated model mappings' : '更新模型映射'}{' '}
+                                        {importPreview.changes.updatedModels}
+                                    </span>
+                                    {'  ·  '}
                                     <span className="text-emerald-500">
                                         {t.importWillCreate} {importPreview.summary.created}
                                     </span>
@@ -1040,6 +1088,45 @@ function ModelsContent() {
                                         {t.importSkippedExists} {importPreview.summary.skipped}
                                     </span>
                                 </div>
+
+                                {importPreview.changes.newModels.length > 0 && (
+                                    <div className="text-sm">
+                                        <h3 className="font-medium">
+                                            {locale === 'en' ? 'New catalog models' : '新增目录模型'}
+                                        </h3>
+                                        <p className="mt-1 break-words font-mono text-xs">
+                                            {importPreview.changes.newModels.join('、')}
+                                        </p>
+                                    </div>
+                                )}
+                                {importPreview.changes.mappingUpdates.length > 0 && (
+                                    <div className="text-sm">
+                                        <h3 className="font-medium">
+                                            {locale === 'en' ? 'Changes to existing mappings' : '已有模型的映射变化'}
+                                        </h3>
+                                        <ul className="mt-2 space-y-2">
+                                            {importPreview.changes.mappingUpdates.map((change) => (
+                                                <li
+                                                    key={`${change.slug}-${change.tier}`}
+                                                    className={`rounded-lg border p-2 ${isDark ? 'border-slate-700' : 'border-slate-200'}`}
+                                                >
+                                                    <p className="break-all font-medium">
+                                                        {change.slug} · {change.tier}
+                                                    </p>
+                                                    <p className="mt-1 break-all font-mono text-xs">
+                                                        {change.from
+                                                            ? `#${change.from.channel_id} / ${change.from.upstream_model}`
+                                                            : '—'}{' '}
+                                                        →{' '}
+                                                        {change.to
+                                                            ? `#${change.to.channel_id} / ${change.to.upstream_model}`
+                                                            : '—'}
+                                                    </p>
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    </div>
+                                )}
 
                                 {importPreview.created.length +
                                     importPreview.flagged.length +
@@ -1240,6 +1327,13 @@ function ModelsContent() {
                         ) : null}
 
                         {/* footer */}
+                        {importSelectionChanged && (
+                            <p role="status" className={`mt-4 text-sm ${isDark ? 'text-amber-300' : 'text-amber-800'}`}>
+                                {locale === 'en'
+                                    ? 'Selection changed. Re-preview before importing.'
+                                    : '所选渠道已改变，请重新预览后再确认导入。'}
+                            </p>
+                        )}
                         <div className="mt-6 flex justify-end gap-3">
                             <button
                                 type="button"
@@ -1259,7 +1353,10 @@ function ModelsContent() {
                                         importing ||
                                         importLoading ||
                                         !importPreview ||
-                                        importPreview.created.length + importPreview.flagged.length === 0
+                                        !importPreview.changes.hasWork ||
+                                        importSelectionChanged ||
+                                        !!importError ||
+                                        importPreview.channelErrors.length > 0
                                     }
                                     className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
                                 >

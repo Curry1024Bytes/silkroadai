@@ -27,6 +27,7 @@ const SUPERADMIN_ROUTES = [
     'channels/[id]/route.ts',
     'channel-groups/route.ts',
     'channel-groups/[id]/route.ts',
+    'channel-groups/[id]/replace-channel/route.ts',
     'models/route.ts',
     'models/[id]/route.ts',
     'models/import/route.ts',

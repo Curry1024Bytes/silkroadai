@@ -4,6 +4,8 @@ import { useSearchParams } from 'next/navigation';
 import { useState, useEffect, useCallback, Suspense } from 'react';
 import PayPageLayout from '@/components/PayPageLayout';
 import { resolveLocale, type Locale } from '@/lib/locale';
+import ChannelReplacementDialog from '@/components/admin/ChannelReplacementDialog';
+import { channelGroupFailureText, type ChannelGroupFailure } from '@/lib/admin/channel-group-feedback';
 
 // ── Types ──
 
@@ -169,6 +171,14 @@ function ChannelGroupsContent() {
     const [groups, setGroups] = useState<ChannelGroup[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
+    const [errorModels, setErrorModels] = useState<NonNullable<ChannelGroupFailure['models']>>([]);
+    const [replacementGroup, setReplacementGroup] = useState<ChannelGroup | null>(null);
+    const [success, setSuccess] = useState('');
+
+    const operationError = (data: ChannelGroupFailure, fallback: string) => {
+        setError(channelGroupFailureText(data, locale, fallback));
+        setErrorModels(data.models ?? []);
+    };
 
     // Edit / create modal state
     const [editModalOpen, setEditModalOpen] = useState(false);
@@ -209,12 +219,16 @@ function ChannelGroupsContent() {
     // ── Modal handlers ──
 
     const openCreateModal = () => {
+        setError('');
+        setErrorModels([]);
         setEditingGroup(null);
         setForm(emptyForm);
         setEditModalOpen(true);
     };
 
     const openEditModal = (group: ChannelGroup) => {
+        setError('');
+        setErrorModels([]);
         setEditingGroup(group);
         setForm({
             key: group.key,
@@ -273,7 +287,7 @@ function ChannelGroupsContent() {
                     return;
                 }
                 const data = await res.json().catch(() => ({}));
-                setError(data.error || t.saveFailed);
+                operationError(data, t.saveFailed);
                 return;
             }
 
@@ -302,7 +316,7 @@ function ChannelGroupsContent() {
                     return;
                 }
                 const data = await res.json().catch(() => ({}));
-                setError(data.error || t.deleteFailed);
+                operationError(data, t.deleteFailed);
                 return;
             }
             fetchGroups();
@@ -328,7 +342,7 @@ function ChannelGroupsContent() {
                     return;
                 }
                 const data = await res.json().catch(() => ({}));
-                setError(data.error || t.saveFailed);
+                operationError(data, t.saveFailed);
                 return;
             }
             setGroups((prev) => prev.map((g) => (g.id === group.id ? { ...g, enabled: !g.enabled } : g)));
@@ -377,11 +391,33 @@ function ChannelGroupsContent() {
             }
         >
             {/* Error banner */}
-            {error && (
+            {success && (
+                <p
+                    role="status"
+                    className={`mb-4 rounded-lg border p-3 text-sm ${isDark ? 'border-emerald-700 bg-emerald-950/40 text-emerald-200' : 'border-emerald-200 bg-emerald-50 text-emerald-800'}`}
+                >
+                    {success}
+                </p>
+            )}
+            {error && !editModalOpen && (
                 <div
+                    role="alert"
                     className={`mb-4 rounded-lg border p-3 text-sm ${isDark ? 'border-red-800 bg-red-950/50 text-red-400' : 'border-red-200 bg-red-50 text-red-600'}`}
                 >
                     {error}
+                    {errorModels.length > 0 && (
+                        <>
+                            <p className="mt-2 break-words">
+                                {errorModels.map((model) => `${model.slug} (#${model.channel_id})`).join('、')}
+                            </p>
+                            <a
+                                className="mt-2 inline-block underline"
+                                href={`/admin/models?lang=${locale}&theme=${theme}`}
+                            >
+                                {locale === 'en' ? 'Open model management' : '前往模型管理'}
+                            </a>
+                        </>
+                    )}
                     <button onClick={() => setError('')} className="ml-2 opacity-60 hover:opacity-100">
                         ✕
                     </button>
@@ -520,6 +556,19 @@ function ChannelGroupsContent() {
                                         </td>
                                         <td className="px-4 py-3 text-right">
                                             <div className="inline-flex gap-1">
+                                                {group.enabled && group.newapi_channel_ids.length > 0 && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => {
+                                                            setError('');
+                                                            setSuccess('');
+                                                            setReplacementGroup(group);
+                                                        }}
+                                                        className={`min-h-11 whitespace-nowrap rounded-md px-2 py-1 text-xs font-medium ${isDark ? 'text-emerald-300 hover:bg-emerald-500/20' : 'text-emerald-700 hover:bg-emerald-50'}`}
+                                                    >
+                                                        {locale === 'en' ? 'Replace channel' : '替换渠道'}
+                                                    </button>
+                                                )}
                                                 <button
                                                     type="button"
                                                     onClick={() => openEditModal(group)}
@@ -567,6 +616,20 @@ function ChannelGroupsContent() {
                         <h2 className={`mb-5 text-lg font-semibold ${isDark ? 'text-slate-100' : 'text-slate-900'}`}>
                             {editingGroup ? t.editGroup : t.newGroup}
                         </h2>
+
+                        {error && (
+                            <div
+                                role="alert"
+                                className={`mb-4 rounded-lg border p-3 text-sm ${isDark ? 'border-red-700 bg-red-950/40 text-red-200' : 'border-red-200 bg-red-50 text-red-700'}`}
+                            >
+                                <p>{error}</p>
+                                {errorModels.length > 0 && (
+                                    <p className="mt-2 break-words">
+                                        {errorModels.map((model) => `${model.slug} (#${model.channel_id})`).join('、')}
+                                    </p>
+                                )}
+                            </div>
+                        )}
 
                         <div className="space-y-4">
                             {/* Tier key */}
@@ -654,6 +717,29 @@ function ChannelGroupsContent() {
 
                             {/* Registered channel ids */}
                             <div>
+                                {editingGroup?.enabled && editingGroup.newapi_channel_ids.length > 0 && (
+                                    <div
+                                        className={`mb-3 rounded-lg border p-3 text-sm ${isDark ? 'border-emerald-800 bg-emerald-950/30' : 'border-emerald-200 bg-emerald-50'}`}
+                                    >
+                                        <p>
+                                            {locale === 'en'
+                                                ? 'Changing providers? Replace a channel to migrate model references together.'
+                                                : '更换渠道时，使用「替换渠道」自动迁移模型引用，无需逐个修改 JSON。'}
+                                        </p>
+                                        <button
+                                            type="button"
+                                            className="mt-2 min-h-11 font-medium underline"
+                                            onClick={() => {
+                                                setReplacementGroup(editingGroup);
+                                                closeEditModal();
+                                                setError('');
+                                                setSuccess('');
+                                            }}
+                                        >
+                                            {locale === 'en' ? 'Replace channel…' : '替换渠道…'}
+                                        </button>
+                                    </div>
+                                )}
                                 <label className={labelCls}>{t.fieldChannels}</label>
                                 <input
                                     type="text"
@@ -737,6 +823,24 @@ function ChannelGroupsContent() {
                         </div>
                     </div>
                 </div>
+            )}
+            {replacementGroup && (
+                <ChannelReplacementDialog
+                    key={replacementGroup.id}
+                    groupId={replacementGroup.id}
+                    locale={locale}
+                    isDark={isDark}
+                    onClose={() => setReplacementGroup(null)}
+                    onComplete={(preview) => {
+                        setReplacementGroup(null);
+                        setSuccess(
+                            locale === 'en'
+                                ? `Replaced #${preview.source_channel_id} with #${preview.target.id}; updated ${preview.models.length} models. Prices and customer keys are unchanged.`
+                                : `已将渠道 #${preview.source_channel_id} 替换为 #${preview.target.id}，同步更新 ${preview.models.length} 个模型。已有价格和客户 Key 保持不变。`,
+                        );
+                        void fetchGroups();
+                    }}
+                />
             )}
         </PayPageLayout>
     );

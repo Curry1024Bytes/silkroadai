@@ -4,7 +4,7 @@ import type { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { unauthorizedResponse } from '@/lib/admin-auth';
 import { resolveAdmin } from '@/lib/admin/auth';
-import { tenantScope, tenantForInsert } from '@/lib/admin/tenant-scope';
+import { tenantForInsert } from '@/lib/admin/tenant-scope';
 import { getChannel, getOption, listChannels, type NewApiChannel } from '@/lib/newapi/client';
 import { buildImportCandidates, type ChannelForImport, type ImportCandidate } from '@/lib/newapi/import-catalog';
 import {
@@ -150,6 +150,7 @@ export async function POST(request: NextRequest) {
         model_count: number;
         selected: boolean;
         tier: string | null;
+        unavailable?: boolean;
     }[] = [];
     try {
         const all = await listChannels();
@@ -171,17 +172,52 @@ export async function POST(request: NextRequest) {
     for (const id of channelIds) {
         try {
             const tier = channelTier(id)!; // selected ids were validated above
-            channels.push(toChannelForImport(await getChannel(id), tier, tierRatio(tier)));
+            const channel = await getChannel(id);
+            channels.push(toChannelForImport(channel, tier, tierRatio(tier)));
+            if (!menu.some((item) => item.id === id))
+                menu.push({
+                    id,
+                    name: typeof channel.name === 'string' ? channel.name : null,
+                    type: typeof channel.type === 'number' ? channel.type : null,
+                    model_count: countModels(channel.models),
+                    selected: true,
+                    tier,
+                });
         } catch (e) {
             channelErrors.push({ channel_id: id, error: errMsg(e) });
         }
+    }
+    // Keep missing registered IDs visible and selectable, including after they are
+    // deselected. Otherwise a deleted channel becomes a hidden, permanent selection.
+    for (const id of registeredChannelIds) {
+        if (!menu.some((item) => item.id === id))
+            menu.push({
+                id,
+                name: null,
+                type: null,
+                model_count: 0,
+                selected: channelIds.includes(id),
+                tier: channelTier(id),
+                unavailable: true,
+            });
+    }
+    for (const item of menu) if (channelErrors.some((error) => error.channel_id === item.id)) item.unavailable = true;
+    if (!dryRun && channelErrors.length > 0) {
+        return NextResponse.json(
+            {
+                error: 'channel_read_failed',
+                message: '所选渠道有读取失败项，尚未写入。请修复渠道，或取消选择失败项并重新预览。',
+                channelErrors,
+            },
+            { status: 409 },
+        );
     }
 
     const candidates = buildImportCandidates(channels);
 
     // ── 现有目录对账(per (slug,tier) 幂等)。带 upstream_map + 各档已有价 tier。 ──
     const existingModels = await prisma.catalogModel.findMany({
-        where: { ...tenantScope(admin) },
+        where: { tenant_id },
         select: { id: true, slug: true, sort_order: true, upstream_map: true, prices: { select: { tier: true } } },
     });
     const bySlug = new Map<
@@ -246,6 +282,7 @@ export async function POST(request: NextRequest) {
         pricesToCreate: { tier: string; input: number | null; output: number | null }[];
     };
     const plan: PlanItem[] = [];
+    const mappingUpdates: { slug: string; tier: string; from: UpstreamEntry | null; to: UpstreamEntry | null }[] = [];
     let sort = maxSort;
 
     for (const slug of slugOrder) {
@@ -270,6 +307,19 @@ export async function POST(request: NextRequest) {
                 upstreamMap[c.tier] = { channel_id: c.channel_id, upstream_model: c.upstream_model };
                 upstreamMapChanged = true;
             }
+        }
+        if (existing) {
+            const changes = [...new Set([...Object.keys(existing.upstream_map), ...Object.keys(upstreamMap)])]
+                .sort()
+                .flatMap((tier) => {
+                    const from = existing.upstream_map[tier] ?? null;
+                    const to = upstreamMap[tier] ?? null;
+                    return from?.channel_id === to?.channel_id && from?.upstream_model === to?.upstream_model
+                        ? []
+                        : [{ slug, tier, from, to }];
+                });
+            mappingUpdates.push(...changes);
+            upstreamMapChanged = changes.length > 0;
         }
 
         let sortOrder: number;
@@ -329,8 +379,8 @@ export async function POST(request: NextRequest) {
     }
 
     // ── 真导入:一个 $transaction 包住建/合并模型 + 建价,失败整体回滚(brief §2/§3)。 ──
+    const hasWork = plan.some((p) => p.existingId === null || p.upstreamMapChanged || p.pricesToCreate.length > 0);
     if (!dryRun) {
-        const hasWork = plan.some((p) => p.existingId === null || p.upstreamMapChanged || p.pricesToCreate.length > 0);
         if (hasWork) {
             await prisma.$transaction(async (tx) => {
                 for (const p of plan) {
@@ -381,5 +431,13 @@ export async function POST(request: NextRequest) {
         skipped,
         flagged,
         summary: { created: created.length, skipped: skipped.length, flagged: flagged.length },
+        changes: {
+            newModels: plan.filter((item) => item.existingId === null).map((item) => item.slug),
+            mappingUpdates,
+            updatedModels: plan.filter((item) => item.existingId !== null && item.upstreamMapChanged).length,
+            newPrices: created.length,
+            preservedPrices: skipped.length,
+            hasWork,
+        },
     });
 }

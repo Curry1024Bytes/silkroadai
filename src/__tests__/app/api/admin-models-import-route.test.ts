@@ -153,10 +153,11 @@ describe('POST /api/admin/models/import — dry run (official not registered →
         expect(body.channels.find((c: { id: number }) => c.id === 4)).toMatchObject({ selected: false, tier: null });
     });
 
-    it('listChannels failure → empty menu; channel-group read + import preview still work', async () => {
+    it('listChannels failure → rebuild the visible selection from individual channel reads', async () => {
         mockListChannels.mockRejectedValue(new Error('list boom'));
         const body = await (await POST(req('POST', {}))).json();
-        expect(body.channels).toEqual([]);
+        expect(body.channels.map((channel: { id: number }) => channel.id)).toEqual([2, 3, 17]);
+        expect(body.channels.every((channel: { selected: boolean }) => channel.selected)).toBe(true);
         expect(body.summary.created).toBe(3);
     });
 
@@ -174,6 +175,91 @@ describe('POST /api/admin/models/import — dry run (official not registered →
         const body = await (await POST(req('POST', { channel_ids: [3, 88] }))).json();
         expect(body.channelErrors).toEqual([{ channel_id: 88, error: 'channel not found' }]);
         expect(body.summary.created).toBe(1); // channel 3 gpt-5.4 still imported
+    });
+});
+
+describe('POST /api/admin/models/import — actionable changes', () => {
+    it('previews and applies mapping-only changes while retaining existing prices', async () => {
+        mockGetChannel.mockResolvedValue({ id: 3, name: 'replacement', models: 'gpt-5.4' });
+        mockModelFindMany.mockResolvedValue([
+            {
+                id: 'm1',
+                slug: 'gpt-5.4',
+                sort_order: 1,
+                upstream_map: { pool: { channel_id: 9, upstream_model: 'gpt-5.4' } },
+                prices: [{ tier: 'pool' }],
+            },
+        ]);
+        const body = await (await POST(req('POST', { channel_ids: [3] }))).json();
+        expect(body.summary).toEqual({ created: 0, flagged: 0, skipped: 1 });
+        expect(body.changes).toEqual({
+            newModels: [],
+            updatedModels: 1,
+            newPrices: 0,
+            preservedPrices: 1,
+            hasWork: true,
+            mappingUpdates: [
+                {
+                    slug: 'gpt-5.4',
+                    tier: 'pool',
+                    from: { channel_id: 9, upstream_model: 'gpt-5.4' },
+                    to: { channel_id: 3, upstream_model: 'gpt-5.4' },
+                },
+            ],
+        });
+        expect(mockModelUpdate).not.toHaveBeenCalled();
+        await POST(req('POST', { channel_ids: [3] }, REAL));
+        expect(mockModelUpdate).toHaveBeenCalledExactlyOnceWith({
+            where: { id: 'm1' },
+            data: { upstream_map: { pool: { channel_id: 3, upstream_model: 'gpt-5.4' } } },
+        });
+        expect(mockPriceCreate).not.toHaveBeenCalled();
+    });
+
+    it('keeps a missing registered channel visible, even after it is deselected', async () => {
+        mockChannelGroupFindMany.mockResolvedValue([
+            { key: 'pool', newapi_group: 'default', newapi_channel_ids: [9, 3], is_default: true, tier_level: 0 },
+        ]);
+        const first = await (await POST(req('POST', {}))).json();
+        expect(first.channelErrors).toHaveLength(1);
+        expect(first.channels).toContainEqual(
+            expect.objectContaining({ id: 9, tier: 'pool', unavailable: true, selected: true }),
+        );
+        const next = await (await POST(req('POST', { channel_ids: [3] }))).json();
+        expect(next.channelErrors).toEqual([]);
+        expect(next.selectedChannelIds).toEqual([3]);
+        expect(next.channels).toContainEqual(expect.objectContaining({ id: 9, unavailable: true, selected: false }));
+    });
+
+    it('blocks partial writes when a selected channel cannot be read', async () => {
+        mockChannelGroupFindMany.mockResolvedValue([
+            { key: 'pool', newapi_group: 'default', newapi_channel_ids: [9, 3], is_default: true, tier_level: 0 },
+        ]);
+        const response = await POST(req('POST', {}, REAL));
+        expect(response.status).toBe(409);
+        expect((await response.json()).error).toBe('channel_read_failed');
+        expect(mockTransaction).not.toHaveBeenCalled();
+    });
+
+    it('reads the same platform tenant it will write, including with a global superadmin', async () => {
+        await POST(req('POST', { channel_ids: [3] }));
+        expect(mockModelFindMany.mock.calls[0][0].where).toEqual({ tenant_id: PLATFORM_TENANT_ID });
+    });
+
+    it('does not offer work for an unchanged mapping with an existing price', async () => {
+        mockGetChannel.mockResolvedValue({ id: 3, name: 'same', models: 'gpt-5.4' });
+        mockModelFindMany.mockResolvedValue([
+            {
+                id: 'm1',
+                slug: 'gpt-5.4',
+                sort_order: 1,
+                upstream_map: { pool: { channel_id: 3, upstream_model: 'gpt-5.4' } },
+                prices: [{ tier: 'pool' }],
+            },
+        ]);
+        const body = await (await POST(req('POST', { channel_ids: [3] }, REAL))).json();
+        expect(body.changes).toMatchObject({ updatedModels: 0, mappingUpdates: [], hasWork: false });
+        expect(mockTransaction).not.toHaveBeenCalled();
     });
 });
 
