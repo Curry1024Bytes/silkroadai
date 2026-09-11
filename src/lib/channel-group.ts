@@ -3,6 +3,7 @@ import { prisma } from '@/lib/db';
 import { PLATFORM_TENANT_ID } from '@/lib/admin/tenant-scope';
 import { getOption } from '@/lib/newapi/client';
 import { ChannelGroupTopology } from '@/lib/channel-group-topology';
+import { generateChannelGroupKey } from '@/lib/channel-group-key';
 
 // ─────────────────────────────────────────────────────────────────────────
 // 档次同步:new-api `UserUsableGroups` 只用于发现/下架,ChannelGroup 才是 Portal
@@ -27,11 +28,6 @@ let inflightSync: Promise<void> | null = null;
 export function __resetChannelGroupSyncForTests(): void {
     lastSyncAttemptAt = 0;
     inflightSync = null;
-}
-
-/** new-api 组名 → portal 档次 key。保留 CJK,只做小写 + 空白转连字符。 */
-function slugifyTierKey(group: string): string {
-    return group.trim().toLowerCase().replace(/\s+/g, '-');
 }
 
 async function runSync(): Promise<void> {
@@ -85,9 +81,7 @@ async function runSync(): Promise<void> {
 
     for (const [group, name] of live) {
         if (covered.has(group)) continue;
-        const base = slugifyTierKey(group);
-        let key = base;
-        for (let i = 2; usedKeys.has(key); i++) key = `${base}-${i}`;
+        const key = generateChannelGroupKey(group, usedKeys);
         usedKeys.add(key);
         ops.push(
             prisma.channelGroup.create({

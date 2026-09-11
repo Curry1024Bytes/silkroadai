@@ -5,6 +5,7 @@ import { useState, useEffect, useCallback, Suspense } from 'react';
 import PayPageLayout from '@/components/PayPageLayout';
 import { resolveLocale, type Locale } from '@/lib/locale';
 import ChannelReplacementDialog from '@/components/admin/ChannelReplacementDialog';
+import NewApiSyncDialog from '@/components/admin/NewApiSyncDialog';
 import { channelGroupFailureText, type ChannelGroupFailure } from '@/lib/admin/channel-group-feedback';
 
 // ── Types ──
@@ -62,7 +63,8 @@ function getTexts(locale: Locale) {
               deleteConfirm: (key: string) =>
                   `Delete the tier "${key}"?\n\nExisting keys are unaffected (their new-api group keeps working), but new keys can no longer select this tier.`,
               fieldKey: 'Tier key',
-              fieldKeyHint: 'Lowercase letters / digits / hyphens. Tier identifier — cannot be changed after creation.',
+              fieldKeyHint:
+                  'Leave blank to generate an identifier. Custom identifiers use lowercase letters, digits and hyphens. Existing identifiers cannot be changed.',
               fieldDisplayName: 'Display Name',
               fieldNewapiGroup: 'new-api group',
               newapiGroupWarning:
@@ -109,7 +111,7 @@ function getTexts(locale: Locale) {
               deleteConfirm: (key: string) =>
                   `确定要删除档次「${key}」吗？\n\n已建 key 不受影响(其 new-api group 照常工作),但新建 key 不能再选该档。`,
               fieldKey: '档次 key',
-              fieldKeyHint: '小写字母 / 数字 / 连字符。档次标识,创建后不可修改。',
+              fieldKeyHint: '留空自动生成。自定义时使用小写字母、数字或连字符；已有标识不可修改。',
               fieldDisplayName: '显示名',
               fieldNewapiGroup: 'new-api group',
               newapiGroupWarning:
@@ -136,14 +138,13 @@ function getTexts(locale: Locale) {
 
 // ── Helpers ──
 
-/** Parse comma-separated ints, dropping blanks / NaN. e.g. "3, 5, x" → [3, 5]. */
-function parseChannelIds(raw: string): number[] {
-    return raw
-        .split(',')
-        .map((s) => s.trim())
-        .filter((s) => s !== '')
-        .map((s) => parseInt(s, 10))
-        .filter((n) => Number.isFinite(n));
+/** Reject incomplete or malformed IDs instead of silently changing the intended channels. */
+function parseChannelIds(raw: string): number[] | null {
+    if (!raw.trim()) return [];
+    const parts = raw.split(',').map((part) => part.trim());
+    if (parts.some((part) => !/^\d+$/.test(part))) return null;
+    const ids = parts.map(Number);
+    return ids.every((id) => Number.isSafeInteger(id) && id > 0) ? ids : null;
 }
 
 const emptyForm: GroupFormData = {
@@ -185,6 +186,7 @@ function ChannelGroupsContent() {
     const [editingGroup, setEditingGroup] = useState<ChannelGroup | null>(null);
     const [form, setForm] = useState<GroupFormData>(emptyForm);
     const [saving, setSaving] = useState(false);
+    const [syncOpen, setSyncOpen] = useState(false);
 
     // ── Fetch groups ──
 
@@ -250,7 +252,23 @@ function ChannelGroupsContent() {
 
     const handleSave = async () => {
         if (!form.display_name.trim() || !form.newapi_group.trim()) return;
-        if (!editingGroup && !form.key.trim()) return;
+        const channelIds = parseChannelIds(form.newapi_channel_ids);
+        if (!channelIds) {
+            operationError(
+                {
+                    error: 'invalid_input',
+                    issues: {
+                        newapi_channel_ids: [
+                            locale === 'en'
+                                ? 'Enter positive integers separated by commas.'
+                                : '请填写正整数，以英文逗号分隔。',
+                        ],
+                    },
+                },
+                t.saveFailed,
+            );
+            return;
+        }
 
         setSaving(true);
         setError('');
@@ -263,10 +281,10 @@ function ChannelGroupsContent() {
             tier_level: parseInt(form.tier_level, 10) || 0,
             enabled: form.enabled,
             is_default: form.is_default,
-            newapi_channel_ids: parseChannelIds(form.newapi_channel_ids),
+            newapi_channel_ids: channelIds,
         };
         // key only on create (not editable on PUT)
-        if (!editingGroup) {
+        if (!editingGroup && form.key.trim()) {
             body.key = form.key.trim();
         }
 
@@ -426,6 +444,9 @@ function ChannelGroupsContent() {
 
             {/* Action buttons */}
             <div className="mb-4 flex flex-wrap gap-2 justify-end">
+                <button type="button" onClick={() => setSyncOpen(true)} className={btnBase}>
+                    {locale === 'en' ? 'Sync new-api' : '同步 new-api'}
+                </button>
                 <button
                     type="button"
                     onClick={openCreateModal}
@@ -633,21 +654,38 @@ function ChannelGroupsContent() {
 
                         <div className="space-y-4">
                             {/* Tier key */}
-                            <div>
-                                <label className={labelCls}>{t.fieldKey}</label>
-                                <input
-                                    type="text"
-                                    value={form.key}
-                                    onChange={(e) => setForm({ ...form, key: e.target.value })}
-                                    className={editingGroup ? readonlyInputCls : [inputCls, 'font-mono'].join(' ')}
-                                    readOnly={!!editingGroup}
-                                    placeholder="sale-tier"
-                                    required={!editingGroup}
-                                />
-                                <p className={`mt-1 text-xs ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
-                                    {t.fieldKeyHint}
-                                </p>
-                            </div>
+                            <details open={!!editingGroup}>
+                                <summary
+                                    className={`cursor-pointer text-sm ${isDark ? 'text-slate-300' : 'text-slate-600'}`}
+                                >
+                                    {editingGroup
+                                        ? t.fieldKey
+                                        : locale === 'en'
+                                          ? 'Advanced settings (optional)'
+                                          : '高级设置（可选）'}
+                                </summary>
+                                <div className="mt-3">
+                                    <label className={labelCls} htmlFor="channel-group-key">
+                                        {t.fieldKey}
+                                    </label>
+                                    <input
+                                        id="channel-group-key"
+                                        type="text"
+                                        value={form.key}
+                                        onChange={(e) => setForm({ ...form, key: e.target.value })}
+                                        className={editingGroup ? readonlyInputCls : [inputCls, 'font-mono'].join(' ')}
+                                        readOnly={!!editingGroup}
+                                        placeholder={locale === 'en' ? 'Generate automatically' : '留空自动生成'}
+                                    />
+                                    <p className={`mt-1 text-xs ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+                                        {editingGroup
+                                            ? locale === 'en'
+                                                ? 'This existing identifier cannot be changed.'
+                                                : '已有档次标识不可修改。'
+                                            : t.fieldKeyHint}
+                                    </p>
+                                </div>
+                            </details>
 
                             {/* Display Name */}
                             <div>
@@ -810,12 +848,7 @@ function ChannelGroupsContent() {
                             <button
                                 type="button"
                                 onClick={handleSave}
-                                disabled={
-                                    saving ||
-                                    !form.display_name.trim() ||
-                                    !form.newapi_group.trim() ||
-                                    (!editingGroup && !form.key.trim())
-                                }
+                                disabled={saving || !form.display_name.trim() || !form.newapi_group.trim()}
                                 className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed"
                             >
                                 {saving ? t.saving : t.save}
@@ -823,6 +856,14 @@ function ChannelGroupsContent() {
                         </div>
                     </div>
                 </div>
+            )}
+            {syncOpen && (
+                <NewApiSyncDialog
+                    locale={locale}
+                    isDark={isDark}
+                    onClose={() => setSyncOpen(false)}
+                    onComplete={() => void fetchGroups()}
+                />
             )}
             {replacementGroup && (
                 <ChannelReplacementDialog

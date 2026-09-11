@@ -4,23 +4,27 @@ import { prisma } from '@/lib/db';
 import { unauthorizedResponse } from '@/lib/admin-auth';
 import { resolveAdmin } from '@/lib/admin/auth';
 import { tenantScope, tenantForInsert } from '@/lib/admin/tenant-scope';
+import { generateChannelGroupKey } from '@/lib/channel-group-key';
 
 export const runtime = 'nodejs';
 
 const createSchema = z.object({
-    key: z
-        .string()
-        .trim()
-        .min(1)
-        .max(50)
-        .regex(/^[a-z0-9-]+$/, 'key 只能是小写字母 / 数字 / 连字符'),
-    display_name: z.string().min(1).max(100),
+    key: z.preprocess(
+        (value) => (typeof value === 'string' && !value.trim() ? undefined : value),
+        z
+            .string()
+            .trim()
+            .max(50, '最多 50 个字符')
+            .regex(/^[a-z0-9-]+$/, '只能使用小写字母、数字和连字符；也可以留空自动生成')
+            .optional(),
+    ),
+    display_name: z.string().trim().min(1, '请填写显示名').max(100, '最多 100 个字符'),
     description: z.string().max(500).nullable().optional(),
-    newapi_group: z.string().trim().min(1).max(50),
+    newapi_group: z.string().trim().min(1, '请填写 new-api 分组名').max(50, '最多 50 个字符'),
     tier_level: z.number().int().min(0).optional().default(0),
     enabled: z.boolean().optional().default(false),
     is_default: z.boolean().optional().default(false),
-    newapi_channel_ids: z.array(z.number().int()).optional().default([]),
+    newapi_channel_ids: z.array(z.number().int().positive()).optional().default([]),
 });
 
 export async function GET(request: NextRequest) {
@@ -60,9 +64,11 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: 'active_tier_requires_channels' }, { status: 400 });
     }
 
-    const dup = await prisma.channelGroup.findFirst({ where: { tenant_id, key: data.key } });
-    if (dup) {
-        return NextResponse.json({ error: `档次 key "${data.key}" 已存在` }, { status: 409 });
+    if (data.key) {
+        const dup = await prisma.channelGroup.findFirst({ where: { tenant_id, key: data.key } });
+        if (dup) {
+            return NextResponse.json({ error: `档次 key "${data.key}" 已存在` }, { status: 409 });
+        }
     }
     if (data.enabled) {
         const conflicts = await prisma.channelGroup.findMany({
@@ -97,12 +103,41 @@ export async function POST(request: NextRequest) {
         }
     }
 
-    // 单一默认档不变式:设新档为默认时,先清掉本租户其它默认。
-    const group = await prisma.$transaction(async (tx) => {
-        if (data.is_default) {
-            await tx.channelGroup.updateMany({ where: { tenant_id }, data: { is_default: false } });
+    // Retry only generated-key collisions: another process may have created the same
+    // candidate since our read. Each failed transaction also rolls back default changes.
+    for (let attempt = 0; attempt < 3; attempt++) {
+        let key = data.key;
+        if (!key) {
+            const rows = await prisma.channelGroup.findMany({ where: { tenant_id }, select: { key: true } });
+            key = generateChannelGroupKey(
+                data.newapi_group,
+                rows.map((row) => row.key),
+            );
         }
-        return tx.channelGroup.create({ data: { tenant_id, ...data } });
-    });
-    return NextResponse.json({ group }, { status: 201 });
+        try {
+            // 单一默认档不变式:设新档为默认时,先清掉本租户其它默认。
+            const group = await prisma.$transaction(async (tx) => {
+                if (data.is_default) {
+                    await tx.channelGroup.updateMany({ where: { tenant_id }, data: { is_default: false } });
+                }
+                return tx.channelGroup.create({ data: { tenant_id, ...data, key } });
+            });
+            return NextResponse.json({ group }, { status: 201 });
+        } catch (error) {
+            if (!isKeyConflict(error)) throw error;
+            if (data.key) {
+                return NextResponse.json({ error: `档次 key "${data.key}" 已存在` }, { status: 409 });
+            }
+        }
+    }
+    return NextResponse.json({ error: 'tier_key_conflict' }, { status: 409 });
+}
+
+function isKeyConflict(error: unknown): boolean {
+    if (!error || typeof error !== 'object' || !('code' in error) || error.code !== 'P2002') return false;
+    if (!('meta' in error) || !error.meta || typeof error.meta !== 'object' || !('target' in error.meta)) return false;
+    const target = error.meta.target;
+    return Array.isArray(target)
+        ? target.includes('key')
+        : typeof target === 'string' && target === 'channel_groups_tenant_id_key_key';
 }

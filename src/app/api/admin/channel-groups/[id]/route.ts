@@ -28,7 +28,7 @@ const updateSchema = z.object({
     tier_level: z.number().int().min(0).optional(),
     enabled: z.boolean().optional(),
     is_default: z.boolean().optional(),
-    newapi_channel_ids: z.array(z.number().int()).optional(),
+    newapi_channel_ids: z.array(z.number().int().positive()).optional(),
 });
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {

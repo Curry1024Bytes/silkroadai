@@ -4,10 +4,31 @@ export interface ChannelGroupFailure {
     error?: string;
     message?: string;
     models?: { id: string; slug: string; channel_id: number }[];
+    issues?: Record<string, string[] | undefined>;
 }
 
 export function channelGroupFailureText(data: ChannelGroupFailure, locale: Locale, fallback: string): string {
     const en = locale === 'en';
+    if (data.error === 'invalid_input' && data.issues) {
+        const fields: Record<string, string> = {
+            key: en ? 'Tier key' : '档次 key',
+            display_name: en ? 'Display name' : '显示名',
+            newapi_group: 'new-api group',
+            description: en ? 'Description' : '描述',
+            tier_level: en ? 'Sort order' : '排序',
+            newapi_channel_ids: en ? 'Channel IDs' : '登记渠道 ID',
+            enabled: en ? 'Enabled' : '启用',
+            is_default: en ? 'Default tier' : '默认档次',
+        };
+        const details = Object.entries(data.issues).flatMap(([field, issues]) =>
+            Array.isArray(issues)
+                ? issues
+                      .filter((issue) => typeof issue === 'string' && issue.trim())
+                      .map((issue) => `${fields[field] ?? field}${en ? ': ' : '：'}${issue}`)
+                : [],
+        );
+        if (details.length) return details.join(en ? '; ' : '；');
+    }
     const messages: Record<string, string> = {
         tier_in_use_by_enabled_models: en
             ? `${data.models?.length ?? 0} enabled models still use this tier or channel. Use “Replace channel” to migrate them together, or edit their references in Models.`
@@ -28,6 +49,9 @@ export function channelGroupFailureText(data: ChannelGroupFailure, locale: Local
             ? 'A selected channel already belongs to another enabled tier.'
             : '所选渠道已登记在其他启用档次，请核对归属。',
         invalid_input: en ? 'Check the required fields and channel IDs.' : '请检查必填项和渠道 ID 的格式。',
+        tier_key_conflict: en
+            ? 'Another tier was just created. Please save again to generate a unique key.'
+            : '其他操作刚创建了档次，请再次保存以生成唯一标识。',
     };
     return (
         messages[data.error ?? ''] ||

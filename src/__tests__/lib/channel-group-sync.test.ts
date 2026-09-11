@@ -92,7 +92,7 @@ describe('syncChannelGroupsFromNewApi', () => {
         expect(mockCreate).toHaveBeenCalledWith({
             data: {
                 tenant_id: PLATFORM_TENANT_ID,
-                key: 'ccmax-蒸馏',
+                key: expect.stringMatching(/^ccmax-[a-f0-9]{10}$/),
                 display_name: 'Claude官方稳定',
                 newapi_group: 'ccmax 蒸馏',
                 tier_level: 4,
@@ -121,6 +121,28 @@ describe('syncChannelGroupsFromNewApi', () => {
         expect(mockCreate).toHaveBeenCalledWith({
             data: expect.objectContaining({ key: 'newgrp-2', newapi_group: 'NewGrp', display_name: '新组' }),
         });
+    });
+
+    it('preserves legacy Chinese keys and keeps disabled Chinese tiers disabled', async () => {
+        mockFindMany.mockResolvedValue([
+            row({ id: 'id-1', key: '图片模型', newapi_group: '图片模型', display_name: '旧名称', enabled: true }),
+            row({
+                id: 'id-2',
+                key: 'ccmax稳定满血',
+                newapi_group: 'CCMax稳定满血',
+                display_name: '旧名称',
+                enabled: false,
+            }),
+        ]);
+        mockGetOption.mockResolvedValue(JSON.stringify({ 图片模型: '图片模型', CCMax稳定满血: 'Claude稳定' }));
+
+        await syncChannelGroupsFromNewApi();
+
+        expect(mockUpdate.mock.calls).toEqual([
+            [{ where: { id: 'id-1' }, data: { display_name: '图片模型' } }],
+            [{ where: { id: 'id-2' }, data: { display_name: 'Claude稳定' } }],
+        ]);
+        expect(mockCreate).not.toHaveBeenCalled();
     });
 
     it('disables enabled rows whose newapi_group vanished from UserUsableGroups', async () => {

@@ -771,6 +771,61 @@ export async function listChannels(): Promise<NewApiChannel[]> {
     return res?.items ?? [];
 }
 
+/** Synchronization must never interpret a truncated menu as deleted channels. */
+export async function listChannelsForCatalogSync(): Promise<NewApiChannel[]> {
+    const channels: NewApiChannel[] = [];
+    const seen = new Set<number>();
+    let expectedTotal: number | undefined;
+    for (let page = 1; page <= 100; page++) {
+        const result = await call<NewApiChannel[] | { items: NewApiChannel[]; total?: number }>(
+            'GET',
+            '/api/channel/',
+            undefined,
+            { p: page, page_size: 100 },
+        );
+        const items = Array.isArray(result) ? result : result?.items;
+        if (!Array.isArray(items)) throw new Error('Invalid channel list');
+        const total = !Array.isArray(result) ? result.total : undefined;
+        if (total !== undefined) {
+            if (!Number.isSafeInteger(total) || total < 0 || (expectedTotal !== undefined && total !== expectedTotal))
+                throw new Error('Channel list changed during pagination');
+            expectedTotal = total;
+        }
+        for (const channel of items) {
+            if (!Number.isSafeInteger(channel.id) || channel.id <= 0 || seen.has(channel.id))
+                throw new Error('Incomplete or repeated channel page');
+            seen.add(channel.id);
+            channels.push(channel);
+        }
+        if (expectedTotal !== undefined && channels.length >= expectedTotal) {
+            if (channels.length !== expectedTotal) throw new Error('Channel count mismatch');
+            return channels;
+        }
+        if (items.length < 100) {
+            if (expectedTotal !== undefined) throw new Error('Incomplete channel list');
+            return channels;
+        }
+    }
+    throw new Error('Channel list exceeds synchronization limit');
+}
+
+/** One consistent options read; only the requested, non-secret values escape this function. */
+export async function getCatalogSyncOptions(): Promise<Record<string, unknown>> {
+    const data = await call<Array<{ key: string; value: unknown }> | Record<string, unknown>>('GET', '/api/option/');
+    if (!data || typeof data !== 'object') throw new Error('Invalid options response');
+    const keys = ['UserUsableGroups', 'GroupRatio', 'ModelRatio', 'CompletionRatio', 'ModelPrice'];
+    return Object.fromEntries(
+        keys.map((key) => [
+            key,
+            Array.isArray(data)
+                ? (data.find((item) => item && item.key === key)?.value ?? null)
+                : Object.hasOwn(data, key)
+                  ? data[key]
+                  : null,
+        ]),
+    );
+}
+
 /**
  * PUT 整个渠道对象回 new-api。调用方负责传【完整】对象(在 getChannel 结果上
  * merge 改动后整体回传),否则未带的字段会被清空(gotcha #15)。

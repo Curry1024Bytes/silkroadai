@@ -89,7 +89,73 @@ describe('POST /api/admin/channel-groups', () => {
     });
 
     it('400 on invalid key (must be ^[a-z0-9-]+$)', async () => {
-        expect((await POST(req('POST', { ...VALID, key: 'Official Tier!' }))).status).toBe(400);
+        const response = await POST(req('POST', { ...VALID, key: 'Official Tier!' }));
+        expect(response.status).toBe(400);
+        expect(await response.json()).toMatchObject({
+            error: 'invalid_input',
+            issues: { key: ['只能使用小写字母、数字和连字符；也可以留空自动生成'] },
+        });
+        expect(mockCreate).not.toHaveBeenCalled();
+    });
+
+    it.each([undefined, '', '   '])('generates a key when the manual key is %j', async (key) => {
+        const response = await POST(req('POST', { ...VALID, key, newapi_group: 'CCMax（支持外接）' }));
+        expect(response.status).toBe(201);
+        expect((await response.json()).group).toMatchObject({
+            key: expect.stringMatching(/^ccmax-[a-f0-9]{10}$/),
+            newapi_group: 'CCMax（支持外接）',
+            enabled: false,
+        });
+        expect(mockFindMany).toHaveBeenCalledWith({ where: { tenant_id: PLATFORM_TENANT_ID }, select: { key: true } });
+        expect(mockUpdate).not.toHaveBeenCalled();
+    });
+
+    it.each([0, -13, 1.5])('rejects invalid channel id %s on create and update before writing', async (id) => {
+        const createResponse = await POST(req('POST', { ...VALID, newapi_channel_ids: [id] }));
+        expect(createResponse.status).toBe(400);
+        expect(await createResponse.json()).toMatchObject({
+            error: 'invalid_input',
+            issues: { newapi_channel_ids: expect.any(Array) },
+        });
+        const updateResponse = await PUT(
+            req('PUT', { newapi_channel_ids: [id] }, 'https://x/api/admin/channel-groups/cg1'),
+            { params: Promise.resolve({ id: 'cg1' }) },
+        );
+        expect(updateResponse.status).toBe(400);
+        expect(mockCreate).not.toHaveBeenCalled();
+        expect(mockUpdate).not.toHaveBeenCalled();
+    });
+
+    it('generates a free key without renaming existing keys', async () => {
+        mockFindMany.mockResolvedValue([{ key: 'official' }, { key: 'official-2' }, { key: '图片模型' }]);
+        const response = await POST(req('POST', { ...VALID, key: undefined }));
+        expect(response.status).toBe(201);
+        expect((await response.json()).group.key).toBe('official-3');
+        expect(mockUpdate).not.toHaveBeenCalled();
+    });
+
+    it('retries generated keys after a concurrent unique-key collision', async () => {
+        mockFindMany.mockResolvedValueOnce([]).mockResolvedValueOnce([{ key: 'official' }]);
+        mockCreate.mockRejectedValueOnce({ code: 'P2002', meta: { target: ['tenant_id', 'key'] } });
+        const response = await POST(req('POST', { ...VALID, key: undefined }));
+        expect(response.status).toBe(201);
+        expect((await response.json()).group.key).toBe('official-2');
+        expect(mockCreate).toHaveBeenCalledTimes(2);
+    });
+
+    it('reports a concurrent explicit-key collision without silently changing the chosen key', async () => {
+        mockCreate.mockRejectedValueOnce({ code: 'P2002', meta: { target: ['tenant_id', 'key'] } });
+        const response = await POST(req('POST', VALID));
+        expect(response.status).toBe(409);
+        expect(await response.json()).toMatchObject({ error: '档次 key "official" 已存在' });
+        expect(mockCreate).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not retry unrelated database constraint failures', async () => {
+        const error = { code: 'P2002', meta: { target: ['tenant_id', 'newapi_group'] } };
+        mockCreate.mockRejectedValueOnce(error);
+        await expect(POST(req('POST', { ...VALID, key: undefined }))).rejects.toEqual(error);
+        expect(mockCreate).toHaveBeenCalledTimes(1);
     });
 
     it('409 on duplicate key within tenant', async () => {
