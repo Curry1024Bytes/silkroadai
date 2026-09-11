@@ -417,7 +417,7 @@
   配置表摘要相同。已有 CCMax `[14]`、10 模型引用不变，未重复 9→14 迁移或执行实际替换。
   没有收费推理、支付或真实浏览器 OAuth 登录；视频供应商未启用，恢复任务号回滚约束仍有效。
 
-## new-api 目录同步 2026-09-11（dev 完成，未发布）
+## new-api 目录同步 2026-09-11（17:25 已发布）
 
 - 模型与渠道分组页面统一为「同步 new-api → 预览 → 选择确认」，新增 `/api/admin/newapi-sync`。
   新流程只读 new-api；确认后在 Portal 的 Serializable 事务内同步档次、模型映射与价格版本，
@@ -429,8 +429,21 @@
   与后台发现候选共用生成器；已有中文 key 不改名，错误按字段展示。
 - 完整测试 298 files / 3890 passed / 1 既有 skipped；typecheck、生产构建通过，lint 0 error /
   93 个既有 warning；桌面/手机模拟数据浏览器交互通过。只读线上预演可补 30 项价格、保留 5 项，
-  未执行同步生产写入或收费请求；真实 PostgreSQL 写事务验收未做。详见
-  `docs/NEWAPI-CATALOG-SYNC-2026-09-11.md`。无 migration/env/依赖/部署配置变化，main/prod 未推进。
+  开发阶段未执行同步生产写入或收费请求。详见 `docs/NEWAPI-CATALOG-SYNC-2026-09-11.md`。
+- operator 明确「上线！」后，`dev@c1d9501` fast-forward 到 prod，于北京时间 17:25 发布。
+  镜像为 `sha256:9d61a61fcec28b1cfe6bdaf2fcc3f32cdb844aacbb91a32a7bddc053d7177d07`，后续文档
+  提交不重建镜像；main 未改。无 migration/env/依赖/部署配置变化，76 条 migration checksum 均一致。
+- 切换前使用同镜像及真实 PostgreSQL 16 隔离库完成 24 项写入验收：30 项补价全成功、第二笔
+  INSERT 故意失败时已写入的第一笔也回滚、跨租户与重放 409、原价/成本/启用状态均保留。
+  隔离库、容器和含密临时 env 已清理，生产目录未写入。
+- 备份与发布证据位于 `/opt/backups/silkroadai-portal/releases/sync-20260911-091532/`，
+  `.env.bak.sync-20260911-091532` 与数据库备份均 0600；回滚镜像标签为
+  `silkroadai-portal-portal:rollback-sync-20260911-091532`，旧应用为 `e69f225`。
+- 生产同步预览 200、默认 30 项补价、保留 5 项价格；没有执行真实同步确认或收费请求。
+  发布前后目录三表及客户 Key 表摘要一致，12/12 持久 token 与真实 Key 公网模型列表通过。
+  50 项源站/公网和 45 项只读业务检查通过；约 7 秒短暂中断，Portal restart count 0、日志无 error，
+  依赖容器未重启。完整发布记录见
+  `docs/DEPLOY-CATALOG-SYNC-2026-09-11.md`。
 
 ## 目录结构
 
