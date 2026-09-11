@@ -395,6 +395,24 @@
 - 本机 PostgreSQL 18 隔离库另验证并发唯一键、回滚和新进程读取，已清理；这不是生产 PostgreSQL
   16 验收。收费 provider/SDK 未实测、未配置；恢复号在未来回滚时需要保留解码兼容。
 
+## 生产发布 2026-09-11（已上线）
+
+- operator 明确安排后，将 `dev@e69f225` fast-forward 到 prod 并从 VPS prod 发布；北京时间
+  10:54:05–10:54:18 切换完成，本机探测约 6 秒短暂中断后恢复。镜像 ID 为
+  `sha256:1d607b258ab6826d8fafadcc6b6ac6e241650bec7ed79eed09103a3332cfafe1`；后续记录提交不重建镜像。
+- 包含渠道替换预览及上游 #452–#458。无新增 migration、依赖或服务器配置变化；76 条 migration
+  checksum 全部匹配，无 pending/unfinished/rolled back。生产 `.env`、Nginx、Cloudflare 未改，
+  Image 2.5 / Batch 继续关闭。使用排除 `.env*` 的 Git 归档构建，UID/迁移文件可读检查通过。
+- 备份 `.env.bak.20260911-024813`、`/opt/backups/silkroadai-portal/portal-20260911-024813.sql.gz`
+  均为 0600，数据库 gzip 完整；回滚镜像 `silkroadai-portal-portal:rollback-20260911-024813`，
+  回滚 Git 为 `65a99e5`，旧应用为 `d3c60d3`。详细证据见 `docs/DEPLOY-2026-09-11.md`。
+- 50 项网络检查、12/12 持久用户 token、真实客户 Key 公网模型列表（4 模型）、默认 urllib
+  模型列表均通过；动态拓扑异常为 0，固定图片价仍 ¥1/¥1.5/¥2。Portal restart count 0，日志
+  无 error/fatal/failed；PostgreSQL/new-api/MySQL 的容器与启动时间不变。
+- 替换接口生产 GET 与 dryRun 已验收，错误目标正确列出 10 模型并禁止确认，预览前后四类
+  配置表摘要相同。已有 CCMax `[14]`、10 模型引用不变，未重复 9→14 迁移或执行实际替换。
+  没有收费推理、支付或真实浏览器 OAuth 登录；视频供应商未启用，恢复任务号回滚约束仍有效。
+
 ## 目录结构
 
 ```
