@@ -1,5 +1,7 @@
 # 上游同步报告 · 2026-09-11
 
+最新验收：北京时间 2026-09-11 10:26，SSH 恢复后原有 smoke 3 项通过，完整测试 290 files / 3736 passed / 1 既有 skipped。dev 验证完成，prod 未推进、未部署；此前隧道中断的检查记录保留如下，补验范围见文末。
+
 ## 合并前报告（先报告，再合并）
 
 本节在 `main -> dev` 合并前写入；后续实际结果追加到文末，不把预判当成完成结果。
@@ -64,13 +66,13 @@ dev 独有 130 个提交以现有历史为准；近期额外内容包括 9/9 发
 
 自动合并文件逐项审计：
 
-| 文件                                          | dev / main / 最终结果                                                                                                                             |
-| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| src/lib/enterprise/assets.ts                  | 接入 main 的大小写前缀识别；保留 dev 既有未使用变量清理。引用查库的 user_id 过滤和严格/lenient 行为未改。与 main 差异仅该变量清理。               |
-| src/lib/enterprise/**tests**/assets.test.ts   | 保留 dev 的 LLmRoute 资源域名，完整保留 main 的大写引用回归。                                                                                     |
-| src/lib/seedance/cn-adapter.ts                | 采用 main 额外字段透传、消费字段保护和 callback_url 拦截；保留 dev 平台资源域名说明。国内 480p 的 doubao 映射及其他档位模型、参考输入门控均未改。 |
-| src/lib/seedance/**tests**/cn-adapter.test.ts | 保留 dev 资源域名与 4 个国内 480p/720p/1080p 单次提交回归；完整保留 main 两个透传回归。                                                           |
-| src/lib/seedance/kuaizi-adapter.ts            | 采用 main 的立即返回平台任务号、后续轮询、按客户 key 和错误透传；没有恢复旧等待/vendor 严格模式。额外补入下述映射保护，其他差异只有格式。         |
+| 文件                                            | dev / main / 最终结果                                                                                                                             |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| src/lib/enterprise/assets.ts                    | 接入 main 的大小写前缀识别；保留 dev 既有未使用变量清理。引用查库的 user_id 过滤和严格/lenient 行为未改。与 main 差异仅该变量清理。               |
+| `src/lib/enterprise/__tests__/assets.test.ts`   | 保留 dev 的 LLmRoute 资源域名，完整保留 main 的大写引用回归。                                                                                     |
+| src/lib/seedance/cn-adapter.ts                  | 采用 main 额外字段透传、消费字段保护和 callback_url 拦截；保留 dev 平台资源域名说明。国内 480p 的 doubao 映射及其他档位模型、参考输入门控均未改。 |
+| `src/lib/seedance/__tests__/cn-adapter.test.ts` | 保留 dev 资源域名与 4 个国内 480p/720p/1080p 单次提交回归；完整保留 main 两个透传回归。                                                           |
+| src/lib/seedance/kuaizi-adapter.ts              | 采用 main 的立即返回平台任务号、后续轮询、按客户 key 和错误透传；没有恢复旧等待/vendor 严格模式。额外补入下述映射保护，其他差异只有格式。         |
 
 修复提交差异已审阅并保存：`git diff ddcde2d -- <adapter25 及其测试>` 完全为空；`e97a569` 到结果仅后续上游/既有域名与本项目旧测试差异；`2192fc4` 到结果保留 #456 后续错误处理以及本次映射保护；`7cea85b` 的分类、文本清洗与其回归未被覆盖；`2c7a7cc` 两个后台页面与 main 字节一致；`8e9b60c` 的三处大小写解析完整保留，assets 仅有既有未使用变量差异。已以实际合并提交 `f8acb3a2f38b3e68b37bfb118c4dd7ed66ad12f5` 再次执行 `git diff <upstream-fix>..<merge-result> -- <affected-files>`，结果与上述审阅一致。
 
@@ -103,7 +105,8 @@ TypeScript AST 对比本轮 8 个上游测试文件：新增/调整的 **19 个�
 | 上游初始定向回归          | 9 files / 347 passed                                                                                                                                                                                                                                 |
 | 最终 API/任务映射定向回归 | 2 files / 106 passed                                                                                                                                                                                                                                 |
 | 最终 CI 全量离线测试      | 289 files / 3733 passed / 1 既有 skipped                                                                                                                                                                                                             |
-| 包含真实 smoke 的完整命令 | 最终 289 files passed / 3733 passed；唯一失败套件为 client.smoke.test.ts，状态前置检查失败使 3 项联机测试未执行；另有 1 项既有 skip。完整结果为 1 suite failed / 4 skipped，不能报完整联机验收通过。                                                 |
+| SSH 恢复前的完整命令      | 当时 289 files passed / 3733 passed；唯一失败套件为 client.smoke.test.ts，状态前置检查失败使 3 项测试未执行；另有 1 项既有 skip。当时完整结果为 1 suite failed / 4 skipped，后续补验结果见文末。                                                     |
+| SSH 恢复后的完整命令      | 290 files / 3736 passed / 1 既有 skipped；无失败，原 smoke 测试未修改。                                                                                                                                                                              |
 | TypeScript                | 通过                                                                                                                                                                                                                                                 |
 | ESLint                    | 0 error / 93 个既有 warning                                                                                                                                                                                                                          |
 | Prisma validate           | 通过；schema 与 migration 均未改                                                                                                                                                                                                                     |
@@ -112,7 +115,23 @@ TypeScript AST 对比本轮 8 个上游测试文件：新增/调整的 **19 个�
 | 本地真实数据库补充验证    | PostgreSQL 18 临时隔离库：真实并发唯一键冲突只留下一个获胜映射、事务回滚无残留、新进程可读取持久映射。仅通过 Prisma 操作单张 fixture 表，测试容器已删除。生产使用 PostgreSQL 16；本机 16 镜像拉取停滞后停止，此项不冒充生产同版本或 migration 演练。 |
 | 本项目关键实现保留        | 17 个重点文件与合并前字节一致，包括固定 SKU 代理、动态拓扑、计费/对账、2.5 入口开关、共享文档和渠道替换相关实现/测试。                                                                                                                               |
 
-完整测试当前唯一外部阻塞仍为本机 new-api SSH 隧道；已请求 operator 恢复，未修改原 smoke 测试、未把其他服务当成 new-api、未登录生产部署。隧道恢复后需原样重跑完整测试。
+首次验证时唯一外部阻塞为本机 new-api SSH 隧道；operator 恢复后已原样重跑并通过完整测试。未修改原 smoke 测试、未把其他服务当成 new-api、未登录生产部署。
+
+### SSH 恢复后的联机补验（2026-09-11 10:26，北京时间）
+
+本机 `127.0.0.1:3000` 已由 SSH 进程监听。命令通过进程环境显式指定 `NEWAPI_BASE_URL=http://127.0.0.1:3000`，没有修改 `.env`。首先使用 `scripts/check-newapi-smoke-target.ts` 做无凭据状态预检，确认目标返回 new-api JSON 状态与版本结构，随后执行原有测试：
+
+| 检查                                                       | 结果                                                                       |
+| ---------------------------------------------------------- | -------------------------------------------------------------------------- |
+| 无凭据目标预检                                             | 通过，退出码 0                                                             |
+| `vitest run src/lib/newapi/__tests__/client.smoke.test.ts` | 10:25:40 开始；1 file / 3 passed，退出码 0                                 |
+| `vitest run`（不排除 smoke）                               | 10:26:00 开始；290 files / 3736 passed / 1 既有 skipped，6.26 秒，退出码 0 |
+
+联机测试仅包含无凭据及携带现有管理员凭据的 `GET /api/status`、携带现有管理员凭据的 `GET /api/channel/models_enabled`；第三项是本地配额换算。已另做调用链只读审核：没有开户、token 轮换、配置写入、模型生成或收费调用。通过结果证明隧道目标可访问、new-api 状态正常及管理员凭据能读取非空模型目录。
+
+本轮补验不覆盖客户 Key 推理、公网 Cloudflare/SDK 兼容、支付结算、真实供应商视频流程或生产 PostgreSQL 16 兼容性；此前对应的验收记录与未完成事项继续有效。Image 2.5 / Batch 的默认关闭状态不变。应用与测试代码仍为已验证的 `f8acb3a`，后续仅更新文档，因此沿用该代码版本已通过的类型、lint、格式和生产构建结果。
+
+补验日志保存在 `/tmp/llmroute-sync-20260911/live-followup/`（0700）：`preflight.log`、`smoke.log`、`full-tests.log`。用户原有 `.env` 与未跟踪需求文档继续按补验前 SHA-256 核对，不纳入提交。
 
 ### 分支与交付状态
 
