@@ -377,7 +377,8 @@
 
 ## 上游同步 2026-09-11（dev 集成，未发布）
 
-- 已先输出 `docs/UPSTREAM-SYNC-2026-09-11.md`，再把 `main@8e9b60c` 的 #452–#458 合入 dev。
+- 已先输出 `docs/UPSTREAM-SYNC-2026-09-11.md`，再把 `main@8e9b60c` 的 #452–#458 合入 dev，
+  合并提交 `f8acb3a` 已推送 origin/dev。
   main 与 origin/main、upstream/main 相同；prod 保持 `65a99e5`，本轮没有部署。
 - 唯一冲突为公共 docs 路由，保留 LLmRoute 共享正文与固定 SKU；2.5 未开放，不套用上游已售
   档次、token 价格与官方能力声明。Image 2.5 / Batch 继续默认关闭；没有 migration 或新依赖。
