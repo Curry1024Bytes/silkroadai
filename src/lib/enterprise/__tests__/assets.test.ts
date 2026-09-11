@@ -249,6 +249,12 @@ describe('resolveAssetRefs(生成引用)', () => {
         expect((out.images as Array<{ url: string }>)[0].url).toBe('https://r2/a2.png');
     });
 
+    it('大写 Asset:// 前缀也识别并替换(客户偶发大写)', async () => {
+        db.enterpriseAsset.findMany.mockResolvedValue([{ id: A1, public_url: 'https://r2/a1.png' }]);
+        const out = await resolveAssetRefs({ model: 'm', first_frame: `Asset://${A1}` }, 'u1');
+        expect(out.first_frame).toBe('https://r2/a1.png');
+    });
+
     it('group id 在数组里 → 按序展开成员 URL', async () => {
         db.enterpriseAsset.findMany
             .mockResolvedValueOnce([]) // assets 查询(无 asset 引用时不会调,这里给 groups 腿)

@@ -32,11 +32,34 @@ function Field({ label, value, mono }: { label: string; value: string | number |
     );
 }
 
-export default async function EnterpriseAdminLogDetailPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function EnterpriseAdminLogDetailPage({
+    params,
+    searchParams,
+}: {
+    params: Promise<{ id: string }>;
+    searchParams: Promise<{ back?: string }>;
+}) {
     const { id } = await params;
+    const { back } = await searchParams;
     if (!/^[0-9a-f-]{36}$/i.test(id)) notFound();
     const log = await prisma.enterpriseRequestLog.findUnique({ where: { id } });
     if (!log) notFound();
+
+    // 「返回请求日志」回到来时那一页(而非默认第 1 页):back = 列表当时的 querystring。
+    // 只收相对 querystring(白名单式:去掉任何前导 / 或协议,防开放重定向)。
+    const backSuffix = back && !back.includes('//') && !back.startsWith('/') ? `?${back}` : '';
+    const backHref = `/enterprise-admin/logs${backSuffix}`;
+    const detailHref = (logId: string) =>
+        `/enterprise-admin/logs/${logId}${back ? `?back=${encodeURIComponent(back)}` : ''}`;
+
+    // 上游真实 ID(#454 后对客 task_id 是我们自造号,真·上游号在 volc_id_map)——
+    // 运营排障要能对到上游筷子/火山侧,superadmin 面内部资料,可显示(#271 仅约束对客)。
+    const upstreamTaskRow = log.task_id
+        ? await prisma.volcIdMap.findUnique({ where: { vendor_id: log.task_id }, select: { upstream_id: true } })
+        : null;
+    const upstreamAssetRow = log.resource_id
+        ? await prisma.volcIdMap.findUnique({ where: { vendor_id: log.resource_id }, select: { upstream_id: true } })
+        : null;
 
     const [user, timeline] = await Promise.all([
         log.user_id
@@ -69,7 +92,7 @@ export default async function EnterpriseAdminLogDetailPage({ params }: { params:
     return (
         <div className="space-y-5">
             <div className="flex items-center justify-between">
-                <Link href="/enterprise-admin/logs" className="text-xs text-blue-600 hover:underline">
+                <Link href={backHref} className="text-xs text-blue-600 hover:underline">
                     ← 返回请求日志
                 </Link>
                 <a
@@ -88,11 +111,13 @@ export default async function EnterpriseAdminLogDetailPage({ params }: { params:
                     <Field label="客户" value={user ? user.email : log.user_id ? log.user_id : '未鉴权'} />
                     <Field label="渠道" value={log.region} />
                     <Field label="模型" value={log.model} />
-                    <Field label="任务 ID" value={log.task_id} mono />
+                    <Field label="任务 ID(对客)" value={log.task_id} mono />
+                    <Field label="上游任务 ID(筷子/火山)" value={upstreamTaskRow?.upstream_id} mono />
                     <Field label="渠道侧任务 ID" value={log.vendor_task_id} mono />
                     <Field label="客户请求号" value={log.client_request_id} mono />
                     <Field label="素材 Action" value={log.action} />
-                    <Field label="素材/组 ID" value={log.resource_id} mono />
+                    <Field label="素材/组 ID(对客)" value={log.resource_id} mono />
+                    <Field label="上游素材/组 ID" value={upstreamAssetRow?.upstream_id} mono />
                     <Field label="返给客户 HTTP" value={log.http_status} />
                     <Field
                         label="上游 HTTP"
@@ -188,7 +213,7 @@ export default async function EnterpriseAdminLogDetailPage({ params }: { params:
                                             <span className="text-xs text-gray-400">当前</span>
                                         ) : (
                                             <Link
-                                                href={`/enterprise-admin/logs/${t.id}`}
+                                                href={detailHref(t.id)}
                                                 className="text-xs text-blue-600 hover:underline"
                                             >
                                                 查看

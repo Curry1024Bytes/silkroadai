@@ -1485,6 +1485,33 @@ describe('vendor_task_id 出口(2026-08-19)', () => {
         expect(JSON.stringify(sent)).not.toContain('asset-20260828014656-n7mc9');
     });
 
+    it('volc:客户传大写 Asset:// 也认 —— 翻回上游号并归一成小写 asset://', async () => {
+        vi.mocked(toUpstreamId).mockImplementation(async (id: string) =>
+            id === 'asset-20260828014656-n7mc9' ? '193477566093328454' : id,
+        );
+        submitVolcVideo.mockImplementation(() =>
+            Promise.resolve(NextResponse.json({ id: 'cgt-x', task_id: 'cgt-x', status: 'queued' })),
+        );
+        await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', {
+                model: 'doubao-seedance-2.5',
+                resolution: '720p',
+                content: [
+                    { type: 'text', text: 'x' },
+                    {
+                        type: 'image_url',
+                        image_url: { url: 'Asset://asset-20260828014656-n7mc9' },
+                        role: 'reference_image',
+                    },
+                ],
+            }),
+            '/video/generations',
+        );
+        const sent = JSON.stringify(submitVolcVideo.mock.calls[0][0]);
+        expect(sent).toContain('asset://193477566093328454'); // 归一小写 + 翻上游号
+        expect(sent).not.toContain('Asset://'); // 大写前缀不再残留
+    });
+
     // 2026-08-28 客户列为「明确不兼容项」:上游对 content[].*_url.url 有 4000 字符硬上限
     // (实测原文 `is too long (6118 chars, max 4000)`),真实图片的 base64 根本进不去。
     // cn 渠道早就替客户把 data URL 转存 R2,volc 之前没做 —— 同平台两条渠道能力不一致。
@@ -1798,5 +1825,84 @@ describe('请求日志落库(2026-09-03)', () => {
         );
         expect(res.status).toBe(200);
         await flush();
+    });
+});
+
+describe('平台任务映射异常的客户 API 契约', () => {
+    const recoveryId = `cgt-recovery-${Buffer.from('kz-cgt-fixture-only').toString('base64url')}`;
+    const task = {
+        id: recoveryId,
+        tier: 'enterprise-portal',
+        user_id: 'u1',
+        model: 'doubao-seedance-2.5',
+        resolution: '720p',
+        has_video: false,
+        status: 'in_progress',
+        tokens: null,
+        created_at: new Date('2026-09-11T01:00:00Z'),
+        duration: 5,
+        ratio: '16:9',
+        seed: null,
+        generate_audio: false,
+        fail_reason: null,
+    };
+    const faces = [
+        ['v1', handleEnterpriseV1, '/video/generations'],
+        ['ark', handleEnterpriseArkV3, '/contents/generations/tasks'],
+    ] as const;
+
+    it.each(faces)('%s: 恢复句柄可建任务并查询完成，计费沿用同一个任务号', async (_label, handler, base) => {
+        submitVolcVideo.mockResolvedValueOnce(
+            NextResponse.json({ id: recoveryId, task_id: recoveryId, status: 'queued' }),
+        );
+        const submitted = await handler(
+            req('POST', base, { model: task.model, prompt: 'fixture', resolution: '720p' }),
+            base,
+        );
+        expect(submitted.status).toBe(200);
+        expect(await submitted.json()).toMatchObject({ id: recoveryId });
+        expect(db.seedanceVideoTask.create).toHaveBeenCalledWith({
+            data: expect.objectContaining({ id: recoveryId, user_id: 'u1' }),
+        });
+        db.seedanceVideoTask.findUnique.mockResolvedValueOnce(task);
+        pollVolcVideo.mockResolvedValueOnce(
+            NextResponse.json({ id: recoveryId, status: 'completed', usage: { completion_tokens: 100 } }),
+        );
+        chargeEnterpriseVideoTask.mockResolvedValueOnce({ outcome: 'charged', costCny: 0.01 });
+        const completed = await handler(req('GET', `${base}/${recoveryId}`), `${base}/${recoveryId}`);
+        expect(completed.status).toBe(200);
+        expect(await completed.json()).toMatchObject({ id: recoveryId });
+        expect(chargeEnterpriseVideoTask).toHaveBeenCalledExactlyOnceWith(recoveryId);
+    });
+
+    it.each(faces)('%s: 映射查询 503 保留在途状态，不提前写失败或收费', async (_label, handler, base) => {
+        db.seedanceVideoTask.findUnique.mockResolvedValueOnce(task);
+        pollVolcVideo.mockResolvedValueOnce(
+            NextResponse.json(
+                {
+                    error: {
+                        code: 'task_mapping_unavailable',
+                        category: 'upstream_unavailable',
+                        message: 'retry lookup',
+                    },
+                },
+                { status: 503 },
+            ),
+        );
+        const res = await handler(req('GET', `${base}/${recoveryId}`), `${base}/${recoveryId}`);
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { status: string };
+        expect(['in_progress', 'running']).toContain(body.status);
+        expect(db.seedanceVideoTask.update).not.toHaveBeenCalled();
+        expect(db.seedanceVideoTask.updateMany).not.toHaveBeenCalled();
+        expect(chargeEnterpriseVideoTask).not.toHaveBeenCalled();
+    });
+
+    it('可解码的恢复句柄仍受任务归属门保护，其他客户不能查询', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValueOnce({ ...task, user_id: 'other-user' });
+        const path = `/video/generations/${recoveryId}`;
+        expect((await handleEnterpriseV1(req('GET', path), path)).status).toBe(404);
+        expect(pollVolcVideo).not.toHaveBeenCalled();
+        expect(chargeEnterpriseVideoTask).not.toHaveBeenCalled();
     });
 });

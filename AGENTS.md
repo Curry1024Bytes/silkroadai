@@ -375,6 +375,21 @@
   验证桌面、375px 窄屏、深色主题及异常流程。无 migration/env/依赖/服务器配置改动，未部署。
   详见 `docs/CHANNEL-REPLACEMENT-UX-2026-09-10.md`。
 
+## 上游同步 2026-09-11（dev 集成，未发布）
+
+- 已先输出 `docs/UPSTREAM-SYNC-2026-09-11.md`，再把 `main@8e9b60c` 的 #452–#458 合入 dev。
+  main 与 origin/main、upstream/main 相同；prod 保持 `65a99e5`，本轮没有部署。
+- 唯一冲突为公共 docs 路由，保留 LLmRoute 共享正文与固定 SKU；2.5 未开放，不套用上游已售
+  档次、token 价格与官方能力声明。Image 2.5 / Batch 继续默认关闭；没有 migration 或新依赖。
+- 接入图片非法 quality 拒绝、视频额外字段透传、错误细节、后台日志翻页与素材前缀大小写兼容。
+  视频提交采用平台任务号；补强任务映射事务查重/创建、失败恢复句柄和临时查询失败处理，
+  不重发已受理的 POST。旧 ENTERPRISE_VOLC_REQUIRE_ARK 不再生效，VENDOR_WAIT_MS 仅素材仍读取。
+- 上游新增/调整的 19 个测试调用保持原样，另补 20 项故障/接口边界回归；原问题已做旧代码
+  负向对照。最终 CI 289 files / 3733 passed / 1 既有 skipped，类型、lint 0 error / 93 warnings、
+  构建通过。完整真实 smoke 因本机 3000/18082 隧道未恢复而未过，不能报全部联机验收完成。
+- 本机 PostgreSQL 18 隔离库另验证并发唯一键、回滚和新进程读取，已清理；这不是生产 PostgreSQL
+  16 验收。收费 provider/SDK 未实测、未配置；恢复号在未来回滚时需要保留解码兼容。
+
 ## 目录结构
 
 ```

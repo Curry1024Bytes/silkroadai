@@ -15,11 +15,12 @@
  *   GetAsset({Id: '192295008202653711'})              → 认 ✅
  * 所以打上游之前必须换回上游 id。这个模块就是那次换算。
  *
- * ## 不是单点故障
+ * ## 素材映射可重建，平台任务号必须持久保存
  *
  * 上游 `ListAssets` / `ListAssetGroups` 的每一行都同时带 `Id` 与 `VendorAssetId`
  * /`VendorGroupId`,所以查询类响应流过时顺手 `remember()` 就能把表回填回来(自愈)。
- * 表整个丢了也能靠翻页重建 —— 不像"我们自己发号"那样丢了就永久失联。
+ * 素材映射可通过翻页重建。平台自己生成的任务号没有这种恢复来源：写入失败必须交给
+ * 提交方使用可还原的任务号回退；碰撞不能覆盖旧任务。查询临时失败也不能冒充“没有映射”。
  *
  * ## 宽进
  *
@@ -30,9 +31,17 @@ import { prisma } from '@/lib/db';
 
 export type VolcIdKind = 'asset' | 'group' | 'task';
 
+export class VolcIdMappingError extends Error {
+    readonly status = 503;
+
+    constructor(message: string, cause?: unknown) {
+        super(message, { cause });
+        this.name = 'VolcIdMappingError';
+    }
+}
+
 /**
- * 记一条映射(幂等)。写失败**不抛** —— 映射表是加速/翻译层,不是事实源:
- * 上游响应里本来就带着两个号,下次查询流过时会自愈。为它把客户请求打挂不划算。
+ * 素材映射仍为 best-effort；任务映射幂等写入，失败抛出，绝不覆盖另一条任务。
  */
 export async function rememberVolcId(
     vendorId: string,
@@ -41,6 +50,24 @@ export async function rememberVolcId(
     userId?: string,
 ): Promise<void> {
     if (!vendorId || !upstreamId || vendorId === upstreamId) return;
+    if (kind === 'task') {
+        try {
+            await prisma.$transaction(async (tx) => {
+                const existing = await tx.volcIdMap.findUnique({ where: { vendor_id: vendorId } });
+                if (existing) {
+                    if (existing.kind === kind && existing.upstream_id === upstreamId) return;
+                    throw new VolcIdMappingError('task id already belongs to another mapping');
+                }
+                // 数据库主键兜住并发碰撞。失败交回调用方，不能 upsert 覆盖旧映射。
+                await tx.volcIdMap.create({
+                    data: { vendor_id: vendorId, upstream_id: upstreamId, kind, user_id: userId ?? null },
+                });
+            });
+        } catch (cause) {
+            throw new VolcIdMappingError('task mapping could not be saved', cause);
+        }
+        return;
+    }
     try {
         await prisma.volcIdMap.upsert({
             where: { vendor_id: vendorId },
@@ -58,13 +85,14 @@ export async function rememberVolcId(
  * 查不到就**原样返回** —— 这就是「宽进」:存量客户手里的上游号照常可用,
  * 客户混着用两种号也不会炸。
  */
-export async function toUpstreamId(clientId: string): Promise<string> {
+export async function toUpstreamId(clientId: string, opts?: { failOnError?: boolean }): Promise<string> {
     if (!clientId) return clientId;
     try {
         const row = await prisma.volcIdMap.findUnique({ where: { vendor_id: clientId } });
         return row?.upstream_id || clientId;
     } catch (e) {
         console.warn('[volc-id-map] lookup failed', { clientId, err: String(e) });
+        if (opts?.failOnError) throw new VolcIdMappingError('task mapping could not be read', e);
         return clientId;
     }
 }

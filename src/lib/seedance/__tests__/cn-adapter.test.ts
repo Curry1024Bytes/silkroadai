@@ -339,6 +339,41 @@ describe('seedance-cn adapter submit', () => {
         expect(b.output_format).toBeUndefined();
     });
 
+    it('反向白名单:未处理的火山官方字段(bitrate_mode/watermark/service_tier)原样透传上游', async () => {
+        mockFetch.mockClear();
+        await submitVideo(
+            makeReq({
+                model: 'seedance2.0-pro-720p',
+                prompt: 'x',
+                bitrate_mode: 'high',
+                watermark: false,
+                service_tier: 'priority',
+            }),
+        );
+        const b = submitBody();
+        expect(b.bitrate_mode).toBe('high'); // 客户 liyan2 传的就是这个,此前被静默吃掉
+        expect(b.watermark).toBe(false);
+        expect(b.service_tier).toBe('priority');
+    });
+
+    it('反向白名单:消费键与参考输入别名不重复透传,callback_url 绝不透传', async () => {
+        mockFetch.mockClear();
+        await submitVideo(
+            makeReq({
+                model: 'seedance2.0-pro-720p-ref',
+                prompt: 'x',
+                images: ['https://cdn/a.jpg'],
+                callback_url: 'https://evil/cb',
+            }),
+        );
+        const b = submitBody();
+        // callback_url 泄露中间层,绝不透传
+        expect(b.callback_url).toBeUndefined();
+        // images 已并进 upstreamBody.images(对象+role),原始 images 键不重复出现为裸数组
+        expect(Array.isArray(b.images)).toBe(true);
+        expect((b.images as Array<{ role?: string }>)[0]?.role).toBe('reference_image');
+    });
+
     it('content-item 显式 role(first_frame/last_frame)原样保留;无 role 时按 reference_image', async () => {
         mockFetch.mockClear();
         await submitVideo(

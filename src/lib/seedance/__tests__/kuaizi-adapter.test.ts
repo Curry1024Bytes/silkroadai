@@ -57,14 +57,15 @@ function mockSubmitThenVendor(upstreamId = 'kz-cgt-abc', vendorId = 'cgt-2026081
 }
 
 describe('submitVolcVideo', () => {
-    it('打筷子方舟端点 + Bearer key,model 换成上游方舟 Model ID,对客 id = 火山官方任务号', async () => {
+    it('打筷子方舟端点 + Bearer key,model 换成上游方舟 Model ID,对客 id = 即时自造的火山方舟形号', async () => {
         const fetchMock = mockSubmitThenVendor();
         const res = await submitVolcVideo({ prompt: '一只猫', ratio: '16:9' }, opts({ resolution: '1080p' }));
         expect(res.status).toBe(200);
         const j = (await res.json()) as { id: string; task_id: string; status: string; model: string };
-        // 对客 id = 火山官方任务号(压着等来的),不是上游发的 kz-cgt-
-        expect(j.id).toBe('cgt-20260819224039-bfjdv');
-        expect(j.task_id).toBe('cgt-20260819224039-bfjdv');
+        // 对客 id = 我们即时自造的火山方舟形号(cgt-<14位时间戳>-<5位>),不是上游发的 kz-cgt-
+        expect(j.id).toMatch(/^cgt-\d{14}-[a-z0-9]{5}$/);
+        expect(j.id).not.toContain('kz-');
+        expect(j.task_id).toBe(j.id);
         expect(j.status).toBe('queued');
         // 对客回显客户调用的名字,不泄露上游 Model ID
         expect(j.model).toBe('doubao-seedance-2.0');
@@ -156,21 +157,14 @@ describe('submitVolcVideo', () => {
         );
     });
 
-    it('等任务号期间任务已失败 → 立刻返回【真实原因】,不空等到 504', async () => {
-        vi.stubEnv('ENTERPRISE_VOLC_VENDOR_WAIT_MS', '60000');
-        vi.spyOn(global, 'fetch').mockImplementation((input) =>
-            Promise.resolve(
-                String(input).endsWith('/tasks')
-                    ? new Response(JSON.stringify({ id: 'kz-cgt-x' }), { status: 200 })
-                    : new Response(
-                          JSON.stringify({ status: 'failed', error: { message: '素材转换失败: sensitive' } }),
-                          { status: 200 },
-                      ),
-            ),
-        );
+    it('提交即返回,不再 GET 轮询等任务号(只打一次上游 POST)', async () => {
+        const fetchMock = mockSubmitThenVendor();
         const res = await submitVolcVideo({ prompt: 'x' }, opts());
-        expect(res.status).toBe(400);
-        expect((await res.json()).error.message).toContain('sensitive');
+        expect(res.status).toBe(200);
+        expect((await res.json()).status).toBe('queued');
+        // 全程只有一次上游调用(提交),没有 waitForVendorTaskId 的 GET 轮询
+        expect(fetchMock.mock.calls.length).toBe(1);
+        expect(String(fetchMock.mock.calls[0][0])).toBe(TASKS);
     });
 
     it('透传客户 content 数组(多模态)+ 火山官方可选字段', async () => {
@@ -261,66 +255,44 @@ describe('submitVolcVideo', () => {
         }
     });
 
-    // ── 对客 id = 火山官方任务号(2026-08-19)──────────────────────────────────
-    // volc 卖的是原生火山体验,所以 id 必须是火山自己的号。上游受理后才给得出
-    // (实测 ~10.5s),这段等待消不掉,只能我们压着;拿不到就报错,不吐非火山的号。
+    // ── 对客 id = 即时自造的火山方舟形号(2026-09-09)──────────────────────────
+    // 不再压着等 vendor_task_id;提交拿到筷子受理号后立刻自造一个火山型号对客,
+    // 上游落方舟/非方舟、vendor_task_id 何时出现都不影响对客响应。
 
-    // 落非方舟:operator 2026-08-19 决定【先放行、同时向上游反馈】。
-    // 但绝不能把 tsk- 直接给客户 —— 破坏火山 SDK 的形态预期,还暴露第三方(#271)。
-    const nonArk = () =>
-        vi
-            .spyOn(global, 'fetch')
-            .mockImplementation((input) =>
-                Promise.resolve(
-                    String(input).endsWith('/tasks')
-                        ? new Response(JSON.stringify({ id: 'kz-cgt-x' }), { status: 200 })
-                        : new Response(JSON.stringify({ vendor_task_id: 'tsk-ghuya22ne4tyq74q' }), { status: 200 }),
-                ),
-            );
-
-    it('落到非方舟 → 放行,但降级回火山方舟形伪装号(绝不把 tsk- 给客户)', async () => {
-        nonArk();
-        const res = await submitVolcVideo({ prompt: 'x' }, opts());
-        expect(res.status).toBe(200);
-        const body = await res.text();
-        expect(JSON.parse(body).id).toBe('cgt-x');
-        expect(body).not.toContain('tsk-ghuya22ne4tyq74q');
-    });
-
-    it('严格模式 ENTERPRISE_VOLC_REQUIRE_ARK=1 → 落非方舟直接 502(上游修好后用它守回归)', async () => {
-        vi.stubEnv('ENTERPRISE_VOLC_REQUIRE_ARK', '1');
-        nonArk();
-        const res = await submitVolcVideo({ prompt: 'x' }, opts());
-        expect(res.status).toBe(502);
-        const b = (await res.json()) as { error: { category?: string } };
-        expect(b.error.category).toBe('non_ark_route');
-        expect(JSON.stringify(b)).not.toContain('tsk-ghuya22ne4tyq74q');
-    });
-
-    it('落方舟 → 仍拿【真】火山号(#398 的收益不受放行影响)', async () => {
-        mockSubmitThenVendor('kz-cgt-x', 'cgt-20260819224039-bfjdv');
-        const res = await submitVolcVideo({ prompt: 'x' }, opts());
-        expect(((await res.json()) as { id: string }).id).toBe('cgt-20260819224039-bfjdv');
-    });
-
-    it('上游迟迟不给任务号 → 504,不吐一个非火山的号', async () => {
-        process.env.ENTERPRISE_VOLC_VENDOR_WAIT_MS = '1';
+    it('落到非方舟(上游返 tsk-)也不影响 —— 对客号是我们自造的,不吐 tsk-', async () => {
+        // 上游即使把任务路由到非方舟渠道,我们提交时根本不看 vendor_task_id,直接自造号返回。
         vi.spyOn(global, 'fetch').mockImplementation((input) =>
             Promise.resolve(
                 String(input).endsWith('/tasks')
                     ? new Response(JSON.stringify({ id: 'kz-cgt-x' }), { status: 200 })
-                    : new Response(JSON.stringify({ status: 'queued' }), { status: 200 }),
+                    : new Response(JSON.stringify({ vendor_task_id: 'tsk-ghuya22ne4tyq74q' }), { status: 200 }),
             ),
         );
         const res = await submitVolcVideo({ prompt: 'x' }, opts());
-        expect(res.status).toBe(504);
-        delete process.env.ENTERPRISE_VOLC_VENDOR_WAIT_MS;
+        expect(res.status).toBe(200);
+        const body = await res.text();
+        expect(JSON.parse(body).id).toMatch(/^cgt-\d{14}-[a-z0-9]{5}$/);
+        expect(body).not.toContain('tsk-ghuya22ne4tyq74q');
+        expect(body).not.toContain('kz-');
     });
 
-    it('拿到火山号后写映射表(轮询时要换回上游号)', async () => {
+    it('写映射表:自造对客号 → 筷子受理号(轮询时换回打上游)', async () => {
+        vi.mocked(rememberVolcId).mockClear();
         mockSubmitThenVendor('kz-cgt-abc', 'cgt-20260819224039-bfjdv');
         await submitVolcVideo({ prompt: 'x' }, opts());
-        expect(rememberVolcId).toHaveBeenCalledWith('cgt-20260819224039-bfjdv', 'cgt-abc', 'task');
+        expect(rememberVolcId).toHaveBeenCalledTimes(1);
+        const [clientId, upstreamId, kind] = (rememberVolcId as unknown as { mock: { calls: string[][] } }).mock
+            .calls[0];
+        expect(clientId).toMatch(/^cgt-\d{14}-[a-z0-9]{5}$/); // 对客自造号
+        expect(upstreamId).toBe('kz-cgt-abc'); // 筷子受理号(轮询换回)
+        expect(kind).toBe('task');
+    });
+
+    it('每次自造号唯一(同参数两次提交不同 id)', async () => {
+        mockSubmitThenVendor();
+        const id1 = ((await (await submitVolcVideo({ prompt: 'x' }, opts())).json()) as { id: string }).id;
+        const id2 = ((await (await submitVolcVideo({ prompt: 'x' }, opts())).json()) as { id: string }).id;
+        expect(id1).not.toBe(id2);
     });
 });
 
@@ -497,7 +469,7 @@ const UPSTREAM_DONE_SAMPLE = {
 /** 明示【不】原样透出的上游字段,每条都要有理由。 */
 const INTENTIONALLY_NOT_PASSED: Record<string, string> = {
     id: '换成我们的对客任务号(客户拿到的是火山原生号,见 volc-id-map)',
-    vendor_task_id: '对客不暴露 —— 客户的 id 本身就是火山号,再给一个既冗余又提示中间层(#271)',
+    vendor_task_id: '对客不暴露 —— 客户的 id 是我们自造的火山型号;火山官方响应也没这个字段(#271)',
     status: '经我们的状态机归一后再翻回火山态(queued/running/succeeded/failed)',
     model: '回显客户调用的名字(ark 面回显火山原生 id)',
     usage: '按我们的计费口径归一(completion/total_tokens)',

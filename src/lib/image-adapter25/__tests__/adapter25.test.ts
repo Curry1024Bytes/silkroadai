@@ -332,22 +332,74 @@ describe('handleAdapter25Image 透明 / 错误 / 脱敏', () => {
         expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
-    it('上游官方形非法尺寸 400(total pixels must not be less than …)→ 终态 invalid_request', async () => {
+    it('上游非法尺寸 400 → 终态 invalid_request,且【透出上游具体原因】+ param=size(客户能定位)', async () => {
         fetchMock.mockResolvedValue(
             new Response(
-                JSON.stringify({ error: { message: 'invalid image size: total pixels must not be less than 655360' } }),
+                JSON.stringify({
+                    error: { message: 'invalid image size: edges must be multiples of 16 (got "1000x1000")' },
+                }),
+                { status: 400 },
+            ),
+        );
+        const res = await handleAdapter25Image(
+            jsonReq(URL_GEN, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1000x1000', quality: 'low' }),
+            'generations',
+            'wetokenasia25',
+        );
+        expect(res.status).toBe(400);
+        const e = ((await res.json()) as { error: { code: string; message: string; param: string | null } }).error;
+        expect(e.code).toBe('invalid_request');
+        expect(e.message).toContain('edges must be multiples of 16'); // 具体原因透出,不再笼统
+        expect(e.message).toContain('1000x1000');
+        expect(e.param).toBe('size');
+    });
+
+    it('bad_request 上游原因带品牌 → 透出前脱敏', async () => {
+        fetchMock.mockResolvedValue(
+            new Response(
+                JSON.stringify({ error: { message: 'we-token: invalid image size, edges must be multiples of 16' } }),
                 {
                     status: 400,
                 },
             ),
         );
         const res = await handleAdapter25Image(
-            jsonReq(URL_GEN, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '512x512', quality: 'low' }),
+            jsonReq(URL_GEN, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '15x15', quality: 'low' }),
             'generations',
             'wetokenasia25',
         );
         expect(res.status).toBe(400);
-        expect(((await res.json()) as { error: { code: string } }).error.code).toBe('invalid_request');
+        const msg = ((await res.json()) as { error: { message: string } }).error.message.toLowerCase();
+        expect(msg).not.toContain('we-token');
+        expect(msg).toContain('edges must be multiples of 16'); // 具体原因保留
+    });
+
+    it('非法 quality(ultra)入口拦截 → 400 invalid_request param=quality,不打上游(不再静默按 low 出图)', async () => {
+        const res = await handleAdapter25Image(
+            jsonReq(URL_GEN, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'ultra' }),
+            'generations',
+            'wetokenasia25',
+        );
+        expect(res.status).toBe(400);
+        expect(fetchMock).not.toHaveBeenCalled(); // 入口拦,没打上游
+        const e = ((await res.json()) as { error: { code: string; param: string; message: string } }).error;
+        expect(e.code).toBe('invalid_request');
+        expect(e.param).toBe('quality');
+        expect(e.message.toLowerCase()).toContain('quality');
+    });
+
+    it('合法 quality(含 auto)与空 quality 不被入口拦(auto/空 → 走 low)', async () => {
+        for (const q of ['low', 'medium', 'high', 'xhigh', 'max', 'auto', '']) {
+            fetchMock.mockReset();
+            okUpstream([pngB64(1024, 1024)]);
+            const res = await handleAdapter25Image(
+                jsonReq(URL_GEN, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: q }),
+                'generations',
+                'wetokenasia25',
+            );
+            expect(res.status).toBe(200);
+            expect(fetchMock).toHaveBeenCalledTimes(1); // 放行打上游
+        }
     });
 
     it('渠道特定(no available channel / 5xx)→ 503 failover,体中性不泄品牌', async () => {

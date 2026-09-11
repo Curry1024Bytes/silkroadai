@@ -619,23 +619,17 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                     </li>
                 </ul>
 
-                <p className="font-medium text-gray-900">任务 ID 就是火山官方任务号</p>
+                <p className="font-medium text-gray-900">任务 ID(火山方舟形)</p>
                 <p>
-                    提交返回的 <Code>id</Code> / <Code>task_id</Code> 为<b>火山方舟形</b>(<Code>cgt-</Code>{' '}
-                    开头)。由火山方舟受理的任务,该编号<b>即火山官方任务号</b> —— 与您在火山侧看到的是
-                    <b>同一个号</b>,可直接用于对账、工单与日志核对,无需再做任何映射。
+                    提交<b>立即返回</b> <Code>id</Code> / <Code>task_id</Code>,为<b>火山方舟形</b>(<Code>cgt-</Code>{' '}
+                    开头)。这个号在本平台<b>全程有效</b> —— 提交、轮询、拿成片都用它,无需任何映射。
                 </p>
                 <Pre>{`curl ${BASE}/v1/video/generations/cgt-20260819224039-bfjdv \\
   -H "Authorization: Bearer sk-ent-您的密钥"
 # → {"status":"in_progress", "id":"cgt-20260819224039-bfjdv", …}`}</Pre>
                 <ul className="list-disc space-y-1 pl-5 text-gray-600">
                     <li>
-                        <b>提交会等上游受理后再返回</b>(通常十几秒)—— 火山那边分配出任务号我们才应答,
-                        这样您拿到的从第一刻起就是火山官方的号。
-                    </li>
-                    <li>
-                        若上游迟迟未受理,提交返回 <Code>504</Code> —— 请稍后重新提交。
-                        <b>这种情况不计费。</b>
+                        <b>提交秒回</b> —— 拿到 <Code>task_id</Code> 后按上文轮询即可,无需等待。
                     </li>
                 </ul>
             </Section>

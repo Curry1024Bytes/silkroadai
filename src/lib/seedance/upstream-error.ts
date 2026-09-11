@@ -95,12 +95,19 @@ function extractUpstreamMessage(body: string): string {
     }
 }
 
-/** 剥掉一切能指向上游身份的东西,并压成一行。 */
-export function sanitizeUpstreamText(text: string): string {
+/** 剥掉一切能指向上游身份的东西,并压成一行。
+ *
+ * `keepOpaqueIds`(2026-09-10,火山渠道透传用):保留 request_id 这类**不透明关联 id** ——
+ * operator 判断裸 id 不含域名/厂商名、无泄露价值,还便于客户贴给我们对号。但**上游任务号
+ * 前缀 `kz-`/`tsk-` 永远剥**(那是真身份标记,#271 明列),不受本开关影响。 */
+export function sanitizeUpstreamText(text: string, opts?: { keepOpaqueIds?: boolean }): string {
     let s = text || '';
-    // 上游 request id(各种写法)—— 连值一起剥
-    s = s.replace(/\b(request[\s_-]?id|req[\s_-]?id|trace[\s_-]?id)\b\s*[:=]?\s*["']?[\w-]+["']?/gi, '');
-    // URL / 裸域名 / IP:端口
+    // 上游任务号前缀(筷子 kz- / 非方舟 tsk-)—— 永远剥,暴露即泄露上游身份(#271)。
+    s = s.replace(/\b(?:kz|tsk)-[A-Za-z0-9-]+/gi, '');
+    // 上游 request id(各种写法)—— 连值一起剥;keepOpaqueIds 时保留(operator 2026-09-10)。
+    if (!opts?.keepOpaqueIds)
+        s = s.replace(/\b(request[\s_-]?id|req[\s_-]?id|trace[\s_-]?id)\b\s*[:=]?\s*["']?[\w-]+["']?/gi, '');
+    // URL / 裸域名 / IP:端口 —— 永远剥。
     s = s.replace(/https?:\/\/\S+/gi, '');
     s = s.replace(/\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b/g, '');
     s = s.replace(/\b[a-z0-9-]+(?:\.[a-z0-9-]+)+\.(?:com|cn|io|net|org|ai|co)\b/gi, '');
@@ -111,8 +118,11 @@ export function sanitizeUpstreamText(text: string): string {
     }
     // 长 id 残留(纯十六进制 ≥20 位 / 超长字母数字串);我们自己的 asset-…/group-… 因带
     // 短横线分段且每段都短,不会被这两条命中 —— 刻意保留,客户据此定位是哪张素材。
-    s = s.replace(/\b[0-9a-f]{20,}\b/gi, '');
-    s = s.replace(/\b[0-9A-Za-z]{28,}\b/g, '');
+    // keepOpaqueIds 时跳过 —— 否则 request_id 这类长串会被这两条兜底规则再吃掉。
+    if (!opts?.keepOpaqueIds) {
+        s = s.replace(/\b[0-9a-f]{20,}\b/gi, '');
+        s = s.replace(/\b[0-9A-Za-z]{28,}\b/g, '');
+    }
     // 收尾:压空白、去掉被剥空后剩下的孤立标点
     s = s
         .replace(/\s+/g, ' ')
@@ -291,6 +301,31 @@ export function classifyUpstreamError(body: string, status?: number): UpstreamEr
         };
     }
     return { category: 'unknown', message: nativeOr(clean, '请求被拒绝,请稍后重试') };
+}
+
+/**
+ * 【透传版】上游报错 → 对客文案(火山渠道 2026-09-10 起用这条)。
+ *
+ * 与 classifyUpstreamError 的区别:**不做分类模板替换**,直接把上游原文(仅按 #271
+ * 剥身份标记:request_id / 中间商域名·IP / 内部长 id)带给客户。operator 判断:筷子的
+ * 报错本就是火山风格的可操作原文,模板化反而把真实原因盖住、增加来回排查。
+ *
+ * 仍保留两处不透传(不是 #271 脱敏,是别把问题引偏):
+ *  - `upstream_account`(上游余额/欠费):是【我们】的上游账户问题,透传「余额不足」会让
+ *    客户误以为是自己 portal 余额,跑去充值 —— 反而制造问题。保持兜底文案。
+ *  - 上游没给原因(空 / HTML 错误页):没有可透传的原文,回落分类兜底。
+ *
+ * `category` 仍照 classifyUpstreamError 算(#391 终态化 / 对账器要用),只换 message。
+ * 脱敏口径(operator 2026-09-10):域名/IP/厂商名/kz-·tsk- 任务号照剥(真身份,#271),
+ * 但 **request_id 这类不透明关联 id 保留**(无泄露价值 + 便于客户贴给我们对号)。
+ */
+export function passthroughUpstreamError(body: string, status?: number): UpstreamErrorInfo {
+    const classified = classifyUpstreamError(body, status);
+    if (classified.category === 'upstream_account') return classified;
+    const extracted = extractUpstreamMessage(body);
+    const isHtml = /<\s*(!doctype|html|head|body|title)\b/i.test(extracted) || extracted.trimStart().startsWith('<');
+    const clean = isHtml ? '' : stripVendorWrapping(sanitizeUpstreamText(extracted, { keepOpaqueIds: true }));
+    return { category: classified.category, message: clean || classified.message };
 }
 
 /**

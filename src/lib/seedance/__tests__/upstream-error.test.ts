@@ -11,6 +11,7 @@ import {
     classifyUpstreamError,
     friendlyUpstreamError,
     isTerminalTaskFailure,
+    passthroughUpstreamError,
     sanitizeUpstreamText,
 } from '../upstream-error';
 
@@ -244,6 +245,52 @@ describe('终态 vs 瞬时 —— 决定要不要停止轮询(2026-08-18,8925 �
     it('真的任务不存在 → 仍归 task_gone', () => {
         expect(classifyUpstreamError('{"message":"task not found"}', 404).category).toBe('task_gone');
         expect(classifyUpstreamError('{"message":"任务不存在"}', 404).category).toBe('task_gone');
+    });
+
+    // ── 火山渠道透传版(2026-09-10):不做模板替换,直出上游原文,仅剥身份标记 ──
+    describe('passthroughUpstreamError', () => {
+        it('透传上游原文 + 保留 request_id(operator 2026-09-10),但剥域名/kz-任务号(#271)', () => {
+            const r = passthroughUpstreamError(
+                JSON.stringify({
+                    error: {
+                        message:
+                            'audio total duration must be <= 30.2 for model doubao-seedance-2-5. Request id: 0217890143833111023f1f6cf081335b7e69d5fdf9a93684ce083, host aiopenapi.kuaizi.cn task kz-cgt-20260908055450-pc248',
+                    },
+                }),
+                400,
+            );
+            // 可操作原文完整保留
+            expect(r.message).toContain('audio total duration must be <= 30.2');
+            // request_id 保留(operator 拍板:无泄露价值 + 便于对号;长串不再被通用兜底规则吃掉)
+            expect(r.message).toContain('0217890143833111023f1f6cf081335b7e69d5fdf9a93684ce083');
+            // 但域名 / 厂商名 / 上游任务号前缀仍剥(真身份,#271)
+            expect(r.message).not.toContain('kuaizi');
+            expect(r.message).not.toContain('aiopenapi');
+            expect(r.message).not.toContain('kz-cgt-');
+            expect(r.message).not.toContain('pc248');
+        });
+
+        it('task_gone:classify 会套「任务已失效」模板,透传版给上游原文', () => {
+            const body = '{"message":"task xyz does not exist in the system"}';
+            expect(classifyUpstreamError(body, 404).message).toBe('任务已失效或不存在,请重新提交');
+            const p = passthroughUpstreamError(body, 404);
+            expect(p.category).toBe('task_gone'); // category 不变(#391 终态化仍靠它)
+            expect(p.message).toContain('does not exist'); // 但 message 是上游原文
+        });
+
+        it('upstream_account(余额/欠费)保持兜底,不透传(避免客户误以为是自己余额)', () => {
+            const p = passthroughUpstreamError('{"message":"insufficient balance in account"}', 402);
+            expect(p.category).toBe('upstream_account');
+            expect(p.message).not.toContain('balance');
+            expect(p.message).toContain('服务方上游账户');
+        });
+
+        it('上游没给原因 / HTML 错误页 → 回落分类兜底(无原文可透传)', () => {
+            expect(passthroughUpstreamError('{}', 500).message).not.toBe('');
+            const html = passthroughUpstreamError('<html><body>502 Bad Gateway</body></html>', 502);
+            expect(html.message).not.toContain('<');
+            expect(html.message).not.toContain('502 Bad Gateway');
+        });
     });
 
     // 2026-09-05 客户投诉的原始报文,钉死最终输出:三层壳(我们的中文前缀、「上游原因」、

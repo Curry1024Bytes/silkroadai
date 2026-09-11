@@ -530,9 +530,11 @@ const GROUP_REF = /^group-\d{14}-[0-9a-f]{6}$/;
 /** 不做引用替换的字段(纯文本/控制字段,防 prompt 恰好长得像 id 被误替换)。 */
 const SKIP_KEYS = new Set(['prompt', 'model', 'text', 'name', 'description']);
 
-/** 剥 asset:// 前缀取裸 id(volc 面 body 不做全局 stripAssetUri,引用可能带前缀)。 */
+/** 剥 asset:// 前缀取裸 id(volc 面 body 不做全局 stripAssetUri,引用可能带前缀)。
+ *  前缀大小写不敏感:客户偶发传 `Asset://`,一并剥。 */
 function bareRef(v: string): string {
-    return v.startsWith('asset://') ? v.slice('asset://'.length) : v;
+    const m = /^asset:\/\//i.exec(v);
+    return m ? v.slice(m[0].length) : v;
 }
 
 function collectRefs(value: unknown, key: string | null, out: { assets: Set<string>; groups: Set<string> }): void {

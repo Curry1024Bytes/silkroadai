@@ -481,7 +481,8 @@ function upstreamNum(v: unknown): number | null {
  * 顶层 images[] / first_frame 等别名里 —— 与其逐个字段列举(必然漏),不如整棵树扫一遍:
  * 只有恰好以 `asset://` 开头的字符串会被改写,其余原样。
  */
-const ASSET_URI = /^asset:\/\/(.+)$/;
+// 前缀大小写不敏感:客户偶发传 `Asset://`(上游只认 `asset://`),捕获 id 后统一输出小写 asset://。
+const ASSET_URI = /^asset:\/\/(.+)$/i;
 const DATA_URI = /^data:((?:image|audio|video)\/[a-z0-9.+-]+);base64,(.+)$/i;
 
 /**

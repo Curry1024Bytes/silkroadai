@@ -66,6 +66,20 @@ describe('stripAssetUri', () => {
         // 原对象未变
         expect(body.content[1].image_url!.url).toBe('asset://asset-20260101120000-abcdef');
     });
+
+    it('前缀大小写不敏感:Asset:// / ASSET:// 也剥成裸 id(客户偶发大写,上游只认小写)', () => {
+        const body = {
+            content: [
+                { url: 'Asset://asset-20260101120000-abcdef' },
+                { url: 'ASSET://asset-20260101120000-ffffff' },
+                { url: 'AsSeT://asset-20260101120000-111111' },
+            ],
+        };
+        const out = stripAssetUri(body) as typeof body;
+        expect(out.content[0].url).toBe('asset-20260101120000-abcdef');
+        expect(out.content[1].url).toBe('asset-20260101120000-ffffff');
+        expect(out.content[2].url).toBe('asset-20260101120000-111111');
+    });
 });
 
 describe('arkFailError', () => {

@@ -114,6 +114,22 @@ export default async function EnterpriseAdminLogsPage({
         params.set('page', String(p));
         return `?${params.toString()}`;
     };
+    // 详情页「返回请求日志」要回到当前这一页(而非默认第 1 页)—— 把当前页码+筛选打进 back 参数。
+    const backQs = new URLSearchParams([...filterEntries, ['page', String(page)]]).toString();
+    const detailHref = (logId: string) => `/enterprise-admin/logs/${logId}?back=${encodeURIComponent(backQs)}`;
+    // 数字页窗口:首页、末页、当前页 ±2,断档处用 … 省略。
+    const pageWindow = ((): Array<number | '…'> => {
+        const out: Array<number | '…'> = [];
+        const push = (p: number) => {
+            if (p >= 1 && p <= totalPages && !out.includes(p)) out.push(p);
+        };
+        push(1);
+        if (page - 2 > 2) out.push('…');
+        for (let p = page - 2; p <= page + 2; p++) push(p);
+        if (page + 2 < totalPages - 1) out.push('…');
+        push(totalPages);
+        return out;
+    })();
     const exportHref = `/api/admin/enterprise/logs/export?${new URLSearchParams(filterEntries).toString()}`;
     const hasFilter = filterEntries.length > 0;
 
@@ -280,10 +296,7 @@ export default async function EnterpriseAdminLogsPage({
                                         {l.error_code && <p className="mt-0.5 text-xs text-red-500">{l.error_code}</p>}
                                     </td>
                                     <td className="py-2">
-                                        <Link
-                                            href={`/enterprise-admin/logs/${l.id}`}
-                                            className="text-xs text-blue-600 hover:underline"
-                                        >
+                                        <Link href={detailHref(l.id)} className="text-xs text-blue-600 hover:underline">
                                             查看
                                         </Link>
                                     </td>
@@ -294,7 +307,7 @@ export default async function EnterpriseAdminLogsPage({
                 </div>
             )}
             {totalPages > 1 && (
-                <div className="mt-3 flex items-center gap-3 text-sm">
+                <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
                     {page > 1 ? (
                         <a href={qs(page - 1)} className="text-blue-600 hover:underline">
                             ← 上一页
@@ -302,9 +315,30 @@ export default async function EnterpriseAdminLogsPage({
                     ) : (
                         <span className="text-gray-300">← 上一页</span>
                     )}
-                    <span className="text-gray-500">
-                        {page} / {totalPages}
-                    </span>
+                    {/* 数字页:直接跳到目标页 */}
+                    {pageWindow.map((p, i) =>
+                        p === '…' ? (
+                            <span key={`gap-${i}`} className="px-1 text-gray-400">
+                                …
+                            </span>
+                        ) : p === page ? (
+                            <span
+                                key={p}
+                                className="rounded bg-blue-600 px-2 py-0.5 text-xs font-medium text-white"
+                                aria-current="page"
+                            >
+                                {p}
+                            </span>
+                        ) : (
+                            <a
+                                key={p}
+                                href={qs(p)}
+                                className="rounded px-2 py-0.5 text-xs text-blue-600 hover:bg-blue-50 hover:underline"
+                            >
+                                {p}
+                            </a>
+                        ),
+                    )}
                     {page < totalPages ? (
                         <a href={qs(page + 1)} className="text-blue-600 hover:underline">
                             下一页 →
@@ -312,6 +346,28 @@ export default async function EnterpriseAdminLogsPage({
                     ) : (
                         <span className="text-gray-300">下一页 →</span>
                     )}
+                    <span className="ml-1 text-xs text-gray-400">共 {totalPages} 页</span>
+                    {/* 跳页输入(原生 GET form,保留当前筛选) */}
+                    <form method="get" className="ml-1 flex items-center gap-1">
+                        {filterEntries.map(([k, v]) => (
+                            <input key={k} type="hidden" name={k} value={v} />
+                        ))}
+                        <input
+                            type="number"
+                            name="page"
+                            min={1}
+                            max={totalPages}
+                            defaultValue={page}
+                            aria-label="跳转到页码"
+                            className="w-16 rounded border border-gray-300 px-2 py-0.5 text-xs"
+                        />
+                        <button
+                            type="submit"
+                            className="rounded border border-gray-300 px-2 py-0.5 text-xs text-gray-700 hover:bg-gray-50"
+                        >
+                            跳转
+                        </button>
+                    </form>
                 </div>
             )}
             <p className="mt-3 text-xs text-gray-400">

@@ -263,6 +263,52 @@ export function maxDurationForVariant(v: SeedanceVariant): number {
 // 火山官方 2.5 支持 adaptive(首尾帧/视频编辑/延长任务【必须】adaptive → 输出跟随输入宽高比)。
 const ALLOWED_RATIOS = new Set(['16:9', '9:16', '4:3', '3:4', '1:1', '21:9', 'adaptive']);
 
+// 反向白名单透传(与火山渠道 kuaizi-adapter 对齐,2026-09-10):我们只挡【自己消费/翻译掉】的键,
+// 其余客户传的字段一律原样转发给上游 —— 逐个列白名单必然落后于上游,曾把 bitrate_mode /
+// watermark / service_tier / priority 等火山官方字段静默吃掉(客户 liyan2 传 bitrate_mode 上游没收到)。
+// CONSUMED = 我们显式构造 upstreamBody 时读掉的键(含各种参考输入别名,proxy 已并进 images/videos,
+// 再透传会重复);此外 `k in upstreamBody` 会自动跳过我们已放进去的键(camera_fixed/seed/... )。
+const CONSUMED_BODY_KEYS = new Set([
+    'model',
+    'content',
+    'prompt',
+    'resolution',
+    'duration',
+    'seconds',
+    'ratio',
+    'aspect_ratio',
+    'generate_audio',
+    // 参考输入的各种别名(已并进 upstreamBody.images/videos/audios)
+    'first_frame',
+    'last_frame',
+    'image',
+    'image_url',
+    'images',
+    'image_urls',
+    'reference_image_urls',
+    'video',
+    'video_url',
+    'videos',
+    'reference_video',
+    'reference_videos',
+    'audio',
+    'audio_url',
+    'audios',
+    'reference_audios',
+    'video_config',
+    // 我们【显式校验后按需注入】的键:有效值走上面的校验分支进 upstreamBody,
+    // 无效值应【丢弃】而非原样透传(保持既有语义,不把非法值漏给上游)。
+    'camera_fixed',
+    'seed',
+    'omni_reference_task_type',
+    'output_format',
+    // moderation_options:火山渠道会挑 ips 单独透传(上游不认 ip_mode)。cn 档暂不做版权放行,
+    // 整个 key 归入消费集,不原样透传(避免把 ip_mode 漏给上游被拒)。
+    'moderation_options',
+]);
+// 绝不透传:callback_url 会让上游直接回调客户并带上游任务号(泄露中间层身份,#271)。
+const NEVER_FORWARD_KEYS = new Set(['callback_url']);
+
 /** category:机器可读分类。调用方(enterprise proxy / 对账器)据此判定
  *  「任务已废」还是「瞬时抖动」—— 见 upstream-error.isTerminalTaskFailure。 */
 function err(status: number, code: string, message: string, category?: string) {
@@ -538,6 +584,21 @@ export async function submitVideoWithKey(body: Record<string, unknown>, auth: st
     // 输出格式(火山官方 2.5 新增 mov;缺省 mp4);有则透传。
     if (typeof body.output_format === 'string' && ['mp4', 'mov'].includes(body.output_format.toLowerCase()))
         upstreamBody.output_format = body.output_format.toLowerCase();
+
+    // 其余字段【一律透传】给上游(反向白名单,与火山渠道对齐)—— 只挡我们消费掉的键与
+    // 绝不转发的键(callback_url),其余(bitrate_mode / watermark / service_tier / priority /
+    // return_last_frame / safety_identifier 等火山官方字段)原样过去,能不能用由上游判。
+    const extras: string[] = [];
+    for (const [k, v] of Object.entries(body)) {
+        if (CONSUMED_BODY_KEYS.has(k) || k in upstreamBody || v === undefined) continue;
+        if (NEVER_FORWARD_KEYS.has(k)) {
+            console.warn('[seedance-cn-adapter] 该字段需要单独适配,未透传', { field: k });
+            continue;
+        }
+        upstreamBody[k] = v;
+        extras.push(k);
+    }
+    if (extras.length) console.log('[seedance-cn-adapter] 透传客户额外字段', { fields: extras });
 
     if (map.ref) {
         try {

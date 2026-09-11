@@ -40,10 +40,13 @@ describe('/enterprise/docs 火山渠道章节', () => {
         expect(html).not.toContain('X-Silkroadai-Vendor-Task-Id');
     });
 
-    it('写明「任务 ID 就是火山官方任务号」+ 提交会等上游受理', () => {
-        expect(html).toContain('即火山官方任务号');
-        expect(html).toContain('同一个号');
-        expect(html).toContain('提交会等上游受理后再返回');
+    // 2026-09-09:任务号改为提交秒回、平台全程有效 —— 文档不再宣称「即火山官方号/可对账」,
+    // 也不能再写「提交会等上游受理」(会误导客户以为提交是阻塞的)。
+    it('写明任务号提交秒回 + 平台全程有效,不再宣称等上游受理', () => {
+        expect(html).toContain('提交秒回');
+        expect(html).toContain('全程有效');
+        expect(html).not.toContain('即火山官方任务号');
+        expect(html).not.toContain('提交会等上游受理后再返回');
     });
 
     it('海外版 global 2.5 在文档里,且写明费率=proMax 2.5(不同于国内版 2.5)', () => {

@@ -96,10 +96,12 @@ export function arkStatus(our: string): string {
 }
 
 /** 深遍历把 body 里所有 "asset://<id>" 前缀剥成裸 <id>(resolveAssetRefs 认裸 asset-…)。
- *  火山用 asset://asset-xxx 引用素材;我们内部认 asset-xxx。返回新对象(不改原 body)。 */
+ *  火山用 asset://asset-xxx 引用素材;我们内部认 asset-xxx。返回新对象(不改原 body)。
+ *  ⚠️ 前缀大小写不敏感:客户偶发传 `Asset://`(上游只认 `asset://`),这里一并剥掉。 */
 export function stripAssetUri<T>(v: T): T {
     if (typeof v === 'string') {
-        return (v.startsWith('asset://') ? v.slice('asset://'.length) : v) as unknown as T;
+        const m = /^asset:\/\//i.exec(v);
+        return (m ? v.slice(m[0].length) : v) as unknown as T;
     }
     if (Array.isArray(v)) return v.map((x) => stripAssetUri(x)) as unknown as T;
     if (v && typeof v === 'object') {

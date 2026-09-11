@@ -227,25 +227,56 @@ const UPSTREAM_BADREQ_RE =
     /prompt is required|invalid image|bad_request|validation_error|invalid image size|total pixels must|quality for .* must be|invalid value/i;
 const UPSTREAM_CHANNEL_RE = /no available channel|model_not_found|channel_circuit_open|no active tokens/i;
 
-type TerminalReject = { terminal: 'safety' | 'bad_request' };
+type TerminalReject = { terminal: 'safety' } | { terminal: 'bad_request'; detail?: string; param?: string | null };
 function isTerminalReject(x: string[] | TerminalReject | null): x is TerminalReject {
     return x !== null && !Array.isArray(x);
 }
 
+/** 从上游错误体提取【可直接展示的具体原因】(脱敏后)—— 客户报"非法 size 未拦截",其实是拦了但
+ *  文案笼统看不出哪错。这里把上游 `error.message`(如 "invalid image size: edges must be
+ *  multiples of 16 (got 1024x641)")透出来,让客户能定位。仅用于 bad_request 桶(参数校验类,
+ *  本就不含品牌/内部结构);仍过 brand 脱敏防御。提不出干净原因 → 返 ''(退回笼统文案)。 */
+function extractBadRequestDetail(text: string, brand: RegExp): { detail: string; param: string | null } {
+    let msg = '';
+    try {
+        const j = JSON.parse(text) as { error?: { message?: unknown } };
+        if (typeof j.error?.message === 'string') msg = j.error.message;
+    } catch {
+        msg = '';
+    }
+    if (!msg) return { detail: '', param: null };
+    const clean = sanitizeAdapterError25(msg, brand).slice(0, 200);
+    // 参数归属(官方 error.param 便于 SDK 定位):按关键词判
+    const lc = clean.toLowerCase();
+    const param = /image size|\bsize\b|edges|pixels|aspect ratio/.test(lc)
+        ? 'size'
+        : /\bquality\b/.test(lc)
+          ? 'quality'
+          : /\bprompt\b/.test(lc)
+            ? 'prompt'
+            : /\bimage\b/.test(lc)
+              ? 'image'
+              : null;
+    return { detail: clean, param };
+}
+
 /** 上游 4xx → 是否终态化 + 归类;5xx / 渠道特定 → null(failover)。不确定的 4xx 保守 failover。 */
-function classifyUpstreamError(status: number, text: string): TerminalReject | null {
+function classifyUpstreamError(status: number, text: string, brand: RegExp): TerminalReject | null {
     if (status >= 500) return null;
     if (UPSTREAM_CHANNEL_RE.test(text)) return null;
     if (UPSTREAM_SAFETY_RE.test(text)) return { terminal: 'safety' };
-    if (UPSTREAM_BADREQ_RE.test(text)) return { terminal: 'bad_request' };
+    if (UPSTREAM_BADREQ_RE.test(text)) {
+        const { detail, param } = extractBadRequestDetail(text, brand);
+        return { terminal: 'bad_request', detail, param };
+    }
     return null;
 }
 
 /** 终态错误(4xx,new-api 不 failover),直接发官方形 —— 直连 :3000 绕过 portal 的客户也拿官方形;
  *  官方 message 含 "safety system" 仍命中 portal 的 IMAGE_SAFETY_RE → portal 再归一幂等。 */
-function terminalReject(kind: 'safety' | 'bad_request'): NextResponse {
-    console.warn('[image-adapter25] terminal reject (no failover)', { kind });
-    if (kind === 'safety') {
+function terminalReject(reject: TerminalReject): NextResponse {
+    console.warn('[image-adapter25] terminal reject (no failover)', reject);
+    if (reject.terminal === 'safety') {
         return NextResponse.json(
             {
                 error: {
@@ -262,9 +293,12 @@ function terminalReject(kind: 'safety' | 'bad_request'): NextResponse {
     return NextResponse.json(
         {
             error: {
-                message: 'Invalid request: the prompt, image, or parameters were rejected — please check your request.',
+                // 有上游具体原因就透出来(客户能定位到 size/quality),否则退回笼统文案
+                message:
+                    reject.detail ||
+                    'Invalid request: the prompt, image, or parameters were rejected — please check your request.',
                 type: 'invalid_request_error',
-                param: null,
+                param: reject.param ?? null,
                 code: 'invalid_request',
             },
         },
@@ -423,7 +457,7 @@ async function callUpstream(
             ms: Date.now() - started,
             body: sanitizeAdapterError25(errText.slice(0, 500), provider.brand),
         });
-        return classifyUpstreamError(upstream.status, errText);
+        return classifyUpstreamError(upstream.status, errText, provider.brand);
     }
 
     const data = (await upstream.json().catch(() => null)) as {
@@ -483,6 +517,19 @@ export async function handleAdapter25Image(
         return failover('model_not_served', `model '${parsed.model}' not served by provider '${providerName}'`);
     }
 
+    // ---- 非法 quality 入口拦截(客户反馈:传 ultra 我们静默按 low 出图 + 计费)----
+    // normQuality25 把未知值归一 low 是给 auto/缺省用的;但客户【显式】传了一个非法档位(如 ultra),
+    // 应像官方/上游一样明确 400 拒,而不是静默降成 low 出张图还收费。空/缺省不拦(走 auto→low)。
+    const rawQ = parsed.quality.trim().toLowerCase();
+    if (rawQ && !FORWARD_QUALITY_SET.has(rawQ)) {
+        console.warn('[image-adapter25] invalid quality rejected', { provider: providerName, quality: parsed.quality });
+        return terminalReject({
+            terminal: 'bad_request',
+            detail: 'Invalid value for quality. Supported values are: low, medium, high, xhigh, max, auto.',
+            param: 'quality',
+        });
+    }
+
     const dims = parseSize(parsed.size);
     const quality = normQuality25(parsed.quality);
     const wantsTransparent = (parsed.extras.background || '').trim().toLowerCase() === 'transparent';
@@ -494,7 +541,7 @@ export async function handleAdapter25Image(
     // ---- 调上游(n 原生透传,一次拿 n 张)----
     const started = Date.now();
     const result = await callUpstream(provider, providerName, mode, parsed, n, auth);
-    if (isTerminalReject(result)) return terminalReject(result.terminal);
+    if (isTerminalReject(result)) return terminalReject(result);
     let items = (result ?? []).map((b64_json) => ({ b64_json }));
     if (items.length === 0) return failover('upstream_error', 'upstream call failed');
     if (items.length < n) {
