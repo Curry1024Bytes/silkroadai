@@ -110,8 +110,12 @@
   jail 已启用(10 分钟 5 次失败先封 1 小时,重复触发递增到 24 小时),启动后已实际捕获并封禁攻击 IP。
 - 2026-08-04 new-api SSH 隧道卡死根因已定位为 VPS -> operator 中国电信网络的高下行丢包:
   服务端 `ss -ti` 观察到约 17%-28% 重传,CUBIC `cwnd` 塌至 2-4,MSS/PMTU 正常;纯 SSH 和 HTTP/80
-  对照均复现,排除浏览器、new-api、Docker、forwarding 与 MTU。VPS 已持久化 `tcp_bbr` + `fq`;
+  对照均复现,排除浏览器、new-api、Docker、forwarding 与 MTU。当时临时切换后的历史测试中，
   同一 5 MB SSH 下行由 5 分 32 秒降至 8.29 秒,3.42 MB new-api 主脚本 3.91 秒完成,Chrome 整页无错误。
+  2026-09-11 发现原 sysctl 路径实际是目录，旧“已持久化 BBR + fq”记录不准确，运行值为 cubic。
+  本次已备份并修成普通配置文件，仅持久化 BBR，保留 fq_codel 和活动队列；3000 新隧道实测 BBR，
+  同一脚本中位耗时从 6.56 秒降至 0.92 秒。未重启业务或整机，重启后验收未做；详见
+  `docs/SSH-TUNNEL-REPAIR-2026-09-11.md`。
   配置与 Mac 隧道命令见 `deploy/部署与运维手册.md` 7.3/9 节;切换拥塞算法后必须重建旧 SSH 连接。
 - 2026-08-04 Portal PostgreSQL 本机备份 cron 已启用:每日北京时间 02:00 执行
   `scripts/backup-db.sh`,保留 7 天;脚本使用无 TTY dump、0600 临时文件、`gzip -t`、原子重命名和
@@ -841,8 +845,8 @@ docker compose -f docker-compose.prod.yml up -d portal
 DATABASE_URL="postgresql://portal:devpass123@localhost:5433/silkroadai_portal_dev"
 
 # new-api 后端(B3 主链路)— 本地通过 SSH 隧道:
-#   ssh -4 -fN -L 3000:127.0.0.1:3000 -o ServerAliveInterval=60 root@82.29.71.122
-NEWAPI_BASE_URL="http://localhost:3000"
+#   ssh -O check llmroute-newapi 2>/dev/null || ssh -fN llmroute-newapi
+NEWAPI_BASE_URL="http://127.0.0.1:3000"
 NEWAPI_ADMIN_TOKEN="<在当前 new-api 后台个人设置生成,密码管理器存档>"
 NEWAPI_ADMIN_USER_ID=1                            # root 通常是 1
 NEWAPI_QUOTA_PER_USD=500000                       # 1 USD = 500k quota(new-api 默认)
