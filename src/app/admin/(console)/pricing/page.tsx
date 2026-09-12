@@ -60,8 +60,7 @@ function getTexts(locale: Locale) {
               unpriced: 'Unpriced',
               tierPool: 'Pool',
               tierOfficial: 'Official',
-              edit: 'Edit price',
-              publishPrice: 'Publish price to new-api…',
+              edit: 'Edit and publish price',
               history: 'History',
               hide: 'Hide',
               cancel: 'Cancel',
@@ -113,8 +112,7 @@ function getTexts(locale: Locale) {
               unpriced: '未定价',
               tierPool: '低价号池',
               tierOfficial: '官方稳定',
-              edit: '改价',
-              publishPrice: '发布价格到 new-api…',
+              edit: '改价并发布',
               history: '历史',
               hide: '收起',
               cancel: '取消',
@@ -268,9 +266,9 @@ function PricingContent() {
         return () => window.clearInterval(interval);
     }, [fetchModels]);
 
-    const openEditModal = (model: ModelWithPrices, row?: TierRow) => {
+    const openEditModal = (model: ModelWithPrices, row: TierRow) => {
         setEditingModel(model);
-        setInitialTier(row?.tier);
+        setInitialTier(row.tier);
         setEditModalOpen(true);
     };
     const closeEditModal = () => {
@@ -439,10 +437,8 @@ function PricingContent() {
                                         linkBtn={linkBtn}
                                         unpricedLabel={t.unpriced}
                                         editLabel={t.edit}
-                                        publishLabel={t.publishPrice}
                                         historyLabel={histOpen ? t.hide : t.history}
                                         onEdit={(row) => openEditModal(model, row)}
-                                        onPublish={() => openEditModal(model)}
                                         onToggleHistory={() => toggleHistory(model.id)}
                                         historyOpen={histOpen}
                                         t={t}
@@ -501,10 +497,8 @@ interface ModelRowsProps {
     linkBtn: (color: 'indigo' | 'red' | 'slate') => string;
     unpricedLabel: string;
     editLabel: string;
-    publishLabel: string;
     historyLabel: string;
     onEdit: (row: TierRow) => void;
-    onPublish: () => void;
     onToggleHistory: () => void;
     historyOpen: boolean;
     t: ReturnType<typeof getTexts>;
@@ -518,10 +512,8 @@ function ModelRows({
     linkBtn,
     unpricedLabel,
     editLabel,
-    publishLabel,
     historyLabel,
     onEdit,
-    onPublish,
     onToggleHistory,
     historyOpen,
     t,
@@ -572,26 +564,17 @@ function ModelRows({
                                 </td>
                             </>
                         )}
-                        {/* Actions — 改价 is per-tier (every row); 发布价格/历史 are model-level
-                            (first row only, so they're not duplicated per tier). */}
+                        {/* Each tier opens the same publication flow with that tier selected.
+                            History belongs to the model and appears once. */}
                         <td className="px-4 py-3 text-right align-top">
                             <div className="inline-flex flex-wrap justify-end gap-1">
                                 <button type="button" onClick={() => onEdit(row)} className={linkBtn('indigo')}>
                                     {editLabel}
                                 </button>
                                 {idx === 0 && (
-                                    <>
-                                        <button
-                                            type="button"
-                                            onClick={onPublish}
-                                            className={`${linkBtn('slate')} disabled:opacity-50`}
-                                        >
-                                            {publishLabel}
-                                        </button>
-                                        <button type="button" onClick={onToggleHistory} className={linkBtn('slate')}>
-                                            {historyLabel}
-                                        </button>
-                                    </>
+                                    <button type="button" onClick={onToggleHistory} className={linkBtn('slate')}>
+                                        {historyLabel}
+                                    </button>
                                 )}
                             </div>
                         </td>
