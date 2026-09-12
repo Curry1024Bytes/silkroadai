@@ -86,6 +86,13 @@ export function priceOptions(options: Record<string, unknown>): PriceOptions {
     return Object.fromEntries(PRICE_KEYS.map((key) => [key, dictionary(options[key], key)])) as PriceOptions;
 }
 
+type OptionalBillingKey = 'ImageResolutionPrice' | 'billing_setting.scheduled_discount';
+function optionalBillingDictionary(source: PublishSource, key: OptionalBillingKey) {
+    // The verified rc.23 option registry predates these features. Only a truly
+    // absent key means unsupported; null, malformed JSON and arrays still fail.
+    return Object.hasOwn(source.options, key) ? dictionary(source.options[key], key) : {};
+}
+
 function checkedMap(raw: unknown): UpstreamMapLike {
     const map = dictionary(raw, '模型渠道映射');
     for (const entry of Object.values(map)) {
@@ -113,12 +120,15 @@ export function sourceGuard(source: PublishSource): string {
         channels: source.channels,
         group: dictionary(source.options.GroupRatio, 'GroupRatio'),
         quota: source.options.QuotaPerUnit,
-        overrides: [
-            'GroupGroupRatio',
-            'ImageResolutionPrice',
-            'billing_setting.billing_mode',
-            'billing_setting.scheduled_discount',
-        ].map((key) => [key, dictionary(source.options[key], key)]),
+        overrides: ['GroupGroupRatio', 'billing_setting.billing_mode'].map((key) => [
+            key,
+            dictionary(source.options[key], key),
+        ]),
+        optional_overrides: (['ImageResolutionPrice', 'billing_setting.scheduled_discount'] as const).map((key) => [
+            key,
+            Object.hasOwn(source.options, key),
+            optionalBillingDictionary(source, key),
+        ]),
         locks: Object.fromEntries(
             Object.entries(meta).map(([name, value]) => {
                 const info = dictionary(value, 'CompletionRatioMeta');
@@ -196,14 +206,11 @@ export function buildPublishPlan(
         throw new PricingPublishError('pricing_group_invalid', '该档次的 new-api 分组倍率缺失或无效。');
     }
     const modes = dictionary(source.options['billing_setting.billing_mode'], 'billing_setting.billing_mode');
-    const discounts = dictionary(
-        source.options['billing_setting.scheduled_discount'],
-        'billing_setting.scheduled_discount',
-    );
-    const resolution = dictionary(source.options.ImageResolutionPrice, 'ImageResolutionPrice');
+    const discounts = optionalBillingDictionary(source, 'billing_setting.scheduled_discount');
+    const resolution = optionalBillingDictionary(source, 'ImageResolutionPrice');
     const discount = discounts[name];
     if (
-        (modes[name] != null && modes[name] !== '' && modes[name] !== 'standard') ||
+        (modes[name] != null && modes[name] !== '' && modes[name] !== 'standard' && modes[name] !== 'ratio') ||
         Object.hasOwn(resolution, name) ||
         (discount && typeof discount === 'object' && 'enabled' in discount && discount.enabled === true)
     ) {

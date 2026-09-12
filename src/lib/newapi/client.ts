@@ -855,15 +855,17 @@ export async function getPricingPublishOptions(): Promise<Record<string, unknown
         'billing_setting.billing_mode',
         'billing_setting.scheduled_discount',
     ];
+    // Preserve absence separately from an explicitly invalid null value. rc.23
+    // predates two optional billing features; its complete option list omits
+    // their keys. Required pricing dictionaries are still validated downstream.
     return Object.fromEntries(
-        keys.map((key) => [
-            key,
-            Array.isArray(data)
-                ? (data.find((item) => item && item.key === key)?.value ?? null)
-                : Object.hasOwn(data, key)
-                  ? data[key]
-                  : null,
-        ]),
+        keys.flatMap((key): Array<[string, unknown]> => {
+            if (Array.isArray(data)) {
+                const row = data.find((item) => item && item.key === key);
+                return row ? [[key, row.value]] : [];
+            }
+            return Object.hasOwn(data, key) ? [[key, data[key]]] : [];
+        }),
     );
 }
 

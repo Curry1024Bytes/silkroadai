@@ -650,6 +650,50 @@ describe('pricing plan invariants', () => {
         live.ModelPrice = null;
         await expect(plan()).rejects.toMatchObject({ code: 'pricing_options_invalid' });
     });
+    it('supports rc23 absence of later optional features and the actual ratio billing mode', async () => {
+        delete live.ImageResolutionPrice;
+        delete live['billing_setting.scheduled_discount'];
+        live['billing_setting.billing_mode'] = { 'gpt-test': 'ratio' };
+        disk = structuredClone(live);
+        await queued();
+        expect((await runPricingPublisherOnce())?.status).toBe('succeeded');
+        expect(mocks.put).toHaveBeenCalledTimes(2);
+    });
+    it.each([null, 'null', 'malformed', []])(
+        'still rejects invalid present optional configuration %j',
+        async (value) => {
+            live.ImageResolutionPrice = value;
+            await expect(plan()).rejects.toMatchObject({ code: 'pricing_options_invalid' });
+            live.ImageResolutionPrice = {};
+            live['billing_setting.scheduled_discount'] = value;
+            await expect(plan()).rejects.toMatchObject({ code: 'pricing_options_invalid' });
+            expect(mocks.put).not.toHaveBeenCalled();
+        },
+    );
+    it.each([
+        'ModelRatio',
+        'CompletionRatio',
+        'ModelPrice',
+        'GroupRatio',
+        'GroupGroupRatio',
+        'billing_setting.billing_mode',
+    ])('never treats missing required %s as an empty optional feature', async (key) => {
+        const state = await readPublishState(mocks.db as unknown as Parameters<typeof readPublishState>[0]);
+        const current = source();
+        delete current.options[key];
+        expect(() => buildPublishPlan(state, current, input(), NOW)).toThrowError(
+            expect.objectContaining({ code: 'pricing_options_invalid' }),
+        );
+    });
+    it('stops before PUT if an absent optional feature appears after confirmation', async () => {
+        delete live.ImageResolutionPrice;
+        delete live['billing_setting.scheduled_discount'];
+        disk = structuredClone(live);
+        await queued();
+        live.ImageResolutionPrice = {};
+        expect((await runPricingPublisherOnce())?.status).toBe('conflict');
+        expect(mocks.put).not.toHaveBeenCalled();
+    });
     it('locked effective completion metadata forbids an incompatible output price', async () => {
         const s = source();
         s.options.CompletionRatioMeta = { 'gpt-test': { ratio: 2, locked: true } };

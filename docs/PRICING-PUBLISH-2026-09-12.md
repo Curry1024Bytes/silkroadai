@@ -55,3 +55,13 @@
 ## 发布前仍要完成
 
 operator 安排上线后，按 [当前运维手册](../deploy/部署与运维手册.md) 完成备份、只读账号和信任材料配置、三表 migration、镜像构建与单 Portal 切换。先只读核对真实运行/保存价格、确认预览影响范围，再由 operator 为明确模型和金额确认首次真实改价；不能把隔离故障测试等同于已完成生产价格验收。
+
+### 同日上线前的 rc.23 兼容修正
+
+operator 随后批准上线。第一份 Linux Node 22.23.2 镜像使用生产备份恢复的隔离数据库，76→77 条 migration 成功且目录不变，但真实 rc.23 的只读 preview 因两个可选字段缺失返回 `pricing_options_invalid`；因此没有切换生产容器。隔离数据库和临时凭据已清理。
+
+已按实际镜像标签确认官方 revision `0ab02020603d22e5613bc4cf46bfab06f8567769`：这个版本尚未实现 `ImageResolutionPrice` 与 `billing_setting.scheduled_discount`，普通计费枚举为 `ratio`。依据为 [官方配置注册](https://github.com/QuantumNous/new-api/blob/0ab02020603d22e5613bc4cf46bfab06f8567769/model/option.go) 与 [计费模式定义](https://github.com/QuantumNous/new-api/blob/0ab02020603d22e5613bc4cf46bfab06f8567769/setting/billing_setting/tiered_billing.go)。
+
+窄兼容修正仅容许这两个选项完全缺失，显式 null/非法 JSON/数组仍拒绝；是否存在也纳入预览指纹，升级后选项出现会中止旧任务。允许已确认的普通 `ratio` 模式，其他特殊规则继续拒绝。核心四价格选项、分组倍率、实际输出倍率、运行与 MySQL 双重核验、持久写入日志均未放宽；补充 14 项回归。
+
+修正后完整测试 `304 files / 4063 passed / 1 skipped`，typecheck、lint（0 error / 93 个既有 warnings）、生产构建与本轮格式检查通过。第一次完整重跑时本机 SSH 控制连接恢复后尚未恢复 3000 转发，原三项 smoke 被前置检查拒绝；恢复转发后完整重跑通过，没有删除或改弱 smoke。

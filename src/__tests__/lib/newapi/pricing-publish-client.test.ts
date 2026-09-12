@@ -50,4 +50,23 @@ describe('publication management acknowledgement', () => {
         expect(options.AnythingSecret).toBeUndefined();
         expect(JSON.stringify(options)).not.toContain('test-secret-sentinel');
     });
+    it.each(['array', 'object'])(
+        'preserves absent optional keys and explicit null separately in %s responses',
+        async (shape) => {
+            const row = { key: 'ImageResolutionPrice', value: null };
+            fetchMock.mockResolvedValue(
+                new Response(
+                    JSON.stringify({
+                        success: true,
+                        data: shape === 'array' ? [row] : { [row.key]: row.value },
+                    }),
+                ),
+            );
+            const options = await getPricingPublishOptions();
+            expect(Object.hasOwn(options, 'ImageResolutionPrice')).toBe(true);
+            expect(options.ImageResolutionPrice).toBeNull();
+            expect(Object.hasOwn(options, 'billing_setting.scheduled_discount')).toBe(false);
+            expect(Object.hasOwn(options, 'ModelRatio')).toBe(false);
+        },
+    );
 });
