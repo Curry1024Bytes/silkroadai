@@ -64,3 +64,14 @@ operator 明确批准“配置只读连接、备份迁移上线、只读验收�
 真实改价、收费生成、支付与真实浏览器 OAuth 登录没有在本轮执行。首次真实改价仍需 operator 指定模型、档次和金额；四个 GPT 主型号（5.4、5.5、5.6-sol、5.6-terra）现用阶梯计费（见 `newapi-pricing-before.json` 的 `billing_setting.billing_mode`），不能通过通用普通价格表覆盖。两项倍率 PUT 不原子的短暂混价限制仍存在。
 
 主要证据为发布目录的 `isolated-check.json`、`production-preview.json`、`production-business.json`、`production-verification.json`、`availability.json`；本机脱敏副本与网络初始/复核结果位于 `/tmp/llmroute-pricing-release-20260912/`。
+
+## 16:19 定价入口修正（已上线）
+
+operator 反馈只有企业级行显示“发布价格到 new-api”，并明确要求改好后再测试。该按钮实际属于模型共用入口，放在首行造成误解。应用 `ad8594afc6bf21f8fd780733b8be54cdce3db5bc` 仅修改后台定价页面：每个档次统一“改价并发布” / “Edit and publish price”，删除重复模型级发布入口；点击必须传入当前行并预选其档次，模型历史仍保留一次。API、价格预览、发布及阶梯计费保护没有变化。
+
+- 完整测试 304 files / 4063 passed / 1 skipped，typecheck、格式通过，lint 0 error / 93 既有 warnings。没有为文案改动新增镜像式测试或修改既有断言。
+- 实际浏览器点击使用导入真实页面和弹窗的本机隔离 harness：两档按钮、分别预选档次和价格、取消及焦点返回、中英文文案与表格布局均核对通过。数据为合成 fixture、写请求全部拒绝。Chrome 连接超时，未宣称完成生产已登录浏览器验收。
+- 从 prod 干净归档构建，Node 22.23.2、uid 1001，打包后新文案存在且旧重复文案消失；运行镜像为 `sha256:4247756c22789a47e8719ed2fe7b90819d8e4012b26db7ba7bb2e3d57c7aa3f6`，标签 `silkroadai-portal-portal:release-ad8594a`。北京时间 16:14:16–16:18:00 构建，16:19:03–16:19:18 切换；首次失败至恢复 9.426 秒，restart count 0，三个依赖容器未变，日志无 error/fatal/failed。
+- 无新增 migration/env/依赖/配置，77 条 migration 及 checksum 正常；29 模型、35 价格版本、6 档次、20 Key 内容摘要不变，new-api 价格及计费选项不变，jobs/writes/active_jobs 均为 0。
+- 公网 apex/www 登录页 200，API 未鉴权模型列表 401、API login 404；公网新 JS 返回 200 且 SHA-256 与实际运行镜像一致，确认已服务新入口。没有真实改价、收费生成或支付。
+- 本轮备份与证据：`/opt/backups/silkroadai-portal/releases/pricing-ui-20260912-081339/`，数据库备份 656682 字节、gzip 完整，环境备份 `.env.bak.pricing-ui-20260912-081339`；备份均 0600。回滚镜像标签 `rollback-pricing-ui-20260912-081339`，旧应用为 `becf7f5`。仍须遵守活动价格任务/未决写入的回滚约束。
