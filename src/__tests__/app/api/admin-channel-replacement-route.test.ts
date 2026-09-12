@@ -1,4 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const mockCatalogGuard = vi.fn();
+vi.mock('@/lib/admin/pricing-publish-lock', async () => ({
+    ...(await vi.importActual<typeof import('@/lib/admin/pricing-publish-lock')>('@/lib/admin/pricing-publish-lock')),
+    assertPricingCatalogWritable: (...args: unknown[]) => mockCatalogGuard(...args),
+}));
+import { PricingPublishError } from '@/lib/admin/pricing-publish-lock';
 import { NextRequest } from 'next/server';
 
 const resolveAdmin = vi.fn();
@@ -316,4 +323,17 @@ describe('channel replacement — authenticated preview and atomic apply', () =>
         expect(response.status).toBe(409);
         expect((await response.json()).error).toBe('preview_stale');
     });
+});
+
+it('returns 409 without replacing channels while a price publication is active', async () => {
+    const previewResponse = await POST(request({ source_channel_id: 9, target_channel_id: 14 }), context);
+    const { preview } = await previewResponse.json();
+    mockCatalogGuard.mockRejectedValueOnce(new PricingPublishError('pricing_publish_busy', 'busy'));
+    const response = await POST(
+        request({ source_channel_id: 9, target_channel_id: 14, preview_token: preview.preview_token }, true),
+        context,
+    );
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: 'pricing_publish_busy' });
+    expect(writes).toBe(0);
 });

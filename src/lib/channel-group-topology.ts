@@ -1,4 +1,5 @@
 import 'server-only';
+import type { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { PLATFORM_TENANT_ID } from '@/lib/admin/tenant-scope';
 
@@ -130,9 +131,12 @@ export class ChannelGroupTopology {
     }
 }
 
-export async function loadChannelGroupTopology(tenantId: string | null): Promise<ChannelGroupTopology> {
+export async function loadChannelGroupTopology(
+    tenantId: string | null,
+    db: Pick<Prisma.TransactionClient, 'channelGroup'> = prisma,
+): Promise<ChannelGroupTopology> {
     const resolvedTenantId = tenantId ?? PLATFORM_TENANT_ID;
-    const groups = await prisma.channelGroup.findMany({
+    const groups = await db.channelGroup.findMany({
         where: { tenant_id: resolvedTenantId, enabled: true },
         orderBy: [{ tier_level: 'asc' }, { key: 'asc' }],
         select: {

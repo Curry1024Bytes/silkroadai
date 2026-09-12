@@ -4,14 +4,15 @@ import { prisma } from '@/lib/db';
 import { unauthorizedResponse } from '@/lib/admin-auth';
 import { resolveAdmin } from '@/lib/admin/auth';
 import { tenantScope } from '@/lib/admin/tenant-scope';
-import { syncModelPriceToNewApi, CHAT_FX, IMAGE_FX, type UpstreamMap } from '@/lib/newapi/pricing-sync';
+import { CHAT_FX, IMAGE_FX } from '@/lib/newapi/pricing-sync';
 import { getOption } from '@/lib/newapi/client';
 import {
-    ChannelGroupTopologyError,
-    loadChannelGroupTopology,
-    topologyErrorPayload,
-    type UpstreamMapLike,
-} from '@/lib/channel-group-topology';
+    enqueuePricingPublish,
+    previewPricingPublish,
+    pricingPublishInputSchema,
+    pricingPublishErrorResponse,
+    listPricingJobs,
+} from '@/lib/admin/pricing-publish';
 
 export const runtime = 'nodejs';
 
@@ -55,92 +56,50 @@ export async function GET(request: NextRequest) {
         pricing_context = null;
     }
 
-    return NextResponse.json({ models, pricing_context });
+    return NextResponse.json({ models, pricing_context, publish_jobs: await listPricingJobs(admin) });
 }
 
-const changePriceSchema = z
-    .object({
-        model_id: z.string().uuid(),
-        tier: z.string().trim().min(1),
-        input_cny_per_1m: z.number().nonnegative().nullable().optional(),
-        output_cny_per_1m: z.number().nonnegative().nullable().optional(),
-        per_image_cny: z.number().nonnegative().nullable().optional(),
-        cost_cny_per_1m: z.number().nonnegative().nullable().optional(),
-    })
-    .refine((d) => (d.input_cny_per_1m != null && d.output_cny_per_1m != null) || d.per_image_cny != null, {
-        message: '需要 input+output 价(文本/对话模型)或 per_image 价(图片模型)',
-    });
-
-/**
- * POST /api/admin/pricing — 改价。
- * 插一条新的 CatalogPrice 版本行(不覆盖旧行 → 历史可追溯/复算),然后 best-effort
- * 把新价 sync 到 new-api(决策①:一上线即生效)。sync 失败不影响价格落库 —— 价格
- * 以 portal DB 为事实源,sync 状态回前端,可「重新同步」。
- */
+/** A preview never writes. Confirming it stores a durable intent and returns
+ * 202; the background publisher alone may verify and activate CatalogPrice. */
 export async function POST(request: NextRequest) {
     const admin = await resolveAdmin(request, 'superadmin');
     if (!admin) return unauthorizedResponse(request);
-
     let body: unknown;
     try {
         body = await request.json();
     } catch {
-        return NextResponse.json({ error: 'invalid_input' }, { status: 400 });
+        return NextResponse.json({ error: 'invalid_input', message: '请求格式无效。' }, { status: 400 });
     }
-    const parsed = changePriceSchema.safeParse(body);
-    if (!parsed.success) {
+    const action = z
+        .object({ action: z.enum(['preview', 'publish']), preview_token: z.string().max(200).optional() })
+        .safeParse(body);
+    if (!action.success) {
         return NextResponse.json(
-            { error: 'invalid_input', issues: parsed.error.flatten().fieldErrors },
-            { status: 400 },
+            {
+                error: 'pricing_preview_required',
+                message: '请刷新定价页，先预览价格变化，再确认发布。旧的直接保存方式已停用。',
+            },
+            { status: 409 },
         );
     }
-    const d = parsed.data;
-
-    // 模型必须属于本租户。
-    const model = await prisma.catalogModel.findFirst({ where: { id: d.model_id, ...tenantScope(admin) } });
-    if (!model) return NextResponse.json({ error: '模型不存在' }, { status: 404 });
-
-    let topologyTenantId: string;
+    const input = pricingPublishInputSchema.safeParse(body);
+    if (!input.success)
+        return NextResponse.json(
+            { error: 'invalid_input', message: input.error.issues[0]?.message ?? '价格格式无效。' },
+            { status: 400 },
+        );
     try {
-        const topology = await loadChannelGroupTopology(model.tenant_id);
-        topologyTenantId = topology.tenantId;
-        const upstreamMap = model.upstream_map as unknown as UpstreamMapLike;
-        const issues = topology.validateUpstreamMap(upstreamMap);
-        if (issues.length > 0) throw new ChannelGroupTopologyError(topology.tenantId, issues);
-        if (!upstreamMap[d.tier]) {
-            throw new ChannelGroupTopologyError(topology.tenantId, [{ code: 'unknown_tier', tier: d.tier }]);
-        }
+        if (action.data.action === 'preview')
+            return NextResponse.json({ preview: await previewPricingPublish(input.data, admin) });
+        if (!action.data.preview_token)
+            return NextResponse.json(
+                { error: 'pricing_preview_required', message: '请先预览价格变化。' },
+                { status: 400 },
+            );
+        const job = await enqueuePricingPublish(input.data, action.data.preview_token, admin);
+        return NextResponse.json({ job }, { status: 202 });
     } catch (error) {
-        if (error instanceof ChannelGroupTopologyError) {
-            return NextResponse.json(topologyErrorPayload(error), { status: 409 });
-        }
-        throw error;
+        const response = pricingPublishErrorResponse(error);
+        return NextResponse.json(response.body, { status: response.status });
     }
-
-    // 插版本行(effective_from 默认 now;created_by = 改价的 admin,break-glass 为 null)。
-    const price = await prisma.catalogPrice.create({
-        data: {
-            model_id: model.id,
-            tier: d.tier,
-            input_cny_per_1m: d.input_cny_per_1m ?? null,
-            output_cny_per_1m: d.output_cny_per_1m ?? null,
-            per_image_cny: d.per_image_cny ?? null,
-            cost_cny_per_1m: d.cost_cny_per_1m ?? null,
-            created_by: admin.user?.id ?? null,
-        },
-    });
-
-    // best-effort sync 到 new-api。chat → 全局 ModelRatio + CompletionRatio(P2.9;旧的 PUT
-    // 渠道 model_ratio 被 new-api 静默丢弃);图片 → 全局 ModelPrice(P2.8)。两者都按模型名、
-    // 不分档。本路由是单档改价,按【本次编辑档】的值即时同步;全局价不分档(默认档归一 + 多档
-    // warn 在「重新同步」里统一处理)。⚠️ 保存即改真实计费 —— operator 须先核对目录价。
-    const sync = await syncModelPriceToNewApi(model.upstream_map as unknown as UpstreamMap, {
-        tenant_id: topologyTenantId,
-        tier: d.tier,
-        input_cny_per_1m: d.input_cny_per_1m ?? null,
-        output_cny_per_1m: d.output_cny_per_1m ?? null,
-        per_image_cny: d.per_image_cny ?? null,
-    });
-
-    return NextResponse.json({ price, sync }, { status: 201 });
 }

@@ -1,3 +1,5 @@
+import { assertPricingCatalogWritable, PricingPublishError } from '@/lib/admin/pricing-publish-lock';
+import { canonicalSync } from '@/lib/admin/newapi-sync-plan';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import type { Prisma } from '@prisma/client';
@@ -104,6 +106,11 @@ export async function POST(request: NextRequest) {
         if (error instanceof ChannelGroupTopologyError) {
             return NextResponse.json(topologyErrorPayload(error), { status: 409 });
         }
+        if (error && typeof error === 'object' && 'code' in error && ['P2028', 'P2034'].includes(String(error.code)))
+            return NextResponse.json(
+                { error: 'catalog_write_busy', message: '目录正在被修改或等待价格发布，请稍后重试。' },
+                { status: 409 },
+            );
         throw error;
     }
     const groups = topology.groups;
@@ -382,42 +389,82 @@ export async function POST(request: NextRequest) {
     const hasWork = plan.some((p) => p.existingId === null || p.upstreamMapChanged || p.pricesToCreate.length > 0);
     if (!dryRun) {
         if (hasWork) {
-            await prisma.$transaction(async (tx) => {
-                for (const p of plan) {
-                    let modelId = p.existingId;
-                    if (modelId === null) {
-                        const m = await tx.catalogModel.create({
-                            data: {
-                                tenant_id,
-                                slug: p.slug,
-                                display_name: p.display_name,
-                                vendor: p.vendor,
-                                modality: p.modality,
-                                enabled: true,
-                                sort_order: p.sort_order,
-                                upstream_map: p.upstreamMap as Prisma.InputJsonValue,
-                            },
-                        });
-                        modelId = m.id;
-                    } else if (p.upstreamMapChanged) {
-                        await tx.catalogModel.update({
-                            where: { id: modelId },
-                            data: { upstream_map: p.upstreamMap as Prisma.InputJsonValue },
-                        });
+            try {
+                await prisma.$transaction(async (tx) => {
+                    await assertPricingCatalogWritable(tx);
+                    const freshTopology = await loadChannelGroupTopology(tenant_id, tx);
+                    const freshModels = await tx.catalogModel.findMany({
+                        where: { tenant_id },
+                        select: {
+                            id: true,
+                            slug: true,
+                            sort_order: true,
+                            upstream_map: true,
+                            prices: { select: { tier: true } },
+                        },
+                    });
+                    const stableModels = (rows: typeof existingModels) =>
+                        rows
+                            .map((row) => ({
+                                ...row,
+                                prices: row.prices.slice().sort((a, b) => a.tier.localeCompare(b.tier)),
+                            }))
+                            .sort((a, b) => a.id.localeCompare(b.id));
+                    if (
+                        canonicalSync(freshTopology.groups) !== canonicalSync(groups) ||
+                        canonicalSync(stableModels(freshModels)) !== canonicalSync(stableModels(existingModels))
+                    )
+                        throw new PricingPublishError('catalog_changed', '目录或档次已变化，请重新预览后导入。');
+                    for (const p of plan) {
+                        let modelId = p.existingId;
+                        if (modelId === null) {
+                            const m = await tx.catalogModel.create({
+                                data: {
+                                    tenant_id,
+                                    slug: p.slug,
+                                    display_name: p.display_name,
+                                    vendor: p.vendor,
+                                    modality: p.modality,
+                                    enabled: true,
+                                    sort_order: p.sort_order,
+                                    upstream_map: p.upstreamMap as Prisma.InputJsonValue,
+                                },
+                            });
+                            modelId = m.id;
+                        } else if (p.upstreamMapChanged) {
+                            await tx.catalogModel.update({
+                                where: { id: modelId },
+                                data: { upstream_map: p.upstreamMap as Prisma.InputJsonValue },
+                            });
+                        }
+                        for (const pr of p.pricesToCreate) {
+                            await tx.catalogPrice.create({
+                                data: {
+                                    model_id: modelId,
+                                    tier: pr.tier,
+                                    input_cny_per_1m: pr.input,
+                                    output_cny_per_1m: pr.output,
+                                    created_by: admin.user?.id ?? null,
+                                },
+                            });
+                        }
                     }
-                    for (const pr of p.pricesToCreate) {
-                        await tx.catalogPrice.create({
-                            data: {
-                                model_id: modelId,
-                                tier: pr.tier,
-                                input_cny_per_1m: pr.input,
-                                output_cny_per_1m: pr.output,
-                                created_by: admin.user?.id ?? null,
-                            },
-                        });
-                    }
-                }
-            });
+                });
+            } catch (error) {
+                if (error instanceof PricingPublishError)
+                    return NextResponse.json({ error: error.code, message: error.message }, { status: error.status });
+                if (
+                    error &&
+                    typeof error === 'object' &&
+                    'code' in error &&
+                    ['P2028', 'P2034'].includes(String(error.code))
+                )
+                    return NextResponse.json(
+                        { error: 'catalog_write_busy', message: '目录正在被修改或等待价格发布，请稍后重试。' },
+                        { status: 409 },
+                    );
+                throw error;
+            }
         }
     }
 

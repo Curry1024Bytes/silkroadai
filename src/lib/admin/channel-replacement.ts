@@ -1,3 +1,4 @@
+import { assertPricingCatalogWritable } from '@/lib/admin/pricing-publish-lock';
 import 'server-only';
 import { createHash } from 'node:crypto';
 import type { Prisma } from '@prisma/client';
@@ -169,6 +170,7 @@ export async function applyChannelReplacement(args: {
     // registry write rolls the whole replacement back; serialization conflicts require a new preview.
     return prisma.$transaction(
         async (tx) => {
+            await assertPricingCatalogWritable(tx);
             const plan = await buildChannelReplacement(tx, args.groupId, args.tenantId, args.sourceId, args.target);
             if (plan.preview.preview_token !== args.previewToken) {
                 throw new ChannelReplacementError('preview_stale', '配置已发生变化，请重新预览后再确认替换。');

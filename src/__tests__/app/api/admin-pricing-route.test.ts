@@ -1,381 +1,320 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+/**
+ * 2026-09-12 intentional contract replacement: old tests accepted an effective
+ * CatalogPrice even when the following new-api write failed. That unsafe contract
+ * is retired. Routes now require a reviewed durable task; verified activation and
+ * recovery are covered by publisher tests. Pure pricing-sync regressions stay intact.
+ * The real input schema/error mapper are used; service, DB, API and persisted reads
+ * are sealed mocks. No HTTP, credentials or production writes are permitted here.
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest, NextResponse } from 'next/server';
 
-const mockResolveAdmin = vi.fn();
-const mockModelFindFirst = vi.fn();
-const mockModelFindMany = vi.fn();
-const mockPriceCreate = vi.fn();
-const mockChannelGroupFindFirst = vi.fn();
-const mockChannelGroupFindMany = vi.fn();
-const mockSync = vi.fn();
-
-vi.mock('@/lib/admin/auth', () => ({ resolveAdmin: (...a: unknown[]) => mockResolveAdmin(...a) }));
+const mocked = vi.hoisted(() => ({
+    auth: vi.fn(),
+    models: vi.fn(),
+    groups: vi.fn(),
+    createPrice: vi.fn(),
+    legacySync: vi.fn(),
+    getOption: vi.fn(),
+    remoteRead: vi.fn(),
+    remoteWrite: vi.fn(),
+    persistedRead: vi.fn(),
+    preview: vi.fn(),
+    enqueue: vi.fn(),
+    jobs: vi.fn(),
+    changeJob: vi.fn(),
+    network: vi.fn(),
+}));
+vi.mock('@/lib/admin/auth', () => ({ resolveAdmin: mocked.auth }));
 vi.mock('@/lib/admin-auth', () => ({
-    unauthorizedResponse: () => NextResponse.json({ error: '未授权' }, { status: 401 }),
+    unauthorizedResponse: () => NextResponse.json({ error: 'unauthorized' }, { status: 401 }),
 }));
 vi.mock('@/lib/db', () => ({
     prisma: {
-        catalogModel: {
-            findFirst: (...a: unknown[]) => mockModelFindFirst(...a),
-            findMany: (...a: unknown[]) => mockModelFindMany(...a),
-        },
-        catalogPrice: {
-            create: (...a: unknown[]) => mockPriceCreate(...a),
-        },
-        channelGroup: {
-            findFirst: (...a: unknown[]) => mockChannelGroupFindFirst(...a),
-            findMany: (...a: unknown[]) => mockChannelGroupFindMany(...a),
-        },
+        catalogModel: { findMany: mocked.models },
+        channelGroup: { findMany: mocked.groups },
+        catalogPrice: { create: mocked.createPrice },
     },
 }));
-// 密闭:pricing-sync/GET 现在会读 new-api option(GroupRatio)—— mock 掉 client,别打真网络。
 vi.mock('@/lib/newapi/client', () => ({
-    getOption: (key: string) => Promise.resolve(key === 'GroupRatio' ? '{"default":1,"official":1}' : null),
-    putOption: () => Promise.resolve(),
+    getOption: mocked.getOption,
+    putOption: mocked.remoteWrite,
+    getPricingPublishOptions: mocked.remoteRead,
+    listChannelsForCatalogSync: mocked.remoteRead,
+    putPricingPublishOption: mocked.remoteWrite,
 }));
-// Mock only the HTTP-touching syncModelPriceToNewApi; keep the pure resolveImageModelPrice real
-// so the resync route's default-tier/warn logic is exercised end-to-end.
-vi.mock('@/lib/newapi/pricing-sync', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('@/lib/newapi/pricing-sync')>();
-    return { ...actual, syncModelPriceToNewApi: (...a: unknown[]) => mockSync(...a) };
-});
+vi.mock('@/lib/newapi/persisted-pricing', () => ({ readPersistedPricingOptions: mocked.persistedRead }));
+vi.mock('@/lib/newapi/pricing-sync', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/lib/newapi/pricing-sync')>()),
+    syncModelPriceToNewApi: mocked.legacySync,
+}));
+vi.mock('@/lib/admin/pricing-publish', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/lib/admin/pricing-publish')>()),
+    previewPricingPublish: mocked.preview,
+    enqueuePricingPublish: mocked.enqueue,
+    listPricingJobs: mocked.jobs,
+    changePricingJob: mocked.changeJob,
+}));
 
 import { GET, POST } from '@/app/api/admin/pricing/route';
 import { POST as RESYNC } from '@/app/api/admin/pricing/[modelId]/resync/route';
-import { PLATFORM_TENANT_ID } from '@/lib/admin/tenant-scope';
+import { POST as JOB } from '@/app/api/admin/pricing/publish/[id]/route';
+import { PricingPublishError } from '@/lib/admin/pricing-publish-lock';
 
-const SUPERADMIN = { role: 'superadmin', tenant_id: null, user: null, viaBreakGlass: true };
-const PARTNER = { role: 'admin', tenant_id: 'tenant-7', user: { id: 'admin-1' }, viaBreakGlass: false };
-const UPSTREAM = { pool: { channel_id: 3, upstream_model: 'gpt-5.4' } };
-
-function req(method = 'GET', body?: object, url = 'https://x/api/admin/pricing') {
-    return new NextRequest(url, {
+const MODEL_ID = '11111111-1111-4111-8111-111111111111';
+const JOB_ID = '22222222-2222-4222-8222-222222222222';
+const ADMIN = { role: 'superadmin', tenant_id: null, user: { id: 'admin-1' }, viaBreakGlass: false };
+const INPUT = {
+    model_id: MODEL_ID,
+    tier: 'sale',
+    input_cny_per_1m: 2.5,
+    output_cny_per_1m: 10,
+    per_image_cny: null,
+    cost_cny_per_1m: null,
+};
+const TOKEN = '1789196400000.' + 'a'.repeat(64);
+const PREVIEW = {
+    preview_token: TOKEN,
+    expires_at: '2026-09-12T08:10:00Z',
+    upstream_model: 'gpt-test',
+    basis: 'token',
+    rows: [],
+    warnings: [],
+};
+const SAVED_JOB = {
+    id: JOB_ID,
+    status: 'queued',
+    message: '等待核验，目录价格未更新。',
+    attempts: 0,
+    created_at: '2026-09-12T08:00:00Z',
+    updated_at: '2026-09-12T08:00:00Z',
+    next_attempt_at: null,
+    upstream_model: 'gpt-test',
+};
+const params = (id = JOB_ID) => ({ params: Promise.resolve({ id }) });
+function req(method = 'GET', body?: unknown, path = '/api/admin/pricing') {
+    return new NextRequest(`https://portal.test${path}`, {
         method,
-        headers: body ? { 'Content-Type': 'application/json' } : {},
-        body: body ? JSON.stringify(body) : undefined,
+        ...(body === undefined ? {} : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
     });
 }
 
 beforeEach(() => {
     vi.clearAllMocks();
-    mockResolveAdmin.mockResolvedValue(SUPERADMIN);
-    mockModelFindMany.mockResolvedValue([]);
-    mockModelFindFirst.mockResolvedValue({
-        id: 'm1',
-        tenant_id: PLATFORM_TENANT_ID,
-        upstream_map: UPSTREAM,
-        prices: [],
-    });
-    mockPriceCreate.mockImplementation(({ data }: { data: object }) => Promise.resolve({ id: 'p1', ...data }));
-    mockChannelGroupFindFirst.mockResolvedValue({ key: 'pool', newapi_group: 'default' }); // is_default tier / GR 解析
-    mockChannelGroupFindMany.mockResolvedValue([
-        {
-            key: 'pool',
-            newapi_group: 'default',
-            newapi_channel_ids: [3, 17, 20],
-            is_default: true,
-            enabled: true,
-            tier_level: 0,
-        },
-        {
-            key: 'official',
-            newapi_group: 'official',
-            newapi_channel_ids: [18],
-            is_default: false,
-            enabled: true,
-            tier_level: 1,
-        },
-    ]);
-    mockSync.mockResolvedValue({
-        ok: true,
-        channel_id: 3,
-        upstream_model: 'gpt-5.4',
-        ratios: { model_ratio: 0.357143, completion_ratio: 4 },
+    mocked.auth.mockResolvedValue(ADMIN);
+    mocked.models.mockResolvedValue([{ id: MODEL_ID, prices: [{ id: 'historical-price' }] }]);
+    mocked.groups.mockResolvedValue([{ key: 'sale', newapi_group: 'Sale' }]);
+    mocked.getOption.mockResolvedValue('{"Sale":1}');
+    mocked.preview.mockResolvedValue(PREVIEW);
+    mocked.enqueue.mockResolvedValue(SAVED_JOB);
+    mocked.jobs.mockResolvedValue([SAVED_JOB]);
+    mocked.changeJob.mockResolvedValue(SAVED_JOB);
+    mocked.network.mockRejectedValue(new Error('Network is sealed in pricing route tests'));
+    vi.stubGlobal('fetch', mocked.network);
+});
+afterEach(() => {
+    for (const operation of [
+        mocked.network,
+        mocked.remoteRead,
+        mocked.remoteWrite,
+        mocked.persistedRead,
+        mocked.createPrice,
+        mocked.legacySync,
+    ])
+        expect(operation).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+});
+
+describe('pricing routes require superadmin before any work', () => {
+    it.each(['get', 'preview', 'publish', 'resync', 'job'] as const)('rejects unauthorized %s', async (entry) => {
+        mocked.auth.mockResolvedValue(null);
+        const request = req(
+            entry === 'get' ? 'GET' : 'POST',
+            entry === 'get'
+                ? undefined
+                : { action: entry === 'preview' ? 'preview' : 'publish', ...INPUT, preview_token: TOKEN },
+        );
+        const response =
+            entry === 'get'
+                ? await GET(request)
+                : entry === 'resync'
+                  ? await RESYNC(request)
+                  : entry === 'job'
+                    ? await JOB(request, params())
+                    : await POST(request);
+        expect(response.status).toBe(401);
+        expect(mocked.auth).toHaveBeenCalledWith(request, 'superadmin');
+        for (const operation of [
+            mocked.models,
+            mocked.groups,
+            mocked.getOption,
+            mocked.preview,
+            mocked.enqueue,
+            mocked.jobs,
+            mocked.changeJob,
+        ])
+            expect(operation).not.toHaveBeenCalled();
     });
 });
 
 describe('GET /api/admin/pricing', () => {
-    it('401 when not an admin', async () => {
-        mockResolveAdmin.mockResolvedValue(null);
-        expect((await GET(req())).status).toBe(401);
+    it('returns catalog history and persisted jobs for the authenticated administrator', async () => {
+        const request = req();
+        const response = await GET(request);
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.models[0].prices).toEqual([{ id: 'historical-price' }]);
+        expect(body.publish_jobs).toEqual([SAVED_JOB]);
+        expect(body.pricing_context.group_ratio_by_tier).toEqual({ sale: 1 });
+        expect(mocked.models).toHaveBeenCalledWith(
+            expect.objectContaining({ include: { prices: { orderBy: { effective_from: 'desc' } } } }),
+        );
+        expect(mocked.jobs).toHaveBeenCalledWith(ADMIN);
+        expect(mocked.auth).toHaveBeenCalledWith(request, 'superadmin');
     });
-    it('returns tenant-scoped models with prices', async () => {
-        const res = await GET(req());
-        expect(res.status).toBe(200);
-        expect(mockModelFindMany.mock.calls[0][0].include.prices).toBeTruthy();
+    it('keeps history and tasks visible when optional live context is unavailable', async () => {
+        mocked.getOption.mockRejectedValue(new Error('offline'));
+        const body = await (await GET(req())).json();
+        expect(body.pricing_context).toBeNull();
+        expect(body.publish_jobs).toEqual([SAVED_JOB]);
+        expect(body.models).toHaveLength(1);
     });
 });
 
-describe('POST /api/admin/pricing (change price)', () => {
-    const CHANGE = {
-        model_id: '11111111-1111-4111-8111-111111111111',
-        tier: 'pool',
-        input_cny_per_1m: 2.5,
-        output_cny_per_1m: 10,
-    };
-
-    it('401 when not an admin', async () => {
-        mockResolveAdmin.mockResolvedValue(null);
-        expect((await POST(req('POST', CHANGE))).status).toBe(401);
+describe('POST /api/admin/pricing publication contract', () => {
+    it('refuses the old direct-save body instead of inserting an effective price', async () => {
+        const response = await POST(req('POST', INPUT));
+        expect(response.status).toBe(409);
+        expect((await response.json()).error).toBe('pricing_preview_required');
+        expect(mocked.preview).not.toHaveBeenCalled();
+        expect(mocked.enqueue).not.toHaveBeenCalled();
     });
-
-    it('400 when neither in+out nor per_image provided', async () => {
-        const res = await POST(req('POST', { model_id: CHANGE.model_id, tier: 'default' }));
-        expect(res.status).toBe(400);
+    it('preview invokes only the read-only service with parsed amounts', async () => {
+        const request = req('POST', { action: 'preview', ...INPUT });
+        const response = await POST(request);
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual({ preview: PREVIEW });
+        expect(mocked.preview).toHaveBeenCalledWith(INPUT, ADMIN);
+        expect(mocked.enqueue).not.toHaveBeenCalled();
+        expect(mocked.auth).toHaveBeenCalledWith(request, 'superadmin');
     });
-
-    it('404 when the model is not in the tenant', async () => {
-        mockModelFindFirst.mockResolvedValue(null);
-        expect((await POST(req('POST', CHANGE))).status).toBe(404);
-        expect(mockPriceCreate).not.toHaveBeenCalled();
+    it('publish requires the reviewed token and returns 202 with a pending job', async () => {
+        const response = await POST(req('POST', { action: 'publish', preview_token: TOKEN, ...INPUT }));
+        expect(response.status).toBe(202);
+        expect(await response.json()).toEqual({ job: SAVED_JOB });
+        expect(mocked.enqueue).toHaveBeenCalledWith(INPUT, TOKEN, ADMIN);
+        expect(mocked.preview).not.toHaveBeenCalled();
     });
-
-    it('inserts a NEW price version row (does not update) + triggers sync', async () => {
-        const res = await POST(req('POST', CHANGE));
-        expect(res.status).toBe(201);
-        const data = await res.json();
-        // version row created with the new price + tier
-        expect(mockPriceCreate.mock.calls[0][0].data).toMatchObject({
-            model_id: 'm1',
-            tier: 'pool',
-            input_cny_per_1m: 2.5,
-            output_cny_per_1m: 10,
-        });
-        // sync called with the model's upstream_map + the new price
-        expect(mockSync).toHaveBeenCalledWith(
-            UPSTREAM,
-            expect.objectContaining({ tier: 'pool', input_cny_per_1m: 2.5, tenant_id: PLATFORM_TENANT_ID }),
+    it.each([undefined, ''])('cannot enqueue without a preview token: %j', async (preview_token) => {
+        const response = await POST(req('POST', { action: 'publish', preview_token, ...INPUT }));
+        expect(response.status).toBe(400);
+        expect((await response.json()).error).toBe('pricing_preview_required');
+        expect(mocked.enqueue).not.toHaveBeenCalled();
+    });
+    it.each([
+        { model_id: 'bad-id' },
+        { tier: ' ' },
+        { input_cny_per_1m: 0 },
+        { input_cny_per_1m: -1 },
+        { output_cny_per_1m: null },
+        { input_cny_per_1m: null },
+        { input_cny_per_1m: '2.5' },
+        { input_cny_per_1m: 1.12345 },
+        { output_cny_per_1m: 100_000_000 },
+        { cost_cny_per_1m: -1 },
+        { cost_cny_per_1m: 0.12345 },
+        { per_image_cny: 1.5 },
+        { input_cny_per_1m: null, output_cny_per_1m: null, per_image_cny: null },
+    ])('rejects incomplete, mixed or unsupported precision inputs: %j', async (change) => {
+        const response = await POST(req('POST', { action: 'preview', ...INPUT, ...change }));
+        expect(response.status).toBe(400);
+        expect((await response.json()).error).toBe('invalid_input');
+        expect(mocked.preview).not.toHaveBeenCalled();
+        expect(mocked.enqueue).not.toHaveBeenCalled();
+    });
+    it('accepts four decimal places and a free output rate without coercing numbers', async () => {
+        const change = { ...INPUT, input_cny_per_1m: 0.1234, output_cny_per_1m: 0, cost_cny_per_1m: 0 };
+        expect((await POST(req('POST', { action: 'preview', ...change }))).status).toBe(200);
+        expect(mocked.preview).toHaveBeenCalledWith(change, ADMIN);
+    });
+    it.each([0, 1.2345])('accepts standalone request price %s with token fields null', async (per_image_cny) => {
+        const change = { ...INPUT, input_cny_per_1m: null, output_cny_per_1m: null, per_image_cny };
+        expect((await POST(req('POST', { action: 'preview', ...change }))).status).toBe(200);
+        expect(mocked.preview).toHaveBeenCalledWith(change, ADMIN);
+    });
+    it('returns a controlled response for invalid JSON', async () => {
+        const response = await POST(
+            new NextRequest('https://portal.test/api/admin/pricing', { method: 'POST', body: '{bad' }),
         );
-        expect(data.sync.ok).toBe(true);
+        expect(response.status).toBe(400);
+        expect((await response.json()).error).toBe('invalid_input');
     });
-
-    it('image change (per_image only) → persists per_image + triggers ModelPrice sync (P2.8, not skipped)', async () => {
-        const IMG_MAP = { pool: { channel_id: 17, upstream_model: 'gpt-image-2' } };
-        mockModelFindFirst.mockResolvedValue({
-            id: 'm1',
-            tenant_id: PLATFORM_TENANT_ID,
-            upstream_map: IMG_MAP,
-            prices: [],
+    it('preserves stale-preview errors without returning a queued job', async () => {
+        mocked.enqueue.mockRejectedValue(new PricingPublishError('pricing_preview_stale', '价格已变化，请重新预览。'));
+        const response = await POST(req('POST', { action: 'publish', preview_token: TOKEN, ...INPUT }));
+        expect(response.status).toBe(409);
+        expect(await response.json()).toEqual({ error: 'pricing_preview_stale', message: '价格已变化，请重新预览。' });
+    });
+    it('redacts unknown upstream/database failures', async () => {
+        mocked.preview.mockRejectedValue(new Error('mysql://admin:private-password@internal-host/api sk-private-key'));
+        const response = await POST(req('POST', { action: 'preview', ...INPUT }));
+        expect(response.status).toBe(503);
+        const body = await response.text();
+        expect(body).toContain('pricing_publish_unavailable');
+        expect(body).not.toMatch(/private-password|internal-host|sk-private-key/);
+    });
+    it('makes missing persisted verification unavailable rather than allowing publication', async () => {
+        mocked.preview.mockRejectedValue({
+            code: 'persisted_pricing_not_configured',
+            message: 'private connection string',
         });
-        mockSync.mockResolvedValue({ ok: true, image: true, upstream_model: 'gpt-image-2', modelPrice_usd: 0.01429 });
-
-        const res = await POST(req('POST', { model_id: CHANGE.model_id, tier: 'pool', per_image_cny: 0.1 }));
-        expect(res.status).toBe(201);
-        const data = await res.json();
-        expect(mockPriceCreate.mock.calls[0][0].data).toMatchObject({ tier: 'pool', per_image_cny: 0.1 });
-        // forwarded to sync with per_image + null in/out (so syncModelPriceToNewApi takes the image branch).
-        expect(mockSync).toHaveBeenCalledWith(
-            IMG_MAP,
-            expect.objectContaining({
-                tier: 'pool',
-                per_image_cny: 0.1,
-                input_cny_per_1m: null,
-                output_cny_per_1m: null,
-            }),
-        );
-        expect(data.sync).toMatchObject({ ok: true, image: true, modelPrice_usd: 0.01429 });
-    });
-
-    it('requires an explicit tier instead of silently writing pool', async () => {
-        const res = await POST(
-            req('POST', {
-                model_id: CHANGE.model_id,
-                input_cny_per_1m: 2.5,
-                output_cny_per_1m: 10,
-            }),
-        );
-        expect(res.status).toBe(400);
-        expect(mockPriceCreate).not.toHaveBeenCalled();
-    });
-
-    it('rejects pricing a historical tier that is no longer routable by the model', async () => {
-        const res = await POST(req('POST', { ...CHANGE, tier: 'official' }));
-        expect(res.status).toBe(409);
-        expect((await res.json()).error).toBe('channel_group_topology_invalid');
-        expect(mockPriceCreate).not.toHaveBeenCalled();
-        expect(mockSync).not.toHaveBeenCalled();
-    });
-
-    it('records created_by = the admin user id', async () => {
-        mockResolveAdmin.mockResolvedValue(PARTNER);
-        await POST(req('POST', CHANGE));
-        expect(mockPriceCreate.mock.calls[0][0].data.created_by).toBe('admin-1');
-    });
-
-    it('break-glass admin → created_by null', async () => {
-        await POST(req('POST', CHANGE)); // SUPERADMIN with user:null
-        expect(mockPriceCreate.mock.calls[0][0].data.created_by).toBeNull();
-    });
-
-    it('sync failure still saves the price (price is source of truth) + returns sync error', async () => {
-        mockSync.mockResolvedValue({
-            ok: false,
-            error: '502 upstream',
-            ratios: { model_ratio: 0.357143, completion_ratio: 4 },
+        const response = await POST(req('POST', { action: 'preview', ...INPUT }));
+        expect(response.status).toBe(503);
+        expect(await response.json()).toMatchObject({
+            error: 'persisted_pricing_not_configured',
+            message: expect.not.stringContaining('private connection string'),
         });
-        const res = await POST(req('POST', CHANGE));
-        expect(res.status).toBe(201);
-        const data = await res.json();
-        expect(mockPriceCreate).toHaveBeenCalled(); // price still persisted
-        expect(data.sync.ok).toBe(false);
-        expect(data.sync.error).toContain('502');
     });
 });
 
-describe('POST /api/admin/pricing/[modelId]/resync', () => {
-    const rurl = 'https://x/api/admin/pricing/m1/resync';
-    const rparams = () => Promise.resolve({ modelId: 'm1' });
-
-    it('404 when model not in tenant', async () => {
-        mockModelFindFirst.mockResolvedValue(null);
-        expect((await RESYNC(req('POST', undefined, rurl), { params: rparams() })).status).toBe(404);
+describe('retired resync endpoint', () => {
+    it('requires an explicit tier preview and never repeats an unreviewed shared-price write', async () => {
+        const request = req('POST', undefined, `/api/admin/pricing/${MODEL_ID}/resync`);
+        const response = await RESYNC(request);
+        expect(response.status).toBe(409);
+        expect((await response.json()).error).toBe('pricing_preview_required');
+        expect(mocked.enqueue).not.toHaveBeenCalled();
+        expect(mocked.preview).not.toHaveBeenCalled();
+        expect(mocked.auth).toHaveBeenCalledWith(request, 'superadmin');
     });
+});
 
-    it('400 when the model has no prices', async () => {
-        mockModelFindFirst.mockResolvedValue({
-            id: 'm1',
-            tenant_id: PLATFORM_TENANT_ID,
-            upstream_map: UPSTREAM,
-            prices: [],
-        });
-        expect((await RESYNC(req('POST', undefined, rurl), { params: rparams() })).status).toBe(400);
+describe('POST /api/admin/pricing/publish/[id]', () => {
+    it.each(['retry', 'cancel'] as const)('passes %s and a validated ID to the scoped service', async (action) => {
+        const response = await JOB(req('POST', { action }), params());
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual({ job: SAVED_JOB });
+        expect(mocked.changeJob).toHaveBeenCalledWith(JOB_ID, action, ADMIN);
     });
-
-    it('chat resync → resolves default tier then ONE global sync (P2.9; no per-tier loop)', async () => {
-        mockModelFindFirst.mockResolvedValue({
-            id: 'm1',
-            tenant_id: PLATFORM_TENANT_ID,
-            upstream_map: UPSTREAM,
-            prices: [
-                {
-                    tier: 'pool',
-                    input_cny_per_1m: '2.5',
-                    output_cny_per_1m: '10',
-                    per_image_cny: null,
-                    effective_from: '2026-06-06T00:00:00Z',
-                },
-                {
-                    tier: 'pool',
-                    input_cny_per_1m: '3',
-                    output_cny_per_1m: '12',
-                    per_image_cny: null,
-                    effective_from: '2026-06-01T00:00:00Z',
-                },
-            ],
-        });
-        const res = await RESYNC(req('POST', undefined, rurl), { params: rparams() });
-        expect(res.status).toBe(200);
-        const data = await res.json();
-        // current (newest) chat price → ONE global sync (chat is global-by-name now, not per-tier).
-        expect(mockSync).toHaveBeenCalledTimes(1);
-        expect(mockSync).toHaveBeenCalledWith(
-            UPSTREAM,
-            expect.objectContaining({
-                tier: 'pool',
-                input_cny_per_1m: 2.5,
-                output_cny_per_1m: 10,
-                per_image_cny: null,
-            }),
-        );
-        expect(data.results[0].tier).toBe('pool');
-        expect(mockChannelGroupFindMany.mock.calls.some((call) => call[0].where.enabled === true)).toBe(true);
+    it('rejects invalid IDs before reading or changing tasks', async () => {
+        const response = await JOB(req('POST', { action: 'retry' }), params('not-a-uuid'));
+        expect(response.status).toBe(400);
+        expect((await response.json()).error).toBe('invalid_id');
+        expect(mocked.changeJob).not.toHaveBeenCalled();
     });
-
-    it('chat resync multi-tier divergent → default (pool) value + warn surfaced (P2.9)', async () => {
-        mockChannelGroupFindFirst.mockResolvedValue({ key: 'pool' });
-        mockModelFindFirst.mockResolvedValue({
-            id: 'm1',
-            tenant_id: PLATFORM_TENANT_ID,
-            upstream_map: {
-                pool: { channel_id: 20, upstream_model: 'claude-opus-4-7' },
-                official: { channel_id: 18, upstream_model: 'claude-opus-4-7' },
-            },
-            prices: [
-                {
-                    tier: 'pool',
-                    input_cny_per_1m: '6.5',
-                    output_cny_per_1m: '32.5',
-                    per_image_cny: null,
-                    effective_from: '2026-06-06T00:00:00Z',
-                },
-                {
-                    tier: 'official',
-                    input_cny_per_1m: '16',
-                    output_cny_per_1m: '80',
-                    per_image_cny: null,
-                    effective_from: '2026-06-06T00:00:00Z',
-                },
-            ],
-        });
-        mockSync.mockResolvedValue({
-            ok: true,
-            upstream_model: 'claude-opus-4-7',
-            ratios: { model_ratio: 0.928571, completion_ratio: 5 },
-        });
-        const res = await RESYNC(req('POST', undefined, rurl), { params: rparams() });
-        const data = await res.json();
-        // single global sync at the default (pool) tier value...
-        expect(mockSync).toHaveBeenCalledTimes(1);
-        expect(mockSync).toHaveBeenCalledWith(
-            expect.anything(),
-            expect.objectContaining({
-                tier: 'pool',
-                input_cny_per_1m: 6.5,
-                output_cny_per_1m: 32.5,
-                per_image_cny: null,
-            }),
-        );
-        // ...with the divergence warn surfaced (chat can't tier — global ModelRatio by name).
-        expect(data.results).toHaveLength(1);
-        expect(data.results[0].sync.warn).toContain('pool');
+    it.each([{}, { action: 'publish' }, { action: false }])('rejects invalid task actions: %j', async (body) => {
+        const response = await JOB(req('POST', body), params());
+        expect(response.status).toBe(400);
+        expect((await response.json()).error).toBe('invalid_input');
+        expect(mocked.changeJob).not.toHaveBeenCalled();
     });
-
-    it('image model resync → ONE sync at the default tier + warn on divergent per_image (P2.8)', async () => {
-        mockChannelGroupFindFirst.mockResolvedValue({ key: 'pool' }); // is_default
-        mockModelFindFirst.mockResolvedValue({
-            id: 'm1',
-            tenant_id: PLATFORM_TENANT_ID,
-            upstream_map: {
-                pool: { channel_id: 17, upstream_model: 'gpt-image-2' },
-                official: { channel_id: 18, upstream_model: 'gpt-image-2' },
-            },
-            prices: [
-                {
-                    tier: 'pool',
-                    input_cny_per_1m: null,
-                    output_cny_per_1m: null,
-                    per_image_cny: '0.10',
-                    effective_from: '2026-06-06T00:00:00Z',
-                },
-                {
-                    tier: 'official',
-                    input_cny_per_1m: null,
-                    output_cny_per_1m: null,
-                    per_image_cny: '0.15',
-                    effective_from: '2026-06-06T00:00:00Z',
-                },
-            ],
-        });
-        mockSync.mockResolvedValue({ ok: true, image: true, upstream_model: 'gpt-image-2', modelPrice_usd: 0.01429 });
-
-        const res = await RESYNC(req('POST', undefined, rurl), { params: rparams() });
-        expect(res.status).toBe(200);
-        const data = await res.json();
-        // global ModelPrice is single-price → ONE sync (not one per tier), using the default (pool) value.
-        expect(mockSync).toHaveBeenCalledTimes(1);
-        expect(mockSync).toHaveBeenCalledWith(
-            expect.anything(),
-            expect.objectContaining({
-                tier: 'pool',
-                per_image_cny: 0.1,
-                input_cny_per_1m: null,
-                output_cny_per_1m: null,
-            }),
-        );
-        // default tier came from the validated topology (not a literal fallback).
-        expect(mockChannelGroupFindMany.mock.calls.some((call) => call[0].where.enabled === true)).toBe(true);
-        // divergent per_image across tiers → warn surfaced (real resolveImageModelPrice).
-        expect(data.results).toHaveLength(1);
-        expect(data.results[0].sync.warn).toContain('pool');
+    it.each([
+        ['pricing_job_not_found', '任务不存在。', 404],
+        ['pricing_cancel_unsafe', '部分价格已写入，不能取消，请继续核验。', 409],
+    ] as const)('maps %s without claiming cancellation or success', async (code, message, status) => {
+        mocked.changeJob.mockRejectedValue(new PricingPublishError(code, message, status));
+        const response = await JOB(req('POST', { action: 'cancel' }), params());
+        expect(response.status).toBe(status);
+        expect(await response.json()).toEqual({ error: code, message });
     });
 });

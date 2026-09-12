@@ -53,10 +53,12 @@ const mockImageTaskUpdate = vi.fn(async (..._a: unknown[]) => ({}));
 const mockImageTaskFindUnique = vi.fn(async (..._a: unknown[]): Promise<Record<string, unknown> | null> => null);
 // 机器可读模型目录:catalogModel mock(默认空目录 = 增强仍工作,pricing 全 null)
 const mockCatalogFindMany = vi.fn(async (..._a: unknown[]): Promise<unknown[]> => []);
+const mockCatalogRevision = vi.fn();
 vi.mock('@/lib/db', () => ({
     prisma: {
         newApiToken: { findUnique: (...a: unknown[]) => mockTokenFindUnique(...a) },
         catalogModel: { findMany: (...a: unknown[]) => mockCatalogFindMany(...a) },
+        pricingPublishCoordinator: { findUnique: (...a: unknown[]) => mockCatalogRevision(...a) },
         imageTask: {
             create: (...a: unknown[]) => mockImageTaskCreate(...a),
             update: (...a: unknown[]) => mockImageTaskUpdate(...a),
@@ -115,6 +117,7 @@ const mockFetch = vi.fn();
 
 beforeEach(() => {
     vi.clearAllMocks();
+    mockCatalogRevision.mockReset().mockResolvedValue({ revision: 0 });
     global.fetch = mockFetch as typeof fetch;
 });
 
@@ -1036,6 +1039,81 @@ describe('/v1 proxy — passthrough', () => {
             per_image_cny: null,
         });
         expect(body.data[0].silkroadai.vendor).toBe('Anthropic');
+    });
+
+    it('GET /models reflects a completed pricing publication without waiting for the old cache TTL', async () => {
+        const { resetCatalogMetaCacheForTests } = await import('@/lib/models/machine-catalog');
+        resetCatalogMetaCacheForTests();
+        mockTokenFindUnique.mockResolvedValue({ tier: 'official' });
+        const catalog = (price: number) => [
+            {
+                slug: 'gpt-5.4',
+                display_name: 'GPT 5.4',
+                context_window: null,
+                upstream_map: { official: { channel_id: 8, upstream_model: 'gpt-5.4' } },
+                prices: [
+                    { tier: 'official', input_cny_per_1m: price, output_cny_per_1m: price * 5, per_image_cny: null },
+                ],
+            },
+        ];
+        const upstream = {
+            object: 'list',
+            data: [
+                { id: 'gpt-5.4', object: 'model', owned_by: 'openai' },
+                { id: 'unlisted-model', object: 'model', owned_by: 'custom' },
+            ],
+        };
+        mockCatalogRevision.mockResolvedValue({ revision: 40 });
+        mockCatalogFindMany.mockResolvedValueOnce(catalog(1));
+        mockFetch.mockImplementation(
+            async () =>
+                new Response(JSON.stringify(upstream), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+        const request = () =>
+            GET(
+                makeReq('/models', { method: 'GET', headers: { authorization: 'Bearer sk-official-key' } }),
+                ctx('models'),
+            );
+        const before = await request();
+        expect((await before.json()).data[0].silkroadai.pricing.input_cny_per_1m).toBe(1);
+        // Simulate the committed CatalogPrice + coordinator revision from a
+        // succeeded publisher in another process. The SDK uses the same key.
+        mockCatalogRevision.mockResolvedValue({ revision: 41 });
+        mockCatalogFindMany.mockResolvedValueOnce(catalog(2));
+        const after = await request();
+        const payload = await after.json();
+        expect(after.headers.get('X-Silkroadai-Enriched')).toBe('models');
+        expect(payload.data.map((model: { id: string }) => model.id)).toEqual(upstream.data.map((model) => model.id));
+        expect(payload.data[0].owned_by).toBe('openai');
+        expect(payload.data[0].silkroadai).toMatchObject({
+            tier: 'official',
+            pricing: { input_cny_per_1m: 2, output_cny_per_1m: 10 },
+        });
+        expect(payload.data[1].silkroadai.pricing).toBeNull();
+        expect(mockCatalogFindMany).toHaveBeenCalledTimes(2);
+    });
+
+    it('GET /models falls back to original bytes when the cache version cannot be read', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        mockCatalogRevision.mockRejectedValueOnce(new Error('revision database unavailable'));
+        const raw = '{ "object": "list", "data": [{"id":"gpt-5.4"}] }';
+        mockFetch.mockResolvedValueOnce(
+            new Response(raw, { status: 200, headers: { 'content-type': 'application/json' } }),
+        );
+        try {
+            const response = await GET(
+                makeReq('/models', { method: 'GET', headers: { authorization: 'Bearer sk-official-key' } }),
+                ctx('models'),
+            );
+            expect(response.status).toBe(200);
+            expect(response.headers.get('X-Silkroadai-Enriched')).toBeNull();
+            expect(await response.text()).toBe(raw);
+        } finally {
+            warn.mockRestore();
+        }
     });
 
     it('GET /models 增强链失败(目录 DB 挂)→ 原字节回退透传,无 enriched 头', async () => {

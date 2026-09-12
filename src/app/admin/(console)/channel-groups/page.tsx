@@ -445,7 +445,7 @@ function ChannelGroupsContent() {
             {/* Action buttons */}
             <div className="mb-4 flex flex-wrap gap-2 justify-end">
                 <button type="button" onClick={() => setSyncOpen(true)} className={btnBase}>
-                    {locale === 'en' ? 'Sync new-api' : '同步 new-api'}
+                    {locale === 'en' ? 'Update catalog from new-api' : '从 new-api 更新目录'}
                 </button>
                 <button
                     type="button"

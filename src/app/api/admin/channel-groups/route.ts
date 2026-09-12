@@ -1,3 +1,4 @@
+import { assertPricingCatalogWritable, PricingPublishError } from '@/lib/admin/pricing-publish-lock';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
@@ -64,70 +65,88 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: 'active_tier_requires_channels' }, { status: 400 });
     }
 
-    if (data.key) {
-        const dup = await prisma.channelGroup.findFirst({ where: { tenant_id, key: data.key } });
-        if (dup) {
-            return NextResponse.json({ error: `档次 key "${data.key}" 已存在` }, { status: 409 });
-        }
-    }
-    if (data.enabled) {
-        const conflicts = await prisma.channelGroup.findMany({
-            where: {
-                tenant_id,
-                enabled: true,
-                OR: [{ newapi_group: data.newapi_group }, { newapi_channel_ids: { hasSome: data.newapi_channel_ids } }],
-            },
-            select: { key: true, newapi_group: true, newapi_channel_ids: true },
-        });
-        const groupOwner = conflicts.find((group) => group.newapi_group === data.newapi_group);
-        if (groupOwner) {
-            return NextResponse.json(
-                { error: 'newapi_group_already_assigned', newapi_group: data.newapi_group, tier: groupOwner.key },
-                { status: 409 },
-            );
-        }
-        const overlaps = conflicts.filter((group) =>
-            group.newapi_channel_ids.some((id) => data.newapi_channel_ids.includes(id)),
-        );
-        if (overlaps.length > 0) {
-            return NextResponse.json(
-                {
-                    error: 'channel_already_assigned',
-                    conflicts: overlaps.map((group) => ({
-                        tier: group.key,
-                        channel_ids: group.newapi_channel_ids.filter((id) => data.newapi_channel_ids.includes(id)),
-                    })),
-                },
-                { status: 409 },
-            );
-        }
-    }
-
-    // Retry only generated-key collisions: another process may have created the same
-    // candidate since our read. Each failed transaction also rolls back default changes.
+    // Retry generated-key uniqueness conflicts without letting a pending price publication interleave.
     for (let attempt = 0; attempt < 3; attempt++) {
-        let key = data.key;
-        if (!key) {
-            const rows = await prisma.channelGroup.findMany({ where: { tenant_id }, select: { key: true } });
-            key = generateChannelGroupKey(
-                data.newapi_group,
-                rows.map((row) => row.key),
-            );
-        }
         try {
-            // 单一默认档不变式:设新档为默认时,先清掉本租户其它默认。
-            const group = await prisma.$transaction(async (tx) => {
+            return await prisma.$transaction(async (tx) => {
+                await assertPricingCatalogWritable(tx);
+                if (data.key) {
+                    const dup = await tx.channelGroup.findFirst({ where: { tenant_id, key: data.key } });
+                    if (dup) {
+                        return NextResponse.json({ error: `档次 key "${data.key}" 已存在` }, { status: 409 });
+                    }
+                }
+                if (data.enabled) {
+                    const conflicts = await tx.channelGroup.findMany({
+                        where: {
+                            tenant_id,
+                            enabled: true,
+                            OR: [
+                                { newapi_group: data.newapi_group },
+                                { newapi_channel_ids: { hasSome: data.newapi_channel_ids } },
+                            ],
+                        },
+                        select: { key: true, newapi_group: true, newapi_channel_ids: true },
+                    });
+                    const groupOwner = conflicts.find((group) => group.newapi_group === data.newapi_group);
+                    if (groupOwner) {
+                        return NextResponse.json(
+                            {
+                                error: 'newapi_group_already_assigned',
+                                newapi_group: data.newapi_group,
+                                tier: groupOwner.key,
+                            },
+                            { status: 409 },
+                        );
+                    }
+                    const overlaps = conflicts.filter((group) =>
+                        group.newapi_channel_ids.some((id) => data.newapi_channel_ids.includes(id)),
+                    );
+                    if (overlaps.length > 0) {
+                        return NextResponse.json(
+                            {
+                                error: 'channel_already_assigned',
+                                conflicts: overlaps.map((group) => ({
+                                    tier: group.key,
+                                    channel_ids: group.newapi_channel_ids.filter((id) =>
+                                        data.newapi_channel_ids.includes(id),
+                                    ),
+                                })),
+                            },
+                            { status: 409 },
+                        );
+                    }
+                }
+
+                let key = data.key;
+                if (!key) {
+                    const rows = await tx.channelGroup.findMany({ where: { tenant_id }, select: { key: true } });
+                    key = generateChannelGroupKey(
+                        data.newapi_group,
+                        rows.map((row) => row.key),
+                    );
+                }
                 if (data.is_default) {
                     await tx.channelGroup.updateMany({ where: { tenant_id }, data: { is_default: false } });
                 }
-                return tx.channelGroup.create({ data: { tenant_id, ...data, key } });
+                const group = await tx.channelGroup.create({ data: { tenant_id, ...data, key } });
+                return NextResponse.json({ group }, { status: 201 });
             });
-            return NextResponse.json({ group }, { status: 201 });
         } catch (error) {
+            if (error instanceof PricingPublishError)
+                return NextResponse.json({ error: error.code, message: error.message }, { status: error.status });
+            if (
+                error &&
+                typeof error === 'object' &&
+                'code' in error &&
+                ['P2028', 'P2034'].includes(String(error.code))
+            )
+                return NextResponse.json(
+                    { error: 'catalog_write_busy', message: '目录正在被修改或等待价格发布，请稍后重试。' },
+                    { status: 409 },
+                );
             if (!isKeyConflict(error)) throw error;
-            if (data.key) {
-                return NextResponse.json({ error: `档次 key "${data.key}" 已存在` }, { status: 409 });
-            }
+            if (data.key) return NextResponse.json({ error: `档次 key "${data.key}" 已存在` }, { status: 409 });
         }
     }
     return NextResponse.json({ error: 'tier_key_conflict' }, { status: 409 });

@@ -1,15 +1,17 @@
 /**
  * 机器可读模型目录单测(machine-catalog.ts)。
- * 契约:只加不减 / 精确档次命中才给价 / 60s 缓存 / 形状不符抛给调用方回退。
+ * 契约:只加不减 / 精确档次命中才给价 / 同版本60s缓存 / 形状不符抛给调用方回退。
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 const mockFindManyCatalog = vi.fn();
 const mockFindUniqueToken = vi.fn();
+const mockFindRevision = vi.fn();
 vi.mock('@/lib/db', () => ({
     prisma: {
         catalogModel: { findMany: (...a: unknown[]) => mockFindManyCatalog(...a) },
         newApiToken: { findUnique: (...a: unknown[]) => mockFindUniqueToken(...a) },
+        pricingPublishCoordinator: { findUnique: (...a: unknown[]) => mockFindRevision(...a) },
     },
 }));
 
@@ -23,6 +25,7 @@ import {
 
 beforeEach(() => {
     vi.clearAllMocks();
+    mockFindRevision.mockReset().mockResolvedValue({ revision: 1 });
     resetCatalogMetaCacheForTests();
 });
 
@@ -65,8 +68,59 @@ describe('loadCatalogMeta', () => {
             per_image_cny: null,
         });
         expect(meta.get('claude-opus-4-8')!.pricesByTier.get('official')!.input_cny_per_1m).toBe(34);
-        // 二次调用走缓存,不再打 DB
+        // 同版本二次调用复用同一个缓存，不重读模型与价格；仍核对共享版本。
+        expect(await loadCatalogMeta()).toBe(meta);
+        expect(mockFindManyCatalog).toHaveBeenCalledTimes(1);
+        expect(mockFindRevision).toHaveBeenCalledTimes(2);
+    });
+
+    it('refreshes warm cached prices immediately when another process commits a new publication revision', async () => {
+        let revision = 4;
+        mockFindRevision.mockImplementation(async () => ({ revision }));
+        mockFindManyCatalog.mockResolvedValueOnce([catalogRow('gpt-5.4', [{ tier: 'sale', in: 1, out: 5 }])]);
+        const before = await loadCatalogMeta();
+        expect(before.get('gpt-5.4')!.pricesByTier.get('sale')!.input_cny_per_1m).toBe(1);
+        // Models/prices and the coordinator revision change in one committed
+        // publication transaction. No local cache reset and no TTL advance.
+        revision = 5;
+        mockFindManyCatalog.mockResolvedValueOnce([catalogRow('gpt-5.4', [{ tier: 'sale', in: 2, out: 10 }])]);
+        const after = await loadCatalogMeta();
+        expect(after).not.toBe(before);
+        expect(after.get('gpt-5.4')!.pricesByTier.get('sale')!.input_cny_per_1m).toBe(2);
+        expect(await loadCatalogMeta()).toBe(after);
+        expect(mockFindManyCatalog).toHaveBeenCalledTimes(2);
+    });
+
+    it('still expires the cache after 60 seconds when the shared revision has not changed', async () => {
+        const now = vi.spyOn(Date, 'now').mockReturnValue(1_000);
+        mockFindManyCatalog.mockResolvedValue([]);
+        try {
+            const first = await loadCatalogMeta();
+            now.mockReturnValue(60_999);
+            expect(await loadCatalogMeta()).toBe(first);
+            now.mockReturnValue(61_000);
+            expect(await loadCatalogMeta()).not.toBe(first);
+            expect(mockFindManyCatalog).toHaveBeenCalledTimes(2);
+        } finally {
+            now.mockRestore();
+        }
+    });
+
+    it('uses revision zero before the first coordinator exists and refreshes when it is created', async () => {
+        mockFindRevision.mockResolvedValue(null);
+        mockFindManyCatalog.mockResolvedValue([]);
+        const initial = await loadCatalogMeta();
+        expect(await loadCatalogMeta()).toBe(initial);
+        mockFindRevision.mockResolvedValue({ revision: 1 });
+        expect(await loadCatalogMeta()).not.toBe(initial);
+        expect(mockFindManyCatalog).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not serve a warm stale cache when the publication revision cannot be read', async () => {
+        mockFindManyCatalog.mockResolvedValue([catalogRow('gpt-5.4', [{ tier: 'sale', in: 1, out: 5 }])]);
         await loadCatalogMeta();
+        mockFindRevision.mockRejectedValue(new Error('revision database unavailable'));
+        await expect(loadCatalogMeta()).rejects.toThrow('revision database unavailable');
         expect(mockFindManyCatalog).toHaveBeenCalledTimes(1);
     });
 

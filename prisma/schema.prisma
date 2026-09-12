@@ -948,6 +948,58 @@ model CatalogPrice {
   @@map("catalog_prices")
 }
 
+// An acknowledged publication is durable before any remote price write. CatalogPrice
+// only receives verified versions; snapshots contain pricing metadata, never credentials.
+model PricingPublishJob {
+  id              String   @id @default(uuid()) @db.Uuid
+  tenant_id       String?  @db.Uuid
+  requested_by    String?  @db.Uuid
+  model_id        String   @db.Uuid
+  upstream_model  String
+  preview_hash    String   @unique
+  status          String   @default("queued")
+  plan            Json
+  attempts        Int      @default(0)
+  message         String
+  next_attempt_at DateTime?
+  applied_at      DateTime?
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  @@index([status, next_attempt_at])
+  @@index([tenant_id, created_at])
+  @@map("pricing_publish_jobs")
+}
+
+// One coordinator for the whole new-api instance: even different model writes
+// replace a shared option dictionary. Updating this row takes a transaction lock.
+model PricingPublishCoordinator {
+  id            String  @id
+  revision      Int     @default(0)
+  active_job_id String? @db.Uuid
+
+  @@map("pricing_publish_coordinator")
+}
+
+// A PUT's intent is committed independently of the publisher transaction. No
+// relation/FK to the job: its row must not contend with the outer transaction.
+// Unacknowledged writes remain uncertain even when both price reads match.
+model PricingPublishWrite {
+  id              String   @id @default(uuid()) @db.Uuid
+  job_id          String   @db.Uuid
+  key             String
+  request_hash    String
+  status          String   @default("in_flight")
+  created_at      DateTime @default(now())
+  acknowledged_at DateTime?
+  resolved_at     DateTime?
+  resolved_by     String?
+  resolution_note String?
+
+  @@index([job_id, status, created_at])
+  @@map("pricing_publish_writes")
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // 渠道分组 / 档次(P3 — 管理后台 §4.3 + §6)
 // ─────────────────────────────────────────────────────────────────────────

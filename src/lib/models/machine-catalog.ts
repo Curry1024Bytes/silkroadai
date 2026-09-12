@@ -54,7 +54,7 @@ export interface SilkroadaiModelExtra {
 }
 
 const META_TTL_MS = 60_000;
-let metaCache: { at: number; map: Map<string, CatalogMetaEntry> } | null = null;
+let metaCache: { at: number; revision: number; map: Map<string, CatalogMetaEntry> } | null = null;
 
 /** 测试用:清模块级缓存。 */
 export function resetCatalogMetaCacheForTests(): void {
@@ -64,11 +64,17 @@ export function resetCatalogMetaCacheForTests(): void {
 const toNum = (d: unknown): number | null => (d == null ? null : Number(d));
 
 /**
- * 目录元数据(slug → display_name/context_window/分档最新价),60s 模块缓存
- * (镜像 model-groups 的 TTL 做法;/models 调用频率低,DB 压力可忽略)。
+ * 目录元数据(slug → display_name/context_window/分档最新价),60s 模块缓存。
+ * 每次读共享发布版本；目录事务提交后，即使另一个 Portal 进程的 TTL 未过也必须刷新。
+ * 版本读取失败仍抛给调用方透传，不能用无法核验版本的旧价格兜底。
  */
 export async function loadCatalogMeta(): Promise<Map<string, CatalogMetaEntry>> {
-    if (metaCache && Date.now() - metaCache.at < META_TTL_MS) return metaCache.map;
+    const coordinator = await prisma.pricingPublishCoordinator.findUnique({
+        where: { id: 'newapi' },
+        select: { revision: true },
+    });
+    const revision = coordinator?.revision ?? 0;
+    if (metaCache && metaCache.revision === revision && Date.now() - metaCache.at < META_TTL_MS) return metaCache.map;
     const rows = await prisma.catalogModel.findMany({
         // ⚠️ 必须锁平台主体:slug 仅在 tenant 内唯一(@@unique([tenant_id, slug])),
         // P6c 白标 tenant 自定价上线后,不过滤会让 tenant 行按 slug 随机覆盖平台行 →
@@ -106,7 +112,7 @@ export async function loadCatalogMeta(): Promise<Map<string, CatalogMetaEntry>> 
             pricesByTier,
         });
     }
-    metaCache = { at: Date.now(), map };
+    metaCache = { at: Date.now(), revision, map };
     return map;
 }
 

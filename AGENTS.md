@@ -445,6 +445,16 @@
   依赖容器未重启。完整发布记录见
   `docs/DEPLOY-CATALOG-SYNC-2026-09-11.md`。
 
+## Portal 定价发布 2026-09-12（dev，未部署）
+
+- operator 批准开发后，在 `dev` 实现“预览全部影响 → 持久发布任务 → new-api 运行值和 MySQL 保存值双重核验 → 全部目录行事务生效”。实际扣费仍由 new-api 执行，没有修改其源码或真实价格；生产应用仍为 `c1d9501`，本轮未推进 prod 或部署。
+- 每次选项 PUT 前独立持久化 `in_flight` journal，明确成功响应后才确认。未决请求不能仅凭 GET/数据库回读自动补写或取消，须核实旧执行者和旧请求终态并记录人工处理；失败不能显示“已生效”。恢复、并发及任意目录插入失败的回滚有实际数据库验证。
+- 全实例共享同名模型价格，预览列出全部受影响档次；全局协调锁覆盖目录、模型、档次、渠道替换及客户倍率保存/停用。SDK 目录使用共享版本刷新。固定图片 SKU、特殊计费规则、未来价格、缺失持久核验或正价换算为零均拒绝通用发布。
+- 新 migration `20260912040000_add_pricing_publications` 增加任务/协调器/journal 三表，无历史数据删除；目录写入口要求先迁移。新增只读 MySQL Prisma client、`@prisma/adapter-mariadb@7.4.1`、可选 `NEWAPI_PRICING_DATABASE_URL` 与 `NEWAPI_PRICING_RSA_PUBLIC_KEY_FILE`；只读 schema 禁止 migrate/db push。生产专用 SELECT 账号和可信 TLS/固定 RSA 公钥尚未配置。
+- 界面区分“从 new-api 更新目录”与“发布价格到 new-api”；旧直接保存/resync 返回 409 要求预览。两项倍率 PUT 仍不原子，可能短暂混价；外部后台不受 Portal 锁约束，发布期间须单一改价入口。回滚旧镜像前须处理活动任务和未决写入，不能用旧全表快照覆盖配置。
+- 完整测试 `304 files / 4049 passed / 1 既有 skipped`（含真实只读模型列表 smoke）；typecheck、生产构建和两份 Prisma schema validate 通过，lint `0 error / 93 既有 warnings`。真实 PG 16.15/MySQL 8.4.11 的 10 项隔离测试通过，含 SIGKILL；HTTP 为模拟 new-api、未回放完整历史 migration，不等同于生产验收。UI 已做 SSR/契约测试，未做本轮真实浏览器视觉验收。
+- 详细实施/上线前置项见 `docs/PRICING-PUBLISH-2026-09-12.md`、`docs/PRICING-PUBLISH-DB-VERIFICATION-2026-09-12.md`、`docs/PRICING-PUBLISH-UNCERTAIN-WRITES.md` 及当前运维手册。实际 `.env`、IDE 配置和用户已有需求文档保留未提交。
+
 ## 目录结构
 
 ```

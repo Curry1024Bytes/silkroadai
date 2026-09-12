@@ -1,11 +1,14 @@
 'use client';
 
 import { useSearchParams } from 'next/navigation';
-import { useState, useEffect, useCallback, useMemo, Suspense, type ReactNode } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, Suspense } from 'react';
 import PayPageLayout from '@/components/PayPageLayout';
 import { resolveLocale, type Locale } from '@/lib/locale';
 import { deriveTierRows, tierOrder } from '@/lib/admin/pricing-tiers';
 import type { BatchCostResult } from '@/lib/admin/batch-cost';
+import PricingPublishDialog from '@/components/admin/PricingPublishDialog';
+import { PricingPublishJobs, requestPricingJobAction } from '@/components/admin/PricingPublishJobs';
+import type { PricingPublishJob } from '@/lib/admin/pricing-publish-types';
 
 // ── Types (mirror /api/admin/pricing shapes) ──
 
@@ -34,39 +37,15 @@ interface ModelWithPrices {
     prices: CatalogPrice[];
 }
 
-// Returned by syncModelPriceToNewApi (best-effort sync to new-api).
-interface SyncResult {
-    ok: boolean;
-    skipped?: string;
-    channel_id?: number;
-    upstream_model?: string;
-    ratios?: { model_ratio: number; completion_ratio: number };
-    // P2.8 Part B: image models sync to new-api's global ModelPrice (USD/img) instead of mr/cr.
-    image?: boolean;
-    modelPrice_usd?: number;
-    warn?: string;
-    error?: string;
-}
-
-interface PriceFormData {
-    tier: string;
-    input_cny_per_1m: string;
-    output_cny_per_1m: string;
-    per_image_cny: string;
-    cost_cny_per_1m: string;
-}
-
 // ── i18n ──
 
 function getTexts(locale: Locale) {
     return locale === 'en'
         ? {
               title: 'Pricing',
-              subtitle: 'Model × tier retail price (¥/1M token) → auto-sync new-api',
+              subtitle: 'Preview shared price changes, then publish and verify against new-api',
               invalidToken: 'Session expired, please sign in again',
               loadFailed: 'Failed to load pricing',
-              saveFailed: 'Failed to save price',
-              resyncFailed: 'Failed to resync',
               refresh: 'Refresh',
               loading: 'Loading...',
               noModels: 'No models found',
@@ -74,7 +53,7 @@ function getTexts(locale: Locale) {
               colTier: 'Tier',
               colInput: 'Input (¥/1M)',
               colOutput: 'Output (¥/1M)',
-              colImage: 'Image (¥/img)',
+              colImage: 'Request (¥/call)',
               colCost: 'Cost',
               colMargin: 'Margin',
               colActions: 'Actions',
@@ -82,30 +61,13 @@ function getTexts(locale: Locale) {
               tierPool: 'Pool',
               tierOfficial: 'Official',
               edit: 'Edit price',
-              resync: 'Resync',
-              resyncing: 'Resyncing...',
+              publishPrice: 'Publish price to new-api…',
               history: 'History',
               hide: 'Hide',
-              editTitle: 'Edit price',
-              fieldTier: 'Tier',
-              fieldInput: 'Input price (¥/1M token)',
-              fieldOutput: 'Output price (¥/1M token)',
-              fieldImage: 'Image price (¥/img, optional)',
-              fieldCost: 'Cost (¥/1M token, optional)',
-              optional: 'optional',
-              ratioHint: (mr: string, cr: string) => `≈ new-api model_ratio ${mr} · completion_ratio ${cr}`,
               cancel: 'Cancel',
-              save: 'Save',
-              saving: 'Saving...',
-              syncOk: (mr: number | string, cr: number | string) =>
-                  `✅ Synced ModelRatio (mr=${mr}, cr=${cr}, global — all tiers share it)`,
-              syncOkImage: (usd: number | string) => `✅ Synced ModelPrice ($${usd}/img, global — all tiers share it)`,
-              syncSkipped: (reason: string) => `↷ Sync skipped: ${reason}`,
-              syncFailed: (err: string) => `⚠️ Sync failed: ${err} — click "Resync" to retry`,
               historyTitle: 'Price history',
               noHistory: 'No price history yet',
-              colEffective: 'Effective from',
-              by: 'by',
+              colEffective: 'Catalog effective from',
               // P2.10 batch cost fill
               batchBtn: 'Batch fill cost',
               batchTitle: 'Batch fill cost by vendor',
@@ -134,11 +96,9 @@ function getTexts(locale: Locale) {
           }
         : {
               title: '定价',
-              subtitle: '模型 × 档次 零售价(¥/1M token)→ 自动同步 new-api',
+              subtitle: '先核对各档次影响，再发布到 new-api；核验完成后更新目录',
               invalidToken: '登录已过期',
               loadFailed: '加载定价失败',
-              saveFailed: '保存价格失败',
-              resyncFailed: '重新同步失败',
               refresh: '刷新',
               loading: '加载中...',
               noModels: '暂无模型',
@@ -146,7 +106,7 @@ function getTexts(locale: Locale) {
               colTier: '档次',
               colInput: '输入价(¥/1M)',
               colOutput: '输出价(¥/1M)',
-              colImage: '图片价(¥/张)',
+              colImage: '按次价(¥/次)',
               colCost: '成本',
               colMargin: '毛利',
               colActions: '操作',
@@ -154,30 +114,13 @@ function getTexts(locale: Locale) {
               tierPool: '低价号池',
               tierOfficial: '官方稳定',
               edit: '改价',
-              resync: '重新同步',
-              resyncing: '同步中...',
+              publishPrice: '发布价格到 new-api…',
               history: '历史',
               hide: '收起',
-              editTitle: '改价',
-              fieldTier: '档次',
-              fieldInput: '输入价(¥/1M token)',
-              fieldOutput: '输出价(¥/1M token)',
-              fieldImage: '图片价(¥/张,可选)',
-              fieldCost: '成本(¥/1M token,可选)',
-              optional: '可选',
-              ratioHint: (mr: string, cr: string) => `≈ new-api model_ratio ${mr} · completion_ratio ${cr}`,
               cancel: '取消',
-              save: '保存',
-              saving: '保存中...',
-              syncOk: (mr: number | string, cr: number | string) =>
-                  `✅ 已同步 ModelRatio (mr=${mr}, cr=${cr},全局价 · 各档共享)`,
-              syncOkImage: (usd: number | string) => `✅ 已同步 ModelPrice ($${usd}/张,全局价 · 各档共享)`,
-              syncSkipped: (reason: string) => `↷ 跳过同步: ${reason}`,
-              syncFailed: (err: string) => `⚠️ 同步失败: ${err} — 可点「重新同步」重试`,
               historyTitle: '改价历史',
               noHistory: '暂无改价历史',
-              colEffective: '生效时间',
-              by: '操作人',
+              colEffective: '目录生效时间',
               // P2.10 批量填成本
               batchBtn: '批量填成本',
               batchTitle: '按家族批量填成本',
@@ -233,35 +176,6 @@ function fmtDate(ts: string): string {
     return new Date(ts).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
 }
 
-/**
- * Live conversion preview shown in the edit form (mirrors pricing-sync math).
- * GR 原生语义:mr = ¥in ÷ (CHAT_FX × 该档组倍率)。FX/倍率来自 GET 附带的 pricing_context
- * (旧实现硬编码 ÷7,是单位迁移前的口径,已废);context 缺失/该档倍率未知 → 不显示预览。
- */
-function computeRatios(
-    inputStr: string,
-    outputStr: string,
-    ctx: { chat_fx: number; group_ratio_by_tier: Record<string, number> } | null,
-    tier: string,
-): { mr: string; cr: string } | null {
-    const input = toNum(inputStr);
-    const output = toNum(outputStr);
-    if (input === null || input <= 0 || !ctx) return null;
-    const gr = ctx.group_ratio_by_tier[tier];
-    if (typeof gr !== 'number' || gr <= 0) return null;
-    const mr = (input / (ctx.chat_fx * gr)).toFixed(6);
-    const cr = output !== null ? (output / input).toFixed(4) : '—';
-    return { mr, cr };
-}
-
-const emptyForm: PriceFormData = {
-    tier: '',
-    input_cny_per_1m: '',
-    output_cny_per_1m: '',
-    per_image_cny: '',
-    cost_cny_per_1m: '',
-};
-
 // ── Per-tier row derivation ──
 
 interface TierRow {
@@ -292,13 +206,6 @@ function PricingContent() {
     const t = getTexts(locale);
 
     const [models, setModels] = useState<ModelWithPrices[]>([]);
-    // GR 原生语义(2026-07-20):换算预览上下文(FX + 各档组倍率),GET /api/admin/pricing 附带;
-    // new-api 不可达时为 null → 预览隐藏(不显示可能错误的数)。
-    const [pricingCtx, setPricingCtx] = useState<{
-        chat_fx: number;
-        image_fx: number;
-        group_ratio_by_tier: Record<string, number>;
-    } | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
 
@@ -308,21 +215,24 @@ function PricingContent() {
     // Edit modal state
     const [editModalOpen, setEditModalOpen] = useState(false);
     const [editingModel, setEditingModel] = useState<ModelWithPrices | null>(null);
-    const [form, setForm] = useState<PriceFormData>(emptyForm);
-    const [saving, setSaving] = useState(false);
-    const [saveSync, setSaveSync] = useState<SyncResult | null>(null);
-
-    // Resync per-model status: modelId → results (or 'loading')
-    const [resyncing, setResyncing] = useState<Set<string>>(new Set());
-    const [resyncResults, setResyncResults] = useState<Record<string, { tier: string; sync: SyncResult }[]>>({});
+    const [initialTier, setInitialTier] = useState<string | undefined>();
+    const [publishJobs, setPublishJobs] = useState<PricingPublishJob[]>([]);
+    const [jobBusyId, setJobBusyId] = useState<string | null>(null);
+    const [jobError, setJobError] = useState('');
+    const fetching = useRef(false);
+    const publicationRevision = useRef(0);
+    const jobActionLock = useRef(false);
 
     // History expansion: which model ids have history open
     const [historyOpen, setHistoryOpen] = useState<Set<string>>(new Set());
 
     // ── Fetch ──
 
-    const fetchModels = useCallback(async () => {
-        setLoading(true);
+    const fetchModels = useCallback(async (quiet = false) => {
+        if (fetching.current) return;
+        fetching.current = true;
+        const revision = publicationRevision.current;
+        if (!quiet) setLoading(true);
         setError('');
         try {
             const res = await fetch('/api/admin/pricing');
@@ -334,12 +244,14 @@ function PricingContent() {
                 throw new Error();
             }
             const data = await res.json();
+            if (revision !== publicationRevision.current) return;
             setModels(Array.isArray(data.models) ? data.models : []);
-            setPricingCtx(data.pricing_context ?? null);
+            setPublishJobs(Array.isArray(data.publish_jobs) ? data.publish_jobs : []);
         } catch {
             setError(t.loadFailed);
         } finally {
-            setLoading(false);
+            fetching.current = false;
+            if (!quiet) setLoading(false);
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
@@ -348,110 +260,50 @@ function PricingContent() {
         fetchModels();
     }, [fetchModels]);
 
-    // ── Edit modal ──
+    // Persisted jobs survive a page reload. Poll without replacing the catalog with a spinner.
+    useEffect(() => {
+        const interval = window.setInterval(() => {
+            if (document.visibilityState !== 'hidden') void fetchModels(true);
+        }, 5000);
+        return () => window.clearInterval(interval);
+    }, [fetchModels]);
 
-    const openEditModal = (model: ModelWithPrices, row: TierRow) => {
+    const openEditModal = (model: ModelWithPrices, row?: TierRow) => {
         setEditingModel(model);
-        setSaveSync(null);
-        setForm({
-            tier: row.tier,
-            input_cny_per_1m:
-                row.current?.input_cny_per_1m != null ? String(toNum(row.current.input_cny_per_1m) ?? '') : '',
-            output_cny_per_1m:
-                row.current?.output_cny_per_1m != null ? String(toNum(row.current.output_cny_per_1m) ?? '') : '',
-            per_image_cny: row.current?.per_image_cny != null ? String(toNum(row.current.per_image_cny) ?? '') : '',
-            cost_cny_per_1m:
-                row.current?.cost_cny_per_1m != null ? String(toNum(row.current.cost_cny_per_1m) ?? '') : '',
-        });
+        setInitialTier(row?.tier);
         setEditModalOpen(true);
     };
-
     const closeEditModal = () => {
         setEditModalOpen(false);
         setEditingModel(null);
-        setSaveSync(null);
     };
-
-    const formInput = toNum(form.input_cny_per_1m);
-    const formOutput = toNum(form.output_cny_per_1m);
-    const formImage = toNum(form.per_image_cny);
-    // API requires (input AND output) OR per_image.
-    const formValid =
-        form.tier.trim().length > 0 && ((formInput !== null && formOutput !== null) || formImage !== null);
-    const liveRatios = computeRatios(form.input_cny_per_1m, form.output_cny_per_1m, pricingCtx, form.tier.trim());
-
-    const handleSave = async () => {
-        if (!editingModel || !formValid) return;
-        setSaving(true);
-        setError('');
-        setSaveSync(null);
-
-        const body: Record<string, unknown> = {
-            model_id: editingModel.id,
-            tier: form.tier.trim(),
-        };
-        if (formInput !== null) body.input_cny_per_1m = formInput;
-        if (formOutput !== null) body.output_cny_per_1m = formOutput;
-        if (formImage !== null) body.per_image_cny = formImage;
-        const cost = toNum(form.cost_cny_per_1m);
-        if (cost !== null) body.cost_cny_per_1m = cost;
-
-        try {
-            const res = await fetch('/api/admin/pricing', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                credentials: 'same-origin',
-                body: JSON.stringify(body),
-            });
-            if (!res.ok) {
-                if (res.status === 401) {
-                    setError(t.invalidToken);
-                    return;
-                }
-                const data = await res.json().catch(() => ({}));
-                setError(data.error || t.saveFailed);
-                return;
-            }
-            const data: { price: CatalogPrice; sync: SyncResult } = await res.json();
-            setSaveSync(data.sync ?? null);
-            // Re-fetch so the new version row appears; keep modal open to show sync status.
-            await fetchModels();
-        } catch {
-            setError(t.saveFailed);
-        } finally {
-            setSaving(false);
-        }
+    const refreshAfterSubmission = (job: PricingPublishJob) => {
+        publicationRevision.current++;
+        setPublishJobs((previous) => [job, ...previous.filter((row) => row.id !== job.id)]);
+        closeEditModal();
+        void fetchModels(true);
     };
-
-    // ── Resync ──
-
-    const handleResync = async (model: ModelWithPrices) => {
-        setError('');
-        setResyncing((prev) => new Set(prev).add(model.id));
+    const handleJobAction = async (job: PricingPublishJob, action: 'retry' | 'cancel') => {
+        if (jobActionLock.current) return;
+        jobActionLock.current = true;
+        setJobBusyId(job.id);
+        setJobError('');
         try {
-            const res = await fetch(`/api/admin/pricing/${model.id}/resync`, {
-                method: 'POST',
-                credentials: 'same-origin',
-            });
-            if (!res.ok) {
-                if (res.status === 401) {
-                    setError(t.invalidToken);
-                    return;
-                }
-                const data = await res.json().catch(() => ({}));
-                setError(data.error || t.resyncFailed);
-                return;
-            }
-            const data: { results: { tier: string; sync: SyncResult }[] } = await res.json();
-            setResyncResults((prev) => ({ ...prev, [model.id]: data.results ?? [] }));
-        } catch {
-            setError(t.resyncFailed);
+            const updated = await requestPricingJobAction(job.id, action, locale === 'en');
+            publicationRevision.current++;
+            setPublishJobs((previous) => previous.map((row) => (row.id === updated.id ? updated : row)));
+        } catch (caught) {
+            setJobError(
+                caught instanceof Error
+                    ? caught.message
+                    : locale === 'en'
+                      ? 'Could not update the task. Refresh to verify its status.'
+                      : '任务操作未完成，请刷新核对状态。',
+            );
         } finally {
-            setResyncing((prev) => {
-                const next = new Set(prev);
-                next.delete(model.id);
-                return next;
-            });
+            jobActionLock.current = false;
+            setJobBusyId(null);
+            void fetchModels(true);
         }
     };
 
@@ -464,40 +316,6 @@ function PricingContent() {
             else next.add(modelId);
             return next;
         });
-    };
-
-    // ── Sync status renderer (shared by edit modal + resync area) ──
-
-    const renderSyncStatus = (sync: SyncResult, prefix?: string) => {
-        if (sync.ok && !sync.skipped) {
-            // P2.8 Part B: image models sync to the global ModelPrice (USD/img), not mr/cr.
-            const okText = sync.image
-                ? t.syncOkImage(sync.modelPrice_usd ?? '?')
-                : t.syncOk(sync.ratios?.model_ratio ?? '?', sync.ratios?.completion_ratio ?? '?');
-            return (
-                <span className={isDark ? 'text-emerald-400' : 'text-emerald-600'}>
-                    {prefix}
-                    {okText}
-                    {sync.warn && (
-                        <span className={isDark ? 'block text-amber-400' : 'block text-amber-600'}>⚠️ {sync.warn}</span>
-                    )}
-                </span>
-            );
-        }
-        if (sync.skipped) {
-            return (
-                <span className={isDark ? 'text-slate-400' : 'text-slate-500'}>
-                    {prefix}
-                    {t.syncSkipped(sync.skipped)}
-                </span>
-            );
-        }
-        return (
-            <span className={isDark ? 'text-red-400' : 'text-red-600'}>
-                {prefix}
-                {t.syncFailed(sync.error || 'unknown')}
-            </span>
-        );
     };
 
     // ── Styles (mirror dashboard/channels conventions) ──
@@ -518,20 +336,6 @@ function PricingContent() {
         return ['rounded-md px-2 py-1 text-xs font-medium transition-colors', map[color]].join(' ');
     };
 
-    const inputCls = [
-        'w-full rounded-lg border px-3 py-2 text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-500/50',
-        isDark
-            ? 'border-slate-600 bg-slate-700 text-slate-100 placeholder-slate-400'
-            : 'border-slate-300 bg-white text-slate-900 placeholder-slate-400',
-    ].join(' ');
-
-    const readonlyInputCls = [
-        'w-full rounded-lg border px-3 py-2 text-sm cursor-not-allowed',
-        isDark ? 'border-slate-700 bg-slate-800 text-slate-400' : 'border-slate-200 bg-slate-100 text-slate-500',
-    ].join(' ');
-
-    const labelCls = ['block text-sm font-medium mb-1', isDark ? 'text-slate-300' : 'text-slate-700'].join(' ');
-
     const thCls = 'px-4 py-3 font-medium';
     const tdMuted = isDark ? 'text-slate-400' : 'text-slate-500';
 
@@ -551,7 +355,7 @@ function PricingContent() {
                     <button type="button" onClick={() => setBatchOpen(true)} className={btnBase}>
                         {t.batchBtn}
                     </button>
-                    <button type="button" onClick={fetchModels} className={btnBase}>
+                    <button type="button" onClick={() => void fetchModels()} className={btnBase}>
                         {t.refresh}
                     </button>
                 </div>
@@ -568,6 +372,24 @@ function PricingContent() {
                     </button>
                 </div>
             )}
+
+            <PricingPublishJobs
+                jobs={publishJobs}
+                en={locale === 'en'}
+                isDark={isDark}
+                busyId={jobBusyId}
+                error={jobError}
+                onAction={handleJobAction}
+            />
+
+            <h2 className={`mb-1 text-sm font-semibold ${isDark ? 'text-slate-100' : 'text-slate-900'}`}>
+                {locale === 'en' ? 'Catalog prices and history' : '目录价格与历史'}
+            </h2>
+            <p className={`mb-3 text-xs ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                {locale === 'en'
+                    ? 'These are recorded Portal catalog prices. Verification against new-api is shown in Publication tasks.'
+                    : '下方展示 Portal 已记录的目录价格；与 new-api 的核验结果见上方发布任务。'}
+            </p>
 
             {/* Table */}
             <div
@@ -606,8 +428,6 @@ function PricingContent() {
                         </thead>
                         <tbody>
                             {rendered.map(({ model, rows }) => {
-                                const isResyncing = resyncing.has(model.id);
-                                const rr = resyncResults[model.id];
                                 const histOpen = historyOpen.has(model.id);
                                 return (
                                     <ModelRows
@@ -619,14 +439,11 @@ function PricingContent() {
                                         linkBtn={linkBtn}
                                         unpricedLabel={t.unpriced}
                                         editLabel={t.edit}
-                                        resyncLabel={isResyncing ? t.resyncing : t.resync}
-                                        resyncDisabled={isResyncing}
+                                        publishLabel={t.publishPrice}
                                         historyLabel={histOpen ? t.hide : t.history}
                                         onEdit={(row) => openEditModal(model, row)}
-                                        onResync={() => handleResync(model)}
+                                        onPublish={() => openEditModal(model)}
                                         onToggleHistory={() => toggleHistory(model.id)}
-                                        resyncResults={rr}
-                                        renderSyncStatus={renderSyncStatus}
                                         historyOpen={histOpen}
                                         t={t}
                                     />
@@ -637,119 +454,27 @@ function PricingContent() {
                 )}
             </div>
 
-            {/* ── Edit price modal ── */}
             {editModalOpen && editingModel && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-                    <div
-                        className={[
-                            'relative w-full max-w-lg overflow-y-auto rounded-2xl border p-6 shadow-2xl',
-                            isDark ? 'border-slate-700 bg-slate-800' : 'border-slate-200 bg-white',
-                        ].join(' ')}
-                        style={{ maxHeight: '90vh' }}
-                    >
-                        <h2 className={`mb-1 text-lg font-semibold ${isDark ? 'text-slate-100' : 'text-slate-900'}`}>
-                            {t.editTitle}
-                        </h2>
-                        <p className={`mb-5 text-sm ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
-                            {editingModel.display_name}{' '}
-                            <span className={isDark ? 'text-slate-500' : 'text-slate-400'}>{editingModel.slug}</span>
-                        </p>
-
-                        <div className="space-y-4">
-                            <div>
-                                <label className={labelCls}>{t.fieldTier}</label>
-                                {/* Tier is fixed by the row being edited (a tier from the model's
-                                    upstream_map). Read-only so operator can't price an un-routable
-                                    tier (P2.7 §2). */}
-                                <input
-                                    type="text"
-                                    value={tierLabel(form.tier, t)}
-                                    readOnly
-                                    className={readonlyInputCls}
-                                />
-                            </div>
-                            <div>
-                                <label className={labelCls}>{t.fieldInput}</label>
-                                <input
-                                    type="number"
-                                    step="0.0001"
-                                    min="0"
-                                    value={form.input_cny_per_1m}
-                                    onChange={(e) => setForm({ ...form, input_cny_per_1m: e.target.value })}
-                                    className={inputCls}
-                                />
-                            </div>
-                            <div>
-                                <label className={labelCls}>{t.fieldOutput}</label>
-                                <input
-                                    type="number"
-                                    step="0.0001"
-                                    min="0"
-                                    value={form.output_cny_per_1m}
-                                    onChange={(e) => setForm({ ...form, output_cny_per_1m: e.target.value })}
-                                    className={inputCls}
-                                />
-                            </div>
-
-                            {/* Live mr/cr preview so operator sees the new-api conversion before save */}
-                            {liveRatios && (
-                                <p className={`-mt-2 text-xs ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
-                                    {t.ratioHint(liveRatios.mr, liveRatios.cr)}
-                                </p>
-                            )}
-
-                            <div>
-                                <label className={labelCls}>{t.fieldImage}</label>
-                                <input
-                                    type="number"
-                                    step="0.0001"
-                                    min="0"
-                                    value={form.per_image_cny}
-                                    onChange={(e) => setForm({ ...form, per_image_cny: e.target.value })}
-                                    className={inputCls}
-                                    placeholder={t.optional}
-                                />
-                            </div>
-                            <div>
-                                <label className={labelCls}>{t.fieldCost}</label>
-                                <input
-                                    type="number"
-                                    step="0.0001"
-                                    min="0"
-                                    value={form.cost_cny_per_1m}
-                                    onChange={(e) => setForm({ ...form, cost_cny_per_1m: e.target.value })}
-                                    className={inputCls}
-                                    placeholder={t.optional}
-                                />
-                            </div>
-                        </div>
-
-                        {/* Inline sync status after save */}
-                        {saveSync && <div className="mt-4 text-sm">{renderSyncStatus(saveSync)}</div>}
-
-                        {/* Actions */}
-                        <div className="mt-6 flex justify-end gap-3">
-                            <button
-                                type="button"
-                                onClick={closeEditModal}
-                                className={[
-                                    'rounded-lg px-4 py-2 text-sm font-medium transition-colors',
-                                    isDark ? 'text-slate-400 hover:bg-slate-700' : 'text-slate-600 hover:bg-slate-100',
-                                ].join(' ')}
-                            >
-                                {t.cancel}
-                            </button>
-                            <button
-                                type="button"
-                                onClick={handleSave}
-                                disabled={saving || !formValid}
-                                className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed"
-                            >
-                                {saving ? t.saving : t.save}
-                            </button>
-                        </div>
-                    </div>
-                </div>
+                <PricingPublishDialog
+                    model={editingModel}
+                    initialTier={initialTier}
+                    tiers={deriveTierRows(editingModel).map((row) => ({
+                        tier: row.tier,
+                        current: row.current
+                            ? {
+                                  input_cny_per_1m: toNum(row.current.input_cny_per_1m),
+                                  output_cny_per_1m: toNum(row.current.output_cny_per_1m),
+                                  per_image_cny: toNum(row.current.per_image_cny),
+                                  cost_cny_per_1m: toNum(row.current.cost_cny_per_1m),
+                              }
+                            : null,
+                    }))}
+                    en={locale === 'en'}
+                    isDark={isDark}
+                    onClose={closeEditModal}
+                    onSubmitted={refreshAfterSubmission}
+                    onUncertain={() => void fetchModels(true)}
+                />
             )}
 
             {/* ── P2.10 批量填成本 modal ── */}
@@ -766,7 +491,7 @@ function PricingContent() {
     );
 }
 
-// ── Per-model rows + inline resync/history sub-rows ──
+// ── Per-model price rows and retained history ──
 
 interface ModelRowsProps {
     model: ModelWithPrices;
@@ -776,14 +501,11 @@ interface ModelRowsProps {
     linkBtn: (color: 'indigo' | 'red' | 'slate') => string;
     unpricedLabel: string;
     editLabel: string;
-    resyncLabel: string;
-    resyncDisabled: boolean;
+    publishLabel: string;
     historyLabel: string;
     onEdit: (row: TierRow) => void;
-    onResync: () => void;
+    onPublish: () => void;
     onToggleHistory: () => void;
-    resyncResults: { tier: string; sync: SyncResult }[] | undefined;
-    renderSyncStatus: (sync: SyncResult, prefix?: string) => ReactNode;
     historyOpen: boolean;
     t: ReturnType<typeof getTexts>;
 }
@@ -796,14 +518,11 @@ function ModelRows({
     linkBtn,
     unpricedLabel,
     editLabel,
-    resyncLabel,
-    resyncDisabled,
+    publishLabel,
     historyLabel,
     onEdit,
-    onResync,
+    onPublish,
     onToggleHistory,
-    resyncResults,
-    renderSyncStatus,
     historyOpen,
     t,
 }: ModelRowsProps) {
@@ -853,7 +572,7 @@ function ModelRows({
                                 </td>
                             </>
                         )}
-                        {/* Actions — 改价 is per-tier (every row); 重新同步/历史 are model-level
+                        {/* Actions — 改价 is per-tier (every row); 发布价格/历史 are model-level
                             (first row only, so they're not duplicated per tier). */}
                         <td className="px-4 py-3 text-right align-top">
                             <div className="inline-flex flex-wrap justify-end gap-1">
@@ -864,11 +583,10 @@ function ModelRows({
                                     <>
                                         <button
                                             type="button"
-                                            onClick={onResync}
-                                            disabled={resyncDisabled}
+                                            onClick={onPublish}
                                             className={`${linkBtn('slate')} disabled:opacity-50`}
                                         >
-                                            {resyncLabel}
+                                            {publishLabel}
                                         </button>
                                         <button type="button" onClick={onToggleHistory} className={linkBtn('slate')}>
                                             {historyLabel}
@@ -880,21 +598,6 @@ function ModelRows({
                     </tr>
                 );
             })}
-
-            {/* Resync results (inline status area) */}
-            {resyncResults && resyncResults.length > 0 && (
-                <tr className={isDark ? 'bg-slate-800/40' : 'bg-slate-50'}>
-                    <td colSpan={COL_SPAN} className="px-4 py-2">
-                        <div className="flex flex-col gap-1 text-xs">
-                            {resyncResults.map((r) => (
-                                <div key={`resync-${model.id}-${r.tier}`}>
-                                    {renderSyncStatus(r.sync, `${r.tier}: `)}
-                                </div>
-                            ))}
-                        </div>
-                    </td>
-                </tr>
-            )}
 
             {/* History timeline (all tiers, newest first) */}
             {historyOpen && (

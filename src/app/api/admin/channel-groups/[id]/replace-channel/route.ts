@@ -1,3 +1,4 @@
+import { PricingPublishError } from '@/lib/admin/pricing-publish-lock';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
@@ -101,10 +102,17 @@ export async function POST(request: NextRequest, { params }: Context) {
                   .preview;
         return NextResponse.json({ dryRun: !apply, preview });
     } catch (error) {
+        if (error instanceof PricingPublishError)
+            return NextResponse.json({ error: error.code, message: error.message }, { status: error.status });
         if (error instanceof ChannelReplacementError) {
             return NextResponse.json({ error: error.code, message: error.message }, { status: error.status });
         }
-        if (error && typeof error === 'object' && 'code' in error && ['P2034', 'P2025'].includes(String(error.code))) {
+        if (
+            error &&
+            typeof error === 'object' &&
+            'code' in error &&
+            ['P2028', 'P2034', 'P2025'].includes(String(error.code))
+        ) {
             return NextResponse.json(
                 { error: 'preview_stale', message: '配置正在被修改，请重新预览后再确认替换。' },
                 { status: 409 },

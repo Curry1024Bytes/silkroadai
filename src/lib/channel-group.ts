@@ -1,3 +1,4 @@
+import { assertPricingCatalogWritable, PricingPublishError } from '@/lib/admin/pricing-publish-lock';
 import 'server-only';
 import { prisma } from '@/lib/db';
 import { PLATFORM_TENANT_ID } from '@/lib/admin/tenant-scope';
@@ -60,31 +61,39 @@ async function runSync(): Promise<void> {
         return;
     }
 
-    const rows = await prisma.channelGroup.findMany({ where: { tenant_id: PLATFORM_TENANT_ID } });
-    const ops = [];
-    const usedKeys = new Set(rows.map((r) => r.key));
-    let nextLevel = rows.reduce((max, r) => Math.max(max, r.tier_level), -1) + 1;
-    const covered = new Set<string>();
-    for (const row of rows) {
-        const name = live.get(row.newapi_group);
-        if (name !== undefined) {
-            covered.add(row.newapi_group);
-            const data: { display_name?: string } = {};
-            if (row.display_name !== name) data.display_name = name;
-            if (Object.keys(data).length > 0) {
-                ops.push(prisma.channelGroup.update({ where: { id: row.id }, data }));
+    // Avoid a coordinator write for the usual unchanged read path. Any actual
+    // reconciliation reads the rows again after acquiring the shared barrier.
+    const current = await prisma.channelGroup.findMany({ where: { tenant_id: PLATFORM_TENANT_ID } });
+    const changed =
+        current.some((row) =>
+            live.has(row.newapi_group) ? row.display_name !== live.get(row.newapi_group) : row.enabled,
+        ) || [...live.keys()].some((group) => !current.some((row) => row.newapi_group === group));
+    if (!changed) return;
+    await prisma.$transaction(async (tx) => {
+        await assertPricingCatalogWritable(tx);
+        const rows = await tx.channelGroup.findMany({ where: { tenant_id: PLATFORM_TENANT_ID } });
+        const usedKeys = new Set(rows.map((r) => r.key));
+        let nextLevel = rows.reduce((max, r) => Math.max(max, r.tier_level), -1) + 1;
+        const covered = new Set<string>();
+        for (const row of rows) {
+            const name = live.get(row.newapi_group);
+            if (name !== undefined) {
+                covered.add(row.newapi_group);
+                const data: { display_name?: string } = {};
+                if (row.display_name !== name) data.display_name = name;
+                if (Object.keys(data).length > 0) {
+                    await tx.channelGroup.update({ where: { id: row.id }, data });
+                }
+            } else if (row.enabled) {
+                await tx.channelGroup.update({ where: { id: row.id }, data: { enabled: false } });
             }
-        } else if (row.enabled) {
-            ops.push(prisma.channelGroup.update({ where: { id: row.id }, data: { enabled: false } }));
         }
-    }
 
-    for (const [group, name] of live) {
-        if (covered.has(group)) continue;
-        const key = generateChannelGroupKey(group, usedKeys);
-        usedKeys.add(key);
-        ops.push(
-            prisma.channelGroup.create({
+        for (const [group, name] of live) {
+            if (covered.has(group)) continue;
+            const key = generateChannelGroupKey(group, usedKeys);
+            usedKeys.add(key);
+            await tx.channelGroup.create({
                 data: {
                     tenant_id: PLATFORM_TENANT_ID,
                     key,
@@ -94,11 +103,9 @@ async function runSync(): Promise<void> {
                     enabled: false,
                     is_default: false,
                 },
-            }),
-        );
-    }
-
-    if (ops.length > 0) await prisma.$transaction(ops);
+            });
+        }
+    });
 }
 
 /**
@@ -112,6 +119,7 @@ export async function syncChannelGroupsFromNewApi(): Promise<void> {
     lastSyncAttemptAt = Date.now();
     inflightSync = runSync()
         .catch((err) => {
+            if (err instanceof PricingPublishError && err.code === 'pricing_publish_busy') return;
             console.warn('[channel-group] sync from new-api failed — serving existing DB tiers', err);
         })
         .finally(() => {

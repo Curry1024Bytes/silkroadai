@@ -1,3 +1,4 @@
+import { PricingPublishError } from '@/lib/admin/pricing-publish-lock';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { resolveAdmin } from '@/lib/admin/auth';
@@ -35,13 +36,15 @@ export async function POST(request: NextRequest) {
         });
         return NextResponse.json({ dryRun, ...result });
     } catch (error) {
+        if (error instanceof PricingPublishError)
+            return NextResponse.json({ error: error.code, message: error.message }, { status: error.status });
         if (error instanceof NewApiSyncError)
             return NextResponse.json({ error: error.code, message: error.message }, { status: error.status });
         if (
             error &&
             typeof error === 'object' &&
             'code' in error &&
-            ['P2034', 'P2025', 'P2002'].includes(String(error.code))
+            ['P2028', 'P2034', 'P2025', 'P2002'].includes(String(error.code))
         )
             return NextResponse.json(
                 { error: 'preview_stale', message: '配置正在被修改，请重新预览后再确认。' },

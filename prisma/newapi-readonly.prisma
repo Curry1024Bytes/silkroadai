@@ -1,0 +1,19 @@
+// Read-only mapping of the existing new-api MySQL options table.
+// Never run migrate/db push against this schema. Deployment must grant this
+// connection SELECT on options only; Portal owns no new-api schema or writes.
+generator client {
+  provider   = "prisma-client"
+  output     = "../src/generated/newapi-readonly"
+  engineType = "client"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+model NewApiOption {
+  key   String  @id @db.VarChar(191)
+  value String? @db.LongText
+
+  @@map("options")
+}

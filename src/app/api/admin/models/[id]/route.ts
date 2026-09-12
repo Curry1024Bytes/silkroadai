@@ -1,3 +1,4 @@
+import { assertPricingCatalogWritable, PricingPublishError } from '@/lib/admin/pricing-publish-lock';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
@@ -64,27 +65,51 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
         );
     }
 
-    const existing = await prisma.catalogModel.findFirst({ where: { id, ...tenantScope(admin) } });
-    if (!existing) return NextResponse.json({ error: '模型不存在' }, { status: 404 });
-
-    const nextMap = (parsed.data.upstream_map ?? existing.upstream_map) as UpstreamMapLike;
-    const nextEnabled = parsed.data.enabled ?? existing.enabled;
     try {
-        const topology = await loadChannelGroupTopology(existing.tenant_id);
-        const issues = topology.validateUpstreamMap(nextMap, { allowEmpty: !nextEnabled });
-        if (issues.length > 0) throw new ChannelGroupTopologyError(topology.tenantId, issues);
+        return await prisma.$transaction(async (tx) => {
+            await assertPricingCatalogWritable(tx);
+            const existing = await tx.catalogModel.findFirst({ where: { id, ...tenantScope(admin) } });
+            if (!existing) return NextResponse.json({ error: '模型不存在' }, { status: 404 });
+
+            const nextMap = (parsed.data.upstream_map ?? existing.upstream_map) as UpstreamMapLike;
+            const nextEnabled = parsed.data.enabled ?? existing.enabled;
+            try {
+                const topology = await loadChannelGroupTopology(existing.tenant_id, tx);
+                const issues = topology.validateUpstreamMap(nextMap, { allowEmpty: !nextEnabled });
+                if (issues.length > 0) throw new ChannelGroupTopologyError(topology.tenantId, issues);
+            } catch (error) {
+                if (error instanceof ChannelGroupTopologyError) {
+                    return NextResponse.json(topologyErrorPayload(error), { status: 409 });
+                }
+                if (
+                    error &&
+                    typeof error === 'object' &&
+                    'code' in error &&
+                    ['P2028', 'P2034'].includes(String(error.code))
+                )
+                    return NextResponse.json(
+                        { error: 'catalog_write_busy', message: '目录正在被修改或等待价格发布，请稍后重试。' },
+                        { status: 409 },
+                    );
+                throw error;
+            }
+
+            const model = await tx.catalogModel.update({
+                where: { id: existing.id },
+                data: parsed.data,
+            });
+            return NextResponse.json({ model });
+        });
     } catch (error) {
-        if (error instanceof ChannelGroupTopologyError) {
-            return NextResponse.json(topologyErrorPayload(error), { status: 409 });
-        }
+        if (error instanceof PricingPublishError)
+            return NextResponse.json({ error: error.code, message: error.message }, { status: error.status });
+        if (error && typeof error === 'object' && 'code' in error && ['P2028', 'P2034'].includes(String(error.code)))
+            return NextResponse.json(
+                { error: 'catalog_write_busy', message: '目录正在被修改或等待价格发布，请稍后重试。' },
+                { status: 409 },
+            );
         throw error;
     }
-
-    const model = await prisma.catalogModel.update({
-        where: { id: existing.id },
-        data: parsed.data,
-    });
-    return NextResponse.json({ model });
 }
 
 export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -92,11 +117,25 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
     if (!admin) return unauthorizedResponse(request);
 
     const { id } = await params;
-    const existing = await prisma.catalogModel.findFirst({ where: { id, ...tenantScope(admin) } });
-    if (!existing) return NextResponse.json({ error: '模型不存在' }, { status: 404 });
+    try {
+        return await prisma.$transaction(async (tx) => {
+            await assertPricingCatalogWritable(tx);
+            const existing = await tx.catalogModel.findFirst({ where: { id, ...tenantScope(admin) } });
+            if (!existing) return NextResponse.json({ error: '模型不存在' }, { status: 404 });
 
-    // CatalogPrice 随 onDelete: Cascade 一并删除。new-api 渠道的 model_ratio 不动
-    // (删 portal 目录条目不应改上游计费 —— 如需下架,改 enabled / 调价)。
-    await prisma.catalogModel.delete({ where: { id: existing.id } });
-    return NextResponse.json({ success: true });
+            // CatalogPrice 随 onDelete: Cascade 一并删除。new-api 渠道的 model_ratio 不动
+            // (删 portal 目录条目不应改上游计费 —— 如需下架,改 enabled / 调价)。
+            await tx.catalogModel.delete({ where: { id: existing.id } });
+            return NextResponse.json({ success: true });
+        });
+    } catch (error) {
+        if (error instanceof PricingPublishError)
+            return NextResponse.json({ error: error.code, message: error.message }, { status: error.status });
+        if (error && typeof error === 'object' && 'code' in error && ['P2028', 'P2034'].includes(String(error.code)))
+            return NextResponse.json(
+                { error: 'catalog_write_busy', message: '目录正在被修改或等待价格发布，请稍后重试。' },
+                { status: 409 },
+            );
+        throw error;
+    }
 }

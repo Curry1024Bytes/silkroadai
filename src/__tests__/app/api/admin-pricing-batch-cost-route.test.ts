@@ -1,4 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const mockCatalogGuard = vi.fn();
+vi.mock('@/lib/admin/pricing-publish-lock', async () => ({
+    ...(await vi.importActual<typeof import('@/lib/admin/pricing-publish-lock')>('@/lib/admin/pricing-publish-lock')),
+    assertPricingCatalogWritable: (...args: unknown[]) => mockCatalogGuard(...args),
+}));
+import { PricingPublishError } from '@/lib/admin/pricing-publish-lock';
 import { NextRequest, NextResponse } from 'next/server';
 
 const mockResolveAdmin = vi.fn();
@@ -13,6 +20,11 @@ vi.mock('@/lib/db', () => ({
     prisma: {
         catalogModel: { findMany: (...a: unknown[]) => mockFindMany(...a) },
         catalogPrice: { createMany: (...a: unknown[]) => mockCreateMany(...a) },
+        $transaction: async (fn: (tx: unknown) => unknown) =>
+            fn({
+                catalogModel: { findMany: (...a: unknown[]) => mockFindMany(...a) },
+                catalogPrice: { createMany: (...a: unknown[]) => mockCreateMany(...a) },
+            }),
     },
 }));
 
@@ -181,4 +193,16 @@ describe('POST /api/admin/pricing/batch-cost', () => {
         await POST(post({ vendor: 'anthropic', cost_ratio: 0.15, retail_ratio: 1.3, dryRun: true }));
         expect(mockFindMany.mock.calls[0][0].where.tenant_id).toBe('tenant-7');
     });
+});
+
+it('blocks batch cost before reading prices while a publication is active; preview stays read-only', async () => {
+    mockCatalogGuard.mockRejectedValueOnce(new PricingPublishError('pricing_publish_busy', 'busy'));
+    const response = await POST(post({ vendor: 'anthropic', cost_ratio: 0.15, retail_ratio: 1.3 }));
+    expect(response.status).toBe(409);
+    expect(mockFindMany).not.toHaveBeenCalled();
+    expect(mockCreateMany).not.toHaveBeenCalled();
+    const preview = await POST(post({ vendor: 'anthropic', cost_ratio: 0.15, retail_ratio: 1.3, dryRun: true }));
+    expect(preview.status).toBe(200);
+    expect(mockCreateMany).not.toHaveBeenCalled();
+    expect(mockCatalogGuard).toHaveBeenCalledTimes(1);
 });

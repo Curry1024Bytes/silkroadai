@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
         'out/**',
         'build/**',
         'next-env.d.ts',
+        // Prisma generates this independent MySQL client during CI/build.
+        'src/generated/newapi-readonly/**',
         // Codex skills are standalone tooling with their own runtime/style.
         '.codex/**',
         // Supplier new-api fork is local reference source, not Portal code.

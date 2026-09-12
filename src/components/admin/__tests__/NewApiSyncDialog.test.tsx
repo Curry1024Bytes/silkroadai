@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import {
+import NewApiSyncDialog, {
     defaultSyncSelection,
     NewApiSyncPreviewList,
     NewApiSyncRequestError,
@@ -113,9 +113,25 @@ describe('new-api sync preview rendering', () => {
         expect(html).toContain('¥ 10 / 1M');
         expect(html).toContain('¥ 20 / 1M');
         expect(html).toContain('此操作不修改 new-api 扣费');
+        expect(html).toContain('将 new-api 当前价格读入 Portal 目录');
+        expect(html).toContain('目录更新后');
         expect(html).toContain('/admin/pricing?lang=zh&amp;theme=light');
         expect(html).toContain('前往定价页核对缺失价格（新窗口）');
         expect(html).not.toContain('private-preview-token');
+    });
+
+    it.each([false, true])('makes the read direction explicit in the dialog title (dark=%s)', (isDark) => {
+        const network = vi.fn().mockRejectedValue(new Error('SSR network is sealed'));
+        vi.stubGlobal('fetch', network);
+        const html = renderToStaticMarkup(
+            <NewApiSyncDialog locale="zh" isDark={isDark} onClose={() => {}} onComplete={() => {}} />,
+        );
+        expect(html).toContain('从 new-api 更新目录');
+        expect(html).toContain('此操作不会把价格发布到 new-api');
+        expect(html).toContain('新增档次和模型默认保存为停用候选');
+        expect(html).toContain('启用或上架需额外勾选');
+        expect(html).not.toContain('>同步 new-api<');
+        expect(network).not.toHaveBeenCalled();
     });
 
     it('uses labelled controls and keeps activation separate from selected import candidates', () => {

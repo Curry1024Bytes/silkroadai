@@ -1,3 +1,4 @@
+import { assertPricingCatalogWritable } from '@/lib/admin/pricing-publish-lock';
 import 'server-only';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { Prisma } from '@prisma/client';
@@ -268,6 +269,7 @@ export async function applyNewApiSync(
     const source = await readNewApiSyncSource();
     return prisma.$transaction(
         async (tx) => {
+            await assertPricingCatalogWritable(tx);
             const state = await readSyncState(tx, tenantId);
             const now = Date.now();
             const plan = buildNewApiSyncPlan(state, source, now);

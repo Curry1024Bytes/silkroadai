@@ -63,6 +63,9 @@ export async function register() {
     if (process.env.PORTAL_FLAVOR === 'seedance-enterprise') return;
     if (process.env.PORTAL_SCHEDULERS === 'off') return;
 
+    const { startPricingPublishScheduler } = await import('@/lib/scheduler/pricing-publish');
+    startPricingPublishScheduler();
+
     const { startTimeoutScheduler } = await import('@/lib/order/timeout');
     startTimeoutScheduler();
 

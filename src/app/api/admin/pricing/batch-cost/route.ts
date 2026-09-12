@@ -1,3 +1,5 @@
+import { assertPricingCatalogWritable, PricingPublishError } from '@/lib/admin/pricing-publish-lock';
+import type { Prisma } from '@prisma/client';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
@@ -46,42 +48,60 @@ export async function POST(request: NextRequest) {
     }
     const { vendor, tier, cost_ratio, retail_ratio, dryRun } = parsed.data;
 
-    // 该 vendor 的本租户目录模型 + 各自版本化价(effective_from DESC → 每档当前价 = 第一行)。
-    const models = await prisma.catalogModel.findMany({
-        where: { vendor, ...tenantScope(admin) },
-        orderBy: [{ sort_order: 'asc' }, { created_at: 'asc' }],
-        include: { prices: { orderBy: { effective_from: 'desc' } } },
-    });
-
-    const result = computeBatchCost(models as unknown as BatchModelLike[], {
-        costRatio: cost_ratio,
-        retailRatio: retail_ratio,
-        tier: tier ?? null,
-    });
-
-    // 预览:不写库。
-    if (dryRun) {
-        return NextResponse.json({ dryRun: true, vendor, tier: tier ?? null, written: 0, ...result });
-    }
-
-    // Apply:每个 affected (model,tier) 插新版本行(复制零售 + 新 cost;effective_from 默认 now()
-    // → 比被复制的旧行新 = 版本追加,绝不 UPDATE/覆盖历史)。
-    const toWrite = result.rows.filter((r) => !r.skipped && r.newCost !== null && r.copy);
-    let written = 0;
-    if (toWrite.length > 0) {
-        const created = await prisma.catalogPrice.createMany({
-            data: toWrite.map((r) => ({
-                model_id: r.model_id,
-                tier: r.tier,
-                input_cny_per_1m: r.copy!.input_cny_per_1m,
-                output_cny_per_1m: r.copy!.output_cny_per_1m,
-                per_image_cny: r.copy!.per_image_cny,
-                cost_cny_per_1m: r.newCost,
-                created_by: admin.user?.id ?? null,
-            })),
+    const execute = async (db: Pick<Prisma.TransactionClient, 'catalogModel' | 'catalogPrice'>) => {
+        // 该 vendor 的本租户目录模型 + 各自版本化价(effective_from DESC → 每档当前价 = 第一行)。
+        const models = await db.catalogModel.findMany({
+            where: { vendor, ...tenantScope(admin) },
+            orderBy: [{ sort_order: 'asc' }, { created_at: 'asc' }],
+            include: { prices: { orderBy: { effective_from: 'desc' } } },
         });
-        written = created.count;
-    }
 
-    return NextResponse.json({ dryRun: false, vendor, tier: tier ?? null, written, ...result });
+        const result = computeBatchCost(models as unknown as BatchModelLike[], {
+            costRatio: cost_ratio,
+            retailRatio: retail_ratio,
+            tier: tier ?? null,
+        });
+
+        // 预览:不写库。
+        if (dryRun) {
+            return NextResponse.json({ dryRun: true, vendor, tier: tier ?? null, written: 0, ...result });
+        }
+
+        // Apply:每个 affected (model,tier) 插新版本行(复制零售 + 新 cost;effective_from 默认 now()
+        // → 比被复制的旧行新 = 版本追加,绝不 UPDATE/覆盖历史)。
+        const toWrite = result.rows.filter((r) => !r.skipped && r.newCost !== null && r.copy);
+        let written = 0;
+        if (toWrite.length > 0) {
+            const created = await db.catalogPrice.createMany({
+                data: toWrite.map((r) => ({
+                    model_id: r.model_id,
+                    tier: r.tier,
+                    input_cny_per_1m: r.copy!.input_cny_per_1m,
+                    output_cny_per_1m: r.copy!.output_cny_per_1m,
+                    per_image_cny: r.copy!.per_image_cny,
+                    cost_cny_per_1m: r.newCost,
+                    created_by: admin.user?.id ?? null,
+                })),
+            });
+            written = created.count;
+        }
+
+        return NextResponse.json({ dryRun: false, vendor, tier: tier ?? null, written, ...result });
+    };
+    if (dryRun) return execute(prisma);
+    try {
+        return await prisma.$transaction(async (tx) => {
+            await assertPricingCatalogWritable(tx);
+            return execute(tx);
+        });
+    } catch (error) {
+        if (error instanceof PricingPublishError)
+            return NextResponse.json({ error: error.code, message: error.message }, { status: error.status });
+        if (error && typeof error === 'object' && 'code' in error && ['P2028', 'P2034'].includes(String(error.code)))
+            return NextResponse.json(
+                { error: 'catalog_write_busy', message: '目录正在被修改或等待价格发布，请稍后重试。' },
+                { status: 409 },
+            );
+        throw error;
+    }
 }

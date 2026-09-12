@@ -71,8 +71,9 @@ export interface RetailPrice {
  * completion_ratio 缺失时调用方应传 1(= in/out 同价),见 import-catalog.ts。
  */
 export function retailFromRatios(modelRatio: number, completionRatio: number, groupRatio: number): RetailPrice {
-    const cnyIn = Number((modelRatio * CHAT_FX * groupRatio).toFixed(4));
-    const cnyOut = Number((cnyIn * completionRatio).toFixed(4));
+    const rawInput = modelRatio * CHAT_FX * groupRatio;
+    const cnyIn = Number(rawInput.toFixed(4));
+    const cnyOut = Number((rawInput * completionRatio).toFixed(4));
     return { input_cny_per_1m: cnyIn, output_cny_per_1m: cnyOut };
 }
 

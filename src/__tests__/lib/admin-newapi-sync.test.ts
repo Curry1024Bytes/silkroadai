@@ -1,4 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const mockCatalogGuard = vi.fn();
+vi.mock('@/lib/admin/pricing-publish-lock', async () => ({
+    ...(await vi.importActual<typeof import('@/lib/admin/pricing-publish-lock')>('@/lib/admin/pricing-publish-lock')),
+    assertPricingCatalogWritable: (...args: unknown[]) => mockCatalogGuard(...args),
+}));
+import { PricingPublishError } from '@/lib/admin/pricing-publish-lock';
 import type { NewApiSyncSource } from '@/lib/admin/newapi-sync-source';
 import type { SyncGroup, SyncModel, SyncPrice } from '@/lib/admin/newapi-sync-plan';
 
@@ -458,4 +465,13 @@ describe('new-api sync selection and activation', () => {
         }
         expect(writes).toEqual([]);
     });
+});
+
+it('blocks unified catalog synchronization before reads or writes while a price publication is active', async () => {
+    const preview = await previewNewApiSync(TENANT);
+    mockCatalogGuard.mockRejectedValueOnce(new PricingPublishError('pricing_publish_busy', 'busy'));
+    await expect(
+        applyNewApiSync(TENANT, null, preview.preview_token, { selected: selected(preview), activate: [] }),
+    ).rejects.toMatchObject({ code: 'pricing_publish_busy', status: 409 });
+    expect(writes).toEqual([]);
 });

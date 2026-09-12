@@ -1,3 +1,4 @@
+import { assertPricingCatalogWritable, PricingPublishError } from '@/lib/admin/pricing-publish-lock';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
@@ -68,38 +69,62 @@ export async function POST(request: NextRequest) {
     }
     const data = parsed.data;
 
-    // slug 在本租户内唯一(DB 有 @@unique([tenant_id, slug]),这里先友好报错)。
-    const tenant_id = tenantForInsert(admin);
-    const dup = await prisma.catalogModel.findFirst({ where: { tenant_id, slug: data.slug } });
-    if (dup) {
-        return NextResponse.json({ error: `slug "${data.slug}" 已存在` }, { status: 409 });
-    }
-
     try {
-        const topology = await loadChannelGroupTopology(tenant_id);
-        const issues = topology.validateUpstreamMap(data.upstream_map as UpstreamMapLike, {
-            allowEmpty: !data.enabled,
+        return await prisma.$transaction(async (tx) => {
+            await assertPricingCatalogWritable(tx);
+            // slug 在本租户内唯一(DB 有 @@unique([tenant_id, slug]),这里先友好报错)。
+            const tenant_id = tenantForInsert(admin);
+            const dup = await tx.catalogModel.findFirst({ where: { tenant_id, slug: data.slug } });
+            if (dup) {
+                return NextResponse.json({ error: `slug "${data.slug}" 已存在` }, { status: 409 });
+            }
+
+            try {
+                const topology = await loadChannelGroupTopology(tenant_id, tx);
+                const issues = topology.validateUpstreamMap(data.upstream_map as UpstreamMapLike, {
+                    allowEmpty: !data.enabled,
+                });
+                if (issues.length > 0) throw new ChannelGroupTopologyError(tenant_id, issues);
+            } catch (error) {
+                if (error instanceof ChannelGroupTopologyError) {
+                    return NextResponse.json(topologyErrorPayload(error), { status: 409 });
+                }
+                if (
+                    error &&
+                    typeof error === 'object' &&
+                    'code' in error &&
+                    ['P2028', 'P2034'].includes(String(error.code))
+                )
+                    return NextResponse.json(
+                        { error: 'catalog_write_busy', message: '目录正在被修改或等待价格发布，请稍后重试。' },
+                        { status: 409 },
+                    );
+                throw error;
+            }
+
+            const model = await tx.catalogModel.create({
+                data: {
+                    tenant_id,
+                    slug: data.slug,
+                    display_name: data.display_name,
+                    vendor: data.vendor,
+                    modality: data.modality,
+                    context_window: data.context_window ?? null,
+                    enabled: data.enabled,
+                    sort_order: data.sort_order,
+                    upstream_map: data.upstream_map,
+                },
+            });
+            return NextResponse.json({ model }, { status: 201 });
         });
-        if (issues.length > 0) throw new ChannelGroupTopologyError(tenant_id, issues);
     } catch (error) {
-        if (error instanceof ChannelGroupTopologyError) {
-            return NextResponse.json(topologyErrorPayload(error), { status: 409 });
-        }
+        if (error instanceof PricingPublishError)
+            return NextResponse.json({ error: error.code, message: error.message }, { status: error.status });
+        if (error && typeof error === 'object' && 'code' in error && ['P2028', 'P2034'].includes(String(error.code)))
+            return NextResponse.json(
+                { error: 'catalog_write_busy', message: '目录正在被修改或等待价格发布，请稍后重试。' },
+                { status: 409 },
+            );
         throw error;
     }
-
-    const model = await prisma.catalogModel.create({
-        data: {
-            tenant_id,
-            slug: data.slug,
-            display_name: data.display_name,
-            vendor: data.vendor,
-            modality: data.modality,
-            context_window: data.context_window ?? null,
-            enabled: data.enabled,
-            sort_order: data.sort_order,
-            upstream_map: data.upstream_map,
-        },
-    });
-    return NextResponse.json({ model }, { status: 201 });
 }

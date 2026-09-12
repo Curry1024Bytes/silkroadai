@@ -135,6 +135,10 @@ export interface NewApiEnvelope<T> {
 export type LoginSessionAuth = { kind: 'cookie'; cookie: string };
 
 interface CallOptions {
+    /** Bounded management operations such as serialized price publications. */
+    timeoutMs?: number;
+    /** Price write acknowledgement requires an explicit application envelope. */
+    requireSuccess?: boolean;
     /** 用哪个 access_token + user_id 调用。默认用 admin。 */
     asUser?: { accessToken: string; userId: number };
     /**
@@ -175,7 +179,7 @@ async function call<T>(
         headers['New-Api-User'] = String(auth.userId); // required by all endpoints
     }
 
-    const init: RequestInit = { method, headers, signal: AbortSignal.timeout(callTimeoutMs()) };
+    const init: RequestInit = { method, headers, signal: AbortSignal.timeout(options.timeoutMs ?? callTimeoutMs()) };
     if (body !== undefined) init.body = JSON.stringify(body);
 
     let res: Response;
@@ -202,6 +206,9 @@ async function call<T>(
     if (!res.ok || (data && !data.success)) {
         const msg = data?.message ?? text ?? res.statusText;
         throw new NewApiError(res.status, `${method} ${path}`, data, String(msg));
+    }
+    if (options.requireSuccess && data?.success !== true) {
+        throw new NewApiError(502, `${method} ${path}`, null, 'Unconfirmed management response');
     }
     return (data?.data ?? null) as T;
 }
@@ -427,8 +434,8 @@ export async function searchUser(
  * 别用这个改 username — 内部似乎走 INSERT-or-UPDATE,空字段会和已有
  * username='' 行冲突触发 unique violation。fetch + merge 后 PUT 才稳。
  */
-export async function updateUser(user: Partial<NewApiUser> & { id: number }): Promise<void> {
-    await call<null>('PUT', '/api/user/', user);
+export async function updateUser(user: Partial<NewApiUser> & { id: number }, timeoutMs?: number): Promise<void> {
+    await call<null>('PUT', '/api/user/', user, undefined, { timeoutMs });
 }
 
 /** 删 user(soft delete) */
@@ -826,6 +833,47 @@ export async function getCatalogSyncOptions(): Promise<Record<string, unknown>> 
     );
 }
 
+/** Pricing-only allowlist. Never retain/log the complete admin option response. */
+export async function getPricingPublishOptions(): Promise<Record<string, unknown>> {
+    const data = await call<Array<{ key: string; value: unknown }> | Record<string, unknown>>(
+        'GET',
+        '/api/option/',
+        undefined,
+        undefined,
+        { timeoutMs: 10_000 },
+    );
+    if (!data || typeof data !== 'object') throw new Error('Invalid pricing options response');
+    const keys = [
+        'GroupRatio',
+        'ModelRatio',
+        'CompletionRatio',
+        'ModelPrice',
+        'CompletionRatioMeta',
+        'GroupGroupRatio',
+        'QuotaPerUnit',
+        'ImageResolutionPrice',
+        'billing_setting.billing_mode',
+        'billing_setting.scheduled_discount',
+    ];
+    return Object.fromEntries(
+        keys.map((key) => [
+            key,
+            Array.isArray(data)
+                ? (data.find((item) => item && item.key === key)?.value ?? null)
+                : Object.hasOwn(data, key)
+                  ? data[key]
+                  : null,
+        ]),
+    );
+}
+
+export async function putPricingPublishOption(
+    key: 'ModelRatio' | 'CompletionRatio' | 'ModelPrice',
+    value: string,
+): Promise<void> {
+    await call<unknown>('PUT', '/api/option/', { key, value }, undefined, { timeoutMs: 10_000, requireSuccess: true });
+}
+
 /**
  * PUT 整个渠道对象回 new-api。调用方负责传【完整】对象(在 getChannel 结果上
  * merge 改动后整体回传),否则未带的字段会被清空(gotcha #15)。
@@ -866,8 +914,8 @@ export async function getOption(key: string): Promise<string | null> {
  * 写单个全局 option(new-api `PUT /api/option/` body `{key, value}` —— 只更新这一个
  * key,不影响其它 option)。value 必须是字符串(JSON dict 需调用方先 stringify)。
  */
-export async function putOption(key: string, value: string): Promise<void> {
-    await call<unknown>('PUT', '/api/option/', { key, value });
+export async function putOption(key: string, value: string, timeoutMs?: number): Promise<void> {
+    await call<unknown>('PUT', '/api/option/', { key, value }, undefined, { timeoutMs });
 }
 
 // ============================================

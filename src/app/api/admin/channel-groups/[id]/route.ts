@@ -1,3 +1,5 @@
+import type { Prisma } from '@prisma/client';
+import { assertPricingCatalogWritable, PricingPublishError } from '@/lib/admin/pricing-publish-lock';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
@@ -7,8 +9,8 @@ import { tenantScope } from '@/lib/admin/tenant-scope';
 
 export const runtime = 'nodejs';
 
-async function enabledModelReferences(tenantId: string | null, tier: string) {
-    const models = await prisma.catalogModel.findMany({
+async function enabledModelReferences(tenantId: string | null, tier: string, db: Prisma.TransactionClient) {
+    const models = await db.catalogModel.findMany({
         where: { tenant_id: tenantId, enabled: true },
         select: { id: true, slug: true, upstream_map: true },
     });
@@ -60,86 +62,100 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
         );
     }
 
-    const existing = await prisma.channelGroup.findFirst({ where: { id, ...tenantScope(admin) } });
-    if (!existing) return NextResponse.json({ error: '渠道分组不存在' }, { status: 404 });
-    const nextIsDefault = parsed.data.is_default ?? existing.is_default;
-    const nextEnabled = parsed.data.enabled ?? existing.enabled;
-    if (nextIsDefault && !nextEnabled) {
-        return NextResponse.json({ error: 'default_tier_must_be_enabled' }, { status: 409 });
-    }
-    if (existing.is_default && existing.enabled && !nextIsDefault) {
-        return NextResponse.json(
-            { error: 'active_default_tier_required', message: '请先将另一档次设为默认档' },
-            { status: 409 },
-        );
-    }
-    const nextChannelIds = parsed.data.newapi_channel_ids ?? existing.newapi_channel_ids ?? [];
-    if (nextEnabled && nextChannelIds.length === 0) {
-        return NextResponse.json({ error: 'active_tier_requires_channels' }, { status: 409 });
-    }
-    if (nextEnabled) {
-        const nextNewApiGroup = parsed.data.newapi_group ?? existing.newapi_group;
-        const conflicts = await prisma.channelGroup.findMany({
-            where: {
-                tenant_id: existing.tenant_id,
-                enabled: true,
-                NOT: { id: existing.id },
-                OR: [{ newapi_group: nextNewApiGroup }, { newapi_channel_ids: { hasSome: nextChannelIds } }],
-            },
-            select: { key: true, newapi_group: true, newapi_channel_ids: true },
+    try {
+        return await prisma.$transaction(async (tx) => {
+            await assertPricingCatalogWritable(tx);
+            const existing = await tx.channelGroup.findFirst({ where: { id, ...tenantScope(admin) } });
+            if (!existing) return NextResponse.json({ error: '渠道分组不存在' }, { status: 404 });
+            const nextIsDefault = parsed.data.is_default ?? existing.is_default;
+            const nextEnabled = parsed.data.enabled ?? existing.enabled;
+            if (nextIsDefault && !nextEnabled) {
+                return NextResponse.json({ error: 'default_tier_must_be_enabled' }, { status: 409 });
+            }
+            if (existing.is_default && existing.enabled && !nextIsDefault) {
+                return NextResponse.json(
+                    { error: 'active_default_tier_required', message: '请先将另一档次设为默认档' },
+                    { status: 409 },
+                );
+            }
+            const nextChannelIds = parsed.data.newapi_channel_ids ?? existing.newapi_channel_ids ?? [];
+            if (nextEnabled && nextChannelIds.length === 0) {
+                return NextResponse.json({ error: 'active_tier_requires_channels' }, { status: 409 });
+            }
+            if (nextEnabled) {
+                const nextNewApiGroup = parsed.data.newapi_group ?? existing.newapi_group;
+                const conflicts = await tx.channelGroup.findMany({
+                    where: {
+                        tenant_id: existing.tenant_id,
+                        enabled: true,
+                        NOT: { id: existing.id },
+                        OR: [{ newapi_group: nextNewApiGroup }, { newapi_channel_ids: { hasSome: nextChannelIds } }],
+                    },
+                    select: { key: true, newapi_group: true, newapi_channel_ids: true },
+                });
+                const groupOwner = conflicts.find((group) => group.newapi_group === nextNewApiGroup);
+                if (groupOwner) {
+                    return NextResponse.json(
+                        { error: 'newapi_group_already_assigned', newapi_group: nextNewApiGroup, tier: groupOwner.key },
+                        { status: 409 },
+                    );
+                }
+                const overlaps = conflicts.filter((group) =>
+                    group.newapi_channel_ids.some((id) => nextChannelIds.includes(id)),
+                );
+                if (overlaps.length > 0) {
+                    return NextResponse.json(
+                        {
+                            error: 'channel_already_assigned',
+                            conflicts: overlaps.map((group) => ({
+                                tier: group.key,
+                                channel_ids: group.newapi_channel_ids.filter((id) => nextChannelIds.includes(id)),
+                            })),
+                        },
+                        { status: 409 },
+                    );
+                }
+            }
+
+            if (existing.enabled && (!nextEnabled || parsed.data.newapi_channel_ids !== undefined)) {
+                const modelRefs = await enabledModelReferences(existing.tenant_id, existing.key, tx);
+                const brokenRefs = nextEnabled
+                    ? modelRefs.filter((ref) => !nextChannelIds.includes(ref.channel_id))
+                    : modelRefs;
+                if (brokenRefs.length > 0) {
+                    return NextResponse.json(
+                        {
+                            error: 'tier_in_use_by_enabled_models',
+                            message: '请先下架或改写引用该档次/渠道的模型',
+                            models: brokenRefs,
+                        },
+                        { status: 409 },
+                    );
+                }
+            }
+
+            // 单一默认档不变式:把本档设为默认时,清掉同租户其它默认。
+            const group = await (async () => {
+                if (parsed.data.is_default === true) {
+                    await tx.channelGroup.updateMany({
+                        where: { tenant_id: existing.tenant_id, NOT: { id: existing.id } },
+                        data: { is_default: false },
+                    });
+                }
+                return tx.channelGroup.update({ where: { id: existing.id }, data: parsed.data });
+            })();
+            return NextResponse.json({ group });
         });
-        const groupOwner = conflicts.find((group) => group.newapi_group === nextNewApiGroup);
-        if (groupOwner) {
+    } catch (error) {
+        if (error instanceof PricingPublishError)
+            return NextResponse.json({ error: error.code, message: error.message }, { status: error.status });
+        if (error && typeof error === 'object' && 'code' in error && ['P2028', 'P2034'].includes(String(error.code)))
             return NextResponse.json(
-                { error: 'newapi_group_already_assigned', newapi_group: nextNewApiGroup, tier: groupOwner.key },
+                { error: 'catalog_write_busy', message: '目录正在被修改或等待价格发布，请稍后重试。' },
                 { status: 409 },
             );
-        }
-        const overlaps = conflicts.filter((group) =>
-            group.newapi_channel_ids.some((id) => nextChannelIds.includes(id)),
-        );
-        if (overlaps.length > 0) {
-            return NextResponse.json(
-                {
-                    error: 'channel_already_assigned',
-                    conflicts: overlaps.map((group) => ({
-                        tier: group.key,
-                        channel_ids: group.newapi_channel_ids.filter((id) => nextChannelIds.includes(id)),
-                    })),
-                },
-                { status: 409 },
-            );
-        }
+        throw error;
     }
-
-    if (existing.enabled && (!nextEnabled || parsed.data.newapi_channel_ids !== undefined)) {
-        const modelRefs = await enabledModelReferences(existing.tenant_id, existing.key);
-        const brokenRefs = nextEnabled
-            ? modelRefs.filter((ref) => !nextChannelIds.includes(ref.channel_id))
-            : modelRefs;
-        if (brokenRefs.length > 0) {
-            return NextResponse.json(
-                {
-                    error: 'tier_in_use_by_enabled_models',
-                    message: '请先下架或改写引用该档次/渠道的模型',
-                    models: brokenRefs,
-                },
-                { status: 409 },
-            );
-        }
-    }
-
-    // 单一默认档不变式:把本档设为默认时,清掉同租户其它默认。
-    const group = await prisma.$transaction(async (tx) => {
-        if (parsed.data.is_default === true) {
-            await tx.channelGroup.updateMany({
-                where: { tenant_id: existing.tenant_id, NOT: { id: existing.id } },
-                data: { is_default: false },
-            });
-        }
-        return tx.channelGroup.update({ where: { id: existing.id }, data: parsed.data });
-    });
-    return NextResponse.json({ group });
 }
 
 export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -147,29 +163,43 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
     if (!admin) return unauthorizedResponse(request);
 
     const { id } = await params;
-    const existing = await prisma.channelGroup.findFirst({ where: { id, ...tenantScope(admin) } });
-    if (!existing) return NextResponse.json({ error: '渠道分组不存在' }, { status: 404 });
-    if (existing.is_default && existing.enabled) {
-        return NextResponse.json(
-            { error: 'active_default_tier_required', message: '请先将另一档次设为默认档' },
-            { status: 409 },
-        );
-    }
+    try {
+        return await prisma.$transaction(async (tx) => {
+            await assertPricingCatalogWritable(tx);
+            const existing = await tx.channelGroup.findFirst({ where: { id, ...tenantScope(admin) } });
+            if (!existing) return NextResponse.json({ error: '渠道分组不存在' }, { status: 404 });
+            if (existing.is_default && existing.enabled) {
+                return NextResponse.json(
+                    { error: 'active_default_tier_required', message: '请先将另一档次设为默认档' },
+                    { status: 409 },
+                );
+            }
 
-    const modelRefs = await enabledModelReferences(existing.tenant_id, existing.key);
-    if (modelRefs.length > 0) {
-        return NextResponse.json(
-            {
-                error: 'tier_in_use_by_enabled_models',
-                message: '请先下架或改写引用该档次的模型',
-                models: modelRefs,
-            },
-            { status: 409 },
-        );
-    }
+            const modelRefs = await enabledModelReferences(existing.tenant_id, existing.key, tx);
+            if (modelRefs.length > 0) {
+                return NextResponse.json(
+                    {
+                        error: 'tier_in_use_by_enabled_models',
+                        message: '请先下架或改写引用该档次的模型',
+                        models: modelRefs,
+                    },
+                    { status: 409 },
+                );
+            }
 
-    // 已建 token 的 new-api group 已下发、照常工作；但启用模型不得留下悬空
-    // upstream_map，所以必须先下架或改写所有活动引用。
-    await prisma.channelGroup.delete({ where: { id: existing.id } });
-    return NextResponse.json({ success: true });
+            // 已建 token 的 new-api group 已下发、照常工作；但启用模型不得留下悬空
+            // upstream_map，所以必须先下架或改写所有活动引用。
+            await tx.channelGroup.delete({ where: { id: existing.id } });
+            return NextResponse.json({ success: true });
+        });
+    } catch (error) {
+        if (error instanceof PricingPublishError)
+            return NextResponse.json({ error: error.code, message: error.message }, { status: error.status });
+        if (error && typeof error === 'object' && 'code' in error && ['P2028', 'P2034'].includes(String(error.code)))
+            return NextResponse.json(
+                { error: 'catalog_write_busy', message: '目录正在被修改或等待价格发布，请稍后重试。' },
+                { status: 409 },
+            );
+        throw error;
+    }
 }

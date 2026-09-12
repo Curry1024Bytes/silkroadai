@@ -30,7 +30,8 @@ FROM base AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-RUN pnpm prisma generate
+# pnpm build generates both the Portal client and the isolated read-only
+# new-api client. Neither generation step needs a live database connection.
 
 # Public values used by Next.js during `next build`. Compose maps the server
 # .env into these build args; the defaults keep a direct `docker build`

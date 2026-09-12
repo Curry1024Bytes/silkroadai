@@ -1,4 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const mockCatalogGuard = vi.fn();
+vi.mock('@/lib/admin/pricing-publish-lock', async () => ({
+    ...(await vi.importActual<typeof import('@/lib/admin/pricing-publish-lock')>('@/lib/admin/pricing-publish-lock')),
+    assertPricingCatalogWritable: (...args: unknown[]) => mockCatalogGuard(...args),
+}));
+import { PricingPublishError } from '@/lib/admin/pricing-publish-lock';
 import { NextRequest, NextResponse } from 'next/server';
 
 const mockResolveAdmin = vi.fn();
@@ -13,7 +20,9 @@ const mockListChannels = vi.fn();
 
 // tx proxy reuses the same per-table spies so prisma.* and tx.* hit one place.
 const txProxy = {
+    channelGroup: { findMany: (...a: unknown[]) => mockChannelGroupFindMany(...a) },
     catalogModel: {
+        findMany: (...a: unknown[]) => mockModelFindMany(...a),
         create: (...a: unknown[]) => mockModelCreate(...a),
         update: (...a: unknown[]) => mockModelUpdate(...a),
     },
@@ -142,7 +151,7 @@ describe('POST /api/admin/models/import — dry run (official not registered →
     it('surfaces reverse-derived retail prices + flags image models (with tier)', async () => {
         const body = await (await POST(req('POST', {}))).json();
         const opus = body.created.find((r: { slug: string }) => r.slug === 'claude-opus-4-7');
-        expect(opus).toMatchObject({ tier: 'pool', input_cny_per_1m: 46.2857, output_cny_per_1m: 231.4285 }); // mr 3.214286 × CHAT_FX 14.4
+        expect(opus).toMatchObject({ tier: 'pool', input_cny_per_1m: 46.2857, output_cny_per_1m: 231.4286 }); // mr 3.214286 × CHAT_FX 14.4
         const img = body.flagged.find((r: { slug: string }) => r.slug === 'gpt-image-2');
         expect(img).toMatchObject({ tier: 'pool', modality: 'image', reason: 'image_model_manual_price' });
     });
@@ -468,7 +477,7 @@ describe('POST /api/admin/models/import — same slug across tiers (real import)
         expect(poolPrice).toMatchObject({
             model_id: 'm-gpt-5.4',
             input_cny_per_1m: 5.1429,
-            output_cny_per_1m: 20.5716,
+            output_cny_per_1m: 20.5714,
         }); // mr 0.357143 × 14.4
         const offPrice = mockPriceCreate.mock.calls.find((c) => c[0].data.tier === 'official')![0].data;
         expect(offPrice).toMatchObject({ model_id: 'm-gpt-5.4', input_cny_per_1m: 7.2, output_cny_per_1m: 28.8 }); // mr 0.5 × 14.4
@@ -642,4 +651,24 @@ describe('POST /api/admin/models/import — real import writes + tenant scope', 
         expect(gptCreate[0].data.tenant_id).toBe('tenant-7');
         expect(mockPriceCreate.mock.calls[0][0].data.created_by).toBe('admin-1');
     });
+});
+
+it('blocks legacy import writes during an active price publication', async () => {
+    mockCatalogGuard.mockRejectedValueOnce(new PricingPublishError('pricing_publish_busy', 'busy'));
+    const response = await POST(req('POST', {}, REAL));
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: 'pricing_publish_busy' });
+    expect(mockModelCreate).not.toHaveBeenCalled();
+    expect(mockModelUpdate).not.toHaveBeenCalled();
+    expect(mockPriceCreate).not.toHaveBeenCalled();
+});
+it('rejects a legacy import plan if the catalog changed while waiting for the publication barrier', async () => {
+    mockModelFindMany
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: 'changed', slug: 'gpt-changed', sort_order: 1, upstream_map: {}, prices: [] }]);
+    const response = await POST(req('POST', {}, REAL));
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: 'catalog_changed' });
+    expect(mockModelCreate).not.toHaveBeenCalled();
+    expect(mockPriceCreate).not.toHaveBeenCalled();
 });

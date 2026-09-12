@@ -1,4 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const mockCatalogGuard = vi.fn();
+vi.mock('@/lib/admin/pricing-publish-lock', async () => ({
+    ...(await vi.importActual<typeof import('@/lib/admin/pricing-publish-lock')>('@/lib/admin/pricing-publish-lock')),
+    assertPricingCatalogWritable: (...args: unknown[]) => mockCatalogGuard(...args),
+}));
+import { PricingPublishError } from '@/lib/admin/pricing-publish-lock';
 import { NextRequest, NextResponse } from 'next/server';
 
 const mockResolveAdmin = vi.fn();
@@ -24,6 +31,17 @@ vi.mock('@/lib/db', () => ({
             delete: (...a: unknown[]) => mockDelete(...a),
         },
         channelGroup: { findMany: (...a: unknown[]) => mockGroupFindMany(...a) },
+        $transaction: async (fn: (tx: unknown) => unknown) =>
+            fn({
+                catalogModel: {
+                    findMany: (...a: unknown[]) => mockFindMany(...a),
+                    findFirst: (...a: unknown[]) => mockFindFirst(...a),
+                    create: (...a: unknown[]) => mockCreate(...a),
+                    update: (...a: unknown[]) => mockUpdate(...a),
+                    delete: (...a: unknown[]) => mockDelete(...a),
+                },
+                channelGroup: { findMany: (...a: unknown[]) => mockGroupFindMany(...a) },
+            }),
     },
 }));
 
@@ -198,4 +216,31 @@ describe('GET/PUT/DELETE /api/admin/models/[id]', () => {
         expect(res.status).toBe(200);
         expect(mockDelete).toHaveBeenCalled();
     });
+});
+
+it.each(['create', 'update', 'delete'])(
+    'blocks model %s before reading or writing while a price publication is active',
+    async (operation) => {
+        mockCatalogGuard.mockRejectedValueOnce(new PricingPublishError('pricing_publish_busy', 'busy'));
+        const response =
+            operation === 'create'
+                ? await POST(req('POST', VALID_CREATE))
+                : operation === 'update'
+                  ? await PUT(req('PUT', { display_name: 'New' }), { params: params() })
+                  : await DELETE(req('DELETE'), { params: params() });
+        expect(response.status).toBe(409);
+        expect(await response.json()).toMatchObject({ error: 'pricing_publish_busy' });
+        expect(mockFindFirst).not.toHaveBeenCalled();
+        expect(mockCreate).not.toHaveBeenCalled();
+        expect(mockUpdate).not.toHaveBeenCalled();
+        expect(mockDelete).not.toHaveBeenCalled();
+    },
+);
+
+it.each(['P2028', 'P2034'])('returns a retriable 409 for transaction barrier %s instead of a 500', async (code) => {
+    mockCatalogGuard.mockRejectedValueOnce(Object.assign(new Error('transaction coordination failed'), { code }));
+    const response = await POST(req('POST', VALID_CREATE));
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: 'catalog_write_busy' });
+    expect(mockCreate).not.toHaveBeenCalled();
 });

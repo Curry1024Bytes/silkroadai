@@ -85,6 +85,12 @@ describe('computeRatios (FX calibrated to new-api actual billing — P4c-prereq 
 });
 
 describe('retailFromRatios (P2.5 reverse derivation — inverse of computeRatios)', () => {
+    it('rounds input and output independently instead of multiplying an already rounded input', () => {
+        expect(retailFromRatios(0.00001, 10, 1)).toEqual({
+            input_cny_per_1m: 0.0001,
+            output_cny_per_1m: 0.0014,
+        });
+    });
     it('mr 0.173611, cr 4 → ¥2.5 in / ¥10 out', () => {
         expect(retailFromRatios(0.173611, 4, 1)).toEqual({ input_cny_per_1m: 2.5, output_cny_per_1m: 10 });
     });

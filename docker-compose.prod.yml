@@ -99,6 +99,10 @@ services:
     portal:
         build: *portal-build
         container_name: silkroadai-portal
+        # Public trust material for the optional, SELECT-only new-api price
+        # verifier (pinned RSA key or trusted CA). Never store DB passwords here.
+        volumes:
+            - ./deploy/runtime/newapi-pricing:/app/newapi-pricing:ro
         ports:
             # Bind to loopback only — public traffic must go through the host
             # Caddy/nginx reverse proxy, never hit the container port directly.

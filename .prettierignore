@@ -1,5 +1,6 @@
 .next
 node_modules
+src/generated/newapi-readonly
 vendor
 pnpm-lock.yaml
 # CLAUDE.md flags this as "Claude Code 别动这个目录,这是辅助资源"

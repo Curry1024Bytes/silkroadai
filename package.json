@@ -6,7 +6,8 @@
     "packageManager": "pnpm@10.30.3",
     "scripts": {
         "dev": "next dev --port 3002",
-        "build": "next build",
+        "build": "pnpm prisma:generate && next build",
+        "prisma:generate": "prisma generate && prisma generate --config prisma.newapi-readonly.config.ts",
         "start": "next start",
         "lint": "eslint",
         "typecheck": "tsc --noEmit",
@@ -22,6 +23,7 @@
         "@assistant-ui/react-markdown": "0.14.1",
         "@assistant-ui/react-syntax-highlighter": "0.14.1",
         "@aws-sdk/client-s3": "^3.1045.0",
+        "@prisma/adapter-mariadb": "7.4.1",
         "@prisma/adapter-pg": "7.4.1",
         "@prisma/client": "^7.4.2",
         "@sentry/nextjs": "^10.51.0",

@@ -16,6 +16,12 @@ const mockOverrideUpdate = vi.fn();
 const mockNewApiTokenFindMany = vi.fn();
 const mockNewApiTokenUpdateMany = vi.fn();
 const mockTransaction = vi.fn();
+const mockCatalogGuard = vi.fn();
+vi.mock('@/lib/admin/pricing-publish-lock', async () => ({
+    ...(await vi.importActual<typeof import('@/lib/admin/pricing-publish-lock')>('@/lib/admin/pricing-publish-lock')),
+    assertPricingCatalogWritable: (...args: unknown[]) => mockCatalogGuard(...args),
+}));
+import { PricingPublishError } from '@/lib/admin/pricing-publish-lock';
 
 vi.mock('@/lib/newapi/client', () => ({
     getOption: (...args: unknown[]) => mockGetOption(...args),
@@ -99,6 +105,7 @@ function token(id: number, group = 'default'): Record<string, unknown> {
 
 beforeEach(() => {
     vi.clearAllMocks();
+    mockCatalogGuard.mockReset().mockResolvedValue(undefined);
     options = {
         [GROUP_GROUP_RATIO_OPTION]: JSON.stringify({ 'another-customer': { 'GPT-Pro20x(企业级)': 0.17 } }),
         UserUsableGroups: JSON.stringify({ 'GPT-Pro20x(企业级)': 'GPT-Pro20x（企业级）' }),
@@ -161,6 +168,44 @@ beforeEach(() => {
 });
 
 describe('new-api dedicated group multiplier sync', () => {
+    it('blocks save and disable before reading or writing new-api while a price publication holds the coordinator', async () => {
+        mockCatalogGuard.mockRejectedValue(new PricingPublishError('pricing_publish_busy', '价格正在发布'));
+        await expect(
+            saveUserTierMultiplier({ user: portalUser, tierKey: 'gpt-pro20x', multiplier: 0.18, createdBy: 'admin-1' }),
+        ).rejects.toMatchObject({ status: 409 });
+        await expect(disableUserTierMultiplier({ user: portalUser, overrideId: 'override-1' })).rejects.toMatchObject({
+            status: 409,
+        });
+        expect(mockGetUser).not.toHaveBeenCalled();
+        expect(mockPutOption).not.toHaveBeenCalled();
+        expect(mockUpdateUser).not.toHaveBeenCalled();
+        expect(mockOverrideUpsert).not.toHaveBeenCalled();
+        expect(mockOverrideUpdate).not.toHaveBeenCalled();
+    });
+
+    it('rechecks the transaction after slow reads and refuses remote writes when the lock is no longer valid', async () => {
+        const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        mockCatalogGuard.mockImplementation(async () => {
+            if (mockGetUser.mock.calls.length) throw Object.assign(new Error('Transaction closed'), { code: 'P2028' });
+        });
+        try {
+            await expect(
+                saveUserTierMultiplier({
+                    user: portalUser,
+                    tierKey: 'gpt-pro20x',
+                    multiplier: 0.18,
+                    createdBy: 'admin-1',
+                }),
+            ).rejects.toMatchObject({ status: 409 });
+            expect(mockGetUser).toHaveBeenCalled();
+            expect(mockPutOption).not.toHaveBeenCalled();
+            expect(mockUpdateUser).not.toHaveBeenCalled();
+            expect(mockOverrideUpsert).not.toHaveBeenCalled();
+        } finally {
+            log.mockRestore();
+        }
+    });
+
     it('confirms the GroupGroupRatio nested object contract and rejects malformed input', () => {
         expect(parseGroupGroupRatio('{"portal-user-a":{"GPT-Pro20x(企业级)":0.18}}')).toEqual({
             'portal-user-a': { 'GPT-Pro20x(企业级)': 0.18 },
@@ -192,7 +237,7 @@ describe('new-api dedicated group multiplier sync', () => {
                 }),
             }),
         );
-        expect(mockPutOption).toHaveBeenCalledWith(GROUP_GROUP_RATIO_OPTION, expect.any(String));
+        expect(mockPutOption).toHaveBeenCalledWith(GROUP_GROUP_RATIO_OPTION, expect.any(String), 30_000);
     });
 
     it('does not make the generated user group publicly selectable', async () => {

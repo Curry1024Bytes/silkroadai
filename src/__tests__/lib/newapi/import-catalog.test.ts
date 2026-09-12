@@ -91,14 +91,14 @@ describe('buildImportCandidates', () => {
         const candidates = buildImportCandidates([claudeChannel, openaiChannel, imageChannel]);
         const bySlug = Object.fromEntries(candidates.map((c) => [c.slug, c]));
 
-        // priced chat (inverse of computeRatios — opus mr 3.214286 × CHAT_FX 14.4 → ¥46.2857/¥231.4285)
+        // priced chat (inverse of computeRatios — opus mr 3.214286 × CHAT_FX 14.4 → ¥46.2857/¥231.4286)
         expect(bySlug['claude-opus-4-7']).toMatchObject({
             vendor: 'anthropic',
             modality: 'chat',
             tier: 'pool',
             price_status: 'priced',
             input_cny_per_1m: 46.2857,
-            output_cny_per_1m: 231.4285,
+            output_cny_per_1m: 231.4286,
             ratio_defaulted: false,
             channel_id: 2,
             channel_name: 'sub2api',
@@ -108,7 +108,7 @@ describe('buildImportCandidates', () => {
             vendor: 'openai',
             price_status: 'priced',
             input_cny_per_1m: 5.1429, // mr 0.357143 × 14.4
-            output_cny_per_1m: 20.5716,
+            output_cny_per_1m: 20.5714,
             channel_id: 3,
         });
 

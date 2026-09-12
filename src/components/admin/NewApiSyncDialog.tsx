@@ -136,8 +136,8 @@ export function NewApiSyncPreviewList({
                         {key === 'price' && (
                             <p className={`text-sm leading-6 ${muted}`}>
                                 {en
-                                    ? 'Read prices already in effect in new-api into Portal. This does not change new-api billing. Existing price changes require your selection.'
-                                    : '将 new-api 已生效的价格读入 Portal。此操作不修改 new-api 扣费；已有价格的变化需单独勾选。'}
+                                    ? 'Read current new-api prices into the Portal catalog. This does not change new-api billing. Changes to existing catalog prices require your selection.'
+                                    : '将 new-api 当前价格读入 Portal 目录。此操作不修改 new-api 扣费；已有目录价格的变化需单独勾选。'}
                             </p>
                         )}
                         {key === 'price' && items.some((item) => !item.selectable) && (
@@ -192,7 +192,9 @@ export function NewApiSyncPreviewList({
                                             </dd>
                                         </div>
                                         <div>
-                                            <dt className="mb-1 font-medium">{en ? 'After sync' : '同步后'}</dt>
+                                            <dt className="mb-1 font-medium">
+                                                {en ? 'Catalog after update' : '目录更新后'}
+                                            </dt>
                                             <dd className="space-y-1 break-words">
                                                 {item.after.length ? (
                                                     item.after.map((line, index) => <p key={index}>{line}</p>)
@@ -362,12 +364,12 @@ export default function NewApiSyncDialog({
             <div className="space-y-5 p-5 sm:p-6">
                 <header>
                     <h2 id={titleId} className="text-xl font-semibold">
-                        {en ? 'Sync new-api' : '同步 new-api'}
+                        {en ? 'Update catalog from new-api' : '从 new-api 更新目录'}
                     </h2>
                     <p id={descriptionId} className={`mt-2 text-sm leading-6 ${muted}`}>
                         {en
-                            ? 'Review tiers, channels, models and prices from new-api, then confirm the changes you want.'
-                            : '读取 new-api 的档次、渠道、模型和价格，查看差异后确认需要同步的内容。'}
+                            ? 'Read tiers, channels, models and current prices from new-api. Review the differences, then confirm which Portal catalog entries to update.'
+                            : '从 new-api 读取档次、渠道、模型和当前价格，核对差异后更新 Portal 目录。此操作不会把价格发布到 new-api。'}
                     </p>
                 </header>
                 <p
@@ -395,7 +397,7 @@ export default function NewApiSyncDialog({
                         role="status"
                         className={`rounded-xl border p-4 ${isDark ? 'border-emerald-700 bg-emerald-950/40 text-emerald-200' : 'border-emerald-200 bg-emerald-50 text-emerald-800'}`}
                     >
-                        <h3 className="font-semibold">{en ? 'Sync complete' : '同步完成'}</h3>
+                        <h3 className="font-semibold">{en ? 'Catalog updated' : '目录更新完成'}</h3>
                         <p className="mt-2 text-sm">
                             {en
                                 ? `${applied.groups} tiers, ${applied.models} models, ${applied.prices} prices updated.`
@@ -433,10 +435,10 @@ export default function NewApiSyncDialog({
                                     {preview.warnings.length
                                         ? en
                                             ? 'No changes can be applied. Review the notes above.'
-                                            : '暂无可同步的变更，请先核对上方提示。'
+                                            : '暂无可更新的目录内容，请先核对上方提示。'
                                         : en
                                           ? 'Everything is up to date.'
-                                          : '当前配置已同步，没有新的变更。'}
+                                          : '当前目录已与 new-api 对齐，没有新的变更。'}
                                 </p>
                             ) : (
                                 <>
@@ -541,7 +543,13 @@ export default function NewApiSyncDialog({
                                 disabled={!!busy || !preview || !selection.selected.length}
                                 onClick={() => void apply()}
                             >
-                                {busy === 'apply' ? (en ? 'Syncing…' : '正在同步…') : en ? 'Confirm sync' : '确认同步'}
+                                {busy === 'apply'
+                                    ? en
+                                        ? 'Updating catalog…'
+                                        : '正在更新目录…'
+                                    : en
+                                      ? 'Confirm catalog update'
+                                      : '确认更新目录'}
                             </button>
                         </>
                     )}

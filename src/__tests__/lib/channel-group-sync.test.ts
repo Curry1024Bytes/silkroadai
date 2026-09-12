@@ -9,6 +9,13 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const mockCatalogGuard = vi.fn();
+vi.mock('@/lib/admin/pricing-publish-lock', async () => ({
+    ...(await vi.importActual<typeof import('@/lib/admin/pricing-publish-lock')>('@/lib/admin/pricing-publish-lock')),
+    assertPricingCatalogWritable: (...args: unknown[]) => mockCatalogGuard(...args),
+}));
+import { PricingPublishError } from '@/lib/admin/pricing-publish-lock';
+
 const mockGetOption = vi.fn();
 vi.mock('@/lib/newapi/client', () => ({
     getOption: (...a: unknown[]) => mockGetOption(...a),
@@ -60,7 +67,15 @@ beforeEach(() => {
     vi.clearAllMocks();
     __resetChannelGroupSyncForTests();
     mockFindMany.mockResolvedValue([]);
-    mockTransaction.mockResolvedValue([]);
+    mockTransaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) =>
+        fn({
+            channelGroup: {
+                findMany: (...a: unknown[]) => mockFindMany(...a),
+                create: (...a: unknown[]) => mockCreate(...a),
+                update: (...a: unknown[]) => mockUpdate(...a),
+            },
+        }),
+    );
 });
 
 describe('syncChannelGroupsFromNewApi', () => {
@@ -349,4 +364,13 @@ describe('getGroupRatios(GroupRatio 倍率同步,/keys 档次下拉「Nx 倍率�
         expect(await getGroupRatios()).toEqual({}); // 节流窗口内,不重打
         expect(mockGetOption).toHaveBeenCalledTimes(1);
     });
+});
+
+it('defers background tier writes while price publication is active and serves existing tiers', async () => {
+    mockFindMany.mockResolvedValue([row({ display_name: 'Old' })]);
+    mockGetOption.mockResolvedValue(JSON.stringify({ default: 'New' }));
+    mockCatalogGuard.mockRejectedValueOnce(new PricingPublishError('pricing_publish_busy', 'busy'));
+    await expect(syncChannelGroupsFromNewApi()).resolves.toBeUndefined();
+    expect(mockUpdate).not.toHaveBeenCalled();
+    expect(mockCreate).not.toHaveBeenCalled();
 });

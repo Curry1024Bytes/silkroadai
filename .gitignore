@@ -44,6 +44,9 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
+# Generated separately from the Portal PostgreSQL client.
+/src/generated/newapi-readonly/
+
 # third-party source code (local reference only)
 /third-party
 /new-api-custom-full
@@ -59,3 +62,5 @@ next-env.d.ts
 /_bootstrap-w1-archive/
 public/_email-preview/
 .env
+# Operator-supplied public trust material stays outside source/release archives.
+/deploy/runtime/

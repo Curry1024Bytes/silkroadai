@@ -1,7 +1,10 @@
 import 'server-only';
 
+import { AsyncLocalStorage } from 'node:async_hooks';
+import type { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { PLATFORM_TENANT_ID } from '@/lib/admin/tenant-scope';
+import { assertPricingCatalogWritable, PricingPublishError } from '@/lib/admin/pricing-publish-lock';
 import {
     getOption,
     getTokenForCustomer,
@@ -24,8 +27,19 @@ const PORTAL_PERSISTENCE_FAILURE =
 // admin edits remain an operational conflict and are post-write verified.
 let optionSyncTail: Promise<void> = Promise.resolve();
 let keyMigrationTail: Promise<void> = Promise.resolve();
+const optionWriteContext = new AsyncLocalStorage<{ tx: Prisma.TransactionClient; writeDeadline: number }>();
 
-async function withOptionSyncLock<T>(work: () => Promise<T>): Promise<T> {
+async function assertOptionSyncWritable() {
+    const context = optionWriteContext.getStore();
+    if (!context) throw new UserTierMultiplierError('Missing pricing coordination context', 409);
+    // Recheck the transaction immediately before every remote write, including
+    // compensation. An expired transaction must never continue writing options.
+    await assertPricingCatalogWritable(context.tx);
+    if (Date.now() > context.writeDeadline)
+        throw new UserTierMultiplierError('客户倍率操作已超过安全写入时限，请核对当前状态。', 409);
+}
+
+async function withOptionSyncLock<T>(work: () => Promise<T>, coordinatePricing = true): Promise<T> {
     const previous = optionSyncTail;
     let release: () => void = () => undefined;
     optionSyncTail = new Promise<void>((resolve) => {
@@ -33,7 +47,24 @@ async function withOptionSyncLock<T>(work: () => Promise<T>): Promise<T> {
     });
     await previous;
     try {
-        return await work();
+        // Key migration does not change any global pricing option and keeps its
+        // existing transaction/compensation timing, even for large key batches.
+        if (!coordinatePricing) return await work();
+        // Hold the same database mutex as global price publications for this
+        // entire read/merge/write/verification flow, across Portal processes.
+        return await prisma.$transaction(
+            async (tx) => {
+                await assertPricingCatalogWritable(tx);
+                return optionWriteContext.run({ tx, writeDeadline: Date.now() + 90_000 }, work);
+            },
+            { timeout: 120_000, maxWait: 5_000 },
+        );
+    } catch (error) {
+        if (error instanceof PricingPublishError) throw new UserTierMultiplierError(error.message, error.status);
+        if (error && typeof error === 'object' && 'code' in error && ['P2028', 'P2034'].includes(String(error.code))) {
+            throw new UserTierMultiplierError('定价或客户倍率正在修改，请稍后核对再重试。', 409);
+        }
+        throw error;
     } finally {
         release();
     }
@@ -196,8 +227,9 @@ async function updateUserGroupWithReadback(args: {
 }): Promise<boolean> {
     if (!args.force && args.user.group === args.group) return false;
 
+    await assertOptionSyncWritable();
     try {
-        await updateUser({ ...args.user, group: args.group });
+        await updateUser({ ...args.user, group: args.group }, 30_000);
         return true;
     } catch (writeErr) {
         try {
@@ -217,8 +249,9 @@ async function updateUserGroupWithReadback(args: {
 
 async function putGroupGroupRatioWithReadback(args: { value: string; operation: string }): Promise<boolean> {
     const expected = parseGroupGroupRatio(args.value);
+    await assertOptionSyncWritable();
     try {
-        await putOption(GROUP_GROUP_RATIO_OPTION, args.value);
+        await putOption(GROUP_GROUP_RATIO_OPTION, args.value, 30_000);
         return true;
     } catch (writeErr) {
         try {
@@ -791,5 +824,5 @@ export function migrateUserKeysToTier(args: Parameters<typeof migrateUserKeysToT
     // The migration depends on the matching User.group + GroupGroupRatio
     // rule remaining active throughout, so serialize it with rule saves and
     // removals as well as with other migrations.
-    return withOptionSyncLock(() => withKeyMigrationLock(() => migrateUserKeysToTierUnlocked(args)));
+    return withOptionSyncLock(() => withKeyMigrationLock(() => migrateUserKeysToTierUnlocked(args)), false);
 }
