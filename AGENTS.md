@@ -471,6 +471,12 @@
 - 完整测试 4063 passed / 1 skipped、类型/格式通过、lint 0 error；实际浏览器在合成数据隔离页验收两档预选、取消和中英文入口。生产新 JS 的公网 hash 与镜像一致；未做生产登录浏览器验收或真实改价。
 - 镜像 `sha256:4247756c22789a47e8719ed2fe7b90819d8e4012b26db7ba7bb2e3d57c7aa3f6`，16:19:03–16:19:18 切换、恢复采样 9.426 秒，restart count 0。数据库77条migration正常，目录/价格/Key和new-api计费选项不变，发布jobs/writes为0，依赖未重启。备份和回滚见 `docs/DEPLOY-PRICING-PUBLISH-2026-09-12.md` 16:19节。
 
+## 逐档定价历史整理 2026-09-12（16:50 已上线）
+
+- operator 要求规整全部行操作，已发布 `d718acd`：每个活动档次固定对齐“改价并发布 / 历史”，历史在当前行下方按tier精确筛选，空记录提示，支持切换/收起且rowSpan/colSpan正确。退役档和纯退役模型保留只读历史，不恢复改价行。
+- 完整测试4063 passed / 1 skipped、类型/格式通过、lint0 error；本地真实浏览器验证多档过滤、空历史、只读退役、切换收起及双语深浅色。镜像 `sha256:585d8123d1a71e5c98ff58459b0be3214dc243ddb959b3c6adaa86c4ffcd62c2`；公网新JS hash与镜像一致。无后端或实际价格变更。
+- 16:50:33–16:50:48切换，恢复采样9.427秒，restart count0、依赖未重启；77条migration与目录/价格/Key/计费选项保持不变，jobs/writes为0。备份 `/opt/backups/silkroadai-portal/releases/pricing-history-20260912-083750/`，旧应用`ad8594a`；详情见`docs/DEPLOY-PRICING-PUBLISH-2026-09-12.md` 16:50节。
+
 ## 目录结构
 
 ```

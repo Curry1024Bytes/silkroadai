@@ -75,3 +75,13 @@ operator 反馈只有企业级行显示“发布价格到 new-api”，并明确
 - 无新增 migration/env/依赖/配置，77 条 migration 及 checksum 正常；29 模型、35 价格版本、6 档次、20 Key 内容摘要不变，new-api 价格及计费选项不变，jobs/writes/active_jobs 均为 0。
 - 公网 apex/www 登录页 200，API 未鉴权模型列表 401、API login 404；公网新 JS 返回 200 且 SHA-256 与实际运行镜像一致，确认已服务新入口。没有真实改价、收费生成或支付。
 - 本轮备份与证据：`/opt/backups/silkroadai-portal/releases/pricing-ui-20260912-081339/`，数据库备份 656682 字节、gzip 完整，环境备份 `.env.bak.pricing-ui-20260912-081339`；备份均 0600。回滚镜像标签 `rollback-pricing-ui-20260912-081339`，旧应用为 `becf7f5`。仍须遵守活动价格任务/未决写入的回滚约束。
+
+## 16:50 逐档历史与表格整理（已上线）
+
+operator 要求各行操作规整一致，已发布 `d718acda5b7fda66bd84802f0dfb695633506397`。后台每个活动档次固定对齐“改价并发布 / 历史”；点击历史在本行下方展开，仅按本档 tier 精确筛选，空记录显示“暂无改价历史”。同一模型切换档次时替换历史面板，支持收起，合并模型列的 rowSpan 包含展开行，历史内容占其余七列。退役档次另有只读入口；没有活动档次但仍有旧价格的模型保留只读历史行，不产生改价入口。未改变价格、计费、API 或发布逻辑。
+
+- 完整测试 304 files / 4063 passed / 1 skipped、typecheck/格式通过、lint 0 error / 93 既有 warnings。真实浏览器在本地合成数据页验证企业/特惠各两条历史互不混入、切换、空记录、退役历史及完全退役模型只读行、展开收起、中英文和深浅色布局。使用实际页面与弹窗、Tailwind 编译的实际样式；暗色复验使用原 PayPageLayout 外壳。所有测试写请求拒绝，没有将本地 fixture 当作生产价格验收。
+- prod 干净归档构建 16:44:21–16:48:11，候选 Node 22.23.2 / uid 1001 / 打包新历史文案通过。镜像 `sha256:585d8123d1a71e5c98ff58459b0be3214dc243ddb959b3c6adaa86c4ffcd62c2`，标签 `silkroadai-portal-portal:release-d718acd`；北京时间16:50:33–16:50:48切换，27次采样14次失败，首次失败至首次恢复9.427秒。Portal restart count0、依赖未重启、启动无error/fatal/failed。
+- 77条migration/checksum正常，无新增migration/env/依赖/服务器配置；29模型、35价格、6档次、20Key内容摘要及new-api价格/计费选项保持不变。jobs/writes/active_jobs均0，未真实改价或收费生成。
+- 公网apex/www登录200、未鉴权API模型列表401、API login404；新历史JS公网200且SHA-256与镜像一致。生产登录态浏览器未重复验收；完整交互证据为本地隔离页检查。
+- 备份及证据目录 `/opt/backups/silkroadai-portal/releases/pricing-history-20260912-083750/`，数据库备份656680字节、gzip完整，环境备份 `.env.bak.pricing-history-20260912-083750`，备份与证据0600。回滚标签 `rollback-pricing-history-20260912-083750`，旧应用`ad8594a`；仍遵守活动任务/未决写入约束。临时浏览器和本地HTTP服务已关闭，保留验收文件。
