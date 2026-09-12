@@ -1,7 +1,7 @@
 'use client';
 
 import { useSearchParams } from 'next/navigation';
-import { useState, useEffect, useCallback, useMemo, useRef, Suspense } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, Suspense, Fragment } from 'react';
 import PayPageLayout from '@/components/PayPageLayout';
 import { resolveLocale, type Locale } from '@/lib/locale';
 import { deriveTierRows, tierOrder } from '@/lib/admin/pricing-tiers';
@@ -66,6 +66,8 @@ function getTexts(locale: Locale) {
               cancel: 'Cancel',
               historyTitle: 'Price history',
               noHistory: 'No price history yet',
+              retiredHistory: 'Retired tier history',
+              historyOnly: 'No active tier · history only',
               colEffective: 'Catalog effective from',
               // P2.10 batch cost fill
               batchBtn: 'Batch fill cost',
@@ -118,6 +120,8 @@ function getTexts(locale: Locale) {
               cancel: '取消',
               historyTitle: '改价历史',
               noHistory: '暂无改价历史',
+              retiredHistory: '已退役档次历史',
+              historyOnly: '无活动档次，仅保留历史',
               colEffective: '目录生效时间',
               // P2.10 批量填成本
               batchBtn: '批量填成本',
@@ -221,9 +225,6 @@ function PricingContent() {
     const publicationRevision = useRef(0);
     const jobActionLock = useRef(false);
 
-    // History expansion: which model ids have history open
-    const [historyOpen, setHistoryOpen] = useState<Set<string>>(new Set());
-
     // ── Fetch ──
 
     const fetchModels = useCallback(async (quiet = false) => {
@@ -303,17 +304,6 @@ function PricingContent() {
             setJobBusyId(null);
             void fetchModels(true);
         }
-    };
-
-    // ── History toggle ──
-
-    const toggleHistory = (modelId: string) => {
-        setHistoryOpen((prev) => {
-            const next = new Set(prev);
-            if (next.has(modelId)) next.delete(modelId);
-            else next.add(modelId);
-            return next;
-        });
     };
 
     // ── Styles (mirror dashboard/channels conventions) ──
@@ -425,26 +415,20 @@ function PricingContent() {
                             </tr>
                         </thead>
                         <tbody>
-                            {rendered.map(({ model, rows }) => {
-                                const histOpen = historyOpen.has(model.id);
-                                return (
-                                    <ModelRows
-                                        key={model.id}
-                                        model={model}
-                                        rows={rows}
-                                        isDark={isDark}
-                                        tdMuted={tdMuted}
-                                        linkBtn={linkBtn}
-                                        unpricedLabel={t.unpriced}
-                                        editLabel={t.edit}
-                                        historyLabel={histOpen ? t.hide : t.history}
-                                        onEdit={(row) => openEditModal(model, row)}
-                                        onToggleHistory={() => toggleHistory(model.id)}
-                                        historyOpen={histOpen}
-                                        t={t}
-                                    />
-                                );
-                            })}
+                            {rendered.map(({ model, rows }) => (
+                                <ModelRows
+                                    key={model.id}
+                                    model={model}
+                                    rows={rows}
+                                    isDark={isDark}
+                                    tdMuted={tdMuted}
+                                    linkBtn={linkBtn}
+                                    unpricedLabel={t.unpriced}
+                                    editLabel={t.edit}
+                                    onEdit={(row) => openEditModal(model, row)}
+                                    t={t}
+                                />
+                            ))}
                         </tbody>
                     </table>
                 )}
@@ -497,140 +481,212 @@ interface ModelRowsProps {
     linkBtn: (color: 'indigo' | 'red' | 'slate') => string;
     unpricedLabel: string;
     editLabel: string;
-    historyLabel: string;
     onEdit: (row: TierRow) => void;
-    onToggleHistory: () => void;
-    historyOpen: boolean;
     t: ReturnType<typeof getTexts>;
 }
 
-function ModelRows({
-    model,
-    rows,
-    isDark,
-    tdMuted,
-    linkBtn,
-    unpricedLabel,
-    editLabel,
-    historyLabel,
-    onEdit,
-    onToggleHistory,
-    historyOpen,
-    t,
-}: ModelRowsProps) {
+function ModelRows({ model, rows, isDark, tdMuted, linkBtn, unpricedLabel, editLabel, onEdit, t }: ModelRowsProps) {
     const rowBorder = isDark ? 'border-slate-700/50 hover:bg-slate-700/30' : 'border-slate-100 hover:bg-slate-50';
-    const COL_SPAN = 8;
+    const [historyView, setHistoryView] = useState<{ kind: 'tier'; tier: string } | { kind: 'retired' } | null>(null);
+    const activeTiers = new Set(rows.map((row) => row.tier));
+    const retiredPrices = model.prices.filter((price) => !activeTiers.has(price.tier));
+    const retiredOpen = historyView?.kind === 'retired' && retiredPrices.length > 0;
+    const expandedTier = historyView?.kind === 'tier' && activeTiers.has(historyView.tier) ? historyView.tier : null;
+    const modelRowSpan = Math.max(1, rows.length) + (retiredOpen || expandedTier !== null ? 1 : 0);
+    const retiredHistoryId = `pricing-retired-history-${model.id}`;
 
     return (
         <>
-            {rows.map((row, idx) => {
-                const cur = row.current;
-                const unpriced = cur === null;
-                return (
-                    <tr key={`${model.id}-${row.tier}`} className={['border-b transition-colors', rowBorder].join(' ')}>
-                        {/* Model name spans all tier rows (rendered on the first row only) */}
-                        {idx === 0 ? (
-                            <td
-                                className={`px-4 py-3 align-top font-medium ${isDark ? 'text-slate-100' : 'text-slate-900'}`}
-                                rowSpan={rows.length}
+            {rows.length === 0 && retiredPrices.length > 0 && (
+                <tr className={['border-b', rowBorder].join(' ')}>
+                    <td
+                        rowSpan={modelRowSpan}
+                        className={`px-4 py-3 align-top font-medium ${isDark ? 'text-slate-100' : 'text-slate-900'}`}
+                    >
+                        <div>{model.display_name}</div>
+                        <div className={`text-xs ${tdMuted}`}>{model.slug}</div>
+                    </td>
+                    <td colSpan={6} className={`px-4 py-3 ${tdMuted}`}>
+                        {t.historyOnly}
+                    </td>
+                    <td className="px-4 py-3 text-right align-top whitespace-nowrap">
+                        <div className="inline-grid grid-cols-[auto_4rem] items-center gap-1">
+                            <button
+                                type="button"
+                                aria-expanded={retiredOpen}
+                                aria-controls={retiredHistoryId}
+                                aria-label={`${t.retiredHistory} · ${model.display_name}`}
+                                onClick={() => setHistoryView(retiredOpen ? null : { kind: 'retired' })}
+                                className={`col-start-2 ${linkBtn('slate')}`}
                             >
-                                <div>{model.display_name}</div>
-                                <div className={`text-xs ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
-                                    {model.slug}
-                                </div>
-                            </td>
-                        ) : null}
-                        <td className={`px-4 py-3 ${isDark ? 'text-slate-300' : 'text-slate-700'}`}>
-                            {tierLabel(row.tier, t)}
-                        </td>
-                        {unpriced ? (
-                            <td className={`px-4 py-3 text-right ${tdMuted}`} colSpan={5}>
-                                {unpricedLabel}
-                            </td>
-                        ) : (
-                            <>
-                                <td className={`px-4 py-3 text-right ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>
-                                    {fmtMoney(cur.input_cny_per_1m)}
-                                </td>
-                                <td className={`px-4 py-3 text-right ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>
-                                    {fmtMoney(cur.output_cny_per_1m)}
-                                </td>
-                                <td className={`px-4 py-3 text-right ${tdMuted}`}>
-                                    {toNum(cur.per_image_cny) !== null ? fmtMoney(cur.per_image_cny) : '—'}
-                                </td>
-                                <td className={`px-4 py-3 text-right ${tdMuted}`}>{fmtMoney(cur.cost_cny_per_1m)}</td>
-                                <td className={`px-4 py-3 text-right ${tdMuted}`}>
-                                    {fmtMargin(cur.input_cny_per_1m, cur.cost_cny_per_1m)}
-                                </td>
-                            </>
-                        )}
-                        {/* Each tier opens the same publication flow with that tier selected.
-                            History belongs to the model and appears once. */}
-                        <td className="px-4 py-3 text-right align-top">
-                            <div className="inline-flex flex-wrap justify-end gap-1">
-                                <button type="button" onClick={() => onEdit(row)} className={linkBtn('indigo')}>
-                                    {editLabel}
-                                </button>
-                                {idx === 0 && (
-                                    <button type="button" onClick={onToggleHistory} className={linkBtn('slate')}>
-                                        {historyLabel}
-                                    </button>
-                                )}
-                            </div>
-                        </td>
-                    </tr>
-                );
-            })}
-
-            {/* History timeline (all tiers, newest first) */}
-            {historyOpen && (
-                <tr className={isDark ? 'bg-slate-900/50' : 'bg-slate-50/70'}>
-                    <td colSpan={COL_SPAN} className="px-4 py-3">
-                        <div className={`mb-2 text-xs font-semibold ${isDark ? 'text-slate-300' : 'text-slate-600'}`}>
-                            {t.historyTitle}
+                                {retiredOpen ? t.hide : t.history}
+                            </button>
                         </div>
-                        {model.prices.length === 0 ? (
-                            <div className={`text-xs ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
-                                {t.noHistory}
-                            </div>
-                        ) : (
-                            <div className="overflow-x-auto">
-                                <table className="w-full text-xs">
-                                    <thead>
-                                        <tr className={isDark ? 'text-slate-500' : 'text-slate-400'}>
-                                            <th className="px-2 py-1 text-left font-medium">{t.colEffective}</th>
-                                            <th className="px-2 py-1 text-left font-medium">{t.colTier}</th>
-                                            <th className="px-2 py-1 text-right font-medium">{t.colInput}</th>
-                                            <th className="px-2 py-1 text-right font-medium">{t.colOutput}</th>
-                                            <th className="px-2 py-1 text-right font-medium">{t.colImage}</th>
-                                            <th className="px-2 py-1 text-right font-medium">{t.colCost}</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        {model.prices.map((p) => (
-                                            <tr key={p.id} className={isDark ? 'text-slate-300' : 'text-slate-600'}>
-                                                <td className="px-2 py-1 whitespace-nowrap">
-                                                    {fmtDate(p.effective_from)}
-                                                </td>
-                                                <td className="px-2 py-1">{p.tier}</td>
-                                                <td className="px-2 py-1 text-right">{fmtMoney(p.input_cny_per_1m)}</td>
-                                                <td className="px-2 py-1 text-right">
-                                                    {fmtMoney(p.output_cny_per_1m)}
-                                                </td>
-                                                <td className="px-2 py-1 text-right">
-                                                    {toNum(p.per_image_cny) !== null ? fmtMoney(p.per_image_cny) : '—'}
-                                                </td>
-                                                <td className="px-2 py-1 text-right">{fmtMoney(p.cost_cny_per_1m)}</td>
-                                            </tr>
-                                        ))}
-                                    </tbody>
-                                </table>
-                            </div>
-                        )}
                     </td>
                 </tr>
             )}
+            {rows.map((row, idx) => {
+                const cur = row.current;
+                const unpriced = cur === null;
+                const historyOpen = expandedTier === row.tier;
+                const historyId = `pricing-tier-history-${model.id}-${encodeURIComponent(row.tier)}`;
+                return (
+                    <Fragment key={row.tier}>
+                        <tr className={['border-b transition-colors', rowBorder].join(' ')}>
+                            {/* Model name spans all tier rows (rendered on the first row only) */}
+                            {idx === 0 ? (
+                                <td
+                                    className={`px-4 py-3 align-top font-medium ${isDark ? 'text-slate-100' : 'text-slate-900'}`}
+                                    rowSpan={modelRowSpan}
+                                >
+                                    <div>{model.display_name}</div>
+                                    <div className={`text-xs ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+                                        {model.slug}
+                                    </div>
+                                    {retiredPrices.length > 0 && (
+                                        <button
+                                            type="button"
+                                            aria-expanded={retiredOpen}
+                                            aria-controls={retiredHistoryId}
+                                            onClick={() => setHistoryView(retiredOpen ? null : { kind: 'retired' })}
+                                            className={`mt-2 text-left text-xs underline underline-offset-2 ${tdMuted}`}
+                                        >
+                                            {t.retiredHistory}
+                                        </button>
+                                    )}
+                                </td>
+                            ) : null}
+                            <td className={`px-4 py-3 ${isDark ? 'text-slate-300' : 'text-slate-700'}`}>
+                                {tierLabel(row.tier, t)}
+                            </td>
+                            {unpriced ? (
+                                <td className={`px-4 py-3 text-right ${tdMuted}`} colSpan={5}>
+                                    {unpricedLabel}
+                                </td>
+                            ) : (
+                                <>
+                                    <td
+                                        className={`px-4 py-3 text-right ${isDark ? 'text-slate-200' : 'text-slate-800'}`}
+                                    >
+                                        {fmtMoney(cur.input_cny_per_1m)}
+                                    </td>
+                                    <td
+                                        className={`px-4 py-3 text-right ${isDark ? 'text-slate-200' : 'text-slate-800'}`}
+                                    >
+                                        {fmtMoney(cur.output_cny_per_1m)}
+                                    </td>
+                                    <td className={`px-4 py-3 text-right ${tdMuted}`}>
+                                        {toNum(cur.per_image_cny) !== null ? fmtMoney(cur.per_image_cny) : '—'}
+                                    </td>
+                                    <td className={`px-4 py-3 text-right ${tdMuted}`}>
+                                        {fmtMoney(cur.cost_cny_per_1m)}
+                                    </td>
+                                    <td className={`px-4 py-3 text-right ${tdMuted}`}>
+                                        {fmtMargin(cur.input_cny_per_1m, cur.cost_cny_per_1m)}
+                                    </td>
+                                </>
+                            )}
+                            <td className="px-4 py-3 text-right align-top whitespace-nowrap">
+                                <div className="inline-grid grid-cols-[auto_4rem] items-center gap-1">
+                                    <button type="button" onClick={() => onEdit(row)} className={linkBtn('indigo')}>
+                                        {editLabel}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        aria-expanded={historyOpen}
+                                        aria-controls={historyId}
+                                        aria-label={`${historyOpen ? t.hide : t.history} · ${model.display_name} · ${tierLabel(row.tier, t)}`}
+                                        onClick={() =>
+                                            setHistoryView(historyOpen ? null : { kind: 'tier', tier: row.tier })
+                                        }
+                                        className={linkBtn('slate')}
+                                    >
+                                        {historyOpen ? t.hide : t.history}
+                                    </button>
+                                </div>
+                            </td>
+                        </tr>
+                        {historyOpen && (
+                            <PriceHistoryRow
+                                id={historyId}
+                                title={`${t.historyTitle} · ${tierLabel(row.tier, t)}`}
+                                prices={model.prices.filter((price) => price.tier === row.tier)}
+                                isDark={isDark}
+                                t={t}
+                            />
+                        )}
+                    </Fragment>
+                );
+            })}
+
+            {retiredOpen && (
+                <PriceHistoryRow
+                    id={retiredHistoryId}
+                    title={t.retiredHistory}
+                    prices={retiredPrices}
+                    isDark={isDark}
+                    t={t}
+                />
+            )}
         </>
+    );
+}
+
+function PriceHistoryRow({
+    id,
+    title,
+    prices,
+    isDark,
+    t,
+}: {
+    id: string;
+    title: string;
+    prices: CatalogPrice[];
+    isDark: boolean;
+    t: ReturnType<typeof getTexts>;
+}) {
+    return (
+        <tr className={isDark ? 'bg-slate-900/50' : 'bg-slate-50/70'}>
+            <td colSpan={7} className="px-4 py-3">
+                <section id={id} aria-label={title}>
+                    <div className={`mb-2 text-xs font-semibold ${isDark ? 'text-slate-300' : 'text-slate-600'}`}>
+                        {title}
+                    </div>
+                    {prices.length === 0 ? (
+                        <div className={`text-xs ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>{t.noHistory}</div>
+                    ) : (
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-xs">
+                                <thead>
+                                    <tr className={isDark ? 'text-slate-500' : 'text-slate-400'}>
+                                        <th className="px-2 py-1 text-left font-medium">{t.colEffective}</th>
+                                        <th className="px-2 py-1 text-left font-medium">{t.colTier}</th>
+                                        <th className="px-2 py-1 text-right font-medium">{t.colInput}</th>
+                                        <th className="px-2 py-1 text-right font-medium">{t.colOutput}</th>
+                                        <th className="px-2 py-1 text-right font-medium">{t.colImage}</th>
+                                        <th className="px-2 py-1 text-right font-medium">{t.colCost}</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {prices.map((p) => (
+                                        <tr key={p.id} className={isDark ? 'text-slate-300' : 'text-slate-600'}>
+                                            <td className="px-2 py-1 whitespace-nowrap">{fmtDate(p.effective_from)}</td>
+                                            <td className="px-2 py-1">{p.tier}</td>
+                                            <td className="px-2 py-1 text-right">{fmtMoney(p.input_cny_per_1m)}</td>
+                                            <td className="px-2 py-1 text-right">{fmtMoney(p.output_cny_per_1m)}</td>
+                                            <td className="px-2 py-1 text-right">
+                                                {toNum(p.per_image_cny) !== null ? fmtMoney(p.per_image_cny) : '—'}
+                                            </td>
+                                            <td className="px-2 py-1 text-right">{fmtMoney(p.cost_cny_per_1m)}</td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
+                </section>
+            </td>
+        </tr>
     );
 }
 
