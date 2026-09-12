@@ -455,6 +455,16 @@
 - 完整测试 `304 files / 4049 passed / 1 既有 skipped`（含真实只读模型列表 smoke）；typecheck、生产构建和两份 Prisma schema validate 通过，lint `0 error / 93 既有 warnings`。真实 PG 16.15/MySQL 8.4.11 的 10 项隔离测试通过，含 SIGKILL；HTTP 为模拟 new-api、未回放完整历史 migration，不等同于生产验收。UI 已做 SSR/契约测试，未做本轮真实浏览器视觉验收。
 - 详细实施/上线前置项见 `docs/PRICING-PUBLISH-2026-09-12.md`、`docs/PRICING-PUBLISH-DB-VERIFICATION-2026-09-12.md`、`docs/PRICING-PUBLISH-UNCERTAIN-WRITES.md` 及当前运维手册。实际 `.env`、IDE 配置和用户已有需求文档保留未提交。
 
+## 定价发布 2026-09-12（12:58 已上线）
+
+- operator 明确批准生产配置、迁移上线与只读验收后，发布 `prod@becf7f5`（`7375300` 加 rc.23 窄兼容修正）；运行镜像 `sha256:2ed8a61106fdb59b05bd5b6c1e5c3c96e19917f4fbc1d77a5df5a46dbc794015`，标签 `release-becf7f5`。北京时间 12:57:53–12:58:08 切换，首次失败至恢复约 9 秒，restart count 0，日志无 error/fatal/failed；三个依赖容器未重启。
+- 实际 rc.23 revision `0ab0202` 未实现 ImageResolutionPrice/定时折扣两个可选项，现只容许它们完全缺失，显式非法值仍拒绝；接受实际普通 `ratio` 枚举。核心四项双读保持严格。修正后完整测试 4063 passed / 1 skipped、类型/构建/格式通过、lint 0 error；真实候选 Linux Node 22.23.2 镜像+生产备份克隆验收 13/13。
+- 生产 MySQL 新增 `portal_pricing_ro@172.18.%`，仅 SELECT `new_api.options`；`.env` 只追加专用只读 URL/固定 RSA 公钥路径，原配置不变。使用既有可信私有 Docker 网络，无新增公开端口；固定 RSA 仅保护鉴权，查询不是 TLS。公开信任材料只读挂载，实际 uid 1001 读取成功。没有修改 new-api 源码、价格或重启数据库。
+- 新增三表 migration 成功：77 applied、0 unfinished/rolled back、全部 checksum 匹配。生产 Kimi 只读预览通过，jobs/writes=0、active_job_id 为空；29 模型/35 价格/6 档次/20 Key 的内容摘要不变，12/12 持久 token 与管理员现有 Key 两种 UA 公网模型列表通过，固定图片价和动态拓扑不变量正常。
+- 四个 GPT 主型号已有 `tiered_expr`，通用普通改价入口会阻止覆盖。真实改价仍未执行，须明确模型/档次/金额；外部入口互斥、两 PUT 短暂混价及未决请求恢复限制仍有效。
+- 备份与证据：`/opt/backups/silkroadai-portal/releases/pricing-20260912-034121/`；`.env.bak.pricing-20260912-034121`，备份 0600/gzip 完整。回滚标签 `rollback-pricing-20260912-034121`，旧应用 `c1d9501`；回滚前须确认没有活动任务/未决写入，不恢复覆盖生产库。50 项网络检查首轮45通过/5本机超时，定向复查5/5通过，原结果保留。
+- 详见 `docs/DEPLOY-PRICING-PUBLISH-2026-09-12.md`。首次预览版本不兼容、SSH/本机转发中断和阶梯计费候选被保护拦截均保留记录；没有将它们掩盖成一次成功。临时容器/库/含密文件已清理；没有收费推理、支付或真实浏览器 OAuth 登录。
+
 ## 目录结构
 
 ```
