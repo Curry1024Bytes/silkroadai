@@ -765,24 +765,70 @@ describe('wetokengated provider(同 us-la 上游但不带 openAllTiers = ch154 �
 });
 
 describe('wetoken provider(us-la.we-token.cc,adobe 上游挂适配器 → 合成官方 usage)', () => {
-    it('路由到 us-la.we-token.cc,上游面积 usage 被丢弃、返回官方合成值', async () => {
+    it('路由到 us-la.we-token.cc,上游面积 usage 被丢弃、返回官方合成值(4K medium;high 已不走本线)', async () => {
         okUpstream();
         const res = await handleAdapterImage(
             jsonReq('http://portal.test/image-adapter/wetoken/v1/images/generations', {
                 model: 'gpt-image-2',
                 prompt: 'a 4k cat',
                 size: '3840x2160',
-                quality: 'high',
+                quality: 'medium',
             }),
             'generations',
             'wetoken',
         );
         expect(res.status).toBe(200);
         const body = await res.json();
-        expect(body.usage.output_tokens).toBe(13342); // 官方公式,不是上游面积 19755
+        expect(body.usage.output_tokens).toBe(officialOutputTokens(3840, 2160, 'medium')); // 官方公式,不是上游面积
         const [url] = fetchMock.mock.calls[0];
         expect(url).toBe('https://us-la.we-token.cc/v1/images/generations');
     });
+
+    it.each(['wetoken', 'wetokenasia'])(
+        '%s:onlyQualities=[low,medium] —— high 503 让路不打上游;low/medium/缺省(→low)含 size=auto 放行',
+        async (prov) => {
+            const url = `http://portal.test/image-adapter/${prov}/v1/images/generations`;
+            for (const req of [
+                { size: '1024x1024', quality: 'high' },
+                { size: 'auto', quality: 'high' },
+                { size: '3840x2160', quality: 'HIGH' },
+            ]) {
+                fetchMock.mockReset();
+                okUpstream();
+                const res = await handleAdapterImage(
+                    jsonReq(url, { model: 'gpt-image-2', prompt: 'x', ...req }),
+                    'generations',
+                    prov,
+                );
+                expect(res.status).toBe(503);
+                expect(fetchMock).not.toHaveBeenCalled();
+                expect(((await res.json()) as { error: { code: string } }).error.code).toBe('upstream_unavailable');
+            }
+            for (const req of [
+                { size: '1024x1024', quality: 'low' },
+                { size: '1024x1024', quality: 'medium' },
+                { size: 'auto', quality: 'medium' },
+                { size: '1344x1008' },
+            ]) {
+                fetchMock.mockReset();
+                // size=auto 按返回图实际尺寸计费 → 上游要返可解码的 PNG
+                fetchMock.mockImplementation(
+                    async () =>
+                        new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(1024, 1024) }] }), {
+                            status: 200,
+                            headers: { 'content-type': 'application/json' },
+                        }),
+                );
+                const res = await handleAdapterImage(
+                    jsonReq(url, { model: 'gpt-image-2', prompt: 'x', ...req }),
+                    'generations',
+                    prov,
+                );
+                expect(res.status).toBe(200);
+                expect(fetchMock).toHaveBeenCalledTimes(1);
+            }
+        },
+    );
 
     it('openAllTiers:1024 low(方图)也放行打上游、合成官方 196(全量官方账单)', async () => {
         okUpstream();
@@ -1633,9 +1679,18 @@ describe('适配器响应合规下沉(echo 官方枚举 + jpeg 转码,覆盖直�
         expect(b.size).toBe('1024x1024');
     });
 
-    it('quality=high 回显 high', async () => {
+    it('quality=high 回显 high(走 pandatk:wetoken 2026-09-13 起不再收 high)', async () => {
         upstreamPng();
-        const res = await genW({ quality: 'high' });
+        const res = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/pandatk/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '1024x1024',
+                quality: 'high',
+            }),
+            'generations',
+            'pandatk',
+        );
         expect(((await res.json()) as Record<string, string>).quality).toBe('high');
     });
 
@@ -1712,7 +1767,7 @@ describe('per-provider upstreamTimeoutMs', () => {
                 model: 'gpt-image-2',
                 prompt: 'x',
                 size: '1024x1024',
-                quality: 'high',
+                quality: 'medium', // 2026-09-13 起 we-token 两线只收 low/medium,high 在守门就 503 打不到上游
             }),
             'generations',
             prov,

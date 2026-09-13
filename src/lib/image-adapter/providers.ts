@@ -70,14 +70,22 @@ export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
     wetoken: {
         baseUrl: 'https://us-la.we-token.cc',
         brand: /\bwe-?token\b|\badobe\b|\bfirefly\b/gi,
-        openAllTiers: true,
+        // 2026-09-13 operator 拍板:we-token 两线(ch176/177)只收 low/medium,high 503 让路给别的渠道。
+        // 原 openAllTiers(全量官方账单)改成 onlyQualities —— 尺寸仍任意(含 size=auto),计费仍按返回图
+        // 实际尺寸合成官方账单;只是 high 档不再打这两条线。注意 gate 代码里 openAllTiers 会整体跳过守门,
+        // 两者不能并存,这里必须去掉 openAllTiers 才会生效。
+        onlyQualities: ['low', 'medium'],
         noTransparentBackground: true,
         upstreamTimeoutMs: WETOKEN_UPSTREAM_TIMEOUT_MS,
     },
     wetokenasia: {
         baseUrl: 'https://asian-acc.we-token.cc',
         brand: /\bwe-?token\b|\badobe\b|\bfirefly\b/gi,
-        openAllTiers: true,
+        // 2026-09-13 operator 拍板:we-token 两线(ch176/177)只收 low/medium,high 503 让路给别的渠道。
+        // 原 openAllTiers(全量官方账单)改成 onlyQualities —— 尺寸仍任意(含 size=auto),计费仍按返回图
+        // 实际尺寸合成官方账单;只是 high 档不再打这两条线。注意 gate 代码里 openAllTiers 会整体跳过守门,
+        // 两者不能并存,这里必须去掉 openAllTiers 才会生效。
+        onlyQualities: ['low', 'medium'],
         noTransparentBackground: true,
         upstreamTimeoutMs: WETOKEN_UPSTREAM_TIMEOUT_MS,
     },

@@ -555,7 +555,8 @@ export async function handleAdapterImage(
 
     // ---- 守门(调上游之前,不花钱)----
     // 放行规则:
-    //  - provider.openAllTiers(we-token 官方账单上游)→ 放行所有请求,含 size=auto/不可解析
+    //  - provider.openAllTiers(pandatk / frimodel / ominiapifull / oaidistfull 等官方账单上游;we-token 两线
+    //    2026-09-13 起改 onlyQualities=[low,medium])→ 放行所有请求,含 size=auto/不可解析
     //    (OpenAI 默认 size 就是 auto;这类无法预先算 token,透传上游后按【返回图实际尺寸】合成官方账单);
     //  - provider.gateMinCt(oaidist 等新守门上游)→ 要求 size 可解析,纯盈利档:合成 ct ≥ 该线放行,
     //    【无】狭长放行条款(兜底线全是 openAllTiers 官方账单,狭长图落下去照样对得上账);
