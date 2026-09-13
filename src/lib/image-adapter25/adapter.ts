@@ -535,6 +535,12 @@ export async function handleAdapter25Image(
 
     const dims = parseSize(parsed.size);
     const quality = normQuality25(parsed.quality);
+    // ---- 档位白名单:上游对名单外档位是【静默降级】而非拒绝(llmway xhigh/max → medium),直通会让
+    // 客户按高档付费拿低档图;让路 503 给别的渠道,不打上游。归一后判(auto/缺省 = low 照常放行)。 ----
+    if (provider.qualities && !provider.qualities.includes(quality)) {
+        console.warn('[image-adapter25] quality not served by provider', { provider: providerName, quality });
+        return failover('quality_not_served', `quality '${quality}' not served by provider '${providerName}'`);
+    }
     const wantsTransparent = (parsed.extras.background || '').trim().toLowerCase() === 'transparent';
     const wantJpeg = (parsed.extras.output_format || '').trim().toLowerCase() === 'jpeg';
     const n = Math.min(parsed.n, MAX_N);

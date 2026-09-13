@@ -530,3 +530,76 @@ describe('per-provider upstreamTimeoutMs', () => {
         expect((await p).status).toBe(503);
     });
 });
+
+describe('per-provider qualities 白名单(llmway25:上游 xhigh/max 静默降 medium → 让路不打上游)', () => {
+    const URL_LLMWAY = 'http://portal.test/image-adapter25/llmway25/v1/images/generations';
+
+    it('registry:llmway25 = llmway.ai、两模型、只放 low/medium/high;wetokenasia25 不设名单(5 档全收)', () => {
+        expect(IMAGE_PROVIDERS_25.llmway25.baseUrl).toBe('https://llmway.ai');
+        expect(IMAGE_PROVIDERS_25.llmway25.models).toEqual(GPT_IMAGE_25_MODELS);
+        expect(IMAGE_PROVIDERS_25.llmway25.qualities).toEqual(['low', 'medium', 'high']);
+        expect(IMAGE_PROVIDERS_25.wetokenasia25.qualities).toBeUndefined();
+        expect('llmway sucks'.replace(IMAGE_PROVIDERS_25.llmway25.brand, '***')).toBe('*** sucks');
+    });
+
+    it('xhigh / max → 503 中性体让路,fetch 一次都不打(不能收 max 的钱交 medium 的图)', async () => {
+        for (const q of ['xhigh', 'max', 'XHIGH']) {
+            fetchMock.mockReset();
+            okUpstream([pngB64(1024, 1024)]);
+            const res = await handleAdapter25Image(
+                jsonReq(URL_LLMWAY, { model: 'gpt-image-2.5-sunburst', prompt: 'x', size: '1024x1024', quality: q }),
+                'generations',
+                'llmway25',
+            );
+            expect(res.status).toBe(503);
+            expect(fetchMock).not.toHaveBeenCalled();
+            const body = (await res.json()) as { error: { code: string; message: string } };
+            expect(body.error.code).toBe('upstream_unavailable');
+            expect(body.error.message).not.toMatch(/llmway|quality/i);
+        }
+    });
+
+    it('low / medium / high / auto / 空 → 正常透传上游并按归一档计费(auto → low 196)', async () => {
+        for (const [q, expectTokens] of [
+            ['low', 196],
+            ['medium', 439],
+            ['high', 1756],
+            ['auto', 196],
+            ['', 196],
+        ] as const) {
+            fetchMock.mockReset();
+            okUpstream([pngB64(1024, 1024)]);
+            const res = await handleAdapter25Image(
+                jsonReq(URL_LLMWAY, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: q }),
+                'generations',
+                'llmway25',
+            );
+            expect(res.status).toBe(200);
+            expect(fetchMock).toHaveBeenCalledTimes(1);
+            expect(String(fetchMock.mock.calls[0][0])).toBe('https://llmway.ai/v1/images/generations');
+            const body = (await res.json()) as { usage: { output_tokens: number } };
+            expect(body.usage.output_tokens).toBe(expectTokens);
+        }
+    });
+
+    it('非法 quality 仍先吃入口 400(名单判定在其后,不会把 ultra 变成 503 让路)', async () => {
+        const res = await handleAdapter25Image(
+            jsonReq(URL_LLMWAY, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'ultra' }),
+            'generations',
+            'llmway25',
+        );
+        expect(res.status).toBe(400);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('未设名单的 wetokenasia25 收 max 照常打上游(行为零变化)', async () => {
+        okUpstream([pngB64(1024, 1024)]);
+        const res = await handleAdapter25Image(
+            jsonReq(URL_GEN, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'max' }),
+            'generations',
+            'wetokenasia25',
+        );
+        expect(res.status).toBe(200);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+});
