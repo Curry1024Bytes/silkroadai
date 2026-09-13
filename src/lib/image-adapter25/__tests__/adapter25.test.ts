@@ -603,3 +603,68 @@ describe('per-provider qualities 白名单(llmway25:上游 xhigh/max 静默降 m
         expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 });
+
+describe('per-provider qualities 白名单(ominiapi25:只放 xhigh/max 补齐 llmway 缺的高两档)', () => {
+    const URL_OMINI = 'http://portal.test/image-adapter25/ominiapi25/v1/images/generations';
+
+    it('registry:ominiapi25 = www.ominiapi.com、两模型、只放 xhigh/max;brand 抹 ominiapi/adobe', () => {
+        expect(IMAGE_PROVIDERS_25.ominiapi25.baseUrl).toBe('https://www.ominiapi.com');
+        expect(IMAGE_PROVIDERS_25.ominiapi25.models).toEqual(GPT_IMAGE_25_MODELS);
+        expect(IMAGE_PROVIDERS_25.ominiapi25.qualities).toEqual(['xhigh', 'max']);
+        expect('via ominiapi / omini api / Adobe'.replace(IMAGE_PROVIDERS_25.ominiapi25.brand, '*')).toBe(
+            'via * / * / *',
+        );
+    });
+
+    it('xhigh / max → 透传上游并按官方档计费(3122 / 7024)', async () => {
+        for (const [q, expectTokens] of [
+            ['xhigh', 3122],
+            ['max', 7024],
+        ] as const) {
+            fetchMock.mockReset();
+            okUpstream([pngB64(1024, 1024)]);
+            const res = await handleAdapter25Image(
+                jsonReq(URL_OMINI, { model: 'gpt-image-2.5-sunburst', prompt: 'x', size: '1024x1024', quality: q }),
+                'generations',
+                'ominiapi25',
+            );
+            expect(res.status).toBe(200);
+            expect(String(fetchMock.mock.calls[0][0])).toBe('https://www.ominiapi.com/v1/images/generations');
+            expect(((await res.json()) as { usage: { output_tokens: number } }).usage.output_tokens).toBe(expectTokens);
+        }
+    });
+
+    it('low / medium / high / auto / 空 → 503 让路不打上游(这些档由 llmway25 承接)', async () => {
+        for (const q of ['low', 'medium', 'high', 'auto', '']) {
+            fetchMock.mockReset();
+            okUpstream([pngB64(1024, 1024)]);
+            const res = await handleAdapter25Image(
+                jsonReq(URL_OMINI, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: q }),
+                'generations',
+                'ominiapi25',
+            );
+            expect(res.status).toBe(503);
+            expect(fetchMock).not.toHaveBeenCalled();
+            expect(((await res.json()) as { error: { code: string } }).error.code).toBe('upstream_unavailable');
+        }
+    });
+
+    it('上游号池打空(503 No available compatible accounts)→ 503 failover,体中性不泄 ominiapi', async () => {
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(
+                    JSON.stringify({ error: { message: 'No available compatible accounts', type: 'api_error' } }),
+                    {
+                        status: 503,
+                    },
+                ),
+        );
+        const res = await handleAdapter25Image(
+            jsonReq(URL_OMINI, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'max' }),
+            'generations',
+            'ominiapi25',
+        );
+        expect(res.status).toBe(503);
+        expect(await res.text()).not.toMatch(/omini/i);
+    });
+});

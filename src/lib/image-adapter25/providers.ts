@@ -61,4 +61,20 @@ export const IMAGE_PROVIDERS_25: Record<string, ImageProvider25> = {
         models: GPT_IMAGE_25_MODELS,
         qualities: ['low', 'medium', 'high'],
     },
+    // ominiapi25:www.ominiapi.com(key 2026-09-13 实测 43 次)对 gpt-image-2.5 两模型是【纯 OpenAI 号池】——
+    // 成功响应 27/27 带 OpenAI OpCo C2PA、PNG 原始编码,usage 逐档命中官方公式(196/439/1756/3122/7024,
+    // 1536×1024 1372、2880² 5930、4K 3336),5 档全如实、尺寸全如实含 4K、透明真 RGBA、edits 通。
+    // 【硬伤】随机 5xx 失败率 ~37%(「No available compatible accounts」503 / 502,与并发无关,是号池容量)
+    // → 适配器本就把上游失败转 503 让 new-api failover,不用额外处理。n>1 上游只返 1 张(按实际张数计费)、
+    // webp 被忽略返 PNG、非法 quality/size 上游不 400(入口 400 靠适配器现有校验)。
+    // 【定位】ch223 llmway25 只放 low/medium/high,本线只放 xhigh/max 补齐高两档;渠道优先级放在 ch223
+    // 之下,让 low/medium/high 先走 llmway,只有 llmway 对 xhigh/max 让路后才落到这里(否则每个请求都先在
+    // 这里白吃一次 503 让路 + new-api 同渠道 RetryTimes)。同站 9/10 另一把 key 曾混 37% Adobe,本 key 零 Adobe,
+    // 但 gpt-image-2 仍是 Adobe —— brand 脱敏一并覆盖。
+    ominiapi25: {
+        baseUrl: 'https://www.ominiapi.com',
+        brand: /\bomini\s?api\b|\bomini\b|\badobe\b|\bfirefly\b/gi,
+        models: GPT_IMAGE_25_MODELS,
+        qualities: ['xhigh', 'max'],
+    },
 };
