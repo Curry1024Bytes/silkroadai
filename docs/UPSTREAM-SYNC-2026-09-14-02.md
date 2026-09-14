@@ -18,7 +18,7 @@
 具体变化：
 
 1. `ominiapi25` 移除 `qualities: ['xhigh', 'max']`。现有适配器对该 provider 接收 low、medium、high、xhigh、max；auto 与空值按既有规则归一为 low。此前 low/medium/high/auto/空值在供应商调用前返回 503，现在会进入实际请求。llmway25 仍只接受 low/medium/high，本批没有改变 new-api 的优先级、渠道或路由。
-2. 上游测试改为逐项确认五档、auto、空值均调用一次 mock 上游。1024×1024 fixture 的合成输出 token 分别为 196/439/1756/3122/7024，auto/空值为196；这是既有计量公式的断言，不是验证真实画质。
+2. 上游测试改为逐项确认五档、auto、空值均进入 mock 上游并返回200。1024×1024 fixture 的合成输出 token 分别为 196/439/1756/3122/7024，auto/空值为196；这是既有计量公式的断言，不是验证真实画质。
 3. 新增只有 created+data 的响应与带有伪造 usage/quality/size 等字段的响应对照。确认适配器使用既有逻辑自行构造 created、usage、quality、size、background、output_format，不信任上游这些顶层回显；运行时 adapter 没有因此修改。
 4. 新增合成 PNG metadata fixture：包含 Adobe 字样的 caBX 被移除，只有 OpenAI 字样的输入字节保持不变。元数据处理函数本身没有变化。fixture 无 IDAT、CRC为0，也没有真实签名，不能声称证明像素保真、官方签名有效或真实图片厂商。
 5. provider 注释新增上游每日探测观察，包括号池变化、较低质量交付与较高档计量并存、延迟与缺失响应字段。这些是上游环境的记录，不能当作本项目真机验收或运营决定。
@@ -47,3 +47,54 @@
 验证计划：先以相同的上游主测试分别配旧/新注册表做隔离mock负对照；合并后定向测试全部Image2.5文件及计费相关回归，再运行完整测试（包含真实只读new-api smoke）、typecheck、lint、两套Prisma校验和生产构建。用户既有 `.env`、`.idea/vcs.xml` 与未跟踪需求文档已记录本轮开始的hash，不纳入本轮提交。
 
 以上是合并前结论。合并、实际测试数、调整理由和最终分支状态将在执行后追加；当前没有部署此批代码。
+
+## 合并后语义审计与实际验证
+
+合并前报告先提交为 `87991df`，之后执行 `main -> dev`，合并提交为 `a9ec989`。无文本冲突，不存在需三方取舍的冲突文件；对自动合并结果仍执行了以下检查：
+
+- `git diff 33ebe6b..a9ec989 -- src/lib/image-adapter25/providers.ts src/lib/image-adapter25/__tests__/adapter25.test.ts` 为空，两个上游文件原样接收。最终工作区再次逐字节核对目标提交，仍完全一致。
+- 对合并前 `dev@aaeab54` 比较公共 `/v1`、Enterprise、新建/持久Key、动态拓扑、Image2.0、metadata工具、Image2.5 adapter/入口、Batch、价格发布后端/UI、Prisma、依赖、Docker和Nginx保护路径，差异为空。上一批迟到失败保护和逐档历史入口没有被覆盖。
+- 本地附加测试调整单独提交为 `cc2cf6f`。没有改供应商实现、上游原测试、既有生产配置或开关默认值。
+
+### 测试断言调整的逐项理由
+
+本地 `provider-boundaries.test.ts` 的四个 ominiapi25 场景保持：generations+auto、edits+带空格AUTO、generations+空值、edits+空值。旧“503且不得fetch”的名称和断言改为新规格“200且恰好一次fetch”；这是本次产品行为从拒绝到接受的变化，不能继续按旧白名单测试。
+
+新增精确断言：auto在实际出站请求中仍为auto，空值省略quality；generations从输入multipart转为JSON，edits保留FormData和上传图片字节；响应都归一low并合成196个输出token。原来另外22项本地案例不变，包括关闭开关不读body/不fetch、llmway拒绝xhigh/max、非法ULTRA终态400，以及既有成功上传检查。
+
+新合并代码配旧本地断言实际得到22 passed / 4 failed，恰好上述四项因实际200而失败；修正后同一文件26/26通过。没有修改上游测试来掩盖冲突，也没有删除默认关闭或错误请求保护。
+
+### 隔离负对照
+
+在 `/tmp` 的两个独立目录使用完全相同的 `33ebe6b` 上游主测试原始字节，仅替换provider注册表。所有fetch均mock，另有原生fetch/http/https/net禁网守卫；没有读取或输出真实凭据，也没有访问供应商。
+
+| 组合                                 | 结果                 | 解释                                                                              |
+| ------------------------------------ | -------------------- | --------------------------------------------------------------------------------- |
+| 新上游测试 + 旧 `3f6b407` registry   | 53 passed / 3 failed | 旧quality限制仍存在；全档循环在首个low请求遇503；high裸壳场景也被旧白名单提前拒绝 |
+| 相同上游测试 + 新 `33ebe6b` registry | 56/56 passed         | 注册表、全档调用、响应重建与metadata既有行为符合当前测试                          |
+| 本地附加测试最终版本 + 新registry    | 26/26 passed         | 四个迁移场景及另外22项保护全部通过                                                |
+
+C2PA案例新旧两边都通过，证明该字节处理行为原本已存在。裸壳负对照的失败源于旧白名单拦截high，不能误报旧适配器本来不支持裸壳响应。真实图片画质、有效像素及签名没有在本轮验证。
+
+### 最终检查结果
+
+| 检查                         | 实际结果                                                                                                                                               |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 完整测试                     | `NEWAPI_BASE_URL=http://127.0.0.1:3000 pnpm run test --reporter=json --outputFile=…`：309 files / 4178 passed / 1既有skipped / 0 failed，没有排除smoke |
+| 相关套件（包含在完整测试内） | Image2.5五文件98/98；metadata15/15；真实new-api只读smoke3/3                                                                                            |
+| 类型检查                     | `pnpm typecheck`通过，包含最终本地测试调整                                                                                                             |
+| Lint                         | 全量0 error / 93既有warnings；最后改动的本地测试文件额外lint通过                                                                                       |
+| 两套Prisma schema validate   | 均通过；本批没有migration增量                                                                                                                          |
+| 生产构建                     | 编译成功，111页生成完成，构建退出0；仅本地执行，没有发布镜像                                                                                           |
+| 格式/差异                    | 本地附加测试与本报告Prettier、`git diff --check`通过；不格式化重写上游测试                                                                             |
+| 用户工作区                   | `.env`、`.idea/vcs.xml`和未跟踪需求文档SHA-256与17:28本轮开始一致，未纳入提交                                                                          |
+
+构建时用命令行环境关闭调度器与遥测，不修改用户 `.env`。与上午相同，本地PostgreSQL `127.0.0.1:5433` 不可达，价格页预生成出现已有 `ECONNREFUSED` 降级横幅；该页面和数据库逻辑没有改变。构建成功不等于本批生产数据库页面或真实图片验收，实际发布时仍须在生产配置下构建与验收。真实new-api状态JSON和管理鉴权模型GET已通过当前SSH隧道验证，没有调用收费接口。
+
+本轮证据目录为 `/tmp/llmroute-upstream-20260914-172859/`；隔离对照另存 `/tmp/llmroute-upstream-20260914-02/image25-controls/`。第一次完整测试启动的pnpm简写因参数解析被CLI拒绝，未进入Vitest；改为明确的`pnpm run test`后完成上述全量验证，原启动日志保留。
+
+## 分支与发布状态
+
+测试完成后将dev fast-forward到prod并推送origin/dev、origin/prod，作为本批待发布版本；main保持上游`33ebe6b`。本批没有登录VPS、部署、重启服务、改渠道或改价格，线上应用仍是上午发布的`4413e61`。本报告后续纯文档记录不构成上线授权。
+
+Image2.5和Batch继续保持关闭；接收上游代码及其注释不代表本项目接受较低质量交付却按较高档收费，也不能据此宣布模型正式可用。需要实际部署时由operator另行安排。

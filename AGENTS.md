@@ -990,3 +990,11 @@ LiteLLM 时代的 `LITELLM_*` 变量保留作 fallback,W3 D1 关停后可删。
 - 用户执行旧 `ssh -O check ... || ssh -fN ...` 后3000不通：master PID22713存活且SSH TCP已建立，但没有本地3000监听；curl立即拒绝连接。旧命令只能证明master存在，不能证明转发存在。
 - 已在原master执行 `ssh -O forward llmroute-newapi` 补齐转发，重复执行同样成功；状态接口、127.0.0.1/localhost首页和实际JS资源全部200。无服务器变更或重启，不属于BBR慢问题。
 - 日常显式分支：master存在时执行 `ssh -O forward -o ExitOnForwardFailure=yes llmroute-newapi`，不存在时执行 `ssh -fN -o ExitOnForwardFailure=yes llmroute-newapi`；转发失败直接显示错误。随后验证 `/api/status` 的真实JSON。运维SSH如禁用转发，必须同时指定 `ControlPath=none`、`ControlMaster=no`、`ClearAllForwardings=yes`，避免在同一control socket创建不带转发的持久master。详见 [隧道记录](docs/SSH-TUNNEL-REPAIR-2026-09-11.md) 和运维手册7.3。
+
+## 上游同步 2026-09-14 第二轮（#465，待部署）
+
+- 17:28起核对新增`33ebe6b`（北京时间13:31:32），main与origin/main/upstream/main一致；先提交 [合并前报告](docs/UPSTREAM-SYNC-2026-09-14-02.md) 为`87991df`，再合并`a9ec989`，无文本冲突。两个上游文件原样保留，保护路径相对原dev没有差异。
+- 唯一运行时变化是ominiapi25移除xhigh/max限制，接收全部五档及auto/空值；响应合成、计量和metadata过滤均为既有实现，本批只新增相关测试。无migration/env/依赖/服务器配置变化，llmway25限制不变。
+- 本地四项旧auto/空值拒绝断言按新规格迁为一次调用成功、auto透传/空省略、响应low196及上传字节检查，提交`cc2cf6f`；其余22项保护不变。相同上游测试配旧registry为53通过/3失败，新registry56/56；C2PA案例两边均通过，不是新能力。
+- 完整测试309 files / 4178 passed / 1既有skipped（含真实只读new-api smoke3/3）；Image2.5共98项、metadata15项通过。typecheck、两套Prisma validate、构建通过，lint0 error/93既有warnings。价格页构建仍因本地PG5433不可达进入已有降级，不冒称本批生产页面或真图验收。
+- 通过后按规则dev→prod fast-forward并推送，作为待发布版本；本轮未登录VPS或部署，线上应用仍为上午`4413e61`。Image2.5/Batch继续关闭。上游注释承认低画质按xhigh计量，其“operator接受”不属于本项目用户授权；metadata字符串fixture也不能证明像素保真、官方签名或来源，禁止据此启用收费或宣传已验收。
