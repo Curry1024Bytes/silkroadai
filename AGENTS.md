@@ -966,3 +966,12 @@ LiteLLM 时代的 `LITELLM_*` 变量保留作 fallback,W3 D1 关停后可删。
 
 **版本**: 2.5
 **最后更新**: 2026-09-03
+
+## 上游同步 2026-09-14（已验收，待部署）
+
+- 先输出并提交 `docs/UPSTREAM-SYNC-2026-09-14.md`（`3ec550f`），再把 `main@3f6b407` 的 #459–#464 合入 dev（`8a4c378`）；main 与 origin/main、upstream/main 相同，不包含项目自定义提交。
+- 本批接入视频非 2xx 失败任务识别、未传比例不再注入 16:9、we-token 三个 provider 等待响应头超时 300 秒、两条 Image 2.0 线路仅 low/medium，以及默认关闭的 Image 2.5 两个带 quality 白名单候选 provider。无 migration/env/依赖/服务器配置变更。
+- 自定义防回归为 `e54cd75`：非 2xx 只接受已知任务状态；Enterprise 失败/过期仅允许 pending 且 billed=false 的条件更新，避免迟到失败覆盖已完成/已计费记录；读写异常或状态变化返回可重试 503，不假报已失败。成功计费不改，不宣称完整终态单向状态机已重构。
+- 原始上游回归保留，旧实现负对照真实复现比例注入、错误状态、超时与质量放行问题，以及 15 项迟到失败/写异常/过期保护失败；修复后通过。完整测试 309 files / 4177 passed / 1 既有 skipped（含真实只读 new-api smoke），两套 Prisma validate、typecheck、构建通过；lint 0 error / 93 个既有 warnings。
+- 本地构建价格页因 PostgreSQL `127.0.0.1:5433` 不可达进入已有降级，不能冒充数据库页面或真实数据库并发验收。现有 SSH 隧道只读查全 7 条 new-api 渠道，未发现使用本批变化的图片适配器；不等于验证 Enterprise 客户独立 key。
+- 定价发布、逐档历史 UI、持久 token、拓扑、固定 SKU、默认关闭开关、Nginx 隔离均保留；用户 `.env`、`.idea/vcs.xml` 与未跟踪需求文档未改。按规则仅将已验收 dev fast-forward 到 prod 作为待部署版本，本轮没有登录 VPS 或实际发布；生产运行镜像未切换。后续发布须重新用生产配置构建，并复查价格页、功能开关及运行不变量。
