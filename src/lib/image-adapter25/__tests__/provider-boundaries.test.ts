@@ -69,10 +69,6 @@ describe('Image 2.5 multipart provider quality boundaries', () => {
     it.each([
         ['llmway25', 'generations', ' XHIGH '],
         ['llmway25', 'edits', ' MAX '],
-        ['ominiapi25', 'generations', 'auto'],
-        ['ominiapi25', 'edits', ' AUTO '],
-        ['ominiapi25', 'generations', ''],
-        ['ominiapi25', 'edits', ''],
     ] as const)('%s / %s rejects unserved quality %s without calling upstream', async (provider, mode, quality) => {
         fetchMock.mockResolvedValue(new Response(JSON.stringify({ data: [{ b64_json: png().toString('base64') }] })));
         const response = await handleAdapter25Image(request(provider, mode, quality), mode, provider);
@@ -83,6 +79,36 @@ describe('Image 2.5 multipart provider quality boundaries', () => {
         expect(body).not.toHaveProperty('usage');
         expect(body).not.toHaveProperty('data');
         expect(body.error.message).not.toMatch(/llmway|omini|quality/i);
+    });
+
+    it.each([
+        ['generations', 'auto'],
+        ['edits', ' AUTO '],
+        ['generations', ''],
+        ['edits', ''],
+    ] as const)('ominiapi25 / %s accepts multipart quality %s and bills normalized low', async (mode, quality) => {
+        fetchMock.mockResolvedValue(new Response(JSON.stringify({ data: [{ b64_json: png().toString('base64') }] })));
+        const response = await handleAdapter25Image(request('ominiapi25', mode, quality), mode, 'ominiapi25');
+        expect(response.status).toBe(200);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+        expect(url).toBe(`https://www.ominiapi.com/v1/images/${mode}`);
+        if (mode === 'edits') {
+            const sent = init.body as FormData;
+            expect(sent).toBeInstanceOf(FormData);
+            expect(sent.get('model')).toBe('gpt-image-2.5-sunburst');
+            if (quality.trim()) expect(sent.get('quality')).toBe('auto');
+            else expect(sent.has('quality')).toBe(false);
+            expect(sent.getAll('image')).toHaveLength(1);
+            expect(Buffer.from(await (sent.get('image') as Blob).arrayBuffer())).toEqual(png());
+        } else {
+            const sent = JSON.parse(String(init.body)) as Record<string, unknown>;
+            expect(sent.model).toBe('gpt-image-2.5-sunburst');
+            if (quality.trim()) expect(sent.quality).toBe('auto');
+            else expect(sent).not.toHaveProperty('quality');
+            expect(sent).not.toHaveProperty('image');
+        }
+        expect(await response.json()).toMatchObject({ quality: 'low', usage: { output_tokens: 196 } });
     });
 
     it.each(['llmway25', 'ominiapi25'])(
