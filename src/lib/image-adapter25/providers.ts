@@ -61,20 +61,22 @@ export const IMAGE_PROVIDERS_25: Record<string, ImageProvider25> = {
         models: GPT_IMAGE_25_MODELS,
         qualities: ['low', 'medium', 'high'],
     },
-    // ominiapi25:www.ominiapi.com(key 2026-09-13 实测 43 次)对 gpt-image-2.5 两模型是【纯 OpenAI 号池】——
-    // 成功响应 27/27 带 OpenAI OpCo C2PA、PNG 原始编码,usage 逐档命中官方公式(196/439/1756/3122/7024,
-    // 1536×1024 1372、2880² 5930、4K 3336),5 档全如实、尺寸全如实含 4K、透明真 RGBA、edits 通。
-    // 【硬伤】随机 5xx 失败率 ~37%(「No available compatible accounts」503 / 502,与并发无关,是号池容量)
-    // → 适配器本就把上游失败转 503 让 new-api failover,不用额外处理。n>1 上游只返 1 张(按实际张数计费)、
-    // webp 被忽略返 PNG、非法 quality/size 上游不 400(入口 400 靠适配器现有校验)。
-    // 【定位】ch223 llmway25 只放 low/medium/high,本线只放 xhigh/max 补齐高两档;渠道优先级放在 ch223
-    // 之下,让 low/medium/high 先走 llmway,只有 llmway 对 xhigh/max 让路后才落到这里(否则每个请求都先在
-    // 这里白吃一次 503 让路 + new-api 同渠道 RetryTimes)。同站 9/10 另一把 key 曾混 37% Adobe,本 key 零 Adobe,
-    // 但 gpt-image-2 仍是 Adobe —— brand 脱敏一并覆盖。
+    // ominiapi25:www.ominiapi.com(key sk-WrSC…)对 gpt-image-2.5 两模型是 OpenAI 为主的号池。2026-09-13 实测
+    // 纯 OpenAI 但随机 5xx ~37%;2026-09-14 复测 36/36 全 200 但混回 Adobe(xhigh 6 次 5 次落 Adobe、回显 medium
+    // usage 1756;max 5/5 OpenAI 7024),延迟翻倍(low 45–98s / max 141–205s),8/27 响应是【裸壳】(只有
+    // created+data,无 usage/quality/size)。池子每天在变,别把某天的探测当常态。
+    // 【全量线(operator 2026-09-14 拍板)】不设 qualities,5 档全收,同时作 ch223 llmway 阵发全挂时的
+    // low/medium/high 兜底。两个已由适配器通吃的点在这里点名(有测试锁死):
+    //  ① 裸壳响应:适配器只读 data[].b64_json|url,created/usage/quality/size/background/output_format 全部
+    //     自合成(usage 按返回图实际尺寸 + 官方 5 档公式),上游给不给壳无关;
+    //  ② C2PA:stripAdobeImageMetadataB64 按内容自定向 —— 元数据块含 adobe/firefly 才剥(像素不动),
+    //     OpenAI 原生签名字节原样保留(客户可验官方凭证)。
+    // 已知代价:xhigh 落 Adobe 时上游交付 1756 档画质、我们按 xhigh 3122 计费(operator 知情接受);n>1 上游
+    // 只返 1 张(按实际张数计费);webp 被忽略返 PNG;非法 quality/size 上游不 400(入口 400 靠适配器)。
     ominiapi25: {
         baseUrl: 'https://www.ominiapi.com',
         brand: /\bomini\s?api\b|\bomini\b|\badobe\b|\bfirefly\b/gi,
         models: GPT_IMAGE_25_MODELS,
-        qualities: ['xhigh', 'max'],
+        // 无 qualities = 5 档全收(全量线)。2026-09-13 曾只放 xhigh/max,09-14 改全量。
     },
 };

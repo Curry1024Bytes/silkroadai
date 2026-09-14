@@ -604,22 +604,58 @@ describe('per-provider qualities 白名单(llmway25:上游 xhigh/max 静默降 m
     });
 });
 
-describe('per-provider qualities 白名单(ominiapi25:只放 xhigh/max 补齐 llmway 缺的高两档)', () => {
+describe('ominiapi25 全量线(5 档全收 + 裸壳响应自合成 + Adobe 剥/OpenAI 留)', () => {
     const URL_OMINI = 'http://portal.test/image-adapter25/ominiapi25/v1/images/generations';
 
-    it('registry:ominiapi25 = www.ominiapi.com、两模型、只放 xhigh/max;brand 抹 ominiapi/adobe', () => {
+    /** 带 caBX(C2PA)块的最小 PNG:IHDR + caBX(payload 自定)+ IEND。 */
+    function pngWithCaBX(w: number, h: number, payload: string): Buffer {
+        const ihdr = Buffer.alloc(13);
+        ihdr.writeUInt32BE(w, 0);
+        ihdr.writeUInt32BE(h, 4);
+        ihdr[8] = 8;
+        ihdr[9] = 2;
+        const chunk = (type: string, data: Buffer) => {
+            const len = Buffer.alloc(4);
+            len.writeUInt32BE(data.length, 0);
+            return Buffer.concat([len, Buffer.from(type, 'latin1'), data, Buffer.alloc(4)]);
+        };
+        return Buffer.concat([
+            Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+            chunk('IHDR', ihdr),
+            chunk('caBX', Buffer.from(payload, 'latin1')),
+            chunk('IEND', Buffer.alloc(0)),
+        ]);
+    }
+    const upstreamRaw = (buf: Buffer, envelope: Record<string, unknown> = {}) =>
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(
+                    JSON.stringify({ created: 1, data: [{ b64_json: buf.toString('base64') }], ...envelope }),
+                    {
+                        status: 200,
+                        headers: { 'content-type': 'application/json' },
+                    },
+                ),
+        );
+
+    it('registry:ominiapi25 = www.ominiapi.com、两模型、无 qualities(全量);brand 抹 ominiapi/adobe', () => {
         expect(IMAGE_PROVIDERS_25.ominiapi25.baseUrl).toBe('https://www.ominiapi.com');
         expect(IMAGE_PROVIDERS_25.ominiapi25.models).toEqual(GPT_IMAGE_25_MODELS);
-        expect(IMAGE_PROVIDERS_25.ominiapi25.qualities).toEqual(['xhigh', 'max']);
+        expect(IMAGE_PROVIDERS_25.ominiapi25.qualities).toBeUndefined();
         expect('via ominiapi / omini api / Adobe'.replace(IMAGE_PROVIDERS_25.ominiapi25.brand, '*')).toBe(
             'via * / * / *',
         );
     });
 
-    it('xhigh / max → 透传上游并按官方档计费(3122 / 7024)', async () => {
+    it('5 档 + auto + 空 全部透传上游,按官方档计费(196/439/1756/3122/7024)', async () => {
         for (const [q, expectTokens] of [
+            ['low', 196],
+            ['medium', 439],
+            ['high', 1756],
             ['xhigh', 3122],
             ['max', 7024],
+            ['auto', 196],
+            ['', 196],
         ] as const) {
             fetchMock.mockReset();
             okUpstream([pngB64(1024, 1024)]);
@@ -634,19 +670,84 @@ describe('per-provider qualities 白名单(ominiapi25:只放 xhigh/max 补齐 ll
         }
     });
 
-    it('low / medium / high / auto / 空 → 503 让路不打上游(这些档由 llmway25 承接)', async () => {
-        for (const q of ['low', 'medium', 'high', 'auto', '']) {
-            fetchMock.mockReset();
-            okUpstream([pngB64(1024, 1024)]);
-            const res = await handleAdapter25Image(
-                jsonReq(URL_OMINI, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: q }),
+    it('裸壳响应(上游只有 created+data,无 usage/quality/size)→ 响应壳全部自合成,与带壳响应一致', async () => {
+        // 裸壳
+        upstreamRaw(pngWithCaBX(1024, 1024, 'OpenAI Media Service API'));
+        const bare = (await (
+            await handleAdapter25Image(
+                jsonReq(URL_OMINI, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'high' }),
                 'generations',
                 'ominiapi25',
-            );
-            expect(res.status).toBe(503);
-            expect(fetchMock).not.toHaveBeenCalled();
-            expect(((await res.json()) as { error: { code: string } }).error.code).toBe('upstream_unavailable');
+            )
+        ).json()) as Record<string, unknown>;
+        // 带壳但 usage/quality 是上游自造的假值(必须被丢弃)
+        upstreamRaw(pngWithCaBX(1024, 1024, 'OpenAI Media Service API'), {
+            usage: { output_tokens: 1 },
+            quality: 'medium',
+            size: '512x512',
+            output_format: 'webp',
+            background: 'transparent',
+        });
+        const shelled = (await (
+            await handleAdapter25Image(
+                jsonReq(URL_OMINI, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'high' }),
+                'generations',
+                'ominiapi25',
+            )
+        ).json()) as Record<string, unknown>;
+        for (const r of [bare, shelled]) {
+            expect(Object.keys(r).sort()).toEqual([
+                'background',
+                'created',
+                'data',
+                'output_format',
+                'quality',
+                'size',
+                'usage',
+            ]);
+            expect(typeof r.created).toBe('number');
+            expect(r.quality).toBe('high');
+            expect(r.size).toBe('1024x1024');
+            expect(r.background).toBe('opaque');
+            expect(r.output_format).toBe('png');
+            expect((r.usage as { output_tokens: number }).output_tokens).toBe(1756);
         }
+    });
+
+    it('C2PA:Adobe 标识的 caBX 被剥(像素块保留)、OpenAI 签名的字节原样不动', async () => {
+        const adobe = pngWithCaBX(
+            1024,
+            1024,
+            'jumdc2pa claim_generator Adobe_Firefly com.adobe.modelVersions gpt-image-2.5-flare',
+        );
+        upstreamRaw(adobe);
+        const r1 = (await (
+            await handleAdapter25Image(
+                jsonReq(URL_OMINI, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'xhigh' }),
+                'generations',
+                'ominiapi25',
+            )
+        ).json()) as { data: Array<{ b64_json: string }> };
+        const out1 = Buffer.from(r1.data[0].b64_json, 'base64');
+        expect(out1.includes(Buffer.from('Adobe'))).toBe(false);
+        expect(out1.includes(Buffer.from('caBX'))).toBe(false);
+        expect(out1.includes(Buffer.from('IHDR'))).toBe(true);
+        expect(out1.length).toBeLessThan(adobe.length);
+
+        const openai = pngWithCaBX(
+            1024,
+            1024,
+            'jumdc2pa claim_generator_info OpenAI Media Service API OpenAI OpCo, LLC',
+        );
+        upstreamRaw(openai);
+        const r2 = (await (
+            await handleAdapter25Image(
+                jsonReq(URL_OMINI, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'xhigh' }),
+                'generations',
+                'ominiapi25',
+            )
+        ).json()) as { data: Array<{ b64_json: string }> };
+        expect(Buffer.from(r2.data[0].b64_json, 'base64').equals(openai)).toBe(true);
     });
 
     it('上游号池打空(503 No available compatible accounts)→ 503 failover,体中性不泄 ominiapi', async () => {
