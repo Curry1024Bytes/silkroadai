@@ -975,3 +975,12 @@ LiteLLM 时代的 `LITELLM_*` 变量保留作 fallback,W3 D1 关停后可删。
 - 原始上游回归保留，旧实现负对照真实复现比例注入、错误状态、超时与质量放行问题，以及 15 项迟到失败/写异常/过期保护失败；修复后通过。完整测试 309 files / 4177 passed / 1 既有 skipped（含真实只读 new-api smoke），两套 Prisma validate、typecheck、构建通过；lint 0 error / 93 个既有 warnings。
 - 本地构建价格页因 PostgreSQL `127.0.0.1:5433` 不可达进入已有降级，不能冒充数据库页面或真实数据库并发验收。现有 SSH 隧道只读查全 7 条 new-api 渠道，未发现使用本批变化的图片适配器；不等于验证 Enterprise 客户独立 key。
 - 定价发布、逐档历史 UI、持久 token、拓扑、固定 SKU、默认关闭开关、Nginx 隔离均保留；用户 `.env`、`.idea/vcs.xml` 与未跟踪需求文档未改。按规则仅将已验收 dev fast-forward 到 prod 作为待部署版本，本轮没有登录 VPS 或实际发布；生产运行镜像未切换。后续发布须重新用生产配置构建，并复查价格页、功能开关及运行不变量。
+
+## 生产发布 2026-09-14（10:53 已上线）
+
+- operator 随后明确「部署到线上吧」，`prod@4413e61` 已按生产 Compose 构建、隔离备份恢复验收后只切换 Portal；上节为部署前历史记录。运行镜像 `sha256:6c8d7e47ec47f11a7e525fd8fc4aab729c7b01dee6f337c8434b1ba671237b58`，后续纯文档提交不重建镜像。
+- 北京时间 10:53:24–10:53:39 切换，源站采样首次失败至恢复为 9.425 秒，Portal restart count 0；PostgreSQL/new-api/MySQL 容器身份、镜像与启动时间未变，成功读取启动日志且 error/fatal/failed 为 0。
+- 备份目录 `/opt/backups/silkroadai-portal/releases/upstream-20260914-022302/`（0700），`.env.bak.upstream-20260914-022302` 与库备份0600；gzip 和真实隔离恢复通过。旧 Git `b092641`，回滚标签 `silkroadai-portal-portal:rollback-upstream-20260914-022302`；本次没有触发回滚。
+- 77条migration checksum均匹配，无新增migration/env/配置。29模型、35价格版本、6档次、21Key摘要不变，new-api价格/计费选项不变，发布jobs/writes/active/in_flight为0；全部13用户均newapi计费、持久token真实身份鉴权通过，拓扑错误为0。
+- 50/50源站公网检查通过；管理员已有Key普通/Python-urllib两类UA模型列表均200、4模型和现行价格一致；固定图价仍¥1/¥1.5/¥2。真实价格页及Kimi发布预览通过；API/MySQL四字典一致，专用只读权限与固定RSA公钥保持；没有真实价格发布或收费调用。
+- 首轮候选误要求已下架gpt-5.4出现在价格页，核实旧版同样不显示后改用当前在售模型重验14项全通过，业务数据没改。Image2.5/Batch继续显式false、入口503，临时容器/库/含密文件清理已核实。完整证据及未验收边界见 [发布报告](docs/DEPLOY-2026-09-14.md)。
