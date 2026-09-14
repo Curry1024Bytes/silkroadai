@@ -424,7 +424,16 @@ export async function pollVolcVideo(id: string, upstreamKey?: string): Promise<N
     } catch {
         j = null;
     }
-    if (!upstream.ok || !j) {
+    // ⚠️ 上游会用【非 2xx + body 里 status:failed】传递一个已失败的任务(2026-09-11 实测:
+    // 筷子对 shujubao 一条 doubao-seedance-2.5 任务持续返 HTTP 400 + {status:"failed",
+    // error:{code:"InternalServiceError"}, vendor_task_id:"cgt-…"} —— 火山方舟内部生成出错)。
+    // 这类 body 是个【带 status 的任务对象】= 真·终态,不能当不透明错误一直挂着:
+    // 之前非 2xx 一律走 passthroughUpstreamError→category unknown,而 unknown 不终态化
+    // (#391 怕误杀活任务)→ DB 永停 queued,客户一直看到「排队中」。
+    // 修:只要 body 解析出且带 status 字段,就按任务态处理(下面读 status/fail_reason 终态化);
+    // 只有【没有可用 status 的纯错误体】(如任务不存在 / 限流 / 5xx 无 body)才走报错分支。
+    const bodyStatus = j && typeof j.status === 'string' && j.status ? j.status : '';
+    if (!upstream.ok && !bodyStatus) {
         const cls = passthroughUpstreamError(text, upstream.status);
         console.warn('[kuaizi-adapter] poll failed', {
             id,
@@ -433,6 +442,19 @@ export async function pollVolcVideo(id: string, upstreamKey?: string): Promise<N
             body: text.slice(0, 2000),
         });
         return err(upstream.status >= 400 ? upstream.status : 502, 'upstream_error', cls.message, cls.category);
+    }
+    if (!j) {
+        // 2xx 但 body 解析不出(不该发生)—— 当上游暂不可用,交上层降级/重试,别当成功。
+        console.warn('[kuaizi-adapter] poll 2xx 但 body 非 JSON', { id, body: text.slice(0, 500) });
+        return err(502, 'upstream_unreachable', 'upstream temporarily unavailable, please retry');
+    }
+    if (!upstream.ok) {
+        // 非 2xx 但 body 带 status(上游把终态包在 4xx/5xx 里)—— 按任务态处理,不当报错。
+        console.warn('[kuaizi-adapter] poll 非2xx 但 body 带 status,按任务态处理', {
+            id,
+            http: upstream.status,
+            taskStatus: bodyStatus,
+        });
     }
     const status = mapStatus(j.status);
     const contentObj = (j.content ?? undefined) as

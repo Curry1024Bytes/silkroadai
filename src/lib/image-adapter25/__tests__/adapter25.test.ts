@@ -13,6 +13,7 @@ import {
     sanitizeAdapterError25,
     estimateTextTokens,
 } from '@/lib/image-adapter25/adapter';
+import { IMAGE_PROVIDERS_25, GPT_IMAGE_25_MODELS } from '@/lib/image-adapter25/providers';
 
 const URL_GEN = 'http://portal.test/image-adapter25/wetokenasia25/v1/images/generations';
 const URL_EDIT = 'http://portal.test/image-adapter25/wetokenasia25/v1/images/edits';
@@ -462,5 +463,208 @@ describe('handleAdapter25Image 透明 / 错误 / 脱敏', () => {
         expect(out).not.toContain('we-token');
         expect(out).not.toContain('adobe');
         expect(out).not.toContain('firefly');
+    });
+});
+
+// ---------------- per-provider 上游超时(2026-09-11,we-token 挂死不回头) ----------------
+describe('per-provider upstreamTimeoutMs', () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => {
+        vi.useRealTimers();
+        delete IMAGE_PROVIDERS_25.__defaulttimeout;
+    });
+
+    function hangingUpstream(): AbortSignal[] {
+        const signals: AbortSignal[] = [];
+        fetchMock.mockImplementation(
+            (_url: string, init: RequestInit) =>
+                new Promise<Response>((_resolve, reject) => {
+                    const s = init.signal as AbortSignal;
+                    signals.push(s);
+                    s.addEventListener('abort', () =>
+                        reject(new DOMException('This operation was aborted', 'AbortError')),
+                    );
+                }),
+        );
+        return signals;
+    }
+
+    it('wetokenasia25:300s 到点 abort → 503 failover(不再等满 600s)', async () => {
+        const signals = hangingUpstream();
+        const p = handleAdapter25Image(
+            jsonReq(URL_GEN, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'high' }),
+            'generations',
+            'wetokenasia25',
+        );
+        await vi.advanceTimersByTimeAsync(299_000);
+        expect(signals).toHaveLength(1);
+        expect(signals[0].aborted).toBe(false);
+        await vi.advanceTimersByTimeAsync(2_000);
+        expect(signals[0].aborted).toBe(true);
+        const res = await p;
+        expect(res.status).toBe(503);
+    });
+
+    it('未设 upstreamTimeoutMs 的 provider 仍是 600s 缺省', async () => {
+        IMAGE_PROVIDERS_25.__defaulttimeout = {
+            baseUrl: 'https://default.test',
+            brand: /\bdefault\b/gi,
+            models: GPT_IMAGE_25_MODELS,
+        };
+        const signals = hangingUpstream();
+        const p = handleAdapter25Image(
+            jsonReq('http://portal.test/image-adapter25/__defaulttimeout/v1/images/generations', {
+                model: 'gpt-image-2.5-flare',
+                prompt: 'x',
+                size: '1024x1024',
+                quality: 'high',
+            }),
+            'generations',
+            '__defaulttimeout',
+        );
+        await vi.advanceTimersByTimeAsync(301_000);
+        expect(signals).toHaveLength(1);
+        expect(signals[0].aborted).toBe(false);
+        await vi.advanceTimersByTimeAsync(300_000);
+        expect(signals[0].aborted).toBe(true);
+        expect((await p).status).toBe(503);
+    });
+});
+
+describe('per-provider qualities 白名单(llmway25:上游 xhigh/max 静默降 medium → 让路不打上游)', () => {
+    const URL_LLMWAY = 'http://portal.test/image-adapter25/llmway25/v1/images/generations';
+
+    it('registry:llmway25 = llmway.ai、两模型、只放 low/medium/high;wetokenasia25 不设名单(5 档全收)', () => {
+        expect(IMAGE_PROVIDERS_25.llmway25.baseUrl).toBe('https://llmway.ai');
+        expect(IMAGE_PROVIDERS_25.llmway25.models).toEqual(GPT_IMAGE_25_MODELS);
+        expect(IMAGE_PROVIDERS_25.llmway25.qualities).toEqual(['low', 'medium', 'high']);
+        expect(IMAGE_PROVIDERS_25.wetokenasia25.qualities).toBeUndefined();
+        expect('llmway sucks'.replace(IMAGE_PROVIDERS_25.llmway25.brand, '***')).toBe('*** sucks');
+    });
+
+    it('xhigh / max → 503 中性体让路,fetch 一次都不打(不能收 max 的钱交 medium 的图)', async () => {
+        for (const q of ['xhigh', 'max', 'XHIGH']) {
+            fetchMock.mockReset();
+            okUpstream([pngB64(1024, 1024)]);
+            const res = await handleAdapter25Image(
+                jsonReq(URL_LLMWAY, { model: 'gpt-image-2.5-sunburst', prompt: 'x', size: '1024x1024', quality: q }),
+                'generations',
+                'llmway25',
+            );
+            expect(res.status).toBe(503);
+            expect(fetchMock).not.toHaveBeenCalled();
+            const body = (await res.json()) as { error: { code: string; message: string } };
+            expect(body.error.code).toBe('upstream_unavailable');
+            expect(body.error.message).not.toMatch(/llmway|quality/i);
+        }
+    });
+
+    it('low / medium / high / auto / 空 → 正常透传上游并按归一档计费(auto → low 196)', async () => {
+        for (const [q, expectTokens] of [
+            ['low', 196],
+            ['medium', 439],
+            ['high', 1756],
+            ['auto', 196],
+            ['', 196],
+        ] as const) {
+            fetchMock.mockReset();
+            okUpstream([pngB64(1024, 1024)]);
+            const res = await handleAdapter25Image(
+                jsonReq(URL_LLMWAY, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: q }),
+                'generations',
+                'llmway25',
+            );
+            expect(res.status).toBe(200);
+            expect(fetchMock).toHaveBeenCalledTimes(1);
+            expect(String(fetchMock.mock.calls[0][0])).toBe('https://llmway.ai/v1/images/generations');
+            const body = (await res.json()) as { usage: { output_tokens: number } };
+            expect(body.usage.output_tokens).toBe(expectTokens);
+        }
+    });
+
+    it('非法 quality 仍先吃入口 400(名单判定在其后,不会把 ultra 变成 503 让路)', async () => {
+        const res = await handleAdapter25Image(
+            jsonReq(URL_LLMWAY, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'ultra' }),
+            'generations',
+            'llmway25',
+        );
+        expect(res.status).toBe(400);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('未设名单的 wetokenasia25 收 max 照常打上游(行为零变化)', async () => {
+        okUpstream([pngB64(1024, 1024)]);
+        const res = await handleAdapter25Image(
+            jsonReq(URL_GEN, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'max' }),
+            'generations',
+            'wetokenasia25',
+        );
+        expect(res.status).toBe(200);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe('per-provider qualities 白名单(ominiapi25:只放 xhigh/max 补齐 llmway 缺的高两档)', () => {
+    const URL_OMINI = 'http://portal.test/image-adapter25/ominiapi25/v1/images/generations';
+
+    it('registry:ominiapi25 = www.ominiapi.com、两模型、只放 xhigh/max;brand 抹 ominiapi/adobe', () => {
+        expect(IMAGE_PROVIDERS_25.ominiapi25.baseUrl).toBe('https://www.ominiapi.com');
+        expect(IMAGE_PROVIDERS_25.ominiapi25.models).toEqual(GPT_IMAGE_25_MODELS);
+        expect(IMAGE_PROVIDERS_25.ominiapi25.qualities).toEqual(['xhigh', 'max']);
+        expect('via ominiapi / omini api / Adobe'.replace(IMAGE_PROVIDERS_25.ominiapi25.brand, '*')).toBe(
+            'via * / * / *',
+        );
+    });
+
+    it('xhigh / max → 透传上游并按官方档计费(3122 / 7024)', async () => {
+        for (const [q, expectTokens] of [
+            ['xhigh', 3122],
+            ['max', 7024],
+        ] as const) {
+            fetchMock.mockReset();
+            okUpstream([pngB64(1024, 1024)]);
+            const res = await handleAdapter25Image(
+                jsonReq(URL_OMINI, { model: 'gpt-image-2.5-sunburst', prompt: 'x', size: '1024x1024', quality: q }),
+                'generations',
+                'ominiapi25',
+            );
+            expect(res.status).toBe(200);
+            expect(String(fetchMock.mock.calls[0][0])).toBe('https://www.ominiapi.com/v1/images/generations');
+            expect(((await res.json()) as { usage: { output_tokens: number } }).usage.output_tokens).toBe(expectTokens);
+        }
+    });
+
+    it('low / medium / high / auto / 空 → 503 让路不打上游(这些档由 llmway25 承接)', async () => {
+        for (const q of ['low', 'medium', 'high', 'auto', '']) {
+            fetchMock.mockReset();
+            okUpstream([pngB64(1024, 1024)]);
+            const res = await handleAdapter25Image(
+                jsonReq(URL_OMINI, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: q }),
+                'generations',
+                'ominiapi25',
+            );
+            expect(res.status).toBe(503);
+            expect(fetchMock).not.toHaveBeenCalled();
+            expect(((await res.json()) as { error: { code: string } }).error.code).toBe('upstream_unavailable');
+        }
+    });
+
+    it('上游号池打空(503 No available compatible accounts)→ 503 failover,体中性不泄 ominiapi', async () => {
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(
+                    JSON.stringify({ error: { message: 'No available compatible accounts', type: 'api_error' } }),
+                    {
+                        status: 503,
+                    },
+                ),
+        );
+        const res = await handleAdapter25Image(
+            jsonReq(URL_OMINI, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'max' }),
+            'generations',
+            'ominiapi25',
+        );
+        expect(res.status).toBe(503);
+        expect(await res.text()).not.toMatch(/omini/i);
     });
 });

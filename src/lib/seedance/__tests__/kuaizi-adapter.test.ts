@@ -382,6 +382,39 @@ describe('pollVolcVideo', () => {
         expect(j2.usage).toBeUndefined();
     });
 
+    // 2026-09-11:筷子把【已失败的任务】包在 HTTP 400 + body{status:"failed"} 里返回
+    // (火山方舟 InternalServiceError)。此前非 2xx 一律当不透明错误 → category unknown 不终态化
+    // → 任务永停 queued(客户一直看到「排队中」)。修:body 带 status 就按任务态处理,终态化。
+    it('非2xx(HTTP 400)但 body 带 status:failed → 按失败终态处理,不当不透明错误', async () => {
+        vi.spyOn(global, 'fetch').mockResolvedValue(
+            new Response(
+                JSON.stringify({
+                    id: 'kz-cgt-z',
+                    status: 'failed',
+                    error: {
+                        code: 'InternalServiceError',
+                        message: 'The service encountered an unexpected internal error.',
+                    },
+                    vendor_task_id: 'cgt-20260911093300-mhw2c',
+                }),
+                { status: 400 },
+            ),
+        );
+        const res = await pollVolcVideo('cgt-z');
+        expect(res.status).toBe(200); // 对客是正常轮询结果(200 + status:failed),不是 400 错误
+        const j = (await res.json()) as { status: string; fail_reason: string };
+        expect(j.status).toBe('failed');
+        expect(j.fail_reason).toContain('internal error');
+    });
+
+    it('非2xx 且 body 是纯错误体(无 status)→ 仍走报错分支(任务不存在等)', async () => {
+        vi.spyOn(global, 'fetch').mockResolvedValue(
+            new Response(JSON.stringify({ error: { code: 'NotFound', message: 'task not found' } }), { status: 404 }),
+        );
+        const res = await pollVolcVideo('cgt-y');
+        expect(res.status).toBe(404); // 无 status 的纯错误体照旧透传状态码
+    });
+
     it('未配置 env → 503', async () => {
         delete process.env.ENTERPRISE_KUAIZI_KEY;
         expect((await pollVolcVideo('cgt-x')).status).toBe(503);

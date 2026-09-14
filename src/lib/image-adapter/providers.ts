@@ -36,7 +36,17 @@ export interface ImageProvider {
      *  比失败更糟 —— fail-closed:未逐家验证真出 alpha 之前一律拒,验证通过再翻开关。
      *  缺省(false)= 上游支持透明,参数经 FORWARD_EXTRAS 正常透传。 */
     noTransparentBackground?: boolean;
+    /** 单次上游调用的超时(ms)。缺省 = adapter.ts 的 DEFAULT_UPSTREAM_TIMEOUT_MS(600s,与 Caddy 3010 /
+     *  undici 各层对齐)。给【会挂死不回头】的上游单独调短:we-token 三条线(2026-09-10 实证,见 memory
+     *  reference_image_504_600s_wetoken_hang)阵发性对 5-10% 请求 600s 不回响应头 → 我方三层 600s 同时到点,
+     *  客户等满 10 分钟拿错误且 new-api 来不及换渠道。降到 300s = 挂死请求 5 分钟后 503 让 new-api failover
+     *  到 ch186/208 等出图;代价是 we-token 侧 >300s 才成功的那 0.2%(当日 p99 203s / p99.9 390s)被误杀重跑。
+     *  只按 provider 覆盖,别改全局缺省(2026-08-23 300→600 是为 n>1 大图客户改的,其他上游要留 600)。 */
+    upstreamTimeoutMs?: number;
 }
+
+/** we-token 系上游的单次调用超时(见 ImageProvider.upstreamTimeoutMs)。 */
+export const WETOKEN_UPSTREAM_TIMEOUT_MS = 300_000;
 
 export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
     // ominiapi:1k/2k/4k 统一 ¥0.1/张 → 只值得接 4K 全档 + 2K-high(守门在 adapter.ts)
@@ -56,17 +66,28 @@ export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
     // 标准账单可对账。key 由各自 new-api 渠道透传(代码不存)。C2PA 由 proxy 剥。
     // 透明背景:未验证(2026-08-26 探测时 adobe 全线故障 502,带不带参数都挂,分不清)→ fail-closed
     // 先拒,上游恢复后用 scratchpad probe-transparent.py 重探,真出 alpha 再翻三条 we-token 的开关。
+    // 超时 300s(2026-09-11,#PR):we-token 两 host 都会阵发性挂死不回头,600s 等满 = 客户 10 分钟超时。
     wetoken: {
         baseUrl: 'https://us-la.we-token.cc',
         brand: /\bwe-?token\b|\badobe\b|\bfirefly\b/gi,
-        openAllTiers: true,
+        // 2026-09-13 operator 拍板:we-token 两线(ch176/177)只收 low/medium,high 503 让路给别的渠道。
+        // 原 openAllTiers(全量官方账单)改成 onlyQualities —— 尺寸仍任意(含 size=auto),计费仍按返回图
+        // 实际尺寸合成官方账单;只是 high 档不再打这两条线。注意 gate 代码里 openAllTiers 会整体跳过守门,
+        // 两者不能并存,这里必须去掉 openAllTiers 才会生效。
+        onlyQualities: ['low', 'medium'],
         noTransparentBackground: true,
+        upstreamTimeoutMs: WETOKEN_UPSTREAM_TIMEOUT_MS,
     },
     wetokenasia: {
         baseUrl: 'https://asian-acc.we-token.cc',
         brand: /\bwe-?token\b|\badobe\b|\bfirefly\b/gi,
-        openAllTiers: true,
+        // 2026-09-13 operator 拍板:we-token 两线(ch176/177)只收 low/medium,high 503 让路给别的渠道。
+        // 原 openAllTiers(全量官方账单)改成 onlyQualities —— 尺寸仍任意(含 size=auto),计费仍按返回图
+        // 实际尺寸合成官方账单;只是 high 档不再打这两条线。注意 gate 代码里 openAllTiers 会整体跳过守门,
+        // 两者不能并存,这里必须去掉 openAllTiers 才会生效。
+        onlyQualities: ['low', 'medium'],
         noTransparentBackground: true,
+        upstreamTimeoutMs: WETOKEN_UPSTREAM_TIMEOUT_MS,
     },
     // wetokengated:同 us-la.we-token.cc 上游,但【不带 openAllTiers】→ 走盈利档+狭长守门(= ch154/ominiapi
     // 那套)。给 ch175 用:让它只接狭长/盈利档,方图低档/auto 拒 → 走 ch176/ch177。2026-08-15 operator 指定。

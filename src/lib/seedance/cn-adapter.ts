@@ -560,8 +560,12 @@ export async function submitVideoWithKey(body: Record<string, unknown>, auth: st
     const durRaw = Number(body.duration ?? body.seconds);
     const maxDur = maxDurationForVariant(map.variant);
     const duration = durRaw === -1 ? -1 : Number.isInteger(durRaw) && durRaw >= 4 && durRaw <= maxDur ? durRaw : 5;
-    let ratio = String(body.ratio || body.aspect_ratio || '16:9');
-    if (!ALLOWED_RATIOS.has(ratio)) ratio = '16:9';
+    // ratio:**客户没传就不注入**,由上游按任务类型自己定 —— 与火山渠道 kuaizi-adapter 对齐。
+    // 此前硬塞 16:9:首帧/首尾帧任务上游要求「输出比例跟随首帧图」(只接受不指定/adaptive),
+    // 我们替客户填了 16:9 → 上游 task_type_constraint 拒(2026-09-11 客户 jingdong 报障)。
+    // 「不指定」是有意义的取值,不能被默认值吃掉。显式传了才注入;非法值宽松纠正成 16:9。
+    const ratioRaw = body.ratio ?? body.aspect_ratio;
+    const ratio = ratioRaw == null || ratioRaw === '' ? undefined : String(ratioRaw);
     const generateAudio = body.generate_audio !== false; // 满血企业档默认出声;传 false 关(音频零额外 token 成本)
 
     // 上游请求体(images/videos 用带 role 的对象;帧角色显式指定优先)
@@ -569,10 +573,10 @@ export async function submitVideoWithKey(body: Record<string, unknown>, auth: st
         model: map.upstream,
         prompt,
         resolution: map.resolution,
-        ratio,
         duration,
         generate_audio: generateAudio,
     };
+    if (ratio !== undefined) upstreamBody.ratio = ALLOWED_RATIOS.has(ratio) ? ratio : '16:9';
     if (typeof body.camera_fixed === 'boolean') upstreamBody.camera_fixed = body.camera_fixed;
     if (typeof body.seed === 'number') upstreamBody.seed = body.seed;
     // 全模态参考任务类型引导(火山官方 2.5:auto/edit/extend);有则透传,上游做特殊参数校验。

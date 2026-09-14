@@ -317,6 +317,17 @@ describe('seedance-cn adapter submit', () => {
         expect(submitBody().ratio).toBe('16:9');
     });
 
+    it('客户不传 ratio → 【不注入】(首帧/首尾帧任务上游要求跟随输入图;此前硬塞 16:9 被拒)', async () => {
+        mockFetch.mockClear();
+        await submitVideo(makeReq({ model: 'seedance2.5-720p-ref', prompt: 'x', first_frame: 'https://x/a.jpg' }));
+        const b = submitBody();
+        expect(b).not.toHaveProperty('ratio'); // 不传就不发,上游按任务类型自定(首帧跟随输入图)
+        mockFetch.mockClear();
+        // 空串也当「不指定」
+        await submitVideo(makeReq({ model: 'seedance2.5-720p', prompt: 'x', ratio: '' }));
+        expect(submitBody()).not.toHaveProperty('ratio');
+    });
+
     it('omni_reference_task_type + output_format 透传(白名单外忽略)', async () => {
         mockFetch.mockClear();
         await submitVideo(

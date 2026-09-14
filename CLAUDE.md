@@ -622,3 +622,7 @@ LiteLLM 时代的 `LITELLM_*` 变量保留作 fallback,W3 D1 关停后可删。
 随后完成发布准备：Image 2.5 增加默认关闭开关 `PORTAL_IMAGE_ADAPTER25_ENABLED=false`，Batch 继续关闭；新供应商内部缺陷尚未修复，不能启用。operator 恢复 SSH 隧道后，完整测试含真实只读联机检查全部通过（287 files / 3680 passed / 1 既有 skipped），类型/构建通过、lint 0 error / 93 warnings。prod 仍保持 `02cbf26`，未部署；后续迁移、Nginx 和生产验收要求见 `docs/RELEASE-READINESS-2026-09-09.md`。
 
 operator 随后重新安排上线，`prod@d3c60d3` 已于北京时间 2026-09-09 15:33 在 VPS 发布。76 条 migration 全部完成，50 项源站/公网检查通过，12 个持久用户 token 与真实客户 Key 模型列表鉴权通过，三档图片价格未变；Image 2.5/Batch 显式关闭。切换约 6 秒短暂不可用后恢复，Portal restart count 0，数据库和 new-api 未重建。生产配置备份与回滚镜像均保留，详细结果及现有 Cloudflare Python-urllib 1010 限制见 `docs/DEPLOY-2026-09-09.md`。之后仅文档跟进，不重建运行镜像。
+
+## 上游同步 2026-09-14
+
+本批 #459–#464 在 dev 集成，合并前报告见 `docs/UPSTREAM-SYNC-2026-09-14.md`。接入视频非 2xx 失败状态识别及未指定比例时不注入 16:9；we-token 三个 provider 的等待响应头超时改为 300 秒，其他 provider 默认 600 秒。Image 2.0 的 wetoken/wetokenasia 仅接受 low/medium；Image 2.5 新增两个带 quality 白名单的候选 provider，但入口继续默认关闭，Batch 也继续关闭。上游事故中的客户信息、渠道编号、server2/Caddy 与耗时测量不属于 LLmRoute 生产事实；不采用其部署叙述。本轮无 migration/env/依赖/服务器配置变化，只有 operator 安排本批上线后才部署 VPS。测试及最终分支状态以同步报告为准。
