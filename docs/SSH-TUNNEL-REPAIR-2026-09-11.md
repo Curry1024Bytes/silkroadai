@@ -81,10 +81,15 @@ python3 /opt/backups/llmroute-network/20260911-064445/restore-network.py
 
 ## 后续连接方式
 
-日常连接复用有效隧道：
+日常连接确保配置中的端口转发存在（2026-09-14 修正）：
 
 ```bash
-ssh -O check llmroute-newapi 2>/dev/null || ssh -fN llmroute-newapi
+if ssh -O check llmroute-newapi >/dev/null 2>&1; then
+  ssh -O forward -o ExitOnForwardFailure=yes llmroute-newapi
+else
+  ssh -fN -o ExitOnForwardFailure=yes llmroute-newapi
+fi
+curl --noproxy '*' --fail --max-time 10 http://127.0.0.1:3000/api/status
 ```
 
 需要重连时：
@@ -101,3 +106,20 @@ ssh -O check llmroute-newapi
 线路仍有约 0.5 秒的请求延迟，BBR 缓解吞吐退化，并不会消除物理距离和网络波动。
 
 原始诊断和测速记录位于 operator Mac 的 `/tmp/llmroute-bbr-20260911/`；持久审计以本报告和服务器备份为准。
+
+## 2026-09-14：master 存在但没有端口转发
+
+本次是本地转发缺失，不能归为前述 BBR/吞吐问题。`ssh -O check` 返回 `Master running (pid=22713)`，
+该进程有到 VPS:22 的已建立连接，但 `lsof` 没有 3000 LISTEN；curl 立即 connection refused。
+SSH 配置仍正确包含 `127.0.0.1:3000 -> 172.17.0.1:3000`，不是配置丢失。
+
+旧推荐命令只检查 master，成功后会跳过 `ssh -fN`，因此无法修复这种状态。部署命令使用同一别名和
+`ClearAllForwardings=yes`；master 启动于 10:53:21，与发布切换命令时间吻合。该选项会在创建新主连接时
+清除转发，仍可留下 ControlPersist master；其存在不能视为隧道可用。
+
+执行 `ssh -O forward llmroute-newapi` 后，同一 PID 开始监听 127.0.0.1:3000；再次执行退出码仍为0。
+实际 `/api/status` 为 new-api rc.23 JSON、HTTP200，约0.337秒；127.0.0.1与localhost首页均200、约0.33秒；
+首页引用的一项脚本200、339927 bytes、约1.387秒。未关闭master、删除socket、修改SSH配置或重启线上服务。
+
+今后无转发的运维 SSH 命令同时使用 `-o ControlPath=none -o ControlMaster=no -o ClearAllForwardings=yes`，
+与用户的长期隧道分开。连接命令成功后仍检查实际状态接口；它不是网络与远端服务永久可用的保证。

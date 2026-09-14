@@ -905,7 +905,7 @@ docker compose -f docker-compose.prod.yml up -d portal
 DATABASE_URL="postgresql://portal:devpass123@localhost:5433/silkroadai_portal_dev"
 
 # new-api 后端(B3 主链路)— 本地通过 SSH 隧道:
-#   ssh -O check llmroute-newapi 2>/dev/null || ssh -fN llmroute-newapi
+#   master存在时: ssh -O forward llmroute-newapi；否则: ssh -fN llmroute-newapi（运维手册7.3）
 NEWAPI_BASE_URL="http://127.0.0.1:3000"
 NEWAPI_ADMIN_TOKEN="<在当前 new-api 后台个人设置生成,密码管理器存档>"
 NEWAPI_ADMIN_USER_ID=1                            # root 通常是 1
@@ -984,3 +984,9 @@ LiteLLM 时代的 `LITELLM_*` 变量保留作 fallback,W3 D1 关停后可删。
 - 77条migration checksum均匹配，无新增migration/env/配置。29模型、35价格版本、6档次、21Key摘要不变，new-api价格/计费选项不变，发布jobs/writes/active/in_flight为0；全部13用户均newapi计费、持久token真实身份鉴权通过，拓扑错误为0。
 - 50/50源站公网检查通过；管理员已有Key普通/Python-urllib两类UA模型列表均200、4模型和现行价格一致；固定图价仍¥1/¥1.5/¥2。真实价格页及Kimi发布预览通过；API/MySQL四字典一致，专用只读权限与固定RSA公钥保持；没有真实价格发布或收费调用。
 - 首轮候选误要求已下架gpt-5.4出现在价格页，核实旧版同样不显示后改用当前在售模型重验14项全通过，业务数据没改。Image2.5/Batch继续显式false、入口503，临时容器/库/含密文件清理已核实。完整证据及未验收边界见 [发布报告](docs/DEPLOY-2026-09-14.md)。
+
+## SSH 隧道连接检查修正（2026-09-14）
+
+- 用户执行旧 `ssh -O check ... || ssh -fN ...` 后3000不通：master PID22713存活且SSH TCP已建立，但没有本地3000监听；curl立即拒绝连接。旧命令只能证明master存在，不能证明转发存在。
+- 已在原master执行 `ssh -O forward llmroute-newapi` 补齐转发，重复执行同样成功；状态接口、127.0.0.1/localhost首页和实际JS资源全部200。无服务器变更或重启，不属于BBR慢问题。
+- 日常显式分支：master存在时执行 `ssh -O forward -o ExitOnForwardFailure=yes llmroute-newapi`，不存在时执行 `ssh -fN -o ExitOnForwardFailure=yes llmroute-newapi`；转发失败直接显示错误。随后验证 `/api/status` 的真实JSON。运维SSH如禁用转发，必须同时指定 `ControlPath=none`、`ControlMaster=no`、`ClearAllForwardings=yes`，避免在同一control socket创建不带转发的持久master。详见 [隧道记录](docs/SSH-TUNNEL-REPAIR-2026-09-11.md) 和运维手册7.3。
