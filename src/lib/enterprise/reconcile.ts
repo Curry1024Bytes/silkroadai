@@ -103,8 +103,7 @@ export async function reconcileStaleTasks(userId: string): Promise<void> {
                 if (!upstreamKey) {
                     // 该版本上游 key 已被移除:老任务无法回查。超保留期的直接过期终态。
                     if (expired) {
-                        await markExpired(task.id);
-                        logReconcile(task, userId, t0, 'expired');
+                        if (await markExpired(task.id)) logReconcile(task, userId, t0, 'expired');
                     }
                     continue;
                 }
@@ -118,18 +117,19 @@ export async function reconcileStaleTasks(userId: string): Promise<void> {
                 // 5xx / 429 等瞬时错仍然只是「这次没查到」,留给下次对账。
                 const e = (j as { error?: { category?: string; message?: string } } | null)?.error;
                 if (isTerminalTaskFailure((e?.category ?? '') as UpstreamErrorCategory, res.status)) {
-                    await prisma.seedanceVideoTask.updateMany({
-                        where: { id: task.id },
+                    const changed = await prisma.seedanceVideoTask.updateMany({
+                        where: { id: task.id, status: { in: ['queued', 'in_progress'] }, billed: false },
                         data: { status: 'failed', fail_reason: (e?.message || '上游判定任务失败').slice(0, 500) },
                     });
-                    console.log('[enterprise-reconcile] terminalized', { id: task.id, category: e?.category });
-                    logReconcile(task, userId, t0, 'terminalized', {
-                        status: res.status,
-                        body: j ? JSON.stringify(j) : null,
-                    });
+                    if (changed.count > 0) {
+                        console.log('[enterprise-reconcile] terminalized', { id: task.id, category: e?.category });
+                        logReconcile(task, userId, t0, 'terminalized', {
+                            status: res.status,
+                            body: j ? JSON.stringify(j) : null,
+                        });
+                    }
                 } else if (expired) {
-                    await markExpired(task.id);
-                    logReconcile(task, userId, t0, 'expired', { status: res.status });
+                    if (await markExpired(task.id)) logReconcile(task, userId, t0, 'expired', { status: res.status });
                 }
                 continue;
             }
@@ -152,17 +152,17 @@ export async function reconcileStaleTasks(userId: string): Promise<void> {
                     }
                 }
             } else if (status === 'failed') {
-                await prisma.seedanceVideoTask.updateMany({
-                    where: { id: task.id },
+                const changed = await prisma.seedanceVideoTask.updateMany({
+                    where: { id: task.id, status: { in: ['queued', 'in_progress'] }, billed: false },
                     data: {
                         status: 'failed',
                         fail_reason: typeof j.fail_reason === 'string' ? j.fail_reason.slice(0, 500) : null,
                     },
                 });
-                logReconcile(task, userId, t0, 'marked_failed', { status: res.status, body: JSON.stringify(j) });
+                if (changed.count > 0)
+                    logReconcile(task, userId, t0, 'marked_failed', { status: res.status, body: JSON.stringify(j) });
             } else if (expired) {
-                await markExpired(task.id);
-                logReconcile(task, userId, t0, 'expired', { status: res.status });
+                if (await markExpired(task.id)) logReconcile(task, userId, t0, 'expired', { status: res.status });
             }
             // 仍在跑且未超保留期 → 留给下次
         } catch (e) {
@@ -171,9 +171,10 @@ export async function reconcileStaleTasks(userId: string): Promise<void> {
     }
 }
 
-async function markExpired(id: string): Promise<void> {
-    await prisma.seedanceVideoTask.updateMany({
-        where: { id, billed: false },
+async function markExpired(id: string): Promise<boolean> {
+    const changed = await prisma.seedanceVideoTask.updateMany({
+        where: { id, status: { in: ['queued', 'in_progress'] }, billed: false },
         data: { status: 'failed', fail_reason: EXPIRED_REASON },
     });
+    return changed.count > 0;
 }

@@ -70,7 +70,7 @@ describe('reconcileStaleTasks', () => {
         });
         await reconcileStaleTasks('u1');
         expect(db.seedanceVideoTask.updateMany).toHaveBeenCalledWith({
-            where: { id: 'cgt-b' },
+            where: { id: 'cgt-b', status: { in: ['queued', 'in_progress'] }, billed: false },
             data: { status: 'failed', fail_reason: 'sensitive content' },
         });
         expect(chargeEnterpriseVideoTask).not.toHaveBeenCalled();
@@ -87,7 +87,7 @@ describe('reconcileStaleTasks', () => {
         await reconcileStaleTasks('u1');
         // cgt-old 过期终态(不计费)
         expect(db.seedanceVideoTask.updateMany).toHaveBeenCalledWith({
-            where: { id: 'cgt-old', billed: false },
+            where: { id: 'cgt-old', status: { in: ['queued', 'in_progress'] }, billed: false },
             data: { status: 'failed', fail_reason: expect.stringContaining('过期') },
         });
         expect(chargeEnterpriseVideoTask).not.toHaveBeenCalled();
@@ -130,7 +130,7 @@ describe('火山渠道(volc)分流 —— 2026-08-18 修复', () => {
         await reconcileStaleTasks('u1');
         expect(db.seedanceVideoTask.updateMany).toHaveBeenCalledWith(
             expect.objectContaining({
-                where: { id: 'cgt-19197088188' },
+                where: { id: 'cgt-19197088188', status: { in: ['queued', 'in_progress'] }, billed: false },
                 data: expect.objectContaining({ status: 'failed', fail_reason: 'ratio 必须为 adaptive' }),
             }),
         );

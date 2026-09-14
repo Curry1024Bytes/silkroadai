@@ -356,12 +356,13 @@ export async function submitVolcVideo(body: Record<string, unknown>, opts: Kuaiz
     );
 }
 
-function mapStatus(s: unknown): 'queued' | 'in_progress' | 'completed' | 'failed' {
+function mapStatus(s: unknown): 'queued' | 'in_progress' | 'completed' | 'failed' | undefined {
     const x = String(s || '').toLowerCase();
     if (['completed', 'success', 'succeeded'].includes(x)) return 'completed';
     if (['failed', 'error', 'cancelled', 'canceled', 'expired'].includes(x)) return 'failed';
     if (x === 'queued' || x === 'pending') return 'queued';
-    return 'in_progress';
+    if (x === 'running' || x === 'in_progress') return 'in_progress';
+    return undefined;
 }
 
 /**
@@ -430,10 +431,11 @@ export async function pollVolcVideo(id: string, upstreamKey?: string): Promise<N
     // 这类 body 是个【带 status 的任务对象】= 真·终态,不能当不透明错误一直挂着:
     // 之前非 2xx 一律走 passthroughUpstreamError→category unknown,而 unknown 不终态化
     // (#391 怕误杀活任务)→ DB 永停 queued,客户一直看到「排队中」。
-    // 修:只要 body 解析出且带 status 字段,就按任务态处理(下面读 status/fail_reason 终态化);
-    // 只有【没有可用 status 的纯错误体】(如任务不存在 / 限流 / 5xx 无 body)才走报错分支。
+    // 仅 mapStatus 认识的状态才算任务对象;限流/故障信封也可能带任意 status 字符串,
+    // 不能把那些未知状态当作 in_progress,吞掉真正的 HTTP 错误。
     const bodyStatus = j && typeof j.status === 'string' && j.status ? j.status : '';
-    if (!upstream.ok && !bodyStatus) {
+    const taskStatus = mapStatus(bodyStatus);
+    if (!upstream.ok && !taskStatus) {
         const cls = passthroughUpstreamError(text, upstream.status);
         console.warn('[kuaizi-adapter] poll failed', {
             id,
@@ -456,7 +458,8 @@ export async function pollVolcVideo(id: string, upstreamKey?: string): Promise<N
             taskStatus: bodyStatus,
         });
     }
-    const status = mapStatus(j.status);
+    // 2xx 未知状态沿用旧的进行中回退,只有非 2xx 需要明确的任务状态。
+    const status = taskStatus ?? 'in_progress';
     const contentObj = (j.content ?? undefined) as
         { video_url?: unknown; kz_video_url?: unknown; last_frame_url?: unknown } | undefined;
     // 优先方舟原始直链(客户只看到火山官方 TOS 域名);缺失才兜底上游转存链。

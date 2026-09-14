@@ -152,6 +152,47 @@ describe('平台视频任务号的持久化与失败时序', () => {
         expect(fetchMock.mock.calls[0][0]).toBe(`${TASKS}/${UPSTREAM_ID}`);
     });
 
+    it('映射查库恢复后重复轮询 HTTP 400 failed 仍返回同一平台号，无 usage 或重新提交', async () => {
+        rows.set(CLIENT_ID, { vendor_id: CLIENT_ID, upstream_id: UPSTREAM_ID, kind: 'task', user_id: null });
+        lookup.mockRejectedValueOnce(new Error('read unavailable'));
+        const unavailable = await pollVolcVideo(CLIENT_ID);
+        expect(unavailable.status).toBe(503);
+        expect(await terminal(unavailable)).toBe(false);
+        expect(fetchMock).not.toHaveBeenCalled();
+
+        fetchMock.mockImplementation(async () =>
+            response(
+                {
+                    id: UPSTREAM_ID,
+                    status: 'failed',
+                    error: { code: 'InternalServiceError', message: 'internal error' },
+                    usage: { completion_tokens: 100 },
+                },
+                400,
+            ),
+        );
+        for (let i = 0; i < 2; i += 1) {
+            const failed = await pollVolcVideo(CLIENT_ID);
+            expect(failed.status).toBe(200);
+            const body = await failed.json();
+            expect(body).toMatchObject({
+                id: CLIENT_ID,
+                task_id: CLIENT_ID,
+                status: 'failed',
+                fail_reason: 'internal error',
+            });
+            expect(body).not.toHaveProperty('usage');
+        }
+        expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+            `${TASKS}/${UPSTREAM_ID}`,
+            `${TASKS}/${UPSTREAM_ID}`,
+        ]);
+        expect(fetchMock.mock.calls.every(([, init]) => ((init as RequestInit).method ?? 'GET') === 'GET')).toBe(true);
+        expect(create).not.toHaveBeenCalled();
+        expect(upsert).not.toHaveBeenCalled();
+        expect(rows.get(CLIENT_ID)?.upstream_id).toBe(UPSTREAM_ID);
+    });
+
     it('随机号映射丢失且回退查询全部 404 时不误判终态；恢复映射后可查', async () => {
         fetchMock.mockImplementation(async () =>
             response({ error: { code: 'TaskNotFound', message: 'task not found' } }, 404),

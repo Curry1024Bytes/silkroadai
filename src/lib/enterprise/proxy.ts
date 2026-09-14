@@ -903,6 +903,45 @@ async function handlePollInner(
         );
     };
 
+    // A failure response can arrive after another poll has completed and billed the task.
+    // Only still-pending, unbilled rows may transition to failed; a stale read is insufficient.
+    const recordFailure = async (reason: string | null): Promise<NextResponse | null> => {
+        try {
+            const changed = await prisma.seedanceVideoTask.updateMany({
+                where: { id: taskId, status: { in: ['queued', 'in_progress'] }, billed: false },
+                data: { status: 'failed', fail_reason: reason?.slice(0, 500) ?? null },
+            });
+            invalidatePollCache(taskId);
+            if (changed.count > 0) {
+                ctx.statusAfter = 'failed';
+                return null;
+            }
+            const latest = await prisma.seedanceVideoTask.findUnique({
+                where: { id: taskId },
+                select: { status: true, billed: true, fail_reason: true },
+            });
+            ctx.statusAfter = latest?.status ?? task.status;
+            if (latest?.status === 'failed' && !latest.billed) {
+                return failedResponse(latest.fail_reason || 'generation failed');
+            }
+            // The database does not retain a complete success payload, so do not invent
+            // either a failed/queued response or a video result for the changed state.
+            const response = errJson(503, 'task_status_changed', 'task state changed, retry this query');
+            response.headers.set('Retry-After', '5');
+            return response;
+        } catch (error) {
+            ctx.statusAfter = task.status;
+            console.warn('[enterprise-proxy] failure state unconfirmed', { taskId, err: String(error) });
+            const response = errJson(
+                503,
+                'task_status_unavailable',
+                'task state could not be confirmed, retry this query',
+            );
+            response.headers.set('Retry-After', '5');
+            return response;
+        }
+    };
+
     // 已终态失败短路:库里已 failed 就不再打上游(上游会清除失败任务,再查返「任务不存在」,
     // 真实原因反而丢失)。
     if (task.status === 'failed') {
@@ -967,13 +1006,8 @@ async function handlePollInner(
             body: text.slice(0, 2000),
         });
         if (terminal) {
-            ctx.statusAfter = 'failed';
             const reason = failMsg || '上游判定任务失败';
-            await prisma.seedanceVideoTask
-                .updateMany({ where: { id: taskId }, data: { status: 'failed', fail_reason: reason.slice(0, 500) } })
-                .catch((e) => console.warn('[enterprise-proxy] terminalize failed', { taskId, err: String(e) }));
-            invalidatePollCache(taskId);
-            return failedResponse(reason);
+            return (await recordFailure(reason)) ?? failedResponse(reason);
         }
         // 【瞬时】失败(上游限流 429 / 5xx / 不可达)→ 降级返库内最后已知状态,不把错误抛给客户。
         // 只认这两类明确的瞬时信号:4xx 的 unknown / task_gone 仍照常透传 —— 对那些降级会造出
@@ -1009,15 +1043,8 @@ async function handlePollInner(
         }
     } else if (j && j.status === 'failed' && task.status !== 'failed') {
         // 失败不计费(火山对失败不收费);fail_reason 落库(2026-07-24 企业权责透明)
-        await prisma.seedanceVideoTask
-            .update({
-                where: { id: taskId },
-                data: {
-                    status: 'failed',
-                    fail_reason: typeof j.fail_reason === 'string' ? j.fail_reason.slice(0, 500) : null,
-                },
-            })
-            .catch(() => {});
+        const changedResponse = await recordFailure(typeof j.fail_reason === 'string' ? j.fail_reason : null);
+        if (changedResponse) return changedResponse;
     }
 
     // 成片落客户自定义 OSS(客户在 /enterprise/storage 配了自己的桶时):把上游成片(火山签名直链,

@@ -24,6 +24,7 @@ const {
             create: vi.fn(),
             findUnique: vi.fn(),
             update: vi.fn(),
+            updateMany: vi.fn(),
             delete: vi.fn(),
             count: vi.fn(),
             findMany: vi.fn(),
@@ -97,6 +98,7 @@ beforeEach(() => {
     estimateEnterpriseCostCny.mockResolvedValue(4.26);
     db.seedanceVideoTask.create.mockResolvedValue({});
     db.seedanceVideoTask.update.mockResolvedValue({});
+    db.seedanceVideoTask.updateMany.mockResolvedValue({ count: 1 });
     db.seedanceVideoTask.delete.mockResolvedValue({});
     cancelVideoWithKey.mockResolvedValue(new Response(null, { status: 200 }));
     cancelVolcVideo.mockResolvedValue(new Response(null, { status: 200 }));

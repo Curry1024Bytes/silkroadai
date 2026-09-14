@@ -80,6 +80,7 @@ beforeEach(() => {
     estimateEnterpriseCostCny.mockResolvedValue(4.26);
     db.seedanceVideoTask.create.mockResolvedValue({});
     db.seedanceVideoTask.update.mockResolvedValue({});
+    db.seedanceVideoTask.updateMany.mockResolvedValue({ count: 1 });
     resolveAssetRefs.mockImplementation((body: Record<string, unknown>) => Promise.resolve(body));
     getUpstreamKeyForUser.mockResolvedValue('sk-upstream-by-region');
 });
@@ -985,8 +986,11 @@ describe('轮询', () => {
             NextResponse.json({ id: 'cgt-e1', status: 'failed', fail_reason: 'sensitive content' }),
         );
         await handleEnterpriseV1(req('GET', '/v1/video/generations/cgt-e1'), '/video/generations/cgt-e1');
-        expect(db.seedanceVideoTask.update).toHaveBeenCalledWith(
-            expect.objectContaining({ data: { status: 'failed', fail_reason: 'sensitive content' } }),
+        expect(db.seedanceVideoTask.updateMany).toHaveBeenCalledWith(
+            expect.objectContaining({
+                where: { id: 'cgt-e1', status: { in: ['queued', 'in_progress'] }, billed: false },
+                data: { status: 'failed', fail_reason: 'sensitive content' },
+            }),
         );
         expect(chargeEnterpriseVideoTask).not.toHaveBeenCalled();
     });
@@ -1201,7 +1205,7 @@ describe('轮询遇上游 4xx —— 终态化 vs 瞬时(2026-08-18,8925 次轮�
         // 且已终态化落库,下次轮询走短路、根本不再打上游
         expect(db.seedanceVideoTask.updateMany).toHaveBeenCalledWith(
             expect.objectContaining({
-                where: { id: 'cgt-ttc1' },
+                where: { id: 'cgt-ttc1', status: { in: ['queued', 'in_progress'] }, billed: false },
                 data: expect.objectContaining({ status: 'failed' }),
             }),
         );

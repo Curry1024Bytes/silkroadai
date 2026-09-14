@@ -8,7 +8,7 @@ afterEach(() => {
 });
 
 describe('Image 2.5 upstream timeout', () => {
-    it('aborts the pending POST at 600s and returns no usage without reposting', async () => {
+    it('aborts the wetokenasia25 POST at 300s and returns no usage without reposting', async () => {
         vi.useFakeTimers();
         const fetchMock = vi.fn(
             (_url: string, init: RequestInit) =>
@@ -26,13 +26,13 @@ describe('Image 2.5 upstream timeout', () => {
             'generations',
             'wetokenasia25',
         );
-        await vi.advanceTimersByTimeAsync(599_999);
+        await vi.advanceTimersByTimeAsync(299_999);
         expect(fetchMock).toHaveBeenCalledTimes(1);
         const signal = fetchMock.mock.calls[0][1].signal;
         expect(signal?.aborted).toBe(false);
         await vi.advanceTimersByTimeAsync(1);
-        const response = await pending;
         expect(signal?.aborted).toBe(true);
+        const response = await pending;
         expect(response.status).toBe(503);
         const body = await response.json();
         expect(body.error.code).toBe('upstream_unavailable');
