@@ -1027,3 +1027,15 @@ LiteLLM 时代的 `LITELLM_*` 变量保留作 fallback,W3 D1 关停后可删。
 - 50/50源站公网、13/13持久token鉴权、两种UA真实模型列表、成本GET及API/MySQL价格双读通过。29模型/35价格版本/6档次/21Key和远端计费选项摘要不变，发布jobs/writes/active/in_flight均0；未填真实成本、未改价或收费。
 - 备份目录 `/opt/backups/silkroadai-portal/releases/cost-pricing-20260915-033010/`，环境备份 `.env.bak.cost-pricing-20260915-033010`，回滚标签 `silkroadai-portal-portal:rollback-cost-pricing-20260915-033010`（旧应用047e64c）。有非终态v2任务或不确定写入时禁止旧worker回滚；新增表和历史保留。
 - 普通文字输入输出、普通单价图片和现有固定图片SKU可按成本预览发布；缓存报价、多规格原生图片及视频真实价格发布仍受限制，视频当前仅保存与试算。生产调度器正常、Image2.5/Batch继续false，环境/Nginx/Cloudflare不变。完整结果见 [发布报告](docs/DEPLOY-COST-PRICING-2026-09-15.md)。
+
+## Portal 分组一键清理生产发布（2026-09-15，16:10 已上线）
+
+- 按持续部署授权发布 `prod@04868d4`，运行镜像 `sha256:78480acc3fe4ada4ac5cde3e3ea3ff39300b5d6f6be1a9e0d6ec36f9bffd2bf4`；后续纯文档提交不重建镜像。分组列表「删除」现在一次预览确认即可清理本档全部模型关联，空映射的启用模型自动下架；默认档替代在同一对话框选择。旧 DELETE 接口保护语义保留。
+- 新入口只清理 Portal 分组与本 tier 映射，保留模型实体、其他档次、其他租户、价格/成本历史、已有 Key、用户 `allowed_tier_keys` 与客户倍率记录；不会修改 new-api。仅获准目标档次的客户需另行分配可用档次，不得清空最后白名单而意外放开权限。
+- 完整分页渠道及分组选项核对区分 missing/present/unknown，隐藏分组和零倍率仍算存在；present/unknown 为提示，管理员可确认只清理 Portal。HMAC 预览绑定操作者、租户、目标、默认替代、模型/Key 身份状态及来源证据，十分钟过期；Serializable 事务内先取价格发布锁，全部清理/默认替代一起提交或回滚。
+- 最终完整测试 316 files / 4387 passed / 1 既有 skipped、typecheck、两套 Prisma、格式和生产构建通过，lint 0 error / 93 既有 warnings。11 项本地真实 PostgreSQL/API 验证通过；生产备份克隆 19 项候选检查及真实 HTTP 的 3 个模型关联清理、1 个下架、默认替代通过，历史/Key/权限/倍率摘要保持，临时资源全部清理。
+- 备份目录 `/opt/backups/silkroadai-portal/releases/group-retire-20260915-075852/`，环境备份 `.env.bak.group-retire-20260915-075852`；回滚标签 `silkroadai-portal-portal:rollback-group-retire-20260915-075852`（旧应用 `b39681d`）。16:10:43–16:10:58 切换，监测 25 样本/12 次失败，失败样本首尾跨度7.92秒，为约8秒观测失败窗口。
+- 生产 78 条 migration 无变化、checksum 一致，Portal restart0/日志error0，三项依赖未重启，环境、九张目录/成本/价格/Key/倍率表和用户白名单摘要不变，发布 jobs/writes/active/in_flight 均 0。调度器正常，Image2.5/Batch 继续 false。
+- 50/50源站公网检查通过；13/13客户非JWT持久token鉴权和user ID匹配、new-api计费13/13、拓扑异常全部0。普通与urllib真实Key模型列表均200/4模型，3条报价0mismatch；固定图片目录与new-api仍¥1/¥1.5/¥2，公开价格页21活动模型全部显示，两个关闭入口503。
+- 生产新入口仅执行预览：匿名401、管理员200；「GPT-特惠反代」当前影响7模型/下架1，15 Key/14 active，canApply=true、无阻止项、来源present。没有生产 apply，没有实际删分组、改价或收费。
+- 本次审计发现prepare的MySQL CLI默认latin1，JSON备份中文有损，导致6项raw hash与UTF-8驱动不一致。现场SQL二进制SHA与驱动raw一致，未发现价格差异；有损历史备份不可作为恢复源、未用于覆盖。四主价格字典已通过切换前候选无损canonical摘要与发布后API/数据库前后比较，附加中文配置仅能声称同CLI前后等价，不能泛称所有new-api选项逐字节不变。详情见 [功能与上线报告](docs/CHANNEL-GROUP-RETIREMENT-2026-09-15.md)。
