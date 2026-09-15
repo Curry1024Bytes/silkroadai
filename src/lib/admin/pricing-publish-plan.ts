@@ -8,6 +8,7 @@ import { canonicalSync } from './newapi-sync-plan';
 import type { SyncChannel } from './newapi-sync-source';
 import type { PricingPublishAmounts, PricingPublishInput, PricingPublishPreviewRow } from './pricing-publish-types';
 import { PricingPublishError } from './pricing-publish-lock';
+import type { CostBatchContext } from './pricing-cost-publication-guard';
 
 export const PRICE_KEYS = ['ModelRatio', 'CompletionRatio', 'ModelPrice', 'GroupRatio'] as const;
 export type PriceKey = (typeof PRICE_KEYS)[number];
@@ -63,6 +64,24 @@ export interface PublishPlan {
     source_guard: string;
     catalog_guard: string;
     units: { chat_fx: number; image_fx: number; quota_per_usd: number };
+}
+
+export interface PublishBatchPlan extends Omit<PublishPlan, 'version' | 'input' | 'target'> {
+    version: 2;
+    inputs: PricingPublishInput[];
+    upstream_models: Array<{ name: string; basis: 'token' | 'request' }>;
+    target: Partial<Record<WritePriceKey, Record<string, number>>>;
+    cost_context?: CostBatchContext;
+}
+export type AnyPublishPlan = PublishPlan | PublishBatchPlan;
+
+/** Normalize legacy intent without changing the persisted v1 contract or signature. */
+export function targetDictionaries(plan: AnyPublishPlan): Partial<Record<WritePriceKey, Record<string, number>>> {
+    return plan.version === 2
+        ? plan.target
+        : Object.fromEntries(
+              Object.entries(plan.target).map(([key, value]) => [key, { [plan.upstream_model]: value }]),
+          );
 }
 
 export function fingerprint(value: unknown) {
@@ -154,7 +173,21 @@ function completionInfo(source: PublishSource, model: string) {
     return { ratio: info.ratio, locked: info.locked };
 }
 
-export function assertEffectiveCompletion(source: PublishSource, plan: PublishPlan) {
+export function assertEffectiveCompletion(source: PublishSource, plan: AnyPublishPlan) {
+    if (plan.version === 2) {
+        for (const model of plan.upstream_models) {
+            if (
+                model.basis === 'token' &&
+                completionInfo(source, model.name).ratio !== plan.target.CompletionRatio?.[model.name]
+            ) {
+                throw new PricingPublishError(
+                    'pricing_effective_ratio_mismatch',
+                    'new-api 实际输出倍率与发布目标不同，目录价格尚未生效。',
+                );
+            }
+        }
+        return;
+    }
     if (plan.basis === 'token') {
         const info = completionInfo(source, plan.upstream_model);
         if (info.ratio !== plan.target.CompletionRatio) {
@@ -177,10 +210,33 @@ export function buildPublishPlan(
     const entry = checkedMap(model.upstream_map)[input.tier];
     if (!entry) throw new PricingPublishError('pricing_tier_invalid', '该档次没有模型渠道映射。');
     const name = entry.upstream_model;
-    if (/^gpt-image-2-(1k|2k|4k)$/.test(name) || /^gpt-image-2-(1k|2k|4k)$/.test(model.slug)) {
+    const fixedSku = /^gpt-image-2-(1k|2k|4k)$/.test(name) || /^gpt-image-2-(1k|2k|4k)$/.test(model.slug);
+    const fixedMode = input.pricing_mode === 'fixed_image';
+    if (fixedSku && !fixedMode) {
         throw new PricingPublishError('fixed_sku_price', '该模型使用已约定的固定分辨率价格，不能在通用定价页修改。');
     }
     const baseline = priceOptions(source.options);
+    if (model.modality === 'video') {
+        throw new PricingPublishError(
+            'pricing_video_unsupported',
+            '视频时长与规格计费尚不能通过此发布器修改，请保留现有视频价格配置。',
+        );
+    }
+    if (
+        fixedMode &&
+        (!fixedSku ||
+            name !== model.slug ||
+            model.modality !== 'image' ||
+            !Object.hasOwn(baseline.ModelPrice, name) ||
+            typeof baseline.ModelPrice[name] !== 'number' ||
+            !Number.isFinite(baseline.ModelPrice[name]) ||
+            Number(baseline.ModelPrice[name]) < 0)
+    ) {
+        throw new PricingPublishError(
+            'fixed_sku_invalid',
+            '仅能调整已配置按次价格、模型名与上游名完全一致的 1K / 2K / 4K 图片规格。',
+        );
+    }
     if (
         Number(source.options.QuotaPerUnit) !== QUOTA_PER_USD ||
         !Number.isFinite(CHAT_FX) ||
@@ -251,13 +307,20 @@ export function buildPublishPlan(
         const map = checkedMap(linked.upstream_map);
         const links = Object.entries(map).filter(([, mapping]) => mapping.upstream_model === name);
         if (!links.length) continue;
+        if (fixedMode && linked.slug !== name)
+            throw new PricingPublishError('fixed_sku_invalid', '固定图片规格存在别名或基础模型混用，请先核对映射。');
+        if (linked.modality === 'video')
+            throw new PricingPublishError(
+                'pricing_video_unsupported',
+                '该基础价格被视频模型引用，不能通过通用发布器修改。',
+            );
         if ((basis === 'request') !== (linked.modality === 'image')) {
             throw new PricingPublishError(
                 'pricing_modality_mismatch',
                 `「${linked.display_name}」的目录类型与实际计费方式不匹配，请先核对模型配置。`,
             );
         }
-        if (/^gpt-image-2-(1k|2k|4k)$/.test(linked.slug))
+        if (/^gpt-image-2-(1k|2k|4k)$/.test(linked.slug) && (!fixedMode || linked.slug !== name))
             throw new PricingPublishError('fixed_sku_price', '该基础价格还被固定分辨率模型引用，不能通用改价。');
         const groups = state.groups.filter((item) => item.tenant_id === linked.tenant_id && item.enabled);
         const topology = new ChannelGroupTopology(linked.tenant_id ?? 'legacy', groups);
@@ -349,21 +412,100 @@ export function buildPublishPlan(
     };
 }
 
+/** Build every model against the SAME observed source, then merge shared targets.
+ * No sequential rebasing: conflicting requirements must be explicitly resolved by the operator. */
+export function buildPublishBatchPlan(
+    state: PublishState,
+    source: PublishSource,
+    inputs: PricingPublishInput[],
+    now: number,
+    costContext?: CostBatchContext,
+): PublishBatchPlan {
+    if (!inputs.length || inputs.length > 30)
+        throw new PricingPublishError('pricing_batch_size', '每次请选择 1 至 30 个模型档次。');
+    const selected = new Set<string>();
+    for (const input of inputs) {
+        const key = JSON.stringify([input.model_id, input.tier]);
+        if (selected.has(key)) throw new PricingPublishError('pricing_batch_duplicate', '同一个模型档次不能重复选择。');
+        selected.add(key);
+    }
+    const plans = inputs.map((input) => buildPublishPlan(state, source, input, now));
+    const target: PublishBatchPlan['target'] = {};
+    const models = new Map<string, 'token' | 'request'>();
+    const rows = new Map<string, PublishPlan['rows'][number]>();
+    for (const plan of plans) {
+        if (models.has(plan.upstream_model) && models.get(plan.upstream_model) !== plan.basis)
+            throw new PricingPublishError('pricing_batch_conflict', '共享模型的计费方式不一致，请分开核对。');
+        models.set(plan.upstream_model, plan.basis);
+        for (const key of Object.keys(plan.target) as WritePriceKey[]) {
+            const values = target[key] ?? {};
+            const value = plan.target[key]!;
+            if (Object.hasOwn(values, plan.upstream_model) && values[plan.upstream_model] !== value)
+                throw new PricingPublishError(
+                    'pricing_batch_conflict',
+                    `「${plan.upstream_model}」在所选档次换算出的基础倍率不同，不能同时发布；请统一加价条件后重新预览。`,
+                );
+            target[key] = { ...values, [plan.upstream_model]: value };
+        }
+        for (const row of plan.rows) {
+            const key = JSON.stringify([row.model_id, row.tier]);
+            const existing = rows.get(key);
+            if (existing && fingerprint(existing.after) !== fingerprint(row.after))
+                throw new PricingPublishError('pricing_batch_conflict', '共享目录行存在不同发布价格，请先核对。');
+            if (!existing) rows.set(key, { ...row });
+        }
+    }
+    // A selected row owns its explicit cost; incidental shared impact must never overwrite it.
+    for (const input of inputs) {
+        const current = state.prices
+            .filter((price) => price.model_id === input.model_id && price.tier === input.tier)
+            .sort((a, b) => b.effective_from.localeCompare(a.effective_from) || b.id.localeCompare(a.id))[0];
+        // The cost workflow stores full component/spec costs separately. A null
+        // legacy one-column estimate must not erase an existing reference cost.
+        rows.get(JSON.stringify([input.model_id, input.tier]))!.cost_cny_per_1m =
+            input.cost_cny_per_1m ?? current?.cost_cny_per_1m ?? null;
+    }
+    const first = plans[0];
+    const names = [...models].map(([name, basis]) => ({ name, basis }));
+    return {
+        version: 2,
+        inputs,
+        upstream_model: names.map((model) => model.name).join(', '),
+        upstream_models: names,
+        tenant_id: first.tenant_id,
+        basis: first.basis,
+        rows: [...rows.values()],
+        warnings: [
+            ...new Set(plans.flatMap((plan) => plan.warnings)),
+            '本批次全部模型通过运行价格和持久化价格核验后，才统一更新目录。多个配置项写入期间不具备远端原子性。',
+        ],
+        baseline: first.baseline,
+        target,
+        source_guard: first.source_guard,
+        catalog_guard: first.catalog_guard,
+        units: first.units,
+        ...(costContext ? { cost_context: costContext } : {}),
+    };
+}
+
 /** A recovery accepts only old/target states, including a partially completed pair.
  * Any third value or unrelated dictionary edit is a conflict, never rolled back. */
-export function assertRecoverableOptions(current: PriceOptions, plan: PublishPlan) {
+export function assertRecoverableOptions(current: PriceOptions, plan: AnyPublishPlan) {
+    const targets = targetDictionaries(plan);
     for (const key of PRICE_KEYS) {
         const expected = { ...plan.baseline[key] };
-        if (key !== 'GroupRatio' && Object.hasOwn(plan.target, key)) {
-            const value = current[key][plan.upstream_model];
-            const old = plan.baseline[key][plan.upstream_model];
-            if (value !== old && value !== plan.target[key])
-                throw new PricingPublishError(
-                    'pricing_conflict',
-                    'new-api 价格出现其他修改，已停止自动写入，请核对后处理。',
-                );
-            if (Object.hasOwn(current[key], plan.upstream_model)) expected[plan.upstream_model] = value;
-            else delete expected[plan.upstream_model];
+        if (key !== 'GroupRatio') {
+            for (const [model, target] of Object.entries(targets[key] ?? {})) {
+                const value = current[key][model];
+                const old = plan.baseline[key][model];
+                if (value !== old && value !== target)
+                    throw new PricingPublishError(
+                        'pricing_conflict',
+                        'new-api 价格出现其他修改，已停止自动写入，请核对后处理。',
+                    );
+                if (Object.hasOwn(current[key], model)) expected[model] = value;
+                else delete expected[model];
+            }
         }
         if (fingerprint(current[key]) !== fingerprint(expected)) {
             throw new PricingPublishError('pricing_conflict', 'new-api 分组或其他价格配置已变化，已停止自动写入。');
@@ -371,8 +513,8 @@ export function assertRecoverableOptions(current: PriceOptions, plan: PublishPla
     }
 }
 
-export function optionsAtTarget(current: PriceOptions, plan: PublishPlan) {
-    return (Object.keys(plan.target) as WritePriceKey[]).every(
-        (key) => current[key][plan.upstream_model] === plan.target[key],
+export function optionsAtTarget(current: PriceOptions, plan: AnyPublishPlan) {
+    return Object.entries(targetDictionaries(plan)).every(([key, values]) =>
+        Object.entries(values).every(([model, value]) => current[key as WritePriceKey][model] === value),
     );
 }

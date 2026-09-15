@@ -1583,7 +1583,7 @@ curl ${OPENAI_BASE}/images/edits \\
                                         固定尺寸
                                     </th>
                                     <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
-                                        ¥ / 张
+                                        当前每张价格
                                     </th>
                                 </tr>
                             </thead>
@@ -1591,17 +1591,19 @@ curl ${OPENAI_BASE}/images/edits \\
                                 <tr className="border-b border-brand-border">
                                     <td className="px-4 py-3 font-mono text-xs text-navy align-top">gpt-image-2-1k</td>
                                     <td className="px-4 py-3 text-ink align-top">1024x1024</td>
-                                    <td className="px-4 py-3 text-navy align-top font-medium">¥1.00</td>
+                                    <td rowSpan={3} className="px-4 py-3 text-navy align-top font-medium">
+                                        <a href="/pricing" className="text-brand-accent underline">
+                                            查看对应档次的当前价格
+                                        </a>
+                                    </td>
                                 </tr>
                                 <tr className="border-b border-brand-border">
                                     <td className="px-4 py-3 font-mono text-xs text-navy align-top">gpt-image-2-2k</td>
                                     <td className="px-4 py-3 text-ink align-top">2048x2048</td>
-                                    <td className="px-4 py-3 text-navy align-top font-medium">¥1.50</td>
                                 </tr>
                                 <tr>
                                     <td className="px-4 py-3 font-mono text-xs text-navy align-top">gpt-image-2-4k</td>
                                     <td className="px-4 py-3 text-ink align-top">3840x2160</td>
-                                    <td className="px-4 py-3 text-navy align-top font-medium">¥2.00</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -1918,8 +1920,12 @@ with open("edited.png", "wb") as f:
                         <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
                             POST /v1/images/edits
                         </code>{' '}
-                        · 模型 gpt-image-2-1k / gpt-image-2-2k / gpt-image-2-4k · 返回 data[0].b64_json(PNG)· 固定价 ¥1
-                        / ¥1.5 / ¥2 每张 · 4K 超时 ≥180s + 重试 · Key 用图片模型分组。
+                        · 模型 gpt-image-2-1k / gpt-image-2-2k / gpt-image-2-4k · 返回 data[0].b64_json(PNG)·
+                        按张计费，单价见
+                        <a href="/pricing" className="text-brand-accent underline">
+                            当前价格页
+                        </a>
+                        · 4K 超时 ≥180s + 重试 · Key 用图片模型分组。
                     </div>
 
                     <h3 className="m-0 mt-8 mb-2 text-base font-semibold text-navy">严格模式 · Azure 标准校验(可选)</h3>

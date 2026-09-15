@@ -9,6 +9,8 @@ export interface PricingPublishInput extends PricingPublishAmounts {
     model_id: string;
     tier: string;
     cost_cny_per_1m: number | null;
+    /** Only the cost workflow may explicitly adjust an already configured resolution SKU. */
+    pricing_mode?: 'standard' | 'fixed_image';
 }
 
 export interface PricingPublishPreviewRow {
@@ -27,6 +29,7 @@ export interface PricingPublishPreview {
     basis: 'token' | 'request';
     rows: PricingPublishPreviewRow[];
     warnings: string[];
+    batch?: { count: number; upstream_models: string[] };
 }
 
 export type PricingPublishJobStatus = 'queued' | 'retry_wait' | 'conflict' | 'failed' | 'succeeded' | 'cancelled';

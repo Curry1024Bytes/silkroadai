@@ -917,7 +917,8 @@ model CatalogModel {
   created_at     DateTime @default(now())
   updated_at     DateTime @updatedAt
 
-  prices CatalogPrice[]
+  prices     CatalogPrice[]
+  cost_rules PricingCostRule[]
 
   @@unique([tenant_id, slug])
   @@index([tenant_id, sort_order])
@@ -946,6 +947,43 @@ model CatalogPrice {
 
   @@index([model_id, tier, effective_from])
   @@map("catalog_prices")
+}
+
+// Operator purchasing terms and markup drafts. These never replace active billing prices.
+model PricingCostRule {
+  id             String       @id @default(uuid()) @db.Uuid
+  model_id       String       @db.Uuid
+  model          CatalogModel @relation(fields: [model_id], references: [id], onDelete: Cascade)
+  tier           String
+  channel_id     Int
+  upstream_model String
+  config         Json
+  revision       Int          @default(1)
+  created_by     String?      @db.Uuid
+  updated_by     String?      @db.Uuid
+  created_at     DateTime     @default(now())
+  updated_at     DateTime     @updatedAt
+
+  revisions PricingCostRuleRevision[]
+
+  @@unique([model_id, tier])
+  @@map("pricing_cost_rules")
+}
+
+// Append-only snapshots created in the same transaction as each draft save.
+model PricingCostRuleRevision {
+  id             String          @id @default(uuid()) @db.Uuid
+  rule_id        String          @db.Uuid
+  rule           PricingCostRule @relation(fields: [rule_id], references: [id], onDelete: Cascade)
+  revision       Int
+  channel_id     Int
+  upstream_model String
+  config         Json
+  created_by     String?         @db.Uuid
+  created_at     DateTime        @default(now())
+
+  @@unique([rule_id, revision])
+  @@map("pricing_cost_rule_revisions")
 }
 
 // An acknowledged publication is durable before any remote price write. CatalogPrice

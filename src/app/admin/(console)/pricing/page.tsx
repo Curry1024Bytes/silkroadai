@@ -7,6 +7,7 @@ import { resolveLocale, type Locale } from '@/lib/locale';
 import { deriveTierRows, tierOrder } from '@/lib/admin/pricing-tiers';
 import type { BatchCostResult } from '@/lib/admin/batch-cost';
 import PricingPublishDialog from '@/components/admin/PricingPublishDialog';
+import CostPricingWorkbench from '@/components/admin/CostPricingWorkbench';
 import { PricingPublishJobs, requestPricingJobAction } from '@/components/admin/PricingPublishJobs';
 import type { PricingPublishJob } from '@/lib/admin/pricing-publish-types';
 
@@ -70,10 +71,10 @@ function getTexts(locale: Locale) {
               historyOnly: 'No active tier · history only',
               colEffective: 'Catalog effective from',
               // P2.10 batch cost fill
-              batchBtn: 'Batch fill cost',
-              batchTitle: 'Batch fill cost by vendor',
+              batchBtn: 'Legacy reference costs',
+              batchTitle: 'Legacy reference costs by vendor',
               batchDesc:
-                  'Cost = retail × (cost ratio / retail ratio). Only models that already have a retail price; retail prices and new-api sync are left untouched.',
+                  'Updates reference costs in the legacy catalog only. It does not generate or publish retail prices, or update the saved cost rules above. Cost = current retail × (cost ratio / retail ratio); only models with existing retail prices are included.',
               batchVendor: 'Vendor',
               batchTier: 'Tier (optional)',
               batchAllTiers: 'All tiers',
@@ -124,9 +125,10 @@ function getTexts(locale: Locale) {
               historyOnly: '无活动档次，仅保留历史',
               colEffective: '目录生效时间',
               // P2.10 批量填成本
-              batchBtn: '批量填成本',
-              batchTitle: '按家族批量填成本',
-              batchDesc: '成本 = 零售 × (拿货ratio / 零售ratio)。只填已有零售价的模型;不动零售价、不同步 new-api。',
+              batchBtn: '旧版参考成本',
+              batchTitle: '旧版参考成本（按家族）',
+              batchDesc:
+                  '仅更新旧目录参考成本，不生成或发布售价，也不更新上方已保存的成本规则。成本 = 当前售价 ×（拿货倍率 / 售价倍率）；只处理已有售价的模型。',
               batchVendor: '家族(vendor)',
               batchTier: '档次(可选)',
               batchAllTiers: '全部档次',
@@ -360,6 +362,14 @@ function PricingContent() {
                     </button>
                 </div>
             )}
+
+            <CostPricingWorkbench
+                models={models}
+                isDark={isDark}
+                locale={locale}
+                onPublished={refreshAfterSubmission}
+                onUncertain={() => void fetchModels(true)}
+            />
 
             <PricingPublishJobs
                 jobs={publishJobs}

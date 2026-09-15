@@ -20,11 +20,15 @@ import {
     optionsAtTarget,
     priceOptions,
     sourceGuard,
-    type PublishPlan,
+    type AnyPublishPlan,
+    type PublishBatchPlan,
+    buildPublishBatchPlan,
+    targetDictionaries,
     type PublishSource,
     type PublishState,
     type WritePriceKey,
 } from './pricing-publish-plan';
+import { assertPricingCostContext, type CostBatchContext } from './pricing-cost-publication-guard';
 import type {
     PricingPublishInput,
     PricingPublishJob,
@@ -48,6 +52,7 @@ export const pricingPublishInputSchema = z
         output_cny_per_1m: amount.nullable().default(null),
         per_image_cny: amount.nullable().default(null),
         cost_cny_per_1m: amount.nullable().default(null),
+        pricing_mode: z.enum(['standard', 'fixed_image']).optional(),
     })
     .refine(
         (d) =>
@@ -57,7 +62,7 @@ export const pricingPublishInputSchema = z
         { message: '请填写完整输入、输出价格，或单独填写按次价格；不能混用计费方式。' },
     );
 
-type PublishDb = Pick<Prisma.TransactionClient, 'catalogModel' | 'catalogPrice' | 'channelGroup'>;
+export type PublishDb = Pick<Prisma.TransactionClient, 'catalogModel' | 'catalogPrice' | 'channelGroup'>;
 
 export async function readPublishState(db: PublishDb): Promise<PublishState> {
     const [models, groups, prices] = await Promise.all([
@@ -142,13 +147,13 @@ export async function readPublishSource(): Promise<PublishSource> {
     return { options, channels };
 }
 
-function signature(admin: AdminPrincipal, plan: PublishPlan, timestamp: number) {
+function signature(admin: AdminPrincipal, plan: AnyPublishPlan, timestamp: number) {
     const secret = process.env.PORTAL_JWT_SECRET;
     if (!secret) throw new PricingPublishError('pricing_not_configured', '发布预览签名尚未配置。', 503);
     return createHmac('sha256', secret)
         .update(
             fingerprint({
-                purpose: 'pricing-publication-v1',
+                purpose: `pricing-publication-v${plan.version}`,
                 actor: admin.user?.id ?? 'break-glass',
                 tenant: admin.tenant_id,
                 plan,
@@ -158,7 +163,7 @@ function signature(admin: AdminPrincipal, plan: PublishPlan, timestamp: number) 
         .digest('hex');
 }
 
-function publicPreview(plan: PublishPlan, token: string, timestamp: number): PricingPublishPreview {
+function publicPreview(plan: AnyPublishPlan, token: string, timestamp: number): PricingPublishPreview {
     return {
         preview_token: token,
         expires_at: new Date(timestamp + PREVIEW_TTL).toISOString(),
@@ -173,6 +178,9 @@ function publicPreview(plan: PublishPlan, token: string, timestamp: number): Pri
             after: row.after,
         })),
         warnings: plan.warnings,
+        ...(plan.version === 2
+            ? { batch: { count: plan.inputs.length, upstream_models: plan.upstream_models.map((model) => model.name) } }
+            : {}),
     };
 }
 
@@ -200,12 +208,106 @@ async function planForInput(db: PublishDb, input: PricingPublishInput, admin: Ad
 }
 
 export async function previewPricingPublish(input: PricingPublishInput, admin: AdminPrincipal) {
+    if (input.pricing_mode === 'fixed_image')
+        throw new PricingPublishError('fixed_sku_price', '固定图片规格请通过成本定价向导预览与发布。');
     const active = await prisma.pricingPublishCoordinator.findUnique({ where: { id: 'newapi' } });
     if (active?.active_job_id)
         throw new PricingPublishError('pricing_publish_busy', '已有价格发布任务，请先处理该任务再预览新价格。');
     const plan = await planForInput(prisma, input, admin);
     const timestamp = Date.now();
     return publicPreview(plan, `${timestamp}.${signature(admin, plan, timestamp)}`, timestamp);
+}
+
+export const pricingPublishBatchInputSchema = z.array(pricingPublishInputSchema).min(1).max(30);
+
+async function planForBatch(
+    db: Prisma.TransactionClient,
+    inputs: PricingPublishInput[],
+    admin: AdminPrincipal,
+    costContext?: CostBatchContext,
+) {
+    for (const input of inputs) {
+        const found = await db.catalogModel.findFirst({
+            where: { id: input.model_id, ...tenantScope(admin) },
+            select: { id: true },
+        });
+        if (!found) throw new PricingPublishError('model_not_found', '模型不存在。', 404);
+    }
+    if (costContext) await assertPricingCostContext(db, inputs, costContext);
+    const [state, source] = await Promise.all([readPublishState(db), readPublishSource()]);
+    await persistedBaseline(source);
+    return buildPublishBatchPlan(state, source, inputs, Date.now(), costContext);
+}
+
+export async function previewPricingBatch(
+    inputs: PricingPublishInput[],
+    admin: AdminPrincipal,
+    context?: CostBatchContext,
+) {
+    const parsed = pricingPublishBatchInputSchema.safeParse(inputs);
+    if (!parsed.success)
+        throw new PricingPublishError('pricing_batch_invalid', '每批请选择 1 至 30 个模型档次，并填写合法价格。', 400);
+    const active = await prisma.pricingPublishCoordinator.findUnique({ where: { id: 'newapi' } });
+    if (active?.active_job_id)
+        throw new PricingPublishError('pricing_publish_busy', '已有价格发布任务，请先处理该任务再预览新价格。');
+    const plan = await planForBatch(prisma, parsed.data, admin, context);
+    const timestamp = Date.now();
+    return publicPreview(plan, `${timestamp}.${signature(admin, plan, timestamp)}`, timestamp);
+}
+
+/** All inputs share one durable intent, coordinator, source snapshot and confirmation. */
+export async function enqueuePricingBatch(
+    inputs: PricingPublishInput[],
+    token: string,
+    admin: AdminPrincipal,
+    context?: CostBatchContext,
+) {
+    const parsed = pricingPublishBatchInputSchema.safeParse(inputs);
+    if (!parsed.success)
+        throw new PricingPublishError('pricing_batch_invalid', '每批请选择 1 至 30 个模型档次，并填写合法价格。', 400);
+    inputs = parsed.data;
+    const previewHash = fingerprint({
+        version: 2,
+        token,
+        actor: admin.user?.id ?? 'break-glass',
+        tenant: admin.tenant_id,
+        inputs,
+        ...(context ? { context } : {}),
+    });
+    return prisma.$transaction(
+        async (tx) => {
+            const coordinator = await lockPricingPublisher(tx);
+            const repeated = await tx.pricingPublishJob.findUnique({ where: { preview_hash: previewHash } });
+            if (repeated) return publicJob(repeated);
+            const { timestamp, digest } = previewTimestamp(token);
+            if (coordinator.active_job_id)
+                throw new PricingPublishError('pricing_publish_busy', '已有价格发布任务，请先完成核验或安全取消。');
+            const plan = await planForBatch(tx, inputs, admin, context);
+            const expected = signature(admin, plan, timestamp);
+            if (!timingSafeEqual(Buffer.from(digest, 'hex'), Buffer.from(expected, 'hex')))
+                throw new PricingPublishError(
+                    'pricing_preview_stale',
+                    '成本、价格、渠道或目录已变化，请重新预览后确认。',
+                );
+            previewTimestamp(token);
+            const job = await tx.pricingPublishJob.create({
+                data: {
+                    tenant_id: plan.tenant_id,
+                    requested_by: admin.user?.id ?? null,
+                    model_id: inputs[0].model_id,
+                    upstream_model: plan.upstream_model,
+                    preview_hash: previewHash,
+                    plan: plan as unknown as Prisma.InputJsonValue,
+                    status: 'queued',
+                    message: '已保存整批待发布价格，等待写入与持久化核验；目录价格尚未更新。',
+                    next_attempt_at: new Date(),
+                },
+            });
+            await tx.pricingPublishCoordinator.update({ where: { id: 'newapi' }, data: { active_job_id: job.id } });
+            return publicJob(job);
+        },
+        { isolationLevel: 'Serializable', timeout: 120_000, maxWait: 5_000 },
+    );
 }
 
 export function publicJob(job: StoredJob): PricingPublishJob {
@@ -231,6 +333,8 @@ function previewTimestamp(token: string) {
 
 /** This commits the complete immutable intent, without a remote write. */
 export async function enqueuePricingPublish(input: PricingPublishInput, token: string, admin: AdminPrincipal) {
+    if (input.pricing_mode === 'fixed_image')
+        throw new PricingPublishError('fixed_sku_price', '固定图片规格请通过成本定价向导预览与发布。');
     const previewHash = fingerprint({ token, actor: admin.user?.id ?? 'break-glass', tenant: admin.tenant_id, input });
     return prisma.$transaction(
         async (tx) => {
@@ -266,18 +370,59 @@ export async function enqueuePricingPublish(input: PricingPublishInput, token: s
     );
 }
 
-function storedPlan(job: StoredJob): PublishPlan {
-    const plan = job.plan as unknown as PublishPlan;
+function storedBatchValid(plan: PublishBatchPlan, job: StoredJob): boolean {
+    if (
+        !Array.isArray(plan.rows) ||
+        !plan.rows.length ||
+        !pricingPublishBatchInputSchema.safeParse(plan.inputs).success ||
+        plan.inputs[0].model_id !== job.model_id ||
+        !Array.isArray(plan.upstream_models) ||
+        !plan.upstream_models.length ||
+        plan.upstream_models.length > 30 ||
+        plan.upstream_models.some(
+            (model) =>
+                !model ||
+                typeof model.name !== 'string' ||
+                !model.name.trim() ||
+                !['token', 'request'].includes(model.basis),
+        ) ||
+        new Set(plan.upstream_models.map((model) => model.name)).size !== plan.upstream_models.length ||
+        plan.upstream_models.map((model) => model.name).join(', ') !== job.upstream_model ||
+        !plan.target ||
+        typeof plan.target !== 'object' ||
+        Array.isArray(plan.target)
+    )
+        return false;
+    const expected: PublishBatchPlan['target'] = {};
+    for (const model of plan.upstream_models) {
+        const keys: WritePriceKey[] = model.basis === 'token' ? ['ModelRatio', 'CompletionRatio'] : ['ModelPrice'];
+        for (const key of keys) {
+            const value = plan.target[key]?.[model.name];
+            if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return false;
+            expected[key] = { ...expected[key], [model.name]: value };
+        }
+    }
+    return (
+        fingerprint(expected) === fingerprint(plan.target) &&
+        new Set(plan.rows?.map((row) => JSON.stringify([row.model_id, row.tier]))).size === plan.rows?.length
+    );
+}
+
+function storedPlan(job: StoredJob): AnyPublishPlan {
+    const plan = job.plan as unknown as AnyPublishPlan;
     const validKeys = plan?.basis === 'token' ? ['CompletionRatio', 'ModelRatio'] : ['ModelPrice'];
     if (
         !plan ||
-        plan.version !== 1 ||
+        ![1, 2].includes(plan.version) ||
         plan.upstream_model !== job.upstream_model ||
-        plan.input?.model_id !== job.model_id ||
+        (plan.version === 1 ? plan.input?.model_id !== job.model_id : !storedBatchValid(plan, job)) ||
         !['token', 'request'].includes(plan.basis) ||
         !plan.target ||
-        fingerprint(Object.keys(plan.target).sort()) !== fingerprint(validKeys) ||
-        Object.values(plan.target).some((value) => typeof value !== 'number' || !Number.isFinite(value) || value < 0) ||
+        (plan.version === 1 &&
+            (fingerprint(Object.keys(plan.target).sort()) !== fingerprint(validKeys) ||
+                Object.values(plan.target).some(
+                    (value) => typeof value !== 'number' || !Number.isFinite(value) || value < 0,
+                ))) ||
         !Array.isArray(plan.rows) ||
         !plan.rows.length ||
         plan.rows.some(
@@ -300,7 +445,7 @@ function storedPlan(job: StoredJob): PublishPlan {
     return plan;
 }
 
-async function checkedRemote(plan: PublishPlan) {
+async function checkedRemote(plan: AnyPublishPlan) {
     // Persisted read is mandatory before any PUT; missing verification can never
     // silently downgrade to a best-effort publication.
     const [source, rawPersisted] = await Promise.all([readPublishSource(), readPersistedPricingOptions()]);
@@ -358,7 +503,7 @@ export async function runPricingPublisherOnce(): Promise<PricingPublishJob | nul
                     return null;
                 attemptedJobId = job.id;
                 const attempts = job.attempts + 1;
-                let plan: PublishPlan;
+                let plan: AnyPublishPlan;
                 try {
                     await assertNoUncertainWrites(job.id);
                     plan = storedPlan(job);
@@ -367,14 +512,19 @@ export async function runPricingPublisherOnce(): Promise<PricingPublishJob | nul
                             'pricing_catalog_changed',
                             '目录或成本已变化，已停止自动发布，请核对本次影响范围。',
                         );
-                    for (const key of Object.keys(plan.target) as WritePriceKey[]) {
+                    const targets = targetDictionaries(plan);
+                    for (const key of Object.keys(targets) as WritePriceKey[]) {
+                        if (plan.version === 2 && plan.cost_context)
+                            await assertPricingCostContext(tx, plan.inputs, plan.cost_context);
                         const remote = await checkedRemote(plan);
                         if (
-                            remote.live[key][plan.upstream_model] === plan.target[key] &&
-                            remote.persisted[key][plan.upstream_model] === plan.target[key]
+                            Object.entries(targets[key]!).every(
+                                ([model, value]) =>
+                                    remote.live[key][model] === value && remote.persisted[key][model] === value,
+                            )
                         )
                             continue;
-                        const next = { ...remote.live[key], [plan.upstream_model]: plan.target[key] };
+                        const next = { ...remote.live[key], ...targets[key] };
                         // A transaction may have expired while network reads were slow.
                         // Confirm the lock is still held and leave at least 30s for the
                         // bounded 10s PUT; never continue remote writes after expiry.
@@ -382,6 +532,8 @@ export async function runPricingPublisherOnce(): Promise<PricingPublishJob | nul
                             where: { id: 'newapi', active_job_id: job.id },
                             data: { revision: { increment: 1 } },
                         });
+                        if (plan.version === 2 && plan.cost_context)
+                            await assertPricingCostContext(tx, plan.inputs, plan.cost_context);
                         if (Date.now() > writeDeadline) throw new Error('Publication write deadline exceeded');
                         const writeId = await beginPricingWrite(job.id, key, fingerprint(next));
                         await tx.pricingPublishCoordinator.update({
@@ -407,6 +559,8 @@ export async function runPricingPublisherOnce(): Promise<PricingPublishJob | nul
                         throw new Error('Publication not yet verified');
                     }
                     assertEffectiveCompletion(verified.source, plan);
+                    if (plan.version === 2 && plan.cost_context)
+                        await assertPricingCostContext(tx, plan.inputs, plan.cost_context);
                 } catch (error) {
                     // Database errors must roll back *all* catalog rows and the status.
                     // Retrying the durable intent is safe even if upstream already changed.
@@ -517,10 +671,17 @@ export async function changePricingJob(id: string, action: 'retry' | 'cancel', a
             const [source, persisted] = await Promise.all([readPublishSource(), readPersistedPricingOptions()]);
             const live = priceOptions(source.options),
                 saved = priceOptions(persisted);
-            for (const key of Object.keys(plan.target) as WritePriceKey[]) {
+            if (plan.version === 2) {
+                assertRecoverableOptions(live, plan);
+                assertRecoverableOptions(saved, plan);
+            }
+            for (const [key, values] of Object.entries(targetDictionaries(plan))) {
                 if (
-                    live[key][plan.upstream_model] !== plan.baseline[key][plan.upstream_model] ||
-                    saved[key][plan.upstream_model] !== plan.baseline[key][plan.upstream_model]
+                    Object.keys(values).some(
+                        (model) =>
+                            live[key as WritePriceKey][model] !== plan.baseline[key as WritePriceKey][model] ||
+                            saved[key as WritePriceKey][model] !== plan.baseline[key as WritePriceKey][model],
+                    )
                 ) {
                     throw new PricingPublishError(
                         'pricing_cancel_unsafe',

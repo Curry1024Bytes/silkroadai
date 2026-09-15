@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
     put: vi.fn(),
     beginWrite: vi.fn(),
     ackWrite: vi.fn(),
+    costGuard: vi.fn(),
     uncertain: vi.fn(),
 }));
 vi.mock('@/lib/db', () => ({ prisma: mocks.db }));
@@ -32,8 +33,12 @@ vi.mock('@/lib/admin/pricing-publish-journal', () => ({
     readUncertainPricingWrites: mocks.uncertain,
 }));
 
+vi.mock('@/lib/admin/pricing-cost-publication-guard', () => ({ assertPricingCostContext: mocks.costGuard }));
+
 import {
     previewPricingPublish,
+    previewPricingBatch,
+    enqueuePricingBatch,
     enqueuePricingPublish,
     runPricingPublisherOnce,
     changePricingJob,
@@ -49,7 +54,7 @@ import {
 } from '@/lib/admin/pricing-publish-plan';
 import { CHAT_FX, IMAGE_FX } from '@/lib/newapi/pricing-sync';
 import { QUOTA_PER_USD } from '@/lib/newapi/quota-units';
-import { assertPricingCatalogWritable } from '@/lib/admin/pricing-publish-lock';
+import { assertPricingCatalogWritable, PricingPublishError } from '@/lib/admin/pricing-publish-lock';
 import type { PricingPublishInput } from '@/lib/admin/pricing-publish-types';
 
 const NOW = Date.parse('2026-09-12T04:00:00Z');
@@ -326,6 +331,7 @@ beforeEach(() => {
     dbTail = Promise.resolve();
     journal = [];
     failOptionsAfterFirstWrite = false;
+    mocks.costGuard.mockResolvedValue(undefined);
     mocks.beginWrite.mockImplementation(async (jobId: string) => {
         const id = `write-${journal.length}`;
         journal.push({ id, jobId, acknowledged: false });
@@ -738,5 +744,301 @@ describe('pricing plan invariants', () => {
         const result = await plan({ ...input(), input_cny_per_1m: 100, output_cny_per_1m: 0 });
         expect(result.target.CompletionRatio).toBe(0);
         expect(result.rows.every((row) => row.after.output_cny_per_1m === 0)).toBe(true);
+    });
+});
+
+describe('batch price publication v2', () => {
+    const SECOND = '44444444-4444-4444-8444-444444444444';
+    function addSecond(kind: 'chat' | 'image' | 'video' = 'chat', name = 'second-model'): PricingPublishInput {
+        store.models.push({
+            ...structuredClone(store.models[0]),
+            id: SECOND,
+            slug: name,
+            display_name: 'Second model',
+            modality: kind,
+            upstream_map: { standard: { channel_id: 1, upstream_model: name } },
+        });
+        sourceChannels[0].models.push(name);
+        if (kind === 'image') (live.ModelPrice as Record<string, number>)[name] = 1;
+        else {
+            (live.ModelRatio as Record<string, number>)[name] = 1;
+            (live.CompletionRatio as Record<string, number>)[name] = 2;
+        }
+        disk = structuredClone(live);
+        mocks.options.mockImplementation(async () => {
+            if (failOptionsAfterFirstWrite && mocks.put.mock.calls.length === 1) {
+                failOptionsAfterFirstWrite = false;
+                throw new Error('GET interrupted after first full dictionary');
+            }
+            const current = source().options;
+            current.CompletionRatioMeta = {
+                ...(current.CompletionRatioMeta as Record<string, unknown>),
+                [name]: { ratio: (live.CompletionRatio as Record<string, number>)[name] ?? 0, locked: false },
+            };
+            return current;
+        });
+        return {
+            ...input(),
+            model_id: SECOND,
+            ...(kind === 'image'
+                ? { input_cny_per_1m: null, output_cny_per_1m: null, per_image_cny: Number((IMAGE_FX * 2).toFixed(4)) }
+                : {}),
+        };
+    }
+    async function batch(inputs: PricingPublishInput[]) {
+        const preview = await previewPricingBatch(inputs, ADMIN);
+        return enqueuePricingBatch(inputs, preview.preview_token, ADMIN);
+    }
+    it('writes each dictionary once for multiple models and preserves every unrelated model, group and history row', async () => {
+        const second = addSecond();
+        const values = [
+            input(),
+            {
+                ...second,
+                input_cny_per_1m: Number((CHAT_FX * 3).toFixed(4)),
+                output_cny_per_1m: Number((CHAT_FX * 12).toFixed(4)),
+            },
+        ];
+        const preview = await previewPricingBatch(values, ADMIN);
+        expect(preview.batch).toEqual({ count: 2, upstream_models: ['gpt-test', 'second-model'] });
+        expect(preview.rows).toHaveLength(4);
+        expect(preview.rows.some((row) => row.model_id === ALIAS)).toBe(true);
+        expect(mocks.put).not.toHaveBeenCalled();
+        const job = await enqueuePricingBatch(values, preview.preview_token, ADMIN);
+        expect((store.jobs[0].plan as { version: number }).version).toBe(2);
+        expect((await runPricingPublisherOnce())?.status).toBe('succeeded');
+        expect(mocks.put.mock.calls.map((call) => call[0])).toEqual(['ModelRatio', 'CompletionRatio']);
+        expect(live.ModelRatio).toEqual({ 'gpt-test': 2, 'second-model': 3, untouched: 8 });
+        expect(live.CompletionRatio).toEqual({ 'gpt-test': 3, 'second-model': 4, untouched: 9 });
+        expect(live.GroupRatio).toEqual({ G: 1, H: 2, J: 3 });
+        expect(store.prices).toHaveLength(7);
+        expect(store.prices.slice(3).every((row) => row.effective_from.getTime() === NOW)).toBe(true);
+        vi.setSystemTime(NOW + 11 * 60_000);
+        expect((await enqueuePricingBatch(values, preview.preview_token, ADMIN)).id).toBe(job.id);
+        expect(store.jobs).toHaveLength(1);
+    });
+    it('deduplicates shared impact rows and retains explicit costs for every selected tier', async () => {
+        const premium = {
+            ...input(),
+            tier: 'premium',
+            input_cny_per_1m: Number((CHAT_FX * 4).toFixed(4)),
+            output_cny_per_1m: Number((CHAT_FX * 12).toFixed(4)),
+            cost_cny_per_1m: 0.9,
+        };
+        const preview = await previewPricingBatch([input(), premium], ADMIN);
+        expect(preview.rows).toHaveLength(3);
+        expect(preview.batch?.upstream_models).toEqual(['gpt-test']);
+        await enqueuePricingBatch([input(), premium], preview.preview_token, ADMIN);
+        await runPricingPublisherOnce();
+        expect(store.prices).toHaveLength(6);
+        expect(store.prices.slice(3).map((row) => row.cost_cny_per_1m)).toEqual([0.7, 0.9, 0.8]);
+    });
+    it('rejects inconsistent shared base ratios, duplicate rows and oversized batches before intent creation', async () => {
+        await expect(previewPricingBatch([input(), { ...input(), tier: 'premium' }], ADMIN)).rejects.toMatchObject({
+            code: 'pricing_batch_conflict',
+        });
+        await expect(previewPricingBatch([input(), input()], ADMIN)).rejects.toMatchObject({
+            code: 'pricing_batch_duplicate',
+        });
+        await expect(previewPricingBatch(Array.from({ length: 31 }, input), ADMIN)).rejects.toMatchObject({
+            code: 'pricing_batch_invalid',
+        });
+        expect(store.jobs).toHaveLength(0);
+        expect(mocks.put).not.toHaveBeenCalled();
+    });
+    it('mixed text/image half-write resumes only missing full dictionaries; all directory rows remain old until verified', async () => {
+        const image = addSecond('image');
+        const job = await batch([input(), image]);
+        failOptionsAfterFirstWrite = true;
+        expect((await runPricingPublisherOnce())?.status).toBe('retry_wait');
+        expect(store.prices).toHaveLength(3);
+        expect(mocks.put.mock.calls.map((call) => call[0])).toEqual(['ModelRatio']);
+        await expect(changePricingJob(job.id, 'cancel', ADMIN)).rejects.toMatchObject({
+            code: 'pricing_cancel_unsafe',
+        });
+        vi.setSystemTime(NOW + 31_000);
+        expect((await runPricingPublisherOnce())?.status).toBe('succeeded');
+        expect(mocks.put.mock.calls.map((call) => call[0])).toEqual(['ModelRatio', 'CompletionRatio', 'ModelPrice']);
+        expect((live.ModelPrice as Record<string, number>)['second-model']).toBe(2);
+        expect(store.prices).toHaveLength(7);
+    });
+    it('lost batch acknowledgement blocks retries/cancellation even if new-api reached the target, until audited clearance', async () => {
+        const second = addSecond();
+        const job = await batch([input(), second]);
+        throwOnce = { key: 'ModelRatio', after: true };
+        expect((await runPricingPublisherOnce())?.status).toBe('conflict');
+        await changePricingJob(job.id, 'retry', ADMIN);
+        expect((await runPricingPublisherOnce())?.status).toBe('conflict');
+        await expect(changePricingJob(job.id, 'cancel', ADMIN)).rejects.toMatchObject({
+            code: 'pricing_write_uncertain',
+        });
+        expect(mocks.put).toHaveBeenCalledTimes(1);
+        journal.forEach((row) => {
+            row.acknowledged = true;
+        });
+        await changePricingJob(job.id, 'retry', ADMIN);
+        expect((await runPricingPublisherOnce())?.status).toBe('succeeded');
+        expect(mocks.put.mock.calls.map((call) => call[0])).toEqual(['ModelRatio', 'CompletionRatio']);
+    });
+    it.each(['live', 'disk'])(
+        'any unrelated %s dictionary change halts the entire batch without overwrite',
+        async (side) => {
+            const second = addSecond();
+            await batch([input(), second]);
+            ((side === 'live' ? live : disk).CompletionRatio as Record<string, number>).untouched = 200;
+            expect((await runPricingPublisherOnce())?.status).toBe('conflict');
+            expect(mocks.put).not.toHaveBeenCalled();
+            expect(store.prices).toHaveLength(3);
+        },
+    );
+    it('rejects edited batch input and changed persisted source during confirmation', async () => {
+        const second = addSecond();
+        const preview = await previewPricingBatch([input(), second], ADMIN);
+        await expect(
+            enqueuePricingBatch([input(), { ...second, cost_cny_per_1m: 1 }], preview.preview_token, ADMIN),
+        ).rejects.toMatchObject({ code: 'pricing_preview_stale' });
+        (disk.ModelRatio as Record<string, number>).untouched = 99;
+        await expect(enqueuePricingBatch([input(), second], preview.preview_token, ADMIN)).rejects.toMatchObject({
+            code: 'pricing_persistence_mismatch',
+        });
+        expect(store.jobs).toHaveLength(0);
+    });
+    it('requires explicit fixed image mode, exact configured SKU mapping and image modality', async () => {
+        const image = addSecond('image', 'gpt-image-2-2k');
+        await expect(previewPricingBatch([image], ADMIN)).rejects.toMatchObject({ code: 'fixed_sku_price' });
+        const explicit = { ...image, pricing_mode: 'fixed_image' as const };
+        await expect(previewPricingPublish(explicit, ADMIN)).rejects.toMatchObject({ code: 'fixed_sku_price' });
+        await batch([explicit]);
+        expect((await runPricingPublisherOnce())?.status).toBe('succeeded');
+        expect(mocks.put.mock.calls.map((call) => call[0])).toEqual(['ModelPrice']);
+        expect(live.ModelPrice).toEqual({ 'gpt-image-2-2k': 2 });
+        expect(store.models.find((row) => row.id === SECOND)?.upstream_map).toEqual({
+            standard: { channel_id: 1, upstream_model: 'gpt-image-2-2k' },
+        });
+    });
+    it.each(['missing-price', 'invalid-price', 'base-alias', 'video', 'resolution-override', 'tiered'])(
+        'blocks invalid fixed SKU %s configuration',
+        async (scenario) => {
+            const value = { ...addSecond('image', 'gpt-image-2-2k'), pricing_mode: 'fixed_image' as const };
+            const model = store.models.find((row) => row.id === SECOND)!;
+            if (scenario === 'missing-price') delete (live.ModelPrice as Record<string, number>)['gpt-image-2-2k'];
+            if (scenario === 'invalid-price') (live.ModelPrice as Record<string, unknown>)['gpt-image-2-2k'] = null;
+            if (scenario === 'base-alias')
+                model.upstream_map = { standard: { channel_id: 1, upstream_model: 'gpt-test' } };
+            if (scenario === 'video') model.modality = 'video';
+            if (scenario === 'resolution-override') live.ImageResolutionPrice = { 'gpt-image-2-2k': { '2k': 9 } };
+            if (scenario === 'tiered') live['billing_setting.billing_mode'] = { 'gpt-image-2-2k': 'tiered_expr' };
+            disk = structuredClone(live);
+            await expect(previewPricingBatch([value], ADMIN)).rejects.toMatchObject({
+                code: expect.stringMatching(/fixed_sku_invalid|pricing_video_unsupported|pricing_special_rule/),
+            });
+            expect(mocks.put).not.toHaveBeenCalled();
+        },
+    );
+    it('never routes video duration pricing through ordinary token publication', async () => {
+        const video = addSecond('video');
+        await expect(previewPricingBatch([video], ADMIN)).rejects.toMatchObject({ code: 'pricing_video_unsupported' });
+        expect(mocks.put).not.toHaveBeenCalled();
+    });
+    it('cost context is signed and checked before each write and final catalog publication; v1 never touches it', async () => {
+        const context = { selections: [], fingerprint: 'test-fingerprint' };
+        const preview = await previewPricingBatch([input()], ADMIN, context);
+        await expect(
+            enqueuePricingBatch([input()], preview.preview_token, ADMIN, { ...context, fingerprint: 'changed' }),
+        ).rejects.toMatchObject({ code: 'pricing_preview_stale' });
+        await enqueuePricingBatch([input()], preview.preview_token, ADMIN, context);
+        mocks.costGuard.mockImplementation(async () => {
+            if (mocks.put.mock.calls.length > 0)
+                throw new PricingPublishError('pricing_cost_stale', '保存的成本发生变化');
+        });
+        expect((await runPricingPublisherOnce())?.status).toBe('conflict');
+        expect(mocks.put).toHaveBeenCalledTimes(1);
+        expect(store.prices).toHaveLength(3);
+    });
+    it('keeps historical reference cost when a saved detailed cost rule does not populate the legacy cost column', async () => {
+        await batch([{ ...input(), cost_cny_per_1m: null }]);
+        expect((await runPricingPublisherOnce())?.status).toBe('succeeded');
+        expect(store.prices.slice(3).map((row) => row.cost_cny_per_1m)).toEqual([0.5, 0.6, 0.8]);
+    });
+    it('a later directory insert failure rolls back the entire batch; durable v2 intent resumes without replaying PUTs', async () => {
+        const second = addSecond();
+        await batch([input(), second]);
+        failPriceAt = 4;
+        expect((await runPricingPublisherOnce())?.status).toBe('retry_wait');
+        expect(store.prices).toHaveLength(3);
+        expect(mocks.put).toHaveBeenCalledTimes(2);
+        expect(store.coordinator?.active_job_id).toBe(store.jobs[0].id);
+        failPriceAt = -1;
+        vi.setSystemTime(NOW + 31_000);
+        expect((await runPricingPublisherOnce())?.status).toBe('succeeded');
+        expect(mocks.put).toHaveBeenCalledTimes(2);
+        expect(store.prices).toHaveLength(7);
+    });
+    it('all-baseline batch can cancel, but a second model changed after preview cannot be overlooked', async () => {
+        const second = addSecond();
+        const job = await batch([input(), second]);
+        (live.ModelRatio as Record<string, number>)['second-model'] = 2;
+        await expect(changePricingJob(job.id, 'cancel', ADMIN)).rejects.toMatchObject({
+            code: 'pricing_cancel_unsafe',
+        });
+        (live.ModelRatio as Record<string, number>)['second-model'] = 1;
+        expect((await changePricingJob(job.id, 'cancel', ADMIN)).status).toBe('cancelled');
+        expect(store.coordinator?.active_job_id).toBeNull();
+        expect(mocks.put).not.toHaveBeenCalled();
+    });
+    it('serialized v2 targets cannot include a new dictionary or an undeclared model', async () => {
+        await batch([input()]);
+        const plan = store.jobs[0].plan as unknown as { target: Record<string, Record<string, number>> };
+        plan.target.GroupRatio = { G: 5 };
+        expect((await runPricingPublisherOnce())?.status).toBe('conflict');
+        expect(mocks.put).not.toHaveBeenCalled();
+    });
+    it('source changes after one successful dictionary write pause all remaining model changes', async () => {
+        const second = addSecond();
+        const job = await batch([input(), second]);
+        failOptionsAfterFirstWrite = true;
+        expect((await runPricingPublisherOnce())?.status).toBe('retry_wait');
+        sourceChannels[0].models = ['gpt-test'];
+        vi.setSystemTime(NOW + 31_000);
+        expect((await runPricingPublisherOnce())?.status).toBe('conflict');
+        expect(mocks.put).toHaveBeenCalledTimes(1);
+        expect(store.prices).toHaveLength(3);
+        expect(store.coordinator?.active_job_id).toBe(job.id);
+    });
+    it('requires effective completion verification for every token model in the batch', async () => {
+        const second = addSecond();
+        await batch([input(), second]);
+        const normalSource = mocks.options.getMockImplementation()!;
+        mocks.options.mockImplementation(async () => {
+            const current = await normalSource();
+            if (mocks.put.mock.calls.length >= 2) current.CompletionRatioMeta['second-model'].ratio = 99;
+            return current;
+        });
+        expect((await runPricingPublisherOnce())?.status).toBe('conflict');
+        expect(store.prices).toHaveLength(3);
+        expect(mocks.put).toHaveBeenCalledTimes(2);
+    });
+    it('a context change before final activation preserves all old directory rows even after remote targets match', async () => {
+        const context = { selections: [], fingerprint: 'test-fingerprint' };
+        const preview = await previewPricingBatch([input()], ADMIN, context);
+        await enqueuePricingBatch([input()], preview.preview_token, ADMIN, context);
+        mocks.costGuard.mockImplementation(async () => {
+            if (mocks.put.mock.calls.length === 2)
+                throw new PricingPublishError('pricing_cost_stale', '保存的成本发生变化');
+        });
+        expect((await runPricingPublisherOnce())?.status).toBe('conflict');
+        expect(mocks.put).toHaveBeenCalledTimes(2);
+        expect(store.prices).toHaveLength(3);
+        expect(store.coordinator?.active_job_id).toBe(store.jobs[0].id);
+    });
+    it('old version-one queued intent continues to recover without calling the cost table guard', async () => {
+        await queued();
+        expect((store.jobs[0].plan as { version: number }).version).toBe(1);
+        mocks.costGuard.mockRejectedValue(new Error('cost table is intentionally unavailable'));
+        failOptionsAfterFirstWrite = true;
+        expect((await runPricingPublisherOnce())?.status).toBe('retry_wait');
+        vi.setSystemTime(NOW + 31_000);
+        expect((await runPricingPublisherOnce())?.status).toBe('succeeded');
+        expect(mocks.costGuard).not.toHaveBeenCalled();
     });
 });
