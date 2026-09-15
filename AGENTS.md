@@ -998,3 +998,11 @@ LiteLLM 时代的 `LITELLM_*` 变量保留作 fallback,W3 D1 关停后可删。
 - 本地四项旧auto/空值拒绝断言按新规格迁为一次调用成功、auto透传/空省略、响应low196及上传字节检查，提交`cc2cf6f`；其余22项保护不变。相同上游测试配旧registry为53通过/3失败，新registry56/56；C2PA案例两边均通过，不是新能力。
 - 完整测试309 files / 4178 passed / 1既有skipped（含真实只读new-api smoke3/3）；Image2.5共98项、metadata15项通过。typecheck、两套Prisma validate、构建通过，lint0 error/93既有warnings。价格页构建仍因本地PG5433不可达进入已有降级，不冒称本批生产页面或真图验收。
 - 通过后按规则dev→prod fast-forward并推送，作为待发布版本；本轮未登录VPS或部署，线上应用仍为上午`4413e61`。Image2.5/Batch继续关闭。上游注释承认低画质按xhigh计量，其“operator接受”不属于本项目用户授权；metadata字符串fixture也不能证明像素保真、官方签名或来源，禁止据此启用收费或宣传已验收。
+
+## 生产发布 2026-09-15（#465，09:22 已上线）
+
+- operator 明确「上线吧」后，`prod@047e64c` 已构建、隔离恢复验收并只切换 Portal；镜像 `sha256:0efc20216cc25f8585668d752f842621c27e5cb40f9cd62892e277f50f712ca9`。上节待部署为历史状态；后续纯文档提交不重建镜像。
+- 09:22:20–09:22:35 切换，源站采样中断 8.124 秒；Portal restart count 0、日志 error 为 0，三项依赖身份/镜像/启动时间不变。77 条 migration 正常，无新增 migration/env/配置。
+- 备份目录 `/opt/backups/silkroadai-portal/releases/upstream-20260915-011013/`，环境备份 `.env.bak.upstream-20260915-011013`，回滚标签 `silkroadai-portal-portal:rollback-upstream-20260915-011013`。真实隔离恢复及 14 项候选检查通过，临时容器/数据库/含密文件已清理；本次未回滚。
+- 50/50 网络检查通过；13/13 用户持久 token 身份匹配，两类 UA 模型列表均 200；真实价格页、Kimi 只读预览、API/MySQL 四字典核验正常。29 模型、35 价格版本、6 档次、21 Key 及远端价格/计费选项不变，发布 jobs/writes/active/in_flight 为 0。
+- Image 2.5/Batch 继续显式 false，生产调度器未关闭；本次未发布真实价格或收费调用。运维 SSH 使用独立连接，不复用用户隧道 master。完整证据见 [发布报告](docs/DEPLOY-2026-09-15.md)。
