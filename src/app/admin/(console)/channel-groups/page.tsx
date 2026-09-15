@@ -5,6 +5,7 @@ import { useState, useEffect, useCallback, Suspense } from 'react';
 import PayPageLayout from '@/components/PayPageLayout';
 import { resolveLocale, type Locale } from '@/lib/locale';
 import ChannelReplacementDialog from '@/components/admin/ChannelReplacementDialog';
+import ChannelRetirementDialog, { channelRetirementSuccessText } from '@/components/admin/ChannelRetirementDialog';
 import NewApiSyncDialog from '@/components/admin/NewApiSyncDialog';
 import { channelGroupFailureText, type ChannelGroupFailure } from '@/lib/admin/channel-group-feedback';
 
@@ -60,8 +61,6 @@ function getTexts(locale: Locale) {
               colActions: 'Actions',
               edit: 'Edit',
               delete: 'Delete',
-              deleteConfirm: (key: string) =>
-                  `Delete the tier "${key}"?\n\nExisting keys are unaffected (their new-api group keeps working), but new keys can no longer select this tier.`,
               fieldKey: 'Tier key',
               fieldKeyHint:
                   'Leave blank to generate an identifier. Custom identifiers use lowercase letters, digits and hyphens. Existing identifiers cannot be changed.',
@@ -84,7 +83,6 @@ function getTexts(locale: Locale) {
               saving: 'Saving...',
               loadFailed: 'Failed to load channel groups',
               saveFailed: 'Failed to save channel group',
-              deleteFailed: 'Failed to delete channel group',
               yes: 'Yes',
               none: '—',
           }
@@ -108,8 +106,6 @@ function getTexts(locale: Locale) {
               colActions: '操作',
               edit: '编辑',
               delete: '删除',
-              deleteConfirm: (key: string) =>
-                  `确定要删除档次「${key}」吗？\n\n已建 key 不受影响(其 new-api group 照常工作),但新建 key 不能再选该档。`,
               fieldKey: '档次 key',
               fieldKeyHint: '留空自动生成。自定义时使用小写字母、数字或连字符；已有标识不可修改。',
               fieldDisplayName: '显示名',
@@ -130,7 +126,6 @@ function getTexts(locale: Locale) {
               saving: '保存中...',
               loadFailed: '加载渠道分组失败',
               saveFailed: '保存渠道分组失败',
-              deleteFailed: '删除渠道分组失败',
               yes: '是',
               none: '—',
           };
@@ -174,6 +169,7 @@ function ChannelGroupsContent() {
     const [error, setError] = useState('');
     const [errorModels, setErrorModels] = useState<NonNullable<ChannelGroupFailure['models']>>([]);
     const [replacementGroup, setReplacementGroup] = useState<ChannelGroup | null>(null);
+    const [retirementGroup, setRetirementGroup] = useState<ChannelGroup | null>(null);
     const [success, setSuccess] = useState('');
 
     const operationError = (data: ChannelGroupFailure, fallback: string) => {
@@ -320,27 +316,11 @@ function ChannelGroupsContent() {
 
     // ── Delete handler ──
 
-    const handleDelete = async (group: ChannelGroup) => {
-        if (!confirm(t.deleteConfirm(group.key))) return;
+    const handleDelete = (group: ChannelGroup) => {
         setError('');
-        try {
-            const res = await fetch(`/api/admin/channel-groups/${group.id}`, {
-                method: 'DELETE',
-                credentials: 'same-origin',
-            });
-            if (!res.ok) {
-                if (res.status === 401) {
-                    setError(t.sessionExpired);
-                    return;
-                }
-                const data = await res.json().catch(() => ({}));
-                operationError(data, t.deleteFailed);
-                return;
-            }
-            fetchGroups();
-        } catch {
-            setError(t.deleteFailed);
-        }
+        setErrorModels([]);
+        setSuccess('');
+        setRetirementGroup(group);
     };
 
     // ── Toggle enabled ──
@@ -879,6 +859,20 @@ function ChannelGroupsContent() {
                                 ? `Replaced #${preview.source_channel_id} with #${preview.target.id}; updated ${preview.models.length} models. Prices and customer keys are unchanged.`
                                 : `已将渠道 #${preview.source_channel_id} 替换为 #${preview.target.id}，同步更新 ${preview.models.length} 个模型。已有价格和客户 Key 保持不变。`,
                         );
+                        void fetchGroups();
+                    }}
+                />
+            )}
+            {retirementGroup && (
+                <ChannelRetirementDialog
+                    key={retirementGroup.id}
+                    groupId={retirementGroup.id}
+                    locale={locale}
+                    isDark={isDark}
+                    onClose={() => setRetirementGroup(null)}
+                    onComplete={(result) => {
+                        setRetirementGroup(null);
+                        setSuccess(channelRetirementSuccessText(result, locale === 'en'));
                         void fetchGroups();
                     }}
                 />
