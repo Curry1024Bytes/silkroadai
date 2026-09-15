@@ -72,6 +72,8 @@
 3. 报告输出后，执行 `main -> dev` 合并；在 `dev` 解决冲突、运行 `typecheck` 和完整测试。
 4. 测试通过后，fast-forward `dev -> prod`，但只有在 operator 明确安排部署时才登录 VPS 发布。
 
+2026-09-15 operator 已明确授权「做好并测试通过后直接上线」：对已安排的开发或同步任务，完成上述验证后直接按 `dev → prod → VPS` 发布，不再重复询问上线许可。该授权不包含擅自改价、收费调用或未安排的功能；后续明确的「先不上线」「先沟通」或暂停指令优先。
+
 ### 冲突解决语义审计（2026-08-09 事故后强制）
 
 - 每个冲突文件必须三方对比：`dev` 合并前版本、`main` 上游版本、最终 merge result；报告逐文件写明
@@ -1015,3 +1017,13 @@ LiteLLM 时代的 `LITELLM_*` 变量保留作 fallback,W3 D1 关停后可删。
 - 普通文字输入输出和已配置同名固定图片 SKU 可按成本发布，固定 SKU 不改尺寸/渠道。缓存、多规格原生图片及视频保存/试算可用，但未验证的实际价格发布明确阻止；视频不会被强改成按秒扣费。固定图公开文档移除静态金额，指向当前价格页。
 - 完整测试 313 files / 4307 passed / 1 既有 skipped（含真实只读 smoke），typecheck/构建通过，lint 0 error / 93 既有 warnings。隔离 PostgreSQL 16 的 14 项真实迁移/API/并发/回滚验证通过；53 张既有表行列摘要不变。浅色/深色浏览器验证成本保存刷新、文字/图片/视频试算及缺少持久化核验时拒绝预览。
 - 本轮未登录 VPS、未部署或改变生产价格；用户既有 `.env`、`.idea/vcs.xml` 和未跟踪需求文档保持。回滚旧 worker 前必须处理完成 v2 发布意图与不确定写入；新增成本历史保留。详情见 [成本工作台报告](docs/COST-PRICING-WORKFLOW-2026-09-15.md)。
+
+
+## 成本定价工作台生产发布（2026-09-15，14:06 已上线）
+
+- operator 明确「做好并测试通过后直接上线」，持续授权已补入分支规则；上节未发布状态为开发阶段历史。`dev@b39681d` fast-forward 至 prod 并部署，镜像 `sha256:69896fe3eacebec7c3acc8b81ad65dc5fe1ef8c1e8dd967722f4399b58a37382`；后续文档提交不重建镜像。
+- 313 files / 4307 passed / 1 skipped、typecheck、Prisma 和生产构建通过，lint 0 error / 93 既有 warnings。生产备份克隆完成17项主检查、2条成本真实保存及历史版本、文字+2K混合v2签名预览；只读代理阻止上游写请求，临时资源全部清理。
+- 先迁移后切换：生产78条migration全完成、checksum一致；新增成本两表为空，历史保护trigger正常。14:05:56–14:06:11切换，失败样本首尾约6.8秒，Portal restart0、日志error0，PostgreSQL/new-api/MySQL身份和启动时间不变。
+- 50/50源站公网、13/13持久token鉴权、两种UA真实模型列表、成本GET及API/MySQL价格双读通过。29模型/35价格版本/6档次/21Key和远端计费选项摘要不变，发布jobs/writes/active/in_flight均0；未填真实成本、未改价或收费。
+- 备份目录 `/opt/backups/silkroadai-portal/releases/cost-pricing-20260915-033010/`，环境备份 `.env.bak.cost-pricing-20260915-033010`，回滚标签 `silkroadai-portal-portal:rollback-cost-pricing-20260915-033010`（旧应用047e64c）。有非终态v2任务或不确定写入时禁止旧worker回滚；新增表和历史保留。
+- 普通文字输入输出、普通单价图片和现有固定图片SKU可按成本预览发布；缓存报价、多规格原生图片及视频真实价格发布仍受限制，视频当前仅保存与试算。生产调度器正常、Image2.5/Batch继续false，环境/Nginx/Cloudflare不变。完整结果见 [发布报告](docs/DEPLOY-COST-PRICING-2026-09-15.md)。
