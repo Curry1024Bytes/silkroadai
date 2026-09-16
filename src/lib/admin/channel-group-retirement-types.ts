@@ -8,7 +8,7 @@ export interface ChannelGroupRetirementPreview {
         id: string;
         key: string;
         display_name: string;
-        newapi_group: string;
+        newapi_group: string | null;
         is_default: boolean;
         enabled: boolean;
     };
@@ -27,16 +27,22 @@ export interface ChannelGroupRetirementPreview {
     issues: { code: string; message: string }[];
     canApply: boolean;
     preview_token: string;
+    group_resolution?: {
+        source: 'history' | 'current_keys' | 'already_absent';
+        message: string;
+    };
     /** Absent only on the legacy Portal-only preview. New revocation previews always include this. */
     revocation?: {
         keys: ChannelGroupRetirementKeyPreview[];
         customers: number;
-        expected_group: string;
+        expected_group: string | null;
         orphaned: boolean;
+        archive_only?: boolean;
     };
 }
 
 export interface ChannelGroupRetirementResult {
+    archive_only?: boolean;
     group_key: string;
     group_name: string;
     updated_models: number;
@@ -63,8 +69,9 @@ export interface ChannelGroupRetirementJobView {
     tenant_id: string | null;
     group_key: string;
     group_name: string;
-    newapi_group: string;
+    newapi_group: string | null;
     orphaned: boolean;
+    archive_only?: boolean;
     status: ChannelGroupRetirementJobStatus;
     message: string;
     summary: {

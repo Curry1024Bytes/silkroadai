@@ -8,9 +8,11 @@ import {
 } from './client';
 
 export type { TokenRevocationMetadata } from './client';
-export interface TokenRevocationTarget {
+export interface StoredCustomerTokenTarget {
     tokenId: number;
     ownerId: number;
+}
+export interface TokenRevocationTarget extends StoredCustomerTokenTarget {
     group: string;
 }
 export interface TokenRevocationAuth {
@@ -53,7 +55,7 @@ function positiveId(value: number): boolean {
     return Number.isSafeInteger(value) && value > 0;
 }
 
-function validateTarget(auth: TokenRevocationAuth, target: TokenRevocationTarget): void {
+function validateStoredTarget(auth: TokenRevocationAuth, target: StoredCustomerTokenTarget): void {
     if (
         !auth ||
         !target ||
@@ -61,14 +63,19 @@ function validateTarget(auth: TokenRevocationAuth, target: TokenRevocationTarget
         !positiveId(target.tokenId) ||
         !positiveId(target.ownerId) ||
         typeof auth.accessToken !== 'string' ||
-        !auth.accessToken.trim() ||
-        typeof target.group !== 'string' ||
-        !target.group.trim()
+        !auth.accessToken.trim()
     ) {
         throw new TokenRevocationError('invalid_target', 'identity', false);
     }
     if (auth.userId !== target.ownerId) {
         throw new TokenRevocationError('owner_mismatch', 'identity', false);
+    }
+}
+
+function validateTarget(auth: TokenRevocationAuth, target: TokenRevocationTarget): void {
+    validateStoredTarget(auth, target);
+    if (typeof target.group !== 'string' || !target.group.trim()) {
+        throw new TokenRevocationError('invalid_target', 'identity', false);
     }
 }
 
@@ -111,6 +118,36 @@ function safeError(error: unknown, stage: TokenRevocationStage): TokenRevocation
         return new TokenRevocationError('unknown_response', stage, true, error.status);
     }
     return new TokenRevocationError('remote_unavailable', stage, true);
+}
+
+/**
+ * 只读识别已持久化 Key 的当前远端记录：先核验用户身份，再核验 token id/owner/status。
+ * 返回的 group 仅是 Key 当前所在的分组，不是历史原分组，也不是允许撤销的归属证明。
+ * 调用方必须从当前租户的数据库关联读取 target，不能采用客户端提供的所有权信息。
+ * This helper never sends DELETE and never treats disabled/expired as missing.
+ */
+export async function inspectStoredCustomerToken(
+    auth: TokenRevocationAuth,
+    target: StoredCustomerTokenTarget,
+): Promise<TokenRevocationInspection> {
+    validateStoredTarget(auth, target);
+    try {
+        const identity = await getTokenRevocationCustomerIdentity(auth);
+        if (identity.id !== target.ownerId) throw new TokenRevocationError('owner_mismatch', 'identity', false);
+        if (identity.status !== 1) throw new TokenRevocationError('authentication_failed', 'identity', false);
+    } catch (error) {
+        throw safeError(error, 'identity');
+    }
+    try {
+        const token = await getTokenRevocationMetadataForCustomer(auth, target.tokenId);
+        if (token.id !== target.tokenId) throw new TokenRevocationError('token_mismatch', 'inspect', false);
+        if (token.user_id !== target.ownerId) throw new TokenRevocationError('owner_mismatch', 'inspect', false);
+        if (![1, 2, 3, 4].includes(token.status)) throw new TokenRevocationError('invalid_target', 'inspect', false);
+        return { state: 'present', token };
+    } catch (error) {
+        if (isScopedRecordMissing(error, target.tokenId)) return { state: 'missing', scope: 'authenticated_owner' };
+        throw safeError(error, 'inspect');
+    }
 }
 
 /** Caller must persist a successful identity read before sending any DELETE. */
@@ -307,6 +344,41 @@ export async function confirmPreviouslyAbsentCustomerToken(
         throw new TokenRevocationError('invalid_target', 'inspect', false);
     }
     const inspection = await inspectCustomerTokenForRevocation(auth, target);
+    if (inspection.state !== 'missing') {
+        throw new TokenRevocationError('token_still_present', 'verify', false);
+    }
+    await requireCredentialRejection(storedLink.apiKey);
+    return {
+        state: 'already_absent',
+        ownershipEvidence: 'portal_stored_link',
+        credential: 'rejected_unclassified',
+        deleteAcknowledged: false,
+    };
+}
+
+/**
+ * Confirm absence without inventing a historical group for an orphaned Key.
+ * The same trusted persisted binding requirements as the grouped confirmation
+ * apply. Any present record, including one in a different group or a disabled
+ * state, blocks archive-only cleanup. A later retry must perform these reads
+ * again; this result is not permission to DELETE a record that reappears.
+ */
+export async function confirmAbsentStoredCustomerToken(
+    auth: TokenRevocationAuth,
+    target: StoredCustomerTokenTarget,
+    storedLink: TokenRevocationStoredLink,
+): Promise<PreviouslyAbsentCustomerToken> {
+    validateStoredTarget(auth, target);
+    if (
+        !storedLink ||
+        storedLink.kind !== 'portal_stored_link' ||
+        storedLink.tokenId !== target.tokenId ||
+        storedLink.ownerId !== target.ownerId ||
+        !validApiKey(storedLink.apiKey)
+    ) {
+        throw new TokenRevocationError('invalid_target', 'inspect', false);
+    }
+    const inspection = await inspectStoredCustomerToken(auth, target);
     if (inspection.state !== 'missing') {
         throw new TokenRevocationError('token_still_present', 'verify', false);
     }

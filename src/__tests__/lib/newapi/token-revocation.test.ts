@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { deleteTokenForCustomerStrict, getTokenRevocationMetadataForCustomer } from '@/lib/newapi/client';
 import {
+    confirmAbsentStoredCustomerToken,
     confirmPreviouslyAbsentCustomerToken,
     inspectCustomerTokenForRevocation,
+    inspectStoredCustomerToken,
     probeCustomerTokenCredential,
     revokeVerifiedCustomerToken,
     TokenRevocationError,
@@ -32,6 +34,188 @@ afterEach(() => {
     vi.unstubAllEnvs();
 });
 
+describe('read-only discovery does not infer an original group or grant DELETE authority', () => {
+    const storedTarget = { tokenId: 71, ownerId: 23 };
+
+    it.each([1, 2, 3, 4])('reports current group and present status %s using only safe metadata', async (status) => {
+        enqueueInspect(present({ group: 'moved-to-B', status }));
+        const result = await inspectStoredCustomerToken(auth, storedTarget);
+        expect(result).toEqual({ state: 'present', token: { ...metadata, group: 'moved-to-B', status } });
+        expect(JSON.stringify(result)).not.toContain('secret');
+        expect(methods()).toEqual(['GET', 'GET']);
+    });
+
+    it.each([
+        [{ user_id: 24 }, 'owner_mismatch'],
+        [{ id: 72 }, 'token_mismatch'],
+        [{ status: 0 }, 'remote_unavailable'],
+        [{ group: null }, 'remote_unavailable'],
+    ])('rejects untrusted discovery metadata %#', async (patch, code) => {
+        enqueueInspect(present(patch));
+        await expect(inspectStoredCustomerToken(auth, storedTarget)).rejects.toMatchObject({ code });
+        expect(methods()).toEqual(['GET', 'GET']);
+    });
+
+    it.each([
+        ['wrong self', () => success({ id: 24, status: 1 }), 'owner_mismatch'],
+        ['disabled owner', () => success({ id: 23, status: 2 }), 'authentication_failed'],
+        ['missing self', missing, 'unknown_response'],
+        [
+            'expired authentication',
+            () => reply({ success: false, message: auth.accessToken }, 401),
+            'authentication_failed',
+        ],
+    ])('stops discovery on %s before reading a token', async (_name, response, code) => {
+        fetchMock.mockResolvedValueOnce(response());
+        const error = await inspectStoredCustomerToken(auth, storedTarget).catch((error: unknown) => error);
+        expect(error).toMatchObject({ code, stage: 'identity' });
+        expect(JSON.stringify(error)).not.toContain('secret');
+        expect(methods()).toEqual(['GET']);
+    });
+
+    it.each([{ tokenId: 0 }, { tokenId: 1.5 }, { ownerId: 24 }])(
+        'rejects invalid stored identity %# without network traffic',
+        async (patch) => {
+            await expect(inspectStoredCustomerToken(auth, { ...storedTarget, ...patch })).rejects.toBeInstanceOf(
+                TokenRevocationError,
+            );
+            expect(fetchMock).not.toHaveBeenCalled();
+        },
+    );
+
+    it('recognizes only the exact authenticated rc.23 missing contract', async () => {
+        enqueueInspect(missing());
+        await expect(inspectStoredCustomerToken(auth, storedTarget)).resolves.toEqual({
+            state: 'missing',
+            scope: 'authenticated_owner',
+        });
+        expect(methods()).toEqual(['GET', 'GET']);
+    });
+
+    it.each([
+        ['HTTP 404', () => reply({ success: false, message: 'record not found' }, 404)],
+        ['HTTP 503', () => reply({ success: false, message: 'record not found' }, 503)],
+        ['auth failure', () => reply({ success: false, message: 'record not found' }, 401)],
+        ['unknown API code', () => reply({ success: false, message: 'record not found', code: 'UNKNOWN' })],
+        [
+            'contradictory data',
+            () => reply({ success: false, message: 'record not found', data: { key: 'fixture-key-secret' } }),
+        ],
+        ['HTML', () => new Response('<html>fixture-key-secret</html>')],
+    ])('keeps discovery %s unknown and strips unsafe payloads', async (_name, response) => {
+        enqueueInspect(response());
+        const error = await inspectStoredCustomerToken(auth, storedTarget).catch((error: unknown) => error);
+        expect(error).toBeInstanceOf(TokenRevocationError);
+        expect(JSON.stringify(error)).not.toContain('secret');
+        expect(String(error)).not.toContain('secret');
+        expect(methods()).toEqual(['GET', 'GET']);
+    });
+
+    it('keeps network failure unknown without exposing error text', async () => {
+        fetchMock.mockResolvedValueOnce(identity()).mockRejectedValueOnce(new Error('fixture-key-secret'));
+        const error = await inspectStoredCustomerToken(auth, storedTarget).catch((error: unknown) => error);
+        expect(error).toMatchObject({ code: 'remote_unavailable', retryable: true });
+        expect(JSON.stringify(error)).not.toContain('secret');
+        expect(methods()).toEqual(['GET', 'GET']);
+    });
+
+    it('retains the nonempty group requirement in all ordinary grouped operations', async () => {
+        const emptyGroup = { ...target, group: '' };
+        const storedLink = { ...storedTarget, kind: 'portal_stored_link' as const, apiKey: 'fixture-key-secret' };
+        await expect(inspectCustomerTokenForRevocation(auth, emptyGroup)).rejects.toMatchObject({
+            code: 'invalid_target',
+        });
+        await expect(revokeVerifiedCustomerToken(auth, emptyGroup, metadata, storedLink.apiKey)).rejects.toMatchObject({
+            code: 'invalid_target',
+        });
+        await expect(confirmPreviouslyAbsentCustomerToken(auth, emptyGroup, storedLink)).rejects.toMatchObject({
+            code: 'invalid_target',
+        });
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+});
+
+describe('archive-only confirmation requires genuine absence without a group name', () => {
+    const storedTarget = { tokenId: 71, ownerId: 23 };
+    const storedLink = { ...storedTarget, kind: 'portal_stored_link' as const, apiKey: 'fixture-key-secret' };
+
+    it('confirms a previously absent record without inventing a group or sending DELETE', async () => {
+        enqueueInspect(missing());
+        fetchMock.mockResolvedValueOnce(reply({ success: false, message: 'Invalid token' }, 401));
+        const result = await confirmAbsentStoredCustomerToken(auth, storedTarget, storedLink);
+        expect(result).toEqual({
+            state: 'already_absent',
+            ownershipEvidence: 'portal_stored_link',
+            credential: 'rejected_unclassified',
+            deleteAcknowledged: false,
+        });
+        expect(JSON.stringify(result)).not.toContain('secret');
+        expect(methods()).toEqual(['GET', 'GET', 'GET']);
+    });
+
+    it.each([1, 2, 3, 4])('blocks a present record in group B even at remote status %s', async (status) => {
+        enqueueInspect(present({ group: 'moved-to-B', status }));
+        await expect(confirmAbsentStoredCustomerToken(auth, storedTarget, storedLink)).rejects.toMatchObject({
+            code: 'token_still_present',
+            retryable: false,
+        });
+        expect(methods()).toEqual(['GET', 'GET']);
+    });
+
+    it.each([{ tokenId: 72 }, { ownerId: 24 }, { apiKey: '' }, { apiKey: 'sk-secret\r\nsecret' }])(
+        'rejects untrusted stored binding %# before any request',
+        async (patch) => {
+            await expect(
+                confirmAbsentStoredCustomerToken(auth, storedTarget, { ...storedLink, ...patch }),
+            ).rejects.toMatchObject({
+                code: 'invalid_target',
+            });
+            expect(fetchMock).not.toHaveBeenCalled();
+        },
+    );
+
+    it('blocks while cache still accepts a credential despite exact record absence', async () => {
+        enqueueInspect(missing());
+        fetchMock.mockResolvedValueOnce(reply({ code: true, data: { object: 'token_usage' } }));
+        await expect(confirmAbsentStoredCustomerToken(auth, storedTarget, storedLink)).rejects.toMatchObject({
+            code: 'credential_still_accepted',
+            retryable: true,
+        });
+        expect(methods()).toEqual(['GET', 'GET', 'GET']);
+    });
+
+    it.each([403, 404, 429, 500, 503])('does not equate credential HTTP %s with confirmed absence', async (status) => {
+        enqueueInspect(missing());
+        fetchMock.mockResolvedValueOnce(reply({ success: false, message: 'fixture-key-secret' }, status));
+        const error = await confirmAbsentStoredCustomerToken(auth, storedTarget, storedLink).catch(
+            (error: unknown) => error,
+        );
+        expect(error).toMatchObject({ code: 'credential_check_unconfirmed', retryable: true });
+        expect(JSON.stringify(error)).not.toContain('secret');
+        expect(methods()).toEqual(['GET', 'GET', 'GET']);
+    });
+
+    it('rechecks real management absence and blocks a record that appears on retry', async () => {
+        enqueueInspect(missing());
+        fetchMock.mockResolvedValueOnce(reply({ success: false, message: 'Invalid token' }, 401));
+        await expect(confirmAbsentStoredCustomerToken(auth, storedTarget, storedLink)).resolves.toMatchObject({
+            state: 'already_absent',
+        });
+        enqueueInspect(present({ group: 'newly-moved-B' }));
+        await expect(confirmAbsentStoredCustomerToken(auth, storedTarget, storedLink)).rejects.toMatchObject({
+            code: 'token_still_present',
+        });
+        expect(methods()).toEqual(['GET', 'GET', 'GET', 'GET', 'GET']);
+    });
+
+    it('does not probe credentials after an unconfirmed management response', async () => {
+        enqueueInspect(reply({ success: false, message: 'record not found' }, 404));
+        await expect(confirmAbsentStoredCustomerToken(auth, storedTarget, storedLink)).rejects.toBeInstanceOf(
+            TokenRevocationError,
+        );
+        expect(methods()).toEqual(['GET', 'GET']);
+    });
+});
 describe('strict rc.23 management reads and acknowledgement', () => {
     it('returns only safe token metadata from the real nested token envelope', async () => {
         fetchMock.mockResolvedValueOnce(present());

@@ -86,6 +86,36 @@ function preview(overrides: Partial<ChannelGroupRetirementPreview> = {}): Channe
         ...overrides,
     };
 }
+const orphanTarget = { kind: 'orphan' as const, tenantId: 'tenant-one', tierKey: 'old-sale' };
+function orphanPreview(group = 'Original Sale', token = 'orphan-token'): ChannelGroupRetirementPreview {
+    return preview({
+        group: { ...preview().group, id: 'orphan:old-sale', key: 'old-sale', newapi_group: group },
+        models: [],
+        preview_token: token,
+        group_resolution: { source: 'history', message: '已从历史记录恢复。' },
+        revocation: { ...preview().revocation!, expected_group: group, orphaned: true },
+    });
+}
+function archivePreview(): ChannelGroupRetirementPreview {
+    const reviewed = orphanPreview();
+    return {
+        ...reviewed,
+        group: { ...reviewed.group, newapi_group: null },
+        group_resolution: { source: 'already_absent', message: '全部 Key 已核实失效，无需恢复原分组。' },
+        upstream: { status: 'unknown', message: '不需要推断已删除分组。' },
+        revocation: {
+            ...reviewed.revocation!,
+            expected_group: null,
+            archive_only: true,
+            keys: reviewed.revocation!.keys.map((key) => ({
+                ...key,
+                actual_group: null,
+                status: 'already_absent',
+                message: 'Key 已失效。',
+            })),
+        },
+    };
+}
 const result: ChannelGroupRetirementResult = {
     group_key: 'sale',
     group_name: 'GPT 特惠',
@@ -431,34 +461,181 @@ describe('persisted key revocation tasks and recovery', () => {
         );
     });
 
-    it('requires an explicit original group for leftover keys and clears the review when it changes', async () => {
-        const reviewed = preview({
-            group: { ...preview().group, id: 'orphan:old-sale', key: 'old-sale' },
-            models: [],
-            revocation: { ...preview().revocation!, orphaned: true },
-        });
+    it('automatically previews leftover keys without an entered group and applies the signed recovered group', async () => {
+        const reviewed = orphanPreview('Original Sale（外接）');
         const network = vi
             .fn()
             .mockResolvedValueOnce(json({ preview: reviewed }))
             .mockResolvedValueOnce(json({ job: job({ orphaned: true }) }, 202));
         vi.stubGlobal('fetch', network);
-        const target = { kind: 'orphan' as const, tenantId: 'tenant-one', tierKey: 'old-sale' };
-        const session = createChannelRetirementSession(target, false);
+        const session = createChannelRetirementSession(orphanTarget, false);
+        expect(await session.apply()).toBeNull();
         await session.start();
-        expect(network).not.toHaveBeenCalled();
-        await session.refresh();
-        expect(session.getState().error).toContain('准确 new-api group');
-        expect(network).not.toHaveBeenCalled();
-        session.setNewapiGroup('Original Sale');
-        await session.refresh();
         expect(network.mock.calls[0][0]).toBe('/api/admin/channel-group-retirement-jobs');
         expect(JSON.parse(network.mock.calls[0][1].body)).toEqual({
             action: 'preview',
             tenant_id: 'tenant-one',
             tier_key: 'old-sale',
-            newapi_group: 'Original Sale',
         });
-        session.setNewapiGroup('Another Group');
+        expect(network).toHaveBeenCalledTimes(1);
+        expect(session.getState().preview).toEqual(reviewed);
+        await session.apply();
+        expect(JSON.parse(network.mock.calls[1][1].body)).toEqual({
+            action: 'apply',
+            tenant_id: 'tenant-one',
+            tier_key: 'old-sale',
+            preview_token: 'orphan-token',
+            newapi_group: 'Original Sale（外接）',
+        });
+    });
+
+    it.each(['preview_stale', 'preview_expired'])(
+        'requires a new explicit confirmation for an orphan %s response',
+        async (code) => {
+            const network = vi
+                .fn()
+                .mockResolvedValueOnce(json({ preview: orphanPreview('Old Group', 'old-token') }))
+                .mockResolvedValueOnce(json({ error: code, message: '归属已变化，请重新核对。' }, 409))
+                .mockResolvedValueOnce(json({ preview: orphanPreview('Current Group', 'new-token') }))
+                .mockResolvedValueOnce(json({ job: job({ orphaned: true, newapi_group: 'Current Group' }) }, 202));
+            vi.stubGlobal('fetch', network);
+            const session = createChannelRetirementSession(orphanTarget, false);
+            await session.start();
+            expect(await session.apply()).toBeNull();
+            expect(network).toHaveBeenCalledTimes(3);
+            expect(JSON.parse(network.mock.calls[2][1].body)).toEqual({
+                action: 'preview',
+                tenant_id: 'tenant-one',
+                tier_key: 'old-sale',
+            });
+            expect(session.getState()).toMatchObject({
+                error: '归属已变化，请重新核对。',
+                preview: { preview_token: 'new-token' },
+            });
+            await session.apply();
+            expect(JSON.parse(network.mock.calls[3][1].body)).toEqual({
+                action: 'apply',
+                tenant_id: 'tenant-one',
+                tier_key: 'old-sale',
+                newapi_group: 'Current Group',
+                preview_token: 'new-token',
+            });
+        },
+    );
+
+    it('ignores an obsolete orphan preview after refresh and never applies while rechecking', async () => {
+        const old = deferred();
+        const latest = deferred();
+        const network = vi.fn().mockReturnValueOnce(old.promise).mockReturnValueOnce(latest.promise);
+        vi.stubGlobal('fetch', network);
+        const session = createChannelRetirementSession(orphanTarget, false);
+        const first = session.start();
+        const second = session.refresh();
+        expect(network.mock.calls[0][1].signal.aborted).toBe(true);
+        expect(await session.apply()).toBeNull();
+        latest.resolve(json({ preview: orphanPreview('Latest Group', 'latest-token') }));
+        await second;
+        old.resolve(json({ preview: orphanPreview('Old Group', 'old-token') }));
+        await first;
+        expect(session.getState().preview?.revocation?.expected_group).toBe('Latest Group');
+        expect(session.getState().preview?.preview_token).toBe('latest-token');
+        expect(network).toHaveBeenCalledTimes(2);
+    });
+
+    it.each([
+        ['orphan_group_ambiguous', 409],
+        ['newapi_unavailable', 502],
+        ['key_owner_mismatch', 409],
+    ])('keeps failed orphan detection %s non-actionable and permits a fresh read', async (code, status) => {
+        const network = vi
+            .fn()
+            .mockResolvedValueOnce(json({ error: code, message: '无法确认归属，请重新核对。' }, Number(status)))
+            .mockResolvedValueOnce(json({ preview: orphanPreview() }));
+        vi.stubGlobal('fetch', network);
+        const session = createChannelRetirementSession(orphanTarget, false);
+        await session.start();
+        expect(session.getState()).toMatchObject({
+            loading: false,
+            preview: null,
+            startUncertain: false,
+            error: '无法确认归属，请重新核对。',
+        });
+        expect(await session.apply()).toBeNull();
+        expect(network).toHaveBeenCalledTimes(1);
+        await session.refresh();
+        expect(session.getState()).toMatchObject({ error: '', preview: { preview_token: 'orphan-token' } });
+        expect(network.mock.calls.map((call) => JSON.parse(call[1].body))).toEqual([
+            { action: 'preview', tenant_id: 'tenant-one', tier_key: 'old-sale' },
+            { action: 'preview', tenant_id: 'tenant-one', tier_key: 'old-sale' },
+        ]);
+    });
+
+    it('applies archive-only confirmation without sending a guessed or empty group', async () => {
+        const archived = job({ orphaned: true, archive_only: true, newapi_group: null });
+        const network = vi
+            .fn()
+            .mockResolvedValueOnce(json({ preview: archivePreview() }))
+            .mockResolvedValueOnce(json({ job: archived }, 202));
+        vi.stubGlobal('fetch', network);
+        const session = createChannelRetirementSession(orphanTarget, false);
+        await session.start();
+        expect(session.getState().preview?.revocation?.archive_only).toBe(true);
+        expect(await session.apply()).toEqual(archived);
+        expect(JSON.parse(network.mock.calls[1][1].body)).toEqual({
+            action: 'apply',
+            tenant_id: 'tenant-one',
+            tier_key: 'old-sale',
+            archive_only: true,
+            preview_token: 'orphan-token',
+        });
+    });
+
+    it('keeps archive-only result metadata when reopening and completing a saved task', async () => {
+        const queued = job({ orphaned: true, archive_only: true, newapi_group: null });
+        const archivedResult = {
+            ...result,
+            archive_only: true,
+            revoked_keys: 0,
+            already_absent_keys: 2,
+            updated_models: 0,
+            disabled_models: 0,
+        };
+        const finished = job({
+            ...queued,
+            status: 'succeeded',
+            canResume: false,
+            canStop: false,
+            result: archivedResult,
+        });
+        const network = vi
+            .fn()
+            .mockResolvedValueOnce(json({ job: queued }))
+            .mockResolvedValueOnce(json({ job: finished }));
+        vi.stubGlobal('fetch', network);
+        const session = createChannelRetirementSession({ kind: 'job', jobId: 'saved-job' }, false);
+        await session.start();
+        expect(network.mock.calls[0][1].method).toBe('GET');
+        expect(session.getState().job?.archive_only).toBe(true);
+        await session.resume();
+        expect(network.mock.calls[1][0]).toBe('/api/admin/channel-group-retirement-jobs/saved-job');
+        expect(JSON.parse(network.mock.calls[1][1].body)).toEqual({ action: 'resume' });
+        expect(session.getState().job?.result).toEqual(archivedResult);
+        expect(channelRetirementSuccessText(session.getState().job!.result!, false)).toContain(
+            '已归档「GPT 特惠」的 2 个失效 Key',
+        );
+    });
+
+    it('rejects a missing recovered group unless the server explicitly confirms archive-only mode', async () => {
+        const reviewed = archivePreview();
+        const network = vi
+            .fn()
+            .mockResolvedValueOnce(
+                json({ preview: { ...reviewed, revocation: { ...reviewed.revocation, archive_only: false } } }),
+            );
+        vi.stubGlobal('fetch', network);
+        const session = createChannelRetirementSession(orphanTarget, false);
+        await session.start();
+        expect(session.getState().error).toContain('未能核实返回结果');
         expect(session.getState().preview).toBeNull();
         expect(await session.apply()).toBeNull();
         expect(network).toHaveBeenCalledTimes(1);
@@ -558,6 +735,45 @@ describe('retirement impact and confirmation content', () => {
         },
     );
 
+    it.each([false, true])(
+        'shows the recovered group and its source without an editable override (dark=%s)',
+        (isDark) => {
+            const history = render(orphanPreview('CCMax（外接）'), isDark);
+            expect(history).toContain('new-api group: CCMax（外接）');
+            expect(history).toContain('识别来源：历史分组记录');
+            expect(history).toContain('已从历史记录恢复');
+            expect(history).not.toContain('<input');
+            expect(history).not.toContain('<select');
+            const current = render(
+                {
+                    ...orphanPreview(),
+                    group_resolution: { source: 'current_keys', message: '全部有效 Key 属于同一分组。' },
+                },
+                isDark,
+            );
+            expect(current).toContain('识别来源：Key 当前归属');
+            expect(current).toContain('无法证明历史名称，请核对下方待撤销清单');
+            expect(current).toContain('全部有效 Key 属于同一分组');
+        },
+    );
+
+    it.each([false, true])(
+        'describes archive-only impact without claiming an unknown group will be revoked (dark=%s)',
+        (isDark) => {
+            const html = render(archivePreview(), isDark);
+            expect(html).toContain('未恢复原分组名称；仅归档已经核实失效的 Key');
+            expect(html).toContain('识别来源：Key 已核实失效或不存在');
+            expect(html).toContain('再次核对并归档 Portal 记录，不会向 new-api 发送 Key 删除请求');
+            expect(html).toContain('如发现 Key 恢复有效或无法确认状态，将停止归档');
+            expect(html).toContain('历史记录和余额保留');
+            expect(html).not.toContain('将逐个核对并在 new-api 撤销');
+            expect(html).not.toContain('确认后将撤销属于本档的 Key');
+            expect(html).not.toContain('new-api group:');
+            expect(html).not.toContain('new-api 未发现该分组');
+            expect(html).not.toContain('<input');
+        },
+    );
+
     it('shows the sole replacement automatically and asks for a choice only when multiple defaults are available', () => {
         const one = preview({
             group: { ...preview().group, is_default: true },
@@ -582,6 +798,43 @@ describe('retirement impact and confirmation content', () => {
         expect(channelRetirementSuccessText(result, true)).toContain('keys revoked now');
     });
 
+    it.each([false, true])(
+        'uses the same archival completion text in the task and page toast without zero deletion statistics (en=%s)',
+        (en) => {
+            const archivedResult = {
+                ...result,
+                archive_only: true,
+                revoked_keys: 0,
+                already_absent_keys: 2,
+                updated_models: 0,
+                disabled_models: 0,
+            };
+            const text = channelRetirementSuccessText(archivedResult, en);
+            expect(text).toContain(en ? 'Archived 2 inactive keys' : '已归档「GPT 特惠」的 2 个失效 Key');
+            expect(text).toContain(en ? 'History and customer balances are retained' : '历史记录保留，客户余额不变');
+            expect(text).not.toMatch(/本次撤销|分组清理|0 个模型|0 keys revoked|0 model mappings/);
+            const html = renderToStaticMarkup(
+                <ChannelRetirementJobProgress
+                    job={job({
+                        status: 'succeeded',
+                        archive_only: true,
+                        orphaned: true,
+                        newapi_group: null,
+                        summary: { total: 2, confirmed: 2, pending: 0, failed: 0, revoked: 0, already_absent: 2 },
+                        keys: job().keys.map((key) => ({ ...key, status: 'already_absent' as const })),
+                        canResume: false,
+                        canStop: false,
+                        result: archivedResult,
+                    })}
+                    isDark={false}
+                    en={en}
+                />,
+            );
+            expect(html).toContain(text);
+            expect(html).not.toMatch(/本次撤销|分组清理|0 个模型|Revoked now|0 model mappings/);
+        },
+    );
+
     it('opens as a labelled confirmation with no SSR network request and no enabled destructive action before preview', () => {
         const network = vi.fn();
         vi.stubGlobal('fetch', network);
@@ -599,6 +852,44 @@ describe('retirement impact and confirmation content', () => {
         expect(html).toContain('先在 new-api 撤销本档所属 Key');
         expect(html).toMatch(/<button[^>]*disabled=""[^>]*>确认删除分组并撤销所属 Key/);
         expect(network).not.toHaveBeenCalled();
+    });
+
+    it('opens leftover cleanup without a mandatory group field or an actionable unreviewed confirmation', () => {
+        const network = vi.fn();
+        vi.stubGlobal('fetch', network);
+        const html = renderToStaticMarkup(
+            <ChannelRetirementDialog
+                target={orphanTarget}
+                locale="zh"
+                isDark={false}
+                onClose={() => {}}
+                onComplete={() => {}}
+                onOpenTasks={() => {}}
+            />,
+        );
+        expect(html).toContain('系统会自动识别原分组');
+        expect(html).toContain('无需填写分组名');
+        expect(html).not.toContain('<input');
+        expect(html).not.toContain('<select');
+        expect(html).not.toContain('请填写原来的准确');
+        expect(html).toMatch(/<button[^>]*disabled=""[^>]*>确认撤销遗留 Key/);
+        expect(network).not.toHaveBeenCalled();
+    });
+
+    it('reopens a saved archive-only task with archival status and no revocation promise', () => {
+        const html = renderToStaticMarkup(
+            <ChannelRetirementJobProgress
+                job={job({ orphaned: true, archive_only: true, newapi_group: null, status: 'running' })}
+                isDark={false}
+                en={false}
+            />,
+        );
+        expect(html).toContain('归档任务进度');
+        expect(html).toContain('正在核对并归档已失效 Key');
+        expect(html).toContain('不会向 new-api 发送 Key 删除请求');
+        expect(html).toContain('历史记录和客户余额保持不变');
+        expect(html).not.toContain('等待撤销');
+        expect(html).not.toContain('Key 撤销与核对');
     });
 
     it.each([false, true])('renders durable task progress and partial revocation honestly (dark=%s)', (isDark) => {

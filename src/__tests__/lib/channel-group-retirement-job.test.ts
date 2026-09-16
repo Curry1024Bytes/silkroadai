@@ -5,6 +5,8 @@ const remote = vi.hoisted(() => ({
     inspect: vi.fn(),
     revoke: vi.fn(),
     absent: vi.fn(),
+    discover: vi.fn(),
+    absentStored: vi.fn(),
     guard: vi.fn(),
     mutex: vi.fn(),
 }));
@@ -14,6 +16,8 @@ vi.mock('@/lib/newapi/token-revocation', async () => ({
     inspectCustomerTokenForRevocation: remote.inspect,
     revokeVerifiedCustomerToken: remote.revoke,
     confirmPreviouslyAbsentCustomerToken: remote.absent,
+    inspectStoredCustomerToken: remote.discover,
+    confirmAbsentStoredCustomerToken: remote.absentStored,
 }));
 vi.mock('@/lib/admin/pricing-publish-lock', async () => ({
     ...(await vi.importActual<typeof import('@/lib/admin/pricing-publish-lock')>('@/lib/admin/pricing-publish-lock')),
@@ -147,6 +151,7 @@ vi.mock('@/lib/db', () => ({
 }));
 import {
     previewRetirementJob,
+    previewOrphanRetirementJob,
     startRetirementJob,
     resumeRetirementJob,
     getRetirementJob,
@@ -264,6 +269,14 @@ beforeEach(() => {
         return { state: 'present', token: metadata };
     });
     remote.absent.mockResolvedValue({ state: 'already_absent' });
+    remote.discover.mockImplementation(async (_auth, target) => {
+        expect(transactional).toBe(false);
+        return { state: 'present', token: { ...metadata, id: target.tokenId, user_id: target.ownerId } };
+    });
+    remote.absentStored.mockImplementation(async () => {
+        expect(transactional).toBe(false);
+        return { state: 'already_absent' };
+    });
     remote.revoke.mockImplementation(async (_auth, _target, _verified, _credential, beforeDelete) => {
         expect(transactional).toBe(false);
         await beforeDelete();
@@ -707,6 +720,299 @@ describe('durable customer Key revocation retirement jobs', () => {
                 ),
             ).rejects.toMatchObject({ code: 'group_claimed_by_other_tier' });
             expect(remote.inspect).not.toHaveBeenCalled();
+        },
+    );
+});
+
+describe('automatic orphan discovery and archive-only jobs', () => {
+    const orphanTarget = { tenantId: tenant, tierKey: 'old-tier' };
+    const orphanSelection = { ...selection, groupId: null };
+    const archiveSelection = { ...orphanSelection, newapiGroup: '', archiveOnly: true };
+    function removeGroup() {
+        state.channelGroup = state.channelGroup.filter((row) => row.id !== 'old');
+    }
+    function addSameTenantKey() {
+        const second: Row = {
+            ...structuredClone(key()),
+            id: 'second',
+            newapi_token_id: 73,
+            newapi_token_value: 'sk-SECOND',
+        };
+        state.newApiToken.push(second);
+        return second;
+    }
+    function allMissing() {
+        remote.discover.mockResolvedValue({ state: 'missing', scope: 'authenticated_owner' });
+    }
+    async function archiveStart() {
+        removeGroup();
+        allMissing();
+        const preview = await previewOrphanRetirementJob(orphanTarget, admin);
+        return startRetirementJob(archiveSelection, admin, preview.preview_token);
+    }
+
+    it('automatically shows the one current group without calling it a historic group', async () => {
+        removeGroup();
+        const preview = await previewOrphanRetirementJob(orphanTarget, admin);
+        expect(preview.group.newapi_group).toBe('Old group');
+        expect(preview.group_resolution?.source).toBe('current_keys');
+        expect(preview.group_resolution?.message).toContain('不证明历史分组');
+        expect(preview.canApply).toBe(true);
+        expect(remote.discover).toHaveBeenCalledTimes(1);
+        expect(remote.revoke).not.toHaveBeenCalled();
+        expect(transactions).toBe(0);
+        expect(JSON.stringify(preview)).not.toMatch(/PRIVATE|sk-/);
+    });
+
+    it('stops if any current group differs rather than choosing the first group', async () => {
+        removeGroup();
+        addSameTenantKey();
+        remote.discover.mockImplementation(async (_auth, target) => ({
+            state: 'present',
+            token: { ...metadata, id: target.tokenId, group: target.tokenId === 71 ? 'Old group' : 'Moved B' },
+        }));
+        await expect(previewOrphanRetirementJob(orphanTarget, admin)).rejects.toMatchObject({
+            code: 'orphan_groups_conflict',
+        });
+        expect(remote.inspect).not.toHaveBeenCalled();
+        expect(remote.revoke).not.toHaveBeenCalled();
+    });
+
+    it.each(['network', 'owner', 'blank', 'untrimmed', 'missing-auth'])(
+        'does not guess a group when discovery has %s uncertainty',
+        async (kind) => {
+            removeGroup();
+            if (kind === 'network') remote.discover.mockRejectedValue(new Error('PRIVATE-UPSTREAM'));
+            if (kind === 'owner')
+                remote.discover.mockRejectedValue(new TokenRevocationError('owner_mismatch', 'inspect', false));
+            if (kind === 'blank' || kind === 'untrimmed')
+                remote.discover.mockResolvedValue({
+                    state: 'present',
+                    token: { ...metadata, group: kind === 'blank' ? '' : ' Old group ' },
+                });
+            if (kind === 'missing-auth') asRow(key().user).newapi_access_token = null;
+            const error = await previewOrphanRetirementJob(orphanTarget, admin).catch((error: unknown) => error);
+            expect(error).toMatchObject({ code: 'orphan_identity_unverified' });
+            expect(JSON.stringify(error)).not.toContain('PRIVATE');
+            expect(remote.revoke).not.toHaveBeenCalled();
+        },
+    );
+
+    it('blocks a uniquely identified group already owned by another enabled Portal tier', async () => {
+        removeGroup();
+        remote.discover.mockResolvedValue({ state: 'present', token: { ...metadata, group: 'Keep group' } });
+        await expect(previewOrphanRetirementJob(orphanTarget, admin)).rejects.toMatchObject({
+            code: 'group_claimed_by_other_tier',
+        });
+        expect(remote.inspect).not.toHaveBeenCalled();
+        expect(remote.revoke).not.toHaveBeenCalled();
+    });
+
+    it('uses exact key-bound original task history for the explanation and persists it on apply', async () => {
+        const original = await start();
+        await stopRetirementJob(original.id, admin);
+        removeGroup();
+        const preview = await previewOrphanRetirementJob(orphanTarget, admin);
+        expect(preview.group_resolution?.source).toBe('history');
+        const created = await startRetirementJob(orphanSelection, admin, preview.preview_token);
+        const plan = asRow(state.channelGroupRetirementJob.find((row) => row.id === created.id)?.plan);
+        expect(asRow(plan.initial_preview).group_resolution).toEqual(preview.group_resolution);
+        expect(remote.revoke).not.toHaveBeenCalled();
+    });
+
+    it('blocks current membership that conflicts with key-bound original group history', async () => {
+        const original = await start();
+        await stopRetirementJob(original.id, admin);
+        removeGroup();
+        remote.discover.mockResolvedValue({ state: 'present', token: { ...metadata, group: 'Unregistered B' } });
+        await expect(previewOrphanRetirementJob(orphanTarget, admin)).rejects.toMatchObject({
+            code: 'orphan_history_conflict',
+        });
+        expect(remote.revoke).not.toHaveBeenCalled();
+    });
+
+    it('does not claim unrelated task keys or another tenant as historical evidence', async () => {
+        const original = await start();
+        await stopRetirementJob(original.id, admin);
+        const foreignHistory = { ...structuredClone(job()), id: 'foreign-history', tenant_id: 'tenant-b' };
+        state.channelGroupRetirementJob.push(foreignHistory);
+        const plan = asRow(job().plan);
+        const saved = (plan.keys as Row[])[0];
+        saved.credential_hash = 'not-this-key';
+        removeGroup();
+        const preview = await previewOrphanRetirementJob(orphanTarget, admin);
+        expect(preview.group_resolution?.source).toBe('current_keys');
+    });
+
+    it('detects new conflicting history again on apply without trusting the preview label', async () => {
+        const original = await start();
+        await stopRetirementJob(original.id, admin);
+        removeGroup();
+        const preview = await previewOrphanRetirementJob(orphanTarget, admin);
+        job().newapi_group = 'Conflicting historical group';
+        asRow(asRow(job().plan).selection).newapiGroup = 'Conflicting historical group';
+        await expect(startRetirementJob(orphanSelection, admin, preview.preview_token)).rejects.toMatchObject({
+            code: 'orphan_history_conflict',
+        });
+        expect(state.channelGroupRetirementJob).toHaveLength(1);
+    });
+
+    it('includes legacy null platform keys but never expands into another tenant during discovery', async () => {
+        removeGroup();
+        asRow(key().user).tenant_id = PLATFORM;
+        const legacy = addSameTenantKey();
+        asRow(legacy.user).tenant_id = null;
+        remote.inspect.mockImplementation(async (_auth, target) => ({
+            state: 'present',
+            token: { ...metadata, id: target.tokenId, user_id: target.ownerId, group: target.group },
+        }));
+        const preview = await previewOrphanRetirementJob(
+            { ...orphanTarget, tenantId: PLATFORM },
+            { ...admin, role: 'admin', tenant_id: PLATFORM },
+        );
+        expect(preview.revocation?.keys.map((entry) => entry.id)).toEqual(['key-old', 'second']);
+        expect(remote.discover.mock.calls.map(([, target]) => target.tokenId)).toEqual([71, 73]);
+        await expect(
+            previewOrphanRetirementJob(orphanTarget, { ...admin, role: 'admin', tenant_id: PLATFORM }),
+        ).rejects.toMatchObject({ code: 'group_not_found' });
+    });
+
+    it('rejects a canonical platform registration when the request uses historical null', async () => {
+        state.channelGroup[0].tenant_id = PLATFORM;
+        asRow(key().user).tenant_id = null;
+        await expect(previewOrphanRetirementJob({ ...orphanTarget, tenantId: null }, admin)).rejects.toMatchObject({
+            code: 'group_exists',
+        });
+        expect(remote.discover).not.toHaveBeenCalled();
+    });
+
+    it('archives all genuinely missing keys without needing or sending a group or any DELETE', async () => {
+        removeGroup();
+        allMissing();
+        const initialModels = structuredClone(state.catalogModel);
+        const preview = await previewOrphanRetirementJob(orphanTarget, admin);
+        expect(preview.group.newapi_group).toBeNull();
+        expect(preview.revocation).toMatchObject({ archive_only: true, expected_group: null });
+        expect(preview.group_resolution?.source).toBe('already_absent');
+        const created = await startRetirementJob(archiveSelection, admin, preview.preview_token);
+        expect(created).toMatchObject({ archive_only: true, newapi_group: null });
+        expect(job().newapi_group).toBe('');
+        expect(item()).toMatchObject({ expected_group: '', delete_started_at: null });
+        expect(item().verified_remote ?? null).toBeNull();
+        const archived = await resumeRetirementJob(created.id, admin);
+        expect(archived.summary).toMatchObject({ revoked: 0, already_absent: 1 });
+        const finished = await resumeRetirementJob(created.id, admin);
+        expect(finished.status).toBe('succeeded');
+        expect(finished.result).toMatchObject({
+            archive_only: true,
+            revoked_keys: 0,
+            already_absent_keys: 1,
+            updated_models: 0,
+            disabled_models: 0,
+        });
+        expect(key().status).toBe('disabled');
+        expect(state.newApiToken.find((row) => row.id === 'key-other')?.status).toBe('active');
+        expect(state.catalogModel).toEqual(initialModels);
+        expect(remote.source).not.toHaveBeenCalled();
+        expect(remote.inspect).not.toHaveBeenCalled();
+        expect(remote.absent).not.toHaveBeenCalled();
+        expect(remote.revoke).not.toHaveBeenCalled();
+        expect(remote.absentStored).toHaveBeenCalledTimes(3);
+        expect(remote.absentStored).toHaveBeenLastCalledWith(
+            expect.anything(),
+            { tokenId: 71, ownerId: 11 },
+            expect.objectContaining({ kind: 'portal_stored_link' }),
+        );
+        expect(JSON.stringify(finished)).not.toMatch(/PRIVATE|sk-/);
+    });
+
+    it('blocks archive-only preview if any missing record still has an accepted credential', async () => {
+        removeGroup();
+        allMissing();
+        remote.absentStored.mockRejectedValue(new TokenRevocationError('credential_still_accepted', 'verify', true));
+        const preview = await previewOrphanRetirementJob(orphanTarget, admin);
+        expect(preview.canApply).toBe(false);
+        await expect(startRetirementJob(archiveSelection, admin, preview.preview_token)).rejects.toMatchObject({
+            code: 'retirement_blocked',
+        });
+        expect(remote.revoke).not.toHaveBeenCalled();
+    });
+
+    it('rechecks absence on apply and refuses a record that appeared after preview', async () => {
+        removeGroup();
+        allMissing();
+        const preview = await previewOrphanRetirementJob(orphanTarget, admin);
+        remote.absentStored.mockRejectedValue(new TokenRevocationError('token_still_present', 'verify', false));
+        await expect(startRetirementJob(archiveSelection, admin, preview.preview_token)).rejects.toMatchObject({
+            code: 'preview_stale',
+        });
+        expect(state.channelGroupRetirementJob).toHaveLength(0);
+        expect(remote.revoke).not.toHaveBeenCalled();
+    });
+
+    it('rechecks absence on resume and never converts a reappeared group B record to DELETE', async () => {
+        const created = await archiveStart();
+        remote.absentStored.mockRejectedValue(new TokenRevocationError('token_still_present', 'verify', false));
+        const result = await resumeRetirementJob(created.id, admin);
+        expect(result).toMatchObject({ status: 'needs_attention', canStop: true });
+        expect(result.summary).toMatchObject({ revoked: 0, already_absent: 0, failed: 1 });
+        expect(key().status).toBe('active');
+        expect(item().delete_started_at).toBeNull();
+        expect(remote.revoke).not.toHaveBeenCalled();
+        expect((await stopRetirementJob(created.id, admin)).status).toBe('cancelled');
+    });
+
+    it('binds archive-only mode in the signed preview and in idempotent task replay', async () => {
+        removeGroup();
+        allMissing();
+        remote.inspect.mockResolvedValue({ state: 'missing', scope: 'authenticated_owner' });
+        const archivePreview = await previewOrphanRetirementJob(orphanTarget, admin);
+        await expect(startRetirementJob(orphanSelection, admin, archivePreview.preview_token)).rejects.toMatchObject({
+            code: 'preview_stale',
+        });
+        const groupedPreview = await previewRetirementJob(orphanSelection, admin);
+        await expect(startRetirementJob(archiveSelection, admin, groupedPreview.preview_token)).rejects.toMatchObject({
+            code: 'preview_stale',
+        });
+        const created = await startRetirementJob(archiveSelection, admin, archivePreview.preview_token);
+        expect((await startRetirementJob(archiveSelection, admin, archivePreview.preview_token)).id).toBe(created.id);
+        await expect(startRetirementJob(orphanSelection, admin, archivePreview.preview_token)).rejects.toMatchObject({
+            code: 'preview_invalid',
+        });
+        expect(remote.revoke).not.toHaveBeenCalled();
+    });
+
+    it('refuses archive-only mode for a live group or a nonempty guessed group', async () => {
+        await expect(previewRetirementJob({ ...archiveSelection, groupId: 'old' }, admin)).rejects.toMatchObject({
+            code: 'invalid_input',
+        });
+        await expect(
+            previewRetirementJob({ ...archiveSelection, newapiGroup: 'Old group' }, admin),
+        ).rejects.toMatchObject({ code: 'invalid_input' });
+        expect(remote.absentStored).not.toHaveBeenCalled();
+    });
+
+    it.each(['snapshot-mode', 'snapshot-ready', 'remote-evidence', 'delete-intent'])(
+        'rejects inconsistent archive-only %s evidence without remote writes',
+        async (kind) => {
+            const created = await archiveStart();
+            if (kind === 'snapshot-mode') asRow(asRow(job().plan).selection).archiveOnly = 'true';
+            if (kind === 'snapshot-ready') {
+                const initial = asRow(asRow(job().plan).initial_preview);
+                (asRow(initial.revocation).keys as Row[])[0].status = 'ready';
+            }
+            if (kind === 'remote-evidence') {
+                item().ownership_evidence = 'remote_verified';
+                item().verified_remote = metadata;
+            }
+            if (kind === 'delete-intent') item().delete_started_at = date;
+            if (kind.startsWith('snapshot'))
+                await expect(resumeRetirementJob(created.id, admin)).rejects.toMatchObject({
+                    code: 'retirement_job_unavailable',
+                });
+            else expect((await resumeRetirementJob(created.id, admin)).status).toBe('needs_attention');
+            expect(key().status).toBe('active');
+            expect(remote.revoke).not.toHaveBeenCalled();
         },
     );
 });

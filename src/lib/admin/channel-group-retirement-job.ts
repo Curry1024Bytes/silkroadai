@@ -17,6 +17,8 @@ import {
     inspectCustomerTokenForRevocation,
     revokeVerifiedCustomerToken,
     confirmPreviouslyAbsentCustomerToken,
+    inspectStoredCustomerToken,
+    confirmAbsentStoredCustomerToken,
     TokenRevocationError,
     type TokenRevocationMetadata,
 } from '@/lib/newapi/token-revocation';
@@ -34,6 +36,8 @@ export type RetirementJobSelection = {
     tierKey: string;
     newapiGroup: string;
     replacementDefaultId?: string | null;
+    /** Only for already-missing orphan keys; never authorizes a remote DELETE. */
+    archiveOnly?: boolean;
 };
 type JobDb = Pick<Prisma.TransactionClient, 'channelGroup' | 'catalogModel' | 'newApiToken'>;
 const keySelect = {
@@ -96,16 +100,23 @@ function publicSource(source: ChannelGroupRetirementSource): ChannelGroupRetirem
     return { ...source, upstream: { status: source.upstream.status, message: messages[source.upstream.status] } };
 }
 
-function assertSelectionScope(selection: RetirementJobSelection, admin: AdminPrincipal) {
+function assertTargetScope(selection: Pick<RetirementJobSelection, 'tenantId' | 'tierKey'>, admin: AdminPrincipal) {
     const scope = tenantScope(admin);
     if (scope.tenant_id && retirementTenantId(scope.tenant_id) !== retirementTenantId(selection.tenantId))
         throw new ChannelGroupRetirementError('group_not_found', '渠道分组不存在。', 404);
-    if (
-        !selection.tierKey.trim() ||
-        !selection.newapiGroup.trim() ||
-        selection.tierKey.length > 200 ||
-        selection.newapiGroup.length > 200
-    )
+    if (!selection.tierKey.trim() || selection.tierKey.length > 200)
+        throw new ChannelGroupRetirementError('invalid_input', '档次标识不能为空。', 400);
+}
+function assertSelectionScope(selection: RetirementJobSelection, admin: AdminPrincipal) {
+    assertTargetScope(selection, admin);
+    if (selection.archiveOnly !== undefined && typeof selection.archiveOnly !== 'boolean')
+        throw new ChannelGroupRetirementError('invalid_input', '归档模式无效，请重新预览。', 400);
+    if (selection.archiveOnly) {
+        if (selection.archiveOnly !== true || selection.groupId !== null || selection.newapiGroup !== '')
+            throw new ChannelGroupRetirementError('invalid_input', '仅可归档已删除分组的失效 Key。', 400);
+        return;
+    }
+    if (!selection.newapiGroup.trim() || selection.newapiGroup.length > 200)
         throw new ChannelGroupRetirementError('invalid_input', '档次和 new-api 分组名称不能为空。', 400);
 }
 
@@ -114,15 +125,17 @@ async function readLocalPlan(
     selection: RetirementJobSelection,
     source: ChannelGroupRetirementSource,
 ): Promise<LocalPlan> {
-    const claimed = await db.channelGroup.findFirst({
-        where: {
-            ...retirementTenantScope(selection.tenantId),
-            newapi_group: selection.newapiGroup,
-            enabled: true,
-            key: { not: selection.tierKey },
-        },
-        select: { id: true },
-    });
+    const claimed =
+        !selection.archiveOnly &&
+        (await db.channelGroup.findFirst({
+            where: {
+                ...retirementTenantScope(selection.tenantId),
+                newapi_group: selection.newapiGroup,
+                enabled: true,
+                key: { not: selection.tierKey },
+            },
+            select: { id: true },
+        }));
     if (claimed)
         throw new ChannelGroupRetirementError(
             'group_claimed_by_other_tier',
@@ -171,7 +184,7 @@ async function readLocalPlan(
             id: `orphan:${selection.tierKey}`,
             key: selection.tierKey,
             display_name: selection.tierKey,
-            newapi_group: selection.newapiGroup,
+            newapi_group: selection.archiveOnly ? null : selection.newapiGroup,
             is_default: false,
             enabled: false,
         },
@@ -223,7 +236,7 @@ function errorMessage(error: unknown): { code: string; message: string } {
         return { code: error.code, message: error.message };
     return { code: 'verification_unavailable', message: '核验暂未完成，请刷新任务后重试；不会将未知结果当作成功。' };
 }
-async function observeKey(key: LocalKey, group: string): Promise<ObservedKey> {
+async function observeKey(key: LocalKey, group: string, archiveOnly = false): Promise<ObservedKey> {
     const local = safeKey(key);
     const base = { id: key.id, label: key.key_alias, user_id: key.user_id, actual_group: null };
     if (!key.user.newapi_user_id || !key.user.newapi_access_token)
@@ -233,6 +246,27 @@ async function observeKey(key: LocalKey, group: string): Promise<ObservedKey> {
             preview: { ...base, status: 'unknown', message: '客户授权资料不完整，暂不能核实 Key。' },
         };
     try {
+        if (archiveOnly) {
+            await confirmAbsentStoredCustomerToken(
+                { userId: key.user.newapi_user_id, accessToken: key.user.newapi_access_token },
+                { tokenId: key.newapi_token_id, ownerId: key.user.newapi_user_id },
+                {
+                    kind: 'portal_stored_link',
+                    tokenId: key.newapi_token_id,
+                    ownerId: key.user.newapi_user_id,
+                    apiKey: key.newapi_token_value,
+                },
+            );
+            return {
+                local,
+                verified: null,
+                preview: {
+                    ...base,
+                    status: 'already_absent',
+                    message: '已核实远端 Key 不存在且旧凭据失效；仅归档历史记录，不发起撤销。',
+                },
+            };
+        }
         const result = await inspectCustomerTokenForRevocation(
             { userId: key.user.newapi_user_id, accessToken: key.user.newapi_access_token },
             { tokenId: key.newapi_token_id, ownerId: key.user.newapi_user_id, group },
@@ -282,11 +316,13 @@ async function observeKey(key: LocalKey, group: string): Promise<ObservedKey> {
         };
     }
 }
-async function observeKeys(keys: LocalKey[], group: string): Promise<ObservedKey[]> {
+async function observeKeys(keys: LocalKey[], group: string, archiveOnly = false): Promise<ObservedKey[]> {
     const results: ObservedKey[] = [];
     // Bounded reads, never a remote DELETE during preview.
     for (let offset = 0; offset < keys.length; offset += 4)
-        results.push(...(await Promise.all(keys.slice(offset, offset + 4).map((key) => observeKey(key, group)))));
+        results.push(
+            ...(await Promise.all(keys.slice(offset, offset + 4).map((key) => observeKey(key, group, archiveOnly)))),
+        );
     return results;
 }
 function signingSecret() {
@@ -310,7 +346,11 @@ function previewState(
         catalog: local.catalogHash,
         keys: observed,
         source,
-        selection: { ...selection, replacementDefaultId: local.preview.replacement_default_id },
+        selection: {
+            ...selection,
+            archiveOnly: Boolean(selection.archiveOnly),
+            replacementDefaultId: local.preview.replacement_default_id,
+        },
     });
 }
 function issuePreview(state: string, admin: AdminPrincipal) {
@@ -355,8 +395,9 @@ function decorate(local: LocalPlan, observed: ObservedKey[], selection: Retireme
     preview.revocation = {
         keys: observed.map((key) => key.preview),
         customers: new Set(observed.map((key) => key.local.user_id)).size,
-        expected_group: selection.newapiGroup,
+        expected_group: selection.archiveOnly ? null : selection.newapiGroup,
         orphaned: !selection.groupId,
+        ...(selection.archiveOnly ? { archive_only: true } : {}),
     };
     const unresolved = observed.filter((key) => !['ready', 'already_absent'].includes(key.preview.status));
     if (unresolved.length)
@@ -367,12 +408,157 @@ function decorate(local: LocalPlan, observed: ObservedKey[], selection: Retireme
     preview.canApply = preview.issues.length === 0;
     return preview;
 }
+
+async function retirementSource(selection: RetirementJobSelection): Promise<ChannelGroupRetirementSource> {
+    if (!selection.archiveOnly) return publicSource(await readChannelGroupRetirementSource(selection.newapiGroup));
+    // An unknown former group is never guessed or sent to new-api as a default group.
+    return {
+        group_name: '',
+        upstream: {
+            status: 'unknown',
+            message: '原分组名称无需恢复；本次仅核验并归档已经失效的遗留 Key，不发送远端删除请求。',
+        },
+        evidence: { channels: null, usable_groups: null, ratio_groups: null },
+    };
+}
+
+/**
+ * Explanation only: neither this label nor a history match authorizes DELETE.
+ * Authorization binds the signed exact group, owner/id/credential snapshot and
+ * a fresh strict remote inspection. Rebuild the explanation on apply so the
+ * durable initial preview records server-verified context, never a UI claim.
+ */
+async function orphanGroupExplanation(
+    keys: LocalKey[],
+    selection: RetirementJobSelection,
+): Promise<NonNullable<ChannelGroupRetirementPreview['group_resolution']>> {
+    if (selection.archiveOnly)
+        return {
+            source: 'already_absent',
+            message: '远端 Key 均已不存在。核验旧凭据失效后只归档记录，无需恢复原分组名，也不会发起撤销。',
+        };
+    const history = await prisma.channelGroupRetirementJob.findMany({
+        where: { ...retirementTenantScope(selection.tenantId), tier_key: selection.tierKey, orphaned: false },
+        select: { newapi_group: true, plan: true },
+    });
+    const originalGroups = new Set<string>();
+    for (const record of history) {
+        const plan = record.plan as unknown as Partial<JobPlan> | null;
+        if (
+            !plan ||
+            plan.version !== 1 ||
+            !plan.selection?.groupId ||
+            retirementTenantId(plan.selection.tenantId) !== retirementTenantId(selection.tenantId) ||
+            plan.selection.tierKey !== selection.tierKey ||
+            plan.selection.newapiGroup !== record.newapi_group ||
+            !record.newapi_group.trim() ||
+            !Array.isArray(plan.keys)
+        )
+            continue;
+        if (
+            keys.some((key) =>
+                plan.keys!.some(
+                    (saved) =>
+                        saved &&
+                        saved.id === key.id &&
+                        saved.user_id === key.user_id &&
+                        saved.newapi_user_id === key.user.newapi_user_id &&
+                        saved.newapi_token_id === key.newapi_token_id &&
+                        saved.credential_hash === digest(key.newapi_token_value),
+                ),
+            )
+        )
+            originalGroups.add(record.newapi_group);
+    }
+    if (originalGroups.size > 1 || (originalGroups.size === 1 && !originalGroups.has(selection.newapiGroup)))
+        throw new ChannelGroupRetirementError(
+            'orphan_history_conflict',
+            '历史分组与 Key 的当前归属不一致，可能已经迁移。已停止自动清理，请先核对归属。',
+            409,
+        );
+    return originalGroups.size === 1
+        ? { source: 'history', message: '已通过保存的分组历史与 Key 身份记录核对归属，请确认下方待撤销清单。' }
+        : {
+              source: 'current_keys',
+              message:
+                  '已根据 Key 当前归属识别分组；这不证明历史分组名称。请核对下方待撤销清单，确认这些 Key 仍应停用。',
+          };
+}
+
+/** Discover current membership from owner-scoped metadata; never infer a group from a tier label. */
+export async function previewOrphanRetirementJob(
+    target: Pick<RetirementJobSelection, 'tenantId' | 'tierKey'>,
+    admin: AdminPrincipal,
+) {
+    assertTargetScope(target, admin);
+    const existing = await prisma.channelGroup.findFirst({
+        where: { ...retirementTenantScope(target.tenantId), key: target.tierKey },
+        select: { id: true },
+    });
+    if (existing) throw new ChannelGroupRetirementError('group_exists', '该分组仍存在，请从分组列表发起清理。');
+    const keys = await prisma.newApiToken.findMany({
+        where: { tier: target.tierKey, user: retirementTenantScope(target.tenantId) },
+        select: keySelect,
+        orderBy: { id: 'asc' },
+    });
+    if (!keys.length) throw new ChannelGroupRetirementError('orphan_not_found', '未找到该档次的遗留 Key。', 404);
+    const groups = new Set<string>();
+    let unknown = 0;
+    let present = 0;
+    for (let offset = 0; offset < keys.length; offset += 4) {
+        const results = await Promise.allSettled(
+            keys.slice(offset, offset + 4).map(async (key) => {
+                if (!key.user.newapi_user_id || !key.user.newapi_access_token) throw unavailable('客户授权不完整。');
+                return inspectStoredCustomerToken(
+                    { userId: key.user.newapi_user_id, accessToken: key.user.newapi_access_token },
+                    { tokenId: key.newapi_token_id, ownerId: key.user.newapi_user_id },
+                );
+            }),
+        );
+        for (const result of results) {
+            if (result.status === 'rejected') {
+                unknown++;
+                continue;
+            }
+            if (result.value.state === 'present') {
+                present++;
+                const group = result.value.token.group;
+                if (!group.trim() || group.length > 200 || group !== group.trim()) unknown++;
+                else groups.add(group);
+            }
+        }
+    }
+    if (unknown)
+        throw new ChannelGroupRetirementError(
+            'orphan_identity_unverified',
+            `${unknown} 把 Key 的所属客户或当前分组暂未核实。请恢复连接或客户授权后重新核对，无需填写旧分组名。`,
+            409,
+        );
+    if (groups.size > 1)
+        throw new ChannelGroupRetirementError(
+            'orphan_groups_conflict',
+            '遗留 Key 当前属于多个分组，可能已有迁移。已停止自动清理，请先在 new-api 核对这批 Key 的归属。',
+            409,
+        );
+
+    const archiveOnly = present === 0;
+    const newapiGroup = archiveOnly ? '' : [...groups][0];
+    const selection: RetirementJobSelection = {
+        ...target,
+        groupId: null,
+        newapiGroup,
+        ...(archiveOnly ? { archiveOnly: true } : {}),
+    };
+    return previewRetirementJob(selection, admin);
+}
+
 export async function previewRetirementJob(selection: RetirementJobSelection, admin: AdminPrincipal) {
     assertSelectionScope(selection, admin);
-    const source = publicSource(await readChannelGroupRetirementSource(selection.newapiGroup));
+    const source = await retirementSource(selection);
     const local = await readLocalPlan(prisma, selection, source);
-    const observed = await observeKeys(local.keys, selection.newapiGroup);
+    const observed = await observeKeys(local.keys, selection.newapiGroup, selection.archiveOnly);
     const preview = decorate(local, observed, selection);
+    if (!selection.groupId) preview.group_resolution = await orphanGroupExplanation(local.keys, selection);
     preview.preview_token = issuePreview(previewState(local, observed, source, selection), admin);
     return preview;
 }
@@ -383,6 +569,7 @@ function assertSameSelection(job: ChannelGroupRetirementJob, selection: Retireme
         job.tenant_id !== selection.tenantId ||
         job.tier_key !== selection.tierKey ||
         job.newapi_group !== selection.newapiGroup ||
+        Boolean(storedPlan(job).selection.archiveOnly) !== Boolean(selection.archiveOnly) ||
         (selection.replacementDefaultId && job.replacement_default_id !== selection.replacementDefaultId)
     )
         throw new ChannelGroupRetirementError('preview_invalid', '该预览不属于当前选择的分组。', 400);
@@ -399,9 +586,10 @@ export async function startRetirementJob(selection: RetirementJobSelection, admi
         assertSameSelection(previous, selection);
         return jobView(previous);
     }
-    const source = publicSource(await readChannelGroupRetirementSource(selection.newapiGroup));
+    const source = await retirementSource(selection);
     const before = await readLocalPlan(prisma, selection, source);
-    const observed = await observeKeys(before.keys, selection.newapiGroup);
+    const observed = await observeKeys(before.keys, selection.newapiGroup, selection.archiveOnly);
+    const resolution = selection.groupId ? undefined : await orphanGroupExplanation(before.keys, selection);
     const created = await prisma.$transaction(
         async (tx) => {
             // Serialize idempotent submissions before checking the global busy guard.
@@ -418,6 +606,7 @@ export async function startRetirementJob(selection: RetirementJobSelection, admi
             if (digest(local.keys.map(safeKey)) !== digest(observed.map((key) => key.local)))
                 throw new ChannelGroupRetirementError('preview_stale', 'Key 清单已变化，请重新预览。');
             const preview = decorate(local, observed, selection);
+            if (resolution) preview.group_resolution = resolution;
             verifyPreview(token, previewState(local, observed, source, selection), admin);
             if (!preview.canApply)
                 throw new ChannelGroupRetirementError('retirement_blocked', preview.issues[0].message);
@@ -443,7 +632,9 @@ export async function startRetirementJob(selection: RetirementJobSelection, admi
                     preview_hash: previewHash,
                     plan: json(plan) as unknown as Prisma.InputJsonValue,
                     status: 'queued',
-                    message: '已冻结目录与相关 Key 变更，等待逐项撤销并核验。',
+                    message: selection.archiveOnly
+                        ? '已冻结相关变更，等待逐项重新核验并归档失效 Key；不会发送远端删除请求。'
+                        : '已冻结目录与相关 Key 变更，等待逐项撤销并核验。',
                 },
             });
             if (observed.length)
@@ -463,7 +654,7 @@ export async function startRetirementJob(selection: RetirementJobSelection, admi
                             : undefined,
                         verified_at: key.verified ? new Date() : null,
                         status: 'pending',
-                        message: '等待撤销。',
+                        message: selection.archiveOnly ? '等待重新核验并归档。' : '等待撤销。',
                     })),
                 });
             return job;
@@ -487,8 +678,9 @@ async function jobView(job: ChannelGroupRetirementJob): Promise<ChannelGroupReti
         tenant_id: job.tenant_id,
         group_key: job.tier_key,
         group_name: job.group_name,
-        newapi_group: job.newapi_group,
+        newapi_group: job.newapi_group || null,
         orphaned: job.orphaned,
+        ...((job.plan as unknown as Partial<JobPlan>)?.selection?.archiveOnly ? { archive_only: true } : {}),
         status: job.status as ChannelGroupRetirementJobView['status'],
         message: job.message,
         summary: {
@@ -597,10 +789,26 @@ function storedPlan(job: ChannelGroupRetirementJob): JobPlan {
         plan.selection.groupId !== job.group_id ||
         plan.selection.tierKey !== job.tier_key ||
         plan.selection.newapiGroup !== job.newapi_group ||
+        (plan.selection.archiveOnly !== undefined && typeof plan.selection.archiveOnly !== 'boolean') ||
+        job.orphaned !== (job.group_id === null) ||
+        (plan.selection.archiveOnly && (!job.orphaned || job.group_id !== null || job.newapi_group !== '')) ||
+        (!plan.selection.archiveOnly && !job.newapi_group.trim()) ||
         !Array.isArray(plan.keys) ||
         !plan.catalog_hash
     )
         throw unavailable('任务快照不完整，不能继续撤销。');
+    if (
+        plan.selection.archiveOnly &&
+        (plan.keys.length === 0 ||
+            plan.source?.group_name !== '' ||
+            plan.initial_preview?.group?.newapi_group !== null ||
+            plan.initial_preview?.revocation?.archive_only !== true ||
+            plan.initial_preview.revocation.expected_group !== null ||
+            !Array.isArray(plan.initial_preview.revocation.keys) ||
+            plan.initial_preview.revocation.keys.length !== plan.keys.length ||
+            plan.initial_preview.revocation.keys.some((key) => key.status !== 'already_absent'))
+    )
+        throw unavailable('失效归档任务快照不完整，不能发送任何远端删除请求。');
     return plan;
 }
 async function ownedJob(tx: Prisma.TransactionClient, id: string, runner: string) {
@@ -633,20 +841,37 @@ async function finalizeJob(tx: Prisma.TransactionClient, job: ChannelGroupRetire
               existing_keys: plan.initial_preview.existing_keys,
               replacement_default_name: null,
           };
-    const items = await tx.channelGroupRetirementKey.findMany({ where: { job_id: job.id }, select: { status: true } });
+    const items = await tx.channelGroupRetirementKey.findMany({
+        where: { job_id: job.id },
+        select: { status: true, delete_started_at: true, verified_remote: true, ownership_evidence: true },
+    });
     if (
         items.length !== plan.keys.length ||
         items.some((item) => !['confirmed', 'already_absent'].includes(item.status))
     )
         throw new ChannelGroupRetirementError('key_confirmation_incomplete', '尚有 Key 未完成核验，不能清理分组。');
+    if (
+        plan.selection.archiveOnly &&
+        items.some(
+            (item) =>
+                item.status !== 'already_absent' ||
+                item.delete_started_at ||
+                item.verified_remote ||
+                item.ownership_evidence !== 'portal_stored_link',
+        )
+    )
+        throw unavailable('失效归档任务存在不一致的撤销记录，请管理员核对。');
     result.existing_keys = plan.initial_preview.existing_keys;
     result.revoked_keys = items.filter((item) => item.status === 'confirmed').length;
     result.already_absent_keys = items.filter((item) => item.status === 'already_absent').length;
+    if (plan.selection.archiveOnly) result.archive_only = true;
     await tx.channelGroupRetirementJob.update({
         where: { id: job.id },
         data: {
             status: 'succeeded',
-            message: '全部 Key 已完成撤销或已失效归档，分组清理完成；历史与客户余额保留。',
+            message: plan.selection.archiveOnly
+                ? '已逐项核验并归档失效 Key，未发送远端删除请求；历史与客户余额保留。'
+                : '全部 Key 已完成撤销或已失效归档，分组清理完成；历史与客户余额保留。',
             result: json(result) as unknown as Prisma.InputJsonValue,
             completed_at: new Date(),
             runner_token: null,
@@ -668,7 +893,7 @@ export async function resumeRetirementJob(id: string, admin: AdminPrincipal): Pr
             )
                 return { job, item: null, skip: true };
             await assertPricingCatalogWritable(tx, { retirementJobId: id });
-            storedPlan(job);
+            const plan = storedPlan(job);
             const items = await tx.channelGroupRetirementKey.findMany({
                 where: { job_id: id, status: { notIn: ['confirmed', 'already_absent'] } },
                 orderBy: [{ attempts: 'asc' }, { portal_key_id: 'asc' }],
@@ -684,7 +909,9 @@ export async function resumeRetirementJob(id: string, admin: AdminPrincipal): Pr
                     status: 'running',
                     runner_token: runner,
                     lease_until: new Date(Date.now() + LEASE_MS),
-                    message: '正在逐项核实并撤销 Key。',
+                    message: plan.selection.archiveOnly
+                        ? '正在重新核实并归档失效 Key，不发送远端删除请求。'
+                        : '正在逐项核实并撤销 Key。',
                 },
             });
             await tx.channelGroupRetirementKey.update({
@@ -721,7 +948,8 @@ export async function resumeRetirementJob(id: string, admin: AdminPrincipal): Pr
             throw new ChannelGroupRetirementError('key_identity_changed', '客户或 Key 资料已变化，未发送撤销请求。');
         if (digest(key.newapi_token_value) !== item.credential_hash)
             throw new ChannelGroupRetirementError('key_identity_changed', 'Key 凭据已变化，未发送撤销请求。');
-        const planned = storedPlan(claim.job).keys.find((entry) => entry.id === item.portal_key_id);
+        const plan = storedPlan(claim.job);
+        const planned = plan.keys.find((entry) => entry.id === item.portal_key_id);
         if (
             !planned ||
             planned.user_id !== item.user_id ||
@@ -738,7 +966,21 @@ export async function resumeRetirementJob(id: string, admin: AdminPrincipal): Pr
         // reads the remote record first; uncertain results never become success.
         const auth = { userId: key.user.newapi_user_id, accessToken: key.user.newapi_access_token };
         const target = { tokenId: item.newapi_token_id, ownerId: key.user.newapi_user_id, group: item.expected_group };
-        if (verified && item.ownership_evidence === 'remote_verified') {
+        if (plan.selection.archiveOnly) {
+            if (verified || item.ownership_evidence !== 'portal_stored_link' || item.delete_started_at)
+                throw unavailable('失效归档任务的 Key 证据不一致，不能发送远端删除请求。');
+            await confirmAbsentStoredCustomerToken(
+                auth,
+                { tokenId: item.newapi_token_id, ownerId: key.user.newapi_user_id },
+                {
+                    kind: 'portal_stored_link',
+                    tokenId: key.newapi_token_id,
+                    ownerId: key.user.newapi_user_id,
+                    apiKey: key.newapi_token_value,
+                },
+            );
+            completion = 'already_absent';
+        } else if (verified && item.ownership_evidence === 'remote_verified') {
             const revoked = await revokeVerifiedCustomerToken(
                 auth,
                 target,

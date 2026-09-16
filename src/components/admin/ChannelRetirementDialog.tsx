@@ -11,49 +11,62 @@ import type {
 } from '@/lib/admin/channel-group-retirement-types';
 
 const keyCounts = z.object({ active: z.number().int().nonnegative(), total: z.number().int().nonnegative() });
-const previewSchema = z.object({
-    group: z.object({
-        id: z.string(),
-        key: z.string(),
-        display_name: z.string(),
-        newapi_group: z.string(),
-        is_default: z.boolean(),
-        enabled: z.boolean(),
-    }),
-    models: z.array(
-        z.object({
+const previewSchema = z
+    .object({
+        group: z.object({
             id: z.string(),
-            slug: z.string(),
+            key: z.string(),
             display_name: z.string(),
-            was_enabled: z.boolean(),
-            will_disable: z.boolean(),
-            remaining_tiers: z.array(z.string()),
+            newapi_group: z.string().nullable(),
+            is_default: z.boolean(),
+            enabled: z.boolean(),
         }),
-    ),
-    existing_keys: keyCounts,
-    default_candidates: z.array(z.object({ id: z.string(), key: z.string(), display_name: z.string() })),
-    replacement_default_id: z.string().nullable(),
-    upstream: z.object({ status: z.enum(['missing', 'present', 'unknown']), message: z.string() }),
-    issues: z.array(z.object({ code: z.string(), message: z.string() })),
-    canApply: z.boolean(),
-    preview_token: z.string().min(1),
-    revocation: z.object({
-        keys: z.array(
+        models: z.array(
             z.object({
                 id: z.string(),
-                label: z.string(),
-                user_id: z.string(),
-                status: z.enum(['ready', 'already_absent', 'missing', 'blocked', 'unknown']),
-                actual_group: z.string().nullable(),
-                message: z.string(),
+                slug: z.string(),
+                display_name: z.string(),
+                was_enabled: z.boolean(),
+                will_disable: z.boolean(),
+                remaining_tiers: z.array(z.string()),
             }),
         ),
-        customers: z.number().int().nonnegative(),
-        expected_group: z.string(),
-        orphaned: z.boolean(),
-    }),
-});
+        existing_keys: keyCounts,
+        default_candidates: z.array(z.object({ id: z.string(), key: z.string(), display_name: z.string() })),
+        replacement_default_id: z.string().nullable(),
+        upstream: z.object({ status: z.enum(['missing', 'present', 'unknown']), message: z.string() }),
+        issues: z.array(z.object({ code: z.string(), message: z.string() })),
+        canApply: z.boolean(),
+        preview_token: z.string().min(1),
+        group_resolution: z
+            .object({ source: z.enum(['history', 'current_keys', 'already_absent']), message: z.string() })
+            .optional(),
+        revocation: z.object({
+            keys: z.array(
+                z.object({
+                    id: z.string(),
+                    label: z.string(),
+                    user_id: z.string(),
+                    status: z.enum(['ready', 'already_absent', 'missing', 'blocked', 'unknown']),
+                    actual_group: z.string().nullable(),
+                    message: z.string(),
+                }),
+            ),
+            customers: z.number().int().nonnegative(),
+            expected_group: z.string().nullable(),
+            orphaned: z.boolean(),
+            archive_only: z.boolean().optional(),
+        }),
+    })
+    .refine((preview) =>
+        preview.revocation.archive_only
+            ? preview.revocation.orphaned &&
+              preview.group.newapi_group === null &&
+              preview.revocation.expected_group === null
+            : !!preview.revocation.expected_group && preview.group.newapi_group === preview.revocation.expected_group,
+    );
 const resultSchema = z.object({
+    archive_only: z.boolean().optional(),
     group_key: z.string(),
     group_name: z.string(),
     updated_models: z.number().int().nonnegative(),
@@ -69,8 +82,9 @@ const jobSchema = z.object({
     tenant_id: z.string().nullable(),
     group_key: z.string(),
     group_name: z.string(),
-    newapi_group: z.string(),
+    newapi_group: z.string().nullable(),
     orphaned: z.boolean(),
+    archive_only: z.boolean().optional(),
     status: z.enum(['queued', 'running', 'needs_attention', 'succeeded', 'cancelled']),
     message: z.string(),
     summary: z.object({
@@ -129,6 +143,7 @@ type RetirementInput = {
     replacement_default_id?: string | null;
     preview_token?: string;
     newapi_group?: string;
+    archive_only?: boolean;
 };
 
 async function retirementRequest<T>(
@@ -192,7 +207,11 @@ export async function requestChannelRetirement(
                   action: input.action,
                   tenant_id: target.tenantId,
                   tier_key: target.tierKey,
-                  newapi_group: input.newapi_group,
+                  ...(input.action === 'apply'
+                      ? input.archive_only
+                          ? { archive_only: true }
+                          : { newapi_group: input.newapi_group }
+                      : {}),
                   ...(input.preview_token ? { preview_token: input.preview_token } : {}),
               };
     return input.action === 'preview'
@@ -233,7 +252,6 @@ export interface ChannelRetirementState {
     applying: boolean;
     error: string;
     job: ChannelGroupRetirementJobView | null;
-    newapiGroup: string;
     startUncertain: boolean;
     paused: boolean;
 }
@@ -250,7 +268,6 @@ export function createChannelRetirementSession(targetOrId: ChannelRetirementTarg
         applying: false,
         error: '',
         job: null,
-        newapiGroup: '',
         startUncertain: false,
         paused: false,
     };
@@ -272,14 +289,6 @@ export function createChannelRetirementSession(targetOrId: ChannelRetirementTarg
 
     async function refresh(replacementDefaultId = state.replacementDefaultId, notice = '') {
         if (disposed || state.applying || state.job || state.startUncertain || target.kind === 'job') return;
-        if (target.kind === 'orphan' && !state.newapiGroup.trim()) {
-            change({
-                error: en
-                    ? 'Enter the exact original new-api group before previewing.'
-                    : '请填写原来的准确 new-api group 后再预览。',
-            });
-            return;
-        }
         const requestId = ++sequence;
         pendingPreview?.abort();
         pendingPreview = new AbortController();
@@ -290,7 +299,6 @@ export function createChannelRetirementSession(targetOrId: ChannelRetirementTarg
                 {
                     action: 'preview',
                     replacement_default_id: replacementDefaultId,
-                    ...(target.kind === 'orphan' ? { newapi_group: state.newapiGroup.trim() } : {}),
                 },
                 en,
                 pendingPreview.signal,
@@ -317,7 +325,8 @@ export function createChannelRetirementSession(targetOrId: ChannelRetirementTarg
             state.startUncertain ||
             state.job ||
             !preview?.canApply ||
-            !preview.revocation
+            !preview.revocation ||
+            (!preview.revocation.archive_only && !preview.revocation.expected_group)
         )
             return null;
         change({ applying: true, error: '' });
@@ -328,7 +337,11 @@ export function createChannelRetirementSession(targetOrId: ChannelRetirementTarg
                     action: 'apply',
                     preview_token: preview.preview_token,
                     replacement_default_id: preview.replacement_default_id,
-                    ...(target.kind === 'orphan' ? { newapi_group: state.newapiGroup.trim() } : {}),
+                    ...(target.kind === 'orphan'
+                        ? preview.revocation.archive_only
+                            ? { archive_only: true }
+                            : { newapi_group: preview.revocation.expected_group! }
+                        : {}),
                 },
                 en,
             );
@@ -382,7 +395,15 @@ export function createChannelRetirementSession(targetOrId: ChannelRetirementTarg
             return data.job;
         } catch (error) {
             if (disposed) return null;
-            const notice = `${failureText(error)} ${en ? 'Some keys may already be revoked. Check this saved task before continuing.' : '部分 Key 可能已经撤销，请核对这个已保存的任务后继续。'}`;
+            const notice = `${failureText(error)} ${
+                job.archive_only
+                    ? en
+                        ? 'Some keys may already be archived. Check this saved task before continuing.'
+                        : '部分 Key 可能已经归档，请核对这个已保存的任务后继续。'
+                    : en
+                      ? 'Some keys may already be revoked. Check this saved task before continuing.'
+                      : '部分 Key 可能已经撤销，请核对这个已保存的任务后继续。'
+            }`;
             change({ applying: false, error: notice, paused: true });
             // A failed resume response is not proof the revocation failed. Only read
             // the same persisted task here; a new explicit action is needed to retry.
@@ -422,17 +443,11 @@ export function createChannelRetirementSession(targetOrId: ChannelRetirementTarg
         loadJob,
         resume,
         stop,
-        setNewapiGroup: (value: string) => {
-            if (disposed || state.applying || state.job || state.startUncertain) return;
-            sequence++;
-            pendingPreview?.abort();
-            change({ newapiGroup: value, preview: null, displayedPreview: null, loading: false, error: '' });
-        },
         start: () => {
             disposed = false;
             // Strict Mode may restart effects after an aborted read.
             change({ loading: false });
-            return target.kind === 'job' ? loadJob() : target.kind === 'group' ? refresh() : Promise.resolve();
+            return target.kind === 'job' ? loadJob() : refresh();
         },
         dispose: () => {
             disposed = true;
@@ -444,6 +459,10 @@ export function createChannelRetirementSession(targetOrId: ChannelRetirementTarg
 }
 
 export function channelRetirementSuccessText(result: ChannelGroupRetirementResult, en: boolean): string {
+    if (result.archive_only)
+        return en
+            ? `Archived ${result.already_absent_keys ?? 0} inactive keys for “${result.group_name}”. No key deletion requests were sent to new-api. History and customer balances are retained.`
+            : `已归档「${result.group_name}」的 ${result.already_absent_keys ?? 0} 个失效 Key。未向 new-api 发送 Key 删除请求，历史记录保留，客户余额不变。`;
     const replacement = result.replacement_default_name
         ? en
             ? ` Default tier: ${result.replacement_default_name}.`
@@ -471,11 +490,48 @@ export function ChannelRetirementPreviewDetails({
 }) {
     const muted = isDark ? 'text-slate-300' : 'text-slate-600';
     const disabledCount = preview.models.filter((model) => model.will_disable).length;
+    const archiveOnly = preview.revocation?.archive_only === true;
+    const resolution = preview.group_resolution;
     return (
         <div className="space-y-4">
             <div className={`rounded-lg p-3 text-sm ${isDark ? 'bg-slate-900/60' : 'bg-slate-50'}`}>
                 <p className="break-words font-semibold">{preview.group.display_name}</p>
-                <p className={`mt-1 break-words ${muted}`}>new-api group: {preview.group.newapi_group}</p>
+                <p className={`mt-1 break-words ${muted}`}>
+                    {archiveOnly ? (
+                        en ? (
+                            'Original group not recovered; only verified inactive keys will be archived.'
+                        ) : (
+                            '未恢复原分组名称；仅归档已经核实失效的 Key。'
+                        )
+                    ) : (
+                        <>new-api group: {preview.group.newapi_group}</>
+                    )}
+                </p>
+                {resolution && (
+                    <div className={`mt-2 space-y-1 leading-6 ${muted}`}>
+                        <p className="font-medium">
+                            {resolution.source === 'history'
+                                ? en
+                                    ? 'Source: saved group history'
+                                    : '识别来源：历史分组记录'
+                                : resolution.source === 'current_keys'
+                                  ? en
+                                      ? 'Source: current key membership'
+                                      : '识别来源：Key 当前归属'
+                                  : en
+                                    ? 'Source: keys verified inactive or absent'
+                                    : '识别来源：Key 已核实失效或不存在'}
+                        </p>
+                        {resolution.source === 'current_keys' && (
+                            <p>
+                                {en
+                                    ? 'Identified from current key membership. This does not prove the original group name; review the keys to revoke below.'
+                                    : '根据 Key 当前归属识别，无法证明历史名称，请核对下方待撤销清单。'}
+                            </p>
+                        )}
+                        <p>{resolution.message}</p>
+                    </div>
+                )}
             </div>
             <div
                 className={`rounded-lg border p-3 text-sm leading-6 ${
@@ -489,20 +545,24 @@ export function ChannelRetirementPreviewDetails({
                 }`}
             >
                 <p className="font-medium">
-                    {preview.upstream.status === 'missing'
+                    {archiveOnly
                         ? en
-                            ? 'No group or channel reference found for this group in new-api'
-                            : 'new-api 未发现该分组或引用关系'
-                        : preview.upstream.status === 'present'
+                            ? 'Only verified inactive keys will be archived'
+                            : '仅归档已核实失效的 Key'
+                        : preview.upstream.status === 'missing'
                           ? en
-                              ? 'This group or channel still exists in new-api'
-                              : 'new-api 仍有对应分组或渠道'
-                          : en
-                            ? 'The new-api state could not be confirmed'
-                            : '暂时无法确认 new-api 状态'}
+                              ? 'No group or channel reference found for this group in new-api'
+                              : 'new-api 未发现该分组或引用关系'
+                          : preview.upstream.status === 'present'
+                            ? en
+                                ? 'This group or channel still exists in new-api'
+                                : 'new-api 仍有对应分组或渠道'
+                            : en
+                              ? 'The new-api state could not be confirmed'
+                              : '暂时无法确认 new-api 状态'}
                 </p>
                 <p>{preview.upstream.message}</p>
-                {preview.upstream.status !== 'missing' && (
+                {!archiveOnly && preview.upstream.status !== 'missing' && (
                     <p>
                         {en
                             ? 'This cleanup does not delete new-api channels. It will revoke the keys belonging to this group after confirmation.'
@@ -545,15 +605,20 @@ export function ChannelRetirementPreviewDetails({
                     )}
                 </div>
             )}
-            <section aria-label={en ? 'Deletion impact' : '删除影响'} className="space-y-3">
+            <section
+                aria-label={archiveOnly ? (en ? 'Archival impact' : '归档影响') : en ? 'Deletion impact' : '删除影响'}
+                className="space-y-3"
+            >
                 <h3 className="font-semibold">
                     {en ? 'Portal will make these changes together' : 'Portal 将一次完成以下清理'}
                 </h3>
-                <p className={`text-sm leading-6 ${muted}`}>
-                    {en
-                        ? `Remove this tier from ${preview.models.length} models; unlist ${disabledCount} models without any remaining tier mappings. Other tiers and their mappings are retained.`
-                        : `清理 ${preview.models.length} 个模型的本档关联，其中 ${disabledCount} 个没有其他档次关联的模型将自动下架。其他档次及其关联保留。`}
-                </p>
+                {!preview.revocation?.orphaned && (
+                    <p className={`text-sm leading-6 ${muted}`}>
+                        {en
+                            ? `Remove this tier from ${preview.models.length} models; unlist ${disabledCount} models without any remaining tier mappings. Other tiers and their mappings are retained.`
+                            : `清理 ${preview.models.length} 个模型的本档关联，其中 ${disabledCount} 个没有其他档次关联的模型将自动下架。其他档次及其关联保留。`}
+                    </p>
+                )}
                 {preview.models.length > 0 && (
                     <ul
                         className={`max-h-52 divide-y overflow-y-auto rounded-lg border ${isDark ? 'divide-slate-700 border-slate-600' : 'divide-slate-200 border-slate-200'}`}
@@ -600,20 +665,30 @@ export function ChannelRetirementPreviewDetails({
                             ? 'Model records, price history, cost rules and their history, and usage records are retained. Customer balances do not change.'
                             : '模型记录、价格历史、成本规则及其历史、用量记录均保留，客户余额不变。'}
                     </p>
+                    {!preview.revocation?.orphaned && (
+                        <p className="mt-1">
+                            {en
+                                ? 'Customers can no longer select this tier when creating keys or see its models in the Portal catalog. Customer tier permissions and multiplier settings are retained. Customers restricted to this tier will need access to another available tier.'
+                                : '删除后，客户不能再选择此档新建 Key，Portal 目录也不再展示本档模型。客户档次权限和倍率配置保留；仅获准使用此档的客户，需要另行分配其他可用档次。'}
+                        </p>
+                    )}
                     <p className="mt-1">
-                        {en
-                            ? 'Customers can no longer select this tier when creating keys or see its models in the Portal catalog. Customer tier permissions and multiplier settings are retained. Customers restricted to this tier will need access to another available tier.'
-                            : '删除后，客户不能再选择此档新建 Key，Portal 目录也不再展示本档模型。客户档次权限和倍率配置保留；仅获准使用此档的客户，需要另行分配其他可用档次。'}
+                        {archiveOnly
+                            ? en
+                                ? `${preview.revocation?.keys.length ?? 0} keys have been verified inactive or absent. After confirmation, Portal will verify them again and archive their records without sending key deletion requests to new-api.`
+                                : `${preview.revocation?.keys.length ?? 0} 个 Key 已核实失效或不存在。确认后会再次核对并归档 Portal 记录，不会向 new-api 发送 Key 删除请求。`
+                            : en
+                              ? `${preview.revocation?.keys.length ?? 0} keys belonging to this tier will be checked and revoked in new-api. Revoked keys cannot make new requests and will not be moved to another group. Historical key records are retained.`
+                              : `将逐个核对并在 new-api 撤销本档所属的 ${preview.revocation?.keys.length ?? 0} 个 Key。已撤销的 Key 不能再发起调用，也不会迁移到其他分组；Key 历史记录保留。`}
                     </p>
                     <p className="mt-1">
-                        {en
-                            ? `${preview.revocation?.keys.length ?? 0} keys belonging to this tier will be checked and revoked in new-api. Revoked keys cannot make new requests and will not be moved to another group. Historical key records are retained.`
-                            : `将逐个核对并在 new-api 撤销本档所属的 ${preview.revocation?.keys.length ?? 0} 个 Key。已撤销的 Key 不能再发起调用，也不会迁移到其他分组；Key 历史记录保留。`}
-                    </p>
-                    <p className="mt-1">
-                        {en
-                            ? 'Portal cleanup finishes only after every key is confirmed revoked or already absent. If a step fails, the saved task can be resumed; keys already revoked will not be restored.'
-                            : '全部 Key 确认撤销或已不存在后，才完成 Portal 清理。途中失败可继续处理已保存的任务；已经撤销的 Key 不会恢复。'}
+                        {archiveOnly
+                            ? en
+                                ? 'Archival stops if any key becomes active or its state cannot be verified. The saved task can be reopened to continue verification. History and balances are retained.'
+                                : '如发现 Key 恢复有效或无法确认状态，将停止归档。可从已保存任务继续核对，历史记录和余额保留。'
+                            : en
+                              ? 'Portal cleanup finishes only after every key is confirmed revoked or already absent. If a step fails, the saved task can be resumed; keys already revoked will not be restored.'
+                              : '全部 Key 确认撤销或已不存在后，才完成 Portal 清理。途中失败可继续处理已保存的任务；已经撤销的 Key 不会恢复。'}
                     </p>
                 </div>
                 {preview.revocation && (
@@ -659,7 +734,7 @@ export function ChannelRetirementPreviewDetails({
                     className={`rounded-lg border p-3 text-sm leading-6 ${isDark ? 'border-amber-700 bg-amber-950/40 text-amber-200' : 'border-amber-300 bg-amber-50 text-amber-900'}`}
                 >
                     <p className="font-medium">
-                        {en ? 'Resolve these items before deleting' : '以下事项处理后即可删除'}
+                        {en ? 'Resolve these items before continuing' : '处理以下事项后才能继续'}
                     </p>
                     <ul className="mt-1 list-disc space-y-1 pl-5">
                         {preview.issues.map((issue, index) => (
@@ -674,8 +749,20 @@ export function ChannelRetirementPreviewDetails({
 
 export function channelRetirementJobStatus(job: ChannelGroupRetirementJobView, en: boolean): string {
     return {
-        queued: en ? 'Waiting to revoke keys' : '等待撤销 Key',
-        running: en ? 'Revoking and verifying keys' : '正在撤销并核对 Key',
+        queued: job.archive_only
+            ? en
+                ? 'Waiting to archive inactive keys'
+                : '等待归档已失效 Key'
+            : en
+              ? 'Waiting to revoke keys'
+              : '等待撤销 Key',
+        running: job.archive_only
+            ? en
+                ? 'Verifying and archiving inactive keys'
+                : '正在核对并归档已失效 Key'
+            : en
+              ? 'Revoking and verifying keys'
+              : '正在撤销并核对 Key',
         needs_attention: en ? 'Needs attention' : '需继续处理',
         succeeded: en ? 'Completed' : '已完成',
         cancelled: en ? 'Stopped' : '已停止',
@@ -706,7 +793,18 @@ export function ChannelRetirementJobProgress({
     const finished = job.status === 'succeeded';
     const stopped = job.status === 'cancelled';
     return (
-        <section aria-label={en ? 'Deletion task progress' : '删除任务进度'} className="space-y-4">
+        <section
+            aria-label={
+                job.archive_only
+                    ? en
+                        ? 'Archival task progress'
+                        : '归档任务进度'
+                    : en
+                      ? 'Deletion task progress'
+                      : '删除任务进度'
+            }
+            className="space-y-4"
+        >
             <div
                 className={`rounded-lg border p-3 text-sm leading-6 ${
                     finished
@@ -729,20 +827,36 @@ export function ChannelRetirementJobProgress({
             </div>
             <div role="status" aria-live="polite" className="space-y-2 text-sm">
                 <p className="font-medium">
-                    {en ? 'Key revocation and verification' : 'Key 撤销与核对'} · {job.summary.confirmed} /{' '}
-                    {job.summary.total}
+                    {job.archive_only
+                        ? en
+                            ? 'Inactive key verification and archival'
+                            : '已失效 Key 核对与归档'
+                        : en
+                          ? 'Key revocation and verification'
+                          : 'Key 撤销与核对'}{' '}
+                    · {job.summary.confirmed} / {job.summary.total}
                 </p>
                 <progress
                     className="h-2 w-full accent-emerald-600"
                     value={job.summary.confirmed}
                     max={Math.max(1, job.summary.total)}
-                    aria-label={en ? 'Keys confirmed revoked or absent' : '已确认撤销或不存在的 Key'}
+                    aria-label={
+                        job.archive_only
+                            ? en
+                                ? 'Keys verified inactive or absent'
+                                : '已核实失效或不存在的 Key'
+                            : en
+                              ? 'Keys confirmed revoked or absent'
+                              : '已确认撤销或不存在的 Key'
+                    }
                 />
                 <div className="flex flex-wrap gap-x-5 gap-y-1">
-                    <span>
-                        {en ? 'Revoked now: ' : '本次撤销：'}
-                        {job.summary.revoked}
-                    </span>
+                    {!job.archive_only && (
+                        <span>
+                            {en ? 'Revoked now: ' : '本次撤销：'}
+                            {job.summary.revoked}
+                        </span>
+                    )}
                     <span>
                         {en ? 'Already inactive / absent: ' : '原已失效或不存在：'}
                         {job.summary.already_absent}
@@ -757,17 +871,29 @@ export function ChannelRetirementJobProgress({
                     </span>
                 </div>
                 <p className={muted}>
-                    {stopped
-                        ? en
-                            ? 'Task stopped. The Portal group and model mappings are retained.'
-                            : '任务已停止，Portal 分组和模型关联保留。'
-                        : finished
+                    {job.archive_only
+                        ? stopped
+                            ? en
+                                ? 'Archival stopped. Key history and customer balances are retained.'
+                                : '归档已停止，Key 历史记录和客户余额保留。'
+                            : finished
+                              ? en
+                                  ? 'Inactive key archival is complete.'
+                                  : '已失效 Key 归档已完成。'
+                              : en
+                                ? 'Only keys verified inactive or absent will be archived. No key deletion requests will be sent to new-api.'
+                                : '仅归档核实失效或不存在的 Key，不会向 new-api 发送 Key 删除请求。'
+                        : stopped
                           ? en
-                              ? 'Portal cleanup is complete.'
-                              : 'Portal 分组和模型关联清理已完成。'
-                          : en
-                            ? 'Portal cleanup waits until all keys are confirmed revoked or absent.'
-                            : '全部 Key 确认撤销或不存在后，才完成 Portal 清理。'}
+                              ? 'Task stopped. The Portal group and model mappings are retained.'
+                              : '任务已停止，Portal 分组和模型关联保留。'
+                          : finished
+                            ? en
+                                ? 'Portal cleanup is complete.'
+                                : 'Portal 分组和模型关联清理已完成。'
+                            : en
+                              ? 'Portal cleanup waits until all keys are confirmed revoked or absent.'
+                              : '全部 Key 确认撤销或不存在后，才完成 Portal 清理。'}
                 </p>
             </div>
             {job.keys.length > 0 && (
@@ -812,13 +938,17 @@ export function ChannelRetirementJobProgress({
             )}
             {!finished && (
                 <p className={`text-sm leading-6 ${muted}`}>
-                    {en
-                        ? stopped
-                            ? 'This task is stopped. Fix the configuration and start a new preview if cleanup is still needed. Keys already revoked stay revoked. History and customer balances remain unchanged.'
-                            : 'This task is saved on the server. If interrupted, reopen it from “Deletion tasks and leftover keys”. Keys already revoked stay revoked. History and customer balances remain unchanged.'
-                        : stopped
-                          ? '任务已停止。如仍需清理，请修正配置后重新预览。已撤销的 Key 不会恢复，历史记录和客户余额保持不变。'
-                          : '任务已保存在服务器，刷新或中断后可从「删除任务与遗留 Key」找回并继续。已撤销的 Key 不会恢复，历史记录和客户余额保持不变。'}
+                    {job.archive_only
+                        ? en
+                            ? 'The saved archival task can be reopened from “Deletion tasks and leftover keys”. History and customer balances remain unchanged.'
+                            : '可从「删除任务与遗留 Key」找回已保存的归档任务，历史记录和客户余额保持不变。'
+                        : en
+                          ? stopped
+                              ? 'This task is stopped. Fix the configuration and start a new preview if cleanup is still needed. Keys already revoked stay revoked. History and customer balances remain unchanged.'
+                              : 'This task is saved on the server. If interrupted, reopen it from “Deletion tasks and leftover keys”. Keys already revoked stay revoked. History and customer balances remain unchanged.'
+                          : stopped
+                            ? '任务已停止。如仍需清理，请修正配置后重新预览。已撤销的 Key 不会恢复，历史记录和客户余额保持不变。'
+                            : '任务已保存在服务器，刷新或中断后可从「删除任务与遗留 Key」找回并继续。已撤销的 Key 不会恢复，历史记录和客户余额保持不变。'}
                 </p>
             )}
         </section>
@@ -845,6 +975,7 @@ export default function ChannelRetirementDialog({
     const session = useMemo(() => createChannelRetirementSession(target, en), [target, en]);
     const state = useSyncExternalStore(session.subscribe, session.getState, session.getState);
     const busy = state.loading || state.applying;
+    const archiveOnly = (state.job?.archive_only ?? state.displayedPreview?.revocation?.archive_only) === true;
     const [confirmStop, setConfirmStop] = useState(false);
     useEffect(() => {
         const el = dialog.current;
@@ -875,25 +1006,37 @@ export default function ChannelRetirementDialog({
             <div className="space-y-5 p-5 sm:p-6" aria-busy={busy}>
                 <header>
                     <h2 id="retirement-title" className="text-xl font-semibold">
-                        {state.job
+                        {archiveOnly
                             ? en
-                                ? 'Deletion task'
-                                : '删除任务'
-                            : target.kind === 'orphan'
+                                ? 'Archive inactive keys'
+                                : '归档已失效 Key'
+                            : state.job
                               ? en
-                                  ? 'Clean up leftover keys'
-                                  : '清理遗留 Key'
-                              : en
-                                ? 'Delete group and revoke keys'
-                                : '删除分组并撤销 Key'}
+                                  ? 'Deletion task'
+                                  : '删除任务'
+                              : target.kind === 'orphan'
+                                ? en
+                                    ? 'Clean up leftover keys'
+                                    : '清理遗留 Key'
+                                : en
+                                  ? 'Delete group and revoke keys'
+                                  : '删除分组并撤销 Key'}
                     </h2>
                     <p
                         id="retirement-description"
                         className={`mt-2 text-sm leading-6 ${isDark ? 'text-slate-300' : 'text-slate-600'}`}
                     >
-                        {en
-                            ? 'Confirm once to revoke the keys belonging to this group in new-api, then clean up Portal. The saved task records each step.'
-                            : '确认一次后，先在 new-api 撤销本档所属 Key，再清理 Portal 分组及模型关联。每一步都会记录在删除任务中。'}
+                        {archiveOnly
+                            ? en
+                                ? 'Confirm once to verify and archive keys already inactive or absent. No key deletion requests will be sent to new-api; history and balances are retained.'
+                                : '确认后再次核对并归档已失效或不存在的 Key，不会向 new-api 发送 Key 删除请求；历史记录和余额保留。'
+                            : target.kind === 'orphan'
+                              ? en
+                                  ? 'The original group will be identified automatically. Review the result and key list before confirming cleanup.'
+                                  : '系统会自动识别原分组。请核对识别结果及 Key 清单，再确认清理。'
+                              : en
+                                ? 'Confirm once to revoke the keys belonging to this group in new-api, then clean up Portal. The saved task records each step.'
+                                : '确认一次后，先在 new-api 撤销本档所属 Key，再清理 Portal 分组及模型关联。每一步都会记录在删除任务中。'}
                     </p>
                 </header>
                 {state.error && (
@@ -915,25 +1058,12 @@ export default function ChannelRetirementDialog({
                               : '正在核对分组、模型和 Key…'}
                     </p>
                 )}
-                {target.kind === 'orphan' && !state.job && (
-                    <label className="block text-sm font-medium">
+                {target.kind === 'orphan' && !state.job && !state.displayedPreview && (
+                    <p className={`text-sm leading-6 ${isDark ? 'text-slate-300' : 'text-slate-600'}`}>
                         {en
-                            ? `Original new-api group for “${target.tierKey}”`
-                            : `「${target.tierKey}」原来的 new-api group`}
-                        <input
-                            value={state.newapiGroup}
-                            onChange={(event) => session.setNewapiGroup(event.target.value)}
-                            disabled={state.applying || state.startUncertain}
-                            className={`mt-2 min-h-11 w-full rounded-lg border px-3 py-2 focus:outline-none focus:ring-2 focus:ring-emerald-500 disabled:opacity-60 ${isDark ? 'border-slate-600 bg-slate-800 text-slate-100' : 'border-slate-300 bg-white text-slate-900'}`}
-                        />
-                        <span
-                            className={`mt-2 block text-xs leading-5 ${isDark ? 'text-slate-300' : 'text-slate-600'}`}
-                        >
-                            {en
-                                ? 'The Portal group was already deleted. Enter its exact original new-api group; every key’s owner and group will be verified before revocation.'
-                                : 'Portal 分组已经删除。请填写原来的准确分组名，撤销前会逐个核对 Key 的用户和分组归属。'}
-                        </span>
-                    </label>
+                            ? `Checking history and current key membership for “${target.tierKey}”; no group name needs to be entered. Cleanup stays unavailable if ownership cannot be verified.`
+                            : `正在核对「${target.tierKey}」的历史记录及 Key 当前归属，无需填写分组名。无法确认归属时，不会开放清理。`}
+                    </p>
                 )}
                 {state.displayedPreview && !state.job && (
                     <ChannelRetirementPreviewDetails
@@ -957,9 +1087,13 @@ export default function ChannelRetirementDialog({
                         className={`space-y-3 rounded-lg border p-3 text-sm leading-6 ${isDark ? 'border-amber-700 bg-amber-950/40 text-amber-200' : 'border-amber-300 bg-amber-50 text-amber-900'}`}
                     >
                         <p>
-                            {en
-                                ? `Stop this task and retain the group and its model mappings? ${state.job.summary.revoked} keys already revoked will not be restored. You can fix the configuration and start a new preview later.`
-                                : `停止后将保留分组和模型关联。已撤销的 ${state.job.summary.revoked} 个 Key 不会恢复；修正配置后可以重新预览发起清理。`}
+                            {archiveOnly
+                                ? en
+                                    ? 'Stop this archival task? Already archived records will not be restored; history and customer balances remain unchanged.'
+                                    : '停止此归档任务？已归档记录不会恢复；历史记录和客户余额保持不变。'
+                                : en
+                                  ? `Stop this task and retain the group and its model mappings? ${state.job.summary.revoked} keys already revoked will not be restored. You can fix the configuration and start a new preview later.`
+                                  : `停止后将保留分组和模型关联。已撤销的 ${state.job.summary.revoked} 个 Key 不会恢复；修正配置后可以重新预览发起清理。`}
                         </p>
                         <div className="flex flex-wrap gap-3">
                             <button
@@ -986,13 +1120,17 @@ export default function ChannelRetirementDialog({
                 )}
                 {state.applying && (
                     <p role="status" className="text-sm">
-                        {state.job
+                        {archiveOnly
                             ? en
-                                ? 'Revoking and verifying the next keys…'
-                                : '正在撤销并核对下一批 Key…'
-                            : en
-                              ? 'Saving the deletion task…'
-                              : '正在保存删除任务…'}
+                                ? 'Verifying and archiving inactive keys…'
+                                : '正在核对并归档已失效 Key…'
+                            : state.job
+                              ? en
+                                  ? 'Revoking and verifying the next keys…'
+                                  : '正在撤销并核对下一批 Key…'
+                              : en
+                                ? 'Saving the deletion task…'
+                                : '正在保存删除任务…'}
                     </p>
                 )}
                 {state.startUncertain && (
@@ -1012,13 +1150,7 @@ export default function ChannelRetirementDialog({
                 )}
                 {!busy && !state.job && !state.startUncertain && target.kind !== 'job' && (
                     <button type="button" className={secondary} onClick={() => void session.refresh()}>
-                        {target.kind === 'orphan' && !state.displayedPreview
-                            ? en
-                                ? 'Preview leftover key cleanup'
-                                : '预览遗留 Key 清理'
-                            : en
-                              ? 'Refresh impact'
-                              : '重新核对'}
+                        {en ? 'Refresh impact' : '重新核对'}
                     </button>
                 )}
                 {!busy && (state.job || target.kind === 'job') && (
@@ -1069,13 +1201,17 @@ export default function ChannelRetirementDialog({
                                 ? en
                                     ? 'Saving task…'
                                     : '正在保存任务…'
-                                : target.kind === 'orphan'
+                                : archiveOnly
                                   ? en
-                                      ? 'Confirm key revocation'
-                                      : '确认撤销遗留 Key'
-                                  : en
-                                    ? 'Delete group and revoke its keys'
-                                    : '确认删除分组并撤销所属 Key'}
+                                      ? 'Confirm inactive key archival'
+                                      : '确认归档已失效 Key'
+                                  : target.kind === 'orphan'
+                                    ? en
+                                        ? 'Confirm key revocation'
+                                        : '确认撤销遗留 Key'
+                                    : en
+                                      ? 'Delete group and revoke its keys'
+                                      : '确认删除分组并撤销所属 Key'}
                         </button>
                     )
                 )}
