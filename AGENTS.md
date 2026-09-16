@@ -1039,3 +1039,13 @@ LiteLLM 时代的 `LITELLM_*` 变量保留作 fallback,W3 D1 关停后可删。
 - 50/50源站公网检查通过；13/13客户非JWT持久token鉴权和user ID匹配、new-api计费13/13、拓扑异常全部0。普通与urllib真实Key模型列表均200/4模型，3条报价0mismatch；固定图片目录与new-api仍¥1/¥1.5/¥2，公开价格页21活动模型全部显示，两个关闭入口503。
 - 生产新入口仅执行预览：匿名401、管理员200；「GPT-特惠反代」当前影响7模型/下架1，15 Key/14 active，canApply=true、无阻止项、来源present。没有生产 apply，没有实际删分组、改价或收费。
 - 本次审计发现prepare的MySQL CLI默认latin1，JSON备份中文有损，导致6项raw hash与UTF-8驱动不一致。现场SQL二进制SHA与驱动raw一致，未发现价格差异；有损历史备份不可作为恢复源、未用于覆盖。四主价格字典已通过切换前候选无损canonical摘要与发布后API/数据库前后比较，附加中文配置仅能声称同CLI前后等价，不能泛称所有new-api选项逐字节不变。详情见 [功能与上线报告](docs/CHANNEL-GROUP-RETIREMENT-2026-09-15.md)。
+
+
+## 分组删除同时撤销客户 Key（2026-09-16，09:29 已上线）
+
+- 按持续授权发布 `prod@fd595f4`；镜像 `sha256:acd88e3dd1799f7c483c0dc4792e3385bf941ee3af0c9bbe13d1057ef300e858`，后续纯文档提交不重建。分组删除现在先持久化任务、逐把核对客户/token/group并撤销，管理记录缺失且旧凭据拒绝才确认；全部确认后才清理本档模型关联。其他分组/租户、余额及历史保留。
+- 新migration `20260916010000_add_channel_group_retirement_jobs` 仅增加任务与Key状态两表；任务不存原始凭据。未完成任务与建Key、注册/OAuth首Key、迁组、目录和价格发布协调；平台历史null用户纳入，其他租户严格隔离。超时、缓存仍接受和远端成功后SQL失败可恢复；未知远端结果不能停止释放锁或回滚旧应用。
+- 320 files / 4545 passed / 1既有skipped，typecheck/Prisma/构建/格式通过，lint0 error/93既有warnings。实PG协调7项、任务10项、注册/OAuth真实P2002故障9组核查及CUA流程通过；生产备份克隆22项通过，零Key真实HTTP任务完成后临时资源清理。真实客户Key撤销未作为上线测试执行。
+- 备份目录 `/opt/backups/silkroadai-portal/releases/group-key-revocation-20260916-011953/`；环境备份 `.env.bak.group-key-revocation-20260916-011953`；回滚标签 `silkroadai-portal-portal:rollback-group-key-revocation-20260916-011953`（旧应用04868d4）。生产79条migration全部完成，09:29:42–09:29:58切换，失败样本跨度7.92秒；Portal restart0/日志error0，依赖未重启。
+- 50/50网络检查、13/13持久授权、两类UA模型列表200/4模型、API/MySQL价格双读通过。九张既有业务表/客户白名单/环境保持；29模型35价格版本5分组21Key、11项配置UTF-8原始字节不变。历史已删除档次仍有14把active Key，为已知遗留状态，不得误报拓扑异常全0。
+- 新入口生产仅preview，2把目标Key均ready、默认替代保护正常；两张新任务表为空，未撤销任何生产Key。已删除的GPT特惠分组遗留Key范围问题尚未获答复，不自动批量撤销。入口为「删除任务与遗留 Key」；详细证据见 [功能与发布报告](docs/CHANNEL-GROUP-KEY-REVOCATION-2026-09-15.md)。
