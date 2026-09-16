@@ -211,6 +211,10 @@ silkroadai/
 
 - [x] we-token 三线上游超时 600s→300s ✅(2026-09-11,分支 `fix/wetoken-upstream-timeout-300s`)— 客户 602018325@qq.com(c-70fd7c5f)报大量「10 分钟超时」:new-api 日志 `status_code=504, openai_error`、use_time 恰 600,只落 we-token 三渠道 ch176(asian-acc)/ch177(us-la)/ch219(asian-acc 2.5)。定位链:**504 是 Caddy `172.20.0.1:3010` 的 `response_header_timeout 600s` 发的** ← 适配器副本没在 600s 内回头 ← 适配器 Node fetch 直连 we-token **600s 收不到响应头**(`[image-adapter] upstream fetch failed { ms: 600001, err: 'This operation was aborted' }`,当日 4,441 条);同一分钟同渠道 90%+ 请求 p50 55s 正常出图、副本 CPU 20-50% → **是 we-token 后端阵发性挂死不回头**(与它同时段返 `408 the provider throttled … system under load` 同源),不是我方卡住。portal 代理 undici 600s / Caddy 3010 600s / 适配器 600s 三层同时到点 → 客户等满 10 分钟拿 `200 + {"error":{"message":"Upstream request failed"}}`,new-api 来不及换渠道(504 请求 finally_ok = 0)。修法:`ImageProvider.upstreamTimeoutMs?`(2.0)/ `ImageProvider25.upstreamTimeoutMs?`(2.5)按 provider 覆盖,`wetoken` / `wetokenasia` / `wetokenasia25` 设 `WETOKEN_UPSTREAM_TIMEOUT_MS = 300_000`,adapter 缺省 `DEFAULT_UPSTREAM_TIMEOUT_MS` 仍 600s(其他上游零变化;`wetokengated` 已停用未动)→ 挂死请求 5 分钟后 503 让 new-api failover 到 ch186/208 出图。代价:we-token >300s 才成功的 0.2%(当日 p99 203s / p99.9 390s)被误杀重跑。+5 单测(fake timers:299s 未掐 / 301s 掐 / 缺省 provider 600s)。部署走 server2 `deploy-image-adapter.sh`(image-adapter 只跑在 api-1..6)。诊断细节见 memory `reference_image_504_600s_wetoken_hang`。
 
+### gpt-image edits `size=auto` 代理层按输入图比例补明确尺寸(2026-09-16)
+
+- [x] PR #466 merge `4e6a65c` + server2 六副本滚动部署 ✅ — 起因:客户 1913696371 报「指定了尺寸出方图」,三条 request_id 查证到 new-api 的 `size` 均为 `auto`、落 ch186 出 1024²;同客户同时段发 `16:9` 的请求被代理折成 1536x864 后正确 → 链路没改尺寸,是客户端没发。顺带用近 24h 适配器 `[image-adapter] ok` 日志实测:**low/medium 专线(ch207 frimodellow / ch204 frimodelmedium)对 `auto` 恒出 1024²/2048² 方图、无视输入图**,只有 high 线(ch186 ominiapi)跟随输入比例(见 gotcha #22)。修法:`resolveGptImageEditsAutoSize` —— **edits(有输入图)** 且 `size` 缺省/`auto` → 读第一张输入图尺寸(`imageDimensions`,含 EXIF Orientation)→ `gptImageSizeFromInput` 挑 `GPT_IMAGE_ASPECT_SIZE` 最近合法 WxH,首发即明确尺寸;multipart 与 JSON(data URL → multipart)两路 + chat 翻译同路;响应头 `X-Silkroadai-Size-Resolved: auto->WxH`。**边界**:generations 的 `auto` 绝不动(一周 73.8 万次、¥25 万,上游 auto→2048² 是既有产品行为);读不出尺寸保留 `auto`;显式 WxH 不动;多图取首图;只作用于经 portal 的请求(直连 :3000 的 c-70fd7c5f 不受影响)。影响:路由/计费机制不变;经 portal 的 `auto` edits 一周约 2.8 万次 / ¥2,049,非方形输入单价降 20–35%,每周少收 ≤ ¥700。+10 测试,全套 271 files / 3499 PASS。
+
 ### 企业门户「火山」渠道换上游 → 筷子开放平台(2026-08-17 上线)
 
 - [x] PR #386 merge `7cbb77f` + 部署 + 生产真机 smoke ✅ — volc region 上游从 new-api 形 provider(`ENTERPRISE_VOLC_VIDEO_*`)换成 **筷子 AI 开放平台** `https://aiopenapi.kuaizi.cn`。筷子对齐火山方舟官方 `contents/generations/tasks` 契约 → 对客方舟形接口近乎直通,**proxy 主干 / 计费 / 对客契约 / region 键全不变**,差异全吸收在适配器边界。
@@ -419,6 +423,13 @@ LiteLLM 同时支持 user-level 和 key-level 预算。我们只用 key-level(�
 
 **首次发现**:2026-06-08 客户 multipart 改图 500(W9 D4 images hotfix-2,`hotfix-multipart-content-type-brief.md`)。修复 commit:见 `fix/proxy-multipart-translate-content-type`。
 
+### 22. gpt-image edits 的 `size=auto` 在按张计费上游上多半是「恒方图」,不是「跟随输入图」
+
+**症状**:客户 `/v1/images/edits` 不传 `size`(或传 `auto`,OpenAI SDK 默认)+ 非方形输入图 → 出 1024×1024 / 2048×2048 方图,客户以为我们改了尺寸。
+**真实行为**(2026-09-16 用近 24h 适配器 `[image-adapter] ok` 日志的 `size: 'auto→WxH'` 字段实测):frimodel 家族(ch204 medium / ch207 low)对 `auto` **100% 出方图**(1024² 或 2048²),完全无视输入图比例;ominiapi(ch186 high)跟随输入比例但分辨率由它定,且混有 1254²/1672×941/816² 这类 ChatGPT 网页特征尺寸(号池成员)。OpenAI 官方 edits 的 `auto` 才是跟随输入图。
+**解决**:PR #466 起代理层 `resolveGptImageEditsAutoSize` 在 edits 且 `auto`/缺省时按第一张输入图比例补明确 WxH 再发上游(只作用经 portal 的请求)。**排障口诀**:客户报「指定尺寸出方图」先查 new-api `logs.content` 的 `大小 X` —— 那是 new-api 收到的原值,代理对裸 `gpt-image-2` 的显式 WxH 一律透传、只把 `16:9` 这类比例串折成像素、变体名补固定尺寸,不会把 WxH 改成 `auto`;`大小 auto` = 客户端没发(new-api 对 gpt-image 不给空 size 补默认,空 size 时日志根本没有 `大小` 段)。想看 `auto` 实际出了什么尺寸,用 ct 反推(1024² high=7024 / medium=1756 / low=196,2048² high=14272)或查适配器 ok 日志,不要猜。
+**别碰 generations**:generations 的 `auto` 上游出 2048²/1024×1536/1536×1024,一周 73.8 万次、¥25 万,是既有产品行为;任何把 generations `auto` 补成 1024² 的写法都会砍半收入(`gptImageFallbackSize` 对无图请求返回 1024²,不能复用到这里)。
+
 ---
 
 ## 不要做的事(避免误改)
@@ -558,5 +569,5 @@ APP_PORT=3002
 
 ---
 
-**版本**: 2.3
-**最后更新**: 2026-09-11(we-token 上游超时 300s)
+**版本**: 2.4
+**最后更新**: 2026-09-16(gpt-image edits auto 尺寸代理层兜底 #466 + gotcha #22)
