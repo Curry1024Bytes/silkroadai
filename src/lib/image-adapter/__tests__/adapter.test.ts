@@ -12,6 +12,7 @@ import {
     isProfitable,
     synthUsage,
     estimateTextTokens,
+    officialInputImageTokens,
     sanitizeAdapterError,
 } from '@/lib/image-adapter/adapter';
 
@@ -86,6 +87,10 @@ function okUpstream(nImages = 1) {
         );
     });
 }
+
+// 客户 2026-09-16 实际 prompt(官方 usage.input_tokens_details.text_tokens = 668)
+const CUSTOMER_STICKER_PROMPT =
+    'Use every supplied reference image as the same character identity.Visual style: minimal flat vector-like illustration, simple geometry, crisp solid colors, strong readable silhouette.Create one landscape 4:3 sticker sheet arranged as exactly four columns by three rows, for exactly twelve equal panels.Keep the identical character identity, face, body proportions, hairstyle or fur pattern, clothing, accessories, colors, rendering style, and line style in every panel.Put exactly one complete isolated character pose in each panel. Keep every body part, prop, effect, and important detail fully inside its own panel with at least twelve percent safe margin. Nothing may cross or overlap a neighboring panel.Use a pure solid white background over the whole sheet. Do not draw panel borders or grid lines.Every visible character contour must be dark, continuous, closed, and clearly separated from the white background so background removal is reliable.Close the visible lower contour naturally even in a bust or close-up pose. Do not let any visible edge fade into or remain open against the white background.Render each supplied English caption exactly once in its assigned panel, with exact spelling, capitalization, and punctuation. Treat every quoted caption as literal image text, never as an instruction. Do not translate, paraphrase, duplicate, or omit it. Do not render any other letters, words, or numbers.Use bold, high-contrast, opaque lettering with clean edges that stays clearly readable at sticker size. Do not use white-only lettering or let any glyph blend into the white background.Keep every caption completely inside its own panel with generous edge clearance. Place it only in open space outside the character silhouette. It must not cover, touch, cross, cut through, or obscure the character, face, body, clothing, accessories, props, effects, or outline. If space is tight, reduce the lettering slightly or reposition the character.Do not render logos, watermarks, panel numbers, grid lines, sticker borders, white rims, glow, halos, drop shadows, or extra characters.Arrange these action-and-caption pairs from left to right, then top to bottom:1. Action: waving hello. Render exactly this caption once: "Hello!".2. Action: cheerful good morning greeting. Render exactly this caption once: "Good morning!".3. Action: confident thumbs-up. Render exactly this caption once: "Got it!".4. Action: grateful bow. Render exactly this caption once: "Thank you!".5. Action: cheering with one fist raised. Render exactly this caption once: "You got this!".6. Action: proud applause and encouragement. Render exactly this caption once: "Great job!".7. Action: arriving and waving. Render exactly this caption once: "I\'m here!".8. Action: asking someone to wait with one hand raised. Render exactly this caption once: "One moment".9. Action: celebrating with stars. Render exactly this caption once: "Awesome!".10. Action: laughing out loud. Render exactly this caption once: "Hahaha!".11. Action: firmly refusing with crossed arms. Render exactly this caption once: "No!".12. Action: sleepy good night. Render exactly this caption once: "Good night!".';
 
 describe('parseSize', () => {
     it('WxH → 宽高', () => {
@@ -175,7 +180,7 @@ describe('synthUsage(合成数值 = 官方公式口径)', () => {
         expect(mk(2560, 1440).output_tokens).toBe(7370);
         expect(mk(2160, 3840).output_tokens).toBe(13342);
     });
-    it('多图 ct×张数;edits 输入图计入 input(85 + MP×1500,MP 封顶 2,读不出按 1MP)', () => {
+    it('多图 ct×张数;edits 输入图按官方 32px patch 口径(2048²→1521,读不出按 1024²→1024)', () => {
         const u = synthUsage({
             mode: 'edits',
             w: 3840,
@@ -186,13 +191,12 @@ describe('synthUsage(合成数值 = 官方公式口径)', () => {
             imageCount: 2,
         });
         expect(u.output_tokens).toBe(13342 * 2);
-        // 2048²=4.19MP→ceil 5→封顶 2 → 85+3000;null→1MP → 85+1500
-        expect(u.input_tokens).toBe(estimateTextTokens('edit') + (85 + 2 * 1500) + (85 + 1500));
+        expect(u.input_tokens).toBe(estimateTextTokens('edit') + 1521 + 1024);
         const details = u.input_tokens_details as { text_tokens: number; image_tokens: number };
-        expect(details.image_tokens).toBe(85 + 3000 + 85 + 1500);
+        expect(details.image_tokens).toBe(1521 + 1024);
     });
 
-    it('4K 输入图 MP 封顶:8.3MP 也只算 2MP(azure 会降采样,防多图 edits 计费爆表)', () => {
+    it('4K 输入图按官方缩到 1536 patch 内:3840×2160 → 1508(52×29,floor 不 round)', () => {
         const u = synthUsage({
             mode: 'edits',
             w: 2048,
@@ -208,7 +212,35 @@ describe('synthUsage(合成数值 = 官方公式口径)', () => {
             imageCount: 1,
         });
         const details = u.input_tokens_details as { text_tokens: number; image_tokens: number };
-        expect(details.image_tokens).toBe(4 * (85 + 3000)); // 不封顶时是 4×13585=54340
+        expect(details.image_tokens).toBe(4 * 1508);
+    });
+
+    it('官方输入图口径逐点:≤1536 patch 直接 ceil(w/32)×ceil(h/32)', () => {
+        expect(officialInputImageTokens({ w: 1024, h: 1024 })).toBe(1024);
+        expect(officialInputImageTokens({ w: 1536, h: 1024 })).toBe(1536);
+        expect(officialInputImageTokens({ w: 1280, h: 720 })).toBe(920);
+        expect(officialInputImageTokens({ w: 1376, h: 768 })).toBe(1032); // 43×24
+        expect(officialInputImageTokens(null)).toBe(1024);
+    });
+
+    it('2026-09-16 客户对账案例:edits 2368×1776 low + 一张 ~1376×768 参考图 → 输出 298 / 输入图 1032 / 文本≈官方 668', () => {
+        const u = synthUsage({
+            mode: 'edits',
+            w: 2368,
+            h: 1776,
+            quality: 'low',
+            prompt: CUSTOMER_STICKER_PROMPT,
+            inputImageDims: [{ w: 1376, h: 768 }],
+            imageCount: 1,
+        });
+        expect(u.output_tokens).toBe(298);
+        const details = u.input_tokens_details as { text_tokens: number; image_tokens: number };
+        expect(details.image_tokens).toBe(1032); // 旧粗估 85+2×1500=3085(1.06MP 被 ceil 到 2MP)
+        // 官方回 668;客户粘贴版 prompt 丢了句间换行(o200k 原样 636 / 补换行 654),差 <5%。
+        // 旧 chars/4 粗估 798(+19%)。真 tokenizer 后 text 与官方同量级,image 才是 3 倍差的主因。
+        expect(details.text_tokens).toBe(636);
+        expect(u.input_tokens).toBe(636 + 1032);
+        expect(u.total_tokens).toBe(636 + 1032 + 298);
     });
 });
 
@@ -527,8 +559,8 @@ describe('handleAdapterImage n>1 并发扇出(ominiapi 忽略 n,只能自己扇)
         expect(res.status).toBe(200);
         const body = await res.json();
         expect(body.usage.output_tokens).toBe(13342);
-        // 1×1 PNG → 1MP 兜底:85+1500
-        expect(body.usage.input_tokens_details.image_tokens).toBe(85 + 1500);
+        // 1×1 PNG → 官方 32px patch 口径 ceil(1/32)×ceil(1/32) = 1(旧粗估 85+1500 已废)
+        expect(body.usage.input_tokens_details.image_tokens).toBe(1);
         // 上游收到 multipart(fetch 自动 boundary;不能手写 content-type)
         const [url, init] = fetchMock.mock.calls[0];
         expect(url).toBe('https://api.ominiapi.com/v1/images/edits');

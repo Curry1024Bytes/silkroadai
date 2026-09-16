@@ -24,6 +24,7 @@
  * 的客户也拿合规响应)。
  */
 import { NextRequest, NextResponse } from 'next/server';
+import { countTextTokens } from '@/lib/tokens/count-text-tokens';
 import { stripAdobeImageMetadataB64 } from '@/lib/proxy/image-metadata';
 import { IMAGE_PROVIDERS_25, type ImageProvider25 } from './providers';
 
@@ -83,17 +84,9 @@ export function parseSize(size: string): { w: number; h: number } | null {
     return w > 0 && h > 0 ? { w, h } : null;
 }
 
-/** prompt 文本 token 粗估(CJK ~1.5 tok/字,其余 ~1 tok/4 字符;同 2.0 / proxy 口径)。 */
+/** prompt 文本 token —— 真 tokenizer(o200k_base),同 2.0 适配器口径(见 `@/lib/tokens/count-text-tokens`)。 */
 export function estimateTextTokens(s: string): number {
-    if (!s) return 0;
-    let cjk = 0;
-    let other = 0;
-    for (const ch of s) {
-        const c = ch.codePointAt(0) ?? 0;
-        if ((c >= 0x3000 && c <= 0x9fff) || (c >= 0xac00 && c <= 0xd7af) || (c >= 0xf900 && c <= 0xfaff)) cjk++;
-        else other++;
-    }
-    return Math.max(1, Math.ceil(cjk * 1.5 + other / 4));
+    return countTextTokens(s);
 }
 
 // ============ 字节工具(独立实现,不从 2.0 适配器 import)============

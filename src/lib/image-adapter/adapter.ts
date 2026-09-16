@@ -22,6 +22,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { stripAdobeImageMetadataB64 } from '@/lib/proxy/image-metadata';
 import { IMAGE_PROVIDERS, type ImageProvider } from './providers';
+import { countTextTokens } from '@/lib/tokens/count-text-tokens';
 
 export type ImageMode = 'generations' | 'edits';
 
@@ -97,17 +98,10 @@ export function isElongated(w: number, h: number): boolean {
 
 // ============ usage 合成 ============
 
-/** prompt 文本 token 粗估(CJK ~1.5 tok/字,其余 ~1 tok/4 字符;同 /v1 route 口径)。 */
+/** prompt 文本 token —— 真 tokenizer(o200k_base)计数,见 `@/lib/tokens/count-text-tokens`。
+ *  原为「CJK×1.5 + 其余/4」粗估,英文长 prompt 偏高 ~20%(官方 668 vs 粗估 798,2026-09-16 客户对账)。 */
 export function estimateTextTokens(s: string): number {
-    if (!s) return 0;
-    let cjk = 0;
-    let other = 0;
-    for (const ch of s) {
-        const c = ch.codePointAt(0) ?? 0;
-        if ((c >= 0x3000 && c <= 0x9fff) || (c >= 0xac00 && c <= 0xd7af) || (c >= 0xf900 && c <= 0xfaff)) cjk++;
-        else other++;
-    }
-    return Math.max(1, Math.ceil(cjk * 1.5 + other / 4));
+    return countTextTokens(s);
 }
 
 /** 返图是否带真 alpha 通道:PNG colortype 6(RGBA)/ 4(灰+alpha)→ true;PNG 其他 colortype
@@ -193,13 +187,25 @@ export function imageDimensions(buf: Buffer): { w: number; h: number } | null {
     return null;
 }
 
-/** 单张输入图 token(edits 输入侧):85 + 每 MP 1500(校准到 prod edit avg pt≈1831),
- *  MP 封顶 2 —— azure 真实口径会把大输入图降采样,pt 很少超 5k;不封顶时 4K 输入图会算到
- *  1.3万 token/张,多图 edits 合成 pt 5.8万、比 azure 贵近一倍(2026-08-04 首灰实测,
- *  c-ff22024e 2K-high 多图单次 ¥1.08 vs azure 同类 ~¥0.59)。 */
-function inputImageTokens(dims: { w: number; h: number } | null): number {
-    const mp = dims ? Math.min(2, Math.max(1, Math.ceil((dims.w * dims.h) / 1_000_000))) : 1;
-    return 85 + mp * 1500;
+/** 单张输入图 token(edits 输入侧)—— 官方口径:32px patch 网格,总 patch 上限 1536,超限按
+ *  √(1536/n) 等比缩小、两轴各取 floor(与 image-adapter25 `officialInputImageTokens25` 同源,
+ *  后者已用 asian-acc 官方直通 usage 逐点验证:1024²→1024、2048²→1521、3840×2160→1508)。
+ *  读不出尺寸 → 按 1024²(1024)兜底。
+ *
+ *  历史:2026-08-04 起用「85 + MP×1500,MP 向上取整封顶 2」粗估(校准到 azure 面积刻度),
+ *  任何 >1MP 的输入图一律 3085;2026-09-16 客户拿官方 usage 对账:同一张 ~1376×768 参考图官方
+ *  image_tokens=1032(=43×24 patch),我方 3085,差 3 倍 → 改官方公式。 */
+export function officialInputImageTokens(dims: { w: number; h: number } | null): number {
+    if (!dims) return 1024;
+    let pw = Math.ceil(dims.w / 32);
+    let ph = Math.ceil(dims.h / 32);
+    const n = pw * ph;
+    if (n > 1536) {
+        const s = Math.sqrt(1536 / n);
+        pw = Math.floor(pw * s);
+        ph = Math.floor(ph * s);
+    }
+    return Math.max(1, pw * ph);
 }
 
 export interface SynthUsageInput {
@@ -232,7 +238,7 @@ export function synthUsage(inp: SynthUsageInput): Record<string, unknown> {
     const ct = perImage * Math.max(1, inp.imageCount);
     const textTokens = estimateTextTokens(inp.prompt);
     let imgTokens = 0;
-    if (inp.mode === 'edits') for (const d of inp.inputImageDims) imgTokens += inputImageTokens(d);
+    if (inp.mode === 'edits') for (const d of inp.inputImageDims) imgTokens += officialInputImageTokens(d);
     const pt = textTokens + imgTokens;
     return {
         input_tokens: pt,
