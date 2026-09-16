@@ -120,6 +120,32 @@ export function getCostMultiplierDelta(upstream: number, retail: number): number
     return asNumber(subtract(decimal(displayPositive.parse(retail)), decimal(displayPositive.parse(upstream))));
 }
 
+/** Display conversion factors and supplier charges without imposing retail limits on them. */
+export function getCostQuoteDisplay(input: PricingCostConfig): {
+    unitCost: number;
+    unitRetail: number;
+    supplierCharges: Record<string, number>;
+} {
+    const config = pricingCostConfigSchema.parse(input);
+    const unit = rawCostAndRetail(config, 1);
+    const prices: Array<[string, number]> =
+        config.basis === 'token'
+            ? tokenKeys.flatMap((key) =>
+                  config.token_rates[key] === null ? [] : [[key, config.token_rates[key]] as [string, number]],
+              )
+            : config.variants.map((variant) => [variant.key, variant.price]);
+    return {
+        unitCost: asNumber(unit.cost),
+        unitRetail: asNumber(unit.retail),
+        supplierCharges: Object.fromEntries(
+            prices.map(([key, price]) => [
+                key,
+                asNumber(multiply(decimal(price), decimal(config.upstream_multiplier))),
+            ]),
+        ),
+    };
+}
+
 const configShape = z
     .object({
         version: z.literal(1),

@@ -12,8 +12,8 @@ vi.mock('next/navigation', () => ({
 
 import { AdminShell } from '@/app/admin/(console)/admin-shell';
 
-const PLATFORM_LABELS = ['支付配置', '渠道分组', '模型管理', '定价', '定价计算器', '影子计量', '租户管理', '公告管理'];
-const RETIRED_LABELS = ['渠道管理', '订阅管理'];
+const PLATFORM_LABELS = ['支付配置', '渠道分组', '模型管理', '定价', '影子计量', '租户管理', '公告管理'];
+const RETIRED_LABELS = ['渠道管理', '订阅管理', '定价计算器'];
 
 describe('AdminShell nav role-filter', () => {
     it('partner admin (role=admin) → Dashboard + Orders + Customers, no platform items', () => {
@@ -40,5 +40,7 @@ describe('AdminShell nav role-filter', () => {
         expect(html).toContain('客户管理');
         for (const label of PLATFORM_LABELS) expect(html).toContain(label);
         for (const label of RETIRED_LABELS) expect(html).not.toContain(label);
+        expect(html.match(/href="\/admin\/pricing\?/g)).toHaveLength(1);
+        expect(html).not.toContain('/admin/pricing-calculator');
     });
 });

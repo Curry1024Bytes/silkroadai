@@ -44,7 +44,7 @@ function getTexts(locale: Locale) {
     return locale === 'en'
         ? {
               title: 'Pricing',
-              subtitle: 'Preview shared price changes, then publish and verify against new-api',
+              subtitle: 'Reference prices, cost calculation and verified publication in one place',
               invalidToken: 'Session expired, please sign in again',
               loadFailed: 'Failed to load pricing',
               refresh: 'Refresh',
@@ -61,7 +61,7 @@ function getTexts(locale: Locale) {
               unpriced: 'Unpriced',
               tierPool: 'Pool',
               tierOfficial: 'Official',
-              edit: 'Edit and publish price',
+              edit: 'Enter retail price directly',
               history: 'History',
               hide: 'Hide',
               cancel: 'Cancel',
@@ -98,7 +98,7 @@ function getTexts(locale: Locale) {
           }
         : {
               title: '定价',
-              subtitle: '先核对各档次影响，再发布到 new-api；核验完成后更新目录',
+              subtitle: '查询基础价、计算成本与售价、发布核验，都在这里完成',
               invalidToken: '登录已过期',
               loadFailed: '加载定价失败',
               refresh: '刷新',
@@ -115,7 +115,7 @@ function getTexts(locale: Locale) {
               unpriced: '未定价',
               tierPool: '低价号池',
               tierOfficial: '官方稳定',
-              edit: '改价并发布',
+              edit: '直接填写售价',
               history: '历史',
               hide: '收起',
               cancel: '取消',
@@ -342,9 +342,18 @@ function PricingContent() {
             locale={locale}
             actions={
                 <div className="flex flex-wrap gap-2">
-                    <button type="button" onClick={() => setBatchOpen(true)} className={btnBase}>
-                        {t.batchBtn}
-                    </button>
+                    <details className="relative">
+                        <summary className={`${btnBase} cursor-pointer`}>
+                            {locale === 'en' ? 'Legacy tools' : '历史工具'}
+                        </summary>
+                        <div
+                            className={`absolute right-0 z-10 mt-2 whitespace-nowrap rounded-lg border p-2 shadow-lg ${isDark ? 'border-slate-700 bg-slate-900' : 'border-slate-200 bg-white'}`}
+                        >
+                            <button type="button" onClick={() => setBatchOpen(true)} className={btnBase}>
+                                {t.batchBtn}
+                            </button>
+                        </div>
+                    </details>
                     <button type="button" onClick={() => void fetchModels()} className={btnBase}>
                         {t.refresh}
                     </button>

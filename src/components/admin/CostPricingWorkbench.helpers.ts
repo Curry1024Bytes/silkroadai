@@ -7,6 +7,7 @@ import type {
 } from '@/lib/admin/pricing-cost-types';
 import type { PricingPublishJob, PricingPublishPreview } from '@/lib/admin/pricing-publish-types';
 import { getCostRetailMultiplier } from '@/lib/admin/pricing-cost';
+import type { PricingReferenceSelection } from './PricingReferencePicker';
 
 export interface CostPricingDraft {
     basis: PricingCostConfig['basis'];
@@ -37,6 +38,23 @@ export interface CostPricingSaveInput {
     tier: string;
     expected_revision: number | null;
     config: PricingCostConfig;
+}
+
+/** The picker explicitly confirms the supplier's USD-number-to-credit basis. */
+export function draftWithReference(draft: CostPricingDraft, price: PricingReferenceSelection): CostPricingDraft {
+    const note = `${price.sourceLabel} · ${price.model} · ${price.fetchedAt} · USD 基准数字按上游额度计价；普通档，阶梯另行核对；缓存写入为 5 分钟。`;
+    return {
+        ...draft,
+        currency: 'credits',
+        credits_per_cny: draft.currency === 'credits' ? draft.credits_per_cny : '',
+        token_rates: {
+            input: String(price.input),
+            output: String(price.output),
+            cache_read: price.cache_read === null ? '' : String(price.cache_read),
+            cache_write: price.cache_write === null ? '' : String(price.cache_write),
+        },
+        source_note: `${note}\n${draft.source_note}`.trim().slice(0, 500),
+    };
 }
 
 export interface CostPricingPrepared {
@@ -200,7 +218,7 @@ export function costRuleSelections(rules: StoredPricingCostRule[], selectedIds: 
 }
 
 export function costRulePublishBlock(
-    rule: StoredPricingCostRule,
+    rule: Pick<StoredPricingCostRule, 'mapping_current' | 'config'>,
     capability: PricingCostCapability | undefined,
     en = false,
 ): string | null {
@@ -316,6 +334,43 @@ export async function requestCostPricingPreview(
         selection_token: data.selection_token,
         cost_rows: data.cost_rows as CostPricingPrepared['cost_rows'],
     };
+}
+
+/** Save the editor, then preview only that returned revision; never publish here. */
+export async function prepareSingleCostPricing({
+    input,
+    savedRule,
+    capability,
+    onSaved,
+    en = false,
+}: {
+    input: CostPricingSaveInput | null;
+    savedRule?: StoredPricingCostRule;
+    capability: PricingCostCapability | undefined;
+    onSaved: (rule: StoredPricingCostRule) => void;
+    en?: boolean;
+}): Promise<CostPricingPrepared> {
+    let rule = savedRule;
+    let didSave = false;
+    if (input) {
+        [rule] = await saveCostPricingRules([input], en);
+        didSave = true;
+        onSaved(rule);
+    }
+    try {
+        if (!rule) throw new Error(en ? 'Save the cost rule first.' : '请先保存成本规则。');
+        const block = costRulePublishBlock(rule, capability, en);
+        if (block) throw new Error(block);
+        return await requestCostPricingPreview(costRuleSelections([rule], [rule.id]), en);
+    } catch (error) {
+        if (!didSave) throw error;
+        const detail = error instanceof Error ? error.message : '';
+        throw new Error(
+            en
+                ? `Cost saved; publication preview failed. Customer prices are unchanged. ${detail}`
+                : `成本已保存，发布预览未完成，客户售价未变。${detail}`,
+        );
+    }
 }
 
 export async function publishCostPricingReview(prepared: CostPricingPrepared, en = false): Promise<PricingPublishJob> {

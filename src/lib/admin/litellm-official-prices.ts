@@ -31,8 +31,8 @@ export interface OfficialModelPrice {
     provider: string | null;
     inputUsdPer1m: number;
     outputUsdPer1m: number;
-    cacheReadUsdPer1m: number;
-    cacheWrite5mUsdPer1m: number;
+    cacheReadUsdPer1m: number | null;
+    cacheWrite5mUsdPer1m: number | null;
     cacheWrite1hUsdPer1m: number | null;
 }
 
@@ -83,8 +83,8 @@ export function parseLiteLlmPriceCatalog(raw: unknown): OfficialModelPrice[] {
             provider,
             inputUsdPer1m,
             outputUsdPer1m,
-            cacheReadUsdPer1m: perMillion(price.cache_read_input_token_cost) ?? 0,
-            cacheWrite5mUsdPer1m: perMillion(price.cache_creation_input_token_cost) ?? 0,
+            cacheReadUsdPer1m: perMillion(price.cache_read_input_token_cost),
+            cacheWrite5mUsdPer1m: perMillion(price.cache_creation_input_token_cost),
             cacheWrite1hUsdPer1m: perMillion(price.cache_creation_input_token_cost_above_1hr),
         });
     }

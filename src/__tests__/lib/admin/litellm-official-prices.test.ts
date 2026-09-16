@@ -33,6 +33,32 @@ describe('LiteLLM official price source', () => {
         ]);
     });
 
+    it('keeps missing and invalid cache prices unknown rather than advertising them as free', () => {
+        const [price] = parseLiteLlmPriceCatalog({
+            'text-model': {
+                input_cost_per_token: 0.000005,
+                output_cost_per_token: 0.00003,
+                cache_creation_input_token_cost: -1,
+            },
+        });
+        expect(price.cacheReadUsdPer1m).toBeNull();
+        expect(price.cacheWrite5mUsdPer1m).toBeNull();
+        expect(price.cacheWrite1hUsdPer1m).toBeNull();
+    });
+
+    it('preserves an explicitly reported zero cache price', () => {
+        const [price] = parseLiteLlmPriceCatalog({
+            'text-model': {
+                input_cost_per_token: 0.000005,
+                output_cost_per_token: 0.00003,
+                cache_read_input_token_cost: 0,
+                cache_creation_input_token_cost: 0,
+            },
+        });
+        expect(price.cacheReadUsdPer1m).toBe(0);
+        expect(price.cacheWrite5mUsdPer1m).toBe(0);
+    });
+
     it('uses the GitHub source when the CDN is unavailable', async () => {
         const fetcher = vi
             .fn()

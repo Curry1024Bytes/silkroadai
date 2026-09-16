@@ -2,22 +2,31 @@
 
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react';
 import type { Locale } from '@/lib/locale';
-import type { PricingCostCapability, PricingCostLine, StoredPricingCostRule } from '@/lib/admin/pricing-cost-types';
+import type {
+    PricingCostCapability,
+    PricingCostConfig,
+    PricingCostLine,
+    StoredPricingCostRule,
+} from '@/lib/admin/pricing-cost-types';
 import {
     calculateCostPricing,
     calculateCostSample,
     getCostMultiplierDelta,
+    getCostQuoteDisplay,
     pricingCostConfigSchema,
 } from '@/lib/admin/pricing-cost';
 import type { PricingPublishJob } from '@/lib/admin/pricing-publish-types';
 import { PricingPublishPreviewDetails } from '@/components/admin/PricingPublishDialog';
+import PricingReferencePicker from './PricingReferencePicker';
 import {
     costConfigFromDraft,
     costReviewReducer,
     costRulePublishBlock,
     costRuleSelections,
     draftFromCostConfig,
+    draftWithReference,
     newCostDraft,
+    prepareSingleCostPricing,
     publishCostPricingReview,
     requestCostPricingPreview,
     saveCostPricingRules,
@@ -223,7 +232,43 @@ export function CostResolutionField({
     );
 }
 
-export function CostEstimateTable({ lines, en, isDark }: { lines: PricingCostLine[]; en: boolean; isDark: boolean }) {
+export function CostConversionSummary({ config, en }: { config: PricingCostConfig; en: boolean }) {
+    if (config.currency !== 'credits') return null;
+    const unit = getCostQuoteDisplay(config);
+    return (
+        <div className="space-y-1 text-sm" aria-live="polite">
+            <p>
+                {en
+                    ? `Recharge ¥1 → ${config.credits_per_cny} supplier credits`
+                    : `上游充值 ¥1 → 到账 ${config.credits_per_cny} 额度`}
+            </p>
+            <p>
+                {en
+                    ? `Per 1 unit of this base quote: converted cost ${money(unit.unitCost)} · planned retail ${money(unit.unitRetail)}`
+                    : `每 1 单位基础价：折算成本 ${money(unit.unitCost)} · 计划售价 ${money(unit.unitRetail)}`}
+            </p>
+            <p className="text-xs opacity-75">
+                {en
+                    ? 'Converted using the recharge ratio above. Do not divide the multipliers again.'
+                    : '已按上方充值比例换算，倍率不用再手动除以充值比例。'}
+            </p>
+        </div>
+    );
+}
+
+export function CostEstimateTable({
+    lines,
+    config,
+    en,
+    isDark,
+}: {
+    lines: PricingCostLine[];
+    config?: PricingCostConfig;
+    en: boolean;
+    isDark: boolean;
+}) {
+    // Calculate the supplier charge directly, without reversing rounded CNY costs.
+    const supplierLines = config?.currency === 'credits' ? getCostQuoteDisplay(config).supplierCharges : null;
     return (
         <div className={`overflow-x-auto rounded-lg border ${isDark ? 'border-slate-700' : 'border-slate-200'}`}>
             <table className="w-full min-w-[530px] text-sm">
@@ -234,8 +279,9 @@ export function CostEstimateTable({ lines, en, isDark }: { lines: PricingCostLin
                     <tr>
                         {[
                             en ? 'Item / unit' : '项目／单位',
-                            en ? 'Quoted cost' : '报价成本',
-                            en ? 'Proposed retail' : '计划售价',
+                            ...(supplierLines ? [en ? 'Supplier charge (credits)' : '上游扣额度'] : []),
+                            en ? 'Converted cost (CNY)' : '折算成本（元）',
+                            en ? 'Planned retail (CNY)' : '计划售价（元）',
                             en ? 'Gross profit' : '预计毛利',
                             en ? 'Margin' : '毛利率',
                         ].map((label, index) => (
@@ -255,6 +301,13 @@ export function CostEstimateTable({ lines, en, isDark }: { lines: PricingCostLin
                                 {line.label}
                                 <span className="ml-2 text-xs opacity-70">{unitLabel(line.unit, en)}</span>
                             </td>
+                            {supplierLines && (
+                                <td className="px-3 py-3 text-right tabular-nums">
+                                    {supplierLines[line.key]?.toLocaleString('zh-CN', {
+                                        maximumSignificantDigits: 12,
+                                    }) ?? '—'}
+                                </td>
+                            )}
                             <td className="px-3 py-3 text-right tabular-nums">{money(line.cost)}</td>
                             <td className="px-3 py-3 text-right font-medium tabular-nums">{money(line.retail)}</td>
                             <td className="px-3 py-3 text-right tabular-nums">{money(line.profit)}</td>
@@ -384,6 +437,7 @@ export default function CostPricingWorkbench({
     const mounted = useRef(true);
     const revision = useRef(0);
     const editor = useRef<HTMLDivElement>(null);
+    const previewPanel = useRef<HTMLDivElement>(null);
     const selectedRules = data.rules.filter((rule) => selectedIds.includes(rule.id));
     const selectedModel = models.find((model) => model.id === modelId);
     const capability = data.capabilities.find((row) => row.model_id === modelId && row.tier === tier);
@@ -439,6 +493,9 @@ export default function CostPricingWorkbench({
         }
     }, [draft, en]);
     const calculation = draftValidation.calculation;
+    const draftPublishBlock = calculation
+        ? costRulePublishBlock({ config: calculation.config, mapping_current: true }, capability, en)
+        : null;
     const classes = {
         muted: isDark ? 'text-slate-400' : 'text-slate-600',
         input: `min-h-11 w-full min-w-0 rounded-lg border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500 disabled:opacity-60 ${isDark ? 'border-slate-600 bg-slate-900 text-slate-100' : 'border-slate-300 bg-white text-slate-900'}`,
@@ -507,6 +564,10 @@ export default function CostPricingWorkbench({
     }, [reload]);
     useEffect(() => {
         if (!review.prepared) return;
+        previewPanel.current?.scrollIntoView({
+            behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth',
+            block: 'start',
+        });
         const timer = window.setInterval(() => setNow(Date.now()), 1000);
         return () => window.clearInterval(timer);
     }, [review.prepared]);
@@ -585,6 +646,35 @@ export default function CostPricingWorkbench({
                     ? 'Cost rule saved. Customer prices have not changed. Select saved rules below to preview publication.'
                     : '成本规则已保存，客户售价未变。可在下方勾选已保存规则，预览发布。',
             );
+        });
+    const previewCurrent = () =>
+        run('preview-current', async () => {
+            if (!modelId || !tier || !calculation || !capability || draftPublishBlock || data.source_error) return;
+            invalidate();
+            setBulkRetailMultiplier('');
+            const savedRule = data.rules.find((rule) => rule.model_id === modelId && rule.tier === tier);
+            setSelectedIds(savedRule ? [savedRule.id] : []);
+            const expectedRevision = revision.current;
+            const prepared = await prepareSingleCostPricing({
+                input: dirty
+                    ? { model_id: modelId, tier, expected_revision: editorRevision, config: calculation.config }
+                    : null,
+                savedRule,
+                capability,
+                en,
+                onSaved: (saved) => {
+                    if (!mounted.current || revision.current !== expectedRevision) return;
+                    mergeSaved([saved]);
+                    const next = draftFromCostConfig(saved.config);
+                    setDraft(next);
+                    setSavedDraft(JSON.stringify(next));
+                    setEditorRevision(saved.revision);
+                    setSelectedIds([saved.id]);
+                },
+            });
+            if (!mounted.current || revision.current !== expectedRevision) return;
+            setNow(Date.now());
+            dispatchReview({ type: 'prepare', prepared });
         });
     const bulkSave = () =>
         run('bulk', async () => {
@@ -668,12 +758,13 @@ export default function CostPricingWorkbench({
     const formBlocked = busy !== null || loading;
     const previewExpired = review.prepared !== null && Date.parse(review.prepared.preview.expires_at) <= now;
     const editorBlock =
-        capability && !capability.publishable
+        draftPublishBlock ||
+        (capability && !capability.publishable
             ? capability.reason ||
               (en
                   ? 'Estimation and saving are available. Publication is not supported yet.'
                   : '可保存和试算，当前未支持发布。')
-            : null;
+            : null);
     const sourceUnit = draft.currency === 'cny' ? '¥' : en ? 'credits' : '额度';
 
     return (
@@ -684,12 +775,12 @@ export default function CostPricingWorkbench({
             <div className="flex flex-wrap items-start justify-between gap-4">
                 <div>
                     <h2 id="cost-pricing-title" className="text-lg font-semibold">
-                        {en ? 'Set your retail multiplier' : '按倍率定价'}
+                        {en ? 'Calculate and publish prices' : '计算并发布价格'}
                     </h2>
                     <p className={`mt-1 text-sm leading-relaxed ${classes.muted}`}>
                         {en
-                            ? 'Save the supplier quote, enter your retail multiplier, review every affected tier, then publish.'
-                            : '保存上游报价，直接填写你的售价倍率，核对各档影响后发布。'}
+                            ? 'Look up a reference quote, enter your recharge ratio and multipliers, then review customer prices in CNY.'
+                            : '查基础价，填充值比例和倍率，直接核对人民币成本与客户售价。'}
                     </p>
                 </div>
                 <button type="button" disabled={formBlocked} onClick={() => void reload()} className={classes.button}>
@@ -697,8 +788,8 @@ export default function CostPricingWorkbench({
                 </button>
             </div>
             <ol className={`my-5 grid gap-2 text-sm sm:grid-cols-3 ${classes.muted}`}>
-                <li>{en ? '1. Choose a model and tier' : '1. 选择模型与档次'}</li>
-                <li>{en ? '2. Save costs and retail multiplier' : '2. 保存成本与售价倍率'}</li>
+                <li>{en ? '1. Choose a model and reference price' : '1. 选择模型、查基础价'}</li>
+                <li>{en ? '2. Convert costs and set retail prices' : '2. 换算成本、设定售价'}</li>
                 <li>{en ? '3. Review and publish' : '3. 预览并发布'}</li>
             </ol>
             {error && (
@@ -727,7 +818,7 @@ export default function CostPricingWorkbench({
             )}
 
             <div ref={editor} className="scroll-mt-6">
-                <fieldset disabled={formBlocked} className="space-y-5">
+                <fieldset disabled={formBlocked} className="min-w-0 space-y-5">
                     <legend className="sr-only">{en ? 'Supplier cost settings' : '上游成本设置'}</legend>
                     <div className="grid gap-4 sm:grid-cols-2">
                         <Field label={en ? 'Model' : '模型'}>
@@ -822,6 +913,19 @@ export default function CostPricingWorkbench({
                                     </select>
                                 </Field>
                             )}
+                            {draft.basis === 'token' && selectedModel && (
+                                <PricingReferencePicker
+                                    key={`${modelId}:${tier}`}
+                                    modelSlug={selectedModel.slug}
+                                    en={en}
+                                    isDark={isDark}
+                                    disabled={formBlocked}
+                                    onApply={(price) => {
+                                        if (lock.current) return;
+                                        changeDraft(draftWithReference(draft, price));
+                                    }}
+                                />
+                            )}
                             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
                                 <Field label={en ? 'Base quote currency' : '基础报价单位'}>
                                     <select
@@ -843,7 +947,7 @@ export default function CostPricingWorkbench({
                                         hint={
                                             en
                                                 ? 'Use the actual credits received after the recharge discount.'
-                                                : '按实际充值兑换比例填写，包含充值折扣。'
+                                                : '例如充值 1 元到账 10 额度，就填 10；客户人民币余额无需再换算。'
                                         }
                                         className={classes.input}
                                     />
@@ -863,6 +967,20 @@ export default function CostPricingWorkbench({
                                     en={en}
                                 />
                             </p>
+                            {calculation && (
+                                <div
+                                    className={`rounded-lg border p-4 ${isDark ? 'border-emerald-800 bg-emerald-950/20' : 'border-emerald-200 bg-emerald-50/50'}`}
+                                >
+                                    <CostConversionSummary config={calculation.config} en={en} />
+                                    {draft.currency === 'cny' && (
+                                        <p className="text-sm">
+                                            {en
+                                                ? 'Your quote is already in CNY. Cost and retail need no recharge conversion.'
+                                                : '当前基础报价已是人民币，成本和售价无需充值换算。'}
+                                        </p>
+                                    )}
+                                </div>
+                            )}
                             <p className={`text-xs leading-relaxed ${classes.muted}`}>
                                 {en
                                     ? 'Cost = base quote × supplier multiplier ÷ credits per CNY. Retail = base quote × my retail multiplier ÷ credits per CNY. Base quotes exclude multipliers. CNY quotes need no credit conversion. Profit estimates exclude payment fees.'
@@ -873,8 +991,13 @@ export default function CostPricingWorkbench({
                                     <h4 className="text-sm font-semibold">
                                         {en
                                             ? `Base quote, before multipliers (${sourceUnit} / 1M tokens)`
-                                            : `基础报价，不含倍率（${sourceUnit}／百万 token）`}
+                                            : `基础价 · 还没乘倍率（${sourceUnit}／百万 token）`}
                                     </h4>
+                                    <p className={`text-xs ${classes.muted}`}>
+                                        {en
+                                            ? 'Use the supplier’s price before multiplying. Reference prices above can fill these fields; manual quotes remain available.'
+                                            : '填写上游乘倍率之前的数字；可以用上方查询结果填入，也可以按上游报价手填。'}
+                                    </p>
                                     <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
                                         {(['input', 'output', 'cache_read', 'cache_write'] as const).map((key) => (
                                             <NumericField
@@ -1112,7 +1235,12 @@ export default function CostPricingWorkbench({
                                     <h4 className="text-sm font-semibold">
                                         {en ? 'Cost and retail estimate' : '成本与售价试算'}
                                     </h4>
-                                    <CostEstimateTable lines={calculation.lines} en={en} isDark={isDark} />
+                                    <CostEstimateTable
+                                        lines={calculation.lines}
+                                        config={calculation.config}
+                                        en={en}
+                                        isDark={isDark}
+                                    />
                                     {draft.basis !== 'token' && (
                                         <div className="space-y-2">
                                             {
@@ -1182,7 +1310,7 @@ export default function CostPricingWorkbench({
                             <div className="flex flex-wrap items-center gap-3">
                                 <button
                                     type="button"
-                                    className={classes.primary}
+                                    className={classes.button}
                                     disabled={!calculation || !dirty || formBlocked}
                                     onClick={() => void save()}
                                 >
@@ -1191,13 +1319,31 @@ export default function CostPricingWorkbench({
                                             ? 'Saving…'
                                             : '保存中…'
                                         : en
-                                          ? 'Save cost rule'
-                                          : '保存成本规则'}
+                                          ? 'Save draft only'
+                                          : '仅保存草稿'}
+                                </button>
+                                <button
+                                    type="button"
+                                    className={classes.primary}
+                                    disabled={!calculation || formBlocked || !!draftPublishBlock || !!data.source_error}
+                                    onClick={() => void previewCurrent()}
+                                >
+                                    {busy === 'preview-current'
+                                        ? en
+                                            ? 'Preparing preview…'
+                                            : '正在生成预览…'
+                                        : dirty
+                                          ? en
+                                              ? 'Save and preview this price'
+                                              : '保存并预览此价格'
+                                          : en
+                                            ? 'Preview this price'
+                                            : '预览此价格'}
                                 </button>
                                 <p className={`text-xs ${classes.muted}`}>
                                     {en
                                         ? 'Saving costs does not change customer prices or new-api settings.'
-                                        : '仅保存成本草稿，不改变客户售价或 new-api 配置。'}
+                                        : '试算不会修改扣费；确认发布后写入 new-api，并回读核验结果。'}
                                 </p>
                             </div>
                         </>
@@ -1205,10 +1351,10 @@ export default function CostPricingWorkbench({
                 </fieldset>
             </div>
 
-            <div className={`mt-6 border-t pt-6 ${isDark ? 'border-slate-700' : 'border-slate-200'}`}>
-                <h3 className="mb-2 text-base font-semibold">
+            <details className={`mt-6 border-t pt-6 ${isDark ? 'border-slate-700' : 'border-slate-200'}`}>
+                <summary className="mb-4 cursor-pointer text-base font-semibold">
                     {en ? 'Saved costs · batch pricing' : '已保存成本 · 批量定价'}
-                </h3>
+                </summary>
                 <p className={`mb-4 text-sm ${classes.muted}`}>
                     {en
                         ? 'Choose saved rules, set one retail multiplier for them, then preview the complete publication impact.'
@@ -1368,11 +1514,12 @@ export default function CostPricingWorkbench({
                         </button>
                     </>
                 )}
-            </div>
+            </details>
 
             {review.prepared && (
                 <div
-                    className={`mt-6 space-y-4 rounded-xl border p-4 sm:p-5 ${isDark ? 'border-emerald-800 bg-slate-900/40' : 'border-emerald-200 bg-emerald-50/30'}`}
+                    ref={previewPanel}
+                    className={`mt-6 scroll-mt-6 space-y-4 rounded-xl border p-4 sm:p-5 ${isDark ? 'border-emerald-800 bg-slate-900/40' : 'border-emerald-200 bg-emerald-50/30'}`}
                 >
                     <h3 className="text-base font-semibold">
                         {en ? 'Confirm publication impact' : '核对本次发布影响'}
