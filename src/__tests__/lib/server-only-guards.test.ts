@@ -42,6 +42,8 @@ const NEWAPI_DIR = path.join(process.cwd(), 'src/lib/newapi');
  */
 const REQUIRES_GUARD = [
     'client.ts',
+    'customer-key-mutation.ts',
+    'token-revocation.ts',
     'token-usage.ts',
     'usage-aggregate.ts',
     'quota-cache.ts',

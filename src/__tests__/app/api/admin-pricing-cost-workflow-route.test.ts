@@ -194,6 +194,7 @@ function dbFor(read: () => Store) {
                 return data;
             },
         },
+        channelGroupRetirementJob: { findFirst: async () => null },
         pricingPublishCoordinator: {
             findUnique: async () => read().coordinator,
             upsert: async () => {

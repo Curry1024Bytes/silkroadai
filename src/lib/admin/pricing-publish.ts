@@ -10,7 +10,7 @@ import { CHAT_FX, IMAGE_FX } from '@/lib/newapi/pricing-sync';
 import { QUOTA_PER_USD } from '@/lib/newapi/quota-units';
 import type { AdminPrincipal } from './auth';
 import { tenantScope } from './tenant-scope';
-import { lockPricingPublisher, PricingPublishError } from './pricing-publish-lock';
+import { assertNoRetirementJob, lockPricingPublisher, PricingPublishError } from './pricing-publish-lock';
 import { beginPricingWrite, acknowledgePricingWrite, readUncertainPricingWrites } from './pricing-publish-journal';
 import {
     assertEffectiveCompletion,
@@ -277,6 +277,7 @@ export async function enqueuePricingBatch(
     return prisma.$transaction(
         async (tx) => {
             const coordinator = await lockPricingPublisher(tx);
+            await assertNoRetirementJob(tx);
             const repeated = await tx.pricingPublishJob.findUnique({ where: { preview_hash: previewHash } });
             if (repeated) return publicJob(repeated);
             const { timestamp, digest } = previewTimestamp(token);
@@ -339,6 +340,7 @@ export async function enqueuePricingPublish(input: PricingPublishInput, token: s
     return prisma.$transaction(
         async (tx) => {
             const coordinator = await lockPricingPublisher(tx);
+            await assertNoRetirementJob(tx);
             const repeated = await tx.pricingPublishJob.findUnique({ where: { preview_hash: previewHash } });
             if (repeated) return publicJob(repeated);
             const { timestamp, digest } = previewTimestamp(token);
@@ -492,6 +494,7 @@ export async function runPricingPublisherOnce(): Promise<PricingPublishJob | nul
         return await prisma.$transaction(
             async (tx) => {
                 const coordinator = await lockPricingPublisher(tx);
+                await assertNoRetirementJob(tx);
                 const writeDeadline = Date.now() + 90_000;
                 if (!coordinator.active_job_id) return null;
                 const job = await tx.pricingPublishJob.findUnique({ where: { id: coordinator.active_job_id } });
@@ -618,6 +621,7 @@ export async function runPricingPublisherOnce(): Promise<PricingPublishJob | nul
         return prisma.$transaction(
             async (tx) => {
                 const coordinator = await lockPricingPublisher(tx);
+                await assertNoRetirementJob(tx);
                 if (coordinator.active_job_id !== attemptedJobId) return null;
                 const job = await tx.pricingPublishJob.findUnique({ where: { id: attemptedJobId! } });
                 if (!job || !['queued', 'retry_wait'].includes(job.status)) return job ? publicJob(job) : null;
@@ -645,6 +649,7 @@ export async function changePricingJob(id: string, action: 'retry' | 'cancel', a
     return prisma.$transaction(
         async (tx) => {
             const coordinator = await lockPricingPublisher(tx);
+            await assertNoRetirementJob(tx);
             const job = await tx.pricingPublishJob.findFirst({ where: { id, ...tenantScope(admin) } });
             if (!job) throw new PricingPublishError('pricing_job_not_found', '发布任务不存在。', 404);
             if (['succeeded', 'cancelled'].includes(job.status)) return publicJob(job);

@@ -32,6 +32,7 @@
  */
 
 import { z } from 'zod';
+import { customerKeyMutationTimeout } from './customer-key-mutation';
 
 // ============================================
 // Server-only module guard (hotfix 2026-05-05)
@@ -139,6 +140,9 @@ interface CallOptions {
     timeoutMs?: number;
     /** Price write acknowledgement requires an explicit application envelope. */
     requireSuccess?: boolean;
+    /** Strict management reads must never reuse caches or follow redirects. */
+    cache?: RequestCache;
+    redirect?: RequestRedirect;
     /** 用哪个 access_token + user_id 调用。默认用 admin。 */
     asUser?: { accessToken: string; userId: number };
     /**
@@ -179,7 +183,15 @@ async function call<T>(
         headers['New-Api-User'] = String(auth.userId); // required by all endpoints
     }
 
-    const init: RequestInit = { method, headers, signal: AbortSignal.timeout(options.timeoutMs ?? callTimeoutMs()) };
+    const guardTimeoutMs = await customerKeyMutationTimeout();
+    const timeoutMs = Math.min(options.timeoutMs ?? callTimeoutMs(), guardTimeoutMs ?? Infinity);
+    const init: RequestInit = {
+        method,
+        headers,
+        signal: AbortSignal.timeout(timeoutMs),
+        ...(options.cache ? { cache: options.cache } : {}),
+        ...(options.redirect ? { redirect: options.redirect } : {}),
+    };
     if (body !== undefined) init.body = JSON.stringify(body);
 
     let res: Response;
@@ -191,7 +203,7 @@ async function call<T>(
         // 它只等 settle 不设 deadline),客户看到的是页面一直转圈。
         // 归一成 NewApiError 504,让既有的 try/catch + 降级分支能接住。
         if (e instanceof Error && (e.name === 'TimeoutError' || e.name === 'AbortError')) {
-            throw new NewApiError(504, `${method} ${path}`, null, `new-api timeout after ${callTimeoutMs()}ms`);
+            throw new NewApiError(504, `${method} ${path}`, null, `new-api timeout after ${timeoutMs}ms`);
         }
         throw e;
     }
@@ -345,6 +357,22 @@ export const NewApiTokenSchema = z.object({
     auto_groups: z.array(z.string()).nullable().optional().default(null),
 });
 export type NewApiToken = z.infer<typeof NewApiTokenSchema>;
+
+/** No key, name, IP restrictions or quota data may enter retirement evidence. */
+const TokenRevocationMetadataSchema = z.object({
+    id: z.number().int().positive().safe(),
+    user_id: z.number().int().positive().safe(),
+    group: z.string(),
+    status: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]),
+});
+export type TokenRevocationMetadata = z.infer<typeof TokenRevocationMetadataSchema>;
+
+const TOKEN_REVOCATION_CALL_OPTIONS = {
+    requireSuccess: true,
+    timeoutMs: 10_000,
+    cache: 'no-store',
+    redirect: 'error',
+} as const;
 
 export interface NewApiUsageLog {
     id: number;
@@ -521,8 +549,57 @@ export async function listTokensForCustomer(
 export async function getTokenForCustomer(
     customerAuth: { accessToken: string; userId: number },
     tokenId: number,
+    timeoutMs?: number,
 ): Promise<NewApiToken> {
-    return await call('GET', `/api/token/${tokenId}`, undefined, undefined, { asUser: customerAuth });
+    return await call('GET', `/api/token/${tokenId}`, undefined, undefined, {
+        asUser: customerAuth,
+        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    });
+}
+
+/** Strict, uncached owner identity read; never rotates the customer's access token. */
+export async function getTokenRevocationCustomerIdentity(customerAuth: {
+    accessToken: string;
+    userId: number;
+}): Promise<{ id: number; status: 1 | 2 }> {
+    const data = await call<unknown>('GET', '/api/user/self', undefined, undefined, {
+        ...TOKEN_REVOCATION_CALL_OPTIONS,
+        asUser: customerAuth,
+    });
+    const parsed = z
+        .object({ id: z.number().int().positive().safe(), status: z.union([z.literal(1), z.literal(2)]) })
+        .safeParse(data);
+    if (!parsed.success) {
+        throw new NewApiError(502, 'GET /api/user/self', null, 'Unconfirmed customer identity');
+    }
+    return parsed.data;
+}
+
+/** rc.23 returns { success:true, data:token }; metadata is parsed and secrets discarded. */
+export async function getTokenRevocationMetadataForCustomer(
+    customerAuth: { accessToken: string; userId: number },
+    tokenId: number,
+): Promise<TokenRevocationMetadata> {
+    const data = await call<unknown>('GET', `/api/token/${tokenId}`, undefined, undefined, {
+        ...TOKEN_REVOCATION_CALL_OPTIONS,
+        asUser: customerAuth,
+    });
+    const parsed = TokenRevocationMetadataSchema.safeParse(data);
+    if (!parsed.success) {
+        throw new NewApiError(502, `GET /api/token/${tokenId}`, null, 'Unconfirmed token metadata');
+    }
+    return parsed.data;
+}
+
+/** An HTTP 200/204/HTML response alone is not a deletion acknowledgement. */
+export async function deleteTokenForCustomerStrict(
+    customerAuth: { accessToken: string; userId: number },
+    tokenId: number,
+): Promise<void> {
+    await call<null>('DELETE', `/api/token/${tokenId}`, undefined, undefined, {
+        ...TOKEN_REVOCATION_CALL_OPTIONS,
+        asUser: customerAuth,
+    });
 }
 
 /**
@@ -535,6 +612,7 @@ export async function getTokenForCustomer(
 export async function updateTokenForCustomer(
     customerAuth: { accessToken: string; userId: number },
     token: NewApiToken,
+    timeoutMs?: number,
 ): Promise<void> {
     await call<null>(
         'PUT',
@@ -557,7 +635,7 @@ export async function updateTokenForCustomer(
             auto_groups: token.auto_groups,
         },
         undefined,
-        { asUser: customerAuth },
+        { asUser: customerAuth, ...(timeoutMs !== undefined ? { timeoutMs } : {}) },
     );
 }
 

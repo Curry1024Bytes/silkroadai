@@ -1,5 +1,5 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
-import { NextRequest } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import type { AdminPrincipal } from '@/lib/admin/auth';
 import type { ChannelGroupRetirementPreview } from '@/lib/admin/channel-group-retirement-types';
 
@@ -167,7 +167,43 @@ vi.mock('@/lib/db', () => ({
         $transaction: (...args: unknown[]) => transaction(...args),
     },
 }));
-import { POST } from '@/app/api/admin/channel-groups/[id]/retire/route';
+import { prisma } from '@/lib/db';
+import {
+    previewChannelGroupRetirement,
+    applyChannelGroupRetirement,
+    ChannelGroupRetirementError,
+} from '@/lib/admin/channel-group-retirement';
+import { readChannelGroupRetirementSource } from '@/lib/admin/channel-group-retirement-source';
+
+// These retained regression cases exercise the atomic catalogue cleanup primitive.
+// The public route now starts a revocation job; its real auth/contracts are covered
+// separately in admin-channel-group-retirement-jobs-route.test.ts.
+async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+    const actor = await resolveAdmin();
+    const body = await request.json();
+    const group = await prisma.channelGroup.findFirst({ where: { id: (await params).id } });
+    if (!group) return NextResponse.json({ error: 'group_not_found' }, { status: 404 });
+    try {
+        const source = await readChannelGroupRetirementSource(group.newapi_group);
+        const selection = {
+            groupId: group.id,
+            tenantId: group.tenant_id,
+            replacementDefaultId: body.replacement_default_id,
+        };
+        return body.action === 'preview'
+            ? NextResponse.json({ preview: await previewChannelGroupRetirement(selection, source, actor) })
+            : NextResponse.json({
+                  success: true,
+                  result: await applyChannelGroupRetirement(selection, source, actor, body.preview_token),
+              });
+    } catch (error) {
+        if (error instanceof ChannelGroupRetirementError || error instanceof PricingPublishError)
+            return NextResponse.json({ error: error.code }, { status: error.status });
+        if (error && typeof error === 'object' && 'code' in error && error.code === 'P2034')
+            return NextResponse.json({ error: 'preview_stale' }, { status: 409 });
+        return NextResponse.json({ error: 'retirement_failed' }, { status: 500 });
+    }
+}
 
 function request(body: unknown) {
     return new NextRequest('https://llmroute.club/api/admin/channel-groups/old/retire', {
@@ -249,29 +285,7 @@ afterEach(() => {
     vi.useRealTimers();
 });
 
-describe('one-step Portal group retirement', () => {
-    it('requires superadmin and locates the selected tenant before any source reads', async () => {
-        resolveAdmin.mockResolvedValue(null);
-        expect((await POST(request({ action: 'preview' }), context)).status).toBe(401);
-        expect(resolveAdmin).toHaveBeenCalledWith(expect.anything(), 'superadmin');
-        expect(channels).not.toHaveBeenCalled();
-        expect(keyReads).not.toHaveBeenCalled();
-        expect(transaction).not.toHaveBeenCalled();
-    });
-    it('returns 404 before source reads when the selected group is absent', async () => {
-        state.groups = [defaultFixture];
-        expect((await POST(request({ action: 'preview' }), context)).status).toBe(404);
-        expect(channels).not.toHaveBeenCalled();
-        expect(options).not.toHaveBeenCalled();
-    });
-    it.each([{}, { action: 'delete' }, { action: 'apply' }, { action: 'preview', delete_keys: true }])(
-        'rejects incomplete or extra action fields',
-        async (body) => {
-            expect((await POST(request(body), context)).status).toBe(400);
-            expect(channels).not.toHaveBeenCalled();
-            expect(transaction).not.toHaveBeenCalled();
-        },
-    );
+describe('atomic catalogue cleanup inside completed retirement jobs', () => {
     it('previews all affected models without writes or reading credentials', async () => {
         const before = structuredClone(state);
         const plan = await preview();

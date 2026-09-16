@@ -47,8 +47,7 @@ async function withOptionSyncLock<T>(work: () => Promise<T>, coordinatePricing =
     });
     await previous;
     try {
-        // Key migration does not change any global pricing option and keeps its
-        // existing transaction/compensation timing, even for large key batches.
+        // All customer group changes participate in the shared database mutex.
         if (!coordinatePricing) return await work();
         // Hold the same database mutex as global price publications for this
         // entire read/merge/write/verification flow, across Portal processes.
@@ -631,18 +630,52 @@ async function listAllCustomerTokens(customerAuth: { accessToken: string; userId
     throw new UserTierMultiplierError('new-api returned too many token pages; refusing partial migration', 502);
 }
 
+type TokenMigrationPhase = 'forward' | 'compensate';
+class TokenMigrationIncompleteError extends UserTierMultiplierError {
+    constructor(prefix = 'Token migration failed') {
+        super(
+            `${prefix}; token migration needs manual reconciliation. Some remote groups may differ from Portal; verify the keys before retrying.`,
+            502,
+        );
+    }
+}
+
+/** Forward work ends at 60s, reserving the final 30s for compensation. */
+async function tokenMigrationTimeout(phase: TokenMigrationPhase): Promise<number> {
+    const context = optionWriteContext.getStore();
+    if (!context) throw new UserTierMultiplierError('Missing pricing coordination context', 409);
+    await assertPricingCatalogWritable(context.tx);
+    const deadline = context.writeDeadline - (phase === 'forward' ? 30_000 : 0);
+    const remaining = deadline - Date.now();
+    if (remaining <= 0)
+        throw new UserTierMultiplierError(
+            'Token migration exceeded its safe processing time; verify the current groups before retrying.',
+            409,
+        );
+    return Math.min(10_000, remaining);
+}
+
 async function updateTokenGroupWithReadback(args: {
     customerAuth: { accessToken: string; userId: number };
     token: NewApiToken;
     group: string;
     operation: string;
+    phase: TokenMigrationPhase;
+    beforeWrite?: () => void;
 }): Promise<void> {
     const next = { ...args.token, group: args.group };
+    // A failed guard never becomes an uncertain PUT and never triggers readback acceptance.
+    const timeout = await tokenMigrationTimeout(args.phase);
+    args.beforeWrite?.();
     try {
-        await updateTokenForCustomer(args.customerAuth, next);
+        await updateTokenForCustomer(args.customerAuth, next, timeout);
     } catch (writeErr) {
         try {
-            const actual = await getTokenForCustomer(args.customerAuth, args.token.id);
+            const actual = await getTokenForCustomer(
+                args.customerAuth,
+                args.token.id,
+                await tokenMigrationTimeout(args.phase),
+            );
             if (actual.group === args.group) return;
         } catch (readErr) {
             console.error('[user-tier-multiplier] CRITICAL cannot reconcile uncertain new-api token write', {
@@ -655,7 +688,7 @@ async function updateTokenGroupWithReadback(args: {
         throw writeErr;
     }
 
-    const actual = await getTokenForCustomer(args.customerAuth, args.token.id);
+    const actual = await getTokenForCustomer(args.customerAuth, args.token.id, await tokenMigrationTimeout(args.phase));
     if (actual.group !== args.group) {
         throw new UserTierMultiplierError(
             `new-api token ${args.token.id} did not persist billing group ${args.group}`,
@@ -668,7 +701,7 @@ async function compensateTokenGroups(args: {
     customerAuth: { accessToken: string; userId: number };
     snapshots: TokenSnapshot[];
     operation: string;
-}): Promise<void> {
+}): Promise<boolean> {
     const failures: Array<{ tokenId: number; err: unknown }> = [];
     for (const snapshot of args.snapshots) {
         try {
@@ -677,6 +710,7 @@ async function compensateTokenGroups(args: {
                 token: snapshot.upstream,
                 group: snapshot.upstream.group,
                 operation: `${args.operation}-restore-${snapshot.upstream.id}`,
+                phase: 'compensate',
             });
         } catch (err) {
             failures.push({ tokenId: snapshot.upstream.id, err });
@@ -691,9 +725,13 @@ async function compensateTokenGroups(args: {
             })),
         });
     }
+    return failures.length === 0;
 }
 
-async function migrateUserKeysToTierUnlocked(args: { user: KeyMigrationUser; tierKey: string }) {
+async function migrateUserKeysToTierUnlocked(
+    args: { user: KeyMigrationUser; tierKey: string },
+    observer: { remoteAttempted(): void; compensationVerified(): void },
+) {
     if (args.user.newapi_user_id == null || !args.user.newapi_access_token) {
         throw new UserTierMultiplierError('Customer has no linked new-api account', 409);
     }
@@ -764,65 +802,103 @@ async function migrateUserKeysToTierUnlocked(args: { user: KeyMigrationUser; tie
     const toMigrate = snapshots.filter(({ upstream }) => upstream.group !== tier.newapi_group);
     const alreadyTargetCount = snapshots.length - toMigrate.length;
     const attempted: TokenSnapshot[] = [];
+    let failureStage: 'migrate' | 'persist' = 'migrate';
     try {
         for (const snapshot of toMigrate) {
-            attempted.push(snapshot);
             await updateTokenGroupWithReadback({
                 customerAuth,
                 token: snapshot.upstream,
                 group: tier.newapi_group,
                 operation: `migrate-${snapshot.upstream.id}`,
+                phase: 'forward',
+                beforeWrite: () => {
+                    attempted.push(snapshot);
+                    observer.remoteAttempted();
+                },
             });
         }
 
         const verified = await Promise.all(
             snapshots.map(async (snapshot) => {
-                const current = await getTokenForCustomer(customerAuth, snapshot.upstream.id);
+                const current = await getTokenForCustomer(
+                    customerAuth,
+                    snapshot.upstream.id,
+                    await tokenMigrationTimeout('forward'),
+                );
                 return current.group === tier.newapi_group;
             }),
         );
         if (verified.some((value) => !value)) throw new UserTierMultiplierError('Token group verification failed', 502);
 
+        failureStage = 'persist';
+        await tokenMigrationTimeout('forward');
+        // Persist inside the transaction holding the mutex. A nested independent
+        // commit could otherwise survive loss of the outer coordination transaction.
+        const context = optionWriteContext.getStore()!;
+        await context.tx.$executeRaw`SAVEPOINT token_migration_persist`;
+        let updated: { count: number };
         try {
-            const updated = await prisma.$transaction(async (tx) => {
-                const result = await tx.newApiToken.updateMany({
-                    where: { id: { in: snapshots.map(({ portalId }) => portalId) }, status: 'active' },
-                    data: { tier: tier.key },
-                });
-                if (result.count !== snapshots.length) {
-                    throw new UserTierMultiplierError(
-                        'Some active Portal keys changed while migration was running',
-                        409,
-                    );
-                }
-                return result.count;
+            updated = await context.tx.newApiToken.updateMany({
+                where: { id: { in: snapshots.map(({ portalId }) => portalId) }, status: 'active' },
+                data: { tier: tier.key },
             });
-            return {
-                tier_key: tier.key,
-                tier_display_name: tier.display_name,
-                migrated_count: toMigrate.length,
-                already_target_count: alreadyTargetCount,
-                total_active_keys: updated,
-            };
-        } catch {
-            await compensateTokenGroups({ customerAuth, snapshots: attempted, operation: 'persist' });
-            throw new UserTierMultiplierError('Portal persistence failed; token migration was rolled back', 502);
+            if (updated.count !== snapshots.length)
+                throw new UserTierMultiplierError('Some active Portal keys changed while migration was running', 409);
+            await context.tx.$executeRaw`RELEASE SAVEPOINT token_migration_persist`;
+        } catch (error) {
+            // A real SQL error aborts a PostgreSQL transaction. Restore it before
+            // guard-protected compensation; transaction loss still fails closed.
+            await context.tx.$executeRaw`ROLLBACK TO SAVEPOINT token_migration_persist`.catch(() => undefined);
+            throw error;
         }
-    } catch (err) {
-        if (!(
-            err instanceof UserTierMultiplierError &&
-            err.message === 'Portal persistence failed; token migration was rolled back'
-        )) {
-            await compensateTokenGroups({ customerAuth, snapshots: attempted, operation: 'migrate' });
-        }
-        throw err;
+        return {
+            tier_key: tier.key,
+            tier_display_name: tier.display_name,
+            migrated_count: toMigrate.length,
+            already_target_count: alreadyTargetCount,
+            total_active_keys: updated.count,
+        };
+    } catch (error) {
+        // Exactly one compensation pass. A failed/expired guard or failed readback
+        // is not a rollback: keep that distinction visible to the operator.
+        const restored = await compensateTokenGroups({ customerAuth, snapshots: attempted, operation: failureStage });
+        if (!restored)
+            throw new TokenMigrationIncompleteError(
+                failureStage === 'persist' ? 'Portal persistence failed' : 'Token migration failed',
+            );
+        observer.compensationVerified();
+        if (failureStage === 'persist')
+            throw new UserTierMultiplierError(
+                'Portal persistence failed; the prior remote groups were verified after compensation.',
+                502,
+            );
+        throw error;
     }
 }
 
 /** Move existing active customer keys to a tier with an active dedicated multiplier. */
-export function migrateUserKeysToTier(args: Parameters<typeof migrateUserKeysToTierUnlocked>[0]) {
-    // The migration depends on the matching User.group + GroupGroupRatio
-    // rule remaining active throughout, so serialize it with rule saves and
-    // removals as well as with other migrations.
-    return withOptionSyncLock(() => withKeyMigrationLock(() => migrateUserKeysToTierUnlocked(args)), false);
+export async function migrateUserKeysToTier(args: Parameters<typeof migrateUserKeysToTierUnlocked>[0]) {
+    let remoteAttempted = false;
+    let compensationVerified = false;
+    try {
+        // Coordinate with rule saves, retirement and creation throughout the entire lifecycle.
+        return await withOptionSyncLock(() =>
+            withKeyMigrationLock(() =>
+                migrateUserKeysToTierUnlocked(args, {
+                    remoteAttempted: () => {
+                        remoteAttempted = true;
+                    },
+                    compensationVerified: () => {
+                        compensationVerified = true;
+                    },
+                }),
+            ),
+        );
+    } catch (error) {
+        if (error instanceof TokenMigrationIncompleteError) throw error;
+        // This also covers outer transaction expiry/commit failure after the
+        // callback returned, where there is no live mutex for safe compensation.
+        if (remoteAttempted && !compensationVerified) throw new TokenMigrationIncompleteError();
+        throw error;
+    }
 }

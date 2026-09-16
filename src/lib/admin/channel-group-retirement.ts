@@ -178,6 +178,7 @@ export async function buildChannelGroupRetirement(
 }
 
 type Plan = Awaited<ReturnType<typeof buildChannelGroupRetirement>>;
+export type ChannelGroupRetirementPlan = Plan;
 function actor(admin: AdminPrincipal) {
     return { id: admin.user?.id ?? null, tenant: admin.tenant_id, role: admin.role, breakGlass: admin.viaBreakGlass };
 }
@@ -270,38 +271,47 @@ export async function applyChannelGroupRetirement(
             verifyToken(previewToken, plan, admin);
             if (!plan.preview.canApply)
                 throw new ChannelGroupRetirementError('retirement_blocked', plan.preview.issues[0].message);
-            for (const model of plan.updates) {
-                await tx.catalogModel.update({
-                    where: { id: model.id, tenant_id: selection.tenantId, updated_at: model.updated_at },
-                    data: { upstream_map: model.nextMap as Prisma.InputJsonValue, enabled: model.nextEnabled },
-                });
-            }
-            // Delete the old default before enabling its replacement: the partial
-            // unique index is immediate, while transaction commit remains atomic.
-            await tx.channelGroup.delete({
-                where: { id: plan.group.id, tenant_id: selection.tenantId, updated_at: plan.group.updated_at },
-            });
-            let replacementName: string | null = null;
-            if (plan.group.is_default && plan.preview.replacement_default_id) {
-                await tx.channelGroup.updateMany({
-                    where: { tenant_id: selection.tenantId, is_default: true, enabled: true },
-                    data: { is_default: false },
-                });
-                const replacement = await tx.channelGroup.update({
-                    where: { id: plan.preview.replacement_default_id, tenant_id: selection.tenantId, enabled: true },
-                    data: { is_default: true },
-                });
-                replacementName = replacement.display_name;
-            }
-            return {
-                group_key: plan.group.key,
-                group_name: plan.group.display_name,
-                updated_models: plan.updates.length,
-                disabled_models: plan.preview.models.filter((row) => row.will_disable).length,
-                existing_keys: plan.preview.existing_keys,
-                replacement_default_name: replacementName,
-            };
+            return commitChannelGroupRetirement(tx, plan, selection.tenantId);
         },
         { isolationLevel: 'Serializable', timeout: 15000 },
     );
+}
+
+/** Internal final step: caller must own the publication mutex and validate its durable job plan. */
+export async function commitChannelGroupRetirement(
+    tx: Prisma.TransactionClient,
+    plan: ChannelGroupRetirementPlan,
+    tenantId: string | null,
+): Promise<ChannelGroupRetirementResult> {
+    for (const model of plan.updates) {
+        await tx.catalogModel.update({
+            where: { id: model.id, tenant_id: tenantId, updated_at: model.updated_at },
+            data: { upstream_map: model.nextMap as Prisma.InputJsonValue, enabled: model.nextEnabled },
+        });
+    }
+    // Delete the old default before enabling its replacement: the partial
+    // unique index is immediate, while transaction commit remains atomic.
+    await tx.channelGroup.delete({
+        where: { id: plan.group.id, tenant_id: tenantId, updated_at: plan.group.updated_at },
+    });
+    let replacementName: string | null = null;
+    if (plan.group.is_default && plan.preview.replacement_default_id) {
+        await tx.channelGroup.updateMany({
+            where: { tenant_id: tenantId, is_default: true, enabled: true },
+            data: { is_default: false },
+        });
+        const replacement = await tx.channelGroup.update({
+            where: { id: plan.preview.replacement_default_id, tenant_id: tenantId, enabled: true },
+            data: { is_default: true },
+        });
+        replacementName = replacement.display_name;
+    }
+    return {
+        group_key: plan.group.key,
+        group_name: plan.group.display_name,
+        updated_models: plan.updates.length,
+        disabled_models: plan.preview.models.filter((row) => row.will_disable).length,
+        existing_keys: plan.preview.existing_keys,
+        replacement_default_name: replacementName,
+    };
 }

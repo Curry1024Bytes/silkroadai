@@ -12,6 +12,9 @@ const mockTransaction = vi.fn();
 
 vi.mock('@/lib/db', () => ({
     prisma: {
+        pricingPublishCoordinator: { upsert: async () => ({ active_job_id: null }) },
+        channelGroupRetirementJob: { findFirst: async () => null },
+        channelGroup: { findFirst: async () => ({ id: 'available-tier' }) },
         oAuthAccount: {
             findUnique: (...args: unknown[]) => mockOAuthFindUnique(...args),
             create: (...args: unknown[]) => mockOAuthCreate(...args),
@@ -53,7 +56,9 @@ const PORTAL_USER_ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 
 beforeEach(() => {
     vi.clearAllMocks();
-    mockTransaction.mockImplementation(async (ops: unknown[]) => Promise.all(ops));
+    mockTransaction.mockImplementation(async (ops: unknown[] | ((tx: unknown) => Promise<unknown>)) =>
+        typeof ops === 'function' ? ops((await import('@/lib/db')).prisma) : Promise.all(ops),
+    );
     mockGetDefaultChannelGroup.mockResolvedValue({
         key: 'gpt特惠分组',
         newapi_group: 'GPT-特惠反代',
@@ -311,7 +316,7 @@ describe('linkOrCreateOAuthUser (5-branch policy)', () => {
             newapi_token_value: 'sk-real-key',
         });
         // Force the linkage transaction to fail
-        mockTransaction.mockRejectedValueOnce(new Error('DB transient'));
+        mockTokenCreate.mockRejectedValueOnce(new Error('DB transient'));
         mockDeleteUser.mockResolvedValue({});
         mockUserDelete.mockResolvedValue({});
 

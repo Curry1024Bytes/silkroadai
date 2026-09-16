@@ -5,7 +5,11 @@ import { useState, useEffect, useCallback, Suspense } from 'react';
 import PayPageLayout from '@/components/PayPageLayout';
 import { resolveLocale, type Locale } from '@/lib/locale';
 import ChannelReplacementDialog from '@/components/admin/ChannelReplacementDialog';
-import ChannelRetirementDialog, { channelRetirementSuccessText } from '@/components/admin/ChannelRetirementDialog';
+import ChannelRetirementDialog, {
+    ChannelRetirementTasksDialog,
+    channelRetirementSuccessText,
+    type ChannelRetirementTarget,
+} from '@/components/admin/ChannelRetirementDialog';
 import NewApiSyncDialog from '@/components/admin/NewApiSyncDialog';
 import { channelGroupFailureText, type ChannelGroupFailure } from '@/lib/admin/channel-group-feedback';
 
@@ -169,7 +173,8 @@ function ChannelGroupsContent() {
     const [error, setError] = useState('');
     const [errorModels, setErrorModels] = useState<NonNullable<ChannelGroupFailure['models']>>([]);
     const [replacementGroup, setReplacementGroup] = useState<ChannelGroup | null>(null);
-    const [retirementGroup, setRetirementGroup] = useState<ChannelGroup | null>(null);
+    const [retirementTarget, setRetirementTarget] = useState<ChannelRetirementTarget | null>(null);
+    const [retirementTasksOpen, setRetirementTasksOpen] = useState(false);
     const [success, setSuccess] = useState('');
 
     const operationError = (data: ChannelGroupFailure, fallback: string) => {
@@ -320,7 +325,7 @@ function ChannelGroupsContent() {
         setError('');
         setErrorModels([]);
         setSuccess('');
-        setRetirementGroup(group);
+        setRetirementTarget({ kind: 'group', groupId: group.id });
     };
 
     // ── Toggle enabled ──
@@ -424,6 +429,9 @@ function ChannelGroupsContent() {
 
             {/* Action buttons */}
             <div className="mb-4 flex flex-wrap gap-2 justify-end">
+                <button type="button" onClick={() => setRetirementTasksOpen(true)} className={btnBase}>
+                    {locale === 'en' ? 'Deletion tasks and leftover keys' : '删除任务与遗留 Key'}
+                </button>
                 <button type="button" onClick={() => setSyncOpen(true)} className={btnBase}>
                     {locale === 'en' ? 'Update catalog from new-api' : '从 new-api 更新目录'}
                 </button>
@@ -863,17 +871,34 @@ function ChannelGroupsContent() {
                     }}
                 />
             )}
-            {retirementGroup && (
+            {retirementTarget && (
                 <ChannelRetirementDialog
-                    key={retirementGroup.id}
-                    groupId={retirementGroup.id}
+                    target={retirementTarget}
                     locale={locale}
                     isDark={isDark}
-                    onClose={() => setRetirementGroup(null)}
+                    onClose={() => {
+                        setRetirementTarget(null);
+                        void fetchGroups();
+                    }}
+                    onOpenTasks={() => {
+                        setRetirementTarget(null);
+                        setRetirementTasksOpen(true);
+                    }}
                     onComplete={(result) => {
-                        setRetirementGroup(null);
+                        setRetirementTarget(null);
                         setSuccess(channelRetirementSuccessText(result, locale === 'en'));
                         void fetchGroups();
+                    }}
+                />
+            )}
+            {retirementTasksOpen && (
+                <ChannelRetirementTasksDialog
+                    locale={locale}
+                    isDark={isDark}
+                    onClose={() => setRetirementTasksOpen(false)}
+                    onOpen={(target) => {
+                        setRetirementTasksOpen(false);
+                        setRetirementTarget(target);
                     }}
                 />
             )}

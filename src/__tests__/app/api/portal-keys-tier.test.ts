@@ -8,6 +8,10 @@ const mockTokenCount = vi.fn();
 const mockTokenCreate = vi.fn();
 vi.mock('@/lib/db', () => ({
     prisma: {
+        $transaction: async (work: (tx: unknown) => Promise<unknown>) => work((await import('@/lib/db')).prisma),
+        pricingPublishCoordinator: { upsert: async () => ({ active_job_id: null }) },
+        channelGroupRetirementJob: { findFirst: async () => null },
+        channelGroup: { findFirst: async () => ({ id: 'available-tier' }) },
         newApiToken: {
             count: (...a: unknown[]) => mockTokenCount(...a),
             create: (...a: unknown[]) => mockTokenCreate(...a),

@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
         catalogModel: { findMany: vi.fn(), findFirst: vi.fn() },
         catalogPrice: { findMany: vi.fn() },
         channelGroup: { findMany: vi.fn() },
+        channelGroupRetirementJob: { findFirst: async () => null },
         pricingPublishCoordinator: { findUnique: vi.fn() },
         pricingPublishJob: { findMany: vi.fn() },
         $transaction: vi.fn(),
@@ -118,6 +119,7 @@ function dbFor(read: () => Store) {
                 return structuredClone(row);
             },
         },
+        channelGroupRetirementJob: { findFirst: async () => null },
         pricingPublishCoordinator: {
             findUnique: async () => structuredClone(read().coordinator),
             upsert: async () => {

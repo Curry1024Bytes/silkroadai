@@ -76,6 +76,7 @@ let store: Store;
 
 function txFor(data: Store) {
     return {
+        channelGroupRetirementJob: { findFirst: async () => null },
         pricingPublishCoordinator: { upsert: async () => ({ active_job_id: data.active }) },
         catalogModel: {
             findFirst: async ({ where }: { where: { id: string; tenant_id?: string } }) =>

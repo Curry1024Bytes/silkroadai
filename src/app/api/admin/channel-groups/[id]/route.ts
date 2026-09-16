@@ -1,3 +1,4 @@
+import { retirementTenantScope } from '@/lib/admin/channel-group-retirement-scope';
 import type { Prisma } from '@prisma/client';
 import { assertPricingCatalogWritable, PricingPublishError } from '@/lib/admin/pricing-publish-lock';
 import { NextRequest, NextResponse } from 'next/server';
@@ -187,8 +188,22 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
                 );
             }
 
-            // 已建 token 的 new-api group 已下发、照常工作；但启用模型不得留下悬空
-            // upstream_map，所以必须先下架或改写所有活动引用。
+            const key = await tx.newApiToken.findFirst({
+                where: { tier: existing.key, user: retirementTenantScope(existing.tenant_id) },
+                select: { id: true },
+            });
+            if (key) {
+                return NextResponse.json(
+                    {
+                        error: 'retirement_preview_required',
+                        message: '该分组仍有关联 Key，请使用“删除分组并撤销所属 Key”预览并确认。',
+                    },
+                    { status: 409 },
+                );
+            }
+
+            // Legacy callers may delete an empty tier. Any historical customer
+            // key must pass through the durable, verified revocation workflow.
             await tx.channelGroup.delete({ where: { id: existing.id } });
             return NextResponse.json({ success: true });
         });

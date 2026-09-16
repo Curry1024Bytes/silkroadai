@@ -17,6 +17,10 @@ const mockTokenCount = vi.fn();
 const mockTokenCreate = vi.fn();
 vi.mock('@/lib/db', () => ({
     prisma: {
+        $transaction: async (work: (tx: unknown) => Promise<unknown>) => work((await import('@/lib/db')).prisma),
+        pricingPublishCoordinator: { upsert: async () => ({ active_job_id: null }) },
+        channelGroupRetirementJob: { findFirst: async () => null },
+        channelGroup: { findFirst: async () => ({ id: 'available-tier' }) },
         newApiToken: {
             findMany: (...args: unknown[]) => mockTokenFindMany(...args),
             count: (...args: unknown[]) => mockTokenCount(...args),
@@ -332,14 +336,16 @@ describe('POST /api/portal/keys', () => {
         mockGetCurrentUser.mockResolvedValue(SESSION_USER);
         mockTokenCount.mockResolvedValue(0);
         mockCreateTokenForCustomer.mockRejectedValue(new Error('new-api 503'));
-        // Cleanup pass also runs — nothing to find since create itself failed
-        mockListTokensForCustomer.mockResolvedValue({ items: [], total: 0 });
+        // An existing Key can share the requested alias; it is never a cleanup target.
+        mockListTokensForCustomer.mockResolvedValue({ items: [{ id: 88, name: 'prod', group: 'other' }], total: 1 });
 
         const res = await POST(makeReq({ method: 'POST', body: { alias: 'prod' } }));
         expect(res.status).toBe(502);
         expect((await res.json()).error).toBe('newapi_create_failed');
         // CRITICAL: no orphan Prisma row when new-api flow fails
         expect(mockTokenCreate).not.toHaveBeenCalled();
+        expect(mockListTokensForCustomer).not.toHaveBeenCalled();
+        expect(mockNewapiDeleteToken).not.toHaveBeenCalled();
     });
 
     it('500 + new-api rollback when Prisma create fails after new-api succeeds', async () => {

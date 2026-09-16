@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockGetOption = vi.fn();
 const mockPutOption = vi.fn();
@@ -17,6 +17,7 @@ const mockNewApiTokenFindMany = vi.fn();
 const mockNewApiTokenUpdateMany = vi.fn();
 const mockTransaction = vi.fn();
 const mockCatalogGuard = vi.fn();
+const mockExecuteRaw = vi.fn();
 vi.mock('@/lib/admin/pricing-publish-lock', async () => ({
     ...(await vi.importActual<typeof import('@/lib/admin/pricing-publish-lock')>('@/lib/admin/pricing-publish-lock')),
     assertPricingCatalogWritable: (...args: unknown[]) => mockCatalogGuard(...args),
@@ -106,6 +107,7 @@ function token(id: number, group = 'default'): Record<string, unknown> {
 beforeEach(() => {
     vi.clearAllMocks();
     mockCatalogGuard.mockReset().mockResolvedValue(undefined);
+    mockExecuteRaw.mockReset().mockResolvedValue(0);
     options = {
         [GROUP_GROUP_RATIO_OPTION]: JSON.stringify({ 'another-customer': { 'GPT-Pro20x(企业级)': 0.17 } }),
         UserUsableGroups: JSON.stringify({ 'GPT-Pro20x(企业级)': 'GPT-Pro20x（企业级）' }),
@@ -163,9 +165,14 @@ beforeEach(() => {
     mockNewApiTokenFindMany.mockResolvedValue([]);
     mockNewApiTokenUpdateMany.mockResolvedValue({ count: 0 });
     mockTransaction.mockImplementation(async (work: (tx: unknown) => unknown) =>
-        work({ newApiToken: { updateMany: (...args: unknown[]) => mockNewApiTokenUpdateMany(...args) } }),
+        work({
+            $executeRaw: (...args: unknown[]) => mockExecuteRaw(...args),
+            newApiToken: { updateMany: (...args: unknown[]) => mockNewApiTokenUpdateMany(...args) },
+        }),
     );
 });
+
+afterEach(() => vi.restoreAllMocks());
 
 describe('new-api dedicated group multiplier sync', () => {
     it('blocks save and disable before reading or writing new-api while a price publication holds the coordinator', async () => {
@@ -419,6 +426,108 @@ describe('new-api dedicated group multiplier sync', () => {
             mockNewApiTokenUpdateMany.mockResolvedValue({ count: portalKeys.length });
         }
 
+        it('reserves compensation time after a delayed forward response crosses 60 seconds', async () => {
+            let now = 0;
+            vi.spyOn(Date, 'now').mockImplementation(() => now);
+            configureMigration([{ id: 'portal-key-1', newapi_token_id: 101, tier: 'pool' }]);
+            mockUpdateToken.mockImplementation(async (_auth, next, timeout) => {
+                expect(timeout).toBeLessThanOrEqual(10_000);
+                liveTokens[0] = { ...liveTokens[0], ...next };
+                if (next.group === 'GPT-Pro20x(企业级)') now = 61_000;
+            });
+            await expect(migrateUserKeysToTier({ user: migrationUser, tierKey: 'gpt-pro20x' })).rejects.toThrow(
+                'safe processing time',
+            );
+            expect(liveTokens[0].group).toBe('default');
+            expect(mockUpdateToken).toHaveBeenCalledTimes(2);
+            expect(mockNewApiTokenUpdateMany).not.toHaveBeenCalled();
+        });
+
+        it('stops before any remote write if preflight has exhausted forward time', async () => {
+            let now = 0;
+            vi.spyOn(Date, 'now').mockImplementation(() => now);
+            configureMigration([{ id: 'portal-key-1', newapi_token_id: 101, tier: 'pool' }]);
+            mockListTokens.mockImplementationOnce(async () => {
+                now = 60_000;
+                return { items: liveTokens, total: 1 };
+            });
+            await expect(migrateUserKeysToTier({ user: migrationUser, tierKey: 'gpt-pro20x' })).rejects.toThrow(
+                'safe processing time',
+            );
+            expect(mockUpdateToken).not.toHaveBeenCalled();
+            expect(mockNewApiTokenUpdateMany).not.toHaveBeenCalled();
+        });
+
+        it('reports manual reconciliation when a late response exhausts even compensation time', async () => {
+            let now = 0;
+            vi.spyOn(Date, 'now').mockImplementation(() => now);
+            vi.spyOn(console, 'error').mockImplementation(() => undefined);
+            configureMigration([{ id: 'portal-key-1', newapi_token_id: 101, tier: 'pool' }]);
+            mockUpdateToken.mockImplementationOnce(async (_auth, next) => {
+                liveTokens[0] = { ...liveTokens[0], ...next };
+                now = 91_000;
+            });
+            const error = await migrateUserKeysToTier({ user: migrationUser, tierKey: 'gpt-pro20x' }).catch(
+                (error: Error) => error,
+            );
+            expect(error).toMatchObject({ status: 502, message: expect.stringContaining('manual reconciliation') });
+            expect(String(error)).not.toContain('was rolled back');
+            expect(liveTokens[0].group).toBe('GPT-Pro20x(企业级)');
+            expect(mockUpdateToken).toHaveBeenCalledTimes(1);
+        });
+
+        it('does not issue compensation writes after losing the database guard', async () => {
+            vi.spyOn(console, 'error').mockImplementation(() => undefined);
+            configureMigration([{ id: 'portal-key-1', newapi_token_id: 101, tier: 'pool' }]);
+            mockUpdateToken.mockImplementationOnce(async (_auth, next) => {
+                liveTokens[0] = { ...liveTokens[0], ...next };
+                mockCatalogGuard.mockRejectedValue(new Error('transaction ended'));
+            });
+            await expect(migrateUserKeysToTier({ user: migrationUser, tierKey: 'gpt-pro20x' })).rejects.toThrow(
+                'manual reconciliation',
+            );
+            expect(mockUpdateToken).toHaveBeenCalledTimes(1);
+            expect(mockNewApiTokenUpdateMany).not.toHaveBeenCalled();
+        });
+
+        it('rolls back the savepoint after a real-SQL-style abort before safe remote compensation', async () => {
+            let sqlAborted = false;
+            configureMigration([{ id: 'portal-key-1', newapi_token_id: 101, tier: 'pool' }]);
+            mockNewApiTokenUpdateMany.mockImplementationOnce(async () => {
+                sqlAborted = true;
+                throw new Error('unique constraint');
+            });
+            mockCatalogGuard.mockImplementation(async () => {
+                if (sqlAborted) throw new Error('current transaction is aborted');
+            });
+            mockExecuteRaw.mockImplementation(async (sql: TemplateStringsArray) => {
+                if (sql.join('').startsWith('ROLLBACK TO')) sqlAborted = false;
+                return 0;
+            });
+            await expect(migrateUserKeysToTier({ user: migrationUser, tierKey: 'gpt-pro20x' })).rejects.toThrow(
+                'prior remote groups were verified',
+            );
+            expect(liveTokens[0].group).toBe('default');
+            expect(mockExecuteRaw.mock.calls.map(([sql]) => sql.join(''))).toEqual([
+                'SAVEPOINT token_migration_persist',
+                'ROLLBACK TO SAVEPOINT token_migration_persist',
+            ]);
+            expect(mockTransaction).toHaveBeenCalledTimes(1);
+        });
+
+        it('reports outer commit failure without claiming independently committed local tiers', async () => {
+            configureMigration([{ id: 'portal-key-1', newapi_token_id: 101, tier: 'pool' }]);
+            mockTransaction.mockImplementationOnce(async (work) => {
+                await work({ $executeRaw: mockExecuteRaw, newApiToken: { updateMany: mockNewApiTokenUpdateMany } });
+                throw Object.assign(new Error('commit expired'), { code: 'P2028' });
+            });
+            await expect(migrateUserKeysToTier({ user: migrationUser, tierKey: 'gpt-pro20x' })).rejects.toThrow(
+                'manual reconciliation',
+            );
+            expect(mockTransaction).toHaveBeenCalledTimes(1);
+            expect(mockUpdateToken).toHaveBeenCalledTimes(1);
+        });
+
         it('rejects a customer without a persistent new-api access token', async () => {
             await expect(
                 migrateUserKeysToTier({
@@ -534,7 +643,7 @@ describe('new-api dedicated group multiplier sync', () => {
         it('restores upstream groups when Portal persistence fails and logs a critical rollback failure', async () => {
             configureMigration([{ id: 'portal-key-1', newapi_token_id: 101, tier: 'pool' }]);
             const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-            mockTransaction.mockRejectedValueOnce(new Error('database unavailable'));
+            mockNewApiTokenUpdateMany.mockRejectedValueOnce(new Error('database unavailable'));
             mockUpdateToken.mockImplementation(async (_auth: unknown, next: Record<string, unknown>) => {
                 if (next.group === 'default') throw new Error('rollback token write failed');
                 liveTokens[0] = { ...liveTokens[0], ...next };
@@ -552,7 +661,7 @@ describe('new-api dedicated group multiplier sync', () => {
 
         it('restores upstream groups when Portal persistence fails', async () => {
             configureMigration([{ id: 'portal-key-1', newapi_token_id: 101, tier: 'pool' }]);
-            mockTransaction.mockRejectedValueOnce(new Error('database unavailable'));
+            mockNewApiTokenUpdateMany.mockRejectedValueOnce(new Error('database unavailable'));
 
             await expect(migrateUserKeysToTier({ user: migrationUser, tierKey: 'gpt-pro20x' })).rejects.toThrow(
                 'Portal persistence failed',

@@ -18,7 +18,6 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { getCurrentUser } from '@/lib/auth/session';
 import {
@@ -27,6 +26,8 @@ import {
     getTokenKey,
     deleteToken as newapiDeleteToken,
 } from '@/lib/newapi/client';
+import { withCustomerKeyMutation, customerKeyMutationTimeout } from '@/lib/newapi/customer-key-mutation';
+import { PricingPublishError } from '@/lib/admin/pricing-publish-lock';
 import { formatTokenForDisplay } from '@/lib/newapi/token-format';
 import { PORTAL_INTERNAL_TOKEN_NAME } from '@/lib/newapi/system-token';
 import { listEnabledChannelGroups, restrictGroupsForUser } from '@/lib/channel-group';
@@ -175,93 +176,100 @@ export async function POST(req: NextRequest) {
         userId: user.newapi_user_id,
     };
 
-    // 3-step new-api flow (mirrors provisionNewCustomer):
-    //   1. createTokenForCustomer(name=alias)  — returns void
-    //   2. listTokensForCustomer → find by name → get id
-    //   3. getTokenKey(id) → real sk-...
-    let newapiTokenId: number;
-    let realKey: string;
+    let issuedTokenId: number | undefined;
+    let persistenceFailed = false;
+    let createFailed = false;
     try {
-        await createTokenForCustomer(customerAuth, {
-            name: alias,
-            unlimited_quota: true, // gotcha #12 — quota lives on user, not token
-            expired_time: -1,
-            group: newapiGroup, // P3: 当前动态档次显式下发的 new-api group
-        });
+        return await withCustomerKeyMutation({ tenantId: user.tenant_id, tierKey: tier, newapiGroup }, async (tx) => {
+            // 3-step new-api flow (mirrors provisionNewCustomer):
+            //   1. createTokenForCustomer(name=alias)  — returns void
+            //   2. listTokensForCustomer → find by name → get id
+            //   3. getTokenKey(id) → real sk-...
+            let newapiTokenId: number;
+            let realKey: string;
+            try {
+                await createTokenForCustomer(customerAuth, {
+                    name: alias,
+                    unlimited_quota: true, // gotcha #12 — quota lives on user, not token
+                    expired_time: -1,
+                    group: newapiGroup, // P3: 当前动态档次显式下发的 new-api group
+                });
 
-        // Find newly-created by name. Same-alias collisions are possible but
-        // rare; if multiple match we pick the most recent (id desc).
-        const list = await listTokensForCustomer(customerAuth, 1, 50);
-        const found = list.items.filter((t) => t.name === alias).sort((a, b) => b.id - a.id)[0];
-        if (!found) {
-            throw new Error(`created token name=${alias} not found in subsequent list`);
-        }
-        newapiTokenId = found.id;
-        realKey = await getTokenKey(customerAuth, newapiTokenId);
-    } catch (newapiErr) {
-        console.error(`[portal/keys POST] new-api create flow failed for user ${user.id}:`, newapiErr);
-        // If the token was created but a later step (list/getKey) failed,
-        // we'd leave an orphan. Best-effort cleanup: try to delete it by
-        // looking it up by name. Failure here is logged but doesn't block
-        // surfacing the error to the user.
-        try {
-            const list = await listTokensForCustomer(customerAuth, 1, 50);
-            const orphan = list.items.find((t) => t.name === alias);
-            if (orphan) {
-                await newapiDeleteToken(customerAuth, orphan.id);
-                console.warn(`[portal/keys POST] cleaned orphan new-api token id=${orphan.id} name=${alias}`);
+                // Find newly-created by name. Same-alias collisions are possible but
+                // rare; if multiple match we pick the most recent (id desc).
+                const list = await listTokensForCustomer(customerAuth, 1, 50);
+                const found = list.items.filter((t) => t.name === alias).sort((a, b) => b.id - a.id)[0];
+                if (!found) {
+                    throw new Error(`created token name=${alias} not found in subsequent list`);
+                }
+                newapiTokenId = found.id;
+                issuedTokenId = found.id;
+                realKey = await getTokenKey(customerAuth, newapiTokenId);
+            } catch (newapiErr) {
+                // Unwind the SQL transaction before compensation. Never search
+                // by alias for cleanup: an older Key in another group may share it.
+                createFailed = true;
+                throw newapiErr;
             }
-        } catch (cleanupErr) {
-            console.error(`[portal/keys POST] orphan cleanup also failed for user ${user.id}:`, cleanupErr);
-        }
-        return NextResponse.json({ error: 'newapi_create_failed' }, { status: 502 });
-    }
 
-    // Persist Prisma row. If Prisma write fails, the new-api token is orphan
-    // — try to roll it back like the W3 D6 register pattern.
-    let row;
-    try {
-        row = await prisma.newApiToken.create({
-            data: {
-                user_id: user.id,
-                newapi_token_id: newapiTokenId,
-                newapi_token_value: realKey,
-                key_alias: alias,
-                tier, // P3: portal 档次 key(new-api group 经 newapiGroup 解耦下发)
-                status: 'active',
-            },
-            select: { id: true, key_alias: true, tier: true, created_at: true },
+            // Persist Prisma row. If Prisma write fails, the new-api token is orphan
+            // — try to roll it back like the W3 D6 register pattern.
+            let row;
+            try {
+                await customerKeyMutationTimeout();
+                row = await tx.newApiToken.create({
+                    data: {
+                        user_id: user.id,
+                        newapi_token_id: newapiTokenId,
+                        newapi_token_value: realKey,
+                        key_alias: alias,
+                        tier, // P3: portal 档次 key(new-api group 经 newapiGroup 解耦下发)
+                        status: 'active',
+                    },
+                    select: { id: true, key_alias: true, tier: true, created_at: true },
+                });
+            } catch (dbErr) {
+                // Release the failed SQL transaction before remote compensation.
+                persistenceFailed = true;
+                throw dbErr;
+            }
+
+            return NextResponse.json({
+                id: row.id,
+                key_alias: row.key_alias,
+                tier: row.tier,
+                // ONE-TIME: full sk- only in the create response. Subsequent reveals
+                // go through GET /api/portal/keys/[id]/key (also auth + ownership
+                // checked).
+                // W7 D4 PR-H Tier A: prepend `sk-` so the customer's first paste
+                // (this response is auto-revealed in the UI) lands a working
+                // Authorization value. DB stores the raw 48-char id (matches
+                // new-api's canonical representation); prefix is purely a
+                // display/wire concern.
+                key: formatTokenForDisplay(realKey),
+                created_at: row.created_at.toISOString(),
+            });
         });
-    } catch (dbErr) {
-        // Unique-violation on newapi_token_id can happen if a previous
-        // attempt half-succeeded (token in DB but earlier response failed).
-        // For W4-2 D5 scope we treat any DB error as a hard fail.
-        if (dbErr instanceof Prisma.PrismaClientKnownRequestError && dbErr.code === 'P2002') {
-            console.warn(`[portal/keys POST] duplicate token row for user ${user.id}, sk truncated`);
-        } else {
-            console.error(`[portal/keys POST] prisma create failed for user ${user.id}:`, dbErr);
+    } catch (error) {
+        if (issuedTokenId !== undefined) {
+            await newapiDeleteToken(customerAuth, issuedTokenId).catch((cleanupError) =>
+                console.error('[portal/keys POST] remote cleanup failed after transaction rollback', cleanupError),
+            );
         }
-        await newapiDeleteToken(customerAuth, newapiTokenId).catch((err) =>
-            console.error(`[portal/keys POST] new-api rollback failed for token ${newapiTokenId}:`, err),
-        );
-        return NextResponse.json({ error: 'persistence_failed' }, { status: 500 });
+        if (createFailed) {
+            console.error(`[portal/keys POST] new-api create flow failed for user ${user.id}:`, error);
+            return NextResponse.json({ error: 'newapi_create_failed' }, { status: 502 });
+        }
+        if (persistenceFailed) {
+            console.error('[portal/keys POST] key persistence failed', error);
+            return NextResponse.json({ error: 'persistence_failed' }, { status: 500 });
+        }
+        if (error instanceof PricingPublishError) {
+            return NextResponse.json({ error: error.code, message: error.message }, { status: error.status });
+        }
+        console.error('[portal/keys POST] coordinated key creation failed', error);
+        return NextResponse.json({ error: 'key_creation_unavailable' }, { status: 503 });
     }
-
-    return NextResponse.json({
-        id: row.id,
-        key_alias: row.key_alias,
-        tier: row.tier,
-        // ONE-TIME: full sk- only in the create response. Subsequent reveals
-        // go through GET /api/portal/keys/[id]/key (also auth + ownership
-        // checked).
-        // W7 D4 PR-H Tier A: prepend `sk-` so the customer's first paste
-        // (this response is auto-revealed in the UI) lands a working
-        // Authorization value. DB stores the raw 48-char id (matches
-        // new-api's canonical representation); prefix is purely a
-        // display/wire concern.
-        key: formatTokenForDisplay(realKey),
-        created_at: row.created_at.toISOString(),
-    });
 }
 
 /** Server-side mask helper, identical algorithm to the page-level one. */

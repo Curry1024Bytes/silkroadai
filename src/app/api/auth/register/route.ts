@@ -17,6 +17,7 @@ import { extractClientIP } from '@/lib/auth/extract-ip';
 import { resolveInviteCode, checkIpThrottleAndFlag } from '@/lib/reseller/register-helper';
 import { record as recordAnalytics } from '@/lib/analytics/recorder';
 import { resolveTenantByHost } from '@/lib/tenant/resolve';
+import { withCustomerKeyMutation, customerKeyMutationTimeout } from '@/lib/newapi/customer-key-mutation';
 import { getDefaultChannelGroup } from '@/lib/channel-group';
 
 const VERIFICATION_TOKEN_TTL_HOURS = 24;
@@ -204,82 +205,75 @@ export async function POST(req: NextRequest) {
         throw err;
     }
 
-    let provisioned: ProvisionedCustomer;
-    try {
-        provisioned = await provisionNewCustomer({
-            portal_user_id: user.id,
-            email: user.email,
-            newapi_group: defaultGroup.newapi_group,
-            initial_quota: 0,
-        });
-    } catch (provisionErr) {
-        // The 6-step flow failed somewhere. Step 1 failure leaves nothing
-        // on new-api; step 2-6 failures leave a half-built user that we
-        // must delete to keep the username slot free and ops dashboards clean.
-        await cleanupOrphanNewApiUser(user.id, email);
-        await prisma.user.delete({ where: { id: user.id } }).catch((deleteErr) => {
-            console.error(
-                `[register] new-api provision failed AND portal rollback failed for user ${user.id}:`,
-                deleteErr,
+    let phase: 'coordination' | 'provision' | 'persistence' = 'coordination';
+    let createdCustomer: ProvisionedCustomer | undefined;
+    const provisionOutcome = await withCustomerKeyMutation(
+        {
+            tenantId: tenant.id,
+            tierKey: defaultGroup.key,
+            newapiGroup: defaultGroup.newapi_group,
+            requireDefault: true,
+        },
+        async (tx) => {
+            phase = 'provision';
+            createdCustomer = await provisionNewCustomer({
+                portal_user_id: user.id,
+                email: email,
+                newapi_group: defaultGroup.newapi_group,
+                initial_quota: 0,
+            });
+            phase = 'persistence';
+            await customerKeyMutationTimeout();
+            await Promise.all([
+                tx.user.update({
+                    where: { id: user.id },
+                    data: {
+                        newapi_user_id: createdCustomer.newapi_user_id,
+                        newapi_username: createdCustomer.newapi_username,
+                        newapi_access_token: createdCustomer.newapi_access_token,
+                    },
+                }),
+                tx.newApiToken.create({
+                    data: {
+                        user_id: user.id,
+                        newapi_token_id: createdCustomer.newapi_token_id,
+                        newapi_token_value: createdCustomer.newapi_token_value,
+                        key_alias: `default-${user.id.slice(0, 8)}`,
+                        tier: defaultGroup.key,
+                    },
+                }),
+            ]);
+            return createdCustomer;
+        },
+    ).catch(async (error) => {
+        // The interactive transaction has ended before cleanup. Never swallow a
+        // SQL error inside an aborted transaction and leave the initial user behind.
+        if (createdCustomer) {
+            await deleteNewApiUser(createdCustomer.newapi_user_id).catch((cleanupError) =>
+                console.error('[register] new-api account cleanup failed', cleanupError),
             );
-        });
-        console.error(`[register] provisionNewCustomer failed for ${email}:`, provisionErr);
-        return NextResponse.json(
-            { error: 'provisioning_failed', message: 'Account provisioning failed, please retry' },
-            { status: 502 },
-        );
-    }
-
-    // Persist the new-api linkage on portal side. If this fails, the new-api
-    // user + token already exist — we must clean them up too, otherwise next
-    // attempt with the same email/portal_user_id collides on
-    // newapi_username unique constraint.
-    try {
-        await prisma.$transaction([
-            prisma.user.update({
-                where: { id: user.id },
-                data: {
-                    newapi_user_id: provisioned.newapi_user_id,
-                    newapi_username: provisioned.newapi_username,
-                    newapi_access_token: provisioned.newapi_access_token,
-                },
-            }),
-            prisma.newApiToken.create({
-                data: {
-                    user_id: user.id,
-                    newapi_token_id: provisioned.newapi_token_id,
-                    newapi_token_value: provisioned.newapi_token_value,
-                    key_alias: `default-${user.id.slice(0, 8)}`,
-                    tier: defaultGroup.key,
-                },
-            }),
-        ]);
-    } catch (linkageErr) {
-        const tokenPreview =
-            typeof provisioned.newapi_token_value === 'string'
-                ? `${provisioned.newapi_token_value.slice(0, 12)}...`
-                : `<${typeof provisioned.newapi_token_value}>`;
-        console.error(
-            `[register] new-api provision succeeded for ${user.id} ` +
-                `(newapi_user_id=${provisioned.newapi_user_id}, ` +
-                `token=${tokenPreview}) ` +
-                `but persisting linkage failed — rolling back both sides:`,
-            linkageErr,
-        );
-        // Cascade-clean: delete new-api user (soft delete; token disposed),
-        // then delete portal user. If either cleanup throws, log loudly so
-        // ops can reconcile manually — at least we tried.
-        await deleteNewApiUser(provisioned.newapi_user_id).catch((err) =>
-            console.error(`[register] new-api user cleanup failed for ${provisioned.newapi_user_id}:`, err),
-        );
+        } else if (phase === 'provision') {
+            await cleanupOrphanNewApiUser(user.id, email);
+        }
         await prisma.user
             .delete({ where: { id: user.id } })
-            .catch((err) => console.error(`[register] portal user cleanup failed for ${user.id}:`, err));
+            .catch((cleanupError) => console.error('[register] Portal account cleanup failed', cleanupError));
+        console.error('[register] coordinated provisioning failed', { phase, error });
         return NextResponse.json(
-            { error: 'persistence_failed', message: 'Account creation failed, please retry' },
-            { status: 500 },
+            {
+                error:
+                    phase === 'persistence'
+                        ? 'persistence_failed'
+                        : phase === 'provision'
+                          ? 'provisioning_failed'
+                          : 'provisioning_unavailable',
+                message: 'Account provisioning failed, please retry',
+            },
+            { status: phase === 'persistence' ? 500 : phase === 'provision' ? 502 : 503 },
         );
-    }
+    });
+    if (provisionOutcome instanceof NextResponse) return provisionOutcome;
+    const provisioned = provisionOutcome;
 
     // PR-T1 Phase 0c — eagerly provision the portal system token used by
     // server-managed services (image gen / future internal flows). Best-

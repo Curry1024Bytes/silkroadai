@@ -989,20 +989,20 @@ model PricingCostRuleRevision {
 // An acknowledged publication is durable before any remote price write. CatalogPrice
 // only receives verified versions; snapshots contain pricing metadata, never credentials.
 model PricingPublishJob {
-  id              String   @id @default(uuid()) @db.Uuid
-  tenant_id       String?  @db.Uuid
-  requested_by    String?  @db.Uuid
-  model_id        String   @db.Uuid
+  id              String    @id @default(uuid()) @db.Uuid
+  tenant_id       String?   @db.Uuid
+  requested_by    String?   @db.Uuid
+  model_id        String    @db.Uuid
   upstream_model  String
-  preview_hash    String   @unique
-  status          String   @default("queued")
+  preview_hash    String    @unique
+  status          String    @default("queued")
   plan            Json
-  attempts        Int      @default(0)
+  attempts        Int       @default(0)
   message         String
   next_attempt_at DateTime?
   applied_at      DateTime?
-  created_at      DateTime @default(now())
-  updated_at      DateTime @updatedAt
+  created_at      DateTime  @default(now())
+  updated_at      DateTime  @updatedAt
 
   @@index([status, next_attempt_at])
   @@index([tenant_id, created_at])
@@ -1023,12 +1023,12 @@ model PricingPublishCoordinator {
 // relation/FK to the job: its row must not contend with the outer transaction.
 // Unacknowledged writes remain uncertain even when both price reads match.
 model PricingPublishWrite {
-  id              String   @id @default(uuid()) @db.Uuid
-  job_id          String   @db.Uuid
+  id              String    @id @default(uuid()) @db.Uuid
+  job_id          String    @db.Uuid
   key             String
   request_hash    String
-  status          String   @default("in_flight")
-  created_at      DateTime @default(now())
+  status          String    @default("in_flight")
+  created_at      DateTime  @default(now())
   acknowledged_at DateTime?
   resolved_at     DateTime?
   resolved_by     String?
@@ -1036,6 +1036,65 @@ model PricingPublishWrite {
 
   @@index([job_id, status, created_at])
   @@map("pricing_publish_writes")
+}
+
+// Durable, explicitly confirmed group retirement. Remote revocation is not
+// reversible; all nonterminal jobs keep the tier frozen until completion.
+// No foreign key to groups/keys/users: audit survives their later lifecycle.
+model ChannelGroupRetirementJob {
+  id                     String    @id @default(uuid()) @db.Uuid
+  tenant_id              String?   @db.Uuid
+  requested_by           String?   @db.Uuid
+  group_id               String?   @db.Uuid
+  tier_key               String
+  group_name             String
+  newapi_group           String
+  replacement_default_id String?   @db.Uuid
+  orphaned               Boolean   @default(false)
+  preview_hash           String    @unique
+  plan                   Json
+  status                 String    @default("queued")
+  message                String
+  runner_token           String?   @db.Uuid
+  lease_until            DateTime?
+  result                 Json?
+  completed_at           DateTime?
+  created_at             DateTime  @default(now())
+  updated_at             DateTime  @updatedAt
+
+  @@index([tenant_id, tier_key, status])
+  @@index([status, updated_at])
+  @@map("channel_group_retirement_jobs")
+}
+
+// A row is committed before any DELETE request. verified_remote contains only
+// id/user_id/group/status, never key material or customer access credentials.
+model ChannelGroupRetirementKey {
+  id                 String    @id @default(uuid()) @db.Uuid
+  job_id             String    @db.Uuid
+  portal_key_id      String    @db.Uuid
+  user_id            String    @db.Uuid
+  newapi_user_id     Int?
+  newapi_token_id    Int
+  expected_group     String
+  credential_hash    String
+  ownership_evidence String
+  label              String
+  status             String    @default("pending")
+  message            String
+  attempts           Int       @default(0)
+  verified_remote    Json?
+  verified_at        DateTime?
+  delete_started_at  DateTime?
+  confirmed_at       DateTime?
+  last_error_code    String?
+  created_at         DateTime  @default(now())
+  updated_at         DateTime  @updatedAt
+
+  @@unique([job_id, portal_key_id])
+  @@index([job_id, status])
+  @@index([portal_key_id])
+  @@map("channel_group_retirement_keys")
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -1075,19 +1134,19 @@ model ChannelGroup {
 // ChannelGroup 对应的公开计费组。因此不修改公共 GroupRatio,也不新增公开档次。
 // original_newapi_user_group 仅在该用户最后一条启用规则取消时用于精确恢复。
 model UserTierMultiplier {
-  id                       String   @id @default(uuid()) @db.Uuid
-  user_id                  String   @db.Uuid
-  user                     User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
-  tier_key                 String
-  newapi_billing_group     String
-  newapi_user_group        String
+  id                         String    @id @default(uuid()) @db.Uuid
+  user_id                    String    @db.Uuid
+  user                       User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  tier_key                   String
+  newapi_billing_group       String
+  newapi_user_group          String
   original_newapi_user_group String
-  multiplier               Decimal  @db.Decimal(10, 6)
-  enabled                  Boolean  @default(true)
-  synced_at                DateTime?
-  created_by               String?  @db.Uuid
-  created_at               DateTime @default(now())
-  updated_at               DateTime @updatedAt
+  multiplier                 Decimal   @db.Decimal(10, 6)
+  enabled                    Boolean   @default(true)
+  synced_at                  DateTime?
+  created_by                 String?   @db.Uuid
+  created_at                 DateTime  @default(now())
+  updated_at                 DateTime  @updatedAt
 
   @@unique([user_id, tier_key])
   @@index([user_id, enabled])

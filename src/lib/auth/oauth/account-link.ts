@@ -29,6 +29,7 @@ import {
     searchUser as searchNewApiUser,
     type ProvisionedCustomer,
 } from '@/lib/newapi/client';
+import { withCustomerKeyMutation, customerKeyMutationTimeout } from '@/lib/newapi/customer-key-mutation';
 import { getDefaultChannelGroup } from '@/lib/channel-group';
 
 export interface OAuthIdentity {
@@ -119,66 +120,63 @@ async function createUserFromIdentity(identity: OAuthIdentity, tenantId?: string
         return null;
     }
 
-    let provisioned: ProvisionedCustomer;
-    try {
-        provisioned = await provisionNewCustomer({
-            portal_user_id: user.id,
-            email: identity.email,
-            newapi_group: defaultGroup.newapi_group,
-            initial_quota: 0,
-        });
-    } catch (provisionErr) {
-        await cleanupOrphanNewApiUser(user.id, identity.email);
-        await prisma.user.delete({ where: { id: user.id } }).catch((deleteErr) => {
-            console.error(
-                `[oauth/account-link] new-api provision failed AND portal rollback failed for user ${user.id}:`,
-                deleteErr,
+    let phase: 'coordination' | 'provision' | 'persistence' = 'coordination';
+    let createdCustomer: ProvisionedCustomer | undefined;
+    const provisionOutcome = await withCustomerKeyMutation(
+        {
+            tenantId: tenantId ?? null,
+            tierKey: defaultGroup.key,
+            newapiGroup: defaultGroup.newapi_group,
+            requireDefault: true,
+        },
+        async (tx) => {
+            phase = 'provision';
+            createdCustomer = await provisionNewCustomer({
+                portal_user_id: user.id,
+                email: identity.email,
+                newapi_group: defaultGroup.newapi_group,
+                initial_quota: 0,
+            });
+            phase = 'persistence';
+            await customerKeyMutationTimeout();
+            await Promise.all([
+                tx.user.update({
+                    where: { id: user.id },
+                    data: {
+                        newapi_user_id: createdCustomer.newapi_user_id,
+                        newapi_username: createdCustomer.newapi_username,
+                        newapi_access_token: createdCustomer.newapi_access_token,
+                    },
+                }),
+                tx.newApiToken.create({
+                    data: {
+                        user_id: user.id,
+                        newapi_token_id: createdCustomer.newapi_token_id,
+                        newapi_token_value: createdCustomer.newapi_token_value,
+                        key_alias: `default-${user.id.slice(0, 8)}`,
+                        tier: defaultGroup.key,
+                    },
+                }),
+            ]);
+            return createdCustomer;
+        },
+    ).catch(async (error) => {
+        // The interactive transaction has ended before cleanup. Never swallow a
+        // SQL error inside an aborted transaction and leave the initial user behind.
+        if (createdCustomer) {
+            await deleteNewApiUser(createdCustomer.newapi_user_id).catch((cleanupError) =>
+                console.error('[oauth/account-link] new-api account cleanup failed', cleanupError),
             );
-        });
-        console.error(`[oauth/account-link] provisionNewCustomer failed for ${identity.email}:`, provisionErr);
-        return null;
-    }
-
-    try {
-        await prisma.$transaction([
-            prisma.user.update({
-                where: { id: user.id },
-                data: {
-                    newapi_user_id: provisioned.newapi_user_id,
-                    newapi_username: provisioned.newapi_username,
-                    newapi_access_token: provisioned.newapi_access_token,
-                },
-            }),
-            prisma.newApiToken.create({
-                data: {
-                    user_id: user.id,
-                    newapi_token_id: provisioned.newapi_token_id,
-                    newapi_token_value: provisioned.newapi_token_value,
-                    key_alias: `default-${user.id.slice(0, 8)}`,
-                    tier: defaultGroup.key,
-                },
-            }),
-        ]);
-    } catch (linkageErr) {
-        const tokenPreview =
-            typeof provisioned.newapi_token_value === 'string'
-                ? `${provisioned.newapi_token_value.slice(0, 12)}...`
-                : `<${typeof provisioned.newapi_token_value}>`;
-        console.error(
-            `[oauth/account-link] new-api provision succeeded for ${user.id} ` +
-                `(newapi_user_id=${provisioned.newapi_user_id}, ` +
-                `token=${tokenPreview}) ` +
-                `but persisting linkage failed — rolling back both sides:`,
-            linkageErr,
-        );
-        await deleteNewApiUser(provisioned.newapi_user_id).catch((err) =>
-            console.error(`[oauth/account-link] new-api user cleanup failed for ${provisioned.newapi_user_id}:`, err),
-        );
+        } else if (phase === 'provision') {
+            await cleanupOrphanNewApiUser(user.id, identity.email);
+        }
         await prisma.user
             .delete({ where: { id: user.id } })
-            .catch((err) => console.error(`[oauth/account-link] portal user cleanup failed for ${user.id}:`, err));
+            .catch((cleanupError) => console.error('[oauth/account-link] Portal account cleanup failed', cleanupError));
+        console.error('[oauth/account-link] coordinated provisioning failed', { phase, error });
         return null;
-    }
+    });
+    if (!provisionOutcome) return null;
 
     // PR-T1 Phase 0c — eagerly provision the portal system token used by
     // server-managed services (image gen / future internal flows). Mirrors

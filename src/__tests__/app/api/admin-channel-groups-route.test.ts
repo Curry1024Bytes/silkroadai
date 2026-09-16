@@ -16,6 +16,7 @@ const mockUpdate = vi.fn();
 const mockDelete = vi.fn();
 const mockUpdateMany = vi.fn();
 const mockCatalogFindMany = vi.fn();
+const mockKeyFindFirst = vi.fn();
 
 vi.mock('@/lib/admin/auth', () => ({ resolveAdmin: (...a: unknown[]) => mockResolveAdmin(...a) }));
 vi.mock('@/lib/admin-auth', () => ({
@@ -37,6 +38,7 @@ vi.mock('@/lib/db', () => ({
         // Invoke the callback with a tx whose channelGroup maps to the same mocks.
         $transaction: async (fn: (tx: unknown) => unknown) =>
             fn({
+                newApiToken: { findFirst: (...a: unknown[]) => mockKeyFindFirst(...a) },
                 catalogModel: { findMany: (...a: unknown[]) => mockCatalogFindMany(...a) },
                 channelGroup: {
                     findMany: (...a: unknown[]) => mockFindMany(...a),
@@ -74,6 +76,7 @@ beforeEach(() => {
     mockFindFirst.mockResolvedValue(null);
     mockUpdateMany.mockResolvedValue({ count: 0 });
     mockCatalogFindMany.mockResolvedValue([]);
+    mockKeyFindFirst.mockResolvedValue(null);
     mockCreate.mockImplementation(({ data }: { data: object }) => Promise.resolve({ id: 'cg1', ...data }));
     mockUpdate.mockImplementation(({ data }: { data: object }) => Promise.resolve({ id: 'cg1', ...data }));
 });
@@ -368,6 +371,24 @@ describe('PUT/DELETE /api/admin/channel-groups/[id]', () => {
         expect(res.status).toBe(409);
         expect((await res.json()).error).toBe('tier_in_use_by_enabled_models');
         expect(mockDelete).not.toHaveBeenCalled();
+    });
+
+    it('legacy DELETE cannot bypass verified revocation even for a disabled historical key', async () => {
+        mockFindFirst.mockResolvedValue({
+            id: 'cg1',
+            key: 'official',
+            tenant_id: PLATFORM_TENANT_ID,
+            is_default: false,
+        });
+        mockKeyFindFirst.mockResolvedValue({ id: 'old-key' });
+        const res = await DELETE(req('DELETE'), { params: params() });
+        expect(res.status).toBe(409);
+        expect(await res.json()).toMatchObject({ error: 'retirement_preview_required' });
+        expect(mockDelete).not.toHaveBeenCalled();
+        expect(mockKeyFindFirst).toHaveBeenCalledWith({
+            where: { tier: 'official', user: { OR: [{ tenant_id: PLATFORM_TENANT_ID }, { tenant_id: null }] } },
+            select: { id: true },
+        });
     });
 
     it('DELETE 404 when not found, else removes the tenant-owned group', async () => {

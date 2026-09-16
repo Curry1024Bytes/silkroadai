@@ -13,6 +13,9 @@ const mockTransaction = vi.fn();
 
 vi.mock('@/lib/db', () => ({
     prisma: {
+        pricingPublishCoordinator: { upsert: async () => ({ active_job_id: null }) },
+        channelGroupRetirementJob: { findFirst: async () => null },
+        channelGroup: { findFirst: async () => ({ id: 'available-tier' }) },
         oAuthAccount: {
             findUnique: (...args: unknown[]) => mockOAuthFindUnique(...args),
             create: (...args: unknown[]) => mockOAuthCreate(...args),
@@ -107,7 +110,9 @@ beforeEach(() => {
     delete process.env.APP_URL;
     delete process.env.NEXT_PUBLIC_APP_URL;
 
-    mockTransaction.mockImplementation(async (ops: unknown[]) => Promise.all(ops));
+    mockTransaction.mockImplementation(async (ops: unknown[] | ((tx: unknown) => Promise<unknown>)) =>
+        typeof ops === 'function' ? ops((await import('@/lib/db')).prisma) : Promise.all(ops),
+    );
     // last_login_at update + signSession DB read default
     mockUserUpdate.mockResolvedValue({});
     mockGetDefaultChannelGroup.mockResolvedValue({

@@ -20,6 +20,9 @@ const mockAnalyticsEventCreate = vi.fn();
 
 vi.mock('@/lib/db', () => ({
     prisma: {
+        pricingPublishCoordinator: { upsert: async () => ({ active_job_id: null }) },
+        channelGroupRetirementJob: { findFirst: async () => null },
+        channelGroup: { findFirst: async () => ({ id: 'available-tier' }) },
         user: {
             findUnique: (...args: unknown[]) => mockUserFindUnique(...args),
             create: (...args: unknown[]) => mockUserCreate(...args),
@@ -80,7 +83,9 @@ const NEWAPI_USER_ID = 42;
 
 beforeEach(() => {
     vi.clearAllMocks();
-    mockTransaction.mockImplementation(async (ops: unknown[]) => Promise.all(ops));
+    mockTransaction.mockImplementation(async (ops: unknown[] | ((tx: unknown) => Promise<unknown>)) =>
+        typeof ops === 'function' ? ops((await import('@/lib/db')).prisma) : Promise.all(ops),
+    );
     // Default: verification token + email succeed silently. Tests that care
     // override these.
     mockEmailVerificationTokenCreate.mockResolvedValue({ id: 'verif-tok-1' });
@@ -320,7 +325,7 @@ describe('POST /api/auth/register (new-api)', () => {
         expect(mockDeleteNewApiUser).toHaveBeenCalledWith(NEWAPI_USER_ID);
         expect(mockUserDelete).toHaveBeenCalledWith({ where: { id: PORTAL_USER_ID } });
         // linkage transaction never reached
-        expect(mockTransaction).not.toHaveBeenCalled();
+        expect(mockTransaction).toHaveBeenCalledTimes(1);
 
         errSpy.mockRestore();
         warnSpy.mockRestore();
@@ -378,7 +383,7 @@ describe('POST /api/auth/register (new-api)', () => {
             newapi_token_id: 99,
             newapi_token_value: 'sk-linkage-test-key',
         });
-        mockTransaction.mockRejectedValue(new Error('connection lost'));
+        mockTokenCreate.mockRejectedValueOnce(new Error('connection lost'));
         mockDeleteNewApiUser.mockResolvedValue(undefined);
         mockUserDelete.mockResolvedValue({ id: PORTAL_USER_ID });
 

@@ -15,6 +15,9 @@ const mockGetOrCreateSystemToken = vi.fn();
 
 vi.mock('@/lib/db', () => ({
     prisma: {
+        pricingPublishCoordinator: { upsert: async () => ({ active_job_id: null }) },
+        channelGroupRetirementJob: { findFirst: async () => null },
+        channelGroup: { findFirst: async () => ({ id: 'available-tier' }) },
         oAuthAccount: { findUnique: (...a: unknown[]) => mockOAuthFindUnique(...a) },
         user: {
             findUnique: (...a: unknown[]) => mockUserFindUnique(...a),
@@ -55,7 +58,9 @@ beforeEach(() => {
         newapi_token_id: 7,
         newapi_token_value: 'sk-xxx',
     });
-    mockTransaction.mockResolvedValue([]);
+    mockTransaction.mockImplementation(async (work: (tx: unknown) => Promise<unknown>) =>
+        work((await import('@/lib/db')).prisma),
+    );
     mockGetOrCreateSystemToken.mockResolvedValue(undefined);
     mockGetDefaultChannelGroup.mockResolvedValue({
         key: 'gpt特惠分组',
