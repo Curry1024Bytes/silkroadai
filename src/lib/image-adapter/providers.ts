@@ -89,6 +89,38 @@ export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
         noTransparentBackground: true,
         upstreamTimeoutMs: WETOKEN_UPSTREAM_TIMEOUT_MS,
     },
+    // ---- 2026-09-16 operator:asian-acc 拆三条【按档专线】(low/medium/high 各一条独立渠道)----
+    // 上游 asian-acc(we-token,Adobe Firefly 转售)对 gpt-image-2 暴露三个【专用档位模型名】
+    // gpt-image-2-low / -medium / -high,按档【按次】收费(2026-09-16 实测三名都有效、均 Adobe、1024²)。
+    // 每条 provider:upstreamModel 钉一个档位名 + onlyQualities 守同档 —— 客户显式该 quality 才走这条,
+    // 别档 503 让 new-api failover 到对应档渠道(与 frimodellow/frimodelmedium 同款,upstreamModel+onlyQualities
+    // 组合已验证)。计费仍按适配器官方公式(按客户请求 quality 合成),与上游按次档价无关。C2PA 由适配器
+    // 按内容剥(Adobe → 剥)。透明未验证 → fail-closed 拒。超时 300s(we-token 阵发挂死,同 wetoken/wetokenasia)。
+    // 与旧 wetokenasia(low/medium 合并线,ch176)并存:operator 决定停不停旧渠道,代码保留不删避免 ch176 503。
+    wetokenasialow: {
+        baseUrl: 'https://asian-acc.we-token.cc',
+        brand: /\bwe-?token\b|\badobe\b|\bfirefly\b/gi,
+        upstreamModel: 'gpt-image-2-low',
+        onlyQualities: ['low'],
+        noTransparentBackground: true,
+        upstreamTimeoutMs: WETOKEN_UPSTREAM_TIMEOUT_MS,
+    },
+    wetokenasiamedium: {
+        baseUrl: 'https://asian-acc.we-token.cc',
+        brand: /\bwe-?token\b|\badobe\b|\bfirefly\b/gi,
+        upstreamModel: 'gpt-image-2-medium',
+        onlyQualities: ['medium'],
+        noTransparentBackground: true,
+        upstreamTimeoutMs: WETOKEN_UPSTREAM_TIMEOUT_MS,
+    },
+    wetokenasiahigh: {
+        baseUrl: 'https://asian-acc.we-token.cc',
+        brand: /\bwe-?token\b|\badobe\b|\bfirefly\b/gi,
+        upstreamModel: 'gpt-image-2-high',
+        onlyQualities: ['high'],
+        noTransparentBackground: true,
+        upstreamTimeoutMs: WETOKEN_UPSTREAM_TIMEOUT_MS,
+    },
     // wetokengated:同 us-la.we-token.cc 上游,但【不带 openAllTiers】→ 走盈利档+狭长守门(= ch154/ominiapi
     // 那套)。给 ch175 用:让它只接狭长/盈利档,方图低档/auto 拒 → 走 ch176/ch177。2026-08-15 operator 指定。
     wetokengated: {

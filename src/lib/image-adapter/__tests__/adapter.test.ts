@@ -1802,3 +1802,84 @@ describe('per-provider upstreamTimeoutMs', () => {
         expect((await p).status).toBe(503);
     });
 });
+
+describe('wetokenasia 三档专线(asian-acc gpt-image-2-{low,medium,high} 按档按次)', () => {
+    const gen = (provider: string, body: Record<string, unknown>) =>
+        handleAdapterImage(
+            jsonReq(`http://portal.test/image-adapter/${provider}/v1/images/generations`, {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '1024x1024',
+                ...body,
+            }),
+            'generations',
+            provider,
+        );
+
+    it.each([
+        ['wetokenasialow', 'low', 'gpt-image-2-low', 196],
+        ['wetokenasiamedium', 'medium', 'gpt-image-2-medium', 1756],
+        ['wetokenasiahigh', 'high', 'gpt-image-2-high', 7024],
+    ])('%s:本档放行 → 路由 asian-acc + upstreamModel=%s + 官方合成 usage', async (provider, q, upModel, expectCt) => {
+        okUpstream();
+        const res = await gen(provider, { quality: q });
+        expect(res.status).toBe(200);
+        const [url, init] = fetchMock.mock.calls[0];
+        expect(url).toBe('https://asian-acc.we-token.cc/v1/images/generations');
+        expect(JSON.parse(init.body as string).model).toBe(upModel);
+        expect((await res.json()).usage.output_tokens).toBe(expectCt);
+    });
+
+    it.each([
+        ['wetokenasialow', ['medium', 'high']],
+        ['wetokenasiamedium', ['low', 'high']],
+        ['wetokenasiahigh', ['low', 'medium']],
+    ])('%s:别档 503 让路,不打上游', async (provider, others) => {
+        for (const q of others) {
+            fetchMock.mockReset();
+            const res = await gen(provider, { quality: q });
+            expect(res.status).toBe(503);
+            expect(fetchMock).not.toHaveBeenCalled();
+        }
+    });
+
+    it('wetokenasiahigh:缺省 quality(→low)不属于 high 档 → 503 让路', async () => {
+        const res = await gen('wetokenasiahigh', {});
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('wetokenasiamedium:size=auto medium 放行,按返回图实际尺寸合成官方 medium', async () => {
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(1024, 1024) }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+        const res = await gen('wetokenasiamedium', { quality: 'medium', size: 'auto' });
+        expect(res.status).toBe(200);
+        expect((await res.json()).usage.output_tokens).toBe(1756);
+    });
+
+    it('wetokenasiahigh + background=transparent → 503(we-token 未验证透明,fail-closed)', async () => {
+        const res = await gen('wetokenasiahigh', { quality: 'high', background: 'transparent' });
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('wetokenasialow edits:multipart 送 gpt-image-2-low', async () => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            formReq(
+                'http://portal.test/image-adapter/wetokenasialow/v1/images/edits',
+                { prompt: 'e', size: '1024x1024', quality: 'low' },
+                [TINY_PNG],
+            ),
+            'edits',
+            'wetokenasialow',
+        );
+        expect(res.status).toBe(200);
+        expect((fetchMock.mock.calls[0][1].body as FormData).get('model')).toBe('gpt-image-2-low');
+    });
+});
