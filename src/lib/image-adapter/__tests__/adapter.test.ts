@@ -215,15 +215,46 @@ describe('synthUsage(合成数值 = 官方公式口径)', () => {
         expect(details.image_tokens).toBe(4 * 1508);
     });
 
-    it('官方输入图口径逐点:≤1536 patch 直接 ceil(w/32)×ceil(h/32)', () => {
-        expect(officialInputImageTokens({ w: 1024, h: 1024 })).toBe(1024);
-        expect(officialInputImageTokens({ w: 1536, h: 1024 })).toBe(1536);
-        expect(officialInputImageTokens({ w: 1280, h: 720 })).toBe(920);
-        expect(officialInputImageTokens({ w: 1376, h: 768 })).toBe(1032); // 43×24
+    it('官方输入图口径逐点(2026-09-16 官方 key 实测 15 尺寸 + null 兜底)', () => {
+        const cases: Array<[number, number, number]> = [
+            // 长边 ≤512:不缩,16px 网格
+            [64, 64, 16],
+            [256, 256, 256],
+            [400, 400, 625],
+            // 长边 512~1024:缩到长边 512
+            [300, 600, 512],
+            [240, 600, 416],
+            [900, 900, 1024],
+            // 长宽比 >3:1 → 短边补到 1/3(200×800 与 100×800 同值)
+            [200, 800, 352],
+            [100, 800, 352],
+            // 长边 ≥1024:固定 0.5(= 原图 32px patch)
+            [1200, 600, 722],
+            [1376, 768, 1032], // 客户案例 43×24
+            [1024, 1024, 1024],
+            [1536, 1024, 1536],
+            [1280, 720, 920],
+            // 超 1536 patch → √ 缩放两轴 floor
+            [2048, 2048, 1521],
+            [3840, 2160, 1508],
+        ];
+        for (const [w, h, expected] of cases) expect(officialInputImageTokens({ w, h }), `${w}x${h}`).toBe(expected);
         expect(officialInputImageTokens(null)).toBe(1024);
     });
 
-    it('2026-09-16 客户对账案例:edits 2368×1776 low + 一张 ~1376×768 参考图 → 输出 298 / 输入图 1032 / 文本≈官方 668', () => {
+    it('prompt 文本 token = o200k + 固定模板开销 6(官方 key 实测 generations/edits 同值)', () => {
+        expect(estimateTextTokens('a cat')).toBe(8);
+        expect(
+            estimateTextTokens(
+                'A cozy reading nook by a rain-streaked window, warm lamp light, a sleeping tabby cat curled on a wool blanket, soft watercolor style.',
+            ),
+        ).toBe(37);
+        expect(estimateTextTokens('一只橘猫坐在窗台上晒太阳,窗外是下雪的城市,温暖的水彩风格,柔和光线。')).toBe(40);
+        expect(estimateTextTokens(CUSTOMER_STICKER_PROMPT)).toBe(642);
+        expect(estimateTextTokens('')).toBe(0);
+    });
+
+    it('2026-09-16 客户对账案例:edits 2368×1776 low + 一张 ~1376×768 参考图 → 输出 298 / 输入图 1032 / 文本 642(官方 key 实测)', () => {
         const u = synthUsage({
             mode: 'edits',
             w: 2368,
@@ -236,11 +267,11 @@ describe('synthUsage(合成数值 = 官方公式口径)', () => {
         expect(u.output_tokens).toBe(298);
         const details = u.input_tokens_details as { text_tokens: number; image_tokens: number };
         expect(details.image_tokens).toBe(1032); // 旧粗估 85+2×1500=3085(1.06MP 被 ceil 到 2MP)
-        // 官方回 668;客户粘贴版 prompt 丢了句间换行(o200k 原样 636 / 补换行 654),差 <5%。
-        // 旧 chars/4 粗估 798(+19%)。真 tokenizer 后 text 与官方同量级,image 才是 3 倍差的主因。
-        expect(details.text_tokens).toBe(636);
-        expect(u.input_tokens).toBe(636 + 1032);
-        expect(u.total_tokens).toBe(636 + 1032 + 298);
+        // 官方 key 实测同一粘贴版 prompt text_tokens=642 = o200k 636 + 固定模板开销 6(客户原文件含
+        // 换行,官方报 668 = 662+6,同一规则)。旧 chars/4 粗估 798(+19%)。
+        expect(details.text_tokens).toBe(642);
+        expect(u.input_tokens).toBe(642 + 1032);
+        expect(u.total_tokens).toBe(642 + 1032 + 298);
     });
 });
 

@@ -22,7 +22,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { stripAdobeImageMetadataB64 } from '@/lib/proxy/image-metadata';
 import { IMAGE_PROVIDERS, type ImageProvider } from './providers';
-import { countTextTokens } from '@/lib/tokens/count-text-tokens';
+import { countImagePromptTokens } from '@/lib/tokens/count-text-tokens';
+import { officialImageInputTokens } from '@/lib/tokens/image-input-tokens';
 
 export type ImageMode = 'generations' | 'edits';
 
@@ -98,10 +99,11 @@ export function isElongated(w: number, h: number): boolean {
 
 // ============ usage 合成 ============
 
-/** prompt 文本 token —— 真 tokenizer(o200k_base)计数,见 `@/lib/tokens/count-text-tokens`。
- *  原为「CJK×1.5 + 其余/4」粗估,英文长 prompt 偏高 ~20%(官方 668 vs 粗估 798,2026-09-16 客户对账)。 */
+/** prompt 文本 token —— images API 官方口径:o200k 真计数 + 固定模板开销 6(官方 key 实测 6/6 组全中),
+ *  见 `@/lib/tokens/count-text-tokens`。原为「CJK×1.5 + 其余/4」粗估(偏高 ~20%,#471 换真 tokenizer);
+ *  #471 上线后客户反馈"文字比官方少一点" = 少了这个 +6 常数(2026-09-16)。 */
 export function estimateTextTokens(s: string): number {
-    return countTextTokens(s);
+    return countImagePromptTokens(s);
 }
 
 /** 返图是否带真 alpha 通道:PNG colortype 6(RGBA)/ 4(灰+alpha)→ true;PNG 其他 colortype
@@ -187,25 +189,11 @@ export function imageDimensions(buf: Buffer): { w: number; h: number } | null {
     return null;
 }
 
-/** 单张输入图 token(edits 输入侧)—— 官方口径:32px patch 网格,总 patch 上限 1536,超限按
- *  √(1536/n) 等比缩小、两轴各取 floor(与 image-adapter25 `officialInputImageTokens25` 同源,
- *  后者已用 asian-acc 官方直通 usage 逐点验证:1024²→1024、2048²→1521、3840×2160→1508)。
- *  读不出尺寸 → 按 1024²(1024)兜底。
- *
- *  历史:2026-08-04 起用「85 + MP×1500,MP 向上取整封顶 2」粗估(校准到 azure 面积刻度),
- *  任何 >1MP 的输入图一律 3085;2026-09-16 客户拿官方 usage 对账:同一张 ~1376×768 参考图官方
- *  image_tokens=1032(=43×24 patch),我方 3085,差 3 倍 → 改官方公式。 */
+/** 单张输入图 token(edits 输入侧)—— 官方口径,见 `@/lib/tokens/image-input-tokens`(官方 key 15 尺寸逐点拟合)。
+ *  历史:2026-08-04 起「85 + MP×1500 封顶 2」粗估(>1MP 一律 3085,客户对账差 3 倍);#471 改 32px patch
+ *  (只在长边 ≥1024 时与官方相等);2026-09-16 官方 key 实测补齐小图三段缩放 + 3:1 补边规则。 */
 export function officialInputImageTokens(dims: { w: number; h: number } | null): number {
-    if (!dims) return 1024;
-    let pw = Math.ceil(dims.w / 32);
-    let ph = Math.ceil(dims.h / 32);
-    const n = pw * ph;
-    if (n > 1536) {
-        const s = Math.sqrt(1536 / n);
-        pw = Math.floor(pw * s);
-        ph = Math.floor(ph * s);
-    }
-    return Math.max(1, pw * ph);
+    return officialImageInputTokens(dims);
 }
 
 export interface SynthUsageInput {

@@ -24,7 +24,8 @@
  * 的客户也拿合规响应)。
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { countTextTokens } from '@/lib/tokens/count-text-tokens';
+import { countImagePromptTokens } from '@/lib/tokens/count-text-tokens';
+import { officialImageInputTokens } from '@/lib/tokens/image-input-tokens';
 import { stripAdobeImageMetadataB64 } from '@/lib/proxy/image-metadata';
 import { IMAGE_PROVIDERS_25, type ImageProvider25 } from './providers';
 
@@ -52,21 +53,12 @@ export function officialOutputTokens25(w: number, h: number, quality: Quality25)
     return Math.ceil((patches * (2_000_000 + w * h)) / 4_000_000);
 }
 
-/** 输入图 token(edits 输入侧)—— 官方 2.5 口径:32px patch,总 patch 上限 1536,超限按 √(1536/n)
- *  等比缩小、两轴各取 floor。实测(asian-acc 官方直通 usage.input_tokens_details.image_tokens):
- *  1024²→1024、1536×1024→1536(恰触顶)、1280×720→920、2048²→1521(39²)、3840×2160→1508(52×29,
- *  round 会得 1560 → 坐实 floor)。读不出尺寸 → 按 1024²(1024)兜底。 */
+/** 输入图 token(edits 输入侧)—— 走共享官方口径 `@/lib/tokens/image-input-tokens`。
+ *  原 32px+1536 上限公式用 asian-acc 2.5 直通 usage 验过 1024²/1536×1024/1280×720/2048²/3840×2160
+ *  五点,共享公式在这五点逐 token 相同;长边 <1024 的小图段按 2026-09-16 gpt-image-2 官方 key 实测
+ *  规则(三段缩放 + 3:1 补边)推定,2.5 小图未单独验证。读不出尺寸 → 1024。 */
 export function officialInputImageTokens25(dims: { w: number; h: number } | null): number {
-    if (!dims) return 1024;
-    let pw = Math.ceil(dims.w / 32);
-    let ph = Math.ceil(dims.h / 32);
-    const n = pw * ph;
-    if (n > 1536) {
-        const s = Math.sqrt(1536 / n);
-        pw = Math.floor(pw * s);
-        ph = Math.floor(ph * s);
-    }
-    return Math.max(1, pw * ph);
+    return officialImageInputTokens(dims);
 }
 
 /** 归一 quality:5 档原样;auto / 缺省 / 未知 → low(上游对 auto 实测按 low 刻度 196 计)。 */
@@ -84,9 +76,9 @@ export function parseSize(size: string): { w: number; h: number } | null {
     return w > 0 && h > 0 ? { w, h } : null;
 }
 
-/** prompt 文本 token —— 真 tokenizer(o200k_base),同 2.0 适配器口径(见 `@/lib/tokens/count-text-tokens`)。 */
+/** prompt 文本 token —— images API 官方口径(o200k + 固定开销 6),同 2.0 适配器,见 `@/lib/tokens/count-text-tokens`。 */
 export function estimateTextTokens(s: string): number {
-    return countTextTokens(s);
+    return countImagePromptTokens(s);
 }
 
 // ============ 字节工具(独立实现,不从 2.0 适配器 import)============
