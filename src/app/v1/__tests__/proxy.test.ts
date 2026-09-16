@@ -5081,3 +5081,123 @@ describe('/v1 proxy — seedream-5-0-pro 钩子', () => {
         expect(await res.text()).toContain('exactly one input image');
     });
 });
+
+describe('/v1 proxy — gpt-image edits size=auto/缺省 → 代理层按输入图比例补明确 size(2026-09-16)', () => {
+    // 背景:low/medium 专线对 auto 恒出方图无视输入图;OpenAI 官方 edits 的 auto = 跟随输入图。
+    // 只动 edits(有输入图);generations 的 auto 绝不动(上游 auto→2048² 是既有产品行为)。
+    function pngHeader(w: number, h: number): Buffer {
+        const png = Buffer.alloc(33);
+        png.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+        png.writeUInt32BE(13, 8);
+        png.write('IHDR', 12, 'latin1');
+        png.writeUInt32BE(w, 16);
+        png.writeUInt32BE(h, 20);
+        return png;
+    }
+    function ok(): Response {
+        return new Response(JSON.stringify({ created: 1, data: [{ b64_json: 'QUJD' }] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+        });
+    }
+    function editsForm(size: string | null, ...images: Buffer[]): NextRequest {
+        const form = new FormData();
+        form.append('model', 'gpt-image-2');
+        form.append('prompt', 'add a bird');
+        if (size !== null) form.append('size', size);
+        for (const buf of images)
+            form.append('image', new File([new Uint8Array(buf)], 'in.png', { type: 'image/png' }));
+        return new NextRequest('https://ai.silkroadai.io/v1/images/edits', { method: 'POST', body: form });
+    }
+    function sentForm(callIdx = 0): FormData {
+        const [, init] = mockFetch.mock.calls[callIdx] as [string, RequestInit];
+        return init.body as FormData;
+    }
+
+    it('multipart edits + size=auto + 竖图 1024×1536 → 单次上游 size=1024x1536 + 响应头标记', async () => {
+        mockFetch.mockResolvedValueOnce(ok());
+        const res = await POST(editsForm('auto', pngHeader(1024, 1536)), ctx('images', 'edits'));
+        expect(res.status).toBe(200);
+        expect(mockFetch).toHaveBeenCalledTimes(1); // 不是靠 "size must use" 重试,首发就是明确尺寸
+        expect(sentForm().get('size')).toBe('1024x1536');
+        expect(res.headers.get('x-silkroadai-size-resolved')).toBe('auto->1024x1536');
+    });
+
+    it('multipart edits + 缺省 size + 16:9 输入(1920×1080)→ 1536x864', async () => {
+        mockFetch.mockResolvedValueOnce(ok());
+        const res = await POST(editsForm(null, pngHeader(1920, 1080)), ctx('images', 'edits'));
+        expect(res.status).toBe(200);
+        expect(sentForm().get('size')).toBe('1536x864');
+        expect(res.headers.get('x-silkroadai-size-resolved')).toBe('auto->1536x864');
+    });
+
+    it('size=AUTO(大小写不限)+ 横图 3:2 → 1536x1024', async () => {
+        mockFetch.mockResolvedValueOnce(ok());
+        await POST(editsForm('AUTO', pngHeader(3000, 2000)), ctx('images', 'edits'));
+        expect(sentForm().get('size')).toBe('1536x1024');
+    });
+
+    it('方形输入 → 1024x1024(比例跟随,不是"永远非方图")', async () => {
+        mockFetch.mockResolvedValueOnce(ok());
+        await POST(editsForm('auto', pngHeader(2048, 2048)), ctx('images', 'edits'));
+        expect(sentForm().get('size')).toBe('1024x1024');
+    });
+
+    it('读不出尺寸的输入(非 PNG/JPEG/WebP 字节)→ 保留 auto、不补 1024²、无响应头', async () => {
+        mockFetch.mockResolvedValueOnce(ok());
+        const res = await POST(editsForm('auto', Buffer.from('GIF89a-not-really')), ctx('images', 'edits'));
+        expect(res.status).toBe(200);
+        expect(sentForm().get('size')).toBe('auto');
+        expect(res.headers.get('x-silkroadai-size-resolved')).toBeNull();
+    });
+
+    it('显式 size(2048x2048)+ 竖图输入 → 显式值不动、无响应头', async () => {
+        mockFetch.mockResolvedValueOnce(ok());
+        const res = await POST(editsForm('2048x2048', pngHeader(1024, 1536)), ctx('images', 'edits'));
+        expect(sentForm().get('size')).toBe('2048x2048');
+        expect(res.headers.get('x-silkroadai-size-resolved')).toBeNull();
+    });
+
+    it('多图 → 按第一张输入图比例', async () => {
+        mockFetch.mockResolvedValueOnce(ok());
+        await POST(editsForm('auto', pngHeader(1080, 1920), pngHeader(1920, 1080)), ctx('images', 'edits'));
+        expect(sentForm().get('size')).toBe('864x1536');
+    });
+
+    it('JSON edits(image data URL)+ size auto + 竖图 → 转 multipart 后 size=1024x1536', async () => {
+        mockFetch.mockResolvedValueOnce(ok());
+        const dataUrl = 'data:image/png;base64,' + pngHeader(1024, 1536).toString('base64');
+        const res = await POST(
+            makeReq('/images/edits', { body: { model: 'gpt-image-2', prompt: 'x', size: 'auto', image: dataUrl } }),
+            ctx('images', 'edits'),
+        );
+        expect(res.status).toBe(200);
+        expect(sentForm().get('size')).toBe('1024x1536');
+        expect(res.headers.get('x-silkroadai-size-resolved')).toBe('auto->1024x1536');
+    });
+
+    it('generations + size auto → 原样透传 auto(绝不补 1024²)', async () => {
+        mockFetch.mockResolvedValueOnce(ok());
+        const res = await POST(
+            makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x', size: 'auto' } }),
+            ctx('images', 'generations'),
+        );
+        const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect((JSON.parse(String(init.body)) as { size?: string }).size).toBe('auto');
+        expect(res.headers.get('x-silkroadai-size-resolved')).toBeNull();
+    });
+
+    it('上游非 2xx 时响应头仍带标记、错误照常脱敏透传(不影响 retry/脱敏链)', async () => {
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ error: { message: 'upstream busy' } }), {
+                status: 503,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const res = await POST(editsForm('auto', pngHeader(1024, 1536)), ctx('images', 'edits'));
+        expect(res.status).toBeGreaterThanOrEqual(500); // normalizeImageError 把泛 5xx 归一到 500 server_error
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+        expect(sentForm().get('size')).toBe('1024x1536');
+        expect(res.headers.get('x-silkroadai-size-resolved')).toBe('auto->1024x1536');
+    });
+});

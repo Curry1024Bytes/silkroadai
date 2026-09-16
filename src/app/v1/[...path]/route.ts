@@ -1232,7 +1232,10 @@ async function gptImageUpstream(
 ): Promise<Response> {
     if (form) {
         const hasImage = formImageFiles(form).length > 0;
-        if (hasImage) return fetchUpstreamMultipart(req, form, '/images/edits', search);
+        if (hasImage) {
+            const resolved = await resolveGptImageEditsAutoSize(form);
+            return withSizeResolvedHeader(await fetchUpstreamMultipart(req, form, '/images/edits', search), resolved);
+        }
         // 无图 → 文生图 generations(上游要 JSON):把 form 文本字段搬进 JSON
         const j: JsonRecord = {};
         for (const [k, v] of form.entries()) if (typeof v === 'string') j[k] = v;
@@ -1269,7 +1272,44 @@ async function gptImageUpstream(
             );
         }
     }
-    return fetchUpstreamMultipart(req, f, '/images/edits', search);
+    const resolved = await resolveGptImageEditsAutoSize(f);
+    return withSizeResolvedHeader(await fetchUpstreamMultipart(req, f, '/images/edits', search), resolved);
+}
+
+/** gpt-image【edits】且客户没给尺寸(缺省 / `auto`,大小写不限)→ 读第一张输入图尺寸,补最近的合法
+ *  WxH(GPT_IMAGE_ASPECT_SIZE 表,约 1MP 档)后再发上游;返回 `auto->WxH` 串供响应头,没动则 null。
+ *
+ *  背景(2026-09-16,1913696371 投诉「指定了尺寸出方图」诊断):近 24h 适配器日志实测,low/medium 专线
+ *  (frimodellow/frimodelmedium)对 `auto` 恒出 1024²/2048² 方图、完全无视输入图;high 线(ominiapi)才
+ *  跟随输入比例。OpenAI 官方 edits 的 `auto` 语义 = 跟随输入图,这里在代理层把它落实,让各上游一致。
+ *  边界:
+ *  - 只动 edits(有输入图)。generations 的 `auto` 原样透传 —— 上游 auto→2048² 等是既有产品行为,
+ *    generations 一周 73.8 万次 `auto`(¥25 万),补成 1024² 会砍半,绝不能碰;
+ *  - 读不出尺寸(gif/bmp/heic/avif…)→ 保留 auto 不阻断(不像 gptImageFallbackSize 那样退 1024²);
+ *  - 多图取第一张(与 Gemini 路径 aspectRatioFromInput 同口径);imageDimensions 已按 EXIF Orientation
+ *    对调手机竖拍 JPEG 的宽高(PR #184);
+ *  - 显式 WxH 一律不动;变体名 / aspect_ratio 在 normalizeGptImage* 里已先转成显式尺寸,到这里不会再是 auto;
+ *  - 只作用于经 portal 的请求,直连 new-api :3000 的客户(c-70fd7c5f 等)行为不变。 */
+async function resolveGptImageEditsAutoSize(form: FormData): Promise<string | null> {
+    const s = String(form.get('size') ?? '').trim();
+    if (s && s.toLowerCase() !== 'auto') return null;
+    const files = formImageFiles(form);
+    if (!files.length) return null;
+    const dims = imageDimensions(Buffer.from(await files[0].arrayBuffer()));
+    if (!dims) return null;
+    const px = gptImageSizeFromInput(dims.w, dims.h);
+    form.set('size', px);
+    console.log('[proxy/gpt-image] edits auto size resolved', { input: `${dims.w}x${dims.h}`, size: px });
+    return `${s || 'auto'}->${px}`;
+}
+
+/** 把 `X-Silkroadai-Size-Resolved: auto->WxH` 挂到上游响应上(reshape 会把上游头透传给客户),
+ *  便于客户 / 排障确认代理补了尺寸。resolved 为 null 时原样返回。 */
+function withSizeResolvedHeader(res: Response, resolved: string | null): Response {
+    if (!resolved) return res;
+    const h = new Headers(res.headers);
+    h.set('X-Silkroadai-Size-Resolved', resolved);
+    return new Response(res.body, { status: res.status, statusText: res.statusText, headers: h });
 }
 
 /** 输入图尺寸 → 最近的合法 gpt-image 像素 size(从 GPT_IMAGE_ASPECT_SIZE 表按宽高比挑最近的)。 */
