@@ -12,6 +12,8 @@ export const PRICING_COST_MAX_RETAIL = 99_999_999.9999;
 const MAX_SAFE_VALUE = Number.MAX_SAFE_INTEGER;
 const nonNegative = z.number().finite().min(0).max(MAX_SAFE_VALUE);
 const positive = z.number().finite().positive().max(MAX_SAFE_VALUE);
+// A legacy rule's derived display multiplier can exceed either input's limit.
+const displayPositive = z.number().finite().positive();
 const tokenKeys = ['input', 'output', 'cache_read', 'cache_write'] as const;
 const tokenLabels: Record<(typeof tokenKeys)[number], string> = {
     input: '输入',
@@ -89,11 +91,33 @@ function costMultiplier(config: PricingCostConfig): Rational {
     );
 }
 function markupMultiplier(config: PricingCostConfig): Rational {
+    if (config.retail_multiplier !== undefined)
+        return divide(decimal(config.retail_multiplier), decimal(config.upstream_multiplier));
     return add(decimal(1), divide(decimal(config.markup_percent), decimal(100)));
 }
 function rawCostAndRetail(config: PricingCostConfig, price: number): { cost: Rational; retail: Rational } {
     const cost = multiply(decimal(price), costMultiplier(config));
+    if (config.retail_multiplier !== undefined) {
+        const retail = divide(
+            multiply(decimal(price), decimal(config.retail_multiplier)),
+            decimal(config.currency === 'credits' ? config.credits_per_cny : 1),
+        );
+        return { cost, retail };
+    }
     return { cost, retail: multiply(cost, markupMultiplier(config)) };
+}
+
+/** Display the final quote multiplier without changing the stored pricing mode. */
+export function getCostRetailMultiplier(input: PricingCostConfig): number {
+    const config = pricingCostConfigSchema.parse(input);
+    return config.retail_multiplier === undefined
+        ? asNumber(multiply(decimal(config.upstream_multiplier), markupMultiplier(config)))
+        : config.retail_multiplier;
+}
+
+/** Avoid showing artifacts such as 1.6 - 1.3 = 0.30000000000000004. */
+export function getCostMultiplierDelta(upstream: number, retail: number): number {
+    return asNumber(subtract(decimal(displayPositive.parse(retail)), decimal(displayPositive.parse(upstream))));
 }
 
 const configShape = z
@@ -103,6 +127,7 @@ const configShape = z
         currency: z.enum(['cny', 'credits']),
         credits_per_cny: positive,
         upstream_multiplier: positive,
+        retail_multiplier: positive.optional(),
         markup_percent: nonNegative,
         source_note: z.string().trim().max(500),
         token_rates: z
@@ -139,6 +164,12 @@ export const pricingCostConfigSchema = configShape.superRefine((config, ctx) => 
     const issue = (path: Array<string | number>, message: string) => ctx.addIssue({ code: 'custom', path, message });
     if (config.currency === 'cny' && config.credits_per_cny !== 1) {
         issue(['credits_per_cny'], '人民币报价的兑换比例须为 1，避免重复折算。');
+    }
+    if (config.retail_multiplier !== undefined) {
+        if (config.markup_percent !== 0)
+            issue(['markup_percent'], '售价倍率与成本加价百分比不能同时设置，请将旧加价百分比设为 0。');
+        if (config.retail_multiplier < config.upstream_multiplier)
+            issue(['retail_multiplier'], '售价倍率不能低于上游倍率。');
     }
     if (config.basis === 'token') {
         if (config.variants.length > 0) issue(['variants'], 'Token 计费不能同时填写图片或视频规格。');
@@ -192,7 +223,9 @@ export const pricingCostConfigSchema = configShape.superRefine((config, ctx) => 
         !Number.isFinite(config.credits_per_cny) ||
         config.credits_per_cny <= 0 ||
         !Number.isFinite(config.markup_percent) ||
-        config.markup_percent < 0
+        config.markup_percent < 0 ||
+        (config.retail_multiplier !== undefined &&
+            (!Number.isFinite(config.retail_multiplier) || config.retail_multiplier <= 0))
     )
         return;
     for (const { price, path } of prices) {

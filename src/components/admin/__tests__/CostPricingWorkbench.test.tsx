@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import CostPricingWorkbench, {
     CostEstimateTable,
+    CostMultiplierFields,
+    CostMultiplierSummary,
     CostResolutionField,
     SavedCostRuleList,
 } from '../CostPricingWorkbench';
@@ -17,7 +19,7 @@ import {
     saveCostPricingRules,
     type CostPricingPrepared,
 } from '../CostPricingWorkbench.helpers';
-import { calculateCostPricing } from '@/lib/admin/pricing-cost';
+import { calculateCostPricing, pricingCostConfigSchema } from '@/lib/admin/pricing-cost';
 import type { PricingCostCapability, PricingCostConfig, StoredPricingCostRule } from '@/lib/admin/pricing-cost-types';
 
 const config: PricingCostConfig = {
@@ -77,11 +79,11 @@ afterEach(() => {
 });
 
 describe('cost forms preserve actual purchasing inputs', () => {
-    it('does not assume prices, supplier multipliers or markups in a new form', () => {
+    it('does not assume prices, supplier multipliers or retail multipliers in a new form', () => {
         const draft = newCostDraft(capability);
         expect(draft.token_rates).toEqual({ input: '', output: '', cache_read: '', cache_write: '' });
         expect(draft.upstream_multiplier).toBe('');
-        expect(draft.markup_percent).toBe('');
+        expect(draft.retail_multiplier).toBe('');
         expect(costConfigFromDraft(draft)).toBeNull();
     });
     it('uses actual credit redemption and supplier multiplier once, then markup once', () => {
@@ -93,6 +95,54 @@ describe('cost forms preserve actual purchasing inputs', () => {
             profit: 0.1,
             margin_percent: 33.3333,
         });
+    });
+    it('keeps a legacy quote and its pricing semantics when only the note changes', () => {
+        const draft = draftFromCostConfig(config);
+        expect(draft.retail_multiplier).toBe('0.75');
+        draft.source_note = 'Supplier quote rechecked';
+        const saved = costConfigFromDraft(draft);
+        expect(saved).toEqual({ ...config, source_note: 'Supplier quote rechecked' });
+        expect(saved).not.toHaveProperty('retail_multiplier');
+        expect(calculateCostPricing(saved!).lines).toEqual(calculateCostPricing(config).lines);
+    });
+    it('preserves a valid legacy target above the direct-input limit when opening or editing its quote and note', () => {
+        const legacy: PricingCostConfig = {
+            ...config,
+            currency: 'cny',
+            credits_per_cny: 1,
+            upstream_multiplier: 1e15,
+            markup_percent: 1900,
+            token_rates: { input: 1e-15, output: 1e-15, cache_read: null, cache_write: null },
+        };
+        const draft = draftFromCostConfig(legacy);
+        expect(draft.retail_multiplier).toBe('20000000000000000');
+        expect(costConfigFromDraft(draft)).toEqual(legacy);
+        expect(calculateCostPricing(costConfigFromDraft(draft)!).lines[0]).toMatchObject({ cost: 1, retail: 20 });
+        const edited = costConfigFromDraft({
+            ...draft,
+            source_note: 'Quote rechecked',
+            token_rates: { ...draft.token_rates, input: '2e-15' },
+        });
+        expect(edited).not.toHaveProperty('retail_multiplier');
+        expect(edited?.source_note).toBe('Quote rechecked');
+        expect(calculateCostPricing(edited!).lines[0]).toMatchObject({ cost: 2, retail: 40 });
+        const converted = costConfigFromDraft({ ...draft, upstream_multiplier: '2e15' });
+        expect(converted).toMatchObject({ retail_multiplier: 2e16, markup_percent: 0 });
+        expect(pricingCostConfigSchema.safeParse(converted).success).toBe(false);
+    });
+    it('uses one target of 1.6 for batch rules while retaining each quote and supplier multiplier', () => {
+        const configs = [
+            { ...config, upstream_multiplier: 1.3 },
+            { ...config, upstream_multiplier: 1.4, token_rates: { ...config.token_rates, input: 6 } },
+        ];
+        const next = configs.map((saved) =>
+            costConfigFromDraft({ ...draftFromCostConfig(saved), retail_multiplier: '1.6' }),
+        );
+        expect(next[0]).toEqual({ ...configs[0], retail_multiplier: 1.6, markup_percent: 0 });
+        expect(next[1]).toEqual({ ...configs[1], retail_multiplier: 1.6, markup_percent: 0 });
+        expect(calculateCostPricing(next[0]!).lines[0]).toMatchObject({ cost: 0.52, retail: 0.64, profit: 0.12 });
+        expect(calculateCostPricing(next[1]!).lines[0]).toMatchObject({ cost: 0.84, retail: 0.96, profit: 0.12 });
+        expect(costConfigFromDraft({ ...draftFromCostConfig(configs[1]), retail_multiplier: '1.3' })).toBeNull();
     });
     it('does not apply a stale credit exchange rate to CNY quotes', () => {
         const draft = { ...draftFromCostConfig(config), currency: 'cny' as const };
@@ -117,7 +167,7 @@ describe('cost forms preserve actual purchasing inputs', () => {
     it('requires video time rounding instead of silently assuming one second', () => {
         const draft = newCostDraft({ ...capability, basis: 'video' });
         draft.upstream_multiplier = '1';
-        draft.markup_percent = '50';
+        draft.retail_multiplier = '1.5';
         draft.variants[0].price = '0.2';
         expect(draft.variants[0].minimum_units).toBe('');
         expect(draft.variants[0].step_units).toBe('');
@@ -125,6 +175,40 @@ describe('cost forms preserve actual purchasing inputs', () => {
         draft.variants[0].minimum_units = '5';
         draft.variants[0].step_units = '1';
         expect(costConfigFromDraft(draft)?.variants[0]).toMatchObject({ minimum_units: 5, step_units: 1 });
+    });
+    it('uses the actual multiplier field callbacks to discard signed review before edits and preserves the target when supplier costs change', () => {
+        let draft = { ...draftFromCostConfig(config), upstream_multiplier: '1.3', retail_multiplier: '1.6' };
+        let review = costReviewReducer({ prepared: null, confirmed: false }, { type: 'prepare', prepared });
+        review = costReviewReducer(review, { type: 'confirm', confirmed: true });
+        const events: string[] = [];
+        const fields = () =>
+            CostMultiplierFields({
+                draft,
+                en: false,
+                className: '',
+                onInvalidate: () => {
+                    events.push('invalidate');
+                    review = costReviewReducer(review, { type: 'invalidate' });
+                },
+                onChange: (next) => {
+                    events.push('change');
+                    draft = next;
+                },
+            }).props.children;
+        fields()[0].props.onChange('1.5');
+        expect(events).toEqual(['invalidate', 'change']);
+        expect(draft).toMatchObject({ upstream_multiplier: '1.5', retail_multiplier: '1.6' });
+        expect(review).toEqual({ prepared: null, confirmed: false });
+        expect(costConfigFromDraft(draft)?.retail_multiplier).toBe(1.6);
+        review = costReviewReducer(review, { type: 'prepare', prepared });
+        review = costReviewReducer(review, { type: 'confirm', confirmed: true });
+        fields()[1].props.onChange('1.7');
+        expect(draft).toMatchObject({ upstream_multiplier: '1.5', retail_multiplier: '1.7' });
+        expect(review).toEqual({ prepared: null, confirmed: false });
+        fields()[0].props.onChange('1.8');
+        expect(draft.retail_multiplier).toBe('1.7');
+        expect(costConfigFromDraft(draft)).toBeNull();
+        expect(events).toEqual(['invalidate', 'change', 'invalidate', 'change', 'invalidate', 'change']);
     });
 });
 
@@ -217,7 +301,7 @@ describe('cost saving and publication requests', () => {
         expect(fetcher).toHaveBeenCalledTimes(1);
         expect(JSON.parse(String(fetcher.mock.calls[0][1]?.body))).not.toHaveProperty('input_cny_per_1m');
     });
-    it('saves batch markup for exact saved model/tier revisions with independent input snapshots', async () => {
+    it('saves batch retail multipliers for exact saved model/tier revisions with independent input snapshots', async () => {
         let respond!: (value: Response) => void;
         const fetcher = vi.fn<typeof fetch>(
             () =>
@@ -227,18 +311,28 @@ describe('cost saving and publication requests', () => {
         );
         vi.stubGlobal('fetch', fetcher);
         const inputs = [
-            { model_id: 'model-1', tier: 'standard', expected_revision: 3, config: { ...config, markup_percent: 80 } },
-            { model_id: 'model-2', tier: 'premium', expected_revision: 5, config: { ...config, markup_percent: 80 } },
+            {
+                model_id: 'model-1',
+                tier: 'standard',
+                expected_revision: 3,
+                config: { ...config, markup_percent: 0, retail_multiplier: 0.8 },
+            },
+            {
+                model_id: 'model-2',
+                tier: 'premium',
+                expected_revision: 5,
+                config: { ...config, markup_percent: 0, retail_multiplier: 0.8 },
+            },
         ];
         const pending = saveCostPricingRules(inputs);
-        inputs[0].config.markup_percent = 999;
+        inputs[0].config.retail_multiplier = 999;
         respond(new Response(JSON.stringify({ rules: [rule, { ...rule, id: 'rule-2' }] })));
         await pending;
         expect(fetcher.mock.calls[0][0]).toBe('/api/admin/pricing/cost-rules/bulk');
         expect(JSON.parse(String(fetcher.mock.calls[0][1]?.body))).toMatchObject({
             rules: [
-                { expected_revision: 3, config: { markup_percent: 80 } },
-                { model_id: 'model-2', tier: 'premium', expected_revision: 5, config: { markup_percent: 80 } },
+                { expected_revision: 3, config: { retail_multiplier: 0.8 } },
+                { model_id: 'model-2', tier: 'premium', expected_revision: 5, config: { retail_multiplier: 0.8 } },
             ],
         });
     });
@@ -308,6 +402,75 @@ describe('cost saving and publication requests', () => {
 });
 
 describe('cost pricing UI semantics', () => {
+    it('presents one direct retail multiplier field and states that its base quote excludes multipliers', () => {
+        const html = renderToStaticMarkup(
+            <CostMultiplierFields
+                draft={{ ...draftFromCostConfig(config), upstream_multiplier: '1.3', retail_multiplier: '1.6' }}
+                en={false}
+                className=""
+                onChange={() => {}}
+                onInvalidate={() => {}}
+            />,
+        );
+        expect(html.match(/<input/g)).toHaveLength(2);
+        expect(html).toContain('上游倍率');
+        expect(html).toContain('我的售价倍率');
+        expect(html).toContain('value="1.3"');
+        expect(html).toContain('value="1.6"');
+        expect(html).toContain('按下方基础报价计算成本');
+        expect(html).toContain('报价已含上游倍率时填 1');
+        expect(html).toContain('售价倍率也以这份报价为基准');
+        expect(html).toContain('不能低于上游倍率');
+        expect(html).not.toMatch(/加价（%）|Markup|<select/);
+    });
+    it.each([false, true])(
+        'shows supplier-to-retail multipliers and the increment without floating-point noise (en=%s)',
+        (en) => {
+            const html = renderToStaticMarkup(<CostMultiplierSummary upstream="1.3" retail="1.6" en={en} />);
+            expect(html).toContain(
+                en ? 'Supplier 1.3× → Retail 1.6× (+0.3×)' : '上游 1.3 倍 → 售价 1.6 倍（加 0.3 倍）',
+            );
+            expect(html).not.toContain('0.300000000');
+            expect(renderToStaticMarkup(<CostMultiplierSummary upstream="1.3" retail="" en={en} />)).toBe('');
+            expect(renderToStaticMarkup(<CostMultiplierSummary upstream="1.3" retail="1.2" en={en} />)).toBe('');
+            expect(renderToStaticMarkup(<CostMultiplierSummary upstream="1.3" retail="Infinity" en={en} />)).toBe('');
+        },
+    );
+    it('displays a valid legacy derived retail multiplier above the direct-input limit', () => {
+        const html = renderToStaticMarkup(
+            <CostMultiplierSummary upstream="1000000000000000" retail="20000000000000000" en={false} />,
+        );
+        expect(html).toContain('上游 1000000000000000 倍 → 售价 20000000000000000 倍（加 19000000000000000 倍）');
+    });
+    it.each([false, true])(
+        'shows direct and legacy saved targets consistently without markup percentages (dark=%s)',
+        (isDark) => {
+            const html = renderToStaticMarkup(
+                <SavedCostRuleList
+                    rules={[
+                        rule,
+                        {
+                            ...rule,
+                            id: 'rule-direct',
+                            config: { ...config, markup_percent: 0, upstream_multiplier: 1.3, retail_multiplier: 1.6 },
+                        },
+                    ]}
+                    capabilities={[capability]}
+                    models={[]}
+                    selectedIds={[]}
+                    busy={false}
+                    en={false}
+                    isDark={isDark}
+                    onSelect={() => {}}
+                    onEdit={() => {}}
+                />,
+            );
+            expect(html).toContain('上游 0.5 倍 → 售价 0.75 倍（加 0.25 倍）');
+            expect(html).toContain('上游 1.3 倍 → 售价 1.6 倍（加 0.3 倍）');
+            expect(html).not.toMatch(/加价|倍成本|50%/);
+            expect(html).toContain('版本');
+        },
+    );
     it('keeps a mismatched saved image resolution editable without silently changing the quote', () => {
         const render = (resolution: string, fixedResolution: string | null) =>
             renderToStaticMarkup(
@@ -337,7 +500,7 @@ describe('cost pricing UI semantics', () => {
                 onUncertain={() => {}}
             />,
         );
-        expect(html).toContain('按成本加价');
+        expect(html).toContain('按倍率定价');
         expect(html).toContain('请选择模型');
         expect(html).toContain('请选择已登记档次');
         expect(html).not.toContain('确认并提交发布任务');
@@ -345,7 +508,26 @@ describe('cost pricing UI semantics', () => {
         expect(html).not.toContain('private-publish-token');
     });
     it('shows unsupported video costs as editable estimates rather than effective prices', () => {
-        const videoRule = { ...rule, config: { ...config, basis: 'video' as const } };
+        const videoRule = {
+            ...rule,
+            config: {
+                ...config,
+                basis: 'video' as const,
+                token_rates: { input: null, output: null, cache_read: null, cache_write: null },
+                variants: [
+                    {
+                        key: 'video-720p',
+                        label: '720p',
+                        resolution: '720p',
+                        audio: 'any' as const,
+                        reference_video: 'any' as const,
+                        price: 1,
+                        minimum_units: 5,
+                        step_units: 1,
+                    },
+                ],
+            },
+        };
         const html = renderToStaticMarkup(
             <SavedCostRuleList
                 rules={[videoRule]}

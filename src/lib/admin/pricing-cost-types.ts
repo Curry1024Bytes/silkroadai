@@ -5,6 +5,9 @@ export interface PricingCostConfig {
     currency: 'cny' | 'credits';
     credits_per_cny: number;
     upstream_multiplier: number;
+    /** Final multiplier on the reference quote; omitted by legacy percentage-based rules. */
+    retail_multiplier?: number;
+    /** Legacy cost markup; must be zero when retail_multiplier is supplied. */
     markup_percent: number;
     source_note: string;
     token_rates: {

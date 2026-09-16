@@ -6,12 +6,20 @@ import type {
     StoredPricingCostRule,
 } from '@/lib/admin/pricing-cost-types';
 import type { PricingPublishJob, PricingPublishPreview } from '@/lib/admin/pricing-publish-types';
+import { getCostRetailMultiplier } from '@/lib/admin/pricing-cost';
 
 export interface CostPricingDraft {
     basis: PricingCostConfig['basis'];
     currency: PricingCostConfig['currency'];
     credits_per_cny: string;
     upstream_multiplier: string;
+    retail_multiplier: string;
+    /** Keep existing percentage rules exact until either multiplier is edited. */
+    legacy_multiplier?: {
+        upstream_multiplier: number;
+        markup_percent: number;
+        retail_multiplier: string;
+    };
     markup_percent: string;
     source_note: string;
     token_rates: Record<keyof PricingCostConfig['token_rates'], string>;
@@ -63,6 +71,7 @@ export function newCostDraft(capability?: PricingCostCapability): CostPricingDra
         currency: 'cny',
         credits_per_cny: '',
         upstream_multiplier: '',
+        retail_multiplier: '',
         markup_percent: '',
         source_note: '',
         token_rates: { input: '', output: '', cache_read: '', cache_write: '' },
@@ -86,10 +95,21 @@ export function newCostDraft(capability?: PricingCostCapability): CostPricingDra
 }
 
 export function draftFromCostConfig(config: PricingCostConfig): CostPricingDraft {
+    const retail = String(getCostRetailMultiplier(config));
     return {
         ...config,
         credits_per_cny: String(config.credits_per_cny),
         upstream_multiplier: String(config.upstream_multiplier),
+        retail_multiplier: retail,
+        ...(config.retail_multiplier === undefined
+            ? {
+                  legacy_multiplier: {
+                      upstream_multiplier: config.upstream_multiplier,
+                      markup_percent: config.markup_percent,
+                      retail_multiplier: retail,
+                  },
+              }
+            : {}),
         markup_percent: String(config.markup_percent),
         token_rates: Object.fromEntries(
             Object.entries(config.token_rates).map(([key, value]) => [key, value === null ? '' : String(value)]),
@@ -108,10 +128,16 @@ export function costConfigFromDraft(draft: CostPricingDraft): PricingCostConfig 
     const number = (value: string): number | null =>
         value.trim() === '' || !Number.isFinite(Number(value)) ? null : Number(value);
     const upstream = number(draft.upstream_multiplier);
-    const markup = number(draft.markup_percent);
+    const retail = number(draft.retail_multiplier);
     const credits = draft.currency === 'cny' ? 1 : number(draft.credits_per_cny);
-    if (upstream === null || upstream <= 0 || markup === null || markup < 0 || credits === null || credits <= 0)
+    if (upstream === null || upstream <= 0 || retail === null || retail < upstream || credits === null || credits <= 0)
         return null;
+    const legacy = draft.legacy_multiplier;
+    const keepLegacy =
+        legacy !== undefined &&
+        upstream === legacy.upstream_multiplier &&
+        draft.retail_multiplier.trim() === legacy.retail_multiplier &&
+        number(draft.markup_percent) === legacy.markup_percent;
     const tokenRates = Object.fromEntries(
         Object.entries(draft.token_rates).map(([key, value]) => [key, number(value)]),
     ) as PricingCostConfig['token_rates'];
@@ -150,7 +176,8 @@ export function costConfigFromDraft(draft: CostPricingDraft): PricingCostConfig 
         currency: draft.currency,
         credits_per_cny: credits,
         upstream_multiplier: upstream,
-        markup_percent: markup,
+        markup_percent: keepLegacy ? legacy.markup_percent : 0,
+        ...(!keepLegacy ? { retail_multiplier: retail } : {}),
         source_note: draft.source_note,
         token_rates:
             draft.basis === 'token' ? tokenRates : { input: null, output: null, cache_read: null, cache_write: null },

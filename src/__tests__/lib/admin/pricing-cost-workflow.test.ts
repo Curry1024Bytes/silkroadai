@@ -137,6 +137,51 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe('saved cost quotes and publication protection', () => {
+    it('saves exact sale multipliers and keeps each purchasing rule revision intact', async () => {
+        const direct = { ...quote(), upstream_multiplier: 1.3, retail_multiplier: 1.6, markup_percent: 0 };
+        const [saved] = await saveCostRules(
+            [{ model_id: MODEL, tier: 'standard', expected_revision: null, config: direct }],
+            ADMIN,
+        );
+        expect(saved.config).toEqual(direct);
+        expect(store.rules[0].config).toEqual(direct);
+        const selected = await resolvePricingCostSelection(
+            txFor(store) as CostDb,
+            [{ rule_id: saved.id, revision: 1 }],
+            ADMIN,
+        );
+        expect(selected.inputs[0]).toMatchObject({ input_cny_per_1m: 3.2, output_cny_per_1m: 16 });
+        await saveCostRules(
+            [
+                {
+                    model_id: MODEL,
+                    tier: 'standard',
+                    expected_revision: 1,
+                    config: { ...direct, retail_multiplier: 1.7 },
+                },
+            ],
+            ADMIN,
+        );
+        expect(store.revisions).toHaveLength(2);
+        expect(store.revisions[0]).toMatchObject({ revision: 1, config: direct });
+        expect(store.revisions[1]).toMatchObject({ revision: 2, config: { retail_multiplier: 1.7 } });
+    });
+
+    it('invalidates signed confirmation if only the sale multiplier changes without a revision bump', async () => {
+        const direct = { ...quote(), upstream_multiplier: 1.3, retail_multiplier: 1.6, markup_percent: 0 };
+        store.rules = [{ ...rule(), config: direct as unknown as Prisma.JsonValue }];
+        const db = txFor(store) as CostDb;
+        const selected = await resolvePricingCostSelection(db, [{ rule_id: RULE, revision: 1 }], ADMIN);
+        const signed = signCostSelection(ADMIN, selected.context, 'publication-preview');
+        store.rules[0].config = { ...direct, retail_multiplier: 1.7 } as unknown as Prisma.JsonValue;
+        const changed = await resolvePricingCostSelection(db, [{ rule_id: RULE, revision: 1 }], ADMIN);
+        expect(changed.context.fingerprint).not.toBe(selected.context.fingerprint);
+        expect(() => verifyCostSelection(ADMIN, changed.context, 'publication-preview', signed)).toThrow();
+        await expect(assertPricingCostContext(db, selected.inputs, selected.context)).rejects.toMatchObject({
+            code: 'pricing_cost_changed',
+        });
+    });
+
     it('stores purchasing terms and an immutable version without writing retail or upstream state', async () => {
         const [saved] = await saveCostRules(
             [{ model_id: MODEL, tier: 'standard', expected_revision: null, config: quote() }],

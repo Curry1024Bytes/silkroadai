@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
     calculateCostPricing,
     calculateCostSample,
+    getCostMultiplierDelta,
+    getCostRetailMultiplier,
     pricingCostConfigSchema,
     PRICING_COST_MAX_RETAIL,
 } from '../pricing-cost';
@@ -150,6 +152,141 @@ describe('cost-derived pricing calculations', () => {
         calculateCostPricing(config);
         calculateCostSample(config, 'input', 1234);
         expect(config).toEqual(before);
+    });
+});
+
+describe('direct retail multipliers', () => {
+    it.each([
+        { currency: 'credits' as const, credits_per_cny: 10, cost: 1.3, retail: 1.6 },
+        { currency: 'cny' as const, credits_per_cny: 1, cost: 13, retail: 16 },
+    ])('applies supplier 1.3 and retail 1.6 independently for $currency quotes', (example) => {
+        const config = token({
+            currency: example.currency,
+            credits_per_cny: example.credits_per_cny,
+            upstream_multiplier: 1.3,
+            retail_multiplier: 1.6,
+            markup_percent: 0,
+        });
+        const calculation = calculateCostPricing(config);
+        expect(calculation.lines[0]).toMatchObject({
+            cost: example.cost,
+            retail: example.retail,
+            margin_percent: 18.75,
+        });
+        expect(calculation.lines[1]).toMatchObject({
+            cost: example.currency === 'credits' ? 3.9 : 39,
+            retail: example.currency === 'credits' ? 4.8 : 48,
+        });
+        expect(calculation.lines[2]).toMatchObject({
+            cost: example.currency === 'credits' ? 0.13 : 1.3,
+            retail: example.currency === 'credits' ? 0.16 : 1.6,
+        });
+        expect(calculation.multiplier).toBe(1.6 / 1.3);
+        expect(getCostRetailMultiplier(config)).toBe(1.6);
+        expect(getCostMultiplierDelta(config.upstream_multiplier, getCostRetailMultiplier(config))).toBe(0.3);
+    });
+    it.each(['image', 'video'] as const)('uses the selected %s quote and units with the direct multiplier', (basis) => {
+        const config = media(basis, { upstream_multiplier: 1.3, retail_multiplier: 1.6, markup_percent: 0 });
+        config.variants.push({ ...config.variants[0], key: 'large', label: '4K', resolution: '4k', price: 0.8 });
+        if (basis === 'video') {
+            config.variants[1].minimum_units = 5;
+            config.variants[1].step_units = 2;
+        }
+        expect(calculateCostPricing(config).lines[1]).toMatchObject({ cost: 1.04, retail: 1.28, profit: 0.24 });
+        expect(calculateCostSample(config, 'large', basis === 'image' ? 3 : 6)).toMatchObject({
+            billed_units: basis === 'image' ? 3 : 7,
+            cost: basis === 'image' ? 3.12 : 7.28,
+            retail: basis === 'image' ? 3.84 : 8.96,
+        });
+    });
+    it('keeps the exact half-cent-of-a-cent boundary without a rounded percentage conversion', () => {
+        const config = media('image', { upstream_multiplier: 1.3, retail_multiplier: 1.6, markup_percent: 0 });
+        config.variants[0].price = 0.00003125;
+        expect(calculateCostPricing(config).lines[0]).toMatchObject({ cost: 0.000041, retail: 0.0001 });
+        const legacy = { ...config };
+        delete legacy.retail_multiplier;
+        expect(() => calculateCostPricing({ ...legacy, markup_percent: 23.0769 })).toThrow('不能保存成免费');
+    });
+    it('retains legacy JSON, arithmetic, and its derived display multiplier without backfilling fields', () => {
+        const config = token();
+        const serialized = JSON.stringify(config);
+        expect(pricingCostConfigSchema.parse(config)).toEqual(config);
+        expect(Object.hasOwn(pricingCostConfigSchema.parse(config), 'retail_multiplier')).toBe(false);
+        expect(getCostRetailMultiplier(config)).toBe(0.3);
+        expect(getCostMultiplierDelta(0.2, getCostRetailMultiplier(config))).toBe(0.1);
+        expect(calculateCostPricing(config).lines[0]).toMatchObject({ cost: 0.2, retail: 0.3 });
+        expect(JSON.stringify(config)).toBe(serialized);
+    });
+    it('preserves direct-mode JSON and never substitutes a percentage when calculating', () => {
+        const config = token({ upstream_multiplier: 1.3, retail_multiplier: 1.6, markup_percent: 0 });
+        const serialized = JSON.stringify(config);
+        expect(pricingCostConfigSchema.parse(JSON.parse(serialized))).toEqual(config);
+        calculateCostPricing(config);
+        calculateCostSample(config, 'input', 123);
+        expect(JSON.stringify(config)).toBe(serialized);
+    });
+    it('displays a valid legacy multiplier beyond direct-input bounds without changing those bounds', () => {
+        const config = media('image', { upstream_multiplier: 1e15, markup_percent: 1_900 });
+        config.variants[0].price = 1e-15;
+        const serialized = JSON.stringify(config);
+        expect(calculateCostPricing(config).lines[0]).toMatchObject({ cost: 1, retail: 20 });
+        const retail = getCostRetailMultiplier(config);
+        expect(retail).toBe(2e16);
+        expect(retail).toBeGreaterThan(Number.MAX_SAFE_INTEGER);
+        expect(getCostMultiplierDelta(config.upstream_multiplier, retail)).toBe(1.9e16);
+        expect(JSON.stringify(config)).toBe(serialized);
+        expect(
+            pricingCostConfigSchema.safeParse({ ...config, markup_percent: 0, retail_multiplier: retail }).success,
+        ).toBe(false);
+    });
+    it('allows the same multiplier for a quote at cost without applying a second multiplier', () => {
+        const config = token({ upstream_multiplier: 1.3, retail_multiplier: 1.3, markup_percent: 0 });
+        expect(calculateCostPricing(config).lines[0]).toMatchObject({ cost: 1.3, retail: 1.3, profit: 0 });
+        expect(calculateCostPricing(config).multiplier).toBe(1);
+        expect(getCostMultiplierDelta(1.3, 1.3)).toBe(0);
+    });
+    it('enforces the direct retail limit and the positive-price rounding limit', () => {
+        const config = media('image', { upstream_multiplier: 1, retail_multiplier: 1, markup_percent: 0 });
+        config.variants[0].price = PRICING_COST_MAX_RETAIL;
+        expect(calculateCostPricing(config).lines[0].retail).toBe(PRICING_COST_MAX_RETAIL);
+        expect(() => calculateCostPricing({ ...config, retail_multiplier: 1.00000001 })).toThrow('售价超过');
+        config.variants[0].price = 0.000049;
+        expect(() => calculateCostPricing(config)).toThrow('不能保存成免费');
+        config.variants[0].price = 0.00000049;
+        expect(() => calculateCostPricing({ ...config, retail_multiplier: 1_001 })).toThrow('实际成本小于');
+    });
+    it.each([0, -1, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, '', '1.6', null])(
+        'rejects an invalid direct multiplier %s without a decimal conversion exception',
+        (retail_multiplier) => {
+            expect(
+                pricingCostConfigSchema.safeParse({ ...token(), markup_percent: 0, retail_multiplier }).success,
+            ).toBe(false);
+        },
+    );
+    it('rejects a direct multiplier below cost and mixed pricing modes', () => {
+        expect(() =>
+            calculateCostPricing(token({ upstream_multiplier: 1.3, retail_multiplier: 1.2, markup_percent: 0 })),
+        ).toThrow('不能低于');
+        expect(() =>
+            calculateCostPricing(token({ upstream_multiplier: 1.3, retail_multiplier: 1.6, markup_percent: 30 })),
+        ).toThrow('不能同时设置');
+    });
+    it('rejects overflow in direct-mode credit conversion', () => {
+        expect(
+            pricingCostConfigSchema.safeParse(
+                token({
+                    credits_per_cny: 1e-200,
+                    upstream_multiplier: 1e15,
+                    retail_multiplier: 2e15,
+                    markup_percent: 0,
+                }),
+            ).success,
+        ).toBe(false);
+    });
+    it('validates display operands before decimal conversion', () => {
+        expect(() => getCostMultiplierDelta(NaN, 1.6)).toThrow();
+        expect(() => getCostMultiplierDelta(1.3, Infinity)).toThrow();
+        expect(() => getCostRetailMultiplier(token({ retail_multiplier: Infinity, markup_percent: 0 }))).toThrow();
     });
 });
 

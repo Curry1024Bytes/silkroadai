@@ -366,6 +366,8 @@ describe('cost API authorization and validation', () => {
         ['save', { ...saveBody(), model_id: 'bad' }],
         ['save', { ...saveBody(), expected_revision: -1 }],
         ['save', { ...saveBody(), config: { ...config(), markup_percent: -1 } }],
+        ['save', { ...saveBody(), config: { ...config(), retail_multiplier: 1.6 } }],
+        ['save', { ...saveBody(), config: { ...config(), markup_percent: 0, retail_multiplier: 0.4 } }],
         ['bulk', { rules: [] }],
         ['preview', { action: 'preview', selections: [] }],
         ['preview', { action: 'preview', selections: [{ rule_id: RULE, revision: 0 }] }],
@@ -400,6 +402,26 @@ describe('cost API authorization and validation', () => {
 });
 
 describe('real saved-cost guard in batch route and worker', () => {
+    it('carries the exact target multiplier through save, signed preview and the publication worker', async () => {
+        const direct = { ...config(), upstream_multiplier: 1.3, retail_multiplier: 1.6, markup_percent: 0 };
+        const response = await SAVE(request({ ...saveBody(), config: direct }));
+        expect(response.status).toBe(200);
+        expect((await response.json()).rule.config).toEqual(direct);
+        expect(mocks.put).not.toHaveBeenCalled();
+        const selected = [{ rule_id: RULE, revision: 2 }];
+        const previewResponse = await PUBLISH(request({ action: 'preview', selections: selected }));
+        expect(previewResponse.status).toBe(200);
+        const data = await previewResponse.json();
+        expect(data.cost_rows.map((row: { cost: number; retail: number }) => [row.cost, row.retail])).toEqual([
+            [2.6, 3.2],
+            [13, 16],
+        ]);
+        expect((await confirm(data, { selections: selected })).status).toBe(202);
+        expect((await runPricingPublisherOnce())?.status).toBe('succeeded');
+        expect(store.prices[1]).toMatchObject({ input_cny_per_1m: 3.2, output_cny_per_1m: 16 });
+        expect(store.revisions[0]).toMatchObject({ config: direct });
+    });
+
     it('previews derived final CNY, confirms signed v2 intent, and applies only after real guard and remote dual verification', async () => {
         const data = await preview();
         expect(data.cost_rows.map((row: { retail: number }) => row.retail)).toEqual([1.2, 6]);

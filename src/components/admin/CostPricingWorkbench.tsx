@@ -3,7 +3,12 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react';
 import type { Locale } from '@/lib/locale';
 import type { PricingCostCapability, PricingCostLine, StoredPricingCostRule } from '@/lib/admin/pricing-cost-types';
-import { calculateCostPricing, calculateCostSample, pricingCostConfigSchema } from '@/lib/admin/pricing-cost';
+import {
+    calculateCostPricing,
+    calculateCostSample,
+    getCostMultiplierDelta,
+    pricingCostConfigSchema,
+} from '@/lib/admin/pricing-cost';
 import type { PricingPublishJob } from '@/lib/admin/pricing-publish-types';
 import { PricingPublishPreviewDetails } from '@/components/admin/PricingPublishDialog';
 import {
@@ -105,6 +110,76 @@ function NumericField({
                 onChange={(event) => onChange(event.target.value)}
             />
         </Field>
+    );
+}
+
+function positiveFiniteMultiplier(value: string): number | null {
+    const number = Number(value);
+    return value.trim() !== '' && Number.isFinite(number) && number > 0 ? number : null;
+}
+
+function validMultiplier(value: string): number | null {
+    const number = positiveFiniteMultiplier(value);
+    return number !== null && number <= Number.MAX_SAFE_INTEGER ? number : null;
+}
+
+export function CostMultiplierSummary({ upstream, retail, en }: { upstream: string; retail: string; en: boolean }) {
+    // A valid legacy percentage rule can derive a target above the direct-input limit.
+    const upstreamValue = positiveFiniteMultiplier(upstream);
+    const retailValue = positiveFiniteMultiplier(retail);
+    if (upstreamValue === null || retailValue === null || retailValue < upstreamValue) return null;
+    const difference = String(getCostMultiplierDelta(upstreamValue, retailValue));
+    return (
+        <span>
+            {en
+                ? `Supplier ${upstream.trim()}× → Retail ${retail.trim()}× (+${difference}×)`
+                : `上游 ${upstream.trim()} 倍 → 售价 ${retail.trim()} 倍（加 ${difference} 倍）`}
+        </span>
+    );
+}
+
+export function CostMultiplierFields({
+    draft,
+    en,
+    className,
+    onChange,
+    onInvalidate,
+}: {
+    draft: CostPricingDraft;
+    en: boolean;
+    className: string;
+    onChange: (draft: CostPricingDraft) => void;
+    onInvalidate: () => void;
+}) {
+    const change = (field: 'upstream_multiplier' | 'retail_multiplier', value: string) => {
+        onInvalidate();
+        onChange({ ...draft, [field]: value });
+    };
+    return (
+        <>
+            <NumericField
+                label={en ? 'Supplier multiplier' : '上游倍率'}
+                value={draft.upstream_multiplier}
+                onChange={(value) => change('upstream_multiplier', value)}
+                hint={
+                    en
+                        ? 'Applied to the base quote below. If the quote already includes this multiplier, enter 1; your retail multiplier then uses that quoted price as its base.'
+                        : '按下方基础报价计算成本。报价已含上游倍率时填 1；此时售价倍率也以这份报价为基准。'
+                }
+                className={className}
+            />
+            <NumericField
+                label={en ? 'My retail multiplier' : '我的售价倍率'}
+                value={draft.retail_multiplier}
+                onChange={(value) => change('retail_multiplier', value)}
+                hint={
+                    en
+                        ? 'Enter the final multiplier directly, e.g. 1.6 for a supplier multiplier of 1.3. It must not be lower than the supplier multiplier.'
+                        : '直接填最终倍率，例如上游 1.3，售价填 1.6。不能低于上游倍率。'
+                }
+                className={className}
+            />
+        </>
     );
 }
 
@@ -237,12 +312,13 @@ export function SavedCostRuleList({
                                     {model?.display_name ?? rule.model_id} · {rule.tier}
                                 </span>
                                 <span className="block text-xs opacity-75">
-                                    {basisLabel(rule.config.basis, en)} · {en ? 'Markup' : '加价'}{' '}
-                                    {rule.config.markup_percent}% (
-                                    {(1 + rule.config.markup_percent / 100).toLocaleString('zh-CN', {
-                                        maximumFractionDigits: 4,
-                                    })}{' '}
-                                    {en ? '× cost' : '倍成本'}) · {en ? 'Revision' : '版本'} {rule.revision}
+                                    {basisLabel(rule.config.basis, en)} ·{' '}
+                                    <CostMultiplierSummary
+                                        upstream={String(rule.config.upstream_multiplier)}
+                                        retail={draftFromCostConfig(rule.config).retail_multiplier}
+                                        en={en}
+                                    />{' '}
+                                    · {en ? 'Revision' : '版本'} {rule.revision}
                                 </span>
                                 <span className="block text-xs opacity-75">
                                     {en ? 'Cost saved at ' : '成本保存于 '}
@@ -300,7 +376,7 @@ export default function CostPricingWorkbench({
     const [savedDraft, setSavedDraft] = useState('');
     const [editorRevision, setEditorRevision] = useState<number | null>(null);
     const [selectedIds, setSelectedIds] = useState<string[]>([]);
-    const [bulkMarkup, setBulkMarkup] = useState('');
+    const [bulkRetailMultiplier, setBulkRetailMultiplier] = useState('');
     const [sampleUnits, setSampleUnits] = useState('');
     const [review, dispatchReview] = useReducer(costReviewReducer, { prepared: null, confirmed: false });
     const [now, setNow] = useState(() => Date.now());
@@ -313,7 +389,19 @@ export default function CostPricingWorkbench({
     const capability = data.capabilities.find((row) => row.model_id === modelId && row.tier === tier);
     const dirty = !!modelId && !!tier && JSON.stringify(draft) !== savedDraft;
     const bulkDirty =
-        bulkMarkup.trim() !== '' && selectedRules.some((rule) => rule.config.markup_percent !== Number(bulkMarkup));
+        bulkRetailMultiplier.trim() !== '' &&
+        selectedRules.some(
+            (rule) => Number(draftFromCostConfig(rule.config).retail_multiplier) !== Number(bulkRetailMultiplier),
+        );
+    const bulkMultiplierValid =
+        validMultiplier(bulkRetailMultiplier) !== null &&
+        selectedRules.every((rule) => Number(bulkRetailMultiplier) >= rule.config.upstream_multiplier);
+    const bulkMultiplierError =
+        bulkRetailMultiplier.trim() !== '' && selectedRules.length > 0 && !bulkMultiplierValid
+            ? en
+                ? 'Enter a positive retail multiplier at least as high as every selected supplier multiplier.'
+                : '售价倍率须为正数，且不能低于任一所选规则的上游倍率。'
+            : null;
     const selectedBlocked = selectedRules.find((rule) =>
         costRulePublishBlock(
             rule,
@@ -331,6 +419,15 @@ export default function CostPricingWorkbench({
           )
         : null;
     const draftValidation = useMemo(() => {
+        const upstream = positiveFiniteMultiplier(draft.upstream_multiplier);
+        const retail = positiveFiniteMultiplier(draft.retail_multiplier);
+        if (upstream !== null && retail !== null && retail < upstream)
+            return {
+                calculation: null,
+                message: en
+                    ? 'Your retail multiplier cannot be lower than the supplier multiplier. Below-cost pricing is not supported.'
+                    : '我的售价倍率不能低于上游倍率，当前不支持低于成本定价。',
+            };
         const raw = costConfigFromDraft(draft);
         if (!raw) return { calculation: null, message: null };
         const parsed = pricingCostConfigSchema.safeParse(raw);
@@ -340,7 +437,7 @@ export default function CostPricingWorkbench({
         } catch {
             return { calculation: null, message: null };
         }
-    }, [draft]);
+    }, [draft, en]);
     const calculation = draftValidation.calculation;
     const classes = {
         muted: isDark ? 'text-slate-400' : 'text-slate-600',
@@ -491,15 +588,20 @@ export default function CostPricingWorkbench({
         });
     const bulkSave = () =>
         run('bulk', async () => {
-            const markup = Number(bulkMarkup);
-            if (bulkMarkup.trim() === '' || !Number.isFinite(markup) || markup < 0 || selectedRules.length === 0)
-                return;
-            const inputs = selectedRules.map((rule) => ({
-                model_id: rule.model_id,
-                tier: rule.tier,
-                expected_revision: rule.revision,
-                config: { ...rule.config, markup_percent: markup },
-            }));
+            if (!bulkMultiplierValid || selectedRules.length === 0) return;
+            const inputs = selectedRules.map((rule) => {
+                const config = costConfigFromDraft({
+                    ...draftFromCostConfig(rule.config),
+                    retail_multiplier: bulkRetailMultiplier,
+                });
+                if (!config)
+                    throw new Error(
+                        en
+                            ? 'Review the saved quote and retail multiplier before saving.'
+                            : '请核对已保存的报价和售价倍率后再保存。',
+                    );
+                return { model_id: rule.model_id, tier: rule.tier, expected_revision: rule.revision, config };
+            });
             for (const input of inputs) calculateCostPricing(pricingCostConfigSchema.parse(input.config));
             const saved = await saveCostPricingRules(inputs, en);
             if (!mounted.current) return;
@@ -512,16 +614,24 @@ export default function CostPricingWorkbench({
                 setSavedDraft(JSON.stringify(next));
                 setEditorRevision(updatedEditor.revision);
             }
-            setBulkMarkup('');
+            setBulkRetailMultiplier('');
             setNotice(
                 en
-                    ? `Markup saved for ${saved.length} rules. Retail prices are unchanged; preview publication next.`
-                    : `已保存 ${saved.length} 条规则的加价比例，客户售价未变；下一步请预览发布。`,
+                    ? `Retail multipliers saved for ${saved.length} rules. Customer prices are unchanged; preview publication next.`
+                    : `已保存 ${saved.length} 条规则的售价倍率，客户售价未变；下一步请预览发布。`,
             );
         });
     const preview = () =>
         run('preview', async () => {
-            if (selectedRules.length === 0 || selectedBlockReason || dirty || bulkDirty || data.source_error) return;
+            if (
+                selectedRules.length === 0 ||
+                selectedBlockReason ||
+                dirty ||
+                bulkDirty ||
+                bulkMultiplierError ||
+                data.source_error
+            )
+                return;
             const expectedRevision = revision.current;
             const prepared = await requestCostPricingPreview(costRuleSelections(data.rules, selectedIds), en);
             if (!mounted.current || revision.current !== expectedRevision) return;
@@ -530,7 +640,15 @@ export default function CostPricingWorkbench({
         });
     const publish = () =>
         run('publish', async () => {
-            if (!review.prepared || !review.confirmed || dirty || bulkDirty || selectedBlockReason || data.source_error)
+            if (
+                !review.prepared ||
+                !review.confirmed ||
+                dirty ||
+                bulkDirty ||
+                bulkMultiplierError ||
+                selectedBlockReason ||
+                data.source_error
+            )
                 return;
             try {
                 const job = await publishCostPricingReview(review.prepared, en);
@@ -566,12 +684,12 @@ export default function CostPricingWorkbench({
             <div className="flex flex-wrap items-start justify-between gap-4">
                 <div>
                     <h2 id="cost-pricing-title" className="text-lg font-semibold">
-                        {en ? 'Price from your costs' : '按成本加价'}
+                        {en ? 'Set your retail multiplier' : '按倍率定价'}
                     </h2>
                     <p className={`mt-1 text-sm leading-relaxed ${classes.muted}`}>
                         {en
-                            ? 'Save supplier costs once. Set your markup, review every affected tier, then publish.'
-                            : '上游成本保存一次，之后调整加价比例、核对各档影响，再发布。'}
+                            ? 'Save the supplier quote, enter your retail multiplier, review every affected tier, then publish.'
+                            : '保存上游报价，直接填写你的售价倍率，核对各档影响后发布。'}
                     </p>
                 </div>
                 <button type="button" disabled={formBlocked} onClick={() => void reload()} className={classes.button}>
@@ -580,7 +698,7 @@ export default function CostPricingWorkbench({
             </div>
             <ol className={`my-5 grid gap-2 text-sm sm:grid-cols-3 ${classes.muted}`}>
                 <li>{en ? '1. Choose a model and tier' : '1. 选择模型与档次'}</li>
-                <li>{en ? '2. Save costs and markup' : '2. 保存成本与加价比例'}</li>
+                <li>{en ? '2. Save costs and retail multiplier' : '2. 保存成本与售价倍率'}</li>
                 <li>{en ? '3. Review and publish' : '3. 预览并发布'}</li>
             </ol>
             {error && (
@@ -705,7 +823,7 @@ export default function CostPricingWorkbench({
                                 </Field>
                             )}
                             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                                <Field label={en ? 'Supplier quote currency' : '上游参考价单位'}>
+                                <Field label={en ? 'Base quote currency' : '基础报价单位'}>
                                     <select
                                         className={classes.input}
                                         value={draft.currency}
@@ -730,44 +848,32 @@ export default function CostPricingWorkbench({
                                         className={classes.input}
                                     />
                                 )}
-                                {
-                                    <NumericField
-                                        label={en ? 'Supplier multiplier' : '上游倍率'}
-                                        value={draft.upstream_multiplier}
-                                        onChange={(value) => changeDraft({ ...draft, upstream_multiplier: value })}
-                                        hint={
-                                            en
-                                                ? 'If the reference quote already includes this multiplier, explicitly enter 1.'
-                                                : '参考价已包含上游倍率时填 1，避免重复计算。'
-                                        }
-                                        className={classes.input}
-                                    />
-                                }
-                                {
-                                    <NumericField
-                                        label={en ? 'Markup on cost (%)' : '在成本上加价（%）'}
-                                        value={draft.markup_percent}
-                                        onChange={(value) => changeDraft({ ...draft, markup_percent: value })}
-                                        hint={
-                                            en
-                                                ? '50% means selling at 1.5 × cost; it is not a 50% margin.'
-                                                : '加价 50% 就是成本 × 1.5，不是毛利率 50%。'
-                                        }
-                                        className={classes.input}
-                                    />
-                                }
+                                <CostMultiplierFields
+                                    draft={draft}
+                                    en={en}
+                                    className={classes.input}
+                                    onChange={setDraft}
+                                    onInvalidate={invalidate}
+                                />
                             </div>
+                            <p className="text-sm font-medium" aria-live="polite">
+                                <CostMultiplierSummary
+                                    upstream={draft.upstream_multiplier}
+                                    retail={draft.retail_multiplier}
+                                    en={en}
+                                />
+                            </p>
                             <p className={`text-xs leading-relaxed ${classes.muted}`}>
                                 {en
-                                    ? 'Quoted cost = reference quote × supplier multiplier ÷ credits per CNY. Retail = quoted cost × (1 + markup %). Estimates exclude payment fees and unrecorded charges.'
-                                    : '报价成本 = 上游参考价 × 上游倍率 ÷ 每元到账额度；售价 = 报价成本 ×（1 + 加价比例）。人民币报价无需额度换算；预计毛利未扣支付手续费等费用。'}
+                                    ? 'Cost = base quote × supplier multiplier ÷ credits per CNY. Retail = base quote × my retail multiplier ÷ credits per CNY. Base quotes exclude multipliers. CNY quotes need no credit conversion. Profit estimates exclude payment fees.'
+                                    : '成本 = 基础报价 × 上游倍率 ÷ 每元到账额度；售价 = 基础报价 × 我的售价倍率 ÷ 每元到账额度。基础报价不含倍率，人民币报价无需额度换算；预计毛利未扣支付手续费等费用。'}
                             </p>
                             {draft.basis === 'token' ? (
                                 <div className="space-y-3">
                                     <h4 className="text-sm font-semibold">
                                         {en
-                                            ? `Supplier quote (${sourceUnit} / 1M tokens)`
-                                            : `上游参考价（${sourceUnit}／百万 token）`}
+                                            ? `Base quote, before multipliers (${sourceUnit} / 1M tokens)`
+                                            : `基础报价，不含倍率（${sourceUnit}／百万 token）`}
                                     </h4>
                                     <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
                                         {(['input', 'output', 'cache_read', 'cache_write'] as const).map((key) => (
@@ -801,7 +907,7 @@ export default function CostPricingWorkbench({
                             ) : (
                                 <div className="space-y-3">
                                     <h4 className="text-sm font-semibold">
-                                        {en ? 'Specification costs' : '各规格成本'}
+                                        {en ? 'Base quotes by specification' : '各规格基础报价（不含倍率）'}
                                     </h4>
                                     {draft.variants.map((variant, index) => {
                                         const update = (changes: Partial<CostPricingDraft['variants'][number]>) =>
@@ -1004,7 +1110,7 @@ export default function CostPricingWorkbench({
                             {calculation ? (
                                 <div className="space-y-3">
                                     <h4 className="text-sm font-semibold">
-                                        {en ? 'Cost-based estimate' : '成本加价试算'}
+                                        {en ? 'Cost and retail estimate' : '成本与售价试算'}
                                     </h4>
                                     <CostEstimateTable lines={calculation.lines} en={en} isDark={isDark} />
                                     {draft.basis !== 'token' && (
@@ -1069,8 +1175,8 @@ export default function CostPricingWorkbench({
                                 >
                                     {draftValidation.message ??
                                         (en
-                                            ? 'Enter the actual quote, supplier multiplier and markup to calculate. Required numeric values must be valid; blank prices will not be assumed.'
-                                            : '填好真实参考价、上游倍率和加价比例后显示试算。请补齐有效必填数值，系统不会猜测空白价格。')}
+                                            ? 'Enter the actual base quote, supplier multiplier and your retail multiplier to calculate. Required numeric values must be valid; blank prices will not be assumed.'
+                                            : '填好真实基础报价、上游倍率和我的售价倍率后显示试算。请补齐有效必填数值，系统不会猜测空白价格。')}
                                 </p>
                             )}
                             <div className="flex flex-wrap items-center gap-3">
@@ -1105,8 +1211,8 @@ export default function CostPricingWorkbench({
                 </h3>
                 <p className={`mb-4 text-sm ${classes.muted}`}>
                     {en
-                        ? 'Choose saved rules. You can apply one markup to the selection, then preview the complete publication impact.'
-                        : '勾选已保存的成本规则，可统一调整加价比例，再预览完整发布影响。'}
+                        ? 'Choose saved rules, set one retail multiplier for them, then preview the complete publication impact.'
+                        : '勾选已保存的成本规则，可统一设置售价倍率，再预览完整发布影响。'}
                 </p>
                 {data.rules.length === 0 ? (
                     <p
@@ -1179,26 +1285,24 @@ export default function CostPricingWorkbench({
                             <div className="w-full sm:max-w-xs">
                                 {
                                     <NumericField
-                                        label={en ? 'Batch markup (%)' : '统一加价比例（%）'}
-                                        value={bulkMarkup}
+                                        label={en ? 'Retail multiplier for selected rules' : '统一售价倍率'}
+                                        value={bulkRetailMultiplier}
                                         onChange={(value) => {
                                             invalidate();
-                                            setBulkMarkup(value);
+                                            setBulkRetailMultiplier(value);
                                         }}
+                                        hint={
+                                            en
+                                                ? 'Apply the same final multiplier to every selected rule; each keeps its own base quote and supplier multiplier.'
+                                                : '所选规则使用同一最终倍率，各自的基础报价和上游倍率保持不变。'
+                                        }
                                         className={classes.input}
                                     />
                                 }
                             </div>
                             <button
                                 type="button"
-                                disabled={
-                                    formBlocked ||
-                                    dirty ||
-                                    selectedRules.length === 0 ||
-                                    bulkMarkup.trim() === '' ||
-                                    !Number.isFinite(Number(bulkMarkup)) ||
-                                    Number(bulkMarkup) < 0
-                                }
+                                disabled={formBlocked || dirty || selectedRules.length === 0 || !bulkMultiplierValid}
                                 className={classes.button}
                                 onClick={() => void bulkSave()}
                             >
@@ -1207,10 +1311,15 @@ export default function CostPricingWorkbench({
                                         ? 'Saving…'
                                         : '保存中…'
                                     : en
-                                      ? 'Save markup for selected costs'
-                                      : '保存所选规则的加价比例'}
+                                      ? 'Save selected retail multipliers'
+                                      : '保存所选规则的售价倍率'}
                             </button>
                         </fieldset>
+                        {bulkMultiplierError && (
+                            <p role="alert" className={`mt-3 ${classes.warning}`}>
+                                {bulkMultiplierError}
+                            </p>
+                        )}
                         {dirty && (
                             <p className={`mt-3 text-sm ${classes.muted}`}>
                                 {en
@@ -1221,8 +1330,8 @@ export default function CostPricingWorkbench({
                         {bulkDirty && (
                             <p className={`mt-3 text-sm ${classes.muted}`}>
                                 {en
-                                    ? 'Save the batch markup or clear its input before publication.'
-                                    : '批量加价比例尚未保存，请先保存或清空此输入，再预览发布。'}
+                                    ? 'Save the batch retail multiplier or clear its input before publication.'
+                                    : '批量售价倍率尚未保存，请先保存或清空此输入，再预览发布。'}
                             </p>
                         )}
                         {selectedBlockReason && (
@@ -1241,6 +1350,7 @@ export default function CostPricingWorkbench({
                                 formBlocked ||
                                 dirty ||
                                 bulkDirty ||
+                                !!bulkMultiplierError ||
                                 selectedRules.length === 0 ||
                                 !!selectedBlockReason ||
                                 !!data.source_error
@@ -1309,7 +1419,14 @@ export default function CostPricingWorkbench({
                     <button
                         type="button"
                         className={classes.primary}
-                        disabled={formBlocked || !review.confirmed || previewExpired || dirty || bulkDirty}
+                        disabled={
+                            formBlocked ||
+                            !review.confirmed ||
+                            previewExpired ||
+                            dirty ||
+                            bulkDirty ||
+                            !!bulkMultiplierError
+                        }
                         onClick={() => void publish()}
                     >
                         {busy === 'publish'
