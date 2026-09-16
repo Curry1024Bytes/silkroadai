@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { resolveAdmin } from '@/lib/admin/auth';
+import { PLATFORM_TENANT_ID } from '@/lib/admin/tenant-scope';
 import { unauthorizedResponse } from '@/lib/admin-auth';
 import {
     listRetirementJobs,
@@ -14,7 +15,8 @@ export const runtime = 'nodejs';
 const schema = z
     .object({
         action: z.enum(['preview', 'apply']),
-        tenant_id: z.string().uuid().nullable(),
+        // The historical platform ID is a PostgreSQL UUID, but has no RFC UUID version bits.
+        tenant_id: z.union([z.string().uuid(), z.literal(PLATFORM_TENANT_ID)]).nullable(),
         tier_key: z.string().trim().min(1).max(200),
         newapi_group: z.string().trim().min(1).max(200).optional(),
         archive_only: z.literal(true).optional(),

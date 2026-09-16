@@ -29,6 +29,7 @@ import { ChannelGroupRetirementError } from '@/lib/admin/channel-group-retiremen
 
 const admin = { role: 'superadmin', tenant_id: null, user: null, viaBreakGlass: true };
 const tenant = '00000000-0000-4000-8000-000000000001';
+const platformTenant = '00000000-0000-0000-0000-000000000001';
 const context = { params: Promise.resolve({ id: 'group' }) };
 const request = (body?: unknown) =>
     new NextRequest('https://llmroute.club/api/admin/channel-group-retirement-jobs', {
@@ -115,49 +116,58 @@ describe('retirement HTTP authorization and durable task contract', () => {
             admin,
         );
     });
-    it('automatically resolves orphan ownership without an operator-provided group', async () => {
-        const response = await orphanPOST(request({ action: 'preview', tenant_id: null, tier_key: 'legacy' }));
-        expect(response.status).toBe(200);
-        expect(await response.json()).toEqual({ preview: { canApply: true, preview_token: 'signed-auto' } });
-        expect(mocks.autoPreview).toHaveBeenCalledWith({ tenantId: null, tierKey: 'legacy' }, admin);
-        expect(mocks.preview).not.toHaveBeenCalled();
-        expect(mocks.start).not.toHaveBeenCalled();
-    });
-    it('creates a signed archive-only job without inventing a group name', async () => {
-        const response = await orphanPOST(
-            request({
-                action: 'apply',
-                tenant_id: tenant,
-                tier_key: 'legacy',
-                archive_only: true,
-                preview_token: 'signed',
-            }),
-        );
-        expect(response.status).toBe(202);
-        expect(mocks.start).toHaveBeenCalledWith(
-            { groupId: null, tenantId: tenant, tierKey: 'legacy', newapiGroup: '', archiveOnly: true },
-            admin,
-            'signed',
-        );
-        expect(mocks.resume).not.toHaveBeenCalled();
-    });
-    it('passes the reviewed nonempty group to the signed normal job', async () => {
-        const response = await orphanPOST(
-            request({
-                action: 'apply',
-                tenant_id: tenant,
-                tier_key: 'legacy',
-                newapi_group: 'Reviewed group',
-                preview_token: 'signed',
-            }),
-        );
-        expect(response.status).toBe(202);
-        expect(mocks.start).toHaveBeenCalledWith(
-            { groupId: null, tenantId: tenant, tierKey: 'legacy', newapiGroup: 'Reviewed group' },
-            admin,
-            'signed',
-        );
-    });
+    it.each([null, tenant, platformTenant])(
+        'automatically resolves orphan ownership for tenant %s without a group',
+        async (tenantId) => {
+            const response = await orphanPOST(request({ action: 'preview', tenant_id: tenantId, tier_key: 'legacy' }));
+            expect(response.status).toBe(200);
+            expect(await response.json()).toEqual({ preview: { canApply: true, preview_token: 'signed-auto' } });
+            expect(mocks.autoPreview).toHaveBeenCalledWith({ tenantId, tierKey: 'legacy' }, admin);
+            expect(mocks.preview).not.toHaveBeenCalled();
+            expect(mocks.start).not.toHaveBeenCalled();
+        },
+    );
+    it.each([tenant, platformTenant])(
+        'creates a signed archive-only job for tenant %s without inventing a group name',
+        async (tenantId) => {
+            const response = await orphanPOST(
+                request({
+                    action: 'apply',
+                    tenant_id: tenantId,
+                    tier_key: 'legacy',
+                    archive_only: true,
+                    preview_token: 'signed',
+                }),
+            );
+            expect(response.status).toBe(202);
+            expect(mocks.start).toHaveBeenCalledWith(
+                { groupId: null, tenantId, tierKey: 'legacy', newapiGroup: '', archiveOnly: true },
+                admin,
+                'signed',
+            );
+            expect(mocks.resume).not.toHaveBeenCalled();
+        },
+    );
+    it.each([tenant, platformTenant])(
+        'passes the reviewed group to the signed normal job for tenant %s',
+        async (tenantId) => {
+            const response = await orphanPOST(
+                request({
+                    action: 'apply',
+                    tenant_id: tenantId,
+                    tier_key: 'legacy',
+                    newapi_group: 'Reviewed group',
+                    preview_token: 'signed',
+                }),
+            );
+            expect(response.status).toBe(202);
+            expect(mocks.start).toHaveBeenCalledWith(
+                { groupId: null, tenantId, tierKey: 'legacy', newapiGroup: 'Reviewed group' },
+                admin,
+                'signed',
+            );
+        },
+    );
     it.each([
         { action: 'preview' },
         { action: 'apply', tenant_id: null, tier_key: 'a', newapi_group: 'b' },
