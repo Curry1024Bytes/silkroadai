@@ -1049,3 +1049,11 @@ LiteLLM 时代的 `LITELLM_*` 变量保留作 fallback,W3 D1 关停后可删。
 - 备份目录 `/opt/backups/silkroadai-portal/releases/group-key-revocation-20260916-011953/`；环境备份 `.env.bak.group-key-revocation-20260916-011953`；回滚标签 `silkroadai-portal-portal:rollback-group-key-revocation-20260916-011953`（旧应用04868d4）。生产79条migration全部完成，09:29:42–09:29:58切换，失败样本跨度7.92秒；Portal restart0/日志error0，依赖未重启。
 - 50/50网络检查、13/13持久授权、两类UA模型列表200/4模型、API/MySQL价格双读通过。九张既有业务表/客户白名单/环境保持；29模型35价格版本5分组21Key、11项配置UTF-8原始字节不变。历史已删除档次仍有14把active Key，为已知遗留状态，不得误报拓扑异常全0。
 - 新入口生产仅preview，2把目标Key均ready、默认替代保护正常；两张新任务表为空，未撤销任何生产Key。已删除的GPT特惠分组遗留Key范围问题尚未获答复，不自动批量撤销。入口为「删除任务与遗留 Key」；详细证据见 [功能与发布报告](docs/CHANNEL-GROUP-KEY-REVOCATION-2026-09-15.md)。
+
+## 遗留 Key 自动识别发布（2026-09-16，11:24 已上线）
+
+- 按持续授权发布 `prod@cb8aa91`，镜像 `sha256:c017bf2edc931a77a4fe00001b9d93a2ab0cb9da277d9496d8285704538812f5`；后续纯文档提交不重建。遗留Key清理不再手填已删除group，按持久客户/token绑定读取当前归属并展示确认；匹配历史冲突、多组、别的启用档占用或身份未知均阻止。
+- 全远端记录缺失时走签名绑定的archiveOnly任务，重新确认客户身份/记录缺失/凭据拒绝后只归档，不发DELETE；重现或缓存仍接受不得完成。普通历史任务兼容。无migration/env/new-api源码/价格配置变更，79条migration保持。
+- 首轮生产克隆捕获平台固定UUID被RFC版本校验拒绝，增加平台常量精确兼容和三项红→绿回归；首轮未切换。最终320 files / 4639 passed / 1既有skipped，类型/Prisma/构建/格式通过，lint0 error/93既有warnings；实PG合成HTTP7场景、最终克隆23项通过。
+- 最终备份 `/opt/backups/silkroadai-portal/releases/orphan-auto-20260916-031652/`，环境备份 `.env.bak.orphan-auto-20260916-031652`，回滚标签 `rollback-orphan-auto-20260916-031652` 对应旧运行fd595f4。11:24:06–11:24:21仅切换Portal，13/25失败样本跨度8.424秒，restart0/日志error0，依赖未重启。
+- 50/50网络、13/13持久授权、两类UA模型列表200/4模型、价格双读通过。九表/环境/白名单及11项计费选项UTF-8原始字节保持；29模型35价格5分组21Key不变。真实自动预览200：`gpt特惠分组 → GPT-特惠反代`，15Key=14ready+1already_absent，canApply=true，来源current_keys（不冒称历史原名证明）。任务表仍0，未实际清理这批Key，14活动遗留Key仍保留。详见 `docs/ORPHAN-KEY-AUTO-DISCOVERY-2026-09-16.md`。
