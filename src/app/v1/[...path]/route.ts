@@ -1289,18 +1289,52 @@ async function gptImageUpstream(
  *  - 多图取第一张(与 Gemini 路径 aspectRatioFromInput 同口径);imageDimensions 已按 EXIF Orientation
  *    对调手机竖拍 JPEG 的宽高(PR #184);
  *  - 显式 WxH 一律不动;变体名 / aspect_ratio 在 normalizeGptImage* 里已先转成显式尺寸,到这里不会再是 auto;
- *  - 只作用于经 portal 的请求,直连 new-api :3000 的客户(c-70fd7c5f 等)行为不变。 */
+ *  - 只作用于经 portal 的请求,直连 new-api :3000 的客户(c-70fd7c5f 等)行为不变;
+ *  - 优先级:prompt 里的明确画幅字样(promptAspectRatio)> 输入图比例。 */
 async function resolveGptImageEditsAutoSize(form: FormData): Promise<string | null> {
     const s = String(form.get('size') ?? '').trim();
     if (s && s.toLowerCase() !== 'auto') return null;
     const files = formImageFiles(form);
     if (!files.length) return null;
-    const dims = imageDimensions(Buffer.from(await files[0].arrayBuffer()));
-    if (!dims) return null;
-    const px = gptImageSizeFromInput(dims.w, dims.h);
+    // 优先级 1:prompt 里写了明确画幅(「改成 16:9」)→ 按 prompt 的比例(2026-09-16 #466 后续):
+    // #466 把 auto 钉成输入图比例后,客户「方图 + prompt 说 16:9」的用法从上游随机 4 成命中变成 0 命中
+    // (ch186 对 auto 是让模型自己定画布,模型有时听 prompt);这里把它变成 100% 确定。
+    const promptRatio = promptAspectRatio(String(form.get('prompt') ?? ''));
+    const fromPrompt = promptRatio ? aspectToPixelSize(promptRatio) : null;
+    let px: string;
+    let input = '';
+    if (fromPrompt) {
+        px = fromPrompt;
+    } else {
+        // 优先级 2:跟随第一张输入图比例
+        const dims = imageDimensions(Buffer.from(await files[0].arrayBuffer()));
+        if (!dims) return null;
+        input = `${dims.w}x${dims.h}`;
+        px = gptImageSizeFromInput(dims.w, dims.h);
+    }
     form.set('size', px);
-    console.log('[proxy/gpt-image] edits auto size resolved', { input: `${dims.w}x${dims.h}`, size: px });
-    return `${s || 'auto'}->${px}`;
+    console.log('[proxy/gpt-image] edits auto size resolved', {
+        source: fromPrompt ? 'prompt' : 'input',
+        ...(fromPrompt ? { promptRatio } : { input }),
+        size: px,
+    });
+    return `${s || 'auto'}->${px}${fromPrompt ? ';from=prompt' : ''}`;
+}
+
+/** prompt 里的明确画幅字样 → 比例串("16:9")。认半角 / 全角冒号与「比」(`16:9` / `16：9` / `16比9`),
+ *  数字前后不能紧挨数字或小数点(排除 1.5:1 / 版本号);两数各 1-32,长短比 ≤ 2.5(涵盖 21:9=2.33,排掉
+ *  10:30 这类时间和 3:1 以上的极端值);取第一个命中。只在客户没给 size(auto/缺省)时被用到。 */
+function promptAspectRatio(prompt: string): string | null {
+    const re = /(?<![\d.])(\d{1,2})\s*[:：比]\s*(\d{1,2})(?![\d.])/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(prompt))) {
+        const a = Number(m[1]);
+        const b = Number(m[2]);
+        if (a < 1 || b < 1 || a > 32 || b > 32) continue;
+        if (Math.max(a, b) / Math.min(a, b) > 2.5) continue;
+        return `${a}:${b}`;
+    }
+    return null;
 }
 
 /** 把 `X-Silkroadai-Size-Resolved: auto->WxH` 挂到上游响应上(reshape 会把上游头透传给客户),

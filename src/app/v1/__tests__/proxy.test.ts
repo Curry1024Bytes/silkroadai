@@ -5201,3 +5201,108 @@ describe('/v1 proxy — gpt-image edits size=auto/缺省 → 代理层按输入�
         expect(res.headers.get('x-silkroadai-size-resolved')).toBe('auto->1024x1536');
     });
 });
+
+describe('/v1 proxy — gpt-image edits size=auto + prompt 写明画幅 → 按 prompt 比例补 size(#466 后续)', () => {
+    function pngHeader(w: number, h: number): Buffer {
+        const png = Buffer.alloc(33);
+        png.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+        png.writeUInt32BE(13, 8);
+        png.write('IHDR', 12, 'latin1');
+        png.writeUInt32BE(w, 16);
+        png.writeUInt32BE(h, 20);
+        return png;
+    }
+    function ok(): Response {
+        return new Response(JSON.stringify({ created: 1, data: [{ b64_json: 'QUJD' }] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+        });
+    }
+    function editsForm(size: string | null, prompt: string, ...images: Buffer[]): NextRequest {
+        const form = new FormData();
+        form.append('model', 'gpt-image-2');
+        form.append('prompt', prompt);
+        if (size !== null) form.append('size', size);
+        for (const buf of images)
+            form.append('image', new File([new Uint8Array(buf)], 'in.png', { type: 'image/png' }));
+        return new NextRequest('https://ai.silkroadai.io/v1/images/edits', { method: 'POST', body: form });
+    }
+    function sentSize(): string | null {
+        const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        return (init.body as FormData).get('size') as string | null;
+    }
+
+    it('客户原样请求:size=auto + 方图 + prompt「将图片改为16：9的尺寸」(全角冒号)→ 1536x864', async () => {
+        mockFetch.mockResolvedValueOnce(ok());
+        const res = await POST(
+            editsForm('auto', '将图片改为16：9的尺寸', pngHeader(1024, 1024)),
+            ctx('images', 'edits'),
+        );
+        expect(res.status).toBe(200);
+        expect(sentSize()).toBe('1536x864');
+        expect(res.headers.get('x-silkroadai-size-resolved')).toBe('auto->1536x864;from=prompt');
+    });
+
+    it('prompt 比例优先于输入图比例:横图输入 + 「改成 9:16」→ 864x1536', async () => {
+        mockFetch.mockResolvedValueOnce(ok());
+        await POST(editsForm(null, '改成 9:16 竖版海报', pngHeader(1920, 1080)), ctx('images', 'edits'));
+        expect(sentSize()).toBe('864x1536');
+    });
+
+    it('「16比9」也认', async () => {
+        mockFetch.mockResolvedValueOnce(ok());
+        await POST(editsForm('auto', '扩成16比9', pngHeader(1024, 1024)), ctx('images', 'edits'));
+        expect(sentSize()).toBe('1536x864');
+    });
+
+    it('表外比例(5:2)按 1MP 等比折算', async () => {
+        mockFetch.mockResolvedValueOnce(ok());
+        await POST(editsForm('auto', 'banner 5:2', pngHeader(1024, 1024)), ctx('images', 'edits'));
+        const [w, h] = String(sentSize()).split('x').map(Number);
+        expect(w % 16).toBe(0);
+        expect(h % 16).toBe(0);
+        expect(Math.abs(w / h - 2.5)).toBeLessThan(0.05);
+    });
+
+    it('时间字样(10:30)/ 极端比例(1:10)/ 小数(1.5:1)不算画幅 → 回落到输入图比例', async () => {
+        for (const prompt of ['在 10:30 的位置加钟表', '拉成 1:10', '比例 1.5:1']) {
+            mockFetch.mockReset();
+            mockFetch.mockResolvedValueOnce(ok());
+            const res = await POST(editsForm('auto', prompt, pngHeader(1024, 1536)), ctx('images', 'edits'));
+            expect(sentSize()).toBe('1024x1536');
+            expect(res.headers.get('x-silkroadai-size-resolved')).toBe('auto->1024x1536');
+        }
+    });
+
+    it('显式 size + prompt 写了比例 → 显式 size 优先,不动', async () => {
+        mockFetch.mockResolvedValueOnce(ok());
+        const res = await POST(editsForm('2048x2048', '改成 16:9', pngHeader(1024, 1024)), ctx('images', 'edits'));
+        expect(sentSize()).toBe('2048x2048');
+        expect(res.headers.get('x-silkroadai-size-resolved')).toBeNull();
+    });
+
+    it('generations(无输入图)+ prompt 写了比例 + size=auto → 不动(仍透传 auto)', async () => {
+        mockFetch.mockResolvedValueOnce(ok());
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2', prompt: '一张 16:9 的海报', size: 'auto' },
+            }),
+            ctx('images', 'generations'),
+        );
+        const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect((JSON.parse(String(init.body)) as { size?: string }).size).toBe('auto');
+        expect(res.headers.get('x-silkroadai-size-resolved')).toBeNull();
+    });
+
+    it('JSON edits(image data URL)+ prompt 16:9 + 缺省 size → 1536x864', async () => {
+        mockFetch.mockResolvedValueOnce(ok());
+        const dataUrl = 'data:image/png;base64,' + pngHeader(1024, 1024).toString('base64');
+        const res = await POST(
+            makeReq('/images/edits', { body: { model: 'gpt-image-2', prompt: '改为 16:9', image: dataUrl } }),
+            ctx('images', 'edits'),
+        );
+        expect(res.status).toBe(200);
+        expect(sentSize()).toBe('1536x864');
+        expect(res.headers.get('x-silkroadai-size-resolved')).toBe('auto->1536x864;from=prompt');
+    });
+});
