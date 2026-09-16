@@ -215,6 +215,8 @@ silkroadai/
 
 - [x] PR #466 merge `4e6a65c` + server2 六副本滚动部署 ✅ — 起因:客户 1913696371 报「指定了尺寸出方图」,三条 request_id 查证到 new-api 的 `size` 均为 `auto`、落 ch186 出 1024²;同客户同时段发 `16:9` 的请求被代理折成 1536x864 后正确 → 链路没改尺寸,是客户端没发。顺带用近 24h 适配器 `[image-adapter] ok` 日志实测:**low/medium 专线(ch207 frimodellow / ch204 frimodelmedium)对 `auto` 恒出 1024²/2048² 方图、无视输入图**,只有 high 线(ch186 ominiapi)跟随输入比例(见 gotcha #22)。修法:`resolveGptImageEditsAutoSize` —— **edits(有输入图)** 且 `size` 缺省/`auto` → 读第一张输入图尺寸(`imageDimensions`,含 EXIF Orientation)→ `gptImageSizeFromInput` 挑 `GPT_IMAGE_ASPECT_SIZE` 最近合法 WxH,首发即明确尺寸;multipart 与 JSON(data URL → multipart)两路 + chat 翻译同路;响应头 `X-Silkroadai-Size-Resolved: auto->WxH`。**边界**:generations 的 `auto` 绝不动(一周 73.8 万次、¥25 万,上游 auto→2048² 是既有产品行为);读不出尺寸保留 `auto`;显式 WxH 不动;多图取首图;只作用于经 portal 的请求(直连 :3000 的 c-70fd7c5f 不受影响)。影响:路由/计费机制不变;经 portal 的 `auto` edits 一周约 2.8 万次 / ¥2,049,非方形输入单价降 20–35%,每周少收 ≤ ¥700。+10 测试,全套 271 files / 3499 PASS。
 
+- [x] PR #468 — `auto` 时 **prompt 写明画幅优先于输入图比例** ✅(2026-09-16,#466 后续)— 客户反馈「昨天同样请求体出的是 16:9」:同一测试图 09-14 `auto` 落 ch186 出 2560×1440 4 次 / 1024² 6 次(ch186 对 `auto` 让模型自己定画布,模型约 4 成听 prompt「改为16：9」),#466 钉成输入图比例后这 4 成归零。现 `resolveGptImageEditsAutoSize` 优先级:`promptAspectRatio(prompt)`(认 `16:9` / 全角 `16：9` / `16比9`,数字前后不挨数字或小数点,两数 1-32、长短比 ≤ 2.5 排掉 `10:30` 时间与 3:1 以上)→ `aspectToPixelSize` 补尺寸;没写才跟随输入图。响应头 `auto->WxH;from=prompt`。显式 size / generations 仍不动。客户请求体不改即 100% 出 16:9。+8 测试,全套 3507 PASS。
+
 ### 企业门户「火山」渠道换上游 → 筷子开放平台(2026-08-17 上线)
 
 - [x] PR #386 merge `7cbb77f` + 部署 + 生产真机 smoke ✅ — volc region 上游从 new-api 形 provider(`ENTERPRISE_VOLC_VIDEO_*`)换成 **筷子 AI 开放平台** `https://aiopenapi.kuaizi.cn`。筷子对齐火山方舟官方 `contents/generations/tasks` 契约 → 对客方舟形接口近乎直通,**proxy 主干 / 计费 / 对客契约 / region 键全不变**,差异全吸收在适配器边界。
@@ -428,6 +430,8 @@ LiteLLM 同时支持 user-level 和 key-level 预算。我们只用 key-level(�
 **症状**:客户 `/v1/images/edits` 不传 `size`(或传 `auto`,OpenAI SDK 默认)+ 非方形输入图 → 出 1024×1024 / 2048×2048 方图,客户以为我们改了尺寸。
 **真实行为**(2026-09-16 用近 24h 适配器 `[image-adapter] ok` 日志的 `size: 'auto→WxH'` 字段实测):frimodel 家族(ch204 medium / ch207 low)对 `auto` **100% 出方图**(1024² 或 2048²),完全无视输入图比例;ominiapi(ch186 high)跟随输入比例但分辨率由它定,且混有 1254²/1672×941/816² 这类 ChatGPT 网页特征尺寸(号池成员)。OpenAI 官方 edits 的 `auto` 才是跟随输入图。
 **解决**:PR #466 起代理层 `resolveGptImageEditsAutoSize` 在 edits 且 `auto`/缺省时按第一张输入图比例补明确 WxH 再发上游(只作用经 portal 的请求)。**排障口诀**:客户报「指定尺寸出方图」先查 new-api `logs.content` 的 `大小 X` —— 那是 new-api 收到的原值,代理对裸 `gpt-image-2` 的显式 WxH 一律透传、只把 `16:9` 这类比例串折成像素、变体名补固定尺寸,不会把 WxH 改成 `auto`;`大小 auto` = 客户端没发(new-api 对 gpt-image 不给空 size 补默认,空 size 时日志根本没有 `大小` 段)。想看 `auto` 实际出了什么尺寸,用 ct 反推(1024² high=7024 / medium=1756 / low=196,2048² high=14272)或查适配器 ok 日志,不要猜。
+**prompt 里写比例 ≠ 指定画幅(#468 前)**:按张上游对 `auto` 是「模型自己定画布」,模型有时听 prompt 里的「16:9」有时不听(实测 4/10),客户会把偶然命中当成功能。#468 起代理在 `auto` + edits 时把 prompt 里的明确比例字样当画幅指令补成显式 size,变成确定行为;但正确用法仍是显式 `size`。
+
 **别碰 generations**:generations 的 `auto` 上游出 2048²/1024×1536/1536×1024,一周 73.8 万次、¥25 万,是既有产品行为;任何把 generations `auto` 补成 1024² 的写法都会砍半收入(`gptImageFallbackSize` 对无图请求返回 1024²,不能复用到这里)。
 
 ---
@@ -570,4 +574,4 @@ APP_PORT=3002
 ---
 
 **版本**: 2.4
-**最后更新**: 2026-09-16(gpt-image edits auto 尺寸代理层兜底 #466 + gotcha #22)
+**最后更新**: 2026-09-16(gpt-image edits auto 尺寸代理层兜底 #466/#468 + gotcha #22)
