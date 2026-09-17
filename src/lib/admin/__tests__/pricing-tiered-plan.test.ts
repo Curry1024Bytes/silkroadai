@@ -21,7 +21,9 @@ import {
 import type { PublishSource, PublishState } from '../pricing-publish-plan';
 import type { PricingPublishInput } from '../pricing-publish-types';
 import { CHAT_FX, IMAGE_FX } from '@/lib/newapi/pricing-sync';
-import { buildUniformPublishPlan } from '../pricing-uniform-plan';
+import { buildUniformPublishPlan, buildCacheUniformPublishPlan } from '../pricing-uniform-plan';
+import { parseTieredPricingDetails } from '@/lib/models/tiered-pricing-details';
+import { costCapabilities } from '../pricing-cost-capabilities';
 import { parseTieredPricingExpression, uniformTokenPricingExpression } from '../pricing-tiered-expression';
 
 const NOW = Date.parse('2026-09-16T12:00:00Z');
@@ -449,5 +451,127 @@ describe('v4 uniform customer token pricing', () => {
         expect(() => buildUniformPublishPlan(state, source, [input, input], NOW)).toThrow();
         source.channels[0].status = 2;
         expect(() => buildUniformPublishPlan(state, source, [input], NOW)).toThrow();
+    });
+});
+
+describe('V5 uniform tariffs with complete cache creation', () => {
+    function cacheFixture() {
+        const { state, source, input } = fixture();
+        (source.options[EXPRESSION_KEY] as Record<string, string>)['gpt-5.5'] =
+            'len < 272000 ? tier("base", p * 5 + c * 30 + cr * 0.5 + cc * 6.25 + cc1h * 10) : tier("tier_2", p * 10 + c * 45 + cr * 1 + cc * 12.5 + cc1h * 20)';
+        return {
+            state,
+            source,
+            input: { ...input, cache_write_cny_per_1m: 1, cache_write_1h_cny_per_1m: 1.6 } as PricingPublishInput,
+        };
+    }
+    it('reproduces the Sol blocking report and replaces the legacy restriction with complete V5 prices', () => {
+        const { state, source, input } = cacheFixture();
+        const plan = buildCacheUniformPublishPlan(state, source, [input], NOW);
+        expect(plan).toMatchObject({ version: 5, strategy: 'uniform_token', unchanged: false });
+        expect(plan.target[EXPRESSION_KEY]['gpt-5.5']).toBe(
+            'tier("uniform", p * 5 + c * 30 + cr * 0.5 + cc * 6.25 + cc1h * 10)',
+        );
+        expect(plan.rows[0].after_details?.tiers).toHaveLength(1);
+        expect(plan.rows[0].after_details?.tiers[0].rates).toEqual({
+            input: 0.8,
+            output: 4.8,
+            cache_read: 0.08,
+            cache_write: 1,
+            cache_write_1h: 1.6,
+        });
+        expect(plan.customer_overrides[0].after.tiers[0].rates).toMatchObject({
+            cache_write: 1.125,
+            cache_write_1h: 1.8,
+        });
+        expect(plan.baseline.GroupRatio).toEqual({ enterprise: 0.16, partner: 0.2 });
+        expect(Object.keys(plan.target)).toEqual([EXPRESSION_KEY]);
+    });
+    it.each(['cache_read', 'cache_write', 'cache_write_1h'] as const)(
+        'requires the configured %s quote instead of silently dropping its token category',
+        (key) => {
+            const { state, source, input } = cacheFixture();
+            delete input[`${key}_cny_per_1m`];
+            expect(() => buildCacheUniformPublishPlan(state, source, [input], NOW)).toThrow(
+                expect.objectContaining({ code: 'pricing_uniform_cache' }),
+            );
+        },
+    );
+    it('requires explicit zero quotes too, because a zero term still controls prompt normalization', () => {
+        const { state, source, input } = cacheFixture();
+        (source.options[EXPRESSION_KEY] as Record<string, string>)['gpt-5.5'] =
+            'tier("zero", p * 5 + c * 30 + cr * 0 + cc * 0 + cc1h * 0)';
+        for (const key of ['cache_read', 'cache_write', 'cache_write_1h'] as const) input[`${key}_cny_per_1m`] = 0;
+        const plan = buildCacheUniformPublishPlan(state, source, [input], NOW);
+        expect(plan.target[EXPRESSION_KEY]['gpt-5.5']).toBe(
+            'tier("uniform", p * 5 + c * 30 + cr * 0 + cc * 0 + cc1h * 0)',
+        );
+        delete input.cache_write_cny_per_1m;
+        expect(() => buildCacheUniformPublishPlan(state, source, [input], NOW)).toThrow(/缓存写入/);
+    });
+    it('checks required categories across every original band, including cache terms only in the long-input band', () => {
+        const { state, source, input } = cacheFixture();
+        (source.options[EXPRESSION_KEY] as Record<string, string>)['gpt-5.5'] =
+            'len < 272000 ? tier("base", p * 5 + c * 30) : tier("tier_2", p * 10 + c * 45 + cr * 1 + cc * 12.5 + cc1h * 20)';
+        const plan = buildCacheUniformPublishPlan(state, source, [input], NOW);
+        expect(plan.rows[0].after_details?.tiers).toHaveLength(1);
+        expect(plan.rows[0].before_details?.tiers[0].rates).toMatchObject({
+            cache_read: 0,
+            cache_write: 0,
+            cache_write_1h: 0,
+        });
+        for (const row of plan.rows) expect(() => parseTieredPricingDetails(row.before_details)).not.toThrow();
+        for (const row of plan.customer_overrides) expect(() => parseTieredPricingDetails(row.before)).not.toThrow();
+        expect(costCapabilities(state, source)[0]).toMatchObject({
+            publishable: true,
+            required_token_rates: ['cache_read', 'cache_write', 'cache_write_1h'],
+        });
+        delete input.cache_write_1h_cny_per_1m;
+        expect(() => buildCacheUniformPublishPlan(state, source, [input], NOW)).toThrow(/1 小时/);
+    });
+    it('advertises the actual needed cache fields without asking the user to bypass an unsupported warning', () => {
+        const { state, source } = cacheFixture();
+        expect(costCapabilities(state, source)[0]).toMatchObject({
+            publishable: true,
+            publication_mode: 'uniform_token',
+            required_token_rates: ['cache_read', 'cache_write', 'cache_write_1h'],
+        });
+        (source.options[EXPRESSION_KEY] as Record<string, string>)['gpt-5.5'] =
+            'tier("base", p * 5 + c * 30 + cr * 0.5 + cc * 6.25)';
+        expect(costCapabilities(state, source)[0]).toMatchObject({
+            publishable: true,
+            required_token_rates: ['cache_read', 'cache_write'],
+        });
+    });
+    it('reads native new-api JSON-string option dictionaries when checking capabilities', () => {
+        const { state, source } = cacheFixture();
+        source.options = Object.fromEntries(
+            Object.entries(source.options).map(([key, value]) => [
+                key,
+                typeof value === 'object' ? JSON.stringify(value) : value,
+            ]),
+        );
+        expect(costCapabilities(state, source)[0]).toMatchObject({
+            publishable: true,
+            required_token_rates: ['cache_read', 'cache_write', 'cache_write_1h'],
+        });
+    });
+
+    it('keeps V3 and V4 recovery semantics and cache-write restriction unchanged', () => {
+        const { state, source, input } = cacheFixture();
+        expect(() => buildTieredPublishPlan(state, source, [input], NOW)).toThrow(/历史发布任务/);
+        expect(() => buildUniformPublishPlan(state, source, [input], NOW)).toThrow(/历史发布任务/);
+        delete input.cache_write_cny_per_1m;
+        delete input.cache_write_1h_cny_per_1m;
+        expect(() => buildTieredPublishPlan(state, source, [input], NOW)).toThrow(/缓存写入/);
+        expect(() => buildUniformPublishPlan(state, source, [input], NOW)).toThrow(/缓存写入/);
+    });
+    it('converts each cache-write quote independently instead of inheriting old prices or duration ratios', () => {
+        const { state, source, input } = cacheFixture();
+        input.cache_write_cny_per_1m = 0.25;
+        input.cache_write_1h_cny_per_1m = 0.125;
+        const plan = buildCacheUniformPublishPlan(state, source, [input], NOW);
+        expect(plan.rows[0].after_details?.tiers[0].rates).toMatchObject({ cache_write: 0.25, cache_write_1h: 0.125 });
+        expect(plan.target[EXPRESSION_KEY]['gpt-5.5']).toContain('cc * 1.5625 + cc1h * 0.78125');
     });
 });

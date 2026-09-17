@@ -16,6 +16,7 @@ const result = {
             outputUsdPer1m: 30,
             cacheReadUsdPer1m: 0.5,
             cacheWrite5mUsdPer1m: null,
+            cacheWrite1hUsdPer1m: null,
         },
     ],
 };
@@ -163,6 +164,7 @@ describe('reference price application requires explicit credit semantics', () =>
             output: 30,
             cache_read: 0.5,
             cache_write: null,
+            cache_write_1h: null,
             sourceLabel: result.source_label,
             fetchedAt: result.fetched_at,
         });
@@ -174,6 +176,20 @@ describe('reference price application requires explicit credit semantics', () =>
         expect(button?.disabled).toBe(true);
         button?.onClick();
         expect(onApply).not.toHaveBeenCalled();
+    });
+
+    it('keeps ordinary and hourly cache-write quotes distinct, including an explicit zero', () => {
+        const onApply = vi.fn();
+        const hourly = {
+            ...result,
+            models: [{ ...result.models[0], cacheWrite5mUsdPer1m: 6.25, cacheWrite1hUsdPer1m: 0 }],
+        };
+        const button = findButton(PricingReferenceResult({ ...props, result: hourly, confirmed: true, onApply }));
+        button?.onClick();
+        expect(onApply).toHaveBeenCalledWith(expect.objectContaining({ cache_write: 6.25, cache_write_1h: 0 }));
+        const html = renderToStaticMarkup(<PricingReferenceResult {...props} result={hourly} onApply={onApply} />);
+        expect(html).toContain('缓存写入 · 1 小时');
+        expect(html).toContain('$0');
     });
 
     it('provides no apply action for a stale selection or an empty search result', () => {

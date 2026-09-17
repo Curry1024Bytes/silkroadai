@@ -13,6 +13,8 @@ export interface PricingPublishInput extends PricingPublishAmounts {
     pricing_mode?: 'standard' | 'fixed_image';
     /** Explicit cached-token target; only a verified tiered expression can publish this. */
     cache_read_cny_per_1m?: number;
+    cache_write_cny_per_1m?: number;
+    cache_write_1h_cny_per_1m?: number;
 }
 
 export interface TieredPricingDetails {

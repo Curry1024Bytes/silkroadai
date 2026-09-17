@@ -67,8 +67,8 @@ function TieredRateComparison({
 }) {
     const rateKeys = ['input', 'output', 'cache_read', 'cache_write', 'cache_write_1h'] as const;
     const labels = en
-        ? ['Input', 'Output', 'Cache read', 'Cache write / 5m', 'Cache write / 1h']
-        : ['输入', '输出', '缓存读取', '缓存写入 / 5 分钟', '缓存写入 / 1 小时'];
+        ? ['Input', 'Output', 'Cache read', 'Cache write', 'Cache write / 1h']
+        : ['输入', '输出', '缓存读取', '缓存写入', '缓存写入 / 1 小时'];
     return (
         <div className="space-y-3">
             {after.tiers.map((tier, index) => (
@@ -128,8 +128,8 @@ function UniformRateComparison({
 }) {
     const rateKeys = ['input', 'output', 'cache_read', 'cache_write', 'cache_write_1h'] as const;
     const labels = en
-        ? ['Input', 'Output', 'Cache read', 'Cache write / 5m', 'Cache write / 1h']
-        : ['输入', '输出', '缓存读取', '缓存写入 / 5 分钟', '缓存写入 / 1 小时'];
+        ? ['Input', 'Output', 'Cache read', 'Cache write', 'Cache write / 1h']
+        : ['输入', '输出', '缓存读取', '缓存写入', '缓存写入 / 1 小时'];
     const rates = after.tiers[0].rates;
     return (
         <div className="space-y-3">
@@ -316,6 +316,49 @@ function NumericField({
                 onChange={(event) => onChange(event.target.value)}
             />
         </Field>
+    );
+}
+
+export function CostTokenRateFields({
+    rates,
+    capability,
+    en,
+    inputClass,
+    onChange,
+}: {
+    rates: CostPricingDraft['token_rates'];
+    capability: PricingCostCapability;
+    en: boolean;
+    inputClass: string;
+    onChange: (rates: CostPricingDraft['token_rates']) => void;
+}) {
+    return (
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            {(['input', 'output', 'cache_read', 'cache_write', 'cache_write_1h'] as const)
+                .filter(
+                    (key) =>
+                        key !== 'cache_write_1h' ||
+                        capability.required_token_rates?.includes(key) ||
+                        rates[key] !== undefined,
+                )
+                .map((key) => (
+                    <NumericField
+                        key={key}
+                        label={`${
+                            {
+                                input: en ? 'Input' : '输入',
+                                output: en ? 'Output' : '输出',
+                                cache_read: en ? 'Cache read' : '缓存读取',
+                                cache_write: en ? 'Cache write' : '缓存写入',
+                                cache_write_1h: en ? 'Cache write · 1 hour' : '缓存写入 · 1 小时',
+                            }[key]
+                        } · ${key === 'input' || key === 'output' || capability.required_token_rates?.includes(key) ? (en ? 'required' : '必填') : en ? 'optional' : '可选'}`}
+                        value={rates[key] ?? ''}
+                        onChange={(value) => onChange({ ...rates, [key]: value })}
+                        className={inputClass}
+                    />
+                ))}
+        </div>
     );
 }
 
@@ -1219,34 +1262,18 @@ export default function CostPricingWorkbench({
                                             ? 'Use the supplier’s price before multiplying. Reference prices above can fill these fields; manual quotes remain available.'
                                             : '填写上游乘倍率之前的数字；可以用上方查询结果填入，也可以按上游报价手填。'}
                                     </p>
-                                    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                                        {(['input', 'output', 'cache_read', 'cache_write'] as const).map((key) => (
-                                            <NumericField
-                                                key={key}
-                                                label={
-                                                    {
-                                                        input: en ? 'Input · required' : '输入 · 必填',
-                                                        output: en ? 'Output · required' : '输出 · 必填',
-                                                        cache_read: en ? 'Cache read · optional' : '缓存读取 · 可选',
-                                                        cache_write: en ? 'Cache write · optional' : '缓存写入 · 可选',
-                                                    }[key]
-                                                }
-                                                value={draft.token_rates[key]}
-                                                onChange={(value) =>
-                                                    changeDraft({
-                                                        ...draft,
-                                                        token_rates: { ...draft.token_rates, [key]: value },
-                                                    })
-                                                }
-                                                className={classes.input}
-                                            />
-                                        ))}
-                                    </div>
+                                    <CostTokenRateFields
+                                        rates={draft.token_rates}
+                                        capability={capability}
+                                        en={en}
+                                        inputClass={classes.input}
+                                        onChange={(token_rates) => changeDraft({ ...draft, token_rates })}
+                                    />
                                     <p className={`text-xs ${classes.muted}`}>
                                         {capability.publication_mode === 'uniform_token'
                                             ? en
-                                                ? 'Input, output and cache-read prices apply at every input length. A blank cache price is not free. Cache-write publication is not supported.'
-                                                : '输入、输出和缓存读取使用统一单价，不随输入长度变化。缓存留空不代表免费；缓存写入价格暂不支持发布。'
+                                                ? 'All quoted token prices use your retail multiplier. Fill the required cache prices before publication; blank does not mean free.'
+                                                : '各项价格统一按你的售价倍率计算。补齐标为必填的缓存价即可发布；留空不代表免费。'
                                             : capability.publication_mode === 'tiered_token'
                                               ? en
                                                   ? 'This model supports tiered input, output and cache-read publication. The full tier conditions and prices appear in the publication preview. Cache-write publication is not supported.'

@@ -1,4 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+// Historical V4 creation is fixed; its queued-job recovery still uses the current worker.
+vi.mock('@/lib/admin/pricing-uniform-plan', async (importOriginal) => {
+    const actual = await importOriginal<Record<string, unknown>>();
+    return { ...actual, buildCacheUniformPublishPlan: actual.buildUniformPublishPlan };
+});
 import type { PricingPublishJob as StoredJob } from '@prisma/client';
 import type { AdminPrincipal } from '@/lib/admin/auth';
 import { createHmac } from 'node:crypto';

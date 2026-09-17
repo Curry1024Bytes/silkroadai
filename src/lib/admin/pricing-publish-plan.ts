@@ -9,7 +9,7 @@ import type { SyncChannel } from './newapi-sync-source';
 import type { PricingPublishAmounts, PricingPublishInput, PricingPublishPreviewRow } from './pricing-publish-types';
 import { PricingPublishError } from './pricing-publish-lock';
 import type { CostBatchContext } from './pricing-cost-publication-guard';
-import type { UniformPublishPlan } from './pricing-uniform-plan';
+import type { UniformPublishPlan, CacheUniformPublishPlan } from './pricing-uniform-plan';
 import type { TieredPublishPlan } from './pricing-tiered-plan';
 
 export const PRICE_KEYS = ['ModelRatio', 'CompletionRatio', 'ModelPrice', 'GroupRatio'] as const;
@@ -75,7 +75,8 @@ export interface PublishBatchPlan extends Omit<PublishPlan, 'version' | 'input' 
     target: Partial<Record<WritePriceKey, Record<string, number>>>;
     cost_context?: CostBatchContext;
 }
-export type AnyPublishPlan = PublishPlan | PublishBatchPlan | TieredPublishPlan | UniformPublishPlan;
+export type AnyPublishPlan =
+    PublishPlan | PublishBatchPlan | TieredPublishPlan | UniformPublishPlan | CacheUniformPublishPlan;
 export type PublicationWriteKey = WritePriceKey | 'billing_setting.billing_expr';
 
 /** Normalize legacy intent without changing the persisted v1 contract or signature. */
@@ -179,7 +180,7 @@ function completionInfo(source: PublishSource, model: string) {
 }
 
 export function assertEffectiveCompletion(source: PublishSource, plan: AnyPublishPlan) {
-    if (plan.version === 3 || plan.version === 4) return; // The runtime expression is verified separately.
+    if (plan.version === 3 || plan.version === 4 || plan.version === 5) return; // The runtime expression is verified separately.
     if (plan.version === 2) {
         for (const model of plan.upstream_models) {
             if (
@@ -211,7 +212,11 @@ export function buildPublishPlan(
     input: PricingPublishInput,
     now: number,
 ): PublishPlan {
-    if (input.cache_read_cny_per_1m !== undefined)
+    if (
+        input.cache_read_cny_per_1m !== undefined ||
+        input.cache_write_cny_per_1m !== undefined ||
+        input.cache_write_1h_cny_per_1m !== undefined
+    )
         throw new PricingPublishError(
             'pricing_cache_unsupported',
             '缓存售价请通过支持阶梯计费的成本规则发布；普通倍率计费暂不支持单独发布缓存价。',

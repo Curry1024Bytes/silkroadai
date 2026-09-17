@@ -1,15 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-
-// Recreate intents produced by the released V3 generator. Only plan creation is
-// pinned to the legacy builder; recovery, HMAC, journal, runtime verification and
-// metadata activation below run the current production worker unchanged.
-vi.mock('@/lib/admin/pricing-uniform-plan', async (importOriginal) => {
-    const actual = await importOriginal<Record<string, unknown>>();
-    const { buildTieredPublishPlan } = await import('../pricing-tiered-plan');
-    return { ...actual, buildCacheUniformPublishPlan: buildTieredPublishPlan };
-});
 import type { PricingPublishJob as StoredJob } from '@prisma/client';
 import type { AdminPrincipal } from '@/lib/admin/auth';
+import { createHmac } from 'node:crypto';
 
 const mocks = vi.hoisted(() => ({
     db: {
@@ -60,18 +52,21 @@ import {
     enqueuePricingBatch,
     runPricingPublisherOnce,
     changePricingJob,
+    readPublishState,
 } from '../pricing-publish';
-import { EXPRESSION_KEY, TIERED_PRICE_KEYS } from '../pricing-tiered-plan';
+import { buildUniformPublishPlan } from '../pricing-uniform-plan';
+import { buildTieredPublishPlan, EXPRESSION_KEY, TIERED_PRICE_KEYS } from '../pricing-tiered-plan';
 import type { PricingPublishInput, TieredPricingDetails } from '../pricing-publish-types';
 import type { PublishSource, PublishState } from '../pricing-publish-plan';
+import { fingerprint } from '../pricing-publish-plan';
 import type { CostBatchContext } from '../pricing-cost-publication-guard';
 import { PricingPublishError } from '../pricing-publish-lock';
 
 const NOW = Date.parse('2026-09-16T13:00:00Z');
 const MODEL = '11111111-1111-4111-8111-111111111111';
 const EXPRESSION = 'len < 272000 ? tier("base", p * 5 + c * 30 + cr * 0.5) : tier("tier_2", p * 10 + c * 45 + cr * 1)';
-const SCALED =
-    'len < 272000 ? tier("base", p * 5.625 + c * 33.75 + cr * 0.5625) : tier("tier_2", p * 11.25 + c * 50.625 + cr * 1.125)';
+const SCALED = 'tier("uniform", p * 5.625 + c * 33.75 + cr * 0.5625)';
+const UNIFORM = 'tier("uniform", p * 5 + c * 30 + cr * 0.5)';
 const ADMIN: AdminPrincipal = { role: 'superadmin', tenant_id: 'tenant', user: null, viaBreakGlass: true };
 const CONTEXT: CostBatchContext = {
     selections: [{ rule_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', revision: 1 }],
@@ -195,6 +190,12 @@ function dbFor(read: () => Store) {
             },
         },
     };
+}
+
+function setUniformLive() {
+    (live[EXPRESSION_KEY] as Record<string, string>)['gpt-5.5'] = UNIFORM;
+    (disk[EXPRESSION_KEY] as Record<string, string>)['gpt-5.5'] = UNIFORM;
+    runtimeExpression = UNIFORM;
 }
 
 async function queued(changed = false) {
@@ -340,7 +341,158 @@ afterEach(() => {
     vi.unstubAllEnvs();
 });
 
-describe('durable v3 tiered price publication', () => {
+describe('durable v5 uniform cache-write price publication', () => {
+    function cacheSource() {
+        const expression =
+            'len < 272000 ? tier("base", p * 5 + c * 30 + cr * 0.5 + cc * 6.25 + cc1h * 10) : tier("tier_2", p * 10 + c * 45 + cr * 1 + cc * 12.5 + cc1h * 20)';
+        (live[EXPRESSION_KEY] as Record<string, string>)['gpt-5.5'] = expression;
+        (disk[EXPRESSION_KEY] as Record<string, string>)['gpt-5.5'] = expression;
+        runtimeExpression = expression;
+    }
+    const cacheInput = () => ({ ...input(), cache_write_cny_per_1m: 1, cache_write_1h_cny_per_1m: 1.6 });
+    async function queuedCache() {
+        cacheSource();
+        const value = cacheInput();
+        const preview = await previewPricingBatch([value], ADMIN, CONTEXT);
+        return enqueuePricingBatch([value], preview.preview_token, ADMIN, CONTEXT);
+    }
+    it('publishes both cache-write durations from preview through durable metadata and repeat no-op', async () => {
+        cacheSource();
+        const value = cacheInput();
+        const preview = await previewPricingBatch([value], ADMIN, CONTEXT);
+        expect(preview.rows[0].after_details?.tiers[0].rates).toMatchObject({ cache_write: 1, cache_write_1h: 1.6 });
+        const job = await enqueuePricingBatch([value], preview.preview_token, ADMIN, CONTEXT);
+        expect((await runPricingPublisherOnce())?.status).toBe('succeeded');
+        expect(runtimeExpression).toBe('tier("uniform", p * 5 + c * 30 + cr * 0.5 + cc * 6.25 + cc1h * 10)');
+        expect(store.prices[1].billing_details?.tiers[0].rates).toMatchObject({ cache_write: 1, cache_write_1h: 1.6 });
+        expect(mocks.put).toHaveBeenCalledOnce();
+        expect(await enqueuePricingBatch([value], preview.preview_token, ADMIN, CONTEXT)).toMatchObject({ id: job.id });
+        const repeat = await previewPricingBatch([value], ADMIN, CONTEXT);
+        expect(repeat.unchanged).toBe(true);
+        await enqueuePricingBatch([value], repeat.preview_token, ADMIN, CONTEXT);
+        expect((await runPricingPublisherOnce())?.status).toBe('succeeded');
+        expect(mocks.put).toHaveBeenCalledOnce();
+    });
+    it('rejects missing cache-write quotes before confirmation or PUT, but permits explicit zero', async () => {
+        cacheSource();
+        await expect(previewPricingBatch([input()], ADMIN, CONTEXT)).rejects.toMatchObject({
+            code: 'pricing_uniform_cache',
+        });
+        const value = { ...cacheInput(), cache_write_cny_per_1m: 0, cache_write_1h_cny_per_1m: 0 };
+        const preview = await previewPricingBatch([value], ADMIN, CONTEXT);
+        await enqueuePricingBatch([value], preview.preview_token, ADMIN, CONTEXT);
+        expect((await runPricingPublisherOnce())?.status).toBe('succeeded');
+        expect(runtimeExpression).toContain('cc * 0 + cc1h * 0');
+        expect(store.prices[1].billing_details?.tiers[0].rates).toMatchObject({ cache_write: 0, cache_write_1h: 0 });
+    });
+    it.each(['cache_write', 'cache_write_1h'] as const)('rejects tampered %s metadata before writing', async (key) => {
+        await queuedCache();
+        const plan = store.jobs[0].plan as unknown as { rows: Array<{ after_details: TieredPricingDetails }> };
+        plan.rows[0].after_details.tiers[0].rates[key] = 0;
+        expect((await runPricingPublisherOnce())?.status).toBe('conflict');
+        expect(mocks.put).not.toHaveBeenCalled();
+    });
+    it('waits for cache-write runtime propagation without replaying the accepted write', async () => {
+        await queuedCache();
+        holdRuntime = true;
+        expect((await runPricingPublisherOnce())?.status).toBe('retry_wait');
+        expect(store.prices).toHaveLength(1);
+        runtimeExpression = (live[EXPRESSION_KEY] as Record<string, string>)['gpt-5.5'];
+        vi.setSystemTime(NOW + 31_000);
+        expect((await runPricingPublisherOnce())?.status).toBe('succeeded');
+        expect(mocks.put).toHaveBeenCalledOnce();
+    });
+    it('refuses catalogue activation until cache-write persistence matches the intended expression', async () => {
+        await queuedCache();
+        holdPersistence = true;
+        expect((await runPricingPublisherOnce())?.status).toBe('retry_wait');
+        expect(store.prices).toHaveLength(1);
+        (disk[EXPRESSION_KEY] as Record<string, string>)['gpt-5.5'] = (live[EXPRESSION_KEY] as Record<string, string>)[
+            'gpt-5.5'
+        ];
+        vi.setSystemTime(NOW + 31_000);
+        expect((await runPricingPublisherOnce())?.status).toBe('succeeded');
+        expect(mocks.put).toHaveBeenCalledOnce();
+    });
+    it.each(['before', 'after'] as const)('does not replay uncertain cache writes (%s)', async (when) => {
+        const job = await queuedCache();
+        writeFailure = when;
+        expect((await runPricingPublisherOnce())?.status).toBe('conflict');
+        await changePricingJob(job.id, 'retry', ADMIN);
+        expect((await runPricingPublisherOnce())?.status).toBe('conflict');
+        expect(mocks.put).toHaveBeenCalledOnce();
+        expect(store.prices).toHaveLength(1);
+    });
+
+    it('publishes the reviewed base rate to every input length rather than preserving the old long-context price', async () => {
+        const preview = await previewPricingBatch([input()], ADMIN, CONTEXT);
+        expect(preview).toMatchObject({ publication_mode: 'uniform_token', unchanged: false });
+        expect(preview.rows[0].before_details?.tiers).toHaveLength(2);
+        expect(preview.rows[0].after_details?.tiers).toHaveLength(1);
+        await enqueuePricingBatch([input()], preview.preview_token, ADMIN, CONTEXT);
+        expect(store.jobs[0].plan).toMatchObject({ version: 5, strategy: 'uniform_token' });
+        expect((await runPricingPublisherOnce())?.status).toBe('succeeded');
+        expect(runtimeExpression).toBe(UNIFORM);
+        expect(mocks.put).toHaveBeenCalledOnce();
+        expect(store.prices[1].billing_details?.tiers[0]).toMatchObject({
+            min_input_tokens: null,
+            max_input_tokens: null,
+            rates: { input: 0.8, output: 4.8, cache_read: 0.08 },
+        });
+    });
+
+    it.each([3, 4])(
+        'requires a new confirmation after upgrading an old V%s preview instead of reinterpreting its signature',
+        async (version) => {
+            const state = await readPublishState(mocks.db as never);
+            const legacy = (version === 3 ? buildTieredPublishPlan : buildUniformPublishPlan)(
+                state,
+                { options: live, channels },
+                [input()],
+                NOW,
+                CONTEXT,
+            );
+            const digest = createHmac('sha256', process.env.PORTAL_JWT_SECRET!)
+                .update(
+                    fingerprint({
+                        purpose: `pricing-publication-v${version}`,
+                        actor: 'break-glass',
+                        tenant: ADMIN.tenant_id,
+                        plan: legacy,
+                        timestamp: NOW,
+                    }),
+                )
+                .digest('hex');
+            await expect(enqueuePricingBatch([input()], `${NOW}.${digest}`, ADMIN, CONTEXT)).rejects.toMatchObject({
+                code: 'pricing_preview_stale',
+            });
+            expect(store.jobs).toHaveLength(0);
+            expect(mocks.put).not.toHaveBeenCalled();
+        },
+    );
+
+    it('publishes independently edited output and cache prices without enforcing historical proportions', async () => {
+        const independentlyPriced = { ...input(), output_cny_per_1m: 7.2, cache_read_cny_per_1m: 0.12 };
+        const preview = await previewPricingBatch([independentlyPriced], ADMIN, CONTEXT);
+        await enqueuePricingBatch([independentlyPriced], preview.preview_token, ADMIN, CONTEXT);
+        expect((await runPricingPublisherOnce())?.status).toBe('succeeded');
+        expect(runtimeExpression).toBe('tier("uniform", p * 5 + c * 45 + cr * 0.75)');
+        expect(store.prices[1].billing_details?.tiers[0].rates).toMatchObject({
+            input: 0.8,
+            output: 7.2,
+            cache_read: 0.12,
+        });
+    });
+
+    it.each(['strategy', 'version'] as const)('rejects a tampered V5 %s before any write', async (field) => {
+        await queued();
+        const plan = store.jobs[0].plan as Record<string, unknown>;
+        plan[field] = field === 'version' ? 3 : 'preserve_tiers';
+        expect((await runPricingPublisherOnce())?.status).toBe('conflict');
+        expect(mocks.put).not.toHaveBeenCalled();
+        expect(store.prices).toHaveLength(1);
+    });
+
     it('requires the saved cost context and runtime/persisted agreement before offering a preview', async () => {
         await expect(previewPricingBatch([input()], ADMIN)).rejects.toMatchObject({
             code: 'pricing_tiered_cost_required',
@@ -356,9 +508,10 @@ describe('durable v3 tiered price publication', () => {
         expect(store.prices).toHaveLength(1);
     });
 
-    it('publishes missing tier/cache catalog metadata for an already correct price without a PUT', async () => {
+    it('publishes uniform/cache catalog metadata for an already correct price without a PUT', async () => {
+        setUniformLive();
         const preview = await previewPricingBatch([input()], ADMIN, CONTEXT);
-        expect(preview).toMatchObject({ publication_mode: 'tiered_token', unchanged: true });
+        expect(preview).toMatchObject({ publication_mode: 'uniform_token', unchanged: true });
         const job = await enqueuePricingBatch([input()], preview.preview_token, ADMIN, CONTEXT);
         expect(store.prices).toHaveLength(1);
         expect((await runPricingPublisherOnce())?.status).toBe('succeeded');
@@ -367,10 +520,11 @@ describe('durable v3 tiered price publication', () => {
         expect(store.prices).toHaveLength(2);
         expect(store.prices[1]).toMatchObject({ input_cny_per_1m: 0.8, output_cny_per_1m: 4.8, cost_cny_per_1m: 0.65 });
         expect(store.prices[1].billing_details?.tiers[0].rates.cache_read).toBe(0.08);
-        expect(store.prices[1].billing_details?.tiers[1].rates).toMatchObject({
-            input: 1.6,
-            output: 7.2,
-            cache_read: 0.16,
+        expect(store.prices[1].billing_details?.tiers).toHaveLength(1);
+        expect(store.prices[1].billing_details?.tiers[0]).toMatchObject({
+            name: 'uniform',
+            min_input_tokens: null,
+            max_input_tokens: null,
         });
         expect(store.coordinator?.active_job_id).toBeNull();
         expect(await enqueuePricingBatch([input()], preview.preview_token, ADMIN, CONTEXT)).toMatchObject({
@@ -393,10 +547,11 @@ describe('durable v3 tiered price publication', () => {
         });
         for (const [key, value] of Object.entries(untouched))
             if (key !== EXPRESSION_KEY) expect(live[key]).toEqual(value);
-        expect(store.prices[1].billing_details?.tiers[1].rates).toMatchObject({
-            input: 1.8,
-            output: 8.1,
-            cache_read: 0.18,
+        expect(store.prices[1].billing_details?.tiers).toHaveLength(1);
+        expect(store.prices[1].billing_details?.tiers[0].rates).toMatchObject({
+            input: 0.9,
+            output: 5.4,
+            cache_read: 0.09,
         });
     });
 
@@ -494,6 +649,7 @@ describe('durable v3 tiered price publication', () => {
     it.each(['ratio', 'group', 'mode'] as const)(
         'does not activate catalog metadata while runtime %s remains stale',
         async (field) => {
+            setUniformLive();
             await queued();
             if (field === 'ratio') runtimeRatio = 0.13;
             if (field === 'group') runtimeGroups = [];
@@ -505,6 +661,7 @@ describe('durable v3 tiered price publication', () => {
     );
 
     it('blocks a stale cost revision even on the no-PUT publication path', async () => {
+        setUniformLive();
         await queued();
         mocks.costGuard.mockRejectedValue(new PricingPublishError('pricing_cost_changed', 'cost revision changed'));
         expect((await runPricingPublisherOnce())?.status).toBe('conflict');
@@ -536,7 +693,7 @@ describe('durable v3 tiered price publication', () => {
     it('rebuilds and verifies cached-token catalog metadata, not just the remote expression', async () => {
         await queued(true);
         const plan = store.jobs[0].plan as unknown as { rows: Array<{ after_details: TieredPricingDetails }> };
-        plan.rows[0].after_details.tiers[1].rates.cache_read = 0;
+        plan.rows[0].after_details.tiers[0].rates.cache_read = 0;
         expect((await runPricingPublisherOnce())?.status).toBe('conflict');
         expect(mocks.put).not.toHaveBeenCalled();
         expect(store.prices).toHaveLength(1);

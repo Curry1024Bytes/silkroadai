@@ -14,18 +14,19 @@ const nonNegative = z.number().finite().min(0).max(MAX_SAFE_VALUE);
 const positive = z.number().finite().positive().max(MAX_SAFE_VALUE);
 // A legacy rule's derived display multiplier can exceed either input's limit.
 const displayPositive = z.number().finite().positive();
-const tokenKeys = ['input', 'output', 'cache_read', 'cache_write'] as const;
+const tokenKeys = ['input', 'output', 'cache_read', 'cache_write', 'cache_write_1h'] as const;
 const tokenLabels: Record<(typeof tokenKeys)[number], string> = {
     input: '输入',
     output: '输出',
     cache_read: '缓存读取',
     cache_write: '缓存写入',
+    cache_write_1h: '缓存写入 / 1 小时',
 };
 
 function retailPrecision(basis: PricingCostConfig['basis'], key: string): number {
     // Cached-token prices publish inside tiered JSON rather than the legacy
     // four-decimal scalar columns. Keep all existing scalar quote contracts.
-    return basis === 'token' && key === 'cache_read' ? 12 : 4;
+    return basis === 'token' && key.startsWith('cache_') ? 12 : 4;
 }
 
 /** Exact rational arithmetic avoids binary floating point changing money at a rounding boundary. */
@@ -137,7 +138,7 @@ export function getCostQuoteDisplay(input: PricingCostConfig): {
     const prices: Array<[string, number]> =
         config.basis === 'token'
             ? tokenKeys.flatMap((key) =>
-                  config.token_rates[key] === null ? [] : [[key, config.token_rates[key]] as [string, number]],
+                  config.token_rates[key] == null ? [] : [[key, config.token_rates[key]] as [string, number]],
               )
             : config.variants.map((variant) => [variant.key, variant.price]);
     return {
@@ -168,6 +169,7 @@ const configShape = z
                 output: nonNegative.nullable(),
                 cache_read: nonNegative.nullable(),
                 cache_write: nonNegative.nullable(),
+                cache_write_1h: nonNegative.nullable().optional(),
             })
             .strict(),
         variants: z
@@ -206,14 +208,13 @@ export const pricingCostConfigSchema = configShape.superRefine((config, ctx) => 
     if (config.basis === 'token') {
         if (config.variants.length > 0) issue(['variants'], 'Token 计费不能同时填写图片或视频规格。');
         for (const key of ['input', 'output'] as const) {
-            if (config.token_rates[key] === null)
+            if (config.token_rates[key] == null)
                 issue(['token_rates', key], '请填写明确的价格，不能将缺失价格当作免费。');
         }
     } else {
         if (config.variants.length === 0) issue(['variants'], '请至少填写一个计费规格。');
         for (const key of tokenKeys) {
-            if (config.token_rates[key] !== null)
-                issue(['token_rates', key], '按张或按秒计费不能同时填写 Token 单价。');
+            if (config.token_rates[key] != null) issue(['token_rates', key], '按张或按秒计费不能同时填写 Token 单价。');
         }
     }
     const keys = new Set<string>();
@@ -242,7 +243,7 @@ export const pricingCostConfigSchema = configShape.superRefine((config, ctx) => 
     const prices =
         config.basis === 'token'
             ? tokenKeys.flatMap((key) =>
-                  config.token_rates[key] === null
+                  config.token_rates[key] == null
                       ? []
                       : [
                             {
@@ -304,7 +305,7 @@ export function calculateCostPricing(input: PricingCostConfig): PricingCostCalcu
         config.basis === 'token'
             ? tokenKeys.flatMap((key) => {
                   const price = config.token_rates[key];
-                  return price === null ? [] : [makeLine(key, tokenLabels[key], 'million_tokens', price)];
+                  return price == null ? [] : [makeLine(key, tokenLabels[key], 'million_tokens', price)];
               })
             : config.variants.map((variant) =>
                   makeLine(variant.key, variant.label, config.basis === 'image' ? 'image' : 'second', variant.price),

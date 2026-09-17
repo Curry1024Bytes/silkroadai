@@ -49,13 +49,10 @@ export function costPublicationInput(model: CostModel, tier: string, config: Pri
         );
     if (config.basis === 'token') {
         if (variantKey) throw new PricingPublishError('pricing_cost_variant', 'Token 成本不使用图片或视频规格。', 400);
-        if (config.token_rates.cache_write !== null)
-            throw new PricingPublishError(
-                'pricing_cache_unsupported',
-                '缓存写入的独立时长报价尚未支持发布；成本仍可保存。',
-            );
-        if (config.token_rates.cache_read !== null)
-            input.cache_read_cny_per_1m = calculation.lines.find((line) => line.key === 'cache_read')!.retail;
+        for (const key of ['cache_read', 'cache_write', 'cache_write_1h'] as const) {
+            if (config.token_rates[key] != null)
+                input[`${key}_cny_per_1m`] = calculation.lines.find((line) => line.key === key)!.retail;
+        }
         input.input_cny_per_1m = calculation.lines.find((line) => line.key === 'input')?.retail ?? null;
         input.output_cny_per_1m = calculation.lines.find((line) => line.key === 'output')?.retail ?? null;
         if (input.input_cny_per_1m === null || input.input_cny_per_1m <= 0 || input.output_cny_per_1m === null)

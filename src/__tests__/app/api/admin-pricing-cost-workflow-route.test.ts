@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
     ack: vi.fn(),
     uncertain: vi.fn(),
     network: vi.fn(),
+    runtime: vi.fn(),
 }));
 vi.mock('@/lib/db', () => ({ prisma: mocks.db }));
 vi.mock('@/lib/admin/auth', () => ({ resolveAdmin: mocks.auth }));
@@ -25,10 +26,14 @@ vi.mock('@/lib/admin-auth', () => ({
 }));
 vi.mock('@/lib/newapi/client', () => ({
     getPricingPublishOptions: mocks.options,
+    getPricingRuntimeModels: mocks.runtime,
     listChannelsForCatalogSync: mocks.channels,
     putPricingPublishOption: mocks.put,
 }));
-vi.mock('@/lib/newapi/persisted-pricing', () => ({ readPersistedPricingOptions: mocks.persisted }));
+vi.mock('@/lib/newapi/persisted-pricing', () => ({
+    readPersistedPricingOptions: mocks.persisted,
+    readPersistedTieredPricingOptions: mocks.persisted,
+}));
 vi.mock('@/lib/admin/pricing-publish-journal', () => ({
     beginPricingWrite: mocks.begin,
     acknowledgePricingWrite: mocks.ack,
@@ -42,6 +47,8 @@ import { runPricingPublisherOnce } from '@/lib/admin/pricing-publish';
 import { listCostRules } from '@/lib/admin/pricing-cost-store';
 import { resolvePricingCostSelection } from '@/lib/admin/pricing-cost-publication-guard';
 import { QUOTA_PER_USD } from '@/lib/newapi/quota-units';
+import { TIERED_PRICE_KEYS, EXPRESSION_KEY } from '@/lib/admin/pricing-tiered-plan';
+import { IMAGE_FX } from '@/lib/newapi/pricing-sync';
 import { PRICE_KEYS } from '@/lib/admin/pricing-publish-plan';
 
 const MODEL = '11111111-1111-4111-8111-111111111111';
@@ -402,6 +409,85 @@ describe('cost API authorization and validation', () => {
 });
 
 describe('real saved-cost guard in batch route and worker', () => {
+    it('saves optional 1h costs and publishes complete V5 cache prices through real guards and signed routes', async () => {
+        const original =
+            'len < 272000 ? tier("base", p * 5 + c * 30 + cr * 0.5 + cc * 6.25 + cc1h * 10) : tier("tier_2", p * 10 + c * 45 + cr * 1 + cc * 12.5 + cc1h * 20)';
+        const cacheLive: Record<string, unknown> = {
+            ...live,
+            GroupRatio: { Group: 0.16 / IMAGE_FX },
+            GroupGroupRatio: {},
+            QuotaPerUnit: String(QUOTA_PER_USD),
+            CompletionRatioMeta: { 'text-model': { ratio: 6, locked: false } },
+            ImageResolutionPrice: {},
+            'billing_setting.billing_mode': { 'text-model': 'tiered_expr' },
+            'billing_setting.scheduled_discount': {},
+            [EXPRESSION_KEY]: { 'text-model': original },
+        };
+        let cacheDisk = structuredClone(cacheLive);
+        mocks.options.mockImplementation(async () => structuredClone(cacheLive));
+        mocks.persisted.mockImplementation(async () =>
+            Object.fromEntries(TIERED_PRICE_KEYS.map((key) => [key, JSON.stringify(cacheDisk[key])])),
+        );
+        mocks.runtime.mockImplementation(async () => ({
+            models: [
+                {
+                    model_name: 'text-model',
+                    billing_mode: 'tiered_expr',
+                    billing_expr: (cacheLive[EXPRESSION_KEY] as Record<string, string>)['text-model'],
+                    quota_type: 0,
+                    enable_groups: ['Group'],
+                },
+            ],
+            group_ratio: { Group: 0.16 / IMAGE_FX },
+        }));
+        mocks.put.mockImplementation(async (key: string, value: string) => {
+            cacheLive[key] = JSON.parse(value);
+            cacheDisk = structuredClone(cacheLive);
+        });
+        const direct: PricingCostConfig = {
+            ...config(),
+            credits_per_cny: 10,
+            upstream_multiplier: 1.3,
+            retail_multiplier: 1.6,
+            markup_percent: 0,
+            token_rates: { input: 5, output: 30, cache_read: 0.5, cache_write: 6.25, cache_write_1h: 10 },
+        };
+        const saved = await SAVE(request({ ...saveBody(), config: direct }));
+        expect(saved.status).toBe(200);
+        expect((await saved.json()).rule.config).toEqual(direct);
+        expect(mocks.put).not.toHaveBeenCalled();
+        const selected = [{ rule_id: RULE, revision: 2 }];
+        const previewResponse = await PUBLISH(request({ action: 'preview', selections: selected }));
+        expect(previewResponse.status).toBe(200);
+        const data = await previewResponse.json();
+        expect(data.preview.publication_mode).toBe('uniform_token');
+        expect(data.preview.rows[0].after_details.tiers[0].rates).toMatchObject({
+            cache_write: 1,
+            cache_write_1h: 1.6,
+        });
+        expect(data.cost_rows.slice(-2)).toMatchObject([
+            { key: 'cache_write', cost: 0.8125, retail: 1 },
+            { key: 'cache_write_1h', cost: 1.3, retail: 1.6 },
+        ]);
+        expect((await confirm(data, { selections: selected })).status).toBe(202);
+        expect(store.jobs[0].plan).toMatchObject({ version: 5, strategy: 'uniform_token' });
+        expect((await runPricingPublisherOnce())?.status).toBe('succeeded');
+        expect(store.prices[1]).toMatchObject({
+            input_cny_per_1m: 0.8,
+            output_cny_per_1m: 4.8,
+            billing_details: { tiers: [{ rates: { cache_write: 1, cache_write_1h: 1.6 } }] },
+        });
+        expect(mocks.put).toHaveBeenCalledOnce();
+        expect(mocks.put.mock.calls[0][0]).toBe(EXPRESSION_KEY);
+        expect((cacheDisk[EXPRESSION_KEY] as Record<string, string>)['text-model']).toBe(
+            'tier("uniform", p * 5 + c * 30 + cr * 0.5 + cc * 6.25 + cc1h * 10)',
+        );
+        expect((await confirm(data, { selections: selected })).status).toBe(202);
+        expect(mocks.put).toHaveBeenCalledOnce();
+        expect(store.jobs).toHaveLength(1);
+        expect(store.rules[0].revision).toBe(2);
+    });
+
     it('carries the exact target multiplier through save, signed preview and the publication worker', async () => {
         const direct = { ...config(), upstream_multiplier: 1.3, retail_multiplier: 1.6, markup_percent: 0 };
         const response = await SAVE(request({ ...saveBody(), config: direct }));

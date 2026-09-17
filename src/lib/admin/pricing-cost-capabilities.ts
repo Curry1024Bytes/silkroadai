@@ -3,14 +3,15 @@ import type { AdminPrincipal } from './auth';
 import { tenantScope } from './tenant-scope';
 import { prisma } from '@/lib/db';
 import { readPublishState, readPublishSource } from './pricing-publish';
-import { buildPublishPlan, type PublishState, type PublishSource } from './pricing-publish-plan';
+import { buildPublishPlan, dictionary, type PublishState, type PublishSource } from './pricing-publish-plan';
 import { readSyncPrice } from '@/lib/newapi/catalog-sync-prices';
 import { costMapping } from './pricing-cost-store';
 import type { PricingCostCapability } from './pricing-cost-types';
 import { PricingPublishError } from './pricing-publish-lock';
 import { isTieredInput, tieredProbeInput } from './pricing-tiered-plan';
 
-import { buildUniformPublishPlan } from './pricing-uniform-plan';
+import { parseTieredPricingExpression } from './pricing-tiered-expression';
+import { buildCacheUniformPublishPlan } from './pricing-uniform-plan';
 
 export function costCapabilities(state: PublishState, source: PublishSource | null): PricingCostCapability[] {
     return state.models.flatMap((model) => {
@@ -51,13 +52,33 @@ export function costCapabilities(state: PublishState, source: PublishSource | nu
                     cost_cny_per_1m: null,
                 };
                 if (isTieredInput(state, source, probe)) {
-                    buildUniformPublishPlan(
-                        state,
-                        source,
-                        [tieredProbeInput(state, source, model.id, tier)],
-                        Date.now(),
-                    );
-                    return { ...base, publication_mode: 'uniform_token', publishable: true };
+                    const probe = tieredProbeInput(state, source, model.id, tier);
+                    const expression = dictionary(
+                        source.options['billing_setting.billing_expr'],
+                        'billing_setting.billing_expr',
+                    )[mapping.upstream_model];
+                    if (typeof expression !== 'string')
+                        throw new PricingPublishError('pricing_tiered_invalid', '未读到模型计费公式。');
+                    const required = [
+                        ...new Set(
+                            parseTieredPricingExpression(expression).tiers.flatMap((row) =>
+                                (['cache_read', 'cache_write', 'cache_write_1h'] as const).filter(
+                                    (key) => row.rates[key] !== null,
+                                ),
+                            ),
+                        ),
+                    ];
+                    // This checks capabilities, not an operator quote. Missing first-band
+                    // cache categories receive a probe-only zero; real quotes are required by V5.
+                    for (const key of required)
+                        if (probe[`${key}_cny_per_1m`] === undefined) probe[`${key}_cny_per_1m`] = 0;
+                    buildCacheUniformPublishPlan(state, source, [probe], Date.now());
+                    return {
+                        ...base,
+                        publication_mode: 'uniform_token',
+                        required_token_rates: required,
+                        publishable: true,
+                    };
                 }
                 const group = state.groups.find(
                     (row) => row.tenant_id === model.tenant_id && row.key === tier && row.enabled,

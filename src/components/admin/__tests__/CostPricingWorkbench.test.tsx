@@ -6,6 +6,7 @@ import CostPricingWorkbench, {
     CostMultiplierFields,
     CostMultiplierSummary,
     CostResolutionField,
+    CostTokenRateFields,
     SavedCostRuleList,
     TieredCostPricingPreview,
 } from '../CostPricingWorkbench';
@@ -339,7 +340,7 @@ describe('uniform customer price confirmation', () => {
         expect(JSON.parse(fetcher.mock.calls[0][1].body)).toEqual({ action: 'preview', selections: result.selections });
     });
 
-    it('allows cache-read publication for uniform prices while keeping unsupported cache-write blocked', () => {
+    it('allows explicitly quoted cache-write prices with uniform publication', () => {
         expect(costRulePublishBlock(savedRule, uniformCapability)).toBeNull();
         expect(
             costRulePublishBlock(
@@ -352,8 +353,57 @@ describe('uniform customer price confirmation', () => {
                 },
                 uniformCapability,
             ),
-        ).toContain('缓存写入价格暂不支持发布');
+        ).toBeNull();
     });
+
+    it('requires every currently billed cache category, while preserving explicit zero', () => {
+        const required: PricingCostCapability = {
+            ...uniformCapability,
+            required_token_rates: ['cache_read', 'cache_write', 'cache_write_1h'],
+        };
+        expect(costRulePublishBlock(savedRule, required)).toContain('缓存写入');
+        const quoted = {
+            ...savedRule,
+            config: {
+                ...directConfig,
+                token_rates: { ...directConfig.token_rates, cache_write: 6.25, cache_write_1h: 0 },
+            },
+        };
+        expect(costRulePublishBlock(quoted, required)).toBeNull();
+        expect(
+            costRulePublishBlock(
+                {
+                    ...quoted,
+                    config: { ...quoted.config, token_rates: { ...quoted.config.token_rates, cache_write_1h: null } },
+                },
+                required,
+            ),
+        ).toContain('1 小时');
+    });
+
+    it.each(['cache_read', 'cache_write', 'cache_write_1h'] as const)(
+        'refuses a preview that silently drops %s from a model or customer override',
+        (key) => {
+            for (const target of ['model', 'override']) {
+                const incomplete = structuredClone(uniformPrepared);
+                const before =
+                    target === 'model'
+                        ? incomplete.preview.rows[0].before_details!
+                        : incomplete.preview.customer_overrides![0].before;
+                const after =
+                    target === 'model'
+                        ? incomplete.preview.rows[0].after_details!
+                        : incomplete.preview.customer_overrides![0].after;
+                before.tiers = structuredClone(before.tiers);
+                after.tiers = structuredClone(after.tiers);
+                for (const tier of before.tiers) tier.rates[key] = 0;
+                after.tiers[0].rates[key] = null;
+                expect(costPricingPreviewBlock(incomplete.preview)).toContain('统一价格详情不完整');
+                after.tiers[0].rates[key] = 0;
+                expect(costPricingPreviewBlock(incomplete.preview)).toBeNull();
+            }
+        },
+    );
 
     it.each([
         'missing old prices',
@@ -458,12 +508,70 @@ describe('uniform customer price confirmation', () => {
 });
 
 describe('cost forms preserve actual purchasing inputs', () => {
+    it('marks the model’s required cache quotes and only shows hourly input when needed', () => {
+        const props = {
+            rates: newCostDraft().token_rates,
+            capability: { ...uniformCapability, required_token_rates: ['cache_read', 'cache_write'] as const },
+            en: false,
+            inputClass: 'input',
+            onChange: vi.fn(),
+        };
+        const required: PricingCostCapability = {
+            ...uniformCapability,
+            required_token_rates: ['cache_read', 'cache_write'],
+        };
+        const html = renderToStaticMarkup(<CostTokenRateFields {...props} capability={required} />);
+        expect(html).toContain('缓存读取 · 必填');
+        expect(html).toContain('缓存写入 · 必填');
+        expect(html).not.toContain('1 小时');
+        const hourly = renderToStaticMarkup(
+            <CostTokenRateFields
+                {...props}
+                capability={{
+                    ...required,
+                    required_token_rates: [...required.required_token_rates!, 'cache_write_1h'],
+                }}
+            />,
+        );
+        expect(hourly).toContain('缓存写入 · 1 小时 · 必填');
+        const savedHourly = renderToStaticMarkup(
+            <CostTokenRateFields {...props} capability={required} rates={{ ...props.rates, cache_write_1h: '0' }} />,
+        );
+        expect(savedHourly).toContain('缓存写入 · 1 小时 · 可选');
+        expect(savedHourly).toContain('value="0"');
+    });
     it('does not assume prices, supplier multipliers or retail multipliers in a new form', () => {
         const draft = newCostDraft(capability);
         expect(draft.token_rates).toEqual({ input: '', output: '', cache_read: '', cache_write: '' });
         expect(draft.upstream_multiplier).toBe('');
         expect(draft.retail_multiplier).toBe('');
         expect(costConfigFromDraft(draft)).toBeNull();
+    });
+
+    it('round-trips old rules without inserting hourly pricing and independently calculates both write quotes', () => {
+        expect(costConfigFromDraft(draftFromCostConfig(directConfig))).toEqual(directConfig);
+        expect(costConfigFromDraft(draftFromCostConfig(directConfig))?.token_rates).not.toHaveProperty(
+            'cache_write_1h',
+        );
+        const quoted = {
+            ...directConfig,
+            token_rates: { ...directConfig.token_rates, cache_write: 6.25, cache_write_1h: 10 },
+        };
+        const roundTrip = costConfigFromDraft(draftFromCostConfig(quoted));
+        expect(roundTrip).toEqual(quoted);
+        expect(calculateCostPricing(roundTrip!).lines).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({ key: 'cache_write', cost: 0.8125, retail: 1 }),
+                expect.objectContaining({ key: 'cache_write_1h', cost: 1.3, retail: 1.6 }),
+            ]),
+        );
+        const replaced = draftWithReference(draftFromCostConfig(quoted), {
+            ...referencePrice,
+            cache_write: 0,
+            cache_write_1h: null,
+        });
+        expect(costConfigFromDraft(replaced)?.token_rates.cache_write).toBe(0);
+        expect(costConfigFromDraft(replaced)?.token_rates).not.toHaveProperty('cache_write_1h');
     });
     it('uses actual credit redemption and supplier multiplier once, then markup once', () => {
         const roundTrip = costConfigFromDraft(draftFromCostConfig(config));

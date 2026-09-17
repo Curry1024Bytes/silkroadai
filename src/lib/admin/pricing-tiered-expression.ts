@@ -351,7 +351,8 @@ export function scaleTieredPricingExpression(expression: string, numerator: numb
 /** Build an absolute, length-independent customer tariff. Each category is
  * converted independently; neither existing tiers nor their price ratios apply. */
 export function uniformTokenPricingExpression(
-    rates: Pick<TieredPricingRates, 'input' | 'output' | 'cache_read'>,
+    rates: Pick<TieredPricingRates, 'input' | 'output' | 'cache_read'> &
+        Partial<Pick<TieredPricingRates, 'cache_write' | 'cache_write_1h'>>,
     groupRatio: number,
     currencyFactor: number,
 ): string {
@@ -371,6 +372,8 @@ export function uniformTokenPricingExpression(
     };
     const terms = [`p * ${coefficient(rates.input)}`, `c * ${coefficient(rates.output)}`];
     if (rates.cache_read !== null) terms.push(`cr * ${coefficient(rates.cache_read)}`);
+    if (rates.cache_write != null) terms.push(`cc * ${coefficient(rates.cache_write)}`);
+    if (rates.cache_write_1h != null) terms.push(`cc1h * ${coefficient(rates.cache_write_1h)}`);
     const expression = `tier("uniform", ${terms.join(' + ')})`;
     parseWithSpans(expression);
     return expression;

@@ -9,6 +9,7 @@ const referencePriceSchema = z.object({
     outputUsdPer1m: z.number().finite().positive(),
     cacheReadUsdPer1m: z.number().finite().nonnegative().nullable(),
     cacheWrite5mUsdPer1m: z.number().finite().nonnegative().nullable(),
+    cacheWrite1hUsdPer1m: z.number().finite().nonnegative().nullable(),
 });
 const referenceResponseSchema = z.object({
     source_label: z.string().min(1),
@@ -25,6 +26,7 @@ export interface PricingReferenceSelection {
     cache_read: number | null;
     /** Five-minute cache creation only; an hourly price must not silently replace it. */
     cache_write: number | null;
+    cache_write_1h?: number | null;
     sourceLabel: string;
     fetchedAt: string;
 }
@@ -76,6 +78,7 @@ function referenceSelection(result: ReferenceResponse, model: string): PricingRe
         output: selected.outputUsdPer1m,
         cache_read: selected.cacheReadUsdPer1m,
         cache_write: selected.cacheWrite5mUsdPer1m,
+        cache_write_1h: selected.cacheWrite1hUsdPer1m,
         sourceLabel: result.source_label,
         fetchedAt: result.fetched_at,
     };
@@ -151,6 +154,9 @@ export function PricingReferenceResult({
                             [en ? 'Output' : '输出', selection.output],
                             [en ? 'Cache read' : '缓存读取', selection.cache_read],
                             [en ? 'Cache write · 5 min' : '缓存写入 · 5 分钟', selection.cache_write],
+                            ...(selection.cache_write_1h != null
+                                ? [[en ? 'Cache write · 1 hour' : '缓存写入 · 1 小时', selection.cache_write_1h]]
+                                : []),
                         ].map(([label, value]) => (
                             <div key={String(label)}>
                                 <dt className="opacity-75">{label}</dt>

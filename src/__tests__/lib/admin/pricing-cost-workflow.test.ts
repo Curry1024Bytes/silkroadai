@@ -298,12 +298,15 @@ describe('saved cost quotes and publication protection', () => {
             derived.lines.find((line) => line.key === 'cache_read')?.retail,
         );
         expect(derived.input.cache_read_cny_per_1m).toBeGreaterThan(0);
-        expect(() =>
-            costPublicationInput(model(), 'standard', {
-                ...quote(),
-                token_rates: { ...quote().token_rates, cache_write: 1 },
-            }),
-        ).toThrow(/缓存/);
+        const withWrites = costPublicationInput(model(), 'standard', {
+            ...quote(),
+            token_rates: { ...quote().token_rates, cache_write: 1, cache_write_1h: 0 },
+        });
+        expect(withWrites.input.cache_write_cny_per_1m).toBe(
+            withWrites.lines.find((line) => line.key === 'cache_write')!.retail,
+        );
+        expect(withWrites.input.cache_write_1h_cny_per_1m).toBe(0);
+        expect(Object.hasOwn(derived.input, 'cache_write_1h_cny_per_1m')).toBe(false);
     });
 
     it('publishes only the matching standalone image resolution, with one ordinary per-image unit', () => {

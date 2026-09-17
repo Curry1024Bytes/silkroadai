@@ -59,14 +59,14 @@ describe('cached-token quote precision', () => {
             );
     });
 
-    it('retains four-decimal prices for input, output, and unsupported cache-write quotes', () => {
+    it('retains four-decimal input/output prices and twelve-decimal supported cache-write quotes', () => {
         const config = fixture(0.5);
         config.token_rates = { input: 5.123456, output: 30.123456, cache_read: 0.5, cache_write: 0.5123456 };
         expect(calculateCostPricing(config).lines.map(({ key, retail }) => ({ key, retail }))).toEqual([
             { key: 'input', retail: 0.8326 },
             { key: 'output', retail: 4.8951 },
             { key: 'cache_read', retail: 0.08125 },
-            { key: 'cache_write', retail: 0.0833 },
+            { key: 'cache_write', retail: 0.08325616 },
         ]);
     });
 
@@ -87,5 +87,40 @@ describe('cached-token quote precision', () => {
             },
         ];
         expect(calculateCostPricing(config).lines[0].retail).toBe(0.0813);
+    });
+});
+
+describe('cache-write quote schema and legacy compatibility', () => {
+    it('never injects the new 1h key into old stored JSON or its confirmation fingerprint', () => {
+        const legacy = fixture();
+        expect(JSON.stringify(pricingCostConfigSchema.parse(legacy))).toBe(JSON.stringify(legacy));
+        expect(Object.hasOwn(pricingCostConfigSchema.parse(legacy).token_rates, 'cache_write_1h')).toBe(false);
+    });
+    it.each([null, undefined])('does not turn missing 1h rate %s into free cache creation', (price) => {
+        const config = fixture();
+        if (price === null) config.token_rates.cache_write_1h = null;
+        expect(calculateCostPricing(config).lines.some((line) => line.key === 'cache_write_1h')).toBe(false);
+        expect(() => calculateCostSample(config, 'cache_write_1h', 100)).toThrow('明确价格');
+    });
+    it('keeps ordinary cache creation and 1h prices independent, including explicit zero', () => {
+        const config = fixture();
+        config.retail_multiplier = 1.6;
+        config.token_rates.cache_write = 6.25;
+        config.token_rates.cache_write_1h = 10;
+        expect(calculateCostPricing(config).lines.slice(-2)).toMatchObject([
+            { key: 'cache_write', cost: 0.8125, retail: 1 },
+            { key: 'cache_write_1h', cost: 1.3, retail: 1.6 },
+        ]);
+        config.token_rates.cache_write_1h = 0;
+        expect(calculateCostSample(config, 'cache_write_1h', 1000000)).toMatchObject({ cost: 0, retail: 0 });
+    });
+    it('preserves nonzero cached-token precision and rejects invalid optional 1h rates', () => {
+        const config = fixture();
+        config.token_rates.cache_write_1h = 0.00001;
+        expect(calculateCostPricing(config).lines.at(-1)).toMatchObject({ retail: 0.000001625 });
+        for (const value of [-1, NaN, Infinity]) {
+            config.token_rates.cache_write_1h = value;
+            expect(pricingCostConfigSchema.safeParse(config).success).toBe(false);
+        }
     });
 });

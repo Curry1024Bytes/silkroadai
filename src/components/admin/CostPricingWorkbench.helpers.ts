@@ -25,7 +25,12 @@ export function costPricingPreviewBlock(preview: PricingPublishPreview, en = fal
         const previous = parseTieredPricingDetails(before);
         const next = parseTieredPricingDetails(after);
         if (!previous || !next) return false;
-        if (uniform) return isUniformPricingDetails(next) && next.tiers[0].name === 'uniform';
+        if (uniform) {
+            if (!isUniformPricingDetails(next) || next.tiers[0].name !== 'uniform') return false;
+            return (['cache_read', 'cache_write', 'cache_write_1h'] as const).every(
+                (key) => !previous.tiers.some((tier) => tier.rates[key] !== null) || next.tiers[0].rates[key] !== null,
+            );
+        }
         if (previous.tiers.length !== next.tiers.length) return false;
         return next.tiers.every((tier, index) => {
             const old = previous.tiers[index];
@@ -83,7 +88,7 @@ export interface CostPricingDraft {
     };
     markup_percent: string;
     source_note: string;
-    token_rates: Record<keyof PricingCostConfig['token_rates'], string>;
+    token_rates: { [K in keyof PricingCostConfig['token_rates']]: string };
     variants: Array<
         Omit<PricingCostConfig['variants'][number], 'price' | 'minimum_units' | 'step_units'> & {
             price: string;
@@ -102,7 +107,7 @@ export interface CostPricingSaveInput {
 
 /** The picker explicitly confirms the supplier's USD-number-to-credit basis. */
 export function draftWithReference(draft: CostPricingDraft, price: PricingReferenceSelection): CostPricingDraft {
-    const note = `${price.sourceLabel} · ${price.model} · ${price.fetchedAt} · USD 基准数字按上游额度计价；用于基础报价与成本估算；缓存写入为 5 分钟。`;
+    const note = `${price.sourceLabel} · ${price.model} · ${price.fetchedAt} · USD 基准数字按上游额度计价；用于基础报价与成本估算；缓存写入按标注时长分别计价。`;
     return {
         ...draft,
         currency: 'credits',
@@ -112,6 +117,7 @@ export function draftWithReference(draft: CostPricingDraft, price: PricingRefere
             output: String(price.output),
             cache_read: price.cache_read === null ? '' : String(price.cache_read),
             cache_write: price.cache_write === null ? '' : String(price.cache_write),
+            ...(price.cache_write_1h != null ? { cache_write_1h: String(price.cache_write_1h) } : {}),
         },
         source_note: `${note}\n${draft.source_note}`.trim().slice(0, 500),
     };
@@ -298,12 +304,27 @@ export function costRulePublishBlock(
         );
     if (rule.config.basis !== capability.basis)
         return en ? 'The cost basis no longer matches the billing rule.' : '成本单位与当前计费规则不一致，请重新核对。';
+    if (rule.config.basis === 'token' && capability.publication_mode === 'uniform_token') {
+        const missing = (capability.required_token_rates ?? []).filter((key) => rule.config.token_rates[key] == null);
+        const labels = {
+            cache_read: en ? 'cache read' : '缓存读取',
+            cache_write: en ? 'cache write' : '缓存写入',
+            cache_write_1h: en ? 'cache write · 1 hour' : '缓存写入 · 1 小时',
+        };
+        if (missing.length)
+            return en
+                ? `Enter the base quote for ${missing.map((key) => labels[key]).join(', ')} before previewing publication.`
+                : `请补填${missing.map((key) => labels[key]).join('、')}基础价，再预览发布。`;
+    }
     if (
         rule.config.basis === 'token' &&
-        (rule.config.token_rates.cache_read !== null || rule.config.token_rates.cache_write !== null)
+        capability.publication_mode !== 'uniform_token' &&
+        (rule.config.token_rates.cache_read != null ||
+            rule.config.token_rates.cache_write != null ||
+            rule.config.token_rates.cache_write_1h != null)
     ) {
-        if (capability.publication_mode === 'tiered_token' || capability.publication_mode === 'uniform_token') {
-            if (rule.config.token_rates.cache_write !== null)
+        if (capability.publication_mode === 'tiered_token') {
+            if (rule.config.token_rates.cache_write != null || rule.config.token_rates.cache_write_1h != null)
                 return en
                     ? 'This rule supports cache-read publication. Cache-write publication is not supported.'
                     : '本规则支持发布缓存读取价；缓存写入价格暂不支持发布。';

@@ -126,6 +126,37 @@ export function buildTieredPublishPlan(
     now: number,
     context?: CostBatchContext,
 ): TieredPublishPlan {
+    if (
+        inputs.some(
+            (input) => input.cache_write_cny_per_1m !== undefined || input.cache_write_1h_cny_per_1m !== undefined,
+        )
+    )
+        throw new PricingPublishError(
+            'pricing_cache_write_unsupported',
+            '历史发布任务不支持新增缓存写入价格，请重新预览。',
+        );
+    return buildTieredPlanInternal(state, source, inputs, now, context, false);
+}
+
+/** Current-price validation only; the returned proportional target is never published.
+ * Legacy V3/V4 callers keep the original restrictions and signed plan semantics. */
+export function buildCacheUniformSourceProbe(
+    state: PublishState,
+    source: PublishSource,
+    inputs: PricingPublishInput[],
+    now: number,
+): TieredPublishPlan {
+    return buildTieredPlanInternal(state, source, inputs, now, undefined, true);
+}
+
+function buildTieredPlanInternal(
+    state: PublishState,
+    source: PublishSource,
+    inputs: PricingPublishInput[],
+    now: number,
+    context: CostBatchContext | undefined,
+    cacheUniformProbe: boolean,
+): TieredPublishPlan {
     if (process.env.BILLING_SOURCE === 'portal')
         throw new PricingPublishError(
             'pricing_tiered_billing_source',
@@ -152,12 +183,18 @@ export function buildTieredPublishPlan(
             '该动态公式含尚不支持的计费条件。成本可保存；发布前需完整适配该公式。',
         );
     }
-    if (parsed.tiers.some((tier) => (tier.rates.cache_read !== null) !== (parsed.tiers[0].rates.cache_read !== null)))
+    if (
+        !cacheUniformProbe &&
+        parsed.tiers.some((tier) => (tier.rates.cache_read !== null) !== (parsed.tiers[0].rates.cache_read !== null))
+    )
         throw new PricingPublishError(
             'pricing_tiered_unsupported',
             '不同档位的缓存计费变量不一致，当前向导尚不能完整表示该公式。',
         );
-    if (parsed.tiers.some((tier) => tier.rates.cache_write !== null || tier.rates.cache_write_1h !== null))
+    if (
+        !cacheUniformProbe &&
+        parsed.tiers.some((tier) => tier.rates.cache_write !== null || tier.rates.cache_write_1h !== null)
+    )
         throw new PricingPublishError(
             'pricing_cache_write_unsupported',
             '此公式还包含缓存写入时长计费，当前向导尚不能完整报价。',
@@ -213,6 +250,8 @@ export function buildTieredPublishPlan(
     // validation. The ordinary temporary plan is never stored or written.
     const plainInput = { ...input };
     delete plainInput.cache_read_cny_per_1m;
+    delete plainInput.cache_write_cny_per_1m;
+    delete plainInput.cache_write_1h_cny_per_1m;
     const meta = dictionary(source.options.CompletionRatioMeta, 'CompletionRatioMeta');
     const validationSource: PublishSource = {
         ...source,
