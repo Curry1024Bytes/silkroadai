@@ -362,20 +362,40 @@ async function parseIncoming(req: NextRequest): Promise<ParsedRequest | null> {
     };
 }
 
-/** 拉上游图 URL 转 b64(60s 超时 + 50MB 上限)。失败返 null。 */
-async function fetchImageAsB64(url: string): Promise<string | null> {
+/** url→b64 拉取的重试间隔(ms)。号池类上游(zdchat / ominiapi)响应里的 url 指向它们的 R2/图床缓存,
+ *  响应刚返回时对象可能还没落盘 —— 2026-09-17 zdchat 实测立刻拉得 0 字节、数秒后重拉正常。
+ *  非 2xx / 空体 / 网络错都重试;超 50MB 不重试(不是瞬时问题)。 */
+export const URL_FETCH_RETRY_DELAYS_MS: ReadonlyArray<number> = [1_000, 3_000];
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** 单次拉取:成功返 b64;瞬时失败返 null(可重试);'too_large' 为终态。 */
+async function fetchImageOnce(url: string): Promise<string | null | 'too_large'> {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 60_000);
     try {
         const r = await fetch(url, { signal: ctrl.signal });
         if (!r.ok) return null;
         const buf = Buffer.from(await r.arrayBuffer());
-        if (buf.length === 0 || buf.length > 50 * 1024 * 1024) return null;
+        if (buf.length > 50 * 1024 * 1024) return 'too_large';
+        if (buf.length === 0) return null;
         return buf.toString('base64');
     } catch {
         return null;
     } finally {
         clearTimeout(timer);
+    }
+}
+
+/** 拉上游图 URL 转 b64(60s 超时 + 50MB 上限),最多 1 + URL_FETCH_RETRY_DELAYS_MS.length 次。失败返 null。 */
+async function fetchImageAsB64(url: string, providerName?: string): Promise<string | null> {
+    for (let attempt = 0; ; attempt++) {
+        const r = await fetchImageOnce(url);
+        if (r === 'too_large') return null;
+        if (r) return r;
+        if (attempt >= URL_FETCH_RETRY_DELAYS_MS.length) return null;
+        console.warn('[image-adapter25] url fetch retry', { provider: providerName, attempt: attempt + 1 });
+        await sleep(URL_FETCH_RETRY_DELAYS_MS[attempt]);
     }
 }
 
@@ -467,7 +487,7 @@ async function callUpstream(
             continue;
         }
         // 上游 url 一律不外泄(指向上游自家 OSS = 伪装穿帮 + 会过期)→ 拉回转 b64;拉不动算失败
-        const b64 = await fetchImageAsB64(it.url as string);
+        const b64 = await fetchImageAsB64(it.url as string, providerName);
         if (!b64) {
             console.warn('[image-adapter25] url→b64 fetch failed', { provider: providerName, mode });
             return null;

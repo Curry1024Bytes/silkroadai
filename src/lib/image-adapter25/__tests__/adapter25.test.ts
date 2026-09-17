@@ -6,6 +6,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { NextRequest } from 'next/server';
 import {
     handleAdapter25Image,
+    URL_FETCH_RETRY_DELAYS_MS,
     officialOutputTokens25,
     officialInputImageTokens25,
     normQuality25,
@@ -767,5 +768,90 @@ describe('ominiapi25 全量线(5 档全收 + 裸壳响应自合成 + Adobe 剥/O
         );
         expect(res.status).toBe(503);
         expect(await res.text()).not.toMatch(/omini/i);
+    });
+});
+
+describe('zdchat25 全量线 + url→b64 拉取重试', () => {
+    const URL_ZD = 'http://portal.test/image-adapter25/zdchat25/v1/images/generations';
+    const urlEnvelope = () =>
+        new Response(JSON.stringify({ created: 1, data: [{ url: 'https://r2.52image.xyz/cache/x.png' }] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+        });
+    const pngResp = () => new Response(new Uint8Array(Buffer.from(pngB64(1024, 1024), 'base64')), { status: 200 });
+
+    it('registry:zdchat25 = new.zdchat.cc、两模型、无 qualities(全量);brand 抹 zdchat/52image/adobe', () => {
+        expect(IMAGE_PROVIDERS_25.zdchat25.baseUrl).toBe('https://new.zdchat.cc');
+        expect(IMAGE_PROVIDERS_25.zdchat25.models).toEqual(GPT_IMAGE_25_MODELS);
+        expect(IMAGE_PROVIDERS_25.zdchat25.qualities).toBeUndefined();
+        expect('zdchat r2.52image.xyz Adobe'.replace(IMAGE_PROVIDERS_25.zdchat25.brand, '*')).toBe('* r2.*.xyz *');
+    });
+
+    it('5 档 + auto 全部透传上游,按官方档计费', async () => {
+        for (const [q, expectTokens] of [
+            ['low', 196],
+            ['medium', 439],
+            ['high', 1756],
+            ['xhigh', 3122],
+            ['max', 7024],
+            ['auto', 196],
+        ] as const) {
+            fetchMock.mockReset();
+            okUpstream([pngB64(1024, 1024)]);
+            const res = await handleAdapter25Image(
+                jsonReq(URL_ZD, { model: 'gpt-image-2.5-sunburst', prompt: 'x', size: '1024x1024', quality: q }),
+                'generations',
+                'zdchat25',
+            );
+            expect(res.status).toBe(200);
+            expect(String(fetchMock.mock.calls[0][0])).toBe('https://new.zdchat.cc/v1/images/generations');
+            expect(((await res.json()) as { usage: { output_tokens: number } }).usage.output_tokens).toBe(expectTokens);
+        }
+    });
+
+    it('url 首拉 0 字节 → 等 1s 重拉成功 → 200(zdchat 图床刚返回时对象未落盘)', async () => {
+        vi.useFakeTimers();
+        try {
+            fetchMock
+                .mockResolvedValueOnce(urlEnvelope())
+                .mockResolvedValueOnce(new Response(new Uint8Array(0), { status: 200 })) // 0 字节
+                .mockResolvedValueOnce(pngResp());
+            const p = handleAdapter25Image(
+                jsonReq(URL_ZD, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'low' }),
+                'generations',
+                'zdchat25',
+            );
+            await vi.advanceTimersByTimeAsync(URL_FETCH_RETRY_DELAYS_MS[0] + 10);
+            const res = await p;
+            expect(res.status).toBe(200);
+            expect(fetchMock).toHaveBeenCalledTimes(3); // 1 上游 + 2 次拉图
+            const raw = JSON.stringify(await res.json());
+            expect(raw).not.toContain('52image');
+            expect(raw).toContain(pngB64(1024, 1024));
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('url 连续 404/空 共 3 次仍失败 → 503 failover(不再多试)', async () => {
+        vi.useFakeTimers();
+        try {
+            fetchMock
+                .mockResolvedValueOnce(urlEnvelope())
+                .mockResolvedValueOnce(new Response('nf', { status: 404 }))
+                .mockResolvedValueOnce(new Response(new Uint8Array(0), { status: 200 }))
+                .mockRejectedValueOnce(new Error('ECONNRESET'));
+            const p = handleAdapter25Image(
+                jsonReq(URL_ZD, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'low' }),
+                'generations',
+                'zdchat25',
+            );
+            await vi.advanceTimersByTimeAsync(URL_FETCH_RETRY_DELAYS_MS[0] + URL_FETCH_RETRY_DELAYS_MS[1] + 10);
+            const res = await p;
+            expect(res.status).toBe(503);
+            expect(fetchMock).toHaveBeenCalledTimes(4); // 1 上游 + 3 次拉图
+        } finally {
+            vi.useRealTimers();
+        }
     });
 });
