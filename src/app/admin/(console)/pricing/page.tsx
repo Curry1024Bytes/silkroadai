@@ -9,6 +9,7 @@ import type { BatchCostResult } from '@/lib/admin/batch-cost';
 import PricingPublishDialog from '@/components/admin/PricingPublishDialog';
 import CostPricingWorkbench from '@/components/admin/CostPricingWorkbench';
 import CatalogTieredPriceDetails from '@/components/admin/CatalogTieredPriceDetails';
+import { isUniformPricingDetails, parseTieredPricingDetails } from '@/lib/models/tiered-pricing-details';
 import { PricingPublishJobs, requestPricingJobAction } from '@/components/admin/PricingPublishJobs';
 import type { PricingPublishJob } from '@/lib/admin/pricing-publish-types';
 
@@ -550,6 +551,21 @@ function ModelRows({ model, rows, isDark, tdMuted, linkBtn, unpricedLabel, editL
             )}
             {rows.map((row, idx) => {
                 const cur = row.current;
+                let priceScopeLabel: string | null = null;
+                if (cur?.billing_details != null) {
+                    try {
+                        const details = parseTieredPricingDetails(cur.billing_details)!;
+                        priceScopeLabel = isUniformPricingDetails(details)
+                            ? t.title === 'Pricing'
+                                ? 'Uniform rate'
+                                : '统一单价'
+                            : t.title === 'Pricing'
+                              ? 'First tier'
+                              : '首档';
+                    } catch {
+                        priceScopeLabel = t.title === 'Pricing' ? 'Needs review' : '待核对';
+                    }
+                }
                 const unpriced = cur === null;
                 const historyOpen = expandedTier === row.tier;
                 const historyId = `pricing-tier-history-${model.id}-${encodeURIComponent(row.tier)}`;
@@ -593,20 +609,16 @@ function ModelRows({ model, rows, isDark, tdMuted, linkBtn, unpricedLabel, editL
                                         className={`px-4 py-3 text-right ${isDark ? 'text-slate-200' : 'text-slate-800'}`}
                                     >
                                         {fmtMoney(cur.input_cny_per_1m)}
-                                        {cur.billing_details != null && (
-                                            <div className={`text-xs ${tdMuted}`}>
-                                                {t.title === 'Pricing' ? 'First tier' : '首档'}
-                                            </div>
+                                        {priceScopeLabel && (
+                                            <div className={`text-xs ${tdMuted}`}>{priceScopeLabel}</div>
                                         )}
                                     </td>
                                     <td
                                         className={`px-4 py-3 text-right ${isDark ? 'text-slate-200' : 'text-slate-800'}`}
                                     >
                                         {fmtMoney(cur.output_cny_per_1m)}
-                                        {cur.billing_details != null && (
-                                            <div className={`text-xs ${tdMuted}`}>
-                                                {t.title === 'Pricing' ? 'First tier' : '首档'}
-                                            </div>
+                                        {priceScopeLabel && (
+                                            <div className={`text-xs ${tdMuted}`}>{priceScopeLabel}</div>
                                         )}
                                     </td>
                                     <td className={`px-4 py-3 text-right ${tdMuted}`}>

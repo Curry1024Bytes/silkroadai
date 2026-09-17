@@ -123,9 +123,9 @@ describe('reference price application requires explicit credit semantics', () =>
             <PricingReferencePicker modelSlug="test-model" en={false} isDark={false} onApply={onApply} />,
         );
         expect(html).toContain('value="test-model"');
-        expect(html).toContain('LiteLLM 参考价');
+        expect(html).toContain('LiteLLM 基础参考价');
         expect(html).toContain('美元／百万 token');
-        expect(html).toContain('不包含长上下文等动态阶梯规则');
+        expect(html).toContain('确认上游使用这组基础价格后即可填入');
         expect(onApply).not.toHaveBeenCalled();
     });
 

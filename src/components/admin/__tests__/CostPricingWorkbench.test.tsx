@@ -142,6 +142,38 @@ const tieredPrepared: CostPricingPrepared = {
     },
 };
 const tieredCapability: PricingCostCapability = { ...capability, publication_mode: 'tiered_token' };
+const uniformCapability: PricingCostCapability = { ...capability, publication_mode: 'uniform_token' };
+const uniformDetails: TieredPricingDetails = {
+    ...tieredDetails,
+    tiers: [{ ...tieredDetails.tiers[0], name: 'uniform', max_input_tokens: null }],
+};
+const uniformPrepared: CostPricingPrepared = {
+    ...prepared,
+    preview: {
+        ...prepared.preview,
+        publication_mode: 'uniform_token',
+        unchanged: false,
+        rows: [
+            {
+                ...prepared.preview.rows[0],
+                before: { input_cny_per_1m: 0.8, output_cny_per_1m: 4.8, per_image_cny: null },
+                after: { input_cny_per_1m: 0.8, output_cny_per_1m: 4.8, per_image_cny: null },
+                before_details: tieredDetails,
+                after_details: uniformDetails,
+            },
+        ],
+        customer_overrides: [
+            {
+                group: 'standard',
+                ratio: 0.18,
+                public_ratio: 0.16,
+                count: 2,
+                before: scaleTieredPricingDetails(tieredDetails, 1.125),
+                after: scaleTieredPricingDetails(uniformDetails, 1.125),
+            },
+        ],
+    },
+};
 afterEach(() => {
     vi.unstubAllGlobals();
 });
@@ -286,6 +318,138 @@ describe('complete tiered price confirmation', () => {
     });
 });
 
+describe('uniform customer price confirmation', () => {
+    const savedRule: StoredPricingCostRule = { ...rule, config: directConfig };
+
+    it('previews the saved base price and multiplier as one price without saving or publishing', async () => {
+        const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify(uniformPrepared)));
+        const onSaved = vi.fn();
+        vi.stubGlobal('fetch', fetcher);
+        const result = await prepareSingleCostPricing({
+            input: null,
+            savedRule,
+            capability: uniformCapability,
+            onSaved,
+        });
+        expect(costPricingPreviewBlock(result.preview)).toBeNull();
+        expect(result.preview.rows[0].before_details!.tiers).toHaveLength(2);
+        expect(result.preview.rows[0].after_details!.tiers).toEqual(uniformDetails.tiers);
+        expect(onSaved).not.toHaveBeenCalled();
+        expect(fetcher).toHaveBeenCalledTimes(1);
+        expect(JSON.parse(fetcher.mock.calls[0][1].body)).toEqual({ action: 'preview', selections: result.selections });
+    });
+
+    it('allows cache-read publication for uniform prices while keeping unsupported cache-write blocked', () => {
+        expect(costRulePublishBlock(savedRule, uniformCapability)).toBeNull();
+        expect(
+            costRulePublishBlock(
+                {
+                    ...savedRule,
+                    config: {
+                        ...directConfig,
+                        token_rates: { ...directConfig.token_rates, cache_write: 1 },
+                    },
+                },
+                uniformCapability,
+            ),
+        ).toContain('缓存写入价格暂不支持发布');
+    });
+
+    it.each([
+        'missing old prices',
+        'missing new prices',
+        'tiered target',
+        'wrong target name',
+        'nonfinite cache',
+        'scalar mismatch',
+        'missing overrides',
+        'tiered override',
+    ])('blocks incomplete or nonuniform %s without sending a publication request', async (scenario) => {
+        const invalid = structuredClone(uniformPrepared);
+        if (scenario === 'missing old prices') delete invalid.preview.rows[0].before_details;
+        if (scenario === 'missing new prices') delete invalid.preview.rows[0].after_details;
+        if (scenario === 'tiered target') invalid.preview.rows[0].after_details = tieredDetails;
+        if (scenario === 'wrong target name') invalid.preview.rows[0].after_details!.tiers[0].name = 'base';
+        if (scenario === 'nonfinite cache') invalid.preview.rows[0].after_details!.tiers[0].rates.cache_read = Infinity;
+        if (scenario === 'scalar mismatch') invalid.preview.rows[0].after.input_cny_per_1m = 2;
+        if (scenario === 'missing overrides') delete invalid.preview.customer_overrides;
+        if (scenario === 'tiered override') invalid.preview.customer_overrides![0].after = tieredDetails;
+        expect(costPricingPreviewBlock(invalid.preview)).toContain('统一价格详情不完整');
+        expect(
+            costReviewReducer({ prepared: invalid, confirmed: false }, { type: 'confirm', confirmed: true }).confirmed,
+        ).toBe(false);
+        const fetcher = vi.fn();
+        vi.stubGlobal('fetch', fetcher);
+        await expect(publishCostPricingReview(invalid)).rejects.toThrow('统一价格详情不完整');
+        expect(fetcher).not.toHaveBeenCalled();
+        const html = renderToStaticMarkup(
+            <TieredCostPricingPreview preview={invalid.preview} en={false} isDark={false} />,
+        );
+        expect(html).toContain('role="alert"');
+        expect(html).not.toContain('¥0.8');
+    });
+
+    it('rejects the old tier-preserving preview when a uniform price was requested', async () => {
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(tieredPrepared))));
+        await expect(
+            prepareSingleCostPricing({ input: null, savedRule, capability: uniformCapability, onSaved: vi.fn() }),
+        ).rejects.toThrow('未返回完整统一价格预览');
+    });
+
+    it.each([false, true])('shows one all-length price and collapsed current-price comparison (dark=%s)', (isDark) => {
+        const html = renderToStaticMarkup(
+            <TieredCostPricingPreview preview={uniformPrepared.preview} en={false} isDark={isDark} />,
+        );
+        for (const text of [
+            '所有输入长度使用统一价格',
+            '¥0.8',
+            '¥4.8',
+            '¥0.08',
+            '¥0.9',
+            '¥5.4',
+            '¥0.09',
+            '2 档 → 统一价格',
+            '客户专属倍率替代公共分组倍率',
+        ])
+            expect(html).toContain(text);
+        expect(html).not.toContain('现有阶梯条件保持不变');
+        expect(html).not.toContain('普通档');
+        expect(html).not.toMatch(/<details[^>]*\bopen/);
+        expect(html).not.toContain('private-publish-token');
+    });
+
+    it('retains the supplied independent output and precise cache prices for every length', () => {
+        const precise = structuredClone(uniformPrepared);
+        precise.preview.rows[0].after_details!.tiers[0].rates.output = 5;
+        precise.preview.rows[0].after_details!.tiers[0].rates.cache_read = 0.08125;
+        precise.preview.rows[0].after.output_cny_per_1m = 5;
+        expect(costPricingPreviewBlock(precise.preview)).toBeNull();
+        const html = renderToStaticMarkup(
+            <TieredCostPricingPreview preview={precise.preview} en={true} isDark={false} />,
+        );
+        expect(html).toContain('¥0.08125');
+        expect(html).toContain('After publication: one rate for every input length');
+    });
+
+    it('publishes only the complete reviewed signed uniform plan', async () => {
+        const job = { id: 'uniform-job', status: 'pending' };
+        const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ job }), { status: 202 }));
+        vi.stubGlobal('fetch', fetcher);
+        const state = costReviewReducer(
+            { prepared: uniformPrepared, confirmed: false },
+            { type: 'confirm', confirmed: true },
+        );
+        expect(state.confirmed).toBe(true);
+        expect(await publishCostPricingReview(state.prepared!)).toEqual(job);
+        expect(JSON.parse(fetcher.mock.calls[0][1].body)).toEqual({
+            action: 'publish',
+            selections: uniformPrepared.selections,
+            selection_token: uniformPrepared.selection_token,
+            preview_token: uniformPrepared.preview.preview_token,
+        });
+    });
+});
+
 describe('cost forms preserve actual purchasing inputs', () => {
     it('does not assume prices, supplier multipliers or retail multipliers in a new form', () => {
         const draft = newCostDraft(capability);
@@ -370,7 +534,7 @@ describe('cost forms preserve actual purchasing inputs', () => {
         expect(draft.source_note).toContain('LiteLLM CDN');
         expect(draft.source_note).toContain(referencePrice.fetchedAt);
         expect(draft.source_note).toContain(config.source_note);
-        expect(draft.source_note).toContain('普通档，阶梯另行核对');
+        expect(draft.source_note).toContain('用于基础报价与成本估算');
         const saved = costConfigFromDraft(draft);
         expect(saved?.token_rates.cache_write).toBeNull();
         expect(calculateCostPricing(saved!).lines).toEqual([

@@ -347,3 +347,31 @@ export function scaleTieredPricingExpression(expression: string, numerator: numb
     parseWithSpans(result);
     return result;
 }
+
+/** Build an absolute, length-independent customer tariff. Each category is
+ * converted independently; neither existing tiers nor their price ratios apply. */
+export function uniformTokenPricingExpression(
+    rates: Pick<TieredPricingRates, 'input' | 'output' | 'cache_read'>,
+    groupRatio: number,
+    currencyFactor: number,
+): string {
+    const denominators = [groupRatio, currencyFactor].map((value) => {
+        if (!Number.isFinite(value) || value <= 0 || value > Number.MAX_SAFE_INTEGER)
+            invalid('分组倍率或金额换算因子无效。');
+        return decimal(String(value));
+    });
+    const coefficient = (value: number): string => {
+        if (!Number.isFinite(value) || value < 0 || value > Number.MAX_SAFE_INTEGER)
+            invalid('统一售价必须是安全范围内的非负数。');
+        const price = decimal(String(value));
+        const [group, currency] = denominators;
+        const literal = roundedDecimal(reduce(price.n * group.d * currency.d, price.d * group.n * currency.n));
+        readPrice({ kind: 'number', text: literal, start: 0, end: literal.length });
+        return literal;
+    };
+    const terms = [`p * ${coefficient(rates.input)}`, `c * ${coefficient(rates.output)}`];
+    if (rates.cache_read !== null) terms.push(`cr * ${coefficient(rates.cache_read)}`);
+    const expression = `tier("uniform", ${terms.join(' + ')})`;
+    parseWithSpans(expression);
+    return expression;
+}

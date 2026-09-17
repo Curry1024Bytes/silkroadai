@@ -216,8 +216,8 @@ function PricingReferencePickerSession({
             <h3 className="text-sm font-semibold">{en ? 'Look up base reference prices' : '查询基础参考价'}</h3>
             <p className="text-xs leading-relaxed opacity-75">
                 {en
-                    ? 'LiteLLM reference prices in USD per million tokens; verify with the supplier. This lookup does not include long-context tiers or other dynamic billing rules.'
-                    : 'LiteLLM 参考价，单位为美元／百万 token，请与上游核对。这里只查询普通基础价，不包含长上下文等动态阶梯规则。'}
+                    ? 'LiteLLM base reference prices in USD per million tokens. Confirm the supplier uses these base prices before filling them in.'
+                    : 'LiteLLM 基础参考价，单位为美元／百万 token。确认上游使用这组基础价格后即可填入。'}
             </p>
             <div className="flex flex-wrap items-end gap-2">
                 <label className="block min-w-0 flex-1 space-y-1.5 text-sm">

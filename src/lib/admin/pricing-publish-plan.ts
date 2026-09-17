@@ -9,6 +9,7 @@ import type { SyncChannel } from './newapi-sync-source';
 import type { PricingPublishAmounts, PricingPublishInput, PricingPublishPreviewRow } from './pricing-publish-types';
 import { PricingPublishError } from './pricing-publish-lock';
 import type { CostBatchContext } from './pricing-cost-publication-guard';
+import type { UniformPublishPlan } from './pricing-uniform-plan';
 import type { TieredPublishPlan } from './pricing-tiered-plan';
 
 export const PRICE_KEYS = ['ModelRatio', 'CompletionRatio', 'ModelPrice', 'GroupRatio'] as const;
@@ -74,7 +75,7 @@ export interface PublishBatchPlan extends Omit<PublishPlan, 'version' | 'input' 
     target: Partial<Record<WritePriceKey, Record<string, number>>>;
     cost_context?: CostBatchContext;
 }
-export type AnyPublishPlan = PublishPlan | PublishBatchPlan | TieredPublishPlan;
+export type AnyPublishPlan = PublishPlan | PublishBatchPlan | TieredPublishPlan | UniformPublishPlan;
 export type PublicationWriteKey = WritePriceKey | 'billing_setting.billing_expr';
 
 /** Normalize legacy intent without changing the persisted v1 contract or signature. */
@@ -178,7 +179,7 @@ function completionInfo(source: PublishSource, model: string) {
 }
 
 export function assertEffectiveCompletion(source: PublishSource, plan: AnyPublishPlan) {
-    if (plan.version === 3) return; // The runtime expression is verified separately.
+    if (plan.version === 3 || plan.version === 4) return; // The runtime expression is verified separately.
     if (plan.version === 2) {
         for (const model of plan.upstream_models) {
             if (

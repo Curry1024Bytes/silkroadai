@@ -55,7 +55,7 @@ export interface PricingPublishPreview {
     rows: PricingPublishPreviewRow[];
     warnings: string[];
     batch?: { count: number; upstream_models: string[] };
-    publication_mode?: 'tiered_token';
+    publication_mode?: 'tiered_token' | 'uniform_token';
     unchanged?: boolean;
     customer_overrides?: Array<{
         group: string;

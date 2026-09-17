@@ -8,6 +8,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToString } from 'react-dom/server';
+import type { TieredPricingDetails } from '@/lib/admin/pricing-publish-types';
 
 const mockFindManyCatalog = vi.fn();
 const mockFindManyGroups = vi.fn();
@@ -59,7 +60,7 @@ beforeEach(() => {
     mockGetOption.mockReset().mockResolvedValue('{}');
 });
 
-const tieredPrice = () => ({
+const tieredPrice = (): ReturnType<typeof price> & { billing_details: TieredPricingDetails } => ({
     ...price('enterprise', { in: 0.8, out: 4.8 }),
     billing_details: {
         version: 1,
@@ -88,6 +89,24 @@ const tieredPrice = () => ({
 });
 
 describe('<PricingPage /> SSR', () => {
+    it('shows verified uniform prices at every length and keeps the exact dedicated cache rate', async () => {
+        mockCurrentUser.mockResolvedValue({ id: 'dedicated-customer' });
+        mockMultipliers.mockResolvedValue([{ newapi_billing_group: 'Enterprise', multiplier: 0.18 }]);
+        mockFindManyGroups.mockResolvedValue([
+            { key: 'enterprise', display_name: '企业档', newapi_group: 'Enterprise', tier_level: 1 },
+        ]);
+        mockGetOption.mockResolvedValue('{"Enterprise":0.16}');
+        const row = tieredPrice();
+        row.billing_details.tiers = [{ ...row.billing_details.tiers[0], name: 'uniform', max_input_tokens: null }];
+        mockFindManyCatalog.mockResolvedValue([model('gpt-5.5', 'GPT 5.5', [row])]);
+        const html = renderToString(await PricingPage());
+        expect(html).toContain('统一单价 · 不随输入长度变化');
+        expect(html).toContain('所有输入长度均使用以下单价');
+        expect(html).not.toContain('阶梯');
+        expect(html).not.toContain('272,000');
+        for (const amount of ['0.9', '5.4', '0.09'])
+            expect(html).toMatch(new RegExp(`¥(?:<!-- -->)?${amount.replace('.', '\\.')}<`));
+    });
     it('renders full tier/cache prices with the exact whole-request threshold, not a misleading single quote', async () => {
         mockFindManyGroups.mockResolvedValue([
             { key: 'enterprise', display_name: '企业档', newapi_group: 'Enterprise', tier_level: 1 },

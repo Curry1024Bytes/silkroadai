@@ -1,5 +1,6 @@
 import {
     formatTieredPrice,
+    isUniformPricingDetails,
     parseTieredPricingDetails,
     tieredPricingConditionLabel,
 } from '@/lib/models/tiered-pricing-details';
@@ -10,18 +11,29 @@ export default function CatalogTieredPriceDetails({ raw, en }: { raw: unknown; e
     try {
         details = parseTieredPricingDetails(raw);
     } catch {
-        return <p className="mt-1 text-xs text-amber-600">{en ? 'Tiered prices need review' : '阶梯价格待核对'}</p>;
+        return <p className="mt-1 text-xs text-amber-600">{en ? 'Prices need review' : '价格待核对'}</p>;
     }
     if (!details) return null;
+    const uniform = isUniformPricingDetails(details);
     return (
         <details className="mt-2 max-w-xl text-xs">
             <summary className="cursor-pointer font-medium text-emerald-600">
-                {en ? 'Tiered prices · view all rates' : '阶梯价 · 查看完整价格'}
+                {uniform
+                    ? en
+                        ? 'Uniform prices · view rates'
+                        : '统一单价 · 查看价格'
+                    : en
+                      ? 'Tiered prices · view all rates'
+                      : '阶梯价 · 查看完整价格'}
             </summary>
             <p className="my-2">
-                {en
-                    ? 'Rates in CNY / million tokens. Full input length selects one tier for the whole request.'
-                    : '单位：元／百万 token。按完整输入长度选档，整次请求使用该档价格。'}
+                {uniform
+                    ? en
+                        ? 'Rates in CNY / million tokens, at any input length.'
+                        : '单位：元／百万 token。所有输入长度均使用同一组单价。'
+                    : en
+                      ? 'Rates in CNY / million tokens. Full input length selects one tier for the whole request.'
+                      : '单位：元／百万 token。按完整输入长度选档，整次请求使用该档价格。'}
             </p>
             <div className="space-y-2">
                 {details.tiers.map((tier) => (

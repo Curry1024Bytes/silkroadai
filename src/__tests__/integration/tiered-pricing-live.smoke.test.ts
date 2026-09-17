@@ -6,7 +6,7 @@ import { prisma } from '@/lib/db';
 import { POST as save, GET as list } from '@/app/api/admin/pricing/cost-rules/route';
 import { POST as publish } from '@/app/api/admin/pricing/cost-rules/publish/route';
 import { runPricingPublisherOnce } from '@/lib/admin/pricing-publish';
-import { getPricingRuntimeModels } from '@/lib/newapi/client';
+import { getPricingRuntimeModels, putPricingPublishOption } from '@/lib/newapi/client';
 import { readPersistedTieredPricingOptions } from '@/lib/newapi/persisted-pricing';
 import { EXPRESSION_KEY } from '@/lib/admin/pricing-tiered-plan';
 
@@ -32,8 +32,8 @@ const request = (body?: unknown) =>
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
 
-describe.skipIf(!enabled)('real isolated tiered publication lifecycle', () => {
-    it('saves through routes, confirms a no-op and two actual expression publications, preserving cache and tiers', async () => {
+describe.skipIf(!enabled)('real isolated uniform publication lifecycle', () => {
+    it('publishes uniform rates at all lengths, retries without compounding, preserves cache and restores the fixture', async () => {
         // Never reuse local or production connection settings accidentally.
         expect(new URL(process.env.DATABASE_URL!).hostname).toBe('127.0.0.1');
         expect(new URL(process.env.DATABASE_URL!).pathname).toBe('/llmroute_tiered_0916');
@@ -75,84 +75,103 @@ describe.skipIf(!enabled)('real isolated tiered publication lifecycle', () => {
         const initial = await getPricingRuntimeModels(['gpt-5.5']);
         const report: unknown[] = [];
         let revision: number | null = null;
-        for (const multiplier of [1.6, 1.8, 1.6]) {
-            const savedResponse = await save(
-                request({
-                    model_id: MODEL,
-                    tier: 'enterprise',
-                    expected_revision: revision,
-                    config: { ...config, retail_multiplier: multiplier },
-                }),
-            );
-            const saved = await savedResponse.json();
-            expect(saved, JSON.stringify(saved)).toHaveProperty('rule.id');
-            expect(savedResponse.status).toBe(200);
-            revision = saved.rule.revision;
-            const capabilities = await (await list(request())).json();
-            expect(capabilities.capabilities).toContainEqual(
-                expect.objectContaining({ model_id: MODEL, publishable: true, publication_mode: 'tiered_token' }),
-            );
-            const selections = [{ rule_id: saved.rule.id, revision }];
-            const previewResponse = await publish(request({ action: 'preview', selections }));
-            const preview = await previewResponse.json();
-            expect(preview, JSON.stringify(preview)).toHaveProperty('preview.publication_mode', 'tiered_token');
-            expect(previewResponse.status).toBe(200);
-            expect(preview.preview.rows[0].after_details.tiers).toHaveLength(2);
-            expect(preview.preview.rows[0].after_details.tiers[0].max_input_tokens).toBe(272000);
-            expect(preview.preview.rows[0].after_details.tiers[0].rates.cache_read).toBeCloseTo(multiplier * 0.05, 12);
-            expect(preview.preview.rows[0].after_details.tiers[1].rates.output).toBeCloseTo(multiplier * 4.5, 12);
-            if (revision === 1) expect(preview.preview.unchanged).toBe(true);
-            const confirmation = {
-                action: 'publish',
-                selections,
-                preview_token: preview.preview.preview_token,
-                selection_token: preview.selection_token,
-            };
-            const acceptedResponse = await publish(request(confirmation));
-            const accepted = await acceptedResponse.json();
-            expect(accepted, JSON.stringify(accepted)).toHaveProperty('job.id');
-            expect(acceptedResponse.status).toBe(202);
-            const duplicate = await (await publish(request(confirmation))).json();
-            expect(duplicate.job.id).toBe(accepted.job.id);
-            const result = await runPricingPublisherOnce();
-            expect(result, JSON.stringify(result)).toMatchObject({ id: accepted.job.id, status: 'succeeded' });
-            const row = await prisma.catalogPrice.findFirstOrThrow({
-                where: { model_id: MODEL },
-                orderBy: { effective_from: 'desc' },
-            });
-            expect(row.billing_details).toEqual(preview.preview.rows[0].after_details);
-            expect(Number(row.cost_cny_per_1m)).toBe(0.65);
-            expect(await prisma.pricingPublishWrite.count()).toBe(revision! - 1);
-            const disk = await readPersistedTieredPricingOptions();
-            const runtime = await getPricingRuntimeModels(['gpt-5.5']);
-            expect(runtime.models[0].billing_expr).toBe(JSON.parse(disk[EXPRESSION_KEY])['gpt-5.5']);
-            expect(runtime.group_ratio).toEqual(initial.group_ratio);
-            report.push({
-                revision,
-                multiplier,
-                job_status: result?.status,
-                unchanged: preview.preview.unchanged,
-                details: row.billing_details,
-                customer_overrides: preview.preview.customer_overrides,
-            });
+        const initialOptions = await readPersistedTieredPricingOptions();
+        try {
+            for (const multiplier of [1.6, 1.6, 1.8, 1.6]) {
+                const savedResponse = await save(
+                    request({
+                        model_id: MODEL,
+                        tier: 'enterprise',
+                        expected_revision: revision,
+                        config: { ...config, retail_multiplier: multiplier },
+                    }),
+                );
+                const saved = await savedResponse.json();
+                expect(saved, JSON.stringify(saved)).toHaveProperty('rule.id');
+                expect(savedResponse.status).toBe(200);
+                revision = saved.rule.revision;
+                const capabilities = await (await list(request())).json();
+                expect(capabilities.capabilities).toContainEqual(
+                    expect.objectContaining({ model_id: MODEL, publishable: true, publication_mode: 'uniform_token' }),
+                );
+                const selections = [{ rule_id: saved.rule.id, revision }];
+                const previewResponse = await publish(request({ action: 'preview', selections }));
+                const preview = await previewResponse.json();
+                expect(preview, JSON.stringify(preview)).toHaveProperty('preview.publication_mode', 'uniform_token');
+                expect(previewResponse.status).toBe(200);
+                expect(preview.preview.rows[0].after_details.tiers).toHaveLength(1);
+                expect(preview.preview.rows[0].after_details.tiers[0].max_input_tokens).toBeNull();
+                expect(preview.preview.rows[0].after_details.tiers[0].min_input_tokens).toBeNull();
+                expect(preview.preview.rows[0].after_details.tiers[0].rates.cache_read).toBeCloseTo(
+                    multiplier * 0.05,
+                    12,
+                );
+                expect(preview.preview.rows[0].after_details.tiers[0].rates.output).toBeCloseTo(multiplier * 3, 12);
+                expect(preview.preview.unchanged).toBe(revision === 2);
+                const confirmation = {
+                    action: 'publish',
+                    selections,
+                    preview_token: preview.preview.preview_token,
+                    selection_token: preview.selection_token,
+                };
+                const acceptedResponse = await publish(request(confirmation));
+                const accepted = await acceptedResponse.json();
+                expect(accepted, JSON.stringify(accepted)).toHaveProperty('job.id');
+                expect(acceptedResponse.status).toBe(202);
+                const duplicate = await (await publish(request(confirmation))).json();
+                expect(duplicate.job.id).toBe(accepted.job.id);
+                const result = await runPricingPublisherOnce();
+                expect(result, JSON.stringify(result)).toMatchObject({ id: accepted.job.id, status: 'succeeded' });
+                const row = await prisma.catalogPrice.findFirstOrThrow({
+                    where: { model_id: MODEL },
+                    orderBy: { effective_from: 'desc' },
+                });
+                expect(row.billing_details).toEqual(preview.preview.rows[0].after_details);
+                expect(Number(row.cost_cny_per_1m)).toBe(0.65);
+                expect(await prisma.pricingPublishWrite.count()).toBe(revision === 1 ? 1 : revision! - 1);
+                const disk = await readPersistedTieredPricingOptions();
+                const runtime = await getPricingRuntimeModels(['gpt-5.5']);
+                expect(runtime.models[0].billing_expr).toBe(JSON.parse(disk[EXPRESSION_KEY])['gpt-5.5']);
+                expect(runtime.models[0].billing_expr).not.toContain('len');
+                for (const key of Object.keys(initialOptions))
+                    if (key !== EXPRESSION_KEY)
+                        expect(disk[key as keyof typeof disk]).toEqual(
+                            initialOptions[key as keyof typeof initialOptions],
+                        );
+                const jobPlan = (await prisma.pricingPublishJob.findUniqueOrThrow({ where: { id: accepted.job.id } }))
+                    .plan as { version: number; strategy: string };
+                expect(jobPlan).toMatchObject({ version: 4, strategy: 'uniform_token' });
+                expect(runtime.group_ratio).toEqual(initial.group_ratio);
+                report.push({
+                    revision,
+                    multiplier,
+                    job_status: result?.status,
+                    unchanged: preview.preview.unchanged,
+                    details: row.billing_details,
+                    customer_overrides: preview.preview.customer_overrides,
+                });
+            }
+        } finally {
+            // Synthetic fixture only; never leave changed billing after a failed assertion.
+            await putPricingPublishOption(EXPRESSION_KEY, initialOptions[EXPRESSION_KEY]);
         }
         expect((await getPricingRuntimeModels(['gpt-5.5'])).models[0].billing_expr).toBe(
             initial.models[0].billing_expr,
         );
-        expect(await prisma.pricingPublishJob.count({ where: { status: 'succeeded' } })).toBe(3);
+        expect(await prisma.pricingPublishJob.count({ where: { status: 'succeeded' } })).toBe(4);
         expect(await prisma.pricingPublishWrite.count({ where: { status: 'in_flight' } })).toBe(0);
         expect(
             (await prisma.pricingPublishCoordinator.findUniqueOrThrow({ where: { id: 'newapi' } })).active_job_id,
         ).toBeNull();
         writeFileSync(
-            '/tmp/llmroute-tiered-pricing-qa/evidence/portal-live-lifecycle.json',
+            '/tmp/llmroute-uniform-pricing-qa/evidence/portal-live-lifecycle.json',
             JSON.stringify(
                 {
                     success: true,
                     real_postgres: true,
                     real_newapi: true,
-                    pricing_jobs: 3,
-                    expression_writes: 2,
+                    pricing_jobs: 4,
+                    expression_writes: 3,
                     original_expression_restored: true,
                     report,
                 },

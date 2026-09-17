@@ -305,7 +305,10 @@ export function buildTieredPublishPlan(
     };
 }
 
-export function assertRecoverableTieredOptions(current: TieredPriceOptions, plan: TieredPublishPlan) {
+export function assertRecoverableTieredOptions(
+    current: TieredPriceOptions,
+    plan: Pick<TieredPublishPlan, 'baseline' | 'target' | 'upstream_model'>,
+) {
     for (const key of TIERED_PRICE_KEYS) {
         const expected = { ...plan.baseline[key] };
         if (key === EXPRESSION_KEY) {

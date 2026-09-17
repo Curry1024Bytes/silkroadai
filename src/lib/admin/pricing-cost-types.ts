@@ -73,7 +73,7 @@ export interface PricingCostSelection {
 }
 
 export interface PricingCostCapability {
-    publication_mode?: 'tiered_token';
+    publication_mode?: 'tiered_token' | 'uniform_token';
     model_id: string;
     tier: string;
     basis: 'token' | 'image' | 'video' | 'unknown';

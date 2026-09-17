@@ -73,6 +73,15 @@ export function parseTieredPricingDetails(raw: unknown): TieredPricingDetails | 
     return parsed.data;
 }
 
+/** A verified, unbounded rate applies at every input length. Keep legacy metadata readable. */
+export function isUniformPricingDetails(details: TieredPricingDetails): boolean {
+    return (
+        details.tiers.length === 1 &&
+        details.tiers[0].min_input_tokens === null &&
+        details.tiers[0].max_input_tokens === null
+    );
+}
+
 /** Apply a customer's effective/public multiplier to every tier and cache rate. */
 export function scaleTieredPricingDetails(
     details: TieredPricingDetails,

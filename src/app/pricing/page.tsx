@@ -34,6 +34,7 @@ import { getOption } from '@/lib/newapi/client';
 import { listUserTierMultipliers } from '@/lib/newapi/user-tier-multiplier';
 import {
     formatTieredPrice,
+    isUniformPricingDetails,
     parseTieredPricingDetails,
     scalePricingAmount,
     scaleTieredPricingDetails,
@@ -321,7 +322,11 @@ function VendorPriceSection({ block }: { block: VendorBlock }) {
                                         <td className="py-2.5 pr-4 text-muted-ink">
                                             {row.tierLabel}
                                             {row.billingDetails && (
-                                                <span className="block mt-1 text-xs">阶梯计费 · 此行显示首档</span>
+                                                <span className="block mt-1 text-xs">
+                                                    {isUniformPricingDetails(row.billingDetails)
+                                                        ? '统一单价 · 不随输入长度变化'
+                                                        : '阶梯计费 · 此行显示首档'}
+                                                </span>
                                             )}
                                         </td>
                                         <td className="py-2.5 pr-4 text-right text-navy tabular-nums">
@@ -358,15 +363,18 @@ function VendorPriceSection({ block }: { block: VendorBlock }) {
 }
 
 function TieredPriceTable({ details, tierLabel }: { details: TieredPricingDetails; tierLabel: string }) {
+    const uniform = isUniformPricingDetails(details);
     const hasWrite = details.tiers.some(
         (tier) => tier.rates.cache_write !== null || tier.rates.cache_write_1h !== null,
     );
     return (
         <div className="rounded-xl border border-brand-border bg-paper-muted p-3">
             <p className="m-0 mb-2 text-xs">
-                按完整输入长度选择一档，整次请求按该档计费；不是分段累进。以下均为 ¥ / 百万 token。
+                {uniform
+                    ? '所有输入长度均使用以下单价。单位：元／百万 token。'
+                    : '按完整输入长度选择一档，整次请求按该档计费；不是分段累进。以下均为 ¥ / 百万 token。'}
             </p>
-            <table className="w-full text-xs" aria-label={`${tierLabel}完整阶梯价格`}>
+            <table className="w-full text-xs" aria-label={`${tierLabel}${uniform ? '统一单价' : '完整阶梯价格'}`}>
                 <thead>
                     <tr className="text-left">
                         <th className="py-2 pr-3">适用条件</th>

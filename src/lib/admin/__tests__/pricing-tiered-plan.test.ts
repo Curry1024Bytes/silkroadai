@@ -21,6 +21,8 @@ import {
 import type { PublishSource, PublishState } from '../pricing-publish-plan';
 import type { PricingPublishInput } from '../pricing-publish-types';
 import { CHAT_FX, IMAGE_FX } from '@/lib/newapi/pricing-sync';
+import { buildUniformPublishPlan } from '../pricing-uniform-plan';
+import { parseTieredPricingExpression, uniformTokenPricingExpression } from '../pricing-tiered-expression';
 
 const NOW = Date.parse('2026-09-16T12:00:00Z');
 const DATE = new Date(NOW - 60_000).toISOString();
@@ -309,5 +311,143 @@ describe('tiered expression publication planning', () => {
         expect(() => assertRecoverableTieredOptions(applied, plan)).toThrow(
             expect.objectContaining({ code: 'pricing_conflict' }),
         );
+    });
+});
+
+describe('v4 uniform customer token pricing', () => {
+    it('replaces the complete two-tier tariff with one fixed input/output/cache price at every length', () => {
+        const { state, source, input } = fixture();
+        const before = structuredClone({ state, source, input });
+        const plan = buildUniformPublishPlan(state, source, [input], NOW);
+        expect(plan).toMatchObject({ version: 4, strategy: 'uniform_token', unchanged: false });
+        expect(plan.target).toEqual({
+            [EXPRESSION_KEY]: { 'gpt-5.5': 'tier("uniform", p * 5 + c * 30 + cr * 0.5)' },
+        });
+        expect(plan.rows[0].before_details?.tiers).toHaveLength(2);
+        expect(plan.rows[0].after_details?.tiers).toEqual([
+            {
+                name: 'uniform',
+                min_input_tokens: null,
+                max_input_tokens: null,
+                min_inclusive: false,
+                max_inclusive: false,
+                rates: { input: 0.8, output: 4.8, cache_read: 0.08, cache_write: null, cache_write_1h: null },
+            },
+        ]);
+        expect(plan.warnings.join(' ')).not.toContain('保留原有边界');
+        expect({ state, source, input }).toEqual(before);
+    });
+
+    it('accepts independently specified input, output and cache prices, without inheriting old proportions', () => {
+        const { state, source, input } = fixture();
+        const plan = buildUniformPublishPlan(
+            state,
+            source,
+            [
+                {
+                    ...input,
+                    input_cny_per_1m: 1.6,
+                    output_cny_per_1m: 7.2,
+                    cache_read_cny_per_1m: 0.12,
+                },
+            ],
+            NOW,
+        );
+        expect(plan.target[EXPRESSION_KEY]['gpt-5.5']).toBe('tier("uniform", p * 10 + c * 45 + cr * 0.75)');
+        expect(plan.rows[0].after_details?.tiers[0].rates).toMatchObject({ input: 1.6, output: 7.2, cache_read: 0.12 });
+        expect(plan.rows[1].after_details?.tiers[0].rates).toMatchObject({ input: 2, output: 9, cache_read: 0.15 });
+        expect(plan.customer_overrides[0].after.tiers[0].rates).toMatchObject({
+            input: 1.8,
+            output: 8.1,
+            cache_read: 0.135,
+        });
+        expect(plan.baseline.GroupRatio).toEqual({ enterprise: 0.16, partner: 0.2 });
+    });
+
+    it('does not apply the retail multiplier again on a second preview after publication', () => {
+        const { state, source, input } = fixture();
+        const plan = buildUniformPublishPlan(state, source, [input], NOW);
+        (source.options[EXPRESSION_KEY] as Record<string, string>)['gpt-5.5'] = plan.target[EXPRESSION_KEY]['gpt-5.5'];
+        const repeated = buildUniformPublishPlan(state, source, [input], NOW);
+        expect(repeated.unchanged).toBe(true);
+        expect(repeated.target).toEqual(plan.target);
+        expect(repeated.rows[0].after_details).toEqual(plan.rows[0].after_details);
+    });
+
+    it('requires an explicit cached read target rather than silently dropping existing cached-token billing', () => {
+        const { state, source, input } = fixture();
+        delete input.cache_read_cny_per_1m;
+        expect(() => buildUniformPublishPlan(state, source, [input], NOW)).toThrow(
+            expect.objectContaining({ code: 'pricing_uniform_cache' }),
+        );
+    });
+
+    it('can add explicitly supplied cached read pricing to a linear expression that lacked it', () => {
+        const { state, source, input } = fixture();
+        (source.options[EXPRESSION_KEY] as Record<string, string>)['gpt-5.5'] = 'tier("base", p * 5 + c * 30)';
+        const plan = buildUniformPublishPlan(state, source, [input], NOW);
+        expect(plan.rows[0].before_details?.tiers[0].rates.cache_read).toBeNull();
+        expect(plan.rows[0].after_details?.tiers[0].rates.cache_read).toBe(0.08);
+    });
+
+    it('keeps an absent cache category absent and allows explicitly free output or cached read', () => {
+        const { state, source, input } = fixture();
+        const free = buildUniformPublishPlan(
+            state,
+            source,
+            [{ ...input, output_cny_per_1m: 0, cache_read_cny_per_1m: 0 }],
+            NOW,
+        );
+        expect(free.target[EXPRESSION_KEY]['gpt-5.5']).toBe('tier("uniform", p * 5 + c * 0 + cr * 0)');
+        (source.options[EXPRESSION_KEY] as Record<string, string>)['gpt-5.5'] = 'tier("base", p * 5 + c * 30)';
+        delete input.cache_read_cny_per_1m;
+        expect(
+            buildUniformPublishPlan(state, source, [input], NOW).rows[0].after_details?.tiers[0].rates.cache_read,
+        ).toBeNull();
+    });
+
+    it('uses exact decimal division for each price and applies group/currency conversion once', () => {
+        const expression = uniformTokenPricingExpression({ input: 0.8, output: 4.8, cache_read: 0.08125 }, 0.16, 1);
+        expect(expression).toBe('tier("uniform", p * 5 + c * 30 + cr * 0.5078125)');
+        const fx = uniformTokenPricingExpression({ input: 0.8, output: 4.8, cache_read: 0.08 }, 0.2, 2);
+        expect(parseTieredPricingExpression(fx).tiers[0].rates).toMatchObject({
+            input: 2,
+            output: 12,
+            cache_read: 0.2,
+        });
+    });
+
+    it.each([Number.NaN, Number.POSITIVE_INFINITY, -1, Number.MIN_VALUE])(
+        'rejects invalid or unrepresentable cached price %s',
+        (price) => {
+            const { state, source, input } = fixture();
+            expect(() =>
+                buildUniformPublishPlan(state, source, [{ ...input, cache_read_cny_per_1m: price }], NOW),
+            ).toThrow();
+        },
+    );
+
+    it('does not change the target of a legacy V3 plan while offering V4 separately', () => {
+        const { state, source, input } = fixture();
+        const legacy = buildTieredPublishPlan(state, source, [input], NOW);
+        const uniform = buildUniformPublishPlan(state, source, [input], NOW);
+        expect(legacy.target[EXPRESSION_KEY]['gpt-5.5']).toBe(EXPRESSION);
+        expect(legacy.version).toBe(3);
+        expect(uniform.version).toBe(4);
+        expect(uniform.target[EXPRESSION_KEY]['gpt-5.5']).not.toContain('len');
+        expect(() => assertRecoverableTieredOptions(tieredPriceOptions(source.options), uniform)).not.toThrow();
+    });
+
+    it('retains every existing source, quota, topology and advanced-rule safety gate', () => {
+        const { state, source, input } = fixture();
+        for (const key of ['ImageResolutionPrice', 'billing_setting.scheduled_discount', 'ModelPrice']) {
+            const modified = structuredClone(source);
+            (modified.options[key] as Record<string, unknown>)['gpt-5.5'] =
+                key === 'ModelPrice' ? 0 : { enabled: true };
+            expect(() => buildUniformPublishPlan(state, modified, [input], NOW)).toThrow();
+        }
+        expect(() => buildUniformPublishPlan(state, source, [input, input], NOW)).toThrow();
+        source.channels[0].status = 2;
+        expect(() => buildUniformPublishPlan(state, source, [input], NOW)).toThrow();
     });
 });

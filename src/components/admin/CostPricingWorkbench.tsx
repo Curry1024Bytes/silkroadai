@@ -116,6 +116,78 @@ function TieredRateComparison({
     );
 }
 
+function UniformRateComparison({
+    before,
+    after,
+    en,
+    isDark,
+}: {
+    before: TieredPricingDetails;
+    after: TieredPricingDetails;
+    en: boolean;
+    isDark: boolean;
+}) {
+    const rateKeys = ['input', 'output', 'cache_read', 'cache_write', 'cache_write_1h'] as const;
+    const labels = en
+        ? ['Input', 'Output', 'Cache read', 'Cache write / 5m', 'Cache write / 1h']
+        : ['输入', '输出', '缓存读取', '缓存写入 / 5 分钟', '缓存写入 / 1 小时'];
+    const rates = after.tiers[0].rates;
+    return (
+        <div className="space-y-3">
+            <table className="w-full text-sm">
+                <caption className="pb-2 text-left font-semibold">
+                    {en ? 'After publication: one rate for every input length' : '发布后：所有输入长度使用统一价格'}
+                </caption>
+                <thead className={isDark ? 'bg-slate-800' : 'bg-slate-100'}>
+                    <tr>
+                        <th className="p-2 text-left">{en ? 'Item' : '项目'}</th>
+                        <th className="p-2 text-right">{en ? 'CNY / 1M tokens' : '元 / 百万 token'}</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {rateKeys.map((key, index) => (
+                        <tr key={key} className="border-t border-slate-300/30">
+                            <th className="p-2 text-left font-normal">{labels[index]}</th>
+                            <td className="p-2 text-right tabular-nums">
+                                {rates[key] === null ? '—' : `¥${formatTieredPrice(rates[key])}`}
+                            </td>
+                        </tr>
+                    ))}
+                </tbody>
+            </table>
+            <details className="rounded-lg border border-slate-300/30 p-3 text-sm">
+                <summary className="cursor-pointer font-medium">
+                    {en ? 'View current pricing for comparison' : '查看当前价格对比'}
+                    {before.tiers.length > 1 &&
+                        (en
+                            ? ` (${before.tiers.length} tiers → one rate)`
+                            : `（${before.tiers.length} 档 → 统一价格）`)}
+                </summary>
+                <div className="mt-3 space-y-4">
+                    {before.tiers.map((tier) => (
+                        <section key={tier.name} className="space-y-2">
+                            <h5 className="font-medium">
+                                {en ? 'Current: ' : '当前：'}
+                                {tieredPricingConditionLabel(tier, en)}
+                            </h5>
+                            <dl className="space-y-1">
+                                {rateKeys.map((key, index) => (
+                                    <div key={key} className="flex justify-between gap-3">
+                                        <dt>{labels[index]}</dt>
+                                        <dd className="text-right tabular-nums">
+                                            {tier.rates[key] === null ? '—' : `¥${formatTieredPrice(tier.rates[key])}`}
+                                        </dd>
+                                    </div>
+                                ))}
+                            </dl>
+                        </section>
+                    ))}
+                </div>
+            </details>
+        </div>
+    );
+}
+
 export function TieredCostPricingPreview({
     preview,
     en,
@@ -127,14 +199,20 @@ export function TieredCostPricingPreview({
 }) {
     const block = costPricingPreviewBlock(preview, en);
     if (block) return <p role="alert">{block}</p>;
-    if (preview.publication_mode !== 'tiered_token') return null;
+    const uniform = preview.publication_mode === 'uniform_token';
+    if (!uniform && preview.publication_mode !== 'tiered_token') return null;
+    const RateComparison = uniform ? UniformRateComparison : TieredRateComparison;
     const border = isDark ? 'border-slate-700' : 'border-slate-200';
     return (
         <div className="space-y-4">
             <p className="text-sm leading-relaxed">
-                {en
-                    ? 'The complete input length selects one tier for the whole request. All input, output and cache tokens use that tier; this is not marginal tier billing. Existing thresholds remain unchanged.'
-                    : '按完整输入长度选择阶梯，整次请求的输入、输出和缓存 token 都使用该档价格，不是只对超出部分加价。现有阶梯条件保持不变。'}
+                {uniform
+                    ? en
+                        ? 'Customer prices use your base quote, recharge ratio and retail multiplier. The same rates apply to every input length.'
+                        : '客户售价按基础报价、充值比例和你的售价倍率计算，所有输入长度使用同一组单价。'
+                    : en
+                      ? 'The complete input length selects one tier for the whole request. All input, output and cache tokens use that tier; this is not marginal tier billing. Existing thresholds remain unchanged.'
+                      : '按完整输入长度选择阶梯，整次请求的输入、输出和缓存 token 都使用该档价格，不是只对超出部分加价。现有阶梯条件保持不变。'}
             </p>
             <p className="text-xs opacity-75">
                 {en ? 'A dash means no configured rate, not a free rate.' : '“—”表示该类价格未配置，不代表免费。'}
@@ -152,12 +230,7 @@ export function TieredCostPricingPreview({
                         {row.model_name} · {row.tier}
                     </h4>
                     <p className="text-xs opacity-75">new-api group: {row.group}</p>
-                    <TieredRateComparison
-                        before={row.before_details!}
-                        after={row.after_details!}
-                        en={en}
-                        isDark={isDark}
-                    />
+                    <RateComparison before={row.before_details!} after={row.after_details!} en={en} isDark={isDark} />
                 </article>
             ))}
             <h4 className="font-semibold">{en ? 'Customer-specific multipliers' : '客户专属倍率影响'}</h4>
@@ -181,7 +254,7 @@ export function TieredCostPricingPreview({
                                 {row.group} · {en ? `${row.count} override records` : `${row.count} 条专属配置`} ·{' '}
                                 {en ? 'Public' : '公共'} {row.public_ratio}× → {en ? 'Dedicated' : '专属'} {row.ratio}×
                             </h5>
-                            <TieredRateComparison before={row.before} after={row.after} en={en} isDark={isDark} />
+                            <RateComparison before={row.before} after={row.after} en={en} isDark={isDark} />
                         </article>
                     ))}
                 </>
@@ -612,18 +685,20 @@ export default function CostPricingWorkbench({
             en,
         ),
     );
-    const tieredBatchBlocked =
+    const tokenBatchBlocked =
         selectedRules.length > 1 &&
         selectedRules.some((rule) =>
             data.capabilities.some(
                 (row) =>
-                    row.model_id === rule.model_id && row.tier === rule.tier && row.publication_mode === 'tiered_token',
+                    row.model_id === rule.model_id &&
+                    row.tier === rule.tier &&
+                    (row.publication_mode === 'tiered_token' || row.publication_mode === 'uniform_token'),
             ),
         );
-    const selectedBlockReason = tieredBatchBlocked
+    const selectedBlockReason = tokenBatchBlocked
         ? en
-            ? 'Publish a tiered model on its own. Select one saved rule to review all affected tiers.'
-            : '阶梯模型需要单独发布，请只选一条成本规则后核对全部受影响档次。'
+            ? 'Publish this model separately. Select one saved cost rule to review the affected groups.'
+            : '此模型需要单独发布，请只选一条成本规则后核对受影响分组。'
         : selectedBlocked
           ? costRulePublishBlock(
                 selectedBlocked,
@@ -887,16 +962,11 @@ export default function CostPricingWorkbench({
             const prepared = await requestCostPricingPreview(
                 costRuleSelections(data.rules, selectedIds),
                 en,
-                selectedRules.some((rule) =>
-                    data.capabilities.some(
-                        (row) =>
-                            row.model_id === rule.model_id &&
-                            row.tier === rule.tier &&
-                            row.publication_mode === 'tiered_token',
-                    ),
-                )
-                    ? 'tiered_token'
-                    : undefined,
+                data.capabilities.find(
+                    (row) =>
+                        row.publication_mode &&
+                        selectedRules.some((rule) => row.model_id === rule.model_id && row.tier === rule.tier),
+                )?.publication_mode,
             );
             if (!mounted.current || revision.current !== expectedRevision) return;
             setNow(Date.now());
@@ -1198,13 +1268,17 @@ export default function CostPricingWorkbench({
                                         ))}
                                     </div>
                                     <p className={`text-xs ${classes.muted}`}>
-                                        {capability.publication_mode === 'tiered_token'
+                                        {capability.publication_mode === 'uniform_token'
                                             ? en
-                                                ? 'This model supports tiered input, output and cache-read publication. The full tier conditions and prices appear in the publication preview. Cache-write publication is not supported.'
-                                                : '此模型支持阶梯输入、输出和缓存读取价格发布；完整阶梯条件及价格将在发布预览中展示。缓存写入价格暂不支持发布。'
-                                            : en
-                                              ? 'Blank cache prices mean not provided, not free. Cache estimates may be saved; cache publication is not supported yet.'
-                                              : '缓存留空表示未提供，不代表免费；缓存可保存试算，当前尚未支持发布缓存价格。'}
+                                                ? 'Input, output and cache-read prices apply at every input length. A blank cache price is not free. Cache-write publication is not supported.'
+                                                : '输入、输出和缓存读取使用统一单价，不随输入长度变化。缓存留空不代表免费；缓存写入价格暂不支持发布。'
+                                            : capability.publication_mode === 'tiered_token'
+                                              ? en
+                                                  ? 'This model supports tiered input, output and cache-read publication. The full tier conditions and prices appear in the publication preview. Cache-write publication is not supported.'
+                                                  : '此模型支持阶梯输入、输出和缓存读取价格发布；完整阶梯条件及价格将在发布预览中展示。缓存写入价格暂不支持发布。'
+                                              : en
+                                                ? 'Blank cache prices mean not provided, not free. Cache estimates may be saved; cache publication is not supported yet.'
+                                                : '缓存留空表示未提供，不代表免费；缓存可保存试算，当前尚未支持发布缓存价格。'}
                                     </p>
                                 </div>
                             ) : (
@@ -1413,19 +1487,13 @@ export default function CostPricingWorkbench({
                             {calculation ? (
                                 <div className="space-y-3">
                                     <h4 className="text-sm font-semibold">
-                                        {capability.publication_mode === 'tiered_token'
-                                            ? en
-                                                ? 'Base tier cost and retail estimate'
-                                                : '普通档成本与售价试算'
-                                            : en
-                                              ? 'Cost and retail estimate'
-                                              : '成本与售价试算'}
+                                        {en ? 'Reference cost and customer price' : '参考成本与客户售价'}
                                     </h4>
-                                    {capability.publication_mode === 'tiered_token' && (
+                                    {draft.basis === 'token' && (
                                         <p className={`text-sm ${classes.muted}`}>
                                             {en
-                                                ? 'Long-context tier prices are derived from the configured rules and verified in the publication preview.'
-                                                : '长上下文档价格按现有规则推导，请在发布预览中核对。'}
+                                                ? 'Cost and margin are estimates based on the supplier quote you entered; actual supplier charges may differ.'
+                                                : '成本与毛利按你填写的上游报价估算，实际上游扣费可能不同。'}
                                         </p>
                                     )}
                                     <CostEstimateTable
@@ -1734,7 +1802,8 @@ export default function CostPricingWorkbench({
                             {review.prepared.preview.batch.upstream_models.join('、')}
                         </p>
                     )}
-                    {review.prepared.preview.publication_mode === 'tiered_token' ? (
+                    {review.prepared.preview.publication_mode === 'tiered_token' ||
+                    review.prepared.preview.publication_mode === 'uniform_token' ? (
                         <TieredCostPricingPreview preview={review.prepared.preview} en={en} isDark={isDark} />
                     ) : (
                         <PricingPublishPreviewDetails preview={review.prepared.preview} en={en} isDark={isDark} />
@@ -1748,13 +1817,17 @@ export default function CostPricingWorkbench({
                             className="mt-1 h-5 w-5 shrink-0 accent-emerald-600"
                         />
                         <span>
-                            {review.prepared.preview.publication_mode === 'tiered_token'
+                            {review.prepared.preview.publication_mode === 'uniform_token'
                                 ? en
-                                    ? 'I reviewed every tier condition, input/output/cache price, affected group and customer-specific multiplier.'
-                                    : '我已核对每个阶梯的适用条件、输入输出和缓存价格，以及全部受影响分组与客户专属倍率。'
-                                : en
-                                  ? 'I reviewed every affected model and tier, including changes to other tiers sharing the base price.'
-                                  : '我已核对全部受影响模型和档次，包括共享基础价格导致的其他档次变化。'}
+                                    ? 'I confirm these uniform customer prices and the affected groups and customer-specific prices.'
+                                    : '我确认按以上统一价格向客户计费，并已核对受影响分组及客户专属价格。'
+                                : review.prepared.preview.publication_mode === 'tiered_token'
+                                  ? en
+                                      ? 'I reviewed every tier condition, input/output/cache price, affected group and customer-specific multiplier.'
+                                      : '我已核对每个阶梯的适用条件、输入输出和缓存价格，以及全部受影响分组与客户专属倍率。'
+                                  : en
+                                    ? 'I reviewed every affected model and tier, including changes to other tiers sharing the base price.'
+                                    : '我已核对全部受影响模型和档次，包括共享基础价格导致的其他档次变化。'}
                         </span>
                     </label>
                     {previewExpired && (

@@ -49,7 +49,17 @@ describe('catalog and history tiered price disclosure', () => {
         const html = renderToStaticMarkup(
             <CatalogTieredPriceDetails raw={{ ...details, tiers: [details.tiers[1]] }} en={false} />,
         );
-        expect(html).toContain('阶梯价格待核对');
+        expect(html).toContain('价格待核对');
         expect(html).not.toContain('¥');
+    });
+    it('shows a single unbounded tariff as uniform pricing in current and historical catalogs', () => {
+        const uniform = { ...details, tiers: [{ ...details.tiers[0], name: 'uniform', max_input_tokens: null }] };
+        const html = renderToStaticMarkup(<CatalogTieredPriceDetails raw={uniform} en={false} />);
+        expect(html).toContain('统一单价 · 查看价格');
+        expect(html).toContain('所有输入长度均使用同一组单价');
+        expect(html).toContain('¥0.08125');
+        expect(html).not.toContain('阶梯');
+        expect(html).not.toContain('272,000');
+        expect(renderToStaticMarkup(<CatalogTieredPriceDetails raw={uniform} en />)).toContain('Uniform prices');
     });
 });
