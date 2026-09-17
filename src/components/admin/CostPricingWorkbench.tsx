@@ -117,7 +117,6 @@ function TieredRateComparison({
 }
 
 function UniformRateComparison({
-    before,
     after,
     en,
     isDark,
@@ -136,7 +135,7 @@ function UniformRateComparison({
         <div className="space-y-3">
             <table className="w-full text-sm">
                 <caption className="pb-2 text-left font-semibold">
-                    {en ? 'After publication: one rate for every input length' : '发布后：所有输入长度使用统一价格'}
+                    {en ? 'Customer prices after publication' : '发布后售价'}
                 </caption>
                 <thead className={isDark ? 'bg-slate-800' : 'bg-slate-100'}>
                     <tr>
@@ -145,45 +144,19 @@ function UniformRateComparison({
                     </tr>
                 </thead>
                 <tbody>
-                    {rateKeys.map((key, index) => (
-                        <tr key={key} className="border-t border-slate-300/30">
-                            <th className="p-2 text-left font-normal">{labels[index]}</th>
-                            <td className="p-2 text-right tabular-nums">
-                                {rates[key] === null ? '—' : `¥${formatTieredPrice(rates[key])}`}
-                            </td>
-                        </tr>
-                    ))}
+                    {rateKeys.map(
+                        (key, index) =>
+                            rates[key] !== null && (
+                                <tr key={key} className="border-t border-slate-300/30">
+                                    <th className="p-2 text-left font-normal">{labels[index]}</th>
+                                    <td className="p-2 text-right tabular-nums">
+                                        {`¥${formatTieredPrice(rates[key])}`}
+                                    </td>
+                                </tr>
+                            ),
+                    )}
                 </tbody>
             </table>
-            <details className="rounded-lg border border-slate-300/30 p-3 text-sm">
-                <summary className="cursor-pointer font-medium">
-                    {en ? 'View current pricing for comparison' : '查看当前价格对比'}
-                    {before.tiers.length > 1 &&
-                        (en
-                            ? ` (${before.tiers.length} tiers → one rate)`
-                            : `（${before.tiers.length} 档 → 统一价格）`)}
-                </summary>
-                <div className="mt-3 space-y-4">
-                    {before.tiers.map((tier) => (
-                        <section key={tier.name} className="space-y-2">
-                            <h5 className="font-medium">
-                                {en ? 'Current: ' : '当前：'}
-                                {tieredPricingConditionLabel(tier, en)}
-                            </h5>
-                            <dl className="space-y-1">
-                                {rateKeys.map((key, index) => (
-                                    <div key={key} className="flex justify-between gap-3">
-                                        <dt>{labels[index]}</dt>
-                                        <dd className="text-right tabular-nums">
-                                            {tier.rates[key] === null ? '—' : `¥${formatTieredPrice(tier.rates[key])}`}
-                                        </dd>
-                                    </div>
-                                ))}
-                            </dl>
-                        </section>
-                    ))}
-                </div>
-            </details>
         </div>
     );
 }
@@ -214,9 +187,11 @@ export function TieredCostPricingPreview({
                       ? 'The complete input length selects one tier for the whole request. All input, output and cache tokens use that tier; this is not marginal tier billing. Existing thresholds remain unchanged.'
                       : '按完整输入长度选择阶梯，整次请求的输入、输出和缓存 token 都使用该档价格，不是只对超出部分加价。现有阶梯条件保持不变。'}
             </p>
-            <p className="text-xs opacity-75">
-                {en ? 'A dash means no configured rate, not a free rate.' : '“—”表示该类价格未配置，不代表免费。'}
-            </p>
+            {!uniform && (
+                <p className="text-xs opacity-75">
+                    {en ? 'A dash means no configured rate, not a free rate.' : '“—”表示该类价格未配置，不代表免费。'}
+                </p>
+            )}
             {preview.unchanged && (
                 <p role="status" className="text-sm">
                     {en

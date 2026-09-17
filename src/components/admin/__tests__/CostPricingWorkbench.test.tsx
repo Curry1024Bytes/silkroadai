@@ -396,27 +396,33 @@ describe('uniform customer price confirmation', () => {
         ).rejects.toThrow('未返回完整统一价格预览');
     });
 
-    it.each([false, true])('shows one all-length price and collapsed current-price comparison (dark=%s)', (isDark) => {
-        const html = renderToStaticMarkup(
-            <TieredCostPricingPreview preview={uniformPrepared.preview} en={false} isDark={isDark} />,
-        );
-        for (const text of [
-            '所有输入长度使用统一价格',
-            '¥0.8',
-            '¥4.8',
-            '¥0.08',
-            '¥0.9',
-            '¥5.4',
-            '¥0.09',
-            '2 档 → 统一价格',
-            '客户专属倍率替代公共分组倍率',
-        ])
-            expect(html).toContain(text);
-        expect(html).not.toContain('现有阶梯条件保持不变');
-        expect(html).not.toContain('普通档');
-        expect(html).not.toMatch(/<details[^>]*\bopen/);
-        expect(html).not.toContain('private-publish-token');
-    });
+    it.each([false, true])(
+        'shows only published rates and customer prices without old length comparisons (dark=%s)',
+        (isDark) => {
+            const html = renderToStaticMarkup(
+                <TieredCostPricingPreview preview={uniformPrepared.preview} en={false} isDark={isDark} />,
+            );
+            for (const text of [
+                '发布后售价',
+                '¥0.8',
+                '¥4.8',
+                '¥0.08',
+                '¥0.9',
+                '¥5.4',
+                '¥0.09',
+                '客户专属倍率替代公共分组倍率',
+            ])
+                expect(html).toContain(text);
+            expect(html).not.toContain('现有阶梯条件保持不变');
+            expect(html).not.toContain('普通档');
+            expect(html).not.toContain('<details');
+            expect(html).not.toContain('查看当前价格对比');
+            expect(html).not.toContain('272,000');
+            expect(html).not.toContain('¥7.2');
+            expect(html).not.toContain('缓存写入');
+            expect(html).not.toContain('private-publish-token');
+        },
+    );
 
     it('retains the supplied independent output and precise cache prices for every length', () => {
         const precise = structuredClone(uniformPrepared);
@@ -428,7 +434,8 @@ describe('uniform customer price confirmation', () => {
             <TieredCostPricingPreview preview={precise.preview} en={true} isDark={false} />,
         );
         expect(html).toContain('¥0.08125');
-        expect(html).toContain('After publication: one rate for every input length');
+        expect(html).toContain('Customer prices after publication');
+        expect(html).not.toContain('View current pricing for comparison');
     });
 
     it('publishes only the complete reviewed signed uniform plan', async () => {
