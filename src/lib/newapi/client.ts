@@ -140,6 +140,10 @@ interface CallOptions {
     timeoutMs?: number;
     /** Price write acknowledgement requires an explicit application envelope. */
     requireSuccess?: boolean;
+    /** Internal readers that need non-data response metadata, such as group_ratio. */
+    returnEnvelope?: boolean;
+    /** Public runtime pricing must not inherit an administrator's group override. */
+    anonymous?: boolean;
     /** Strict management reads must never reuse caches or follow redirects. */
     cache?: RequestCache;
     redirect?: RequestRedirect;
@@ -168,7 +172,9 @@ async function call<T>(
     }
 
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (options.session) {
+    if (options.anonymous) {
+        if (options.session || options.asUser) throw new Error('Conflicting new-api authentication options');
+    } else if (options.session) {
         headers['Cookie'] = options.session.auth.cookie;
         headers['New-Api-User'] = String(options.session.userId);
     } else {
@@ -191,6 +197,7 @@ async function call<T>(
         signal: AbortSignal.timeout(timeoutMs),
         ...(options.cache ? { cache: options.cache } : {}),
         ...(options.redirect ? { redirect: options.redirect } : {}),
+        ...(options.anonymous ? { credentials: 'omit' as const } : {}),
     };
     if (body !== undefined) init.body = JSON.stringify(body);
 
@@ -222,7 +229,7 @@ async function call<T>(
     if (options.requireSuccess && data?.success !== true) {
         throw new NewApiError(502, `${method} ${path}`, null, 'Unconfirmed management response');
     }
-    return (data?.data ?? null) as T;
+    return (options.returnEnvelope ? data : (data?.data ?? null)) as T;
 }
 
 interface NewApiLoginUser {
@@ -931,6 +938,7 @@ export async function getPricingPublishOptions(): Promise<Record<string, unknown
         'QuotaPerUnit',
         'ImageResolutionPrice',
         'billing_setting.billing_mode',
+        'billing_setting.billing_expr',
         'billing_setting.scheduled_discount',
     ];
     // Preserve absence separately from an explicitly invalid null value. rc.23
@@ -948,10 +956,106 @@ export async function getPricingPublishOptions(): Promise<Record<string, unknown
 }
 
 export async function putPricingPublishOption(
-    key: 'ModelRatio' | 'CompletionRatio' | 'ModelPrice',
+    key: 'ModelRatio' | 'CompletionRatio' | 'ModelPrice' | 'billing_setting.billing_expr',
     value: string,
 ): Promise<void> {
+    if (!['ModelRatio', 'CompletionRatio', 'ModelPrice', 'billing_setting.billing_expr'].includes(key))
+        throw new Error('Unsupported pricing publication option');
     await call<unknown>('PUT', '/api/option/', { key, value }, undefined, { timeoutMs: 10_000, requireSuccess: true });
+}
+
+export interface NewApiRuntimePricingModel {
+    model_name: string;
+    quota_type: 0 | 1;
+    model_ratio: number;
+    model_price: number;
+    completion_ratio: number;
+    enable_groups: string[];
+    cache_ratio?: number;
+    create_cache_ratio?: number;
+    billing_mode?: string;
+    billing_expr?: string;
+}
+
+export interface NewApiRuntimePricing {
+    models: NewApiRuntimePricingModel[];
+    /** Anonymous public group ratios, without any customer's group overrides. */
+    group_ratio: Record<string, number>;
+}
+
+/**
+ * Read pricing built from new-api's running ratio/billing structures, not its
+ * OptionMap. new-api can cache this view for up to a minute; callers must keep
+ * verification pending when it still disagrees with persisted target values.
+ * Missing models are not evidence of deletion: visibility also depends on the
+ * endpoint's public usable groups. Never send admin credentials, which could
+ * select its customer group overrides. No fallback to option values is allowed.
+ */
+export async function getPricingRuntimeModels(modelNames: string[]): Promise<NewApiRuntimePricing> {
+    if (
+        !Array.isArray(modelNames) ||
+        modelNames.length === 0 ||
+        modelNames.length > 30 ||
+        modelNames.some((name) => typeof name !== 'string' || !name.trim() || name !== name.trim()) ||
+        new Set(modelNames).size !== modelNames.length
+    )
+        throw new Error('Invalid runtime pricing model selection');
+    const envelope = await call<unknown>('GET', '/api/pricing', undefined, undefined, {
+        timeoutMs: 10_000,
+        requireSuccess: true,
+        returnEnvelope: true,
+        anonymous: true,
+        cache: 'no-store',
+        redirect: 'error',
+    });
+    const invalid = () => new Error('Invalid runtime pricing response');
+    const isObject = (value: unknown): value is Record<string, unknown> =>
+        value !== null && typeof value === 'object' && !Array.isArray(value);
+    const number = (value: unknown): value is number =>
+        typeof value === 'number' && Number.isFinite(value) && value >= 0;
+    if (!isObject(envelope) || !Array.isArray(envelope.data) || !isObject(envelope.group_ratio)) throw invalid();
+    const groupRatio: Array<[string, number]> = [];
+    for (const [group, ratio] of Object.entries(envelope.group_ratio)) {
+        if (!group.trim() || !number(ratio)) throw invalid();
+        groupRatio.push([group, ratio]);
+    }
+    const requested = new Set(modelNames);
+    const models = new Map<string, NewApiRuntimePricingModel>();
+    for (const row of envelope.data) {
+        if (!isObject(row) || typeof row.model_name !== 'string' || !row.model_name.trim()) throw invalid();
+        if (!requested.has(row.model_name)) continue;
+        if (
+            models.has(row.model_name) ||
+            (row.quota_type !== 0 && row.quota_type !== 1) ||
+            !number(row.model_ratio) ||
+            !number(row.model_price) ||
+            !number(row.completion_ratio) ||
+            !Array.isArray(row.enable_groups) ||
+            row.enable_groups.some((group) => typeof group !== 'string' || !group.trim())
+        )
+            throw invalid();
+        const result: NewApiRuntimePricingModel = {
+            model_name: row.model_name,
+            quota_type: row.quota_type,
+            model_ratio: row.model_ratio,
+            model_price: row.model_price,
+            completion_ratio: row.completion_ratio,
+            enable_groups: [...row.enable_groups] as string[],
+        };
+        for (const field of ['cache_ratio', 'create_cache_ratio'] as const) {
+            if (!Object.hasOwn(row, field)) continue;
+            if (!number(row[field])) throw invalid();
+            result[field] = row[field];
+        }
+        for (const field of ['billing_mode', 'billing_expr'] as const) {
+            if (!Object.hasOwn(row, field)) continue;
+            if (typeof row[field] !== 'string' || !row[field].trim()) throw invalid();
+            result[field] = row[field];
+        }
+        models.set(result.model_name, result);
+    }
+    if (models.size !== modelNames.length) throw new Error('Requested runtime pricing models are unavailable');
+    return { models: modelNames.map((name) => models.get(name)!), group_ratio: Object.fromEntries(groupRatio) };
 }
 
 /**

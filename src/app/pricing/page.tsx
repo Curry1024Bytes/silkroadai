@@ -3,10 +3,11 @@
  * (catalog_models / catalog_prices), grouped VENDOR-first like /models.
  *
  * Single source of truth: operators change prices in /admin/pricing (or the
- * catalog import wizard); this page re-reads the same versioned catalog rows
- * the billing meter uses (`effective_from ≤ now`, newest per tier), so what
- * customers see here can never drift from what they are charged — the drift
- * class the hand-written landing PRICING_ROWS suffered from (W7→2026-07 audit).
+ * catalog import wizard); this page reads the latest effective catalog snapshot
+ * (`effective_from ≤ now`, newest per tier). Published prices are verified against
+ * new-api runtime and persistence at publication. Later external new-api changes
+ * require another verified publication or catalog sync; this page is not a live
+ * guarantee against such external changes.
  *
  * Public access (NOT under (authenticated)); the landing page has linked
  * /pricing since W8 (dead until this page). ISR revalidate=60 mirrors /models.
@@ -19,6 +20,7 @@
  *  - tier labels come from ChannelGroup.display_name, ordered by tier_level.
  */
 import Link from 'next/link';
+import { Fragment } from 'react';
 import { headers } from 'next/headers';
 import { NextRequest } from 'next/server';
 import { BackButton } from '@/components/BackButton';
@@ -30,6 +32,14 @@ import { categorizeByVendor, HIDDEN_MODELS, VENDOR_META, VENDOR_ORDER, type Vend
 import { getCurrentUser } from '@/lib/auth/session';
 import { getOption } from '@/lib/newapi/client';
 import { listUserTierMultipliers } from '@/lib/newapi/user-tier-multiplier';
+import {
+    formatTieredPrice,
+    parseTieredPricingDetails,
+    scalePricingAmount,
+    scaleTieredPricingDetails,
+    tieredPricingConditionLabel,
+} from '@/lib/models/tiered-pricing-details';
+import type { TieredPricingDetails } from '@/lib/admin/pricing-publish-types';
 
 export const revalidate = 60;
 export const metadata = {
@@ -60,6 +70,7 @@ interface PriceCell {
     perImageCny: number | null;
     publicMultiplier: number | null;
     effectiveMultiplier: number | null;
+    billingDetails: TieredPricingDetails | null;
 }
 
 interface ModelBlock {
@@ -73,9 +84,9 @@ interface VendorBlock {
     models: ModelBlock[];
 }
 
-/** ¥6.0000 → "6"、¥2.0571 → "2.0571" — Decimal(12,4) 无浮点噪声,trim 即可。 */
+/** Preserve full cache-rate precision in structured tiered prices. */
 function fmtCny(n: number): string {
-    return n.toFixed(4).replace(/\.?0+$/, '');
+    return formatTieredPrice(n);
 }
 
 async function getGroupRatioSafe(): Promise<string | null> {
@@ -106,12 +117,8 @@ async function loadPricingSheet(userId?: string): Promise<{ vendors: VendorBlock
             orderBy: [{ tier_level: 'asc' }, { key: 'asc' }],
         }),
         getGroupRatioSafe(),
-        userId
-            ? listUserTierMultipliers(userId).catch((err) => {
-                  console.warn(`[pricing] dedicated multiplier lookup failed for user ${userId}:`, err);
-                  return [];
-              })
-            : Promise.resolve([]),
+        // Never silently display public prices as a logged-in customer's dedicated quote on lookup failure.
+        userId ? listUserTierMultipliers(userId) : Promise.resolve([]),
     ]);
 
     let groupRatios: Record<string, number> = {};
@@ -119,7 +126,9 @@ async function loadPricingSheet(userId?: string): Promise<{ vendors: VendorBlock
         const parsed = groupRatioRaw ? JSON.parse(groupRatioRaw) : null;
         if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
             groupRatios = Object.fromEntries(
-                Object.entries(parsed).filter(([, value]) => typeof value === 'number' && Number.isFinite(value)),
+                Object.entries(parsed).filter(
+                    ([, value]) => typeof value === 'number' && Number.isFinite(value) && value >= 0,
+                ),
             ) as Record<string, number>;
         }
     } catch {
@@ -152,17 +161,40 @@ async function loadPricingSheet(userId?: string): Promise<{ vendors: VendorBlock
             seen.add(p.tier);
             if (!Object.hasOwn(upstreamMap, p.tier)) continue; // 旧价只留审计,不能冒充当前可售档
             if (!tierLabel.has(p.tier)) continue; // 档次已停用 → 不挂公开价
+            const billingGroup = groupByTier.get(p.tier) ?? '';
+            const publicMultiplier = groupRatios[billingGroup] ?? null;
+            const dedicatedMultiplier = overridesByGroup.get(billingGroup);
+            let multiplierScale = 1;
+            if (dedicatedMultiplier !== undefined) {
+                if (
+                    publicMultiplier === null ||
+                    publicMultiplier <= 0 ||
+                    !Number.isFinite(dedicatedMultiplier) ||
+                    dedicatedMultiplier < 0
+                )
+                    throw new Error('Cannot verify dedicated customer price');
+                multiplierScale = dedicatedMultiplier / publicMultiplier;
+            }
+            const publicDetails = parseTieredPricingDetails(p.billing_details);
+            const billingDetails = publicDetails ? scaleTieredPricingDetails(publicDetails, multiplierScale) : null;
             rows.push({
                 tierKey: p.tier,
                 tierLabel: tierLabel.get(p.tier)!,
-                inputCny: p.input_cny_per_1m == null ? null : Number(p.input_cny_per_1m),
-                outputCny: p.output_cny_per_1m == null ? null : Number(p.output_cny_per_1m),
-                perImageCny: p.per_image_cny == null ? null : Number(p.per_image_cny),
-                publicMultiplier: groupRatios[groupByTier.get(p.tier) ?? ''] ?? null,
-                effectiveMultiplier:
-                    overridesByGroup.get(groupByTier.get(p.tier) ?? '') ??
-                    groupRatios[groupByTier.get(p.tier) ?? ''] ??
-                    null,
+                inputCny:
+                    billingDetails?.tiers[0].rates.input ??
+                    (p.input_cny_per_1m == null
+                        ? null
+                        : scalePricingAmount(Number(p.input_cny_per_1m), multiplierScale)),
+                outputCny:
+                    billingDetails?.tiers[0].rates.output ??
+                    (p.output_cny_per_1m == null
+                        ? null
+                        : scalePricingAmount(Number(p.output_cny_per_1m), multiplierScale)),
+                perImageCny:
+                    p.per_image_cny == null ? null : scalePricingAmount(Number(p.per_image_cny), multiplierScale),
+                publicMultiplier,
+                effectiveMultiplier: dedicatedMultiplier ?? publicMultiplier,
+                billingDetails,
             });
         }
         if (rows.length === 0) continue; // 无任何可展示价 → 不上表
@@ -211,7 +243,7 @@ export default async function PricingPage() {
                         <Link href="/keys" className="text-navy underline">
                             密钥管理
                         </Link>{' '}
-                        创建 API Key 时选择。价格数据与计费系统同源实时读取;完整模型清单见{' '}
+                        创建 API Key 时选择。这里展示已保存的目录价格；完整模型清单见{' '}
                         <Link href="/models" className="text-navy underline">
                             /models
                         </Link>
@@ -272,32 +304,110 @@ function VendorPriceSection({ block }: { block: VendorBlock }) {
                     <tbody>
                         {block.models.map((m) =>
                             m.rows.map((row, i) => (
-                                <tr key={`${m.slug}:${row.tierKey}`} className="border-b border-brand-border/60">
-                                    {i === 0 && (
-                                        <td className="py-2.5 pr-4 align-top" rowSpan={m.rows.length}>
-                                            <div className="font-medium text-navy">{m.displayName}</div>
-                                            <code className="text-xs text-minor-ink">{m.slug}</code>
+                                <Fragment key={`${m.slug}:${row.tierKey}`}>
+                                    <tr className="border-b border-brand-border/60">
+                                        {i === 0 && (
+                                            <td
+                                                className="py-2.5 pr-4 align-top"
+                                                rowSpan={m.rows.reduce(
+                                                    (total, item) => total + (item.billingDetails ? 2 : 1),
+                                                    0,
+                                                )}
+                                            >
+                                                <div className="font-medium text-navy">{m.displayName}</div>
+                                                <code className="text-xs text-minor-ink">{m.slug}</code>
+                                            </td>
+                                        )}
+                                        <td className="py-2.5 pr-4 text-muted-ink">
+                                            {row.tierLabel}
+                                            {row.billingDetails && (
+                                                <span className="block mt-1 text-xs">阶梯计费 · 此行显示首档</span>
+                                            )}
                                         </td>
+                                        <td className="py-2.5 pr-4 text-right text-navy tabular-nums">
+                                            {row.inputCny != null ? `¥${fmtCny(row.inputCny)}` : '—'}
+                                        </td>
+                                        <td className="py-2.5 pr-4 text-right text-navy tabular-nums">
+                                            {row.outputCny != null ? `¥${fmtCny(row.outputCny)}` : '—'}
+                                        </td>
+                                        <td className="py-2.5 text-right text-navy tabular-nums">
+                                            {row.perImageCny != null ? `¥${fmtCny(row.perImageCny)}` : '—'}
+                                        </td>
+                                        <td className="py-2.5 pl-4 text-right text-navy tabular-nums">
+                                            {row.effectiveMultiplier != null ? `${row.effectiveMultiplier}x` : '—'}
+                                        </td>
+                                    </tr>
+                                    {row.billingDetails && (
+                                        <tr className="border-b border-brand-border/60">
+                                            <td colSpan={5} className="py-3 text-muted-ink">
+                                                <TieredPriceTable
+                                                    details={row.billingDetails}
+                                                    tierLabel={row.tierLabel}
+                                                />
+                                            </td>
+                                        </tr>
                                     )}
-                                    <td className="py-2.5 pr-4 text-muted-ink">{row.tierLabel}</td>
-                                    <td className="py-2.5 pr-4 text-right text-navy tabular-nums">
-                                        {row.inputCny != null ? `¥${fmtCny(row.inputCny)}` : '—'}
-                                    </td>
-                                    <td className="py-2.5 pr-4 text-right text-navy tabular-nums">
-                                        {row.outputCny != null ? `¥${fmtCny(row.outputCny)}` : '—'}
-                                    </td>
-                                    <td className="py-2.5 text-right text-navy tabular-nums">
-                                        {row.perImageCny != null ? `¥${fmtCny(row.perImageCny)}` : '—'}
-                                    </td>
-                                    <td className="py-2.5 pl-4 text-right text-navy tabular-nums">
-                                        {row.effectiveMultiplier != null ? `${row.effectiveMultiplier}x` : '—'}
-                                    </td>
-                                </tr>
+                                </Fragment>
                             )),
                         )}
                     </tbody>
                 </table>
             </div>
         </section>
+    );
+}
+
+function TieredPriceTable({ details, tierLabel }: { details: TieredPricingDetails; tierLabel: string }) {
+    const hasWrite = details.tiers.some(
+        (tier) => tier.rates.cache_write !== null || tier.rates.cache_write_1h !== null,
+    );
+    return (
+        <div className="rounded-xl border border-brand-border bg-paper-muted p-3">
+            <p className="m-0 mb-2 text-xs">
+                按完整输入长度选择一档，整次请求按该档计费；不是分段累进。以下均为 ¥ / 百万 token。
+            </p>
+            <table className="w-full text-xs" aria-label={`${tierLabel}完整阶梯价格`}>
+                <thead>
+                    <tr className="text-left">
+                        <th className="py-2 pr-3">适用条件</th>
+                        <th className="py-2 pr-3 text-right">输入</th>
+                        <th className="py-2 pr-3 text-right">输出</th>
+                        <th className="py-2 text-right">缓存读取</th>
+                        {hasWrite && (
+                            <>
+                                <th className="py-2 pl-3 text-right">缓存写入</th>
+                                <th className="py-2 pl-3 text-right">缓存写入 1 小时</th>
+                            </>
+                        )}
+                    </tr>
+                </thead>
+                <tbody>
+                    {details.tiers.map((tier) => (
+                        <tr key={tier.name} className="border-t border-brand-border/60">
+                            <td className="py-2 pr-3">{tieredPricingConditionLabel(tier)}</td>
+                            <td className="py-2 pr-3 text-right tabular-nums">¥{fmtCny(tier.rates.input)}</td>
+                            <td className="py-2 pr-3 text-right tabular-nums">¥{fmtCny(tier.rates.output)}</td>
+                            <td className="py-2 text-right tabular-nums">
+                                {tier.rates.cache_read === null ? '未单列' : `¥${fmtCny(tier.rates.cache_read)}`}
+                            </td>
+                            {hasWrite && (
+                                <>
+                                    <td className="py-2 pl-3 text-right tabular-nums">
+                                        {tier.rates.cache_write === null
+                                            ? '未单列'
+                                            : `¥${fmtCny(tier.rates.cache_write)}`}
+                                    </td>
+                                    <td className="py-2 pl-3 text-right tabular-nums">
+                                        {tier.rates.cache_write_1h === null
+                                            ? '未单列'
+                                            : `¥${fmtCny(tier.rates.cache_write_1h)}`}
+                                    </td>
+                                </>
+                            )}
+                        </tr>
+                    ))}
+                </tbody>
+            </table>
+        </div>
     );
 }

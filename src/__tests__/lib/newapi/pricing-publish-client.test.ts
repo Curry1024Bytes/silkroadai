@@ -32,6 +32,25 @@ describe('publication management acknowledgement', () => {
         expect(request.signal).toBeInstanceOf(AbortSignal);
         expect(JSON.parse(String(request.body))).toEqual({ key: 'ModelPrice', value: '{"model":1}' });
     });
+    it('writes only the expression dictionary for tiered publication', async () => {
+        const value = JSON.stringify({ 'gpt-5.5': 'tier("base", p * 8 + c * 48 + cr * 0.8)' });
+        fetchMock.mockResolvedValue(new Response('{"success":true}', { status: 200 }));
+        await expect(putPricingPublishOption('billing_setting.billing_expr', value)).resolves.toBeUndefined();
+        expect(fetchMock).toHaveBeenCalledOnce();
+        expect(JSON.parse(String(fetchMock.mock.calls[0][1].body))).toEqual({
+            key: 'billing_setting.billing_expr',
+            value,
+        });
+    });
+    it.each(['billing_setting.billing_mode', 'GroupRatio', 'GroupGroupRatio', 'CacheRatio', 'CreateCacheRatio'])(
+        'refuses an unsupported publication write before fetching: %s',
+        async (key) => {
+            await expect(
+                putPricingPublishOption(key as Parameters<typeof putPricingPublishOption>[0], '{}'),
+            ).rejects.toThrow('Unsupported pricing publication option');
+            expect(fetchMock).not.toHaveBeenCalled();
+        },
+    );
     it('returns only allowlisted pricing metadata, never unrelated admin secrets', async () => {
         fetchMock.mockResolvedValue(
             new Response(
@@ -40,6 +59,9 @@ describe('publication management acknowledgement', () => {
                     data: [
                         { key: 'ModelRatio', value: '{"model":1}' },
                         { key: 'CompletionRatioMeta', value: '{}' },
+                        { key: 'billing_setting.billing_expr', value: JSON.stringify({ model: 'tier("base", p)' }) },
+                        { key: 'billing_setting.billing_mode', value: '{"model":"tiered_expr"}' },
+                        { key: 'billing_setting.scheduled_discount', value: '{}' },
                         { key: 'AnythingSecret', value: 'test-secret-sentinel' },
                     ],
                 }),
@@ -47,6 +69,9 @@ describe('publication management acknowledgement', () => {
         );
         const options = await getPricingPublishOptions();
         expect(options.ModelRatio).toBe('{"model":1}');
+        expect(options['billing_setting.billing_expr']).toBe(JSON.stringify({ model: 'tier("base", p)' }));
+        expect(options['billing_setting.billing_mode']).toBe('{"model":"tiered_expr"}');
+        expect(options['billing_setting.scheduled_discount']).toBe('{}');
         expect(options.AnythingSecret).toBeUndefined();
         expect(JSON.stringify(options)).not.toContain('test-secret-sentinel');
     });

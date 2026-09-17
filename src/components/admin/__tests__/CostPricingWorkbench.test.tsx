@@ -7,9 +7,11 @@ import CostPricingWorkbench, {
     CostMultiplierSummary,
     CostResolutionField,
     SavedCostRuleList,
+    TieredCostPricingPreview,
 } from '../CostPricingWorkbench';
 import {
     costConfigFromDraft,
+    costPricingPreviewBlock,
     costReviewReducer,
     costRulePublishBlock,
     costRuleSelections,
@@ -25,6 +27,8 @@ import {
 import { calculateCostPricing, pricingCostConfigSchema } from '@/lib/admin/pricing-cost';
 import type { PricingCostCapability, PricingCostConfig, StoredPricingCostRule } from '@/lib/admin/pricing-cost-types';
 import type { PricingReferenceSelection } from '../PricingReferencePicker';
+import type { TieredPricingDetails } from '@/lib/admin/pricing-publish-types';
+import { scaleTieredPricingDetails } from '@/lib/models/tiered-pricing-details';
 
 const config: PricingCostConfig = {
     version: 1,
@@ -94,8 +98,192 @@ const prepared: CostPricingPrepared = {
         ],
     },
 };
+const tieredDetails: TieredPricingDetails = {
+    version: 1,
+    mode: 'tiered_token',
+    unit: 'cny_per_million_tokens',
+    semantics: 'whole_request',
+    tiers: [
+        {
+            name: 'base',
+            min_input_tokens: null,
+            max_input_tokens: 272000,
+            min_inclusive: false,
+            max_inclusive: false,
+            rates: { input: 0.8, output: 4.8, cache_read: 0.08, cache_write: null, cache_write_1h: null },
+        },
+        {
+            name: 'tier_2',
+            min_input_tokens: 272000,
+            max_input_tokens: null,
+            min_inclusive: true,
+            max_inclusive: false,
+            rates: { input: 1.6, output: 7.2, cache_read: 0.16, cache_write: null, cache_write_1h: null },
+        },
+    ],
+};
+const tieredPrepared: CostPricingPrepared = {
+    ...prepared,
+    preview: {
+        ...prepared.preview,
+        publication_mode: 'tiered_token',
+        unchanged: true,
+        rows: [{ ...prepared.preview.rows[0], before_details: tieredDetails, after_details: tieredDetails }],
+        customer_overrides: [
+            {
+                group: 'standard',
+                ratio: 0.18,
+                public_ratio: 0.16,
+                count: 2,
+                before: scaleTieredPricingDetails(tieredDetails, 1.125),
+                after: scaleTieredPricingDetails(tieredDetails, 1.125),
+            },
+        ],
+    },
+};
+const tieredCapability: PricingCostCapability = { ...capability, publication_mode: 'tiered_token' };
 afterEach(() => {
     vi.unstubAllGlobals();
+});
+
+describe('complete tiered price confirmation', () => {
+    const savedTieredRule: StoredPricingCostRule = { ...rule, config: directConfig };
+
+    it('previews the existing cached draft without creating a new revision or publishing', async () => {
+        const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify(tieredPrepared)));
+        const onSaved = vi.fn();
+        vi.stubGlobal('fetch', fetcher);
+        const result = await prepareSingleCostPricing({
+            input: null,
+            savedRule: savedTieredRule,
+            capability: tieredCapability,
+            onSaved,
+        });
+        expect(result.preview.unchanged).toBe(true);
+        expect(result.preview.rows[0].after_details).toEqual(tieredDetails);
+        expect(onSaved).not.toHaveBeenCalled();
+        expect(fetcher).toHaveBeenCalledTimes(1);
+        expect(JSON.parse(fetcher.mock.calls[0][1].body)).toEqual({
+            action: 'preview',
+            selections: [{ rule_id: rule.id, revision: rule.revision }],
+        });
+    });
+
+    it('allows cache reads only for supported tiered publication and continues blocking cache writes', () => {
+        expect(costRulePublishBlock(savedTieredRule, tieredCapability)).toBeNull();
+        expect(costRulePublishBlock(savedTieredRule, capability)).toContain('缓存价格发布');
+        expect(
+            costRulePublishBlock(
+                {
+                    ...savedTieredRule,
+                    config: { ...directConfig, token_rates: { ...directConfig.token_rates, cache_write: 0 } },
+                },
+                tieredCapability,
+            ),
+        ).toContain('缓存写入价格暂不支持发布');
+    });
+
+    it.each([
+        'missing row details',
+        'missing overrides',
+        'invalid interval',
+        'changed threshold',
+        'invalid override',
+        'nonfinite rate',
+    ])('blocks %s before acknowledgment or publication', async (scenario) => {
+        const invalid = structuredClone(tieredPrepared);
+        invalid.preview.rows[0].after_details = structuredClone(tieredDetails);
+        if (scenario === 'missing row details') delete invalid.preview.rows[0].after_details;
+        if (scenario === 'missing overrides') delete invalid.preview.customer_overrides;
+        if (scenario === 'invalid interval') invalid.preview.rows[0].after_details!.tiers[1].min_input_tokens = 300000;
+        if (scenario === 'changed threshold') {
+            invalid.preview.rows[0].after_details!.tiers[0].max_input_tokens = 300000;
+            invalid.preview.rows[0].after_details!.tiers[1].min_input_tokens = 300000;
+        }
+        if (scenario === 'invalid override') invalid.preview.customer_overrides![0].count = 0;
+        if (scenario === 'nonfinite rate') invalid.preview.rows[0].after_details!.tiers[0].rates.cache_read = Infinity;
+        expect(costPricingPreviewBlock(invalid.preview)).toContain('阶梯价格详情不完整');
+        expect(
+            costReviewReducer({ prepared: invalid, confirmed: false }, { type: 'confirm', confirmed: true }).confirmed,
+        ).toBe(false);
+        const fetcher = vi.fn();
+        vi.stubGlobal('fetch', fetcher);
+        await expect(publishCostPricingReview(invalid)).rejects.toThrow('阶梯价格详情不完整');
+        expect(fetcher).not.toHaveBeenCalled();
+        const html = renderToStaticMarkup(
+            <TieredCostPricingPreview preview={invalid.preview} en={false} isDark={false} />,
+        );
+        expect(html).toContain('role="alert"');
+        expect(html).not.toContain('¥0.8');
+    });
+
+    it('rejects a flat preview response for a tiered capability', async () => {
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(prepared))));
+        await expect(
+            prepareSingleCostPricing({
+                input: null,
+                savedRule: savedTieredRule,
+                capability: tieredCapability,
+                onSaved: vi.fn(),
+            }),
+        ).rejects.toThrow('未返回完整阶梯价格预览');
+    });
+
+    it.each([false, true])('shows every tier, cache and replacement override in both themes (dark=%s)', (isDark) => {
+        const html = renderToStaticMarkup(
+            <TieredCostPricingPreview preview={tieredPrepared.preview} en={false} isDark={isDark} />,
+        );
+        for (const text of [
+            'base',
+            'tier_2',
+            '272,000',
+            '¥0.08',
+            '¥0.16',
+            '¥7.2',
+            '¥0.09',
+            '¥8.1',
+            '计划价与 new-api 当前价格一致',
+            '不重复写入',
+            '客户专属倍率替代公共分组倍率',
+            '整次请求',
+        ])
+            expect(html).toContain(text);
+        expect(html).not.toContain('private-publish-token');
+        expect(html).not.toContain('发布成功');
+    });
+
+    it('keeps fifth-decimal cached retail prices visible in estimates and tier comparisons', () => {
+        const precise = { ...directConfig, retail_multiplier: 1.625 };
+        const estimate = renderToStaticMarkup(
+            <CostEstimateTable
+                lines={calculateCostPricing(precise).lines}
+                config={precise}
+                en={false}
+                isDark={false}
+            />,
+        );
+        expect(estimate).toContain('¥0.08125');
+        const preview = structuredClone(tieredPrepared.preview);
+        preview.unchanged = false;
+        preview.rows[0].after_details = scaleTieredPricingDetails(tieredDetails, 1.625 / 1.6);
+        const html = renderToStaticMarkup(<TieredCostPricingPreview preview={preview} en={false} isDark={false} />);
+        expect(html).toContain('¥0.08125');
+        expect(html).toContain('¥0.1625');
+        expect(html).not.toContain('不重复写入上游价格');
+    });
+
+    it('publishes a complete unchanged review with the original signed tokens and saved revision', async () => {
+        const job = { id: 'verified-tiered-job', status: 'succeeded' };
+        const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ job }), { status: 202 }));
+        vi.stubGlobal('fetch', fetcher);
+        expect(await publishCostPricingReview(tieredPrepared)).toEqual(job);
+        expect(JSON.parse(fetcher.mock.calls[0][1].body)).toEqual({
+            action: 'publish',
+            selections: tieredPrepared.selections,
+            selection_token: tieredPrepared.selection_token,
+            preview_token: tieredPrepared.preview.preview_token,
+        });
+    });
 });
 
 describe('cost forms preserve actual purchasing inputs', () => {

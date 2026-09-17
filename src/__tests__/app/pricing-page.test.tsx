@@ -11,6 +11,15 @@ import { renderToString } from 'react-dom/server';
 
 const mockFindManyCatalog = vi.fn();
 const mockFindManyGroups = vi.fn();
+const mockCurrentUser = vi.fn();
+const mockMultipliers = vi.fn();
+const mockGetOption = vi.fn();
+vi.mock('next/headers', () => ({ headers: async () => new Headers() }));
+vi.mock('@/lib/auth/session', () => ({ getCurrentUser: (...args: unknown[]) => mockCurrentUser(...args) }));
+vi.mock('@/lib/newapi/client', () => ({ getOption: (...args: unknown[]) => mockGetOption(...args) }));
+vi.mock('@/lib/newapi/user-tier-multiplier', () => ({
+    listUserTierMultipliers: (...args: unknown[]) => mockMultipliers(...args),
+}));
 vi.mock('@/lib/db', () => ({
     prisma: {
         catalogModel: { findMany: (...a: unknown[]) => mockFindManyCatalog(...a) },
@@ -45,9 +54,94 @@ const GROUPS = [
 beforeEach(() => {
     vi.clearAllMocks();
     mockFindManyGroups.mockResolvedValue(GROUPS);
+    mockCurrentUser.mockReset().mockResolvedValue(null);
+    mockMultipliers.mockReset().mockResolvedValue([]);
+    mockGetOption.mockReset().mockResolvedValue('{}');
+});
+
+const tieredPrice = () => ({
+    ...price('enterprise', { in: 0.8, out: 4.8 }),
+    billing_details: {
+        version: 1,
+        mode: 'tiered_token',
+        unit: 'cny_per_million_tokens',
+        semantics: 'whole_request',
+        tiers: [
+            {
+                name: 'base',
+                min_input_tokens: null,
+                max_input_tokens: 272000,
+                min_inclusive: false,
+                max_inclusive: false,
+                rates: { input: 0.8, output: 4.8, cache_read: 0.08, cache_write: null, cache_write_1h: null },
+            },
+            {
+                name: 'long',
+                min_input_tokens: 272000,
+                max_input_tokens: null,
+                min_inclusive: true,
+                max_inclusive: false,
+                rates: { input: 1.6, output: 7.2, cache_read: 0.16, cache_write: null, cache_write_1h: null },
+            },
+        ],
+    },
 });
 
 describe('<PricingPage /> SSR', () => {
+    it('renders full tier/cache prices with the exact whole-request threshold, not a misleading single quote', async () => {
+        mockFindManyGroups.mockResolvedValue([
+            { key: 'enterprise', display_name: '企业档', newapi_group: 'Enterprise', tier_level: 1 },
+        ]);
+        mockGetOption.mockResolvedValue('{"Enterprise":0.16}');
+        mockFindManyCatalog.mockResolvedValue([model('gpt-5.5', 'GPT 5.5', [tieredPrice()])]);
+        const html = renderToString(await PricingPage());
+        expect(html).toContain('阶梯计费 · 此行显示首档');
+        expect(html).toContain('完整输入 token &lt; 272,000');
+        expect(html).toContain('完整输入 token ≥ 272,000');
+        expect(html).toContain('整次请求按该档计费；不是分段累进');
+        for (const amount of ['0.8', '4.8', '0.08', '1.6', '7.2', '0.16'])
+            expect(html).toMatch(new RegExp(`¥(?:<!-- -->)?${amount.replace('.', '\\.')}<`));
+    });
+    it('replaces public ratios for a dedicated customer in both scalar and full tier/cache quotes', async () => {
+        mockCurrentUser.mockResolvedValue({ id: 'dedicated-customer' });
+        mockMultipliers.mockResolvedValue([{ newapi_billing_group: 'Enterprise', multiplier: 0.18 }]);
+        mockFindManyGroups.mockResolvedValue([
+            { key: 'enterprise', display_name: '企业档', newapi_group: 'Enterprise', tier_level: 1 },
+        ]);
+        mockGetOption.mockResolvedValue('{"Enterprise":0.16}');
+        mockFindManyCatalog.mockResolvedValue([
+            model('gpt-5.5', 'GPT 5.5', [tieredPrice()]),
+            model('gpt-5.4', 'GPT 5.4', [price('enterprise', { in: 0.4, out: 2.4 })]),
+        ]);
+        const html = renderToString(await PricingPage());
+        for (const amount of ['0.9', '5.4', '0.09', '1.8', '8.1', '0.18', '0.45', '2.7'])
+            expect(html).toMatch(new RegExp(`¥(?:<!-- -->)?${amount.replace('.', '\\.')}<`));
+        expect(html).not.toMatch(/¥(?:<!-- -->)?7\.2</);
+        expect(mockMultipliers).toHaveBeenCalledWith('dedicated-customer');
+    });
+    it('does not substitute public prices when dedicated lookup or required public ratio verification fails', async () => {
+        mockCurrentUser.mockResolvedValue({ id: 'dedicated-customer' });
+        mockFindManyGroups.mockResolvedValue([
+            { key: 'enterprise', display_name: '企业档', newapi_group: 'Enterprise', tier_level: 1 },
+        ]);
+        mockFindManyCatalog.mockResolvedValue([model('gpt-5.5', 'GPT 5.5', [tieredPrice()])]);
+        mockMultipliers.mockRejectedValue(new Error('override unavailable'));
+        expect(renderToString(await PricingPage())).toContain('当前无法获取价格表');
+        mockMultipliers.mockResolvedValue([{ newapi_billing_group: 'Enterprise', multiplier: 0.18 }]);
+        mockGetOption.mockResolvedValue('{}');
+        const html = renderToString(await PricingPage());
+        expect(html).toContain('当前无法获取价格表');
+        expect(html).not.toContain('GPT 5.5');
+    });
+    it('fails closed on corrupt dynamic metadata rather than displaying first-tier scalar prices as fixed pricing', async () => {
+        mockFindManyGroups.mockResolvedValue([{ key: 'enterprise', display_name: '企业档', tier_level: 1 }]);
+        const row = tieredPrice();
+        row.billing_details.tiers[1].min_inclusive = false;
+        mockFindManyCatalog.mockResolvedValue([model('gpt-5.5', 'GPT 5.5', [row])]);
+        const html = renderToString(await PricingPage());
+        expect(html).toContain('当前无法获取价格表');
+        expect(html).not.toContain('GPT 5.5');
+    });
     it('renders vendor sections with per-tier prices (¥ trimmed, tier display names)', async () => {
         mockFindManyCatalog.mockResolvedValue([
             model('claude-opus-4-8', 'Claude Opus 4 8', [

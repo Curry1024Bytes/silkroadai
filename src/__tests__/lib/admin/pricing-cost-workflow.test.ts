@@ -290,10 +290,18 @@ describe('saved cost quotes and publication protection', () => {
     });
 
     it('never silently omits configured cache pricing from a publication', () => {
+        const derived = costPublicationInput(model(), 'standard', {
+            ...quote(),
+            token_rates: { ...quote().token_rates, cache_read: 1 },
+        });
+        expect(derived.input.cache_read_cny_per_1m).toBe(
+            derived.lines.find((line) => line.key === 'cache_read')?.retail,
+        );
+        expect(derived.input.cache_read_cny_per_1m).toBeGreaterThan(0);
         expect(() =>
             costPublicationInput(model(), 'standard', {
                 ...quote(),
-                token_rates: { ...quote().token_rates, cache_read: 1 },
+                token_rates: { ...quote().token_rates, cache_write: 1 },
             }),
         ).toThrow(/缓存/);
     });

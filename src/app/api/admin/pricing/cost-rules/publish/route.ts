@@ -30,7 +30,9 @@ export async function POST(request: NextRequest) {
         if (body.action === 'preview') {
             const preview = await previewPricingBatch(selected.inputs, admin, selected.context);
             preview.warnings.push(
-                '本次利润为所填上游报价的估算，不包含退款、支付手续费及实际用量差异。缓存价格尚未单独核验；new-api 现有缓存倍率仍按其计费规则生效。',
+                preview.publication_mode === 'tiered_token'
+                    ? '利润试算按所填基础报价计算，不包含退款、支付手续费及用量差异。发布核验包含下列全部阶梯和缓存读取价格。'
+                    : '本次利润为所填上游报价的估算，不包含退款、支付手续费及实际用量差异。缓存价格尚未单独核验；new-api 现有缓存倍率仍按其计费规则生效。',
             );
             return NextResponse.json({
                 preview,

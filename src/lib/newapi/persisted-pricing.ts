@@ -7,6 +7,13 @@ import { isAbsolute } from 'node:path';
 
 const OPTION_KEYS = ['ModelRatio', 'CompletionRatio', 'ModelPrice', 'GroupRatio'] as const;
 type PersistedPricingOptions = Record<(typeof OPTION_KEYS)[number], string>;
+const TIERED_OPTION_KEYS = [
+    ...OPTION_KEYS,
+    'billing_setting.billing_mode',
+    'billing_setting.billing_expr',
+    'GroupGroupRatio',
+] as const;
+export type PersistedTieredPricingOptions = Record<(typeof TIERED_OPTION_KEYS)[number], string>;
 type VerificationFailure =
     'persisted_pricing_not_configured' | 'persisted_pricing_unavailable' | 'persisted_pricing_incomplete';
 
@@ -99,6 +106,23 @@ function connectionOptions(raw: string) {
  * Errors explicitly mean verification is unavailable, never permission to publish.
  */
 export async function readPersistedPricingOptions(): Promise<PersistedPricingOptions> {
+    return readPersistedOptions(OPTION_KEYS);
+}
+
+/**
+ * Tiered publication verifies the original dictionaries plus the expression,
+ * mode and customer group overrides. A never-persisted override dictionary has
+ * no overrides; an explicitly malformed row is still rejected. Legacy callers
+ * retain their original four-option query and contract.
+ */
+export async function readPersistedTieredPricingOptions(): Promise<PersistedTieredPricingOptions> {
+    return readPersistedOptions(TIERED_OPTION_KEYS, ['GroupGroupRatio']);
+}
+
+async function readPersistedOptions<const Keys extends readonly string[]>(
+    keys: Keys,
+    absentEmptyDictionaries: readonly Keys[number][] = [],
+): Promise<Record<Keys[number], string>> {
     const raw = process.env.NEWAPI_PRICING_DATABASE_URL?.trim();
     if (!raw) throw failure('persisted_pricing_not_configured');
 
@@ -110,22 +134,23 @@ export async function readPersistedPricingOptions(): Promise<PersistedPricingOpt
             errorFormat: 'minimal',
         });
         const rows = await client.newApiOption.findMany({
-            where: { key: { in: [...OPTION_KEYS] } },
+            where: { key: { in: [...keys] } },
             select: { key: true, value: true },
         });
-        const values: Partial<PersistedPricingOptions> = {};
+        const values: Partial<Record<Keys[number], string>> = {};
         for (const row of rows) {
             if (
-                !OPTION_KEYS.includes(row.key as (typeof OPTION_KEYS)[number]) ||
+                !keys.includes(row.key) ||
                 Object.hasOwn(values, row.key) ||
                 typeof row.value !== 'string' ||
                 !row.value.trim()
             )
                 throw failure('persisted_pricing_incomplete');
-            values[row.key as keyof PersistedPricingOptions] = row.value;
+            values[row.key as Keys[number]] = row.value;
         }
-        if (OPTION_KEYS.some((key) => !Object.hasOwn(values, key))) throw failure('persisted_pricing_incomplete');
-        return values as PersistedPricingOptions;
+        for (const key of absentEmptyDictionaries) if (!Object.hasOwn(values, key)) values[key] = '{}';
+        if (keys.some((key) => !Object.hasOwn(values, key))) throw failure('persisted_pricing_incomplete');
+        return values as Record<Keys[number], string>;
     } catch (error) {
         if (error instanceof Error && 'code' in error && error.code === 'persisted_pricing_incomplete')
             throw failure('persisted_pricing_incomplete');

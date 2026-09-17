@@ -22,6 +22,12 @@ const tokenLabels: Record<(typeof tokenKeys)[number], string> = {
     cache_write: '缓存写入',
 };
 
+function retailPrecision(basis: PricingCostConfig['basis'], key: string): number {
+    // Cached-token prices publish inside tiered JSON rather than the legacy
+    // four-decimal scalar columns. Keep all existing scalar quote contracts.
+    return basis === 'token' && key === 'cache_read' ? 12 : 4;
+}
+
 /** Exact rational arithmetic avoids binary floating point changing money at a rounding boundary. */
 interface Rational {
     n: bigint;
@@ -238,9 +244,19 @@ export const pricingCostConfigSchema = configShape.superRefine((config, ctx) => 
             ? tokenKeys.flatMap((key) =>
                   config.token_rates[key] === null
                       ? []
-                      : [{ price: config.token_rates[key], path: ['token_rates', key] }],
+                      : [
+                            {
+                                price: config.token_rates[key],
+                                path: ['token_rates', key],
+                                precision: retailPrecision(config.basis, key),
+                            },
+                        ],
               )
-            : config.variants.map((variant, index) => ({ price: variant.price, path: ['variants', index, 'price'] }));
+            : config.variants.map((variant, index) => ({
+                  price: variant.price,
+                  path: ['variants', index, 'price'],
+                  precision: 4,
+              }));
     // Zod may continue refinements after range failures. Never divide by an
     // invalid exchange rate or feed a nonfinite value into exact arithmetic.
     if (
@@ -254,13 +270,13 @@ export const pricingCostConfigSchema = configShape.superRefine((config, ctx) => 
             (!Number.isFinite(config.retail_multiplier) || config.retail_multiplier <= 0))
     )
         return;
-    for (const { price, path } of prices) {
+    for (const { price, path, precision } of prices) {
         if (!Number.isFinite(price) || price < 0) continue;
         const { cost, retail } = rawCostAndRetail(config, price);
         if (cost.n > ZERO && round(cost, 6) === 0)
             issue(path, '实际成本小于当前支持的 6 位小数精度，请使用更合适的计费单位。');
-        if (retail.n > ZERO && round(retail, 4) === 0)
-            issue(path, '售价小于当前支持的 4 位小数精度，不能保存成免费价格。');
+        if (retail.n > ZERO && round(retail, precision) === 0)
+            issue(path, `售价小于当前支持的 ${precision} 位小数精度，不能保存成免费价格。`);
         if (compare(retail, decimal(PRICING_COST_MAX_RETAIL)) > 0)
             issue(path, '售价超过支持范围（最高 ¥99,999,999.9999）。');
     }
@@ -272,7 +288,7 @@ export function calculateCostPricing(input: PricingCostConfig): PricingCostCalcu
     const makeLine = (key: string, label: string, unit: PricingCostLine['unit'], price: number): PricingCostLine => {
         const raw = rawCostAndRetail(config, price);
         const cost = round(raw.cost, 6);
-        const retail = round(raw.retail, 4);
+        const retail = round(raw.retail, retailPrecision(config.basis, key));
         const profit = round(subtract(decimal(retail), decimal(cost)), 6);
         return {
             key,

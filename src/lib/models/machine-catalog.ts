@@ -19,6 +19,14 @@
 import { prisma } from '@/lib/db';
 import { PLATFORM_TENANT_ID } from '@/lib/admin/tenant-scope';
 import { categorizeByType, categorizeByVendor, type TypeName, type VendorName } from '@/lib/models/categorize';
+import { getOption } from '@/lib/newapi/client';
+import { listUserTierMultipliers } from '@/lib/newapi/user-tier-multiplier';
+import {
+    parseTieredPricingDetails,
+    scalePricingAmount,
+    scaleTieredPricingDetails,
+} from '@/lib/models/tiered-pricing-details';
+import type { TieredPricingDetails } from '@/lib/admin/pricing-publish-types';
 
 export interface TierPricing {
     /** ¥ / 1M input tokens(chat 类);image 模型为 null */
@@ -27,6 +35,14 @@ export interface TierPricing {
     output_cny_per_1m: number | null;
     /** ¥ / 张(生图模型按张计价) */
     per_image_cny: number | null;
+    /** Scalar token prices are the first tier when full conditional prices are present. */
+    billing_details?: TieredPricingDetails;
+}
+
+export interface CatalogPricingContext {
+    tier: string;
+    /** Dedicated GroupGroupRatio / public GroupRatio; never multiply the two ratios together. */
+    multiplierScale: number;
 }
 
 export interface CatalogMetaEntry {
@@ -100,10 +116,12 @@ export async function loadCatalogMeta(): Promise<Map<string, CatalogMetaEntry>> 
         for (const p of row.prices) {
             if (!Object.hasOwn(upstreamMap, p.tier)) continue; // 历史价不等于当前仍可路由
             if (pricesByTier.has(p.tier)) continue;
+            const details = parseTieredPricingDetails(p.billing_details);
             pricesByTier.set(p.tier, {
-                input_cny_per_1m: toNum(p.input_cny_per_1m),
-                output_cny_per_1m: toNum(p.output_cny_per_1m),
+                input_cny_per_1m: details?.tiers[0].rates.input ?? toNum(p.input_cny_per_1m),
+                output_cny_per_1m: details?.tiers[0].rates.output ?? toNum(p.output_cny_per_1m),
                 per_image_cny: toNum(p.per_image_cny),
+                ...(details ? { billing_details: details } : {}),
             });
         }
         map.set(row.slug, {
@@ -114,6 +132,49 @@ export async function loadCatalogMeta(): Promise<Map<string, CatalogMetaEntry>> 
     }
     metaCache = { at: Date.now(), revision, map };
     return map;
+}
+
+/** Resolve the customer-specific price factor without caching it across customers. */
+export async function resolveCatalogPricingContextFromAuthHeader(
+    authHeader: string | null,
+): Promise<CatalogPricingContext> {
+    const m = authHeader?.match(/^Bearer\s+(.+)$/i);
+    if (!m) throw new Error('cannot resolve catalog tier without a bearer token');
+    const raw = m[1].startsWith('sk-') ? m[1].slice(3) : m[1];
+    if (!raw) throw new Error('cannot resolve catalog tier from an empty bearer token');
+    const token = await prisma.newApiToken.findUnique({
+        where: { newapi_token_value: raw },
+        select: { tier: true, user_id: true, status: true },
+    });
+    if (!token || token.status !== 'active') throw new Error('bearer token is not an active Portal customer token');
+    const [group, overrides] = await Promise.all([
+        prisma.channelGroup.findFirst({
+            where: { tenant_id: PLATFORM_TENANT_ID, key: token.tier, enabled: true },
+            select: { newapi_group: true },
+        }),
+        listUserTierMultipliers(token.user_id),
+    ]);
+    if (!group) throw new Error('catalog tier is unavailable');
+    const matches = overrides.filter(
+        (rule) => rule.tier_key === token.tier && rule.newapi_billing_group === group.newapi_group,
+    );
+    if (matches.length === 0) return { tier: token.tier, multiplierScale: 1 };
+    if (matches.length !== 1) throw new Error('ambiguous customer pricing multiplier');
+    const publicRatios: unknown = JSON.parse((await getOption('GroupRatio')) ?? '{}');
+    const publicRatio =
+        publicRatios && typeof publicRatios === 'object' && !Array.isArray(publicRatios)
+            ? (publicRatios as Record<string, unknown>)[group.newapi_group]
+            : null;
+    const effectiveRatio = Number(matches[0].multiplier);
+    if (
+        typeof publicRatio !== 'number' ||
+        !Number.isFinite(publicRatio) ||
+        publicRatio <= 0 ||
+        !Number.isFinite(effectiveRatio) ||
+        effectiveRatio < 0
+    )
+        throw new Error('cannot verify customer pricing multiplier');
+    return { tier: token.tier, multiplierScale: effectiveRatio / publicRatio };
 }
 
 /**
@@ -140,11 +201,14 @@ export async function resolveTierFromAuthHeader(authHeader: string | null): Prom
  */
 export function enrichModelList(
     payload: Record<string, unknown>,
-    tier: string,
+    context: string | CatalogPricingContext,
     meta: Map<string, CatalogMetaEntry>,
 ): Record<string, unknown> {
     const data = payload.data;
     if (!Array.isArray(data)) throw new Error('model list payload has no data array');
+    const { tier, multiplierScale } = typeof context === 'string' ? { tier: context, multiplierScale: 1 } : context;
+    // Validate even an empty catalog; a bad customer context must not be treated as the public price.
+    scalePricingAmount(0, multiplierScale);
     const enriched = data.map((entry) => {
         if (!entry || typeof entry !== 'object' || typeof (entry as Record<string, unknown>).id !== 'string') {
             return entry; // 形状怪的条目原样保留
@@ -152,6 +216,26 @@ export function enrichModelList(
         const id = (entry as Record<string, unknown>).id as string;
         const cat = meta.get(id);
         const type = categorizeByType(id);
+        const publicPrice = cat?.pricesByTier.get(tier);
+        const pricing = publicPrice
+            ? {
+                  input_cny_per_1m:
+                      publicPrice.input_cny_per_1m == null
+                          ? null
+                          : scalePricingAmount(publicPrice.input_cny_per_1m, multiplierScale),
+                  output_cny_per_1m:
+                      publicPrice.output_cny_per_1m == null
+                          ? null
+                          : scalePricingAmount(publicPrice.output_cny_per_1m, multiplierScale),
+                  per_image_cny:
+                      publicPrice.per_image_cny == null
+                          ? null
+                          : scalePricingAmount(publicPrice.per_image_cny, multiplierScale),
+                  ...(publicPrice.billing_details
+                      ? { billing_details: scaleTieredPricingDetails(publicPrice.billing_details, multiplierScale) }
+                      : {}),
+              }
+            : null;
         const extra: SilkroadaiModelExtra = {
             ...(cat ? { display_name: cat.display_name } : {}),
             vendor: categorizeByVendor(id),
@@ -159,7 +243,7 @@ export function enrichModelList(
             vision: type === 'vision',
             ...(cat?.context_window != null ? { context_window: cat.context_window } : {}),
             tier,
-            pricing: cat?.pricesByTier.get(tier) ?? null,
+            pricing,
         };
         return { ...(entry as Record<string, unknown>), silkroadai: extra };
     });

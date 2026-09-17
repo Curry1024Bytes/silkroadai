@@ -7,17 +7,26 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 const mockFindManyCatalog = vi.fn();
 const mockFindUniqueToken = vi.fn();
 const mockFindRevision = vi.fn();
+const mockFindGroup = vi.fn();
+const mockMultipliers = vi.fn();
+const mockGetOption = vi.fn();
+vi.mock('@/lib/newapi/client', () => ({ getOption: (...args: unknown[]) => mockGetOption(...args) }));
+vi.mock('@/lib/newapi/user-tier-multiplier', () => ({
+    listUserTierMultipliers: (...args: unknown[]) => mockMultipliers(...args),
+}));
 vi.mock('@/lib/db', () => ({
     prisma: {
         catalogModel: { findMany: (...a: unknown[]) => mockFindManyCatalog(...a) },
         newApiToken: { findUnique: (...a: unknown[]) => mockFindUniqueToken(...a) },
         pricingPublishCoordinator: { findUnique: (...a: unknown[]) => mockFindRevision(...a) },
+        channelGroup: { findFirst: (...a: unknown[]) => mockFindGroup(...a) },
     },
 }));
 
 import {
     loadCatalogMeta,
     resolveTierFromAuthHeader,
+    resolveCatalogPricingContextFromAuthHeader,
     enrichModelList,
     resetCatalogMetaCacheForTests,
     type CatalogMetaEntry,
@@ -26,8 +35,36 @@ import {
 beforeEach(() => {
     vi.clearAllMocks();
     mockFindRevision.mockReset().mockResolvedValue({ revision: 1 });
+    mockFindGroup.mockReset().mockResolvedValue({ newapi_group: 'Enterprise' });
+    mockMultipliers.mockReset().mockResolvedValue([]);
+    mockGetOption.mockReset().mockResolvedValue(JSON.stringify({ Enterprise: 0.16 }));
     resetCatalogMetaCacheForTests();
 });
+
+const dynamicDetails = {
+    version: 1 as const,
+    mode: 'tiered_token' as const,
+    unit: 'cny_per_million_tokens' as const,
+    semantics: 'whole_request' as const,
+    tiers: [
+        {
+            name: 'base',
+            min_input_tokens: null,
+            max_input_tokens: 272000,
+            min_inclusive: false,
+            max_inclusive: false,
+            rates: { input: 0.8, output: 4.8, cache_read: 0.08, cache_write: null, cache_write_1h: null },
+        },
+        {
+            name: 'long',
+            min_input_tokens: 272000,
+            max_input_tokens: null,
+            min_inclusive: true,
+            max_inclusive: false,
+            rates: { input: 1.6, output: 7.2, cache_read: 0.16, cache_write: null, cache_write_1h: null },
+        },
+    ],
+};
 
 const catalogRow = (
     slug: string,
@@ -52,6 +89,18 @@ const catalogRow = (
 });
 
 describe('loadCatalogMeta', () => {
+    it('includes verified full tier/cache prices and rejects corrupt latest metadata without falling back to history', async () => {
+        const row = catalogRow('gpt-5.5', [{ tier: 'enterprise', in: 0.8, out: 4.8 }]);
+        Object.assign(row.prices[0], { billing_details: dynamicDetails });
+        mockFindManyCatalog.mockResolvedValue([row]);
+        expect((await loadCatalogMeta()).get('gpt-5.5')!.pricesByTier.get('enterprise')!.billing_details).toEqual(
+            dynamicDetails,
+        );
+        resetCatalogMetaCacheForTests();
+        Object.assign(row.prices[0], { billing_details: { mode: 'tiered_token' } });
+        row.prices.push({ ...row.prices[0], ...{ input_cny_per_1m: 1 } });
+        await expect(loadCatalogMeta()).rejects.toThrow('Invalid tiered pricing details');
+    });
     it('prices 降序首条 = 现行价(旧版本价不覆盖)+ 60s 模块缓存', async () => {
         mockFindManyCatalog.mockResolvedValue([
             // effective_from 降序:第一条是现行价 ¥22.5,第二条是历史价 ¥45
@@ -160,6 +209,85 @@ describe('loadCatalogMeta', () => {
         ]);
         const meta = await loadCatalogMeta();
         expect([...meta.get('gpt-5.4')!.pricesByTier.keys()]).toEqual(['sale']);
+    });
+});
+
+describe('customer-specific catalog pricing', () => {
+    it('resolves only an active exact Portal tier and uses a dedicated/public ratio, not their product', async () => {
+        mockFindUniqueToken.mockResolvedValue({ tier: 'enterprise', user_id: 'customer-a', status: 'active' });
+        mockMultipliers.mockResolvedValue([
+            { tier_key: 'enterprise', newapi_billing_group: 'Enterprise', multiplier: 0.18 },
+        ]);
+        await expect(resolveCatalogPricingContextFromAuthHeader('Bearer sk-customer')).resolves.toEqual({
+            tier: 'enterprise',
+            multiplierScale: 1.125,
+        });
+        expect(mockMultipliers).toHaveBeenCalledWith('customer-a');
+        expect(mockFindGroup).toHaveBeenCalledWith(
+            expect.objectContaining({
+                where: { key: 'enterprise', enabled: true, tenant_id: '00000000-0000-0000-0000-000000000001' },
+            }),
+        );
+    });
+    it('does not query upstream multiplier options for customers with no dedicated price', async () => {
+        mockFindUniqueToken.mockResolvedValue({ tier: 'enterprise', user_id: 'customer-b', status: 'active' });
+        await expect(resolveCatalogPricingContextFromAuthHeader('Bearer customer')).resolves.toEqual({
+            tier: 'enterprise',
+            multiplierScale: 1,
+        });
+        expect(mockGetOption).not.toHaveBeenCalled();
+    });
+    it.each([null, '{}', '{"Enterprise":0}', '{"Enterprise":-1}', 'invalid'])(
+        'fails closed for unverifiable public multiplier %s',
+        async (raw) => {
+            mockFindUniqueToken.mockResolvedValue({ tier: 'enterprise', user_id: 'customer-a', status: 'active' });
+            mockMultipliers.mockResolvedValue([
+                { tier_key: 'enterprise', newapi_billing_group: 'Enterprise', multiplier: 0.18 },
+            ]);
+            mockGetOption.mockResolvedValue(raw);
+            await expect(resolveCatalogPricingContextFromAuthHeader('Bearer customer')).rejects.toThrow();
+        },
+    );
+    it('fails closed for inactive tokens and unavailable tiers', async () => {
+        mockFindUniqueToken.mockResolvedValue({ tier: 'enterprise', user_id: 'customer-a', status: 'revoked' });
+        await expect(resolveCatalogPricingContextFromAuthHeader('Bearer customer')).rejects.toThrow('active Portal');
+        mockFindUniqueToken.mockResolvedValue({ tier: 'enterprise', user_id: 'customer-a', status: 'active' });
+        mockFindGroup.mockResolvedValue(null);
+        await expect(resolveCatalogPricingContextFromAuthHeader('Bearer customer')).rejects.toThrow('unavailable');
+    });
+    it('scales every published tier/cache rate without mutating the shared public cache or thresholds', () => {
+        const price = {
+            input_cny_per_1m: 0.8,
+            output_cny_per_1m: 4.8,
+            per_image_cny: null,
+            billing_details: dynamicDetails,
+        };
+        const map = new Map<string, CatalogMetaEntry>([
+            [
+                'gpt-5.5',
+                { display_name: 'GPT 5.5', context_window: null, pricesByTier: new Map([['enterprise', price]]) },
+            ],
+        ]);
+        const result = enrichModelList(
+            { data: [{ id: 'gpt-5.5', extra: 'preserved' }] },
+            { tier: 'enterprise', multiplierScale: 1.125 },
+            map,
+        ) as { data: { silkroadai: { pricing: typeof price }; extra: string }[] };
+        expect(result.data[0].extra).toBe('preserved');
+        const actual = result.data[0].silkroadai.pricing;
+        expect(actual.input_cny_per_1m).toBe(0.9);
+        expect(actual.output_cny_per_1m).toBe(5.4);
+        expect(actual.billing_details.tiers[1].rates).toEqual({
+            input: 1.8,
+            output: 8.1,
+            cache_read: 0.18,
+            cache_write: null,
+            cache_write_1h: null,
+        });
+        expect(actual.billing_details.tiers[0].max_input_tokens).toBe(272000);
+        expect(actual.billing_details.semantics).toBe('whole_request');
+        expect(price.input_cny_per_1m).toBe(0.8);
+        expect(price.billing_details.tiers[1].rates.input).toBe(1.6);
     });
 });
 

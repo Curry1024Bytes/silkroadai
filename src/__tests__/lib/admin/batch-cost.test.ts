@@ -67,6 +67,17 @@ describe('batch-cost helpers', () => {
 });
 
 describe('computeBatchCost', () => {
+    it('retains verified tier and cache metadata when appending a legacy reference-cost version', () => {
+        const metadata = {
+            version: 1,
+            mode: 'tiered_token',
+            tiers: [{ name: 'long', rates: { cache_read: 0.08125 } }],
+        };
+        const model = { ...opus, prices: [{ ...opus.prices[0], billing_details: metadata }] };
+        const before = JSON.stringify(model);
+        expect(computeBatchCost([model], RATIOS).rows[0].copy?.billing_details).toEqual(metadata);
+        expect(JSON.stringify(model)).toBe(before);
+    });
     it('chat model pins input retail: opus 6.5 × 0.15/1.3 = ¥0.75', () => {
         const r = computeBatchCost([opus], RATIOS);
         expect(r.affected).toBe(1);

@@ -937,6 +937,8 @@ model CatalogPrice {
   input_cny_per_1m  Decimal? @db.Decimal(12, 4)
   output_cny_per_1m Decimal? @db.Decimal(12, 4)
   per_image_cny     Decimal? @db.Decimal(12, 4)
+  // Verified whole-request token tiers and cache prices. Scalars above are the first tier.
+  billing_details  Json?
   // 成本价(可选,毛利看板用)
   cost_cny_per_1m   Decimal? @db.Decimal(12, 4)
 

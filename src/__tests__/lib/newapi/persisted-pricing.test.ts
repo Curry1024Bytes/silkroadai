@@ -28,7 +28,7 @@ vi.mock('@/generated/newapi-readonly/client', () => ({
     },
 }));
 
-import { readPersistedPricingOptions } from '@/lib/newapi/persisted-pricing';
+import { readPersistedPricingOptions, readPersistedTieredPricingOptions } from '@/lib/newapi/persisted-pricing';
 
 const options = {
     ModelRatio: '{"test":1}',
@@ -37,6 +37,13 @@ const options = {
     GroupRatio: '{"default":1}',
 };
 const rows = () => Object.entries(options).map(([key, value]) => ({ key, value }));
+const tieredOptions = {
+    ...options,
+    'billing_setting.billing_mode': '{"test":"tiered_expr"}',
+    'billing_setting.billing_expr': JSON.stringify({ test: 'tier("base", p * 5 + c * 30 + cr * 0.5)' }),
+    GroupGroupRatio: '{"customer-special":{"enterprise":0.18}}',
+};
+const tieredRows = () => Object.entries(tieredOptions).map(([key, value]) => ({ key, value }));
 
 beforeEach(() => {
     vi.resetAllMocks();
@@ -212,6 +219,67 @@ describe('persisted new-api pricing read boundary', () => {
         const error = await readPersistedPricingOptions().catch((e: unknown) => e);
         expect(error).toMatchObject({ code: 'persisted_pricing_unavailable' });
         expect(String(error)).not.toContain('fixture-secret');
+    });
+});
+
+describe('tiered persisted pricing read boundary', () => {
+    it('selects exactly the seven verification keys and preserves all original strings', async () => {
+        mocks.findMany.mockResolvedValue(tieredRows());
+        expect(await readPersistedTieredPricingOptions()).toEqual(tieredOptions);
+        expect(mocks.findMany).toHaveBeenCalledExactlyOnceWith({
+            where: { key: { in: Object.keys(tieredOptions) } },
+            select: { key: true, value: true },
+        });
+        expect(mocks.disconnect).toHaveBeenCalledOnce();
+    });
+
+    it('uses an empty override dictionary only when GroupGroupRatio has never been persisted', async () => {
+        mocks.findMany.mockResolvedValue(tieredRows().filter((row) => row.key !== 'GroupGroupRatio'));
+        expect(await readPersistedTieredPricingOptions()).toEqual({ ...tieredOptions, GroupGroupRatio: '{}' });
+    });
+
+    it.each(Object.keys(tieredOptions).filter((key) => key !== 'GroupGroupRatio'))(
+        'requires the persisted %s row rather than trusting option-memory values',
+        async (missing) => {
+            mocks.findMany.mockResolvedValue(tieredRows().filter((row) => row.key !== missing));
+            await expect(readPersistedTieredPricingOptions()).rejects.toMatchObject({
+                code: 'persisted_pricing_incomplete',
+            });
+            expect(mocks.disconnect).toHaveBeenCalledOnce();
+        },
+    );
+
+    it.each([null, '', ' ', 0])(
+        'does not replace an explicitly invalid override row with a default (%s)',
+        async (value) => {
+            mocks.findMany.mockResolvedValue(
+                tieredRows().map((row) => (row.key === 'GroupGroupRatio' ? { ...row, value } : row)),
+            );
+            await expect(readPersistedTieredPricingOptions()).rejects.toMatchObject({
+                code: 'persisted_pricing_incomplete',
+            });
+        },
+    );
+
+    it('rejects duplicates, non-exact keys and unexpected rows without leaking values', async () => {
+        for (const extra of [
+            tieredRows()[4],
+            { key: 'groupgroupratio', value: '{}' },
+            { key: 'SMTPToken', value: 'fixture-secret' },
+        ]) {
+            mocks.findMany.mockResolvedValue([...tieredRows(), extra]);
+            const error = await readPersistedTieredPricingOptions().catch((error: unknown) => error);
+            expect(error).toMatchObject({ code: 'persisted_pricing_incomplete' });
+            expect(String(error)).not.toContain('fixture-secret');
+        }
+    });
+
+    it('keeps legacy publication verification on its four-option contract after a tiered read', async () => {
+        mocks.findMany.mockResolvedValueOnce(tieredRows()).mockResolvedValueOnce(rows());
+        await readPersistedTieredPricingOptions();
+        expect(await readPersistedPricingOptions()).toEqual(options);
+        expect(mocks.findMany.mock.calls[1][0].where.key.in).toEqual(Object.keys(options));
+        expect(mocks.disconnect).toHaveBeenCalledTimes(2);
     });
 });
 

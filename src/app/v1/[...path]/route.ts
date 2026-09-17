@@ -95,7 +95,11 @@ import { forwardHeaders, passthroughResponse, STRIP_RESPONSE_HEADERS } from '@/l
 import { CHAT_SPEC, RESPONSES_SPEC, coerceAndValidate, guardRawBody, violationBody } from '@/lib/proxy/body-guard';
 import { stripAdobeImageMetadata, stripAdobeImageMetadataB64 } from '@/lib/proxy/image-metadata';
 import { normalizeOpenAiResponse, normalizeChoices } from '@/lib/proxy/finish-reason';
-import { loadCatalogMeta, resolveTierFromAuthHeader, enrichModelList } from '@/lib/models/machine-catalog';
+import {
+    loadCatalogMeta,
+    resolveCatalogPricingContextFromAuthHeader,
+    enrichModelList,
+} from '@/lib/models/machine-catalog';
 import {
     newImageTaskId,
     createImageTask,
@@ -3600,7 +3604,10 @@ async function handleModelsEnriched(req: NextRequest, search: string, cap: Captu
         // 2.5s 钟:portal DB 慢/挂时别让 /models(纯透传时代零 DB)跟着 Prisma
         // 连接超时陪跑十几秒 —— 到点放弃增强走回退。
         const [meta, tier] = await withDeadline(
-            Promise.all([loadCatalogMeta(), resolveTierFromAuthHeader(req.headers.get('authorization'))]),
+            Promise.all([
+                loadCatalogMeta(),
+                resolveCatalogPricingContextFromAuthHeader(req.headers.get('authorization')),
+            ]),
             MODELS_ENRICH_DEADLINE_MS,
         );
         const enriched = enrichModelList(json, tier, meta);

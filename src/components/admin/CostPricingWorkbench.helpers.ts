@@ -8,6 +8,51 @@ import type {
 import type { PricingPublishJob, PricingPublishPreview } from '@/lib/admin/pricing-publish-types';
 import { getCostRetailMultiplier } from '@/lib/admin/pricing-cost';
 import type { PricingReferenceSelection } from './PricingReferencePicker';
+import { parseTieredPricingDetails } from '@/lib/models/tiered-pricing-details';
+
+/** A partial tiered response must never appear as a complete price confirmation. */
+export function costPricingPreviewBlock(preview: PricingPublishPreview, en = false): string | null {
+    if (preview.publication_mode !== 'tiered_token') return null;
+    const invalid = en
+        ? 'Tiered pricing details are incomplete. Preview again before confirming publication.'
+        : '阶梯价格详情不完整，请重新预览后再确认发布。';
+    const matchedDetails = (before: unknown, after: unknown) => {
+        const previous = parseTieredPricingDetails(before);
+        const next = parseTieredPricingDetails(after);
+        if (!previous || !next || previous.tiers.length !== next.tiers.length) return false;
+        return next.tiers.every((tier, index) => {
+            const old = previous.tiers[index];
+            return (
+                old.name === tier.name &&
+                old.min_input_tokens === tier.min_input_tokens &&
+                old.max_input_tokens === tier.max_input_tokens &&
+                old.min_inclusive === tier.min_inclusive &&
+                old.max_inclusive === tier.max_inclusive
+            );
+        });
+    };
+    try {
+        if (!preview.rows.length || !Array.isArray(preview.customer_overrides)) return invalid;
+        if (preview.rows.some((row) => !matchedDetails(row.before_details, row.after_details))) return invalid;
+        if (
+            preview.customer_overrides.some(
+                (row) =>
+                    !row.group ||
+                    !Number.isFinite(row.ratio) ||
+                    row.ratio < 0 ||
+                    !Number.isFinite(row.public_ratio) ||
+                    row.public_ratio <= 0 ||
+                    !Number.isInteger(row.count) ||
+                    row.count < 1 ||
+                    !matchedDetails(row.before, row.after),
+            )
+        )
+            return invalid;
+    } catch {
+        return invalid;
+    }
+    return null;
+}
 
 export interface CostPricingDraft {
     basis: PricingCostConfig['basis'];
@@ -79,7 +124,10 @@ export function costReviewReducer(
 ): CostReviewState {
     if (action.type === 'invalidate') return { prepared: null, confirmed: false };
     if (action.type === 'prepare') return { prepared: action.prepared, confirmed: false };
-    return { ...state, confirmed: state.prepared !== null && action.confirmed };
+    return {
+        ...state,
+        confirmed: state.prepared !== null && !costPricingPreviewBlock(state.prepared.preview) && action.confirmed,
+    };
 }
 
 export function newCostDraft(capability?: PricingCostCapability): CostPricingDraft {
@@ -238,10 +286,17 @@ export function costRulePublishBlock(
     if (
         rule.config.basis === 'token' &&
         (rule.config.token_rates.cache_read !== null || rule.config.token_rates.cache_write !== null)
-    )
-        return en
-            ? 'Cache costs can be saved and estimated. Cache price publication is not supported yet.'
-            : '缓存成本可保存和试算；当前尚未支持缓存价格发布。';
+    ) {
+        if (capability.publication_mode === 'tiered_token') {
+            if (rule.config.token_rates.cache_write !== null)
+                return en
+                    ? 'This tiered rule supports cache-read publication. Cache-write publication is not supported.'
+                    : '本阶梯规则支持发布缓存读取价；缓存写入价格暂不支持发布。';
+        } else
+            return en
+                ? 'Cache costs can be saved and estimated. Cache price publication is not supported yet.'
+                : '缓存成本可保存和试算；当前尚未支持缓存价格发布。';
+    }
     if (rule.config.basis !== 'token' && rule.config.variants.length !== 1)
         return en
             ? 'Multiple specifications can be saved; this model cannot publish them separately yet.'
@@ -310,6 +365,7 @@ export async function saveCostPricingRules(
 export async function requestCostPricingPreview(
     selections: PricingCostSelection[],
     en = false,
+    expectedMode?: 'tiered_token',
 ): Promise<CostPricingPrepared> {
     const snapshot = selections.map((selection) => ({ ...selection }));
     const data = await costRequest(
@@ -328,6 +384,10 @@ export async function requestCostPricingPreview(
         !Array.isArray(data.cost_rows)
     )
         throw new Error(en ? 'Invalid preview. Please preview again.' : '预览响应不完整，请重新预览。');
+    const block = costPricingPreviewBlock(preview, en);
+    if (block) throw new Error(block);
+    if (expectedMode === 'tiered_token' && preview.publication_mode !== expectedMode)
+        throw new Error(en ? 'Tiered pricing preview is missing.' : '未返回完整阶梯价格预览。');
     return {
         selections: snapshot,
         preview,
@@ -361,7 +421,7 @@ export async function prepareSingleCostPricing({
         if (!rule) throw new Error(en ? 'Save the cost rule first.' : '请先保存成本规则。');
         const block = costRulePublishBlock(rule, capability, en);
         if (block) throw new Error(block);
-        return await requestCostPricingPreview(costRuleSelections([rule], [rule.id]), en);
+        return await requestCostPricingPreview(costRuleSelections([rule], [rule.id]), en, capability?.publication_mode);
     } catch (error) {
         if (!didSave) throw error;
         const detail = error instanceof Error ? error.message : '';
@@ -374,6 +434,8 @@ export async function prepareSingleCostPricing({
 }
 
 export async function publishCostPricingReview(prepared: CostPricingPrepared, en = false): Promise<PricingPublishJob> {
+    const block = costPricingPreviewBlock(prepared.preview, en);
+    if (block) throw new Error(block);
     if (Date.parse(prepared.preview.expires_at) <= Date.now())
         throw new Error(en ? 'The preview expired. Please preview again.' : '预览已过期，请重新预览。');
     const data = await costRequest(

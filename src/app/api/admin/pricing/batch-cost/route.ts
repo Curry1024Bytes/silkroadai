@@ -79,6 +79,9 @@ export async function POST(request: NextRequest) {
                     input_cny_per_1m: r.copy!.input_cny_per_1m,
                     output_cny_per_1m: r.copy!.output_cny_per_1m,
                     per_image_cny: r.copy!.per_image_cny,
+                    ...(r.copy!.billing_details != null
+                        ? { billing_details: r.copy!.billing_details as Prisma.InputJsonValue }
+                        : {}),
                     cost_cny_per_1m: r.newCost,
                     created_by: admin.user?.id ?? null,
                 })),

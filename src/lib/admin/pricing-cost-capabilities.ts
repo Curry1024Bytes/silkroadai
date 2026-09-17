@@ -8,6 +8,7 @@ import { readSyncPrice } from '@/lib/newapi/catalog-sync-prices';
 import { costMapping } from './pricing-cost-store';
 import type { PricingCostCapability } from './pricing-cost-types';
 import { PricingPublishError } from './pricing-publish-lock';
+import { buildTieredPublishPlan, isTieredInput, tieredProbeInput } from './pricing-tiered-plan';
 
 export function costCapabilities(state: PublishState, source: PublishSource | null): PricingCostCapability[] {
     return state.models.flatMap((model) => {
@@ -39,6 +40,23 @@ export function costCapabilities(state: PublishState, source: PublishSource | nu
                         'pricing_source_unavailable',
                         '暂未读到 new-api 计费配置。成本仍可保存，恢复连接后重新预览。',
                     );
+                const probe = {
+                    model_id: model.id,
+                    tier,
+                    input_cny_per_1m: 1,
+                    output_cny_per_1m: 1,
+                    per_image_cny: null,
+                    cost_cny_per_1m: null,
+                };
+                if (isTieredInput(state, source, probe)) {
+                    buildTieredPublishPlan(
+                        state,
+                        source,
+                        [tieredProbeInput(state, source, model.id, tier)],
+                        Date.now(),
+                    );
+                    return { ...base, publication_mode: 'tiered_token', publishable: true };
+                }
                 const group = state.groups.find(
                     (row) => row.tenant_id === model.tenant_id && row.key === tier && row.enabled,
                 )!;

@@ -54,11 +54,17 @@ const mockImageTaskFindUnique = vi.fn(async (..._a: unknown[]): Promise<Record<s
 // 机器可读模型目录:catalogModel mock(默认空目录 = 增强仍工作,pricing 全 null)
 const mockCatalogFindMany = vi.fn(async (..._a: unknown[]): Promise<unknown[]> => []);
 const mockCatalogRevision = vi.fn();
+const mockCatalogGroup = vi.fn();
+const mockCatalogMultipliers = vi.fn();
+vi.mock('@/lib/newapi/user-tier-multiplier', () => ({
+    listUserTierMultipliers: (...args: unknown[]) => mockCatalogMultipliers(...args),
+}));
 vi.mock('@/lib/db', () => ({
     prisma: {
         newApiToken: { findUnique: (...a: unknown[]) => mockTokenFindUnique(...a) },
         catalogModel: { findMany: (...a: unknown[]) => mockCatalogFindMany(...a) },
         pricingPublishCoordinator: { findUnique: (...a: unknown[]) => mockCatalogRevision(...a) },
+        channelGroup: { findFirst: (...a: unknown[]) => mockCatalogGroup(...a) },
         imageTask: {
             create: (...a: unknown[]) => mockImageTaskCreate(...a),
             update: (...a: unknown[]) => mockImageTaskUpdate(...a),
@@ -118,6 +124,8 @@ const mockFetch = vi.fn();
 beforeEach(() => {
     vi.clearAllMocks();
     mockCatalogRevision.mockReset().mockResolvedValue({ revision: 0 });
+    mockCatalogGroup.mockReset().mockResolvedValue({ newapi_group: 'Enterprise' });
+    mockCatalogMultipliers.mockReset().mockResolvedValue([]);
     global.fetch = mockFetch as typeof fetch;
 });
 
@@ -988,7 +996,7 @@ describe('/v1 proxy — passthrough', () => {
     it('GET /models(JSON)→ 逐条附加 silkroadai 元数据,按 key 档次给价,上游字段全保留', async () => {
         const { resetCatalogMetaCacheForTests } = await import('@/lib/models/machine-catalog');
         resetCatalogMetaCacheForTests();
-        mockTokenFindUnique.mockResolvedValueOnce({ tier: 'official' });
+        mockTokenFindUnique.mockResolvedValueOnce({ tier: 'official', user_id: 'customer-a', status: 'active' });
         mockCatalogFindMany.mockResolvedValueOnce([
             {
                 slug: 'claude-opus-4-8',
@@ -1023,7 +1031,7 @@ describe('/v1 proxy — passthrough', () => {
         expect(res.headers.get('x-oneapi-request-id')).toBe('req-m-1');
         expect(mockTokenFindUnique).toHaveBeenCalledWith({
             where: { newapi_token_value: 'official-key' },
-            select: { tier: true },
+            select: { tier: true, user_id: true, status: true },
         });
         const body = (await res.json()) as {
             object: string;
@@ -1044,7 +1052,7 @@ describe('/v1 proxy — passthrough', () => {
     it('GET /models reflects a completed pricing publication without waiting for the old cache TTL', async () => {
         const { resetCatalogMetaCacheForTests } = await import('@/lib/models/machine-catalog');
         resetCatalogMetaCacheForTests();
-        mockTokenFindUnique.mockResolvedValue({ tier: 'official' });
+        mockTokenFindUnique.mockResolvedValue({ tier: 'official', user_id: 'customer-a', status: 'active' });
         const catalog = (price: number) => [
             {
                 slug: 'gpt-5.4',

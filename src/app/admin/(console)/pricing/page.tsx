@@ -8,6 +8,7 @@ import { deriveTierRows, tierOrder } from '@/lib/admin/pricing-tiers';
 import type { BatchCostResult } from '@/lib/admin/batch-cost';
 import PricingPublishDialog from '@/components/admin/PricingPublishDialog';
 import CostPricingWorkbench from '@/components/admin/CostPricingWorkbench';
+import CatalogTieredPriceDetails from '@/components/admin/CatalogTieredPriceDetails';
 import { PricingPublishJobs, requestPricingJobAction } from '@/components/admin/PricingPublishJobs';
 import type { PricingPublishJob } from '@/lib/admin/pricing-publish-types';
 
@@ -24,6 +25,7 @@ interface CatalogPrice {
     effective_from: string;
     created_by: string | null;
     created_at: string;
+    billing_details?: unknown;
 }
 
 interface ModelWithPrices {
@@ -372,13 +374,15 @@ function PricingContent() {
                 </div>
             )}
 
-            <CostPricingWorkbench
-                models={models}
-                isDark={isDark}
-                locale={locale}
-                onPublished={refreshAfterSubmission}
-                onUncertain={() => void fetchModels(true)}
-            />
+            <div id="pricing-workbench" className="scroll-mt-4">
+                <CostPricingWorkbench
+                    models={models}
+                    isDark={isDark}
+                    locale={locale}
+                    onPublished={refreshAfterSubmission}
+                    onUncertain={() => void fetchModels(true)}
+                />
+            </div>
 
             <PricingPublishJobs
                 jobs={publishJobs}
@@ -577,6 +581,7 @@ function ModelRows({ model, rows, isDark, tdMuted, linkBtn, unpricedLabel, editL
                             ) : null}
                             <td className={`px-4 py-3 ${isDark ? 'text-slate-300' : 'text-slate-700'}`}>
                                 {tierLabel(row.tier, t)}
+                                <CatalogTieredPriceDetails raw={cur?.billing_details} en={t.title === 'Pricing'} />
                             </td>
                             {unpriced ? (
                                 <td className={`px-4 py-3 text-right ${tdMuted}`} colSpan={5}>
@@ -588,11 +593,21 @@ function ModelRows({ model, rows, isDark, tdMuted, linkBtn, unpricedLabel, editL
                                         className={`px-4 py-3 text-right ${isDark ? 'text-slate-200' : 'text-slate-800'}`}
                                     >
                                         {fmtMoney(cur.input_cny_per_1m)}
+                                        {cur.billing_details != null && (
+                                            <div className={`text-xs ${tdMuted}`}>
+                                                {t.title === 'Pricing' ? 'First tier' : '首档'}
+                                            </div>
+                                        )}
                                     </td>
                                     <td
                                         className={`px-4 py-3 text-right ${isDark ? 'text-slate-200' : 'text-slate-800'}`}
                                     >
                                         {fmtMoney(cur.output_cny_per_1m)}
+                                        {cur.billing_details != null && (
+                                            <div className={`text-xs ${tdMuted}`}>
+                                                {t.title === 'Pricing' ? 'First tier' : '首档'}
+                                            </div>
+                                        )}
                                     </td>
                                     <td className={`px-4 py-3 text-right ${tdMuted}`}>
                                         {toNum(cur.per_image_cny) !== null ? fmtMoney(cur.per_image_cny) : '—'}
@@ -607,9 +622,15 @@ function ModelRows({ model, rows, isDark, tdMuted, linkBtn, unpricedLabel, editL
                             )}
                             <td className="px-4 py-3 text-right align-top whitespace-nowrap">
                                 <div className="inline-grid grid-cols-[auto_4rem] items-center gap-1">
-                                    <button type="button" onClick={() => onEdit(row)} className={linkBtn('indigo')}>
-                                        {editLabel}
-                                    </button>
+                                    {cur?.billing_details != null ? (
+                                        <a href="#pricing-workbench" className={linkBtn('indigo')}>
+                                            {t.title === 'Pricing' ? 'Price by multiplier above' : '上方按倍率定价'}
+                                        </a>
+                                    ) : (
+                                        <button type="button" onClick={() => onEdit(row)} className={linkBtn('indigo')}>
+                                            {editLabel}
+                                        </button>
+                                    )}
                                     <button
                                         type="button"
                                         aria-expanded={historyOpen}
@@ -690,7 +711,13 @@ function PriceHistoryRow({
                                     {prices.map((p) => (
                                         <tr key={p.id} className={isDark ? 'text-slate-300' : 'text-slate-600'}>
                                             <td className="px-2 py-1 whitespace-nowrap">{fmtDate(p.effective_from)}</td>
-                                            <td className="px-2 py-1">{p.tier}</td>
+                                            <td className="px-2 py-1">
+                                                {p.tier}
+                                                <CatalogTieredPriceDetails
+                                                    raw={p.billing_details}
+                                                    en={t.title === 'Pricing'}
+                                                />
+                                            </td>
                                             <td className="px-2 py-1 text-right">{fmtMoney(p.input_cny_per_1m)}</td>
                                             <td className="px-2 py-1 text-right">{fmtMoney(p.output_cny_per_1m)}</td>
                                             <td className="px-2 py-1 text-right">

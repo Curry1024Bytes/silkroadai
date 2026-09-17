@@ -9,6 +9,7 @@ import type { SyncChannel } from './newapi-sync-source';
 import type { PricingPublishAmounts, PricingPublishInput, PricingPublishPreviewRow } from './pricing-publish-types';
 import { PricingPublishError } from './pricing-publish-lock';
 import type { CostBatchContext } from './pricing-cost-publication-guard';
+import type { TieredPublishPlan } from './pricing-tiered-plan';
 
 export const PRICE_KEYS = ['ModelRatio', 'CompletionRatio', 'ModelPrice', 'GroupRatio'] as const;
 export type PriceKey = (typeof PRICE_KEYS)[number];
@@ -73,11 +74,14 @@ export interface PublishBatchPlan extends Omit<PublishPlan, 'version' | 'input' 
     target: Partial<Record<WritePriceKey, Record<string, number>>>;
     cost_context?: CostBatchContext;
 }
-export type AnyPublishPlan = PublishPlan | PublishBatchPlan;
+export type AnyPublishPlan = PublishPlan | PublishBatchPlan | TieredPublishPlan;
+export type PublicationWriteKey = WritePriceKey | 'billing_setting.billing_expr';
 
 /** Normalize legacy intent without changing the persisted v1 contract or signature. */
-export function targetDictionaries(plan: AnyPublishPlan): Partial<Record<WritePriceKey, Record<string, number>>> {
-    return plan.version === 2
+export function targetDictionaries(
+    plan: AnyPublishPlan,
+): Partial<Record<PublicationWriteKey, Record<string, number | string>>> {
+    return plan.version !== 1
         ? plan.target
         : Object.fromEntries(
               Object.entries(plan.target).map(([key, value]) => [key, { [plan.upstream_model]: value }]),
@@ -174,6 +178,7 @@ function completionInfo(source: PublishSource, model: string) {
 }
 
 export function assertEffectiveCompletion(source: PublishSource, plan: AnyPublishPlan) {
+    if (plan.version === 3) return; // The runtime expression is verified separately.
     if (plan.version === 2) {
         for (const model of plan.upstream_models) {
             if (
@@ -205,6 +210,11 @@ export function buildPublishPlan(
     input: PricingPublishInput,
     now: number,
 ): PublishPlan {
+    if (input.cache_read_cny_per_1m !== undefined)
+        throw new PricingPublishError(
+            'pricing_cache_unsupported',
+            '缓存售价请通过支持阶梯计费的成本规则发布；普通倍率计费暂不支持单独发布缓存价。',
+        );
     const model = state.models.find((row) => row.id === input.model_id);
     if (!model) throw new PricingPublishError('model_not_found', '模型不存在。', 404);
     const entry = checkedMap(model.upstream_map)[input.tier];
@@ -490,7 +500,7 @@ export function buildPublishBatchPlan(
 
 /** A recovery accepts only old/target states, including a partially completed pair.
  * Any third value or unrelated dictionary edit is a conflict, never rolled back. */
-export function assertRecoverableOptions(current: PriceOptions, plan: AnyPublishPlan) {
+export function assertRecoverableOptions(current: PriceOptions, plan: PublishPlan | PublishBatchPlan) {
     const targets = targetDictionaries(plan);
     for (const key of PRICE_KEYS) {
         const expected = { ...plan.baseline[key] };
@@ -513,8 +523,8 @@ export function assertRecoverableOptions(current: PriceOptions, plan: AnyPublish
     }
 }
 
-export function optionsAtTarget(current: PriceOptions, plan: AnyPublishPlan) {
+export function optionsAtTarget(current: Record<string, Record<string, unknown>>, plan: AnyPublishPlan) {
     return Object.entries(targetDictionaries(plan)).every(([key, values]) =>
-        Object.entries(values).every(([model, value]) => current[key as WritePriceKey][model] === value),
+        Object.entries(values).every(([model, value]) => current[key]?.[model] === value),
     );
 }

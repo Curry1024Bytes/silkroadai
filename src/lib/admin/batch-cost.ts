@@ -33,6 +33,7 @@ export function costFraction(costRatio: number, retailRatio: number): number {
 }
 
 export interface BatchPriceLike {
+    billing_details?: unknown;
     tier: string;
     input_cny_per_1m: string | number | null;
     output_cny_per_1m: string | number | null;
@@ -66,6 +67,7 @@ export interface BatchCostRow {
     skipped: boolean;
     /** 写新版本行时要复制的零售字段(仅 !skipped 时有值)。 */
     copy: {
+        billing_details?: unknown;
         input_cny_per_1m: number | null;
         output_cny_per_1m: number | null;
         per_image_cny: number | null;
@@ -139,6 +141,7 @@ export function computeBatchCost(models: BatchModelLike[], params: BatchCostPara
                 newCost,
                 skipped: false,
                 copy: {
+                    ...(current.billing_details != null ? { billing_details: current.billing_details } : {}),
                     input_cny_per_1m: toNum(current.input_cny_per_1m),
                     output_cny_per_1m: toNum(current.output_cny_per_1m),
                     per_image_cny: toNum(current.per_image_cny),

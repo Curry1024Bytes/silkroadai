@@ -5,7 +5,7 @@ import { lockPricingPublisher, PricingPublishError } from './pricing-publish-loc
 
 const writeInput = z.object({
     job_id: z.string().uuid(),
-    key: z.enum(['ModelRatio', 'CompletionRatio', 'ModelPrice']),
+    key: z.enum(['ModelRatio', 'CompletionRatio', 'ModelPrice', 'billing_setting.billing_expr']),
     request_hash: z.string().regex(/^[a-f0-9]{64}$/),
 });
 
@@ -13,7 +13,7 @@ const writeInput = z.object({
  * never the publisher's interactive transaction or its Serializable snapshot. */
 export async function beginPricingWrite(
     jobId: string,
-    key: 'ModelRatio' | 'CompletionRatio' | 'ModelPrice',
+    key: 'ModelRatio' | 'CompletionRatio' | 'ModelPrice' | 'billing_setting.billing_expr',
     requestHash: string,
 ): Promise<string> {
     const data = writeInput.parse({ job_id: jobId, key, request_hash: requestHash });

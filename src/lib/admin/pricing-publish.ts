@@ -3,8 +3,13 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { Prisma, PricingPublishJob as StoredJob } from '@prisma/client';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
-import { getPricingPublishOptions, listChannelsForCatalogSync, putPricingPublishOption } from '@/lib/newapi/client';
-import { readPersistedPricingOptions } from '@/lib/newapi/persisted-pricing';
+import {
+    getPricingPublishOptions,
+    getPricingRuntimeModels,
+    listChannelsForCatalogSync,
+    putPricingPublishOption,
+} from '@/lib/newapi/client';
+import { readPersistedPricingOptions, readPersistedTieredPricingOptions } from '@/lib/newapi/persisted-pricing';
 import { replacementChannel } from './channel-replacement';
 import { CHAT_FX, IMAGE_FX } from '@/lib/newapi/pricing-sync';
 import { QUOTA_PER_USD } from '@/lib/newapi/quota-units';
@@ -27,7 +32,16 @@ import {
     type PublishSource,
     type PublishState,
     type WritePriceKey,
+    type PublicationWriteKey,
 } from './pricing-publish-plan';
+import {
+    buildTieredPublishPlan,
+    isTieredInput,
+    tieredPriceOptions,
+    assertRecoverableTieredOptions,
+    EXPRESSION_KEY,
+    type TieredPublishPlan,
+} from './pricing-tiered-plan';
 import { assertPricingCostContext, type CostBatchContext } from './pricing-cost-publication-guard';
 import type {
     PricingPublishInput,
@@ -53,6 +67,13 @@ export const pricingPublishInputSchema = z
         per_image_cny: amount.nullable().default(null),
         cost_cny_per_1m: amount.nullable().default(null),
         pricing_mode: z.enum(['standard', 'fixed_image']).optional(),
+        cache_read_cny_per_1m: z
+            .number()
+            .finite()
+            .nonnegative()
+            .max(99_999_999.9999)
+            .refine((n) => n === Number(n.toFixed(12)), '缓存价最多十二位小数')
+            .optional(),
     })
     .refine(
         (d) =>
@@ -176,10 +197,18 @@ function publicPreview(plan: AnyPublishPlan, token: string, timestamp: number): 
             group: row.group,
             before: row.before,
             after: row.after,
+            ...(plan.version === 3 ? { before_details: row.before_details, after_details: row.after_details } : {}),
         })),
         warnings: plan.warnings,
-        ...(plan.version === 2
+        ...(plan.version !== 1
             ? { batch: { count: plan.inputs.length, upstream_models: plan.upstream_models.map((model) => model.name) } }
+            : {}),
+        ...(plan.version === 3
+            ? {
+                  publication_mode: 'tiered_token' as const,
+                  unchanged: plan.unchanged,
+                  customer_overrides: plan.customer_overrides,
+              }
             : {}),
     };
 }
@@ -235,6 +264,21 @@ async function planForBatch(
     }
     if (costContext) await assertPricingCostContext(db, inputs, costContext);
     const [state, source] = await Promise.all([readPublishState(db), readPublishSource()]);
+    if (inputs.some((input) => isTieredInput(state, source, input))) {
+        if (inputs.some((input) => input.pricing_mode === 'fixed_image'))
+            throw new PricingPublishError('pricing_special_rule', '固定图片规格不能同时使用文本阶梯公式。');
+        if (!costContext)
+            throw new PricingPublishError(
+                'pricing_tiered_cost_required',
+                '阶梯模型请通过成本定价向导预览全部档位后发布。',
+            );
+        const plan = buildTieredPublishPlan(state, source, inputs, Date.now(), costContext);
+        const persisted = tieredPriceOptions(await readPersistedTieredPricingOptions());
+        if (fingerprint(persisted) !== fingerprint(plan.baseline))
+            throw new PricingPublishError('pricing_persistence_mismatch', '阶梯运行配置与已保存配置不一致，请先核对。');
+        await verifyTieredRuntime(plan, false);
+        return plan;
+    }
     await persistedBaseline(source);
     return buildPublishBatchPlan(state, source, inputs, Date.now(), costContext);
 }
@@ -412,6 +456,27 @@ function storedBatchValid(plan: PublishBatchPlan, job: StoredJob): boolean {
 
 function storedPlan(job: StoredJob): AnyPublishPlan {
     const plan = job.plan as unknown as AnyPublishPlan;
+    if (plan?.version === 3) {
+        if (
+            !pricingPublishBatchInputSchema.safeParse(plan.inputs).success ||
+            plan.inputs.length !== 1 ||
+            plan.inputs[0].model_id !== job.model_id ||
+            plan.upstream_model !== job.upstream_model ||
+            !plan.cost_context ||
+            !plan.target ||
+            Object.keys(plan.target).length !== 1 ||
+            !plan.target[EXPRESSION_KEY] ||
+            Object.keys(plan.target[EXPRESSION_KEY]).length !== 1 ||
+            typeof plan.target[EXPRESSION_KEY][plan.upstream_model] !== 'string' ||
+            !Array.isArray(plan.rows) ||
+            !plan.rows.length ||
+            fingerprint(plan.units) !==
+                fingerprint({ chat_fx: CHAT_FX, image_fx: IMAGE_FX, quota_per_usd: QUOTA_PER_USD })
+        )
+            throw new PricingPublishError('pricing_plan_invalid', '阶梯发布记录不完整或金额换算已变化，已停止发布。');
+        tieredPriceOptions(plan.baseline);
+        return plan;
+    }
     const validKeys = plan?.basis === 'token' ? ['CompletionRatio', 'ModelRatio'] : ['ModelPrice'];
     if (
         !plan ||
@@ -447,17 +512,53 @@ function storedPlan(job: StoredJob): AnyPublishPlan {
     return plan;
 }
 
-async function checkedRemote(plan: AnyPublishPlan) {
+async function checkedRemote(plan: AnyPublishPlan): Promise<{
+    source: PublishSource;
+    live: Record<string, Record<string, unknown>>;
+    persisted: Record<string, Record<string, unknown>>;
+}> {
     // Persisted read is mandatory before any PUT; missing verification can never
     // silently downgrade to a best-effort publication.
-    const [source, rawPersisted] = await Promise.all([readPublishSource(), readPersistedPricingOptions()]);
+    const [source, rawPersisted] = await Promise.all([
+        readPublishSource(),
+        plan.version === 3 ? readPersistedTieredPricingOptions() : readPersistedPricingOptions(),
+    ]);
     if (sourceGuard(source) !== plan.source_guard)
         throw new PricingPublishError('pricing_source_changed', 'new-api 渠道、分组或计费规则已变化，已停止自动发布。');
+    if (plan.version === 3) {
+        const live = tieredPriceOptions(source.options),
+            persisted = tieredPriceOptions(rawPersisted);
+        assertRecoverableTieredOptions(live, plan);
+        assertRecoverableTieredOptions(persisted, plan);
+        return { source, live, persisted };
+    }
     const live = priceOptions(source.options),
         persisted = priceOptions(rawPersisted);
     assertRecoverableOptions(live, plan);
     assertRecoverableOptions(persisted, plan);
     return { source, live, persisted };
+}
+
+async function verifyTieredRuntime(plan: TieredPublishPlan, target: boolean) {
+    const runtime = await getPricingRuntimeModels([plan.upstream_model]);
+    const model = runtime.models[0];
+    const expression = target
+        ? plan.target[EXPRESSION_KEY][plan.upstream_model]
+        : plan.baseline[EXPRESSION_KEY][plan.upstream_model];
+    if (
+        model.billing_mode !== 'tiered_expr' ||
+        model.billing_expr !== expression ||
+        model.quota_type !== 0 ||
+        plan.rows.some(
+            (row) =>
+                !model.enable_groups.includes(row.group) ||
+                runtime.group_ratio[row.group] !== plan.baseline.GroupRatio[row.group],
+        )
+    ) {
+        // Runtime cache propagation is a retryable verification, never a reason
+        // to repeat an acknowledged write or prematurely activate catalog prices.
+        throw new Error('Tiered runtime pricing has not converged');
+    }
 }
 
 async function assertNoUncertainWrites(jobId: string) {
@@ -510,14 +611,34 @@ export async function runPricingPublisherOnce(): Promise<PricingPublishJob | nul
                 try {
                     await assertNoUncertainWrites(job.id);
                     plan = storedPlan(job);
-                    if (fingerprint(await readPublishState(tx)) !== plan.catalog_guard)
+                    const state = await readPublishState(tx);
+                    if (fingerprint(state) !== plan.catalog_guard)
                         throw new PricingPublishError(
                             'pricing_catalog_changed',
                             '目录或成本已变化，已停止自动发布，请核对本次影响范围。',
                         );
+                    if (plan.version === 3) {
+                        const remote = await checkedRemote(plan);
+                        const originalSource = {
+                            ...remote.source,
+                            options: { ...remote.source.options, ...plan.baseline },
+                        };
+                        const rebuilt = buildTieredPublishPlan(
+                            state,
+                            originalSource,
+                            plan.inputs,
+                            Date.now(),
+                            plan.cost_context,
+                        );
+                        if (fingerprint(rebuilt) !== fingerprint(plan))
+                            throw new PricingPublishError(
+                                'pricing_plan_invalid',
+                                '阶梯发布目标或预览记录不完整，已停止写入。',
+                            );
+                    }
                     const targets = targetDictionaries(plan);
-                    for (const key of Object.keys(targets) as WritePriceKey[]) {
-                        if (plan.version === 2 && plan.cost_context)
+                    for (const key of Object.keys(targets) as PublicationWriteKey[]) {
+                        if (plan.version !== 1 && plan.cost_context)
                             await assertPricingCostContext(tx, plan.inputs, plan.cost_context);
                         const remote = await checkedRemote(plan);
                         if (
@@ -535,7 +656,7 @@ export async function runPricingPublisherOnce(): Promise<PricingPublishJob | nul
                             where: { id: 'newapi', active_job_id: job.id },
                             data: { revision: { increment: 1 } },
                         });
-                        if (plan.version === 2 && plan.cost_context)
+                        if (plan.version !== 1 && plan.cost_context)
                             await assertPricingCostContext(tx, plan.inputs, plan.cost_context);
                         if (Date.now() > writeDeadline) throw new Error('Publication write deadline exceeded');
                         const writeId = await beginPricingWrite(job.id, key, fingerprint(next));
@@ -562,7 +683,8 @@ export async function runPricingPublisherOnce(): Promise<PricingPublishJob | nul
                         throw new Error('Publication not yet verified');
                     }
                     assertEffectiveCompletion(verified.source, plan);
-                    if (plan.version === 2 && plan.cost_context)
+                    if (plan.version === 3) await verifyTieredRuntime(plan, true);
+                    if (plan.version !== 1 && plan.cost_context)
                         await assertPricingCostContext(tx, plan.inputs, plan.cost_context);
                 } catch (error) {
                     // Database errors must roll back *all* catalog rows and the status.
@@ -592,6 +714,9 @@ export async function runPricingPublisherOnce(): Promise<PricingPublishJob | nul
                             model_id: row.model_id,
                             tier: row.tier,
                             ...row.after,
+                            ...(plan.version === 3
+                                ? { billing_details: row.after_details as unknown as Prisma.InputJsonValue }
+                                : {}),
                             cost_cny_per_1m: row.cost_cny_per_1m,
                             effective_from: now,
                             created_by: job.requested_by,
@@ -605,10 +730,16 @@ export async function runPricingPublisherOnce(): Promise<PricingPublishJob | nul
                         attempts,
                         applied_at: now,
                         next_attempt_at: null,
-                        message: '已核对 new-api 运行价格、已保存价格及相关分组，所有受影响目录价格已生效。',
+                        message:
+                            plan.version === 3
+                                ? '已生效：new-api 持久配置、运行阶梯公式、缓存价格与 Portal 全部档位已核验一致。'
+                                : '已核对 new-api 运行价格、已保存价格及相关分组，所有受影响目录价格已生效。',
                     },
                 });
-                await tx.pricingPublishCoordinator.update({ where: { id: 'newapi' }, data: { active_job_id: null } });
+                await tx.pricingPublishCoordinator.update({
+                    where: { id: 'newapi' },
+                    data: { active_job_id: null, ...(plan.version === 3 ? { revision: { increment: 1 } } : {}) },
+                });
                 return publicJob(updated);
             },
             { isolationLevel: 'Serializable', timeout: 120_000, maxWait: 1_000 },
@@ -673,19 +804,30 @@ export async function changePricingJob(id: string, action: 'retry' | 'cancel', a
             }
             await assertNoUncertainWrites(job.id);
             const plan = storedPlan(job);
-            const [source, persisted] = await Promise.all([readPublishSource(), readPersistedPricingOptions()]);
-            const live = priceOptions(source.options),
-                saved = priceOptions(persisted);
+            // Cancellation makes no remote write. Channel/routing drift must not
+            // trap an untouched intent forever behind the publication lock.
+            const [source, persisted] = await Promise.all([
+                readPublishSource(),
+                plan.version === 3 ? readPersistedTieredPricingOptions() : readPersistedPricingOptions(),
+            ]);
+            const live: Record<string, Record<string, unknown>> = plan.version === 3
+                ? tieredPriceOptions(source.options)
+                : priceOptions(source.options);
+            const saved: Record<string, Record<string, unknown>> = plan.version === 3
+                ? tieredPriceOptions(persisted)
+                : priceOptions(persisted);
             if (plan.version === 2) {
-                assertRecoverableOptions(live, plan);
-                assertRecoverableOptions(saved, plan);
+                assertRecoverableOptions(priceOptions(live), plan);
+                assertRecoverableOptions(priceOptions(saved), plan);
             }
             for (const [key, values] of Object.entries(targetDictionaries(plan))) {
                 if (
                     Object.keys(values).some(
                         (model) =>
-                            live[key as WritePriceKey][model] !== plan.baseline[key as WritePriceKey][model] ||
-                            saved[key as WritePriceKey][model] !== plan.baseline[key as WritePriceKey][model],
+                            live[key][model] !==
+                                (plan.baseline as Record<string, Record<string, unknown>>)[key][model] ||
+                            saved[key][model] !==
+                                (plan.baseline as Record<string, Record<string, unknown>>)[key][model],
                     )
                 ) {
                     throw new PricingPublishError(

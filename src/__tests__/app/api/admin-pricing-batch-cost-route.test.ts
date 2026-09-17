@@ -195,6 +195,36 @@ describe('POST /api/admin/pricing/batch-cost', () => {
     });
 });
 
+it('persists tiered metadata unchanged when only reference cost is updated', async () => {
+    const metadata = { version: 1, mode: 'tiered_token', tiers: [{ name: 'long', rates: { cache_read: 0.08125 } }] };
+    mockFindMany.mockResolvedValueOnce([
+        {
+            id: 'm-tiered',
+            slug: 'gpt-tiered',
+            display_name: 'GPT',
+            modality: 'chat',
+            upstream_map: { enterprise: {} },
+            prices: [
+                {
+                    tier: 'enterprise',
+                    input_cny_per_1m: 0.8,
+                    output_cny_per_1m: 4.8,
+                    per_image_cny: null,
+                    cost_cny_per_1m: null,
+                    billing_details: metadata,
+                },
+            ],
+        },
+    ]);
+    const response = await POST(post({ vendor: 'openai', cost_ratio: 1.3, retail_ratio: 1.6 }));
+    expect(response.status).toBe(200);
+    expect(mockCreateMany.mock.calls[0][0].data[0]).toMatchObject({
+        billing_details: metadata,
+        input_cny_per_1m: 0.8,
+        cost_cny_per_1m: 0.65,
+    });
+});
+
 it('blocks batch cost before reading prices while a publication is active; preview stays read-only', async () => {
     mockCatalogGuard.mockRejectedValueOnce(new PricingPublishError('pricing_publish_busy', 'busy'));
     const response = await POST(post({ vendor: 'anthropic', cost_ratio: 0.15, retail_ratio: 1.3 }));
