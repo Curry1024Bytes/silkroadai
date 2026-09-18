@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { canonicalSync } from './newapi-sync-plan';
 import { costMapping, type CostDb, type CostModel } from './pricing-cost-store';
-import { calculateCostPricing, pricingCostConfigSchema } from './pricing-cost';
+import { calculateCostPricing, getCostQuoteDisplay, pricingCostConfigSchema } from './pricing-cost';
 import type { PricingCostConfig, PricingCostSelection } from './pricing-cost-types';
 import type { PricingPublishInput } from './pricing-publish-types';
 import { PricingPublishError } from './pricing-publish-lock';
@@ -13,7 +13,21 @@ import { tenantScope } from './tenant-scope';
 export interface CostBatchContext {
     selections: PricingCostSelection[];
     fingerprint: string;
+    /** Explicit whole-group publication; legacy single-model intents remain unchanged. */
+    group_scope?: PricingCostGroupScope;
 }
+export interface PricingCostGroupScope {
+    tier: string;
+    newapi_group: string;
+    retail_ratio: number;
+}
+export const pricingCostGroupScopeSchema = z
+    .object({
+        tier: z.string().min(1).max(200),
+        newapi_group: z.string().min(1).max(200),
+        retail_ratio: z.number().finite().positive(),
+    })
+    .strict();
 export const pricingCostSelectionsSchema = z
     .array(
         z
@@ -107,7 +121,9 @@ export async function resolvePricingCostSelection(
     db: CostDb,
     selections: PricingCostSelection[],
     admin?: AdminPrincipal,
+    groupScope?: PricingCostGroupScope,
 ) {
+    const scope = groupScope ? pricingCostGroupScopeSchema.parse(groupScope) : undefined;
     const normalized = pricingCostSelectionsSchema.parse(selections).sort((a, b) => a.rule_id.localeCompare(b.rule_id));
     const [rules, groups] = await Promise.all([
         db.pricingCostRule.findMany({
@@ -133,6 +149,26 @@ export async function resolvePricingCostSelection(
                 '渠道或上游模型已更换，请核对新上游成本并重新保存后再发布。',
             );
         const config = pricingCostConfigSchema.parse(rule.config);
+        if (scope) {
+            const matching = groups.filter(
+                (group) =>
+                    group.enabled &&
+                    group.key === rule.tier &&
+                    group.tenant_id === rule.model.tenant_id &&
+                    group.newapi_group === scope.newapi_group,
+            );
+            if (
+                rule.tier !== scope.tier ||
+                matching.length !== 1 ||
+                rules.some((other) => other.model.tenant_id !== rule.model.tenant_id) ||
+                config.retail_multiplier === undefined ||
+                getCostQuoteDisplay(config).unitRetail !== scope.retail_ratio
+            )
+                throw new PricingPublishError(
+                    'pricing_group_cost_changed',
+                    '整组定价的档次、充值比例或售价倍率不一致，请重新加载该档次。',
+                );
+        }
         const derived = costPublicationInput(rule.model, rule.tier, config, selection.variant_key);
         inputs.push(derived.input);
         cost_rows.push(
@@ -148,13 +184,17 @@ export async function resolvePricingCostSelection(
     return {
         inputs,
         cost_rows,
-        context: { selections: normalized, fingerprint: hash(snapshots) } satisfies CostBatchContext,
+        context: {
+            selections: normalized,
+            fingerprint: hash(scope ? { snapshots, group_scope: scope } : snapshots),
+            ...(scope ? { group_scope: scope } : {}),
+        } satisfies CostBatchContext,
     };
 }
 
 /** Re-evaluated under the existing publication lock before writes and activation. */
 export async function assertPricingCostContext(db: CostDb, inputs: PricingPublishInput[], context: CostBatchContext) {
-    const current = await resolvePricingCostSelection(db, context.selections);
+    const current = await resolvePricingCostSelection(db, context.selections, undefined, context.group_scope);
     if (current.context.fingerprint !== context.fingerprint || hash(current.inputs) !== hash(inputs))
         throw new PricingPublishError(
             'pricing_cost_changed',

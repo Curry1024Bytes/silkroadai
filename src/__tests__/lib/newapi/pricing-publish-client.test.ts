@@ -42,7 +42,7 @@ describe('publication management acknowledgement', () => {
             value,
         });
     });
-    it.each(['billing_setting.billing_mode', 'GroupRatio', 'GroupGroupRatio', 'CacheRatio', 'CreateCacheRatio'])(
+    it.each(['billing_setting.billing_mode', 'GroupGroupRatio', 'CacheRatio', 'CreateCacheRatio'])(
         'refuses an unsupported publication write before fetching: %s',
         async (key) => {
             await expect(
@@ -51,6 +51,16 @@ describe('publication management acknowledgement', () => {
             expect(fetchMock).not.toHaveBeenCalled();
         },
     );
+    it('acknowledges one bounded GroupRatio write for a group-scoped publication', async () => {
+        fetchMock.mockResolvedValue(new Response('{"success":true}', { status: 200 }));
+        const value = JSON.stringify({ enterprise: 0.16, unchanged: 0.2 });
+        await expect(putPricingPublishOption('GroupRatio', value)).resolves.toBeUndefined();
+        expect(fetchMock).toHaveBeenCalledOnce();
+        const request = fetchMock.mock.calls[0][1] as RequestInit;
+        expect(request.method).toBe('PUT');
+        expect(request.signal).toBeInstanceOf(AbortSignal);
+        expect(JSON.parse(String(request.body))).toEqual({ key: 'GroupRatio', value });
+    });
     it('returns only allowlisted pricing metadata, never unrelated admin secrets', async () => {
         fetchMock.mockResolvedValue(
             new Response(

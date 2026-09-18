@@ -57,9 +57,21 @@ export interface PricingPublishPreview {
     rows: PricingPublishPreviewRow[];
     warnings: string[];
     batch?: { count: number; upstream_models: string[] };
-    publication_mode?: 'tiered_token' | 'uniform_token';
+    publication_mode?: 'tiered_token' | 'uniform_token' | 'group';
     unchanged?: boolean;
+    customer_request_overrides?: Array<{
+        model_id: string;
+        model_name: string;
+        group: string;
+        ratio: number;
+        public_ratio: number;
+        count: number;
+        before_per_image_cny: number;
+        after_per_image_cny: number;
+    }>;
     customer_overrides?: Array<{
+        model_id?: string;
+        model_name?: string;
         group: string;
         ratio: number;
         public_ratio: number;

@@ -137,6 +137,39 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe('saved cost quotes and publication protection', () => {
+    it('binds whole-group scope into cost signatures and rejects another group or multiplier', async () => {
+        const direct = {
+            ...quote(),
+            credits_per_cny: 10,
+            upstream_multiplier: 1.3,
+            retail_multiplier: 1.6,
+            markup_percent: 0,
+        };
+        store.rules = [{ ...rule(), config: direct as unknown as Prisma.JsonValue }];
+        const db = txFor(store) as CostDb;
+        const selections = [{ rule_id: RULE, revision: 1 }];
+        const scope = { tier: 'standard', newapi_group: 'group', retail_ratio: 0.16 };
+        const legacy = await resolvePricingCostSelection(db, selections, ADMIN);
+        const grouped = await resolvePricingCostSelection(db, selections, ADMIN, scope);
+        expect(grouped.context.group_scope).toEqual(scope);
+        expect(grouped.context.fingerprint).not.toBe(legacy.context.fingerprint);
+        await assertPricingCostContext(db, grouped.inputs, grouped.context);
+        for (const changed of [
+            { ...scope, retail_ratio: 1.6 },
+            { ...scope, newapi_group: 'elsewhere' },
+            { ...scope, tier: 'elsewhere' },
+        ])
+            await expect(resolvePricingCostSelection(db, selections, ADMIN, changed)).rejects.toMatchObject({
+                code: 'pricing_group_cost_changed',
+            });
+        const signed = signCostSelection(ADMIN, grouped.context, 'preview');
+        expect(() => verifyCostSelection(ADMIN, legacy.context, 'preview', signed)).toThrow();
+        store.groups[0].newapi_group = 'renamed';
+        await expect(assertPricingCostContext(db, grouped.inputs, grouped.context)).rejects.toMatchObject({
+            code: 'pricing_group_cost_changed',
+        });
+    });
+
     it('saves exact sale multipliers and keeps each purchasing rule revision intact', async () => {
         const direct = { ...quote(), upstream_multiplier: 1.3, retail_multiplier: 1.6, markup_percent: 0 };
         const [saved] = await saveCostRules(

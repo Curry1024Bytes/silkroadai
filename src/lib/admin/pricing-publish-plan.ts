@@ -10,6 +10,7 @@ import type { PricingPublishAmounts, PricingPublishInput, PricingPublishPreviewR
 import { PricingPublishError } from './pricing-publish-lock';
 import type { CostBatchContext } from './pricing-cost-publication-guard';
 import type { UniformPublishPlan, CacheUniformPublishPlan } from './pricing-uniform-plan';
+import type { GroupPublishPlan } from './pricing-group-plan';
 import type { TieredPublishPlan } from './pricing-tiered-plan';
 
 export const PRICE_KEYS = ['ModelRatio', 'CompletionRatio', 'ModelPrice', 'GroupRatio'] as const;
@@ -76,8 +77,13 @@ export interface PublishBatchPlan extends Omit<PublishPlan, 'version' | 'input' 
     cost_context?: CostBatchContext;
 }
 export type AnyPublishPlan =
-    PublishPlan | PublishBatchPlan | TieredPublishPlan | UniformPublishPlan | CacheUniformPublishPlan;
-export type PublicationWriteKey = WritePriceKey | 'billing_setting.billing_expr';
+    | PublishPlan
+    | PublishBatchPlan
+    | TieredPublishPlan
+    | UniformPublishPlan
+    | CacheUniformPublishPlan
+    | GroupPublishPlan;
+export type PublicationWriteKey = WritePriceKey | 'billing_setting.billing_expr' | 'GroupRatio';
 
 /** Normalize legacy intent without changing the persisted v1 contract or signature. */
 export function targetDictionaries(
@@ -180,7 +186,7 @@ function completionInfo(source: PublishSource, model: string) {
 }
 
 export function assertEffectiveCompletion(source: PublishSource, plan: AnyPublishPlan) {
-    if (plan.version === 3 || plan.version === 4 || plan.version === 5) return; // The runtime expression is verified separately.
+    if (plan.version === 3 || plan.version === 4 || plan.version === 5 || plan.version === 6) return; // The runtime expression is verified separately.
     if (plan.version === 2) {
         for (const model of plan.upstream_models) {
             if (

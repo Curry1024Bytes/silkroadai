@@ -934,6 +934,8 @@ export async function getPricingPublishOptions(): Promise<Record<string, unknown
         'CompletionRatio',
         'ModelPrice',
         'CompletionRatioMeta',
+        'CacheRatio',
+        'CreateCacheRatio',
         'GroupGroupRatio',
         'QuotaPerUnit',
         'ImageResolutionPrice',
@@ -956,10 +958,10 @@ export async function getPricingPublishOptions(): Promise<Record<string, unknown
 }
 
 export async function putPricingPublishOption(
-    key: 'ModelRatio' | 'CompletionRatio' | 'ModelPrice' | 'billing_setting.billing_expr',
+    key: 'ModelRatio' | 'CompletionRatio' | 'ModelPrice' | 'billing_setting.billing_expr' | 'GroupRatio',
     value: string,
 ): Promise<void> {
-    if (!['ModelRatio', 'CompletionRatio', 'ModelPrice', 'billing_setting.billing_expr'].includes(key))
+    if (!['ModelRatio', 'CompletionRatio', 'ModelPrice', 'billing_setting.billing_expr', 'GroupRatio'].includes(key))
         throw new Error('Unsupported pricing publication option');
     await call<unknown>('PUT', '/api/option/', { key, value }, undefined, { timeoutMs: 10_000, requireSuccess: true });
 }

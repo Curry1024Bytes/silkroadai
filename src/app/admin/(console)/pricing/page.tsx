@@ -8,6 +8,7 @@ import { deriveTierRows, tierOrder } from '@/lib/admin/pricing-tiers';
 import type { BatchCostResult } from '@/lib/admin/batch-cost';
 import PricingPublishDialog from '@/components/admin/PricingPublishDialog';
 import CostPricingWorkbench from '@/components/admin/CostPricingWorkbench';
+import GroupPricingWorkbench from '@/components/admin/GroupPricingWorkbench';
 import CatalogTieredPriceDetails from '@/components/admin/CatalogTieredPriceDetails';
 import { isUniformPricingDetails, parseTieredPricingDetails } from '@/lib/models/tiered-pricing-details';
 import { PricingPublishJobs, requestPricingJobAction } from '@/components/admin/PricingPublishJobs';
@@ -376,6 +377,18 @@ function PricingContent() {
             )}
 
             <div id="pricing-workbench" className="scroll-mt-4">
+                <GroupPricingWorkbench
+                    isDark={isDark}
+                    locale={locale}
+                    onPublished={refreshAfterSubmission}
+                    onUncertain={() => void fetchModels(true)}
+                />
+            </div>
+
+            <details className={`mb-6 rounded-xl border p-4 ${isDark ? 'border-slate-700' : 'border-slate-200'}`}>
+                <summary className="cursor-pointer py-2 text-sm font-medium">
+                    {locale === 'en' ? 'Individual model pricing' : '单个模型定价'}
+                </summary>
                 <CostPricingWorkbench
                     models={models}
                     isDark={isDark}
@@ -383,7 +396,7 @@ function PricingContent() {
                     onPublished={refreshAfterSubmission}
                     onUncertain={() => void fetchModels(true)}
                 />
-            </div>
+            </details>
 
             <PricingPublishJobs
                 jobs={publishJobs}
@@ -636,7 +649,7 @@ function ModelRows({ model, rows, isDark, tdMuted, linkBtn, unpricedLabel, editL
                                 <div className="inline-grid grid-cols-[auto_4rem] items-center gap-1">
                                     {cur?.billing_details != null ? (
                                         <a href="#pricing-workbench" className={linkBtn('indigo')}>
-                                            {t.title === 'Pricing' ? 'Price by multiplier above' : '上方按倍率定价'}
+                                            {t.title === 'Pricing' ? 'Price by multiplier above' : '上方按档次定价'}
                                         </a>
                                     ) : (
                                         <button type="button" onClick={() => onEdit(row)} className={linkBtn('indigo')}>
