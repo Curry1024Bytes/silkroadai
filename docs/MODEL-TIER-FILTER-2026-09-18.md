@@ -25,4 +25,9 @@
 
 ## 发布
 
-待本次 dev 提交验证后，按 dev → prod fast-forward → VPS 发布。发布工具仅切换 Portal；发布前后对照当前已发布价格、业务表、迁移与依赖容器状态。实际生产发布结果完成后补记。
+- 应用提交 `aefe51b391ab5de45c6801e561bcd8bd0efcac95` 已由 dev fast-forward 到 prod 并部署。运行镜像为 `sha256:4cd94d544febd99a4b8d2f37cd10a655452a879f68f79c486f6c669b8715b846`；北京时间 2026-09-18 15:04:18 开始切换，15:04:33 确认稳定。源站半秒采样共 26 次，其中 14 次失败，首末失败跨度约 8.92 秒；Portal restart count 为 0，PostgreSQL healthy，new-api/MySQL/PostgreSQL 的容器、镜像和启动时间均未改变。
+- 发布前生成 0600 环境备份 `/opt/silkroadai-portal/.env.bak.model-tier-20260918-065302`，数据库备份及完整证据位于 `/opt/backups/silkroadai-portal/releases/model-tier-20260918-065302/`。数据库备份已通过 gzip 检查并恢复到临时隔离库。回滚镜像标签为 `silkroadai-portal-portal:rollback-model-tier-20260918-065302`。
+- 新镜像在隔离库验证 `/models` 和签名客户会话下的 `/workspace/models`；GET 白名单代理验证写入、凭据轮换和收费路径均不可通过。实际模型卡片的 GPT-5.5、GPT-5.6 Sol 输入/输出/缓存价格逐项匹配当前数据库；镜像无 `.env*`，Prisma 文件对运行用户可读。隔离容器、数据库和环境文件均已清理。
+- 生产验收通过：模型页面 HTML 与脚本含档次筛选，公网脚本哈希匹配新镜像；GPT-5.5 售价 0.8/4.8/0.08、GPT-5.6 Sol 售价 0.64/3.2/0.064/0.8 元/百万 token 与原目录一致。14 项源站/公网模型页、登录、API 和 CORS 检查通过，启动后 error/fatal 日志为 0。
+- 发布前后 11 张目录/定价/Key/删除任务业务表摘要、客户档次限制、15 项 new-api 价格配置（Admin API 与只读 MySQL 双读）、环境文件及 80 条 migration checksum 均保持一致。本次未执行真实收费请求、支付、改价或 Key 操作。
+- 交互验收使用本地实际组件；另一次线上 CUA 浏览器复核因浏览器工具超时未完成，未将其计为通过。生产 HTML/资源/价格通过上述独立 HTTP 检查验收。发布构建目录已清理，备份与证据保留。后续仅同步本报告的文档提交，不重建应用镜像。
