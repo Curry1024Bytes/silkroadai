@@ -4,7 +4,8 @@
  */
 import { ModelsCatalog } from './models-catalog';
 
-export const revalidate = 60;
+// Logged-in customers may have dedicated prices; never share rendered quotes across users.
+export const dynamic = 'force-dynamic';
 export const metadata = {
     title: '模型清单 — LLmRoute',
     description:

@@ -2,42 +2,43 @@ import { BackButton } from '@/components/BackButton';
 import { Logo } from '@/components/brand/Logo';
 import { FormError } from '@/components/ui/FormError';
 import { classifyModels } from '@/lib/models/categorize';
-import { listAvailableModels } from '@/lib/newapi/client';
-import { CUSTOMER_API_BASE_URL } from '@/lib/public-config';
+import { loadBrowserCatalog } from '@/lib/models/catalog-browser';
+import { getCurrentUser } from '@/lib/auth/session';
+import { headers } from 'next/headers';
+import { NextRequest } from 'next/server';
 import { ModelsBrowser } from './models-browser';
 
+async function pricingUserId() {
+    const cookie = (await headers()).get('cookie');
+    if (!cookie) return undefined;
+    const user = await getCurrentUser(new NextRequest('http://internal/models', { headers: { cookie } }));
+    return user?.id;
+}
+
 export async function ModelsCatalog({ embedded = false }: { embedded?: boolean }) {
-    let rawModels: string[] = [];
-    let fetchErr: string | null = null;
+    let catalog: Awaited<ReturnType<typeof loadBrowserCatalog>> | null = null;
     try {
-        rawModels = await listAvailableModels();
+        catalog = await loadBrowserCatalog(await pricingUserId());
     } catch (err) {
-        fetchErr = err instanceof Error ? err.message : String(err);
-        console.warn('[models] listAvailableModels failed:', err);
+        console.warn('[models] loadBrowserCatalog failed:', err);
     }
 
-    const { entries, totalModels, vendorCount } = classifyModels(rawModels);
-    const content = fetchErr ? (
-        <FormError severity="banner">当前无法获取模型清单,请稍后重试。</FormError>
+    const content = !catalog ? (
+        <>
+            <h1 className="m-0 mb-4 text-3xl font-semibold text-navy">模型清单</h1>
+            <FormError severity="banner">当前无法获取模型清单与价格，请稍后重试。</FormError>
+        </>
     ) : (
-        <ModelsBrowser entries={entries} totalModels={totalModels} vendorCount={vendorCount} />
+        <ModelsBrowser
+            {...classifyModels(catalog.models.map((model) => model.slug))}
+            tiers={catalog.tiers}
+            pricing={catalog.models}
+            embedded={embedded}
+        />
     );
 
     if (embedded) {
-        return (
-            <section className="space-y-6">
-                <div>
-                    <p className="m-0 mb-1 text-xs font-semibold text-portal-gold">CATALOG</p>
-                    <h1 className="m-0 text-[28px] font-semibold leading-tight text-portal-ink">模型清单</h1>
-                    <p className="m-0 mt-2 max-w-3xl text-sm leading-relaxed text-portal-muted">
-                        当前接入 <strong className="text-portal-ink">{totalModels}</strong> 个模型，覆盖{' '}
-                        <strong className="text-portal-ink">{vendorCount}</strong> 个厂商，可通过 OpenAI / Anthropic
-                        兼容协议调用。
-                    </p>
-                </div>
-                {content}
-            </section>
-        );
+        return <section className="space-y-6">{content}</section>;
     }
 
     return (
@@ -52,15 +53,6 @@ export async function ModelsCatalog({ embedded = false }: { embedded?: boolean }
                         <Logo variant="primary-flat" size={28} />
                         <p className="m-0 text-xs text-minor-ink">One route. Every model.</p>
                     </div>
-                    <h1 className="m-0 text-3xl font-semibold text-navy">模型清单</h1>
-                    <p className="m-0 max-w-3xl text-sm leading-relaxed text-muted-ink">
-                        我们当前接入了 <strong className="text-navy">{totalModels}</strong> 个模型,涵盖{' '}
-                        <strong className="text-navy">{vendorCount}</strong> 个厂商。所有模型均可在{' '}
-                        <code className="rounded border border-brand-border bg-surface px-1.5 py-0.5 text-xs text-navy">
-                            {CUSTOMER_API_BASE_URL}
-                        </code>{' '}
-                        通过 OpenAI / Anthropic 兼容协议调用。
-                    </p>
                 </header>
                 {content}
             </div>
