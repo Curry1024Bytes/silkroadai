@@ -655,7 +655,7 @@ export default function CostPricingWorkbench({
     isDark: boolean;
     locale: Locale;
     onPublished: (job: PricingPublishJob) => void;
-    onUncertain: () => void;
+    onUncertain: (message?: string) => void;
 }) {
     const en = locale === 'en';
     const [data, setData] = useState<CostData>({ rules: [], capabilities: [], source_error: null });
@@ -1009,12 +1009,13 @@ export default function CostPricingWorkbench({
                 dispatchReview({ type: 'invalidate' });
                 setNotice(
                     en
-                        ? 'Publication task submitted. Prices become effective only after verification; check Publication tasks below.'
-                        : '发布任务已提交；核验通过才会生效，请查看下方发布任务。',
+                        ? 'Publication task submitted. Prices become effective only after verification; check the Publication tasks tab.'
+                        : '发布任务已提交；核验通过才会生效，请查看「发布任务」标签。',
                 );
                 onPublished(job);
-            } finally {
-                onUncertain();
+            } catch (caught) {
+                if (mounted.current) onUncertain(caught instanceof Error ? caught.message : undefined);
+                throw caught;
             }
         });
 

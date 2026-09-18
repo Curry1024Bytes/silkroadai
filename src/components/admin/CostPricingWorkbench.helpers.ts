@@ -9,6 +9,7 @@ import type { PricingPublishJob, PricingPublishPreview } from '@/lib/admin/prici
 import { getCostRetailMultiplier } from '@/lib/admin/pricing-cost';
 import type { PricingReferenceSelection } from './PricingReferencePicker';
 import { isUniformPricingDetails, parseTieredPricingDetails } from '@/lib/models/tiered-pricing-details';
+import { pricingNumberFromInput, pricingNumberInput } from './pricing-number-input';
 
 /** A partial token-price response must never appear as a complete price confirmation. */
 export function costPricingPreviewBlock(preview: PricingPublishPreview, en = false): string | null {
@@ -88,6 +89,8 @@ export interface CostPricingDraft {
     };
     markup_percent: string;
     source_note: string;
+    /** Client-only originals for imported numbers whose display tail was cleaned. */
+    number_sources?: Record<string, number>;
     token_rates: { [K in keyof PricingCostConfig['token_rates']]: string };
     variants: Array<
         Omit<PricingCostConfig['variants'][number], 'price' | 'minimum_units' | 'step_units'> & {
@@ -96,6 +99,28 @@ export interface CostPricingDraft {
             step_units: string;
         }
     >;
+}
+
+/** Shared by saved single-model drafts and incomplete group-discovery quotes. */
+export function costQuoteInputs(config: Pick<PricingCostConfig, 'token_rates' | 'variants'>) {
+    const sources: Record<string, number> = {};
+    const input = (key: string, value: number | null | undefined) => {
+        const formatted = pricingNumberInput(value);
+        if (value != null && Number.isFinite(value) && formatted !== String(value)) sources[key] = value;
+        return formatted;
+    };
+    return {
+        token_rates: Object.fromEntries(
+            Object.entries(config.token_rates).map(([key, value]) => [key, input(`token_rates.${key}`, value)]),
+        ) as CostPricingDraft['token_rates'],
+        variants: config.variants.map((variant) => ({
+            ...variant,
+            price: input(`variants.${variant.key}.price`, variant.price),
+            minimum_units: String(variant.minimum_units),
+            step_units: String(variant.step_units),
+        })),
+        number_sources: sources,
+    };
 }
 
 export interface CostPricingSaveInput {
@@ -108,16 +133,26 @@ export interface CostPricingSaveInput {
 /** The picker explicitly confirms the supplier's USD-number-to-credit basis. */
 export function draftWithReference(draft: CostPricingDraft, price: PricingReferenceSelection): CostPricingDraft {
     const note = `${price.sourceLabel} · ${price.model} · ${price.fetchedAt} · USD 基准数字按上游额度计价；用于基础报价与成本估算；缓存写入按标注时长分别计价。`;
+    const quote = costQuoteInputs({
+        token_rates: {
+            input: price.input,
+            output: price.output,
+            cache_read: price.cache_read,
+            cache_write: price.cache_write,
+            ...(price.cache_write_1h != null ? { cache_write_1h: price.cache_write_1h } : {}),
+        },
+        variants: [],
+    });
     return {
         ...draft,
         currency: 'credits',
         credits_per_cny: draft.currency === 'credits' ? draft.credits_per_cny : '',
-        token_rates: {
-            input: String(price.input),
-            output: String(price.output),
-            cache_read: price.cache_read === null ? '' : String(price.cache_read),
-            cache_write: price.cache_write === null ? '' : String(price.cache_write),
-            ...(price.cache_write_1h != null ? { cache_write_1h: String(price.cache_write_1h) } : {}),
+        token_rates: quote.token_rates,
+        number_sources: {
+            ...Object.fromEntries(
+                Object.entries(draft.number_sources ?? {}).filter(([key]) => !key.startsWith('token_rates.')),
+            ),
+            ...quote.number_sources,
         },
         source_note: `${note}\n${draft.source_note}`.trim().slice(0, 500),
     };
@@ -198,15 +233,7 @@ export function draftFromCostConfig(config: PricingCostConfig): CostPricingDraft
               }
             : {}),
         markup_percent: String(config.markup_percent),
-        token_rates: Object.fromEntries(
-            Object.entries(config.token_rates).map(([key, value]) => [key, value === null ? '' : String(value)]),
-        ) as CostPricingDraft['token_rates'],
-        variants: config.variants.map((variant) => ({
-            ...variant,
-            price: String(variant.price),
-            minimum_units: String(variant.minimum_units),
-            step_units: String(variant.step_units),
-        })),
+        ...costQuoteInputs(config),
     };
 }
 
@@ -226,7 +253,10 @@ export function costConfigFromDraft(draft: CostPricingDraft): PricingCostConfig 
         draft.retail_multiplier.trim() === legacy.retail_multiplier &&
         number(draft.markup_percent) === legacy.markup_percent;
     const tokenRates = Object.fromEntries(
-        Object.entries(draft.token_rates).map(([key, value]) => [key, number(value)]),
+        Object.entries(draft.token_rates).map(([key, value]) => [
+            key,
+            pricingNumberFromInput(value, draft.number_sources?.[`token_rates.${key}`]),
+        ]),
     ) as PricingCostConfig['token_rates'];
     if (draft.basis === 'token' && (tokenRates.input === null || tokenRates.output === null)) return null;
     if (
@@ -243,7 +273,10 @@ export function costConfigFromDraft(draft: CostPricingDraft): PricingCostConfig 
     if (draft.basis !== 'token') {
         if (draft.variants.length === 0) return null;
         for (const variant of draft.variants) {
-            const price = number(variant.price);
+            const price = pricingNumberFromInput(
+                variant.price,
+                draft.number_sources?.[`variants.${variant.key}.price`],
+            );
             const minimum = number(variant.minimum_units);
             const step = number(variant.step_units);
             if (price === null || price < 0 || minimum === null || minimum <= 0 || step === null || step <= 0)

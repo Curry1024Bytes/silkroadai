@@ -2,7 +2,12 @@ import type { PricingCostConfig, PricingCostSelection, StoredPricingCostRule } f
 import type { PricingGroupCatalog, PricingGroupModel } from '@/lib/admin/pricing-group-types';
 import type { PricingPublishJob } from '@/lib/admin/pricing-publish-types';
 import { calculateCostPricing, pricingCostConfigSchema } from '@/lib/admin/pricing-cost';
-import { costConfigFromDraft, type CostPricingDraft, type CostPricingPrepared } from './CostPricingWorkbench.helpers';
+import {
+    costConfigFromDraft,
+    costQuoteInputs,
+    type CostPricingDraft,
+    type CostPricingPrepared,
+} from './CostPricingWorkbench.helpers';
 
 export interface GroupSettingsDraft {
     currency: PricingCostConfig['currency'];
@@ -45,15 +50,7 @@ function groupQuoteDraft(config: PricingCostConfig): CostPricingDraft {
             config.retail_multiplier ?? config.upstream_multiplier * (1 + config.markup_percent / 100),
         ),
         markup_percent: String(config.markup_percent),
-        token_rates: Object.fromEntries(
-            Object.entries(config.token_rates).map(([key, value]) => [key, value == null ? '' : String(value)]),
-        ) as CostPricingDraft['token_rates'],
-        variants: config.variants.map((row) => ({
-            ...row,
-            price: Number.isFinite(row.price) ? String(row.price) : '',
-            minimum_units: String(row.minimum_units),
-            step_units: String(row.step_units),
-        })),
+        ...costQuoteInputs(config),
     };
 }
 

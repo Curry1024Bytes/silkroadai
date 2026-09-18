@@ -125,6 +125,38 @@ function responseData() {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('group pricing drafts', () => {
+    it('shows clean saved cache prices and preserves them exactly in a full-group preview payload', () => {
+        const changed = {
+            ...catalog,
+            models: [
+                {
+                    ...model,
+                    config: { ...config, token_rates: { ...config.token_rates, cache_read: 0.39999999999999997 } },
+                },
+            ],
+        };
+        const drafts = groupInitialDrafts(changed);
+        expect(drafts[model.id].token_rates.cache_read).toBe('0.4');
+        const html = renderToStaticMarkup(
+            <GroupModelQuote
+                model={changed.models[0]}
+                draft={drafts[model.id]}
+                settings={settings}
+                isDark={false}
+                en={false}
+                disabled={false}
+                onChange={() => {}}
+            />,
+        );
+        expect(html).toContain('value="0.4"');
+        expect(html).not.toContain('0.39999999999999997');
+        const payload = groupPreviewInput(changed, drafts, settings)!;
+        expect(payload.models[0].config.token_rates.cache_read).toBe(0.39999999999999997);
+        expect(payload.models[0].config).not.toHaveProperty('number_sources');
+        expect(calculateCostPricing(payload.models[0].config).lines).toEqual(
+            calculateCostPricing(changed.models[0].config).lines,
+        );
+    });
     it('creates one full-group payload and applies shared settings once to every base quote', () => {
         const input = groupPreviewInput(catalog, groupInitialDrafts(catalog), settings)!;
         expect(input.models).toHaveLength(2);

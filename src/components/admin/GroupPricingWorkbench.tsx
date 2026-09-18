@@ -379,7 +379,7 @@ export default function GroupPricingWorkbench({
     isDark: boolean;
     locale: Locale;
     onPublished: (job: PricingPublishJob) => void;
-    onUncertain: () => void;
+    onUncertain: (message?: string) => void;
 }) {
     const en = locale === 'en';
     const [groups, setGroups] = useState<PricingGroupTier[]>([]);
@@ -523,8 +523,8 @@ export default function GroupPricingWorkbench({
             setConfirmed(false);
             setNotice(
                 en
-                    ? 'Group publication submitted. Follow Publication tasks below until verified.'
-                    : '整组发布任务已提交，请在下方查看进度；显示「已生效」后完成。',
+                    ? 'Group publication submitted. Follow the Publication tasks tab until verified.'
+                    : '整组发布任务已提交，请在「发布任务」标签查看进度；显示「已生效」后完成。',
             );
             onPublished(job);
         } catch (caught) {
@@ -532,7 +532,7 @@ export default function GroupPricingWorkbench({
             setPrepared(null);
             setConfirmed(false);
             setError(caught instanceof Error ? caught.message : String(caught));
-            onUncertain();
+            onUncertain(caught instanceof Error ? caught.message : undefined);
         } finally {
             lock.current = false;
             if (mounted.current) setBusy(null);

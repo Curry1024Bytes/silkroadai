@@ -205,7 +205,7 @@ export default function PricingPublishDialog({
     isDark: boolean;
     onClose: () => void;
     onSubmitted: (job: PricingPublishJob) => void;
-    onUncertain: () => void;
+    onUncertain: (message?: string) => void;
 }) {
     const valuesFor = (tier: string): FormValues => {
         const current = tiers.find((row) => row.tier === tier)?.current;
@@ -289,14 +289,14 @@ export default function PricingPublishDialog({
             if (!active.current) return;
             setPrepared(null);
             setConfirmed(false);
-            setError(
+            const message =
                 caught instanceof PricingPublishRequestError
                     ? caught.message
                     : en
                       ? 'The submission result is unconfirmed. Check Publication tasks before submitting again.'
-                      : '提交结果尚未确认，请先关闭窗口查看「价格发布任务」，避免重复提交。',
-            );
-            onUncertain();
+                      : '提交结果尚未确认，请先查看「发布任务」标签，避免重复提交。';
+            setError(message);
+            onUncertain(message);
         } finally {
             requestLock.current = false;
             if (active.current) setBusy(false);

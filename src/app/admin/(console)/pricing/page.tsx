@@ -9,6 +9,10 @@ import type { BatchCostResult } from '@/lib/admin/batch-cost';
 import PricingPublishDialog from '@/components/admin/PricingPublishDialog';
 import CostPricingWorkbench from '@/components/admin/CostPricingWorkbench';
 import GroupPricingWorkbench from '@/components/admin/GroupPricingWorkbench';
+import PricingWorkspaceTabs, {
+    pricingWorkspaceTabId,
+    type PricingWorkspaceTab,
+} from '@/components/admin/PricingWorkspaceTabs';
 import CatalogTieredPriceDetails from '@/components/admin/CatalogTieredPriceDetails';
 import { isUniformPricingDetails, parseTieredPricingDetails } from '@/lib/models/tiered-pricing-details';
 import { PricingPublishJobs, requestPricingJobAction } from '@/components/admin/PricingPublishJobs';
@@ -227,6 +231,7 @@ function PricingContent() {
     const [publishJobs, setPublishJobs] = useState<PricingPublishJob[]>([]);
     const [jobBusyId, setJobBusyId] = useState<string | null>(null);
     const [jobError, setJobError] = useState('');
+    const [activeTab, setActiveTab] = useState<PricingWorkspaceTab>('group');
     const fetching = useRef(false);
     const publicationRevision = useRef(0);
     const jobActionLock = useRef(false);
@@ -282,10 +287,31 @@ function PricingContent() {
         setEditModalOpen(false);
         setEditingModel(null);
     };
+    const navigateToTab = (tab: PricingWorkspaceTab) => {
+        setActiveTab(tab);
+        window.requestAnimationFrame(() => {
+            const button = document.getElementById(pricingWorkspaceTabId(tab));
+            button?.focus({ preventScroll: true });
+            button?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        });
+    };
     const refreshAfterSubmission = (job: PricingPublishJob) => {
         publicationRevision.current++;
+        setJobError('');
         setPublishJobs((previous) => [job, ...previous.filter((row) => row.id !== job.id)]);
         closeEditModal();
+        navigateToTab('jobs');
+        void fetchModels(true);
+    };
+    const refreshUncertainSubmission = (message?: string) => {
+        closeEditModal();
+        navigateToTab('jobs');
+        setJobError(
+            message ||
+                (locale === 'en'
+                    ? 'The submission result is unconfirmed. Check the latest task status before submitting again.'
+                    : '提交结果尚未确认，请先核对最新任务状态，再决定是否重新提交。'),
+        );
         void fetchModels(true);
     };
     const handleJobAction = async (job: PricingPublishJob, action: 'retry' | 'cancel') => {
@@ -376,100 +402,117 @@ function PricingContent() {
                 </div>
             )}
 
-            <div id="pricing-workbench" className="scroll-mt-4">
-                <GroupPricingWorkbench
-                    isDark={isDark}
-                    locale={locale}
-                    onPublished={refreshAfterSubmission}
-                    onUncertain={() => void fetchModels(true)}
-                />
-            </div>
-
-            <details className={`mb-6 rounded-xl border p-4 ${isDark ? 'border-slate-700' : 'border-slate-200'}`}>
-                <summary className="cursor-pointer py-2 text-sm font-medium">
-                    {locale === 'en' ? 'Individual model pricing' : '单个模型定价'}
-                </summary>
-                <CostPricingWorkbench
-                    models={models}
-                    isDark={isDark}
-                    locale={locale}
-                    onPublished={refreshAfterSubmission}
-                    onUncertain={() => void fetchModels(true)}
-                />
-            </details>
-
-            <PricingPublishJobs
-                jobs={publishJobs}
+            <PricingWorkspaceTabs
+                activeTab={activeTab}
+                onChange={setActiveTab}
                 en={locale === 'en'}
                 isDark={isDark}
-                busyId={jobBusyId}
-                error={jobError}
-                onAction={handleJobAction}
-            />
+                jobCount={publishJobs.length}
+                panels={{
+                    group: (
+                        <div id="pricing-workbench" className="scroll-mt-4">
+                            <GroupPricingWorkbench
+                                isDark={isDark}
+                                locale={locale}
+                                onPublished={refreshAfterSubmission}
+                                onUncertain={refreshUncertainSubmission}
+                            />
+                        </div>
+                    ),
 
-            <h2 className={`mb-1 text-sm font-semibold ${isDark ? 'text-slate-100' : 'text-slate-900'}`}>
-                {locale === 'en' ? 'Catalog prices and history' : '目录价格与历史'}
-            </h2>
-            <p className={`mb-3 text-xs ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
-                {locale === 'en'
-                    ? 'These are recorded Portal catalog prices. Verification against new-api is shown in Publication tasks.'
-                    : '下方展示 Portal 已记录的目录价格；与 new-api 的核验结果见上方发布任务。'}
-            </p>
+                    model: (
+                        <CostPricingWorkbench
+                            models={models}
+                            isDark={isDark}
+                            locale={locale}
+                            onPublished={refreshAfterSubmission}
+                            onUncertain={refreshUncertainSubmission}
+                        />
+                    ),
 
-            {/* Table */}
-            <div
-                className={[
-                    'overflow-x-auto rounded-xl border',
-                    isDark ? 'border-slate-700 bg-slate-800/70' : 'border-slate-200 bg-white shadow-sm',
-                ].join(' ')}
-            >
-                {loading ? (
-                    <div className={`py-12 text-center ${isDark ? 'text-slate-400' : 'text-gray-500'}`}>
-                        {t.loading}
-                    </div>
-                ) : rendered.length === 0 ? (
-                    <div className={`py-12 text-center ${isDark ? 'text-slate-400' : 'text-gray-500'}`}>
-                        <p className="text-base font-medium">{t.noModels}</p>
-                    </div>
-                ) : (
-                    <table className="w-full text-sm">
-                        <thead>
-                            <tr
-                                className={
-                                    isDark
-                                        ? 'border-b border-slate-700 text-slate-400'
-                                        : 'border-b border-slate-200 text-slate-500'
-                                }
+                    jobs: (
+                        <PricingPublishJobs
+                            jobs={publishJobs}
+                            en={locale === 'en'}
+                            isDark={isDark}
+                            busyId={jobBusyId}
+                            error={jobError}
+                            onAction={handleJobAction}
+                        />
+                    ),
+
+                    catalog: (
+                        <>
+                            <h2
+                                className={`mb-1 text-sm font-semibold ${isDark ? 'text-slate-100' : 'text-slate-900'}`}
                             >
-                                <th className={`${thCls} text-left`}>{t.colModel}</th>
-                                <th className={`${thCls} text-left`}>{t.colTier}</th>
-                                <th className={`${thCls} text-right`}>{t.colInput}</th>
-                                <th className={`${thCls} text-right`}>{t.colOutput}</th>
-                                <th className={`${thCls} text-right`}>{t.colImage}</th>
-                                <th className={`${thCls} text-right`}>{t.colCost}</th>
-                                <th className={`${thCls} text-right`}>{t.colMargin}</th>
-                                <th className={`${thCls} text-right`}>{t.colActions}</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {rendered.map(({ model, rows }) => (
-                                <ModelRows
-                                    key={model.id}
-                                    model={model}
-                                    rows={rows}
-                                    isDark={isDark}
-                                    tdMuted={tdMuted}
-                                    linkBtn={linkBtn}
-                                    unpricedLabel={t.unpriced}
-                                    editLabel={t.edit}
-                                    onEdit={(row) => openEditModal(model, row)}
-                                    t={t}
-                                />
-                            ))}
-                        </tbody>
-                    </table>
-                )}
-            </div>
+                                {locale === 'en' ? 'Catalog prices and history' : '目录价格与历史'}
+                            </h2>
+                            <p className={`mb-3 text-xs ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                                {locale === 'en'
+                                    ? 'These are recorded Portal catalog prices. Verification against new-api is shown in Publication tasks.'
+                                    : '下方展示 Portal 已记录的目录价格；与 new-api 的核验结果见「发布任务」标签。'}
+                            </p>
+
+                            {/* Table */}
+                            <div
+                                className={[
+                                    'overflow-x-auto rounded-xl border',
+                                    isDark ? 'border-slate-700 bg-slate-800/70' : 'border-slate-200 bg-white shadow-sm',
+                                ].join(' ')}
+                            >
+                                {loading ? (
+                                    <div className={`py-12 text-center ${isDark ? 'text-slate-400' : 'text-gray-500'}`}>
+                                        {t.loading}
+                                    </div>
+                                ) : rendered.length === 0 ? (
+                                    <div className={`py-12 text-center ${isDark ? 'text-slate-400' : 'text-gray-500'}`}>
+                                        <p className="text-base font-medium">{t.noModels}</p>
+                                    </div>
+                                ) : (
+                                    <table className="w-full text-sm">
+                                        <thead>
+                                            <tr
+                                                className={
+                                                    isDark
+                                                        ? 'border-b border-slate-700 text-slate-400'
+                                                        : 'border-b border-slate-200 text-slate-500'
+                                                }
+                                            >
+                                                <th className={`${thCls} text-left`}>{t.colModel}</th>
+                                                <th className={`${thCls} text-left`}>{t.colTier}</th>
+                                                <th className={`${thCls} text-right`}>{t.colInput}</th>
+                                                <th className={`${thCls} text-right`}>{t.colOutput}</th>
+                                                <th className={`${thCls} text-right`}>{t.colImage}</th>
+                                                <th className={`${thCls} text-right`}>{t.colCost}</th>
+                                                <th className={`${thCls} text-right`}>{t.colMargin}</th>
+                                                <th className={`${thCls} text-right`}>{t.colActions}</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {rendered.map(({ model, rows }) => (
+                                                <ModelRows
+                                                    key={model.id}
+                                                    model={model}
+                                                    rows={rows}
+                                                    isDark={isDark}
+                                                    tdMuted={tdMuted}
+                                                    linkBtn={linkBtn}
+                                                    unpricedLabel={t.unpriced}
+                                                    editLabel={t.edit}
+                                                    onEdit={(row) => openEditModal(model, row)}
+                                                    onGroupPricing={() => navigateToTab('group')}
+                                                    t={t}
+                                                />
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                )}
+                            </div>
+                        </>
+                    ),
+                }}
+            />
 
             {editModalOpen && editingModel && (
                 <PricingPublishDialog
@@ -490,7 +533,7 @@ function PricingContent() {
                     isDark={isDark}
                     onClose={closeEditModal}
                     onSubmitted={refreshAfterSubmission}
-                    onUncertain={() => void fetchModels(true)}
+                    onUncertain={refreshUncertainSubmission}
                 />
             )}
 
@@ -519,10 +562,22 @@ interface ModelRowsProps {
     unpricedLabel: string;
     editLabel: string;
     onEdit: (row: TierRow) => void;
+    onGroupPricing: () => void;
     t: ReturnType<typeof getTexts>;
 }
 
-function ModelRows({ model, rows, isDark, tdMuted, linkBtn, unpricedLabel, editLabel, onEdit, t }: ModelRowsProps) {
+function ModelRows({
+    model,
+    rows,
+    isDark,
+    tdMuted,
+    linkBtn,
+    unpricedLabel,
+    editLabel,
+    onEdit,
+    onGroupPricing,
+    t,
+}: ModelRowsProps) {
     const rowBorder = isDark ? 'border-slate-700/50 hover:bg-slate-700/30' : 'border-slate-100 hover:bg-slate-50';
     const [historyView, setHistoryView] = useState<{ kind: 'tier'; tier: string } | { kind: 'retired' } | null>(null);
     const activeTiers = new Set(rows.map((row) => row.tier));
@@ -648,9 +703,9 @@ function ModelRows({ model, rows, isDark, tdMuted, linkBtn, unpricedLabel, editL
                             <td className="px-4 py-3 text-right align-top whitespace-nowrap">
                                 <div className="inline-grid grid-cols-[auto_4rem] items-center gap-1">
                                     {cur?.billing_details != null ? (
-                                        <a href="#pricing-workbench" className={linkBtn('indigo')}>
-                                            {t.title === 'Pricing' ? 'Price by multiplier above' : '上方按档次定价'}
-                                        </a>
+                                        <button type="button" onClick={onGroupPricing} className={linkBtn('indigo')}>
+                                            {t.title === 'Pricing' ? 'Group pricing' : '按档次定价'}
+                                        </button>
                                     ) : (
                                         <button type="button" onClick={() => onEdit(row)} className={linkBtn('indigo')}>
                                             {editLabel}

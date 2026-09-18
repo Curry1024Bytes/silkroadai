@@ -47,7 +47,7 @@ describe('admin catalog pages — SSR smoke (P2)', () => {
             const html = renderToString(<PricingPage />);
             expect(html).toContain('目录价格与历史');
             expect(html).toContain('下方展示 Portal 已记录的目录价格');
-            expect(html).toContain('与 new-api 的核验结果见上方发布任务');
+            expect(html).toContain('与 new-api 的核验结果见「发布任务」标签');
             expect(html).toContain('价格发布任务');
             expect(html).toContain('只有「已生效」表示两端已完成核验');
             expect(network).not.toHaveBeenCalled();

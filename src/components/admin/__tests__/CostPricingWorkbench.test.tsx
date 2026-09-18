@@ -583,6 +583,57 @@ describe('cost forms preserve actual purchasing inputs', () => {
             margin_percent: 33.3333,
         });
     });
+    it('cleans saved input displays while preserving the original quote during unrelated edits', () => {
+        const original = {
+            ...directConfig,
+            token_rates: { ...directConfig.token_rates, cache_read: 0.39999999999999997, cache_write: 0.00002 },
+        };
+        const draft = draftFromCostConfig(original);
+        expect(draft.token_rates).toMatchObject({ cache_read: '0.4', cache_write: '0.00002' });
+        const saved = costConfigFromDraft({ ...draft, source_note: 'Rechecked' });
+        expect(saved).toEqual({ ...original, source_note: 'Rechecked' });
+        expect(saved).not.toHaveProperty('number_sources');
+        expect(calculateCostPricing(saved!).lines).toEqual(calculateCostPricing(original).lines);
+        expect(
+            costConfigFromDraft({ ...draft, token_rates: { ...draft.token_rates, cache_read: '0.42' } })?.token_rates
+                .cache_read,
+        ).toBe(0.42);
+    });
+    it('formats reference quotes and discards stale imported originals when the quote is replaced', () => {
+        const original = draftFromCostConfig(directConfig);
+        const imported = draftWithReference(original, { ...referencePrice, cache_read: 0.39999999999999997 });
+        expect(imported.token_rates.cache_read).toBe('0.4');
+        expect(costConfigFromDraft(imported)?.token_rates.cache_read).toBe(0.39999999999999997);
+        const refreshed = draftWithReference(imported, { ...referencePrice, cache_read: 0.4 });
+        expect(costConfigFromDraft(refreshed)?.token_rates.cache_read).toBe(0.4);
+        const missing = draftWithReference(imported, { ...referencePrice, cache_read: null });
+        expect(missing.token_rates.cache_read).toBe('');
+        expect(costConfigFromDraft(missing)?.token_rates.cache_read).toBeNull();
+    });
+    it('formats saved image prices without changing an untouched quote or newly entered precision', () => {
+        const original: PricingCostConfig = {
+            ...directConfig,
+            basis: 'image',
+            token_rates: { input: null, output: null, cache_read: null, cache_write: null },
+            variants: [
+                {
+                    key: 'standard',
+                    label: 'Standard',
+                    resolution: 'default',
+                    audio: 'any',
+                    reference_video: 'any',
+                    price: 0.19999999999999998,
+                    minimum_units: 1,
+                    step_units: 1,
+                },
+            ],
+        };
+        const draft = draftFromCostConfig(original);
+        expect(draft.variants[0].price).toBe('0.2');
+        expect(costConfigFromDraft(draft)).toEqual(original);
+        draft.variants[0].price = '0.20000000000001';
+        expect(costConfigFromDraft(draft)?.variants[0].price).toBe(0.20000000000001);
+    });
     it('keeps a legacy quote and its pricing semantics when only the note changes', () => {
         const draft = draftFromCostConfig(config);
         expect(draft.retail_multiplier).toBe('0.75');
