@@ -27,4 +27,10 @@
 
 ## 生产发布记录
 
-待最终验证后填写。
+- 代码 `01746ba21595f472970261aeb2dc66c4f7b158cb`，完成 `dev → prod` fast-forward 并推送；北京时间 16:35 切换 Portal。
+- 运行镜像 `sha256:9299bab59e4828eae0e89ce7358c2ce26c3f44876e034be5d4f38fac935fbdfd`。干净 Git 归档构建，镜像无 `.env*`；旧 Portal 构建期间继续服务。切换探测 25 次、12 次短暂失败，随后恢复稳定，restart count 0。
+- 备份与完整验证证据：`/opt/backups/silkroadai-portal/releases/group-pricing-20260918-082608/`；`.env` 备份 `/opt/silkroadai-portal/.env.bak.group-pricing-20260918-082608`，均受限权限；数据库 gzip 已验证并恢复到临时数据库验收，临时容器／数据库／凭据已清理。
+- 生产数据隔离副本的只读候选验收、6 档次模型 GET、模型清单页面、定价新入口及精确 JS 内容校验通过。公网／源站 14 项检查通过，启动无 error/fatal。80 条 migration checksum 不变。
+- 发布前后 11 张业务表摘要、客户档次权限、15 个 new-api 价格配置、环境变量均一致。PostgreSQL、new-api、MySQL 容器未重建；未创建生产定价任务、未保存实际成本、未改客户收费、未调用收费模型。
+
+当前数据需由 operator 处理的事项已在页面列明：企业组 4 模型中 `gpt-5.4` 在 Portal 停用（其余 3 项报价齐全）；CCMax 两组分别 11／9 项报价齐全；Kimi 缺基础报价；图片组 6 项待补价、两个 Nano Banana 的目录类型与计费方式不匹配；Claude-K 组 `claude-sonnet-4-5` 停用。未擅自启用停用模型或修改已有计费方式；有阻塞项时不会部分修改整组倍率。
