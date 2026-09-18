@@ -165,6 +165,8 @@ export type RawGuardResult = {
     streamed: boolean;
     /** 非 null → 调用方应直接返回 400,不打上游。 */
     violation: Violation | null;
+    /** 解析(且已强转)后的对象,给需要看更深结构的后续守门复用;体不可解析 → null。 */
+    parsed: JsonRecord | null;
 };
 
 /**
@@ -175,18 +177,24 @@ export function guardRawBody(raw: string, spec: Spec): RawGuardResult {
     try {
         const obj = JSON.parse(raw) as unknown;
         if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
-            return { body: raw, model: null, streamed: false, violation: null };
+            return { body: raw, model: null, streamed: false, violation: null, parsed: null };
         }
         const rec = obj as JsonRecord;
         const model = typeof rec.model === 'string' ? rec.model : null;
         const streamed = rec.stream === true;
 
         const { violation, changed } = coerceAndValidate(rec, spec);
-        if (violation) return { body: raw, model, streamed, violation };
+        if (violation) return { body: raw, model, streamed, violation, parsed: rec };
 
-        return { body: changed ? JSON.stringify(rec) : raw, model, streamed: rec.stream === true, violation: null };
+        return {
+            body: changed ? JSON.stringify(rec) : raw,
+            model,
+            streamed: rec.stream === true,
+            violation: null,
+            parsed: rec,
+        };
     } catch {
-        return { body: raw, model: null, streamed: false, violation: null };
+        return { body: raw, model: null, streamed: false, violation: null, parsed: null };
     }
 }
 

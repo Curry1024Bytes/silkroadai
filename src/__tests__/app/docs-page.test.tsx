@@ -125,7 +125,7 @@ describe('/docs page — code snippets ground-truthed', () => {
 });
 
 describe('/docs page — W7 D4 PR-H Tier B common-errors section', () => {
-    it('renders the 常见错误码 heading + the 3 stable error codes', () => {
+    it('renders the 常见错误码 heading + the stable error codes', () => {
         const html = renderToString(<DocsPage />);
         // Section heading
         expect(html).toContain('常见错误码');
@@ -133,7 +133,8 @@ describe('/docs page — W7 D4 PR-H Tier B common-errors section', () => {
         // 402-vs-403 status rewriting later resolves)
         expect(html).toContain('invalid_authentication');
         expect(html).toContain('insufficient_user_quota');
-        expect(html).toContain('no available channel');
+        // 未知模型自 PR #474 起对齐官方 404 model_not_found(503 仅剩「已知模型暂无线路」)
+        expect(html).toContain('model_not_found');
     });
 
     it('links insufficient_user_quota to the recharge surface (/balance + /pay)', () => {

@@ -93,6 +93,7 @@ import { isEnterpriseFlavor, handleEnterpriseV1 } from '@/lib/enterprise/proxy';
 import { guardSseResponse, guardSseStream, type SseErrorShape } from '@/lib/sse/stream-guard';
 import { forwardHeaders, passthroughResponse, STRIP_RESPONSE_HEADERS } from '@/lib/proxy/forward';
 import { CHAT_SPEC, RESPONSES_SPEC, coerceAndValidate, guardRawBody, violationBody } from '@/lib/proxy/body-guard';
+import { remapModelNotFound } from '@/lib/proxy/model-not-found';
 import { stripAdobeImageMetadata, stripAdobeImageMetadataB64 } from '@/lib/proxy/image-metadata';
 import { normalizeOpenAiResponse, normalizeChoices } from '@/lib/proxy/finish-reason';
 import { loadCatalogMeta, resolveTierFromAuthHeader, enrichModelList } from '@/lib/models/machine-catalog';
@@ -446,6 +447,17 @@ async function forwardToNewApi(
         } catch {
             /* diagnostic only */
         }
+    }
+    // 未知模型:new-api 503 model_not_found → 404 OpenAI model_not_found(官方语义;已知模型
+    // 容量耗尽仍 503,见 @/lib/proxy/model-not-found)。/images/* 有自己的 normalizeImageError
+    // 分桶(未知图片模型按官方 400),不在这里动。
+    if (upstream.status === 503 && !path.startsWith('/images')) {
+        upstream = await remapModelNotFound(
+            upstream,
+            req,
+            'openai',
+            typeof bodyOverride?.model === 'string' ? bodyOverride.model : null,
+        );
     }
     // finish_reason 归一(只对 OpenAI 兼容面):逆向/经销商渠道漏出的非标 stop reason
     // (end_turn / STOP / MAX_TOKENS / SAFETY…)映射成 OpenAI 标准集;/messages、

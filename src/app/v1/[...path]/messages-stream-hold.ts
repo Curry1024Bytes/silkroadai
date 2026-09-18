@@ -27,6 +27,8 @@ import { guardSseStream } from '@/lib/sse/stream-guard';
 import { scheduleStreamFailRefund } from '@/lib/billing/stream-fail-refund';
 import { type CaptureCtx, captureJsonResponse, captureResponse, recordRequestBody } from '@/lib/reqlog/capture';
 import { ANTHROPIC_SPEC, guardRawBody, violationBody } from '@/lib/proxy/body-guard';
+import { anthropicInvalidRequestBody, validateAnthropicTools } from '@/lib/proxy/anthropic-tools-guard';
+import { remapModelNotFound } from '@/lib/proxy/model-not-found';
 
 const NEWAPI_BASE_URL = process.env.NEWAPI_BASE_URL || 'http://localhost:3000';
 
@@ -55,6 +57,11 @@ export async function handleAnthropicMessages(
     // guardRawBody 永不抛异常;不可解析的体照旧原样放行交给 new-api 报错。
     const g = guardRawBody(raw, ANTHROPIC_SPEC);
     if (g.violation) return NextResponse.json(violationBody(g.violation), { status: 400 });
+    // tools[] 结构校验(官方确定性 400;中转与 new-api 都不校验,畸形定义会打到模型并计费)。
+    if (g.parsed && !isAbsentTools(g.parsed.tools)) {
+        const tv = validateAnthropicTools(g.parsed.tools);
+        if (tv) return NextResponse.json(anthropicInvalidRequestBody(tv.message), { status: 400 });
+    }
     const pm = { model: g.model, streamed: g.streamed };
     if (cap) recordRequestBody(cap, raw, pm.model, pm.streamed); // 记【原始】输入,不记强转后的
 
@@ -81,7 +88,9 @@ export async function handleAnthropicMessages(
         // 非流式请求 / 非 2xx / 非 SSE 响应:与原透传尾部等价(真实状态码原样给客户)。
         // 注意:重试后拿到非 2xx 也走这里 —— 那是 new-api 的真实错误码,比我们编一个好。
         if (!pm.streamed || !isSse) {
-            return cap ? captureResponse(cap, upstream) : passthroughResponse(upstream);
+            // 未知模型:new-api 503 model_not_found → 404 Anthropic not_found_error(容量耗尽仍 503)
+            const resp = await remapModelNotFound(upstream, req, 'anthropic', pm.model);
+            return cap ? captureResponse(cap, resp) : passthroughResponse(resp);
         }
 
         // ── 流式 2xx SSE:持头检读(reader 贯穿持头与回放,body 只能 getReader 一次)──
@@ -146,6 +155,10 @@ export async function handleAnthropicMessages(
     const resp = NextResponse.json(errBody, { status: 502 });
     resp.headers.set('X-Silkroadai-Stream-Failover', `exhausted=${MAX_ATTEMPTS}`);
     return resp;
+}
+
+function isAbsentTools(v: unknown): boolean {
+    return v === null || v === undefined;
 }
 
 /**

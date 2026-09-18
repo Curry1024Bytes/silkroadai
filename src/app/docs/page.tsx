@@ -661,7 +661,7 @@ console.log(resp.choices[0].message.content);`}
                         <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
                             error.code
                         </code>{' '}
-                        字段(比 HTTP status 更精准)。下表列出最常见的三种:
+                        字段(比 HTTP status 更精准)。下表列出最常见的几种:
                     </p>
                     <div className="rounded-lg overflow-hidden border border-brand-border bg-surface">
                         <table className="w-full border-collapse text-sm">
@@ -706,15 +706,26 @@ console.log(resp.choices[0].message.content);`}
                                         充值。
                                     </td>
                                 </tr>
-                                <tr>
-                                    <td className="px-4 py-3 font-mono text-navy align-top">503</td>
-                                    <td className="px-4 py-3 font-mono text-navy align-top">no available channel</td>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-navy align-top">404</td>
+                                    <td className="px-4 py-3 font-mono text-navy align-top">model_not_found</td>
                                     <td className="px-4 py-3 text-ink">
-                                        模型名拼写错误,或该模型暂时下线。请用{' '}
+                                        模型 id 不存在,或您的 key 所在档次不含该模型(与官方语义一致;
+                                        <code className="font-mono text-xs">/v1/messages</code> 返 Anthropic 形{' '}
+                                        <code className="font-mono text-xs">not_found_error</code>)。请用{' '}
                                         <a href="/models" className="text-navy font-medium hover:text-brand-accent">
                                             /models
                                         </a>{' '}
-                                        页搜索一下确认模型 id。
+                                        页或 <code className="font-mono text-xs">GET /v1/models</code>(按您的 key
+                                        返回可调清单)确认模型 id。此错误不会因重试而消失,请勿自动重试。
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-3 font-mono text-navy align-top">503</td>
+                                    <td className="px-4 py-3 font-mono text-navy align-top">model_not_found</td>
+                                    <td className="px-4 py-3 text-ink">
+                                        模型 id 正确但该模型暂时没有可用线路(上游全部不可用)。属临时容量问题,
+                                        请稍后重试。
                                     </td>
                                 </tr>
                             </tbody>

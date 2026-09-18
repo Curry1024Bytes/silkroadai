@@ -5306,3 +5306,64 @@ describe('/v1 proxy — gpt-image edits size=auto + prompt 写明画幅 → 按 
         expect(res.headers.get('x-silkroadai-size-resolved')).toBe('auto->1536x864;from=prompt');
     });
 });
+
+describe('/v1 proxy — 未知模型 503 → 404 model_not_found(OpenAI 面)', () => {
+    const MNF = JSON.stringify({
+        error: {
+            code: 'model_not_found',
+            message: '分组 ccmax 下模型 nonexistent-model-xyz 无可用渠道（distributor） (request id: 1)',
+            type: 'new_api_error',
+        },
+    });
+    const models = (ids: string[]) =>
+        new Response(JSON.stringify({ data: ids.map((id) => ({ id })) }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+        });
+
+    it('chat/completions:模型不在清单 → 404 OpenAI 形(code model_not_found / param model),无分组名', async () => {
+        mockFetch
+            .mockResolvedValueOnce(new Response(MNF, { status: 503, headers: { 'content-type': 'application/json' } }))
+            .mockResolvedValueOnce(models(['gpt-5.4']));
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: { model: 'nonexistent-model-xyz', messages: [{ role: 'user', content: 'hi' }] },
+                headers: { authorization: 'Bearer sk-abc' },
+            }),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(404);
+        const j = (await res.json()) as { error: Record<string, string> };
+        expect(j.error.code).toBe('model_not_found');
+        expect(j.error.param).toBe('model');
+        expect(j.error.type).toBe('invalid_request_error');
+        expect(j.error.message).not.toContain('ccmax');
+        const [url, init] = mockFetch.mock.calls[1] as [string, RequestInit];
+        expect(url).toBe(`${NEWAPI_BASE}/v1/models`);
+        expect((init.headers as Headers).get('authorization')).toBe('Bearer sk-abc');
+    });
+
+    it('chat/completions:模型在清单(容量耗尽)→ 503 原样', async () => {
+        mockFetch
+            .mockResolvedValueOnce(new Response(MNF, { status: 503, headers: { 'content-type': 'application/json' } }))
+            .mockResolvedValueOnce(models(['nonexistent-model-xyz']));
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: { model: 'nonexistent-model-xyz', messages: [{ role: 'user', content: 'hi' }] },
+            }),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(503);
+    });
+
+    it('/responses:failover 重试后仍 503 model_not_found → 404', async () => {
+        const r503 = () => new Response(MNF, { status: 503, headers: { 'content-type': 'application/json' } });
+        mockFetch.mockResolvedValueOnce(r503()).mockResolvedValueOnce(r503()).mockResolvedValueOnce(models([]));
+        const res = await POST(
+            makeReq('/responses', { body: { model: 'nonexistent-model-xyz', input: 'hi' } }),
+            ctx('responses'),
+        );
+        expect(res.status).toBe(404);
+        expect(mockFetch).toHaveBeenCalledTimes(3);
+    });
+});
