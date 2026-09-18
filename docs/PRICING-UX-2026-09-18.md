@@ -17,4 +17,10 @@
 
 ## 发布
 
-待记录已测试 SHA、备份、运行镜像及生产只读验收结果。
+- 已测试代码 `e3d27d2ecc4b42e7cbf24f28e6991f9b02e1d4fb` 经 `dev → prod` fast-forward 上线。北京时间 2026-09-18 17:58 切换 Portal；运行镜像 `sha256:e60d141070caa91e311b1f7584c25322e599f8160f74a59f2eb41b56f74f645b`。
+- 新鲜发布证据与 PostgreSQL 备份：`/opt/backups/silkroadai-portal/releases/pricing-ux-20260918-095015/`（备份 `portal.sql.gz` 已验证完整性）；环境备份 `.env.bak.pricing-ux-20260918-095015`。证据/备份权限 0600，目录 0700；保留镜像 `silkroadai-portal-portal:rollback-pricing-ux-20260918-095015`。
+- 先从干净 Git archive 构建（排除 `.env*`），再用隔离数据库和只读 new-api 代理检查候选镜像。四个标签的 SSR、ARIA、默认可见面板及镜像/实际 JS 一致；临时数据库、容器、环境文件均已删除。
+- 生产验证通过：14 项源站/公网检查；6 个档次目录只读查询（企业组 2 个模型 / 2 项就绪）；80 migrations checksum 一致；启动日志无 error/fatal；Portal restart count 0；PostgreSQL/new-api/MySQL 启动身份未变。
+- 11 张业务表摘要、客户档次限制、15 项 new-api 价格选项及环境配置在发布前后逐项一致。本次未保存生产成本草稿、未创建发布任务、未修改售价，未执行收费调用。
+- 切换期间探测记录 13 个非 200 样本，随后恢复稳定；完整本地测试日志和浏览器验收存为发布目录 `local-verification.tar.gz`。仅清理本次干净构建目录，备份、回滚镜像和部署脚本证据保留。
+- 本文发布结果为后续文档提交；不重建已验收镜像。
