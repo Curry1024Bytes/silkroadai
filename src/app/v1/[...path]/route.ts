@@ -1489,12 +1489,129 @@ function coerceImageIntFields(obj: JsonRecord): void {
 }
 /** 官方 n 取值 = 1-10 的整数(空/缺省合法;字符串数字在 coerce 后到这)。非法 → 400 文案,合法 → null。
  *  代理层不校验的话 `n:1000` 会原样打上游(适配器渠道才 clamp 10,直连渠道全靠上游自觉)。 */
-function gptImageNError(n: unknown): string | null {
-    if (n === undefined || n === null || n === '') return null;
-    const v = typeof n === 'string' && /^\d+$/.test(n.trim()) ? Number(n.trim()) : n;
-    if (typeof v !== 'number' || !Number.isInteger(v) || v < 1 || v > 10)
-        return `invalid n '${String(n)}': must be an integer between 1 and 10`;
+/** gpt-image 官方入参校验(2026-09-17 官方 key 逐条实测文案 / type / param / code;只收录实测过的项):
+ *  - style → 400 unknown_parameter;input_fidelity → 400 invalid_input_fidelity_model(gpt-image-2 不支持)
+ *  - prompt 缺 → missing_required_parameter;空串 → empty_string;非字符串 → invalid_type
+ *  - n:JSON 非整数类型 → invalid_type(官方不收 "2" 字符串);<1 → integer_below_min_value;>10 → integer_above_max_value。
+ *    multipart 字段天然是字符串,数字串放行(官方 multipart 同)。
+ *  - quality 只认 'low' | 'medium' | 'high' | 'auto'(区分大小写;standard / hd / Low → invalid_value)
+ *  - png(缺省)+ output_compression < 100 → invalid_png_output_compression
+ *  有意偏离官方、保留的宽容:response_format(portal 文档化扩展 url / b64_json)、aspect_ratio 与 "16:9" 比例串
+ *  (portal 扩展,normalize 后再按官方尺寸约束校验)、size 'AUTO' 大小写不限、quality 空串按缺省。
+ *  output_format / background / moderation 的非法值官方文案未实测,本函数不管(strict 模式仍按 Azure 规则)。 */
+interface GptImageParamInput {
+    model: string;
+    promptPresent: boolean;
+    promptType: string;
+    prompt: string;
+    quality: unknown;
+    nRaw: unknown;
+    multipart: boolean;
+    outputFormat: unknown;
+    outputCompression: unknown;
+    hasStyle: boolean;
+    hasInputFidelity: boolean;
+}
+function jsTypeName(v: unknown): string {
+    if (v === null) return 'null';
+    if (Array.isArray(v)) return 'an array';
+    if (typeof v === 'string') return 'a string';
+    if (typeof v === 'number') return 'a number';
+    if (typeof v === 'boolean') return 'a boolean';
+    return 'an object';
+}
+function officialGptImageParamError(p: GptImageParamInput, cap: CaptureCtx | null): NextResponse | null {
+    const bad = (message: string, param: string | null, code: string, type = 'invalid_request_error') =>
+        imageError(message, 400, cap, { type, param, code });
+    if (p.hasStyle) return bad("Unknown parameter: 'style'.", 'style', 'unknown_parameter');
+    if (p.hasInputFidelity)
+        return bad(
+            `The model '${p.model}' does not support the 'input_fidelity' parameter.`,
+            'input_fidelity',
+            'invalid_input_fidelity_model',
+            'image_generation_user_error',
+        );
+    if (!p.promptPresent) return bad("Missing required parameter: 'prompt'.", 'prompt', 'missing_required_parameter');
+    if (p.promptType !== 'string')
+        return bad(
+            `Invalid type for 'prompt': expected a string, but got ${p.promptType === 'object' ? 'an object' : `a ${p.promptType}`} instead.`,
+            'prompt',
+            'invalid_type',
+        );
+    if (p.prompt === '')
+        return bad(
+            "Invalid 'prompt': empty string. Expected a string with minimum length 1, but got an empty string instead.",
+            'prompt',
+            'empty_string',
+        );
+    if (p.nRaw !== undefined && p.nRaw !== null && !(p.multipart && String(p.nRaw).trim() === '')) {
+        let v: number;
+        if (p.multipart) {
+            const t = String(p.nRaw).trim();
+            if (!/^-?\d+$/.test(t))
+                return bad("Invalid type for 'n': expected an integer, but got a string instead.", 'n', 'invalid_type');
+            v = Number(t);
+        } else if (typeof p.nRaw !== 'number') {
+            return bad(
+                `Invalid type for 'n': expected an integer, but got ${jsTypeName(p.nRaw)} instead.`,
+                'n',
+                'invalid_type',
+            );
+        } else if (!Number.isInteger(p.nRaw)) {
+            return bad("Invalid type for 'n': expected an integer, but got a number instead.", 'n', 'invalid_type');
+        } else v = p.nRaw;
+        if (v < 1)
+            return bad(
+                `Invalid 'n': integer below minimum value. Expected a value >= 1, but got ${v} instead.`,
+                'n',
+                'integer_below_min_value',
+            );
+        if (v > 10)
+            return bad(
+                `Invalid 'n': integer above maximum value. Expected a value <= 10, but got ${v} instead.`,
+                'n',
+                'integer_above_max_value',
+            );
+    }
+    if (p.quality !== undefined && p.quality !== null && p.quality !== '') {
+        if (typeof p.quality !== 'string')
+            return bad(
+                `Invalid type for 'quality': expected a string, but got ${jsTypeName(p.quality)} instead.`,
+                'quality',
+                'invalid_type',
+            );
+        if (!['low', 'medium', 'high', 'auto'].includes(p.quality))
+            return bad(
+                `Invalid value: '${p.quality}'. Supported values are: 'low', 'medium', 'high', and 'auto'.`,
+                'quality',
+                'invalid_value',
+            );
+    }
+    const of = typeof p.outputFormat === 'string' ? p.outputFormat.trim().toLowerCase() : '';
+    if (
+        p.outputCompression !== undefined &&
+        p.outputCompression !== null &&
+        String(p.outputCompression).trim() !== ''
+    ) {
+        const c =
+            typeof p.outputCompression === 'number' ? p.outputCompression : Number(String(p.outputCompression).trim());
+        if (Number.isFinite(c) && (of === '' || of === 'png') && c < 100)
+            return bad(
+                'Compression less than 100 is not supported for PNG output format',
+                null,
+                'invalid_png_output_compression',
+                'image_generation_user_error',
+            );
+    }
     return null;
+}
+
+/** size 形态校验(官方:`Invalid size 'X'. Expected WIDTHxHEIGHT, for example '1824x1024'.`)。在 normalize 之后调用
+ *  (比例串已翻成像素);auto(大小写不限,portal 宽容)/ 空 放行,其余非 `\d+x\d+` → 400。 */
+function gptImageSizeFormatError(size: string): string | null {
+    if (!size || size.trim().toLowerCase() === 'auto') return null;
+    if (/^\d+x\d+$/.test(size)) return null;
+    return `Invalid size '${size}'. Expected WIDTHxHEIGHT, for example '1824x1024'.`;
 }
 /** gpt-image JSON 规整:剥 response_format(zhiyunai 拒收 →400)+ 比例→像素 size(默认出方图)。
  *  一并剥 stream / partial_images:上游恒走非流(留着会让上游真返 SSE 时原样 200 透传、绕过
@@ -2077,9 +2194,25 @@ async function handleImagesDalle(
                                 ? gptImageSizeErrorResponse(err, cap)
                                 : imageError(err, 400, cap, { code: 'invalid_value' });
                     }
-                    // n 范围门(官方 1-10):两模式都拦 —— n=1000 打上游是真金白银
-                    const nErr = gptImageNError(form.get('n') == null ? undefined : String(form.get('n')));
-                    if (nErr) return imageError(nErr, 400, cap, { code: 'invalid_value', param: 'n' });
+                    // 官方入参校验(style / input_fidelity / prompt / n / quality / png+compression),400 官方文案
+                    const promptField = form.get('prompt');
+                    const pErr = officialGptImageParamError(
+                        {
+                            model,
+                            promptPresent: promptField !== null,
+                            promptType: typeof promptField === 'string' ? 'string' : 'object',
+                            prompt: typeof promptField === 'string' ? promptField : '',
+                            quality: form.get('quality') ?? undefined,
+                            nRaw: form.get('n') ?? undefined,
+                            multipart: true,
+                            outputFormat: form.get('output_format') ?? undefined,
+                            outputCompression: form.get('output_compression') ?? undefined,
+                            hasStyle: form.has('style'),
+                            hasInputFidelity: form.has('input_fidelity'),
+                        },
+                        cap,
+                    );
+                    if (pErr) return pErr;
                     // 伪流式限 n=1(completed 事件按官方单图形;多图流式官方也没有稳定语义)
                     const nVal = String(form.get('n') ?? '').trim();
                     if (wantStream && nVal !== '' && Number(nVal) > 1)
@@ -2094,7 +2227,7 @@ async function handleImagesDalle(
                     normalizeGptImageForm(form);
                     sizeRaw = String(form.get('size') ?? '');
                     // 官方尺寸约束默认生效(非法 → 400 官方文案,不打上游;上游会静默改尺寸再计费)
-                    const sizeErr = gptImageSizeError(sizeRaw);
+                    const sizeErr = gptImageSizeFormatError(sizeRaw) ?? gptImageSizeError(sizeRaw);
                     if (sizeErr) return gptImageSizeErrorResponse(sizeErr, cap);
                 }
                 // multipart 入参不拆图字节(brief §3 Out),只记文本字段摘要
@@ -2215,9 +2348,24 @@ async function handleImagesDalle(
                                 ? gptImageSizeErrorResponse(err, cap)
                                 : imageError(err, 400, cap, { code: 'invalid_value' });
                     }
-                    // n 范围门(官方 1-10):两模式都拦 —— n=1000 打上游是真金白银
-                    const nErr = gptImageNError(body.n);
-                    if (nErr) return imageError(nErr, 400, cap, { code: 'invalid_value', param: 'n' });
+                    // 官方入参校验(style / input_fidelity / prompt / n / quality / png+compression),400 官方文案
+                    const pErr = officialGptImageParamError(
+                        {
+                            model,
+                            promptPresent: body.prompt !== undefined,
+                            promptType: body.prompt === null ? 'object' : typeof body.prompt,
+                            prompt: typeof body.prompt === 'string' ? body.prompt : '',
+                            quality: body.quality,
+                            nRaw: body.n,
+                            multipart: false,
+                            outputFormat: body.output_format,
+                            outputCompression: body.output_compression,
+                            hasStyle: 'style' in body,
+                            hasInputFidelity: 'input_fidelity' in body,
+                        },
+                        cap,
+                    );
+                    if (pErr) return pErr;
                     // 伪流式限 n=1(completed 事件按官方单图形)
                     if (wantStream && body.n != null && Number(body.n) > 1)
                         return imageError('stream supports n=1 only', 400, cap, { code: 'invalid_value', param: 'n' });
@@ -2239,7 +2387,7 @@ async function handleImagesDalle(
                     normalizeGptImageJson(body);
                     sizeRaw = typeof body.size === 'string' ? body.size : '';
                     // 官方尺寸约束默认生效(同 multipart 分支)
-                    const sizeErr = gptImageSizeError(sizeRaw);
+                    const sizeErr = gptImageSizeFormatError(sizeRaw) ?? gptImageSizeError(sizeRaw);
                     if (sizeErr) return gptImageSizeErrorResponse(sizeErr, cap);
                 }
                 const echo: ImageEchoFields = {

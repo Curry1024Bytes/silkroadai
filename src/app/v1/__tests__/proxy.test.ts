@@ -2471,12 +2471,12 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
         expect(((await res.json()) as EchoBody).quality).toBe('low');
     });
 
-    it('multipart edits 传 quality → 同样回显(大小写归一)', async () => {
+    it('multipart edits 传 quality → 同样回显(官方只认小写枚举;大写 High 自第 3 批起 400)', async () => {
         mockFetch.mockResolvedValueOnce(upstreamNoEcho());
         const form = new FormData();
         form.append('model', 'gpt-image-2');
         form.append('prompt', '改成夜景');
-        form.append('quality', 'High');
+        form.append('quality', 'high');
         form.append('image', new File([new Uint8Array([1, 2, 3])], 'in.png', { type: 'image/png' }));
         const req = new NextRequest('https://ai.silkroadai.io/v1/images/edits', { method: 'POST', body: form });
         const res = await POST(req, ctx('images', 'edits'));
@@ -2908,15 +2908,17 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
 
     // ── 整型字段 n 强转:客户端发 "n":"1"(字符串)或 multipart 无图转 JSON 时 n 恒字符串,
     //    new-api 按 uint 解析 JSON 会 500 `cannot unmarshal string into ... n of type uint`。──
-    it('n="2"(字符串)JSON generations → 强转成数字 2(避免 new-api uint unmarshal 500)', async () => {
-        mockFetch.mockResolvedValueOnce(imageJson200());
-        await POST(
+    it('n="2"(字符串)JSON generations → 400 invalid_type(官方不收字符串 n;2026-09-19 第 3 批对齐)', async () => {
+        const res = await POST(
             makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x', n: '2' } }),
             ctx('images', 'generations'),
         );
-        const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
-        const sent = JSON.parse(init.body as string) as { n: unknown };
-        expect(sent.n).toBe(2); // 数字,不是 "2"
+        expect(res.status).toBe(400);
+        const j = (await res.json()) as { error: { code: string; param: string; message: string } };
+        expect(j.error.code).toBe('invalid_type');
+        expect(j.error.param).toBe('n');
+        expect(j.error.message).toBe("Invalid type for 'n': expected an integer, but got a string instead.");
+        expect(mockFetch).not.toHaveBeenCalled();
     });
 
     it('multipart 无图带 n → 转 JSON generations 时 n 强转成数字(#192 回归修复)', async () => {
@@ -3473,18 +3475,14 @@ describe('/v1 proxy — PROXY_STRIP_REQUEST_HEADERS(可配置剥离请求头)', 
 });
 
 describe('/v1 proxy — n 字符串→数字兼容(修 Alias.n unmarshal)', () => {
-    it('图片生成透传:n:"2" → 转成数字 2', async () => {
-        mockFetch.mockResolvedValueOnce(
-            new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } }),
-        );
-        await POST(
+    it('图片生成 JSON n:"2" → 400 invalid_type(官方语义;multipart 无图内部转 JSON 的 n 强转仍在 coerceImageIntFields)', async () => {
+        const res = await POST(
             makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'a cat', n: '2' } }),
             ctx('images', 'generations'),
         );
-        const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
-        const fwd = JSON.parse(String(init.body)) as { n: unknown };
-        expect(fwd.n).toBe(2);
-        expect(typeof fwd.n).toBe('number');
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error: { code: string } }).error.code).toBe('invalid_type');
+        expect(mockFetch).not.toHaveBeenCalled();
     });
 
     it('n 本就是数字 → 不动;n 非数字串 → 代理层直接 400(官方 1-10 门,不再留给 new-api 500)', async () => {
@@ -4648,7 +4646,7 @@ describe('/v1 proxy — gpt-image 官方契约对齐(variations 拦 / 流参数�
         expect(fd.get('image')).not.toBeNull();
     });
 
-    it('n=11 → 400 param:n 不打上游;n="3" 强转放行', async () => {
+    it('n=11 → 400 param:n 不打上游;JSON n="3" 字符串 → 400 invalid_type;数字 3 放行', async () => {
         const bad = await POST(
             makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x', n: 11 } }),
             ctx('images', 'generations'),
@@ -4657,9 +4655,16 @@ describe('/v1 proxy — gpt-image 官方契约对齐(variations 拦 / 流参数�
         expect(((await bad.json()) as { error: { param: string } }).error.param).toBe('n');
         expect(mockFetch).not.toHaveBeenCalled();
 
+        // JSON n:"3"(字符串)自第 3 批起按官方 invalid_type 拒(不再强转);数字 3 放行
+        const bad2 = await POST(
+            makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x', n: '3' } }),
+            ctx('images', 'generations'),
+        );
+        expect(bad2.status).toBe(400);
+        expect(((await bad2.json()) as { error: { code: string } }).error.code).toBe('invalid_type');
         mockFetch.mockResolvedValueOnce(okImageResp());
         const ok = await POST(
-            makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x', n: '3' } }),
+            makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x', n: 3 } }),
             ctx('images', 'generations'),
         );
         expect(ok.status).toBe(200);
@@ -5455,5 +5460,148 @@ describe('/v1 proxy — gpt-image 官方尺寸约束默认生效 + /images/edits
         expect(res.status).toBe(200);
         const [url] = mockFetch.mock.calls[0] as [string];
         expect(url).toBe(`${NEWAPI_BASE}/v1/images/generations`);
+    });
+});
+
+describe('/v1 proxy — gpt-image 官方入参校验第 3 批(2026-09-19,官方 key 逐条实测文案)', () => {
+    beforeEach(() => {
+        mockFetch.mockResolvedValue(
+            new Response(JSON.stringify({ created: 1, data: [{ b64_json: 'QUJD' }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+    });
+    const gen = (body: Record<string, unknown>) =>
+        makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', ...body } });
+    type Err = { error: { message: string; type: string; param: string | null; code: string } };
+    const expect400 = async (res: Response, want: Partial<Err['error']>) => {
+        expect(res.status).toBe(400);
+        const j = (await res.json()) as Err;
+        for (const [k, v] of Object.entries(want)) expect((j.error as Record<string, unknown>)[k]).toBe(v);
+        expect(mockFetch).not.toHaveBeenCalled();
+    };
+
+    it.each(['standard', 'hd', 'Low', 'xhigh'])('quality %s → 400 invalid_value 官方文案', async (q) => {
+        await expect400(await POST(gen({ quality: q }), ctx('images', 'generations')), {
+            type: 'invalid_request_error',
+            param: 'quality',
+            code: 'invalid_value',
+            message: `Invalid value: '${q}'. Supported values are: 'low', 'medium', 'high', and 'auto'.`,
+        });
+    });
+
+    it.each(['low', 'medium', 'high', 'auto'])('quality %s → 放行', async (q) => {
+        expect((await POST(gen({ quality: q }), ctx('images', 'generations'))).status).toBe(200);
+    });
+
+    it.each(['1024X1024', ' 1024x1024 ', '1024*1024'])('size 形态非法 %s → 400 官方文案', async (size) => {
+        await expect400(await POST(gen({ size }), ctx('images', 'generations')), {
+            type: 'image_generation_user_error',
+            param: 'size',
+            code: 'invalid_value',
+            message: `Invalid size '${size}'. Expected WIDTHxHEIGHT, for example '1824x1024'.`,
+        });
+    });
+
+    it('size AUTO(大小写)仍放行(portal 宽容,有意偏离)', async () => {
+        expect((await POST(gen({ size: 'AUTO' }), ctx('images', 'generations'))).status).toBe(200);
+    });
+
+    it('n=0 / n=11 / n=1.5 / n="abc" → 官方 code', async () => {
+        await expect400(await POST(gen({ n: 0 }), ctx('images', 'generations')), {
+            param: 'n',
+            code: 'integer_below_min_value',
+            message: "Invalid 'n': integer below minimum value. Expected a value >= 1, but got 0 instead.",
+        });
+        await expect400(await POST(gen({ n: 11 }), ctx('images', 'generations')), {
+            param: 'n',
+            code: 'integer_above_max_value',
+            message: "Invalid 'n': integer above maximum value. Expected a value <= 10, but got 11 instead.",
+        });
+        await expect400(await POST(gen({ n: 1.5 }), ctx('images', 'generations')), {
+            param: 'n',
+            code: 'invalid_type',
+        });
+        await expect400(await POST(gen({ n: 'abc' }), ctx('images', 'generations')), {
+            param: 'n',
+            code: 'invalid_type',
+        });
+    });
+
+    it('prompt 空串 → empty_string;缺 prompt → missing_required_parameter;非字符串 → invalid_type', async () => {
+        await expect400(await POST(gen({ prompt: '' }), ctx('images', 'generations')), {
+            param: 'prompt',
+            code: 'empty_string',
+            message:
+                "Invalid 'prompt': empty string. Expected a string with minimum length 1, but got an empty string instead.",
+        });
+        await expect400(
+            await POST(
+                makeReq('/images/generations', { body: { model: 'gpt-image-2', size: '1024x1024' } }),
+                ctx('images', 'generations'),
+            ),
+            { param: 'prompt', code: 'missing_required_parameter', message: "Missing required parameter: 'prompt'." },
+        );
+        await expect400(await POST(gen({ prompt: 123 }), ctx('images', 'generations')), {
+            param: 'prompt',
+            code: 'invalid_type',
+        });
+    });
+
+    it('style → unknown_parameter;input_fidelity → invalid_input_fidelity_model(image_generation_user_error)', async () => {
+        await expect400(await POST(gen({ style: 'vivid' }), ctx('images', 'generations')), {
+            type: 'invalid_request_error',
+            param: 'style',
+            code: 'unknown_parameter',
+            message: "Unknown parameter: 'style'.",
+        });
+        await expect400(await POST(gen({ input_fidelity: 'high' }), ctx('images', 'generations')), {
+            type: 'image_generation_user_error',
+            param: 'input_fidelity',
+            code: 'invalid_input_fidelity_model',
+            message: "The model 'gpt-image-2' does not support the 'input_fidelity' parameter.",
+        });
+    });
+
+    it('png(缺省)+ output_compression=50 → invalid_png_output_compression;jpeg + 50 放行;png + 100 放行', async () => {
+        await expect400(await POST(gen({ output_compression: 50 }), ctx('images', 'generations')), {
+            type: 'image_generation_user_error',
+            param: null,
+            code: 'invalid_png_output_compression',
+            message: 'Compression less than 100 is not supported for PNG output format',
+        });
+        expect(
+            (await POST(gen({ output_format: 'jpeg', output_compression: 50 }), ctx('images', 'generations'))).status,
+        ).toBe(200);
+    });
+
+    it('png + output_compression=100 → 放行', async () => {
+        expect((await POST(gen({ output_compression: 100 }), ctx('images', 'generations'))).status).toBe(200);
+    });
+
+    it('multipart:quality standard → 400;n="3"(表单数字串)放行;input_fidelity 字段 → 400', async () => {
+        const mk = (fields: Record<string, string>) => {
+            const fd = new FormData();
+            fd.append('model', 'gpt-image-2');
+            fd.append('prompt', 'x');
+            fd.append('size', '1024x1024');
+            for (const [k, v] of Object.entries(fields)) fd.append(k, v);
+            return new NextRequest('https://ai.silkroadai.io/v1/images/generations', { method: 'POST', body: fd });
+        };
+        await expect400(await POST(mk({ quality: 'standard' }), ctx('images', 'generations')), {
+            param: 'quality',
+            code: 'invalid_value',
+        });
+        expect((await POST(mk({ n: '3' }), ctx('images', 'generations'))).status).toBe(200);
+        mockFetch.mockClear();
+        await expect400(await POST(mk({ input_fidelity: 'low' }), ctx('images', 'generations')), {
+            param: 'input_fidelity',
+            code: 'invalid_input_fidelity_model',
+        });
+    });
+
+    it('response_format:url 仍放行(portal 文档化扩展,有意偏离官方 unknown_parameter)', async () => {
+        expect((await POST(gen({ response_format: 'b64_json' }), ctx('images', 'generations'))).status).toBe(200);
     });
 });
