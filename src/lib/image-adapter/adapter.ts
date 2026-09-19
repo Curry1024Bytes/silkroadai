@@ -24,6 +24,15 @@ import { stripAdobeImageMetadataB64 } from '@/lib/proxy/image-metadata';
 import { IMAGE_PROVIDERS, type ImageProvider } from './providers';
 import { countImagePromptTokens } from '@/lib/tokens/count-text-tokens';
 import { officialImageInputTokens } from '@/lib/tokens/image-input-tokens';
+import {
+    OFFICIAL_AUTO_DEFAULT_ASPECT,
+    alignTo16,
+    aspectFromRatio,
+    isAutoSize,
+    matchesAutoRequest,
+    officialAutoDims,
+    promptAspectRatio,
+} from './auto-size';
 
 export type ImageMode = 'generations' | 'edits';
 
@@ -346,6 +355,8 @@ interface ParsedRequest {
     /** edits 的蒙版(官方 `mask`,与 image 同尺寸的 RGBA png):原样透传上游,不计费、不参与尺寸判定。
      *  2026-09-17 官方对齐审计发现此前被丢弃 → 客户局部重绘变成整图重画。 */
     mask: { buf: Buffer; type: string; name: string } | null;
+    /** size=auto 时发给上游的 16 对齐尺寸(handleAdapterImage 解析后填入);未设 = 原样发 parsed.size。 */
+    upstreamSize?: string;
 }
 
 const FORWARD_EXTRAS = new Set(['output_format', 'output_compression', 'background', 'user']);
@@ -455,7 +466,7 @@ async function callUpstreamOnce(
         const f = new FormData();
         f.append('model', provider.upstreamModel ?? 'gpt-image-2');
         f.append('prompt', parsed.prompt);
-        f.append('size', parsed.size.trim());
+        f.append('size', parsed.upstreamSize ?? parsed.size.trim());
         f.append('response_format', 'b64_json'); // 不带时 ominiapi 返自家 OSS url(上游身份泄漏),显式要 b64
         if (parsed.quality) f.append('quality', normQuality(parsed.quality));
         for (const [k, v] of Object.entries(parsed.extras)) f.append(k, v);
@@ -468,7 +479,7 @@ async function callUpstreamOnce(
         const j: Record<string, unknown> = {
             model: provider.upstreamModel ?? 'gpt-image-2',
             prompt: parsed.prompt,
-            size: parsed.size.trim(),
+            size: parsed.upstreamSize ?? parsed.size.trim(),
             response_format: 'b64_json', // 同上:2026-08-04 smoke 实测缺省返 url
         };
         if (parsed.quality) j.quality = normQuality(parsed.quality);
@@ -583,7 +594,39 @@ export async function handleAdapterImage(
     //    【无】狭长放行条款(兜底线全是 openAllTiers 官方账单,狭长图落下去照样对得上账);
     //  - 否则(存量 gated provider)要求 size 可解析,且:狭长形(长/短 > 1.5)不论盈利档放行,
     //    其余走盈利档守门(行为不变)。
-    const dims = parseSize(parsed.size);
+    // ---- size=auto / 缺省 → 官方 auto 尺寸(见 auto-size.ts):计费/回显按官方尺寸,上游发 16 对齐尺寸 ----
+    // 此前 auto 对 openAllTiers 原样透传(各上游默认尺寸不一,1024² / 1024×1536 都有,与官方 1122×1402 对不上),
+    // 对守门上游一律 503(算不出 token)。现在 auto 有确定尺寸 → 守门正常评估,gated 上游也能接 auto。
+    let officialDims: { w: number; h: number } | null = null;
+    if (isAutoSize(parsed.size)) {
+        let aspect = OFFICIAL_AUTO_DEFAULT_ASPECT;
+        let source = 'default-4:5';
+        if (mode === 'edits') {
+            const pr = promptAspectRatio(parsed.prompt); // portal 扩展:prompt 写明画幅优先(官方不看 prompt)
+            const inputDims = parsed.images.length ? imageDimensions(parsed.images[0].buf) : null;
+            if (pr) {
+                aspect = aspectFromRatio(pr);
+                source = `prompt:${pr}`;
+            } else if (inputDims) {
+                aspect = inputDims.w / inputDims.h;
+                source = `input:${inputDims.w}x${inputDims.h}`;
+            } else {
+                aspect = 1;
+                source = 'input-unreadable→1:1';
+            }
+        }
+        officialDims = officialAutoDims(aspect);
+        const aligned = alignTo16(officialDims);
+        parsed.upstreamSize = `${aligned.w}x${aligned.h}`;
+        console.log('[image-adapter] auto size', {
+            provider: providerName,
+            mode,
+            source,
+            official: `${officialDims.w}x${officialDims.h}`,
+            upstream: parsed.upstreamSize,
+        });
+    }
+    const dims = officialDims ?? parseSize(parsed.size);
     const quality = normQuality(parsed.quality);
     const perImageCt = dims ? officialOutputTokens(dims.w, dims.h, quality) : 0;
     const elongated = dims ? isElongated(dims.w, dims.h) : false;
@@ -664,22 +707,27 @@ export async function handleAdapterImage(
     const actualDims = out0 ? imageDimensions(Buffer.from(out0, 'base64')) : null;
     let billW: number;
     let billH: number;
-    if (actualDims) {
+    if (actualDims && officialDims && matchesAutoRequest(actualDims, officialDims)) {
+        // auto:上游交付了我们要的那张(16 对齐尺寸,与官方尺寸相差 ≤8px/边)→ 按官方 auto 尺寸计费 + 回显
+        billW = officialDims.w;
+        billH = officialDims.h;
+    } else if (actualDims) {
         billW = actualDims.w;
         billH = actualDims.h;
         if (dims && (dims.w !== actualDims.w || dims.h !== actualDims.h)) {
             console.warn('[image-adapter] upstream coerced size, billing by actual', {
                 provider: providerName,
                 mode,
-                requested: parsed.size,
+                requested: parsed.upstreamSize ?? parsed.size,
                 actual: `${actualDims.w}x${actualDims.h}`,
             });
         }
     } else if (dims) {
+        // 读不出返回图尺寸(webp 等):显式 size 按请求值;auto 按官方 auto 尺寸(不再 503 unbillable_auto)
         billW = dims.w;
         billH = dims.h;
     } else {
-        return failover('unbillable_auto', 'auto size but output image dimensions unreadable');
+        return failover('unbillable_auto', 'size unparsable and output image dimensions unreadable');
     }
 
     // ---- 合成 usage(丢弃上游假 token,按官方公式)----
@@ -719,7 +767,11 @@ export async function handleAdapterImage(
     console.log('[image-adapter] ok', {
         provider: providerName,
         mode,
-        size: dims && dims.w === billW && dims.h === billH ? parsed.size : `${parsed.size || 'auto'}→${billW}x${billH}`,
+        size: officialDims
+            ? `auto→${billW}x${billH}(upstream ${parsed.upstreamSize})`
+            : dims && dims.w === billW && dims.h === billH
+              ? parsed.size
+              : `${parsed.size || '?'}→${billW}x${billH}`,
         quality,
         nRequested: parsed.n,
         images: items.length,

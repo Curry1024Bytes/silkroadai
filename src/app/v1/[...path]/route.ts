@@ -52,6 +52,7 @@
  *   3. R2 也失败 → data URL 内联 + `X-Silkroadai-R2-Fallback: yes`
  */
 import { NextRequest, NextResponse } from 'next/server';
+import { promptAspectRatio } from '@/lib/image-adapter/auto-size';
 import { randomUUID } from 'node:crypto';
 import { prisma } from '@/lib/db';
 import { getCustomerBalance, type CustomerBalance } from '@/lib/billing/customer-balance';
@@ -1245,7 +1246,11 @@ async function gptImageUpstream(
     if (form) {
         const hasImage = formImageFiles(form).length > 0;
         if (hasImage) {
-            const resolved = await resolveGptImageEditsAutoSize(form);
+            // gpt-image-2:auto 交给适配器按官方 1.5MP 语义定尺寸并按官方尺寸计费(2026-09-19 第 4 批);
+            // 这里只给 2.5 系保留代理层解析(2.5 官方 auto 尺寸未实测,维持原 ~1MP 比例表)。
+            const resolved = isGptImage25Model(String(form.get('model') ?? ''))
+                ? await resolveGptImageEditsAutoSize(form)
+                : null;
             return withSizeResolvedHeader(await fetchUpstreamMultipart(req, form, '/images/edits', search), resolved);
         }
         // 无图 → 文生图 generations(上游要 JSON):把 form 文本字段搬进 JSON
@@ -1284,7 +1289,7 @@ async function gptImageUpstream(
             );
         }
     }
-    const resolved = await resolveGptImageEditsAutoSize(f);
+    const resolved = isGptImage25Model(String(b.model ?? '')) ? await resolveGptImageEditsAutoSize(f) : null;
     return withSizeResolvedHeader(await fetchUpstreamMultipart(req, f, '/images/edits', search), resolved);
 }
 
@@ -1331,22 +1336,6 @@ async function resolveGptImageEditsAutoSize(form: FormData): Promise<string | nu
         size: px,
     });
     return `${s || 'auto'}->${px}${fromPrompt ? ';from=prompt' : ''}`;
-}
-
-/** prompt 里的明确画幅字样 → 比例串("16:9")。认半角 / 全角冒号与「比」(`16:9` / `16：9` / `16比9`),
- *  数字前后不能紧挨数字或小数点(排除 1.5:1 / 版本号);两数各 1-32,长短比 ≤ 2.5(涵盖 21:9=2.33,排掉
- *  10:30 这类时间和 3:1 以上的极端值);取第一个命中。只在客户没给 size(auto/缺省)时被用到。 */
-function promptAspectRatio(prompt: string): string | null {
-    const re = /(?<![\d.])(\d{1,2})\s*[:：比]\s*(\d{1,2})(?![\d.])/g;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(prompt))) {
-        const a = Number(m[1]);
-        const b = Number(m[2]);
-        if (a < 1 || b < 1 || a > 32 || b > 32) continue;
-        if (Math.max(a, b) / Math.min(a, b) > 2.5) continue;
-        return `${a}:${b}`;
-    }
-    return null;
 }
 
 /** 把 `X-Silkroadai-Size-Resolved: auto->WxH` 挂到上游响应上(reshape 会把上游头透传给客户),

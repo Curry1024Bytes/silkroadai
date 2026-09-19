@@ -5094,7 +5094,7 @@ describe('/v1 proxy — seedream-5-0-pro 钩子', () => {
     });
 });
 
-describe('/v1 proxy — gpt-image edits size=auto/缺省 → 代理层按输入图比例补明确 size(2026-09-16)', () => {
+describe('/v1 proxy — gpt-image-2.5 edits size=auto/缺省 → 代理层按输入图比例补明确 size(2026-09-16;2.0 自第 4 批起由适配器按官方 1.5MP 定)', () => {
     // 背景:low/medium 专线对 auto 恒出方图无视输入图;OpenAI 官方 edits 的 auto = 跟随输入图。
     // 只动 edits(有输入图);generations 的 auto 绝不动(上游 auto→2048² 是既有产品行为)。
     function pngHeader(w: number, h: number): Buffer {
@@ -5114,7 +5114,7 @@ describe('/v1 proxy — gpt-image edits size=auto/缺省 → 代理层按输入�
     }
     function editsForm(size: string | null, ...images: Buffer[]): NextRequest {
         const form = new FormData();
-        form.append('model', 'gpt-image-2');
+        form.append('model', 'gpt-image-2.5-flare');
         form.append('prompt', 'add a bird');
         if (size !== null) form.append('size', size);
         for (const buf of images)
@@ -5180,7 +5180,9 @@ describe('/v1 proxy — gpt-image edits size=auto/缺省 → 代理层按输入�
         mockFetch.mockResolvedValueOnce(ok());
         const dataUrl = 'data:image/png;base64,' + pngHeader(1024, 1536).toString('base64');
         const res = await POST(
-            makeReq('/images/edits', { body: { model: 'gpt-image-2', prompt: 'x', size: 'auto', image: dataUrl } }),
+            makeReq('/images/edits', {
+                body: { model: 'gpt-image-2.5-flare', prompt: 'x', size: 'auto', image: dataUrl },
+            }),
             ctx('images', 'edits'),
         );
         expect(res.status).toBe(200);
@@ -5191,7 +5193,7 @@ describe('/v1 proxy — gpt-image edits size=auto/缺省 → 代理层按输入�
     it('generations + size auto → 原样透传 auto(绝不补 1024²)', async () => {
         mockFetch.mockResolvedValueOnce(ok());
         const res = await POST(
-            makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x', size: 'auto' } }),
+            makeReq('/images/generations', { body: { model: 'gpt-image-2.5-flare', prompt: 'x', size: 'auto' } }),
             ctx('images', 'generations'),
         );
         const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
@@ -5214,7 +5216,7 @@ describe('/v1 proxy — gpt-image edits size=auto/缺省 → 代理层按输入�
     });
 });
 
-describe('/v1 proxy — gpt-image edits size=auto + prompt 写明画幅 → 按 prompt 比例补 size(#466 后续)', () => {
+describe('/v1 proxy — gpt-image-2.5 edits size=auto + prompt 写明画幅 → 按 prompt 比例补 size(#466 后续;2.0 同逻辑已搬到适配器)', () => {
     function pngHeader(w: number, h: number): Buffer {
         const png = Buffer.alloc(33);
         png.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
@@ -5232,7 +5234,7 @@ describe('/v1 proxy — gpt-image edits size=auto + prompt 写明画幅 → 按 
     }
     function editsForm(size: string | null, prompt: string, ...images: Buffer[]): NextRequest {
         const form = new FormData();
-        form.append('model', 'gpt-image-2');
+        form.append('model', 'gpt-image-2.5-flare');
         form.append('prompt', prompt);
         if (size !== null) form.append('size', size);
         for (const buf of images)
@@ -5297,7 +5299,7 @@ describe('/v1 proxy — gpt-image edits size=auto + prompt 写明画幅 → 按 
         mockFetch.mockResolvedValueOnce(ok());
         const res = await POST(
             makeReq('/images/generations', {
-                body: { model: 'gpt-image-2', prompt: '一张 16:9 的海报', size: 'auto' },
+                body: { model: 'gpt-image-2.5-flare', prompt: '一张 16:9 的海报', size: 'auto' },
             }),
             ctx('images', 'generations'),
         );
@@ -5310,7 +5312,7 @@ describe('/v1 proxy — gpt-image edits size=auto + prompt 写明画幅 → 按 
         mockFetch.mockResolvedValueOnce(ok());
         const dataUrl = 'data:image/png;base64,' + pngHeader(1024, 1024).toString('base64');
         const res = await POST(
-            makeReq('/images/edits', { body: { model: 'gpt-image-2', prompt: '改为 16:9', image: dataUrl } }),
+            makeReq('/images/edits', { body: { model: 'gpt-image-2.5-flare', prompt: '改为 16:9', image: dataUrl } }),
             ctx('images', 'edits'),
         );
         expect(res.status).toBe(200);
@@ -5603,5 +5605,38 @@ describe('/v1 proxy — gpt-image 官方入参校验第 3 批(2026-09-19,官方 
 
     it('response_format:url 仍放行(portal 文档化扩展,有意偏离官方 unknown_parameter)', async () => {
         expect((await POST(gen({ response_format: 'b64_json' }), ctx('images', 'generations'))).status).toBe(200);
+    });
+});
+
+describe('/v1 proxy — gpt-image-2 size=auto 交给适配器(第 4 批,官方 1.5MP auto 语义在 image-adapter/auto-size.ts)', () => {
+    function pngHeader(w: number, h: number): Buffer {
+        const png = Buffer.alloc(33);
+        png.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+        png.writeUInt32BE(13, 8);
+        png.write('IHDR', 12, 'latin1');
+        png.writeUInt32BE(w, 16);
+        png.writeUInt32BE(h, 20);
+        return png;
+    }
+    it('multipart edits + size=auto + 竖图输入 → 代理原样转发 auto、不补尺寸、无 Size-Resolved 头(适配器负责)', async () => {
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ created: 1, data: [{ b64_json: 'QUJD' }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const form = new FormData();
+        form.append('model', 'gpt-image-2');
+        form.append('prompt', 'add a bird');
+        form.append('size', 'auto');
+        form.append('image', new File([new Uint8Array(pngHeader(1024, 1536))], 'in.png', { type: 'image/png' }));
+        const res = await POST(
+            new NextRequest('https://ai.silkroadai.io/v1/images/edits', { method: 'POST', body: form }),
+            ctx('images', 'edits'),
+        );
+        expect(res.status).toBe(200);
+        const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect((init.body as FormData).get('size')).toBe('auto');
+        expect(res.headers.get('x-silkroadai-size-resolved')).toBeNull();
     });
 });
