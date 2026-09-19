@@ -2199,8 +2199,12 @@ describe('第 5 批:webp 真交付 + generation_id(2026-09-19)', () => {
         );
         const body = await res.json();
         expect(body.data).toHaveLength(2);
-        expect(body.data[0].generation_id).toMatch(/^ig_[0-9a-f]{32}$/);
-        expect(body.data[1].generation_id).toMatch(/^ig_[0-9a-f]{32}$/);
+        expect(body.data[0].generation_id).toMatch(
+            /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+        );
+        expect(body.data[1].generation_id).toMatch(
+            /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+        );
         expect(body.data[0].generation_id).not.toBe(body.data[1].generation_id);
     });
 });

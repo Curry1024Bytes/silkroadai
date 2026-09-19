@@ -1,8 +1,8 @@
-import { randomBytes } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 
-/** 官方 images 响应 `data[].generation_id`(2026-09-17 官方 key 实测每张图都带,值为不透明 id)。
- *  上游(号池 / Adobe 转售)不给 → 本地生成 `ig_` + 32 hex(对齐 OpenAI 图片生成 id 的形态,best-effort:
- *  官方原值格式未留档);只保证唯一与形态稳定,不承载语义。 */
+/** 官方 images 响应 `data[].generation_id`:2026-09-19 官方 key 打 gpt-image-2.5 实测为 UUID v4 形态
+ *  (如 a412b49c-78f2-4009-9a23-a2e4e0f7b1fd)。上游(号池 / Adobe 转售)不给 → 本地生成 UUID;
+ *  只保证唯一与形态稳定,不承载语义。(#478 首版猜的 `ig_`+hex 已纠正。) */
 export function newGenerationId(): string {
-    return `ig_${randomBytes(16).toString('hex')}`;
+    return randomUUID();
 }

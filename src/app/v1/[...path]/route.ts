@@ -52,7 +52,6 @@
  *   3. R2 也失败 → data URL 内联 + `X-Silkroadai-R2-Fallback: yes`
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { promptAspectRatio } from '@/lib/image-adapter/auto-size';
 import {
     previewB64,
     transcodeB64,
@@ -1254,12 +1253,9 @@ async function gptImageUpstream(
     if (form) {
         const hasImage = formImageFiles(form).length > 0;
         if (hasImage) {
-            // gpt-image-2:auto 交给适配器按官方 1.5MP 语义定尺寸并按官方尺寸计费(2026-09-19 第 4 批);
-            // 这里只给 2.5 系保留代理层解析(2.5 官方 auto 尺寸未实测,维持原 ~1MP 比例表)。
-            const resolved = isGptImage25Model(String(form.get('model') ?? ''))
-                ? await resolveGptImageEditsAutoSize(form)
-                : null;
-            return withSizeResolvedHeader(await fetchUpstreamMultipart(req, form, '/images/edits', search), resolved);
+            // auto 一律交给适配器按官方语义定尺寸并计费(2.0 第 4 批 #477;2.5 官方实测后 2026-09-19 同样下沉:
+            // generations 缺省 1254²、edits 跟输入图)。代理层不再改写 size。
+            return fetchUpstreamMultipart(req, form, '/images/edits', search);
         }
         // 无图 → 文生图 generations(上游要 JSON):把 form 文本字段搬进 JSON
         const j: JsonRecord = {};
@@ -1297,62 +1293,7 @@ async function gptImageUpstream(
             );
         }
     }
-    const resolved = isGptImage25Model(String(b.model ?? '')) ? await resolveGptImageEditsAutoSize(f) : null;
-    return withSizeResolvedHeader(await fetchUpstreamMultipart(req, f, '/images/edits', search), resolved);
-}
-
-/** gpt-image【edits】且客户没给尺寸(缺省 / `auto`,大小写不限)→ 读第一张输入图尺寸,补最近的合法
- *  WxH(GPT_IMAGE_ASPECT_SIZE 表,约 1MP 档)后再发上游;返回 `auto->WxH` 串供响应头,没动则 null。
- *
- *  背景(2026-09-16,1913696371 投诉「指定了尺寸出方图」诊断):近 24h 适配器日志实测,low/medium 专线
- *  (frimodellow/frimodelmedium)对 `auto` 恒出 1024²/2048² 方图、完全无视输入图;high 线(ominiapi)才
- *  跟随输入比例。OpenAI 官方 edits 的 `auto` 语义 = 跟随输入图,这里在代理层把它落实,让各上游一致。
- *  边界:
- *  - 只动 edits(有输入图)。generations 的 `auto` 原样透传 —— 上游 auto→2048² 等是既有产品行为,
- *    generations 一周 73.8 万次 `auto`(¥25 万),补成 1024² 会砍半,绝不能碰;
- *  - 读不出尺寸(gif/bmp/heic/avif…)→ 保留 auto 不阻断(不像 gptImageFallbackSize 那样退 1024²);
- *  - 多图取第一张(与 Gemini 路径 aspectRatioFromInput 同口径);imageDimensions 已按 EXIF Orientation
- *    对调手机竖拍 JPEG 的宽高(PR #184);
- *  - 显式 WxH 一律不动;变体名 / aspect_ratio 在 normalizeGptImage* 里已先转成显式尺寸,到这里不会再是 auto;
- *  - 只作用于经 portal 的请求,直连 new-api :3000 的客户(c-70fd7c5f 等)行为不变;
- *  - 优先级:prompt 里的明确画幅字样(promptAspectRatio)> 输入图比例。 */
-async function resolveGptImageEditsAutoSize(form: FormData): Promise<string | null> {
-    const s = String(form.get('size') ?? '').trim();
-    if (s && s.toLowerCase() !== 'auto') return null;
-    const files = formImageFiles(form);
-    if (!files.length) return null;
-    // 优先级 1:prompt 里写了明确画幅(「改成 16:9」)→ 按 prompt 的比例(2026-09-16 #466 后续):
-    // #466 把 auto 钉成输入图比例后,客户「方图 + prompt 说 16:9」的用法从上游随机 4 成命中变成 0 命中
-    // (ch186 对 auto 是让模型自己定画布,模型有时听 prompt);这里把它变成 100% 确定。
-    const promptRatio = promptAspectRatio(String(form.get('prompt') ?? ''));
-    const fromPrompt = promptRatio ? aspectToPixelSize(promptRatio) : null;
-    let px: string;
-    let input = '';
-    if (fromPrompt) {
-        px = fromPrompt;
-    } else {
-        // 优先级 2:跟随第一张输入图比例
-        const dims = imageDimensions(Buffer.from(await files[0].arrayBuffer()));
-        if (!dims) return null;
-        input = `${dims.w}x${dims.h}`;
-        px = gptImageSizeFromInput(dims.w, dims.h);
-    }
-    form.set('size', px);
-    console.log('[proxy/gpt-image] edits auto size resolved', {
-        source: fromPrompt ? 'prompt' : 'input',
-        ...(fromPrompt ? { promptRatio } : { input }),
-        size: px,
-    });
-    return `${s || 'auto'}->${px}${fromPrompt ? ';from=prompt' : ''}`;
-}
-
-/** 把 `X-Silkroadai-Size-Resolved: auto->WxH` 挂到上游响应上(reshape 会把上游头透传给客户),
- *  便于客户 / 排障确认代理补了尺寸。resolved 为 null 时原样返回。 */
-function withSizeResolvedHeader(res: Response, resolved: string | null): Response {
-    if (!resolved) return res;
-    const h = new Headers(res.headers);
-    h.set('X-Silkroadai-Size-Resolved', resolved);
-    return new Response(res.body, { status: res.status, statusText: res.statusText, headers: h });
+    return fetchUpstreamMultipart(req, f, '/images/edits', search);
 }
 
 /** 输入图尺寸 → 最近的合法 gpt-image 像素 size(从 GPT_IMAGE_ASPECT_SIZE 表按宽高比挑最近的)。 */

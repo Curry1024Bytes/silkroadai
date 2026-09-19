@@ -8,6 +8,7 @@ import {
     handleAdapter25Image,
     URL_FETCH_RETRY_DELAYS_MS,
     officialOutputTokens25,
+    IMAGE25_TEXT_TOKENS_PER_INPUT_IMAGE,
     officialInputImageTokens25,
     normQuality25,
     synthUsage25,
@@ -132,7 +133,8 @@ describe('synthUsage25', () => {
         expect(u.output_tokens).toBe(3122 * 2);
         const det = u.input_tokens_details as { text_tokens: number; image_tokens: number };
         expect(det.image_tokens).toBe((1521 + 1024) * 2); // 官方 n 张语义:input ×张数
-        expect(u.input_tokens).toBe((estimateTextTokens('add a tiny star') + 1521 + 1024) * 2);
+        // 2.5 edits 每张输入图 +10 文字 token(官方实测),两张 → +20;再 ×张数
+        expect(u.input_tokens).toBe((estimateTextTokens('add a tiny star') + 20 + 1521 + 1024) * 2);
         expect(Object.keys(u).sort()).toEqual([
             'input_tokens',
             'input_tokens_details',
@@ -877,5 +879,86 @@ describe('2.5 适配器 mask 透传(2026-09-19 补齐;此前只在 2.0 适配器
         expect((mask as File).name).toBe('m.png');
         const body = (await res.json()) as { usage: { input_tokens_details: { image_tokens: number } } };
         expect(body.usage.input_tokens_details.image_tokens).toBe(1024); // 只算 image(1024² 夹具),不算 mask(否则 2048)
+    });
+});
+
+describe('2.5 官方校准(2026-09-19 官方 key 实测):edits 文字 +10/输入图、auto 缺省 1254²、边界 400', () => {
+    const URL_G = 'http://portal.test/image-adapter25/wetokenasia25/v1/images/generations';
+    const URL_E = 'http://portal.test/image-adapter25/wetokenasia25/v1/images/edits';
+    function pngHeader(w: number, h: number): Buffer {
+        const png = Buffer.alloc(33);
+        png.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+        png.writeUInt32BE(13, 8);
+        png.write('IHDR', 12, 'latin1');
+        png.writeUInt32BE(w, 16);
+        png.writeUInt32BE(h, 20);
+        return png;
+    }
+    it('常数 = 10;generations 不加(仍 +6)', () => {
+        expect(IMAGE25_TEXT_TOKENS_PER_INPUT_IMAGE).toBe(10);
+        expect(estimateTextTokens('a cat')).toBe(8);
+    });
+    it('edits "a cat" 1 张输入图 → text 18;2 张 → 28;n=2 → 36(官方逐点)', () => {
+        const mk = (imgs: number, n: number) =>
+            synthUsage25({
+                mode: 'edits',
+                w: 1024,
+                h: 1024,
+                quality: 'low',
+                prompt: 'a cat',
+                inputImageDims: Array.from({ length: imgs }, () => ({ w: 256, h: 256 })),
+                imageCount: n,
+            });
+        expect((mk(1, 1).input_tokens_details as { text_tokens: number }).text_tokens).toBe(18);
+        expect((mk(2, 1).input_tokens_details as { text_tokens: number }).text_tokens).toBe(28);
+        expect((mk(1, 2).input_tokens_details as { text_tokens: number }).text_tokens).toBe(36);
+        expect(mk(1, 1).input_tokens).toBe(18 + 256);
+    });
+    it('generations size=auto → 上游收 1248x1248(1254² 对齐);返图相符按官方 1254² 计 229、回显 1254x1254', async () => {
+        okUpstream([pngB64(1248, 1248)]);
+        const res = await handleAdapter25Image(
+            jsonReq(URL_G, { model: 'gpt-image-2.5-flare', prompt: 'a cat', size: 'auto', quality: 'low' }),
+            'generations',
+            'wetokenasia25',
+        );
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { size: string; usage: { output_tokens: number } };
+        const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+        expect((JSON.parse(String(init.body)) as { size: string }).size).toBe('1248x1248');
+        expect(body.size).toBe('1254x1254');
+        expect(body.usage.output_tokens).toBe(229);
+    });
+    it('edits size 缺省 + 16:9 输入 → 官方 1672×941(129),上游收 1680x944;input = 18 + 1508', async () => {
+        okUpstream([pngB64(1680, 944)]);
+        const res = await handleAdapter25Image(
+            formReq(URL_E, { model: 'gpt-image-2.5-flare', prompt: 'a cat', quality: 'low' }, [pngHeader(3840, 2160)]),
+            'edits',
+            'wetokenasia25',
+        );
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as {
+            size: string;
+            usage: {
+                output_tokens: number;
+                input_tokens: number;
+                input_tokens_details: { image_tokens: number; text_tokens: number };
+            };
+        };
+        const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+        expect((init.body as FormData).get('size')).toBe('1680x944');
+        expect(body.size).toBe('1672x941');
+        expect(body.usage.output_tokens).toBe(129);
+        expect(body.usage.input_tokens_details).toEqual({ text_tokens: 18, image_tokens: 1508 });
+        expect(body.usage.input_tokens).toBe(1526);
+    });
+    it('auto 但上游降级返 512² → 按实际计费(守卫不放松)', async () => {
+        okUpstream([pngB64(512, 512)]);
+        const res = await handleAdapter25Image(
+            jsonReq(URL_G, { model: 'gpt-image-2.5-flare', prompt: 'x', size: 'auto', quality: 'low' }),
+            'generations',
+            'wetokenasia25',
+        );
+        const body = (await res.json()) as { size: string };
+        expect(body.size).toBe('512x512');
     });
 });

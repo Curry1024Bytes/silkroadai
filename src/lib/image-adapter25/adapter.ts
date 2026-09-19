@@ -29,6 +29,14 @@ import { officialImageInputTokens } from '@/lib/tokens/image-input-tokens';
 import { stripAdobeImageMetadataB64 } from '@/lib/proxy/image-metadata';
 import { encodeQuality, transcodeB64, transcodeTargetOf } from '@/lib/image/transcode';
 import { newGenerationId } from '@/lib/image/generation-id';
+import {
+    alignTo16,
+    aspectFromRatio,
+    isAutoSize,
+    matchesAutoRequest,
+    officialAutoDims,
+    promptAspectRatio,
+} from '@/lib/image-adapter/auto-size';
 import { IMAGE_PROVIDERS_25, type ImageProvider25 } from './providers';
 
 export type ImageMode = 'generations' | 'edits';
@@ -162,11 +170,17 @@ export interface SynthUsageInput25 {
 }
 
 /** 只发 OpenAI images 官方那套字段(input/output/total + *_details),不送 chat 形别名(2.0 教训:中继客户会加两遍)。 */
+/** gpt-image-2.5 edits:官方 text_tokens = o200k + 6 + 10×输入图张数(官方 key 实测 'a cat' 1 图 18、2 图 28、n=2 ×2;
+ *  generations 仍 +6;gpt-image-2 edits 无此项(实测 31+6=37)。 */
+export const IMAGE25_TEXT_TOKENS_PER_INPUT_IMAGE = 10;
+
 export function synthUsage25(inp: SynthUsageInput25): Record<string, unknown> {
     const count = Math.max(1, inp.imageCount);
     // 官方 n 张语义同 2.0(见 image-adapter synthUsage):output 先乘 n 再 ceil;input(文本+输入图)×n。
     const ct = Math.ceil((count * officialOutputTokensNumerator25(inp.w, inp.h, inp.quality)) / 4_000_000);
-    const textTokens = estimateTextTokens(inp.prompt) * count;
+    // 2.5 独有(2026-09-19 官方 key 实测):edits 每张输入图额外 +10 文字 token(1 图 18、2 图 28;2.0 无此项)。
+    const perImageText = inp.mode === 'edits' ? IMAGE25_TEXT_TOKENS_PER_INPUT_IMAGE * inp.inputImageDims.length : 0;
+    const textTokens = (estimateTextTokens(inp.prompt) + perImageText) * count;
     let imgTokens = 0;
     if (inp.mode === 'edits') for (const d of inp.inputImageDims) imgTokens += officialInputImageTokens25(d);
     imgTokens *= count;
@@ -301,6 +315,8 @@ interface ParsedRequest {
     extras: Record<string, string>;
     /** edits 蒙版(官方 `mask`):原样透传上游,不计费、不参与尺寸判定(2026-09-19 补齐,此前 2.5 适配器丢弃)。 */
     mask: { buf: Buffer; type: string; name: string } | null;
+    /** size=auto 时发给上游的 16 对齐尺寸(handleAdapter25Image 解析后填入);未设 = 原样发 parsed.size。 */
+    upstreamSize?: string;
 }
 
 const FORWARD_EXTRAS = new Set(['output_format', 'output_compression', 'background', 'user']);
@@ -425,7 +441,8 @@ async function callUpstream(
         const f = new FormData();
         f.append('model', parsed.model);
         f.append('prompt', parsed.prompt);
-        if (parsed.size.trim()) f.append('size', parsed.size.trim());
+        const sendSize = parsed.upstreamSize ?? parsed.size.trim();
+        if (sendSize) f.append('size', sendSize);
         if (FORWARD_QUALITY_SET.has(q)) f.append('quality', q);
         if (n > 1) f.append('n', String(n));
         for (const [k, v] of Object.entries(parsed.extras)) f.append(k, v);
@@ -436,7 +453,8 @@ async function callUpstream(
         upstreamBody = f; // fetch 自动生成 boundary(不能手写 content-type)
     } else {
         const j: Record<string, unknown> = { model: parsed.model, prompt: parsed.prompt };
-        if (parsed.size.trim()) j.size = parsed.size.trim();
+        const sendSize = parsed.upstreamSize ?? parsed.size.trim();
+        if (sendSize) j.size = sendSize;
         if (FORWARD_QUALITY_SET.has(q)) j.quality = q;
         if (n > 1) j.n = n;
         for (const [k, v] of Object.entries(parsed.extras)) {
@@ -549,7 +567,36 @@ export async function handleAdapter25Image(
         });
     }
 
-    const dims = parseSize(parsed.size);
+    // ---- size=auto / 缺省 → 官方 auto 尺寸(2026-09-19 官方 key 打 gpt-image-2.5 实测):generations 缺省 1:1
+    // (1254×1254,与 2.0 的 4:5 不同);edits 跟第一张输入图比例(方→1254²、16:9→1672×941,与 2.0 相同)。
+    // 上游发 16 对齐尺寸,返图相符按官方尺寸计费/回显;不符按实际;读不出按官方尺寸(不再 503)。
+    let officialDims: { w: number; h: number } | null = null;
+    if (isAutoSize(parsed.size)) {
+        let aspect = 1;
+        let source = 'default-1:1';
+        if (mode === 'edits') {
+            const pr = promptAspectRatio(parsed.prompt);
+            const inputDims = parsed.images.length ? imageDimensions(parsed.images[0].buf) : null;
+            if (pr) {
+                aspect = aspectFromRatio(pr);
+                source = `prompt:${pr}`;
+            } else if (inputDims) {
+                aspect = inputDims.w / inputDims.h;
+                source = `input:${inputDims.w}x${inputDims.h}`;
+            } else source = 'input-unreadable→1:1';
+        }
+        officialDims = officialAutoDims(aspect);
+        const aligned = alignTo16(officialDims);
+        parsed.upstreamSize = `${aligned.w}x${aligned.h}`;
+        console.log('[image-adapter25] auto size', {
+            provider: providerName,
+            mode,
+            source,
+            official: `${officialDims.w}x${officialDims.h}`,
+            upstream: parsed.upstreamSize,
+        });
+    }
+    const dims = officialDims ?? parseSize(parsed.size);
     const quality = normQuality25(parsed.quality);
     // ---- 档位白名单:上游对名单外档位是【静默降级】而非拒绝(llmway xhigh/max → medium),直通会让
     // 客户按高档付费拿低档图;让路 503 给别的渠道,不打上游。归一后判(auto/缺省 = low 照常放行)。 ----
@@ -599,22 +646,25 @@ export async function handleAdapter25Image(
     const actualDims = out0 ? imageDimensions(Buffer.from(out0, 'base64')) : null;
     let billW: number;
     let billH: number;
-    if (actualDims) {
+    if (actualDims && officialDims && matchesAutoRequest(actualDims, officialDims)) {
+        billW = officialDims.w; // auto:上游交付了我们要的那张 → 按官方 auto 尺寸计费 + 回显
+        billH = officialDims.h;
+    } else if (actualDims) {
         billW = actualDims.w;
         billH = actualDims.h;
         if (dims && (dims.w !== actualDims.w || dims.h !== actualDims.h)) {
             console.warn('[image-adapter25] upstream size differs from request, billing by actual', {
                 provider: providerName,
                 mode,
-                requested: parsed.size,
+                requested: parsed.upstreamSize ?? parsed.size,
                 actual: `${actualDims.w}x${actualDims.h}`,
             });
         }
     } else if (dims) {
-        billW = dims.w;
+        billW = dims.w; // 读不出返回图尺寸:显式 size 按请求值;auto 按官方 auto 尺寸
         billH = dims.h;
     } else {
-        return failover('unbillable_auto', 'auto size but output image dimensions unreadable');
+        return failover('unbillable_auto', 'size unparsable and output image dimensions unreadable');
     }
 
     // ---- 合成 usage(官方 5 档公式 + 官方输入图口径)----
@@ -645,7 +695,11 @@ export async function handleAdapter25Image(
         provider: providerName,
         model: parsed.model,
         mode,
-        size: dims && dims.w === billW && dims.h === billH ? parsed.size : `${parsed.size || 'auto'}→${respSize}`,
+        size: officialDims
+            ? `auto→${respSize}(upstream ${parsed.upstreamSize})`
+            : dims && dims.w === billW && dims.h === billH
+              ? parsed.size
+              : `${parsed.size || '?'}→${respSize}`,
         quality,
         n,
         images: items.length,
