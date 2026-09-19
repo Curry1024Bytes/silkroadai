@@ -5770,3 +5770,42 @@ describe('/v1 proxy — 伪流式 partial_image 事件 + sequence_number(第 5 �
         expect(j.data[0].generation_id).not.toBe(j.data[1].generation_id);
     });
 });
+
+describe('/v1 proxy — gpt-image-2.5 quality 枚举含 xhigh / max(修第 3 批误伤 2.5 的回归,2026-09-19)', () => {
+    beforeEach(() => {
+        mockFetch.mockResolvedValue(
+            new Response(JSON.stringify({ created: 1, data: [{ b64_json: 'QUJD' }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+    });
+    const gen25 = (q: string) =>
+        makeReq('/images/generations', {
+            body: { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: q },
+        });
+
+    it.each(['low', 'medium', 'high', 'xhigh', 'max', 'auto'])('2.5 quality %s → 放行', async (q) => {
+        expect((await POST(gen25(q), ctx('images', 'generations'))).status).toBe(200);
+    });
+
+    it('2.5 quality ultra → 400,文案列六档', async () => {
+        const res = await POST(gen25('ultra'), ctx('images', 'generations'));
+        expect(res.status).toBe(400);
+        const j = (await res.json()) as { error: { message: string; param: string } };
+        expect(j.error.param).toBe('quality');
+        expect(j.error.message).toBe(
+            "Invalid value: 'ultra'. Supported values are: 'low', 'medium', 'high', 'xhigh', 'max', and 'auto'.",
+        );
+    });
+
+    it('2.0 quality xhigh 仍 400(官方 2.0 只有四档)', async () => {
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', quality: 'xhigh' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(400);
+    });
+});

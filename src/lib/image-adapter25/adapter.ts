@@ -299,6 +299,8 @@ interface ParsedRequest {
     images: Array<{ buf: Buffer; type: string; name: string }>;
     /** 透传给上游的其余标量字段。 */
     extras: Record<string, string>;
+    /** edits 蒙版(官方 `mask`):原样透传上游,不计费、不参与尺寸判定(2026-09-19 补齐,此前 2.5 适配器丢弃)。 */
+    mask: { buf: Buffer; type: string; name: string } | null;
 }
 
 const FORWARD_EXTRAS = new Set(['output_format', 'output_compression', 'background', 'user']);
@@ -329,6 +331,15 @@ async function parseIncoming(req: NextRequest): Promise<ParsedRequest | null> {
             const v = form.get(k);
             if (typeof v === 'string' && v) extras[k] = v;
         }
+        const maskFile = form.get('mask');
+        const mask =
+            maskFile instanceof File && maskFile.size > 0
+                ? {
+                      buf: Buffer.from(await maskFile.arrayBuffer()),
+                      type: maskFile.type || 'image/png',
+                      name: maskFile.name || 'mask.png',
+                  }
+                : null;
         return {
             model: String(form.get('model') ?? ''),
             prompt: String(form.get('prompt') ?? ''),
@@ -337,6 +348,7 @@ async function parseIncoming(req: NextRequest): Promise<ParsedRequest | null> {
             n: Math.max(1, Number(form.get('n')) || 1),
             images,
             extras,
+            mask,
         };
     }
     const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
@@ -355,6 +367,7 @@ async function parseIncoming(req: NextRequest): Promise<ParsedRequest | null> {
         n: Math.max(1, Number(body.n) || 1),
         images: [],
         extras,
+        mask: null,
     };
 }
 
@@ -418,6 +431,8 @@ async function callUpstream(
         for (const [k, v] of Object.entries(parsed.extras)) f.append(k, v);
         for (const img of parsed.images)
             f.append('image', new Blob([new Uint8Array(img.buf)], { type: img.type }), img.name);
+        if (parsed.mask)
+            f.append('mask', new Blob([new Uint8Array(parsed.mask.buf)], { type: parsed.mask.type }), parsed.mask.name);
         upstreamBody = f; // fetch 自动生成 boundary(不能手写 content-type)
     } else {
         const j: Record<string, unknown> = { model: parsed.model, prompt: parsed.prompt };

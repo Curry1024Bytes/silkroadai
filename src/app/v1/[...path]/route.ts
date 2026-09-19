@@ -1508,6 +1508,8 @@ interface GptImageParamInput {
     outputCompression: unknown;
     hasStyle: boolean;
     hasInputFidelity: boolean;
+    /** gpt-image-2.5 系:quality 官方枚举多 xhigh / max 两档(image-adapter25 QUALITY_GRID_25)。 */
+    tier5: boolean;
 }
 function jsTypeName(v: unknown): string {
     if (v === null) return 'null';
@@ -1577,9 +1579,12 @@ function officialGptImageParamError(p: GptImageParamInput, cap: CaptureCtx | nul
                 'quality',
                 'invalid_type',
             );
-        if (!['low', 'medium', 'high', 'auto'].includes(p.quality))
+        const allowed = p.tier5 ? ['low', 'medium', 'high', 'xhigh', 'max', 'auto'] : ['low', 'medium', 'high', 'auto'];
+        if (!allowed.includes(p.quality))
             return bad(
-                `Invalid value: '${p.quality}'. Supported values are: 'low', 'medium', 'high', and 'auto'.`,
+                p.tier5
+                    ? `Invalid value: '${p.quality}'. Supported values are: 'low', 'medium', 'high', 'xhigh', 'max', and 'auto'.`
+                    : `Invalid value: '${p.quality}'. Supported values are: 'low', 'medium', 'high', and 'auto'.`,
                 'quality',
                 'invalid_value',
             );
@@ -2232,6 +2237,7 @@ async function handleImagesDalle(
                             outputCompression: form.get('output_compression') ?? undefined,
                             hasStyle: form.has('style'),
                             hasInputFidelity: form.has('input_fidelity'),
+                            tier5: isGptImage25Model(model),
                         },
                         cap,
                     );
@@ -2387,6 +2393,7 @@ async function handleImagesDalle(
                             outputCompression: body.output_compression,
                             hasStyle: 'style' in body,
                             hasInputFidelity: 'input_fidelity' in body,
+                            tier5: isGptImage25Model(model),
                         },
                         cap,
                     );

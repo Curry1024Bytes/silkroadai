@@ -855,3 +855,27 @@ describe('zdchat25 全量线 + url→b64 拉取重试', () => {
         }
     });
 });
+
+describe('2.5 适配器 mask 透传(2026-09-19 补齐;此前只在 2.0 适配器修了)', () => {
+    it('multipart edits 带 mask → 上游 FormData 含 mask 文件,不计费', async () => {
+        okUpstream([pngB64(1024, 1024)]);
+        const fd = new FormData();
+        fd.append('model', 'gpt-image-2.5-flare');
+        fd.append('prompt', 'edit');
+        fd.append('size', '1024x1024');
+        fd.append('quality', 'high');
+        fd.append('image', new Blob([new Uint8Array(TINY_PNG)], { type: 'image/png' }), 'a.png');
+        fd.append('mask', new Blob([new Uint8Array(TINY_PNG)], { type: 'image/png' }), 'm.png');
+        const req = new NextRequest(URL_EDIT, { method: 'POST', headers: { authorization: 'Bearer k' }, body: fd });
+        const res = await handleAdapter25Image(req, 'edits', 'wetokenasia25');
+        expect(res.status).toBe(200);
+        const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+        const f = init.body as FormData;
+        expect(f.getAll('image')).toHaveLength(1);
+        const mask = f.get('mask');
+        expect(mask).toBeInstanceOf(Blob);
+        expect((mask as File).name).toBe('m.png');
+        const body = (await res.json()) as { usage: { input_tokens_details: { image_tokens: number } } };
+        expect(body.usage.input_tokens_details.image_tokens).toBe(1024); // 只算 image(1024² 夹具),不算 mask(否则 2048)
+    });
+});
