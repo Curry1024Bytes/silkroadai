@@ -181,6 +181,20 @@ export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
         openAllTiers: true,
         noTransparentBackground: true,
     },
+    // revehigh:reve.amlkcloud.top(amlkcloud 家,2026-09-20 接入)—— gpt-image-2 的【high 专线】。
+    // 2026-09-20 实测:认裸 gpt-image-2、【尺寸全如实】(1024²/1536×1024/2048²/2880²/3840×2160 逐像素
+    // 精确,不降级)、high 比 low 细节更足(184 vs 133KB)、17-26s。输出【JPEG】(非 PNG):≤2K 直返 b64、
+    // 2880²+4K 走 img.dengche.cc CDN 的 url(适配器 url→b64 拉回;⚠️ 该 CDN 挡 Python-urllib UA 但放行
+    // node undici → 适配器 fetch 200 实测通,无需改 UA)。无可读 C2PA、无 adobe/OpenAI 签名 → 无泄漏、
+    // 无需剥。守门 onlyQualities=['high']:只接客户显式 quality=high,其余 503 让路。透明 fail-closed
+    // (JPEG 无 alpha 通道)。计费仍按适配器官方 high 公式(按返回图实际尺寸合成)。
+    // 【已知特征】输出恒 JPEG —— 客户请求默认(png)也拿 JPEG;适配器不转 jpeg→png(只 png→jpeg)。
+    revehigh: {
+        baseUrl: 'https://reve.amlkcloud.top',
+        brand: /\bamlkcloud\b|\bdengche\b|\breve\b/gi,
+        onlyQualities: ['high'],
+        noTransparentBackground: true,
+    },
     // ---- oaidist/oaidistfull(ch201/ch202)守门 + 全量线 ----
     // 【上游变迁史】2026-08-24 首接 64.32.31.178:3009 是真 OpenAI 签名;2026-09-06 复测该上游【静默
     // 变成 Adobe Firefly】(见 memory image2 project + ch83-adobe-c2pa-image-leak,上游会偷偷换后端)。

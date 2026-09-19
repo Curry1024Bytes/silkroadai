@@ -2208,3 +2208,80 @@ describe('第 5 批:webp 真交付 + generation_id(2026-09-19)', () => {
         expect(body.data[0].generation_id).not.toBe(body.data[1].generation_id);
     });
 });
+
+describe('revehigh provider(reve.amlkcloud.top,gpt-image-2 high 专线,onlyQualities=[high])', () => {
+    const URL_RV = 'http://portal.test/image-adapter/revehigh/v1/images/generations';
+    const gen = (body: Record<string, unknown>) =>
+        handleAdapterImage(
+            jsonReq(URL_RV, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', ...body }),
+            'generations',
+            'revehigh',
+        );
+
+    it('high 放行:路由 reve.amlkcloud.top,送裸 gpt-image-2,官方 high 合成 usage', async () => {
+        okUpstream();
+        const res = await gen({ quality: 'high' });
+        expect(res.status).toBe(200);
+        const [url, init] = fetchMock.mock.calls[0];
+        expect(url).toBe('https://reve.amlkcloud.top/v1/images/generations');
+        expect(JSON.parse(init.body as string).model).toBe('gpt-image-2');
+        expect((await res.json()).usage.output_tokens).toBe(7024); // 官方 1024² high
+    });
+
+    it.each([
+        ['low', { quality: 'low' }],
+        ['medium', { quality: 'medium' }],
+        ['auto(→low)', { quality: 'auto' }],
+        ['缺省(→low)', {}],
+    ])('非 high 拒(503 不打上游):%s', async (_label, extra) => {
+        const res = await gen(extra);
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('high 不看尺寸:2880² / 4K high 均放行,按返回图实际尺寸合成', async () => {
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(2880, 2880) }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+        const res = await gen({ quality: 'high', size: '2880x2880' });
+        expect(res.status).toBe(200);
+        expect((await res.json()).usage.output_tokens).toBe(officialOutputTokens(2880, 2880, 'high'));
+    });
+
+    it('high + background=transparent → 503(JPEG 无 alpha,fail-closed)', async () => {
+        const res = await gen({ quality: 'high', background: 'transparent' });
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('上游返 url → 拉回转 b64,不外泄上游 url', async () => {
+        fetchMock
+            .mockResolvedValueOnce(
+                new Response(JSON.stringify({ created: 1, data: [{ url: 'https://img.dengche.cc/leo/x.jpg' }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+            )
+            .mockResolvedValueOnce(
+                new Response(new Uint8Array(Buffer.from(pngB64(2880, 2880), 'base64')), { status: 200 }),
+            );
+        const res = await gen({ quality: 'high', size: '2880x2880' });
+        expect(res.status).toBe(200);
+        const raw = JSON.stringify(await res.json());
+        expect(raw).not.toContain('dengche');
+    });
+
+    it('brand 正则抹掉 amlkcloud / dengche / reve', () => {
+        const out = sanitizeAdapterError(
+            'reve.amlkcloud.top via dengche.cc failed',
+            /\bamlkcloud\b|\bdengche\b|\breve\b/gi,
+        );
+        const lc = out.toLowerCase();
+        expect(lc).not.toContain('amlkcloud');
+        expect(lc).not.toContain('dengche');
+    });
+});
