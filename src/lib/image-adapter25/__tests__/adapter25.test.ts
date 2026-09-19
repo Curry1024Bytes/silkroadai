@@ -131,8 +131,8 @@ describe('synthUsage25', () => {
         });
         expect(u.output_tokens).toBe(3122 * 2);
         const det = u.input_tokens_details as { text_tokens: number; image_tokens: number };
-        expect(det.image_tokens).toBe(1521 + 1024);
-        expect(u.input_tokens).toBe(estimateTextTokens('add a tiny star') + 1521 + 1024);
+        expect(det.image_tokens).toBe((1521 + 1024) * 2); // 官方 n 张语义:input ×张数
+        expect(u.input_tokens).toBe((estimateTextTokens('add a tiny star') + 1521 + 1024) * 2);
         expect(Object.keys(u).sort()).toEqual([
             'input_tokens',
             'input_tokens_details',
@@ -210,7 +210,7 @@ describe('handleAdapter25Image 透传契约', () => {
         expect(sent.n).toBe(3);
         const body = (await res.json()) as { data: unknown[]; usage: { output_tokens: number } };
         expect(body.data).toHaveLength(3);
-        expect(body.usage.output_tokens).toBe(196 * 3);
+        expect(body.usage.output_tokens).toBe(586); // 官方 n 张 = ceil(3×195.1),不是 196×3=588
     });
 
     it('上游少返(n=3 只回 2)→ 按 2 张计费不失败', async () => {
@@ -220,7 +220,7 @@ describe('handleAdapter25Image 透传契约', () => {
             'generations',
             'wetokenasia25',
         );
-        expect(((await res.json()) as { usage: { output_tokens: number } }).usage.output_tokens).toBe(196 * 2);
+        expect(((await res.json()) as { usage: { output_tokens: number } }).usage.output_tokens).toBe(391); // ceil(2×195.1)
     });
 
     it('multipart edits:model/quality/输入图透传,输入图 token 按官方 2.5 口径', async () => {

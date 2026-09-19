@@ -9,12 +9,17 @@ import {
     handleAdapterImage,
     parseSize,
     officialOutputTokens,
+    officialOutputTokensNumerator,
     isProfitable,
     synthUsage,
     estimateTextTokens,
     officialInputImageTokens,
     sanitizeAdapterError,
 } from '@/lib/image-adapter/adapter';
+
+/** 官方 n 张输出 token:先乘 n 再一次 ceil(1024² low n=2 → 391 非 392,官方 key 实测)。 */
+const ctN = (w: number, h: number, q: 'low' | 'medium' | 'high', n: number) =>
+    Math.ceil((n * officialOutputTokensNumerator(w, h, q)) / 4_000_000);
 
 const URL_GEN = 'http://portal.test/image-adapter/ominiapi/v1/images/generations';
 const URL_EDIT = 'http://portal.test/image-adapter/ominiapi/v1/images/edits';
@@ -190,10 +195,12 @@ describe('synthUsage(合成数值 = 官方公式口径)', () => {
             inputImageDims: [{ w: 2048, h: 2048 }, null],
             imageCount: 2,
         });
-        expect(u.output_tokens).toBe(13342 * 2);
-        expect(u.input_tokens).toBe(estimateTextTokens('edit') + 1521 + 1024);
+        expect(u.output_tokens).toBe(ctN(3840, 2160, 'high', 2));
+        // 官方 n 张语义:input(文本+输入图)×张数
+        expect(u.input_tokens).toBe((estimateTextTokens('edit') + 1521 + 1024) * 2);
         const details = u.input_tokens_details as { text_tokens: number; image_tokens: number };
-        expect(details.image_tokens).toBe(1521 + 1024);
+        expect(details.image_tokens).toBe((1521 + 1024) * 2);
+        expect(details.text_tokens).toBe(estimateTextTokens('edit') * 2);
     });
 
     it('4K 输入图按官方缩到 1536 patch 内:3840×2160 → 1508(52×29,floor 不 round)', () => {
@@ -213,6 +220,29 @@ describe('synthUsage(合成数值 = 官方公式口径)', () => {
         });
         const details = u.input_tokens_details as { text_tokens: number; image_tokens: number };
         expect(details.image_tokens).toBe(4 * 1508);
+    });
+
+    it('n 张官方语义(2026-09-17 官方 key 实测):output 先乘 n 再 ceil,input ×n', () => {
+        const mk = (n: number, mode: 'generations' | 'edits' = 'generations') =>
+            synthUsage({
+                mode,
+                w: 1024,
+                h: 1024,
+                quality: 'low',
+                prompt: 'a cat',
+                inputImageDims: mode === 'edits' ? [{ w: 1024, h: 1024 }] : [],
+                imageCount: n,
+            });
+        expect(mk(1).output_tokens).toBe(196);
+        expect(mk(2).output_tokens).toBe(391); // 不是 392
+        expect(mk(3).output_tokens).toBe(586); // 不是 588
+        expect(mk(2).input_tokens).toBe(16); // text 8 ×2
+        const e = mk(2, 'edits');
+        const det = e.input_tokens_details as { text_tokens: number; image_tokens: number };
+        expect(det.text_tokens).toBe(16);
+        expect(det.image_tokens).toBe(2048); // 1024 ×2
+        expect(e.input_tokens).toBe(2064);
+        expect(e.total_tokens).toBe(2064 + 391);
     });
 
     it('官方输入图口径逐点(2026-09-16 官方 key 实测 15 尺寸 + null 兜底)', () => {
@@ -237,6 +267,7 @@ describe('synthUsage(合成数值 = 官方公式口径)', () => {
             // 超 1536 patch → √ 缩放两轴 floor
             [2048, 2048, 1521],
             [3840, 2160, 1508],
+            [6000, 4000, 1536], // 像素缩放后 floor = 48×32;对 patch 数缩放会错成 48×31=1488
         ];
         for (const [w, h, expected] of cases) expect(officialInputImageTokens({ w, h }), `${w}x${h}`).toBe(expected);
         expect(officialInputImageTokens(null)).toBe(1024);
@@ -496,7 +527,7 @@ describe('handleAdapterImage n>1 并发扇出(ominiapi 忽略 n,只能自己扇)
         const body = await res.json();
         expect(body.data).toHaveLength(4);
         expect(new Set(body.data.map((d: { b64_json: string }) => d.b64_json)).size).toBe(4); // 4 张互不相同
-        expect(body.usage.output_tokens).toBe(13342 * 4);
+        expect(body.usage.output_tokens).toBe(ctN(3840, 2160, 'high', 4));
         // 每次上游调用都只要 1 张 —— 传 n 给 ominiapi 无效,反而会混淆
         for (const [, init] of fetchMock.mock.calls) {
             expect(JSON.parse(init.body as string).n).toBeUndefined();
@@ -513,7 +544,7 @@ describe('handleAdapterImage n>1 并发扇出(ominiapi 忽略 n,只能自己扇)
                 'ominiapi',
             );
             expect(fetchMock).toHaveBeenCalledTimes(n);
-            expect((await res.json()).usage.output_tokens).toBe(13342 * n);
+            expect((await res.json()).usage.output_tokens).toBe(ctN(3840, 2160, 'high', n));
         }
     });
 
@@ -546,7 +577,7 @@ describe('handleAdapterImage n>1 并发扇出(ominiapi 忽略 n,只能自己扇)
         expect(res.status).toBe(200);
         const body = await res.json();
         expect(body.data).toHaveLength(2);
-        expect(body.usage.output_tokens).toBe(13342 * 2); // 只收 2 张的钱
+        expect(body.usage.output_tokens).toBe(ctN(3840, 2160, 'high', 2)); // 只收 2 张的钱
     });
 
     it('全部失败 → 503 failover(不合成 usage)', async () => {
@@ -575,7 +606,7 @@ describe('handleAdapterImage n>1 并发扇出(ominiapi 忽略 n,只能自己扇)
             expect(f.getAll('image')).toHaveLength(1);
             expect(f.get('n')).toBeNull();
         }
-        expect((await res.json()).usage.output_tokens).toBe(13342 * 3);
+        expect((await res.json()).usage.output_tokens).toBe(ctN(3840, 2160, 'high', 3));
     });
 
     it('multipart edits:解析 prompt/size/quality + 输入图透传上游 + 输入图 token 计入', async () => {
@@ -601,6 +632,28 @@ describe('handleAdapterImage n>1 并发扇出(ominiapi 忽略 n,只能自己扇)
         expect(sentForm.get('model')).toBe('gpt-image-2');
         expect(sentForm.get('response_format')).toBe('b64_json');
         expect(sentForm.getAll('image')).toHaveLength(1);
+    });
+
+    it('multipart edits 带 mask:蒙版原样透传上游(此前被丢弃 → 整图重画),不计费', async () => {
+        okUpstream();
+        const fd = new FormData();
+        fd.append('model', 'gpt-image-2');
+        fd.append('prompt', 'edit it');
+        fd.append('size', '3840x2160');
+        fd.append('quality', 'high');
+        fd.append('image', new Blob([new Uint8Array(TINY_PNG)], { type: 'image/png' }), 'a.png');
+        fd.append('mask', new Blob([new Uint8Array(TINY_PNG)], { type: 'image/png' }), 'm.png');
+        const req = new NextRequest(URL_EDIT, { method: 'POST', headers: { authorization: 'Bearer k' }, body: fd });
+        const res = await handleAdapterImage(req, 'edits', 'ominiapi');
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.usage.input_tokens_details.image_tokens).toBe(1); // 只算 image,不算 mask
+        const [, init] = fetchMock.mock.calls[0];
+        const sentForm = init.body as FormData;
+        expect(sentForm.getAll('image')).toHaveLength(1);
+        const mask = sentForm.get('mask');
+        expect(mask).toBeInstanceOf(Blob);
+        expect((mask as File).name).toBe('m.png');
     });
 });
 

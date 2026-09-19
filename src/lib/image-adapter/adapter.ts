@@ -51,12 +51,19 @@ const MAX_FANOUT = 10;
 type Quality = 'low' | 'medium' | 'high';
 const QUALITY_GRID: Record<Quality, number> = { low: 16, medium: 48, high: 96 };
 
-export function officialOutputTokens(w: number, h: number, quality: Quality): number {
+/** 单张输出 token 的【未取整分子】:patches × (2e6 + w·h),分母恒 4e6。官方对 n 张是先乘 n 再一次 ceil
+ *  (2026-09-17 官方 key 实测 1024² low:n=1→196、n=2→391、n=3→586,不是 392/588),所以 synthUsage 要拿
+ *  分子自己算,不能拿单张 ceil 值乘 n。整数运算,4K·high 分子 ~5×10¹⁰ 远在 2⁵³ 内。 */
+export function officialOutputTokensNumerator(w: number, h: number, quality: Quality): number {
     const long = Math.max(w, h);
     const short = Math.min(w, h);
     const grid = QUALITY_GRID[quality];
     const patches = grid * Math.round((grid * short) / long);
-    return Math.ceil((patches * (2_000_000 + w * h)) / 4_000_000);
+    return patches * (2_000_000 + w * h);
+}
+
+export function officialOutputTokens(w: number, h: number, quality: Quality): number {
+    return Math.ceil(officialOutputTokensNumerator(w, h, quality) / 4_000_000);
 }
 
 /** "3840x2160" → {w,h};非 WxH(auto/缺省/比例串)→ null(守门按不明处理)。 */
@@ -205,7 +212,7 @@ export interface SynthUsageInput {
     prompt: string;
     /** edits 输入图的尺寸(读不出的项传 null,按 1MP 兜底)。 */
     inputImageDims: Array<{ w: number; h: number } | null>;
-    /** 实际出图张数(按上游真实返回计,n>1 时按张累加)。 */
+    /** 实际出图张数(按上游真实返回计;input ×n、output 先乘 n 再 ceil,见 synthUsage)。 */
     imageCount: number;
 }
 
@@ -222,11 +229,15 @@ export interface SynthUsageInput {
  *  它们本来就只返回官方字段。适配器多送一套反而让【同一个模型不同渠道 usage 形状不一致】。
  *  `buildEstimatedUsage` 那处保持不动 —— 它只在上游完全不回 usage 时兜底,是另一个场景(PR #134)。 */
 export function synthUsage(inp: SynthUsageInput): Record<string, unknown> {
-    const perImage = officialOutputTokens(inp.w, inp.h, inp.quality);
-    const ct = perImage * Math.max(1, inp.imageCount);
-    const textTokens = estimateTextTokens(inp.prompt);
+    const count = Math.max(1, inp.imageCount);
+    // 官方 n 张语义(2026-09-17 官方 key 实测):output = ceil(n × 单张分子 / 4e6)(不是单张 ceil × n);
+    // input(文本 + 输入图)每张都算一遍 = ×n(generations n=2:text 8→16;edits n=2:image 1024→2048)。
+    // 这里的 n 用【实际交付张数】:扇出部分失败只按拿到的张数收,与官方"n 次生成"语义一致。
+    const ct = Math.ceil((count * officialOutputTokensNumerator(inp.w, inp.h, inp.quality)) / 4_000_000);
+    const textTokens = estimateTextTokens(inp.prompt) * count;
     let imgTokens = 0;
     if (inp.mode === 'edits') for (const d of inp.inputImageDims) imgTokens += officialInputImageTokens(d);
+    imgTokens *= count;
     const pt = textTokens + imgTokens;
     return {
         input_tokens: pt,
@@ -332,6 +343,9 @@ interface ParsedRequest {
     images: Array<{ buf: Buffer; type: string; name: string }>;
     /** 透传给上游的其余标量字段(model 强制 gpt-image-2,见 buildUpstreamBody)。 */
     extras: Record<string, string>;
+    /** edits 的蒙版(官方 `mask`,与 image 同尺寸的 RGBA png):原样透传上游,不计费、不参与尺寸判定。
+     *  2026-09-17 官方对齐审计发现此前被丢弃 → 客户局部重绘变成整图重画。 */
+    mask: { buf: Buffer; type: string; name: string } | null;
 }
 
 const FORWARD_EXTRAS = new Set(['output_format', 'output_compression', 'background', 'user']);
@@ -361,6 +375,15 @@ async function parseIncoming(req: NextRequest, mode: ImageMode): Promise<ParsedR
             const v = form.get(k);
             if (typeof v === 'string' && v) extras[k] = v;
         }
+        const maskFile = form.get('mask');
+        const mask =
+            maskFile instanceof File && maskFile.size > 0
+                ? {
+                      buf: Buffer.from(await maskFile.arrayBuffer()),
+                      type: maskFile.type || 'image/png',
+                      name: maskFile.name || 'mask.png',
+                  }
+                : null;
         return {
             prompt: String(form.get('prompt') ?? ''),
             size: String(form.get('size') ?? ''),
@@ -368,6 +391,7 @@ async function parseIncoming(req: NextRequest, mode: ImageMode): Promise<ParsedR
             n: Math.max(1, Number(form.get('n')) || 1),
             images,
             extras,
+            mask,
         };
     }
     const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
@@ -386,6 +410,7 @@ async function parseIncoming(req: NextRequest, mode: ImageMode): Promise<ParsedR
         n: Math.max(1, Number(body.n) || 1),
         images: [],
         extras,
+        mask: null,
     };
 }
 
@@ -436,6 +461,8 @@ async function callUpstreamOnce(
         for (const [k, v] of Object.entries(parsed.extras)) f.append(k, v);
         for (const img of parsed.images)
             f.append('image', new Blob([new Uint8Array(img.buf)], { type: img.type }), img.name);
+        if (parsed.mask)
+            f.append('mask', new Blob([new Uint8Array(parsed.mask.buf)], { type: parsed.mask.type }), parsed.mask.name);
         upstreamBody = f; // fetch 自动生成 multipart boundary(不能手写 content-type,gotcha #21)
     } else {
         const j: Record<string, unknown> = {

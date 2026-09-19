@@ -1650,23 +1650,46 @@ function isStrictImageMode(req: NextRequest, search: string): boolean {
     return new URLSearchParams(search).get('strict') === 'true';
 }
 
-/** gpt-image 尺寸校验(逆向 ch44 zhiyunai 实测规则)。仅校验显式 WxH 像素尺寸(auto / 比例串
- *  交给 normalize)。合规 = 两边都是 16 的倍数、1024 ≤ 长边 ≤ 3840、短边 ≤ 2160、长/短 ≤ 3:1。
- *  返回 400 错误文案或 null(合规)。 */
+/** gpt-image 尺寸校验 —— 官方 api.openai.com 规则与文案(2026-09-17 官方 key 逐条实测):两边都是 16 的倍数、
+ *  最长边 ≤ 3840、长/短 ≤ 3:1、总像素 ∈ [655,360, 8,294,400]。仅校验显式 WxH(auto / "" / 比例串交给 normalize)。
+ *  返回官方原文或 null。此前只在 strict 模式且按 zhiyunai 规则(长边 ≥1024 / 短边 ≤2160)校验,非严格一律透传,
+ *  上游会【静默改尺寸再计费】(1000²→1008²、512²→816²、4096×2304→4K),客户按官方对不上 → 改为默认生效。 */
+const GPT_IMAGE_MIN_PIXELS = 655_360;
+const GPT_IMAGE_MAX_PIXELS = 8_294_400;
 function gptImageSizeError(size: string): string | null {
     if (!size) return null;
     const m = size.match(/^(\d+)x(\d+)$/);
     if (!m) return null; // 非 WxH(auto / "16:9" 等)→ 不在此校验
     const w = Number(m[1]);
     const h = Number(m[2]);
-    if (w % 16 !== 0 || h % 16 !== 0) return `invalid size '${size}': width and height must be multiples of 16`;
+    if (w % 16 !== 0 || h % 16 !== 0) return `Invalid size '${size}'. Width and height must both be divisible by 16.`;
     const long = Math.max(w, h);
     const short = Math.min(w, h);
-    if (long < 1024) return `invalid size '${size}': minimum long edge is 1024`;
-    if (long > 3840 || short > 2160)
-        return `invalid size '${size}': maximum is 3840x2160 (long edge ≤ 3840, short edge ≤ 2160)`;
-    if (long / short > 3) return `invalid size '${size}': aspect ratio must be within 3:1`;
+    if (long > 3840) return `Invalid size '${size}'. The longest edge must be less than or equal to 3840.`;
+    if (long / short > 3) return `Invalid size '${size}'. The maximum supported aspect ratio is 3:1.`;
+    if (w * h < GPT_IMAGE_MIN_PIXELS)
+        return `Invalid size '${size}'. Requested resolution is below the current minimum pixel budget.`;
+    if (w * h > GPT_IMAGE_MAX_PIXELS)
+        return `Invalid size '${size}'. Requested resolution is above the current maximum pixel budget.`;
     return null;
+}
+
+/** 客户打的是 /images/edits 却一张输入图都没带 → 官方 400 `missing_required_parameter`(2026-09-17 官方实测)。
+ *  此前统一分流会把它当文生图打 generations 并计费(客户按官方对不上,且"漏传图"这种客户端 bug 被静默吞掉)。
+ *  统一分流仍保留其余语义:/generations 带图照旧转 edits。 */
+function isImagesEditsPath(path: string): boolean {
+    return path.replace(/\/+$/, '') === '/images/edits';
+}
+function missingImageError(cap: CaptureCtx | null): NextResponse {
+    return imageError("Missing required parameter: 'image'.", 400, cap, {
+        param: 'image',
+        code: 'missing_required_parameter',
+    });
+}
+
+/** 官方 size 错误体:type image_generation_user_error / param size / code invalid_value(官方实测三字段恒定)。 */
+function gptImageSizeErrorResponse(msg: string, cap: CaptureCtx | null): NextResponse {
+    return imageError(msg, 400, cap, { type: 'image_generation_user_error', param: 'size', code: 'invalid_value' });
 }
 
 /** 严格模式下校验 gpt-image 入参(output_format / background / size / moderation)。返回 400 文案或 null。 */
@@ -2049,7 +2072,10 @@ async function handleImagesDalle(
                             sizeRaw,
                             String(form.get('moderation') ?? ''),
                         );
-                        if (err) return imageError(err, 400, cap, { code: 'invalid_value' });
+                        if (err)
+                            return err.startsWith('Invalid size')
+                                ? gptImageSizeErrorResponse(err, cap)
+                                : imageError(err, 400, cap, { code: 'invalid_value' });
                     }
                     // n 范围门(官方 1-10):两模式都拦 —— n=1000 打上游是真金白银
                     const nErr = gptImageNError(form.get('n') == null ? undefined : String(form.get('n')));
@@ -2058,6 +2084,8 @@ async function handleImagesDalle(
                     const nVal = String(form.get('n') ?? '').trim();
                     if (wantStream && nVal !== '' && Number(nVal) > 1)
                         return imageError('stream supports n=1 only', 400, cap, { code: 'invalid_value', param: 'n' });
+                    // /images/edits 必须带输入图(官方 400 missing_required_parameter)
+                    if (isImagesEditsPath(path) && formImageFiles(form).length === 0) return missingImageError(cap);
                     // 严格 / 非严格都做:请求 jpeg/webp → 服务端转码交付(上游恒返 png、无视 output_format)
                     transcodeTo = gptImageTranscodeTarget(String(form.get('output_format') ?? ''));
                     const c = Number(form.get('output_compression'));
@@ -2065,6 +2093,9 @@ async function handleImagesDalle(
                         Number.isFinite(c) && String(form.get('output_compression') ?? '') !== '' ? c : undefined;
                     normalizeGptImageForm(form);
                     sizeRaw = String(form.get('size') ?? '');
+                    // 官方尺寸约束默认生效(非法 → 400 官方文案,不打上游;上游会静默改尺寸再计费)
+                    const sizeErr = gptImageSizeError(sizeRaw);
+                    if (sizeErr) return gptImageSizeErrorResponse(sizeErr, cap);
                 }
                 // multipart 入参不拆图字节(brief §3 Out),只记文本字段摘要
                 if (cap)
@@ -2179,7 +2210,10 @@ async function handleImagesDalle(
                             sizeRaw,
                             typeof body.moderation === 'string' ? body.moderation : '',
                         );
-                        if (err) return imageError(err, 400, cap, { code: 'invalid_value' });
+                        if (err)
+                            return err.startsWith('Invalid size')
+                                ? gptImageSizeErrorResponse(err, cap)
+                                : imageError(err, 400, cap, { code: 'invalid_value' });
                     }
                     // n 范围门(官方 1-10):两模式都拦 —— n=1000 打上游是真金白银
                     const nErr = gptImageNError(body.n);
@@ -2187,6 +2221,15 @@ async function handleImagesDalle(
                     // 伪流式限 n=1(completed 事件按官方单图形)
                     if (wantStream && body.n != null && Number(body.n) > 1)
                         return imageError('stream supports n=1 only', 400, cap, { code: 'invalid_value', param: 'n' });
+                    // /images/edits 必须带输入图(JSON 形:image / image_url 字符串或非空数组)
+                    if (isImagesEditsPath(path)) {
+                        const img = body.image;
+                        const hasImage =
+                            (typeof img === 'string' && img.trim() !== '') ||
+                            (Array.isArray(img) && img.length > 0) ||
+                            (typeof body.image_url === 'string' && body.image_url.trim() !== '');
+                        if (!hasImage) return missingImageError(cap);
+                    }
                     // 严格 / 非严格都做:请求 jpeg/webp → 服务端转码交付(上游恒返 png、无视 output_format)
                     transcodeTo = gptImageTranscodeTarget(
                         typeof body.output_format === 'string' ? body.output_format : '',
@@ -2195,6 +2238,9 @@ async function handleImagesDalle(
                         typeof body.output_compression === 'number' ? body.output_compression : undefined;
                     normalizeGptImageJson(body);
                     sizeRaw = typeof body.size === 'string' ? body.size : '';
+                    // 官方尺寸约束默认生效(同 multipart 分支)
+                    const sizeErr = gptImageSizeError(sizeRaw);
+                    if (sizeErr) return gptImageSizeErrorResponse(sizeErr, cap);
                 }
                 const echo: ImageEchoFields = {
                     quality: typeof body.quality === 'string' ? body.quality : '',

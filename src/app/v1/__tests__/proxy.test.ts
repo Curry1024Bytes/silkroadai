@@ -2858,15 +2858,14 @@ describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usag
         expect(sent.model).toBe('az-gpt-image-2');
     });
 
-    it('统一入口:JSON 无图发到 /images/edits → 代理分流到上游 generations', async () => {
-        mockFetch.mockResolvedValueOnce(imageJson200());
+    it('JSON 无图发到 /images/edits → 400 missing_required_parameter(官方语义,2026-09-17;不再静默转 generations 计费)', async () => {
         const res = await POST(
             makeReq('/images/edits', { body: { model: 'gpt-image-2', prompt: 'a red apple' } }),
             ctx('images', 'edits'),
         );
-        expect(res.status).toBe(200);
-        const [url] = mockFetch.mock.calls[0] as [string];
-        expect(url).toBe(`${NEWAPI_BASE}/v1/images/generations`); // 无图 → generations(客户发的是 edits)
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error: { code: string } }).error.code).toBe('missing_required_parameter');
+        expect(mockFetch).not.toHaveBeenCalled();
     });
 
     it('统一入口:JSON 带 image(data URL)发到 /images/generations → 转 multipart 走上游 edits', async () => {
@@ -3841,15 +3840,23 @@ describe('/v1 proxy — 严格模式 Azure gpt-image 合规(opt-in)', () => {
         expect(res.status).toBe(400);
     });
 
-    it('非严格模式:webp + 非法尺寸 → 不 400,原样放行(零回归)', async () => {
+    it('非严格模式:webp 仍放行(不 400);非法尺寸自 2026-09-17 起两模式都按官方 400', async () => {
         const res = await POST(
             makeReq('/images/generations', {
-                body: { model: 'gpt-image-2', prompt: 'x', output_format: 'webp', size: '1024x641' },
+                body: { model: 'gpt-image-2', prompt: 'x', output_format: 'webp', size: '1024x1024' },
             }),
             ctx('images', 'generations'),
         );
         expect(res.status).toBe(200);
         expect(mockFetch).toHaveBeenCalled();
+        const bad = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2', prompt: 'x', size: '1024x641' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(bad.status).toBe(400);
+        expect(((await bad.json()) as { error: { param: string } }).error.param).toBe('size');
     });
 
     it('严格 + output_format=jpeg → 服务端转码,返回 b64 是 JPEG(FFD8)', async () => {
@@ -4689,15 +4696,15 @@ describe('/v1 proxy — gpt-image 官方契约对齐(variations 拦 / 流参数�
         expect(typeof mask).not.toBe('string');
     });
 
-    it('multipart 只带 mask 无 image → mask 不算输入图,走文生图 generations', async () => {
-        mockFetch.mockResolvedValueOnce(okImageResp());
+    it('multipart /images/edits 只带 mask 无 image → mask 不算输入图 → 400 missing_required_parameter(官方语义)', async () => {
         const form = new FormData();
         form.append('model', 'gpt-image-2');
         form.append('prompt', 'x');
         form.append('mask', imageFile([1, 2, 3], 'mask.png'));
-        await POST(makeMultipartReq(form), ctx('images', 'edits'));
-        const [url] = mockFetch.mock.calls[0] as [string];
-        expect(url).toBe(`${NEWAPI_BASE}/v1/images/generations`);
+        const res = await POST(makeMultipartReq(form), ctx('images', 'edits'));
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error: { param: string } }).error.param).toBe('image');
+        expect(mockFetch).not.toHaveBeenCalled();
     });
 
     it('?strict=true 不透传给上游 URL', async () => {
@@ -5365,5 +5372,88 @@ describe('/v1 proxy — 未知模型 503 → 404 model_not_found(OpenAI 面)', (
         );
         expect(res.status).toBe(404);
         expect(mockFetch).toHaveBeenCalledTimes(3);
+    });
+});
+
+describe('/v1 proxy — gpt-image 官方尺寸约束默认生效 + /images/edits 必须带图(2026-09-17 官方 key 对齐)', () => {
+    beforeEach(() => {
+        mockFetch.mockResolvedValue(
+            new Response(JSON.stringify({ created: 1, data: [{ b64_json: 'QUJD' }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+    });
+    const gen = (body: Record<string, unknown>) =>
+        makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x', ...body } });
+
+    it.each([
+        ['1000x1000', /Width and height must both be divisible by 16/],
+        ['512x512', /below the current minimum pixel budget/],
+        ['4096x2304', /longest edge must be less than or equal to 3840/],
+        ['3840x1024', /maximum supported aspect ratio is 3:1/],
+        ['3840x2176', /above the current maximum pixel budget/],
+    ])('非严格模式 %s → 400 官方文案与字段,不打上游(此前透传让上游静默改尺寸再计费)', async (size, re) => {
+        const res = await POST(gen({ size }), ctx('images', 'generations'));
+        expect(res.status).toBe(400);
+        const j = (await res.json()) as { error: { message: string; type: string; param: string; code: string } };
+        expect(j.error.type).toBe('image_generation_user_error');
+        expect(j.error.param).toBe('size');
+        expect(j.error.code).toBe('invalid_value');
+        expect(j.error.message).toMatch(re);
+        expect(j.error.message).toContain(`'${size}'`);
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it.each(['1024x1024', '1024x640', '2368x1776', '3840x2160', '2880x2880', '1792x1024', '3072x1024'])(
+        '合规 %s → 放行',
+        async (size) => {
+            const res = await POST(gen({ size }), ctx('images', 'generations'));
+            expect(res.status).toBe(200);
+            expect(mockFetch).toHaveBeenCalled();
+        },
+    );
+
+    it('size=auto 不做像素校验 → 放行', async () => {
+        expect((await POST(gen({ size: 'auto' }), ctx('images', 'generations'))).status).toBe(200);
+    });
+
+    it('size 缺省不做像素校验 → 放行', async () => {
+        expect((await POST(gen({}), ctx('images', 'generations'))).status).toBe(200);
+    });
+
+    it('multipart /images/edits 不带 image → 400 missing_required_parameter(官方文案),不打上游', async () => {
+        const fd = new FormData();
+        fd.append('model', 'gpt-image-2');
+        fd.append('prompt', 'x');
+        fd.append('size', '1024x1024');
+        const req = new NextRequest('https://ai.silkroadai.io/v1/images/edits', { method: 'POST', body: fd });
+        const res = await POST(req, ctx('images', 'edits'));
+        expect(res.status).toBe(400);
+        const j = (await res.json()) as { error: { message: string; type: string; param: string; code: string } };
+        expect(j.error).toEqual({
+            message: "Missing required parameter: 'image'.",
+            type: 'invalid_request_error',
+            param: 'image',
+            code: 'missing_required_parameter',
+        });
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('JSON /images/edits 不带 image / image_url → 400 missing_required_parameter', async () => {
+        const res = await POST(
+            makeReq('/images/edits', { body: { model: 'gpt-image-2', prompt: 'x', size: '1024x1024' } }),
+            ctx('images', 'edits'),
+        );
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error: { code: string } }).error.code).toBe('missing_required_parameter');
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('/images/generations 不带图照旧走文生图(统一分流其余语义不变)', async () => {
+        const res = await POST(gen({ size: '1024x1024' }), ctx('images', 'generations'));
+        expect(res.status).toBe(200);
+        const [url] = mockFetch.mock.calls[0] as [string];
+        expect(url).toBe(`${NEWAPI_BASE}/v1/images/generations`);
     });
 });

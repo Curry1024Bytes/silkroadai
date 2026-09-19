@@ -45,12 +45,17 @@ export type Quality25 = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export const QUALITY_GRID_25: Record<Quality25, number> = { low: 16, medium: 24, high: 48, xhigh: 64, max: 96 };
 const QUALITY_25_SET = new Set<string>(['low', 'medium', 'high', 'xhigh', 'max']);
 
-export function officialOutputTokens25(w: number, h: number, quality: Quality25): number {
+/** 单张输出 token 未取整分子(分母 4e6);n 张 = ceil(n × 分子 / 4e6),同 2.0(官方 n=2 → 391 非 392)。 */
+export function officialOutputTokensNumerator25(w: number, h: number, quality: Quality25): number {
     const long = Math.max(w, h);
     const short = Math.min(w, h);
     const grid = QUALITY_GRID_25[quality];
     const patches = grid * Math.round((grid * short) / long);
-    return Math.ceil((patches * (2_000_000 + w * h)) / 4_000_000);
+    return patches * (2_000_000 + w * h);
+}
+
+export function officialOutputTokens25(w: number, h: number, quality: Quality25): number {
+    return Math.ceil(officialOutputTokensNumerator25(w, h, quality) / 4_000_000);
 }
 
 /** 输入图 token(edits 输入侧)—— 走共享官方口径 `@/lib/tokens/image-input-tokens`。
@@ -169,11 +174,13 @@ export interface SynthUsageInput25 {
 
 /** 只发 OpenAI images 官方那套字段(input/output/total + *_details),不送 chat 形别名(2.0 教训:中继客户会加两遍)。 */
 export function synthUsage25(inp: SynthUsageInput25): Record<string, unknown> {
-    const perImage = officialOutputTokens25(inp.w, inp.h, inp.quality);
-    const ct = perImage * Math.max(1, inp.imageCount);
-    const textTokens = estimateTextTokens(inp.prompt);
+    const count = Math.max(1, inp.imageCount);
+    // 官方 n 张语义同 2.0(见 image-adapter synthUsage):output 先乘 n 再 ceil;input(文本+输入图)×n。
+    const ct = Math.ceil((count * officialOutputTokensNumerator25(inp.w, inp.h, inp.quality)) / 4_000_000);
+    const textTokens = estimateTextTokens(inp.prompt) * count;
     let imgTokens = 0;
     if (inp.mode === 'edits') for (const d of inp.inputImageDims) imgTokens += officialInputImageTokens25(d);
+    imgTokens *= count;
     const pt = textTokens + imgTokens;
     return {
         input_tokens: pt,
