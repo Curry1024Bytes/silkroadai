@@ -21,6 +21,8 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { stripAdobeImageMetadataB64 } from '@/lib/proxy/image-metadata';
+import { encodeQuality, transcodeB64, transcodeTargetOf } from '@/lib/image/transcode';
+import { newGenerationId } from '@/lib/image/generation-id';
 import { IMAGE_PROVIDERS, type ImageProvider } from './providers';
 import { countImagePromptTokens } from '@/lib/tokens/count-text-tokens';
 import { officialImageInputTokens } from '@/lib/tokens/image-input-tokens';
@@ -148,23 +150,6 @@ function sniffOutputFormat(buf: Buffer): string {
     if (buf.length >= 12 && buf.toString('latin1', 0, 4) === 'RIFF' && buf.toString('latin1', 8, 12) === 'WEBP')
         return 'webp';
     return '';
-}
-
-/** png/webp base64 → jpeg base64(jimp,纯 JS 无 native 依赖;失败回退原图,永不抛)。
- *  客户 output_format=jpeg 时上游多恒返 png → 服务端转码成真 jpeg 字节(客户 #9 反馈)。 */
-async function toJpegB64(b64: string): Promise<string> {
-    try {
-        const { Jimp } = await import('jimp');
-        const img = await Jimp.read(Buffer.from(b64, 'base64'));
-        const jpeg = await img.getBuffer('image/jpeg', { quality: 92 });
-        return Buffer.from(jpeg).toString('base64');
-    } catch (e) {
-        console.warn(
-            '[image-adapter] png→jpeg transcode failed, keeping original:',
-            e instanceof Error ? e.message : e,
-        );
-        return b64;
-    }
 }
 
 /** dep-free 尺寸解析(PNG IHDR / JPEG SOF),读不出 → null(输入 token 按 1MP 兜底)。 */
@@ -665,7 +650,9 @@ export async function handleAdapterImage(
     // 任一扇出返回【终态】(内容安全 / 请求本身错)→ 立即终态化,不 failover(换渠道也拒,别浪费重试位)。
     const terminal = results.find(isTerminalReject);
     if (terminal) return terminalReject(terminal.terminal);
-    let items = results.flatMap((r) => (Array.isArray(r) ? r : []).map((b64_json) => ({ b64_json })));
+    let items = results.flatMap((r) =>
+        (Array.isArray(r) ? r : []).map((b64_json) => ({ b64_json, generation_id: newGenerationId() })),
+    );
     if (items.length === 0) {
         // 全军覆没才 failover(部分成功 → 返回拿到的那几张,按张计费)
         return failover('upstream_error', `all ${fanout} upstream call(s) failed`);
@@ -740,10 +727,11 @@ export async function handleAdapterImage(
         inputImageDims: parsed.images.map((img) => imageDimensions(img.buf)),
         imageCount: items.length,
     });
-    // ---- output_format=jpeg:服务端转码成真 jpeg 字节(客户 #9;dims/usage 已按原图算完,转码不改尺寸)----
-    const wantJpeg = (parsed.extras.output_format || '').trim().toLowerCase() === 'jpeg';
-    if (wantJpeg) {
-        for (const it of items) it.b64_json = await toJpegB64(it.b64_json);
+    // ---- output_format=jpeg / webp:服务端转码成真字节(客户 #9;第 5 批加 webp;dims/usage 已按原图算完)----
+    const wantFormat = transcodeTargetOf(parsed.extras.output_format);
+    if (wantFormat) {
+        const q = encodeQuality(parsed.extras.output_compression, 92);
+        for (const it of items) it.b64_json = await transcodeB64(it.b64_json, wantFormat, q);
     }
 
     // ---- C2PA 剥离下沉到适配器层(2026-09-06)----
@@ -761,7 +749,7 @@ export async function handleAdapterImage(
     // quality:normQuality 已归一 low/medium/high(auto/standard→low)。output_format:按最终字节 sniff
     // (交付真形态,消解"请求 jpeg 出 png 却回显 jpeg")。background:透明校验通过则 transparent,否则 opaque。
     // size:计费尺寸(= 返回图实际尺寸)。上游没这些字段,new-api 透传适配器顶层字段 → 直连客户也收到。
-    const outFmt = sniffOutputFormat(Buffer.from(items[0]?.b64_json ?? '', 'base64')) || (wantJpeg ? 'jpeg' : 'png');
+    const outFmt = sniffOutputFormat(Buffer.from(items[0]?.b64_json ?? '', 'base64')) || (wantFormat ?? 'png');
     const outBackground = wantsTransparent ? 'transparent' : 'opaque';
     const respSize = `${billW}x${billH}`;
     console.log('[image-adapter] ok', {

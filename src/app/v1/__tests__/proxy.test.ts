@@ -3949,7 +3949,7 @@ describe('/v1 proxy — 非严格模式 output_format=jpeg 真交付(客户 #9/#
         expect(j.output_format).toBe('png');
     });
 
-    it('output_format=webp(jimp 不支持)→ 交付 png + 诚实回显 png(不谎报 webp)', async () => {
+    it('output_format=webp → sharp 真转 webp 字节(RIFF…WEBP)+ 回显 webp(第 5 批;此前 jimp 无编码器只能交付 png)', async () => {
         mockFetch.mockResolvedValueOnce(upstreamPng(await pngB64()));
         const res = await POST(
             makeReq('/images/generations', {
@@ -3958,9 +3958,15 @@ describe('/v1 proxy — 非严格模式 output_format=jpeg 真交付(客户 #9/#
             }),
             ctx('images', 'generations'),
         );
-        const j = (await res.json()) as { data: Array<{ b64_json: string }>; output_format?: string };
-        expect(magic(j.data[0].b64_json).slice(0, 1)).toEqual([0x89]); // PNG 字节
-        expect(j.output_format).toBe('png'); // sniff 出 png,不谎报 webp
+        const j = (await res.json()) as {
+            data: Array<{ b64_json: string; generation_id?: string }>;
+            output_format?: string;
+        };
+        const buf = Buffer.from(j.data[0].b64_json, 'base64');
+        expect(buf.toString('latin1', 0, 4)).toBe('RIFF');
+        expect(buf.toString('latin1', 8, 12)).toBe('WEBP');
+        expect(j.output_format).toBe('webp');
+        expect(j.data[0].generation_id).toMatch(/^ig_[0-9a-f]{32}$/); // 非适配器上游 → reshape 补齐
     });
 });
 
@@ -5638,5 +5644,129 @@ describe('/v1 proxy — gpt-image-2 size=auto 交给适配器(第 4 批,官方 1
         const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
         expect((init.body as FormData).get('size')).toBe('auto');
         expect(res.headers.get('x-silkroadai-size-resolved')).toBeNull();
+    });
+});
+
+describe('/v1 proxy — 伪流式 partial_image 事件 + sequence_number(第 5 批,官方形状)', () => {
+    async function realPng(): Promise<string> {
+        const sharp = (await import('sharp')).default;
+        const buf = await sharp({ create: { width: 64, height: 64, channels: 3, background: '#ff0000' } })
+            .png()
+            .toBuffer();
+        return buf.toString('base64');
+    }
+    async function pngDims(b64: string): Promise<{ w: number; h: number }> {
+        const sharp = (await import('sharp')).default;
+        const m = await sharp(Buffer.from(b64, 'base64')).metadata();
+        return { w: m.width ?? 0, h: m.height ?? 0 };
+    }
+    function parseSse(text: string): Array<{ event: string; data: Record<string, unknown> }> {
+        return text
+            .split('\n\n')
+            .filter((blk) => blk.startsWith('event:'))
+            .map((blk) => {
+                const [evLine, dataLine] = blk.split('\n');
+                return { event: evLine.slice(7).trim(), data: JSON.parse(dataLine.slice(5).trim()) };
+            });
+    }
+
+    it('partial_images=2 → 两个 partial_image(index 0/1,缩放预览)+ completed,sequence_number 0/1/2', async () => {
+        const png = await realPng();
+        mockFetch.mockResolvedValueOnce(
+            new Response(
+                JSON.stringify({
+                    created: 1,
+                    data: [{ b64_json: png }],
+                    usage: { input_tokens: 8, output_tokens: 196, total_tokens: 204 },
+                }),
+                { status: 200, headers: { 'content-type': 'application/json' } },
+            ),
+        );
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', stream: true, partial_images: 2 },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        expect(res.headers.get('content-type')).toContain('text/event-stream');
+        const events = parseSse(await res.text());
+        expect(events.map((e) => e.event)).toEqual([
+            'image_generation.partial_image',
+            'image_generation.partial_image',
+            'image_generation.completed',
+        ]);
+        expect(events[0].data.partial_image_index).toBe(0);
+        expect(events[1].data.partial_image_index).toBe(1);
+        expect(events.map((e) => e.data.sequence_number)).toEqual([0, 1, 2]);
+        expect(events[2].data.usage).toEqual({ input_tokens: 8, output_tokens: 196, total_tokens: 204 });
+        // 预览按 (i+1)/(N+1) 线性缩小:64 → 21 → 43
+        expect((await pngDims(events[0].data.b64_json as string)).w).toBe(21);
+        expect((await pngDims(events[1].data.b64_json as string)).w).toBe(43);
+        expect((await pngDims(events[2].data.b64_json as string)).w).toBe(64);
+        for (const e of events) expect(e.data.type).toBe(e.event);
+    });
+
+    it('partial_images 缺省 → 只有 completed(sequence_number 0);partial_images=5(超官方上限)→ 当 0', async () => {
+        for (const extra of [{}, { partial_images: 5 }]) {
+            mockFetch.mockResolvedValueOnce(
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: 'QUJD' }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+            );
+            const res = await POST(
+                makeReq('/images/generations', {
+                    body: { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', stream: true, ...extra },
+                }),
+                ctx('images', 'generations'),
+            );
+            const events = parseSse(await res.text());
+            expect(events.map((e) => e.event)).toEqual(['image_generation.completed']);
+            expect(events[0].data.sequence_number).toBe(0);
+        }
+    });
+
+    it('multipart edits + stream + partial_images=1 → image_edit.partial_image + image_edit.completed', async () => {
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ created: 1, data: [{ b64_json: 'QUJD' }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const form = new FormData();
+        form.append('model', 'gpt-image-2');
+        form.append('prompt', 'x');
+        form.append('size', '1024x1024');
+        form.append('stream', 'true');
+        form.append('partial_images', '1');
+        form.append('image', new File([new Uint8Array([1, 2, 3])], 'in.png', { type: 'image/png' }));
+        const res = await POST(
+            new NextRequest('https://ai.silkroadai.io/v1/images/edits', { method: 'POST', body: form }),
+            ctx('images', 'edits'),
+        );
+        const events = parseSse(await res.text());
+        expect(events.map((e) => e.event)).toEqual(['image_edit.partial_image', 'image_edit.completed']);
+        // 假 b64 无法缩放 → partial 回退为完整图字节,事件数仍确定
+        expect(events[0].data.b64_json).toBe('QUJD');
+        const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect((init.body as FormData).get('partial_images')).toBeNull(); // 不透传上游
+    });
+
+    it('非流式 generations:data[].generation_id 形态 ig_ + 32 hex,多张各不相同', async () => {
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ created: 1, data: [{ b64_json: 'QUJD' }, { b64_json: 'QUJD' }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const res = await POST(
+            makeReq('/images/generations', { body: { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', n: 2 } }),
+            ctx('images', 'generations'),
+        );
+        const j = (await res.json()) as { data: Array<{ generation_id: string }> };
+        expect(j.data[0].generation_id).toMatch(/^ig_[0-9a-f]{32}$/);
+        expect(j.data[1].generation_id).toMatch(/^ig_[0-9a-f]{32}$/);
+        expect(j.data[0].generation_id).not.toBe(j.data[1].generation_id);
     });
 });

@@ -449,7 +449,7 @@ describe('handleAdapterImage 成功路径', () => {
         );
         expect(res.status).toBe(200);
         const body = await res.json();
-        expect(body.data).toEqual([{ b64_json: 'img0-0' }]);
+        expect(body.data).toMatchObject([{ b64_json: 'img0-0' }]); // 另带 generation_id(第 5 批)
         expect(body.usage.output_tokens).toBe(13342); // 不是上游的 1120
         expect(body.usage.input_tokens).toBe(estimateTextTokens('a 4k cat'));
         // 上游收到的请求:model 强制 gpt-image-2、JSON content-type、Authorization 透传
@@ -480,7 +480,7 @@ describe('handleAdapterImage 成功路径', () => {
         );
         expect(res.status).toBe(200);
         const body = await res.json();
-        expect(body.data).toEqual([{ b64_json: Buffer.from('pngbytes').toString('base64') }]);
+        expect(body.data).toMatchObject([{ b64_json: Buffer.from('pngbytes').toString('base64') }]);
         expect(JSON.stringify(body)).not.toContain('oss-upstream');
         expect(fetchMock.mock.calls[1][0]).toBe('https://oss-upstream.example.com/x.png');
     });
@@ -1126,7 +1126,7 @@ describe('wetoken provider(us-la.we-token.cc,adobe 上游挂适配器 → 合成
         );
         expect(res.status).toBe(200);
         const body = await res.json();
-        expect(body.data).toEqual([{ b64_json: pngB64(1024, 1024) }]);
+        expect(body.data).toMatchObject([{ b64_json: pngB64(1024, 1024) }]);
         const raw = JSON.stringify(body);
         expect(raw).not.toContain('amazonaws');
         expect(raw).not.toContain('firefly');
@@ -2141,5 +2141,66 @@ describe('size=auto 官方 1.5MP 语义(第 4 批,2026-09-17 官方 key 实测 1
         expect(JSON.parse(init.body).size).toBe('1024x1024');
         expect(body.size).toBe('1024x1024');
         expect(body.usage.output_tokens).toBe(196);
+    });
+});
+
+describe('第 5 批:webp 真交付 + generation_id(2026-09-19)', () => {
+    const URL_FULL_GEN = 'http://portal.test/image-adapter/ominiapifull/v1/images/generations';
+    // sharp 能解码的真 PNG(顶部 pngB64 是最小 IHDR/IDAT 骨架,libvips 拒解;jimp 时代够用)
+    async function realPngB64(w: number, h: number): Promise<string> {
+        const sharp = (await import('sharp')).default;
+        return (
+            await sharp({ create: { width: w, height: h, channels: 3, background: '#3355ff' } })
+                .png()
+                .toBuffer()
+        ).toString('base64');
+    }
+    async function upstreamPng(w: number, h: number, n = 1) {
+        const b64 = await realPngB64(w, h);
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(
+                    JSON.stringify({ created: 1, data: Array.from({ length: n }, () => ({ b64_json: b64 })) }),
+                    {
+                        status: 200,
+                        headers: { 'content-type': 'application/json' },
+                    },
+                ),
+        );
+    }
+    it('output_format=webp → RIFF…WEBP 字节 + 回显 webp;output_compression 作为编码质量', async () => {
+        await upstreamPng(1024, 1024);
+        const res = await handleAdapterImage(
+            jsonReq(URL_FULL_GEN, {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '1024x1024',
+                quality: 'low',
+                output_format: 'webp',
+                output_compression: 60,
+            }),
+            'generations',
+            'ominiapifull',
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        const buf = Buffer.from(body.data[0].b64_json, 'base64');
+        expect(buf.toString('latin1', 0, 4)).toBe('RIFF');
+        expect(buf.toString('latin1', 8, 12)).toBe('WEBP');
+        expect(body.output_format).toBe('webp');
+        expect(body.usage.output_tokens).toBe(196); // 转码不改计费(按原返回图 1024² 算)
+    });
+    it('data[] 每项带 generation_id(ig_ + 32 hex),n=2 各不相同', async () => {
+        await upstreamPng(64, 64);
+        const res = await handleAdapterImage(
+            jsonReq(URL_FULL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', quality: 'low', n: 2 }),
+            'generations',
+            'ominiapifull',
+        );
+        const body = await res.json();
+        expect(body.data).toHaveLength(2);
+        expect(body.data[0].generation_id).toMatch(/^ig_[0-9a-f]{32}$/);
+        expect(body.data[1].generation_id).toMatch(/^ig_[0-9a-f]{32}$/);
+        expect(body.data[0].generation_id).not.toBe(body.data[1].generation_id);
     });
 });

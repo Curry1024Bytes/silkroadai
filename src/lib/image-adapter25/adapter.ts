@@ -27,6 +27,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { countImagePromptTokens } from '@/lib/tokens/count-text-tokens';
 import { officialImageInputTokens } from '@/lib/tokens/image-input-tokens';
 import { stripAdobeImageMetadataB64 } from '@/lib/proxy/image-metadata';
+import { encodeQuality, transcodeB64, transcodeTargetOf } from '@/lib/image/transcode';
+import { newGenerationId } from '@/lib/image/generation-id';
 import { IMAGE_PROVIDERS_25, type ImageProvider25 } from './providers';
 
 export type ImageMode = 'generations' | 'edits';
@@ -143,19 +145,6 @@ export function sniffOutputFormat(buf: Buffer): string {
     if (buf.length >= 12 && buf.toString('latin1', 0, 4) === 'RIFF' && buf.toString('latin1', 8, 12) === 'WEBP')
         return 'webp';
     return '';
-}
-
-/** png/webp base64 → jpeg base64(jimp,失败回退原图,永不抛)。仅在上游未兑现 output_format=jpeg 时兜底。 */
-async function toJpegB64(b64: string): Promise<string> {
-    try {
-        const { Jimp } = await import('jimp');
-        const img = await Jimp.read(Buffer.from(b64, 'base64'));
-        const jpeg = await img.getBuffer('image/jpeg', { quality: 92 });
-        return Buffer.from(jpeg).toString('base64');
-    } catch (e) {
-        console.warn('[image-adapter25] jpeg transcode failed, keeping original:', e instanceof Error ? e.message : e);
-        return b64;
-    }
 }
 
 // ============ usage 合成 ============
@@ -554,7 +543,7 @@ export async function handleAdapter25Image(
         return failover('quality_not_served', `quality '${quality}' not served by provider '${providerName}'`);
     }
     const wantsTransparent = (parsed.extras.background || '').trim().toLowerCase() === 'transparent';
-    const wantJpeg = (parsed.extras.output_format || '').trim().toLowerCase() === 'jpeg';
+    const wantFormat = transcodeTargetOf(parsed.extras.output_format);
     const n = Math.min(parsed.n, MAX_N);
     if (parsed.n > MAX_N)
         console.warn('[image-adapter25] n clamped', { provider: providerName, requested: parsed.n, used: MAX_N });
@@ -563,7 +552,7 @@ export async function handleAdapter25Image(
     const started = Date.now();
     const result = await callUpstream(provider, providerName, mode, parsed, n, auth);
     if (isTerminalReject(result)) return terminalReject(result);
-    let items = (result ?? []).map((b64_json) => ({ b64_json }));
+    let items = (result ?? []).map((b64_json) => ({ b64_json, generation_id: newGenerationId() }));
     if (items.length === 0) return failover('upstream_error', 'upstream call failed');
     if (items.length < n) {
         console.warn('[image-adapter25] upstream returned fewer than n', {
@@ -624,19 +613,17 @@ export async function handleAdapter25Image(
         imageCount: items.length,
     });
 
-    // ---- output_format=jpeg:官方原生支持已透传;上游未兑现(sniff 非 jpeg)才服务端转码兜底 ----
-    if (wantJpeg) {
-        for (const it of items) {
-            if (sniffOutputFormat(Buffer.from(it.b64_json, 'base64')) !== 'jpeg')
-                it.b64_json = await toJpegB64(it.b64_json);
-        }
+    // ---- output_format=jpeg / webp:官方原生支持已透传;上游未兑现(sniff 非目标格式)才服务端转码兜底(第 5 批加 webp)----
+    if (wantFormat) {
+        const q = encodeQuality(parsed.extras.output_compression, 92);
+        for (const it of items) it.b64_json = await transcodeB64(it.b64_json, wantFormat, q); // 已是目标格式 → 原样
     }
 
     // ---- C2PA 剥离(内容自定向:仅 adobe/firefly 才剥;OpenAI 原生签名原样保留 = 客户可验官方凭证)----
     for (const it of items) it.b64_json = stripAdobeImageMetadataB64(it.b64_json);
 
     // ---- 官方枚举 echo(直连 :3000 绕过 portal 的客户也拿合规响应)----
-    const outFmt = sniffOutputFormat(Buffer.from(items[0]?.b64_json ?? '', 'base64')) || (wantJpeg ? 'jpeg' : 'png');
+    const outFmt = sniffOutputFormat(Buffer.from(items[0]?.b64_json ?? '', 'base64')) || (wantFormat ?? 'png');
     const outBackground = wantsTransparent ? 'transparent' : 'opaque';
     const respSize = `${billW}x${billH}`;
     console.log('[image-adapter25] ok', {

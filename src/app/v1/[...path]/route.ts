@@ -53,6 +53,14 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { promptAspectRatio } from '@/lib/image-adapter/auto-size';
+import {
+    previewB64,
+    transcodeB64,
+    transcodeTargetOf,
+    type ImageFormat,
+    type TranscodeTarget,
+} from '@/lib/image/transcode';
+import { newGenerationId } from '@/lib/image/generation-id';
 import { randomUUID } from 'node:crypto';
 import { prisma } from '@/lib/db';
 import { getCustomerBalance, type CustomerBalance } from '@/lib/billing/customer-balance';
@@ -1648,7 +1656,7 @@ function normalizeGptImageForm(form: FormData): void {
 
 // ============ 伪流式(官方 Images streaming 契约,gpt-image)============
 // 官方:`stream:true` → SSE,0-N 个 partial_image 事件 + 每张图一个 completed 事件。我们的
-// 上游不产渐进图 → 不发 partial(官方 SDK 按事件驱动解析,少 partial 不破);连接立即 200 开流,
+// 上游不产渐进图 → partial 用最终图缩放预览合成(第 5 批,2026-09-19;此前不发 partial);连接立即 200 开流,
 // 生成期间每 15s 注 SSE 注释保活(CF ~100s 空闲掐线,慢图 300s+ —— 这条路天然不需要 withKeepalive
 // 的「85s 后变 200」妥协),完成后发 completed(字段对齐官方:b64_json / created_at / size /
 // quality / background / output_format / usage;`response_format=url` 扩展时带 url)。失败 → 官方
@@ -1658,7 +1666,13 @@ const IMAGE_SSE_KEEPALIVE_MS = 15_000;
 
 /** 把非流式 images 流程(reshape 后的 NextResponse promise)包成官方形 SSE。
  *  事件族按客户调用的 path:/images/edits → image_edit.*,其余 → image_generation.*。 */
-function gptImageSseResponse(work: Promise<NextResponse>, clientPath: string): NextResponse {
+/** partial_images(官方 0-3)→ 整数;非法 / 缺省 → 0。 */
+function parsePartialImages(v: unknown): number {
+    const n = typeof v === 'number' ? v : Number(String(v ?? '').trim());
+    return Number.isInteger(n) && n >= 0 && n <= 3 ? n : 0;
+}
+
+function gptImageSseResponse(work: Promise<NextResponse>, clientPath: string, partialImages = 0): NextResponse {
     const family = clientPath === '/images/edits' ? 'image_edit' : 'image_generation';
     const enc = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
@@ -1685,17 +1699,40 @@ function gptImageSseResponse(work: Promise<NextResponse>, clientPath: string): N
                     }
                     const items = j && Array.isArray(j.data) ? (j.data as Array<Record<string, unknown>>) : [];
                     if (resp.status >= 200 && resp.status < 300 && j && items.length > 0) {
+                        // 官方:每张图 0-N 个 partial_image(partial_image_index 0..N-1)+ 1 个 completed,
+                        // sequence_number 跨事件递增。我们的上游不产渐进图 → partial 用最终图按 (i+1)/(N+1)
+                        // 线性比例缩小的预览合成(sharp),在拿到最终图后一次性发出(时序不对齐官方,形状对齐)。
+                        let seq = 0;
+                        const common = {
+                            created_at: j.created ?? Math.floor(Date.now() / 1000),
+                            size: j.size ?? null,
+                            quality: j.quality ?? null,
+                            background: j.background ?? null,
+                            output_format: j.output_format ?? null,
+                        };
+                        const fmt: ImageFormat =
+                            j.output_format === 'jpeg' || j.output_format === 'webp' ? j.output_format : 'png';
                         for (const it of items) {
+                            const b64 = typeof it.b64_json === 'string' && it.b64_json ? it.b64_json : '';
+                            if (partialImages > 0 && b64) {
+                                for (let i = 0; i < partialImages; i++) {
+                                    const preview = (await previewB64(b64, (i + 1) / (partialImages + 1), fmt)) ?? b64;
+                                    send(`${family}.partial_image`, {
+                                        type: `${family}.partial_image`,
+                                        b64_json: preview,
+                                        ...common,
+                                        partial_image_index: i,
+                                        sequence_number: seq++,
+                                    });
+                                }
+                            }
                             send(`${family}.completed`, {
                                 type: `${family}.completed`,
-                                ...(typeof it.b64_json === 'string' && it.b64_json ? { b64_json: it.b64_json } : {}),
+                                ...(b64 ? { b64_json: b64 } : {}),
                                 ...(typeof it.url === 'string' && it.url ? { url: it.url } : {}),
-                                created_at: j.created ?? Math.floor(Date.now() / 1000),
-                                size: j.size ?? null,
-                                quality: j.quality ?? null,
-                                background: j.background ?? null,
-                                output_format: j.output_format ?? null,
+                                ...common,
                                 usage: j.usage ?? null,
+                                sequence_number: seq++,
                             });
                         }
                     } else {
@@ -1808,13 +1845,11 @@ function strictGptImageError(outputFormat: string, background: string, size: str
     return gptImageSizeError(size);
 }
 
-/** 客户请求的 output_format → 需要服务端转码的目标(gpt-image 上游恒返 png、无视 output_format)。
- *  jpeg/jpg → 'jpeg'(本地转码交付);png/空/webp/未知 → null。
- *  ⚠️ webp 不转:jimp 1.6.1 不支持 webp 编码,不为它引 native 依赖 —— webp 请求交付 png、
- *  回显按实际字节 sniff 成 png(诚实,#418 行为)。客户当前反馈只涉及 jpeg(#9/#13)。 */
-function gptImageTranscodeTarget(outputFormat: string): 'jpeg' | null {
-    const s = outputFormat.trim().toLowerCase();
-    return s === 'jpeg' || s === 'jpg' ? 'jpeg' : null;
+/** 客户请求的 output_format → 需要服务端转码的目标(gpt-image 上游多恒返 png、无视 output_format)。
+ *  jpeg/jpg → 'jpeg';webp → 'webp'(2026-09-19 第 5 批:改 sharp 后 webp 真交付,不再"交付 png 回显 png");
+ *  png/空/未知 → null。 */
+function gptImageTranscodeTarget(outputFormat: string): TranscodeTarget | null {
+    return transcodeTargetOf(outputFormat);
 }
 
 /** output_compression(OpenAI:0-100 百分比,越大文件越大质量越高)→ jimp quality(1-100)。
@@ -1826,19 +1861,11 @@ function transcodeQuality(compression: number | undefined): number {
     return 90;
 }
 
-/** png base64 → jpeg base64(jimp,纯 JS 无 native 依赖,失败回退原 png,永不抛)。
- *  上游恒返 png,客户请求 jpeg 时在此本地转码【真交付】(#9/#13,2026-08-29 客户反馈:请求 JPEG
- *  却拿到 PNG)。副带把 png 里的 adobe C2PA 一并丢弃(重编码不保留 PNG 辅助块)。 */
-async function transcodePngB64(pngB64: string, target: 'jpeg', compression?: number): Promise<string> {
-    try {
-        const { Jimp } = await import('jimp');
-        const img = await Jimp.read(Buffer.from(pngB64, 'base64'));
-        const buf = await img.getBuffer('image/jpeg', { quality: transcodeQuality(compression) });
-        return Buffer.from(buf).toString('base64');
-    } catch (e) {
-        console.warn(`[gpt-image] png→${target} transcode failed, keeping png:`, e instanceof Error ? e.message : e);
-        return pngB64;
-    }
+/** base64 图 → jpeg / webp base64(sharp;已是目标格式原样返回 —— 适配器层已转过就不二次重编码;失败回退原图,永不抛)。
+ *  上游恒返 png,客户请求 jpeg/webp 时在此本地转码【真交付】(#9/#13 客户反馈 + 第 5 批 webp)。
+ *  副带把 png 里的 adobe C2PA 一并丢弃(重编码不保留辅助块)。 */
+async function transcodePngB64(pngB64: string, target: TranscodeTarget, compression?: number): Promise<string> {
+    return transcodeB64(pngB64, target, transcodeQuality(compression));
 }
 
 /** OpenAI gpt-image 图片输出 token 估算系数:~703 tok/百万像素(校准到 1536×1024≈1106,
@@ -1965,7 +1992,7 @@ async function reshapeOpenAiImageResponse(
     cap: CaptureCtx | null,
     req: NextRequest | null = null,
     storeToUrl = false,
-    transcodeTo: 'jpeg' | null = null,
+    transcodeTo: TranscodeTarget | null = null,
     echo: ImageEchoFields | null = null,
     transcodeCompression?: number,
 ): Promise<NextResponse> {
@@ -2041,11 +2068,17 @@ async function reshapeOpenAiImageResponse(
     for (const it of data) {
         if (typeof it.b64_json === 'string' && it.b64_json) it.b64_json = stripAdobeImageMetadataB64(it.b64_json);
     }
+    // 官方 data[] 每项带 generation_id(2026-09-17 实测);适配器已生成,非适配器上游(直连渠道)在此补齐。
+    if (echo?.gptDefaults) {
+        for (const it of data) {
+            if (typeof it.generation_id !== 'string' || !it.generation_id) it.generation_id = newGenerationId();
+        }
+    }
 
     // output_format=jpeg/webp:上游恒返 png、无视该参数 → 服务端 png→目标格式转码【真交付】(#9/#13,
     // 就地改 data[].b64_json,out.data 同一引用会一并反映)。失败回退原 png(transcodePngB64 永不抛)。
     // 客户请求 jpeg/webp 就真给 jpeg/webp,不再谎报也不再只回 png。output_compression → 转码 quality。
-    const imgMime = transcodeTo === 'jpeg' ? 'image/jpeg' : 'image/png';
+    const imgMime = transcodeTo === 'jpeg' ? 'image/jpeg' : transcodeTo === 'webp' ? 'image/webp' : 'image/png';
     if (transcodeTo) {
         for (const item of data) {
             if (typeof item.b64_json === 'string' && item.b64_json) {
@@ -2165,9 +2198,10 @@ async function handleImagesDalle(
             // model 非我们的 Gemini 生图 → 重建 FormData 透传(保留 gpt-image-2 等)
             if (!(model in GEMINI_IMAGE_MODELS)) {
                 // gpt-image:剥 response_format + 把比例(aspect_ratio / "16:9" 形态 size)翻成像素 size
-                let transcodeTo: 'jpeg' | null = null;
+                let transcodeTo: TranscodeTarget | null = null;
                 let transcodeCompression: number | undefined;
                 let wantStream = false;
+                let partialImages = 0;
                 if (isGptImageModel(model)) {
                     wantStream = String(form.get('stream') ?? '').toLowerCase() === 'true';
                     // 严格模式(opt-in):先按 Azure 标准校验 output_format/background/size,不合规 → 400
@@ -2213,6 +2247,7 @@ async function handleImagesDalle(
                     const c = Number(form.get('output_compression'));
                     transcodeCompression =
                         Number.isFinite(c) && String(form.get('output_compression') ?? '') !== '' ? c : undefined;
+                    partialImages = parsePartialImages(form.get('partial_images'));
                     normalizeGptImageForm(form);
                     sizeRaw = String(form.get('size') ?? '');
                     // 官方尺寸约束默认生效(非法 → 400 官方文案,不打上游;上游会静默改尺寸再计费)
@@ -2265,7 +2300,7 @@ async function handleImagesDalle(
                     }
                 };
                 // 伪流式:gpt-image + stream:true → 立即 200 开 SSE 保活,完成后发 completed 事件
-                if (wantStream && isGptImageModel(model)) return gptImageSseResponse(run(), path);
+                if (wantStream && isGptImageModel(model)) return gptImageSseResponse(run(), path, partialImages);
                 return await run();
             }
             for (const file of formImageFiles(form)) {
@@ -2311,9 +2346,10 @@ async function handleImagesDalle(
             if (!(model in GEMINI_IMAGE_MODELS)) {
                 // gpt-image:剥 response_format(zhiyunai 拒收 →400)+ 比例→像素 size(zhiyunai 不认
                 // aspect_ratio / "16:9" 形态 size,默认出方图)。见 normalizeGptImageJson。
-                let transcodeTo: 'jpeg' | null = null;
+                let transcodeTo: TranscodeTarget | null = null;
                 let transcodeCompression: number | undefined;
                 let wantStream = false;
+                let partialImages = 0;
                 const seedream = isSeedreamModel(model);
                 if (seedream) {
                     // 缺省 = url(上游 / 火山默认;客户显式 b64_json 才内联)→ 适配器恒返 b64,回程存图床换 url。
@@ -2373,6 +2409,7 @@ async function handleImagesDalle(
                     );
                     transcodeCompression =
                         typeof body.output_compression === 'number' ? body.output_compression : undefined;
+                    partialImages = parsePartialImages(body.partial_images);
                     normalizeGptImageJson(body);
                     sizeRaw = typeof body.size === 'string' ? body.size : '';
                     // 官方尺寸约束默认生效(同 multipart 分支)
@@ -2416,7 +2453,7 @@ async function handleImagesDalle(
                     }
                 };
                 // 伪流式:gpt-image + stream:true → 立即 200 开 SSE 保活,完成后发 completed 事件
-                if (wantStream && isGptImageModel(model)) return gptImageSseResponse(run(), path);
+                if (wantStream && isGptImageModel(model)) return gptImageSseResponse(run(), path, partialImages);
                 return await run();
             }
             // JSON 形态的 image 可能是 data URL / 外部 URL 字符串或其数组(复用现有 helper)
