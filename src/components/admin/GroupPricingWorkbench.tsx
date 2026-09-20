@@ -165,6 +165,7 @@ export function GroupModelQuote({
     isDark,
     en,
     disabled,
+    allowQuoteEditing = true,
     onChange,
 }: {
     model: PricingGroupModel;
@@ -173,6 +174,7 @@ export function GroupModelQuote({
     isDark: boolean;
     en: boolean;
     disabled: boolean;
+    allowQuoteEditing?: boolean;
     onChange: (draft: CostPricingDraft) => void;
 }) {
     const issue = groupModelIssue(model, draft, settings, en);
@@ -189,8 +191,8 @@ export function GroupModelQuote({
                 : '已保存基础报价'
             : model.base_source === 'reference'
               ? en
-                  ? 'Reference quote · verify with supplier'
-                  : '参考基础价 · 请核对上游'
+                  ? 'System reference quote'
+                  : '系统读取的上游参考价'
               : en
                 ? 'Supplier quote required'
                 : '请填写上游基础价';
@@ -260,15 +262,13 @@ export function GroupModelQuote({
                                     ))
                                 ) : (
                                     <span className="font-normal opacity-70">
-                                        {en
-                                            ? 'Complete shared settings and base quotes'
-                                            : '填写统一倍率和基础报价后显示'}
+                                        {en ? 'Complete shared settings and base quotes' : '填写三项参数后显示'}
                                     </span>
                                 )}
                             </div>
                         </div>
                     </div>
-                    {model.selectable && (
+                    {model.selectable && allowQuoteEditing && (
                         <details
                             className="mt-3"
                             open={expanded}
@@ -364,6 +364,13 @@ export function GroupModelQuote({
                             </p>
                         </details>
                     )}
+                    {model.selectable && !allowQuoteEditing && issue && (
+                        <p className="mt-3 text-xs opacity-70">
+                            {en
+                                ? 'The supplier base quote is incomplete. Reload the new-api directory or fix the model registration before pricing this tier.'
+                                : '系统没有读取到完整的上游基础价，请先更新 new-api 目录或处理模型登记；这里不需要手填价格。'}
+                        </p>
+                    )}
                 </>
             )}
         </article>
@@ -389,7 +396,6 @@ export default function GroupPricingWorkbench({
     const [drafts, setDrafts] = useState<GroupModelDrafts>({});
     const [prepared, setPrepared] = useState<GroupPricingPrepared | null>(null);
     const [confirmed, setConfirmed] = useState(false);
-    const [quotesChecked, setQuotesChecked] = useState(false);
     const [loading, setLoading] = useState(true);
     const [busy, setBusy] = useState<'preview' | 'publish' | null>(null);
     const [error, setError] = useState('');
@@ -448,7 +454,6 @@ export default function GroupPricingWorkbench({
         setSettings(emptySettings);
         setPrepared(null);
         setConfirmed(false);
-        setQuotesChecked(false);
         setNotice('');
     };
     const input = useMemo(
@@ -459,7 +464,6 @@ export default function GroupPricingWorkbench({
     const invalidate = () => {
         setPrepared(null);
         setConfirmed(false);
-        setQuotesChecked(false);
         setNotice('');
         setError('');
     };
@@ -483,7 +487,7 @@ export default function GroupPricingWorkbench({
         );
     };
     const preview = async () => {
-        if (!input || !quotesChecked || lock.current) return;
+        if (!input || lock.current) return;
         lock.current = true;
         setBusy('preview');
         setError('');
@@ -497,8 +501,8 @@ export default function GroupPricingWorkbench({
             setPrepared(result);
             setNotice(
                 en
-                    ? 'Costs saved. Review the complete group before publication.'
-                    : '整组成本已保存，请核对下方发布价格。',
+                    ? 'Group prices are ready. Review the complete group before publication.'
+                    : '整组价格已准备好，请核对下方发布价格。',
             );
             requestAnimationFrame(() => reviewRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
         } catch (caught) {
@@ -555,8 +559,8 @@ export default function GroupPricingWorkbench({
                     </h2>
                     <p className="mt-1 text-sm opacity-75">
                         {en
-                            ? 'Choose a tier, set shared multipliers, then review and publish every model in its new-api group.'
-                            : '选择档次，统一填写倍率，核对该 new-api 分组的全部模型后一次发布。'}
+                            ? 'Choose a tier. The system reads its models and supplier base quotes; you only enter the recharge ratio and two multipliers.'
+                            : '选择档次后，系统自动读取该分组的模型和上游基础价；你只需填写充值比例、上游倍率和售价倍率。'}
                     </p>
                 </div>
                 <button
@@ -573,7 +577,7 @@ export default function GroupPricingWorkbench({
             </div>
             <ol className="grid gap-2 text-xs opacity-70 sm:grid-cols-3">
                 <li>{en ? '1. Choose tier' : '1. 选择档次'}</li>
-                <li>{en ? '2. Set multipliers and check quotes' : '2. 填写倍率、核对基础价'}</li>
+                <li>{en ? '2. Enter the three pricing values' : '2. 填写充值比例和两种倍率'}</li>
                 <li>{en ? '3. Preview and publish the group' : '3. 预览并发布整组'}</li>
             </ol>
             <label className="block max-w-2xl space-y-2 text-sm font-medium">
@@ -762,8 +766,8 @@ export default function GroupPricingWorkbench({
                             className={`rounded-lg border p-3 text-sm ${isDark ? 'border-amber-800 bg-amber-950/30 text-amber-200' : 'border-amber-200 bg-amber-50 text-amber-900'}`}
                         >
                             {en
-                                ? 'Every group model must be ready before changing this tier’s multiplier. Complete missing quotes or resolve the model registration below.'
-                                : '统一倍率会影响整组模型，请先补齐缺价或处理下方模型登记问题，再预览整组。'}{' '}
+                                ? 'This tier cannot be previewed until every model is registered and has a supplier quote. Reload the directory or resolve the model registration below.'
+                                : '统一倍率会影响整组模型，请先更新目录或处理下方模型登记问题，再预览整组。'}{' '}
                             <a className="underline" href="/admin/models">
                                 {en ? 'Model management' : '前往模型管理'}
                             </a>
@@ -784,6 +788,7 @@ export default function GroupPricingWorkbench({
                                     isDark={isDark}
                                     en={en}
                                     disabled={!!busy}
+                                    allowQuoteEditing={false}
                                     onChange={(draft) => {
                                         invalidate();
                                         setDrafts((value) => ({ ...value, [model.id]: draft }));
@@ -792,29 +797,16 @@ export default function GroupPricingWorkbench({
                             ))}
                         </div>
                     )}
-                    <label className="flex items-start gap-2 text-sm">
-                        <input
-                            type="checkbox"
-                            checked={quotesChecked}
-                            disabled={!!busy}
-                            onChange={(event) => {
-                                setQuotesChecked(event.target.checked);
-                                setPrepared(null);
-                                setConfirmed(false);
-                            }}
-                            className="mt-1 size-4 shrink-0 accent-emerald-600"
-                        />
-                        <span>
-                            {en
-                                ? 'I have checked these base quotes and their units against the supplier, including cache or image rates.'
-                                : '已核对这些模型的上游基础报价和单位，包括缓存或图片单价。'}
-                        </span>
-                    </label>
+                    <p className={`rounded-lg p-3 text-sm ${isDark ? 'bg-slate-800/80' : 'bg-slate-50'}`}>
+                        {en
+                            ? 'Supplier base quotes are read from the synced directory and shown above. Missing quotes block the preview; you do not need to re-enter them here.'
+                            : '上游基础价由同步后的目录自动读取并在上方展示。缺少基础价时会阻止预览，你不需要在这里重新填写。'}
+                    </p>
                     <div className="flex flex-wrap items-center gap-3">
                         <button
                             type="button"
                             className={button}
-                            disabled={!input || !quotesChecked || !!busy}
+                            disabled={!input || !!busy}
                             onClick={() => void preview()}
                         >
                             {busy === 'preview'
@@ -822,13 +814,11 @@ export default function GroupPricingWorkbench({
                                     ? 'Preparing group…'
                                     : '正在核对整组…'
                                 : en
-                                  ? 'Save and preview group prices'
-                                  : '保存并预览整组价格'}
+                                  ? 'Preview group prices'
+                                  : '预览整组价格'}
                         </button>
                         <p className="text-xs opacity-70">
-                            {en
-                                ? 'Saves the cost draft. Actual billing changes only after publication.'
-                                : '先保存成本草稿，确认发布后才改变扣费。'}
+                            {en ? 'Customer billing changes only after publication.' : '确认发布后才会改变客户扣费。'}
                         </p>
                     </div>
                 </>

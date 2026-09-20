@@ -429,6 +429,24 @@ describe('group pricing presentation', () => {
         expect(html).toContain('缓存写入');
         expect(html).toContain('修改基础报价');
     });
+    it('supports the simple group flow with read-only supplier quotes', () => {
+        const row = catalog.models[1];
+        const html = renderToStaticMarkup(
+            <GroupModelQuote
+                model={row}
+                draft={groupInitialDrafts(catalog)[row.id]}
+                settings={settings}
+                isDark={false}
+                en={false}
+                disabled={false}
+                allowQuoteEditing={false}
+                onChange={() => {}}
+            />,
+        );
+        expect(html).toContain('缓存写入');
+        expect(html).not.toContain('修改基础报价');
+        expect(html).not.toContain('<input');
+    });
     it('renders missing prices as an issue, preserving explicit zero cache prices', () => {
         const drafts = groupInitialDrafts(catalog);
         drafts[model.id].token_rates.cache_read = '0';

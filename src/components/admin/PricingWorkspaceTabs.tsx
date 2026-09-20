@@ -15,6 +15,7 @@ export default function PricingWorkspaceTabs({
     en,
     isDark,
     jobCount,
+    showModelTab = true,
     panels,
 }: {
     activeTab: PricingWorkspaceTab;
@@ -22,27 +23,38 @@ export default function PricingWorkspaceTabs({
     en: boolean;
     isDark: boolean;
     jobCount: number;
+    /**
+     * The legacy per-model editor remains available to callers that need it,
+     * but the normal pricing workflow is intentionally group-first.  Keeping
+     * this switch here lets the admin page hide the legacy entry point without
+     * removing the component or its API for existing links/tests.
+     */
+    showModelTab?: boolean;
     panels: Record<PricingWorkspaceTab, ReactNode>;
 }) {
     const labels: Record<PricingWorkspaceTab, string> = en
         ? { group: 'Group pricing', model: 'Model pricing', jobs: 'Publication tasks', catalog: 'Prices & history' }
         : { group: '按档次定价', model: '单模型定价', jobs: '发布任务', catalog: '价格与历史' };
 
+    const visibleTabs: PricingWorkspaceTab[] = showModelTab
+        ? [...pricingWorkspaceTabs]
+        : pricingWorkspaceTabs.filter((tab): tab is Exclude<PricingWorkspaceTab, 'model'> => tab !== 'model');
+
     const handleKeyDown = (event: KeyboardEvent<HTMLButtonElement>, tab: PricingWorkspaceTab) => {
-        const index = pricingWorkspaceTabs.indexOf(tab);
+        const index = visibleTabs.indexOf(tab);
         const nextIndex =
             event.key === 'ArrowRight'
-                ? (index + 1) % pricingWorkspaceTabs.length
+                ? (index + 1) % visibleTabs.length
                 : event.key === 'ArrowLeft'
-                  ? (index + pricingWorkspaceTabs.length - 1) % pricingWorkspaceTabs.length
+                  ? (index + visibleTabs.length - 1) % visibleTabs.length
                   : event.key === 'Home'
                     ? 0
                     : event.key === 'End'
-                      ? pricingWorkspaceTabs.length - 1
+                      ? visibleTabs.length - 1
                       : null;
         if (nextIndex === null) return;
         event.preventDefault();
-        const next = pricingWorkspaceTabs[nextIndex];
+        const next = visibleTabs[nextIndex];
         onChange(next);
         event.currentTarget.parentElement?.querySelector<HTMLButtonElement>(`#${pricingWorkspaceTabId(next)}`)?.focus();
     };
@@ -58,7 +70,7 @@ export default function PricingWorkspaceTabs({
                     aria-orientation="horizontal"
                     className="flex min-w-max gap-1"
                 >
-                    {pricingWorkspaceTabs.map((tab) => {
+                    {visibleTabs.map((tab) => {
                         const active = tab === activeTab;
                         return (
                             <button
@@ -95,8 +107,8 @@ export default function PricingWorkspaceTabs({
                     })}
                 </div>
             </div>
-            {/* Keep every workbench mounted so switching sections preserves unsaved edits and previews. */}
-            {pricingWorkspaceTabs.map((tab) => (
+            {/* Keep visible workbenches mounted so switching sections preserves unsaved edits and previews. */}
+            {visibleTabs.map((tab) => (
                 <div
                     key={tab}
                     id={`pricing-panel-${tab}`}

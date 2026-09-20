@@ -52,7 +52,7 @@ function getTexts(locale: Locale) {
     return locale === 'en'
         ? {
               title: 'Pricing',
-              subtitle: 'Reference prices, cost calculation and verified publication in one place',
+              subtitle: 'Choose a tier, enter three values, preview, and publish',
               invalidToken: 'Session expired, please sign in again',
               loadFailed: 'Failed to load pricing',
               refresh: 'Refresh',
@@ -106,7 +106,7 @@ function getTexts(locale: Locale) {
           }
         : {
               title: '定价',
-              subtitle: '查询基础价、计算成本与售价、发布核验，都在这里完成',
+              subtitle: '选择档次，填写三项参数，预览后发布',
               invalidToken: '登录已过期',
               loadFailed: '加载定价失败',
               refresh: '刷新',
@@ -372,18 +372,6 @@ function PricingContent() {
             locale={locale}
             actions={
                 <div className="flex flex-wrap gap-2">
-                    <details className="relative">
-                        <summary className={`${btnBase} cursor-pointer`}>
-                            {locale === 'en' ? 'Legacy tools' : '历史工具'}
-                        </summary>
-                        <div
-                            className={`absolute right-0 z-10 mt-2 whitespace-nowrap rounded-lg border p-2 shadow-lg ${isDark ? 'border-slate-700 bg-slate-900' : 'border-slate-200 bg-white'}`}
-                        >
-                            <button type="button" onClick={() => setBatchOpen(true)} className={btnBase}>
-                                {t.batchBtn}
-                            </button>
-                        </div>
-                    </details>
                     <button type="button" onClick={() => void fetchModels()} className={btnBase}>
                         {t.refresh}
                     </button>
@@ -408,6 +396,7 @@ function PricingContent() {
                 en={locale === 'en'}
                 isDark={isDark}
                 jobCount={publishJobs.length}
+                showModelTab={false}
                 panels={{
                     group: (
                         <div id="pricing-workbench" className="scroll-mt-4">
@@ -499,8 +488,6 @@ function PricingContent() {
                                                     tdMuted={tdMuted}
                                                     linkBtn={linkBtn}
                                                     unpricedLabel={t.unpriced}
-                                                    editLabel={t.edit}
-                                                    onEdit={(row) => openEditModal(model, row)}
                                                     onGroupPricing={() => navigateToTab('group')}
                                                     t={t}
                                                 />
@@ -560,24 +547,11 @@ interface ModelRowsProps {
     tdMuted: string;
     linkBtn: (color: 'indigo' | 'red' | 'slate') => string;
     unpricedLabel: string;
-    editLabel: string;
-    onEdit: (row: TierRow) => void;
     onGroupPricing: () => void;
     t: ReturnType<typeof getTexts>;
 }
 
-function ModelRows({
-    model,
-    rows,
-    isDark,
-    tdMuted,
-    linkBtn,
-    unpricedLabel,
-    editLabel,
-    onEdit,
-    onGroupPricing,
-    t,
-}: ModelRowsProps) {
+function ModelRows({ model, rows, isDark, tdMuted, linkBtn, unpricedLabel, onGroupPricing, t }: ModelRowsProps) {
     const rowBorder = isDark ? 'border-slate-700/50 hover:bg-slate-700/30' : 'border-slate-100 hover:bg-slate-50';
     const [historyView, setHistoryView] = useState<{ kind: 'tier'; tier: string } | { kind: 'retired' } | null>(null);
     const activeTiers = new Set(rows.map((row) => row.tier));
@@ -702,15 +676,9 @@ function ModelRows({
                             )}
                             <td className="px-4 py-3 text-right align-top whitespace-nowrap">
                                 <div className="inline-grid grid-cols-[auto_4rem] items-center gap-1">
-                                    {cur?.billing_details != null ? (
-                                        <button type="button" onClick={onGroupPricing} className={linkBtn('indigo')}>
-                                            {t.title === 'Pricing' ? 'Group pricing' : '按档次定价'}
-                                        </button>
-                                    ) : (
-                                        <button type="button" onClick={() => onEdit(row)} className={linkBtn('indigo')}>
-                                            {editLabel}
-                                        </button>
-                                    )}
+                                    <button type="button" onClick={onGroupPricing} className={linkBtn('indigo')}>
+                                        {t.title === 'Pricing' ? 'Group pricing' : '按档次定价'}
+                                    </button>
                                     <button
                                         type="button"
                                         aria-expanded={historyOpen}

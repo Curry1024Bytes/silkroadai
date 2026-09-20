@@ -77,6 +77,23 @@ describe('pricing workspace sections', () => {
         expect(onChange).toHaveBeenCalledExactlyOnceWith('jobs');
     });
 
+    it('can hide the legacy per-model section while keeping the group workflow and status sections', () => {
+        const tree = PricingWorkspaceTabs({ ...props, showModelTab: false });
+        const tabs = elements(tree).filter((element) => element.props.role === 'tab');
+        const panelsInView = elements(tree).filter((element) => element.props.role === 'tabpanel');
+        expect(tabs.map((tab) => tab.props.id)).toEqual([
+            'pricing-tab-group',
+            'pricing-tab-jobs',
+            'pricing-tab-catalog',
+        ]);
+        expect(panelsInView.map((panel) => String(panel.key))).toEqual([
+            expect.stringContaining('group'),
+            expect.stringContaining('jobs'),
+            expect.stringContaining('catalog'),
+        ]);
+        expect(tabs.some((tab) => tab.props.id === 'pricing-tab-model')).toBe(false);
+    });
+
     it.each([false, true])('links localized tab labels and panels in dark=%s without hiding the tab row', (isDark) => {
         for (const en of [false, true]) {
             const html = renderToStaticMarkup(<PricingWorkspaceTabs {...props} en={en} isDark={isDark} />);
