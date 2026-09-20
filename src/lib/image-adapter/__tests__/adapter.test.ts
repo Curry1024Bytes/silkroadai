@@ -2285,3 +2285,101 @@ describe('revehigh provider(reve.amlkcloud.top,gpt-image-2 high 专线,onlyQuali
         expect(lc).not.toContain('dengche');
     });
 });
+
+describe('frimodelhigh provider(frimodel 第四账号,onlyQualities=[high] + gpt-image-2-adobe)', () => {
+    const URL_FH = 'http://portal.test/image-adapter/frimodelhigh/v1/images/generations';
+    const gen = (body: Record<string, unknown>) =>
+        handleAdapterImage(
+            jsonReq(URL_FH, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', ...body }),
+            'generations',
+            'frimodelhigh',
+        );
+
+    it('high 放行:路由 api.frimodel.com,上游 model 覆盖成 gpt-image-2-adobe,官方 high 合成 usage', async () => {
+        okUpstream();
+        const res = await gen({ quality: 'high' });
+        expect(res.status).toBe(200);
+        const [url, init] = fetchMock.mock.calls[0];
+        expect(url).toBe('https://api.frimodel.com/v1/images/generations');
+        expect(JSON.parse(init.body as string).model).toBe('gpt-image-2-adobe');
+        expect((await res.json()).usage.output_tokens).toBe(7024); // 官方 1024² high
+    });
+
+    it.each([
+        ['low', { quality: 'low' }],
+        ['medium', { quality: 'medium' }],
+        ['auto(→low)', { quality: 'auto' }],
+        ['standard(→low)', { quality: 'standard' }],
+        ['缺省(→low)', {}],
+    ])('非 high 拒(503 不打上游):%s', async (_label, extra) => {
+        const res = await gen(extra);
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('high 不看尺寸:1536×1024 high 放行,按返回图实际尺寸合成', async () => {
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(1536, 1024) }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+        const res = await gen({ quality: 'high', size: '1536x1024' });
+        expect(res.status).toBe(200);
+        expect((await res.json()).usage.output_tokens).toBe(officialOutputTokens(1536, 1024, 'high'));
+    });
+
+    it('high + background=transparent → 503(frimodel 家族不出真 alpha,fail-closed)', async () => {
+        const res = await gen({ quality: 'high', background: 'transparent' });
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('multipart edits high → 放行且 form model 覆盖成 gpt-image-2-adobe', async () => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            formReq(
+                'http://portal.test/image-adapter/frimodelhigh/v1/images/edits',
+                { prompt: 'e', size: '1024x1024', quality: 'high' },
+                [TINY_PNG],
+            ),
+            'edits',
+            'frimodelhigh',
+        );
+        expect(res.status).toBe(200);
+        expect((fetchMock.mock.calls[0][1].body as FormData).get('model')).toBe('gpt-image-2-adobe');
+    });
+
+    it('上游返 Firefly S3 url → 拉回转 b64,不外泄上游 url', async () => {
+        fetchMock
+            .mockResolvedValueOnce(
+                new Response(
+                    JSON.stringify({
+                        created: 1,
+                        data: [{ url: 'https://pre-signed-firefly-prod.s3-accelerate.amazonaws.com/x.png' }],
+                    }),
+                    { status: 200, headers: { 'content-type': 'application/json' } },
+                ),
+            )
+            .mockResolvedValueOnce(
+                new Response(new Uint8Array(Buffer.from(pngB64(1024, 1024), 'base64')), { status: 200 }),
+            );
+        const res = await gen({ quality: 'high' });
+        expect(res.status).toBe(200);
+        const raw = JSON.stringify(await res.json());
+        expect(raw).not.toContain('firefly');
+        expect(raw).not.toContain('s3-accelerate');
+    });
+
+    it('brand 正则抹掉 frimodel / firefly / s3-accelerate', () => {
+        const out = sanitizeAdapterError(
+            'api.frimodel.com via pre-signed-firefly-prod.s3-accelerate.amazonaws.com failed',
+            /\bfri-?model\b|\bfirefly\b|\bs3-accelerate\.amazonaws\.com\b/gi,
+        );
+        const lc = out.toLowerCase();
+        expect(lc).not.toContain('frimodel');
+        expect(lc).not.toContain('firefly');
+        expect(lc).not.toContain('s3-accelerate');
+    });
+});

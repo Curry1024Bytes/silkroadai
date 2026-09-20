@@ -171,6 +171,23 @@ export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
         onlyQualities: ['low'],
         noTransparentBackground: true, // frimodel 家族实测不出真 alpha
     },
+    // frimodelhigh:frimodel 平台【第四个账号】(2026-09-20 接入,key sk-VUVYjx…,组 gpt_image_adobe)。
+    // 2026-09-20 实测:裸 gpt-image-2 与字面 -high 均【不可用】(前者 no-channel,后者 400
+    // "Invalid free model: gpt-image-high" —— 此号 -high 路由坏);真高质量档在 **gpt-image-2-adobe**
+    // (1024² up_out=7024=官方 high 刻度、1536×1024 尺寸分毫不差、Firefly S3 预签名 url 交付,
+    // url→b64 兜底从 server2 拉回 200)。同 frimodel 家族 = Adobe Firefly 底(pre-signed-firefly-prod
+    // S3、C2PA present)→ C2PA 由适配器层按内容剥(#440)、错误/回显/JPEG 亦下沉,不外泄。
+    // 守门 onlyQualities=['high']:只接客户显式 quality=high,其余 503 让路。透明 fail-closed。
+    // 计费按适配器官方 high 公式(按返回图实际尺寸合成),不取上游 usage。
+    // ⚠️【已知瞬时特征】共享 "10k pool":高负载时偶发 503 "pool upstream unavailable" / 429
+    //   "Upstream rate limit reached"(非确定性、非按尺寸),做兜底守门线可接受,别设唯一主力。
+    frimodelhigh: {
+        baseUrl: 'https://api.frimodel.com',
+        brand: /\bfri-?model\b|\bfirefly\b|\bs3-accelerate\.amazonaws\.com\b/gi,
+        upstreamModel: 'gpt-image-2-adobe',
+        onlyQualities: ['high'],
+        noTransparentBackground: true, // frimodel 家族实测不出真 alpha
+    },
     // pandatk:Adobe Firefly 转售(2026-08-28 接入,claim=Adobe_Firefly + Adobe 全证书链,C2PA 由
     // proxy 回程剥)。实测契约:认裸 gpt-image-2、b64 直返、【尺寸全如实】(1024²/1536×1024/2048²/
     // 2560×1440/4K 逐像素精确)、quality 钉死 medium 刻度(记账恒官方 medium 公式 ±1)、41-67s。
