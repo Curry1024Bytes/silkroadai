@@ -89,6 +89,38 @@ export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
         noTransparentBackground: true,
         upstreamTimeoutMs: WETOKEN_UPSTREAM_TIMEOUT_MS,
     },
+    // ---- 2026-09-16 operator:asian-acc 拆三条【按档专线】(low/medium/high 各一条独立渠道)----
+    // 上游 asian-acc(we-token,Adobe Firefly 转售)对 gpt-image-2 暴露三个【专用档位模型名】
+    // gpt-image-2-low / -medium / -high,按档【按次】收费(2026-09-16 实测三名都有效、均 Adobe、1024²)。
+    // 每条 provider:upstreamModel 钉一个档位名 + onlyQualities 守同档 —— 客户显式该 quality 才走这条,
+    // 别档 503 让 new-api failover 到对应档渠道(与 frimodellow/frimodelmedium 同款,upstreamModel+onlyQualities
+    // 组合已验证)。计费仍按适配器官方公式(按客户请求 quality 合成),与上游按次档价无关。C2PA 由适配器
+    // 按内容剥(Adobe → 剥)。透明未验证 → fail-closed 拒。超时 300s(we-token 阵发挂死,同 wetoken/wetokenasia)。
+    // 与旧 wetokenasia(low/medium 合并线,ch176)并存:operator 决定停不停旧渠道,代码保留不删避免 ch176 503。
+    wetokenasialow: {
+        baseUrl: 'https://asian-acc.we-token.cc',
+        brand: /\bwe-?token\b|\badobe\b|\bfirefly\b/gi,
+        upstreamModel: 'gpt-image-2-low',
+        onlyQualities: ['low'],
+        noTransparentBackground: true,
+        upstreamTimeoutMs: WETOKEN_UPSTREAM_TIMEOUT_MS,
+    },
+    wetokenasiamedium: {
+        baseUrl: 'https://asian-acc.we-token.cc',
+        brand: /\bwe-?token\b|\badobe\b|\bfirefly\b/gi,
+        upstreamModel: 'gpt-image-2-medium',
+        onlyQualities: ['medium'],
+        noTransparentBackground: true,
+        upstreamTimeoutMs: WETOKEN_UPSTREAM_TIMEOUT_MS,
+    },
+    wetokenasiahigh: {
+        baseUrl: 'https://asian-acc.we-token.cc',
+        brand: /\bwe-?token\b|\badobe\b|\bfirefly\b/gi,
+        upstreamModel: 'gpt-image-2-high',
+        onlyQualities: ['high'],
+        noTransparentBackground: true,
+        upstreamTimeoutMs: WETOKEN_UPSTREAM_TIMEOUT_MS,
+    },
     // wetokengated:同 us-la.we-token.cc 上游,但【不带 openAllTiers】→ 走盈利档+狭长守门(= ch154/ominiapi
     // 那套)。给 ch175 用:让它只接狭长/盈利档,方图低档/auto 拒 → 走 ch176/ch177。2026-08-15 operator 指定。
     wetokengated: {
@@ -139,6 +171,23 @@ export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
         onlyQualities: ['low'],
         noTransparentBackground: true, // frimodel 家族实测不出真 alpha
     },
+    // frimodelhigh:frimodel 平台【第四个账号】(2026-09-20 接入,key sk-VUVYjx…,组 gpt_image_adobe)。
+    // 2026-09-20 实测:裸 gpt-image-2 与字面 -high 均【不可用】(前者 no-channel,后者 400
+    // "Invalid free model: gpt-image-high" —— 此号 -high 路由坏);真高质量档在 **gpt-image-2-adobe**
+    // (1024² up_out=7024=官方 high 刻度、1536×1024 尺寸分毫不差、Firefly S3 预签名 url 交付,
+    // url→b64 兜底从 server2 拉回 200)。同 frimodel 家族 = Adobe Firefly 底(pre-signed-firefly-prod
+    // S3、C2PA present)→ C2PA 由适配器层按内容剥(#440)、错误/回显/JPEG 亦下沉,不外泄。
+    // 守门 onlyQualities=['high']:只接客户显式 quality=high,其余 503 让路。透明 fail-closed。
+    // 计费按适配器官方 high 公式(按返回图实际尺寸合成),不取上游 usage。
+    // ⚠️【已知瞬时特征】共享 "10k pool":高负载时偶发 503 "pool upstream unavailable" / 429
+    //   "Upstream rate limit reached"(非确定性、非按尺寸),做兜底守门线可接受,别设唯一主力。
+    frimodelhigh: {
+        baseUrl: 'https://api.frimodel.com',
+        brand: /\bfri-?model\b|\bfirefly\b|\bs3-accelerate\.amazonaws\.com\b/gi,
+        upstreamModel: 'gpt-image-2-adobe',
+        onlyQualities: ['high'],
+        noTransparentBackground: true, // frimodel 家族实测不出真 alpha
+    },
     // pandatk:Adobe Firefly 转售(2026-08-28 接入,claim=Adobe_Firefly + Adobe 全证书链,C2PA 由
     // proxy 回程剥)。实测契约:认裸 gpt-image-2、b64 直返、【尺寸全如实】(1024²/1536×1024/2048²/
     // 2560×1440/4K 逐像素精确)、quality 钉死 medium 刻度(记账恒官方 medium 公式 ±1)、41-67s。
@@ -147,6 +196,20 @@ export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
         baseUrl: 'https://api.pandatk.com',
         brand: /\bpandatk\b|\bfirefly\b/gi,
         openAllTiers: true,
+        noTransparentBackground: true,
+    },
+    // revehigh:reve.amlkcloud.top(amlkcloud 家,2026-09-20 接入)—— gpt-image-2 的【high 专线】。
+    // 2026-09-20 实测:认裸 gpt-image-2、【尺寸全如实】(1024²/1536×1024/2048²/2880²/3840×2160 逐像素
+    // 精确,不降级)、high 比 low 细节更足(184 vs 133KB)、17-26s。输出【JPEG】(非 PNG):≤2K 直返 b64、
+    // 2880²+4K 走 img.dengche.cc CDN 的 url(适配器 url→b64 拉回;⚠️ 该 CDN 挡 Python-urllib UA 但放行
+    // node undici → 适配器 fetch 200 实测通,无需改 UA)。无可读 C2PA、无 adobe/OpenAI 签名 → 无泄漏、
+    // 无需剥。守门 onlyQualities=['high']:只接客户显式 quality=high,其余 503 让路。透明 fail-closed
+    // (JPEG 无 alpha 通道)。计费仍按适配器官方 high 公式(按返回图实际尺寸合成)。
+    // 【已知特征】输出恒 JPEG —— 客户请求默认(png)也拿 JPEG;适配器不转 jpeg→png(只 png→jpeg)。
+    revehigh: {
+        baseUrl: 'https://reve.amlkcloud.top',
+        brand: /\bamlkcloud\b|\bdengche\b|\breve\b/gi,
+        onlyQualities: ['high'],
         noTransparentBackground: true,
     },
     // ---- oaidist/oaidistfull(ch201/ch202)守门 + 全量线 ----

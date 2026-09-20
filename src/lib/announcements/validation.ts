@@ -21,10 +21,11 @@ const linkUrlSchema = z.preprocess(
         .trim()
         .max(500)
         .refine((u) => /^https?:\/\//i.test(u), '链接需以 http:// 或 https:// 开头')
-        .nullish(),
+        .nullable()
+        .default(null),
 );
 
-const linkLabelSchema = z.preprocess(emptyToNull, z.string().trim().max(80).nullish());
+const linkLabelSchema = z.preprocess(emptyToNull, z.string().trim().max(80).nullable().default(null));
 
 export const announcementInputSchema = z.object({
     title: z.string().trim().min(1, '标题不能为空').max(200),

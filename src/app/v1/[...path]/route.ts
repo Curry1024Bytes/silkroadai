@@ -52,6 +52,14 @@
  *   3. R2 也失败 → data URL 内联 + `X-Silkroadai-R2-Fallback: yes`
  */
 import { NextRequest, NextResponse } from 'next/server';
+import {
+    previewB64,
+    transcodeB64,
+    transcodeTargetOf,
+    type ImageFormat,
+    type TranscodeTarget,
+} from '@/lib/image/transcode';
+import { newGenerationId } from '@/lib/image/generation-id';
 import { randomUUID } from 'node:crypto';
 import { prisma } from '@/lib/db';
 import { getCustomerBalance, type CustomerBalance } from '@/lib/billing/customer-balance';
@@ -61,6 +69,7 @@ import { getTokenUsageWithCache } from '@/lib/newapi/token-usage';
 import { uploadImage } from '@/lib/r2/client';
 import { objectExistsInOss, ossPublicUrl, uploadToCustomerOss } from '@/lib/oss/client';
 import { getOssConfig, resolveUserIdFromAuthHeader } from '@/lib/oss/store';
+import { getFile } from '@/lib/batch/store';
 import {
     type CaptureCtx,
     beginCapture,
@@ -93,6 +102,7 @@ import { isEnterpriseFlavor, handleEnterpriseV1 } from '@/lib/enterprise/proxy';
 import { guardSseResponse, guardSseStream, type SseErrorShape } from '@/lib/sse/stream-guard';
 import { forwardHeaders, passthroughResponse, STRIP_RESPONSE_HEADERS } from '@/lib/proxy/forward';
 import { CHAT_SPEC, RESPONSES_SPEC, coerceAndValidate, guardRawBody, violationBody } from '@/lib/proxy/body-guard';
+import { remapModelNotFound } from '@/lib/proxy/model-not-found';
 import { stripAdobeImageMetadata, stripAdobeImageMetadataB64 } from '@/lib/proxy/image-metadata';
 import { normalizeOpenAiResponse, normalizeChoices } from '@/lib/proxy/finish-reason';
 import {
@@ -455,6 +465,17 @@ async function forwardToNewApi(
         } catch {
             /* diagnostic only */
         }
+    }
+    // 未知模型:new-api 503 model_not_found → 404 OpenAI model_not_found(官方语义;已知模型
+    // 容量耗尽仍 503,见 @/lib/proxy/model-not-found)。/images/* 有自己的 normalizeImageError
+    // 分桶(未知图片模型按官方 400),不在这里动。
+    if (upstream.status === 503 && !path.startsWith('/images')) {
+        upstream = await remapModelNotFound(
+            upstream,
+            req,
+            'openai',
+            typeof bodyOverride?.model === 'string' ? bodyOverride.model : null,
+        );
     }
     // finish_reason 归一(只对 OpenAI 兼容面):逆向/经销商渠道漏出的非标 stop reason
     // (end_turn / STOP / MAX_TOKENS / SAFETY…)映射成 OpenAI 标准集;/messages、
@@ -1217,17 +1238,67 @@ function fetchUpstreamJson(req: NextRequest, body: JsonRecord, path: string, sea
     });
 }
 
-/** 从 JSON body 的 image / image_url(字符串或数组:data URL / 外部 http URL)解出输入图字节。
- *  复用 imageUrlToInlinePart(data URL 直解 / http URL fetch→base64 + SSRF 守门)。 */
-async function extractJsonInputImages(body: JsonRecord): Promise<Array<{ mimeType: string; data: string }>> {
-    const field = body.image ?? body.image_url;
-    const urls = Array.isArray(field) ? field : field ? [field] : [];
+/** JSON 形态的输入图引用。官方 /images/edits 的 JSON schema(2026-02 起,developers.openai.com 2026-09 实读):
+ *  `images: [{ image_url | file_id }]`、`mask: { image_url | file_id }`,"Provide exactly one of image_url or file_id";
+ *  `image_url` = 完整 URL 或 base64 data URL。我们早先的自家扩展 `image` / `image_url`(URL / data URL 字符串
+ *  或数组)继续兼容。客户按官方形态发 `images[]` 曾被 #475 的缺图校验 400、适配器直连时 503(2026-09-20 事故)。 */
+type JsonImageRef = { url: string } | { fileId: string };
+
+function collectJsonImageRefs(v: unknown, out: JsonImageRef[]): void {
+    if (Array.isArray(v)) {
+        for (const it of v) collectJsonImageRefs(it, out);
+        return;
+    }
+    if (typeof v === 'string') {
+        if (v.trim()) out.push({ url: v.trim() });
+        return;
+    }
+    if (v && typeof v === 'object') {
+        const o = v as JsonRecord;
+        // 官方 { image_url: "..." } / { file_id: "..." };兼容 chat 多模态风格 { image_url: { url } } / { url }
+        const nested = o.image_url && typeof o.image_url === 'object' ? (o.image_url as JsonRecord).url : undefined;
+        const url = [o.image_url, nested, o.url].find((x) => typeof x === 'string' && x.trim());
+        if (typeof url === 'string') out.push({ url: url.trim() });
+        else if (typeof o.file_id === 'string' && o.file_id.trim()) out.push({ fileId: o.file_id.trim() });
+    }
+}
+
+/** body 里所有输入图引用(官方 `images` 优先,再自家 `image` / `image_url`),按出现顺序。 */
+function jsonImageRefs(body: JsonRecord): JsonImageRef[] {
+    const out: JsonImageRef[] = [];
+    for (const key of ['images', 'image', 'image_url']) collectJsonImageRefs(body[key], out);
+    return out;
+}
+
+/** 官方 `file_id`:客户经 /v1/files 上传的文件(同 Batch 线,`resolveUserIdFromAuthHeader` 反查 user 守 IDOR)。 */
+async function fileIdToInlinePart(fileId: string, req: NextRequest): Promise<{ mimeType: string; data: string }> {
+    const userId = await resolveUserIdFromAuthHeader(req.headers.get('authorization'));
+    const row = userId ? await getFile(fileId, userId) : null;
+    if (!row) throw new ImageUrlError(`file_id not found: ${fileId.slice(0, 100)}`);
+    const buf = Buffer.from(row.content);
+    if (buf.byteLength > IMAGE_FETCH_MAX_BYTES)
+        throw new ImageUrlError(`file_id too large: ${buf.byteLength} bytes (max ${IMAGE_FETCH_MAX_BYTES})`);
+    return { mimeType: sniffImageMime(buf), data: buf.toString('base64') };
+}
+
+async function resolveJsonImageRef(
+    ref: JsonImageRef,
+    req: NextRequest,
+): Promise<{ mimeType: string; data: string } | null> {
+    if ('fileId' in ref) return fileIdToInlinePart(ref.fileId, req);
+    const part = await imageUrlToInlinePart(ref.url);
+    return 'inlineData' in part ? part.inlineData : null;
+}
+
+/** 从 JSON body 解出输入图字节(URL / data URL 经 imageUrlToInlinePart:SSRF 守门 + 大小上限;file_id 查库)。 */
+async function extractJsonInputImages(
+    body: JsonRecord,
+    req: NextRequest,
+): Promise<Array<{ mimeType: string; data: string }>> {
     const out: Array<{ mimeType: string; data: string }> = [];
-    for (const u of urls) {
-        if (typeof u === 'string' && u.trim()) {
-            const part = await imageUrlToInlinePart(u);
-            if ('inlineData' in part) out.push(part.inlineData);
-        }
+    for (const ref of jsonImageRefs(body)) {
+        const img = await resolveJsonImageRef(ref, req);
+        if (img) out.push(img);
     }
     return out;
 }
@@ -1295,7 +1366,11 @@ async function gptImageUpstream(
 ): Promise<Response> {
     if (form) {
         const hasImage = formImageFiles(form).length > 0;
-        if (hasImage) return fetchUpstreamMultipart(req, form, '/images/edits', search);
+        if (hasImage) {
+            // auto 一律交给适配器按官方语义定尺寸并计费(2.0 第 4 批 #477;2.5 官方实测后 2026-09-19 同样下沉:
+            // generations 缺省 1254²、edits 跟输入图)。代理层不再改写 size。
+            return fetchUpstreamMultipart(req, form, '/images/edits', search);
+        }
         // 无图 → 文生图 generations(上游要 JSON):把 form 文本字段搬进 JSON
         const j: JsonRecord = {};
         for (const [k, v] of form.entries()) if (typeof v === 'string') j[k] = v;
@@ -1303,12 +1378,12 @@ async function gptImageUpstream(
         return fetchUpstreamJson(req, j, '/images/generations', search);
     }
     const b = body ?? {};
-    const imgs = await extractJsonInputImages(b);
+    const imgs = await extractJsonInputImages(b, req);
     if (imgs.length === 0) return fetchUpstreamJson(req, b, '/images/generations', search);
     // 有图 → 图生图 edits(上游要 multipart):JSON 标量字段搬进 form + 图片作为文件部件
     const f = new FormData();
     for (const [k, v] of Object.entries(b)) {
-        if (k === 'image' || k === 'image_url' || k === 'mask') continue;
+        if (k === 'image' || k === 'image_url' || k === 'images' || k === 'mask') continue;
         if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') f.append(k, String(v));
     }
     for (const img of imgs) {
@@ -1318,16 +1393,16 @@ async function gptImageUpstream(
             'image.png',
         );
     }
-    // 官方 edits 的 mask:JSON 形里是 data URL / http(s) URL 字符串 → 转成文件部件。
-    // (此前被当标量文本 append 进 form,上游实际收不到蒙版、静默整图重绘。)
-    if (typeof b.mask === 'string' && b.mask.trim()) {
-        const part = await imageUrlToInlinePart(b.mask);
-        if ('inlineData' in part) {
+    // 官方 edits 的 mask:JSON 形是 { image_url | file_id } 对象(自家扩展也收 data URL / http(s) URL 字符串)
+    // → 转成文件部件。(此前被当标量文本 append 进 form,上游实际收不到蒙版、静默整图重绘。)
+    const maskRefs: JsonImageRef[] = [];
+    collectJsonImageRefs(b.mask, maskRefs);
+    if (maskRefs.length > 0) {
+        const mask = await resolveJsonImageRef(maskRefs[0], req);
+        if (mask) {
             f.append(
                 'mask',
-                new Blob([Buffer.from(part.inlineData.data, 'base64')], {
-                    type: part.inlineData.mimeType || 'image/png',
-                }),
+                new Blob([Buffer.from(mask.data, 'base64')], { type: mask.mimeType || 'image/png' }),
                 'mask.png',
             );
         }
@@ -1355,13 +1430,13 @@ function gptImageSizeFromInput(w: number, h: number): string {
 
 /** 尺寸重试用的明确 size:有输入图(图生图)→ 读第一张输入图尺寸选最近合法 WxH(改竖图出竖图,
  *  不强行方图);无输入图(文生图)/ 读不出尺寸 → 1024²。 */
-async function gptImageFallbackSize(form: FormData | null, body: JsonRecord | null): Promise<string> {
+async function gptImageFallbackSize(req: NextRequest, form: FormData | null, body: JsonRecord | null): Promise<string> {
     let dims: { w: number; h: number } | null = null;
     if (form) {
         const files = formImageFiles(form);
         if (files.length) dims = imageDimensions(Buffer.from(await files[0].arrayBuffer()));
     } else if (body) {
-        const imgs = await extractJsonInputImages(body);
+        const imgs = await extractJsonInputImages(body, req);
         if (imgs.length) dims = imageDimensions(Buffer.from(imgs[0].data, 'base64'));
     }
     return dims ? gptImageSizeFromInput(dims.w, dims.h) : DEFAULT_GPT_IMAGE_SIZE;
@@ -1391,7 +1466,7 @@ async function gptImageUpstreamWithSizeRetry(
         h.delete('content-length');
         return new Response(errText, { status: first.status, headers: h });
     }
-    const explicit = await gptImageFallbackSize(form, body);
+    const explicit = await gptImageFallbackSize(req, form, body);
     if (form) form.set('size', explicit);
     else if (body) body.size = explicit;
     return gptImageUpstream(req, form, body, search);
@@ -1657,12 +1732,134 @@ function coerceImageIntFields(obj: JsonRecord): void {
 }
 /** 官方 n 取值 = 1-10 的整数(空/缺省合法;字符串数字在 coerce 后到这)。非法 → 400 文案,合法 → null。
  *  代理层不校验的话 `n:1000` 会原样打上游(适配器渠道才 clamp 10,直连渠道全靠上游自觉)。 */
-function gptImageNError(n: unknown): string | null {
-    if (n === undefined || n === null || n === '') return null;
-    const v = typeof n === 'string' && /^\d+$/.test(n.trim()) ? Number(n.trim()) : n;
-    if (typeof v !== 'number' || !Number.isInteger(v) || v < 1 || v > 10)
-        return `invalid n '${String(n)}': must be an integer between 1 and 10`;
+/** gpt-image 官方入参校验(2026-09-17 官方 key 逐条实测文案 / type / param / code;只收录实测过的项):
+ *  - style → 400 unknown_parameter;input_fidelity → 400 invalid_input_fidelity_model(gpt-image-2 不支持)
+ *  - prompt 缺 → missing_required_parameter;空串 → empty_string;非字符串 → invalid_type
+ *  - n:JSON 非整数类型 → invalid_type(官方不收 "2" 字符串);<1 → integer_below_min_value;>10 → integer_above_max_value。
+ *    multipart 字段天然是字符串,数字串放行(官方 multipart 同)。
+ *  - quality 只认 'low' | 'medium' | 'high' | 'auto'(区分大小写;standard / hd / Low → invalid_value)
+ *  - png(缺省)+ output_compression < 100 → invalid_png_output_compression
+ *  有意偏离官方、保留的宽容:response_format(portal 文档化扩展 url / b64_json)、aspect_ratio 与 "16:9" 比例串
+ *  (portal 扩展,normalize 后再按官方尺寸约束校验)、size 'AUTO' 大小写不限、quality 空串按缺省。
+ *  output_format / background / moderation 的非法值官方文案未实测,本函数不管(strict 模式仍按 Azure 规则)。 */
+interface GptImageParamInput {
+    model: string;
+    promptPresent: boolean;
+    promptType: string;
+    prompt: string;
+    quality: unknown;
+    nRaw: unknown;
+    multipart: boolean;
+    outputFormat: unknown;
+    outputCompression: unknown;
+    hasStyle: boolean;
+    hasInputFidelity: boolean;
+    /** gpt-image-2.5 系:quality 官方枚举多 xhigh / max 两档(image-adapter25 QUALITY_GRID_25)。 */
+    tier5: boolean;
+}
+function jsTypeName(v: unknown): string {
+    if (v === null) return 'null';
+    if (Array.isArray(v)) return 'an array';
+    if (typeof v === 'string') return 'a string';
+    if (typeof v === 'number') return 'a number';
+    if (typeof v === 'boolean') return 'a boolean';
+    return 'an object';
+}
+function officialGptImageParamError(p: GptImageParamInput, cap: CaptureCtx | null): NextResponse | null {
+    const bad = (message: string, param: string | null, code: string, type = 'invalid_request_error') =>
+        imageError(message, 400, cap, { type, param, code });
+    if (p.hasStyle) return bad("Unknown parameter: 'style'.", 'style', 'unknown_parameter');
+    if (p.hasInputFidelity)
+        return bad(
+            `The model '${p.model}' does not support the 'input_fidelity' parameter.`,
+            'input_fidelity',
+            'invalid_input_fidelity_model',
+            'image_generation_user_error',
+        );
+    if (!p.promptPresent) return bad("Missing required parameter: 'prompt'.", 'prompt', 'missing_required_parameter');
+    if (p.promptType !== 'string')
+        return bad(
+            `Invalid type for 'prompt': expected a string, but got ${p.promptType === 'object' ? 'an object' : `a ${p.promptType}`} instead.`,
+            'prompt',
+            'invalid_type',
+        );
+    if (p.prompt === '')
+        return bad(
+            "Invalid 'prompt': empty string. Expected a string with minimum length 1, but got an empty string instead.",
+            'prompt',
+            'empty_string',
+        );
+    if (p.nRaw !== undefined && p.nRaw !== null && !(p.multipart && String(p.nRaw).trim() === '')) {
+        let v: number;
+        if (p.multipart) {
+            const t = String(p.nRaw).trim();
+            if (!/^-?\d+$/.test(t))
+                return bad("Invalid type for 'n': expected an integer, but got a string instead.", 'n', 'invalid_type');
+            v = Number(t);
+        } else if (typeof p.nRaw !== 'number') {
+            return bad(
+                `Invalid type for 'n': expected an integer, but got ${jsTypeName(p.nRaw)} instead.`,
+                'n',
+                'invalid_type',
+            );
+        } else if (!Number.isInteger(p.nRaw)) {
+            return bad("Invalid type for 'n': expected an integer, but got a number instead.", 'n', 'invalid_type');
+        } else v = p.nRaw;
+        if (v < 1)
+            return bad(
+                `Invalid 'n': integer below minimum value. Expected a value >= 1, but got ${v} instead.`,
+                'n',
+                'integer_below_min_value',
+            );
+        if (v > 10)
+            return bad(
+                `Invalid 'n': integer above maximum value. Expected a value <= 10, but got ${v} instead.`,
+                'n',
+                'integer_above_max_value',
+            );
+    }
+    if (p.quality !== undefined && p.quality !== null && p.quality !== '') {
+        if (typeof p.quality !== 'string')
+            return bad(
+                `Invalid type for 'quality': expected a string, but got ${jsTypeName(p.quality)} instead.`,
+                'quality',
+                'invalid_type',
+            );
+        const allowed = p.tier5 ? ['low', 'medium', 'high', 'xhigh', 'max', 'auto'] : ['low', 'medium', 'high', 'auto'];
+        if (!allowed.includes(p.quality))
+            return bad(
+                p.tier5
+                    ? `Invalid value: '${p.quality}'. Supported values are: 'low', 'medium', 'high', 'xhigh', 'max', and 'auto'.`
+                    : `Invalid value: '${p.quality}'. Supported values are: 'low', 'medium', 'high', and 'auto'.`,
+                'quality',
+                'invalid_value',
+            );
+    }
+    const of = typeof p.outputFormat === 'string' ? p.outputFormat.trim().toLowerCase() : '';
+    if (
+        p.outputCompression !== undefined &&
+        p.outputCompression !== null &&
+        String(p.outputCompression).trim() !== ''
+    ) {
+        const c =
+            typeof p.outputCompression === 'number' ? p.outputCompression : Number(String(p.outputCompression).trim());
+        if (Number.isFinite(c) && (of === '' || of === 'png') && c < 100)
+            return bad(
+                'Compression less than 100 is not supported for PNG output format',
+                null,
+                'invalid_png_output_compression',
+                'image_generation_user_error',
+            );
+    }
     return null;
+}
+
+/** size 形态校验(官方:`Invalid size 'X'. Expected WIDTHxHEIGHT, for example '1824x1024'.`)。在 normalize 之后调用
+ *  (比例串已翻成像素);auto(大小写不限,portal 宽容)/ 空 放行,其余非 `\d+x\d+` → 400。 */
+function gptImageSizeFormatError(size: string): string | null {
+    if (!size || size.trim().toLowerCase() === 'auto') return null;
+    if (/^\d+x\d+$/.test(size)) return null;
+    return `Invalid size '${size}'. Expected WIDTHxHEIGHT, for example '1824x1024'.`;
 }
 /** gpt-image JSON 规整:剥 response_format(zhiyunai 拒收 →400)+ 比例→像素 size(默认出方图)。
  *  一并剥 stream / partial_images:上游恒走非流(留着会让上游真返 SSE 时原样 200 透传、绕过
@@ -1727,7 +1924,7 @@ function normalizeGptImageForm(form: FormData): void {
 
 // ============ 伪流式(官方 Images streaming 契约,gpt-image)============
 // 官方:`stream:true` → SSE,0-N 个 partial_image 事件 + 每张图一个 completed 事件。我们的
-// 上游不产渐进图 → 不发 partial(官方 SDK 按事件驱动解析,少 partial 不破);连接立即 200 开流,
+// 上游不产渐进图 → partial 用最终图缩放预览合成(第 5 批,2026-09-19;此前不发 partial);连接立即 200 开流,
 // 生成期间每 15s 注 SSE 注释保活(CF ~100s 空闲掐线,慢图 300s+ —— 这条路天然不需要 withKeepalive
 // 的「85s 后变 200」妥协),完成后发 completed(字段对齐官方:b64_json / created_at / size /
 // quality / background / output_format / usage;`response_format=url` 扩展时带 url)。失败 → 官方
@@ -1737,7 +1934,13 @@ const IMAGE_SSE_KEEPALIVE_MS = 15_000;
 
 /** 把非流式 images 流程(reshape 后的 NextResponse promise)包成官方形 SSE。
  *  事件族按客户调用的 path:/images/edits → image_edit.*,其余 → image_generation.*。 */
-function gptImageSseResponse(work: Promise<NextResponse>, clientPath: string): NextResponse {
+/** partial_images(官方 0-3)→ 整数;非法 / 缺省 → 0。 */
+function parsePartialImages(v: unknown): number {
+    const n = typeof v === 'number' ? v : Number(String(v ?? '').trim());
+    return Number.isInteger(n) && n >= 0 && n <= 3 ? n : 0;
+}
+
+function gptImageSseResponse(work: Promise<NextResponse>, clientPath: string, partialImages = 0): NextResponse {
     const family = clientPath === '/images/edits' ? 'image_edit' : 'image_generation';
     const enc = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
@@ -1764,17 +1967,40 @@ function gptImageSseResponse(work: Promise<NextResponse>, clientPath: string): N
                     }
                     const items = j && Array.isArray(j.data) ? (j.data as Array<Record<string, unknown>>) : [];
                     if (resp.status >= 200 && resp.status < 300 && j && items.length > 0) {
+                        // 官方:每张图 0-N 个 partial_image(partial_image_index 0..N-1)+ 1 个 completed,
+                        // sequence_number 跨事件递增。我们的上游不产渐进图 → partial 用最终图按 (i+1)/(N+1)
+                        // 线性比例缩小的预览合成(sharp),在拿到最终图后一次性发出(时序不对齐官方,形状对齐)。
+                        let seq = 0;
+                        const common = {
+                            created_at: j.created ?? Math.floor(Date.now() / 1000),
+                            size: j.size ?? null,
+                            quality: j.quality ?? null,
+                            background: j.background ?? null,
+                            output_format: j.output_format ?? null,
+                        };
+                        const fmt: ImageFormat =
+                            j.output_format === 'jpeg' || j.output_format === 'webp' ? j.output_format : 'png';
                         for (const it of items) {
+                            const b64 = typeof it.b64_json === 'string' && it.b64_json ? it.b64_json : '';
+                            if (partialImages > 0 && b64) {
+                                for (let i = 0; i < partialImages; i++) {
+                                    const preview = (await previewB64(b64, (i + 1) / (partialImages + 1), fmt)) ?? b64;
+                                    send(`${family}.partial_image`, {
+                                        type: `${family}.partial_image`,
+                                        b64_json: preview,
+                                        ...common,
+                                        partial_image_index: i,
+                                        sequence_number: seq++,
+                                    });
+                                }
+                            }
                             send(`${family}.completed`, {
                                 type: `${family}.completed`,
-                                ...(typeof it.b64_json === 'string' && it.b64_json ? { b64_json: it.b64_json } : {}),
+                                ...(b64 ? { b64_json: b64 } : {}),
                                 ...(typeof it.url === 'string' && it.url ? { url: it.url } : {}),
-                                created_at: j.created ?? Math.floor(Date.now() / 1000),
-                                size: j.size ?? null,
-                                quality: j.quality ?? null,
-                                background: j.background ?? null,
-                                output_format: j.output_format ?? null,
+                                ...common,
                                 usage: j.usage ?? null,
+                                sequence_number: seq++,
                             });
                         }
                     } else {
@@ -1835,23 +2061,46 @@ function isStrictImageMode(req: NextRequest, search: string): boolean {
     return new URLSearchParams(search).get('strict') === 'true';
 }
 
-/** gpt-image 尺寸校验(逆向 ch44 zhiyunai 实测规则)。仅校验显式 WxH 像素尺寸(auto / 比例串
- *  交给 normalize)。合规 = 两边都是 16 的倍数、1024 ≤ 长边 ≤ 3840、短边 ≤ 2160、长/短 ≤ 3:1。
- *  返回 400 错误文案或 null(合规)。 */
+/** gpt-image 尺寸校验 —— 官方 api.openai.com 规则与文案(2026-09-17 官方 key 逐条实测):两边都是 16 的倍数、
+ *  最长边 ≤ 3840、长/短 ≤ 3:1、总像素 ∈ [655,360, 8,294,400]。仅校验显式 WxH(auto / "" / 比例串交给 normalize)。
+ *  返回官方原文或 null。此前只在 strict 模式且按 zhiyunai 规则(长边 ≥1024 / 短边 ≤2160)校验,非严格一律透传,
+ *  上游会【静默改尺寸再计费】(1000²→1008²、512²→816²、4096×2304→4K),客户按官方对不上 → 改为默认生效。 */
+const GPT_IMAGE_MIN_PIXELS = 655_360;
+const GPT_IMAGE_MAX_PIXELS = 8_294_400;
 function gptImageSizeError(size: string): string | null {
     if (!size) return null;
     const m = size.match(/^(\d+)x(\d+)$/);
     if (!m) return null; // 非 WxH(auto / "16:9" 等)→ 不在此校验
     const w = Number(m[1]);
     const h = Number(m[2]);
-    if (w % 16 !== 0 || h % 16 !== 0) return `invalid size '${size}': width and height must be multiples of 16`;
+    if (w % 16 !== 0 || h % 16 !== 0) return `Invalid size '${size}'. Width and height must both be divisible by 16.`;
     const long = Math.max(w, h);
     const short = Math.min(w, h);
-    if (long < 1024) return `invalid size '${size}': minimum long edge is 1024`;
-    if (long > 3840 || short > 2160)
-        return `invalid size '${size}': maximum is 3840x2160 (long edge ≤ 3840, short edge ≤ 2160)`;
-    if (long / short > 3) return `invalid size '${size}': aspect ratio must be within 3:1`;
+    if (long > 3840) return `Invalid size '${size}'. The longest edge must be less than or equal to 3840.`;
+    if (long / short > 3) return `Invalid size '${size}'. The maximum supported aspect ratio is 3:1.`;
+    if (w * h < GPT_IMAGE_MIN_PIXELS)
+        return `Invalid size '${size}'. Requested resolution is below the current minimum pixel budget.`;
+    if (w * h > GPT_IMAGE_MAX_PIXELS)
+        return `Invalid size '${size}'. Requested resolution is above the current maximum pixel budget.`;
     return null;
+}
+
+/** 客户打的是 /images/edits 却一张输入图都没带 → 官方 400 `missing_required_parameter`(2026-09-17 官方实测)。
+ *  此前统一分流会把它当文生图打 generations 并计费(客户按官方对不上,且"漏传图"这种客户端 bug 被静默吞掉)。
+ *  统一分流仍保留其余语义:/generations 带图照旧转 edits。 */
+function isImagesEditsPath(path: string): boolean {
+    return path.replace(/\/+$/, '') === '/images/edits';
+}
+function missingImageError(cap: CaptureCtx | null): NextResponse {
+    return imageError("Missing required parameter: 'image'.", 400, cap, {
+        param: 'image',
+        code: 'missing_required_parameter',
+    });
+}
+
+/** 官方 size 错误体:type image_generation_user_error / param size / code invalid_value(官方实测三字段恒定)。 */
+function gptImageSizeErrorResponse(msg: string, cap: CaptureCtx | null): NextResponse {
+    return imageError(msg, 400, cap, { type: 'image_generation_user_error', param: 'size', code: 'invalid_value' });
 }
 
 /** 严格模式下校验 gpt-image 入参(output_format / background / size / moderation)。返回 400 文案或 null。 */
@@ -1879,13 +2128,10 @@ function imageFormatMime(format: ImageOutputFormat | null, fallback = 'applicati
     return format ? `image/${format}` : fallback;
 }
 
-/** 客户请求的 output_format → 需要服务端转码的目标(gpt-image 上游恒返 png、无视 output_format)。
- *  jpeg/jpg → 'jpeg'(本地转码交付);png/空/webp/未知 → null。
- *  ⚠️ webp 不转:jimp 1.6.1 不支持 webp 编码,不为它引 native 依赖 —— webp 请求交付 png、
- *  回显按实际字节 sniff 成 png(诚实,#418 行为)。客户当前反馈只涉及 jpeg(#9/#13)。 */
-function gptImageTranscodeTarget(outputFormat: string): 'jpeg' | null {
-    const s = outputFormat.trim().toLowerCase();
-    return s === 'jpeg' || s === 'jpg' ? 'jpeg' : null;
+/** 客户请求的 output_format → 需要服务端转码的目标(gpt-image 上游多恒返 png、无视 output_format)。
+ * jpeg/jpg → jpeg;webp → webp;png/空/未知 → null。 */
+function gptImageTranscodeTarget(outputFormat: string): TranscodeTarget | null {
+    return transcodeTargetOf(outputFormat);
 }
 
 /** output_compression(OpenAI:0-100 百分比,越大文件越大质量越高)→ jimp quality(1-100)。
@@ -1897,19 +2143,11 @@ function transcodeQuality(compression: number | undefined): number {
     return 90;
 }
 
-/** png base64 → jpeg base64(jimp,纯 JS 无 native 依赖,失败回退原 png,永不抛)。
- *  上游恒返 png,客户请求 jpeg 时在此本地转码【真交付】(#9/#13,2026-08-29 客户反馈:请求 JPEG
- *  却拿到 PNG)。副带把 png 里的 adobe C2PA 一并丢弃(重编码不保留 PNG 辅助块)。 */
-async function transcodePngB64(pngB64: string, target: 'jpeg', compression?: number): Promise<string> {
-    try {
-        const { Jimp } = await import('jimp');
-        const img = await Jimp.read(Buffer.from(pngB64, 'base64'));
-        const buf = await img.getBuffer('image/jpeg', { quality: transcodeQuality(compression) });
-        return Buffer.from(buf).toString('base64');
-    } catch (e) {
-        console.warn(`[gpt-image] png→${target} transcode failed, keeping png:`, e instanceof Error ? e.message : e);
-        return pngB64;
-    }
+/** base64 图 → jpeg / webp base64(sharp;已是目标格式原样返回 —— 适配器层已转过就不二次重编码;失败回退原图,永不抛)。
+ *  上游恒返 png,客户请求 jpeg/webp 时在此本地转码【真交付】(#9/#13 客户反馈 + 第 5 批 webp)。
+ *  副带把 png 里的 adobe C2PA 一并丢弃(重编码不保留辅助块)。 */
+async function transcodePngB64(pngB64: string, target: TranscodeTarget, compression?: number): Promise<string> {
+    return transcodeB64(pngB64, target, transcodeQuality(compression));
 }
 
 type FixedVariantImageItem = { b64_json?: unknown; url?: unknown; size?: unknown };
@@ -2165,7 +2403,7 @@ async function reshapeOpenAiImageResponse(
     cap: CaptureCtx | null,
     req: NextRequest | null = null,
     storeToUrl = false,
-    transcodeTo: 'jpeg' | null = null,
+    transcodeTo: TranscodeTarget | null = null,
     echo: ImageEchoFields | null = null,
     fixedVariant: GptImageVariant | null = null,
     estimatedPromptCount = 1,
@@ -2243,6 +2481,12 @@ async function reshapeOpenAiImageResponse(
     for (const it of data) {
         if (typeof it.b64_json === 'string' && it.b64_json) it.b64_json = stripAdobeImageMetadataB64(it.b64_json);
     }
+    // 官方 data[] 每项带 generation_id(2026-09-17 实测);适配器已生成,非适配器上游(直连渠道)在此补齐。
+    if (echo?.gptDefaults) {
+        for (const it of data) {
+            if (typeof it.generation_id !== 'string' || !it.generation_id) it.generation_id = newGenerationId();
+        }
+    }
 
     if (fixedVariant) {
         try {
@@ -2270,7 +2514,7 @@ async function reshapeOpenAiImageResponse(
     // output_format=jpeg/webp:上游恒返 png、无视该参数 → 服务端 png→目标格式转码【真交付】(#9/#13,
     // 就地改 data[].b64_json,out.data 同一引用会一并反映)。失败回退原 png(transcodePngB64 永不抛)。
     // 客户请求 jpeg/webp 就真给 jpeg/webp,不再谎报也不再只回 png。output_compression → 转码 quality。
-    const imgMime = transcodeTo === 'jpeg' ? 'image/jpeg' : 'image/png';
+    const imgMime = transcodeTo === 'jpeg' ? 'image/jpeg' : transcodeTo === 'webp' ? 'image/webp' : 'image/png';
     if (transcodeTo) {
         for (const item of data) {
             if (typeof item.b64_json === 'string' && item.b64_json) {
@@ -2406,11 +2650,12 @@ async function handleImagesDalle(
             // model 非我们的 Gemini 生图 → 重建 FormData 透传(保留 gpt-image-2 等)
             if (!(model in GEMINI_IMAGE_MODELS)) {
                 // gpt-image:剥 response_format + 把比例(aspect_ratio / "16:9" 形态 size)翻成像素 size
-                let transcodeTo: 'jpeg' | null = null;
+                let transcodeTo: TranscodeTarget | null = null;
                 let transcodeCompression: number | undefined;
                 let wantStream = false;
                 const fixedVariant = gptImageVariant(model);
                 let fixedN = 1;
+                let partialImages = 0;
                 if (isGptImageModel(model)) {
                     wantStream = String(form.get('stream') ?? '').toLowerCase() === 'true';
                     if (fixedVariant && String(form.get('stream') ?? '').toLowerCase() === 'true') {
@@ -2436,22 +2681,48 @@ async function handleImagesDalle(
                             sizeRaw,
                             String(form.get('moderation') ?? ''),
                         );
-                        if (err) return imageError(err, 400, cap, { code: 'invalid_value' });
+                        if (err)
+                            return err.startsWith('Invalid size')
+                                ? gptImageSizeErrorResponse(err, cap)
+                                : imageError(err, 400, cap, { code: 'invalid_value' });
                     }
-                    // n 范围门(官方 1-10):两模式都拦 —— n=1000 打上游是真金白银
-                    const nErr = gptImageNError(form.get('n') == null ? undefined : String(form.get('n')));
-                    if (nErr) return imageError(nErr, 400, cap, { code: 'invalid_value', param: 'n' });
+                    // 官方入参校验(style / input_fidelity / prompt / n / quality / png+compression),400 官方文案
+                    const promptField = form.get('prompt');
+                    const pErr = officialGptImageParamError(
+                        {
+                            model,
+                            promptPresent: promptField !== null,
+                            promptType: typeof promptField === 'string' ? 'string' : 'object',
+                            prompt: typeof promptField === 'string' ? promptField : '',
+                            quality: form.get('quality') ?? undefined,
+                            nRaw: form.get('n') ?? undefined,
+                            multipart: true,
+                            outputFormat: form.get('output_format') ?? undefined,
+                            outputCompression: form.get('output_compression') ?? undefined,
+                            hasStyle: form.has('style'),
+                            hasInputFidelity: form.has('input_fidelity'),
+                            tier5: isGptImage25Model(model),
+                        },
+                        cap,
+                    );
+                    if (pErr) return pErr;
                     // 伪流式限 n=1(completed 事件按官方单图形;多图流式官方也没有稳定语义)
                     const nVal = String(form.get('n') ?? '').trim();
                     if (wantStream && nVal !== '' && Number(nVal) > 1)
                         return imageError('stream supports n=1 only', 400, cap, { code: 'invalid_value', param: 'n' });
+                    // /images/edits 必须带输入图(官方 400 missing_required_parameter)
+                    if (isImagesEditsPath(path) && formImageFiles(form).length === 0) return missingImageError(cap);
                     // 严格 / 非严格都做:请求 jpeg/webp → 服务端转码交付(上游恒返 png、无视 output_format)
                     transcodeTo = gptImageTranscodeTarget(String(form.get('output_format') ?? ''));
                     const c = Number(form.get('output_compression'));
                     transcodeCompression =
                         Number.isFinite(c) && String(form.get('output_compression') ?? '') !== '' ? c : undefined;
+                    partialImages = parsePartialImages(form.get('partial_images'));
                     normalizeGptImageForm(form);
                     sizeRaw = String(form.get('size') ?? '');
+                    // 官方尺寸约束默认生效(非法 → 400 官方文案,不打上游;上游会静默改尺寸再计费)
+                    const sizeErr = gptImageSizeFormatError(sizeRaw) ?? gptImageSizeError(sizeRaw);
+                    if (sizeErr) return gptImageSizeErrorResponse(sizeErr, cap);
                 }
                 // multipart 入参不拆图字节(brief §3 Out),只记文本字段摘要
                 if (cap)
@@ -2511,7 +2782,7 @@ async function handleImagesDalle(
                     }
                 };
                 // 伪流式:gpt-image + stream:true → 立即 200 开 SSE 保活,完成后发 completed 事件
-                if (wantStream && isGptImageModel(model)) return gptImageSseResponse(run(), path);
+                if (wantStream && isGptImageModel(model)) return gptImageSseResponse(run(), path, partialImages);
                 return await run();
             }
             for (const file of formImageFiles(form)) {
@@ -2557,11 +2828,12 @@ async function handleImagesDalle(
             if (!(model in GEMINI_IMAGE_MODELS)) {
                 // gpt-image:剥 response_format(zhiyunai 拒收 →400)+ 比例→像素 size(zhiyunai 不认
                 // aspect_ratio / "16:9" 形态 size,默认出方图)。见 normalizeGptImageJson。
-                let transcodeTo: 'jpeg' | null = null;
+                let transcodeTo: TranscodeTarget | null = null;
                 let transcodeCompression: number | undefined;
                 let wantStream = false;
                 const fixedVariant = gptImageVariant(model);
                 let fixedN = 1;
+                let partialImages = 0;
                 const seedream = isSeedreamModel(model);
                 if (seedream) {
                     // 缺省 = url(上游 / 火山默认;客户显式 b64_json 才内联)→ 适配器恒返 b64,回程存图床换 url。
@@ -2595,22 +2867,47 @@ async function handleImagesDalle(
                             sizeRaw,
                             typeof body.moderation === 'string' ? body.moderation : '',
                         );
-                        if (err) return imageError(err, 400, cap, { code: 'invalid_value' });
+                        if (err)
+                            return err.startsWith('Invalid size')
+                                ? gptImageSizeErrorResponse(err, cap)
+                                : imageError(err, 400, cap, { code: 'invalid_value' });
                     }
-                    // n 范围门(官方 1-10):两模式都拦 —— n=1000 打上游是真金白银
-                    const nErr = gptImageNError(body.n);
-                    if (nErr) return imageError(nErr, 400, cap, { code: 'invalid_value', param: 'n' });
+                    // 官方入参校验(style / input_fidelity / prompt / n / quality / png+compression),400 官方文案
+                    const pErr = officialGptImageParamError(
+                        {
+                            model,
+                            promptPresent: body.prompt !== undefined,
+                            promptType: body.prompt === null ? 'object' : typeof body.prompt,
+                            prompt: typeof body.prompt === 'string' ? body.prompt : '',
+                            quality: body.quality,
+                            nRaw: body.n,
+                            multipart: false,
+                            outputFormat: body.output_format,
+                            outputCompression: body.output_compression,
+                            hasStyle: 'style' in body,
+                            hasInputFidelity: 'input_fidelity' in body,
+                            tier5: isGptImage25Model(model),
+                        },
+                        cap,
+                    );
+                    if (pErr) return pErr;
                     // 伪流式限 n=1(completed 事件按官方单图形)
                     if (wantStream && body.n != null && Number(body.n) > 1)
                         return imageError('stream supports n=1 only', 400, cap, { code: 'invalid_value', param: 'n' });
+                    // /images/edits 必须带输入图(JSON 形:官方 images[{image_url|file_id}],或自家 image / image_url)
+                    if (isImagesEditsPath(path) && jsonImageRefs(body).length === 0) return missingImageError(cap);
                     // 严格 / 非严格都做:请求 jpeg/webp → 服务端转码交付(上游恒返 png、无视 output_format)
                     transcodeTo = gptImageTranscodeTarget(
                         typeof body.output_format === 'string' ? body.output_format : '',
                     );
                     transcodeCompression =
                         typeof body.output_compression === 'number' ? body.output_compression : undefined;
+                    partialImages = parsePartialImages(body.partial_images);
                     normalizeGptImageJson(body);
                     sizeRaw = typeof body.size === 'string' ? body.size : '';
+                    // 官方尺寸约束默认生效(同 multipart 分支)
+                    const sizeErr = gptImageSizeFormatError(sizeRaw) ?? gptImageSizeError(sizeRaw);
+                    if (sizeErr) return gptImageSizeErrorResponse(sizeErr, cap);
                 }
                 const echo: ImageEchoFields = {
                     quality: typeof body.quality === 'string' ? body.quality : '',
@@ -2641,6 +2938,7 @@ async function handleImagesDalle(
                                 search,
                             );
                         }
+
                         return await reshapeOpenAiImageResponse(
                             upstream,
                             prompt,
@@ -2666,15 +2964,11 @@ async function handleImagesDalle(
                     }
                 };
                 // 伪流式:gpt-image + stream:true → 立即 200 开 SSE 保活,完成后发 completed 事件
-                if (wantStream && isGptImageModel(model)) return gptImageSseResponse(run(), path);
+                if (wantStream && isGptImageModel(model)) return gptImageSseResponse(run(), path, partialImages);
                 return await run();
             }
-            // JSON 形态的 image 可能是 data URL / 外部 URL 字符串或其数组(复用现有 helper)
-            const imageField = body.image;
-            const urls = Array.isArray(imageField) ? imageField : imageField ? [imageField] : [];
-            for (const u of urls) {
-                if (typeof u === 'string') inputParts.push(await imageUrlToInlinePart(u));
-            }
+            // JSON 形态:官方 images[{image_url|file_id}] / 自家 image、image_url(data URL / 外部 URL 字符串或数组)
+            for (const img of await extractJsonInputImages(body, req)) inputParts.push({ inlineData: img });
         }
     } catch (e) {
         if (e instanceof ImageUrlError)

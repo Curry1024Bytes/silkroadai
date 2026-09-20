@@ -17,10 +17,17 @@ function request(mode: ImageMode, format: 'json' | 'multipart') {
     const url = `http://portal.test/image-adapter25/wetokenasia25/v1/images/${mode}`;
     const fields = { model: 'gpt-image-2.5-flare', prompt: 'fixture', quality: ' ULTRA ', size: '1024x1024' };
     if (format === 'json') {
+        const jsonFields =
+            mode === 'edits'
+                ? {
+                      ...fields,
+                      images: [{ image_url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' }],
+                  }
+                : fields;
         return new NextRequest(url, {
             method: 'POST',
             headers: { authorization: 'Bearer fixture-only', 'content-type': 'application/json' },
-            body: JSON.stringify(fields),
+            body: JSON.stringify(jsonFields),
         });
     }
     const form = new FormData();

@@ -213,3 +213,71 @@ describe('/v1/messages 持头转发 — 持头上限退化', () => {
         vi.resetModules();
     });
 });
+
+// ── 2026-09-18 客户契约测试反馈:未知模型错误码 + tools[] 结构校验(官方对齐)──
+const NEWAPI_MNF = JSON.stringify({
+    error: {
+        code: 'model_not_found',
+        message: '分组 ccmax 下模型 nonexistent-model-xyz 无可用渠道（distributor） (request id: 1)',
+        type: 'new_api_error',
+    },
+});
+function newApi503(): Response {
+    return new Response(NEWAPI_MNF, { status: 503, headers: { 'content-type': 'application/json' } });
+}
+function modelsResp(ids: string[]): Response {
+    return new Response(JSON.stringify({ data: ids.map((id) => ({ id })) }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+    });
+}
+
+describe('/v1/messages — 未知模型 503 → 404 not_found_error', () => {
+    it('模型不在该 key 的 /v1/models 清单 → 404 Anthropic 形,不泄内部分组名(流式与非流式同)', async () => {
+        for (const stream of [true, false]) {
+            mockFetch.mockReset();
+            mockFetch.mockResolvedValueOnce(newApi503()).mockResolvedValueOnce(modelsResp(['claude-opus-4-8']));
+            const res = await POST(makeReq({ ...STREAM_BODY, model: 'nonexistent-model-xyz', stream }), ctx);
+            expect(res.status).toBe(404);
+            expect(res.headers.get('x-silkroadai-error-remap')).toBe('model_not_found');
+            const j = (await res.json()) as { type: string; error: { type: string; message: string } };
+            expect(j.type).toBe('error');
+            expect(j.error.type).toBe('not_found_error');
+            expect(j.error.message).toContain('model: nonexistent-model-xyz');
+            expect(j.error.message).not.toContain('ccmax');
+            expect(mockFetch).toHaveBeenCalledTimes(2); // 原请求 + /v1/models 判别,不做流式 failover 重试
+            expect(mockScheduleRefund).not.toHaveBeenCalled();
+        }
+    });
+
+    it('模型在清单里(渠道全挂)→ 保持 503 原体', async () => {
+        mockFetch.mockResolvedValueOnce(newApi503()).mockResolvedValueOnce(modelsResp(['nonexistent-model-xyz']));
+        const res = await POST(makeReq({ ...STREAM_BODY, model: 'nonexistent-model-xyz' }), ctx);
+        expect(res.status).toBe(503);
+        expect(await res.text()).toBe(NEWAPI_MNF);
+    });
+});
+
+describe('/v1/messages — tools[] 结构校验(官方确定性 400)', () => {
+    it('缺 input_schema → 400 Anthropic invalid_request_error,不打上游', async () => {
+        const res = await POST(
+            makeReq({ ...STREAM_BODY, tools: [{ name: 'evil_tool', description: 'no schema' }] }),
+            ctx,
+        );
+        expect(res.status).toBe(400);
+        const j = (await res.json()) as { type: string; error: { type: string; message: string } };
+        expect(j.type).toBe('error');
+        expect(j.error.type).toBe('invalid_request_error');
+        expect(j.error.message).toBe('tools.0.custom.input_schema: Field required');
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('合规工具 → 照常转发(tools 字节原样)', async () => {
+        mockFetch.mockResolvedValueOnce(sseResponse([MESSAGE_START, CONTENT, STOP]));
+        const tools = [{ name: 'get_weather', input_schema: { type: 'object', properties: {} } }];
+        const res = await POST(makeReq({ ...STREAM_BODY, tools }), ctx);
+        expect(res.status).toBe(200);
+        const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect((JSON.parse(init.body as string) as { tools: unknown }).tools).toEqual(tools);
+    });
+});

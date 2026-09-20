@@ -233,6 +233,21 @@ silkroadai/
 - [x] #212 — **GET /v1/key 自查端点**(new-api 无此路径,拦截纯增量):sk- 自查别名/状态/档次(显示名按 key 主人 tenant)/账户余额(round4 + `stale` 标志)/近期用量。评审 major:`last_used_at` 缓存命中时是缓存写入时间 → 只 `source==='live'` 才给;`recent_used_cny` 命名不冒充对账口径。余额挂 → 503;次要信息 best-effort null。
 - [ ] `/docs` 章节(流式契约 / silkroadai 字段 / /v1/key)另起 PR;enriched 头 + 真实逐 token 流式待有余额 key 验证(unauth 通路已证)。
 
+### OpenAI Batch API 兼容(/v1/files + /v1/batches — 2026-08-29)
+
+- [x] 客户 SDK `client.files.create(purpose='batch')` + `client.batches.*` 直接可用(此前 /v1/batches 兜底透传 new-api 全 404)。MVP 只收 `endpoint` = `/v1/images/{generations,edits}`;JSONL 逐行由 worker(`src/lib/batch/worker.ts`,挂 instrumentation 第 6 调度器,5s cadence + 重入守卫)**self-fetch 重放本实例 /v1/images/\* 同步管线** —— 计费/渠道 failover/错误归一/图床 URL 全走客户直调同一条路,worker 零计费逻辑。文件内容存 **PG Bytes**(公开读 image bucket 放不得客户 prompt),上限 20MB / 1000 行(env `BATCH_MAX_*` 可调);`response_format=b64_json` 校验时就地删掉(输出 URL 形,防 output 文件 GB 级)。**不做官方 5 折**(上游成本没变,按同步价计费)。migration `20260829120000_add_batch_api`(3 表全 additive,SQL 与 `prisma migrate diff --from-empty` 权威输出逐字核对)。逐行结果落 `batch_request_results`(唯一键幂等)→ 重启续跑;24h 超窗 → expired(带部分结果);每用户在途 5 批上限。39 新测(validate 10 / worker 10 / HTTP 面 19)+ instrumentation 测试更新;全套与基线红绿完全对齐。
+
+### image2 适配器上游超时按 provider 覆盖(2026-09-11)
+
+- [x] we-token 三线上游超时 600s→300s ✅(2026-09-11,分支 `fix/wetoken-upstream-timeout-300s`)— 客户 602018325@qq.com(c-70fd7c5f)报大量「10 分钟超时」:new-api 日志 `status_code=504, openai_error`、use_time 恰 600,只落 we-token 三渠道 ch176(asian-acc)/ch177(us-la)/ch219(asian-acc 2.5)。定位链:**504 是 Caddy `172.20.0.1:3010` 的 `response_header_timeout 600s` 发的** ← 适配器副本没在 600s 内回头 ← 适配器 Node fetch 直连 we-token **600s 收不到响应头**(`[image-adapter] upstream fetch failed { ms: 600001, err: 'This operation was aborted' }`,当日 4,441 条);同一分钟同渠道 90%+ 请求 p50 55s 正常出图、副本 CPU 20-50% → **是 we-token 后端阵发性挂死不回头**(与它同时段返 `408 the provider throttled … system under load` 同源),不是我方卡住。portal 代理 undici 600s / Caddy 3010 600s / 适配器 600s 三层同时到点 → 客户等满 10 分钟拿 `200 + {"error":{"message":"Upstream request failed"}}`,new-api 来不及换渠道(504 请求 finally_ok = 0)。修法:`ImageProvider.upstreamTimeoutMs?`(2.0)/ `ImageProvider25.upstreamTimeoutMs?`(2.5)按 provider 覆盖,`wetoken` / `wetokenasia` / `wetokenasia25` 设 `WETOKEN_UPSTREAM_TIMEOUT_MS = 300_000`,adapter 缺省 `DEFAULT_UPSTREAM_TIMEOUT_MS` 仍 600s(其他上游零变化;`wetokengated` 已停用未动)→ 挂死请求 5 分钟后 503 让 new-api failover 到 ch186/208 出图。代价:we-token >300s 才成功的 0.2%(当日 p99 203s / p99.9 390s)被误杀重跑。+5 单测(fake timers:299s 未掐 / 301s 掐 / 缺省 provider 600s)。部署走 server2 `deploy-image-adapter.sh`(image-adapter 只跑在 api-1..6)。诊断细节见 memory `reference_image_504_600s_wetoken_hang`。
+
+### gpt-image edits `size=auto` 代理层按输入图比例补明确尺寸(2026-09-16)
+
+- [x] PR #466 merge `4e6a65c` + server2 六副本滚动部署 ✅ — 起因:客户 1913696371 报「指定了尺寸出方图」,三条 request_id 查证到 new-api 的 `size` 均为 `auto`、落 ch186 出 1024²;同客户同时段发 `16:9` 的请求被代理折成 1536x864 后正确 → 链路没改尺寸,是客户端没发。顺带用近 24h 适配器 `[image-adapter] ok` 日志实测:**low/medium 专线(ch207 frimodellow / ch204 frimodelmedium)对 `auto` 恒出 1024²/2048² 方图、无视输入图**,只有 high 线(ch186 ominiapi)跟随输入比例(见 gotcha #22)。修法:`resolveGptImageEditsAutoSize` —— **edits(有输入图)** 且 `size` 缺省/`auto` → 读第一张输入图尺寸(`imageDimensions`,含 EXIF Orientation)→ `gptImageSizeFromInput` 挑 `GPT_IMAGE_ASPECT_SIZE` 最近合法 WxH,首发即明确尺寸;multipart 与 JSON(data URL → multipart)两路 + chat 翻译同路;响应头 `X-Silkroadai-Size-Resolved: auto->WxH`。**边界**:generations 的 `auto` 绝不动(一周 73.8 万次、¥25 万,上游 auto→2048² 是既有产品行为);读不出尺寸保留 `auto`;显式 WxH 不动;多图取首图;只作用于经 portal 的请求(直连 :3000 的 c-70fd7c5f 不受影响)。影响:路由/计费机制不变;经 portal 的 `auto` edits 一周约 2.8 万次 / ¥2,049,非方形输入单价降 20–35%,每周少收 ≤ ¥700。+10 测试,全套 271 files / 3499 PASS。
+
+- [x] PR #468 — `auto` 时 **prompt 写明画幅优先于输入图比例** ✅(2026-09-16,#466 后续)— 客户反馈「昨天同样请求体出的是 16:9」:同一测试图 09-14 `auto` 落 ch186 出 2560×1440 4 次 / 1024² 6 次(ch186 对 `auto` 让模型自己定画布,模型约 4 成听 prompt「改为16：9」),#466 钉成输入图比例后这 4 成归零。现 `resolveGptImageEditsAutoSize` 优先级:`promptAspectRatio(prompt)`(认 `16:9` / 全角 `16：9` / `16比9`,数字前后不挨数字或小数点,两数 1-32、长短比 ≤ 2.5 排掉 `10:30` 时间与 3:1 以上)→ `aspectToPixelSize` 补尺寸;没写才跟随输入图。响应头 `auto->WxH;from=prompt`。显式 size / generations 仍不动。客户请求体不改即 100% 出 16:9。+8 测试,全套 3507 PASS。
+
+
 ### 企业门户「火山」渠道换上游 → 筷子开放平台(2026-08-17 上线)
 
 - [x] PR #386 merge `7cbb77f` + 部署 + 生产真机 smoke ✅ — volc region 上游从 new-api 形 provider(`ENTERPRISE_VOLC_VIDEO_*`)换成 **筷子 AI 开放平台** `https://aiopenapi.kuaizi.cn`。筷子对齐火山方舟官方 `contents/generations/tasks` 契约 → 对客方舟形接口近乎直通,**proxy 主干 / 计费 / 对客契约 / region 键全不变**,差异全吸收在适配器边界。
@@ -437,6 +452,15 @@ LiteLLM 同时支持 user-level 和 key-level 预算。我们只用 key-level(�
 **通用规则**:任何 proxy 层「读入一种 body 形态、转发另一种 body 形态」的地方(JSON↔multipart↔stream),都要把 `Content-Type`(+ 必要时 `Content-Length`)按出口 body 重设,不能无脑透传入口的头。
 
 **首次发现**:2026-06-08 客户 multipart 改图 500(W9 D4 images hotfix-2,`hotfix-multipart-content-type-brief.md`)。修复 commit:见 `fix/proxy-multipart-translate-content-type`。
+
+### 22. gpt-image edits 的 `size=auto` 在按张计费上游上多半是「恒方图」,不是「跟随输入图」
+
+**症状**:客户 `/v1/images/edits` 不传 `size`(或传 `auto`,OpenAI SDK 默认)+ 非方形输入图 → 出 1024×1024 / 2048×2048 方图,客户以为我们改了尺寸。
+**真实行为**(2026-09-16 用近 24h 适配器 `[image-adapter] ok` 日志的 `size: 'auto→WxH'` 字段实测):frimodel 家族(ch204 medium / ch207 low)对 `auto` **100% 出方图**(1024² 或 2048²),完全无视输入图比例;ominiapi(ch186 high)跟随输入比例但分辨率由它定,且混有 1254²/1672×941/816² 这类 ChatGPT 网页特征尺寸(号池成员)。OpenAI 官方 edits 的 `auto` 才是跟随输入图。
+**解决**:PR #466 起代理层 `resolveGptImageEditsAutoSize` 在 edits 且 `auto`/缺省时按第一张输入图比例补明确 WxH 再发上游(只作用经 portal 的请求)。**排障口诀**:客户报「指定尺寸出方图」先查 new-api `logs.content` 的 `大小 X` —— 那是 new-api 收到的原值,代理对裸 `gpt-image-2` 的显式 WxH 一律透传、只把 `16:9` 这类比例串折成像素、变体名补固定尺寸,不会把 WxH 改成 `auto`;`大小 auto` = 客户端没发(new-api 对 gpt-image 不给空 size 补默认,空 size 时日志根本没有 `大小` 段)。想看 `auto` 实际出了什么尺寸,用 ct 反推(1024² high=7024 / medium=1756 / low=196,2048² high=14272)或查适配器 ok 日志,不要猜。
+**prompt 里写比例 ≠ 指定画幅(#468 前)**:按张上游对 `auto` 是「模型自己定画布」,模型有时听 prompt 里的「16:9」有时不听(实测 4/10),客户会把偶然命中当成功能。#468 起代理在 `auto` + edits 时把 prompt 里的明确比例字样当画幅指令补成显式 size,变成确定行为;但正确用法仍是显式 `size`。
+
+**别碰 generations**:generations 的 `auto` 上游出 2048²/1024×1536/1536×1024,一周 73.8 万次、¥25 万,是既有产品行为;任何把 generations `auto` 补成 1024² 的写法都会砍半收入(`gptImageFallbackSize` 对无图请求返回 1024²,不能复用到这里)。
 
 ---
 

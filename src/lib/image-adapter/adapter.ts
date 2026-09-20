@@ -21,7 +21,20 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { stripAdobeImageMetadataB64 } from '@/lib/proxy/image-metadata';
+import { encodeQuality, transcodeB64, transcodeTargetOf } from '@/lib/image/transcode';
+import { newGenerationId } from '@/lib/image/generation-id';
 import { IMAGE_PROVIDERS, type ImageProvider } from './providers';
+import { countImagePromptTokens } from '@/lib/tokens/count-text-tokens';
+import { officialImageInputTokens } from '@/lib/tokens/image-input-tokens';
+import {
+    OFFICIAL_AUTO_DEFAULT_ASPECT,
+    alignTo16,
+    aspectFromRatio,
+    isAutoSize,
+    matchesAutoRequest,
+    officialAutoDims,
+    promptAspectRatio,
+} from './auto-size';
 
 export type ImageMode = 'generations' | 'edits';
 
@@ -49,12 +62,19 @@ const MAX_FANOUT = 10;
 type Quality = 'low' | 'medium' | 'high';
 const QUALITY_GRID: Record<Quality, number> = { low: 16, medium: 48, high: 96 };
 
-export function officialOutputTokens(w: number, h: number, quality: Quality): number {
+/** 单张输出 token 的【未取整分子】:patches × (2e6 + w·h),分母恒 4e6。官方对 n 张是先乘 n 再一次 ceil
+ *  (2026-09-17 官方 key 实测 1024² low:n=1→196、n=2→391、n=3→586,不是 392/588),所以 synthUsage 要拿
+ *  分子自己算,不能拿单张 ceil 值乘 n。整数运算,4K·high 分子 ~5×10¹⁰ 远在 2⁵³ 内。 */
+export function officialOutputTokensNumerator(w: number, h: number, quality: Quality): number {
     const long = Math.max(w, h);
     const short = Math.min(w, h);
     const grid = QUALITY_GRID[quality];
     const patches = grid * Math.round((grid * short) / long);
-    return Math.ceil((patches * (2_000_000 + w * h)) / 4_000_000);
+    return patches * (2_000_000 + w * h);
+}
+
+export function officialOutputTokens(w: number, h: number, quality: Quality): number {
+    return Math.ceil(officialOutputTokensNumerator(w, h, quality) / 4_000_000);
 }
 
 /** "3840x2160" → {w,h};非 WxH(auto/缺省/比例串)→ null(守门按不明处理)。 */
@@ -97,17 +117,11 @@ export function isElongated(w: number, h: number): boolean {
 
 // ============ usage 合成 ============
 
-/** prompt 文本 token 粗估(CJK ~1.5 tok/字,其余 ~1 tok/4 字符;同 /v1 route 口径)。 */
+/** prompt 文本 token —— images API 官方口径:o200k 真计数 + 固定模板开销 6(官方 key 实测 6/6 组全中),
+ *  见 `@/lib/tokens/count-text-tokens`。原为「CJK×1.5 + 其余/4」粗估(偏高 ~20%,#471 换真 tokenizer);
+ *  #471 上线后客户反馈"文字比官方少一点" = 少了这个 +6 常数(2026-09-16)。 */
 export function estimateTextTokens(s: string): number {
-    if (!s) return 0;
-    let cjk = 0;
-    let other = 0;
-    for (const ch of s) {
-        const c = ch.codePointAt(0) ?? 0;
-        if ((c >= 0x3000 && c <= 0x9fff) || (c >= 0xac00 && c <= 0xd7af) || (c >= 0xf900 && c <= 0xfaff)) cjk++;
-        else other++;
-    }
-    return Math.max(1, Math.ceil(cjk * 1.5 + other / 4));
+    return countImagePromptTokens(s);
 }
 
 /** 返图是否带真 alpha 通道:PNG colortype 6(RGBA)/ 4(灰+alpha)→ true;PNG 其他 colortype
@@ -136,23 +150,6 @@ function sniffOutputFormat(buf: Buffer): string {
     if (buf.length >= 12 && buf.toString('latin1', 0, 4) === 'RIFF' && buf.toString('latin1', 8, 12) === 'WEBP')
         return 'webp';
     return '';
-}
-
-/** png/webp base64 → jpeg base64(jimp,纯 JS 无 native 依赖;失败回退原图,永不抛)。
- *  客户 output_format=jpeg 时上游多恒返 png → 服务端转码成真 jpeg 字节(客户 #9 反馈)。 */
-async function toJpegB64(b64: string): Promise<string> {
-    try {
-        const { Jimp } = await import('jimp');
-        const img = await Jimp.read(Buffer.from(b64, 'base64'));
-        const jpeg = await img.getBuffer('image/jpeg', { quality: 92 });
-        return Buffer.from(jpeg).toString('base64');
-    } catch (e) {
-        console.warn(
-            '[image-adapter] png→jpeg transcode failed, keeping original:',
-            e instanceof Error ? e.message : e,
-        );
-        return b64;
-    }
 }
 
 /** dep-free 尺寸解析(PNG IHDR / JPEG SOF),读不出 → null(输入 token 按 1MP 兜底)。 */
@@ -193,13 +190,11 @@ export function imageDimensions(buf: Buffer): { w: number; h: number } | null {
     return null;
 }
 
-/** 单张输入图 token(edits 输入侧):85 + 每 MP 1500(校准到 prod edit avg pt≈1831),
- *  MP 封顶 2 —— azure 真实口径会把大输入图降采样,pt 很少超 5k;不封顶时 4K 输入图会算到
- *  1.3万 token/张,多图 edits 合成 pt 5.8万、比 azure 贵近一倍(2026-08-04 首灰实测,
- *  c-ff22024e 2K-high 多图单次 ¥1.08 vs azure 同类 ~¥0.59)。 */
-function inputImageTokens(dims: { w: number; h: number } | null): number {
-    const mp = dims ? Math.min(2, Math.max(1, Math.ceil((dims.w * dims.h) / 1_000_000))) : 1;
-    return 85 + mp * 1500;
+/** 单张输入图 token(edits 输入侧)—— 官方口径,见 `@/lib/tokens/image-input-tokens`(官方 key 15 尺寸逐点拟合)。
+ *  历史:2026-08-04 起「85 + MP×1500 封顶 2」粗估(>1MP 一律 3085,客户对账差 3 倍);#471 改 32px patch
+ *  (只在长边 ≥1024 时与官方相等);2026-09-16 官方 key 实测补齐小图三段缩放 + 3:1 补边规则。 */
+export function officialInputImageTokens(dims: { w: number; h: number } | null): number {
+    return officialImageInputTokens(dims);
 }
 
 export interface SynthUsageInput {
@@ -211,7 +206,7 @@ export interface SynthUsageInput {
     prompt: string;
     /** edits 输入图的尺寸(读不出的项传 null,按 1MP 兜底)。 */
     inputImageDims: Array<{ w: number; h: number } | null>;
-    /** 实际出图张数(按上游真实返回计,n>1 时按张累加)。 */
+    /** 实际出图张数(按上游真实返回计;input ×n、output 先乘 n 再 ceil,见 synthUsage)。 */
     imageCount: number;
 }
 
@@ -228,11 +223,15 @@ export interface SynthUsageInput {
  *  它们本来就只返回官方字段。适配器多送一套反而让【同一个模型不同渠道 usage 形状不一致】。
  *  `buildEstimatedUsage` 那处保持不动 —— 它只在上游完全不回 usage 时兜底,是另一个场景(PR #134)。 */
 export function synthUsage(inp: SynthUsageInput): Record<string, unknown> {
-    const perImage = officialOutputTokens(inp.w, inp.h, inp.quality);
-    const ct = perImage * Math.max(1, inp.imageCount);
-    const textTokens = estimateTextTokens(inp.prompt);
+    const count = Math.max(1, inp.imageCount);
+    // 官方 n 张语义(2026-09-17 官方 key 实测):output = ceil(n × 单张分子 / 4e6)(不是单张 ceil × n);
+    // input(文本 + 输入图)每张都算一遍 = ×n(generations n=2:text 8→16;edits n=2:image 1024→2048)。
+    // 这里的 n 用【实际交付张数】:扇出部分失败只按拿到的张数收,与官方"n 次生成"语义一致。
+    const ct = Math.ceil((count * officialOutputTokensNumerator(inp.w, inp.h, inp.quality)) / 4_000_000);
+    const textTokens = estimateTextTokens(inp.prompt) * count;
     let imgTokens = 0;
-    if (inp.mode === 'edits') for (const d of inp.inputImageDims) imgTokens += inputImageTokens(d);
+    if (inp.mode === 'edits') for (const d of inp.inputImageDims) imgTokens += officialInputImageTokens(d);
+    imgTokens *= count;
     const pt = textTokens + imgTokens;
     return {
         input_tokens: pt,
@@ -338,6 +337,11 @@ interface ParsedRequest {
     images: Array<{ buf: Buffer; type: string; name: string }>;
     /** 透传给上游的其余标量字段(model 强制 gpt-image-2,见 buildUpstreamBody)。 */
     extras: Record<string, string>;
+    /** edits 的蒙版(官方 `mask`,与 image 同尺寸的 RGBA png):原样透传上游,不计费、不参与尺寸判定。
+     *  2026-09-17 官方对齐审计发现此前被丢弃 → 客户局部重绘变成整图重画。 */
+    mask: { buf: Buffer; type: string; name: string } | null;
+    /** size=auto 时发给上游的 16 对齐尺寸(handleAdapterImage 解析后填入);未设 = 原样发 parsed.size。 */
+    upstreamSize?: string;
 }
 
 const FORWARD_EXTRAS = new Set(['output_format', 'output_compression', 'background', 'user']);
@@ -367,6 +371,15 @@ async function parseIncoming(req: NextRequest, mode: ImageMode): Promise<ParsedR
             const v = form.get(k);
             if (typeof v === 'string' && v) extras[k] = v;
         }
+        const maskFile = form.get('mask');
+        const mask =
+            maskFile instanceof File && maskFile.size > 0
+                ? {
+                      buf: Buffer.from(await maskFile.arrayBuffer()),
+                      type: maskFile.type || 'image/png',
+                      name: maskFile.name || 'mask.png',
+                  }
+                : null;
         return {
             prompt: String(form.get('prompt') ?? ''),
             size: String(form.get('size') ?? ''),
@@ -374,6 +387,7 @@ async function parseIncoming(req: NextRequest, mode: ImageMode): Promise<ParsedR
             n: Math.max(1, Number(form.get('n')) || 1),
             images,
             extras,
+            mask,
         };
     }
     const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
@@ -392,6 +406,7 @@ async function parseIncoming(req: NextRequest, mode: ImageMode): Promise<ParsedR
         n: Math.max(1, Number(body.n) || 1),
         images: [],
         extras,
+        mask: null,
     };
 }
 
@@ -436,18 +451,20 @@ async function callUpstreamOnce(
         const f = new FormData();
         f.append('model', provider.upstreamModel ?? 'gpt-image-2');
         f.append('prompt', parsed.prompt);
-        f.append('size', parsed.size.trim());
+        f.append('size', parsed.upstreamSize ?? parsed.size.trim());
         f.append('response_format', 'b64_json'); // 不带时 ominiapi 返自家 OSS url(上游身份泄漏),显式要 b64
         if (parsed.quality) f.append('quality', normQuality(parsed.quality));
         for (const [k, v] of Object.entries(parsed.extras)) f.append(k, v);
         for (const img of parsed.images)
             f.append('image', new Blob([new Uint8Array(img.buf)], { type: img.type }), img.name);
+        if (parsed.mask)
+            f.append('mask', new Blob([new Uint8Array(parsed.mask.buf)], { type: parsed.mask.type }), parsed.mask.name);
         upstreamBody = f; // fetch 自动生成 multipart boundary(不能手写 content-type,gotcha #21)
     } else {
         const j: Record<string, unknown> = {
             model: provider.upstreamModel ?? 'gpt-image-2',
             prompt: parsed.prompt,
-            size: parsed.size.trim(),
+            size: parsed.upstreamSize ?? parsed.size.trim(),
             response_format: 'b64_json', // 同上:2026-08-04 smoke 实测缺省返 url
         };
         if (parsed.quality) j.quality = normQuality(parsed.quality);
@@ -562,7 +579,39 @@ export async function handleAdapterImage(
     //    【无】狭长放行条款(兜底线全是 openAllTiers 官方账单,狭长图落下去照样对得上账);
     //  - 否则(存量 gated provider)要求 size 可解析,且:狭长形(长/短 > 1.5)不论盈利档放行,
     //    其余走盈利档守门(行为不变)。
-    const dims = parseSize(parsed.size);
+    // ---- size=auto / 缺省 → 官方 auto 尺寸(见 auto-size.ts):计费/回显按官方尺寸,上游发 16 对齐尺寸 ----
+    // 此前 auto 对 openAllTiers 原样透传(各上游默认尺寸不一,1024² / 1024×1536 都有,与官方 1122×1402 对不上),
+    // 对守门上游一律 503(算不出 token)。现在 auto 有确定尺寸 → 守门正常评估,gated 上游也能接 auto。
+    let officialDims: { w: number; h: number } | null = null;
+    if (isAutoSize(parsed.size)) {
+        let aspect = OFFICIAL_AUTO_DEFAULT_ASPECT;
+        let source = 'default-4:5';
+        if (mode === 'edits') {
+            const pr = promptAspectRatio(parsed.prompt); // portal 扩展:prompt 写明画幅优先(官方不看 prompt)
+            const inputDims = parsed.images.length ? imageDimensions(parsed.images[0].buf) : null;
+            if (pr) {
+                aspect = aspectFromRatio(pr);
+                source = `prompt:${pr}`;
+            } else if (inputDims) {
+                aspect = inputDims.w / inputDims.h;
+                source = `input:${inputDims.w}x${inputDims.h}`;
+            } else {
+                aspect = 1;
+                source = 'input-unreadable→1:1';
+            }
+        }
+        officialDims = officialAutoDims(aspect);
+        const aligned = alignTo16(officialDims);
+        parsed.upstreamSize = `${aligned.w}x${aligned.h}`;
+        console.log('[image-adapter] auto size', {
+            provider: providerName,
+            mode,
+            source,
+            official: `${officialDims.w}x${officialDims.h}`,
+            upstream: parsed.upstreamSize,
+        });
+    }
+    const dims = officialDims ?? parseSize(parsed.size);
     const quality = normQuality(parsed.quality);
     const perImageCt = dims ? officialOutputTokens(dims.w, dims.h, quality) : 0;
     const elongated = dims ? isElongated(dims.w, dims.h) : false;
@@ -601,7 +650,9 @@ export async function handleAdapterImage(
     // 任一扇出返回【终态】(内容安全 / 请求本身错)→ 立即终态化,不 failover(换渠道也拒,别浪费重试位)。
     const terminal = results.find(isTerminalReject);
     if (terminal) return terminalReject(terminal.terminal);
-    let items = results.flatMap((r) => (Array.isArray(r) ? r : []).map((b64_json) => ({ b64_json })));
+    let items = results.flatMap((r) =>
+        (Array.isArray(r) ? r : []).map((b64_json) => ({ b64_json, generation_id: newGenerationId() })),
+    );
     if (items.length === 0) {
         // 全军覆没才 failover(部分成功 → 返回拿到的那几张,按张计费)
         return failover('upstream_error', `all ${fanout} upstream call(s) failed`);
@@ -643,22 +694,27 @@ export async function handleAdapterImage(
     const actualDims = out0 ? imageDimensions(Buffer.from(out0, 'base64')) : null;
     let billW: number;
     let billH: number;
-    if (actualDims) {
+    if (actualDims && officialDims && matchesAutoRequest(actualDims, officialDims)) {
+        // auto:上游交付了我们要的那张(16 对齐尺寸,与官方尺寸相差 ≤8px/边)→ 按官方 auto 尺寸计费 + 回显
+        billW = officialDims.w;
+        billH = officialDims.h;
+    } else if (actualDims) {
         billW = actualDims.w;
         billH = actualDims.h;
         if (dims && (dims.w !== actualDims.w || dims.h !== actualDims.h)) {
             console.warn('[image-adapter] upstream coerced size, billing by actual', {
                 provider: providerName,
                 mode,
-                requested: parsed.size,
+                requested: parsed.upstreamSize ?? parsed.size,
                 actual: `${actualDims.w}x${actualDims.h}`,
             });
         }
     } else if (dims) {
+        // 读不出返回图尺寸(webp 等):显式 size 按请求值;auto 按官方 auto 尺寸(不再 503 unbillable_auto)
         billW = dims.w;
         billH = dims.h;
     } else {
-        return failover('unbillable_auto', 'auto size but output image dimensions unreadable');
+        return failover('unbillable_auto', 'size unparsable and output image dimensions unreadable');
     }
 
     // ---- 合成 usage(丢弃上游假 token,按官方公式)----
@@ -671,10 +727,11 @@ export async function handleAdapterImage(
         inputImageDims: parsed.images.map((img) => imageDimensions(img.buf)),
         imageCount: items.length,
     });
-    // ---- output_format=jpeg:服务端转码成真 jpeg 字节(客户 #9;dims/usage 已按原图算完,转码不改尺寸)----
-    const wantJpeg = (parsed.extras.output_format || '').trim().toLowerCase() === 'jpeg';
-    if (wantJpeg) {
-        for (const it of items) it.b64_json = await toJpegB64(it.b64_json);
+    // ---- output_format=jpeg / webp:服务端转码成真字节(客户 #9;第 5 批加 webp;dims/usage 已按原图算完)----
+    const wantFormat = transcodeTargetOf(parsed.extras.output_format);
+    if (wantFormat) {
+        const q = encodeQuality(parsed.extras.output_compression, 92);
+        for (const it of items) it.b64_json = await transcodeB64(it.b64_json, wantFormat, q);
     }
 
     // ---- C2PA 剥离下沉到适配器层(2026-09-06)----
@@ -692,13 +749,17 @@ export async function handleAdapterImage(
     // quality:normQuality 已归一 low/medium/high(auto/standard→low)。output_format:按最终字节 sniff
     // (交付真形态,消解"请求 jpeg 出 png 却回显 jpeg")。background:透明校验通过则 transparent,否则 opaque。
     // size:计费尺寸(= 返回图实际尺寸)。上游没这些字段,new-api 透传适配器顶层字段 → 直连客户也收到。
-    const outFmt = sniffOutputFormat(Buffer.from(items[0]?.b64_json ?? '', 'base64')) || (wantJpeg ? 'jpeg' : 'png');
+    const outFmt = sniffOutputFormat(Buffer.from(items[0]?.b64_json ?? '', 'base64')) || (wantFormat ?? 'png');
     const outBackground = wantsTransparent ? 'transparent' : 'opaque';
     const respSize = `${billW}x${billH}`;
     console.log('[image-adapter] ok', {
         provider: providerName,
         mode,
-        size: dims && dims.w === billW && dims.h === billH ? parsed.size : `${parsed.size || 'auto'}→${billW}x${billH}`,
+        size: officialDims
+            ? `auto→${billW}x${billH}(upstream ${parsed.upstreamSize})`
+            : dims && dims.w === billW && dims.h === billH
+              ? parsed.size
+              : `${parsed.size || '?'}→${billW}x${billH}`,
         quality,
         nRequested: parsed.n,
         images: items.length,

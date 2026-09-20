@@ -6,7 +6,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { NextRequest } from 'next/server';
 import {
     handleAdapter25Image,
+    URL_FETCH_RETRY_DELAYS_MS,
     officialOutputTokens25,
+    IMAGE25_TEXT_TOKENS_PER_INPUT_IMAGE,
     officialInputImageTokens25,
     normQuality25,
     synthUsage25,
@@ -130,8 +132,9 @@ describe('synthUsage25', () => {
         });
         expect(u.output_tokens).toBe(3122 * 2);
         const det = u.input_tokens_details as { text_tokens: number; image_tokens: number };
-        expect(det.image_tokens).toBe(1521 + 1024);
-        expect(u.input_tokens).toBe(estimateTextTokens('add a tiny star') + 1521 + 1024);
+        expect(det.image_tokens).toBe((1521 + 1024) * 2); // 官方 n 张语义:input ×张数
+        // 2.5 edits 每张输入图 +10 文字 token(官方实测),两张 → +20;再 ×张数
+        expect(u.input_tokens).toBe((estimateTextTokens('add a tiny star') + 20 + 1521 + 1024) * 2);
         expect(Object.keys(u).sort()).toEqual([
             'input_tokens',
             'input_tokens_details',
@@ -209,7 +212,7 @@ describe('handleAdapter25Image 透传契约', () => {
         expect(sent.n).toBe(3);
         const body = (await res.json()) as { data: unknown[]; usage: { output_tokens: number } };
         expect(body.data).toHaveLength(3);
-        expect(body.usage.output_tokens).toBe(196 * 3);
+        expect(body.usage.output_tokens).toBe(586); // 官方 n 张 = ceil(3×195.1),不是 196×3=588
     });
 
     it('上游少返(n=3 只回 2)→ 按 2 张计费不失败', async () => {
@@ -219,7 +222,7 @@ describe('handleAdapter25Image 透传契约', () => {
             'generations',
             'wetokenasia25',
         );
-        expect(((await res.json()) as { usage: { output_tokens: number } }).usage.output_tokens).toBe(196 * 2);
+        expect(((await res.json()) as { usage: { output_tokens: number } }).usage.output_tokens).toBe(391); // ceil(2×195.1)
     });
 
     it('multipart edits:model/quality/输入图透传,输入图 token 按官方 2.5 口径', async () => {
@@ -767,5 +770,345 @@ describe('ominiapi25 全量线(5 档全收 + 裸壳响应自合成 + Adobe 剥/O
         );
         expect(res.status).toBe(503);
         expect(await res.text()).not.toMatch(/omini/i);
+    });
+});
+
+describe('zdchat25 全量线 + url→b64 拉取重试', () => {
+    const URL_ZD = 'http://portal.test/image-adapter25/zdchat25/v1/images/generations';
+    const urlEnvelope = () =>
+        new Response(JSON.stringify({ created: 1, data: [{ url: 'https://r2.52image.xyz/cache/x.png' }] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+        });
+    const pngResp = () => new Response(new Uint8Array(Buffer.from(pngB64(1024, 1024), 'base64')), { status: 200 });
+
+    it('registry:zdchat25 = new.zdchat.cc、两模型、无 qualities(全量);brand 抹 zdchat/52image/adobe', () => {
+        expect(IMAGE_PROVIDERS_25.zdchat25.baseUrl).toBe('https://new.zdchat.cc');
+        expect(IMAGE_PROVIDERS_25.zdchat25.models).toEqual(GPT_IMAGE_25_MODELS);
+        expect(IMAGE_PROVIDERS_25.zdchat25.qualities).toBeUndefined();
+        expect('zdchat r2.52image.xyz Adobe'.replace(IMAGE_PROVIDERS_25.zdchat25.brand, '*')).toBe('* r2.*.xyz *');
+    });
+
+    it('5 档 + auto 全部透传上游,按官方档计费', async () => {
+        for (const [q, expectTokens] of [
+            ['low', 196],
+            ['medium', 439],
+            ['high', 1756],
+            ['xhigh', 3122],
+            ['max', 7024],
+            ['auto', 196],
+        ] as const) {
+            fetchMock.mockReset();
+            okUpstream([pngB64(1024, 1024)]);
+            const res = await handleAdapter25Image(
+                jsonReq(URL_ZD, { model: 'gpt-image-2.5-sunburst', prompt: 'x', size: '1024x1024', quality: q }),
+                'generations',
+                'zdchat25',
+            );
+            expect(res.status).toBe(200);
+            expect(String(fetchMock.mock.calls[0][0])).toBe('https://new.zdchat.cc/v1/images/generations');
+            expect(((await res.json()) as { usage: { output_tokens: number } }).usage.output_tokens).toBe(expectTokens);
+        }
+    });
+
+    it('url 首拉 0 字节 → 等 1s 重拉成功 → 200(zdchat 图床刚返回时对象未落盘)', async () => {
+        vi.useFakeTimers();
+        try {
+            fetchMock
+                .mockResolvedValueOnce(urlEnvelope())
+                .mockResolvedValueOnce(new Response(new Uint8Array(0), { status: 200 })) // 0 字节
+                .mockResolvedValueOnce(pngResp());
+            const p = handleAdapter25Image(
+                jsonReq(URL_ZD, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'low' }),
+                'generations',
+                'zdchat25',
+            );
+            await vi.advanceTimersByTimeAsync(URL_FETCH_RETRY_DELAYS_MS[0] + 10);
+            const res = await p;
+            expect(res.status).toBe(200);
+            expect(fetchMock).toHaveBeenCalledTimes(3); // 1 上游 + 2 次拉图
+            const raw = JSON.stringify(await res.json());
+            expect(raw).not.toContain('52image');
+            expect(raw).toContain(pngB64(1024, 1024));
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('url 连续 404/空 共 3 次仍失败 → 503 failover(不再多试)', async () => {
+        vi.useFakeTimers();
+        try {
+            fetchMock
+                .mockResolvedValueOnce(urlEnvelope())
+                .mockResolvedValueOnce(new Response('nf', { status: 404 }))
+                .mockResolvedValueOnce(new Response(new Uint8Array(0), { status: 200 }))
+                .mockRejectedValueOnce(new Error('ECONNRESET'));
+            const p = handleAdapter25Image(
+                jsonReq(URL_ZD, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'low' }),
+                'generations',
+                'zdchat25',
+            );
+            await vi.advanceTimersByTimeAsync(URL_FETCH_RETRY_DELAYS_MS[0] + URL_FETCH_RETRY_DELAYS_MS[1] + 10);
+            const res = await p;
+            expect(res.status).toBe(503);
+            expect(fetchMock).toHaveBeenCalledTimes(4); // 1 上游 + 3 次拉图
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+});
+
+describe('2.5 适配器 mask 透传(2026-09-19 补齐;此前只在 2.0 适配器修了)', () => {
+    it('multipart edits 带 mask → 上游 FormData 含 mask 文件,不计费', async () => {
+        okUpstream([pngB64(1024, 1024)]);
+        const fd = new FormData();
+        fd.append('model', 'gpt-image-2.5-flare');
+        fd.append('prompt', 'edit');
+        fd.append('size', '1024x1024');
+        fd.append('quality', 'high');
+        fd.append('image', new Blob([new Uint8Array(TINY_PNG)], { type: 'image/png' }), 'a.png');
+        fd.append('mask', new Blob([new Uint8Array(TINY_PNG)], { type: 'image/png' }), 'm.png');
+        const req = new NextRequest(URL_EDIT, { method: 'POST', headers: { authorization: 'Bearer k' }, body: fd });
+        const res = await handleAdapter25Image(req, 'edits', 'wetokenasia25');
+        expect(res.status).toBe(200);
+        const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+        const f = init.body as FormData;
+        expect(f.getAll('image')).toHaveLength(1);
+        const mask = f.get('mask');
+        expect(mask).toBeInstanceOf(Blob);
+        expect((mask as File).name).toBe('m.png');
+        const body = (await res.json()) as { usage: { input_tokens_details: { image_tokens: number } } };
+        expect(body.usage.input_tokens_details.image_tokens).toBe(1024); // 只算 image(1024² 夹具),不算 mask(否则 2048)
+    });
+});
+
+describe('2.5 官方校准(2026-09-19 官方 key 实测):edits 文字 +10/输入图、auto 缺省 1254²、边界 400', () => {
+    const URL_G = 'http://portal.test/image-adapter25/wetokenasia25/v1/images/generations';
+    const URL_E = 'http://portal.test/image-adapter25/wetokenasia25/v1/images/edits';
+    function pngHeader(w: number, h: number): Buffer {
+        const png = Buffer.alloc(33);
+        png.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+        png.writeUInt32BE(13, 8);
+        png.write('IHDR', 12, 'latin1');
+        png.writeUInt32BE(w, 16);
+        png.writeUInt32BE(h, 20);
+        return png;
+    }
+    it('常数 = 10;generations 不加(仍 +6)', () => {
+        expect(IMAGE25_TEXT_TOKENS_PER_INPUT_IMAGE).toBe(10);
+        expect(estimateTextTokens('a cat')).toBe(8);
+    });
+    it('edits "a cat" 1 张输入图 → text 18;2 张 → 28;n=2 → 36(官方逐点)', () => {
+        const mk = (imgs: number, n: number) =>
+            synthUsage25({
+                mode: 'edits',
+                w: 1024,
+                h: 1024,
+                quality: 'low',
+                prompt: 'a cat',
+                inputImageDims: Array.from({ length: imgs }, () => ({ w: 256, h: 256 })),
+                imageCount: n,
+            });
+        expect((mk(1, 1).input_tokens_details as { text_tokens: number }).text_tokens).toBe(18);
+        expect((mk(2, 1).input_tokens_details as { text_tokens: number }).text_tokens).toBe(28);
+        expect((mk(1, 2).input_tokens_details as { text_tokens: number }).text_tokens).toBe(36);
+        expect(mk(1, 1).input_tokens).toBe(18 + 256);
+    });
+    it('generations size=auto → 上游收 1248x1248(1254² 对齐);返图相符按官方 1254² 计 229、回显 1254x1254', async () => {
+        okUpstream([pngB64(1248, 1248)]);
+        const res = await handleAdapter25Image(
+            jsonReq(URL_G, { model: 'gpt-image-2.5-flare', prompt: 'a cat', size: 'auto', quality: 'low' }),
+            'generations',
+            'wetokenasia25',
+        );
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { size: string; usage: { output_tokens: number } };
+        const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+        expect((JSON.parse(String(init.body)) as { size: string }).size).toBe('1248x1248');
+        expect(body.size).toBe('1254x1254');
+        expect(body.usage.output_tokens).toBe(229);
+    });
+    it('edits size 缺省 + 16:9 输入 → 官方 1672×941(129),上游收 1680x944;input = 18 + 1508', async () => {
+        okUpstream([pngB64(1680, 944)]);
+        const res = await handleAdapter25Image(
+            formReq(URL_E, { model: 'gpt-image-2.5-flare', prompt: 'a cat', quality: 'low' }, [pngHeader(3840, 2160)]),
+            'edits',
+            'wetokenasia25',
+        );
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as {
+            size: string;
+            usage: {
+                output_tokens: number;
+                input_tokens: number;
+                input_tokens_details: { image_tokens: number; text_tokens: number };
+            };
+        };
+        const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+        expect((init.body as FormData).get('size')).toBe('1680x944');
+        expect(body.size).toBe('1672x941');
+        expect(body.usage.output_tokens).toBe(129);
+        expect(body.usage.input_tokens_details).toEqual({ text_tokens: 18, image_tokens: 1508 });
+        expect(body.usage.input_tokens).toBe(1526);
+    });
+    it('auto 但上游降级返 512² → 按实际计费(守卫不放松)', async () => {
+        okUpstream([pngB64(512, 512)]);
+        const res = await handleAdapter25Image(
+            jsonReq(URL_G, { model: 'gpt-image-2.5-flare', prompt: 'x', size: 'auto', quality: 'low' }),
+            'generations',
+            'wetokenasia25',
+        );
+        const body = (await res.json()) as { size: string };
+        expect(body.size).toBe('512x512');
+    });
+});
+
+describe('JSON /images/edits 输入图:官方 images[{image_url|file_id}] + 自家 image/image_url(2026-09-20 直连 new-api 503 事故)', () => {
+    const DATA_URL = 'data:image/png;base64,' + pngB64(1024, 1024);
+
+    it('官方 images:[{image_url: dataURL}] → 上游 multipart 带 1 张 image,输入图按官方口径计费(与 multipart 路径一致)', async () => {
+        okUpstream([pngB64(1024, 1024)]);
+        const res = await handleAdapter25Image(
+            jsonReq(URL_EDIT, {
+                model: 'gpt-image-2.5-flare',
+                images: [{ image_url: DATA_URL }],
+                prompt: 'edit',
+                size: '1024x1024',
+                quality: 'low',
+            }),
+            'edits',
+            'wetokenasia25',
+        );
+        expect(res.status).toBe(200);
+        const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+        expect(url).toBe('https://asian-acc.we-token.cc/v1/images/edits');
+        const f = init.body as FormData;
+        expect(f.getAll('image')).toHaveLength(1);
+        expect((f.get('image') as Blob).type).toBe('image/png');
+        const body = (await res.json()) as { usage: { input_tokens_details: { image_tokens: number } } };
+        expect(body.usage.input_tokens_details.image_tokens).toBe(officialInputImageTokens25({ w: 1024, h: 1024 }));
+    });
+
+    it('自家 image:[dataURL, dataURL] → 2 张;mask:{image_url} 对象形 → mask 部件', async () => {
+        okUpstream([pngB64(1024, 1024)]);
+        const res = await handleAdapter25Image(
+            jsonReq(URL_EDIT, {
+                model: 'gpt-image-2.5-flare',
+                image: [DATA_URL, DATA_URL],
+                mask: { image_url: DATA_URL },
+                prompt: 'edit',
+                size: '1024x1024',
+            }),
+            'edits',
+            'wetokenasia25',
+        );
+        expect(res.status).toBe(200);
+        const f = (fetchMock.mock.calls[0] as [string, RequestInit])[1].body as FormData;
+        expect(f.getAll('image')).toHaveLength(2);
+        expect(f.get('mask')).toBeInstanceOf(Blob);
+    });
+
+    it('官方 image_url 为 https URL → 适配器拉图(第 1 次 fetch)再打上游(第 2 次)', async () => {
+        const png = Buffer.from(pngB64(1024, 1024), 'base64');
+        fetchMock
+            .mockResolvedValueOnce(
+                new Response(new Uint8Array(png), { status: 200, headers: { 'content-type': 'image/png' } }),
+            )
+            .mockResolvedValueOnce(
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(1024, 1024) }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+            );
+        const res = await handleAdapter25Image(
+            jsonReq(URL_EDIT, {
+                model: 'gpt-image-2.5-flare',
+                images: [{ image_url: 'https://rolee-1301812539.cos.ap-shanghai.myqcloud.com/test1.jpg' }],
+                prompt: 'edit',
+                size: '1024x1024',
+            }),
+            'edits',
+            'wetokenasia25',
+        );
+        expect(res.status).toBe(200);
+        expect((fetchMock.mock.calls[0] as [string])[0]).toBe(
+            'https://rolee-1301812539.cos.ap-shanghai.myqcloud.com/test1.jpg',
+        );
+        const f = (fetchMock.mock.calls[1] as [string, RequestInit])[1].body as FormData;
+        expect(f.getAll('image')).toHaveLength(1);
+    });
+
+    it('JSON edits 一张图都没有 → 400 missing_required_parameter(终态,不打上游、不 failover)', async () => {
+        const res = await handleAdapter25Image(
+            jsonReq(URL_EDIT, { model: 'gpt-image-2.5-flare', prompt: 'edit', size: '1024x1024' }),
+            'edits',
+            'wetokenasia25',
+        );
+        expect(res.status).toBe(400);
+        const j = (await res.json()) as { error: { code: string; param: string; message: string } };
+        expect(j.error.code).toBe('missing_required_parameter');
+        expect(j.error.param).toBe('image');
+        expect(j.error.message).toBe("Missing required parameter: 'image'.");
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('file_id 引用(适配器无 portal user 上下文)/ 私网 URL / 拉图失败 → 400 invalid_image,不打上游', async () => {
+        for (const images of [
+            [{ file_id: 'file_abc' }],
+            [{ image_url: 'http://127.0.0.1:3000/x.png' }],
+            [{ image_url: 'http://172.20.0.1:3010/x.png' }],
+            [{ image_url: 'ftp://example.com/x.png' }],
+        ]) {
+            fetchMock.mockReset();
+            const res = await handleAdapter25Image(
+                jsonReq(URL_EDIT, { model: 'gpt-image-2.5-flare', images, prompt: 'edit', size: '1024x1024' }),
+                'edits',
+                'wetokenasia25',
+            );
+            expect(res.status).toBe(400);
+            expect(((await res.json()) as { error: { code: string } }).error.code).toBe('invalid_image');
+            expect(fetchMock).not.toHaveBeenCalled();
+        }
+        fetchMock.mockReset();
+        fetchMock.mockResolvedValueOnce(new Response('nope', { status: 404 }));
+        const res = await handleAdapter25Image(
+            jsonReq(URL_EDIT, {
+                model: 'gpt-image-2.5-flare',
+                images: [{ image_url: 'https://example.com/missing.png' }],
+                prompt: 'edit',
+                size: '1024x1024',
+            }),
+            'edits',
+            'wetokenasia25',
+        );
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error: { message: string } }).error.message).toContain('fetch failed: 404');
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('上游回「image is required」(即便 500)→ 终态 400 missing_required_parameter,不再 503 空跑渠道', async () => {
+        fetchMock.mockResolvedValueOnce(
+            new Response(
+                JSON.stringify({ error: { message: 'image is required (request id: x)', type: 'new_api_error' } }),
+                { status: 500, headers: { 'content-type': 'application/json' } },
+            ),
+        );
+        const res = await handleAdapter25Image(
+            formReq(URL_EDIT, { model: 'gpt-image-2.5-flare', prompt: 'edit', size: '1024x1024' }, [TINY_PNG]),
+            'edits',
+            'wetokenasia25',
+        );
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error: { code: string } }).error.code).toBe('missing_required_parameter');
+    });
+
+    it('JSON generations 带 images 字段不影响文生图(images 只对 edits 有意义)', async () => {
+        okUpstream([pngB64(1024, 1024)]);
+        const res = await handleAdapter25Image(
+            jsonReq(URL_GEN, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'low' }),
+            'generations',
+            'wetokenasia25',
+        );
+        expect(res.status).toBe(200);
     });
 });

@@ -79,4 +79,18 @@ export const IMAGE_PROVIDERS_25: Record<string, ImageProvider25> = {
         models: GPT_IMAGE_25_MODELS,
         // 无 qualities = 5 档全收(全量线)。2026-09-13 曾只放 xhigh/max,09-14 改全量。
     },
+    // zdchat25:new.zdchat.cc(key sk-g2HE…)。2026-09-17 实测 37/37 全 200、全部 OpenAI OpCo C2PA + 原始编码、
+    // usage 逐档官方(196/439/1756/3122/7024;1536×1024 1372、1024×1536 158、2880² 5930、4K 3336)、5 档全如实
+    // (sunburst 同)、尺寸全如实含 4K 原生非放大、透明真 RGBA、edits 通;零 Adobe、零 5xx;延迟 low 15–23s /
+    // xhigh 35–63s / max 58–129s。指纹与 ominiapi 的 OpenAI 侧同款号池(1000×1000 不 400 返 1024² 计 192、
+    // Trufo/OpenAI TSA 两 CA 混出、壳带 model),同类平台隔天就变,别把某天结论当常态。
+    // 【全量线(operator 2026-09-17 拍板)】不设 qualities。已知毛病全由适配器兜:n>1 时返 1 或 2 张不定
+    // (按实际张数计费)、webp/jpeg 被忽略返 PNG(jpeg 由适配器转码兜底)、非法 quality/size 上游不 400
+    // (入口 400 靠适配器)、edits 输入 token 报 0(适配器自算)、size=auto 返非标尺寸(按返回图实际尺寸计费)、
+    // 返回 url 指向 r2.52image.xyz 刚返回时可能 0 字节(fetchImageAsB64 已带重试)。
+    zdchat25: {
+        baseUrl: 'https://new.zdchat.cc',
+        brand: /\bzdchat\b|\b52image\b|\badobe\b|\bfirefly\b/gi,
+        models: GPT_IMAGE_25_MODELS,
+    },
 };

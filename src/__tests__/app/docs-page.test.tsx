@@ -136,10 +136,10 @@ describe('/docs page — code snippets ground-truthed', () => {
 });
 
 describe('/docs page — W7 D4 PR-H Tier B common-errors section', () => {
-    it('renders the 常见错误码 heading + the image API status/code contract', () => {
+    it('renders the 常见错误码 heading and Portal error codes', () => {
         const html = renderToString(<DocsPage />);
-        // Section heading
         expect(html).toContain('常见错误码');
+        // Keep the LLmRoute image/API contract codes.
         expect(html).toContain('invalid_api_key');
         expect(html).toContain('insufficient_quota');
         expect(html).toContain('moderation_blocked');

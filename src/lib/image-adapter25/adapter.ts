@@ -24,7 +24,19 @@
  * 的客户也拿合规响应)。
  */
 import { NextRequest, NextResponse } from 'next/server';
+import { countImagePromptTokens } from '@/lib/tokens/count-text-tokens';
+import { officialImageInputTokens } from '@/lib/tokens/image-input-tokens';
 import { stripAdobeImageMetadataB64 } from '@/lib/proxy/image-metadata';
+import { encodeQuality, transcodeB64, transcodeTargetOf } from '@/lib/image/transcode';
+import { newGenerationId } from '@/lib/image/generation-id';
+import {
+    alignTo16,
+    aspectFromRatio,
+    isAutoSize,
+    matchesAutoRequest,
+    officialAutoDims,
+    promptAspectRatio,
+} from '@/lib/image-adapter/auto-size';
 import { IMAGE_PROVIDERS_25, type ImageProvider25 } from './providers';
 
 export type ImageMode = 'generations' | 'edits';
@@ -43,29 +55,25 @@ export type Quality25 = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export const QUALITY_GRID_25: Record<Quality25, number> = { low: 16, medium: 24, high: 48, xhigh: 64, max: 96 };
 const QUALITY_25_SET = new Set<string>(['low', 'medium', 'high', 'xhigh', 'max']);
 
-export function officialOutputTokens25(w: number, h: number, quality: Quality25): number {
+/** 单张输出 token 未取整分子(分母 4e6);n 张 = ceil(n × 分子 / 4e6),同 2.0(官方 n=2 → 391 非 392)。 */
+export function officialOutputTokensNumerator25(w: number, h: number, quality: Quality25): number {
     const long = Math.max(w, h);
     const short = Math.min(w, h);
     const grid = QUALITY_GRID_25[quality];
     const patches = grid * Math.round((grid * short) / long);
-    return Math.ceil((patches * (2_000_000 + w * h)) / 4_000_000);
+    return patches * (2_000_000 + w * h);
 }
 
-/** 输入图 token(edits 输入侧)—— 官方 2.5 口径:32px patch,总 patch 上限 1536,超限按 √(1536/n)
- *  等比缩小、两轴各取 floor。实测(asian-acc 官方直通 usage.input_tokens_details.image_tokens):
- *  1024²→1024、1536×1024→1536(恰触顶)、1280×720→920、2048²→1521(39²)、3840×2160→1508(52×29,
- *  round 会得 1560 → 坐实 floor)。读不出尺寸 → 按 1024²(1024)兜底。 */
+export function officialOutputTokens25(w: number, h: number, quality: Quality25): number {
+    return Math.ceil(officialOutputTokensNumerator25(w, h, quality) / 4_000_000);
+}
+
+/** 输入图 token(edits 输入侧)—— 走共享官方口径 `@/lib/tokens/image-input-tokens`。
+ *  原 32px+1536 上限公式用 asian-acc 2.5 直通 usage 验过 1024²/1536×1024/1280×720/2048²/3840×2160
+ *  五点,共享公式在这五点逐 token 相同;长边 <1024 的小图段按 2026-09-16 gpt-image-2 官方 key 实测
+ *  规则(三段缩放 + 3:1 补边)推定,2.5 小图未单独验证。读不出尺寸 → 1024。 */
 export function officialInputImageTokens25(dims: { w: number; h: number } | null): number {
-    if (!dims) return 1024;
-    let pw = Math.ceil(dims.w / 32);
-    let ph = Math.ceil(dims.h / 32);
-    const n = pw * ph;
-    if (n > 1536) {
-        const s = Math.sqrt(1536 / n);
-        pw = Math.floor(pw * s);
-        ph = Math.floor(ph * s);
-    }
-    return Math.max(1, pw * ph);
+    return officialImageInputTokens(dims);
 }
 
 /** 归一 quality:5 档原样;auto / 缺省 / 未知 → low(上游对 auto 实测按 low 刻度 196 计)。 */
@@ -83,17 +91,9 @@ export function parseSize(size: string): { w: number; h: number } | null {
     return w > 0 && h > 0 ? { w, h } : null;
 }
 
-/** prompt 文本 token 粗估(CJK ~1.5 tok/字,其余 ~1 tok/4 字符;同 2.0 / proxy 口径)。 */
+/** prompt 文本 token —— images API 官方口径(o200k + 固定开销 6),同 2.0 适配器,见 `@/lib/tokens/count-text-tokens`。 */
 export function estimateTextTokens(s: string): number {
-    if (!s) return 0;
-    let cjk = 0;
-    let other = 0;
-    for (const ch of s) {
-        const c = ch.codePointAt(0) ?? 0;
-        if ((c >= 0x3000 && c <= 0x9fff) || (c >= 0xac00 && c <= 0xd7af) || (c >= 0xf900 && c <= 0xfaff)) cjk++;
-        else other++;
-    }
-    return Math.max(1, Math.ceil(cjk * 1.5 + other / 4));
+    return countImagePromptTokens(s);
 }
 
 // ============ 字节工具(独立实现,不从 2.0 适配器 import)============
@@ -155,19 +155,6 @@ export function sniffOutputFormat(buf: Buffer): string {
     return '';
 }
 
-/** png/webp base64 → jpeg base64(jimp,失败回退原图,永不抛)。仅在上游未兑现 output_format=jpeg 时兜底。 */
-async function toJpegB64(b64: string): Promise<string> {
-    try {
-        const { Jimp } = await import('jimp');
-        const img = await Jimp.read(Buffer.from(b64, 'base64'));
-        const jpeg = await img.getBuffer('image/jpeg', { quality: 92 });
-        return Buffer.from(jpeg).toString('base64');
-    } catch (e) {
-        console.warn('[image-adapter25] jpeg transcode failed, keeping original:', e instanceof Error ? e.message : e);
-        return b64;
-    }
-}
-
 // ============ usage 合成 ============
 
 export interface SynthUsageInput25 {
@@ -183,12 +170,20 @@ export interface SynthUsageInput25 {
 }
 
 /** 只发 OpenAI images 官方那套字段(input/output/total + *_details),不送 chat 形别名(2.0 教训:中继客户会加两遍)。 */
+/** gpt-image-2.5 edits:官方 text_tokens = o200k + 6 + 10×输入图张数(官方 key 实测 'a cat' 1 图 18、2 图 28、n=2 ×2;
+ *  generations 仍 +6;gpt-image-2 edits 无此项(实测 31+6=37)。 */
+export const IMAGE25_TEXT_TOKENS_PER_INPUT_IMAGE = 10;
+
 export function synthUsage25(inp: SynthUsageInput25): Record<string, unknown> {
-    const perImage = officialOutputTokens25(inp.w, inp.h, inp.quality);
-    const ct = perImage * Math.max(1, inp.imageCount);
-    const textTokens = estimateTextTokens(inp.prompt);
+    const count = Math.max(1, inp.imageCount);
+    // 官方 n 张语义同 2.0(见 image-adapter synthUsage):output 先乘 n 再 ceil;input(文本+输入图)×n。
+    const ct = Math.ceil((count * officialOutputTokensNumerator25(inp.w, inp.h, inp.quality)) / 4_000_000);
+    // 2.5 独有(2026-09-19 官方 key 实测):edits 每张输入图额外 +10 文字 token(1 图 18、2 图 28;2.0 无此项)。
+    const perImageText = inp.mode === 'edits' ? IMAGE25_TEXT_TOKENS_PER_INPUT_IMAGE * inp.inputImageDims.length : 0;
+    const textTokens = (estimateTextTokens(inp.prompt) + perImageText) * count;
     let imgTokens = 0;
     if (inp.mode === 'edits') for (const d of inp.inputImageDims) imgTokens += officialInputImageTokens25(d);
+    imgTokens *= count;
     const pt = textTokens + imgTokens;
     return {
         input_tokens: pt,
@@ -228,7 +223,8 @@ const UPSTREAM_BADREQ_RE =
     /prompt is required|invalid image|bad_request|validation_error|invalid image size|total pixels must|quality for .* must be|invalid value/i;
 const UPSTREAM_CHANNEL_RE = /no available channel|model_not_found|channel_circuit_open|no active tokens/i;
 
-type TerminalReject = { terminal: 'safety' } | { terminal: 'bad_request'; detail?: string; param?: string | null };
+type TerminalReject =
+    { terminal: 'safety' } | { terminal: 'bad_request'; detail?: string; param?: string | null; code?: string };
 function isTerminalReject(x: string[] | TerminalReject | null): x is TerminalReject {
     return x !== null && !Array.isArray(x);
 }
@@ -262,7 +258,18 @@ function extractBadRequestDetail(text: string, brand: RegExp): { detail: string;
 }
 
 /** 上游 4xx → 是否终态化 + 归类;5xx / 渠道特定 → null(failover)。不确定的 4xx 保守 failover。 */
+const UPSTREAM_NO_IMAGE_RE = /image (file )?is required/i;
+
 function classifyUpstreamError(status: number, text: string, brand: RegExp): TerminalReject | null {
+    // 上游说没收到输入图 = 请求本身缺图,换渠道也不会有(2026-09-20 事故:JSON edits 无图 → 三渠道空跑
+    // 10k 次 503)。号池类上游(ominiapi / zdchat)对此回 500,所以放在 5xx 判定之前。
+    if (UPSTREAM_NO_IMAGE_RE.test(text))
+        return {
+            terminal: 'bad_request',
+            detail: "Missing required parameter: 'image'.",
+            param: 'image',
+            code: 'missing_required_parameter',
+        };
     if (status >= 500) return null;
     if (UPSTREAM_CHANNEL_RE.test(text)) return null;
     if (UPSTREAM_SAFETY_RE.test(text)) return { terminal: 'safety' };
@@ -300,7 +307,7 @@ function terminalReject(reject: TerminalReject): NextResponse {
                     'Invalid request: the prompt, image, or parameters were rejected — please check your request.',
                 type: 'invalid_request_error',
                 param: reject.param ?? null,
-                code: 'invalid_request',
+                code: reject.code ?? 'invalid_request',
             },
         },
         { status: 400 },
@@ -318,6 +325,10 @@ interface ParsedRequest {
     images: Array<{ buf: Buffer; type: string; name: string }>;
     /** 透传给上游的其余标量字段。 */
     extras: Record<string, string>;
+    /** edits 蒙版(官方 `mask`):原样透传上游,不计费、不参与尺寸判定(2026-09-19 补齐,此前 2.5 适配器丢弃)。 */
+    mask: { buf: Buffer; type: string; name: string } | null;
+    /** size=auto 时发给上游的 16 对齐尺寸(handleAdapter25Image 解析后填入);未设 = 原样发 parsed.size。 */
+    upstreamSize?: string;
 }
 
 const FORWARD_EXTRAS = new Set(['output_format', 'output_compression', 'background', 'user']);
@@ -348,6 +359,15 @@ async function parseIncoming(req: NextRequest): Promise<ParsedRequest | null> {
             const v = form.get(k);
             if (typeof v === 'string' && v) extras[k] = v;
         }
+        const maskFile = form.get('mask');
+        const mask =
+            maskFile instanceof File && maskFile.size > 0
+                ? {
+                      buf: Buffer.from(await maskFile.arrayBuffer()),
+                      type: maskFile.type || 'image/png',
+                      name: maskFile.name || 'mask.png',
+                  }
+                : null;
         return {
             model: String(form.get('model') ?? ''),
             prompt: String(form.get('prompt') ?? ''),
@@ -356,6 +376,7 @@ async function parseIncoming(req: NextRequest): Promise<ParsedRequest | null> {
             n: Math.max(1, Number(form.get('n')) || 1),
             images,
             extras,
+            mask,
         };
     }
     const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
@@ -366,31 +387,172 @@ async function parseIncoming(req: NextRequest): Promise<ParsedRequest | null> {
         if (typeof v === 'string' && v) extras[k] = v;
         else if (typeof v === 'number') extras[k] = String(v);
     }
+    // JSON 形态输入图:官方 images[{image_url|file_id}](developers.openai.com 2026-09 实读)+ 自家 image / image_url
+    // (URL / data URL 字符串或数组)。此前 JSON 分支恒 images=[],直连 new-api 的 JSON 改图全部被上游
+    // 「image is required」拒 → 503 空跑三渠道(2026-09-20 事故)。file_id 在适配器层无 portal user 上下文,
+    // 不能查库 → 显式 400(经 portal 的请求由 portal 解成文件后以 multipart 到这里,不受影响)。
+    const refs: JsonImageRef[] = [];
+    for (const key of ['images', 'image', 'image_url']) collectJsonImageRefs(body[key], refs);
+    const images: ParsedRequest['images'] = [];
+    for (const ref of refs) {
+        if ('fileId' in ref)
+            throw new InputImageError('file_id references are not supported here; pass image_url instead');
+        images.push(await fetchInputImage(ref.url, 'image'));
+    }
+    const maskRefs: JsonImageRef[] = [];
+    collectJsonImageRefs(body.mask, maskRefs);
+    let mask: ParsedRequest['mask'] = null;
+    if (maskRefs.length > 0) {
+        const ref = maskRefs[0];
+        if ('fileId' in ref)
+            throw new InputImageError('file_id references are not supported here; pass image_url instead');
+        mask = await fetchInputImage(ref.url, 'mask');
+    }
     return {
         model: typeof body.model === 'string' ? body.model : '',
         prompt: typeof body.prompt === 'string' ? body.prompt : '',
         size: typeof body.size === 'string' ? body.size : '',
         quality: typeof body.quality === 'string' ? body.quality : '',
         n: Math.max(1, Number(body.n) || 1),
-        images: [],
+        images,
         extras,
+        mask,
     };
 }
 
-/** 拉上游图 URL 转 b64(60s 超时 + 50MB 上限)。失败返 null。 */
-async function fetchImageAsB64(url: string): Promise<string | null> {
+// ---- JSON 输入图引用(与 portal proxy 同一套语义,适配器不依赖 portal user 上下文)----
+type JsonImageRef = { url: string } | { fileId: string };
+
+function collectJsonImageRefs(v: unknown, out: JsonImageRef[]): void {
+    if (Array.isArray(v)) {
+        for (const it of v) collectJsonImageRefs(it, out);
+        return;
+    }
+    if (typeof v === 'string') {
+        if (v.trim()) out.push({ url: v.trim() });
+        return;
+    }
+    if (v && typeof v === 'object') {
+        const o = v as Record<string, unknown>;
+        const nested =
+            o.image_url && typeof o.image_url === 'object' ? (o.image_url as Record<string, unknown>).url : undefined;
+        const url = [o.image_url, nested, o.url].find((x) => typeof x === 'string' && x.trim());
+        if (typeof url === 'string') out.push({ url: url.trim() });
+        else if (typeof o.file_id === 'string' && o.file_id.trim()) out.push({ fileId: o.file_id.trim() });
+    }
+}
+
+/** 客户给的输入图引用解不开(坏 data URL / 拉不到 / 私网地址 / 过大)→ 终态 400,不 failover。 */
+export class InputImageError extends Error {}
+
+/** 官方 image_url 上限(2.5 页面 maxLength 20971520 ≈ 20MB data URL);二进制按 25MB(官方每图 25MB)。 */
+const INPUT_IMAGE_MAX_BYTES = 25 * 1024 * 1024;
+const INPUT_IMAGE_FETCH_TIMEOUT_MS = 15_000;
+
+/** 基础 SSRF 守门:只放 http(s),拒 localhost / 私网 / link-local 字面量(与 portal proxy 同口径)。 */
+function isDisallowedInputUrl(raw: string): boolean {
+    let u: URL;
+    try {
+        u = new URL(raw);
+    } catch {
+        return true;
+    }
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return true;
+    const h = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    if (h === 'localhost' || h.endsWith('.localhost') || h === '0.0.0.0' || h === '::1' || h === '::') return true;
+    const m = h.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+    if (m) {
+        const [a, b] = [Number(m[1]), Number(m[2])];
+        if (a === 10 || a === 127 || a === 0) return true;
+        if (a === 172 && b >= 16 && b <= 31) return true;
+        if (a === 192 && b === 168) return true;
+        if (a === 169 && b === 254) return true;
+        if (a === 100 && b >= 64 && b <= 127) return true;
+    }
+    if (h.startsWith('fc') || h.startsWith('fd') || h.startsWith('fe80')) return true;
+    return false;
+}
+
+function sniffInputMime(buf: Buffer, fallback: string): string {
+    if (buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'image/png';
+    if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
+    if (
+        buf.length >= 12 &&
+        buf.subarray(0, 4).toString('latin1') === 'RIFF' &&
+        buf.subarray(8, 12).toString('latin1') === 'WEBP'
+    )
+        return 'image/webp';
+    if (buf.length >= 6 && buf.subarray(0, 6).toString('latin1').startsWith('GIF8')) return 'image/gif';
+    return fallback;
+}
+
+/** 单个引用 → 图字节:data URL 直解;http(s) 拉取(15s 超时 + 25MB 上限)。失败抛 InputImageError。 */
+async function fetchInputImage(
+    url: string,
+    field: 'image' | 'mask',
+): Promise<{ buf: Buffer; type: string; name: string }> {
+    const dataUrl = url.match(/^data:([^;,]+);base64,([\s\S]+)$/);
+    if (dataUrl) {
+        const buf = Buffer.from(dataUrl[2], 'base64');
+        if (buf.byteLength === 0) throw new InputImageError(`${field}: data URL decodes to empty content`);
+        if (buf.byteLength > INPUT_IMAGE_MAX_BYTES)
+            throw new InputImageError(`${field}: too large (${buf.byteLength} bytes, max ${INPUT_IMAGE_MAX_BYTES})`);
+        const type = sniffInputMime(buf, dataUrl[1]);
+        return { buf, type, name: `${field}.${type.split('/')[1] || 'png'}` };
+    }
+    if (url.startsWith('data:')) throw new InputImageError(`${field}: data URL must be base64-encoded`);
+    if (isDisallowedInputUrl(url)) throw new InputImageError(`${field}: url not allowed: ${url.slice(0, 200)}`);
+    let resp: Response;
+    try {
+        resp = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(INPUT_IMAGE_FETCH_TIMEOUT_MS) });
+    } catch {
+        throw new InputImageError(`${field}: fetch failed: network error for ${url.slice(0, 200)}`);
+    }
+    if (!resp.ok) throw new InputImageError(`${field}: fetch failed: ${resp.status} for ${url.slice(0, 200)}`);
+    const buf = Buffer.from(await resp.arrayBuffer());
+    if (buf.byteLength === 0)
+        throw new InputImageError(`${field}: fetch returned empty content for ${url.slice(0, 200)}`);
+    if (buf.byteLength > INPUT_IMAGE_MAX_BYTES)
+        throw new InputImageError(`${field}: too large (${buf.byteLength} bytes, max ${INPUT_IMAGE_MAX_BYTES})`);
+    const header = resp.headers.get('content-type')?.split(';')[0].trim() || 'image/png';
+    const type = sniffInputMime(buf, header);
+    return { buf, type, name: `${field}.${type.split('/')[1] || 'png'}` };
+}
+
+/** url→b64 拉取的重试间隔(ms)。号池类上游(zdchat / ominiapi)响应里的 url 指向它们的 R2/图床缓存,
+ *  响应刚返回时对象可能还没落盘 —— 2026-09-17 zdchat 实测立刻拉得 0 字节、数秒后重拉正常。
+ *  非 2xx / 空体 / 网络错都重试;超 50MB 不重试(不是瞬时问题)。 */
+export const URL_FETCH_RETRY_DELAYS_MS: ReadonlyArray<number> = [1_000, 3_000];
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** 单次拉取:成功返 b64;瞬时失败返 null(可重试);'too_large' 为终态。 */
+async function fetchImageOnce(url: string): Promise<string | null | 'too_large'> {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 60_000);
     try {
         const r = await fetch(url, { signal: ctrl.signal });
         if (!r.ok) return null;
         const buf = Buffer.from(await r.arrayBuffer());
-        if (buf.length === 0 || buf.length > 50 * 1024 * 1024) return null;
+        if (buf.length > 50 * 1024 * 1024) return 'too_large';
+        if (buf.length === 0) return null;
         return buf.toString('base64');
     } catch {
         return null;
     } finally {
         clearTimeout(timer);
+    }
+}
+
+/** 拉上游图 URL 转 b64(60s 超时 + 50MB 上限),最多 1 + URL_FETCH_RETRY_DELAYS_MS.length 次。失败返 null。 */
+async function fetchImageAsB64(url: string, providerName?: string): Promise<string | null> {
+    for (let attempt = 0; ; attempt++) {
+        const r = await fetchImageOnce(url);
+        if (r === 'too_large') return null;
+        if (r) return r;
+        if (attempt >= URL_FETCH_RETRY_DELAYS_MS.length) return null;
+        console.warn('[image-adapter25] url fetch retry', { provider: providerName, attempt: attempt + 1 });
+        await sleep(URL_FETCH_RETRY_DELAYS_MS[attempt]);
     }
 }
 
@@ -411,16 +573,20 @@ async function callUpstream(
         const f = new FormData();
         f.append('model', parsed.model);
         f.append('prompt', parsed.prompt);
-        if (parsed.size.trim()) f.append('size', parsed.size.trim());
+        const sendSize = parsed.upstreamSize ?? parsed.size.trim();
+        if (sendSize) f.append('size', sendSize);
         if (FORWARD_QUALITY_SET.has(q)) f.append('quality', q);
         if (n > 1) f.append('n', String(n));
         for (const [k, v] of Object.entries(parsed.extras)) f.append(k, v);
         for (const img of parsed.images)
             f.append('image', new Blob([new Uint8Array(img.buf)], { type: img.type }), img.name);
+        if (parsed.mask)
+            f.append('mask', new Blob([new Uint8Array(parsed.mask.buf)], { type: parsed.mask.type }), parsed.mask.name);
         upstreamBody = f; // fetch 自动生成 boundary(不能手写 content-type)
     } else {
         const j: Record<string, unknown> = { model: parsed.model, prompt: parsed.prompt };
-        if (parsed.size.trim()) j.size = parsed.size.trim();
+        const sendSize = parsed.upstreamSize ?? parsed.size.trim();
+        if (sendSize) j.size = sendSize;
         if (FORWARD_QUALITY_SET.has(q)) j.quality = q;
         if (n > 1) j.n = n;
         for (const [k, v] of Object.entries(parsed.extras)) {
@@ -482,7 +648,7 @@ async function callUpstream(
             continue;
         }
         // 上游 url 一律不外泄(指向上游自家 OSS = 伪装穿帮 + 会过期)→ 拉回转 b64;拉不动算失败
-        const b64 = await fetchImageAsB64(it.url as string);
+        const b64 = await fetchImageAsB64(it.url as string, providerName);
         if (!b64) {
             console.warn('[image-adapter25] url→b64 fetch failed', { provider: providerName, mode });
             return null;
@@ -508,8 +674,32 @@ export async function handleAdapter25Image(
             { status: 401 },
         );
 
-    const parsed = await parseIncoming(req);
+    let parsed: ParsedRequest | null;
+    try {
+        parsed = await parseIncoming(req);
+    } catch (e) {
+        if (e instanceof InputImageError) {
+            console.warn('[image-adapter25] input image rejected', { provider: providerName, reason: e.message });
+            return terminalReject({
+                terminal: 'bad_request',
+                detail: e.message,
+                param: 'image',
+                code: 'invalid_image',
+            });
+        }
+        throw e;
+    }
     if (!parsed) return failover('bad_request_body', 'unparseable request body');
+    // edits 一张输入图都没有 → 官方 400 missing_required_parameter,不打上游(上游必拒,换渠道也没用)
+    if (mode === 'edits' && parsed.images.length === 0) {
+        console.warn('[image-adapter25] edits without input image rejected', { provider: providerName });
+        return terminalReject({
+            terminal: 'bad_request',
+            detail: "Missing required parameter: 'image'.",
+            param: 'image',
+            code: 'missing_required_parameter',
+        });
+    }
 
     // ---- 模型白名单:一渠道承两模型,只透传我们认的 2.5 名;不认 = 渠道 models 配错 → 让路 ----
     if (!provider.models.includes(parsed.model)) {
@@ -533,7 +723,36 @@ export async function handleAdapter25Image(
         });
     }
 
-    const dims = parseSize(parsed.size);
+    // ---- size=auto / 缺省 → 官方 auto 尺寸(2026-09-19 官方 key 打 gpt-image-2.5 实测):generations 缺省 1:1
+    // (1254×1254,与 2.0 的 4:5 不同);edits 跟第一张输入图比例(方→1254²、16:9→1672×941,与 2.0 相同)。
+    // 上游发 16 对齐尺寸,返图相符按官方尺寸计费/回显;不符按实际;读不出按官方尺寸(不再 503)。
+    let officialDims: { w: number; h: number } | null = null;
+    if (isAutoSize(parsed.size)) {
+        let aspect = 1;
+        let source = 'default-1:1';
+        if (mode === 'edits') {
+            const pr = promptAspectRatio(parsed.prompt);
+            const inputDims = parsed.images.length ? imageDimensions(parsed.images[0].buf) : null;
+            if (pr) {
+                aspect = aspectFromRatio(pr);
+                source = `prompt:${pr}`;
+            } else if (inputDims) {
+                aspect = inputDims.w / inputDims.h;
+                source = `input:${inputDims.w}x${inputDims.h}`;
+            } else source = 'input-unreadable→1:1';
+        }
+        officialDims = officialAutoDims(aspect);
+        const aligned = alignTo16(officialDims);
+        parsed.upstreamSize = `${aligned.w}x${aligned.h}`;
+        console.log('[image-adapter25] auto size', {
+            provider: providerName,
+            mode,
+            source,
+            official: `${officialDims.w}x${officialDims.h}`,
+            upstream: parsed.upstreamSize,
+        });
+    }
+    const dims = officialDims ?? parseSize(parsed.size);
     const quality = normQuality25(parsed.quality);
     // ---- 档位白名单:上游对名单外档位是【静默降级】而非拒绝(llmway xhigh/max → medium),直通会让
     // 客户按高档付费拿低档图;让路 503 给别的渠道,不打上游。归一后判(auto/缺省 = low 照常放行)。 ----
@@ -542,7 +761,7 @@ export async function handleAdapter25Image(
         return failover('quality_not_served', `quality '${quality}' not served by provider '${providerName}'`);
     }
     const wantsTransparent = (parsed.extras.background || '').trim().toLowerCase() === 'transparent';
-    const wantJpeg = (parsed.extras.output_format || '').trim().toLowerCase() === 'jpeg';
+    const wantFormat = transcodeTargetOf(parsed.extras.output_format);
     const n = Math.min(parsed.n, MAX_N);
     if (parsed.n > MAX_N)
         console.warn('[image-adapter25] n clamped', { provider: providerName, requested: parsed.n, used: MAX_N });
@@ -551,7 +770,7 @@ export async function handleAdapter25Image(
     const started = Date.now();
     const result = await callUpstream(provider, providerName, mode, parsed, n, auth);
     if (isTerminalReject(result)) return terminalReject(result);
-    let items = (result ?? []).map((b64_json) => ({ b64_json }));
+    let items = (result ?? []).map((b64_json) => ({ b64_json, generation_id: newGenerationId() }));
     if (items.length === 0) return failover('upstream_error', 'upstream call failed');
     if (items.length < n) {
         console.warn('[image-adapter25] upstream returned fewer than n', {
@@ -583,22 +802,25 @@ export async function handleAdapter25Image(
     const actualDims = out0 ? imageDimensions(Buffer.from(out0, 'base64')) : null;
     let billW: number;
     let billH: number;
-    if (actualDims) {
+    if (actualDims && officialDims && matchesAutoRequest(actualDims, officialDims)) {
+        billW = officialDims.w; // auto:上游交付了我们要的那张 → 按官方 auto 尺寸计费 + 回显
+        billH = officialDims.h;
+    } else if (actualDims) {
         billW = actualDims.w;
         billH = actualDims.h;
         if (dims && (dims.w !== actualDims.w || dims.h !== actualDims.h)) {
             console.warn('[image-adapter25] upstream size differs from request, billing by actual', {
                 provider: providerName,
                 mode,
-                requested: parsed.size,
+                requested: parsed.upstreamSize ?? parsed.size,
                 actual: `${actualDims.w}x${actualDims.h}`,
             });
         }
     } else if (dims) {
-        billW = dims.w;
+        billW = dims.w; // 读不出返回图尺寸:显式 size 按请求值;auto 按官方 auto 尺寸
         billH = dims.h;
     } else {
-        return failover('unbillable_auto', 'auto size but output image dimensions unreadable');
+        return failover('unbillable_auto', 'size unparsable and output image dimensions unreadable');
     }
 
     // ---- 合成 usage(官方 5 档公式 + 官方输入图口径)----
@@ -612,26 +834,28 @@ export async function handleAdapter25Image(
         imageCount: items.length,
     });
 
-    // ---- output_format=jpeg:官方原生支持已透传;上游未兑现(sniff 非 jpeg)才服务端转码兜底 ----
-    if (wantJpeg) {
-        for (const it of items) {
-            if (sniffOutputFormat(Buffer.from(it.b64_json, 'base64')) !== 'jpeg')
-                it.b64_json = await toJpegB64(it.b64_json);
-        }
+    // ---- output_format=jpeg / webp:官方原生支持已透传;上游未兑现(sniff 非目标格式)才服务端转码兜底(第 5 批加 webp)----
+    if (wantFormat) {
+        const q = encodeQuality(parsed.extras.output_compression, 92);
+        for (const it of items) it.b64_json = await transcodeB64(it.b64_json, wantFormat, q); // 已是目标格式 → 原样
     }
 
     // ---- C2PA 剥离(内容自定向:仅 adobe/firefly 才剥;OpenAI 原生签名原样保留 = 客户可验官方凭证)----
     for (const it of items) it.b64_json = stripAdobeImageMetadataB64(it.b64_json);
 
     // ---- 官方枚举 echo(直连 :3000 绕过 portal 的客户也拿合规响应)----
-    const outFmt = sniffOutputFormat(Buffer.from(items[0]?.b64_json ?? '', 'base64')) || (wantJpeg ? 'jpeg' : 'png');
+    const outFmt = sniffOutputFormat(Buffer.from(items[0]?.b64_json ?? '', 'base64')) || (wantFormat ?? 'png');
     const outBackground = wantsTransparent ? 'transparent' : 'opaque';
     const respSize = `${billW}x${billH}`;
     console.log('[image-adapter25] ok', {
         provider: providerName,
         model: parsed.model,
         mode,
-        size: dims && dims.w === billW && dims.h === billH ? parsed.size : `${parsed.size || 'auto'}→${respSize}`,
+        size: officialDims
+            ? `auto→${respSize}(upstream ${parsed.upstreamSize})`
+            : dims && dims.w === billW && dims.h === billH
+              ? parsed.size
+              : `${parsed.size || '?'}→${respSize}`,
         quality,
         n,
         images: items.length,
