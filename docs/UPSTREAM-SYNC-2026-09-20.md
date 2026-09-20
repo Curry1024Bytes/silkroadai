@@ -107,3 +107,12 @@
 - 定向 Image/Proxy/Docs/公告测试：通过；其中固定 SKU、Image 2.5、官方参数 400、JSON edits、WebP、伪流式、未知模型 404 和生成 ID 均已覆盖。
 - 为使既有公告契约与实现注释一致，缺失的 `link_url`/`link_label` 现在落为 `null`；这不涉及上游价格、路由或数据库结构。
 - `pnpm format:check` 仍会报告仓库原有文档和历史需求文档的格式差异；本次改动涉及的 route、proxy test、Image 2.5 adapter 和同步报告已单独按 Prettier 格式化。
+
+## 生产发布结果
+
+- 合并提交：`00b22c9`，已推送 `origin/dev` 并 fast-forward 到 `origin/prod`。
+- 发布前备份：`.env.bak.20260920-233633`（0600）；PostgreSQL `/opt/backups/silkroadai-portal/portal-20260920-153633.sql.gz`（0600，`gzip -t` 通过）。
+- VPS 已从 `prod@18715c1` fast-forward 到 `prod@00b22c9`。本次无 Prisma migration，数据库保持 80 条已完成 migration。
+- 干净 Git 归档构建成功；运行镜像 digest 为 `sha256:b6942a52474d41aa5d9dc7984579b4873e5a30a66cf01fb78babfff1f210fe8e`。
+- 发布后 Portal、PostgreSQL、new-api、new-api-mysql 均正常；Portal restart count 为 0，Portal→new-api `/api/setup` 返回 200，`llmroute.club/login` 与 `www.llmroute.club/login` 返回 200，API `/v1/models` 使用假 Key 返回 401，最近 10 分钟 Portal 日志 error/fatal/panic/unhandled 计数为 0。
+- 本次没有收费模型调用、价格改动、new-api 源码改动或生产环境变量改动；用户工作区的 `.env`、IDE 配置、需求文档和 `.codex` 未跟踪文件均未纳入提交。
