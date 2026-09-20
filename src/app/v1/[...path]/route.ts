@@ -69,6 +69,7 @@ import { getTokenUsageWithCache } from '@/lib/newapi/token-usage';
 import { uploadImage } from '@/lib/r2/client';
 import { objectExistsInOss, ossPublicUrl, uploadToCustomerOss } from '@/lib/oss/client';
 import { getOssConfig, resolveUserIdFromAuthHeader } from '@/lib/oss/store';
+import { getFile } from '@/lib/batch/store';
 import {
     type CaptureCtx,
     beginCapture,
@@ -1174,17 +1175,67 @@ function fetchUpstreamJson(req: NextRequest, body: JsonRecord, path: string, sea
     });
 }
 
-/** 从 JSON body 的 image / image_url(字符串或数组:data URL / 外部 http URL)解出输入图字节。
- *  复用 imageUrlToInlinePart(data URL 直解 / http URL fetch→base64 + SSRF 守门)。 */
-async function extractJsonInputImages(body: JsonRecord): Promise<Array<{ mimeType: string; data: string }>> {
-    const field = body.image ?? body.image_url;
-    const urls = Array.isArray(field) ? field : field ? [field] : [];
+/** JSON 形态的输入图引用。官方 /images/edits 的 JSON schema(2026-02 起,developers.openai.com 2026-09 实读):
+ *  `images: [{ image_url | file_id }]`、`mask: { image_url | file_id }`,"Provide exactly one of image_url or file_id";
+ *  `image_url` = 完整 URL 或 base64 data URL。我们早先的自家扩展 `image` / `image_url`(URL / data URL 字符串
+ *  或数组)继续兼容。客户按官方形态发 `images[]` 曾被 #475 的缺图校验 400、适配器直连时 503(2026-09-20 事故)。 */
+type JsonImageRef = { url: string } | { fileId: string };
+
+function collectJsonImageRefs(v: unknown, out: JsonImageRef[]): void {
+    if (Array.isArray(v)) {
+        for (const it of v) collectJsonImageRefs(it, out);
+        return;
+    }
+    if (typeof v === 'string') {
+        if (v.trim()) out.push({ url: v.trim() });
+        return;
+    }
+    if (v && typeof v === 'object') {
+        const o = v as JsonRecord;
+        // 官方 { image_url: "..." } / { file_id: "..." };兼容 chat 多模态风格 { image_url: { url } } / { url }
+        const nested = o.image_url && typeof o.image_url === 'object' ? (o.image_url as JsonRecord).url : undefined;
+        const url = [o.image_url, nested, o.url].find((x) => typeof x === 'string' && x.trim());
+        if (typeof url === 'string') out.push({ url: url.trim() });
+        else if (typeof o.file_id === 'string' && o.file_id.trim()) out.push({ fileId: o.file_id.trim() });
+    }
+}
+
+/** body 里所有输入图引用(官方 `images` 优先,再自家 `image` / `image_url`),按出现顺序。 */
+function jsonImageRefs(body: JsonRecord): JsonImageRef[] {
+    const out: JsonImageRef[] = [];
+    for (const key of ['images', 'image', 'image_url']) collectJsonImageRefs(body[key], out);
+    return out;
+}
+
+/** 官方 `file_id`:客户经 /v1/files 上传的文件(同 Batch 线,`resolveUserIdFromAuthHeader` 反查 user 守 IDOR)。 */
+async function fileIdToInlinePart(fileId: string, req: NextRequest): Promise<{ mimeType: string; data: string }> {
+    const userId = await resolveUserIdFromAuthHeader(req.headers.get('authorization'));
+    const row = userId ? await getFile(fileId, userId) : null;
+    if (!row) throw new ImageUrlError(`file_id not found: ${fileId.slice(0, 100)}`);
+    const buf = Buffer.from(row.content);
+    if (buf.byteLength > IMAGE_FETCH_MAX_BYTES)
+        throw new ImageUrlError(`file_id too large: ${buf.byteLength} bytes (max ${IMAGE_FETCH_MAX_BYTES})`);
+    return { mimeType: sniffImageMime(buf), data: buf.toString('base64') };
+}
+
+async function resolveJsonImageRef(
+    ref: JsonImageRef,
+    req: NextRequest,
+): Promise<{ mimeType: string; data: string } | null> {
+    if ('fileId' in ref) return fileIdToInlinePart(ref.fileId, req);
+    const part = await imageUrlToInlinePart(ref.url);
+    return 'inlineData' in part ? part.inlineData : null;
+}
+
+/** 从 JSON body 解出输入图字节(URL / data URL 经 imageUrlToInlinePart:SSRF 守门 + 大小上限;file_id 查库)。 */
+async function extractJsonInputImages(
+    body: JsonRecord,
+    req: NextRequest,
+): Promise<Array<{ mimeType: string; data: string }>> {
     const out: Array<{ mimeType: string; data: string }> = [];
-    for (const u of urls) {
-        if (typeof u === 'string' && u.trim()) {
-            const part = await imageUrlToInlinePart(u);
-            if ('inlineData' in part) out.push(part.inlineData);
-        }
+    for (const ref of jsonImageRefs(body)) {
+        const img = await resolveJsonImageRef(ref, req);
+        if (img) out.push(img);
     }
     return out;
 }
@@ -1264,12 +1315,12 @@ async function gptImageUpstream(
         return fetchUpstreamJson(req, j, '/images/generations', search);
     }
     const b = body ?? {};
-    const imgs = await extractJsonInputImages(b);
+    const imgs = await extractJsonInputImages(b, req);
     if (imgs.length === 0) return fetchUpstreamJson(req, b, '/images/generations', search);
     // 有图 → 图生图 edits(上游要 multipart):JSON 标量字段搬进 form + 图片作为文件部件
     const f = new FormData();
     for (const [k, v] of Object.entries(b)) {
-        if (k === 'image' || k === 'image_url' || k === 'mask') continue;
+        if (k === 'image' || k === 'image_url' || k === 'images' || k === 'mask') continue;
         if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') f.append(k, String(v));
     }
     for (const img of imgs) {
@@ -1279,16 +1330,16 @@ async function gptImageUpstream(
             'image.png',
         );
     }
-    // 官方 edits 的 mask:JSON 形里是 data URL / http(s) URL 字符串 → 转成文件部件。
-    // (此前被当标量文本 append 进 form,上游实际收不到蒙版、静默整图重绘。)
-    if (typeof b.mask === 'string' && b.mask.trim()) {
-        const part = await imageUrlToInlinePart(b.mask);
-        if ('inlineData' in part) {
+    // 官方 edits 的 mask:JSON 形是 { image_url | file_id } 对象(自家扩展也收 data URL / http(s) URL 字符串)
+    // → 转成文件部件。(此前被当标量文本 append 进 form,上游实际收不到蒙版、静默整图重绘。)
+    const maskRefs: JsonImageRef[] = [];
+    collectJsonImageRefs(b.mask, maskRefs);
+    if (maskRefs.length > 0) {
+        const mask = await resolveJsonImageRef(maskRefs[0], req);
+        if (mask) {
             f.append(
                 'mask',
-                new Blob([Buffer.from(part.inlineData.data, 'base64')], {
-                    type: part.inlineData.mimeType || 'image/png',
-                }),
+                new Blob([Buffer.from(mask.data, 'base64')], { type: mask.mimeType || 'image/png' }),
                 'mask.png',
             );
         }
@@ -1316,13 +1367,13 @@ function gptImageSizeFromInput(w: number, h: number): string {
 
 /** 尺寸重试用的明确 size:有输入图(图生图)→ 读第一张输入图尺寸选最近合法 WxH(改竖图出竖图,
  *  不强行方图);无输入图(文生图)/ 读不出尺寸 → 1024²。 */
-async function gptImageFallbackSize(form: FormData | null, body: JsonRecord | null): Promise<string> {
+async function gptImageFallbackSize(req: NextRequest, form: FormData | null, body: JsonRecord | null): Promise<string> {
     let dims: { w: number; h: number } | null = null;
     if (form) {
         const files = formImageFiles(form);
         if (files.length) dims = imageDimensions(Buffer.from(await files[0].arrayBuffer()));
     } else if (body) {
-        const imgs = await extractJsonInputImages(body);
+        const imgs = await extractJsonInputImages(body, req);
         if (imgs.length) dims = imageDimensions(Buffer.from(imgs[0].data, 'base64'));
     }
     return dims ? gptImageSizeFromInput(dims.w, dims.h) : DEFAULT_GPT_IMAGE_SIZE;
@@ -1349,7 +1400,7 @@ async function gptImageUpstreamWithSizeRetry(
         h.delete('content-length');
         return new Response(errText, { status: first.status, headers: h });
     }
-    const explicit = await gptImageFallbackSize(form, body);
+    const explicit = await gptImageFallbackSize(req, form, body);
     if (form) form.set('size', explicit);
     else if (body) body.size = explicit;
     return gptImageUpstream(req, form, body, search);
@@ -2342,15 +2393,8 @@ async function handleImagesDalle(
                     // 伪流式限 n=1(completed 事件按官方单图形)
                     if (wantStream && body.n != null && Number(body.n) > 1)
                         return imageError('stream supports n=1 only', 400, cap, { code: 'invalid_value', param: 'n' });
-                    // /images/edits 必须带输入图(JSON 形:image / image_url 字符串或非空数组)
-                    if (isImagesEditsPath(path)) {
-                        const img = body.image;
-                        const hasImage =
-                            (typeof img === 'string' && img.trim() !== '') ||
-                            (Array.isArray(img) && img.length > 0) ||
-                            (typeof body.image_url === 'string' && body.image_url.trim() !== '');
-                        if (!hasImage) return missingImageError(cap);
-                    }
+                    // /images/edits 必须带输入图(JSON 形:官方 images[{image_url|file_id}],或自家 image / image_url)
+                    if (isImagesEditsPath(path) && jsonImageRefs(body).length === 0) return missingImageError(cap);
                     // 严格 / 非严格都做:请求 jpeg/webp → 服务端转码交付(上游恒返 png、无视 output_format)
                     transcodeTo = gptImageTranscodeTarget(
                         typeof body.output_format === 'string' ? body.output_format : '',
@@ -2374,7 +2418,7 @@ async function handleImagesDalle(
                 };
                 const run = async (): Promise<NextResponse> => {
                     try {
-                        // 统一入口:gpt-image body 里带 image/image_url → 图生图 edits;否则文生图 generations。
+                        // 统一入口:gpt-image body 里带 images/image/image_url → 图生图 edits;否则文生图 generations。
                         const upstream = isGptImageModel(model)
                             ? await gptImageUpstreamWithSizeRetry(req, null, body, search)
                             : await fetchUpstreamJson(req, body, seedream ? '/images/generations' : path, search);
@@ -2404,12 +2448,8 @@ async function handleImagesDalle(
                 if (wantStream && isGptImageModel(model)) return gptImageSseResponse(run(), path, partialImages);
                 return await run();
             }
-            // JSON 形态的 image 可能是 data URL / 外部 URL 字符串或其数组(复用现有 helper)
-            const imageField = body.image;
-            const urls = Array.isArray(imageField) ? imageField : imageField ? [imageField] : [];
-            for (const u of urls) {
-                if (typeof u === 'string') inputParts.push(await imageUrlToInlinePart(u));
-            }
+            // JSON 形态:官方 images[{image_url|file_id}] / 自家 image、image_url(data URL / 外部 URL 字符串或数组)
+            for (const img of await extractJsonInputImages(body, req)) inputParts.push({ inlineData: img });
         }
     } catch (e) {
         if (e instanceof ImageUrlError)

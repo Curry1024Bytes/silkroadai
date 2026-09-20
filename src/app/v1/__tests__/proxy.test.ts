@@ -37,6 +37,12 @@ vi.mock('@/lib/oss/store', () => ({
     resolveUserIdFromAuthHeader: (auth: string | null) => mockResolveUserId(auth),
     getOssConfig: (userId: string) => mockGetOssConfig(userId),
 }));
+// 官方 JSON edits 的 file_id 引用 → /v1/files 上传的文件(batch store)。默认查不到。
+const mockGetFile = vi.fn(async (_fileId: string, _userId: string): Promise<Record<string, unknown> | null> => null);
+vi.mock('@/lib/batch/store', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/lib/batch/store')>()),
+    getFile: (fileId: string, userId: string) => mockGetFile(fileId, userId),
+}));
 vi.mock('@/lib/oss/client', () => ({
     uploadToCustomerOss: (config: unknown, buf: Buffer, key: string, mime: string) =>
         mockUploadToCustomerOss(config, buf, key, mime),
@@ -5589,5 +5595,150 @@ describe('/v1 proxy — gpt-image-2.5 quality 枚举含 xhigh / max(修第 3 批
             ctx('images', 'generations'),
         );
         expect(res.status).toBe(400);
+    });
+});
+
+describe('/v1 proxy — /images/edits 官方 JSON schema:images[{image_url|file_id}] + mask 对象(2026-09-20 客户按官方形态被 400/503)', () => {
+    function okImageResp(): Response {
+        return new Response(JSON.stringify({ created: 1, data: [{ b64_json: 'QUJD' }] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+        });
+    }
+    const PNG_BYTES = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+    const PX = 'data:image/png;base64,' + Buffer.from(PNG_BYTES).toString('base64');
+
+    async function sentForm(): Promise<FormData> {
+        const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(url).toBe(`${NEWAPI_BASE}/v1/images/edits`);
+        return init.body as FormData;
+    }
+
+    it('官方 images:[{image_url: dataURL}] ×2 → 通过缺图校验,转 multipart 两个 image 文件部件,不带 images 文本字段', async () => {
+        mockFetch.mockResolvedValueOnce(okImageResp());
+        const res = await POST(
+            makeReq('/images/edits', {
+                body: {
+                    model: 'gpt-image-2.5-flare',
+                    images: [{ image_url: PX }, { image_url: PX }],
+                    prompt: '把图一中的椅子替换为图二的椅子。',
+                    quality: 'medium',
+                    size: '1536x1024',
+                    n: 1,
+                },
+            }),
+            ctx('images', 'edits'),
+        );
+        expect(res.status).toBe(200);
+        const fd = await sentForm();
+        expect(fd.getAll('image')).toHaveLength(2);
+        expect(fd.getAll('image')[0]).toBeInstanceOf(Blob);
+        expect(fd.get('images')).toBeNull();
+        expect(fd.get('model')).toBe('gpt-image-2.5-flare');
+        expect(fd.get('size')).toBe('1536x1024');
+    });
+
+    it('官方 images:[{image_url: https URL}] → 代理拉图后作为文件部件转发(URL 不透传上游)', async () => {
+        mockFetch
+            .mockResolvedValueOnce(
+                new Response(new Uint8Array(PNG_BYTES), { status: 200, headers: { 'content-type': 'image/png' } }),
+            )
+            .mockResolvedValueOnce(okImageResp());
+        const res = await POST(
+            makeReq('/images/edits', {
+                body: {
+                    model: 'gpt-image-2',
+                    images: [{ image_url: 'https://rolee-1301812539.cos.ap-shanghai.myqcloud.com/test1.jpg' }],
+                    prompt: 'x',
+                },
+            }),
+            ctx('images', 'edits'),
+        );
+        expect(res.status).toBe(200);
+        expect((mockFetch.mock.calls[0] as [string])[0]).toBe(
+            'https://rolee-1301812539.cos.ap-shanghai.myqcloud.com/test1.jpg',
+        );
+        const [url, init] = mockFetch.mock.calls[1] as [string, RequestInit];
+        expect(url).toBe(`${NEWAPI_BASE}/v1/images/edits`);
+        expect((init.body as FormData).getAll('image')).toHaveLength(1);
+    });
+
+    it('官方 file_id → 反查 user + /v1/files 文件字节 → image 文件部件;查不到 → 400 invalid_image,不打上游', async () => {
+        mockResolveUserId.mockResolvedValueOnce('user-1');
+        mockGetFile.mockResolvedValueOnce({ id: 'file_abc', user_id: 'user-1', content: new Uint8Array(PNG_BYTES) });
+        mockFetch.mockResolvedValueOnce(okImageResp());
+        const ok = await POST(
+            makeReq('/images/edits', {
+                body: { model: 'gpt-image-2', images: [{ file_id: 'file_abc' }], prompt: 'x' },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'edits'),
+        );
+        expect(ok.status).toBe(200);
+        expect(mockGetFile).toHaveBeenCalledWith('file_abc', 'user-1');
+        const fd = await sentForm();
+        expect(fd.getAll('image')).toHaveLength(1);
+        expect((fd.get('image') as Blob).type).toBe('image/png');
+
+        mockFetch.mockClear();
+        mockResolveUserId.mockResolvedValueOnce('user-1');
+        mockGetFile.mockResolvedValueOnce(null);
+        const bad = await POST(
+            makeReq('/images/edits', {
+                body: { model: 'gpt-image-2', images: [{ file_id: 'file_nope' }], prompt: 'x' },
+                headers: { authorization: 'Bearer sk-test' },
+            }),
+            ctx('images', 'edits'),
+        );
+        expect(bad.status).toBe(400);
+        const j = (await bad.json()) as { error: { code: string; param: string; message: string } };
+        expect(j.error.code).toBe('invalid_image');
+        expect(j.error.param).toBe('image');
+        expect(j.error.message).toContain('file_id not found');
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('官方 mask:{image_url} 对象形 → mask 文件部件(字符串形仍兼容)', async () => {
+        mockFetch.mockResolvedValueOnce(okImageResp());
+        await POST(
+            makeReq('/images/edits', {
+                body: { model: 'gpt-image-2', images: [{ image_url: PX }], mask: { image_url: PX }, prompt: 'x' },
+            }),
+            ctx('images', 'edits'),
+        );
+        const fd = await sentForm();
+        expect(fd.get('mask')).toBeInstanceOf(Blob);
+        expect(fd.getAll('image')).toHaveLength(1);
+    });
+
+    it('自家扩展 image:[url,url] / image_url 字符串仍通;images 为空数组 → 400 missing_required_parameter', async () => {
+        mockFetch.mockResolvedValueOnce(okImageResp());
+        const ext = await POST(
+            makeReq('/images/edits', { body: { model: 'gpt-image-2', image: [PX, PX], prompt: 'x' } }),
+            ctx('images', 'edits'),
+        );
+        expect(ext.status).toBe(200);
+        expect((await sentForm()).getAll('image')).toHaveLength(2);
+
+        mockFetch.mockClear();
+        const empty = await POST(
+            makeReq('/images/edits', { body: { model: 'gpt-image-2.5-flare', images: [], prompt: 'x' } }),
+            ctx('images', 'edits'),
+        );
+        expect(empty.status).toBe(400);
+        expect(((await empty.json()) as { error: { code: string } }).error.code).toBe('missing_required_parameter');
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('/images/generations 带官方 images[] → 统一分流成 edits(与 image 字段同语义)', async () => {
+        mockFetch.mockResolvedValueOnce(okImageResp());
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2', images: [{ image_url: PX }], prompt: 'x' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(200);
+        expect((await sentForm()).getAll('image')).toHaveLength(1);
     });
 });

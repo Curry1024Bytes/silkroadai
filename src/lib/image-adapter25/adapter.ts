@@ -223,7 +223,9 @@ const UPSTREAM_BADREQ_RE =
     /prompt is required|invalid image|bad_request|validation_error|invalid image size|total pixels must|quality for .* must be|invalid value/i;
 const UPSTREAM_CHANNEL_RE = /no available channel|model_not_found|channel_circuit_open|no active tokens/i;
 
-type TerminalReject = { terminal: 'safety' } | { terminal: 'bad_request'; detail?: string; param?: string | null };
+type TerminalReject =
+    | { terminal: 'safety' }
+    | { terminal: 'bad_request'; detail?: string; param?: string | null; code?: string };
 function isTerminalReject(x: string[] | TerminalReject | null): x is TerminalReject {
     return x !== null && !Array.isArray(x);
 }
@@ -257,7 +259,18 @@ function extractBadRequestDetail(text: string, brand: RegExp): { detail: string;
 }
 
 /** 上游 4xx → 是否终态化 + 归类;5xx / 渠道特定 → null(failover)。不确定的 4xx 保守 failover。 */
+const UPSTREAM_NO_IMAGE_RE = /image (file )?is required/i;
+
 function classifyUpstreamError(status: number, text: string, brand: RegExp): TerminalReject | null {
+    // 上游说没收到输入图 = 请求本身缺图,换渠道也不会有(2026-09-20 事故:JSON edits 无图 → 三渠道空跑
+    // 10k 次 503)。号池类上游(ominiapi / zdchat)对此回 500,所以放在 5xx 判定之前。
+    if (UPSTREAM_NO_IMAGE_RE.test(text))
+        return {
+            terminal: 'bad_request',
+            detail: "Missing required parameter: 'image'.",
+            param: 'image',
+            code: 'missing_required_parameter',
+        };
     if (status >= 500) return null;
     if (UPSTREAM_CHANNEL_RE.test(text)) return null;
     if (UPSTREAM_SAFETY_RE.test(text)) return { terminal: 'safety' };
@@ -295,7 +308,7 @@ function terminalReject(reject: TerminalReject): NextResponse {
                     'Invalid request: the prompt, image, or parameters were rejected — please check your request.',
                 type: 'invalid_request_error',
                 param: reject.param ?? null,
-                code: 'invalid_request',
+                code: reject.code ?? 'invalid_request',
             },
         },
         { status: 400 },
@@ -375,16 +388,136 @@ async function parseIncoming(req: NextRequest): Promise<ParsedRequest | null> {
         if (typeof v === 'string' && v) extras[k] = v;
         else if (typeof v === 'number') extras[k] = String(v);
     }
+    // JSON 形态输入图:官方 images[{image_url|file_id}](developers.openai.com 2026-09 实读)+ 自家 image / image_url
+    // (URL / data URL 字符串或数组)。此前 JSON 分支恒 images=[],直连 new-api 的 JSON 改图全部被上游
+    // 「image is required」拒 → 503 空跑三渠道(2026-09-20 事故)。file_id 在适配器层无 portal user 上下文,
+    // 不能查库 → 显式 400(经 portal 的请求由 portal 解成文件后以 multipart 到这里,不受影响)。
+    const refs: JsonImageRef[] = [];
+    for (const key of ['images', 'image', 'image_url']) collectJsonImageRefs(body[key], refs);
+    const images: ParsedRequest['images'] = [];
+    for (const ref of refs) {
+        if ('fileId' in ref)
+            throw new InputImageError('file_id references are not supported here; pass image_url instead');
+        images.push(await fetchInputImage(ref.url, 'image'));
+    }
+    const maskRefs: JsonImageRef[] = [];
+    collectJsonImageRefs(body.mask, maskRefs);
+    let mask: ParsedRequest['mask'] = null;
+    if (maskRefs.length > 0) {
+        const ref = maskRefs[0];
+        if ('fileId' in ref)
+            throw new InputImageError('file_id references are not supported here; pass image_url instead');
+        mask = await fetchInputImage(ref.url, 'mask');
+    }
     return {
         model: typeof body.model === 'string' ? body.model : '',
         prompt: typeof body.prompt === 'string' ? body.prompt : '',
         size: typeof body.size === 'string' ? body.size : '',
         quality: typeof body.quality === 'string' ? body.quality : '',
         n: Math.max(1, Number(body.n) || 1),
-        images: [],
+        images,
         extras,
-        mask: null,
+        mask,
     };
+}
+
+// ---- JSON 输入图引用(与 portal proxy 同一套语义,适配器不依赖 portal user 上下文)----
+type JsonImageRef = { url: string } | { fileId: string };
+
+function collectJsonImageRefs(v: unknown, out: JsonImageRef[]): void {
+    if (Array.isArray(v)) {
+        for (const it of v) collectJsonImageRefs(it, out);
+        return;
+    }
+    if (typeof v === 'string') {
+        if (v.trim()) out.push({ url: v.trim() });
+        return;
+    }
+    if (v && typeof v === 'object') {
+        const o = v as Record<string, unknown>;
+        const nested =
+            o.image_url && typeof o.image_url === 'object' ? (o.image_url as Record<string, unknown>).url : undefined;
+        const url = [o.image_url, nested, o.url].find((x) => typeof x === 'string' && x.trim());
+        if (typeof url === 'string') out.push({ url: url.trim() });
+        else if (typeof o.file_id === 'string' && o.file_id.trim()) out.push({ fileId: o.file_id.trim() });
+    }
+}
+
+/** 客户给的输入图引用解不开(坏 data URL / 拉不到 / 私网地址 / 过大)→ 终态 400,不 failover。 */
+export class InputImageError extends Error {}
+
+/** 官方 image_url 上限(2.5 页面 maxLength 20971520 ≈ 20MB data URL);二进制按 25MB(官方每图 25MB)。 */
+const INPUT_IMAGE_MAX_BYTES = 25 * 1024 * 1024;
+const INPUT_IMAGE_FETCH_TIMEOUT_MS = 15_000;
+
+/** 基础 SSRF 守门:只放 http(s),拒 localhost / 私网 / link-local 字面量(与 portal proxy 同口径)。 */
+function isDisallowedInputUrl(raw: string): boolean {
+    let u: URL;
+    try {
+        u = new URL(raw);
+    } catch {
+        return true;
+    }
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return true;
+    const h = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    if (h === 'localhost' || h.endsWith('.localhost') || h === '0.0.0.0' || h === '::1' || h === '::') return true;
+    const m = h.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+    if (m) {
+        const [a, b] = [Number(m[1]), Number(m[2])];
+        if (a === 10 || a === 127 || a === 0) return true;
+        if (a === 172 && b >= 16 && b <= 31) return true;
+        if (a === 192 && b === 168) return true;
+        if (a === 169 && b === 254) return true;
+        if (a === 100 && b >= 64 && b <= 127) return true;
+    }
+    if (h.startsWith('fc') || h.startsWith('fd') || h.startsWith('fe80')) return true;
+    return false;
+}
+
+function sniffInputMime(buf: Buffer, fallback: string): string {
+    if (buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'image/png';
+    if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
+    if (
+        buf.length >= 12 &&
+        buf.subarray(0, 4).toString('latin1') === 'RIFF' &&
+        buf.subarray(8, 12).toString('latin1') === 'WEBP'
+    )
+        return 'image/webp';
+    if (buf.length >= 6 && buf.subarray(0, 6).toString('latin1').startsWith('GIF8')) return 'image/gif';
+    return fallback;
+}
+
+/** 单个引用 → 图字节:data URL 直解;http(s) 拉取(15s 超时 + 25MB 上限)。失败抛 InputImageError。 */
+async function fetchInputImage(
+    url: string,
+    field: 'image' | 'mask',
+): Promise<{ buf: Buffer; type: string; name: string }> {
+    const dataUrl = url.match(/^data:([^;,]+);base64,([\s\S]+)$/);
+    if (dataUrl) {
+        const buf = Buffer.from(dataUrl[2], 'base64');
+        if (buf.byteLength === 0) throw new InputImageError(`${field}: data URL decodes to empty content`);
+        if (buf.byteLength > INPUT_IMAGE_MAX_BYTES)
+            throw new InputImageError(`${field}: too large (${buf.byteLength} bytes, max ${INPUT_IMAGE_MAX_BYTES})`);
+        const type = sniffInputMime(buf, dataUrl[1]);
+        return { buf, type, name: `${field}.${type.split('/')[1] || 'png'}` };
+    }
+    if (url.startsWith('data:')) throw new InputImageError(`${field}: data URL must be base64-encoded`);
+    if (isDisallowedInputUrl(url)) throw new InputImageError(`${field}: url not allowed: ${url.slice(0, 200)}`);
+    let resp: Response;
+    try {
+        resp = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(INPUT_IMAGE_FETCH_TIMEOUT_MS) });
+    } catch {
+        throw new InputImageError(`${field}: fetch failed: network error for ${url.slice(0, 200)}`);
+    }
+    if (!resp.ok) throw new InputImageError(`${field}: fetch failed: ${resp.status} for ${url.slice(0, 200)}`);
+    const buf = Buffer.from(await resp.arrayBuffer());
+    if (buf.byteLength === 0)
+        throw new InputImageError(`${field}: fetch returned empty content for ${url.slice(0, 200)}`);
+    if (buf.byteLength > INPUT_IMAGE_MAX_BYTES)
+        throw new InputImageError(`${field}: too large (${buf.byteLength} bytes, max ${INPUT_IMAGE_MAX_BYTES})`);
+    const header = resp.headers.get('content-type')?.split(';')[0].trim() || 'image/png';
+    const type = sniffInputMime(buf, header);
+    return { buf, type, name: `${field}.${type.split('/')[1] || 'png'}` };
 }
 
 /** url→b64 拉取的重试间隔(ms)。号池类上游(zdchat / ominiapi)响应里的 url 指向它们的 R2/图床缓存,
@@ -542,8 +675,32 @@ export async function handleAdapter25Image(
             { status: 401 },
         );
 
-    const parsed = await parseIncoming(req);
+    let parsed: ParsedRequest | null;
+    try {
+        parsed = await parseIncoming(req);
+    } catch (e) {
+        if (e instanceof InputImageError) {
+            console.warn('[image-adapter25] input image rejected', { provider: providerName, reason: e.message });
+            return terminalReject({
+                terminal: 'bad_request',
+                detail: e.message,
+                param: 'image',
+                code: 'invalid_image',
+            });
+        }
+        throw e;
+    }
     if (!parsed) return failover('bad_request_body', 'unparseable request body');
+    // edits 一张输入图都没有 → 官方 400 missing_required_parameter,不打上游(上游必拒,换渠道也没用)
+    if (mode === 'edits' && parsed.images.length === 0) {
+        console.warn('[image-adapter25] edits without input image rejected', { provider: providerName });
+        return terminalReject({
+            terminal: 'bad_request',
+            detail: "Missing required parameter: 'image'.",
+            param: 'image',
+            code: 'missing_required_parameter',
+        });
+    }
 
     // ---- 模型白名单:一渠道承两模型,只透传我们认的 2.5 名;不认 = 渠道 models 配错 → 让路 ----
     if (!provider.models.includes(parsed.model)) {
