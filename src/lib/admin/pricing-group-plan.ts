@@ -67,6 +67,22 @@ function same(a: number, b: number) {
     return a === b || (b !== 0 && Math.abs(a - b) <= Math.abs(b) * 1e-10);
 }
 
+/**
+ * new-api stores the shared model ratios at a fixed decimal precision. A
+ * group quote is derived from the official model price and the selected
+ * GroupRatio, so converting that quote back can differ by one stored unit
+ * even when it represents the same shared base. Treat only that storage
+ * quantization as equal; a real base-price change must still be rejected when
+ * the model is used by another group.
+ */
+function equivalentSharedValue(key: string, old: unknown, next: unknown): boolean {
+    if (old === next) return true;
+    if (typeof old !== 'number' || typeof next !== 'number' || !Number.isFinite(old) || !Number.isFinite(next))
+        return false;
+    const quantum = key === 'ModelRatio' ? 1e-6 : key === 'CompletionRatio' ? 1e-4 : key === 'ModelPrice' ? 1e-6 : 0;
+    return quantum > 0 && Math.abs(old - next) <= quantum / 2 + Math.max(Math.abs(old), Math.abs(next)) * 1e-12;
+}
+
 function fail(code: string, message: string): never {
     throw new PricingPublishError(code, message);
 }
@@ -212,7 +228,7 @@ export function buildGroupPublishPlan(
             const equivalent =
                 key === EXPRESSION_KEY && typeof old === 'string' && typeof next === 'string'
                     ? sameExpression(old, next)
-                    : old === next;
+                    : equivalentSharedValue(key, old, next);
             if (externalGroups.size && !equivalent)
                 fail(
                     'pricing_group_shared_base',
@@ -394,13 +410,18 @@ export function assertGroupRuntime(runtime: NewApiRuntimePricing, plan: GroupPub
             )
                 throw new Error('Group cache rules changed');
             if (basis === 'request') {
-                if (current.model_price !== (target ? plan.target.ModelPrice?.[name] : plan.baseline.ModelPrice[name]))
+                const expected = target ? plan.target.ModelPrice?.[name] : plan.baseline.ModelPrice[name];
+                if (!equivalentSharedValue('ModelPrice', current.model_price, expected))
                     throw new Error('Group image pricing has not converged');
-            } else if (
-                current.model_ratio !== (target ? plan.target.ModelRatio?.[name] : plan.baseline.ModelRatio[name]) ||
-                current.completion_ratio !== (target ? plan.target.CompletionRatio?.[name] : old.completion_ratio)
-            )
-                throw new Error('Group model pricing has not converged');
+            } else {
+                const expectedModelRatio = target ? plan.target.ModelRatio?.[name] : plan.baseline.ModelRatio[name];
+                const expectedCompletionRatio = target ? plan.target.CompletionRatio?.[name] : old.completion_ratio;
+                if (
+                    !equivalentSharedValue('ModelRatio', current.model_ratio, expectedModelRatio) ||
+                    !equivalentSharedValue('CompletionRatio', current.completion_ratio, expectedCompletionRatio)
+                )
+                    throw new Error('Group model pricing has not converged');
+            }
         }
     }
 }

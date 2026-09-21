@@ -262,6 +262,21 @@ describe('group-scoped pricing plans', () => {
         f.input.cache_read_cny_per_1m = 0.1;
         expect(() => build(f)).toThrow('缓存');
     });
+    it('keeps a shared ratio when the quote only differs by new-api storage precision', () => {
+        const f = groupFixture();
+        (f.source.options['billing_setting.billing_mode'] as Record<string, string>)['gpt-5.5'] = 'ratio';
+        f.runtime.models[0].billing_mode = 'ratio';
+        delete f.runtime.models[0].billing_expr;
+        f.runtime.models[0].model_ratio = 2.5000004;
+        (f.source.options.ModelRatio as Record<string, number>)['gpt-5.5'] = 2.5000004;
+        delete f.input.cache_read_cny_per_1m;
+
+        const plan = build(f);
+
+        expect(plan.target.ModelRatio?.['gpt-5.5']).toBe(2.5000004);
+        expect(plan.target.CompletionRatio?.['gpt-5.5']).toBe(6);
+        expect(plan.target.GroupRatio).toEqual({ enterprise: 0.18 });
+    });
     it('checks image dedicated prices instead of omitting them', () => {
         const f = groupFixture();
         f.state.models[0].modality = 'image';

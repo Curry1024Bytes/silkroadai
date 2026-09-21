@@ -10,7 +10,9 @@
  * guarantee against such external changes.
  *
  * Public access (NOT under (authenticated)); the landing page has linked
- * /pricing since W8 (dead until this page). ISR revalidate=60 mirrors /models.
+ * /pricing since W8 (dead until this page). The page is user-aware because a
+ * logged-in customer may have a dedicated multiplier, so it must stay fully
+ * dynamic and must never reuse one customer's rendered quote for another.
  *
  * Rendering rules:
  *  - only enabled catalog models with ≥1 current price on an ENABLED tier
@@ -42,7 +44,8 @@ import {
 } from '@/lib/models/tiered-pricing-details';
 import type { TieredPricingDetails } from '@/lib/admin/pricing-publish-types';
 
-export const revalidate = 60;
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 export const metadata = {
     title: '模型价格 — LLmRoute',
     description:
