@@ -189,16 +189,34 @@ describe('group-scoped pricing plans', () => {
         expect(Object.keys(plan.target[EXPRESSION_KEY]!)).toEqual(['gpt-5.5', 'sol']);
         expect(plan.customer_overrides.map((x) => x.model_name)).toEqual(['GPT 5.5', 'Sol']);
     });
-    it('rejects shared-model repricing or flattening that changes another group', () => {
+    it('allows shared-model group pricing while preserving the shared base price', () => {
         const f = groupFixture();
+        const plan = build(f);
+        expect(plan.target[EXPRESSION_KEY]).toEqual({ 'gpt-5.5': UNIFORM });
+        expect(plan.target.ModelRatio).toBeUndefined();
+        expect(plan.target.CompletionRatio).toBeUndefined();
+        expect(plan.target.GroupRatio).toEqual({ enterprise: 0.18 });
+        expect(plan.rows[0].after).toEqual({ input_cny_per_1m: 0.9, output_cny_per_1m: 5.4, per_image_cny: null });
+
         f.input.input_cny_per_1m = 1.8;
         f.input.output_cny_per_1m = 10.8;
         f.input.cache_read_cny_per_1m = 0.18;
-        expect(() => build(f)).toThrow('其他分组');
-        f.input = groupFixture().input;
-        (f.source.options[EXPRESSION_KEY] as Record<string, string>)['gpt-5.5'] = EXPRESSION;
-        f.runtime.models[0].billing_expr = EXPRESSION;
-        expect(() => build(f)).toThrow('其他分组');
+        expect(() => build(f)).toThrow('当前共享基础价');
+    });
+    it('allows a shared model in an enabled channel even when that channel is not registered in Portal', () => {
+        const f = groupFixture();
+        f.source.channels.push({
+            id: 99,
+            name: 'legacy-sale',
+            status: 1,
+            groups: ['legacy-sale'],
+            models: ['gpt-5.5'],
+        });
+        expect(build(f).target.GroupRatio).toEqual({ enterprise: 0.18 });
+        f.input.input_cny_per_1m = 1.8;
+        f.input.output_cny_per_1m = 10.8;
+        f.input.cache_read_cny_per_1m = 0.18;
+        expect(() => build(f)).toThrow('当前共享基础价');
     });
     it('can flatten an exclusively owned model without copying upstream tiers', () => {
         const f = groupFixture();

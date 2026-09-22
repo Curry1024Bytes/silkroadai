@@ -1829,8 +1829,8 @@ export default function CostPricingWorkbench({
                                       ? 'I reviewed every tier condition, input/output/cache price, affected group and customer-specific multiplier.'
                                       : '我已核对每个阶梯的适用条件、输入输出和缓存价格，以及全部受影响分组与客户专属倍率。'
                                   : en
-                                    ? 'I reviewed every affected model and tier, including changes to other tiers sharing the base price.'
-                                    : '我已核对全部受影响模型和档次，包括共享基础价格导致的其他档次变化。'}
+                                    ? 'I reviewed every model and the actual prices for the selected group.'
+                                    : '我已核对全部模型，以及所选分组按新倍率计算出的实际价格。'}
                         </span>
                     </label>
                     {previewExpired && (

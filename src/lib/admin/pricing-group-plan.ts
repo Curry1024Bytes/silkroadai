@@ -221,19 +221,19 @@ export function buildGroupPublishPlan(
                 .flatMap((channel) => channel.groups)
                 .filter((item) => item !== group.newapi_group),
         );
+        const shared = externalGroups.size > 0;
+        const basePriceLabel = shared ? '当前共享基础价' : '当前基础价';
         for (const [rawKey, values] of Object.entries(desired)) {
             const key = rawKey as PublicationWriteKey;
-            const next = values[name];
             const old = baseline[key as keyof TieredPriceOptions]?.[name];
+            // A model used by another enabled group has one shared new-api base
+            // price. Group pricing may change only the selected GroupRatio; a
+            // new base here would silently reprice every other group.
+            const next = shared ? old : values[name];
             const equivalent =
                 key === EXPRESSION_KEY && typeof old === 'string' && typeof next === 'string'
                     ? sameExpression(old, next)
                     : equivalentSharedValue(key, old, next);
-            if (externalGroups.size && !equivalent)
-                fail(
-                    'pricing_group_shared_base',
-                    `${name} 与其他分组共享基础价格，当前报价会改变其他分组；请先核对基础价。`,
-                );
             // Preserve an equivalent existing formula, including its label, so
             // other groups and acknowledged/no-op jobs have no unnecessary write.
             target[key] = { ...target[key], [name]: equivalent ? (old as string | number) : next };
@@ -242,17 +242,59 @@ export function buildGroupPublishPlan(
         if (selectedRows.length !== 1 || selectedRows[0].model_id !== input.model_id)
             fail('pricing_group_ambiguous', `${name} 在该档次存在多个目录映射，请先核对。`);
         const row = selectedRows[0];
+        let actual: PricingPublishPreviewRow['after'];
+        if (isExpression) {
+            const details = tieredDetails(String(target[EXPRESSION_KEY]![name]), scope.retail_ratio).tiers[0].rates;
+            actual = {
+                input_cny_per_1m: Number(details.input.toFixed(4)),
+                output_cny_per_1m: Number(details.output.toFixed(4)),
+                per_image_cny: null,
+            };
+        } else if (single.basis === 'request') {
+            const modelPrice = Number(target.ModelPrice![name]);
+            actual = {
+                input_cny_per_1m: null,
+                output_cny_per_1m: null,
+                per_image_cny: Number((modelPrice * IMAGE_FX * scope.retail_ratio).toFixed(4)),
+            };
+        } else {
+            const details = ratioDetails(
+                running,
+                scope.retail_ratio,
+                Number(target.ModelRatio![name]),
+                Number(target.CompletionRatio![name]),
+            );
+            actual = {
+                input_cny_per_1m: Number(details.tiers[0].rates.input.toFixed(4)),
+                output_cny_per_1m: Number(details.tiers[0].rates.output.toFixed(4)),
+                per_image_cny: null,
+            };
+        }
         for (const key of ['input_cny_per_1m', 'output_cny_per_1m', 'per_image_cny'] as const) {
             const wanted = input[key],
-                actual = row.after[key];
-            if (wanted === null ? actual !== null : actual === null || !same(actual, wanted))
-                fail('pricing_group_precision', `${name} 的实际单价与填写目标不一致，请调整基础报价精度。`);
+                actualValue = actual[key];
+            if (wanted === null ? actualValue !== null : actualValue === null || !same(actualValue, wanted))
+                fail(
+                    'pricing_group_precision',
+                    `${name} 在${basePriceLabel}和新分组倍率下的实际价格为 ${actual.input_cny_per_1m === null ? `按次 ¥${actual.per_image_cny}` : `输入 ¥${actual.input_cny_per_1m} / 输出 ¥${actual.output_cny_per_1m}`}，与填写的目标不一致；请调整该档次倍率或目标价格。`,
+                );
         }
         let beforeDetails: TieredPricingDetails | undefined;
         let afterDetails: TieredPricingDetails | undefined;
         if (isExpression) {
             beforeDetails = tieredDetails(String(baseline[EXPRESSION_KEY][name]), oldRatio);
             afterDetails = tieredDetails(String(target[EXPRESSION_KEY]![name]), scope.retail_ratio);
+            for (const key of ['cache_read', 'cache_write', 'cache_write_1h'] as const) {
+                const wanted = input[`${key}_cny_per_1m`];
+                if (
+                    wanted !== undefined &&
+                    (afterDetails.tiers[0].rates[key] === null || !same(afterDetails.tiers[0].rates[key]!, wanted))
+                )
+                    fail(
+                        'pricing_group_cache_mismatch',
+                        `${name} 的缓存报价与${basePriceLabel}不一致，请核对缓存基础价。`,
+                    );
+            }
         } else if (single.basis === 'token') {
             beforeDetails = ratioDetails(running, oldRatio);
             afterDetails = ratioDetails(
@@ -278,6 +320,7 @@ export function buildGroupPublishPlan(
             .sort((a, b) => b.effective_from.localeCompare(a.effective_from) || b.id.localeCompare(a.id))[0];
         rows.push({
             ...row,
+            after: actual,
             // Group cost rules hold the full cost breakdown separately. A null
             // legacy estimate must not erase the last catalog reference cost.
             cost_cny_per_1m: input.cost_cny_per_1m ?? currentPrice?.cost_cny_per_1m ?? null,
