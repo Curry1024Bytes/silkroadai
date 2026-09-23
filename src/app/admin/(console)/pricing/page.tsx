@@ -7,7 +7,7 @@ import { resolveLocale, type Locale } from '@/lib/locale';
 import { deriveTierRows, tierOrder } from '@/lib/admin/pricing-tiers';
 import type { BatchCostResult } from '@/lib/admin/batch-cost';
 import PricingPublishDialog from '@/components/admin/PricingPublishDialog';
-import CostPricingWorkbench from '@/components/admin/CostPricingWorkbench';
+import GlobalModelPricingWorkbench from '@/components/admin/GlobalModelPricingWorkbench';
 import GroupPricingWorkbench from '@/components/admin/GroupPricingWorkbench';
 import PricingWorkspaceTabs, {
     pricingWorkspaceTabId,
@@ -52,7 +52,7 @@ function getTexts(locale: Locale) {
     return locale === 'en'
         ? {
               title: 'Pricing',
-              subtitle: 'Choose a tier, enter three values, preview, and publish',
+              subtitle: 'Set the official model base price, then maintain each group multiplier',
               invalidToken: 'Session expired, please sign in again',
               loadFailed: 'Failed to load pricing',
               refresh: 'Refresh',
@@ -106,7 +106,7 @@ function getTexts(locale: Locale) {
           }
         : {
               title: '定价',
-              subtitle: '选择档次，填写三项参数，预览后发布',
+              subtitle: '先维护模型官方基础价，再维护各档次分组倍率',
               invalidToken: '登录已过期',
               loadFailed: '加载定价失败',
               refresh: '刷新',
@@ -410,8 +410,7 @@ function PricingContent() {
                     ),
 
                     model: (
-                        <CostPricingWorkbench
-                            models={models}
+                        <GlobalModelPricingWorkbench
                             isDark={isDark}
                             locale={locale}
                             onPublished={refreshAfterSubmission}
