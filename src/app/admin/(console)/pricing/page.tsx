@@ -396,7 +396,7 @@ function PricingContent() {
                 en={locale === 'en'}
                 isDark={isDark}
                 jobCount={publishJobs.length}
-                showModelTab={false}
+                showModelTab
                 panels={{
                     group: (
                         <div id="pricing-workbench" className="scroll-mt-4">

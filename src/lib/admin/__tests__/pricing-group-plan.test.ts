@@ -202,6 +202,7 @@ describe('group-scoped pricing plans', () => {
         f.input.output_cny_per_1m = 10.8;
         f.input.cache_read_cny_per_1m = 0.18;
         expect(() => build(f)).toThrow('当前共享基础价');
+        expect(() => build(f)).toThrow('全局模型定价');
     });
     it('allows a shared model in an enabled channel even when that channel is not registered in Portal', () => {
         const f = groupFixture();
@@ -217,6 +218,7 @@ describe('group-scoped pricing plans', () => {
         f.input.output_cny_per_1m = 10.8;
         f.input.cache_read_cny_per_1m = 0.18;
         expect(() => build(f)).toThrow('当前共享基础价');
+        expect(() => build(f)).toThrow('全局模型定价');
     });
     it('can flatten an exclusively owned model without copying upstream tiers', () => {
         const f = groupFixture();

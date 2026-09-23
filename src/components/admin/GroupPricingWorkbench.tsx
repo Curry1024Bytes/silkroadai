@@ -802,6 +802,13 @@ export default function GroupPricingWorkbench({
                             ? 'Supplier base quotes are read from the synced directory and shown above. Missing quotes block the preview; you do not need to re-enter them here.'
                             : '上游基础价由同步后的目录自动读取并在上方展示。缺少基础价时会阻止预览，你不需要在这里重新填写。'}
                     </p>
+                    <p
+                        className={`rounded-lg border p-3 text-sm ${isDark ? 'border-indigo-800 bg-indigo-950/20 text-indigo-200' : 'border-indigo-200 bg-indigo-50 text-indigo-900'}`}
+                    >
+                        {en
+                            ? 'The model base price is global. This page changes only the selected new-api group multiplier. If a shared model does not match the target, open Global model pricing first and correct its official base expression; do not compensate by changing this group multiplier.'
+                            : '模型官方基础价是全局共用的。本页只修改当前 new-api 分组倍率；共享模型若与目标价不一致，请先打开「全局模型定价」校正官方基础表达式，不要用本档次倍率去补偿。'}
+                    </p>
                     <div className="flex flex-wrap items-center gap-3">
                         <button
                             type="button"

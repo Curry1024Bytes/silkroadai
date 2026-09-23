@@ -276,7 +276,9 @@ export function buildGroupPublishPlan(
             if (wanted === null ? actualValue !== null : actualValue === null || !same(actualValue, wanted))
                 fail(
                     'pricing_group_precision',
-                    `${name} 在${basePriceLabel}和新分组倍率下的实际价格为 ${actual.input_cny_per_1m === null ? `按次 ¥${actual.per_image_cny}` : `输入 ¥${actual.input_cny_per_1m} / 输出 ¥${actual.output_cny_per_1m}`}，与填写的目标不一致；请调整该档次倍率或目标价格。`,
+                    shared
+                        ? `${name} 在${basePriceLabel}和新分组倍率下的实际价格为 ${actual.input_cny_per_1m === null ? `按次 ¥${actual.per_image_cny}` : `输入 ¥${actual.input_cny_per_1m} / 输出 ¥${actual.output_cny_per_1m}`}，与填写的目标不一致。该模型的官方基础价格由多个分组共享，不能在本档次单独修改；请先到「全局模型定价」校正官方基础价格，再重新预览。`
+                        : `${name} 在${basePriceLabel}和新分组倍率下的实际价格为 ${actual.input_cny_per_1m === null ? `按次 ¥${actual.per_image_cny}` : `输入 ¥${actual.input_cny_per_1m} / 输出 ¥${actual.output_cny_per_1m}`}，与填写的目标不一致；请调整该档次倍率或目标价格。`,
                 );
         }
         let beforeDetails: TieredPricingDetails | undefined;

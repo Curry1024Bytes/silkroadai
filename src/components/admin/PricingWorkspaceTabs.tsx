@@ -23,18 +23,19 @@ export default function PricingWorkspaceTabs({
     en: boolean;
     isDark: boolean;
     jobCount: number;
-    /**
-     * The legacy per-model editor remains available to callers that need it,
-     * but the normal pricing workflow is intentionally group-first.  Keeping
-     * this switch here lets the admin page hide the legacy entry point without
-     * removing the component or its API for existing links/tests.
-     */
+    /** Keep the global model pricing entry available when shared base prices
+     * need correction before a group can be previewed. */
     showModelTab?: boolean;
     panels: Record<PricingWorkspaceTab, ReactNode>;
 }) {
     const labels: Record<PricingWorkspaceTab, string> = en
-        ? { group: 'Group pricing', model: 'Model pricing', jobs: 'Publication tasks', catalog: 'Prices & history' }
-        : { group: '按档次定价', model: '单模型定价', jobs: '发布任务', catalog: '价格与历史' };
+        ? {
+              group: 'Group pricing',
+              model: 'Global model pricing',
+              jobs: 'Publication tasks',
+              catalog: 'Prices & history',
+          }
+        : { group: '按档次定价', model: '全局模型定价', jobs: '发布任务', catalog: '价格与历史' };
 
     const visibleTabs: PricingWorkspaceTab[] = showModelTab
         ? [...pricingWorkspaceTabs]
