@@ -1057,6 +1057,11 @@ export default function CostPricingWorkbench({
                 <li>{en ? '2. Convert costs and set retail prices' : '2. 换算成本、设定售价'}</li>
                 <li>{en ? '3. Review and publish' : '3. 预览并发布'}</li>
             </ol>
+            <p className={`mb-4 ${classes.warning}`} role="note">
+                {en
+                    ? 'This is the global model price. A shared model base price is used by every new-api group; group-specific multipliers are adjusted in Group pricing. Changes here can affect all linked groups.'
+                    : '这里维护的是模型全局基础价。共享模型的基础价格由所有 new-api 分组共用；分组倍率请在「按档次定价」中调整。本页发布可能影响所有关联分组。'}
+            </p>
             {error && (
                 <p
                     role="alert"

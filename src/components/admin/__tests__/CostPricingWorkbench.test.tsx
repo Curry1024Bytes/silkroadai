@@ -1237,6 +1237,7 @@ describe('cost pricing UI semantics', () => {
             />,
         );
         expect(html).toContain('计算并发布价格');
+        expect(html).toContain('这里维护的是模型全局基础价');
         expect(html).toContain('请选择模型');
         expect(html).toContain('请选择已登记档次');
         expect(html).not.toContain('确认并提交发布任务');
