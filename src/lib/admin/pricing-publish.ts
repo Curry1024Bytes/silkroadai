@@ -56,6 +56,12 @@ import {
     assertGroupRuntime,
     type GroupPublishPlan,
 } from './pricing-group-plan';
+import {
+    buildGroupRatioPublishPlan,
+    assertRecoverableGroupRatioOptions,
+    assertGroupRatioRuntime,
+    type GroupRatioPublishPlan,
+} from './pricing-group-ratio-plan';
 import { assertPricingCostContext, type CostBatchContext } from './pricing-cost-publication-guard';
 import type {
     PricingPublishInput,
@@ -63,6 +69,8 @@ import type {
     PricingPublishJobStatus,
     PricingPublishPreview,
 } from './pricing-publish-types';
+import { buildGlobalModelPlan, type GlobalModelPublishPlan } from './global-model-pricing';
+import { globalModelBaseInputSchema, type GlobalModelBaseInput } from './global-model-pricing-types';
 
 const PREVIEW_TTL = 10 * 60_000;
 const MAX_ATTEMPTS = 6;
@@ -225,7 +233,11 @@ function publicPreview(plan: AnyPublishPlan, token: string, timestamp: number): 
             group: row.group,
             before: row.before,
             after: row.after,
-            ...(plan.version === 3 || plan.version === 4 || plan.version === 5 || plan.version === 6
+            ...(plan.version === 3 ||
+            plan.version === 4 ||
+            plan.version === 5 ||
+            plan.version === 6 ||
+            plan.version === 7
                 ? { before_details: row.before_details, after_details: row.after_details }
                 : {}),
         })),
@@ -233,17 +245,19 @@ function publicPreview(plan: AnyPublishPlan, token: string, timestamp: number): 
         ...(plan.version !== 1
             ? { batch: { count: plan.inputs.length, upstream_models: plan.upstream_models.map((model) => model.name) } }
             : {}),
-        ...(plan.version === 3 || plan.version === 4 || plan.version === 5 || plan.version === 6
+        ...(plan.version === 3 || plan.version === 4 || plan.version === 5 || plan.version === 6 || plan.version === 7
             ? {
                   publication_mode:
-                      plan.version === 6
+                      plan.version === 6 || plan.version === 7
                           ? ('group' as const)
                           : plan.version !== 3
                             ? ('uniform_token' as const)
                             : ('tiered_token' as const),
                   unchanged: plan.unchanged,
                   customer_overrides: plan.customer_overrides,
-                  ...(plan.version === 6 ? { customer_request_overrides: plan.customer_request_overrides } : {}),
+                  ...(plan.version === 6 || plan.version === 7
+                      ? { customer_request_overrides: plan.customer_request_overrides }
+                      : {}),
               }
             : {}),
     };
@@ -339,6 +353,194 @@ export async function previewPricingBatch(
     const plan = await planForBatch(prisma, parsed.data, admin, context);
     const timestamp = Date.now();
     return publicPreview(plan, `${timestamp}.${signature(admin, plan, timestamp)}`, timestamp);
+}
+
+export const pricingGroupRatioInputSchema = z
+    .object({
+        group_id: z.string().uuid(),
+        target_ratio: z.number().finite().positive().max(10_000),
+    })
+    .strict();
+
+async function planForGroupRatio(
+    db: PublishDb,
+    input: z.infer<typeof pricingGroupRatioInputSchema>,
+    admin: AdminPrincipal,
+) {
+    const group = await db.channelGroup.findFirst({
+        where: { id: input.group_id, ...tenantScope(admin) },
+        select: { id: true },
+    });
+    if (!group) throw new PricingPublishError('pricing_group_not_found', '档次不存在。', 404);
+    const [state, source] = await Promise.all([readPublishState(db), readPublishSource()]);
+    const stateGroup = state.groups.find((candidate) => candidate.id === input.group_id);
+    if (!stateGroup || !stateGroup.enabled)
+        throw new PricingPublishError('pricing_group_disabled', '该档次已停用，请选择启用的档次。', 409);
+    const names = source.channels
+        .filter((channel) => channel.status === 1 && channel.groups.includes(stateGroup.newapi_group))
+        .flatMap((channel) => channel.models);
+    const runtime = await getPricingRuntimeModels([...new Set(names)].sort());
+    const plan = buildGroupRatioPublishPlan(state, source, input.group_id, input.target_ratio, Date.now(), runtime, {
+        chat_fx: CHAT_FX,
+        image_fx: IMAGE_FX,
+        quota_per_usd: QUOTA_PER_USD,
+    });
+    const persisted = tieredPriceOptions(await readPersistedTieredPricingOptions());
+    if (fingerprint(persisted) !== fingerprint(plan.baseline))
+        throw new PricingPublishError('pricing_persistence_mismatch', '实际计费配置与已保存配置不一致，请先核对。');
+    assertGroupRatioRuntime(runtime, plan, false);
+    return plan;
+}
+
+export async function previewGroupRatioPricing(
+    input: z.infer<typeof pricingGroupRatioInputSchema>,
+    admin: AdminPrincipal,
+) {
+    const parsed = pricingGroupRatioInputSchema.safeParse(input);
+    if (!parsed.success) throw new PricingPublishError('pricing_group_ratio_invalid', '档次倍率参数不合法。', 400);
+    const active = await prisma.pricingPublishCoordinator.findUnique({ where: { id: 'newapi' } });
+    if (active?.active_job_id)
+        throw new PricingPublishError('pricing_publish_busy', '已有价格发布任务，请先处理该任务再预览新价格。');
+    const plan = await planForGroupRatio(prisma, parsed.data, admin);
+    const timestamp = Date.now();
+    return publicPreview(plan, `${timestamp}.${signature(admin, plan, timestamp)}`, timestamp);
+}
+
+export async function enqueueGroupRatioPricing(
+    input: z.infer<typeof pricingGroupRatioInputSchema>,
+    token: string,
+    admin: AdminPrincipal,
+) {
+    const parsed = pricingGroupRatioInputSchema.safeParse(input);
+    if (!parsed.success) throw new PricingPublishError('pricing_group_ratio_invalid', '档次倍率参数不合法。', 400);
+    const previewHash = fingerprint({
+        version: 7,
+        token,
+        actor: admin.user?.id ?? 'break-glass',
+        tenant: admin.tenant_id,
+        input: parsed.data,
+    });
+    return prisma.$transaction(
+        async (tx) => {
+            const coordinator = await lockPricingPublisher(tx);
+            await assertNoRetirementJob(tx);
+            const repeated = await tx.pricingPublishJob.findUnique({ where: { preview_hash: previewHash } });
+            if (repeated) return publicJob(repeated);
+            const { timestamp, digest } = previewTimestamp(token);
+            if (coordinator.active_job_id)
+                throw new PricingPublishError('pricing_publish_busy', '已有价格发布任务，请先完成核验或安全取消。');
+            const plan = await planForGroupRatio(tx, parsed.data, admin);
+            const expected = signature(admin, plan, timestamp);
+            if (!timingSafeEqual(Buffer.from(digest, 'hex'), Buffer.from(expected, 'hex')))
+                throw new PricingPublishError('pricing_preview_stale', '价格、渠道或目录已变化，请重新预览后确认。');
+            previewTimestamp(token);
+            const job = await tx.pricingPublishJob.create({
+                data: {
+                    tenant_id: plan.tenant_id,
+                    requested_by: admin.user?.id ?? null,
+                    model_id: plan.inputs[0].model_id,
+                    upstream_model: plan.upstream_model,
+                    preview_hash: previewHash,
+                    plan: plan as unknown as Prisma.InputJsonValue,
+                    status: 'queued',
+                    message: '已保存档次倍率发布任务，等待写入与持久化核验；目录价格尚未更新。',
+                    next_attempt_at: new Date(),
+                },
+            });
+            await tx.pricingPublishCoordinator.update({ where: { id: 'newapi' }, data: { active_job_id: job.id } });
+            return publicJob(job);
+        },
+        { isolationLevel: 'Serializable', timeout: 120_000, maxWait: 5_000 },
+    );
+}
+
+async function planForGlobalModel(
+    db: PublishDb,
+    rawInput: GlobalModelBaseInput,
+    admin: AdminPrincipal,
+): Promise<GlobalModelPublishPlan> {
+    const input = globalModelBaseInputSchema.parse(rawInput);
+    const found = await db.catalogModel.findFirst({
+        where: { id: input.model_id, ...tenantScope(admin) },
+        select: { id: true },
+    });
+    if (!found) throw new PricingPublishError('model_not_found', '模型不存在。', 404);
+    const [state, source] = await Promise.all([readPublishState(db), readPublishSource()]);
+    const plan = buildGlobalModelPlan(state, source, input, Date.now());
+    if (plan.version === 2) await persistedBaseline(source);
+    else {
+        const persisted = tieredPriceOptions(await readPersistedTieredPricingOptions());
+        if (fingerprint(persisted) !== fingerprint(plan.baseline))
+            throw new PricingPublishError('pricing_persistence_mismatch', '实际计费配置与已保存配置不一致，请先核对。');
+        await verifyTieredRuntime(plan, false);
+    }
+    return plan;
+}
+
+export async function previewGlobalModelPricing(rawInput: GlobalModelBaseInput, admin: AdminPrincipal) {
+    const parsed = globalModelBaseInputSchema.safeParse(rawInput);
+    if (!parsed.success)
+        throw new PricingPublishError(
+            'pricing_global_invalid',
+            parsed.error.issues[0]?.message ?? '官方基础价格式无效。',
+            400,
+        );
+    const active = await prisma.pricingPublishCoordinator.findUnique({ where: { id: 'newapi' } });
+    if (active?.active_job_id)
+        throw new PricingPublishError('pricing_publish_busy', '已有价格发布任务，请先处理该任务再预览新价格。');
+    const plan = await planForGlobalModel(prisma, parsed.data, admin);
+    const timestamp = Date.now();
+    return publicPreview(plan, `${timestamp}.${signature(admin, plan, timestamp)}`, timestamp);
+}
+
+export async function enqueueGlobalModelPricing(rawInput: GlobalModelBaseInput, token: string, admin: AdminPrincipal) {
+    const parsed = globalModelBaseInputSchema.safeParse(rawInput);
+    if (!parsed.success)
+        throw new PricingPublishError(
+            'pricing_global_invalid',
+            parsed.error.issues[0]?.message ?? '官方基础价格式无效。',
+            400,
+        );
+    const input = parsed.data;
+    const previewHash = fingerprint({
+        version: 'global-model-v1',
+        token,
+        actor: admin.user?.id ?? 'break-glass',
+        tenant: admin.tenant_id,
+        input,
+    });
+    return prisma.$transaction(
+        async (tx) => {
+            const coordinator = await lockPricingPublisher(tx);
+            await assertNoRetirementJob(tx);
+            const repeated = await tx.pricingPublishJob.findUnique({ where: { preview_hash: previewHash } });
+            if (repeated) return publicJob(repeated);
+            const { timestamp, digest } = previewTimestamp(token);
+            if (coordinator.active_job_id)
+                throw new PricingPublishError('pricing_publish_busy', '已有价格发布任务，请先完成核验或安全取消。');
+            const plan = await planForGlobalModel(tx, input, admin);
+            const expected = signature(admin, plan, timestamp);
+            if (!timingSafeEqual(Buffer.from(digest, 'hex'), Buffer.from(expected, 'hex')))
+                throw new PricingPublishError('pricing_preview_stale', '模型、档次或官方基础价已变化，请重新预览。');
+            previewTimestamp(token);
+            const job = await tx.pricingPublishJob.create({
+                data: {
+                    tenant_id: plan.tenant_id,
+                    requested_by: admin.user?.id ?? null,
+                    model_id: input.model_id,
+                    upstream_model: plan.upstream_model,
+                    preview_hash: previewHash,
+                    plan: plan as unknown as Prisma.InputJsonValue,
+                    status: 'queued',
+                    message: '已保存模型级官方基础价，等待写入 new-api 并核验所有关联档次。',
+                    next_attempt_at: new Date(),
+                },
+            });
+            await tx.pricingPublishCoordinator.update({ where: { id: 'newapi' }, data: { active_job_id: job.id } });
+            return publicJob(job);
+        },
+        { isolationLevel: 'Serializable', timeout: 120_000, maxWait: 5_000 },
+    );
 }
 
 /** All inputs share one durable intent, coordinator, source snapshot and confirmation. */
@@ -498,6 +700,47 @@ function storedBatchValid(plan: PublishBatchPlan, job: StoredJob): boolean {
 
 function storedPlan(job: StoredJob): AnyPublishPlan {
     const plan = job.plan as unknown as AnyPublishPlan;
+    if (plan?.version === 2) {
+        const markedGlobal = plan.global_model === true;
+        if (
+            (markedGlobal &&
+                (!globalModelBaseInputSchema.safeParse(plan.global_input).success ||
+                    plan.global_input?.model_id !== job.model_id ||
+                    !Array.isArray(plan.inputs) ||
+                    plan.inputs.some((input) => input.model_id !== job.model_id) ||
+                    plan.cost_context !== undefined)) ||
+            (!markedGlobal && (plan.global_model !== undefined || plan.global_input !== undefined))
+        )
+            throw new PricingPublishError('pricing_plan_invalid', '模型级官方基础价发布记录不完整，已停止发布。');
+    }
+    if (plan?.version === 7) {
+        const ratio = plan.target?.GroupRatio?.[plan.group?.newapi_group ?? ''];
+        if (
+            plan.strategy !== 'group_ratio' ||
+            !pricingPublishBatchInputSchema.safeParse(plan.inputs).success ||
+            plan.inputs[0].model_id !== job.model_id ||
+            plan.upstream_model !== job.upstream_model ||
+            !plan.group ||
+            typeof plan.group.key !== 'string' ||
+            typeof plan.group.newapi_group !== 'string' ||
+            typeof plan.group.target_ratio !== 'number' ||
+            ratio !== plan.group.target_ratio ||
+            !Number.isFinite(ratio) ||
+            ratio <= 0 ||
+            !plan.runtime_baseline ||
+            !Array.isArray(plan.rows) ||
+            !plan.rows.length ||
+            !plan.target ||
+            Object.keys(plan.target).length !== 1 ||
+            !plan.target.GroupRatio ||
+            Object.keys(plan.target.GroupRatio).length !== 1 ||
+            fingerprint(plan.units) !==
+                fingerprint({ chat_fx: CHAT_FX, image_fx: IMAGE_FX, quota_per_usd: QUOTA_PER_USD })
+        )
+            throw new PricingPublishError('pricing_plan_invalid', '档次倍率发布记录不完整，已停止发布。');
+        tieredPriceOptions(plan.baseline);
+        return plan;
+    }
     if (plan?.version === 6) {
         if (
             plan.strategy !== 'group' ||
@@ -516,13 +759,18 @@ function storedPlan(job: StoredJob): AnyPublishPlan {
         return plan;
     }
     if (plan?.version === 3 || plan?.version === 4 || plan?.version === 5) {
+        const globalModel = plan.version === 5 && plan.global_model === true;
         if (
             (plan.version !== 3 && plan.strategy !== 'uniform_token') ||
             !pricingPublishBatchInputSchema.safeParse(plan.inputs).success ||
             plan.inputs.length !== 1 ||
             plan.inputs[0].model_id !== job.model_id ||
             plan.upstream_model !== job.upstream_model ||
-            !plan.cost_context ||
+            (!globalModel && !plan.cost_context) ||
+            (globalModel &&
+                (!plan.global_input ||
+                    !globalModelBaseInputSchema.safeParse(plan.global_input).success ||
+                    plan.global_input.model_id !== job.model_id)) ||
             !plan.target ||
             Object.keys(plan.target).length !== 1 ||
             !plan.target[EXPRESSION_KEY] ||
@@ -581,21 +829,29 @@ async function checkedRemote(plan: AnyPublishPlan): Promise<{
     // silently downgrade to a best-effort publication.
     const [source, rawPersisted] = await Promise.all([
         readPublishSource(),
-        plan.version === 3 || plan.version === 4 || plan.version === 5 || plan.version === 6
+        plan.version === 3 || plan.version === 4 || plan.version === 5 || plan.version === 6 || plan.version === 7
             ? readPersistedTieredPricingOptions()
             : readPersistedPricingOptions(),
     ]);
     const guardSource =
-        plan.version === 6
+        plan.version === 6 || plan.version === 7
             ? { ...source, options: { ...source.options, GroupRatio: plan.baseline.GroupRatio } }
             : source;
-    if ((plan.version === 6 ? groupSourceGuard(guardSource) : sourceGuard(guardSource)) !== plan.source_guard)
+    if (
+        (plan.version === 6 || plan.version === 7 ? groupSourceGuard(guardSource) : sourceGuard(guardSource)) !==
+        plan.source_guard
+    )
         throw new PricingPublishError('pricing_source_changed', 'new-api 渠道、分组或计费规则已变化，已停止自动发布。');
-    if (plan.version === 6) {
+    if (plan.version === 6 || plan.version === 7) {
         const live = tieredPriceOptions(source.options),
             persisted = tieredPriceOptions(rawPersisted);
-        assertRecoverableGroupOptions(live, plan);
-        assertRecoverableGroupOptions(persisted, plan);
+        if (plan.version === 7) {
+            assertRecoverableGroupRatioOptions(live, plan);
+            assertRecoverableGroupRatioOptions(persisted, plan);
+        } else {
+            assertRecoverableGroupOptions(live, plan);
+            assertRecoverableGroupOptions(persisted, plan);
+        }
         return { source, live, persisted };
     }
     if (plan.version === 3 || plan.version === 4 || plan.version === 5) {
@@ -613,12 +869,13 @@ async function checkedRemote(plan: AnyPublishPlan): Promise<{
 }
 
 async function verifyTieredRuntime(
-    plan: TieredPublishPlan | UniformPublishPlan | CacheUniformPublishPlan | GroupPublishPlan,
+    plan: TieredPublishPlan | UniformPublishPlan | CacheUniformPublishPlan | GroupPublishPlan | GroupRatioPublishPlan,
     target: boolean,
 ) {
-    if (plan.version === 6) {
+    if (plan.version === 6 || plan.version === 7) {
         const runtime = await getPricingRuntimeModels(plan.upstream_models.map((model) => model.name));
-        assertGroupRuntime(runtime, plan, target);
+        if (plan.version === 7) assertGroupRatioRuntime(runtime, plan, target);
+        else assertGroupRuntime(runtime, plan, target);
         return;
     }
     const runtime = await getPricingRuntimeModels([plan.upstream_model]);
@@ -698,7 +955,14 @@ export async function runPricingPublisherOnce(): Promise<PricingPublishJob | nul
                             'pricing_catalog_changed',
                             '目录或成本已变化，已停止自动发布，请核对本次影响范围。',
                         );
-                    if (plan.version === 3 || plan.version === 4 || plan.version === 5 || plan.version === 6) {
+                    if (
+                        (plan.version === 2 && plan.global_model === true) ||
+                        plan.version === 3 ||
+                        plan.version === 4 ||
+                        plan.version === 5 ||
+                        plan.version === 6 ||
+                        plan.version === 7
+                    ) {
                         const remote = await checkedRemote(plan);
                         const originalSource = {
                             ...remote.source,
@@ -711,16 +975,30 @@ export async function runPricingPublisherOnce(): Promise<PricingPublishJob | nul
                                   ? buildUniformPublishPlan
                                   : buildTieredPublishPlan;
                         const rebuilt =
-                            plan.version === 6
-                                ? buildGroupPublishPlan(
-                                      state,
-                                      originalSource,
-                                      plan.inputs,
-                                      Date.now(),
-                                      plan.cost_context,
-                                      plan.runtime_baseline,
-                                  )
-                                : rebuild(state, originalSource, plan.inputs, Date.now(), plan.cost_context);
+                            plan.version === 2
+                                ? buildGlobalModelPlan(state, originalSource, plan.global_input!, Date.now())
+                                : plan.version === 6
+                                  ? buildGroupPublishPlan(
+                                        state,
+                                        originalSource,
+                                        plan.inputs,
+                                        Date.now(),
+                                        plan.cost_context,
+                                        plan.runtime_baseline,
+                                    )
+                                  : plan.version === 7
+                                    ? buildGroupRatioPublishPlan(
+                                          state,
+                                          originalSource,
+                                          plan.group.id,
+                                          plan.group.target_ratio,
+                                          Date.now(),
+                                          plan.runtime_baseline,
+                                          plan.units,
+                                      )
+                                    : plan.version === 5 && plan.global_model
+                                      ? buildGlobalModelPlan(state, originalSource, plan.global_input!, Date.now())
+                                      : rebuild(state, originalSource, plan.inputs, Date.now(), plan.cost_context);
                         if (fingerprint(rebuilt) !== fingerprint(plan))
                             throw new PricingPublishError(
                                 'pricing_plan_invalid',
@@ -729,8 +1007,9 @@ export async function runPricingPublisherOnce(): Promise<PricingPublishJob | nul
                     }
                     const targets = targetDictionaries(plan);
                     for (const key of Object.keys(targets) as PublicationWriteKey[]) {
-                        if (plan.version !== 1 && plan.cost_context)
-                            await assertPricingCostContext(tx, plan.inputs, plan.cost_context);
+                        const costContext = 'cost_context' in plan ? plan.cost_context : undefined;
+                        if (plan.version !== 1 && costContext)
+                            await assertPricingCostContext(tx, plan.inputs, costContext);
                         const remote = await checkedRemote(plan);
                         if (
                             Object.entries(targets[key]!).every(
@@ -757,6 +1036,11 @@ export async function runPricingPublisherOnce(): Promise<PricingPublishJob | nul
                                         '模型缓存倍率已变化，请重新核对整组价格。',
                                     );
                             }
+                        } else if (plan.version === 7) {
+                            const runtime = await getPricingRuntimeModels(
+                                plan.upstream_models.map((model) => model.name),
+                            );
+                            assertGroupRatioRuntime(runtime, plan, false);
                         }
                         const next = { ...remote.live[key], ...targets[key] };
                         // A transaction may have expired while network reads were slow.
@@ -766,8 +1050,8 @@ export async function runPricingPublisherOnce(): Promise<PricingPublishJob | nul
                             where: { id: 'newapi', active_job_id: job.id },
                             data: { revision: { increment: 1 } },
                         });
-                        if (plan.version !== 1 && plan.cost_context)
-                            await assertPricingCostContext(tx, plan.inputs, plan.cost_context);
+                        if (plan.version !== 1 && costContext)
+                            await assertPricingCostContext(tx, plan.inputs, costContext);
                         if (Date.now() > writeDeadline) throw new Error('Publication write deadline exceeded');
                         const writeId = await beginPricingWrite(job.id, key, fingerprint(next));
                         await tx.pricingPublishCoordinator.update({
@@ -793,10 +1077,17 @@ export async function runPricingPublisherOnce(): Promise<PricingPublishJob | nul
                         throw new Error('Publication not yet verified');
                     }
                     assertEffectiveCompletion(verified.source, plan);
-                    if (plan.version === 3 || plan.version === 4 || plan.version === 5 || plan.version === 6)
+                    if (
+                        plan.version === 3 ||
+                        plan.version === 4 ||
+                        plan.version === 5 ||
+                        plan.version === 6 ||
+                        plan.version === 7
+                    )
                         await verifyTieredRuntime(plan, true);
-                    if (plan.version !== 1 && plan.cost_context)
-                        await assertPricingCostContext(tx, plan.inputs, plan.cost_context);
+                    const finalCostContext = 'cost_context' in plan ? plan.cost_context : undefined;
+                    if (plan.version !== 1 && finalCostContext)
+                        await assertPricingCostContext(tx, plan.inputs, finalCostContext);
                 } catch (error) {
                     // Database errors must roll back *all* catalog rows and the status.
                     // Retrying the durable intent is safe even if upstream already changed.
@@ -825,7 +1116,11 @@ export async function runPricingPublisherOnce(): Promise<PricingPublishJob | nul
                             model_id: row.model_id,
                             tier: row.tier,
                             ...row.after,
-                            ...(plan.version === 3 || plan.version === 4 || plan.version === 5 || plan.version === 6
+                            ...(plan.version === 3 ||
+                            plan.version === 4 ||
+                            plan.version === 5 ||
+                            plan.version === 6 ||
+                            plan.version === 7
                                 ? row.after_details
                                     ? { billing_details: row.after_details as unknown as Prisma.InputJsonValue }
                                     : {}
@@ -844,8 +1139,12 @@ export async function runPricingPublisherOnce(): Promise<PricingPublishJob | nul
                         applied_at: now,
                         next_attempt_at: null,
                         message:
-                            plan.version === 3 || plan.version === 4 || plan.version === 5 || plan.version === 6
-                                ? plan.version === 6
+                            plan.version === 3 ||
+                            plan.version === 4 ||
+                            plan.version === 5 ||
+                            plan.version === 6 ||
+                            plan.version === 7
+                                ? plan.version === 6 || plan.version === 7
                                     ? '已生效：所选档次全部模型的实际计费与目录价格已核验，其他分组价格未改动。'
                                     : plan.version !== 3
                                       ? '已生效：客户统一单价、缓存价格与 new-api 实际计费已核验一致，价格不随上下文长度变化。'
@@ -857,7 +1156,11 @@ export async function runPricingPublisherOnce(): Promise<PricingPublishJob | nul
                     where: { id: 'newapi' },
                     data: {
                         active_job_id: null,
-                        ...(plan.version === 3 || plan.version === 4 || plan.version === 5 || plan.version === 6
+                        ...(plan.version === 3 ||
+                        plan.version === 4 ||
+                        plan.version === 5 ||
+                        plan.version === 6 ||
+                        plan.version === 7
                             ? { revision: { increment: 1 } }
                             : {}),
                     },
@@ -930,20 +1233,26 @@ export async function changePricingJob(id: string, action: 'retry' | 'cancel', a
             // trap an untouched intent forever behind the publication lock.
             const [source, persisted] = await Promise.all([
                 readPublishSource(),
-                plan.version === 3 || plan.version === 4 || plan.version === 5 || plan.version === 6
+                plan.version === 3 ||
+                plan.version === 4 ||
+                plan.version === 5 ||
+                plan.version === 6 ||
+                plan.version === 7
                     ? readPersistedTieredPricingOptions()
                     : readPersistedPricingOptions(),
             ]);
             const live: Record<string, Record<string, unknown>> = plan.version === 3 ||
             plan.version === 4 ||
             plan.version === 5 ||
-            plan.version === 6
+            plan.version === 6 ||
+            plan.version === 7
                 ? tieredPriceOptions(source.options)
                 : priceOptions(source.options);
             const saved: Record<string, Record<string, unknown>> = plan.version === 3 ||
             plan.version === 4 ||
             plan.version === 5 ||
-            plan.version === 6
+            plan.version === 6 ||
+            plan.version === 7
                 ? tieredPriceOptions(persisted)
                 : priceOptions(persisted);
             if (plan.version === 2) {

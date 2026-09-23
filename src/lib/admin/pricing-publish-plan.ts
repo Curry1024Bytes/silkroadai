@@ -11,7 +11,9 @@ import { PricingPublishError } from './pricing-publish-lock';
 import type { CostBatchContext } from './pricing-cost-publication-guard';
 import type { UniformPublishPlan, CacheUniformPublishPlan } from './pricing-uniform-plan';
 import type { GroupPublishPlan } from './pricing-group-plan';
+import type { GroupRatioPublishPlan } from './pricing-group-ratio-plan';
 import type { TieredPublishPlan } from './pricing-tiered-plan';
+import type { GlobalModelBaseInput } from './global-model-pricing-types';
 
 export const PRICE_KEYS = ['ModelRatio', 'CompletionRatio', 'ModelPrice', 'GroupRatio'] as const;
 export type PriceKey = (typeof PRICE_KEYS)[number];
@@ -75,6 +77,9 @@ export interface PublishBatchPlan extends Omit<PublishPlan, 'version' | 'input' 
     upstream_models: Array<{ name: string; basis: 'token' | 'request' }>;
     target: Partial<Record<WritePriceKey, Record<string, number>>>;
     cost_context?: CostBatchContext;
+    /** Signed marker for the model-global official base-price workflow. */
+    global_model?: boolean;
+    global_input?: GlobalModelBaseInput;
 }
 export type AnyPublishPlan =
     | PublishPlan
@@ -82,7 +87,8 @@ export type AnyPublishPlan =
     | TieredPublishPlan
     | UniformPublishPlan
     | CacheUniformPublishPlan
-    | GroupPublishPlan;
+    | GroupPublishPlan
+    | GroupRatioPublishPlan;
 export type PublicationWriteKey = WritePriceKey | 'billing_setting.billing_expr' | 'GroupRatio';
 
 /** Normalize legacy intent without changing the persisted v1 contract or signature. */
@@ -186,7 +192,8 @@ function completionInfo(source: PublishSource, model: string) {
 }
 
 export function assertEffectiveCompletion(source: PublishSource, plan: AnyPublishPlan) {
-    if (plan.version === 3 || plan.version === 4 || plan.version === 5 || plan.version === 6) return; // The runtime expression is verified separately.
+    if (plan.version === 3 || plan.version === 4 || plan.version === 5 || plan.version === 6 || plan.version === 7)
+        return; // The runtime expression/group ratio is verified separately.
     if (plan.version === 2) {
         for (const model of plan.upstream_models) {
             if (
@@ -217,6 +224,7 @@ export function buildPublishPlan(
     source: PublishSource,
     input: PricingPublishInput,
     now: number,
+    targetOverride?: PublishPlan['target'],
 ): PublishPlan {
     if (
         input.cache_read_cny_per_1m !== undefined ||
@@ -299,14 +307,27 @@ export function buildPublishPlan(
     }
     let target: PublishPlan['target'];
     if (basis === 'request') {
-        target = { ModelPrice: Number((input.per_image_cny! / (IMAGE_FX * ratio)).toFixed(6)) };
+        target = targetOverride ?? { ModelPrice: Number((input.per_image_cny! / (IMAGE_FX * ratio)).toFixed(6)) };
+        if (typeof target.ModelPrice !== 'number' || !Number.isFinite(target.ModelPrice) || target.ModelPrice < 0)
+            throw new PricingPublishError('pricing_precision', '按次基础价无效。');
         if (input.per_image_cny! > 0 && target.ModelPrice === 0)
             throw new PricingPublishError('pricing_precision', '价格太小，换算后会变为免费，请调整。');
     } else {
-        const computed = computeRatios(input.input_cny_per_1m!, input.output_cny_per_1m!, ratio);
-        if (computed.model_ratio <= 0)
+        const computed = targetOverride
+            ? { model_ratio: targetOverride.ModelRatio, completion_ratio: targetOverride.CompletionRatio }
+            : computeRatios(input.input_cny_per_1m!, input.output_cny_per_1m!, ratio);
+        if (
+            typeof computed.model_ratio !== 'number' ||
+            !Number.isFinite(computed.model_ratio) ||
+            computed.model_ratio <= 0
+        )
             throw new PricingPublishError('pricing_precision', '输入价格必须大于零，且换算后不能变为免费。');
-        if (input.output_cny_per_1m! > 0 && computed.completion_ratio <= 0)
+        if (
+            typeof computed.completion_ratio !== 'number' ||
+            !Number.isFinite(computed.completion_ratio) ||
+            computed.completion_ratio < 0 ||
+            (input.output_cny_per_1m! > 0 && computed.completion_ratio === 0)
+        )
             throw new PricingPublishError('pricing_precision', '输出价格太小，换算后会变为免费，请调整。');
         const info = completionInfo(source, name);
         if (info.locked && info.ratio !== computed.completion_ratio) {

@@ -39,7 +39,9 @@ vi.mock('@/lib/admin/pricing-cost-publication-guard', () => ({ assertPricingCost
 import {
     previewPricingPublish,
     previewPricingBatch,
+    previewGlobalModelPricing,
     enqueuePricingBatch,
+    enqueueGlobalModelPricing,
     enqueuePricingPublish,
     runPricingPublisherOnce,
     changePricingJob,
@@ -57,6 +59,7 @@ import { CHAT_FX, IMAGE_FX } from '@/lib/newapi/pricing-sync';
 import { QUOTA_PER_USD } from '@/lib/newapi/quota-units';
 import { assertPricingCatalogWritable, PricingPublishError } from '@/lib/admin/pricing-publish-lock';
 import type { PricingPublishInput } from '@/lib/admin/pricing-publish-types';
+import type { GlobalModelBaseInput } from '@/lib/admin/global-model-pricing-types';
 
 const NOW = Date.parse('2026-09-12T04:00:00Z');
 const MODEL = '11111111-1111-4111-8111-111111111111';
@@ -384,6 +387,67 @@ beforeEach(() => {
             if (!noPersistence) disk[key] = JSON.parse(value);
         }
         if (fail) throw new Error('response lost after server persisted write');
+    });
+});
+
+describe('model-global official base publication v2', () => {
+    function globalInput(): GlobalModelBaseInput {
+        return {
+            model_id: MODEL,
+            base_input_cny_per_1m: Number((CHAT_FX * 2).toFixed(4)),
+            base_output_cny_per_1m: Number((CHAT_FX * 6).toFixed(4)),
+            base_per_image_cny: null,
+        };
+    }
+
+    async function globalJob() {
+        const value = globalInput();
+        const preview = await previewGlobalModelPricing(value, ADMIN);
+        return enqueueGlobalModelPricing(value, preview.preview_token, ADMIN);
+    }
+
+    it('publishes one shared base target and keeps tier ratios and existing costs', async () => {
+        await globalJob();
+        expect((await runPricingPublisherOnce())?.status).toBe('succeeded');
+        expect(mocks.put.mock.calls.map((call) => call[0])).toEqual(['ModelRatio', 'CompletionRatio']);
+        expect(live.GroupRatio).toEqual({ G: 1, H: 2, J: 3 });
+        expect(
+            store.prices.slice(3).map((row) => [row.tier, Number(row.input_cny_per_1m), Number(row.cost_cny_per_1m)]),
+        ).toEqual([
+            ['standard', Number((CHAT_FX * 2).toFixed(4)), 0.5],
+            ['premium', Number((CHAT_FX * 4).toFixed(4)), 0.6],
+            ['other', Number((CHAT_FX * 6).toFixed(4)), 0.8],
+        ]);
+    });
+
+    it.each(['target', 'input'] as const)(
+        'rejects a stored global %s changed after enqueue before any PUT',
+        async (field) => {
+            await globalJob();
+            const plan = store.jobs[0].plan as unknown as {
+                target: { ModelRatio: Record<string, number> };
+                global_input: GlobalModelBaseInput;
+            };
+            if (field === 'target') plan.target.ModelRatio['gpt-test'] += 1;
+            else plan.global_input.base_input_cny_per_1m! += CHAT_FX;
+            expect((await runPricingPublisherOnce())?.status).toBe('conflict');
+            expect(mocks.put).not.toHaveBeenCalled();
+            expect(store.prices).toHaveLength(3);
+        },
+    );
+
+    it('rebuilds a global intent on retry after the remote target was written but catalog insertion failed', async () => {
+        await globalJob();
+        const rowCount = (store.jobs[0].plan as unknown as { rows: unknown[] }).rows.length;
+        failPriceAt = 1;
+        expect((await runPricingPublisherOnce())?.status).toBe('retry_wait');
+        expect(mocks.put).toHaveBeenCalledTimes(2);
+        expect(store.prices).toHaveLength(3);
+        failPriceAt = -1;
+        vi.setSystemTime(NOW + 31_000);
+        expect((await runPricingPublisherOnce())?.status).toBe('succeeded');
+        expect(mocks.put).toHaveBeenCalledTimes(2);
+        expect(store.prices).toHaveLength(3 + rowCount);
     });
 });
 afterEach(() => {

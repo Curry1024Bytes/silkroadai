@@ -36,7 +36,7 @@ vi.mock('next/navigation', () => ({ useSearchParams: () => new URLSearchParams('
 import PricingPage from '@/app/admin/(console)/pricing/page';
 import PricingWorkspaceTabs from '@/components/admin/PricingWorkspaceTabs';
 import GroupPricingWorkbench from '@/components/admin/GroupPricingWorkbench';
-import CostPricingWorkbench from '@/components/admin/CostPricingWorkbench';
+import GlobalModelPricingWorkbench from '@/components/admin/GlobalModelPricingWorkbench';
 import { PricingPublishJobs } from '@/components/admin/PricingPublishJobs';
 import type { PricingPublishJob } from '@/lib/admin/pricing-publish-types';
 
@@ -57,7 +57,7 @@ function renderPage() {
         typeof PricingWorkspaceTabs
     >;
 }
-function workbench<T extends typeof GroupPricingWorkbench | typeof CostPricingWorkbench>(
+function workbench<T extends typeof GroupPricingWorkbench | typeof GlobalModelPricingWorkbench>(
     workspace: ReturnType<typeof renderPage>,
     component: T,
 ): ComponentProps<T> {
@@ -94,12 +94,12 @@ describe('admin pricing workspace navigation', () => {
             workspace = renderPage();
             expect(workspace.activeTab).toBe(tab);
             expect(workbench(workspace, GroupPricingWorkbench).onPublished).toBeDefined();
-            expect(workbench(workspace, CostPricingWorkbench).onPublished).toBeDefined();
+            expect(workbench(workspace, GlobalModelPricingWorkbench).onPublished).toBeDefined();
         }
         expect(network).not.toHaveBeenCalled();
     });
 
-    it.each([GroupPricingWorkbench, CostPricingWorkbench])(
+    it.each([GroupPricingWorkbench, GlobalModelPricingWorkbench])(
         'shows the submitted job immediately and focuses its tab',
         (component) => {
             const job = { id: 'job-new', status: 'queued', upstream_model: 'model-a' } as PricingPublishJob;
@@ -127,10 +127,12 @@ describe('admin pricing workspace navigation', () => {
 
     it('clears a previous uncertainty warning when a later submission returns a durable job', () => {
         let workspace = renderPage();
-        workbench(workspace, CostPricingWorkbench).onUncertain();
+        workbench(workspace, GlobalModelPricingWorkbench).onUncertain();
         workspace = renderPage();
         expect(jobs(workspace).error).toContain('提交结果尚未确认');
-        workbench(workspace, CostPricingWorkbench).onPublished({ id: 'verified-submission' } as PricingPublishJob);
+        workbench(workspace, GlobalModelPricingWorkbench).onPublished({
+            id: 'verified-submission',
+        } as PricingPublishJob);
         expect(jobs(renderPage()).error).toBe('');
     });
 });

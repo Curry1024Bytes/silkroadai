@@ -13,6 +13,7 @@ import {
     type TieredPublishPlan,
 } from './pricing-tiered-plan';
 import { uniformTokenPricingExpression } from './pricing-tiered-expression';
+import type { GlobalModelBaseInput } from './global-model-pricing-types';
 
 /** V3 keeps its historical preserve-tier semantics. V4 is a separate signed
  * intent so queued legacy jobs can never silently become uniform tariffs. */
@@ -130,6 +131,9 @@ export function buildUniformPublishPlan(
 /** V5 adds independently quoted cache-write categories; V4 recovery remains unchanged. */
 export interface CacheUniformPublishPlan extends Omit<UniformPublishPlan, 'version'> {
     version: 5;
+    /** Signed marker for the model-global official base-price workflow. */
+    global_model?: boolean;
+    global_input?: GlobalModelBaseInput;
 }
 
 export function buildCacheUniformPublishPlan(
@@ -138,6 +142,7 @@ export function buildCacheUniformPublishPlan(
     inputs: PricingPublishInput[],
     now: number,
     context?: CostBatchContext,
+    globalBase?: GlobalModelBaseInput,
 ): CacheUniformPublishPlan {
     if (inputs.length !== 1)
         throw new PricingPublishError(
@@ -191,26 +196,37 @@ export function buildCacheUniformPublishPlan(
     }
     const selected = checked.rows.find((row) => row.model_id === input.model_id && row.tier === input.tier)!;
     const ratio = Number(checked.baseline.GroupRatio[selected.group]);
-    const expression = uniformTokenPricingExpression(
-        {
-            input: input.input_cny_per_1m,
-            output: input.output_cny_per_1m,
-            cache_read: input.cache_read_cny_per_1m ?? null,
-            cache_write: input.cache_write_cny_per_1m ?? null,
-            cache_write_1h: input.cache_write_1h_cny_per_1m ?? null,
-        },
-        ratio,
-        IMAGE_FX,
-    );
-    const actual = tieredDetails(expression, ratio).tiers[0].rates;
+    const desired = globalBase
+        ? {
+              input: globalBase.base_input_cny_per_1m!,
+              output: globalBase.base_output_cny_per_1m!,
+              cache_read: globalBase.base_cache_read_cny_per_1m ?? null,
+              cache_write: globalBase.base_cache_write_cny_per_1m ?? null,
+              cache_write_1h: globalBase.base_cache_write_1h_cny_per_1m ?? null,
+          }
+        : {
+              input: input.input_cny_per_1m,
+              output: input.output_cny_per_1m,
+              cache_read: input.cache_read_cny_per_1m ?? null,
+              cache_write: input.cache_write_cny_per_1m ?? null,
+              cache_write_1h: input.cache_write_1h_cny_per_1m ?? null,
+          };
+    const expression = uniformTokenPricingExpression(desired, globalBase ? 1 : ratio, IMAGE_FX);
+    const actual = tieredDetails(expression, globalBase ? 1 : ratio).tiers[0].rates;
     const exact = (a: number | null, b: number | null) =>
         a === null || b === null ? a === b : a === b || (b !== 0 && Math.abs(a - b) <= Math.abs(b) * 1e-10);
+    const matches = (actualRate: number | null, expected: number | null, places: number) =>
+        globalBase
+            ? actualRate === null || expected === null
+                ? actualRate === expected
+                : Number(actualRate.toFixed(places)) === expected
+            : exact(actualRate, expected);
     if (
-        !exact(actual.input, input.input_cny_per_1m) ||
-        !exact(actual.output, input.output_cny_per_1m) ||
-        !exact(actual.cache_read, input.cache_read_cny_per_1m ?? null) ||
-        !exact(actual.cache_write, input.cache_write_cny_per_1m ?? null) ||
-        !exact(actual.cache_write_1h, input.cache_write_1h_cny_per_1m ?? null)
+        !matches(actual.input, desired.input, 4) ||
+        !matches(actual.output, desired.output, 4) ||
+        !matches(actual.cache_read, desired.cache_read, 12) ||
+        !matches(actual.cache_write, desired.cache_write, 12) ||
+        !matches(actual.cache_write_1h, desired.cache_write_1h, 12)
     )
         throw new PricingPublishError('pricing_uniform_precision', '目标售价超出可核验精度，请调整后重新预览。');
 
