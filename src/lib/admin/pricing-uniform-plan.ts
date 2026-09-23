@@ -13,7 +13,7 @@ import {
     type TieredPublishPlan,
 } from './pricing-tiered-plan';
 import { uniformTokenPricingExpression } from './pricing-tiered-expression';
-import type { GlobalModelBaseInput } from './global-model-pricing-types';
+import type { GlobalModelBaseInput, OfficialPriceQuoteSnapshot } from './global-model-pricing-types';
 
 /** V3 keeps its historical preserve-tier semantics. V4 is a separate signed
  * intent so queued legacy jobs can never silently become uniform tariffs. */
@@ -134,6 +134,7 @@ export interface CacheUniformPublishPlan extends Omit<UniformPublishPlan, 'versi
     /** Signed marker for the model-global official base-price workflow. */
     global_model?: boolean;
     global_input?: GlobalModelBaseInput;
+    global_quote_snapshot?: OfficialPriceQuoteSnapshot;
 }
 
 export function buildCacheUniformPublishPlan(

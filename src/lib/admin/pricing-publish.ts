@@ -69,11 +69,17 @@ import type {
     PricingPublishJobStatus,
     PricingPublishPreview,
 } from './pricing-publish-types';
-import { buildGlobalModelPlan, type GlobalModelPublishPlan } from './global-model-pricing';
-import { globalModelBaseInputSchema, type GlobalModelBaseInput } from './global-model-pricing-types';
+import { buildGlobalModelPlan, globalModelOfficialQuote, type GlobalModelPublishPlan } from './global-model-pricing';
+import {
+    globalModelBaseInputSchema,
+    officialPriceQuoteSnapshotSchema,
+    type GlobalModelBaseInput,
+} from './global-model-pricing-types';
+import { getLiteLlmPriceCatalog } from './litellm-official-prices';
 
 const PREVIEW_TTL = 10 * 60_000;
 const MAX_ATTEMPTS = 6;
+const globalModelQuotePreviewInputSchema = z.object({ model_id: z.string().uuid() }).strict();
 const amount = z
     .number()
     .finite()
@@ -244,6 +250,9 @@ function publicPreview(plan: AnyPublishPlan, token: string, timestamp: number): 
         warnings: plan.warnings,
         ...(plan.version !== 1
             ? { batch: { count: plan.inputs.length, upstream_models: plan.upstream_models.map((model) => model.name) } }
+            : {}),
+        ...('global_quote_snapshot' in plan && plan.global_quote_snapshot
+            ? { global_quote_snapshot: plan.global_quote_snapshot }
             : {}),
         ...(plan.version === 3 || plan.version === 4 || plan.version === 5 || plan.version === 6 || plan.version === 7
             ? {
@@ -456,16 +465,35 @@ export async function enqueueGroupRatioPricing(
 
 async function planForGlobalModel(
     db: PublishDb,
-    rawInput: GlobalModelBaseInput,
+    request:
+        { mode: 'query_official_quote'; model_id: string } | { mode: 'use_preview_quote'; input: GlobalModelBaseInput },
     admin: AdminPrincipal,
 ): Promise<GlobalModelPublishPlan> {
-    const input = globalModelBaseInputSchema.parse(rawInput);
+    const modelId = request.mode === 'query_official_quote' ? request.model_id : request.input.model_id;
     const found = await db.catalogModel.findFirst({
-        where: { id: input.model_id, ...tenantScope(admin) },
+        where: { id: modelId, ...tenantScope(admin) },
         select: { id: true },
     });
     if (!found) throw new PricingPublishError('model_not_found', '模型不存在。', 404);
     const [state, source] = await Promise.all([readPublishState(db), readPublishSource()]);
+    let input: GlobalModelBaseInput;
+    if (request.mode === 'query_official_quote') {
+        let catalog;
+        try {
+            catalog = await getLiteLlmPriceCatalog();
+        } catch {
+            throw new PricingPublishError(
+                'pricing_global_quote_unavailable',
+                '暂时无法查询 LiteLLM 官方价格，请稍后重试。',
+                503,
+            );
+        }
+        input = globalModelOfficialQuote(state, source, modelId, catalog);
+    } else {
+        input = globalModelBaseInputSchema.parse(request.input);
+        if (!input.official_quote)
+            throw new PricingPublishError('pricing_global_quote_required', '请重新预览并使用查询到的官方报价。', 400);
+    }
     const plan = buildGlobalModelPlan(state, source, input, Date.now());
     if (plan.version === 2) await persistedBaseline(source);
     else {
@@ -477,18 +505,22 @@ async function planForGlobalModel(
     return plan;
 }
 
-export async function previewGlobalModelPricing(rawInput: GlobalModelBaseInput, admin: AdminPrincipal) {
-    const parsed = globalModelBaseInputSchema.safeParse(rawInput);
+export async function previewGlobalModelPricing(rawInput: { model_id: string }, admin: AdminPrincipal) {
+    const parsed = globalModelQuotePreviewInputSchema.safeParse(rawInput);
     if (!parsed.success)
         throw new PricingPublishError(
             'pricing_global_invalid',
-            parsed.error.issues[0]?.message ?? '官方基础价格式无效。',
+            parsed.error.issues[0]?.message ?? '模型 ID 无效。',
             400,
         );
     const active = await prisma.pricingPublishCoordinator.findUnique({ where: { id: 'newapi' } });
     if (active?.active_job_id)
         throw new PricingPublishError('pricing_publish_busy', '已有价格发布任务，请先处理该任务再预览新价格。');
-    const plan = await planForGlobalModel(prisma, parsed.data, admin);
+    const plan = await planForGlobalModel(
+        prisma,
+        { mode: 'query_official_quote', model_id: parsed.data.model_id },
+        admin,
+    );
     const timestamp = Date.now();
     return publicPreview(plan, `${timestamp}.${signature(admin, plan, timestamp)}`, timestamp);
 }
@@ -502,6 +534,8 @@ export async function enqueueGlobalModelPricing(rawInput: GlobalModelBaseInput, 
             400,
         );
     const input = parsed.data;
+    if (!input.official_quote)
+        throw new PricingPublishError('pricing_global_quote_required', '请重新预览并使用查询到的官方报价。', 400);
     const previewHash = fingerprint({
         version: 'global-model-v1',
         token,
@@ -518,7 +552,7 @@ export async function enqueueGlobalModelPricing(rawInput: GlobalModelBaseInput, 
             const { timestamp, digest } = previewTimestamp(token);
             if (coordinator.active_job_id)
                 throw new PricingPublishError('pricing_publish_busy', '已有价格发布任务，请先完成核验或安全取消。');
-            const plan = await planForGlobalModel(tx, input, admin);
+            const plan = await planForGlobalModel(tx, { mode: 'use_preview_quote', input }, admin);
             const expected = signature(admin, plan, timestamp);
             if (!timingSafeEqual(Buffer.from(digest, 'hex'), Buffer.from(expected, 'hex')))
                 throw new PricingPublishError('pricing_preview_stale', '模型、档次或官方基础价已变化，请重新预览。');
@@ -708,8 +742,12 @@ function storedPlan(job: StoredJob): AnyPublishPlan {
                     plan.global_input?.model_id !== job.model_id ||
                     !Array.isArray(plan.inputs) ||
                     plan.inputs.some((input) => input.model_id !== job.model_id) ||
-                    plan.cost_context !== undefined)) ||
-            (!markedGlobal && (plan.global_model !== undefined || plan.global_input !== undefined))
+                    plan.cost_context !== undefined ||
+                    !validGlobalQuoteSnapshot(plan.global_input, plan.global_quote_snapshot, plan.upstream_model))) ||
+            (!markedGlobal &&
+                (plan.global_model !== undefined ||
+                    plan.global_input !== undefined ||
+                    plan.global_quote_snapshot !== undefined))
         )
             throw new PricingPublishError('pricing_plan_invalid', '模型级官方基础价发布记录不完整，已停止发布。');
     }
@@ -770,7 +808,13 @@ function storedPlan(job: StoredJob): AnyPublishPlan {
             (globalModel &&
                 (!plan.global_input ||
                     !globalModelBaseInputSchema.safeParse(plan.global_input).success ||
-                    plan.global_input.model_id !== job.model_id)) ||
+                    plan.global_input.model_id !== job.model_id ||
+                    !validGlobalQuoteSnapshot(plan.global_input, plan.global_quote_snapshot, plan.upstream_model))) ||
+            (plan.version === 5 &&
+                !globalModel &&
+                (plan.global_input !== undefined ||
+                    plan.global_quote_snapshot !== undefined ||
+                    plan.global_model !== undefined)) ||
             !plan.target ||
             Object.keys(plan.target).length !== 1 ||
             !plan.target[EXPRESSION_KEY] ||
@@ -818,6 +862,27 @@ function storedPlan(job: StoredJob): AnyPublishPlan {
         throw new PricingPublishError('pricing_units_changed', '金额换算配置已变化，已停止自动发布。');
     }
     return plan;
+}
+
+function validGlobalQuoteSnapshot(
+    input: GlobalModelBaseInput | undefined,
+    rawSnapshot: unknown,
+    upstreamModel: string,
+): boolean {
+    if (!input) return false;
+    if (rawSnapshot === undefined) return input.official_quote === undefined;
+    const snapshot = officialPriceQuoteSnapshotSchema.safeParse(rawSnapshot);
+    return Boolean(
+        snapshot.success &&
+        input.official_quote &&
+        snapshot.data.upstream_model === upstreamModel &&
+        fingerprint(snapshot.data) === fingerprint(input.official_quote),
+    );
+}
+
+function globalInputForRebuild(input: GlobalModelBaseInput, rawSnapshot: unknown): GlobalModelBaseInput {
+    if (rawSnapshot === undefined) return input;
+    return { ...input, official_quote: officialPriceQuoteSnapshotSchema.parse(rawSnapshot) };
 }
 
 async function checkedRemote(plan: AnyPublishPlan): Promise<{
@@ -976,7 +1041,12 @@ export async function runPricingPublisherOnce(): Promise<PricingPublishJob | nul
                                   : buildTieredPublishPlan;
                         const rebuilt =
                             plan.version === 2
-                                ? buildGlobalModelPlan(state, originalSource, plan.global_input!, Date.now())
+                                ? buildGlobalModelPlan(
+                                      state,
+                                      originalSource,
+                                      globalInputForRebuild(plan.global_input!, plan.global_quote_snapshot),
+                                      Date.now(),
+                                  )
                                 : plan.version === 6
                                   ? buildGroupPublishPlan(
                                         state,
@@ -997,7 +1067,12 @@ export async function runPricingPublisherOnce(): Promise<PricingPublishJob | nul
                                           plan.units,
                                       )
                                     : plan.version === 5 && plan.global_model
-                                      ? buildGlobalModelPlan(state, originalSource, plan.global_input!, Date.now())
+                                      ? buildGlobalModelPlan(
+                                            state,
+                                            originalSource,
+                                            globalInputForRebuild(plan.global_input!, plan.global_quote_snapshot),
+                                            Date.now(),
+                                        )
                                       : rebuild(state, originalSource, plan.inputs, Date.now(), plan.cost_context);
                         if (fingerprint(rebuilt) !== fingerprint(plan))
                             throw new PricingPublishError(

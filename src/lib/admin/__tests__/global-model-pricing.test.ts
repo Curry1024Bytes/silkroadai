@@ -9,7 +9,7 @@ vi.mock('@/lib/newapi/quota-units', async (importOriginal) => ({
     quotaToCny: (quota: number) => quota / 500_000,
 }));
 
-import { buildGlobalModelPlan, globalModelPriceInfo } from '../global-model-pricing';
+import { buildGlobalModelPlan, globalModelOfficialQuote, globalModelPriceInfo } from '../global-model-pricing';
 import type { GlobalModelBaseInput } from '../global-model-pricing-types';
 import type { PublishSource, PublishState } from '../pricing-publish-plan';
 import {
@@ -19,6 +19,7 @@ import {
 } from '../pricing-group-ratio-plan';
 import { EXPRESSION_KEY, tieredPriceOptions } from '../pricing-tiered-plan';
 import type { NewApiRuntimePricing } from '@/lib/newapi/client';
+import type { OfficialPriceCatalog } from '../litellm-official-prices';
 
 const NOW = Date.parse('2026-09-16T12:00:00Z');
 const DATE = new Date(NOW - 60_000).toISOString();
@@ -97,6 +98,110 @@ function fixture() {
 }
 
 describe('model-global official base pricing', () => {
+    function catalog(
+        models: OfficialPriceCatalog['models'] = [
+            {
+                model: 'gpt-5.5',
+                provider: 'openai',
+                inputUsdPer1m: 1.25,
+                outputUsdPer1m: 10,
+                cacheReadUsdPer1m: 0.125,
+                cacheWrite5mUsdPer1m: 1.5,
+                cacheWrite1hUsdPer1m: 3,
+            },
+        ],
+    ): OfficialPriceCatalog {
+        return {
+            source: 'litellm-cdn',
+            sourceLabel: 'LiteLLM CDN',
+            fetchedAt: '2026-09-24T00:00:00.000Z',
+            models,
+        };
+    }
+
+    it('matches the mapped upstream name exactly and converts the quote with the explicit real FX rate', () => {
+        const { state, source } = fixture();
+
+        const input = globalModelOfficialQuote(state, source, MODEL, catalog(), 7.2);
+
+        expect(input.official_quote).toMatchObject({
+            upstream_model: 'gpt-5.5',
+            provider: 'openai',
+            source: 'litellm-cdn',
+            fetched_at: '2026-09-24T00:00:00.000Z',
+            input_usd_per_1m: 1.25,
+            output_usd_per_1m: 10,
+            input_cny_per_1m: 9,
+            output_cny_per_1m: 72,
+            cache_read_cny_per_1m: 0.9,
+            cache_write_5m_cny_per_1m: 10.8,
+            cache_write_1h_cny_per_1m: 21.6,
+            usd_to_cny_rate: 7.2,
+        });
+        expect(input.base_input_cny_per_1m).toBeNull();
+    });
+
+    it('rejects missing, duplicate, and non-exact catalog names', () => {
+        const { state, source } = fixture();
+
+        expect(() => globalModelOfficialQuote(state, source, MODEL, catalog([]), 7.2)).toThrow(/没有精确匹配/);
+        expect(() =>
+            globalModelOfficialQuote(
+                state,
+                source,
+                MODEL,
+                catalog([...catalog().models, { ...catalog().models[0], provider: 'another-provider' }]),
+                7.2,
+            ),
+        ).toThrow(/重复报价/);
+        expect(() =>
+            globalModelOfficialQuote(
+                state,
+                source,
+                MODEL,
+                catalog([{ ...catalog().models[0], model: 'provider/gpt-5.5' }]),
+                7.2,
+            ),
+        ).toThrow(/没有精确匹配/);
+    });
+
+    it('fails closed when the real FX rate is absent or invalid', () => {
+        const { state, source } = fixture();
+        const previous = process.env.REAL_USD_TO_CNY_RATE;
+        try {
+            delete process.env.REAL_USD_TO_CNY_RATE;
+            expect(() => globalModelOfficialQuote(state, source, MODEL, catalog())).toThrow(/汇率未配置或无效/);
+            process.env.REAL_USD_TO_CNY_RATE = 'not-a-rate';
+            expect(() => globalModelOfficialQuote(state, source, MODEL, catalog())).toThrow(/汇率未配置或无效/);
+        } finally {
+            if (previous === undefined) delete process.env.REAL_USD_TO_CNY_RATE;
+            else process.env.REAL_USD_TO_CNY_RATE = previous;
+        }
+    });
+
+    it('applies each unchanged GroupRatio to the converted reference price', () => {
+        const { state, source } = fixture();
+        const quoteInput = globalModelOfficialQuote(state, source, MODEL, catalog(), 7.2);
+        const plan = buildGlobalModelPlan(state, source, quoteInput, NOW);
+
+        expect(source.options.GroupRatio).toEqual({ enterprise: 0.16, partner: 0.2 });
+        expect(plan.rows.map((row) => [row.tier, row.after])).toEqual([
+            ['enterprise', { input_cny_per_1m: 1.44, output_cny_per_1m: 11.52, per_image_cny: null }],
+            ['partner', { input_cny_per_1m: 1.8, output_cny_per_1m: 14.4, per_image_cny: null }],
+        ]);
+        expect(plan.global_quote_snapshot).toEqual(quoteInput.official_quote);
+    });
+
+    it('rejects LiteLLM token quotes for image and request-priced models', () => {
+        const { state, source } = fixture();
+        state.models[0].modality = 'image';
+        expect(() => globalModelOfficialQuote(state, source, MODEL, catalog(), 7.2)).toThrow(/按次\/图片模型/);
+
+        state.models[0].modality = 'chat';
+        source.options.ModelPrice = { 'gpt-5.5': 1 };
+        expect(() => globalModelOfficialQuote(state, source, MODEL, catalog(), 7.2)).toThrow(/按次\/图片模型/);
+    });
+
     it('writes one shared token target and derives both catalog prices from their unchanged GroupRatio', () => {
         const { state, source, input } = fixture();
         const original = structuredClone(source.options);

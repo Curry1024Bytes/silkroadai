@@ -14,11 +14,18 @@ import { tieredDetails, EXPRESSION_KEY, tieredPriceOptions } from './pricing-tie
 import { PricingPublishError } from './pricing-publish-lock';
 import {
     globalModelBaseInputSchema,
+    globalModelOfficialQuoteSchema,
     type GlobalModelBaseInput,
     type GlobalModelPriceInfo,
 } from './global-model-pricing-types';
+import type { OfficialPriceCatalog } from './litellm-official-prices';
 
 export type GlobalModelPublishPlan = PublishBatchPlan | CacheUniformPublishPlan;
+
+function configuredRealUsdToCnyRate(): number {
+    const raw = process.env.REAL_USD_TO_CNY_RATE;
+    return typeof raw === 'string' && raw.trim() ? Number(raw) : Number.NaN;
+}
 
 function activeMappings(state: PublishState, modelId: string) {
     const model = state.models.find((row) => row.id === modelId);
@@ -83,13 +90,14 @@ function infoForModel(state: PublishState, source: PublishSource, modelId: strin
         };
     }
     const modelPrice = options.ModelPrice[upstream_model];
-    if (typeof modelPrice === 'number' && Number.isFinite(modelPrice)) {
+    if (model.modality === 'image' || (typeof modelPrice === 'number' && Number.isFinite(modelPrice))) {
         return {
             ...display,
             billing_mode: 'request',
             base_input_cny_per_1m: null,
             base_output_cny_per_1m: null,
-            base_per_image_cny: modelPrice * IMAGE_FX,
+            base_per_image_cny:
+                typeof modelPrice === 'number' && Number.isFinite(modelPrice) ? modelPrice * IMAGE_FX : null,
             base_cache_read_cny_per_1m: null,
             base_cache_write_cny_per_1m: null,
             base_cache_write_1h_cny_per_1m: null,
@@ -97,17 +105,80 @@ function infoForModel(state: PublishState, source: PublishSource, modelId: strin
     }
     const inputRatio = options.ModelRatio[upstream_model];
     const outputRatio = options.CompletionRatio[upstream_model];
-    if (typeof inputRatio !== 'number' || typeof outputRatio !== 'number')
-        throw new PricingPublishError('pricing_global_missing', '模型的全局基础倍率尚未配置。');
     return {
         ...display,
         billing_mode: 'standard',
-        base_input_cny_per_1m: inputRatio * CHAT_FX,
-        base_output_cny_per_1m: inputRatio * CHAT_FX * outputRatio,
+        base_input_cny_per_1m:
+            typeof inputRatio === 'number' && Number.isFinite(inputRatio) ? inputRatio * CHAT_FX : null,
+        base_output_cny_per_1m:
+            typeof inputRatio === 'number' &&
+            Number.isFinite(inputRatio) &&
+            typeof outputRatio === 'number' &&
+            Number.isFinite(outputRatio)
+                ? inputRatio * CHAT_FX * outputRatio
+                : null,
         base_per_image_cny: null,
         base_cache_read_cny_per_1m: null,
         base_cache_write_cny_per_1m: null,
         base_cache_write_1h_cny_per_1m: null,
+    };
+}
+
+/**
+ * Build a signed, immutable snapshot only for an exact upstream model name.
+ * Search candidates and provider aliases are intentionally not accepted here.
+ */
+export function globalModelOfficialQuote(
+    state: PublishState,
+    source: PublishSource,
+    modelId: string,
+    catalog: OfficialPriceCatalog,
+    usdToCnyRate = configuredRealUsdToCnyRate(),
+): GlobalModelBaseInput {
+    const { model, upstream_model } = activeMappings(state, modelId);
+    const options = priceOptions(source.options);
+    if (model.modality === 'image' || Object.hasOwn(options.ModelPrice, upstream_model))
+        throw new PricingPublishError(
+            'pricing_global_official_unsupported',
+            '按次/图片模型不支持通过 Token 官方价格目录定价。',
+        );
+    if (!Number.isFinite(usdToCnyRate) || usdToCnyRate <= 0)
+        throw new PricingPublishError('pricing_global_fx_invalid', '真实美元兑人民币汇率未配置或无效。', 503);
+    const matches = catalog.models.filter((row) => row.model === upstream_model);
+    if (matches.length !== 1)
+        throw new PricingPublishError(
+            matches.length ? 'pricing_global_quote_ambiguous' : 'pricing_global_quote_missing',
+            matches.length
+                ? `LiteLLM 官方价格目录中「${upstream_model}」有重复报价，不能自动选择。`
+                : `LiteLLM 官方价格目录没有精确匹配「${upstream_model}」的 Token 报价。`,
+            409,
+        );
+    const row = matches[0];
+    const convert = (value: number | null) => (value === null ? null : Number((value * usdToCnyRate).toPrecision(14)));
+    const quote = globalModelOfficialQuoteSchema.parse({
+        upstream_model,
+        provider: row.provider,
+        source: catalog.source,
+        source_label: catalog.sourceLabel,
+        fetched_at: catalog.fetchedAt,
+        input_usd_per_1m: row.inputUsdPer1m,
+        output_usd_per_1m: row.outputUsdPer1m,
+        cache_read_usd_per_1m: row.cacheReadUsdPer1m,
+        cache_write_5m_usd_per_1m: row.cacheWrite5mUsdPer1m,
+        cache_write_1h_usd_per_1m: row.cacheWrite1hUsdPer1m,
+        usd_to_cny_rate: usdToCnyRate,
+        input_cny_per_1m: convert(row.inputUsdPer1m),
+        output_cny_per_1m: convert(row.outputUsdPer1m),
+        cache_read_cny_per_1m: convert(row.cacheReadUsdPer1m),
+        cache_write_5m_cny_per_1m: convert(row.cacheWrite5mUsdPer1m),
+        cache_write_1h_cny_per_1m: convert(row.cacheWrite1hUsdPer1m),
+    });
+    return {
+        model_id: modelId,
+        base_input_cny_per_1m: null,
+        base_output_cny_per_1m: null,
+        base_per_image_cny: null,
+        official_quote: quote,
     };
 }
 
@@ -131,10 +202,30 @@ export function buildGlobalModelPlan(
     now: number,
 ): GlobalModelPublishPlan {
     const input = globalModelBaseInputSchema.parse(rawInput);
-    const { mappings, upstream_model } = activeMappings(state, input.model_id);
+    const { model, mappings, upstream_model } = activeMappings(state, input.model_id);
     const info = infoForModel(state, source, input.model_id);
     if (info.upstream_model !== upstream_model)
         throw new PricingPublishError('pricing_global_ambiguous', '模型上游映射已变化，请刷新后重试。');
+    const quote = input.official_quote;
+    if (quote && quote.upstream_model !== upstream_model)
+        throw new PricingPublishError(
+            'pricing_global_quote_stale',
+            '官方报价与当前模型上游名称不匹配，请重新查询。',
+            409,
+        );
+    if (quote && (model.modality === 'image' || info.billing_mode === 'request'))
+        throw new PricingPublishError('pricing_global_official_unsupported', '按次/图片模型不支持 Token 官方报价。');
+    const base: GlobalModelBaseInput = quote
+        ? {
+              model_id: input.model_id,
+              base_input_cny_per_1m: quote.input_cny_per_1m,
+              base_output_cny_per_1m: quote.output_cny_per_1m,
+              base_per_image_cny: null,
+              base_cache_read_cny_per_1m: quote.cache_read_cny_per_1m ?? undefined,
+              base_cache_write_cny_per_1m: quote.cache_write_5m_cny_per_1m ?? undefined,
+              base_cache_write_1h_cny_per_1m: quote.cache_write_1h_cny_per_1m ?? undefined,
+          }
+        : input;
     const ratios = priceOptions(source.options).GroupRatio;
     if (info.billing_mode === 'tiered_expr') {
         const first = mappings[0];
@@ -142,19 +233,19 @@ export function buildGlobalModelPlan(
         if (typeof groupRatio !== 'number' || !Number.isFinite(groupRatio) || groupRatio <= 0)
             throw new PricingPublishError('pricing_group_invalid', '关联档次的分组倍率缺失或无效。');
         const values = {
-            input_cny_per_1m: input.base_input_cny_per_1m,
-            output_cny_per_1m: input.base_output_cny_per_1m,
+            input_cny_per_1m: base.base_input_cny_per_1m,
+            output_cny_per_1m: base.base_output_cny_per_1m,
             per_image_cny: null,
             cost_cny_per_1m: null,
-            ...(input.base_cache_read_cny_per_1m === undefined
+            ...(base.base_cache_read_cny_per_1m === undefined
                 ? {}
-                : { cache_read_cny_per_1m: input.base_cache_read_cny_per_1m }),
-            ...(input.base_cache_write_cny_per_1m === undefined
+                : { cache_read_cny_per_1m: base.base_cache_read_cny_per_1m }),
+            ...(base.base_cache_write_cny_per_1m === undefined
                 ? {}
-                : { cache_write_cny_per_1m: input.base_cache_write_cny_per_1m }),
-            ...(input.base_cache_write_1h_cny_per_1m === undefined
+                : { cache_write_cny_per_1m: base.base_cache_write_cny_per_1m }),
+            ...(base.base_cache_write_1h_cny_per_1m === undefined
                 ? {}
-                : { cache_write_1h_cny_per_1m: input.base_cache_write_1h_cny_per_1m }),
+                : { cache_write_1h_cny_per_1m: base.base_cache_write_1h_cny_per_1m }),
         } as const;
         if (values.input_cny_per_1m === null || values.output_cny_per_1m === null)
             throw new PricingPublishError('pricing_global_missing', '阶梯模型需要完整的输入与输出官方基础价。');
@@ -186,16 +277,22 @@ export function buildGlobalModelPlan(
             ],
             now,
             undefined,
-            input,
+            base,
         );
         return {
             ...plan,
             global_model: true,
             global_input: input,
+            ...(quote ? { global_quote_snapshot: quote } : {}),
             warnings: [
                 '这是模型级官方全局基础价，发布后会影响该模型所有已登记档次。',
                 '各档次最终价格仅由 new-api 的 GroupRatio 推导，本次不会修改任何分组倍率或成本参数。',
                 '发布将把现有按上下文长度分档的计费公式改为统一单价，原有长度阶梯会被移除。',
+                ...(quote
+                    ? [
+                          `LiteLLM 聚合参考报价（${quote.provider ?? 'Provider 未标注'}），抓取于 ${quote.fetched_at}；美元兑人民币汇率按 ${quote.usd_to_cny_rate} 固定在本次发布快照中。`,
+                      ]
+                    : []),
                 ...plan.warnings,
             ],
         };
@@ -207,10 +304,15 @@ export function buildGlobalModelPlan(
     const target: PublishBatchPlan['target'] = {};
     let selectedInput: PublishBatchPlan['inputs'][number];
     if (info.billing_mode === 'request') {
-        if (input.base_per_image_cny === null)
+        if (quote)
+            throw new PricingPublishError(
+                'pricing_global_official_unsupported',
+                '按次/图片模型不支持 Token 官方报价。',
+            );
+        if (base.base_per_image_cny === null)
             throw new PricingPublishError('pricing_global_missing', '按次模型需要填写官方按次基础价。');
-        const modelPrice = Number((input.base_per_image_cny! / IMAGE_FX).toFixed(6));
-        if (input.base_per_image_cny! > 0 && modelPrice === 0)
+        const modelPrice = Number((base.base_per_image_cny! / IMAGE_FX).toFixed(6));
+        if (base.base_per_image_cny! > 0 && modelPrice === 0)
             throw new PricingPublishError('pricing_precision', '按次基础价太小，换算后会变为免费。');
         target.ModelPrice = { [upstream_model]: modelPrice };
         selectedInput = {
@@ -218,28 +320,28 @@ export function buildGlobalModelPlan(
             tier: first.tier,
             input_cny_per_1m: null,
             output_cny_per_1m: null,
-            per_image_cny: input.base_per_image_cny * groupRatio,
+            per_image_cny: base.base_per_image_cny * groupRatio,
             cost_cny_per_1m: null,
         };
     } else {
-        if (input.base_input_cny_per_1m === null || input.base_output_cny_per_1m === null)
+        if (base.base_input_cny_per_1m === null || base.base_output_cny_per_1m === null)
             throw new PricingPublishError('pricing_global_missing', 'Token 模型需要填写完整的官方输入与输出基础价。');
         if (
-            input.base_cache_read_cny_per_1m !== undefined ||
-            input.base_cache_write_cny_per_1m !== undefined ||
-            input.base_cache_write_1h_cny_per_1m !== undefined
+            (!quote && base.base_cache_read_cny_per_1m !== undefined) ||
+            (!quote && base.base_cache_write_cny_per_1m !== undefined) ||
+            (!quote && base.base_cache_write_1h_cny_per_1m !== undefined)
         )
             throw new PricingPublishError('pricing_global_cache_unsupported', '普通倍率模型不能单独配置缓存基础价。');
-        const computed = computeRatios(input.base_input_cny_per_1m!, input.base_output_cny_per_1m!, 1);
-        if (computed.model_ratio <= 0 || (input.base_output_cny_per_1m! > 0 && computed.completion_ratio <= 0))
+        const computed = computeRatios(base.base_input_cny_per_1m!, base.base_output_cny_per_1m!, 1);
+        if (computed.model_ratio <= 0 || (base.base_output_cny_per_1m! > 0 && computed.completion_ratio <= 0))
             throw new PricingPublishError('pricing_precision', '官方基础价换算后会变为免费，请调整价格精度。');
         target.ModelRatio = { [upstream_model]: computed.model_ratio };
         target.CompletionRatio = { [upstream_model]: computed.completion_ratio };
         selectedInput = {
             model_id: input.model_id,
             tier: first.tier,
-            input_cny_per_1m: input.base_input_cny_per_1m * groupRatio,
-            output_cny_per_1m: input.base_output_cny_per_1m * groupRatio,
+            input_cny_per_1m: base.base_input_cny_per_1m * groupRatio,
+            output_cny_per_1m: base.base_output_cny_per_1m * groupRatio,
             per_image_cny: null,
             cost_cny_per_1m: null,
         };
@@ -301,9 +403,23 @@ export function buildGlobalModelPlan(
         rows,
         global_model: true,
         global_input: input,
+        ...(quote ? { global_quote_snapshot: quote } : {}),
         warnings: [
             '这是模型级官方全局基础价，发布后会影响该模型所有已登记档次。',
             '各档次最终价格仅由 new-api 的 GroupRatio 推导，本次不会修改任何分组倍率或成本参数。',
+            ...(quote
+                ? [
+                      `LiteLLM 聚合参考报价（${quote.provider ?? 'Provider 未标注'}），抓取于 ${quote.fetched_at}；美元兑人民币汇率按 ${quote.usd_to_cny_rate} 固定在本次发布快照中。`,
+                      ...(info.billing_mode === 'standard' &&
+                      (quote.cache_read_usd_per_1m !== null ||
+                          quote.cache_write_5m_usd_per_1m !== null ||
+                          quote.cache_write_1h_usd_per_1m !== null)
+                          ? [
+                                'LiteLLM 缓存单价已保留在官方报价快照中；普通倍率计费不支持分别写入缓存单价，本次仅发布输入与输出基础价。',
+                            ]
+                          : []),
+                  ]
+                : []),
             ...checked.warnings,
         ],
     };

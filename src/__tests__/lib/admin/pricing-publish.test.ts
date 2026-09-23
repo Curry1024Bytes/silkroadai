@@ -15,6 +15,9 @@ const mocks = vi.hoisted(() => ({
     options: vi.fn(),
     channels: vi.fn(),
     persisted: vi.fn(),
+    persistedTiered: vi.fn(),
+    runtime: vi.fn(),
+    officialCatalog: vi.fn(),
     put: vi.fn(),
     beginWrite: vi.fn(),
     ackWrite: vi.fn(),
@@ -24,10 +27,15 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@/lib/db', () => ({ prisma: mocks.db }));
 vi.mock('@/lib/newapi/client', () => ({
     getPricingPublishOptions: mocks.options,
+    getPricingRuntimeModels: mocks.runtime,
     listChannelsForCatalogSync: mocks.channels,
     putPricingPublishOption: mocks.put,
 }));
-vi.mock('@/lib/newapi/persisted-pricing', () => ({ readPersistedPricingOptions: mocks.persisted }));
+vi.mock('@/lib/newapi/persisted-pricing', () => ({
+    readPersistedPricingOptions: mocks.persisted,
+    readPersistedTieredPricingOptions: mocks.persistedTiered,
+}));
+vi.mock('@/lib/admin/litellm-official-prices', () => ({ getLiteLlmPriceCatalog: mocks.officialCatalog }));
 vi.mock('@/lib/admin/pricing-publish-journal', () => ({
     beginPricingWrite: mocks.beginWrite,
     acknowledgePricingWrite: mocks.ackWrite,
@@ -55,8 +63,9 @@ import {
     type PublishState,
     type WritePriceKey,
 } from '@/lib/admin/pricing-publish-plan';
+import { buildGlobalModelPlan } from '@/lib/admin/global-model-pricing';
 import { CHAT_FX, IMAGE_FX } from '@/lib/newapi/pricing-sync';
-import { QUOTA_PER_USD } from '@/lib/newapi/quota-units';
+import { QUOTA_PER_USD, REAL_USD_TO_CNY } from '@/lib/newapi/quota-units';
 import { assertPricingCatalogWritable, PricingPublishError } from '@/lib/admin/pricing-publish-lock';
 import type { PricingPublishInput } from '@/lib/admin/pricing-publish-types';
 import type { GlobalModelBaseInput } from '@/lib/admin/global-model-pricing-types';
@@ -209,6 +218,22 @@ beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
     vi.stubEnv('PORTAL_JWT_SECRET', 'test-only-publication-signing-secret-long-enough');
+    mocks.officialCatalog.mockResolvedValue({
+        source: 'litellm-cdn',
+        sourceLabel: 'LiteLLM CDN',
+        fetchedAt: new Date(NOW).toISOString(),
+        models: [
+            {
+                model: 'gpt-test',
+                provider: 'openai',
+                inputUsdPer1m: (CHAT_FX * 2) / REAL_USD_TO_CNY,
+                outputUsdPer1m: (CHAT_FX * 6) / REAL_USD_TO_CNY,
+                cacheReadUsdPer1m: null,
+                cacheWrite5mUsdPer1m: null,
+                cacheWrite1hUsdPer1m: null,
+            },
+        ],
+    });
     const date = new Date(NOW - 60_000);
     store = {
         coordinator: null,
@@ -378,6 +403,29 @@ beforeEach(() => {
     mocks.persisted.mockImplementation(async () =>
         Object.fromEntries(PRICE_KEYS.map((key) => [key, JSON.stringify(disk[key])])),
     );
+    mocks.persistedTiered.mockImplementation(async () => {
+        const options = source().options;
+        return {
+            ...options,
+            ...Object.fromEntries(PRICE_KEYS.map((key) => [key, JSON.stringify(disk[key])])),
+            'billing_setting.billing_expr': JSON.stringify(disk['billing_setting.billing_expr'] ?? {}),
+        };
+    });
+    mocks.runtime.mockImplementation(async (names: string[]) => ({
+        models: names.map((model_name) => ({
+            model_name,
+            billing_mode: 'tiered_expr',
+            billing_expr: (live['billing_setting.billing_expr'] as Record<string, string> | undefined)?.[model_name],
+            quota_type: 0,
+            enable_groups: store.groups.flatMap((group) => [group.key, group.newapi_group]),
+        })),
+        group_ratio: Object.fromEntries(
+            store.groups.flatMap((group) => [
+                [group.key, (live.GroupRatio as Record<string, number>)[group.newapi_group]],
+                [group.newapi_group, (live.GroupRatio as Record<string, number>)[group.newapi_group]],
+            ]),
+        ),
+    }));
     mocks.put.mockImplementation(async (key: WritePriceKey, value: string) => {
         const fail = throwOnce?.key === key ? throwOnce : null;
         if (fail) throwOnce = null;
@@ -391,32 +439,88 @@ beforeEach(() => {
 });
 
 describe('model-global official base publication v2', () => {
-    function globalInput(): GlobalModelBaseInput {
+    function inputFromQuote(official_quote: NonNullable<GlobalModelBaseInput['official_quote']>): GlobalModelBaseInput {
         return {
+            model_id: MODEL,
+            base_input_cny_per_1m: null,
+            base_output_cny_per_1m: null,
+            base_per_image_cny: null,
+            official_quote,
+        };
+    }
+
+    async function globalJob() {
+        const preview = await previewGlobalModelPricing({ model_id: MODEL }, ADMIN);
+        const value = inputFromQuote(preview.global_quote_snapshot!);
+        return enqueueGlobalModelPricing(value, preview.preview_token, ADMIN);
+    }
+
+    it('fails closed when the explicit real FX setting is absent', async () => {
+        vi.stubEnv('REAL_USD_TO_CNY_RATE', '');
+
+        await expect(previewGlobalModelPricing({ model_id: MODEL }, ADMIN)).rejects.toMatchObject({
+            code: 'pricing_global_fx_invalid',
+        });
+        expect(mocks.officialCatalog).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects a new global task without a preview-backed official quote', async () => {
+        const preview = await previewGlobalModelPricing({ model_id: MODEL }, ADMIN);
+        const value: GlobalModelBaseInput = {
             model_id: MODEL,
             base_input_cny_per_1m: Number((CHAT_FX * 2).toFixed(4)),
             base_output_cny_per_1m: Number((CHAT_FX * 6).toFixed(4)),
             base_per_image_cny: null,
         };
-    }
+        await expect(enqueueGlobalModelPricing(value, preview.preview_token, ADMIN)).rejects.toMatchObject({
+            code: 'pricing_global_quote_required',
+        });
+        expect(store.jobs).toHaveLength(0);
+    });
 
-    async function globalJob() {
-        const value = globalInput();
-        const preview = await previewGlobalModelPricing(value, ADMIN);
-        return enqueueGlobalModelPricing(value, preview.preview_token, ADMIN);
-    }
+    it('rejects an official quote whose converted CNY amount disagrees with its captured FX rate', async () => {
+        const preview = await previewGlobalModelPricing({ model_id: MODEL }, ADMIN);
+        const value = inputFromQuote(preview.global_quote_snapshot!);
+        value.official_quote!.input_cny_per_1m += 1;
+        await expect(enqueueGlobalModelPricing(value, preview.preview_token, ADMIN)).rejects.toMatchObject({
+            code: 'pricing_global_invalid',
+        });
+        expect(store.jobs).toHaveLength(0);
+    });
+
+    it('rejects a new global task whose quote names another upstream model', async () => {
+        const preview = await previewGlobalModelPricing({ model_id: MODEL }, ADMIN);
+        const value = inputFromQuote(preview.global_quote_snapshot!);
+        value.official_quote!.upstream_model = 'other-model';
+        await expect(enqueueGlobalModelPricing(value, preview.preview_token, ADMIN)).rejects.toMatchObject({
+            code: 'pricing_global_quote_stale',
+        });
+        expect(store.jobs).toHaveLength(0);
+    });
+
+    it('rejects a stored official-price task if its durable quote snapshot is missing', async () => {
+        await globalJob();
+        delete (store.jobs[0].plan as unknown as { global_quote_snapshot?: unknown }).global_quote_snapshot;
+        expect((await runPricingPublisherOnce())?.status).toBe('conflict');
+        expect(mocks.put).not.toHaveBeenCalled();
+    });
 
     it('publishes one shared base target and keeps tier ratios and existing costs', async () => {
         await globalJob();
         expect((await runPricingPublisherOnce())?.status).toBe('succeeded');
         expect(mocks.put.mock.calls.map((call) => call[0])).toEqual(['ModelRatio', 'CompletionRatio']);
         expect(live.GroupRatio).toEqual({ G: 1, H: 2, J: 3 });
+        const quote = (
+            store.jobs[0].plan as unknown as {
+                global_quote_snapshot: NonNullable<GlobalModelBaseInput['official_quote']>;
+            }
+        ).global_quote_snapshot;
         expect(
             store.prices.slice(3).map((row) => [row.tier, Number(row.input_cny_per_1m), Number(row.cost_cny_per_1m)]),
         ).toEqual([
-            ['standard', Number((CHAT_FX * 2).toFixed(4)), 0.5],
-            ['premium', Number((CHAT_FX * 4).toFixed(4)), 0.6],
-            ['other', Number((CHAT_FX * 6).toFixed(4)), 0.8],
+            ['standard', Number(quote.input_cny_per_1m.toFixed(4)), 0.5],
+            ['premium', Number((quote.input_cny_per_1m * 2).toFixed(4)), 0.6],
+            ['other', Number((quote.input_cny_per_1m * 3).toFixed(4)), 0.8],
         ]);
     });
 
@@ -429,7 +533,7 @@ describe('model-global official base publication v2', () => {
                 global_input: GlobalModelBaseInput;
             };
             if (field === 'target') plan.target.ModelRatio['gpt-test'] += 1;
-            else plan.global_input.base_input_cny_per_1m! += CHAT_FX;
+            else plan.global_input.official_quote!.input_cny_per_1m += CHAT_FX;
             expect((await runPricingPublisherOnce())?.status).toBe('conflict');
             expect(mocks.put).not.toHaveBeenCalled();
             expect(store.prices).toHaveLength(3);
@@ -438,6 +542,22 @@ describe('model-global official base publication v2', () => {
 
     it('rebuilds a global intent on retry after the remote target was written but catalog insertion failed', async () => {
         await globalJob();
+        mocks.officialCatalog.mockResolvedValueOnce({
+            source: 'litellm-cdn',
+            sourceLabel: 'LiteLLM CDN',
+            fetchedAt: new Date(NOW + 60_000).toISOString(),
+            models: [
+                {
+                    model: 'gpt-test',
+                    provider: 'openai',
+                    inputUsdPer1m: 90,
+                    outputUsdPer1m: 190,
+                    cacheReadUsdPer1m: null,
+                    cacheWrite5mUsdPer1m: null,
+                    cacheWrite1hUsdPer1m: null,
+                },
+            ],
+        });
         const rowCount = (store.jobs[0].plan as unknown as { rows: unknown[] }).rows.length;
         failPriceAt = 1;
         expect((await runPricingPublisherOnce())?.status).toBe('retry_wait');
@@ -447,8 +567,56 @@ describe('model-global official base publication v2', () => {
         vi.setSystemTime(NOW + 31_000);
         expect((await runPricingPublisherOnce())?.status).toBe('succeeded');
         expect(mocks.put).toHaveBeenCalledTimes(2);
+        expect(mocks.officialCatalog).toHaveBeenCalledTimes(1);
         expect(store.prices).toHaveLength(3 + rowCount);
     });
+
+    it.each([2, 5] as const)(
+        'retries legacy global v%s plans without a quote snapshot using their manual CNY input',
+        async (version) => {
+            if (version === 5) {
+                live['billing_setting.billing_mode'] = { 'gpt-test': 'tiered_expr' };
+                live['billing_setting.billing_expr'] = { 'gpt-test': 'v1:tier("default",p*1+c*2)' };
+                disk = structuredClone(live);
+            }
+
+            await globalJob();
+            const manualInput: GlobalModelBaseInput = {
+                model_id: MODEL,
+                base_input_cny_per_1m: 13.25,
+                base_output_cny_per_1m: 28.75,
+                base_per_image_cny: null,
+            };
+            const state = await readPublishState(mocks.db as unknown as Parameters<typeof readPublishState>[0]);
+            const legacyPlan = buildGlobalModelPlan(state, source(), manualInput, NOW);
+            expect(legacyPlan.version).toBe(version);
+            expect(legacyPlan.global_quote_snapshot).toBeUndefined();
+            expect(legacyPlan.global_input).toEqual(manualInput);
+            store.jobs[0].plan = legacyPlan as unknown as StoredJob['plan'];
+            store.jobs[0].upstream_model = legacyPlan.upstream_model;
+
+            const officialQueriesBeforeRetry = mocks.officialCatalog.mock.calls.length;
+            const expectedRows = legacyPlan.rows.map((row) => [
+                row.tier,
+                row.after.input_cny_per_1m,
+                row.after.output_cny_per_1m,
+            ]);
+            failPriceAt = 1;
+            expect((await runPricingPublisherOnce())?.status).toBe('retry_wait');
+            expect(store.prices).toHaveLength(3);
+            failPriceAt = -1;
+            vi.setSystemTime(NOW + 31_000);
+            expect((await runPricingPublisherOnce())?.status).toBe('succeeded');
+
+            expect(mocks.officialCatalog).toHaveBeenCalledTimes(officialQueriesBeforeRetry);
+            expect(mocks.put).toHaveBeenCalledTimes(Object.keys(legacyPlan.target).length);
+            expect(
+                store.prices
+                    .slice(3)
+                    .map((row) => [row.tier, Number(row.input_cny_per_1m), Number(row.output_cny_per_1m)]),
+            ).toEqual(expectedRows);
+        },
+    );
 });
 afterEach(() => {
     vi.useRealTimers();

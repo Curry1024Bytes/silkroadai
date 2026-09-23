@@ -1,3 +1,5 @@
+import type { OfficialPriceQuoteSnapshot } from './global-model-pricing-types';
+
 /** Public pricing publication contracts. All monetary values use CNY numbers, never Decimal strings. */
 export interface PricingPublishAmounts {
     input_cny_per_1m: number | null;
@@ -56,6 +58,7 @@ export interface PricingPublishPreview {
     basis: 'token' | 'request';
     rows: PricingPublishPreviewRow[];
     warnings: string[];
+    global_quote_snapshot?: OfficialPriceQuoteSnapshot;
     batch?: { count: number; upstream_models: string[] };
     publication_mode?: 'tiered_token' | 'uniform_token' | 'group';
     unchanged?: boolean;

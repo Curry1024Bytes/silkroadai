@@ -13,7 +13,7 @@ import type { UniformPublishPlan, CacheUniformPublishPlan } from './pricing-unif
 import type { GroupPublishPlan } from './pricing-group-plan';
 import type { GroupRatioPublishPlan } from './pricing-group-ratio-plan';
 import type { TieredPublishPlan } from './pricing-tiered-plan';
-import type { GlobalModelBaseInput } from './global-model-pricing-types';
+import type { GlobalModelBaseInput, OfficialPriceQuoteSnapshot } from './global-model-pricing-types';
 
 export const PRICE_KEYS = ['ModelRatio', 'CompletionRatio', 'ModelPrice', 'GroupRatio'] as const;
 export type PriceKey = (typeof PRICE_KEYS)[number];
@@ -80,6 +80,8 @@ export interface PublishBatchPlan extends Omit<PublishPlan, 'version' | 'input' 
     /** Signed marker for the model-global official base-price workflow. */
     global_model?: boolean;
     global_input?: GlobalModelBaseInput;
+    /** Immutable official quote captured during preview; required for new global plans. */
+    global_quote_snapshot?: OfficialPriceQuoteSnapshot;
 }
 export type AnyPublishPlan =
     | PublishPlan

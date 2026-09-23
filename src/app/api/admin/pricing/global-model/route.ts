@@ -17,7 +17,7 @@ export const runtime = 'nodejs';
 const noStore = { 'Cache-Control': 'private, no-store' };
 
 const bodySchema = z.discriminatedUnion('action', [
-    z.object({ action: z.literal('preview'), ...globalModelBaseInputSchema.shape }).strict(),
+    z.object({ action: z.literal('preview'), model_id: z.string().uuid() }).strict(),
     z
         .object({
             action: z.literal('publish'),
@@ -47,14 +47,22 @@ export async function POST(request: NextRequest) {
     if (!admin) return unauthorizedResponse(request);
     try {
         const body = bodySchema.parse(await request.json());
-        const { action } = body;
-        const payload: Record<string, unknown> = { ...body };
-        delete payload.action;
-        delete payload.preview_token;
-        const input = globalModelBaseInputSchema.parse(payload);
-        if (action === 'preview') {
-            return NextResponse.json({ preview: await previewGlobalModelPricing(input, admin) }, { headers: noStore });
+        if (body.action === 'preview') {
+            return NextResponse.json(
+                { preview: await previewGlobalModelPricing({ model_id: body.model_id }, admin) },
+                { headers: noStore },
+            );
         }
+        const input = globalModelBaseInputSchema.parse({
+            model_id: body.model_id,
+            base_input_cny_per_1m: body.base_input_cny_per_1m,
+            base_output_cny_per_1m: body.base_output_cny_per_1m,
+            base_per_image_cny: body.base_per_image_cny,
+            base_cache_read_cny_per_1m: body.base_cache_read_cny_per_1m,
+            base_cache_write_cny_per_1m: body.base_cache_write_cny_per_1m,
+            base_cache_write_1h_cny_per_1m: body.base_cache_write_1h_cny_per_1m,
+            official_quote: body.official_quote,
+        });
         return NextResponse.json(
             { job: await enqueueGlobalModelPricing(input, body.preview_token, admin) },
             { status: 202, headers: noStore },
