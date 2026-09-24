@@ -942,6 +942,7 @@ export async function getPricingPublishOptions(): Promise<Record<string, unknown
         'billing_setting.billing_mode',
         'billing_setting.billing_expr',
         'billing_setting.scheduled_discount',
+        'group_ratio_setting.group_ratio',
     ];
     // Preserve absence separately from an explicitly invalid null value. rc.23
     // predates two optional billing features; its complete option list omits
@@ -957,11 +958,21 @@ export async function getPricingPublishOptions(): Promise<Record<string, unknown
     );
 }
 
-export async function putPricingPublishOption(
-    key: 'ModelRatio' | 'CompletionRatio' | 'ModelPrice' | 'billing_setting.billing_expr' | 'GroupRatio',
-    value: string,
-): Promise<void> {
-    if (!['ModelRatio', 'CompletionRatio', 'ModelPrice', 'billing_setting.billing_expr', 'GroupRatio'].includes(key))
+export const PRICING_WRITABLE_OPTIONS = [
+    'ModelRatio',
+    'CompletionRatio',
+    'ModelPrice',
+    'CacheRatio',
+    'CreateCacheRatio',
+    'billing_setting.billing_mode',
+    'billing_setting.billing_expr',
+    'GroupRatio',
+    'group_ratio_setting.group_ratio',
+] as const;
+export type PricingWritableOption = (typeof PRICING_WRITABLE_OPTIONS)[number];
+
+export async function putPricingPublishOption(key: PricingWritableOption, value: string): Promise<void> {
+    if (!(PRICING_WRITABLE_OPTIONS as readonly string[]).includes(key))
         throw new Error('Unsupported pricing publication option');
     await call<unknown>('PUT', '/api/option/', { key, value }, undefined, { timeoutMs: 10_000, requireSuccess: true });
 }

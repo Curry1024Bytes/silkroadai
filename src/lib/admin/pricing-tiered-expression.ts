@@ -378,3 +378,45 @@ export function uniformTokenPricingExpression(
     parseWithSpans(expression);
     return expression;
 }
+
+export interface TieredPricingBuildTier {
+    /** Upper input-length bound of this tier; null only for the last tier. */
+    max_input_tokens: number | null;
+    /** `len <= max` when true, `len < max` otherwise. */
+    max_inclusive: boolean;
+    rates: TieredPricingRates;
+}
+
+/** Canonical source for a length-tiered tariff. Coefficients are USD per million
+ * tokens; the generated source is re-parsed so it obeys every reader rule. */
+export function buildTieredPricingExpression(tiers: TieredPricingBuildTier[]): string {
+    if (!Array.isArray(tiers) || tiers.length === 0 || tiers.length > MAX_TIERS) invalid('阶梯数量无效。');
+    const literal = (value: number | null, label: string): string => {
+        if (value === null || !Number.isFinite(value) || value < 0 || value > Number.MAX_SAFE_INTEGER)
+            invalid(`${label}必须是安全范围内的非负数。`);
+        const text = roundedDecimal(decimal(String(value)));
+        readPrice({ kind: 'number', text, start: 0, end: text.length });
+        return text;
+    };
+    const cacheKeys = ['cache_read', 'cache_write', 'cache_write_1h'] as const;
+    for (const key of cacheKeys)
+        if (tiers.some((tier) => (tier.rates[key] === null) !== (tiers[0].rates[key] === null)))
+            invalid('缓存价须在所有阶梯同时填写或同时留空。');
+    const branches = tiers.map((tier, index) => {
+        const last = index === tiers.length - 1;
+        if (last !== (tier.max_input_tokens === null)) invalid('只有最后一档不设输入长度上限。');
+        const terms = [`p * ${literal(tier.rates.input, '输入价')}`, `c * ${literal(tier.rates.output, '输出价')}`];
+        if (tier.rates.cache_read !== null) terms.push(`cr * ${literal(tier.rates.cache_read, '缓存读取价')}`);
+        if (tier.rates.cache_write !== null) terms.push(`cc * ${literal(tier.rates.cache_write, '缓存写入价')}`);
+        if (tier.rates.cache_write_1h !== null)
+            terms.push(`cc1h * ${literal(tier.rates.cache_write_1h, '1 小时缓存写入价')}`);
+        const body = `tier("${index === 0 ? 'base' : `tier_${index + 1}`}", ${terms.join(' + ')})`;
+        if (last) return body;
+        const max = tier.max_input_tokens!;
+        if (!Number.isSafeInteger(max) || max <= 0) invalid('输入长度阈值须为正整数。');
+        return `len ${tier.max_inclusive ? '<=' : '<'} ${max} ? ${body} : `;
+    });
+    const expression = branches.join('');
+    parseWithSpans(expression);
+    return expression;
+}

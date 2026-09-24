@@ -42,7 +42,7 @@ describe('publication management acknowledgement', () => {
             value,
         });
     });
-    it.each(['billing_setting.billing_mode', 'GroupGroupRatio', 'CacheRatio', 'CreateCacheRatio'])(
+    it.each(['GroupGroupRatio', 'QuotaPerUnit', 'billing_setting.scheduled_discount'])(
         'refuses an unsupported publication write before fetching: %s',
         async (key) => {
             await expect(

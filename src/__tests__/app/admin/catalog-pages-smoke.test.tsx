@@ -40,16 +40,15 @@ describe('admin catalog pages — SSR smoke (P2)', () => {
         }
     });
 
-    it('distinguishes recorded catalog prices from publication verification', () => {
+    it('explains the two-knob pricing model without touching the network', () => {
         const network = vi.fn().mockRejectedValue(new Error('SSR network is sealed'));
         vi.stubGlobal('fetch', network);
         try {
             const html = renderToString(<PricingPage />);
-            expect(html).toContain('目录价格与历史');
-            expect(html).toContain('下方展示 Portal 已记录的目录价格');
-            expect(html).toContain('与 new-api 的核验结果见「发布任务」标签');
-            expect(html).toContain('价格发布任务');
-            expect(html).toContain('只有「已生效」表示两端已完成核验');
+            expect(html).toContain('客户价 = 模型基础价(官方 $)× 档次倍率');
+            expect(html).toContain('档次倍率');
+            expect(html).toContain('模型基础价');
+            expect(html).toContain('价格总览');
             expect(network).not.toHaveBeenCalled();
         } finally {
             vi.unstubAllGlobals();
