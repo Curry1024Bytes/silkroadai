@@ -23,12 +23,12 @@
 
 `CHAT_FX = 1M ÷ NEWAPI_QUOTA_PER_USD × USD_TO_CNY_RATE`,生产环境为 2。
 
-| 形态     | 写入的 option |
-| -------- | ------------- |
+| 形态     | 写入的 option                                                                                                                                                             |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 按 Token | `ModelRatio = 输入$ × FX ÷ CHAT_FX`、`CompletionRatio = 输出/输入`、`CacheRatio = 缓存读/输入`、`CreateCacheRatio = 缓存写/输入`;同时删除该模型的 `ModelPrice` 和阶梯配置 |
-| 阶梯     | `billing_setting.billing_mode = tiered_expr`,`billing_setting.billing_expr = len < N ? tier(...) : tier(...)`(系数即基础价 $/1M);同时删除 `ModelPrice` |
-| 按次     | `ModelPrice = 基础价$/次`;同时删除阶梯配置 |
-| 档次倍率 | `GroupRatio[分组]`;若 `group_ratio_setting.group_ratio` 中已有该分组,同步写入 |
+| 阶梯     | `billing_setting.billing_mode = tiered_expr`,`billing_setting.billing_expr = len < N ? tier(...) : tier(...)`(系数即基础价 $/1M);同时删除 `ModelPrice`                    |
+| 按次     | `ModelPrice = 基础价$/次`;同时删除阶梯配置                                                                                                                                |
+| 档次倍率 | `GroupRatio[分组]`;若 `group_ratio_setting.group_ratio` 中已有该分组,同步写入                                                                                             |
 
 - 只写发生变化的 key。
 - new-api 内置锁定输出倍率的模型(`CompletionRatioMeta.locked`):目标输出倍率与锁定值不一致时拒绝保存,提示改用阶梯形态。
@@ -52,7 +52,7 @@
     - 🟡 Portal 目录与实际扣费不一致
     - 🟢 一致
 
-  可以「按 new-api 现价重写目录」,只改展示,不改扣费。下方列出最近的定价操作历史。
+    可以「按 new-api 现价重写目录」,只改展示,不改扣费。下方列出最近的定价操作历史。
 
 ## 5. 接口
 
