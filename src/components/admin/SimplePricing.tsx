@@ -13,7 +13,7 @@ import type {
     SimplePricingView,
     SimpleUpstreamModel,
 } from '@/lib/admin/pricing-simple';
-import type { CatalogAmounts } from '@/lib/admin/pricing-simple-core';
+import type { CatalogAmounts, CatalogDiff, CatalogDiffField } from '@/lib/admin/pricing-simple-core';
 
 type Tab = 'tiers' | 'models' | 'overview';
 
@@ -47,6 +47,29 @@ function amountsLabel(amounts: CatalogAmounts | null, en: boolean): string {
     if (!amounts) return '—';
     if (amounts.per_image_cny !== null) return `${money(amounts.per_image_cny)}${en ? '/call' : '/次'}`;
     return `${money(amounts.input_cny_per_1m)} / ${money(amounts.output_cny_per_1m)}`;
+}
+
+const DIFF_FIELD_LABEL: Record<CatalogDiffField, [string, string]> = {
+    input: ['输入', 'Input'],
+    output: ['输出', 'Output'],
+    per_call: ['按次', 'Per call'],
+    cache_read: ['缓存读', 'Cache read'],
+    cache_write: ['缓存写', 'Cache write'],
+    cache_write_1h: ['缓存写 1h', 'Cache write 1h'],
+    tier_count: ['阶梯档数', 'Tier count'],
+    bound: ['档位上限', 'Tier bound'],
+};
+
+/** e.g. "第2档 缓存读:目录 — → 实际 ¥0.16" */
+function diffLabel(diff: CatalogDiff, en: boolean): string {
+    const count = diff.field === 'tier_count';
+    const bound = diff.field === 'bound';
+    const value = (v: number | null) =>
+        v === null ? (bound ? (en ? 'open' : '不封顶') : '—') : count || bound ? v.toLocaleString('en-US') : money(v);
+    const tier = diff.tier === null ? '' : en ? `Tier ${diff.tier + 1} ` : `第${diff.tier + 1}档 `;
+    return en
+        ? `${tier}${DIFF_FIELD_LABEL[diff.field][1]}: catalog ${value(diff.catalog)} → billed ${value(diff.expected)}`
+        : `${tier}${DIFF_FIELD_LABEL[diff.field][0]}:目录 ${value(diff.catalog)} → 实际 ${value(diff.expected)}`;
 }
 
 const STATUS_LABEL: Record<CellStatus, [string, string]> = {
@@ -981,7 +1004,7 @@ function OverviewPanel({ view, en, isDark, onSaved, onError }: PanelProps) {
             <p className={`text-xs ${muted}`}>
                 {en
                     ? 'Each cell shows what new-api bills (input / output ¥ per 1M, or ¥ per call). "Catalog stale" means the price shown to customers differs.'
-                    : '每格为 new-api 实际扣费(输入/输出 ¥每百万，或 ¥每次)。「目录待同步」= 客户看到的价格与实际扣费不一致，点上方同步即可。'}
+                    : '每格为 new-api 实际扣费(输入/输出 ¥每百万，或 ¥每次)。「目录待同步」下方逐项列出目录与实际扣费的差异，核对后点上方同步即可(只改展示，不改扣费)。'}
             </p>
             {runtime && (
                 <div
@@ -1042,11 +1065,15 @@ function OverviewPanel({ view, en, isDark, onSaved, onError }: PanelProps) {
                                             <div className={statusCls(cell.status)}>
                                                 {STATUS_LABEL[cell.status][en ? 1 : 0]}
                                             </div>
-                                            {cell.status === 'mismatch' && (
-                                                <div className={muted}>
-                                                    {en ? 'catalog' : '目录'} {amountsLabel(cell.catalog, en)}
-                                                </div>
-                                            )}
+                                            {cell.status === 'mismatch' &&
+                                                cell.diffs.map((diff) => (
+                                                    <div
+                                                        key={`${diff.tier}-${diff.field}`}
+                                                        className={`text-xs ${muted}`}
+                                                    >
+                                                        {diffLabel(diff, en)}
+                                                    </div>
+                                                ))}
                                             {cell.expected?.billing_details &&
                                                 cell.expected.billing_details.tiers.length > 1 && (
                                                     <div className="text-left">

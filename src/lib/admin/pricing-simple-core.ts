@@ -405,17 +405,38 @@ function sameScalar(a: number | null, b: number | null): boolean {
     return Math.abs(a - b) < 0.00005 + 1e-9;
 }
 
+export type CatalogDiffField =
+    'input' | 'output' | 'per_call' | 'cache_read' | 'cache_write' | 'cache_write_1h' | 'tier_count' | 'bound';
+
+/** One field where the displayed catalog differs from new-api billing. `tier` is null for a single-rate price. */
+export interface CatalogDiff {
+    tier: number | null;
+    field: CatalogDiffField;
+    catalog: number | null;
+    expected: number | null;
+}
+
+const RATE_KEYS = ['input', 'output', 'cache_read', 'cache_write', 'cache_write_1h'] as const;
+
 /**
- * Does the displayed catalog row match what new-api bills? Multi-tier details
- * must match; single-tier cache details are compared only when the row has them.
+ * Where the displayed catalog row differs from what new-api bills; empty = match.
+ * Multi-tier details must match; single-tier cache details are compared only when a row has them.
  */
-export function catalogMatches(catalog: CatalogAmounts, expected: CatalogAmounts): boolean {
-    if (
-        !sameScalar(catalog.input_cny_per_1m, expected.input_cny_per_1m) ||
-        !sameScalar(catalog.output_cny_per_1m, expected.output_cny_per_1m) ||
-        !sameScalar(catalog.per_image_cny, expected.per_image_cny)
-    )
-        return false;
+export function catalogDiffs(catalog: CatalogAmounts, expected: CatalogAmounts): CatalogDiff[] {
+    const diffs: CatalogDiff[] = [];
+    const scalar = (field: CatalogDiffField, a: number | null, b: number | null) => {
+        if (!sameScalar(a, b)) diffs.push({ tier: null, field, catalog: a, expected: b });
+    };
+    scalar('input', catalog.input_cny_per_1m, expected.input_cny_per_1m);
+    scalar('output', catalog.output_cny_per_1m, expected.output_cny_per_1m);
+    scalar('per_call', catalog.per_image_cny, expected.per_image_cny);
+    const seen = new Set(diffs.map((diff) => diff.field));
+    const push = (diff: CatalogDiff) => {
+        // A single-rate input/output difference is already reported by the scalar check.
+        if (diff.tier === null && seen.has(diff.field)) return;
+        diffs.push(diff);
+    };
+
     const want = expected.billing_details;
     const have = catalog.billing_details;
     // Scalars already cover a single uniform rate; details only matter for real tiers or cache prices.
@@ -423,18 +444,45 @@ export function catalogMatches(catalog: CatalogAmounts, expected: CatalogAmounts
         !!details &&
         (details.tiers.length > 1 ||
             details.tiers.some((tier) => tier.rates.cache_read !== null || tier.rates.cache_write !== null));
-    if (!want || !have) return !needsDetails(want) && !needsDetails(have);
-    if (want.tiers.length !== have.tiers.length) return false;
-    return want.tiers.every((tier, index) => {
+    if (!want || !have) {
+        const present = want ?? have;
+        if (!present || !needsDetails(present)) return diffs;
+        if (present.tiers.length > 1)
+            push({
+                tier: null,
+                field: 'tier_count',
+                catalog: have ? have.tiers.length : null,
+                expected: want ? want.tiers.length : null,
+            });
+        else
+            for (const key of ['cache_read', 'cache_write', 'cache_write_1h'] as const) {
+                const value = present.tiers[0].rates[key];
+                if (value !== null)
+                    push({ tier: null, field: key, catalog: have ? value : null, expected: want ? value : null });
+            }
+        return diffs;
+    }
+    if (want.tiers.length !== have.tiers.length) {
+        push({ tier: null, field: 'tier_count', catalog: have.tiers.length, expected: want.tiers.length });
+        return diffs;
+    }
+    const single = want.tiers.length === 1;
+    want.tiers.forEach((tier, index) => {
         const other = have.tiers[index];
-        return (
-            tier.max_input_tokens === other.max_input_tokens &&
-            tier.max_inclusive === other.max_inclusive &&
-            (['input', 'output', 'cache_read', 'cache_write', 'cache_write_1h'] as const).every((key) => {
-                const a = tier.rates[key];
-                const b = other.rates[key];
-                return a === null || b === null ? a === b : sameNumber(a, b);
-            })
-        );
+        const at = single ? null : index;
+        if (tier.max_input_tokens !== other.max_input_tokens || tier.max_inclusive !== other.max_inclusive)
+            push({ tier: at, field: 'bound', catalog: other.max_input_tokens, expected: tier.max_input_tokens });
+        for (const key of RATE_KEYS) {
+            const a = other.rates[key];
+            const b = tier.rates[key];
+            if (a === null || b === null ? a !== b : !sameNumber(a, b))
+                push({ tier: at, field: key, catalog: a, expected: b });
+        }
     });
+    return diffs;
+}
+
+/** Does the displayed catalog row match what new-api bills? */
+export function catalogMatches(catalog: CatalogAmounts, expected: CatalogAmounts): boolean {
+    return catalogDiffs(catalog, expected).length === 0;
 }

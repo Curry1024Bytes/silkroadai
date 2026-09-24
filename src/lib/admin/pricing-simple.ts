@@ -14,6 +14,7 @@ import {
     RATIO_UNIT,
     SimplePricingError,
     basePriceSchema,
+    catalogDiffs,
     catalogMatches,
     customerPrice,
     groupRatioOf,
@@ -26,6 +27,7 @@ import {
     unverifiedWrites,
     type BasePrice,
     type CatalogAmounts,
+    type CatalogDiff,
     type OptionWrite,
 } from './pricing-simple-core';
 
@@ -60,6 +62,8 @@ export interface SimpleCell {
     status: CellStatus;
     catalog: CatalogAmounts | null;
     expected: CatalogAmounts | null;
+    /** Only for status 'mismatch': which fields differ. */
+    diffs: CatalogDiff[];
 }
 
 export interface SimpleCatalogModel {
@@ -230,19 +234,14 @@ function buildView(
                 });
                 const current = latestCatalog(model, tier)?.amounts ?? null;
                 const { status, expected } = expectedFor(options, upstream_model, groupByKey.get(tier)!.newapi_group);
+                const diffs = status === 'ok' && current ? catalogDiffs(current, expected!) : [];
                 return {
                     tier,
                     upstream_model,
-                    status:
-                        status !== 'ok'
-                            ? status
-                            : !current
-                              ? 'missing'
-                              : catalogMatches(current, expected!)
-                                ? 'ok'
-                                : 'mismatch',
+                    status: status !== 'ok' ? status : !current ? 'missing' : diffs.length === 0 ? 'ok' : 'mismatch',
                     catalog: current,
                     expected,
+                    diffs,
                 };
             });
         return {

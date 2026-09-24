@@ -8,6 +8,7 @@ vi.mock('@/lib/newapi/quota-units', async (importOriginal) => ({
 
 import {
     GROUP_SETTING_KEY,
+    catalogDiffs,
     catalogMatches,
     customerPrice,
     modelOptionState,
@@ -268,5 +269,34 @@ describe('customerPrice / catalogMatches', () => {
         const changed = structuredClone(tiered);
         changed.billing_details!.tiers[1].rates.output = 44;
         expect(catalogMatches(changed, tiered)).toBe(false);
+    });
+
+    it('lists exactly which fields differ', () => {
+        const cached = customerPrice({ mode: 'token', input: 5, output: 40, cache_read: 0.5, cache_write: null }, 1.2);
+        // Same input/output, but the catalog never recorded the cache price.
+        expect(catalogDiffs({ ...cached, billing_details: null }, cached)).toEqual([
+            { tier: null, field: 'cache_read', catalog: null, expected: 0.6 },
+        ]);
+        const cacheChanged = structuredClone(cached);
+        cacheChanged.billing_details!.tiers[0].rates.cache_read = 1.2;
+        expect(catalogDiffs(cacheChanged, cached)).toEqual([
+            { tier: null, field: 'cache_read', catalog: 1.2, expected: 0.6 },
+        ]);
+        // A scalar difference is reported once, not again from the uniform tier.
+        const inputChanged = structuredClone(cached);
+        inputChanged.input_cny_per_1m = 4;
+        inputChanged.billing_details!.tiers[0].rates.input = 4;
+        expect(catalogDiffs(inputChanged, cached)).toEqual([{ tier: null, field: 'input', catalog: 4, expected: 6 }]);
+
+        const tiered = customerPrice({ mode: 'tiered', tiers: twoTiers }, 2);
+        expect(catalogDiffs(tiered, tiered)).toEqual([]);
+        expect(catalogDiffs({ ...tiered, billing_details: null }, tiered)).toEqual([
+            { tier: null, field: 'tier_count', catalog: null, expected: 2 },
+        ]);
+        const tierChanged = structuredClone(tiered);
+        tierChanged.billing_details!.tiers[1].rates.cache_read = 1;
+        expect(catalogDiffs(tierChanged, tiered)).toEqual([
+            { tier: 1, field: 'cache_read', catalog: 1, expected: 1.2 },
+        ]);
     });
 });
