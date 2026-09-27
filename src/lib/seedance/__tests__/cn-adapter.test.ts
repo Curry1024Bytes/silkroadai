@@ -714,13 +714,13 @@ describe('上游报错友好化(2026-08-11):审核类给可操作提示,且不�
  * 国内版 seedance-2-5 的 480p 单档改走 service-inference.ai(2026-09-22,operator 拍板;与火山渠道同一家上游,
  * 独立 key、走 /v1)。只有配了 SEEDANCE_SVCINF_KEY 才切,未配回落 xinhankr doubao-260628(部署缺 env 不断档)。
  */
-describe('国内版 2.5 480p 单档 → service-inference.ai(/v1)', () => {
+describe('国内版 2.5 480p 单档 → service-inference.ai(缺省 /v2,env 可切 v1)', () => {
     const SVC = 'https://model.service-inference.ai';
     const SVC_KEY = 'sk-inf-v1-cn-480p-key';
     /** 打到 service-inference.ai 的提交体。 */
     const svcSubmitCall = () =>
         mockFetch.mock.calls.find(
-            (c) => String(c[0]) === `${SVC}/v1/video/generate` && (c[1] as RequestInit)?.method === 'POST',
+            (c) => String(c[0]) === `${SVC}/v2/video/generate` && (c[1] as RequestInit)?.method === 'POST',
         );
 
     beforeEach(() => {
@@ -728,10 +728,10 @@ describe('国内版 2.5 480p 单档 → service-inference.ai(/v1)', () => {
         mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
             const u = String(url);
             const method = (init?.method || 'GET').toUpperCase();
-            if (u === `${SVC}/v1/video/generate` && method === 'POST') {
+            if (u === `${SVC}/v2/video/generate` && method === 'POST') {
                 return json({ task: { id: 'mvt-abc123', status: 'pending', outputs: [], error: null } });
             }
-            if (u.startsWith(`${SVC}/v1/video/tasks/`) && method === 'GET') {
+            if (u.startsWith(`${SVC}/v2/video/tasks/`) && method === 'GET') {
                 return json({
                     task: {
                         id: 'mvt-abc123',
@@ -776,7 +776,7 @@ describe('国内版 2.5 480p 单档 → service-inference.ai(/v1)', () => {
     });
     afterEach(() => vi.unstubAllEnvs());
 
-    it('seedance2.5-480p 文生:打 /v1/video/generate + 平台 sk-inf key,model=-max 名,prompt 翻成 content,对客 id 自造 cgt- 并记映射', async () => {
+    it('seedance2.5-480p 文生:打 /v2/video/generate + 平台 sk-inf key,model=-max 名,prompt 翻成 content,对客 id 自造 cgt- 并记映射', async () => {
         const res = await submitVideo(makeReq({ model: 'seedance2.5-480p', prompt: '一只猫', duration: 4, seed: 9 }));
         expect(res.status).toBe(200);
         const j = (await res.json()) as { id: string; task_id: string; model: string; status: string };
@@ -829,6 +829,16 @@ describe('国内版 2.5 480p 单档 → service-inference.ai(/v1)', () => {
         ]);
     });
 
+    it('SEEDANCE_SVCINF_API_VERSION=v1 → 切回 /v1 路径(信封相同)', async () => {
+        vi.stubEnv('SEEDANCE_SVCINF_API_VERSION', 'v1');
+        mockFetch.mockImplementationOnce(async () =>
+            json({ task: { id: 'mvt-v1', status: 'pending', outputs: [], error: null } }),
+        );
+        const res = await submitVideo(makeReq({ model: 'seedance2.5-480p', prompt: 'x' }));
+        expect(res.status).toBe(200);
+        expect(String(mockFetch.mock.calls[0][0])).toBe(`${SVC}/v1/video/generate`);
+    });
+
     it('seedance2.5-720p 不受影响,仍走 xinhankr pro 版', async () => {
         await submitVideo(makeReq({ model: 'seedance2.5-720p', prompt: 'x' }));
         expect(svcSubmitCall()).toBeUndefined();
@@ -861,7 +871,7 @@ describe('国内版 2.5 480p 单档 → service-inference.ai(/v1)', () => {
         expect(rememberVolcId).not.toHaveBeenCalled();
     });
 
-    it('轮询:对客号经映射得到 mvt- → 打 /v1/video/tasks/{mvt}(平台 key),归一成 completed + usage + 方舟元数据', async () => {
+    it('轮询:对客号经映射得到 mvt- → 打 /v2/video/tasks/{mvt}(平台 key),归一成 completed + usage + 方舟元数据', async () => {
         toUpstreamId.mockResolvedValueOnce('mvt-abc123');
         const res = await pollVideo(pollReq(), 'cgt-20260922232424-aaaaa');
         expect(res.status).toBe(200);
@@ -872,7 +882,7 @@ describe('国内版 2.5 480p 单档 → service-inference.ai(/v1)', () => {
         expect((j.usage as { completion_tokens: number }).completion_tokens).toBe(38830);
         expect(j.duration).toBe(4);
         expect(j.resolution).toBe('480p');
-        const call = mockFetch.mock.calls.find((c) => String(c[0]) === `${SVC}/v1/video/tasks/mvt-abc123`);
+        const call = mockFetch.mock.calls.find((c) => String(c[0]) === `${SVC}/v2/video/tasks/mvt-abc123`);
         expect(call).toBeDefined();
         expect((call![1] as RequestInit).headers).toMatchObject({ Authorization: `Bearer ${SVC_KEY}` });
         expect(JSON.stringify(j)).not.toContain('mvt-');

@@ -251,6 +251,7 @@ silkroadai/
     - 上游能力实测:service-inference.ai(火山四档 + 国内 2.5 480p)`metadata` 回显 `safety_identifier / output_format / service_tier / seed / fps / expires / generate_audio`(无 `frames`);**xinhankr(国内 720p/1080p + 2.0 系)完成态只有 `created/data/id/object/status/usage`,什么都不回显** → 只能提交时落库再回显。
     - migration `20260923010000_seedance_task_ark_echo_params`:`seedance_video_tasks` 加 `safety_identifier / output_format / tools(jsonb)` 三列(可空,非破坏)。`buildArkTaskResponse` 加 `upstreamMeta`(非 volc 渠道的上游真值)+ `submitted`(落库参数),值优先级 **上游真值 > 落库提交参数 > 官方默认**(fps 24 / expires 172800 / service_tier default / output_format mp4 / frames = 24×秒+1);`safety_identifier` / `tools` 客户没传就省略(官方语义);cn 官方形仍不带 `draft` / `upstream_id`。三条渠道(cn / volc / global-promax)三个响应路径(正常 / failed 短路 / 降级)都带。
     - 部署顺序:先 build 新镜像 → temp-DB 验 migration → prod `migrate deploy` → 再滚动副本(server1 seedance-portal×3;server2 api 副本经 cn-adapter/svcinf-client 但 ark 面只在企业实例,server2 可顺带升)。
+- [x] 追加(2026-09-27):国内版 2.5 480p 的 service-inference.ai 线 **/v1 → /v2**(operator 指定)。两台机 `.env` 置 `SEEDANCE_SVCINF_API_VERSION=v2` 已滚动生效(smoke:新任务 `/v2/video/tasks/{mvt}` 200、`/v1` 404);代码缺省同步改 v2,置 `v1` 可切回。
 - [x] 追加(同日,客户实测 `execution_expires_after` 被 400):`/api/v3` 提交白名单再补 `execution_expires_after` / `bitrate_mode` / `moderation_options`(官方创建参数);migration `20260923020000` 加 `execution_expires_after` 列,客户传了就回显客户值,没传给官方默认 172800。**教训:ark 面白名单是正向清单,官方每加一个创建参数就得跟一次** —— 新参数先查白名单。
 
 ### Seedream 5.0 Pro 生图线(2026-09-06)

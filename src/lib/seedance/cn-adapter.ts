@@ -68,7 +68,7 @@ const UPSTREAM_XHK_25 = process.env.SEEDANCE_XHK_MODEL_25 || 'artsdance-2-5-pro-
 // 720p 却 100% 稳),doubao-seedance-2-5-260628 @480p 是 28/28 全稳(含 audio=false)——
 // 同一底模,doubao- 名路由到全支持 480p 的稳定后端。720p/1080p 仍走 pro 版 260801。
 const UPSTREAM_XHK_25_480P = process.env.SEEDANCE_XHK_MODEL_25_480P || 'doubao-seedance-2-5-260628';
-// 2026-09-22 起 480p 单档改走 service-inference.ai(operator 拍板,与火山渠道同一家上游、独立 key):
+// 2026-09-22 起 480p 单档改走 service-inference.ai(operator 拍板,与火山渠道同一家上游、独立 key;2026-09-27 起 /v2):
 // 上游模型名 `doubao-seedance-2-5-260628-max`(本平台套餐形态,GET /v1/models 为准),协议见 svcinf-client。
 // 只有配了 SEEDANCE_SVCINF_KEY 才切;未配回落上面的 xinhankr 260628(部署缺 env 不断档)。
 const UPSTREAM_SVCINF_25_480P = process.env.SEEDANCE_SVCINF_MODEL_25_480P || 'doubao-seedance-2-5-260628-max';
@@ -76,7 +76,9 @@ const UPSTREAM_SVCINF_25_480P = process.env.SEEDANCE_SVCINF_MODEL_25_480P || 'do
 export function getSvcinfCnConfig(): SvcinfConfig | null {
     const key = process.env.SEEDANCE_SVCINF_KEY?.trim();
     if (!key) return null;
-    const api: SvcinfApiVersion = process.env.SEEDANCE_SVCINF_API_VERSION === 'v2' ? 'v2' : 'v1';
+    // 2026-09-27 operator 指定改走 /v2(与火山渠道同一入口;直传 URL 素材经 preparing 自动上传)。
+    // 缺省 v2;置 SEEDANCE_SVCINF_API_VERSION=v1 可切回(两版信封相同)。
+    const api: SvcinfApiVersion = process.env.SEEDANCE_SVCINF_API_VERSION === 'v1' ? 'v1' : 'v2';
     return { base: (process.env.SEEDANCE_SVCINF_BASE_URL || SVCINF_DEFAULT_BASE).replace(/\/$/, ''), key, api };
 }
 
