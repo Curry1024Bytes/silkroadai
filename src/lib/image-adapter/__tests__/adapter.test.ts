@@ -15,6 +15,7 @@ import {
     estimateTextTokens,
     officialInputImageTokens,
     sanitizeAdapterError,
+    isOfficialSize,
 } from '@/lib/image-adapter/adapter';
 import { officialAutoDims, alignTo16, matchesAutoRequest, promptAspectRatio } from '@/lib/image-adapter/auto-size';
 
@@ -1335,9 +1336,9 @@ describe('oaidist provider(真 OpenAI 签名分销网关,gateMinCt 1,756 纯盈�
         expect(rOld.status).toBe(200);
     });
 
-    it('上游静默降级尺寸 → 按【返回图实际尺寸】计费(7000² 式超收根治)', async () => {
-        // 请求 2048² high(过线),上游"降级"返 1024² 的图 → 计费必须是 1024² high 7,024,
-        // 不是请求值 2048² high 14,272
+    it('上游静默降级尺寸(约束内显式 size)→ 按【客户请求尺寸】计费(2026-09-27 对齐官方计算器)', async () => {
+        // 请求 2048² high(过线,官方约束内),上游"降级"返 1024² 的图 → 账单跟请求走 2048² high 14,272
+        // (客户按官方计算器核对只认请求尺寸);7000² 式约束外请求仍按实际,见文末「显式 size 按客户请求尺寸计费」块
         fetchMock.mockImplementation(
             async () =>
                 new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(1024, 1024) }] }), {
@@ -1351,7 +1352,7 @@ describe('oaidist provider(真 OpenAI 签名分销网关,gateMinCt 1,756 纯盈�
             'oaidist',
         );
         expect(res.status).toBe(200);
-        expect((await res.json()).usage.output_tokens).toBe(7024);
+        expect((await res.json()).usage.output_tokens).toBe(14272);
     });
 
     it('返回图实际尺寸 = 请求值 → 计费与旧口径逐 token 一致(如实上游零变化)', async () => {
@@ -2405,8 +2406,8 @@ describe('revefull provider(reve.amlkcloud.top 同上游同 key 的全量线,ope
         expect((await res.json()).usage.output_tokens).toBe(196); // 官方 1024² low
     });
 
-    it('上游静默降级尺寸 → 按【返回图实际尺寸】计费(low 1536×1024 实交 1264×848,防超收)', async () => {
-        // 请求 1536×1024 low,上游降级返 1264×848 的图 → 计费必须是 1264×848 low,不是请求值
+    it('上游静默降级尺寸 → 按【客户请求尺寸】计费(low 1536×1024 实交 1264×848,2026-09-27 起对齐官方)', async () => {
+        // 请求 1536×1024 low,上游降级返 1264×848 的图 → 账单跟请求走 1536×1024 low(官方计算器口径)
         fetchMock.mockImplementation(
             async () =>
                 new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(1264, 848) }] }), {
@@ -2420,7 +2421,7 @@ describe('revefull provider(reve.amlkcloud.top 同上游同 key 的全量线,ope
             'revefull',
         );
         expect(res.status).toBe(200);
-        expect((await res.json()).usage.output_tokens).toBe(officialOutputTokens(1264, 848, 'low'));
+        expect((await res.json()).usage.output_tokens).toBe(officialOutputTokens(1536, 1024, 'low'));
     });
 
     it('size=auto → 透传上游,按返回图实际尺寸(1024²)合成官方 low(196)', async () => {
@@ -2700,5 +2701,98 @@ describe('junze / junzestable provider(钧泽 API,Firefly 转售,openAllTiers �
         expect(lc).not.toContain('distributor');
         expect(lc).not.toContain('firefly');
         expect(lc).not.toContain('s3-accelerate');
+    });
+});
+
+describe('显式 size 按【客户请求尺寸】计费(2026-09-27 operator 拍板:对齐官方计算器,上游缩图只 warn)', () => {
+    const URL_JUNZE = 'http://portal.test/image-adapter/junze/v1/images/generations';
+    const URL_FULL = 'http://portal.test/image-adapter/ominiapifull/v1/images/generations';
+    function upstreamPng(w: number, h: number) {
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(w, h) }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+    }
+
+    it('1536x1024 high,上游静默缩到 1264x848(junze 实况)→ 仍记官方 5488、size 回显 1536x1024', async () => {
+        upstreamPng(1264, 848);
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const res = await handleAdapterImage(
+            jsonReq(URL_JUNZE, { model: 'gpt-image-2', prompt: 'x', size: '1536x1024', quality: 'high' }),
+            'generations',
+            'junze',
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.usage.output_tokens).toBe(5488);
+        expect(body.size).toBe('1536x1024');
+        // 官方按实际会是 4719 —— 这正是客户对不上账的数字,不能再出现
+        expect(officialOutputTokens(1264, 848, 'high')).toBe(4719);
+        expect(warn).toHaveBeenCalledWith(
+            '[image-adapter] upstream coerced size, billing by requested',
+            expect.objectContaining({ requested: '1536x1024', actual: '1264x848' }),
+        );
+        warn.mockRestore();
+    });
+
+    it('上游如实出图(1024x1024 → 1024x1024)→ 请求与实际一致,196,不打 warn', async () => {
+        upstreamPng(1024, 1024);
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const res = await handleAdapterImage(
+            jsonReq(URL_FULL, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', quality: 'low' }),
+            'generations',
+            'ominiapifull',
+        );
+        const body = await res.json();
+        expect(body.usage.output_tokens).toBe(196);
+        expect(body.size).toBe('1024x1024');
+        expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('coerced'), expect.anything());
+        warn.mockRestore();
+    });
+
+    it('约束外显式 size(7000x7000 绕过 proxy 校验)上游降级出 2048² → 退回按实际 2048² 计费,不按请求 38 倍超收', async () => {
+        upstreamPng(2048, 2048);
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const res = await handleAdapterImage(
+            jsonReq(URL_FULL, { model: 'gpt-image-2', prompt: 'x', size: '7000x7000', quality: 'low' }),
+            'generations',
+            'ominiapifull',
+        );
+        const body = await res.json();
+        expect(body.size).toBe('2048x2048');
+        expect(body.usage.output_tokens).toBe(officialOutputTokens(2048, 2048, 'low'));
+        expect(warn).toHaveBeenCalledWith(
+            '[image-adapter] upstream coerced size, billing by actual',
+            expect.objectContaining({ actual: '2048x2048' }),
+        );
+        warn.mockRestore();
+    });
+
+    it('auto 路径不变:上游降级返 512² → 仍按实际 512²(降级守卫不放松)', async () => {
+        upstreamPng(512, 512);
+        const res = await handleAdapterImage(
+            jsonReq(URL_FULL, { model: 'gpt-image-2', prompt: 'x', size: 'auto', quality: 'low' }),
+            'generations',
+            'ominiapifull',
+        );
+        const body = await res.json();
+        expect(body.size).toBe('512x512');
+        expect(body.usage.output_tokens).toBe(officialOutputTokens(512, 512, 'low'));
+    });
+
+    it('isOfficialSize:官方约束(16 整除 / 长边 ≤3840 / 比例 ≤3 / 像素 65.5万~829.4万)', () => {
+        expect(isOfficialSize(1024, 1024)).toBe(true);
+        expect(isOfficialSize(1536, 1024)).toBe(true);
+        expect(isOfficialSize(3840, 2160)).toBe(true);
+        expect(isOfficialSize(2880, 2880)).toBe(true);
+        expect(isOfficialSize(1264, 848)).toBe(true);
+        expect(isOfficialSize(1000, 1000)).toBe(false); // 非 16 整除
+        expect(isOfficialSize(7000, 7000)).toBe(false); // 超长边 + 超像素
+        expect(isOfficialSize(512, 512)).toBe(false); // 像素不足
+        expect(isOfficialSize(3840, 1024)).toBe(false); // 比例 3.75 > 3
+        expect(isOfficialSize(3072, 3072)).toBe(false); // 943 万像素超上限
     });
 });

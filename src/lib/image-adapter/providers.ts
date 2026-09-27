@@ -26,7 +26,7 @@ export interface ImageProvider {
      *  (frimodel 新账号只挂 `gpt-image-2-high` / `gpt-image-2-adobe`)→ 在这里指定。 */
     upstreamModel?: string;
     /** 质量档守门:设了此值 → 只接归一后 quality 在列表内的请求(任意尺寸,含 size=auto,
-     *  计费走"返回图实际尺寸"),其余 503 让路。与 openAllTiers / gateMinCt 互斥使用
+     *  计费:显式 size 按请求尺寸 / auto 按返回图实际尺寸),其余 503 让路。与 openAllTiers / gateMinCt 互斥使用
      *  (onlyQualities 优先)。注意 normQuality 把 auto/standard/缺省归一成 low ——
      *  "所有 medium 请求" = 客户显式传 quality=medium 的请求。 */
     onlyQualities?: ReadonlyArray<'low' | 'medium' | 'high'>;
@@ -218,8 +218,8 @@ export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
     // 的内容凭证一致,不是外泄他家上游身份】,故内容自定向剥离(#440,只在命中 adobe/firefly 时剥)
     // 正确【放行】,客户拿到的 C2PA 与官方一致。若该混合池某张真带 adobe,strip 无条件跑仍会剥。
     // ⚠️【low/medium 大尺寸静默降级】:low 1536×1024 → 实交 1264×848、medium 2048² → 实交 1536²
-    // (high 档才尺寸全如实);openAllTiers 计费一律按【返回图实际尺寸】合成官方公式(imageDimensions
-    // 解 JPEG SOF)→ 降级只少收不超收,安全。输出恒 JPEG(≤2K b64 / 大图走 img.dengche.cc CDN url→b64)。
+    // (high 档才尺寸全如实);⚠️ 2026-09-27 起显式 size 改按【客户请求尺寸】计费(对齐官方计算器),
+    // 这类降级 = 卖小图收大图钱,只在 auto 路径仍按返回图实际尺寸(imageDimensions 解 JPEG SOF)。输出恒 JPEG(≤2K b64 / 大图走 img.dengche.cc CDN url→b64)。
     // 透明 fail-closed(JPEG 无 alpha)。brand 多兜 firefly 纯防御(实测无,防未来漂移到 adobe 时文案泄漏)。
     revefull: {
         baseUrl: 'https://reve.amlkcloud.top',
@@ -235,7 +235,7 @@ export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
     // 尺寸如实、速度最快(23-29s)。slug 名保留 oaidist/oaidistfull(渠道 base_url 路径不变),只换 baseUrl+key。
     // C2PA 由适配器层统一按内容剥(#440)—— 上游身份再漂移也不漏,故不追签名变化。
     // 守门:gateMinCt 1,756(¥0.06/张 保本线)= 1024² medium 起放行、1280×1024 medium(1,510)及以下拒。
-    // 计费按【返回图实际尺寸】合成(adapter.ts 全 provider 通用,防上游静默降级超收)。brand 兜 llmway +
+    // 计费按【客户请求尺寸】合成(2026-09-27 起,adapter.ts 全 provider 通用;auto 按返回图实际尺寸)。brand 兜 llmway +
     // 通用 distributor 词(+ 旧 IP,历史兜底无害)。
     oaidist: {
         baseUrl: 'https://llmway.ai',
@@ -282,7 +282,8 @@ export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
     // 优于全站出图失败);若某天要改成诚实按 medium 收,把 openAllTiers 换成
     // onlyQualities: ['medium'] 一行即可(同 frimodelmedium 先例)。
     // 【尺寸】1024²/1536×1024/1024×1536/2048²/2560×1440/3840×2160 逐像素如实;**方图上限 2880²**
-    // (3072²/3840² 静默降到 2880²)—— openAllTiers 按返回图实际尺寸计费 → 降级只少收不超收,安全。
+    // (3072²/3840² 静默降到 2880²)—— ⚠️ 2026-09-27 起显式 size 按请求尺寸计费,这类降级会按请求尺寸
+    // 收费(2880² 交付、3072² 计费属超收;3072² 已被 proxy 层官方约束 400 挡住,直打适配器才会到这)。
     // `size:"auto"` 与【不传 size】→ 2048×2048(非官方缺省),auto-size 归一层已统一处理。
     // 【其余实测】generations / edits multipart / 多参考图 image[] / mask / response_format=b64_json
     // 全支持;12 并发 12/12 成功、p50 39s(单发 38-70s,12 并发 95-112s);451 文案
