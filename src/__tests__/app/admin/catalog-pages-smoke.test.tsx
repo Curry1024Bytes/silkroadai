@@ -40,13 +40,13 @@ describe('admin catalog pages — SSR smoke (P2)', () => {
         }
     });
 
-    it('explains the two-knob pricing model without touching the network', () => {
+    it('explains the buy/sell rate pricing model without touching the network', () => {
         const network = vi.fn().mockRejectedValue(new Error('SSR network is sealed'));
         vi.stubGlobal('fetch', network);
         try {
             const html = renderToString(<PricingPage />);
-            expect(html).toContain('客户价 = 模型基础价(官方 $)× 档次倍率');
-            expect(html).toContain('档次倍率');
+            expect(html).toContain('客户价 = 模型基础价(官方 $)× 售价率');
+            expect(html).toContain('进货率');
             expect(html).toContain('模型基础价');
             expect(html).toContain('价格总览');
             expect(network).not.toHaveBeenCalled();
