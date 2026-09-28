@@ -21,9 +21,7 @@ const mocked = vi.hoisted(() => ({
 vi.mock('@/lib/db', () => ({ prisma: mocked.db }));
 vi.mock('@/lib/admin/newapi-sync-source', () => ({ readNewApiSyncSource: mocked.source }));
 
-import { applyNewApiSync, previewNewApiSync, readSyncState, validateSyncSelection } from '@/lib/admin/newapi-sync';
-import { buildNewApiSyncPlan } from '@/lib/admin/newapi-sync-plan';
-import type { NewApiSyncPreview } from '@/lib/admin/newapi-sync-types';
+import { applyNewApiSync, previewNewApiSync } from '@/lib/admin/newapi-sync';
 
 const TENANT = 'tenant-a';
 const FOREIGN = 'tenant-b';
@@ -153,9 +151,6 @@ function dbFor(getStore: () => Store) {
         },
     };
 }
-function selected(preview: NewApiSyncPreview) {
-    return preview.items.filter((row) => row.selectable).map((row) => row.id);
-}
 function addExternalGroup() {
     source.groups.external = 'External';
     source.channels.push({ id: 13, name: 'External', status: 1, groups: ['external'], models: ['claude-new'] });
@@ -206,7 +201,9 @@ describe('new-api sync signed preview and transactional apply', () => {
         const before = structuredClone(store);
         const preview = await previewNewApiSync(TENANT);
         expect(preview.preview_token).toMatch(/^\d{13}\.[a-f0-9]{64}$/);
-        expect(preview.items.some((row) => row.kind === 'model' && row.change === 'new')).toBe(true);
+        expect(preview.items.some((row) => row.kind === 'model' && row.change === 'create')).toBe(true);
+        expect(preview.summary).toMatchObject({ models_published: 1, prices_updated: 2 });
+        expect(preview.blocked).toBeNull();
         expect(preview.items.some((row) => row.kind === 'price' && row.change === 'update')).toBe(true);
         expect(writes).toEqual([]);
         expect(store).toEqual(before);
@@ -217,9 +214,10 @@ describe('new-api sync signed preview and transactional apply', () => {
         const preview = await previewNewApiSync(TENANT);
         if (location === 'portal') store.models[0].display_name = 'Edited by another admin';
         else source.channels[0].models.push('gpt-later');
-        await expect(
-            applyNewApiSync(TENANT, 'admin-1', preview.preview_token, { selected: selected(preview), activate: [] }),
-        ).rejects.toMatchObject({ code: 'preview_stale', status: 409 });
+        await expect(applyNewApiSync(TENANT, 'admin-1', preview.preview_token)).rejects.toMatchObject({
+            code: 'preview_stale',
+            status: 409,
+        });
         expect(writes).toEqual([]);
         expect(mocked.source).toHaveBeenCalledTimes(2);
     });
@@ -227,9 +225,9 @@ describe('new-api sync signed preview and transactional apply', () => {
     it('rejects expired previews before refreshing upstream or opening a transaction', async () => {
         const preview = await previewNewApiSync(TENANT);
         vi.advanceTimersByTime(10 * 60_000 + 1);
-        await expect(
-            applyNewApiSync(TENANT, 'admin-1', preview.preview_token, { selected: selected(preview), activate: [] }),
-        ).rejects.toMatchObject({ code: 'preview_stale' });
+        await expect(applyNewApiSync(TENANT, 'admin-1', preview.preview_token)).rejects.toMatchObject({
+            code: 'preview_stale',
+        });
         expect(mocked.source).toHaveBeenCalledTimes(1);
         expect(mocked.db.$transaction).not.toHaveBeenCalled();
         expect(writes).toEqual([]);
@@ -242,9 +240,9 @@ describe('new-api sync signed preview and transactional apply', () => {
             vi.advanceTimersByTime(2);
             return structuredClone(source);
         });
-        await expect(
-            applyNewApiSync(TENANT, 'admin-1', preview.preview_token, { selected: selected(preview), activate: [] }),
-        ).rejects.toMatchObject({ code: 'preview_stale' });
+        await expect(applyNewApiSync(TENANT, 'admin-1', preview.preview_token)).rejects.toMatchObject({
+            code: 'preview_stale',
+        });
         expect(writes).toEqual([]);
     });
 
@@ -255,24 +253,21 @@ describe('new-api sync signed preview and transactional apply', () => {
             [TENANT, badToken],
             [FOREIGN, preview.preview_token],
         ]) {
-            await expect(
-                applyNewApiSync(tenant, null, token, { selected: selected(preview), activate: [] }),
-            ).rejects.toMatchObject({ code: 'preview_stale' });
+            await expect(applyNewApiSync(tenant, null, token)).rejects.toMatchObject({ code: 'preview_stale' });
         }
         expect(writes).toEqual([]);
     });
 
     it('appends price history once and refuses replaying the same successful preview', async () => {
         const preview = await previewNewApiSync(TENANT);
-        const selection = { selected: selected(preview), activate: [] };
-        const result = await applyNewApiSync(TENANT, 'admin-1', preview.preview_token, selection);
+        const result = await applyNewApiSync(TENANT, 'admin-1', preview.preview_token);
         expect(result.applied).toEqual({ groups: 0, models: 1, prices: 2 });
         expect(store.prices).toContainEqual(price());
         expect(
             store.prices.find((row) => row.model_id === `${TENANT}-model` && row.id !== `${TENANT}-price`),
         ).toMatchObject({ cost_cny_per_1m: 0.02, created_by: 'admin-1' });
         const after = structuredClone(store);
-        await expect(applyNewApiSync(TENANT, 'admin-1', preview.preview_token, selection)).rejects.toMatchObject({
+        await expect(applyNewApiSync(TENANT, 'admin-1', preview.preview_token)).rejects.toMatchObject({
             code: 'preview_stale',
         });
         expect(store).toEqual(after);
@@ -282,16 +277,20 @@ describe('new-api sync signed preview and transactional apply', () => {
         });
     });
 
-    it('keeps newly synchronized groups and models disabled until explicitly activated', async () => {
+    it('enables a new group that has channels and a GroupRatio and publishes its priced models', async () => {
         addExternalGroup();
         const preview = await previewNewApiSync(TENANT);
-        await applyNewApiSync(TENANT, null, preview.preview_token, { selected: selected(preview), activate: [] });
+        await applyNewApiSync(TENANT, null, preview.preview_token);
         expect(store.groups.find((row) => row.key === 'external')).toMatchObject({
-            enabled: false,
+            enabled: true,
             is_default: false,
             newapi_channel_ids: [13],
         });
-        expect(store.models.find((row) => row.slug === 'claude-new')).toMatchObject({ enabled: false });
+        expect(store.models.find((row) => row.slug === 'claude-new')).toMatchObject({
+            enabled: true,
+            upstream_map: { external: { channel_id: 13, upstream_model: 'claude-new' } },
+        });
+        expect(store.models.find((row) => row.slug === 'gpt-new')?.enabled).toBe(true);
     });
 
     it('does not read or modify another tenant with the same tier key and model slug', async () => {
@@ -310,7 +309,7 @@ describe('new-api sync signed preview and transactional apply', () => {
         expect(mocked.db.catalogPrice.findMany).toHaveBeenCalledWith(
             expect.objectContaining({ where: { model: { tenant_id: TENANT } } }),
         );
-        await applyNewApiSync(TENANT, null, preview.preview_token, { selected: selected(preview), activate: [] });
+        await applyNewApiSync(TENANT, null, preview.preview_token);
         expect(store.groups.find((row) => row.tenant_id === FOREIGN)).toEqual(foreignBefore.group);
         expect(store.models.find((row) => row.tenant_id === FOREIGN)).toEqual(foreignBefore.model);
         expect(store.prices.filter((row) => row.model_id === `${FOREIGN}-model`)).toEqual([foreignBefore.price]);
@@ -321,9 +320,9 @@ describe('new-api sync signed preview and transactional apply', () => {
         const preview = await previewNewApiSync(TENANT);
         const before = structuredClone(store);
         failPriceWrite = true;
-        await expect(
-            applyNewApiSync(TENANT, 'admin-1', preview.preview_token, { selected: selected(preview), activate: [] }),
-        ).rejects.toThrow('fixture database failure');
+        await expect(applyNewApiSync(TENANT, 'admin-1', preview.preview_token)).rejects.toThrow(
+            'fixture database failure',
+        );
         expect(writes).toContain('group:create');
         expect(writes).toContain('model:create');
         expect(writes.at(-1)).toBe('price:create');
@@ -331,101 +330,39 @@ describe('new-api sync signed preview and transactional apply', () => {
     });
 });
 
-describe('new-api sync selection and activation', () => {
-    it('accepts a complete circular registry/mapping dependency set and rejects either half', async () => {
+describe('new-api sync keeps the catalog aligned', () => {
+    it('re-points the registry and mappings together when a channel is replaced', async () => {
         source.channels = [{ ...source.channels[0], id: 14, models: ['gpt-test'] }];
-        const state = await readSyncState(mocked.db as unknown as Parameters<typeof readSyncState>[0], TENANT);
-        const plan = buildNewApiSyncPlan(state, source, NOW);
-        const registry = plan.groups[0].item;
-        const mapping = plan.models[0].item;
-        expect(registry.dependsOn).toContain(mapping.id);
-        expect(mapping.dependsOn).toContain(registry.id);
-        expect(() =>
-            validateSyncSelection(state, source, plan, { selected: [registry.id, mapping.id], activate: [] }, NOW),
-        ).not.toThrow();
-        for (const id of [registry.id, mapping.id]) {
-            expect(() => validateSyncSelection(state, source, plan, { selected: [id], activate: [] }, NOW)).toThrow(
-                '关联变化需要一起选择',
-            );
-        }
         const beforePrices = structuredClone(store.prices);
         const preview = await previewNewApiSync(TENANT);
-        await applyNewApiSync(TENANT, null, preview.preview_token, {
-            selected: [registry.id, mapping.id],
-            activate: [],
-        });
+        await applyNewApiSync(TENANT, null, preview.preview_token);
         expect(store.groups.find((row) => row.tenant_id === TENANT)?.newapi_channel_ids).toEqual([14]);
         expect(store.models.find((row) => row.tenant_id === TENANT)?.upstream_map.sale.channel_id).toBe(14);
-        expect(store.prices).toEqual(beforePrices);
+        expect(store.prices.slice(0, beforePrices.length)).toEqual(beforePrices);
     });
 
-    it('rejects model activation until its price is explicitly included', async () => {
-        const preview = await previewNewApiSync(TENANT);
-        const modelItem = preview.items.find((row) => row.id === 'model:gpt-new')!;
-        await expect(
-            applyNewApiSync(TENANT, null, preview.preview_token, {
-                selected: [modelItem.id],
-                activate: [modelItem.id],
-            }),
-        ).rejects.toMatchObject({ code: 'selection_invalid', message: expect.stringContaining('尚无完整价格') });
-        expect(writes).toEqual([]);
-        await applyNewApiSync(TENANT, null, preview.preview_token, {
-            selected: selected(preview),
-            activate: [modelItem.id],
-        });
-        expect(store.models.find((row) => row.slug === 'gpt-new')?.enabled).toBe(true);
-    });
-
-    it.each(['chat', 'image'] as const)(
-        'rejects activation of an existing %s model when live billing basis contradicts its historical price',
-        async (modality) => {
-            store.models[0].enabled = false;
-            store.models[0].modality = modality;
-            if (modality === 'chat') {
-                source.prices.modelPrice = { 'gpt-test': 0.12 };
-            } else {
-                store.prices[0].input_cny_per_1m = null;
-                store.prices[0].output_cny_per_1m = null;
-                store.prices[0].per_image_cny = 0.12;
-            }
-            const before = structuredClone(store);
-            const preview = await previewNewApiSync(TENANT);
-            const modelId = 'model:gpt-test';
-            const unsupportedPrice = preview.items.find((row) => row.kind === 'price' && row.id.includes('gpt-test'));
-            expect(unsupportedPrice).toMatchObject({ change: 'missing', selectable: false });
-            expect(unsupportedPrice?.notes.join(' ')).toContain('计费方式无法');
-            await expect(
-                applyNewApiSync(TENANT, null, preview.preview_token, { selected: [modelId], activate: [modelId] }),
-            ).rejects.toMatchObject({ code: 'selection_invalid', message: expect.stringContaining('计费方式') });
-            expect(writes).toEqual([]);
-            expect(store).toEqual(before);
-        },
-    );
-
-    it('requires explicit price synchronization before activating a model whose historical price differs from live pricing', async () => {
-        store.models[0].enabled = false;
+    it('unpublishes a model its channel no longer offers, keeping the model and price history', async () => {
+        source.channels[0].models = ['gpt-new'];
         const before = structuredClone(store);
         const preview = await previewNewApiSync(TENANT);
-        const modelId = 'model:gpt-test';
-        const updatedPrice = preview.items.find((row) => row.kind === 'price' && row.id.includes('gpt-test'))!;
-        expect(updatedPrice).toMatchObject({ change: 'update', defaultSelected: false });
-        await expect(
-            applyNewApiSync(TENANT, null, preview.preview_token, { selected: [modelId], activate: [modelId] }),
-        ).rejects.toMatchObject({
-            code: 'selection_invalid',
-            message: expect.stringContaining('目录价格与 new-api 不一致'),
+        expect(preview.summary).toMatchObject({ models_unpublished: 1, models_published: 1 });
+        await applyNewApiSync(TENANT, null, preview.preview_token);
+        expect(store.models.find((row) => row.id === `${TENANT}-model`)).toMatchObject({
+            enabled: false,
+            upstream_map: model().upstream_map,
         });
-        expect(writes).toEqual([]);
-        expect(store).toEqual(before);
+        expect(store.prices.slice(0, before.prices.length)).toEqual(before.prices);
+    });
 
-        await applyNewApiSync(TENANT, 'admin-1', preview.preview_token, {
-            selected: [modelId, updatedPrice.id],
-            activate: [modelId],
-        });
+    it('publishes an unpublished model at the live price, preserving cost and history', async () => {
+        store.models[0].enabled = false;
+        source.channels[0].models = ['gpt-test'];
+        const before = structuredClone(store);
+        const preview = await previewNewApiSync(TENANT);
+        await applyNewApiSync(TENANT, 'admin-1', preview.preview_token);
         expect(writes).toEqual(['model:update', 'price:create']);
         expect(store.models[0].enabled).toBe(true);
         expect(store.prices.slice(0, before.prices.length)).toEqual(before.prices);
-        expect(store.prices).toHaveLength(before.prices.length + 1);
         expect(store.prices.at(-1)).toMatchObject({
             model_id: store.models[0].id,
             cost_cny_per_1m: before.prices[0].cost_cny_per_1m,
@@ -433,45 +370,42 @@ describe('new-api sync selection and activation', () => {
         });
     });
 
-    it('rejects activation against a disabled group and allows explicit joint activation', async () => {
-        addExternalGroup();
-        const preview = await previewNewApiSync(TENANT);
-        const modelId = 'model:claude-new';
-        const groupId = 'group:external';
-        await expect(
-            applyNewApiSync(TENANT, null, preview.preview_token, { selected: selected(preview), activate: [modelId] }),
-        ).rejects.toMatchObject({ code: 'selection_invalid', message: expect.stringContaining('未启用或未登记') });
-        expect(writes).toEqual([]);
-        await applyNewApiSync(TENANT, null, preview.preview_token, {
-            selected: selected(preview),
-            activate: [modelId, groupId],
-        });
-        expect(store.groups.find((row) => row.key === 'external')?.enabled).toBe(true);
-        expect(store.models.find((row) => row.slug === 'claude-new')?.enabled).toBe(true);
-    });
-
-    it('rejects missing, unselectable or unselected activation operations', async () => {
-        source.prices.completionRatio = { 'gpt-test': 3 };
-        const preview = await previewNewApiSync(TENANT);
-        const missing = preview.items.find((row) => row.kind === 'price' && row.change === 'missing')!;
-        for (const selection of [
-            { selected: ['unknown'], activate: [] },
-            { selected: [missing.id], activate: [] },
-            { selected: ['model:gpt-new'], activate: ['model:gpt-test'] },
-        ]) {
-            await expect(applyNewApiSync(TENANT, null, preview.preview_token, selection)).rejects.toMatchObject({
-                code: 'selection_invalid',
+    it.each(['chat', 'image'] as const)(
+        'does not publish an existing %s model whose live billing basis contradicts its catalog modality',
+        async (modality) => {
+            store.models[0].enabled = false;
+            store.models[0].modality = modality;
+            source.channels[0].models = ['gpt-test'];
+            if (modality === 'chat') source.prices.modelPrice = { 'gpt-test': 0.12 };
+            const preview = await previewNewApiSync(TENANT);
+            expect(preview.items).toEqual([]);
+            expect(preview.warnings.join(' ')).toContain('计费方式无法');
+            await expect(applyNewApiSync(TENANT, null, preview.preview_token)).rejects.toMatchObject({
+                code: 'nothing_to_sync',
             });
-        }
+            expect(writes).toEqual([]);
+        },
+    );
+
+    it('refuses to apply when the default tier would lose every channel', async () => {
+        source.channels = [];
+        const before = structuredClone(store);
+        const preview = await previewNewApiSync(TENANT);
+        expect(preview.blocked).toContain('默认档次');
+        await expect(applyNewApiSync(TENANT, null, preview.preview_token)).rejects.toMatchObject({
+            code: 'sync_blocked',
+        });
         expect(writes).toEqual([]);
+        expect(store).toEqual(before);
     });
 });
 
 it('blocks unified catalog synchronization before reads or writes while a price publication is active', async () => {
     const preview = await previewNewApiSync(TENANT);
     mockCatalogGuard.mockRejectedValueOnce(new PricingPublishError('pricing_publish_busy', 'busy'));
-    await expect(
-        applyNewApiSync(TENANT, null, preview.preview_token, { selected: selected(preview), activate: [] }),
-    ).rejects.toMatchObject({ code: 'pricing_publish_busy', status: 409 });
+    await expect(applyNewApiSync(TENANT, null, preview.preview_token)).rejects.toMatchObject({
+        code: 'pricing_publish_busy',
+        status: 409,
+    });
     expect(writes).toEqual([]);
 });

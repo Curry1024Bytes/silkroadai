@@ -88,42 +88,60 @@ afterEach(() => {
     expect(forbiddenIo.findFirst).not.toHaveBeenCalled();
 });
 
+const ready = () => rounded(0.5 * CHAT_FX * 0.2);
+const livePrice = () => price({ input_cny_per_1m: ready(), output_cny_per_1m: rounded(ready() * 4) });
+function withExternal(overrides: { ratio?: boolean; groups?: Record<string, string> } = {}): NewApiSyncSource {
+    const upstream = source({
+        groups: { [GROUP]: '特惠', ...(overrides.groups ?? { 外接: '外接档' }) },
+        channels: [
+            channel(),
+            ...Object.keys(overrides.groups ?? { 外接: '' }).map((name, index) =>
+                channel({ id: 13 + index, name: `ext ${index}`, groups: [name], models: ['claude-new'] }),
+            ),
+        ],
+    });
+    const names = Object.keys(overrides.groups ?? { 外接: '' });
+    upstream.prices.modelRatio = { [MODEL]: 0.5, 'claude-new': 1.5 };
+    upstream.prices.completionRatio = { [MODEL]: 4, 'claude-new': 5 };
+    upstream.prices.groupRatio = {
+        [GROUP]: 0.2,
+        ...(overrides.ratio === false ? {} : Object.fromEntries(names.map((name) => [name, 1]))),
+    };
+    return upstream;
+}
+
 describe('buildNewApiSyncPlan prices', () => {
-    it('proposes a missing catalog price from global model ratios, not absent channel price fields', () => {
+    it('adds a missing catalog price from global model ratios', () => {
         const plan = buildNewApiSyncPlan(state(), source(), NOW);
         expect(plan.groups).toHaveLength(0);
         expect(plan.models).toHaveLength(0);
         expect(plan.prices).toHaveLength(1);
-        const input = rounded(0.5 * CHAT_FX * 0.2);
         expect(plan.prices[0]).toMatchObject({
             slug: MODEL,
             tier: TIER,
             current: null,
-            next: { input_cny_per_1m: input, output_cny_per_1m: rounded(input * 4), per_image_cny: null },
-            item: { change: 'new', selectable: true, defaultSelected: true },
+            next: { input_cny_per_1m: ready(), output_cny_per_1m: rounded(ready() * 4), per_image_cny: null },
+            item: { kind: 'price', change: 'create' },
         });
+        expect(plan.summary).toMatchObject({ prices_updated: 1, models_published: 0, models_unpublished: 0 });
+        expect(plan.blocked).toBeNull();
     });
 
-    it('offers changed existing prices as unchecked versions and preserves current cost/history', () => {
+    it('follows changed new-api prices as a new version and preserves current cost/history', () => {
         const prior = price();
         const input = state({ prices: [prior, price({ id: 'old', effective_from: '2026-08-01T00:00:00.000Z' })] });
         const before = structuredClone(input);
         const plan = buildNewApiSyncPlan(input, source(), NOW);
-        expect(plan.prices[0].item).toMatchObject({ change: 'update', defaultSelected: false, selectable: true });
+        expect(plan.prices[0].item.change).toBe('update');
         expect(plan.prices[0].current).toEqual(prior);
         expect(plan.prices[0].current?.cost_cny_per_1m).toBe(0.15);
         expect(input).toEqual(before);
     });
 
     it('counts identical prices as unchanged without adding another version', () => {
-        const input = rounded(0.5 * CHAT_FX * 0.2);
-        const plan = buildNewApiSyncPlan(
-            state({ prices: [price({ input_cny_per_1m: input, output_cny_per_1m: rounded(input * 4) })] }),
-            source(),
-            NOW,
-        );
-        expect(plan.prices).toEqual([]);
-        expect(plan.unchanged.prices).toBe(1);
+        const plan = buildNewApiSyncPlan(state({ prices: [livePrice()] }), source(), NOW);
+        expect(plan.items).toEqual([]);
+        expect(plan.unchanged).toEqual({ groups: 1, models: 1, prices: 1 });
     });
 
     it('does not default missing CompletionRatio into an apparently valid catalog price', () => {
@@ -131,12 +149,8 @@ describe('buildNewApiSyncPlan prices', () => {
         upstream.prices.completionRatio = '{}';
         const plan = buildNewApiSyncPlan(state(), upstream, NOW);
         expect(plan.prices).toHaveLength(0);
-        expect(plan.items.find((row) => row.kind === 'price')).toMatchObject({
-            change: 'missing',
-            selectable: false,
-            defaultSelected: false,
-        });
-        expect(plan.items.find((row) => row.kind === 'price')?.notes.join(' ')).toContain('CompletionRatio');
+        expect(plan.models).toHaveLength(0);
+        expect(plan.warnings.join(' ')).toContain('CompletionRatio');
     });
 
     it('does not overwrite scheduled future prices or write an immediate competing version', () => {
@@ -151,9 +165,7 @@ describe('buildNewApiSyncPlan prices', () => {
             NOW,
         );
         expect(plan.prices).toEqual([]);
-        const row = plan.items.find((item) => item.kind === 'price');
-        expect(row).toMatchObject({ selectable: false, defaultSelected: false });
-        expect(row?.notes.join(' ')).toContain('未来生效价格');
+        expect(plan.warnings.join(' ')).toContain('未来生效价格');
     });
 
     it.each(['1k', '2k', '4k'])('preserves fixed image SKU %s even when new-api reports a different price', (size) => {
@@ -172,18 +184,20 @@ describe('buildNewApiSyncPlan prices', () => {
         expect(previous.per_image_cny).toBe(1.5);
     });
 
-    it('does not invent the initial price for a fixed SKU missing its protected catalog price', () => {
+    it('does not invent or publish a fixed SKU missing its protected catalog price', () => {
         const slug = 'gpt-image-2-1k';
         const image = model({
             slug,
             modality: 'image',
+            enabled: false,
             upstream_map: { [TIER]: { channel_id: 6, upstream_model: slug } },
         });
         const upstream = source({ channels: [channel({ models: [slug] })] });
         upstream.prices.modelPrice = { [slug]: 10 };
         const plan = buildNewApiSyncPlan(state({ models: [image] }), upstream, NOW);
         expect(plan.prices).toEqual([]);
-        expect(plan.items.find((row) => row.kind === 'price')?.notes.join(' ')).toContain('固定图片规格');
+        expect(plan.models).toEqual([]);
+        expect(plan.warnings.join(' ')).toContain('固定图片规格');
     });
 
     it('converts an ordinary fixed image price using the configured group and image conversion', () => {
@@ -203,13 +217,14 @@ describe('buildNewApiSyncPlan prices', () => {
         });
     });
 
-    it('flags token-priced images instead of turning them into fixed-price images', () => {
+    it('flags token-priced images instead of creating fixed-price images', () => {
         const upstream = source({ channels: [channel({ models: ['gpt-image-2'] })] });
         upstream.prices.modelRatio = { 'gpt-image-2': 2.5 };
         upstream.prices.completionRatio = { 'gpt-image-2': 6 };
         const plan = buildNewApiSyncPlan(state({ models: [] }), upstream, NOW);
         expect(plan.prices).toEqual([]);
-        expect(plan.items.find((row) => row.kind === 'price')?.notes.join(' ')).toContain('计费方式无法');
+        expect(plan.models).toEqual([]);
+        expect(plan.warnings.join(' ')).toContain('计费方式无法');
     });
 
     it('flags per-request chat models instead of presenting a misleading per-image price', () => {
@@ -217,86 +232,189 @@ describe('buildNewApiSyncPlan prices', () => {
         upstream.prices.modelPrice = { [MODEL]: 0.12 };
         const plan = buildNewApiSyncPlan(state(), upstream, NOW);
         expect(plan.prices).toEqual([]);
-        expect(plan.items.find((row) => row.kind === 'price')?.notes.join(' ')).toContain('计费方式无法');
+        expect(plan.warnings.join(' ')).toContain('计费方式无法');
     });
 });
 
-describe('buildNewApiSyncPlan group/model candidates', () => {
-    it('creates new groups and models as disabled candidates with explicit activation options', () => {
-        const plan = buildNewApiSyncPlan(state({ groups: [], models: [] }), source(), NOW);
+describe('buildNewApiSyncPlan follows new-api channels', () => {
+    it('creates and enables a new usable group that has channels and a GroupRatio, and publishes its models', () => {
+        const plan = buildNewApiSyncPlan(state({ prices: [livePrice()] }), withExternal(), NOW);
+        expect(plan.blocked).toBeNull();
         expect(plan.groups).toHaveLength(1);
-        expect(plan.groups[0].next).toMatchObject({ enabled: false, is_default: false, newapi_channel_ids: [6] });
+        expect(plan.groups[0].next).toMatchObject({ enabled: true, is_default: false, newapi_channel_ids: [13] });
         expect(plan.groups[0].next.key).toMatch(/^[a-z0-9-]+$/);
-        expect(plan.groups[0].item).toMatchObject({ canActivate: true, defaultSelected: true });
-        expect(plan.models[0].next.enabled).toBe(false);
-        expect(plan.models[0].item).toMatchObject({ canActivate: true, defaultSelected: true });
-        expect(plan.models[0].item.dependsOn).toContain(plan.groups[0].item.id);
-        expect(plan.prices[0].item.dependsOn).toEqual(
-            expect.arrayContaining([plan.groups[0].item.id, plan.models[0].item.id]),
-        );
-    });
-
-    it('does not reactivate disabled existing groups or models when metadata is unchanged', () => {
-        const plan = buildNewApiSyncPlan(
-            state({ groups: [group({ enabled: false, is_default: false })], models: [model({ enabled: false })] }),
-            source(),
-            NOW,
-        );
-        expect(plan.groups[0].next.enabled).toBe(false);
-        expect(plan.groups[0].item).toMatchObject({ canActivate: true, defaultSelected: false });
-        expect(plan.models[0].next.enabled).toBe(false);
-        expect(plan.models[0].item).toMatchObject({ canActivate: true, defaultSelected: false });
-    });
-
-    it('does not offer activation for an unpublished model that still has no upstream mapping', () => {
-        const plan = buildNewApiSyncPlan(
-            state({ models: [model({ slug: 'orphaned-model', enabled: false, upstream_map: {} })] }),
-            source({ channels: [channel({ models: [] })] }),
-            NOW,
-        );
-        expect(plan.models).toEqual([]);
-        const orphan = plan.items.find((row) => row.kind === 'model');
-        expect(orphan).toMatchObject({
-            change: 'unavailable',
-            selectable: false,
-            defaultSelected: false,
-            canActivate: false,
+        const created = plan.models.find((change) => change.next.slug === 'claude-new');
+        expect(created?.item.change).toBe('create');
+        expect(created?.next).toMatchObject({
+            enabled: true,
+            upstream_map: { [plan.groups[0].next.key]: { channel_id: 13, upstream_model: 'claude-new' } },
         });
-        expect(orphan?.notes.join(' ')).toContain('没有可用渠道映射');
+        expect(plan.prices.map((change) => change.slug)).toEqual(['claude-new']);
+        expect(plan.summary).toMatchObject({ groups_created: 1, models_published: 1, prices_updated: 1 });
     });
 
-    it('can fill a missing price for an unchanged unpublished model without selecting a model write', () => {
+    it('does not create a tier for a group without a GroupRatio', () => {
+        const plan = buildNewApiSyncPlan(state({ prices: [livePrice()] }), withExternal({ ratio: false }), NOW);
+        expect(plan.groups).toEqual([]);
+        expect(plan.models).toEqual([]);
+        expect(plan.warnings.join(' ')).toContain('没有设置分组倍率');
+    });
+
+    it('creates separate ASCII keys for different Chinese group names without renaming the legacy key', () => {
+        const plan = buildNewApiSyncPlan(
+            state({ prices: [livePrice()] }),
+            withExternal({ groups: { 外接一: '外接一', 外接二: '外接二' } }),
+            NOW,
+        );
+        const keys = plan.groups.map((change) => change.next.key);
+        expect(keys).toHaveLength(2);
+        expect(new Set(keys).size).toBe(2);
+        expect(keys.every((key) => /^[a-z0-9-]+$/.test(key))).toBe(true);
+        expect(plan.groups.every((change) => change.current === null)).toBe(true);
+        expect(plan.blocked).toBeNull();
+    });
+
+    it('publishes an unpublished model once a channel sells it and the price is ready', () => {
         const plan = buildNewApiSyncPlan(state({ models: [model({ enabled: false })] }), source(), NOW);
-        expect(plan.models[0].current?.upstream_map).toEqual(plan.models[0].next.upstream_map);
-        expect(plan.models[0].item).toMatchObject({ defaultSelected: false, canActivate: true });
+        expect(plan.models[0].item.change).toBe('publish');
+        expect(plan.models[0].next.enabled).toBe(true);
         expect(plan.prices).toHaveLength(1);
-        expect(plan.prices[0].item).toMatchObject({ selectable: true, defaultSelected: true, dependsOn: [] });
-        expect(plan.models[0].next.enabled).toBe(false);
+        expect(plan.summary.models_published).toBe(1);
     });
 
-    it('keeps legacy Chinese tier keys and existing display metadata unchanged', () => {
+    it('does not publish a model whose new-api price is missing', () => {
+        const upstream = source();
+        upstream.prices.modelRatio = {};
+        const plan = buildNewApiSyncPlan(state({ models: [model({ enabled: false })] }), upstream, NOW);
+        expect(plan.models).toEqual([]);
+        expect(plan.warnings.join(' ')).toContain('未读取到 new-api 价格');
+    });
+
+    it('repoints the registry and model mapping when the channel is replaced, keeping custom metadata', () => {
         const input = state({
             groups: [group({ display_name: '运营自定义名称' })],
             models: [model({ display_name: '自定义模型名', vendor: 'custom-vendor' })],
+            prices: [livePrice()],
         });
+        const before = structuredClone(input);
         const plan = buildNewApiSyncPlan(input, source({ channels: [channel({ id: 14 })] }), NOW);
-        expect(plan.groups[0].next).toMatchObject({ key: TIER, display_name: '运营自定义名称' });
-        expect(plan.models[0].next).toMatchObject({ display_name: '自定义模型名', vendor: 'custom-vendor' });
-        expect(Object.keys(plan.models[0].next.upstream_map)).toEqual([TIER]);
+        expect(plan.groups[0].next).toMatchObject({
+            key: TIER,
+            display_name: '运营自定义名称',
+            newapi_channel_ids: [14],
+        });
+        expect(plan.models[0].item.change).toBe('update');
+        expect(plan.models[0].next).toMatchObject({
+            display_name: '自定义模型名',
+            vendor: 'custom-vendor',
+            enabled: true,
+            upstream_map: { [TIER]: { channel_id: 14, upstream_model: MODEL } },
+        });
+        expect(input).toEqual(before);
     });
 
-    it('does not automatically choose among multiple source groups for an unregistered channel', () => {
-        const upstream = source({
-            groups: { first: '第一档', second: '第二档' },
-            channels: [channel({ groups: ['first', 'second'] })],
-        });
-        const plan = buildNewApiSyncPlan(state({ groups: [], models: [] }), upstream, NOW);
-        expect(plan.warnings.join(' ')).toContain('归属不明确');
-        expect(plan.models).toHaveLength(0);
-        expect(plan.groups.every((change) => !change.next.enabled && change.next.newapi_channel_ids.length === 0)).toBe(
-            true,
+    it('repoints unpublished models too, preserving a custom upstream alias', () => {
+        const alias = 'claude-legacy-name';
+        const upstream = source({ channels: [channel({ id: 14, models: [MODEL, alias] })] });
+        upstream.prices.modelRatio = { [MODEL]: 0.5 };
+        const plan = buildNewApiSyncPlan(
+            state({
+                models: [
+                    model(),
+                    model({
+                        id: 'disabled',
+                        slug: 'friendly-name',
+                        enabled: false,
+                        upstream_map: { [TIER]: { channel_id: 6, upstream_model: alias } },
+                    }),
+                ],
+                prices: [livePrice()],
+            }),
+            upstream,
+            NOW,
         );
-        expect(plan.groups.every((change) => !change.item.canActivate)).toBe(true);
+        expect(plan.models.find((change) => change.next.id === 'disabled')?.next).toMatchObject({
+            enabled: false,
+            upstream_map: { [TIER]: { channel_id: 14, upstream_model: alias } },
+        });
+    });
+
+    it('picks the first channel of the tier when several channels sell the model', () => {
+        const plan = buildNewApiSyncPlan(
+            state({ prices: [livePrice()] }),
+            source({ channels: [channel({ id: 13 }), channel({ id: 14 })] }),
+            NOW,
+        );
+        expect(plan.groups[0].next.newapi_channel_ids).toEqual([13, 14]);
+        expect(plan.models[0].next.upstream_map[TIER]).toEqual({ channel_id: 13, upstream_model: MODEL });
+    });
+
+    it.each(['deleted', 'disabled', 'model-removed'] as const)(
+        'unpublishes a model whose channel was %s without deleting it or its price history',
+        (failure) => {
+            const input = state({ prices: [price()] });
+            const before = structuredClone(input);
+            const spare = channel({ id: 7, name: 'spare', models: ['other'] });
+            const upstream = source({
+                channels:
+                    failure === 'deleted'
+                        ? [spare]
+                        : [channel(failure === 'disabled' ? { status: 2 } : { models: [] }), spare],
+            });
+            const plan = buildNewApiSyncPlan(input, upstream, NOW);
+            const unpublished = plan.models.find((change) => change.next.slug === MODEL);
+            expect(unpublished?.item.change).toBe('unpublish');
+            expect(unpublished?.next.enabled).toBe(false);
+            expect(unpublished?.next.upstream_map).toEqual(
+                failure === 'model-removed' ? { [TIER]: { channel_id: 6, upstream_model: MODEL } } : {},
+            );
+            expect(plan.prices).toEqual([]);
+            expect(plan.summary.models_unpublished).toBe(1);
+            expect(plan.blocked).toBeNull();
+            expect(input).toEqual(before);
+        },
+    );
+
+    it('blocks the sync when the default tier would lose every channel', () => {
+        const plan = buildNewApiSyncPlan(state({ prices: [price()] }), source({ channels: [] }), NOW);
+        expect(plan.blocked).toContain('默认档次');
+    });
+
+    it('disables a non-default tier that lost all channels and drops it from published models', () => {
+        const input = state({
+            groups: [
+                group(),
+                group({ id: 'group-2', key: 'side', newapi_group: 'side', newapi_channel_ids: [9], is_default: false }),
+            ],
+            models: [
+                model({
+                    upstream_map: {
+                        [TIER]: { channel_id: 6, upstream_model: MODEL },
+                        side: { channel_id: 9, upstream_model: MODEL },
+                    },
+                }),
+            ],
+            prices: [livePrice()],
+        });
+        const plan = buildNewApiSyncPlan(input, source(), NOW);
+        expect(plan.blocked).toBeNull();
+        expect(plan.groups.find((change) => change.next.key === 'side')?.next).toMatchObject({
+            enabled: false,
+            newapi_channel_ids: [],
+        });
+        expect(plan.models[0].next).toMatchObject({
+            enabled: true,
+            upstream_map: { [TIER]: { channel_id: 6, upstream_model: MODEL } },
+        });
+    });
+
+    it('does not guess among multiple source groups for an unregistered channel', () => {
+        const upstream = withExternal();
+        upstream.channels[1].groups = ['外接', GROUP];
+        const plan = buildNewApiSyncPlan(state({ prices: [livePrice()] }), upstream, NOW);
+        expect(plan.warnings.join(' ')).toContain('同时属于多个分组');
+        expect(plan.groups).toEqual([]);
+        expect(plan.models).toEqual([]);
     });
 
     it('respects an existing unique owner when a channel advertises multiple source groups', () => {
@@ -304,157 +422,18 @@ describe('buildNewApiSyncPlan group/model candidates', () => {
             groups: { [GROUP]: '特惠', extra: '另一个档' },
             channels: [channel({ groups: [GROUP, 'extra'] })],
         });
-        const plan = buildNewApiSyncPlan(state(), upstream, NOW);
+        upstream.prices.groupRatio = { [GROUP]: 0.2, extra: 1 };
+        const plan = buildNewApiSyncPlan(state({ prices: [livePrice()] }), upstream, NOW);
         expect(plan.warnings).toEqual([]);
-        expect(plan.groups.find((change) => change.next.newapi_group === 'extra')?.next.newapi_channel_ids).toEqual([]);
-        expect(plan.models).toHaveLength(0);
-        expect(plan.prices[0].tier).toBe(TIER);
+        expect(plan.items).toEqual([]);
     });
 
-    it('does not auto-assign a registered channel when its upstream group has changed', () => {
-        const upstream = source({
-            groups: { [GROUP]: '特惠', changed: '改组' },
-            channels: [channel({ groups: ['changed'] })],
-        });
-        const plan = buildNewApiSyncPlan(state(), upstream, NOW);
-        expect(plan.warnings.join(' ')).toContain('分组已改变');
-        expect(plan.models).toEqual([]);
-        expect(plan.groups.some((change) => change.current?.key === TIER)).toBe(false);
-        expect(plan.items.find((row) => row.kind === 'group' && row.title === '特惠')).toMatchObject({
-            change: 'unavailable',
-            selectable: false,
-        });
-    });
-
-    it('does not choose between two equally valid replacement channels for one model', () => {
-        const upstream = source({ channels: [channel({ id: 13 }), channel({ id: 14 })] });
-        const plan = buildNewApiSyncPlan(state(), upstream, NOW);
-        expect(plan.groups[0].item).toMatchObject({ selectable: false, defaultSelected: false });
-        expect(plan.models).toEqual([]);
-        const unavailable = plan.items.find((row) => row.kind === 'model');
-        expect(unavailable).toMatchObject({ selectable: false, change: 'unavailable' });
-        expect(unavailable?.notes.join(' ')).toContain('多个替换渠道');
-    });
-
-    it('does not attach an inactive new tier to an already published model', () => {
-        const upstream = source({
-            groups: { [GROUP]: '特惠', newgroup: '新档' },
-            channels: [channel(), channel({ id: 13, groups: ['newgroup'] })],
-        });
-        const plan = buildNewApiSyncPlan(state(), upstream, NOW);
-        expect(plan.groups[0].next.enabled).toBe(false);
-        expect(plan.models).toEqual([]);
-        expect(plan.prices.every((change) => change.tier === TIER)).toBe(true);
-    });
-
-    it('creates separate ASCII candidate keys for different Chinese names without renaming the legacy key', () => {
-        const upstream = source({
-            groups: { [GROUP]: '特惠', 外接一: '外接一', 外接二: '外接二' },
-            channels: [
-                channel(),
-                channel({ id: 13, groups: ['外接一'], models: [] }),
-                channel({ id: 14, groups: ['外接二'], models: [] }),
-            ],
-        });
-        const plan = buildNewApiSyncPlan(state(), upstream, NOW);
-        const keys = plan.groups.map((change) => change.next.key);
-        expect(keys).toHaveLength(2);
-        expect(new Set(keys).size).toBe(2);
-        expect(keys.every((key) => /^[a-z0-9-]+$/.test(key))).toBe(true);
-        expect(plan.groups.every((change) => change.current === null)).toBe(true);
-    });
-});
-
-describe('buildNewApiSyncPlan replacement safety', () => {
-    it('requires registry and model mapping replacement together', () => {
-        const input = state();
-        const before = structuredClone(input);
-        const plan = buildNewApiSyncPlan(input, source({ channels: [channel({ id: 14 })] }), NOW);
-        expect(plan.groups[0].next.newapi_channel_ids).toEqual([14]);
-        expect(plan.models[0].next.upstream_map[TIER]).toEqual({ channel_id: 14, upstream_model: MODEL });
-        expect(plan.groups[0].item.dependsOn).toContain(plan.models[0].item.id);
-        expect(plan.models[0].item.dependsOn).toContain(plan.groups[0].item.id);
-        expect(plan.groups[0].item.selectable).toBe(true);
-        expect(plan.models[0].item.selectable).toBe(true);
-        expect(input).toEqual(before);
-    });
-
-    it('migrates disabled models too, preserving the custom upstream alias and publication status', () => {
-        const alias = 'claude-legacy-name';
+    it('does not touch duplicate Portal owners of one new-api group', () => {
         const input = state({
-            models: [
-                model(),
-                model({
-                    id: 'disabled',
-                    slug: 'friendly-name',
-                    enabled: false,
-                    upstream_map: { [TIER]: { channel_id: 6, upstream_model: alias } },
-                }),
-            ],
+            groups: [group(), group({ id: 'duplicate', key: 'other', is_default: false, enabled: false })],
         });
-        const plan = buildNewApiSyncPlan(
-            input,
-            source({ channels: [channel({ id: 14, models: [MODEL, alias] })] }),
-            NOW,
-        );
-        const disabled = plan.models.find((change) => change.next.id === 'disabled');
-        expect(disabled?.next).toMatchObject({
-            enabled: false,
-            upstream_map: { [TIER]: { channel_id: 14, upstream_model: alias } },
-        });
-        expect(plan.groups[0].item.dependsOn).toContain(disabled?.item.id);
-    });
-
-    it('blocks a registry replacement when even an unpublished model has no compatible replacement', () => {
-        const input = state({
-            models: [
-                model(),
-                model({
-                    id: 'disabled',
-                    slug: 'old-model',
-                    enabled: false,
-                    upstream_map: { [TIER]: { channel_id: 6, upstream_model: 'old-model' } },
-                }),
-            ],
-        });
-        const plan = buildNewApiSyncPlan(input, source({ channels: [channel({ id: 14 })] }), NOW);
-        expect(plan.groups[0].item).toMatchObject({ selectable: false, defaultSelected: false });
-        expect(plan.groups[0].item.notes.join(' ')).toContain('无法迁移');
-        expect(plan.models.find((change) => change.next.slug === MODEL)?.item).toMatchObject({
-            selectable: false,
-            defaultSelected: false,
-        });
-        expect(plan.prices.every((change) => !change.item.selectable)).toBe(true);
-    });
-
-    it.each(['deleted', 'disabled', 'model-removed'] as const)(
-        'reports a %s source without deleting catalog models, mappings, groups, or price history',
-        (failure) => {
-            const input = state({ prices: [price()] });
-            const before = structuredClone(input);
-            const upstream = source({
-                channels:
-                    failure === 'deleted' ? [] : [channel(failure === 'disabled' ? { status: 2 } : { models: [] })],
-            });
-            const plan = buildNewApiSyncPlan(input, upstream, NOW);
-            expect(plan.models).toEqual([]);
-            expect(plan.prices).toEqual([]);
-            expect(plan.groups).toEqual([]);
-            expect(plan.items.find((row) => row.kind === 'model')).toMatchObject({
-                change: 'unavailable',
-                selectable: false,
-                defaultSelected: false,
-            });
-            expect(input).toEqual(before);
-        },
-    );
-
-    it('blocks ambiguous duplicate Portal owners instead of guessing one', () => {
-        const input = state({ groups: [group(), group({ id: 'duplicate', key: 'other', is_default: false })] });
         const plan = buildNewApiSyncPlan(input, source(), NOW);
         expect(plan.groups).toEqual([]);
-        expect(plan.models).toEqual([]);
-        expect(plan.prices).toEqual([]);
         expect(plan.warnings.join(' ')).toContain('对应多个 Portal 档次');
     });
 });

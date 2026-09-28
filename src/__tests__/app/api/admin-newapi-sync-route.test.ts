@@ -24,9 +24,23 @@ import { NewApiSyncError } from '@/lib/admin/newapi-sync';
 import { PLATFORM_TENANT_ID } from '@/lib/admin/tenant-scope';
 
 const TOKEN = `${Date.parse('2026-09-11T08:00:00Z')}.${'a'.repeat(64)}`;
-const PREVIEW = { preview_token: TOKEN, items: [], warnings: [], unchanged: { groups: 1, models: 2, prices: 3 } };
+const PREVIEW = {
+    preview_token: TOKEN,
+    items: [],
+    summary: {
+        groups_created: 0,
+        groups_updated: 0,
+        models_published: 0,
+        models_unpublished: 0,
+        models_updated: 0,
+        prices_updated: 0,
+    },
+    warnings: [],
+    blocked: null,
+    unchanged: { groups: 1, models: 2, prices: 3 },
+};
 const ADMIN = { role: 'superadmin', tenant_id: 'tenant-a', user: { id: 'admin-1' }, viaBreakGlass: false };
-const SELECTION = { preview_token: TOKEN, selected: ['model:gpt-test'], activate: [] };
+const SELECTION = { preview_token: TOKEN };
 
 function request(body: unknown = {}, query = '') {
     return new NextRequest(`https://portal.test/api/admin/newapi-sync${query}`, {
@@ -65,43 +79,36 @@ describe('POST /api/admin/newapi-sync', () => {
         mocked.resolveAdmin.mockResolvedValue({ ...ADMIN, tenant_id: null, user: null, viaBreakGlass: true });
         const response = await POST(request(SELECTION, '?dryRun=false'));
         expect(response.status).toBe(200);
-        expect(mocked.apply).toHaveBeenCalledWith(PLATFORM_TENANT_ID, null, TOKEN, {
-            selected: SELECTION.selected,
-            activate: [],
-        });
+        expect(mocked.apply).toHaveBeenCalledWith(PLATFORM_TENANT_ID, null, TOKEN);
     });
 
-    it('applies only an explicit dryRun=false with the signed token and chosen operations', async () => {
-        const response = await POST(request({ ...SELECTION, activate: ['model:gpt-test'] }, '?dryRun=false'));
+    it('applies only an explicit dryRun=false with the signed preview token', async () => {
+        const response = await POST(request(SELECTION, '?dryRun=false'));
         expect(response.status).toBe(200);
         expect(await response.json()).toMatchObject({ dryRun: false, applied: { groups: 0, models: 1, prices: 0 } });
-        expect(mocked.apply).toHaveBeenCalledWith('tenant-a', 'admin-1', TOKEN, {
-            selected: ['model:gpt-test'],
-            activate: ['model:gpt-test'],
-        });
+        expect(mocked.apply).toHaveBeenCalledWith('tenant-a', 'admin-1', TOKEN);
         expect(mocked.preview).not.toHaveBeenCalled();
     });
 
-    it.each([{ selected: ['model:gpt-test'] }, { preview_token: TOKEN }, { preview_token: TOKEN, selected: [] }])(
-        'rejects applying without both a preview and a nonempty selection: %j',
-        async (body) => {
-            const response = await POST(request(body, '?dryRun=false'));
-            expect(response.status).toBe(400);
-            expect((await response.json()).error).toBe('preview_required');
-            expect(mocked.apply).not.toHaveBeenCalled();
-        },
-    );
+    it('rejects applying without a preview token', async () => {
+        const response = await POST(request({}, '?dryRun=false'));
+        expect(response.status).toBe(400);
+        expect((await response.json()).error).toBe('preview_required');
+        expect(mocked.apply).not.toHaveBeenCalled();
+    });
 
-    it.each([{ tenant_id: 'tenant-b' }, { selected: 'all' }, { preview_token: 'x'.repeat(101) }, { activate: [7] }])(
-        'rejects tenant overrides and malformed payloads before accessing data: %j',
-        async (body) => {
-            const response = await POST(request(body, '?dryRun=false'));
-            expect(response.status).toBe(400);
-            expect((await response.json()).error).toBe('invalid_input');
-            expect(mocked.apply).not.toHaveBeenCalled();
-            expect(mocked.preview).not.toHaveBeenCalled();
-        },
-    );
+    it.each([
+        { tenant_id: 'tenant-b' },
+        { preview_token: TOKEN, selected: ['model:gpt-test'] },
+        { preview_token: 'x'.repeat(101) },
+        { preview_token: TOKEN, activate: [7] },
+    ])('rejects tenant overrides and malformed payloads before accessing data: %j', async (body) => {
+        const response = await POST(request(body, '?dryRun=false'));
+        expect(response.status).toBe(400);
+        expect((await response.json()).error).toBe('invalid_input');
+        expect(mocked.apply).not.toHaveBeenCalled();
+        expect(mocked.preview).not.toHaveBeenCalled();
+    });
 
     it('returns a controlled error for malformed JSON', async () => {
         const response = await POST(

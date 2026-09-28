@@ -7,13 +7,7 @@ import { tenantForInsert } from '@/lib/admin/tenant-scope';
 import { applyNewApiSync, NewApiSyncError, previewNewApiSync } from '@/lib/admin/newapi-sync';
 
 export const runtime = 'nodejs';
-const schema = z
-    .object({
-        preview_token: z.string().max(100).optional(),
-        selected: z.array(z.string().max(1200)).max(20000).optional(),
-        activate: z.array(z.string().max(1200)).max(20000).optional(),
-    })
-    .strict();
+const schema = z.object({ preview_token: z.string().max(100).optional() }).strict();
 
 export async function POST(request: NextRequest) {
     const admin = await resolveAdmin(request, 'superadmin');
@@ -22,18 +16,12 @@ export async function POST(request: NextRequest) {
     if (!parsed.success)
         return NextResponse.json({ error: 'invalid_input', message: '同步请求无效，请重新预览。' }, { status: 400 });
     const dryRun = request.nextUrl.searchParams.get('dryRun') !== 'false';
-    if (!dryRun && (!parsed.data.preview_token || !parsed.data.selected?.length))
-        return NextResponse.json(
-            { error: 'preview_required', message: '请先预览并选择变化，再确认同步。' },
-            { status: 400 },
-        );
+    if (!dryRun && !parsed.data.preview_token)
+        return NextResponse.json({ error: 'preview_required', message: '请先预览，再确认同步。' }, { status: 400 });
     try {
         const tenantId = tenantForInsert(admin);
         if (dryRun) return NextResponse.json({ dryRun, preview: await previewNewApiSync(tenantId) });
-        const result = await applyNewApiSync(tenantId, admin.user?.id ?? null, parsed.data.preview_token!, {
-            selected: parsed.data.selected!,
-            activate: parsed.data.activate ?? [],
-        });
+        const result = await applyNewApiSync(tenantId, admin.user?.id ?? null, parsed.data.preview_token!);
         return NextResponse.json({ dryRun, ...result });
     } catch (error) {
         if (error instanceof PricingPublishError)
