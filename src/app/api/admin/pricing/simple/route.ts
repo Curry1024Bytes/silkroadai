@@ -7,10 +7,12 @@ import { pricingPublishErrorResponse } from '@/lib/admin/pricing-publish';
 import { basePriceSchema, SimplePricingError } from '@/lib/admin/pricing-simple-core';
 import {
     loadSimplePricing,
+    lookupBillLog,
     previewModel,
     previewTier,
     resyncCatalog,
     saveModel,
+    savePurchaseRate,
     saveTier,
     verifyRuntime,
 } from '@/lib/admin/pricing-simple';
@@ -42,6 +44,24 @@ const bodySchema = z.discriminatedUnion('action', [
         .strict(),
     z.object({ action: z.literal('resync_catalog') }).strict(),
     z.object({ action: z.literal('verify_runtime'), models: z.array(modelName).min(1).max(30) }).strict(),
+    z
+        .object({
+            action: z.literal('save_purchase_rate'),
+            group_id: z.string().uuid(),
+            purchase_rate: ratio.nullable(),
+        })
+        .strict(),
+    z
+        .object({
+            action: z.literal('lookup_log'),
+            request_id: z
+                .string()
+                .trim()
+                .min(1, '请填写 request_id。')
+                .max(128)
+                .regex(/^[A-Za-z0-9_-]+$/, 'request_id 格式无效。'),
+        })
+        .strict(),
 ]);
 
 function errorResponse(error: unknown) {
@@ -100,6 +120,13 @@ export async function POST(request: NextRequest) {
                 return NextResponse.json({ result: await resyncCatalog(context) }, { headers: noStore });
             case 'verify_runtime':
                 return NextResponse.json({ check: await verifyRuntime(body.models) }, { headers: noStore });
+            case 'save_purchase_rate':
+                return NextResponse.json(
+                    { result: await savePurchaseRate(context, body.group_id, body.purchase_rate) },
+                    { headers: noStore },
+                );
+            case 'lookup_log':
+                return NextResponse.json({ lookup: await lookupBillLog(admin, body.request_id) }, { headers: noStore });
         }
     } catch (error) {
         return errorResponse(error);

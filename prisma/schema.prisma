@@ -1121,6 +1121,9 @@ model ChannelGroup {
   // 该档对应 new-api 哪些 channel id —— 是 Portal 模型映射/定价校验的事实源；
   // 真正请求路由仍由 new-api 按 group 执行。
   newapi_channel_ids Int[]    @default([])
+  // 进货率:该档上游每 1 美元官方价我们付多少元(多上游取最贵的)。只给定价页算利润/核对上游扣费，
+  // 不参与计费;客户价由 new-api GroupRatio(售价率)决定。
+  purchase_rate      Decimal? @db.Decimal(12, 6)
   created_at         DateTime @default(now())
   updated_at         DateTime @updatedAt
 

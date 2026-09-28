@@ -16,6 +16,8 @@ const state = vi.hoisted(() => ({
     models: [] as unknown[],
     created: [] as unknown[],
     audits: [] as unknown[],
+    updates: [] as unknown[],
+    logs: [] as unknown[],
 }));
 
 vi.mock('@/lib/newapi/client', () => ({
@@ -26,6 +28,7 @@ vi.mock('@/lib/newapi/client', () => ({
         if (state.dropPut !== key) state.options[key] = value;
     }),
     getPricingRuntimeModels: vi.fn(),
+    queryLogs: vi.fn(async () => ({ items: state.logs, total: state.logs.length })),
 }));
 
 vi.mock('@/lib/admin/pricing-publish-lock', async (importOriginal) => ({
@@ -35,7 +38,13 @@ vi.mock('@/lib/admin/pricing-publish-lock', async (importOriginal) => ({
 
 vi.mock('@/lib/db', () => {
     const db = {
-        channelGroup: { findMany: vi.fn(async () => state.groups) },
+        channelGroup: {
+            findMany: vi.fn(async () => state.groups),
+            update: vi.fn(async (args: unknown) => {
+                state.updates.push(args);
+                return args;
+            }),
+        },
         catalogModel: { findMany: vi.fn(async () => state.models) },
         catalogPrice: {
             create: vi.fn(async (args: { data: unknown }) => {
@@ -57,10 +66,12 @@ vi.mock('@/lib/db', () => {
 
 import {
     loadSimplePricing,
+    lookupBillLog,
     previewModel,
     previewTier,
     resyncCatalog,
     saveModel,
+    savePurchaseRate,
     saveTier,
     type SimplePricingContext,
 } from '@/lib/admin/pricing-simple';
@@ -103,9 +114,25 @@ beforeEach(() => {
     state.dropPut = null;
     state.created = [];
     state.audits = [];
+    state.updates = [];
+    state.logs = [];
     state.groups = [
-        { id: 'g-official', key: 'official', display_name: '官方', newapi_group: 'official', tier_level: 1 },
-        { id: 'g-pool', key: 'pool', display_name: '号池', newapi_group: 'default', tier_level: 0 },
+        {
+            id: 'g-official',
+            key: 'official',
+            display_name: '官方',
+            newapi_group: 'official',
+            tier_level: 1,
+            purchase_rate: null,
+        },
+        {
+            id: 'g-pool',
+            key: 'pool',
+            display_name: '号池',
+            newapi_group: 'default',
+            tier_level: 0,
+            purchase_rate: '0.3',
+        },
     ];
     state.models = [
         {
@@ -135,10 +162,11 @@ describe('loadSimplePricing', () => {
                 tier.active_keys,
                 tier.customer_overrides,
                 tier.model_count,
+                tier.purchase_rate,
             ]),
         ).toEqual([
-            ['pool', 1.2, 7, 2, 1],
-            ['official', 3.4, 0, 0, 1],
+            ['pool', 1.2, 7, 2, 1, 0.3],
+            ['official', 3.4, 0, 0, 1, null],
         ]);
         expect(view.models[0].cells.map((cell) => [cell.tier, cell.status])).toEqual([
             ['pool', 'ok'],
@@ -260,5 +288,59 @@ describe('saves', () => {
         expect(result.catalog_rows).toBe(1);
         expect(state.created).toEqual([expect.objectContaining({ tier: 'official', input_cny_per_1m: 17 })]);
         expect(state.puts).toEqual([]);
+    });
+});
+
+describe('purchase rate', () => {
+    it('saves a tier purchase rate in Portal only and audits it', async () => {
+        expect(await savePurchaseRate(context, 'g-official', 0.85)).toEqual({ purchase_rate: 0.85 });
+        expect(state.updates).toEqual([{ where: { id: 'g-official' }, data: { purchase_rate: 0.85 } }]);
+        expect(state.audits[0]).toMatchObject({ action: 'pricing_tier_purchase_rate', target: 'official' });
+        expect(state.puts).toEqual([]);
+    });
+
+    it('clears a purchase rate', async () => {
+        expect(await savePurchaseRate(context, 'g-pool', null)).toEqual({ purchase_rate: null });
+        expect(state.updates).toEqual([{ where: { id: 'g-pool' }, data: { purchase_rate: null } }]);
+    });
+
+    it('rejects an invalid rate or unknown tier', async () => {
+        await expect(savePurchaseRate(context, 'g-pool', 0)).rejects.toMatchObject({
+            code: 'pricing_purchase_rate_invalid',
+            status: 400,
+        });
+        await expect(savePurchaseRate(context, 'nope', 1)).rejects.toMatchObject({ code: 'pricing_tier_not_found' });
+        expect(state.updates).toEqual([]);
+    });
+});
+
+describe('lookupBillLog', () => {
+    const row = (request_id: string, group: string) => ({
+        request_id,
+        created_at: 1_760_000_000,
+        model_name: 'gpt-5.5',
+        group,
+        channel: 3,
+        quota: 4200,
+        prompt_tokens: 100,
+        completion_tokens: 50,
+        other: JSON.stringify({ cache_tokens: 20, group_ratio: 1.2 }),
+    });
+
+    it('returns the exact request and maps its group to a tier', async () => {
+        state.logs = [row('other-id', 'official'), row('req-1', 'default')];
+        const lookup = await lookupBillLog(admin, 'req-1');
+        expect(lookup.tier).toBe('pool');
+        expect(lookup.log).toMatchObject({ request_id: 'req-1', quota: 4200, usage: { cache_read: 20 } });
+        expect(state.puts).toEqual([]);
+    });
+
+    it('returns a null tier for an unmapped group and 404 when nothing matches', async () => {
+        state.logs = [row('req-2', 'vip')];
+        expect((await lookupBillLog(admin, 'req-2')).tier).toBeNull();
+        await expect(lookupBillLog(admin, 'missing')).rejects.toMatchObject({
+            code: 'pricing_log_not_found',
+            status: 404,
+        });
     });
 });

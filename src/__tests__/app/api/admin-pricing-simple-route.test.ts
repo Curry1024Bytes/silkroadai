@@ -10,6 +10,8 @@ const m = vi.hoisted(() => ({
     saveModel: vi.fn(),
     resync: vi.fn(),
     verify: vi.fn(),
+    savePurchase: vi.fn(),
+    lookup: vi.fn(),
 }));
 vi.mock('@/lib/db', () => ({ prisma: {} }));
 vi.mock('@/lib/admin/auth', () => ({ resolveAdmin: m.auth }));
@@ -30,6 +32,8 @@ vi.mock('@/lib/admin/pricing-simple', () => ({
     saveModel: m.saveModel,
     resyncCatalog: m.resync,
     verifyRuntime: m.verify,
+    savePurchaseRate: m.savePurchase,
+    lookupBillLog: m.lookup,
 }));
 
 import { GET, POST } from '@/app/api/admin/pricing/simple/route';
@@ -95,12 +99,32 @@ describe('/api/admin/pricing/simple', () => {
         });
     });
 
+    it('saves a purchase rate and looks up a log', async () => {
+        m.savePurchase.mockResolvedValue({ purchase_rate: 0.3 });
+        m.lookup.mockResolvedValue({ tier: 'pool' });
+        expect(
+            await (await POST(req({ action: 'save_purchase_rate', group_id: GROUP, purchase_rate: 0.3 }))).json(),
+        ).toEqual({ result: { purchase_rate: 0.3 } });
+        expect(m.savePurchase).toHaveBeenCalledWith(expect.objectContaining({ admin }), GROUP, 0.3);
+        await POST(req({ action: 'save_purchase_rate', group_id: GROUP, purchase_rate: null }));
+        expect(m.savePurchase).toHaveBeenLastCalledWith(expect.anything(), GROUP, null);
+
+        const response = await POST(req({ action: 'lookup_log', request_id: '  req_1-a  ' }));
+        expect(await response.json()).toEqual({ lookup: { tier: 'pool' } });
+        expect(response.headers.get('cache-control')).toBe('private, no-store');
+        expect(m.lookup).toHaveBeenCalledWith(admin, 'req_1-a');
+    });
+
     it('rejects malformed input before touching the service', async () => {
         for (const body of [
             { action: 'save_tier', group_id: GROUP, ratio: 0, expected_ratio: 1 },
             { action: 'save_model', model: 'gpt-5.5', base: { ...token, input: 0 }, expected_state: 's' },
             { action: 'preview_model', model: 'x', base: token, extra: 1 },
             { action: 'verify_runtime', models: [] },
+            { action: 'save_purchase_rate', group_id: 'not-a-uuid', purchase_rate: 1 },
+            { action: 'save_purchase_rate', group_id: GROUP, purchase_rate: -1 },
+            { action: 'lookup_log', request_id: '' },
+            { action: 'lookup_log', request_id: 'bad id;drop' },
             { action: 'unknown' },
         ]) {
             const response = await POST(req(body));
@@ -109,6 +133,8 @@ describe('/api/admin/pricing/simple', () => {
         }
         expect(m.saveTier).not.toHaveBeenCalled();
         expect(m.saveModel).not.toHaveBeenCalled();
+        expect(m.savePurchase).not.toHaveBeenCalled();
+        expect(m.lookup).not.toHaveBeenCalled();
     });
 
     it('maps service errors to their status', async () => {

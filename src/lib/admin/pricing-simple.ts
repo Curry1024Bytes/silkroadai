@@ -1,12 +1,19 @@
 import 'server-only';
 import type { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
-import { getPricingPublishOptions, getPricingRuntimeModels, putPricingPublishOption } from '@/lib/newapi/client';
+import {
+    getPricingPublishOptions,
+    getPricingRuntimeModels,
+    putPricingPublishOption,
+    queryLogs,
+} from '@/lib/newapi/client';
+import { QUOTA_PER_USD } from '@/lib/newapi/quota-units';
 import { parseTieredPricingDetails } from '@/lib/models/tiered-pricing-details';
 import { assertPricingCatalogWritable, PricingPublishError } from './pricing-publish-lock';
 import { tenantForInsert } from './tenant-scope';
 import { tierOrder } from './pricing-tiers';
 import type { AdminPrincipal } from './auth';
+import { parseLoggedBill, type LoggedBill } from './pricing-bill-check';
 import {
     BASE_FX,
     EXPR_KEY,
@@ -20,6 +27,7 @@ import {
     groupRatioOf,
     modelOptionState,
     optionDict,
+    round,
     planGroupRatioWrites,
     planModelWrites,
     readBasePrice,
@@ -51,6 +59,8 @@ export interface SimpleTier {
     display_name: string;
     newapi_group: string;
     ratio: number | null;
+    /** 进货率 (¥ we pay per official $1); Portal-only, never billed. */
+    purchase_rate: number | null;
     active_keys: number;
     customer_overrides: number;
     model_count: number;
@@ -89,7 +99,7 @@ export interface SimpleUpstreamModel {
 }
 
 export interface SimplePricingView {
-    units: { base_fx: number; ratio_unit: number };
+    units: { base_fx: number; ratio_unit: number; quota_per_usd: number };
     tiers: SimpleTier[];
     models: SimpleCatalogModel[];
     upstream_models: SimpleUpstreamModel[];
@@ -102,7 +112,14 @@ async function loadCatalog(tenantId: string, db: Prisma.TransactionClient | type
     const [groups, models] = await Promise.all([
         db.channelGroup.findMany({
             where: { tenant_id: tenantId, enabled: true },
-            select: { id: true, key: true, display_name: true, newapi_group: true, tier_level: true },
+            select: {
+                id: true,
+                key: true,
+                display_name: true,
+                newapi_group: true,
+                tier_level: true,
+                purchase_rate: true,
+            },
         }),
         db.catalogModel.findMany({
             where: { tenant_id: tenantId, enabled: true },
@@ -254,13 +271,14 @@ function buildView(
         };
     });
     return {
-        units: { base_fx: BASE_FX, ratio_unit: RATIO_UNIT },
+        units: { base_fx: BASE_FX, ratio_unit: RATIO_UNIT, quota_per_usd: QUOTA_PER_USD },
         tiers: catalog.groups.map((group) => ({
             id: group.id,
             key: group.key,
             display_name: group.display_name,
             newapi_group: group.newapi_group,
             ratio: groupRatioOf(options, group.newapi_group),
+            purchase_rate: num(group.purchase_rate),
             active_keys: counts.keys.get(group.key) ?? 0,
             customer_overrides: counts.overrides.get(group.key) ?? 0,
             model_count: modelCount.get(group.key) ?? 0,
@@ -617,6 +635,48 @@ export async function resyncCatalog(context: SimplePricingContext): Promise<Save
         await audit(tx, context, 'pricing_catalog_resync', tenantId, { catalog_rows: rows });
         return { unchanged: rows === 0, written_keys: [], catalog_rows: rows };
     }, TX_OPTIONS);
+}
+
+/** 进货率 is Portal-only bookkeeping for margins and upstream checks; it never touches new-api. */
+export async function savePurchaseRate(
+    context: SimplePricingContext,
+    groupId: string,
+    rate: number | null,
+): Promise<{ purchase_rate: number | null }> {
+    if (rate !== null && (!Number.isFinite(rate) || rate <= 0 || rate > 1000))
+        throw new SimplePricingError('pricing_purchase_rate_invalid', '进货率须为 0 到 1000 之间的正数。', 400);
+    const tenantId = tenantForInsert(context.admin);
+    const next = rate === null ? null : round(rate, 6);
+    return prisma.$transaction(async (tx) => {
+        const group = tierGroup(await loadCatalog(tenantId, tx), groupId);
+        await tx.channelGroup.update({ where: { id: group.id }, data: { purchase_rate: next } });
+        await audit(tx, context, 'pricing_tier_purchase_rate', group.key, {
+            before: num(group.purchase_rate),
+            after: next,
+        });
+        return { purchase_rate: next };
+    });
+}
+
+// ── bill check ──
+
+export interface LoggedBillLookup {
+    log: LoggedBill;
+    /** Enabled tier whose new-api group billed this request; null when none matches. */
+    tier: string | null;
+}
+
+/** Read one consume log by request_id for the bill check. Read-only against new-api. */
+export async function lookupBillLog(admin: AdminPrincipal, requestId: string): Promise<LoggedBillLookup> {
+    const tenantId = tenantForInsert(admin);
+    const [catalog, logs] = await Promise.all([
+        loadCatalog(tenantId),
+        queryLogs({ request_id: requestId, type: 2, page_size: 5 }),
+    ]);
+    const row = logs.items.find((item) => item.request_id === requestId);
+    if (!row) throw new SimplePricingError('pricing_log_not_found', '没有找到这条消费日志，请核对 request_id。', 404);
+    const log = parseLoggedBill(row);
+    return { log, tier: catalog.groups.find((group) => group.newapi_group === log.group)?.key ?? null };
 }
 
 // ── runtime check ──
