@@ -331,4 +331,31 @@ export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
         openAllTiers: true,
         noTransparentBackground: true,
     },
+    // ---- open302(开放堆栈,open302.com,杭州词元智界)2026-09-28 接入,【全量线】----
+    // 定位:openAllTiers 全量兜底(同 yuanshudian / pandatk / junze 那批):不设 gateMinCt,所有档位含
+    // size=auto 都接,按【客户请求尺寸 + quality】合成官方账单(#496)。
+    // 【身份】**不是 new-api**(`/api/status` `/api/pricing` `/api/log/token` 全回官网 HTML,`/v1/dashboard/billing/*`
+    // 404,响应头只有 `X-Request-Id: req_…`),nginx 直出;key 64 位带下划线。`/v1/models` 28 个,图类含 gpt-image-2 /
+    // gpt-image-2.5-flare / -sunburst / gemini image 系;本 provider 只挂裸 `gpt-image-2`。
+    // 【成本】**API 侧查不到**(无计费端点),只能看站方后台扣费 —— 接入后 operator 按后台核单价;盈亏表待补。
+    // 【⚠️ quality high 不给】1024² high → 回显 `medium` ct 1756;4K high → 回显 `medium` ct 3336(官方 medium 值);
+    //   low 如实(196)。即上游只有 low/medium 两档。openAllTiers 按客户请求的 quality 计费 → **high 档客户按 high
+    //   收但拿 medium 渲染**(同 junze 启用期间的应急取舍,operator 2026-09-28 拍板接全量);要诚实按档收,把
+    //   openAllTiers 换成 onlyQualities: ['low', 'medium'] 一行(同 we-token 先例)。
+    // 【尺寸如实】1024² / 2048² / **3840×2160 真 4K**(11.9MB,241s)逐像素等于请求;edits multipart 1024² ✓;
+    //   不传 size → 上游默认 1024²(非官方 auto)→ auto 归一层显式发尺寸即可。usage 回官方公式(196/1756/3568/3336)。
+    // 【⚠️ 三源混池】同 key 同模型 7 张:4 张完全无 C2PA(字节零 openai/adobe,疑 ChatGPT 逆向剥过元数据)、
+    //   2 张 Adobe Inc. / Adobe Firefly / c2pa.opened(edits、2048²)、1 张 OpenAI OpCo / OpenAI Media Service API
+    //   (4K,无 watermarked.unbound,像 Azure/官方直连)。Adobe 那路靠适配器内容自定向 strip(#227/#440)兜住,
+    //   OpenAI 签名是真官方凭证正确放行,无 C2PA 那路字节原样。三家渲染风格一致、中文招牌全对。
+    // 【响应形态】认 `response_format: b64_json`(返纯 b64);缺省只返 url(自家图床 `r2.open302.com`,无需 UA)
+    //   → 适配器 url→b64 拉回不外泄。延迟 low 21s / medium 40–62s / 4K 241s。
+    // 【brand】兜 open302 / 词元 / 开放堆栈 / firefly(adobe 由 sanitize 通用兜)。非 new-api 错误体形态未知,
+    //   classifyUpstreamError 默认保守 failover。透明背景 / n>1 / 安全文案 / 并发未测 → 透明 fail-closed。
+    open302: {
+        baseUrl: 'https://open302.com',
+        brand: /\bopen-?302\b|词元|开放堆栈|\bfirefly\b/gi,
+        openAllTiers: true,
+        noTransparentBackground: true,
+    },
 };

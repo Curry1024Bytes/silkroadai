@@ -2934,3 +2934,130 @@ describe('yuanshudian provider(元数点 API,Adobe Firefly 原生 C2PA,openAllTi
         expect(lc).not.toContain('adobe');
     });
 });
+
+describe('open302 provider(开放堆栈,非 new-api 三源混池,openAllTiers 全量线,high 上游只给 medium)', () => {
+    const URL = 'http://portal.test/image-adapter/open302/v1/images/generations';
+
+    it('路由到 open302.com,key 透传,model 裸 gpt-image-2 + 显式 b64_json', async () => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            jsonReq(URL, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', quality: 'high' }),
+            'generations',
+            'open302',
+        );
+        expect(res.status).toBe(200);
+        const [url, init] = fetchMock.mock.calls[0];
+        expect(url).toBe('https://open302.com/v1/images/generations');
+        expect(init.headers.authorization).toBe('Bearer sk-upstream-test');
+        const sent = JSON.parse(init.body as string);
+        expect(sent.model).toBe('gpt-image-2');
+        expect(sent.response_format).toBe('b64_json'); // 2026-09-28 实测上游认此参数返纯 b64
+    });
+
+    // 全量线核心契约:无 gateMinCt,任何档位含 auto 都放行(operator 2026-09-28 拍板)。
+    it.each([
+        ['1024² low(196)', { size: '1024x1024', quality: 'low' }],
+        ['1024² medium(1,756)', { size: '1024x1024', quality: 'medium' }],
+        ['1024² high(7,024;上游实给 medium,按请求档计费 = 知情取舍)', { size: '1024x1024', quality: 'high' }],
+        ['size=auto', { size: 'auto' }],
+        ['2048² medium(3,568)', { size: '2048x2048', quality: 'medium' }],
+        ['4K high(13,342;上游真 4K 但 medium 刻度)', { size: '3840x2160', quality: 'high' }],
+    ])('open302 全量放行:%s', async (_label, extra) => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            jsonReq(URL, { model: 'gpt-image-2', prompt: 'x', ...extra }),
+            'generations',
+            'open302',
+        );
+        expect(res.status).toBe(200);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('上游回显 quality=medium + 自报 usage 一律丢弃,按客户请求 high 合成官方账单(1024² = 7,024)并回显 high', async () => {
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(
+                    JSON.stringify({
+                        created: 1,
+                        size: '1024x1024',
+                        quality: 'medium',
+                        data: [{ b64_json: pngB64(1024, 1024) }],
+                        usage: { input_tokens: 34, output_tokens: 1756, total_tokens: 1790 },
+                    }),
+                    { status: 200, headers: { 'content-type': 'application/json' } },
+                ),
+        );
+        const res = await handleAdapterImage(
+            jsonReq(URL, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', quality: 'high' }),
+            'generations',
+            'open302',
+        );
+        const body = await res.json();
+        expect(body.usage.output_tokens).toBe(officialOutputTokens(1024, 1024, 'high'));
+        expect(body.quality).toBe('high');
+    });
+
+    it('上游缺省只返 url(r2.open302.com 图床)→ 拉回转 b64,响应不外泄 url / open302 字样', async () => {
+        const png = pngB64(1024, 1024);
+        fetchMock.mockImplementation(async (url: string) => {
+            if (String(url).includes('r2.open302.com')) {
+                return new Response(Buffer.from(png, 'base64'), {
+                    status: 200,
+                    headers: { 'content-type': 'image/png' },
+                });
+            }
+            return new Response(JSON.stringify({ created: 1, data: [{ url: 'https://r2.open302.com/x/abc.png' }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            });
+        });
+        const res = await handleAdapterImage(
+            jsonReq(URL, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', quality: 'low' }),
+            'generations',
+            'open302',
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(typeof body.data[0].b64_json).toBe('string');
+        expect(body.data[0].url).toBeUndefined();
+        expect(JSON.stringify(body)).not.toContain('open302');
+    });
+
+    it('透明背景 fail-closed(未验证)→ 503 不打上游', async () => {
+        const res = await handleAdapterImage(
+            jsonReq(URL, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', background: 'transparent' }),
+            'generations',
+            'open302',
+        );
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('上游 5xx(非 new-api,错误体形态未知)→ failover 503 且错误体脱敏', async () => {
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ error: { message: 'open302 upstream busy, 开放堆栈 retry' } }), {
+                    status: 502,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+        const res = await handleAdapterImage(
+            jsonReq(URL, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', quality: 'low' }),
+            'generations',
+            'open302',
+        );
+        expect(res.status).toBe(503);
+        const text = (await res.text()).toLowerCase();
+        expect(text).not.toContain('open302');
+        expect(text).not.toContain('开放堆栈');
+    });
+
+    it('brand 正则抹掉 open302 / 词元 / 开放堆栈 / firefly(adobe 由 sanitize 通用兜)', () => {
+        const out = sanitizeAdapterError(
+            'open302.com (杭州词元智界 开放堆栈): image at r2.open302.com signed by Adobe Firefly',
+            IMAGE_PROVIDERS.open302.brand,
+        );
+        const lc = out.toLowerCase();
+        for (const w of ['open302', '词元', '开放堆栈', 'firefly', 'adobe']) expect(lc).not.toContain(w);
+    });
+});
