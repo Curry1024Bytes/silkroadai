@@ -5,6 +5,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { NextRequest } from 'next/server';
+import { IMAGE_PROVIDERS } from '@/lib/image-adapter/providers';
 import {
     handleAdapterImage,
     parseSize,
@@ -2794,5 +2795,142 @@ describe('显式 size 按【客户请求尺寸】计费(2026-09-27 operator 拍�
         expect(isOfficialSize(512, 512)).toBe(false); // 像素不足
         expect(isOfficialSize(3840, 1024)).toBe(false); // 比例 3.75 > 3
         expect(isOfficialSize(3072, 3072)).toBe(false); // 943 万像素超上限
+    });
+});
+
+describe('yuanshudian provider(元数点 API,Adobe Firefly 原生 C2PA,openAllTiers 全量线 $0.07/张)', () => {
+    const URL = 'http://portal.test/image-adapter/yuanshudian/v1/images/generations';
+
+    it('路由到 api.yuanshudian.com,key 透传,model 裸 gpt-image-2 + 显式 b64_json', async () => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            jsonReq(URL, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', quality: 'high' }),
+            'generations',
+            'yuanshudian',
+        );
+        expect(res.status).toBe(200);
+        const [url, init] = fetchMock.mock.calls[0];
+        expect(url).toBe('https://api.yuanshudian.com/v1/images/generations');
+        expect(init.headers.authorization).toBe('Bearer sk-upstream-test');
+        const sent = JSON.parse(init.body as string);
+        expect(sent.model).toBe('gpt-image-2'); // 上游只有裸名
+        expect(sent.response_format).toBe('b64_json'); // 2026-09-28 实测上游认此参数返纯 b64
+    });
+
+    // 全量线核心契约:无 gateMinCt,亏钱档也放行(operator 2026-09-28 拍板)。
+    it.each([
+        ['1024² low(196,亏)', { size: '1024x1024', quality: 'low' }],
+        ['1024² medium(1,756,亏)', { size: '1024x1024', quality: 'medium' }],
+        ['1024² high(7,024,亏 —— 成本 ¥0.504 > 售价 ¥0.274)', { size: '1024x1024', quality: 'high' }],
+        ['1536×1024 high(5,488,亏)', { size: '1536x1024', quality: 'high' }],
+        ['size=auto(gateMinCt 线会拒,全量线必须接)', { size: 'auto' }],
+        ['2048² high(14,272,赚)', { size: '2048x2048', quality: 'high' }],
+        ['4K high(13,342,赚)', { size: '3840x2160', quality: 'high' }],
+    ])('yuanshudian 全量放行(含亏钱档):%s', async (_label, extra) => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            jsonReq(URL, { model: 'gpt-image-2', prompt: 'x', ...extra }),
+            'generations',
+            'yuanshudian',
+        );
+        expect(res.status).toBe(200);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('上游缺省只返 url(r2.52image.xyz 图床)→ 适配器拉回转 b64,响应只含 b64_json 不外泄 url', async () => {
+        const png = pngB64(1024, 1024);
+        fetchMock.mockImplementation(async (url: string) => {
+            if (String(url).includes('r2.52image.xyz')) {
+                return new Response(Buffer.from(png, 'base64'), {
+                    status: 200,
+                    headers: { 'content-type': 'image/png' },
+                });
+            }
+            return new Response(JSON.stringify({ created: 1, data: [{ url: 'https://r2.52image.xyz/gen/abc.png' }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            });
+        });
+        const res = await handleAdapterImage(
+            jsonReq(URL, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', quality: 'low' }),
+            'generations',
+            'yuanshudian',
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data).toHaveLength(1);
+        expect(typeof body.data[0].b64_json).toBe('string');
+        expect(body.data[0].url).toBeUndefined();
+        expect(JSON.stringify(body)).not.toContain('52image');
+    });
+
+    it('计费按客户请求 quality + 尺寸合成官方账单(1024² high = 7,024),丢弃上游 usage', async () => {
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(
+                    JSON.stringify({
+                        created: 1,
+                        data: [{ b64_json: pngB64(1024, 1024) }],
+                        usage: { input_tokens: 40, output_tokens: 7024, total_tokens: 7064 },
+                    }),
+                    { status: 200, headers: { 'content-type': 'application/json' } },
+                ),
+        );
+        const res = await handleAdapterImage(
+            jsonReq(URL, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', quality: 'high' }),
+            'generations',
+            'yuanshudian',
+        );
+        expect((await res.json()).usage.output_tokens).toBe(officialOutputTokens(1024, 1024, 'high'));
+    });
+
+    it('上游池抖动 502 "candidate upstream unavailable" → 5xx failover(503 让 new-api 换渠道/重试),不终态化', async () => {
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(
+                    JSON.stringify({
+                        error: { message: 'candidate upstream unavailable', type: 'invalid_request_error' },
+                    }),
+                    { status: 502, headers: { 'content-type': 'application/json' } },
+                ),
+        );
+        const res = await handleAdapterImage(
+            jsonReq(URL, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', quality: 'low' }),
+            'generations',
+            'yuanshudian',
+        );
+        expect(res.status).toBe(503);
+        const text = (await res.text()).toLowerCase();
+        expect(text).not.toContain('candidate upstream');
+        expect(text).not.toContain('yuanshudian');
+    });
+
+    it('透明背景 fail-closed:openAllTiers 不豁免 → 503 不打上游', async () => {
+        const res = await handleAdapterImage(
+            jsonReq(URL, {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '1024x1024',
+                quality: 'high',
+                background: 'transparent',
+            }),
+            'generations',
+            'yuanshudian',
+        );
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('brand 正则抹掉 yuanshudian / 52image / candidate upstream / firefly(adobe 由 sanitize 通用兜)', () => {
+        const out = sanitizeAdapterError(
+            'api.yuanshudian.com: candidate upstream unavailable; image at r2.52image.xyz signed by Adobe Firefly',
+            IMAGE_PROVIDERS.yuanshudian.brand,
+        );
+        const lc = out.toLowerCase();
+        expect(lc).not.toContain('yuanshudian');
+        expect(lc).not.toContain('52image');
+        expect(lc).not.toContain('candidate upstream');
+        expect(lc).not.toContain('firefly');
+        expect(lc).not.toContain('adobe');
     });
 });

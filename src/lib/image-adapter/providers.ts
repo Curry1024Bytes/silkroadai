@@ -302,4 +302,33 @@ export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
         openAllTiers: true,
         noTransparentBackground: true,
     },
+    // ---- yuanshudian(元数点 API,api.yuanshudian.com)2026-09-28 接入,【全量线】----
+    // 定位:openAllTiers 全量兜底(同 pandatk / ominiapifull / oaidistfull / junze 那批):不设 gateMinCt,
+    // 所有档位含 size=auto 都接,按【客户请求尺寸 + quality】合成官方账单(#496)。
+    // 【身份】new-api rc.26,系统名「元数点 API」,nginx 直出无 CF;key 在分组 `Gpt_image2_adobe`(gr 0.7),
+    // `/v1/models` 只有裸 `gpt-image-2`(渠道 ch87)。出图 C2PA = **Adobe Inc. / Adobe Firefly / c2pa.opened**
+    // (Firefly 原生输出,不是 OpenAI 包装的那种;字节 adobe×50 firefly×6 零 openai)→ 靠适配器内容自定向
+    // strip(#227/#440,命中 adobe/firefly 才剥)兜住,交付客户的字节零 adobe。
+    // 【成本】按张固定 **$0.1 × gr 0.7 = $0.07/张 = ¥0.504**(汇率 7.2;站内充值 ¥7.3/$1),与 size/quality/n
+    // 全无关(2026-09-28 上游 `/api/log/token` 逐条 quota 实测 8 张全 0.07);失败(502/503)不计费。
+    // 【盈亏(售价 = 合成 ct × 3.9e-5,见 MIN_SYNTH_CT 注释)】覆盖 ¥0.504 需 ct ≥ ~12,923 → 只有
+    //   4K high(13,342→¥0.520)/ 2048² high(14,272→¥0.557)/ 2880² high(23,718→¥0.925)赚;
+    //   1024² high(7,024→¥0.274)/ 2560×1440 high(7,370→¥0.287)及全部 medium/low 档亏。**全量线既定代价**,
+    //   operator 2026-09-28 拍板接全量;要改守门把 openAllTiers 换成 gateMinCt: 12_923 一行即可。
+    // 【尺寸 / quality 全如实(7/7 实测)】1024² low/high、1536×1024 high、2048² medium、3840×2160 high
+    //   逐像素等于请求;响应 usage 逐 token 等于官方公式(196/7024/5488/3568/13342/1756),quality 档是真的
+    //   (与 junze 钉死 medium 不同)。不传 size → 上游默认 1264×848(非官方 auto)→ auto 归一层显式发尺寸即可。
+    //   edits multipart 1024² ✓。认 `response_format: b64_json`(显式要则返纯 b64);缺省只返 url,图床
+    //   `r2.52image.xyz`(= zdchat/zdapi 同一图床,疑同源号池)→ 适配器 url→b64 拉回(含 1s/3s 重试),不外泄。
+    // 【稳定性差】上游池阵发性抖动:实测一个 ~1.5 分钟窗口内 6 并发 × 3 轮全部 `502 candidate upstream
+    //   unavailable`,第 4 轮全过;另见 `503 image upload queue is busy; please retry shortly`。两者都是 5xx
+    //   → classifyUpstreamError 走 failover(换渠道 / 重试),不终态化。成功延迟 25–65s。
+    // 【brand】兜 yuanshudian / 52image(图床域)/ candidate upstream(其 502 文案)/ firefly / adobe(sanitize 已兜 adobe)。
+    // 透明背景未验证 → fail-closed(家族惯例,openAllTiers 不豁免)。
+    yuanshudian: {
+        baseUrl: 'https://api.yuanshudian.com',
+        brand: /\byuan-?shu-?dian\b|\b52image\b|\bcandidate upstream\b|\bfirefly\b/gi,
+        openAllTiers: true,
+        noTransparentBackground: true,
+    },
 };
