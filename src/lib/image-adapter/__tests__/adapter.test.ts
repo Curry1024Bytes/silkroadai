@@ -1111,7 +1111,7 @@ describe('wetoken provider(us-la.we-token.cc,adobe 上游挂适配器 → 合成
         expect(body.usage.output_tokens).toBe(162); // = officialOutputTokens(1344,1008,low)
     });
 
-    it('openAllTiers:size=auto 但上游返回图无法解码尺寸 → 按官方 auto 尺寸计费(1122×1402 low = 186),不再 503', async () => {
+    it('openAllTiers:size=auto 但上游返回图无法解码尺寸 → 按发给上游的对齐尺寸计费(1120×1408 low = 187),不再 503', async () => {
         fetchMock.mockImplementation(
             async () =>
                 new Response(JSON.stringify({ created: 1, data: [{ b64_json: 'bm90LXBuZw==' }] }), {
@@ -1131,11 +1131,11 @@ describe('wetoken provider(us-la.we-token.cc,adobe 上游挂适配器 → 合成
         );
         expect(res.status).toBe(200);
         const body = await res.json();
-        expect(body.size).toBe('1122x1402');
-        expect(body.usage.output_tokens).toBe(186);
+        expect(body.size).toBe('1120x1408');
+        expect(body.usage.output_tokens).toBe(187);
     });
 
-    it('非 openAllTiers(ominiapi):size=auto 按官方 auto 尺寸过守门 —— low(186)拒、high(6603)放行', async () => {
+    it('非 openAllTiers(ominiapi):size=auto 按对齐后的 auto 尺寸过守门 —— low(187)拒、high(6525)放行', async () => {
         const low = await handleAdapterImage(
             jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: 'auto', quality: 'low' }),
             'generations',
@@ -2117,6 +2117,8 @@ describe('wetokenasia 三档专线(asian-acc gpt-image-2-{low,medium,high} 按�
     });
 });
 
+// 2026-09-30:auto 的计费 + 回显改按【交付图实际像素】(16 对齐尺寸)。此前回显官方尺寸(1122x1402 / 1254x1254),
+// 交付图却是对齐尺寸 → 客户报"返回的 size 和实际图片对不上",且非 16 倍数尺寸在官方计算器里是 Invalid size。
 describe('size=auto 官方 1.5MP 语义(第 4 批,2026-09-17 官方 key 实测 1122×1402 / 1254² / 1672×941)', () => {
     const URL_FULL_GEN = 'http://portal.test/image-adapter/ominiapifull/v1/images/generations';
     const URL_FULL_EDIT = 'http://portal.test/image-adapter/ominiapifull/v1/images/edits';
@@ -2153,7 +2155,7 @@ describe('size=auto 官方 1.5MP 语义(第 4 批,2026-09-17 官方 key 实测 1
         expect(promptAspectRatio('改成 16:9 的画幅')).toBe('16:9');
     });
 
-    it('generations auto → 上游收 1120x1408;返图匹配 → 按官方 1122×1402 计费 186、回显 1122x1402', async () => {
+    it('generations auto → 上游收 1120x1408;按交付图实际像素计费 187、回显 1120x1408', async () => {
         upstreamPng(1120, 1408);
         const res = await handleAdapterImage(
             jsonReq(URL_FULL_GEN, { model: 'gpt-image-2', prompt: 'a cat', size: 'auto', quality: 'low' }),
@@ -2164,8 +2166,8 @@ describe('size=auto 官方 1.5MP 语义(第 4 批,2026-09-17 官方 key 实测 1
         const body = await res.json();
         const [, init] = fetchMock.mock.calls[0];
         expect(JSON.parse(init.body).size).toBe('1120x1408');
-        expect(body.size).toBe('1122x1402');
-        expect(body.usage.output_tokens).toBe(186);
+        expect(body.size).toBe('1120x1408');
+        expect(body.usage.output_tokens).toBe(187);
         expect(body.usage.input_tokens).toBe(8);
     });
 
@@ -2176,10 +2178,10 @@ describe('size=auto 官方 1.5MP 语义(第 4 批,2026-09-17 官方 key 实测 1
             'generations',
             'ominiapifull',
         );
-        expect((await res.json()).size).toBe('1122x1402');
+        expect((await res.json()).size).toBe('1120x1408');
     });
 
-    it('edits auto + 16:9 输入(1920×1080)→ 官方 1672×941(129),上游收 16 对齐 1680x944', async () => {
+    it('edits auto + 16:9 输入(1920×1080)→ 上游收 16 对齐 1680x944,按实际像素计 130、回显 1680x944', async () => {
         upstreamPng(1680, 944);
         const res = await handleAdapterImage(
             formReq(URL_FULL_EDIT, { model: 'gpt-image-2', prompt: 'add a bird', size: 'auto', quality: 'low' }, [
@@ -2192,12 +2194,12 @@ describe('size=auto 官方 1.5MP 语义(第 4 批,2026-09-17 官方 key 实测 1
         const body = await res.json();
         const [, init] = fetchMock.mock.calls[0];
         expect((init.body as FormData).get('size')).toBe('1680x944');
-        expect(body.size).toBe('1672x941');
-        expect(body.usage.output_tokens).toBe(129);
+        expect(body.size).toBe('1680x944');
+        expect(body.usage.output_tokens).toBe(130);
         expect(body.usage.input_tokens_details.image_tokens).toBe(1508); // 1920×1080 输入图官方 patch(长边 ≥1024 → 0.5 缩放,同 4K)
     });
 
-    it('edits auto + 方图输入 → 官方 1254×1254(229)', async () => {
+    it('edits auto + 方图输入 → 交付 1248×1248,回显 1248x1248(228)', async () => {
         upstreamPng(1248, 1248);
         const res = await handleAdapterImage(
             formReq(URL_FULL_EDIT, { model: 'gpt-image-2', prompt: 'x', quality: 'low' }, [pngHeader(1024, 1024)]),
@@ -2205,11 +2207,11 @@ describe('size=auto 官方 1.5MP 语义(第 4 批,2026-09-17 官方 key 实测 1
             'ominiapifull',
         );
         const body = await res.json();
-        expect(body.size).toBe('1254x1254');
-        expect(body.usage.output_tokens).toBe(229);
+        expect(body.size).toBe('1248x1248');
+        expect(body.usage.output_tokens).toBe(228);
     });
 
-    it('edits auto + prompt 写明 16:9(portal 扩展)+ 方图输入 → 按 prompt 比例 1672×941', async () => {
+    it('edits auto + prompt 写明 16:9(portal 扩展)+ 方图输入 → 按 prompt 比例出 1680×944', async () => {
         upstreamPng(1680, 944);
         const res = await handleAdapterImage(
             formReq(URL_FULL_EDIT, { model: 'gpt-image-2', prompt: '把这张图改成 16:9', size: 'auto' }, [
@@ -2218,7 +2220,28 @@ describe('size=auto 官方 1.5MP 语义(第 4 批,2026-09-17 官方 key 实测 1
             'edits',
             'ominiapifull',
         );
-        expect((await res.json()).size).toBe('1672x941');
+        expect((await res.json()).size).toBe('1680x944');
+    });
+
+    it('auto 回显的 size 恒为 16 倍数(官方计算器认的合法尺寸),且等于交付图像素', async () => {
+        for (const [w, h] of [
+            [1120, 1408],
+            [1248, 1248],
+            [1680, 944],
+        ]) {
+            upstreamPng(w, h);
+            const res = await handleAdapterImage(
+                jsonReq(URL_FULL_GEN, { model: 'gpt-image-2', prompt: 'x', size: 'auto', quality: 'high' }),
+                'generations',
+                'ominiapifull',
+            );
+            const body = await res.json();
+            expect(body.size).toBe(`${w}x${h}`);
+            const [bw, bh] = String(body.size).split('x').map(Number);
+            expect(bw % 16).toBe(0);
+            expect(bh % 16).toBe(0);
+            expect(body.usage.output_tokens).toBe(officialOutputTokens(w, h, 'high'));
+        }
     });
 
     it('auto 但上游降级返 512²(与请求不符)→ 按实际 512² 计费(降级守卫不放松)', async () => {

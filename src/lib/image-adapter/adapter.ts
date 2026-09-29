@@ -32,7 +32,6 @@ import {
     alignTo16,
     aspectFromRatio,
     isAutoSize,
-    matchesAutoRequest,
     officialAutoDims,
     promptAspectRatio,
 } from './auto-size';
@@ -597,10 +596,13 @@ export async function handleAdapterImage(
     //    【无】狭长放行条款(兜底线全是 openAllTiers 官方账单,狭长图落下去照样对得上账);
     //  - 否则(存量 gated provider)要求 size 可解析,且:狭长形(长/短 > 1.5)不论盈利档放行,
     //    其余走盈利档守门(行为不变)。
-    // ---- size=auto / 缺省 → 官方 auto 尺寸(见 auto-size.ts):计费/回显按官方尺寸,上游发 16 对齐尺寸 ----
+    // ---- size=auto / 缺省 → 官方 auto 尺寸(见 auto-size.ts)就近对齐 16 后发上游;计费/回显按【交付图实际像素】----
+    // (2026-09-30 客户反馈:此前回显官方尺寸 1254x1254 / 1122x1402,但交付的是 16 对齐图,回显与像素对不上,
+    //  且非 16 倍数的 size 在官方计算器里是 Invalid size,客户无法核账。)
     // 此前 auto 对 openAllTiers 原样透传(各上游默认尺寸不一,1024² / 1024×1536 都有,与官方 1122×1402 对不上),
     // 对守门上游一律 503(算不出 token)。现在 auto 有确定尺寸 → 守门正常评估,gated 上游也能接 auto。
     let officialDims: { w: number; h: number } | null = null;
+    let autoDims: { w: number; h: number } | null = null; // auto 时发给上游的 16 对齐尺寸
     if (isAutoSize(parsed.size)) {
         let aspect = OFFICIAL_AUTO_DEFAULT_ASPECT;
         let source = 'default-4:5';
@@ -619,8 +621,8 @@ export async function handleAdapterImage(
             }
         }
         officialDims = officialAutoDims(aspect);
-        const aligned = alignTo16(officialDims);
-        parsed.upstreamSize = `${aligned.w}x${aligned.h}`;
+        autoDims = alignTo16(officialDims);
+        parsed.upstreamSize = `${autoDims.w}x${autoDims.h}`;
         console.log('[image-adapter] auto size', {
             provider: providerName,
             mode,
@@ -629,7 +631,7 @@ export async function handleAdapterImage(
             upstream: parsed.upstreamSize,
         });
     }
-    const dims = officialDims ?? parseSize(parsed.size);
+    const dims = autoDims ?? parseSize(parsed.size);
     const quality = normQuality(parsed.quality);
     const perImageCt = dims ? officialOutputTokens(dims.w, dims.h, quality) : 0;
     const elongated = dims ? isElongated(dims.w, dims.h) : false;
@@ -737,8 +739,9 @@ export async function handleAdapterImage(
     //   1264×848 → 记 4719,客户对不上账。上游缩图仍打 warn(运维信号),但账单跟请求走。
     //   约束外的显式 size(直打适配器绕过 proxy 校验,如 7000²)仍按实际:oaidist 实测不拒、200 静默降级出
     //   2048²,按请求值合成会 38 倍超收(2026-08 教训)。
-    // auto → 上游交付了官方 auto 尺寸那张 → 按官方尺寸;否则按返回图实际尺寸(降级守卫不放松)。
-    // 实际尺寸读不出(webp 等非 PNG/JPEG)→ size 可解析退回请求值,auto → 无从计费,failover。
+    // auto → 一律按【返回图实际像素】计费 + 回显(2026-09-30:回显必须等于交付图像素,且是官方计算器认的
+    //   16 倍数尺寸);上游没按我们发的对齐尺寸出图只打 warn,降级守卫不放松。
+    // 实际尺寸读不出(webp 等非 PNG/JPEG)→ 显式 size 退回请求值,auto 退回发给上游的对齐尺寸。
     // ---- 透明出图校验:transparent 请求只把【真带 alpha 通道】的图交给客户 ----
     // 支持名单内的上游也可能是号池(ominiapi 同账号 50/50 随机),假棋盘格按上游失败处理:
     // 丢弃无 alpha 的张,全军覆没则 503 让 new-api 重试/换渠道把骰子摇到真透明。
@@ -762,12 +765,8 @@ export async function handleAdapterImage(
     const actualDims = out0 ? imageDimensions(Buffer.from(out0, 'base64')) : null;
     let billW: number;
     let billH: number;
-    const requestedDims = officialDims ? null : dims; // 显式 WxH 才有;auto 走 officialDims
-    if (actualDims && officialDims && matchesAutoRequest(actualDims, officialDims)) {
-        // auto:上游交付了我们要的那张(16 对齐尺寸,与官方尺寸相差 ≤8px/边)→ 按官方 auto 尺寸计费 + 回显
-        billW = officialDims.w;
-        billH = officialDims.h;
-    } else if (requestedDims && isOfficialSize(requestedDims.w, requestedDims.h)) {
+    const requestedDims = autoDims ? null : dims; // 显式 WxH 才有;auto 走 autoDims
+    if (requestedDims && isOfficialSize(requestedDims.w, requestedDims.h)) {
         // 显式 size:按客户请求尺寸计费 + 回显,上游缩/放图只记 warn
         billW = requestedDims.w;
         billH = requestedDims.h;
@@ -791,7 +790,7 @@ export async function handleAdapterImage(
             });
         }
     } else if (dims) {
-        // 读不出返回图尺寸(webp 等):显式 size 按请求值;auto 按官方 auto 尺寸(不再 503 unbillable_auto)
+        // 读不出返回图尺寸(webp 等):显式 size 按请求值;auto 按发给上游的对齐尺寸(不再 503 unbillable_auto)
         billW = dims.w;
         billH = dims.h;
     } else {
@@ -829,14 +828,14 @@ export async function handleAdapterImage(
     // ---- 响应回显官方枚举(客户 #13:quality/background/output_format;下沉覆盖直连客户)----
     // quality:normQuality 已归一 low/medium/high(auto/standard→low)。output_format:按最终字节 sniff
     // (交付真形态,消解"请求 jpeg 出 png 却回显 jpeg")。background:透明校验通过则 transparent,否则 opaque。
-    // size:计费尺寸(显式 size = 请求尺寸;auto = 官方 auto 尺寸或返回图实际尺寸)。上游没这些字段,new-api 透传适配器顶层字段 → 直连客户也收到。
+    // size:计费尺寸(显式 size = 请求尺寸;auto = 返回图实际像素)。上游没这些字段,new-api 透传适配器顶层字段 → 直连客户也收到。
     const outFmt = sniffOutputFormat(Buffer.from(items[0]?.b64_json ?? '', 'base64')) || (wantFormat ?? 'png');
     const outBackground = wantsTransparent ? 'transparent' : 'opaque';
     const respSize = `${billW}x${billH}`;
     console.log('[image-adapter] ok', {
         provider: providerName,
         mode,
-        size: officialDims
+        size: autoDims
             ? `auto→${billW}x${billH}(upstream ${parsed.upstreamSize})`
             : dims && dims.w === billW && dims.h === billH
               ? parsed.size

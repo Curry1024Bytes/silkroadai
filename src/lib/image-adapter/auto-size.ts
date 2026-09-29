@@ -5,9 +5,12 @@
  *   w = round(√(A·r)), h = round(√(A/r)),r = 宽/高。generations 缺省比例 4:5(1122/1402);edits 跟随输入图。
  *   官方 usage 按这些尺寸算:1254² low=229、1672×941 low=129、1122×1402 low=186(与实测逐 token 相同)。
  *
- * 上游只认 16 倍数尺寸(官方约束),所以【发给上游】用最近的 16 对齐尺寸(1122×1402 → 1120×1408),
- * 【计费与回显】用官方尺寸;返回图与对齐尺寸相符(面积 ±6% / 比例 ±4%)即按官方尺寸计,否则(上游降级)按实际。
- * 交付像素与官方相差 ≤8px/边,是有意取舍(不做 jimp 重采样,省 CPU)。
+ * 上游只认 16 倍数尺寸(官方约束),所以【发给上游】用最近的 16 对齐尺寸(1122×1402 → 1120×1408、
+ * 1254² → 1248²)。交付像素与官方 auto 尺寸相差 ≤8px/边,是有意取舍(不重采样:省 CPU、保住 OpenAI 原生 C2PA)。
+ *
+ * 【计费与回显】2026-09-30 起一律按【交付图实际像素】(两条适配器同口径):此前回显官方尺寸(1254x1254),
+ * 客户拿到的图却是 1248×1248 —— 回显与像素对不上,且非 16 倍数尺寸在官方计算器里是 Invalid size,客户无法
+ * 核账(1248² high 官方 2,050,我们按 1254² 记 2,058)。官方尺寸现在只用来推导发给上游的对齐尺寸。
  */
 export const OFFICIAL_AUTO_AREA = 1_572_864;
 /** generations auto 官方缺省画幅 4:5(1122×1402)。 */
@@ -30,7 +33,8 @@ export function alignTo16(d: { w: number; h: number }): { w: number; h: number }
     return { w: Math.max(16, Math.round(d.w / 16) * 16), h: Math.max(16, Math.round(d.h / 16) * 16) };
 }
 
-/** 返回图是否"就是我们要的那张"(面积 ±6%、比例 ±4%)—— 是则按官方 auto 尺寸计费/回显;否则视为上游降级按实际。 */
+/** 返回图是否"就是我们要的那张"(面积 ±6%、比例 ±4%)。2026-09-30 起不再参与计费/回显(一律按实际像素),
+ *  保留作判定工具。 */
 export function matchesAutoRequest(actual: { w: number; h: number }, official: { w: number; h: number }): boolean {
     const areaRatio = (actual.w * actual.h) / (official.w * official.h);
     const aspectRatio = actual.w / actual.h / (official.w / official.h);

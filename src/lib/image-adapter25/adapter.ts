@@ -33,7 +33,6 @@ import {
     alignTo16,
     aspectFromRatio,
     isAutoSize,
-    matchesAutoRequest,
     officialAutoDims,
     promptAspectRatio,
 } from '@/lib/image-adapter/auto-size';
@@ -730,8 +729,11 @@ export async function handleAdapter25Image(
 
     // ---- size=auto / 缺省 → 官方 auto 尺寸(2026-09-19 官方 key 打 gpt-image-2.5 实测):generations 缺省 1:1
     // (1254×1254,与 2.0 的 4:5 不同);edits 跟第一张输入图比例(方→1254²、16:9→1672×941,与 2.0 相同)。
-    // 上游发 16 对齐尺寸,返图相符按官方尺寸计费/回显;不符按实际;读不出按官方尺寸(不再 503)。
+    // 上游发 16 对齐尺寸(1254² → 1248²),计费/回显一律按【交付图实际像素】;读不出按发给上游的对齐尺寸。
+    // (2026-09-30 客户反馈:此前回显官方尺寸 1254x1254,交付图是 1248x1248 —— 回显与像素对不上,
+    //  且 1254 不是 16 倍数,官方计算器判 Invalid size、客户无法核账;1248² high 官方 2,050,我们记了 2,058。)
     let officialDims: { w: number; h: number } | null = null;
+    let autoDims: { w: number; h: number } | null = null; // auto 时发给上游的 16 对齐尺寸
     if (isAutoSize(parsed.size)) {
         let aspect = 1;
         let source = 'default-1:1';
@@ -747,8 +749,8 @@ export async function handleAdapter25Image(
             } else source = 'input-unreadable→1:1';
         }
         officialDims = officialAutoDims(aspect);
-        const aligned = alignTo16(officialDims);
-        parsed.upstreamSize = `${aligned.w}x${aligned.h}`;
+        autoDims = alignTo16(officialDims);
+        parsed.upstreamSize = `${autoDims.w}x${autoDims.h}`;
         console.log('[image-adapter25] auto size', {
             provider: providerName,
             mode,
@@ -757,7 +759,7 @@ export async function handleAdapter25Image(
             upstream: parsed.upstreamSize,
         });
     }
-    const dims = officialDims ?? parseSize(parsed.size);
+    const dims = autoDims ?? parseSize(parsed.size);
     const quality = normQuality25(parsed.quality);
     // ---- 档位白名单:上游对名单外档位是【静默降级】而非拒绝(llmway xhigh/max → medium),直通会让
     // 客户按高档付费拿低档图;让路 503 给别的渠道,不打上游。归一后判(auto/缺省 = low 照常放行)。 ----
@@ -845,15 +847,13 @@ export async function handleAdapter25Image(
         items = kept;
     }
 
-    // ---- 计费尺寸:优先【返回图实际尺寸】(防上游静默降级超收);读不出 → 请求值;auto 且读不出 → 让路 ----
+    // ---- 计费尺寸 = 回显 size:优先【返回图实际像素】(防上游静默降级超收;auto 同样按实际,回显即交付);
+    //      读不出 → 显式 size 按请求值 / auto 按发给上游的对齐尺寸 ----
     const out0 = items[0]?.b64_json;
     const actualDims = out0 ? imageDimensions(Buffer.from(out0, 'base64')) : null;
     let billW: number;
     let billH: number;
-    if (actualDims && officialDims && matchesAutoRequest(actualDims, officialDims)) {
-        billW = officialDims.w; // auto:上游交付了我们要的那张 → 按官方 auto 尺寸计费 + 回显
-        billH = officialDims.h;
-    } else if (actualDims) {
+    if (actualDims) {
         billW = actualDims.w;
         billH = actualDims.h;
         if (dims && (dims.w !== actualDims.w || dims.h !== actualDims.h)) {
@@ -865,7 +865,7 @@ export async function handleAdapter25Image(
             });
         }
     } else if (dims) {
-        billW = dims.w; // 读不出返回图尺寸:显式 size 按请求值;auto 按官方 auto 尺寸
+        billW = dims.w; // 读不出返回图尺寸:显式 size 按请求值;auto 按发给上游的对齐尺寸
         billH = dims.h;
     } else {
         return failover('unbillable_auto', 'size unparsable and output image dimensions unreadable');
@@ -899,7 +899,7 @@ export async function handleAdapter25Image(
         provider: providerName,
         model: parsed.model,
         mode,
-        size: officialDims
+        size: autoDims
             ? `auto→${respSize}(upstream ${parsed.upstreamSize})`
             : dims && dims.w === billW && dims.h === billH
               ? parsed.size

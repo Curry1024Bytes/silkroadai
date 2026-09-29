@@ -1025,7 +1025,9 @@ describe('2.5 官方校准(2026-09-19 官方 key 实测):edits 文字 +10/输入
         expect((mk(1, 2).input_tokens_details as { text_tokens: number }).text_tokens).toBe(36);
         expect(mk(1, 1).input_tokens).toBe(18 + 256);
     });
-    it('generations size=auto → 上游收 1248x1248(1254² 对齐);返图相符按官方 1254² 计 229、回显 1254x1254', async () => {
+    // 2026-09-30:auto 的计费 + 回显改按【交付图实际像素】。此前回显官方 1254x1254、交付 1248×1248 → 客户报
+    // "返回的 size 和实际图片对不上",且 1254 非 16 倍数,官方计算器判 Invalid size。
+    it('generations size=auto → 上游收 1248x1248(1254² 对齐);按交付图实际像素计 228、回显 1248x1248', async () => {
         okUpstream([pngB64(1248, 1248)]);
         const res = await handleAdapter25Image(
             jsonReq(URL_G, { model: 'gpt-image-2.5-flare', prompt: 'a cat', size: 'auto', quality: 'low' }),
@@ -1036,10 +1038,40 @@ describe('2.5 官方校准(2026-09-19 官方 key 实测):edits 文字 +10/输入
         const body = (await res.json()) as { size: string; usage: { output_tokens: number } };
         const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
         expect((JSON.parse(String(init.body)) as { size: string }).size).toBe('1248x1248');
-        expect(body.size).toBe('1254x1254');
-        expect(body.usage.output_tokens).toBe(229);
+        expect(body.size).toBe('1248x1248');
+        expect(body.usage.output_tokens).toBe(228);
     });
-    it('edits size 缺省 + 16:9 输入 → 官方 1672×941(129),上游收 1680x944;input = 18 + 1508', async () => {
+    it('客户实例:size=auto + quality=high + jpeg → 回显 1248x1248、output 2,050(= 官方计算器 1248² high,不再是 1254² 的 2,058)', async () => {
+        okUpstream([pngB64(1248, 1248)]);
+        const res = await handleAdapter25Image(
+            jsonReq(URL_G, {
+                model: 'gpt-image-2.5-flare',
+                prompt: '可爱的一只猫',
+                size: 'auto',
+                quality: 'high',
+                n: 1,
+            }),
+            'generations',
+            'wetokenasia25',
+        );
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { size: string; usage: { output_tokens: number } };
+        expect(body.size).toBe('1248x1248');
+        expect(body.usage.output_tokens).toBe(2050);
+    });
+    it('size=auto 且返回图尺寸读不出 → 按发给上游的对齐尺寸 1248x1248 计费 + 回显(不回显非 16 倍数的 1254)', async () => {
+        okUpstream(['bm90LXBuZw==']);
+        const res = await handleAdapter25Image(
+            jsonReq(URL_G, { model: 'gpt-image-2.5-flare', prompt: 'a cat', size: 'auto', quality: 'low' }),
+            'generations',
+            'wetokenasia25',
+        );
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { size: string; usage: { output_tokens: number } };
+        expect(body.size).toBe('1248x1248');
+        expect(body.usage.output_tokens).toBe(228);
+    });
+    it('edits size 缺省 + 16:9 输入 → 上游收 1680x944,按实际像素计 130、回显 1680x944;input = 18 + 1508', async () => {
         okUpstream([pngB64(1680, 944)]);
         const res = await handleAdapter25Image(
             formReq(URL_E, { model: 'gpt-image-2.5-flare', prompt: 'a cat', quality: 'low' }, [pngHeader(3840, 2160)]),
@@ -1057,8 +1089,8 @@ describe('2.5 官方校准(2026-09-19 官方 key 实测):edits 文字 +10/输入
         };
         const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
         expect((init.body as FormData).get('size')).toBe('1680x944');
-        expect(body.size).toBe('1672x941');
-        expect(body.usage.output_tokens).toBe(129);
+        expect(body.size).toBe('1680x944');
+        expect(body.usage.output_tokens).toBe(130);
         expect(body.usage.input_tokens_details).toEqual({ text_tokens: 18, image_tokens: 1508 });
         expect(body.usage.input_tokens).toBe(1526);
     });
