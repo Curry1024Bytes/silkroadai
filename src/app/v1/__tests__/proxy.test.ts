@@ -771,7 +771,12 @@ describe('/v1 proxy — passthrough', () => {
         );
         const res = await POST(
             makeReq('/messages', {
-                body: { model: 'claude-sonnet-4-6', stream: true, max_tokens: 100, messages: [] },
+                body: {
+                    model: 'claude-sonnet-4-6',
+                    stream: true,
+                    max_tokens: 100,
+                    messages: [{ role: 'user', content: 'hi' }],
+                },
             }),
             ctx('messages'),
         );
@@ -830,7 +835,9 @@ describe('/v1 proxy — passthrough', () => {
             new Response(anthropic, { status: 200, headers: { 'content-type': 'application/json' } }),
         );
         const res = await POST(
-            makeReq('/messages', { body: { model: 'claude-sonnet-4-6', max_tokens: 10, messages: [] } }),
+            makeReq('/messages', {
+                body: { model: 'claude-sonnet-4-6', max_tokens: 10, messages: [{ role: 'user', content: 'hi' }] },
+            }),
             ctx('messages'),
         );
         expect(await res.text()).toBe(anthropic);
@@ -868,7 +875,7 @@ describe('/v1 proxy — passthrough', () => {
         mockFetch.mockResolvedValueOnce(new Response(JSON.stringify({ type: 'message' }), { status: 200 }));
         const res = await POST(
             makeReq('/messages?beta=true', {
-                body: { model: 'claude-opus-4-7', max_tokens: 8192, messages: [] },
+                body: { model: 'claude-opus-4-7', max_tokens: 8192, messages: [{ role: 'user', content: 'hi' }] },
             }),
             ctx('messages'),
         );
@@ -4231,7 +4238,7 @@ describe('/v1 proxy — chat/completions 请求体守门(把 new-api 的 500 变
 
     it('model 传数字 → 400', async () => {
         const res = await POST(
-            makeReq('/chat/completions', { body: { model: 123, messages: [] } }),
+            makeReq('/chat/completions', { body: { model: 123, messages: [{ role: 'user', content: 'hi' }] } }),
             ctx('chat', 'completions'),
         );
         expect(res.status).toBe(400);
@@ -4297,7 +4304,9 @@ describe('/v1 proxy — 请求体守门接线:/messages 与 /responses(第二步
     // ── /messages(97.4% 流量)──
     it('/messages max_tokens:-1 → 400,不打上游', async () => {
         const res = await POST(
-            makeReq('/messages', { body: { model: 'claude-opus-4-8', max_tokens: -1, messages: [] } }),
+            makeReq('/messages', {
+                body: { model: 'claude-opus-4-8', max_tokens: -1, messages: [{ role: 'user', content: 'hi' }] },
+            }),
             ctx('messages'),
         );
         expect(res.status).toBe(400);
@@ -4324,7 +4333,7 @@ describe('/v1 proxy — 请求体守门接线:/messages 与 /responses(第二步
                     model: 'claude-opus-4-8',
                     max_tokens: 2000,
                     thinking: { type: 'enabled', budget_tokens: -1 },
-                    messages: [],
+                    messages: [{ role: 'user', content: 'hi' }],
                 },
             }),
             ctx('messages'),
@@ -4336,7 +4345,9 @@ describe('/v1 proxy — 请求体守门接线:/messages 与 /responses(第二步
     it('/messages max_tokens:"64" → 强转并放行', async () => {
         ok200();
         const res = await POST(
-            makeReq('/messages', { body: { model: 'claude-opus-4-8', max_tokens: '64', messages: [] } }),
+            makeReq('/messages', {
+                body: { model: 'claude-opus-4-8', max_tokens: '64', messages: [{ role: 'user', content: 'hi' }] },
+            }),
             ctx('messages'),
         );
         expect(res.status).toBe(200);
@@ -4345,7 +4356,7 @@ describe('/v1 proxy — 请求体守门接线:/messages 与 /responses(第二步
 
     it('/messages 合法请求:转发的是【原始字节】,未重新序列化', async () => {
         ok200();
-        const raw = '{"model":"claude-opus-4-8",  "max_tokens":16,\n  "messages":[]}';
+        const raw = '{"model":"claude-opus-4-8",  "max_tokens":16,\n  "messages":[{"role":"user","content":"hi"}]}';
         const req = new NextRequest('https://ai.silkroadai.io/v1/messages', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -4374,7 +4385,9 @@ describe('/v1 proxy — 请求体守门接线:/messages 与 /responses(第二步
             mockFetch.mockClear();
             ok200();
             const res = await POST(
-                makeReq('/messages', { body: { model: 'm', max_tokens: 16, system, messages: [] } }),
+                makeReq('/messages', {
+                    body: { model: 'm', max_tokens: 16, system, messages: [{ role: 'user', content: 'hi' }] },
+                }),
                 ctx('messages'),
             );
             expect(res.status).toBe(200);
@@ -4422,6 +4435,90 @@ describe('/v1 proxy — 请求体守门接线:/messages 与 /responses(第二步
             ctx('responses'),
         );
         expect(res.status).toBe(200);
+    });
+
+    // ── 必填字段(2026-09-30):new-api 的 GetAndValidateRequest 校验失败一律 500 ──
+    it('/chat/completions 缺 messages → 400 missing_required_parameter,不打上游', async () => {
+        const res = await POST(
+            makeReq('/chat/completions', { body: { model: 'gpt-6-sol' } }),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(400);
+        const j = await res.json();
+        expect(j.error).toEqual({
+            message: "Missing required parameter: 'messages'.",
+            type: 'invalid_request_error',
+            param: 'messages',
+            code: 'missing_required_parameter',
+        });
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('/chat/completions messages 为空数组 / null → 400,不打上游', async () => {
+        for (const messages of [[], null]) {
+            const res = await POST(
+                makeReq('/chat/completions', { body: { model: 'gpt-6-luna', messages } }),
+                ctx('chat', 'completions'),
+            );
+            expect(res.status).toBe(400);
+            expect((await res.json()).error.param).toBe('messages');
+        }
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('/chat/completions FIM(带 prefix / suffix)缺 messages → 放行', async () => {
+        ok200();
+        const res = await POST(
+            makeReq('/chat/completions', { body: { model: 'deepseek-v4-flash', prefix: 'def f(', suffix: ')' } }),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(200);
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('/messages 缺 messages → 400 Anthropic 形,不打上游', async () => {
+        const res = await POST(
+            makeReq('/messages', { body: { model: 'claude-opus-4-8', max_tokens: 16 } }),
+            ctx('messages'),
+        );
+        expect(res.status).toBe(400);
+        expect(await res.json()).toEqual({
+            type: 'error',
+            error: { type: 'invalid_request_error', message: 'messages: Field required' },
+        });
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('/responses 缺 input → 400;input 为 string / array / null → 放行', async () => {
+        const miss = await POST(makeReq('/responses', { body: { model: 'gpt-6-sol' } }), ctx('responses'));
+        expect(miss.status).toBe(400);
+        expect((await miss.json()).error).toMatchObject({ param: 'input', code: 'missing_required_parameter' });
+        expect(mockFetch).not.toHaveBeenCalled();
+
+        for (const input of ['hi', [{ role: 'user', content: 'hi' }], null]) {
+            ok200();
+            const res = await POST(makeReq('/responses', { body: { model: 'gpt-6-sol', input } }), ctx('responses'));
+            expect(res.status).toBe(200);
+        }
+    });
+
+    it('max_tokens 超过 new-api 上限(MaxInt32/2)→ 400 integer_above_max_value', async () => {
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: {
+                    model: 'gpt-6-sol',
+                    messages: [{ role: 'user', content: 'hi' }],
+                    max_completion_tokens: 2147483647,
+                },
+            }),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(400);
+        expect((await res.json()).error).toMatchObject({
+            param: 'max_completion_tokens',
+            code: 'integer_above_max_value',
+        });
+        expect(mockFetch).not.toHaveBeenCalled();
     });
 
     it('GET /responses 不走守门(只拦 POST)', async () => {

@@ -254,6 +254,10 @@ silkroadai/
 - [x] 追加(2026-09-27):国内版 2.5 480p 的 service-inference.ai 线 **/v1 → /v2**(operator 指定)。两台机 `.env` 置 `SEEDANCE_SVCINF_API_VERSION=v2` 已滚动生效(smoke:新任务 `/v2/video/tasks/{mvt}` 200、`/v1` 404);代码缺省同步改 v2,置 `v1` 可切回。
 - [x] 追加(同日,客户实测 `execution_expires_after` 被 400):`/api/v3` 提交白名单再补 `execution_expires_after` / `bitrate_mode` / `moderation_options`(官方创建参数);migration `20260923020000` 加 `execution_expires_after` 列,客户传了就回显客户值,没传给官方默认 172800。**教训:ark 面白名单是正向清单,官方每加一个创建参数就得跟一次** —— 新参数先查白名单。
 
+### /v1 请求体守门补「必填字段」(2026-09-30)
+
+- [x] 分支 `fix/proxy-required-fields-400` — 客户对标 Azure 官方的 77 格契约测试(az-gpt 组 gpt-6-sol / gpt-6-luna)报「缺 `messages` 的非法请求回 HTTP 500」。生产日志定位:500 是 **new-api 本地 <1ms 吐的**(`relay error: field messages is required`),没打上游(见 gotcha #23)。`src/lib/proxy/body-guard.ts` 新增 `validateRequired(obj, surface)`,三条面在类型校验通过后各调一次,只拒 new-api 必然 500 的输入:chat / messages 的 `messages` 缺失 / null / 空数组(chat 带 `prefix`/`suffix` 的 FIM 豁免)、responses 的 `input` 键缺失(`input:null` 不拦)、max_tokens 类字段 > 1073741823。OpenAI 面用官方文案 + code(`missing_required_parameter` / `empty_array` / `integer_above_max_value`),`/messages` 用 Anthropic 形。fail-open。`/v1beta` 的 `contents is required` 同类 500 本次未拦。
+
 ### Seedream 5.0 Pro 生图线(2026-09-06)
 
 - [x] `seedream-5-0-pro` 适配器 ✅(2026-09-06,PR #442 merge `89281f8` + #443 `fe52023`;**2026-09-07 已部署**:server2 `deploy-image-adapter.sh` api-1..6 + server1 官网 `/docs`;new-api **ch214** `seedream 5 pro (service-inference · seedream-adapter)` + ModelRatio/CompletionRatio=1;公网真 key 冒烟 1K 扣 84,151 / 拆层 4 图扣 168,301 / 坏尺寸 400 全过)— 上游 service-inference.ai `dola-seedream-5-0-pro-260628-ep`,走 image-adapter / minimax 同款「portal 适配器 + new-api 渠道」:`src/lib/seedream/adapter.ts` + `/seedream-adapter/v1/images/generations`。**渠道必须开 `pass_through_body_enabled`**(否则 new-api 按自家 ImageRequest 重组 body,`layer_decomposition` / `image` 等字段到不了适配器;echo 探测证实开了原始 JSON 逐字节到达、响应扩展字段 z_index / bounding_box 原样穿回)。适配器:模型名映射、输入图四字段归一(URL / base64 都直传上游)、恒要 b64_json(上游 url 是火山 TOS 24h 链接)、n 本层扇出(上游忽略 n)、**合成 usage = 售价 quota**(ModelRatio=CompletionRatio=1 ⇒ quota = input_tokens + output_tokens 逐 quota 精确)。售价 = 官方 USD × 0.55 × 6.8:普通 ≤2.36MP ¥0.1683 / >2.36MP ¥0.3366 每张,图层拆分 ¥0.0842 / ¥0.1683 每张输出,参考图第 2 张起 ¥0.0112(阈值取上游计费元数据 le_236w,不用官方页的 2.61M)。代理层(`/v1` route)钩子:缺省 `response_format=url` → b64 存图床(客户 OSS / R2)换永久 url;图层拆分空 prompt 占位空格(new-api 要求非空);multipart `images.edit` → 转 JSON 打 generations;上游无渠道按容量 503。上游实测:size 面积 ≤4,624,220 px(3K/4K 拒)、透明背景需恰好 1 张 PNG 输入、prompt 可空拆层。配置脚本 `scripts/setup-seedream-5-pro.mjs`(ModelRatio/CompletionRatio=1 + 建渠道 pass_through/auto_ban=0;**缺省不碰 `group_ratio_setting`** —— 部署前核查 prod 三键已分叉:GroupRatio 15 键 / flat 18 / nested 17,9 个在用组三键全无、靠内存态放行,default/pool-gpt/pool-claude 两键值不同;PUT flat 会让未镜像组 403「已被弃用」,合并值是定价决策,留 operator 拍板后用 `--sync-group-setting`);组 `seedream 5 pro` / 档位行已存在。**部署走 server2 `deploy-image-adapter.sh`(api-1..6),不是 CLAUDE.md 那条 portal 命令。** 旧 ch166(artsapi 直连、未定价)建议禁用。`/docs#seedream-image` 章节 + 23 适配器单测 + 6 代理单测。
@@ -458,6 +462,14 @@ LiteLLM 同时支持 user-level 和 key-level 预算。我们只用 key-level(�
 **prompt 里写比例 ≠ 指定画幅(#468 前)**:按张上游对 `auto` 是「模型自己定画布」,模型有时听 prompt 里的「16:9」有时不听(实测 4/10),客户会把偶然命中当成功能。#468 起代理在 `auto` + edits 时把 prompt 里的明确比例字样当画幅指令补成显式 size,变成确定行为;但正确用法仍是显式 `size`。
 
 **别碰 generations**:generations 的 `auto` 上游出 2048²/1024×1536/1536×1024,一周 73.8 万次、¥25 万,是既有产品行为;任何把 generations `auto` 补成 1024² 的写法都会砍半收入(`gptImageFallbackSize` 对无图请求返回 1024²,不能复用到这里)。
+
+---
+
+### 23. new-api 请求校验失败一律回 500(不是上游问题)
+
+**症状**:缺 `messages` / 缺 `input` / max_tokens 超大的请求拿到 `500`,客户侧 5xx 重试逻辑被误触发。
+**真实行为**:new-api(rc.22)`controller/relay.go` 对 `GetAndValidateRequest` 的任何报错都走 `types.NewError(err, ErrorCodeInvalidRequest)`,`NewError` 缺省状态码 500。请求在 new-api 本地 <1ms 返回,**不进 `logs` 表**(type=5 查不到),只能翻 docker log:`[ERR] … relay error: <msg>` + 同 request id 的 `[GIN] … | 500 | 几百µs`(GIN 时间是北京时间)。
+**解决**:网关 `body-guard.ts` 的 `validateRequired` 提前回 400。new-api 每加一条校验(`relay/helper/valid_request.go`)都可能多一个 500 —— 客户报「非法请求回 500」先按上面的方法看是不是 new-api 本地吐的,是就补进守门。缺 `model` 不在此列(Distribute 中间件已回 400)。
 
 ---
 

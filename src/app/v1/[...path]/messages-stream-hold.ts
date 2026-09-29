@@ -26,7 +26,7 @@ import { forwardHeaders, passthroughResponse, STRIP_RESPONSE_HEADERS } from '@/l
 import { guardSseStream } from '@/lib/sse/stream-guard';
 import { scheduleStreamFailRefund } from '@/lib/billing/stream-fail-refund';
 import { type CaptureCtx, captureJsonResponse, captureResponse, recordRequestBody } from '@/lib/reqlog/capture';
-import { ANTHROPIC_SPEC, guardRawBody, violationBody } from '@/lib/proxy/body-guard';
+import { ANTHROPIC_SPEC, guardRawBody, validateRequired, violationBody } from '@/lib/proxy/body-guard';
 import { anthropicInvalidRequestBody, validateAnthropicTools } from '@/lib/proxy/anthropic-tools-guard';
 import { remapModelNotFound } from '@/lib/proxy/model-not-found';
 
@@ -57,6 +57,10 @@ export async function handleAnthropicMessages(
     // guardRawBody 永不抛异常;不可解析的体照旧原样放行交给 new-api 报错。
     const g = guardRawBody(raw, ANTHROPIC_SPEC);
     if (g.violation) return NextResponse.json(violationBody(g.violation), { status: 400 });
+    // 必填 + max_tokens 上限(new-api 对缺 messages 本地回 500 `field messages is required`)。
+    // Anthropic 形错误体,措辞同官方。
+    const rv = g.parsed ? validateRequired(g.parsed, 'anthropic') : null;
+    if (rv) return NextResponse.json(anthropicInvalidRequestBody(rv.message), { status: 400 });
     // tools[] 结构校验(官方确定性 400;中转与 new-api 都不校验,畸形定义会打到模型并计费)。
     if (g.parsed && !isAbsentTools(g.parsed.tools)) {
         const tv = validateAnthropicTools(g.parsed.tools);
