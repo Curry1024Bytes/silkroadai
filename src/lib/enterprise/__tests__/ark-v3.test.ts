@@ -64,6 +64,11 @@ vi.mock('../assets', async (importOriginal) => {
 });
 const { maybeStoreVideoToCustomerOss } = vi.hoisted(() => ({ maybeStoreVideoToCustomerOss: vi.fn() }));
 vi.mock('@/lib/seedance/customer-oss-video', () => ({ maybeStoreVideoToCustomerOss }));
+// 成片探测要打真实网络 → mock 成探不到(存量任务行 ratio 为 NULL 会触发探测)
+vi.mock('../video-probe', async (importOriginal) => {
+    const mod = await importOriginal<typeof import('../video-probe')>();
+    return { ...mod, probeVideoMeta: vi.fn(async () => null) };
+});
 
 import { handleEnterpriseArkV3, handleEnterpriseV1 } from '../proxy';
 import { __resetPollCache } from '../poll-cache';

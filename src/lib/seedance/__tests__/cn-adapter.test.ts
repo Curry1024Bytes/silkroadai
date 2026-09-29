@@ -19,7 +19,13 @@ const { rememberVolcId, toUpstreamId } = vi.hoisted(() => ({
 }));
 vi.mock('@/lib/enterprise/volc-id-map', () => ({ rememberVolcId, toUpstreamId }));
 
-import { submitVideo, pollVideo, cancelVideoWithKey } from '../cn-adapter';
+import {
+    submitVideo,
+    pollVideo,
+    cancelVideoWithKey,
+    inlineDurationFromPrompt,
+    resolveRequestedDuration,
+} from '../cn-adapter';
 
 const json = (obj: unknown, status = 200) =>
     new Response(JSON.stringify(obj), { status, headers: { 'content-type': 'application/json' } });
@@ -908,5 +914,52 @@ describe('国内版 2.5 480p 单档 → service-inference.ai(缺省 /v2,env 可�
         const r = await cancelVideoWithKey('cgt-x', 'Bearer sk-9066test');
         expect(r.status).toBe(501);
         expect(mockFetch).not.toHaveBeenCalled();
+    });
+});
+
+// 2026-09-29 客户测试报告:body 没传 duration、提示词写 `--duration 25`,官方出 25s,我们硬填 5 转发 → 5s 出片。
+describe('prompt 内联 --duration(火山官方弱校验通道)', () => {
+    it('解析:--duration / --dur,多次出现取最后一个,content 数组形也认', () => {
+        expect(inlineDurationFromPrompt({ prompt: '森林里雾气缓缓流动 --duration 25' }, 30)).toBe(25);
+        expect(inlineDurationFromPrompt({ prompt: 'x --dur 8 --ratio 16:9' }, 30)).toBe(8);
+        expect(inlineDurationFromPrompt({ prompt: 'x --duration 6 y --duration 12' }, 30)).toBe(12);
+        expect(inlineDurationFromPrompt({ prompt: 'x --duration -1' }, 30)).toBe(-1);
+        expect(inlineDurationFromPrompt({ content: [{ type: 'text', text: 'x --duration 25' }] }, 30)).toBe(25);
+    });
+
+    it('弱校验:越界 / 非整数 / 粘连写法 → 当没写(null)', () => {
+        expect(inlineDurationFromPrompt({ prompt: 'x --duration 31' }, 30)).toBeNull();
+        expect(inlineDurationFromPrompt({ prompt: 'x --duration 25' }, 15)).toBeNull(); // 2.0 系上限 15
+        expect(inlineDurationFromPrompt({ prompt: 'x --duration 3' }, 30)).toBeNull();
+        expect(inlineDurationFromPrompt({ prompt: 'x --duration 7.5' }, 30)).toBeNull();
+        expect(inlineDurationFromPrompt({ prompt: 'x --duration25' }, 30)).toBeNull();
+        expect(inlineDurationFromPrompt({ prompt: 'x--duration 25' }, 30)).toBeNull();
+        expect(inlineDurationFromPrompt({ prompt: '没有指令的普通提示词' }, 30)).toBeNull();
+    });
+
+    it('优先级:body > 内联 > 缺省 5;body 显式非法 → null(调用方决定 400 / 回落)', () => {
+        expect(resolveRequestedDuration({ prompt: 'x --duration 25', duration: 6 }, 30)).toBe(6);
+        expect(resolveRequestedDuration({ prompt: 'x --duration 25', seconds: 9 }, 30)).toBe(9);
+        expect(resolveRequestedDuration({ prompt: 'x --duration 25' }, 30)).toBe(25);
+        expect(resolveRequestedDuration({ prompt: 'x' }, 30)).toBe(5);
+        expect(resolveRequestedDuration({ prompt: 'x', duration: -1 }, 30)).toBe(-1);
+        expect(resolveRequestedDuration({ prompt: 'x --duration 25', duration: 3 }, 30)).toBeNull();
+        expect(resolveRequestedDuration({ prompt: 'x', duration: 31 }, 30)).toBeNull();
+    });
+
+    it('提交:内联 25 真正转发给上游(2.5 系);body 传了则 body 胜出;2.0 系越界回落 5', async () => {
+        let res = await submitVideo(makeReq({ model: 'seedance2.5-720p', prompt: '森林里雾气缓缓流动 --duration 25' }));
+        expect(res.status).toBe(200);
+        expect(submitBody().duration).toBe(25);
+
+        mockFetch.mockClear();
+        res = await submitVideo(makeReq({ model: 'seedance2.5-720p', prompt: 'x --duration 25', duration: 6 }));
+        expect(res.status).toBe(200);
+        expect(submitBody().duration).toBe(6);
+
+        mockFetch.mockClear();
+        res = await submitVideo(makeReq({ model: 'seedance2.0-pro-720p', prompt: 'x --duration 25' }));
+        expect(res.status).toBe(200);
+        expect(submitBody().duration).toBe(5);
     });
 });

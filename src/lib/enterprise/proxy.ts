@@ -23,6 +23,7 @@ import {
     cancelVideoWithKey,
     regionForModel,
     maxDurationForVariant,
+    resolveRequestedDuration,
     type SeedanceModelSpec,
     type SeedanceVariant,
     type SeedanceRegion,
@@ -57,6 +58,8 @@ import { maybeBrandVideoUrl } from '@/lib/seedance/volc-brand';
 import { maybeStoreVideoToCustomerOss } from '@/lib/seedance/customer-oss-video';
 import { isTerminalTaskFailure, type UpstreamErrorCategory } from '@/lib/seedance/upstream-error';
 import { invalidatePollCache, pollWithCache } from './poll-cache';
+import { probeVideoMeta, ratioFromDimensions, roundDurationSec } from './video-probe';
+import { estimateTokens, type Resolution } from '@/lib/seedance/cn-billing';
 import {
     newRequestLogCtx,
     sanitizeRequestBody,
@@ -724,20 +727,16 @@ async function handleSubmitInner(req: NextRequest, format: ClientFormat, ctx: Re
 
     const hasVideo = extractVideoUrls(body).length > 0;
     // duration:2.5 系 4-30s,2.0 系 4-15s(火山官方 2026-08 提升 2.5 至 30s;探测 volc/cn/global
-    // 2.0 上游 3s/16s 皆 400,4s 全变体真出片)。缺省 5;显式非法值 400(不静默改秒数 —— 计费
-    // 按 token,静默换时长=换价)。
-    const durRaw = Number(body.duration ?? body.seconds);
+    // 2.0 上游 3s/16s 皆 400,4s 全变体真出片)。显式非法值 400(不静默改秒数 —— 计费
+    // 按 token,静默换时长=换价)。body 没传时认 prompt 内联 `--duration N`(火山官方弱校验通道),
+    // 都没有才缺省 5。-1 = 智能时长(上游自选,落库 -1;余额门按上限估价)。
+    // 解析口径与适配器核心共用 resolveRequestedDuration —— 估价 / 落库 / 实际转发必须同值。
     const maxDur = maxDurationForVariant(map.variant);
-    let duration: number;
-    if (body.duration == null && body.seconds == null) {
-        duration = 5;
-    } else if (durRaw === -1) {
-        duration = -1; // 智能时长(上游自选,落库 -1;余额门按上限估价)
-    } else if (Number.isInteger(durRaw) && durRaw >= 4 && durRaw <= maxDur) {
-        duration = durRaw;
-    } else {
+    const resolvedDuration = resolveRequestedDuration(body, maxDur);
+    if (resolvedDuration == null) {
         return errJson(400, 'invalid_request', `duration 仅支持 4-${maxDur} 之间的整数秒或 -1(智能时长)`);
     }
+    const duration = resolvedDuration;
     // 余额门:-1 时长未定,按【上限】估价挡防欠扣(最终按 token 结算,不受影响)。
     const estDuration = duration === -1 ? maxDur : duration;
 
@@ -807,7 +806,10 @@ async function handleSubmitInner(req: NextRequest, format: ClientFormat, ctx: Re
 
     try {
         // 提交参数落库(2026-08-06):火山方舟形查询响应要逐字段回显 ratio/seed/generate_audio
-        const ratioRaw = String(body.ratio || body.aspect_ratio || '16:9');
+        // ratio 客户没传 → 落 NULL(=模型自选,成片出来后按实测回填),不再落 '16:9' 冒充提交参数:
+        // 文生视频模型常自选 9:16,回显却是 16:9(2026-09-29 客户对照基线实测)。
+        const ratioRaw = body.ratio ?? body.aspect_ratio;
+        const ratioSubmitted = ratioRaw == null || ratioRaw === '' ? null : String(ratioRaw).slice(0, 16);
         await prisma.seedanceVideoTask.create({
             data: {
                 id: taskId,
@@ -819,7 +821,7 @@ async function handleSubmitInner(req: NextRequest, format: ClientFormat, ctx: Re
                 resolution: map.resolution,
                 has_video: hasVideo,
                 duration,
-                ratio: ratioRaw.slice(0, 16),
+                ratio: ratioSubmitted,
                 seed:
                     typeof body.seed === 'number' && Number.isFinite(body.seed) ? BigInt(Math.trunc(body.seed)) : null,
                 generate_audio: body.generate_audio !== false,
@@ -1104,6 +1106,42 @@ async function handlePollInner(
         });
     }
 
+    // 成片真值(时长 / 宽高比):上游给了【已推导】的值就用它;上游不回显的渠道(国内版 xinhankr
+    // 线只回 status / url / usage)从成片头部实测。只在库里是「未定」(duration=-1 / ratio 空)时才测,
+    // 测到即回填任务行 —— 之后的查询与列表都回显真值,也不再重复探测。
+    let actualDuration = upstreamNum(j?.duration);
+    let actualRatio = upstreamStr(j?.ratio);
+    if (j?.status === 'completed') {
+        const needDuration = task.duration === -1;
+        const needRatio = !task.ratio;
+        if (rawVideoUrl && ((needDuration && actualDuration == null) || (needRatio && actualRatio == null))) {
+            const probed = await probeVideoMeta(rawVideoUrl);
+            if (probed?.durationSec != null && actualDuration == null)
+                actualDuration = roundDurationSec(probed.durationSec);
+            if (probed?.width && probed?.height && actualRatio == null)
+                actualRatio = ratioFromDimensions(probed.width, probed.height);
+            if (!probed) console.warn('[enterprise-proxy] video probe failed', { taskId });
+        }
+        const backfill: { duration?: number; ratio?: string } = {};
+        if (needDuration && actualDuration != null && actualDuration > 0) backfill.duration = actualDuration;
+        if (needRatio && actualRatio) backfill.ratio = actualRatio.slice(0, 16);
+        if (Object.keys(backfill).length) {
+            await prisma.seedanceVideoTask
+                .update({ where: { id: taskId }, data: backfill })
+                .catch((e) =>
+                    console.warn('[enterprise-proxy] backfill actual meta failed', { taskId, err: String(e) }),
+                );
+        }
+        // 探测失败的兜底(仅回显、不落库,下次查询重测):无输入视频时 token 只含输出时长,
+        // 按每秒 token 锚点反推整数秒。含输入视频的任务 token 混了输入时长,反推不出 → 保持 -1。
+        if (needDuration && actualDuration == null && !task.has_video) {
+            const usage = j.usage as { completion_tokens?: number; total_tokens?: number } | undefined;
+            const tokens = usage?.completion_tokens ?? usage?.total_tokens ?? Number(task.tokens ?? 0);
+            const perSec = estimateTokens(task.resolution as Resolution, 1);
+            if (tokens > 0 && perSec > 0) actualDuration = Math.max(1, Math.round(tokens / perSec));
+        }
+    }
+
     // 2026-08-19 起不再有 X-Silkroadai-Vendor-Task-Id 头 —— volc 客户拿到的 `id` 本身
     // 就是火山官方任务号了(提交时压着等来的),再单出一个「渠道侧原始 id」既冗余、
     // 也提示了中间层的存在。火山官方既没有这个头也没有这个字段。
@@ -1144,10 +1182,10 @@ async function handlePollInner(
                 // 上游给了【已推导】的值就用它,库里的提交参数只作兜底。
                 // 客户传 duration=-1(智能时长)时,库里存的就是 -1,一直回显 -1 是错的 ——
                 // 上游完成时会给模型真正选的秒数(2026-08-26 客户报障)。ratio 同理。
-                // 其余渠道的适配器不返回这几个字段 → 自动回落 task.*,行为不变。
+                // 上游不回显的渠道走成片实测值(见上 actualDuration / actualRatio)。
                 resolution: upstreamStr(j?.resolution) ?? task.resolution,
-                duration: upstreamNum(j?.duration) ?? task.duration,
-                ratio: upstreamStr(j?.ratio) ?? task.ratio,
+                duration: actualDuration ?? task.duration,
+                ratio: actualRatio ?? task.ratio,
                 seed: task.seed,
                 generateAudio: task.generate_audio,
                 extended,

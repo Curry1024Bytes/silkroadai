@@ -291,6 +291,47 @@ export function maxDurationForVariant(v: SeedanceVariant): number {
     return v === '2.5' || v === 'promax-2.5' ? 30 : 15;
 }
 
+/** 合法时长:-1(智能时长)或 [4, maxDur] 的整数秒。 */
+function isValidDuration(n: number, maxDur: number): boolean {
+    return n === -1 || (Number.isInteger(n) && n >= 4 && n <= maxDur);
+}
+
+/**
+ * prompt 内联指令 `--duration N` / `--dur N`(火山官方的「弱校验」通道:参数写在提示词文本里)。
+ *
+ * 火山官方语义(2026-09-29 客户对照国内基线实测):body 没传 duration 时,文本里的
+ * `--duration 25` 生效(出 25s);body 传了则 body 胜出。弱校验 = 内联值不合法就当没写
+ * (不报错,走缺省)。多次出现取最后一个。
+ */
+export function inlineDurationFromPrompt(body: Record<string, unknown>, maxDur: number): number | null {
+    const text = extractPrompt(body);
+    if (!text) return null;
+    let hit: number | null = null;
+    for (const m of text.matchAll(/(?:^|\s)--(?:duration|dur)\s+(-?\d+)(?=\s|$)/gi)) {
+        const n = Number(m[1]);
+        if (isValidDuration(n, maxDur)) hit = n;
+    }
+    return hit;
+}
+
+/**
+ * 请求时长的【唯一】解析口径(enterprise proxy / cn-proxy / 适配器核心三处共用 ——
+ * 估价、落库、实际转发给上游的值必须一致,否则按 token 结算时「估的」和「出的」对不上)。
+ *
+ * 优先级:body.duration(/seconds)> prompt 内联 `--duration N` > 缺省 5。
+ * body 显式传了但不合法 → null,由调用方决定 400(proxy)还是回落 5(适配器 / cn-proxy)。
+ *
+ * ⚠️ 此前缺省时我们硬填 5 并总往上游 body 注入 duration,body 参数压过文本指令 →
+ * 客户写在提示词里的 `--duration 25` 静默失效、按 5s 出片计费(2026-09-29 客户报障)。
+ */
+export function resolveRequestedDuration(body: Record<string, unknown>, maxDur: number): number | null {
+    if (body.duration != null || body.seconds != null) {
+        const n = Number(body.duration ?? body.seconds);
+        return isValidDuration(n, maxDur) ? n : null;
+    }
+    return inlineDurationFromPrompt(body, maxDur) ?? 5;
+}
+
 // 火山官方 2.5 支持 adaptive(首尾帧/视频编辑/延长任务【必须】adaptive → 输出跟随输入宽高比)。
 const ALLOWED_RATIOS = new Set(['16:9', '9:16', '4:3', '3:4', '1:1', '21:9', 'adaptive']);
 
@@ -589,9 +630,9 @@ export async function submitVideoWithKey(body: Record<string, unknown>, auth: st
 
     // duration:2.5 系 4-30s,2.0 系 4-15s(火山官方 2026-08 提升 2.5 至 30s);-1 = 智能时长
     // (上游在有效范围内自选,火山官方全系支持)。范围外/非整数回落 5。
-    const durRaw = Number(body.duration ?? body.seconds);
+    // body 没传时认 prompt 内联 `--duration N`(见 resolveRequestedDuration)。
     const maxDur = maxDurationForVariant(map.variant);
-    const duration = durRaw === -1 ? -1 : Number.isInteger(durRaw) && durRaw >= 4 && durRaw <= maxDur ? durRaw : 5;
+    const duration = resolveRequestedDuration(body, maxDur) ?? 5;
     // ratio:**客户没传就不注入**,由上游按任务类型自己定 —— 与火山渠道 volc-adapter 对齐。
     // 此前硬塞 16:9:首帧/首尾帧任务上游要求「输出比例跟随首帧图」(只接受不指定/adaptive),
     // 我们替客户填了 16:9 → 上游 task_type_constraint 拒(2026-09-11 客户 jingdong 报障)。

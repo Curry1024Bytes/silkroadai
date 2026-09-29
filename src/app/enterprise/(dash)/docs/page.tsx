@@ -349,7 +349,8 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                                 <Td>否</Td>
                                 <Td>
                                     任意整数秒,默认 5:2.0 系 4-15,seedance-2-5 系 4-30;-1 =
-                                    智能时长(模型在有效区间内自选)
+                                    智能时长(模型在有效区间内自选)。未传该参数时,提示词里的内联指令{' '}
+                                    <Code>--duration N</Code>(或 <Code>--dur N</Code>)生效;两者都有以本参数为准
                                 </Td>
                             </tr>
                             <tr>

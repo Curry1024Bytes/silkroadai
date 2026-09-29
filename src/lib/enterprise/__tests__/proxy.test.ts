@@ -57,6 +57,12 @@ vi.mock('../assets', async (importOriginal) => {
     const mod = await importOriginal<typeof import('../assets')>();
     return { ...mod, resolveAssetRefs };
 });
+// 成片探测要打真实网络 → 一律 mock;缺省探不到(null),需要实测值的用例自行 mockResolvedValue。
+const { probeVideoMeta } = vi.hoisted(() => ({ probeVideoMeta: vi.fn() }));
+vi.mock('../video-probe', async (importOriginal) => {
+    const mod = await importOriginal<typeof import('../video-probe')>();
+    return { ...mod, probeVideoMeta };
+});
 import { AssetError } from '../assets';
 
 import { handleEnterpriseArkV3, handleEnterpriseV1, isEnterpriseFlavor } from '../proxy';
@@ -82,6 +88,7 @@ beforeEach(() => {
     db.seedanceVideoTask.update.mockResolvedValue({});
     resolveAssetRefs.mockImplementation((body: Record<string, unknown>) => Promise.resolve(body));
     getUpstreamKeyForUser.mockResolvedValue('sk-upstream-by-region');
+    probeVideoMeta.mockResolvedValue(null);
 });
 
 describe('火山渠道(volc)路由', () => {
@@ -2095,5 +2102,159 @@ describe('火山官方查询响应新字段(2026-09-23)', () => {
         expect(body.output_format).toBe('mov');
         expect(body.safety_identifier).toBe('end-user-99');
         expect(body.service_tier).toBe('default');
+    });
+});
+
+// 2026-09-29 客户测试报告(国内版 seedance 2.5):
+//  ① body 没传 duration、提示词里写 `--duration 25` → 官方出 25s,我们硬填 5s 出片;
+//  ② duration=-1 / 不传 ratio → 查询响应回显的是提交参数(-1 / 16:9),不是成片真值(10s / 9:16)。
+describe('duration 内联指令 + 成片真值回显(2026-09-29)', () => {
+    const submit = (body: Record<string, unknown>) =>
+        handleEnterpriseArkV3(req('POST', '/api/v3/contents/generations/tasks', body), '/contents/generations/tasks');
+    const text = (t: string) => [{ type: 'text', text: t }];
+
+    beforeEach(() => {
+        submitVideoWithKey.mockImplementation(() =>
+            Promise.resolve(NextResponse.json({ id: 'cgt-in1', task_id: 'cgt-in1', status: 'queued' })),
+        );
+    });
+
+    it('body 没传 duration + 文本 `--duration 25` → 按 25s 估价并落库', async () => {
+        const res = await submit({
+            model: 'doubao-seedance-2-5-260628',
+            resolution: '720p',
+            content: text('森林里雾气缓缓流动 --duration 25'),
+        });
+        expect(res.status).toBe(200);
+        expect(estimateEnterpriseCostCny).toHaveBeenCalledWith('u1', '720p', 25, false, '2.5', 'cn');
+        expect(db.seedanceVideoTask.create).toHaveBeenLastCalledWith({
+            data: expect.objectContaining({ duration: 25 }),
+        });
+    });
+
+    it('body 传了 duration → body 胜出(文本指令不生效)', async () => {
+        await submit({
+            model: 'doubao-seedance-2-5-260628',
+            resolution: '720p',
+            duration: 6,
+            content: text('x --duration 25'),
+        });
+        expect(db.seedanceVideoTask.create).toHaveBeenLastCalledWith({
+            data: expect.objectContaining({ duration: 6 }),
+        });
+    });
+
+    it('内联值不合法(弱校验:越界 / 2.0 系超 15s)→ 当没写,缺省 5,不 400', async () => {
+        const a = await submit({ model: 'doubao-seedance-2-5-260628', content: text('x --duration 31') });
+        expect(a.status).toBe(200);
+        expect(db.seedanceVideoTask.create).toHaveBeenLastCalledWith({
+            data: expect.objectContaining({ duration: 5 }),
+        });
+        const b = await submit({ model: 'doubao-seedance-2-0-260128', content: text('x --dur 25') });
+        expect(b.status).toBe(200);
+        expect(db.seedanceVideoTask.create).toHaveBeenLastCalledWith({
+            data: expect.objectContaining({ duration: 5 }),
+        });
+    });
+
+    it('ratio 没传 → 落库 NULL(模型自选),不再落 16:9;传了照存', async () => {
+        await submit({ model: 'doubao-seedance-2-5-260628', content: text('x') });
+        expect(db.seedanceVideoTask.create).toHaveBeenLastCalledWith({
+            data: expect.objectContaining({ ratio: null }),
+        });
+        await submit({ model: 'doubao-seedance-2-5-260628', ratio: '9:16', content: text('x') });
+        expect(db.seedanceVideoTask.create).toHaveBeenLastCalledWith({
+            data: expect.objectContaining({ ratio: '9:16' }),
+        });
+    });
+
+    const task = {
+        id: 'cgt-p3',
+        tier: 'enterprise-portal',
+        user_id: 'u1',
+        model: 'seedance-2-5',
+        resolution: '720p',
+        has_video: false,
+        status: 'in_progress',
+        tokens: null,
+        created_at: new Date('2026-09-29T16:58:37Z'),
+        duration: -1,
+        ratio: null,
+        seed: null,
+        generate_audio: true,
+        fail_reason: null,
+    };
+    // 国内版 xinhankr 线的完成态:只有 url + usage,不带 duration / ratio
+    const completed = () =>
+        NextResponse.json({
+            id: 'cgt-p3',
+            task_id: 'cgt-p3',
+            object: 'video',
+            status: 'completed',
+            progress: 100,
+            video_url: 'https://vod/p3.mp4',
+            usage: { completion_tokens: 207421, total_tokens: 207421 },
+        });
+    const poll = async () => {
+        const res = await handleEnterpriseArkV3(
+            req('GET', '/api/v3/contents/generations/tasks/cgt-p3'),
+            '/contents/generations/tasks/cgt-p3',
+        );
+        return (await res.json()) as Record<string, unknown>;
+    };
+
+    it('duration=-1 + 上游不回显 → 回显成片实测值(10.101s → 10、720×1280 → 9:16)并回填任务行', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue(task);
+        chargeEnterpriseVideoTask.mockResolvedValue({ outcome: 'charged', costCny: 14.52 });
+        pollVideoWithKey.mockResolvedValue(completed());
+        probeVideoMeta.mockResolvedValue({ durationSec: 10.101, width: 720, height: 1280 });
+        const body = await poll();
+        expect(probeVideoMeta).toHaveBeenCalledWith('https://vod/p3.mp4');
+        expect(body.duration).toBe(10);
+        expect(body.ratio).toBe('9:16');
+        expect(body.frames).toBe(241);
+        expect(db.seedanceVideoTask.update).toHaveBeenCalledWith({
+            where: { id: 'cgt-p3' },
+            data: { duration: 10, ratio: '9:16' },
+        });
+    });
+
+    it('探测失败 → 无输入视频按 token 反推整数秒(仅回显不落库);ratio 回落缺省', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue(task);
+        chargeEnterpriseVideoTask.mockResolvedValue({ outcome: 'charged', costCny: 14.52 });
+        pollVideoWithKey.mockResolvedValue(completed());
+        const body = await poll();
+        expect(body.duration).toBe(10);
+        expect(db.seedanceVideoTask.update).not.toHaveBeenCalledWith(
+            expect.objectContaining({ data: expect.objectContaining({ duration: expect.anything() }) }),
+        );
+    });
+
+    it('探测失败 + 含输入视频 → token 混了输入时长反推不出,保持 -1', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({ ...task, has_video: true });
+        chargeEnterpriseVideoTask.mockResolvedValue({ outcome: 'charged', costCny: 14.52 });
+        pollVideoWithKey.mockResolvedValue(completed());
+        const body = await poll();
+        expect(body.duration).toBe(-1);
+    });
+
+    it('提交参数已确定(duration=5 / ratio=16:9)→ 不探测,原样回显', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({ ...task, duration: 5, ratio: '16:9' });
+        chargeEnterpriseVideoTask.mockResolvedValue({ outcome: 'charged', costCny: 7.29 });
+        pollVideoWithKey.mockResolvedValue(completed());
+        const body = await poll();
+        expect(probeVideoMeta).not.toHaveBeenCalled();
+        expect(body.duration).toBe(5);
+        expect(body.ratio).toBe('16:9');
+    });
+
+    it('未完成 → 不探测', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue(task);
+        pollVideoWithKey.mockResolvedValue(
+            NextResponse.json({ id: 'cgt-p3', task_id: 'cgt-p3', object: 'video', status: 'in_progress' }),
+        );
+        const body = await poll();
+        expect(probeVideoMeta).not.toHaveBeenCalled();
+        expect(body.duration).toBe(-1);
     });
 });
