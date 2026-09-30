@@ -6,6 +6,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { NextRequest } from 'next/server';
 import {
     handleAdapter25Image,
+    imageDimensions,
     URL_FETCH_RETRY_DELAYS_MS,
     officialOutputTokens25,
     IMAGE25_TEXT_TOKENS_PER_INPUT_IMAGE,
@@ -1025,9 +1026,10 @@ describe('2.5 官方校准(2026-09-19 官方 key 实测):edits 文字 +10/输入
         expect((mk(1, 2).input_tokens_details as { text_tokens: number }).text_tokens).toBe(36);
         expect(mk(1, 1).input_tokens).toBe(18 + 256);
     });
-    // 2026-09-30:auto 的计费 + 回显改按【交付图实际像素】。此前回显官方 1254x1254、交付 1248×1248 → 客户报
-    // "返回的 size 和实际图片对不上",且 1254 非 16 倍数,官方计算器判 Invalid size。
-    it('generations size=auto → 上游收 1248x1248(1254² 对齐);按交付图实际像素计 228、回显 1248x1248', async () => {
+    // 2026-09-30 官方 key 直打 gpt-image-2.5-flare 实测:auto = 模型按 prompt 自选画幅(「竖屏」→ 1024×1536、
+    // 中性 → 1254²、「超宽横幅海报」→ 1918×820),官方回显 size 就是实际像素。此前(#480)把 auto 折成固定 1:1
+    // 发上游 → 客户 prompt 写「竖屏」仍恒出 1248²。现在 auto 原样透传,计费 + 回显按返回图实际像素(#500)。
+    it('generations size=auto → 上游原样收 "auto"(模型自选画幅);返图按实际像素计费 + 回显', async () => {
         okUpstream([pngB64(1248, 1248)]);
         const res = await handleAdapter25Image(
             jsonReq(URL_G, { model: 'gpt-image-2.5-flare', prompt: 'a cat', size: 'auto', quality: 'low' }),
@@ -1037,9 +1039,40 @@ describe('2.5 官方校准(2026-09-19 官方 key 实测):edits 文字 +10/输入
         expect(res.status).toBe(200);
         const body = (await res.json()) as { size: string; usage: { output_tokens: number } };
         const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-        expect((JSON.parse(String(init.body)) as { size: string }).size).toBe('1248x1248');
+        expect((JSON.parse(String(init.body)) as { size: string }).size).toBe('auto');
         expect(body.size).toBe('1248x1248');
         expect(body.usage.output_tokens).toBe(228);
+    });
+    it('客户实例(第二轮):prompt「竖屏」+ size=auto → 上游收 "auto",号池返 768×1376 竖版 → 回显 768x1376、按实际计费', async () => {
+        okUpstream([pngB64(768, 1376)]);
+        const res = await handleAdapter25Image(
+            jsonReq(URL_G, {
+                model: 'gpt-image-2.5-flare',
+                prompt: '可爱的一只猫,竖屏',
+                size: 'auto',
+                quality: 'low',
+                output_format: 'jpeg',
+            }),
+            'generations',
+            'zdchat25',
+        );
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { size: string; usage: { output_tokens: number } };
+        const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+        expect((JSON.parse(String(init.body)) as { size: string }).size).toBe('auto');
+        expect(body.size).toBe('768x1376');
+        expect(body.usage.output_tokens).toBe(officialOutputTokens25(768, 1376, 'low'));
+    });
+    it('缺省 size → 上游也不带 size(官方缺省即 auto)', async () => {
+        okUpstream([pngB64(1264, 848)]);
+        const res = await handleAdapter25Image(
+            jsonReq(URL_G, { model: 'gpt-image-2.5-flare', prompt: 'a cat', quality: 'low' }),
+            'generations',
+            'wetokenasia25',
+        );
+        const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+        expect((JSON.parse(String(init.body)) as { size?: string }).size).toBeUndefined();
+        expect(((await res.json()) as { size: string }).size).toBe('1264x848');
     });
     it('客户实例:size=auto + quality=high + jpeg → 回显 1248x1248、output 2,050(= 官方计算器 1248² high,不再是 1254² 的 2,058)', async () => {
         okUpstream([pngB64(1248, 1248)]);
@@ -1059,8 +1092,9 @@ describe('2.5 官方校准(2026-09-19 官方 key 实测):edits 文字 +10/输入
         expect(body.size).toBe('1248x1248');
         expect(body.usage.output_tokens).toBe(2050);
     });
-    it('size=auto 且返回图尺寸读不出 → 按发给上游的对齐尺寸 1248x1248 计费 + 回显(不回显非 16 倍数的 1254)', async () => {
+    it('size=auto 且返回图尺寸读不出 → 按官方缺省画幅 1248x1248 计费 + 回显(不 503),打 warn', async () => {
         okUpstream(['bm90LXBuZw==']);
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
         const res = await handleAdapter25Image(
             jsonReq(URL_G, { model: 'gpt-image-2.5-flare', prompt: 'a cat', size: 'auto', quality: 'low' }),
             'generations',
@@ -1070,8 +1104,25 @@ describe('2.5 官方校准(2026-09-19 官方 key 实测):edits 文字 +10/输入
         const body = (await res.json()) as { size: string; usage: { output_tokens: number } };
         expect(body.size).toBe('1248x1248');
         expect(body.usage.output_tokens).toBe(228);
+        expect(warn).toHaveBeenCalledWith(
+            '[image-adapter25] auto output dimensions unreadable, billing by default auto size',
+            expect.objectContaining({ fallback: '1248x1248' }),
+        );
+        warn.mockRestore();
     });
-    it('edits size 缺省 + 16:9 输入 → 上游收 1680x944,按实际像素计 130、回显 1680x944;input = 18 + 1508', async () => {
+    it('imageDimensions 读 WebP(VP8 lossy)—— output_format=webp 的 auto 图也能计费', () => {
+        const head = Buffer.alloc(20);
+        head.write('RIFF', 0, 'latin1');
+        head.write('WEBP', 8, 'latin1');
+        head.write('VP8 ', 12, 'latin1');
+        const vp8 = Buffer.alloc(10);
+        vp8.set([0x9d, 0x01, 0x2a], 3);
+        vp8.writeUInt16LE(1024, 6);
+        vp8.writeUInt16LE(1536, 8);
+        head.writeUInt32LE(vp8.length, 16);
+        expect(imageDimensions(Buffer.concat([head, vp8]))).toEqual({ w: 1024, h: 1536 });
+    });
+    it('edits size 缺省 + 16:9 输入 → 上游不带 size(模型跟输入图),返图 1680×944 按实际计 130;input = 18 + 1508', async () => {
         okUpstream([pngB64(1680, 944)]);
         const res = await handleAdapter25Image(
             formReq(URL_E, { model: 'gpt-image-2.5-flare', prompt: 'a cat', quality: 'low' }, [pngHeader(3840, 2160)]),
@@ -1088,7 +1139,7 @@ describe('2.5 官方校准(2026-09-19 官方 key 实测):edits 文字 +10/输入
             };
         };
         const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-        expect((init.body as FormData).get('size')).toBe('1680x944');
+        expect((init.body as FormData).get('size')).toBeNull();
         expect(body.size).toBe('1680x944');
         expect(body.usage.output_tokens).toBe(130);
         expect(body.usage.input_tokens_details).toEqual({ text_tokens: 18, image_tokens: 1508 });

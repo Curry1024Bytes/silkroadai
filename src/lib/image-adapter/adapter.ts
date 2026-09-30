@@ -169,7 +169,7 @@ function sniffOutputFormat(buf: Buffer): string {
     return '';
 }
 
-/** dep-free 尺寸解析(PNG IHDR / JPEG SOF),读不出 → null(输入 token 按 1MP 兜底)。 */
+/** dep-free 尺寸解析(PNG IHDR / JPEG SOF / WebP VP8·VP8L·VP8X),读不出 → null(输入 token 按 1MP 兜底)。 */
 export function imageDimensions(buf: Buffer): { w: number; h: number } | null {
     if (
         buf.length >= 24 &&
@@ -202,6 +202,30 @@ export function imageDimensions(buf: Buffer): { w: number; h: number } | null {
                 return w > 0 && h > 0 ? { w, h } : null;
             }
             i += 2 + buf.readUInt16BE(i + 2);
+        }
+    }
+    // WebP(RIFF....WEBP):VP8 lossy / VP8L lossless / VP8X extended 三种头。auto 透传后模型选尺寸,
+    // 客户要 webp 时上游可能直接给 webp,读不出尺寸就没法计费,所以补上。
+    if (buf.length >= 25 && buf.toString('latin1', 0, 4) === 'RIFF' && buf.toString('latin1', 8, 12) === 'WEBP') {
+        const chunk = buf.toString('latin1', 12, 16);
+        if (chunk === 'VP8X' && buf.length >= 30) {
+            const w = 1 + (buf[24] | (buf[25] << 8) | (buf[26] << 16));
+            const h = 1 + (buf[27] | (buf[28] << 8) | (buf[29] << 16));
+            return w > 0 && h > 0 ? { w, h } : null;
+        }
+        if (chunk === 'VP8L' && buf[20] === 0x2f) {
+            const b0 = buf[21];
+            const b1 = buf[22];
+            const b2 = buf[23];
+            const b3 = buf[24];
+            const w = 1 + (b0 | ((b1 & 0x3f) << 8));
+            const h = 1 + ((b1 >> 6) | (b2 << 2) | ((b3 & 0x0f) << 10));
+            return w > 0 && h > 0 ? { w, h } : null;
+        }
+        if (chunk === 'VP8 ' && buf.length >= 30 && buf[23] === 0x9d && buf[24] === 0x01 && buf[25] === 0x2a) {
+            const w = buf.readUInt16LE(26) & 0x3fff;
+            const h = buf.readUInt16LE(28) & 0x3fff;
+            return w > 0 && h > 0 ? { w, h } : null;
         }
     }
     return null;
@@ -468,7 +492,8 @@ async function callUpstreamOnce(
         const f = new FormData();
         f.append('model', provider.upstreamModel ?? 'gpt-image-2');
         f.append('prompt', parsed.prompt);
-        f.append('size', parsed.upstreamSize ?? parsed.size.trim());
+        const sendSize = parsed.upstreamSize ?? parsed.size.trim(); // auto 原样透传;缺省不发(官方缺省即 auto)
+        if (sendSize) f.append('size', sendSize);
         f.append('response_format', 'b64_json'); // 不带时 ominiapi 返自家 OSS url(上游身份泄漏),显式要 b64
         if (parsed.quality) f.append('quality', normQuality(parsed.quality));
         for (const [k, v] of Object.entries(parsed.extras)) f.append(k, v);
@@ -481,9 +506,10 @@ async function callUpstreamOnce(
         const j: Record<string, unknown> = {
             model: provider.upstreamModel ?? 'gpt-image-2',
             prompt: parsed.prompt,
-            size: parsed.upstreamSize ?? parsed.size.trim(),
             response_format: 'b64_json', // 同上:2026-08-04 smoke 实测缺省返 url
         };
+        const sendSize = parsed.upstreamSize ?? parsed.size.trim(); // auto 原样透传;缺省不发(官方缺省即 auto)
+        if (sendSize) j.size = sendSize;
         if (parsed.quality) j.quality = normQuality(parsed.quality);
         // extras 存成字符串;JSON body 里整型字段(output_compression)要转回 number,否则上游拒
         for (const [k, v] of Object.entries(parsed.extras)) {
@@ -596,14 +622,19 @@ export async function handleAdapterImage(
     //    【无】狭长放行条款(兜底线全是 openAllTiers 官方账单,狭长图落下去照样对得上账);
     //  - 否则(存量 gated provider)要求 size 可解析,且:狭长形(长/短 > 1.5)不论盈利档放行,
     //    其余走盈利档守门(行为不变)。
-    // ---- size=auto / 缺省 → 官方 auto 尺寸(见 auto-size.ts)就近对齐 16 后发上游;计费/回显按【交付图实际像素】----
-    // (2026-09-30 客户反馈:此前回显官方尺寸 1254x1254 / 1122x1402,但交付的是 16 对齐图,回显与像素对不上,
-    //  且非 16 倍数的 size 在官方计算器里是 Invalid size,客户无法核账。)
-    // 此前 auto 对 openAllTiers 原样透传(各上游默认尺寸不一,1024² / 1024×1536 都有,与官方 1122×1402 对不上),
-    // 对守门上游一律 503(算不出 token)。现在 auto 有确定尺寸 → 守门正常评估,gated 上游也能接 auto。
+    // ---- size=auto / 缺省 ----
+    // 官方机制(2026-09-30 OpenAI 官 key 实测):auto = 模型读 prompt 自选画幅(「竖屏」→ gpt-image-2 941×1672),
+    // 不是固定尺寸。所以:
+    //  - openAllTiers / onlyQualities 上游(不按尺寸守门)→ auto【原样透传】,模型自选画幅,计费/回显按返回图
+    //    实际像素。#477 曾为了"与官方 1122×1402 对得上"把 auto 折成固定 4:5 发上游,结果客户 prompt 写的方向
+    //    全被无视(2026-09-30 客户反馈),现撤回。
+    //  - 按尺寸守门的上游(gateMinCt / 存量 gated)必须先算 ct 才能决定放不放行,auto 算不出 → 仍按官方 1.5MP
+    //    缺省画幅折成 16 对齐尺寸发上游(#477 逻辑保留),计费/回显同样按交付图实际像素(#500)。
+    const passAutoThrough = provider.openAllTiers === true || provider.onlyQualities !== undefined;
     let officialDims: { w: number; h: number } | null = null;
-    let autoDims: { w: number; h: number } | null = null; // auto 时发给上游的 16 对齐尺寸
-    if (isAutoSize(parsed.size)) {
+    let autoDims: { w: number; h: number } | null = null; // auto 且需守门时发给上游的 16 对齐尺寸
+    const autoSize = isAutoSize(parsed.size);
+    if (autoSize && !passAutoThrough) {
         let aspect = OFFICIAL_AUTO_DEFAULT_ASPECT;
         let source = 'default-4:5';
         if (mode === 'edits') {
@@ -631,7 +662,7 @@ export async function handleAdapterImage(
             upstream: parsed.upstreamSize,
         });
     }
-    const dims = autoDims ?? parseSize(parsed.size);
+    const dims = autoDims ?? (autoSize ? null : parseSize(parsed.size));
     const quality = normQuality(parsed.quality);
     const perImageCt = dims ? officialOutputTokens(dims.w, dims.h, quality) : 0;
     const elongated = dims ? isElongated(dims.w, dims.h) : false;
@@ -739,9 +770,10 @@ export async function handleAdapterImage(
     //   1264×848 → 记 4719,客户对不上账。上游缩图仍打 warn(运维信号),但账单跟请求走。
     //   约束外的显式 size(直打适配器绕过 proxy 校验,如 7000²)仍按实际:oaidist 实测不拒、200 静默降级出
     //   2048²,按请求值合成会 38 倍超收(2026-08 教训)。
-    // auto → 一律按【返回图实际像素】计费 + 回显(2026-09-30:回显必须等于交付图像素,且是官方计算器认的
-    //   16 倍数尺寸);上游没按我们发的对齐尺寸出图只打 warn,降级守卫不放松。
-    // 实际尺寸读不出(webp 等非 PNG/JPEG)→ 显式 size 退回请求值,auto 退回发给上游的对齐尺寸。
+    // auto → 一律按【返回图实际像素】计费 + 回显(2026-09-30:回显必须等于交付图像素);透传上游的 auto 由模型
+    //   选尺寸,只能按实际;守门上游按我们发的对齐尺寸没出图只打 warn,降级守卫不放松。
+    // 实际尺寸读不出(webp 等非 PNG/JPEG)→ 显式 size 退回请求值,守门上游的 auto 退回发给上游的对齐尺寸,
+    //   透传的 auto 无从计费 → 让路。
     // ---- 透明出图校验:transparent 请求只把【真带 alpha 通道】的图交给客户 ----
     // 支持名单内的上游也可能是号池(ominiapi 同账号 50/50 随机),假棋盘格按上游失败处理:
     // 丢弃无 alpha 的张,全军覆没则 503 让 new-api 重试/换渠道把骰子摇到真透明。
@@ -765,7 +797,7 @@ export async function handleAdapterImage(
     const actualDims = out0 ? imageDimensions(Buffer.from(out0, 'base64')) : null;
     let billW: number;
     let billH: number;
-    const requestedDims = autoDims ? null : dims; // 显式 WxH 才有;auto 走 autoDims
+    const requestedDims = autoSize ? null : dims; // 显式 WxH 才有;auto 走 autoDims(守门上游)或 null(透传)
     if (requestedDims && isOfficialSize(requestedDims.w, requestedDims.h)) {
         // 显式 size:按客户请求尺寸计费 + 回显,上游缩/放图只记 warn
         billW = requestedDims.w;
@@ -790,9 +822,20 @@ export async function handleAdapterImage(
             });
         }
     } else if (dims) {
-        // 读不出返回图尺寸(webp 等):显式 size 按请求值;auto 按发给上游的对齐尺寸(不再 503 unbillable_auto)
+        // 读不出返回图尺寸(webp 等):显式 size 按请求值;守门上游的 auto 按发给上游的对齐尺寸
         billW = dims.w;
         billH = dims.h;
+    } else if (autoSize) {
+        // 透传的 auto 且返回图尺寸读不出(非 PNG/JPEG/WebP):按官方 auto 缺省画幅(1122×1402 对齐 1120×1408)
+        // 计费 + 回显,不让客户的图因为计不出费而失败;打 warn 便于追。
+        const fb = alignTo16(officialAutoDims(OFFICIAL_AUTO_DEFAULT_ASPECT));
+        billW = fb.w;
+        billH = fb.h;
+        console.warn('[image-adapter] auto output dimensions unreadable, billing by default auto size', {
+            provider: providerName,
+            mode,
+            fallback: `${fb.w}x${fb.h}`,
+        });
     } else {
         return failover('unbillable_auto', 'size unparsable and output image dimensions unreadable');
     }
@@ -835,8 +878,8 @@ export async function handleAdapterImage(
     console.log('[image-adapter] ok', {
         provider: providerName,
         mode,
-        size: autoDims
-            ? `auto→${billW}x${billH}(upstream ${parsed.upstreamSize})`
+        size: autoSize
+            ? `auto→${billW}x${billH}(upstream ${parsed.upstreamSize ?? 'auto'})`
             : dims && dims.w === billW && dims.h === billH
               ? parsed.size
               : `${parsed.size || '?'}→${billW}x${billH}`,

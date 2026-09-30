@@ -8,6 +8,7 @@ import { NextRequest } from 'next/server';
 import { IMAGE_PROVIDERS } from '@/lib/image-adapter/providers';
 import {
     handleAdapterImage,
+    imageDimensions,
     parseSize,
     officialOutputTokens,
     officialOutputTokensNumerator,
@@ -2155,33 +2156,36 @@ describe('size=auto 官方 1.5MP 语义(第 4 批,2026-09-17 官方 key 实测 1
         expect(promptAspectRatio('改成 16:9 的画幅')).toBe('16:9');
     });
 
-    it('generations auto → 上游收 1120x1408;按交付图实际像素计费 187、回显 1120x1408', async () => {
-        upstreamPng(1120, 1408);
+    // 2026-09-30 官方 key 实测:auto = 模型按 prompt 自选画幅(「竖屏」→ 941×1672),不是固定尺寸。
+    // openAllTiers / onlyQualities 上游 → auto 原样透传,模型自选,按返回图实际像素计费 + 回显。
+    it('openAllTiers:generations auto → 上游原样收 "auto"(模型自选画幅);返图 941×1672 按实际计费 + 回显', async () => {
+        upstreamPng(941, 1672);
         const res = await handleAdapterImage(
-            jsonReq(URL_FULL_GEN, { model: 'gpt-image-2', prompt: 'a cat', size: 'auto', quality: 'low' }),
+            jsonReq(URL_FULL_GEN, { model: 'gpt-image-2', prompt: '可爱的一只猫,竖屏', size: 'auto', quality: 'low' }),
             'generations',
             'ominiapifull',
         );
         expect(res.status).toBe(200);
         const body = await res.json();
         const [, init] = fetchMock.mock.calls[0];
-        expect(JSON.parse(init.body).size).toBe('1120x1408');
-        expect(body.size).toBe('1120x1408');
-        expect(body.usage.output_tokens).toBe(187);
-        expect(body.usage.input_tokens).toBe(8);
+        expect(JSON.parse(init.body).size).toBe('auto');
+        expect(body.size).toBe('941x1672');
+        expect(body.usage.output_tokens).toBe(officialOutputTokens(941, 1672, 'low'));
     });
 
-    it('generations 缺省 size 同 auto', async () => {
+    it('openAllTiers:缺省 size → 上游也不带 size(官方缺省即 auto),返图 1120×1408 按实际', async () => {
         upstreamPng(1120, 1408);
         const res = await handleAdapterImage(
             jsonReq(URL_FULL_GEN, { model: 'gpt-image-2', prompt: 'a cat', quality: 'low' }),
             'generations',
             'ominiapifull',
         );
+        const [, init] = fetchMock.mock.calls[0];
+        expect(JSON.parse(init.body).size).toBeUndefined();
         expect((await res.json()).size).toBe('1120x1408');
     });
 
-    it('edits auto + 16:9 输入(1920×1080)→ 上游收 16 对齐 1680x944,按实际像素计 130、回显 1680x944', async () => {
+    it('openAllTiers:edits auto + 16:9 输入 → 上游原样收 "auto"(模型跟输入图),返图 1680×944 按实际计 130;输入图 token 不变', async () => {
         upstreamPng(1680, 944);
         const res = await handleAdapterImage(
             formReq(URL_FULL_EDIT, { model: 'gpt-image-2', prompt: 'add a bird', size: 'auto', quality: 'low' }, [
@@ -2193,25 +2197,13 @@ describe('size=auto 官方 1.5MP 语义(第 4 批,2026-09-17 官方 key 实测 1
         expect(res.status).toBe(200);
         const body = await res.json();
         const [, init] = fetchMock.mock.calls[0];
-        expect((init.body as FormData).get('size')).toBe('1680x944');
+        expect((init.body as FormData).get('size')).toBe('auto');
         expect(body.size).toBe('1680x944');
         expect(body.usage.output_tokens).toBe(130);
         expect(body.usage.input_tokens_details.image_tokens).toBe(1508); // 1920×1080 输入图官方 patch(长边 ≥1024 → 0.5 缩放,同 4K)
     });
 
-    it('edits auto + 方图输入 → 交付 1248×1248,回显 1248x1248(228)', async () => {
-        upstreamPng(1248, 1248);
-        const res = await handleAdapterImage(
-            formReq(URL_FULL_EDIT, { model: 'gpt-image-2', prompt: 'x', quality: 'low' }, [pngHeader(1024, 1024)]),
-            'edits',
-            'ominiapifull',
-        );
-        const body = await res.json();
-        expect(body.size).toBe('1248x1248');
-        expect(body.usage.output_tokens).toBe(228);
-    });
-
-    it('edits auto + prompt 写明 16:9(portal 扩展)+ 方图输入 → 按 prompt 比例出 1680×944', async () => {
+    it('openAllTiers:edits auto + prompt 写 16:9 → 不再由 portal 解析 prompt 折尺寸,原样交给模型', async () => {
         upstreamPng(1680, 944);
         const res = await handleAdapterImage(
             formReq(URL_FULL_EDIT, { model: 'gpt-image-2', prompt: '把这张图改成 16:9', size: 'auto' }, [
@@ -2220,7 +2212,103 @@ describe('size=auto 官方 1.5MP 语义(第 4 批,2026-09-17 官方 key 实测 1
             'edits',
             'ominiapifull',
         );
+        const [, init] = fetchMock.mock.calls[0];
+        expect((init.body as FormData).get('size')).toBe('auto');
         expect((await res.json()).size).toBe('1680x944');
+    });
+
+    it('onlyQualities 上游(frimodelmedium)auto 同样透传 "auto"', async () => {
+        upstreamPng(1264, 848);
+        const res = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/frimodelmedium/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: 'auto',
+                quality: 'medium',
+            }),
+            'generations',
+            'frimodelmedium',
+        );
+        expect(res.status).toBe(200);
+        const [, init] = fetchMock.mock.calls[0];
+        expect(JSON.parse(init.body).size).toBe('auto');
+        expect((await res.json()).size).toBe('1264x848');
+    });
+
+    it('守门上游(gateMinCt oaidist)auto 仍折成官方缺省画幅 16 对齐尺寸发上游(要先算 ct 才能守门)', async () => {
+        upstreamPng(1120, 1408);
+        const res = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/oaidist/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: 'auto',
+                quality: 'high',
+            }),
+            'generations',
+            'oaidist',
+        );
+        expect(res.status).toBe(200);
+        const [, init] = fetchMock.mock.calls[0];
+        expect(JSON.parse(init.body).size).toBe('1120x1408');
+        expect((await res.json()).size).toBe('1120x1408');
+    });
+
+    it('透传 auto 且返回图尺寸读不出 → 按官方缺省画幅 1120x1408 计费 + 回显,不 503', async () => {
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: 'bm90LXBuZw==' }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const res = await handleAdapterImage(
+            jsonReq(URL_FULL_GEN, { model: 'gpt-image-2', prompt: 'x', size: 'auto', quality: 'low' }),
+            'generations',
+            'ominiapifull',
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.size).toBe('1120x1408');
+        expect(body.usage.output_tokens).toBe(187);
+        expect(warn).toHaveBeenCalledWith(
+            '[image-adapter] auto output dimensions unreadable, billing by default auto size',
+            expect.objectContaining({ fallback: '1120x1408' }),
+        );
+        warn.mockRestore();
+    });
+
+    it('imageDimensions 读 WebP 三种头(VP8 / VP8L / VP8X)', () => {
+        const riff = (chunk: string, payload: Buffer) => {
+            const head = Buffer.alloc(20);
+            head.write('RIFF', 0, 'latin1');
+            head.writeUInt32LE(4 + 8 + payload.length, 4);
+            head.write('WEBP', 8, 'latin1');
+            head.write(chunk, 12, 'latin1');
+            head.writeUInt32LE(payload.length, 16);
+            return Buffer.concat([head, payload]);
+        };
+        // VP8 lossy:3 字节帧头 + 起始码 9d 01 2a + 宽高(14 bit)
+        const vp8 = Buffer.alloc(10);
+        vp8.set([0x9d, 0x01, 0x2a], 3);
+        vp8.writeUInt16LE(1264, 6);
+        vp8.writeUInt16LE(848, 8);
+        expect(imageDimensions(riff('VP8 ', vp8))).toEqual({ w: 1264, h: 848 });
+        // VP8L:签名 2f + 14 bit 宽-1 / 14 bit 高-1
+        const vp8l = Buffer.alloc(5);
+        vp8l[0] = 0x2f;
+        const w1 = 768 - 1;
+        const h1 = 1376 - 1;
+        vp8l[1] = w1 & 0xff;
+        vp8l[2] = ((w1 >> 8) & 0x3f) | ((h1 & 0x03) << 6);
+        vp8l[3] = (h1 >> 2) & 0xff;
+        vp8l[4] = (h1 >> 10) & 0x0f;
+        expect(imageDimensions(riff('VP8L', vp8l))).toEqual({ w: 768, h: 1376 });
+        // VP8X:4 字节 flags + 24 bit 宽-1 / 24 bit 高-1
+        const vp8x = Buffer.alloc(10);
+        vp8x.writeUIntLE(1918 - 1, 4, 3);
+        vp8x.writeUIntLE(820 - 1, 7, 3);
+        expect(imageDimensions(riff('VP8X', vp8x))).toEqual({ w: 1918, h: 820 });
     });
 
     it('auto 回显的 size 恒为 16 倍数(官方计算器认的合法尺寸),且等于交付图像素', async () => {
