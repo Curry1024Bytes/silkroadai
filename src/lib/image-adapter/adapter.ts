@@ -317,7 +317,12 @@ export function sanitizeAdapterError(text: string, brand: RegExp): string {
 //    命中会进一步改写成统一友好文案);
 //  - 请求本身错(prompt 缺失 / 输入图坏 / 参数非法)→ 终态 invalid_request(身份中性,不透上游原文);
 //  - 渠道特定(无可用渠道 / model_not_found)+ 5xx / 连接失败 → 仍 failover 换渠道。
-const UPSTREAM_SAFETY_RE = /image_unsafe|content rejected|appear to be unsafe/i;
+// 2026-09-30:yuanshudian(Firefly)451 文案是 `filtered by the safety policy` / `blocked by the content safety
+// policy`(code image_safety / content_safety),zdchat 一部分是 type content_filter —— 旧正则全漏,451 落到
+// 「其余 4xx 保守 failover」→ 单渠道分组下客户拿 503「engine overloaded」并无限重试(24h 内 8k+/15min)。
+// 补全措辞,并把 HTTP 451 本身视为内容安全终态(这些上游只用 451 表示安全过滤)。
+const UPSTREAM_SAFETY_RE =
+    /image_unsafe|image_safety|content_safety|content_filter|content rejected|appear to be unsafe|safety policy|content safety/i;
 const UPSTREAM_BADREQ_RE = /prompt is required|invalid image|bad_request|validation_error|undefined mention/i;
 const UPSTREAM_CHANNEL_RE = /no available channel|model_not_found/i;
 
@@ -330,7 +335,7 @@ function isTerminalReject(x: string[] | TerminalReject | null): x is TerminalRej
 function classifyUpstreamError(status: number, text: string): TerminalReject | null {
     if (status >= 500) return null; // 5xx → failover
     if (UPSTREAM_CHANNEL_RE.test(text)) return null; // 渠道特定(换渠道有意义)→ failover
-    if (UPSTREAM_SAFETY_RE.test(text)) return { terminal: 'safety' };
+    if (status === 451 || UPSTREAM_SAFETY_RE.test(text)) return { terminal: 'safety' }; // 451 = 内容安全
     if (UPSTREAM_BADREQ_RE.test(text)) return { terminal: 'bad_request' };
     return null; // 其余 4xx 保守 failover(不确定是否终态)
 }

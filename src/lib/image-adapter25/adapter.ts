@@ -239,7 +239,10 @@ export function sanitizeAdapterError25(text: string, brand: RegExp): string {
     return text.replace(brand, 'the provider').replace(/\badobe\b/gi, 'the provider');
 }
 
-const UPSTREAM_SAFETY_RE = /image_unsafe|content rejected|appear to be unsafe|safety system|moderation_blocked/i;
+// 2026-09-30:同 image-adapter —— 补 yuanshudian/zdchat 的 451 措辞(image_safety / content_safety /
+// content_filter / safety policy),HTTP 451 本身也视为内容安全终态。
+const UPSTREAM_SAFETY_RE =
+    /image_unsafe|image_safety|content_safety|content_filter|content rejected|appear to be unsafe|safety system|moderation_blocked|safety policy|content safety/i;
 const UPSTREAM_BADREQ_RE =
     /prompt is required|invalid image|bad_request|validation_error|invalid image size|total pixels must|quality for .* must be|invalid value/i;
 const UPSTREAM_CHANNEL_RE = /no available channel|model_not_found|channel_circuit_open|no active tokens/i;
@@ -294,7 +297,7 @@ function classifyUpstreamError(status: number, text: string, brand: RegExp): Ter
         };
     if (status >= 500) return null;
     if (UPSTREAM_CHANNEL_RE.test(text)) return null;
-    if (UPSTREAM_SAFETY_RE.test(text)) return { terminal: 'safety' };
+    if (status === 451 || UPSTREAM_SAFETY_RE.test(text)) return { terminal: 'safety' }; // 451 = 内容安全
     if (UPSTREAM_BADREQ_RE.test(text)) {
         const { detail, param } = extractBadRequestDetail(text, brand);
         return { terminal: 'bad_request', detail, param };

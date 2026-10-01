@@ -799,6 +799,57 @@ describe('handleAdapterImage 失败路径(不合成 usage → new-api 不扣费)
         expect(JSON.stringify(body).toLowerCase()).not.toContain('omini');
     });
 
+    it('内容安全(yuanshudian 451 image_safety「filtered by the safety policy」)→ 终态 400 moderation_blocked,不 failover', async () => {
+        // 2026-09-30 线上实况:旧正则漏掉这句 → 503 + 同渠道重试 6 次 + 客户无限重试
+        fetchMock.mockResolvedValue(
+            new Response(
+                JSON.stringify({
+                    error: {
+                        message:
+                            'The generated image was filtered by the safety policy. Please adjust your prompt and try again.',
+                        type: 'invalid_request_error',
+                        param: '',
+                        code: 'image_safety',
+                    },
+                }),
+                { status: 451 },
+            ),
+        );
+        const res = await handleAdapterImage(
+            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160', quality: 'high' }),
+            'generations',
+            'ominiapi',
+        );
+        expect(res.status).toBe(400);
+        const body = await res.json();
+        expect(body.error.code).toBe('moderation_blocked');
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('内容安全(451 content_safety「blocked by the content safety policy」/ 未知措辞的 451)→ 均终态 400', async () => {
+        for (const errBody of [
+            {
+                error: {
+                    message: 'Your prompt or reference image was blocked by the content safety policy.',
+                    code: 'content_safety',
+                },
+            },
+            { error: { message: 'nope', code: 'ERR-FFD974C5BD', type: 'content_filter' } },
+            { error: { message: 'some brand-new wording' } }, // 纯靠 HTTP 451 判定
+        ]) {
+            fetchMock.mockReset();
+            fetchMock.mockResolvedValue(new Response(JSON.stringify(errBody), { status: 451 }));
+            const res = await handleAdapterImage(
+                jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160', quality: 'high' }),
+                'generations',
+                'ominiapi',
+            );
+            expect(res.status).toBe(400);
+            expect((await res.json()).error.code).toBe('moderation_blocked');
+            expect(fetchMock).toHaveBeenCalledTimes(1);
+        }
+    });
+
     it('请求本身错(prompt is required,400)→ 终态 400 invalid_request(不 failover)', async () => {
         fetchMock.mockResolvedValue(
             new Response(JSON.stringify({ error: { message: 'prompt is required' } }), { status: 400 }),

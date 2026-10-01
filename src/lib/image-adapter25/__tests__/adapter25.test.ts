@@ -446,6 +446,39 @@ describe('handleAdapter25Image 透明 / 错误 / 脱敏', () => {
         expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
+    it('内容安全(zdchat 451 type content_filter / yuanshudian image_safety 措辞)→ 均终态 400,不 failover', async () => {
+        // 2026-09-30 线上实况:这些措辞旧正则漏掉 → 503 failover + 客户无限重试
+        for (const errBody of [
+            {
+                error: {
+                    message: 'The generated images appear to be unsafe. Try modifying the prompts or the seeds.',
+                    type: 'content_filter',
+                    code: 'ERR-FFD974C5BD',
+                },
+            },
+            {
+                error: {
+                    message:
+                        'The generated image was filtered by the safety policy. Please adjust your prompt and try again.',
+                    type: 'invalid_request_error',
+                    code: 'image_safety',
+                },
+            },
+            { error: { message: 'brand-new wording' } }, // 纯靠 HTTP 451 判定
+        ]) {
+            fetchMock.mockReset();
+            fetchMock.mockResolvedValue(new Response(JSON.stringify(errBody), { status: 451 }));
+            const res = await handleAdapter25Image(
+                jsonReq(URL_GEN, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'low' }),
+                'generations',
+                'wetokenasia25',
+            );
+            expect(res.status).toBe(400);
+            expect(((await res.json()) as { error: { code: string } }).error.code).toBe('moderation_blocked');
+            expect(fetchMock).toHaveBeenCalledTimes(1);
+        }
+    });
+
     it('上游非法尺寸 400 → 终态 invalid_request,且【透出上游具体原因】+ param=size(客户能定位)', async () => {
         fetchMock.mockResolvedValue(
             new Response(
