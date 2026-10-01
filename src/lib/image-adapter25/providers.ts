@@ -101,4 +101,25 @@ export const IMAGE_PROVIDERS_25: Record<string, ImageProvider25> = {
         brand: /\bzdchat\b|\bzdapi\b|\b52image\b|\badobe\b|\bfirefly\b/gi,
         models: GPT_IMAGE_25_MODELS,
     },
+    // yuanshudian25:api.yuanshudian.com(元数点,2.5 专用 key sk-Dlbb…;与 2.0 适配器里的 `yuanshudian`
+    // Firefly 线是【完全不同的后端】,别混)。2026-10-01 实测 31 发 30 个 200(唯一 400 是故意发的非法 quality):
+    //  - 30/30 OpenAI OpCo C2PA,softwareAgent = `API / gpt-image`(与 asian-acc 真直通同款,不是号池的
+    //    `gpt-image / 2.0`),PNG 原始编码单 IDAT,零 Adobe;
+    //  - 5 档如实:延迟随档单调(low 22–33s / high 35s / xhigh 46–49s / max 68–73s / sunburst max 123s),
+    //    尺寸全如实含 2880² 与 4K(4K 边缘比 2.6、中心裁片原生锐利),透明真 RGBA,webp 真返 WEBP,
+    //    size=auto → 1254²(= 官方 2.5 缺省),非法 quality 上游正确 400(`Provider API error: Invalid value…`);
+    //  - 毛病(全由适配器兜):n=2 只返 1 张(n 补齐段补打);1000×1000 不 400 返 992²(入口尺寸校验拦);
+    //    壳只有 created/data/usage(适配器自合成);usage 非官方公式且逐张浮动(low 263–289 / high ~4290 /
+    //    4K high 16417,壳带 reasoning_tokens)—— synthUsage25 自算,不受影响;返回 url 图床 cdn.jd23kjs.work
+    //    (CF,server2 拉 10MB 0.15s;fetchImageAsB64 带重试)。
+    // 【成本 = 按张 $0.09 一口价】(账单接口差分:28 张 252 美分,单发 high 与 low 各 +9.0 美分),与档位/尺寸
+    // 无关。对官方 $30/M:low 15× / medium 6.8× / high 1.7× / xhigh 0.96× / max 0.43× / 4K high 0.90× /
+    // 2880² high 0.51× —— 只有 xhigh、max 与大尺寸不亏。
+    // 【全量线(operator 2026-10-01 拍板,知情上述成本)】不设 qualities。要收紧成只放高档,加
+    // `qualities: ['xhigh','max']` 一行即可(机制见 llmway25)。
+    yuanshudian25: {
+        baseUrl: 'https://api.yuanshudian.com',
+        brand: /\byuanshudian\b|\bjd23kjs\b|provider api error:?\s*|\badobe\b|\bfirefly\b/gi,
+        models: GPT_IMAGE_25_MODELS,
+    },
 };

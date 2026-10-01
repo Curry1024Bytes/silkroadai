@@ -1003,6 +1003,101 @@ describe('zdchat25 全量线 + url→b64 拉取重试', () => {
     });
 });
 
+describe('yuanshudian25 全量线(真 OpenAI API 签名,按张 $0.09;与 2.0 的 yuanshudian Firefly 线无关)', () => {
+    const URL_YSD = 'http://portal.test/image-adapter25/yuanshudian25/v1/images/generations';
+
+    it('registry:api.yuanshudian.com、两模型、无 qualities(全量);brand 抹 yuanshudian / 图床域 / Provider API error 前缀', () => {
+        const p = IMAGE_PROVIDERS_25.yuanshudian25;
+        expect(p.baseUrl).toBe('https://api.yuanshudian.com');
+        expect(p.models).toEqual(GPT_IMAGE_25_MODELS);
+        expect(p.qualities).toBeUndefined();
+        expect(p.upstreamTimeoutMs).toBeUndefined();
+        expect('yuanshudian cdn.jd23kjs.work Adobe'.replace(p.brand, '*')).toBe('* cdn.*.work *');
+        expect('Provider API error: Invalid value'.replace(p.brand, '')).toBe('Invalid value');
+    });
+
+    it('5 档 + auto 全部透传上游(两模型),按官方档计费 —— 上游自造的浮动 usage 被丢弃', async () => {
+        for (const [q, expectTokens] of [
+            ['low', 196],
+            ['medium', 439],
+            ['high', 1756],
+            ['xhigh', 3122],
+            ['max', 7024],
+            ['auto', 196],
+        ] as const) {
+            for (const model of GPT_IMAGE_25_MODELS) {
+                fetchMock.mockReset();
+                // 上游壳:只有 created/data/usage,usage 是它自己的浮动值(实测 low 263–289 / max ~8400)
+                fetchMock.mockImplementation(
+                    async () =>
+                        new Response(
+                            JSON.stringify({
+                                created: 1,
+                                data: [{ b64_json: pngB64(1024, 1024) }],
+                                usage: {
+                                    input_tokens: 17,
+                                    output_tokens: 8536,
+                                    output_tokens_details: { reasoning_tokens: 0 },
+                                },
+                            }),
+                            { status: 200, headers: { 'content-type': 'application/json' } },
+                        ),
+                );
+                const res = await handleAdapter25Image(
+                    jsonReq(URL_YSD, { model, prompt: 'x', size: '1024x1024', quality: q }),
+                    'generations',
+                    'yuanshudian25',
+                );
+                expect(res.status).toBe(200);
+                expect(String(fetchMock.mock.calls[0][0])).toBe('https://api.yuanshudian.com/v1/images/generations');
+                expect(JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body)).model).toBe(model);
+                const body = (await res.json()) as { usage: { output_tokens: number }; quality: string; size: string };
+                expect(body.usage.output_tokens).toBe(expectTokens);
+                expect(body.size).toBe('1024x1024');
+            }
+        }
+    });
+
+    it('上游 400 `Provider API error: …` → 终态 400,透出具体原因但抹掉 Provider API error 前缀与品牌', async () => {
+        fetchMock.mockResolvedValue(
+            new Response(
+                JSON.stringify({
+                    error: {
+                        message:
+                            'Provider API error: invalid image size: edges must be multiples of 16 (yuanshudian request id: 2026)',
+                    },
+                }),
+                { status: 400 },
+            ),
+        );
+        const res = await handleAdapter25Image(
+            jsonReq(URL_YSD, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'low' }),
+            'generations',
+            'yuanshudian25',
+        );
+        expect(res.status).toBe(400);
+        const msg = ((await res.json()) as { error: { message: string } }).error.message;
+        expect(msg.toLowerCase()).not.toContain('yuanshudian');
+        expect(msg.toLowerCase()).not.toContain('provider api error');
+        expect(msg).toContain('edges must be multiples of 16');
+    });
+
+    it('上游 502 池抖(candidate upstream unavailable)→ 503 failover,体中性不泄品牌', async () => {
+        fetchMock.mockResolvedValue(
+            new Response(JSON.stringify({ error: { message: 'candidate upstream unavailable (yuanshudian)' } }), {
+                status: 502,
+            }),
+        );
+        const res = await handleAdapter25Image(
+            jsonReq(URL_YSD, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'max' }),
+            'generations',
+            'yuanshudian25',
+        );
+        expect(res.status).toBe(503);
+        expect(await res.text()).not.toMatch(/yuanshudian|candidate/i);
+    });
+});
+
 describe('2.5 适配器 mask 透传(2026-09-19 补齐;此前只在 2.0 适配器修了)', () => {
     it('multipart edits 带 mask → 上游 FormData 含 mask 文件,不计费', async () => {
         okUpstream([pngB64(1024, 1024)]);
