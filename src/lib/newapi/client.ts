@@ -518,6 +518,37 @@ export async function getTokenKey(
     return result.key;
 }
 
+/** 读单个 token(act-as customer)。new-api `GET /api/token/{id}` 按
+ *  `(id, user_id)` 查,别人的 token 直接 404。返回 raw object(不过
+ *  NewApiTokenSchema 严格校验)—— `renameToken` 需要把 `allow_ips` 等
+ *  schema 未列的字段原样回传,严格 parse 会把它们丢掉。
+ *  注意 rc.22 起 `key` 字段在 GET 里是 mask 过的,别拿它当真 key 用。 */
+export async function getTokenForCustomer(
+    customerAuth: { accessToken: string; userId: number },
+    tokenId: number,
+): Promise<Record<string, unknown>> {
+    return await call<Record<string, unknown>>('GET', `/api/token/${tokenId}`, undefined, undefined, {
+        asUser: customerAuth,
+    });
+}
+
+/** 改 token 别名(act-as customer)。
+ *
+ *  ⚠️ new-api `PUT /api/token/` 不是 partial update:非 `status_only` 模式下
+ *  会把 name / expired_time / remain_quota / unlimited_quota /
+ *  model_limits_enabled / model_limits / allow_ips / group **全部**用请求体
+ *  覆盖。只传 `{id, name}` 会把 `unlimited_quota` 刷成 false、
+ *  `remain_quota` 刷成 0 → token 立刻被判耗尽拒调(gotcha #12)。
+ *  所以先 GET 拿全量,再把 `name` 换掉整体 PUT 回去。 */
+export async function renameToken(
+    customerAuth: { accessToken: string; userId: number },
+    tokenId: number,
+    name: string,
+): Promise<void> {
+    const existing = await getTokenForCustomer(customerAuth, tokenId);
+    await call<null>('PUT', '/api/token/', { ...existing, id: tokenId, name }, undefined, { asUser: customerAuth });
+}
+
 /** 删 token */
 export async function deleteToken(
     customerAuth: { accessToken: string; userId: number },

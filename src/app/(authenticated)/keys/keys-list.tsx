@@ -79,6 +79,14 @@ function formatLastUsed(iso: string | null): string {
 type RevealMap = Record<string, string | undefined>;
 type CopiedMap = Record<string, boolean>;
 
+/** Inline alias editor state — at most one row in edit mode at a time. */
+interface EditState {
+    id: string;
+    alias: string;
+    submitting: boolean;
+    error: string | null;
+}
+
 interface CreateState {
     open: boolean;
     alias: string;
@@ -228,6 +236,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
     const [copied, setCopied] = useState<CopiedMap>({});
     const [busyId, setBusyId] = useState<string | null>(null);
     const [globalError, setGlobalError] = useState<string | null>(null);
+    const [edit, setEdit] = useState<EditState | null>(null);
     const [create, setCreate] = useState<CreateState>({
         open: false,
         alias: '',
@@ -337,6 +346,59 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
             setGlobalError(err instanceof Error ? err.message : '网络错误');
         }
         setBusyId(null);
+    }
+
+    function startEdit(row: KeyRow) {
+        if (busyId || edit?.submitting) return;
+        setGlobalError(null);
+        setEdit({ id: row.id, alias: row.key_alias, submitting: false, error: null });
+    }
+
+    function cancelEdit() {
+        if (edit?.submitting) return;
+        setEdit(null);
+    }
+
+    async function submitEdit() {
+        if (!edit || edit.submitting) return;
+        const alias = edit.alias.trim();
+        if (!alias) {
+            setEdit((prev) => (prev ? { ...prev, error: '请填写 Key 别名' } : prev));
+            return;
+        }
+        const current = rows.find((r) => r.id === edit.id);
+        if (current && current.key_alias === alias) {
+            setEdit(null);
+            return;
+        }
+        setEdit((prev) => (prev ? { ...prev, submitting: true, error: null } : prev));
+        try {
+            const r = await fetch(`/api/portal/keys/${encodeURIComponent(edit.id)}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'same-origin',
+                body: JSON.stringify({ alias }),
+            });
+            if (!r.ok) {
+                const data = await r.json().catch(() => ({}));
+                const msg =
+                    r.status === 502
+                        ? '保存失败,上游暂时不可用,请稍后重试'
+                        : typeof data?.error === 'string'
+                          ? data.error
+                          : `保存失败 (${r.status})`;
+                setEdit((prev) => (prev ? { ...prev, submitting: false, error: msg } : prev));
+                return;
+            }
+            const data = (await r.json()) as { key_alias?: string };
+            const saved = typeof data.key_alias === 'string' ? data.key_alias : alias;
+            setRows((prev) => prev.map((row) => (row.id === edit.id ? { ...row, key_alias: saved } : row)));
+            setEdit(null);
+        } catch (err) {
+            setEdit((prev) =>
+                prev ? { ...prev, submitting: false, error: err instanceof Error ? err.message : '网络错误' } : prev,
+            );
+        }
     }
 
     async function handleCreate(e: React.FormEvent) {
@@ -524,6 +586,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                                 const revealed = reveal[row.id];
                                 const showCopied = copied[row.id];
                                 const busy = busyId === row.id;
+                                const editing = edit?.id === row.id ? edit : null;
                                 const isLast = idx === rows.length - 1;
                                 // W7 D4 PR-R Item C: rows are flat again.
                                 // The per-row "如何使用此 Key" panel that
@@ -538,12 +601,80 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                                 return (
                                     <tr key={row.id}>
                                         <td className={`${cell} ${borderClass}`}>
-                                            <div className="flex flex-wrap items-center gap-2">
-                                                <span>{row.key_alias}</span>
-                                                <span className="rounded-full bg-paper-muted px-2 py-0.5 text-[10px] font-medium text-muted-ink">
-                                                    {tierLabel(row.tier)}
-                                                </span>
-                                            </div>
+                                            {editing ? (
+                                                <div>
+                                                    <div className="flex items-center gap-1.5">
+                                                        <Input
+                                                            type="text"
+                                                            value={editing.alias}
+                                                            onChange={(e) =>
+                                                                setEdit((prev) =>
+                                                                    prev
+                                                                        ? {
+                                                                              ...prev,
+                                                                              alias: e.target.value,
+                                                                              error: null,
+                                                                          }
+                                                                        : prev,
+                                                                )
+                                                            }
+                                                            onKeyDown={(e) => {
+                                                                if (e.key === 'Enter') {
+                                                                    e.preventDefault();
+                                                                    void submitEdit();
+                                                                } else if (e.key === 'Escape') {
+                                                                    e.preventDefault();
+                                                                    cancelEdit();
+                                                                }
+                                                            }}
+                                                            maxLength={50}
+                                                            autoFocus
+                                                            disabled={editing.submitting}
+                                                            error={!!editing.error}
+                                                            aria-label="Key 别名"
+                                                            block={false}
+                                                            className="text-sm w-44"
+                                                        />
+                                                        <Button
+                                                            type="button"
+                                                            variant="primary"
+                                                            size="sm"
+                                                            onClick={() => void submitEdit()}
+                                                            loading={editing.submitting}
+                                                            disabled={editing.submitting || !editing.alias.trim()}
+                                                        >
+                                                            保存
+                                                        </Button>
+                                                        <Button
+                                                            type="button"
+                                                            variant="secondary"
+                                                            size="sm"
+                                                            onClick={cancelEdit}
+                                                            disabled={editing.submitting}
+                                                        >
+                                                            取消
+                                                        </Button>
+                                                    </div>
+                                                    <FormError>{editing.error}</FormError>
+                                                </div>
+                                            ) : (
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    <span>{row.key_alias}</span>
+                                                    <span className="rounded-full bg-paper-muted px-2 py-0.5 text-[10px] font-medium text-muted-ink">
+                                                        {tierLabel(row.tier)}
+                                                    </span>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => startEdit(row)}
+                                                        disabled={busy || !!edit}
+                                                        title="修改别名"
+                                                        aria-label={`修改别名 ${row.key_alias}`}
+                                                        className="cursor-pointer rounded px-1 text-xs text-minor-ink hover:text-navy hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+                                                    >
+                                                        编辑
+                                                    </button>
+                                                </div>
+                                            )}
                                         </td>
                                         <td className={`${cell} ${borderClass}`}>
                                             <div
