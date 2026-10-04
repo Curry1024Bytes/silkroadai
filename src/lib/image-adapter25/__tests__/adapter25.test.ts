@@ -1098,6 +1098,74 @@ describe('yuanshudian25 全量线(真 OpenAI API 签名,按张 $0.09;与 2.0 的
     });
 });
 
+describe('synoralink25 全量线(与 yuanshudian25 同后端、独立账号池 —— 互为容灾)', () => {
+    const URL_SYN = 'http://portal.test/image-adapter25/synoralink25/v1/images/generations';
+
+    it('registry:api.synoralink.com、两模型、无 qualities(全量);brand 抹 synoralink / 图床域 / Provider API error 前缀', () => {
+        const p = IMAGE_PROVIDERS_25.synoralink25;
+        expect(p.baseUrl).toBe('https://api.synoralink.com');
+        expect(p.models).toEqual(GPT_IMAGE_25_MODELS);
+        expect(p.qualities).toBeUndefined();
+        expect('synoralink cdn.jd23kjs.work Adobe'.replace(p.brand, '*')).toBe('* cdn.*.work *');
+        expect('Provider API error: Invalid value'.replace(p.brand, '')).toBe('Invalid value');
+        // 两条同后端线必须是两个独立 provider(各自的 base_url / 渠道 key),不能互相覆盖
+        expect(p.baseUrl).not.toBe(IMAGE_PROVIDERS_25.yuanshudian25.baseUrl);
+    });
+
+    it('5 档 + auto 全部透传上游,按官方档计费(上游浮动 usage 被丢弃)', async () => {
+        for (const [q, expectTokens] of [
+            ['low', 196],
+            ['medium', 439],
+            ['high', 1756],
+            ['xhigh', 3122],
+            ['max', 7024],
+            ['auto', 196],
+        ] as const) {
+            fetchMock.mockReset();
+            fetchMock.mockImplementation(
+                async () =>
+                    new Response(
+                        JSON.stringify({
+                            created: 1,
+                            data: [{ b64_json: pngB64(1024, 1024) }],
+                            usage: {
+                                input_tokens: 6,
+                                output_tokens: 32925,
+                                output_tokens_details: { reasoning_tokens: 0 },
+                            },
+                        }),
+                        { status: 200, headers: { 'content-type': 'application/json' } },
+                    ),
+            );
+            const res = await handleAdapter25Image(
+                jsonReq(URL_SYN, { model: 'gpt-image-2.5-sunburst', prompt: 'x', size: '1024x1024', quality: q }),
+                'generations',
+                'synoralink25',
+            );
+            expect(res.status).toBe(200);
+            expect(String(fetchMock.mock.calls[0][0])).toBe('https://api.synoralink.com/v1/images/generations');
+            expect(((await res.json()) as { usage: { output_tokens: number } }).usage.output_tokens).toBe(expectTokens);
+        }
+    });
+
+    it.each([
+        [403, { code: 'INSUFFICIENT_BALANCE', message: 'Insufficient account balance' }],
+        [503, { error: { message: 'No available compatible accounts', type: 'api_error' } }],
+        [502, { error: { message: 'Upstream service temporarily unavailable (synoralink)', type: 'upstream_error' } }],
+    ])('上游 %i(余额 0 / 号池空 / 上游不可用)→ 503 failover,体中性不泄品牌与余额', async (status, body) => {
+        fetchMock.mockResolvedValue(new Response(JSON.stringify(body), { status: status as number }));
+        const res = await handleAdapter25Image(
+            jsonReq(URL_SYN, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'high' }),
+            'generations',
+            'synoralink25',
+        );
+        expect(res.status).toBe(503);
+        const text = await res.text();
+        expect(text).not.toMatch(/synoralink|balance|compatible accounts/i);
+        expect((JSON.parse(text) as { error: { code: string } }).error.code).toBe('upstream_unavailable');
+    });
+});
+
 describe('2.5 适配器 mask 透传(2026-09-19 补齐;此前只在 2.0 适配器修了)', () => {
     it('multipart edits 带 mask → 上游 FormData 含 mask 文件,不计费', async () => {
         okUpstream([pngB64(1024, 1024)]);

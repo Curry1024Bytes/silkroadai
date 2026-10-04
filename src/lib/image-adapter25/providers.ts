@@ -122,4 +122,23 @@ export const IMAGE_PROVIDERS_25: Record<string, ImageProvider25> = {
         brand: /\byuanshudian\b|\bjd23kjs\b|provider api error:?\s*|\badobe\b|\bfirefly\b/gi,
         models: GPT_IMAGE_25_MODELS,
     },
+    // synoralink25:api.synoralink.com(key sk-b4fa…)。自研网关(非 new-api:nginx 直出,错误体
+    // `{"code":"INSUFFICIENT_BALANCE",…}`,无任何账单接口 → 单价只能从对方后台看,接入时未知)。
+    // 2026-10-04 实测 32 发 31 个 200(唯一 400 是故意发的非法 quality):
+    //  - 31/31 OpenAI OpCo C2PA,softwareAgent `API / gpt-image`,PNG 原始编码单 IDAT,零 Adobe;
+    //  - 档位是真的:延迟逐档单调且可复现(low 14–21s / medium 21s / high 30–32s / xhigh 41s×3 /
+    //    max 72–77s / sunburst max 156s),4K 原生裁片 low 发糊、high/max 皮纹缝线清晰;
+    //  - 尺寸全如实含 2880² 与 4K,透明真 RGBA,webp 真返,edits 三种输入尺寸通,size=auto → 1312×1199。
+    // 【与 yuanshudian25 是同一套后端、不同账号】:裸壳结构、逐张浮动的 usage(带 reasoning_tokens)、
+    // 图床 cdn.jd23kjs.work、`Provider API error:` 前缀、1000×1000 → 992²、n=2 只返 1 张,逐项相同;
+    // 但账号池与余额各自独立 —— 10-03 本线号池空(51 发全 503 `No available compatible accounts` /
+    // 502 `Upstream service temporarily unavailable`,>1h)时 yuanshudian 同时段仍 ~70% 成功,
+    // 所以两条线互为容灾。毛病同样全由适配器兜(n 补齐、自合成壳与 usage、url 拉回重试)。
+    // 余额为 0 时上游回 403 `INSUFFICIENT_BALANCE`(连 /v1/models 都 403)→ 走通用 failover 503。
+    // 【全量线(operator 2026-10-04 拍板)】不设 qualities。
+    synoralink25: {
+        baseUrl: 'https://api.synoralink.com',
+        brand: /\bsynoralink\b|\bjd23kjs\b|provider api error:?\s*|\badobe\b|\bfirefly\b/gi,
+        models: GPT_IMAGE_25_MODELS,
+    },
 };
