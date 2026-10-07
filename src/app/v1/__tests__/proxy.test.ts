@@ -2348,6 +2348,131 @@ describe('/v1 proxy — pro imageSize 可选 (size param, feat/pro-image-size-se
     });
 });
 
+describe('/v1 proxy — gemini-nano-banana-2.1 接入(对齐官方:默认 1K、size 可选、官方 14 比例)', () => {
+    const MODEL = 'gemini-nano-banana-2.1';
+    function sentImageConfig(): { imageSize: string; aspectRatio?: string } {
+        const call = mockFetch.mock.calls.find(([u]) => String(u).includes(':generateContent'));
+        expect(call).toBeDefined();
+        const sent = JSON.parse(String((call![1] as RequestInit).body)) as {
+            generationConfig: { imageConfig: { imageSize: string; aspectRatio?: string } };
+        };
+        return sent.generationConfig.imageConfig;
+    }
+
+    it('chat/completions → 翻译到 native generateContent,官方默认 imageSize 1K + 托管 URL', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const res = await POST(
+            makeReq('/chat/completions', { body: { model: MODEL, messages: [{ role: 'user', content: 'a cat' }] } }),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(200);
+        expect(res.headers.get('X-Silkroadai-Translated')).toBe('gemini-native');
+        const [url] = mockFetch.mock.calls[0] as [string];
+        expect(url).toBe(`${NEWAPI_BASE}/v1beta/models/${MODEL}:generateContent`);
+        expect(sentImageConfig().imageSize).toBe('1K');
+        expect(sentImageConfig().aspectRatio).toBeUndefined(); // 文生图无 aspect → 不注入,随官方模型默认
+        const data = (await res.json()) as { choices: Array<{ message: { content: string } }> };
+        expect(data.choices[0].message.content).toMatch(/^!\[image\]\(https:\/\//);
+    });
+
+    it('chat/completions + size=4K → imageSize 4K(官方 1K/2K/4K 可选)', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        await POST(
+            makeReq('/chat/completions', {
+                body: { model: MODEL, messages: [{ role: 'user', content: 'a cat' }], size: '4K' },
+            }),
+            ctx('chat', 'completions'),
+        );
+        expect(sentImageConfig().imageSize).toBe('4K');
+    });
+
+    it('images/generations 无 size → 1K;size=2K → 2K;size=1024x1024 → 1K', async () => {
+        for (const [size, want] of [
+            [undefined, '1K'],
+            ['2K', '2K'],
+            ['1024x1024', '1K'],
+        ] as const) {
+            mockFetch.mockReset();
+            mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+            const body: Record<string, unknown> = { model: MODEL, prompt: 'x' };
+            if (size) body.size = size;
+            const res = await POST(makeReq('/images/generations', { body }), ctx('images', 'generations'));
+            expect(res.status).toBe(200);
+            expect(sentImageConfig().imageSize).toBe(want);
+        }
+    });
+
+    it('images/generations + size=8K → 400 invalid_request_error,不打上游', async () => {
+        const res = await POST(
+            makeReq('/images/generations', { body: { model: MODEL, prompt: 'x', size: '8K' } }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(400);
+        const data = (await res.json()) as { error: { type: string; message: string; param?: string } };
+        expect(data.error.type).toBe('invalid_request_error');
+        expect(data.error.param).toBe('size');
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('官方 14 个比例全部放行并注入 aspectRatio(含 pro 档没有的 4:1)', async () => {
+        const official = [
+            '1:1',
+            '1:4',
+            '1:8',
+            '2:3',
+            '3:2',
+            '3:4',
+            '4:1',
+            '4:3',
+            '4:5',
+            '5:4',
+            '8:1',
+            '9:16',
+            '16:9',
+            '21:9',
+        ];
+        for (const ratio of official) {
+            mockFetch.mockReset();
+            mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+            const res = await POST(
+                makeReq('/images/generations', { body: { model: MODEL, prompt: 'x', aspect_ratio: ratio } }),
+                ctx('images', 'generations'),
+            );
+            expect(res.status, ratio).toBe(200);
+            expect(sentImageConfig().aspectRatio, ratio).toBe(ratio);
+        }
+    });
+
+    it('非官方比例 7:3 → 400,不打上游', async () => {
+        const res = await POST(
+            makeReq('/images/generations', { body: { model: MODEL, prompt: 'x', aspect_ratio: '7:3' } }),
+            ctx('images', 'generations'),
+        );
+        expect(res.status).toBe(400);
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('multipart images/edits → 翻译到 native(不再透传给 new-api 吃 "only imagen" 500)+ size=2K 生效', async () => {
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const form = new FormData();
+        form.append('model', MODEL);
+        form.append('prompt', 'edit this');
+        form.append('size', '2K');
+        form.append('image', new File([new Uint8Array([1, 2, 3])], 'ref.png', { type: 'image/png' }));
+        const res = await POST(
+            new NextRequest('https://ai.silkroadai.io/v1/images/edits', { method: 'POST', body: form }),
+            ctx('images', 'edits'),
+        );
+        expect(res.status).toBe(200);
+        const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(url).toBe(`${NEWAPI_BASE}/v1beta/models/${MODEL}:generateContent`);
+        expect(new Headers(init.headers).get('content-type')).toBe('application/json');
+        expect(sentImageConfig().imageSize).toBe('2K');
+        const data = (await res.json()) as { data: Array<{ url: string }> };
+        expect(data.data[0].url).toMatch(/^https:\/\//);
+    });
+});
+
 describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usage + 报错透传', () => {
     type Usage = {
         input_tokens: number;
