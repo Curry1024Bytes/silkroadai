@@ -563,6 +563,18 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                     <Code>callback_url</Code> 暂不支持,请改用轮询。)
                 </p>
                 <p className="text-gray-600">
+                    <b>
+                        样片模式(<Code>draft</Code>)
+                    </b>{' '}
+                    —— 创建时传 <Code>{'"draft": true'}</Code> 先出低成本样片, 确认构图 / 运镜 /
+                    主体动作符合预期后,再提交一次正片任务:<Code>content</Code> 里放{' '}
+                    <Code>{'{"type":"draft_task","draft_task":{"id":"<样片任务号>"}}'}</Code>(可不带 text), 用{' '}
+                    <Code>resolution</Code> 指定正片分辨率即可;提示词 / 参考素材 / 时长 / 比例 / 音频自动沿用样片,
+                    不必(也不要)重复传。样片任务号必须是你名下、已完成的样片,7 天内有效;仅{' '}
+                    <Code>doubao-seedance-2-5-260628</Code> 支持。查询响应回显 <Code>draft</Code> 与正片的{' '}
+                    <Code>draft_task_id</Code>。
+                </p>
+                <p className="text-gray-600">
                     <b>查询响应对齐火山官方 2026-09 字段集</b>(国内版 / 火山渠道均适用):除 <Code>id</Code> /{' '}
                     <Code>model</Code> / <Code>status</Code> / <Code>content</Code> / <Code>error</Code> /{' '}
                     <Code>created_at</Code> / <Code>updated_at</Code> / <Code>resolution</Code> / <Code>ratio</Code> /{' '}

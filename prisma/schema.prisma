@@ -1216,6 +1216,10 @@ model SeedanceVideoTask {
   output_format     String? // mp4 | mov
   tools             Json? // 请求里的 tools 数组(未传/空 → 响应省略,对齐官方「未使用工具时不返回」)
   execution_expires_after Int? // 官方创建参数(任务超时阈值秒,[3600,259200]);客户传了就回显,没传响应给官方默认 172800
+  // 样片模式(2026-10-08,火山官方 draft / draft_task):draft = 创建时传的布尔(NULL=没传=false);
+  // draft_task_id = 正片引用的【客户】样片任务号(方舟真号不落库不对客)。
+  draft             Boolean?
+  draft_task_id     String?
 
   @@index([user_id, created_at])
   @@index([billed])

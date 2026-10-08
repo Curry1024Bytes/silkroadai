@@ -81,6 +81,43 @@ describe('submitVolcVideo', () => {
         expect(sent.content).toEqual([{ type: 'text', text: '一只猫' }]);
     });
 
+    // 2026-10-08 样片出正片(draft_task):客户样片号 → mvt- → GET 上游任务 metadata.id(方舟真号)→ 替换。
+    it('draft_task:先 GET 样片任务拿方舟真号再提交,content 里的 id 已换成方舟真号,没传时长/音频不注入默认值', async () => {
+        vi.mocked(toUpstreamId).mockResolvedValueOnce('mvt-draft1');
+        const fetchMock = vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+            if (String(url) === `${TASKS}/mvt-draft1` && (init?.method ?? 'GET') === 'GET') {
+                return taskEnvelope({ status: 'completed', metadata: { id: 'cgt-20261008150000-arkid', draft: true } });
+            }
+            return new Response(JSON.stringify({ task: { id: 'mvt-final1', status: 'pending' } }), { status: 200 });
+        });
+        const res = await submitVolcVideo(
+            { content: [{ type: 'draft_task', draft_task: { id: 'cgt-client-draft' } }] },
+            opts({ clientModel: 'doubao-seedance-2.5', resolution: '1080p' }),
+        );
+        expect(res.status).toBe(200);
+        const submit = fetchMock.mock.calls.find((c) => String(c[0]) === GENERATE);
+        expect(submit).toBeDefined();
+        const sent = JSON.parse((submit![1] as RequestInit).body as string);
+        expect(sent.content).toEqual([{ type: 'draft_task', draft_task: { id: 'cgt-20261008150000-arkid' } }]);
+        expect(sent.resolution).toBe('1080p');
+        expect('duration' in sent).toBe(false);
+        expect('generate_audio' in sent).toBe(false);
+    });
+
+    it('draft_task 样片未完成 → 400 不提交', async () => {
+        vi.mocked(toUpstreamId).mockResolvedValueOnce('mvt-draft1');
+        const fetchMock = vi
+            .spyOn(global, 'fetch')
+            .mockImplementation(async () => taskEnvelope({ status: 'processing', metadata: {} }));
+        const res = await submitVolcVideo(
+            { content: [{ type: 'draft_task', draft_task: { id: 'cgt-client-draft' } }] },
+            opts({ clientModel: 'doubao-seedance-2.5' }),
+        );
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error: { message: string } }).error.message).toContain('尚未完成');
+        expect(fetchMock.mock.calls.some((c) => String(c[0]) === GENERATE)).toBe(false);
+    });
+
     it('四档全部在售,各自映射到 方舟 id + -max 的上游模型名', async () => {
         expect(Object.keys(VOLC_MODELS).filter(isVolcModelWithdrawn)).toEqual([]);
         for (const [clientModel, spec] of Object.entries(VOLC_MODELS)) {

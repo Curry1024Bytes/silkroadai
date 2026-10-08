@@ -99,7 +99,7 @@ describe('arkFailError', () => {
 
 describe('buildArkTaskResponse', () => {
     const createdAt = new Date('2026-07-24T02:00:00Z');
-    it('火山官方形(cn,extended 缺省):只出官方声明字段,不带 draft/service_tier/seed 等', () => {
+    it('火山官方形(cn,extended 缺省):只出官方声明字段(draft=false 常驻),不带 upstream_id 等', () => {
         const r = buildArkTaskResponse({
             taskId: 'cgt-1',
             internalModel: 'seedance-2-0',
@@ -125,8 +125,9 @@ describe('buildArkTaskResponse', () => {
         expect(r.resolution).toBe('720p');
         expect(r.duration).toBe(5);
         expect(r.ratio).toBe('16:9');
-        // 官方形不含 BytePlus / volc 专属字段
-        expect('draft' in r).toBe(false);
+        // 官方形不含 volc 专属字段;draft 是官方 SDK 任务体字段(2026-10-08 起常驻,非正片不出 draft_task_id)
+        expect(r.draft).toBe(false);
+        expect('draft_task_id' in r).toBe(false);
         expect('upstream_id' in r).toBe(false);
         // 2026-09 火山官方查询响应新增字段(此前按旧文档只出 11 个,客户按新文档校验就缺项):
         // 上游(xinhankr)不回显 → 落库提交参数 / 官方默认值
@@ -162,6 +163,8 @@ describe('buildArkTaskResponse', () => {
             'seed',
             'service_tier',
             'tools',
+            'draft', // 官方 SDK 任务体字段(2026-10-08 样片模式起常驻)
+            'draft_task_id',
         ]);
         expect(Object.keys(r).filter((k) => !officialKeys.has(k))).toEqual([]);
     });
@@ -238,7 +241,45 @@ describe('buildArkTaskResponse', () => {
         expect(r.updated_at).toBe(1790092007);
         // 成功态 content 恒有 last_frame_url(无尾帧为空串)
         expect((r.content as Record<string, unknown>).last_frame_url).toBe('');
-        expect('draft' in r).toBe(false);
+        expect(r.draft).toBe(false);
+    });
+
+    // 2026-10-08 样片模式:draft 回显 = 上游真值 > 落库 > false;正片任务回显客户样片号 draft_task_id。
+    it('样片模式回显:样片任务 draft=true(上游真值);正片任务带 draft_task_id(客户样片号)', () => {
+        const draft = buildArkTaskResponse({
+            taskId: 'cgt-draft',
+            internalModel: 'seedance-2-5',
+            status: 'succeeded',
+            videoUrl: 'https://vod/d.mp4',
+            createdAt,
+            duration: 5,
+            submitted: { draft: true, draftTaskId: null },
+            upstreamMeta: { draft: true },
+        });
+        expect(draft.draft).toBe(true);
+        expect('draft_task_id' in draft).toBe(false);
+        const final = buildArkTaskResponse({
+            taskId: 'cgt-final',
+            internalModel: 'seedance-2-5',
+            status: 'running',
+            createdAt,
+            duration: 5,
+            submitted: { draft: null, draftTaskId: 'cgt-draft' },
+        });
+        expect(final.draft).toBe(false);
+        expect(final.draft_task_id).toBe('cgt-draft');
+        // volc 形同样出 draft_task_id
+        const volc = buildArkTaskResponse({
+            taskId: 'cgt-vf',
+            internalModel: 'doubao-seedance-2.5',
+            status: 'running',
+            createdAt,
+            duration: 5,
+            submitted: { draftTaskId: 'cgt-vd' },
+            volcMeta: { draft: false },
+        });
+        expect(volc.draft).toBe(false);
+        expect(volc.draft_task_id).toBe('cgt-vd');
     });
 
     it('volc 形也补齐 output_format / safety_identifier / frames(上游 metadata 真值优先)', () => {

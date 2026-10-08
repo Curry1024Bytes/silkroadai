@@ -41,6 +41,7 @@ import {
 } from '@/lib/seedance/volc-adapter';
 import { callerHasVolc, resolveEnterpriseAuth, getUpstreamKeyForUser, type EnterpriseCustomer } from './keys';
 import { toUpstreamId } from './volc-id-map';
+import { DraftTaskError, extractDraftTaskRef } from '@/lib/seedance/draft-task';
 import { uploadImage } from '@/lib/r2/client';
 import { randomUUID } from 'crypto';
 import { ENTERPRISE_TIER, estimateEnterpriseCostCny, chargeEnterpriseVideoTask } from './billing';
@@ -578,6 +579,7 @@ function upstreamArkMeta(j: Record<string, unknown> | null): VolcArkMeta {
         safetyIdentifier: upstreamStr(j?.safety_identifier),
         serviceTier: upstreamStr(j?.service_tier),
         frames: upstreamNum(j?.frames),
+        draft: typeof j?.draft === 'boolean' ? j.draft : null,
     };
 }
 
@@ -587,12 +589,16 @@ function submittedArkParams(t: {
     output_format?: string | null;
     tools?: unknown;
     execution_expires_after?: number | null;
+    draft?: boolean | null;
+    draft_task_id?: string | null;
 }): ArkSubmittedParams {
     return {
         safetyIdentifier: t.safety_identifier ?? null,
         outputFormat: t.output_format ?? null,
         tools: t.tools ?? null,
         executionExpiresAfter: t.execution_expires_after ?? null,
+        draft: t.draft ?? null,
+        draftTaskId: t.draft_task_id ?? null,
     };
 }
 
@@ -705,6 +711,44 @@ async function handleSubmitInner(req: NextRequest, format: ClientFormat, ctx: Re
         return errJson(503, 'temporarily_unavailable', 'asset lookup failed, please retry');
     }
 
+    // 样片出正片(火山官方 draft_task,2026-10-08):content 里引用样片任务号 → 归属 / 完成态 / 渠道
+    // 按我们库行先校验(IDOR:别人的样片号不能拿来出片),号的翻译(→ 方舟真号)在适配器里做。
+    // 正片的提示词 / 参考 / 时长 / 比例 / 音频官方语义是沿用样片 → 客户没传的估价 / 落库口径取样片行。
+    let draftRef: { id: string } | null = null;
+    try {
+        draftRef = extractDraftTaskRef(body);
+    } catch (e) {
+        if (e instanceof DraftTaskError) return errJson(400, 'invalid_request', e.message);
+        throw e;
+    }
+    let draftRow: {
+        has_video: boolean;
+        duration: number;
+        ratio: string | null;
+        generate_audio: boolean | null;
+    } | null = null;
+    if (draftRef) {
+        const row = await prisma.seedanceVideoTask.findUnique({ where: { id: draftRef.id } });
+        if (!row || row.tier !== ENTERPRISE_TIER || row.user_id !== cust.userId) {
+            return errJson(400, 'invalid_request', `draft_task.id ${draftRef.id} 不是你名下的任务`);
+        }
+        if (row.status !== 'completed') {
+            return errJson(
+                400,
+                'invalid_request',
+                `样片任务 ${draftRef.id} 尚未完成(当前 ${arkStatus(row.status)}),完成后再出正片`,
+            );
+        }
+        if (regionForModel(row.model) !== regionForModel(model)) {
+            return errJson(
+                400,
+                'invalid_request',
+                `样片任务 ${draftRef.id} 与当前模型不在同一渠道,请用生成样片的模型出正片`,
+            );
+        }
+        draftRow = row;
+    }
+
     // 模型解析:归一短名(seedance-2-0[-fast|-mini] + resolution 参数 + ref 自动识别)
     // 优先;旧长名(MODEL_MAP)保留兼容。任务行存客户实际调用的名字。
     let map: SeedanceModelSpec;
@@ -729,14 +773,18 @@ async function handleSubmitInner(req: NextRequest, format: ClientFormat, ctx: Re
         }
     }
 
-    const hasVideo = extractVideoUrls(body).length > 0;
+    const hasVideo = extractVideoUrls(body).length > 0 || (draftRow?.has_video ?? false);
     // duration:2.5 系 4-30s,2.0 系 4-15s(火山官方 2026-08 提升 2.5 至 30s;探测 volc/cn/global
     // 2.0 上游 3s/16s 皆 400,4s 全变体真出片)。显式非法值 400(不静默改秒数 —— 计费
     // 按 token,静默换时长=换价)。body 没传时认 prompt 内联 `--duration N`(火山官方弱校验通道),
     // 都没有才缺省 5。-1 = 智能时长(上游自选,落库 -1;余额门按上限估价)。
     // 解析口径与适配器核心共用 resolveRequestedDuration —— 估价 / 落库 / 实际转发必须同值。
     const maxDur = maxDurationForVariant(map.variant);
-    const resolvedDuration = resolveRequestedDuration(body, maxDur);
+    // 样片出正片且客户没传时长 → 沿用样片行的秒数(估价 / 落库口径;适配器也不会注入默认 5s)。
+    const resolvedDuration =
+        draftRow && body.duration == null && body.seconds == null
+            ? draftRow.duration
+            : resolveRequestedDuration(body, maxDur);
     if (resolvedDuration == null) {
         return errJson(400, 'invalid_request', `duration 仅支持 4-${maxDur} 之间的整数秒或 -1(智能时长)`);
     }
@@ -825,10 +873,11 @@ async function handleSubmitInner(req: NextRequest, format: ClientFormat, ctx: Re
                 resolution: map.resolution,
                 has_video: hasVideo,
                 duration,
-                ratio: ratioSubmitted,
+                ratio: ratioSubmitted ?? draftRow?.ratio ?? null,
                 seed:
                     typeof body.seed === 'number' && Number.isFinite(body.seed) ? BigInt(Math.trunc(body.seed)) : null,
-                generate_audio: body.generate_audio !== false,
+                generate_audio:
+                    typeof body.generate_audio === 'boolean' ? body.generate_audio : (draftRow?.generate_audio ?? true),
                 // 2026-09-23 火山官方查询响应新增回显字段:xinhankr 上游不回显,只能落库再回显
                 safety_identifier:
                     typeof body.safety_identifier === 'string' && body.safety_identifier
@@ -844,6 +893,9 @@ async function handleSubmitInner(req: NextRequest, format: ClientFormat, ctx: Re
                     typeof body.execution_expires_after === 'number' && Number.isInteger(body.execution_expires_after)
                         ? body.execution_expires_after
                         : null,
+                // 样片模式(2026-10-08):draft 布尔原样落库;正片落客户样片号供查询回显 draft_task_id
+                draft: typeof body.draft === 'boolean' ? body.draft : null,
+                draft_task_id: draftRef?.id ?? null,
             },
         });
     } catch (e) {

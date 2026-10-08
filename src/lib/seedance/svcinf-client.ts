@@ -203,6 +203,41 @@ export async function submitSvcinfTask(
     return { ok: true, taskId };
 }
 
+/**
+ * 取上游任务的方舟真号(metadata.id,cgt-)+ 状态 —— 样片出正片用(draft_task.id 必须是方舟真号,
+ * 上游不翻译 mvt- 号,2026-10-08 实测)。网络 / 解析失败 → ok:false。
+ */
+export async function fetchSvcinfArkTaskId(
+    cfg: SvcinfConfig,
+    upstreamId: string,
+    log: string,
+): Promise<{ ok: true; status: string; arkId: string | null } | { ok: false }> {
+    let upstream: Response;
+    try {
+        upstream = await fetch(`${cfg.base}/${cfg.api}/video/tasks/${encodeURIComponent(upstreamId)}`, {
+            headers: { Authorization: `Bearer ${cfg.key}`, Accept: 'application/json' },
+            signal: AbortSignal.timeout(20000),
+        });
+    } catch (e) {
+        console.warn(`[${log}] draft task lookup unreachable`, { upstreamId, err: String(e) });
+        return { ok: false };
+    }
+    let j: Record<string, unknown> | null;
+    try {
+        j = JSON.parse(await upstream.text()) as Record<string, unknown>;
+    } catch {
+        j = null;
+    }
+    const task = ((j?.task && typeof j.task === 'object' ? j.task : j) ?? null) as UpstreamTask | null;
+    if (!upstream.ok || !task || typeof task.status !== 'string') {
+        console.warn(`[${log}] draft task lookup failed`, { upstreamId, http: upstream.status });
+        return { ok: false };
+    }
+    const meta = (task.metadata && typeof task.metadata === 'object' ? task.metadata : {}) as Record<string, unknown>;
+    const arkId = typeof meta.id === 'string' && isArkTaskId(meta.id) ? meta.id : null;
+    return { ok: true, status: mapStatus(task.status), arkId };
+}
+
 /** 上游任务对象(`{task:{…}}` 信封内)。metadata = 火山方舟原生任务体(受理后才有)。 */
 interface UpstreamTask {
     id?: unknown;
@@ -329,6 +364,9 @@ export async function pollSvcinfTask(
         upstreamMeta.execution_expires_after = meta.execution_expires_after;
     if (typeof meta.seed === 'number') upstreamMeta.seed = meta.seed;
     if (Array.isArray(meta.tools)) upstreamMeta.tools = meta.tools;
+    // 样片模式(2026-10-08):上游回显 draft 布尔(方舟原生体恒有);draft_task_id 是方舟真号【不透】,
+    // 对客回显用我们库里存的客户样片号(proxy submitted.draftTaskId)。
+    if (typeof meta.draft === 'boolean') upstreamMeta.draft = meta.draft;
     // 2026-09 火山官方新增回显字段(实测 metadata 回显前三项;frames 上游暂未见,有则透)
     if (typeof meta.output_format === 'string' && meta.output_format) upstreamMeta.output_format = meta.output_format;
     if (typeof meta.safety_identifier === 'string' && meta.safety_identifier)

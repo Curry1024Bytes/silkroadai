@@ -2068,7 +2068,8 @@ describe('火山官方查询响应新字段(2026-09-23)', () => {
         expect(body.generate_audio).toBe(false);
         expect(body.seed).toBe(7);
         expect(body.frames).toBe(24 * 4 + 1);
-        expect('draft' in body).toBe(false);
+        expect(body.draft).toBe(false); // 2026-10-08 起 cn 形也出 draft(官方 SDK 字段),非正片不出 draft_task_id
+        expect('draft_task_id' in body).toBe(false);
         expect('upstream_id' in body).toBe(false);
     });
 
@@ -2280,5 +2281,165 @@ describe('duration 内联指令 + 成片真值回显(2026-09-29)', () => {
         const body = await poll();
         expect(probeVideoMeta).not.toHaveBeenCalled();
         expect(body.duration).toBe(-1);
+    });
+});
+
+/**
+ * 2026-10-08 样片模式第二步(火山官方 draft_task):content 里引用客户样片任务号出正片。
+ * proxy 只做归属 / 完成态 / 渠道校验 + 估价落库口径沿用样片行;号的翻译(→ 方舟真号)在适配器。
+ */
+describe('样片出正片(draft_task,2026-10-08)', () => {
+    const draftRow = {
+        id: 'cgt-draft1',
+        tier: 'enterprise-portal',
+        user_id: 'u1',
+        model: 'seedance-2-5',
+        resolution: '480p',
+        status: 'completed',
+        tokens: BigInt(38830),
+        created_at: new Date('2026-10-08T02:00:00Z'),
+        duration: 10,
+        ratio: '9:16',
+        seed: null,
+        generate_audio: false,
+        has_video: true,
+        fail_reason: null,
+        draft: true,
+        draft_task_id: null,
+    };
+    const finalBody = {
+        model: 'doubao-seedance-2-5-260628',
+        content: [{ type: 'draft_task', draft_task: { id: 'cgt-draft1' } }],
+        resolution: '1080p',
+    };
+
+    it('本人已完成的样片 → 200;draft_task 原样交适配器;时长/含视频/比例/音频沿用样片行;落库 draft_task_id', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValueOnce(draftRow);
+        submitVideoWithKey.mockResolvedValue(
+            NextResponse.json({ id: 'cgt-final1', task_id: 'cgt-final1', status: 'queued' }),
+        );
+        const res = await handleEnterpriseArkV3(
+            req('POST', '/api/v3/contents/generations/tasks', finalBody),
+            '/contents/generations/tasks',
+        );
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ id: 'cgt-final1' });
+        expect(submitVideoWithKey).toHaveBeenCalledWith(
+            expect.objectContaining({
+                content: [{ type: 'draft_task', draft_task: { id: 'cgt-draft1' } }],
+                resolution: '1080p',
+            }),
+            expect.any(String),
+        );
+        // 估价:时长取样片行 10s(客户没传)、含视频沿用样片(true)、正片分辨率 1080p
+        expect(estimateEnterpriseCostCny).toHaveBeenCalledWith('u1', '1080p', 10, true, '2.5', 'cn');
+        expect(db.seedanceVideoTask.create).toHaveBeenCalledWith({
+            data: expect.objectContaining({
+                id: 'cgt-final1',
+                resolution: '1080p',
+                duration: 10,
+                has_video: true,
+                ratio: '9:16',
+                generate_audio: false,
+                draft: null,
+                draft_task_id: 'cgt-draft1',
+            }),
+        });
+    });
+
+    it('客户显式传了 duration / generate_audio → 以客户值为准(由上游判)', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValueOnce(draftRow);
+        submitVideoWithKey.mockResolvedValue(
+            NextResponse.json({ id: 'cgt-final2', task_id: 'cgt-final2', status: 'queued' }),
+        );
+        const res = await handleEnterpriseArkV3(
+            req('POST', '/api/v3/contents/generations/tasks', { ...finalBody, duration: 4, generate_audio: true }),
+            '/contents/generations/tasks',
+        );
+        expect(res.status).toBe(200);
+        expect(estimateEnterpriseCostCny).toHaveBeenCalledWith('u1', '1080p', 4, true, '2.5', 'cn');
+        expect(db.seedanceVideoTask.create).toHaveBeenCalledWith({
+            data: expect.objectContaining({ duration: 4, generate_audio: true, draft_task_id: 'cgt-draft1' }),
+        });
+    });
+
+    it('别人的样片号 / 不存在 → 400 且不打上游(IDOR)', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValueOnce({ ...draftRow, user_id: 'someone-else' });
+        const res = await handleEnterpriseArkV3(
+            req('POST', '/api/v3/contents/generations/tasks', finalBody),
+            '/contents/generations/tasks',
+        );
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error: { message: string } }).error.message).toContain('不是你名下');
+        expect(submitVideoWithKey).not.toHaveBeenCalled();
+
+        db.seedanceVideoTask.findUnique.mockResolvedValueOnce(null);
+        const res2 = await handleEnterpriseArkV3(
+            req('POST', '/api/v3/contents/generations/tasks', finalBody),
+            '/contents/generations/tasks',
+        );
+        expect(res2.status).toBe(400);
+        expect(submitVideoWithKey).not.toHaveBeenCalled();
+    });
+
+    it('样片尚未完成 → 400(文案带火山态);draft_task 缺 id → 400', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValueOnce({ ...draftRow, status: 'queued' });
+        const res = await handleEnterpriseArkV3(
+            req('POST', '/api/v3/contents/generations/tasks', finalBody),
+            '/contents/generations/tasks',
+        );
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error: { message: string } }).error.message).toContain('尚未完成');
+
+        const bad = await handleEnterpriseArkV3(
+            req('POST', '/api/v3/contents/generations/tasks', {
+                ...finalBody,
+                content: [{ type: 'draft_task', draft_task: {} }],
+            }),
+            '/contents/generations/tasks',
+        );
+        expect(bad.status).toBe(400);
+        expect(submitVideoWithKey).not.toHaveBeenCalled();
+    });
+
+    it('查询:正片任务回显 draft_task_id(客户样片号)+ draft=false;样片任务 draft=true', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({
+            ...draftRow,
+            id: 'cgt-final1',
+            resolution: '1080p',
+            status: 'in_progress',
+            tokens: null,
+            draft: null,
+            draft_task_id: 'cgt-draft1',
+        });
+        pollVideoWithKey.mockResolvedValue(
+            NextResponse.json({ id: 'cgt-final1', task_id: 'cgt-final1', object: 'video', status: 'in_progress' }),
+        );
+        const q = await handleEnterpriseArkV3(
+            req('GET', '/api/v3/contents/generations/tasks/cgt-final1'),
+            '/contents/generations/tasks/cgt-final1',
+        );
+        const b = (await q.json()) as Record<string, unknown>;
+        expect(b.draft).toBe(false);
+        expect(b.draft_task_id).toBe('cgt-draft1');
+
+        __resetPollCache();
+        db.seedanceVideoTask.findUnique.mockResolvedValue({ ...draftRow, status: 'in_progress', tokens: null });
+        pollVideoWithKey.mockResolvedValue(
+            NextResponse.json({
+                id: 'cgt-draft1',
+                task_id: 'cgt-draft1',
+                object: 'video',
+                status: 'in_progress',
+                draft: true,
+            }),
+        );
+        const q2 = await handleEnterpriseArkV3(
+            req('GET', '/api/v3/contents/generations/tasks/cgt-draft1'),
+            '/contents/generations/tasks/cgt-draft1',
+        );
+        const b2 = (await q2.json()) as Record<string, unknown>;
+        expect(b2.draft).toBe(true);
+        expect('draft_task_id' in b2).toBe(false);
     });
 });

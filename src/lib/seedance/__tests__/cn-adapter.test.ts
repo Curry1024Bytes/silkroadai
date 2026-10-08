@@ -852,6 +852,75 @@ describe('国内版 2.5 480p 单档 → service-inference.ai(缺省 /v2,env 可�
         expect(rememberVolcId).not.toHaveBeenCalled();
     });
 
+    // 2026-10-08 样片出正片(火山官方 draft_task):客户样片号 → volc_id_map 拿 mvt- → GET 上游任务取
+    // metadata.id(方舟真号)→ 替换进 draft_task.id;不论正片分辨率一律走 service-inference.ai。
+    it('draft_task:1080p 正片强制走 svcinf,draft_task.id 换成方舟真号,text 可省,没传时长/音频不注入默认值', async () => {
+        toUpstreamId.mockResolvedValueOnce('mvt-abc123');
+        const res = await submitVideo(
+            makeReq({
+                model: 'seedance2.5-1080p',
+                content: [{ type: 'draft_task', draft_task: { id: 'cgt-client-draft' } }],
+            }),
+        );
+        expect(res.status).toBe(200);
+        const j = (await res.json()) as { id: string };
+        expect(j.id).toMatch(/^cgt-\d{14}-[a-z0-9]{5}$/);
+        // 先 GET 了样片任务(拿方舟真号)
+        expect(
+            mockFetch.mock.calls.some(
+                (c) =>
+                    String(c[0]) === `${SVC}/v2/video/tasks/mvt-abc123` &&
+                    ((c[1] as RequestInit)?.method || 'GET') === 'GET',
+            ),
+        ).toBe(true);
+        const call = svcSubmitCall();
+        expect(call).toBeDefined();
+        const sent = JSON.parse(String((call![1] as RequestInit).body)) as Record<string, unknown>;
+        expect(sent.model).toBe('doubao-seedance-2-5-260628-max');
+        expect(sent.resolution).toBe('1080p');
+        expect(sent.content).toEqual([{ type: 'draft_task', draft_task: { id: 'cgt-20260922232424-rqurx' } }]);
+        expect('duration' in sent).toBe(false);
+        expect('generate_audio' in sent).toBe(false);
+        expect('prompt' in sent).toBe(false);
+        // 没打 xinhankr
+        expect(mockFetch.mock.calls.some((c) => String(c[0]) === `${UP}/v1/video/generations`)).toBe(false);
+    });
+
+    it('draft_task + 显式 text / duration / generate_audio → 一并发上游(由上游判)', async () => {
+        toUpstreamId.mockResolvedValueOnce('mvt-abc123');
+        const res = await submitVideo(
+            makeReq({
+                model: 'seedance2.5-720p',
+                content: [
+                    { type: 'text', text: '镜头再慢一点' },
+                    { type: 'draft_task', draft_task: { id: 'cgt-client-draft' } },
+                ],
+                duration: 4,
+                generate_audio: false,
+            }),
+        );
+        expect(res.status).toBe(200);
+        const sent = JSON.parse(String((svcSubmitCall()![1] as RequestInit).body)) as Record<string, unknown>;
+        expect(sent.content).toEqual([
+            { type: 'text', text: '镜头再慢一点' },
+            { type: 'draft_task', draft_task: { id: 'cgt-20260922232424-rqurx' } },
+        ]);
+        expect(sent.duration).toBe(4);
+        expect(sent.generate_audio).toBe(false);
+    });
+
+    it('draft_task 引用的不是 svcinf 任务(存量 xinhankr 号 / 查不到映射)→ 400 不打上游', async () => {
+        const res = await submitVideo(
+            makeReq({
+                model: 'seedance2.5-1080p',
+                content: [{ type: 'draft_task', draft_task: { id: 'cgt-xhk-old' } }],
+            }),
+        );
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error: { message: string } }).error.message).toContain('不是可出正片');
+        expect(svcSubmitCall()).toBeUndefined();
+    });
+
     it('未配 SEEDANCE_SVCINF_KEY → 480p 回落 xinhankr doubao-260628(缺 env 不断档)', async () => {
         vi.stubEnv('SEEDANCE_SVCINF_KEY', '');
         await submitVideo(makeReq({ model: 'seedance2.5-480p', prompt: 'x' }));

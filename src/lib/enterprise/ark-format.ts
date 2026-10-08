@@ -192,6 +192,9 @@ export interface ArkSubmittedParams {
     tools?: unknown;
     /** 官方创建参数(任务超时阈值秒);客户传了就回显,否则官方默认 172800。 */
     executionExpiresAfter?: number | null;
+    /** 样片模式(2026-10-08):创建时传的 draft 布尔(没传 → false);正片引用的客户样片号(没有 → 省略)。 */
+    draft?: boolean | null;
+    draftTaskId?: string | null;
 }
 
 /** 上游(火山方舟原生体)带出来的元数据(上游未给的项走火山官方默认值)。 */
@@ -211,6 +214,8 @@ export interface VolcArkMeta {
     safetyIdentifier?: string | null;
     serviceTier?: string | null;
     frames?: number | null;
+    /** 样片模式:上游(方舟原生体)回显的 draft 布尔。 */
+    draft?: boolean | null;
 }
 
 /** 火山官方默认值 —— 任务未完成时上游不返回这几项,但客户契约要求字段恒在。 */
@@ -241,7 +246,7 @@ function submittedTools(
  *  - 火山方舟官方形(cn/volc,extended=false):只出 docs.volcengine.com/82379 声明的字段集。
  *    2026-09 官方扩到 {id, model, status, content, error, created_at, updated_at, resolution, ratio, duration,
  *    usage, execution_expires_after, frames, framespersecond, generate_audio, output_format, safety_identifier,
- *    seed, service_tier, tools}(后两者客户传了才出);客户严格白名单校验会拒未声明字段,故仍不带 draft。
+ *    seed, service_tier, tools}(后两者客户传了才出)+ draft(官方 SDK 任务体字段,2026-10-08 起三形都出)。
  *  - BytePlus ModelArk 形(global/promax,extended=true,#326 客户样例):额外常驻
  *    draft/execution_expires_after/framespersecond/service_tier/tools/seed/generate_audio + usage.tool_usage。
  *  两形共有:error 恒为 {code,message} 对象(成功/进行中 = 空串,非 null);ratio 从 task 行回显。 */
@@ -274,8 +279,13 @@ export function buildArkTaskResponse(inp: ArkTaskResponseInput): Record<string, 
     const expiresAfter = meta?.executionExpiresAfter ?? sub?.executionExpiresAfter ?? VOLC_DEFAULT_EXPIRES_AFTER;
 
     // BytePlus 形专属扩展字段(火山官方形不带,否则客户白名单校验拒)。
+    // 样片模式(2026-10-08,官方 SDK 任务体含 draft + draft_task_id):三形都出 draft(上游真值 > 落库 > false),
+    // draft_task_id 只在正片任务上出(客户样片号,方舟真号不对客)。
+    const draftEcho = meta?.draft ?? sub?.draft ?? false;
+    const draftTaskId = sub?.draftTaskId || null;
     if (inp.extended) {
-        base.draft = false;
+        base.draft = draftEcho;
+        if (draftTaskId) base.draft_task_id = draftTaskId;
         base.execution_expires_after = 0;
         base.framespersecond = 0;
         base.service_tier = '';
@@ -289,7 +299,8 @@ export function buildArkTaskResponse(inp: ArkTaskResponseInput): Record<string, 
     // volc:火山官方字段集(值优先取上游真值,上游未给的走火山官方默认值)。
     if (inp.volcMeta) {
         const m = inp.volcMeta;
-        base.draft = false;
+        base.draft = draftEcho;
+        if (draftTaskId) base.draft_task_id = draftTaskId;
         base.service_tier = m.serviceTier || VOLC_DEFAULT_SERVICE_TIER;
         base.framespersecond = fps;
         base.execution_expires_after = expiresAfter;
@@ -308,7 +319,7 @@ export function buildArkTaskResponse(inp: ArkTaskResponseInput): Record<string, 
     }
     // 火山方舟官方形(cn):2026-09 官方文档把 execution_expires_after / frames / framespersecond /
     // generate_audio / output_format / safety_identifier / seed / service_tier / tools 都列进了查询响应
-    // (此前我们按旧文档只出 11 个字段,客户按新文档校验就缺项)。不带 draft / upstream_id(官方无)。
+    // (此前我们按旧文档只出 11 个字段,客户按新文档校验就缺项)。不带 upstream_id(官方无)。
     if (!inp.extended && !inp.volcMeta) {
         const m = inp.upstreamMeta ?? null;
         base.execution_expires_after = expiresAfter;
@@ -317,6 +328,8 @@ export function buildArkTaskResponse(inp: ArkTaskResponseInput): Record<string, 
         base.seed = m?.seed ?? (inp.seed != null ? Number(inp.seed) : 0);
         base.service_tier = m?.serviceTier || VOLC_DEFAULT_SERVICE_TIER;
         base.output_format = outputFormat;
+        base.draft = draftEcho;
+        if (draftTaskId) base.draft_task_id = draftTaskId;
         if (safetyIdentifier) base.safety_identifier = safetyIdentifier;
         if (frames != null) base.frames = frames;
         if (toolsEcho) base.tools = toolsEcho;

@@ -51,6 +51,7 @@ import {
     submitSvcinfTask,
     type SvcinfConfig,
 } from './svcinf-client';
+import { DraftTaskError, extractDraftTaskRef, resolveDraftTaskArkId, rewriteDraftTaskId } from './draft-task';
 
 // 提交/轮询信封、错误拆包、失败原因脱敏 → svcinf-client.ts(cn 2.5 480p 单档也用同一上游,2026-09-22 抽出)。
 export { unwrapUpstreamError } from './svcinf-client';
@@ -231,8 +232,21 @@ export async function submitVolcVideo(body: Record<string, unknown>, opts: VolcS
     // 兜底(主闸在 proxy 的 resolveEnterpriseModel):下架档位不打上游,避免白花钱。
     if (isVolcModelWithdrawn(opts.clientModel)) return err(400, 'model_unavailable', WITHDRAWN_VOLC_HINT);
 
-    const content = buildContent(body);
+    let content = buildContent(body);
     if (!content) return err(400, 'invalid_request', 'prompt (text) or content is required');
+    // 样片出正片(draft_task,2026-10-08):客户样片号 → 方舟真号(上游不翻译 mvt- 号)。
+    let draftRef: { id: string } | null = null;
+    try {
+        draftRef = extractDraftTaskRef(body);
+    } catch (e) {
+        if (e instanceof DraftTaskError) return err(400, 'invalid_request', e.message);
+        throw e;
+    }
+    if (draftRef) {
+        const r = await resolveDraftTaskArkId(cfg, draftRef.id, LOG);
+        if (!r.ok) return err(r.status, r.code, r.message);
+        content = rewriteDraftTaskId(content, r.arkId);
+    }
 
     // ratio:**客户没传就不注入**,由上游按任务类型自己定。
     // 硬塞 16:9 会主动打断「视频续写 / 视频编辑」:那两类任务上游只接受 ratio=adaptive,客户按火山
@@ -247,6 +261,11 @@ export async function submitVolcVideo(body: Record<string, unknown>, opts: VolcS
         duration: opts.duration,
         generate_audio: body.generate_audio !== false,
     };
+    // 样片出正片:时长 / 音频官方语义是「沿用样片」,客户没显式传就不注入默认值(显式传了由上游判)。
+    if (draftRef) {
+        if (body.duration == null && body.seconds == null) delete upstreamBody.duration;
+        if (typeof body.generate_audio !== 'boolean') delete upstreamBody.generate_audio;
+    }
     // 显式传了才注入;非法值仍按 v1 面的宽松口径纠正成 16:9(ark 面有独立的严格校验)。
     if (ratio !== undefined) upstreamBody.ratio = ALLOWED_RATIOS.has(ratio) ? ratio : '16:9';
     if (typeof body.seed === 'number') upstreamBody.seed = body.seed;

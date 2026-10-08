@@ -23,6 +23,7 @@ import { randomUUID } from 'node:crypto';
 import { uploadImage } from '@/lib/r2/client';
 import { classifyUpstreamError } from './upstream-error';
 import { rememberVolcId, toUpstreamId } from '@/lib/enterprise/volc-id-map';
+import { DraftTaskError, extractDraftTaskRef, resolveDraftTaskArkId } from './draft-task';
 import {
     SVCINF_DEFAULT_BASE,
     isSvcinfTaskId,
@@ -72,6 +73,9 @@ const UPSTREAM_XHK_25_480P = process.env.SEEDANCE_XHK_MODEL_25_480P || 'doubao-s
 // 上游模型名 `doubao-seedance-2-5-260628-max`(本平台套餐形态,GET /v1/models 为准),协议见 svcinf-client。
 // 只有配了 SEEDANCE_SVCINF_KEY 才切;未配回落上面的 xinhankr 260628(部署缺 env 不断档)。
 const UPSTREAM_SVCINF_25_480P = process.env.SEEDANCE_SVCINF_MODEL_25_480P || 'doubao-seedance-2-5-260628-max';
+// 样片出正片(draft_task,2026-10-08)强制走 service-inference.ai(样片在那条线生成,方舟真号只有它认),
+// 正片分辨率由请求体承载,模型名与 480p 档同一个套餐名(env 可覆盖)。
+const UPSTREAM_SVCINF_25 = process.env.SEEDANCE_SVCINF_MODEL_25 || 'doubao-seedance-2-5-260628-max';
 /** 国内版 2.5 480p 的 service-inference.ai 配置(lazy 读 env,便于改 key 不重启 + 可测);未配 → null。 */
 export function getSvcinfCnConfig(): SvcinfConfig | null {
     const key = process.env.SEEDANCE_SVCINF_KEY?.trim();
@@ -595,8 +599,16 @@ export async function submitVideoWithKey(body: Record<string, unknown>, auth: st
     const map = MODEL_MAP[model];
     if (!map) return err(400, 'model_not_found', `unknown seedance-cn model: ${model}`);
 
+    // 样片出正片:content 里带 draft_task 引用时,提示词等由样片沿用,text 可省。
+    let draftRef: { id: string } | null = null;
+    try {
+        draftRef = extractDraftTaskRef(body);
+    } catch (e) {
+        if (e instanceof DraftTaskError) return err(400, 'invalid_request', e.message);
+        throw e;
+    }
     const prompt = extractPrompt(body);
-    if (!prompt) return err(400, 'invalid_request', 'prompt (text) is required');
+    if (!prompt && !draftRef) return err(400, 'invalid_request', 'prompt (text) is required');
 
     // 入参图/视频 + 帧角色(first_frame/last_frame 显式优先;reference_mode 次之;否则智能模式)
     const rawImages = extractImageUrls(body);
@@ -649,6 +661,12 @@ export async function submitVideoWithKey(body: Record<string, unknown>, auth: st
         duration,
         generate_audio: generateAudio,
     };
+    // 样片出正片:时长 / 音频等官方语义是「沿用样片」,客户没显式传就不注入我们的默认值
+    //(注入了会被方舟按「重复指定」拒或悄悄改掉样片口径)。显式传了原样过去,由上游判。
+    if (draftRef) {
+        if (body.duration == null && body.seconds == null) delete upstreamBody.duration;
+        if (typeof body.generate_audio !== 'boolean') delete upstreamBody.generate_audio;
+    }
     if (ratio !== undefined) upstreamBody.ratio = ALLOWED_RATIOS.has(ratio) ? ratio : '16:9';
     if (typeof body.camera_fixed === 'boolean') upstreamBody.camera_fixed = body.camera_fixed;
     if (typeof body.seed === 'number') upstreamBody.seed = body.seed;
@@ -732,16 +750,32 @@ export async function submitVideoWithKey(body: Record<string, unknown>, auth: st
     // 2.5 480p 单档 → service-inference.ai(平台 key,不用客户/渠道的 xinhankr key)。
     // 只翻译 body 形态(prompt + images/videos/audios → 方舟 content 数组),其余字段原样;
     // 对客 id 自造火山方舟形号 + volc_id_map 记映射(上游受理号 mvt-),轮询按映射分流。
-    const svc = map.provider === 'svcinf' ? getSvcinfCnConfig() : null;
+    let svc = map.provider === 'svcinf' ? getSvcinfCnConfig() : null;
+    let svcModel = map.svcinfModel ?? map.upstream;
+    let draftArkId: string | null = null;
+    if (draftRef) {
+        // 样片出正片:仅 2.5(方舟官方),且不论正片分辨率一律走 service-inference.ai ——
+        // 样片在那条线生成,draft_task.id 必须是方舟真号(mvt- 受理号 → metadata.id,见 draft-task.ts)。
+        if (map.variant !== '2.5') return err(400, 'invalid_request', 'draft_task(样片出正片)仅 seedance-2-5 支持');
+        svc = getSvcinfCnConfig();
+        if (!svc) return err(503, 'temporarily_unavailable', '样片出正片上游未配置,请联系服务方');
+        const r = await resolveDraftTaskArkId(svc, draftRef.id, 'seedance-cn-adapter');
+        if (!r.ok) return err(r.status, r.code, r.message);
+        draftArkId = r.arkId;
+        svcModel = UPSTREAM_SVCINF_25;
+        console.log('[seedance-cn-adapter] draft_task → 方舟真号', { client_draft_id: draftRef.id, model });
+    }
     if (svc) {
-        const content: Array<Record<string, unknown>> = [{ type: 'text', text: prompt }];
+        const content: Array<Record<string, unknown>> = [];
+        if (prompt) content.push({ type: 'text', text: prompt });
+        if (draftArkId) content.push({ type: 'draft_task', draft_task: { id: draftArkId } });
         for (const im of (upstreamBody.images as Array<{ url: string; role: string }> | undefined) ?? [])
             content.push({ type: 'image_url', image_url: { url: im.url }, role: im.role });
         for (const v of (upstreamBody.videos as string[] | undefined) ?? [])
             content.push({ type: 'video_url', video_url: { url: v }, role: 'reference_video' });
         for (const a of (upstreamBody.audios as string[] | undefined) ?? [])
             content.push({ type: 'audio_url', audio_url: { url: a }, role: 'reference_audio' });
-        const svcBody: Record<string, unknown> = { ...upstreamBody, model: map.svcinfModel ?? map.upstream, content };
+        const svcBody: Record<string, unknown> = { ...upstreamBody, model: svcModel, content };
         delete svcBody.prompt;
         delete svcBody.images;
         delete svcBody.videos;

@@ -63,4 +63,12 @@ describe('/enterprise/docs 火山渠道章节', () => {
         expect(html).toContain('bitrate_mode');
         expect(html).toContain('camera_fixed');
     });
+
+    // 2026-10-08 样片模式(火山官方 draft / draft_task):创建参数 + 正片引用形状 + 沿用语义都要写进文档。
+    it('写明样片模式:draft 创建参数 + draft_task 正片引用 + 参数沿用', () => {
+        expect(html).toContain('样片模式');
+        expect(html).toContain('draft_task');
+        expect(html).toContain('自动沿用样片');
+        expect(html).toContain('draft_task_id');
+    });
 });
