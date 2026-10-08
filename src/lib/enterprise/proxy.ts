@@ -449,6 +449,10 @@ const ARK_ALLOWED_FIELDS = new Set([
     'execution_expires_after', // 2026-09-23:官方创建参数(任务超时阈值),客户实测被 400
     'bitrate_mode', // 火山官方字段(2026-08-26 实测上游收),v1 面早已透传,ark 面补齐
     'moderation_options', // 火山官方(版权放行 ips);volc 透 ips、cn 暂消费掉,但不该 400
+    // 样片模式(火山官方 2.5:draft=true 先出低成本预览片确认构图/运镜,再按样片任务号出正片)。
+    // 2026-10-08 客户在国内版 2.5 传 draft:true 被本白名单 400「unknown parameter(s): draft」,
+    // 上游(xinhankr / service-inference.ai 方舟原生体)实际支持;cn-adapter 反向白名单原样透传。
+    'draft',
     // 我们支持的别名/OpenAI 形入参(保留兼容,均为已知字段)
     'prompt',
     'seconds',

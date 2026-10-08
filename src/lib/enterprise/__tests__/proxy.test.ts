@@ -1999,6 +1999,30 @@ describe('火山官方查询响应新字段(2026-09-23)', () => {
         expect(((await q.json()) as Record<string, unknown>).execution_expires_after).toBe(3600);
     });
 
+    it('ark 提交:draft(样片模式)不再 400(客户 2026-10-08 国内版 2.5 实测被拒),原样透传到适配器', async () => {
+        submitVideoWithKey.mockResolvedValue(
+            NextResponse.json({ id: 'cgt-draft1', task_id: 'cgt-draft1', status: 'queued' }),
+        );
+        const res = await handleEnterpriseArkV3(
+            req('POST', '/api/v3/contents/generations/tasks', {
+                model: 'doubao-seedance-2-5',
+                content: [{ type: 'text', text: '雏菊花田,镜头拉近到花瓣露珠特写' }],
+                resolution: '480p',
+                generate_audio: true,
+                ratio: '16:9',
+                duration: 5,
+                watermark: false,
+                draft: true,
+            }),
+            '/contents/generations/tasks',
+        );
+        expect(res.status).toBe(200);
+        expect(submitVideoWithKey).toHaveBeenCalledWith(
+            expect.objectContaining({ draft: true, watermark: false }),
+            expect.any(String),
+        );
+    });
+
     it('ark 提交:没传这三项 → 落库 null / 省略(存量语义不变)', async () => {
         submitVideoWithKey.mockResolvedValue(
             NextResponse.json({ id: 'cgt-nf0', task_id: 'cgt-nf0', status: 'queued' }),
