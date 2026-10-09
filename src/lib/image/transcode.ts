@@ -11,7 +11,7 @@ import type Sharp from 'sharp';
 /** 惰性加载 sharp:native 二进制缺失(镜像/平台不匹配)时不能拖垮整个 route 模块 —— 加载失败只
  *  warn 一次,转码回退原图、预览回退完整图,请求照常成功。 */
 let sharpPromise: Promise<typeof Sharp | null> | null = null;
-function loadSharp(): Promise<typeof Sharp | null> {
+export function loadSharp(): Promise<typeof Sharp | null> {
     if (!sharpPromise) {
         sharpPromise = import('sharp')
             .then((m) => m.default)

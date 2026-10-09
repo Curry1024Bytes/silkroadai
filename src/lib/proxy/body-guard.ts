@@ -18,6 +18,12 @@
  *   1. 语义无歧义的就地强转("100"→100、"true"→true),客户请求照常成功;
  *   2. 强转不了的(类型错、uint 收到负数/小数)→ 400,不打上游。
  *
+ * 第三段(2026-09-30 补):**必填字段 + max_tokens 上限**。new-api 的
+ * `GetAndValidateRequest` 任何校验失败都走 `types.NewError(err, ErrorCodeInvalidRequest)`,
+ * 而 NewError 缺省状态码是 500 —— 缺 `messages` 的请求 0.3ms 内本地回
+ * `500 field messages is required`,根本没打上游(rc.22 源码 + 生产日志双证,客户对标
+ * 官方的契约测试判 error)。见 validateRequired,三条面在类型校验通过后各调一次。
+ *
  * 安全性质:
  *   - **fail-open** —— 守门自身抛异常一律按「原样放行」处理。/messages 是 97.4%
  *     的流量,宁可漏掉一个 400,不能因为守门挂掉造成全站故障。
@@ -104,7 +110,8 @@ function resolve(obj: JsonRecord, path: string): [JsonRecord, string] | null {
     return [parent as JsonRecord, path.slice(dot + 1)];
 }
 
-export type Violation = { param: string; message: string };
+/** `code` 缺省 'invalid_request_error';必填/上限类违规带官方同名 code(SDK 可机读)。 */
+export type Violation = { param: string; message: string; code?: string };
 
 /**
  * 就地强转 + 校验。返回首个违规(null = 通过);`changed` 表示是否发生过强转。
@@ -157,6 +164,79 @@ export function coerceAndValidate(obj: JsonRecord, spec: Spec): { violation: Vio
     return { violation: null, changed };
 }
 
+/** 哪条面的必填规则。与 new-api `relay/helper/valid_request.go`(rc.22)逐条对应。 */
+export type Surface = 'chat' | 'anthropic' | 'responses';
+
+/** new-api `maxTokensLimit = math.MaxInt32 / 2`:超过即 `max_tokens is invalid` → 500。 */
+export const MAX_TOKENS_LIMIT = 1073741823;
+
+const MAX_TOKEN_FIELDS: Record<Surface, readonly string[]> = {
+    chat: ['max_tokens', 'max_completion_tokens'],
+    anthropic: ['max_tokens', 'max_tokens_to_sample'],
+    responses: ['max_output_tokens'],
+};
+
+/** 三类违规的措辞:OpenAI 面沿用 OpenAI 官方文案 + code;/messages 沿用 Anthropic 官方的 `<path>: <reason>`。 */
+function missing(param: string, surface: Surface): Violation {
+    return surface === 'anthropic'
+        ? { param, message: `${param}: Field required` }
+        : { param, message: `Missing required parameter: '${param}'.`, code: 'missing_required_parameter' };
+}
+
+function emptyArray(param: string, surface: Surface): Violation {
+    return surface === 'anthropic'
+        ? { param, message: `${param}: at least one message is required` }
+        : {
+              param,
+              message: `Invalid '${param}': empty array. Expected an array with minimum length 1, but got an empty array instead.`,
+              code: 'empty_array',
+          };
+}
+
+function aboveMax(param: string, got: number, surface: Surface): Violation {
+    return surface === 'anthropic'
+        ? { param, message: `${param}: Input should be less than or equal to ${MAX_TOKENS_LIMIT}` }
+        : {
+              param,
+              message: `Invalid '${param}': integer above maximum value. Expected a value <= ${MAX_TOKENS_LIMIT}, but got ${got} instead.`,
+              code: 'integer_above_max_value',
+          };
+}
+
+/**
+ * 必填字段 + max_tokens 上限。**在 coerceAndValidate 通过之后调**(类型已合法、数字串已强转)。
+ * 同样只拒「本来就必然 500」的输入,逐条对应 new-api 的判定:
+ *   - chat:      `len(Messages)==0 && Prefix==nil && Suffix==nil` → 缺失 / null / 空数组都算;
+ *                带 prefix 或 suffix 的 FIM 请求(DeepSeek / SiliconFlow)messages 可省,放行。
+ *   - anthropic: `len(Messages)==0` → 同上,无 FIM 豁免。
+ *   - responses: `Input == nil`。Input 是 json.RawMessage,JSON null 会被存成字面量 "null"
+ *                (非 nil),所以**只有键缺失**才必然 500;`input: null` 不拦,交给上游。
+ * `model` 不在这里管:缺 model 在 new-api 的 Distribute 中间件就已经是 400。
+ * 永不抛异常(fail-open)。
+ */
+export function validateRequired(obj: JsonRecord, surface: Surface): Violation | null {
+    try {
+        if (surface === 'responses') {
+            if (obj.input === undefined) return missing('input', surface);
+        } else {
+            const fim = surface === 'chat' && (!isAbsent(obj.prefix) || !isAbsent(obj.suffix));
+            if (!fim) {
+                const m = obj.messages;
+                if (isAbsent(m)) return missing('messages', surface);
+                if (Array.isArray(m) && m.length === 0) return emptyArray('messages', surface);
+            }
+        }
+
+        for (const f of MAX_TOKEN_FIELDS[surface]) {
+            const v = obj[f];
+            if (typeof v === 'number' && v > MAX_TOKENS_LIMIT) return aboveMax(f, v, surface);
+        }
+        return null;
+    } catch {
+        return null;
+    }
+}
+
 export type RawGuardResult = {
     /** 要发给上游的 body:未强转 = 原始字节;强转过 = 重新序列化。 */
     body: string;
@@ -170,10 +250,10 @@ export type RawGuardResult = {
 };
 
 /**
- * 文本入口:解析 → 强转 → 校验。**永不抛异常**(fail-open:任何意外都按原样放行)。
+ * 文本入口:解析 → 强转 → 校验(→ 传了 surface 再查必填)。**永不抛异常**(fail-open:任何意外都按原样放行)。
  * body 不可解析时同样放行,保持今天「交给 new-api 报错」的行为。
  */
-export function guardRawBody(raw: string, spec: Spec): RawGuardResult {
+export function guardRawBody(raw: string, spec: Spec, surface?: Surface): RawGuardResult {
     try {
         const obj = JSON.parse(raw) as unknown;
         if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
@@ -185,6 +265,10 @@ export function guardRawBody(raw: string, spec: Spec): RawGuardResult {
 
         const { violation, changed } = coerceAndValidate(rec, spec);
         if (violation) return { body: raw, model, streamed, violation, parsed: rec };
+
+        // 类型都合法了再查必填(不传 surface = 不查,保持旧调用方行为)
+        const required = surface ? validateRequired(rec, surface) : null;
+        if (required) return { body: raw, model, streamed, violation: required, parsed: rec };
 
         return {
             body: changed ? JSON.stringify(rec) : raw,
@@ -205,7 +289,7 @@ export function violationBody(v: Violation) {
             message: v.message,
             type: 'invalid_request_error',
             param: v.param,
-            code: 'invalid_request_error',
+            code: v.code ?? 'invalid_request_error',
         },
     };
 }

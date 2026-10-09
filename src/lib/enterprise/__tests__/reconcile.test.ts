@@ -19,8 +19,8 @@ vi.mock('@/lib/seedance/cn-adapter', () => ({
     regionForModel: (m: string) =>
         m.startsWith('doubao-') ? 'volc' : m.includes('-promax') ? 'promax' : m.includes('-global') ? 'global' : 'cn',
 }));
-vi.mock('@/lib/seedance/kuaizi-adapter', async (importOriginal) => {
-    const mod = await importOriginal<typeof import('@/lib/seedance/kuaizi-adapter')>();
+vi.mock('@/lib/seedance/volc-adapter', async (importOriginal) => {
+    const mod = await importOriginal<typeof import('@/lib/seedance/volc-adapter')>();
     return { ...mod, pollVolcVideo };
 });
 vi.mock('../keys', () => ({ getUpstreamKeyForUser }));
@@ -95,27 +95,27 @@ describe('reconcileStaleTasks', () => {
 });
 
 describe('火山渠道(volc)分流 —— 2026-08-18 修复', () => {
-    /** volc 任务:上游是筷子开放平台 + 平台共享 env key,不是客户的 per-region key。 */
+    /** volc 任务:上游是 service-inference.ai + 平台共享 env key,不是客户的 per-region key。 */
     const volcTask = { id: 'cgt-19197088188', model: 'doubao-seedance-2.5', created_at: oldDate };
 
     it('volc 任务走 pollVolcVideo,【不】走 cn 的 pollVideoWithKey', async () => {
         db.seedanceVideoTask.findMany.mockResolvedValue([volcTask]);
         pollVolcVideo.mockResolvedValue({ ok: true, json: async () => ({ status: 'in_progress' }) });
         await reconcileStaleTasks('u1');
-        // 2026-09-04 起支持按客户筷子 key:占位符行(非 kz-)→ undefined 回落平台 env key
+        // 2026-09-04 起支持按客户上游 key:占位符行(非 sk-inf-)→ undefined 回落平台 env key
         expect(pollVolcVideo).toHaveBeenCalledWith('cgt-19197088188', undefined);
         expect(pollVideoWithKey).not.toHaveBeenCalled();
         expect(getUpstreamKeyForUser).toHaveBeenCalledWith('u1', 'volc');
     });
 
-    it('客户配了自己的 kz- key → volc 轮询用它(任务在他的筷子账号里)', async () => {
+    it('客户配了自己的 sk-inf- key → volc 轮询用它(任务在他的上游账号里)', async () => {
         db.seedanceVideoTask.findMany.mockResolvedValue([volcTask]);
         getUpstreamKeyForUser.mockImplementation(async (_u: string, region: string) =>
-            region === 'volc' ? 'kz-customer-own-key' : 'sk-x',
+            region === 'volc' ? 'sk-inf-v1-customer-own-key' : 'sk-x',
         );
         pollVolcVideo.mockResolvedValue({ ok: true, json: async () => ({ status: 'in_progress' }) });
         await reconcileStaleTasks('u1');
-        expect(pollVolcVideo).toHaveBeenCalledWith('cgt-19197088188', 'kz-customer-own-key');
+        expect(pollVolcVideo).toHaveBeenCalledWith('cgt-19197088188', 'sk-inf-v1-customer-own-key');
     });
 
     it('volc 任务被上游判废(4xx 终态)→ 终态化落库(修复前永远查不到、卡在 queued)', async () => {

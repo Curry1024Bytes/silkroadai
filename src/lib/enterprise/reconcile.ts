@@ -15,7 +15,7 @@
 import 'server-only';
 import { prisma } from '@/lib/db';
 import { pollVideoWithKey, regionForModel } from '@/lib/seedance/cn-adapter';
-import { customerKuaiziKey, pollVolcVideo } from '@/lib/seedance/kuaizi-adapter';
+import { customerVolcUpstreamKey, pollVolcVideo } from '@/lib/seedance/volc-adapter';
 import { isTerminalTaskFailure, type UpstreamErrorCategory } from '@/lib/seedance/upstream-error';
 import { getUpstreamKeyForUser } from './keys';
 import { ENTERPRISE_TIER, chargeEnterpriseVideoTask } from './billing';
@@ -78,22 +78,22 @@ export async function reconcileStaleTasks(userId: string): Promise<void> {
             const expired = Date.now() - task.created_at.getTime() > EXPIRE_AFTER_MS;
             const region = regionForModel(task.model);
 
-            // 「火山」渠道(volc)走【独立上游 + 平台共享 env key】(筷子开放平台),
-            // 不是客户的 per-region key,端点也不是 cn/intl 那套 —— 必须分流到 kuaizi-adapter。
+            // 「火山」渠道(volc)走【独立上游 + 平台共享 env key】(service-inference.ai),
+            // 不是客户的 per-region key,端点也不是 cn/intl 那套 —— 必须分流到 volc-adapter。
             // ⚠️ 2026-08-18 修复:此前对账器对所有 region 一律走 pollVideoWithKey,而
-            // baseForRegion('volc') 回落国内 base,等于拿筷子的 task id 去 token.xinhankr 查,
+            // baseForRegion('volc') 回落国内 base,等于拿上游的 task id 去 token.xinhankr 查,
             // 永远查不到 → volc 任务在对账器这条路上【从来没能被终态化】(只能靠客户轮询自愈)。
             // 分流逻辑与 enterprise/proxy 的 handlePoll 保持一致。
             let res: Awaited<ReturnType<typeof pollVideoWithKey>>;
             if (region === 'volc') {
-                // 按客户 key 轮询(2026-09-04):客户配了自己的筷子 key 时,任务在【他的】
-                // 筷子账号里,用平台 env key 查必 404 task_gone → 误终态化。占位符行回落 env。
+                // 按客户 key 轮询(2026-09-04):客户配了自己的上游 key 时,任务在【他的】
+                // 上游账号里,用平台 env key 查必 404 task_gone → 误终态化。占位符行回落 env。
                 let volcCustKey = keyCache.get('volc');
                 if (volcCustKey === undefined) {
                     volcCustKey = await getUpstreamKeyForUser(userId, 'volc').catch(() => null);
                     keyCache.set('volc', volcCustKey);
                 }
-                res = await pollVolcVideo(task.id, customerKuaiziKey(volcCustKey));
+                res = await pollVolcVideo(task.id, customerVolcUpstreamKey(volcCustKey));
             } else {
                 let upstreamKey = keyCache.get(region);
                 if (upstreamKey === undefined) {

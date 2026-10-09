@@ -179,6 +179,52 @@ services:
         ports:
             - '127.0.0.1:3016:3002'
 
+    # ── 2026-09-23 扩容 6→10:六副本 Node 主线程 93-96%(生图峰值 ~2200 成功 rpm 撞顶),
+    # 机器 CPU 仍 45% 空闲 → 加 4 副本。新副本 DATABASE_URL 用 connection_limit=10
+    # (portal-db max_connections=100,10 副本 × 20 理论超限;值在 .env 的 DATABASE_URL_POOL10,
+    # 即 DATABASE_URL 把 connection_limit=20 改成 10)。
+    # ⚠️ YAML 合并是浅合并:写了 environment 就整块覆盖锚点,所以三个键都要重写。
+    # 隧道绑定 10.88.0.2:301x 同样不在 git,由 deploy-image-adapter.sh 补回(范围已扩到 3020)。
+    portal-api-7:
+        <<: *portal-api-common
+        container_name: silkroadai-portal-api-7
+        environment:
+            PORTAL_SCHEDULERS: 'off'
+            NODE_OPTIONS: '--max-old-space-size=6144'
+            DATABASE_URL: ${DATABASE_URL_POOL10}
+        ports:
+            - '127.0.0.1:3017:3002'
+
+    portal-api-8:
+        <<: *portal-api-common
+        container_name: silkroadai-portal-api-8
+        environment:
+            PORTAL_SCHEDULERS: 'off'
+            NODE_OPTIONS: '--max-old-space-size=6144'
+            DATABASE_URL: ${DATABASE_URL_POOL10}
+        ports:
+            - '127.0.0.1:3018:3002'
+
+    portal-api-9:
+        <<: *portal-api-common
+        container_name: silkroadai-portal-api-9
+        environment:
+            PORTAL_SCHEDULERS: 'off'
+            NODE_OPTIONS: '--max-old-space-size=6144'
+            DATABASE_URL: ${DATABASE_URL_POOL10}
+        ports:
+            - '127.0.0.1:3019:3002'
+
+    portal-api-10:
+        <<: *portal-api-common
+        container_name: silkroadai-portal-api-10
+        environment:
+            PORTAL_SCHEDULERS: 'off'
+            NODE_OPTIONS: '--max-old-space-size=6144'
+            DATABASE_URL: ${DATABASE_URL_POOL10}
+        ports:
+            - '127.0.0.1:3020:3002'
+
     # ── seedance 大客户独立门户(P1,seedance-enterprise-portal-design.md)──
     # 同镜像同库,PORTAL_FLAVOR 切形态:/v1 只服务 seedance 视频端点,主站页面/API 404,
     # 定时任务不跑(instrumentation 门)。三个实例只绑 127.0.0.1:3003-3005 —— 公网入口由

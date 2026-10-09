@@ -23,6 +23,7 @@ import {
     cancelVideoWithKey,
     regionForModel,
     maxDurationForVariant,
+    resolveRequestedDuration,
     type SeedanceModelSpec,
     type SeedanceVariant,
     type SeedanceRegion,
@@ -31,24 +32,36 @@ import {
     submitVolcVideo,
     pollVolcVideo,
     cancelVolcVideo,
-    customerKuaiziKey,
+    customerVolcUpstreamKey,
     volcRefLimits,
     VOLC_MODELS,
     VOLC_RESOLUTIONS,
     isVolcModelWithdrawn,
     WITHDRAWN_VOLC_HINT,
-} from '@/lib/seedance/kuaizi-adapter';
+} from '@/lib/seedance/volc-adapter';
 import { callerHasVolc, resolveEnterpriseAuth, getUpstreamKeyForUser, type EnterpriseCustomer } from './keys';
 import { toUpstreamId } from './volc-id-map';
+import { DraftTaskError, extractDraftTaskRef } from '@/lib/seedance/draft-task';
 import { uploadImage } from '@/lib/r2/client';
+import { normalizeReferenceImage } from '@/lib/image/normalize-reference';
 import { randomUUID } from 'crypto';
 import { ENTERPRISE_TIER, estimateEnterpriseCostCny, chargeEnterpriseVideoTask } from './billing';
 import { AssetError, resolveAssetRefs } from './assets';
-import { normalizeArkModel, stripAssetUri, arkStatus, buildArkTaskResponse } from './ark-format';
+import {
+    normalizeArkModel,
+    stripAssetUri,
+    arkStatus,
+    buildArkTaskResponse,
+    type ArkSubmittedParams,
+    type VolcArkMeta,
+} from './ark-format';
+import type { Prisma } from '@prisma/client';
 import { maybeBrandVideoUrl } from '@/lib/seedance/volc-brand';
 import { maybeStoreVideoToCustomerOss } from '@/lib/seedance/customer-oss-video';
 import { isTerminalTaskFailure, type UpstreamErrorCategory } from '@/lib/seedance/upstream-error';
 import { invalidatePollCache, pollWithCache } from './poll-cache';
+import { probeVideoMeta, ratioFromDimensions, roundDurationSec } from './video-probe';
+import { estimateTokens, type Resolution } from '@/lib/seedance/cn-billing';
 import {
     newRequestLogCtx,
     sanitizeRequestBody,
@@ -97,7 +110,7 @@ function resolveEnterpriseModel(
     // 「火山」渠道:四档模型(doubao-seedance-2.0 / -fast / -mini / doubao-seedance-2.5),
     // resolution 参数 + ref 自动识别。走独立 adapter(火山方舟原生),不经 MODEL_MAP 长名机制。
     if (isVolcModel(lower)) {
-        // 下架档位(fast/mini 实测不落方舟,见 kuaizi-adapter 的 WITHDRAWN_VOLC_MODELS)——
+        // 下架档位(env 临时下架,见 volc-adapter 的 isVolcModelWithdrawn(env 名单))——
         // 在解析最前面拦掉,连参数校验都不必走。
         if (isVolcModelWithdrawn(lower)) {
             return { error: errJson(400, 'model_unavailable', `${rawModel}:${WITHDRAWN_VOLC_HINT}`) };
@@ -293,6 +306,7 @@ async function handleListTasks(req: NextRequest): Promise<NextResponse> {
             seed: t.seed,
             generateAudio: t.generate_audio,
             extended: region === 'global' || region === 'promax',
+            submitted: submittedArkParams(t),
         });
     });
     return NextResponse.json({ items, total, page_num: pageNum, page_size: pageSize });
@@ -433,6 +447,14 @@ const ARK_ALLOWED_FIELDS = new Set([
     'safety_identifier',
     'service_tier',
     'priority',
+    'tools', // 2026-09-23:官方创建/查询都有 tools,此前被白名单 400 挡在门外
+    'execution_expires_after', // 2026-09-23:官方创建参数(任务超时阈值),客户实测被 400
+    'bitrate_mode', // 火山官方字段(2026-08-26 实测上游收),v1 面早已透传,ark 面补齐
+    'moderation_options', // 火山官方(版权放行 ips);volc 透 ips、cn 暂消费掉,但不该 400
+    // 样片模式(火山官方 2.5:draft=true 先出低成本预览片确认构图/运镜,再按样片任务号出正片)。
+    // 2026-10-08 客户在国内版 2.5 传 draft:true 被本白名单 400「unknown parameter(s): draft」,
+    // 上游(xinhankr / service-inference.ai 方舟原生体)实际支持;cn-adapter 反向白名单原样透传。
+    'draft',
     // 我们支持的别名/OpenAI 形入参(保留兼容,均为已知字段)
     'prompt',
     'seconds',
@@ -510,7 +532,9 @@ async function dataUrlToR2(dataUrl: string): Promise<string> {
             400,
         );
     }
-    return uploadImage(`seedance-volc-ref/${randomUUID()}`, buf, m[1]);
+    // bmp → png / heif 品牌回写(上游对这两种「声明支持」的格式实际拒收,见 normalize-reference.ts)
+    const n = await normalizeReferenceImage(buf, m[1]);
+    return uploadImage(`seedance-volc-ref/${randomUUID()}`, n.buf, n.mime);
 }
 
 async function translateVolcAssetRefs(body: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -541,6 +565,44 @@ async function translateVolcAssetRefs(body: Record<string, unknown>): Promise<Re
     if (changed.length) console.log('[enterprise-proxy] volc 素材引用翻回上游号', { count: changed.length });
     if (inlined) console.log('[enterprise-proxy] volc 内联 base64 媒体转存 R2', { count: inlined });
     return translated;
+}
+
+/** 适配器归一 JSON 里的方舟原生元数据 → ark 响应用(volc / service-inference.ai 线有值;xinhankr 全 null)。 */
+function upstreamArkMeta(j: Record<string, unknown> | null): VolcArkMeta {
+    return {
+        framespersecond: upstreamNum(j?.framespersecond),
+        generateAudio: typeof j?.generate_audio === 'boolean' ? j.generate_audio : null,
+        executionExpiresAfter: upstreamNum(j?.execution_expires_after),
+        seed: upstreamNum(j?.seed),
+        tools: Array.isArray(j?.tools) ? j.tools : null,
+        createdAt: upstreamNum(j?.upstream_created_at),
+        updatedAt: upstreamNum(j?.upstream_updated_at),
+        lastFrameUrl: typeof j?.last_frame_url === 'string' ? j.last_frame_url : null,
+        outputFormat: upstreamStr(j?.output_format),
+        safetyIdentifier: upstreamStr(j?.safety_identifier),
+        serviceTier: upstreamStr(j?.service_tier),
+        frames: upstreamNum(j?.frames),
+        draft: typeof j?.draft === 'boolean' ? j.draft : null,
+    };
+}
+
+/** task 行里落库的回显参数(存量行三列 NULL → 缺省/省略)。 */
+function submittedArkParams(t: {
+    safety_identifier?: string | null;
+    output_format?: string | null;
+    tools?: unknown;
+    execution_expires_after?: number | null;
+    draft?: boolean | null;
+    draft_task_id?: string | null;
+}): ArkSubmittedParams {
+    return {
+        safetyIdentifier: t.safety_identifier ?? null,
+        outputFormat: t.output_format ?? null,
+        tools: t.tools ?? null,
+        executionExpiresAfter: t.execution_expires_after ?? null,
+        draft: t.draft ?? null,
+        draftTaskId: t.draft_task_id ?? null,
+    };
 }
 
 async function handleSubmit(req: NextRequest, format: ClientFormat = 'v1'): Promise<NextResponse> {
@@ -652,6 +714,44 @@ async function handleSubmitInner(req: NextRequest, format: ClientFormat, ctx: Re
         return errJson(503, 'temporarily_unavailable', 'asset lookup failed, please retry');
     }
 
+    // 样片出正片(火山官方 draft_task,2026-10-08):content 里引用样片任务号 → 归属 / 完成态 / 渠道
+    // 按我们库行先校验(IDOR:别人的样片号不能拿来出片),号的翻译(→ 方舟真号)在适配器里做。
+    // 正片的提示词 / 参考 / 时长 / 比例 / 音频官方语义是沿用样片 → 客户没传的估价 / 落库口径取样片行。
+    let draftRef: { id: string } | null = null;
+    try {
+        draftRef = extractDraftTaskRef(body);
+    } catch (e) {
+        if (e instanceof DraftTaskError) return errJson(400, 'invalid_request', e.message);
+        throw e;
+    }
+    let draftRow: {
+        has_video: boolean;
+        duration: number;
+        ratio: string | null;
+        generate_audio: boolean | null;
+    } | null = null;
+    if (draftRef) {
+        const row = await prisma.seedanceVideoTask.findUnique({ where: { id: draftRef.id } });
+        if (!row || row.tier !== ENTERPRISE_TIER || row.user_id !== cust.userId) {
+            return errJson(400, 'invalid_request', `draft_task.id ${draftRef.id} 不是你名下的任务`);
+        }
+        if (row.status !== 'completed') {
+            return errJson(
+                400,
+                'invalid_request',
+                `样片任务 ${draftRef.id} 尚未完成(当前 ${arkStatus(row.status)}),完成后再出正片`,
+            );
+        }
+        if (regionForModel(row.model) !== regionForModel(model)) {
+            return errJson(
+                400,
+                'invalid_request',
+                `样片任务 ${draftRef.id} 与当前模型不在同一渠道,请用生成样片的模型出正片`,
+            );
+        }
+        draftRow = row;
+    }
+
     // 模型解析:归一短名(seedance-2-0[-fast|-mini] + resolution 参数 + ref 自动识别)
     // 优先;旧长名(MODEL_MAP)保留兼容。任务行存客户实际调用的名字。
     let map: SeedanceModelSpec;
@@ -676,22 +776,22 @@ async function handleSubmitInner(req: NextRequest, format: ClientFormat, ctx: Re
         }
     }
 
-    const hasVideo = extractVideoUrls(body).length > 0;
+    const hasVideo = extractVideoUrls(body).length > 0 || (draftRow?.has_video ?? false);
     // duration:2.5 系 4-30s,2.0 系 4-15s(火山官方 2026-08 提升 2.5 至 30s;探测 volc/cn/global
-    // 2.0 上游 3s/16s 皆 400,4s 全变体真出片)。缺省 5;显式非法值 400(不静默改秒数 —— 计费
-    // 按 token,静默换时长=换价)。
-    const durRaw = Number(body.duration ?? body.seconds);
+    // 2.0 上游 3s/16s 皆 400,4s 全变体真出片)。显式非法值 400(不静默改秒数 —— 计费
+    // 按 token,静默换时长=换价)。body 没传时认 prompt 内联 `--duration N`(火山官方弱校验通道),
+    // 都没有才缺省 5。-1 = 智能时长(上游自选,落库 -1;余额门按上限估价)。
+    // 解析口径与适配器核心共用 resolveRequestedDuration —— 估价 / 落库 / 实际转发必须同值。
     const maxDur = maxDurationForVariant(map.variant);
-    let duration: number;
-    if (body.duration == null && body.seconds == null) {
-        duration = 5;
-    } else if (durRaw === -1) {
-        duration = -1; // 智能时长(上游自选,落库 -1;余额门按上限估价)
-    } else if (Number.isInteger(durRaw) && durRaw >= 4 && durRaw <= maxDur) {
-        duration = durRaw;
-    } else {
+    // 样片出正片且客户没传时长 → 沿用样片行的秒数(估价 / 落库口径;适配器也不会注入默认 5s)。
+    const resolvedDuration =
+        draftRow && body.duration == null && body.seconds == null
+            ? draftRow.duration
+            : resolveRequestedDuration(body, maxDur);
+    if (resolvedDuration == null) {
         return errJson(400, 'invalid_request', `duration 仅支持 4-${maxDur} 之间的整数秒或 -1(智能时长)`);
     }
+    const duration = resolvedDuration;
     // 余额门:-1 时长未定,按【上限】估价挡防欠扣(最终按 token 结算,不受影响)。
     const estDuration = duration === -1 ? maxDur : duration;
 
@@ -730,7 +830,7 @@ async function handleSubmitInner(req: NextRequest, format: ClientFormat, ctx: Re
                   clientModel: adapterModel,
                   resolution: map.resolution,
                   duration,
-                  upstreamKey: customerKuaiziKey(cust.upstreamKey),
+                  upstreamKey: customerVolcUpstreamKey(cust.upstreamKey),
               })
             : await submitVideoWithKey({ ...body, model: adapterModel }, `Bearer ${cust.upstreamKey}`);
     const text = await res.text();
@@ -761,7 +861,10 @@ async function handleSubmitInner(req: NextRequest, format: ClientFormat, ctx: Re
 
     try {
         // 提交参数落库(2026-08-06):火山方舟形查询响应要逐字段回显 ratio/seed/generate_audio
-        const ratioRaw = String(body.ratio || body.aspect_ratio || '16:9');
+        // ratio 客户没传 → 落 NULL(=模型自选,成片出来后按实测回填),不再落 '16:9' 冒充提交参数:
+        // 文生视频模型常自选 9:16,回显却是 16:9(2026-09-29 客户对照基线实测)。
+        const ratioRaw = body.ratio ?? body.aspect_ratio;
+        const ratioSubmitted = ratioRaw == null || ratioRaw === '' ? null : String(ratioRaw).slice(0, 16);
         await prisma.seedanceVideoTask.create({
             data: {
                 id: taskId,
@@ -773,10 +876,29 @@ async function handleSubmitInner(req: NextRequest, format: ClientFormat, ctx: Re
                 resolution: map.resolution,
                 has_video: hasVideo,
                 duration,
-                ratio: ratioRaw.slice(0, 16),
+                ratio: ratioSubmitted ?? draftRow?.ratio ?? null,
                 seed:
                     typeof body.seed === 'number' && Number.isFinite(body.seed) ? BigInt(Math.trunc(body.seed)) : null,
-                generate_audio: body.generate_audio !== false,
+                generate_audio:
+                    typeof body.generate_audio === 'boolean' ? body.generate_audio : (draftRow?.generate_audio ?? true),
+                // 2026-09-23 火山官方查询响应新增回显字段:xinhankr 上游不回显,只能落库再回显
+                safety_identifier:
+                    typeof body.safety_identifier === 'string' && body.safety_identifier
+                        ? body.safety_identifier.slice(0, 64)
+                        : null,
+                output_format:
+                    typeof body.output_format === 'string' && ['mp4', 'mov'].includes(body.output_format.toLowerCase())
+                        ? body.output_format.toLowerCase()
+                        : null,
+                tools:
+                    Array.isArray(body.tools) && body.tools.length ? (body.tools as Prisma.InputJsonValue) : undefined,
+                execution_expires_after:
+                    typeof body.execution_expires_after === 'number' && Number.isInteger(body.execution_expires_after)
+                        ? body.execution_expires_after
+                        : null,
+                // 样片模式(2026-10-08):draft 布尔原样落库;正片落客户样片号供查询回显 draft_task_id
+                draft: typeof body.draft === 'boolean' ? body.draft : null,
+                draft_task_id: draftRef?.id ?? null,
             },
         });
     } catch (e) {
@@ -854,6 +976,7 @@ async function handlePollInner(
                     extended,
                     // 失败态也要出齐火山官方字段集(客户契约校验不分成功失败)。
                     volcMeta: taskRegion === 'volc' ? {} : null,
+                    submitted: submittedArkParams(task),
                 }),
             );
         }
@@ -893,6 +1016,7 @@ async function handlePollInner(
                     extended,
                     // 降级路径同样要出齐字段(值走火山官方默认,上游此刻无数据)。
                     volcMeta: taskRegion === 'volc' ? {} : null,
+                    submitted: submittedArkParams(task),
                 }),
                 { headers },
             );
@@ -949,13 +1073,21 @@ async function handlePollInner(
         return failedResponse(task.fail_reason || 'generation failed');
     }
 
-    // 非 volc 轮询要打客户上游:sk-ent 用鉴权时装载的 cust.upstreamKey;AK/SK 账号级(/api 轮询
+    // 轮询要打客户上游:sk-ent 用鉴权时装载的 cust.upstreamKey;AK/SK 账号级(/api 轮询
     // 未按 region 装载,cust.upstreamKey='')→ 按【任务的 region】补加载客户上游 key。
+    // ⚠️ volc 也必须补加载(2026-09-23 修):提交路径按模型渠道装载了客户的 volc 行 —— 若客户行是
+    // 真实 sk-inf- key(自带 service-inference 账号),任务建在客户账号下;轮询若不补加载就回落
+    // 平台 env key → 上游「Task not found」404 永远查不到(北京独立系统首日客户实测)。
+    // 客户行是占位符时 customerVolcUpstreamKey 仍回落平台 key,行为不变。
     let upstreamKey = cust.upstreamKey;
-    if (taskRegion !== 'volc' && cust.accountLevel) {
+    if (cust.accountLevel) {
         const k = await getUpstreamKeyForUser(cust.userId, taskRegion);
-        if (!k) return errJson(503, 'account_not_configured', 'no upstream key configured for this region');
-        upstreamKey = k;
+        if (taskRegion !== 'volc') {
+            if (!k) return errJson(503, 'account_not_configured', 'no upstream key configured for this region');
+            upstreamKey = k;
+        } else {
+            upstreamKey = k ?? '';
+        }
     }
 
     // 短 TTL 缓存 + 同任务并发合流:客户的轮询频率不再 1:1 传导到上游(见 poll-cache 头部)。
@@ -965,7 +1097,7 @@ async function handlePollInner(
     const { result: upstream, cached } = await pollWithCache(taskId, async () => {
         const r =
             taskRegion === 'volc'
-                ? await pollVolcVideo(taskId, customerKuaiziKey(cust.upstreamKey))
+                ? await pollVolcVideo(taskId, customerVolcUpstreamKey(upstreamKey))
                 : await pollVideoWithKey(taskId, `Bearer ${upstreamKey}`, taskRegion);
         return { status: r.status, text: await r.text() };
     });
@@ -1060,6 +1192,42 @@ async function handlePollInner(
         });
     }
 
+    // 成片真值(时长 / 宽高比):上游给了【已推导】的值就用它;上游不回显的渠道(国内版 xinhankr
+    // 线只回 status / url / usage)从成片头部实测。只在库里是「未定」(duration=-1 / ratio 空)时才测,
+    // 测到即回填任务行 —— 之后的查询与列表都回显真值,也不再重复探测。
+    let actualDuration = upstreamNum(j?.duration);
+    let actualRatio = upstreamStr(j?.ratio);
+    if (j?.status === 'completed') {
+        const needDuration = task.duration === -1;
+        const needRatio = !task.ratio;
+        if (rawVideoUrl && ((needDuration && actualDuration == null) || (needRatio && actualRatio == null))) {
+            const probed = await probeVideoMeta(rawVideoUrl);
+            if (probed?.durationSec != null && actualDuration == null)
+                actualDuration = roundDurationSec(probed.durationSec);
+            if (probed?.width && probed?.height && actualRatio == null)
+                actualRatio = ratioFromDimensions(probed.width, probed.height);
+            if (!probed) console.warn('[enterprise-proxy] video probe failed', { taskId });
+        }
+        const backfill: { duration?: number; ratio?: string } = {};
+        if (needDuration && actualDuration != null && actualDuration > 0) backfill.duration = actualDuration;
+        if (needRatio && actualRatio) backfill.ratio = actualRatio.slice(0, 16);
+        if (Object.keys(backfill).length) {
+            await prisma.seedanceVideoTask
+                .update({ where: { id: taskId }, data: backfill })
+                .catch((e) =>
+                    console.warn('[enterprise-proxy] backfill actual meta failed', { taskId, err: String(e) }),
+                );
+        }
+        // 探测失败的兜底(仅回显、不落库,下次查询重测):无输入视频时 token 只含输出时长,
+        // 按每秒 token 锚点反推整数秒。含输入视频的任务 token 混了输入时长,反推不出 → 保持 -1。
+        if (needDuration && actualDuration == null && !task.has_video) {
+            const usage = j.usage as { completion_tokens?: number; total_tokens?: number } | undefined;
+            const tokens = usage?.completion_tokens ?? usage?.total_tokens ?? Number(task.tokens ?? 0);
+            const perSec = estimateTokens(task.resolution as Resolution, 1);
+            if (tokens > 0 && perSec > 0) actualDuration = Math.max(1, Math.round(tokens / perSec));
+        }
+    }
+
     // 2026-08-19 起不再有 X-Silkroadai-Vendor-Task-Id 头 —— volc 客户拿到的 `id` 本身
     // 就是火山官方任务号了(提交时压着等来的),再单出一个「渠道侧原始 id」既冗余、
     // 也提示了中间层的存在。火山官方既没有这个头也没有这个字段。
@@ -1100,28 +1268,20 @@ async function handlePollInner(
                 // 上游给了【已推导】的值就用它,库里的提交参数只作兜底。
                 // 客户传 duration=-1(智能时长)时,库里存的就是 -1,一直回显 -1 是错的 ——
                 // 上游完成时会给模型真正选的秒数(2026-08-26 客户报障)。ratio 同理。
-                // 其余渠道的适配器不返回这几个字段 → 自动回落 task.*,行为不变。
+                // 上游不回显的渠道走成片实测值(见上 actualDuration / actualRatio)。
                 resolution: upstreamStr(j?.resolution) ?? task.resolution,
-                duration: upstreamNum(j?.duration) ?? task.duration,
-                ratio: upstreamStr(j?.ratio) ?? task.ratio,
+                duration: actualDuration ?? task.duration,
+                ratio: actualRatio ?? task.ratio,
                 seed: task.seed,
                 generateAudio: task.generate_audio,
                 extended,
                 // volc = 原生火山:火山官方字段集要齐(客户按基准做契约校验)。
                 // 其余渠道传 null,行为逐字不变。
-                volcMeta:
-                    taskRegion === 'volc'
-                        ? {
-                              framespersecond: upstreamNum(j?.framespersecond),
-                              generateAudio: typeof j?.generate_audio === 'boolean' ? j.generate_audio : null,
-                              executionExpiresAfter: upstreamNum(j?.execution_expires_after),
-                              seed: upstreamNum(j?.seed),
-                              tools: Array.isArray(j?.tools) ? j.tools : null,
-                              createdAt: upstreamNum(j?.upstream_created_at),
-                              updatedAt: upstreamNum(j?.upstream_updated_at),
-                              lastFrameUrl: typeof j?.last_frame_url === 'string' ? j.last_frame_url : null,
-                          }
-                        : null,
+                volcMeta: taskRegion === 'volc' ? upstreamArkMeta(j) : null,
+                // cn 官方形也补齐 2026-09 新字段:国内版 2.5 480p(service-inference.ai)有上游真值,
+                // xinhankr 线全 null → 走落库提交参数 / 官方默认值。
+                upstreamMeta: taskRegion !== 'volc' ? upstreamArkMeta(j) : null,
+                submitted: submittedArkParams(task),
             }),
             { headers: vendorHeaders },
         );

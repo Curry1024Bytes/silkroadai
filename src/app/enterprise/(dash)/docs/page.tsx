@@ -349,7 +349,8 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                                 <Td>否</Td>
                                 <Td>
                                     任意整数秒,默认 5:2.0 系 4-15,seedance-2-5 系 4-30;-1 =
-                                    智能时长(模型在有效区间内自选)
+                                    智能时长(模型在有效区间内自选)。未传该参数时,提示词里的内联指令{' '}
+                                    <Code>--duration N</Code>(或 <Code>--dur N</Code>)生效;两者都有以本参数为准
                                 </Td>
                             </tr>
                             <tr>
@@ -497,13 +498,17 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
 
 # 多图参考(主体一致性,引用素材组)
 {"model":"seedance-2-0-fast","prompt":"主角走进咖啡馆","images":["group-20260719153506-b945c6"]}`}</Pre>
-                <p>参考图建议短边 ≥512px、jpg/png 格式;尺寸过小或格式异常会被上游拒绝并提示。</p>
+                <p>
+                    参考图建议短边 ≥512px、jpg/png 格式;尺寸过小或格式异常会被上游拒绝并提示。bmp / heic / heif
+                    也可以传(含 base64 内联与公网直链):平台会在转存时自动把 bmp 转成 png、把非标准品牌的 heif 归一成
+                    heic,再交给上游,无需客户端自行转换。
+                </p>
             </Section>
 
             <Section id="volc" title="5. 火山渠道(volc · 火山方舟原生 + AK/SK 签名)">
                 <p>
-                    <b>火山渠道</b>是独立渠道(与国内/海外/proMax 平级),提供<b>真人视觉认证</b>与{' '}
-                    <b>seedance 2.0 / 2.5 两档</b>视频,采用<b>火山方舟原生接口形态</b> +{' '}
+                    <b>火山渠道</b>是独立渠道(与国内/海外/proMax 平级),提供{' '}
+                    <b>seedance 2.0 / 2.0-fast / 2.0-mini / 2.5 四档</b>视频,采用<b>火山方舟原生接口形态</b> +{' '}
                     <b>火山官方 AK/SK 签名(SignerV4)</b>
                     鉴权 —— 现有火山官方 SDK / 脚本可零改动接入。需在「API 密钥」页开通并生成 AK/SK,专用密钥,与 sk-ent
                     并存互不影响。
@@ -522,6 +527,8 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                         <tbody className="text-gray-700">
                             {[
                                 ['doubao-seedance-2-0-260128', '480p / 720p / 1080p / 4k', '4~15 或 -1', '9 / 3 / 3'],
+                                ['doubao-seedance-2-0-fast-260128', '480p / 720p', '4~15 或 -1', '9 / 3 / 3'],
+                                ['doubao-seedance-2-0-mini-260615', '480p / 720p', '4~15 或 -1', '9 / 3 / 3'],
                                 ['doubao-seedance-2-5-260628', '480p / 720p / 1080p', '4~30 或 -1', '30 / 10 / 10'],
                             ].map(([m, r, d, refs]) => (
                                 <tr key={m} className="border-b border-gray-100">
@@ -555,8 +562,30 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                 </p>
                 <p className="text-gray-600">
                     <b>火山官方参数一律透传</b> —— <Code>bitrate_mode</Code> / <Code>camera_fixed</Code> /{' '}
-                    <Code>service_tier</Code> / <Code>priority</Code> 等按火山文档传即可,能不能用由火山判。(
+                    <Code>service_tier</Code> / <Code>priority</Code> / <Code>tools</Code>{' '}
+                    等按火山文档传即可,能不能用由火山判。(
                     <Code>callback_url</Code> 暂不支持,请改用轮询。)
+                </p>
+                <p className="text-gray-600">
+                    <b>
+                        样片模式(<Code>draft</Code>)
+                    </b>{' '}
+                    —— 创建时传 <Code>{'"draft": true'}</Code> 先出低成本样片, 确认构图 / 运镜 /
+                    主体动作符合预期后,再提交一次正片任务:<Code>content</Code> 里放{' '}
+                    <Code>{'{"type":"draft_task","draft_task":{"id":"<样片任务号>"}}'}</Code>(可不带 text), 用{' '}
+                    <Code>resolution</Code> 指定正片分辨率即可;提示词 / 参考素材 / 时长 / 比例 / 音频自动沿用样片,
+                    不必(也不要)重复传。样片任务号必须是你名下、已完成的样片,7 天内有效;仅{' '}
+                    <Code>doubao-seedance-2-5-260628</Code> 支持。查询响应回显 <Code>draft</Code> 与正片的{' '}
+                    <Code>draft_task_id</Code>。
+                </p>
+                <p className="text-gray-600">
+                    <b>查询响应对齐火山官方 2026-09 字段集</b>(国内版 / 火山渠道均适用):除 <Code>id</Code> /{' '}
+                    <Code>model</Code> / <Code>status</Code> / <Code>content</Code> / <Code>error</Code> /{' '}
+                    <Code>created_at</Code> / <Code>updated_at</Code> / <Code>resolution</Code> / <Code>ratio</Code> /{' '}
+                    <Code>duration</Code> / <Code>usage</Code> 外,还返回 <Code>execution_expires_after</Code> /{' '}
+                    <Code>frames</Code> / <Code>framespersecond</Code> / <Code>generate_audio</Code> /{' '}
+                    <Code>output_format</Code> / <Code>seed</Code> / <Code>service_tier</Code>;创建时传了{' '}
+                    <Code>safety_identifier</Code> / <Code>tools</Code> 会原样回显,没传则不出现该键。
                 </p>
                 <p className="text-gray-600">
                     <Code>duration: -1</Code> = 智能时长(由模型在有效区间内自选)——{' '}
@@ -569,7 +598,8 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                 </p>
                 <p className="text-gray-600">
                     <Code>doubao-seedance-2-0-fast-260128</Code> / <Code>doubao-seedance-2-0-mini-260615</Code>{' '}
-                    <b>暂停服务</b> —— 这两档当前不由火山方舟出片,与本渠道「原生火山」的定位不符, 恢复前请改用上表两档。
+                    两档已恢复供应(2026-09-22 起),仅支持 <Code>480p</Code> / <Code>720p</Code>,传 <Code>1080p</Code>
+                    会被拒。
                 </p>
                 <p className="font-medium text-gray-900">config 关键字段(以火山官方素材库/方舟脚本为例):</p>
                 <Pre>{`{
@@ -635,6 +665,11 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
             </Section>
 
             <Section id="realperson" title="6. 火山渠道 · 真人视觉认证">
+                <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                    <b>服务暂停中(2026-09-22 起)</b> —— 真人活体认证暂不可用,两个 Action 会返回{' '}
+                    <Code>503 ServiceUnavailable</Code>;含真人人脸的参考素材当前会被上游拒绝。恢复时间另行通知,
+                    以下内容保留供恢复后参考。
+                </div>
                 <p>
                     在 AIGC 视频里使用<b>真人的脸</b>时,火山要求先由本人完成一次<b>活体认证授权</b>(合规,无法绕过)。
                     火山渠道专属,采用 AK/SK 签名(Action 形态),两步:

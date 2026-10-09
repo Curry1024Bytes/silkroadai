@@ -26,7 +26,7 @@ export interface ImageProvider {
      *  (frimodel 新账号只挂 `gpt-image-2-high` / `gpt-image-2-adobe`)→ 在这里指定。 */
     upstreamModel?: string;
     /** 质量档守门:设了此值 → 只接归一后 quality 在列表内的请求(任意尺寸,含 size=auto,
-     *  计费走"返回图实际尺寸"),其余 503 让路。与 openAllTiers / gateMinCt 互斥使用
+     *  计费:显式 size 按请求尺寸 / auto 按返回图实际尺寸),其余 503 让路。与 openAllTiers / gateMinCt 互斥使用
      *  (onlyQualities 优先)。注意 normQuality 把 auto/standard/缺省归一成 low ——
      *  "所有 medium 请求" = 客户显式传 quality=medium 的请求。 */
     onlyQualities?: ReadonlyArray<'low' | 'medium' | 'high'>;
@@ -212,6 +212,21 @@ export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
         onlyQualities: ['high'],
         noTransparentBackground: true,
     },
+    // revefull:reve.amlkcloud.top 同一上游 + 同一 key 的【全量】线(镜像 revehigh,openAllTiers)。
+    // 2026-09-23 实测(dump JPEG 段核实):low/medium/auto 出图【带 C2PA,但 claim_generator=`OpenAI
+    // Media` / `org.contentauth.c2pa`,APP11 段内零 adobe/firefly】—— 这与【真 gpt-image 官方出图自带
+    // 的内容凭证一致,不是外泄他家上游身份】,故内容自定向剥离(#440,只在命中 adobe/firefly 时剥)
+    // 正确【放行】,客户拿到的 C2PA 与官方一致。若该混合池某张真带 adobe,strip 无条件跑仍会剥。
+    // ⚠️【low/medium 大尺寸静默降级】:low 1536×1024 → 实交 1264×848、medium 2048² → 实交 1536²
+    // (high 档才尺寸全如实);⚠️ 2026-09-27 起显式 size 改按【客户请求尺寸】计费(对齐官方计算器),
+    // 这类降级 = 卖小图收大图钱,只在 auto 路径仍按返回图实际尺寸(imageDimensions 解 JPEG SOF)。输出恒 JPEG(≤2K b64 / 大图走 img.dengche.cc CDN url→b64)。
+    // 透明 fail-closed(JPEG 无 alpha)。brand 多兜 firefly 纯防御(实测无,防未来漂移到 adobe 时文案泄漏)。
+    revefull: {
+        baseUrl: 'https://reve.amlkcloud.top',
+        brand: /\bamlkcloud\b|\bdengche\b|\breve\b|\bfirefly\b/gi,
+        openAllTiers: true,
+        noTransparentBackground: true,
+    },
     // ---- oaidist/oaidistfull(ch201/ch202)守门 + 全量线 ----
     // 【上游变迁史】2026-08-24 首接 64.32.31.178:3009 是真 OpenAI 签名;2026-09-06 复测该上游【静默
     // 变成 Adobe Firefly】(见 memory image2 project + ch83-adobe-c2pa-image-leak,上游会偷偷换后端)。
@@ -220,7 +235,7 @@ export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
     // 尺寸如实、速度最快(23-29s)。slug 名保留 oaidist/oaidistfull(渠道 base_url 路径不变),只换 baseUrl+key。
     // C2PA 由适配器层统一按内容剥(#440)—— 上游身份再漂移也不漏,故不追签名变化。
     // 守门:gateMinCt 1,756(¥0.06/张 保本线)= 1024² medium 起放行、1280×1024 medium(1,510)及以下拒。
-    // 计费按【返回图实际尺寸】合成(adapter.ts 全 provider 通用,防上游静默降级超收)。brand 兜 llmway +
+    // 计费按【客户请求尺寸】合成(2026-09-27 起,adapter.ts 全 provider 通用;auto 按返回图实际尺寸)。brand 兜 llmway +
     // 通用 distributor 词(+ 旧 IP,历史兜底无害)。
     oaidist: {
         baseUrl: 'https://llmway.ai',
@@ -233,5 +248,114 @@ export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
         baseUrl: 'https://llmway.ai',
         brand: /\bllmway\b|\bdistributor\b|64\.32\.31\.178/gi,
         openAllTiers: true,
+    },
+    // ---- junze / junzestable(钧泽 API,ai.junze.me)2026-09-24 接入,【紧急备用线】----
+    // 定位:operator 2026-09-24 拍板 —— 两条渠道【先建停用】(status=2),只在现有 image2 主力线
+    // (ch176/177/178/186/201/202 等)全挂时手工启用兜底。因此【不设 gateMinCt 守门线】:备用线的
+    // 价值是"什么都能接住",宁可低档亏钱也不能把客户请求拒成 503 —— 同 ominiapifull / oaidistfull /
+    // pandatk 那批 openAllTiers 兜底线的定位。启用期间低档是亏的(见下方成本表),按天盯着,主力恢复即停。
+    //
+    // 【成本】按张固定,与 size / quality / 档位全无关(权威来源:上游 `GET /api/log/token?key=sk-xxx`
+    // 带 `Authorization: sk-xxx`,逐条 quota ÷ quota_per_unit 500,000):
+    //   - junze       key sk-Wwqj…yXp0 → **$0.03/张 = ¥0.216**(汇率 7.2)
+    //   - junzestable key sk-Ce6A…y03Q → **$0.045/张 = ¥0.324**(贵 50%,上游承诺"稳定不断";
+    //     两 key 同上游同契约,逐项实测一致:1024²/4K token 值、Firefly 主机、quality 行为全同
+    //     → 只有"更稳"这一个卖点,主力备用选 junze,junze 也不行时再上 junzestable)
+    //   `n>1` 按张收(n=2 = 2×单价);内容安全 451 不计费。
+    // 【盈亏(售价 = 合成 ct × 3.9e-5,见 MIN_SYNTH_CT 注释的换算)】能覆盖 junze ¥0.216 成本的只有
+    //   1024² high(7,024→¥0.274 +27%)/2560×1440 high(7,370→¥0.287)/4K high(13,342→¥0.520)/
+    //   2048² high(14,272→¥0.557)/2880² high(23,718→¥0.925);**全部 medium/low 档亏**
+    //   (medium 天花板 2880²=5,930→¥0.231 勉强打平,1024² medium 仅 ¥0.068 vs 成本 ¥0.216)。
+    //   junzestable 再往上抬一档:1024² high / 2560×1440 high 也亏。**这是备用线的既定代价。**
+    // 【上游身份】Adobe Firefly Services 转售 OpenAI —— 出图 C2PA claim = `OpenAI Media Service API`
+    // (OpenAI OpCo 证书链,SSL.com C2PA ICA),但分发主机是 `pre-signed-firefly-prod.s3-accelerate
+    // .amazonaws.com` 预签名 url(X-Amz-Expires=86400 → 24h 过期,适配器 url→b64 拉回,绝不外泄)。
+    // C2PA 由适配器按内容剥(#440,命中 adobe/firefly 才剥;本家 claim 是 OpenAI 官方内容凭证,
+    // 与 revefull 同理【正确放行】)。另带 `c2pa.watermarked.unbound` 隐形水印(官方出图本就有)。
+    // 【⚠️ quality 钉死 medium 刻度】low/medium/high 三种请求上游一律回 `quality:"medium"`,
+    // 自报 out_tokens:1024²=1056、1536×1024=1568、2048²=1584、2560×1440=2352、3840×2160=3336
+    // —— 4K 那个 3336 正好是官方 **medium** 公式值(high 应 13,342)→ 上游【拿不到 high 档渲染】。
+    // 同站的 `gpt-image-high`($0.08/张)实测同样是 medium 刻度(1024²=1756 / 4K=3336),不是 high 专线,
+    // 且带 quality 参数会 400 `Invalid free model` → 不接,upstreamModel 保持裸 gpt-image-2。
+    // 适配器计费按【客户请求的 quality】+ 返回图实际尺寸合成官方账单(全 provider 通用)→ 启用期间
+    // high 档客户按 high 计费但拿 medium 渲染。**这是 operator 知情接受的应急取舍**(备用线短暂启用,
+    // 优于全站出图失败);若某天要改成诚实按 medium 收,把 openAllTiers 换成
+    // onlyQualities: ['medium'] 一行即可(同 frimodelmedium 先例)。
+    // 【尺寸】1024²/1536×1024/1024×1536/2048²/2560×1440/3840×2160 逐像素如实;**方图上限 2880²**
+    // (3072²/3840² 静默降到 2880²)—— ⚠️ 2026-09-27 起显式 size 按请求尺寸计费,这类降级会按请求尺寸
+    // 收费(2880² 交付、3072² 计费属超收;3072² 已被 proxy 层官方约束 400 挡住,直打适配器才会到这)。
+    // `size:"auto"` 与【不传 size】→ 2048×2048(非官方缺省),auto-size 归一层已统一处理。
+    // 【其余实测】generations / edits multipart / 多参考图 image[] / mask / response_format=b64_json
+    // 全支持;12 并发 12/12 成功、p50 39s(单发 38-70s,12 并发 95-112s);451 文案
+    // `Try modifying the prompts or the seeds`(非官方措辞,#379 内容安全分类已覆盖 `appear to be unsafe`);
+    // 503 错误体含 `under group default (distributor)` → brand 兜 distributor。
+    // 透明背景未验证 → fail-closed 拒(家族惯例;openAllTiers 不豁免这条)。
+    junze: {
+        baseUrl: 'https://ai.junze.me',
+        brand: /\bjun-?ze\b|\bdistributor\b|\bfirefly\b|\bs3-accelerate\.amazonaws\.com\b/gi,
+        openAllTiers: true,
+        noTransparentBackground: true,
+    },
+    junzestable: {
+        baseUrl: 'https://ai.junze.me',
+        brand: /\bjun-?ze\b|\bdistributor\b|\bfirefly\b|\bs3-accelerate\.amazonaws\.com\b/gi,
+        openAllTiers: true,
+        noTransparentBackground: true,
+    },
+    // ---- yuanshudian(元数点 API,api.yuanshudian.com)2026-09-28 接入,【全量线】----
+    // 定位:openAllTiers 全量兜底(同 pandatk / ominiapifull / oaidistfull / junze 那批):不设 gateMinCt,
+    // 所有档位含 size=auto 都接,按【客户请求尺寸 + quality】合成官方账单(#496)。
+    // 【身份】new-api rc.26,系统名「元数点 API」,nginx 直出无 CF;key 在分组 `Gpt_image2_adobe`(gr 0.7),
+    // `/v1/models` 只有裸 `gpt-image-2`(渠道 ch87)。出图 C2PA = **Adobe Inc. / Adobe Firefly / c2pa.opened**
+    // (Firefly 原生输出,不是 OpenAI 包装的那种;字节 adobe×50 firefly×6 零 openai)→ 靠适配器内容自定向
+    // strip(#227/#440,命中 adobe/firefly 才剥)兜住,交付客户的字节零 adobe。
+    // 【成本】按张固定 **$0.1 × gr 0.7 = $0.07/张 = ¥0.504**(汇率 7.2;站内充值 ¥7.3/$1),与 size/quality/n
+    // 全无关(2026-09-28 上游 `/api/log/token` 逐条 quota 实测 8 张全 0.07);失败(502/503)不计费。
+    // 【盈亏(售价 = 合成 ct × 3.9e-5,见 MIN_SYNTH_CT 注释)】覆盖 ¥0.504 需 ct ≥ ~12,923 → 只有
+    //   4K high(13,342→¥0.520)/ 2048² high(14,272→¥0.557)/ 2880² high(23,718→¥0.925)赚;
+    //   1024² high(7,024→¥0.274)/ 2560×1440 high(7,370→¥0.287)及全部 medium/low 档亏。**全量线既定代价**,
+    //   operator 2026-09-28 拍板接全量;要改守门把 openAllTiers 换成 gateMinCt: 12_923 一行即可。
+    // 【尺寸 / quality 全如实(7/7 实测)】1024² low/high、1536×1024 high、2048² medium、3840×2160 high
+    //   逐像素等于请求;响应 usage 逐 token 等于官方公式(196/7024/5488/3568/13342/1756),quality 档是真的
+    //   (与 junze 钉死 medium 不同)。不传 size → 上游默认 1264×848(非官方 auto)→ auto 归一层显式发尺寸即可。
+    //   edits multipart 1024² ✓。认 `response_format: b64_json`(显式要则返纯 b64);缺省只返 url,图床
+    //   `r2.52image.xyz`(= zdchat/zdapi 同一图床,疑同源号池)→ 适配器 url→b64 拉回(含 1s/3s 重试),不外泄。
+    // 【稳定性差】上游池阵发性抖动:实测一个 ~1.5 分钟窗口内 6 并发 × 3 轮全部 `502 candidate upstream
+    //   unavailable`,第 4 轮全过;另见 `503 image upload queue is busy; please retry shortly`。两者都是 5xx
+    //   → classifyUpstreamError 走 failover(换渠道 / 重试),不终态化。成功延迟 25–65s。
+    // 【brand】兜 yuanshudian / 52image(图床域)/ candidate upstream(其 502 文案)/ firefly / adobe(sanitize 已兜 adobe)。
+    // 透明背景未验证 → fail-closed(家族惯例,openAllTiers 不豁免)。
+    yuanshudian: {
+        baseUrl: 'https://api.yuanshudian.com',
+        brand: /\byuan-?shu-?dian\b|\b52image\b|\bcandidate upstream\b|\bfirefly\b/gi,
+        openAllTiers: true,
+        noTransparentBackground: true,
+    },
+    // ---- open302(开放堆栈,open302.com,杭州词元智界)2026-09-28 接入,【全量线】----
+    // 定位:openAllTiers 全量兜底(同 yuanshudian / pandatk / junze 那批):不设 gateMinCt,所有档位含
+    // size=auto 都接,按【客户请求尺寸 + quality】合成官方账单(#496)。
+    // 【身份】**不是 new-api**(`/api/status` `/api/pricing` `/api/log/token` 全回官网 HTML,`/v1/dashboard/billing/*`
+    // 404,响应头只有 `X-Request-Id: req_…`),nginx 直出;key 64 位带下划线。`/v1/models` 28 个,图类含 gpt-image-2 /
+    // gpt-image-2.5-flare / -sunburst / gemini image 系;本 provider 只挂裸 `gpt-image-2`。
+    // 【成本】**API 侧查不到**(无计费端点),只能看站方后台扣费 —— 接入后 operator 按后台核单价;盈亏表待补。
+    // 【⚠️ quality high 不给】1024² high → 回显 `medium` ct 1756;4K high → 回显 `medium` ct 3336(官方 medium 值);
+    //   low 如实(196)。即上游只有 low/medium 两档。openAllTiers 按客户请求的 quality 计费 → **high 档客户按 high
+    //   收但拿 medium 渲染**(同 junze 启用期间的应急取舍,operator 2026-09-28 拍板接全量);要诚实按档收,把
+    //   openAllTiers 换成 onlyQualities: ['low', 'medium'] 一行(同 we-token 先例)。
+    // 【尺寸如实】1024² / 2048² / **3840×2160 真 4K**(11.9MB,241s)逐像素等于请求;edits multipart 1024² ✓;
+    //   不传 size → 上游默认 1024²(非官方 auto)→ auto 归一层显式发尺寸即可。usage 回官方公式(196/1756/3568/3336)。
+    // 【⚠️ 三源混池】同 key 同模型 7 张:4 张完全无 C2PA(字节零 openai/adobe,疑 ChatGPT 逆向剥过元数据)、
+    //   2 张 Adobe Inc. / Adobe Firefly / c2pa.opened(edits、2048²)、1 张 OpenAI OpCo / OpenAI Media Service API
+    //   (4K,无 watermarked.unbound,像 Azure/官方直连)。Adobe 那路靠适配器内容自定向 strip(#227/#440)兜住,
+    //   OpenAI 签名是真官方凭证正确放行,无 C2PA 那路字节原样。三家渲染风格一致、中文招牌全对。
+    // 【响应形态】认 `response_format: b64_json`(返纯 b64);缺省只返 url(自家图床 `r2.open302.com`,无需 UA)
+    //   → 适配器 url→b64 拉回不外泄。延迟 low 21s / medium 40–62s / 4K 241s。
+    // 【brand】兜 open302 / 词元 / 开放堆栈 / firefly(adobe 由 sanitize 通用兜)。非 new-api 错误体形态未知,
+    //   classifyUpstreamError 默认保守 failover。透明背景 / n>1 / 安全文案 / 并发未测 → 透明 fail-closed。
+    open302: {
+        baseUrl: 'https://open302.com',
+        brand: /\bopen-?302\b|词元|开放堆栈|\bfirefly\b/gi,
+        openAllTiers: true,
+        noTransparentBackground: true,
     },
 };

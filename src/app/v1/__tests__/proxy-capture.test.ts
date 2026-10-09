@@ -154,7 +154,7 @@ describe('fail-closed + 采样', () => {
         logStoreConfigured = false;
         mockFetch.mockResolvedValueOnce(jsonUpstream({ ok: 1 }));
         const res = await POST(
-            makeReq('/chat/completions', { body: { model: 'gpt-5.4', messages: [] } }),
+            makeReq('/chat/completions', { body: { model: 'gpt-5.4', messages: [{ role: 'user', content: 'hi' }] } }),
             ctx('chat', 'completions'),
         );
         await __flushReqlogForTest();
@@ -167,7 +167,7 @@ describe('fail-closed + 采样', () => {
         process.env.REQUEST_LOGGING_SAMPLE_RATE = '0';
         mockFetch.mockResolvedValueOnce(jsonUpstream({ ok: 1 }));
         await POST(
-            makeReq('/chat/completions', { body: { model: 'gpt-5.4', messages: [] } }),
+            makeReq('/chat/completions', { body: { model: 'gpt-5.4', messages: [{ role: 'user', content: 'hi' }] } }),
             ctx('chat', 'completions'),
         );
         await __flushReqlogForTest();
@@ -292,7 +292,7 @@ describe('best-effort:写存失败客户照常', () => {
         const respBody = { ok: 'yes' };
         mockFetch.mockResolvedValueOnce(jsonUpstream(respBody));
         const res = await POST(
-            makeReq('/chat/completions', { body: { model: 'gpt-5.4', messages: [] } }),
+            makeReq('/chat/completions', { body: { model: 'gpt-5.4', messages: [{ role: 'user', content: 'hi' }] } }),
             ctx('chat', 'completions'),
         );
         const forwarded = await res.text();
@@ -311,7 +311,7 @@ describe('best-effort:写存失败客户照常', () => {
         const respBody = { ok: 'still' };
         mockFetch.mockResolvedValueOnce(jsonUpstream(respBody));
         const res = await POST(
-            makeReq('/chat/completions', { body: { model: 'gpt-5.4', messages: [] } }),
+            makeReq('/chat/completions', { body: { model: 'gpt-5.4', messages: [{ role: 'user', content: 'hi' }] } }),
             ctx('chat', 'completions'),
         );
         const forwarded = await res.text();
@@ -404,7 +404,7 @@ describe('text-only 模式(REQUEST_LOGGING_SKIP_MEDIA)— 跳过生图/生视频
     it('/messages(Claude 文本)→ 仍捕获', async () => {
         mockFetch.mockResolvedValueOnce(jsonUpstream({ ok: 1 }));
         const res = await POST(
-            makeReq('/messages', { body: { model: 'claude-opus-4-8', messages: [] } }),
+            makeReq('/messages', { body: { model: 'claude-opus-4-8', messages: [{ role: 'user', content: 'hi' }] } }),
             ctx('messages'),
         );
         await res.text(); // 消费响应驱动 tee 收尾(/messages 走 passthrough teeStream)

@@ -21,7 +21,19 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
 import { uploadImage } from '@/lib/r2/client';
+import { normalizeReferenceImage } from '@/lib/image/normalize-reference';
 import { classifyUpstreamError } from './upstream-error';
+import { rememberVolcId, toUpstreamId } from '@/lib/enterprise/volc-id-map';
+import { DraftTaskError, extractDraftTaskRef, resolveDraftTaskArkId } from './draft-task';
+import {
+    SVCINF_DEFAULT_BASE,
+    isSvcinfTaskId,
+    makeArkTaskId,
+    pollSvcinfTask,
+    submitSvcinfTask,
+    type SvcinfApiVersion,
+    type SvcinfConfig,
+} from './svcinf-client';
 
 const XHK_BASE = process.env.SEEDANCE_XHK_BASE_URL || 'https://token.xinhankr.com';
 /** 上游 pro 模型名(SEEDANCE_XHK_MODEL 仅覆盖 pro;fast/mini 上游 id 固定)。 */
@@ -58,16 +70,32 @@ const UPSTREAM_XHK_25 = process.env.SEEDANCE_XHK_MODEL_25 || 'artsdance-2-5-pro-
 // 720p 却 100% 稳),doubao-seedance-2-5-260628 @480p 是 28/28 全稳(含 audio=false)——
 // 同一底模,doubao- 名路由到全支持 480p 的稳定后端。720p/1080p 仍走 pro 版 260801。
 const UPSTREAM_XHK_25_480P = process.env.SEEDANCE_XHK_MODEL_25_480P || 'doubao-seedance-2-5-260628';
+// 2026-09-22 起 480p 单档改走 service-inference.ai(operator 拍板,与火山渠道同一家上游、独立 key;2026-09-27 起 /v2):
+// 上游模型名 `doubao-seedance-2-5-260628-max`(本平台套餐形态,GET /v1/models 为准),协议见 svcinf-client。
+// 只有配了 SEEDANCE_SVCINF_KEY 才切;未配回落上面的 xinhankr 260628(部署缺 env 不断档)。
+const UPSTREAM_SVCINF_25_480P = process.env.SEEDANCE_SVCINF_MODEL_25_480P || 'doubao-seedance-2-5-260628-max';
+// 样片出正片(draft_task,2026-10-08)强制走 service-inference.ai(样片在那条线生成,方舟真号只有它认),
+// 正片分辨率由请求体承载,模型名与 480p 档同一个套餐名(env 可覆盖)。
+const UPSTREAM_SVCINF_25 = process.env.SEEDANCE_SVCINF_MODEL_25 || 'doubao-seedance-2-5-260628-max';
+/** 国内版 2.5 480p 的 service-inference.ai 配置(lazy 读 env,便于改 key 不重启 + 可测);未配 → null。 */
+export function getSvcinfCnConfig(): SvcinfConfig | null {
+    const key = process.env.SEEDANCE_SVCINF_KEY?.trim();
+    if (!key) return null;
+    // 2026-09-27 operator 指定改走 /v2(与火山渠道同一入口;直传 URL 素材经 preparing 自动上传)。
+    // 缺省 v2;置 SEEDANCE_SVCINF_API_VERSION=v1 可切回(两版信封相同)。
+    const api: SvcinfApiVersion = process.env.SEEDANCE_SVCINF_API_VERSION === 'v1' ? 'v1' : 'v2';
+    return { base: (process.env.SEEDANCE_SVCINF_BASE_URL || SVCINF_DEFAULT_BASE).replace(/\/$/, ''), key, api };
+}
 
 /** 版本 → 上游 base URL(global 与 promax 同为 intl 端口,仅模型名/费率不同)。
- *  volc(火山渠道)走独立上游 + 火山方舟原生协议,不经此函数(见 kuaizi-adapter)。 */
+ *  volc(火山渠道)走独立上游 + 火山方舟原生协议,不经此函数(见 volc-adapter)。 */
 export type SeedanceRegion = 'cn' | 'global' | 'promax' | 'volc';
 export function baseForRegion(region: SeedanceRegion): string {
     return region === 'global' || region === 'promax' ? INTL_BASE : XHK_BASE;
 }
 
-/** 「火山」渠道对客模型名(火山方舟点分形)。2026-08-17 换上游(筷子开放平台)后由单模型
- *  扩到四档;上游 Model ID 与档位映射见 kuaizi-adapter 的 VOLC_MODELS。
+/** 「火山」渠道对客模型名(火山方舟点分形)。2026-08-17 换上游后由单模型
+ *  扩到四档;上游 Model ID 与档位映射见 volc-adapter 的 VOLC_MODELS。
  *  ⚠️ 必须是点分形 —— 连字符形(doubao-seedance-2-0-260128 等)被 ark-format 归一到国内版
  *  短名 seedance-2-0 系(cn 渠道),两套命名不能相撞。 */
 export const VOLC_MODEL = 'doubao-seedance-2.0';
@@ -108,6 +136,10 @@ export interface SeedanceModelSpec {
     upstream: string;
     /** 版本:缺省 'cn';'global' 走海外 base(INTL_BASE)。 */
     region?: SeedanceRegion;
+    /** 'svcinf' = 该档走 service-inference.ai(配了 SEEDANCE_SVCINF_KEY 时);缺省走 region 对应的 xinhankr/intl base。 */
+    provider?: 'svcinf';
+    /** provider='svcinf' 时发给 service-inference.ai 的模型名(`upstream` 仍是未配 key 时的回落模型)。 */
+    svcinfModel?: string;
 }
 
 /** 客户/new-api 档位模型名 → 档位规格(每档 × {无参考,-ref} 两名)。2k 已下线(2026-07-15)。
@@ -131,8 +163,8 @@ export const MODEL_MAP: Record<string, SeedanceModelSpec> = {
             ),
         ),
     ),
-    // ── 国内 seedance 2.5(cn):费率独立;720p/1080p 走 pro 版 260801,480p 走 doubao-260628
-    //    (pro 版拒 480p;480p 用 doubao- 名走稳定后端,见 UPSTREAM_XHK_25_480P 注释)──
+    // ── 国内 seedance 2.5(cn):费率独立;720p/1080p 走 pro 版 260801;480p 走 service-inference.ai
+    //    (2026-09-22 起,未配 key 回落 xinhankr doubao-260628,见 UPSTREAM_XHK_25_480P / getSvcinfCnConfig)──
     ...Object.fromEntries(
         (['480p', '720p', '1080p'] as const).flatMap((resolution) =>
             [false, true].map((ref) => [
@@ -142,6 +174,10 @@ export const MODEL_MAP: Record<string, SeedanceModelSpec> = {
                     ref,
                     variant: '2.5' as const,
                     upstream: resolution === '480p' ? UPSTREAM_XHK_25_480P : UPSTREAM_XHK_25,
+                    // 480p 单档 2026-09-22 起走 service-inference.ai(有 key 才切,见 getSvcinfCnConfig)
+                    ...(resolution === '480p'
+                        ? { provider: 'svcinf' as const, svcinfModel: UPSTREAM_SVCINF_25_480P }
+                        : {}),
                 },
             ]),
         ),
@@ -260,10 +296,51 @@ export function maxDurationForVariant(v: SeedanceVariant): number {
     return v === '2.5' || v === 'promax-2.5' ? 30 : 15;
 }
 
+/** 合法时长:-1(智能时长)或 [4, maxDur] 的整数秒。 */
+function isValidDuration(n: number, maxDur: number): boolean {
+    return n === -1 || (Number.isInteger(n) && n >= 4 && n <= maxDur);
+}
+
+/**
+ * prompt 内联指令 `--duration N` / `--dur N`(火山官方的「弱校验」通道:参数写在提示词文本里)。
+ *
+ * 火山官方语义(2026-09-29 客户对照国内基线实测):body 没传 duration 时,文本里的
+ * `--duration 25` 生效(出 25s);body 传了则 body 胜出。弱校验 = 内联值不合法就当没写
+ * (不报错,走缺省)。多次出现取最后一个。
+ */
+export function inlineDurationFromPrompt(body: Record<string, unknown>, maxDur: number): number | null {
+    const text = extractPrompt(body);
+    if (!text) return null;
+    let hit: number | null = null;
+    for (const m of text.matchAll(/(?:^|\s)--(?:duration|dur)\s+(-?\d+)(?=\s|$)/gi)) {
+        const n = Number(m[1]);
+        if (isValidDuration(n, maxDur)) hit = n;
+    }
+    return hit;
+}
+
+/**
+ * 请求时长的【唯一】解析口径(enterprise proxy / cn-proxy / 适配器核心三处共用 ——
+ * 估价、落库、实际转发给上游的值必须一致,否则按 token 结算时「估的」和「出的」对不上)。
+ *
+ * 优先级:body.duration(/seconds)> prompt 内联 `--duration N` > 缺省 5。
+ * body 显式传了但不合法 → null,由调用方决定 400(proxy)还是回落 5(适配器 / cn-proxy)。
+ *
+ * ⚠️ 此前缺省时我们硬填 5 并总往上游 body 注入 duration,body 参数压过文本指令 →
+ * 客户写在提示词里的 `--duration 25` 静默失效、按 5s 出片计费(2026-09-29 客户报障)。
+ */
+export function resolveRequestedDuration(body: Record<string, unknown>, maxDur: number): number | null {
+    if (body.duration != null || body.seconds != null) {
+        const n = Number(body.duration ?? body.seconds);
+        return isValidDuration(n, maxDur) ? n : null;
+    }
+    return inlineDurationFromPrompt(body, maxDur) ?? 5;
+}
+
 // 火山官方 2.5 支持 adaptive(首尾帧/视频编辑/延长任务【必须】adaptive → 输出跟随输入宽高比)。
 const ALLOWED_RATIOS = new Set(['16:9', '9:16', '4:3', '3:4', '1:1', '21:9', 'adaptive']);
 
-// 反向白名单透传(与火山渠道 kuaizi-adapter 对齐,2026-09-10):我们只挡【自己消费/翻译掉】的键,
+// 反向白名单透传(与火山渠道 volc-adapter 对齐,2026-09-10):我们只挡【自己消费/翻译掉】的键,
 // 其余客户传的字段一律原样转发给上游 —— 逐个列白名单必然落后于上游,曾把 bitrate_mode /
 // watermark / service_tier / priority 等火山官方字段静默吃掉(客户 liyan2 传 bitrate_mode 上游没收到)。
 // CONSUMED = 我们显式构造 upstreamBody 时读掉的键(含各种参考输入别名,proxy 已并进 images/videos,
@@ -470,11 +547,21 @@ async function rehostHttpMediaToR2(url: string): Promise<string | null> {
                   ? 'audio/mpeg'
                   : 'image/jpeg';
         }
-        return await uploadImage(`seedance-input/${randomUUID()}`, buf, ct);
+        const n = await normalizeReferenceImage(buf, ct);
+        return await uploadImage(`seedance-input/${randomUUID()}`, n.buf, n.mime);
     } catch {
         return null;
     } finally {
         clearTimeout(timer);
+    }
+}
+
+/** URL 路径以 .bmp / .heic / .heif 结尾 → 即使国内档也要先转存归一(上游按字节拒收这两族)。 */
+function needsFormatNormalize(u: string): boolean {
+    try {
+        return /\.(bmp|heic|heif)$/i.test(new URL(u).pathname);
+    } catch {
+        return false;
     }
 }
 
@@ -484,12 +571,15 @@ async function toHttpMediaUrl(url: string, opts?: { rehostHttp?: boolean }): Pro
     if (m) {
         const buf = Buffer.from(m[2], 'base64');
         if (buf.length > 20 * 1024 * 1024) throw new Error('media exceeds 20MB');
-        return uploadImage(`seedance-cn-ref/${randomUUID()}`, buf, m[1]);
+        // bmp → png / heif 品牌回写(上游对这两种「声明支持」的格式实际拒收,见 normalize-reference.ts)
+        const n = await normalizeReferenceImage(buf, m[1]);
+        return uploadImage(`seedance-cn-ref/${randomUUID()}`, n.buf, n.mime);
     }
     if (!/^https?:\/\//i.test(u)) throw new Error('media must be an http(s) URL or a base64 data URL');
     // 海外档(global/promax):把 http 输入媒体转存 Cloudflare R2,避免海外上游跨境拉国内 CDN
     // (popreels.cn 等)超时(Gateway Time-out)。已是我们 R2 域名的跳过;转存失败回退原 URL。
-    if (opts?.rehostHttp && !isOurR2Url(u)) {
+    // 国内档本来原样透传,但 .bmp / .heic / .heif 直链上游同样拒收 → 也拉下来归一后转存(失败回退原 URL)。
+    if ((opts?.rehostHttp || needsFormatNormalize(u)) && !isOurR2Url(u)) {
         const rehosted = await rehostHttpMediaToR2(u);
         if (rehosted) return rehosted;
     }
@@ -522,8 +612,16 @@ export async function submitVideoWithKey(body: Record<string, unknown>, auth: st
     const map = MODEL_MAP[model];
     if (!map) return err(400, 'model_not_found', `unknown seedance-cn model: ${model}`);
 
+    // 样片出正片:content 里带 draft_task 引用时,提示词等由样片沿用,text 可省。
+    let draftRef: { id: string } | null = null;
+    try {
+        draftRef = extractDraftTaskRef(body);
+    } catch (e) {
+        if (e instanceof DraftTaskError) return err(400, 'invalid_request', e.message);
+        throw e;
+    }
     const prompt = extractPrompt(body);
-    if (!prompt) return err(400, 'invalid_request', 'prompt (text) is required');
+    if (!prompt && !draftRef) return err(400, 'invalid_request', 'prompt (text) is required');
 
     // 入参图/视频 + 帧角色(first_frame/last_frame 显式优先;reference_mode 次之;否则智能模式)
     const rawImages = extractImageUrls(body);
@@ -557,10 +655,10 @@ export async function submitVideoWithKey(body: Record<string, unknown>, auth: st
 
     // duration:2.5 系 4-30s,2.0 系 4-15s(火山官方 2026-08 提升 2.5 至 30s);-1 = 智能时长
     // (上游在有效范围内自选,火山官方全系支持)。范围外/非整数回落 5。
-    const durRaw = Number(body.duration ?? body.seconds);
+    // body 没传时认 prompt 内联 `--duration N`(见 resolveRequestedDuration)。
     const maxDur = maxDurationForVariant(map.variant);
-    const duration = durRaw === -1 ? -1 : Number.isInteger(durRaw) && durRaw >= 4 && durRaw <= maxDur ? durRaw : 5;
-    // ratio:**客户没传就不注入**,由上游按任务类型自己定 —— 与火山渠道 kuaizi-adapter 对齐。
+    const duration = resolveRequestedDuration(body, maxDur) ?? 5;
+    // ratio:**客户没传就不注入**,由上游按任务类型自己定 —— 与火山渠道 volc-adapter 对齐。
     // 此前硬塞 16:9:首帧/首尾帧任务上游要求「输出比例跟随首帧图」(只接受不指定/adaptive),
     // 我们替客户填了 16:9 → 上游 task_type_constraint 拒(2026-09-11 客户 jingdong 报障)。
     // 「不指定」是有意义的取值,不能被默认值吃掉。显式传了才注入;非法值宽松纠正成 16:9。
@@ -576,6 +674,12 @@ export async function submitVideoWithKey(body: Record<string, unknown>, auth: st
         duration,
         generate_audio: generateAudio,
     };
+    // 样片出正片:时长 / 音频等官方语义是「沿用样片」,客户没显式传就不注入我们的默认值
+    //(注入了会被方舟按「重复指定」拒或悄悄改掉样片口径)。显式传了原样过去,由上游判。
+    if (draftRef) {
+        if (body.duration == null && body.seconds == null) delete upstreamBody.duration;
+        if (typeof body.generate_audio !== 'boolean') delete upstreamBody.generate_audio;
+    }
     if (ratio !== undefined) upstreamBody.ratio = ALLOWED_RATIOS.has(ratio) ? ratio : '16:9';
     if (typeof body.camera_fixed === 'boolean') upstreamBody.camera_fixed = body.camera_fixed;
     if (typeof body.seed === 'number') upstreamBody.seed = body.seed;
@@ -656,6 +760,61 @@ export async function submitVideoWithKey(body: Record<string, unknown>, auth: st
         genAudio: generateAudio,
     });
 
+    // 2.5 480p 单档 → service-inference.ai(平台 key,不用客户/渠道的 xinhankr key)。
+    // 只翻译 body 形态(prompt + images/videos/audios → 方舟 content 数组),其余字段原样;
+    // 对客 id 自造火山方舟形号 + volc_id_map 记映射(上游受理号 mvt-),轮询按映射分流。
+    let svc = map.provider === 'svcinf' ? getSvcinfCnConfig() : null;
+    let svcModel = map.svcinfModel ?? map.upstream;
+    let draftArkId: string | null = null;
+    if (draftRef) {
+        // 样片出正片:仅 2.5(方舟官方),且不论正片分辨率一律走 service-inference.ai ——
+        // 样片在那条线生成,draft_task.id 必须是方舟真号(mvt- 受理号 → metadata.id,见 draft-task.ts)。
+        if (map.variant !== '2.5') return err(400, 'invalid_request', 'draft_task(样片出正片)仅 seedance-2-5 支持');
+        svc = getSvcinfCnConfig();
+        if (!svc) return err(503, 'temporarily_unavailable', '样片出正片上游未配置,请联系服务方');
+        const r = await resolveDraftTaskArkId(svc, draftRef.id, 'seedance-cn-adapter');
+        if (!r.ok) return err(r.status, r.code, r.message);
+        draftArkId = r.arkId;
+        svcModel = UPSTREAM_SVCINF_25;
+        console.log('[seedance-cn-adapter] draft_task → 方舟真号', { client_draft_id: draftRef.id, model });
+    }
+    if (svc) {
+        const content: Array<Record<string, unknown>> = [];
+        if (prompt) content.push({ type: 'text', text: prompt });
+        if (draftArkId) content.push({ type: 'draft_task', draft_task: { id: draftArkId } });
+        for (const im of (upstreamBody.images as Array<{ url: string; role: string }> | undefined) ?? [])
+            content.push({ type: 'image_url', image_url: { url: im.url }, role: im.role });
+        for (const v of (upstreamBody.videos as string[] | undefined) ?? [])
+            content.push({ type: 'video_url', video_url: { url: v }, role: 'reference_video' });
+        for (const a of (upstreamBody.audios as string[] | undefined) ?? [])
+            content.push({ type: 'audio_url', audio_url: { url: a }, role: 'reference_audio' });
+        const svcBody: Record<string, unknown> = { ...upstreamBody, model: svcModel, content };
+        delete svcBody.prompt;
+        delete svcBody.images;
+        delete svcBody.videos;
+        delete svcBody.audios;
+        const r = await submitSvcinfTask(svc, svcBody, {
+            log: 'seedance-cn-adapter',
+            errType: 'seedance_cn_adapter_error',
+            model,
+        });
+        if (!r.ok) return r.res;
+        const clientTaskId = makeArkTaskId();
+        await rememberVolcId(clientTaskId, r.taskId, 'task');
+        return NextResponse.json(
+            {
+                id: clientTaskId,
+                task_id: clientTaskId,
+                object: 'video',
+                model,
+                status: 'queued',
+                progress: 0,
+                created_at: Math.floor(Date.now() / 1000),
+            },
+            { status: 200 },
+        );
+    }
+
     const upstreamBase = baseForRegion(map.region ?? 'cn');
     let upstream: Response;
     try {
@@ -734,6 +893,13 @@ export async function pollVideo(req: NextRequest, id: string): Promise<NextRespo
  *  尽力而为——上游支持则真取消排队任务;不支持/报错由调用方决定不阻断客户,且绝不透传上游 body(#271)。
  *  返回原始 upstream Response(调用方一般只看是否 2xx)。 */
 export async function cancelVideoWithKey(id: string, auth: string, region: SeedanceRegion = 'cn'): Promise<Response> {
+    // service-inference.ai 任务(2.5 480p):上游无取消端点 → 合成 501,调用方 best-effort 不阻断。
+    if (isSvcinfTaskId(await toUpstreamId(id))) {
+        return new Response(JSON.stringify({ error: { code: 'not_supported', message: 'cancel not supported' } }), {
+            status: 501,
+            headers: { 'Content-Type': 'application/json' },
+        });
+    }
     return fetchXhk(
         `/v1/video/generations/${encodeURIComponent(id)}`,
         auth,
@@ -744,6 +910,14 @@ export async function cancelVideoWithKey(id: string, auth: string, region: Seeda
 
 /** 轮询核心(独立门户直调:id + 上游 key 授权头;region 决定打哪个 base,缺省国内)。 */
 export async function pollVideoWithKey(id: string, auth: string, region: SeedanceRegion = 'cn'): Promise<NextResponse> {
+    // 2.5 480p(service-inference.ai)任务:对客号 → volc_id_map → 上游 mvt- 号 → 平台 key 轮询。
+    // 查不到映射 / 非 mvt- → 存量 xinhankr 任务,照旧。（每次轮询 +1 次主键查表,可接受。）
+    const mapped = await toUpstreamId(id);
+    if (isSvcinfTaskId(mapped)) {
+        const svc = getSvcinfCnConfig();
+        if (!svc) return err(503, 'temporarily_unavailable', 'seedance 2.5 480p 上游未配置,请联系服务方');
+        return pollSvcinfTask(svc, id, mapped, { log: 'seedance-cn-adapter', errType: 'seedance_cn_adapter_error' });
+    }
     let upstream: Response;
     try {
         upstream = await fetchXhk(`/v1/video/generations/${encodeURIComponent(id)}`, auth, {}, baseForRegion(region));

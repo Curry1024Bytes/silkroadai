@@ -173,9 +173,31 @@ export interface ArkTaskResponseInput {
      * 必须用上游真值,上游没给的项才走火山官方默认值。
      */
     volcMeta?: VolcArkMeta | null;
+    /**
+     * 非 volc 渠道上游(能)带出来的元数据(2026-09-23):国内版 2.5 480p 走 service-inference.ai,
+     * 它回显方舟原生体;xinhankr / intl 上游什么都不回显 → 传 null,一律走落库值 / 官方默认值。
+     */
+    upstreamMeta?: VolcArkMeta | null;
+    /**
+     * 提交时落库的回显参数(2026-09-23,火山官方查询响应新增字段):
+     * 上游不回显时用它;客户没传的项(safety_identifier / tools)响应里省略,对齐官方语义。
+     */
+    submitted?: ArkSubmittedParams | null;
 }
 
-/** volc 渠道从上游带出来的元数据(上游未给的项走火山官方默认值)。 */
+/** 提交参数(task 行新列,存量行 NULL)。 */
+export interface ArkSubmittedParams {
+    safetyIdentifier?: string | null;
+    outputFormat?: string | null;
+    tools?: unknown;
+    /** 官方创建参数(任务超时阈值秒);客户传了就回显,否则官方默认 172800。 */
+    executionExpiresAfter?: number | null;
+    /** 样片模式(2026-10-08):创建时传的 draft 布尔(没传 → false);正片引用的客户样片号(没有 → 省略)。 */
+    draft?: boolean | null;
+    draftTaskId?: string | null;
+}
+
+/** 上游(火山方舟原生体)带出来的元数据(上游未给的项走火山官方默认值)。 */
 export interface VolcArkMeta {
     framespersecond?: number | null;
     generateAudio?: boolean | null;
@@ -187,17 +209,44 @@ export interface VolcArkMeta {
     updatedAt?: number | null;
     /** 上游给了就跟随(火山成功态恒有该键,无尾帧时为空串)。 */
     lastFrameUrl?: string | null;
+    // 2026-09 官方新增回显字段(service-inference.ai metadata 实测有前三项;frames 暂未见)
+    outputFormat?: string | null;
+    safetyIdentifier?: string | null;
+    serviceTier?: string | null;
+    frames?: number | null;
+    /** 样片模式:上游(方舟原生体)回显的 draft 布尔。 */
+    draft?: boolean | null;
 }
 
 /** 火山官方默认值 —— 任务未完成时上游不返回这几项,但客户契约要求字段恒在。 */
 const VOLC_DEFAULT_FPS = 24;
 const VOLC_DEFAULT_EXPIRES_AFTER = 172800; // 48h
 const VOLC_DEFAULT_SERVICE_TIER = 'default';
+const VOLC_DEFAULT_OUTPUT_FORMAT = 'mp4';
+
+/** 官方 `frames`(视频帧数):上游给了用上游;否则按 Seedance 惯例 24fps × 秒 + 1(1.0 时代 5s=121 / 10s=241)。
+ *  时长未定(-1 智能时长且上游尚未推导)→ 省略。 */
+function arkFrames(m: VolcArkMeta | null | undefined, fps: number, duration: number | null | undefined): number | null {
+    if (typeof m?.frames === 'number' && m.frames > 0) return m.frames;
+    if (typeof duration === 'number' && duration > 0) return fps * duration + 1;
+    return null;
+}
+
+/** 客户传了的 tools 数组才回显(官方:未使用工具时不返回)。 */
+function submittedTools(
+    m: VolcArkMeta | null | undefined,
+    sub: ArkSubmittedParams | null | undefined,
+): unknown[] | null {
+    if (Array.isArray(m?.tools) && m.tools.length) return m.tools;
+    if (Array.isArray(sub?.tools) && sub.tools.length) return sub.tools;
+    return null;
+}
 
 /** 组装查询任务响应体 —— 按渠道分形(2026-08-12):
- *  - 火山方舟官方形(cn/volc,extended=false):只出 docs.volcengine.com/82379 声明的字段集
- *    {id, model, status, content, error, created_at, updated_at, resolution, ratio, duration, usage},
- *    客户严格白名单校验会拒未声明字段,故不带 draft/service_tier/seed 等。
+ *  - 火山方舟官方形(cn/volc,extended=false):只出 docs.volcengine.com/82379 声明的字段集。
+ *    2026-09 官方扩到 {id, model, status, content, error, created_at, updated_at, resolution, ratio, duration,
+ *    usage, execution_expires_after, frames, framespersecond, generate_audio, output_format, safety_identifier,
+ *    seed, service_tier, tools}(后两者客户传了才出)+ draft(官方 SDK 任务体字段,2026-10-08 起三形都出)。
  *  - BytePlus ModelArk 形(global/promax,extended=true,#326 客户样例):额外常驻
  *    draft/execution_expires_after/framespersecond/service_tier/tools/seed/generate_audio + usage.tool_usage。
  *  两形共有:error 恒为 {code,message} 对象(成功/进行中 = 空串,非 null);ratio 从 task 行回显。 */
@@ -218,32 +267,74 @@ export function buildArkTaskResponse(inp: ArkTaskResponseInput): Record<string, 
         updated_at: nowSec,
         ratio: inp.ratio || '16:9',
     };
+    const sub = inp.submitted ?? null;
+    const meta = inp.volcMeta ?? inp.upstreamMeta ?? null;
+    // 2026-09 火山官方查询响应新增字段(output_format / safety_identifier / frames / tools 等):
+    // 值优先级 = 上游真值 > 落库的提交参数 > 官方默认值;客户没传的 safety_identifier / tools 省略。
+    const outputFormat = meta?.outputFormat || sub?.outputFormat || VOLC_DEFAULT_OUTPUT_FORMAT;
+    const safetyIdentifier = meta?.safetyIdentifier || sub?.safetyIdentifier || null;
+    const fps = meta?.framespersecond ?? VOLC_DEFAULT_FPS;
+    const frames = arkFrames(meta, fps, inp.duration);
+    const toolsEcho = submittedTools(meta, sub);
+    const expiresAfter = meta?.executionExpiresAfter ?? sub?.executionExpiresAfter ?? VOLC_DEFAULT_EXPIRES_AFTER;
+
     // BytePlus 形专属扩展字段(火山官方形不带,否则客户白名单校验拒)。
+    // 样片模式(2026-10-08,官方 SDK 任务体含 draft + draft_task_id):三形都出 draft(上游真值 > 落库 > false),
+    // draft_task_id 只在正片任务上出(客户样片号,方舟真号不对客)。
+    const draftEcho = meta?.draft ?? sub?.draft ?? false;
+    const draftTaskId = sub?.draftTaskId || null;
     if (inp.extended) {
-        base.draft = false;
+        base.draft = draftEcho;
+        if (draftTaskId) base.draft_task_id = draftTaskId;
         base.execution_expires_after = 0;
         base.framespersecond = 0;
         base.service_tier = '';
-        base.tools = null;
+        base.tools = toolsEcho;
         base.seed = inp.seed != null ? Number(inp.seed) : 0;
         base.generate_audio = inp.generateAudio ?? true;
+        base.output_format = outputFormat;
+        if (safetyIdentifier) base.safety_identifier = safetyIdentifier;
+        if (frames != null) base.frames = frames;
     }
     // volc:火山官方字段集(值优先取上游真值,上游未给的走火山官方默认值)。
     if (inp.volcMeta) {
         const m = inp.volcMeta;
-        base.draft = false;
-        base.service_tier = VOLC_DEFAULT_SERVICE_TIER;
-        base.framespersecond = m.framespersecond ?? VOLC_DEFAULT_FPS;
-        base.execution_expires_after = m.executionExpiresAfter ?? VOLC_DEFAULT_EXPIRES_AFTER;
+        base.draft = draftEcho;
+        if (draftTaskId) base.draft_task_id = draftTaskId;
+        base.service_tier = m.serviceTier || VOLC_DEFAULT_SERVICE_TIER;
+        base.framespersecond = fps;
+        base.execution_expires_after = expiresAfter;
         base.generate_audio = m.generateAudio ?? inp.generateAudio ?? true;
         base.seed = m.seed ?? (inp.seed != null ? Number(inp.seed) : 0);
-        base.tools = m.tools ?? [];
+        base.tools = toolsEcho ?? m.tools ?? [];
+        base.output_format = outputFormat;
+        if (safetyIdentifier) base.safety_identifier = safetyIdentifier;
+        if (frames != null) base.frames = frames;
         // 时间戳以**上游**为准。此前用的是我们库行的 created_at + Date.now():
         //  - created_at 与上游差几秒(我们落库晚于上游受理)
         //  - updated_at 是 Date.now() → **客户每查一次就变一次**,根本不是"任务更新时间"
         // 上游未受理时返 0(running 早期),那时才回落库值。
         if (m.createdAt) base.created_at = m.createdAt;
         if (m.updatedAt) base.updated_at = m.updatedAt;
+    }
+    // 火山方舟官方形(cn):2026-09 官方文档把 execution_expires_after / frames / framespersecond /
+    // generate_audio / output_format / safety_identifier / seed / service_tier / tools 都列进了查询响应
+    // (此前我们按旧文档只出 11 个字段,客户按新文档校验就缺项)。不带 upstream_id(官方无)。
+    if (!inp.extended && !inp.volcMeta) {
+        const m = inp.upstreamMeta ?? null;
+        base.execution_expires_after = expiresAfter;
+        base.framespersecond = fps;
+        base.generate_audio = m?.generateAudio ?? inp.generateAudio ?? true;
+        base.seed = m?.seed ?? (inp.seed != null ? Number(inp.seed) : 0);
+        base.service_tier = m?.serviceTier || VOLC_DEFAULT_SERVICE_TIER;
+        base.output_format = outputFormat;
+        base.draft = draftEcho;
+        if (draftTaskId) base.draft_task_id = draftTaskId;
+        if (safetyIdentifier) base.safety_identifier = safetyIdentifier;
+        if (frames != null) base.frames = frames;
+        if (toolsEcho) base.tools = toolsEcho;
+        if (m?.createdAt) base.created_at = m.createdAt;
+        if (m?.updatedAt) base.updated_at = m.updatedAt;
     }
     if (inp.resolution) base.resolution = inp.resolution;
     if (inp.duration != null) base.duration = inp.duration;
@@ -254,8 +345,8 @@ export function buildArkTaskResponse(inp: ArkTaskResponseInput): Record<string, 
         if (inp.lastFrameUrl) content.last_frame_url = inp.lastFrameUrl;
         // volc:火山成功态 content 恒有 last_frame_url 键(无尾帧时为空串)——
         // 客户按基准比对时"键缺失"和"值为空"是两回事。
-        else if (inp.volcMeta && inp.volcMeta.lastFrameUrl != null) {
-            content.last_frame_url = inp.volcMeta.lastFrameUrl;
+        else if (meta && meta.lastFrameUrl != null) {
+            content.last_frame_url = meta.lastFrameUrl;
         }
         base.content = content;
         if (inp.usage) {

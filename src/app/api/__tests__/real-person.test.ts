@@ -1,8 +1,11 @@
 /**
  * 真人视觉认证 Action 单测(2026-07-29,「火山」渠道):
  * CreateVisualValidateSession / GetVisualValidateResult 翻译到 provider + 火山 envelope。
+ *
+ * 2026-09-22 起入口缺省下架(ENTERPRISE_REALPERSON_ENABLED 未设 → 503,见 asset-actions.test);
+ * 本文件验的是【开启时】的原逻辑,故统一 stubEnv 打开。
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 
 const { db, resolveEnterpriseAuth, createSession, getGroupId } = vi.hoisted(() => ({
@@ -40,10 +43,12 @@ function req(action: string, body?: unknown): NextRequest {
 
 beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubEnv('ENTERPRISE_REALPERSON_ENABLED', '1');
     resolveEnterpriseAuth.mockResolvedValue(CUSTOMER);
     // 默认客户已开通 volc(有 volc 上游 key 行)
     db.enterpriseUpstreamKey.findUnique.mockResolvedValue({ id: 'up-volc' });
 });
+afterEach(() => vi.unstubAllEnvs());
 
 describe('CreateVisualValidateSession', () => {
     it('成功 → 火山 envelope 返 BytedToken/H5Link/ExpiresIn', async () => {

@@ -87,7 +87,12 @@ function makeReq(body: unknown): NextRequest {
     });
 }
 const ctx = { params: Promise.resolve({ path: ['messages'] }) };
-const STREAM_BODY = { model: 'claude-opus-4-8', stream: true, max_tokens: 100, messages: [] };
+const STREAM_BODY = {
+    model: 'claude-opus-4-8',
+    stream: true,
+    max_tokens: 100,
+    messages: [{ role: 'user', content: 'hi' }],
+};
 
 const mockFetch = vi.fn();
 

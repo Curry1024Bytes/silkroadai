@@ -10,6 +10,8 @@ import {
     coerceAndValidate,
     guardRawBody,
     isAbsent,
+    MAX_TOKENS_LIMIT,
+    validateRequired,
     violationBody,
 } from '@/lib/proxy/body-guard';
 
@@ -194,7 +196,96 @@ describe('body-guard — guardRawBody(文本入口)', () => {
     });
 });
 
+describe('body-guard — 必填字段 + max_tokens 上限(validateRequired)', () => {
+    const MSG = [{ role: 'user', content: 'hi' }];
+
+    it('chat:messages 缺失 / null → missing_required_parameter', () => {
+        for (const o of [{ model: 'm' }, { model: 'm', messages: null }]) {
+            expect(validateRequired(o, 'chat')).toEqual({
+                param: 'messages',
+                message: "Missing required parameter: 'messages'.",
+                code: 'missing_required_parameter',
+            });
+        }
+    });
+
+    it('chat:messages 空数组 → empty_array;非空 → 通过', () => {
+        expect(validateRequired({ messages: [] }, 'chat')?.code).toBe('empty_array');
+        expect(validateRequired({ messages: MSG }, 'chat')).toBeNull();
+    });
+
+    it('chat:FIM(prefix 或 suffix 非 null)豁免;prefix:null 不算', () => {
+        expect(validateRequired({ prefix: 'a' }, 'chat')).toBeNull();
+        expect(validateRequired({ suffix: '' }, 'chat')).toBeNull();
+        expect(validateRequired({ prefix: null, suffix: null }, 'chat')?.param).toBe('messages');
+    });
+
+    it('anthropic:Anthropic 官方措辞,无 FIM 豁免', () => {
+        expect(validateRequired({ model: 'm' }, 'anthropic')?.message).toBe('messages: Field required');
+        expect(validateRequired({ messages: [] }, 'anthropic')?.message).toBe(
+            'messages: at least one message is required',
+        );
+        expect(validateRequired({ prefix: 'a' }, 'anthropic')?.param).toBe('messages');
+        expect(validateRequired({ messages: MSG }, 'anthropic')).toBeNull();
+    });
+
+    it('responses:只有 input 键缺失才拦(null 在 Go 侧是非 nil RawMessage,不必然 500)', () => {
+        expect(validateRequired({ model: 'm' }, 'responses')?.param).toBe('input');
+        expect(validateRequired({ input: null }, 'responses')).toBeNull();
+        expect(validateRequired({ input: 'hi' }, 'responses')).toBeNull();
+        expect(validateRequired({ input: [] }, 'responses')).toBeNull();
+        // responses 面不要求 messages
+        expect(validateRequired({ input: 'hi', messages: [] }, 'responses')).toBeNull();
+    });
+
+    it('max_tokens 上限:等于上限放行,超过 → integer_above_max_value(各面各字段)', () => {
+        expect(validateRequired({ messages: MSG, max_tokens: MAX_TOKENS_LIMIT }, 'chat')).toBeNull();
+        expect(validateRequired({ messages: MSG, max_tokens: MAX_TOKENS_LIMIT + 1 }, 'chat')).toMatchObject({
+            param: 'max_tokens',
+            code: 'integer_above_max_value',
+        });
+        expect(validateRequired({ messages: MSG, max_completion_tokens: 2 ** 31 }, 'chat')?.param).toBe(
+            'max_completion_tokens',
+        );
+        expect(validateRequired({ messages: MSG, max_tokens_to_sample: 2 ** 31 }, 'anthropic')?.param).toBe(
+            'max_tokens_to_sample',
+        );
+        expect(validateRequired({ input: 'hi', max_output_tokens: 2 ** 31 }, 'responses')?.param).toBe(
+            'max_output_tokens',
+        );
+    });
+
+    it('guardRawBody:不传 surface 不查必填(旧调用方行为不变);传了才查,且类型违规优先', () => {
+        expect(guardRawBody('{"model":"m"}', CHAT_SPEC).violation).toBeNull();
+        expect(guardRawBody('{"model":"m"}', RESPONSES_SPEC, 'responses').violation?.param).toBe('input');
+        expect(guardRawBody('{"model":"m","max_output_tokens":-1}', RESPONSES_SPEC, 'responses').violation?.param).toBe(
+            'max_output_tokens',
+        );
+        // 数字串先强转再比上限
+        expect(
+            guardRawBody('{"input":"hi","max_output_tokens":"2147483647"}', RESPONSES_SPEC, 'responses').violation
+                ?.code,
+        ).toBe('integer_above_max_value');
+    });
+
+    it('getter 抛异常 → fail-open 返回 null', () => {
+        const evil = Object.defineProperty({}, 'messages', {
+            enumerable: true,
+            get() {
+                throw new Error('boom');
+            },
+        });
+        expect(validateRequired(evil as Record<string, unknown>, 'chat')).toBeNull();
+    });
+});
+
 describe('body-guard — violationBody 形状', () => {
+    it('带 code 的违规 → code 透出', () => {
+        expect(violationBody({ param: 'messages', message: 'x', code: 'missing_required_parameter' }).error.code).toBe(
+            'missing_required_parameter',
+        );
+    });
+
     it('OpenAI 形 invalid_request_error', () => {
         expect(violationBody({ param: 'max_tokens', message: "'max_tokens' must be a non-negative integer" })).toEqual({
             error: {

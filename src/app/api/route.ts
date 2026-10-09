@@ -12,8 +12,12 @@ import {
     type AssetType,
 } from '@/lib/enterprise/assets';
 import { RealPersonError, createVisualValidateSession, getVisualValidateGroupId } from '@/lib/enterprise/real-person';
-import { handleKuaiziAssetAction, kuaiziAssetsEnabled, shouldUseKuaiziAssets } from '@/lib/enterprise/kuaizi-assets';
 import { decryptUpstreamKey } from '@/lib/enterprise/crypto';
+
+/** 真人活体认证入口开关(缺省【关】= 下架;置 "1" 恢复)。见 handler 内说明。 */
+function realPersonEnabled(): boolean {
+    return process.env.ENTERPRISE_REALPERSON_ENABLED === '1';
+}
 import {
     newRequestLogCtx,
     sanitizeRequestBody,
@@ -225,8 +229,9 @@ async function handleAssetAction(req: NextRequest, ctx: RequestLogCtx): Promise<
     ctx.keyId = auth.customer.keyId;
 
     // 「火山」渠道客户?= 已开通 volc(有 volc 上游 key 行)。AK/SK 是账号级(非按 region),
-    // 故按"客户是否开通 volc"判定。volc 客户的真人认证 + 素材库都走 provider(专属服务)。
-    // 客户 volc 行 + 自己的筷子 key(2026-09-04 起支持按客户;占位符行 → undefined 走平台 env key)。
+    // 故按"客户是否开通 volc"判定。真人认证是 volc 专属服务;素材库四渠道统一走平台库(2026-09-22 起
+    // volc 也不再接上游素材库 —— 新上游 service-inference.ai 没有 list/delete/组 接口,见 volc-adapter 头注)。
+    // 客户 volc 行 + 自己的筷子 key:真人认证仍走筷子 provider(代码保留,入口下架),故仍按 kz- 前缀识别。
     const volcRow = await prisma.enterpriseUpstreamKey.findUnique({
         where: { user_id_region: { user_id: userId, region: 'volc' } },
         select: { id: true, upstream_key_enc: true },
@@ -242,8 +247,15 @@ async function handleAssetAction(req: NextRequest, ctx: RequestLogCtx): Promise<
         }
     }
 
+    const isRealPersonAction = action === 'CreateVisualValidateSession' || action === 'GetVisualValidateResult';
+    // 真人活体认证【下架】(2026-09-22,operator 拍板):与筷子合作终止,活体链路的上游没了;新上游
+    // service-inference.ai 无活体通道(含真人人脸的素材直接被拒)。接口与 real-person.ts 实现整体保留,
+    // 待未来接到新 provider 后置 ENTERPRISE_REALPERSON_ENABLED=1 恢复,不必改代码。
+    if (isRealPersonAction && !realPersonEnabled()) {
+        return fail(action, 503, 'ServiceUnavailable', '真人活体认证服务暂停中,恢复时间另行通知;如有需要请联系服务方');
+    }
     // 真人认证是「火山」渠道专属服务:未开通 volc → 403。
-    if ((action === 'CreateVisualValidateSession' || action === 'GetVisualValidateResult') && !isVolc) {
+    if (isRealPersonAction && !isVolc) {
         return fail(action, 403, 'ChannelNotEnabled', '真人认证为「火山」渠道专属服务,请先开通火山渠道');
     }
 
@@ -263,38 +275,11 @@ async function handleAssetAction(req: NextRequest, ctx: RequestLogCtx): Promise<
 
     // 素材库(2026-08-06 v3,operator 拍板):【全部素材统一平台托管】—— 真人素材四渠道
     // 通用,LivenessFace 只是分组类型不再决定存储位置;727 provider 素材路由下线
-    // (volc-assets.ts 保留未挂接,provider 账号复活后如需可重接)。volc 生成引用平台
-    // 素材走 lenient 混合解析(见 enterprise/proxy)。
-    //
-    // 例外(2026-08-17,**缺省开**):volc 渠道客户的 10 个素材 Action 走筷子开放平台自有
-    // 素材库 —— 与视频面同一个筷子账号自洽,asset://<Id> 上游能直接解析。火山渠道是单客户
-    // 专属,故共享 ApiKey 账号无行级隔离不构成问题;接第二个客户前置 ENTERPRISE_KUAIZI_ASSETS=0
-    // 回落平台库(取舍详见 kuaizi-assets.ts 文件头)。cn/global/promax 不受影响。
-    // 三种情况仍回落平台库(真人素材 / 平台形 Id / 平台形 GroupId)—— 见 shouldUseKuaiziAssets。
-    if (kuaiziAssetsEnabled() && isVolc && shouldUseKuaiziAssets(action, body)) {
-        ctx.format = 'kuaizi'; // 素材落筷子自有库(volc 渠道缺省)
-        try {
-            const result = await handleKuaiziAssetAction(action, body, userId, custKuaiziKey);
-            const rid = (result as { Id?: unknown } | null)?.Id;
-            if (typeof rid === 'string' && rid) ctx.resourceId = rid;
-            return ok(action, result);
-        } catch (e) {
-            if (e instanceof RealPersonError) {
-                // 上游侧原因落请求日志(2026-09-04):admin 日志详情页可直接看到上游为什么拒
-                if (e.upstream) {
-                    ctx.upstreamStatus = e.upstream.status ?? null;
-                    ctx.upstreamBody = e.upstream.body ?? null;
-                }
-                return fail(action, e.status, e.code, e.message);
-            }
-            console.error('[asset-api] kuaizi asset error', action, e);
-            return fail(action, 500, 'InternalError', 'internal error');
-        }
-    }
-
-    // 真人认证走 provider(筷子),其余平台 R2 托管库
-    ctx.format =
-        action === 'CreateVisualValidateSession' || action === 'GetVisualValidateResult' ? 'kuaizi' : 'platform';
+    // (volc-assets.ts 保留未挂接,provider 账号复活后如需可重接)。
+    // 2026-08-17 ~ 2026-09-22 期间 volc 客户曾分流到筷子私域素材库(kuaizi-assets.ts,已删):
+    // 合作终止 + 新上游无素材管理接口 → volc 回归平台库,生成时 asset:// 由 proxy 解析成 R2 直链发上游。
+    // 真人认证走 provider(筷子,已下架见上),其余平台 R2 托管库
+    ctx.format = isRealPersonAction ? 'kuaizi' : 'platform';
     try {
         switch (action) {
             case 'CreateAsset': {

@@ -101,7 +101,14 @@ import { isSeedreamModel } from '@/lib/seedream/adapter';
 import { isEnterpriseFlavor, handleEnterpriseV1 } from '@/lib/enterprise/proxy';
 import { guardSseResponse, guardSseStream, type SseErrorShape } from '@/lib/sse/stream-guard';
 import { forwardHeaders, passthroughResponse, STRIP_RESPONSE_HEADERS } from '@/lib/proxy/forward';
-import { CHAT_SPEC, RESPONSES_SPEC, coerceAndValidate, guardRawBody, violationBody } from '@/lib/proxy/body-guard';
+import {
+    CHAT_SPEC,
+    RESPONSES_SPEC,
+    coerceAndValidate,
+    guardRawBody,
+    validateRequired,
+    violationBody,
+} from '@/lib/proxy/body-guard';
 import { remapModelNotFound } from '@/lib/proxy/model-not-found';
 import { stripAdobeImageMetadata, stripAdobeImageMetadataB64 } from '@/lib/proxy/image-metadata';
 import { normalizeOpenAiResponse, normalizeChoices } from '@/lib/proxy/finish-reason';
@@ -189,11 +196,15 @@ const GEMINI_IMAGE_MODELS: Record<string, '1K' | '2K' | '4K'> = {
     // 见 configure-gemini-4k-skus.mjs。两者自身无候补(FAILOVER_MODELS 无此 key)。
     'gemini-3.1-flash-image-preview-4k': '4K',
     'gemini-3-pro-image-preview-4k': '4K',
+    // Nano Banana 2.1(Google 2026-10-06 GA,ch198 we-token asian-acc 按 token 计费):对齐官方 —— 官方文档
+    // 「1K, 2K, and 4K output resolutions (default 1K)」,故默认档 1K、size 可选(SIZE_SELECTABLE_MODELS)。
+    // 按 token 计费(1K=1120 / 2K=1680 / 4K=2520 image tokens)→ 客户选高档自然多扣,无需别名 SKU。
+    'gemini-nano-banana-2.1': '1K',
 };
 
 /** 仅这些模型允许客户用 `size` 选 imageSize(其余按 GEMINI_IMAGE_MODELS 固定档,size 被忽略)。
  *  pro 上限 4K → 1K/2K/4K 都合法。 */
-const SIZE_SELECTABLE_MODELS = new Set<string>(['gemini-3-pro-image-preview']);
+const SIZE_SELECTABLE_MODELS = new Set<string>(['gemini-3-pro-image-preview', 'gemini-nano-banana-2.1']);
 
 /** "2K"/"4K"/"2048x2048" 等 → 规范 imageSize;无法识别返 null(调用方据此 400)。 */
 function normalizeImageSize(raw: string): '1K' | '2K' | '4K' | null {
@@ -218,7 +229,9 @@ function resolveImageSize(model: string, sizeRaw: string): '1K' | '2K' | '4K' {
     if (!SIZE_SELECTABLE_MODELS.has(model) || !sizeRaw) return fixed;
     const norm = normalizeImageSize(sizeRaw);
     if (!norm) {
-        throw new ImageSizeError(`unsupported size "${sizeRaw}". Use 2K / 4K (or 2048x2048 / 4096x4096).`);
+        throw new ImageSizeError(
+            `unsupported size "${sizeRaw}". Use 1K / 2K / 4K (or 1024x1024 / 2048x2048 / 4096x4096).`,
+        );
     }
     return norm;
 }
@@ -277,6 +290,24 @@ GEMINI_ASPECT_RATIOS['gemini-3-pro-image-adobe'] = GEMINI_ASPECT_RATIOS['gemini-
 // 4K SKU 与 flash/pro 同底模 → 复用对应档白名单。
 GEMINI_ASPECT_RATIOS['gemini-3.1-flash-image-preview-4k'] = GEMINI_ASPECT_RATIOS['gemini-3.1-flash-image-preview'];
 GEMINI_ASPECT_RATIOS['gemini-3-pro-image-preview-4k'] = GEMINI_ASPECT_RATIOS['gemini-3-pro-image-preview'];
+// Nano Banana 2.1:官方 image-generation 文档「Nano Banana 2.1」分辨率表的全部 14 个比例(2026-10-07 实读),
+// 比 pro 档多 4:1(官方 2.1 修了 1:4 / 4:1 / 1:8 / 8:1 宽幅在 2K/4K 的拼接伪影)。
+GEMINI_ASPECT_RATIOS['gemini-nano-banana-2.1'] = new Set([
+    '1:1',
+    '1:4',
+    '1:8',
+    '2:3',
+    '3:2',
+    '3:4',
+    '4:1',
+    '4:3',
+    '4:5',
+    '5:4',
+    '8:1',
+    '9:16',
+    '16:9',
+    '21:9',
+]);
 
 const CLAUDE_MAX_TOKENS_CAP = 4096;
 
@@ -3710,7 +3741,8 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
 
         // 请求体守门:先就地强转无歧义的字符串标量,再把仍会让 new-api 500 的输入挡成 400。
         // 见 @/lib/proxy/body-guard(三条面共用同一引擎,按面用不同 spec)。
-        const { violation } = coerceAndValidate(body, CHAT_SPEC);
+        // 再查必填(缺 messages → new-api 本地回 500 `field messages is required`,应为 400)。
+        const violation = coerceAndValidate(body, CHAT_SPEC).violation ?? validateRequired(body, 'chat');
         if (violation) return NextResponse.json(violationBody(violation), { status: 400 });
 
         const model = String(body.model ?? '');
@@ -3855,7 +3887,7 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
     // forwardToNewApi 的透传分支本来就 buffer,这里读完直接把串交给它,不重复读。
     if (path === '/responses' && req.method === 'POST') {
         const raw = await req.text();
-        const g = guardRawBody(raw, RESPONSES_SPEC);
+        const g = guardRawBody(raw, RESPONSES_SPEC, 'responses');
         if (g.violation) return NextResponse.json(violationBody(g.violation), { status: 400 });
         if (cap) recordRequestBody(cap, raw, g.model, g.streamed); // 记【原始】输入
         return forwardToNewApi(req, null, path, search, cap, g.body, /* failoverOn5xx */ true);

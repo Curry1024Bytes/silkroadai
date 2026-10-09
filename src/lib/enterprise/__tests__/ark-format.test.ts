@@ -99,7 +99,7 @@ describe('arkFailError', () => {
 
 describe('buildArkTaskResponse', () => {
     const createdAt = new Date('2026-07-24T02:00:00Z');
-    it('火山官方形(cn,extended 缺省):只出官方声明字段,不带 draft/service_tier/seed 等', () => {
+    it('火山官方形(cn,extended 缺省):只出官方声明字段(draft=false 常驻),不带 upstream_id 等', () => {
         const r = buildArkTaskResponse({
             taskId: 'cgt-1',
             internalModel: 'seedance-2-0',
@@ -125,14 +125,22 @@ describe('buildArkTaskResponse', () => {
         expect(r.resolution).toBe('720p');
         expect(r.duration).toBe(5);
         expect(r.ratio).toBe('16:9');
-        // 官方形不含 BytePlus 扩展字段(即使入参给了 seed/generateAudio 也不输出)
-        expect('draft' in r).toBe(false);
-        expect('execution_expires_after' in r).toBe(false);
-        expect('framespersecond' in r).toBe(false);
-        expect('service_tier' in r).toBe(false);
+        // 官方形不含 volc 专属字段;draft 是官方 SDK 任务体字段(2026-10-08 起常驻,非正片不出 draft_task_id)
+        expect(r.draft).toBe(false);
+        expect('draft_task_id' in r).toBe(false);
+        expect('upstream_id' in r).toBe(false);
+        // 2026-09 火山官方查询响应新增字段(此前按旧文档只出 11 个,客户按新文档校验就缺项):
+        // 上游(xinhankr)不回显 → 落库提交参数 / 官方默认值
+        expect(r.execution_expires_after).toBe(172800);
+        expect(r.framespersecond).toBe(24);
+        expect(r.generate_audio).toBe(false);
+        expect(r.seed).toBe(999);
+        expect(r.service_tier).toBe('default');
+        expect(r.output_format).toBe('mp4');
+        expect(r.frames).toBe(24 * 5 + 1);
+        // 客户没传 safety_identifier / tools → 省略(官方:未设置不返回 / 未使用工具不返回)
+        expect('safety_identifier' in r).toBe(false);
         expect('tools' in r).toBe(false);
-        expect('seed' in r).toBe(false);
-        expect('generate_audio' in r).toBe(false);
         // 响应键集 = 火山官方声明白名单子集(无未声明字段)
         const officialKeys = new Set([
             'id',
@@ -146,8 +154,157 @@ describe('buildArkTaskResponse', () => {
             'ratio',
             'duration',
             'usage',
+            'execution_expires_after',
+            'frames',
+            'framespersecond',
+            'generate_audio',
+            'output_format',
+            'safety_identifier',
+            'seed',
+            'service_tier',
+            'tools',
+            'draft', // 官方 SDK 任务体字段(2026-10-08 样片模式起常驻)
+            'draft_task_id',
         ]);
         expect(Object.keys(r).filter((k) => !officialKeys.has(k))).toEqual([]);
+    });
+
+    it('cn 官方形:落库的 safety_identifier / output_format / tools 回显;智能时长未定时省略 frames', () => {
+        const r = buildArkTaskResponse({
+            taskId: 'cgt-1b',
+            internalModel: 'seedance-2-5',
+            status: 'running',
+            createdAt,
+            resolution: '480p',
+            duration: -1,
+            submitted: { safetyIdentifier: 'end-user-42', outputFormat: 'mov', tools: [{ type: 'web_search' }] },
+        });
+        expect(r.safety_identifier).toBe('end-user-42');
+        expect(r.output_format).toBe('mov');
+        expect(r.tools).toEqual([{ type: 'web_search' }]);
+        expect('frames' in r).toBe(false);
+        // execution_expires_after:客户传了回显客户值(官方创建参数),没传给官方默认
+        const withExp = buildArkTaskResponse({
+            taskId: 'cgt-1e',
+            internalModel: 'seedance-2-5',
+            status: 'running',
+            createdAt,
+            submitted: { executionExpiresAfter: 3600 },
+        });
+        expect(withExp.execution_expires_after).toBe(3600);
+        expect(r.execution_expires_after).toBe(172800);
+        // 存量行三列 NULL → 缺省 mp4、省略 safety_identifier/tools
+        const old = buildArkTaskResponse({
+            taskId: 'cgt-1c',
+            internalModel: 'seedance-2-5',
+            status: 'running',
+            createdAt,
+            submitted: { safetyIdentifier: null, outputFormat: null, tools: null },
+        });
+        expect(old.output_format).toBe('mp4');
+        expect('safety_identifier' in old).toBe(false);
+        expect('tools' in old).toBe(false);
+    });
+
+    it('cn 官方形 + 上游真值(国内版 2.5 480p 走 service-inference.ai):上游 > 落库 > 默认,时间戳取上游', () => {
+        const r = buildArkTaskResponse({
+            taskId: 'cgt-1d',
+            internalModel: 'seedance-2-5',
+            status: 'succeeded',
+            videoUrl: 'https://vod/x.mp4',
+            usage: { completion_tokens: 38830, total_tokens: 38830 },
+            createdAt,
+            resolution: '480p',
+            duration: 4,
+            generateAudio: true,
+            submitted: { safetyIdentifier: 'stored-id', outputFormat: 'mp4', tools: null },
+            upstreamMeta: {
+                framespersecond: 24,
+                generateAudio: false,
+                executionExpiresAfter: 172800,
+                seed: 53041,
+                createdAt: 1790091874,
+                updatedAt: 1790092007,
+                lastFrameUrl: '',
+                outputFormat: 'mov',
+                safetyIdentifier: 'upstream-id',
+                serviceTier: 'default',
+                frames: 97,
+            },
+        });
+        expect(r.output_format).toBe('mov');
+        expect(r.safety_identifier).toBe('upstream-id');
+        expect(r.generate_audio).toBe(false);
+        expect(r.seed).toBe(53041);
+        expect(r.frames).toBe(97);
+        expect(r.created_at).toBe(1790091874);
+        expect(r.updated_at).toBe(1790092007);
+        // 成功态 content 恒有 last_frame_url(无尾帧为空串)
+        expect((r.content as Record<string, unknown>).last_frame_url).toBe('');
+        expect(r.draft).toBe(false);
+    });
+
+    // 2026-10-08 样片模式:draft 回显 = 上游真值 > 落库 > false;正片任务回显客户样片号 draft_task_id。
+    it('样片模式回显:样片任务 draft=true(上游真值);正片任务带 draft_task_id(客户样片号)', () => {
+        const draft = buildArkTaskResponse({
+            taskId: 'cgt-draft',
+            internalModel: 'seedance-2-5',
+            status: 'succeeded',
+            videoUrl: 'https://vod/d.mp4',
+            createdAt,
+            duration: 5,
+            submitted: { draft: true, draftTaskId: null },
+            upstreamMeta: { draft: true },
+        });
+        expect(draft.draft).toBe(true);
+        expect('draft_task_id' in draft).toBe(false);
+        const final = buildArkTaskResponse({
+            taskId: 'cgt-final',
+            internalModel: 'seedance-2-5',
+            status: 'running',
+            createdAt,
+            duration: 5,
+            submitted: { draft: null, draftTaskId: 'cgt-draft' },
+        });
+        expect(final.draft).toBe(false);
+        expect(final.draft_task_id).toBe('cgt-draft');
+        // volc 形同样出 draft_task_id
+        const volc = buildArkTaskResponse({
+            taskId: 'cgt-vf',
+            internalModel: 'doubao-seedance-2.5',
+            status: 'running',
+            createdAt,
+            duration: 5,
+            submitted: { draftTaskId: 'cgt-vd' },
+            volcMeta: { draft: false },
+        });
+        expect(volc.draft).toBe(false);
+        expect(volc.draft_task_id).toBe('cgt-vd');
+    });
+
+    it('volc 形也补齐 output_format / safety_identifier / frames(上游 metadata 真值优先)', () => {
+        const r = buildArkTaskResponse({
+            taskId: 'cgt-v1',
+            internalModel: 'doubao-seedance-2.0',
+            status: 'succeeded',
+            videoUrl: 'https://vod/x.mp4',
+            createdAt,
+            duration: 4,
+            submitted: { safetyIdentifier: null, outputFormat: null, tools: null },
+            volcMeta: {
+                framespersecond: 24,
+                seed: 1,
+                outputFormat: 'mp4',
+                safetyIdentifier: 'probe-001',
+                serviceTier: 'default',
+            },
+        });
+        expect(r.output_format).toBe('mp4');
+        expect(r.safety_identifier).toBe('probe-001');
+        expect(r.frames).toBe(97);
+        expect(r.service_tier).toBe('default');
+        expect(r.draft).toBe(false);
+        expect(r.tools).toEqual([]); // volc 基准:tools 恒在(客户契约)
     });
 
     it('BytePlus 形(promax,extended=true):扩展字段 + usage.tool_usage 常驻,ratio/seed/generate_audio 回显', () => {

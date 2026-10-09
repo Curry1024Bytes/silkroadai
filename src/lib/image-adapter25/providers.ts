@@ -79,18 +79,66 @@ export const IMAGE_PROVIDERS_25: Record<string, ImageProvider25> = {
         models: GPT_IMAGE_25_MODELS,
         // 无 qualities = 5 档全收(全量线)。2026-09-13 曾只放 xhigh/max,09-14 改全量。
     },
-    // zdchat25:new.zdchat.cc(key sk-g2HE…)。2026-09-17 实测 37/37 全 200、全部 OpenAI OpCo C2PA + 原始编码、
+    // zdchat25:api.zdapi.cc(key sk-g2HE…)。【2026-09-23 厂商搬站】原域名 new.zdchat.cc(45.78.73.20)整机失联
+    // —— 三个出口(server1 / server2 / 本地)ICMP 全丢、443/80/22 全 timeout,适配器每次固定 ~10.5s
+    // `fetch failed` 再 failover,当天 ch230 一小时刷出 4000+ 条 503;apex zdchat.cc 另一台活着但 nginx 502。
+    // 新入口 api.zdapi.cc(40.160.130.122)同一家(图床仍 r2.52image.xyz)、key 不变,server2 实测:
+    // /v1/models 只回 flare+sunburst 两个、generations low 196 / xhigh 3122(官方档位值,非 llmway 那种静默降档)、
+    // edits multipart 通、返回 url 可下载。provider 名 zdchat25 保持不变(ch230 的 base_url 路径按它拼,改名即断线)。
+    // 以下 2026-09-17 那轮 37/37 全档实测是在旧域名做的,新域名只抽测了 low/xhigh/edits/双模型:
+    // 37/37 全 200、全部 OpenAI OpCo C2PA + 原始编码、
     // usage 逐档官方(196/439/1756/3122/7024;1536×1024 1372、1024×1536 158、2880² 5930、4K 3336)、5 档全如实
     // (sunburst 同)、尺寸全如实含 4K 原生非放大、透明真 RGBA、edits 通;零 Adobe、零 5xx;延迟 low 15–23s /
     // xhigh 35–63s / max 58–129s。指纹与 ominiapi 的 OpenAI 侧同款号池(1000×1000 不 400 返 1024² 计 192、
     // Trufo/OpenAI TSA 两 CA 混出、壳带 model),同类平台隔天就变,别把某天结论当常态。
     // 【全量线(operator 2026-09-17 拍板)】不设 qualities。已知毛病全由适配器兜:n>1 时返 1 或 2 张不定
     // (按实际张数计费)、webp/jpeg 被忽略返 PNG(jpeg 由适配器转码兜底)、非法 quality/size 上游不 400
-    // (入口 400 靠适配器)、edits 输入 token 报 0(适配器自算)、size=auto 返非标尺寸(按返回图实际尺寸计费)、
+    // (入口 400 靠适配器)、edits 输入 token 旧域名报 0 / 新域名报实数(适配器一律 synthUsage25 自算,两边都不受影响)、
+    // size=auto 返非标尺寸(按返回图实际尺寸计费)、
     // 返回 url 指向 r2.52image.xyz 刚返回时可能 0 字节(fetchImageAsB64 已带重试)。
     zdchat25: {
-        baseUrl: 'https://new.zdchat.cc',
-        brand: /\bzdchat\b|\b52image\b|\badobe\b|\bfirefly\b/gi,
+        baseUrl: 'https://api.zdapi.cc',
+        brand: /\bzdchat\b|\bzdapi\b|\b52image\b|\badobe\b|\bfirefly\b/gi,
+        models: GPT_IMAGE_25_MODELS,
+    },
+    // yuanshudian25:api.yuanshudian.com(元数点,2.5 专用 key sk-Dlbb…;与 2.0 适配器里的 `yuanshudian`
+    // Firefly 线是【完全不同的后端】,别混)。2026-10-01 实测 31 发 30 个 200(唯一 400 是故意发的非法 quality):
+    //  - 30/30 OpenAI OpCo C2PA,softwareAgent = `API / gpt-image`(与 asian-acc 真直通同款,不是号池的
+    //    `gpt-image / 2.0`),PNG 原始编码单 IDAT,零 Adobe;
+    //  - 5 档如实:延迟随档单调(low 22–33s / high 35s / xhigh 46–49s / max 68–73s / sunburst max 123s),
+    //    尺寸全如实含 2880² 与 4K(4K 边缘比 2.6、中心裁片原生锐利),透明真 RGBA,webp 真返 WEBP,
+    //    size=auto → 1254²(= 官方 2.5 缺省),非法 quality 上游正确 400(`Provider API error: Invalid value…`);
+    //  - 毛病(全由适配器兜):n=2 只返 1 张(n 补齐段补打);1000×1000 不 400 返 992²(入口尺寸校验拦);
+    //    壳只有 created/data/usage(适配器自合成);usage 非官方公式且逐张浮动(low 263–289 / high ~4290 /
+    //    4K high 16417,壳带 reasoning_tokens)—— synthUsage25 自算,不受影响;返回 url 图床 cdn.jd23kjs.work
+    //    (CF,server2 拉 10MB 0.15s;fetchImageAsB64 带重试)。
+    // 【成本 = 按张 $0.09 一口价】(账单接口差分:28 张 252 美分,单发 high 与 low 各 +9.0 美分),与档位/尺寸
+    // 无关。对官方 $30/M:low 15× / medium 6.8× / high 1.7× / xhigh 0.96× / max 0.43× / 4K high 0.90× /
+    // 2880² high 0.51× —— 只有 xhigh、max 与大尺寸不亏。
+    // 【全量线(operator 2026-10-01 拍板,知情上述成本)】不设 qualities。要收紧成只放高档,加
+    // `qualities: ['xhigh','max']` 一行即可(机制见 llmway25)。
+    yuanshudian25: {
+        baseUrl: 'https://api.yuanshudian.com',
+        brand: /\byuanshudian\b|\bjd23kjs\b|provider api error:?\s*|\badobe\b|\bfirefly\b/gi,
+        models: GPT_IMAGE_25_MODELS,
+    },
+    // synoralink25:api.synoralink.com(key sk-b4fa…)。自研网关(非 new-api:nginx 直出,错误体
+    // `{"code":"INSUFFICIENT_BALANCE",…}`,无任何账单接口 → 单价只能从对方后台看,接入时未知)。
+    // 2026-10-04 实测 32 发 31 个 200(唯一 400 是故意发的非法 quality):
+    //  - 31/31 OpenAI OpCo C2PA,softwareAgent `API / gpt-image`,PNG 原始编码单 IDAT,零 Adobe;
+    //  - 档位是真的:延迟逐档单调且可复现(low 14–21s / medium 21s / high 30–32s / xhigh 41s×3 /
+    //    max 72–77s / sunburst max 156s),4K 原生裁片 low 发糊、high/max 皮纹缝线清晰;
+    //  - 尺寸全如实含 2880² 与 4K,透明真 RGBA,webp 真返,edits 三种输入尺寸通,size=auto → 1312×1199。
+    // 【与 yuanshudian25 是同一套后端、不同账号】:裸壳结构、逐张浮动的 usage(带 reasoning_tokens)、
+    // 图床 cdn.jd23kjs.work、`Provider API error:` 前缀、1000×1000 → 992²、n=2 只返 1 张,逐项相同;
+    // 但账号池与余额各自独立 —— 10-03 本线号池空(51 发全 503 `No available compatible accounts` /
+    // 502 `Upstream service temporarily unavailable`,>1h)时 yuanshudian 同时段仍 ~70% 成功,
+    // 所以两条线互为容灾。毛病同样全由适配器兜(n 补齐、自合成壳与 usage、url 拉回重试)。
+    // 余额为 0 时上游回 403 `INSUFFICIENT_BALANCE`(连 /v1/models 都 403)→ 走通用 failover 503。
+    // 【全量线(operator 2026-10-04 拍板)】不设 qualities。
+    synoralink25: {
+        baseUrl: 'https://api.synoralink.com',
+        brand: /\bsynoralink\b|\bjd23kjs\b|provider api error:?\s*|\badobe\b|\bfirefly\b/gi,
         models: GPT_IMAGE_25_MODELS,
     },
 };

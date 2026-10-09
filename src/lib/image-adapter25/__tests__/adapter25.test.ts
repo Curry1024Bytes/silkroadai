@@ -6,6 +6,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { NextRequest } from 'next/server';
 import {
     handleAdapter25Image,
+    imageDimensions,
     URL_FETCH_RETRY_DELAYS_MS,
     officialOutputTokens25,
     IMAGE25_TEXT_TOKENS_PER_INPUT_IMAGE,
@@ -215,8 +216,16 @@ describe('handleAdapter25Image 透传契约', () => {
         expect(body.usage.output_tokens).toBe(586); // 官方 n 张 = ceil(3×195.1),不是 196×3=588
     });
 
-    it('上游少返(n=3 只回 2)→ 按 2 张计费不失败', async () => {
-        okUpstream([pngB64(1024, 1024), pngB64(1024, 1024)]);
+    it('上游少返且补齐也拿不到(n=3 只回 2,补齐轮空手)→ 按 2 张计费不失败', async () => {
+        let call = 0;
+        fetchMock.mockImplementation(async () =>
+            call++ === 0
+                ? new Response(
+                      JSON.stringify({ data: [{ b64_json: pngB64(1024, 1024) }, { b64_json: pngB64(1024, 1024) }] }),
+                      { status: 200, headers: { 'content-type': 'application/json' } },
+                  )
+                : new Response('{"error":{}}', { status: 503 }),
+        );
         const res = await handleAdapter25Image(
             jsonReq(URL_GEN, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'low', n: 3 }),
             'generations',
@@ -287,6 +296,107 @@ describe('handleAdapter25Image 透传契约', () => {
     });
 });
 
+/**
+ * n 补齐(2026-09-23):上游【原生 n】在号池型上游身上不可靠 —— zdchat 实测 n>1 请求约 1/3 少给
+ * (要 2 回 1、要 4 回 2),客户投诉"n 参数不读了"。以前只 warn 不补。
+ */
+describe('handleAdapter25Image n 补齐(上游少给后补打)', () => {
+    /** 按调用顺序依次返回每批图(空数组 = 该次 503);超出批次数后恒 503。 */
+    function seqUpstream(batches: number[]) {
+        let call = 0;
+        fetchMock.mockImplementation(async () => {
+            const count = batches[call++] ?? 0;
+            if (count === 0) return new Response('{"error":{}}', { status: 503 });
+            return new Response(
+                JSON.stringify({
+                    created: 1,
+                    data: Array.from({ length: count }, () => ({ b64_json: pngB64(1024, 1024) })),
+                }),
+                { status: 200, headers: { 'content-type': 'application/json' } },
+            );
+        });
+    }
+    const gen = (n: number) =>
+        handleAdapter25Image(
+            jsonReq(URL_GEN, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'low', n }),
+            'generations',
+            'wetokenasia25',
+        );
+    const bodyOf = (res: Response) => res.json() as Promise<{ data: unknown[]; usage: { output_tokens: number } }>;
+
+    it('要 2 回 1 → 补打 1 张凑满,按 2 张计费(客户实案 c-70fd7c5f 19:06)', async () => {
+        seqUpstream([1, 1]);
+        const res = await gen(2);
+        expect(res.status).toBe(200);
+        const body = await bodyOf(res);
+        expect(body.data).toHaveLength(2);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect(body.usage.output_tokens).toBe(391); // ceil(2×195.1),不是 196
+    });
+
+    it('补齐请求只要【缺的那几张】(n=missing),不是整个 n 重打', async () => {
+        seqUpstream([2, 2]);
+        await gen(4);
+        const second = JSON.parse(String((fetchMock.mock.calls[1] as [string, RequestInit])[1].body)) as {
+            n?: number;
+        };
+        expect(second.n).toBe(2);
+    });
+
+    it('两轮补齐封顶:要 4 每次只回 1 → 3 张后停,按 3 张计费', async () => {
+        seqUpstream([1, 1, 1, 1]);
+        const res = await gen(4);
+        const body = await bodyOf(res);
+        expect(fetchMock).toHaveBeenCalledTimes(3); // 首轮 + 2 轮补齐
+        expect(body.data).toHaveLength(3);
+        expect(body.usage.output_tokens).toBe(586); // ceil(3×195.1)
+    });
+
+    it('补齐轮空手 → 立即停,不打满轮数', async () => {
+        seqUpstream([1]); // 第 2 次起恒 503
+        const res = await gen(4);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect((await bodyOf(res)).data).toHaveLength(1);
+    });
+
+    it('一张没拿到 → 503 failover,【不】原地补打(换渠道更可能成)', async () => {
+        seqUpstream([]);
+        const res = await gen(3);
+        expect(res.status).toBe(503);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('补齐轮命中终态(内容安全)→ 不推翻已拿到的图,200 交付已有', async () => {
+        let call = 0;
+        fetchMock.mockImplementation(async () =>
+            call++ === 0
+                ? new Response(JSON.stringify({ data: [{ b64_json: pngB64(1024, 1024) }] }), {
+                      status: 200,
+                      headers: { 'content-type': 'application/json' },
+                  })
+                : new Response('{"error":{"code":"image_unsafe"}}', { status: 451 }),
+        );
+        const res = await gen(2);
+        expect(res.status).toBe(200);
+        expect((await bodyOf(res)).data).toHaveLength(1);
+    });
+
+    it('首轮就命中终态 → 仍然 400(补齐不改变既有语义)', async () => {
+        fetchMock.mockImplementation(async () => new Response('{"error":{"code":"image_unsafe"}}', { status: 451 }));
+        const res = await gen(2);
+        expect(res.status).toBe(400);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('补齐轮上游多给 → 只交付 n 张(不超发也不超收)', async () => {
+        seqUpstream([1, 3]); // 缺 1 张却回了 3 张
+        const res = await gen(2);
+        const body = await bodyOf(res);
+        expect(body.data).toHaveLength(2);
+        expect(body.usage.output_tokens).toBe(391);
+    });
+});
+
 describe('handleAdapter25Image 透明 / 错误 / 脱敏', () => {
     it('transparent:上游返无 alpha(colortype 2)→ 503 让路;返 RGBA → 200 回显 transparent', async () => {
         okUpstream([pngB64(1024, 1024, 2)]);
@@ -334,6 +444,39 @@ describe('handleAdapter25Image 透明 / 错误 / 脱敏', () => {
         expect(e.code).toBe('moderation_blocked');
         expect(e.type).toBe('user_error');
         expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('内容安全(zdchat 451 type content_filter / yuanshudian image_safety 措辞)→ 均终态 400,不 failover', async () => {
+        // 2026-09-30 线上实况:这些措辞旧正则漏掉 → 503 failover + 客户无限重试
+        for (const errBody of [
+            {
+                error: {
+                    message: 'The generated images appear to be unsafe. Try modifying the prompts or the seeds.',
+                    type: 'content_filter',
+                    code: 'ERR-FFD974C5BD',
+                },
+            },
+            {
+                error: {
+                    message:
+                        'The generated image was filtered by the safety policy. Please adjust your prompt and try again.',
+                    type: 'invalid_request_error',
+                    code: 'image_safety',
+                },
+            },
+            { error: { message: 'brand-new wording' } }, // 纯靠 HTTP 451 判定
+        ]) {
+            fetchMock.mockReset();
+            fetchMock.mockResolvedValue(new Response(JSON.stringify(errBody), { status: 451 }));
+            const res = await handleAdapter25Image(
+                jsonReq(URL_GEN, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'low' }),
+                'generations',
+                'wetokenasia25',
+            );
+            expect(res.status).toBe(400);
+            expect(((await res.json()) as { error: { code: string } }).error.code).toBe('moderation_blocked');
+            expect(fetchMock).toHaveBeenCalledTimes(1);
+        }
     });
 
     it('上游非法尺寸 400 → 终态 invalid_request,且【透出上游具体原因】+ param=size(客户能定位)', async () => {
@@ -782,11 +925,13 @@ describe('zdchat25 全量线 + url→b64 拉取重试', () => {
         });
     const pngResp = () => new Response(new Uint8Array(Buffer.from(pngB64(1024, 1024), 'base64')), { status: 200 });
 
-    it('registry:zdchat25 = new.zdchat.cc、两模型、无 qualities(全量);brand 抹 zdchat/52image/adobe', () => {
-        expect(IMAGE_PROVIDERS_25.zdchat25.baseUrl).toBe('https://new.zdchat.cc');
+    it('registry:zdchat25 = api.zdapi.cc(2026-09-23 搬站)、两模型、无 qualities(全量);brand 抹 zdchat/zdapi/52image/adobe', () => {
+        expect(IMAGE_PROVIDERS_25.zdchat25.baseUrl).toBe('https://api.zdapi.cc');
         expect(IMAGE_PROVIDERS_25.zdchat25.models).toEqual(GPT_IMAGE_25_MODELS);
         expect(IMAGE_PROVIDERS_25.zdchat25.qualities).toBeUndefined();
         expect('zdchat r2.52image.xyz Adobe'.replace(IMAGE_PROVIDERS_25.zdchat25.brand, '*')).toBe('* r2.*.xyz *');
+        // 新域名也要被抹掉,别让 api.zdapi.cc 从错误体里漏给客户。
+        expect('api.zdapi.cc down'.replace(IMAGE_PROVIDERS_25.zdchat25.brand, '*')).toBe('api.*.cc down');
     });
 
     it('5 档 + auto 全部透传上游,按官方档计费', async () => {
@@ -806,7 +951,7 @@ describe('zdchat25 全量线 + url→b64 拉取重试', () => {
                 'zdchat25',
             );
             expect(res.status).toBe(200);
-            expect(String(fetchMock.mock.calls[0][0])).toBe('https://new.zdchat.cc/v1/images/generations');
+            expect(String(fetchMock.mock.calls[0][0])).toBe('https://api.zdapi.cc/v1/images/generations');
             expect(((await res.json()) as { usage: { output_tokens: number } }).usage.output_tokens).toBe(expectTokens);
         }
     });
@@ -855,6 +1000,169 @@ describe('zdchat25 全量线 + url→b64 拉取重试', () => {
         } finally {
             vi.useRealTimers();
         }
+    });
+});
+
+describe('yuanshudian25 全量线(真 OpenAI API 签名,按张 $0.09;与 2.0 的 yuanshudian Firefly 线无关)', () => {
+    const URL_YSD = 'http://portal.test/image-adapter25/yuanshudian25/v1/images/generations';
+
+    it('registry:api.yuanshudian.com、两模型、无 qualities(全量);brand 抹 yuanshudian / 图床域 / Provider API error 前缀', () => {
+        const p = IMAGE_PROVIDERS_25.yuanshudian25;
+        expect(p.baseUrl).toBe('https://api.yuanshudian.com');
+        expect(p.models).toEqual(GPT_IMAGE_25_MODELS);
+        expect(p.qualities).toBeUndefined();
+        expect(p.upstreamTimeoutMs).toBeUndefined();
+        expect('yuanshudian cdn.jd23kjs.work Adobe'.replace(p.brand, '*')).toBe('* cdn.*.work *');
+        expect('Provider API error: Invalid value'.replace(p.brand, '')).toBe('Invalid value');
+    });
+
+    it('5 档 + auto 全部透传上游(两模型),按官方档计费 —— 上游自造的浮动 usage 被丢弃', async () => {
+        for (const [q, expectTokens] of [
+            ['low', 196],
+            ['medium', 439],
+            ['high', 1756],
+            ['xhigh', 3122],
+            ['max', 7024],
+            ['auto', 196],
+        ] as const) {
+            for (const model of GPT_IMAGE_25_MODELS) {
+                fetchMock.mockReset();
+                // 上游壳:只有 created/data/usage,usage 是它自己的浮动值(实测 low 263–289 / max ~8400)
+                fetchMock.mockImplementation(
+                    async () =>
+                        new Response(
+                            JSON.stringify({
+                                created: 1,
+                                data: [{ b64_json: pngB64(1024, 1024) }],
+                                usage: {
+                                    input_tokens: 17,
+                                    output_tokens: 8536,
+                                    output_tokens_details: { reasoning_tokens: 0 },
+                                },
+                            }),
+                            { status: 200, headers: { 'content-type': 'application/json' } },
+                        ),
+                );
+                const res = await handleAdapter25Image(
+                    jsonReq(URL_YSD, { model, prompt: 'x', size: '1024x1024', quality: q }),
+                    'generations',
+                    'yuanshudian25',
+                );
+                expect(res.status).toBe(200);
+                expect(String(fetchMock.mock.calls[0][0])).toBe('https://api.yuanshudian.com/v1/images/generations');
+                expect(JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body)).model).toBe(model);
+                const body = (await res.json()) as { usage: { output_tokens: number }; quality: string; size: string };
+                expect(body.usage.output_tokens).toBe(expectTokens);
+                expect(body.size).toBe('1024x1024');
+            }
+        }
+    });
+
+    it('上游 400 `Provider API error: …` → 终态 400,透出具体原因但抹掉 Provider API error 前缀与品牌', async () => {
+        fetchMock.mockResolvedValue(
+            new Response(
+                JSON.stringify({
+                    error: {
+                        message:
+                            'Provider API error: invalid image size: edges must be multiples of 16 (yuanshudian request id: 2026)',
+                    },
+                }),
+                { status: 400 },
+            ),
+        );
+        const res = await handleAdapter25Image(
+            jsonReq(URL_YSD, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'low' }),
+            'generations',
+            'yuanshudian25',
+        );
+        expect(res.status).toBe(400);
+        const msg = ((await res.json()) as { error: { message: string } }).error.message;
+        expect(msg.toLowerCase()).not.toContain('yuanshudian');
+        expect(msg.toLowerCase()).not.toContain('provider api error');
+        expect(msg).toContain('edges must be multiples of 16');
+    });
+
+    it('上游 502 池抖(candidate upstream unavailable)→ 503 failover,体中性不泄品牌', async () => {
+        fetchMock.mockResolvedValue(
+            new Response(JSON.stringify({ error: { message: 'candidate upstream unavailable (yuanshudian)' } }), {
+                status: 502,
+            }),
+        );
+        const res = await handleAdapter25Image(
+            jsonReq(URL_YSD, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'max' }),
+            'generations',
+            'yuanshudian25',
+        );
+        expect(res.status).toBe(503);
+        expect(await res.text()).not.toMatch(/yuanshudian|candidate/i);
+    });
+});
+
+describe('synoralink25 全量线(与 yuanshudian25 同后端、独立账号池 —— 互为容灾)', () => {
+    const URL_SYN = 'http://portal.test/image-adapter25/synoralink25/v1/images/generations';
+
+    it('registry:api.synoralink.com、两模型、无 qualities(全量);brand 抹 synoralink / 图床域 / Provider API error 前缀', () => {
+        const p = IMAGE_PROVIDERS_25.synoralink25;
+        expect(p.baseUrl).toBe('https://api.synoralink.com');
+        expect(p.models).toEqual(GPT_IMAGE_25_MODELS);
+        expect(p.qualities).toBeUndefined();
+        expect('synoralink cdn.jd23kjs.work Adobe'.replace(p.brand, '*')).toBe('* cdn.*.work *');
+        expect('Provider API error: Invalid value'.replace(p.brand, '')).toBe('Invalid value');
+        // 两条同后端线必须是两个独立 provider(各自的 base_url / 渠道 key),不能互相覆盖
+        expect(p.baseUrl).not.toBe(IMAGE_PROVIDERS_25.yuanshudian25.baseUrl);
+    });
+
+    it('5 档 + auto 全部透传上游,按官方档计费(上游浮动 usage 被丢弃)', async () => {
+        for (const [q, expectTokens] of [
+            ['low', 196],
+            ['medium', 439],
+            ['high', 1756],
+            ['xhigh', 3122],
+            ['max', 7024],
+            ['auto', 196],
+        ] as const) {
+            fetchMock.mockReset();
+            fetchMock.mockImplementation(
+                async () =>
+                    new Response(
+                        JSON.stringify({
+                            created: 1,
+                            data: [{ b64_json: pngB64(1024, 1024) }],
+                            usage: {
+                                input_tokens: 6,
+                                output_tokens: 32925,
+                                output_tokens_details: { reasoning_tokens: 0 },
+                            },
+                        }),
+                        { status: 200, headers: { 'content-type': 'application/json' } },
+                    ),
+            );
+            const res = await handleAdapter25Image(
+                jsonReq(URL_SYN, { model: 'gpt-image-2.5-sunburst', prompt: 'x', size: '1024x1024', quality: q }),
+                'generations',
+                'synoralink25',
+            );
+            expect(res.status).toBe(200);
+            expect(String(fetchMock.mock.calls[0][0])).toBe('https://api.synoralink.com/v1/images/generations');
+            expect(((await res.json()) as { usage: { output_tokens: number } }).usage.output_tokens).toBe(expectTokens);
+        }
+    });
+
+    it.each([
+        [403, { code: 'INSUFFICIENT_BALANCE', message: 'Insufficient account balance' }],
+        [503, { error: { message: 'No available compatible accounts', type: 'api_error' } }],
+        [502, { error: { message: 'Upstream service temporarily unavailable (synoralink)', type: 'upstream_error' } }],
+    ])('上游 %i(余额 0 / 号池空 / 上游不可用)→ 503 failover,体中性不泄品牌与余额', async (status, body) => {
+        fetchMock.mockResolvedValue(new Response(JSON.stringify(body), { status: status as number }));
+        const res = await handleAdapter25Image(
+            jsonReq(URL_SYN, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'high' }),
+            'generations',
+            'synoralink25',
+        );
+        expect(res.status).toBe(503);
+        const text = await res.text();
+        expect(text).not.toMatch(/synoralink|balance|compatible accounts/i);
+        expect((JSON.parse(text) as { error: { code: string } }).error.code).toBe('upstream_unavailable');
     });
 });
 
@@ -914,7 +1222,10 @@ describe('2.5 官方校准(2026-09-19 官方 key 实测):edits 文字 +10/输入
         expect((mk(1, 2).input_tokens_details as { text_tokens: number }).text_tokens).toBe(36);
         expect(mk(1, 1).input_tokens).toBe(18 + 256);
     });
-    it('generations size=auto → 上游收 1248x1248(1254² 对齐);返图相符按官方 1254² 计 229、回显 1254x1254', async () => {
+    // 2026-09-30 官方 key 直打 gpt-image-2.5-flare 实测:auto = 模型按 prompt 自选画幅(「竖屏」→ 1024×1536、
+    // 中性 → 1254²、「超宽横幅海报」→ 1918×820),官方回显 size 就是实际像素。此前(#480)把 auto 折成固定 1:1
+    // 发上游 → 客户 prompt 写「竖屏」仍恒出 1248²。现在 auto 原样透传,计费 + 回显按返回图实际像素(#500)。
+    it('generations size=auto → 上游原样收 "auto"(模型自选画幅);返图按实际像素计费 + 回显', async () => {
         okUpstream([pngB64(1248, 1248)]);
         const res = await handleAdapter25Image(
             jsonReq(URL_G, { model: 'gpt-image-2.5-flare', prompt: 'a cat', size: 'auto', quality: 'low' }),
@@ -924,11 +1235,90 @@ describe('2.5 官方校准(2026-09-19 官方 key 实测):edits 文字 +10/输入
         expect(res.status).toBe(200);
         const body = (await res.json()) as { size: string; usage: { output_tokens: number } };
         const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-        expect((JSON.parse(String(init.body)) as { size: string }).size).toBe('1248x1248');
-        expect(body.size).toBe('1254x1254');
-        expect(body.usage.output_tokens).toBe(229);
+        expect((JSON.parse(String(init.body)) as { size: string }).size).toBe('auto');
+        expect(body.size).toBe('1248x1248');
+        expect(body.usage.output_tokens).toBe(228);
     });
-    it('edits size 缺省 + 16:9 输入 → 官方 1672×941(129),上游收 1680x944;input = 18 + 1508', async () => {
+    it('客户实例(第二轮):prompt「竖屏」+ size=auto → 上游收 "auto",号池返 768×1376 竖版 → 回显 768x1376、按实际计费', async () => {
+        okUpstream([pngB64(768, 1376)]);
+        const res = await handleAdapter25Image(
+            jsonReq(URL_G, {
+                model: 'gpt-image-2.5-flare',
+                prompt: '可爱的一只猫,竖屏',
+                size: 'auto',
+                quality: 'low',
+                output_format: 'jpeg',
+            }),
+            'generations',
+            'zdchat25',
+        );
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { size: string; usage: { output_tokens: number } };
+        const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+        expect((JSON.parse(String(init.body)) as { size: string }).size).toBe('auto');
+        expect(body.size).toBe('768x1376');
+        expect(body.usage.output_tokens).toBe(officialOutputTokens25(768, 1376, 'low'));
+    });
+    it('缺省 size → 上游也不带 size(官方缺省即 auto)', async () => {
+        okUpstream([pngB64(1264, 848)]);
+        const res = await handleAdapter25Image(
+            jsonReq(URL_G, { model: 'gpt-image-2.5-flare', prompt: 'a cat', quality: 'low' }),
+            'generations',
+            'wetokenasia25',
+        );
+        const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+        expect((JSON.parse(String(init.body)) as { size?: string }).size).toBeUndefined();
+        expect(((await res.json()) as { size: string }).size).toBe('1264x848');
+    });
+    it('客户实例:size=auto + quality=high + jpeg → 回显 1248x1248、output 2,050(= 官方计算器 1248² high,不再是 1254² 的 2,058)', async () => {
+        okUpstream([pngB64(1248, 1248)]);
+        const res = await handleAdapter25Image(
+            jsonReq(URL_G, {
+                model: 'gpt-image-2.5-flare',
+                prompt: '可爱的一只猫',
+                size: 'auto',
+                quality: 'high',
+                n: 1,
+            }),
+            'generations',
+            'wetokenasia25',
+        );
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { size: string; usage: { output_tokens: number } };
+        expect(body.size).toBe('1248x1248');
+        expect(body.usage.output_tokens).toBe(2050);
+    });
+    it('size=auto 且返回图尺寸读不出 → 按官方缺省画幅 1248x1248 计费 + 回显(不 503),打 warn', async () => {
+        okUpstream(['bm90LXBuZw==']);
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const res = await handleAdapter25Image(
+            jsonReq(URL_G, { model: 'gpt-image-2.5-flare', prompt: 'a cat', size: 'auto', quality: 'low' }),
+            'generations',
+            'wetokenasia25',
+        );
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { size: string; usage: { output_tokens: number } };
+        expect(body.size).toBe('1248x1248');
+        expect(body.usage.output_tokens).toBe(228);
+        expect(warn).toHaveBeenCalledWith(
+            '[image-adapter25] auto output dimensions unreadable, billing by default auto size',
+            expect.objectContaining({ fallback: '1248x1248' }),
+        );
+        warn.mockRestore();
+    });
+    it('imageDimensions 读 WebP(VP8 lossy)—— output_format=webp 的 auto 图也能计费', () => {
+        const head = Buffer.alloc(20);
+        head.write('RIFF', 0, 'latin1');
+        head.write('WEBP', 8, 'latin1');
+        head.write('VP8 ', 12, 'latin1');
+        const vp8 = Buffer.alloc(10);
+        vp8.set([0x9d, 0x01, 0x2a], 3);
+        vp8.writeUInt16LE(1024, 6);
+        vp8.writeUInt16LE(1536, 8);
+        head.writeUInt32LE(vp8.length, 16);
+        expect(imageDimensions(Buffer.concat([head, vp8]))).toEqual({ w: 1024, h: 1536 });
+    });
+    it('edits size 缺省 + 16:9 输入 → 上游不带 size(模型跟输入图),返图 1680×944 按实际计 130;input = 18 + 1508', async () => {
         okUpstream([pngB64(1680, 944)]);
         const res = await handleAdapter25Image(
             formReq(URL_E, { model: 'gpt-image-2.5-flare', prompt: 'a cat', quality: 'low' }, [pngHeader(3840, 2160)]),
@@ -945,9 +1335,9 @@ describe('2.5 官方校准(2026-09-19 官方 key 实测):edits 文字 +10/输入
             };
         };
         const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-        expect((init.body as FormData).get('size')).toBe('1680x944');
-        expect(body.size).toBe('1672x941');
-        expect(body.usage.output_tokens).toBe(129);
+        expect((init.body as FormData).get('size')).toBeNull();
+        expect(body.size).toBe('1680x944');
+        expect(body.usage.output_tokens).toBe(130);
         expect(body.usage.input_tokens_details).toEqual({ text_tokens: 18, image_tokens: 1508 });
         expect(body.usage.input_tokens).toBe(1526);
     });

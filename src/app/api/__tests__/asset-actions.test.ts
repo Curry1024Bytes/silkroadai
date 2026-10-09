@@ -1,7 +1,7 @@
 /**
  * P3 火山形 Action API 单测:envelope / 鉴权 / CRUD 全 Action / IDOR / 分页。
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 
 const { db, resolveEnterpriseAuth, fetchAssetFromUrl, storeAsset, deleteAssetFn } = vi.hoisted(() => ({
@@ -40,12 +40,11 @@ vi.mock('@/lib/enterprise/volc-assets', async (importOriginal) => {
     const mod = await importOriginal<typeof import('@/lib/enterprise/volc-assets')>();
     return { ...mod, handleVolcAssetAction };
 });
-// 筷子库入口 mock(分流判据 shouldUseKuaiziAssets 等保留真实现):volc 路径的上游细节
-// 落日志测试用 —— 默认不触发(上面 enterpriseUpstreamKey 默认 null = 非 volc 客户)。
-const { handleKuaiziAssetAction } = vi.hoisted(() => ({ handleKuaiziAssetAction: vi.fn() }));
-vi.mock('@/lib/enterprise/kuaizi-assets', async (importOriginal) => {
-    const mod = await importOriginal<typeof import('@/lib/enterprise/kuaizi-assets')>();
-    return { ...mod, handleKuaiziAssetAction };
+// 真人认证上游 mock(筷子 provider,代码保留、入口缺省下架):只在 ENTERPRISE_REALPERSON_ENABLED=1 的用例里触发。
+const { createVisualValidateSession } = vi.hoisted(() => ({ createVisualValidateSession: vi.fn() }));
+vi.mock('@/lib/enterprise/real-person', async (importOriginal) => {
+    const mod = await importOriginal<typeof import('@/lib/enterprise/real-person')>();
+    return { ...mod, createVisualValidateSession };
 });
 import { RealPersonError } from '@/lib/enterprise/real-person';
 
@@ -534,49 +533,61 @@ describe('请求日志落库(P2 2026-09-04)', () => {
     });
 });
 
-describe('上游失败原因落请求日志(2026-09-04)', () => {
+describe('真人活体认证入口下架(2026-09-22,代码保留、env 恢复)', () => {
     const flush = () => new Promise((r) => setTimeout(r, 0));
     const reqlogRows = () =>
         (db.enterpriseRequestLog.create.mock.calls as unknown as Array<[{ data: Record<string, unknown> }]>).map(
             (c) => c[0].data,
         );
+    afterEach(() => vi.unstubAllEnvs());
 
-    it('筷子路径素材入库失败:上游原文进 upstream_body,对客响应【不】含上游原文(#271)', async () => {
-        db.enterpriseUpstreamKey.findUnique.mockResolvedValue({ id: 'up-volc' }); // volc 客户
-        handleKuaiziAssetAction.mockRejectedValue(
-            new RealPersonError(502, 'AssetCreateFailed', '素材入库失败,请检查素材链接后重试').withUpstream(
-                200,
-                '{"Status":"Failed","Reason":"download image failed: connect timeout kz-internal"}',
-            ),
-        );
-        const res = await POST(
-            req('CreateAsset', { GroupId: '1800657071180349888', URL: 'https://x/a.png', AssetType: 'image' }),
-        );
-        expect(res.status).toBe(502);
-        const bodyText = JSON.stringify(await res.json());
-        expect(bodyText).toContain('素材入库失败');
-        expect(bodyText).not.toContain('kz-internal'); // 上游原文只进日志,不对客
-        await flush();
-        const rows = reqlogRows();
-        expect(rows).toHaveLength(1);
-        expect(rows[0]).toMatchObject({
-            kind: 'asset_action',
-            action: 'CreateAsset',
-            format: 'kuaizi',
-            http_status: 502,
-            error_code: 'AssetCreateFailed',
-            upstream_status: 200,
-        });
-        expect(String(rows[0].upstream_body)).toContain('download image failed');
+    it.each(['CreateVisualValidateSession', 'GetVisualValidateResult'])(
+        '%s 缺省 → 503 ServiceUnavailable(暂停文案),不打上游;请求日志照记',
+        async (action) => {
+            db.enterpriseUpstreamKey.findUnique.mockResolvedValue({ id: 'up-volc' }); // 即使是 volc 客户
+            const res = await POST(req(action, { CallbackURL: 'https://x/cb', BytedToken: 't' }));
+            expect(res.status).toBe(503);
+            const j = (await res.json()) as { ResponseMetadata: { Error: { Code: string; Message: string } } };
+            expect(j.ResponseMetadata.Error.Code).toBe('ServiceUnavailable');
+            expect(j.ResponseMetadata.Error.Message).toContain('暂停');
+            expect(createVisualValidateSession).not.toHaveBeenCalled();
+            await flush();
+            expect(reqlogRows()[0]).toMatchObject({ kind: 'asset_action', action, http_status: 503 });
+        },
+    );
+
+    it('ENTERPRISE_REALPERSON_ENABLED=1 → 恢复原逻辑(非 volc 客户仍 403 ChannelNotEnabled)', async () => {
+        vi.stubEnv('ENTERPRISE_REALPERSON_ENABLED', '1');
+        db.enterpriseUpstreamKey.findUnique.mockResolvedValue(null);
+        const res = await POST(req('CreateVisualValidateSession', { CallbackURL: 'https://x/cb' }));
+        expect(res.status).toBe(403);
+        expect(createVisualValidateSession).not.toHaveBeenCalled();
     });
 
-    it('无 upstream 细节的失败照旧落行(upstream_* 空,不炸)', async () => {
-        db.enterpriseUpstreamKey.findUnique.mockResolvedValue({ id: 'up-volc' });
-        handleKuaiziAssetAction.mockRejectedValue(new RealPersonError(503, 'ServiceUnavailable', '未配置'));
-        const res = await POST(req('ListAssets', {}));
-        expect(res.status).toBe(503);
+    it('ENTERPRISE_REALPERSON_ENABLED=1 + volc 客户 → 打 provider;上游失败原文进 upstream_body、不对客(#271)', async () => {
+        vi.stubEnv('ENTERPRISE_REALPERSON_ENABLED', '1');
+        db.enterpriseUpstreamKey.findUnique.mockResolvedValue({ id: 'up-volc', upstream_key_enc: 'enc' });
+        createVisualValidateSession.mockRejectedValue(
+            new RealPersonError(502, 'UpstreamError', '活体会话创建失败,请稍后重试').withUpstream(
+                500,
+                '{"ResponseMetadata":{"Error":{"Message":"rpc error kz-internal"}}}',
+            ),
+        );
+        const res = await POST(req('CreateVisualValidateSession', { CallbackURL: 'https://x/cb' }));
+        expect(res.status).toBe(502);
+        const bodyText = JSON.stringify(await res.json());
+        expect(bodyText).toContain('活体会话创建失败');
+        expect(bodyText).not.toContain('kz-internal');
         await flush();
         const rows = reqlogRows();
-        expect(rows[0]).toMatchObject({ error_code: 'ServiceUnavailable', upstream_status: null, upstream_body: null });
+        expect(rows[0]).toMatchObject({
+            kind: 'asset_action',
+            action: 'CreateVisualValidateSession',
+            format: 'kuaizi',
+            http_status: 502,
+            error_code: 'UpstreamError',
+            upstream_status: 500,
+        });
+        expect(String(rows[0].upstream_body)).toContain('rpc error');
     });
 });

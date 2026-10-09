@@ -1,23 +1,23 @@
 /**
- * 企业门户 /enterprise/docs SSR smoke —— 火山渠道章节的四档模型矩阵(2026-08-17 换上游后)。
+ * 企业门户 /enterprise/docs SSR smoke —— 火山渠道章节的四档模型矩阵(2026-09-22 换上游 service-inference.ai 后)。
  * 同 models-page / pay-form 的 renderToString 浅渲染模式;页面是纯静态 JSX,无需 mock。
  */
 import { describe, expect, it } from 'vitest';
 import { renderToString } from 'react-dom/server';
 
 import EnterpriseDocsPage from '@/app/enterprise/(dash)/docs/page';
-import { isVolcModelWithdrawn, VOLC_MODELS, VOLC_RESOLUTIONS } from '@/lib/seedance/kuaizi-adapter';
+import { isVolcModelWithdrawn, VOLC_MODELS, VOLC_RESOLUTIONS } from '@/lib/seedance/volc-adapter';
 
 describe('/enterprise/docs 火山渠道章节', () => {
     const html = renderToString(<EnterpriseDocsPage />);
 
-    it('文档用【火山原生 Model ID】;下架档位写明停售(不能悄悄消失,客户会以为是自己写错了)', () => {
+    it('文档用【火山原生 Model ID】;四档全在售(2026-09-22 换上游后 fast/mini 恢复),不再写「暂停服务」', () => {
         // 2026-08-26 客户要求:模型名直接用上游原生的,不要我们发明的点分名。
         for (const upstream of Object.values(VOLC_MODELS).map((m) => m.upstream)) {
             expect(html).toContain(upstream);
         }
-        expect(Object.keys(VOLC_MODELS).some(isVolcModelWithdrawn)).toBe(true);
-        expect(html).toContain('暂停服务');
+        expect(Object.keys(VOLC_MODELS).some(isVolcModelWithdrawn)).toBe(false);
+        expect(html).not.toContain('暂停服务');
     });
 
     it('分辨率矩阵与适配器的实际门控一致(文档不漂移)', () => {
@@ -62,5 +62,13 @@ describe('/enterprise/docs 火山渠道章节', () => {
         expect(html).toContain('模型实际选定的秒数');
         expect(html).toContain('bitrate_mode');
         expect(html).toContain('camera_fixed');
+    });
+
+    // 2026-10-08 样片模式(火山官方 draft / draft_task):创建参数 + 正片引用形状 + 沿用语义都要写进文档。
+    it('写明样片模式:draft 创建参数 + draft_task 正片引用 + 参数沿用', () => {
+        expect(html).toContain('样片模式');
+        expect(html).toContain('draft_task');
+        expect(html).toContain('自动沿用样片');
+        expect(html).toContain('draft_task_id');
     });
 });

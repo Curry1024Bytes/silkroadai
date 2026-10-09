@@ -29,14 +29,7 @@ import { officialImageInputTokens } from '@/lib/tokens/image-input-tokens';
 import { stripAdobeImageMetadataB64 } from '@/lib/proxy/image-metadata';
 import { encodeQuality, transcodeB64, transcodeTargetOf } from '@/lib/image/transcode';
 import { newGenerationId } from '@/lib/image/generation-id';
-import {
-    alignTo16,
-    aspectFromRatio,
-    isAutoSize,
-    matchesAutoRequest,
-    officialAutoDims,
-    promptAspectRatio,
-} from '@/lib/image-adapter/auto-size';
+import { alignTo16, isAutoSize, officialAutoDims } from '@/lib/image-adapter/auto-size';
 import { IMAGE_PROVIDERS_25, type ImageProvider25 } from './providers';
 
 export type ImageMode = 'generations' | 'edits';
@@ -46,6 +39,10 @@ export type ImageMode = 'generations' | 'edits';
 const DEFAULT_UPSTREAM_TIMEOUT_MS = 600_000;
 /** 对齐 OpenAI images 的 n≤10;超出只钳制不报错。 */
 const MAX_N = 10;
+/** n 补齐的最大补打轮数(见 handler 里的补齐段)。 */
+const MAX_TOPUP_ROUNDS_25 = 2;
+/** n 补齐的总耗时预算(从首次上游调用开始计),留在 Caddy :3010 的 600s 之下。 */
+const TOPUP_BUDGET_MS_25 = 540_000;
 
 // ============ 官方 token 公式(5 档网格)============
 // 2026-09-09 用 viper3 官 key 交叉验证:1024² low 196 / medium 439 / high 1756 / xhigh 3122 / max 7024,
@@ -98,7 +95,7 @@ export function estimateTextTokens(s: string): number {
 
 // ============ 字节工具(独立实现,不从 2.0 适配器 import)============
 
-/** dep-free 尺寸解析(PNG IHDR / JPEG SOF),读不出 → null。 */
+/** dep-free 尺寸解析(PNG IHDR / JPEG SOF / WebP VP8·VP8L·VP8X),读不出 → null。 */
 export function imageDimensions(buf: Buffer): { w: number; h: number } | null {
     if (
         buf.length >= 24 &&
@@ -131,6 +128,30 @@ export function imageDimensions(buf: Buffer): { w: number; h: number } | null {
                 return w > 0 && h > 0 ? { w, h } : null;
             }
             i += 2 + buf.readUInt16BE(i + 2);
+        }
+    }
+    // WebP(RIFF....WEBP):VP8 lossy / VP8L lossless / VP8X extended 三种头。auto 透传后模型选尺寸,
+    // 客户要 webp 时上游可能直接给 webp,读不出尺寸就没法计费,所以补上。
+    if (buf.length >= 25 && buf.toString('latin1', 0, 4) === 'RIFF' && buf.toString('latin1', 8, 12) === 'WEBP') {
+        const chunk = buf.toString('latin1', 12, 16);
+        if (chunk === 'VP8X' && buf.length >= 30) {
+            const w = 1 + (buf[24] | (buf[25] << 8) | (buf[26] << 16));
+            const h = 1 + (buf[27] | (buf[28] << 8) | (buf[29] << 16));
+            return w > 0 && h > 0 ? { w, h } : null;
+        }
+        if (chunk === 'VP8L' && buf[20] === 0x2f) {
+            const b0 = buf[21];
+            const b1 = buf[22];
+            const b2 = buf[23];
+            const b3 = buf[24];
+            const w = 1 + (b0 | ((b1 & 0x3f) << 8));
+            const h = 1 + ((b1 >> 6) | (b2 << 2) | ((b3 & 0x0f) << 10));
+            return w > 0 && h > 0 ? { w, h } : null;
+        }
+        if (chunk === 'VP8 ' && buf.length >= 30 && buf[23] === 0x9d && buf[24] === 0x01 && buf[25] === 0x2a) {
+            const w = buf.readUInt16LE(26) & 0x3fff;
+            const h = buf.readUInt16LE(28) & 0x3fff;
+            return w > 0 && h > 0 ? { w, h } : null;
         }
     }
     return null;
@@ -218,7 +239,10 @@ export function sanitizeAdapterError25(text: string, brand: RegExp): string {
     return text.replace(brand, 'the provider').replace(/\badobe\b/gi, 'the provider');
 }
 
-const UPSTREAM_SAFETY_RE = /image_unsafe|content rejected|appear to be unsafe|safety system|moderation_blocked/i;
+// 2026-09-30:同 image-adapter —— 补 yuanshudian/zdchat 的 451 措辞(image_safety / content_safety /
+// content_filter / safety policy),HTTP 451 本身也视为内容安全终态。
+const UPSTREAM_SAFETY_RE =
+    /image_unsafe|image_safety|content_safety|content_filter|content rejected|appear to be unsafe|safety system|moderation_blocked|safety policy|content safety/i;
 const UPSTREAM_BADREQ_RE =
     /prompt is required|invalid image|bad_request|validation_error|invalid image size|total pixels must|quality for .* must be|invalid value/i;
 const UPSTREAM_CHANNEL_RE = /no available channel|model_not_found|channel_circuit_open|no active tokens/i;
@@ -272,7 +296,7 @@ function classifyUpstreamError(status: number, text: string, brand: RegExp): Ter
         };
     if (status >= 500) return null;
     if (UPSTREAM_CHANNEL_RE.test(text)) return null;
-    if (UPSTREAM_SAFETY_RE.test(text)) return { terminal: 'safety' };
+    if (status === 451 || UPSTREAM_SAFETY_RE.test(text)) return { terminal: 'safety' }; // 451 = 内容安全
     if (UPSTREAM_BADREQ_RE.test(text)) {
         const { detail, param } = extractBadRequestDetail(text, brand);
         return { terminal: 'bad_request', detail, param };
@@ -327,8 +351,6 @@ interface ParsedRequest {
     extras: Record<string, string>;
     /** edits 蒙版(官方 `mask`):原样透传上游,不计费、不参与尺寸判定(2026-09-19 补齐,此前 2.5 适配器丢弃)。 */
     mask: { buf: Buffer; type: string; name: string } | null;
-    /** size=auto 时发给上游的 16 对齐尺寸(handleAdapter25Image 解析后填入);未设 = 原样发 parsed.size。 */
-    upstreamSize?: string;
 }
 
 const FORWARD_EXTRAS = new Set(['output_format', 'output_compression', 'background', 'user']);
@@ -573,7 +595,7 @@ async function callUpstream(
         const f = new FormData();
         f.append('model', parsed.model);
         f.append('prompt', parsed.prompt);
-        const sendSize = parsed.upstreamSize ?? parsed.size.trim();
+        const sendSize = parsed.size.trim(); // auto 原样透传(模型按 prompt 自选画幅),缺省不发
         if (sendSize) f.append('size', sendSize);
         if (FORWARD_QUALITY_SET.has(q)) f.append('quality', q);
         if (n > 1) f.append('n', String(n));
@@ -585,7 +607,7 @@ async function callUpstream(
         upstreamBody = f; // fetch 自动生成 boundary(不能手写 content-type)
     } else {
         const j: Record<string, unknown> = { model: parsed.model, prompt: parsed.prompt };
-        const sendSize = parsed.upstreamSize ?? parsed.size.trim();
+        const sendSize = parsed.size.trim(); // auto 原样透传(模型按 prompt 自选画幅),缺省不发
         if (sendSize) j.size = sendSize;
         if (FORWARD_QUALITY_SET.has(q)) j.quality = q;
         if (n > 1) j.n = n;
@@ -723,36 +745,15 @@ export async function handleAdapter25Image(
         });
     }
 
-    // ---- size=auto / 缺省 → 官方 auto 尺寸(2026-09-19 官方 key 打 gpt-image-2.5 实测):generations 缺省 1:1
-    // (1254×1254,与 2.0 的 4:5 不同);edits 跟第一张输入图比例(方→1254²、16:9→1672×941,与 2.0 相同)。
-    // 上游发 16 对齐尺寸,返图相符按官方尺寸计费/回显;不符按实际;读不出按官方尺寸(不再 503)。
-    let officialDims: { w: number; h: number } | null = null;
-    if (isAutoSize(parsed.size)) {
-        let aspect = 1;
-        let source = 'default-1:1';
-        if (mode === 'edits') {
-            const pr = promptAspectRatio(parsed.prompt);
-            const inputDims = parsed.images.length ? imageDimensions(parsed.images[0].buf) : null;
-            if (pr) {
-                aspect = aspectFromRatio(pr);
-                source = `prompt:${pr}`;
-            } else if (inputDims) {
-                aspect = inputDims.w / inputDims.h;
-                source = `input:${inputDims.w}x${inputDims.h}`;
-            } else source = 'input-unreadable→1:1';
-        }
-        officialDims = officialAutoDims(aspect);
-        const aligned = alignTo16(officialDims);
-        parsed.upstreamSize = `${aligned.w}x${aligned.h}`;
-        console.log('[image-adapter25] auto size', {
-            provider: providerName,
-            mode,
-            source,
-            official: `${officialDims.w}x${officialDims.h}`,
-            upstream: parsed.upstreamSize,
-        });
-    }
-    const dims = officialDims ?? parseSize(parsed.size);
+    // ---- size=auto / 缺省 → 【原样透传】,让模型按 prompt 自选画幅 ----
+    // 官方机制(2026-09-30 OpenAI 官 key 直打 gpt-image-2.5-flare 实测):auto 不是固定尺寸,是模型读 prompt 自选
+    // 画幅、面积 ≈1.5MP —— 「竖屏」→ 1024×1536、中性 → 1254×1254、「超宽横幅海报」→ 1918×820;官方回显 size
+    // 就是实际像素(可以不是 16 倍数)。此前(#480)只用中性 prompt 校准出 1254² 就把 auto 折成固定 1:1 发上游,
+    // 模型拿不到 auto → 客户 prompt 写「竖屏」仍恒出 1248²(2026-09-30 客户反馈)。现在 auto 原样交给上游,
+    // 计费 + 回显按返回图实际像素(#500);号池上游对 auto 实测也按 prompt 选画幅(竖屏 768×1376 / 中性 1264×848,
+    // 16 倍数、~1MP,与官方尺寸集不同但画幅语义一致)。auto 无法预估 ct,2.5 全量线本就不守门,不受影响。
+    const autoSize = isAutoSize(parsed.size);
+    const dims = autoSize ? null : parseSize(parsed.size);
     const quality = normQuality25(parsed.quality);
     // ---- 档位白名单:上游对名单外档位是【静默降级】而非拒绝(llmway xhigh/max → medium),直通会让
     // 客户按高档付费拿低档图;让路 503 给别的渠道,不打上游。归一后判(auto/缺省 = low 照常放行)。 ----
@@ -769,9 +770,52 @@ export async function handleAdapter25Image(
     // ---- 调上游(n 原生透传,一次拿 n 张)----
     const started = Date.now();
     const result = await callUpstream(provider, providerName, mode, parsed, n, auth);
+    let roundMs = Date.now() - started;
     if (isTerminalReject(result)) return terminalReject(result);
     let items = (result ?? []).map((b64_json) => ({ b64_json, generation_id: newGenerationId() }));
+    // 一张没拿到 → failover(换渠道比原地重试更可能成);拿到一部分 → 补齐,见下。
     if (items.length === 0) return failover('upstream_error', 'upstream call failed');
+
+    // ---- n 补齐(2026-09-23)----
+    // 上游【原生 n】在号池型上游身上不可靠:zdchat 实测 n>1 请求约 1/3 少给(要 2 回 1、要 4 回 2),
+    // 客户感知就是"n 参数不读了"。以前只 warn 不补。这里补打缺的张数,三重封顶:
+    //  - 轮数 ≤ MAX_TOPUP_ROUNDS_25;
+    //  - 某轮零产出立即停(上游整体不行,再打白打);
+    //  - 只有【按上一轮实际耗时估计本轮结束仍在 TOPUP_BUDGET_MS_25 内】才开下一轮 ——
+    //    2.5 max 档单次可达 130-200s,绝不把请求推过 Caddy :3010 的 600s(504 比少一张更糟)。
+    // 补齐轮命中终态【不】推翻已拿到的图。计费不受影响:synthUsage25 恒按 items.length 算。
+    for (let round = 1; round <= MAX_TOPUP_ROUNDS_25 && items.length < n; round++) {
+        const elapsed = Date.now() - started;
+        if (elapsed + roundMs > TOPUP_BUDGET_MS_25) {
+            console.warn('[image-adapter25] top-up skipped (time budget)', {
+                provider: providerName,
+                mode,
+                requested: n,
+                got: items.length,
+                elapsedMs: elapsed,
+            });
+            break;
+        }
+        const missing = n - items.length;
+        const t0 = Date.now();
+        const more = await callUpstream(provider, providerName, mode, parsed, missing, auth);
+        roundMs = Date.now() - t0;
+        const gained = isTerminalReject(more) ? [] : (more ?? []);
+        items = items.concat(gained.map((b64_json) => ({ b64_json, generation_id: newGenerationId() })));
+        console.warn('[image-adapter25] top-up round', {
+            provider: providerName,
+            mode,
+            round,
+            missing,
+            gained: gained.length,
+            total: items.length,
+            ms: roundMs,
+        });
+        if (gained.length === 0 || isTerminalReject(more)) break;
+    }
+    // 补齐轮里上游可能多给(我们要 1 它回 2)→ 只交付客户请求的 n 张:超发会跟着超收。
+    if (items.length > n) items = items.slice(0, n);
+
     if (items.length < n) {
         console.warn('[image-adapter25] upstream returned fewer than n', {
             provider: providerName,
@@ -797,28 +841,37 @@ export async function handleAdapter25Image(
         items = kept;
     }
 
-    // ---- 计费尺寸:优先【返回图实际尺寸】(防上游静默降级超收);读不出 → 请求值;auto 且读不出 → 让路 ----
+    // ---- 计费尺寸 = 回显 size:优先【返回图实际像素】(防上游静默降级超收;auto 由模型选尺寸,只能按实际);
+    //      读不出 → 显式 size 按请求值 / auto 无从计费 → 让路 ----
     const out0 = items[0]?.b64_json;
     const actualDims = out0 ? imageDimensions(Buffer.from(out0, 'base64')) : null;
     let billW: number;
     let billH: number;
-    if (actualDims && officialDims && matchesAutoRequest(actualDims, officialDims)) {
-        billW = officialDims.w; // auto:上游交付了我们要的那张 → 按官方 auto 尺寸计费 + 回显
-        billH = officialDims.h;
-    } else if (actualDims) {
+    if (actualDims) {
         billW = actualDims.w;
         billH = actualDims.h;
         if (dims && (dims.w !== actualDims.w || dims.h !== actualDims.h)) {
             console.warn('[image-adapter25] upstream size differs from request, billing by actual', {
                 provider: providerName,
                 mode,
-                requested: parsed.upstreamSize ?? parsed.size,
+                requested: parsed.size,
                 actual: `${actualDims.w}x${actualDims.h}`,
             });
         }
     } else if (dims) {
-        billW = dims.w; // 读不出返回图尺寸:显式 size 按请求值;auto 按官方 auto 尺寸
+        billW = dims.w; // 读不出返回图尺寸:显式 size 按请求值
         billH = dims.h;
+    } else if (autoSize) {
+        // auto 且返回图尺寸读不出(非 PNG/JPEG/WebP):没法知道模型选了什么,按官方 auto 中性缺省(1254² 对齐 1248²)
+        // 计费 + 回显,不让客户的图因为计不出费而失败;打 warn 便于追。
+        const fb = alignTo16(officialAutoDims(1));
+        billW = fb.w;
+        billH = fb.h;
+        console.warn('[image-adapter25] auto output dimensions unreadable, billing by default auto size', {
+            provider: providerName,
+            mode,
+            fallback: `${fb.w}x${fb.h}`,
+        });
     } else {
         return failover('unbillable_auto', 'size unparsable and output image dimensions unreadable');
     }
@@ -851,8 +904,8 @@ export async function handleAdapter25Image(
         provider: providerName,
         model: parsed.model,
         mode,
-        size: officialDims
-            ? `auto→${respSize}(upstream ${parsed.upstreamSize})`
+        size: autoSize
+            ? `auto→${respSize}`
             : dims && dims.w === billW && dims.h === billH
               ? parsed.size
               : `${parsed.size || '?'}→${respSize}`,
