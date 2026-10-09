@@ -11,7 +11,7 @@
  */
 import 'server-only';
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/db';
+import { prisma, type SeedanceVideoTask } from '@/lib/db';
 import {
     MODEL_MAP,
     isVolcModel,
@@ -587,14 +587,10 @@ function upstreamArkMeta(j: Record<string, unknown> | null): VolcArkMeta {
 }
 
 /** task 行里落库的回显参数(存量行三列 NULL → 缺省/省略)。 */
-function submittedArkParams(t: {
-    safety_identifier?: string | null;
-    output_format?: string | null;
-    tools?: unknown;
-    execution_expires_after?: number | null;
-    draft?: boolean | null;
-    draft_task_id?: string | null;
-}): ArkSubmittedParams {
+function submittedArkParams(t: Partial<Pick<
+    SeedanceVideoTask,
+    'safety_identifier' | 'output_format' | 'tools' | 'execution_expires_after' | 'draft' | 'draft_task_id'
+>>): ArkSubmittedParams {
     return {
         safetyIdentifier: t.safety_identifier ?? null,
         outputFormat: t.output_format ?? null,

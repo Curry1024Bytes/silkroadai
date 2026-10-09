@@ -13,3 +13,6 @@ function createPrismaClient() {
 export const prisma = globalForPrisma.prisma || createPrismaClient();
 
 if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma;
+
+// 导出 Prisma 生成的类型供其他模块使用
+export type { SeedanceVideoTask } from '@prisma/client';
