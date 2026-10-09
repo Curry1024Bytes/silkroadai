@@ -21,6 +21,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
 import { uploadImage } from '@/lib/r2/client';
+import { normalizeReferenceImage } from '@/lib/image/normalize-reference';
 import { classifyUpstreamError } from './upstream-error';
 import { rememberVolcId, toUpstreamId } from '@/lib/enterprise/volc-id-map';
 import { DraftTaskError, extractDraftTaskRef, resolveDraftTaskArkId } from './draft-task';
@@ -547,11 +548,21 @@ async function rehostHttpMediaToR2(url: string): Promise<string | null> {
                   ? 'audio/mpeg'
                   : 'image/jpeg';
         }
-        return await uploadImage(`seedance-input/${randomUUID()}`, buf, ct);
+        const n = await normalizeReferenceImage(buf, ct);
+        return await uploadImage(`seedance-input/${randomUUID()}`, n.buf, n.mime);
     } catch {
         return null;
     } finally {
         clearTimeout(timer);
+    }
+}
+
+/** URL 路径以 .bmp / .heic / .heif 结尾 → 即使国内档也要先转存归一(上游按字节拒收这两族)。 */
+function needsFormatNormalize(u: string): boolean {
+    try {
+        return /\.(bmp|heic|heif)$/i.test(new URL(u).pathname);
+    } catch {
+        return false;
     }
 }
 
@@ -561,12 +572,15 @@ async function toHttpMediaUrl(url: string, opts?: { rehostHttp?: boolean }): Pro
     if (m) {
         const buf = Buffer.from(m[2], 'base64');
         if (buf.length > 20 * 1024 * 1024) throw new Error('media exceeds 20MB');
-        return uploadImage(`seedance-cn-ref/${randomUUID()}`, buf, m[1]);
+        // bmp → png / heif 品牌回写(上游对这两种「声明支持」的格式实际拒收,见 normalize-reference.ts)
+        const n = await normalizeReferenceImage(buf, m[1]);
+        return uploadImage(`seedance-cn-ref/${randomUUID()}`, n.buf, n.mime);
     }
     if (!/^https?:\/\//i.test(u)) throw new Error('media must be an http(s) URL or a base64 data URL');
     // 海外档(global/promax):把 http 输入媒体转存 Cloudflare R2,避免海外上游跨境拉国内 CDN
     // (popreels.cn 等)超时(Gateway Time-out)。已是我们 R2 域名的跳过;转存失败回退原 URL。
-    if (opts?.rehostHttp && !isOurR2Url(u)) {
+    // 国内档本来原样透传,但 .bmp / .heic / .heif 直链上游同样拒收 → 也拉下来归一后转存(失败回退原 URL)。
+    if ((opts?.rehostHttp || needsFormatNormalize(u)) && !isOurR2Url(u)) {
         const rehosted = await rehostHttpMediaToR2(u);
         if (rehosted) return rehosted;
     }

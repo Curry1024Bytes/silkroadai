@@ -190,6 +190,42 @@ describe('storeAsset', () => {
         expect(uploadImage).toHaveBeenCalledWith(expect.stringMatching(/\.png$/), expect.any(Buffer), 'image/png');
     });
 
+    // 2026-10-09 智象未来 conformance 报告 A12-FMT-BMP:素材库的唯一用途是喂生成,而上游按字节拒收 40 字节头
+    // bmp(ImageMagick 识别成 `BMP3`)。入库前 bmp → png,落库 mime / 扩展名 / 字节数都按归一后的算。
+    it('bmp 图片素材 → 入库前转 png:R2 key .png、mime image/png、bytes 是 png 的', async () => {
+        db.enterpriseAsset.create.mockImplementation(({ data }: { data: Record<string, unknown> }) =>
+            Promise.resolve(data),
+        );
+        // 320×320 24-bit、40 字节 BITMAPINFOHEADER(全黑像素即可,校验只看头 + 尺寸)
+        const w = 320,
+            h = 320,
+            stride = w * 3;
+        const bmp = Buffer.alloc(54 + stride * h);
+        bmp.write('BM', 0, 'latin1');
+        bmp.writeUInt32LE(bmp.length, 2);
+        bmp.writeUInt32LE(54, 10);
+        bmp.writeUInt32LE(40, 14);
+        bmp.writeInt32LE(w, 18);
+        bmp.writeInt32LE(h, 22);
+        bmp.writeUInt16LE(1, 26);
+        bmp.writeUInt16LE(24, 28);
+        expect(readImageDims(bmp)).toEqual({ w, h });
+        const row = (await storeAsset({
+            userId: 'u1',
+            assetType: 'image',
+            name: '位图',
+            bytes: bmp,
+            mime: 'image/bmp',
+        })) as unknown as Record<string, unknown>;
+        expect(String(row.r2_key)).toMatch(/\.png$/);
+        expect(row.mime).toBe('image/png');
+        expect(uploadImage).toHaveBeenCalledWith(expect.stringMatching(/\.png$/), expect.any(Buffer), 'image/png');
+        const uploaded = uploadImage.mock.calls[0][1] as Buffer;
+        expect(uploaded.subarray(0, 4).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47]))).toBe(true);
+        expect(row.bytes).toBe(uploaded.length);
+        expect(uploaded.length).toBeLessThan(bmp.length);
+    });
+
     it('素材数达上限 → QuotaExceeded', async () => {
         db.enterpriseAsset.count.mockResolvedValue(5000);
         await expect(

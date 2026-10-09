@@ -43,6 +43,7 @@ import { callerHasVolc, resolveEnterpriseAuth, getUpstreamKeyForUser, type Enter
 import { toUpstreamId } from './volc-id-map';
 import { DraftTaskError, extractDraftTaskRef } from '@/lib/seedance/draft-task';
 import { uploadImage } from '@/lib/r2/client';
+import { normalizeReferenceImage } from '@/lib/image/normalize-reference';
 import { randomUUID } from 'crypto';
 import { ENTERPRISE_TIER, estimateEnterpriseCostCny, chargeEnterpriseVideoTask } from './billing';
 import { AssetError, resolveAssetRefs } from './assets';
@@ -531,7 +532,9 @@ async function dataUrlToR2(dataUrl: string): Promise<string> {
             400,
         );
     }
-    return uploadImage(`seedance-volc-ref/${randomUUID()}`, buf, m[1]);
+    // bmp → png / heif 品牌回写(上游对这两种「声明支持」的格式实际拒收,见 normalize-reference.ts)
+    const n = await normalizeReferenceImage(buf, m[1]);
+    return uploadImage(`seedance-volc-ref/${randomUUID()}`, n.buf, n.mime);
 }
 
 async function translateVolcAssetRefs(body: Record<string, unknown>): Promise<Record<string, unknown>> {

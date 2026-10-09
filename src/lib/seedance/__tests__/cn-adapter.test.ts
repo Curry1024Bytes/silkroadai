@@ -30,6 +30,11 @@ import {
 const json = (obj: unknown, status = 200) =>
     new Response(JSON.stringify(obj), { status, headers: { 'content-type': 'application/json' } });
 
+// 6×4 24-bit、40 字节头的真实 bmp(ImageMagick `BMP3:`)—— 上游拒收的那一族(报告 A12-FMT-BMP)。
+const BMP3_B64 =
+    'Qk2GAAAAAAAAADYAAAAoAAAABgAAAAQAAAABABgAAAAAAFAAAAAAAAAAAAAAAAAAAAAAAAAA/wAA/wAA/wAA/wAA/wAA/wAAAACqAFWqAFWqAFWqAFWqAFWqAFUAAFUAqlUAqlUAqlUAqlUAqlUAqgAAAAD/AAD/AAD/AAD/AAD/AAD/AAA=';
+const PNG_SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+
 const UP = 'https://token.xinhankr.com';
 const INTL = 'https://ai.artsmcp.com';
 const mockFetch = vi.fn();
@@ -160,6 +165,46 @@ describe('seedance-cn adapter submit', () => {
         const images = submitBody().images as Array<{ url: string; role: string }>;
         expect(images[0].url).toBe('https://cdn/a.png');
         expect(mockUploadImage).not.toHaveBeenCalled(); // 国内档不转存
+    });
+
+    // 2026-10-09 智象未来 conformance 报告 A12-FMT-BMP:上游用 ImageMagick 识别格式,40 字节头 bmp 的识别名是
+    // `BMP3`,白名单按字面比 `bmp` 不中 → 「Unsupported image format: bmp3. Allowed formats: … bmp …」。
+    // 平台在转存 R2 前就把 bmp 解成 png,上游永远看不到 bmp。
+    it('参考档 data URL 是 bmp 字节 → 转存 R2 的是 png(image/png)', async () => {
+        const res = await submitVideo(
+            makeReq({ model: 'seedance2.0-pro-720p-ref', prompt: 'x', image_url: `data:image/bmp;base64,${BMP3_B64}` }),
+        );
+        expect(res.status).toBe(200);
+        expect(mockUploadImage).toHaveBeenCalledTimes(1);
+        const [key, body, ct] = mockUploadImage.mock.calls[0];
+        expect(key).toMatch(/^seedance-cn-ref\//);
+        expect(ct).toBe('image/png');
+        expect((body as Buffer).subarray(0, 4).equals(PNG_SIG)).toBe(true);
+        const images = submitBody().images as Array<{ url: string; role: string }>;
+        expect(images[0].url).toMatch(/^https:\/\/images\.silkroadai\.io\/seedance-cn-ref\//);
+    });
+
+    it('国内档 http .bmp 直链 → 不再原样透传:拉下来转 png 后转存 R2(.png 直链仍透传)', async () => {
+        const base = mockFetch.getMockImplementation()!;
+        mockFetch.mockImplementation(async (url: string, init?: RequestInit) =>
+            /\.bmp$/i.test(String(url))
+                ? new Response(Buffer.from(BMP3_B64, 'base64'), {
+                      status: 200,
+                      headers: { 'content-type': 'image/bmp' },
+                  })
+                : base(url, init),
+        );
+        const res = await submitVideo(
+            makeReq({ model: 'seedance2.0-pro-720p-ref', prompt: 'x', image: 'https://cdn/a.bmp' }),
+        );
+        expect(res.status).toBe(200);
+        expect(mockUploadImage).toHaveBeenCalledTimes(1);
+        const [key, body, ct] = mockUploadImage.mock.calls[0];
+        expect(key).toMatch(/^seedance-input\//);
+        expect(ct).toBe('image/png');
+        expect((body as Buffer).subarray(0, 4).equals(PNG_SIG)).toBe(true);
+        const images = submitBody().images as Array<{ url: string; role: string }>;
+        expect(images[0].url).toMatch(/^https:\/\/images\.silkroadai\.io\/seedance-input\//);
     });
 
     it('海外档(promax)http 输入图 → 转存 Cloudflare R2(避免海外上游跨境拉国内图超时)', async () => {

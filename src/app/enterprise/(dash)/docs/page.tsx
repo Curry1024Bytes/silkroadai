@@ -498,7 +498,11 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
 
 # 多图参考(主体一致性,引用素材组)
 {"model":"seedance-2-0-fast","prompt":"主角走进咖啡馆","images":["group-20260719153506-b945c6"]}`}</Pre>
-                <p>参考图建议短边 ≥512px、jpg/png 格式;尺寸过小或格式异常会被上游拒绝并提示。</p>
+                <p>
+                    参考图建议短边 ≥512px、jpg/png 格式;尺寸过小或格式异常会被上游拒绝并提示。bmp / heic / heif
+                    也可以传(含 base64 内联与公网直链):平台会在转存时自动把 bmp 转成 png、把非标准品牌的 heif 归一成
+                    heic,再交给上游,无需客户端自行转换。
+                </p>
             </Section>
 
             <Section id="volc" title="5. 火山渠道(volc · 火山方舟原生 + AK/SK 签名)">

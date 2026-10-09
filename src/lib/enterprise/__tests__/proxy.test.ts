@@ -1609,6 +1609,33 @@ describe('vendor_task_id 出口(2026-08-19)', () => {
         expect(uploadImage).toHaveBeenCalled();
     });
 
+    // 2026-10-09 智象未来 conformance 报告 A12-FMT-BMP / A12-FMT-HEIF:上游按字节拒收 40 字节头 bmp(识别成
+    // `BMP3`)和 major_brand 未注册的 heif。volc 面的内联 base64 同样经 normalizeReferenceImage 归一后再转存。
+    it('volc:内联 base64 是 bmp 字节 → 转存 R2 的是 png(image/png)', async () => {
+        vi.mocked(toUpstreamId).mockImplementation(async (id: string) => id);
+        submitVolcVideo.mockImplementation(() =>
+            Promise.resolve(NextResponse.json({ id: 'cgt-x', task_id: 'cgt-x', status: 'queued' })),
+        );
+        const bmp =
+            'data:image/bmp;base64,Qk2GAAAAAAAAADYAAAAoAAAABgAAAAQAAAABABgAAAAAAFAAAAAAAAAAAAAAAAAAAAAAAAAA/wAA/wAA/wAA/wAA/wAA/wAAAACqAFWqAFWqAFWqAFWqAFWqAFUAAFUAqlUAqlUAqlUAqlUAqlUAqgAAAAD/AAD/AAD/AAD/AAD/AAD/AAA=';
+        await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', {
+                model: 'doubao-seedance-2.5',
+                resolution: '720p',
+                content: [
+                    { type: 'text', text: 'x' },
+                    { type: 'image_url', image_url: { url: bmp }, role: 'first_frame' },
+                ],
+            }),
+            '/video/generations',
+        );
+        expect(uploadImage).toHaveBeenCalledTimes(1);
+        const [key, body, ct] = uploadImage.mock.calls[0] as unknown as [string, Buffer, string];
+        expect(key).toMatch(/^seedance-volc-ref\//);
+        expect(ct).toBe('image/png');
+        expect(body.subarray(0, 4).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47]))).toBe(true);
+    });
+
     it('volc:内联 base64 超 20MB → 400,给可操作提示(不静默塞给上游)', async () => {
         vi.mocked(toUpstreamId).mockImplementation(async (id: string) => id);
         const huge = 'data:image/png;base64,' + 'A'.repeat(30 * 1024 * 1024);

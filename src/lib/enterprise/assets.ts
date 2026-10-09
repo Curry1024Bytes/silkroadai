@@ -11,6 +11,7 @@ import 'server-only';
 import { randomBytes } from 'node:crypto';
 import { prisma } from '@/lib/db';
 import { uploadImage, deleteImage } from '@/lib/r2/client';
+import { normalizeReferenceImage } from '@/lib/image/normalize-reference';
 
 /** 配额(env 可调):素材数 / 总字节 / 单文件字节。 */
 export function assetLimits() {
@@ -452,7 +453,18 @@ export interface StoreAssetInput {
 
 /** 字节 → R2 + 落库(两套表面共用)。groupId 传入时校验归属。 */
 export async function storeAsset(input: StoreAssetInput) {
-    validateAssetMedia(input.assetType, input.bytes, input.mime);
+    let { bytes, mime } = input;
+    // 图片素材入库前归一:bmp → png / heif 品牌回写。素材库的唯一用途是喂生成,上游对这两族按字节拒收
+    // (见 normalize-reference.ts),存原始字节 = 存一张必然生成失败的素材。校验按归一后的字节跑。
+    if (input.assetType === 'image') {
+        const n = await normalizeReferenceImage(bytes, mime);
+        if (n.changed) {
+            console.log('[enterprise-assets] 图片素材归一', { how: n.changed, from: mime, to: n.mime });
+            bytes = n.buf;
+            mime = n.mime;
+        }
+    }
+    validateAssetMedia(input.assetType, bytes, mime);
     if (input.groupId) {
         const g = await prisma.enterpriseAssetGroup.findFirst({
             where: { id: input.groupId, user_id: input.userId },
@@ -460,11 +472,11 @@ export async function storeAsset(input: StoreAssetInput) {
         });
         if (!g) throw new AssetError('GroupNotFound', `素材组不存在: ${input.groupId}`, 404);
     }
-    await assertAssetQuota(input.userId, input.bytes.length);
+    await assertAssetQuota(input.userId, bytes.length);
     const id = newAssetId('asset');
-    const ext = EXT_BY_MIME[input.mime.toLowerCase().split(';')[0]] ?? 'bin';
+    const ext = EXT_BY_MIME[mime.toLowerCase().split(';')[0]] ?? 'bin';
     const key = `enterprise-assets/${input.userId}/${id}.${ext}`;
-    const publicUrl = await uploadImage(key, input.bytes, input.mime);
+    const publicUrl = await uploadImage(key, bytes, mime);
     return prisma.enterpriseAsset.create({
         data: {
             id,
@@ -475,8 +487,8 @@ export async function storeAsset(input: StoreAssetInput) {
             description: input.description ?? null,
             r2_key: key,
             public_url: publicUrl,
-            mime: input.mime,
-            bytes: input.bytes.length,
+            mime,
+            bytes: bytes.length,
             source_url: input.sourceUrl ?? null,
         },
     });

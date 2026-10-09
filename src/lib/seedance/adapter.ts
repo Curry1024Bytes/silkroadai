@@ -15,6 +15,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
 import { uploadImage } from '@/lib/r2/client';
+import { normalizeReferenceImage } from '@/lib/image/normalize-reference';
 
 const SVC_BASE = process.env.SEEDANCE_INFERENCE_BASE_URL || 'https://model.service-inference.ai';
 const UA =
@@ -179,8 +180,10 @@ const fetchSvc = (path: string, auth: string, init: RequestInit = {}) =>
 // 无扩展名 key + R2 对象正确 content-type(picsum 同款)对所有格式都通。
 async function uploadCleanMedia(buf: Buffer, mime: string): Promise<string> {
     if (buf.length > 20 * 1024 * 1024) throw new Error('media exceeds 20MB');
-    const r2url = await uploadImage(`seedance-ref/${randomUUID()}`, buf, mime);
-    console.log('[seedance-adapter] r2 upload', { mime, bytes: buf.length, url: r2url });
+    // bmp → png / heif 品牌回写(上游对这两种「声明支持」的格式实际拒收,见 normalize-reference.ts)
+    const n = await normalizeReferenceImage(buf, mime);
+    const r2url = await uploadImage(`seedance-ref/${randomUUID()}`, n.buf, n.mime);
+    console.log('[seedance-adapter] r2 upload', { mime: n.mime, bytes: n.buf.length, url: r2url });
     return r2url;
 }
 
