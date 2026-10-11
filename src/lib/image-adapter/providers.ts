@@ -433,6 +433,23 @@ export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
     //  - 计费按档一口价:low 0.72 / medium ~0.72 / high 0.864「单位」/张,与尺寸无关(单位 $ 或 ¥ 待 operator 核实;
     //    若 $,high 对官方 1024² $0.21 = 0.04×)。
     // 【全量线(operator 2026-10-10 拍板)】openAllTiers,quality 原样透传,显式尺寸按请求尺寸计费。
+    // qimg:qimg.cc(new-api rc.30 外套自研号池层,错误码 `ERR-XXXXXXXXXX`;default 组 key sk-G99w…)。2026-10-11 实测
+    // gpt-image-2 26 发 24 个 200(2 个 400 都是预期:透明不支持 / xhigh 非法),三波 ≤10 并发零 503:
+    //  - **Adobe Firefly Services 中转 OpenAI 2.0**:24/24 Adobe Inc. 签名(C2PA remoteProvider.3rdParty / modelId gpt-image /
+    //    details "GPT Image 2"),无 OpenAI 签名 → 由 stripAdobeImageMetadataB64 剥;图床 Firefly S3 预签名 url(会过期,拉回);
+    //  - **high 被网关静默降成 medium**:发 high → 回显 quality=medium、usage 1756、延迟 72–76s = medium;4K 同;1K 裁片
+    //    low/medium/「high」字形无差 → 只有 low / medium 两档真交付 → onlyQualities=[low,medium],high 503 让路;
+    //  - 尺寸 1536×1024 / 1024×1536 / 1344×1008 / 2048² / 2880² / 4K 全如实;edits 通;auto → 1024²;1000×1000 → 1008²;
+    //    webp 被忽略返 png;n=2 只返 1 张(适配器扇出);
+    //  - 透明 → 400 `Transparent background is not supported for this model` → noTransparentBackground;
+    //  - 计费按张一口价 $0.035,与尺寸/档位无关;延迟 low 21–47s / medium 72–76s / 4K 55–80s。
+    // ⚠️ 同站另一把「image2 high分组」key 的 2.0 走「10k pool」(10-09 整池挂一天),与本线不是一条;2.5 走 qimg25(ch263 禁用)。
+    qimg: {
+        baseUrl: 'https://qimg.cc',
+        brand: /\bqimg\b|\b10k pool\b|\bERR-[0-9A-F]{6,}\b|pre-signed-firefly[a-z0-9.-]*|s3-accelerate[a-z0-9.-]*|bad request to openai:?\s*|\badobe\b|\bfirefly\b/gi,
+        onlyQualities: ['low', 'medium'],
+        noTransparentBackground: true,
+    },
     yobox: {
         baseUrl: 'https://max.yoboxai.com',
         brand: /\byobox\s?ai\b|\byobox\b|\bjd23kjs\b|provider api error:?\s*|\bone_hub(?:_error)?\b|\badobe\b|\bfirefly\b/gi,

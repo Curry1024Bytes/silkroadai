@@ -1722,6 +1722,119 @@ describe('frimodelmedium provider(frimodel 新账号,onlyQualities=[medium] + up
     });
 });
 
+describe('qimg provider(qimg.cc Adobe Firefly 中转 2.0,onlyQualities=[low,medium] + 透明拒)', () => {
+    const URL_Q = 'http://portal.test/image-adapter/qimg/v1/images/generations';
+    const gen = (body: Record<string, unknown>) =>
+        handleAdapterImage(
+            jsonReq(URL_Q, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', ...body }),
+            'generations',
+            'qimg',
+        );
+
+    it('registry:qimg.cc、onlyQualities=[low,medium]、无 openAllTiers/sizes/upstreamQuality、透明拒;brand 抹 qimg / ERR 码 / Firefly S3 主机 / 前缀', () => {
+        const p = IMAGE_PROVIDERS.qimg;
+        expect(p.baseUrl).toBe('https://qimg.cc');
+        expect(p.onlyQualities).toEqual(['low', 'medium']);
+        expect(p.openAllTiers).toBeUndefined();
+        expect(p.sizes).toBeUndefined();
+        expect(p.upstreamQuality).toBeUndefined();
+        expect(p.noTransparentBackground).toBe(true);
+        expect('qimg 10k pool ERR-DCD58FC708 Adobe firefly'.replace(p.brand, '*')).toBe('* * * * *');
+        expect('https://pre-signed-firefly-prod.s3-accelerate.amazonaws.com/x'.replace(p.brand, '*')).toBe(
+            'https://*/x',
+        );
+        expect('Bad request to openai: Transparent background'.replace(p.brand, '')).toBe('Transparent background');
+    });
+
+    it('high(含大小写 / size=auto / 4K)→ 503 让路不打上游;low / medium / 缺省(→low)/ auto 放行并按官方账单', async () => {
+        for (const req of [
+            { size: '1024x1024', quality: 'high' },
+            { size: 'auto', quality: 'HIGH' },
+            { size: '3840x2160', quality: 'high' },
+        ]) {
+            fetchMock.mockReset();
+            okUpstream();
+            const res = await gen(req);
+            expect(res.status).toBe(503);
+            expect(fetchMock).not.toHaveBeenCalled();
+            expect(((await res.json()) as { error: { code: string } }).error.code).toBe('upstream_unavailable');
+        }
+        for (const [req, w, h, q] of [
+            [{ size: '1024x1024', quality: 'low' }, 1024, 1024, 'low'],
+            [{ size: '1024x1024', quality: 'medium' }, 1024, 1024, 'medium'],
+            [{ size: '1536x1024' }, 1536, 1024, 'low'],
+            [{ size: '3840x2160', quality: 'medium' }, 3840, 2160, 'medium'],
+        ] as const) {
+            fetchMock.mockReset();
+            fetchMock.mockImplementation(
+                async () =>
+                    new Response(
+                        JSON.stringify({
+                            created: 1,
+                            data: [{ b64_json: pngB64(w, h) }],
+                            usage: { input_tokens: 11, output_tokens: 1756 },
+                        }),
+                        { status: 200, headers: { 'content-type': 'application/json' } },
+                    ),
+            );
+            const res = await gen(req);
+            expect(res.status).toBe(200);
+            const [url, init] = fetchMock.mock.calls[0];
+            expect(url).toBe('https://qimg.cc/v1/images/generations');
+            expect(JSON.parse(init.body as string).quality ?? 'low').toBe(q); // 缺省不补字段,上游自己默认 low
+            const body = await res.json();
+            expect(body.quality).toBe(q);
+            expect(body.usage.output_tokens).toBe(officialOutputTokens(w, h, q)); // 上游 1756 浮动值丢弃
+        }
+    });
+
+    it('透明请求 → 503 让路不打上游(上游明拒 Transparent background is not supported)', async () => {
+        okUpstream();
+        const res = await gen({ quality: 'low', background: 'transparent' });
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('上游 4xx/5xx 分类:泛 400(ERR 码)→ 保守 failover 503;`invalid image` → 终态 400 中性体;503 10k pool → 503 中性体;均不泄 qimg / ERR 码', async () => {
+        fetchMock.mockResolvedValue(
+            new Response(
+                JSON.stringify({
+                    error: {
+                        message: 'Bad request to openai: Transparent background is not supported for this model.',
+                        type: 'invalid_request_error',
+                        code: 'ERR-FFBD8993FD',
+                    },
+                }),
+                { status: 400 },
+            ),
+        );
+        const r1 = await gen({ quality: 'low', size: '1000x1000' });
+        expect(r1.status).toBe(503);
+        expect(await r1.text()).not.toMatch(/qimg|ERR-|openai/i);
+
+        fetchMock.mockResolvedValue(
+            new Response(JSON.stringify({ error: { message: 'invalid image file (qimg)', code: 'ERR-DCD58FC708' } }), {
+                status: 400,
+            }),
+        );
+        const r2 = await gen({ quality: 'low' });
+        expect(r2.status).toBe(400);
+        expect(await r2.text()).not.toMatch(/qimg|ERR-/i);
+
+        fetchMock.mockResolvedValue(
+            new Response(
+                JSON.stringify({
+                    error: { message: '10k pool upstream unavailable', code: 'pool_upstream_unavailable' },
+                }),
+                { status: 503 },
+            ),
+        );
+        const r3 = await gen({ quality: 'medium' });
+        expect(r3.status).toBe(503);
+        expect(await r3.text()).not.toMatch(/qimg|10k pool/i);
+    });
+});
+
 describe('yobox provider(真 OpenAI API 直通 2.0,全量 openAllTiers + 透明拒)', () => {
     const URL_YB = 'http://portal.test/image-adapter/yobox/v1/images/generations';
     const gen = (body: Record<string, unknown>) =>
