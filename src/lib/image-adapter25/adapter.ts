@@ -11,7 +11,10 @@
  *  2. 一渠道承两模型:按客户请求的 model 透传(白名单),不写死。
  *  3. 输入图 token 对齐官方 2.5 口径:32px patch、上限 1536 patch、超限等比缩小取 floor
  *     (5 个尺寸实测逐点命中,含 3840×2160 超顶非方图 1508)—— 不再用 2.0 的 85+MP×1500 估算。
- *  4. n 原生 honor(上游实测返 n 张),不扇出;按【实际返回张数】计费。
+ *  4. n:按 provider 分两路 —— `nativeN: true` 的上游(we-token / llmway,实测一次真返 n 张)原生透传、
+ *     一次拿 n 张;其余上游(yobox / yuanshudian / synoralink / qimg / omini 同后端族,n>1 只回 1 张)
+ *     【并发扇出 n 次单图请求】凑 n(2026-10-11 起,此前全量原生透传 → 客户「n 最多 3」)。
+ *     少给再补齐(≤2 轮,同样并发)。无论哪路都按【实际返回张数】计费。
  *  5. 不发 response_format:官方 gpt-image 默认返 b64 且【拒收】该参数(viper3 官 key 实测 400),
  *     上游若返 url 则拉回转 b64 兜底,绝不外泄上游 url。
  *  6. output_format 透传给上游(官方原生支持 png/jpeg/webp);交付前按字节 sniff,请求 jpeg 而
@@ -768,14 +771,31 @@ export async function handleAdapter25Image(
     if (parsed.n > MAX_N)
         console.warn('[image-adapter25] n clamped', { provider: providerName, requested: parsed.n, used: MAX_N });
 
-    // ---- 调上游(n 原生透传,一次拿 n 张)----
+    // ---- 调上游:按 provider 选「原生 n」或「并发扇出」(2026-10-11)----
+    // nativeN 上游一次调用带 n 拿 n 张;其余上游对 n>1 恒回 1 张(yobox25 等同后端族实测),此前原生透传 +
+    // 串行补齐 2 轮 → 封顶 3 张(客户「n 最多 3」)。现在对它们并发发 count 次 n=1 的单图请求凑数:
+    // 耗时 = 最慢一次而不是 count 次之和,也不再吃补齐轮数上限。补齐轮同样走这条路。
+    const strategy: 'native' | 'fanout' = provider.nativeN ? 'native' : 'fanout';
+    const requestImages = (count: number): Promise<Array<string[] | TerminalReject | null>> =>
+        strategy === 'native'
+            ? callUpstream(provider, providerName, mode, parsed, count, auth).then((r) => [r])
+            : Promise.all(
+                  Array.from({ length: count }, () => callUpstream(provider, providerName, mode, parsed, 1, auth)),
+              );
+    const collect = (rs: Array<string[] | TerminalReject | null>) =>
+        rs
+            .flatMap((r) => (Array.isArray(r) ? r : []))
+            .map((b64_json) => ({ b64_json, generation_id: newGenerationId() }));
+
     const started = Date.now();
-    const result = await callUpstream(provider, providerName, mode, parsed, n, auth);
+    const results = await requestImages(n);
     let roundMs = Date.now() - started;
-    if (isTerminalReject(result)) return terminalReject(result);
-    let items = (result ?? []).map((b64_json) => ({ b64_json, generation_id: newGenerationId() }));
+    // 任一调用命中终态(内容安全 / 请求本身错)→ 整体终态化,不 failover:同一 prompt 换渠道也拒,别浪费重试位。
+    const terminal = results.find(isTerminalReject);
+    if (terminal) return terminalReject(terminal);
+    let items = collect(results);
     // 一张没拿到 → failover(换渠道比原地重试更可能成);拿到一部分 → 补齐,见下。
-    if (items.length === 0) return failover('upstream_error', 'upstream call failed');
+    if (items.length === 0) return failover('upstream_error', `all ${results.length} upstream call(s) failed`);
 
     // ---- n 补齐(2026-09-23)----
     // 上游【原生 n】在号池型上游身上不可靠:zdchat 实测 n>1 请求约 1/3 少给(要 2 回 1、要 4 回 2),
@@ -799,20 +819,22 @@ export async function handleAdapter25Image(
         }
         const missing = n - items.length;
         const t0 = Date.now();
-        const more = await callUpstream(provider, providerName, mode, parsed, missing, auth);
+        const more = await requestImages(missing);
         roundMs = Date.now() - t0;
-        const gained = isTerminalReject(more) ? [] : (more ?? []);
-        items = items.concat(gained.map((b64_json) => ({ b64_json, generation_id: newGenerationId() })));
+        const gained = collect(more);
+        const hitTerminal = more.some(isTerminalReject);
+        items = items.concat(gained);
         console.warn('[image-adapter25] top-up round', {
             provider: providerName,
             mode,
+            strategy,
             round,
             missing,
             gained: gained.length,
             total: items.length,
             ms: roundMs,
         });
-        if (gained.length === 0 || isTerminalReject(more)) break;
+        if (gained.length === 0 || hitTerminal) break;
     }
     // 补齐轮里上游可能多给(我们要 1 它回 2)→ 只交付客户请求的 n 张:超发会跟着超收。
     if (items.length > n) items = items.slice(0, n);
@@ -821,6 +843,7 @@ export async function handleAdapter25Image(
         console.warn('[image-adapter25] upstream returned fewer than n', {
             provider: providerName,
             mode,
+            strategy,
             requested: n,
             got: items.length,
         });

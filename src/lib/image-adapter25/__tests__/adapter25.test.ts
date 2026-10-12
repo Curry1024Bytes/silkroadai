@@ -1765,3 +1765,152 @@ describe('JSON /images/edits 输入图:官方 images[{image_url|file_id}] + 自�
         expect(res.status).toBe(200);
     });
 });
+
+/**
+ * n 扇出(2026-10-11):`nativeN` 未标的上游对 n>1 恒回 1 张(yobox25 / yuanshudian25 / synoralink25 / qimg25
+ * 同后端族实测),此前 2.5 对所有上游原生透传 + 串行补齐 2 轮 → 封顶 3 张(客户「n 最多 3」,近 48h 日志
+ * n=4 请求 10/10 只拿 3)。现在对这类上游并发扇出 n 次单图请求凑 n;nativeN 上游(we-token / llmway)不变。
+ */
+describe('handleAdapter25Image n 扇出(nativeN 未标的上游:yobox25)', () => {
+    const URL_GEN_YOBOX = 'http://portal.test/image-adapter25/yobox25/v1/images/generations';
+    const URL_EDIT_YOBOX = 'http://portal.test/image-adapter25/yobox25/v1/images/edits';
+    const UPSTREAM_GEN_YOBOX = 'https://max.yoboxai.com/v1/images/generations';
+    const gen = (n: number) =>
+        handleAdapter25Image(
+            jsonReq(URL_GEN_YOBOX, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'low', n }),
+            'generations',
+            'yobox25',
+        );
+    const bodyOf = (res: Response) => res.json() as Promise<{ data: unknown[]; usage: { output_tokens: number } }>;
+    const sentBody = (i: number) =>
+        JSON.parse(String((fetchMock.mock.calls[i] as [string, RequestInit])[1].body)) as Record<string, unknown>;
+    /** 第 k 次上游调用返回的张数(0 = 503);超出序列恒 503。扇出是同步按序发起的,调用序号稳定。 */
+    function seqUpstream(batches: number[]) {
+        let call = 0;
+        fetchMock.mockImplementation(async () => {
+            const count = batches[call++] ?? 0;
+            if (count === 0) return new Response('{"error":{}}', { status: 503 });
+            return new Response(
+                JSON.stringify({
+                    created: 1,
+                    data: Array.from({ length: count }, () => ({ b64_json: pngB64(1024, 1024) })),
+                }),
+                { status: 200, headers: { 'content-type': 'application/json' } },
+            );
+        });
+    }
+
+    it('registry:we-token / llmway 标 nativeN(实测原生 honor);同后端族 + omini / zdchat 不标 → 走扇出', () => {
+        expect(IMAGE_PROVIDERS_25.wetokenasia25.nativeN).toBe(true);
+        expect(IMAGE_PROVIDERS_25.llmway25.nativeN).toBe(true);
+        for (const p of ['yobox25', 'yuanshudian25', 'synoralink25', 'qimg25', 'ominiapi25', 'zdchat25']) {
+            expect(IMAGE_PROVIDERS_25[p].nativeN, p).toBeFalsy();
+        }
+    });
+
+    it('要 4:并发发 4 次单图请求(body 不带 n),拿满 4 张,按 4 张计费(此前封顶 3)', async () => {
+        okUpstream([pngB64(1024, 1024)]); // 每次调用只回 1 张 —— yobox25 的真实行为
+        const res = await gen(4);
+        expect(res.status).toBe(200);
+        expect(fetchMock).toHaveBeenCalledTimes(4);
+        for (let i = 0; i < 4; i++) {
+            expect((fetchMock.mock.calls[i] as [string])[0]).toBe(UPSTREAM_GEN_YOBOX);
+            expect(sentBody(i)).not.toHaveProperty('n');
+        }
+        const body = await bodyOf(res);
+        expect(body.data).toHaveLength(4);
+        expect(body.usage.output_tokens).toBe(781); // ceil(4×195.1),不是 196×4=784
+    });
+
+    it('扇出是【并发】的:4 次调用在第一个响应回来之前就全部发出', async () => {
+        const resolvers: Array<(r: Response) => void> = [];
+        fetchMock.mockImplementation(() => new Promise<Response>((resolve) => resolvers.push(resolve)));
+        const pending = gen(4);
+        await new Promise((r) => setTimeout(r, 0));
+        expect(resolvers).toHaveLength(4);
+        for (const resolve of resolvers) {
+            resolve(
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(1024, 1024) }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+            );
+        }
+        const res = await pending;
+        expect((await bodyOf(res)).data).toHaveLength(4);
+    });
+
+    it('扇出部分失败(4 发 1 败)→ 补齐轮只补缺的 1 张,凑满 4,共 5 次调用', async () => {
+        seqUpstream([1, 0, 1, 1, 1]);
+        const res = await gen(4);
+        const body = await bodyOf(res);
+        expect(fetchMock).toHaveBeenCalledTimes(5);
+        expect(body.data).toHaveLength(4);
+        expect(body.usage.output_tokens).toBe(781);
+    });
+
+    it('补齐轮本身也并发扇出:缺 2 → 一轮发 2 次;两轮封顶后仍可能少给,按实际计费', async () => {
+        seqUpstream([1, 1, 0, 0, 1, 0, 0]); // 首轮 2/4;补齐轮 1:2 发 1 中;补齐轮 2:1 发 0 中 → 停
+        const res = await gen(4);
+        const body = await bodyOf(res);
+        expect(fetchMock).toHaveBeenCalledTimes(4 + 2 + 1);
+        expect(body.data).toHaveLength(3);
+        expect(body.usage.output_tokens).toBe(586); // ceil(3×195.1)
+    });
+
+    it('全部扇出失败 → 503 failover,不原地补打', async () => {
+        seqUpstream([]);
+        const res = await gen(3);
+        expect(res.status).toBe(503);
+        expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
+
+    it('任一扇出命中终态(内容安全 451)→ 整体 400 终态,不 failover,不交付另一张', async () => {
+        let call = 0;
+        fetchMock.mockImplementation(async () =>
+            call++ === 0
+                ? new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(1024, 1024) }] }), {
+                      status: 200,
+                      headers: { 'content-type': 'application/json' },
+                  })
+                : new Response('{"error":{"code":"image_unsafe"}}', { status: 451 }),
+        );
+        const res = await gen(2);
+        expect(res.status).toBe(400);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('multipart edits 同样扇出:n=2 → 2 次调用,每次重建 FormData、各带 1 张输入图、不带 n', async () => {
+        okUpstream([pngB64(1024, 1024)]);
+        const res = await handleAdapter25Image(
+            formReq(
+                URL_EDIT_YOBOX,
+                { model: 'gpt-image-2.5-flare', prompt: 'edit', size: '1024x1024', quality: 'low', n: '2' },
+                [TINY_PNG],
+            ),
+            'edits',
+            'yobox25',
+        );
+        expect(res.status).toBe(200);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        for (let i = 0; i < 2; i++) {
+            const f = (fetchMock.mock.calls[i] as [string, RequestInit])[1].body as FormData;
+            expect(f.get('n')).toBeNull();
+            expect(f.getAll('image')).toHaveLength(1);
+            expect(f.get('model')).toBe('gpt-image-2.5-flare');
+        }
+        expect((await bodyOf(res)).data).toHaveLength(2);
+    });
+
+    it('nativeN 上游(wetokenasia25)行为不变:n=4 一次调用带 n=4', async () => {
+        okUpstream([pngB64(1024, 1024), pngB64(1024, 1024), pngB64(1024, 1024), pngB64(1024, 1024)]);
+        const res = await handleAdapter25Image(
+            jsonReq(URL_GEN, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'low', n: 4 }),
+            'generations',
+            'wetokenasia25',
+        );
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(sentBody(0).n).toBe(4);
+        expect((await bodyOf(res)).data).toHaveLength(4);
+    });
+});

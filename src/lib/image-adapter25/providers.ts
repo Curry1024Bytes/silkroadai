@@ -25,6 +25,13 @@ export interface ImageProvider25 {
      *  缺省 = 5 档全收。设了名单的 provider 收到名单外档位 → 503 让路给别的渠道,【不打上游】——
      *  因为有的上游对高档位是静默降级(收 max 的钱交 medium 的图),而不是拒绝;适配器不能替客户吃这个亏。 */
     qualities?: ReadonlyArray<'low' | 'medium' | 'high' | 'xhigh' | 'max'>;
+    /** true = 上游【原生 honor n】(一次调用真返 n 张,实测验证过)→ 适配器把 n 原样透传、一次拿 n 张。
+     *  缺省(false)= 上游对 n>1 只回 1 张(yobox25 / yuanshudian25 / synoralink25 / qimg25 同后端实测
+     *  「n=2 只返 1 张」,ominiapi25 同;zdchat25 返 1 或 2 不定)→ 适配器【并发扇出 n 次单图请求】
+     *  自己凑 n(镜像 2.0 适配器的做法)。2026-10-11 客户反馈「n 最多 3」:此前 2.5 对所有上游都原生透传,
+     *  靶 yobox25 每次只回 1 张 + 串行补齐只补 2 轮 → 1+1+1 封顶 3 张(近 48h 日志 n=4 请求 10/10 都只拿 3)。
+     *  fail-safe 方向:没验证过原生 n 的上游一律扇出 —— 扇出对真支持 n 的上游也只是多几次调用,不丢图。 */
+    nativeN?: boolean;
 }
 
 /** we-token 系上游的单次调用超时(与 @/lib/image-adapter/providers 的同名常量语义一致,模块独立不共享)。 */
@@ -46,6 +53,7 @@ export const IMAGE_PROVIDERS_25: Record<string, ImageProvider25> = {
         brand: /\bwe-?token\b|\badobe\b|\bfirefly\b/gi,
         models: GPT_IMAGE_25_MODELS,
         upstreamTimeoutMs: WETOKEN_UPSTREAM_TIMEOUT_MS, // 2026-09-11:we-token 挂死不回头,600s→300s
+        nativeN: true, // 2026-09-09 实测 n 原生 honor(一次真返 n 张)
     },
     // llmway25:llmway.ai 对 gpt-image-2.5 两模型是真 OpenAI 直通(2026-09-13 实测 27/27 带 OpenAI OpCo
     // C2PA、PNG 原始编码单 IDAT 不经重编码;1024² / 1536×1024 / 1024×1536 / 2880² / 3840×2160 全如实、
@@ -60,6 +68,7 @@ export const IMAGE_PROVIDERS_25: Record<string, ImageProvider25> = {
         brand: /\bllmway\b|\badobe\b|\bfirefly\b/gi,
         models: GPT_IMAGE_25_MODELS,
         qualities: ['low', 'medium', 'high'],
+        nativeN: true, // 2026-09-13 实测 27/27 n 原生 honor
     },
     // ominiapi25:www.ominiapi.com(key sk-WrSC…)对 gpt-image-2.5 两模型是 OpenAI 为主的号池。2026-09-13 实测
     // 纯 OpenAI 但随机 5xx ~37%;2026-09-14 复测 36/36 全 200 但混回 Adobe(xhigh 6 次 5 次落 Adobe、回显 medium
