@@ -7,6 +7,7 @@ import { prisma } from '@/lib/db';
 import { unauthorizedResponse } from '@/lib/admin-auth';
 import { resolveAdmin } from '@/lib/admin/auth';
 import { tenantScope } from '@/lib/admin/tenant-scope';
+import { mirrorsNewApiGroups, mirroredGroupMessage } from '@/lib/channel-group-source';
 
 export const runtime = 'nodejs';
 
@@ -68,6 +69,15 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
             await assertPricingCatalogWritable(tx);
             const existing = await tx.channelGroup.findFirst({ where: { id, ...tenantScope(admin) } });
             if (!existing) return NextResponse.json({ error: '渠道分组不存在' }, { status: 404 });
+            const mirrored = mirrorsNewApiGroups(existing.tenant_id);
+            if (
+                mirrored &&
+                (!existing.upstream_present || Object.keys(parsed.data).some((key) => key !== 'is_default'))
+            )
+                return NextResponse.json(
+                    { error: 'newapi_managed_group', message: mirroredGroupMessage },
+                    { status: 409 },
+                );
             const nextIsDefault = parsed.data.is_default ?? existing.is_default;
             const nextEnabled = parsed.data.enabled ?? existing.enabled;
             if (nextIsDefault && !nextEnabled) {
@@ -80,7 +90,7 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
                 );
             }
             const nextChannelIds = parsed.data.newapi_channel_ids ?? existing.newapi_channel_ids ?? [];
-            if (nextEnabled && nextChannelIds.length === 0) {
+            if (nextEnabled && nextChannelIds.length === 0 && !existing.upstream_synced_at) {
                 return NextResponse.json({ error: 'active_tier_requires_channels' }, { status: 409 });
             }
             if (nextEnabled) {
@@ -104,7 +114,7 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
                 const overlaps = conflicts.filter((group) =>
                     group.newapi_channel_ids.some((id) => nextChannelIds.includes(id)),
                 );
-                if (overlaps.length > 0) {
+                if (overlaps.length > 0 && !mirrored) {
                     return NextResponse.json(
                         {
                             error: 'channel_already_assigned',
@@ -169,6 +179,11 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
             await assertPricingCatalogWritable(tx);
             const existing = await tx.channelGroup.findFirst({ where: { id, ...tenantScope(admin) } });
             if (!existing) return NextResponse.json({ error: '渠道分组不存在' }, { status: 404 });
+            if (mirrorsNewApiGroups(existing.tenant_id))
+                return NextResponse.json(
+                    { error: 'newapi_managed_group', message: mirroredGroupMessage },
+                    { status: 409 },
+                );
             if (existing.is_default && existing.enabled) {
                 return NextResponse.json(
                     { error: 'active_default_tier_required', message: '请先将另一档次设为默认档' },

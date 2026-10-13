@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { resolveAdmin } from '@/lib/admin/auth';
 import { tenantScope } from '@/lib/admin/tenant-scope';
+import { mirrorsNewApiGroups, mirroredGroupMessage } from '@/lib/channel-group-source';
 import { unauthorizedResponse } from '@/lib/admin-auth';
 import { PricingPublishError } from '@/lib/admin/pricing-publish-lock';
 import { ChannelGroupRetirementError } from '@/lib/admin/channel-group-retirement';
@@ -47,6 +48,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
             newapiGroup: group.newapi_group,
             replacementDefaultId: parsed.data.replacement_default_id,
         };
+        if (mirrorsNewApiGroups(group.tenant_id))
+            return NextResponse.json({ error: 'newapi_managed_group', message: mirroredGroupMessage }, { status: 409 });
         if (parsed.data.action === 'preview')
             return NextResponse.json({ preview: await previewRetirementJob(selection, admin) });
         const job = await startRetirementJob(selection, admin, parsed.data.preview_token!);

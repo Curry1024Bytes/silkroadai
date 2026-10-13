@@ -154,6 +154,7 @@ export async function readPublishState(db: PublishDb): Promise<PublishState> {
                 is_default: true,
                 tier_level: true,
                 newapi_channel_ids: true,
+                upstream_synced_at: true,
                 updated_at: true,
             },
         }),
@@ -176,6 +177,7 @@ export async function readPublishState(db: PublishDb): Promise<PublishState> {
         models: models.map((row) => ({ ...row, updated_at: row.updated_at.toISOString() })),
         groups: groups.map((row) => ({
             ...row,
+            upstream_synced_at: row.upstream_synced_at?.toISOString() ?? null,
             newapi_channel_ids: [...row.newapi_channel_ids].sort((a, b) => a - b),
             updated_at: row.updated_at.toISOString(),
         })),

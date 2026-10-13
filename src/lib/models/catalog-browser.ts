@@ -115,6 +115,7 @@ export async function loadBrowserCatalog(userId?: string): Promise<BrowserCatalo
                 is_default: true,
                 enabled: true,
                 tier_level: true,
+                upstream_synced_at: true,
             },
         }),
         userId ? listUserTierMultipliers(userId) : Promise.resolve([]),

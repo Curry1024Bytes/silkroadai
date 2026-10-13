@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockCatalogGuard = vi.fn();
 vi.mock('@/lib/admin/pricing-publish-lock', async () => ({
@@ -17,6 +17,8 @@ const mockDelete = vi.fn();
 const mockUpdateMany = vi.fn();
 const mockCatalogFindMany = vi.fn();
 const mockKeyFindFirst = vi.fn();
+const mockMirror = vi.fn();
+vi.mock('@/lib/channel-group-mirror', () => ({ mirrorChannelGroups: (...a: unknown[]) => mockMirror(...a) }));
 
 vi.mock('@/lib/admin/auth', () => ({ resolveAdmin: (...a: unknown[]) => mockResolveAdmin(...a) }));
 vi.mock('@/lib/admin-auth', () => ({
@@ -79,6 +81,68 @@ beforeEach(() => {
     mockKeyFindFirst.mockResolvedValue(null);
     mockCreate.mockImplementation(({ data }: { data: object }) => Promise.resolve({ id: 'cg1', ...data }));
     mockUpdate.mockImplementation(({ data }: { data: object }) => Promise.resolve({ id: 'cg1', ...data }));
+});
+afterEach(() => vi.unstubAllEnvs());
+
+describe('new-api managed groups', () => {
+    beforeEach(() => {
+        vi.stubEnv('NEWAPI_GROUP_SYNC_MODE', 'mirror');
+        mockMirror.mockResolvedValue(undefined);
+    });
+    it('refreshes the complete mirror before returning only current platform groups', async () => {
+        const response = await GET(req());
+        expect(mockMirror).toHaveBeenCalledWith(true);
+        expect(mockFindMany).toHaveBeenCalledWith(
+            expect.objectContaining({ where: { tenant_id: PLATFORM_TENANT_ID, upstream_present: true } }),
+        );
+        expect(await response.json()).toMatchObject({ source: 'newapi' });
+    });
+    it('reports failed synchronization without presenting an outdated list as current', async () => {
+        mockMirror.mockRejectedValue(new Error('upstream secret must not escape'));
+        const response = await GET(req());
+        expect(response.status).toBe(502);
+        expect(await response.text()).not.toContain('upstream secret');
+        expect(mockFindMany).not.toHaveBeenCalled();
+    });
+    it('does not read upstream for unauthorized callers', async () => {
+        mockResolveAdmin.mockResolvedValue(null);
+        expect((await GET(req())).status).toBe(401);
+        expect(mockMirror).not.toHaveBeenCalled();
+    });
+    it('rejects local creation and deletion', async () => {
+        expect((await POST(req('POST', VALID))).status).toBe(409);
+        mockFindFirst.mockResolvedValue({ ...VALID, id: 'cg1', tenant_id: PLATFORM_TENANT_ID });
+        expect((await DELETE(req('DELETE'), { params: params() })).status).toBe(409);
+        expect(mockCreate).not.toHaveBeenCalled();
+        expect(mockDelete).not.toHaveBeenCalled();
+    });
+    it.each([{ enabled: false }, { display_name: 'renamed' }, { newapi_group: 'other' }, { newapi_channel_ids: [99] }])(
+        'rejects local overrides %j',
+        async (body) => {
+            mockFindFirst.mockResolvedValue({
+                ...VALID,
+                id: 'cg1',
+                tenant_id: PLATFORM_TENANT_ID,
+                upstream_present: true,
+            });
+            expect((await PUT(req('PUT', body), { params: params() })).status).toBe(409);
+            expect(mockUpdate).not.toHaveBeenCalled();
+        },
+    );
+    it('allows setting a selectable mirrored group as the single default', async () => {
+        mockFindFirst.mockResolvedValue({
+            ...VALID,
+            id: 'cg1',
+            tenant_id: PLATFORM_TENANT_ID,
+            enabled: true,
+            is_default: false,
+            upstream_present: true,
+            upstream_synced_at: new Date(),
+        });
+        expect((await PUT(req('PUT', { is_default: true }), { params: params() })).status).toBe(200);
+        expect(mockUpdate).toHaveBeenCalledWith({ where: { id: 'cg1' }, data: { is_default: true } });
+        expect(mockUpdateMany).toHaveBeenCalledWith(expect.objectContaining({ data: { is_default: false } }));
+    });
 });
 
 describe('GET /api/admin/channel-groups', () => {

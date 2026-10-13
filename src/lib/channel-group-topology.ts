@@ -10,6 +10,7 @@ export interface TopologyGroup {
     is_default: boolean;
     enabled: boolean;
     tier_level: number;
+    upstream_synced_at?: Date | string | null;
 }
 
 export interface UpstreamMapEntryLike {
@@ -64,9 +65,9 @@ function formatTopologyIssue(issue: ChannelGroupTopologyIssue): string {
 }
 
 /**
- * A tenant's active routing topology. ChannelGroup is the only Portal-side
- * source of truth: callers must never invent `pool`, `default`, or another
- * fallback tier when this topology is incomplete.
+ * A tenant's active group/channel registry. Verified new-api mirrors support
+ * shared memberships; manually managed tiers retain unique channel ownership.
+ * Callers must never invent a fallback tier when this topology is incomplete.
  */
 export class ChannelGroupTopology {
     readonly byTier = new Map<string, TopologyGroup>();
@@ -87,7 +88,8 @@ export class ChannelGroupTopology {
         const groupOwners = new Map<string, string[]>();
         for (const group of groups) {
             this.byTier.set(group.key, group);
-            if (group.newapi_channel_ids.length === 0) issues.push({ code: 'tier_has_no_channels', tier: group.key });
+            if (group.newapi_channel_ids.length === 0 && !group.upstream_synced_at)
+                issues.push({ code: 'tier_has_no_channels', tier: group.key });
             groupOwners.set(group.newapi_group, [...(groupOwners.get(group.newapi_group) ?? []), group.key]);
             for (const channelId of group.newapi_channel_ids) {
                 owners.set(channelId, [...(owners.get(channelId) ?? []), group.key]);
@@ -102,7 +104,10 @@ export class ChannelGroupTopology {
         for (const [channelId, tiers] of owners) {
             const uniqueTiers = [...new Set(tiers)];
             if (uniqueTiers.length > 1) {
-                issues.push({ code: 'duplicate_channel_owner', channel_id: channelId, tiers: uniqueTiers });
+                // new-api legitimately assigns one channel to multiple groups. Only verified mirrors
+                // may share it. Legacy callers without an explicit group receive no guessed owner.
+                if (!uniqueTiers.every((tier) => this.byTier.get(tier)?.upstream_synced_at))
+                    issues.push({ code: 'duplicate_channel_owner', channel_id: channelId, tiers: uniqueTiers });
             } else {
                 this.channelOwner.set(channelId, uniqueTiers[0]);
             }
@@ -123,7 +128,7 @@ export class ChannelGroupTopology {
                 continue;
             }
             const owner = this.channelOwner.get(entry.channel_id) ?? null;
-            if (owner !== tier) {
+            if (!this.byTier.get(tier)!.newapi_channel_ids.includes(entry.channel_id)) {
                 issues.push({ code: 'channel_not_owned_by_tier', tier, channel_id: entry.channel_id, owner });
             }
         }
@@ -146,6 +151,7 @@ export async function loadChannelGroupTopology(
             is_default: true,
             enabled: true,
             tier_level: true,
+            upstream_synced_at: true,
         },
     });
     return new ChannelGroupTopology(resolvedTenantId, groups);

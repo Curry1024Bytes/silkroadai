@@ -45,6 +45,7 @@ export interface PublishState {
         tier_level: number;
         newapi_channel_ids: number[];
         updated_at: string;
+        upstream_synced_at?: string | null;
     }>;
     prices: Array<
         PricingPublishAmounts & {
@@ -371,7 +372,7 @@ export function buildPublishPlan(
         const topology = new ChannelGroupTopology(linked.tenant_id ?? 'legacy', groups);
         for (const [tier, mapping] of links) {
             const linkedGroup = groups.find((item) => item.key === tier);
-            if (!linkedGroup || topology.channelOwner.get(mapping.channel_id) !== tier) {
+            if (!linkedGroup || topology.validateUpstreamMap({ [tier]: mapping }).length > 0) {
                 throw new PricingPublishError(
                     'pricing_mapping_invalid',
                     `「${linked.display_name}」的档次归属不完整，请先核对。`,

@@ -8,6 +8,7 @@ import { CHAT_FX, IMAGE_FX } from '@/lib/newapi/pricing-sync';
 import { readNewApiSyncSource, type NewApiSyncSource } from './newapi-sync-source';
 import { buildNewApiSyncPlan, canonicalSync, type SyncState, type SyncPlan } from './newapi-sync-plan';
 import type { NewApiSyncPreview } from './newapi-sync-types';
+import { mirrorsNewApiGroups } from '@/lib/channel-group-source';
 
 export class NewApiSyncError extends Error {
     constructor(
@@ -50,6 +51,7 @@ export async function readSyncState(db: SyncDb, tenantId: string): Promise<SyncS
                 is_default: true,
                 tier_level: true,
                 updated_at: true,
+                upstream_synced_at: true,
             },
         }),
         db.catalogModel.findMany({
@@ -88,6 +90,7 @@ export async function readSyncState(db: SyncDb, tenantId: string): Promise<SyncS
             ...row,
             newapi_channel_ids: [...row.newapi_channel_ids].sort((a, b) => a - b),
             updated_at: row.updated_at.toISOString(),
+            upstream_synced_at: row.upstream_synced_at?.toISOString() ?? null,
         })),
         models: models.map((row) => ({
             ...row,
@@ -138,6 +141,10 @@ function publicPreview(plan: SyncPlan, token: string): NewApiSyncPreview {
     };
 }
 export async function previewNewApiSync(tenantId: string) {
+    if (mirrorsNewApiGroups(tenantId)) {
+        const { mirrorChannelGroups } = await import('@/lib/channel-group-mirror');
+        await mirrorChannelGroups(true);
+    }
     const [source, state] = await Promise.all([readNewApiSyncSource(), readSyncState(prisma, tenantId)]);
     const now = Date.now();
     const plan = buildNewApiSyncPlan(state, source, now);

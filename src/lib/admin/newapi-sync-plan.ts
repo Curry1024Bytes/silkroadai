@@ -209,6 +209,7 @@ export function buildNewApiSyncPlan(state: SyncState, source: NewApiSyncSource, 
     for (const group of state.groups)
         groupsByName.set(group.newapi_group, [...(groupsByName.get(group.newapi_group) ?? []), group]);
     const usable = (name: string) => Object.hasOwn(source.groups, name);
+    const mirrored = state.groups.length > 0 && state.groups.every((group) => !!group.upstream_synced_at);
     const ratioNames = groupRatioNames(source.prices.groupRatio);
 
     // 1. Each active channel belongs to exactly one tier: its existing owner if still valid, else its only group.
@@ -237,6 +238,13 @@ export function buildNewApiSyncPlan(state: SyncState, source: NewApiSyncSource, 
     const nextGroups: SyncGroup[] = [];
     for (const name of [...new Set([...Object.keys(source.groups), ...groupsByName.keys()])].sort()) {
         const matches = groupsByName.get(name) ?? [];
+        // Verified mirrors already follow full channel membership and user selectability.
+        // Catalog/price synchronization must never overwrite that registry with active-channel guesses.
+        if (mirrored) {
+            nextGroups.push(...matches);
+            plan.unchanged.groups += matches.length;
+            continue;
+        }
         if (matches.length > 1) {
             plan.warnings.push(`new-api 分组「${name}」对应多个 Portal 档次，请先核对归属；本次不修改这些档次。`);
             nextGroups.push(...matches);
@@ -329,9 +337,11 @@ export function buildNewApiSyncPlan(state: SyncState, source: NewApiSyncSource, 
         const owner = owners.get(entry.channel_id);
         return (
             byKey.get(tier)?.enabled === true &&
-            owner?.length === 1 &&
-            owner[0] === tier &&
+            (mirrored
+                ? byKey.get(tier)!.newapi_channel_ids.includes(entry.channel_id)
+                : owner?.length === 1 && owner[0] === tier) &&
             channel?.status === 1 &&
+            (!mirrored || channel.groups.includes(byKey.get(tier)!.newapi_group)) &&
             channel.models.includes(entry.upstream_model)
         );
     };
@@ -403,8 +413,7 @@ export function buildNewApiSyncPlan(state: SyncState, source: NewApiSyncSource, 
                 const replacement = supportingChannel(group, entry.upstream_model);
                 if (replacement !== undefined) map[tier] = { ...entry, channel_id: replacement };
                 // Keep a still-owned reference so metering keeps resolving the tier; drop anything invalid.
-                else if (owners.get(entry.channel_id)?.length === 1 && owners.get(entry.channel_id)?.[0] === tier)
-                    map[tier] = entry;
+                else if (group.newapi_channel_ids.includes(entry.channel_id)) map[tier] = entry;
             }
         }
         const statuses = new Map<string, PriceStatus>();

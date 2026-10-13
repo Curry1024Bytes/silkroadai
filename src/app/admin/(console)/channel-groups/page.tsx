@@ -169,6 +169,7 @@ function ChannelGroupsContent() {
     const t = getTexts(locale);
 
     const [groups, setGroups] = useState<ChannelGroup[]>([]);
+    const [mirrored, setMirrored] = useState(false);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
     const [errorModels, setErrorModels] = useState<NonNullable<ChannelGroupFailure['models']>>([]);
@@ -202,11 +203,12 @@ function ChannelGroupsContent() {
                     return;
                 }
                 const data = await res.json().catch(() => ({}));
-                setError(data.error || t.loadFailed);
+                setError(data.message || data.error || t.loadFailed);
                 return;
             }
             const data = await res.json();
             setGroups(data.groups ?? []);
+            setMirrored(data.source === 'newapi');
         } catch {
             setError(t.loadFailed);
         } finally {
@@ -218,6 +220,14 @@ function ChannelGroupsContent() {
     useEffect(() => {
         fetchGroups();
     }, [fetchGroups]);
+
+    useEffect(() => {
+        if (!mirrored) return;
+        const timer = setInterval(() => {
+            if (document.visibilityState === 'visible') void fetchGroups();
+        }, 60_000);
+        return () => clearInterval(timer);
+    }, [mirrored, fetchGroups]);
 
     // ── Modal handlers ──
 
@@ -354,6 +364,25 @@ function ChannelGroupsContent() {
         }
     };
 
+    const setDefaultGroup = async (group: ChannelGroup) => {
+        setSaving(true);
+        setError('');
+        try {
+            const res = await fetch(`/api/admin/channel-groups/${group.id}`, {
+                method: 'PUT',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ is_default: true }),
+            });
+            if (!res.ok) operationError(await res.json().catch(() => ({})), t.saveFailed);
+            else await fetchGroups();
+        } catch {
+            setError(t.saveFailed);
+        } finally {
+            setSaving(false);
+        }
+    };
+
     // ── Shared styles ──
 
     const btnBase = [
@@ -385,7 +414,13 @@ function ChannelGroupsContent() {
             isEmbedded={isEmbedded}
             maxWidth="full"
             title={t.title}
-            subtitle={t.subtitle}
+            subtitle={
+                mirrored
+                    ? locale === 'en'
+                        ? 'Groups follow new-api. Change groups in new-api; choose the default here.'
+                        : '分组与 new-api 同步。在 new-api 修改分组，在这里选择默认分组。'
+                    : t.subtitle
+            }
             locale={locale}
             actions={
                 <button type="button" onClick={fetchGroups} className={btnBase}>
@@ -393,6 +428,16 @@ function ChannelGroupsContent() {
                 </button>
             }
         >
+            {mirrored && !loading && !groups.some((group) => group.enabled && group.is_default) && (
+                <p
+                    role="status"
+                    className="mb-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900"
+                >
+                    {locale === 'en'
+                        ? 'Choose a user-selectable default group so new customers can finish registration.'
+                        : '请选择一个用户可选分组作为默认分组，新用户才能完成开户。'}
+                </p>
+            )}
             {/* Error banner */}
             {success && (
                 <p
@@ -435,13 +480,15 @@ function ChannelGroupsContent() {
                 <button type="button" onClick={() => setSyncOpen(true)} className={btnBase}>
                     {locale === 'en' ? 'Update catalog from new-api' : '从 new-api 更新目录'}
                 </button>
-                <button
-                    type="button"
-                    onClick={openCreateModal}
-                    className="inline-flex items-center rounded-lg border border-emerald-500 bg-emerald-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-emerald-600"
-                >
-                    {t.newGroup}
-                </button>
+                {!mirrored && (
+                    <button
+                        type="button"
+                        onClick={openCreateModal}
+                        className="inline-flex items-center rounded-lg border border-emerald-500 bg-emerald-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-emerald-600"
+                    >
+                        {t.newGroup}
+                    </button>
+                )}
             </div>
 
             {/* Group table */}
@@ -458,7 +505,13 @@ function ChannelGroupsContent() {
                 ) : groups.length === 0 ? (
                     <div className={`py-12 text-center ${isDark ? 'text-slate-400' : 'text-gray-500'}`}>
                         <p className="text-base font-medium">{t.noGroups}</p>
-                        <p className="mt-1 text-sm opacity-70">{t.noGroupsHint}</p>
+                        <p className="mt-1 text-sm opacity-70">
+                            {mirrored
+                                ? locale === 'en'
+                                    ? 'Create groups in new-api, then refresh.'
+                                    : '请在 new-api 创建分组，然后刷新。'
+                                : t.noGroupsHint}
+                        </p>
                     </div>
                 ) : (
                     <table className="w-full text-sm">
@@ -470,13 +523,17 @@ function ChannelGroupsContent() {
                                         : 'border-b border-slate-200 text-slate-500'
                                 }
                             >
-                                <th className="px-4 py-3 text-left font-medium">{t.colKey}</th>
+                                {!mirrored && <th className="px-4 py-3 text-left font-medium">{t.colKey}</th>}
                                 <th className="px-4 py-3 text-left font-medium">{t.colName}</th>
                                 <th className="px-4 py-3 text-left font-medium">{t.colNewapiGroup}</th>
                                 <th className="px-4 py-3 text-center font-medium">{t.colTierLevel}</th>
                                 <th className="px-4 py-3 text-center font-medium">{t.colDefault}</th>
-                                <th className="px-4 py-3 text-center font-medium">{t.colEnabled}</th>
-                                <th className="px-4 py-3 text-left font-medium">{t.colChannels}</th>
+                                <th className="px-4 py-3 text-center font-medium">
+                                    {mirrored ? (locale === 'en' ? 'User selectable' : '用户可选') : t.colEnabled}
+                                </th>
+                                <th className="px-4 py-3 text-left font-medium">
+                                    {mirrored ? (locale === 'en' ? 'Channels' : '所属渠道') : t.colChannels}
+                                </th>
                                 <th className="px-4 py-3 text-right font-medium">{t.colActions}</th>
                             </tr>
                         </thead>
@@ -496,16 +553,18 @@ function ChannelGroupsContent() {
                                                 : 'border-slate-100 hover:bg-slate-50',
                                         ].join(' ')}
                                     >
-                                        <td
-                                            className={`px-4 py-3 font-mono text-xs ${isDark ? 'text-slate-100' : 'text-slate-900'}`}
-                                        >
-                                            {group.key}
-                                        </td>
+                                        {!mirrored && (
+                                            <td
+                                                className={`px-4 py-3 font-mono text-xs ${isDark ? 'text-slate-100' : 'text-slate-900'}`}
+                                            >
+                                                {group.key}
+                                            </td>
+                                        )}
                                         <td
                                             className={`px-4 py-3 font-medium ${isDark ? 'text-slate-100' : 'text-slate-900'}`}
                                         >
                                             <div>{group.display_name}</div>
-                                            {group.description && (
+                                            {!mirrored && group.description && (
                                                 <div
                                                     className={`text-xs font-normal ${isDark ? 'text-slate-500' : 'text-slate-400'}`}
                                                 >
@@ -539,6 +598,8 @@ function ChannelGroupsContent() {
                                         <td className="px-4 py-3 text-center">
                                             <button
                                                 type="button"
+                                                disabled={mirrored}
+                                                aria-label={`${group.display_name} ${mirrored ? (locale === 'en' ? 'user selectable' : '用户可选') : t.colEnabled}`}
                                                 onClick={() => handleToggleEnabled(group)}
                                                 className={[
                                                     'relative inline-flex h-5 w-9 items-center rounded-full transition-colors',
@@ -564,45 +625,60 @@ function ChannelGroupsContent() {
                                             {channels}
                                         </td>
                                         <td className="px-4 py-3 text-right">
-                                            <div className="inline-flex gap-1">
-                                                {group.enabled && group.newapi_channel_ids.length > 0 && (
+                                            {mirrored ? (
+                                                group.enabled && !group.is_default ? (
                                                     <button
                                                         type="button"
-                                                        onClick={() => {
-                                                            setError('');
-                                                            setSuccess('');
-                                                            setReplacementGroup(group);
-                                                        }}
-                                                        className={`min-h-11 whitespace-nowrap rounded-md px-2 py-1 text-xs font-medium ${isDark ? 'text-emerald-300 hover:bg-emerald-500/20' : 'text-emerald-700 hover:bg-emerald-50'}`}
+                                                        disabled={saving}
+                                                        onClick={() => setDefaultGroup(group)}
+                                                        className={btnBase}
                                                     >
-                                                        {locale === 'en' ? 'Replace channel' : '替换渠道'}
+                                                        {locale === 'en' ? 'Set as default' : '设为默认'}
                                                     </button>
-                                                )}
-                                                <button
-                                                    type="button"
-                                                    onClick={() => openEditModal(group)}
-                                                    className={[
-                                                        'rounded-md px-2 py-1 text-xs font-medium transition-colors',
-                                                        isDark
-                                                            ? 'text-indigo-400 hover:bg-indigo-500/20'
-                                                            : 'text-indigo-600 hover:bg-indigo-50',
-                                                    ].join(' ')}
-                                                >
-                                                    {t.edit}
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => handleDelete(group)}
-                                                    className={[
-                                                        'rounded-md px-2 py-1 text-xs font-medium transition-colors',
-                                                        isDark
-                                                            ? 'text-red-400 hover:bg-red-500/20'
-                                                            : 'text-red-600 hover:bg-red-50',
-                                                    ].join(' ')}
-                                                >
-                                                    {t.delete}
-                                                </button>
-                                            </div>
+                                                ) : (
+                                                    <span>{t.none}</span>
+                                                )
+                                            ) : (
+                                                <div className="inline-flex gap-1">
+                                                    {group.enabled && group.newapi_channel_ids.length > 0 && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                setError('');
+                                                                setSuccess('');
+                                                                setReplacementGroup(group);
+                                                            }}
+                                                            className={`min-h-11 whitespace-nowrap rounded-md px-2 py-1 text-xs font-medium ${isDark ? 'text-emerald-300 hover:bg-emerald-500/20' : 'text-emerald-700 hover:bg-emerald-50'}`}
+                                                        >
+                                                            {locale === 'en' ? 'Replace channel' : '替换渠道'}
+                                                        </button>
+                                                    )}
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => openEditModal(group)}
+                                                        className={[
+                                                            'rounded-md px-2 py-1 text-xs font-medium transition-colors',
+                                                            isDark
+                                                                ? 'text-indigo-400 hover:bg-indigo-500/20'
+                                                                : 'text-indigo-600 hover:bg-indigo-50',
+                                                        ].join(' ')}
+                                                    >
+                                                        {t.edit}
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => handleDelete(group)}
+                                                        className={[
+                                                            'rounded-md px-2 py-1 text-xs font-medium transition-colors',
+                                                            isDark
+                                                                ? 'text-red-400 hover:bg-red-500/20'
+                                                                : 'text-red-600 hover:bg-red-50',
+                                                        ].join(' ')}
+                                                    >
+                                                        {t.delete}
+                                                    </button>
+                                                </div>
+                                            )}
                                         </td>
                                     </tr>
                                 );

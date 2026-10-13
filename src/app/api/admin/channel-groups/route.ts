@@ -6,6 +6,7 @@ import { unauthorizedResponse } from '@/lib/admin-auth';
 import { resolveAdmin } from '@/lib/admin/auth';
 import { tenantScope, tenantForInsert } from '@/lib/admin/tenant-scope';
 import { generateChannelGroupKey } from '@/lib/channel-group-key';
+import { mirrorsNewApiGroups, mirroredGroupMessage } from '@/lib/channel-group-source';
 
 export const runtime = 'nodejs';
 
@@ -32,16 +33,36 @@ export async function GET(request: NextRequest) {
     const admin = await resolveAdmin(request, 'superadmin');
     if (!admin) return unauthorizedResponse(request);
 
+    const mirror = mirrorsNewApiGroups(tenantForInsert(admin));
+    if (mirror) {
+        try {
+            const { mirrorChannelGroups } = await import('@/lib/channel-group-mirror');
+            await mirrorChannelGroups(true);
+        } catch {
+            return NextResponse.json(
+                {
+                    error: 'group_sync_unavailable',
+                    message: '无法完整读取 new-api 分组，请稍后刷新；本次未使用不完整数据覆盖分组。',
+                },
+                { status: 502 },
+            );
+        }
+    }
     const groups = await prisma.channelGroup.findMany({
-        where: { ...tenantScope(admin) },
+        where: {
+            ...tenantScope(admin),
+            ...(mirror ? { tenant_id: tenantForInsert(admin), upstream_present: true } : {}),
+        },
         orderBy: [{ tier_level: 'asc' }, { created_at: 'asc' }],
     });
-    return NextResponse.json({ groups });
+    return NextResponse.json({ groups, source: mirror ? 'newapi' : 'portal' });
 }
 
 export async function POST(request: NextRequest) {
     const admin = await resolveAdmin(request, 'superadmin');
     if (!admin) return unauthorizedResponse(request);
+    if (mirrorsNewApiGroups(tenantForInsert(admin)))
+        return NextResponse.json({ error: 'newapi_managed_group', message: mirroredGroupMessage }, { status: 409 });
 
     let body: unknown;
     try {

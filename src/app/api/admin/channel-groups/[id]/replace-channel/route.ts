@@ -5,6 +5,7 @@ import { prisma } from '@/lib/db';
 import { resolveAdmin } from '@/lib/admin/auth';
 import { tenantScope } from '@/lib/admin/tenant-scope';
 import { unauthorizedResponse } from '@/lib/admin-auth';
+import { mirrorsNewApiGroups, mirroredGroupMessage } from '@/lib/channel-group-source';
 import { getChannel, listChannels } from '@/lib/newapi/client';
 import {
     applyChannelReplacement,
@@ -79,6 +80,8 @@ export async function POST(request: NextRequest, { params }: Context) {
     const { id } = await params;
     const group = await prisma.channelGroup.findFirst({ where: { id, ...tenantScope(admin) } });
     if (!group) return NextResponse.json({ error: 'group_not_found', message: '渠道分组不存在。' }, { status: 404 });
+    if (mirrorsNewApiGroups(group.tenant_id))
+        return NextResponse.json({ error: 'newapi_managed_group', message: mirroredGroupMessage }, { status: 409 });
     let target;
     try {
         target = replacementChannel(await getChannel(parsed.data.target_channel_id));

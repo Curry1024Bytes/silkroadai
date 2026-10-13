@@ -5,6 +5,7 @@ import { PLATFORM_TENANT_ID } from '@/lib/admin/tenant-scope';
 import { getOption } from '@/lib/newapi/client';
 import { ChannelGroupTopology } from '@/lib/channel-group-topology';
 import { generateChannelGroupKey } from '@/lib/channel-group-key';
+import { mirrorsNewApiGroups } from '@/lib/channel-group-source';
 
 // ─────────────────────────────────────────────────────────────────────────
 // 档次同步:new-api `UserUsableGroups` 只用于发现/下架,ChannelGroup 才是 Portal
@@ -114,6 +115,12 @@ async function runSync(): Promise<void> {
  * 同一个 in-flight promise。任何失败只 warn 不抛 —— 调用方继续用 DB 现有行。
  */
 export async function syncChannelGroupsFromNewApi(): Promise<void> {
+    if (mirrorsNewApiGroups()) {
+        const { mirrorChannelGroups } = await import('@/lib/channel-group-mirror');
+        // Fail closed when an authoritative snapshot cannot be verified; do not offer stale groups for new keys.
+        await mirrorChannelGroups();
+        return;
+    }
     if (inflightSync) return inflightSync;
     if (Date.now() - lastSyncAttemptAt < SYNC_TTL_MS) return;
     lastSyncAttemptAt = Date.now();

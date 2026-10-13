@@ -27,6 +27,7 @@ const groupSelect = {
     display_name: true,
     newapi_group: true,
     newapi_channel_ids: true,
+    upstream_synced_at: true,
     is_default: true,
     enabled: true,
     tier_level: true,

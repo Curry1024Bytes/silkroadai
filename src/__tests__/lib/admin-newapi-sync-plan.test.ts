@@ -111,6 +111,27 @@ function withExternal(overrides: { ratio?: boolean; groups?: Record<string, stri
 }
 
 describe('buildNewApiSyncPlan prices', () => {
+    it('does not overwrite mirrored selectability or shared/disabled channel memberships', () => {
+        const stamp = new Date(NOW).toISOString();
+        const groups = [
+            group({ upstream_synced_at: stamp, newapi_channel_ids: [6, 7] }),
+            group({ id: 'g2', key: 'shared', newapi_group: 'shared', is_default: false, upstream_synced_at: stamp }),
+            group({
+                id: 'g3',
+                key: 'empty',
+                newapi_group: 'empty',
+                is_default: false,
+                upstream_synced_at: stamp,
+                newapi_channel_ids: [],
+            }),
+        ];
+        const upstream = source({ channels: [channel({ groups: [GROUP, 'shared'] }), channel({ id: 7, status: 2 })] });
+        const plan = buildNewApiSyncPlan(state({ groups }), upstream, NOW);
+        expect(plan.groups).toEqual([]);
+        expect(plan.blocked).toBeNull();
+        expect(groups[0].newapi_channel_ids).toEqual([6, 7]);
+        expect(groups[2].enabled).toBe(true);
+    });
     it('adds a missing catalog price from global model ratios', () => {
         const plan = buildNewApiSyncPlan(state(), source(), NOW);
         expect(plan.groups).toHaveLength(0);
