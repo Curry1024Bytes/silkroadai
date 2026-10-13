@@ -37,3 +37,28 @@ Operator 明确要求分组增删、名称、用户可选状态和所属渠道�
 
 生产只读确认：new-api 8 分组 / 8 渠道，Portal 11 个历史登记、1 用户、1 Key、0 模型、0 目录价格；
 唯一客户 Key 属于「GPT特惠反代」。本次不会改 new-api 源码、分组、价格，也不发收费推理或支付请求。
+
+## 上线与验收
+
+应用提交 `b88c49cdfde230dbd4017cc896e1ebcf46d28055` 已从 dev fast-forward 到 prod 并推送。
+最终完整 CI 与首轮计数一致，失败标签与同日已核验基线完全一致。实际发布前再次完成类型检查与生产构建。
+
+新镜像先在隔离恢复库执行完整 forward migration，再用实际 Portal 同步代码读取生产 new-api 的只读
+元数据：8 个当前分组、3 个归档组、唯一默认「GPT特惠反代」，原 Key 与价格均不变；第二次同步幂等。
+隔离库和临时环境文件已删除。首次独立检查脚本遗漏必填公开站点 URL，在进入同步前被环境校验拒绝；
+补齐检查环境后重新恢复隔离库，migration 和实际同步全部通过，无需修改应用代码。
+
+2026-10-13 16:58:10（北京时间）切换 Portal，约 8.1 秒登录页可用。运行镜像为
+`sha256:cd0311f0025e9e57e6cc287b4cb749be5ada578da1bbc1eff5d5507b62265ddd`。
+服务器环境只新增 `NEWAPI_GROUP_SYNC_MODE=mirror`；现有 Compose 和 new-api 配置不变。
+构建目录 `/opt/llmroute-releases/b88c49c/source` 来自干净 prod Git 归档，排除 `.env*`。
+
+- 实际 `/api/admin/channel-groups` 返回 `source=newapi`，8 个分组逐一与 new-api 名称、用户可选状态、
+  渠道归属比对一致；重复刷新数据无额外变化。default/official/vip 三个旧登记仅归档，没有撤销客户 Key。
+- 85 个有效 migration 与镜像逐项 checksum 一致，0 pending；历史 rolled-back 记录未改。
+- 唯一用户的 superadmin 身份保留；用短时会话验证 `/admin/channel-groups`、`/keys`、
+  `/api/portal/keys` 都为 200，未登录的管理 API 为 401。会话仅留内存，45 秒后过期。
+- 原有客户 Key 的非收费模型列表请求返回 200 / 4 模型；Key 的 id、tier、凭据前后相同。
+  Portal 仍为 0 模型、0 目录价格，本次没有自动导入模型、发布价格、收费推理或支付。
+- 回滚使用上述旧镜像、发布前 `.env` 和 `source-before.tar.gz`。新增 schema 为向后兼容字段，
+  回滚应用时无需删除列或回滚历史数据；后续要继续手动管理档次，应先核对镜像登记和业务要求。
