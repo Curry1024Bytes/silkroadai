@@ -155,6 +155,8 @@ interface CallOptions {
      * provisioning.
      */
     session?: { auth: LoginSessionAuth; userId: number };
+    /** Single-use proof, scoped to this one authenticated operation. */
+    securityProof?: string;
 }
 
 async function call<T>(
@@ -188,6 +190,7 @@ async function call<T>(
         headers['Authorization'] = auth.accessToken; // no Bearer prefix
         headers['New-Api-User'] = String(auth.userId); // required by all endpoints
     }
+    if (options.securityProof) headers['X-Security-Proof'] = options.securityProof;
 
     const guardTimeoutMs = await customerKeyMutationTimeout();
     const timeoutMs = Math.min(options.timeoutMs ?? callTimeoutMs(), guardTimeoutMs ?? Infinity);
@@ -661,7 +664,6 @@ export async function getTokenKey(
     });
     return result.key;
 }
-
 
 /** 改 token 别名(act-as customer)。
  *
@@ -1148,6 +1150,96 @@ function generateUserPassword(): string {
     return randomBytes(8).toString('hex').slice(0, 16); // 16 字符
 }
 
+/** Exchange the login credential without ever persisting the short-lived JWT.
+ * Newer new-api requires password re-verification and a single-use operation
+ * proof. Only that explicit challenge enables this flow; other failures and
+ * ambiguous network outcomes must not cause another token rotation.
+ */
+async function provisionAccessToken(login: Awaited<ReturnType<typeof loginAsUser>>, password: string): Promise<string> {
+    const options: CallOptions = {
+        ...(login.accessToken
+            ? { asUser: { accessToken: login.accessToken, userId: login.user.id } }
+            : { session: { auth: { kind: 'cookie' as const, cookie: login.cookie! }, userId: login.user.id } }),
+        requireSuccess: true,
+        cache: 'no-store',
+        redirect: 'error',
+    };
+    let token: unknown;
+    try {
+        token = await call<unknown>('GET', '/api/user/token', undefined, undefined, options);
+    } catch (error) {
+        if (
+            !login.accessToken ||
+            !(error instanceof NewApiError) ||
+            error.status !== 403 ||
+            !isRecord(error.payload) ||
+            error.payload.code !== 'SECURITY_PROOF_REQUIRED'
+        ) {
+            throw error;
+        }
+
+        const scope = 'access_token.generate';
+        const requirements = await call<unknown>('GET', '/api/verify/methods', undefined, { scope }, options);
+        const policy = z
+            .object({
+                scope: z.literal(scope),
+                password_encryption_enabled: z.literal(false),
+                methods: z.array(z.object({ method: z.string(), available: z.boolean() })),
+            })
+            .safeParse(requirements);
+        if (
+            !policy.success ||
+            !policy.data.methods.some((method) => method.method === 'password' && method.available)
+        ) {
+            throw new NewApiError(
+                403,
+                'GET /api/verify/methods',
+                null,
+                'Password verification is unavailable for provisioning',
+            );
+        }
+
+        let verification: unknown;
+        try {
+            verification = await call<unknown>(
+                'POST',
+                '/api/verify',
+                { method: 'password', scope, password },
+                undefined,
+                options,
+            );
+        } catch (error) {
+            // Never retain an upstream response that could echo the password.
+            if (error instanceof NewApiError) {
+                throw new NewApiError(error.status, error.endpoint, null, 'Provisioning password verification failed');
+            }
+            throw error;
+        }
+        const proof = z
+            .object({
+                proof_token: z.string().trim().min(1),
+                method: z.literal('password'),
+                scope: z.literal(scope),
+                expires_at: z
+                    .number()
+                    .int()
+                    .refine((value) => value > Date.now() / 1000),
+            })
+            .safeParse(verification);
+        if (!proof.success) {
+            throw new NewApiError(502, 'POST /api/verify', null, 'Invalid provisioning security proof');
+        }
+        token = await call<unknown>('GET', '/api/user/token', undefined, undefined, {
+            ...options,
+            securityProof: proof.data.proof_token,
+        });
+    }
+    if (typeof token !== 'string' || !token.trim() || token === login.accessToken || token.split('.').length === 3) {
+        throw new NewApiError(502, 'GET /api/user/token', null, 'Invalid persistent access token');
+    }
+    return token;
+}
+
 export interface ProvisionedCustomer {
     newapi_user_id: number;
     newapi_username: string;
@@ -1197,13 +1289,7 @@ export async function provisionNewCustomer(args: {
     // token. Saving the login JWT here makes Portal key management fail once
     // that short-lived session expires. Current releases accept the JWT;
     // older releases require the legacy session cookie.
-    const accessToken = login.accessToken
-        ? await call<string>('GET', '/api/user/token', undefined, undefined, {
-              asUser: { accessToken: login.accessToken, userId },
-          })
-        : await call<string>('GET', '/api/user/token', undefined, undefined, {
-              session: { auth: { kind: 'cookie', cookie: login.cookie! }, userId },
-          });
+    const accessToken = await provisionAccessToken(login, password);
 
     // Step 4: create the first token. Must act-as the customer.
     //
