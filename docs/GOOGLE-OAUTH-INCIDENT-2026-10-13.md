@@ -73,4 +73,5 @@ PostgreSQL、new-api、new-api PostgreSQL 和 Redis 的启动时间均未变化�
 - 切换后再次在新容器运行真实 Portal 开户 helper，持久令牌鉴权与默认分组 Key 创建通过；临时资源已清理。
 - `/opt/deploy-state/portal-source.sha256` 已记录实际部署的 prod SHA。
 
-以上不等于用户真实 Google 浏览器登录已验收；已请用户重新登录确认。
+2026-10-13 上线后，用户按提示刷新登录页并重新使用 Google 登录，明确反馈「已成功登录」。
+真实浏览器登录已由用户确认恢复，本次故障验收完成；该结论依据用户反馈，未扩大为支付或模型调用验收。
