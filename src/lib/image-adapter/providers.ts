@@ -237,6 +237,28 @@ export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
         onlyQualities: ['high'],
         noTransparentBackground: true, // frimodel 家族实测不出真 alpha
     },
+    // frimodeladobe2:frimodel 平台【第五个账号】(2026-10-13 接入,key sk-j3DN…,组 gpt_image_adobe2)。
+    // 2026-10-13 server2 直打 18 发 16 个 200 实测:`/v1/models` 只有 gpt-image-2-adobe / -low / -medium
+    // (裸 gpt-image-2 → 503 model_not_found);三个名都走 gpt-image-2-adobe 即可(quality 参数上游认)。
+    // 【与 frimodel 前四号不同】出图是【真 OpenAI 字节】:16/16 C2PA issuer `OpenAI OpCo, LLC`、
+    // softwareAgent `API`(OpenAI Media Service API),raw 零 adobe/firefly —— Adobe 中转原样转发 OpenAI
+    // (同 qimg 2.5-flare / yobox 2.0 一类);但图床仍是 Firefly S3 预签名 url(generations / edits 都恒返 url,
+    // 无视 b64)→ url→b64 兜底拉回,brand 抹 firefly / s3-accelerate。C2PA 按内容剥:OpenAI 签名原样保留。
+    // 档位:high 静默降 medium(回显 medium、usage 1756;4K 记 3336)、三档单发延迟一样(46–54s)→
+    // 【只放 low/medium】,high 503 让路给真 high 线;xhigh 上游 400。尺寸 1024²/1536×1024/2048²/4K 全如实
+    // (4K 242s);auto → 1536×1024;1000×1000 不 400 出 992²(入口尺寸校验靠适配器);webp 被忽略返 PNG;
+    // n 原生 honor(n=2 真返 2 张,2.0 适配器仍扇出单图,无影响);edits multipart 通;4 并发 1K 延迟 85s。
+    // 透明 → 上游 400 "Transparent background is not supported for gpt-image-2" → noTransparentBackground。
+    // 【计费 = 按张一口价 $0.054】(7 单逐单账单差分全 5.4 美分,与档位/尺寸/edits 无关):对官方 $30/M
+    // low 9.2×(亏)/ medium 1024² 1.02× / 2048² medium 0.5× / 4K medium 0.54× —— medium 大尺寸最划算。
+    // 共享 frimodel "10k pool",偶发 503/429 由 new-api failover 兜(本次 18 发零 5xx)。
+    frimodeladobe2: {
+        baseUrl: 'https://api.frimodel.com',
+        brand: /\bfri-?model\b|\bfirefly\b|\bs3-accelerate\.amazonaws\.com\b/gi,
+        upstreamModel: 'gpt-image-2-adobe',
+        onlyQualities: ['low', 'medium'],
+        noTransparentBackground: true, // 2026-10-13 实测上游 400 不支持
+    },
     // pandatk:Adobe Firefly 转售(2026-08-28 接入,claim=Adobe_Firefly + Adobe 全证书链,C2PA 由
     // proxy 回程剥)。实测契约:认裸 gpt-image-2、b64 直返、【尺寸全如实】(1024²/1536×1024/2048²/
     // 2560×1440/4K 逐像素精确)、quality 钉死 medium 刻度(记账恒官方 medium 公式 ±1)、41-67s。

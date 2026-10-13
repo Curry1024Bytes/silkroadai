@@ -3119,6 +3119,101 @@ describe('frimodelhigh provider(frimodel 第四账号,onlyQualities=[high] + gpt
     });
 });
 
+describe('frimodeladobe2 provider(frimodel 第五账号,onlyQualities=[low,medium] + gpt-image-2-adobe,真 OpenAI 字节经 Firefly S3)', () => {
+    const URL_FA2 = 'http://portal.test/image-adapter/frimodeladobe2/v1/images/generations';
+    const gen = (body: Record<string, unknown>) =>
+        handleAdapterImage(
+            jsonReq(URL_FA2, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', ...body }),
+            'generations',
+            'frimodeladobe2',
+        );
+
+    it('registry:api.frimodel.com、upstreamModel gpt-image-2-adobe、只放 low/medium、透明 fail-closed、非 openAllTiers', () => {
+        const p = IMAGE_PROVIDERS.frimodeladobe2;
+        expect(p.baseUrl).toBe('https://api.frimodel.com');
+        expect(p.upstreamModel).toBe('gpt-image-2-adobe');
+        expect(p.onlyQualities).toEqual(['low', 'medium']);
+        expect(p.noTransparentBackground).toBe(true);
+        expect(p.openAllTiers).toBeFalsy();
+    });
+
+    it.each([
+        ['low', { quality: 'low' }, 196],
+        ['medium', { quality: 'medium' }, 1756],
+        ['auto(→low)', { quality: 'auto' }, 196],
+        ['缺省(→low)', {}, 196],
+    ])('放行 %s:上游 model 覆盖成 gpt-image-2-adobe,按请求档官方公式合成 usage', async (_label, extra, out) => {
+        okUpstream();
+        const res = await gen(extra);
+        expect(res.status).toBe(200);
+        const [url, init] = fetchMock.mock.calls[0];
+        expect(url).toBe('https://api.frimodel.com/v1/images/generations');
+        expect(JSON.parse(init.body as string).model).toBe('gpt-image-2-adobe');
+        expect((await res.json()).usage.output_tokens).toBe(out);
+    });
+
+    it('high 拒(503 不打上游):上游对 high 静默降 medium,让路给真 high 线', async () => {
+        const res = await gen({ quality: 'high' });
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('medium 不看尺寸:2048² medium 放行,按返回图实际尺寸合成', async () => {
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(2048, 2048) }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+        const res = await gen({ quality: 'medium', size: '2048x2048' });
+        expect(res.status).toBe(200);
+        expect((await res.json()).usage.output_tokens).toBe(officialOutputTokens(2048, 2048, 'medium'));
+    });
+
+    it('background=transparent → 503(上游 400 不支持,fail-closed 不打上游)', async () => {
+        const res = await gen({ quality: 'medium', background: 'transparent' });
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('multipart edits medium → 放行且 form model 覆盖成 gpt-image-2-adobe', async () => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            formReq(
+                'http://portal.test/image-adapter/frimodeladobe2/v1/images/edits',
+                { prompt: 'e', size: '1024x1024', quality: 'medium' },
+                [TINY_PNG],
+            ),
+            'edits',
+            'frimodeladobe2',
+        );
+        expect(res.status).toBe(200);
+        expect((fetchMock.mock.calls[0][1].body as FormData).get('model')).toBe('gpt-image-2-adobe');
+    });
+
+    it('上游恒返 Firefly S3 url → 拉回转 b64,不外泄上游 url', async () => {
+        fetchMock
+            .mockResolvedValueOnce(
+                new Response(
+                    JSON.stringify({
+                        created: 1,
+                        data: [{ url: 'https://pre-signed-firefly-prod.s3-accelerate.amazonaws.com/x.png' }],
+                    }),
+                    { status: 200, headers: { 'content-type': 'application/json' } },
+                ),
+            )
+            .mockResolvedValueOnce(
+                new Response(new Uint8Array(Buffer.from(pngB64(1024, 1024), 'base64')), { status: 200 }),
+            );
+        const res = await gen({ quality: 'low' });
+        expect(res.status).toBe(200);
+        const raw = JSON.stringify(await res.json());
+        expect(raw).not.toContain('firefly');
+        expect(raw).not.toContain('s3-accelerate');
+    });
+});
+
 describe('junze / junzestable provider(钧泽 API,Firefly 转售,openAllTiers 紧急备用线)', () => {
     const URL_JUNZE = 'http://portal.test/image-adapter/junze/v1/images/generations';
     const URL_STABLE = 'http://portal.test/image-adapter/junzestable/v1/images/generations';
