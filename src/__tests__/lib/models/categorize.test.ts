@@ -74,6 +74,7 @@ describe('categorizeByType', () => {
         // MiniMax H 系 = 海螺视频;M 系文本模型不受影响(仍走 chat 兜底)
         expect(categorizeByType('MiniMax-H3')).toBe('video');
         expect(categorizeByType('MiniMaxAI/MiniMax-M2.5')).toBe('chat');
+        expect(categorizeByType('wan-3.0')).toBe('video');
     });
 
     it('image-gen: dall-e / flux / gpt-image / *-image / *_image_* → image-gen', () => {
@@ -90,6 +91,8 @@ describe('categorizeByType', () => {
         expect(categorizeByType('gemini-3-pro-image-preview-2k')).toBe('image-gen');
         expect(categorizeByType('gemini_3.0_pro_image_preview_4K')).toBe('image-gen');
         expect(categorizeByType('gemini_3.1_flash_image_preview')).toBe('image-gen');
+        expect(categorizeByType('Nano Banana 2')).toBe('image-gen');
+        expect(categorizeByType('nano-banana-pro')).toBe('image-gen');
     });
 
     it('image-gen: "image" must be a standalone token — embedded substring stays chat', () => {
@@ -149,6 +152,7 @@ describe('categorizeByVendor', () => {
         expect(categorizeByVendor('imagen-3')).toBe('Google');
         expect(categorizeByVendor('veo-3.1')).toBe('Google');
         expect(categorizeByVendor('gemma-2-27b')).toBe('Google');
+        expect(categorizeByVendor('Nano Banana Pro')).toBe('Google');
     });
 
     it('ByteDance: seedance / dreamina / doubao', () => {

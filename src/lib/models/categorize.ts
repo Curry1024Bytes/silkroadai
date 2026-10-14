@@ -138,6 +138,7 @@ export function categorizeByType(modelName: string): TypeName {
         n.includes('cogvideo') ||
         n.includes('mochi') ||
         n.includes('wanx') ||
+        n.startsWith('wan-') ||
         n.includes('video')
     ) {
         return 'video';
@@ -152,6 +153,7 @@ export function categorizeByType(modelName: string): TypeName {
         n.includes('stable-diffusion') ||
         n.includes('sdxl') ||
         n.includes('sd3') ||
+        /nano[ _-]+banana/.test(n) ||
         IMAGE_WORD.test(n)
     ) {
         return 'image-gen';
@@ -210,13 +212,14 @@ export function categorizeByVendor(modelName: string): VendorName {
 
     if (n.includes('claude')) return 'Anthropic';
 
-    // Google — Gemini / Imagen / Veo / Gemma / PaLM.
+    // Google — Gemini / Imagen / Veo / Gemma / PaLM / Nano Banana.
     if (
         n.includes('gemini') ||
         n.includes('imagen') ||
         n.includes('veo') ||
         n.startsWith('gemma') ||
-        n.includes('palm')
+        n.includes('palm') ||
+        /nano[ _-]+banana/.test(n)
     ) {
         return 'Google';
     }
