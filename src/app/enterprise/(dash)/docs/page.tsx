@@ -579,7 +579,7 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                     <Code>draft_task_id</Code>。
                 </p>
                 <p className="text-gray-600">
-                    <b>查询响应对齐火山官方 2026-09 字段集</b>(国内版 / 火山渠道均适用):除 <Code>id</Code> /{' '}
+                    <b>查询响应对齐火山官方 2026-09 字段集</b>(国内版 / 火山渠道 / 海外版均适用):除 <Code>id</Code> /{' '}
                     <Code>model</Code> / <Code>status</Code> / <Code>content</Code> / <Code>error</Code> /{' '}
                     <Code>created_at</Code> / <Code>updated_at</Code> / <Code>resolution</Code> / <Code>ratio</Code> /{' '}
                     <Code>duration</Code> / <Code>usage</Code> 外,还返回 <Code>execution_expires_after</Code> /{' '}

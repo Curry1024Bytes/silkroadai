@@ -168,9 +168,8 @@ export interface ArkTaskResponseInput {
      * 实测上游完成态确实返回 framespersecond / generate_audio / execution_expires_after /
      * seed / tools,是我们在出口砍掉的。
      *
-     * ⚠️ 不能简单改成让 volc 也走 `extended` —— 那个分支里的值是**硬编码占位**
-     * (framespersecond: 0、execution_expires_after: 0、service_tier: ''),打开了也对不上基准。
-     * 必须用上游真值,上游没给的项才走火山官方默认值。
+     * 必须用上游真值,上游没给的项才走火山官方默认值。(`extended` 分支里这三项曾是
+     * 硬编码占位 0 / 0 / '',2026-10-13 起也改成同一套取值,见 buildArkTaskResponse。)
      */
     volcMeta?: VolcArkMeta | null;
     /**
@@ -273,7 +272,8 @@ export function buildArkTaskResponse(inp: ArkTaskResponseInput): Record<string, 
     // 值优先级 = 上游真值 > 落库的提交参数 > 官方默认值;客户没传的 safety_identifier / tools 省略。
     const outputFormat = meta?.outputFormat || sub?.outputFormat || VOLC_DEFAULT_OUTPUT_FORMAT;
     const safetyIdentifier = meta?.safetyIdentifier || sub?.safetyIdentifier || null;
-    const fps = meta?.framespersecond ?? VOLC_DEFAULT_FPS;
+    // 上游偶发回 0(BytePlus 未完成态)→ 视为未给,走官方默认 24,绝不把 0 放出去。
+    const fps = meta?.framespersecond && meta.framespersecond > 0 ? meta.framespersecond : VOLC_DEFAULT_FPS;
     const frames = arkFrames(meta, fps, inp.duration);
     const toolsEcho = submittedTools(meta, sub);
     const expiresAfter = meta?.executionExpiresAfter ?? sub?.executionExpiresAfter ?? VOLC_DEFAULT_EXPIRES_AFTER;
@@ -283,12 +283,16 @@ export function buildArkTaskResponse(inp: ArkTaskResponseInput): Record<string, 
     // draft_task_id 只在正片任务上出(客户样片号,方舟真号不对客)。
     const draftEcho = meta?.draft ?? sub?.draft ?? false;
     const draftTaskId = sub?.draftTaskId || null;
+    // ⚠️ 这三项曾是硬编码占位(0 / 0 / ''),照抄 #326 客户样例里一条【未完成】任务的值。
+    // 2026-10-13 智象未来网关按 BytePlus 官方下界(framespersecond ≥ 1)校验我们的回显,
+    // 把 0 判成「任务对象元数据异常」→ 客户侧任务卡 queued。改成与 cn / volc 两形同一套取值:
+    // 上游真值 > 落库提交参数 > 官方默认(24 fps / 172800s / 'default')。
     if (inp.extended) {
         base.draft = draftEcho;
         if (draftTaskId) base.draft_task_id = draftTaskId;
-        base.execution_expires_after = 0;
-        base.framespersecond = 0;
-        base.service_tier = '';
+        base.execution_expires_after = expiresAfter;
+        base.framespersecond = fps;
+        base.service_tier = meta?.serviceTier || VOLC_DEFAULT_SERVICE_TIER;
         base.tools = toolsEcho;
         base.seed = inp.seed != null ? Number(inp.seed) : 0;
         base.generate_audio = inp.generateAudio ?? true;
