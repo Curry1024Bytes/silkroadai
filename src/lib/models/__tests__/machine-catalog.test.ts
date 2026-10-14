@@ -213,6 +213,44 @@ describe('loadCatalogMeta', () => {
 });
 
 describe('customer-specific catalog pricing', () => {
+    it('scales every media resolution while preserving units, discounts, and the shared public quote', async () => {
+        const details = {
+            version: 1,
+            mode: 'media',
+            unit: 'cny_per_second',
+            default_price: null,
+            resolution_prices: { '768p': 1, '1080p': 1.5 },
+            scheduled_discount: { start: '22:00', end: '08:00', timezone: 'Asia/Shanghai', multiplier: 0.5 },
+        };
+        const row = catalogRow('video-test', [{ tier: 'enterprise' }]);
+        Object.assign(row.prices[0], { billing_details: details });
+        mockFindManyCatalog.mockResolvedValue([row]);
+        const map = await loadCatalogMeta();
+        const result = enrichModelList(
+            { data: [{ id: 'video-test' }] },
+            { tier: 'enterprise', multiplierScale: 2 },
+            map,
+        );
+        expect(result).toMatchObject({
+            data: [
+                {
+                    silkroadai: {
+                        pricing: {
+                            input_cny_per_1m: null,
+                            output_cny_per_1m: null,
+                            per_image_cny: null,
+                            billing_details: {
+                                unit: 'cny_per_second',
+                                resolution_prices: { '768p': 2, '1080p': 3 },
+                                scheduled_discount: { multiplier: 0.5 },
+                            },
+                        },
+                    },
+                },
+            ],
+        });
+        expect(map.get('video-test')!.pricesByTier.get('enterprise')!.billing_details).toEqual(details);
+    });
     it('resolves only an active exact Portal tier and uses a dedicated/public ratio, not their product', async () => {
         mockFindUniqueToken.mockResolvedValue({ tier: 'enterprise', user_id: 'customer-a', status: 'active' });
         mockMultipliers.mockResolvedValue([

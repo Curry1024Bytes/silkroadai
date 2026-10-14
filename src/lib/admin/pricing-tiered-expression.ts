@@ -236,13 +236,37 @@ function parseWithSpans(expression: string): {
         return { name, maximum: null, rates };
     }
 
+    function singleTier(depth: number): RawTier {
+        if (depth > MAX_DEPTH) invalid('表达式超过嵌套深度限制。');
+        if (tokens[cursor]?.text !== '(') return tier();
+        consume('(');
+        const result = singleTier(depth + 1);
+        consume(')');
+        return result;
+    }
+
     function selection(depth = 0): RawTier[] {
         if (depth > MAX_DEPTH) invalid('表达式超过嵌套深度限制。');
-        if (tokens[cursor]?.text === '(') {
+        // Parentheses may wrap only the comparison, as in ((len <= n)) ? (...): (...).
+        // Look ahead without deleting tokens so price spans and precedence remain exact.
+        let conditionParens = 0;
+        while (tokens[cursor + conditionParens]?.text === '(') conditionParens++;
+        const wrappedCondition =
+            conditionParens > 0 &&
+            tokens[cursor + conditionParens]?.text === 'len' &&
+            Array.from({ length: conditionParens }, (_, i) => tokens[cursor + conditionParens + 3 + i]?.text).every(
+                (text) => text === ')',
+            ) &&
+            tokens[cursor + conditionParens * 2 + 3]?.text === '?';
+        if (tokens[cursor]?.text === '(' && !wrappedCondition) {
             consume('(');
             const nested = selection(depth + 1);
             consume(')');
             return nested;
+        }
+        if (wrappedCondition) {
+            if (depth + conditionParens > MAX_DEPTH) invalid('表达式超过嵌套深度限制。');
+            for (let i = 0; i < conditionParens; i++) consume('(');
         }
         if (tokens[cursor]?.text !== 'len') return [tier()];
         consume('len');
@@ -256,8 +280,9 @@ function parseWithSpans(expression: string): {
         }
         const maximum = Number(threshold.text);
         if (!Number.isSafeInteger(maximum)) invalid('输入长度阈值超出安全整数范围。');
+        if (wrappedCondition) for (let i = 0; i < conditionParens; i++) consume(')');
         consume('?');
-        const branch = tier();
+        const branch = singleTier(depth + 1);
         branch.maximum = { tokens: maximum, inclusive: operator.text === '<=' };
         consume(':');
         return [branch, ...selection(depth + 1)];

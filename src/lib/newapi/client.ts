@@ -926,7 +926,17 @@ export async function getCatalogSyncOptions(): Promise<Record<string, unknown>> 
     const data = await call<Array<{ key: string; value: unknown }> | Record<string, unknown>>('GET', '/api/option/');
     if (!data || typeof data !== 'object') throw new Error('Invalid options response');
     const keys = ['UserUsableGroups', 'GroupRatio', 'ModelRatio', 'CompletionRatio', 'ModelPrice'];
-    return Object.fromEntries(
+    const optional = [
+        'CacheRatio',
+        'CreateCacheRatio',
+        'billing_setting.billing_mode',
+        'billing_setting.billing_expr',
+        'ImageResolutionPrice',
+        'billing_setting.task_billing_pricing',
+        'billing_setting.scheduled_discount',
+        'billing_setting.plugin_billing_expr',
+    ];
+    const result = Object.fromEntries(
         keys.map((key) => [
             key,
             Array.isArray(data)
@@ -936,6 +946,13 @@ export async function getCatalogSyncOptions(): Promise<Record<string, unknown>> 
                   : null,
         ]),
     );
+    for (const key of optional) {
+        if (Array.isArray(data)) {
+            const row = data.find((item) => item && item.key === key);
+            if (row) result[key] = row.value;
+        } else if (Object.hasOwn(data, key)) result[key] = data[key];
+    }
+    return result;
 }
 
 /** Pricing-only allowlist. Never retain/log the complete admin option response. */
@@ -959,6 +976,8 @@ export async function getPricingPublishOptions(): Promise<Record<string, unknown
         'GroupGroupRatio',
         'QuotaPerUnit',
         'ImageResolutionPrice',
+        'billing_setting.task_billing_pricing',
+        'billing_setting.plugin_billing_expr',
         'billing_setting.billing_mode',
         'billing_setting.billing_expr',
         'billing_setting.scheduled_discount',

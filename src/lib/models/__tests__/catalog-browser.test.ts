@@ -99,6 +99,28 @@ beforeEach(() => {
 });
 
 describe('loadBrowserCatalog memberships and retail prices', () => {
+    it('keeps resolution/second quotes visible when there is no scalar price', async () => {
+        catalogFixture([
+            model('video-test', { sale: route(1) }, [
+                {
+                    ...price('sale', null, null),
+                    billing_details: {
+                        version: 1,
+                        mode: 'media',
+                        unit: 'cny_per_second',
+                        default_price: null,
+                        resolution_prices: { '1080p': 1.5 },
+                    },
+                },
+            ]),
+        ]);
+        const result = await loadBrowserCatalog();
+        expect(result.models[0].pricesByTier.sale).toMatchObject({
+            input_cny_per_1m: null,
+            per_image_cny: null,
+            billing_details: { unit: 'cny_per_second', resolution_prices: { '1080p': 1.5 } },
+        });
+    });
     it('keeps exact prices isolated for a shared slug and includes linked but unpriced tiers', async () => {
         catalogFixture([
             model('shared', { sale: route(1), premium: route(2) }, [price('sale', 1, 5), price('premium', 3, 15)]),
@@ -261,6 +283,7 @@ describe('loadBrowserCatalog dedicated customer quotes', () => {
         expect(mockMultipliers).toHaveBeenCalledWith('customer-a');
         expect(mockGetOption).toHaveBeenCalledWith('GroupRatio');
         const quote = customer.models[0].pricesByTier.sale!;
+        if (quote.billing_details?.mode !== 'tiered_token') throw new Error('Expected complete token tiers');
         expect(quote.input_cny_per_1m).toBe(0.9);
         expect(quote.output_cny_per_1m).toBe(5.4);
         expect(quote.billing_details!.tiers[0].rates).toEqual({

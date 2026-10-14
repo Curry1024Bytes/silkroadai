@@ -6,11 +6,8 @@ import { ChannelGroupTopology } from '@/lib/channel-group-topology';
 import { HIDDEN_MODELS } from '@/lib/models/categorize';
 import type { BrowserCatalog, BrowserModelPricing } from '@/lib/models/catalog-browser-types';
 import type { TierPricing } from '@/lib/models/machine-catalog';
-import {
-    parseTieredPricingDetails,
-    scalePricingAmount,
-    scaleTieredPricingDetails,
-} from '@/lib/models/tiered-pricing-details';
+import { scalePricingAmount } from '@/lib/models/tiered-pricing-details';
+import { parseCatalogBillingDetails, scaleCatalogBillingDetails } from './catalog-pricing-details';
 import { getOption } from '@/lib/newapi/client';
 import { listUserTierMultipliers } from '@/lib/newapi/user-tier-multiplier';
 
@@ -137,20 +134,22 @@ export async function loadBrowserCatalog(userId?: string): Promise<BrowserCatalo
                 const price = latestPrices.get(tier);
                 if (!price) return [tier, null];
                 const scale = scales.get(tier) ?? 1;
-                const publicDetails = parseTieredPricingDetails(price.billing_details);
-                const details = publicDetails ? scaleTieredPricingDetails(publicDetails, scale) : null;
+                const publicDetails = parseCatalogBillingDetails(price.billing_details);
+                const details = publicDetails ? scaleCatalogBillingDetails(publicDetails, scale) : null;
+                const tokenRates = details?.mode === 'tiered_token' ? details.tiers[0].rates : null;
                 const amount = (value: unknown): number | null =>
                     value == null ? null : scalePricingAmount(Number(value), scale);
                 const pricing: TierPricing = {
-                    input_cny_per_1m: details?.tiers[0].rates.input ?? amount(price.input_cny_per_1m),
-                    output_cny_per_1m: details?.tiers[0].rates.output ?? amount(price.output_cny_per_1m),
+                    input_cny_per_1m: tokenRates?.input ?? amount(price.input_cny_per_1m),
+                    output_cny_per_1m: tokenRates?.output ?? amount(price.output_cny_per_1m),
                     per_image_cny: amount(price.per_image_cny),
                     ...(details ? { billing_details: details } : {}),
                 };
                 const hasPrice =
                     pricing.input_cny_per_1m !== null ||
                     pricing.output_cny_per_1m !== null ||
-                    pricing.per_image_cny !== null;
+                    pricing.per_image_cny !== null ||
+                    !!details;
                 return [tier, hasPrice ? pricing : null];
             }),
         );

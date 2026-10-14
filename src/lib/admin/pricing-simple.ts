@@ -8,7 +8,9 @@ import {
     queryLogs,
 } from '@/lib/newapi/client';
 import { QUOTA_PER_USD } from '@/lib/newapi/quota-units';
-import { parseTieredPricingDetails } from '@/lib/models/tiered-pricing-details';
+import { parseCatalogBillingDetails } from '@/lib/models/catalog-pricing-details';
+import { advancedSyncPrice } from '@/lib/newapi/catalog-sync-advanced';
+import { syncPricesFromOptions } from '@/lib/newapi/catalog-sync-prices';
 import { assertPricingCatalogWritable, PricingPublishError } from './pricing-publish-lock';
 import { tenantForInsert } from './tenant-scope';
 import { tierOrder } from './pricing-tiers';
@@ -31,6 +33,7 @@ import {
     planGroupRatioWrites,
     planModelWrites,
     readBasePrice,
+    hasStructuredMediaPrice,
     sameNumber,
     unverifiedWrites,
     type BasePrice,
@@ -89,6 +92,7 @@ export interface SimpleUpstreamModel {
     name: string;
     base: BasePrice | null;
     error: string | null;
+    read_only?: boolean;
     /** Optimistic-lock token for save_model. */
     state: string;
     /** new-api forces output = input × this ratio for token pricing. */
@@ -159,7 +163,7 @@ function latestCatalog(model: CatalogRow, tier: string) {
     if (!row) return null;
     let details = null;
     try {
-        details = parseTieredPricingDetails(row.billing_details);
+        details = parseCatalogBillingDetails(row.billing_details);
     } catch {
         details = null;
     }
@@ -204,6 +208,17 @@ function notesFor(options: Record<string, unknown>, name: string): string[] {
 }
 
 function expectedFor(options: Record<string, unknown>, name: string, group: string) {
+    const configuredRatio = groupRatioOf(options, group);
+    if (configuredRatio !== null) {
+        const advanced = advancedSyncPrice(syncPricesFromOptions(options), name, configuredRatio);
+        if (advanced)
+            return advanced.price
+                ? {
+                      status: 'ok' as const,
+                      expected: { ...advanced.price, billing_details: advanced.price.billing_details ?? null },
+                  }
+                : { status: 'invalid' as const, expected: null };
+    }
     const { base, error } = safeBase(options, name);
     const ratio = groupRatioOf(options, group);
     if (error) return { status: 'invalid' as const, expected: null };
@@ -235,6 +250,7 @@ function buildView(
                         name: upstream_model,
                         base,
                         error,
+                        read_only: hasStructuredMediaPrice(options, upstream_model),
                         state: modelOptionState(options, upstream_model),
                         locked_completion: meta?.locked === true && typeof meta.ratio === 'number' ? meta.ratio : null,
                         notes: notesFor(options, upstream_model),

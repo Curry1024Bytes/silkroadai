@@ -39,6 +39,14 @@ function fixtureCharge(
 }
 
 describe('strict new-api tiered token expression reader', () => {
+    it('scales wrapped presets without changing parentheses, thresholds or branch precedence', () => {
+        const expression = '((len <= 272000)) ? (tier("Short", p * 2 + c * 10)) : (tier("Long", p * 4 + c * 15))';
+        const scaled = scaleTieredPricingExpression(expression, 2, 1);
+        expect(scaled).toBe('((len <= 272000)) ? (tier("Short", p * 4 + c * 20)) : (tier("Long", p * 8 + c * 30))');
+        expect(fixtureCharge(parseTieredPricingExpression(scaled), { len: 272000, p: 272000, c: 0 })).toBe(1.088);
+        expect(fixtureCharge(parseTieredPricingExpression(scaled), { len: 272001, p: 272001, c: 0 })).toBe(2.176008);
+        expect(() => parseTieredPricingExpression(expression.replace('272000))', '272000)'))).toThrow();
+    });
     it('reads the deployed GPT schedule with full-input, whole-request boundaries and cache prices', () => {
         expect(parseTieredPricingExpression(GPT_EXPRESSION)).toEqual({
             version: 1,

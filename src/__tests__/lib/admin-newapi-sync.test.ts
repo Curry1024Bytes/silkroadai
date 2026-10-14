@@ -197,6 +197,58 @@ afterEach(() => {
 });
 
 describe('new-api sync signed preview and transactional apply', () => {
+    it('persists complete token tiers and cache prices, then produces an empty second preview', async () => {
+        source.channels[0].models = ['gpt-test'];
+        source.prices.billingMode = { 'gpt-test': 'tiered_expr' };
+        source.prices.billingExpr = {
+            'gpt-test':
+                'len < 272000 ? tier("base", p * 5 + c * 30 + cr * 0.5) : tier("long", p * 10 + c * 45 + cr * 1)',
+        };
+        const preview = await previewNewApiSync(TENANT);
+        expect(writes).toEqual([]);
+        expect(preview.items.find((row) => row.kind === 'price')!.after.join(' ')).toContain('缓存读取');
+        await applyNewApiSync(TENANT, 'admin-1', preview.preview_token);
+        const saved = store.prices.at(-1)!;
+        expect(saved.billing_details).toMatchObject({
+            mode: 'tiered_token',
+            tiers: [{ max_input_tokens: 272000 }, { min_input_tokens: 272000 }],
+        });
+        expect(saved.cost_cny_per_1m).toBe(0.02);
+        expect(store.prices[0].billing_details).toBeUndefined();
+        const next = await previewNewApiSync(TENANT);
+        expect(next.items).toEqual([]);
+        expect(next.unchanged.prices).toBe(1);
+    });
+
+    it('rejects a signed preview when only the billing expression changes', async () => {
+        source.prices.billingMode = { 'gpt-test': 'tiered_expr' };
+        source.prices.billingExpr = { 'gpt-test': 'tier("base", p * 5 + c * 30)' };
+        const preview = await previewNewApiSync(TENANT);
+        source.prices.billingExpr = { 'gpt-test': 'tier("base", p * 5 + c * 31)' };
+        await expect(applyNewApiSync(TENANT, null, preview.preview_token)).rejects.toMatchObject({
+            code: 'preview_stale',
+        });
+        expect(writes).toEqual([]);
+    });
+
+    it('creates image/video models with structured prices and never writes a false per-image scalar', async () => {
+        source.channels[0].models = ['banana', 'video-test'];
+        source.prices.imageResolutionPrice = { banana: { '1K': 0.5, '2K': 0.8, '4K': 1 } };
+        source.prices.taskBillingPricing = {
+            'video-test': { mode: 'per-second', resolution_prices: { '1080p': 1.5 } },
+        };
+        const preview = await previewNewApiSync(TENANT);
+        expect(preview.warnings).toEqual([]);
+        await applyNewApiSync(TENANT, null, preview.preview_token);
+        const video = store.models.find((row) => row.slug === 'video-test')!;
+        expect(video.modality).toBe('video');
+        expect(store.models.find((row) => row.slug === 'banana')!.modality).toBe('image');
+        const saved = store.prices.find((row) => row.model_id === video.id)!;
+        expect(saved.per_image_cny).toBeNull();
+        expect(saved.billing_details).toMatchObject({ mode: 'media', unit: 'cny_per_second' });
+        expect((await previewNewApiSync(TENANT)).items).toEqual([]);
+    });
+
     it('previews real changes without writes or a transaction', async () => {
         const before = structuredClone(store);
         const preview = await previewNewApiSync(TENANT);

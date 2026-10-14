@@ -24,6 +24,38 @@ afterEach(() => {
 });
 
 describe('catalog sync full source', () => {
+    it('reads modern billing rules in the same allowlisted snapshot without exposing secrets', async () => {
+        fetchMock.mockImplementation((url) =>
+            Promise.resolve(
+                new URL(url).pathname === '/api/channel/'
+                    ? envelope({ items: [channel(1)], total: 1 })
+                    : envelope({
+                          UserUsableGroups: '{"public":"Public"}',
+                          GroupRatio: '{"public":1}',
+                          ModelRatio: '{}',
+                          CompletionRatio: '{}',
+                          ModelPrice: '{}',
+                          CacheRatio: '{"gpt-test":0.1}',
+                          CreateCacheRatio: '{"gpt-test":1.25}',
+                          'billing_setting.billing_mode': '{"gpt-test":"tiered_expr"}',
+                          'billing_setting.billing_expr': {},
+                          ImageResolutionPrice: '{"banana":{"1K":1,"2K":2,"4K":3}}',
+                          'billing_setting.task_billing_pricing': '{}',
+                          'billing_setting.scheduled_discount': '{}',
+                          'billing_setting.plugin_billing_expr': '{}',
+                          SMTPToken: 'SECRET',
+                      }),
+            ),
+        );
+        const source = await readNewApiSyncSource();
+        expect(source.prices.billingMode).toBe('{"gpt-test":"tiered_expr"}');
+        expect(source.prices.imageResolutionPrice).toContain('banana');
+        expect(source.prices.taskBillingPricing).toBe('{}');
+        expect(source.prices.cacheRatio).toBe('{"gpt-test":0.1}');
+        expect(source.prices.createCacheRatio).toBe('{"gpt-test":1.25}');
+        expect(JSON.stringify(source)).not.toContain('SECRET');
+        expect(fetchMock.mock.calls.every(([, init]) => init.method === 'GET')).toBe(true);
+    });
     it('reads every page and never interprets the first 100 as the complete inventory', async () => {
         fetchMock
             .mockResolvedValueOnce(

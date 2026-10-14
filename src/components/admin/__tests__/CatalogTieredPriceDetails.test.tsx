@@ -27,6 +27,25 @@ const details = {
     ],
 };
 describe('catalog and history tiered price disclosure', () => {
+    it('shows image resolution and request units without labeling video prices per image', () => {
+        const image = {
+            version: 1,
+            mode: 'media',
+            unit: 'cny_per_image',
+            default_price: null,
+            resolution_prices: { '1K': 0.5, '2K': 0.8, '4K': 1 },
+        };
+        const html = renderToStaticMarkup(<CatalogTieredPriceDetails raw={image} en={false} />);
+        for (const text of ['1K', '2K', '4K', '¥0.8 / 张']) expect(html).toContain(text);
+        const video = renderToStaticMarkup(
+            <CatalogTieredPriceDetails
+                raw={{ ...image, unit: 'cny_per_request', resolution_prices: { '720p': 45 } }}
+                en={false}
+            />,
+        );
+        expect(video).toContain('¥45 / 次');
+        expect(video).not.toContain('/ 张');
+    });
     it('shows the boundary, whole-request semantics and precise cache price in both tiers', () => {
         const html = renderToStaticMarkup(<CatalogTieredPriceDetails raw={details} en={false} />);
         for (const text of [

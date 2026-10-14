@@ -2,6 +2,13 @@ import 'server-only';
 import { generateChannelGroupKey } from '@/lib/channel-group-key';
 import { inferVendor, isImageModel, toDisplayName } from '@/lib/newapi/import-catalog';
 import { readSyncPrice } from '@/lib/newapi/catalog-sync-prices';
+import { syncModelModality } from '@/lib/newapi/catalog-sync-advanced';
+import {
+    parseCatalogBillingDetails,
+    catalogDetailLines,
+    type CatalogBillingDetails,
+} from '@/lib/models/catalog-pricing-details';
+import { tieredPricingConditionLabel } from '@/lib/models/tiered-pricing-details';
 import {
     ChannelGroupTopology,
     ChannelGroupTopologyError,
@@ -26,8 +33,12 @@ export interface SyncPrice {
     output_cny_per_1m: number | null;
     per_image_cny: number | null;
     cost_cny_per_1m: number | null;
+    billing_details?: CatalogBillingDetails | null;
 }
-export type PriceValues = Pick<SyncPrice, 'input_cny_per_1m' | 'output_cny_per_1m' | 'per_image_cny'>;
+export type PriceValues = Pick<
+    SyncPrice,
+    'input_cny_per_1m' | 'output_cny_per_1m' | 'per_image_cny' | 'billing_details'
+>;
 export interface SyncModel {
     id: string;
     slug: string;
@@ -89,8 +100,22 @@ const mapLines = (map: UpstreamMapLike) =>
     Object.entries(map)
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([tier, entry]) => `${tier} · #${entry.channel_id} · ${entry.upstream_model}`);
-const priceLines = (price: PriceValues | null) =>
-    !price
+const priceLines = (price: PriceValues | null): string[] => {
+    if (price?.billing_details) {
+        const details = price.billing_details;
+        if (details.mode !== 'tiered_token') return catalogDetailLines(details);
+        return details.tiers.flatMap((tier) => [
+            tieredPricingConditionLabel(tier),
+            ...Object.entries(tier.rates).flatMap(([key, value]) =>
+                value === null
+                    ? []
+                    : [
+                          `${({ input: '输入', output: '输出', cache_read: '缓存读取', cache_write: '缓存写入', cache_write_1h: '缓存写入 1 小时' } as Record<string, string>)[key]} ¥${value} / 百万 token`,
+                      ],
+            ),
+        ]);
+    }
+    return !price
         ? ['未设置目录价格']
         : price.per_image_cny !== null
           ? [`¥${price.per_image_cny} / 张`]
@@ -98,10 +123,12 @@ const priceLines = (price: PriceValues | null) =>
                 `输入 ¥${price.input_cny_per_1m ?? '未设置'} / 百万 token`,
                 `输出 ¥${price.output_cny_per_1m ?? '未设置'} / 百万 token`,
             ];
+};
 const valueOf = (price: PriceValues): PriceValues => ({
     input_cny_per_1m: price.input_cny_per_1m,
     output_cny_per_1m: price.output_cny_per_1m,
     per_image_cny: price.per_image_cny,
+    ...(price.billing_details ? { billing_details: price.billing_details } : {}),
 });
 export function currentSyncPrice(state: SyncState, modelId: string, tier: string, now: number): SyncPrice | null {
     return (
@@ -115,6 +142,13 @@ export function currentSyncPrice(state: SyncState, modelId: string, tier: string
 export const PROTECTED_SKU = /^gpt-image-2-(1k|2k|4k)$/;
 /** A catalog price that can actually be charged for the model's modality. */
 export function validSyncPrice(value: PriceValues | null, modality: string): boolean {
+    if (value?.billing_details) {
+        try {
+            return parseCatalogBillingDetails(value.billing_details) !== null;
+        } catch {
+            return false;
+        }
+    }
     const ok = (amount: number | null) => amount !== null && Number.isFinite(amount) && amount >= 0;
     return (
         !!value &&
@@ -358,9 +392,9 @@ export function buildNewApiSyncPlan(state: SyncState, source: NewApiSyncSource, 
                 : { ok: false, issue: 'protected', reason: '' };
         const live = readSyncPrice(source.prices, upstream, group.newapi_group);
         if (!live.price) return { ok: false, issue: 'missing', reason: live.reason ?? '价格不完整' };
-        if ((live.basis === 'request') !== (model.modality === 'image'))
+        if (!live.price.billing_details && (live.basis === 'request') !== (model.modality === 'image'))
             return { ok: false, issue: 'unsupported', reason: '' };
-        if (current && equal(valueOf(current), live.price)) return { ok: true, current, next: null };
+        if (current && equal(valueOf(current), valueOf(live.price))) return { ok: true, current, next: null };
         if (
             state.prices.some(
                 (row) => row.model_id === model.id && row.tier === tier && Date.parse(row.effective_from) > now,
@@ -398,7 +432,7 @@ export function buildNewApiSyncPlan(state: SyncState, source: NewApiSyncSource, 
             slug,
             display_name: toDisplayName(slug),
             vendor: inferVendor(slug),
-            modality: isImageModel(slug) ? 'image' : 'chat',
+            modality: syncModelModality(source.prices, slug, isImageModel(slug) ? 'image' : 'chat'),
             enabled: false,
             sort_order: 0,
             upstream_map: {},

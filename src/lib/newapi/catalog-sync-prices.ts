@@ -1,5 +1,11 @@
 import 'server-only';
 import { CHAT_FX, IMAGE_FX, retailFromRatios } from './pricing-sync';
+import { advancedSyncPrice, syncDictionary } from './catalog-sync-advanced';
+import {
+    parseCatalogBillingDetails,
+    scaleCatalogBillingDetails,
+    type CatalogBillingDetails,
+} from '@/lib/models/catalog-pricing-details';
 
 /** Global new-api options, read once by the caller. Never use channel.model_ratio here. */
 export interface RawSyncPrices {
@@ -7,6 +13,31 @@ export interface RawSyncPrices {
     completionRatio: unknown;
     modelPrice: unknown;
     groupRatio: unknown;
+    billingMode?: unknown;
+    billingExpr?: unknown;
+    imageResolutionPrice?: unknown;
+    taskBillingPricing?: unknown;
+    scheduledDiscount?: unknown;
+    pluginBillingExpr?: unknown;
+    cacheRatio?: unknown;
+    createCacheRatio?: unknown;
+}
+
+export function syncPricesFromOptions(options: Record<string, unknown>): RawSyncPrices {
+    return {
+        modelRatio: options.ModelRatio,
+        completionRatio: options.CompletionRatio,
+        modelPrice: options.ModelPrice,
+        groupRatio: options.GroupRatio,
+        billingMode: options['billing_setting.billing_mode'],
+        billingExpr: options['billing_setting.billing_expr'],
+        imageResolutionPrice: options.ImageResolutionPrice,
+        taskBillingPricing: options['billing_setting.task_billing_pricing'],
+        scheduledDiscount: options['billing_setting.scheduled_discount'],
+        pluginBillingExpr: options['billing_setting.plugin_billing_expr'],
+        cacheRatio: options.CacheRatio,
+        createCacheRatio: options.CreateCacheRatio,
+    };
 }
 
 export interface SyncRetailPrice {
@@ -14,12 +45,13 @@ export interface SyncRetailPrice {
     output_cny_per_1m: number | null;
     /** Existing catalog column for fixed request prices; basis determines the displayed unit. */
     per_image_cny: number | null;
+    billing_details?: CatalogBillingDetails | null;
 }
 
 export interface SyncPriceResult {
     price: SyncRetailPrice | null;
     reason: string | null;
-    basis: 'token' | 'request' | null;
+    basis: 'token' | 'request' | 'second' | null;
 }
 
 type ParsedDictionary = { dictionary: Record<string, unknown>; reason: null } | { dictionary: null; reason: string };
@@ -87,6 +119,9 @@ export function readSyncPrice(raw: RawSyncPrices, model: string, group: string):
     const groupRatio = readNumber(groupRatios.dictionary, group, 'GroupRatio');
     if (groupRatio.value === null) return unavailable(groupRatio.reason, basis);
 
+    const advanced = advancedSyncPrice(raw, model, groupRatio.value);
+    if (advanced) return advanced;
+
     if (basis === 'request') {
         const modelPrice = readNumber(modelPrices.dictionary, model, 'ModelPrice');
         if (modelPrice.value === null) return unavailable(modelPrice.reason, basis);
@@ -120,5 +155,51 @@ export function readSyncPrice(raw: RawSyncPrices, model: string, group: string):
     ) {
         return unavailable('Token 价格超出目录可保存的范围或精度', basis);
     }
-    return { price: { ...price, per_image_cny: null }, reason: null, basis };
+    try {
+        const cache = syncDictionary(raw.cacheRatio, 'CacheRatio');
+        const create = syncDictionary(raw.createCacheRatio, 'CreateCacheRatio');
+        const optionalRate = (values: Record<string, unknown>): number | null => {
+            if (!Object.hasOwn(values, model)) return null;
+            const value = readNumber(values, model, 'CacheRatio/CreateCacheRatio');
+            if (value.value === null) throw new Error(value.reason);
+            return modelRatio.value! * CHAT_FX * value.value;
+        };
+        const cacheRead = optionalRate(cache),
+            cacheWrite = optionalRate(create);
+        const details =
+            cacheRead === null && cacheWrite === null
+                ? null
+                : scaleCatalogBillingDetails(
+                      parseCatalogBillingDetails({
+                          version: 1,
+                          mode: 'tiered_token',
+                          unit: 'cny_per_million_tokens',
+                          semantics: 'whole_request',
+                          tiers: [
+                              {
+                                  name: 'uniform',
+                                  min_input_tokens: null,
+                                  max_input_tokens: null,
+                                  min_inclusive: false,
+                                  max_inclusive: false,
+                                  rates: {
+                                      input: modelRatio.value * CHAT_FX,
+                                      output: modelRatio.value * CHAT_FX * completionRatio.value,
+                                      cache_read: cacheRead,
+                                      cache_write: cacheWrite,
+                                      cache_write_1h: null,
+                                  },
+                              },
+                          ],
+                      })!,
+                      groupRatio.value,
+                  );
+        return {
+            price: { ...price, per_image_cny: null, ...(details ? { billing_details: details } : {}) },
+            reason: null,
+            basis,
+        };
+    } catch {
+        return unavailable('缓存计费价格无效或超出目录精度', basis);
+    }
 }

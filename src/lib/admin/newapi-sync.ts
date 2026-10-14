@@ -2,6 +2,7 @@ import { assertPricingCatalogWritable } from '@/lib/admin/pricing-publish-lock';
 import 'server-only';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { Prisma } from '@prisma/client';
+import { parseCatalogBillingDetails } from '@/lib/models/catalog-pricing-details';
 import { prisma } from '@/lib/db';
 import type { UpstreamMapLike } from '@/lib/channel-group-topology';
 import { CHAT_FX, IMAGE_FX } from '@/lib/newapi/pricing-sync';
@@ -81,6 +82,7 @@ export async function readSyncState(db: SyncDb, tenantId: string): Promise<SyncS
                 output_cny_per_1m: true,
                 per_image_cny: true,
                 cost_cny_per_1m: true,
+                billing_details: true,
             },
         }),
     ]);
@@ -104,6 +106,7 @@ export async function readSyncState(db: SyncDb, tenantId: string): Promise<SyncS
             output_cny_per_1m: numberOrNull(row.output_cny_per_1m),
             per_image_cny: numberOrNull(row.per_image_cny),
             cost_cny_per_1m: numberOrNull(row.cost_cny_per_1m),
+            billing_details: parseCatalogBillingDetails(row.billing_details),
         })),
     };
 }
@@ -225,6 +228,9 @@ export async function applyNewApiSync(tenantId: string, userId: string | null, t
                         model_id: ids.get(change.slug)!,
                         tier: change.tier,
                         ...change.next,
+                        billing_details: change.next.billing_details
+                            ? (change.next.billing_details as unknown as Prisma.InputJsonValue)
+                            : undefined,
                         cost_cny_per_1m: change.current?.cost_cny_per_1m ?? null,
                         created_by: userId,
                     },

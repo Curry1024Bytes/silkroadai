@@ -17,6 +17,7 @@ import {
     type TieredPricingBuildTier,
 } from './pricing-tiered-expression';
 import type { TieredPricingDetails } from './pricing-publish-types';
+import type { CatalogBillingDetails } from '@/lib/models/catalog-pricing-details';
 
 /** ¥ per 1 unit of base price (tiered coefficients and ModelPrice). Production = 1. */
 export const BASE_FX = USD_TO_CNY_RATE;
@@ -144,6 +145,11 @@ function completionMeta(options: Record<string, unknown>, name: string): { ratio
 
 /** The base price new-api actually bills for `name`, or null when unpriced. */
 export function readBasePrice(options: Record<string, unknown>, name: string): BasePrice | null {
+    if (hasStructuredMediaPrice(options, name))
+        throw new SimplePricingError(
+            'pricing_media_readonly',
+            '该模型使用图片或视频计费规则，请在 new-api 修改基础价后同步目录。',
+        );
     const modes = optionDict(options, MODE_KEY, true);
     if (modes[name] === 'tiered_expr') {
         const expression = optionDict(options, EXPR_KEY, true)[name];
@@ -173,6 +179,18 @@ export function readBasePrice(options: Record<string, unknown>, name: string): B
         cache_read: finiteNumber(cache) ? round(input * cache) : null,
         cache_write: finiteNumber(create) ? round(input * create) : null,
     };
+}
+
+export function hasStructuredMediaPrice(options: Record<string, unknown>, name: string): boolean {
+    const expr = optionDict(options, EXPR_KEY, true)[name];
+    return (
+        Object.hasOwn(optionDict(options, 'ImageResolutionPrice', true), name) ||
+        Object.hasOwn(optionDict(options, 'billing_setting.task_billing_pricing', true), name) ||
+        optionDict(options, MODE_KEY, true)[name] === 'per-second' ||
+        (optionDict(options, MODE_KEY, true)[name] === 'tiered_expr' &&
+            typeof expr === 'string' &&
+            /\bimg(?:_cr)?\b/.test(expr))
+    );
 }
 
 const MODEL_KEYS: SimpleOptionKey[] = [
@@ -241,6 +259,11 @@ function setEntry(
  * before the mode switch; obsolete keys are removed after it.
  */
 export function planModelWrites(options: Record<string, unknown>, name: string, base: BasePrice): OptionWrite[] {
+    if (hasStructuredMediaPrice(options, name))
+        throw new SimplePricingError(
+            'pricing_media_readonly',
+            '该模型的图片或视频计费规则须在 new-api 修改，再同步目录。',
+        );
     const parsed = basePriceSchema.parse(base);
     const early: Array<OptionWrite | null> = [];
     const late: Array<OptionWrite | null> = [];
@@ -332,14 +355,17 @@ export interface CatalogAmounts {
     input_cny_per_1m: number | null;
     output_cny_per_1m: number | null;
     per_image_cny: number | null;
-    billing_details: TieredPricingDetails | null;
+    billing_details: CatalogBillingDetails | null;
 }
 
 function cny(value: number, groupRatio: number): number {
     return round(value * BASE_FX * groupRatio);
 }
 
-export function customerPrice(base: BasePrice, groupRatio: number): CatalogAmounts {
+export function customerPrice(
+    base: BasePrice,
+    groupRatio: number,
+): CatalogAmounts & { billing_details: TieredPricingDetails | null } {
     if (base.mode === 'per_call')
         return {
             input_cny_per_1m: null,
@@ -406,7 +432,15 @@ function sameScalar(a: number | null, b: number | null): boolean {
 }
 
 export type CatalogDiffField =
-    'input' | 'output' | 'per_call' | 'cache_read' | 'cache_write' | 'cache_write_1h' | 'tier_count' | 'bound';
+    | 'input'
+    | 'output'
+    | 'per_call'
+    | 'cache_read'
+    | 'cache_write'
+    | 'cache_write_1h'
+    | 'tier_count'
+    | 'bound'
+    | 'billing_rule';
 
 /** One field where the displayed catalog differs from new-api billing. `tier` is null for a single-rate price. */
 export interface CatalogDiff {
@@ -439,6 +473,19 @@ export function catalogDiffs(catalog: CatalogAmounts, expected: CatalogAmounts):
 
     const want = expected.billing_details;
     const have = catalog.billing_details;
+    if ((want && want.mode !== 'tiered_token') || (have && have.mode !== 'tiered_token')) {
+        const canonical = (value: unknown): string =>
+            value && typeof value === 'object'
+                ? JSON.stringify(
+                      Object.entries(value)
+                          .sort(([a], [b]) => a.localeCompare(b))
+                          .map(([k, v]) => [k, canonical(v)]),
+                  )
+                : JSON.stringify(value);
+        if (canonical(want) !== canonical(have))
+            push({ tier: null, field: 'billing_rule', catalog: null, expected: null });
+        return diffs;
+    }
     // Scalars already cover a single uniform rate; details only matter for real tiers or cache prices.
     const needsDetails = (details: TieredPricingDetails | null) =>
         !!details &&

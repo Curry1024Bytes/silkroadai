@@ -1,19 +1,21 @@
 import {
     formatTieredPrice,
     isUniformPricingDetails,
-    parseTieredPricingDetails,
     tieredPricingConditionLabel,
 } from '@/lib/models/tiered-pricing-details';
+import { parseCatalogBillingDetails } from '@/lib/models/catalog-pricing-details';
+import CatalogMediaPriceDetails from '@/components/CatalogMediaPriceDetails';
 
 /** The same verified tariff is retained in both the current catalog and its history. */
 export default function CatalogTieredPriceDetails({ raw, en }: { raw: unknown; en: boolean }) {
     let details;
     try {
-        details = parseTieredPricingDetails(raw);
+        details = parseCatalogBillingDetails(raw);
     } catch {
         return <p className="mt-1 text-xs text-amber-600">{en ? 'Prices need review' : '价格待核对'}</p>;
     }
     if (!details) return null;
+    if (details.mode !== 'tiered_token') return <CatalogMediaPriceDetails details={details} en={en} />;
     const uniform = isUniformPricingDetails(details);
     return (
         <details className="mt-2 max-w-xl text-xs">

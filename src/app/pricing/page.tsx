@@ -37,12 +37,16 @@ import { listUserTierMultipliers } from '@/lib/newapi/user-tier-multiplier';
 import {
     formatTieredPrice,
     isUniformPricingDetails,
-    parseTieredPricingDetails,
     scalePricingAmount,
-    scaleTieredPricingDetails,
     tieredPricingConditionLabel,
 } from '@/lib/models/tiered-pricing-details';
 import type { TieredPricingDetails } from '@/lib/admin/pricing-publish-types';
+import {
+    parseCatalogBillingDetails,
+    scaleCatalogBillingDetails,
+    type CatalogBillingDetails,
+} from '@/lib/models/catalog-pricing-details';
+import CatalogMediaPriceDetails from '@/components/CatalogMediaPriceDetails';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -74,7 +78,7 @@ interface PriceCell {
     perImageCny: number | null;
     publicMultiplier: number | null;
     effectiveMultiplier: number | null;
-    billingDetails: TieredPricingDetails | null;
+    billingDetails: CatalogBillingDetails | null;
 }
 
 interface ModelBlock {
@@ -179,18 +183,19 @@ async function loadPricingSheet(userId?: string): Promise<{ vendors: VendorBlock
                     throw new Error('Cannot verify dedicated customer price');
                 multiplierScale = dedicatedMultiplier / publicMultiplier;
             }
-            const publicDetails = parseTieredPricingDetails(p.billing_details);
-            const billingDetails = publicDetails ? scaleTieredPricingDetails(publicDetails, multiplierScale) : null;
+            const publicDetails = parseCatalogBillingDetails(p.billing_details);
+            const billingDetails = publicDetails ? scaleCatalogBillingDetails(publicDetails, multiplierScale) : null;
+            const tokenRates = billingDetails?.mode === 'tiered_token' ? billingDetails.tiers[0].rates : null;
             rows.push({
                 tierKey: p.tier,
                 tierLabel: tierLabel.get(p.tier)!,
                 inputCny:
-                    billingDetails?.tiers[0].rates.input ??
+                    tokenRates?.input ??
                     (p.input_cny_per_1m == null
                         ? null
                         : scalePricingAmount(Number(p.input_cny_per_1m), multiplierScale)),
                 outputCny:
-                    billingDetails?.tiers[0].rates.output ??
+                    tokenRates?.output ??
                     (p.output_cny_per_1m == null
                         ? null
                         : scalePricingAmount(Number(p.output_cny_per_1m), multiplierScale)),
@@ -326,9 +331,11 @@ function VendorPriceSection({ block }: { block: VendorBlock }) {
                                             {row.tierLabel}
                                             {row.billingDetails && (
                                                 <span className="block mt-1 text-xs">
-                                                    {isUniformPricingDetails(row.billingDetails)
-                                                        ? '统一单价 · 不随输入长度变化'
-                                                        : '阶梯计费 · 此行显示首档'}
+                                                    {row.billingDetails.mode !== 'tiered_token'
+                                                        ? '详细计费规则见下方'
+                                                        : isUniformPricingDetails(row.billingDetails)
+                                                          ? '统一单价 · 不随输入长度变化'
+                                                          : '阶梯计费 · 此行显示首档'}
                                                 </span>
                                             )}
                                         </td>
@@ -348,10 +355,14 @@ function VendorPriceSection({ block }: { block: VendorBlock }) {
                                     {row.billingDetails && (
                                         <tr className="border-b border-brand-border/60">
                                             <td colSpan={5} className="py-3 text-muted-ink">
-                                                <TieredPriceTable
-                                                    details={row.billingDetails}
-                                                    tierLabel={row.tierLabel}
-                                                />
+                                                {row.billingDetails.mode !== 'tiered_token' ? (
+                                                    <CatalogMediaPriceDetails details={row.billingDetails} />
+                                                ) : (
+                                                    <TieredPriceTable
+                                                        details={row.billingDetails}
+                                                        tierLabel={row.tierLabel}
+                                                    />
+                                                )}
                                             </td>
                                         </tr>
                                     )}

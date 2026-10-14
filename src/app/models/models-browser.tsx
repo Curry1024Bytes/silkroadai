@@ -33,6 +33,7 @@ import { Input } from '@/components/ui/Input';
 import type { BrowserModelPricing, BrowserTier } from '@/lib/models/catalog-browser-types';
 import type { TierPricing } from '@/lib/models/machine-catalog';
 import { formatTieredPrice, isUniformPricingDetails } from '@/lib/models/tiered-pricing-details';
+import CatalogMediaPriceDetails from '@/components/CatalogMediaPriceDetails';
 import { CUSTOMER_API_BASE_URL } from '@/lib/public-config';
 
 interface Props {
@@ -286,6 +287,7 @@ function ModelCard({
 export function ModelTierPrices({ price, type }: { price: TierPricing | null; type: TypeName }) {
     if (!price) return <p className="m-0 text-xs text-muted-ink">未定价</p>;
     const details = price.billing_details;
+    if (details && details.mode !== 'tiered_token') return <CatalogMediaPriceDetails details={details} />;
     if (details && !isUniformPricingDetails(details)) {
         return (
             <a href="/pricing" className="text-xs text-brand-accent underline">

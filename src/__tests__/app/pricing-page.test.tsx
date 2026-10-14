@@ -89,6 +89,22 @@ const tieredPrice = (): ReturnType<typeof price> & { billing_details: TieredPric
 });
 
 describe('<PricingPage /> SSR', () => {
+    it('renders every resolution and the correct video unit and scheduled discount', async () => {
+        const details = {
+            version: 1,
+            mode: 'media',
+            unit: 'cny_per_second',
+            default_price: null,
+            resolution_prices: { '768p': 1, '1080p': 1.5 },
+            scheduled_discount: { start: '22:00', end: '08:00', timezone: 'Asia/Shanghai', multiplier: 0.5 },
+        };
+        const row = { ...price('pool'), billing_details: details };
+        mockFindManyCatalog.mockResolvedValue([model('video-test', 'Video Test', [row])]);
+        const html = renderToString(await PricingPage());
+        for (const text of ['768p', '1080p', '¥1.5 / 秒', '22:00–08:00', '北京时间', '× 0.5'])
+            expect(html).toContain(text);
+        expect(html).not.toContain('价格暂时不可用');
+    });
     it('shows verified uniform prices at every length and keeps the exact dedicated cache rate', async () => {
         mockCurrentUser.mockResolvedValue({ id: 'dedicated-customer' });
         mockMultipliers.mockResolvedValue([{ newapi_billing_group: 'Enterprise', multiplier: 0.18 }]);

@@ -1,7 +1,7 @@
 import 'server-only';
 import { getCatalogSyncOptions, listChannelsForCatalogSync } from '@/lib/newapi/client';
 import { replacementChannel } from './channel-replacement';
-import type { RawSyncPrices } from '@/lib/newapi/catalog-sync-prices';
+import { syncPricesFromOptions, type RawSyncPrices } from '@/lib/newapi/catalog-sync-prices';
 
 export interface SyncChannel {
     id: number;
@@ -44,11 +44,6 @@ export async function readNewApiSyncSource(): Promise<NewApiSyncSource> {
     return {
         channels,
         groups,
-        prices: {
-            modelRatio: options.ModelRatio,
-            completionRatio: options.CompletionRatio,
-            modelPrice: options.ModelPrice,
-            groupRatio: options.GroupRatio,
-        },
+        prices: syncPricesFromOptions(options),
     };
 }

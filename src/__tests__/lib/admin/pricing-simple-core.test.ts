@@ -18,6 +18,7 @@ import {
     unverifiedWrites,
     type BasePrice,
     type OptionWrite,
+    type CatalogAmounts,
 } from '@/lib/admin/pricing-simple-core';
 import { buildTieredPricingExpression, parseTieredPricingExpression } from '@/lib/admin/pricing-tiered-expression';
 
@@ -83,6 +84,30 @@ describe('buildTieredPricingExpression', () => {
 });
 
 describe('readBasePrice', () => {
+    it('keeps structured media rules out of the scalar editor and detects resolution-only changes', () => {
+        const source = options({ ImageResolutionPrice: { 'img-1': { '1K': 0.5, '2K': 0.8, '4K': 1 } } });
+        expect(() => readBasePrice(source, 'img-1')).toThrow('new-api');
+        expect(() => planModelWrites(source, 'img-1', { mode: 'per_call', price: 1 })).toThrow('new-api');
+        const quote: CatalogAmounts = {
+            input_cny_per_1m: null,
+            output_cny_per_1m: null,
+            per_image_cny: null,
+            billing_details: {
+                version: 1,
+                mode: 'media',
+                unit: 'cny_per_image',
+                default_price: null,
+                resolution_prices: { '1K': 0.5, '2K': 0.8, '4K': 1 },
+            },
+        };
+        expect(catalogDiffs(quote, structuredClone(quote))).toEqual([]);
+        const changed = structuredClone(quote);
+        if (changed.billing_details?.mode !== 'media') throw Error('wrong mode');
+        changed.billing_details.resolution_prices['4K'] = 2;
+        expect(catalogDiffs(quote, changed)).toEqual([
+            { tier: null, field: 'billing_rule', catalog: null, expected: null },
+        ]);
+    });
     it('reads token prices in official $ per 1M', () => {
         expect(readBasePrice(options(), 'gpt-5.5')).toEqual({
             mode: 'token',

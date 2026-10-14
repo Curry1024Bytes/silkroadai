@@ -53,6 +53,8 @@ const REQUIRES_GUARD = [
     'import-catalog.ts',
     // Global catalog price reading uses server-only pricing conversion/configuration.
     'catalog-sync-prices.ts',
+    // Structured catalog rules share the same server-side currency configuration.
+    'catalog-sync-advanced.ts',
     // Independent MySQL Prisma reader; exposes only four persisted pricing options.
     'persisted-pricing.ts',
     // 日志导出:pg 直连 new-api 日志库(NEWAPI_LOGS_DATABASE_URL)。

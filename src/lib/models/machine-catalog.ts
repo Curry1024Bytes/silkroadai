@@ -21,12 +21,12 @@ import { PLATFORM_TENANT_ID } from '@/lib/admin/tenant-scope';
 import { categorizeByType, categorizeByVendor, type TypeName, type VendorName } from '@/lib/models/categorize';
 import { getOption } from '@/lib/newapi/client';
 import { listUserTierMultipliers } from '@/lib/newapi/user-tier-multiplier';
+import { scalePricingAmount } from '@/lib/models/tiered-pricing-details';
 import {
-    parseTieredPricingDetails,
-    scalePricingAmount,
-    scaleTieredPricingDetails,
-} from '@/lib/models/tiered-pricing-details';
-import type { TieredPricingDetails } from '@/lib/admin/pricing-publish-types';
+    parseCatalogBillingDetails,
+    scaleCatalogBillingDetails,
+    type CatalogBillingDetails,
+} from './catalog-pricing-details';
 
 export interface TierPricing {
     /** ¥ / 1M input tokens(chat 类);image 模型为 null */
@@ -36,7 +36,7 @@ export interface TierPricing {
     /** ¥ / 张(生图模型按张计价) */
     per_image_cny: number | null;
     /** Scalar token prices are the first tier when full conditional prices are present. */
-    billing_details?: TieredPricingDetails;
+    billing_details?: CatalogBillingDetails;
 }
 
 export interface CatalogPricingContext {
@@ -116,10 +116,11 @@ export async function loadCatalogMeta(): Promise<Map<string, CatalogMetaEntry>> 
         for (const p of row.prices) {
             if (!Object.hasOwn(upstreamMap, p.tier)) continue; // 历史价不等于当前仍可路由
             if (pricesByTier.has(p.tier)) continue;
-            const details = parseTieredPricingDetails(p.billing_details);
+            const details = parseCatalogBillingDetails(p.billing_details);
+            const tokenRates = details?.mode === 'tiered_token' ? details.tiers[0].rates : null;
             pricesByTier.set(p.tier, {
-                input_cny_per_1m: details?.tiers[0].rates.input ?? toNum(p.input_cny_per_1m),
-                output_cny_per_1m: details?.tiers[0].rates.output ?? toNum(p.output_cny_per_1m),
+                input_cny_per_1m: tokenRates?.input ?? toNum(p.input_cny_per_1m),
+                output_cny_per_1m: tokenRates?.output ?? toNum(p.output_cny_per_1m),
                 per_image_cny: toNum(p.per_image_cny),
                 ...(details ? { billing_details: details } : {}),
             });
@@ -232,7 +233,7 @@ export function enrichModelList(
                           ? null
                           : scalePricingAmount(publicPrice.per_image_cny, multiplierScale),
                   ...(publicPrice.billing_details
-                      ? { billing_details: scaleTieredPricingDetails(publicPrice.billing_details, multiplierScale) }
+                      ? { billing_details: scaleCatalogBillingDetails(publicPrice.billing_details, multiplierScale) }
                       : {}),
               }
             : null;

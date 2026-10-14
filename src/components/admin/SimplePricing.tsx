@@ -24,6 +24,7 @@ import {
     type BillLine,
 } from '@/lib/admin/pricing-bill-check';
 import type { CatalogAmounts, CatalogDiff, CatalogDiffField } from '@/lib/admin/pricing-simple-core';
+import { catalogDetailLines } from '@/lib/models/catalog-pricing-details';
 
 type Tab = 'tiers' | 'models' | 'overview' | 'check';
 
@@ -55,6 +56,8 @@ function money(value: number | null | undefined): string {
 
 function amountsLabel(amounts: CatalogAmounts | null, en: boolean): string {
     if (!amounts) return '—';
+    if (amounts.billing_details && amounts.billing_details.mode !== 'tiered_token')
+        return catalogDetailLines(amounts.billing_details, en).join(' · ');
     if (amounts.per_image_cny !== null) return `${money(amounts.per_image_cny)}${en ? '/call' : '/次'}`;
     return `${money(amounts.input_cny_per_1m)} / ${money(amounts.output_cny_per_1m)}`;
 }
@@ -68,10 +71,13 @@ const DIFF_FIELD_LABEL: Record<CatalogDiffField, [string, string]> = {
     cache_write_1h: ['缓存写 1h', 'Cache write 1h'],
     tier_count: ['阶梯档数', 'Tier count'],
     bound: ['档位上限', 'Tier bound'],
+    billing_rule: ['计费规则', 'Billing rule'],
 };
 
 /** e.g. "第2档 缓存读:目录 — → 实际 ¥0.16" */
 function diffLabel(diff: CatalogDiff, en: boolean): string {
+    if (diff.field === 'billing_rule')
+        return en ? 'Billing rules differ; refresh the catalog.' : '计费规则有变化，请更新目录。';
     const count = diff.field === 'tier_count';
     const bound = diff.field === 'bound';
     const value = (v: number | null) =>
@@ -742,7 +748,11 @@ function ModelsPanel({ view, en, isDark, onSaved, onError }: PanelProps) {
                                         {model.used_by[0]?.display_name ?? model.name}
                                     </span>
                                     <span className={model.base ? '' : 'text-amber-500'}>
-                                        {baseSummary(model.base, en)}
+                                        {model.read_only
+                                            ? en
+                                                ? 'Media pricing'
+                                                : '图片／视频计费'
+                                            : baseSummary(model.base, en)}
                                     </span>
                                 </div>
                                 <div className="truncate text-xs opacity-70">
@@ -754,7 +764,9 @@ function ModelsPanel({ view, en, isDark, onSaved, onError }: PanelProps) {
                 </ul>
             </div>
             <div>
-                {current ? (
+                {current?.read_only ? (
+                    <p className={`py-8 text-sm ${muted}`}>{current.error}</p>
+                ) : current ? (
                     <ModelEditor
                         key={`${current.name}:${current.state}`}
                         model={current}
@@ -1261,7 +1273,8 @@ function OverviewPanel({ view, en, isDark, onSaved, onError }: PanelProps) {
                                                     </div>
                                                 ))}
                                             {cell.expected?.billing_details &&
-                                                cell.expected.billing_details.tiers.length > 1 && (
+                                                (cell.expected.billing_details.mode !== 'tiered_token' ||
+                                                    cell.expected.billing_details.tiers.length > 1) && (
                                                     <div className="text-left">
                                                         <CatalogTieredPriceDetails
                                                             raw={cell.expected.billing_details}
