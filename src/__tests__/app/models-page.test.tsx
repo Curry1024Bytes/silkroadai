@@ -1,5 +1,5 @@
 /**
- * /models page + ModelsBrowser SSR smoke (vendor-first redesign).
+ * /models page + ModelsBrowser SSR smoke (compact cards and price details).
  *
  * Same shallow renderToString pattern as the pay-form / balance-alert-form
  * tests. Mocks the tier-aware catalog boundary without hitting the database
@@ -23,6 +23,7 @@ vi.mock('@/lib/auth/session', () => ({ getCurrentUser: (...args: unknown[]) => m
 import ModelsPage from '@/app/models/page';
 import WorkspaceModelsPage from '@/app/(authenticated)/workspace/models/page';
 import { ModelsBrowser, ModelTierPrices, filterCatalogTier } from '@/app/models/models-browser';
+import { ModelPriceDialog } from '@/app/models/model-prices';
 import { classifyModels } from '@/lib/models/categorize';
 import type { TierPricing } from '@/lib/models/machine-catalog';
 import type { BrowserModelPricing } from '@/lib/models/catalog-browser-types';
@@ -66,24 +67,24 @@ describe('<ModelsPage /> SSR', () => {
         expect(html).toContain('https://api.llmroute.club');
     });
 
-    it('renders one section per vendor (vendor-first grouping)', async () => {
+    it('keeps each vendor discoverable in the filter and model cards', async () => {
         mockListAvailableModels.mockResolvedValue(SAMPLE);
         const el = await ModelsPage();
         const html = renderToString(el);
-        // Each served vendor appears as a section header — exactly once.
+        // Vendors remain available after replacing the large vendor sections with filters.
         for (const vendor of ['OpenAI', 'Anthropic', 'Google', 'ByteDance']) {
             expect(html).toContain(vendor);
         }
-        // The Chinese descriptor for ByteDance proves the vendor meta header.
+        // Chinese vendor descriptors remain searchable and visible in the filter.
         expect(html).toContain('字节跳动');
     });
 
-    it('renders type sub-labels inside vendor sections', async () => {
+    it('renders type filters and keeps vision capability labels on cards', async () => {
         mockListAvailableModels.mockResolvedValue(SAMPLE);
         const el = await ModelsPage();
         const html = renderToString(el);
-        expect(html).toContain('对话模型');
-        expect(html).toContain('视觉理解');
+        expect(html).toContain('对话与视觉');
+        expect(html).toContain('视觉');
         expect(html).toContain('图像生成');
         expect(html).toContain('视频生成');
     });
@@ -235,21 +236,38 @@ describe('tier-specific model prices', () => {
         expect(filterCatalogTier(entries, pricing, '')).toHaveLength(3);
     });
 
-    it('shows an accessible tier selector and distinguishes each group price on the same card', () => {
-        const html = renderToString(
-            <ModelsBrowser
-                {...classifyModels(['gpt-5.5'])}
-                tiers={[...TIERS, { key: 'discounted', label: '优惠档', isDefault: false }]}
-                pricing={pricing}
-            />,
-        );
+    it('shows one named default tariff on the card and retains both exact group prices in details', () => {
+        const tiers = [...TIERS, { key: 'discounted', label: '优惠档', isDefault: false }];
+        const html = renderToString(<ModelsBrowser {...classifyModels(['gpt-5.5'])} tiers={tiers} pricing={pricing} />);
         expect(html).toContain('for="model-tier-filter"');
         expect(html).toContain('id="model-tier-filter"');
-        expect(html).toContain('全部档次');
-        expect(html).toContain('企业级价格');
-        expect(html).toContain('优惠档价格');
+        expect(html).toContain('全部分组');
+        expect(html).toContain('企业级价格摘要');
         expect(html).toContain('¥0.8');
-        expect(html).toContain('¥0.6');
+        expect(html).not.toContain('¥0.6');
+        expect(html).toContain('2 个可用分组');
+        const detail = renderToString(
+            <ModelPriceDialog
+                entry={classifyModels(['gpt-5.5']).entries[0]}
+                tiers={tiers}
+                prices={pricing[0].pricesByTier}
+                onClose={() => {}}
+            />,
+        );
+        expect(detail).toContain('企业级价格');
+        expect(detail).toContain('优惠档价格');
+        expect(detail).toContain('¥0.8');
+        expect(detail).toContain('¥0.6');
+        const filteredDetail = renderToString(
+            <ModelPriceDialog
+                entry={classifyModels(['gpt-5.5']).entries[0]}
+                tiers={TIERS}
+                prices={pricing[0].pricesByTier}
+                onClose={() => {}}
+            />,
+        );
+        expect(filteredDetail).not.toContain('优惠档');
+        expect(filteredDetail).not.toContain('¥0.6');
     });
 
     it('does not turn missing prices into zero and keeps legitimate zero prices', () => {

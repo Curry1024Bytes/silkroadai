@@ -1,40 +1,25 @@
 'use client';
 
-/**
- * /models browser — vendor-first catalog.
- *
- * Receives current model memberships and customer prices from the server
- * and renders them grouped by VENDOR first (one section per vendor,
- * each appearing exactly once), with a light type sub-grouping inside each
- * vendor and a per-card capability badge.
- *
- *   - Search over model name / vendor (EN + 中文) / type label
- *   - 200ms debounce so fast typers don't re-filter every keystroke
- *   - Empty-state when the filter narrows everything out
- *   - Tier selection filters both membership and exact-tier retail prices
- *
- * Filtering + grouping are in-memory: the catalog is a few dozen entries,
- * far too small to bother with server-side filter or virtualization.
- */
 import { useMemo, useState, useEffect } from 'react';
+import { Check, ChevronRight, Copy, Search } from 'lucide-react';
 import {
     type ModelEntry,
     type TypeName,
-    type VendorSection,
-    TYPE_LABEL,
     TYPE_BADGE,
     VENDOR_META,
-    groupByVendor,
+    VENDOR_ORDER,
     filterEntries,
 } from '@/lib/models/categorize';
 import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
-import { Input } from '@/components/ui/Input';
 import type { BrowserModelPricing, BrowserTier } from '@/lib/models/catalog-browser-types';
 import type { TierPricing } from '@/lib/models/machine-catalog';
-import { formatTieredPrice, isUniformPricingDetails } from '@/lib/models/tiered-pricing-details';
-import CatalogMediaPriceDetails from '@/components/CatalogMediaPriceDetails';
+import { formatTieredPrice } from '@/lib/models/tiered-pricing-details';
+import { catalogPriceSummary, catalogSummaryTier } from '@/lib/models/catalog-price-summary';
 import { CUSTOMER_API_BASE_URL } from '@/lib/public-config';
+import { ModelPriceDialog } from './model-prices';
+
+export { ModelTierPrices } from './model-prices';
 
 interface Props {
     entries: ModelEntry[];
@@ -45,6 +30,17 @@ interface Props {
     embedded?: boolean;
 }
 
+const TYPE_FILTERS = [
+    { key: 'text', label: '对话与视觉', types: ['chat', 'vision'] },
+    { key: 'image', label: '图像生成', types: ['image-gen'] },
+    { key: 'video', label: '视频生成', types: ['video'] },
+    { key: 'audio', label: '音频', types: ['audio'] },
+    { key: 'embedding', label: '向量嵌入', types: ['embedding'] },
+] as const;
+type ModelTypeFilter = '' | (typeof TYPE_FILTERS)[number]['key'];
+const FIELD_CLASS =
+    'min-h-11 w-full rounded-lg border border-brand-border bg-surface px-3 py-2.5 text-sm text-navy focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-accent';
+
 export function filterCatalogTier(entries: ModelEntry[], pricing: BrowserModelPricing[], tier: string) {
     const members = new Set(
         pricing.filter((model) => !tier || Object.hasOwn(model.pricesByTier, tier)).map((model) => model.slug),
@@ -54,280 +50,283 @@ export function filterCatalogTier(entries: ModelEntry[], pricing: BrowserModelPr
 
 export function ModelsBrowser({ entries, tiers, pricing, embedded = false }: Props) {
     const [tier, setTier] = useState('');
+    const [vendor, setVendor] = useState('');
+    const [type, setType] = useState<ModelTypeFilter>('');
     const [query, setQuery] = useState('');
     const [debouncedQuery, setDebouncedQuery] = useState('');
-
-    // 200ms debounce — instant on a single keystroke, no thrash on a burst.
+    const [detailModel, setDetailModel] = useState<string | null>(null);
     useEffect(() => {
         const id = setTimeout(() => setDebouncedQuery(query.trim().toLowerCase()), 200);
         return () => clearTimeout(id);
     }, [query]);
 
     const tierEntries = useMemo(() => filterCatalogTier(entries, pricing, tier), [entries, pricing, tier]);
-    const filtered = useMemo(() => filterEntries(tierEntries, debouncedQuery), [tierEntries, debouncedQuery]);
-    const sections = useMemo(() => groupByVendor(filtered), [filtered]);
-    const filteredTotal = filtered.length;
-    const tierVendorCount = new Set(tierEntries.map((entry) => entry.vendor)).size;
+    const filtered = useMemo(() => {
+        const selectedTypes: readonly TypeName[] | undefined = TYPE_FILTERS.find((row) => row.key === type)?.types;
+        return filterEntries(tierEntries, debouncedQuery).filter(
+            (entry) => (!vendor || entry.vendor === vendor) && (!selectedTypes || selectedTypes.includes(entry.type)),
+        );
+    }, [tierEntries, debouncedQuery, vendor, type]);
+    const vendors = VENDOR_ORDER.filter((name) => entries.some((entry) => entry.vendor === name));
+    const typeFilters = TYPE_FILTERS.filter((filter) =>
+        entries.some((entry) => (filter.types as readonly TypeName[]).includes(entry.type)),
+    );
     const selectedTier = tiers.find((row) => row.key === tier);
-    const pricingBySlug = new Map(pricing.map((model) => [model.slug, model.pricesByTier]));
+    const visibleTiers = selectedTier ? [selectedTier] : tiers;
+    const pricingBySlug = useMemo(() => new Map(pricing.map((model) => [model.slug, model.pricesByTier])), [pricing]);
+    const selectedModel = filtered.find((entry) => entry.shortName === detailModel);
+    const hasFilters = Boolean(tier || vendor || type || debouncedQuery);
+
+    function resetFilters() {
+        setQuery('');
+        setDebouncedQuery('');
+        setTier('');
+        setVendor('');
+        setType('');
+    }
 
     return (
         <>
-            <header className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                <div className="min-w-0">
-                    {embedded && <p className="m-0 mb-1 text-xs font-semibold text-portal-gold">CATALOG</p>}
-                    <h1 className="m-0 text-3xl font-semibold text-navy">模型清单</h1>
-                    <p className="m-0 mt-2 text-sm leading-relaxed text-muted-ink">
-                        按档次查看模型与价格，使用对应档次的 API Key 调用。
-                    </p>
-                    {!embedded && (
-                        <p className="m-0 mt-2 text-xs text-minor-ink break-all">API：{CUSTOMER_API_BASE_URL}</p>
-                    )}
-                </div>
-                <div className="w-full sm:w-64 sm:shrink-0">
-                    <label htmlFor="model-tier-filter" className="mb-1.5 block text-sm font-medium text-navy">
-                        档次筛选
-                    </label>
+            <header className="mb-7">
+                {embedded && <p className="m-0 mb-2 text-xs font-semibold tracking-wider text-minor-ink">CATALOG</p>}
+                <h1 className="m-0 text-3xl font-semibold tracking-tight text-navy">模型清单</h1>
+                <p className="m-0 mt-2 text-sm leading-relaxed text-muted-ink">
+                    查看价格，选择分组，复制模型名开始调用。
+                </p>
+                {!embedded && <p className="m-0 mt-2 break-all text-xs text-minor-ink">API：{CUSTOMER_API_BASE_URL}</p>}
+            </header>
+            <div className="mb-5 flex flex-wrap gap-1.5" role="group" aria-label="模型类型">
+                {[{ key: '', label: '全部' }, ...typeFilters].map((filter) => (
+                    <button
+                        key={filter.key}
+                        type="button"
+                        aria-pressed={type === filter.key}
+                        onClick={() => setType(filter.key as ModelTypeFilter)}
+                        className={`min-h-11 cursor-pointer rounded-lg border-0 px-4 py-2 text-sm font-medium transition-colors ${type === filter.key ? 'bg-navy text-paper' : 'bg-transparent text-muted-ink hover:bg-paper-muted hover:text-navy'}`}
+                    >
+                        {filter.label}
+                    </button>
+                ))}
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,0.45fr)_minmax(0,0.65fr)]">
+                <label className="flex min-w-0 flex-col gap-1.5 text-xs text-muted-ink sm:col-span-2 lg:col-span-1">
+                    搜索模型
+                    <span className="relative">
+                        <Search aria-hidden="true" size={16} className="pointer-events-none absolute left-3 top-3.5" />
+                        <input
+                            type="search"
+                            value={query}
+                            onChange={(event) => setQuery(event.target.value)}
+                            placeholder="搜索模型名称、API ID 或厂商"
+                            className={`${FIELD_CLASS} pl-9`}
+                        />
+                    </span>
+                </label>
+                <label htmlFor="model-vendor-filter" className="flex min-w-0 flex-col gap-1.5 text-xs text-muted-ink">
+                    厂商
+                    <select
+                        id="model-vendor-filter"
+                        value={vendor}
+                        onChange={(event) => setVendor(event.target.value)}
+                        className={`${FIELD_CLASS} cursor-pointer`}
+                    >
+                        <option value="">全部厂商</option>
+                        {vendors.map((name) => (
+                            <option key={name} value={name}>
+                                {name}
+                                {VENDOR_META[name].zh ? ` · ${VENDOR_META[name].zh}` : ''}
+                            </option>
+                        ))}
+                    </select>
+                </label>
+                <label htmlFor="model-tier-filter" className="flex min-w-0 flex-col gap-1.5 text-xs text-muted-ink">
+                    API Key 分组
                     <select
                         id="model-tier-filter"
                         value={tier}
                         onChange={(event) => setTier(event.target.value)}
-                        className="min-h-11 w-full cursor-pointer rounded-lg border border-brand-border bg-surface px-3 py-2 text-sm text-navy focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-accent"
+                        className={`${FIELD_CLASS} cursor-pointer`}
                     >
-                        <option value="">全部档次</option>
+                        <option value="">全部分组</option>
                         {tiers.map((row) => (
                             <option key={row.key} value={row.key}>
                                 {row.label}
                             </option>
                         ))}
                     </select>
-                </div>
-            </header>
-            <div className="flex flex-col gap-2 mb-6">
-                <Input
-                    type="search"
-                    value={query}
-                    onChange={(e) => setQuery(e.target.value)}
-                    placeholder="搜索模型(支持模型名 / 厂商 / 类型)…"
-                    aria-label="搜索模型"
-                />
-                <p className="m-0 text-xs text-muted-ink" role="status">
-                    {selectedTier && <>{selectedTier.label} · </>}
-                    {debouncedQuery ? (
-                        <>
-                            筛选结果 {filteredTotal} / {tierEntries.length} 条
-                        </>
-                    ) : (
-                        <>
-                            共 <strong className="text-navy">{tierEntries.length}</strong> 个模型，
-                            <strong className="text-navy">{tierVendorCount}</strong> 个厂商
-                        </>
-                    )}
-                </p>
+                </label>
             </div>
-
-            {sections.length === 0 ? (
-                <Card>
+            <div className="my-5 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 text-xs text-muted-ink">
+                <p className="m-0" role="status">
+                    {hasFilters ? '筛选结果 ' : '共 '}
+                    <strong className="text-navy">{filtered.length}</strong> 个模型，
+                    <strong className="text-navy">{new Set(filtered.map((entry) => entry.vendor)).size}</strong> 个厂商
+                </p>
+                {hasFilters ? (
+                    <button
+                        type="button"
+                        onClick={resetFilters}
+                        className="cursor-pointer border-0 bg-transparent py-1 text-xs text-brand-accent hover:underline"
+                    >
+                        清除筛选
+                    </button>
+                ) : (
+                    <span>人民币 · 使用价格所示分组的 API Key 调用</span>
+                )}
+            </div>
+            {filtered.length === 0 ? (
+                <Card className="p-8">
                     <EmptyState
-                        title={debouncedQuery ? `没有匹配「${query}」的模型` : tier ? '该档次暂无模型' : '暂无可用模型'}
+                        title={hasFilters ? '没有匹配的模型' : '暂无可用模型'}
                         body={
-                            debouncedQuery
-                                ? '试试其他关键词,或清空搜索框查看全部。'
-                                : tier
-                                  ? '可以切换其他档次查看。'
-                                  : '模型目录暂时不可用,请稍后刷新页面。'
+                            hasFilters
+                                ? '调整类型、厂商或分组，或清除筛选查看全部模型。'
+                                : '模型目录暂时不可用，请稍后刷新页面。'
                         }
                     />
                 </Card>
             ) : (
-                <div className="flex flex-col gap-10">
-                    {sections.map((section) => (
-                        <VendorSectionBlock
-                            key={section.vendor}
-                            section={section}
-                            tiers={selectedTier ? [selectedTier] : tiers}
-                            pricingBySlug={pricingBySlug}
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                    {filtered.map((entry) => (
+                        <ModelCard
+                            key={entry.shortName}
+                            entry={entry}
+                            tiers={visibleTiers}
+                            prices={pricingBySlug.get(entry.shortName) ?? {}}
+                            filteredTier={Boolean(selectedTier)}
+                            onDetails={() => setDetailModel(entry.shortName)}
                         />
                     ))}
                 </div>
+            )}
+            {selectedModel && (
+                <ModelPriceDialog
+                    entry={selectedModel}
+                    tiers={visibleTiers}
+                    prices={pricingBySlug.get(selectedModel.shortName) ?? {}}
+                    onClose={() => setDetailModel(null)}
+                />
             )}
         </>
     );
 }
 
-function VendorSectionBlock({
-    section,
-    tiers,
-    pricingBySlug,
-}: {
-    section: VendorSection;
-    tiers: BrowserTier[];
-    pricingBySlug: Map<string, Record<string, TierPricing | null>>;
-}) {
-    const meta = VENDOR_META[section.vendor];
+function CopyModelName({ name }: { name: string }) {
+    const [status, setStatus] = useState<'idle' | 'copied' | 'failed'>('idle');
+    useEffect(() => {
+        if (status === 'idle') return;
+        const timeout = setTimeout(() => setStatus('idle'), 2500);
+        return () => clearTimeout(timeout);
+    }, [status]);
+    async function copy() {
+        try {
+            await navigator.clipboard.writeText(name);
+            setStatus('copied');
+        } catch {
+            setStatus('failed');
+        }
+    }
     return (
-        <section>
-            <header className="flex items-center gap-3 mb-4 pb-3 border-b border-brand-border">
-                <span
-                    aria-hidden="true"
-                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-navy text-lg font-semibold text-paper"
-                >
-                    {meta.initial}
-                </span>
-                <div className="min-w-0">
-                    <h2 className="m-0 text-xl font-semibold text-navy leading-tight">{section.vendor}</h2>
-                    {meta.zh && <p className="m-0 text-xs text-minor-ink">{meta.zh}</p>}
-                </div>
-                <span className="ml-auto shrink-0 text-xs font-medium text-muted-ink bg-paper-muted border border-brand-border rounded-full px-2.5 py-1">
-                    {section.total} 个模型
-                </span>
-            </header>
-
-            <div className="flex flex-col gap-5">
-                {section.types.map((bucket) => (
-                    <div key={bucket.type}>
-                        <h3 className="m-0 mb-2.5 text-xs font-semibold text-muted-ink">
-                            {TYPE_LABEL[bucket.type]}{' '}
-                            <span className="text-minor-ink font-normal normal-case">· {bucket.entries.length}</span>
-                        </h3>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
-                            {bucket.entries.map((m) => (
-                                <ModelCard
-                                    key={m.shortName}
-                                    entry={m}
-                                    tiers={tiers}
-                                    prices={pricingBySlug.get(m.shortName) ?? {}}
-                                />
-                            ))}
-                        </div>
-                    </div>
-                ))}
-            </div>
-        </section>
+        <span className="relative shrink-0">
+            <button
+                type="button"
+                onClick={copy}
+                aria-label={`复制模型名 ${name}`}
+                className="flex h-11 w-11 cursor-pointer items-center justify-center rounded-lg border-0 bg-transparent text-muted-ink transition-colors hover:bg-paper-muted hover:text-navy"
+            >
+                {status === 'copied' ? <Check size={16} aria-hidden="true" /> : <Copy size={16} aria-hidden="true" />}
+            </button>
+            <span
+                role="status"
+                className={
+                    status === 'idle'
+                        ? 'sr-only'
+                        : 'absolute right-0 top-full z-10 w-max max-w-64 rounded border border-brand-border bg-surface px-2 py-1 text-xs text-navy shadow-card'
+                }
+            >
+                {status === 'copied' ? '已复制模型名' : status === 'failed' ? '复制失败，请手动选择模型名复制' : ''}
+            </span>
+        </span>
     );
 }
-
-const TYPE_CHIP_CLASS: Record<TypeName, string> = {
-    chat: 'bg-paper-muted text-muted-ink border-brand-border',
-    vision: 'bg-paper-muted text-muted-ink border-brand-border',
-    'image-gen': 'bg-status-warning-bg text-status-warning-text border-status-warning-border',
-    video: 'bg-status-success-bg text-status-success-text border-status-success-border',
-    audio: 'bg-paper-muted text-muted-ink border-brand-border',
-    embedding: 'bg-paper-muted text-muted-ink border-brand-border',
-};
 
 function ModelCard({
     entry,
     tiers,
     prices,
+    filteredTier,
+    onDetails,
 }: {
     entry: ModelEntry;
     tiers: BrowserTier[];
     prices: Record<string, TierPricing | null>;
+    filteredTier: boolean;
+    onDetails: () => void;
 }) {
-    const [copied, setCopied] = useState(false);
-    const showCanonical = entry.shortName !== entry.canonicalName;
-
-    async function handleCopy() {
-        try {
-            await navigator.clipboard.writeText(entry.shortName);
-            setCopied(true);
-            setTimeout(() => setCopied(false), 1500);
-        } catch {
-            // Older browsers / non-https — silently swallow; user can copy
-            // manually from the visible card text.
-        }
-    }
-
+    const members = tiers.filter((row) => Object.hasOwn(prices, row.key));
+    const displayTier = catalogSummaryTier(tiers, prices);
+    const summary = catalogPriceSummary(displayTier ? prices[displayTier.key] : null, entry.type);
     return (
-        <Card as="article" className="px-3.5 py-3 flex flex-col gap-1.5">
-            <div className="font-mono text-sm font-semibold text-navy break-all">{entry.shortName}</div>
-            {showCanonical && (
-                <div className="font-mono text-[11px] text-minor-ink break-all">{entry.canonicalName}</div>
-            )}
-            <div className="my-2 space-y-3">
-                {tiers
-                    .filter((row) => Object.hasOwn(prices, row.key))
-                    .map((row) => (
-                        <section
-                            key={row.key}
-                            aria-label={`${row.label}价格`}
-                            className="border-t border-brand-border pt-2.5"
-                        >
-                            <h4 className="m-0 mb-2 text-xs font-semibold text-navy break-words">{row.label}</h4>
-                            <ModelTierPrices price={prices[row.key]} type={entry.type} />
-                        </section>
-                    ))}
+        <Card
+            as="article"
+            className="flex min-w-0 flex-col gap-5 p-5 shadow-none! transition-shadow hover:shadow-card!"
+        >
+            <div>
+                <div className="flex items-start justify-between gap-2">
+                    <h2 className="m-0 min-w-0 select-text break-words pt-2 text-base font-semibold tracking-tight text-navy [overflow-wrap:anywhere]">
+                        {entry.shortName}
+                    </h2>
+                    <CopyModelName name={entry.shortName} />
+                </div>
+                <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-ink">
+                    <span>{entry.vendor}</span>
+                    <span aria-hidden="true">·</span>
+                    <span>{TYPE_BADGE[entry.type]}</span>
+                </div>
             </div>
-            <div className="flex items-center gap-2 mt-1">
-                <span
-                    className={['text-[11px] px-2 py-0.5 rounded-full border', TYPE_CHIP_CLASS[entry.type]].join(' ')}
-                >
-                    {TYPE_BADGE[entry.type]}
+            <div className="flex-1" aria-label={`${displayTier?.label ?? '当前分组'}价格摘要`}>
+                {summary ? (
+                    <>
+                        <dl className="m-0 grid grid-cols-2 gap-x-3 gap-y-1">
+                            {summary.rates.map((rate) => (
+                                <div key={rate.label}>
+                                    <dt className="text-xs text-muted-ink">{rate.label}</dt>
+                                    <dd className="m-0 mt-1 break-words text-xl font-semibold tabular-nums tracking-tight text-navy [overflow-wrap:anywhere]">
+                                        {`¥${formatTieredPrice(rate.amount)}`}
+                                    </dd>
+                                </div>
+                            ))}
+                        </dl>
+                        <p className="m-0 mt-2 text-xs text-muted-ink">{summary.unit}</p>
+                        {summary.condition && (
+                            <p className="m-0 mt-1.5 text-xs leading-relaxed text-muted-ink">{summary.condition}</p>
+                        )}
+                        {summary.note && (
+                            <p className="m-0 mt-1 text-xs leading-relaxed text-muted-ink">{summary.note}</p>
+                        )}
+                    </>
+                ) : (
+                    <p className="m-0 py-2 text-sm text-muted-ink">未定价</p>
+                )}
+                {displayTier && (
+                    <p className="m-0 mt-3 break-words text-xs font-medium text-navy">{displayTier.label}</p>
+                )}
+            </div>
+            <div className="flex items-center justify-between gap-3">
+                <span className="text-xs text-muted-ink">
+                    {filteredTier ? '当前分组' : `${members.length} 个可用分组`}
                 </span>
                 <button
                     type="button"
-                    onClick={handleCopy}
-                    aria-label={`复制模型名 ${entry.shortName}`}
-                    className={[
-                        'ml-auto text-[11px] px-2.5 py-1 rounded-lg',
-                        'border border-transparent transition-colors duration-150 ease-brand cursor-pointer',
-                        copied
-                            ? 'bg-status-success-bg text-status-success-text border-status-success-border'
-                            : 'bg-navy text-paper hover:bg-navy-strong',
-                    ].join(' ')}
+                    onClick={onDetails}
+                    aria-label={`查看 ${entry.shortName} 的价格详情`}
+                    aria-haspopup="dialog"
+                    className="inline-flex min-h-11 cursor-pointer items-center gap-1 rounded border-0 bg-transparent px-1 text-sm font-medium text-brand-accent hover:underline"
                 >
-                    {copied ? '已复制 ✓' : '复制'}
+                    价格详情
+                    <ChevronRight size={14} aria-hidden="true" />
                 </button>
             </div>
         </Card>
-    );
-}
-
-export function ModelTierPrices({ price, type }: { price: TierPricing | null; type: TypeName }) {
-    if (!price) return <p className="m-0 text-xs text-muted-ink">未定价</p>;
-    const details = price.billing_details;
-    if (details && details.mode !== 'tiered_token') return <CatalogMediaPriceDetails details={details} />;
-    if (details && !isUniformPricingDetails(details)) {
-        return (
-            <a href="/pricing" className="text-xs text-brand-accent underline">
-                按用量计费 · 查看价格
-            </a>
-        );
-    }
-    const rates = details?.tiers[0].rates;
-    const rows: [string, number | null | undefined][] = [
-        ['输入', rates?.input ?? price.input_cny_per_1m],
-        ['输出', rates?.output ?? price.output_cny_per_1m],
-        ['缓存读取', rates?.cache_read],
-        [rates?.cache_write_1h != null ? '缓存写入 / 5 分钟' : '缓存写入', rates?.cache_write],
-        ['缓存写入 / 1 小时', rates?.cache_write_1h],
-    ];
-    const tokenRows = rows.filter((row): row is [string, number] => row[1] != null);
-    if (price.per_image_cny == null && tokenRows.length === 0) {
-        return <p className="m-0 text-xs text-muted-ink">未定价</p>;
-    }
-    return (
-        <>
-            {price.per_image_cny != null && (
-                <p className="m-0 text-sm font-semibold text-navy">
-                    {`¥${formatTieredPrice(price.per_image_cny)}`}
-                    <span className="font-normal text-xs text-muted-ink"> / {type === 'image-gen' ? '张' : '次'}</span>
-                </p>
-            )}
-            {tokenRows.length > 0 && (
-                <>
-                    <p className="m-0 mb-1.5 text-[11px] text-minor-ink">元 / 百万 token</p>
-                    <dl className="m-0 space-y-1 text-xs">
-                        {tokenRows.map(([label, amount]) => (
-                            <div key={label} className="flex justify-between gap-3">
-                                <dt className="text-muted-ink">{label}</dt>
-                                <dd className="m-0 font-medium tabular-nums text-navy">{`¥${formatTieredPrice(amount)}`}</dd>
-                            </div>
-                        ))}
-                    </dl>
-                </>
-            )}
-        </>
     );
 }
