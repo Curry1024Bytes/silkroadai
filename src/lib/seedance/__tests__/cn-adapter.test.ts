@@ -50,7 +50,9 @@ beforeEach(() => {
             return json({
                 id: 'cgt-test-1',
                 status: 'completed',
-                data: [{ url: `${UP}/out/generated.mp4?auth_key=xyz` }],
+                data: [
+                    { url: `${UP}/out/generated.mp4?auth_key=xyz`, last_frame_url: `${UP}/out/last.jpg?auth_key=lf` },
+                ],
                 usage: { completion_tokens: 108872, total_tokens: 108872 },
             });
         }
@@ -496,6 +498,8 @@ describe('seedance-cn adapter poll', () => {
         expect(j.url).toBe(j.video_url);
         // 完成时透传上游 usage(供按 token 量计费)
         expect(j.usage).toEqual({ completion_tokens: 108872, total_tokens: 108872 });
+        // 2026-10-13 智象未来:上游 data[0].last_frame_url 必须透出(此前被丢,客户 return_last_frame 拿不到末帧)
+        expect(j.last_frame_url).toBe(`${UP}/out/last.jpg?auth_key=lf`);
     });
 
     it('未知/已下线模型(2k)→ 400 model_not_found', async () => {

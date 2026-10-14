@@ -280,7 +280,8 @@ export async function resolveEnterpriseCustomer(auth: string | null, expectedReg
             ok: false,
             status: 403,
             code: 'region_mismatch',
-            message: `this API key is bound to the ${row.region === 'global' ? 'global' : 'cn'} region; create a ${expectedRegion} key in the dashboard to call ${expectedRegion} models`,
+            // 2026-10-13 智象未来:promax key 打国内模型,文案却说「bound to the cn region」,客户以为 cn key 被风控。打印真实版本。
+            message: `this API key is bound to the ${row.region} region; create a ${expectedRegion} key in the dashboard to call ${expectedRegion} models`,
         };
     }
     // last_used_at:best-effort,不阻塞请求

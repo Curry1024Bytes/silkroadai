@@ -130,6 +130,13 @@ describe('resolveEnterpriseCustomer — 版本门(2026-07-23 海外版)', () => 
         expect(db.enterpriseUpstreamKey.findUnique).not.toHaveBeenCalled();
     });
 
+    it('region_mismatch 文案打印 key 的真实版本(promax key 打 cn 模型 → "bound to the promax region")', async () => {
+        db.enterpriseKey.findUnique.mockResolvedValue({ ...cnRow, id: 'k3', region: 'promax' });
+        const r = await resolveEnterpriseCustomer('Bearer sk-ent-' + 'a'.repeat(48), 'cn');
+        expect(r.ok).toBe(false);
+        if (!r.ok) expect(r.message).toContain('bound to the promax region; create a cn key');
+    });
+
     it('global key + expectedRegion global → 按 (user, global) 行取上游 key', async () => {
         db.enterpriseKey.findUnique.mockResolvedValue(globalRow);
         db.enterpriseUpstreamKey.findUnique.mockResolvedValue({ upstream_key_enc: 'enc' });

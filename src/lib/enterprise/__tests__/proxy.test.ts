@@ -2160,6 +2160,85 @@ describe('火山官方查询响应新字段(2026-09-23)', () => {
 // 2026-09-29 客户测试报告(国内版 seedance 2.5):
 //  ① body 没传 duration、提示词里写 `--duration 25` → 官方出 25s,我们硬填 5s 出片;
 //  ② duration=-1 / 不传 ratio → 查询响应回显的是提交参数(-1 / 16:9),不是成片真值(10s / 9:16)。
+// 2026-10-13 智象未来 conformance 报告(国内 fast/mini + 海外 promax-fast/mini):
+//  ① service_tier=flex / priority=-1 / priority=10 被 200 受理 —— 上游异步拒(failed,不计费),客户以为受理并计费;
+//  ② 缺 model / 别名模型 / body 非对象 对海外 key 先吃 403 region_mismatch,期望 400。
+describe('提交入口同步校验(2026-10-13 conformance)', () => {
+    const submit = (body: unknown) =>
+        handleEnterpriseArkV3(req('POST', '/api/v3/contents/generations/tasks', body), '/contents/generations/tasks');
+    const text = (t: string) => [{ type: 'text', text: t }];
+    const code = async (r: Response) => ((await r.json()) as { error?: { code?: string } }).error?.code;
+
+    beforeEach(() => {
+        submitVideoWithKey.mockImplementation(() =>
+            Promise.resolve(NextResponse.json({ id: 'cgt-sv1', task_id: 'cgt-sv1', status: 'queued' })),
+        );
+    });
+
+    it('service_tier=flex → 400,不打上游', async () => {
+        const r = await submit({
+            model: 'seedance-2-0-fast',
+            content: text('x'),
+            resolution: '480p',
+            duration: 4,
+            service_tier: 'flex',
+        });
+        expect(r.status).toBe(400);
+        expect(await code(r)).toBe('invalid_request');
+        expect(submitVideoWithKey).not.toHaveBeenCalled();
+    });
+
+    it('service_tier=default → 200,且不转发给上游(上游要求为空)', async () => {
+        const r = await submit({
+            model: 'seedance-2-0-fast',
+            content: text('x'),
+            resolution: '480p',
+            duration: 4,
+            service_tier: 'default',
+        });
+        expect(r.status).toBe(200);
+        const sent = submitVideoWithKey.mock.calls[0][0] as Record<string, unknown>;
+        expect('service_tier' in sent).toBe(false);
+    });
+
+    it('priority=-1 / 10 / 非整数 → 400;0 / 9 → 200', async () => {
+        for (const bad of [-1, 10, 1.5, '3']) {
+            const r = await submit({
+                model: 'seedance-2-0-mini',
+                content: text('x'),
+                resolution: '480p',
+                duration: 4,
+                priority: bad,
+            });
+            expect(r.status, `priority=${String(bad)}`).toBe(400);
+        }
+        expect(submitVideoWithKey).not.toHaveBeenCalled();
+        for (const ok of [0, 9]) {
+            const r = await submit({
+                model: 'seedance-2-0-mini',
+                content: text('x'),
+                resolution: '480p',
+                duration: 4,
+                priority: ok,
+            });
+            expect(r.status, `priority=${ok}`).toBe(200);
+        }
+    });
+
+    it('缺 model / 未知模型名 / body 为数组 → 400,先于版本门(不触发鉴权,不再 403 region_mismatch)', async () => {
+        resolveEnterpriseAuth.mockResolvedValue({ ok: false, status: 403, code: 'region_mismatch', message: 'x' });
+        const missing = await submit({ content: text('x') });
+        expect(missing.status).toBe(400);
+        expect(await code(missing)).toBe('invalid_request');
+        const alias = await submit({ model: 'dreamina-seedance-2-0', content: text('x') });
+        expect(alias.status).toBe(400);
+        expect(await code(alias)).toBe('model_not_found');
+        const arr = await submit([{ model: 'seedance-2-0' }]);
+        expect(arr.status).toBe(400);
+        expect(resolveEnterpriseAuth).not.toHaveBeenCalled();
+    });
+});
+
 describe('duration 内联指令 + 成片真值回显(2026-09-29)', () => {
     const submit = (body: Record<string, unknown>) =>
         handleEnterpriseArkV3(req('POST', '/api/v3/contents/generations/tasks', body), '/contents/generations/tasks');

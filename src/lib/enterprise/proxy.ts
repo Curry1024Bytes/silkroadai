@@ -674,6 +674,36 @@ async function handleSubmitInner(req: NextRequest, format: ClientFormat, ctx: Re
     ctx.model = model || null;
     ctx.region = regionForModel(model);
 
+    // 基本校验先于版本门(2026-10-13 智象未来 conformance):缺 model / 未知模型 / body 非对象
+    // 此前都按 cn 解析 region,海外 key 一律先吃 403 region_mismatch,客户期望的是 400。
+    // 只判「认不认识这个名」,不碰素材/鉴权;真正的解析仍在鉴权之后。
+    if (!model) return errJson(400, 'invalid_request', 'model is required');
+    if (!resolveEnterpriseModel(model, body) && !MODEL_MAP[model]) {
+        return errJson(400, 'model_not_found', `unknown seedance model: ${model}`);
+    }
+
+    // service_tier / priority 同步校验(非 volc;volc 原生火山自己判):此前原样透传,上游是在
+    // 任务里异步拒(InvalidParameter → failed,不计费),客户拿到 200 以为被受理并计费。
+    // 上游实测规则:2.x 系 service_tier 必须为空(flex 不支持);priority 0–9 整数。
+    if (!isVolc) {
+        if (body.service_tier !== undefined) {
+            if (body.service_tier !== 'default') {
+                return errJson(
+                    400,
+                    'invalid_request',
+                    'service_tier is not supported by seedance 2.x (only "default"); omit it',
+                );
+            }
+            delete body.service_tier; // 上游要求为空,'default' 等价于不传
+        }
+        if (body.priority !== undefined) {
+            const pr = body.priority;
+            if (typeof pr !== 'number' || !Number.isInteger(pr) || pr < 0 || pr > 9) {
+                return errJson(400, 'invalid_request', 'priority must be an integer between 0 and 9');
+            }
+        }
+    }
+
     // 剥 asset:// 前缀(对 v1 也安全:v1 客户素材引用是裸 id,归一后不变)——
     // 仅非 volc:后面 resolveAssetRefs 认裸 asset-…。「火山」渠道素材由上游 provider
     // 解析,契约就是 asset://<id> 整串,剥了前缀上游按 URL 解析必 400

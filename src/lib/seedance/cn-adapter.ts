@@ -885,6 +885,15 @@ function firstVideoUrl(data: unknown): string | null {
     return typeof first?.url === 'string' ? first.url : null;
 }
 
+/** 上游 `data[0].last_frame_url`(客户 return_last_frame=true 时 xinhankr / intl 都会给)。
+ *  2026-10-13 智象未来 conformance:上游明明回了末帧,我们轮询只取 url 把它丢了 →
+ *  客户看到 succeeded 却没有 content.last_frame_url。 */
+function firstLastFrameUrl(data: unknown): string | null {
+    if (!Array.isArray(data)) return null;
+    const first = data[0] as { last_frame_url?: unknown } | undefined;
+    return typeof first?.last_frame_url === 'string' && first.last_frame_url ? first.last_frame_url : null;
+}
+
 /** GET 轮询:token.xinhankr.com /v1/video/generations/{id} → OpenAI-video 形。 */
 export async function pollVideo(req: NextRequest, id: string): Promise<NextResponse> {
     return pollVideoWithKey(id, req.headers.get('authorization') || '');
@@ -947,6 +956,7 @@ export async function pollVideoWithKey(id: string, auth: string, region: Seedanc
     }
     const status = mapStatus(j.status);
     const videoUrl = firstVideoUrl(j.data);
+    const lastFrameUrl = firstLastFrameUrl(j.data);
     const failReason =
         status === 'failed'
             ? String((j.error as { message?: string } | undefined)?.message || j.message || 'generation failed')
@@ -965,6 +975,7 @@ export async function pollVideoWithKey(id: string, auth: string, region: Seedanc
             progress: status === 'completed' || status === 'failed' ? 100 : 50,
             video_url: videoUrl ?? undefined,
             url: videoUrl ?? undefined,
+            last_frame_url: lastFrameUrl ?? undefined,
             fail_reason: failReason || undefined,
             // 完成时透传上游 usage(供 new-api ModelRatio 或适配器自扣按 token 计费)
             usage: status === 'completed' ? usage : undefined,
