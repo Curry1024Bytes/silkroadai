@@ -277,19 +277,20 @@ silkroadai/
 
 ## 核心 API 调用(new-api Admin API)
 
-| 操作                         | 函数                      | new-api 端点                                          |
-| ---------------------------- | ------------------------- | ----------------------------------------------------- |
-| 注册时建 new-api user(admin) | `createUser`              | `POST /api/user/`                                     |
-| 反查 user / 拿登录 cookie    | `loginAsUser`(内部)       | `POST /api/user/login`                                |
-| Rotate 出客户 access_token   | (用 cookie 调 call)       | `GET /api/user/token` ⚠️ **是 rotate 不是 read**      |
-| 给 user 创建 token           | `createTokenForCustomer`  | `POST /api/token/` (act-as customer)                  |
-| 拿 token 真实 key            | `getTokenKey`             | `POST /api/token/{id}/key` (返回 `{key:"sk-..."}`)    |
-| 列出客户的 tokens            | `listTokensForCustomer`   | `GET /api/token/?p=&page_size=` (act-as)              |
-| 充值入账                     | `addQuota` / `applyTopup` | `POST /api/user/manage` `action=add_quota`            |
-| 查用户余额(quota)            | `getUser`                 | `GET /api/user/{id}`                                  |
-| 查用量日志                   | `queryLogs`               | `GET /api/log/` (filter by **username** 不是 user_id) |
-| 列出可用模型                 | `listAvailableModels`     | `GET /api/channel/models_enabled`                     |
-| 高层封装:开通新客户          | `provisionNewCustomer`    | 6 步内部串联(W2 D6 验证)                              |
+| 操作                         | 函数                       | new-api 端点                                                                        |
+| ---------------------------- | -------------------------- | ----------------------------------------------------------------------------------- |
+| 注册时建 new-api user(admin) | `createUser`               | `POST /api/user/`                                                                   |
+| 反查 user / 拿登录 cookie    | `loginAsUser`(内部)        | `POST /api/user/login`                                                              |
+| 拿客户 act-as 凭据(≤rc.40)   | `issueCustomerAccessToken` | `GET /api/user/token` ⚠️ **是 rotate 不是 read**(rc.41 已删)                        |
+| 拿客户 act-as 凭据(rc.41+)   | `issueCustomerAccessToken` | `POST /api/verify` → `POST /api/user/access_tokens`(具名 PAT `nap_…`,见 gotcha #24) |
+| 给 user 创建 token           | `createTokenForCustomer`   | `POST /api/token/` (act-as customer)                                                |
+| 拿 token 真实 key            | `getTokenKey`              | `POST /api/token/{id}/key` (返回 `{key:"sk-..."}`)                                  |
+| 列出客户的 tokens            | `listTokensForCustomer`    | `GET /api/token/?p=&page_size=` (act-as)                                            |
+| 充值入账                     | `addQuota` / `applyTopup`  | `POST /api/user/manage` `action=add_quota`                                          |
+| 查用户余额(quota)            | `getUser`                  | `GET /api/user/{id}`                                                                |
+| 查用量日志                   | `queryLogs`                | `GET /api/log/` (filter by **username** 不是 user_id)                               |
+| 列出可用模型                 | `listAvailableModels`      | `GET /api/channel/models_enabled`                                                   |
+| 高层封装:开通新客户          | `provisionNewCustomer`     | 6 步内部串联(W2 D6 验证)                                                            |
 
 封装在 `src/lib/newapi/client.ts`。看那里就是 source of truth。
 
@@ -470,6 +471,16 @@ LiteLLM 同时支持 user-level 和 key-level 预算。我们只用 key-level(�
 **症状**:缺 `messages` / 缺 `input` / max_tokens 超大的请求拿到 `500`,客户侧 5xx 重试逻辑被误触发。
 **真实行为**:new-api(rc.22)`controller/relay.go` 对 `GetAndValidateRequest` 的任何报错都走 `types.NewError(err, ErrorCodeInvalidRequest)`,`NewError` 缺省状态码 500。请求在 new-api 本地 <1ms 返回,**不进 `logs` 表**(type=5 查不到),只能翻 docker log:`[ERR] … relay error: <msg>` + 同 request id 的 `[GIN] … | 500 | 几百µs`(GIN 时间是北京时间)。
 **解决**:网关 `body-guard.ts` 的 `validateRequired` 提前回 400。new-api 每加一条校验(`relay/helper/valid_request.go`)都可能多一个 500 —— 客户报「非法请求回 500」先按上面的方法看是不是 new-api 本地吐的,是就补进守门。缺 `model` 不在此列(Distribute 中间件已回 400)。
+
+### 24. new-api rc.41+ 把单个 `access_token` 换成了具名 PAT —— `GET /api/user/token` 没了,legacy token 升级后 30 天作废
+
+**变化**(2026-10-14 对 rc.44 源码核实):`users.access_token`(32 字符,portal 存在 `User.newapi_access_token` 作 act-as 凭据)被最多 20 个具名、带 scope 的 personal access token(前缀 `nap_`)取代。`GET /api/user/token` 路由删除(打它只会被 NoRoute 301 到前端页);旧 token 在 new-api **第一次以 rc.41+ 启动时**写 `options.LegacyAccessTokenRetireAt = now + 30d`,到期后一律拒绝且**不能再生成**。`.env` 里的 `NEWAPI_ADMIN_TOKEN` 和全部客户的 `newapi_access_token` 都在倒计时内。
+
+**发新 PAT 的唯一途径**:该用户自己的 dashboard 登录会话(`POST /api/user/login` 的 Bearer JWT;PAT 不能再生 PAT)+ 一次性安全校验:`POST /api/verify {method:'password', scope:'access_token.generate', password, context:{scopes, expires_at}}` → `proof_token` → 以头 `X-Security-Proof` 调 `POST /api/user/access_tokens {name, scopes, expires_at:0}`(0 = 永不过期)。context 必须恰好 `{scopes, expires_at}` 且与 create body 一致。客户 PAT 只给 `api_key:read/write/reveal`。
+
+**portal 侧**:`issueCustomerAccessToken`(`src/lib/newapi/client.ts` section F)按 `NEWAPI_ACCESS_TOKEN_MODE`(auto = 读 `/api/status` version,rc ≥ 41 走 PAT)分流,同一份代码升级前后都能开户。`call()` 已改 `redirect:'manual'`,否则 NoRoute 301 会被 fetch 跟到前端页变成 200 HTML、静默返回 null。存量客户 portal 没存其 new-api 密码 → `scripts/migrate-newapi-legacy-access-tokens.ts`:root 登录 + admin 证明重置客户密码 → 以客户身份发 PAT → 写回。admin 侧用 `admin_user.update` 校验的只有改密码/改权限;`add_quota`、改分组、改备注不需要。
+
+**admin token 本身**:升级后 30 天内在后台「安全与访问」给 root 建具名 PAT(scope 至少 user:read/write、log:read、option:read/write、api_key:\*、channel 相关)替换三处 `.env` 并滚动重启;legacy token 到期前不替换 = 充值入账、余额查询、/keys 全部 401。完整升级方案见 `docs/NEWAPI-RC44-UPGRADE-PLAN.md`。
 
 ---
 

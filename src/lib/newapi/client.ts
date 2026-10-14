@@ -7,8 +7,9 @@
  * 架构关键点(基于对 QuantumNous/new-api source code 的精确分析):
  *
  * 1. 双头部认证:
- *    - Authorization: <access_token>     (29-32 字符,在 new-api admin UI 生成)
+ *    - Authorization: <access_token>     (≤ rc.40:32 字符 legacy token;rc.41+:具名 PAT `nap_…`)
  *    - New-Api-User: <int_user_id>       (持有该 token 的 user 的整数 ID)
+ *    ⚠️ rc.41 起 legacy token 在升级后 30 天作废且不能再生成 —— 见 section F。
  *
  * 2. 配额单位:
  *    - 1 USD = 500,000 quota(默认 QuotaPerUnit,可配置)
@@ -151,6 +152,11 @@ interface CallOptions {
      * GET /api/user/token (which requires session auth, not admin scope).
      */
     session?: { auth: LoginSessionAuth; userId: number };
+    /**
+     * Extra request headers merged last (e.g. rc.41+ `X-Security-Proof`
+     * for operations that need a single-use security verification).
+     */
+    headers?: Record<string, string>;
 }
 
 async function call<T>(
@@ -187,7 +193,20 @@ async function call<T>(
         headers['New-Api-User'] = String(auth.userId); // required by all endpoints
     }
 
-    const init: RequestInit = { method, headers, signal: AbortSignal.timeout(callTimeoutMs()) };
+    if (options.headers) Object.assign(headers, options.headers);
+
+    // redirect: 'manual' — new-api never redirects a legitimate /api call,
+    // but its NoRoute handler answers an UNKNOWN /api path with a 301 to the
+    // frontend (rc.44 removed GET /api/user/token; rc.22 lacks /api/verify).
+    // Following that redirect would hand us a 200 HTML page and `call()`
+    // would quietly return null. With 'manual' the 301 surfaces as a
+    // NewApiError(301) and the access-token fallback logic can see it.
+    const init: RequestInit = {
+        method,
+        headers,
+        redirect: 'manual',
+        signal: AbortSignal.timeout(callTimeoutMs()),
+    };
     if (body !== undefined) init.body = JSON.stringify(body);
 
     let res: Response;
@@ -800,9 +819,264 @@ export async function putOption(key: string, value: string): Promise<void> {
 
 import { randomBytes } from 'crypto';
 
-// access_tokens are issued by new-api itself via GET /api/user/token after
-// session login — portal does not generate them. (W2 D6 finding: PUT
-// /api/user/ silently ignores any access_token field passed by admin.)
+// ============================================
+// F. Dashboard access tokens(portal act-as 凭据)
+// ============================================
+//
+// new-api v1.0.0-rc.41 replaced the single per-user dashboard access_token
+// (`users.access_token`, 32 chars, rotated via GET /api/user/token) with up
+// to 20 named, scoped personal access tokens (PAT, prefix `nap_`):
+//   - GET /api/user/token is GONE (NoRoute → 301 to the frontend).
+//   - Legacy 32-char tokens keep working for 30 days after the first rc.41+
+//     boot (`options.LegacyAccessTokenRetireAt`), then are rejected for good
+//     and cannot be regenerated.
+//   - Minting a PAT needs a dashboard LOGIN SESSION (Bearer JWT from
+//     POST /api/user/login — a PAT cannot mint another PAT) plus a
+//     single-use security proof: POST /api/verify {method:'password', ...}
+//     → proof_token → header `X-Security-Proof` on POST /api/user/access_tokens.
+//   - `expires_at: 0` = never expires. Scopes must be ones the owner can
+//     already exercise; a common user can grant api_key:{read,write,reveal}.
+//
+// `issueCustomerAccessToken` picks the right flow per server version so the
+// SAME portal build can be deployed before and after the upgrade:
+//   NEWAPI_ACCESS_TOKEN_MODE = legacy | pat | auto(default)
+//   auto → GET /api/status `version` once per 5 min: rc ≥ 41 (or any GA
+//          ≥ v1.0.0) → pat, else legacy.
+
+export type NewApiAccessTokenMode = 'legacy' | 'pat';
+
+/** Prefix new-api puts on every rc.41+ personal access token. */
+export const NEWAPI_PAT_PREFIX = 'nap_';
+
+/** Scopes the per-customer act-as PAT needs: exactly the /api/token/* routes
+ *  portal calls on the customer's behalf (create / list / rename / delete /
+ *  reveal). Kept minimal on purpose — usage, balance and quota are read via
+ *  the admin credential. Sorted: the verify-step context must normalise to
+ *  the same set as the create-step body. */
+export const CUSTOMER_PAT_SCOPES: readonly string[] = ['api_key:read', 'api_key:reveal', 'api_key:write'];
+
+/** Name shown in the customer's new-api "Security & Access" list. */
+export const CUSTOMER_PAT_NAME = 'portal-act-as';
+
+/** Verification scope new-api binds the PAT-create proof to. */
+const VERIFICATION_SCOPE_ACCESS_TOKEN_GENERATE = 'access_token.generate';
+const VERIFICATION_SCOPE_ADMIN_USER_UPDATE = 'admin_user.update';
+
+/** true for a pre-rc.41 32-char `users.access_token`; false for a `nap_` PAT. */
+export function isLegacyNewApiAccessToken(token: string): boolean {
+    return !token.startsWith(NEWAPI_PAT_PREFIX);
+}
+
+const ACCESS_TOKEN_MODE_CACHE_MS = 5 * 60_000;
+let cachedAccessTokenMode: { mode: NewApiAccessTokenMode; at: number } | null = null;
+
+/** Test hook: forget the cached auto-detected mode. */
+export function _resetAccessTokenModeCache(): void {
+    cachedAccessTokenMode = null;
+}
+
+/**
+ * Map a new-api `version` string to the access-token flow it supports.
+ * Exported for tests. Unparseable → 'pat' (any future GA build has PATs;
+ * the only servers without them are the explicitly-matched old RCs).
+ */
+export function accessTokenModeForVersion(version: string | null | undefined): NewApiAccessTokenMode {
+    if (!version) return 'pat';
+    const m = /^v?(\d+)\.(\d+)\.(\d+)(?:-rc\.(\d+))?/.exec(version.trim());
+    if (!m) return 'pat';
+    const [major, minor, patch] = [Number(m[1]), Number(m[2]), Number(m[3])];
+    if (major > 1 || (major === 1 && (minor > 0 || patch > 0))) return 'pat';
+    if (major < 1) return 'legacy';
+    // 1.0.0 exactly: GA → pat; rc.N → pat from rc.41 (PR #7598-era release).
+    if (m[4] === undefined) return 'pat';
+    return Number(m[4]) >= 41 ? 'pat' : 'legacy';
+}
+
+/**
+ * Resolve which access-token flow to use. Env pin wins; otherwise detect
+ * from GET /api/status (cached 5 min). A failing /api/status falls back to
+ * 'legacy' only when the env says so — otherwise we try 'pat' first and
+ * `issueCustomerAccessToken` falls back to legacy on a 301/404 from /api/verify.
+ */
+export async function resolveAccessTokenMode(): Promise<NewApiAccessTokenMode | 'probe'> {
+    const pinned = (process.env.NEWAPI_ACCESS_TOKEN_MODE ?? 'auto').trim().toLowerCase();
+    if (pinned === 'legacy' || pinned === 'pat') return pinned;
+    const now = Date.now();
+    if (cachedAccessTokenMode && now - cachedAccessTokenMode.at < ACCESS_TOKEN_MODE_CACHE_MS) {
+        return cachedAccessTokenMode.mode;
+    }
+    try {
+        const status = await call<{ version?: string } | null>('GET', '/api/status');
+        const mode = accessTokenModeForVersion(status?.version);
+        cachedAccessTokenMode = { mode, at: now };
+        return mode;
+    } catch {
+        return 'probe';
+    }
+}
+
+const SecurityProofSchema = z.object({ proof_token: z.string().min(1) });
+const CreatedAccessTokenSchema = z.object({ token: z.string().startsWith(NEWAPI_PAT_PREFIX) });
+
+/**
+ * rc.41+: obtain a single-use security proof for `scope` with the account's
+ * password. `session` must be a dashboard LOGIN session (Bearer JWT) — or a
+ * scoped PAT whose own grant covers the operation; legacy tokens cannot.
+ */
+async function obtainSecurityProof(args: {
+    session: LoginSessionAuth;
+    userId: number;
+    password: string;
+    scope: string;
+    context: Record<string, unknown>;
+}): Promise<string> {
+    const res = await call<unknown>(
+        'POST',
+        '/api/verify',
+        { method: 'password', scope: args.scope, password: args.password, context: args.context },
+        undefined,
+        { session: { auth: args.session, userId: args.userId } },
+    );
+    const parsed = SecurityProofSchema.safeParse(res);
+    if (!parsed.success) {
+        throw new NewApiError(200, 'POST /api/verify', res, 'verify OK but no proof_token in response');
+    }
+    return parsed.data.proof_token;
+}
+
+/**
+ * rc.41+: mint the customer's never-expiring act-as PAT.
+ * Two calls on the customer's login session: verify (password) → create.
+ */
+export async function createCustomerPersonalAccessToken(args: {
+    session: LoginSessionAuth;
+    userId: number;
+    password: string;
+    name?: string;
+}): Promise<string> {
+    const scopes = [...CUSTOMER_PAT_SCOPES];
+    const proof = await obtainSecurityProof({
+        session: args.session,
+        userId: args.userId,
+        password: args.password,
+        scope: VERIFICATION_SCOPE_ACCESS_TOKEN_GENERATE,
+        // Must carry exactly {scopes, expires_at} and match the create body.
+        context: { scopes, expires_at: 0 },
+    });
+    const created = await call<unknown>(
+        'POST',
+        '/api/user/access_tokens',
+        { name: args.name ?? CUSTOMER_PAT_NAME, scopes, expires_at: 0 },
+        undefined,
+        { session: { auth: args.session, userId: args.userId }, headers: { 'X-Security-Proof': proof } },
+    );
+    const parsed = CreatedAccessTokenSchema.safeParse(created);
+    if (!parsed.success) {
+        throw new NewApiError(200, 'POST /api/user/access_tokens', created, 'create OK but no nap_ token in response');
+    }
+    return parsed.data.token;
+}
+
+/** ≤ rc.40: rotate the single legacy access_token (gotcha #13 — destructive). */
+async function rotateLegacyAccessToken(args: { session: LoginSessionAuth; userId: number }): Promise<string> {
+    const token = await call<string | null>('GET', '/api/user/token', undefined, undefined, {
+        session: { auth: args.session, userId: args.userId },
+    });
+    if (typeof token !== 'string' || token.length === 0) {
+        throw new NewApiError(200, 'GET /api/user/token', token, 'rotate OK but no access_token in response');
+    }
+    return token;
+}
+
+/** 301 (NoRoute → frontend redirect) or 404: the endpoint does not exist on this server version. */
+function isMissingRoute(e: unknown): boolean {
+    return e instanceof NewApiError && (e.status === 301 || e.status === 404 || e.status === 405);
+}
+
+/**
+ * Obtain a customer's dashboard access_token on whatever new-api version is
+ * running — the one call provisioning (and the legacy-token migration) use.
+ *
+ * `password` is the customer's new-api password (known at provision time,
+ * or freshly reset by admin during migration); it is only sent to
+ * POST /api/verify on rc.41+ and never stored by portal.
+ */
+export async function issueCustomerAccessToken(args: {
+    session: LoginSessionAuth;
+    userId: number;
+    password: string;
+}): Promise<string> {
+    const mode = await resolveAccessTokenMode();
+    if (mode === 'legacy') return rotateLegacyAccessToken(args);
+    if (mode === 'pat') return createCustomerPersonalAccessToken(args);
+    // probe: /api/status unreadable — try the modern flow, fall back on a
+    // "route does not exist" answer only (auth/validation errors propagate).
+    try {
+        return await createCustomerPersonalAccessToken(args);
+    } catch (e) {
+        if (!isMissingRoute(e)) throw e;
+        return rotateLegacyAccessToken(args);
+    }
+}
+
+/**
+ * Migration helper for customers provisioned before rc.41: portal holds
+ * their legacy `users.access_token` but NOT their new-api password, so a PAT
+ * cannot be minted on their session directly. Admin (root) resets the
+ * customer's password (PUT /api/user/ with a password requires an admin
+ * security proof bound to `{user_id}`), then we log in as the customer and
+ * mint the PAT exactly like provisioning does.
+ *
+ * Side effect: the customer's new-api password changes (customers never use
+ * it — they log into portal, not new-api) and their legacy access_token
+ * stays valid until new-api's retire date, so a half-finished run is safe
+ * to resume.
+ *
+ * `admin` must be a dashboard login session of a user allowed to manage the
+ * customer (root for everybody) — obtained via `loginNewApiUser`.
+ */
+export async function reissueCustomerAccessTokenViaAdminReset(args: {
+    admin: { session: LoginSessionAuth; userId: number; password: string };
+    customer: { userId: number };
+}): Promise<{ accessToken: string; username: string }> {
+    const existing = await call<NewApiUser>('GET', `/api/user/${args.customer.userId}`, undefined, undefined, {
+        session: { auth: args.admin.session, userId: args.admin.userId },
+    });
+    const newPassword = generateUserPassword();
+    const proof = await obtainSecurityProof({
+        session: args.admin.session,
+        userId: args.admin.userId,
+        password: args.admin.password,
+        scope: VERIFICATION_SCOPE_ADMIN_USER_UPDATE,
+        context: { user_id: args.customer.userId },
+    });
+    // PUT /api/user/ validates the whole struct (username required) → send
+    // the fetched user back with only the password changed.
+    await call<null>('PUT', '/api/user/', { ...existing, password: newPassword }, undefined, {
+        session: { auth: args.admin.session, userId: args.admin.userId },
+        headers: { 'X-Security-Proof': proof },
+    });
+    const session = await loginAsUser({ username: existing.username, password: newPassword });
+    const accessToken = await issueCustomerAccessToken({
+        session: session.auth,
+        userId: session.user.id,
+        password: newPassword,
+    });
+    return { accessToken, username: existing.username };
+}
+
+/** Public wrapper over the login call for scripts (e.g. root login during migration). */
+export async function loginNewApiUser(args: { username: string; password: string }): Promise<{
+    auth: LoginSessionAuth;
+    user: { id: number; username: string; role: number };
+}> {
+    return loginAsUser(args);
+}
+
+// access_tokens are issued by new-api itself after a session login — portal
+// never mints them. (W2 D6 finding: PUT /api/user/ silently ignores any
+// access_token field passed by admin.) How they are issued depends on the
+// new-api version — see the "F. Dashboard access tokens" section below.
 
 /** 生成随机密码(8-20 字符,符合 new-api validator) */
 function generateUserPassword(): string {
@@ -825,8 +1099,12 @@ export interface ProvisionedCustomer {
  *   2. POST /api/user/login        portal 用刚生成的密码登录该 user,拿 session 凭据
  *                                  (≤rc.2: session cookie;rc.22+: 响应体短效 Bearer JWT)
  *                                  (顺便从响应里拿到 user.id,省掉一次 search)
- *   3. GET  /api/user/token        以 session 身份拿(并 rotate)access_token
- *                                  ⚠️ 这个端点 admin 调不动:必须用该用户自己的 session
+ *   3. 拿客户的 dashboard access_token(portal 之后 act-as 该客户用):
+ *        ≤ rc.40: GET /api/user/token   以 session 身份 rotate 出 32 字符 legacy token
+ *        ≥ rc.41: POST /api/verify (密码一次性校验) → POST /api/user/access_tokens
+ *                 发永不过期的具名 PAT(`nap_…`,scope 仅 api_key:*)
+ *                 —— GET /api/user/token 在 rc.41 已删除;见 issueCustomerAccessToken。
+ *                                  ⚠️ 两条路 admin 都调不动:必须用该用户自己的 session
  *                                     PUT /api/user/ 里的 access_token 字段是被静默忽略的
  *   4. POST /api/token/            以 customer 的 access_token 身份创建第一个 token
  *   5. GET  /api/token/            反查 token.id(create 不返回 ID)
@@ -854,11 +1132,10 @@ export async function provisionNewCustomer(args: {
     const session = await loginAsUser({ username, password });
     const userId = session.user.id;
 
-    // Step 3: ask new-api to (re)generate this user's access_token. Returns
-    // the new token; the previous value (if any) is invalidated server-side.
-    const accessToken = await call<string>('GET', '/api/user/token', undefined, undefined, {
-        session: { auth: session.auth, userId },
-    });
+    // Step 3: obtain this user's dashboard access_token (version-dependent,
+    // see section F). Legacy rotate invalidates any previous value; the
+    // rc.41+ path mints a fresh never-expiring personal access token.
+    const accessToken = await issueCustomerAccessToken({ session: session.auth, userId, password });
 
     // Step 4: create the first token. Must act-as the customer.
     //
