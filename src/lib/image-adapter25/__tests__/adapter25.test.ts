@@ -1541,6 +1541,179 @@ describe('suduma25 异步任务线(submit + poll 分支;quality 全量;图床要
     }, 20_000);
 });
 
+describe('ztyunjuan25 全量线(qimg 同后端族的第二账号池;flare OpenAI 签名、sunburst Adobe 签名)', () => {
+    const URL_Z = 'http://portal.test/image-adapter25/ztyunjuan25/v1/images/generations';
+    function pngWithCaBX(w: number, h: number, payload: string): Buffer {
+        const ihdr = Buffer.alloc(13);
+        ihdr.writeUInt32BE(w, 0);
+        ihdr.writeUInt32BE(h, 4);
+        ihdr[8] = 8;
+        ihdr[9] = 2;
+        const chunk = (type: string, data: Buffer) => {
+            const len = Buffer.alloc(4);
+            len.writeUInt32BE(data.length, 0);
+            return Buffer.concat([len, Buffer.from(type, 'latin1'), data, Buffer.alloc(4)]);
+        };
+        return Buffer.concat([
+            Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+            chunk('IHDR', ihdr),
+            chunk('caBX', Buffer.from(payload, 'latin1')),
+            chunk('IEND', Buffer.alloc(0)),
+        ]);
+    }
+
+    it('registry:ztyunjuan.com、两模型、无 qualities / transport(全量同步直转);brand 抹 ztyunjuan / ERR 码 / Firefly S3 主机 / 前缀 / adobe', () => {
+        const p = IMAGE_PROVIDERS_25.ztyunjuan25;
+        expect(p.baseUrl).toBe('https://ztyunjuan.com');
+        expect(p.models).toEqual(GPT_IMAGE_25_MODELS);
+        expect(p.qualities).toBeUndefined();
+        expect(p.transport).toBeUndefined();
+        expect(p.nativeN).toBeUndefined(); // 实测 n=2 返 1 张 → 扇出
+        expect('ztyunjuan 10k pool ERR-3B62FB7EF1 Adobe firefly'.replace(p.brand, '*')).toBe('* * * * *');
+        expect('https://pre-signed-firefly-prod.s3-accelerate.amazonaws.com/x'.replace(p.brand, '*')).toBe(
+            'https://*/x',
+        );
+        expect('Bad request to openai: Transparent background'.replace(p.brand, '')).toBe('Transparent background');
+        expect(p.baseUrl).not.toBe(IMAGE_PROVIDERS_25.qimg25.baseUrl); // 同后端族但独立渠道 / 账号池
+    });
+
+    it('5 档 + auto × 两模型原样透传、按官方档计费 —— 上游 2.0 词表 usage(xhigh/max 回 1756)被丢弃', async () => {
+        for (const [q, expectTokens] of [
+            ['low', 196],
+            ['medium', 439],
+            ['high', 1756],
+            ['xhigh', 3122],
+            ['max', 7024],
+            ['auto', 196],
+        ] as const) {
+            for (const model of GPT_IMAGE_25_MODELS) {
+                fetchMock.mockReset();
+                fetchMock.mockImplementation(
+                    async () =>
+                        new Response(
+                            JSON.stringify({
+                                created: 1,
+                                data: [{ b64_json: pngB64(1024, 1024) }],
+                                usage: { input_tokens: 11, output_tokens: 1756 },
+                            }),
+                            { status: 200, headers: { 'content-type': 'application/json' } },
+                        ),
+                );
+                const res = await handleAdapter25Image(
+                    jsonReq(URL_Z, { model, prompt: 'x', size: '1024x1024', quality: q }),
+                    'generations',
+                    'ztyunjuan25',
+                );
+                expect(res.status).toBe(200);
+                expect(String(fetchMock.mock.calls[0][0])).toBe('https://ztyunjuan.com/v1/images/generations');
+                const sent = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body));
+                expect(sent.model).toBe(model);
+                expect(sent.quality).toBe(q);
+                expect(((await res.json()) as { usage: { output_tokens: number } }).usage.output_tokens).toBe(
+                    expectTokens,
+                );
+            }
+        }
+    });
+
+    it('上游 Firefly S3 url → 拉回转 b64 不外泄;sunburst Adobe C2PA 剥、flare OpenAI 签名保留', async () => {
+        const adobe = pngWithCaBX(1024, 1024, 'Adobe Inc.');
+        const openai = pngWithCaBX(1024, 1024, 'OpenAI Media Service');
+        fetchMock.mockImplementation(async (url: string | URL) => {
+            const u = String(url);
+            if (u.endsWith('/v1/images/generations'))
+                return new Response(
+                    JSON.stringify({
+                        created: 1,
+                        data: [
+                            {
+                                url: 'https://pre-signed-firefly-prod.s3-accelerate.amazonaws.com/images/a.png?X-Amz-Expires=86400',
+                            },
+                        ],
+                    }),
+                    { status: 200, headers: { 'content-type': 'application/json' } },
+                );
+            return new Response(new Uint8Array(u.includes('a.png') ? adobe : openai), { status: 200 });
+        });
+        const r1 = await handleAdapter25Image(
+            jsonReq(URL_Z, { model: 'gpt-image-2.5-sunburst', prompt: 'x', size: '1024x1024', quality: 'low' }),
+            'generations',
+            'ztyunjuan25',
+        );
+        expect(r1.status).toBe(200);
+        const b1 = (await r1.json()) as { data: Array<{ b64_json?: string; url?: string }> };
+        expect(b1.data[0].url).toBeUndefined();
+        expect(Buffer.from(b1.data[0].b64_json!, 'base64').includes(Buffer.from('Adobe Inc.'))).toBe(false);
+
+        fetchMock.mockImplementation(async (url: string | URL) =>
+            String(url).endsWith('/v1/images/generations')
+                ? new Response(
+                      JSON.stringify({
+                          created: 1,
+                          data: [{ url: 'https://pre-signed-firefly-prod.s3-accelerate.amazonaws.com/images/b.png' }],
+                      }),
+                      {
+                          status: 200,
+                          headers: { 'content-type': 'application/json' },
+                      },
+                  )
+                : new Response(new Uint8Array(openai), { status: 200 }),
+        );
+        const r2 = await handleAdapter25Image(
+            jsonReq(URL_Z, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'low' }),
+            'generations',
+            'ztyunjuan25',
+        );
+        expect(r2.status).toBe(200);
+        const b2 = (await r2.json()) as { data: Array<{ b64_json?: string }> };
+        expect(Buffer.from(b2.data[0].b64_json!, 'base64').includes(Buffer.from('OpenAI Media Service'))).toBe(true);
+    });
+
+    it('上游 400 ERR 码(非法 quality)→ 终态 400 抹 ERR 码与品牌;上游 503 → 503 中性体', async () => {
+        fetchMock.mockResolvedValue(
+            new Response(
+                JSON.stringify({
+                    error: {
+                        message: 'Flare quality must be low, medium, high, max, or xhigh',
+                        type: 'invalid_request_error',
+                        code: 'ERR-3B62FB7EF1',
+                    },
+                }),
+                { status: 400 },
+            ),
+        );
+        const r1 = await handleAdapter25Image(
+            jsonReq(URL_Z, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'low' }),
+            'generations',
+            'ztyunjuan25',
+        );
+        expect([400, 503]).toContain(r1.status);
+        expect(await r1.text()).not.toMatch(/ztyunjuan|ERR-/i);
+
+        fetchMock.mockResolvedValue(
+            new Response(
+                JSON.stringify({
+                    error: {
+                        message: '10k pool upstream unavailable (ztyunjuan)',
+                        type: 'pool_upstream_unavailable',
+                        code: 'ERR-F1AA8DD57F',
+                    },
+                }),
+                {
+                    status: 503,
+                },
+            ),
+        );
+        const r2 = await handleAdapter25Image(
+            jsonReq(URL_Z, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'max' }),
+            'generations',
+            'ztyunjuan25',
+        );
+        expect(r2.status).toBe(503);
+        expect(await r2.text()).not.toMatch(/ztyunjuan|10k pool|ERR-/i);
+    });
+});
+
 describe('qimg25 全量线(Firefly 中转:flare OpenAI 原生签名、sunburst Adobe 签名;url 为 Firefly S3 预签名)', () => {
     const URL_Q = 'http://portal.test/image-adapter25/qimg25/v1/images/generations';
     /** 带 caBX(C2PA)块的最小 PNG。 */

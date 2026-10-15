@@ -230,6 +230,19 @@ export const IMAGE_PROVIDERS_25: Record<string, ImageProvider25> = {
             },
         },
     },
+    // ztyunjuan25:ztyunjuan.com(new-api rc.40,default 组;key sk-ddBI…)。2026-10-15 实测 2.5 23 发 22 个 200(唯一 400 是
+    // 故意发的非法 quality;10 并发仅 1 发 429):**与 qimg.cc 同一后端族**(ERR- 码、文案逐字相同、Firefly S3 预签名图床、
+    // 1000×1000 → 1008²、n=2 返 1 张、webp 忽略、usage 表用 2.0 词表:high 回 7024 / xhigh、max 回 1756),但是另一个站 = 独立账号池。
+    //  - **flare 全 OpenAI Media Service 签名 `API/gpt-image`(含 high / xhigh / max / 4K max)**,延迟单调 low 25s / medium 25s /
+    //    high 38s / xhigh 44s / max 70s、4K max 65s;透明真 RGBA;2880² / 4K 如实;edits 1024² / 1280×720 / 2048² 全通;
+    //  - sunburst = Adobe 签名(prism),low 35s / max 169s → 由 stripAdobeImageMetadataB64 剥;
+    //  - 挂牌 = 实扣:flare $0.05 / sunburst $0.07 一口价(quota_type=1),失败不计费。
+    // 【全量线(operator 2026-10-15 拍板)】不设 qualities;价值在于 qimg 之外的第二个账号池(qimg 生产一半 503 = 容量上限)。
+    ztyunjuan25: {
+        baseUrl: 'https://ztyunjuan.com',
+        brand: /\bztyunjuan\b|\b10k pool\b|\bERR-[0-9A-F]{6,}\b|pre-signed-firefly[a-z0-9.-]*|s3-accelerate[a-z0-9.-]*|bad request to openai:?\s*|\badobe\b|\bfirefly\b/gi,
+        models: GPT_IMAGE_25_MODELS,
+    },
     qimg25: {
         baseUrl: 'https://qimg.cc',
         brand: /\bqimg\b|\b10k pool\b|pre-signed-firefly[a-z0-9.-]*|s3-accelerate[a-z0-9.-]*|\badobe\b|\bfirefly\b/gi,
