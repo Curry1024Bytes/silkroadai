@@ -12,9 +12,9 @@
  * `LogStoreNotConfiguredError`,绝不回落 / 复用 `R2_BUCKET_NAME`。调用方
  * (第②步捕获层)先 `isLogStoreConfigured()` 探,再决定捕不捕。
  *
- * 账号与凭证沿用现有 R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY
- * (operator 2026-06-13 拍板)。若现有 scoped API token 只授了 image bucket,
- * 对新 bucket 会 403 —— 那时 operator 开新凭证,这里再加 R2_LOG_* override。
+ * 账号沿用 R2_ACCOUNT_ID。日志桶优先使用 R2_LOG_ACCESS_KEY_ID /
+ * R2_LOG_SECRET_ACCESS_KEY 专属凭据(仅授权私有日志桶)；未配专属凭据时兼容
+ * 原有共享 R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY。
  *
  * ── R2 键约定(定案 2026-06-13;单一事实源,第②步捕获 + admin 页直接引用)──
  *   reqlog/{yyyy}/{mm}/{dd}/{request_id}.in.json      请求体(原始 JSON)
@@ -41,7 +41,7 @@ export class LogStoreNotConfiguredError extends Error {
     constructor() {
         super(
             'R2 log store not configured: need R2_LOG_BUCKET_NAME ' +
-                '(+ shared R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY)',
+                '(+ R2_ACCOUNT_ID and log-specific or shared R2 access credentials)',
         );
         this.name = 'LogStoreNotConfiguredError';
     }
@@ -57,8 +57,12 @@ interface LogStoreEnvSnapshot {
 /** 调用时(非 import 时)读 env;不全则抛 LogStoreNotConfiguredError。 */
 function readEnv(): LogStoreEnvSnapshot {
     const accountId = process.env.R2_ACCOUNT_ID;
-    const accessKeyId = process.env.R2_ACCESS_KEY_ID;
-    const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY;
+    const logAccessKeyId = process.env.R2_LOG_ACCESS_KEY_ID;
+    const logSecretAccessKey = process.env.R2_LOG_SECRET_ACCESS_KEY;
+    // 若只配了专属凭据的一半，必须 fail closed，不得混用另一组的密钥。
+    if (Boolean(logAccessKeyId) !== Boolean(logSecretAccessKey)) throw new LogStoreNotConfiguredError();
+    const accessKeyId = logAccessKeyId || process.env.R2_ACCESS_KEY_ID;
+    const secretAccessKey = logSecretAccessKey || process.env.R2_SECRET_ACCESS_KEY;
     const bucket = process.env.R2_LOG_BUCKET_NAME;
     if (!accountId || !accessKeyId || !secretAccessKey || !bucket) {
         throw new LogStoreNotConfiguredError();
@@ -90,7 +94,7 @@ const LOG_STORE_MAX_SOCKETS = 256;
 
 function client(): S3Client {
     const env = readEnv();
-    const sig = `${env.accountId}|${env.accessKeyId}|${env.bucket}`;
+    const sig = `${env.accountId}|${env.accessKeyId}|${env.secretAccessKey}|${env.bucket}`;
     if (!_client || _envSig !== sig) {
         _client = new S3Client({
             region: 'auto',

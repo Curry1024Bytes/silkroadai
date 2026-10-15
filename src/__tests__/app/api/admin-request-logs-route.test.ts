@@ -132,6 +132,19 @@ describe('审计', () => {
         expect(res.status).toBe(200); // 元数据不含客户原文 → 不挡
     });
 
+    it('到期记录的元数据和原文都拒绝读取', async () => {
+        mockFindUnique.mockResolvedValue({
+            id: UUID,
+            input_r2_key: 'i',
+            output_r2_key: 'o',
+            retention_expires_at: new Date('2020-01-01T00:00:00Z'),
+        });
+        expect((await META(metaReq(), params())).status).toBe(404);
+        expect((await BODY(bodyReq('in'), params())).status).toBe(404);
+        expect(mockGetLogObject).not.toHaveBeenCalled();
+        expect(mockAccessCreate).not.toHaveBeenCalled();
+    });
+
     it('view_input 写 action=view_input(在返回 body 之前)', async () => {
         mockFindUnique.mockResolvedValue({ input_r2_key: 'reqlog/x.in.json', output_r2_key: 'reqlog/x.out.json' });
         mockGetLogObject.mockResolvedValue(Buffer.from('CLIENT PROMPT'));
@@ -237,9 +250,12 @@ describe('筛选 + 分页', () => {
         expect(arg.take).toBe(20);
     });
 
-    it('空筛选 → where 空对象', async () => {
+    it('空筛选仍排除已到期记录', async () => {
         await LIST(listReq());
         const arg = mockFindMany.mock.calls[0][0] as { where: Record<string, unknown> };
-        expect(arg.where).toEqual({});
+        expect(arg.where.OR).toEqual([
+            { retention_expires_at: null },
+            { retention_expires_at: { gt: expect.any(Date) } },
+        ]);
     });
 });

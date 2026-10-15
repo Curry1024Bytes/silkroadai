@@ -117,11 +117,13 @@ beforeEach(() => {
     process.env.REQUEST_LOGGING = 'on';
     delete process.env.REQUEST_LOGGING_SAMPLE_RATE;
     delete process.env.REQUEST_LOGGING_SKIP_MEDIA;
+    delete process.env.REQUEST_LOGGING_RETENTION_DAYS;
 });
 afterEach(() => {
     delete process.env.REQUEST_LOGGING;
     delete process.env.REQUEST_LOGGING_SAMPLE_RATE;
     delete process.env.REQUEST_LOGGING_SKIP_MEDIA;
+    delete process.env.REQUEST_LOGGING_RETENTION_DAYS;
 });
 
 /** Gemini native generateContent 响应(含一张内联图)。 */
@@ -206,7 +208,9 @@ describe('非流式 chat 直捕', () => {
         expect(d.output_tokens).toBe(22);
         expect(d.user_id).toBe('user-1');
         expect(d.capture_version).toBe(1);
-        expect(d.retention_expires_at).toBeNull();
+        expect((d.retention_expires_at as Date).getTime() - (d.created_at as Date).getTime()).toBe(
+            7 * 24 * 60 * 60 * 1000,
+        );
         expect(d.input_image_r2_keys).toEqual([]);
     });
 });

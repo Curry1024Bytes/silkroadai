@@ -11,6 +11,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockSend = vi.fn();
+const clientConfigs: Array<Record<string, unknown>> = [];
 
 interface CapturedCommand {
     type: string;
@@ -21,6 +22,9 @@ let captured: CapturedCommand[] = [];
 
 vi.mock('@aws-sdk/client-s3', () => {
     class S3Client {
+        constructor(config: Record<string, unknown>) {
+            clientConfigs.push(config);
+        }
         send = mockSend;
     }
     class PutObjectCommand {
@@ -62,6 +66,7 @@ beforeEach(() => {
     // 故意把公开读 image bucket 的 env 也配着 —— 断言 log 路径永远不碰它。
     process.env.R2_BUCKET_NAME = 'silkroadai-image-gen';
     captured = [];
+    clientConfigs.length = 0;
     mockSend.mockReset();
     mockSend.mockResolvedValue(undefined);
     _resetLogStoreClientForTest();
@@ -72,6 +77,8 @@ afterEach(() => {
     delete process.env.R2_ACCESS_KEY_ID;
     delete process.env.R2_SECRET_ACCESS_KEY;
     delete process.env.R2_LOG_BUCKET_NAME;
+    delete process.env.R2_LOG_ACCESS_KEY_ID;
+    delete process.env.R2_LOG_SECRET_ACCESS_KEY;
     delete process.env.R2_BUCKET_NAME;
 });
 
@@ -124,6 +131,24 @@ describe('isLogStoreConfigured', () => {
 
     it('缺共享凭证(如 R2_SECRET_ACCESS_KEY)→ false', () => {
         delete process.env.R2_SECRET_ACCESS_KEY;
+        expect(isLogStoreConfigured()).toBe(false);
+    });
+
+    it('日志专属凭据可独立于图片桶凭据使用', async () => {
+        delete process.env.R2_ACCESS_KEY_ID;
+        delete process.env.R2_SECRET_ACCESS_KEY;
+        process.env.R2_LOG_ACCESS_KEY_ID = 'log-only-id';
+        process.env.R2_LOG_SECRET_ACCESS_KEY = 'log-only-secret';
+        expect(isLogStoreConfigured()).toBe(true);
+        await putLogObject('reqlog/x.out.json', 'body');
+        expect(clientConfigs[0].credentials).toEqual({
+            accessKeyId: 'log-only-id',
+            secretAccessKey: 'log-only-secret',
+        });
+    });
+
+    it('专属凭据只填一半时不能混用共享凭据', () => {
+        process.env.R2_LOG_ACCESS_KEY_ID = 'log-only-id';
         expect(isLogStoreConfigured()).toBe(false);
     });
 });

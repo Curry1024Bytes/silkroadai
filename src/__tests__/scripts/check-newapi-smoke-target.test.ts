@@ -32,6 +32,19 @@ describe('new-api smoke target preflight', () => {
         expect(init?.body).toBeUndefined();
     });
 
+    it('accepts a real new-api status with an empty version and complete identity fields', async () => {
+        const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+            new Response(
+                JSON.stringify({
+                    success: true,
+                    data: { version: '', system_name: 'New API', start_time: 1791781317, setup: true },
+                }),
+                { headers: { 'content-type': 'application/json' } },
+            ),
+        );
+        expect((await checkNewapiSmokeTarget(target, { fetchImpl })).ok).toBe(true);
+    });
+
     it.each([
         { success: false, data: { version: 'x' } },
         { success: true, data: [] },

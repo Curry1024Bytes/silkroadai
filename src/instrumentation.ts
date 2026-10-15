@@ -96,4 +96,8 @@ export async function register() {
     // 企业实例不跑 cron(上面的门),但同库 —— 由主站实例代为清理。12h cadence。
     const { startEnterpriseReqlogCleanupScheduler } = await import('@/lib/scheduler/enterprise-reqlog-cleanup');
     startEnterpriseReqlogCleanupScheduler();
+
+    // 客户 /v1 请求日志:按记录到期时间清理 PG 元数据，R2 原文由桶生命周期清理。
+    const { startRequestLogCleanupScheduler } = await import('@/lib/scheduler/request-log-cleanup');
+    startRequestLogCleanupScheduler();
 }

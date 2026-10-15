@@ -59,17 +59,34 @@ export async function checkNewapiSmokeTarget(
             reader.releaseLock();
         }
         const body: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        const data = body && typeof body === 'object' && 'data' in body ? body.data : null;
+        const hasNamedVersion =
+            data &&
+            typeof data === 'object' &&
+            'version' in data &&
+            typeof data.version === 'string' &&
+            data.version.length > 0;
+        // 某些 new-api 构建未填 version，但仍提供完整的状态元数据；避免把合法实例误判为其他应用。
+        const hasUnversionedStatus =
+            data &&
+            typeof data === 'object' &&
+            'version' in data &&
+            data.version === '' &&
+            'system_name' in data &&
+            typeof data.system_name === 'string' &&
+            data.system_name.length > 0 &&
+            'start_time' in data &&
+            typeof data.start_time === 'number' &&
+            Number.isFinite(data.start_time) &&
+            data.start_time > 0 &&
+            'setup' in data &&
+            typeof data.setup === 'boolean';
         if (
             !body ||
             typeof body !== 'object' ||
             !('success' in body) ||
             body.success !== true ||
-            !('data' in body) ||
-            !body.data ||
-            typeof body.data !== 'object' ||
-            !('version' in body.data) ||
-            typeof body.data.version !== 'string' ||
-            !body.data.version
+            (!hasNamedVersion && !hasUnversionedStatus)
         ) {
             return { ok: false, origin, reason: '响应不符合 new-api 状态接口结构。' };
         }

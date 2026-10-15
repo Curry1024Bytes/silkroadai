@@ -33,6 +33,8 @@ export async function GET(request: NextRequest) {
     const to = sp.get('to')?.trim() || undefined;
 
     const where: Prisma.RequestLogWhereInput = {};
+    // 调度器每 12 小时清理一次；清理尚未运行时也不展示已经到期的日志。
+    where.OR = [{ retention_expires_at: null }, { retention_expires_at: { gt: new Date() } }];
     if (userId) where.user_id = userId;
     if (model) where.model = { contains: model, mode: 'insensitive' };
     if (statusCode) {

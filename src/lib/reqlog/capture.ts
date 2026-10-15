@@ -25,6 +25,7 @@ import 'server-only';
 import { randomUUID } from 'node:crypto';
 import { after, NextResponse, type NextRequest } from 'next/server';
 import { isLogStoreConfigured, putLogObject, reqlogInputKey, reqlogOutputKey } from '@/lib/r2/log-store';
+import { requestLogExpiresAt } from './retention';
 
 // 注:`@/lib/db`(prisma)与 `./identity` 在 finalizeCapture 里【懒加载】,不在
 // 模块顶层 import —— 这样 proxy route 引用本模块时不会把 prisma 拉进 off-path 的
@@ -491,7 +492,7 @@ async function finalizeCapture(cap: CaptureCtx): Promise<void> {
                 output_bytes: outBytes,
                 input_image_r2_keys: [], // 输入图字节单独拆存留后续步(brief §3 Out)
                 output_image_refs: cap.imageRefs,
-                retention_expires_at: null, // 永久(operator 2026-06-13)
+                retention_expires_at: requestLogExpiresAt(cap.createdAt),
                 capture_version: CAPTURE_VERSION,
                 created_at: cap.createdAt, // 与 R2 键日期同源
             },

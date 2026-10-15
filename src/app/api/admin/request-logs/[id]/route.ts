@@ -4,6 +4,7 @@ import { unauthorizedResponse } from '@/lib/admin-auth';
 import { resolveAdmin } from '@/lib/admin/auth';
 import { extractClientIP } from '@/lib/auth/extract-ip';
 import { writeAccessAudit } from '@/lib/reqlog/access-audit';
+import { isRequestLogExpired } from '@/lib/reqlog/retention';
 
 export const runtime = 'nodejs';
 
@@ -21,7 +22,9 @@ export async function GET(request: NextRequest, ctx: { params: Promise<{ id: str
     if (!UUID_RE.test(id)) return NextResponse.json({ error: 'not found' }, { status: 404 });
 
     const log = await prisma.requestLog.findUnique({ where: { id } });
-    if (!log) return NextResponse.json({ error: 'not found' }, { status: 404 });
+    if (!log || isRequestLogExpired(log.retention_expires_at)) {
+        return NextResponse.json({ error: 'not found' }, { status: 404 });
+    }
 
     void writeAccessAudit({
         principal: admin,

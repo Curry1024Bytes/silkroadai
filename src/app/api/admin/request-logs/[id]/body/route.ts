@@ -5,6 +5,7 @@ import { resolveAdmin } from '@/lib/admin/auth';
 import { extractClientIP } from '@/lib/auth/extract-ip';
 import { getLogObject, isLogStoreConfigured } from '@/lib/r2/log-store';
 import { BODY_MAX_BYTES, writeAccessAudit } from '@/lib/reqlog/access-audit';
+import { isRequestLogExpired } from '@/lib/reqlog/retention';
 
 export const runtime = 'nodejs';
 
@@ -34,9 +35,11 @@ export async function GET(request: NextRequest, ctx: { params: Promise<{ id: str
 
     const row = await prisma.requestLog.findUnique({
         where: { id },
-        select: { input_r2_key: true, output_r2_key: true },
+        select: { input_r2_key: true, output_r2_key: true, retention_expires_at: true },
     });
-    if (!row) return NextResponse.json({ error: 'not found' }, { status: 404 });
+    if (!row || isRequestLogExpired(row.retention_expires_at)) {
+        return NextResponse.json({ error: 'not found' }, { status: 404 });
+    }
     const key = which === 'in' ? row.input_r2_key : row.output_r2_key;
     if (!key) return NextResponse.json({ error: 'no body stored for this request' }, { status: 404 });
 

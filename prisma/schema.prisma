@@ -1254,7 +1254,7 @@ model RequestLog {
   output_image_refs   Json    @default("[]")
 
   // ── 治理 ──
-  retention_expires_at DateTime? // null = 永久(operator 2026-06-13 拍板;列留未来开关)
+  retention_expires_at DateTime? // 新日志默认 7 天；null 仅供既有历史日志保持原策略
   capture_version      Int       @default(0) // 捕获实现版本(第②步起写 ≥1,排障用)
   created_at           DateTime  @default(now())
 
@@ -1262,6 +1262,7 @@ model RequestLog {
   @@index([model, created_at])
   @@index([created_at])
   @@index([success, created_at])
+  @@index([retention_expires_at])
   @@map("request_logs")
 }
 
