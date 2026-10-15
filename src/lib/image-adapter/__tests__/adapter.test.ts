@@ -2064,6 +2064,114 @@ describe('suduma provider(异步任务 submit+poll 分支;表内尺寸;low→med
     });
 });
 
+describe('ztyunjuan provider(qimg 同后端族第二账号池,Adobe Firefly 2.0,全量 openAllTiers + 透明拒)', () => {
+    const URL_Z = 'http://portal.test/image-adapter/ztyunjuan/v1/images/generations';
+    const gen = (body: Record<string, unknown>) =>
+        handleAdapterImage(
+            jsonReq(URL_Z, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', ...body }),
+            'generations',
+            'ztyunjuan',
+        );
+
+    it('registry:ztyunjuan.com、openAllTiers、无 sizes/upstreamQuality/onlyQualities/transport、透明拒;brand 抹 ztyunjuan / ERR 码 / Firefly S3 / 前缀', () => {
+        const p = IMAGE_PROVIDERS.ztyunjuan;
+        expect(p.baseUrl).toBe('https://ztyunjuan.com');
+        expect(p.openAllTiers).toBe(true);
+        expect(p.sizes).toBeUndefined();
+        expect(p.upstreamQuality).toBeUndefined();
+        expect(p.onlyQualities).toBeUndefined();
+        expect(p.transport).toBeUndefined();
+        expect(p.noTransparentBackground).toBe(true);
+        expect('ztyunjuan 10k pool ERR-3B62FB7EF1 Adobe firefly'.replace(p.brand, '*')).toBe('* * * * *');
+        expect('https://pre-signed-firefly-prod.s3-accelerate.amazonaws.com/x'.replace(p.brand, '*')).toBe(
+            'https://*/x',
+        );
+        expect('Bad request to openai: Transparent background'.replace(p.brand, '')).toBe('Transparent background');
+        expect(p.baseUrl).not.toBe(IMAGE_PROVIDERS.qimg.baseUrl);
+    });
+
+    it('三档 × 任意尺寸全放行,quality 原样透传,按请求尺寸与档合成官方账单(上游浮动 usage 丢弃)', async () => {
+        for (const [size, q] of [
+            ['1024x1024', 'low'],
+            ['1024x1024', 'medium'],
+            ['1024x1024', 'high'],
+            ['1344x1008', 'low'],
+            ['2880x2880', 'medium'],
+            ['3840x2160', 'high'],
+        ] as const) {
+            fetchMock.mockReset();
+            okUpstream();
+            const res = await gen({ size, quality: q });
+            expect(res.status).toBe(200);
+            const [url, init] = fetchMock.mock.calls[0];
+            expect(url).toBe('https://ztyunjuan.com/v1/images/generations');
+            expect(JSON.parse(init.body as string).quality).toBe(q);
+            const [w, h] = size.split('x').map(Number);
+            const body = await res.json();
+            expect(body.quality).toBe(q);
+            expect(body.size).toBe(size);
+            expect(body.usage.output_tokens).toBe(officialOutputTokens(w, h, q));
+        }
+    });
+
+    it('size=auto 原样透传(openAllTiers),按返回图实际尺寸计费 + 回显', async () => {
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(1024, 1024) }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+        const res = await gen({ size: 'auto', quality: 'low' });
+        expect(res.status).toBe(200);
+        expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).size).toBe('auto');
+        const body = await res.json();
+        expect(body.size).toBe('1024x1024');
+        expect(body.usage.output_tokens).toBe(officialOutputTokens(1024, 1024, 'low'));
+    });
+
+    it('透明请求 → 503 让路不打上游;上游 503 10k pool → 503 中性体不泄品牌;上游 429 → 503', async () => {
+        okUpstream();
+        const r0 = await gen({ quality: 'low', background: 'transparent' });
+        expect(r0.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+
+        fetchMock.mockResolvedValue(
+            new Response(
+                JSON.stringify({
+                    error: {
+                        message: '10k pool upstream unavailable (ztyunjuan)',
+                        type: 'pool_upstream_unavailable',
+                        code: 'ERR-F1AA8DD57F',
+                    },
+                }),
+                {
+                    status: 503,
+                },
+            ),
+        );
+        const r1 = await gen({ quality: 'high' });
+        expect(r1.status).toBe(503);
+        expect(await r1.text()).not.toMatch(/ztyunjuan|10k pool|ERR-/i);
+
+        fetchMock.mockResolvedValue(
+            new Response(
+                JSON.stringify({
+                    error: {
+                        message: 'Upstream rate limit reached. Please retry later.',
+                        type: 'rate_limited',
+                        code: 'ERR-FAB341A2B1',
+                    },
+                }),
+                { status: 429 },
+            ),
+        );
+        const r2 = await gen({ quality: 'medium' });
+        expect(r2.status).toBe(503);
+        expect(await r2.text()).not.toMatch(/ztyunjuan|ERR-/i);
+    });
+});
+
 describe('yobox provider(真 OpenAI API 直通 2.0,全量 openAllTiers + 透明拒)', () => {
     const URL_YB = 'http://portal.test/image-adapter/yobox/v1/images/generations';
     const gen = (body: Record<string, unknown>) =>

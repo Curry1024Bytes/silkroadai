@@ -537,6 +537,21 @@ export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
             },
         },
     },
+    // ztyunjuan:ztyunjuan.com(new-api rc.40,default 组;key sk-ddBI…)。2026-10-15 实测 gpt-image-2 24 发 21 个 200(3 个失败
+    // 都是预期:透明 400 / xhigh 400 / 1 发 edits 429):**与 qimg.cc 同一后端族**(ERR- 码、文案逐字相同、Firefly S3 预签名图床、
+    // 1000×1000 → 1008²、n=2 返 1 张、webp 忽略),但是另一个站 = 独立账号池(qimg 生产一半 503 是容量上限,这条分摊)。
+    //  - 全 Adobe Inc. 签名(`com.adobe.details GPT Image 2`,Firefly 线)→ 由 stripAdobeImageMetadataB64 剥;
+    //  - **三档真**:1K low 25s / medium 68s / high 137–142s(usage 7024),4K low 47s / medium 65s / high 110s(13342),
+    //    4K PNG 11.9 / 13.1 / 15.8 MB 单调;1344×1008 / 2048² / 2880² / 4K 全如实;auto → 1024²;edits 通;
+    //  - 透明 → 400 `Transparent background is not supported for this model` → noTransparentBackground;
+    //  - 挂牌 = 实扣 $0.05/张一口价(quota_type=1),失败不计费。
+    // 【全量线(operator 2026-10-15 拍板)】openAllTiers,quality 原样透传,显式尺寸按请求尺寸计费(上游尺寸如实,不需 sizes)。
+    ztyunjuan: {
+        baseUrl: 'https://ztyunjuan.com',
+        brand: /\bztyunjuan\b|\b10k pool\b|\bERR-[0-9A-F]{6,}\b|pre-signed-firefly[a-z0-9.-]*|s3-accelerate[a-z0-9.-]*|bad request to openai:?\s*|\badobe\b|\bfirefly\b/gi,
+        openAllTiers: true,
+        noTransparentBackground: true,
+    },
     yobox: {
         baseUrl: 'https://max.yoboxai.com',
         brand: /\byobox\s?ai\b|\byobox\b|\bjd23kjs\b|provider api error:?\s*|\bone_hub(?:_error)?\b|\badobe\b|\bfirefly\b/gi,
