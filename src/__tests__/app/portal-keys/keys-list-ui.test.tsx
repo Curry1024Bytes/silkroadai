@@ -279,9 +279,10 @@ describe('<KeysList /> P3 — 档次 badge', () => {
 describe('<KeysList /> — alias rename affordance', () => {
     it('renders a 编辑 (rename) control per row, and no inline editor until clicked', () => {
         const html = renderToString(<KeysList initialRows={SAMPLE_ROWS} />);
-        expect(html.match(/修改别名 production/g)?.length).toBe(1);
-        expect(html.match(/修改别名 mobile-app/g)?.length).toBe(1);
-        expect((html.match(/>编辑</g) ?? []).length).toBe(2);
+        // Each key has one mobile and one desktop action; CSS shows only one.
+        expect(html.match(/修改别名 production/g)?.length).toBe(2);
+        expect(html.match(/修改别名 mobile-app/g)?.length).toBe(2);
+        expect((html.match(/>编辑</g) ?? []).length).toBe(4);
         // Editor (保存 button + 别名 input) is not in the initial markup.
         expect(html).not.toContain('>保存<');
         expect(html).not.toContain('aria-label="Key 别名"');

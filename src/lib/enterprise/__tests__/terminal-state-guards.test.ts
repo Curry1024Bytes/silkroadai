@@ -20,8 +20,8 @@ vi.mock('../billing', async (original) => ({
     ...(await original<typeof import('../billing')>()),
     chargeEnterpriseVideoTask: charge,
 }));
-vi.mock('@/lib/seedance/kuaizi-adapter', async (original) => ({
-    ...(await original<typeof import('@/lib/seedance/kuaizi-adapter')>()),
+vi.mock('@/lib/seedance/volc-adapter', async (original) => ({
+    ...(await original<typeof import('@/lib/seedance/volc-adapter')>()),
     pollVolcVideo,
 }));
 vi.mock('@/lib/seedance/customer-oss-video', () => ({ maybeStoreVideoToCustomerOss: vi.fn(async () => null) }));

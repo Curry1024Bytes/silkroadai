@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Check, Clipboard, Eye, KeyRound, Plus, Trash2 } from 'lucide-react';
+import { Check, Clipboard, Eye, KeyRound, Pencil, Plus, Trash2 } from 'lucide-react';
 // NOTE: this 'use client' island does NOT convert quota→¥ itself. quotaToCny
 // reads NEWAPI_QUOTA_PER_USD / USD_TO_CNY_RATE — server-only env that is
 // undefined in the browser bundle, so quota-units would fall back to stale
@@ -82,6 +82,13 @@ function formatLastUsed(iso: string | null): string {
  *  null (showing the masked form). */
 type RevealMap = Record<string, string | undefined>;
 type CopiedMap = Record<string, boolean>;
+
+interface EditState {
+    id: string;
+    alias: string;
+    submitting: boolean;
+    error: string | null;
+}
 
 interface CreateState {
     open: boolean;
@@ -222,16 +229,20 @@ function KeyActions({
     busy,
     revealed,
     copied,
+    editing,
     onReveal,
     onCopy,
+    onEdit,
     onRevoke,
 }: {
     row: KeyRow;
     busy: boolean;
     revealed: boolean;
     copied: boolean;
+    editing: boolean;
     onReveal: () => void;
     onCopy: () => void;
+    onEdit: () => void;
     onRevoke: () => void;
 }) {
     return (
@@ -264,6 +275,17 @@ function KeyActions({
             </button>
             <button
                 type="button"
+                onClick={onEdit}
+                disabled={busy || editing}
+                className={ACTION_BUTTON}
+                aria-label={`修改别名 ${row.key_alias}`}
+                title="修改别名"
+            >
+                <Pencil size={15} strokeWidth={1.8} aria-hidden="true" />
+                <span className="sr-only">编辑</span>
+            </button>
+            <button
+                type="button"
                 onClick={onRevoke}
                 disabled={busy}
                 className={`${ACTION_BUTTON} hover:border-status-error-border hover:bg-status-error-bg hover:text-status-error-text`}
@@ -274,6 +296,57 @@ function KeyActions({
                 <span className="sr-only">撤销</span>
             </button>
         </span>
+    );
+}
+
+function AliasEditor({
+    edit,
+    onChange,
+    onSave,
+    onCancel,
+}: {
+    edit: EditState;
+    onChange: (alias: string) => void;
+    onSave: () => void;
+    onCancel: () => void;
+}) {
+    return (
+        <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+                <input
+                    type="text"
+                    aria-label="Key 别名"
+                    value={edit.alias}
+                    maxLength={50}
+                    disabled={edit.submitting}
+                    onChange={(event) => onChange(event.target.value)}
+                    onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                            event.preventDefault();
+                            onSave();
+                        } else if (event.key === 'Escape') {
+                            event.preventDefault();
+                            onCancel();
+                        }
+                    }}
+                    className="w-40 min-w-0 rounded-md border border-portal-line bg-portal-panel px-2 py-1 text-sm text-portal-ink outline-none focus:border-navy disabled:opacity-60"
+                />
+                <Button
+                    type="button"
+                    variant="primary"
+                    size="sm"
+                    onClick={onSave}
+                    disabled={edit.submitting || !edit.alias.trim()}
+                    loading={edit.submitting}
+                >
+                    保存
+                </Button>
+                <Button type="button" variant="secondary" size="sm" onClick={onCancel} disabled={edit.submitting}>
+                    取消
+                </Button>
+            </div>
+            <FormError>{edit.error}</FormError>
+        </div>
     );
 }
 
@@ -289,6 +362,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
     const [copied, setCopied] = useState<CopiedMap>({});
     const [busyId, setBusyId] = useState<string | null>(null);
     const [globalError, setGlobalError] = useState<string | null>(null);
+    const [edit, setEdit] = useState<EditState | null>(null);
     const [create, setCreate] = useState<CreateState>({
         open: false,
         alias: '',
@@ -398,6 +472,64 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
             setGlobalError(err instanceof Error ? err.message : '网络错误');
         }
         setBusyId(null);
+    }
+
+    function startEdit(row: KeyRow) {
+        if (busyId || edit) return;
+        setGlobalError(null);
+        setEdit({ id: row.id, alias: row.key_alias, submitting: false, error: null });
+    }
+
+    function cancelEdit() {
+        if (!edit?.submitting) setEdit(null);
+    }
+
+    async function submitEdit() {
+        if (!edit || edit.submitting || busyId) return;
+        const alias = edit.alias.trim();
+        if (!alias) {
+            setEdit((current) => current && { ...current, error: '请填写 Key 别名' });
+            return;
+        }
+        const current = rows.find((row) => row.id === edit.id);
+        if (current?.key_alias === alias) {
+            setEdit(null);
+            return;
+        }
+        const id = edit.id;
+        setEdit((current) => current && { ...current, submitting: true, error: null });
+        try {
+            const response = await fetch(`/api/portal/keys/${encodeURIComponent(id)}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'same-origin',
+                body: JSON.stringify({ alias }),
+            });
+            if (!response.ok) {
+                const data = await response.json().catch(() => ({}));
+                const error =
+                    response.status === 502
+                        ? '保存失败，上游暂时不可用，请稍后重试'
+                        : typeof data?.error === 'string'
+                          ? data.error
+                          : `保存失败 (${response.status})`;
+                setEdit((current) => current && { ...current, submitting: false, error });
+                return;
+            }
+            const data = (await response.json()) as { key_alias?: string };
+            const savedAlias = typeof data.key_alias === 'string' ? data.key_alias : alias;
+            setRows((current) => current.map((row) => (row.id === id ? { ...row, key_alias: savedAlias } : row)));
+            setEdit(null);
+        } catch (error) {
+            setEdit(
+                (current) =>
+                    current && {
+                        ...current,
+                        submitting: false,
+                        error: error instanceof Error ? error.message : '网络错误',
+                    },
+            );
+        }
     }
 
     async function handleCreate(e: React.FormEvent) {
@@ -625,9 +757,23 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                                         <div className="flex items-start justify-between gap-3">
                                             <div className="min-w-0 pt-1">
                                                 <div className="flex min-w-0 flex-wrap items-center gap-2">
-                                                    <h3 className="m-0 max-w-full truncate text-sm font-semibold text-portal-ink">
-                                                        {row.key_alias}
-                                                    </h3>
+                                                    {edit?.id === row.id ? (
+                                                        <AliasEditor
+                                                            edit={edit}
+                                                            onChange={(alias) =>
+                                                                setEdit(
+                                                                    (current) =>
+                                                                        current && { ...current, alias, error: null },
+                                                                )
+                                                            }
+                                                            onSave={() => void submitEdit()}
+                                                            onCancel={cancelEdit}
+                                                        />
+                                                    ) : (
+                                                        <h3 className="m-0 max-w-full truncate text-sm font-semibold text-portal-ink">
+                                                            {row.key_alias}
+                                                        </h3>
+                                                    )}
                                                     <span className="rounded bg-portal-gold-soft px-2 py-0.5 text-[10px] font-semibold text-portal-gold">
                                                         {tierLabel(row.tier)}
                                                     </span>
@@ -649,8 +795,10 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                                                 busy={busy}
                                                 revealed={!!revealed}
                                                 copied={!!showCopied}
+                                                editing={!!edit}
                                                 onReveal={() => handleReveal(row.id)}
                                                 onCopy={() => handleCopy(row.id)}
+                                                onEdit={() => startEdit(row)}
                                                 onRevoke={() => handleRevoke(row.id)}
                                             />
                                         </div>
@@ -703,7 +851,25 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                                             <tr key={row.id} className="transition-colors hover:bg-portal-soft/70">
                                                 <td className={`${cell} ${borderClass}`}>
                                                     <div className="flex flex-wrap items-center gap-2">
-                                                        <span className="font-medium">{row.key_alias}</span>
+                                                        {edit?.id === row.id ? (
+                                                            <AliasEditor
+                                                                edit={edit}
+                                                                onChange={(alias) =>
+                                                                    setEdit(
+                                                                        (current) =>
+                                                                            current && {
+                                                                                ...current,
+                                                                                alias,
+                                                                                error: null,
+                                                                            },
+                                                                    )
+                                                                }
+                                                                onSave={() => void submitEdit()}
+                                                                onCancel={cancelEdit}
+                                                            />
+                                                        ) : (
+                                                            <span className="font-medium">{row.key_alias}</span>
+                                                        )}
                                                         <span className="rounded bg-portal-gold-soft px-2 py-0.5 text-[10px] font-semibold text-portal-gold">
                                                             {tierLabel(row.tier)}
                                                         </span>
@@ -754,8 +920,10 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                                                         busy={busy}
                                                         revealed={!!revealed}
                                                         copied={!!showCopied}
+                                                        editing={!!edit}
                                                         onReveal={() => handleReveal(row.id)}
                                                         onCopy={() => handleCopy(row.id)}
+                                                        onEdit={() => startEdit(row)}
                                                         onRevoke={() => handleRevoke(row.id)}
                                                     />
                                                 </td>

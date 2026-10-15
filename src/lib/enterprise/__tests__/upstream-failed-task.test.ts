@@ -54,7 +54,8 @@ function poll() {
 beforeEach(() => {
     vi.clearAllMocks();
     __resetPollCache();
-    vi.stubEnv('ENTERPRISE_KUAIZI_BASE_URL', 'http://upstream.test');
+    vi.stubEnv('ENTERPRISE_VOLC_UPSTREAM_BASE_URL', 'http://upstream.test');
+    vi.stubEnv('ENTERPRISE_VOLC_UPSTREAM_KEY', 'sk-inf-v1-fixture');
     task = {
         id: taskId,
         user_id: 'u1',

@@ -1,7 +1,7 @@
 /**
  * 独立门户 /v1 处理器单测:分发白名单 / 鉴权 / 余额门 / 任务落库(fail closed)/ 轮询 IDOR + 扣费。
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest, NextResponse } from 'next/server';
 
 const {
@@ -44,8 +44,8 @@ vi.mock('@/lib/seedance/cn-adapter', async (importOriginal) => {
     const mod = await importOriginal<typeof import('@/lib/seedance/cn-adapter')>();
     return { ...mod, submitVideoWithKey, pollVideoWithKey };
 });
-vi.mock('@/lib/seedance/kuaizi-adapter', async (importOriginal) => {
-    const mod = await importOriginal<typeof import('@/lib/seedance/kuaizi-adapter')>();
+vi.mock('@/lib/seedance/volc-adapter', async (importOriginal) => {
+    const mod = await importOriginal<typeof import('@/lib/seedance/volc-adapter')>();
     return { ...mod, submitVolcVideo, pollVolcVideo };
 });
 vi.mock('../billing', async (importOriginal) => {
@@ -996,15 +996,18 @@ describe('轮询', () => {
     });
 });
 
-describe('火山渠道(volc)模型档位 —— fast/mini 已下架(2026-08-19),仅 2.0 / 2.5 在售', () => {
+describe('火山渠道(volc)模型档位与临时下架名单', () => {
     beforeEach(() => {
         submitVolcVideo.mockImplementation(() =>
             Promise.resolve(NextResponse.json({ id: 'cgt-m1', task_id: 'cgt-m1', status: 'queued' })),
         );
     });
+    afterEach(() => vi.unstubAllEnvs());
 
     it.each([
         ['doubao-seedance-2.0', 'pro'],
+        ['doubao-seedance-2.0-fast', 'fast'],
+        ['doubao-seedance-2.0-mini', 'mini'],
         ['doubao-seedance-2.5', '2.5'],
     ])('%s 走 volc 适配器(不走 cn),按对客名落库', async (model) => {
         const res = await handleEnterpriseV1(
@@ -1033,11 +1036,11 @@ describe('火山渠道(volc)模型档位 —— fast/mini 已下架(2026-08-19),
         expect(submitVolcVideo).not.toHaveBeenCalled();
     });
 
-    // 2026-08-19 实测:fast/mini 的 vendor_task_id 返 tsk-…(非方舟),pro/2.5 返 cgt-…(方舟)。
-    // 本渠道卖的是原生火山 —— 这两档的片子不是火山出的,先下架。
+    // fast/mini 默认在售；运营设置临时下架名单时，两种入口都须在调用前拒绝。
     it.each(['doubao-seedance-2.0-fast', 'doubao-seedance-2.0-mini'])(
-        '%s 已下架 → 400 model_unavailable,且【不打上游】(不白花钱)',
+        '%s 被临时下架 → 400 model_unavailable,且【不打上游】(不白花钱)',
         async (model) => {
+            vi.stubEnv('ENTERPRISE_VOLC_WITHDRAWN_MODELS', 'doubao-seedance-2.0-fast,doubao-seedance-2.0-mini');
             const res = await handleEnterpriseV1(
                 req('POST', '/v1/video/generations', { model, prompt: 'x', resolution: '720p' }),
                 '/video/generations',
@@ -1053,6 +1056,7 @@ describe('火山渠道(volc)模型档位 —— fast/mini 已下架(2026-08-19),
     );
 
     it('下架对火山方舟形(ark)入口同样生效 —— 两个调用面共用同一道闸', async () => {
+        vi.stubEnv('ENTERPRISE_VOLC_WITHDRAWN_MODELS', 'doubao-seedance-2.0-mini');
         const res = await handleEnterpriseArkV3(
             req('POST', '/api/v3/contents/generations/tasks', {
                 model: 'doubao-seedance-2.0-mini',

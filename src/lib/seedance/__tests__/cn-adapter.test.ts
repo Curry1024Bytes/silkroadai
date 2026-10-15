@@ -181,7 +181,7 @@ describe('seedance-cn adapter submit', () => {
         expect(ct).toBe('image/png');
         expect((body as Buffer).subarray(0, 4).equals(PNG_SIG)).toBe(true);
         const images = submitBody().images as Array<{ url: string; role: string }>;
-        expect(images[0].url).toMatch(/^https:\/\/images\.silkroadai\.io\/seedance-cn-ref\//);
+        expect(images[0].url).toMatch(/^https:\/\/images\.llmroute\.club\/seedance-cn-ref\//);
     });
 
     it('国内档 http .bmp 直链 → 不再原样透传:拉下来转 png 后转存 R2(.png 直链仍透传)', async () => {
@@ -204,7 +204,7 @@ describe('seedance-cn adapter submit', () => {
         expect(ct).toBe('image/png');
         expect((body as Buffer).subarray(0, 4).equals(PNG_SIG)).toBe(true);
         const images = submitBody().images as Array<{ url: string; role: string }>;
-        expect(images[0].url).toMatch(/^https:\/\/images\.silkroadai\.io\/seedance-input\//);
+        expect(images[0].url).toMatch(/^https:\/\/images\.llmroute\.club\/seedance-input\//);
     });
 
     it('海外档(promax)http 输入图 → 转存 Cloudflare R2(避免海外上游跨境拉国内图超时)', async () => {
@@ -894,7 +894,7 @@ describe('国内版 2.5 480p 单档 → service-inference.ai(缺省 /v2,env 可�
             { type: 'video_url', video_url: { url: 'https://cdn.test/ref.mp4' }, role: 'reference_video' },
             {
                 type: 'audio_url',
-                audio_url: { url: expect.stringMatching(/^https:\/\/images\.silkroadai\.io\/seedance-cn-ref\//) },
+                audio_url: { url: expect.stringMatching(/^https:\/\/images\.llmroute\.club\/seedance-cn-ref\//) },
                 role: 'reference_audio',
             },
         ]);
