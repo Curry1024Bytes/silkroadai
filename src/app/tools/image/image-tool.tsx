@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useState } from 'react';
 
 type Mode = 'text' | 'edit';
+type TaskStatus = 'IDLE' | 'IN_PROGRESS' | 'SUCCESS' | 'FAILURE';
 const ASPECTS = ['auto', '1:1', '16:9', '9:16', '4:3', '3:4', '2:3', '3:2'];
+const LAST_TASK_STORAGE_KEY = 'llmroute:image-tool:last-task';
 
 /** 分辨率(size)选项按模型给 —— gpt-image / dall-e 用 WxH,Gemini 生图用 1K/2K/4K 档。
  *  用错格式会被上游 400,所以 model 变了就重置 size(见 ImageTool)。 */
@@ -37,7 +39,10 @@ function buildBody(
     image: string,
 ): string {
     const b: Record<string, unknown> = { model, prompt };
-    if (aspect && aspect !== 'auto') b.aspect_ratio = aspect;
+    // GPT 图片的像素尺寸已经决定画幅;同时传相反的比例会被代理层改成另一个尺寸。
+    if (aspect && aspect !== 'auto' && !(model.toLowerCase().includes('gpt-image') && size)) {
+        b.aspect_ratio = aspect;
+    }
     if (size) b.size = size;
     if (n > 1) b.n = n;
     if (mode === 'edit' && image) b.image = image;
@@ -61,6 +66,100 @@ export function ImageTool() {
     const [imgs, setImgs] = useState<string[]>([]);
     const [raw, setRaw] = useState('');
     const [err, setErr] = useState('');
+    const [taskId, setTaskId] = useState('');
+    const [taskStatus, setTaskStatus] = useState<TaskStatus>('IDLE');
+
+    useEffect(() => {
+        try {
+            const saved = window.localStorage.getItem(LAST_TASK_STORAGE_KEY) || '';
+            if (/^[0-9a-f]{32}$/.test(saved)) {
+                setTaskId(saved);
+                setTaskStatus('IN_PROGRESS');
+            }
+        } catch {
+            // 浏览器禁用存储时仍可在当前页面按任务号轮询。
+        }
+    }, []);
+
+    useEffect(() => {
+        if (!taskId || !key.trim()) return;
+        const controller = new AbortController();
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        let stopped = false;
+        const poll = async () => {
+            try {
+                const r = await fetch(`/api/tools/image/generate?task_id=${taskId}`, {
+                    headers: { Authorization: `Bearer ${key.trim()}` },
+                    cache: 'no-store',
+                    signal: controller.signal,
+                });
+                const text = await r.text();
+                const j = JSON.parse(text) as {
+                    code?: string;
+                    message?: string;
+                    error?: { message?: string } | string;
+                    data?: {
+                        status?: string;
+                        fail_reason?: string;
+                        data?: { data?: Array<{ url?: string; b64_json?: string }> };
+                    };
+                };
+                if (stopped) return;
+                if (r.status === 401 || j.code === 'not_found') {
+                    setErr('找不到这个任务，请输入提交时使用的同一把 API Key。');
+                    return;
+                }
+                if (!r.ok || j.code !== 'success' || !j.data) {
+                    throw new Error(
+                        (typeof j.error === 'string' ? j.error : j.error?.message) ||
+                            j.message ||
+                            `查询失败 (${r.status})`,
+                    );
+                }
+                if (j.data.status === 'SUCCESS') {
+                    const result = j.data.data;
+                    const urls = (result?.data || [])
+                        .map((d) => d.url || (d.b64_json ? `data:image/png;base64,${d.b64_json}` : ''))
+                        .filter(Boolean);
+                    setRaw(
+                        JSON.stringify(
+                            result ?? {},
+                            (_key, value: unknown) =>
+                                typeof value === 'string' &&
+                                (value.startsWith('data:image/') ||
+                                    (value.length > 1000 && /^[A-Za-z0-9+/=]+$/.test(value)))
+                                    ? `[图片数据，${value.length} 字符]`
+                                    : value,
+                            2,
+                        ),
+                    );
+                    setImgs(urls);
+                    setTaskStatus('SUCCESS');
+                    setErr(urls.length ? '' : '任务已完成，但返回里没有图片（见下方原始响应）。');
+                    return;
+                }
+                if (j.data.status === 'FAILURE') {
+                    setTaskStatus('FAILURE');
+                    setErr(j.data.fail_reason || '生图任务失败');
+                    return;
+                }
+                if (j.data.status !== 'IN_PROGRESS') throw new Error('未知的任务状态');
+                setTaskStatus('IN_PROGRESS');
+                setErr('');
+                timer = setTimeout(poll, 3000);
+            } catch (e) {
+                if (stopped) return;
+                setErr(`查询暂时中断，正在自动重试：${e instanceof Error ? e.message : String(e)}`);
+                timer = setTimeout(poll, 5000);
+            }
+        };
+        void poll();
+        return () => {
+            stopped = true;
+            if (timer) clearTimeout(timer);
+            controller.abort();
+        };
+    }, [taskId, key]);
 
     // 换模型时重置分辨率 —— 不同模型 size 格式不同(WxH vs 1K/2K/4K),留旧值会被上游 400。
     useEffect(() => {
@@ -105,7 +204,8 @@ export function ImageTool() {
         const a = document.createElement('a');
         if (url.startsWith('data:')) {
             a.href = url;
-            a.download = `${name}.png`;
+            const mime = url.slice(5, url.indexOf(';'));
+            a.download = `${name}.${mime === 'image/jpeg' ? 'jpg' : mime === 'image/webp' ? 'webp' : 'png'}`;
         } else {
             a.href = `/api/tools/image/download?url=${encodeURIComponent(url)}&name=${encodeURIComponent(name)}`;
             a.download = name; // 服务端会带 Content-Disposition,这里只作提示
@@ -116,7 +216,7 @@ export function ImageTool() {
     }, []);
 
     const generate = useCallback(async () => {
-        if (busy || !model || !prompt.trim()) return;
+        if (busy || taskStatus === 'IN_PROGRESS' || !model || !prompt.trim()) return;
         setErr('');
         setImgs([]);
         setRaw('');
@@ -141,18 +241,23 @@ export function ImageTool() {
                     (typeof e.error === 'string' ? e.error : e.error?.message) || e.message || `请求失败 (${r.status})`,
                 );
             }
-            const data = (j as { data?: Array<{ url?: string; b64_json?: string }> }).data || [];
-            const urls = data
-                .map((d) => d.url || (d.b64_json ? `data:image/png;base64,${d.b64_json}` : ''))
-                .filter(Boolean);
-            if (!urls.length) throw new Error('返回里没有图片(见下方原始响应)');
-            setImgs(urls);
+            const task = (j as { data?: { task_id?: string; status?: string } }).data;
+            if (!task?.task_id || !/^[0-9a-f]{32}$/.test(task.task_id)) {
+                throw new Error('未收到任务号，请检查原始响应');
+            }
+            try {
+                window.localStorage.setItem(LAST_TASK_STORAGE_KEY, task.task_id);
+            } catch {
+                // 本地存储不可用时，当前页面仍可继续查询。
+            }
+            setTaskId(task.task_id);
+            setTaskStatus('IN_PROGRESS');
         } catch (e) {
             setErr(String(e instanceof Error ? e.message : e));
         } finally {
             setBusy(false);
         }
-    }, [busy, model, prompt, bodyJson, key]);
+    }, [busy, taskStatus, model, prompt, bodyJson, key]);
 
     return (
         <div className="space-y-5">
@@ -185,6 +290,39 @@ export function ImageTool() {
                     Key 只用于本次调用、不保存。在「API 密钥」页用复制按钮取。
                 </p>
             </div>
+
+            {taskId && (
+                <div className="rounded-lg border border-brand-border bg-surface p-4 text-sm text-navy space-y-1">
+                    <p className="m-0">
+                        生图任务：<code className="font-mono break-all">{taskId}</code>
+                    </p>
+                    <p className="m-0 text-muted-ink">
+                        {taskStatus === 'SUCCESS'
+                            ? '已完成。刷新页面后，输入原 API Key 仍可取回结果。'
+                            : taskStatus === 'FAILURE'
+                              ? '任务失败，详情见下方。'
+                              : key.trim()
+                                ? '生成中，页面会自动查询结果；网络短暂中断时请勿重复提交。'
+                                : '输入提交时的 API Key，即可继续查询上次任务。'}
+                    </p>
+                    <button
+                        type="button"
+                        onClick={() => {
+                            try {
+                                window.localStorage.removeItem(LAST_TASK_STORAGE_KEY);
+                            } catch {
+                                // 不影响清除当前页面的任务号。
+                            }
+                            setTaskId('');
+                            setTaskStatus('IDLE');
+                            setErr('');
+                        }}
+                        className="mt-2 rounded border border-brand-border px-3 py-1 text-xs text-muted-ink"
+                    >
+                        移除本机任务记录
+                    </button>
+                </div>
+            )}
 
             {models.length > 0 && (
                 <>
@@ -238,7 +376,12 @@ export function ImageTool() {
                                 <label className="text-sm font-medium text-navy">比例</label>
                                 <select
                                     value={aspect}
-                                    onChange={(e) => setAspect(e.target.value)}
+                                    onChange={(e) => {
+                                        setAspect(e.target.value);
+                                        if (model.toLowerCase().includes('gpt-image') && e.target.value !== 'auto') {
+                                            setSize('');
+                                        }
+                                    }}
                                     className="rounded border border-brand-border bg-paper px-2 py-1.5 text-sm"
                                 >
                                     {ASPECTS.map((a) => (
@@ -252,7 +395,12 @@ export function ImageTool() {
                                 <label className="text-sm font-medium text-navy">分辨率</label>
                                 <select
                                     value={size}
-                                    onChange={(e) => setSize(e.target.value)}
+                                    onChange={(e) => {
+                                        setSize(e.target.value);
+                                        if (model.toLowerCase().includes('gpt-image') && e.target.value) {
+                                            setAspect('auto');
+                                        }
+                                    }}
                                     className="rounded border border-brand-border bg-paper px-2 py-1.5 text-sm"
                                 >
                                     {sizeOptionsFor(model).map((o) => (
@@ -308,41 +456,41 @@ export function ImageTool() {
 
                     <button
                         onClick={generate}
-                        disabled={busy || !prompt.trim()}
+                        disabled={busy || taskStatus === 'IN_PROGRESS' || !prompt.trim()}
                         className="rounded bg-brand-accent px-5 py-2 text-sm font-medium text-white disabled:opacity-50"
                     >
-                        {busy ? '生成中…' : '生成图片'}
+                        {busy ? '提交中…' : taskStatus === 'IN_PROGRESS' ? '生成中…' : '生成图片'}
                     </button>
-
-                    {imgs.length > 0 && (
-                        <div className="grid grid-cols-2 gap-3">
-                            {imgs.map((u, i) => (
-                                <div key={i} className="space-y-2">
-                                    <a href={u} target="_blank" rel="noreferrer">
-                                        <img
-                                            src={u}
-                                            alt={`result ${i + 1}`}
-                                            className="w-full rounded-lg border border-brand-border"
-                                        />
-                                    </a>
-                                    <button
-                                        onClick={() => downloadImage(u, i)}
-                                        className="w-full rounded border border-brand-border px-3 py-1.5 text-sm font-medium text-navy hover:bg-paper-muted"
-                                    >
-                                        下载图片
-                                    </button>
-                                </div>
-                            ))}
-                        </div>
-                    )}
-
-                    {raw && (
-                        <details className="rounded-lg border border-brand-border bg-surface p-3 text-xs">
-                            <summary className="cursor-pointer text-muted-ink">原始响应</summary>
-                            <pre className="mt-2 overflow-auto whitespace-pre-wrap break-all text-minor-ink">{raw}</pre>
-                        </details>
-                    )}
                 </>
+            )}
+
+            {imgs.length > 0 && (
+                <div className="grid grid-cols-2 gap-3">
+                    {imgs.map((u, i) => (
+                        <div key={i} className="space-y-2">
+                            <a href={u} target="_blank" rel="noreferrer">
+                                <img
+                                    src={u}
+                                    alt={`result ${i + 1}`}
+                                    className="w-full rounded-lg border border-brand-border"
+                                />
+                            </a>
+                            <button
+                                onClick={() => downloadImage(u, i)}
+                                className="w-full rounded border border-brand-border px-3 py-1.5 text-sm font-medium text-navy hover:bg-paper-muted"
+                            >
+                                下载图片
+                            </button>
+                        </div>
+                    ))}
+                </div>
+            )}
+
+            {raw && (
+                <details className="rounded-lg border border-brand-border bg-surface p-3 text-xs">
+                    <summary className="cursor-pointer text-muted-ink">响应详情</summary>
+                    <pre className="mt-2 overflow-auto whitespace-pre-wrap break-all text-minor-ink">{raw}</pre>
+                </details>
             )}
 
             {err && (

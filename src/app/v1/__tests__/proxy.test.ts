@@ -5040,6 +5040,39 @@ describe('/v1 proxy — 异步生图(?async=true)', () => {
         expect(rj.data[0].b64_json).toBe('');
     });
 
+    it('异步生图在平台 R2 不可用时仍落 SUCCESS,可按任务号取回内联图片', async () => {
+        mockFetch.mockResolvedValue(
+            new Response(JSON.stringify({ created: 1, model: 'gpt-image-2', data: [{ b64_json: 'QUJD' }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        mockUploadImage.mockRejectedValueOnce(new Error('R2 not configured'));
+        const submit = await POST(
+            makeReq('/images/generations?async=true', { body: { model: 'gpt-image-2', prompt: 'x' } }),
+            ctx('images', 'generations'),
+        );
+        const taskId = ((await submit.json()) as { data: { task_id: string } }).data.task_id;
+        await vi.waitFor(() => {
+            expect(
+                mockImageTaskUpdate.mock.calls.some(
+                    (call) => (call[0] as { data?: { status?: string } })?.data?.status === 'SUCCESS',
+                ),
+            ).toBe(true);
+        });
+        const success = mockImageTaskUpdate.mock.calls.find(
+            (call) => (call[0] as { data?: { status?: string } })?.data?.status === 'SUCCESS',
+        );
+        const saved = (success![0] as { data: { result_json: { data: Array<{ url: string }> } } }).data.result_json;
+        expect(saved.data[0].url).toBe('data:image/png;base64,QUJD');
+        mockImageTaskFindUnique.mockImplementation(async () =>
+            taskRow({ task_id: taskId, status: 'SUCCESS', result_json: saved, finished_at: new Date() }),
+        );
+        const query = await GET(makeReq(`/images/tasks/${taskId}`, { method: 'GET' }), ctx('images', 'tasks', taskId));
+        const result = (await query.json()) as { data: { data: { data: Array<{ url: string }> } } };
+        expect(result.data.data.data[0].url).toBe('data:image/png;base64,QUJD');
+    });
+
     it('查询 IN_PROGRESS → status=IN_PROGRESS + progress 0%', async () => {
         mockImageTaskFindUnique.mockImplementation(async () => taskRow({ status: 'IN_PROGRESS' }));
         const res = await GET(makeReq('/images/tasks/abc', { method: 'GET' }), ctx('images', 'tasks', 'abc'));

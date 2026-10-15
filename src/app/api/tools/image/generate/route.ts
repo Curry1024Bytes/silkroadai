@@ -1,11 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 /**
- * 工具 — 生图代理。转发到 portal 自己的 /v1 代理(localhost:3002),拿到代理层
- * 的 Gemini 生图翻译 / 自定义 OSS 等。body 含 image → 走 /v1/images/edits(图生图),
- * 否则 /v1/images/generations(文生图)。key 仅服务端中转、不保存。无限流。
+ * 工具 — 异步生图代理。提交立即得到 task_id,之后按 task_id 查询结果。
+ * 生图耗时可能超过 Cloudflare 空闲连接时限;底层 /v1 图片任务在服务端继续执行并落库,
+ * 页面断线后也能凭同一把 Key 取回结果。Key 仅用于本次请求,不保存。
  */
 const SELF = `http://127.0.0.1:${process.env.PORT || 3002}`;
+
+function upstreamResponse(up: Response): NextResponse {
+    return new NextResponse(up.body, {
+        status: up.status,
+        headers: { 'Content-Type': up.headers.get('content-type') || 'application/json', 'Cache-Control': 'no-store' },
+    });
+}
 
 export async function POST(req: NextRequest) {
     const auth = req.headers.get('authorization') || '';
@@ -21,7 +28,7 @@ export async function POST(req: NextRequest) {
     const path = isEdit ? '/v1/images/edits' : '/v1/images/generations';
     let up: Response;
     try {
-        up = await fetch(`${SELF}${path}`, {
+        up = await fetch(`${SELF}${path}?async=true`, {
             method: 'POST',
             headers: { Authorization: auth, 'Content-Type': 'application/json' },
             body: raw,
@@ -29,8 +36,23 @@ export async function POST(req: NextRequest) {
     } catch (e) {
         return NextResponse.json({ error: { message: `代理不可达: ${String(e)}` } }, { status: 502 });
     }
-    return new NextResponse(await up.text(), {
-        status: up.status,
-        headers: { 'Content-Type': 'application/json' },
-    });
+    return upstreamResponse(up);
+}
+
+export async function GET(req: NextRequest) {
+    const auth = req.headers.get('authorization') || '';
+    if (!auth) return NextResponse.json({ error: '缺少 API Key' }, { status: 401 });
+    const taskId = req.nextUrl.searchParams.get('task_id') || '';
+    if (!/^[0-9a-f]{32}$/.test(taskId)) {
+        return NextResponse.json({ error: '无效的任务号' }, { status: 400 });
+    }
+    try {
+        const up = await fetch(`${SELF}/v1/images/tasks/${taskId}`, {
+            headers: { Authorization: auth },
+            cache: 'no-store',
+        });
+        return upstreamResponse(up);
+    } catch (e) {
+        return NextResponse.json({ error: { message: `查询任务失败: ${String(e)}` } }, { status: 502 });
+    }
 }
