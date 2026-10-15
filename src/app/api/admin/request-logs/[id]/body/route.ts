@@ -12,8 +12,8 @@ export const runtime = 'nodejs';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * GET /api/admin/request-logs/[id]/body?which=in|out[&full=1] — 从私有 R2 log
- * bucket 读回客户【请求/响应原文】。**superadmin only,最高敏感。**
+ * GET /api/admin/request-logs/[id]/body?which=in|out[&full=1] — 从私有日志
+ * 存储读回客户【请求/响应原文】。**superadmin only,最高敏感。**
  *
  * 治理铁律(brief §6.1,fail-closed):看客户原文前**必须先写审计成功**
  * (`view_input`/`view_output`)才返回 body —— 审计写失败 → 503 拒绝展示。
@@ -52,7 +52,7 @@ export async function GET(request: NextRequest, ctx: { params: Promise<{ id: str
         return NextResponse.json({ error: 'access audit unavailable, body access denied' }, { status: 503 });
     }
 
-    // ── 从私有 bucket 读回(无公开 URL,server 端 getLogObject)──
+    // ── 从私有存储读回(无公开 URL,server 端 getLogObject)──
     if (!isLogStoreConfigured()) {
         return NextResponse.json({ error: 'log store not configured' }, { status: 503 });
     }

@@ -96,6 +96,12 @@ RUN chmod -R a+rX prisma && \
     PRISMA_PKG=$(find node_modules/.pnpm -path '*/prisma/build/index.js' -type f | head -1 | sed 's|/build/index.js||') && \
     ln -s /app/$PRISMA_PKG node_modules/prisma
 
+# Docker initializes the dedicated request-log volume from this directory.
+# Only the non-root app user can read raw customer requests and responses.
+RUN mkdir -p /app/request-logs && \
+    chown nextjs:nodejs /app/request-logs && \
+    chmod 0700 /app/request-logs
+
 USER nextjs
 EXPOSE 3002
 ENV PORT=3002

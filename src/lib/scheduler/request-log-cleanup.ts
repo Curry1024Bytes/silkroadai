@@ -1,8 +1,9 @@
-/** 客户请求日志元数据按每条记录的到期时间分批清理。R2 原文由桶的 7 天生命周期删除。 */
+/** 客户请求日志元数据按到期时间清理；本地原文独立扫描（含孤儿文件）。 */
 import * as Sentry from '@sentry/nextjs';
 import { prisma } from '@/lib/db';
+import { sweepExpiredLocalLogObjects } from '@/lib/reqlog/local-log-store';
 
-const INTERVAL_MS = 12 * 60 * 60 * 1000;
+const INTERVAL_MS = 60 * 60 * 1000;
 const BATCH_SIZE = 5000;
 const MAX_BATCHES_PER_SWEEP = 20;
 
@@ -33,6 +34,14 @@ export function startRequestLogCleanupScheduler(): void {
             console.error('[reqlog-cleanup] sweep failed:', err);
             Sentry.captureException(err, { tags: { area: 'reqlog-cleanup' } });
         });
+        sweepExpiredLocalLogObjects()
+            .then(({ deleted }) => {
+                if (deleted > 0) console.log(`[reqlog-cleanup] local objects deleted=${deleted}`);
+            })
+            .catch((err) => {
+                console.error('[reqlog-cleanup] local sweep failed:', err);
+                Sentry.captureException(err, { tags: { area: 'reqlog-local-cleanup' } });
+            });
     };
     run();
     timer = setInterval(run, INTERVAL_MS);

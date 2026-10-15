@@ -3,7 +3,7 @@
  *
  * 在 portal `/v1/*` proxy(`src/app/v1/[...path]/route.ts`)单点把客户每次
  * 调用的请求体 + 响应体 + 元数据落库:元数据 → PG `RequestLog`;大体 → 私有
- * R2 log bucket(`src/lib/r2/log-store.ts`)。
+ * 日志存储(`src/lib/r2/log-store.ts`,支持 R2 或本地持久卷)。
  *
  * ── 最高约束(brief §6)──
  * 1. 开关 off:`shouldCapture()` 返 false → `beginCapture` 返 null → proxy 走
@@ -267,7 +267,17 @@ export function captureResponse(cap: CaptureCtx, upstream: Response): NextRespon
 export function captureJsonResponse(cap: CaptureCtx, status: number, bodyObj: unknown, imageRefs: string[] = []): void {
     cap.statusCode = status;
     cap.responseContentType = 'application/json';
-    cap.responseBodyString = JSON.stringify(bodyObj);
+    const body = JSON.stringify(bodyObj);
+    const bytes = Buffer.byteLength(body);
+    const limit = maxAccumBytes();
+    if (bytes > limit) {
+        cap.responseBodyString = null;
+        cap.truncated = true;
+        cap.errorParts.push('out-too-large');
+        cap.accumBytes = bytes;
+    } else {
+        cap.responseBodyString = body;
+    }
     cap.imageRefs = imageRefs;
     scheduleFinalize(cap);
 }
@@ -433,12 +443,13 @@ export function parseUsage(
     return { inputTokens, outputTokens };
 }
 
-/** 写 R2(in/out)+ PG(RequestLog 一行)。永不抛(全程 try/catch + warn)。 */
+/** 写原文存储(in/out)+ PG(RequestLog 一行)。永不抛(全程 try/catch + warn)。 */
 async function finalizeCapture(cap: CaptureCtx): Promise<void> {
     try {
         // 懒加载 prisma + identity(见文件头注释:off-path 不拉 prisma)
         const [{ prisma }, { resolveLogIdentity }] = await Promise.all([import('@/lib/db'), import('./identity')]);
 
+        const omitOutputBody = cap.truncated && cap.responseBodyString == null && cap.chunks.length === 0;
         const outBody = cap.responseBodyString ?? decodeChunks(cap.chunks);
         cap.chunks = []; // 解码完立刻放掉原始 chunk 引用,排队等 R2 时少攥一份内存
         const outBytes = cap.responseBodyString != null ? Buffer.byteLength(cap.responseBodyString) : cap.accumBytes;
@@ -456,12 +467,14 @@ async function finalizeCapture(cap: CaptureCtx): Promise<void> {
                 cap.errorParts.push('r2-in:' + errMsg(e));
             }
         }
-        try {
-            const k = reqlogOutputKey(cap.id, cap.createdAt);
-            await putLogObject(k, outBody);
-            outKeyW = k;
-        } catch (e) {
-            cap.errorParts.push('r2-out:' + errMsg(e));
+        if (!omitOutputBody) {
+            try {
+                const k = reqlogOutputKey(cap.id, cap.createdAt);
+                await putLogObject(k, outBody);
+                outKeyW = k;
+            } catch (e) {
+                cap.errorParts.push('r2-out:' + errMsg(e));
+            }
         }
 
         const statusOk = cap.statusCode != null && cap.statusCode >= 200 && cap.statusCode < 300;

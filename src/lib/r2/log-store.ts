@@ -1,22 +1,24 @@
 /**
- * 私有 R2 log bucket helper(数据存储 Phase 1 第①步)。
+ * 客户请求日志对象存储接口。默认使用私有 R2 bucket；可显式选择
+ * REQUEST_LOG_STORE=local，写入独立的私有 Docker 持久卷。
  *
  * 请求日志大体(请求体 / 响应体 / 输入图原始字节)存这里;PG `request_logs`
  * 行(prisma RequestLog)只存元数据 + 键引用,id = request_id 即键里的同名段。
  *
  * ⚠️ 安全边界 — 与 `client.ts` 完全分离:client.ts 的 `silkroadai-image-gen`
  * 是 **public-read** bucket(靠不可猜 key);请求日志是全量客户内容
- * (prompt / 对话 / 输入图),【绝不能】落公开读 bucket。本模块只认独立 env
+ * (prompt / 对话 / 输入图),【绝不能】落公开读 bucket。R2 模式只认独立 env
  * `R2_LOG_BUCKET_NAME`(operator 在 Cloudflare 建 private bucket、不绑公开
- * 域名);env 未配置时 fail-closed —— 所有 I/O helper 抛
- * `LogStoreNotConfiguredError`,绝不回落 / 复用 `R2_BUCKET_NAME`。调用方
+ * 域名)；本地模式只认显式配置的私有目录。存储未配置时 fail-closed ——
+ * 所有 I/O helper 抛 `LogStoreNotConfiguredError`,绝不回落到公开图片桶。
+ * 调用方
  * (第②步捕获层)先 `isLogStoreConfigured()` 探,再决定捕不捕。
  *
  * 账号沿用 R2_ACCOUNT_ID。日志桶优先使用 R2_LOG_ACCESS_KEY_ID /
  * R2_LOG_SECRET_ACCESS_KEY 专属凭据(仅授权私有日志桶)；未配专属凭据时兼容
  * 原有共享 R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY。
  *
- * ── R2 键约定(定案 2026-06-13;单一事实源,第②步捕获 + admin 页直接引用)──
+ * ── 存储键约定(定案 2026-06-13;单一事实源,第②步捕获 + admin 页直接引用)──
  *   reqlog/{yyyy}/{mm}/{dd}/{request_id}.in.json      请求体(原始 JSON)
  *   reqlog/{yyyy}/{mm}/{dd}/{request_id}.out.json     响应体(非流式原样;流式为重组后的完整体)
  *   reqlog/{yyyy}/{mm}/{dd}/{request_id}.in.{i}.{ext} 第 i 张(0-based)输入图原始字节
@@ -31,20 +33,25 @@ import 'server-only';
 import { Agent as HttpsAgent } from 'node:https';
 import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { NodeHttpHandler } from '@smithy/node-http-handler';
+import { deleteLocalLogObject, getLocalLogObject, localLogRoot, putLocalLogObject } from '@/lib/reqlog/local-log-store';
 
-/** 所有请求日志对象的统一键前缀(列举 / lifecycle rule 按这个前缀圈)。 */
+/** 所有请求日志对象的统一键前缀(R2 lifecycle / 本地日期分区共用)。 */
 export const REQLOG_PREFIX = 'reqlog';
 
 /** env 未配置时所有 I/O helper 抛这个。调用方据此跳过捕获(fail-closed),
  *  绝不静默改写到别的 bucket。 */
 export class LogStoreNotConfiguredError extends Error {
     constructor() {
-        super(
-            'R2 log store not configured: need R2_LOG_BUCKET_NAME ' +
-                '(+ R2_ACCOUNT_ID and log-specific or shared R2 access credentials)',
-        );
+        super('private request-log store not configured');
         this.name = 'LogStoreNotConfiguredError';
     }
+}
+
+function backend(): 'r2' | 'local' | null {
+    const configured = process.env.REQUEST_LOG_STORE;
+    if (configured == null || configured === '' || configured === 'r2') return 'r2';
+    if (configured === 'local') return 'local';
+    return null;
 }
 
 interface LogStoreEnvSnapshot {
@@ -72,6 +79,8 @@ function readEnv(): LogStoreEnvSnapshot {
 
 /** 第②步捕获层的总开关探针:env 不全 → false(此时任何 put/get/delete 都会抛)。 */
 export function isLogStoreConfigured(): boolean {
+    if (backend() === 'local') return localLogRoot() != null;
+    if (backend() !== 'r2') return false;
     try {
         readEnv();
         return true;
@@ -145,6 +154,12 @@ export async function putLogObject(
     body: Buffer | string,
     contentType: string = 'application/json',
 ): Promise<void> {
+    if (backend() === 'local') {
+        if (!localLogRoot()) throw new LogStoreNotConfiguredError();
+        await putLocalLogObject(key, body);
+        return;
+    }
+    if (backend() !== 'r2') throw new LogStoreNotConfiguredError();
     const env = readEnv();
     await client().send(
         new PutObjectCommand({
@@ -159,6 +174,11 @@ export async function putLogObject(
 /** 读回一个日志对象(后续 admin 查看页用)。对象不存在时 SDK 抛 NoSuchKey,
  *  由调用方兜(admin 页 404)。 */
 export async function getLogObject(key: string): Promise<Buffer> {
+    if (backend() === 'local') {
+        if (!localLogRoot()) throw new LogStoreNotConfiguredError();
+        return getLocalLogObject(key);
+    }
+    if (backend() !== 'r2') throw new LogStoreNotConfiguredError();
     const env = readEnv();
     const res = await client().send(
         new GetObjectCommand({
@@ -174,6 +194,12 @@ export async function getLogObject(key: string): Promise<Buffer> {
 
 /** 删一个日志对象(未来 retention 清理用)。R2 上删不存在的对象是 no-op。 */
 export async function deleteLogObject(key: string): Promise<void> {
+    if (backend() === 'local') {
+        if (!localLogRoot()) throw new LogStoreNotConfiguredError();
+        await deleteLocalLogObject(key);
+        return;
+    }
+    if (backend() !== 'r2') throw new LogStoreNotConfiguredError();
     const env = readEnv();
     await client().send(
         new DeleteObjectCommand({

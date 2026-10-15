@@ -46,6 +46,8 @@ x-portal-api-common: &portal-api-common
     profiles: ['api-replicas']
     build: *portal-build
     env_file: .env
+    volumes:
+        - portal_reqlog_data:/app/request-logs
     environment:
         # 调度器只在主站 portal 单实例跑(instrumentation.ts 的门),
         # 副本双跑会 meter 游标竞态 / 余额提醒双发。
@@ -72,6 +74,8 @@ x-seedance-portal-common: &seedance-portal-common
     profiles: ['seedance']
     build: *portal-build
     env_file: .env
+    volumes:
+        - portal_reqlog_data:/app/request-logs
     environment:
         PORTAL_FLAVOR: seedance-enterprise
         PORTAL_SCHEDULERS: 'off'
@@ -103,6 +107,7 @@ services:
         # verifier (pinned RSA key or trusted CA). Never store DB passwords here.
         volumes:
             - ./deploy/runtime/newapi-pricing:/app/newapi-pricing:ro
+            - portal_reqlog_data:/app/request-logs
         ports:
             # Bind to loopback only — public traffic must go through the host
             # Caddy/nginx reverse proxy, never hit the container port directly.
@@ -276,6 +281,8 @@ services:
 volumes:
     portal_pg_data:
         name: silkroadai-portal-pg-data
+    portal_reqlog_data:
+        name: silkroadai-portal-reqlog-data
 
 networks:
     silkroadai-portal-net:

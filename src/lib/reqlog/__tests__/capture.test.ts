@@ -256,6 +256,7 @@ describe('large request body cap (REQUEST_LOGGING_MAX_INPUT_BYTES)', () => {
     });
     afterEach(() => {
         delete process.env.REQUEST_LOGGING_MAX_INPUT_BYTES;
+        delete process.env.REQUEST_LOGGING_MAX_OUTPUT_BYTES;
     });
 
     it('keeps the body when under the limit', () => {
@@ -313,5 +314,18 @@ describe('large request body cap (REQUEST_LOGGING_MAX_INPUT_BYTES)', () => {
         expect(row.input_bytes).toBe(5000);
         expect(row.model).toBe('claude-opus-4-8');
         expect(String(row.error)).toContain('in-too-large');
+    });
+
+    it('oversized direct JSON response keeps metadata but does not retain its large body', async () => {
+        process.env.REQUEST_LOGGING_MAX_OUTPUT_BYTES = '10';
+        const cap = newCap();
+        captureJsonResponse(cap, 200, { image: 'x'.repeat(1000) });
+        await __flushReqlogForTest();
+
+        expect(cap.responseBodyString).toBeNull();
+        expect(prismaCreates).toHaveLength(1);
+        expect(prismaCreates[0].output_bytes).toBeGreaterThan(1000);
+        expect(prismaCreates[0].output_r2_key).toBeNull();
+        expect(String(prismaCreates[0].error)).toContain('out-too-large');
     });
 });
