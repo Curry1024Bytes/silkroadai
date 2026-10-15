@@ -5,7 +5,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { NextRequest } from 'next/server';
-import { PIXELLELABS_SIZES, IMAGE_PROVIDERS } from '@/lib/image-adapter/providers';
+import { PIXELLELABS_SIZES, SUDUMA_SIZES, IMAGE_PROVIDERS } from '@/lib/image-adapter/providers';
 import {
     handleAdapterImage,
     imageDimensions,
@@ -1839,6 +1839,228 @@ describe('qimg provider(qimg.cc Adobe Firefly 中转 2.0,全量 openAllTiers + �
         const r3 = await gen({ quality: 'medium' });
         expect(r3.status).toBe(503);
         expect(await r3.text()).not.toMatch(/qimg|10k pool/i);
+    });
+});
+
+describe('suduma provider(异步任务 submit+poll 分支;表内尺寸;low→medium 上游映射;假透明拒)', () => {
+    const URL_S = 'http://portal.test/image-adapter/suduma/v1/images/generations';
+    const URL_SE = 'http://portal.test/image-adapter/suduma/v1/images/edits';
+    const SUBMIT = 'https://www.suduma.com/v1/images/generations';
+    const IMG_URL = 'https://img.911339.xyz/i/abc123';
+    const transport = IMAGE_PROVIDERS.suduma.transport!;
+    const origInterval = transport.pollIntervalMs;
+    const origMaxWait = transport.maxWaitMs;
+    beforeEach(() => {
+        transport.pollIntervalMs = 1;
+    });
+    afterEach(() => {
+        transport.pollIntervalMs = origInterval;
+        transport.maxWaitMs = origMaxWait;
+    });
+    type Call = { url: string; init?: RequestInit };
+    const calls = (): Call[] => fetchMock.mock.calls.map((c) => ({ url: String(c[0]), init: c[1] as RequestInit }));
+    const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+    function scriptUpstream(opts: { w?: number; h?: number; pollsBeforeDone?: number; rid?: string } = {}) {
+        const { w = 1024, h = 1024, pollsBeforeDone = 1, rid = 'req_x1' } = opts;
+        let polls = 0;
+        fetchMock.mockImplementation(async (url: string | URL, init?: RequestInit) => {
+            const u = String(url);
+            if (u === SUBMIT && init?.method === 'POST')
+                return json({ taskOrderId: '21105', requestId: rid, status: 'created' });
+            if (u === `https://www.suduma.com/v1/tasks/${rid}`) {
+                polls++;
+                if (polls <= pollsBeforeDone) return json({ id: rid, status: 'running', progress: 50, data: [] });
+                return json({
+                    id: rid,
+                    status: 'succeeded',
+                    progress: 100,
+                    error: '',
+                    data: [{ type: 'image', url: IMG_URL }],
+                });
+            }
+            if (u === IMG_URL) return new Response(Buffer.from(pngB64(w, h), 'base64'), { status: 200 });
+            throw new Error('unexpected fetch ' + u);
+        });
+    }
+    const gen = (body: Record<string, unknown>) =>
+        handleAdapterImage(
+            jsonReq(URL_S, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', ...body }),
+            'generations',
+            'suduma',
+        );
+
+    it('registry:www.suduma.com、async-task transport、openAllTiers + sizes 白名单 + low→medium + 透明拒;brand 抹 suduma / 图床域 / 任务失败文案;其他 provider 无 transport', () => {
+        const p = IMAGE_PROVIDERS.suduma;
+        expect(p.baseUrl).toBe('https://www.suduma.com');
+        expect(p.openAllTiers).toBe(true);
+        expect(p.sizes).toBe(SUDUMA_SIZES);
+        expect(SUDUMA_SIZES).toEqual(['1024x1024', '1536x1024', '1024x1536', '2048x2048', '2048x1152', '1280x720']);
+        expect(p.upstreamQuality).toEqual({ low: 'medium' });
+        expect(p.noTransparentBackground).toBe(true);
+        expect(p.transport).toMatchObject({ kind: 'async-task', pollPath: '/v1/tasks/{id}', idField: 'requestId' });
+        expect(p.transport!.maxWaitMs).toBeLessThanOrEqual(540_000);
+        expect(p.transport!.imageFetchHeaders!['user-agent']).toMatch(/Mozilla/);
+        expect('suduma img.911339.xyz provider task failed provider request invalid'.replace(p.brand, '*')).toBe(
+            '* * * *',
+        );
+        for (const [name, prov] of Object.entries(IMAGE_PROVIDERS))
+            if (name !== 'suduma') expect(prov.transport).toBeUndefined();
+    });
+
+    it('generations low:JSON 提交(quality 映射成 medium、无 n)→ 轮询 running→succeeded → 图床拉回(带 UA)→ 回显 low、按 low 官方计费,url 不外泄', async () => {
+        scriptUpstream({ pollsBeforeDone: 2 });
+        const res = await gen({ quality: 'low' });
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data).toHaveLength(1);
+        expect(body.data[0].b64_json).toBeTruthy();
+        expect(body.data[0].url).toBeUndefined();
+        expect(body.quality).toBe('low');
+        expect(body.usage.output_tokens).toBe(196);
+        const c = calls();
+        expect(c.map((x) => x.url)).toEqual([
+            SUBMIT,
+            'https://www.suduma.com/v1/tasks/req_x1',
+            'https://www.suduma.com/v1/tasks/req_x1',
+            'https://www.suduma.com/v1/tasks/req_x1',
+            IMG_URL,
+        ]);
+        const sent = JSON.parse(String(c[0].init!.body));
+        expect(sent).toMatchObject({ model: 'gpt-image-2', prompt: 'x', size: '1024x1024', quality: 'medium' });
+        expect(sent.n).toBeUndefined();
+        expect(sent.response_format).toBeUndefined();
+        expect((c[0].init!.headers as Record<string, string>)['authorization']).toBe('Bearer sk-upstream-test');
+        expect((c[0].init!.headers as Record<string, string>)['content-type']).toBe('application/json');
+        expect((c[4].init!.headers as Record<string, string>)['user-agent']).toMatch(/Mozilla/);
+    });
+
+    it.each([
+        [{}, 'medium', 'low', 196],
+        [{ quality: 'medium' }, 'medium', 'medium', 1756],
+        [{ quality: 'HIGH' }, 'high', 'high', 7024],
+        [{ quality: 'high', size: '2048x1152' }, 'high', 'high', officialOutputTokens(2048, 1152, 'high')],
+    ])('%j → 提交 quality=%s,回显 %s,计费 %i(表内尺寸放行)', async (req, sentQ, echoQ, tokens) => {
+        const [w, h] = String((req as { size?: string }).size ?? '1024x1024')
+            .split('x')
+            .map(Number);
+        scriptUpstream({ w, h });
+        const res = await gen(req);
+        expect(res.status).toBe(200);
+        expect(JSON.parse(String(calls()[0].init!.body)).quality).toBe(sentQ);
+        const body = await res.json();
+        expect(body.quality).toBe(echoQ);
+        expect(body.usage.output_tokens).toBe(tokens);
+    });
+
+    it('表外尺寸(2880² / 4K / 1344×1008 / auto)→ 503 让路不提交;透明 → 503 不提交', async () => {
+        for (const req of [
+            { size: '2880x2880' },
+            { size: '3840x2160', quality: 'high' },
+            { size: '1344x1008' },
+            { size: 'auto' },
+            { background: 'transparent' },
+        ]) {
+            fetchMock.mockReset();
+            scriptUpstream();
+            const res = await gen({ quality: 'medium', ...req });
+            expect(res.status).toBe(503);
+            expect(fetchMock).not.toHaveBeenCalled();
+        }
+    });
+
+    it('edits(multipart 输入图)→ 仍 POST 提交路径,参考图转 data URL 塞 JSON `image` 数组', async () => {
+        scriptUpstream();
+        const res = await handleAdapterImage(
+            formReq(URL_SE, { model: 'gpt-image-2', prompt: 'watercolor', size: '1280x720', quality: 'medium' }, [
+                TINY_PNG,
+            ]),
+            'edits',
+            'suduma',
+        );
+        expect(res.status).toBe(200);
+        const c = calls();
+        expect(c[0].url).toBe(SUBMIT);
+        const sent = JSON.parse(String(c[0].init!.body));
+        expect(sent.image).toEqual(['data:image/png;base64,' + TINY_PNG.toString('base64')]);
+        expect(sent.size).toBe('1280x720');
+    });
+
+    it('n=2 → 扇出两次独立提交(各自任务 id),拿两张', async () => {
+        let seq = 0;
+        const done = new Map<string, number>();
+        fetchMock.mockImplementation(async (url: string | URL, init?: RequestInit) => {
+            const u = String(url);
+            if (u === SUBMIT && init?.method === 'POST') {
+                expect(JSON.parse(String(init.body)).n).toBeUndefined();
+                return json({ requestId: `req_${++seq}`, status: 'created' });
+            }
+            const m = u.match(/\/v1\/tasks\/(req_\d+)$/);
+            if (m) {
+                const k = m[1];
+                done.set(k, (done.get(k) ?? 0) + 1);
+                return done.get(k)! < 2
+                    ? json({ id: k, status: 'running', data: [] })
+                    : json({ id: k, status: 'succeeded', data: [{ type: 'image', url: `${IMG_URL}/${k}` }] });
+            }
+            if (u.startsWith(IMG_URL)) return new Response(Buffer.from(pngB64(1024, 1024), 'base64'), { status: 200 });
+            throw new Error('unexpected fetch ' + u);
+        });
+        const res = await gen({ quality: 'medium', n: 2 });
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data).toHaveLength(2);
+        expect(seq).toBe(2);
+    });
+
+    it('任务 failed(provider request invalid / task failed)→ 503 中性体不泄文案;failed 带安全措辞 → 400 终态;提交 400「没有匹配的价格」→ 503;轮询 404 → 503 不重试;超 maxWaitMs → 503', async () => {
+        for (const err of ['provider request invalid', 'provider task failed']) {
+            fetchMock.mockReset();
+            fetchMock.mockImplementation(async (url: string | URL, init?: RequestInit) =>
+                String(url) === SUBMIT && init?.method === 'POST'
+                    ? json({ requestId: 'req_f', status: 'created' })
+                    : json({ id: 'req_f', status: 'failed', error: err, data: [] }),
+            );
+            const res = await gen({ quality: 'medium' });
+            expect(res.status).toBe(503);
+            const t = await res.text();
+            expect(t).not.toMatch(/suduma|provider (task failed|request invalid)/i);
+        }
+        fetchMock.mockReset();
+        fetchMock.mockImplementation(async (url: string | URL, init?: RequestInit) =>
+            String(url) === SUBMIT && init?.method === 'POST'
+                ? json({ requestId: 'req_s', status: 'created' })
+                : json({ id: 'req_s', status: 'failed', error: 'image_safety: blocked', data: [] }),
+        );
+        let res = await gen({ quality: 'medium' });
+        expect(res.status).toBe(400);
+
+        fetchMock.mockReset();
+        fetchMock.mockImplementation(async () => json({ error: '没有匹配的价格' }, 400));
+        res = await gen({ quality: 'medium' });
+        expect(res.status).toBe(503);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+
+        fetchMock.mockReset();
+        fetchMock.mockImplementation(async (url: string | URL, init?: RequestInit) =>
+            String(url) === SUBMIT && init?.method === 'POST'
+                ? json({ requestId: 'req_404', status: 'created' })
+                : json({ error: '任务不存在' }, 404),
+        );
+        res = await gen({ quality: 'medium' });
+        expect(res.status).toBe(503);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+
+        fetchMock.mockReset();
+        transport.maxWaitMs = 20;
+        fetchMock.mockImplementation(async (url: string | URL, init?: RequestInit) =>
+            String(url) === SUBMIT && init?.method === 'POST'
+                ? json({ requestId: 'req_slow', status: 'created' })
+                : json({ id: 'req_slow', status: 'running', data: [] }),
+        );
+        res = await gen({ quality: 'medium' });
+        expect(res.status).toBe(503);
+        expect(await res.text()).not.toMatch(/suduma/i);
     });
 });
 

@@ -53,6 +53,27 @@ export interface ImageProvider {
      *  决定照常承接」的线用(pixellelabs:high 在上游静默等于 medium,2026-10-09 operator 拍板 high 用 medium
      *  替代、响应仍显示 high)。缺省 = 原样透传。 */
     upstreamQuality?: Partial<Record<'low' | 'medium' | 'high', 'low' | 'medium' | 'high'>>;
+    /** 上游不是 OpenAI 同步形而是【异步任务】(提交拿任务 id → 轮询取图)时声明;缺省 = 同步直转。
+     *  只影响声明了它的 provider:adapter.callUpstreamOnce 看到该字段才走 submit+poll 分支,其余 provider 路径不变。
+     *  (与 @/lib/image-adapter25 的同名接口语义一致,两模块独立不共享。) */
+    transport?: AsyncTaskTransport;
+}
+
+/** 异步任务形上游的传输描述(2026-10-15 为 suduma 引入)。提交与轮询都带 new-api 透传来的 Authorization。 */
+export interface AsyncTaskTransport {
+    kind: 'async-task';
+    /** 提交路径(POST JSON,参考图/蒙版以 data URL 塞进 body `image` / `mask`),缺省 /v1/images/generations。 */
+    submitPath?: string;
+    /** 轮询路径,`{id}` 占位符替换成提交响应里的任务 id。 */
+    pollPath: string;
+    /** 提交响应里任务 id 的字段名。 */
+    idField: string;
+    /** 轮询间隔(ms)。 */
+    pollIntervalMs: number;
+    /** 从提交起算的最长等待(ms),超时视为上游失败 → failover。要留在 Caddy :3010 600s 之下。 */
+    maxWaitMs: number;
+    /** 拉取结果图 url 时附加的请求头(如图床要求浏览器 UA,否则 403)。 */
+    imageFetchHeaders?: Record<string, string>;
 }
 
 /** we-token 系上游的单次调用超时(见 ImageProvider.upstreamTimeoutMs)。 */
@@ -61,6 +82,17 @@ export const WETOKEN_UPSTREAM_TIMEOUT_MS = 300_000;
 /** pixellelabs 厂商确认的全部支持尺寸(2026-10-09 operator 与上游沟通所得):10 比例 × 1K/2K/4K。
  *  每一条都在官方约束内(16 倍数、最长边 ≤3840、比例 ≤3:1、像素 ∈ [655,360, 8,294,400]),但官方是约束集不是
  *  枚举表,这里只是官方合法尺寸的一个 30 点子集。 */
+/** suduma 2.0 实测【如实交付】的尺寸(2026-10-15):1024² / 1536×1024 / 1024×1536 / 2048² / 1280×720(edits)+ 文档列出的
+ *  2048×1152(4K 请求被降到的原生尺寸)。其余(1344×1008 / 2880² / 4K / 1000×1000 / auto)上游静默降级或改尺寸 → 让路。 */
+export const SUDUMA_SIZES: ReadonlyArray<string> = [
+    '1024x1024',
+    '1536x1024',
+    '1024x1536',
+    '2048x2048',
+    '2048x1152',
+    '1280x720',
+];
+
 export const PIXELLELABS_SIZES: ReadonlyArray<string> = [
     // 3:1 / 21:9 / 16:9
     '1536x512',
@@ -473,6 +505,37 @@ export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
         brand: /\bqimg\b|\b10k pool\b|\bERR-[0-9A-F]{6,}\b|pre-signed-firefly[a-z0-9.-]*|s3-accelerate[a-z0-9.-]*|bad request to openai:?\s*|\badobe\b|\bfirefly\b/gi,
         openAllTiers: true,
         noTransparentBackground: true,
+    },
+    // suduma:www.suduma.com(非 new-api,自研站;key sk-21fb…;与 2.5 适配器的 suduma25 同站同 key)。2026-10-15 实测
+    // gpt-image-2 23 发 19 个 200:
+    //  - 【接口是异步任务】POST /v1/images/generations(JSON)→ `{requestId}`,轮询 GET /v1/tasks/{requestId} →
+    //    `{status, data:[{type:"image", url}]}`;无 usage / 无 quality 回显;edits 只是别名,参考图走 JSON `image`(data URL
+    //    数组,最多 16 张)、蒙版 `mask`;图床 img.911339.xyz 不带浏览器 UA 回 403;
+    //  - **quality 只认 medium / high**(low / 缺省 → 400「没有匹配的价格」;xhigh 同)→ upstreamQuality low→medium:客户要 low
+    //    上游交 medium、按 low 计费(operator 2026-10-15 拍板 2.0 也接且档位放开;代价是 low 请求付上游 medium 价);
+    //  - **全部无 C2PA 签名**(PNG 只有 IHDR/IDAT/IEND),尺寸封顶 2K:1344×1008→1024×768、2880²→2048²、4K→2048×1152、
+    //    1000×1000→1024² —— 2.0 适配器显式尺寸按【请求】尺寸计费,放行会收 4K 的钱交 2K 的图 → sizes 白名单只放实测如实
+    //    的尺寸(+ 文档列出的 2048×1152),表外(含 auto)503 让路;
+    //  - 透明返非 RGBA(假透明)→ noTransparentBackground;webp 被忽略;n=2 返 1 张(适配器扇出);
+    //    延迟 medium 59–84s / high 85–91s;size=auto 偶发 `provider task failed`;无账单接口价格待商家报。
+    suduma: {
+        baseUrl: 'https://www.suduma.com',
+        brand: /\bsuduma\b|\b911339\b|img\.911339\.xyz|provider (?:task failed|request invalid)|\badobe\b|\bfirefly\b/gi,
+        openAllTiers: true,
+        sizes: SUDUMA_SIZES,
+        upstreamQuality: { low: 'medium' },
+        noTransparentBackground: true,
+        transport: {
+            kind: 'async-task',
+            submitPath: '/v1/images/generations',
+            pollPath: '/v1/tasks/{id}',
+            idField: 'requestId',
+            pollIntervalMs: 4_000,
+            maxWaitMs: 300_000, // 实测 edits 最长 134s;留在 Caddy :3010 600s 之下
+            imageFetchHeaders: {
+                'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/128 Safari/537.36',
+            },
+        },
     },
     yobox: {
         baseUrl: 'https://max.yoboxai.com',
