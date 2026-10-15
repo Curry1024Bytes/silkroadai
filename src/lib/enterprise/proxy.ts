@@ -93,7 +93,7 @@ export const ENTERPRISE_MODELS: Record<string, SeedanceVariant> = {
     'seedance-2-0-promax': 'promax',
     'seedance-2-0-promax-fast': 'promax-fast',
     'seedance-2-0-promax-mini': 'promax-mini',
-    // 海外版 proMax seedance 2.5(2026-08-08):intl 新代,仅 720p/1080p,费率独立(按原价挂牌)
+    // 海外版 proMax seedance 2.5(2026-08-08):费率独立(按原价挂牌);2026-10-15 起 480p/720p/1080p
     'seedance-2-5-promax': 'promax-2.5',
 };
 
@@ -178,7 +178,8 @@ function resolveEnterpriseModel(
     if (!(RESOLUTIONS as readonly string[]).includes(resRaw)) {
         return { error: errJson(400, 'invalid_request', 'resolution 仅支持 480p / 720p / 1080p / 4k') };
     }
-    // 海外版(global)上游无 480p(intl 三变体实测均拒,2026-08-06);国内/火山有 480p,proMax 2026-08-08 起也无
+    // 海外版(global)上游无 480p(intl 三变体实测均拒,2026-08-06);国内/火山有 480p;
+    // proMax 2026-10-15 换 service-inference.ai 后四档全有 480p(2026-08-08~10-15 artsdance intl 时期曾无)
     if (region === 'global' && resRaw === '480p') {
         return {
             error: errJson(
@@ -188,23 +189,13 @@ function resolveEnterpriseModel(
             ),
         };
     }
-    // proMax 上游 2026-08-08 全档迁到 artsdance intl,不支持 480p(pro=720p/1080p/4k,fast/mini=仅720p)
-    if (region === 'promax' && resRaw === '480p') {
-        return {
-            error: errJson(
-                400,
-                'invalid_request',
-                `${rawModel} 无 480p 档(proMax pro 支持 720p / 1080p / 4k,fast/mini 仅 720p)`,
-            ),
-        };
-    }
     if (resRaw === '4k' && variant !== 'pro' && variant !== 'promax') {
         const tiers = region === 'global' ? '720p / 1080p' : '480p / 720p / 1080p';
         return { error: errJson(400, 'invalid_request', `${rawModel} 无 4k 档(resolution 仅 ${tiers})`) };
     }
-    // proMax fast/mini(上游 artsdance intl,2026-08-08)仅 720p
-    if ((variant === 'promax-fast' || variant === 'promax-mini') && resRaw !== '720p') {
-        return { error: errJson(400, 'invalid_request', `${rawModel} 仅支持 720p 档`) };
+    // proMax fast/mini:上游(service-inference.ai dreamina fast/mini)仅 480p/720p
+    if ((variant === 'promax-fast' || variant === 'promax-mini') && resRaw !== '720p' && resRaw !== '480p') {
+        return { error: errJson(400, 'invalid_request', `${rawModel} 仅支持 480p / 720p 档`) };
     }
     // seedance 2.5(cn):480p / 720p / 1080p(480p 走原版 260628 上游,2026-09-07 开档;4k 由上方通用门拦)
     const hasRefs =

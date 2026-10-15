@@ -72,8 +72,10 @@ const OFFICIAL_CNY_PER_M: Record<
         '480p': { noVideo: 34, withVideo: 20.4 }, // 官方挂牌(与 720p 同费率)
         '720p': { noVideo: 34, withVideo: 20.4 }, // 官方挂牌
     },
-    // 海外版 proMax seedance 2.5(2026-08-08,上游 artsdance2-5-intl):仅 720p/1080p,按原价(划线价)挂牌。
+    // 海外版 proMax seedance 2.5(2026-08-08):按原价(划线价)挂牌;2026-10-15 换 service-inference.ai 上游后
+    // 加 480p(与 720p 同费率,沿用全线 480p 口径)。
     'promax-2.5': {
+        '480p': { noVideo: 72.76, withVideo: 43.52 }, // 官方挂牌(与 720p 同费率)
         '720p': { noVideo: 72.76, withVideo: 43.52 }, // 官方挂牌(原价)
         '1080p': { noVideo: 80.24, withVideo: 47.94 }, // 官方挂牌(原价)
     },

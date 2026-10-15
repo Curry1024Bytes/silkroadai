@@ -1392,6 +1392,9 @@ model VolcIdMap {
   upstream_id String
   kind        String
   user_id     String?  @db.Uuid
+  /// service-inference.ai 任务建在哪个 API 版本下('v1' | 'v2')。/v1 与 /v2 的任务互不可见
+  /// (2026-09-27 切版本孤儿化一条在途任务),轮询必须按创建版本打;NULL = 存量行(按配置版 + 404 回退另一版)。
+  api_version String?
   created_at  DateTime @default(now())
 
   @@index([upstream_id])

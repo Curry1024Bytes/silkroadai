@@ -317,9 +317,10 @@ describe('火山渠道(volc)路由', () => {
         });
     });
 
-    it('promax-fast 仅 720p(上游 artsdance intl,2026-08-08):720p 放行长名 seedance2.0-promax-fast-720p;480p/1080p → 400', async () => {
-        submitVideoWithKey.mockResolvedValue(
-            NextResponse.json({ id: 'cgt-pm720', task_id: 'cgt-pm720', status: 'queued' }),
+    it('promax-fast 480p/720p(2026-10-15 svcinf dreamina 上游):720p → seedance2.0-promax-fast-720p、480p → -480p;1080p → 400', async () => {
+        // 同一测试提交两次,Response body 只能读一次 → 每次调用新建响应
+        submitVideoWithKey.mockImplementation(() =>
+            Promise.resolve(NextResponse.json({ id: 'cgt-pm720', task_id: 'cgt-pm720', status: 'queued' })),
         );
         const ok = await handleEnterpriseV1(
             req('POST', '/v1/video/generations', {
@@ -334,13 +335,31 @@ describe('火山渠道(volc)路由', () => {
             expect.objectContaining({ model: 'seedance2.0-promax-fast-720p' }),
             expect.any(String),
         );
-        for (const resolution of ['480p', '1080p']) {
-            const bad = await handleEnterpriseV1(
-                req('POST', '/v1/video/generations', { model: 'seedance-2-0-promax-fast', prompt: 'x', resolution }),
-                '/video/generations',
-            );
-            expect(bad.status).toBe(400);
-        }
+        submitVideoWithKey.mockClear();
+        const ok480 = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', {
+                model: 'seedance-2-0-promax-fast',
+                prompt: 'x',
+                resolution: '480p',
+            }),
+            '/video/generations',
+        );
+        expect(ok480.status).toBe(200);
+        expect(submitVideoWithKey).toHaveBeenCalledWith(
+            expect.objectContaining({ model: 'seedance2.0-promax-fast-480p' }),
+            expect.any(String),
+        );
+        submitVideoWithKey.mockClear();
+        const bad = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', {
+                model: 'seedance-2-0-promax-fast',
+                prompt: 'x',
+                resolution: '1080p',
+            }),
+            '/video/generations',
+        );
+        expect(bad.status).toBe(400);
+        expect(submitVideoWithKey).not.toHaveBeenCalled();
     });
 
     it('seedance-2-5(国内版新代):720p → 长名 seedance2.5-720p,任务行存短名', async () => {
@@ -848,17 +867,20 @@ describe('归一短名(2026-07-20)', () => {
             expect.objectContaining({ model: 'seedance2.0-promax-4k' }),
             'Bearer sk-upstream-u1',
         );
-        // promax(pro)480p → 400(上游 artsdance intl 不支持,2026-08-08),不打上游
+        // promax(pro)480p → seedance2.0-promax-480p(2026-10-15 svcinf dreamina 上游重开 480p)
         submitVideoWithKey.mockClear();
         res = await handleEnterpriseV1(
             req('POST', '/v1/video/generations', { model: 'seedance-2-0-promax', prompt: 'x', resolution: '480p' }),
             '/video/generations',
         );
-        expect(res.status).toBe(400);
-        expect(submitVideoWithKey).not.toHaveBeenCalled();
+        expect(res.status).toBe(200);
+        expect(submitVideoWithKey).toHaveBeenCalledWith(
+            expect.objectContaining({ model: 'seedance2.0-promax-480p' }),
+            'Bearer sk-upstream-u1',
+        );
     });
 
-    it('proMax 2.5(2026-08-08):720p/1080p → seedance2.5-promax-{res};480p/4k → 400', async () => {
+    it('proMax 2.5:480p/720p/1080p → seedance2.5-promax-{res}(480p 2026-10-15 重开);4k → 400', async () => {
         resolveEnterpriseAuth.mockResolvedValue({ ok: true, customer: { ...CUSTOMER, region: 'promax' } });
         submitVideoWithKey.mockImplementation(() =>
             Promise.resolve(NextResponse.json({ id: 'cgt-p25', task_id: 'cgt-p25', status: 'queued' })),
@@ -884,15 +906,24 @@ describe('归一短名(2026-07-20)', () => {
             expect.objectContaining({ model: 'seedance2.5-promax-1080p' }),
             'Bearer sk-upstream-u1',
         );
-        // 480p / 4k → 400,不打上游
+        // 480p → seedance2.5-promax-480p
         submitVideoWithKey.mockClear();
-        for (const resolution of ['480p', '4k']) {
-            const bad = await handleEnterpriseV1(
-                req('POST', '/v1/video/generations', { model: 'seedance-2-5-promax', prompt: 'x', resolution }),
-                '/video/generations',
-            );
-            expect(bad.status).toBe(400);
-        }
+        res = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { model: 'seedance-2-5-promax', prompt: 'x', resolution: '480p' }),
+            '/video/generations',
+        );
+        expect(res.status).toBe(200);
+        expect(submitVideoWithKey).toHaveBeenCalledWith(
+            expect.objectContaining({ model: 'seedance2.5-promax-480p' }),
+            'Bearer sk-upstream-u1',
+        );
+        // 4k → 400,不打上游
+        submitVideoWithKey.mockClear();
+        const bad = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { model: 'seedance-2-5-promax', prompt: 'x', resolution: '4k' }),
+            '/video/generations',
+        );
+        expect(bad.status).toBe(400);
         expect(submitVideoWithKey).not.toHaveBeenCalled();
     });
 

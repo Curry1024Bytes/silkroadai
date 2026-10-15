@@ -17,16 +17,21 @@
  * 适配器强制档位与实际输入一致(无参考档带图 → 400;参考档不带图/视频 → 400),防止客户挑便宜档串用。
  *
  * ⚠️ 上游账户余额 < ¥5 会对【所有】请求回 403「账户余额不足5元」—— 保持上游充值。
+ *
+ * 2026-10-15:海外版 proMax 全档(2.0 pro/fast/mini + 2.5)上游换成 service-inference.ai dreamina-sd-max 线
+ * (`provider:'svcinf'`,与 cn 2.5 480p 单档同一套 svcinf-client 翻译/轮询,独立 key + 独立 API 版本 env);
+ * 对客模型名 / 档位 / 费率全不变。未配 `SEEDANCE_SVCINF_PROMAX_KEY` 回落 artsmcp intl 线。
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
 import { uploadImage } from '@/lib/r2/client';
 import { normalizeReferenceImage } from '@/lib/image/normalize-reference';
 import { classifyUpstreamError } from './upstream-error';
-import { rememberVolcId, toUpstreamId } from '@/lib/enterprise/volc-id-map';
+import { rememberVolcId, toUpstreamId, toUpstreamTask } from '@/lib/enterprise/volc-id-map';
 import { DraftTaskError, extractDraftTaskRef, resolveDraftTaskArkId } from './draft-task';
 import {
     SVCINF_DEFAULT_BASE,
+    SVCINF_KEY_PREFIX,
     isSvcinfTaskId,
     makeArkTaskId,
     pollSvcinfTask,
@@ -53,6 +58,8 @@ const UPSTREAM_INTL_MINI = 'artsdance2-0-mini-intl-260701';
 // 与现有渠道一致(720p 5s = 108,900);计费按 usage 实报,基数差异不影响正确性。
 // proMax 三档 2026-08-08 全部由 dreamina 系迁到 artsdance intl 系(= global 同一上游名,生产已验证)。
 // artsdance intl 不支持 480p → proMax 全档去 480p:pro 保留 720p/1080p/4k,fast/mini 仅 720p。价格不变。
+// ⚠️ 2026-10-15 起 proMax 全档改走 service-inference.ai(见下 UPSTREAM_SVCINF_PROMAX_* / getSvcinfPromaxConfig);
+// 这三个 artsdance intl 名只在【未配 SEEDANCE_SVCINF_PROMAX_KEY】时作回落(部署缺 env 不断档)。
 const UPSTREAM_PROMAX_PRO = 'artsdance2-0-pro-intl-260701';
 const UPSTREAM_PROMAX_FAST = 'artsdance2-0-fast-intl-260701';
 const UPSTREAM_PROMAX_MINI = 'artsdance2-0-mini-intl-260701';
@@ -85,6 +92,51 @@ export function getSvcinfCnConfig(): SvcinfConfig | null {
     // 缺省 v2;置 SEEDANCE_SVCINF_API_VERSION=v1 可切回(两版信封相同)。
     const api: SvcinfApiVersion = process.env.SEEDANCE_SVCINF_API_VERSION === 'v1' ? 'v1' : 'v2';
     return { base: (process.env.SEEDANCE_SVCINF_BASE_URL || SVCINF_DEFAULT_BASE).replace(/\/$/, ''), key, api };
+}
+
+// ── 海外版 proMax → service-inference.ai dreamina-sd-max 线(2026-10-15,operator 指定换上游,对客模型/价格不变)──
+// 上游文档 console.service-inference.ai/docs/seedance-max:四档套餐名(以该 key `GET /v1/models` 为准,
+// 部分套餐不带 -max 后缀 → 按档 env 覆盖)。pro 480p/720p/1080p/4k、fast/mini 480p/720p、2.5 480p/720p/1080p
+// —— proMax 480p 档随之重开(operator 2026-10-15 拍板;费率 = 各自 720p 同价,沿用 2026-08-06 口径)。
+// ⚠️ 480p 只有新上游支持:未配 key 回落 artsmcp 时 480p 会被 intl 上游 400(回落是应急路径,可接受)。
+const UPSTREAM_SVCINF_PROMAX_PRO = process.env.SEEDANCE_SVCINF_PROMAX_MODEL_PRO || 'dreamina-seedance-2-0-260128-max';
+const UPSTREAM_SVCINF_PROMAX_FAST =
+    process.env.SEEDANCE_SVCINF_PROMAX_MODEL_FAST || 'dreamina-seedance-2-0-fast-260128-max';
+const UPSTREAM_SVCINF_PROMAX_MINI =
+    process.env.SEEDANCE_SVCINF_PROMAX_MODEL_MINI || 'dreamina-seedance-2-0-mini-260615-max';
+const UPSTREAM_SVCINF_PROMAX_25 = process.env.SEEDANCE_SVCINF_PROMAX_MODEL_25 || 'dreamina-seedance-2-5-260628-max';
+
+/** 客户 upstream key 行里存的是真实 service-inference key(sk-inf-)还是别家 / 占位符?(后者走平台 env key) */
+function customerSvcinfKey(auth: string | undefined | null): string | undefined {
+    const key = String(auth || '')
+        .replace(/^Bearer\s+/i, '')
+        .trim();
+    return key.startsWith(SVCINF_KEY_PREFIX) ? key : undefined;
+}
+
+/**
+ * 海外版 proMax 的 service-inference.ai 配置(lazy 读 env;未配 → null = 回落 artsmcp intl 线)。
+ * key:客户 promax 行存了 sk-inf- 真 key 时优先用客户的(任务建在他账号下,轮询也必须用同一把),
+ * 否则平台级 `SEEDANCE_SVCINF_PROMAX_KEY`(与 cn 2.5 480p 的 `SEEDANCE_SVCINF_KEY`、火山渠道的
+ * `ENTERPRISE_VOLC_UPSTREAM_KEY` 都不是同一把,各线独立计量)。
+ * API 版本:缺省 /v2(直传 URL 素材经 preparing 由网关代传 + 支持 asset://mva- 句柄);
+ * `SEEDANCE_SVCINF_PROMAX_API_VERSION=v1` 切 /v1(直传 URL 直接 pending,不支持句柄)。
+ * ⚠️ 两版任务互不可见 —— 提交时把版本记进 volc_id_map.api_version,轮询按行上的版本打,切 env 不孤儿化在途任务。
+ */
+export function getSvcinfPromaxConfig(customerAuth?: string | null): SvcinfConfig | null {
+    const key = customerSvcinfKey(customerAuth) || process.env.SEEDANCE_SVCINF_PROMAX_KEY?.trim();
+    if (!key) return null;
+    const api: SvcinfApiVersion = process.env.SEEDANCE_SVCINF_PROMAX_API_VERSION === 'v1' ? 'v1' : 'v2';
+    return {
+        base: (process.env.SEEDANCE_SVCINF_PROMAX_BASE_URL || SVCINF_DEFAULT_BASE).replace(/\/$/, ''),
+        key,
+        api,
+    };
+}
+
+/** provider='svcinf' 的档按 region 取各自那条线的配置(cn 480p 线 / proMax 线各自独立 key + 版本)。 */
+function svcinfConfigForRegion(region: SeedanceRegion, customerAuth?: string | null): SvcinfConfig | null {
+    return region === 'promax' ? getSvcinfPromaxConfig(customerAuth) : getSvcinfCnConfig();
 }
 
 /** 版本 → 上游 base URL(global 与 promax 同为 intl 端口,仅模型名/费率不同)。
@@ -182,9 +234,9 @@ export const MODEL_MAP: Record<string, SeedanceModelSpec> = {
             ]),
         ),
     ),
-    // ── 海外版 proMax seedance 2.5(2026-08-08):intl 新代模型,仅 720p/1080p,费率独立(按原价挂牌)──
+    // ── 海外版 proMax seedance 2.5(2026-08-08):费率独立(按原价挂牌);2026-10-15 换 svcinf 上游后加 480p ──
     ...Object.fromEntries(
-        (['720p', '1080p'] as const).flatMap((resolution) =>
+        (['480p', '720p', '1080p'] as const).flatMap((resolution) =>
             [false, true].map((ref) => [
                 `seedance2.5-promax-${resolution}${ref ? '-ref' : ''}`,
                 {
@@ -193,6 +245,9 @@ export const MODEL_MAP: Record<string, SeedanceModelSpec> = {
                     variant: 'promax-2.5' as const,
                     upstream: UPSTREAM_PROMAX_25,
                     region: 'promax' as const,
+                    // 2026-10-15 起走 service-inference.ai(有 key 才切,见 getSvcinfPromaxConfig)
+                    provider: 'svcinf' as const,
+                    svcinfModel: UPSTREAM_SVCINF_PROMAX_25,
                 },
             ]),
         ),
@@ -213,19 +268,29 @@ export const MODEL_MAP: Record<string, SeedanceModelSpec> = {
             ]),
         ),
     ),
-    // ── 海外版proMax(promax,2026-07-23):dreamina 系,费率独立;pro 4 档,fast/mini 480p/720p ──
+    // ── 海外版proMax(promax,2026-07-23):费率独立;pro 480p/720p/1080p/4k,fast/mini 480p/720p。
+    //    2026-10-15 起上游 = service-inference.ai dreamina-seedance-*-max(有 key 才切,否则回落 artsdance intl),
+    //    480p 档随新上游重开(artsdance intl 无 480p 时期曾去掉)──
     ...Object.fromEntries(
         (
             [
-                ['promax', UPSTREAM_PROMAX_PRO, ['720p', '1080p', '4k']], // artsdance intl:无 480p
-                ['promax-fast', UPSTREAM_PROMAX_FAST, ['720p']], // artsdance intl:仅 720p
-                ['promax-mini', UPSTREAM_PROMAX_MINI, ['720p']], // artsdance intl:仅 720p
-            ] as Array<[SeedanceVariant, string, Array<'480p' | '720p' | '1080p' | '4k'>]>
-        ).flatMap(([variant, upstream, resolutions]) =>
+                ['promax', UPSTREAM_PROMAX_PRO, UPSTREAM_SVCINF_PROMAX_PRO, ['480p', '720p', '1080p', '4k']],
+                ['promax-fast', UPSTREAM_PROMAX_FAST, UPSTREAM_SVCINF_PROMAX_FAST, ['480p', '720p']],
+                ['promax-mini', UPSTREAM_PROMAX_MINI, UPSTREAM_SVCINF_PROMAX_MINI, ['480p', '720p']],
+            ] as Array<[SeedanceVariant, string, string, Array<'480p' | '720p' | '1080p' | '4k'>]>
+        ).flatMap(([variant, upstream, svcinfModel, resolutions]) =>
             resolutions.flatMap((resolution) =>
                 [false, true].map((ref) => [
                     `seedance2.0-${variant}-${resolution}${ref ? '-ref' : ''}`,
-                    { resolution, ref, variant, upstream, region: 'promax' as const },
+                    {
+                        resolution,
+                        ref,
+                        variant,
+                        upstream,
+                        region: 'promax' as const,
+                        provider: 'svcinf' as const,
+                        svcinfModel,
+                    },
                 ]),
             ),
         ),
@@ -761,10 +826,12 @@ export async function submitVideoWithKey(body: Record<string, unknown>, auth: st
         genAudio: generateAudio,
     });
 
-    // 2.5 480p 单档 → service-inference.ai(平台 key,不用客户/渠道的 xinhankr key)。
-    // 只翻译 body 形态(prompt + images/videos/audios → 方舟 content 数组),其余字段原样;
-    // 对客 id 自造火山方舟形号 + volc_id_map 记映射(上游受理号 mvt-),轮询按映射分流。
-    let svc = map.provider === 'svcinf' ? getSvcinfCnConfig() : null;
+    // provider='svcinf' 的档(cn 2.5 480p 单档 / proMax 全档)→ service-inference.ai。
+    // key:cn 线平台 `SEEDANCE_SVCINF_KEY`;proMax 线客户 sk-inf- 行优先、否则平台 `SEEDANCE_SVCINF_PROMAX_KEY`
+    //(不用客户/渠道的 xinhankr / artsmcp key)。只翻译 body 形态(prompt + images/videos/audios →
+    // 方舟 content 数组),其余字段原样;对客 id 自造火山方舟形号 + volc_id_map 记映射(上游受理号 mvt- +
+    // 所用 API 版本),轮询按映射分流。未配 key → 跳过本分支,走各 region 原上游(缺 env 不断档)。
+    let svc = map.provider === 'svcinf' ? svcinfConfigForRegion(map.region ?? 'cn', auth) : null;
     let svcModel = map.svcinfModel ?? map.upstream;
     let draftArkId: string | null = null;
     if (draftRef) {
@@ -801,7 +868,14 @@ export async function submitVideoWithKey(body: Record<string, unknown>, auth: st
         });
         if (!r.ok) return r.res;
         const clientTaskId = makeArkTaskId();
-        await rememberVolcId(clientTaskId, r.taskId, 'task');
+        // 记下所用 API 版本:/v1 与 /v2 的任务互不可见,轮询必须按创建版本打(切 env 不孤儿化在途任务)。
+        await rememberVolcId(clientTaskId, r.taskId, 'task', undefined, r.api);
+        console.log('[seedance-cn-adapter] svcinf accepted', {
+            model,
+            region: map.region ?? 'cn',
+            upstream_model: svcModel,
+            api: r.api,
+        });
         return NextResponse.json(
             {
                 id: clientTaskId,
@@ -903,7 +977,7 @@ export async function pollVideo(req: NextRequest, id: string): Promise<NextRespo
  *  尽力而为——上游支持则真取消排队任务;不支持/报错由调用方决定不阻断客户,且绝不透传上游 body(#271)。
  *  返回原始 upstream Response(调用方一般只看是否 2xx)。 */
 export async function cancelVideoWithKey(id: string, auth: string, region: SeedanceRegion = 'cn'): Promise<Response> {
-    // service-inference.ai 任务(2.5 480p):上游无取消端点 → 合成 501,调用方 best-effort 不阻断。
+    // service-inference.ai 任务(cn 2.5 480p / proMax):上游无取消端点 → 合成 501,调用方 best-effort 不阻断。
     if (isSvcinfTaskId(await toUpstreamId(id))) {
         return new Response(JSON.stringify({ error: { code: 'not_supported', message: 'cancel not supported' } }), {
             status: 501,
@@ -920,13 +994,20 @@ export async function cancelVideoWithKey(id: string, auth: string, region: Seeda
 
 /** 轮询核心(独立门户直调:id + 上游 key 授权头;region 决定打哪个 base,缺省国内)。 */
 export async function pollVideoWithKey(id: string, auth: string, region: SeedanceRegion = 'cn'): Promise<NextResponse> {
-    // 2.5 480p(service-inference.ai)任务:对客号 → volc_id_map → 上游 mvt- 号 → 平台 key 轮询。
-    // 查不到映射 / 非 mvt- → 存量 xinhankr 任务,照旧。（每次轮询 +1 次主键查表,可接受。）
-    const mapped = await toUpstreamId(id);
-    if (isSvcinfTaskId(mapped)) {
-        const svc = getSvcinfCnConfig();
-        if (!svc) return err(503, 'temporarily_unavailable', 'seedance 2.5 480p 上游未配置,请联系服务方');
-        return pollSvcinfTask(svc, id, mapped, { log: 'seedance-cn-adapter', errType: 'seedance_cn_adapter_error' });
+    // service-inference.ai 任务(cn 2.5 480p / proMax 全档):对客号 → volc_id_map → 上游 mvt- 号 + 创建版本
+    // → 按 region 取那条线的 key 轮询(proMax 客户 sk-inf- 行优先,否则平台 key)。
+    // 查不到映射 / 非 mvt- → 存量 xinhankr / artsmcp 任务,照旧。（每次轮询 +1 次主键查表,可接受。）
+    const mapped = await toUpstreamTask(id);
+    if (isSvcinfTaskId(mapped.upstreamId)) {
+        const svc = svcinfConfigForRegion(region, auth);
+        if (!svc) return err(503, 'temporarily_unavailable', '该任务的上游未配置,请联系服务方');
+        return pollSvcinfTask(
+            svc,
+            id,
+            mapped.upstreamId,
+            { log: 'seedance-cn-adapter', errType: 'seedance_cn_adapter_error' },
+            { apiVersion: mapped.apiVersion },
+        );
     }
     let upstream: Response;
     try {
