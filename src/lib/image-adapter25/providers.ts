@@ -32,6 +32,26 @@ export interface ImageProvider25 {
      *  靶 yobox25 每次只回 1 张 + 串行补齐只补 2 轮 → 1+1+1 封顶 3 张(近 48h 日志 n=4 请求 10/10 都只拿 3)。
      *  fail-safe 方向:没验证过原生 n 的上游一律扇出 —— 扇出对真支持 n 的上游也只是多几次调用,不丢图。 */
     nativeN?: boolean;
+    /** 上游不是 OpenAI 同步形而是【异步任务】(提交拿任务 id → 轮询取图)时声明;缺省 = 同步直转。
+     *  只影响声明了它的 provider:adapter.callUpstream 看到该字段才走 submit+poll 分支,其余 provider 代码路径不变。 */
+    transport?: AsyncTaskTransport;
+}
+
+/** 异步任务形上游的传输描述(2026-10-15 为 suduma 引入)。提交与轮询都带 new-api 透传来的 Authorization。 */
+export interface AsyncTaskTransport {
+    kind: 'async-task';
+    /** 提交路径(POST JSON,参考图/蒙版以 data URL 塞进 body `image` / `mask` 字段),缺省 /v1/images/generations。 */
+    submitPath?: string;
+    /** 轮询路径,`{id}` 占位符替换成提交响应里的任务 id。 */
+    pollPath: string;
+    /** 提交响应里任务 id 的字段名。 */
+    idField: string;
+    /** 轮询间隔(ms)。 */
+    pollIntervalMs: number;
+    /** 从提交起算的最长等待(ms),超时视为上游失败 → failover。要留在 Caddy :3010 600s 之下。 */
+    maxWaitMs: number;
+    /** 拉取结果图 url 时附加的请求头(如图床要求浏览器 UA,否则 403)。 */
+    imageFetchHeaders?: Record<string, string>;
 }
 
 /** we-token 系上游的单次调用超时(与 @/lib/image-adapter/providers 的同名常量语义一致,模块独立不共享)。 */
@@ -180,6 +200,35 @@ export const IMAGE_PROVIDERS_25: Record<string, ImageProvider25> = {
         baseUrl: 'https://max.yoboxai.com',
         brand: /\byobox\s?ai\b|\byobox\b|\bjd23kjs\b|provider api error:?\s*|\badobe\b|\bfirefly\b/gi,
         models: GPT_IMAGE_25_MODELS,
+    },
+    // suduma25:www.suduma.com(非 new-api,自研站;key sk-21fb…)。2026-10-15 实测 2.5-flare 23 发:
+    //  - 【接口是异步任务】POST /v1/images/generations(JSON)→ `{taskOrderId, requestId, status:"created"}`,
+    //    轮询 GET /v1/tasks/{requestId}(用 requestId 不是 taskOrderId)→ `{status: succeeded|failed, data:[{type:"image", url}]}`,
+    //    无 usage / 无 quality 回显;edits 只是别名,参考图走 JSON body `image`(url 或 base64,最多 16 张)、蒙版 `mask`;
+    //    quality 必填(缺 → 400「请在请求里指定 quality」),价表外组合 → 400「没有匹配的价格」→ 适配器恒发归一后的档位;
+    //  - 图床 img.911339.xyz 不带浏览器 UA 回 403 → imageFetchHeaders 加 UA;
+    //  - low / medium / auto / 1536×1024 / 1024×1536 / 2880² / 4K low / 透明(真 RGBA)/ edits:全 OpenAI Media Service
+    //    签名 `API/gpt-image`(真 2.5 API 款);延迟 low 35–64s / medium 64s;
+    //  - ⚠️ high / xhigh / max / sunburst max 探针全部【无 C2PA】且 4K max 返 2048×1152(封顶 2K)—— 高档位混到另一个
+    //    无签名池;operator 2026-10-15 拍板仍放 quality 全量(不设 qualities),计费照官方档;
+    //  - 硬拒(任务 failed `provider request invalid`,几秒即回):1000×1000、1280×720、n>1 → 适配器 n 扇出成单张,
+    //    尺寸拒 → failover;`provider task failed` 偶发(size=auto 一次,重试成功)→ failover;
+    //  - 无账单接口,价格待商家报;sunburst low 也是 OpenAI 签 `API/gpt-image`(没 prism)。
+    suduma25: {
+        baseUrl: 'https://www.suduma.com',
+        brand: /\bsuduma\b|\b911339\b|img\.911339\.xyz|provider (?:task failed|request invalid)|\badobe\b|\bfirefly\b/gi,
+        models: GPT_IMAGE_25_MODELS,
+        transport: {
+            kind: 'async-task',
+            submitPath: '/v1/images/generations',
+            pollPath: '/v1/tasks/{id}',
+            idField: 'requestId',
+            pollIntervalMs: 4_000,
+            maxWaitMs: 300_000, // 实测 max 档 204s;留在 Caddy :3010 600s 之下
+            imageFetchHeaders: {
+                'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/128 Safari/537.36',
+            },
+        },
     },
     qimg25: {
         baseUrl: 'https://qimg.cc',

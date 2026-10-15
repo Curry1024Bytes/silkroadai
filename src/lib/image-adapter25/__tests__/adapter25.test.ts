@@ -1265,6 +1265,282 @@ describe('yobox25 全量线(同后端 yuanshudian/synoralink;flare+sunburst 全 
     });
 });
 
+describe('suduma25 异步任务线(submit + poll 分支;quality 全量;图床要 UA)', () => {
+    const URL_S = 'http://portal.test/image-adapter25/suduma25/v1/images/generations';
+    const URL_SE = 'http://portal.test/image-adapter25/suduma25/v1/images/edits';
+    const SUBMIT = 'https://www.suduma.com/v1/images/generations';
+    const IMG_URL = 'https://img.911339.xyz/i/abc123';
+    const transport = IMAGE_PROVIDERS_25.suduma25.transport!;
+    const origInterval = transport.pollIntervalMs;
+    const origMaxWait = transport.maxWaitMs;
+    beforeEach(() => {
+        transport.pollIntervalMs = 1; // 测试不真等 4s
+    });
+    afterEach(() => {
+        transport.pollIntervalMs = origInterval;
+        transport.maxWaitMs = origMaxWait;
+    });
+
+    type Call = { url: string; init?: RequestInit };
+    const calls = (): Call[] => fetchMock.mock.calls.map((c) => ({ url: String(c[0]), init: c[1] as RequestInit }));
+    const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+
+    /** 标准上游剧本:提交 → running → succeeded(url)→ 图床返 PNG。pollsBeforeDone 控制 running 次数。 */
+    function scriptUpstream(opts: { w?: number; h?: number; pollsBeforeDone?: number; rid?: string } = {}) {
+        const { w = 1024, h = 1024, pollsBeforeDone = 1, rid = 'req_x1' } = opts;
+        let polls = 0;
+        fetchMock.mockImplementation(async (url: string | URL, init?: RequestInit) => {
+            const u = String(url);
+            if (u === SUBMIT && init?.method === 'POST')
+                return json({
+                    taskOrderId: '2110517832533258242',
+                    requestId: rid,
+                    status: 'created',
+                    billingStatus: 'pending',
+                });
+            if (u === `https://www.suduma.com/v1/tasks/${rid}`) {
+                polls++;
+                if (polls <= pollsBeforeDone) return json({ id: rid, status: 'running', progress: 50, data: [] });
+                return json({
+                    id: rid,
+                    status: 'succeeded',
+                    progress: 100,
+                    error: '',
+                    data: [{ type: 'image', url: IMG_URL }],
+                });
+            }
+            if (u === IMG_URL) return new Response(Buffer.from(pngB64(w, h), 'base64'), { status: 200 });
+            throw new Error('unexpected fetch ' + u);
+        });
+    }
+
+    it('registry:www.suduma.com、async-task transport(requestId / /v1/tasks/{id} / UA 头)、两模型、无 qualities(全量);brand 抹 suduma / 图床域 / 任务失败文案', () => {
+        const p = IMAGE_PROVIDERS_25.suduma25;
+        expect(p.baseUrl).toBe('https://www.suduma.com');
+        expect(p.models).toEqual(GPT_IMAGE_25_MODELS);
+        expect(p.qualities).toBeUndefined();
+        expect(p.nativeN).toBeUndefined(); // 实测 n=2 任务失败 → 扇出
+        expect(p.transport).toMatchObject({ kind: 'async-task', pollPath: '/v1/tasks/{id}', idField: 'requestId' });
+        expect(p.transport!.maxWaitMs).toBeLessThanOrEqual(540_000);
+        expect(p.transport!.imageFetchHeaders!['user-agent']).toMatch(/Mozilla/);
+        expect('suduma img.911339.xyz provider task failed provider request invalid'.replace(p.brand, '*')).toBe(
+            '* * * *',
+        );
+        // 其他 provider 不带 transport(分支只对声明者生效)
+        for (const [name, prov] of Object.entries(IMAGE_PROVIDERS_25))
+            if (name !== 'suduma25') expect(prov.transport).toBeUndefined();
+    });
+
+    it('generations:JSON 提交(恒带归一 quality,无 n)→ 轮询 running→succeeded → 图床拉回(带 UA)→ 官方 usage 合成,url 不外泄', async () => {
+        scriptUpstream({ pollsBeforeDone: 2 });
+        const res = await handleAdapter25Image(
+            jsonReq(URL_S, { model: 'gpt-image-2.5-flare', prompt: 'a red apple', size: '1024x1024', quality: 'low' }),
+            'generations',
+            'suduma25',
+        );
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as {
+            data: Array<{ b64_json?: string; url?: string }>;
+            usage: { output_tokens: number };
+            quality: string;
+        };
+        expect(body.data).toHaveLength(1);
+        expect(body.data[0].b64_json).toBeTruthy();
+        expect(body.data[0].url).toBeUndefined();
+        expect(body.usage.output_tokens).toBe(196);
+        expect(body.quality).toBe('low');
+        const c = calls();
+        expect(c.map((x) => x.url)).toEqual([
+            SUBMIT,
+            'https://www.suduma.com/v1/tasks/req_x1',
+            'https://www.suduma.com/v1/tasks/req_x1',
+            'https://www.suduma.com/v1/tasks/req_x1',
+            IMG_URL,
+        ]);
+        const sent = JSON.parse(String(c[0].init!.body));
+        expect(sent).toMatchObject({
+            model: 'gpt-image-2.5-flare',
+            prompt: 'a red apple',
+            size: '1024x1024',
+            quality: 'low',
+        });
+        expect(sent.n).toBeUndefined();
+        expect((c[0].init!.headers as Record<string, string>)['authorization']).toBe('Bearer sk-upstream-test');
+        expect((c[0].init!.headers as Record<string, string>)['content-type']).toBe('application/json');
+        expect((c[1].init!.headers as Record<string, string>)['authorization']).toBe('Bearer sk-upstream-test');
+        expect((c[4].init!.headers as Record<string, string>)['user-agent']).toMatch(/Mozilla/);
+    });
+
+    it.each([
+        ['auto', 'low', 196],
+        ['', 'low', 196],
+        ['MAX', 'max', 7024],
+        ['xhigh', 'xhigh', 3122],
+    ])('quality %j → 提交归一为 %s(上游 quality 必填且只认价表 5 档),计费 %i', async (q, sentQ, tokens) => {
+        scriptUpstream();
+        const res = await handleAdapter25Image(
+            jsonReq(URL_S, {
+                model: 'gpt-image-2.5-sunburst',
+                prompt: 'x',
+                size: '1024x1024',
+                ...(q ? { quality: q } : {}),
+            }),
+            'generations',
+            'suduma25',
+        );
+        expect(res.status).toBe(200);
+        expect(JSON.parse(String(calls()[0].init!.body)).quality).toBe(sentQ);
+        expect(((await res.json()) as { usage: { output_tokens: number } }).usage.output_tokens).toBe(tokens);
+    });
+
+    it('edits(multipart 输入图)→ 仍 POST 提交路径,参考图转 data URL 塞 JSON `image` 数组', async () => {
+        scriptUpstream();
+        const res = await handleAdapter25Image(
+            formReq(
+                URL_SE,
+                { model: 'gpt-image-2.5-flare', prompt: 'watercolor', size: '1024x1024', quality: 'medium' },
+                [TINY_PNG],
+            ),
+            'edits',
+            'suduma25',
+        );
+        expect(res.status).toBe(200);
+        const c = calls();
+        expect(c[0].url).toBe(SUBMIT);
+        const sent = JSON.parse(String(c[0].init!.body));
+        expect(sent.image).toHaveLength(1);
+        expect(sent.image[0]).toBe('data:image/png;base64,' + TINY_PNG.toString('base64'));
+        expect(sent.quality).toBe('medium');
+        expect(((await res.json()) as { usage: { output_tokens: number } }).usage.output_tokens).toBe(439); // 输出按 medium 档;输入图 token 记在 input_tokens
+    });
+
+    it('n=2 → 扇出两次独立提交(各自任务 id),拿两张', async () => {
+        let seq = 0;
+        const done = new Map<string, number>();
+        fetchMock.mockImplementation(async (url: string | URL, init?: RequestInit) => {
+            const u = String(url);
+            if (u === SUBMIT && init?.method === 'POST') {
+                expect(JSON.parse(String(init.body)).n).toBeUndefined();
+                return json({ requestId: `req_${++seq}`, status: 'created' });
+            }
+            const m = u.match(/\/v1\/tasks\/(req_\d+)$/);
+            if (m) {
+                const k = m[1];
+                done.set(k, (done.get(k) ?? 0) + 1);
+                return done.get(k)! < 2
+                    ? json({ id: k, status: 'running', data: [] })
+                    : json({ id: k, status: 'succeeded', data: [{ type: 'image', url: `${IMG_URL}/${k}` }] });
+            }
+            if (u.startsWith(IMG_URL)) return new Response(Buffer.from(pngB64(1024, 1024), 'base64'), { status: 200 });
+            throw new Error('unexpected fetch ' + u);
+        });
+        const res = await handleAdapter25Image(
+            jsonReq(URL_S, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'low', n: 2 }),
+            'generations',
+            'suduma25',
+        );
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { data: unknown[]; usage: { output_tokens: number } };
+        expect(body.data).toHaveLength(2);
+        expect(body.usage.output_tokens).toBe(391); // 官方分子公式按 2 张合算(不是 2×196)
+        expect(seq).toBe(2);
+    });
+
+    it('任务 failed(provider request invalid / provider task failed)→ 503 中性体 failover,不泄文案;failed 带安全措辞 → 400 moderation_blocked 终态', async () => {
+        for (const err of ['provider request invalid', 'provider task failed']) {
+            fetchMock.mockReset();
+            fetchMock.mockImplementation(async (url: string | URL, init?: RequestInit) => {
+                const u = String(url);
+                if (u === SUBMIT && init?.method === 'POST') return json({ requestId: 'req_f', status: 'created' });
+                return json({ id: 'req_f', status: 'failed', progress: 0, error: err, data: [] });
+            });
+            const res = await handleAdapter25Image(
+                jsonReq(URL_S, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1000x1000', quality: 'low' }),
+                'generations',
+                'suduma25',
+            );
+            expect(res.status).toBe(503);
+            const t = await res.text();
+            expect(t).not.toMatch(/suduma|provider (task failed|request invalid)/i);
+            expect(JSON.parse(t).error.code).toBe('upstream_unavailable');
+        }
+        fetchMock.mockReset();
+        fetchMock.mockImplementation(async (url: string | URL, init?: RequestInit) => {
+            const u = String(url);
+            if (u === SUBMIT && init?.method === 'POST') return json({ requestId: 'req_s', status: 'created' });
+            return json({ id: 'req_s', status: 'failed', error: 'blocked by the content safety policy', data: [] });
+        });
+        const res = await handleAdapter25Image(
+            jsonReq(URL_S, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'low' }),
+            'generations',
+            'suduma25',
+        );
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error: { code: string } }).error.code).toBe('moderation_blocked');
+    });
+
+    it('提交 400「没有匹配的价格」→ 保守 failover 503;轮询 404「任务不存在」→ 503;超过 maxWaitMs 仍 running → 503,全部不泄品牌', async () => {
+        fetchMock.mockImplementation(async () => json({ error: '没有匹配的价格' }, 400));
+        let res = await handleAdapter25Image(
+            jsonReq(URL_S, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'low' }),
+            'generations',
+            'suduma25',
+        );
+        expect(res.status).toBe(503);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+
+        fetchMock.mockReset();
+        fetchMock.mockImplementation(async (url: string | URL, init?: RequestInit) =>
+            String(url) === SUBMIT && init?.method === 'POST'
+                ? json({ requestId: 'req_404', status: 'created' })
+                : json({ error: '任务不存在' }, 404),
+        );
+        res = await handleAdapter25Image(
+            jsonReq(URL_S, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'low' }),
+            'generations',
+            'suduma25',
+        );
+        expect(res.status).toBe(503);
+        expect(fetchMock).toHaveBeenCalledTimes(2); // 4xx 不重试
+
+        fetchMock.mockReset();
+        transport.maxWaitMs = 20;
+        fetchMock.mockImplementation(async (url: string | URL, init?: RequestInit) =>
+            String(url) === SUBMIT && init?.method === 'POST'
+                ? json({ requestId: 'req_slow', status: 'created' })
+                : json({ id: 'req_slow', status: 'running', progress: 10, data: [] }),
+        );
+        res = await handleAdapter25Image(
+            jsonReq(URL_S, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'low' }),
+            'generations',
+            'suduma25',
+        );
+        expect(res.status).toBe(503);
+        expect(await res.text()).not.toMatch(/suduma/i);
+        expect(fetchMock.mock.calls.length).toBeGreaterThan(2);
+    });
+
+    it('图床拉回失败(403 无 UA 场景)→ 按 URL_FETCH_RETRY_DELAYS_MS 重试后仍败 → 503', async () => {
+        fetchMock.mockImplementation(async (url: string | URL, init?: RequestInit) => {
+            const u = String(url);
+            if (u === SUBMIT && init?.method === 'POST') return json({ requestId: 'req_i', status: 'created' });
+            if (u.includes('/v1/tasks/'))
+                return json({ id: 'req_i', status: 'succeeded', data: [{ type: 'image', url: IMG_URL }] });
+            return new Response('Forbidden', { status: 403 });
+        });
+        const res = await handleAdapter25Image(
+            jsonReq(URL_S, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'low' }),
+            'generations',
+            'suduma25',
+        );
+        expect(res.status).toBe(503);
+        expect(fetchMock.mock.calls.filter((c) => String(c[0]) === IMG_URL).length).toBe(
+            1 + URL_FETCH_RETRY_DELAYS_MS.length,
+        );
+    }, 20_000);
+});
+
 describe('qimg25 全量线(Firefly 中转:flare OpenAI 原生签名、sunburst Adobe 签名;url 为 Firefly S3 预签名)', () => {
     const URL_Q = 'http://portal.test/image-adapter25/qimg25/v1/images/generations';
     /** 带 caBX(C2PA)块的最小 PNG。 */

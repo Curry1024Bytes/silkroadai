@@ -33,7 +33,7 @@ import { stripAdobeImageMetadataB64 } from '@/lib/proxy/image-metadata';
 import { encodeQuality, transcodeB64, transcodeTargetOf } from '@/lib/image/transcode';
 import { newGenerationId } from '@/lib/image/generation-id';
 import { alignTo16, isAutoSize, officialAutoDims } from '@/lib/image-adapter/auto-size';
-import { IMAGE_PROVIDERS_25, type ImageProvider25 } from './providers';
+import { IMAGE_PROVIDERS_25, type AsyncTaskTransport, type ImageProvider25 } from './providers';
 
 export type ImageMode = 'generations' | 'edits';
 
@@ -553,11 +553,11 @@ export const URL_FETCH_RETRY_DELAYS_MS: ReadonlyArray<number> = [1_000, 3_000];
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /** 单次拉取:成功返 b64;瞬时失败返 null(可重试);'too_large' 为终态。 */
-async function fetchImageOnce(url: string): Promise<string | null | 'too_large'> {
+async function fetchImageOnce(url: string, headers?: Record<string, string>): Promise<string | null | 'too_large'> {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 60_000);
     try {
-        const r = await fetch(url, { signal: ctrl.signal });
+        const r = await fetch(url, headers ? { signal: ctrl.signal, headers } : { signal: ctrl.signal });
         if (!r.ok) return null;
         const buf = Buffer.from(await r.arrayBuffer());
         if (buf.length > 50 * 1024 * 1024) return 'too_large';
@@ -571,9 +571,13 @@ async function fetchImageOnce(url: string): Promise<string | null | 'too_large'>
 }
 
 /** 拉上游图 URL 转 b64(60s 超时 + 50MB 上限),最多 1 + URL_FETCH_RETRY_DELAYS_MS.length 次。失败返 null。 */
-async function fetchImageAsB64(url: string, providerName?: string): Promise<string | null> {
+async function fetchImageAsB64(
+    url: string,
+    providerName?: string,
+    headers?: Record<string, string>,
+): Promise<string | null> {
     for (let attempt = 0; ; attempt++) {
-        const r = await fetchImageOnce(url);
+        const r = await fetchImageOnce(url, headers);
         if (r === 'too_large') return null;
         if (r) return r;
         if (attempt >= URL_FETCH_RETRY_DELAYS_MS.length) return null;
@@ -591,6 +595,9 @@ async function callUpstream(
     n: number,
     auth: string,
 ): Promise<string[] | TerminalReject | null> {
+    // 异步任务形上游(providers.ts transport)→ 独立分支;其余 provider 走下面的同步直转,路径不变。
+    if (provider.transport?.kind === 'async-task')
+        return callUpstreamAsyncTask(provider, provider.transport, providerName, mode, parsed, n, auth);
     const url = `${provider.baseUrl}/v1/images/${mode}`;
     const headers: Record<string, string> = { authorization: auth };
     const q = parsed.quality.trim().toLowerCase();
@@ -681,6 +688,171 @@ async function callUpstream(
         }
         out.push(b64);
     }
+    return out;
+}
+
+// ============ 异步任务形上游(submit + poll)============
+// 2026-10-15 为 suduma 引入:上游不是 OpenAI 同步形,POST 提交只回任务 id,要轮询取图。整个差异收在这个函数
+// 里:提交 body 用 JSON(参考图 / 蒙版转 data URL 塞 `image` / `mask`),拿到图 url 后交回与同步分支相同的
+// url→b64 拉回;后续 n 扇出 / 补齐、官方 usage 合成、C2PA 剥离、透明校验、failover 分类全部复用,不碰其他 provider。
+const ASYNC_SUBMIT_TIMEOUT_MS = 60_000;
+const ASYNC_POLL_TIMEOUT_MS = 30_000;
+/** 轮询连续瞬时失败(网络 / 5xx)容忍次数,超过视为上游失败 → failover。 */
+const ASYNC_POLL_MAX_CONSECUTIVE_FAILURES = 3;
+const ASYNC_TASK_DONE = new Set(['succeeded', 'success', 'completed', 'done']);
+const ASYNC_TASK_FAILED = new Set(['failed', 'error', 'cancelled', 'canceled', 'timeout']);
+
+function toDataUrl(img: { buf: Buffer; type: string }): string {
+    return `data:${img.type || 'image/png'};base64,${img.buf.toString('base64')}`;
+}
+
+async function callUpstreamAsyncTask(
+    provider: ImageProvider25,
+    transport: AsyncTaskTransport,
+    providerName: string,
+    mode: ImageMode,
+    parsed: ParsedRequest,
+    n: number,
+    auth: string,
+): Promise<string[] | TerminalReject | null> {
+    const started = Date.now();
+    const headers: Record<string, string> = { authorization: auth, 'content-type': 'application/json' };
+    const body: Record<string, unknown> = { model: parsed.model, prompt: parsed.prompt };
+    const sendSize = parsed.size.trim();
+    if (sendSize) body.size = sendSize; // auto 原样透传
+    // 异步形上游 quality 必填且只认价表里的 5 档(auto / 缺省 / 非法 → 400 没有匹配的价格)→ 恒发归一后的档位,
+    // 与适配器的计费档一致(normQuality25:auto/缺省/非法 → low)。
+    body.quality = normQuality25(parsed.quality);
+    if (n > 1) body.n = n;
+    for (const [k, v] of Object.entries(parsed.extras)) body[k] = INT_EXTRAS.has(k) && /^\d+$/.test(v) ? Number(v) : v;
+    if (parsed.images.length > 0) body.image = parsed.images.map(toDataUrl);
+    if (parsed.mask) body.mask = toDataUrl(parsed.mask);
+
+    const submitUrl = `${provider.baseUrl}${transport.submitPath ?? '/v1/images/generations'}`;
+    let submit: Response;
+    try {
+        submit = await fetch(submitUrl, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(body),
+            signal: AbortSignal.timeout(ASYNC_SUBMIT_TIMEOUT_MS),
+        });
+    } catch (e) {
+        console.warn('[image-adapter25] async-task submit fetch failed', {
+            provider: providerName,
+            mode,
+            ms: Date.now() - started,
+            err: e instanceof Error ? e.message : String(e),
+        });
+        return null;
+    }
+    if (!submit.ok) {
+        const errText = await submit.text().catch(() => '');
+        console.warn('[image-adapter25] upstream error', {
+            provider: providerName,
+            mode,
+            phase: 'submit',
+            status: submit.status,
+            ms: Date.now() - started,
+            body: sanitizeAdapterError25(errText.slice(0, 500), provider.brand),
+        });
+        return classifyUpstreamError(submit.status, errText, provider.brand);
+    }
+    const submitJson = (await submit.json().catch(() => null)) as Record<string, unknown> | null;
+    const taskId = submitJson?.[transport.idField];
+    if (typeof taskId !== 'string' || !taskId) {
+        console.warn('[image-adapter25] async-task submit returned no task id', { provider: providerName, mode });
+        return null;
+    }
+
+    const pollUrl = `${provider.baseUrl}${transport.pollPath.replace('{id}', encodeURIComponent(taskId))}`;
+    let consecutiveFailures = 0;
+    let task: Record<string, unknown> | null = null;
+    while (Date.now() - started < transport.maxWaitMs) {
+        await sleep(transport.pollIntervalMs);
+        let poll: Response;
+        try {
+            poll = await fetch(pollUrl, {
+                headers: { authorization: auth },
+                signal: AbortSignal.timeout(ASYNC_POLL_TIMEOUT_MS),
+            });
+        } catch {
+            if (++consecutiveFailures > ASYNC_POLL_MAX_CONSECUTIVE_FAILURES) break;
+            continue;
+        }
+        if (!poll.ok) {
+            // 4xx(任务不存在 / 鉴权)不会自愈 → 直接放弃;5xx 容忍几次
+            if (poll.status < 500 || ++consecutiveFailures > ASYNC_POLL_MAX_CONSECUTIVE_FAILURES) {
+                const errText = await poll.text().catch(() => '');
+                console.warn('[image-adapter25] async-task poll error', {
+                    provider: providerName,
+                    mode,
+                    status: poll.status,
+                    ms: Date.now() - started,
+                    body: sanitizeAdapterError25(errText.slice(0, 300), provider.brand),
+                });
+                return null;
+            }
+            continue;
+        }
+        consecutiveFailures = 0;
+        const j = (await poll.json().catch(() => null)) as Record<string, unknown> | null;
+        const status = typeof j?.status === 'string' ? j.status.toLowerCase() : '';
+        if (ASYNC_TASK_DONE.has(status) || ASYNC_TASK_FAILED.has(status)) {
+            task = j;
+            break;
+        }
+    }
+    if (!task) {
+        console.warn('[image-adapter25] async-task timed out / unreachable', {
+            provider: providerName,
+            mode,
+            ms: Date.now() - started,
+            maxWaitMs: transport.maxWaitMs,
+        });
+        return null;
+    }
+    const status = String(task.status).toLowerCase();
+    if (ASYNC_TASK_FAILED.has(status)) {
+        const errText = typeof task.error === 'string' ? task.error : JSON.stringify(task.error ?? '');
+        console.warn('[image-adapter25] upstream error', {
+            provider: providerName,
+            mode,
+            phase: 'task',
+            status,
+            ms: Date.now() - started,
+            body: sanitizeAdapterError25(errText.slice(0, 500), provider.brand),
+        });
+        // 任务级失败没有 HTTP 状态:只认内容安全措辞为终态,其余(provider task failed / request invalid)保守 failover
+        const cls = classifyUpstreamError(400, errText, provider.brand);
+        return cls && cls.terminal === 'safety' ? cls : null;
+    }
+    const rawItems = Array.isArray(task.data)
+        ? (task.data as Array<{ b64_json?: string; url?: string }>).filter((it) => it && (it.b64_json || it.url))
+        : [];
+    if (rawItems.length === 0) {
+        console.warn('[image-adapter25] async-task succeeded without image', { provider: providerName, mode });
+        return null;
+    }
+    const out: string[] = [];
+    for (const it of rawItems) {
+        if (it.b64_json) {
+            out.push(it.b64_json);
+            continue;
+        }
+        const b64 = await fetchImageAsB64(it.url as string, providerName, transport.imageFetchHeaders);
+        if (!b64) {
+            console.warn('[image-adapter25] url→b64 fetch failed', { provider: providerName, mode });
+            return null;
+        }
+        out.push(b64);
+    }
+    console.log('[image-adapter25] async-task ok', {
+        provider: providerName,
+        mode,
+        ms: Date.now() - started,
+        n: out.length,
+    });
     return out;
 }
 
