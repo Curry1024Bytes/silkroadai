@@ -1722,7 +1722,7 @@ describe('frimodelmedium provider(frimodel 新账号,onlyQualities=[medium] + up
     });
 });
 
-describe('qimg provider(qimg.cc Adobe Firefly 中转 2.0,onlyQualities=[low,medium] + 透明拒)', () => {
+describe('qimg provider(qimg.cc Adobe Firefly 中转 2.0,全量 openAllTiers + 透明拒)', () => {
     const URL_Q = 'http://portal.test/image-adapter/qimg/v1/images/generations';
     const gen = (body: Record<string, unknown>) =>
         handleAdapterImage(
@@ -1731,11 +1731,11 @@ describe('qimg provider(qimg.cc Adobe Firefly 中转 2.0,onlyQualities=[low,medi
             'qimg',
         );
 
-    it('registry:qimg.cc、onlyQualities=[low,medium]、无 openAllTiers/sizes/upstreamQuality、透明拒;brand 抹 qimg / ERR 码 / Firefly S3 主机 / 前缀', () => {
+    it('registry:qimg.cc、openAllTiers 全量(10-14 复测 high 已真,不再 onlyQualities)、无 sizes/upstreamQuality、透明拒;brand 抹 qimg / ERR 码 / Firefly S3 主机 / 前缀', () => {
         const p = IMAGE_PROVIDERS.qimg;
         expect(p.baseUrl).toBe('https://qimg.cc');
-        expect(p.onlyQualities).toEqual(['low', 'medium']);
-        expect(p.openAllTiers).toBeUndefined();
+        expect(p.openAllTiers).toBe(true);
+        expect(p.onlyQualities).toBeUndefined();
         expect(p.sizes).toBeUndefined();
         expect(p.upstreamQuality).toBeUndefined();
         expect(p.noTransparentBackground).toBe(true);
@@ -1746,24 +1746,14 @@ describe('qimg provider(qimg.cc Adobe Firefly 中转 2.0,onlyQualities=[low,medi
         expect('Bad request to openai: Transparent background'.replace(p.brand, '')).toBe('Transparent background');
     });
 
-    it('high(含大小写 / size=auto / 4K)→ 503 让路不打上游;low / medium / 缺省(→low)/ auto 放行并按官方账单', async () => {
-        for (const req of [
-            { size: '1024x1024', quality: 'high' },
-            { size: 'auto', quality: 'HIGH' },
-            { size: '3840x2160', quality: 'high' },
-        ]) {
-            fetchMock.mockReset();
-            okUpstream();
-            const res = await gen(req);
-            expect(res.status).toBe(503);
-            expect(fetchMock).not.toHaveBeenCalled();
-            expect(((await res.json()) as { error: { code: string } }).error.code).toBe('upstream_unavailable');
-        }
+    it('三档 × 任意尺寸全放行,quality 原样透传(含大小写归一),按请求尺寸与档合成官方账单(上游浮动 usage 丢弃)', async () => {
         for (const [req, w, h, q] of [
             [{ size: '1024x1024', quality: 'low' }, 1024, 1024, 'low'],
             [{ size: '1024x1024', quality: 'medium' }, 1024, 1024, 'medium'],
+            [{ size: '1024x1024', quality: 'high' }, 1024, 1024, 'high'],
+            [{ size: '1024x1024', quality: 'HIGH' }, 1024, 1024, 'high'],
             [{ size: '1536x1024' }, 1536, 1024, 'low'],
-            [{ size: '3840x2160', quality: 'medium' }, 3840, 2160, 'medium'],
+            [{ size: '3840x2160', quality: 'high' }, 3840, 2160, 'high'],
         ] as const) {
             fetchMock.mockReset();
             fetchMock.mockImplementation(
@@ -1779,13 +1769,30 @@ describe('qimg provider(qimg.cc Adobe Firefly 中转 2.0,onlyQualities=[low,medi
             );
             const res = await gen(req);
             expect(res.status).toBe(200);
+            expect(fetchMock).toHaveBeenCalledTimes(1);
             const [url, init] = fetchMock.mock.calls[0];
             expect(url).toBe('https://qimg.cc/v1/images/generations');
-            expect(JSON.parse(init.body as string).quality ?? 'low').toBe(q); // 缺省不补字段,上游自己默认 low
+            expect((JSON.parse(init.body as string).quality ?? 'low').toLowerCase()).toBe(q); // 缺省不补字段,上游默认 low
             const body = await res.json();
             expect(body.quality).toBe(q);
             expect(body.usage.output_tokens).toBe(officialOutputTokens(w, h, q)); // 上游 1756 浮动值丢弃
         }
+    });
+
+    it('size=auto 原样透传(openAllTiers),按返回图实际尺寸计费 + 回显', async () => {
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(1024, 1024) }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+        const res = await gen({ size: 'auto', quality: 'high' });
+        expect(res.status).toBe(200);
+        expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).size).toBe('auto');
+        const body = await res.json();
+        expect(body.size).toBe('1024x1024');
+        expect(body.usage.output_tokens).toBe(officialOutputTokens(1024, 1024, 'high'));
     });
 
     it('透明请求 → 503 让路不打上游(上游明拒 Transparent background is not supported)', async () => {
