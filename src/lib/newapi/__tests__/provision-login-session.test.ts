@@ -454,14 +454,14 @@ describe('reissueCustomerAccessTokenViaAdminReset (pre-rc.41 customers, no store
         expect(verifies[0].headers['authorization']).toBe('Bearer root.session.jwt');
         expect(verifies[0].body).toEqual({
             method: 'password',
-            scope: 'admin_user.update',
+            scope: 'admin.user.update',
             password: 'root-pw',
             context: { user_id: NEWAPI_USER_ID },
         });
 
         // 3. PUT carries the proof + the full user with a new 8-20 char password
         const put = find('PUT', '/api/user/');
-        expect(put!.headers['x-security-proof']).toBe('proof-admin_user.update');
+        expect(put!.headers['x-security-proof']).toBe('proof-admin.user.update');
         expect(put!.body!.id).toBe(NEWAPI_USER_ID);
         expect(put!.body!.username).toBe(USERNAME);
         const newPassword = String(put!.body!.password);

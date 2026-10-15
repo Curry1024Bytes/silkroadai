@@ -860,7 +860,7 @@ export const CUSTOMER_PAT_NAME = 'portal-act-as';
 
 /** Verification scope new-api binds the PAT-create proof to. */
 const VERIFICATION_SCOPE_ACCESS_TOKEN_GENERATE = 'access_token.generate';
-const VERIFICATION_SCOPE_ADMIN_USER_UPDATE = 'admin_user.update';
+const VERIFICATION_SCOPE_ADMIN_USER_UPDATE = 'admin.user.update';
 
 /** true for a pre-rc.41 32-char `users.access_token`; false for a `nap_` PAT. */
 export function isLegacyNewApiAccessToken(token: string): boolean {
@@ -1052,7 +1052,21 @@ export async function reissueCustomerAccessTokenViaAdminReset(args: {
     });
     // PUT /api/user/ validates the whole struct (username required) → send
     // the fetched user back with only the password changed.
-    await call<null>('PUT', '/api/user/', { ...existing, password: newPassword }, undefined, {
+    // Strip server-managed echoes before sending the user back: a non-null
+    // `admin_permissions` map makes new-api treat the PUT as a permission
+    // rewrite (rc.44 rehearsal finding), gorm:"-" fields are noise.
+    const {
+        admin_permissions: _perm,
+        DeletedAt: _deleted,
+        original_password: _orig,
+        verification_code: _code,
+        ...editable
+    } = existing as NewApiUser & Record<string, unknown>;
+    void _perm;
+    void _deleted;
+    void _orig;
+    void _code;
+    await call<null>('PUT', '/api/user/', { ...editable, password: newPassword }, undefined, {
         session: { auth: args.admin.session, userId: args.admin.userId },
         headers: { 'X-Security-Proof': proof },
     });

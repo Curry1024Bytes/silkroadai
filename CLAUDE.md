@@ -478,7 +478,7 @@ LiteLLM 同时支持 user-level 和 key-level 预算。我们只用 key-level(�
 
 **发新 PAT 的唯一途径**:该用户自己的 dashboard 登录会话(`POST /api/user/login` 的 Bearer JWT;PAT 不能再生 PAT)+ 一次性安全校验:`POST /api/verify {method:'password', scope:'access_token.generate', password, context:{scopes, expires_at}}` → `proof_token` → 以头 `X-Security-Proof` 调 `POST /api/user/access_tokens {name, scopes, expires_at:0}`(0 = 永不过期)。context 必须恰好 `{scopes, expires_at}` 且与 create body 一致。客户 PAT 只给 `api_key:read/write/reveal`。
 
-**portal 侧**:`issueCustomerAccessToken`(`src/lib/newapi/client.ts` section F)按 `NEWAPI_ACCESS_TOKEN_MODE`(auto = 读 `/api/status` version,rc ≥ 41 走 PAT)分流,同一份代码升级前后都能开户。`call()` 已改 `redirect:'manual'`,否则 NoRoute 301 会被 fetch 跟到前端页变成 200 HTML、静默返回 null。存量客户 portal 没存其 new-api 密码 → `scripts/migrate-newapi-legacy-access-tokens.ts`:root 登录 + admin 证明重置客户密码 → 以客户身份发 PAT → 写回。admin 侧用 `admin_user.update` 校验的只有改密码/改权限;`add_quota`、改分组、改备注不需要。
+**portal 侧**:`issueCustomerAccessToken`(`src/lib/newapi/client.ts` section F)按 `NEWAPI_ACCESS_TOKEN_MODE`(auto = 读 `/api/status` version,rc ≥ 41 走 PAT)分流,同一份代码升级前后都能开户。`call()` 已改 `redirect:'manual'`,否则 NoRoute 301 会被 fetch 跟到前端页变成 200 HTML、静默返回 null。存量客户 portal 没存其 new-api 密码 → `scripts/migrate-newapi-legacy-access-tokens.ts`:root 登录 + admin 证明重置客户密码 → 以客户身份发 PAT → 写回。admin 侧用 `admin.user.update` 校验的只有改密码/改权限;`add_quota`、改分组、改备注不需要。
 
 **admin token 本身**:升级后 30 天内在后台「安全与访问」给 root 建具名 PAT(scope 至少 user:read/write、log:read、option:read/write、api_key:\*、channel 相关)替换三处 `.env` 并滚动重启;legacy token 到期前不替换 = 充值入账、余额查询、/keys 全部 401。完整升级方案见 `docs/NEWAPI-RC44-UPGRADE-PLAN.md`。
 
