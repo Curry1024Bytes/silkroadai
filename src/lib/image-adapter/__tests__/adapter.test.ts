@@ -3551,6 +3551,114 @@ describe('frimodeladobe2 provider(frimodel 第五账号,onlyQualities=[low,mediu
     });
 });
 
+describe('junzehigh provider(钧泽 gpt-image-high SKU,10k pool 网关,全量 openAllTiers + upstreamModel 映射 + 透明拒)', () => {
+    const URL_J = 'http://portal.test/image-adapter/junzehigh/v1/images/generations';
+    const gen = (body: Record<string, unknown>) =>
+        handleAdapterImage(
+            jsonReq(URL_J, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', ...body }),
+            'generations',
+            'junzehigh',
+        );
+
+    it('registry:ai.junze.me、upstreamModel=gpt-image-high、openAllTiers、无 sizes/upstreamQuality/onlyQualities/transport、透明拒;brand 抹 junze / 10k pool / ERR 码 / Firefly S3 / 前缀', () => {
+        const p = IMAGE_PROVIDERS.junzehigh;
+        expect(p.baseUrl).toBe('https://ai.junze.me');
+        expect(p.upstreamModel).toBe('gpt-image-high');
+        expect(p.openAllTiers).toBe(true);
+        expect(p.sizes).toBeUndefined();
+        expect(p.upstreamQuality).toBeUndefined();
+        expect(p.onlyQualities).toBeUndefined();
+        expect(p.transport).toBeUndefined();
+        expect(p.noTransparentBackground).toBe(true);
+        expect('junze 钧泽 distributor 10k pool ERR-A3173747BB Adobe firefly'.replace(p.brand, '*')).toBe(
+            '* 钧泽 * * * * *',
+        );
+        expect('https://pre-signed-firefly-prod.s3-accelerate.amazonaws.com/x'.replace(p.brand, '*')).toBe(
+            'https://*/x',
+        );
+        expect('Bad request to openai: Transparent background'.replace(p.brand, '')).toBe('Transparent background');
+    });
+
+    it('三档 × 任意尺寸全放行:上游 model 恒发 gpt-image-high(JSON 与 multipart),quality 原样透传,回显 gpt-image-2 语义 + 官方账单', async () => {
+        for (const [size, q] of [
+            ['1024x1024', 'low'],
+            ['1024x1024', 'medium'],
+            ['1024x1024', 'high'],
+            ['1344x1008', 'low'],
+            ['3840x2160', 'high'],
+        ] as const) {
+            fetchMock.mockReset();
+            okUpstream();
+            const res = await gen({ size, quality: q });
+            expect(res.status).toBe(200);
+            const [url, init] = fetchMock.mock.calls[0];
+            expect(url).toBe('https://ai.junze.me/v1/images/generations');
+            const sent = JSON.parse(init.body as string);
+            expect(sent.model).toBe('gpt-image-high');
+            expect(sent.quality).toBe(q);
+            const [w, h] = size.split('x').map(Number);
+            const body = await res.json();
+            expect(body.quality).toBe(q);
+            expect(body.size).toBe(size);
+            expect(body.usage.output_tokens).toBe(officialOutputTokens(w, h, q));
+        }
+        fetchMock.mockReset();
+        okUpstream();
+        const res = await handleAdapterImage(
+            formReq(
+                'http://portal.test/image-adapter/junzehigh/v1/images/edits',
+                { model: 'gpt-image-2', prompt: 'watercolor', size: '1024x1024', quality: 'high' },
+                [TINY_PNG],
+            ),
+            'edits',
+            'junzehigh',
+        );
+        expect(res.status).toBe(200);
+        const form = fetchMock.mock.calls[0][1].body as FormData;
+        expect(form.get('model')).toBe('gpt-image-high');
+        expect(form.get('quality')).toBe('high');
+    });
+
+    it('size=auto 原样透传(openAllTiers),按返回图实际尺寸计费 + 回显', async () => {
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(1024, 1024) }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+        const res = await gen({ size: 'auto', quality: 'high' });
+        expect(res.status).toBe(200);
+        expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).size).toBe('auto');
+        const body = await res.json();
+        expect(body.size).toBe('1024x1024');
+        expect(body.usage.output_tokens).toBe(officialOutputTokens(1024, 1024, 'high'));
+    });
+
+    it('透明请求 → 503 让路不打上游;上游 503 10k pool / 429 并发上限 / 502 → 503 中性体不泄品牌与 ERR 码', async () => {
+        okUpstream();
+        const r0 = await gen({ quality: 'low', background: 'transparent' });
+        expect(r0.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+        for (const [status, msg, type] of [
+            [503, '10k pool upstream unavailable', 'pool_upstream_unavailable'],
+            [429, 'generation concurrency limit reached; retry shortly', 'rate_limited'],
+            [429, 'account selection is busy; retry shortly', 'rate_limited'],
+            [502, '10k pool upstream unavailable', 'server_error'],
+        ] as const) {
+            fetchMock.mockReset();
+            fetchMock.mockResolvedValue(
+                new Response(JSON.stringify({ error: { message: msg, type, param: '', code: 'ERR-ECB7236D2D' } }), {
+                    status,
+                }),
+            );
+            const r = await gen({ quality: 'high' });
+            expect(r.status).toBe(503);
+            expect(await r.text()).not.toMatch(/junze|钧泽|10k pool|ERR-/i);
+        }
+    });
+});
+
 describe('junze / junzestable provider(钧泽 API,Firefly 转售,openAllTiers 紧急备用线)', () => {
     const URL_JUNZE = 'http://portal.test/image-adapter/junze/v1/images/generations';
     const URL_STABLE = 'http://portal.test/image-adapter/junzestable/v1/images/generations';

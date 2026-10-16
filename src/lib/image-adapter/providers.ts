@@ -405,6 +405,22 @@ export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
         openAllTiers: true,
         noTransparentBackground: true,
     },
+    // junzehigh:钧泽 API 的 `gpt-image-high` SKU(2026-10-14 公告新增,$0.07/张一口价不分尺寸档位;同 key sk-Wwqj)。
+    // 2026-10-15/16 实测:走的是「10k pool」网关(与 qimg key1 / ztyunjuan 逐字相同的错误文案 + ERR- 码生成器 + 9 key 成功壳,
+    // 调 gpt-image-high 回显 model=gpt-image-2;后面是 Adobe Firefly,全 Adobe Inc. 签名 → 由剥离逻辑处理)。
+    //  - **三档真**(10-16 25/25):1K low 20s / medium 59s / high 132–135s(usage 7024);4K low 49s / medium 70s / high 104s(13342),
+    //    4K PNG 11.3 / 14.3 / 16.1 MB 单调;1344×1008 / 2048² / 2880² / 4K 全如实;auto → 1024²;1000 → 1008²;edits 通;
+    //  - 透明 → 400 `Transparent background is not supported for this model` → noTransparentBackground;xhigh → 400;
+    //  - 可用性随池按天波动:10-15 7/27(10k pool unavailable + 429 `generation concurrency limit reached` / `account selection is busy`,
+    //    10 并发即 429),10-16 25/25 零 429。n=2 返 1 张(适配器扇出)。
+    // 【全量线(operator 2026-10-16 拍板)】openAllTiers;客户仍叫 gpt-image-2,上游模型名用 upstreamModel 映射成 gpt-image-high。
+    junzehigh: {
+        baseUrl: 'https://ai.junze.me',
+        brand: /\bjun-?ze\b|\bdistributor\b|\b10k pool\b|\bERR-[0-9A-F]{6,}\b|pre-signed-firefly[a-z0-9.-]*|s3-accelerate[a-z0-9.-]*|bad request to openai:?\s*|\badobe\b|\bfirefly\b/gi,
+        upstreamModel: 'gpt-image-high',
+        openAllTiers: true,
+        noTransparentBackground: true,
+    },
     // ---- yuanshudian(元数点 API,api.yuanshudian.com)2026-09-28 接入,【全量线】----
     // 定位:openAllTiers 全量兜底(同 pandatk / ominiapifull / oaidistfull / junze 那批):不设 gateMinCt,
     // 所有档位含 size=auto 都接,按【客户请求尺寸 + quality】合成官方账单(#496)。
