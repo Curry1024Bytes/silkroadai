@@ -3551,6 +3551,127 @@ describe('frimodeladobe2 provider(frimodel 第五账号,onlyQualities=[low,mediu
     });
 });
 
+describe('llmway provider(Firefly 线只渲染 medium;全量 openAllTiers + low/high→medium 上游替换、回显/计费按请求档 + 透明拒)', () => {
+    const URL_L = 'http://portal.test/image-adapter/llmway/v1/images/generations';
+    const gen = (body: Record<string, unknown>) =>
+        handleAdapterImage(
+            jsonReq(URL_L, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', ...body }),
+            'generations',
+            'llmway',
+        );
+
+    it('registry:llmway.ai、openAllTiers、upstreamQuality {low→medium, high→medium}、无 sizes/onlyQualities/transport、透明拒;brand 抹 llmway / 熔断文案 / poll failed / Firefly S3 / 前缀', () => {
+        const p = IMAGE_PROVIDERS.llmway;
+        expect(p.baseUrl).toBe('https://llmway.ai');
+        expect(p.openAllTiers).toBe(true);
+        expect(p.upstreamQuality).toEqual({ low: 'medium', high: 'medium' });
+        expect(p.sizes).toBeUndefined();
+        expect(p.onlyQualities).toBeUndefined();
+        expect(p.transport).toBeUndefined();
+        expect(p.noTransparentBackground).toBe(true);
+        expect('llmway llm-way llm-gpt-2-medium Adobe firefly'.replace(p.brand, '*')).toBe('* * * * *');
+        expect(
+            'All 1 channels for model gpt-image-2 under group llm-gpt-2-medium are temporarily suspended by circuit breaker (last upstream error: status_429), auto-recovery probe in ~121s (request id: x)'.replace(
+                p.brand,
+                '*',
+            ),
+        ).toBe(
+            'All 1 channels for model gpt-image-2 under group * are temporarily suspended by * (last upstream error: status_429), *(request id: x)',
+        );
+        expect('poll failed: 400 Bad request to openai: Transparent background'.replace(p.brand, '')).toBe(
+            '400 Transparent background',
+        );
+        expect('https://pre-signed-firefly-prod.s3-accelerate.amazonaws.com/x'.replace(p.brand, '*')).toBe(
+            'https://*/x',
+        );
+    });
+
+    it('三档 × 任意尺寸全放行:上游 quality 恒发 medium(JSON 与 multipart),回显与计费按客户请求档', async () => {
+        for (const [size, q] of [
+            ['1024x1024', 'low'],
+            ['1024x1024', 'medium'],
+            ['1024x1024', 'high'],
+            ['1024x1024', 'HIGH'],
+            ['1344x1008', 'low'],
+            ['3840x2160', 'high'],
+        ] as const) {
+            fetchMock.mockReset();
+            okUpstream();
+            const res = await gen({ size, quality: q });
+            expect(res.status).toBe(200);
+            const [url, init] = fetchMock.mock.calls[0];
+            expect(url).toBe('https://llmway.ai/v1/images/generations');
+            const sent = JSON.parse(init.body as string);
+            expect(sent.model).toBe('gpt-image-2');
+            expect(sent.quality).toBe('medium');
+            const [w, h] = size.split('x').map(Number);
+            const body = await res.json();
+            expect(body.quality).toBe(q.toLowerCase());
+            expect(body.size).toBe(size);
+            expect(body.usage.output_tokens).toBe(
+                officialOutputTokens(w, h, q.toLowerCase() as 'low' | 'medium' | 'high'),
+            );
+        }
+        fetchMock.mockReset();
+        okUpstream();
+        const res = await handleAdapterImage(
+            formReq(
+                'http://portal.test/image-adapter/llmway/v1/images/edits',
+                { model: 'gpt-image-2', prompt: 'watercolor', size: '1024x1024', quality: 'high' },
+                [TINY_PNG],
+            ),
+            'edits',
+            'llmway',
+        );
+        expect(res.status).toBe(200);
+        const form = fetchMock.mock.calls[0][1].body as FormData;
+        expect(form.get('quality')).toBe('medium');
+        expect(((await res.json()) as { quality: string }).quality).toBe('high');
+    });
+
+    it('size=auto 原样透传(openAllTiers),按返回图实际尺寸计费 + 回显', async () => {
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(1402, 1122) }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+        const res = await gen({ size: 'auto', quality: 'low' });
+        expect(res.status).toBe(200);
+        expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).size).toBe('auto');
+        const body = await res.json();
+        expect(body.size).toBe('1402x1122');
+        expect(body.usage.output_tokens).toBe(officialOutputTokens(1402, 1122, 'low'));
+    });
+
+    it('透明请求 → 503 让路不打上游;上游 503 熔断 / 500 poll failed / 429 → 503 中性体不泄品牌与熔断文案', async () => {
+        okUpstream();
+        const r0 = await gen({ quality: 'low', background: 'transparent' });
+        expect(r0.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+        for (const [status, msg, code] of [
+            [
+                503,
+                'All 1 channels for model gpt-image-2 under group llm-gpt-2-medium are temporarily suspended by circuit breaker (last upstream error: status_429: no active tokens available), auto-recovery probe in ~121s',
+                'channel_circuit_open',
+            ],
+            [500, 'poll failed: 502 upstream gone (llmway)', 'new_api_error'],
+            [429, 'no active tokens available', 'rate_limited'],
+        ] as const) {
+            fetchMock.mockReset();
+            fetchMock.mockResolvedValue(
+                new Response(JSON.stringify({ error: { message: msg, type: 'new_api_error', param: '', code } }), {
+                    status,
+                }),
+            );
+            const r = await gen({ quality: 'high' });
+            expect(r.status).toBe(503);
+            expect(await r.text()).not.toMatch(/llmway|llm-gpt-2|circuit breaker|poll failed/i);
+        }
+    });
+});
+
 describe('junzehigh provider(钧泽 gpt-image-high SKU,10k pool 网关,全量 openAllTiers + upstreamModel 映射 + 透明拒)', () => {
     const URL_J = 'http://portal.test/image-adapter/junzehigh/v1/images/generations';
     const gen = (body: Record<string, unknown>) =>

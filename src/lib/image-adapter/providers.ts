@@ -421,6 +421,23 @@ export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
         openAllTiers: true,
         noTransparentBackground: true,
     },
+    // llmway:llmway.ai「生图分组」key(sk-UP8r…;与 2.5 适配器的 llmway25 不同 key 不同线)。2026-10-16 实测 gpt-image-2:
+    //  - Adobe Firefly 线(全 Adobe Inc. 签名 → 剥离逻辑处理;Firefly S3 预签名 url 拉回);$0.06/张一口价(quota_type=1)不分尺寸档位;
+    //  - **上游只渲染 medium**(内部组名 llm-gpt-2-medium;1K high 58–61s = medium 61s,4K 三档延迟 51/56/56s、PNG 15.3/15.5/15.7 MB
+    //    无差;xhigh 不报错照收回显 medium)→ operator 2026-10-16 拍板「缺资源,接全量,low/high 都用 medium 替代,响应体由适配器
+    //    合成」:upstreamQuality low→medium / high→medium,回显与计费仍按客户请求档(同 pixellelabs high→medium 的做法);
+    //  - 尺寸 1344×1008 / 2048² / 2880² / 4K 如实;auto → 1402×1122;1000→1024²;n=2 返 1(扇出);webp 忽略;edits 通;
+    //  - 透明 → 500 `poll failed: 400 Bad request to openai: Transparent background is not supported` → noTransparentBackground;
+    //  - usage 表是自家的(1024² 383/574/765…)→ 适配器自算忽略;
+    //  - ⚠️ llmway 侧该模型只挂 1 条渠道,上游账号池空即整线熔断(503 channel_circuit_open「temporarily suspended by circuit breaker」,
+    //    10-16 停 >1h)→ 503 failover;放最低位。
+    llmway: {
+        baseUrl: 'https://llmway.ai',
+        brand: /\bllm-?way\b|\bllm-gpt-2-[a-z]+\b|circuit breaker|auto-recovery probe[^(]*|\bpoll failed:?\s*|pre-signed-firefly[a-z0-9.-]*|s3-accelerate[a-z0-9.-]*|bad request to openai:?\s*|\badobe\b|\bfirefly\b/gi,
+        openAllTiers: true,
+        upstreamQuality: { low: 'medium', high: 'medium' },
+        noTransparentBackground: true,
+    },
     // ---- yuanshudian(元数点 API,api.yuanshudian.com)2026-09-28 接入,【全量线】----
     // 定位:openAllTiers 全量兜底(同 pandatk / ominiapifull / oaidistfull / junze 那批):不设 gateMinCt,
     // 所有档位含 size=auto 都接,按【客户请求尺寸 + quality】合成官方账单(#496)。
