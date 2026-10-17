@@ -3551,6 +3551,136 @@ describe('frimodeladobe2 provider(frimodel 第五账号,onlyQualities=[low,mediu
     });
 });
 
+describe('luckfill provider(Firefly 转售真 OpenAI 字节、只渲染 medium;全量 openAllTiers + low/high→medium 替换 + 透明拒)', () => {
+    const URL_F = 'http://portal.test/image-adapter/luckfill/v1/images/generations';
+    const gen = (body: Record<string, unknown>) =>
+        handleAdapterImage(
+            jsonReq(URL_F, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', ...body }),
+            'generations',
+            'luckfill',
+        );
+
+    it('registry:api.luckfill.com、openAllTiers、upstreamQuality {low→medium, high→medium}、无 sizes/onlyQualities/transport、透明拒;brand 抹 luckfill / submit|poll failed / Firefly S3 / 前缀', () => {
+        const p = IMAGE_PROVIDERS.luckfill;
+        expect(p.baseUrl).toBe('https://api.luckfill.com');
+        expect(p.openAllTiers).toBe(true);
+        expect(p.upstreamQuality).toEqual({ low: 'medium', high: 'medium' });
+        expect(p.sizes).toBeUndefined();
+        expect(p.onlyQualities).toBeUndefined();
+        expect(p.transport).toBeUndefined();
+        expect(p.noTransparentBackground).toBe(true);
+        expect('luckfill luck-fill adobe特价 Adobe firefly'.replace(p.brand, '*')).toBe('* * * * *');
+        expect('poll failed: 400 Bad request to openai: Transparent background'.replace(p.brand, '')).toBe(
+            '400 Transparent background',
+        );
+        expect('submit failed: 451 legal_error'.replace(p.brand, '')).toBe('451 legal_error');
+        expect('https://pre-signed-firefly-prod.s3-accelerate.amazonaws.com/x'.replace(p.brand, '*')).toBe(
+            'https://*/x',
+        );
+    });
+
+    it('三档 × 任意尺寸全放行:上游 quality 恒发 medium(JSON 与 multipart),回显与计费按客户请求档', async () => {
+        for (const [size, q] of [
+            ['1024x1024', 'low'],
+            ['1024x1024', 'medium'],
+            ['1024x1024', 'high'],
+            ['1344x1008', 'low'],
+            ['3840x2160', 'high'],
+        ] as const) {
+            fetchMock.mockReset();
+            okUpstream();
+            const res = await gen({ size, quality: q });
+            expect(res.status).toBe(200);
+            const [url, init] = fetchMock.mock.calls[0];
+            expect(url).toBe('https://api.luckfill.com/v1/images/generations');
+            const sent = JSON.parse(init.body as string);
+            expect(sent.model).toBe('gpt-image-2');
+            expect(sent.quality).toBe('medium');
+            const [w, h] = size.split('x').map(Number);
+            const body = await res.json();
+            expect(body.quality).toBe(q);
+            expect(body.size).toBe(size);
+            expect(body.usage.output_tokens).toBe(officialOutputTokens(w, h, q));
+        }
+        fetchMock.mockReset();
+        okUpstream();
+        const res = await handleAdapterImage(
+            formReq(
+                'http://portal.test/image-adapter/luckfill/v1/images/edits',
+                { model: 'gpt-image-2', prompt: 'watercolor', size: '1024x1024', quality: 'low' },
+                [TINY_PNG],
+            ),
+            'edits',
+            'luckfill',
+        );
+        expect(res.status).toBe(200);
+        const form = fetchMock.mock.calls[0][1].body as FormData;
+        expect(form.get('quality')).toBe('medium');
+        expect(((await res.json()) as { quality: string }).quality).toBe('low');
+    });
+
+    it('size=auto 原样透传,按返回图实际尺寸(上游 auto → 2048²)计费 + 回显', async () => {
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(2048, 2048) }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+        const res = await gen({ size: 'auto', quality: 'low' });
+        expect(res.status).toBe(200);
+        expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).size).toBe('auto');
+        const body = await res.json();
+        expect(body.size).toBe('2048x2048');
+        expect(body.usage.output_tokens).toBe(officialOutputTokens(2048, 2048, 'low'));
+    });
+
+    it('透明请求 → 503 让路不打上游;上游 451 legal_error → 终态 400 内容安全(不泄品牌);上游 500 poll failed → 503 中性体', async () => {
+        okUpstream();
+        const r0 = await gen({ quality: 'low', background: 'transparent' });
+        expect(r0.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+
+        fetchMock.mockReset();
+        fetchMock.mockResolvedValue(
+            new Response(
+                JSON.stringify({
+                    error: {
+                        message: 'submit failed: 451 {"error_code":"legal_error","message":""}',
+                        type: 'api_error',
+                        param: '',
+                        code: 'api_error',
+                    },
+                }),
+                { status: 451 },
+            ),
+        );
+        const r1 = await gen({ quality: 'high' });
+        expect(r1.status).toBe(400);
+        const t1 = await r1.text();
+        expect(JSON.parse(t1).error.code).toBe('moderation_blocked');
+        expect(t1).not.toMatch(/luckfill|submit failed/i);
+
+        fetchMock.mockReset();
+        fetchMock.mockResolvedValue(
+            new Response(
+                JSON.stringify({
+                    error: {
+                        message: 'poll failed: 502 upstream gone (luckfill)',
+                        type: 'api_error',
+                        param: '',
+                        code: 'api_error',
+                    },
+                }),
+                { status: 500 },
+            ),
+        );
+        const r2 = await gen({ quality: 'medium' });
+        expect(r2.status).toBe(503);
+        expect(await r2.text()).not.toMatch(/luckfill|poll failed/i);
+    });
+});
+
 describe('llmway provider(Firefly 线只渲染 medium;全量 openAllTiers + low/high→medium 上游替换、回显/计费按请求档 + 透明拒)', () => {
     const URL_L = 'http://portal.test/image-adapter/llmway/v1/images/generations';
     const gen = (body: Record<string, unknown>) =>

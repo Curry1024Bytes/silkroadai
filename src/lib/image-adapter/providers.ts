@@ -438,6 +438,22 @@ export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
         upstreamQuality: { low: 'medium', high: 'medium' },
         noTransparentBackground: true,
     },
+    // luckfill:api.luckfill.com「平价 api」adobe特价组 key(sk-ZPfu…,gr 0.3)。2026-10-17 实测 gpt-image-2 26 发 24 成:
+    //  - Firefly 转售的真 OpenAI 字节(全 OpenAI Media Service 签名 `API/gpt-image-2`,Firefly S3 预签名 url 拉回;签名保留);
+    //  - **上游只渲染 medium**(组描述「image2 中质量」;low/high/xhigh 全回显 medium,1K ct 恒 1056,延迟 high=medium;
+    //    ct 表 1056/1568/1584/2247/3336 与钧泽 2.0 逐项相同 = 同一条 Firefly medium 线)→ operator 2026-10-18 拍板「全量,
+    //    medium 替代 low/high」:upstreamQuality low→medium / high→medium,回显与计费按客户请求档(同 llmway / pixellelabs);
+    //  - $0.03/张一口价(quota_type=1,0.1 × gr 0.3)不分尺寸档位,medium 档 Firefly 线里最便宜;
+    //  - 尺寸 1344×1008 / 2048² / 2880² / 4K 如实;auto → 2048²(非官方);1000→1008²;n=2 原生返 2 张(2.0 适配器仍扇出单张);
+    //    webp 忽略;edits 通;透明 → 400 `poll failed: 400 Bad request to openai: Transparent…` → noTransparentBackground;
+    //  - ⚠️ 内容审核随机误杀:`a red apple on a white table` 一发 451 `legal_error`(1/26)→ #504 逻辑按内容安全终态 400 返客户。
+    luckfill: {
+        baseUrl: 'https://api.luckfill.com',
+        brand: /\bluck-?fill\b|adobe特价|\b(?:submit|poll) failed:?\s*|pre-signed-firefly[a-z0-9.-]*|s3-accelerate[a-z0-9.-]*|bad request to openai:?\s*|\badobe\b|\bfirefly\b/gi,
+        openAllTiers: true,
+        upstreamQuality: { low: 'medium', high: 'medium' },
+        noTransparentBackground: true,
+    },
     // ---- yuanshudian(元数点 API,api.yuanshudian.com)2026-09-28 接入,【全量线】----
     // 定位:openAllTiers 全量兜底(同 pandatk / ominiapifull / oaidistfull / junze 那批):不设 gateMinCt,
     // 所有档位含 size=auto 都接,按【客户请求尺寸 + quality】合成官方账单(#496)。
