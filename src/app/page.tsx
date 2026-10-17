@@ -668,7 +668,7 @@ function HowItWorks() {
                     title="充值开通"
                     body={
                         <>
-                            支付宝 / 微信 ¥10 起,<strong>首充独享 +20% 积分</strong>
+                            支付宝 / 微信 ¥10 起,<strong>单笔最高 ¥10000</strong>
                         </>
                     }
                 />

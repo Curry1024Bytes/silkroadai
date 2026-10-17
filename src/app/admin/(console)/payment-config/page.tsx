@@ -364,8 +364,8 @@ function PaymentConfigContent() {
                 setRcEnabledProviders(configuredProviders.join(','));
                 setRcEnabledPaymentTypes(d.ENABLED_PAYMENT_TYPES || '');
                 setRcMinAmount(d.RECHARGE_MIN_AMOUNT || '1');
-                setRcMaxAmount(d.RECHARGE_MAX_AMOUNT || '1000');
-                setRcDailyLimit(d.DAILY_RECHARGE_LIMIT || '10000');
+                setRcMaxAmount(d.RECHARGE_MAX_AMOUNT || '10000');
+                setRcDailyLimit(d.DAILY_RECHARGE_LIMIT || '100000');
                 setRcOrderTimeout(d.ORDER_TIMEOUT_MINUTES || '5');
                 if (d.MAX_PENDING_ORDERS) setRcMaxPendingOrders(d.MAX_PENDING_ORDERS);
 

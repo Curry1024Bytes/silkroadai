@@ -26,6 +26,9 @@ import { NextRequest } from 'next/server';
 import { Prisma } from '@prisma/client';
 import { generateSign } from '@/lib/easy-pay/sign';
 
+// 2026-10-17: 首充 bonus 已下架(prod 开关 false)。mock 成 true 让下面 W6 D1 e2e 继续守护机制。
+vi.mock('@/lib/order/first-recharge-bonus', () => ({ isFirstRechargeBonusEnabled: () => true }));
+
 // ─────────────────────────────────────────────────────────────────────────
 // Stateful prisma mock — small in-memory state so a single test can thread
 // reads/writes across the multi-step recharge flow (CAS lock, dedup check,

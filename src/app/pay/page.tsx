@@ -18,7 +18,6 @@ import { getEnabledPaymentTypes } from '@/lib/payment/resolve-enabled-types';
 import { Logo } from '@/components/brand/Logo';
 import { Card } from '@/components/ui/Card';
 import { PayForm } from './pay-form';
-import { FirstRechargeBonusBanner } from './first-recharge-bonus-banner';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: '充值 — Silk Road AI' };
@@ -72,11 +71,6 @@ export default async function PayPage({
                 <p className="m-0 mb-5 text-sm text-muted-ink">
                     登录账户:<strong className="text-navy">{user.email}</strong>
                 </p>
-                {/* W6 D1: 首充 20% bonus 横幅。only render 给还没拿过 bonus 的
-                 *  user — 字段在 getCurrentUser 返回的 User 上。banner 仅 UI 提示,
-                 *  真正的入账与 race-safe 防护在 executeRecharge 的事务内 CAS
-                 *  lock,不依赖 banner 状态。 */}
-                {user.first_recharge_bonus_granted === false && <FirstRechargeBonusBanner />}
                 <PayForm enabledPaymentTypes={enabledTypes} />
                 {/* 充值失败求助入口:第三方支付网关偶发超时(易支付网关侧问题),
                  *  给客户一个人工兜底渠道。文案与微信号按 operator 提供的原样展示,

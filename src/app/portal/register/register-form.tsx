@@ -231,9 +231,7 @@ export function RegisterForm() {
                             ✓ 已自动填入推荐码,可修改或清空
                         </p>
                     ) : (
-                        <p className="m-0 mt-1 text-xs text-minor-ink">
-                            有效邀请码可在首充时获得 +30% 积分(默认 +20%)。
-                        </p>
+                        <p className="m-0 mt-1 text-xs text-minor-ink">有邀请码 / 推荐码可在此填写(选填)。</p>
                     )}
                 </div>
 

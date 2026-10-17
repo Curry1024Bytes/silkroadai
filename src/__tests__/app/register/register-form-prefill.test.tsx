@@ -39,7 +39,7 @@ describe('<RegisterForm /> prefill from ?invite=', () => {
         mockGet.mockReturnValue(null);
         const html = strip(renderToString(<RegisterForm />));
         // Default hint shows (not the prefill one).
-        expect(html).toContain('有效邀请码可在首充时获得');
+        expect(html).toContain('有邀请码 / 推荐码可在此填写');
         expect(html).not.toContain('已自动填入推荐码');
         // Invite input is empty.
         expect(html).toMatch(/id="register-invite"[^>]*value=""/);
@@ -55,7 +55,7 @@ describe('<RegisterForm /> prefill from ?invite=', () => {
         expect(html).toContain('data-prefill-source="invite-link"');
         expect(html).toContain('text-emerald-700');
         // Default hint should be REPLACED, not co-shown
-        expect(html).not.toContain('有效邀请码可在首充时获得');
+        expect(html).not.toContain('有邀请码 / 推荐码可在此填写');
     });
 
     it('?invite= trimmed (surrounding whitespace stripped)', () => {

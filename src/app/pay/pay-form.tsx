@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/Input';
 
 /** Default tiers (CNY). Approved values from W4-1 D2 brief — adjust by
  *  editing this constant; no DB-config knob exists yet. */
-const DEFAULT_TIERS_CNY = [10, 30, 100, 300, 1000];
+const DEFAULT_TIERS_CNY = [10, 30, 100, 300, 1000, 5000, 10000];
 
 /** Friendly label for known payment-type strings. The registry returns codes
  *  like "alipay" / "wxpay" / "stripe" — render Chinese names for portal users. */
@@ -102,7 +102,7 @@ export function PayForm({ enabledPaymentTypes }: { enabledPaymentTypes: string[]
         <form onSubmit={handleSubmit}>
             <fieldset className="border-0 p-0 m-0 mb-5">
                 <legend className="text-sm text-muted-ink p-0 mb-2">选择金额(CNY)</legend>
-                <div className="grid grid-cols-5 gap-1.5">
+                <div className="grid grid-cols-4 sm:grid-cols-7 gap-1.5">
                     {DEFAULT_TIERS_CNY.map((tier) => {
                         const active = selectedTier === tier;
                         return (

@@ -119,6 +119,11 @@ const mockSyncNewapiGate = vi.fn();
 vi.mock('@/lib/billing/ledger', () => ({ applyLedgerEntry: (...args: unknown[]) => mockApplyLedgerEntry(...args) }));
 vi.mock('@/lib/billing/newapi-gate', () => ({ syncNewapiGate: (...args: unknown[]) => mockSyncNewapiGate(...args) }));
 
+// 2026-10-17: bonus 已下架(prod 开关 false)。这里把开关 mock 成 true 让 W6 D1 / W7 D4
+// 的 race-safe 机制测试继续守护代码;「开关关着 → 零 bonus」单独一条测试覆盖。
+const mockBonusEnabled = vi.fn(() => true);
+vi.mock('@/lib/order/first-recharge-bonus', () => ({ isFirstRechargeBonusEnabled: () => mockBonusEnabled() }));
+
 import { executeRecharge, OrderError, FIRST_RECHARGE_BONUS_RATE } from '@/lib/order/service';
 
 const ORDER_ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
@@ -369,6 +374,35 @@ describe('executeRecharge — first-recharge bonus (W6 D1)', () => {
         await executeRecharge(ORDER_ID);
 
         // No CAS-claim because peek already showed granted=true (data self-heal)
+        expect(mockUserUpdateMany).not.toHaveBeenCalled();
+        expect(mockApplyTopup).toHaveBeenCalledWith({
+            newapi_user_id: NEWAPI_USER_ID,
+            cnyAmount,
+            extraBonusQuota: 0,
+        });
+        expect(mockRechargeLogUpdate).toHaveBeenCalledWith(
+            expect.objectContaining({
+                data: expect.objectContaining({
+                    bonus_quota_added: BigInt(0),
+                    newapi_quota_added: BigInt(mainQuota),
+                }),
+            }),
+        );
+    });
+
+    it('switch OFF (2026-10-17 下架, prod default): granted=false but no bonus, no CAS-claim, flag untouched', async () => {
+        mockBonusEnabled.mockReturnValueOnce(false);
+        mockOrderFindUnique.mockResolvedValue(pendingOrder({ amount: new Prisma.Decimal('100.00') }));
+        mockUserFindUnique.mockResolvedValue(userRow({ first_recharge_bonus_granted: false }));
+        mockRechargeLogFindFirst.mockResolvedValue(null);
+        mockNewapiGetUser
+            .mockResolvedValueOnce({ id: NEWAPI_USER_ID, quota: 0 })
+            .mockResolvedValueOnce({ id: NEWAPI_USER_ID, quota: mainQuota });
+        mockApplyTopup.mockResolvedValue(undefined);
+
+        await executeRecharge(ORDER_ID);
+
+        // Switch off → never claim (user keeps granted=false; re-enabling later would honor it)
         expect(mockUserUpdateMany).not.toHaveBeenCalled();
         expect(mockApplyTopup).toHaveBeenCalledWith({
             newapi_user_id: NEWAPI_USER_ID,
