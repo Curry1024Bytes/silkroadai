@@ -316,7 +316,8 @@ describe('seedance-cn adapter submit', () => {
         expect(b.generate_audio).toBe(false);
     });
 
-    it('global 长名 → 打海外 base(ai.artsmcp.com)+ 上游 intl 模型名', async () => {
+    it('global 长名(未配 svcinf key 时)→ 回落海外 base(ai.artsmcp.com)+ 上游 intl 模型名', async () => {
+        vi.stubEnv('SEEDANCE_SVCINF_GLOBAL_KEY', '');
         const res = await submitVideo(makeReq({ model: 'seedance2.0-global-mini-720p', prompt: 'x', duration: 5 }));
         expect(res.status).toBe(200);
         const call = mockFetch.mock.calls.find((c) => String(c[0]).startsWith(INTL));
@@ -1045,7 +1046,7 @@ describe('国内版 2.5 480p 单档 → service-inference.ai(缺省 /v2,env 可�
 /**
  * 海外版 proMax 全档换上游 → service-inference.ai dreamina-sd-max 线(2026-10-15,operator 指定;对客模型/价格不变)。
  * 独立 key `SEEDANCE_SVCINF_PROMAX_KEY` + 独立版本 env `SEEDANCE_SVCINF_PROMAX_API_VERSION`(缺省 /v2);
- * 未配 key 回落 artsmcp intl 线。global 区不动。
+ * 未配 key 回落 artsmcp intl 线。global 区 2026-10-17 同线(独立 GLOBAL key)。
  */
 describe('海外版 proMax 全档 → service-inference.ai dreamina(独立 key / 版本;未配回落 artsmcp)', () => {
     const SVC = 'https://model.service-inference.ai';
@@ -1190,14 +1191,59 @@ describe('海外版 proMax 全档 → service-inference.ai dreamina(独立 key /
         expect(rememberVolcId).not.toHaveBeenCalled();
     });
 
-    it('global 区不受影响:seedance2.0-global-pro-720p / seedance2.5-global-720p 仍打 artsmcp intl', async () => {
-        for (const model of ['seedance2.0-global-pro-720p', 'seedance2.5-global-720p']) {
+    it('global 区(2026-10-17 同线,独立 key):pro/fast/mini/2.5 各档 → svcinf dreamina,用 GLOBAL key 不用 PROMAX key', async () => {
+        vi.stubEnv('SEEDANCE_SVCINF_GLOBAL_KEY', 'sk-inf-v1-global-platform-key');
+        for (const [model, up, res] of [
+            ['seedance2.0-global-pro-480p', 'dreamina-seedance-2-0-260128-max', '480p'],
+            ['seedance2.0-global-pro-4k', 'dreamina-seedance-2-0-260128-max', '4k'],
+            ['seedance2.0-global-fast-720p', 'dreamina-seedance-2-0-fast-260128-max', '720p'],
+            ['seedance2.0-global-mini-480p', 'dreamina-seedance-2-0-mini-260615-max', '480p'],
+            ['seedance2.5-global-480p', 'dreamina-seedance-2-5-260628-max', '480p'],
+            ['seedance2.5-global-1080p', 'dreamina-seedance-2-5-260628-max', '1080p'],
+        ]) {
+            mockFetch.mockClear();
+            const r = await submitVideo(makeReq({ model, prompt: 'x' }, 'Bearer sk-cb097-artsmcp-row'));
+            expect(r.status).toBe(200);
+            const call = svcSubmitCall();
+            expect(call).toBeDefined();
+            expect((call![1] as RequestInit).headers).toMatchObject({
+                Authorization: 'Bearer sk-inf-v1-global-platform-key',
+            });
+            expect(svcSent().model).toBe(up);
+            expect(svcSent().resolution).toBe(res);
+            expect(mockFetch.mock.calls.some((c) => String(c[0]).startsWith(INTL))).toBe(false);
+        }
+    });
+
+    it('global fast/mini 1080p(新上游无此档)仍走 artsmcp intl,即使 GLOBAL key 已配', async () => {
+        vi.stubEnv('SEEDANCE_SVCINF_GLOBAL_KEY', 'sk-inf-v1-global-platform-key');
+        for (const model of ['seedance2.0-global-fast-1080p', 'seedance2.0-global-mini-1080p']) {
             mockFetch.mockClear();
             const r = await submitVideo(makeReq({ model, prompt: 'x' }));
             expect(r.status).toBe(200);
             expect(mockFetch.mock.calls.some((c) => String(c[0]).startsWith(SVC))).toBe(false);
             expect(mockFetch.mock.calls.some((c) => String(c[0]) === `${INTL}/v1/video/generations`)).toBe(true);
         }
+    });
+
+    it('global 未配 GLOBAL key → 回落 artsmcp,不借 PROMAX key', async () => {
+        vi.stubEnv('SEEDANCE_SVCINF_GLOBAL_KEY', '');
+        const r = await submitVideo(makeReq({ model: 'seedance2.0-global-pro-720p', prompt: 'x' }));
+        expect(r.status).toBe(200);
+        expect(mockFetch.mock.calls.some((c) => String(c[0]).startsWith(SVC))).toBe(false);
+        expect(mockFetch.mock.calls.some((c) => String(c[0]) === `${INTL}/v1/video/generations`)).toBe(true);
+    });
+
+    it('轮询(region=global):映射 mvt- → 用 GLOBAL key 打 /v2/video/tasks', async () => {
+        vi.stubEnv('SEEDANCE_SVCINF_GLOBAL_KEY', 'sk-inf-v1-global-platform-key');
+        mapTaskOnce('mvt-promax1', 'v2');
+        const { pollVideoWithKey } = await import('../cn-adapter');
+        const res = await pollVideoWithKey('cgt-g', 'Bearer sk-cb097-artsmcp-row', 'global');
+        expect(res.status).toBe(200);
+        const call = mockFetch.mock.calls.find((c) => String(c[0]) === `${SVC}/v2/video/tasks/mvt-promax1`);
+        expect((call![1] as RequestInit).headers).toMatchObject({
+            Authorization: 'Bearer sk-inf-v1-global-platform-key',
+        });
     });
 
     it('轮询(region=promax):映射 mvt- + 版本 v2 → GET /v2/video/tasks/{mvt},用 proMax 平台 key,归一 completed', async () => {

@@ -178,20 +178,10 @@ function resolveEnterpriseModel(
     if (!(RESOLUTIONS as readonly string[]).includes(resRaw)) {
         return { error: errJson(400, 'invalid_request', 'resolution 仅支持 480p / 720p / 1080p / 4k') };
     }
-    // 海外版(global)上游无 480p(intl 三变体实测均拒,2026-08-06);国内/火山有 480p;
-    // proMax 2026-10-15 换 service-inference.ai 后四档全有 480p(2026-08-08~10-15 artsdance intl 时期曾无)
-    if (region === 'global' && resRaw === '480p') {
-        return {
-            error: errJson(
-                400,
-                'invalid_request',
-                `${rawModel} 无 480p 档(海外版仅 720p / 1080p / 4k);480p 请用国内版`,
-            ),
-        };
-    }
+    // 480p:四个 region 现在都有(cn/volc 一直有;proMax 2026-10-15、global 2026-10-17 换 service-inference.ai 后开放;
+    // 2026-08-06~ 期间 artsdance intl 上游无 480p 时 global/proMax 曾在这里 400)。
     if (resRaw === '4k' && variant !== 'pro' && variant !== 'promax') {
-        const tiers = region === 'global' ? '720p / 1080p' : '480p / 720p / 1080p';
-        return { error: errJson(400, 'invalid_request', `${rawModel} 无 4k 档(resolution 仅 ${tiers})`) };
+        return { error: errJson(400, 'invalid_request', `${rawModel} 无 4k 档(resolution 仅 480p / 720p / 1080p)`) };
     }
     // proMax fast/mini:上游(service-inference.ai dreamina fast/mini)仅 480p/720p
     if ((variant === 'promax-fast' || variant === 'promax-mini') && resRaw !== '720p' && resRaw !== '480p') {

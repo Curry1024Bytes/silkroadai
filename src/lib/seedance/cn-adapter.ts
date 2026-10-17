@@ -21,6 +21,8 @@
  * 2026-10-15:海外版 proMax 全档(2.0 pro/fast/mini + 2.5)上游换成 service-inference.ai dreamina-sd-max 线
  * (`provider:'svcinf'`,与 cn 2.5 480p 单档同一套 svcinf-client 翻译/轮询,独立 key + 独立 API 版本 env);
  * 对客模型名 / 档位 / 费率全不变。未配 `SEEDANCE_SVCINF_PROMAX_KEY` 回落 artsmcp intl 线。
+ * 2026-10-17:海外版 global 同样切到这条线(独立 key `SEEDANCE_SVCINF_GLOBAL_KEY`),global 480p 随之开放;
+ * 仅 global fast/mini 的 1080p 档(新上游无)仍留 artsmcp。
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
@@ -114,29 +116,51 @@ function customerSvcinfKey(auth: string | undefined | null): string | undefined 
     return key.startsWith(SVCINF_KEY_PREFIX) ? key : undefined;
 }
 
+// ── 海外版 global → 同一条 service-inference.ai dreamina-sd-max 线(2026-10-17,operator 指定;对客模型/价格不变)──
+// 与 proMax 同四个套餐名,但**独立 key**(`SEEDANCE_SVCINF_GLOBAL_KEY`,各线独立计量)+ 独立版本 env。
+// 上游 fast/mini 只有 480p/720p → global fast/mini 的 1080p 档继续留在 artsmcp intl(模型不变的前提下无法迁),
+// 其余(pro 全档、fast/mini 480p/720p、2.5 全档)都走新上游;global 480p 随之开放(此前 intl 上游无 480p)。
+const UPSTREAM_SVCINF_GLOBAL_PRO = process.env.SEEDANCE_SVCINF_GLOBAL_MODEL_PRO || UPSTREAM_SVCINF_PROMAX_PRO;
+const UPSTREAM_SVCINF_GLOBAL_FAST = process.env.SEEDANCE_SVCINF_GLOBAL_MODEL_FAST || UPSTREAM_SVCINF_PROMAX_FAST;
+const UPSTREAM_SVCINF_GLOBAL_MINI = process.env.SEEDANCE_SVCINF_GLOBAL_MODEL_MINI || UPSTREAM_SVCINF_PROMAX_MINI;
+const UPSTREAM_SVCINF_GLOBAL_25 = process.env.SEEDANCE_SVCINF_GLOBAL_MODEL_25 || UPSTREAM_SVCINF_PROMAX_25;
+
+/** 各 region 在 service-inference.ai 上的 env 前缀(key / base / 版本三件套;cn 线历史命名无 region 段)。 */
+const SVCINF_ENV_PREFIX: Partial<Record<SeedanceRegion, string>> = {
+    promax: 'SEEDANCE_SVCINF_PROMAX',
+    global: 'SEEDANCE_SVCINF_GLOBAL',
+};
+
 /**
- * 海外版 proMax 的 service-inference.ai 配置(lazy 读 env;未配 → null = 回落 artsmcp intl 线)。
- * key:客户 promax 行存了 sk-inf- 真 key 时优先用客户的(任务建在他账号下,轮询也必须用同一把),
- * 否则平台级 `SEEDANCE_SVCINF_PROMAX_KEY`(与 cn 2.5 480p 的 `SEEDANCE_SVCINF_KEY`、火山渠道的
- * `ENTERPRISE_VOLC_UPSTREAM_KEY` 都不是同一把,各线独立计量)。
+ * 海外版(promax / global)的 service-inference.ai 配置(lazy 读 env;未配 → null = 回落 artsmcp intl 线)。
+ * key:客户该 region 行存了 sk-inf- 真 key 时优先用客户的(任务建在他账号下,轮询也必须用同一把),
+ * 否则平台级 `<PREFIX>_KEY`(promax / global / cn 2.5 480p / 火山 四把 key 互不借用,各线独立计量)。
  * API 版本:缺省 /v2(直传 URL 素材经 preparing 由网关代传 + 支持 asset://mva- 句柄);
- * `SEEDANCE_SVCINF_PROMAX_API_VERSION=v1` 切 /v1(直传 URL 直接 pending,不支持句柄)。
+ * `<PREFIX>_API_VERSION=v1` 切 /v1(直传 URL 直接 pending,不支持句柄)。
  * ⚠️ 两版任务互不可见 —— 提交时把版本记进 volc_id_map.api_version,轮询按行上的版本打,切 env 不孤儿化在途任务。
  */
-export function getSvcinfPromaxConfig(customerAuth?: string | null): SvcinfConfig | null {
-    const key = customerSvcinfKey(customerAuth) || process.env.SEEDANCE_SVCINF_PROMAX_KEY?.trim();
+export function getSvcinfRegionConfig(region: SeedanceRegion, customerAuth?: string | null): SvcinfConfig | null {
+    const prefix = SVCINF_ENV_PREFIX[region];
+    if (!prefix) return null;
+    const key = customerSvcinfKey(customerAuth) || process.env[`${prefix}_KEY`]?.trim();
     if (!key) return null;
-    const api: SvcinfApiVersion = process.env.SEEDANCE_SVCINF_PROMAX_API_VERSION === 'v1' ? 'v1' : 'v2';
+    const api: SvcinfApiVersion = process.env[`${prefix}_API_VERSION`] === 'v1' ? 'v1' : 'v2';
     return {
-        base: (process.env.SEEDANCE_SVCINF_PROMAX_BASE_URL || SVCINF_DEFAULT_BASE).replace(/\/$/, ''),
+        base: (process.env[`${prefix}_BASE_URL`] || SVCINF_DEFAULT_BASE).replace(/\/$/, ''),
         key,
         api,
     };
 }
+/** @deprecated 2026-10-17 起用 getSvcinfRegionConfig('promax', auth);保留名字给既有调用/测试。 */
+export function getSvcinfPromaxConfig(customerAuth?: string | null): SvcinfConfig | null {
+    return getSvcinfRegionConfig('promax', customerAuth);
+}
 
-/** provider='svcinf' 的档按 region 取各自那条线的配置(cn 480p 线 / proMax 线各自独立 key + 版本)。 */
+/** provider='svcinf' 的档按 region 取各自那条线的配置(cn 480p 线 / proMax 线 / global 线各自独立 key + 版本)。 */
 function svcinfConfigForRegion(region: SeedanceRegion, customerAuth?: string | null): SvcinfConfig | null {
-    return region === 'promax' ? getSvcinfPromaxConfig(customerAuth) : getSvcinfCnConfig();
+    return region === 'promax' || region === 'global'
+        ? getSvcinfRegionConfig(region, customerAuth)
+        : getSvcinfCnConfig();
 }
 
 /** 版本 → 上游 base URL(global 与 promax 同为 intl 端口,仅模型名/费率不同)。
@@ -252,10 +276,10 @@ export const MODEL_MAP: Record<string, SeedanceModelSpec> = {
             ]),
         ),
     ),
-    // ── 海外版(global)seedance 2.5(2026-08-31):仅 720p/1080p;variant 复用 promax-2.5
-    //    (费率同价、单一价源 —— promax 调价自动跟随);region=global 走客户 global key ──
+    // ── 海外版(global)seedance 2.5(2026-08-31):variant 复用 promax-2.5(费率同价、单一价源);
+    //    2026-10-17 起上游 = service-inference.ai(有 key 才切,否则回落 artsmcp intl),480p 随之开放 ──
     ...Object.fromEntries(
-        (['720p', '1080p'] as const).flatMap((resolution) =>
+        (['480p', '720p', '1080p'] as const).flatMap((resolution) =>
             [false, true].map((ref) => [
                 `seedance2.5-global-${resolution}${ref ? '-ref' : ''}`,
                 {
@@ -264,6 +288,8 @@ export const MODEL_MAP: Record<string, SeedanceModelSpec> = {
                     variant: 'promax-2.5' as const,
                     upstream: UPSTREAM_GLOBAL_25,
                     region: 'global' as const,
+                    provider: 'svcinf' as const,
+                    svcinfModel: UPSTREAM_SVCINF_GLOBAL_25,
                 },
             ]),
         ),
@@ -295,21 +321,29 @@ export const MODEL_MAP: Record<string, SeedanceModelSpec> = {
             ),
         ),
     ),
-    // ── 海外版(global,2026-07-23):档位与国内一致(operator 拍板同 4k/15s/定价),仅上游不同。
-    //    ⚠️ 无 480p:intl 上游三变体实测均拒「当前分辨率 480p 不支持」(2026-08-06),
-    //    proxy 对 global+480p 返带指引的 400。 ──
+    // ── 海外版(global,2026-07-23):档位与国内一致(operator 拍板同 4k/15s/定价),费率同 cn 变体。
+    //    2026-10-17 起上游 = service-inference.ai dreamina(有 key 才切,否则回落 artsdance intl);480p 随之开放。
+    //    ⚠️ 新上游 fast/mini 只有 480p/720p → global fast/mini 的 1080p 档【仍留 artsmcp intl】(svcinfModel 为空
+    //    = 不打 provider 标),模型名不变的前提下无法迁;operator 决定退役 artsmcp 时这两档要一并下架。 ──
     ...Object.fromEntries(
         (
             [
-                ['pro', UPSTREAM_INTL_PRO, ['720p', '1080p', '4k']],
-                ['fast', UPSTREAM_INTL_FAST, ['720p', '1080p']],
-                ['mini', UPSTREAM_INTL_MINI, ['720p', '1080p']],
-            ] as Array<[SeedanceVariant, string, Array<'480p' | '720p' | '1080p' | '4k'>]>
-        ).flatMap(([variant, upstream, resolutions]) =>
+                ['pro', UPSTREAM_INTL_PRO, UPSTREAM_SVCINF_GLOBAL_PRO, ['480p', '720p', '1080p', '4k'], []],
+                ['fast', UPSTREAM_INTL_FAST, UPSTREAM_SVCINF_GLOBAL_FAST, ['480p', '720p', '1080p'], ['1080p']],
+                ['mini', UPSTREAM_INTL_MINI, UPSTREAM_SVCINF_GLOBAL_MINI, ['480p', '720p', '1080p'], ['1080p']],
+            ] as Array<[SeedanceVariant, string, string, Array<'480p' | '720p' | '1080p' | '4k'>, string[]]>
+        ).flatMap(([variant, upstream, svcinfModel, resolutions, intlOnly]) =>
             resolutions.flatMap((resolution) =>
                 [false, true].map((ref) => [
                     `seedance2.0-global-${variant}-${resolution}${ref ? '-ref' : ''}`,
-                    { resolution, ref, variant, upstream, region: 'global' as const },
+                    {
+                        resolution,
+                        ref,
+                        variant,
+                        upstream,
+                        region: 'global' as const,
+                        ...(intlOnly.includes(resolution) ? {} : { provider: 'svcinf' as const, svcinfModel }),
+                    },
                 ]),
             ),
         ),

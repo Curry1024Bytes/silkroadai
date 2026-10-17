@@ -427,17 +427,26 @@ describe('火山渠道(volc)路由', () => {
         expect(submitVideoWithKey).not.toHaveBeenCalled();
     });
 
-    it('global 无 480p(intl 上游实测拒,2026-08-06):三变体 480p 均 400 带指引,不打上游', async () => {
-        for (const model of ['seedance-2-0-global', 'seedance-2-0-global-fast', 'seedance-2-0-global-mini']) {
+    it('global 480p 开放(2026-10-17 换 service-inference.ai 上游):三变体 480p → 对应长名放行', async () => {
+        submitVideoWithKey.mockImplementation(() =>
+            Promise.resolve(NextResponse.json({ id: 'cgt-g480', task_id: 'cgt-g480', status: 'queued' })),
+        );
+        for (const [model, long] of [
+            ['seedance-2-0-global', 'seedance2.0-global-pro-480p'],
+            ['seedance-2-0-global-fast', 'seedance2.0-global-fast-480p'],
+            ['seedance-2-0-global-mini', 'seedance2.0-global-mini-480p'],
+        ]) {
+            submitVideoWithKey.mockClear();
             const res = await handleEnterpriseV1(
                 req('POST', '/v1/video/generations', { model, prompt: 'x', resolution: '480p' }),
                 '/video/generations',
             );
-            expect(res.status).toBe(400);
-            const body = (await res.json()) as { error: { message: string } };
-            expect(body.error.message).toContain('国内版'); // proMax 2026-08-08 起也无 480p,指引改为国内版
+            expect(res.status).toBe(200);
+            expect(submitVideoWithKey).toHaveBeenCalledWith(
+                expect.objectContaining({ model: long }),
+                expect.any(String),
+            );
         }
-        expect(submitVideoWithKey).not.toHaveBeenCalled();
     });
 
     it('非 volc 提交仍剥 asset:// 前缀(resolveAssetRefs 收到裸 id)', async () => {
@@ -1543,14 +1552,22 @@ describe('vendor_task_id 出口(2026-08-19)', () => {
             );
         });
 
-        it('480p → 400(海外版无 480p);4k → 400(2.5 无 4k)', async () => {
-            for (const r of ['480p', '4k']) {
-                const res = await handleEnterpriseV1(
-                    req('POST', '/v1/video/generations', { model: 'seedance-2-5-global', prompt: 'x', resolution: r }),
-                    '/video/generations',
-                );
-                expect(res.status).toBe(400);
-            }
+        it('480p → seedance2.5-global-480p(2026-10-17 开放);4k → 400(2.5 无 4k)', async () => {
+            let res = await handleEnterpriseV1(
+                req('POST', '/v1/video/generations', { model: 'seedance-2-5-global', prompt: 'x', resolution: '480p' }),
+                '/video/generations',
+            );
+            expect(res.status).toBe(200);
+            expect(submitVideoWithKey).toHaveBeenCalledWith(
+                expect.objectContaining({ model: 'seedance2.5-global-480p' }),
+                expect.anything(),
+            );
+            submitVideoWithKey.mockClear();
+            res = await handleEnterpriseV1(
+                req('POST', '/v1/video/generations', { model: 'seedance-2-5-global', prompt: 'x', resolution: '4k' }),
+                '/video/generations',
+            );
+            expect(res.status).toBe(400);
             expect(submitVideoWithKey).not.toHaveBeenCalled();
         });
     });
