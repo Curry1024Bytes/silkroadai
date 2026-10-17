@@ -30,7 +30,15 @@ PAT 的硬约束(rc.44 源码):每用户最多 20 个;`expires_at: 0` = 永不�
 3. **主实例切换**(低峰):`docker-compose.yml` 钉 `v1.0.0-rc.44`,`up -d new-api`。预期中断 ~10 s(logs 表无 DDL)。
 4. **切后 30 分钟内**:root 在后台「安全与访问」建具名 PAT(永不过期,scope 全选:预演验证 36 个 scope 的 PAT 能打 portal 用到的全部 admin 路由)→ 替换 server2 十个 api 实例 + server1 portal 的 `.env` `NEWAPI_ADMIN_TOKEN` → 滚动 `--no-deps` 重启;`.env` 加 `NEWAPI_ACCESS_TOKEN_MODE=pat`。注册 smoke:`src/lib/newapi/__tests__/rc44-access-token.live.smoke.test.ts`(需 root 密码,会建一个 throwaway 客户)。
    ⚠️ **切换前把 `CRITICAL_RATE_LIMIT: "5000"` 加进主实例 compose env**(默认 20 次 / 20 分钟 / 每 IP;登录、`/api/verify`、建 PAT 都算「critical」。迁移脚本每个客户要 4 次,默认值下 689 个客户要跑 46 小时;portal 所有调用来自同一个 docker 网关 IP)。和升级同一次重启生效,迁移完可改回。
-5. **切后 30 天内**:`NEWAPI_ROOT_USERNAME=root NEWAPI_ROOT_PASSWORD=… pnpm tsx scripts/migrate-newapi-legacy-access-tokens.ts --apply`(先 `--limit 20` 观察),直到 `pending=0`。到期日 = `SELECT value FROM options WHERE key='LegacyAccessTokenRetireAt'`(unix 秒)。
+5. **切后 30 天内(2026-11-15 06:02 北京前)—— 存量客户 legacy token → PAT 迁移**。✅ 2026-10-17 已完成前置:root PAT「portal-admin」已建(全 36 scope、永不过期,由 operator 在 server2 跑 `/root/make-root-pat.sh` 交互生成,token 落 `/root/.newapi-root-pat` 0600,**四处** `.env` 的 `NEWAPI_ADMIN_TOKEN` 已换 + `NEWAPI_ACCESS_TOKEN_MODE=pat`:server1 portal/seedance 已重建生效;server2 与 api3 的十副本各挂了一次性定时器 21:40 / 21:55 UTC 逐个 `--force-recreate`)。迁移脚本**不能在 portal 容器里跑**(镜像没有 scripts/ 和 tsx),在本机 repo 检出里跑,打隧道:
+    ```bash
+    ssh -fN -L 15432:10.88.0.2:5432 -L 14001:127.0.0.1:3000 -o ServerAliveInterval=60 vps2   # portal-db + new-api master
+    DATABASE_URL='postgresql://portal:<pw>@127.0.0.1:15432/silkroadai_portal_prod?sslmode=disable' NEWAPI_BASE_URL=http://127.0.0.1:14001 \
+      pnpm dlx tsx@4 scripts/migrate-newapi-legacy-access-tokens.ts                  # dry-run:2026-10-17 = 669 linked / 668 pending
+    …                                                             --apply --limit 20  # 终端提示输 root 密码;先小批
+    …                                                             --apply             # 全量,约 2.5 s/客户 ≈ 30 min
+    ```
+    `pnpm dlx tsx` 需要 `node_modules/server-only/` 本地 stub(空 `index.js`,vitest 之外没人提供这个包)。root 密码只在 `--apply` 时要,`promptRootCredentials` 终端不回显;dry-run 不要凭据。单客户失败(new-api 用户已删 / 被禁)会 `FAILED` 记一行继续,CAS 写回保证不覆盖并发改动。完成标准:再跑一次 dry-run `pending=0`。到期日:`SELECT value FROM options WHERE key='LegacyAccessTokenRetireAt'`。迁移完可删两节点 compose 的 `CRITICAL_RATE_LIMIT` 两行。
 6. 后台请求策略里评估关闭/收窄 `codex cli trace` 渠道亲和;自动禁用关键字加「用户额度不足」「预扣费额度失败」。
 
 ## 3. 回滚

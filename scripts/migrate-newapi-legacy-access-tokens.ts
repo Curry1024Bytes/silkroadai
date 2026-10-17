@@ -18,13 +18,17 @@
  * a customer's legacy token stays valid until retire day, so a crashed run
  * can simply be re-run.
  *
- * Preconditions: new-api ≥ rc.41 (the script refuses otherwise), .env has
- * DATABASE_URL + NEWAPI_BASE_URL, and the ROOT dashboard login is supplied
- * at run time (never put it in .env):
- *   NEWAPI_ROOT_USERNAME=root NEWAPI_ROOT_PASSWORD='…' pnpm tsx scripts/migrate-newapi-legacy-access-tokens.ts            # dry-run
- *   NEWAPI_ROOT_USERNAME=root NEWAPI_ROOT_PASSWORD='…' pnpm tsx scripts/migrate-newapi-legacy-access-tokens.ts --apply    # write
+ * Preconditions: new-api ≥ rc.41 (the script refuses otherwise) and env has
+ * DATABASE_URL + NEWAPI_BASE_URL (NEWAPI_ADMIN_TOKEN is NOT needed). The ROOT
+ * dashboard login is only needed with --apply and is asked for interactively
+ * on the terminal (never put it in .env / shell history); the env vars
+ * NEWAPI_ROOT_USERNAME / NEWAPI_ROOT_PASSWORD are honoured if set.
+ *   pnpm dlx tsx scripts/migrate-newapi-legacy-access-tokens.ts                 # dry-run (no credentials)
+ *   pnpm dlx tsx scripts/migrate-newapi-legacy-access-tokens.ts --apply         # prompts for root password
  *   … --apply --limit 20      # first batch only
  *   … --apply --user <portal-uuid>
+ * The portal image has no scripts/ dir or tsx — run it from a repo checkout
+ * with tunnels to new-api master and the portal DB (runbook §2 step 5).
  */
 import 'dotenv/config';
 import { prisma } from '@/lib/db';
@@ -50,12 +54,32 @@ async function serverVersion(): Promise<string> {
     return json.data?.version ?? '';
 }
 
-async function main() {
-    const rootUser = process.env.NEWAPI_ROOT_USERNAME;
-    const rootPassword = process.env.NEWAPI_ROOT_PASSWORD;
-    if (!rootUser || !rootPassword)
-        throw new Error('NEWAPI_ROOT_USERNAME + NEWAPI_ROOT_PASSWORD must be set for this run');
+/** Ask for the root password on the terminal without echo (fallback: env). */
+async function promptRootCredentials(): Promise<{ user: string; password: string }> {
+    const user = process.env.NEWAPI_ROOT_USERNAME || 'root';
+    if (process.env.NEWAPI_ROOT_PASSWORD) return { user, password: process.env.NEWAPI_ROOT_PASSWORD };
+    if (!process.stdin.isTTY) throw new Error('no TTY: set NEWAPI_ROOT_PASSWORD or run interactively');
+    const { createInterface } = await import('node:readline');
+    const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+    let muted = false;
+    const write = process.stdout.write.bind(process.stdout);
+    (rl as unknown as { _writeToOutput: (s: string) => void })._writeToOutput = (str: string) => {
+        if (!muted) write(str);
+    };
+    const password = await new Promise<string>((resolve) => {
+        rl.question(`new-api ${user} 密码(不回显): `, (answer) => {
+            muted = false;
+            write('\n');
+            resolve(answer);
+        });
+        muted = true;
+    });
+    rl.close();
+    if (!password) throw new Error('empty password');
+    return { user, password };
+}
 
+async function main() {
     const version = await serverVersion();
     if (accessTokenModeForVersion(version) !== 'pat') {
         throw new Error(
@@ -83,6 +107,7 @@ async function main() {
         return;
     }
 
+    const { user: rootUser, password: rootPassword } = await promptRootCredentials();
     // One root login session for the whole run (15-min JWT; re-login on expiry).
     let admin = await loginNewApiUser({ username: rootUser, password: rootPassword });
     let ok = 0;
