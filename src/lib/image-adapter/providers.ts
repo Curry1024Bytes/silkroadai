@@ -57,6 +57,8 @@ export interface ImageProvider {
      *  只影响声明了它的 provider:adapter.callUpstreamOnce 看到该字段才走 submit+poll 分支,其余 provider 路径不变。
      *  (与 @/lib/image-adapter25 的同名接口语义一致,两模块独立不共享。) */
     transport?: AsyncTaskTransport;
+    /** 同步直转路径拉取上游返图 url 时附加的请求头(如图床要求浏览器 UA,否则 403;suduma 的 img.911339.xyz)。 */
+    imageFetchHeaders?: Readonly<Record<string, string>>;
 }
 
 /** 异步任务形上游的传输描述(2026-10-15 为 suduma 引入)。提交与轮询都带 new-api 透传来的 Authorization。 */
@@ -84,6 +86,16 @@ export const WETOKEN_UPSTREAM_TIMEOUT_MS = 300_000;
  *  枚举表,这里只是官方合法尺寸的一个 30 点子集。 */
 /** suduma 2.0 实测【如实交付】的尺寸(2026-10-15):1024² / 1536×1024 / 1024×1536 / 2048² / 1280×720(edits)+ 文档列出的
  *  2048×1152(4K 请求被降到的原生尺寸)。其余(1344×1008 / 2880² / 4K / 1000×1000 / auto)上游静默降级或改尺寸 → 让路。 */
+/** suduma `-gzs` 同步 2.0 实测【如实交付】的尺寸(2026-10-18):4K 不再封顶,但非标尺寸(1344×1008 / 1000×1000)仍被改尺寸 → 表外让路。 */
+export const SUDUMAGZS_SIZES: ReadonlyArray<string> = [
+    '1024x1024',
+    '1536x1024',
+    '1024x1536',
+    '2048x2048',
+    '2880x2880',
+    '3840x2160',
+];
+
 export const SUDUMA_SIZES: ReadonlyArray<string> = [
     '1024x1024',
     '1536x1024',
@@ -453,6 +465,27 @@ export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
         openAllTiers: true,
         upstreamQuality: { low: 'medium', high: 'medium' },
         noTransparentBackground: true,
+    },
+    // sudumagzs:www.suduma.com 的 `gpt-image-2-gzs` 同步变体(2026-10-18 上游新增;同 key sk-21fb…)。与 suduma(异步任务形)不同:
+    // 普通 OpenAI 同步壳 `{created, data:[{url}]}`,走同步直转 + upstreamModel 映射;图床 img.911339.xyz 拉回要浏览器 UA(imageFetchHeaders)。
+    // 2026-10-18 实测(23 发 18 成):
+    //  - **混池**:约一半图 OpenAI Media Service 签名 `API/gpt-image-2`(真 2.0 API),其余无签名;延迟 40–170s,10 并发下偶发 502「上游暂时不可用」;
+    //  - quality 只认 medium / high(low / xhigh → 400「没有匹配的价格」)→ upstreamQuality low→medium,回显与计费按客户请求档;
+    //  - 尺寸:1024² / 1536×1024 / 1024×1536 / 2048² / 2880² / 3840×2160 如实(4K 不再封顶 2K),但 1344×1008 → 1024×768、
+    //    1000×1000 → 1024² 被改尺寸 → sizes 白名单只放实测如实的 6 个,表外(含 auto)让路;
+    //  - n>1 → 上游 400「n must be 1 for this channel」(适配器本就扇出单张);透明返非 RGBA(假)→ noTransparentBackground;webp 忽略。
+    sudumagzs: {
+        baseUrl: 'https://www.suduma.com',
+        brand: /\bsuduma\b|\b911339\b|img\.911339\.xyz|-gzs\b|provider (?:task failed|request invalid|temporarily unavailable)|上游暂时不可用|for this channel|\badobe\b|\bfirefly\b/gi,
+        upstreamModel: 'gpt-image-2-gzs',
+        openAllTiers: true,
+        sizes: SUDUMAGZS_SIZES,
+        upstreamQuality: { low: 'medium' },
+        noTransparentBackground: true,
+        imageFetchHeaders: {
+            'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/128 Safari/537.36',
+        },
+        upstreamTimeoutMs: 300_000,
     },
     // ---- yuanshudian(元数点 API,api.yuanshudian.com)2026-09-28 接入,【全量线】----
     // 定位:openAllTiers 全量兜底(同 pandatk / ominiapifull / oaidistfull / junze 那批):不设 gateMinCt,

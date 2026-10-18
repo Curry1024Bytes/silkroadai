@@ -5,7 +5,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { NextRequest } from 'next/server';
-import { PIXELLELABS_SIZES, SUDUMA_SIZES, IMAGE_PROVIDERS } from '@/lib/image-adapter/providers';
+import { PIXELLELABS_SIZES, SUDUMA_SIZES, SUDUMAGZS_SIZES, IMAGE_PROVIDERS } from '@/lib/image-adapter/providers';
 import {
     handleAdapterImage,
     imageDimensions,
@@ -1839,6 +1839,107 @@ describe('qimg provider(qimg.cc Adobe Firefly 中转 2.0,全量 openAllTiers + �
         const r3 = await gen({ quality: 'medium' });
         expect(r3.status).toBe(503);
         expect(await r3.text()).not.toMatch(/qimg|10k pool/i);
+    });
+});
+
+describe('sudumagzs provider(-gzs 同步变体:upstreamModel 映射 + 图床 UA;表内尺寸;low→medium;假透明拒)', () => {
+    const URL_SG = 'http://portal.test/image-adapter/sudumagzs/v1/images/generations';
+    const IMG = 'https://img.911339.xyz/i/abc.png';
+    const gen = (body: Record<string, unknown>) =>
+        handleAdapterImage(
+            jsonReq(URL_SG, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', ...body }),
+            'generations',
+            'sudumagzs',
+        );
+
+    it('registry:www.suduma.com、无 transport(同步)、upstreamModel=gpt-image-2-gzs、openAllTiers + sizes + low→medium + 透明拒 + UA;brand 抹 suduma / 图床域 / -gzs / 上游文案', () => {
+        const p = IMAGE_PROVIDERS.sudumagzs;
+        expect(p.transport).toBeUndefined();
+        expect(p.upstreamModel).toBe('gpt-image-2-gzs');
+        expect(p.openAllTiers).toBe(true);
+        expect(p.sizes).toBe(SUDUMAGZS_SIZES);
+        expect(SUDUMAGZS_SIZES).toEqual(['1024x1024', '1536x1024', '1024x1536', '2048x2048', '2880x2880', '3840x2160']);
+        expect(p.upstreamQuality).toEqual({ low: 'medium' });
+        expect(p.noTransparentBackground).toBe(true);
+        expect(p.imageFetchHeaders!['user-agent']).toMatch(/Mozilla/);
+        expect(
+            'suduma img.911339.xyz gpt-image-2-gzs 上游暂时不可用 n must be 1 for this channel'.replace(p.brand, '*'),
+        ).toBe('* * gpt-image-2* * n must be 1 *');
+    });
+
+    it('表内尺寸 × 三档放行:上游 model 恒 gpt-image-2-gzs、low→medium 其余原样,回显/计费按请求档;url 返图带 UA 拉回不外泄', async () => {
+        for (const [size, q, upQ] of [
+            ['1024x1024', 'low', 'medium'],
+            ['1024x1024', 'medium', 'medium'],
+            ['3840x2160', 'high', 'high'],
+            ['2880x2880', 'low', 'medium'],
+        ] as const) {
+            fetchMock.mockReset();
+            fetchMock.mockImplementation(async (url: string | URL, init?: RequestInit) => {
+                const u = String(url);
+                if (u.endsWith('/v1/images/generations'))
+                    return new Response(JSON.stringify({ created: 1, data: [{ url: IMG }] }), {
+                        status: 200,
+                        headers: { 'content-type': 'application/json' },
+                    });
+                expect(u).toBe(IMG);
+                expect((init!.headers as Record<string, string>)['user-agent']).toMatch(/Mozilla/);
+                const [w, h] = size.split('x').map(Number);
+                return new Response(new Uint8Array(Buffer.from(pngB64(w, h), 'base64')), { status: 200 });
+            });
+            const res = await gen({ size, quality: q });
+            expect(res.status).toBe(200);
+            const sent = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+            expect(sent.model).toBe('gpt-image-2-gzs');
+            expect(sent.quality).toBe(upQ);
+            const [w, h] = size.split('x').map(Number);
+            const body = await res.json();
+            expect(body.quality).toBe(q);
+            expect(body.size).toBe(size);
+            expect(body.data[0].url).toBeUndefined();
+            expect(body.data[0].b64_json).toBeTruthy();
+            expect(body.usage.output_tokens).toBe(officialOutputTokens(w, h, q));
+        }
+    });
+
+    it('表外尺寸(1344×1008 / 1000×1000 / auto)与透明 → 503 让路不打上游;n=2 扇出成两次单张', async () => {
+        for (const req of [
+            { size: '1344x1008' },
+            { size: '1000x1000' },
+            { size: 'auto' },
+            { background: 'transparent' },
+        ]) {
+            fetchMock.mockReset();
+            okUpstream();
+            const res = await gen({ quality: 'medium', ...req });
+            expect(res.status).toBe(503);
+            expect(fetchMock).not.toHaveBeenCalled();
+        }
+        fetchMock.mockReset();
+        okUpstream();
+        const res = await gen({ quality: 'medium', n: 2 });
+        expect(res.status).toBe(200);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        for (const c of fetchMock.mock.calls) expect(JSON.parse(c[1].body as string).n).toBeUndefined();
+        expect(((await res.json()) as { data: unknown[] }).data).toHaveLength(2);
+    });
+
+    it('上游 502「上游暂时不可用」/ 400「n must be 1 for this channel」→ 503 中性体不泄文案', async () => {
+        for (const [status, body] of [
+            [502, { error: '上游暂时不可用' }],
+            [
+                502,
+                {
+                    error: 'upstream HTTP 400: {"code":"invalid_request","message":"n must be 1 for this channel","data":null}',
+                },
+            ],
+        ] as const) {
+            fetchMock.mockReset();
+            fetchMock.mockResolvedValue(new Response(JSON.stringify(body), { status }));
+            const r = await gen({ quality: 'high' });
+            expect(r.status).toBe(503);
+            expect(await r.text()).not.toMatch(/suduma|-gzs|上游暂时不可用|for this channel/i);
+        }
     });
 });
 

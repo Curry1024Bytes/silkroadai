@@ -588,7 +588,7 @@ async function callUpstreamOnce(
             out.push(it.b64_json);
             continue;
         }
-        const b64 = await fetchImageAsB64(it.url as string);
+        const b64 = await fetchImageAsB64(it.url as string, provider.imageFetchHeaders);
         if (!b64) {
             console.warn('[image-adapter] url→b64 fetch failed', { provider: providerName, mode });
             return null;
