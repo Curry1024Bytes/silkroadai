@@ -1714,6 +1714,121 @@ describe('ztyunjuan25 全量线(qimg 同后端族的第二账号池;flare OpenAI
     });
 });
 
+describe('sudumagzs25 同步线(-gzs 变体:modelMap 映射上游模型名 + 图床 UA;全量)', () => {
+    const URL_G = 'http://portal.test/image-adapter25/sudumagzs25/v1/images/generations';
+    const IMG = 'https://img.911339.xyz/i/abc.png';
+
+    it('registry:www.suduma.com、无 transport(同步直转)、无 qualities、modelMap 两模型 → -gzs、imageFetchHeaders 带 UA;brand 抹 suduma / 图床域 / -gzs / 任务失败文案', () => {
+        const p = IMAGE_PROVIDERS_25.sudumagzs25;
+        expect(p.baseUrl).toBe('https://www.suduma.com');
+        expect(p.transport).toBeUndefined();
+        expect(p.qualities).toBeUndefined();
+        expect(p.models).toEqual(GPT_IMAGE_25_MODELS);
+        expect(p.modelMap).toEqual({
+            'gpt-image-2.5-flare': 'gpt-image-2.5-flare-gzs',
+            'gpt-image-2.5-sunburst': 'gpt-image-2.5-sunburst-gzs',
+        });
+        expect(p.imageFetchHeaders!['user-agent']).toMatch(/Mozilla/);
+        expect(
+            'suduma img.911339.xyz gpt-image-2.5-flare-gzs provider temporarily unavailable'.replace(p.brand, '*'),
+        ).toBe('* * gpt-image-2.5-flare* *');
+        // 其他 provider 没有 modelMap / imageFetchHeaders(分支只对声明者生效)
+        for (const [name, prov] of Object.entries(IMAGE_PROVIDERS_25))
+            if (name !== 'sudumagzs25') expect(prov.modelMap).toBeUndefined();
+    });
+
+    it('JSON 与 multipart 上游 model 都映射成 -gzs,入口白名单 / 回显 / 计费仍按客户模型名;5 档 + auto 全放行', async () => {
+        for (const [model, upstream] of [
+            ['gpt-image-2.5-flare', 'gpt-image-2.5-flare-gzs'],
+            ['gpt-image-2.5-sunburst', 'gpt-image-2.5-sunburst-gzs'],
+        ] as const) {
+            for (const [q, tokens] of [
+                ['low', 196],
+                ['max', 7024],
+                ['auto', 196],
+            ] as const) {
+                fetchMock.mockReset();
+                okUpstream([pngB64(1024, 1024)]);
+                const res = await handleAdapter25Image(
+                    jsonReq(URL_G, { model, prompt: 'x', size: '1024x1024', quality: q }),
+                    'generations',
+                    'sudumagzs25',
+                );
+                expect(res.status).toBe(200);
+                const [url, init] = fetchMock.mock.calls[0];
+                expect(String(url)).toBe('https://www.suduma.com/v1/images/generations');
+                expect(JSON.parse(String((init as RequestInit).body)).model).toBe(upstream);
+                expect(((await res.json()) as { usage: { output_tokens: number } }).usage.output_tokens).toBe(tokens);
+            }
+        }
+        fetchMock.mockReset();
+        okUpstream([pngB64(1024, 1024)]);
+        const res = await handleAdapter25Image(
+            formReq(
+                'http://portal.test/image-adapter25/sudumagzs25/v1/images/edits',
+                { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'high' },
+                [TINY_PNG],
+            ),
+            'edits',
+            'sudumagzs25',
+        );
+        expect(res.status).toBe(200);
+        expect(((fetchMock.mock.calls[0][1] as RequestInit).body as FormData).get('model')).toBe(
+            'gpt-image-2.5-flare-gzs',
+        );
+    });
+
+    it('上游返 url(img.911339.xyz)→ 带 UA 拉回转 b64,不外泄 url;未知客户模型名 → 503 让路不打上游', async () => {
+        fetchMock.mockImplementation(async (url: string | URL, init?: RequestInit) => {
+            const u = String(url);
+            if (u.endsWith('/v1/images/generations'))
+                return new Response(JSON.stringify({ created: 1, data: [{ url: IMG }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                });
+            expect(u).toBe(IMG);
+            expect((init!.headers as Record<string, string>)['user-agent']).toMatch(/Mozilla/);
+            return new Response(new Uint8Array(Buffer.from(pngB64(1024, 1024), 'base64')), { status: 200 });
+        });
+        const res = await handleAdapter25Image(
+            jsonReq(URL_G, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'low' }),
+            'generations',
+            'sudumagzs25',
+        );
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { data: Array<{ b64_json?: string; url?: string }> };
+        expect(body.data[0].b64_json).toBeTruthy();
+        expect(body.data[0].url).toBeUndefined();
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+
+        fetchMock.mockReset();
+        okUpstream([pngB64(1024, 1024)]);
+        const r2 = await handleAdapter25Image(
+            jsonReq(URL_G, { model: 'gpt-image-2.5-flare-gzs', prompt: 'x', size: '1024x1024', quality: 'low' }),
+            'generations',
+            'sudumagzs25',
+        );
+        expect(r2.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('上游 5xx / 「provider temporarily unavailable」→ 503 中性体不泄品牌与 -gzs 名', async () => {
+        fetchMock.mockResolvedValue(
+            new Response(
+                JSON.stringify({ error: 'provider temporarily unavailable (suduma gpt-image-2.5-flare-gzs)' }),
+                { status: 502 },
+            ),
+        );
+        const res = await handleAdapter25Image(
+            jsonReq(URL_G, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'low' }),
+            'generations',
+            'sudumagzs25',
+        );
+        expect(res.status).toBe(503);
+        expect(await res.text()).not.toMatch(/suduma|-gzs|temporarily unavailable/i);
+    });
+});
+
 describe('qimg25 全量线(Firefly 中转:flare OpenAI 原生签名、sunburst Adobe 签名;url 为 Firefly S3 预签名)', () => {
     const URL_Q = 'http://portal.test/image-adapter25/qimg25/v1/images/generations';
     /** 带 caBX(C2PA)块的最小 PNG。 */

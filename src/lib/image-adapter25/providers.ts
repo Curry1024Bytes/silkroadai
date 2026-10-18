@@ -35,6 +35,12 @@ export interface ImageProvider25 {
     /** 上游不是 OpenAI 同步形而是【异步任务】(提交拿任务 id → 轮询取图)时声明;缺省 = 同步直转。
      *  只影响声明了它的 provider:adapter.callUpstream 看到该字段才走 submit+poll 分支,其余 provider 代码路径不变。 */
     transport?: AsyncTaskTransport;
+    /** 客户模型名 → 上游模型名映射(上游用了别名,如 suduma 的 `-gzs` 同步变体)。只影响发给上游的 `model` 字段;
+     *  入口白名单(models)、计费、回显仍按客户模型名。缺省 = 原样透传。 */
+    modelMap?: Readonly<Record<string, string>>;
+    /** 同步直转路径拉取上游返图 url 时附加的请求头(如图床要求浏览器 UA,否则 403;suduma 的 img.911339.xyz)。
+     *  异步 transport 的同名字段只作用于 transport 路径。 */
+    imageFetchHeaders?: Readonly<Record<string, string>>;
 }
 
 /** 异步任务形上游的传输描述(2026-10-15 为 suduma 引入)。提交与轮询都带 new-api 透传来的 Authorization。 */
@@ -242,6 +248,24 @@ export const IMAGE_PROVIDERS_25: Record<string, ImageProvider25> = {
         baseUrl: 'https://ztyunjuan.com',
         brand: /\bztyunjuan\b|\b10k pool\b|\bERR-[0-9A-F]{6,}\b|pre-signed-firefly[a-z0-9.-]*|s3-accelerate[a-z0-9.-]*|bad request to openai:?\s*|\badobe\b|\bfirefly\b/gi,
         models: GPT_IMAGE_25_MODELS,
+    },
+    // sudumagzs25:www.suduma.com 的 `-gzs` 同步变体(2026-10-18 上游新增;同 key sk-21fb…)。与 suduma25(异步任务形)的区别:
+    // POST /v1/images/generations 直接等 60–130s 返 OpenAI 同步壳 `{created, data:[{url}]}`,不再提交+轮询 → 走普通同步直转,
+    // 只需把客户模型名映射成 `gpt-image-2.5-flare-gzs` / `-sunburst-gzs`(modelMap)。图床仍 img.911339.xyz,拉回要浏览器 UA
+    // (imageFetchHeaders,否则 403)。
+    // 实测特征见 memory suduma-gpt-image-probe「-gzs」段;operator 2026-10-18 拍板用变体名重做两个适配器,quality 全量不设 qualities。
+    sudumagzs25: {
+        baseUrl: 'https://www.suduma.com',
+        brand: /\bsuduma\b|\b911339\b|img\.911339\.xyz|-gzs\b|provider (?:task failed|request invalid|temporarily unavailable)|\badobe\b|\bfirefly\b/gi,
+        models: GPT_IMAGE_25_MODELS,
+        modelMap: {
+            'gpt-image-2.5-flare': 'gpt-image-2.5-flare-gzs',
+            'gpt-image-2.5-sunburst': 'gpt-image-2.5-sunburst-gzs',
+        },
+        imageFetchHeaders: {
+            'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/128 Safari/537.36',
+        },
+        upstreamTimeoutMs: 300_000,
     },
     qimg25: {
         baseUrl: 'https://qimg.cc',

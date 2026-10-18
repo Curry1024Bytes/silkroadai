@@ -604,7 +604,7 @@ async function callUpstream(
     let upstreamBody: BodyInit;
     if (mode === 'edits') {
         const f = new FormData();
-        f.append('model', parsed.model);
+        f.append('model', provider.modelMap?.[parsed.model] ?? parsed.model);
         f.append('prompt', parsed.prompt);
         const sendSize = parsed.size.trim(); // auto 原样透传(模型按 prompt 自选画幅),缺省不发
         if (sendSize) f.append('size', sendSize);
@@ -617,7 +617,10 @@ async function callUpstream(
             f.append('mask', new Blob([new Uint8Array(parsed.mask.buf)], { type: parsed.mask.type }), parsed.mask.name);
         upstreamBody = f; // fetch 自动生成 boundary(不能手写 content-type)
     } else {
-        const j: Record<string, unknown> = { model: parsed.model, prompt: parsed.prompt };
+        const j: Record<string, unknown> = {
+            model: provider.modelMap?.[parsed.model] ?? parsed.model,
+            prompt: parsed.prompt,
+        };
         const sendSize = parsed.size.trim(); // auto 原样透传(模型按 prompt 自选画幅),缺省不发
         if (sendSize) j.size = sendSize;
         if (FORWARD_QUALITY_SET.has(q)) j.quality = q;
@@ -681,7 +684,7 @@ async function callUpstream(
             continue;
         }
         // 上游 url 一律不外泄(指向上游自家 OSS = 伪装穿帮 + 会过期)→ 拉回转 b64;拉不动算失败
-        const b64 = await fetchImageAsB64(it.url as string, providerName);
+        const b64 = await fetchImageAsB64(it.url as string, providerName, provider.imageFetchHeaders);
         if (!b64) {
             console.warn('[image-adapter25] url→b64 fetch failed', { provider: providerName, mode });
             return null;
@@ -717,7 +720,10 @@ async function callUpstreamAsyncTask(
 ): Promise<string[] | TerminalReject | null> {
     const started = Date.now();
     const headers: Record<string, string> = { authorization: auth, 'content-type': 'application/json' };
-    const body: Record<string, unknown> = { model: parsed.model, prompt: parsed.prompt };
+    const body: Record<string, unknown> = {
+        model: provider.modelMap?.[parsed.model] ?? parsed.model,
+        prompt: parsed.prompt,
+    };
     const sendSize = parsed.size.trim();
     if (sendSize) body.size = sendSize; // auto 原样透传
     // 异步形上游 quality 必填且只认价表里的 5 档(auto / 缺省 / 非法 → 400 没有匹配的价格)→ 恒发归一后的档位,
