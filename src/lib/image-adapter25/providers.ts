@@ -289,7 +289,8 @@ export const IMAGE_PROVIDERS_25: Record<string, ImageProvider25> = {
     // monkeycoding25:api.monkeycoding.club 的 2.5 两模型(自研 Go 网关 + Cloudflare,非 new-api)。2026-10-18 实测 26/26 200,
     // flare / sunburst 两名字 usage、延迟逐位相同 = 同一条线;6 并发零 429/5xx。
     //  - quality 只兑现 low/medium/high;xhigh / max / 不传 / 非法值 → 200 + 回显 low + usage 196(静默降 low 不是拒,4K max 裁片
-    //    明显比 4K high 糊)→ qualities 只放三档,xhigh/max 503 让路不打上游(不能收 max 的钱交 low 的图);
+    //    明显比 4K high 糊)。#542 首版只放三档让路;operator 2026-10-19 拍板「288 放到全量」→ 去掉 qualities,5 档全收,
+    //    xhigh / max 原样透传、按客户请求档计费(知情取舍:上游会交 low 档图);
     //  - 官 key 对照(2026-10-18):官方 2.5 high 18–22s / max 48–73s,本上游 2.5 high 6 样本 20–99s(最快 20s ≈ 官方 high + 中转),
     //    与真 high 不矛盾但延迟分不开 high/medium;上游 usage 报 2.0 词表(medium 1764 / high 7017 = 官方 4 倍)→ 适配器丢弃自算官方档;
     //  - 图被 Go 网关重编码(IDAT 32KB 分块):零 C2PA、webp/jpeg 回 PNG(服务端转码兜底)、透明回 RGB(交付前 alpha 校验 → 让路);
@@ -300,6 +301,5 @@ export const IMAGE_PROVIDERS_25: Record<string, ImageProvider25> = {
         baseUrl: 'https://api.monkeycoding.club',
         brand: /\bmonkey\s?-?coding\b|\badobe\b|\bfirefly\b/gi,
         models: GPT_IMAGE_25_MODELS,
-        qualities: ['low', 'medium', 'high'],
     },
 };

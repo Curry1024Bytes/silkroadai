@@ -2534,7 +2534,7 @@ describe('handleAdapter25Image n 扇出(nativeN 未标的上游:yobox25)', () =>
     });
 });
 
-describe('monkeycoding25 三档线(Go 网关重编码剥 C2PA;xhigh/max 上游静默降 low → qualities 只放三档让路)', () => {
+describe('monkeycoding25 全量线(Go 网关重编码剥 C2PA;xhigh/max 上游静默降 low,operator 拍板全量照收按请求档计费)', () => {
     const URL_M = 'http://portal.test/image-adapter25/monkeycoding25/v1/images/generations';
     const gen = (body: Record<string, unknown>) =>
         handleAdapter25Image(
@@ -2543,11 +2543,11 @@ describe('monkeycoding25 三档线(Go 网关重编码剥 C2PA;xhigh/max 上游�
             'monkeycoding25',
         );
 
-    it('registry:api.monkeycoding.club、两模型、qualities=[low,medium,high]、无 nativeN/transport/sizes/modelMap;brand 抹 monkeycoding 变体 / adobe / firefly', () => {
+    it('registry:api.monkeycoding.club、两模型、无 qualities(5 档全收)、无 nativeN/transport/sizes/modelMap;brand 抹 monkeycoding 变体 / adobe / firefly', () => {
         const p = IMAGE_PROVIDERS_25.monkeycoding25;
         expect(p.baseUrl).toBe('https://api.monkeycoding.club');
         expect(p.models).toEqual(GPT_IMAGE_25_MODELS);
-        expect(p.qualities).toEqual(['low', 'medium', 'high']);
+        expect(p.qualities).toBeUndefined();
         expect(p.nativeN).toBeUndefined(); // 实测 n=2 返 1 张 → 扇出
         expect(p.transport).toBeUndefined();
         expect(p.sizes).toBeUndefined();
@@ -2556,16 +2556,32 @@ describe('monkeycoding25 三档线(Go 网关重编码剥 C2PA;xhigh/max 上游�
         expect(p.baseUrl).toBe(IMAGE_PROVIDERS.monkeycoding.baseUrl); // 同一上游的 2.0 / 2.5 两条渠道
     });
 
-    it('xhigh / max → 503 中性体让路,fetch 一次都不打(上游会收 max 的钱交 low 的图)', async () => {
-        for (const q of ['xhigh', 'max', 'MAX']) {
+    it('xhigh / max 照常打上游、quality 原样透传、按官方 xhigh 3122 / max 7024 计费(上游回显 low + usage 196 被丢弃)', async () => {
+        for (const [q, expectTokens] of [
+            ['xhigh', 3122],
+            ['max', 7024],
+        ] as const) {
             fetchMock.mockReset();
-            okUpstream([pngB64(1024, 1024)]);
+            fetchMock.mockImplementation(
+                async () =>
+                    new Response(
+                        JSON.stringify({
+                            created: 1,
+                            data: [{ b64_json: pngB64(1024, 1024) }],
+                            quality: 'low',
+                            usage: { input_tokens: 109, output_tokens: 196, total_tokens: 305 },
+                        }),
+                        { status: 200, headers: { 'content-type': 'application/json' } },
+                    ),
+            );
             const res = await gen({ model: 'gpt-image-2.5-sunburst', quality: q });
-            expect(res.status).toBe(503);
-            expect(fetchMock).not.toHaveBeenCalled();
-            const body = (await res.json()) as { error: { code: string; message: string } };
-            expect(body.error.code).toBe('upstream_unavailable');
-            expect(body.error.message).not.toMatch(/monkey|quality/i);
+            expect(res.status).toBe(200);
+            expect(fetchMock).toHaveBeenCalledTimes(1);
+            const sent = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body));
+            expect(sent.quality).toBe(q);
+            const body = (await res.json()) as { quality: string; usage: { output_tokens: number } };
+            expect(body.quality).toBe(q);
+            expect(body.usage.output_tokens).toBe(expectTokens);
         }
     });
 
