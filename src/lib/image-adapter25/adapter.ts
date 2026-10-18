@@ -943,6 +943,13 @@ export async function handleAdapter25Image(
         console.warn('[image-adapter25] quality not served by provider', { provider: providerName, quality });
         return failover('quality_not_served', `quality '${quality}' not served by provider '${providerName}'`);
     }
+    // ---- 尺寸白名单(providers.ts sizes):上游对名单外尺寸是【静默改尺寸】而非拒绝(suduma -gzs 把 1536×1024 缩成
+    // 1152×768),直通会让客户拿到不是他要的尺寸;让路 503 给别的渠道,不打上游。auto 原样放行(上游按 prompt 自选、
+    // 按返回图实际像素计费,不存在「要 A 给 B」)。与 2.0 适配器的 sizes 语义一致,只是 auto 这里放行。 ----
+    if (provider.sizes && !autoSize && !provider.sizes.includes(parsed.size.trim().toLowerCase())) {
+        console.warn('[image-adapter25] size not served by provider', { provider: providerName, size: parsed.size });
+        return failover('size_not_served', `size ${parsed.size} not in provider size list`);
+    }
     const wantsTransparent = (parsed.extras.background || '').trim().toLowerCase() === 'transparent';
     const wantFormat = transcodeTargetOf(parsed.extras.output_format);
     const n = Math.min(parsed.n, MAX_N);

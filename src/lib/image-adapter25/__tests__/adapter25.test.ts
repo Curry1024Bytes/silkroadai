@@ -16,7 +16,7 @@ import {
     sanitizeAdapterError25,
     estimateTextTokens,
 } from '@/lib/image-adapter25/adapter';
-import { IMAGE_PROVIDERS_25, GPT_IMAGE_25_MODELS } from '@/lib/image-adapter25/providers';
+import { IMAGE_PROVIDERS_25, GPT_IMAGE_25_MODELS, SUDUMAGZS25_SIZES } from '@/lib/image-adapter25/providers';
 
 const URL_GEN = 'http://portal.test/image-adapter25/wetokenasia25/v1/images/generations';
 const URL_EDIT = 'http://portal.test/image-adapter25/wetokenasia25/v1/images/edits';
@@ -1729,6 +1729,10 @@ describe('sudumagzs25 同步线(-gzs 变体:modelMap 映射上游模型名 + 图
             'gpt-image-2.5-sunburst': 'gpt-image-2.5-sunburst-gzs',
         });
         expect(p.imageFetchHeaders!['user-agent']).toMatch(/Mozilla/);
+        expect(p.sizes).toBe(SUDUMAGZS25_SIZES);
+        expect(SUDUMAGZS25_SIZES).toEqual(['1024x1024', '2048x2048', '2880x2880', '3840x2160', '1280x720']);
+        for (const [name, prov] of Object.entries(IMAGE_PROVIDERS_25))
+            if (name !== 'sudumagzs25') expect(prov.sizes).toBeUndefined();
         expect(
             'suduma img.911339.xyz gpt-image-2.5-flare-gzs provider temporarily unavailable'.replace(p.brand, '*'),
         ).toBe('* * gpt-image-2.5-flare* *');
@@ -1810,6 +1814,56 @@ describe('sudumagzs25 同步线(-gzs 变体:modelMap 映射上游模型名 + 图
         );
         expect(r2.status).toBe(503);
         expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('sizes 白名单:表内显式尺寸(大小写归一)放行;表外(1536×1024 / 1024×1536 / 1000×1000)→ 503 不打上游;auto 不受名单约束;没设 sizes 的 provider 不受影响', async () => {
+        for (const size of ['1024x1024', '2880X2880', '3840x2160', '1280x720']) {
+            fetchMock.mockReset();
+            const [w, h] = size.toLowerCase().split('x').map(Number);
+            okUpstream([pngB64(w, h)]);
+            const res = await handleAdapter25Image(
+                jsonReq(URL_G, { model: 'gpt-image-2.5-flare', prompt: 'x', size, quality: 'low' }),
+                'generations',
+                'sudumagzs25',
+            );
+            expect(res.status).toBe(200);
+            expect(fetchMock).toHaveBeenCalledTimes(1);
+        }
+        for (const size of ['1536x1024', '1024x1536', '1000x1000']) {
+            fetchMock.mockReset();
+            okUpstream([pngB64(1024, 1024)]);
+            const res = await handleAdapter25Image(
+                jsonReq(URL_G, { model: 'gpt-image-2.5-flare', prompt: 'x', size, quality: 'low' }),
+                'generations',
+                'sudumagzs25',
+            );
+            expect(res.status).toBe(503);
+            expect(fetchMock).not.toHaveBeenCalled();
+            expect(((await res.json()) as { error: { code: string } }).error.code).toBe('upstream_unavailable');
+        }
+        fetchMock.mockReset();
+        okUpstream([pngB64(1264, 848)]);
+        const auto = await handleAdapter25Image(
+            jsonReq(URL_G, { model: 'gpt-image-2.5-flare', prompt: 'x', size: 'auto', quality: 'low' }),
+            'generations',
+            'sudumagzs25',
+        );
+        expect(auto.status).toBe(200);
+        expect(JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body)).size).toBe('auto');
+        expect(((await auto.json()) as { size: string }).size).toBe('1264x848');
+        fetchMock.mockReset();
+        okUpstream([pngB64(1536, 1024)]);
+        const other = await handleAdapter25Image(
+            jsonReq('http://portal.test/image-adapter25/ztyunjuan25/v1/images/generations', {
+                model: 'gpt-image-2.5-flare',
+                prompt: 'x',
+                size: '1536x1024',
+                quality: 'low',
+            }),
+            'generations',
+            'ztyunjuan25',
+        );
+        expect(other.status).toBe(200);
     });
 
     it('上游 5xx / 「provider temporarily unavailable」→ 503 中性体不泄品牌与 -gzs 名', async () => {

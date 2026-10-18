@@ -41,6 +41,9 @@ export interface ImageProvider25 {
     /** 同步直转路径拉取上游返图 url 时附加的请求头(如图床要求浏览器 UA,否则 403;suduma 的 img.911339.xyz)。
      *  异步 transport 的同名字段只作用于 transport 路径。 */
     imageFetchHeaders?: Readonly<Record<string, string>>;
+    /** 上游【如实交付】的显式尺寸白名单(小写 `WxH`)。设了名单的 provider 收到名单外显式尺寸 → 503 让路,不打上游
+     *  (上游对名单外尺寸是静默改尺寸,如 suduma -gzs 把 1536×1024 缩成 1152×768);`auto` 不受名单约束。缺省 = 任意尺寸。 */
+    sizes?: ReadonlyArray<string>;
 }
 
 /** 异步任务形上游的传输描述(2026-10-15 为 suduma 引入)。提交与轮询都带 new-api 透传来的 Authorization。 */
@@ -66,6 +69,16 @@ export const WETOKEN_UPSTREAM_TIMEOUT_MS = 300_000;
 /** 2.5 系官方模型名。token 公式两者完全相同(2026-09-09 官 key 交叉验证逐 token 一致),
  *  区别是 sunburst 更慢(max 档 147s vs 46s)、画质更好;单价由 operator 在 new-api 后台按官方设。 */
 export const GPT_IMAGE_25_MODELS = ['gpt-image-2.5-flare', 'gpt-image-2.5-sunburst'] as const;
+
+/** suduma `-gzs` 2.5 实测【如实交付】的尺寸(2026-10-18):1024² / 2048² / 2880² / 3840×2160 / 1280×720 如实;
+ *  1536×1024 → 1152×768、1024×1536 → 768×1152、1000×1000 → 1024² 被改尺寸 → 表外让路(operator 2026-10-18 拍板加白名单)。 */
+export const SUDUMAGZS25_SIZES: ReadonlyArray<string> = [
+    '1024x1024',
+    '2048x2048',
+    '2880x2880',
+    '3840x2160',
+    '1280x720',
+];
 
 export const IMAGE_PROVIDERS_25: Record<string, ImageProvider25> = {
     // wetokenasia25:asian-acc.we-token.cc 对 gpt-image-2.5 是【真 OpenAI 直通】—— 同一主机跑
@@ -262,6 +275,7 @@ export const IMAGE_PROVIDERS_25: Record<string, ImageProvider25> = {
             'gpt-image-2.5-flare': 'gpt-image-2.5-flare-gzs',
             'gpt-image-2.5-sunburst': 'gpt-image-2.5-sunburst-gzs',
         },
+        sizes: SUDUMAGZS25_SIZES,
         imageFetchHeaders: {
             'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/128 Safari/537.36',
         },
