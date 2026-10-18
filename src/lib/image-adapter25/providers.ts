@@ -298,7 +298,9 @@ export const IMAGE_PROVIDERS_25: Record<string, ImageProvider25> = {
     //  - n=2 只返 1 张 → 扇出(不标 nativeN);edits 单图 / image[] 多图 / mask / 显式 size 通,不传 size → 1254²。
     //  operator 2026-10-19 拍板「2.0 跟 2.5 全接」。
     monkeycoding25: {
-        baseUrl: 'https://api.monkeycoding.club',
+        // 2026-10-19 上游告知域名 api.monkeycoding.club(Cloudflare 前置)会限速,改走其裸 IP 直连(明文 http,key 走明文;
+        // Mac / server2 宿主机 / 容器内三处 /v1/models 200,18 张并发出图 18/18)。域名仍可用作回退。
+        baseUrl: 'http://47.251.171.153',
         brand: /\bmonkey\s?-?coding\b|\badobe\b|\bfirefly\b/gi,
         models: GPT_IMAGE_25_MODELS,
     },

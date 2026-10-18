@@ -662,7 +662,9 @@ export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
     //  - n=2 只返 1 张 → 扇出;透明实测真 RGBA(alpha 0–255、47% 像素透明)→ 不设 noTransparentBackground,交付前 alpha 校验兜底;
     //  - edits 单图 / image[] 多图 / mask / input_fidelity / 显式 size 全通;mask 走了另一条后端(usage 带 cached_tokens)且位置不守。
     monkeycoding: {
-        baseUrl: 'https://api.monkeycoding.club',
+        // 2026-10-19 上游告知域名 api.monkeycoding.club(Cloudflare 前置)会限速,改走其裸 IP 直连(明文 http,key 走明文;
+        // Mac / server2 宿主机 / 容器内三处 /v1/models 200,18 张并发出图 18/18)。域名仍可用作回退。
+        baseUrl: 'http://47.251.171.153',
         brand: /\bmonkey\s?-?coding\b|\badobe\b|\bfirefly\b/gi,
         openAllTiers: true,
     },

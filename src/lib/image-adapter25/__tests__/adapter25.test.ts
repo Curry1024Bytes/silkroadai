@@ -2543,9 +2543,9 @@ describe('monkeycoding25 全量线(Go 网关重编码剥 C2PA;xhigh/max 上游�
             'monkeycoding25',
         );
 
-    it('registry:api.monkeycoding.club、两模型、无 qualities(5 档全收)、无 nativeN/transport/sizes/modelMap;brand 抹 monkeycoding 变体 / adobe / firefly', () => {
+    it('registry:47.251.171.153(原 api.monkeycoding.club 域名限速)、两模型、无 qualities(5 档全收)、无 nativeN/transport/sizes/modelMap;brand 抹 monkeycoding 变体 / adobe / firefly', () => {
         const p = IMAGE_PROVIDERS_25.monkeycoding25;
-        expect(p.baseUrl).toBe('https://api.monkeycoding.club');
+        expect(p.baseUrl).toBe('http://47.251.171.153');
         expect(p.models).toEqual(GPT_IMAGE_25_MODELS);
         expect(p.qualities).toBeUndefined();
         expect(p.nativeN).toBeUndefined(); // 实测 n=2 返 1 张 → 扇出
@@ -2609,7 +2609,7 @@ describe('monkeycoding25 全量线(Go 网关重编码剥 C2PA;xhigh/max 上游�
                 );
                 const res = await gen({ model, quality: q });
                 expect(res.status).toBe(200);
-                expect(String(fetchMock.mock.calls[0][0])).toBe('https://api.monkeycoding.club/v1/images/generations');
+                expect(String(fetchMock.mock.calls[0][0])).toBe('http://47.251.171.153/v1/images/generations');
                 const sent = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body));
                 expect(sent.model).toBe(model);
                 expect(sent.quality).toBe(q);

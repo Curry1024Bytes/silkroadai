@@ -4493,9 +4493,9 @@ describe('monkeycoding provider(Go 网关重编码剥 C2PA;2.0 高档非真 high
             'monkeycoding',
         );
 
-    it('registry:api.monkeycoding.club、openAllTiers、无 sizes/upstreamQuality/onlyQualities/transport、透明不拒(实测真 RGBA);brand 抹 monkeycoding 变体 / adobe / firefly', () => {
+    it('registry:47.251.171.153(原 api.monkeycoding.club 域名限速)、openAllTiers、无 sizes/upstreamQuality/onlyQualities/transport、透明不拒(实测真 RGBA);brand 抹 monkeycoding 变体 / adobe / firefly', () => {
         const p = IMAGE_PROVIDERS.monkeycoding;
-        expect(p.baseUrl).toBe('https://api.monkeycoding.club');
+        expect(p.baseUrl).toBe('http://47.251.171.153');
         expect(p.openAllTiers).toBe(true);
         expect(p.sizes).toBeUndefined();
         expect(p.upstreamQuality).toBeUndefined();
@@ -4522,7 +4522,7 @@ describe('monkeycoding provider(Go 网关重编码剥 C2PA;2.0 高档非真 high
             const res = await gen({ size, quality: q });
             expect(res.status).toBe(200);
             const [url, init] = fetchMock.mock.calls[0];
-            expect(url).toBe('https://api.monkeycoding.club/v1/images/generations');
+            expect(url).toBe('http://47.251.171.153/v1/images/generations');
             const sent = JSON.parse(init.body as string);
             expect(sent.model).toBe('gpt-image-2');
             expect(sent.quality).toBe(q);
