@@ -648,4 +648,22 @@ export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
         upstreamQuality: { high: 'medium' },
         noTransparentBackground: true,
     },
+    // monkeycoding:api.monkeycoding.club(自研 Go 网关 + Cloudflare 前置,非 new-api;无账单/定价接口)。2026-10-18 实测
+    // 2.0 19 发 18 成(唯一失败是 gpt-image-1 429「无渠道」),6 并发零 429/5xx,最长 113s 没撞 CF 超时。
+    //  - 每张图被网关用 Go image/png 重编码(IDAT 32KB 分块,1K 图 62 块;官方原图单 IDAT + caBX)→ C2PA 全剥、
+    //    webp/jpeg 请求一律回 PNG(回显也写 png)→ 靠适配器服务端转码兜底;
+    //  - quality 只认 low/medium/high;xhigh / 非法值 → 200 + 回显 low + usage 196(静默降 low 不是拒;2.0 本就三档,入口 400 拦非法值);
+    //  - 官 key 对照(2026-10-18):官方 2.0 high 4 样本 91–116s 从不低于 89s,本上游 2.0 high 6 样本 21–54s → 一定不是真 2.0 high
+    //    (与官方 2.0 medium 30–36s / 2.5 high 18–22s 同量级;2.0 与 2.5 两名字 usage/延迟逐位相同,疑全站用 2.5 出图)。
+    //    operator 2026-10-19 拍板「2.0 跟 2.5 全接」→ openAllTiers,high 按 high 计费(同 llmway / luckfill 的知情取舍);
+    //    上游 usage 用 2.0 常数表(196 / 1764 / 7017,4K high 13271)与官方略异,适配器反正自算丢弃;
+    //  - 尺寸 1024² / 1536×1024 / 1024×1536 / 1344×1008 / 2048² / 2880² / 3840×2160 全如实;网关不校验尺寸(1000² 原样回、
+    //    4000×2000 超官方上限也出)→ 入口校验靠适配器;auto「竖屏」→ 1086×1448 竖版(官方式非 16 倍数);
+    //  - n=2 只返 1 张 → 扇出;透明实测真 RGBA(alpha 0–255、47% 像素透明)→ 不设 noTransparentBackground,交付前 alpha 校验兜底;
+    //  - edits 单图 / image[] 多图 / mask / input_fidelity / 显式 size 全通;mask 走了另一条后端(usage 带 cached_tokens)且位置不守。
+    monkeycoding: {
+        baseUrl: 'https://api.monkeycoding.club',
+        brand: /\bmonkey\s?-?coding\b|\badobe\b|\bfirefly\b/gi,
+        openAllTiers: true,
+    },
 };

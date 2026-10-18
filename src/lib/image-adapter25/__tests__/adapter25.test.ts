@@ -17,6 +17,7 @@ import {
     estimateTextTokens,
 } from '@/lib/image-adapter25/adapter';
 import { IMAGE_PROVIDERS_25, GPT_IMAGE_25_MODELS, SUDUMAGZS25_SIZES } from '@/lib/image-adapter25/providers';
+import { IMAGE_PROVIDERS } from '@/lib/image-adapter/providers';
 
 const URL_GEN = 'http://portal.test/image-adapter25/wetokenasia25/v1/images/generations';
 const URL_EDIT = 'http://portal.test/image-adapter25/wetokenasia25/v1/images/edits';
@@ -2530,5 +2531,109 @@ describe('handleAdapter25Image n 扇出(nativeN 未标的上游:yobox25)', () =>
         expect(fetchMock).toHaveBeenCalledTimes(1);
         expect(sentBody(0).n).toBe(4);
         expect((await bodyOf(res)).data).toHaveLength(4);
+    });
+});
+
+describe('monkeycoding25 三档线(Go 网关重编码剥 C2PA;xhigh/max 上游静默降 low → qualities 只放三档让路)', () => {
+    const URL_M = 'http://portal.test/image-adapter25/monkeycoding25/v1/images/generations';
+    const gen = (body: Record<string, unknown>) =>
+        handleAdapter25Image(
+            jsonReq(URL_M, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', ...body }),
+            'generations',
+            'monkeycoding25',
+        );
+
+    it('registry:api.monkeycoding.club、两模型、qualities=[low,medium,high]、无 nativeN/transport/sizes/modelMap;brand 抹 monkeycoding 变体 / adobe / firefly', () => {
+        const p = IMAGE_PROVIDERS_25.monkeycoding25;
+        expect(p.baseUrl).toBe('https://api.monkeycoding.club');
+        expect(p.models).toEqual(GPT_IMAGE_25_MODELS);
+        expect(p.qualities).toEqual(['low', 'medium', 'high']);
+        expect(p.nativeN).toBeUndefined(); // 实测 n=2 返 1 张 → 扇出
+        expect(p.transport).toBeUndefined();
+        expect(p.sizes).toBeUndefined();
+        expect(p.modelMap).toBeUndefined();
+        expect('monkeycoding monkey coding monkey-coding Adobe firefly'.replace(p.brand, '*')).toBe('* * * * *');
+        expect(p.baseUrl).toBe(IMAGE_PROVIDERS.monkeycoding.baseUrl); // 同一上游的 2.0 / 2.5 两条渠道
+    });
+
+    it('xhigh / max → 503 中性体让路,fetch 一次都不打(上游会收 max 的钱交 low 的图)', async () => {
+        for (const q of ['xhigh', 'max', 'MAX']) {
+            fetchMock.mockReset();
+            okUpstream([pngB64(1024, 1024)]);
+            const res = await gen({ model: 'gpt-image-2.5-sunburst', quality: q });
+            expect(res.status).toBe(503);
+            expect(fetchMock).not.toHaveBeenCalled();
+            const body = (await res.json()) as { error: { code: string; message: string } };
+            expect(body.error.code).toBe('upstream_unavailable');
+            expect(body.error.message).not.toMatch(/monkey|quality/i);
+        }
+    });
+
+    it('low / medium / high / auto × 两模型原样透传、按官方档计费 —— 上游 2.0 词表 usage(medium 1764 / high 7017)被丢弃', async () => {
+        for (const [q, expectTokens] of [
+            ['low', 196],
+            ['medium', 439],
+            ['high', 1756],
+            ['auto', 196],
+        ] as const) {
+            for (const model of GPT_IMAGE_25_MODELS) {
+                fetchMock.mockReset();
+                fetchMock.mockImplementation(
+                    async () =>
+                        new Response(
+                            JSON.stringify({
+                                created: 1,
+                                model,
+                                data: [{ b64_json: pngB64(1024, 1024) }],
+                                quality: q === 'auto' ? 'low' : q,
+                                usage: { input_tokens: 109, output_tokens: 7017, total_tokens: 7126 },
+                            }),
+                            { status: 200, headers: { 'content-type': 'application/json' } },
+                        ),
+                );
+                const res = await gen({ model, quality: q });
+                expect(res.status).toBe(200);
+                expect(String(fetchMock.mock.calls[0][0])).toBe('https://api.monkeycoding.club/v1/images/generations');
+                const sent = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body));
+                expect(sent.model).toBe(model);
+                expect(sent.quality).toBe(q);
+                expect(((await res.json()) as { usage: { output_tokens: number } }).usage.output_tokens).toBe(
+                    expectTokens,
+                );
+            }
+        }
+    });
+
+    it('size=auto 原样透传(不发 size),按返回图实际像素(上游 → 1254²)计费 + 回显', async () => {
+        okUpstream([pngB64(1254, 1254)]);
+        const res = await gen({ size: 'auto', quality: 'low' });
+        expect(res.status).toBe(200);
+        const sent = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body));
+        expect(sent.size === undefined || sent.size === 'auto').toBe(true);
+        const body = (await res.json()) as { size: string; usage: { output_tokens: number } };
+        expect(body.size).toBe('1254x1254');
+        expect(body.usage.output_tokens).toBe(officialOutputTokens25(1254, 1254, 'low'));
+    });
+
+    it('上游 429 rate_limit_error → 503 中性体不泄品牌;Cloudflare 524 HTML → 503', async () => {
+        fetchMock.mockResolvedValue(
+            new Response(
+                JSON.stringify({
+                    error: {
+                        message: 'Service temporarily unavailable, please retry later (monkeycoding)',
+                        type: 'rate_limit_error',
+                    },
+                }),
+                { status: 429 },
+            ),
+        );
+        const r1 = await gen({ quality: 'high' });
+        expect(r1.status).toBe(503);
+        expect(await r1.text()).not.toMatch(/monkey/i);
+
+        fetchMock.mockResolvedValue(new Response('<html>cloudflare 524</html>', { status: 524 }));
+        const r2 = await gen({ quality: 'medium' });
+        expect(r2.status).toBe(503);
+        expect(await r2.text()).not.toMatch(/monkey|cloudflare/i);
     });
 });

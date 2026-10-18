@@ -4483,3 +4483,100 @@ describe('open302 provider(开放堆栈,非 new-api 三源混池,openAllTiers �
         for (const w of ['open302', '词元', '开放堆栈', 'firefly', 'adobe']) expect(lc).not.toContain(w);
     });
 });
+
+describe('monkeycoding provider(Go 网关重编码剥 C2PA;2.0 高档非真 high 但 operator 全接;openAllTiers、透明放行)', () => {
+    const URL_M = 'http://portal.test/image-adapter/monkeycoding/v1/images/generations';
+    const gen = (body: Record<string, unknown>) =>
+        handleAdapterImage(
+            jsonReq(URL_M, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', ...body }),
+            'generations',
+            'monkeycoding',
+        );
+
+    it('registry:api.monkeycoding.club、openAllTiers、无 sizes/upstreamQuality/onlyQualities/transport、透明不拒(实测真 RGBA);brand 抹 monkeycoding 变体 / adobe / firefly', () => {
+        const p = IMAGE_PROVIDERS.monkeycoding;
+        expect(p.baseUrl).toBe('https://api.monkeycoding.club');
+        expect(p.openAllTiers).toBe(true);
+        expect(p.sizes).toBeUndefined();
+        expect(p.upstreamQuality).toBeUndefined();
+        expect(p.onlyQualities).toBeUndefined();
+        expect(p.transport).toBeUndefined();
+        expect(p.noTransparentBackground).toBeUndefined();
+        expect('monkeycoding monkey coding monkey-coding Adobe firefly'.replace(p.brand, '*')).toBe('* * * * *');
+        expect('https://api.monkeycoding.club/v1/images/generations'.replace(p.brand, '*')).toBe(
+            'https://api.*.club/v1/images/generations',
+        );
+    });
+
+    it('三档 × 任意尺寸全放行,quality 原样透传(不替换),按请求尺寸与档合成官方账单(上游 2.0 常数表 usage 丢弃)', async () => {
+        for (const [size, q] of [
+            ['1024x1024', 'low'],
+            ['1024x1024', 'medium'],
+            ['1024x1024', 'high'],
+            ['1344x1008', 'low'],
+            ['2880x2880', 'medium'],
+            ['3840x2160', 'high'],
+        ] as const) {
+            fetchMock.mockReset();
+            okUpstream();
+            const res = await gen({ size, quality: q });
+            expect(res.status).toBe(200);
+            const [url, init] = fetchMock.mock.calls[0];
+            expect(url).toBe('https://api.monkeycoding.club/v1/images/generations');
+            const sent = JSON.parse(init.body as string);
+            expect(sent.model).toBe('gpt-image-2');
+            expect(sent.quality).toBe(q);
+            const [w, h] = size.split('x').map(Number);
+            const body = await res.json();
+            expect(body.quality).toBe(q);
+            expect(body.size).toBe(size);
+            expect(body.usage.output_tokens).toBe(officialOutputTokens(w, h, q));
+        }
+    });
+
+    it('size=auto 原样透传,按返回图实际尺寸(上游 auto「竖屏」→ 1086×1448)计费 + 回显', async () => {
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(1086, 1448) }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+        const res = await gen({ size: 'auto', quality: 'low' });
+        expect(res.status).toBe(200);
+        expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).size).toBe('auto');
+        const body = await res.json();
+        expect(body.size).toBe('1086x1448');
+        expect(body.usage.output_tokens).toBe(officialOutputTokens(1086, 1448, 'low'));
+    });
+
+    it('透明请求放行且 background=transparent 透传进上游 body(实测真 RGBA,靠交付前 alpha 校验兜底)', async () => {
+        okUpstream();
+        const res = await gen({ background: 'transparent', quality: 'low' });
+        expect(res.status).toBe(200);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).background).toBe('transparent');
+    });
+
+    it('上游 429 rate_limit_error(「Service temporarily unavailable」)→ 503 中性体不泄品牌;上游 5xx → 503', async () => {
+        fetchMock.mockResolvedValue(
+            new Response(
+                JSON.stringify({
+                    error: {
+                        message: 'Service temporarily unavailable, please retry later (monkeycoding)',
+                        type: 'rate_limit_error',
+                    },
+                }),
+                { status: 429 },
+            ),
+        );
+        const r1 = await gen({ quality: 'high' });
+        expect(r1.status).toBe(503);
+        expect(await r1.text()).not.toMatch(/monkey/i);
+
+        fetchMock.mockResolvedValue(new Response('<html>cloudflare 524</html>', { status: 524 }));
+        const r2 = await gen({ quality: 'medium' });
+        expect(r2.status).toBe(503);
+        expect(await r2.text()).not.toMatch(/monkey|cloudflare/i);
+    });
+});
