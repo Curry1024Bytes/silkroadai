@@ -427,6 +427,51 @@ describe('火山渠道(volc)路由', () => {
         expect(submitVideoWithKey).not.toHaveBeenCalled();
     });
 
+    it('callback_url(2026-10-19):合法公网 URL 落库 pending + 入口形;不转发给适配器;私网/非法 → 400 不建任务', async () => {
+        submitVideoWithKey.mockImplementation(() =>
+            Promise.resolve(NextResponse.json({ id: 'cgt-cb', task_id: 'cgt-cb', status: 'queued' })),
+        );
+        const ok = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', {
+                model: 'seedance-2-0',
+                prompt: 'x',
+                resolution: '720p',
+                callback_url: 'https://webhook.site/abc',
+            }),
+            '/video/generations',
+        );
+        expect(ok.status).toBe(200);
+        expect(db.seedanceVideoTask.create).toHaveBeenCalledWith({
+            data: expect.objectContaining({
+                id: 'cgt-cb',
+                callback_url: 'https://webhook.site/abc',
+                callback_format: 'v1',
+                callback_status: 'pending',
+            }),
+        });
+        for (const bad of ['http://127.0.0.1/cb', 'ftp://x/cb', 'nope']) {
+            submitVideoWithKey.mockClear();
+            db.seedanceVideoTask.create.mockClear();
+            const res = await handleEnterpriseV1(
+                req('POST', '/v1/video/generations', { model: 'seedance-2-0', prompt: 'x', callback_url: bad }),
+                '/video/generations',
+            );
+            expect(res.status).toBe(400);
+            expect(((await res.json()) as { error: { message: string } }).error.message).toContain('callback_url');
+            expect(submitVideoWithKey).not.toHaveBeenCalled();
+            expect(db.seedanceVideoTask.create).not.toHaveBeenCalled();
+        }
+        // 没传 → 三列 null
+        db.seedanceVideoTask.create.mockClear();
+        await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { model: 'seedance-2-0', prompt: 'x' }),
+            '/video/generations',
+        );
+        expect(db.seedanceVideoTask.create).toHaveBeenCalledWith({
+            data: expect.objectContaining({ callback_url: null, callback_format: null, callback_status: null }),
+        });
+    });
+
     it('global fast/mini 1080p 下架(2026-10-19,artsmcp key 失效):→ 400 带指引,不打上游;pro 1080p 仍放行', async () => {
         submitVideoWithKey.mockImplementation(() =>
             Promise.resolve(NextResponse.json({ id: 'cgt-g1080', task_id: 'cgt-g1080', status: 'queued' })),

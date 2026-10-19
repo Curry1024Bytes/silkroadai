@@ -378,3 +378,101 @@ export function buildArkTaskResponse(inp: ArkTaskResponseInput): Record<string, 
 export function arkErrorBody(code: string, message: string, type = 'invalid_request_error'): Record<string, unknown> {
     return { error: { code, message, type } };
 }
+
+// ── 上游归一 JSON → 火山形元数据 / task 行 → 提交回显参数(2026-10-19 从 proxy.ts 搬来,回调投递也要用)──
+/** 上游回的已推导值(字符串);缺失/空 → null。 */
+export function upstreamStr(v: unknown): string | null {
+    return typeof v === 'string' && v ? v : null;
+}
+/** 上游回的已推导值(数字);缺失/非法 → null。 */
+export function upstreamNum(v: unknown): number | null {
+    return typeof v === 'number' && Number.isFinite(v) ? v : null;
+}
+export function upstreamArkMeta(j: Record<string, unknown> | null): VolcArkMeta {
+    return {
+        framespersecond: upstreamNum(j?.framespersecond),
+        generateAudio: typeof j?.generate_audio === 'boolean' ? j.generate_audio : null,
+        executionExpiresAfter: upstreamNum(j?.execution_expires_after),
+        seed: upstreamNum(j?.seed),
+        tools: Array.isArray(j?.tools) ? j.tools : null,
+        createdAt: upstreamNum(j?.upstream_created_at),
+        updatedAt: upstreamNum(j?.upstream_updated_at),
+        lastFrameUrl: typeof j?.last_frame_url === 'string' ? j.last_frame_url : null,
+        outputFormat: upstreamStr(j?.output_format),
+        safetyIdentifier: upstreamStr(j?.safety_identifier),
+        serviceTier: upstreamStr(j?.service_tier),
+        frames: upstreamNum(j?.frames),
+        draft: typeof j?.draft === 'boolean' ? j.draft : null,
+    };
+}
+/** task 行里落库的回显参数(存量行三列 NULL → 缺省/省略)。 */
+export function submittedArkParams(t: {
+    safety_identifier?: string | null;
+    output_format?: string | null;
+    tools?: unknown;
+    execution_expires_after?: number | null;
+    draft?: boolean | null;
+    draft_task_id?: string | null;
+}): ArkSubmittedParams {
+    return {
+        safetyIdentifier: t.safety_identifier ?? null,
+        outputFormat: t.output_format ?? null,
+        tools: t.tools ?? null,
+        executionExpiresAfter: t.execution_expires_after ?? null,
+        draft: t.draft ?? null,
+        draftTaskId: t.draft_task_id ?? null,
+    };
+}
+
+/**
+ * 终态回调体(2026-10-19):与客户按同一入口查询会拿到的响应体同形。
+ * - ark:火山形(global/promax 扩展形;cn/volc 官方形),上游真值 > 落库 > 默认;
+ * - v1:上游归一 JSON 原样 + 对客 id。
+ * j = 适配器归一 JSON(pollVideoWithKey 的 body);对账路径没有上游体时传合成的 {status, fail_reason}。
+ */
+export function buildTerminalCallbackBody(
+    task: {
+        id: string;
+        model: string;
+        status: string;
+        created_at: Date;
+        resolution: string;
+        duration: number;
+        ratio?: string | null;
+        seed?: bigint | number | null;
+        generate_audio?: boolean | null;
+        fail_reason?: string | null;
+        safety_identifier?: string | null;
+        output_format?: string | null;
+        tools?: unknown;
+        execution_expires_after?: number | null;
+        draft?: boolean | null;
+        draft_task_id?: string | null;
+    },
+    j: Record<string, unknown>,
+    format: 'v1' | 'ark',
+    region: 'cn' | 'global' | 'promax' | 'volc',
+): Record<string, unknown> {
+    if (format !== 'ark') return { ...j, id: task.id, task_id: task.id, object: 'video' };
+    const ourStatus = upstreamStr(j.status) ?? task.status;
+    const videoUrl = upstreamStr(j.video_url) ?? upstreamStr(j.url);
+    return buildArkTaskResponse({
+        taskId: task.id,
+        internalModel: task.model,
+        status: arkStatus(ourStatus),
+        videoUrl,
+        lastFrameUrl: upstreamStr(j.last_frame_url),
+        usage: (j.usage ?? null) as { completion_tokens?: number; total_tokens?: number } | null,
+        failReason: upstreamStr(j.fail_reason) ?? task.fail_reason ?? null,
+        createdAt: task.created_at,
+        resolution: upstreamStr(j.resolution) ?? task.resolution,
+        duration: upstreamNum(j.duration) ?? task.duration,
+        ratio: upstreamStr(j.ratio) ?? task.ratio ?? null,
+        seed: task.seed ?? null,
+        generateAudio: task.generate_audio ?? null,
+        extended: region === 'global' || region === 'promax',
+        volcMeta: region === 'volc' ? upstreamArkMeta(j) : null,
+        upstreamMeta: region !== 'volc' ? upstreamArkMeta(j) : null,
+        submitted: submittedArkParams(task),
+    });
+}

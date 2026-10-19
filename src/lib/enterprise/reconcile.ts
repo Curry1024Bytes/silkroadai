@@ -20,6 +20,43 @@ import { isTerminalTaskFailure, type UpstreamErrorCategory } from '@/lib/seedanc
 import { getUpstreamKeyForUser } from './keys';
 import { ENTERPRISE_TIER, chargeEnterpriseVideoTask } from './billing';
 import { writeRequestLog, type RequestLogCtx } from './request-log';
+import { buildTerminalCallbackBody } from './ark-format';
+import { fireTaskCallback, shouldFireCallback } from './callback';
+
+/**
+ * 回调投递(2026-10-19):对账器把任务推到终态后,若客户提交时要了 callback_url(行上 pending),
+ * 用库里的行 + 上游归一 JSON(没有就合成失败体)拼与查询同形的 body 投出去。best-effort。
+ */
+async function notifyCallback(
+    task: { id: string; callback_url?: string | null; callback_status?: string | null },
+    j: Record<string, unknown> | null,
+    fallback: { status: 'completed' | 'failed'; fail_reason?: string | null },
+): Promise<void> {
+    if (!shouldFireCallback(task)) return;
+    try {
+        const row = await prisma.seedanceVideoTask.findUnique({ where: { id: task.id } });
+        if (!row) return;
+        const body = j ?? {
+            id: row.id,
+            task_id: row.id,
+            object: 'video',
+            status: fallback.status,
+            progress: 100,
+            fail_reason: fallback.fail_reason ?? row.fail_reason ?? undefined,
+        };
+        fireTaskCallback(
+            row.id,
+            buildTerminalCallbackBody(
+                row,
+                body,
+                row.callback_format === 'ark' ? 'ark' : 'v1',
+                regionForModel(row.model),
+            ),
+        );
+    } catch (e) {
+        console.warn('[enterprise-reconcile] callback prep failed', { id: task.id, err: String(e) });
+    }
+}
 
 /** 对账动作落请求日志(kind='reconcile'):僵尸任务是谁补扣/标失败的,后台可查可导。 */
 function logReconcile(
@@ -51,7 +88,13 @@ const EXPIRED_REASON = '任务已过期(上游不再保留结果),未计费';
 
 /** 对账单个客户的滞留任务。best-effort:任何单条失败不影响其余,也不抛给页面。 */
 export async function reconcileStaleTasks(userId: string): Promise<void> {
-    let stale: Array<{ id: string; model: string; created_at: Date }>;
+    let stale: Array<{
+        id: string;
+        model: string;
+        created_at: Date;
+        callback_url?: string | null;
+        callback_status?: string | null;
+    }>;
     try {
         stale = await prisma.seedanceVideoTask.findMany({
             where: {
@@ -62,7 +105,7 @@ export async function reconcileStaleTasks(userId: string): Promise<void> {
             },
             orderBy: { created_at: 'asc' },
             take: BATCH_LIMIT,
-            select: { id: true, model: true, created_at: true },
+            select: { id: true, model: true, created_at: true, callback_url: true, callback_status: true },
         });
     } catch (e) {
         console.warn('[enterprise-reconcile] query failed', e);
@@ -105,6 +148,7 @@ export async function reconcileStaleTasks(userId: string): Promise<void> {
                     if (expired) {
                         await markExpired(task.id);
                         logReconcile(task, userId, t0, 'expired');
+                        await notifyCallback(task, null, { status: 'failed', fail_reason: EXPIRED_REASON });
                     }
                     continue;
                 }
@@ -127,9 +171,14 @@ export async function reconcileStaleTasks(userId: string): Promise<void> {
                         status: res.status,
                         body: j ? JSON.stringify(j) : null,
                     });
+                    await notifyCallback(task, null, {
+                        status: 'failed',
+                        fail_reason: e?.message || '上游判定任务失败',
+                    });
                 } else if (expired) {
                     await markExpired(task.id);
                     logReconcile(task, userId, t0, 'expired', { status: res.status });
+                    await notifyCallback(task, null, { status: 'failed', fail_reason: EXPIRED_REASON });
                 }
                 continue;
             }
@@ -150,6 +199,7 @@ export async function reconcileStaleTasks(userId: string): Promise<void> {
                             body: JSON.stringify(j),
                         });
                     }
+                    await notifyCallback(task, j, { status: 'completed' });
                 }
             } else if (status === 'failed') {
                 await prisma.seedanceVideoTask.updateMany({
@@ -160,9 +210,11 @@ export async function reconcileStaleTasks(userId: string): Promise<void> {
                     },
                 });
                 logReconcile(task, userId, t0, 'marked_failed', { status: res.status, body: JSON.stringify(j) });
+                await notifyCallback(task, j, { status: 'failed' });
             } else if (expired) {
                 await markExpired(task.id);
                 logReconcile(task, userId, t0, 'expired', { status: res.status });
+                await notifyCallback(task, null, { status: 'failed', fail_reason: EXPIRED_REASON });
             }
             // 仍在跑且未超保留期 → 留给下次
         } catch (e) {

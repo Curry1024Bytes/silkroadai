@@ -80,4 +80,9 @@ export async function register() {
     // 企业实例不跑 cron(上面的门),但同库 —— 由主站实例代为清理。12h cadence。
     const { startEnterpriseReqlogCleanupScheduler } = await import('@/lib/scheduler/enterprise-reqlog-cleanup');
     startEnterpriseReqlogCleanupScheduler();
+
+    // 企业任务对账 sweep(2026-10-19):客户提交后不轮询也不开页面的滞留任务,由主站实例每 10 分钟
+    // 代为对账(终态 + 幂等补扣 + 回调投递)。主站 .env 要配齐各线上游 key。
+    const { startEnterpriseReconcileSweepScheduler } = await import('@/lib/scheduler/enterprise-reconcile-sweep');
+    startEnterpriseReconcileSweepScheduler();
 }

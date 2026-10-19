@@ -567,8 +567,17 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                 <p className="text-gray-600">
                     <b>火山官方参数一律透传</b> —— <Code>bitrate_mode</Code> / <Code>camera_fixed</Code> /{' '}
                     <Code>service_tier</Code> / <Code>priority</Code> / <Code>tools</Code>{' '}
-                    等按火山文档传即可,能不能用由火山判。(
-                    <Code>callback_url</Code> 暂不支持,请改用轮询。)
+                    等按火山文档传即可,能不能用由火山判。
+                </p>
+                <p className="text-gray-600">
+                    <b>
+                        回调(<Code>callback_url</Code>)
+                    </b>
+                    —— 提交时带公网可达的 http(s) 地址,任务到达终态(succeeded / failed)后我们向它 POST 一次, body
+                    与您按同一入口查询该任务拿到的响应体完全一致(<Code>/api/v3</Code> 提交 → 火山形,
+                    <Code>/v1</Code> 提交 → OpenAI-video 形),请求头带 <Code>X-Task-Id</Code>。您的接收端返回 2xx
+                    视为送达;否则间隔 5s / 30s 共重试 3 次,仍失败不再投递(请以轮询兜底)。单次超时 10s,不跟随重定向;
+                    <Code>localhost</Code> / 内网地址提交即 400。
                 </p>
                 <p className="text-gray-600">
                     <b>

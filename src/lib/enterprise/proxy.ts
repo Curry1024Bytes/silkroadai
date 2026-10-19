@@ -52,12 +52,15 @@ import {
     stripAssetUri,
     arkStatus,
     buildArkTaskResponse,
-    type ArkSubmittedParams,
-    type VolcArkMeta,
+    upstreamStr,
+    upstreamNum,
+    upstreamArkMeta,
+    submittedArkParams,
 } from './ark-format';
 import type { Prisma } from '@prisma/client';
 import { maybeBrandVideoUrl } from '@/lib/seedance/volc-brand';
 import { maybeStoreVideoToCustomerOss } from '@/lib/seedance/customer-oss-video';
+import { validateCallbackUrl, shouldFireCallback, fireTaskCallback } from './callback';
 import { isTerminalTaskFailure, type UpstreamErrorCategory } from '@/lib/seedance/upstream-error';
 import { invalidatePollCache, pollWithCache } from './poll-cache';
 import { probeVideoMeta, ratioFromDimensions, roundDurationSec } from './video-probe';
@@ -491,14 +494,6 @@ const ARK_STATUS_TO_INTERNAL: Record<string, string> = {
 
 /** 提交:key 鉴权(绑版本)→ 模型门 → 余额门(¥账本)→ 直调适配器核心(客户上游 key)→ 记任务(fail closed)。 */
 /** 上游回的已推导值(字符串);缺失/非法 → null,交由调用方回落库值。 */
-function upstreamStr(v: unknown): string | null {
-    return typeof v === 'string' && v ? v : null;
-}
-/** 上游回的已推导值(数字);缺失/非法 → null。 */
-function upstreamNum(v: unknown): number | null {
-    return typeof v === 'number' && Number.isFinite(v) ? v : null;
-}
-
 /**
  * 深走 body,把所有 `asset://<对客号>` 换成 `asset://<上游号>`(volc 专用)。
  *
@@ -571,43 +566,6 @@ async function translateVolcAssetRefs(body: Record<string, unknown>): Promise<Re
 }
 
 /** 适配器归一 JSON 里的方舟原生元数据 → ark 响应用(volc / service-inference.ai 线有值;xinhankr 全 null)。 */
-function upstreamArkMeta(j: Record<string, unknown> | null): VolcArkMeta {
-    return {
-        framespersecond: upstreamNum(j?.framespersecond),
-        generateAudio: typeof j?.generate_audio === 'boolean' ? j.generate_audio : null,
-        executionExpiresAfter: upstreamNum(j?.execution_expires_after),
-        seed: upstreamNum(j?.seed),
-        tools: Array.isArray(j?.tools) ? j.tools : null,
-        createdAt: upstreamNum(j?.upstream_created_at),
-        updatedAt: upstreamNum(j?.upstream_updated_at),
-        lastFrameUrl: typeof j?.last_frame_url === 'string' ? j.last_frame_url : null,
-        outputFormat: upstreamStr(j?.output_format),
-        safetyIdentifier: upstreamStr(j?.safety_identifier),
-        serviceTier: upstreamStr(j?.service_tier),
-        frames: upstreamNum(j?.frames),
-        draft: typeof j?.draft === 'boolean' ? j.draft : null,
-    };
-}
-
-/** task 行里落库的回显参数(存量行三列 NULL → 缺省/省略)。 */
-function submittedArkParams(t: {
-    safety_identifier?: string | null;
-    output_format?: string | null;
-    tools?: unknown;
-    execution_expires_after?: number | null;
-    draft?: boolean | null;
-    draft_task_id?: string | null;
-}): ArkSubmittedParams {
-    return {
-        safetyIdentifier: t.safety_identifier ?? null,
-        outputFormat: t.output_format ?? null,
-        tools: t.tools ?? null,
-        executionExpiresAfter: t.execution_expires_after ?? null,
-        draft: t.draft ?? null,
-        draftTaskId: t.draft_task_id ?? null,
-    };
-}
-
 async function handleSubmit(req: NextRequest, format: ClientFormat = 'v1'): Promise<NextResponse> {
     // 请求日志(2026-09-03):submit 全量落库(含被拒的)。wrapper 形 —— inner 沿途填 ctx,
     // 这里统一写行(fire-and-forget,绝不影响客户响应)。
@@ -809,6 +767,9 @@ async function handleSubmitInner(req: NextRequest, format: ClientFormat, ctx: Re
         }
     }
 
+    // 回调 URL(2026-10-19):校验后落库,由我们在终态投递(绝不转发上游);不合法 → 400 不建任务。
+    const cb = validateCallbackUrl(body.callback_url);
+    if (cb && !cb.ok) return errJson(400, 'invalid_request', cb.message);
     const hasVideo = extractVideoUrls(body).length > 0 || (draftRow?.has_video ?? false);
     // duration:2.5 系 4-30s,2.0 系 4-15s(火山官方 2026-08 提升 2.5 至 30s;探测 volc/cn/global
     // 2.0 上游 3s/16s 皆 400,4s 全变体真出片)。显式非法值 400(不静默改秒数 —— 计费
@@ -914,6 +875,10 @@ async function handleSubmitInner(req: NextRequest, format: ClientFormat, ctx: Re
                     typeof body.seed === 'number' && Number.isFinite(body.seed) ? BigInt(Math.trunc(body.seed)) : null,
                 generate_audio:
                     typeof body.generate_audio === 'boolean' ? body.generate_audio : (draftRow?.generate_audio ?? true),
+                // 回调投递(2026-10-19):按提交入口记形;pending = 待投
+                callback_url: cb?.ok ? cb.url : null,
+                callback_format: cb?.ok ? format : null,
+                callback_status: cb?.ok ? 'pending' : null,
                 // 2026-09-23 火山官方查询响应新增回显字段:xinhankr 上游不回显,只能落库再回显
                 safety_identifier:
                     typeof body.safety_identifier === 'string' && body.safety_identifier
@@ -992,35 +957,39 @@ async function handlePollInner(
 
     /** 失败终态的对客响应(v1 形 / 火山形)。库里 fail_reason 是权威。 */
     const failedResponse = (failReason: string): NextResponse => {
+        const body = failedBody(failReason);
+        // 回调投递(2026-10-19):失败终态也投;CAS 保证只投一次(已投/已 failed 的不会再进)。
+        if (shouldFireCallback(task)) fireTaskCallback(taskId, body);
+        return NextResponse.json(body);
+    };
+    const failedBody = (failReason: string): Record<string, unknown> => {
         if (format === 'ark') {
             const extended = taskRegion === 'global' || taskRegion === 'promax';
-            return NextResponse.json(
-                buildArkTaskResponse({
-                    taskId,
-                    internalModel: task.model,
-                    status: 'failed',
-                    failReason,
-                    createdAt: task.created_at,
-                    resolution: task.resolution,
-                    duration: task.duration,
-                    ratio: task.ratio,
-                    seed: task.seed,
-                    generateAudio: task.generate_audio,
-                    extended,
-                    // 失败态也要出齐火山官方字段集(客户契约校验不分成功失败)。
-                    volcMeta: taskRegion === 'volc' ? {} : null,
-                    submitted: submittedArkParams(task),
-                }),
-            );
+            return buildArkTaskResponse({
+                taskId,
+                internalModel: task.model,
+                status: 'failed',
+                failReason,
+                createdAt: task.created_at,
+                resolution: task.resolution,
+                duration: task.duration,
+                ratio: task.ratio,
+                seed: task.seed,
+                generateAudio: task.generate_audio,
+                extended,
+                // 失败态也要出齐火山官方字段集(客户契约校验不分成功失败)。
+                volcMeta: taskRegion === 'volc' ? {} : null,
+                submitted: submittedArkParams(task),
+            });
         }
-        return NextResponse.json({
+        return {
             id: taskId,
             task_id: taskId,
             object: 'video',
             status: 'failed',
             progress: 100,
             fail_reason: failReason,
-        });
+        };
     };
 
     /**
@@ -1261,36 +1230,37 @@ async function handlePollInner(
             const branded = await maybeBrandVideoUrl({ userId: cust.userId, taskId, upstreamUrl: videoUrl });
             if (branded) videoUrl = branded;
         }
-        return NextResponse.json(
-            buildArkTaskResponse({
-                taskId,
-                internalModel: task.model,
-                status: arkStatus(String(ourStatus)),
-                videoUrl,
-                lastFrameUrl: typeof j?.last_frame_url === 'string' ? j.last_frame_url : null,
-                usage,
-                failReason,
-                createdAt: task.created_at,
-                // 上游给了【已推导】的值就用它,库里的提交参数只作兜底。
-                // 客户传 duration=-1(智能时长)时,库里存的就是 -1,一直回显 -1 是错的 ——
-                // 上游完成时会给模型真正选的秒数(2026-08-26 客户报障)。ratio 同理。
-                // 上游不回显的渠道走成片实测值(见上 actualDuration / actualRatio)。
-                resolution: upstreamStr(j?.resolution) ?? task.resolution,
-                duration: actualDuration ?? task.duration,
-                ratio: actualRatio ?? task.ratio,
-                seed: task.seed,
-                generateAudio: task.generate_audio,
-                extended,
-                // volc = 原生火山:火山官方字段集要齐(客户按基准做契约校验)。
-                // 其余渠道传 null,行为逐字不变。
-                volcMeta: taskRegion === 'volc' ? upstreamArkMeta(j) : null,
-                // cn 官方形也补齐 2026-09 新字段:国内版 2.5 480p(service-inference.ai)有上游真值,
-                // xinhankr 线全 null → 走落库提交参数 / 官方默认值。
-                upstreamMeta: taskRegion !== 'volc' ? upstreamArkMeta(j) : null,
-                submitted: submittedArkParams(task),
-            }),
-            { headers: vendorHeaders },
-        );
+        const arkBody = buildArkTaskResponse({
+            taskId,
+            internalModel: task.model,
+            status: arkStatus(String(ourStatus)),
+            videoUrl,
+            lastFrameUrl: typeof j?.last_frame_url === 'string' ? j.last_frame_url : null,
+            usage,
+            failReason,
+            createdAt: task.created_at,
+            // 上游给了【已推导】的值就用它,库里的提交参数只作兜底。
+            // 客户传 duration=-1(智能时长)时,库里存的就是 -1,一直回显 -1 是错的 ——
+            // 上游完成时会给模型真正选的秒数(2026-08-26 客户报障)。ratio 同理。
+            // 上游不回显的渠道走成片实测值(见上 actualDuration / actualRatio)。
+            resolution: upstreamStr(j?.resolution) ?? task.resolution,
+            duration: actualDuration ?? task.duration,
+            ratio: actualRatio ?? task.ratio,
+            seed: task.seed,
+            generateAudio: task.generate_audio,
+            extended,
+            // volc = 原生火山:火山官方字段集要齐(客户按基准做契约校验)。
+            // 其余渠道传 null,行为逐字不变。
+            volcMeta: taskRegion === 'volc' ? upstreamArkMeta(j) : null,
+            // cn 官方形也补齐 2026-09 新字段:国内版 2.5 480p(service-inference.ai)有上游真值,
+            // xinhankr 线全 null → 走落库提交参数 / 官方默认值。
+            upstreamMeta: taskRegion !== 'volc' ? upstreamArkMeta(j) : null,
+            submitted: submittedArkParams(task),
+        });
+        // 回调投递(2026-10-19):终态(计费已在上面完成)才投,body = 本次查询响应体。
+        if ((ourStatus === 'completed' || ourStatus === 'failed') && shouldFireCallback(task))
+            fireTaskCallback(taskId, arkBody);
+        return NextResponse.json(arkBody, { headers: vendorHeaders });
     }
 
     // v1(OpenAI-video)形:成片落客户 OSS 时,把 video_url/url 换成客户域名 URL 再回序列化;
@@ -1298,6 +1268,11 @@ async function handlePollInner(
     if (customerOssVideoUrl && j) {
         j.video_url = customerOssVideoUrl;
         j.url = customerOssVideoUrl;
+    }
+    // 回调投递(2026-10-19):终态才投,body = 客户此刻查询拿到的 v1 形(含客户 OSS 替换后的 URL)。
+    if (j && (j.status === 'completed' || j.status === 'failed') && shouldFireCallback(task))
+        fireTaskCallback(taskId, { ...j, id: taskId, task_id: taskId });
+    if (customerOssVideoUrl && j) {
         return NextResponse.json(j, { status: 200, headers: vendorHeaders });
     }
     return new NextResponse(text, {
