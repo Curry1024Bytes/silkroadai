@@ -5377,6 +5377,9 @@ describe('/v1 proxy — 视频轮询 result_url 重写(2026-07-04 base_url 内�
     const AUTH = { authorization: 'Bearer sk-test-video' };
     const R2_URL = 'https://images.llmroute.club/seedance-video/mvt-abc123.mp4';
     const CONTENT_PROXY = 'https://api.llmroute.club/v1/videos/task_xyz/content';
+    const CACHE_TASK_ID = `task_${'a'.repeat(32)}`;
+    const LOCAL_CACHE_URL = `http://localhost:3000/video-cache/${CACHE_TASK_ID}.mp4`;
+    const PUBLIC_CACHE_URL = `https://api.llmroute.club/v1/video-cache/${CACHE_TASK_ID}.mp4`;
 
     function pollResponse(status: string, videoUrl: string | null) {
         const inner: Record<string, unknown> = { status: status === 'SUCCESS' ? 'completed' : 'running' };
@@ -5434,6 +5437,71 @@ describe('/v1 proxy — 视频轮询 result_url 重写(2026-07-04 base_url 内�
         expect(json.data.data.video_url).toBe(expected);
         expect(json.data.result_url).toBe(expected); // result_url 跟随 OSS
         vi.unstubAllEnvs();
+    });
+
+    it('new-api 本机缓存视频 → 旧轮询形中的所有缓存地址改为 Portal 公网地址', async () => {
+        mockFetch.mockResolvedValueOnce(
+            new Response(
+                JSON.stringify({
+                    code: 'success',
+                    data: {
+                        task_id: CACHE_TASK_ID,
+                        status: 'SUCCESS',
+                        result_url: LOCAL_CACHE_URL,
+                        data: { url: LOCAL_CACHE_URL, urls: [LOCAL_CACHE_URL] },
+                    },
+                }),
+                { status: 200, headers: { 'content-type': 'application/json' } },
+            ),
+        );
+        const res = await GET(
+            makeReq(`/video/generations/${CACHE_TASK_ID}`, { method: 'GET', headers: AUTH }),
+            ctx('video', 'generations', CACHE_TASK_ID),
+        );
+        const json = (await res.json()) as { data: { result_url: string; data: { url: string; urls: string[] } } };
+        expect(json.data.result_url).toBe(PUBLIC_CACHE_URL);
+        expect(json.data.data.url).toBe(PUBLIC_CACHE_URL);
+        expect(json.data.data.urls).toEqual([PUBLIC_CACHE_URL]);
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('OpenAI /videos/{id} 完成响应 → result_url 与 metadata.url 一并改写', async () => {
+        mockFetch.mockResolvedValueOnce(
+            new Response(
+                JSON.stringify({
+                    id: CACHE_TASK_ID,
+                    status: 'completed',
+                    result_url: LOCAL_CACHE_URL,
+                    metadata: { url: LOCAL_CACHE_URL },
+                }),
+                { status: 200, headers: { 'content-type': 'application/json' } },
+            ),
+        );
+        const res = await GET(
+            makeReq(`/videos/${CACHE_TASK_ID}`, { method: 'GET', headers: AUTH }),
+            ctx('videos', CACHE_TASK_ID),
+        );
+        const json = (await res.json()) as { result_url: string; metadata: { url: string } };
+        expect(json.result_url).toBe(PUBLIC_CACHE_URL);
+        expect(json.metadata.url).toBe(PUBLIC_CACHE_URL);
+    });
+
+    it('未完成或 URL 的 task ID 不匹配时不重写缓存地址', async () => {
+        for (const status of ['IN_PROGRESS', 'SUCCESS']) {
+            mockFetch.mockResolvedValueOnce(
+                new Response(JSON.stringify({ code: 'success', data: { status, result_url: LOCAL_CACHE_URL } }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+            );
+            const taskId = status === 'SUCCESS' ? `task_${'b'.repeat(32)}` : CACHE_TASK_ID;
+            const res = await GET(
+                makeReq(`/video/generations/${taskId}`, { method: 'GET', headers: AUTH }),
+                ctx('video', 'generations', taskId),
+            );
+            const json = (await res.json()) as { data: { result_url: string } };
+            expect(json.data.result_url).toBe(LOCAL_CACHE_URL);
+        }
     });
 });
 

@@ -52,6 +52,7 @@
  *   3. R2 也失败 → data URL 内联 + `X-Silkroadai-R2-Fallback: yes`
  */
 import { NextRequest, NextResponse } from 'next/server';
+import { CUSTOMER_API_BASE_URL } from '@/lib/public-config';
 import {
     previewB64,
     transcodeB64,
@@ -3119,8 +3120,43 @@ async function handleImagesDalle(
     return NextResponse.json(dalleResp, { status: 200, headers: respHeaders });
 }
 
+/** new-api 的本机缓存地址不能交给客户;仅重写当前任务的受控缓存文件。 */
+function publicVideoCacheUrl(value: unknown, taskId: string): string | null {
+    if (typeof value !== 'string' || !/^task_[A-Za-z0-9]{32}$/.test(taskId)) return null;
+    try {
+        const url = new URL(value);
+        const newApiHost = new URL(NEWAPI_BASE_URL).hostname;
+        if (
+            !['http:', 'https:'].includes(url.protocol) ||
+            !['localhost', '127.0.0.1', 'host.docker.internal', newApiHost].includes(url.hostname) ||
+            url.username ||
+            url.password ||
+            url.search ||
+            url.hash ||
+            url.pathname !== `/video-cache/${taskId}.mp4`
+        ) {
+            return null;
+        }
+        return `${CUSTOMER_API_BASE_URL}/v1/video-cache/${taskId}.mp4`;
+    } catch {
+        return null;
+    }
+}
+
+function rewriteLocalVideoCacheReferences(value: unknown, taskId: string, depth = 0): void {
+    if (!value || typeof value !== 'object' || depth > 8) return;
+    for (const [key, child] of Object.entries(value)) {
+        const publicUrl = publicVideoCacheUrl(child, taskId);
+        if (publicUrl) {
+            (value as JsonRecord)[key] = publicUrl;
+        } else {
+            rewriteLocalVideoCacheReferences(child, taskId, depth + 1);
+        }
+    }
+}
+
 /**
- * 视频轮询(GET /video/generations/{id}):转发 new-api,若任务已完成且 video_url 是我们平台 R2、
+ * 视频轮询(GET /video/generations/{id} 或 /videos/{id}):转发 new-api,若任务已完成且 video_url 是我们平台 R2、
  * 且该客户配了自定义 OSS,则把成片转存到客户 bucket 并改写 video_url 为客户域名。
  * 这是视频版的「自定义对象存储」——镜像生图的 storeGeneratedImage,但生图在生成时存(代理里有客户 key),
  * 视频成片是 new-api 异步轮询时由适配器落到平台 R2(那一步没有客户身份),所以放到客户【轮询】这步做
@@ -3144,12 +3180,13 @@ async function handleVideoPoll(req: NextRequest, path: string, search: string): 
     }
 
     try {
-        const data = body.data as JsonRecord | undefined;
+        const data = path.startsWith('/videos/') ? body : (body.data as JsonRecord | undefined);
         const inner = data?.data as JsonRecord | undefined;
         const status = String(data?.status ?? '').toUpperCase();
+        const completed = status === 'SUCCESS' || status === 'COMPLETED';
         const videoUrl = typeof inner?.video_url === 'string' ? (inner.video_url as string) : null;
         const r2Base = (process.env.R2_PUBLIC_URL || '').replace(/\/$/, '');
-        if (status === 'SUCCESS' && videoUrl && r2Base && videoUrl.startsWith(r2Base + '/') && inner) {
+        if (completed && videoUrl && r2Base && videoUrl.startsWith(r2Base + '/') && inner) {
             const userId = await resolveUserIdFromAuthHeader(req.headers.get('authorization'));
             const ossConfig = userId ? await getOssConfig(userId) : null;
             if (ossConfig && ossConfig.status === 'active') {
@@ -3179,8 +3216,15 @@ async function handleVideoPoll(req: NextRequest, path: string, search: string): 
         // (客户 OSS 优先,否则平台 R2 —— 即上面同一份 video_url),让仍在用 result_url 的老客户自动恢复。
         // data.data.video_url 一直是对的直链,不受影响;失败/未完成任务不改写(finalVideoUrl 为空)。
         const finalVideoUrl = typeof inner?.video_url === 'string' ? (inner.video_url as string) : null;
-        if (status === 'SUCCESS' && data && finalVideoUrl && /^https?:\/\//.test(finalVideoUrl)) {
-            data.result_url = finalVideoUrl;
+        if (completed && data) {
+            const taskId = path.slice(path.lastIndexOf('/') + 1);
+            const publicCacheUrl = publicVideoCacheUrl(finalVideoUrl ?? data.result_url, taskId);
+            if (publicCacheUrl) {
+                rewriteLocalVideoCacheReferences(data, taskId);
+                data.result_url = publicCacheUrl;
+            } else if (finalVideoUrl && /^https?:\/\//.test(finalVideoUrl)) {
+                data.result_url = finalVideoUrl;
+            }
         }
     } catch (e) {
         // DB / OSS / R2 任一故障都不阻断:保持平台 R2 直链返回(客户照样拿得到片)
@@ -3859,6 +3903,11 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
         const taskId = path.slice(path.lastIndexOf('/') + 1);
         if (await isSeedanceCnTask(taskId)) return handleSeedanceVideoPoll(req, taskId);
         if (await isKlingVideoTask(taskId)) return handleKlingVideoPoll(req, taskId);
+        return handleVideoPoll(req, path, search);
+    }
+
+    // new-api 的 OpenAI 视频查询形也可能携带本机 video-cache 地址。
+    if (req.method === 'GET' && /^\/videos\/(?:generations\/)?[^/]+$/.test(path)) {
         return handleVideoPoll(req, path, search);
     }
 
