@@ -427,6 +427,69 @@ describe('火山渠道(volc)路由', () => {
         expect(submitVideoWithKey).not.toHaveBeenCalled();
     });
 
+    it('global fast/mini 1080p 下架(2026-10-19,artsmcp key 失效):→ 400 带指引,不打上游;pro 1080p 仍放行', async () => {
+        submitVideoWithKey.mockImplementation(() =>
+            Promise.resolve(NextResponse.json({ id: 'cgt-g1080', task_id: 'cgt-g1080', status: 'queued' })),
+        );
+        for (const model of ['seedance-2-0-global-fast', 'seedance-2-0-global-mini']) {
+            submitVideoWithKey.mockClear();
+            const res = await handleEnterpriseV1(
+                req('POST', '/v1/video/generations', { model, prompt: 'x', resolution: '1080p' }),
+                '/video/generations',
+            );
+            expect(res.status).toBe(400);
+            expect(((await res.json()) as { error: { message: string } }).error.message).toContain(
+                '仅支持 480p / 720p',
+            );
+            expect(submitVideoWithKey).not.toHaveBeenCalled();
+        }
+        const ok = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { model: 'seedance-2-0-global', prompt: 'x', resolution: '1080p' }),
+            '/video/generations',
+        );
+        expect(ok.status).toBe(200);
+        expect(submitVideoWithKey).toHaveBeenCalledWith(
+            expect.objectContaining({ model: 'seedance2.0-global-pro-1080p' }),
+            expect.any(String),
+        );
+    });
+
+    it('tools 快失败(2026-10-19):global/proMax 的 2.0 pro / fast 带非空 tools → 400 不打上游;mini / 2.5 / 空数组放行', async () => {
+        submitVideoWithKey.mockImplementation(() =>
+            Promise.resolve(NextResponse.json({ id: 'cgt-tl', task_id: 'cgt-tl', status: 'queued' })),
+        );
+        const tools = [{ type: 'web_search' }];
+        for (const model of [
+            'seedance-2-0-global',
+            'seedance-2-0-global-fast',
+            'seedance-2-0-promax',
+            'seedance-2-0-promax-fast',
+        ]) {
+            submitVideoWithKey.mockClear();
+            const res = await handleEnterpriseV1(
+                req('POST', '/v1/video/generations', { model, prompt: 'x', resolution: '720p', tools }),
+                '/video/generations',
+            );
+            expect(res.status).toBe(400);
+            expect(((await res.json()) as { error: { message: string } }).error.message).toContain('tools');
+            expect(submitVideoWithKey).not.toHaveBeenCalled();
+        }
+        for (const [model, extra] of [
+            ['seedance-2-0-global-mini', { tools }],
+            ['seedance-2-5-global', { tools }],
+            ['seedance-2-0-promax-mini', { tools }],
+            ['seedance-2-0-global', { tools: [] }], // 空数组 = 没传
+        ] as Array<[string, Record<string, unknown>]>) {
+            submitVideoWithKey.mockClear();
+            const res = await handleEnterpriseV1(
+                req('POST', '/v1/video/generations', { model, prompt: 'x', resolution: '720p', ...extra }),
+                '/video/generations',
+            );
+            expect(res.status).toBe(200);
+            expect(submitVideoWithKey).toHaveBeenCalledTimes(1);
+        }
+    });
+
     it('global 480p 开放(2026-10-17 换 service-inference.ai 上游):三变体 480p → 对应长名放行', async () => {
         submitVideoWithKey.mockImplementation(() =>
             Promise.resolve(NextResponse.json({ id: 'cgt-g480', task_id: 'cgt-g480', status: 'queued' })),

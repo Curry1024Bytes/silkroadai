@@ -183,9 +183,31 @@ function resolveEnterpriseModel(
     if (resRaw === '4k' && variant !== 'pro' && variant !== 'promax') {
         return { error: errJson(400, 'invalid_request', `${rawModel} 无 4k 档(resolution 仅 480p / 720p / 1080p)`) };
     }
-    // proMax fast/mini:上游(service-inference.ai dreamina fast/mini)仅 480p/720p
-    if ((variant === 'promax-fast' || variant === 'promax-mini') && resRaw !== '720p' && resRaw !== '480p') {
+    // proMax / global 的 fast/mini:上游(service-inference.ai dreamina fast/mini)仅 480p/720p。
+    // global fast/mini 1080p 2026-10-19 下架(此前留 artsmcp,其共享 key 已失效 → 必 401)。
+    const isOverseasFastMini =
+        variant === 'promax-fast' ||
+        variant === 'promax-mini' ||
+        (region === 'global' && (variant === 'fast' || variant === 'mini'));
+    if (isOverseasFastMini && resRaw !== '720p' && resRaw !== '480p') {
         return { error: errJson(400, 'invalid_request', `${rawModel} 仅支持 480p / 720p 档`) };
+    }
+    // tools(web_search)快失败(2026-10-19):海外线(global / proMax)的 2.0 pro / fast 上游模型(dreamina-seedance-2-0 /
+    // -fast)在 t2v 下拒 tools(`the specified parameter tools is not supported for model in t2v, must be empty`),
+    // 此前原样透传 → 客户拿到 200、十几秒后 failed。mini / 2.5 接受,不拦。cn / volc 线上游接受,不拦。
+    if (
+        Array.isArray(body.tools) &&
+        body.tools.length > 0 &&
+        (region === 'global' || region === 'promax') &&
+        (variant === 'pro' || variant === 'fast' || variant === 'promax' || variant === 'promax-fast')
+    ) {
+        return {
+            error: errJson(
+                400,
+                'invalid_request',
+                `${rawModel} 不支持 tools(web_search);请去掉 tools,或改用 mini / seedance-2-5 系模型`,
+            ),
+        };
     }
     // seedance 2.5(cn):480p / 720p / 1080p(480p 走原版 260628 上游,2026-09-07 开档;4k 由上方通用门拦)
     const hasRefs =

@@ -22,7 +22,7 @@
  * (`provider:'svcinf'`,与 cn 2.5 480p 单档同一套 svcinf-client 翻译/轮询,独立 key + 独立 API 版本 env);
  * 对客模型名 / 档位 / 费率全不变。未配 `SEEDANCE_SVCINF_PROMAX_KEY` 回落 artsmcp intl 线。
  * 2026-10-17:海外版 global 同样切到这条线(独立 key `SEEDANCE_SVCINF_GLOBAL_KEY`),global 480p 随之开放;
- * 仅 global fast/mini 的 1080p 档(新上游无)仍留 artsmcp。
+ * global fast/mini 的 1080p 档(新上游无)2026-10-19 下架。
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
@@ -118,8 +118,8 @@ function customerSvcinfKey(auth: string | undefined | null): string | undefined 
 
 // ── 海外版 global → 同一条 service-inference.ai dreamina-sd-max 线(2026-10-17,operator 指定;对客模型/价格不变)──
 // 与 proMax 同四个套餐名,但**独立 key**(`SEEDANCE_SVCINF_GLOBAL_KEY`,各线独立计量)+ 独立版本 env。
-// 上游 fast/mini 只有 480p/720p → global fast/mini 的 1080p 档继续留在 artsmcp intl(模型不变的前提下无法迁),
-// 其余(pro 全档、fast/mini 480p/720p、2.5 全档)都走新上游;global 480p 随之开放(此前 intl 上游无 480p)。
+// 上游 fast/mini 只有 480p/720p → global fast/mini 的 1080p 档 2026-10-19 下架(artsmcp 共享 key 已失效,留着只会 401);
+// global 全档都走新上游;global 480p 随之开放(此前 intl 上游无 480p)。
 const UPSTREAM_SVCINF_GLOBAL_PRO = process.env.SEEDANCE_SVCINF_GLOBAL_MODEL_PRO || UPSTREAM_SVCINF_PROMAX_PRO;
 const UPSTREAM_SVCINF_GLOBAL_FAST = process.env.SEEDANCE_SVCINF_GLOBAL_MODEL_FAST || UPSTREAM_SVCINF_PROMAX_FAST;
 const UPSTREAM_SVCINF_GLOBAL_MINI = process.env.SEEDANCE_SVCINF_GLOBAL_MODEL_MINI || UPSTREAM_SVCINF_PROMAX_MINI;
@@ -323,16 +323,16 @@ export const MODEL_MAP: Record<string, SeedanceModelSpec> = {
     ),
     // ── 海外版(global,2026-07-23):档位与国内一致(operator 拍板同 4k/15s/定价),费率同 cn 变体。
     //    2026-10-17 起上游 = service-inference.ai dreamina(有 key 才切,否则回落 artsdance intl);480p 随之开放。
-    //    ⚠️ 新上游 fast/mini 只有 480p/720p → global fast/mini 的 1080p 档【仍留 artsmcp intl】(svcinfModel 为空
-    //    = 不打 provider 标),模型名不变的前提下无法迁;operator 决定退役 artsmcp 时这两档要一并下架。 ──
+    //    新上游 fast/mini 只有 480p/720p → global fast/mini 的 1080p 档 2026-10-19 下架(此前曾留 artsmcp intl,
+    //    但 artsmcp 共享 key 已失效 → 客户 10-18 实测 6/6 都 401;proxy 对 global fast/mini 1080p 返带指引 400)。 ──
     ...Object.fromEntries(
         (
             [
-                ['pro', UPSTREAM_INTL_PRO, UPSTREAM_SVCINF_GLOBAL_PRO, ['480p', '720p', '1080p', '4k'], []],
-                ['fast', UPSTREAM_INTL_FAST, UPSTREAM_SVCINF_GLOBAL_FAST, ['480p', '720p', '1080p'], ['1080p']],
-                ['mini', UPSTREAM_INTL_MINI, UPSTREAM_SVCINF_GLOBAL_MINI, ['480p', '720p', '1080p'], ['1080p']],
-            ] as Array<[SeedanceVariant, string, string, Array<'480p' | '720p' | '1080p' | '4k'>, string[]]>
-        ).flatMap(([variant, upstream, svcinfModel, resolutions, intlOnly]) =>
+                ['pro', UPSTREAM_INTL_PRO, UPSTREAM_SVCINF_GLOBAL_PRO, ['480p', '720p', '1080p', '4k']],
+                ['fast', UPSTREAM_INTL_FAST, UPSTREAM_SVCINF_GLOBAL_FAST, ['480p', '720p']],
+                ['mini', UPSTREAM_INTL_MINI, UPSTREAM_SVCINF_GLOBAL_MINI, ['480p', '720p']],
+            ] as Array<[SeedanceVariant, string, string, Array<'480p' | '720p' | '1080p' | '4k'>]>
+        ).flatMap(([variant, upstream, svcinfModel, resolutions]) =>
             resolutions.flatMap((resolution) =>
                 [false, true].map((ref) => [
                     `seedance2.0-global-${variant}-${resolution}${ref ? '-ref' : ''}`,
@@ -342,7 +342,8 @@ export const MODEL_MAP: Record<string, SeedanceModelSpec> = {
                         variant,
                         upstream,
                         region: 'global' as const,
-                        ...(intlOnly.includes(resolution) ? {} : { provider: 'svcinf' as const, svcinfModel }),
+                        provider: 'svcinf' as const,
+                        svcinfModel,
                     },
                 ]),
             ),

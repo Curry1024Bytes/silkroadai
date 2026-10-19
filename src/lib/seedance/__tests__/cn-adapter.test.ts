@@ -1215,15 +1215,18 @@ describe('海外版 proMax 全档 → service-inference.ai dreamina(独立 key /
         }
     });
 
-    it('global fast/mini 1080p(新上游无此档)仍走 artsmcp intl,即使 GLOBAL key 已配', async () => {
-        vi.stubEnv('SEEDANCE_SVCINF_GLOBAL_KEY', 'sk-inf-v1-global-platform-key');
-        for (const model of ['seedance2.0-global-fast-1080p', 'seedance2.0-global-mini-1080p']) {
-            mockFetch.mockClear();
-            const r = await submitVideo(makeReq({ model, prompt: 'x' }));
-            expect(r.status).toBe(200);
-            expect(mockFetch.mock.calls.some((c) => String(c[0]).startsWith(SVC))).toBe(false);
-            expect(mockFetch.mock.calls.some((c) => String(c[0]) === `${INTL}/v1/video/generations`)).toBe(true);
-        }
+    it('global fast/mini 1080p 已下架(2026-10-19):MODEL_MAP 无此长名', async () => {
+        const { MODEL_MAP } = await import('../cn-adapter');
+        for (const n of [
+            'seedance2.0-global-fast-1080p',
+            'seedance2.0-global-fast-1080p-ref',
+            'seedance2.0-global-mini-1080p',
+            'seedance2.0-global-mini-1080p-ref',
+        ])
+            expect(MODEL_MAP[n]).toBeUndefined();
+        // 480p/720p 仍在且走 svcinf
+        expect(MODEL_MAP['seedance2.0-global-fast-720p'].provider).toBe('svcinf');
+        expect(MODEL_MAP['seedance2.0-global-mini-480p'].provider).toBe('svcinf');
     });
 
     it('global 未配 GLOBAL key → 回落 artsmcp,不借 PROMAX key', async () => {
