@@ -1,0 +1,11 @@
+[Unit]
+Description=Check verified video cache failures every 30 seconds
+
+[Timer]
+OnBootSec=30s
+OnUnitInactiveSec=30s
+AccuracySec=1s
+Unit=llmroute-video-cache-repair.service
+
+[Install]
+WantedBy=timers.target

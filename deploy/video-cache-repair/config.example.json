@@ -1,0 +1,16 @@
+{
+    "database_container": "postgres",
+    "docker_network": "new-api_new-api-net",
+    "database_hostname": "postgres",
+    "repair_image": "llmroute-video-cache-repair:RELEASE_TAG",
+    "job": {
+        "state_directory": "/var/lib/llmroute-video-cache-repair",
+        "batch_size": 25,
+        "providers": [
+            {
+                "api_origin": "https://api.kkone.vip",
+                "media_origin": "https://video.kkone.vip"
+            }
+        ]
+    }
+}

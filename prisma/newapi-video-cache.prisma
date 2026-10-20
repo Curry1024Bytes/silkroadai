@@ -1,0 +1,34 @@
+// Narrow mapping for the host's video-cache maintenance job. This client is
+// never used by Portal requests and MUST NOT migrate/db push the new-api DB.
+generator client {
+  provider   = "prisma-client-js"
+  output     = "../src/generated/newapi-video-cache"
+  engineType = "client"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model VideoCacheTask {
+  id          BigInt @id
+  taskId      String @map("task_id")
+  channelId   BigInt @map("channel_id")
+  status      String
+  platform    String
+  finishTime  BigInt @map("finish_time")
+  privateData Json?  @map("private_data") @db.Json
+
+  @@map("tasks")
+}
+
+model VideoCacheChannel {
+  id      BigInt @id
+  type    BigInt
+  baseUrl String? @map("base_url")
+  // Only the isolated fixture creates this field. Runtime reads select the
+  // three public channel fields above and never load this credential.
+  key     String?
+
+  @@map("channels")
+}
