@@ -86,6 +86,25 @@ describe('verified video cache source policy', () => {
     it('accepts a trailing slash on the configured channel origin', () => {
         expect(planRepair(task(), { ...CHANNEL, baseUrl: API + '/' }, [POLICY], NOW)).not.toBeNull();
     });
+    it('accepts generic request provenance snapshots without plugin execution', () => {
+        const plan = planRepair(
+            task({}, { execution: { request_id: 'request-1', request_path: '/v1/video/generations' } }),
+            CHANNEL,
+            [POLICY],
+            NOW,
+        );
+        expect(plan.target_url).toBe(TARGET);
+    });
+    it('rejects plugin execution snapshots', () => {
+        expect(
+            planRepair(
+                task({}, { execution: { request_id: 'request-1', task_plugin: { key: 'plugin' } } }),
+                CHANNEL,
+                [POLICY],
+                NOW,
+            ),
+        ).toBeNull();
+    });
     it.each([
         { status: 'IN_PROGRESS' },
         { status: 'FAILURE' },
@@ -105,7 +124,6 @@ describe('verified video cache source policy', () => {
     it.each([
         { video_cached_at: NOW - 1 },
         { video_cached_at: 'invalid' },
-        { execution: {} },
         { future_field: { unsafe_integer: Number.MAX_SAFE_INTEGER + 1 } },
         { upstream_task_id: '' },
         { upstream_task_id: UPSTREAM_ID + '\n' },

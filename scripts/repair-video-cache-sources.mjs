@@ -70,7 +70,11 @@ export function planRepair(task, channel, providers, now = Math.floor(Date.now()
         data.upstream_task_id.length !== 37 ||
         !TASK_ID.test(data.upstream_task_id) ||
         ![undefined, null, 0].includes(data.video_cached_at) ||
-        data.execution != null ||
+        // Every ordinary task carries a request provenance snapshot with the
+        // request id/path. Only plugin-owned tasks must stay out of this
+        // narrowly scoped source repair; rejecting the whole snapshot would
+        // skip all normal video tasks created through the API.
+        data.execution?.task_plugin != null ||
         !PLATFORMS.get(channel.type)?.has(task.platform)
     )
         return null;
