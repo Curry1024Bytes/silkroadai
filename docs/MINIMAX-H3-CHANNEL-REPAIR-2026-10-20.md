@@ -24,12 +24,13 @@ Body 选择 JSON，使用专用协议：
     "prompt": "一只橘猫在湖边钓鱼，镜头缓慢推进，电影质感",
     "seconds": 5,
     "size": "1376x768",
-    "aspect_ratio": "16:9",
     "workflow_id": "text-to-video"
 }
 ```
 
 此例为 5 秒、768P 横屏。`seconds` 接受 4–15 的整数；`1376x768` 是 H3 支持的尺寸，勿替换为通用的 `1280x720`。此请求不再需要之前示例中的 `ratio`、`resolution` 和 `metadata.resolution`。
+
+客户随后重试收到上游 422：`size 不能与 aspect_ratio、megapixels 或 pixels 同时使用`。此前示例同时传了 `size` 与 `aspect_ratio`，现已删除后者。指定具体像素尺寸时只传 `size`，不要同时传这些互斥字段；本地无效尺寸检查无法覆盖供应商的这项参数组合约束。
 
 提交成功后保留返回的 `task_id`，每 5 秒带同一把 Key 查询 `GET /v1/video/generations/{task_id}`。`data.status=SUCCESS` 时读取 `data.result_url`，`FAILURE` 时读取 `data.fail_reason`，其他状态继续查询。不要将重复提交生成当作轮询。
 
