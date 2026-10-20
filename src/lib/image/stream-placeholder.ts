@@ -6,9 +6,15 @@
  * 1–3 分钟)什么帧都收不到。现改为:SSE 一开就按 partial_images 数量吐 N 帧**同一张**固定占位图(平色底 +
  * 加载环),completed 帧再给真图。占位图按请求的 (尺寸, 格式, 透明) 生成,否则客户端拿占位帧去布局会错位。
  *
- * 两层缓存:常用尺寸模块加载时后台预热;长尾尺寸首次现做后进 LRU。平色底 PNG 即使 4K 也只有几十 KB,
- * sharp 编码几十毫秒,现做也不是瓶颈。sharp 不可用 → 返 null,调用方跳过 partial 帧(只发 completed)。
+ * 2026-10-20 第二版:占位帧做成**动图**(静态图客户会以为卡死,反而起 partial_image 的反作用)——
+ *   png  → APNG(自写最小编码器 ./apng):首帧整幅画布(普通解码器看到的静态图),后续帧只覆盖转圈
+ *          那一小块子矩形 → 4K 画布也只有几十 KB;
+ *   webp → 动态 WebP(sharp 多页 raw 输入;整页帧,只对 ≤ 2.5MP 画布做,更大的退回静态);
+ *   jpeg → 无动画,静态首帧。
+ * 两层缓存:常用尺寸模块加载时后台预热;长尾尺寸首次现做后进 LRU。sharp 不可用 → 返 null,调用方跳过
+ * partial 帧(只发 completed)。
  */
+import { encodeApng, type ApngFrame } from './apng';
 import { loadSharp, type ImageFormat } from './transcode';
 
 export interface PlaceholderSpec {
@@ -46,9 +52,25 @@ export function placeholderKey(s: PlaceholderSpec): string {
     return `${s.w}x${s.h}:${s.format}:${s.transparent ? 'a' : 'o'}`;
 }
 
-/** 加载环 + 三点的 SVG(纯形状,不依赖字体 —— Alpine 镜像里 librsvg 未必有字体,文字会渲染成空)。 */
-function placeholderSvg(s: PlaceholderSpec): string {
-    const { w, h } = s;
+/** 动画参数:12 帧 × 80ms ≈ 1 秒转一圈。 */
+export const PLACEHOLDER_FRAMES = 12;
+export const PLACEHOLDER_FRAME_MS = 80;
+/** 动态 WebP 要整页帧(sharp 不暴露子矩形),只对 ≤ 2.5MP 画布做;再大退回静态 webp。 */
+const WEBP_ANIMATED_MAX_PIXELS = 2_500_000;
+
+interface Geometry {
+    r: number;
+    sw: number;
+    cx: number;
+    cy: number;
+    dotR: number;
+    dotY: number;
+    gap: number;
+    /** 动画只更新的子矩形(整数、落在画布内)。 */
+    region: { left: number; top: number; width: number; height: number };
+}
+
+function geometry(w: number, h: number): Geometry {
     const r = Math.max(8, Math.round(Math.min(w, h) * 0.06));
     const sw = Math.max(2, Math.round(r * 0.22));
     const cx = w / 2;
@@ -56,10 +78,41 @@ function placeholderSvg(s: PlaceholderSpec): string {
     const dotR = Math.max(2, Math.round(r * 0.14));
     const dotY = cy + r * 1.9;
     const gap = r * 0.6;
+    const pad = sw + 2;
+    const left = Math.max(0, Math.floor(cx - r - pad));
+    const top = Math.max(0, Math.floor(cy - r - pad));
+    const right = Math.min(w, Math.ceil(cx + r + pad));
+    const bottom = Math.min(h, Math.ceil(dotY + dotR + pad));
+    return { r, sw, cx, cy, dotR, dotY, gap, region: { left, top, width: right - left, height: bottom - top } };
+}
+
+/** 第 i 帧的 SVG:加载环 + 三点,纯形状不依赖字体(Alpine 镜像里 librsvg 未必有字体,文字会渲染成空)。
+ *  环的高亮弧按帧旋转,三点按相位渐隐。 */
+function placeholderSvg(s: PlaceholderSpec, frame: number): string {
+    const { w, h } = s;
+    const g = geometry(w, h);
     const bg = s.transparent ? '' : `<rect width="${w}" height="${h}" fill="#1c1f26"/>`;
-    // 环:浅灰底环 + 3/4 弧高亮,读起来像 spinner;三点递减透明度。
-    const arc = `M ${cx} ${cy - r} A ${r} ${r} 0 1 1 ${cx - r} ${cy}`;
-    return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">${bg}<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="#5a6070" stroke-opacity="0.45" stroke-width="${sw}"/><path d="${arc}" fill="none" stroke="#9fb3ff" stroke-width="${sw}" stroke-linecap="round"/><circle cx="${cx - gap}" cy="${dotY}" r="${dotR}" fill="#9fb3ff" fill-opacity="0.9"/><circle cx="${cx}" cy="${dotY}" r="${dotR}" fill="#9fb3ff" fill-opacity="0.6"/><circle cx="${cx + gap}" cy="${dotY}" r="${dotR}" fill="#9fb3ff" fill-opacity="0.3"/></svg>`;
+    const angle = (frame * 360) / PLACEHOLDER_FRAMES;
+    const arc = `M ${g.cx} ${g.cy - g.r} A ${g.r} ${g.r} 0 1 1 ${g.cx - g.r} ${g.cy}`;
+    const dot = (k: number): string => {
+        const phase = (frame / PLACEHOLDER_FRAMES) * 2 * Math.PI - (k * 2 * Math.PI) / 3;
+        const op = (0.3 + 0.6 * ((Math.sin(phase) + 1) / 2)).toFixed(2);
+        return `<circle cx="${g.cx + (k - 1) * g.gap}" cy="${g.dotY}" r="${g.dotR}" fill="#9fb3ff" fill-opacity="${op}"/>`;
+    };
+    return (
+        `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">${bg}` +
+        `<circle cx="${g.cx}" cy="${g.cy}" r="${g.r}" fill="none" stroke="#5a6070" stroke-opacity="0.45" stroke-width="${g.sw}"/>` +
+        `<g transform="rotate(${angle} ${g.cx} ${g.cy})"><path d="${arc}" fill="none" stroke="#9fb3ff" stroke-width="${g.sw}" stroke-linecap="round"/></g>` +
+        dot(0) +
+        dot(1) +
+        dot(2) +
+        `</svg>`
+    );
+}
+
+/** 测试 / 排障用:动画只更新的子矩形。 */
+export function placeholderRegion(w: number, h: number): { left: number; top: number; width: number; height: number } {
+    return geometry(w, h).region;
 }
 
 const LRU_MAX = 64;
@@ -69,15 +122,42 @@ async function render(s: PlaceholderSpec): Promise<string | null> {
     const sharp = await loadSharp();
     if (!sharp) return null;
     try {
-        let pipe = sharp(Buffer.from(placeholderSvg(s)));
-        if (!s.transparent) pipe = pipe.flatten({ background: '#1c1f26' });
-        pipe =
-            s.format === 'jpeg'
-                ? pipe.jpeg({ quality: 80 })
-                : s.format === 'webp'
-                  ? pipe.webp({ quality: 80, alphaQuality: 100 })
-                  : pipe.png({ compressionLevel: 9, palette: !s.transparent });
-        return (await pipe.toBuffer()).toString('base64');
+        const base = (frame: number) => {
+            let pipe = sharp(Buffer.from(placeholderSvg(s, frame)));
+            if (!s.transparent) pipe = pipe.flatten({ background: '#1c1f26' });
+            return pipe.ensureAlpha();
+        };
+        if (s.format === 'jpeg') {
+            return (await base(0).jpeg({ quality: 80 }).toBuffer()).toString('base64');
+        }
+        if (s.format === 'webp') {
+            if (s.w * s.h > WEBP_ANIMATED_MAX_PIXELS)
+                return (await base(0).webp({ quality: 80, alphaQuality: 100 }).toBuffer()).toString('base64');
+            // 动态 WebP:N 页整幅 RGBA raw 竖向拼接,pageHeight 告诉 sharp 这是多页
+            const pages: Buffer[] = [];
+            for (let i = 0; i < PLACEHOLDER_FRAMES; i++) pages.push(await base(i).raw().toBuffer());
+            const buf = await sharp(Buffer.concat(pages), {
+                raw: { width: s.w, height: s.h * PLACEHOLDER_FRAMES, channels: 4, pageHeight: s.h },
+            })
+                .webp({ quality: 80, alphaQuality: 100, loop: 0, delay: PLACEHOLDER_FRAME_MS })
+                .toBuffer();
+            return buf.toString('base64');
+        }
+        // APNG:首帧整幅,后续帧只编码转圈子矩形;所有帧 8-bit RGBA 非调色板,保证 IHDR 一致
+        const png = { compressionLevel: 9, palette: false } as const;
+        const region = geometry(s.w, s.h).region;
+        const frames: ApngFrame[] = [
+            { png: await base(0).png(png).toBuffer(), x: 0, y: 0, delayMs: PLACEHOLDER_FRAME_MS },
+        ];
+        for (let i = 1; i < PLACEHOLDER_FRAMES; i++) {
+            frames.push({
+                png: await base(i).extract(region).png(png).toBuffer(),
+                x: region.left,
+                y: region.top,
+                delayMs: PLACEHOLDER_FRAME_MS,
+            });
+        }
+        return encodeApng(frames).toString('base64');
     } catch (e) {
         console.warn('[stream-placeholder] render failed:', placeholderKey(s), e instanceof Error ? e.message : e);
         return null;
