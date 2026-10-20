@@ -2165,7 +2165,7 @@ describe('suduma provider(异步任务 submit+poll 分支;表内尺寸;low→med
     });
 });
 
-describe('ztyunjuan provider(qimg 同后端族第二账号池,Adobe Firefly 2.0,全量 openAllTiers + 透明拒)', () => {
+describe('ztyunjuan provider(qimg 同后端族第二账号池,Adobe Firefly 2.0,全量 openAllTiers + low/high→medium 上游替换 + 透明拒)', () => {
     const URL_Z = 'http://portal.test/image-adapter/ztyunjuan/v1/images/generations';
     const gen = (body: Record<string, unknown>) =>
         handleAdapterImage(
@@ -2174,12 +2174,12 @@ describe('ztyunjuan provider(qimg 同后端族第二账号池,Adobe Firefly 2.0,
             'ztyunjuan',
         );
 
-    it('registry:ztyunjuan.com、openAllTiers、无 sizes/upstreamQuality/onlyQualities/transport、透明拒;brand 抹 ztyunjuan / ERR 码 / Firefly S3 / 前缀', () => {
+    it('registry:ztyunjuan.com、openAllTiers、upstreamQuality {low→medium, high→medium}、无 sizes/onlyQualities/transport、透明拒;brand 抹 ztyunjuan / ERR 码 / Firefly S3 / 前缀', () => {
         const p = IMAGE_PROVIDERS.ztyunjuan;
         expect(p.baseUrl).toBe('https://ztyunjuan.com');
         expect(p.openAllTiers).toBe(true);
         expect(p.sizes).toBeUndefined();
-        expect(p.upstreamQuality).toBeUndefined();
+        expect(p.upstreamQuality).toEqual({ low: 'medium', high: 'medium' });
         expect(p.onlyQualities).toBeUndefined();
         expect(p.transport).toBeUndefined();
         expect(p.noTransparentBackground).toBe(true);
@@ -2191,7 +2191,7 @@ describe('ztyunjuan provider(qimg 同后端族第二账号池,Adobe Firefly 2.0,
         expect(p.baseUrl).not.toBe(IMAGE_PROVIDERS.qimg.baseUrl);
     });
 
-    it('三档 × 任意尺寸全放行,quality 原样透传,按请求尺寸与档合成官方账单(上游浮动 usage 丢弃)', async () => {
+    it('三档 × 任意尺寸全放行:上游 quality 恒发 medium(JSON 与 multipart),回显与计费按客户请求档合成官方账单(上游浮动 usage 丢弃)', async () => {
         for (const [size, q] of [
             ['1024x1024', 'low'],
             ['1024x1024', 'medium'],
@@ -2206,13 +2206,31 @@ describe('ztyunjuan provider(qimg 同后端族第二账号池,Adobe Firefly 2.0,
             expect(res.status).toBe(200);
             const [url, init] = fetchMock.mock.calls[0];
             expect(url).toBe('https://ztyunjuan.com/v1/images/generations');
-            expect(JSON.parse(init.body as string).quality).toBe(q);
+            const sent = JSON.parse(init.body as string);
+            expect(sent.model).toBe('gpt-image-2');
+            expect(sent.quality).toBe('medium');
             const [w, h] = size.split('x').map(Number);
             const body = await res.json();
             expect(body.quality).toBe(q);
             expect(body.size).toBe(size);
             expect(body.usage.output_tokens).toBe(officialOutputTokens(w, h, q));
         }
+        fetchMock.mockReset();
+        okUpstream();
+        const res = await handleAdapterImage(
+            formReq(
+                'http://portal.test/image-adapter/ztyunjuan/v1/images/edits',
+                { model: 'gpt-image-2', prompt: 'watercolor', size: '1024x1024', quality: 'high' },
+                [TINY_PNG],
+            ),
+            'edits',
+            'ztyunjuan',
+        );
+        expect(res.status).toBe(200);
+        expect(fetchMock.mock.calls[0][0]).toBe('https://ztyunjuan.com/v1/images/edits');
+        const form = fetchMock.mock.calls[0][1].body as FormData;
+        expect(form.get('quality')).toBe('medium');
+        expect(((await res.json()) as { quality: string }).quality).toBe('high');
     });
 
     it('size=auto 原样透传(openAllTiers),按返回图实际尺寸计费 + 回显', async () => {

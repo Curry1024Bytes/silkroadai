@@ -627,11 +627,16 @@ export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
     //    4K PNG 11.9 / 13.1 / 15.8 MB 单调;1344×1008 / 2048² / 2880² / 4K 全如实;auto → 1024²;edits 通;
     //  - 透明 → 400 `Transparent background is not supported for this model` → noTransparentBackground;
     //  - 挂牌 = 实扣 $0.05/张一口价(quota_type=1),失败不计费。
-    // 【全量线(operator 2026-10-15 拍板)】openAllTiers,quality 原样透传,显式尺寸按请求尺寸计费(上游尺寸如实,不需 sizes)。
+    // 【全量线(operator 2026-10-15 拍板)】openAllTiers,显式尺寸按请求尺寸计费(上游尺寸如实,不需 sizes)。
+    // 【2026-10-20 改 low/high→medium 上游替换(operator 拍板)】当日复测 22 发:medium 7/7 成功(1K / 1536×1024 / 4K / edits / auto),
+    // low 0/6、high 0/6 全 1.6–3.5s 即回 `503 10k pool upstream unavailable`(选号失败 = 池里只剩能出 medium 的账号),
+    // gpt-image-medium / gpt-image 同样;ch278/ch279 当时已被自动禁用。改成 upstreamQuality {low→medium, high→medium}:
+    // 三档全放行、上游恒发 medium、回显与计费按客户请求档(同 luckfill / llmway 取舍,客户要 high 按 high 计费拿 medium 图)。
     ztyunjuan: {
         baseUrl: 'https://ztyunjuan.com',
         brand: /\bztyunjuan\b|\b10k pool\b|\bERR-[0-9A-F]{6,}\b|pre-signed-firefly[a-z0-9.-]*|s3-accelerate[a-z0-9.-]*|bad request to openai:?\s*|\badobe\b|\bfirefly\b/gi,
         openAllTiers: true,
+        upstreamQuality: { low: 'medium', high: 'medium' },
         noTransparentBackground: true,
     },
     yobox: {
