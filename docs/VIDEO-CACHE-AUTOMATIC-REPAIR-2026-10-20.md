@@ -61,4 +61,22 @@ python3 /opt/llmroute-video-cache-repair/run-video-cache-repair.py --config /etc
 - 现有视频公网 HEAD 为 200、`video/mp4`、2,626,131 字节，Range 为 206；验收时无遗留临时凭据文件。配置、state 摘要和数据库备份权限均为 0600。
 - 安装前已备份 new-api 与 Portal PostgreSQL，路径为 `/opt/backups/silkroadai-portal/releases/video-cache-automatic-9c185a43/{newapi,portal}.sql.gz`，均通过 `gzip -t`；同目录保存前后容器身份、价格摘要和两轮运行/公网读取证据。
 - new-api、两套 PostgreSQL、Portal 的身份、镜像和启动时间不变，现有计费字典摘要一致。没有修改价格、业务 `.env`、Nginx、Cloudflare 或生产 schema，没有发起新的生成任务。Portal 应用 source marker 仍为 `2445fe886f1b3c82b11558a4cb32654b576ec58f`。
+
+## 后续修正（2026-10-21）
+
+首轮自动修复上线后，发现普通 NewAPI Video 任务也会保存通用的 `execution` 请求快照
+（request id/path），而筛选策略把所有 `execution != null` 的任务都排除了。结果是已确认的跨域
+缓存失败任务持续由 new-api 重试，但维护程序每轮均为 `eligible=0`。插件任务仍应排除，
+普通请求快照不应影响这条已验证的源地址修复。
+
+提交 `34e3fa90` 将条件收窄为仅排除 `execution.task_plugin` 存在的任务，并增加普通请求快照可修复、
+插件快照继续拒绝的回归测试。验证结果为定向 56/56、完整非 smoke 5725 passed / 1 skipped、
+typecheck 通过、lint 0 error（100 个既有 warning）。
+
+生产维护镜像已更新为 `llmroute-video-cache-repair:release-34e3fa90`，
+镜像 ID 为 `sha256:811dfc462f36676c57fb23b1fabdef2ecd68862cf0875e2af7bf15eb5356ef58`。
+更新前已保存 new-api PostgreSQL 备份和维护配置备份，均为 0600。北京时间 2026-10-20
+23:59 运行一次性维护任务，`eligible=4 / applied=4`；new-api 原有 worker 随后将目标
+视频写入本地缓存。当前受影响链接已通过公网验收为 `200 video/mp4`，大小 2,714,929 字节；
+Portal、new-api、PostgreSQL、Redis 均未重启，没有执行 migration、生成请求或计费操作。
 - 临时测试 SSH 隧道及其本机配置已清理，用户原有隧道配置和未提交文件保留。
