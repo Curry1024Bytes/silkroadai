@@ -53,4 +53,12 @@ python3 /opt/llmroute-video-cache-repair/run-video-cache-repair.py --config /etc
 
 自动检查和 new-api 的下载重试均为后台流程，任务生成成功后的文件准备可能稍有延迟；下载完成前公开链接仍可能暂时 404，需要稍后重试。当前兼容的是上述已验证源站/媒体域名组合，未把任意跨域跳转放开。未来更换供应商域名、new-api 表结构、错误格式或缓存机制时需要重新核验，不能承诺所有未知错误均可自动修复。
 
-发布与最终完整检查结果在安装后补充；应用业务容器不需要重建或重启。
+## 生产启用
+
+- 已按 `dev → prod` fast-forward 并推送源代码 `9c185a43fff982a5b40b5b501e0be3dc7efe248a`，北京时间 2026-10-20 11:55 安装并启用。服务器使用该 prod 的定向 Git 归档；维护镜像涉及的四个源文件已与成功隔离验证的版本逐字节核对。
+- 维护镜像为 `llmroute-video-cache-repair:release-9c185a43`，ID 为 `sha256:8435a51da7628d149c2bc263bd3cd23c93d5b36cfdbe5c2802685b91e8f045a5`。独立 source marker 为 `/opt/deploy-state/video-cache-repair.sha256`；后续纯文档提交不需要重建镜像。
+- `systemd-analyze verify`、正式沙箱约束下的首次运行均通过，timer 为 enabled/active，随后自行运行下一轮成功。两轮均为 apply 模式、eligible/applied/raced 为 0，没有对存量任务作重复修改。
+- 现有视频公网 HEAD 为 200、`video/mp4`、2,626,131 字节，Range 为 206；验收时无遗留临时凭据文件。配置、state 摘要和数据库备份权限均为 0600。
+- 安装前已备份 new-api 与 Portal PostgreSQL，路径为 `/opt/backups/silkroadai-portal/releases/video-cache-automatic-9c185a43/{newapi,portal}.sql.gz`，均通过 `gzip -t`；同目录保存前后容器身份、价格摘要和两轮运行/公网读取证据。
+- new-api、两套 PostgreSQL、Portal 的身份、镜像和启动时间不变，现有计费字典摘要一致。没有修改价格、业务 `.env`、Nginx、Cloudflare 或生产 schema，没有发起新的生成任务。Portal 应用 source marker 仍为 `2445fe886f1b3c82b11558a4cb32654b576ec58f`。
+- 临时测试 SSH 隧道及其本机配置已清理，用户原有隧道配置和未提交文件保留。
