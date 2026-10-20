@@ -52,13 +52,13 @@
  *   3. R2 也失败 → data URL 内联 + `X-Silkroadai-R2-Fallback: yes`
  */
 import { NextRequest, NextResponse } from 'next/server';
+import { transcodeB64, transcodeTargetOf, type ImageFormat, type TranscodeTarget } from '@/lib/image/transcode';
 import {
-    previewB64,
-    transcodeB64,
-    transcodeTargetOf,
-    type ImageFormat,
-    type TranscodeTarget,
-} from '@/lib/image/transcode';
+    getStreamPlaceholderB64,
+    placeholderSpecFromRequest,
+    warmStreamPlaceholders,
+    type PlaceholderSpec,
+} from '@/lib/image/stream-placeholder';
 import { newGenerationId } from '@/lib/image/generation-id';
 import { randomUUID } from 'node:crypto';
 import { prisma } from '@/lib/db';
@@ -1683,24 +1683,38 @@ function normalizeGptImageForm(form: FormData): void {
 }
 
 // ============ 伪流式(官方 Images streaming 契约,gpt-image)============
-// 官方:`stream:true` → SSE,0-N 个 partial_image 事件 + 每张图一个 completed 事件。我们的
-// 上游不产渐进图 → partial 用最终图缩放预览合成(第 5 批,2026-09-19;此前不发 partial);连接立即 200 开流,
-// 生成期间每 15s 注 SSE 注释保活(CF ~100s 空闲掐线,慢图 300s+ —— 这条路天然不需要 withKeepalive
-// 的「85s 后变 200」妥协),完成后发 completed(字段对齐官方:b64_json / created_at / size /
-// quality / background / output_format / usage;`response_format=url` 扩展时带 url)。失败 → 官方
-// error 事件(SSE 已开、状态码回不去了,与官方流中错误行为一致)。
+// 官方:`stream:true` → SSE,0-N 个 partial_image 事件 + 每张图一个 completed 事件。我们的上游不产渐进图。
+// 第 5 批(2026-09-19)partial 用最终图缩放预览合成,但只能在拿到最终图后一次性发出 —— 生成期(慢上游
+// 1–3 分钟)客户什么帧都收不到。2026-10-20 operator 方案:连接一开就按 partial_images 数量吐 N 帧**同一张**
+// 固定「生成中」占位图(@/lib/image/stream-placeholder,按请求的尺寸 / 格式 / 透明生成,常用尺寸预热),
+// completed 帧再给真图;生成期间每 15s 注 SSE 注释保活(CF ~100s 空闲掐线,慢图 300s+)。completed 字段对齐官方:
+// b64_json / created_at / size / quality / background / output_format / usage;`response_format=url` 扩展时带 url。
+// 失败 → 官方 error 事件(SSE 已开、状态码回不去了,与官方流中错误行为一致)。
+// 计费:partial 帧不计费(官方对每个 partial 帧多收 ~77 token,我们不收),usage 只在 completed 帧按非流式口径。
 
 const IMAGE_SSE_KEEPALIVE_MS = 15_000;
 
-/** 把非流式 images 流程(reshape 后的 NextResponse promise)包成官方形 SSE。
- *  事件族按客户调用的 path:/images/edits → image_edit.*,其余 → image_generation.*。 */
 /** partial_images(官方 0-3)→ 整数;非法 / 缺省 → 0。 */
 function parsePartialImages(v: unknown): number {
     const n = typeof v === 'number' ? v : Number(String(v ?? '').trim());
     return Number.isInteger(n) && n >= 0 && n <= 3 ? n : 0;
 }
 
-function gptImageSseResponse(work: Promise<NextResponse>, clientPath: string, partialImages = 0): NextResponse {
+/** partial 占位帧回显的请求侧字段(与 completed 的 common 同形;真值要等上游返回才知道)。 */
+interface PlaceholderEcho {
+    spec: PlaceholderSpec;
+    quality: string | null;
+}
+
+/** 把非流式 images 流程(reshape 后的 NextResponse promise)包成官方形 SSE。
+ *  事件族按客户调用的 path:/images/edits → image_edit.*,其余 → image_generation.*。
+ *  partialImages > 0 且能做出占位图 → 开流即发 N 帧占位 partial_image(index 0..N-1),再等 work 发 completed。 */
+function gptImageSseResponse(
+    work: Promise<NextResponse>,
+    clientPath: string,
+    partialImages = 0,
+    placeholder?: PlaceholderEcho,
+): NextResponse {
     const family = clientPath === '/images/edits' ? 'image_edit' : 'image_generation';
     const enc = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
@@ -1717,8 +1731,36 @@ function gptImageSseResponse(work: Promise<NextResponse>, clientPath: string, pa
             const send = (event: string, data: Record<string, unknown>): void =>
                 emit(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
             const keep = setInterval(() => emit(': keep-alive\n\n'), IMAGE_SSE_KEEPALIVE_MS);
+            let seq = 0;
+            // 占位 partial 帧:开流即发(不等上游)。completed 必须排在它们之后,所以 work 的收尾 await 这个 promise。
+            const partials: Promise<void> =
+                partialImages > 0 && placeholder
+                    ? getStreamPlaceholderB64(placeholder.spec)
+                          .then((b64) => {
+                              if (!b64) return;
+                              const { spec } = placeholder;
+                              const common = {
+                                  created_at: Math.floor(Date.now() / 1000),
+                                  size: `${spec.w}x${spec.h}`,
+                                  quality: placeholder.quality,
+                                  background: spec.transparent ? 'transparent' : 'opaque',
+                                  output_format: spec.format,
+                              };
+                              for (let i = 0; i < partialImages; i++) {
+                                  send(`${family}.partial_image`, {
+                                      type: `${family}.partial_image`,
+                                      b64_json: b64,
+                                      ...common,
+                                      partial_image_index: i,
+                                      sequence_number: seq++,
+                                  });
+                              }
+                          })
+                          .catch(() => undefined)
+                    : Promise.resolve();
             void work
                 .then(async (resp) => {
+                    await partials;
                     let j: JsonRecord | null = null;
                     try {
                         j = (await resp.json()) as JsonRecord;
@@ -1727,10 +1769,7 @@ function gptImageSseResponse(work: Promise<NextResponse>, clientPath: string, pa
                     }
                     const items = j && Array.isArray(j.data) ? (j.data as Array<Record<string, unknown>>) : [];
                     if (resp.status >= 200 && resp.status < 300 && j && items.length > 0) {
-                        // 官方:每张图 0-N 个 partial_image(partial_image_index 0..N-1)+ 1 个 completed,
-                        // sequence_number 跨事件递增。我们的上游不产渐进图 → partial 用最终图按 (i+1)/(N+1)
-                        // 线性比例缩小的预览合成(sharp),在拿到最终图后一次性发出(时序不对齐官方,形状对齐)。
-                        let seq = 0;
+                        // 官方:每张图 0-N 个 partial_image + 1 个 completed,sequence_number 跨事件递增。
                         const common = {
                             created_at: j.created ?? Math.floor(Date.now() / 1000),
                             size: j.size ?? null,
@@ -1738,22 +1777,8 @@ function gptImageSseResponse(work: Promise<NextResponse>, clientPath: string, pa
                             background: j.background ?? null,
                             output_format: j.output_format ?? null,
                         };
-                        const fmt: ImageFormat =
-                            j.output_format === 'jpeg' || j.output_format === 'webp' ? j.output_format : 'png';
                         for (const it of items) {
                             const b64 = typeof it.b64_json === 'string' && it.b64_json ? it.b64_json : '';
-                            if (partialImages > 0 && b64) {
-                                for (let i = 0; i < partialImages; i++) {
-                                    const preview = (await previewB64(b64, (i + 1) / (partialImages + 1), fmt)) ?? b64;
-                                    send(`${family}.partial_image`, {
-                                        type: `${family}.partial_image`,
-                                        b64_json: preview,
-                                        ...common,
-                                        partial_image_index: i,
-                                        sequence_number: seq++,
-                                    });
-                                }
-                            }
                             send(`${family}.completed`, {
                                 type: `${family}.completed`,
                                 ...(b64 ? { b64_json: b64 } : {}),
@@ -2329,7 +2354,13 @@ async function handleImagesDalle(
                     }
                 };
                 // 伪流式:gpt-image + stream:true → 立即 200 开 SSE 保活,完成后发 completed 事件
-                if (wantStream && isGptImageModel(model)) return gptImageSseResponse(run(), path, partialImages);
+                if (wantStream && isGptImageModel(model)) {
+                    warmStreamPlaceholders();
+                    return gptImageSseResponse(run(), path, partialImages, {
+                        spec: placeholderSpecFromRequest(sizeRaw, echo.outputFormat, echo.background),
+                        quality: echo.quality || null,
+                    });
+                }
                 return await run();
             }
             for (const file of formImageFiles(form)) {
@@ -2476,7 +2507,13 @@ async function handleImagesDalle(
                     }
                 };
                 // 伪流式:gpt-image + stream:true → 立即 200 开 SSE 保活,完成后发 completed 事件
-                if (wantStream && isGptImageModel(model)) return gptImageSseResponse(run(), path, partialImages);
+                if (wantStream && isGptImageModel(model)) {
+                    warmStreamPlaceholders();
+                    return gptImageSseResponse(run(), path, partialImages, {
+                        spec: placeholderSpecFromRequest(sizeRaw, echo.outputFormat, echo.background),
+                        quality: echo.quality || null,
+                    });
+                }
                 return await run();
             }
             // JSON 形态:官方 images[{image_url|file_id}] / 自家 image、image_url(data URL / 外部 URL 字符串或数组)

@@ -5676,7 +5676,7 @@ describe('/v1 proxy — 伪流式 partial_image 事件 + sequence_number(第 5 �
             });
     }
 
-    it('partial_images=2 → 两个 partial_image(index 0/1,缩放预览)+ completed,sequence_number 0/1/2', async () => {
+    it('partial_images=2 → 两个 partial_image(index 0/1,同一张请求尺寸的占位图,先于 completed 发出)+ completed,sequence_number 0/1/2', async () => {
         const png = await realPng();
         mockFetch.mockResolvedValueOnce(
             new Response(
@@ -5706,11 +5706,87 @@ describe('/v1 proxy — 伪流式 partial_image 事件 + sequence_number(第 5 �
         expect(events[1].data.partial_image_index).toBe(1);
         expect(events.map((e) => e.data.sequence_number)).toEqual([0, 1, 2]);
         expect(events[2].data.usage).toEqual({ input_tokens: 8, output_tokens: 196, total_tokens: 204 });
-        // 预览按 (i+1)/(N+1) 线性缩小:64 → 21 → 43
-        expect((await pngDims(events[0].data.b64_json as string)).w).toBe(21);
-        expect((await pngDims(events[1].data.b64_json as string)).w).toBe(43);
+        // 占位帧 = 请求尺寸(1024²)的同一张图,不是最终图的缩放;completed 才是真图(64²)
+        expect(events[0].data.b64_json).toBe(events[1].data.b64_json);
+        expect(await pngDims(events[0].data.b64_json as string)).toEqual({ w: 1024, h: 1024 });
+        expect(events[0].data.size).toBe('1024x1024');
+        expect(events[0].data.output_format).toBe('png');
+        expect(events[0].data.background).toBe('opaque');
         expect((await pngDims(events[2].data.b64_json as string)).w).toBe(64);
+        expect(events[2].data.b64_json).toBe(png);
         for (const e of events) expect(e.data.type).toBe(e.event);
+    });
+
+    it('占位帧在上游返回之前就发出(上游挂 2s,首个 partial 在 1s 内到达)', async () => {
+        const png = await realPng();
+        mockFetch.mockImplementationOnce(
+            () =>
+                new Promise((resolve) =>
+                    setTimeout(
+                        () =>
+                            resolve(
+                                new Response(JSON.stringify({ created: 1, data: [{ b64_json: png }] }), {
+                                    status: 200,
+                                    headers: { 'content-type': 'application/json' },
+                                }),
+                            ),
+                        2000,
+                    ),
+                ),
+        );
+        const t0 = Date.now();
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2', prompt: 'x', size: '1536x1024', stream: true, partial_images: 1 },
+            }),
+            ctx('images', 'generations'),
+        );
+        const reader = res.body!.getReader();
+        const dec = new TextDecoder();
+        let buf = '';
+        let firstPartialAt = -1;
+        for (;;) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buf += dec.decode(value, { stream: true });
+            if (firstPartialAt < 0 && buf.includes('event: image_generation.partial_image'))
+                firstPartialAt = Date.now() - t0;
+        }
+        expect(firstPartialAt).toBeGreaterThanOrEqual(0);
+        expect(firstPartialAt).toBeLessThan(1000);
+        const events = parseSse(buf);
+        expect(events.map((e) => e.event)).toEqual(['image_generation.partial_image', 'image_generation.completed']);
+        expect(await pngDims(events[0].data.b64_json as string)).toEqual({ w: 1536, h: 1024 });
+    });
+
+    it('透明 + webp 请求 → 占位帧按 webp / transparent 回显,completed 仍是上游真图', async () => {
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ created: 1, data: [{ b64_json: 'QUJD' }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: {
+                    model: 'gpt-image-2',
+                    prompt: 'x',
+                    size: '1024x1024',
+                    stream: true,
+                    partial_images: 1,
+                    output_format: 'webp',
+                    background: 'transparent',
+                },
+            }),
+            ctx('images', 'generations'),
+        );
+        const events = parseSse(await res.text());
+        expect(events.map((e) => e.event)).toEqual(['image_generation.partial_image', 'image_generation.completed']);
+        expect(events[0].data.output_format).toBe('webp');
+        expect(events[0].data.background).toBe('transparent');
+        const head = Buffer.from(events[0].data.b64_json as string, 'base64');
+        expect(head.toString('latin1', 0, 4)).toBe('RIFF');
+        expect(head.toString('latin1', 8, 12)).toBe('WEBP');
     });
 
     it('partial_images 缺省 → 只有 completed(sequence_number 0);partial_images=5(超官方上限)→ 当 0', async () => {
@@ -5753,8 +5829,10 @@ describe('/v1 proxy — 伪流式 partial_image 事件 + sequence_number(第 5 �
         );
         const events = parseSse(await res.text());
         expect(events.map((e) => e.event)).toEqual(['image_edit.partial_image', 'image_edit.completed']);
-        // 假 b64 无法缩放 → partial 回退为完整图字节,事件数仍确定
-        expect(events[0].data.b64_json).toBe('QUJD');
+        // partial 是占位图(与上游返回无关),completed 才是上游字节
+        expect(events[0].data.b64_json).not.toBe('QUJD');
+        expect(await pngDims(events[0].data.b64_json as string)).toEqual({ w: 1024, h: 1024 });
+        expect(events[1].data.b64_json).toBe('QUJD');
         const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
         expect((init.body as FormData).get('partial_images')).toBeNull(); // 不透传上游
     });
