@@ -778,6 +778,33 @@ describe('handleAdapterImage 失败路径(不合成 usage → new-api 不扣费)
         expect(text.toLowerCase()).not.toContain('omini');
     });
 
+    it('内容安全(monkeycoding 400 "Content policy violation … moderation system")→ 终态 400,不 failover', async () => {
+        // 2026-10-20 线上实况:ChatGPT 网页池审核拒是 HTTP 400(非 451),旧正则漏 → 503 failover + 客户重试放大
+        fetchMock.mockResolvedValue(
+            new Response(
+                JSON.stringify({
+                    error: {
+                        message:
+                            'Content policy violation: the prompt or generated image was rejected by the moderation system, please modify the prompt and retry',
+                        type: 'invalid_request_error',
+                    },
+                }),
+                { status: 400 },
+            ),
+        );
+        const res = await handleAdapterImage(
+            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160', quality: 'high' }),
+            'generations',
+            'ominiapi',
+        );
+        expect(res.status).toBe(400);
+        const body = await res.json();
+        expect(body.error.code).toBe('moderation_blocked');
+        expect(body.error.type).toBe('user_error');
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(JSON.stringify(body).toLowerCase()).not.toContain('monkey');
+    });
+
     it('内容安全(451 image_unsafe)→ 终态 400 官方 moderation_blocked(不 failover)', async () => {
         fetchMock.mockResolvedValue(
             new Response(JSON.stringify({ error: { error_code: 'image_unsafe', message: 'appear to be unsafe' } }), {

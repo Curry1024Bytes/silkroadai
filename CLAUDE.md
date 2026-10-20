@@ -287,6 +287,11 @@ silkroadai/
 
 - [x] `seedream-5-0-pro` 适配器 ✅(2026-09-06,PR #442 merge `89281f8` + #443 `fe52023`;**2026-09-07 已部署**:server2 `deploy-image-adapter.sh` api-1..6 + server1 官网 `/docs`;new-api **ch214** `seedream 5 pro (service-inference · seedream-adapter)` + ModelRatio/CompletionRatio=1;公网真 key 冒烟 1K 扣 84,151 / 拆层 4 图扣 168,301 / 坏尺寸 400 全过)— 上游 service-inference.ai `dola-seedream-5-0-pro-260628-ep`,走 image-adapter / minimax 同款「portal 适配器 + new-api 渠道」:`src/lib/seedream/adapter.ts` + `/seedream-adapter/v1/images/generations`。**渠道必须开 `pass_through_body_enabled`**(否则 new-api 按自家 ImageRequest 重组 body,`layer_decomposition` / `image` 等字段到不了适配器;echo 探测证实开了原始 JSON 逐字节到达、响应扩展字段 z_index / bounding_box 原样穿回)。适配器:模型名映射、输入图四字段归一(URL / base64 都直传上游)、恒要 b64_json(上游 url 是火山 TOS 24h 链接)、n 本层扇出(上游忽略 n)、**合成 usage = 售价 quota**(ModelRatio=CompletionRatio=1 ⇒ quota = input_tokens + output_tokens 逐 quota 精确)。售价 = 官方 USD × 0.55 × 6.8:普通 ≤2.36MP ¥0.1683 / >2.36MP ¥0.3366 每张,图层拆分 ¥0.0842 / ¥0.1683 每张输出,参考图第 2 张起 ¥0.0112(阈值取上游计费元数据 le_236w,不用官方页的 2.61M)。代理层(`/v1` route)钩子:缺省 `response_format=url` → b64 存图床(客户 OSS / R2)换永久 url;图层拆分空 prompt 占位空格(new-api 要求非空);multipart `images.edit` → 转 JSON 打 generations;上游无渠道按容量 503。上游实测:size 面积 ≤4,624,220 px(3K/4K 拒)、透明背景需恰好 1 张 PNG 输入、prompt 可空拆层。配置脚本 `scripts/setup-seedream-5-pro.mjs`(ModelRatio/CompletionRatio=1 + 建渠道 pass_through/auto_ban=0;**缺省不碰 `group_ratio_setting`** —— 部署前核查 prod 三键已分叉:GroupRatio 15 键 / flat 18 / nested 17,9 个在用组三键全无、靠内存态放行,default/pool-gpt/pool-claude 两键值不同;PUT flat 会让未镜像组 403「已被弃用」,合并值是定价决策,留 operator 拍板后用 `--sync-group-setting`);组 `seedream 5 pro` / 档位行已存在。**部署走 server2 `deploy-image-adapter.sh`(api-1..6),不是 CLAUDE.md 那条 portal 命令。** 旧 ch166(artsapi 直连、未定价)建议禁用。`/docs#seedream-image` 章节 + 23 适配器单测 + 6 代理单测。
 
+### 2026-10-20 — 滚动部署排空 + monkeycoding 审核拒终态化
+
+- [x] 部署 502 风暴修复 ✅(分支 `fix/deploy-drain-and-moderation-classify`)— 近 10 分钟 image2 分析:3,649 最终失败里 3,008 条是 #550 滚动部署切断在途生图(`502 bad response status code`,部署窗口外为 0)。根因:Next standalone 收 SIGTERM 本会 `server.close()` 等在途做完,但 compose 默认 10s 后 SIGKILL;且 Node 只关【空闲】长连接,Caddy 池里活跃 keep-alive 连接响应完仍会被复用送新请求进来,排空收不住。修法三件:① compose `x-portal-api-common` 加 `stop_grace_period: 630s`;② `src/lib/server/drain.ts`(instrumentation Part 3)SIGTERM 后每个响应头带 `Connection: close`;③ server2 `deploy-image-adapter.sh` + server3 `deploy-api-node.sh`(**不在 repo,scp 安装**)在 `--force-recreate` 前先 `docker stop -t $DRAIN_TIMEOUT`(旧容器 StopTimeout 建时写死 10s,必须显式覆盖),日志打「排空 Ns」。见 gotcha #22。
+- [x] monkeycoding 审核拒归类修复 ✅ — ChatGPT 网页池审核拒是 **HTTP 400** `Content policy violation: … rejected by the moderation system`,两个适配器的 `UPSTREAM_SAFETY_RE` 全漏 → 当瞬时错 failover → 客户拿 503「temporarily unable」并重试放大(部署后 10 分钟内占 503 真因 83%;近 1h 6,476 次 failover 仅 9.8% 挽回,其中 7.7% 还是同渠道重试)。正则补 `content policy violation|moderation system`,2.0 / 2.5 各加 1 测试。代价:那 ~10% 靠重试挽回的请求现在直接 400。
+
 ---
 
 ## 关键架构决策(决策已定,不要重新讨论)
@@ -479,6 +484,16 @@ LiteLLM 同时支持 user-level 和 key-level 预算。我们只用 key-level(�
 **通用规则**:任何 proxy 层「读入一种 body 形态、转发另一种 body 形态」的地方(JSON↔multipart↔stream),都要把 `Content-Type`(+ 必要时 `Content-Length`)按出口 body 重设,不能无脑透传入口的头。
 
 **首次发现**:2026-06-08 客户 multipart 改图 500(W9 D4 images hotfix-2,`hotfix-multipart-content-type-brief.md`)。修复 commit:见 `fix/proxy-multipart-translate-content-type`。
+
+### 22. 滚动重启副本 = 掐断在途生图,除非「grace 够长 + 排空期 Connection: close」两件齐备
+
+**症状**:每次 `deploy-image-adapter.sh` 十副本逐台 `--force-recreate`,new-api 3 分钟内记 3,000+ 条 `502 bad response status code`(全渠道同时出现、部署窗口外为 0),客户最终失败率瞬间 37%。
+
+**根因两层**:① compose 默认 `stop_grace_period` 10s → SIGKILL,生图 20–600s 的在途请求全死;Next standalone 其实已注册 SIGTERM → `server.close()` 等在途做完再 exit,只是等不到。② 就算 grace 够长,Node `server.close()` 只关【空闲】keep-alive 连接;Caddy 池里正在服务的连接响应完会被 Go transport 立刻复用送下一条请求进来(Node 22/25 实测响应头仍是 `keep-alive`),least_conn 还偏爱这台活跃数在降的副本 → 排空永远收不住,最后还是 SIGKILL。Caddy `lb_try_duration` 只重试**拨号失败**,不重放已发出的 POST。
+
+**修法**:`stop_grace_period: 630s`(compose,对新容器生效)+ 部署脚本 `docker stop -t 630`(旧容器 StopTimeout 建时写死,必须显式覆盖)+ `src/lib/server/drain.ts` 在 SIGTERM 后给每个响应头加 `Connection: close`(包 `ServerResponse.prototype.writeHead`,显式/隐式头都经它),Caddy 响应完即弃连、新请求只能重新拨号 → 监听已关 → 立刻换副本。**新增任何「副本型」服务都要同时带这三件**,少一件部署就还是 502 风暴。
+
+**首次发现**:2026-10-20 近 10 分钟 image2 报错分析(本次修复)。此前 2026-09-27 #496 部署已记录「3,300 条 502 / 2.5 分钟是固定成本」—— 那是误判,不是固定成本。
 
 ### 22. gpt-image edits 的 `size=auto` 在按张计费上游上多半是「恒方图」,不是「跟随输入图」
 

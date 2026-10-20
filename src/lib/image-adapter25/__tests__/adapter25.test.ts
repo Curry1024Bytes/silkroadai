@@ -480,6 +480,30 @@ describe('handleAdapter25Image 透明 / 错误 / 脱敏', () => {
         }
     });
 
+    it('内容安全(monkeycoding25 HTTP 400 "Content policy violation … moderation system")→ 终态 400,不 failover', async () => {
+        // 2026-10-20 线上实况:ChatGPT 网页池审核拒走 400 非 451,旧正则漏 → 503 failover + 客户重试放大
+        for (const errBody of [
+            {
+                error: {
+                    message:
+                        'Content policy violation: the prompt or generated image was rejected by the moderation system, please modify the prompt and retry',
+                    type: 'invalid_request_error',
+                },
+            },
+        ]) {
+            fetchMock.mockReset();
+            fetchMock.mockResolvedValue(new Response(JSON.stringify(errBody), { status: 451 }));
+            const res = await handleAdapter25Image(
+                jsonReq(URL_GEN, { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'low' }),
+                'generations',
+                'wetokenasia25',
+            );
+            expect(res.status).toBe(400);
+            expect(((await res.json()) as { error: { code: string } }).error.code).toBe('moderation_blocked');
+            expect(fetchMock).toHaveBeenCalledTimes(1);
+        }
+    });
+
     it('上游非法尺寸 400 → 终态 invalid_request,且【透出上游具体原因】+ param=size(客户能定位)', async () => {
         fetchMock.mockResolvedValue(
             new Response(

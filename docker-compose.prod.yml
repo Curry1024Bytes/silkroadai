@@ -53,6 +53,12 @@ x-portal-api-common: &portal-api-common
             gw_priority: 1
         newapi-net: {}
     restart: unless-stopped
+    # 2026-10-20:滚动部署排空。Next 收 SIGTERM 会 server.close() 等在途请求做完再退,但 compose 默认
+    # 10s 后 SIGKILL → 20–600s 的在途生图被掐断,new-api 记 `502 bad response status code`(每次部署
+    # ~3 分钟 3,000+ 条)。放宽到适配器 UPSTREAM_TIMEOUT 600s + 余量;配合 src/instrumentation.ts Part 3
+    # 排空期响应加 `Connection: close`,Caddy 不再复用长连接把新请求送进正在退出的副本。
+    # ⚠️ StopTimeout 在容器创建时写死 —— 旧容器仍是 10s,deploy 脚本用 `docker stop -t` 显式覆盖。
+    stop_grace_period: 630s
 
 # ── seedance 企业门户数据面(2026-08-07,大客户上量前扩容)──
 # 单实例 → 3 副本(least_conn,Caddy 在 128.241.232.23 分流 3003/3004/3005),

@@ -244,8 +244,10 @@ export function sanitizeAdapterError25(text: string, brand: RegExp): string {
 
 // 2026-09-30:同 image-adapter —— 补 yuanshudian/zdchat 的 451 措辞(image_safety / content_safety /
 // content_filter / safety policy),HTTP 451 本身也视为内容安全终态。
+// 2026-10-20:补 monkeycoding25 的 400 `Content policy violation … rejected by the moderation system`
+// (ChatGPT 网页池审核拒,换渠道几乎不挽回 → 终态 400 而非 503 failover)。
 const UPSTREAM_SAFETY_RE =
-    /image_unsafe|image_safety|content_safety|content_filter|content rejected|appear to be unsafe|safety system|moderation_blocked|safety policy|content safety/i;
+    /image_unsafe|image_safety|content_safety|content_filter|content rejected|appear to be unsafe|safety system|moderation_blocked|safety policy|content safety|content policy violation|moderation system/i;
 const UPSTREAM_BADREQ_RE =
     /prompt is required|invalid image|bad_request|validation_error|invalid image size|total pixels must|quality for .* must be|invalid value/i;
 const UPSTREAM_CHANNEL_RE = /no available channel|model_not_found|channel_circuit_open|no active tokens/i;

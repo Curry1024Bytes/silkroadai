@@ -19,6 +19,11 @@
  * 只能靠 dispatcher。与 Caddy `ai.silkroadai.io` 600s 对齐。见 2026-07-13
  * lkl1131888403 诊断。
  *
+ * ── Part 3:滚动部署排空(2026-10-20)──
+ * SIGTERM 之后每个响应头带 `Connection: close`,让 Caddy 不再复用长连接把新请求送进正在退出的
+ * 副本;配合 compose `stop_grace_period: 630s` + deploy 脚本 `docker stop -t`,在途生图做完再退。
+ * 机理与实测见 src/lib/server/drain.ts 文件头。所有实例(主站 / 副本 / 企业)都装,无副作用。
+ *
  * ── Part 2:后台调度器(仅主站单实例跑)──
  * 两道门,命中任一即不跑:
  *  - `PORTAL_FLAVOR=seedance-enterprise`:seedance 独立门户实例(与主站共库)
@@ -40,6 +45,10 @@ export async function register() {
             // keep-alive(4s):建连开销略高,但适配器路径恢复直连速度。2026-08-15 回退(hotfix)。
         }),
     );
+
+    // Part 3:排空钩子(见文件头)。
+    const [{ installDrainHook }, http] = await Promise.all([import('@/lib/server/drain'), import('node:http')]);
+    installDrainHook(http.default ?? http);
 
     // W5 D4: Sentry server-side init. Conditional on SENTRY_DSN — empty env
     // keeps SDK in no-op mode so dev / test runs don't ship anywhere.

@@ -30,6 +30,9 @@ vi.mock('@/lib/scheduler/shadow-meter', () => ({ startShadowMeterScheduler }));
 vi.mock('@/lib/batch/worker', () => ({ startBatchScheduler }));
 // 不 mock 会 import 真调度器 → 初始 sweep 打真 prisma(P1 2026-09-03 的测试盲区,曾致本文件抖动超时)
 vi.mock('@/lib/scheduler/enterprise-reqlog-cleanup', () => ({ startEnterpriseReqlogCleanupScheduler }));
+// 排空钩子真实现会 patch http.ServerResponse.prototype + 挂 SIGTERM 监听 —— 这里只验证被装上
+const installDrainHook = vi.fn();
+vi.mock('@/lib/server/drain', () => ({ installDrainHook }));
 
 const ALL_SCHEDULERS = [
     startTimeoutScheduler,
@@ -61,6 +64,7 @@ describe('instrumentation register()', () => {
         await register();
         expect(Agent).toHaveBeenCalledWith({ headersTimeout: 600_000, bodyTimeout: 600_000 });
         expect(setGlobalDispatcher).toHaveBeenCalledTimes(1);
+        expect(installDrainHook).toHaveBeenCalledTimes(1); // Part 3 排空钩子随 dispatcher 一起装
     });
 
     it('nodejs runtime(主站,无门)→ 7 个调度器全部启动', async () => {

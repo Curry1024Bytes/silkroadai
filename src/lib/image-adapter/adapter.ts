@@ -328,8 +328,11 @@ export function sanitizeAdapterError(text: string, brand: RegExp): string {
 // policy`(code image_safety / content_safety),zdchat 一部分是 type content_filter —— 旧正则全漏,451 落到
 // 「其余 4xx 保守 failover」→ 单渠道分组下客户拿 503「engine overloaded」并无限重试(24h 内 8k+/15min)。
 // 补全措辞,并把 HTTP 451 本身视为内容安全终态(这些上游只用 451 表示安全过滤)。
+// 2026-10-20:monkeycoding(ChatGPT 网页池)审核拒是 HTTP 400 + `Content policy violation: the prompt or
+// generated image was rejected by the moderation system` —— 旧正则全漏 → 当瞬时错 failover → 客户拿 503
+// 「temporarily unable」并重试放大(部署后 10 分钟内占 503 真因 83%;近 1h 6,476 次 failover 仅 9.8% 挽回)。
 const UPSTREAM_SAFETY_RE =
-    /image_unsafe|image_safety|content_safety|content_filter|content rejected|appear to be unsafe|safety policy|content safety/i;
+    /image_unsafe|image_safety|content_safety|content_filter|content rejected|appear to be unsafe|safety policy|content safety|content policy violation|moderation system/i;
 const UPSTREAM_BADREQ_RE = /prompt is required|invalid image|bad_request|validation_error|undefined mention/i;
 const UPSTREAM_CHANNEL_RE = /no available channel|model_not_found/i;
 
