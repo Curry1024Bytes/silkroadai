@@ -289,8 +289,8 @@ silkroadai/
 
 ### 2026-10-20 — 滚动部署排空 + monkeycoding 审核拒终态化
 
-- [x] 部署 502 风暴修复 ✅(分支 `fix/deploy-drain-and-moderation-classify`)— 近 10 分钟 image2 分析:3,649 最终失败里 3,008 条是 #550 滚动部署切断在途生图(`502 bad response status code`,部署窗口外为 0)。根因:Next standalone 收 SIGTERM 本会 `server.close()` 等在途做完,但 compose 默认 10s 后 SIGKILL;且 Node 只关【空闲】长连接,Caddy 池里活跃 keep-alive 连接响应完仍会被复用送新请求进来,排空收不住。修法三件:① compose `x-portal-api-common` 加 `stop_grace_period: 630s`;② `src/lib/server/drain.ts`(instrumentation Part 3)SIGTERM 后每个响应头带 `Connection: close`;③ server2 `deploy-image-adapter.sh` + server3 `deploy-api-node.sh`(**不在 repo,scp 安装**)在 `--force-recreate` 前先 `docker stop -t $DRAIN_TIMEOUT`(旧容器 StopTimeout 建时写死 10s,必须显式覆盖),日志打「排空 Ns」。见 gotcha #22。
-- [x] monkeycoding 审核拒归类修复 ✅ — ChatGPT 网页池审核拒是 **HTTP 400** `Content policy violation: … rejected by the moderation system`,两个适配器的 `UPSTREAM_SAFETY_RE` 全漏 → 当瞬时错 failover → 客户拿 503「temporarily unable」并重试放大(部署后 10 分钟内占 503 真因 83%;近 1h 6,476 次 failover 仅 9.8% 挽回,其中 7.7% 还是同渠道重试)。正则补 `content policy violation|moderation system`,2.0 / 2.5 各加 1 测试。代价:那 ~10% 靠重试挽回的请求现在直接 400。
+- [x] 部署 502 风暴修复 ✅(PR #552 merge `c7112a6` + 当日两台机 Caddy/脚本补齐,server2 + server3 各 10 副本已滚完)— 近 10 分钟 image2 分析:3,649 最终失败里 3,008 条是 #550 滚动部署切断在途生图(`502 bad response status code`,部署窗口外为 0)。根因:Next standalone 收 SIGTERM 本会 `server.close()` 等在途做完,但 compose 默认 10s 后 SIGKILL;且 Node 只关【空闲】长连接,Caddy 池里活跃 keep-alive 连接响应完仍会被复用送新请求进来,排空收不住。修法三件:① compose `x-portal-api-common` 加 `stop_grace_period: 630s`;② `src/lib/server/drain.ts`(instrumentation Part 3)SIGTERM 后每个响应头带 `Connection: close`;③ server2 `deploy-image-adapter.sh` + server3 `deploy-api-node.sh`(**不在 repo,scp 安装**)在 `--force-recreate` 前先 `docker stop -t $DRAIN_TIMEOUT`(旧容器 StopTimeout 建时写死 10s,必须显式覆盖),日志打「排空 Ns」;④ 三台 Caddy 副本池加主动探测 `health_uri /favicon.ico` 1s。**实测**:新代码副本排空 117–435s 后自己退出,部署全程 80 分钟 new-api 502 仅 126 条(全部是尚跑旧代码、撞 630s 上限被 kill 的 4 台),此前每次 3,000–6,000 条;成功数 850→1,500/min 不掉。**代价**:当天调 Caddy 健康检查踩了两个坑造成 02:38–02:40 两分钟全池标坏(5,887 条 `no upstreams available`),见 gotcha #22。
+- [x] monkeycoding 审核拒归类修复 ✅ — ChatGPT 网页池审核拒是 **HTTP 400** `Content policy violation: … rejected by the moderation system`,两个适配器的 `UPSTREAM_SAFETY_RE` 全漏 → 当瞬时错 failover → 客户拿 503「temporarily unable」并重试放大(部署后 10 分钟内占 503 真因 83%;近 1h 6,476 次 failover 仅 9.8% 挽回,其中 7.7% 还是同渠道重试)。正则补 `content policy violation|moderation system`,2.0 / 2.5 各加 1 测试。代价:那 ~10% 靠重试挽回的请求现在直接 400。**上线后**:503 尝试从 ~170–300/min 降到 ~40–90/min,400 从 ~5/min 升到 ~80/min(审核拒现在如实回 400)。
 
 ---
 
@@ -485,24 +485,26 @@ LiteLLM 同时支持 user-level 和 key-level 预算。我们只用 key-level(�
 
 **首次发现**:2026-06-08 客户 multipart 改图 500(W9 D4 images hotfix-2,`hotfix-multipart-content-type-brief.md`)。修复 commit:见 `fix/proxy-multipart-translate-content-type`。
 
-### 22. 滚动重启副本 = 掐断在途生图,除非「grace 够长 + 排空期 Connection: close」两件齐备
+### 22. 滚动重启副本 = 掐断在途生图;排空要四件齐备(grace / Connection: close / iptables 拒新连接 / Caddy 被动健康)
 
 **症状**:每次 `deploy-image-adapter.sh` 十副本逐台 `--force-recreate`,new-api 3 分钟内记 3,000+ 条 `502 bad response status code`(全渠道同时出现、部署窗口外为 0),客户最终失败率瞬间 37%。
 
-**根因两层**:① compose 默认 `stop_grace_period` 10s → SIGKILL,生图 20–600s 的在途请求全死;Next standalone 其实已注册 SIGTERM → `server.close()` 等在途做完再 exit,只是等不到。② 就算 grace 够长,Node `server.close()` 只关【空闲】keep-alive 连接;Caddy 池里正在服务的连接响应完会被 Go transport 立刻复用送下一条请求进来(Node 22/25 实测响应头仍是 `keep-alive`),least_conn 还偏爱这台活跃数在降的副本 → 排空永远收不住,最后还是 SIGKILL。Caddy `lb_try_duration` 只重试**拨号失败**,不重放已发出的 POST。
+**根因四层(2026-10-20 两次部署实测,每层都单独足以造成 502 风暴)**:
 
-**修法**:`stop_grace_period: 630s`(compose,对新容器生效)+ 部署脚本 `docker stop -t 630`(旧容器 StopTimeout 建时写死,必须显式覆盖)+ `src/lib/server/drain.ts` 在 SIGTERM 后给每个响应头加 `Connection: close`(包 `ServerResponse.prototype.writeHead`,显式/隐式头都经它),Caddy 响应完即弃连、新请求只能重新拨号 → 监听已关 → 立刻换副本。**新增任何「副本型」服务都要同时带这三件**,少一件部署就还是 502 风暴。
+1. compose 默认 `stop_grace_period` 10s → SIGKILL,生图 20–600s 的在途请求全死。Next standalone 其实已注册 SIGTERM → `server.close()` 等在途做完再 exit,只是等不到。
+2. 就算 grace 够长,Node `server.close()` 只关【空闲】keep-alive 连接;Caddy 池里正在服务的连接响应完会被 Go transport 立刻复用送下一条请求进来(Node 22/25 实测响应头仍 `keep-alive`)→ 排空永远收不住。
+3. **容器里监听关了,宿主 docker-proxy 仍在 127.0.0.1:301x 收连接**,请求发出后才被 RST → Caddy 记 `read: connection reset by peer` / `broken pipe`,**不是拨号错 → 不重试** → 第一次部署排空 10 分钟每分钟 1,000–2,700 条 502(比不排空还多)。容器启动到 Next 监听之间同样如此。
+4. 容器彻底没了之后 Caddy 拨号 `connection refused` 虽会重试,但 **least_conn + 无被动健康检查 → 重试又选回活跃数 0 的死副本**,5s `lb_try_duration` 耗尽 → 502(实测每分钟 4,300 条)。`lb_try_duration` 在这套配置下形同虚设。
 
-**首次发现**:2026-10-20 近 10 分钟 image2 报错分析(本次修复)。此前 2026-09-27 #496 部署已记录「3,300 条 502 / 2.5 分钟是固定成本」—— 那是误判,不是固定成本。
+**修法(缺一件就还是风暴)**:
 
-### 22. gpt-image edits 的 `size=auto` 在按张计费上游上多半是「恒方图」,不是「跟随输入图」
+- compose `x-portal-api-common` `stop_grace_period: 630s`(对新建容器生效)+ 部署脚本 `docker stop -t $DRAIN_TIMEOUT`(旧容器 StopTimeout 建时写死,必须显式覆盖);
+- `src/lib/server/drain.ts`(instrumentation Part 3)SIGTERM 后每个响应头加 `Connection: close`,Caddy 响应完即弃连;
+- 部署脚本在 stop 前 `iptables -I INPUT 1 -p tcp --dport $port -m conntrack --ctstate NEW -j REJECT --reject-with tcp-reset`(SYN 直接 RST = 真拨号失败 → Caddy 换副本;已建立连接不受影响),**规则保留到新容器经容器 IP:3002 验活为止**(盖住启动窗口),trap EXIT 兜底删规则;
+- 三台机 Caddy 所有含 301x 副本的池加**主动探测** `health_uri /favicon.ico` + `health_interval 1s` + `health_timeout 5s`(备份 `Caddyfile.bak-active-health-20261020-*`),拨号失败/连接重置 1s 内摘出。**不要用被动 `fail_duration`/`max_fails`**:Caddy 把客户端断连也计成上游失败,36 个并发断连曾把十副本一起标坏 → `503 no upstreams available`;**探测路径必须是真 200**:Caddy 主动探测默认只认 2xx,`/` 的 307 会被判坏 → 全池标坏两分钟(02:38–02:40 事故,成功数 1000→250/min)。
+  部署脚本(server2 `deploy-image-adapter.sh` / server3 `deploy-api-node.sh`)**不在 repo**,scp 安装,本地留档在 session scratchpad;脚本每台打「排空 Ns」。**新增任何「副本型」服务都要同时带这四件。**
 
-**症状**:客户 `/v1/images/edits` 不传 `size`(或传 `auto`,OpenAI SDK 默认)+ 非方形输入图 → 出 1024×1024 / 2048×2048 方图,客户以为我们改了尺寸。
-**真实行为**(2026-09-16 用近 24h 适配器 `[image-adapter] ok` 日志的 `size: 'auto→WxH'` 字段实测):frimodel 家族(ch204 medium / ch207 low)对 `auto` **100% 出方图**(1024² 或 2048²),完全无视输入图比例;ominiapi(ch186 high)跟随输入比例但分辨率由它定,且混有 1254²/1672×941/816² 这类 ChatGPT 网页特征尺寸(号池成员)。OpenAI 官方 edits 的 `auto` 才是跟随输入图。
-**解决**:PR #466 起代理层 `resolveGptImageEditsAutoSize` 在 edits 且 `auto`/缺省时按第一张输入图比例补明确 WxH 再发上游(只作用经 portal 的请求)。**排障口诀**:客户报「指定尺寸出方图」先查 new-api `logs.content` 的 `大小 X` —— 那是 new-api 收到的原值,代理对裸 `gpt-image-2` 的显式 WxH 一律透传、只把 `16:9` 这类比例串折成像素、变体名补固定尺寸,不会把 WxH 改成 `auto`;`大小 auto` = 客户端没发(new-api 对 gpt-image 不给空 size 补默认,空 size 时日志根本没有 `大小` 段)。想看 `auto` 实际出了什么尺寸,用 ct 反推(1024² high=7024 / medium=1756 / low=196,2048² high=14272)或查适配器 ok 日志,不要猜。
-**prompt 里写比例 ≠ 指定画幅(#468 前)**:按张上游对 `auto` 是「模型自己定画布」,模型有时听 prompt 里的「16:9」有时不听(实测 4/10),客户会把偶然命中当成功能。#468 起代理在 `auto` + edits 时把 prompt 里的明确比例字样当画幅指令补成显式 size,变成确定行为;但正确用法仍是显式 `size`。
-
-**别碰 generations**:generations 的 `auto` 上游出 2048²/1024×1536/1536×1024,一周 73.8 万次、¥25 万,是既有产品行为;任何把 generations `auto` 补成 1024² 的写法都会砍半收入(`gptImageFallbackSize` 对无图请求返回 1024²,不能复用到这里)。
+**首次发现**:2026-10-20 近 10 分钟 image2 报错分析 → PR #552 修了前两件,首次部署反而更糟(第 3/4 层),当日补齐后两件。此前 2026-09-27 #496 部署记录的「3,300 条 502 / 2.5 分钟是固定成本」是误判。
 
 ---
 
