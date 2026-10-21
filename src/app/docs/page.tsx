@@ -2877,7 +2877,7 @@ curl ${OPENAI_BASE}/dashboard/billing/usage \\
                                     <td className="px-4 py-2.5 text-ink">否</td>
                                     <td className="px-4 py-2.5 text-ink">
                                         参考音频(≤3,mp3/wav/m4a 等),
-                                        <strong className="text-navy">需同时带 ≥1 张参考图</strong>
+                                        <strong className="text-navy">需同时带 ≥1 个参考视频或参考图</strong>
                                     </td>
                                 </tr>
                                 <tr>
@@ -2954,7 +2954,7 @@ curl ${OPENAI_BASE}/dashboard/billing/usage \\
                     <p className="m-0 mt-2 text-xs text-minor-ink">
                         用音频(<code className="font-mono text-xs">audio_url</code> /{' '}
                         <code className="font-mono text-xs">reference_audios</code>)时
-                        <strong className="text-navy">必须同时带 ≥1 张参考图</strong>,否则上游报错。
+                        <strong className="text-navy">必须同时带 ≥1 个参考视频或参考图</strong>(不可纯音频),否则报错。
                     </p>
 
                     <p className="m-0 mt-5 mb-2 text-sm font-medium text-navy">Python 完整示例(提交 + 轮询)</p>
@@ -3026,7 +3026,9 @@ for _ in range(120):  # 最多约 16 分钟
                                 </tr>
                                 <tr className="border-b border-brand-border">
                                     <td className="px-4 py-2.5 text-navy">音频报错</td>
-                                    <td className="px-4 py-2.5 text-ink">用音频时必须同时带至少一张参考图</td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        2.0 系用音频时须同时带至少 1 个参考视频或参考图(2.5 可纯音频)
+                                    </td>
                                 </tr>
                                 <tr className="border-b border-brand-border">
                                     <td className="px-4 py-2.5 text-navy">视频链接过段时间失效</td>
@@ -3185,7 +3187,7 @@ for _ in range(120):  # 最多约 16 分钟
   -H "Content-Type: application/json" -d '{ "model": "dreamina-seedance-2-0-720p-ref",
   "prompt": "这个人随节奏唱歌", "duration": 5, "image": "https://你的图床/singer.jpg",
   "audio_url": "https://你的音频/song.mp3" }'
-# 用音频时必须同时带至少一张图`}
+# 2.0 系用音频时须同时带 ≥1 个参考视频或图(2.5 可纯音频)`}
                     </CodeBlock>
 
                     <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">5) 参考视频(-ref + reference_videos)</p>
@@ -3274,7 +3276,9 @@ for _ in range(120):  # 最多约 16 分钟
                                 <tr className="border-b border-brand-border">
                                     <td className="px-4 py-2.5 font-mono text-xs text-navy">audio_url</td>
                                     <td className="px-4 py-2.5 text-ink">-ref</td>
-                                    <td className="px-4 py-2.5 text-ink">参考音频(直链或 base64),需配 ≥1 张图</td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        参考音频(直链或 base64);2.0 系需配 ≥1 个参考视频或图,2.5 可纯音频
+                                    </td>
                                 </tr>
                                 <tr>
                                     <td className="px-4 py-2.5 font-mono text-xs text-navy">generate_audio</td>
@@ -3369,8 +3373,10 @@ for _ in range(120):  # 最多约 10 分钟
                                     </td>
                                 </tr>
                                 <tr className="border-b border-brand-border">
-                                    <td className="px-4 py-2.5 text-navy">音频报 requires reference_image</td>
-                                    <td className="px-4 py-2.5 text-ink">用音频时必须同时带至少一张图</td>
+                                    <td className="px-4 py-2.5 text-navy">音频报 requires reference video or image</td>
+                                    <td className="px-4 py-2.5 text-ink">
+                                        2.0 系用音频时须同时带至少 1 个参考视频或图(2.5 可纯音频)
+                                    </td>
                                 </tr>
                                 <tr className="border-b border-brand-border">
                                     <td className="px-4 py-2.5 text-navy">视频链接过段时间失效</td>
@@ -3575,7 +3581,8 @@ for _ in range(120):  # 最多约 10 分钟
                                     <td className="px-4 py-2.5 font-mono text-xs text-navy">audio_url / audios</td>
                                     <td className="px-4 py-2.5 text-ink">否</td>
                                     <td className="px-4 py-2.5 text-ink">
-                                        参考音频,<strong className="text-navy">需同时带 ≥1 张参考图</strong>
+                                        参考音频,<strong className="text-navy">2.0 系需同时带 ≥1 个参考视频或图</strong>
+                                        (2.5 可纯音频)
                                     </td>
                                 </tr>
                                 <tr>

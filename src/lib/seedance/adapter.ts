@@ -422,7 +422,7 @@ export async function submitVideo(req: NextRequest): Promise<NextResponse> {
     // 参考视频(reference_videos / reference_video / content[].video_url):上游 asset_type=Video,@VideoN 按序
     const videoUrls = extractVideoUrls(body);
 
-    // 音频(直链或 base64;上游要求音频需配 ≥1 张图):audio / audio_url / reference_audios[0]
+    // 音频(直链或 base64;火山官方 2.0 系:不可单独输入音频,应至少包含 1 个参考视频或图片):audio / audio_url / reference_audios[0]
     const audioField = body.audio_url as { url?: unknown } | string | undefined;
     const refAudios = body.reference_audios;
     const firstRefAudio =
@@ -453,8 +453,17 @@ export async function submitVideo(req: NextRequest): Promise<NextResponse> {
         );
     if (imageInputs.length > MAX_REF_IMAGES) return err(400, 'invalid_request', `at most ${MAX_REF_IMAGES} images`);
     if (videoUrls.length > MAX_REF_VIDEOS) return err(400, 'invalid_request', `at most ${MAX_REF_VIDEOS} videos`);
-    if (audioRaw && !imageInputs.some((i) => i.role === 'reference_image' || i.role === 'first_frame'))
-        return err(400, 'invalid_request', 'audio requires at least one reference_image or first_frame');
+    // 2026-10-20 前这里只认图不认视频,把官方明确支持的「视频 + 音频」组合误拒(企业线同款 bug,一并修)
+    if (
+        audioRaw &&
+        videoUrls.length === 0 &&
+        !imageInputs.some((i) => i.role === 'reference_image' || i.role === 'first_frame')
+    )
+        return err(
+            400,
+            'invalid_request',
+            'audio requires at least one reference video, reference_image or first_frame',
+        );
 
     // duration:文档用 seconds(常为字符串,如 "15"),兼容 legacy duration
     const durRaw = Number(body.seconds ?? body.duration);

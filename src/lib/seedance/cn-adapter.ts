@@ -200,6 +200,8 @@ export type SeedanceVariant = 'pro' | 'fast' | 'mini' | '2.5' | 'promax' | 'prom
 const REF_LIMITS: Partial<Record<SeedanceVariant, { images: number; videos: number; audios: number }>> = {
     '2.5': { images: 30, videos: 10, audios: 10 },
 };
+/** 可「纯音频」提交的变体(火山官方:仅 Seedance 2.5 支持单独传入音频;2.0 系须配 ≥1 视频或图)。 */
+const AUDIO_ONLY_VARIANTS: ReadonlySet<SeedanceVariant> = new Set<SeedanceVariant>(['2.5', 'promax-2.5']);
 function refLimitsFor(variant: SeedanceVariant): { images: number; videos: number; audios: number } {
     return REF_LIMITS[variant] ?? { images: MAX_REF_IMAGES, videos: MAX_REF_VIDEOS, audios: Infinity };
 }
@@ -745,9 +747,14 @@ export async function submitVideoWithKey(body: Record<string, unknown>, auth: st
             'invalid_request',
             `${model} requires a reference (image_url / images / reference_image_urls / first_frame / last_frame / reference_videos)`,
         );
-    // 音频需配 ≥1 张图(对齐上游文档)
-    if (rawAudios.length > 0 && totalImages === 0)
-        return err(400, 'invalid_request', 'audio requires at least one reference image (image / first_frame)');
+    // 音频不能单独传(对齐火山官方:2.0 系「应至少包含 1 个参考视频或图片」;2.5 系可纯音频)。
+    // 2026-10-20 前这里只数图不数视频,把官方明确支持的「视频 + 音频」组合误拒(客户 zhixiang 报障)。
+    if (rawAudios.length > 0 && totalImages === 0 && rawVideos.length === 0 && !AUDIO_ONLY_VARIANTS.has(map.variant))
+        return err(
+            400,
+            'invalid_request',
+            'audio requires at least one reference video or image (reference_video / image / first_frame)',
+        );
     // 单次输入上限按变体(seedance 2.5 = 30 图 / 10 视频 / 10 音频;其余 9 图 / 3 视频 / 音频不限数)
     const limits = refLimitsFor(map.variant);
     if (totalImages > limits.images) return err(400, 'invalid_request', `at most ${limits.images} images`);

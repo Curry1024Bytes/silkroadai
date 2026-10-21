@@ -292,12 +292,47 @@ describe('seedance-cn adapter submit', () => {
         expect(b.audios).toEqual(['https://cdn/track.mp3']);
     });
 
-    it('音频但没图 → 400(音频需配 ≥1 图)', async () => {
+    it('2.0 纯音频(无图无视频)→ 400(官方:应至少包含 1 个参考视频或图片)', async () => {
         const res = await submitVideo(
             makeReq({ model: 'seedance2.0-pro-720p-ref', prompt: 'x', audio_url: 'https://cdn/track.mp3' }),
         );
         expect(res.status).toBe(400);
-        expect(((await res.json()) as { error: { message: string } }).error.message).toMatch(/audio requires/);
+        expect(((await res.json()) as { error: { message: string } }).error.message).toMatch(
+            /audio requires at least one reference video or image/,
+        );
+    });
+
+    it('2.0 参考视频 + 参考音频、无图(火山官方形 content[])→ 放行,上游带 videos + audios 不带 images', async () => {
+        // 2026-10-20 客户 zhixiang 报障:官方明确支持「文本 + 视频 + 音频」,此前门控只数图把它误拒 400
+        const res = await submitVideo(
+            makeReq({
+                model: 'seedance2.0-pro-720p-ref',
+                content: [
+                    { type: 'text', text: '融合两个参考视频的镜头运动,匹配参考音频' },
+                    { type: 'video_url', role: 'reference_video', video_url: { url: 'https://cdn/v1.mp4' } },
+                    { type: 'video_url', role: 'reference_video', video_url: { url: 'https://cdn/v2.mp4' } },
+                    { type: 'audio_url', role: 'reference_audio', audio_url: { url: 'https://cdn/track.mp3' } },
+                ],
+                ratio: '3:4',
+                generate_audio: true,
+            }),
+        );
+        expect(res.status).toBe(200);
+        const b = submitBody();
+        expect(b.images).toBeUndefined();
+        expect(b.videos).toEqual(['https://cdn/v1.mp4', 'https://cdn/v2.mp4']);
+        expect(b.audios).toEqual(['https://cdn/track.mp3']);
+        expect(b.ratio).toBe('3:4');
+    });
+
+    it('2.5 纯音频 → 放行(官方:仅 Seedance 2.5 支持单独传入音频)', async () => {
+        const res = await submitVideo(
+            makeReq({ model: 'seedance2.5-720p-ref', prompt: 'x', audio_url: 'https://cdn/track.mp3' }),
+        );
+        expect(res.status).toBe(200);
+        const b = submitBody();
+        expect(b.images).toBeUndefined();
+        expect(b.audios).toEqual(['https://cdn/track.mp3']);
     });
 
     it('duration 合法值透传;ratio 白名单外回落 16:9;generate_audio:false 关', async () => {

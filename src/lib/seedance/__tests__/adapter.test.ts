@@ -170,6 +170,31 @@ describe('seedance overseas adapter — 参考图 http URL 转存 R2', () => {
         expect(String(v?.video_url?.url)).toMatch(/^asset:\/\//);
     });
 
+    it('参考视频 + 参考音频、无图 → 放行(火山官方 2.0:音频至少配 1 个参考视频或图片;此前只认图误拒)', async () => {
+        const res = await submitVideo(
+            makeReq({
+                model: 'dreamina-seedance-2-0-720p-ref',
+                prompt: '跟着参考音频的节奏剪辑 @Video1',
+                reference_videos: ['https://customer.example/clip.mp4'],
+                audio_url: 'https://customer.example/track.mp3',
+            }),
+        );
+        expect(res.status).toBe(200);
+        const content = upstreamBody('/v1/video/generate').content as Array<{ type: string; role?: string }>;
+        expect(content.some((c) => c.type === 'video_url' && c.role === 'reference_video')).toBe(true);
+        expect(content.some((c) => c.type === 'audio_url')).toBe(true);
+        expect(content.some((c) => c.type === 'image_url')).toBe(false);
+    });
+
+    it('纯音频(无图无视频)→ 400', async () => {
+        const res = await submitVideo(
+            makeReq({ model: 'dreamina-seedance-2-0-720p-ref', prompt: 'x', audio_url: 'https://h/t.mp3' }),
+        );
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { error: { message: string } };
+        expect(body.error.message).toMatch(/requires a reference|audio requires at least one reference video/);
+    });
+
     it('文生(非 -ref)模型带参考视频 → 400 text-only', async () => {
         const res = await submitVideo(
             makeReq({ model: 'dreamina-seedance-2-0-720p', prompt: 'x', reference_videos: ['https://h/c.mp4'] }),
