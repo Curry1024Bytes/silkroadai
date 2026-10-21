@@ -177,6 +177,10 @@ silkroadai/
 - **改价一律走 /admin/pricing**(PR #255 起 pricing-sync 组感知:换算自动 ÷ 该档组倍率,档次经 `channel_groups.newapi_group` → live GroupRatio 解析,解析失败拒同步)。改某档整体 ¥ 率 → 直接改 GroupRatio + `group_ratio_setting.group_ratio` 两处。**任何 2026-07-20 之前文档/脚本里的「GR=¥×5 / ÷1.2」换算全部作废。**
 - 切换备份:`/root/newapi-pre-gr-rebase-20260720.dump`;迁移明细见 memory `project_gr_native_rebase_2026_07_20`。
 
+### 2026-10 维护线(客户报障修复)
+
+- [x] 参考音频门控对齐火山官方 ✅(2026-10-21,PR #554 merge `0ff135a`,server1 seedance-portal ×3 + portal 已滚动)— 客户 zhixiang 10-20 调企业门户 `/api/v3` 提交 Seedance 2.0「2 参考视频 + 1 参考音频、无图」被我们 400 `audio requires at least one reference image`。火山官方(docs.volcengine.com/docs/82379/1520757):2.0 系「不可单独输入音频,应至少包含 1 个参考视频**或**图片」,「文本 + 视频 + 音频」是受支持组合;2.5 可纯音频。`cn-adapter.ts` 与主站海外线 `adapter.ts` 的门控都只数图不数视频 → 改成「无图 && 无视频」才拒,2.5 / promax-2.5 允许纯音频(`AUDIO_ONLY_VARIANTS`);/docs 7 处文案同步。+4 测试,全套 282 files / 4019 pass。**真金 smoke(throwaway 账号,已软删)**:客户原请求原样提交 → `cgt-20261021055008-an05a` 9.5 分钟 completed,成片 834×1120 5.09s 含 AAC 音轨;上游 usage 361,632 token(带参考视频的任务比纯 5s 720p 的 ~109k 高 ~3.3×,按 ¥28/M 实扣 ¥10.13)。volc 线无此门控不涉及。
+
 ### ChatUI(无状态客户对话 — 2026-06-08 上线)
 
 - [x] v1 — `/chat` 无状态流式对话 ✅(2026-06-08,PR #97 merge `fbd761a`,brief `chatui-v1-deploy-brief.md`)— 客户选**我们自接的模型**(复用 `/models` catalog 管线,过滤 `chat`+`vision` 两 bucket,按 vendor 分组)→ 发消息 → SSE **逐 token 流式** → **不存历史 / 零 schema / 零新依赖**。唯一服务端件 `POST /api/portal/chat/stream`:cookie auth(`getCurrentUser`)→ 限流(scope `chat_stream` 20/min)→ zod 校验 `{model,messages,temperature?}` → `getOrCreateSystemToken(user.id)` → 转发 `ai.silkroadai.io/v1/chat/completions` `stream:true` 原样 pipe SSE 回(**sk-… 不进浏览器**,镜像生图 `POST /api/portal/image/generate` pattern;quota 由 user 单点扣,gotcha #12)。client island(`chat-console.tsx`):vendor 分组下拉 + in-memory transcript(每轮整发,`MAX_MESSAGES=100`/`MAX_CONTENT_CHARS=32000`)+ 停止 AbortController + 新对话清 state + Enter 发送/Shift+Enter 换行;**零依赖** markdown 渲染(`markdown.tsx`,代码块+语言标签+复制,未闭合围栏流式安全)。sidebar 加「AI 对话」(概览之后)。tsc/lint/prettier clean,全套 **1546 pass / 1 skip / 0 fail**(16 新测:`chat-models` 4 + `stream-route` 12 覆盖 401/429/400×3/503/500/SSE 透传/Bearer 头/502/402)。部署后线上验证:`/chat` unauth→`/login` 307(路由+守门上线)、`/api/portal/chat/stream` unauth→401。**真实浏览器 happy-path 逐 token 流式 smoke 待有余额账号验证**(本地 DB provisioned 用户在线上 new-api 已 record-not-found,operator 选 ship-on-tests);无 migration,Caddy 不动(`/chat`+`/api/portal/chat/stream` 皆 portal :3002,代理 server 端 fetch 出去)。**对话历史持久化留后续单独协调 migration。**
@@ -665,4 +669,4 @@ APP_PORT=3002
 ---
 
 **版本**: 2.4
-**最后更新**: 2026-09-16(gpt-image edits auto 尺寸代理层兜底 #466/#468 + gotcha #22)
+**最后更新**: 2026-10-21(seedance 参考音频门控对齐火山官方 #554)
