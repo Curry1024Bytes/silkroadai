@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { formatCny } from '@/lib/format/number';
 // NOTE: this 'use client' island does NOT convert quota→¥ itself. quotaToCny
 // reads NEWAPI_QUOTA_PER_USD / USD_TO_CNY_RATE — server-only env that is
 // undefined in the browser bundle, so quota-units would fall back to stale
@@ -694,7 +695,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                                                     <span>用量数据暂不可用</span>
                                                 ) : (
                                                     <>
-                                                        累计 ¥{(row.usedCny ?? 0).toFixed(2)}
+                                                        累计 {formatCny(row.usedCny ?? 0).exact}
                                                         <span className="mx-1.5">·</span>
                                                         最近调用 {formatLastUsed(row.last_used_at)}
                                                     </>

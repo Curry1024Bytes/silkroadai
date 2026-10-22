@@ -119,7 +119,7 @@ describe('<KeysList /> W6 D4 — per-key usage subline', () => {
         expect(html).toContain('从未调用');
         // React 19 SSR inserts <!-- --> between adjacent text + dynamic
         // nodes (the literal "¥" plus the formatted CNY number).
-        expect(html).toMatch(/累计 ¥(<!-- -->)?0\.00/);
+        expect(html).toMatch(/累计 (<!-- -->)?¥(<!-- -->)?0\.00/);
     });
 
     it('renders ¥X.XX accumulated (server usedCny, not client-derived) + relative last-used time', () => {
@@ -139,7 +139,7 @@ describe('<KeysList /> W6 D4 — per-key usage subline', () => {
         ];
         const html = renderToString(<KeysList initialRows={rows} />);
         // React 19 inserts <!-- --> between literal ¥ and dynamic value.
-        expect(html).toMatch(/累计 ¥(<!-- -->)?4\.87/);
+        expect(html).toMatch(/累计 (<!-- -->)?¥(<!-- -->)?4\.87/);
         // client-side quotaToCny(695000) with stale defaults would render ¥10.01 — guard against regression
         expect(html).not.toContain('10.01');
         // 26h ago → "1 天前" (with optional comment)
@@ -162,7 +162,7 @@ describe('<KeysList /> W6 D4 — per-key usage subline', () => {
         const html = renderToString(<KeysList initialRows={rows} />);
         expect(html).toContain('用量数据暂不可用');
         // The fallback hides the 累计/最近调用 line entirely
-        expect(html).not.toMatch(/累计 ¥/);
+        expect(html).not.toMatch(/累计 /);
     });
 });
 

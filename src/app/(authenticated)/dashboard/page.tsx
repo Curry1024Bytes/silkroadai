@@ -140,7 +140,8 @@ export default async function DashboardPage({
             </Suspense>
 
             {/* 1. Summary cards(余额 2 张 + 用量 3 张各自独立流入) */}
-            <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-5">
+            {/* 5 列只在 xl(≥1280)启用;lg 下每列不足 200px,数字太挤,退 3+2 两行。 */}
+            <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5">
                 <Suspense fallback={<StatCardSkeletons count={2} />}>
                     <BalanceStatCards data={balanceData} />
                 </Suspense>

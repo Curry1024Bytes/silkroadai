@@ -210,10 +210,13 @@ describe('<DashboardPage /> merged console — happy path', () => {
         expect(html).toMatch(/¥(<!-- -->)?7\.20/); // balance
         expect(html).toMatch(/¥(<!-- -->)?1\.44/); // historical spend
         expect(html).toMatch(/¥(<!-- -->)?8\.64/); // period spend (600k quota)
-        expect(html).toContain('20,000'); // total tokens (combined token_used)
+        // total tokens 20,000 → compact "20.0K" headline + exact "20,000" in the subline
+        expect(html).toContain('20.0');
+        expect(html).toContain('20,000');
         expect(html).toContain('输入+输出'); // token card subline (no per-side split from /api/data/)
-        // raw quota sub-display present in newapi mode
-        expect(html).toContain('500,000');
+        // 2026-10-22: raw new-api quota is an internal unit — no longer shown to customers
+        expect(html).not.toContain('500,000');
+        expect(html).not.toContain('quota');
     });
 
     it('passes chartModels to the chart + renders the 按模型 breakdown', async () => {
@@ -400,5 +403,47 @@ describe('<DashboardPage /> graceful degradation', () => {
         expect(mockQueryLogs).not.toHaveBeenCalled();
         // balance still renders
         expect(html).toMatch(/¥(<!-- -->)?7\.20/);
+    });
+});
+
+describe('<DashboardPage /> compact stat numbers (2026-10-22, 头部客户量级)', () => {
+    it('compacts ¥ ≥ 10万 to 万 and keeps the exact value in the subline', async () => {
+        mockGetCustomerBalance.mockResolvedValue(newapiBal({ balanceCny: 290_262.82, spentCny: 1_215_773.1 }));
+        const html = await renderPage({});
+        // 当前余额 ¥290,262.82 → headline "29.03" + "万", exact in subline, USD with separators
+        expect(html).toContain('29.03');
+        expect(html).toContain('万');
+        expect(html).toContain('¥290,262.82');
+        expect(html).toContain('$40,314.28');
+        // 历史消费 ¥1,215,773.10 → "121.58 万"
+        expect(html).toContain('121.58');
+        expect(html).toContain('¥1,215,773.10');
+        // the ten-digit raw strings must not appear as headline text
+        expect(html).not.toMatch(/¥(<!-- -->)?290262\.82/);
+        expect(html).not.toContain('quota');
+    });
+
+    it('compacts tokens to B / calls to 万 with exact values in the subline', async () => {
+        mockGetUsageAggregate.mockResolvedValue(
+            aggSnap({ totalTokens: 1_000_719_906, totalCalls: 2_184_903, totalUsedQuota: 74_146_775_000 }),
+        );
+        const html = await renderPage({});
+        expect(html).toContain('1.00');
+        expect(html).toContain('>B<');
+        expect(html).toContain('1,000,719,906');
+        expect(html).toContain('218.5');
+        expect(html).toMatch(/2,184,903(<!-- -->)? 次/);
+        // headline never shows the full comma-separated ten-digit token count
+        expect(html).not.toMatch(/text-3xl[^<]*>1,000,719,906/);
+    });
+
+    it('leaves small-customer numbers uncompacted (threshold guard)', async () => {
+        const html = await renderPage({});
+        // defaults: ¥7.20 / ¥1.44 / 250 calls / 20,000 tokens → 20.0K
+        expect(html).toMatch(/¥(<!-- -->)?7\.20/);
+        expect(html).toMatch(/¥(<!-- -->)?1\.44/);
+        expect(html).toContain('250');
+        expect(html).not.toContain('万');
+        expect(html).toContain('>K<');
     });
 });
