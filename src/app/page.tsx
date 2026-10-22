@@ -160,20 +160,6 @@ function Header() {
                         工具
                     </a>
                     <Link
-                        href="/gpu"
-                        style={{
-                            color: 'var(--color-brand-accent)',
-                            textDecoration: 'none',
-                            fontSize: 14,
-                            fontWeight: 500,
-                            padding: '8px 14px',
-                            border: '1px solid var(--color-brand-accent)',
-                            borderRadius: 6,
-                        }}
-                    >
-                        GPU 租赁
-                    </Link>
-                    <Link
                         href="/dashboard"
                         style={{
                             color: 'var(--color-navy)',

@@ -112,17 +112,8 @@ describe('sitemap.ts — public-route inclusion', () => {
         // W7 D4 PR-G: public integration docs page.
         expect(urls).toContain('https://silkroadai.io/docs');
 
-        // W7 PR-P: GPU rental landing — H100 / H200 / B300.
-        expect(urls).toContain('https://silkroadai.io/gpu');
-    });
-
-    it('declares /gpu at priority 0.7 (W7 PR-P public marketing tier)', async () => {
-        process.env.APP_URL = 'https://silkroadai.io';
-        const sitemap = await loadSitemap();
-        const gpu = sitemap().find((e) => e.url === 'https://silkroadai.io/gpu');
-        expect(gpu, 'sitemap must include /gpu').toBeDefined();
-        expect(gpu!.priority).toBe(0.7);
-        expect(gpu!.changeFrequency).toBe('weekly');
+        // 2026-10-22: /gpu page retired — must not be advertised to crawlers.
+        expect(urls).not.toContain('https://silkroadai.io/gpu');
     });
 
     it('declares / (apex) at priority 1.0 — the canonical landing surface', async () => {
@@ -164,14 +155,15 @@ describe('robots.ts — host source precedence', () => {
         }
     });
 
-    it('allows the public marketing routes including /gpu (W7 PR-P)', async () => {
+    it('allows the public marketing routes (no /gpu — page retired 2026-10-22)', async () => {
         process.env.APP_URL = 'https://silkroadai.io';
         const robots = await loadRobots();
         const rules = robots().rules;
         const rulesArray = Array.isArray(rules) ? rules : [rules];
         const allow = rulesArray.flatMap((r) => (Array.isArray(r.allow) ? r.allow : r.allow ? [r.allow] : []));
-        for (const path of ['/', '/pricing', '/models', '/docs', '/gpu', '/terms', '/privacy', '/refund']) {
+        for (const path of ['/', '/pricing', '/models', '/docs', '/terms', '/privacy', '/refund']) {
             expect(allow, `robots.txt must allow ${path}`).toContain(path);
         }
+        expect(allow).not.toContain('/gpu');
     });
 });

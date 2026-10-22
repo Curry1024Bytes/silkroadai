@@ -36,8 +36,7 @@ const BASE_NAV: NavItem[] = [
     // W7 D4 PR-G: public integration docs (Cursor / Cline / Continue /
     // Claude Code Desktop / Python + Node SDK).
     { href: '/docs', label: '文档' },
-    // W7 PR-P: GPU rental landing — H100 / H200 / B300.
-    { href: '/gpu', label: 'GPU 租赁' },
+    // 2026-10-22: GPU 租赁(/gpu)页面已下线,入口一并移除。
 ];
 
 interface SidebarProps {
@@ -62,14 +61,9 @@ function resellerNavLabel(status: SidebarProps['resellerStatus']): string {
 
 export function Sidebar({ resellerStatus = null }: SidebarProps) {
     const pathname = usePathname();
-    // Build the final nav list — always inject the reseller entry just
-    // before /gpu (customer-facing tools group together, reseller entry
-    // sits at the end of the customer rows whether they've joined or not).
-    const nav: NavItem[] = [
-        ...BASE_NAV.slice(0, -1),
-        { href: '/reseller', label: resellerNavLabel(resellerStatus) },
-        BASE_NAV[BASE_NAV.length - 1],
-    ];
+    // Build the final nav list — always append the reseller entry after
+    // the customer-facing rows (it sits last whether they've joined or not).
+    const nav: NavItem[] = [...BASE_NAV, { href: '/reseller', label: resellerNavLabel(resellerStatus) }];
     // Suspended / banned resellers get a muted entry — their click still
     // routes to /reseller, which server-side renders the status page.
     const resellerMuted = resellerStatus === 'suspended' || resellerStatus === 'banned';

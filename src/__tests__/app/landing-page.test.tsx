@@ -142,15 +142,15 @@ describe('landing page — general rendering (post-permanent-pricing)', () => {
         expect(html).not.toMatch(/<span[^>]*>Silk Road AI<\/span>/);
     });
 
-    it('renders the GPU 租赁 outline CTA in the header (W7 D4 PR-Q)', async () => {
+    it('does NOT render the GPU 租赁 header CTA — /gpu page retired (2026-10-22)', async () => {
         const Page = await loadPage();
         const tree = await Page({ searchParams: Promise.resolve({}) });
         const html = renderToString(tree);
-        // PR-Q surfaces GPU rental as a brand-accent (gold) outline button
-        // in the sticky header. Operator visual feedback after PR-P shipped:
-        // footer-only entry was too buried for a high-ASP product line.
-        expect(html).toContain('GPU 租赁');
-        expect(html).toMatch(/href="\/gpu"/);
+        // W7 PR-Q added a gold outline "GPU 租赁" button in the header;
+        // the GPU rental line was taken down on 2026-10-22, so neither the
+        // label nor any /gpu link may remain on the landing page.
+        expect(html).not.toContain('GPU 租赁');
+        expect(html).not.toMatch(/href="\/gpu"/);
     });
 
     it('does NOT render a header 登录 button — /dashboard CTA covers both states (W7 D4 PR-R Item A)', async () => {

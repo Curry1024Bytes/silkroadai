@@ -66,14 +66,14 @@ describe('<Sidebar />', () => {
         expect(html).toMatch(/text-minor-ink\/70/);
     });
 
-    it('reseller entry sits between /docs and /gpu in nav order', () => {
+    it('reseller entry sits last, after /docs (GPU 租赁 entry retired 2026-10-22)', () => {
         const html = renderToString(<Sidebar resellerStatus="active" />);
         const docsIdx = html.indexOf('文档');
         const resellerIdx = html.indexOf('代理后台');
-        const gpuIdx = html.indexOf('GPU 租赁');
         expect(docsIdx).toBeGreaterThan(-1);
         expect(resellerIdx).toBeGreaterThan(docsIdx);
-        expect(gpuIdx).toBeGreaterThan(resellerIdx);
+        expect(html).not.toContain('GPU 租赁');
+        expect(html).not.toContain('href="/gpu"');
     });
 
     it('active state highlight on /reseller path', () => {
