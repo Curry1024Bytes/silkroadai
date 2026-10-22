@@ -30,8 +30,23 @@ import {
 import { formatTokenForDisplay } from '@/lib/newapi/token-format';
 import { PORTAL_INTERNAL_TOKEN_NAME } from '@/lib/newapi/system-token';
 import { listEnabledChannelGroups, restrictGroupsForUser } from '@/lib/channel-group';
+import { cnyToQuota } from '@/lib/newapi/quota-units';
+import { isoToExpiredTime } from '@/lib/newapi/token-meta';
+import { MAX_QUOTA_CNY } from '@/lib/keys/quota-expiry';
 
 export const runtime = 'nodejs';
+
+/** 额度上限:正数、≤ MAX_QUOTA_CNY、最多两位小数。 */
+export const QuotaCnySchema = z
+    .number()
+    .positive('quotaCny must be > 0')
+    .max(MAX_QUOTA_CNY, `quotaCny must be ≤ ${MAX_QUOTA_CNY}`)
+    .refine((v) => Math.abs(v * 100 - Math.round(v * 100)) < 1e-6, 'quotaCny supports at most 2 decimals');
+/** 到期时间:可解析的 ISO 时间且在未来。 */
+export const ExpiresAtSchema = z
+    .string()
+    .refine((s) => !Number.isNaN(Date.parse(s)), 'expiresAt must be an ISO datetime')
+    .refine((s) => Date.parse(s) > Date.now(), 'expiresAt must be in the future');
 
 const CreateKeySchema = z.object({
     // PR-T1 Phase 0e: reserve `portal-internal` for the server-managed
@@ -53,6 +68,9 @@ const CreateKeySchema = z.object({
     // (is_default = pool)。值域不写死 enum —— 数据驱动 + 可白标扩展,handler 内
     // 按本 tenant 的 enabled 档次校验。
     tier: z.string().trim().min(1).max(50).optional(),
+    // 2026-10-22 额度上限(¥,null = 无限)与到期时间(ISO,null = 永不)。
+    quotaCny: QuotaCnySchema.nullable().optional(),
+    expiresAt: ExpiresAtSchema.nullable().optional(),
 });
 
 export async function GET(req: NextRequest) {
@@ -129,7 +147,7 @@ export async function POST(req: NextRequest) {
             { status: 400 },
         );
     }
-    const { alias, tier: requestedTier } = parsed.data;
+    const { alias, tier: requestedTier, quotaCny = null, expiresAt = null } = parsed.data;
 
     // P3: resolve 档次 → new-api group(portal key 与 new-api group 解耦)。
     // pool→'default'(复用现有渠道,现有 token 已是 default);official→'official'。
@@ -170,8 +188,11 @@ export async function POST(req: NextRequest) {
     try {
         await createTokenForCustomer(customerAuth, {
             name: alias,
-            unlimited_quota: true, // gotcha #12 — quota lives on user, not token
-            expired_time: -1,
+            // gotcha #12:默认无限(预算关在 user.quota)。客户显式设了额度上限时才
+            // 走 unlimited_quota=false + remain_quota=绝对值(第二道闸)。
+            unlimited_quota: quotaCny == null,
+            ...(quotaCny != null ? { remain_quota: cnyToQuota(quotaCny) } : {}),
+            expired_time: isoToExpiredTime(expiresAt),
             group: newapiGroup, // P3: 档次下发的 new-api group(pool→default / official→official)
         });
 
@@ -247,6 +268,9 @@ export async function POST(req: NextRequest) {
         // display/wire concern.
         key: formatTokenForDisplay(realKey),
         created_at: row.created_at.toISOString(),
+        quota_unlimited: quotaCny == null,
+        remainCny: quotaCny,
+        expires_at: expiresAt ? new Date(expiresAt).toISOString() : null,
     });
 }
 

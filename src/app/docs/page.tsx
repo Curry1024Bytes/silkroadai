@@ -224,6 +224,9 @@ export default function DocsPage() {
                                 <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
                                     sk-…
                                 </code>
+                                。每把 key 可单独设<strong className="text-navy">额度上限</strong>(这把 key
+                                一共还能花多少,独立于账户余额,用完即拒绝,充值不会自动补)和
+                                <strong className="text-navy">到期时间</strong>(到期即拒绝,可续期)。
                             </dd>
                         </div>
                         <div>

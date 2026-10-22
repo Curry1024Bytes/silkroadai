@@ -24,7 +24,15 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { getCurrentUser } from '@/lib/auth/session';
-import { deleteToken as newapiDeleteToken, renameToken as newapiRenameToken } from '@/lib/newapi/client';
+import {
+    deleteToken as newapiDeleteToken,
+    renameToken as newapiRenameToken,
+    updateTokenForCustomer as newapiUpdateToken,
+    type TokenBudgetPatch,
+} from '@/lib/newapi/client';
+import { cnyToQuota } from '@/lib/newapi/quota-units';
+import { isoToExpiredTime } from '@/lib/newapi/token-meta';
+import { ExpiresAtSchema, QuotaCnySchema } from '../route';
 import { PORTAL_INTERNAL_TOKEN_NAME } from '@/lib/newapi/system-token';
 
 export const runtime = 'nodejs';
@@ -32,16 +40,30 @@ export const runtime = 'nodejs';
 /** Same alias rule as POST /api/portal/keys (CreateKeySchema.alias). Kept
  *  in sync by hand — the two routes are separate modules and the create
  *  schema also carries `tier`, which rename must not accept. */
-const RenameKeySchema = z.object({
-    alias: z
-        .string()
-        .trim()
-        .min(1, 'alias must not be empty')
-        .max(50, 'alias must be ≤ 50 chars')
-        .refine((s) => !s.startsWith(PORTAL_INTERNAL_TOKEN_NAME), {
-            message: `alias starting with "${PORTAL_INTERNAL_TOKEN_NAME}" is reserved`,
-        }),
-});
+const AliasSchema = z
+    .string()
+    .trim()
+    .min(1, 'alias must not be empty')
+    .max(50, 'alias must be ≤ 50 chars')
+    .refine((s) => !s.startsWith(PORTAL_INTERNAL_TOKEN_NAME), {
+        message: `alias starting with "${PORTAL_INTERNAL_TOKEN_NAME}" is reserved`,
+    });
+
+/**
+ * PATCH body:改名 / 额度上限 / 到期时间,任意组合,至少一项(2026-10-22 起)。
+ *   alias:      改名(行为与原 rename 完全一致:同名 no-op、new-api 先于 Prisma)
+ *   quotaCny:   number → 设额度上限(¥,绝对值,不是增量);null → 取消额度(无限)
+ *   expiresAt:  ISO → 设到期;null → 永不过期
+ */
+const UpdateKeySchema = z
+    .object({
+        alias: AliasSchema.optional(),
+        quotaCny: QuotaCnySchema.nullable().optional(),
+        expiresAt: ExpiresAtSchema.nullable().optional(),
+    })
+    .refine((o) => o.alias !== undefined || o.quotaCny !== undefined || o.expiresAt !== undefined, {
+        message: 'nothing to update',
+    });
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
     const user = await getCurrentUser(req);
@@ -49,7 +71,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
         return NextResponse.json({ error: 'invalid_credentials' }, { status: 401 });
     }
     if (user.newapi_user_id == null || !user.newapi_access_token) {
-        console.error(`[portal/keys PATCH] user ${user.id} has no newapi auth; cannot rename`);
+        console.error(`[portal/keys PATCH] user ${user.id} has no newapi auth; cannot update`);
         return NextResponse.json({ error: 'account_not_provisioned' }, { status: 500 });
     }
 
@@ -59,14 +81,15 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     } catch {
         return NextResponse.json({ error: 'invalid_json' }, { status: 400 });
     }
-    const parsed = RenameKeySchema.safeParse(body);
+    const parsed = UpdateKeySchema.safeParse(body);
     if (!parsed.success) {
         return NextResponse.json(
             { error: 'validation_error', details: parsed.error.flatten().fieldErrors },
             { status: 400 },
         );
     }
-    const alias = parsed.data.alias;
+    const { alias, quotaCny, expiresAt } = parsed.data;
+    const budgetRequested = quotaCny !== undefined || expiresAt !== undefined;
 
     const { id } = await params;
     const token = await prisma.newApiToken.findUnique({
@@ -82,16 +105,18 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     if (!token) {
         return NextResponse.json({ error: 'not_found' }, { status: 404 });
     }
-    // IDOR defense — same 401 shape as DELETE so existence doesn't leak.
+    // IDOR defense: 401 (not 403) so an attacker can't enumerate other users' ids.
     if (token.user_id !== user.id) {
         return NextResponse.json({ error: 'invalid_credentials' }, { status: 401 });
     }
     if (token.status !== 'active') {
         return NextResponse.json({ error: 'token_revoked' }, { status: 410 });
     }
-    if (token.key_alias === alias) {
-        // No-op rename — skip the new-api round-trip.
-        return NextResponse.json({ ok: true, key_alias: alias });
+
+    const aliasChanged = alias !== undefined && token.key_alias !== alias;
+    if (!budgetRequested && !aliasChanged) {
+        // alias-only no-op:不碰 new-api 也不碰 Prisma
+        return NextResponse.json({ ok: true, key_alias: token.key_alias });
     }
 
     const customerAuth = {
@@ -100,21 +125,41 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     };
 
     // new-api first (mirrors DELETE ordering): a failure here leaves the
-    // portal row untouched so the customer sees the old alias and can
-    // retry, instead of a portal/new-api name split.
+    // portal row untouched so the customer can retry, instead of a
+    // portal/new-api split.
     try {
-        await newapiRenameToken(customerAuth, token.newapi_token_id, alias);
+        if (!budgetRequested) {
+            await newapiRenameToken(customerAuth, token.newapi_token_id, alias as string);
+        } else {
+            // 额度 / 到期(可顺带改名)走一次全量 GET→PUT(new-api PUT 是全量覆盖)。
+            // 取消额度只翻 unlimited_quota,remain_quota 保持原值;设额度写绝对值。
+            const patch: TokenBudgetPatch = {};
+            if (aliasChanged) patch.name = alias as string;
+            if (quotaCny !== undefined) {
+                patch.unlimited_quota = quotaCny === null;
+                if (quotaCny !== null) patch.remain_quota = cnyToQuota(quotaCny);
+            }
+            if (expiresAt !== undefined) patch.expired_time = isoToExpiredTime(expiresAt);
+            await newapiUpdateToken(customerAuth, token.newapi_token_id, patch);
+        }
     } catch (newapiErr) {
-        console.error(`[portal/keys PATCH] new-api renameToken failed for portal token ${id}:`, newapiErr);
+        console.error(`[portal/keys PATCH] new-api update failed for portal token ${id}:`, newapiErr);
         return NextResponse.json({ error: 'newapi_update_failed' }, { status: 502 });
     }
 
-    await prisma.newApiToken.update({
-        where: { id },
-        data: { key_alias: alias },
-    });
+    if (aliasChanged) {
+        await prisma.newApiToken.update({
+            where: { id },
+            data: { key_alias: alias as string },
+        });
+    }
 
-    return NextResponse.json({ ok: true, key_alias: alias });
+    return NextResponse.json({
+        ok: true,
+        key_alias: aliasChanged ? (alias as string) : token.key_alias,
+        ...(quotaCny !== undefined ? { quota_unlimited: quotaCny === null, remainCny: quotaCny } : {}),
+        ...(expiresAt !== undefined ? { expires_at: expiresAt ? new Date(expiresAt).toISOString() : null } : {}),
+    });
 }
 
 export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {

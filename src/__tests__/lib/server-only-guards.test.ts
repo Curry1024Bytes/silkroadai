@@ -54,6 +54,8 @@ const REQUIRES_GUARD = [
     // dashboard 明细日志的 30s 进程内缓存:包着 server-only 的 client.queryLogs,
     // 且缓存必须只活在服务端进程里(客户端各开一份既无意义又漏别人数据)。
     'logs-cache.ts',
+
+    'token-meta.ts', // 2026-10-22 /keys 额度与到期:act-as 列 token 元数据
 ];
 
 /**

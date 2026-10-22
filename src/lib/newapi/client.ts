@@ -569,6 +569,30 @@ export async function renameToken(
 }
 
 /** 删 token */
+/**
+ * 改 token 的额度 / 到期(2026-10-22 /keys 额度与到期功能)。
+ *
+ * 与 renameToken 同款写法:new-api `PUT /api/token/` 是【全量覆盖】,只传部分字段
+ * 会把 unlimited_quota 刷成 false —— 所以先 GET 全量再合并 PUT。
+ *   - 设额度:{ unlimited_quota: false, remain_quota: <绝对值> }
+ *   - 取消额度:{ unlimited_quota: true }(remain_quota 保持原值不动)
+ *   - 到期:{ expired_time: unix 秒 | -1 }
+ */
+export interface TokenBudgetPatch {
+    name?: string;
+    unlimited_quota?: boolean;
+    remain_quota?: number;
+    expired_time?: number;
+}
+export async function updateTokenForCustomer(
+    customerAuth: { accessToken: string; userId: number },
+    tokenId: number,
+    patch: TokenBudgetPatch,
+): Promise<void> {
+    const existing = await getTokenForCustomer(customerAuth, tokenId);
+    await call<null>('PUT', '/api/token/', { ...existing, id: tokenId, ...patch }, undefined, { asUser: customerAuth });
+}
+
 export async function deleteToken(
     customerAuth: { accessToken: string; userId: number },
     tokenId: number,

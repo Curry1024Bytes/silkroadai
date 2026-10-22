@@ -14,6 +14,7 @@ import { NextRequest } from 'next/server';
 import { getCurrentUser } from '@/lib/auth/session';
 import { prisma } from '@/lib/db';
 import { getTokenUsageWithCache } from '@/lib/newapi/token-usage';
+import { expiredTimeToIso, getTokenMetaForCustomer } from '@/lib/newapi/token-meta';
 import { quotaToCny } from '@/lib/newapi/quota-units';
 import { formatTokenForDisplay } from '@/lib/newapi/token-format';
 import { listEnabledChannelGroups, restrictGroupsForUser, getGroupRatios } from '@/lib/channel-group';
@@ -66,7 +67,12 @@ export default async function KeysPage() {
     // (⚠️ 不是批量合并的,冷缓存时是 N 发上游,见 token-usage.ts 头注释)。
     // 单个 token 失败只影响该行快照(记 warn + 该行不显示用量)。
     // 2026-08-15:档次/倍率两项本来串在这段之后白等一个 RTT,一并并到这里。
-    const [usageSnaps, tierGroupsRaw, ratios] = await Promise.all([
+    // 2026-10-22:额度上限 / 到期时间只从 new-api 读(单一事实源,不落库),失败降级为"暂不可用"。
+    const customerAuth =
+        user.newapi_user_id != null && user.newapi_access_token
+            ? { accessToken: user.newapi_access_token, userId: user.newapi_user_id }
+            : null;
+    const [usageSnaps, tierGroupsRaw, ratios, meta] = await Promise.all([
         Promise.all(
             tokens.map(async (t) => {
                 if (user.newapi_user_id == null) return null;
@@ -85,10 +91,12 @@ export default async function KeysPage() {
         ),
         listEnabledChannelGroups(user.tenant_id),
         getGroupRatios(),
+        customerAuth ? getTokenMetaForCustomer(customerAuth) : Promise.resolve(null),
     ]);
 
     const rows: KeyRow[] = tokens.map((t, i) => {
         const snap = usageSnaps[i];
+        const m = meta?.get(t.newapi_token_id) ?? null;
         return {
             id: t.id,
             key_alias: t.key_alias,
@@ -108,6 +116,10 @@ export default async function KeysPage() {
             usedCny: snap ? quotaToCny(Number(snap.used_quota)) : null,
             last_used_at: snap?.last_used_at ? snap.last_used_at.toISOString() : null,
             tier: t.tier,
+            meta_available: m != null,
+            quota_unlimited: m ? m.unlimited_quota : null,
+            remainCny: m && !m.unlimited_quota ? quotaToCny(m.remain_quota) : null,
+            expires_at: m ? expiredTimeToIso(m.expired_time) : null,
         };
     });
 
