@@ -1,86 +1,45 @@
 /**
- * Public /models page — full catalog of models available through
- * https://ai.silkroadai.io, grouped VENDOR-first (OpenAI / Anthropic /
- * Google / 字节跳动 / …) so each vendor appears exactly once, with a light
- * capability sub-grouping (对话 / 视觉 / 图像 / 视频) inside each vendor.
+ * Public /models — 模型广场(2026-10-22)。
  *
- * Public access (NOT under (authenticated)). Acts as both a marketing
- * surface ("look how many models we have!") and a customer reference
- * ("which name do I pass to /v1/chat/completions?").
+ * 用 vendored new-api 模型广场(src/vendor/newapi-web,AGPL,见其 NOTICE.md)
+ * 替换 W6 D3 的自写清单页。页面壳(返回首页 / Logo)由 portal SSR,广场本体是
+ * `ssr:false` 的客户端岛,数据走 /api/portal/models/* 代理。
  *
- * Server component fetches `listAvailableModels()` (new-api admin
- * `/api/channel/models_enabled`) once per ISR window and classifies via
- * `src/lib/models/categorize.ts` → a flat `ModelEntry[]` handed to the
- * `ModelsBrowser` client component (search + vendor grouping + cards).
- *
- * ISR: revalidate=60 — channels do change occasionally (admin adds /
- * removes models in admin.silkroadai.io UI) but rarely. 60s is faster
- * than legitimate operator turnaround and keeps SSR fast even when
- * new-api is busy.
+ * 货币与 API 地址等运行时配置在这里服务端读 new-api `/api/status`(公开,60s
+ * 缓存),失败时退回与线上一致的默认值,页面不白屏。
  */
 import Link from 'next/link';
-import { BackButton } from '@/components/BackButton';
-import { listAvailableModels } from '@/lib/newapi/client';
-import { classifyModels } from '@/lib/models/categorize';
 import { Logo } from '@/components/brand/Logo';
-import { FormError } from '@/components/ui/FormError';
-import { ModelsBrowser } from './models-browser';
+import { PlazaLoader } from './plaza-loader';
+import { loadPlazaRuntime } from './runtime';
 
-export const revalidate = 60;
+// 运行时配置来自 new-api `/api/status`(server-side 60s memo,见 runtime.ts),页面按需渲染。
+export const dynamic = 'force-dynamic';
 export const metadata = {
-    title: '模型清单 — Silk Road AI',
-    description:
-        'Silk Road AI 当前接入的全部模型,按厂商分组(OpenAI / Anthropic / Google / 字节跳动 等),覆盖对话 / 视觉 / 图像 / 视频,可搜索检索。',
+    title: '模型广场 — Silk Road AI',
+    description: 'Silk Road AI 当前接入的全部模型:按供应商 / 分组 / 类型 / 标签筛选,对比价格、端点与近 24 小时可用性。',
 };
 
 export default async function ModelsPage() {
-    let rawModels: string[] = [];
-    let fetchErr: string | null = null;
-    try {
-        rawModels = await listAvailableModels();
-    } catch (err) {
-        // Don't crash the page on new-api hiccup — render the chrome with
-        // an empty/error state so the URL stays useful for marketing.
-        fetchErr = err instanceof Error ? err.message : String(err);
-        console.warn('[models] listAvailableModels failed:', err);
-    }
-
-    const { entries, totalModels, vendorCount } = classifyModels(rawModels);
-
+    const runtime = await loadPlazaRuntime();
     return (
-        <main className="min-h-screen bg-paper px-4 py-8">
-            <div className="max-w-6xl mx-auto">
-                <header className="mb-6 flex flex-col gap-3">
-                    {/* W7 D4 PR-R Item D — back-to-landing link, sits
-                     *  above the brand row so customers landing on this
-                     *  public page from a search result or a shared
-                     *  link have an explicit way back. Small + muted
-                     *  per the PR-R style spec. */}
-                    <BackButton className="inline-flex items-center gap-1 text-xs text-muted-ink hover:text-brand-accent transition-colors duration-150 ease-brand no-underline w-fit cursor-pointer border-0 bg-transparent p-0">
+        <main className="min-h-screen bg-paper">
+            <div className="mx-auto max-w-[1800px] px-4 pt-8 sm:px-6 xl:px-8">
+                <header className="flex flex-col gap-3">
+                    <Link
+                        href="/"
+                        className="inline-flex w-fit items-center gap-1 text-xs text-muted-ink no-underline transition-colors duration-150 ease-brand hover:text-brand-accent"
+                    >
                         <span aria-hidden="true">←</span>
-                        <span>返回</span>
-                    </BackButton>
+                        <span>返回首页</span>
+                    </Link>
                     <div className="flex items-center gap-3">
                         <Logo variant="primary-flat" size={28} />
                         <p className="m-0 text-xs text-minor-ink">Connecting Global Intelligence.</p>
                     </div>
-                    <h1 className="m-0 text-3xl font-semibold text-navy">模型清单</h1>
-                    <p className="m-0 text-sm text-muted-ink leading-relaxed max-w-3xl">
-                        我们当前接入了 <strong className="text-navy">{totalModels}</strong> 个模型,涵盖{' '}
-                        <strong className="text-navy">{vendorCount}</strong> 个厂商。所有模型均可在{' '}
-                        <code className="bg-surface px-1.5 py-0.5 rounded text-xs border border-brand-border text-navy">
-                            https://ai.silkroadai.io
-                        </code>{' '}
-                        通过 OpenAI / Anthropic 兼容协议调用。
-                    </p>
                 </header>
-
-                {fetchErr ? (
-                    <FormError severity="banner">当前无法获取模型清单,请稍后重试。</FormError>
-                ) : (
-                    <ModelsBrowser entries={entries} totalModels={totalModels} vendorCount={vendorCount} />
-                )}
             </div>
+            <PlazaLoader runtime={runtime} />
         </main>
     );
 }

@@ -12,6 +12,7 @@ export default defineConfig({
     resolve: {
         alias: {
             '@': path.resolve(__dirname, './src'),
+            '@newapi': path.resolve(__dirname, './src/vendor/newapi-web'),
             // `import 'server-only'` is provided by Next.js at build time
             // (resolves to next/dist/compiled/server-only). Vitest (plain
             // Node) has no such resolver, so without this alias every test

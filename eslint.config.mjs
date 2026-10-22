@@ -14,6 +14,8 @@ const eslintConfig = defineConfig([
         'next-env.d.ts',
         // Git submodules:
         'vendor/**',
+        // Vendored new-api web pricing feature (AGPL, upstream style) — see src/vendor/newapi-web/NOTICE.md
+        'src/vendor/**',
     ]),
 ]);
 

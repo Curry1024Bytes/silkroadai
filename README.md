@@ -116,4 +116,4 @@ Portal 调 new-api 的所有调用封装在 `src/lib/newapi/client.ts`。
 
 ## License
 
-MIT
+AGPL-3.0-only(2026-10-22 起)。`/models` 模型广场整合了 [QuantumNous/new-api](https://github.com/QuantumNous/new-api) 的前端代码(`src/vendor/newapi-web/`,见其 `NOTICE.md`),new-api 为 AGPL-3.0,因此本仓库整体按 AGPL-3.0 分发。继承自 sub2apipay 的原始代码仍可按 MIT 使用(`LICENSE.sub2apipay-MIT`)。

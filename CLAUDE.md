@@ -28,7 +28,7 @@
 
 **禁止做的事**:
 
-- ❌ 不要建议 fork 或修改 new-api 源码(AGPL,改了就要开源全部)
+- ❌ 不要建议 fork 或修改 new-api **后端**源码(AGPL)。**前端例外(2026-10-22 起)**:operator 拍板把 portal 整体改为 AGPL-3.0,new-api 的模型广场前端已 vendored 到 `src/vendor/newapi-web/`(见其 `NOTICE.md`);该目录保持上游风格、eslint/prettier/vitest 均忽略,改动只做 shim 不做重写,升级时按 NOTICE 里的改动清单重放
 - ❌ 不要在 portal 里实现"模型路由"逻辑(new-api 已经做了)
 - ❌ 不要尝试调 SiliconFlow / Anthropic / OpenAI 上游(走 new-api)
 - ❌ 不要再调 LiteLLM(W3 D1 在 VPS 关停)— 任何 `@/lib/litellm/client` import 都是 R3 stub,不是真后端
@@ -180,6 +180,10 @@ silkroadai/
 ### 2026-10 维护线(客户报障修复)
 
 - [x] 参考音频门控对齐火山官方 ✅(2026-10-21,PR #554 merge `0ff135a`,server1 seedance-portal ×3 + portal 已滚动)— 客户 zhixiang 10-20 调企业门户 `/api/v3` 提交 Seedance 2.0「2 参考视频 + 1 参考音频、无图」被我们 400 `audio requires at least one reference image`。火山官方(docs.volcengine.com/docs/82379/1520757):2.0 系「不可单独输入音频,应至少包含 1 个参考视频**或**图片」,「文本 + 视频 + 音频」是受支持组合;2.5 可纯音频。`cn-adapter.ts` 与主站海外线 `adapter.ts` 的门控都只数图不数视频 → 改成「无图 && 无视频」才拒,2.5 / promax-2.5 允许纯音频(`AUDIO_ONLY_VARIANTS`);/docs 7 处文案同步。+4 测试,全套 282 files / 4019 pass。**真金 smoke(throwaway 账号,已软删)**:客户原请求原样提交 → `cgt-20261021055008-an05a` 9.5 分钟 completed,成片 834×1120 5.09s 含 AAC 音轨;上游 usage 361,632 token(带参考视频的任务比纯 5s 720p 的 ~109k 高 ~3.3×,按 ¥28/M 实扣 ¥10.13)。volc 线无此门控不涉及。
+
+### 模型广场(vendored new-api pricing feature — 2026-10-22)
+
+- [x] PR-1 — `/models` 整页替换为 new-api 模型广场 ✅(2026-10-22,分支 `feat/models-plaza-vendored`)— **许可证**:operator 决定 portal 整体改 AGPL-3.0(`LICENSE` 换 AGPL,原 MIT 存 `LICENSE.sub2apipay-MIT`,`package.json`/README 同步),据此**直接 vendored new-api `v1.0.0-rc.44` 的 `web/src/features/pricing` + 依赖闭包**(138 文件)到 `src/vendor/newapi-web/`,`@/` 别名改写为 `@newapi/`(tsconfig + vitest alias),上游版权头保留,改动清单见该目录 `NOTICE.md`。**shim 层**(文件头标 `silkroadai portal shim`):`lib/api.ts` 改走 portal 同源代理、`lib/router-shim.ts` 替 `@tanstack/react-router`(只读初始 URL 参数)、`hooks/use-status.ts` + `stores/system-config-store.ts` 从 `lib/plaza-runtime.ts`(zustand)取货币配置、`components/layout` / `page-transition` 透传、`code-block` 去 shiki、`lobe-icon.tsx` 改静态图标注册表(Turbopack 不吃模板动态 import)、i18n 只带 zh+en 且按「源码出现该字面量」裁到 398 key。**删掉的 mock**:API 页签「支持参数 / 速率限制」两段 + `model-details-apps`(上游用种子伪造数据,不能当真数据给客户);卡片与性能页签的可用率/延迟/吞吐是**真数据**(公开 `/api/perf-metrics/summary` + `/api/perf-metrics`)。**portal 侧**:`src/app/api/portal/models/[...path]/route.ts` 白名单代理(pricing / perf-metrics / perf-metrics/summary,60s 缓存 + 10min stale 回退,new-api 主机不进浏览器);`src/app/models/page.tsx` SSR 壳 + `plaza-island.tsx` `ssr:false` 客户端岛(QueryClient + i18n + `.newapi-plaza` 主题作用域 + PortalContainer);`runtime.ts` 服务端读 new-api `/api/status` 货币配置(60s memo,失败回默认);`globals.css` 引入 `vendor/newapi-web/styles/plaza.css`(shadcn 变量只挂在 `.newapi-plaza` 下,不污染 portal)。旧 `models-browser.tsx` 删除,`categorize.ts` 保留(/chat 选模型仍用)。新依赖:`@base-ui/react` `@tanstack/react-query` `@tanstack/react-table@8` `lucide-react` `@hugeicons/*` `@lobehub/icons@5.22` `i18next` `react-i18next` `zustand` `cva` `clsx` `tailwind-merge` `cmdk` `sonner` `tw-animate-css` `shadcn`(只用其 tailwind.css)`@visactor/vchart+react-vchart`(性能图表)。tsconfig target ES2017→ES2022。本地 dev(`plaza-dev` :3013,隧道打 vps2 new-api)真机验证:95 模型 / 筛选侧栏 / 表格视图 / 详情抽屉三页签(定价、真实性能曲线、调用示例指向 ai.silkroadai.io)/ 手机布局 全过,console 0 error。**已知待办(PR-2+)**:(a) 卡片「分组」会把内部分组名(`awsb蒸馏带f5` / `az官k` 等)暴露给客户,需白名单+别名;(b) 真实成功率直接公开(gpt-image-2 近 24h 58%)是产品决策;(c) VChart 随首屏加载,可改懒加载;(d) 24/95 模型缺描述和标签,在 new-api 后台「模型管理」补。
 
 ### ChatUI(无状态客户对话 — 2026-06-08 上线)
 

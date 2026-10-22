@@ -14,3 +14,6 @@ _bootstrap
 .next/types
 # Submodule that just happens to be in the workspace
 vendor/stripe-node
+
+# Vendored new-api web code keeps upstream formatting (src/vendor/newapi-web/NOTICE.md)
+src/vendor
