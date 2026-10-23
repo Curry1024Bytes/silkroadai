@@ -84,8 +84,12 @@ const UPSTREAM_XHK_25_480P = process.env.SEEDANCE_XHK_MODEL_25_480P || 'doubao-s
 // 只有配了 SEEDANCE_SVCINF_KEY 才切;未配回落上面的 xinhankr 260628(部署缺 env 不断档)。
 const UPSTREAM_SVCINF_25_480P = process.env.SEEDANCE_SVCINF_MODEL_25_480P || 'doubao-seedance-2-5-260628-max';
 // 样片出正片(draft_task,2026-10-08)强制走 service-inference.ai(样片在那条线生成,方舟真号只有它认),
-// 正片分辨率由请求体承载,模型名与 480p 档同一个套餐名(env 可覆盖)。
+// 正片分辨率由请求体承载;cn 线模型名与 480p 档同一个套餐名(env 可覆盖),global / proMax 线用各自套餐名(2026-10-23)。
 const UPSTREAM_SVCINF_25 = process.env.SEEDANCE_SVCINF_MODEL_25 || 'doubao-seedance-2-5-260628-max';
+// 样片出正片放行的变体:cn 2.5 + 海外 global / proMax 2.5(后两者 variant 共用 'promax-2.5' 只为同价,
+// 都是 svcinf 的 2.5 -max 套餐,上游同样支持 draft / draft_task,见 seedance-max.md §4)。
+// 2026-10-23 前只认 '2.5',global / promax 客户第二步一律被 400「仅 seedance-2-5 支持」(zhixiangweilai 报障)。
+const DRAFT_TASK_VARIANTS: ReadonlySet<SeedanceVariant> = new Set<SeedanceVariant>(['2.5', 'promax-2.5']);
 /** 国内版 2.5 480p 的 service-inference.ai 配置(lazy 读 env,便于改 key 不重启 + 可测);未配 → null。 */
 export function getSvcinfCnConfig(): SvcinfConfig | null {
     const key = process.env.SEEDANCE_SVCINF_KEY?.trim();
@@ -877,16 +881,29 @@ export async function submitVideoWithKey(body: Record<string, unknown>, auth: st
     let svcModel = map.svcinfModel ?? map.upstream;
     let draftArkId: string | null = null;
     if (draftRef) {
-        // 样片出正片:仅 2.5(方舟官方),且不论正片分辨率一律走 service-inference.ai ——
+        // 样片出正片:仅 2.5 系(cn / global / proMax,方舟官方能力),且不论正片分辨率一律走 service-inference.ai ——
         // 样片在那条线生成,draft_task.id 必须是方舟真号(mvt- 受理号 → metadata.id,见 draft-task.ts)。
-        if (map.variant !== '2.5') return err(400, 'invalid_request', 'draft_task(样片出正片)仅 seedance-2-5 支持');
-        svc = getSvcinfCnConfig();
+        // key 与上游套餐名必须取【出样片的那条线】(按 region):svcinf 任务按 key 隔离,拿 cn 线的 key 查
+        // global 样片是 404;上游也要求正片 model 与样片相同。proxy 已校验样片与正片同渠道(region)。
+        if (!DRAFT_TASK_VARIANTS.has(map.variant))
+            return err(
+                400,
+                'invalid_request',
+                'draft_task(样片出正片)仅 2.5 系模型支持(seedance-2-5 / seedance-2-5-global / seedance-2-5-promax)',
+            );
+        const draftRegion = map.region ?? 'cn';
+        svc = svcinfConfigForRegion(draftRegion, auth);
         if (!svc) return err(503, 'temporarily_unavailable', '样片出正片上游未配置,请联系服务方');
         const r = await resolveDraftTaskArkId(svc, draftRef.id, 'seedance-cn-adapter');
         if (!r.ok) return err(r.status, r.code, r.message);
         draftArkId = r.arkId;
-        svcModel = UPSTREAM_SVCINF_25;
-        console.log('[seedance-cn-adapter] draft_task → 方舟真号', { client_draft_id: draftRef.id, model });
+        // cn 线正片不论分辨率用 2.5 套餐名(720p/1080p 档本身无 svcinfModel);海外线各档都带本线套餐名。
+        svcModel = draftRegion === 'cn' ? UPSTREAM_SVCINF_25 : (map.svcinfModel ?? UPSTREAM_SVCINF_25);
+        console.log('[seedance-cn-adapter] draft_task → 方舟真号', {
+            client_draft_id: draftRef.id,
+            model,
+            region: draftRegion,
+        });
     }
     if (svc) {
         const content: Array<Record<string, unknown>> = [];

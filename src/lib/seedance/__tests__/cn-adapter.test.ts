@@ -1137,6 +1137,76 @@ describe('海外版 proMax 全档 → service-inference.ai dreamina(独立 key /
     });
     afterEach(() => vi.unstubAllEnvs());
 
+    // 2026-10-23 客户 zhixiangweilai 报障:global 2.5 样片(第一步)正常,第二步 draft_task 被 400
+    // 「仅 seedance-2-5 支持」—— global / promax 2.5 的 variant 是 'promax-2.5'(同价复用),旧门只认 '2.5'。
+    // 修后:放行 2.5 系;key / 套餐名取出样片那条线(按 region),不能拿 cn 480p 线的 key 去查海外样片。
+    describe('样片出正片(draft_task)海外 2.5 线放行(2026-10-23)', () => {
+        const GLOBAL_KEY = 'sk-inf-v1-global-platform-key';
+        beforeEach(() => vi.stubEnv('SEEDANCE_SVCINF_GLOBAL_KEY', GLOBAL_KEY));
+
+        it.each([
+            ['seedance2.5-global-1080p', GLOBAL_KEY, 'global'],
+            ['seedance2.5-global-720p', GLOBAL_KEY, 'global'],
+            ['seedance2.5-promax-1080p', PROMAX_KEY, 'promax'],
+        ])('%s draft_task → 200,用本线 key 查样片 + 提交,model=dreamina 2.5 -max,id 换方舟真号', async (model, key) => {
+            mapTaskOnce('mvt-promax1');
+            const r = await submitVideo(
+                makeReq({
+                    model,
+                    content: [{ type: 'draft_task', draft_task: { id: 'cgt-client-draft' } }],
+                }),
+            );
+            expect(r.status).toBe(200);
+            expect(((await r.json()) as { id: string }).id).toMatch(/^cgt-\d{14}-[a-z0-9]{5}$/);
+            // 查样片任务(拿方舟真号)用的是本线 key,不是 cn 480p 线的 key
+            const get = mockFetch.mock.calls.find(
+                (c) =>
+                    String(c[0]) === `${SVC}/v2/video/tasks/mvt-promax1` &&
+                    ((c[1] as RequestInit)?.method || 'GET') === 'GET',
+            );
+            expect(get).toBeDefined();
+            expect((get![1] as RequestInit).headers).toMatchObject({ Authorization: `Bearer ${key}` });
+            const call = svcSubmitCall();
+            expect(call).toBeDefined();
+            expect((call![1] as RequestInit).headers).toMatchObject({ Authorization: `Bearer ${key}` });
+            const sent = svcSent();
+            expect(sent.model).toBe('dreamina-seedance-2-5-260628-max');
+            expect(sent.resolution).toBe(model.endsWith('720p') ? '720p' : '1080p');
+            expect(sent.content).toEqual([{ type: 'draft_task', draft_task: { id: 'cgt-20261015120000-pmx01' } }]);
+            expect('duration' in sent).toBe(false);
+            expect('generate_audio' in sent).toBe(false);
+            expect(mockFetch.mock.calls.every((c) => String(c[0]).startsWith(SVC))).toBe(true);
+            expect(
+                mockFetch.mock.calls.some((c) => JSON.stringify((c[1] as RequestInit)?.headers ?? {}).includes(CN_KEY)),
+            ).toBe(false);
+        });
+
+        it('global 2.0(非 2.5 系)draft_task → 400 不打上游', async () => {
+            const r = await submitVideo(
+                makeReq({
+                    model: 'seedance2.0-global-mini-720p',
+                    content: [{ type: 'draft_task', draft_task: { id: 'cgt-client-draft' } }],
+                }),
+            );
+            expect(r.status).toBe(400);
+            expect(((await r.json()) as { error: { message: string } }).error.message).toContain('仅 2.5 系');
+            expect(svcSubmitCall()).toBeUndefined();
+        });
+
+        it('global 线未配 key → 503(不拿 cn 线 key 顶上)', async () => {
+            vi.stubEnv('SEEDANCE_SVCINF_GLOBAL_KEY', '');
+            // 不排 mapTaskOnce:配置门在解析样片号之前,排了会漏到后面的用例
+            const r = await submitVideo(
+                makeReq({
+                    model: 'seedance2.5-global-1080p',
+                    content: [{ type: 'draft_task', draft_task: { id: 'cgt-client-draft' } }],
+                }),
+            );
+            expect(r.status).toBe(503);
+            expect(mockFetch).not.toHaveBeenCalled();
+        });
+    });
+
     it.each([
         ['seedance2.0-promax-480p', 'dreamina-seedance-2-0-260128-max', '480p'],
         ['seedance2.0-promax-fast-480p', 'dreamina-seedance-2-0-fast-260128-max', '480p'],

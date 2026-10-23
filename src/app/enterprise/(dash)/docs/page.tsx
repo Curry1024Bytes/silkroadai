@@ -587,9 +587,10 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                     主体动作符合预期后,再提交一次正片任务:<Code>content</Code> 里放{' '}
                     <Code>{'{"type":"draft_task","draft_task":{"id":"<样片任务号>"}}'}</Code>(可不带 text), 用{' '}
                     <Code>resolution</Code> 指定正片分辨率即可;提示词 / 参考素材 / 时长 / 比例 / 音频自动沿用样片,
-                    不必(也不要)重复传。样片任务号必须是你名下、已完成的样片,7 天内有效;仅{' '}
-                    <Code>doubao-seedance-2-5-260628</Code> 支持。查询响应回显 <Code>draft</Code> 与正片的{' '}
-                    <Code>draft_task_id</Code>。
+                    不必(也不要)重复传。样片任务号必须是你名下、已完成的样片,7 天内有效;仅 2.5 系模型支持:国内版{' '}
+                    <Code>doubao-seedance-2-5-260628</Code>(即 <Code>seedance-2-5</Code>)、海外版{' '}
+                    <Code>seedance-2-5-global</Code>、proMax <Code>seedance-2-5-promax</Code>;正片必须用与样片相同的模型
+                    / 渠道。查询响应回显 <Code>draft</Code> 与正片的 <Code>draft_task_id</Code>。
                 </p>
                 <p className="text-gray-600">
                     <b>查询响应对齐火山官方 2026-09 字段集</b>(国内版 / 火山渠道 / 海外版均适用):除 <Code>id</Code> /{' '}

@@ -25,3 +25,11 @@ declare module '*.svg' {
     const content: string;
     export default content;
 }
+
+// `*.png`:#558 vendored 模型广场的 `src/vendor/newapi-web/assets/custom/icon-wan.tsx` 以
+// `import wan from './wan.png'` + `wan.src` 方式使用(Next 静态图片 = StaticImageData);
+// 同上原因 CI 的 `tsc --noEmit` 拿不到 next/image-types/global,Type Check 自 #558 起一直红。
+declare module '*.png' {
+    const content: import('next/image').StaticImageData;
+    export default content;
+}
