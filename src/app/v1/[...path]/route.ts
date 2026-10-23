@@ -194,11 +194,21 @@ const GEMINI_IMAGE_MODELS: Record<string, '1K' | '2K' | '4K'> = {
     // 「1K, 2K, and 4K output resolutions (default 1K)」,故默认档 1K、size 可选(SIZE_SELECTABLE_MODELS)。
     // 按 token 计费(1K=1120 / 2K=1680 / 4K=2520 image tokens)→ 客户选高档自然多扣,无需别名 SKU。
     'gemini-nano-banana-2.1': '1K',
+    // 裸名按量 SKU(2026-10-22 核查):同组 ch198 / ch306 按 token 计费的 pro / flash。不在此表时 chat 落
+    // new-api 兼容层(内联 base64、无 size、usage 泄露内部字段),/v1/images/* 恒 500。对齐官方
+    // 「Gemini 3 image models generate 1K images by default」→ 默认 1K、size 可选(SIZE_SELECTABLE_MODELS)。
+    'gemini-3-pro-image': '1K',
+    'gemini-3.1-flash-image': '1K',
 };
 
 /** 仅这些模型允许客户用 `size` 选 imageSize(其余按 GEMINI_IMAGE_MODELS 固定档,size 被忽略)。
  *  pro 上限 4K → 1K/2K/4K 都合法。 */
-const SIZE_SELECTABLE_MODELS = new Set<string>(['gemini-3-pro-image-preview', 'gemini-nano-banana-2.1']);
+const SIZE_SELECTABLE_MODELS = new Set<string>([
+    'gemini-3-pro-image-preview',
+    'gemini-nano-banana-2.1',
+    'gemini-3-pro-image',
+    'gemini-3.1-flash-image',
+]);
 
 /** "2K"/"4K"/"2048x2048" 等 → 规范 imageSize;无法识别返 null(调用方据此 400)。 */
 function normalizeImageSize(raw: string): '1K' | '2K' | '4K' | null {
@@ -295,6 +305,21 @@ GEMINI_ASPECT_RATIOS['gemini-nano-banana-2.1'] = new Set([
     '4:5',
     '5:4',
     '8:1',
+    '9:16',
+    '16:9',
+    '21:9',
+]);
+// 裸名按量 SKU(2026-10-22 官方 image-generation 分辨率表实读):3.1 Flash Image 与 Nano Banana 2.1 同 14 比例;
+// 3 Pro Image 表只有 10 个(无 1:4 / 1:8 / 4:1 / 8:1)。
+GEMINI_ASPECT_RATIOS['gemini-3.1-flash-image'] = GEMINI_ASPECT_RATIOS['gemini-nano-banana-2.1'];
+GEMINI_ASPECT_RATIOS['gemini-3-pro-image'] = new Set([
+    '1:1',
+    '2:3',
+    '3:2',
+    '3:4',
+    '4:3',
+    '4:5',
+    '5:4',
     '9:16',
     '16:9',
     '21:9',
@@ -937,6 +962,20 @@ async function handleGeminiImage(
     if (stored?.r2Fallback) respHeaders['X-Silkroadai-R2-Fallback'] = 'yes';
     // 出图引用:仅记真实公网 URL(data URL 降级时是内联 base64,不当 ref 存)
     if (cap) captureJsonResponse(cap, 200, openaiResp, hostedRefs(stored));
+    // stream:true → 按 OpenAI chunk 形回 SSE(2026-10-22 前被忽略、回 JSON,OpenAI SDK 开流式会解析失败)。
+    // Gemini 生图没有真·增量,整条 content 一个 chunk + 收尾 chunk(finish_reason + usage)+ [DONE],
+    // 与 gpt-4o-image 分支同一写法;计费不变(new-api 按非流式 generateContent 扣)。
+    if (body.stream === true) {
+        const base = { id: openaiResp.id, object: 'chat.completion.chunk', created: openaiResp.created, model };
+        const first = { ...base, choices: [{ index: 0, delta: { role: 'assistant', content }, finish_reason: null }] };
+        const last = { ...base, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: openaiResp.usage };
+        respHeaders['content-type'] = 'text/event-stream';
+        respHeaders['cache-control'] = 'no-cache';
+        return new NextResponse(`data: ${JSON.stringify(first)}\n\ndata: ${JSON.stringify(last)}\n\ndata: [DONE]\n\n`, {
+            status: 200,
+            headers: respHeaders,
+        });
+    }
     return NextResponse.json(openaiResp, { status: 200, headers: respHeaders });
 }
 
@@ -3221,7 +3260,7 @@ async function handleRequest(req: NextRequest, params: Promise<{ path: string[] 
         if (model in GEMINI_IMAGE_MODELS) {
             const imgCap = isMediaCaptureSkipped() ? null : cap;
             if (imgCap) recordRequestBody(imgCap, JSON.stringify(body), model, body.stream === true);
-            return withKeepalive(handleGeminiImage(req, body, model, imgCap));
+            return withKeepalive(handleGeminiImage(req, body, model, imgCap), { sse: body.stream === true });
         }
 
         // Branch 1.1: gpt-image-2(图片模型)被当 chat 模型调 → 翻译到 Images 接口(否则上游

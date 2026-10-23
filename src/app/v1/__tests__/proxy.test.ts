@@ -2473,6 +2473,140 @@ describe('/v1 proxy — gemini-nano-banana-2.1 接入(对齐官方:默认 1K、s
     });
 });
 
+describe('/v1 proxy — 裸名按量 gemini-3-pro-image / gemini-3.1-flash-image 接入(2026-10-22 核查)', () => {
+    function sentImageConfig(): { imageSize: string; aspectRatio?: string } {
+        const call = mockFetch.mock.calls.find(([u]) => String(u).includes(':generateContent'));
+        expect(call).toBeDefined();
+        const sent = JSON.parse(String((call![1] as RequestInit).body)) as {
+            generationConfig: { imageConfig: { imageSize: string; aspectRatio?: string } };
+        };
+        return sent.generationConfig.imageConfig;
+    }
+
+    for (const MODEL of ['gemini-3-pro-image', 'gemini-3.1-flash-image']) {
+        it(`${MODEL}: chat/completions → 翻译到 native,默认 1K + 托管 URL(不再落 new-api 兼容层)`, async () => {
+            mockFetch.mockReset();
+            mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+            const res = await POST(
+                makeReq('/chat/completions', {
+                    body: { model: MODEL, messages: [{ role: 'user', content: 'a cat' }] },
+                }),
+                ctx('chat', 'completions'),
+            );
+            expect(res.status).toBe(200);
+            expect(res.headers.get('X-Silkroadai-Translated')).toBe('gemini-native');
+            const [url] = mockFetch.mock.calls[0] as [string];
+            expect(url).toBe(`${NEWAPI_BASE}/v1beta/models/${MODEL}:generateContent`);
+            expect(sentImageConfig().imageSize).toBe('1K');
+            const data = (await res.json()) as { choices: Array<{ message: { content: string } }> };
+            expect(data.choices[0].message.content).toMatch(/^!\[image\]\(https:\/\//);
+        });
+
+        it(`${MODEL}: images/generations size=2K → 2K;size=8K → 400 不打上游`, async () => {
+            mockFetch.mockReset();
+            mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+            const ok = await POST(
+                makeReq('/images/generations', { body: { model: MODEL, prompt: 'x', size: '2K' } }),
+                ctx('images', 'generations'),
+            );
+            expect(ok.status).toBe(200);
+            expect(sentImageConfig().imageSize).toBe('2K');
+            mockFetch.mockReset();
+            const bad = await POST(
+                makeReq('/images/generations', { body: { model: MODEL, prompt: 'x', size: '8K' } }),
+                ctx('images', 'generations'),
+            );
+            expect(bad.status).toBe(400);
+            expect(mockFetch).not.toHaveBeenCalled();
+        });
+    }
+
+    it('flash 放行官方 14 比例(含 4:1);pro 官方表只有 10 个 → 4:1 对 pro 是 400', async () => {
+        mockFetch.mockReset();
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const flash = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gemini-3.1-flash-image', prompt: 'x', aspect_ratio: '4:1' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(flash.status).toBe(200);
+        expect(sentImageConfig().aspectRatio).toBe('4:1');
+        mockFetch.mockReset();
+        const pro = await POST(
+            makeReq('/images/generations', { body: { model: 'gemini-3-pro-image', prompt: 'x', aspect_ratio: '4:1' } }),
+            ctx('images', 'generations'),
+        );
+        expect(pro.status).toBe(400);
+        expect(mockFetch).not.toHaveBeenCalled();
+        mockFetch.mockReset();
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const pro169 = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gemini-3-pro-image', prompt: 'x', aspect_ratio: '16:9' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(pro169.status).toBe(200);
+        expect(sentImageConfig().aspectRatio).toBe('16:9');
+    });
+});
+
+describe('/v1 proxy — Gemini 生图 chat stream:true → OpenAI chunk 形 SSE(2026-10-22 前被忽略回 JSON)', () => {
+    it('stream:true → text/event-stream,首 chunk 带 content,尾 chunk finish_reason=stop + usage,[DONE] 收尾', async () => {
+        mockFetch.mockReset();
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: { model: 'gemini-nano-banana-2.1', stream: true, messages: [{ role: 'user', content: 'a cat' }] },
+            }),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(200);
+        expect(res.headers.get('content-type')).toBe('text/event-stream');
+        expect(res.headers.get('X-Silkroadai-Translated')).toBe('gemini-native');
+        // 上游仍是非流式 generateContent(Gemini 流式回空图,计费口径不变)
+        const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(String(init.body)).not.toContain('"stream"');
+        const text = await res.text();
+        const events = text.split('\n\n').filter(Boolean);
+        expect(events[events.length - 1]).toBe('data: [DONE]');
+        const first = JSON.parse(events[0].slice(6)) as {
+            object: string;
+            choices: Array<{ delta: { role?: string; content?: string }; finish_reason: string | null }>;
+        };
+        expect(first.object).toBe('chat.completion.chunk');
+        expect(first.choices[0].delta.role).toBe('assistant');
+        expect(first.choices[0].delta.content).toMatch(/^!\[image\]\(https:\/\//);
+        expect(first.choices[0].finish_reason).toBeNull();
+        const last = JSON.parse(events[1].slice(6)) as {
+            choices: Array<{ finish_reason: string }>;
+            usage: { completion_tokens: number };
+        };
+        expect(last.choices[0].finish_reason).toBe('stop');
+        expect(last.usage.completion_tokens).toBe(1290);
+    });
+
+    it('stream 省略 / false → 仍回 JSON chat.completion(零回归)', async () => {
+        mockFetch.mockReset();
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: {
+                    model: 'gemini-nano-banana-2.1',
+                    stream: false,
+                    messages: [{ role: 'user', content: 'a cat' }],
+                },
+            }),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(200);
+        expect(res.headers.get('content-type')).toContain('application/json');
+        const data = (await res.json()) as { object: string };
+        expect(data.object).toBe('chat.completion');
+    });
+});
+
 describe('/v1 proxy — 非 Gemini 图片(gpt-image-2)透传整形 + 估算 usage + 报错透传', () => {
     type Usage = {
         input_tokens: number;
