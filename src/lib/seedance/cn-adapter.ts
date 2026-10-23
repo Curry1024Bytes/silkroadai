@@ -18,9 +18,8 @@
  *
  * ⚠️ 上游账户余额 < ¥5 会对【所有】请求回 403「账户余额不足5元」—— 保持上游充值。
  *
- * 2026-10-15:海外版 proMax 全档(2.0 pro/fast/mini + 2.5)上游换成 service-inference.ai dreamina-sd-max 线
- * (`provider:'svcinf'`,与 cn 2.5 480p 单档同一套 svcinf-client 翻译/轮询,独立 key + 独立 API 版本 env);
- * 对客模型名 / 档位 / 费率全不变。未配 `SEEDANCE_SVCINF_PROMAX_KEY` 回落 artsmcp intl 线。
+ * 2026-10-15~10-23:海外版 proMax 曾切 service-inference.ai dreamina 线;**2026-10-23 换回 artsmcp intl**(operator 指定,
+ * 新 key 写进各客户 promax 行),480p 随之关闭。`SEEDANCE_SVCINF_PROMAX_KEY` 现只用于轮询存量 svcinf proMax 任务。
  * 2026-10-17:海外版 global 同样切到这条线(独立 key `SEEDANCE_SVCINF_GLOBAL_KEY`),global 480p 随之开放;
  * global fast/mini 的 1080p 档(新上游无)2026-10-19 下架。
  */
@@ -60,8 +59,8 @@ const UPSTREAM_INTL_MINI = 'artsdance2-0-mini-intl-260701';
 // 与现有渠道一致(720p 5s = 108,900);计费按 usage 实报,基数差异不影响正确性。
 // proMax 三档 2026-08-08 全部由 dreamina 系迁到 artsdance intl 系(= global 同一上游名,生产已验证)。
 // artsdance intl 不支持 480p → proMax 全档去 480p:pro 保留 720p/1080p/4k,fast/mini 仅 720p。价格不变。
-// ⚠️ 2026-10-15 起 proMax 全档改走 service-inference.ai(见下 UPSTREAM_SVCINF_PROMAX_* / getSvcinfPromaxConfig);
-// 这三个 artsdance intl 名只在【未配 SEEDANCE_SVCINF_PROMAX_KEY】时作回落(部署缺 env 不断档)。
+// 2026-10-23 起 proMax 全档回到 artsmcp intl(2026-10-15~10-23 曾切 service-inference.ai);key 按客户 promax 行。
+// UPSTREAM_SVCINF_PROMAX_* 保留:global 线缺省沿用这四个套餐名,且存量 svcinf proMax 任务仍按 PROMAX key 轮询。
 const UPSTREAM_PROMAX_PRO = 'artsdance2-0-pro-intl-260701';
 const UPSTREAM_PROMAX_FAST = 'artsdance2-0-fast-intl-260701';
 const UPSTREAM_PROMAX_MINI = 'artsdance2-0-mini-intl-260701';
@@ -100,11 +99,9 @@ export function getSvcinfCnConfig(): SvcinfConfig | null {
     return { base: (process.env.SEEDANCE_SVCINF_BASE_URL || SVCINF_DEFAULT_BASE).replace(/\/$/, ''), key, api };
 }
 
-// ── 海外版 proMax → service-inference.ai dreamina-sd-max 线(2026-10-15,operator 指定换上游,对客模型/价格不变)──
-// 上游文档 console.service-inference.ai/docs/seedance-max:四档套餐名(以该 key `GET /v1/models` 为准,
-// 部分套餐不带 -max 后缀 → 按档 env 覆盖)。pro 480p/720p/1080p/4k、fast/mini 480p/720p、2.5 480p/720p/1080p
-// —— proMax 480p 档随之重开(operator 2026-10-15 拍板;费率 = 各自 720p 同价,沿用 2026-08-06 口径)。
-// ⚠️ 480p 只有新上游支持:未配 key 回落 artsmcp 时 480p 会被 intl 上游 400(回落是应急路径,可接受)。
+// ── service-inference.ai dreamina-sd-max 线套餐名(2026-10-15 引入;10-23 起 proMax 已换回 artsmcp,这四个名
+//    现只给 global 线作缺省 + 存量 svcinf proMax 任务轮询)。上游文档 console.service-inference.ai/docs/seedance-max,
+//    以该 key `GET /v1/models` 为准,部分套餐不带 -max 后缀 → 按档 env 覆盖。
 const UPSTREAM_SVCINF_PROMAX_PRO = process.env.SEEDANCE_SVCINF_PROMAX_MODEL_PRO || 'dreamina-seedance-2-0-260128-max';
 const UPSTREAM_SVCINF_PROMAX_FAST =
     process.env.SEEDANCE_SVCINF_PROMAX_MODEL_FAST || 'dreamina-seedance-2-0-fast-260128-max';
@@ -264,9 +261,11 @@ export const MODEL_MAP: Record<string, SeedanceModelSpec> = {
             ]),
         ),
     ),
-    // ── 海外版 proMax seedance 2.5(2026-08-08):费率独立(按原价挂牌);2026-10-15 换 svcinf 上游后加 480p ──
+    // ── 海外版 proMax seedance 2.5(2026-08-08):费率独立(按原价挂牌);上游 artsmcp intl `artsdance2-5-intl-260628`,
+    //    仅 720p/1080p(intl 无 480p)。2026-10-15~10-23 曾切 service-inference.ai 并开 480p,10-23 operator 指定换回 artsmcp
+    //    (新 key 写进各客户 promax 行),480p 随之再次关闭 ──
     ...Object.fromEntries(
-        (['480p', '720p', '1080p'] as const).flatMap((resolution) =>
+        (['720p', '1080p'] as const).flatMap((resolution) =>
             [false, true].map((ref) => [
                 `seedance2.5-promax-${resolution}${ref ? '-ref' : ''}`,
                 {
@@ -275,9 +274,6 @@ export const MODEL_MAP: Record<string, SeedanceModelSpec> = {
                     variant: 'promax-2.5' as const,
                     upstream: UPSTREAM_PROMAX_25,
                     region: 'promax' as const,
-                    // 2026-10-15 起走 service-inference.ai(有 key 才切,见 getSvcinfPromaxConfig)
-                    provider: 'svcinf' as const,
-                    svcinfModel: UPSTREAM_SVCINF_PROMAX_25,
                 },
             ]),
         ),
@@ -300,29 +296,22 @@ export const MODEL_MAP: Record<string, SeedanceModelSpec> = {
             ]),
         ),
     ),
-    // ── 海外版proMax(promax,2026-07-23):费率独立;pro 480p/720p/1080p/4k,fast/mini 480p/720p。
-    //    2026-10-15 起上游 = service-inference.ai dreamina-seedance-*-max(有 key 才切,否则回落 artsdance intl),
-    //    480p 档随新上游重开(artsdance intl 无 480p 时期曾去掉)──
+    // ── 海外版proMax(promax,2026-07-23):费率独立;上游 artsmcp intl(artsdance2-*-intl-260701,key 按客户 promax 行):
+    //    pro 720p/1080p/4k,fast/mini 仅 720p(intl 无 480p、fast/mini 无 1080p)。
+    //    2026-10-15~10-23 曾切 service-inference.ai dreamina 并开 480p;10-23 operator 指定换回 artsmcp。
+    //    存量 svcinf 任务(mvt- 映射)仍由 getSvcinfRegionConfig('promax') 用 PROMAX key 轮询到终态,不受影响。──
     ...Object.fromEntries(
         (
             [
-                ['promax', UPSTREAM_PROMAX_PRO, UPSTREAM_SVCINF_PROMAX_PRO, ['480p', '720p', '1080p', '4k']],
-                ['promax-fast', UPSTREAM_PROMAX_FAST, UPSTREAM_SVCINF_PROMAX_FAST, ['480p', '720p']],
-                ['promax-mini', UPSTREAM_PROMAX_MINI, UPSTREAM_SVCINF_PROMAX_MINI, ['480p', '720p']],
-            ] as Array<[SeedanceVariant, string, string, Array<'480p' | '720p' | '1080p' | '4k'>]>
-        ).flatMap(([variant, upstream, svcinfModel, resolutions]) =>
+                ['promax', UPSTREAM_PROMAX_PRO, ['720p', '1080p', '4k']],
+                ['promax-fast', UPSTREAM_PROMAX_FAST, ['720p']],
+                ['promax-mini', UPSTREAM_PROMAX_MINI, ['720p']],
+            ] as Array<[SeedanceVariant, string, Array<'480p' | '720p' | '1080p' | '4k'>]>
+        ).flatMap(([variant, upstream, resolutions]) =>
             resolutions.flatMap((resolution) =>
                 [false, true].map((ref) => [
                     `seedance2.0-${variant}-${resolution}${ref ? '-ref' : ''}`,
-                    {
-                        resolution,
-                        ref,
-                        variant,
-                        upstream,
-                        region: 'promax' as const,
-                        provider: 'svcinf' as const,
-                        svcinfModel,
-                    },
+                    { resolution, ref, variant, upstream, region: 'promax' as const },
                 ]),
             ),
         ),
@@ -897,8 +886,15 @@ export async function submitVideoWithKey(body: Record<string, unknown>, auth: st
         const r = await resolveDraftTaskArkId(svc, draftRef.id, 'seedance-cn-adapter');
         if (!r.ok) return err(r.status, r.code, r.message);
         draftArkId = r.arkId;
-        // cn 线正片不论分辨率用 2.5 套餐名(720p/1080p 档本身无 svcinfModel);海外线各档都带本线套餐名。
-        svcModel = draftRegion === 'cn' ? UPSTREAM_SVCINF_25 : (map.svcinfModel ?? UPSTREAM_SVCINF_25);
+        // cn 线正片不论分辨率用 2.5 套餐名(720p/1080p 档本身无 svcinfModel);global 各档都带本线套餐名;
+        // proMax 2026-10-23 已换回 artsmcp(档位表无 svcinfModel),存量 svcinf 样片出正片仍用 dreamina 2.5 套餐名
+        //(新样片建在 artsmcp 上,resolveDraftTaskArkId 会按「不是可出正片的样片」400,proMax 样片模式随之下线)。
+        svcModel =
+            draftRegion === 'cn'
+                ? UPSTREAM_SVCINF_25
+                : draftRegion === 'promax'
+                  ? UPSTREAM_SVCINF_PROMAX_25
+                  : (map.svcinfModel ?? UPSTREAM_SVCINF_GLOBAL_25);
         console.log('[seedance-cn-adapter] draft_task → 方舟真号', {
             client_draft_id: draftRef.id,
             model,

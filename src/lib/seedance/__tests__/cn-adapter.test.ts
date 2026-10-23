@@ -613,15 +613,15 @@ describe('proMax 2.5 判定(2026-08-08)', () => {
         expect(variantForModel('seedance-2-5')).toBe('2.5');
         expect(variantForModel('seedance-2-0-promax')).toBe('promax');
         expect(regionForModel('seedance-2-5-promax')).toBe('promax');
-        // MODEL_MAP:480p/720p/1080p × {无ref,-ref}(480p 2026-10-15 随 svcinf 上游重开),回落上游 artsdance2-5-intl-260628,
-        // svcinf 上游 dreamina-seedance-2-5-260628-max,region promax
-        for (const n of ['seedance2.5-promax-480p', 'seedance2.5-promax-720p', 'seedance2.5-promax-1080p-ref']) {
+        // MODEL_MAP:720p/1080p × {无ref,-ref},上游 artsmcp intl artsdance2-5-intl-260628(2026-10-23 换回,无 provider),
+        // region promax;480p / 4k 无(intl 无 480p)
+        for (const n of ['seedance2.5-promax-720p', 'seedance2.5-promax-1080p-ref']) {
             expect(MODEL_MAP[n].variant).toBe('promax-2.5');
             expect(MODEL_MAP[n].upstream).toBe('artsdance2-5-intl-260628');
-            expect(MODEL_MAP[n].provider).toBe('svcinf');
-            expect(MODEL_MAP[n].svcinfModel).toBe('dreamina-seedance-2-5-260628-max');
+            expect(MODEL_MAP[n].provider).toBeUndefined();
             expect(MODEL_MAP[n].region).toBe('promax');
         }
+        expect(MODEL_MAP['seedance2.5-promax-480p']).toBeUndefined();
         expect(MODEL_MAP['seedance2.5-promax-4k']).toBeUndefined();
     });
 });
@@ -1083,7 +1083,7 @@ describe('国内版 2.5 480p 单档 → service-inference.ai(缺省 /v2,env 可�
  * 独立 key `SEEDANCE_SVCINF_PROMAX_KEY` + 独立版本 env `SEEDANCE_SVCINF_PROMAX_API_VERSION`(缺省 /v2);
  * 未配 key 回落 artsmcp intl 线。global 区 2026-10-17 同线(独立 GLOBAL key)。
  */
-describe('海外版 proMax 全档 → service-inference.ai dreamina(独立 key / 版本;未配回落 artsmcp)', () => {
+describe('海外版 proMax(2026-10-23 换回 artsmcp intl;存量 svcinf 任务仍按 PROMAX key 轮询)+ global svcinf 线', () => {
     const SVC = 'https://model.service-inference.ai';
     const PROMAX_KEY = 'sk-inf-v1-promax-platform-key';
     const CN_KEY = 'sk-inf-v1-cn-480p-key';
@@ -1208,40 +1208,59 @@ describe('海外版 proMax 全档 → service-inference.ai dreamina(独立 key /
     });
 
     it.each([
-        ['seedance2.0-promax-480p', 'dreamina-seedance-2-0-260128-max', '480p'],
-        ['seedance2.0-promax-fast-480p', 'dreamina-seedance-2-0-fast-260128-max', '480p'],
-        ['seedance2.0-promax-mini-480p', 'dreamina-seedance-2-0-mini-260615-max', '480p'],
-        ['seedance2.5-promax-480p', 'dreamina-seedance-2-5-260628-max', '480p'],
-        ['seedance2.0-promax-720p', 'dreamina-seedance-2-0-260128-max', '720p'],
-        ['seedance2.0-promax-1080p', 'dreamina-seedance-2-0-260128-max', '1080p'],
-        ['seedance2.0-promax-4k', 'dreamina-seedance-2-0-260128-max', '4k'],
-        ['seedance2.0-promax-fast-720p', 'dreamina-seedance-2-0-fast-260128-max', '720p'],
-        ['seedance2.0-promax-mini-720p', 'dreamina-seedance-2-0-mini-260615-max', '720p'],
-        ['seedance2.5-promax-720p', 'dreamina-seedance-2-5-260628-max', '720p'],
-        ['seedance2.5-promax-1080p', 'dreamina-seedance-2-5-260628-max', '1080p'],
-    ])('%s → /v2/video/generate,model=%s,resolution=%s,proMax 平台 key,版本记进映射', async (model, up, res) => {
-        const r = await submitVideo(makeReq({ model, prompt: '海边日落', duration: 5 }, 'Bearer sk-cb097-artsmcp-row'));
-        expect(r.status).toBe(200);
-        const j = (await r.json()) as { id: string; model: string; status: string };
-        expect(j.id).toMatch(/^cgt-\d{14}-[a-z0-9]{5}$/);
-        expect(j.model).toBe(model);
-        expect(j.status).toBe('queued');
-        expect(rememberVolcId).toHaveBeenCalledWith(j.id, 'mvt-promax1', 'task', undefined, 'v2');
-        const call = svcSubmitCall();
-        expect(call).toBeDefined();
-        // 用 proMax 线的平台 key,不是 cn 480p 线的 key,也不是客户行里的 artsmcp key
-        expect((call![1] as RequestInit).headers).toMatchObject({ Authorization: `Bearer ${PROMAX_KEY}` });
-        const sent = svcSent();
-        expect(sent.model).toBe(up);
-        expect(sent.resolution).toBe(res);
-        expect(sent.content).toEqual([{ type: 'text', text: '海边日落' }]);
-        expect(sent.duration).toBe(5);
-        for (const k of ['prompt', 'images', 'videos', 'audios']) expect(sent).not.toHaveProperty(k);
-        // artsmcp 一个字节不打
-        expect(mockFetch.mock.calls.some((c) => String(c[0]).startsWith(INTL))).toBe(false);
+        ['seedance2.0-promax-720p', 'artsdance2-0-pro-intl-260701', '720p'],
+        ['seedance2.0-promax-1080p', 'artsdance2-0-pro-intl-260701', '1080p'],
+        ['seedance2.0-promax-4k', 'artsdance2-0-pro-intl-260701', '4k'],
+        ['seedance2.0-promax-fast-720p', 'artsdance2-0-fast-intl-260701', '720p'],
+        ['seedance2.0-promax-mini-720p', 'artsdance2-0-mini-intl-260701', '720p'],
+        ['seedance2.5-promax-720p', 'artsdance2-5-intl-260628', '720p'],
+        ['seedance2.5-promax-1080p', 'artsdance2-5-intl-260628', '1080p'],
+    ])(
+        '%s → artsmcp intl(客户 promax 行 key),model=%s,resolution=%s;svcinf 一个字节不打(2026-10-23 换回)',
+        async (model, up, res) => {
+            const r = await submitVideo(
+                makeReq({ model, prompt: '海边日落', duration: 5 }, 'Bearer sk-90e8-artsmcp-row'),
+            );
+            expect(r.status).toBe(200);
+            const j = (await r.json()) as { id: string; model: string; status: string };
+            expect(j.id).toBe('cgt-intl-1'); // 上游号直出(artsmcp 线不自造号、不记映射)
+            expect(j.model).toBe(model);
+            expect(rememberVolcId).not.toHaveBeenCalled();
+            expect(mockFetch.mock.calls.some((c) => String(c[0]).startsWith(SVC))).toBe(false);
+            const intl = mockFetch.mock.calls.find((c) => String(c[0]) === `${INTL}/v1/video/generations`);
+            expect(intl).toBeDefined();
+            expect((intl![1] as RequestInit).headers).toMatchObject({ Authorization: 'Bearer sk-90e8-artsmcp-row' });
+            const sent = JSON.parse(String((intl![1] as RequestInit).body)) as Record<string, unknown>;
+            expect(sent.model).toBe(up);
+            expect(sent.resolution).toBe(res);
+            expect(sent.prompt).toBe('海边日落');
+            expect(sent.duration).toBe(5);
+            // 即使 PROMAX svcinf key 配着,也不拿它提交(只用于轮询存量任务)
+            expect(
+                mockFetch.mock.calls.some((c) =>
+                    JSON.stringify((c[1] as RequestInit)?.headers ?? {}).includes(PROMAX_KEY),
+                ),
+            ).toBe(false);
+        },
+    );
+
+    it('promax 480p 档已关闭(artsmcp intl 无 480p):MODEL_MAP 无此长名;fast/mini 1080p 亦无', async () => {
+        const { MODEL_MAP } = await import('../cn-adapter');
+        for (const n of [
+            'seedance2.0-promax-480p',
+            'seedance2.0-promax-480p-ref',
+            'seedance2.0-promax-fast-480p',
+            'seedance2.0-promax-mini-480p',
+            'seedance2.5-promax-480p',
+            'seedance2.0-promax-fast-1080p',
+            'seedance2.0-promax-mini-1080p',
+        ])
+            expect(MODEL_MAP[n]).toBeUndefined();
+        for (const n of ['seedance2.0-promax-720p', 'seedance2.0-promax-4k', 'seedance2.5-promax-1080p'])
+            expect(MODEL_MAP[n].provider).toBeUndefined();
     });
 
-    it('promax -ref:http 参考图先转存 R2(海外上游拉不到国内 CDN)再翻成 content image_url', async () => {
+    it('promax -ref:http 参考图先转存 R2(海外上游拉不到国内 CDN)再以 images[] 发 artsmcp', async () => {
         await submitVideo(
             makeReq({
                 model: 'seedance2.0-promax-720p-ref',
@@ -1249,51 +1268,17 @@ describe('海外版 proMax 全档 → service-inference.ai dreamina(独立 key /
                 images: ['https://cdn.popreels.cn/ref.jpg'],
             }),
         );
-        const sent = svcSent() as { content: Array<Record<string, unknown>> };
-        expect(sent.content).toEqual([
-            { type: 'text', text: '@Image1 动起来' },
+        const intl = mockFetch.mock.calls.find((c) => String(c[0]) === `${INTL}/v1/video/generations`);
+        expect(intl).toBeDefined();
+        const sent = JSON.parse(String((intl![1] as RequestInit).body)) as {
+            images: Array<{ url: string; role: string }>;
+        };
+        expect(sent.images).toEqual([
             {
-                type: 'image_url',
-                image_url: { url: expect.stringMatching(/^https:\/\/images\.silkroadai\.io\/seedance-input\//) },
+                url: expect.stringMatching(/^https:\/\/images\.silkroadai\.io\/seedance-input\//),
                 role: 'reference_image',
             },
         ]);
-    });
-
-    it('客户 promax 行存了 sk-inf- 真 key → 优先用客户的 key(任务建在他账号下)', async () => {
-        await submitVideo(makeReq({ model: 'seedance2.0-promax-720p', prompt: 'x' }, 'Bearer sk-inf-v1-customer-own'));
-        expect((svcSubmitCall()![1] as RequestInit).headers).toMatchObject({
-            Authorization: 'Bearer sk-inf-v1-customer-own',
-        });
-    });
-
-    it('SEEDANCE_SVCINF_PROMAX_API_VERSION=v1 → 打 /v1/video/generate,映射记 v1;cn 480p 线版本 env 互不影响', async () => {
-        vi.stubEnv('SEEDANCE_SVCINF_PROMAX_API_VERSION', 'v1');
-        const r = await submitVideo(makeReq({ model: 'seedance2.0-promax-720p', prompt: 'x' }));
-        expect(r.status).toBe(200);
-        const j = (await r.json()) as { id: string };
-        expect(svcSubmitCall('v1')).toBeDefined();
-        expect(svcSubmitCall('v2')).toBeUndefined();
-        expect(rememberVolcId).toHaveBeenCalledWith(j.id, 'mvt-promax1', 'task', undefined, 'v1');
-
-        mockFetch.mockClear();
-        rememberVolcId.mockClear();
-        // cn 2.5 480p 线仍按自己的 env(缺省 v2)
-        await submitVideo(makeReq({ model: 'seedance2.5-480p', prompt: 'x' }));
-        expect(svcSubmitCall('v2')).toBeDefined();
-        expect((svcSubmitCall('v2')![1] as RequestInit).headers).toMatchObject({ Authorization: `Bearer ${CN_KEY}` });
-    });
-
-    it('未配 SEEDANCE_SVCINF_PROMAX_KEY → 回落 artsmcp intl(缺 env 不断档);cn 线 key 配了也不借用', async () => {
-        vi.stubEnv('SEEDANCE_SVCINF_PROMAX_KEY', '');
-        const r = await submitVideo(makeReq({ model: 'seedance2.0-promax-720p', prompt: 'x' }));
-        expect(r.status).toBe(200);
-        expect(((await r.json()) as { id: string }).id).toBe('cgt-intl-1');
-        expect(mockFetch.mock.calls.some((c) => String(c[0]).startsWith(SVC))).toBe(false);
-        const intl = mockFetch.mock.calls.find((c) => String(c[0]) === `${INTL}/v1/video/generations`);
-        expect(intl).toBeDefined();
-        expect(JSON.parse(String((intl![1] as RequestInit).body)).model).toBe('artsdance2-0-pro-intl-260701');
-        expect(rememberVolcId).not.toHaveBeenCalled();
     });
 
     it('global 区(2026-10-17 同线,独立 key):pro/fast/mini/2.5 各档 → svcinf dreamina,用 GLOBAL key 不用 PROMAX key', async () => {
@@ -1354,7 +1339,7 @@ describe('海外版 proMax 全档 → service-inference.ai dreamina(独立 key /
         });
     });
 
-    it('轮询(region=promax):映射 mvt- + 版本 v2 → GET /v2/video/tasks/{mvt},用 proMax 平台 key,归一 completed', async () => {
+    it('轮询(region=promax,存量 svcinf 任务):映射 mvt- + 版本 v2 → GET /v2/video/tasks/{mvt},用 PROMAX key,归一 completed', async () => {
         mapTaskOnce('mvt-promax1', 'v2');
         const { pollVideoWithKey } = await import('../cn-adapter');
         const res = await pollVideoWithKey('cgt-20261015120000-aaaaa', 'Bearer sk-cb097-artsmcp-row', 'promax');
@@ -1413,7 +1398,7 @@ describe('海外版 proMax 全档 → service-inference.ai dreamina(独立 key /
         expect(mockFetch).toHaveBeenCalledTimes(1);
     });
 
-    it('轮询:promax 映射到 mvt- 但 proMax key 未配 → 503,不借 cn 线 key、不打上游', async () => {
+    it('轮询:promax 存量 svcinf 任务但 PROMAX key 未配 → 503,不借 cn 线 key、不打上游', async () => {
         vi.stubEnv('SEEDANCE_SVCINF_PROMAX_KEY', '');
         mapTaskOnce('mvt-promax1', 'v2');
         const { pollVideoWithKey } = await import('../cn-adapter');
@@ -1422,7 +1407,7 @@ describe('海外版 proMax 全档 → service-inference.ai dreamina(独立 key /
         expect(mockFetch).not.toHaveBeenCalled();
     });
 
-    it('取消:proMax svcinf 任务 → 501(上游无取消端点),不打任何上游', async () => {
+    it('取消:proMax 存量 svcinf 任务 → 501(上游无取消端点),不打任何上游', async () => {
         toUpstreamId.mockResolvedValueOnce('mvt-promax1');
         const r = await cancelVideoWithKey('cgt-x', 'Bearer sk-cb097-artsmcp-row', 'promax');
         expect(r.status).toBe(501);
