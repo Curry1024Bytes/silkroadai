@@ -127,6 +127,12 @@ describe('gemini-adapter — 纯函数', () => {
         expect(officialOutputTokens('gemini-3-pro-image', '2K')).toBe(1120);
         expect(officialOutputTokens('gemini-3-pro-image', '4K')).toBe(2000);
         expect(officialOutputTokens('gemini-3-pro-image', '0.5K')).toBe(1120); // pro 无 0.5K → 取 1K 不少收
+        // lite 官方仅 1K;2.5 单档 1290。裸名与 -preview 同族。
+        expect(officialFamily('gemini-3.1-flash-lite-image')).toBe('gemini-3.1-flash-lite-image');
+        expect(officialFamily('gemini-3.1-flash-image-preview')).toBe('gemini-3.1-flash-image'); // 不被 lite 抢匹配
+        expect(officialOutputTokens('gemini-3.1-flash-lite-image', '1K')).toBe(1120);
+        expect(officialOutputTokens('gemini-3.1-flash-lite-image', '2K')).toBe(1120);
+        expect(officialOutputTokens('gemini-2.5-flash-image', '1K')).toBe(1290);
     });
 
     it('countInputImages:inlineData / fileData 都算', () => {

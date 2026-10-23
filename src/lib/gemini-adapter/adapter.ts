@@ -22,6 +22,7 @@
  *   gemini-3.1-flash-image:0.5K 747 / 1K 1120 / 2K 1680 / 4K 2520
  *   gemini-3-pro-image:    1K 1120 / 2K 1120 / 4K 2000
  *   gemini-2.5-flash-image:1290 单档
+ *   gemini-3.1-flash-lite-image:1120 单档(官方仅 1K)
  *   输入图:560 tok/张(pro 定价页脚注;与尺寸无关)
  */
 import { NextRequest, NextResponse } from 'next/server';
@@ -38,6 +39,8 @@ const OFFICIAL_OUTPUT_TOKENS: Record<string, Partial<Record<ImageTier, number>>>
     'gemini-3.1-flash-image': { '0.5K': 747, '1K': 1120, '2K': 1680, '4K': 2520 },
     'gemini-3-pro-image': { '1K': 1120, '2K': 1120, '4K': 2000 },
     'gemini-2.5-flash-image': { '0.5K': 1290, '1K': 1290, '2K': 1290, '4K': 1290 },
+    // Nano Banana 2 Lite:官方只支持 1K(1120 tok,$30/1M → $0.0336/张);上游若回其他尺寸一律按 1K 计。
+    'gemini-3.1-flash-lite-image': { '0.5K': 1120, '1K': 1120, '2K': 1120, '4K': 1120 },
 };
 export const OFFICIAL_INPUT_IMAGE_TOKENS = 560;
 
