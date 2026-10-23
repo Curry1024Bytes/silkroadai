@@ -141,8 +141,8 @@ const AGENTS: AgentSection[] = [
     },
     {
         id: 'seedream-image',
-        label: 'Seedream 5.0 Pro 生图 · 图层拆分',
-        blurb: '字节 Seedream 5.0 Pro — 文生 / 图生(≤10 参考图)/ 图层拆分(底图 + 透明 PNG 图层带坐标)/ 透明背景;OpenAI Images 兼容,按张计费 ¥0.17 起,需「seedream 5 pro」档 key。',
+        label: 'Seedream 5.0 Pro / Flash 生图 · 图层拆分',
+        blurb: '字节 Seedream 5.0 Pro / Flash — 文生 / 图生(≤10 参考图)/ 图层拆分(底图 + 透明 PNG 图层带坐标)/ 透明背景;OpenAI Images 兼容,按张计费,Flash ¥0.0673/张、Pro ¥0.17 起,需「seedream 5 pro」档 key。',
     },
 ];
 
@@ -4767,7 +4767,7 @@ curl "${OPENAI_BASE}/files/file-yyyy/content" \\
                     <div className="flex items-baseline justify-between flex-wrap gap-2 mb-4 pb-3 border-b-2 border-brand-accent">
                         <h2 className="m-0 text-2xl font-semibold text-navy">
                             <span className="text-brand-accent font-bold mr-3 tabular-nums">23</span>
-                            Seedream 5.0 Pro 生图 · 图层拆分
+                            Seedream 5.0 Pro / Flash 生图 · 图层拆分
                         </h2>
                     </div>
                     <p className="m-0 mb-3 text-sm text-ink leading-relaxed">
@@ -4781,18 +4781,25 @@ curl "${OPENAI_BASE}/files/file-yyyy/content" \\
                         ,model ={' '}
                         <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
                             seedream-5-0-pro
-                        </code>
-                        。现有 OpenAI SDK 改一行 base_url 即可;图生图既可走 JSON 的{' '}
-                        <code className="font-mono text-xs">image</code> 字段,也可用 SDK 的{' '}
+                        </code>{' '}
+                        (旗舰,画质最佳)或{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1.5 py-0.5 rounded border border-brand-border text-navy">
+                            seedream-5-0-flash
+                        </code>{' '}
+                        (快速版,一口价更便宜),两者参数完全一致。现有 OpenAI SDK 改一行 base_url 即可;图生图既可走 JSON
+                        的 <code className="font-mono text-xs">image</code> 字段,也可用 SDK 的{' '}
                         <code className="font-mono text-xs">images.edit</code>(multipart)上传文件。
                     </p>
                     <div className="rounded-lg border border-brand-border bg-paper-muted px-4 py-3 mb-4 text-sm text-ink leading-relaxed">
                         ⚠️ 需先在「API 密钥」页创建一把 <strong className="text-navy">「seedream 5 pro」档</strong> 的
                         key(创建密钥时在档次里选它)。该 key 专用于{' '}
-                        <code className="font-mono text-xs">seedream-5-0-pro</code>;调别的模型请用对应档 key。
+                        <code className="font-mono text-xs">seedream-5-0-pro</code> 与{' '}
+                        <code className="font-mono text-xs">seedream-5-0-flash</code>;调别的模型请用对应档 key。
                     </div>
 
-                    <p className="m-0 mb-2 text-sm font-medium text-navy">价格(按张,按返回图实际像素分档)</p>
+                    <p className="m-0 mb-2 text-sm font-medium text-navy">
+                        Pro 价格(seedream-5-0-pro,按张,按返回图实际像素分档)
+                    </p>
                     <div className="rounded-lg overflow-hidden border border-brand-border bg-surface mb-2">
                         <table className="w-full border-collapse text-sm">
                             <thead>
@@ -4801,10 +4808,10 @@ curl "${OPENAI_BASE}/files/file-yyyy/content" \\
                                         项目
                                     </th>
                                     <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
-                                        ≤ 236 万像素(1K / 1.5K)
+                                        ≤ 261 万像素(1K / 1.5K)
                                     </th>
                                     <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
-                                        &gt; 236 万像素(2K)
+                                        &gt; 261 万像素(2K)
                                     </th>
                                 </tr>
                             </thead>
@@ -4830,6 +4837,11 @@ curl "${OPENAI_BASE}/files/file-yyyy/content" \\
                             </tbody>
                         </table>
                     </div>
+                    <p className="m-0 mb-2 text-sm text-ink leading-relaxed">
+                        <strong className="text-navy">Flash 价格</strong>(seedream-5-0-flash):每张{' '}
+                        <strong className="text-navy">¥0.0673</strong> 一口价 —— 不分尺寸(1K–2K
+                        同价),图层拆分的底图与每个图层各算 1 张,输入参考图不收费。
+                    </p>
                     <p className="m-0 mb-4 text-xs text-muted-ink leading-relaxed">
                         <code className="font-mono">n</code> 张 = n 次扣费;生成失败不扣费。 响应{' '}
                         <code className="font-mono">usage.total_tokens</code> 即本次扣费的计费单位(500,000 = ¥1),
@@ -4852,7 +4864,7 @@ curl "${OPENAI_BASE}/files/file-yyyy/content" \\
                             </thead>
                             <tbody>
                                 {[
-                                    ['model', '固定 seedream-5-0-pro'],
+                                    ['model', 'seedream-5-0-pro(旗舰)或 seedream-5-0-flash(快速版)'],
                                     ['prompt', '画面 / 编辑意图。图层拆分时可空(自动拆全部要素)'],
                                     [
                                         'image',

@@ -20,6 +20,9 @@
  *      到不了适配器),auto_ban=0(单渠道,别让 new-api 因上游抖动把整档禁了)。
  *
  * 用法: SEEDREAM_INF_KEY=sk-inf-v1-... node scripts/setup-seedream-5-pro.mjs [--apply]
+ *   Flash(2026-10-23):SEEDREAM_SETUP_MODEL=seedream-5-0-flash SEEDREAM_INF_KEY=... node scripts/setup-seedream-5-pro.mjs [--apply]
+ *   → 同组「seedream 5 pro」另建一条 flash 渠道(名字带 flash,按名幂等),ModelRatio/CompletionRatio[seedream-5-0-flash]=1。
+ *   Flash 用的是另一把上游 key(ch214 那把没开 flash 权限),所以单独成渠道,不改 ch214。
  *   需 NEWAPI_BASE_URL 指向 new-api(本地隧道 ssh -fN -L 3000:localhost:3000 vps2;或在 server2 的
  *   portal 容器里跑:docker exec -e SEEDREAM_INF_KEY=... silkroadai-portal-api-1 node scripts/setup-seedream-5-pro.mjs --apply)。
  *
@@ -50,9 +53,16 @@ const APPLY = process.argv.includes('--apply');
 const KEY = process.env.SEEDREAM_INF_KEY || '';
 const GROUP = 'seedream 5 pro';
 const LABEL = 'seedream 5 pro';
-const MODEL = 'seedream-5-0-pro';
+const MODEL = process.env.SEEDREAM_SETUP_MODEL || 'seedream-5-0-pro';
+const IS_FLASH = MODEL === 'seedream-5-0-flash';
+if (MODEL !== 'seedream-5-0-pro' && !IS_FLASH) {
+    console.error(`SEEDREAM_SETUP_MODEL 只能是 seedream-5-0-pro / seedream-5-0-flash,收到 ${MODEL}`);
+    process.exit(1);
+}
 const ADAPTER_BASE = process.env.SEEDREAM_ADAPTER_BASE || 'http://172.20.0.1:3010/seedream-adapter';
-const CH_NAME = 'seedream 5 pro (service-inference · seedream-adapter)';
+const CH_NAME = IS_FLASH
+    ? 'seedream 5 flash (service-inference · seedream-adapter)'
+    : 'seedream 5 pro (service-inference · seedream-adapter)';
 
 if (!BASE || !TOKEN) {
     console.error('NEWAPI_BASE_URL / NEWAPI_ADMIN_TOKEN 未设');
@@ -96,7 +106,7 @@ async function putOption(key, value) {
     console.log('    ->', r.status, r.j?.success === true ? 'ok' : JSON.stringify(r.j).slice(0, 160));
 }
 
-console.log(`=== setup-seedream-5-pro [${APPLY ? 'APPLY' : 'DRY-RUN'}] ===`);
+console.log(`=== setup-seedream-5-pro (${MODEL}) [${APPLY ? 'APPLY' : 'DRY-RUN'}] ===`);
 console.log(`adapter base_url: ${ADAPTER_BASE}\ngroup: ${GROUP}  model: ${MODEL}\n`);
 
 // 1: GroupRatio(已是 1 则不动)
@@ -182,7 +192,7 @@ if (!existing) {
             setting,
             param_override: '',
             header_override: '',
-            remark: 'Seedream 5.0 Pro via portal seedream-adapter (service-inference.ai); pass_through_body_enabled 必须为 true',
+            remark: `Seedream 5.0 ${IS_FLASH ? 'Flash' : 'Pro'} via portal seedream-adapter (service-inference.ai); pass_through_body_enabled 必须为 true`,
             channel_info: {
                 is_multi_key: false,
                 multi_key_size: 0,
@@ -251,5 +261,5 @@ if (APPLY) {
         ch &&
         String(ch.group) === GROUP &&
         chSetting.pass_through_body_enabled === true;
-    console.log(ok ? '\n✅ seedream 5 pro configured' : '\n❌ mismatch — check above');
+    console.log(ok ? `\n✅ ${MODEL} configured` : '\n❌ mismatch — check above');
 }

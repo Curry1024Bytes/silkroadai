@@ -1,5 +1,7 @@
 /**
- * Seedream 5.0 Pro 图片适配器(service-inference.ai · `dola-seedream-5-0-pro-260628-ep`,2026-09-06)。
+ * Seedream 5.0 图片适配器(service-inference.ai,2026-09-06):
+ *   Pro   `seedream-5-0-pro`   → 上游 `dola-seedream-5-0-pro-260628-ep`
+ *   Flash `seedream-5-0-flash` → 上游 `dola-seedream-5-0-flash-260915`(2026-10-23 接入)
  *
  * 走 image-adapter / minimax 同款「portal 适配器 + new-api 渠道」模式:new-api 渠道(type=1 OpenAI,
  * base_url 指向本适配器,渠道 key = 上游 key,portal 不存 key)把客户的 OpenAI Images 形 JSON 请求
@@ -8,7 +10,7 @@
  * 开了之后原始 JSON 逐字节到达,响应里的 z_index / bounding_box 等扩展字段也原样穿回客户)。
  *
  * 本适配器只做四件事:
- *  1. 对客模型名 `seedream-5-0-pro` → 上游 `dola-seedream-5-0-pro-260628-ep`;归一输入图字段
+ *  1. 对客模型名 → 上游模型名(见上);归一输入图字段
  *     (image / images / image_url / image_urls,URL 或 base64 data URL 都收,上游两种都吃,实测);
  *     恒向上游要 `b64_json` —— 上游 url 是火山 TOS 24h 签名链接、且暴露上游域名,绝不外泄。
  *  2. `n>1` 由本层并发扇出(上游忽略 n:2026-09-06 直连 n=2 只回 1 张);图层拆分固定单次。
@@ -21,29 +23,44 @@
  * 做;这层只返 b64 + usage。
  *
  * === 售价(2026-09-06 operator 拍板:官方 USD 牌价 × 0.55 折 × 汇率 6.8;500,000 quota = ¥1)===
+ * 【Pro】
  *   输入参考图:第 1 张免费,第 2 张起 $0.003/张                    → ¥0.01122/张 = 5,610 quota
- *   普通生图  ≤2.36MP(1.5K 及以下)$0.045 / >2.36MP(2K)$0.09     → ¥0.1683 / ¥0.3366 每张
- *   图层拆分  ≤2.36MP $0.0225 / >2.36MP $0.045                     → ¥0.0842 / ¥0.1683 每张
+ *   普通生图  ≤2.61MP $0.045 / >2.61MP $0.09                        → ¥0.1683 / ¥0.3366 每张
+ *   图层拆分  ≤2.61MP $0.0225 / >2.61MP $0.045                      → ¥0.0842 / ¥0.1683 每张
  *            (底图 + 每个图层各算一张,与上游 usage.generated_images 口径一致)
- *   像素分档阈值取上游计费元数据 `pixel_tier: le_236w`(2,360,000;1.5K = 1536² = 2,359,296 恰在线内)。
- *   官方页面写的 2.61M 与上游实际计费阈值不一致,按上游(我们被扣的那条线)走,不留亏损区。
- *   上游给我们的成本 = 官方 × 0.45(/v1/models pricing 元数据),毛利 ≈ 售价的 18%。
+ *   像素分档阈值取上游计费元数据 `pixel_tier`:2026-09-06 上线时是 le_236w,2026-10-23 核查已改为
+ *   le_261w(= 官方页面的 2.61M)→ 阈值跟进 2,610,000(此前 2.36–2.61MP 的图被多收一档)。
+ * 【Flash】一口价 $0.018/张(不分尺寸;图层拆分底图 + 每个图层各算一张;参考图不收费)
+ *                                                                  → ¥0.06732/张 = 33,660 quota
+ *   (2026-10-23 /v1/models:flash 只有 image_count 一个计量单位 $0.0081 = 官方 × 0.45,无 pixel_tier、
+ *   无 image_input_count。)
+ * 上游给我们的成本 = 官方 × 0.45(/v1/models pricing 元数据),毛利 ≈ 售价的 18%。
  *
- * === 上游契约(2026-09-06 直连实测)===
+ * === 上游契约(Pro 2026-09-06 / Flash 2026-10-23 直连实测,两者一致)===
  *   POST /v1/images/generations,Bearer 上游 key;`size` 收 1K / 1.5K / 2K / WxH(面积 ≤ 4,624,220 px,
  *   3K/4K 会被拒);`image` 收 string 或 string[](URL / data URL);`layer_decomposition:true` 返底图
  *   (z_index 0)+ 图层(z_index≥1,带 bounding_box / name / description,透明 PNG),prompt 可空;
  *   `background:"transparent"` 要求恰好 1 张【PNG】输入图;usage 带 input_images / generated_images。
+ *   Flash 同样:1K / 1.5K / 2K(缺省 ≈2K),3K/4K 拒;多参考图 / 图层拆分 / png 输出均可;忽略 n。
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { imageDimensions, parseSize } from '@/lib/image-adapter/adapter';
 
 const SI_BASE = process.env.SEEDREAM_INF_BASE_URL || 'https://model.service-inference.ai';
 
-/** 对客模型名(new-api 渠道 models 只挂这个)。 */
+/** 对客模型名(new-api 渠道 models 只挂这些)。 */
 export const SEEDREAM_MODEL = 'seedream-5-0-pro';
+export const SEEDREAM_FLASH_MODEL = 'seedream-5-0-flash';
 /** 上游模型名(service-inference.ai 上架名)。 */
 export const SEEDREAM_UPSTREAM_MODEL = 'dola-seedream-5-0-pro-260628-ep';
+export const SEEDREAM_FLASH_UPSTREAM_MODEL = 'dola-seedream-5-0-flash-260915';
+
+export type SeedreamModel = typeof SEEDREAM_MODEL | typeof SEEDREAM_FLASH_MODEL;
+
+const UPSTREAM_BY_MODEL: Record<SeedreamModel, string> = {
+    [SEEDREAM_MODEL]: SEEDREAM_UPSTREAM_MODEL,
+    [SEEDREAM_FLASH_MODEL]: SEEDREAM_FLASH_UPSTREAM_MODEL,
+};
 
 /** 上游单次生成实测 20–100s(图生图 1.5K 曾 97s);与链路其余各层(Caddy 3010 / undici)对齐 600s。 */
 const UPSTREAM_TIMEOUT_MS = 600_000;
@@ -52,34 +69,40 @@ const MAX_FANOUT = 10;
 /** Pro 参考图上限(上游文档:最多 10 张)。 */
 export const MAX_INPUT_IMAGES = 10;
 
+/** 对客模型名 → 规范名(大小写宽容);非本适配器负责的模型 → null。 */
+export function resolveSeedreamModel(model: string): SeedreamModel | null {
+    const m = String(model || '')
+        .trim()
+        .toLowerCase();
+    return m === SEEDREAM_MODEL || m === SEEDREAM_FLASH_MODEL ? m : null;
+}
+
 /** 是否本适配器负责的模型(大小写宽容)。 */
 export function isSeedreamModel(model: string): boolean {
-    return (
-        String(model || '')
-            .trim()
-            .toLowerCase() === SEEDREAM_MODEL
-    );
+    return resolveSeedreamModel(model) !== null;
 }
 
 // ============ 定价(改这里即可)============
 
 export const SEEDREAM_PRICING = {
-    /** 官方 USD 牌价(service-inference.ai 定价页,2026-09-06)。 */
+    /** Pro 官方 USD 牌价(service-inference.ai 定价页,2026-09-06)。 */
     officialUsd: {
         single: { low: 0.045, high: 0.09 },
         layer: { low: 0.0225, high: 0.045 },
         inputImage: 0.003,
     },
+    /** Flash 官方 USD 牌价:一口价每张(不分尺寸 / 不分普通或图层;参考图免费)。2026-10-23。 */
+    flashOfficialUsd: 0.018,
     /** 我们对客 = 官方 × 0.55(5.5 折)。 */
     sellDiscount: 0.55,
     /** 换算汇率(operator 指定)。 */
     usdToCny: 6.8,
     /** 2026-07-19 计价单位迁移后:500,000 quota = ¥1。 */
     quotaPerCny: 500_000,
-    /** 输入参考图免费张数(官方:第 1 张免费)。 */
+    /** Pro 输入参考图免费张数(官方:第 1 张免费)。 */
     freeInputImages: 1,
-    /** 像素分档阈值(含):≤ 走 low 档,> 走 high 档。 */
-    pixelTierThreshold: 2_360_000,
+    /** Pro 像素分档阈值(含):≤ 走 low 档,> 走 high 档。上游 pixel_tier le_261w。 */
+    pixelTierThreshold: 2_610_000,
 } as const;
 
 export type PixelTier = 'low' | 'high';
@@ -94,14 +117,16 @@ export function pixelTier(w: number, h: number): PixelTier {
     return w * h <= SEEDREAM_PRICING.pixelTierThreshold ? 'low' : 'high';
 }
 
-/** 一张输出图的售价(quota):普通生图 / 图层拆分两张表,按该图自身像素分档。 */
-export function outputImageQuota(w: number, h: number, layer: boolean): number {
+/** 一张输出图的售价(quota)。Pro:普通生图 / 图层拆分两张表,按该图自身像素分档;Flash:一口价。 */
+export function outputImageQuota(w: number, h: number, layer: boolean, model: SeedreamModel = SEEDREAM_MODEL): number {
+    if (model === SEEDREAM_FLASH_MODEL) return sellQuota(SEEDREAM_PRICING.flashOfficialUsd);
     const table = layer ? SEEDREAM_PRICING.officialUsd.layer : SEEDREAM_PRICING.officialUsd.single;
     return sellQuota(table[pixelTier(w, h)]);
 }
 
-/** 输入参考图售价(quota):第 1 张免费,其余按张。 */
-export function inputImagesQuota(count: number): number {
+/** 输入参考图售价(quota)。Pro:第 1 张免费,其余按张;Flash:不收费。 */
+export function inputImagesQuota(count: number, model: SeedreamModel = SEEDREAM_MODEL): number {
+    if (model === SEEDREAM_FLASH_MODEL) return 0;
     const paid = Math.max(0, Math.floor(count) - SEEDREAM_PRICING.freeInputImages);
     return paid * sellQuota(SEEDREAM_PRICING.officialUsd.inputImage);
 }
@@ -111,6 +136,8 @@ export interface SeedreamUsageInput {
     outputs: Array<{ w: number; h: number }>;
     layer: boolean;
     inputImages: number;
+    /** 缺省 Pro。 */
+    model?: SeedreamModel;
 }
 
 /** 合成 usage:input_tokens / output_tokens 直接就是 quota(ModelRatio=1 · CompletionRatio=1 下
@@ -118,8 +145,9 @@ export interface SeedreamUsageInput {
  *  (与上游口径一致)。只发 OpenAI images 官方字段名,不带 prompt_tokens/completion_tokens 别名
  *  (中继型客户会把两套相加导致账面翻倍,见 image-adapter synthUsage 注释)。 */
 export function synthSeedreamUsage(inp: SeedreamUsageInput): Record<string, number> {
-    const output = inp.outputs.reduce((sum, o) => sum + outputImageQuota(o.w, o.h, inp.layer), 0);
-    const input = inputImagesQuota(inp.inputImages);
+    const model = inp.model ?? SEEDREAM_MODEL;
+    const output = inp.outputs.reduce((sum, o) => sum + outputImageQuota(o.w, o.h, inp.layer, model), 0);
+    const input = inputImagesQuota(inp.inputImages, model);
     return {
         input_tokens: input,
         output_tokens: output,
@@ -149,9 +177,9 @@ function err(status: number, code: string, message: string, param: string | null
 const BRAND_RE =
     /service-?inference(?:\.ai)?|\bdola\b|\bvolc(?:engine|es)?\b|\bbytedance\b|\bdoubao\b|\bERR_[A-Z]+_\d+\b/gi;
 export function sanitizeUpstreamMessage(msg: string): string {
-    return msg
-        .split(SEEDREAM_UPSTREAM_MODEL)
-        .join(SEEDREAM_MODEL)
+    let out = msg;
+    for (const [ours, upstream] of Object.entries(UPSTREAM_BY_MODEL)) out = out.split(upstream).join(ours);
+    return out
         .replace(BRAND_RE, 'the provider')
         .replace(/\s{2,}/g, ' ')
         .trim();
@@ -186,6 +214,8 @@ function isAuthorized(auth: string): boolean {
 // ============ 入参 ============
 
 interface ParsedRequest {
+    /** 规范对客模型名(body.model 认不出时按 Pro;主流程入口已先校验)。 */
+    model: SeedreamModel;
     prompt: string;
     /** 归一后的 size(1K / 1.5K / 2K / WxH);'' = 不传,上游默认 2K。 */
     size: string;
@@ -259,6 +289,7 @@ export function parseIncoming(body: Record<string, unknown>): ParsedRequest {
     // 水印缺省关(火山官方缺省 true 会在右下角压「AI生成」字样;付费 API 客户默认不要,显式传 true 才加)
     if (!('watermark' in extras)) extras.watermark = false;
     return {
+        model: resolveSeedreamModel(String(body.model ?? '')) ?? SEEDREAM_MODEL,
         prompt: typeof body.prompt === 'string' ? body.prompt.trim() : '',
         size: normalizeSize(body.size ?? body.resolution),
         n,
@@ -286,7 +317,7 @@ type CallResult =
 
 function buildUpstreamBody(parsed: ParsedRequest): Record<string, unknown> {
     const body: Record<string, unknown> = {
-        model: SEEDREAM_UPSTREAM_MODEL,
+        model: UPSTREAM_BY_MODEL[parsed.model],
         prompt: parsed.prompt,
         response_format: 'b64_json',
         ...parsed.extras,
@@ -419,8 +450,8 @@ export async function handleSeedreamImage(req: NextRequest): Promise<NextRespons
 
     const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
     if (!body || typeof body !== 'object') return err(400, 'invalid_json', 'request body must be JSON');
-    const model = String(body.model || '');
-    if (!isSeedreamModel(model)) return err(400, 'model_not_found', `model '${model}' is not served here`, 'model');
+    const model = resolveSeedreamModel(String(body.model || ''));
+    if (!model) return err(400, 'model_not_found', `model '${String(body.model || '')}' is not served here`, 'model');
 
     const parsed = parseIncoming(body);
     if (parsed.images.length > MAX_INPUT_IMAGES)
@@ -453,6 +484,7 @@ export async function handleSeedreamImage(req: NextRequest): Promise<NextRespons
         outputs: items.map((it) => ({ w: it.w, h: it.h })),
         layer: parsed.layer,
         inputImages,
+        model,
     });
     const data = items.map((it) => {
         const rest: Record<string, unknown> = { ...it };
@@ -461,6 +493,7 @@ export async function handleSeedreamImage(req: NextRequest): Promise<NextRespons
         return rest;
     });
     console.log('[seedream-adapter] ok', {
+        model,
         size: parsed.size || 'default',
         layer: parsed.layer,
         nRequested: parsed.n,
@@ -469,5 +502,5 @@ export async function handleSeedreamImage(req: NextRequest): Promise<NextRespons
         quota: usage.total_tokens,
         ms: Date.now() - started,
     });
-    return NextResponse.json({ created: Math.floor(Date.now() / 1000), model: SEEDREAM_MODEL, data, usage });
+    return NextResponse.json({ created: Math.floor(Date.now() / 1000), model, data, usage });
 }
