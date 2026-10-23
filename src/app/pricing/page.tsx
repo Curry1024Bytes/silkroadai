@@ -25,8 +25,14 @@ import { FormError } from '@/components/ui/FormError';
 import { prisma } from '@/lib/db';
 import { PLATFORM_TENANT_ID } from '@/lib/admin/tenant-scope';
 import { categorizeByVendor, HIDDEN_MODELS, VENDOR_META, VENDOR_ORDER, type VendorName } from '@/lib/models/categorize';
+import { headers } from 'next/headers';
+import { NextRequest } from 'next/server';
+import { getCurrentUser } from '@/lib/auth/session';
+import { getEffectiveGroupRatios, ratioScale, type EffectiveGroupRatios } from '@/lib/newapi/effective-group-ratios';
 
-export const revalidate = 60;
+// 2026-10-23:登录客户按专属倍率(GroupGroupRatio)个性化显示 → 需读 cookie,页面改为按需渲染;
+// 价格表本体 60s 进程内缓存,DB 负载与原 ISR 相当。
+export const dynamic = 'force-dynamic';
 export const metadata = {
     title: '模型价格 — Silk Road AI',
     description:
@@ -39,6 +45,8 @@ interface PriceCell {
     inputCny: number | null;
     outputCny: number | null;
     perImageCny: number | null;
+    /** 2026-10-23:该行已按登录客户的专属倍率缩放。 */
+    special?: boolean;
 }
 
 interface ModelBlock {
@@ -57,7 +65,68 @@ function fmtCny(n: number): string {
     return n.toFixed(4).replace(/\.?0+$/, '');
 }
 
-async function loadPricingSheet(): Promise<{ vendors: VendorBlock[]; modelCount: number }> {
+interface Sheet {
+    vendors: VendorBlock[];
+    modelCount: number;
+    /** tierKey → newapi_group(专属倍率缩放用)。 */
+    tierGroup: Record<string, string>;
+}
+
+const SHEET_TTL_MS = 60_000;
+let sheetCache: { at: number; sheet: Sheet } | null = null;
+
+async function loadPricingSheetCached(): Promise<Sheet> {
+    if (sheetCache && Date.now() - sheetCache.at < SHEET_TTL_MS) return sheetCache.sheet;
+    const sheet = await loadPricingSheet();
+    sheetCache = { at: Date.now(), sheet };
+    return sheet;
+}
+
+/** 测试用。 */
+export function _resetPricingSheetCache(): void {
+    sheetCache = null;
+}
+
+async function getSessionUser() {
+    try {
+        const h = await headers();
+        const cookie = h.get('cookie') || '';
+        if (!cookie) return null;
+        return await getCurrentUser(new NextRequest('http://internal/pricing', { headers: { cookie } }));
+    } catch {
+        return null; // 无请求上下文(测试)/ session 解析失败 → 匿名
+    }
+}
+
+/** 按客户专属倍率缩放价格表;无专属档 → 原样返回。 */
+function personalize(sheet: Sheet, eff: EffectiveGroupRatios): { sheet: Sheet; specialTiers: string[] } {
+    const specialTiers = Object.entries(sheet.tierGroup)
+        .filter(([, g]) => eff.special.has(g))
+        .map(([tierKey]) => tierKey);
+    if (specialTiers.length === 0) return { sheet, specialTiers };
+    const scaleOf = (tierKey: string) => ratioScale(eff, sheet.tierGroup[tierKey]);
+    const mul = (v: number | null, k: number) => (v == null ? null : Math.round(v * k * 10000) / 10000);
+    const vendors = sheet.vendors.map((vb) => ({
+        ...vb,
+        models: vb.models.map((m) => ({
+            ...m,
+            rows: m.rows.map((r) => {
+                const k = scaleOf(r.tierKey);
+                if (k === 1) return r;
+                return {
+                    ...r,
+                    inputCny: mul(r.inputCny, k),
+                    outputCny: mul(r.outputCny, k),
+                    perImageCny: mul(r.perImageCny, k),
+                    special: true,
+                };
+            }),
+        })),
+    }));
+    return { sheet: { ...sheet, vendors }, specialTiers };
+}
+
+async function loadPricingSheet(): Promise<Sheet> {
     const [models, groups] = await Promise.all([
         prisma.catalogModel.findMany({
             // 锁平台主体 —— slug 仅在 tenant 内唯一,与 machine-catalog / billing meter 同标准。
@@ -79,9 +148,11 @@ async function loadPricingSheet(): Promise<{ vendors: VendorBlock[]; modelCount:
 
     const tierLabel = new Map<string, string>();
     const tierRank = new Map<string, number>();
+    const tierGroup: Record<string, string> = {};
     groups.forEach((g, i) => {
         tierLabel.set(g.key, g.display_name);
         tierRank.set(g.key, i);
+        tierGroup[g.key] = g.newapi_group;
     });
 
     const byVendor = new Map<VendorName, ModelBlock[]>();
@@ -114,14 +185,22 @@ async function loadPricingSheet(): Promise<{ vendors: VendorBlock[]; modelCount:
         vendor: v,
         models: byVendor.get(v)!,
     }));
-    return { vendors, modelCount };
+    return { vendors, modelCount, tierGroup };
 }
 
 export default async function PricingPage() {
-    let sheet: Awaited<ReturnType<typeof loadPricingSheet>> | null = null;
+    let sheet: Sheet | null = null;
     let fetchErr = false;
+    let specialTiers: string[] = [];
     try {
-        sheet = await loadPricingSheet();
+        const [base, user] = await Promise.all([loadPricingSheetCached(), getSessionUser()]);
+        sheet = base;
+        if (user) {
+            const eff = await getEffectiveGroupRatios(user);
+            const p = personalize(base, eff);
+            sheet = p.sheet;
+            specialTiers = p.specialTiers;
+        }
     } catch (err) {
         // 与 /models 同哲学:DB 抖动不炸公开页,渲染 chrome + 错误横幅。
         fetchErr = true;
@@ -156,6 +235,24 @@ export default async function PricingPage() {
                     </p>
                 </header>
 
+                {specialTiers.length > 0 && sheet && (
+                    <div
+                        role="status"
+                        className="mb-6 rounded-lg border border-status-success-border bg-status-success-bg px-4 py-2.5 text-sm text-status-success-text"
+                    >
+                        已按您的专属倍率显示价格(专属档次:
+                        {specialTiers
+                            .map(
+                                (k) =>
+                                    sheet!.vendors
+                                        .flatMap((v) => v.models)
+                                        .flatMap((m) => m.rows)
+                                        .find((r) => r.tierKey === k)?.tierLabel ?? k,
+                            )
+                            .join('、')}
+                        ),与实际扣费一致。
+                    </div>
+                )}
                 {fetchErr || !sheet ? (
                     <FormError severity="banner">当前无法获取价格表,请稍后重试。</FormError>
                 ) : (
@@ -215,7 +312,14 @@ function VendorPriceSection({ block }: { block: VendorBlock }) {
                                             <code className="text-xs text-minor-ink">{m.slug}</code>
                                         </td>
                                     )}
-                                    <td className="py-2.5 pr-4 text-muted-ink">{row.tierLabel}</td>
+                                    <td className="py-2.5 pr-4 text-muted-ink">
+                                        {row.tierLabel}
+                                        {row.special && (
+                                            <span className="ml-1.5 rounded-full bg-status-success-bg px-2 py-0.5 text-[10px] font-medium text-status-success-text">
+                                                专属价
+                                            </span>
+                                        )}
+                                    </td>
                                     <td className="py-2.5 pr-4 text-right text-navy tabular-nums">
                                         {row.inputCny != null ? `¥${fmtCny(row.inputCny)}` : '—'}
                                     </td>

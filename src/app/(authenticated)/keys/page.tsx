@@ -17,7 +17,8 @@ import { getTokenUsageWithCache } from '@/lib/newapi/token-usage';
 import { expiredTimeToIso, getTokenMetaForCustomer } from '@/lib/newapi/token-meta';
 import { quotaToCny } from '@/lib/newapi/quota-units';
 import { formatTokenForDisplay } from '@/lib/newapi/token-format';
-import { listEnabledChannelGroups, restrictGroupsForUser, getGroupRatios } from '@/lib/channel-group';
+import { listEnabledChannelGroups, restrictGroupsForUser } from '@/lib/channel-group';
+import { getEffectiveGroupRatios } from '@/lib/newapi/effective-group-ratios';
 import { KeysList, type KeyRow } from './keys-list';
 import { KeysSnippetsPanel } from './keys-snippets-panel';
 
@@ -72,7 +73,7 @@ export default async function KeysPage() {
         user.newapi_user_id != null && user.newapi_access_token
             ? { accessToken: user.newapi_access_token, userId: user.newapi_user_id }
             : null;
-    const [usageSnaps, tierGroupsRaw, ratios, meta] = await Promise.all([
+    const [usageSnaps, tierGroupsRaw, effective, meta] = await Promise.all([
         Promise.all(
             tokens.map(async (t) => {
                 if (user.newapi_user_id == null) return null;
@@ -90,7 +91,8 @@ export default async function KeysPage() {
             }),
         ),
         listEnabledChannelGroups(user.tenant_id),
-        getGroupRatios(),
+        // 2026-10-23:倍率以客户身份读(GroupGroupRatio 专属覆盖生效),失败回落全局
+        getEffectiveGroupRatios(user),
         customerAuth ? getTokenMetaForCustomer(customerAuth) : Promise.resolve(null),
     ]);
 
@@ -136,7 +138,9 @@ export default async function KeysPage() {
         description: g.description,
         is_default: g.is_default,
         newapi_group: g.newapi_group,
-        ratio: ratios[g.newapi_group] ?? null,
+        ratio: effective.ratios[g.newapi_group] ?? null,
+        listRatio: effective.listRatios[g.newapi_group] ?? null,
+        special: effective.special.has(g.newapi_group),
     }));
 
     return (

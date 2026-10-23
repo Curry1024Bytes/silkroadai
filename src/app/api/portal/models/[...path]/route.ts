@@ -13,6 +13,7 @@
  * 60s 进程内缓存(按完整 query 为 key),new-api 抖动时回 stale(最多 10min)。
  */
 import { NextRequest, NextResponse } from 'next/server';
+import { getCurrentUser } from '@/lib/auth/session';
 
 export const dynamic = 'force-dynamic';
 
@@ -37,7 +38,21 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ path: strin
     }
     const upstream = new URL(`/api/${sub}`, NEWAPI_BASE_URL);
     upstream.search = req.nextUrl.search;
-    const key = upstream.toString();
+    // 2026-10-23 专属倍率:`pricing` 有登录态时以客户身份转发(Authorization + New-Api-User),
+    // new-api 会按该用户的 GroupGroupRatio 覆盖返回 group_ratio —— 与 new-api 自家前端同源。
+    // 缓存按用户隔离;匿名请求保持原样。其余端点(perf-metrics)与用户无关,不带身份。
+    let actAs: { accessToken: string; userId: number } | null = null;
+    if (sub === 'pricing') {
+        try {
+            const user = await getCurrentUser(req);
+            if (user?.newapi_user_id != null && user.newapi_access_token) {
+                actAs = { accessToken: user.newapi_access_token, userId: user.newapi_user_id };
+            }
+        } catch (err) {
+            console.warn('[models-proxy] session lookup failed, serving anonymous pricing', String(err));
+        }
+    }
+    const key = actAs ? `${upstream.toString()}#u=${actAs.userId}` : upstream.toString();
     const now = Date.now();
     const hit = cache.get(key);
     if (hit && now - hit.at < FRESH_MS) {
@@ -47,8 +62,11 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ path: strin
         });
     }
     try {
-        const res = await fetch(key, {
-            headers: { Accept: 'application/json' },
+        const res = await fetch(upstream.toString(), {
+            headers: {
+                Accept: 'application/json',
+                ...(actAs ? { Authorization: actAs.accessToken, 'New-Api-User': String(actAs.userId) } : {}),
+            },
             signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
             cache: 'no-store',
         });

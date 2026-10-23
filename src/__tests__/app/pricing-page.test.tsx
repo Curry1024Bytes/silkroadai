@@ -17,8 +17,24 @@ vi.mock('@/lib/db', () => ({
         channelGroup: { findMany: (...a: unknown[]) => mockFindManyGroups(...a) },
     },
 }));
+// 2026-10-23 专属倍率:默认无 cookie(匿名),个性化用例单独设。
+let mockCookie = '';
+vi.mock('next/headers', () => ({
+    headers: async () => ({ get: (k: string) => (k === 'cookie' ? mockCookie : null) }),
+}));
+const mockGetCurrentUser = vi.fn();
+vi.mock('@/lib/auth/session', () => ({
+    getCurrentUser: (...a: unknown[]) => mockGetCurrentUser(...a),
+}));
+const mockGetEffectiveGroupRatios = vi.fn();
+vi.mock('@/lib/newapi/effective-group-ratios', async () => {
+    const actual = await vi.importActual<typeof import('@/lib/newapi/effective-group-ratios')>(
+        '@/lib/newapi/effective-group-ratios',
+    );
+    return { ...actual, getEffectiveGroupRatios: (...a: unknown[]) => mockGetEffectiveGroupRatios(...a) };
+});
 
-import PricingPage from '@/app/pricing/page';
+import PricingPage, { _resetPricingSheetCache } from '@/app/pricing/page';
 
 const price = (tier: string, opts: { in?: number | null; out?: number | null; img?: number | null } = {}) => ({
     tier,
@@ -34,12 +50,16 @@ const model = (slug: string, display_name: string, prices: ReturnType<typeof pri
 });
 
 const GROUPS = [
-    { key: 'pool', display_name: '默认(号池为主)', tier_level: 0 },
-    { key: 'geminit3', display_name: 'geminit3', tier_level: 0 },
-    { key: 'official', display_name: 'Claude官方稳定', tier_level: 1 },
+    { key: 'pool', display_name: '默认(号池为主)', tier_level: 0, newapi_group: 'default' },
+    { key: 'geminit3', display_name: 'geminit3', tier_level: 0, newapi_group: 'default' },
+    { key: 'official', display_name: 'Claude官方稳定', tier_level: 1, newapi_group: 'official' },
 ];
 
 beforeEach(() => {
+    _resetPricingSheetCache();
+    mockCookie = '';
+    mockGetCurrentUser.mockReset();
+    mockGetEffectiveGroupRatios.mockReset();
     vi.clearAllMocks();
     mockFindManyGroups.mockResolvedValue(GROUPS);
 });
@@ -103,5 +123,61 @@ describe('<PricingPage /> SSR', () => {
         const html = renderToString(await PricingPage());
         expect(html).toContain('当前无法获取价格表');
         expect(html).toContain('模型价格'); // chrome 仍在
+    });
+});
+
+describe('/pricing — 登录客户按专属倍率显示(2026-10-23)', () => {
+    const SESSION_USER = { id: 'u-1', newapi_user_id: 816, newapi_access_token: 'cust-token' };
+    function catalog() {
+        mockFindManyCatalog.mockResolvedValue([
+            model('claude-opus-4-8', 'Claude Opus 4 8', [
+                price('pool', { in: 6, out: 30 }),
+                price('official', { in: 17, out: 85 }),
+            ]),
+        ]);
+    }
+
+    it('anonymous: no banner, list prices', async () => {
+        catalog();
+        const html = renderToString(await PricingPage());
+        expect(html).not.toContain('已按您的专属倍率');
+        expect(html).not.toContain('专属价');
+        expect(mockGetEffectiveGroupRatios).not.toHaveBeenCalled();
+    });
+
+    it('logged-in customer with an override on official → banner + scaled official prices, pool untouched', async () => {
+        catalog();
+        mockCookie = 'session=abc';
+        mockGetCurrentUser.mockResolvedValue(SESSION_USER);
+        mockGetEffectiveGroupRatios.mockResolvedValue({
+            ratios: { default: 1.3, official: 1.75 }, // 专属 1.75(挂牌 3.5)→ 价格减半
+            listRatios: { default: 1.3, official: 3.5 },
+            special: new Set(['official']),
+            source: 'customer',
+        });
+        const html = renderToString(await PricingPage());
+        expect(mockGetEffectiveGroupRatios).toHaveBeenCalledWith(SESSION_USER);
+        expect(html).toContain('已按您的专属倍率显示价格');
+        expect(html).toContain('Claude官方稳定');
+        expect(html).toContain('专属价');
+        expect(html).toContain('¥8.5'); // 17 × 0.5
+        expect(html).toContain('¥42.5'); // 85 × 0.5
+        expect(html).toContain('¥6'); // pool 原价
+        expect(html).not.toContain('¥17');
+    });
+
+    it('logged-in customer without overrides → identical to anonymous', async () => {
+        catalog();
+        mockCookie = 'session=abc';
+        mockGetCurrentUser.mockResolvedValue(SESSION_USER);
+        mockGetEffectiveGroupRatios.mockResolvedValue({
+            ratios: { default: 1.3, official: 3.5 },
+            listRatios: { default: 1.3, official: 3.5 },
+            special: new Set(),
+            source: 'customer',
+        });
+        const html = renderToString(await PricingPage());
+        expect(html).not.toContain('已按您的专属倍率');
+        expect(html).toContain('¥17');
     });
 });

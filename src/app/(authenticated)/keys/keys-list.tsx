@@ -58,8 +58,12 @@ export interface TierOption {
     is_default: boolean;
     /** new-api 组名(下拉副行展示,与 new-api 分组下拉同款信息)。 */
     newapi_group: string;
-    /** new-api GroupRatio 倍率(server 端同步);new-api 不可达 → null,不显示徽章。 */
+    /** 该客户的有效倍率(2026-10-23 起以客户身份读,GroupGroupRatio 专属覆盖生效);不可达 → null,不显示徽章。 */
     ratio: number | null;
+    /** 全局挂牌倍率(对照),专属价时与 ratio 不同。 */
+    listRatio?: number | null;
+    /** 该档对当前客户是专属倍率(GroupGroupRatio 覆盖命中)。 */
+    special?: boolean;
 }
 
 /** Mirror of the server-side mask helper. Used when we receive a freshly
@@ -262,8 +266,9 @@ function BudgetSummary({ row }: { row: KeyRow }) {
 }
 
 /** 倍率徽章文案:0.4 → "0.4x 倍率"(与 new-api 分组下拉同款)。 */
-function ratioBadgeText(ratio: number | null): string | null {
-    return ratio == null ? null : `${ratio}x 倍率`;
+function ratioBadgeText(ratio: number | null, special?: boolean): string | null {
+    if (ratio == null) return null;
+    return special ? `${ratio}x 专属倍率` : `${ratio}x 倍率`;
 }
 
 /**
@@ -329,9 +334,9 @@ export function TierSelect({
                 {selected ? (
                     <span className="flex min-w-0 items-center gap-2">
                         <span className="truncate text-ink">{selected.display_name}</span>
-                        {ratioBadgeText(selected.ratio) && (
+                        {ratioBadgeText(selected.ratio, selected.special) && (
                             <span className="shrink-0 rounded-full border border-status-success-border bg-status-success-bg px-2 py-0.5 text-[11px] font-medium text-status-success-text">
-                                {ratioBadgeText(selected.ratio)}
+                                {ratioBadgeText(selected.ratio, selected.special)}
                             </span>
                         )}
                     </span>
@@ -374,9 +379,9 @@ export function TierSelect({
                                             {[t.newapi_group, t.description].filter(Boolean).join(' · ')}
                                         </span>
                                     </span>
-                                    {ratioBadgeText(t.ratio) && (
+                                    {ratioBadgeText(t.ratio, t.special) && (
                                         <span className="shrink-0 rounded-full border border-status-success-border bg-status-success-bg px-2 py-0.5 text-[11px] font-medium text-status-success-text">
-                                            {ratioBadgeText(t.ratio)}
+                                            {ratioBadgeText(t.ratio, t.special)}
                                         </span>
                                     )}
                                 </button>

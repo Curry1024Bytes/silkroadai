@@ -593,6 +593,37 @@ export async function updateTokenForCustomer(
     await call<null>('PUT', '/api/token/', { ...existing, id: tokenId, ...patch }, undefined, { asUser: customerAuth });
 }
 
+/**
+ * 客户视角的可用分组 + **有效倍率**(2026-10-23 专属倍率读路径)。
+ *
+ * `GET /api/user/self/groups`(act-as 客户)—— new-api 服务端按该用户的用户分组查
+ * `GroupGroupRatio[userGroup][group]` 覆盖矩阵,命中返专属倍率,否则返全局 GroupRatio。
+ * 与 new-api 自家前端同一数据源,所以客户在 portal 看到的倍率 = 实际扣费倍率。
+ * `auto` 项 ratio 为字符串 "auto",调用方忽略。
+ */
+export async function getUsableGroupsForCustomer(customerAuth: {
+    accessToken: string;
+    userId: number;
+}): Promise<Record<string, { ratio: number | 'auto'; desc: string }>> {
+    const raw = await call<Record<string, { ratio?: unknown; desc?: unknown }>>(
+        'GET',
+        '/api/user/self/groups',
+        undefined,
+        undefined,
+        { asUser: customerAuth },
+    );
+    const out: Record<string, { ratio: number | 'auto'; desc: string }> = {};
+    for (const [group, v] of Object.entries(raw ?? {})) {
+        if (!v || typeof v !== 'object') continue;
+        const ratio = (v as { ratio?: unknown }).ratio;
+        const desc = (v as { desc?: unknown }).desc;
+        if (ratio === 'auto') out[group] = { ratio: 'auto', desc: typeof desc === 'string' ? desc : '' };
+        else if (typeof ratio === 'number' && Number.isFinite(ratio))
+            out[group] = { ratio, desc: typeof desc === 'string' ? desc : '' };
+    }
+    return out;
+}
+
 export async function deleteToken(
     customerAuth: { accessToken: string; userId: number },
     tokenId: number,

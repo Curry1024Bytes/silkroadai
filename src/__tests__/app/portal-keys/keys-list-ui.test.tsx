@@ -396,3 +396,35 @@ describe('<QuotaExpiryFields /> SSR', () => {
         expect(html).toContain('value="2030-01-01T12:00"');
     });
 });
+
+describe('<TierSelect /> 专属倍率徽章(2026-10-23)', () => {
+    const TIERS = [
+        {
+            key: 'pool-gpt',
+            display_name: 'GPT 池子',
+            description: null,
+            is_default: true,
+            newapi_group: 'pool-gpt',
+            ratio: 0.25,
+            listRatio: 0.4,
+            special: true,
+        },
+        {
+            key: 'pool-claude',
+            display_name: 'Claude 号池',
+            description: null,
+            is_default: false,
+            newapi_group: 'pool-claude',
+            ratio: 1.6,
+            listRatio: 1.6,
+            special: false,
+        },
+    ];
+    it('renders 「Nx 专属倍率」 for a GroupGroupRatio-overridden tier and plain 「Nx 倍率」 otherwise', () => {
+        const special = renderToString(<TierSelect tiers={TIERS} value="pool-gpt" onChange={() => {}} />);
+        expect(special).toContain('0.25x 专属倍率');
+        const plain = renderToString(<TierSelect tiers={TIERS} value="pool-claude" onChange={() => {}} />);
+        expect(plain).toContain('1.6x 倍率');
+        expect(plain).not.toContain('专属倍率');
+    });
+});
