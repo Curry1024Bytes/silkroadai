@@ -10,9 +10,9 @@ on:
     workflow_dispatch:
         inputs:
             source_sha:
-                description: 'Exact already-verified application commit; this recovery workflow only accepts the pinned SHA below'
+                description: 'Exact already-verified application commit; only the pinned SHA below is accepted'
                 required: true
-                default: '5a0e613e0017fd4b35bc178c0b171f59510c1b55'
+                default: '04f0bdf19d2e0b4f67cdd2a2761f9b8ab61196a1'
                 type: string
 
 permissions:
@@ -31,7 +31,7 @@ jobs:
             run:
                 shell: bash
         env:
-            VERIFIED_SOURCE_SHA: '5a0e613e0017fd4b35bc178c0b171f59510c1b55'
+            VERIFIED_SOURCE_SHA: '04f0bdf19d2e0b4f67cdd2a2761f9b8ab61196a1'
             DOCKER_BUILDKIT: '1'
 
         steps:
@@ -207,7 +207,7 @@ jobs:
                       ${{ runner.temp }}/llmroute-image-artifact/SHA256SUMS
                   if-no-files-found: error
                   retention-days: 1
-                  compression-level: 0
+                  compression-level: 1
                   include-hidden-files: false
                   overwrite: false
 
