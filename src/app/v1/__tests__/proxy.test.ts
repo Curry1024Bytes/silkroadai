@@ -4399,7 +4399,7 @@ describe('/v1 proxy — gpt-image-2-{1,2,4}k fixed-price variants retain billing
         const { Jimp } = await import('jimp');
         const output = await Jimp.read(Buffer.from(body.data[0].b64_json, 'base64'));
         expect([output.width, output.height]).toEqual([3840, 2160]);
-    });
+    }, 15_000);
 
     it('fixed strict JPEG transcode failure reports the actual retained format', async () => {
         const originalB64 = unsupportedWebpHeaderB64(1024, 1024);

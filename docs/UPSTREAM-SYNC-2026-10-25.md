@@ -749,3 +749,18 @@ feat(gemini-adapter): 官方表补 gemini-3.1-flash-lite-image(1K 1120 单档) (
   订单、账本及计费配置均保持。新增错误日志quota为0，旧记录未丢失；任务/权限差异已单独核清。
 - 详细经过、证据及边界见[生产恢复记录](PRODUCTION-RECOVERY-2026-10-25.md)。后续改用独立原生
   amd64构建环境，VPS只加载已验证镜像；当前仍不得将候选提交`5a0e613e`写成已上线。
+
+### GitHub CI 4K EXIF 测试耗时审计
+
+- 2026-10-25，CI `40170896389`（`d10234ff`）的 Format、Type Check、Lint 均通过；Test 为
+  6257 passed / 1 failed / 1 skipped，唯一失败是
+  `fixed 4K normalizes an EXIF-rotated JPEG to the promised display dimensions`
+  超过 Vitest 默认 5000ms，未报告尺寸或图片内容断言不符。
+- 此用例与公共 v1 代理文件在前一 CI `40170169212`（`4e471dab`）和本次提交之间的 Git blob
+  完全相同；前一 CI 的 Test 已通过。用例包括现场生成 3840×2160 JPEG、EXIF 方向处理、
+  缩放/编码以及重新解码检查，存在 CI 环境下的执行时长波动。
+- 仅将该单项正确性测试的执行预算设为 `15_000ms`；名称、请求、fixture、HTTP 状态、回显尺寸、
+  图片字节发生转换以及真实解码后 3840×2160 的断言全部保留。没有修改应用逻辑、生产超时或全局测试超时。
+- 延长测试执行预算不视为生产图片处理时延、并发容量或性能验收，也不据此声称新应用已经上线。
+- 本次仅定向运行该用例：1 passed / 435 filtered；两个改动文件的 Prettier 检查与
+  `git diff --check` 均通过。测试文件已逐字比较，除该用例新增的超时参数外没有其他改动；未触发远端重跑。
