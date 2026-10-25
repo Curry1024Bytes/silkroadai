@@ -1070,4 +1070,14 @@ LiteLLM 时代的 `LITELLM_*` 变量保留作 fallback,W3 D1 关停后可删。
 - 模型广场采用上游vendored前端，许可证/原MIT来源/版权说明随上游保留；不修改new-api后端源码。实际两入口共用新广场，Portal当前目录、明确分组及完整人民币报价不被上游原始倍率/最低价/旧缓存覆盖。
 - Key到期能力接入，有限额度默认关闭；保存失效Key设置不自动重新启用，避免覆盖new-api后台停用。空版本new-api先只读探测PAT能力，明确缺路由才legacy+proof，不能猜版本并重签。
 - 新回调、自动对账、Gemini内部适配器默认关闭；视频提交默认不重发；充值/赠送、GPU产品、现有渠道规格和Seedream Pro既有阈值保留。详细开关、测试取舍与回滚限制见docs/UPSTREAM-SYNC-2026-10-25.md。
-- 最终源码候选完整测试6261 passed / 3 skipped / 0 failed，类型/lint0error/构建通过；真实new-api只读smoke已用当前凭据在隔离代理中通过，不执行收费调用或凭据迁移。线上部署结果尚未包含在本条。
+- 最终源码候选完整测试6261 passed / 3 skipped / 0 failed，类型/lint0error/构建通过；真实new-api只读smoke已用当前凭据在隔离代理中通过，不执行收费调用或凭据迁移。正式发布结果见下一节。
+
+## 上游 55 提交发布与主机恢复（2026-10-25）
+
+- 已于北京时间15:52上线应用`5a0e613e`，运行标签`silkroadai-portal-portal:release-5a0e613e`；VPS manifest digest为`8cc5be5ce4ff0a877e994010e501e4e951c7e71cc9e41787437d2ee1692e8296`，配置digest为`c05d9ac2c098b39b63e85065e704baef39683e0dd09308f8b08d94cd71fcea40`，18层及配置字节已核验。后续文档/测试提交不重建应用镜像。
+- 生产构建期间曾发生服务失联；软重启未恢复，经operator单独授权的一次硬重启后恢复原站并逐表核对数据，再继续发布。具体根因尚未确认，不能断言OOM。**现役4GB生产VPS不再执行重型编译**；使用独立原生amd64构建、校验产物后仅load与`--no-build`发布。
+- 新完整CI全部通过；克隆库86→88迁移、17表旧记录保留、41模型/69份报价及权限拒绝通过。生产两迁移成功，88 applied/0活动unfinished，1条旧rolled-back历史保持。3个存量opaque授权通过身份核对，真实Key公网模型列表200。未做收费生成或支付验收。
+- VPS项目目录`/opt/silkroadai-portal`是归档而非Git checkout；prod源码在`/opt/llmroute-portal-source.git`。当前Portal使用`/opt/llmroute-releases/5a0e613e/source/docker-compose.prod.yml`和`/opt/llmroute-releases/5a0e613e/release.json`，project directory仍为原项目目录。保持原环境、端口、卷、网关优先级和new-api后端；Nginx仅增加Gemini内部入口公网404。
+- 最新发布前备份`/opt/backups/silkroadai-portal/releases/upstream-final-20261025-073943/`，已在operator Mac保存0700/0600副本并验证SHA256/gzip。旧镜像`release-2445fe88`及`rollback-upstream-final-20261025-073943`回退标签保留；回退应用保留新可空列，不为回退代码恢复整库覆盖后续交易。
+- 新有限Key额度、Enterprise callback/reconcile、Gemini内部适配器及原Batch/Image2.5继续默认关闭。候选容器、克隆库和候选凭据已清理，只读代理停止；故障构建器保持stopped/restart=no，缓存暂留取证，未删除业务卷。
+- 完整证据和回退命令见`docs/DEPLOY-UPSTREAM-2026-10-25.md`；故障与数据恢复边界见`docs/PRODUCTION-RECOVERY-2026-10-25.md`。公网切换采样间隙10.443秒，Portal restart0；本次正式切换未再次重启new-api、两PG或Redis。
