@@ -1081,3 +1081,11 @@ LiteLLM 时代的 `LITELLM_*` 变量保留作 fallback,W3 D1 关停后可删。
 - 最新发布前备份`/opt/backups/silkroadai-portal/releases/upstream-final-20261025-073943/`，已在operator Mac保存0700/0600副本并验证SHA256/gzip。旧镜像`release-2445fe88`及`rollback-upstream-final-20261025-073943`回退标签保留；回退应用保留新可空列，不为回退代码恢复整库覆盖后续交易。
 - 新有限Key额度、Enterprise callback/reconcile、Gemini内部适配器及原Batch/Image2.5继续默认关闭。候选容器、克隆库和候选凭据已清理，只读代理停止；故障构建器保持stopped/restart=no，缓存暂留取证，未删除业务卷。
 - 完整证据和回退命令见`docs/DEPLOY-UPSTREAM-2026-10-25.md`；故障与数据恢复边界见`docs/PRODUCTION-RECOVERY-2026-10-25.md`。公网切换采样间隙10.443秒，Portal restart0；本次正式切换未再次重启new-api、两PG或Redis。
+
+## 模型卡片排版修复发布（2026-10-25，19:57）
+
+- 当前运行应用更新为`04f0bdf1`，标签`silkroadai-portal-portal:release-04f0bdf1`；VPS manifest为`6e2cea14a804a9aba934421f39a4d0f1b1e8e2c29cf929bc41649b2dab0b5c28`。仅修改前端布局：卡片共享内容行、按列表容器宽度排布、价格间距及窄屏页脚换行；报价/授权/计费计算未改。
+- 完整6258项非联机测试、类型、lint0error、本机及独立原生amd64构建通过。线上20卡片价格和金额纵向偏差0px，390px无横向溢出。生产业务摘要、环境和88条迁移保持，Portal restart0，依赖未重启。
+- 活动Compose文件为`/opt/llmroute-releases/04f0bdf1/source/docker-compose.prod.yml`与`/opt/llmroute-releases/04f0bdf1/release.json`；project directory/env位置不变，继续`--no-build --no-deps --pull never`只发布Portal。
+- 最新备份`/opt/backups/silkroadai-portal/releases/model-layout-20261025-113233/`；旧应用5a0e613e与回退标签`rollback-model-layout-20261025-113233`保留。先前停用的临时BuildKit已保存日志/配置/4个元数据DB后清理，业务卷与其他构建器未动；取证文件在`upstream-final-20261025-073943/failed-builder-forensics/`。
+- 详情见`docs/MODEL-CARD-LAYOUT-2026-10-25.md`。后续文档/构建流程提交不重建应用镜像，禁止再在这台4GB生产VPS重型编译。
