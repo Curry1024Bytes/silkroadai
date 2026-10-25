@@ -624,6 +624,62 @@ export async function getUsableGroupsForCustomer(customerAuth: {
     return out;
 }
 
+/**
+ * 客户视角的分组**有效倍率**,数据源 `GET /api/pricing`(act-as 客户)。
+ *
+ * 2026-10-25 换源:原用 `/api/user/self/groups`,但 rc.41+ 客户的访问令牌是带 scope 的
+ * PAT,缺 `profile:read` → 403(线上 c-db420d6d 实测)。`/api/pricing` 在 new-api 路由表里是
+ * `accessTokenAnyRule`(任何 PAT 都放行)且 controller 会按 `New-Api-User` 的用户分组套
+ * `GroupGroupRatio` 覆盖矩阵后返回 `group_ratio` —— 与 new-api 自家前端同源。
+ * `group_ratio` 在信封顶层而非 `data`,所以不走 call(),这里直接 fetch。
+ */
+export async function getPricingGroupRatiosForCustomer(customerAuth: {
+    accessToken: string;
+    userId: number;
+}): Promise<Record<string, number>> {
+    const url = new URL('/api/pricing', NEWAPI_BASE_URL);
+    let res: Response;
+    try {
+        res = await fetch(url, {
+            method: 'GET',
+            headers: {
+                Accept: 'application/json',
+                Authorization: customerAuth.accessToken, // no Bearer prefix
+                'New-Api-User': String(customerAuth.userId),
+            },
+            redirect: 'manual',
+            signal: AbortSignal.timeout(callTimeoutMs()),
+        });
+    } catch (e) {
+        if (e instanceof Error && (e.name === 'TimeoutError' || e.name === 'AbortError')) {
+            throw new NewApiError(504, 'GET /api/pricing', null, `new-api timeout after ${callTimeoutMs()}ms`);
+        }
+        throw e;
+    }
+    const text = await res.text();
+    interface PricingEnvelope {
+        success?: boolean;
+        message?: string;
+        group_ratio?: unknown;
+    }
+    let body: PricingEnvelope | null = null;
+    try {
+        body = text ? (JSON.parse(text) as PricingEnvelope) : null;
+    } catch {
+        /* */
+    }
+    if (!res.ok || !body || body.success === false) {
+        throw new NewApiError(res.status, 'GET /api/pricing', null, String(body?.message ?? text ?? res.statusText));
+    }
+    const out: Record<string, number> = {};
+    if (body.group_ratio && typeof body.group_ratio === 'object' && !Array.isArray(body.group_ratio)) {
+        for (const [g, r] of Object.entries(body.group_ratio as Record<string, unknown>)) {
+            if (typeof r === 'number' && Number.isFinite(r)) out[g] = r;
+        }
+    }
+    return out;
+}
+
 export async function deleteToken(
     customerAuth: { accessToken: string; userId: number },
     tokenId: number,
