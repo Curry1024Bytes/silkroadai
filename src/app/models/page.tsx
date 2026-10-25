@@ -1,15 +1,10 @@
-/**
- * Public model catalog. The authenticated workspace renders the same data
- * through /workspace/models so this SEO-facing route remains public.
- */
+/** Public and workspace catalogs share the same Portal-backed model plaza. */
 import { ModelsCatalog } from './models-catalog';
 
-// Logged-in customers may have dedicated prices; never share rendered quotes across users.
 export const dynamic = 'force-dynamic';
 export const metadata = {
-    title: '模型清单 — LLmRoute',
-    description:
-        'LLmRoute 当前接入的全部模型,按厂商分组(OpenAI / Anthropic / Google / 字节跳动 等),覆盖对话 / 视觉 / 图像 / 视频,可搜索检索。',
+    title: '模型广场 — LLmRoute',
+    description: 'LLmRoute 模型广场：按厂商、分组和类型筛选，查看人民币价格、完整计费条件、API 示例和真实运行表现。',
 };
 
 export default async function ModelsPage() {

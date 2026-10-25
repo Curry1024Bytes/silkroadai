@@ -1065,3 +1065,12 @@ LiteLLM 时代的 `LITELLM_*` 变量保留作 fallback,W3 D1 关停后可删。
 - 首轮生产克隆捕获平台固定UUID被RFC版本校验拒绝，增加平台常量精确兼容和三项红→绿回归；首轮未切换。最终320 files / 4639 passed / 1既有skipped，类型/Prisma/构建/格式通过，lint0 error/93既有warnings；实PG合成HTTP7场景、最终克隆23项通过。
 - 最终备份 `/opt/backups/silkroadai-portal/releases/orphan-auto-20260916-031652/`，环境备份 `.env.bak.orphan-auto-20260916-031652`，回滚标签 `rollback-orphan-auto-20260916-031652` 对应旧运行fd595f4。11:24:06–11:24:21仅切换Portal，13/25失败样本跨度8.424秒，restart0/日志error0，依赖未重启。
 - 50/50网络、13/13持久授权、两类UA模型列表200/4模型、价格双读通过。九表/环境/白名单及11项计费选项UTF-8原始字节保持；29模型35价格5分组21Key不变。真实自动预览200：`gpt特惠分组 → GPT-特惠反代`，15Key=14ready+1already_absent，canApply=true，来源current_keys（不冒称历史原名证明）。任务表仍0，未实际清理这批Key，14活动遗留Key仍保留。详见 `docs/ORPHAN-KEY-AUTO-DISCOVERY-2026-09-16.md`。
+
+
+## 上游集成 2026-10-25（开发候选，发布结果另记）
+
+- 用户确认继承上游功能并保留LLmRoute定制；固定上游48f914ba的55提交先出逐提交报告，再在dev合并。33个冲突逐文件三方审计，原回退标签backup/pre-upstream-clean-20261025保留。
+- 模型广场采用上游vendored前端，许可证/原MIT来源/版权说明随上游保留；不修改new-api后端源码。实际两入口共用新广场，Portal当前目录、明确分组及完整人民币报价不被上游原始倍率/最低价/旧缓存覆盖。
+- Key到期能力接入，有限额度默认关闭；保存失效Key设置不自动重新启用，避免覆盖new-api后台停用。空版本new-api先只读探测PAT能力，明确缺路由才legacy+proof，不能猜版本并重签。
+- 新回调、自动对账、Gemini内部适配器默认关闭；视频提交默认不重发；充值/赠送、GPU产品、现有渠道规格和Seedream Pro既有阈值保留。详细开关、测试取舍与回滚限制见docs/UPSTREAM-SYNC-2026-10-25.md。
+- 最终源码候选完整测试6261 passed / 3 skipped / 0 failed，类型/lint0error/构建通过；真实new-api只读smoke已用当前凭据在隔离代理中通过，不执行收费调用或凭据迁移。线上部署结果尚未包含在本条。

@@ -65,6 +65,10 @@ const REQUIRES_GUARD = [
     // Customer-specific GroupGroupRatio sync mutates new-api options and
     // Prisma state; it must never enter a client bundle.
     'user-tier-multiplier.ts',
+
+    'token-meta.ts', // 2026-10-22 /keys 额度与到期:act-as 列 token 元数据
+
+    'effective-group-ratios.ts', // 2026-10-23 专属倍率读路径:act-as 读 /api/user/self/groups
 ];
 
 /**

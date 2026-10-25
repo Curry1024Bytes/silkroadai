@@ -20,6 +20,64 @@ import { isTerminalTaskFailure, type UpstreamErrorCategory } from '@/lib/seedanc
 import { getUpstreamKeyForUser } from './keys';
 import { ENTERPRISE_TIER, chargeEnterpriseVideoTask } from './billing';
 import { writeRequestLog, type RequestLogCtx } from './request-log';
+import { buildTerminalCallbackBody } from './ark-format';
+import { fireTaskCallback, shouldFireCallback } from './callback';
+import { taskCompletionTokens, hasCompletedVideoUrl, recordVideoTaskCompletion } from './task-completion';
+import { maybeStoreVideoToCustomerOss } from '@/lib/seedance/customer-oss-video';
+import { maybeBrandVideoUrl } from '@/lib/seedance/volc-brand';
+
+/**
+ * 回调投递(2026-10-19):对账器把任务推到终态后,若客户提交时要了 callback_url(行上 pending),
+ * 用库里的行 + 上游归一 JSON(没有就合成失败体)拼与查询同形的 body 投出去。best-effort。
+ */
+async function notifyCallback(
+    task: { id: string; callback_url?: string | null; callback_status?: string | null },
+    j: Record<string, unknown> | null,
+    fallback: { status: 'completed' | 'failed'; fail_reason?: string | null },
+): Promise<void> {
+    if (!shouldFireCallback(task)) return;
+    try {
+        const row = await prisma.seedanceVideoTask.findUnique({ where: { id: task.id } });
+        if (!row || row.status !== fallback.status) return;
+        const body: Record<string, unknown> = j
+            ? { ...j }
+            : {
+                  id: row.id,
+                  task_id: row.id,
+                  object: 'video',
+                  status: fallback.status,
+                  progress: 100,
+                  fail_reason: fallback.fail_reason ?? row.fail_reason ?? undefined,
+              };
+        const region = regionForModel(row.model);
+        if (row.status === 'completed') {
+            const upstreamUrl =
+                typeof body.video_url === 'string' ? body.video_url : typeof body.url === 'string' ? body.url : null;
+            if (upstreamUrl) {
+                const stored = await maybeStoreVideoToCustomerOss({ userId: row.user_id, taskId: row.id, upstreamUrl });
+                const branded =
+                    !stored && row.callback_format === 'ark' && region === 'cn'
+                        ? await maybeBrandVideoUrl({ userId: row.user_id, taskId: row.id, upstreamUrl })
+                        : null;
+                if (stored || branded) {
+                    body.video_url = stored || branded;
+                    body.url = stored || branded;
+                }
+            }
+        }
+        fireTaskCallback(
+            row.id,
+            buildTerminalCallbackBody(
+                row,
+                body,
+                row.callback_format === 'ark' ? 'ark' : 'v1',
+                regionForModel(row.model),
+            ),
+        );
+    } catch (e) {
+        console.warn('[enterprise-reconcile] callback prep failed', { id: task.id, err: String(e) });
+    }
+}
 
 /** 对账动作落请求日志(kind='reconcile'):僵尸任务是谁补扣/标失败的,后台可查可导。 */
 function logReconcile(
@@ -51,18 +109,24 @@ const EXPIRED_REASON = '任务已过期(上游不再保留结果),未计费';
 
 /** 对账单个客户的滞留任务。best-effort:任何单条失败不影响其余,也不抛给页面。 */
 export async function reconcileStaleTasks(userId: string): Promise<void> {
-    let stale: Array<{ id: string; model: string; created_at: Date }>;
+    let stale: Array<{
+        id: string;
+        model: string;
+        created_at: Date;
+        callback_url?: string | null;
+        callback_status?: string | null;
+    }>;
     try {
         stale = await prisma.seedanceVideoTask.findMany({
             where: {
                 user_id: userId,
                 tier: ENTERPRISE_TIER,
-                status: { in: ['queued', 'in_progress'] },
+                OR: [{ status: { in: ['queued', 'in_progress'] } }, { status: 'completed', billed: false }],
                 created_at: { lt: new Date(Date.now() - STALE_AFTER_MS) },
             },
             orderBy: { created_at: 'asc' },
             take: BATCH_LIMIT,
-            select: { id: true, model: true, created_at: true },
+            select: { id: true, model: true, created_at: true, callback_url: true, callback_status: true },
         });
     } catch (e) {
         console.warn('[enterprise-reconcile] query failed', e);
@@ -103,7 +167,10 @@ export async function reconcileStaleTasks(userId: string): Promise<void> {
                 if (!upstreamKey) {
                     // 该版本上游 key 已被移除:老任务无法回查。超保留期的直接过期终态。
                     if (expired) {
-                        if (await markExpired(task.id)) logReconcile(task, userId, t0, 'expired');
+                        if (await markExpired(task.id)) {
+                            logReconcile(task, userId, t0, 'expired');
+                            await notifyCallback(task, null, { status: 'failed', fail_reason: EXPIRED_REASON });
+                        }
                     }
                     continue;
                 }
@@ -127,29 +194,35 @@ export async function reconcileStaleTasks(userId: string): Promise<void> {
                             status: res.status,
                             body: j ? JSON.stringify(j) : null,
                         });
+                        await notifyCallback(task, null, {
+                            status: 'failed',
+                            fail_reason: e?.message || '上游判定任务失败',
+                        });
                     }
                 } else if (expired) {
-                    if (await markExpired(task.id)) logReconcile(task, userId, t0, 'expired', { status: res.status });
+                    if (await markExpired(task.id)) {
+                        logReconcile(task, userId, t0, 'expired', { status: res.status });
+                        await notifyCallback(task, null, { status: 'failed', fail_reason: EXPIRED_REASON });
+                    }
                 }
                 continue;
             }
             const status = String(j.status || '');
             if (status === 'completed') {
-                const usage = j.usage as { completion_tokens?: number; total_tokens?: number } | undefined;
-                const tokens = usage?.completion_tokens ?? usage?.total_tokens;
-                if (tokens && tokens > 0) {
-                    await prisma.seedanceVideoTask.updateMany({
-                        where: { id: task.id, tokens: null },
-                        data: { tokens: BigInt(tokens), status: 'completed' },
-                    });
-                    const r = await chargeEnterpriseVideoTask(task.id);
-                    if (r.outcome === 'charged') {
-                        console.log('[enterprise-reconcile] back-charged', { id: task.id, cost: r.costCny });
-                        logReconcile(task, userId, t0, 'back_charged', {
-                            status: res.status,
-                            body: JSON.stringify(j),
-                        });
+                const tokens = taskCompletionTokens(j);
+                if (tokens !== null || hasCompletedVideoUrl(j)) {
+                    if (!(await recordVideoTaskCompletion(task.id, tokens))) continue;
+                    if (tokens !== null) {
+                        const r = await chargeEnterpriseVideoTask(task.id);
+                        if (r.outcome === 'charged') {
+                            console.log('[enterprise-reconcile] back-charged', { id: task.id, cost: r.costCny });
+                            logReconcile(task, userId, t0, 'back_charged', {
+                                status: res.status,
+                                body: JSON.stringify(j),
+                            });
+                        }
                     }
+                    await notifyCallback(task, j, { status: 'completed' });
                 }
             } else if (status === 'failed') {
                 const changed = await prisma.seedanceVideoTask.updateMany({
@@ -159,10 +232,15 @@ export async function reconcileStaleTasks(userId: string): Promise<void> {
                         fail_reason: typeof j.fail_reason === 'string' ? j.fail_reason.slice(0, 500) : null,
                     },
                 });
-                if (changed.count > 0)
+                if (changed.count > 0) {
                     logReconcile(task, userId, t0, 'marked_failed', { status: res.status, body: JSON.stringify(j) });
+                    await notifyCallback(task, j, { status: 'failed' });
+                }
             } else if (expired) {
-                if (await markExpired(task.id)) logReconcile(task, userId, t0, 'expired', { status: res.status });
+                if (await markExpired(task.id)) {
+                    logReconcile(task, userId, t0, 'expired', { status: res.status });
+                    await notifyCallback(task, null, { status: 'failed', fail_reason: EXPIRED_REASON });
+                }
             }
             // 仍在跑且未超保留期 → 留给下次
         } catch (e) {

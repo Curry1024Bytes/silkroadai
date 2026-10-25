@@ -249,3 +249,62 @@ describe('<PricingPage /> SSR', () => {
         expect(html).toContain('模型价格'); // chrome 仍在
     });
 });
+
+describe('/pricing — 登录客户按专属倍率显示(2026-10-23)', () => {
+    const SESSION_USER = { id: 'u-1', newapi_user_id: 816, newapi_access_token: 'cust-token' };
+    function catalog() {
+        mockFindManyGroups.mockResolvedValue(
+            GROUPS.map((g) => ({ ...g, newapi_group: g.key === 'official' ? 'official' : 'default' })),
+        );
+        mockFindManyCatalog.mockResolvedValue([
+            model('claude-opus-4-8', 'Claude Opus 4 8', [
+                price('pool', { in: 6, out: 30 }),
+                price('official', { in: 17, out: 85 }),
+            ]),
+        ]);
+    }
+
+    it('anonymous: no banner, list prices', async () => {
+        catalog();
+        const html = renderToString(await PricingPage());
+        expect(html).not.toContain('已按您的专属倍率');
+        expect(html).not.toContain('专属价');
+        expect(mockMultipliers).not.toHaveBeenCalled();
+    });
+
+    it('logged-in customer with an override on official → banner + scaled official prices, pool untouched', async () => {
+        catalog();
+        mockCurrentUser.mockResolvedValue(SESSION_USER);
+        mockGetOption.mockResolvedValue(JSON.stringify({ default: 1.3, official: 3.5 }));
+        mockMultipliers.mockResolvedValue([
+            { tier_key: 'official', newapi_billing_group: 'official', multiplier: 1.75 },
+        ]);
+        const html = renderToString(await PricingPage());
+        expect(mockMultipliers).toHaveBeenCalledWith(SESSION_USER.id);
+        expect(html).toContain('已按您的专属倍率显示价格');
+        expect(html).toContain('Claude官方稳定');
+        expect(html).toContain('专属价');
+        expect(html).toContain('¥8.5'); // 17 × 0.5
+        expect(html).toContain('¥42.5'); // 85 × 0.5
+        expect(html).toContain('¥6'); // pool 原价
+        expect(html).not.toContain('¥17');
+    });
+
+    it('session lookup failure does not silently return public prices', async () => {
+        catalog();
+        mockCurrentUser.mockRejectedValue(new Error('session unavailable'));
+        const html = renderToString(await PricingPage());
+        expect(html).toContain('当前无法获取价格表');
+        expect(html).not.toContain('¥17');
+    });
+
+    it('logged-in customer without overrides → identical to anonymous', async () => {
+        catalog();
+        mockCurrentUser.mockResolvedValue(SESSION_USER);
+        mockGetOption.mockResolvedValue(JSON.stringify({ default: 1.3, official: 3.5 }));
+        mockMultipliers.mockResolvedValue([]);
+        const html = renderToString(await PricingPage());
+        expect(html).not.toContain('已按您的专属倍率');
+        expect(html).toContain('¥17');
+    });
+});

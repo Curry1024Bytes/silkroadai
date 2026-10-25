@@ -40,14 +40,16 @@ export class VolcIdMappingError extends Error {
     }
 }
 
-/**
- * 素材映射仍为 best-effort；任务映射幂等写入，失败抛出，绝不覆盖另一条任务。
- */
+/** svcinf 的 v1/v2 任务互不可见；创建版本随任务映射保存，NULL 老行只做 GET 回退。 */
+export type SvcinfTaskApiVersion = 'v1' | 'v2';
+
+/** 素材映射 best-effort；任务映射事务写入、防碰撞，失败抛出，创建版本不能被后续配置覆盖。 */
 export async function rememberVolcId(
     vendorId: string,
     upstreamId: string,
     kind: VolcIdKind,
     userId?: string,
+    apiVersion?: SvcinfTaskApiVersion,
 ): Promise<void> {
     if (!vendorId || !upstreamId || vendorId === upstreamId) return;
     if (kind === 'task') {
@@ -55,12 +57,27 @@ export async function rememberVolcId(
             await prisma.$transaction(async (tx) => {
                 const existing = await tx.volcIdMap.findUnique({ where: { vendor_id: vendorId } });
                 if (existing) {
-                    if (existing.kind === kind && existing.upstream_id === upstreamId) return;
+                    if (existing.kind === kind && existing.upstream_id === upstreamId) {
+                        if (apiVersion && existing.api_version && existing.api_version !== apiVersion)
+                            throw new VolcIdMappingError('task API version does not match its creation version');
+                        if (apiVersion && !existing.api_version)
+                            await tx.volcIdMap.update({
+                                where: { vendor_id: vendorId },
+                                data: { api_version: apiVersion },
+                            });
+                        return;
+                    }
                     throw new VolcIdMappingError('task id already belongs to another mapping');
                 }
                 // 数据库主键兜住并发碰撞。失败交回调用方，不能 upsert 覆盖旧映射。
                 await tx.volcIdMap.create({
-                    data: { vendor_id: vendorId, upstream_id: upstreamId, kind, user_id: userId ?? null },
+                    data: {
+                        vendor_id: vendorId,
+                        upstream_id: upstreamId,
+                        kind,
+                        user_id: userId ?? null,
+                        ...(apiVersion ? { api_version: apiVersion } : {}),
+                    },
                 });
             });
         } catch (cause) {
@@ -71,11 +88,57 @@ export async function rememberVolcId(
     try {
         await prisma.volcIdMap.upsert({
             where: { vendor_id: vendorId },
-            create: { vendor_id: vendorId, upstream_id: upstreamId, kind, user_id: userId ?? null },
-            update: { upstream_id: upstreamId },
+            create: {
+                vendor_id: vendorId,
+                upstream_id: upstreamId,
+                kind,
+                user_id: userId ?? null,
+                api_version: apiVersion ?? null,
+            },
+            update: { upstream_id: upstreamId, ...(apiVersion ? { api_version: apiVersion } : {}) },
         });
     } catch (e) {
         console.warn('[volc-id-map] remember failed', { vendorId, kind, err: String(e) });
+    }
+}
+
+/** Mapping persistence can fail after a paid submission was accepted. This recovery handle
+ * retains the upstream identifier and API version without sending the generation a second time.
+ * Portal ownership checks still apply to the complete client ID before polling. */
+function decodeSvcinfRecoveryId(id: string): { upstreamId: string; apiVersion: SvcinfTaskApiVersion } | null {
+    const match = /^cgt-svc-recovery-(v1|v2)-([A-Za-z0-9_-]+)$/.exec(id);
+    if (!match) return null;
+    const upstreamId = Buffer.from(match[2], 'base64url').toString('utf8');
+    if (!/^mvt-[A-Za-z0-9_-]+$/.test(upstreamId) || Buffer.from(upstreamId).toString('base64url') !== match[2])
+        return null;
+    return { upstreamId, apiVersion: match[1] as SvcinfTaskApiVersion };
+}
+
+export interface UpstreamTaskRef {
+    /** 上游号;查不到映射时 = 入参(宽进,同 toUpstreamId)。 */
+    upstreamId: string;
+    /** 创建该任务用的 API 版本;存量行 / 查不到映射 → null。 */
+    apiVersion: SvcinfTaskApiVersion | null;
+}
+
+/**
+ * 对客任务号 → 上游号 + 创建时的 API 版本(轮询 / 出正片前调)。
+ * 查不到就**原样返回**(宽进),版本 null 由调用方按配置版打并在 404 时回退另一版。
+ */
+export async function toUpstreamTask(clientId: string): Promise<UpstreamTaskRef> {
+    if (!clientId) return { upstreamId: clientId, apiVersion: null };
+    const recovered = decodeSvcinfRecoveryId(clientId);
+    if (recovered) return recovered;
+    try {
+        const row = await prisma.volcIdMap.findUnique({ where: { vendor_id: clientId } });
+        const v = row?.api_version;
+        return {
+            upstreamId: row?.upstream_id || clientId,
+            apiVersion: v === 'v1' || v === 'v2' ? v : null,
+        };
+    } catch (e) {
+        console.warn('[volc-id-map] lookup failed', { clientId, err: String(e) });
+        throw new VolcIdMappingError('task mapping could not be read', e);
     }
 }
 
@@ -87,6 +150,8 @@ export async function rememberVolcId(
  */
 export async function toUpstreamId(clientId: string, opts?: { failOnError?: boolean }): Promise<string> {
     if (!clientId) return clientId;
+    const recovered = decodeSvcinfRecoveryId(clientId);
+    if (recovered) return recovered.upstreamId;
     try {
         const row = await prisma.volcIdMap.findUnique({ where: { vendor_id: clientId } });
         return row?.upstream_id || clientId;

@@ -3,8 +3,9 @@ node_modules
 .git
 third-party
 new-api-custom-full
-.env
-.env.local
+.env*
+outputs
 *.md
+!src/vendor/newapi-web/NOTICE.md
 .claude
 deploy/runtime/

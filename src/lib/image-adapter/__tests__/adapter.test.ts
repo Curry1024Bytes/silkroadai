@@ -5,7 +5,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { NextRequest } from 'next/server';
-import { IMAGE_PROVIDERS } from '@/lib/image-adapter/providers';
+import { PIXELLELABS_SIZES, SUDUMA_SIZES, SUDUMAGZS_SIZES, IMAGE_PROVIDERS } from '@/lib/image-adapter/providers';
 import {
     handleAdapterImage,
     imageDimensions,
@@ -776,6 +776,33 @@ describe('handleAdapterImage 失败路径(不合成 usage → new-api 不扣费)
         expect(res.status).toBe(503);
         const text = JSON.stringify(await res.json());
         expect(text.toLowerCase()).not.toContain('omini');
+    });
+
+    it('内容安全(monkeycoding 400 "Content policy violation … moderation system")→ 终态 400,不 failover', async () => {
+        // 2026-10-20 线上实况:ChatGPT 网页池审核拒是 HTTP 400(非 451),旧正则漏 → 503 failover + 客户重试放大
+        fetchMock.mockResolvedValue(
+            new Response(
+                JSON.stringify({
+                    error: {
+                        message:
+                            'Content policy violation: the prompt or generated image was rejected by the moderation system, please modify the prompt and retry',
+                        type: 'invalid_request_error',
+                    },
+                }),
+                { status: 400 },
+            ),
+        );
+        const res = await handleAdapterImage(
+            jsonReq(URL_GEN, { model: 'gpt-image-2', prompt: 'x', size: '3840x2160', quality: 'high' }),
+            'generations',
+            'ominiapi',
+        );
+        expect(res.status).toBe(400);
+        const body = await res.json();
+        expect(body.error.code).toBe('moderation_blocked');
+        expect(body.error.type).toBe('user_error');
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(JSON.stringify(body).toLowerCase()).not.toContain('monkey');
     });
 
     it('内容安全(451 image_unsafe)→ 终态 400 官方 moderation_blocked(不 failover)', async () => {
@@ -1719,6 +1746,830 @@ describe('frimodelmedium provider(frimodel 新账号,onlyQualities=[medium] + up
             'ominiapi',
         );
         expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).model).toBe('gpt-image-2');
+    });
+});
+
+describe('qimg provider(qimg.cc Adobe Firefly 中转 2.0,全量 openAllTiers + 透明拒)', () => {
+    const URL_Q = 'http://portal.test/image-adapter/qimg/v1/images/generations';
+    const gen = (body: Record<string, unknown>) =>
+        handleAdapterImage(
+            jsonReq(URL_Q, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', ...body }),
+            'generations',
+            'qimg',
+        );
+
+    it('registry:qimg.cc、openAllTiers 全量(10-14 复测 high 已真,不再 onlyQualities)、无 sizes/upstreamQuality、透明拒;brand 抹 qimg / ERR 码 / Firefly S3 主机 / 前缀', () => {
+        const p = IMAGE_PROVIDERS.qimg;
+        expect(p.baseUrl).toBe('https://qimg.cc');
+        expect(p.openAllTiers).toBe(true);
+        expect(p.onlyQualities).toBeUndefined();
+        expect(p.sizes).toBeUndefined();
+        expect(p.upstreamQuality).toBeUndefined();
+        expect(p.noTransparentBackground).toBe(true);
+        expect('qimg 10k pool ERR-DCD58FC708 Adobe firefly'.replace(p.brand, '*')).toBe('* * * * *');
+        expect('https://pre-signed-firefly-prod.s3-accelerate.amazonaws.com/x'.replace(p.brand, '*')).toBe(
+            'https://*/x',
+        );
+        expect('Bad request to openai: Transparent background'.replace(p.brand, '')).toBe('Transparent background');
+    });
+
+    it('三档 × 任意尺寸全放行,quality 原样透传(含大小写归一),按请求尺寸与档合成官方账单(上游浮动 usage 丢弃)', async () => {
+        for (const [req, w, h, q] of [
+            [{ size: '1024x1024', quality: 'low' }, 1024, 1024, 'low'],
+            [{ size: '1024x1024', quality: 'medium' }, 1024, 1024, 'medium'],
+            [{ size: '1024x1024', quality: 'high' }, 1024, 1024, 'high'],
+            [{ size: '1024x1024', quality: 'HIGH' }, 1024, 1024, 'high'],
+            [{ size: '1536x1024' }, 1536, 1024, 'low'],
+            [{ size: '3840x2160', quality: 'high' }, 3840, 2160, 'high'],
+        ] as const) {
+            fetchMock.mockReset();
+            fetchMock.mockImplementation(
+                async () =>
+                    new Response(
+                        JSON.stringify({
+                            created: 1,
+                            data: [{ b64_json: pngB64(w, h) }],
+                            usage: { input_tokens: 11, output_tokens: 1756 },
+                        }),
+                        { status: 200, headers: { 'content-type': 'application/json' } },
+                    ),
+            );
+            const res = await gen(req);
+            expect(res.status).toBe(200);
+            expect(fetchMock).toHaveBeenCalledTimes(1);
+            const [url, init] = fetchMock.mock.calls[0];
+            expect(url).toBe('https://qimg.cc/v1/images/generations');
+            expect((JSON.parse(init.body as string).quality ?? 'low').toLowerCase()).toBe(q); // 缺省不补字段,上游默认 low
+            const body = await res.json();
+            expect(body.quality).toBe(q);
+            expect(body.usage.output_tokens).toBe(officialOutputTokens(w, h, q)); // 上游 1756 浮动值丢弃
+        }
+    });
+
+    it('size=auto 原样透传(openAllTiers),按返回图实际尺寸计费 + 回显', async () => {
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(1024, 1024) }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+        const res = await gen({ size: 'auto', quality: 'high' });
+        expect(res.status).toBe(200);
+        expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).size).toBe('auto');
+        const body = await res.json();
+        expect(body.size).toBe('1024x1024');
+        expect(body.usage.output_tokens).toBe(officialOutputTokens(1024, 1024, 'high'));
+    });
+
+    it('透明请求 → 503 让路不打上游(上游明拒 Transparent background is not supported)', async () => {
+        okUpstream();
+        const res = await gen({ quality: 'low', background: 'transparent' });
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('上游 4xx/5xx 分类:泛 400(ERR 码)→ 保守 failover 503;`invalid image` → 终态 400 中性体;503 10k pool → 503 中性体;均不泄 qimg / ERR 码', async () => {
+        fetchMock.mockResolvedValue(
+            new Response(
+                JSON.stringify({
+                    error: {
+                        message: 'Bad request to openai: Transparent background is not supported for this model.',
+                        type: 'invalid_request_error',
+                        code: 'ERR-FFBD8993FD',
+                    },
+                }),
+                { status: 400 },
+            ),
+        );
+        const r1 = await gen({ quality: 'low', size: '1000x1000' });
+        expect(r1.status).toBe(503);
+        expect(await r1.text()).not.toMatch(/qimg|ERR-|openai/i);
+
+        fetchMock.mockResolvedValue(
+            new Response(JSON.stringify({ error: { message: 'invalid image file (qimg)', code: 'ERR-DCD58FC708' } }), {
+                status: 400,
+            }),
+        );
+        const r2 = await gen({ quality: 'low' });
+        expect(r2.status).toBe(400);
+        expect(await r2.text()).not.toMatch(/qimg|ERR-/i);
+
+        fetchMock.mockResolvedValue(
+            new Response(
+                JSON.stringify({
+                    error: { message: '10k pool upstream unavailable', code: 'pool_upstream_unavailable' },
+                }),
+                { status: 503 },
+            ),
+        );
+        const r3 = await gen({ quality: 'medium' });
+        expect(r3.status).toBe(503);
+        expect(await r3.text()).not.toMatch(/qimg|10k pool/i);
+    });
+});
+
+describe('sudumagzs provider(-gzs 同步变体:upstreamModel 映射 + 图床 UA;表内尺寸;low→medium;假透明拒)', () => {
+    const URL_SG = 'http://portal.test/image-adapter/sudumagzs/v1/images/generations';
+    const IMG = 'https://img.911339.xyz/i/abc.png';
+    const gen = (body: Record<string, unknown>) =>
+        handleAdapterImage(
+            jsonReq(URL_SG, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', ...body }),
+            'generations',
+            'sudumagzs',
+        );
+
+    it('registry:www.suduma.com、无 transport(同步)、upstreamModel=gpt-image-2-gzs、openAllTiers + sizes + low→medium + 透明拒 + UA;brand 抹 suduma / 图床域 / -gzs / 上游文案', () => {
+        const p = IMAGE_PROVIDERS.sudumagzs;
+        expect(p.transport).toBeUndefined();
+        expect(p.upstreamModel).toBe('gpt-image-2-gzs');
+        expect(p.openAllTiers).toBe(true);
+        expect(p.sizes).toBe(SUDUMAGZS_SIZES);
+        expect(SUDUMAGZS_SIZES).toEqual(['1024x1024', '1536x1024', '1024x1536', '2048x2048', '2880x2880', '3840x2160']);
+        expect(p.upstreamQuality).toEqual({ low: 'medium' });
+        expect(p.noTransparentBackground).toBe(true);
+        expect(p.imageFetchHeaders!['user-agent']).toMatch(/Mozilla/);
+        expect(
+            'suduma img.911339.xyz gpt-image-2-gzs 上游暂时不可用 n must be 1 for this channel'.replace(p.brand, '*'),
+        ).toBe('* * gpt-image-2* * n must be 1 *');
+    });
+
+    it('表内尺寸 × 三档放行:上游 model 恒 gpt-image-2-gzs、low→medium 其余原样,回显/计费按请求档;url 返图带 UA 拉回不外泄', async () => {
+        for (const [size, q, upQ] of [
+            ['1024x1024', 'low', 'medium'],
+            ['1024x1024', 'medium', 'medium'],
+            ['3840x2160', 'high', 'high'],
+            ['2880x2880', 'low', 'medium'],
+        ] as const) {
+            fetchMock.mockReset();
+            fetchMock.mockImplementation(async (url: string | URL, init?: RequestInit) => {
+                const u = String(url);
+                if (u.endsWith('/v1/images/generations'))
+                    return new Response(JSON.stringify({ created: 1, data: [{ url: IMG }] }), {
+                        status: 200,
+                        headers: { 'content-type': 'application/json' },
+                    });
+                expect(u).toBe(IMG);
+                expect((init!.headers as Record<string, string>)['user-agent']).toMatch(/Mozilla/);
+                const [w, h] = size.split('x').map(Number);
+                return new Response(new Uint8Array(Buffer.from(pngB64(w, h), 'base64')), { status: 200 });
+            });
+            const res = await gen({ size, quality: q });
+            expect(res.status).toBe(200);
+            const sent = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+            expect(sent.model).toBe('gpt-image-2-gzs');
+            expect(sent.quality).toBe(upQ);
+            const [w, h] = size.split('x').map(Number);
+            const body = await res.json();
+            expect(body.quality).toBe(q);
+            expect(body.size).toBe(size);
+            expect(body.data[0].url).toBeUndefined();
+            expect(body.data[0].b64_json).toBeTruthy();
+            expect(body.usage.output_tokens).toBe(officialOutputTokens(w, h, q));
+        }
+    });
+
+    it('表外尺寸(1344×1008 / 1000×1000 / auto)与透明 → 503 让路不打上游;n=2 扇出成两次单张', async () => {
+        for (const req of [
+            { size: '1344x1008' },
+            { size: '1000x1000' },
+            { size: 'auto' },
+            { background: 'transparent' },
+        ]) {
+            fetchMock.mockReset();
+            okUpstream();
+            const res = await gen({ quality: 'medium', ...req });
+            expect(res.status).toBe(503);
+            expect(fetchMock).not.toHaveBeenCalled();
+        }
+        fetchMock.mockReset();
+        okUpstream();
+        const res = await gen({ quality: 'medium', n: 2 });
+        expect(res.status).toBe(200);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        for (const c of fetchMock.mock.calls) expect(JSON.parse(c[1].body as string).n).toBeUndefined();
+        expect(((await res.json()) as { data: unknown[] }).data).toHaveLength(2);
+    });
+
+    it('上游 502「上游暂时不可用」/ 400「n must be 1 for this channel」→ 503 中性体不泄文案', async () => {
+        for (const [status, body] of [
+            [502, { error: '上游暂时不可用' }],
+            [
+                502,
+                {
+                    error: 'upstream HTTP 400: {"code":"invalid_request","message":"n must be 1 for this channel","data":null}',
+                },
+            ],
+        ] as const) {
+            fetchMock.mockReset();
+            fetchMock.mockResolvedValue(new Response(JSON.stringify(body), { status }));
+            const r = await gen({ quality: 'high' });
+            expect(r.status).toBe(503);
+            expect(await r.text()).not.toMatch(/suduma|-gzs|上游暂时不可用|for this channel/i);
+        }
+    });
+});
+
+describe('suduma provider(异步任务 submit+poll 分支;表内尺寸;low→medium 上游映射;假透明拒)', () => {
+    const URL_S = 'http://portal.test/image-adapter/suduma/v1/images/generations';
+    const URL_SE = 'http://portal.test/image-adapter/suduma/v1/images/edits';
+    const SUBMIT = 'https://www.suduma.com/v1/images/generations';
+    const IMG_URL = 'https://img.911339.xyz/i/abc123';
+    const transport = IMAGE_PROVIDERS.suduma.transport!;
+    const origInterval = transport.pollIntervalMs;
+    const origMaxWait = transport.maxWaitMs;
+    beforeEach(() => {
+        transport.pollIntervalMs = 1;
+    });
+    afterEach(() => {
+        transport.pollIntervalMs = origInterval;
+        transport.maxWaitMs = origMaxWait;
+    });
+    type Call = { url: string; init?: RequestInit };
+    const calls = (): Call[] => fetchMock.mock.calls.map((c) => ({ url: String(c[0]), init: c[1] as RequestInit }));
+    const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+    function scriptUpstream(opts: { w?: number; h?: number; pollsBeforeDone?: number; rid?: string } = {}) {
+        const { w = 1024, h = 1024, pollsBeforeDone = 1, rid = 'req_x1' } = opts;
+        let polls = 0;
+        fetchMock.mockImplementation(async (url: string | URL, init?: RequestInit) => {
+            const u = String(url);
+            if (u === SUBMIT && init?.method === 'POST')
+                return json({ taskOrderId: '21105', requestId: rid, status: 'created' });
+            if (u === `https://www.suduma.com/v1/tasks/${rid}`) {
+                polls++;
+                if (polls <= pollsBeforeDone) return json({ id: rid, status: 'running', progress: 50, data: [] });
+                return json({
+                    id: rid,
+                    status: 'succeeded',
+                    progress: 100,
+                    error: '',
+                    data: [{ type: 'image', url: IMG_URL }],
+                });
+            }
+            if (u === IMG_URL) return new Response(Buffer.from(pngB64(w, h), 'base64'), { status: 200 });
+            throw new Error('unexpected fetch ' + u);
+        });
+    }
+    const gen = (body: Record<string, unknown>) =>
+        handleAdapterImage(
+            jsonReq(URL_S, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', ...body }),
+            'generations',
+            'suduma',
+        );
+
+    it('registry:www.suduma.com、async-task transport、openAllTiers + sizes 白名单 + low→medium + 透明拒;brand 抹 suduma / 图床域 / 任务失败文案;其他 provider 无 transport', () => {
+        const p = IMAGE_PROVIDERS.suduma;
+        expect(p.baseUrl).toBe('https://www.suduma.com');
+        expect(p.openAllTiers).toBe(true);
+        expect(p.sizes).toBe(SUDUMA_SIZES);
+        expect(SUDUMA_SIZES).toEqual(['1024x1024', '1536x1024', '1024x1536', '2048x2048', '2048x1152', '1280x720']);
+        expect(p.upstreamQuality).toEqual({ low: 'medium' });
+        expect(p.noTransparentBackground).toBe(true);
+        expect(p.transport).toMatchObject({ kind: 'async-task', pollPath: '/v1/tasks/{id}', idField: 'requestId' });
+        expect(p.transport!.maxWaitMs).toBeLessThanOrEqual(540_000);
+        expect(p.transport!.imageFetchHeaders!['user-agent']).toMatch(/Mozilla/);
+        expect('suduma img.911339.xyz provider task failed provider request invalid'.replace(p.brand, '*')).toBe(
+            '* * * *',
+        );
+        for (const [name, prov] of Object.entries(IMAGE_PROVIDERS))
+            if (name !== 'suduma') expect(prov.transport).toBeUndefined();
+    });
+
+    it('generations low:JSON 提交(quality 映射成 medium、无 n)→ 轮询 running→succeeded → 图床拉回(带 UA)→ 回显 low、按 low 官方计费,url 不外泄', async () => {
+        scriptUpstream({ pollsBeforeDone: 2 });
+        const res = await gen({ quality: 'low' });
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data).toHaveLength(1);
+        expect(body.data[0].b64_json).toBeTruthy();
+        expect(body.data[0].url).toBeUndefined();
+        expect(body.quality).toBe('low');
+        expect(body.usage.output_tokens).toBe(196);
+        const c = calls();
+        expect(c.map((x) => x.url)).toEqual([
+            SUBMIT,
+            'https://www.suduma.com/v1/tasks/req_x1',
+            'https://www.suduma.com/v1/tasks/req_x1',
+            'https://www.suduma.com/v1/tasks/req_x1',
+            IMG_URL,
+        ]);
+        const sent = JSON.parse(String(c[0].init!.body));
+        expect(sent).toMatchObject({ model: 'gpt-image-2', prompt: 'x', size: '1024x1024', quality: 'medium' });
+        expect(sent.n).toBeUndefined();
+        expect(sent.response_format).toBeUndefined();
+        expect((c[0].init!.headers as Record<string, string>)['authorization']).toBe('Bearer sk-upstream-test');
+        expect((c[0].init!.headers as Record<string, string>)['content-type']).toBe('application/json');
+        expect((c[4].init!.headers as Record<string, string>)['user-agent']).toMatch(/Mozilla/);
+    });
+
+    it.each([
+        [{}, 'medium', 'low', 196],
+        [{ quality: 'medium' }, 'medium', 'medium', 1756],
+        [{ quality: 'HIGH' }, 'high', 'high', 7024],
+        [{ quality: 'high', size: '2048x1152' }, 'high', 'high', officialOutputTokens(2048, 1152, 'high')],
+    ])('%j → 提交 quality=%s,回显 %s,计费 %i(表内尺寸放行)', async (req, sentQ, echoQ, tokens) => {
+        const [w, h] = String((req as { size?: string }).size ?? '1024x1024')
+            .split('x')
+            .map(Number);
+        scriptUpstream({ w, h });
+        const res = await gen(req);
+        expect(res.status).toBe(200);
+        expect(JSON.parse(String(calls()[0].init!.body)).quality).toBe(sentQ);
+        const body = await res.json();
+        expect(body.quality).toBe(echoQ);
+        expect(body.usage.output_tokens).toBe(tokens);
+    });
+
+    it('表外尺寸(2880² / 4K / 1344×1008 / auto)→ 503 让路不提交;透明 → 503 不提交', async () => {
+        for (const req of [
+            { size: '2880x2880' },
+            { size: '3840x2160', quality: 'high' },
+            { size: '1344x1008' },
+            { size: 'auto' },
+            { background: 'transparent' },
+        ]) {
+            fetchMock.mockReset();
+            scriptUpstream();
+            const res = await gen({ quality: 'medium', ...req });
+            expect(res.status).toBe(503);
+            expect(fetchMock).not.toHaveBeenCalled();
+        }
+    });
+
+    it('edits(multipart 输入图)→ 仍 POST 提交路径,参考图转 data URL 塞 JSON `image` 数组', async () => {
+        scriptUpstream();
+        const res = await handleAdapterImage(
+            formReq(URL_SE, { model: 'gpt-image-2', prompt: 'watercolor', size: '1280x720', quality: 'medium' }, [
+                TINY_PNG,
+            ]),
+            'edits',
+            'suduma',
+        );
+        expect(res.status).toBe(200);
+        const c = calls();
+        expect(c[0].url).toBe(SUBMIT);
+        const sent = JSON.parse(String(c[0].init!.body));
+        expect(sent.image).toEqual(['data:image/png;base64,' + TINY_PNG.toString('base64')]);
+        expect(sent.size).toBe('1280x720');
+    });
+
+    it('n=2 → 扇出两次独立提交(各自任务 id),拿两张', async () => {
+        let seq = 0;
+        const done = new Map<string, number>();
+        fetchMock.mockImplementation(async (url: string | URL, init?: RequestInit) => {
+            const u = String(url);
+            if (u === SUBMIT && init?.method === 'POST') {
+                expect(JSON.parse(String(init.body)).n).toBeUndefined();
+                return json({ requestId: `req_${++seq}`, status: 'created' });
+            }
+            const m = u.match(/\/v1\/tasks\/(req_\d+)$/);
+            if (m) {
+                const k = m[1];
+                done.set(k, (done.get(k) ?? 0) + 1);
+                return done.get(k)! < 2
+                    ? json({ id: k, status: 'running', data: [] })
+                    : json({ id: k, status: 'succeeded', data: [{ type: 'image', url: `${IMG_URL}/${k}` }] });
+            }
+            if (u.startsWith(IMG_URL)) return new Response(Buffer.from(pngB64(1024, 1024), 'base64'), { status: 200 });
+            throw new Error('unexpected fetch ' + u);
+        });
+        const res = await gen({ quality: 'medium', n: 2 });
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data).toHaveLength(2);
+        expect(seq).toBe(2);
+    });
+
+    it('任务 failed(provider request invalid / task failed)→ 503 中性体不泄文案;failed 带安全措辞 → 400 终态;提交 400「没有匹配的价格」→ 503;轮询 404 → 503 不重试;超 maxWaitMs → 503', async () => {
+        for (const err of ['provider request invalid', 'provider task failed']) {
+            fetchMock.mockReset();
+            fetchMock.mockImplementation(async (url: string | URL, init?: RequestInit) =>
+                String(url) === SUBMIT && init?.method === 'POST'
+                    ? json({ requestId: 'req_f', status: 'created' })
+                    : json({ id: 'req_f', status: 'failed', error: err, data: [] }),
+            );
+            const res = await gen({ quality: 'medium' });
+            expect(res.status).toBe(503);
+            const t = await res.text();
+            expect(t).not.toMatch(/suduma|provider (task failed|request invalid)/i);
+        }
+        fetchMock.mockReset();
+        fetchMock.mockImplementation(async (url: string | URL, init?: RequestInit) =>
+            String(url) === SUBMIT && init?.method === 'POST'
+                ? json({ requestId: 'req_s', status: 'created' })
+                : json({ id: 'req_s', status: 'failed', error: 'image_safety: blocked', data: [] }),
+        );
+        let res = await gen({ quality: 'medium' });
+        expect(res.status).toBe(400);
+
+        fetchMock.mockReset();
+        fetchMock.mockImplementation(async () => json({ error: '没有匹配的价格' }, 400));
+        res = await gen({ quality: 'medium' });
+        expect(res.status).toBe(503);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+
+        fetchMock.mockReset();
+        fetchMock.mockImplementation(async (url: string | URL, init?: RequestInit) =>
+            String(url) === SUBMIT && init?.method === 'POST'
+                ? json({ requestId: 'req_404', status: 'created' })
+                : json({ error: '任务不存在' }, 404),
+        );
+        res = await gen({ quality: 'medium' });
+        expect(res.status).toBe(503);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+
+        fetchMock.mockReset();
+        transport.maxWaitMs = 20;
+        fetchMock.mockImplementation(async (url: string | URL, init?: RequestInit) =>
+            String(url) === SUBMIT && init?.method === 'POST'
+                ? json({ requestId: 'req_slow', status: 'created' })
+                : json({ id: 'req_slow', status: 'running', data: [] }),
+        );
+        res = await gen({ quality: 'medium' });
+        expect(res.status).toBe(503);
+        expect(await res.text()).not.toMatch(/suduma/i);
+    });
+});
+
+describe('ztyunjuan provider(qimg 同后端族第二账号池,Adobe Firefly 2.0,全量 openAllTiers + low/high→medium 上游替换 + 透明拒)', () => {
+    const URL_Z = 'http://portal.test/image-adapter/ztyunjuan/v1/images/generations';
+    const gen = (body: Record<string, unknown>) =>
+        handleAdapterImage(
+            jsonReq(URL_Z, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', ...body }),
+            'generations',
+            'ztyunjuan',
+        );
+
+    it('registry:ztyunjuan.com、openAllTiers、upstreamQuality {low→medium, high→medium}、无 sizes/onlyQualities/transport、透明拒;brand 抹 ztyunjuan / ERR 码 / Firefly S3 / 前缀', () => {
+        const p = IMAGE_PROVIDERS.ztyunjuan;
+        expect(p.baseUrl).toBe('https://ztyunjuan.com');
+        expect(p.openAllTiers).toBe(true);
+        expect(p.sizes).toBeUndefined();
+        expect(p.upstreamQuality).toEqual({ low: 'medium', high: 'medium' });
+        expect(p.onlyQualities).toBeUndefined();
+        expect(p.transport).toBeUndefined();
+        expect(p.noTransparentBackground).toBe(true);
+        expect('ztyunjuan 10k pool ERR-3B62FB7EF1 Adobe firefly'.replace(p.brand, '*')).toBe('* * * * *');
+        expect('https://pre-signed-firefly-prod.s3-accelerate.amazonaws.com/x'.replace(p.brand, '*')).toBe(
+            'https://*/x',
+        );
+        expect('Bad request to openai: Transparent background'.replace(p.brand, '')).toBe('Transparent background');
+        expect(p.baseUrl).not.toBe(IMAGE_PROVIDERS.qimg.baseUrl);
+    });
+
+    it('三档 × 任意尺寸全放行:上游 quality 恒发 medium(JSON 与 multipart),回显与计费按客户请求档合成官方账单(上游浮动 usage 丢弃)', async () => {
+        for (const [size, q] of [
+            ['1024x1024', 'low'],
+            ['1024x1024', 'medium'],
+            ['1024x1024', 'high'],
+            ['1344x1008', 'low'],
+            ['2880x2880', 'medium'],
+            ['3840x2160', 'high'],
+        ] as const) {
+            fetchMock.mockReset();
+            okUpstream();
+            const res = await gen({ size, quality: q });
+            expect(res.status).toBe(200);
+            const [url, init] = fetchMock.mock.calls[0];
+            expect(url).toBe('https://ztyunjuan.com/v1/images/generations');
+            const sent = JSON.parse(init.body as string);
+            expect(sent.model).toBe('gpt-image-2');
+            expect(sent.quality).toBe('medium');
+            const [w, h] = size.split('x').map(Number);
+            const body = await res.json();
+            expect(body.quality).toBe(q);
+            expect(body.size).toBe(size);
+            expect(body.usage.output_tokens).toBe(officialOutputTokens(w, h, q));
+        }
+        fetchMock.mockReset();
+        okUpstream();
+        const res = await handleAdapterImage(
+            formReq(
+                'http://portal.test/image-adapter/ztyunjuan/v1/images/edits',
+                { model: 'gpt-image-2', prompt: 'watercolor', size: '1024x1024', quality: 'high' },
+                [TINY_PNG],
+            ),
+            'edits',
+            'ztyunjuan',
+        );
+        expect(res.status).toBe(200);
+        expect(fetchMock.mock.calls[0][0]).toBe('https://ztyunjuan.com/v1/images/edits');
+        const form = fetchMock.mock.calls[0][1].body as FormData;
+        expect(form.get('quality')).toBe('medium');
+        expect(((await res.json()) as { quality: string }).quality).toBe('high');
+    });
+
+    it('size=auto 原样透传(openAllTiers),按返回图实际尺寸计费 + 回显', async () => {
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(1024, 1024) }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+        const res = await gen({ size: 'auto', quality: 'low' });
+        expect(res.status).toBe(200);
+        expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).size).toBe('auto');
+        const body = await res.json();
+        expect(body.size).toBe('1024x1024');
+        expect(body.usage.output_tokens).toBe(officialOutputTokens(1024, 1024, 'low'));
+    });
+
+    it('透明请求 → 503 让路不打上游;上游 503 10k pool → 503 中性体不泄品牌;上游 429 → 503', async () => {
+        okUpstream();
+        const r0 = await gen({ quality: 'low', background: 'transparent' });
+        expect(r0.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+
+        fetchMock.mockResolvedValue(
+            new Response(
+                JSON.stringify({
+                    error: {
+                        message: '10k pool upstream unavailable (ztyunjuan)',
+                        type: 'pool_upstream_unavailable',
+                        code: 'ERR-F1AA8DD57F',
+                    },
+                }),
+                {
+                    status: 503,
+                },
+            ),
+        );
+        const r1 = await gen({ quality: 'high' });
+        expect(r1.status).toBe(503);
+        expect(await r1.text()).not.toMatch(/ztyunjuan|10k pool|ERR-/i);
+
+        fetchMock.mockResolvedValue(
+            new Response(
+                JSON.stringify({
+                    error: {
+                        message: 'Upstream rate limit reached. Please retry later.',
+                        type: 'rate_limited',
+                        code: 'ERR-FAB341A2B1',
+                    },
+                }),
+                { status: 429 },
+            ),
+        );
+        const r2 = await gen({ quality: 'medium' });
+        expect(r2.status).toBe(503);
+        expect(await r2.text()).not.toMatch(/ztyunjuan|ERR-/i);
+    });
+});
+
+describe('yobox provider(真 OpenAI API 直通 2.0,全量 openAllTiers + 透明拒)', () => {
+    const URL_YB = 'http://portal.test/image-adapter/yobox/v1/images/generations';
+    const gen = (body: Record<string, unknown>) =>
+        handleAdapterImage(
+            jsonReq(URL_YB, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', ...body }),
+            'generations',
+            'yobox',
+        );
+
+    it('registry:max.yoboxai.com、openAllTiers、无 sizes/upstreamQuality/gateMinCt/upstreamModel、透明拒;brand 抹品牌与 one_hub', () => {
+        const p = IMAGE_PROVIDERS.yobox;
+        expect(p.baseUrl).toBe('https://max.yoboxai.com');
+        expect(p.openAllTiers).toBe(true);
+        expect(p.sizes).toBeUndefined();
+        expect(p.upstreamQuality).toBeUndefined();
+        expect(p.gateMinCt).toBeUndefined();
+        expect(p.upstreamModel).toBeUndefined();
+        expect(p.noTransparentBackground).toBe(true);
+        expect('YoBoxAI one_hub_error cdn.jd23kjs.work firefly'.replace(p.brand, '*')).toBe('* * cdn.*.work *');
+        expect('Provider API error: Bad request'.replace(p.brand, '')).toBe('Bad request');
+    });
+
+    it('三档 + 任意尺寸全放行,quality 原样透传,按请求尺寸与档合成官方账单(上游浮动 usage 丢弃)', async () => {
+        for (const [size, q] of [
+            ['1024x1024', 'low'],
+            ['1024x1024', 'medium'],
+            ['1024x1024', 'high'],
+            ['1536x1024', 'high'],
+            ['1344x1008', 'low'],
+            ['3840x2160', 'high'],
+        ] as const) {
+            fetchMock.mockReset();
+            okUpstream();
+            const res = await gen({ size, quality: q });
+            expect(res.status).toBe(200);
+            const [url, init] = fetchMock.mock.calls[0];
+            expect(url).toBe('https://max.yoboxai.com/v1/images/generations');
+            const sent = JSON.parse(init.body as string);
+            expect(sent.model).toBe('gpt-image-2');
+            expect(sent.quality).toBe(q);
+            const [w, h] = size.split('x').map(Number);
+            const body = await res.json();
+            expect(body.quality).toBe(q);
+            expect(body.size).toBe(size);
+            expect(body.usage.output_tokens).toBe(officialOutputTokens(w, h, q));
+        }
+    });
+
+    it('size=auto 原样透传(openAllTiers),返图 1122×1402(官方缺省)按实际尺寸计费 + 回显', async () => {
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(1122, 1402) }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+        const res = await gen({ size: 'auto', quality: 'low' });
+        expect(res.status).toBe(200);
+        const sent = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+        expect(sent.size).toBe('auto');
+        const body = await res.json();
+        expect(body.size).toBe('1122x1402');
+        expect(body.usage.output_tokens).toBe(officialOutputTokens(1122, 1402, 'low'));
+    });
+
+    it('透明请求 → 503 让路不打上游(上游明拒 Transparent background is not supported)', async () => {
+        okUpstream();
+        const res = await gen({ quality: 'low', background: 'transparent' });
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('上游 503 one_hub_error → 503 中性体不泄品牌', async () => {
+        fetchMock.mockResolvedValue(
+            new Response(
+                JSON.stringify({
+                    error: { code: 'one_hub_error', message: 'The service is temporarily unavailable. (yobox)' },
+                }),
+                { status: 503 },
+            ),
+        );
+        const res = await gen({ quality: 'high' });
+        expect(res.status).toBe(503);
+        expect(await res.text()).not.toMatch(/yobox|one_hub/i);
+    });
+});
+
+describe('pixellelabs provider(尺寸白名单 + high→medium 上游替换、回显/计费仍按 high)', () => {
+    const URL_PX = 'http://portal.test/image-adapter/pixellelabs/v1/images/generations';
+    const gen = (body: Record<string, unknown>) =>
+        handleAdapterImage(
+            jsonReq(URL_PX, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', ...body }),
+            'generations',
+            'pixellelabs',
+        );
+    const upstreamQ = () => JSON.parse(fetchMock.mock.calls[0][1].body as string).quality as string;
+
+    it('registry:api.pixellelabs.com、openAllTiers、30 个尺寸白名单、high→medium、透明拒;brand 抹品牌与 ERR- 码', () => {
+        const p = IMAGE_PROVIDERS.pixellelabs;
+        expect(p.baseUrl).toBe('https://api.pixellelabs.com');
+        expect(p.openAllTiers).toBe(true);
+        expect(p.sizes).toBe(PIXELLELABS_SIZES);
+        expect(PIXELLELABS_SIZES).toHaveLength(30);
+        expect(new Set(PIXELLELABS_SIZES).size).toBe(30);
+        for (const sz of PIXELLELABS_SIZES) {
+            const [w, h] = sz.split('x').map(Number); // 每条都在官方约束内
+            expect(w % 16).toBe(0);
+            expect(h % 16).toBe(0);
+            expect(Math.max(w, h)).toBeLessThanOrEqual(3840);
+            expect(Math.max(w, h) / Math.min(w, h)).toBeLessThanOrEqual(3);
+            expect(w * h).toBeGreaterThanOrEqual(655_360);
+            expect(w * h).toBeLessThanOrEqual(8_294_400);
+        }
+        expect(p.upstreamQuality).toEqual({ high: 'medium' });
+        expect(p.noTransparentBackground).toBe(true);
+        expect('PixelleLabs ERR-A744AC9A4F firefly'.replace(p.brand, '*')).toBe('* * *');
+    });
+
+    it('表内尺寸放行(1024² / 2048x1152 / 3840x2160 / 512x1536),按请求尺寸与请求档合成官方账单', async () => {
+        for (const [size, q] of [
+            ['1024x1024', 'low'],
+            ['2048x1152', 'medium'],
+            ['3840x2160', 'high'],
+            ['512x1536', 'low'],
+        ] as const) {
+            const [w, h] = size.split('x').map(Number);
+            const ct = officialOutputTokens(w, h, q); // 1024² low = 196、4K high = 13342(官方计算器口径)
+            fetchMock.mockReset();
+            okUpstream();
+            const res = await gen({ size, quality: q });
+            expect(res.status).toBe(200);
+            expect(fetchMock).toHaveBeenCalledTimes(1);
+            expect(fetchMock.mock.calls[0][0]).toBe('https://api.pixellelabs.com/v1/images/generations');
+            const body = await res.json();
+            expect(body.size).toBe(size);
+            expect(body.usage.output_tokens).toBe(ct);
+            if (size === '1024x1024') expect(ct).toBe(196);
+            if (size === '3840x2160') expect(ct).toBe(13342);
+        }
+    });
+
+    it('表外显式尺寸(1536x1024 / 1024x1536 / 2560x1440 / 1344x1008)、auto、缺省 → 503 让路,不打上游', async () => {
+        for (const body of [
+            { size: '1536x1024' },
+            { size: '1024x1536' },
+            { size: '2560x1440' },
+            { size: '1344x1008' },
+            { size: 'auto' },
+            { size: '' },
+        ]) {
+            fetchMock.mockReset();
+            okUpstream();
+            const res = await gen({ quality: 'medium', ...body });
+            expect(res.status).toBe(503);
+            expect(fetchMock).not.toHaveBeenCalled();
+            expect((await res.json()).error.code).toBe('upstream_unavailable');
+        }
+    });
+
+    it('high:上游 body 收到 medium,响应回显 high、usage 按 high(1024² = 7024)', async () => {
+        okUpstream();
+        const res = await gen({ quality: 'high' });
+        expect(res.status).toBe(200);
+        expect(upstreamQ()).toBe('medium');
+        const body = await res.json();
+        expect(body.quality).toBe('high');
+        expect(body.usage.output_tokens).toBe(7024);
+    });
+
+    it('low / medium 原样透传(不被替换表波及);medium 回显 medium 计 1756', async () => {
+        for (const [q, ct] of [
+            ['low', 196],
+            ['medium', 1756],
+        ] as const) {
+            fetchMock.mockReset();
+            okUpstream();
+            const res = await gen({ quality: q });
+            expect(upstreamQ()).toBe(q);
+            const body = await res.json();
+            expect(body.quality).toBe(q);
+            expect(body.usage.output_tokens).toBe(ct);
+        }
+    });
+
+    it('edits multipart:high 同样替换成 medium 发上游,表外尺寸同样让路', async () => {
+        okUpstream();
+        const f = new FormData();
+        for (const [k, v] of Object.entries({ model: 'gpt-image-2', prompt: 'x', size: '1024x1024', quality: 'high' }))
+            f.append(k, v);
+        f.append(
+            'image',
+            new Blob([new Uint8Array(Buffer.from(pngB64(1024, 1024), 'base64'))], { type: 'image/png' }),
+            'in.png',
+        );
+        const res = await handleAdapterImage(
+            new NextRequest('http://portal.test/image-adapter/pixellelabs/v1/images/edits', {
+                method: 'POST',
+                headers: { authorization: 'Bearer sk-upstream-test' },
+                body: f,
+            }),
+            'edits',
+            'pixellelabs',
+        );
+        expect(res.status).toBe(200);
+        const sent = fetchMock.mock.calls[0][1].body as FormData;
+        expect(sent.get('quality')).toBe('medium');
+        expect((await res.json()).quality).toBe('high');
+
+        fetchMock.mockReset();
+        okUpstream();
+        const f2 = new FormData();
+        for (const [k, v] of Object.entries({ model: 'gpt-image-2', prompt: 'x', size: '1536x1024', quality: 'low' }))
+            f2.append(k, v);
+        f2.append(
+            'image',
+            new Blob([new Uint8Array(Buffer.from(pngB64(1024, 1024), 'base64'))], { type: 'image/png' }),
+            'in.png',
+        );
+        const res2 = await handleAdapterImage(
+            new NextRequest('http://portal.test/image-adapter/pixellelabs/v1/images/edits', {
+                method: 'POST',
+                headers: { authorization: 'Bearer sk-upstream-test' },
+                body: f2,
+            }),
+            'edits',
+            'pixellelabs',
+        );
+        expect(res2.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('透明请求 → 503 让路不打上游(上游用 451 伪装不支持透明)', async () => {
+        okUpstream();
+        const res = await gen({ quality: 'low', background: 'transparent' });
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('其他 provider 不受 sizes / upstreamQuality 影响(open302 收 1536x1024,high 原样透传)', async () => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            jsonReq('http://portal.test/image-adapter/open302/v1/images/generations', {
+                model: 'gpt-image-2',
+                prompt: 'x',
+                size: '1536x1024',
+                quality: 'high',
+            }),
+            'generations',
+            'open302',
+        );
+        expect(res.status).toBe(200);
+        expect(upstreamQ()).toBe('high');
     });
 });
 
@@ -2751,6 +3602,460 @@ describe('frimodelhigh provider(frimodel 第四账号,onlyQualities=[high] + gpt
     });
 });
 
+describe('frimodeladobe2 provider(frimodel 第五账号,onlyQualities=[low,medium] + gpt-image-2-adobe,真 OpenAI 字节经 Firefly S3)', () => {
+    const URL_FA2 = 'http://portal.test/image-adapter/frimodeladobe2/v1/images/generations';
+    const gen = (body: Record<string, unknown>) =>
+        handleAdapterImage(
+            jsonReq(URL_FA2, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', ...body }),
+            'generations',
+            'frimodeladobe2',
+        );
+
+    it('registry:api.frimodel.com、upstreamModel gpt-image-2-adobe、只放 low/medium、透明 fail-closed、非 openAllTiers', () => {
+        const p = IMAGE_PROVIDERS.frimodeladobe2;
+        expect(p.baseUrl).toBe('https://api.frimodel.com');
+        expect(p.upstreamModel).toBe('gpt-image-2-adobe');
+        expect(p.onlyQualities).toEqual(['low', 'medium']);
+        expect(p.noTransparentBackground).toBe(true);
+        expect(p.openAllTiers).toBeFalsy();
+    });
+
+    it.each([
+        ['low', { quality: 'low' }, 196],
+        ['medium', { quality: 'medium' }, 1756],
+        ['auto(→low)', { quality: 'auto' }, 196],
+        ['缺省(→low)', {}, 196],
+    ])('放行 %s:上游 model 覆盖成 gpt-image-2-adobe,按请求档官方公式合成 usage', async (_label, extra, out) => {
+        okUpstream();
+        const res = await gen(extra);
+        expect(res.status).toBe(200);
+        const [url, init] = fetchMock.mock.calls[0];
+        expect(url).toBe('https://api.frimodel.com/v1/images/generations');
+        expect(JSON.parse(init.body as string).model).toBe('gpt-image-2-adobe');
+        expect((await res.json()).usage.output_tokens).toBe(out);
+    });
+
+    it('high 拒(503 不打上游):上游对 high 静默降 medium,让路给真 high 线', async () => {
+        const res = await gen({ quality: 'high' });
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('medium 不看尺寸:2048² medium 放行,按返回图实际尺寸合成', async () => {
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(2048, 2048) }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+        const res = await gen({ quality: 'medium', size: '2048x2048' });
+        expect(res.status).toBe(200);
+        expect((await res.json()).usage.output_tokens).toBe(officialOutputTokens(2048, 2048, 'medium'));
+    });
+
+    it('background=transparent → 503(上游 400 不支持,fail-closed 不打上游)', async () => {
+        const res = await gen({ quality: 'medium', background: 'transparent' });
+        expect(res.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('multipart edits medium → 放行且 form model 覆盖成 gpt-image-2-adobe', async () => {
+        okUpstream();
+        const res = await handleAdapterImage(
+            formReq(
+                'http://portal.test/image-adapter/frimodeladobe2/v1/images/edits',
+                { prompt: 'e', size: '1024x1024', quality: 'medium' },
+                [TINY_PNG],
+            ),
+            'edits',
+            'frimodeladobe2',
+        );
+        expect(res.status).toBe(200);
+        expect((fetchMock.mock.calls[0][1].body as FormData).get('model')).toBe('gpt-image-2-adobe');
+    });
+
+    it('上游恒返 Firefly S3 url → 拉回转 b64,不外泄上游 url', async () => {
+        fetchMock
+            .mockResolvedValueOnce(
+                new Response(
+                    JSON.stringify({
+                        created: 1,
+                        data: [{ url: 'https://pre-signed-firefly-prod.s3-accelerate.amazonaws.com/x.png' }],
+                    }),
+                    { status: 200, headers: { 'content-type': 'application/json' } },
+                ),
+            )
+            .mockResolvedValueOnce(
+                new Response(new Uint8Array(Buffer.from(pngB64(1024, 1024), 'base64')), { status: 200 }),
+            );
+        const res = await gen({ quality: 'low' });
+        expect(res.status).toBe(200);
+        const raw = JSON.stringify(await res.json());
+        expect(raw).not.toContain('firefly');
+        expect(raw).not.toContain('s3-accelerate');
+    });
+});
+
+describe('luckfill provider(Firefly 转售真 OpenAI 字节、只渲染 medium;全量 openAllTiers + low/high→medium 替换 + 透明拒)', () => {
+    const URL_F = 'http://portal.test/image-adapter/luckfill/v1/images/generations';
+    const gen = (body: Record<string, unknown>) =>
+        handleAdapterImage(
+            jsonReq(URL_F, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', ...body }),
+            'generations',
+            'luckfill',
+        );
+
+    it('registry:api.luckfill.com、openAllTiers、upstreamQuality {low→medium, high→medium}、无 sizes/onlyQualities/transport、透明拒;brand 抹 luckfill / submit|poll failed / Firefly S3 / 前缀', () => {
+        const p = IMAGE_PROVIDERS.luckfill;
+        expect(p.baseUrl).toBe('https://api.luckfill.com');
+        expect(p.openAllTiers).toBe(true);
+        expect(p.upstreamQuality).toEqual({ low: 'medium', high: 'medium' });
+        expect(p.sizes).toBeUndefined();
+        expect(p.onlyQualities).toBeUndefined();
+        expect(p.transport).toBeUndefined();
+        expect(p.noTransparentBackground).toBe(true);
+        expect('luckfill luck-fill adobe特价 Adobe firefly'.replace(p.brand, '*')).toBe('* * * * *');
+        expect('poll failed: 400 Bad request to openai: Transparent background'.replace(p.brand, '')).toBe(
+            '400 Transparent background',
+        );
+        expect('submit failed: 451 legal_error'.replace(p.brand, '')).toBe('451 legal_error');
+        expect('https://pre-signed-firefly-prod.s3-accelerate.amazonaws.com/x'.replace(p.brand, '*')).toBe(
+            'https://*/x',
+        );
+    });
+
+    it('三档 × 任意尺寸全放行:上游 quality 恒发 medium(JSON 与 multipart),回显与计费按客户请求档', async () => {
+        for (const [size, q] of [
+            ['1024x1024', 'low'],
+            ['1024x1024', 'medium'],
+            ['1024x1024', 'high'],
+            ['1344x1008', 'low'],
+            ['3840x2160', 'high'],
+        ] as const) {
+            fetchMock.mockReset();
+            okUpstream();
+            const res = await gen({ size, quality: q });
+            expect(res.status).toBe(200);
+            const [url, init] = fetchMock.mock.calls[0];
+            expect(url).toBe('https://api.luckfill.com/v1/images/generations');
+            const sent = JSON.parse(init.body as string);
+            expect(sent.model).toBe('gpt-image-2');
+            expect(sent.quality).toBe('medium');
+            const [w, h] = size.split('x').map(Number);
+            const body = await res.json();
+            expect(body.quality).toBe(q);
+            expect(body.size).toBe(size);
+            expect(body.usage.output_tokens).toBe(officialOutputTokens(w, h, q));
+        }
+        fetchMock.mockReset();
+        okUpstream();
+        const res = await handleAdapterImage(
+            formReq(
+                'http://portal.test/image-adapter/luckfill/v1/images/edits',
+                { model: 'gpt-image-2', prompt: 'watercolor', size: '1024x1024', quality: 'low' },
+                [TINY_PNG],
+            ),
+            'edits',
+            'luckfill',
+        );
+        expect(res.status).toBe(200);
+        const form = fetchMock.mock.calls[0][1].body as FormData;
+        expect(form.get('quality')).toBe('medium');
+        expect(((await res.json()) as { quality: string }).quality).toBe('low');
+    });
+
+    it('size=auto 原样透传,按返回图实际尺寸(上游 auto → 2048²)计费 + 回显', async () => {
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(2048, 2048) }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+        const res = await gen({ size: 'auto', quality: 'low' });
+        expect(res.status).toBe(200);
+        expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).size).toBe('auto');
+        const body = await res.json();
+        expect(body.size).toBe('2048x2048');
+        expect(body.usage.output_tokens).toBe(officialOutputTokens(2048, 2048, 'low'));
+    });
+
+    it('透明请求 → 503 让路不打上游;上游 451 legal_error → 终态 400 内容安全(不泄品牌);上游 500 poll failed → 503 中性体', async () => {
+        okUpstream();
+        const r0 = await gen({ quality: 'low', background: 'transparent' });
+        expect(r0.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+
+        fetchMock.mockReset();
+        fetchMock.mockResolvedValue(
+            new Response(
+                JSON.stringify({
+                    error: {
+                        message: 'submit failed: 451 {"error_code":"legal_error","message":""}',
+                        type: 'api_error',
+                        param: '',
+                        code: 'api_error',
+                    },
+                }),
+                { status: 451 },
+            ),
+        );
+        const r1 = await gen({ quality: 'high' });
+        expect(r1.status).toBe(400);
+        const t1 = await r1.text();
+        expect(JSON.parse(t1).error.code).toBe('moderation_blocked');
+        expect(t1).not.toMatch(/luckfill|submit failed/i);
+
+        fetchMock.mockReset();
+        fetchMock.mockResolvedValue(
+            new Response(
+                JSON.stringify({
+                    error: {
+                        message: 'poll failed: 502 upstream gone (luckfill)',
+                        type: 'api_error',
+                        param: '',
+                        code: 'api_error',
+                    },
+                }),
+                { status: 500 },
+            ),
+        );
+        const r2 = await gen({ quality: 'medium' });
+        expect(r2.status).toBe(503);
+        expect(await r2.text()).not.toMatch(/luckfill|poll failed/i);
+    });
+});
+
+describe('llmway provider(Firefly 线只渲染 medium;全量 openAllTiers + low/high→medium 上游替换、回显/计费按请求档 + 透明拒)', () => {
+    const URL_L = 'http://portal.test/image-adapter/llmway/v1/images/generations';
+    const gen = (body: Record<string, unknown>) =>
+        handleAdapterImage(
+            jsonReq(URL_L, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', ...body }),
+            'generations',
+            'llmway',
+        );
+
+    it('registry:llmway.ai、openAllTiers、upstreamQuality {low→medium, high→medium}、无 sizes/onlyQualities/transport、透明拒;brand 抹 llmway / 熔断文案 / poll failed / Firefly S3 / 前缀', () => {
+        const p = IMAGE_PROVIDERS.llmway;
+        expect(p.baseUrl).toBe('https://llmway.ai');
+        expect(p.openAllTiers).toBe(true);
+        expect(p.upstreamQuality).toEqual({ low: 'medium', high: 'medium' });
+        expect(p.sizes).toBeUndefined();
+        expect(p.onlyQualities).toBeUndefined();
+        expect(p.transport).toBeUndefined();
+        expect(p.noTransparentBackground).toBe(true);
+        expect('llmway llm-way llm-gpt-2-medium Adobe firefly'.replace(p.brand, '*')).toBe('* * * * *');
+        expect(
+            'All 1 channels for model gpt-image-2 under group llm-gpt-2-medium are temporarily suspended by circuit breaker (last upstream error: status_429), auto-recovery probe in ~121s (request id: x)'.replace(
+                p.brand,
+                '*',
+            ),
+        ).toBe(
+            'All 1 channels for model gpt-image-2 under group * are temporarily suspended by * (last upstream error: status_429), *(request id: x)',
+        );
+        expect('poll failed: 400 Bad request to openai: Transparent background'.replace(p.brand, '')).toBe(
+            '400 Transparent background',
+        );
+        expect('https://pre-signed-firefly-prod.s3-accelerate.amazonaws.com/x'.replace(p.brand, '*')).toBe(
+            'https://*/x',
+        );
+    });
+
+    it('三档 × 任意尺寸全放行:上游 quality 恒发 medium(JSON 与 multipart),回显与计费按客户请求档', async () => {
+        for (const [size, q] of [
+            ['1024x1024', 'low'],
+            ['1024x1024', 'medium'],
+            ['1024x1024', 'high'],
+            ['1024x1024', 'HIGH'],
+            ['1344x1008', 'low'],
+            ['3840x2160', 'high'],
+        ] as const) {
+            fetchMock.mockReset();
+            okUpstream();
+            const res = await gen({ size, quality: q });
+            expect(res.status).toBe(200);
+            const [url, init] = fetchMock.mock.calls[0];
+            expect(url).toBe('https://llmway.ai/v1/images/generations');
+            const sent = JSON.parse(init.body as string);
+            expect(sent.model).toBe('gpt-image-2');
+            expect(sent.quality).toBe('medium');
+            const [w, h] = size.split('x').map(Number);
+            const body = await res.json();
+            expect(body.quality).toBe(q.toLowerCase());
+            expect(body.size).toBe(size);
+            expect(body.usage.output_tokens).toBe(
+                officialOutputTokens(w, h, q.toLowerCase() as 'low' | 'medium' | 'high'),
+            );
+        }
+        fetchMock.mockReset();
+        okUpstream();
+        const res = await handleAdapterImage(
+            formReq(
+                'http://portal.test/image-adapter/llmway/v1/images/edits',
+                { model: 'gpt-image-2', prompt: 'watercolor', size: '1024x1024', quality: 'high' },
+                [TINY_PNG],
+            ),
+            'edits',
+            'llmway',
+        );
+        expect(res.status).toBe(200);
+        const form = fetchMock.mock.calls[0][1].body as FormData;
+        expect(form.get('quality')).toBe('medium');
+        expect(((await res.json()) as { quality: string }).quality).toBe('high');
+    });
+
+    it('size=auto 原样透传(openAllTiers),按返回图实际尺寸计费 + 回显', async () => {
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(1402, 1122) }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+        const res = await gen({ size: 'auto', quality: 'low' });
+        expect(res.status).toBe(200);
+        expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).size).toBe('auto');
+        const body = await res.json();
+        expect(body.size).toBe('1402x1122');
+        expect(body.usage.output_tokens).toBe(officialOutputTokens(1402, 1122, 'low'));
+    });
+
+    it('透明请求 → 503 让路不打上游;上游 503 熔断 / 500 poll failed / 429 → 503 中性体不泄品牌与熔断文案', async () => {
+        okUpstream();
+        const r0 = await gen({ quality: 'low', background: 'transparent' });
+        expect(r0.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+        for (const [status, msg, code] of [
+            [
+                503,
+                'All 1 channels for model gpt-image-2 under group llm-gpt-2-medium are temporarily suspended by circuit breaker (last upstream error: status_429: no active tokens available), auto-recovery probe in ~121s',
+                'channel_circuit_open',
+            ],
+            [500, 'poll failed: 502 upstream gone (llmway)', 'new_api_error'],
+            [429, 'no active tokens available', 'rate_limited'],
+        ] as const) {
+            fetchMock.mockReset();
+            fetchMock.mockResolvedValue(
+                new Response(JSON.stringify({ error: { message: msg, type: 'new_api_error', param: '', code } }), {
+                    status,
+                }),
+            );
+            const r = await gen({ quality: 'high' });
+            expect(r.status).toBe(503);
+            expect(await r.text()).not.toMatch(/llmway|llm-gpt-2|circuit breaker|poll failed/i);
+        }
+    });
+});
+
+describe('junzehigh provider(钧泽 gpt-image-high SKU,10k pool 网关,全量 openAllTiers + upstreamModel 映射 + 透明拒)', () => {
+    const URL_J = 'http://portal.test/image-adapter/junzehigh/v1/images/generations';
+    const gen = (body: Record<string, unknown>) =>
+        handleAdapterImage(
+            jsonReq(URL_J, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', ...body }),
+            'generations',
+            'junzehigh',
+        );
+
+    it('registry:ai.junze.me、upstreamModel=gpt-image-high、openAllTiers、无 sizes/upstreamQuality/onlyQualities/transport、透明拒;brand 抹 junze / 10k pool / ERR 码 / Firefly S3 / 前缀', () => {
+        const p = IMAGE_PROVIDERS.junzehigh;
+        expect(p.baseUrl).toBe('https://ai.junze.me');
+        expect(p.upstreamModel).toBe('gpt-image-high');
+        expect(p.openAllTiers).toBe(true);
+        expect(p.sizes).toBeUndefined();
+        expect(p.upstreamQuality).toBeUndefined();
+        expect(p.onlyQualities).toBeUndefined();
+        expect(p.transport).toBeUndefined();
+        expect(p.noTransparentBackground).toBe(true);
+        expect('junze 钧泽 distributor 10k pool ERR-A3173747BB Adobe firefly'.replace(p.brand, '*')).toBe(
+            '* 钧泽 * * * * *',
+        );
+        expect('https://pre-signed-firefly-prod.s3-accelerate.amazonaws.com/x'.replace(p.brand, '*')).toBe(
+            'https://*/x',
+        );
+        expect('Bad request to openai: Transparent background'.replace(p.brand, '')).toBe('Transparent background');
+    });
+
+    it('三档 × 任意尺寸全放行:上游 model 恒发 gpt-image-high(JSON 与 multipart),quality 原样透传,回显 gpt-image-2 语义 + 官方账单', async () => {
+        for (const [size, q] of [
+            ['1024x1024', 'low'],
+            ['1024x1024', 'medium'],
+            ['1024x1024', 'high'],
+            ['1344x1008', 'low'],
+            ['3840x2160', 'high'],
+        ] as const) {
+            fetchMock.mockReset();
+            okUpstream();
+            const res = await gen({ size, quality: q });
+            expect(res.status).toBe(200);
+            const [url, init] = fetchMock.mock.calls[0];
+            expect(url).toBe('https://ai.junze.me/v1/images/generations');
+            const sent = JSON.parse(init.body as string);
+            expect(sent.model).toBe('gpt-image-high');
+            expect(sent.quality).toBe(q);
+            const [w, h] = size.split('x').map(Number);
+            const body = await res.json();
+            expect(body.quality).toBe(q);
+            expect(body.size).toBe(size);
+            expect(body.usage.output_tokens).toBe(officialOutputTokens(w, h, q));
+        }
+        fetchMock.mockReset();
+        okUpstream();
+        const res = await handleAdapterImage(
+            formReq(
+                'http://portal.test/image-adapter/junzehigh/v1/images/edits',
+                { model: 'gpt-image-2', prompt: 'watercolor', size: '1024x1024', quality: 'high' },
+                [TINY_PNG],
+            ),
+            'edits',
+            'junzehigh',
+        );
+        expect(res.status).toBe(200);
+        const form = fetchMock.mock.calls[0][1].body as FormData;
+        expect(form.get('model')).toBe('gpt-image-high');
+        expect(form.get('quality')).toBe('high');
+    });
+
+    it('size=auto 原样透传(openAllTiers),按返回图实际尺寸计费 + 回显', async () => {
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(1024, 1024) }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+        const res = await gen({ size: 'auto', quality: 'high' });
+        expect(res.status).toBe(200);
+        expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).size).toBe('auto');
+        const body = await res.json();
+        expect(body.size).toBe('1024x1024');
+        expect(body.usage.output_tokens).toBe(officialOutputTokens(1024, 1024, 'high'));
+    });
+
+    it('透明请求 → 503 让路不打上游;上游 503 10k pool / 429 并发上限 / 502 → 503 中性体不泄品牌与 ERR 码', async () => {
+        okUpstream();
+        const r0 = await gen({ quality: 'low', background: 'transparent' });
+        expect(r0.status).toBe(503);
+        expect(fetchMock).not.toHaveBeenCalled();
+        for (const [status, msg, type] of [
+            [503, '10k pool upstream unavailable', 'pool_upstream_unavailable'],
+            [429, 'generation concurrency limit reached; retry shortly', 'rate_limited'],
+            [429, 'account selection is busy; retry shortly', 'rate_limited'],
+            [502, '10k pool upstream unavailable', 'server_error'],
+        ] as const) {
+            fetchMock.mockReset();
+            fetchMock.mockResolvedValue(
+                new Response(JSON.stringify({ error: { message: msg, type, param: '', code: 'ERR-ECB7236D2D' } }), {
+                    status,
+                }),
+            );
+            const r = await gen({ quality: 'high' });
+            expect(r.status).toBe(503);
+            expect(await r.text()).not.toMatch(/junze|钧泽|10k pool|ERR-/i);
+        }
+    });
+});
+
 describe('junze / junzestable provider(钧泽 API,Firefly 转售,openAllTiers 紧急备用线)', () => {
     const URL_JUNZE = 'http://portal.test/image-adapter/junze/v1/images/generations';
     const URL_STABLE = 'http://portal.test/image-adapter/junzestable/v1/images/generations';
@@ -3221,5 +4526,102 @@ describe('open302 provider(开放堆栈,非 new-api 三源混池,openAllTiers �
         );
         const lc = out.toLowerCase();
         for (const w of ['open302', '词元', '开放堆栈', 'firefly', 'adobe']) expect(lc).not.toContain(w);
+    });
+});
+
+describe('monkeycoding provider(Go 网关重编码剥 C2PA;2.0 高档非真 high 但 operator 全接;openAllTiers、透明放行)', () => {
+    const URL_M = 'http://portal.test/image-adapter/monkeycoding/v1/images/generations';
+    const gen = (body: Record<string, unknown>) =>
+        handleAdapterImage(
+            jsonReq(URL_M, { model: 'gpt-image-2', prompt: 'x', size: '1024x1024', ...body }),
+            'generations',
+            'monkeycoding',
+        );
+
+    it('registry:47.251.171.153(原 api.monkeycoding.club 域名限速)、openAllTiers、无 sizes/upstreamQuality/onlyQualities/transport、透明不拒(实测真 RGBA);brand 抹 monkeycoding 变体 / adobe / firefly', () => {
+        const p = IMAGE_PROVIDERS.monkeycoding;
+        expect(p.baseUrl).toBe('http://47.251.171.153');
+        expect(p.openAllTiers).toBe(true);
+        expect(p.sizes).toBeUndefined();
+        expect(p.upstreamQuality).toBeUndefined();
+        expect(p.onlyQualities).toBeUndefined();
+        expect(p.transport).toBeUndefined();
+        expect(p.noTransparentBackground).toBeUndefined();
+        expect('monkeycoding monkey coding monkey-coding Adobe firefly'.replace(p.brand, '*')).toBe('* * * * *');
+        expect('https://api.monkeycoding.club/v1/images/generations'.replace(p.brand, '*')).toBe(
+            'https://api.*.club/v1/images/generations',
+        );
+    });
+
+    it('三档 × 任意尺寸全放行,quality 原样透传(不替换),按请求尺寸与档合成官方账单(上游 2.0 常数表 usage 丢弃)', async () => {
+        for (const [size, q] of [
+            ['1024x1024', 'low'],
+            ['1024x1024', 'medium'],
+            ['1024x1024', 'high'],
+            ['1344x1008', 'low'],
+            ['2880x2880', 'medium'],
+            ['3840x2160', 'high'],
+        ] as const) {
+            fetchMock.mockReset();
+            okUpstream();
+            const res = await gen({ size, quality: q });
+            expect(res.status).toBe(200);
+            const [url, init] = fetchMock.mock.calls[0];
+            expect(url).toBe('http://47.251.171.153/v1/images/generations');
+            const sent = JSON.parse(init.body as string);
+            expect(sent.model).toBe('gpt-image-2');
+            expect(sent.quality).toBe(q);
+            const [w, h] = size.split('x').map(Number);
+            const body = await res.json();
+            expect(body.quality).toBe(q);
+            expect(body.size).toBe(size);
+            expect(body.usage.output_tokens).toBe(officialOutputTokens(w, h, q));
+        }
+    });
+
+    it('size=auto 原样透传,按返回图实际尺寸(上游 auto「竖屏」→ 1086×1448)计费 + 回显', async () => {
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: pngB64(1086, 1448) }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+        );
+        const res = await gen({ size: 'auto', quality: 'low' });
+        expect(res.status).toBe(200);
+        expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).size).toBe('auto');
+        const body = await res.json();
+        expect(body.size).toBe('1086x1448');
+        expect(body.usage.output_tokens).toBe(officialOutputTokens(1086, 1448, 'low'));
+    });
+
+    it('透明请求放行且 background=transparent 透传进上游 body(实测真 RGBA,靠交付前 alpha 校验兜底)', async () => {
+        okUpstream();
+        const res = await gen({ background: 'transparent', quality: 'low' });
+        expect(res.status).toBe(200);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).background).toBe('transparent');
+    });
+
+    it('上游 429 rate_limit_error(「Service temporarily unavailable」)→ 503 中性体不泄品牌;上游 5xx → 503', async () => {
+        fetchMock.mockResolvedValue(
+            new Response(
+                JSON.stringify({
+                    error: {
+                        message: 'Service temporarily unavailable, please retry later (monkeycoding)',
+                        type: 'rate_limit_error',
+                    },
+                }),
+                { status: 429 },
+            ),
+        );
+        const r1 = await gen({ quality: 'high' });
+        expect(r1.status).toBe(503);
+        expect(await r1.text()).not.toMatch(/monkey/i);
+
+        fetchMock.mockResolvedValue(new Response('<html>cloudflare 524</html>', { status: 524 }));
+        const r2 = await gen({ quality: 'medium' });
+        expect(r2.status).toBe(503);
+        expect(await r2.text()).not.toMatch(/monkey|cloudflare/i);
     });
 });

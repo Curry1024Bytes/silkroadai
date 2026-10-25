@@ -19,6 +19,9 @@ import {
     isSeedreamModel,
     SEEDREAM_MODEL,
     SEEDREAM_UPSTREAM_MODEL,
+    SEEDREAM_FLASH_MODEL,
+    SEEDREAM_FLASH_UPSTREAM_MODEL,
+    resolveSeedreamModel,
 } from '@/lib/seedream/adapter';
 
 const URL = 'http://portal.test/seedream-adapter/v1/images/generations';
@@ -57,6 +60,7 @@ beforeEach(() => {
 });
 afterEach(() => {
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
     vi.restoreAllMocks();
 });
 
@@ -100,15 +104,19 @@ function sentBody(call = 0): Record<string, unknown> {
 
 describe('seedream pricing (官方 USD × 0.55 × 6.8;500k quota = ¥1)', () => {
     it('售价表逐 quota 精确', () => {
-        expect(sellQuota(0.045)).toBe(84_150); // 普通 ≤2.36MP  ¥0.1683
-        expect(sellQuota(0.09)).toBe(168_300); // 普通 >2.36MP  ¥0.3366
-        expect(sellQuota(0.0225)).toBe(42_075); // 图层 ≤2.36MP  ¥0.0842
+        expect(sellQuota(0.045)).toBe(84_150); // 普通 ≤2.61MP  ¥0.1683
+        expect(sellQuota(0.09)).toBe(168_300); // 普通 >2.61MP  ¥0.3366
+        expect(sellQuota(0.0225)).toBe(42_075); // 图层 ≤2.61MP  ¥0.0842
+        expect(sellQuota(0.018)).toBe(33_660); // Flash 一口价 ¥0.06732
         expect(sellQuota(0.003)).toBe(5_610); // 输入图第 2 张起 ¥0.01122
     });
-    it('像素分档:1.5K(1536²=2,359,296)在 low 档内,多 1 像素行即 high', () => {
+    it('像素分档:阈值 le_261w(2,610,000),1615² 在 low 档内,1616² 即 high', () => {
+        vi.stubEnv('SEEDREAM_PRO_PIXEL_TIER_THRESHOLD', '2610000');
         expect(pixelTier(1024, 1024)).toBe('low');
         expect(pixelTier(1536, 1536)).toBe('low');
-        expect(pixelTier(1537, 1537)).toBe('high');
+        expect(pixelTier(1537, 1537)).toBe('low'); // 2.36–2.61MP:旧阈值 2.36M 曾误判 high
+        expect(pixelTier(1615, 1615)).toBe('low');
+        expect(pixelTier(1616, 1616)).toBe('high');
         expect(pixelTier(2048, 2048)).toBe('high');
         expect(outputImageQuota(1536, 1536, false)).toBe(84_150);
         expect(outputImageQuota(2048, 2048, false)).toBe(168_300);
@@ -143,6 +151,30 @@ describe('seedream pricing (官方 USD × 0.55 × 6.8;500k quota = ¥1)', () => 
         expect(u.input_tokens).toBe(0);
         expect(u.generated_images).toBe(3);
     });
+    it('Flash:一口价 33,660/张,不分尺寸 / 普通或图层,参考图不收费', () => {
+        expect(outputImageQuota(1024, 1024, false, SEEDREAM_FLASH_MODEL)).toBe(33_660);
+        expect(outputImageQuota(2496, 1664, false, SEEDREAM_FLASH_MODEL)).toBe(33_660);
+        expect(outputImageQuota(601, 1200, true, SEEDREAM_FLASH_MODEL)).toBe(33_660);
+        expect(inputImagesQuota(4, SEEDREAM_FLASH_MODEL)).toBe(0);
+        expect(
+            synthSeedreamUsage({
+                outputs: [
+                    { w: 1024, h: 1024 },
+                    { w: 601, h: 1200 },
+                    { w: 625, h: 1248 },
+                ],
+                layer: true,
+                inputImages: 3,
+                model: SEEDREAM_FLASH_MODEL,
+            }),
+        ).toEqual({
+            input_tokens: 0,
+            output_tokens: 33_660 * 3,
+            total_tokens: 33_660 * 3,
+            input_images: 3,
+            generated_images: 3,
+        });
+    });
 });
 
 // ============ 入参归一 ============
@@ -152,6 +184,9 @@ describe('seedream 入参归一', () => {
         expect(isSeedreamModel('seedream-5-0-pro')).toBe(true);
         expect(isSeedreamModel(' Seedream-5-0-Pro ')).toBe(true);
         expect(isSeedreamModel(SEEDREAM_UPSTREAM_MODEL)).toBe(false);
+        expect(isSeedreamModel('seedream-5-0-flash')).toBe(true);
+        expect(resolveSeedreamModel(' Seedream-5-0-Flash ')).toBe(SEEDREAM_FLASH_MODEL);
+        expect(isSeedreamModel(SEEDREAM_FLASH_UPSTREAM_MODEL)).toBe(false);
         expect(isSeedreamModel('gpt-image-2')).toBe(false);
     });
     it('collectInputImages:image / images / image_url / image_urls,string 与 {url} 两形,顺序保留,空串丢', () => {
@@ -190,6 +225,9 @@ describe('seedream 入参归一', () => {
         );
         expect(s).not.toMatch(/service-?inference|ERR_PROVIDER|dola|volcengine/i);
         expect(s).toContain(SEEDREAM_MODEL);
+        expect(sanitizeUpstreamMessage(`model ${SEEDREAM_FLASH_UPSTREAM_MODEL} rejected`)).toBe(
+            `model ${SEEDREAM_FLASH_MODEL} rejected`,
+        );
     });
 });
 
@@ -285,6 +323,26 @@ describe('handleSeedreamImage', () => {
             generated_images: 1,
         });
         expect(sentBody().size).toBeUndefined(); // 缺省不传 size,上游默认 2K
+    });
+
+    it('Flash:上游换 flash 模型名,model 回对客名,一口价计费(2K 也 33,660、参考图不收)', async () => {
+        upstreamOk([{ b64_json: pngB64(2496, 1664), size: '2496x1664', output_format: 'jpeg' }], {
+            input_images: 3,
+        });
+        const res = await handleSeedreamImage(
+            req({ model: 'Seedream-5-0-Flash', prompt: 'apple', size: '2K', image: ['a', 'b', 'c'] }),
+        );
+        expect(res.status).toBe(200);
+        expect(sentBody().model).toBe(SEEDREAM_FLASH_UPSTREAM_MODEL);
+        const j = (await res.json()) as { model: string; usage: Record<string, number> };
+        expect(j.model).toBe(SEEDREAM_FLASH_MODEL);
+        expect(j.usage).toEqual({
+            input_tokens: 0,
+            output_tokens: 33_660,
+            total_tokens: 33_660,
+            input_images: 3,
+            generated_images: 1,
+        });
     });
 
     it('计费尺寸:上游没给 size 字段 → 读图字节头;2K 走 high 档', async () => {
@@ -447,4 +505,26 @@ describe('handleSeedreamImage', () => {
         expect(res.status).toBe(502);
         expect(await res.text()).not.toContain('usage');
     });
+});
+
+describe('LLmRoute price boundary policy', () => {
+    it('keeps the original 2360000 boundary by default and applies the selected boundary inclusively', () => {
+        vi.stubEnv('SEEDREAM_PRO_PIXEL_TIER_THRESHOLD', '');
+        expect(pixelTier(2360, 1000)).toBe('low');
+        expect(pixelTier(2361, 1000)).toBe('high');
+        expect(outputImageQuota(2500, 1000, false)).toBe(168300);
+        vi.stubEnv('SEEDREAM_PRO_PIXEL_TIER_THRESHOLD', '2610000');
+        expect(pixelTier(2610, 1000)).toBe('low');
+        expect(pixelTier(2611, 1000)).toBe('high');
+        expect(outputImageQuota(2500, 1000, false)).toBe(84150);
+    });
+    it.each(['0', '1', 'NaN', '2610001'])(
+        'rejects invalid boundary %s before generating a billed image',
+        async (value) => {
+            vi.stubEnv('SEEDREAM_PRO_PIXEL_TIER_THRESHOLD', value);
+            const response = await handleSeedreamImage(req({ model: SEEDREAM_MODEL, prompt: 'fixture' }));
+            expect(response.status).toBe(503);
+            expect(fetchMock).not.toHaveBeenCalled();
+        },
+    );
 });

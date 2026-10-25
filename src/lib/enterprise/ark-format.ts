@@ -168,9 +168,8 @@ export interface ArkTaskResponseInput {
      * 实测上游完成态确实返回 framespersecond / generate_audio / execution_expires_after /
      * seed / tools,是我们在出口砍掉的。
      *
-     * ⚠️ 不能简单改成让 volc 也走 `extended` —— 那个分支里的值是**硬编码占位**
-     * (framespersecond: 0、execution_expires_after: 0、service_tier: ''),打开了也对不上基准。
-     * 必须用上游真值,上游没给的项才走火山官方默认值。
+     * 必须用上游真值,上游没给的项才走火山官方默认值。(`extended` 分支里这三项曾是
+     * 硬编码占位 0 / 0 / '',2026-10-13 起也改成同一套取值,见 buildArkTaskResponse。)
      */
     volcMeta?: VolcArkMeta | null;
     /**
@@ -273,7 +272,8 @@ export function buildArkTaskResponse(inp: ArkTaskResponseInput): Record<string, 
     // 值优先级 = 上游真值 > 落库的提交参数 > 官方默认值;客户没传的 safety_identifier / tools 省略。
     const outputFormat = meta?.outputFormat || sub?.outputFormat || VOLC_DEFAULT_OUTPUT_FORMAT;
     const safetyIdentifier = meta?.safetyIdentifier || sub?.safetyIdentifier || null;
-    const fps = meta?.framespersecond ?? VOLC_DEFAULT_FPS;
+    // 上游偶发回 0(BytePlus 未完成态)→ 视为未给,走官方默认 24,绝不把 0 放出去。
+    const fps = meta?.framespersecond && meta.framespersecond > 0 ? meta.framespersecond : VOLC_DEFAULT_FPS;
     const frames = arkFrames(meta, fps, inp.duration);
     const toolsEcho = submittedTools(meta, sub);
     const expiresAfter = meta?.executionExpiresAfter ?? sub?.executionExpiresAfter ?? VOLC_DEFAULT_EXPIRES_AFTER;
@@ -283,12 +283,16 @@ export function buildArkTaskResponse(inp: ArkTaskResponseInput): Record<string, 
     // draft_task_id 只在正片任务上出(客户样片号,方舟真号不对客)。
     const draftEcho = meta?.draft ?? sub?.draft ?? false;
     const draftTaskId = sub?.draftTaskId || null;
+    // ⚠️ 这三项曾是硬编码占位(0 / 0 / ''),照抄 #326 客户样例里一条【未完成】任务的值。
+    // 2026-10-13 智象未来网关按 BytePlus 官方下界(framespersecond ≥ 1)校验我们的回显,
+    // 把 0 判成「任务对象元数据异常」→ 客户侧任务卡 queued。改成与 cn / volc 两形同一套取值:
+    // 上游真值 > 落库提交参数 > 官方默认(24 fps / 172800s / 'default')。
     if (inp.extended) {
         base.draft = draftEcho;
         if (draftTaskId) base.draft_task_id = draftTaskId;
-        base.execution_expires_after = 0;
-        base.framespersecond = 0;
-        base.service_tier = '';
+        base.execution_expires_after = expiresAfter;
+        base.framespersecond = fps;
+        base.service_tier = meta?.serviceTier || VOLC_DEFAULT_SERVICE_TIER;
         base.tools = toolsEcho;
         base.seed = inp.seed != null ? Number(inp.seed) : 0;
         base.generate_audio = inp.generateAudio ?? true;
@@ -373,4 +377,102 @@ export function buildArkTaskResponse(inp: ArkTaskResponseInput): Record<string, 
 /** 火山形错误响应体(提交/参数错误用)。 */
 export function arkErrorBody(code: string, message: string, type = 'invalid_request_error'): Record<string, unknown> {
     return { error: { code, message, type } };
+}
+
+// ── 上游归一 JSON → 火山形元数据 / task 行 → 提交回显参数(2026-10-19 从 proxy.ts 搬来,回调投递也要用)──
+/** 上游回的已推导值(字符串);缺失/空 → null。 */
+export function upstreamStr(v: unknown): string | null {
+    return typeof v === 'string' && v ? v : null;
+}
+/** 上游回的已推导值(数字);缺失/非法 → null。 */
+export function upstreamNum(v: unknown): number | null {
+    return typeof v === 'number' && Number.isFinite(v) ? v : null;
+}
+export function upstreamArkMeta(j: Record<string, unknown> | null): VolcArkMeta {
+    return {
+        framespersecond: upstreamNum(j?.framespersecond),
+        generateAudio: typeof j?.generate_audio === 'boolean' ? j.generate_audio : null,
+        executionExpiresAfter: upstreamNum(j?.execution_expires_after),
+        seed: upstreamNum(j?.seed),
+        tools: Array.isArray(j?.tools) ? j.tools : null,
+        createdAt: upstreamNum(j?.upstream_created_at),
+        updatedAt: upstreamNum(j?.upstream_updated_at),
+        lastFrameUrl: typeof j?.last_frame_url === 'string' ? j.last_frame_url : null,
+        outputFormat: upstreamStr(j?.output_format),
+        safetyIdentifier: upstreamStr(j?.safety_identifier),
+        serviceTier: upstreamStr(j?.service_tier),
+        frames: upstreamNum(j?.frames),
+        draft: typeof j?.draft === 'boolean' ? j.draft : null,
+    };
+}
+/** task 行里落库的回显参数(存量行三列 NULL → 缺省/省略)。 */
+export function submittedArkParams(t: {
+    safety_identifier?: string | null;
+    output_format?: string | null;
+    tools?: unknown;
+    execution_expires_after?: number | null;
+    draft?: boolean | null;
+    draft_task_id?: string | null;
+}): ArkSubmittedParams {
+    return {
+        safetyIdentifier: t.safety_identifier ?? null,
+        outputFormat: t.output_format ?? null,
+        tools: t.tools ?? null,
+        executionExpiresAfter: t.execution_expires_after ?? null,
+        draft: t.draft ?? null,
+        draftTaskId: t.draft_task_id ?? null,
+    };
+}
+
+/**
+ * 终态回调体(2026-10-19):与客户按同一入口查询会拿到的响应体同形。
+ * - ark:火山形(global/promax 扩展形;cn/volc 官方形),上游真值 > 落库 > 默认;
+ * - v1:上游归一 JSON 原样 + 对客 id。
+ * j = 适配器归一 JSON(pollVideoWithKey 的 body);对账路径没有上游体时传合成的 {status, fail_reason}。
+ */
+export function buildTerminalCallbackBody(
+    task: {
+        id: string;
+        model: string;
+        status: string;
+        created_at: Date;
+        resolution: string;
+        duration: number;
+        ratio?: string | null;
+        seed?: bigint | number | null;
+        generate_audio?: boolean | null;
+        fail_reason?: string | null;
+        safety_identifier?: string | null;
+        output_format?: string | null;
+        tools?: unknown;
+        execution_expires_after?: number | null;
+        draft?: boolean | null;
+        draft_task_id?: string | null;
+    },
+    j: Record<string, unknown>,
+    format: 'v1' | 'ark',
+    region: 'cn' | 'global' | 'promax' | 'volc',
+): Record<string, unknown> {
+    if (format !== 'ark') return { ...j, id: task.id, task_id: task.id, object: 'video' };
+    const ourStatus = upstreamStr(j.status) ?? task.status;
+    const videoUrl = upstreamStr(j.video_url) ?? upstreamStr(j.url);
+    return buildArkTaskResponse({
+        taskId: task.id,
+        internalModel: task.model,
+        status: arkStatus(ourStatus),
+        videoUrl,
+        lastFrameUrl: upstreamStr(j.last_frame_url),
+        usage: (j.usage ?? null) as { completion_tokens?: number; total_tokens?: number } | null,
+        failReason: upstreamStr(j.fail_reason) ?? task.fail_reason ?? null,
+        createdAt: task.created_at,
+        resolution: upstreamStr(j.resolution) ?? task.resolution,
+        duration: upstreamNum(j.duration) ?? task.duration,
+        ratio: upstreamStr(j.ratio) ?? task.ratio ?? null,
+        seed: task.seed ?? null,
+        generateAudio: task.generate_audio ?? null,
+        extended: region === 'global' || region === 'promax',
+        volcMeta: region === 'volc' ? upstreamArkMeta(j) : null,
+        upstreamMeta: region !== 'volc' ? upstreamArkMeta(j) : null,
+        submitted: submittedArkParams(task),
+    });
 }

@@ -24,7 +24,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { stripAdobeImageMetadataB64 } from '@/lib/proxy/image-metadata';
 import { encodeQuality, transcodeB64, transcodeTargetOf } from '@/lib/image/transcode';
 import { newGenerationId } from '@/lib/image/generation-id';
-import { IMAGE_PROVIDERS, type ImageProvider } from './providers';
+import { type AsyncTaskTransport, IMAGE_PROVIDERS, type ImageProvider } from './providers';
 import { countImagePromptTokens } from '@/lib/tokens/count-text-tokens';
 import { officialImageInputTokens } from '@/lib/tokens/image-input-tokens';
 import {
@@ -108,6 +108,13 @@ function normQuality(q: string): Quality {
     // auto/standard/缺省/未知 → low:上游对 auto 实测按 low 刻度计费(2026-08-06 发现按 medium
     // 归档时同请求价差 6.9×)。low 必在守门线下 → 这类请求全部交 failover 渠道,适配器不再超收。
     return s === 'medium' || s === 'high' ? s : 'low';
+}
+
+/** 发给上游的 quality:provider.upstreamQuality 有替换则替换(只影响上游 body;计费与回显仍按客户请求档,
+ *  见 providers.ts 字段注释),否则原样归一透传。 */
+function upstreamQualityFor(provider: ImageProvider, q: string): Quality {
+    const norm = normQuality(q);
+    return provider.upstreamQuality?.[norm] ?? norm;
 }
 
 /** 守门线:合成售价必须显著高于上游按张成本(¥0.1/张)。
@@ -321,8 +328,11 @@ export function sanitizeAdapterError(text: string, brand: RegExp): string {
 // policy`(code image_safety / content_safety),zdchat 一部分是 type content_filter —— 旧正则全漏,451 落到
 // 「其余 4xx 保守 failover」→ 单渠道分组下客户拿 503「engine overloaded」并无限重试(24h 内 8k+/15min)。
 // 补全措辞,并把 HTTP 451 本身视为内容安全终态(这些上游只用 451 表示安全过滤)。
+// 2026-10-20:monkeycoding(ChatGPT 网页池)审核拒是 HTTP 400 + `Content policy violation: the prompt or
+// generated image was rejected by the moderation system` —— 旧正则全漏 → 当瞬时错 failover → 客户拿 503
+// 「temporarily unable」并重试放大(部署后 10 分钟内占 503 真因 83%;近 1h 6,476 次 failover 仅 9.8% 挽回)。
 const UPSTREAM_SAFETY_RE =
-    /image_unsafe|image_safety|content_safety|content_filter|content rejected|appear to be unsafe|safety policy|content safety/i;
+    /image_unsafe|image_safety|content_safety|content_filter|content rejected|appear to be unsafe|safety policy|content safety|content policy violation|moderation system/i;
 const UPSTREAM_BADREQ_RE = /prompt is required|invalid image|bad_request|validation_error|undefined mention/i;
 const UPSTREAM_CHANNEL_RE = /no available channel|model_not_found/i;
 
@@ -457,11 +467,11 @@ async function parseIncoming(req: NextRequest, mode: ImageMode): Promise<ParsedR
 }
 
 /** 拉上游图 URL 转 b64(60s 超时 + 50MB 上限;4K PNG 实测 8-14MB)。失败返 null。 */
-async function fetchImageAsB64(url: string): Promise<string | null> {
+async function fetchImageAsB64(url: string, headers?: Record<string, string>): Promise<string | null> {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 60_000);
     try {
-        const r = await fetch(url, { signal: ctrl.signal });
+        const r = await fetch(url, headers ? { signal: ctrl.signal, headers } : { signal: ctrl.signal });
         if (!r.ok) return null;
         const buf = Buffer.from(await r.arrayBuffer());
         if (buf.length === 0 || buf.length > 50 * 1024 * 1024) return null;
@@ -489,6 +499,9 @@ async function callUpstreamOnce(
     parsed: ParsedRequest,
     auth: string,
 ): Promise<string[] | TerminalReject | null> {
+    // 异步任务形上游(providers.ts transport)→ 独立分支;其余 provider 走下面的同步直转,路径不变。
+    if (provider.transport?.kind === 'async-task')
+        return callUpstreamAsyncTask(provider, provider.transport, providerName, mode, parsed, auth);
     const url = `${provider.baseUrl}/v1/images/${mode}`;
     // body 每次重建(FormData 一次性语义),且【不传 n】—— 每次调用只取 1 张
     let upstreamBody: BodyInit;
@@ -500,7 +513,7 @@ async function callUpstreamOnce(
         const sendSize = parsed.upstreamSize ?? parsed.size.trim(); // auto 原样透传;缺省不发(官方缺省即 auto)
         if (sendSize) f.append('size', sendSize);
         f.append('response_format', 'b64_json'); // 不带时 ominiapi 返自家 OSS url(上游身份泄漏),显式要 b64
-        if (parsed.quality) f.append('quality', normQuality(parsed.quality));
+        if (parsed.quality) f.append('quality', upstreamQualityFor(provider, parsed.quality));
         for (const [k, v] of Object.entries(parsed.extras)) f.append(k, v);
         for (const img of parsed.images)
             f.append('image', new Blob([new Uint8Array(img.buf)], { type: img.type }), img.name);
@@ -515,7 +528,7 @@ async function callUpstreamOnce(
         };
         const sendSize = parsed.upstreamSize ?? parsed.size.trim(); // auto 原样透传;缺省不发(官方缺省即 auto)
         if (sendSize) j.size = sendSize;
-        if (parsed.quality) j.quality = normQuality(parsed.quality);
+        if (parsed.quality) j.quality = upstreamQualityFor(provider, parsed.quality);
         // extras 存成字符串;JSON body 里整型字段(output_compression)要转回 number,否则上游拒
         for (const [k, v] of Object.entries(parsed.extras)) {
             j[k] = INT_EXTRAS.has(k) && /^\d+$/.test(v) ? Number(v) : v;
@@ -578,13 +591,174 @@ async function callUpstreamOnce(
             out.push(it.b64_json);
             continue;
         }
-        const b64 = await fetchImageAsB64(it.url as string);
+        const b64 = await fetchImageAsB64(it.url as string, provider.imageFetchHeaders);
         if (!b64) {
             console.warn('[image-adapter] url→b64 fetch failed', { provider: providerName, mode });
             return null;
         }
         out.push(b64);
     }
+    return out;
+}
+
+// ============ 异步任务形上游(submit + poll)============
+// 2026-10-15 为 suduma 引入(镜像 @/lib/image-adapter25 的同名分支):上游 POST 只回任务 id,要轮询取图。差异全收在
+// 这个函数里:JSON 提交(参考图 / 蒙版转 data URL 塞 `image` / `mask`,quality 经 upstreamQualityFor 映射),拿到图 url 后
+// 交回与同步分支相同的 url→b64 拉回;后续 n 扇出 / 补齐、官方 usage 合成、C2PA 剥离、透明校验、failover 分类全部复用。
+const ASYNC_SUBMIT_TIMEOUT_MS = 60_000;
+const ASYNC_POLL_TIMEOUT_MS = 30_000;
+const ASYNC_POLL_MAX_CONSECUTIVE_FAILURES = 3;
+const ASYNC_TASK_DONE = new Set(['succeeded', 'success', 'completed', 'done']);
+const ASYNC_TASK_FAILED = new Set(['failed', 'error', 'cancelled', 'canceled', 'timeout']);
+
+function toDataUrl(img: { buf: Buffer; type: string }): string {
+    return `data:${img.type || 'image/png'};base64,${img.buf.toString('base64')}`;
+}
+
+async function callUpstreamAsyncTask(
+    provider: ImageProvider,
+    transport: AsyncTaskTransport,
+    providerName: string,
+    mode: ImageMode,
+    parsed: ParsedRequest,
+    auth: string,
+): Promise<string[] | TerminalReject | null> {
+    const started = Date.now();
+    const headers: Record<string, string> = { authorization: auth, 'content-type': 'application/json' };
+    const body: Record<string, unknown> = { model: provider.upstreamModel ?? 'gpt-image-2', prompt: parsed.prompt };
+    const sendSize = parsed.upstreamSize ?? parsed.size.trim();
+    if (sendSize) body.size = sendSize;
+    // 异步形上游 quality 必填且只认价表档位(缺省 → 400 没有匹配的价格)→ 恒发归一 + 映射后的档位(缺省归 low → 可再映射)
+    body.quality = upstreamQualityFor(provider, parsed.quality);
+    for (const [k, v] of Object.entries(parsed.extras)) body[k] = INT_EXTRAS.has(k) && /^\d+$/.test(v) ? Number(v) : v;
+    if (parsed.images.length > 0) body.image = parsed.images.map(toDataUrl);
+    if (parsed.mask) body.mask = toDataUrl(parsed.mask);
+
+    const submitUrl = `${provider.baseUrl}${transport.submitPath ?? '/v1/images/generations'}`;
+    let submit: Response;
+    try {
+        submit = await fetch(submitUrl, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(body),
+            signal: AbortSignal.timeout(ASYNC_SUBMIT_TIMEOUT_MS),
+        });
+    } catch (e) {
+        console.warn('[image-adapter] async-task submit fetch failed', {
+            provider: providerName,
+            mode,
+            ms: Date.now() - started,
+            err: e instanceof Error ? e.message : String(e),
+        });
+        return null;
+    }
+    if (!submit.ok) {
+        const errText = await submit.text().catch(() => '');
+        console.warn('[image-adapter] upstream error', {
+            provider: providerName,
+            mode,
+            phase: 'submit',
+            status: submit.status,
+            ms: Date.now() - started,
+            body: sanitizeAdapterError(errText.slice(0, 500), provider.brand),
+        });
+        return classifyUpstreamError(submit.status, errText);
+    }
+    const submitJson = (await submit.json().catch(() => null)) as Record<string, unknown> | null;
+    const taskId = submitJson?.[transport.idField];
+    if (typeof taskId !== 'string' || !taskId) {
+        console.warn('[image-adapter] async-task submit returned no task id', { provider: providerName, mode });
+        return null;
+    }
+
+    const pollUrl = `${provider.baseUrl}${transport.pollPath.replace('{id}', encodeURIComponent(taskId))}`;
+    let consecutiveFailures = 0;
+    let task: Record<string, unknown> | null = null;
+    while (Date.now() - started < transport.maxWaitMs) {
+        await new Promise<void>((r) => setTimeout(r, transport.pollIntervalMs));
+        let poll: Response;
+        try {
+            poll = await fetch(pollUrl, {
+                headers: { authorization: auth },
+                signal: AbortSignal.timeout(ASYNC_POLL_TIMEOUT_MS),
+            });
+        } catch {
+            if (++consecutiveFailures > ASYNC_POLL_MAX_CONSECUTIVE_FAILURES) break;
+            continue;
+        }
+        if (!poll.ok) {
+            // 4xx(任务不存在 / 鉴权)不会自愈 → 直接放弃;5xx 容忍几次
+            if (poll.status < 500 || ++consecutiveFailures > ASYNC_POLL_MAX_CONSECUTIVE_FAILURES) {
+                const errText = await poll.text().catch(() => '');
+                console.warn('[image-adapter] async-task poll error', {
+                    provider: providerName,
+                    mode,
+                    status: poll.status,
+                    ms: Date.now() - started,
+                    body: sanitizeAdapterError(errText.slice(0, 300), provider.brand),
+                });
+                return null;
+            }
+            continue;
+        }
+        consecutiveFailures = 0;
+        const j = (await poll.json().catch(() => null)) as Record<string, unknown> | null;
+        const status = typeof j?.status === 'string' ? j.status.toLowerCase() : '';
+        if (ASYNC_TASK_DONE.has(status) || ASYNC_TASK_FAILED.has(status)) {
+            task = j;
+            break;
+        }
+    }
+    if (!task) {
+        console.warn('[image-adapter] async-task timed out / unreachable', {
+            provider: providerName,
+            mode,
+            ms: Date.now() - started,
+            maxWaitMs: transport.maxWaitMs,
+        });
+        return null;
+    }
+    const status = String(task.status).toLowerCase();
+    if (ASYNC_TASK_FAILED.has(status)) {
+        const errText = typeof task.error === 'string' ? task.error : JSON.stringify(task.error ?? '');
+        console.warn('[image-adapter] upstream error', {
+            provider: providerName,
+            mode,
+            phase: 'task',
+            status,
+            ms: Date.now() - started,
+            body: sanitizeAdapterError(errText.slice(0, 500), provider.brand),
+        });
+        // 任务级失败没有 HTTP 状态:只认内容安全措辞为终态,其余(provider task failed / request invalid)保守 failover
+        const cls = classifyUpstreamError(400, errText);
+        return cls && cls.terminal === 'safety' ? cls : null;
+    }
+    const rawItems = Array.isArray(task.data)
+        ? (task.data as Array<{ b64_json?: string; url?: string }>).filter((it) => it && (it.b64_json || it.url))
+        : [];
+    if (rawItems.length === 0) {
+        console.warn('[image-adapter] async-task succeeded without image', { provider: providerName, mode });
+        return null;
+    }
+    const out: string[] = [];
+    for (const it of rawItems) {
+        if (it.b64_json) {
+            out.push(it.b64_json);
+            continue;
+        }
+        const b64 = await fetchImageAsB64(it.url as string, transport.imageFetchHeaders);
+        if (!b64) {
+            console.warn('[image-adapter] url→b64 fetch failed', { provider: providerName, mode });
+            return null;
+        }
+        out.push(b64);
+    }
+    console.log('[image-adapter] async-task ok', {
+        provider: providerName,
+        mode,
+        ms: Date.now() - started,
+        n: out.length,
+    });
     return out;
 }
 
@@ -616,6 +790,21 @@ export async function handleAdapterImage(
     if (provider.noTransparentBackground && wantsTransparent) {
         console.log('[image-adapter] transparent not served', { provider: providerName, mode });
         return failover('transparent_not_served', 'provider not verified for background=transparent');
+    }
+
+    // ---- 尺寸白名单(调上游之前,不花钱)----
+    // 只支持固定尺寸表的上游(providers.ts sizes):表外显式尺寸 / auto / 缺省一律让路,否则上游会静默改尺寸交付
+    // (pixellelabs 实测 1536×1024 → 2304×1536),客户拿到的像素与请求对不上。
+    if (provider.sizes) {
+        const requested = parsed.size.trim().toLowerCase();
+        if (!requested || isAutoSize(parsed.size) || !provider.sizes.includes(requested)) {
+            console.log('[image-adapter] size not served', {
+                provider: providerName,
+                mode,
+                size: parsed.size || 'auto',
+            });
+            return failover('size_not_served', `size ${parsed.size || 'auto'} not in provider size list`);
+        }
     }
 
     // ---- 守门(调上游之前,不花钱)----

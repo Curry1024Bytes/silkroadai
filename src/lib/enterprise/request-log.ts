@@ -32,7 +32,7 @@ const MAX_INLINE_STRING = 2048; // 入参里超过这个长度的字符串按媒
 const MAX_ERROR_MESSAGE = 500;
 
 export interface RequestLogCtx {
-    kind: 'submit' | 'poll' | 'reconcile' | 'asset_action';
+    kind: 'submit' | 'poll' | 'reconcile' | 'asset_action' | 'callback';
     format?: 'v1' | 'ark' | 'platform' | 'kuaizi';
     startedAt: number;
     userId?: string | null;

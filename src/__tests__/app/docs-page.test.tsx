@@ -263,3 +263,33 @@ describe('/docs page — 第 22 章 Batch API 批量生图(#422 OpenAI Batch 兼
         expect(html).toContain('no available');
     });
 });
+
+describe('/docs page — 第 13 章 gpt-image 流式返回(stream + partial_images,#548/#550 占位动图)', () => {
+    const html = renderToString(<DocsPage />);
+
+    it('参数表有 stream / partial_images 两行', () => {
+        expect(html).toContain('partial_images');
+        expect(html).toContain('Images streaming');
+    });
+
+    it('事件表三件 + keep-alive,说明占位动图不是渐进渲染、不计费、n=1', () => {
+        for (const s of [
+            'image_generation.partial_image',
+            'image_generation.completed',
+            'partial_image_index',
+            'sequence_number',
+            'keep-alive',
+            'image_edit.',
+            '占位动图',
+            'APNG',
+            '占位帧不计费',
+        ])
+            expect(html, s).toContain(s);
+    });
+
+    it('curl -N 与 Python SDK 流式示例', () => {
+        expect(html).toContain('curl -N');
+        expect(html).toContain('stream=True');
+        expect(html).toContain('partial_images=2');
+    });
+});

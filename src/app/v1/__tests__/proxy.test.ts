@@ -105,6 +105,7 @@ vi.mock('@/lib/newapi/token-usage', () => ({
 }));
 
 import { GET, OPTIONS, POST } from '../[...path]/route';
+import * as streamPlaceholders from '@/lib/image/stream-placeholder';
 import { USD_TO_CNY_RATE, quotaToCny } from '@/lib/newapi/quota-units';
 
 const NEWAPI_BASE = process.env.NEWAPI_BASE_URL || 'http://localhost:3000';
@@ -2658,6 +2659,197 @@ describe('/v1 proxy — gemini-nano-banana-2.1 接入(对齐官方:默认 1K、s
         expect(sentImageConfig().imageSize).toBe('2K');
         const data = (await res.json()) as { data: Array<{ url: string }> };
         expect(data.data[0].url).toMatch(/^https:\/\//);
+    });
+});
+
+describe('/v1 proxy — 裸名按量 gemini-3-pro-image / gemini-3.1-flash-image 接入(2026-10-22 核查)', () => {
+    function sentImageConfig(): { imageSize: string; aspectRatio?: string } {
+        const call = mockFetch.mock.calls.find(([u]) => String(u).includes(':generateContent'));
+        expect(call).toBeDefined();
+        const sent = JSON.parse(String((call![1] as RequestInit).body)) as {
+            generationConfig: { imageConfig: { imageSize: string; aspectRatio?: string } };
+        };
+        return sent.generationConfig.imageConfig;
+    }
+
+    for (const MODEL of ['gemini-3-pro-image', 'gemini-3.1-flash-image']) {
+        it(`${MODEL}: chat/completions → 翻译到 native,默认 1K + 托管 URL(不再落 new-api 兼容层)`, async () => {
+            mockFetch.mockReset();
+            mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+            const res = await POST(
+                makeReq('/chat/completions', {
+                    body: { model: MODEL, messages: [{ role: 'user', content: 'a cat' }] },
+                }),
+                ctx('chat', 'completions'),
+            );
+            expect(res.status).toBe(200);
+            expect(res.headers.get('X-Silkroadai-Translated')).toBe('gemini-native');
+            const [url] = mockFetch.mock.calls[0] as [string];
+            expect(url).toBe(`${NEWAPI_BASE}/v1beta/models/${MODEL}:generateContent`);
+            expect(sentImageConfig().imageSize).toBe('1K');
+            const data = (await res.json()) as { choices: Array<{ message: { content: string } }> };
+            expect(data.choices[0].message.content).toMatch(/^!\[image\]\(https:\/\//);
+        });
+
+        it(`${MODEL}: images/generations size=2K → 2K;size=8K → 400 不打上游`, async () => {
+            mockFetch.mockReset();
+            mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+            const ok = await POST(
+                makeReq('/images/generations', { body: { model: MODEL, prompt: 'x', size: '2K' } }),
+                ctx('images', 'generations'),
+            );
+            expect(ok.status).toBe(200);
+            expect(sentImageConfig().imageSize).toBe('2K');
+            mockFetch.mockReset();
+            const bad = await POST(
+                makeReq('/images/generations', { body: { model: MODEL, prompt: 'x', size: '8K' } }),
+                ctx('images', 'generations'),
+            );
+            expect(bad.status).toBe(400);
+            expect(mockFetch).not.toHaveBeenCalled();
+        });
+    }
+
+    it('flash 放行官方 14 比例(含 4:1);pro 官方表只有 10 个 → 4:1 对 pro 是 400', async () => {
+        mockFetch.mockReset();
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const flash = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gemini-3.1-flash-image', prompt: 'x', aspect_ratio: '4:1' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(flash.status).toBe(200);
+        expect(sentImageConfig().aspectRatio).toBe('4:1');
+        mockFetch.mockReset();
+        const pro = await POST(
+            makeReq('/images/generations', { body: { model: 'gemini-3-pro-image', prompt: 'x', aspect_ratio: '4:1' } }),
+            ctx('images', 'generations'),
+        );
+        expect(pro.status).toBe(400);
+        expect(mockFetch).not.toHaveBeenCalled();
+        mockFetch.mockReset();
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const pro169 = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gemini-3-pro-image', prompt: 'x', aspect_ratio: '16:9' },
+            }),
+            ctx('images', 'generations'),
+        );
+        expect(pro169.status).toBe(200);
+        expect(sentImageConfig().aspectRatio).toBe('16:9');
+    });
+});
+
+describe('/v1 proxy — Gemini 生图 chat stream:true → OpenAI chunk 形 SSE(2026-10-22 前被忽略回 JSON)', () => {
+    it.each(['http-error', 'network-error'])(
+        'slow Gemini %s is visible as an SSE error after keepalive starts',
+        async (failure) => {
+            vi.stubEnv('KEEPALIVE_AFTER_MS', '1');
+            vi.stubEnv('KEEPALIVE_TRICKLE_MS', '5');
+            try {
+                mockFetch.mockImplementationOnce(
+                    () =>
+                        new Promise((resolve, reject) =>
+                            setTimeout(() => {
+                                if (failure === 'network-error') reject(new Error('mock network failure'));
+                                else
+                                    resolve(
+                                        new Response(
+                                            JSON.stringify({
+                                                error: { message: 'mock invalid key', type: 'invalid_api_key' },
+                                            }),
+                                            {
+                                                status: 401,
+                                                headers: { 'content-type': 'application/json' },
+                                            },
+                                        ),
+                                    );
+                            }, 25),
+                        ),
+                );
+                const response = await POST(
+                    makeReq('/chat/completions', {
+                        body: {
+                            model: 'gemini-3-pro-image',
+                            stream: true,
+                            messages: [{ role: 'user', content: 'a cat' }],
+                        },
+                    }),
+                    ctx('chat', 'completions'),
+                );
+                const text = await response.text();
+                const data = text
+                    .split('\n')
+                    .filter((line) => line.startsWith('data: ') && line !== 'data: [DONE]')
+                    .map((line) => JSON.parse(line.slice(6)));
+                expect(response.headers.get('content-type')).toBe('text/event-stream');
+                expect(text).toContain(': keepalive');
+                expect(data).toHaveLength(1);
+                expect(data[0].error.message).toContain(
+                    failure === 'network-error' ? 'mock network failure' : 'mock invalid key',
+                );
+                expect(data[0].choices).toBeUndefined();
+                expect(data[0].usage).toBeUndefined();
+                expect(text.endsWith('data: [DONE]\n\n')).toBe(true);
+                expect(mockFetch).toHaveBeenCalledTimes(1);
+            } finally {
+                vi.unstubAllEnvs();
+            }
+        },
+    );
+
+    it('stream:true → text/event-stream,首 chunk 带 content,尾 chunk finish_reason=stop + usage,[DONE] 收尾', async () => {
+        mockFetch.mockReset();
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: { model: 'gemini-nano-banana-2.1', stream: true, messages: [{ role: 'user', content: 'a cat' }] },
+            }),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(200);
+        expect(res.headers.get('content-type')).toBe('text/event-stream');
+        expect(res.headers.get('X-Silkroadai-Translated')).toBe('gemini-native');
+        // 上游仍是非流式 generateContent(Gemini 流式回空图,计费口径不变)
+        const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+        expect(String(init.body)).not.toContain('"stream"');
+        const text = await res.text();
+        const events = text.split('\n\n').filter(Boolean);
+        expect(events[events.length - 1]).toBe('data: [DONE]');
+        const first = JSON.parse(events[0].slice(6)) as {
+            object: string;
+            choices: Array<{ delta: { role?: string; content?: string }; finish_reason: string | null }>;
+        };
+        expect(first.object).toBe('chat.completion.chunk');
+        expect(first.choices[0].delta.role).toBe('assistant');
+        expect(first.choices[0].delta.content).toMatch(/^!\[image\]\(https:\/\//);
+        expect(first.choices[0].finish_reason).toBeNull();
+        const last = JSON.parse(events[1].slice(6)) as {
+            choices: Array<{ finish_reason: string }>;
+            usage: { completion_tokens: number };
+        };
+        expect(last.choices[0].finish_reason).toBe('stop');
+        expect(last.usage.completion_tokens).toBe(1290);
+    });
+
+    it('stream 省略 / false → 仍回 JSON chat.completion(零回归)', async () => {
+        mockFetch.mockReset();
+        mockFetch.mockResolvedValueOnce(geminiNativeResponse());
+        const res = await POST(
+            makeReq('/chat/completions', {
+                body: {
+                    model: 'gemini-nano-banana-2.1',
+                    stream: false,
+                    messages: [{ role: 'user', content: 'a cat' }],
+                },
+            }),
+            ctx('chat', 'completions'),
+        );
+        expect(res.status).toBe(200);
+        expect(res.headers.get('content-type')).toContain('application/json');
+        const data = (await res.json()) as { object: string };
+        expect(data.object).toBe('chat.completion');
     });
 });
 
@@ -6187,7 +6379,7 @@ describe('/v1 proxy — gpt-image 官方契约对齐(variations 拦 / 流参数�
 
     it('JSON:stream / partial_images 被剥掉(images 流式未实现,防 SSE 旁路绕过后处理链)', async () => {
         mockFetch.mockResolvedValueOnce(okImageResp());
-        await POST(
+        const response = await POST(
             makeReq('/images/generations', {
                 body: { model: 'gpt-image-2', prompt: 'x', stream: true, partial_images: 2 },
             }),
@@ -6196,6 +6388,9 @@ describe('/v1 proxy — gpt-image 官方契约对齐(variations 拦 / 流参数�
         const sent = JSON.parse(String((mockFetch.mock.calls[0][1] as RequestInit).body)) as Record<string, unknown>;
         expect(sent.stream).toBeUndefined();
         expect(sent.partial_images).toBeUndefined();
+        // The returned stream starts native placeholder work. Await its terminal event before the next test.
+        expect(await response.text()).toContain('image_generation.completed');
+        expect(streamPlaceholders._placeholderResourceStats().active).toBe(0);
     });
 
     it('multipart:stream / partial_images 被剥掉', async () => {
@@ -6206,11 +6401,13 @@ describe('/v1 proxy — gpt-image 官方契约对齐(variations 拦 / 流参数�
         form.append('stream', 'true');
         form.append('partial_images', '3');
         form.append('image', imageFile([1, 2, 3]));
-        await POST(makeMultipartReq(form), ctx('images', 'edits'));
+        const response = await POST(makeMultipartReq(form), ctx('images', 'edits'));
         const fd = (mockFetch.mock.calls[0][1] as RequestInit).body as FormData;
         expect(fd.get('stream')).toBeNull();
         expect(fd.get('partial_images')).toBeNull();
         expect(fd.get('image')).not.toBeNull();
+        expect(await response.text()).toContain('image_edit.completed');
+        expect(streamPlaceholders._placeholderResourceStats().active).toBe(0);
     });
 
     it('n=11 → 400 param:n 不打上游;JSON n="3" 字符串 → 400 invalid_type;数字 3 放行', async () => {
@@ -7098,6 +7295,70 @@ describe('/v1 proxy — gpt-image-2 size=auto 交给适配器(第 4 批,官方 1
 });
 
 describe('/v1 proxy — 伪流式 partial_image 事件 + sequence_number(第 5 批,官方形状)', () => {
+    it.each(['json', 'multipart'])('partial_images=0 in %s does not warm or render any placeholder', async (format) => {
+        expect(streamPlaceholders._placeholderResourceStats().active).toBe(0);
+        streamPlaceholders._resetPlaceholderCache();
+        const generate = vi.spyOn(streamPlaceholders, 'getStreamPlaceholderB64');
+        const warm = vi.spyOn(streamPlaceholders, 'warmStreamPlaceholders');
+        try {
+            mockFetch.mockResolvedValueOnce(
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: 'QUJD' }] }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+            );
+            let request: NextRequest;
+            if (format === 'multipart') {
+                const body = new FormData();
+                for (const [key, value] of Object.entries({
+                    model: 'gpt-image-2',
+                    prompt: 'x',
+                    stream: 'true',
+                    partial_images: '0',
+                }))
+                    body.set(key, value);
+                request = new NextRequest('https://api.llmroute.club/v1/images/generations', { method: 'POST', body });
+            } else
+                request = makeReq('/images/generations', {
+                    body: { model: 'gpt-image-2', prompt: 'x', stream: true, partial_images: 0 },
+                });
+            const response = await POST(request, ctx('images', 'generations'));
+            const events = parseSse(await response.text());
+            expect(events.map((event) => event.event)).toEqual(['image_generation.completed']);
+            expect(generate).not.toHaveBeenCalled();
+            expect(warm).not.toHaveBeenCalled();
+            expect(streamPlaceholders._placeholderResourceStats()).toEqual({ active: 0, entries: 0, bytes: 0 });
+        } finally {
+            generate.mockRestore();
+            warm.mockRestore();
+        }
+    });
+
+    it('placeholder admission failure skips partial frames without changing the final image or usage', async () => {
+        const skip = vi.spyOn(streamPlaceholders, 'getStreamPlaceholderB64').mockResolvedValueOnce(null);
+        try {
+            const usage = { input_tokens: 8, output_tokens: 196, total_tokens: 204 };
+            mockFetch.mockResolvedValueOnce(
+                new Response(JSON.stringify({ created: 1, data: [{ b64_json: 'QUJD' }], usage }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }),
+            );
+            const response = await POST(
+                makeReq('/images/generations', {
+                    body: { model: 'gpt-image-2', prompt: 'x', stream: true, partial_images: 2 },
+                }),
+                ctx('images', 'generations'),
+            );
+            const events = parseSse(await response.text());
+            expect(events.map((event) => event.event)).toEqual(['image_generation.completed']);
+            expect(events[0].data).toMatchObject({ b64_json: 'QUJD', sequence_number: 0, usage });
+            expect(mockFetch).toHaveBeenCalledTimes(1);
+        } finally {
+            skip.mockRestore();
+        }
+    });
+
     async function realPng(): Promise<string> {
         const sharp = (await import('sharp')).default;
         const buf = await sharp({ create: { width: 64, height: 64, channels: 3, background: '#ff0000' } })
@@ -7120,7 +7381,7 @@ describe('/v1 proxy — 伪流式 partial_image 事件 + sequence_number(第 5 �
             });
     }
 
-    it('partial_images=2 → 两个 partial_image(index 0/1,缩放预览)+ completed,sequence_number 0/1/2', async () => {
+    it('partial_images=2 → 两个 partial_image(index 0/1,同一张请求尺寸的占位图,先于 completed 发出)+ completed,sequence_number 0/1/2', async () => {
         const png = await realPng();
         mockFetch.mockResolvedValueOnce(
             new Response(
@@ -7150,11 +7411,87 @@ describe('/v1 proxy — 伪流式 partial_image 事件 + sequence_number(第 5 �
         expect(events[1].data.partial_image_index).toBe(1);
         expect(events.map((e) => e.data.sequence_number)).toEqual([0, 1, 2]);
         expect(events[2].data.usage).toEqual({ input_tokens: 8, output_tokens: 196, total_tokens: 204 });
-        // 预览按 (i+1)/(N+1) 线性缩小:64 → 21 → 43
-        expect((await pngDims(events[0].data.b64_json as string)).w).toBe(21);
-        expect((await pngDims(events[1].data.b64_json as string)).w).toBe(43);
+        // 占位帧 = 请求尺寸(1024²)的同一张图,不是最终图的缩放;completed 才是真图(64²)
+        expect(events[0].data.b64_json).toBe(events[1].data.b64_json);
+        expect(await pngDims(events[0].data.b64_json as string)).toEqual({ w: 1024, h: 1024 });
+        expect(events[0].data.size).toBe('1024x1024');
+        expect(events[0].data.output_format).toBe('png');
+        expect(events[0].data.background).toBe('opaque');
         expect((await pngDims(events[2].data.b64_json as string)).w).toBe(64);
+        expect(events[2].data.b64_json).toBe(png);
         for (const e of events) expect(e.data.type).toBe(e.event);
+    });
+
+    it('占位帧在上游返回之前就发出(上游挂 2s,首个 partial 在 1s 内到达)', async () => {
+        const png = await realPng();
+        mockFetch.mockImplementationOnce(
+            () =>
+                new Promise((resolve) =>
+                    setTimeout(
+                        () =>
+                            resolve(
+                                new Response(JSON.stringify({ created: 1, data: [{ b64_json: png }] }), {
+                                    status: 200,
+                                    headers: { 'content-type': 'application/json' },
+                                }),
+                            ),
+                        2000,
+                    ),
+                ),
+        );
+        const t0 = Date.now();
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: { model: 'gpt-image-2', prompt: 'x', size: '1536x1024', stream: true, partial_images: 1 },
+            }),
+            ctx('images', 'generations'),
+        );
+        const reader = res.body!.getReader();
+        const dec = new TextDecoder();
+        let buf = '';
+        let firstPartialAt = -1;
+        for (;;) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buf += dec.decode(value, { stream: true });
+            if (firstPartialAt < 0 && buf.includes('event: image_generation.partial_image'))
+                firstPartialAt = Date.now() - t0;
+        }
+        expect(firstPartialAt).toBeGreaterThanOrEqual(0);
+        expect(firstPartialAt).toBeLessThan(1000);
+        const events = parseSse(buf);
+        expect(events.map((e) => e.event)).toEqual(['image_generation.partial_image', 'image_generation.completed']);
+        expect(await pngDims(events[0].data.b64_json as string)).toEqual({ w: 1536, h: 1024 });
+    });
+
+    it('透明 + webp 请求 → 占位帧按 webp / transparent 回显,completed 仍是上游真图', async () => {
+        mockFetch.mockResolvedValueOnce(
+            new Response(JSON.stringify({ created: 1, data: [{ b64_json: 'QUJD' }] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            }),
+        );
+        const res = await POST(
+            makeReq('/images/generations', {
+                body: {
+                    model: 'gpt-image-2',
+                    prompt: 'x',
+                    size: '1024x1024',
+                    stream: true,
+                    partial_images: 1,
+                    output_format: 'webp',
+                    background: 'transparent',
+                },
+            }),
+            ctx('images', 'generations'),
+        );
+        const events = parseSse(await res.text());
+        expect(events.map((e) => e.event)).toEqual(['image_generation.partial_image', 'image_generation.completed']);
+        expect(events[0].data.output_format).toBe('webp');
+        expect(events[0].data.background).toBe('transparent');
+        const head = Buffer.from(events[0].data.b64_json as string, 'base64');
+        expect(head.toString('latin1', 0, 4)).toBe('RIFF');
+        expect(head.toString('latin1', 8, 12)).toBe('WEBP');
     });
 
     it('partial_images 缺省 → 只有 completed(sequence_number 0);partial_images=5(超官方上限)→ 当 0', async () => {
@@ -7197,8 +7534,10 @@ describe('/v1 proxy — 伪流式 partial_image 事件 + sequence_number(第 5 �
         );
         const events = parseSse(await res.text());
         expect(events.map((e) => e.event)).toEqual(['image_edit.partial_image', 'image_edit.completed']);
-        // 假 b64 无法缩放 → partial 回退为完整图字节,事件数仍确定
-        expect(events[0].data.b64_json).toBe('QUJD');
+        // partial 是占位图(与上游返回无关),completed 才是上游字节
+        expect(events[0].data.b64_json).not.toBe('QUJD');
+        expect(await pngDims(events[0].data.b64_json as string)).toEqual({ w: 1024, h: 1024 });
+        expect(events[1].data.b64_json).toBe('QUJD');
         const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
         expect((init.body as FormData).get('partial_images')).toBeNull(); // 不透传上游
     });

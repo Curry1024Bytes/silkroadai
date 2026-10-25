@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { unauthorizedResponse } from '@/lib/admin-auth';
 import { resolveEnterpriseAdmin, auditAdminAction } from '@/lib/enterprise/admin-auth';
+import { reconcileStaleTasks } from '@/lib/enterprise/reconcile';
 import { ENTERPRISE_TIER } from '@/lib/enterprise/billing';
 
 export const runtime = 'nodejs';
@@ -95,6 +96,12 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const admin = await resolveEnterpriseAdmin(request);
     if (!admin) return unauthorizedResponse(request);
     const { id } = await params;
+    // 后台打开客户详情也触发对账(2026-10-19):此前只有客户自己开概览/日志页才跑,客户不开页就漏收。
+    // best-effort,不阻断详情(对账器内部每条 try/catch)。
+    if (process.env.PORTAL_ENTERPRISE_RECONCILE_ENABLED === 'true')
+        await reconcileStaleTasks(id).catch((e) =>
+            console.warn('[enterprise-admin] reconcile on detail failed', { id, err: String(e) }),
+        );
 
     const upRows = await prisma.enterpriseUpstreamKey.findMany({
         where: { user_id: id },

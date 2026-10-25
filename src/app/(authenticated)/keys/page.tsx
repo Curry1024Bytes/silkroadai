@@ -16,8 +16,10 @@ import { prisma } from '@/lib/db';
 import { getTokenUsageWithCache } from '@/lib/newapi/token-usage';
 import { quotaToCny } from '@/lib/newapi/quota-units';
 import { formatTokenForDisplay } from '@/lib/newapi/token-format';
-import { listEnabledChannelGroups, restrictGroupsForUser, getGroupRatios } from '@/lib/channel-group';
-import { listUserTierMultipliers } from '@/lib/newapi/user-tier-multiplier';
+import { listEnabledChannelGroups, restrictGroupsForUser } from '@/lib/channel-group';
+import { getVerifiedEffectiveGroupRatios } from '@/lib/newapi/effective-group-ratios';
+import { getTokenMetaForCustomer, expiredTimeToIso } from '@/lib/newapi/token-meta';
+import { keyQuotaLimitsEnabled } from '@/lib/keys/quota-policy';
 import { KeysList, type KeyRow } from './keys-list';
 import { KeysSnippetsPanel } from './keys-snippets-panel';
 
@@ -67,7 +69,11 @@ export default async function KeysPage() {
     // (⚠️ 不是批量合并的,冷缓存时是 N 发上游,见 token-usage.ts 头注释)。
     // 单个 token 失败只影响该行快照(记 warn + 该行不显示用量)。
     // 2026-08-15:档次/倍率两项本来串在这段之后白等一个 RTT,一并并到这里。
-    const [usageSnaps, tierGroupsRaw, ratios, overrides] = await Promise.all([
+    const customerAuth =
+        user.newapi_user_id != null && user.newapi_access_token
+            ? { accessToken: user.newapi_access_token, userId: user.newapi_user_id }
+            : null;
+    const [usageSnaps, tierGroupsRaw, effective, meta] = await Promise.all([
         Promise.all(
             tokens.map(async (t) => {
                 if (user.newapi_user_id == null) return null;
@@ -88,18 +94,18 @@ export default async function KeysPage() {
             console.error('[keys] invalid channel-group topology; disabling key creation', err);
             return [];
         }),
-        getGroupRatios(),
-        listUserTierMultipliers(user.id).catch((err) => {
-            console.warn(`[keys] dedicated multiplier lookup failed for user ${user.id}:`, err);
-            return [];
+        getVerifiedEffectiveGroupRatios(user).catch(() => {
+            console.warn('[keys] customer ratios unavailable; hiding price badges');
+            return null;
         }),
+        customerAuth ? getTokenMetaForCustomer(customerAuth) : Promise.resolve(null),
     ]);
 
-    const overrideByTier = new Map(overrides.map((override) => [override.tier_key, Number(override.multiplier)]));
     const newApiGroupByTier = new Map(tierGroupsRaw.map((group) => [group.key, group.newapi_group]));
 
     const rows: KeyRow[] = tokens.map((t, i) => {
         const snap = usageSnaps[i];
+        const tokenMeta = meta?.get(t.newapi_token_id);
         return {
             id: t.id,
             key_alias: t.key_alias,
@@ -119,7 +125,13 @@ export default async function KeysPage() {
             usedCny: snap ? quotaToCny(Number(snap.used_quota)) : null,
             last_used_at: snap?.last_used_at ? snap.last_used_at.toISOString() : null,
             tier: t.tier,
-            effective_ratio: overrideByTier.get(t.tier) ?? ratios[newApiGroupByTier.get(t.tier) ?? ''] ?? null,
+            effective_ratio: effective?.ratios[newApiGroupByTier.get(t.tier) ?? ''] ?? null,
+            meta_available: !!tokenMeta,
+            upstream_status: tokenMeta?.status ?? null,
+            requires_reactivation: tokenMeta != null && tokenMeta.status !== 1,
+            quota_unlimited: tokenMeta?.unlimited_quota ?? null,
+            remainCny: tokenMeta && !tokenMeta.unlimited_quota ? quotaToCny(tokenMeta.remain_quota) : null,
+            expires_at: tokenMeta ? expiredTimeToIso(tokenMeta.expired_time) : null,
         };
     });
 
@@ -136,7 +148,9 @@ export default async function KeysPage() {
         description: g.description,
         is_default: g.is_default,
         newapi_group: g.newapi_group,
-        ratio: overrideByTier.get(g.key) ?? ratios[g.newapi_group] ?? null,
+        ratio: effective?.ratios[g.newapi_group] ?? null,
+        listRatio: effective?.listRatios[g.newapi_group] ?? null,
+        special: effective?.special.has(g.newapi_group) ?? false,
     }));
 
     return (
@@ -148,7 +162,7 @@ export default async function KeysPage() {
                     创建并管理用于调用 LLmRoute 的访问密钥。密钥撤销后立即失效。
                 </p>
             </div>
-            <KeysList initialRows={rows} tiers={tiers} />
+            <KeysList initialRows={rows} tiers={tiers} quotaLimitsEnabled={keyQuotaLimitsEnabled()} />
             {/* W7 D4 PR-R Item C — unified 调用示例 panel below the
              *  keys table replaces the per-row KeyHowtoPanel that PR-G
              *  used to stitch into each row. Static `YOUR_API_KEY`

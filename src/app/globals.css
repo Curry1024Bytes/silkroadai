@@ -1,4 +1,6 @@
 @import 'tailwindcss';
+/* 模型广场(vendored new-api pricing feature)的 shadcn 主题 + 变体,见 src/vendor/newapi-web/styles/plaza.css */
+@import '../vendor/newapi-web/styles/plaza.css';
 
 /*
  * LLmRoute interface system

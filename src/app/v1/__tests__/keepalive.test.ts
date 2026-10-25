@@ -62,4 +62,101 @@ describe('withKeepalive — 慢生图 keepalive 防 CF 100s 超时', () => {
             'fast-fail',
         );
     });
+    function ssePayloads(text: string) {
+        return text
+            .split('\n')
+            .filter((line) => line.startsWith('data: ') && line !== 'data: [DONE]')
+            .map((line) => JSON.parse(line.slice(6)));
+    }
+
+    it.each([200, 400, 503])(
+        'slow JSON error %s becomes one parseable SSE error frame and terminates',
+        async (status) => {
+            const error = { message: 'image rejected', type: 'upstream_error', code: 'image_failed' };
+            const work = new Promise<NextResponse>((resolve) =>
+                setTimeout(() => resolve(NextResponse.json({ error }, { status })), 25),
+            );
+            const response = await withKeepalive(work, { sse: true, afterMs: 1, trickleMs: 5 });
+            const text = await response.text();
+            expect(response.status).toBe(200);
+            expect(response.headers.get('content-type')).toBe('text/event-stream');
+            expect(ssePayloads(text)).toEqual([{ error }]);
+            expect(text.endsWith('data: [DONE]\n\n')).toBe(true);
+        },
+    );
+
+    it('slow HTML failure becomes a safe SSE error instead of an ignored raw response', async () => {
+        const work = new Promise<NextResponse>((resolve) =>
+            setTimeout(() => resolve(new NextResponse('<html>private upstream</html>', { status: 502 })), 25),
+        );
+        const response = await withKeepalive(work, { sse: true, afterMs: 1, trickleMs: 5 });
+        const text = await response.text();
+        expect(ssePayloads(text)[0].error).toMatchObject({ type: 'server_error', code: 'upstream_error' });
+        expect(text).not.toContain('private upstream');
+    });
+
+    it('slow rejection becomes a proxy_error SSE frame', async () => {
+        const work = new Promise<NextResponse>((_, reject) => setTimeout(() => reject(new Error('late failure')), 25));
+        const response = await withKeepalive(work, { sse: true, afterMs: 1, trickleMs: 5 });
+        const text = await response.text();
+        expect(ssePayloads(text)).toEqual([
+            { error: { message: 'upstream request failed: late failure', type: 'proxy_error' } },
+        ]);
+        expect(text.endsWith('data: [DONE]\n\n')).toBe(true);
+    });
+
+    it('a slow response-body read failure also becomes an SSE error frame', async () => {
+        const work = new Promise<NextResponse>((resolve) =>
+            setTimeout(
+                () =>
+                    resolve(
+                        new NextResponse(
+                            new ReadableStream({
+                                start(controller) {
+                                    controller.error(new Error('body disconnected'));
+                                },
+                            }),
+                            { headers: { 'content-type': 'text/event-stream' } },
+                        ),
+                    ),
+                25,
+            ),
+        );
+        const response = await withKeepalive(work, { sse: true, afterMs: 1, trickleMs: 5 });
+        expect(ssePayloads(await response.text())[0].error.message).toContain('body disconnected');
+    });
+
+    it('emits the first keepalive immediately and preserves successful SSE bytes exactly', async () => {
+        let finish!: (response: NextResponse) => void;
+        const work = new Promise<NextResponse>((resolve) => {
+            finish = resolve;
+        });
+        const response = await withKeepalive(work, { sse: true, afterMs: 1, trickleMs: 10_000 });
+        const reader = response.body!.getReader();
+        const first = await reader.read();
+        expect(new TextDecoder().decode(first.value)).toBe(': keepalive\n\n');
+        const actual = 'data: {"choices":[{"delta":{"content":"完成"}}]}\n\ndata: [DONE]\n\n';
+        finish(new NextResponse(actual, { headers: { 'content-type': 'text/event-stream' } }));
+        const remaining: Uint8Array[] = [];
+        for (;;) {
+            const part = await reader.read();
+            if (part.done) break;
+            remaining.push(part.value);
+        }
+        expect(Buffer.concat(remaining).toString('utf8')).toBe(actual);
+    });
+
+    it('customer cancellation leaves the generation promise running without a stream-close rejection', async () => {
+        let finish!: (response: NextResponse) => void;
+        const work = new Promise<NextResponse>((resolve) => {
+            finish = resolve;
+        });
+        const response = await withKeepalive(work, { sse: true, afterMs: 1, trickleMs: 5 });
+        const reader = response.body!.getReader();
+        await reader.read();
+        const cancelled = reader.cancel();
+        finish(new NextResponse('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } }));
+        await cancelled;
+        expect((await work).status).toBe(200);
+    });
 });

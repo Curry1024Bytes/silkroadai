@@ -94,6 +94,7 @@ beforeEach(() => {
     requests.length = 0;
     vi.stubEnv('NEWAPI_ADMIN_TOKEN', 'admin-credential');
     vi.stubEnv('NEWAPI_ADMIN_USER_ID', '1');
+    vi.stubEnv('NEWAPI_ACCESS_TOKEN_MODE', 'legacy');
 });
 afterEach(() => {
     vi.unstubAllGlobals();
@@ -109,9 +110,9 @@ describe('new-api provisioning security proof', () => {
         expect(verification.body).toEqual({ method: 'password', scope, password: created.body.password });
         const handshake = requests.filter((r) => r.path === '/api/user/token' || r.path.startsWith('/api/verify'));
         for (const request of handshake) {
-            expect(request.headers.get('authorization')).toBe(loginJwt);
+            expect(request.headers.get('authorization')).toBe(`Bearer ${loginJwt}`);
             expect(request.headers.get('new-api-user')).toBe(String(userId));
-            expect(request.init).toMatchObject({ cache: 'no-store', redirect: 'error' });
+            expect(request.init).toMatchObject({ cache: 'no-store', redirect: 'manual' });
             expect(request.init?.signal).toBeInstanceOf(AbortSignal);
         }
         const proofRequests = requests.filter((r) => r.headers.has('x-security-proof'));

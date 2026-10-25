@@ -1,6 +1,18 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { formatCny } from '@/lib/format/number';
+import { Input } from '@/components/ui/Input';
+import {
+    buildQuotaExpiryPayload,
+    KEY_INACTIVE_MESSAGE,
+    EXPIRY_PRESETS,
+    EXPIRY_PRESET_LABELS,
+    formatExpiry,
+    isExpired,
+    toDatetimeLocalValue,
+    type ExpiryPreset,
+} from '@/lib/keys/quota-expiry';
 import { Check, Clipboard, Eye, KeyRound, Pencil, Plus, Trash2 } from 'lucide-react';
 // NOTE: this 'use client' island does NOT convert quota→¥ itself. quotaToCny
 // reads NEWAPI_QUOTA_PER_USD / USD_TO_CNY_RATE — server-only env that is
@@ -30,6 +42,12 @@ export interface KeyRow {
     tier: string;
     /** Effective GroupGroupRatio for the signed-in customer, if configured. */
     effective_ratio?: number | null;
+    meta_available?: boolean;
+    upstream_status?: 1 | 2 | 3 | 4 | null;
+    requires_reactivation?: boolean;
+    quota_unlimited?: boolean | null;
+    remainCny?: number | null;
+    expires_at?: string | null;
 }
 
 /** P3: a selectable tier (an enabled ChannelGroup), passed from the server page. */
@@ -42,6 +60,8 @@ export interface TierOption {
     newapi_group: string;
     /** Group multiplier; null when new-api cannot be reached. */
     ratio: number | null;
+    listRatio?: number | null;
+    special?: boolean;
 }
 
 /** Mirror of the server-side mask helper. Used when we receive a freshly
@@ -95,11 +115,164 @@ interface CreateState {
     alias: string;
     submitting: boolean;
     error: string | null;
+    /** null = 尚未选档(多档时必选,不预选;单档 / 无档配置时自动定)。 */
     tier: string | null;
+    quotaUnlimited: boolean;
+    quotaCny: string;
+    expiryPreset: ExpiryPreset;
+    expiryCustom: string;
 }
 
-function ratioBadgeText(ratio: number | null): string | null {
-    return ratio == null ? null : `${ratio}x 倍率`;
+interface BudgetEditState {
+    id: string;
+    quotaUnlimited: boolean;
+    quotaCny: string;
+    expiryPreset: ExpiryPreset;
+    expiryCustom: string;
+    submitting: boolean;
+    error: string | null;
+}
+
+function emptyCreate(tier: string | null): CreateState {
+    return {
+        open: false,
+        alias: '',
+        submitting: false,
+        error: null,
+        tier,
+        quotaUnlimited: true,
+        quotaCny: '',
+        expiryPreset: 'never',
+        expiryCustom: '',
+    };
+}
+
+type BudgetFields = Pick<CreateState, 'quotaUnlimited' | 'quotaCny' | 'expiryPreset' | 'expiryCustom'>;
+
+/** 额度上限 + 到期时间输入组(创建表单与行内调整共用)。 */
+export function QuotaExpiryFields(props: {
+    value: BudgetFields;
+    onChange: (patch: Partial<BudgetFields>) => void;
+    disabled?: boolean;
+    idPrefix: string;
+    quotaLimitsEnabled?: boolean;
+}) {
+    const { value, onChange, disabled, idPrefix, quotaLimitsEnabled = false } = props;
+    return (
+        <div className="grid gap-3 sm:grid-cols-2">
+            {quotaLimitsEnabled && (
+                <div>
+                    <p className="m-0 mb-1 text-xs font-medium text-muted-ink">额度上限</p>
+                    <label className="flex items-center gap-2 text-sm text-ink">
+                        <input
+                            type="checkbox"
+                            id={`${idPrefix}-unlimited`}
+                            checked={value.quotaUnlimited}
+                            disabled={disabled}
+                            onChange={(e) => onChange({ quotaUnlimited: e.target.checked })}
+                        />
+                        无限额度
+                    </label>
+                    {!value.quotaUnlimited && (
+                        <div className="mt-1.5 flex items-center gap-1.5">
+                            <span className="text-sm text-muted-ink">¥</span>
+                            <Input
+                                type="text"
+                                inputMode="decimal"
+                                placeholder="例如 100"
+                                value={value.quotaCny}
+                                disabled={disabled}
+                                onChange={(e) => onChange({ quotaCny: e.target.value })}
+                                aria-label="额度上限(元)"
+                                block={false}
+                                className="w-32 text-sm"
+                            />
+                        </div>
+                    )}
+                    <p className="m-0 mt-1 text-xs text-minor-ink">
+                        这把 key 一共还能花多少,独立于账户余额;用完即拒绝调用,充值不会自动补。
+                    </p>
+                </div>
+            )}
+            <div>
+                <p className="m-0 mb-1 text-xs font-medium text-muted-ink">到期时间</p>
+                <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="到期时间">
+                    {EXPIRY_PRESETS.map((preset) => {
+                        const active = value.expiryPreset === preset;
+                        return (
+                            <button
+                                key={preset}
+                                type="button"
+                                role="radio"
+                                aria-checked={active}
+                                disabled={disabled}
+                                onClick={() => onChange({ expiryPreset: preset })}
+                                className={[
+                                    'cursor-pointer rounded-full border px-2.5 py-0.5 text-xs transition-colors duration-150 ease-brand',
+                                    active
+                                        ? 'border-navy bg-navy text-paper'
+                                        : 'border-brand-border bg-surface text-muted-ink hover:text-navy',
+                                    'disabled:cursor-not-allowed disabled:opacity-50',
+                                ].join(' ')}
+                            >
+                                {EXPIRY_PRESET_LABELS[preset]}
+                            </button>
+                        );
+                    })}
+                </div>
+                {value.expiryPreset === 'custom' && (
+                    <Input
+                        type="datetime-local"
+                        value={value.expiryCustom}
+                        disabled={disabled}
+                        onChange={(e) => onChange({ expiryCustom: e.target.value })}
+                        aria-label="自定义到期时间"
+                        block={false}
+                        className="mt-1.5 text-sm"
+                    />
+                )}
+                <p className="m-0 mt-1 text-xs text-minor-ink">保存到期设置不会自动启用已失效或已停用的 Key。</p>
+            </div>
+        </div>
+    );
+}
+
+/** 行内「额度 / 到期」摘要。 */
+function BudgetSummary({ row }: { row: KeyRow }) {
+    if (!row.meta_available) {
+        return <span className="text-minor-ink">额度信息暂不可用</span>;
+    }
+    const inactive = row.requires_reactivation || (row.upstream_status != null && row.upstream_status !== 1);
+    const expired = isExpired(row.expires_at ?? null);
+    const exhausted = row.quota_unlimited === false && (row.remainCny ?? 0) <= 0;
+    const badge = (text: string) => (
+        <span className="ml-1.5 rounded-full bg-status-error-bg px-2 py-0.5 text-[10px] font-medium text-status-error-text">
+            {text}
+        </span>
+    );
+    return (
+        <div className="text-sm tabular-nums">
+            <div>
+                {row.quota_unlimited === false ? (
+                    <>
+                        剩余 {formatCny(row.remainCny ?? 0).exact}
+                        {exhausted && badge('已用尽')}
+                    </>
+                ) : (
+                    '无限额度'
+                )}
+            </div>
+            <div className="mt-0.5 text-xs text-minor-ink">
+                {formatExpiry(row.expires_at ?? null)}
+                {expired && badge('已过期')}
+            </div>
+            {inactive && <p className="m-0 mt-1 text-xs text-status-error-text">{KEY_INACTIVE_MESSAGE}</p>}
+        </div>
+    );
+}
+
+function ratioBadgeText(ratio: number | null, special = false): string | null {
+    return ratio == null ? null : `${ratio}x ${special ? '专属倍率' : '倍率'}`;
 }
 
 /** Searchable group selector. Multiple groups intentionally start unselected. */
@@ -162,9 +335,9 @@ export function TierSelect({
                 {selected ? (
                     <span className="flex min-w-0 items-center gap-2">
                         <span className="truncate text-portal-ink">{selected.display_name}</span>
-                        {ratioBadgeText(selected.ratio) && (
+                        {ratioBadgeText(selected.ratio, selected.special) && (
                             <span className="shrink-0 rounded border border-status-success-border bg-status-success-bg px-1.5 py-0.5 text-[11px] font-medium text-status-success-text">
-                                {ratioBadgeText(selected.ratio)}
+                                {ratioBadgeText(selected.ratio, selected.special)}
                             </span>
                         )}
                     </span>
@@ -209,9 +382,9 @@ export function TierSelect({
                                             {[tier.newapi_group, tier.description].filter(Boolean).join(' · ')}
                                         </span>
                                     </span>
-                                    {ratioBadgeText(tier.ratio) && (
+                                    {ratioBadgeText(tier.ratio, tier.special) && (
                                         <span className="shrink-0 rounded border border-status-success-border bg-status-success-bg px-1.5 py-0.5 text-[11px] font-medium text-status-success-text">
-                                            {ratioBadgeText(tier.ratio)}
+                                            {ratioBadgeText(tier.ratio, tier.special)}
                                         </span>
                                     )}
                                 </button>
@@ -350,7 +523,15 @@ function AliasEditor({
     );
 }
 
-export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; tiers?: TierOption[] }) {
+export function KeysList({
+    initialRows,
+    tiers = [],
+    quotaLimitsEnabled = false,
+}: {
+    initialRows: KeyRow[];
+    tiers?: TierOption[];
+    quotaLimitsEnabled?: boolean;
+}) {
     // Multi-tier accounts must deliberately select a group. Missing topology
     // is an operator error; never invent a legacy `pool` tier in the browser.
     const initialTier: string | null = tiers.length === 1 ? tiers[0].key : null;
@@ -363,13 +544,8 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
     const [busyId, setBusyId] = useState<string | null>(null);
     const [globalError, setGlobalError] = useState<string | null>(null);
     const [edit, setEdit] = useState<EditState | null>(null);
-    const [create, setCreate] = useState<CreateState>({
-        open: false,
-        alias: '',
-        submitting: false,
-        error: null,
-        tier: initialTier,
-    });
+    const [create, setCreate] = useState<CreateState>(() => emptyCreate(initialTier));
+    const [budgetEdit, setBudgetEdit] = useState<BudgetEditState | null>(null);
 
     const isOnlyKey = rows.length === 1;
 
@@ -532,6 +708,90 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
         }
     }
 
+    function startBudgetEdit(row: KeyRow) {
+        if (busyId || budgetEdit?.submitting) return;
+        setGlobalError(null);
+        setBudgetEdit({
+            id: row.id,
+            quotaUnlimited: row.quota_unlimited !== false,
+            quotaCny: row.quota_unlimited === false ? (row.remainCny ?? 0).toFixed(2) : '',
+            expiryPreset: row.expires_at ? 'custom' : 'never',
+            expiryCustom: row.expires_at ? toDatetimeLocalValue(row.expires_at) : '',
+            submitting: false,
+            error: null,
+        });
+    }
+
+    function cancelBudgetEdit() {
+        if (budgetEdit?.submitting) return;
+        setBudgetEdit(null);
+    }
+
+    async function submitBudgetEdit() {
+        if (!budgetEdit || budgetEdit.submitting) return;
+        const budget = buildQuotaExpiryPayload({
+            ...budgetEdit,
+            quotaUnlimited: !quotaLimitsEnabled || budgetEdit.quotaUnlimited,
+        });
+        if (!budget.ok) {
+            setBudgetEdit((prev) => (prev ? { ...prev, error: budget.error } : prev));
+            return;
+        }
+        setBudgetEdit((prev) => (prev ? { ...prev, submitting: true, error: null } : prev));
+        try {
+            const r = await fetch(`/api/portal/keys/${encodeURIComponent(budgetEdit.id)}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'same-origin',
+                body: JSON.stringify({
+                    ...(quotaLimitsEnabled ? { quotaCny: budget.quotaCny } : {}),
+                    expiresAt: budget.expiresAt,
+                }),
+            });
+            if (!r.ok) {
+                const data = await r.json().catch(() => ({}));
+                const msg =
+                    r.status === 502
+                        ? '保存失败,上游暂时不可用,请稍后重试'
+                        : typeof data?.error === 'string'
+                          ? data.error
+                          : `保存失败 (${r.status})`;
+                setBudgetEdit((prev) => (prev ? { ...prev, submitting: false, error: msg } : prev));
+                return;
+            }
+            const data = (await r.json()) as {
+                quota_unlimited?: boolean;
+                remainCny?: number | null;
+                expires_at?: string | null;
+                requires_reactivation?: boolean;
+            };
+            setRows((prev) =>
+                prev.map((row) =>
+                    row.id === budgetEdit.id
+                        ? {
+                              ...row,
+                              meta_available: true,
+                              requires_reactivation:
+                                  data.requires_reactivation ??
+                                  row.requires_reactivation ??
+                                  (row.upstream_status != null && row.upstream_status !== 1),
+                              quota_unlimited:
+                                  data.quota_unlimited ??
+                                  (quotaLimitsEnabled ? budget.quotaCny == null : row.quota_unlimited),
+                              remainCny: data.remainCny ?? (quotaLimitsEnabled ? budget.quotaCny : row.remainCny),
+                              expires_at: data.expires_at ?? budget.expiresAt,
+                          }
+                        : row,
+                ),
+            );
+            setBudgetEdit(null);
+        } catch (err) {
+            setBudgetEdit((prev) =>
+                prev ? { ...prev, submitting: false, error: err instanceof Error ? err.message : '网络错误' } : prev,
+            );
+        }
+    }
+
     async function handleCreate(e: React.FormEvent) {
         e.preventDefault();
         if (create.submitting) return;
@@ -541,13 +801,26 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
             return;
         }
         const tier = create.tier;
+        const budget = buildQuotaExpiryPayload({
+            ...create,
+            quotaUnlimited: !quotaLimitsEnabled || create.quotaUnlimited,
+        });
+        if (!budget.ok) {
+            setCreate((prev) => ({ ...prev, error: budget.error }));
+            return;
+        }
         setCreate((prev) => ({ ...prev, submitting: true, error: null }));
         try {
             const r = await fetch('/api/portal/keys', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'same-origin',
-                body: JSON.stringify({ alias, tier }),
+                body: JSON.stringify({
+                    alias,
+                    tier,
+                    ...(quotaLimitsEnabled ? { quotaCny: budget.quotaCny } : {}),
+                    expiresAt: budget.expiresAt,
+                }),
             });
             if (!r.ok) {
                 const data = await r.json().catch(() => ({}));
@@ -564,6 +837,9 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                 key: string;
                 created_at: string;
                 tier?: string;
+                quota_unlimited?: boolean;
+                remainCny?: number | null;
+                expires_at?: string | null;
             };
             const newRow: KeyRow = {
                 id: data.id,
@@ -575,6 +851,12 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                 usedCny: 0,
                 last_used_at: null,
                 tier: data.tier ?? tier,
+                meta_available: true,
+                upstream_status: 1,
+                requires_reactivation: false,
+                quota_unlimited: data.quota_unlimited ?? budget.quotaCny === null,
+                remainCny: data.remainCny ?? budget.quotaCny,
+                expires_at: data.expires_at ?? budget.expiresAt,
                 effective_ratio: tiers.find((option) => option.key === (data.tier ?? tier))?.ratio ?? null,
             };
             setRows((prev) => [...prev, newRow]);
@@ -584,7 +866,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
             // was removed; the unified bottom 调用示例 panel covers all
             // keys, so there's no per-row panel to auto-expand here.)
             setReveal((prev) => ({ ...prev, [data.id]: data.key }));
-            setCreate({ open: false, alias: '', submitting: false, error: null, tier: initialTier });
+            setCreate(emptyCreate(initialTier));
         } catch (err) {
             setCreate((prev) => ({
                 ...prev,
@@ -600,6 +882,9 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                 <tr className="bg-portal-soft text-portal-muted">
                     <th className="border-b border-portal-line px-5 py-2.5 text-left text-xs font-semibold">别名</th>
                     <th className="border-b border-portal-line px-5 py-2.5 text-left text-xs font-semibold">API Key</th>
+                    <th className="border-b border-portal-line px-5 py-2.5 text-left text-xs font-semibold">
+                        额度 / 到期
+                    </th>
                     <th className="border-b border-portal-line px-5 py-2.5 text-left text-xs font-semibold">
                         创建时间
                     </th>
@@ -643,9 +928,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                         type="button"
                         variant="primary"
                         size="sm"
-                        onClick={() =>
-                            setCreate({ open: true, alias: '', submitting: false, error: null, tier: initialTier })
-                        }
+                        onClick={() => setCreate({ ...emptyCreate(initialTier), open: true })}
                         disabled={create.open || tiers.length === 0}
                         title={tiers.length === 0 ? '当前没有可用档次,请联系管理员' : '创建新的 API Key'}
                         className="rounded-md"
@@ -689,15 +972,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                                     type="button"
                                     variant="secondary"
                                     size="sm"
-                                    onClick={() =>
-                                        setCreate({
-                                            open: false,
-                                            alias: '',
-                                            submitting: false,
-                                            error: null,
-                                            tier: initialTier,
-                                        })
-                                    }
+                                    onClick={() => setCreate(emptyCreate(initialTier))}
                                     disabled={create.submitting}
                                     className="rounded-md border-portal-line text-portal-muted"
                                 >
@@ -731,10 +1006,55 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                                 </p>
                             </fieldset>
                         )}
+                        <div className="mt-4">
+                            <QuotaExpiryFields
+                                idPrefix="create"
+                                value={create}
+                                quotaLimitsEnabled={quotaLimitsEnabled}
+                                disabled={create.submitting}
+                                onChange={(patch) => setCreate((prev) => ({ ...prev, ...patch, error: null }))}
+                            />
+                        </div>
                         <FormError>{create.error}</FormError>
                     </form>
                 )}
 
+                {budgetEdit && (
+                    <div
+                        className="border-b border-portal-line bg-portal-soft p-4 sm:p-5"
+                        aria-label="调整 Key 到期设置"
+                    >
+                        <QuotaExpiryFields
+                            idPrefix={`edit-${budgetEdit.id}`}
+                            value={budgetEdit}
+                            quotaLimitsEnabled={quotaLimitsEnabled}
+                            disabled={budgetEdit.submitting}
+                            onChange={(patch) =>
+                                setBudgetEdit((prev) => (prev ? { ...prev, ...patch, error: null } : prev))
+                            }
+                        />
+                        <div className="mt-3 flex gap-2">
+                            <Button
+                                type="button"
+                                size="sm"
+                                onClick={() => void submitBudgetEdit()}
+                                disabled={budgetEdit.submitting}
+                            >
+                                保存
+                            </Button>
+                            <Button
+                                type="button"
+                                variant="secondary"
+                                size="sm"
+                                onClick={cancelBudgetEdit}
+                                disabled={budgetEdit.submitting}
+                            >
+                                取消
+                            </Button>
+                        </div>
+                        <FormError>{budgetEdit.error}</FormError>
+                    </div>
+                )}
                 {rows.length === 0 ? (
                     <div className="flex min-h-[250px] flex-col items-center justify-center px-6 py-10 text-center">
                         <span className="flex h-11 w-11 items-center justify-center rounded-md bg-portal-gold-soft text-portal-gold">
@@ -823,6 +1143,20 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                                                 )}
                                             </p>
                                         </div>
+                                        <div className="mt-2 flex items-start gap-2">
+                                            <BudgetSummary row={row} />
+                                            {row.meta_available && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => startBudgetEdit(row)}
+                                                    disabled={busy || !!budgetEdit}
+                                                    aria-label={`调整额度与到期 ${row.key_alias}`}
+                                                    className="text-xs text-portal-muted hover:underline"
+                                                >
+                                                    调整
+                                                </button>
+                                            )}
+                                        </div>
                                     </article>
                                 );
                             })}
@@ -904,6 +1238,22 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                                                                 <span className="mx-1.5">·</span>
                                                                 最近调用 {formatLastUsed(row.last_used_at)}
                                                             </>
+                                                        )}
+                                                    </div>
+                                                </td>
+                                                <td className={`${cell} ${borderClass}`}>
+                                                    <div className="mt-2 flex items-start gap-2">
+                                                        <BudgetSummary row={row} />
+                                                        {row.meta_available && (
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => startBudgetEdit(row)}
+                                                                disabled={busy || !!budgetEdit}
+                                                                aria-label={`调整额度与到期 ${row.key_alias}`}
+                                                                className="text-xs text-portal-muted hover:underline"
+                                                            >
+                                                                调整
+                                                            </button>
                                                         )}
                                                     </div>
                                                 </td>

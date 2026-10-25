@@ -650,3 +650,8 @@ operator 随后重新安排上线，`prod@d3c60d3` 已于北京时间 2026-09-09
 ## 上游同步 2026-09-14
 
 本批 #459–#464 在 dev 集成，合并前报告见 `docs/UPSTREAM-SYNC-2026-09-14.md`。接入视频非 2xx 失败状态识别及未指定比例时不注入 16:9；we-token 三个 provider 的等待响应头超时改为 300 秒，其他 provider 默认 600 秒。Image 2.0 的 wetoken/wetokenasia 仅接受 low/medium；Image 2.5 新增两个带 quality 白名单的候选 provider，但入口继续默认关闭，Batch 也继续关闭。上游事故中的客户信息、渠道编号、server2/Caddy 与耗时测量不属于 LLmRoute 生产事实；不采用其部署叙述。本轮无 migration/env/依赖/服务器配置变化，只有 operator 安排本批上线后才部署 VPS。测试及最终分支状态以同步报告为准。
+
+
+## 2026-10-25 上游集成边界
+
+本轮55提交的逐项行为、配置与风险以 `docs/UPSTREAM-SYNC-2026-10-25.md` 为准。保留LLmRoute当前生产运维、镜像分组、价格、授权、日志及视频缓存语义；上游部署/客户key/收费测试不属于本项目事实。模型广场采用上游组件并适配本项目只读目录和报价。新增有限Key额度、回调、自动补扣及Gemini适配器默认关闭，视频提交默认不重发。

@@ -1400,6 +1400,13 @@ model SeedanceVideoTask {
   // draft_task_id = 正片引用的【客户】样片任务号(方舟真号不落库不对客)。
   draft             Boolean?
   draft_task_id     String?
+  // 回调投递(2026-10-19):提交时记客户 callback_url(绝不转发上游,#271),终态由我们 POST 查询响应体。
+  // callback_format = 提交入口(v1 | ark)决定回调体形;callback_status pending → sending → sent | failed;NULL = 没要回调。
+  callback_url     String?
+  callback_format  String?
+  callback_status  String?
+  callback_sent_at DateTime?
+  callback_error   String?
 
   @@index([user_id, created_at])
   @@index([billed])
@@ -1572,6 +1579,9 @@ model VolcIdMap {
   upstream_id String
   kind        String
   user_id     String?  @db.Uuid
+  /// service-inference.ai 任务建在哪个 API 版本下('v1' | 'v2')。/v1 与 /v2 的任务互不可见
+  /// (2026-09-27 切版本孤儿化一条在途任务),轮询必须按创建版本打;NULL = 存量行(按配置版 + 404 回退另一版)。
+  api_version String?
   created_at  DateTime @default(now())
 
   @@index([upstream_id])

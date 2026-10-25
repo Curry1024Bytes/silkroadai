@@ -11,9 +11,10 @@
  */
 import 'server-only';
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma, type SeedanceVideoTask } from '@/lib/db';
+import { prisma } from '@/lib/db';
 import {
     MODEL_MAP,
+    getSvcinfRegionConfig,
     isVolcModel,
     extractImageUrls,
     extractVideoUrls,
@@ -52,14 +53,19 @@ import {
     stripAssetUri,
     arkStatus,
     buildArkTaskResponse,
-    type ArkSubmittedParams,
-    type VolcArkMeta,
+    buildTerminalCallbackBody,
+    upstreamStr,
+    upstreamNum,
+    upstreamArkMeta,
+    submittedArkParams,
 } from './ark-format';
 import type { Prisma } from '@prisma/client';
 import { maybeBrandVideoUrl } from '@/lib/seedance/volc-brand';
 import { maybeStoreVideoToCustomerOss } from '@/lib/seedance/customer-oss-video';
+import { validateCallbackUrl, shouldFireCallback, fireTaskCallback, enterpriseCallbacksEnabled } from './callback';
 import { isTerminalTaskFailure, type UpstreamErrorCategory } from '@/lib/seedance/upstream-error';
 import { invalidatePollCache, pollWithCache } from './poll-cache';
+import { taskCompletionTokens, hasCompletedVideoUrl, recordVideoTaskCompletion } from './task-completion';
 import { probeVideoMeta, ratioFromDimensions, roundDurationSec } from './video-probe';
 import { estimateTokens, type Resolution } from '@/lib/seedance/cn-billing';
 import {
@@ -93,7 +99,7 @@ export const ENTERPRISE_MODELS: Record<string, SeedanceVariant> = {
     'seedance-2-0-promax': 'promax',
     'seedance-2-0-promax-fast': 'promax-fast',
     'seedance-2-0-promax-mini': 'promax-mini',
-    // 海外版 proMax seedance 2.5(2026-08-08):intl 新代,仅 720p/1080p,费率独立(按原价挂牌)
+    // 海外版 proMax seedance 2.5(2026-08-08):费率独立(按原价挂牌);2026-10-15 起 480p/720p/1080p
     'seedance-2-5-promax': 'promax-2.5',
 };
 
@@ -105,6 +111,7 @@ const RESOLUTIONS = ['480p', '720p', '1080p', '4k'] as const;
 function resolveEnterpriseModel(
     rawModel: string,
     body: Record<string, unknown>,
+    customerAuth?: string,
 ): { spec: SeedanceModelSpec; longName: string } | { error: NextResponse } | null {
     const lower = rawModel.toLowerCase();
     // 「火山」渠道:四档模型(doubao-seedance-2.0 / -fast / -mini / doubao-seedance-2.5),
@@ -174,37 +181,52 @@ function resolveEnterpriseModel(
     const variant = ENTERPRISE_MODELS[lower];
     if (!variant) return null;
     const region = lower.includes('-promax') ? 'promax' : lower.includes('-global') ? 'global' : 'cn';
+    const globalSvcinf = region === 'global' && !!getSvcinfRegionConfig('global', customerAuth);
     const resRaw = String(body.resolution ?? '720p').toLowerCase();
     if (!(RESOLUTIONS as readonly string[]).includes(resRaw)) {
         return { error: errJson(400, 'invalid_request', 'resolution 仅支持 480p / 720p / 1080p / 4k') };
     }
-    // 海外版(global)上游无 480p(intl 三变体实测均拒,2026-08-06);国内/火山有 480p,proMax 2026-08-08 起也无
-    if (region === 'global' && resRaw === '480p') {
-        return {
-            error: errJson(
-                400,
-                'invalid_request',
-                `${rawModel} 无 480p 档(海外版仅 720p / 1080p / 4k);480p 请用国内版`,
-            ),
-        };
-    }
-    // proMax 上游 2026-08-08 全档迁到 artsdance intl,不支持 480p(pro=720p/1080p/4k,fast/mini=仅720p)
+    if (region === 'global' && !globalSvcinf && resRaw === '480p')
+        return { error: errJson(400, 'invalid_request', `${rawModel} 当前上游无 480p 档；请使用 720p / 1080p / 4k`) };
+    // 480p:cn / volc 一直有;global 2026-10-17 换 service-inference.ai 后开放;proMax 2026-10-23 换回 artsmcp intl
+    // (intl 上游无 480p)→ 在这里 400 带指引,不打上游。
     if (region === 'promax' && resRaw === '480p') {
         return {
             error: errJson(
                 400,
                 'invalid_request',
-                `${rawModel} 无 480p 档(proMax pro 支持 720p / 1080p / 4k,fast/mini 仅 720p)`,
+                `${rawModel} 无 480p 档(proMax pro 支持 720p / 1080p / 4k,fast/mini 仅 720p);480p 请用国内版或海外版 global`,
             ),
         };
     }
     if (resRaw === '4k' && variant !== 'pro' && variant !== 'promax') {
-        const tiers = region === 'global' ? '720p / 1080p' : '480p / 720p / 1080p';
+        const tiers = region === 'promax' ? '720p / 1080p' : '480p / 720p / 1080p';
         return { error: errJson(400, 'invalid_request', `${rawModel} 无 4k 档(resolution 仅 ${tiers})`) };
     }
-    // proMax fast/mini(上游 artsdance intl,2026-08-08)仅 720p
+    // proMax fast/mini(artsmcp intl)仅 720p;global fast/mini(service-inference.ai dreamina)仅 480p/720p
+    // (global fast/mini 1080p 2026-10-19 下架)。
     if ((variant === 'promax-fast' || variant === 'promax-mini') && resRaw !== '720p') {
         return { error: errJson(400, 'invalid_request', `${rawModel} 仅支持 720p 档`) };
+    }
+    if (globalSvcinf && (variant === 'fast' || variant === 'mini') && resRaw !== '720p' && resRaw !== '480p') {
+        return { error: errJson(400, 'invalid_request', `${rawModel} 仅支持 480p / 720p 档`) };
+    }
+    // tools(web_search)快失败(2026-10-19):global 线的 2.0 pro / fast 上游模型(dreamina-seedance-2-0 / -fast)
+    // 在 t2v 下拒 tools(`the specified parameter tools is not supported for model in t2v, must be empty`),
+    // 此前原样透传 → 客户拿到 200、十几秒后 failed。mini / 2.5 接受,不拦。cn / volc / proMax(artsmcp,10-23 起)原样透传。
+    if (
+        Array.isArray(body.tools) &&
+        body.tools.length > 0 &&
+        globalSvcinf &&
+        (variant === 'pro' || variant === 'fast')
+    ) {
+        return {
+            error: errJson(
+                400,
+                'invalid_request',
+                `${rawModel} 不支持 tools(web_search);请去掉 tools,或改用 mini / seedance-2-5 系模型`,
+            ),
+        };
     }
     // seedance 2.5(cn):480p / 720p / 1080p(480p 走原版 260628 上游,2026-09-07 开档;4k 由上方通用门拦)
     const hasRefs =
@@ -488,14 +510,6 @@ const ARK_STATUS_TO_INTERNAL: Record<string, string> = {
 
 /** 提交:key 鉴权(绑版本)→ 模型门 → 余额门(¥账本)→ 直调适配器核心(客户上游 key)→ 记任务(fail closed)。 */
 /** 上游回的已推导值(字符串);缺失/非法 → null,交由调用方回落库值。 */
-function upstreamStr(v: unknown): string | null {
-    return typeof v === 'string' && v ? v : null;
-}
-/** 上游回的已推导值(数字);缺失/非法 → null。 */
-function upstreamNum(v: unknown): number | null {
-    return typeof v === 'number' && Number.isFinite(v) ? v : null;
-}
-
 /**
  * 深走 body,把所有 `asset://<对客号>` 换成 `asset://<上游号>`(volc 专用)。
  *
@@ -567,40 +581,6 @@ async function translateVolcAssetRefs(body: Record<string, unknown>): Promise<Re
     return translated;
 }
 
-/** 适配器归一 JSON 里的方舟原生元数据 → ark 响应用(volc / service-inference.ai 线有值;xinhankr 全 null)。 */
-function upstreamArkMeta(j: Record<string, unknown> | null): VolcArkMeta {
-    return {
-        framespersecond: upstreamNum(j?.framespersecond),
-        generateAudio: typeof j?.generate_audio === 'boolean' ? j.generate_audio : null,
-        executionExpiresAfter: upstreamNum(j?.execution_expires_after),
-        seed: upstreamNum(j?.seed),
-        tools: Array.isArray(j?.tools) ? j.tools : null,
-        createdAt: upstreamNum(j?.upstream_created_at),
-        updatedAt: upstreamNum(j?.upstream_updated_at),
-        lastFrameUrl: typeof j?.last_frame_url === 'string' ? j.last_frame_url : null,
-        outputFormat: upstreamStr(j?.output_format),
-        safetyIdentifier: upstreamStr(j?.safety_identifier),
-        serviceTier: upstreamStr(j?.service_tier),
-        frames: upstreamNum(j?.frames),
-        draft: typeof j?.draft === 'boolean' ? j.draft : null,
-    };
-}
-
-/** task 行里落库的回显参数(存量行三列 NULL → 缺省/省略)。 */
-function submittedArkParams(t: Partial<Pick<
-    SeedanceVideoTask,
-    'safety_identifier' | 'output_format' | 'tools' | 'execution_expires_after' | 'draft' | 'draft_task_id'
->>): ArkSubmittedParams {
-    return {
-        safetyIdentifier: t.safety_identifier ?? null,
-        outputFormat: t.output_format ?? null,
-        tools: t.tools ?? null,
-        executionExpiresAfter: t.execution_expires_after ?? null,
-        draft: t.draft ?? null,
-        draftTaskId: t.draft_task_id ?? null,
-    };
-}
-
 async function handleSubmit(req: NextRequest, format: ClientFormat = 'v1'): Promise<NextResponse> {
     // 请求日志(2026-09-03):submit 全量落库(含被拒的)。wrapper 形 —— inner 沿途填 ctx,
     // 这里统一写行(fire-and-forget,绝不影响客户响应)。
@@ -669,6 +649,36 @@ async function handleSubmitInner(req: NextRequest, format: ClientFormat, ctx: Re
     const isVolc = regionForModel(model) === 'volc';
     ctx.model = model || null;
     ctx.region = regionForModel(model);
+
+    // 基本校验先于版本门(2026-10-13 智象未来 conformance):缺 model / 未知模型 / body 非对象
+    // 此前都按 cn 解析 region,海外 key 一律先吃 403 region_mismatch,客户期望的是 400。
+    // 只判「认不认识这个名」,不碰素材/鉴权;真正的解析仍在鉴权之后。
+    if (!model) return errJson(400, 'invalid_request', 'model is required');
+    if (!resolveEnterpriseModel(model, body) && !MODEL_MAP[model]) {
+        return errJson(400, 'model_not_found', `unknown seedance model: ${model}`);
+    }
+
+    // service_tier / priority 同步校验(非 volc;volc 原生火山自己判):此前原样透传,上游是在
+    // 任务里异步拒(InvalidParameter → failed,不计费),客户拿到 200 以为被受理并计费。
+    // 上游实测规则:2.x 系 service_tier 必须为空(flex 不支持);priority 0–9 整数。
+    if (!isVolc) {
+        if (body.service_tier !== undefined) {
+            if (body.service_tier !== 'default') {
+                return errJson(
+                    400,
+                    'invalid_request',
+                    'service_tier is not supported by seedance 2.x (only "default"); omit it',
+                );
+            }
+            delete body.service_tier; // 上游要求为空,'default' 等价于不传
+        }
+        if (body.priority !== undefined) {
+            const pr = body.priority;
+            if (typeof pr !== 'number' || !Number.isInteger(pr) || pr < 0 || pr > 9) {
+                return errJson(400, 'invalid_request', 'priority must be an integer between 0 and 9');
+            }
+        }
+    }
 
     // 剥 asset:// 前缀(对 v1 也安全:v1 客户素材引用是裸 id,归一后不变)——
     // 仅非 volc:后面 resolveAssetRefs 认裸 asset-…。「火山」渠道素材由上游 provider
@@ -752,7 +762,7 @@ async function handleSubmitInner(req: NextRequest, format: ClientFormat, ctx: Re
     // 优先;旧长名(MODEL_MAP)保留兼容。任务行存客户实际调用的名字。
     let map: SeedanceModelSpec;
     let adapterModel: string; // 发给适配器核心的长名
-    const short = resolveEnterpriseModel(model, body);
+    const short = resolveEnterpriseModel(model, body, cust.upstreamKey);
     if (short && 'error' in short) return short.error;
     if (short) {
         map = short.spec;
@@ -772,6 +782,11 @@ async function handleSubmitInner(req: NextRequest, format: ClientFormat, ctx: Re
         }
     }
 
+    // 回调 URL(2026-10-19):校验后落库,由我们在终态投递(绝不转发上游);不合法 → 400 不建任务。
+    const cb = validateCallbackUrl(body.callback_url);
+    if (cb && !cb.ok) return errJson(400, 'invalid_request', cb.message);
+    if (cb?.ok && !enterpriseCallbacksEnabled())
+        return errJson(503, 'callback_unavailable', 'task callbacks are not enabled');
     const hasVideo = extractVideoUrls(body).length > 0 || (draftRow?.has_video ?? false);
     // duration:2.5 系 4-30s,2.0 系 4-15s(火山官方 2026-08 提升 2.5 至 30s;探测 volc/cn/global
     // 2.0 上游 3s/16s 皆 400,4s 全变体真出片)。显式非法值 400(不静默改秒数 —— 计费
@@ -877,6 +892,10 @@ async function handleSubmitInner(req: NextRequest, format: ClientFormat, ctx: Re
                     typeof body.seed === 'number' && Number.isFinite(body.seed) ? BigInt(Math.trunc(body.seed)) : null,
                 generate_audio:
                     typeof body.generate_audio === 'boolean' ? body.generate_audio : (draftRow?.generate_audio ?? true),
+                // 回调投递(2026-10-19):按提交入口记形;pending = 待投
+                callback_url: cb?.ok ? cb.url : null,
+                callback_format: cb?.ok ? format : null,
+                callback_status: cb?.ok ? 'pending' : null,
                 // 2026-09-23 火山官方查询响应新增回显字段:xinhankr 上游不回显,只能落库再回显
                 safety_identifier:
                     typeof body.safety_identifier === 'string' && body.safety_identifier
@@ -898,9 +917,33 @@ async function handleSubmitInner(req: NextRequest, format: ClientFormat, ctx: Re
             },
         });
     } catch (e) {
-        // 记录失败 = 无法扣费 → 拒绝(fail closed,防生成了却收不到钱)
-        console.error('[enterprise-proxy] task record failed, rejecting submit', e);
-        return errJson(503, 'temporarily_unavailable', 'billing record failed, please retry');
+        // The provider already accepted generation. This is not a safe reason to submit again.
+        // Without the ownership row Portal cannot promise query recovery; retain an audit handle.
+        const requestId = randomUUID();
+        ctx.outcome = 'accepted_record_unconfirmed';
+        ctx.clientRequestId = ctx.clientRequestId || requestId;
+        ctx.resourceId = requestId;
+        console.error('[enterprise-proxy] accepted task record unconfirmed', {
+            requestId,
+            taskId,
+            userId: cust.userId,
+            error: String(e),
+        });
+        return NextResponse.json(
+            {
+                error: {
+                    code: 'task_record_unconfirmed',
+                    type: 'seedance_enterprise_error',
+                    message:
+                        'Generation was accepted but its local record could not be saved. Do not resubmit; contact support with the request ID and task ID.',
+                    request_id: requestId,
+                    task_id: taskId,
+                    accepted: true,
+                    retryable: false,
+                },
+            },
+            { status: 503, headers: { 'X-Request-Id': requestId, 'X-Should-Retry': 'false' } },
+        );
     }
     // 火山形提交成功仅返 { id }(前缀 cgt-);v1 形返完整对象。
     // volc 提交响应同样带 upstream_id(客户脚本 create 与 query 两处都读)。
@@ -955,35 +998,48 @@ async function handlePollInner(
 
     /** 失败终态的对客响应(v1 形 / 火山形)。库里 fail_reason 是权威。 */
     const failedResponse = (failReason: string): NextResponse => {
+        const body = failedBody(failReason);
+        // 回调投递(2026-10-19):失败终态也投;CAS 保证只投一次(已投/已 failed 的不会再进)。
+        if (shouldFireCallback(task))
+            fireTaskCallback(
+                taskId,
+                buildTerminalCallbackBody(
+                    task,
+                    { status: 'failed', fail_reason: failReason, progress: 100 },
+                    task.callback_format === 'ark' ? 'ark' : 'v1',
+                    taskRegion,
+                ),
+            );
+        return NextResponse.json(body);
+    };
+    const failedBody = (failReason: string): Record<string, unknown> => {
         if (format === 'ark') {
             const extended = taskRegion === 'global' || taskRegion === 'promax';
-            return NextResponse.json(
-                buildArkTaskResponse({
-                    taskId,
-                    internalModel: task.model,
-                    status: 'failed',
-                    failReason,
-                    createdAt: task.created_at,
-                    resolution: task.resolution,
-                    duration: task.duration,
-                    ratio: task.ratio,
-                    seed: task.seed,
-                    generateAudio: task.generate_audio,
-                    extended,
-                    // 失败态也要出齐火山官方字段集(客户契约校验不分成功失败)。
-                    volcMeta: taskRegion === 'volc' ? {} : null,
-                    submitted: submittedArkParams(task),
-                }),
-            );
+            return buildArkTaskResponse({
+                taskId,
+                internalModel: task.model,
+                status: 'failed',
+                failReason,
+                createdAt: task.created_at,
+                resolution: task.resolution,
+                duration: task.duration,
+                ratio: task.ratio,
+                seed: task.seed,
+                generateAudio: task.generate_audio,
+                extended,
+                // 失败态也要出齐火山官方字段集(客户契约校验不分成功失败)。
+                volcMeta: taskRegion === 'volc' ? {} : null,
+                submitted: submittedArkParams(task),
+            });
         }
-        return NextResponse.json({
+        return {
             id: taskId,
             task_id: taskId,
             object: 'video',
             status: 'failed',
             progress: 100,
             fail_reason: failReason,
-        });
+        };
     };
 
     /**
@@ -994,6 +1050,12 @@ async function handlePollInner(
      * 任务真出片时自然拿到结果。响应带 `X-Silkroadai-Poll-Degraded: 1` 供我们排查区分。
      */
     const lastKnownResponse = (): NextResponse => {
+        if (task.status === 'completed')
+            return errJson(
+                503,
+                'task_result_unavailable',
+                'task is already completed; its result is temporarily unavailable, retry this query without resubmitting generation',
+            );
         const headers = { 'X-Silkroadai-Poll-Degraded': '1' };
         const our = task.status === 'in_progress' ? 'in_progress' : 'queued';
         if (format === 'ark') {
@@ -1154,20 +1216,44 @@ async function handlePollInner(
     ctx.statusAfter = typeof j?.status === 'string' ? j.status : task.status;
     if (typeof j?.vendor_task_id === 'string') ctx.vendorTaskId = j.vendor_task_id;
 
+    if (task.status === 'completed' && j && j.status !== 'completed') {
+        const response = errJson(
+            503,
+            'task_status_changed',
+            'task is already completed; retry this query without resubmitting generation',
+        );
+        response.headers.set('Retry-After', '5');
+        return response;
+    }
     if (j && j.status === 'completed') {
-        const usage = j.usage as { completion_tokens?: number; total_tokens?: number } | undefined;
-        const tokens = usage?.completion_tokens ?? usage?.total_tokens;
-        if (tokens && tokens > 0 && task.tokens == null) {
-            await prisma.seedanceVideoTask
-                .update({ where: { id: taskId }, data: { tokens: BigInt(tokens), status: 'completed' } })
-                .catch((e) => console.warn('[enterprise-proxy] write tokens failed', e));
+        const tokens = taskCompletionTokens(j);
+        if (tokens === null && !hasCompletedVideoUrl(j))
+            return errJson(
+                503,
+                'task_result_unavailable',
+                'completed task result is incomplete; retry this query without resubmitting generation',
+            );
+        if (tokens !== null || hasCompletedVideoUrl(j)) {
+            try {
+                if (!(await recordVideoTaskCompletion(taskId, tokens))) {
+                    const response = errJson(503, 'task_status_changed', 'task state changed, retry this query');
+                    response.headers.set('Retry-After', '5');
+                    return response;
+                }
+            } catch (e) {
+                console.warn('[enterprise-proxy] completion state write failed', e);
+                return errJson(503, 'task_status_unavailable', 'task state could not be confirmed, retry this query');
+            }
         }
-        try {
-            const r = await chargeEnterpriseVideoTask(taskId);
-            if (r.outcome === 'deduct_failed')
-                console.error('[enterprise-proxy] charge deduct_failed', { taskId, cost: r.costCny });
-        } catch (e) {
-            console.error('[enterprise-proxy] charge threw', e);
+        // No usage means no debit. A later poll/reconciliation can settle this completed task.
+        if (tokens !== null) {
+            try {
+                const r = await chargeEnterpriseVideoTask(taskId);
+                if (r.outcome === 'deduct_failed')
+                    console.error('[enterprise-proxy] charge deduct_failed', { taskId, cost: r.costCny });
+            } catch (e) {
+                console.error('[enterprise-proxy] charge threw', e);
+            }
         }
     } else if (j && j.status === 'failed' && task.status !== 'failed') {
         // 失败不计费(火山对失败不收费);fail_reason 落库(2026-07-24 企业权责透明)
@@ -1251,36 +1337,42 @@ async function handlePollInner(
             const branded = await maybeBrandVideoUrl({ userId: cust.userId, taskId, upstreamUrl: videoUrl });
             if (branded) videoUrl = branded;
         }
-        return NextResponse.json(
-            buildArkTaskResponse({
+        const arkBody = buildArkTaskResponse({
+            taskId,
+            internalModel: task.model,
+            status: arkStatus(String(ourStatus)),
+            videoUrl,
+            lastFrameUrl: typeof j?.last_frame_url === 'string' ? j.last_frame_url : null,
+            usage,
+            failReason,
+            createdAt: task.created_at,
+            // 上游给了【已推导】的值就用它,库里的提交参数只作兜底。
+            // 客户传 duration=-1(智能时长)时,库里存的就是 -1,一直回显 -1 是错的 ——
+            // 上游完成时会给模型真正选的秒数(2026-08-26 客户报障)。ratio 同理。
+            // 上游不回显的渠道走成片实测值(见上 actualDuration / actualRatio)。
+            resolution: upstreamStr(j?.resolution) ?? task.resolution,
+            duration: actualDuration ?? task.duration,
+            ratio: actualRatio ?? task.ratio,
+            seed: task.seed,
+            generateAudio: task.generate_audio,
+            extended,
+            // volc = 原生火山:火山官方字段集要齐(客户按基准做契约校验)。
+            // 其余渠道传 null,行为逐字不变。
+            volcMeta: taskRegion === 'volc' ? upstreamArkMeta(j) : null,
+            // cn 官方形也补齐 2026-09 新字段:国内版 2.5 480p(service-inference.ai)有上游真值,
+            // xinhankr 线全 null → 走落库提交参数 / 官方默认值。
+            upstreamMeta: taskRegion !== 'volc' ? upstreamArkMeta(j) : null,
+            submitted: submittedArkParams(task),
+        });
+        // 回调投递(2026-10-19):终态(计费已在上面完成)才投,body = 本次查询响应体。
+        if ((ourStatus === 'completed' || ourStatus === 'failed') && shouldFireCallback(task))
+            fireTaskCallback(
                 taskId,
-                internalModel: task.model,
-                status: arkStatus(String(ourStatus)),
-                videoUrl,
-                lastFrameUrl: typeof j?.last_frame_url === 'string' ? j.last_frame_url : null,
-                usage,
-                failReason,
-                createdAt: task.created_at,
-                // 上游给了【已推导】的值就用它,库里的提交参数只作兜底。
-                // 客户传 duration=-1(智能时长)时,库里存的就是 -1,一直回显 -1 是错的 ——
-                // 上游完成时会给模型真正选的秒数(2026-08-26 客户报障)。ratio 同理。
-                // 上游不回显的渠道走成片实测值(见上 actualDuration / actualRatio)。
-                resolution: upstreamStr(j?.resolution) ?? task.resolution,
-                duration: actualDuration ?? task.duration,
-                ratio: actualRatio ?? task.ratio,
-                seed: task.seed,
-                generateAudio: task.generate_audio,
-                extended,
-                // volc = 原生火山:火山官方字段集要齐(客户按基准做契约校验)。
-                // 其余渠道传 null,行为逐字不变。
-                volcMeta: taskRegion === 'volc' ? upstreamArkMeta(j) : null,
-                // cn 官方形也补齐 2026-09 新字段:国内版 2.5 480p(service-inference.ai)有上游真值,
-                // xinhankr 线全 null → 走落库提交参数 / 官方默认值。
-                upstreamMeta: taskRegion !== 'volc' ? upstreamArkMeta(j) : null,
-                submitted: submittedArkParams(task),
-            }),
-            { headers: vendorHeaders },
-        );
+                task.callback_format === 'ark'
+                    ? arkBody
+                    : buildTerminalCallbackBody(task, { ...j, video_url: videoUrl, url: videoUrl }, 'v1', taskRegion),
+            );
+        return NextResponse.json(arkBody, { headers: vendorHeaders });
     }
 
     // v1(OpenAI-video)形:成片落客户 OSS 时,把 video_url/url 换成客户域名 URL 再回序列化;
@@ -1288,6 +1380,14 @@ async function handlePollInner(
     if (customerOssVideoUrl && j) {
         j.video_url = customerOssVideoUrl;
         j.url = customerOssVideoUrl;
+    }
+    // 回调投递(2026-10-19):终态才投,body = 客户此刻查询拿到的 v1 形(含客户 OSS 替换后的 URL)。
+    if (j && (j.status === 'completed' || j.status === 'failed') && shouldFireCallback(task))
+        fireTaskCallback(
+            taskId,
+            buildTerminalCallbackBody(task, j, task.callback_format === 'ark' ? 'ark' : 'v1', taskRegion),
+        );
+    if (customerOssVideoUrl && j) {
         return NextResponse.json(j, { status: 200, headers: vendorHeaders });
     }
     return new NextResponse(text, {

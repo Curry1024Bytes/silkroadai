@@ -1928,6 +1928,128 @@ with open("edited.png", "wb") as f:
                         · 4K 超时 ≥180s + 重试 · Key 用图片模型分组。
                     </div>
 
+                    <h3 className="m-0 mt-8 mb-2 text-base font-semibold text-navy">
+                        流式返回 · stream + partial_images(可选，固定分辨率 SKU 不支持)
+                    </h3>
+                    <p className="m-0 mb-3 text-sm text-ink leading-relaxed">
+                        加{' '}
+                        <code className="font-mono text-xs bg-paper-muted px-1 py-0.5 rounded border border-brand-border text-navy">
+                            &quot;stream&quot;: true
+                        </code>{' '}
+                        后,接口按 OpenAI Images streaming 契约返回 SSE 事件流(
+                        <code className="font-mono text-xs">Content-Type: text/event-stream</code>
+                        ),官方 SDK 的流式写法可以直接用。本实现的兼容边界是:上游模型不产渐进预览,
+                        <strong className="text-navy">
+                            partial_image 事件里是一张固定的「生成中」占位动图(转圈),不是半成品渲染
+                        </strong>
+                        ;最终图只在 completed
+                        事件里。好处是连接一开就有帧回来,生成期间通过保活减少空闲超时；客户端仍需配置足够的超时时间。
+                    </p>
+                    <div className="rounded-lg overflow-hidden border border-brand-border bg-surface mb-3">
+                        <table className="w-full border-collapse text-sm">
+                            <thead>
+                                <tr className="bg-paper-muted text-muted-ink">
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        事件(event)
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        何时 / 几次
+                                    </th>
+                                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                                        data 字段
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">
+                                        image_generation.partial_image
+                                    </td>
+                                    <td className="px-4 py-3 text-ink align-top">
+                                        开流后 1–3 秒内,共 <code className="font-mono text-xs">partial_images</code>{' '}
+                                        次(0 则没有)
+                                    </td>
+                                    <td className="px-4 py-3 text-ink">
+                                        <code className="font-mono text-xs">b64_json</code>(占位动图:png 为 APNG、webp
+                                        为动态 WebP、jpeg 静态;尺寸 / 格式 / 透明与请求一致,size=auto 时按 1024×1024)、
+                                        <code className="font-mono text-xs">partial_image_index</code> 0..N-1、
+                                        <code className="font-mono text-xs">sequence_number</code>、size / quality /
+                                        background / output_format / created_at
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">
+                                        image_generation.completed
+                                    </td>
+                                    <td className="px-4 py-3 text-ink align-top">生成完成,1 次</td>
+                                    <td className="px-4 py-3 text-ink">
+                                        <code className="font-mono text-xs">b64_json</code> 最终图(或{' '}
+                                        <code className="font-mono text-xs">url</code>,当 response_format=url)、
+                                        <code className="font-mono text-xs">usage</code>(计费依据,与非流式相同)、size /
+                                        quality / background / output_format / created_at / sequence_number
+                                    </td>
+                                </tr>
+                                <tr className="border-b border-brand-border">
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">error</td>
+                                    <td className="px-4 py-3 text-ink align-top">生成失败,替代 completed</td>
+                                    <td className="px-4 py-3 text-ink">
+                                        <code className="font-mono text-xs">error.message / type / code</code>(SSE
+                                        已开,HTTP 状态码恒 200,错误只在事件里)
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td className="px-4 py-3 font-mono text-xs text-navy align-top">: keep-alive</td>
+                                    <td className="px-4 py-3 text-ink align-top">每 15 秒</td>
+                                    <td className="px-4 py-3 text-ink">SSE 注释行,无 data,客户端按协议忽略即可</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <p className="m-0 mb-3 text-xs text-minor-ink leading-relaxed">
+                        /images/edits 的事件名前缀为 <code className="font-mono text-xs">image_edit.</code>。流式只支持{' '}
+                        <code className="font-mono text-xs">n = 1</code>(n &gt; 1 返 400)。占位帧不计费,
+                        <code className="font-mono text-xs">usage</code>{' '}
+                        与非流式完全一致。不支持动图的查看器会显示占位图的第一帧。
+                    </p>
+                    <CodeBlock language="bash">
+                        {`curl -N ${OPENAI_BASE}/images/generations \\
+  -H "Authorization: Bearer sk-你的KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "gpt-image-2",
+    "prompt": "a red apple on a wooden table",
+    "size": "1536x1024",
+    "quality": "high",
+    "stream": true,
+    "partial_images": 2
+  }'
+# 依次收到:
+# event: image_generation.partial_image   ← 1–3s 内,占位动图,index 0
+# event: image_generation.partial_image   ← 占位动图,index 1
+# : keep-alive                            ← 每 15s
+# event: image_generation.completed       ← 最终图 b64_json + usage`}
+                    </CodeBlock>
+                    <CodeBlock language="python">
+                        {`from openai import OpenAI
+client = OpenAI(base_url="${OPENAI_BASE}", api_key="sk-你的KEY")
+
+stream = client.images.generate(
+    model="gpt-image-2",
+    prompt="a red apple on a wooden table",
+    size="1536x1024",
+    quality="high",
+    stream=True,
+    partial_images=2,
+)
+for event in stream:
+    if event.type == "image_generation.partial_image":
+        show_placeholder(event.b64_json)      # 「生成中」动图,先占住画面
+    elif event.type == "image_generation.completed":
+        save_png(event.b64_json)              # 最终图;event.usage 为计费依据
+    elif event.type == "error":
+        raise RuntimeError(event.error.message)`}
+                    </CodeBlock>
+
                     <h3 className="m-0 mt-8 mb-2 text-base font-semibold text-navy">严格模式 · Azure 标准校验(可选)</h3>
                     <p className="m-0 mb-3 text-sm text-ink leading-relaxed">
                         固定价 SKU 的尺寸约束始终生效,不需要本开关:档位与 size / aspect_ratio 冲突必定 400。 若还需要

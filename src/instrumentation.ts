@@ -19,6 +19,11 @@
  * 只能靠 dispatcher。与 Caddy `ai.silkroadai.io` 600s 对齐。见 2026-07-13
  * lkl1131888403 诊断。
  *
+ * ── Part 3:滚动部署排空(2026-10-20)──
+ * SIGTERM 之后每个响应头带 `Connection: close`,让 Caddy 不再复用长连接把新请求送进正在退出的
+ * 副本;配合 compose `stop_grace_period: 630s` + deploy 脚本 `docker stop -t`,在途生图做完再退。
+ * 机理与实测见 src/lib/server/drain.ts 文件头。所有实例(主站 / 副本 / 企业)都装,无副作用。
+ *
  * ── Part 2:后台调度器(仅主站单实例跑)──
  * 两道门,命中任一即不跑:
  *  - `PORTAL_FLAVOR=seedance-enterprise`:seedance 独立门户实例(与主站共库)
@@ -52,6 +57,12 @@ export async function register() {
                 // Undici 默认 keep-alive(约 4s)虽增加少量建连开销,但可避免慢请求队头阻塞。
             }),
         );
+    }
+
+    // Part 3:排空钩子(见文件头)。
+    if (process.env.NEXT_RUNTIME === 'nodejs') {
+        const [{ installDrainHook }, http] = await Promise.all([import('@/lib/server/drain'), import('node:http')]);
+        installDrainHook(http.default ?? http);
     }
 
     // W5 D4: Sentry server-side init. Conditional on SENTRY_DSN — empty env
@@ -100,4 +111,8 @@ export async function register() {
     // 客户 /v1 请求日志:按记录到期时间清理 PG 元数据，R2 原文由桶生命周期清理。
     const { startRequestLogCleanupScheduler } = await import('@/lib/scheduler/request-log-cleanup');
     startRequestLogCleanupScheduler();
+    // 企业任务对账 sweep(2026-10-19):客户提交后不轮询也不开页面的滞留任务,由主站实例每 10 分钟
+    // 代为对账(终态 + 幂等补扣 + 回调投递)。主站 .env 要配齐各线上游 key。
+    const { startEnterpriseReconcileSweepScheduler } = await import('@/lib/scheduler/enterprise-reconcile-sweep');
+    startEnterpriseReconcileSweepScheduler();
 }

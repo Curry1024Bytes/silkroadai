@@ -57,17 +57,11 @@ export const metadata = {
 };
 
 async function getPricingUserId(): Promise<string | undefined> {
-    try {
-        const h = await headers();
-        const user = await getCurrentUser(
-            new NextRequest('http://internal/pricing', { headers: { cookie: h.get('cookie') ?? '' } }),
-        );
-        return user?.id;
-    } catch {
-        // Unit renders and static tooling have no request scope; public
-        // pricing simply falls back to the public GroupRatio in that case.
-        return undefined;
-    }
+    const h = await headers();
+    const user = await getCurrentUser(
+        new NextRequest('http://internal/pricing', { headers: { cookie: h.get('cookie') ?? '' } }),
+    );
+    return user?.id;
 }
 
 interface PriceCell {
@@ -79,6 +73,7 @@ interface PriceCell {
     publicMultiplier: number | null;
     effectiveMultiplier: number | null;
     billingDetails: CatalogBillingDetails | null;
+    special: boolean;
 }
 
 interface ModelBlock {
@@ -204,6 +199,7 @@ async function loadPricingSheet(userId?: string): Promise<{ vendors: VendorBlock
                 publicMultiplier,
                 effectiveMultiplier: dedicatedMultiplier ?? publicMultiplier,
                 billingDetails,
+                special: dedicatedMultiplier !== undefined && dedicatedMultiplier !== publicMultiplier,
             });
         }
         if (rows.length === 0) continue; // 无任何可展示价 → 不上表
@@ -260,6 +256,11 @@ export default async function PricingPage() {
                     </p>
                 </header>
 
+                {sheet && sheet.vendors.some((v) => v.models.some((m) => m.rows.some((r) => r.special))) && (
+                    <p role="status" className="mb-6 text-sm text-brand-accent">
+                        已按您的专属倍率显示价格
+                    </p>
+                )}
                 {fetchErr || !sheet ? (
                     <FormError severity="banner">当前无法获取价格表,请稍后重试。</FormError>
                 ) : (
@@ -329,6 +330,7 @@ function VendorPriceSection({ block }: { block: VendorBlock }) {
                                         )}
                                         <td className="py-2.5 pr-4 text-muted-ink">
                                             {row.tierLabel}
+                                            {row.special && <span className="ml-2 text-xs">专属价</span>}
                                             {row.billingDetails && (
                                                 <span className="block mt-1 text-xs">
                                                     {row.billingDetails.mode !== 'tiered_token'

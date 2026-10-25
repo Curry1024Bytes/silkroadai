@@ -272,3 +272,26 @@ describe('reconciliation expires only still-pending, unbilled rows', () => {
         expect(charge).not.toHaveBeenCalled();
     });
 });
+
+describe('success writes preserve a competing failure', () => {
+    it.each(['customer', 'reconcile'] as const)(
+        '%s does not revive or bill a task failed during upstream I/O',
+        async (entry) => {
+            const upstream = deferredPoll();
+            const pending = run(entry);
+            await upstream.started;
+            task.status = 'failed';
+            task.fail_reason = 'persisted authoritative failure';
+            upstream.release(completed());
+            const response = await pending;
+            expect(task).toMatchObject({
+                status: 'failed',
+                billed: false,
+                tokens: null,
+                fail_reason: 'persisted authoritative failure',
+            });
+            expect(charge).not.toHaveBeenCalled();
+            if (response) expect(response.status).toBe(503);
+        },
+    );
+});

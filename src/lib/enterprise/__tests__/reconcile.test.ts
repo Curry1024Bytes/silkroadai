@@ -56,7 +56,7 @@ describe('reconcileStaleTasks', () => {
         await reconcileStaleTasks('u1');
         expect(pollVideoWithKey).toHaveBeenCalledWith('cgt-a', 'Bearer sk-upstream', 'promax');
         expect(db.seedanceVideoTask.updateMany).toHaveBeenCalledWith({
-            where: { id: 'cgt-a', tokens: null },
+            where: { id: 'cgt-a', tokens: null, status: { in: ['queued', 'in_progress', 'completed'] }, billed: false },
             data: { tokens: BigInt(245025), status: 'completed' },
         });
         expect(chargeEnterpriseVideoTask).toHaveBeenCalledWith('cgt-a');

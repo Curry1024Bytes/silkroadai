@@ -12,7 +12,13 @@
  */
 import { describe, expect, it } from 'vitest';
 import { renderToString } from 'react-dom/server';
-import { KeysList, TierSelect, type KeyRow, type TierOption } from '@/app/(authenticated)/keys/keys-list';
+import {
+    KeysList,
+    TierSelect,
+    QuotaExpiryFields,
+    type KeyRow,
+    type TierOption,
+} from '@/app/(authenticated)/keys/keys-list';
 
 const VALID_TIERS: TierOption[] = [
     {
@@ -35,6 +41,10 @@ const SAMPLE_ROWS: KeyRow[] = [
         usedCny: 0,
         last_used_at: null,
         tier: 'pool',
+        meta_available: true,
+        quota_unlimited: true,
+        remainCny: null,
+        expires_at: null,
     },
     {
         id: 'tok-bbb',
@@ -45,6 +55,10 @@ const SAMPLE_ROWS: KeyRow[] = [
         usedCny: 0,
         last_used_at: null,
         tier: 'pool',
+        meta_available: true,
+        quota_unlimited: true,
+        remainCny: null,
+        expires_at: null,
     },
 ];
 
@@ -96,6 +110,10 @@ describe('<KeysList /> SSR smoke', () => {
             usedCny: 0,
             last_used_at: null,
             tier: 'pool',
+            meta_available: true,
+            quota_unlimited: true,
+            remainCny: null,
+            expires_at: null,
         }));
         const html = renderToString(<KeysList initialRows={fullList} tiers={VALID_TIERS} />);
         expect(html).not.toContain('已达上限');
@@ -125,13 +143,17 @@ describe('<KeysList /> W6 D4 — per-key usage subline', () => {
                 usedCny: 0,
                 last_used_at: null,
                 tier: 'pool',
+                meta_available: true,
+                quota_unlimited: true,
+                remainCny: null,
+                expires_at: null,
             },
         ];
         const html = renderToString(<KeysList initialRows={rows} />);
         expect(html).toContain('从未调用');
         // React 19 SSR inserts <!-- --> between adjacent text + dynamic
         // nodes (the literal "¥" plus the formatted CNY number).
-        expect(html).toMatch(/累计 ¥(<!-- -->)?0\.00/);
+        expect(html).toMatch(/累计 (<!-- -->)?¥(<!-- -->)?0\.00/);
     });
 
     it('renders ¥X.XX accumulated (server usedCny, not client-derived) + relative last-used time', () => {
@@ -147,11 +169,15 @@ describe('<KeysList /> W6 D4 — per-key usage subline', () => {
                 usedCny: 4.87,
                 last_used_at: aboutADayAgo,
                 tier: 'pool',
+                meta_available: true,
+                quota_unlimited: true,
+                remainCny: null,
+                expires_at: null,
             },
         ];
         const html = renderToString(<KeysList initialRows={rows} />);
         // React 19 inserts <!-- --> between literal ¥ and dynamic value.
-        expect(html).toMatch(/累计 ¥(<!-- -->)?4\.87/);
+        expect(html).toMatch(/累计 (<!-- -->)?¥(<!-- -->)?4\.87/);
         // client-side quotaToCny(695000) with stale defaults would render ¥10.01 — guard against regression
         expect(html).not.toContain('10.01');
         // 26h ago → "1 天前" (with optional comment)
@@ -169,12 +195,16 @@ describe('<KeysList /> W6 D4 — per-key usage subline', () => {
                 usedCny: null,
                 last_used_at: null,
                 tier: 'pool',
+                meta_available: true,
+                quota_unlimited: true,
+                remainCny: null,
+                expires_at: null,
             },
         ];
         const html = renderToString(<KeysList initialRows={rows} />);
         expect(html).toContain('用量数据暂不可用');
         // The fallback hides the 累计/最近调用 line entirely
-        expect(html).not.toMatch(/累计 ¥/);
+        expect(html).not.toMatch(/累计 /);
     });
 });
 
@@ -219,6 +249,10 @@ describe('<KeysList /> P3 — 档次 badge', () => {
                 usedCny: 0,
                 last_used_at: null,
                 tier: 'official',
+                meta_available: true,
+                quota_unlimited: true,
+                remainCny: null,
+                expires_at: null,
             },
             {
                 id: 't2',
@@ -229,6 +263,10 @@ describe('<KeysList /> P3 — 档次 badge', () => {
                 usedCny: 0,
                 last_used_at: null,
                 tier: 'pool',
+                meta_available: true,
+                quota_unlimited: true,
+                remainCny: null,
+                expires_at: null,
             },
         ];
         const html = renderToString(<KeysList initialRows={rows} tiers={TIERS} />);
@@ -247,6 +285,10 @@ describe('<KeysList /> P3 — 档次 badge', () => {
                 usedCny: 0,
                 last_used_at: null,
                 tier: 'legacy',
+                meta_available: true,
+                quota_unlimited: true,
+                remainCny: null,
+                expires_at: null,
             },
         ];
         const html = renderToString(<KeysList initialRows={rows} tiers={TIERS} />);
@@ -292,4 +334,156 @@ describe('<KeysList /> — alias rename affordance', () => {
         const html = renderToString(<KeysList initialRows={[]} />);
         expect(html).not.toContain('>编辑<');
     });
+});
+
+describe('<KeysList /> 额度 / 到期列(2026-10-22)', () => {
+    const base = SAMPLE_ROWS[0];
+
+    it('renders the 额度 / 到期 column header and 无限额度 + 永不过期 for a default key', () => {
+        const html = renderToString(<KeysList initialRows={[base]} />);
+        expect(html).toContain('额度 / 到期');
+        expect(html).toContain('无限额度');
+        expect(html).toContain('永不过期');
+        expect(html).toContain('调整额度与到期 production');
+        expect(html).not.toContain('已过期');
+        expect(html).not.toContain('已用尽');
+    });
+
+    it('renders 剩余 ¥ + Beijing-time expiry for a capped key, and 已过期 when the date has passed', () => {
+        const html = renderToString(
+            <KeysList
+                initialRows={[
+                    { ...base, quota_unlimited: false, remainCny: 70, expires_at: '2026-01-01T04:00:00.000Z' },
+                ]}
+            />,
+        );
+        expect(html).toMatch(/剩余 (<!-- -->)?¥70\.00/);
+        // 2026-01-01T04:00Z = 北京 12:00(gotcha #20:显式 Asia/Shanghai)
+        expect(html).toContain('2026/1/1 12:00:00');
+        expect(html).toContain('已过期');
+    });
+
+    it('renders 已用尽 when a capped key has no remaining quota', () => {
+        const html = renderToString(
+            <KeysList initialRows={[{ ...base, quota_unlimited: false, remainCny: 0, expires_at: null }]} />,
+        );
+        expect(html).toContain('已用尽');
+        expect(html).toContain('永不过期');
+    });
+
+    it('degrades to 额度信息暂不可用 (no 调整 button) when token meta could not be read', () => {
+        const html = renderToString(
+            <KeysList initialRows={[{ ...base, meta_available: false, quota_unlimited: null }]} />,
+        );
+        expect(html).toContain('额度信息暂不可用');
+        expect(html).not.toContain('调整额度与到期');
+    });
+});
+
+describe('<QuotaExpiryFields /> SSR', () => {
+    it('renders the unlimited toggle, five expiry presets, and hides the ¥ input while unlimited', () => {
+        const html = renderToString(
+            <QuotaExpiryFields
+                quotaLimitsEnabled
+                idPrefix="t"
+                value={{ quotaUnlimited: true, quotaCny: '', expiryPreset: 'never', expiryCustom: '' }}
+                onChange={() => {}}
+            />,
+        );
+        expect(html).toContain('无限额度');
+        for (const label of ['永不', '1 小时', '1 天', '1 个月', '自定义']) expect(html).toContain(label);
+        expect(html).toContain('aria-checked="true"');
+        expect(html).not.toContain('aria-label="额度上限(元)"');
+        expect(html).not.toContain('type="datetime-local"');
+    });
+
+    it('shows the ¥ input when capped and the datetime-local input for the custom preset', () => {
+        const html = renderToString(
+            <QuotaExpiryFields
+                quotaLimitsEnabled
+                idPrefix="t"
+                value={{
+                    quotaUnlimited: false,
+                    quotaCny: '100',
+                    expiryPreset: 'custom',
+                    expiryCustom: '2030-01-01T12:00',
+                }}
+                onChange={() => {}}
+            />,
+        );
+        expect(html).toContain('aria-label="额度上限(元)"');
+        expect(html).toContain('value="100"');
+        expect(html).toContain('type="datetime-local"');
+        expect(html).toContain('value="2030-01-01T12:00"');
+    });
+});
+
+describe('<TierSelect /> 专属倍率徽章(2026-10-23)', () => {
+    const TIERS = [
+        {
+            key: 'pool-gpt',
+            display_name: 'GPT 池子',
+            description: null,
+            is_default: true,
+            newapi_group: 'pool-gpt',
+            ratio: 0.25,
+            listRatio: 0.4,
+            special: true,
+        },
+        {
+            key: 'pool-claude',
+            display_name: 'Claude 号池',
+            description: null,
+            is_default: false,
+            newapi_group: 'pool-claude',
+            ratio: 1.6,
+            listRatio: 1.6,
+            special: false,
+        },
+    ];
+    it('renders 「Nx 专属倍率」 for a GroupGroupRatio-overridden tier and plain 「Nx 倍率」 otherwise', () => {
+        const special = renderToString(<TierSelect tiers={TIERS} value="pool-gpt" onChange={() => {}} />);
+        expect(special).toContain('0.25x 专属倍率');
+        const plain = renderToString(<TierSelect tiers={TIERS} value="pool-claude" onChange={() => {}} />);
+        expect(plain).toContain('1.6x 倍率');
+        expect(plain).not.toContain('专属倍率');
+    });
+});
+
+describe('LLmRoute Key quota policy', () => {
+    it('hides finite quota controls by default while keeping expiry controls', () => {
+        const html = renderToString(
+            <QuotaExpiryFields
+                idPrefix="disabled"
+                value={{ quotaUnlimited: false, quotaCny: '100', expiryPreset: 'never', expiryCustom: '' }}
+                onChange={() => {}}
+            />,
+        );
+        expect(html).not.toContain('额度上限');
+        expect(html).not.toContain('独立于账户余额');
+        expect(html).toContain('到期时间');
+        expect(html).toContain('1 小时');
+    });
+});
+
+describe('inactive Key expiry settings', () => {
+    it.each([2, 3, 4] as const)(
+        'still shows status %s as unusable after its expiry is changed into the future',
+        (upstream_status) => {
+            const html = renderToString(
+                <KeysList
+                    initialRows={[
+                        {
+                            ...SAMPLE_ROWS[0],
+                            upstream_status,
+                            requires_reactivation: true,
+                            expires_at: '2030-01-01T00:00:00.000Z',
+                        },
+                    ]}
+                    tiers={VALID_TIERS}
+                />,
+            );
+            expect(html).toContain('此 Key 仍不可用，请联系管理员恢复或创建新 Key。');
+        },
+    );
 });

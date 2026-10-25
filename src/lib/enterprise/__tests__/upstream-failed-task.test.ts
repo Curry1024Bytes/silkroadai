@@ -21,6 +21,7 @@ vi.mock('../billing', async (importOriginal) => ({
 }));
 vi.mock('../volc-id-map', () => ({
     toUpstreamId: vi.fn(async () => 'kz-cgt-fixture'),
+    toUpstreamTask: vi.fn(async () => ({ upstreamId: 'kz-cgt-fixture', apiVersion: 'v2' })),
     rememberVolcId: vi.fn(),
 }));
 

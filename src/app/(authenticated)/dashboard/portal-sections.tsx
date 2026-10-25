@@ -7,6 +7,18 @@ import { quotaToCny } from '@/lib/newapi/client';
 import { ModelConsumptionChartLazy } from './model-consumption-chart-lazy';
 import { CallDetailTable } from './call-detail-table';
 import type { BalanceData, UsageData } from './sections';
+import { formatCny, formatCount, formatTokens, type CompactNumber } from '@/lib/format/number';
+
+function CompactValue({ value, prefix = '' }: { value: CompactNumber; prefix?: string }) {
+    return (
+        <span title={value.exact}>
+            {prefix}
+            {value.display}
+            {value.unit && <small className="ml-1 text-base">{value.unit}</small>}
+        </span>
+    );
+}
+
 function MetricCell({
     icon: Icon,
     label,
@@ -40,6 +52,8 @@ const NO_DATA = <span className="text-base font-medium text-portal-subtle">暂�
 
 export async function PortalBalance({ data }: { data: Promise<BalanceData> }) {
     const { bal } = await data;
+    const balance = bal ? formatCny(bal.balanceCny) : null;
+    const spent = bal ? formatCny(bal.spentCny) : null;
     return (
         <article className="relative overflow-hidden rounded-lg border border-portal-line bg-portal-panel p-6 shadow-portal lg:col-span-4 lg:min-h-[220px]">
             <div className="flex items-start justify-between gap-4">
@@ -48,12 +62,13 @@ export async function PortalBalance({ data }: { data: Promise<BalanceData> }) {
                     <div className="mt-4">
                         {bal ? (
                             <p className="m-0 font-display text-[38px] font-semibold leading-none text-portal-ink tabular-nums">
-                                ¥{bal.balanceCny.toFixed(2)}
+                                <CompactValue value={balance!} prefix="¥" />
                             </p>
                         ) : (
                             <p className="m-0 text-base font-medium text-portal-subtle">暂无数据</p>
                         )}
                     </div>
+                    {balance?.compact && <p className="mt-2 text-xs text-portal-subtle">{balance.exact}</p>}
                 </div>
                 <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-brand-accent-soft text-brand-accent">
                     <Wallet size={20} strokeWidth={1.7} aria-hidden="true" />
@@ -64,8 +79,9 @@ export async function PortalBalance({ data }: { data: Promise<BalanceData> }) {
                 <div>
                     <p className="m-0 text-xs text-portal-subtle">历史消费</p>
                     <p className="m-0 mt-1 font-display text-lg font-semibold text-portal-ink tabular-nums">
-                        {bal ? `¥${bal.spentCny.toFixed(2)}` : '暂无数据'}
+                        {spent ? <CompactValue value={spent} prefix="¥" /> : '暂无数据'}
                     </p>
+                    {spent?.compact && <p className="mt-1 text-xs text-portal-subtle">{spent.exact}</p>}
                 </div>
                 <Link
                     href="/pay"
@@ -80,15 +96,19 @@ export async function PortalBalance({ data }: { data: Promise<BalanceData> }) {
 export async function PortalUsageStats({ data, periodLabel }: { data: Promise<UsageData>; periodLabel: string }) {
     const { agg } = await data;
     const totalTokens = agg?.totalTokens ?? 0;
+    const spend = agg ? formatCny(quotaToCny(agg.totalUsedQuota)) : null;
+    const calls = agg ? formatCount(agg.totalCalls) : null;
+    const tokens = formatTokens(totalTokens);
     return (
         <div className="grid overflow-hidden rounded-lg border border-portal-line bg-portal-panel shadow-portal sm:grid-cols-3 lg:col-span-8">
             <MetricCell
                 icon={Coins}
                 label="本期消费"
-                value={agg ? `¥${quotaToCny(agg.totalUsedQuota).toFixed(2)}` : NO_DATA}
+                value={spend ? <CompactValue value={spend} prefix="¥" /> : NO_DATA}
                 detail={
                     agg ? (
                         <>
+                            {spend?.compact && <>{spend.exact} · </>}
                             {periodLabel}
                             {agg.source === 'fallback' && ' · 数据稍滞后'}
                         </>
@@ -100,15 +120,25 @@ export async function PortalUsageStats({ data, periodLabel }: { data: Promise<Us
             <MetricCell
                 icon={Activity}
                 label="请求次数"
-                value={agg ? agg.totalCalls.toLocaleString('en-US') : NO_DATA}
-                detail={periodLabel}
+                value={calls ? <CompactValue value={calls} /> : NO_DATA}
+                detail={
+                    <>
+                        {calls?.compact && <>{calls.exact} 次 · </>}
+                        {periodLabel}
+                    </>
+                }
                 className="border-t border-portal-line sm:border-l sm:border-t-0"
             />
             <MetricCell
                 icon={Database}
                 label="统计 Tokens"
-                value={agg ? totalTokens.toLocaleString('en-US') : NO_DATA}
-                detail={`${periodLabel} · 输入+输出`}
+                value={agg ? <CompactValue value={tokens} /> : NO_DATA}
+                detail={
+                    <>
+                        {tokens.compact && <>{tokens.exact} · </>}
+                        {periodLabel} · 输入+输出
+                    </>
+                }
                 className="border-t border-portal-line sm:border-l sm:border-t-0"
             />
         </div>

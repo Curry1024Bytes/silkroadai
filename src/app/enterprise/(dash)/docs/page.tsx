@@ -213,11 +213,15 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                         ¥6.48);1080p ≈ 720p 的 2.25 倍 token,480p ≈ 720p 的一半。
                     </li>
                     <li>
-                        <b>480p 与 720p 同费率</b>(单价一样,但 token 量 ∝ 像素,480p 整条约为 720p 的一半价)。仅
-                        国内版(seedance-2-0 系 / seedance-2-5)/ 火山渠道支持 480p;海外版(global)与 proMax 上游无 480p。
+                        <b>480p 与 720p 同费率</b>(单价一样,但 token 量 ∝ 像素,480p 整条约为 720p 的一半价)。
+                        国内版(seedance-2-0 系 / seedance-2-5)/ 火山渠道支持
+                        480p；海外版(global)仅在账号已开通该规格时支持；海外版 proMax 无 480p。
                     </li>
                     <li>「含视频输入」(参考视频)费率更低,但输入视频的时长也计入 token。图片参考不额外计 token。</li>
                     <li>生成失败不计费。提交时按预估价校验余额,不足返回 402(不会透支)。</li>
+                    <li>
+                        生成完成与结算完成可能不同步：成片已就绪但用量尚未返回时，不预估扣费；后续获得真实用量后结算。生成完成回调不会因用量补齐再次投递，请查询任务确认最终用量。
+                    </li>
                     <li>消费明细实时可见:「计费流水」「调用日志」页,每笔带 token 数与金额。</li>
                 </ul>
                 <div className="mt-4 rounded-lg border border-indigo-200 bg-indigo-50 p-4 text-sm">
@@ -225,20 +229,24 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                     <p className="mt-1 text-indigo-900">
                         另有海外节点出片的同款模型:<Code>seedance-2-0-global</Code> /{' '}
                         <Code>seedance-2-0-global-fast</Code> / <Code>seedance-2-0-global-mini</Code> /{' '}
-                        <Code>seedance-2-5-global</Code>(新代,2026-08-31 上线) 。2.0 系参数、分辨率档位、时长与费率
-                        <b>均与国内版一致(唯一例外:无 480p 档)</b>
-                        ,仅生成与出片走海外 节点(BytePlus),成片链接为海外 CDN(同样 ~24 小时有效)。调用需使用
+                        <Code>seedance-2-5-global</Code>(新代,2026-08-31 上线) 。2.0 系参数、时长与费率
+                        <b>均与国内版一致</b>
+                        ;默认分辨率档位:<Code>seedance-2-0-global</Code> 720p / 1080p / 4k，
+                        <Code>-fast</Code> / <Code>-mini</Code> 720p / 1080p。 已开通 480p 的账号，fast/mini 仅支持 480p
+                        / 720p，pro/fast 不支持 <Code>tools</Code>
+                        (web_search，提交即 400)。具体以账号开通规格为准。 仅生成与出片走海外
+                        节点(BytePlus),成片链接为海外 CDN(同样 ~24 小时有效)。调用需使用
                         <b>海外版专用 API 密钥</b>(「API 密钥」页创建时选「海外版」),国内/海外密钥不互通;
                         余额与国内版共享同一账户。
                         <b>如果生成因敏感内容被审核拒绝(fail_reason 提示 sensitive),并非开白/权限原因,请尝试海外版。</b>
                     </p>
                     <p className="mt-1 text-indigo-900">
-                        ⚠️ <Code>seedance-2-5-global</Code> 仅 720p / 1080p,
+                        ⚠️ <Code>seedance-2-5-global</Code> 默认支持 720p / 1080p，480p 需账号已开通该规格，
                         <b>
                             费率与下方 proMax 的 <Code>seedance-2-5-promax</Code> 相同
                         </b>
-                        ({listPrices('promax-2.5', ['720p', '1080p'], false)}
-                        ;含视频输入 {listPrices('promax-2.5', ['720p', '1080p'], true)}),
+                        ({listPrices('promax-2.5', ['480p', '720p', '1080p'], false)}
+                        ;含视频输入 {listPrices('promax-2.5', ['480p', '720p', '1080p'], true)}),
                         <b>不同于国内版 seedance-2-5</b> —— 下单前请留意。
                     </p>
                 </div>
@@ -247,8 +255,8 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                     <p className="mt-1 text-purple-900">
                         更高规格的海外出片系列:<Code>seedance-2-0-promax</Code> / <Code>seedance-2-0-promax-fast</Code>{' '}
                         / <Code>seedance-2-0-promax-mini</Code> / <Code>seedance-2-5-promax</Code>(新代)
-                        。调用方式同上(resolution 参数、参考输入自动识别),需<b>海外版proMax 专用密钥</b>; proMax
-                        fast/mini 仅 720p 档,promax(pro)支持 720p/1080p/4k、seedance-2-5-promax 支持 720p/1080p(均无
+                        。调用方式同上(resolution 参数、参考输入自动识别),需<b>海外版proMax 专用密钥</b>;
+                        promax(pro)支持 720p/1080p/4k,fast/mini 仅 720p,seedance-2-5-promax 支持 720p/1080p(均无
                         480p)。费率(¥/1M token):
                     </p>
                     <div className="mt-2 overflow-x-auto">
@@ -563,8 +571,19 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                 <p className="text-gray-600">
                     <b>火山官方参数一律透传</b> —— <Code>bitrate_mode</Code> / <Code>camera_fixed</Code> /{' '}
                     <Code>service_tier</Code> / <Code>priority</Code> / <Code>tools</Code>{' '}
-                    等按火山文档传即可,能不能用由火山判。(
-                    <Code>callback_url</Code> 暂不支持,请改用轮询。)
+                    等按火山文档传即可,能不能用由火山判。
+                </p>
+                <p className="text-gray-600">
+                    <b>
+                        回调(<Code>callback_url</Code>)
+                    </b>
+                    —— 需先确认账号所在服务已开通回调；未开通时携带该字段返回 503，不创建生成任务。 开通后提交公网可达的
+                    http(s) 地址，任务到达终态(succeeded / failed)后我们向它 POST 通知，body
+                    与您按同一入口查询该任务拿到的响应体完全一致(<Code>/api/v3</Code> 提交 → 火山形,
+                    <Code>/v1</Code> 提交 → OpenAI-video 形),请求头带 <Code>X-Task-Id</Code>。您的接收端返回 2xx
+                    视为送达;否则间隔 5s / 30s 共重试 3 次,仍失败不再投递(请以轮询兜底)。单次超时 10s,不跟随重定向;
+                    <Code>localhost</Code> / 内网地址提交即 400，域名解析到内网时也不会投递。
+                    网络超时可能造成重复通知，请按 <Code>X-Task-Id</Code> 去重；投递中断时请通过查询接口确认任务结果。
                 </p>
                 <p className="text-gray-600">
                     <b>
@@ -574,12 +593,13 @@ print(j.get("video_url"), j.get("usage"))`}</Pre>
                     主体动作符合预期后,再提交一次正片任务:<Code>content</Code> 里放{' '}
                     <Code>{'{"type":"draft_task","draft_task":{"id":"<样片任务号>"}}'}</Code>(可不带 text), 用{' '}
                     <Code>resolution</Code> 指定正片分辨率即可;提示词 / 参考素材 / 时长 / 比例 / 音频自动沿用样片,
-                    不必(也不要)重复传。样片任务号必须是你名下、已完成的样片,7 天内有效;仅{' '}
-                    <Code>doubao-seedance-2-5-260628</Code> 支持。查询响应回显 <Code>draft</Code> 与正片的{' '}
-                    <Code>draft_task_id</Code>。
+                    不必(也不要)重复传。样片任务号必须是你名下、已完成的样片,7 天内有效;仅 2.5 系模型支持:国内版{' '}
+                    <Code>doubao-seedance-2-5-260628</Code>(即 <Code>seedance-2-5</Code>)、海外版{' '}
+                    <Code>seedance-2-5-global</Code>、proMax <Code>seedance-2-5-promax</Code>;正片必须用与样片相同的模型
+                    / 渠道。查询响应回显 <Code>draft</Code> 与正片的 <Code>draft_task_id</Code>。
                 </p>
                 <p className="text-gray-600">
-                    <b>查询响应对齐火山官方 2026-09 字段集</b>(国内版 / 火山渠道均适用):除 <Code>id</Code> /{' '}
+                    <b>查询响应对齐火山官方 2026-09 字段集</b>(国内版 / 火山渠道 / 海外版均适用):除 <Code>id</Code> /{' '}
                     <Code>model</Code> / <Code>status</Code> / <Code>content</Code> / <Code>error</Code> /{' '}
                     <Code>created_at</Code> / <Code>updated_at</Code> / <Code>resolution</Code> / <Code>ratio</Code> /{' '}
                     <Code>duration</Code> / <Code>usage</Code> 外,还返回 <Code>execution_expires_after</Code> /{' '}

@@ -14,7 +14,13 @@ export const metadata = { title: 'Seedance 企业端口 · 请求日志' };
 
 const PAGE_SIZE = 50;
 
-const KIND_LABEL: Record<string, string> = { submit: '提交', poll: '轮询', reconcile: '对账', asset_action: '素材' };
+const KIND_LABEL: Record<string, string> = {
+    submit: '提交',
+    poll: '轮询',
+    reconcile: '对账',
+    asset_action: '素材',
+    callback: '回调',
+};
 
 function resultBadge(l: { http_status: number | null; upstream_status: number | null; outcome: string | null }) {
     if (l.outcome === 'completed' || l.outcome === 'back_charged')
@@ -187,6 +193,7 @@ export default async function EnterpriseAdminLogsPage({
                     <option value="submit">提交</option>
                     <option value="poll">轮询</option>
                     <option value="reconcile">对账</option>
+                    <option value="callback">回调</option>
                     <option value="asset_action">素材库</option>
                 </select>
                 <select

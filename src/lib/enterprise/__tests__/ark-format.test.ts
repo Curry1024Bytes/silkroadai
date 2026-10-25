@@ -324,14 +324,34 @@ describe('buildArkTaskResponse', () => {
         });
         expect(r.model).toBe('byteplus/seedance-2.0-fast');
         expect(r.draft).toBe(false);
-        expect(r.execution_expires_after).toBe(0);
-        expect(r.framespersecond).toBe(0);
-        expect(r.service_tier).toBe('');
+        // 2026-10-13 智象未来:网关按官方下界校验,framespersecond=0 被判元数据异常 → 任务卡 queued。
+        // 扩展形不再出硬编码占位,与 cn / volc 同走「上游真值 > 落库 > 官方默认」。
+        expect(r.execution_expires_after).toBe(172800);
+        expect(r.framespersecond).toBe(24);
+        expect(r.service_tier).toBe('default');
         expect(r.tools).toBeNull();
         expect(r.seed).toBe(74196);
         expect(r.generate_audio).toBe(false);
         expect(r.ratio).toBe('16:9');
         expect((r.usage as Record<string, unknown>).tool_usage).toEqual({ web_search: 0 });
+    });
+
+    it('BytePlus 形:客户传的 execution_expires_after 回显;上游 framespersecond=0 视为未给仍回 24', () => {
+        const r = buildArkTaskResponse({
+            taskId: 'cgt-4b',
+            internalModel: 'seedance-2-0-promax',
+            status: 'running',
+            createdAt,
+            resolution: '720p',
+            duration: 5,
+            extended: true,
+            submitted: { executionExpiresAfter: 3600 },
+            upstreamMeta: { framespersecond: 0, serviceTier: null },
+        });
+        expect(r.execution_expires_after).toBe(3600);
+        expect(r.framespersecond).toBe(24);
+        expect(r.service_tier).toBe('default');
+        expect(r.frames).toBe(121);
     });
     it('failed:error 对象带火山码,content 空', () => {
         const r = buildArkTaskResponse({

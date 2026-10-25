@@ -34,6 +34,7 @@ import { buildOrderResultUrl, createOrderStatusAccessToken } from '@/lib/order/s
 import { getSystemConfig, getSystemConfigs } from '@/lib/system-config';
 import { selectInstance, getInstanceConfig, type LoadBalanceStrategy } from '@/lib/payment/load-balancer';
 import { isValidInviteCode } from '@/lib/invite/code';
+import { isFirstRechargeBonusEnabled } from './first-recharge-bonus';
 // PR-U1: reseller commission hook (called from inside executeRecharge tx
 // after RechargeLog.create). Failure throws → tx rollback → recharge
 // reverts (money-path consistency).
@@ -49,6 +50,8 @@ const DEFAULT_MAX_PENDING_ORDERS = 3;
 export const MAX_AMOUNT = 99999999.99;
 /**
  * 首充 bonus 比率(W6 D1)。默认 20% 主 quota,一次性,仅 user 第一次充值发。
+ * ⚠️ 2026-10-17 已下架:总开关 `isFirstRechargeBonusEnabled()`(first-recharge-bonus.ts)
+ * 返 false 时整条 bonus 路径不走,本比率仅在开关打开时生效。
  * 改这个数对存量已充用户无影响 — 已 flip 的 first_recharge_bonus_granted=true
  * 永远不会重新走 bonus 路径。
  */
@@ -1177,7 +1180,8 @@ export async function executeRecharge(orderId: string): Promise<void> {
             );
         }
         const newapiUserId = portalUser.newapi_user_id;
-        const peekBonusEligible = portalUser.first_recharge_bonus_granted === false;
+        // 2026-10-17 下架:总开关关着时永远不 eligible(不 claim、不 flip、bonus=0)。
+        const peekBonusEligible = isFirstRechargeBonusEnabled() && portalUser.first_recharge_bonus_granted === false;
         // W7 D4: bonus-rate selection. Read once at peek time and pass into
         // the tx so the rate doesn't shift mid-transaction if env is reloaded.
         const bonusRate = isValidInviteCode(portalUser.invite_code)

@@ -4,7 +4,7 @@
  * Mirrors delete-reveal.test.ts: cookie auth + IDOR + revoked + new-api
  * failure ordering (new-api first, Prisma only on success).
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 
 const mockGetCurrentUser = vi.fn();
@@ -25,11 +25,26 @@ vi.mock('@/lib/db', () => ({
 
 const mockNewapiDeleteToken = vi.fn();
 const mockNewapiRenameToken = vi.fn();
+const mockNewapiUpdateToken = vi.fn();
 vi.mock('@/lib/newapi/client', () => ({
     deleteToken: (...args: unknown[]) => mockNewapiDeleteToken(...args),
     renameToken: (...args: unknown[]) => mockNewapiRenameToken(...args),
+    updateTokenForCustomer: (...args: unknown[]) => mockNewapiUpdateToken(...args),
+}));
+import { cnyToQuota } from '@/lib/newapi/quota-units';
+
+const mockGroups = vi.fn();
+const mockMutation = vi.fn();
+vi.mock('@/lib/channel-group', () => ({
+    listEnabledChannelGroups: (...args: unknown[]) => mockGroups(...args),
+    restrictGroupsForUser: (groups: { key: string }[], allowed: string[]) =>
+        allowed?.length ? groups.filter((group) => allowed.includes(group.key)) : groups,
+}));
+vi.mock('@/lib/newapi/customer-key-mutation', () => ({
+    withCustomerKeyMutation: (...args: unknown[]) => mockMutation(...args),
 }));
 
+import { PricingPublishError } from '@/lib/admin/pricing-publish-lock';
 import { PATCH } from '@/app/api/portal/keys/[id]/route';
 
 const PORTAL_USER_ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
@@ -49,6 +64,7 @@ const ACTIVE_TOKEN = {
     newapi_token_id: 99,
     status: 'active',
     key_alias: 'old-name',
+    tier: 'sale',
 };
 
 function makeReq(body: unknown, raw = false): NextRequest {
@@ -60,10 +76,16 @@ function makeReq(body: unknown, raw = false): NextRequest {
 }
 const params = Promise.resolve({ id: TOKEN_ID });
 
+afterEach(() => vi.unstubAllEnvs());
+
 beforeEach(() => {
+    vi.stubEnv('PORTAL_KEY_QUOTA_LIMITS_ENABLED', 'false');
     vi.clearAllMocks();
+    mockGroups.mockResolvedValue([{ key: 'sale', newapi_group: 'sale-group' }]);
+    mockMutation.mockImplementation(async (_scope, work) => work({ newApiToken: { update: mockTokenUpdate } }));
     mockTokenUpdate.mockResolvedValue({});
     mockNewapiRenameToken.mockResolvedValue(undefined);
+    mockNewapiUpdateToken.mockResolvedValue(undefined);
 });
 
 describe('PATCH /api/portal/keys/[id]', () => {
@@ -173,5 +195,142 @@ describe('PATCH /api/portal/keys/[id]', () => {
         const res = await PATCH(makeReq({ alias: 'prod-claude' }), { params });
         expect(res.status).toBe(500);
         expect((await res.json()).error).toBe('account_not_provisioned');
+    });
+});
+
+describe('PATCH /api/portal/keys/[id] — 额度上限 / 到期时间(2026-10-22)', () => {
+    // Upstream finite-budget regressions explicitly enable this optional policy.
+    beforeEach(() => vi.stubEnv('PORTAL_KEY_QUOTA_LIMITS_ENABLED', 'true'));
+    const FUTURE = '2030-01-01T00:00:00.000Z';
+    const CUSTOMER_AUTH = { accessToken: NEWAPI_ACCESS_TOKEN, userId: NEWAPI_USER_ID };
+
+    beforeEach(() => {
+        mockGetCurrentUser.mockResolvedValue(SESSION_USER);
+        mockTokenFindUnique.mockResolvedValue(ACTIVE_TOKEN);
+    });
+
+    it('400 validation_error on an empty body (nothing to update)', async () => {
+        const res = await PATCH(makeReq({}), { params });
+        expect(res.status).toBe(400);
+        expect((await res.json()).error).toBe('validation_error');
+    });
+
+    it.each([
+        ['quotaCny 0', { quotaCny: 0 }],
+        ['quotaCny negative', { quotaCny: -5 }],
+        ['quotaCny 3 decimals', { quotaCny: 1.234 }],
+        ['quotaCny over max', { quotaCny: 1_000_001 }],
+        ['expiresAt in the past', { expiresAt: '2020-01-01T00:00:00.000Z' }],
+        ['expiresAt garbage', { expiresAt: 'tomorrow-ish' }],
+    ])('400 validation_error when %s', async (_label, body) => {
+        const res = await PATCH(makeReq(body), { params });
+        expect(res.status).toBe(400);
+        expect(mockNewapiUpdateToken).not.toHaveBeenCalled();
+        expect(mockNewapiRenameToken).not.toHaveBeenCalled();
+    });
+
+    it('set quota: full GET→PUT via updateTokenForCustomer with unlimited_quota=false + remain_quota=cnyToQuota(absolute)', async () => {
+        const res = await PATCH(makeReq({ quotaCny: 100 }), { params });
+        expect(res.status).toBe(200);
+        expect(mockNewapiUpdateToken).toHaveBeenCalledWith(CUSTOMER_AUTH, 99, {
+            unlimited_quota: false,
+            remain_quota: cnyToQuota(100),
+        });
+        expect(mockNewapiRenameToken).not.toHaveBeenCalled();
+        expect(mockTokenUpdate).not.toHaveBeenCalled(); // alias unchanged → Prisma untouched
+        expect(await res.json()).toEqual({ ok: true, key_alias: 'old-name', quota_unlimited: false, remainCny: 100 });
+    });
+
+    it('cancel quota (null): only unlimited_quota=true, remain_quota NOT sent (new-api keeps stored value)', async () => {
+        const res = await PATCH(makeReq({ quotaCny: null }), { params });
+        expect(res.status).toBe(200);
+        expect(mockNewapiUpdateToken).toHaveBeenCalledWith(CUSTOMER_AUTH, 99, { unlimited_quota: true });
+        expect(await res.json()).toEqual({ ok: true, key_alias: 'old-name', quota_unlimited: true, remainCny: null });
+    });
+
+    it('set expiry: expired_time = floor(unix seconds); null → -1', async () => {
+        await PATCH(makeReq({ expiresAt: FUTURE }), { params });
+        expect(mockNewapiUpdateToken).toHaveBeenCalledWith(CUSTOMER_AUTH, 99, {
+            expired_time: Math.floor(Date.parse(FUTURE) / 1000),
+        });
+        mockNewapiUpdateToken.mockClear();
+        const res = await PATCH(makeReq({ expiresAt: null }), { params });
+        expect(mockNewapiUpdateToken).toHaveBeenCalledWith(CUSTOMER_AUTH, 99, { expired_time: -1 });
+        expect(await res.json()).toEqual({ ok: true, key_alias: 'old-name', expires_at: null });
+    });
+
+    it('alias + quota + expiry together → ONE PUT carrying name, then Prisma alias update', async () => {
+        const res = await PATCH(makeReq({ alias: 'renamed', quotaCny: 25.5, expiresAt: FUTURE }), { params });
+        expect(res.status).toBe(200);
+        expect(mockNewapiUpdateToken).toHaveBeenCalledTimes(1);
+        expect(mockNewapiUpdateToken).toHaveBeenCalledWith(CUSTOMER_AUTH, 99, {
+            name: 'renamed',
+            unlimited_quota: false,
+            remain_quota: cnyToQuota(25.5),
+            expired_time: Math.floor(Date.parse(FUTURE) / 1000),
+        });
+        expect(mockNewapiRenameToken).not.toHaveBeenCalled();
+        expect(mockTokenUpdate).toHaveBeenCalledWith({ where: { id: TOKEN_ID }, data: { key_alias: 'renamed' } });
+        expect(await res.json()).toEqual({
+            ok: true,
+            key_alias: 'renamed',
+            quota_unlimited: false,
+            remainCny: 25.5,
+            expires_at: FUTURE,
+        });
+    });
+
+    it('502 newapi_update_failed when the PUT fails; Prisma untouched', async () => {
+        mockNewapiUpdateToken.mockRejectedValue(new Error('new-api 503'));
+        const res = await PATCH(makeReq({ alias: 'renamed', quotaCny: 10 }), { params });
+        expect(res.status).toBe(502);
+        expect((await res.json()).error).toBe('newapi_update_failed');
+        expect(mockTokenUpdate).not.toHaveBeenCalled();
+    });
+
+    it('IDOR / revoked guards still apply to budget updates', async () => {
+        mockTokenFindUnique.mockResolvedValue({ ...ACTIVE_TOKEN, user_id: OTHER_USER_ID });
+        expect((await PATCH(makeReq({ quotaCny: 10 }), { params })).status).toBe(401);
+        mockTokenFindUnique.mockResolvedValue({ ...ACTIVE_TOKEN, status: 'disabled' });
+        expect((await PATCH(makeReq({ quotaCny: 10 }), { params })).status).toBe(410);
+        expect(mockNewapiUpdateToken).not.toHaveBeenCalled();
+    });
+
+    it('default policy rejects finite quota even with an alias, and expiry-only leaves quota untouched', async () => {
+        vi.stubEnv('PORTAL_KEY_QUOTA_LIMITS_ENABLED', 'false');
+        const denied = await PATCH(makeReq({ alias: 'changed', quotaCny: 10 }), { params });
+        expect(denied.status).toBe(403);
+        expect(mockNewapiUpdateToken).not.toHaveBeenCalled();
+        expect(mockNewapiRenameToken).not.toHaveBeenCalled();
+        expect(mockTokenUpdate).not.toHaveBeenCalled();
+        const expiry = await PATCH(makeReq({ expiresAt: FUTURE }), { params });
+        expect(expiry.status).toBe(200);
+        expect(mockNewapiUpdateToken).toHaveBeenCalledWith(CUSTOMER_AUTH, 99, {
+            expired_time: Math.floor(Date.parse(FUTURE) / 1000),
+        });
+    });
+
+    it('coordinates expiry changes with group retirement and respects current customer group access', async () => {
+        mockMutation.mockRejectedValueOnce(new PricingPublishError('tier_retiring', 'Group retiring'));
+        expect((await PATCH(makeReq({ expiresAt: FUTURE }), { params })).status).toBe(409);
+        expect(mockNewapiUpdateToken).not.toHaveBeenCalled();
+        expect(mockTokenUpdate).not.toHaveBeenCalled();
+        mockGetCurrentUser.mockResolvedValue({ ...SESSION_USER, allowed_tier_keys: ['other'] });
+        expect((await PATCH(makeReq({ expiresAt: FUTURE }), { params })).status).toBe(403);
+        expect(mockNewapiUpdateToken).not.toHaveBeenCalled();
+    });
+
+    it('reports saved settings separately from reactivation for an inactive upstream Key', async () => {
+        mockNewapiUpdateToken.mockResolvedValueOnce({ requiresReactivation: true });
+        const response = await PATCH(makeReq({ expiresAt: FUTURE }), { params });
+        expect(response.status).toBe(200);
+        expect(await response.json()).toMatchObject({
+            ok: true,
+            settings_saved: true,
+            requires_reactivation: true,
+            expires_at: FUTURE,
+            message: '此 Key 仍不可用，请联系管理员恢复或创建新 Key。',
+        });
+        expect(mockNewapiUpdateToken).toHaveBeenCalledTimes(1);
     });
 });

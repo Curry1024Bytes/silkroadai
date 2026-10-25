@@ -4,7 +4,7 @@
  * GET: list current user's active keys, mask sk- in payload
  * POST: 3-step new-api flow + Prisma persist + ONE-TIME full sk- in response
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 
 const mockGetCurrentUser = vi.fn();
@@ -51,6 +51,7 @@ vi.mock('@/lib/channel-group', async () => {
 });
 
 import { GET, POST } from '@/app/api/portal/keys/route';
+import { cnyToQuota } from '@/lib/newapi/quota-units';
 
 const PORTAL_USER_ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 const NEWAPI_USER_ID = 7;
@@ -73,7 +74,10 @@ function makeReq(opts: { method: string; body?: unknown } = { method: 'GET' }): 
     });
 }
 
+afterEach(() => vi.unstubAllEnvs());
+
 beforeEach(() => {
+    vi.stubEnv('PORTAL_KEY_QUOTA_LIMITS_ENABLED', 'false');
     vi.clearAllMocks();
     // P3 default: tenant has pool (default) + official tiers.
     mockListEnabledChannelGroups.mockResolvedValue([
@@ -291,6 +295,10 @@ describe('POST /api/portal/keys', () => {
             tier: 'pool',
             key: 'sk-NEWLY-MINTED-FULL-VALUE-xxxx',
             created_at: '2026-05-04T10:00:00.000Z',
+            // 2026-10-22 默认:无限额度 + 永不过期
+            quota_unlimited: true,
+            remainCny: null,
+            expires_at: null,
         });
     });
 
@@ -376,5 +384,79 @@ describe('POST /api/portal/keys', () => {
         expect(res.status).toBe(500);
         expect((await res.json()).error).toBe('account_not_provisioned');
         expect(mockCreateTokenForCustomer).not.toHaveBeenCalled();
+    });
+});
+
+describe('POST /api/portal/keys — 额度上限 / 到期时间(2026-10-22)', () => {
+    // Upstream finite-budget regressions explicitly enable this optional policy.
+    beforeEach(() => vi.stubEnv('PORTAL_KEY_QUOTA_LIMITS_ENABLED', 'true'));
+    const FUTURE = '2030-06-01T00:00:00.000Z';
+    function happyMocks() {
+        mockGetCurrentUser.mockResolvedValue(SESSION_USER);
+        mockCreateTokenForCustomer.mockResolvedValue(undefined);
+        mockListTokensForCustomer.mockResolvedValue({ items: [{ id: 42, name: 'capped' }], total: 1 });
+        mockGetTokenKey.mockResolvedValue('sk-CAPPED-FULL-VALUE-xxxx');
+        mockTokenCreate.mockResolvedValue({
+            id: 'tok-capped',
+            key_alias: 'capped',
+            tier: 'pool',
+            created_at: new Date('2026-10-22T10:00:00Z'),
+        });
+    }
+
+    it('creates with unlimited_quota=false + remain_quota=cnyToQuota + expired_time when both given', async () => {
+        happyMocks();
+        const res = await POST(makeReq({ method: 'POST', body: { alias: 'capped', quotaCny: 50, expiresAt: FUTURE } }));
+        expect(res.status).toBe(200);
+        expect(mockCreateTokenForCustomer).toHaveBeenCalledWith(
+            { accessToken: NEWAPI_ACCESS_TOKEN, userId: NEWAPI_USER_ID },
+            expect.objectContaining({
+                name: 'capped',
+                unlimited_quota: false,
+                remain_quota: cnyToQuota(50),
+                expired_time: Math.floor(Date.parse(FUTURE) / 1000),
+            }),
+        );
+        const body = await res.json();
+        expect(body.quota_unlimited).toBe(false);
+        expect(body.remainCny).toBe(50);
+        expect(body.expires_at).toBe(FUTURE);
+    });
+
+    it('explicit nulls behave like defaults (unlimited + never) and do NOT send remain_quota', async () => {
+        happyMocks();
+        await POST(makeReq({ method: 'POST', body: { alias: 'capped', quotaCny: null, expiresAt: null } }));
+        const args = mockCreateTokenForCustomer.mock.calls[0][1] as Record<string, unknown>;
+        expect(args.unlimited_quota).toBe(true);
+        expect(args.expired_time).toBe(-1);
+        expect('remain_quota' in args).toBe(false);
+    });
+
+    it.each([
+        ['quotaCny 0', { quotaCny: 0 }],
+        ['quotaCny 3 decimals', { quotaCny: 0.005 }],
+        ['expiresAt in the past', { expiresAt: '2020-01-01T00:00:00.000Z' }],
+    ])('400 invalid_input when %s', async (_label, extra) => {
+        mockGetCurrentUser.mockResolvedValue(SESSION_USER);
+        const res = await POST(makeReq({ method: 'POST', body: { alias: 'capped', ...extra } }));
+        expect(res.status).toBe(400);
+        expect((await res.json()).error).toBe('invalid_input');
+        expect(mockCreateTokenForCustomer).not.toHaveBeenCalled();
+    });
+
+    it('default policy rejects finite quota before creating anything, but accepts expiry with unlimited quota', async () => {
+        vi.stubEnv('PORTAL_KEY_QUOTA_LIMITS_ENABLED', 'false');
+        happyMocks();
+        const denied = await POST(makeReq({ method: 'POST', body: { alias: 'capped', quotaCny: 50 } }));
+        expect(denied.status).toBe(403);
+        expect((await denied.json()).error).toBe('key_quota_limits_disabled');
+        expect(mockCreateTokenForCustomer).not.toHaveBeenCalled();
+        expect(mockTokenCreate).not.toHaveBeenCalled();
+        const expiry = await POST(makeReq({ method: 'POST', body: { alias: 'capped', expiresAt: FUTURE } }));
+        expect(expiry.status).toBe(200);
+        const args = mockCreateTokenForCustomer.mock.calls[0][1];
+        expect(args.unlimited_quota).toBe(true);
+        expect(args).not.toHaveProperty('remain_quota');
+        expect(args.expired_time).toBe(Math.floor(Date.parse(FUTURE) / 1000));
     });
 });

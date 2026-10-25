@@ -13,7 +13,7 @@
  * 这里只做号的翻译与上游状态二次确认。
  */
 import 'server-only';
-import { toUpstreamId } from '@/lib/enterprise/volc-id-map';
+import { toUpstreamTask } from '@/lib/enterprise/volc-id-map';
 import { fetchSvcinfArkTaskId, isSvcinfTaskId, type SvcinfConfig } from './svcinf-client';
 
 export class DraftTaskError extends Error {}
@@ -50,8 +50,7 @@ export function rewriteDraftTaskId(content: unknown[], upstreamArkId: string): u
 }
 
 export type DraftTaskResolve =
-    | { ok: true; arkId: string }
-    | { ok: false; status: number; code: string; message: string };
+    { ok: true; arkId: string } | { ok: false; status: number; code: string; message: string };
 
 /**
  * 客户样片号 → 方舟真号。
@@ -63,7 +62,18 @@ export async function resolveDraftTaskArkId(
     clientDraftId: string,
     log: string,
 ): Promise<DraftTaskResolve> {
-    const upstreamId = await toUpstreamId(clientDraftId);
+    let mapped: Awaited<ReturnType<typeof toUpstreamTask>>;
+    try {
+        mapped = await toUpstreamTask(clientDraftId);
+    } catch {
+        return {
+            ok: false,
+            status: 503,
+            code: 'task_mapping_unavailable',
+            message: '样片任务查询暂不可用，请重试查询',
+        };
+    }
+    const { upstreamId, apiVersion } = mapped;
     if (!isSvcinfTaskId(upstreamId)) {
         return {
             ok: false,
@@ -72,7 +82,8 @@ export async function resolveDraftTaskArkId(
             message: `draft_task.id ${clientDraftId} 不是可出正片的样片任务(需 doubao-seedance-2-5 且 draft:true 生成)`,
         };
     }
-    const r = await fetchSvcinfArkTaskId(cfg, upstreamId, log);
+    // 样片建在哪个 API 版本下就按哪个查(两版任务互不可见)。
+    const r = await fetchSvcinfArkTaskId(cfg, upstreamId, log, { apiVersion });
     if (!r.ok) {
         return { ok: false, status: 502, code: 'upstream_unreachable', message: '样片任务查询失败,请稍后重试' };
     }

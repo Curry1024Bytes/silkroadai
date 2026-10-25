@@ -42,11 +42,12 @@
 import 'server-only';
 import { NextResponse } from 'next/server';
 import { type SeedanceVariant } from './cn-adapter';
-import { rememberVolcId, toUpstreamId } from '@/lib/enterprise/volc-id-map';
+import { toUpstreamTask } from '@/lib/enterprise/volc-id-map';
 import {
     SVCINF_DEFAULT_BASE,
     SVCINF_KEY_PREFIX,
     makeArkTaskId,
+    persistSvcinfTaskReference,
     pollSvcinfTask,
     submitSvcinfTask,
     type SvcinfConfig,
@@ -306,8 +307,9 @@ export async function submitVolcVideo(body: Record<string, unknown>, opts: VolcS
     const taskId = r.taskId;
     // 对客 id = 我们【即时自造】的火山方舟形任务号;上游受理号(mvt-…)是唯一可轮询句柄,
     // 存映射供轮询换回去打上游。方舟真号在轮询响应 metadata.id 里,只落日志供内部对账。
-    const clientTaskId = makeArkTaskId();
-    await rememberVolcId(clientTaskId, taskId, 'task');
+    let clientTaskId = makeArkTaskId();
+    // 记下所用 API 版本(/v1 与 /v2 任务互不可见,轮询按创建版本打)。
+    clientTaskId = await persistSvcinfTaskReference(clientTaskId, taskId, r.api);
     return NextResponse.json(
         {
             id: clientTaskId,
@@ -329,8 +331,20 @@ export async function submitVolcVideo(body: Record<string, unknown>, opts: VolcS
 export async function pollVolcVideo(id: string, upstreamKey?: string): Promise<NextResponse> {
     const cfg = getVolcUpstreamConfig(upstreamKey);
     if (!cfg) return err(503, 'temporarily_unavailable', '火山渠道未配置,请联系服务方');
-    const upstreamId = await toUpstreamId(id);
-    return pollSvcinfTask(cfg, id, upstreamId, { log: LOG, errType: ERR_TYPE });
+    let mapped: Awaited<ReturnType<typeof toUpstreamTask>>;
+    try {
+        mapped = await toUpstreamTask(id);
+    } catch {
+        return err(503, 'task_mapping_unavailable', 'task lookup temporarily unavailable, retry this query');
+    }
+    // 火山渠道自上线起恒 /v2(cfg.api 固定),存量无版本行也一定是 /v2 建的 → 钉死版本,404 不回退 /v1 白打一次。
+    return pollSvcinfTask(
+        cfg,
+        id,
+        mapped.upstreamId,
+        { log: LOG, errType: ERR_TYPE },
+        { apiVersion: mapped.apiVersion ?? cfg.api },
+    );
 }
 
 /** 取消任务:上游【无取消/删除端点】(文档只有建/查/列三条)。

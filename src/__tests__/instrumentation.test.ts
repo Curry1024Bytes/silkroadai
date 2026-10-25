@@ -24,6 +24,10 @@ const startShadowMeterScheduler = vi.fn();
 const startBatchScheduler = vi.fn();
 const startEnterpriseReqlogCleanupScheduler = vi.fn();
 const startRequestLogCleanupScheduler = vi.fn();
+const startEnterpriseReconcileSweepScheduler = vi.fn();
+const startPricingPublishScheduler = vi.fn();
+vi.mock('@/lib/scheduler/pricing-publish', () => ({ startPricingPublishScheduler }));
+vi.mock('@/lib/scheduler/enterprise-reconcile-sweep', () => ({ startEnterpriseReconcileSweepScheduler }));
 vi.mock('@/lib/order/timeout', () => ({ startTimeoutScheduler }));
 vi.mock('@/lib/scheduler/balance-alert', () => ({ startBalanceAlertScheduler }));
 vi.mock('@/lib/scheduler/image-cleanup', () => ({ startImageCleanupScheduler }));
@@ -33,8 +37,13 @@ vi.mock('@/lib/batch/worker', () => ({ startBatchScheduler }));
 // 不 mock 会 import 真调度器 → 初始 sweep 打真 prisma(P1 2026-09-03 的测试盲区,曾致本文件抖动超时)
 vi.mock('@/lib/scheduler/enterprise-reqlog-cleanup', () => ({ startEnterpriseReqlogCleanupScheduler }));
 vi.mock('@/lib/scheduler/request-log-cleanup', () => ({ startRequestLogCleanupScheduler }));
+// 排空钩子真实现会 patch http.ServerResponse.prototype + 挂 SIGTERM 监听 —— 这里只验证被装上
+const installDrainHook = vi.fn();
+vi.mock('@/lib/server/drain', () => ({ installDrainHook }));
 
 const ALL_SCHEDULERS = [
+    startPricingPublishScheduler,
+    startEnterpriseReconcileSweepScheduler,
     startTimeoutScheduler,
     startBalanceAlertScheduler,
     startImageCleanupScheduler,
@@ -69,6 +78,7 @@ describe('instrumentation register()', () => {
         await register();
         expect(Agent).toHaveBeenCalledWith({ headersTimeout: 600_000, bodyTimeout: 600_000 });
         expect(setGlobalDispatcher).toHaveBeenCalledTimes(1);
+        expect(installDrainHook).toHaveBeenCalledTimes(1); // Part 3 排空钩子随 dispatcher 一起装
     });
 
     it('开发环境配置 DEV_PROXY_URL → 使用代理 dispatcher', async () => {

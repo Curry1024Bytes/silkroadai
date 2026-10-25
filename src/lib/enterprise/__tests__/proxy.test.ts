@@ -57,6 +57,8 @@ vi.mock('../assets', async (importOriginal) => {
     const mod = await importOriginal<typeof import('../assets')>();
     return { ...mod, resolveAssetRefs };
 });
+const { fireTaskCallback } = vi.hoisted(() => ({ fireTaskCallback: vi.fn() }));
+vi.mock('../callback', async (original) => ({ ...(await original<typeof import('../callback')>()), fireTaskCallback }));
 import { AssetError } from '../assets';
 
 import { handleEnterpriseArkV3, handleEnterpriseV1, isEnterpriseFlavor } from '../proxy';
@@ -71,6 +73,8 @@ function req(method: string, url: string, body?: unknown): NextRequest {
         body: body === undefined ? undefined : JSON.stringify(body),
     });
 }
+
+afterEach(() => vi.unstubAllEnvs());
 
 beforeEach(() => {
     vi.clearAllMocks();
@@ -311,9 +315,9 @@ describe('火山渠道(volc)路由', () => {
         });
     });
 
-    it('promax-fast 仅 720p(上游 artsdance intl,2026-08-08):720p 放行长名 seedance2.0-promax-fast-720p;480p/1080p → 400', async () => {
-        submitVideoWithKey.mockResolvedValue(
-            NextResponse.json({ id: 'cgt-pm720', task_id: 'cgt-pm720', status: 'queued' }),
+    it('promax-fast 仅 720p(2026-10-23 换回 artsmcp intl):720p → seedance2.0-promax-fast-720p;480p / 1080p → 400 不打上游', async () => {
+        submitVideoWithKey.mockImplementation(() =>
+            Promise.resolve(NextResponse.json({ id: 'cgt-pm720', task_id: 'cgt-pm720', status: 'queued' })),
         );
         const ok = await handleEnterpriseV1(
             req('POST', '/v1/video/generations', {
@@ -329,11 +333,13 @@ describe('火山渠道(volc)路由', () => {
             expect.any(String),
         );
         for (const resolution of ['480p', '1080p']) {
+            submitVideoWithKey.mockClear();
             const bad = await handleEnterpriseV1(
                 req('POST', '/v1/video/generations', { model: 'seedance-2-0-promax-fast', prompt: 'x', resolution }),
                 '/video/generations',
             );
             expect(bad.status).toBe(400);
+            expect(submitVideoWithKey).not.toHaveBeenCalled();
         }
     });
 
@@ -402,17 +408,135 @@ describe('火山渠道(volc)路由', () => {
         expect(submitVideoWithKey).not.toHaveBeenCalled();
     });
 
-    it('global 无 480p(intl 上游实测拒,2026-08-06):三变体 480p 均 400 带指引,不打上游', async () => {
-        for (const model of ['seedance-2-0-global', 'seedance-2-0-global-fast', 'seedance-2-0-global-mini']) {
+    it('callback_url(2026-10-19):合法公网 URL 落库 pending + 入口形;不转发给适配器;私网/非法 → 400 不建任务', async () => {
+        vi.stubEnv('PORTAL_ENTERPRISE_CALLBACK_ENABLED', 'true');
+        submitVideoWithKey.mockImplementation(() =>
+            Promise.resolve(NextResponse.json({ id: 'cgt-cb', task_id: 'cgt-cb', status: 'queued' })),
+        );
+        const ok = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', {
+                model: 'seedance-2-0',
+                prompt: 'x',
+                resolution: '720p',
+                callback_url: 'https://webhook.site/abc',
+            }),
+            '/video/generations',
+        );
+        expect(ok.status).toBe(200);
+        expect(db.seedanceVideoTask.create).toHaveBeenCalledWith({
+            data: expect.objectContaining({
+                id: 'cgt-cb',
+                callback_url: 'https://webhook.site/abc',
+                callback_format: 'v1',
+                callback_status: 'pending',
+            }),
+        });
+        for (const bad of ['http://127.0.0.1/cb', 'ftp://x/cb', 'nope']) {
+            submitVideoWithKey.mockClear();
+            db.seedanceVideoTask.create.mockClear();
+            const res = await handleEnterpriseV1(
+                req('POST', '/v1/video/generations', { model: 'seedance-2-0', prompt: 'x', callback_url: bad }),
+                '/video/generations',
+            );
+            expect(res.status).toBe(400);
+            expect(((await res.json()) as { error: { message: string } }).error.message).toContain('callback_url');
+            expect(submitVideoWithKey).not.toHaveBeenCalled();
+            expect(db.seedanceVideoTask.create).not.toHaveBeenCalled();
+        }
+        // 没传 → 三列 null
+        db.seedanceVideoTask.create.mockClear();
+        await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { model: 'seedance-2-0', prompt: 'x' }),
+            '/video/generations',
+        );
+        expect(db.seedanceVideoTask.create).toHaveBeenCalledWith({
+            data: expect.objectContaining({ callback_url: null, callback_format: null, callback_status: null }),
+        });
+    });
+
+    it('global fast/mini 1080p 下架(2026-10-19,artsmcp key 失效):→ 400 带指引,不打上游;pro 1080p 仍放行', async () => {
+        vi.stubEnv('SEEDANCE_SVCINF_GLOBAL_KEY', 'sk-inf-v1-global-fixture');
+        submitVideoWithKey.mockImplementation(() =>
+            Promise.resolve(NextResponse.json({ id: 'cgt-g1080', task_id: 'cgt-g1080', status: 'queued' })),
+        );
+        for (const model of ['seedance-2-0-global-fast', 'seedance-2-0-global-mini']) {
+            submitVideoWithKey.mockClear();
+            const res = await handleEnterpriseV1(
+                req('POST', '/v1/video/generations', { model, prompt: 'x', resolution: '1080p' }),
+                '/video/generations',
+            );
+            expect(res.status).toBe(400);
+            expect(((await res.json()) as { error: { message: string } }).error.message).toContain(
+                '仅支持 480p / 720p',
+            );
+            expect(submitVideoWithKey).not.toHaveBeenCalled();
+        }
+        const ok = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { model: 'seedance-2-0-global', prompt: 'x', resolution: '1080p' }),
+            '/video/generations',
+        );
+        expect(ok.status).toBe(200);
+        expect(submitVideoWithKey).toHaveBeenCalledWith(
+            expect.objectContaining({ model: 'seedance2.0-global-pro-1080p' }),
+            expect.any(String),
+        );
+    });
+
+    it('tools 快失败(2026-10-19;10-23 起仅 global):global 2.0 pro / fast 带非空 tools → 400 不打上游;mini / 2.5 / proMax / 空数组放行', async () => {
+        vi.stubEnv('SEEDANCE_SVCINF_GLOBAL_KEY', 'sk-inf-v1-global-fixture');
+        submitVideoWithKey.mockImplementation(() =>
+            Promise.resolve(NextResponse.json({ id: 'cgt-tl', task_id: 'cgt-tl', status: 'queued' })),
+        );
+        const tools = [{ type: 'web_search' }];
+        for (const model of ['seedance-2-0-global', 'seedance-2-0-global-fast']) {
+            submitVideoWithKey.mockClear();
+            const res = await handleEnterpriseV1(
+                req('POST', '/v1/video/generations', { model, prompt: 'x', resolution: '720p', tools }),
+                '/video/generations',
+            );
+            expect(res.status).toBe(400);
+            expect(((await res.json()) as { error: { message: string } }).error.message).toContain('tools');
+            expect(submitVideoWithKey).not.toHaveBeenCalled();
+        }
+        for (const [model, extra] of [
+            ['seedance-2-0-global-mini', { tools }],
+            ['seedance-2-5-global', { tools }],
+            ['seedance-2-0-promax', { tools }], // proMax 2026-10-23 换回 artsmcp:tools 原样透传,不拦
+            ['seedance-2-0-promax-fast', { tools }],
+            ['seedance-2-0-promax-mini', { tools }],
+            ['seedance-2-0-global', { tools: [] }], // 空数组 = 没传
+        ] as Array<[string, Record<string, unknown>]>) {
+            submitVideoWithKey.mockClear();
+            const res = await handleEnterpriseV1(
+                req('POST', '/v1/video/generations', { model, prompt: 'x', resolution: '720p', ...extra }),
+                '/video/generations',
+            );
+            expect(res.status).toBe(200);
+            expect(submitVideoWithKey).toHaveBeenCalledTimes(1);
+        }
+    });
+
+    it('global 480p 开放(2026-10-17 换 service-inference.ai 上游):三变体 480p → 对应长名放行', async () => {
+        vi.stubEnv('SEEDANCE_SVCINF_GLOBAL_KEY', 'sk-inf-v1-global-fixture');
+        submitVideoWithKey.mockImplementation(() =>
+            Promise.resolve(NextResponse.json({ id: 'cgt-g480', task_id: 'cgt-g480', status: 'queued' })),
+        );
+        for (const [model, long] of [
+            ['seedance-2-0-global', 'seedance2.0-global-pro-480p'],
+            ['seedance-2-0-global-fast', 'seedance2.0-global-fast-480p'],
+            ['seedance-2-0-global-mini', 'seedance2.0-global-mini-480p'],
+        ]) {
+            submitVideoWithKey.mockClear();
             const res = await handleEnterpriseV1(
                 req('POST', '/v1/video/generations', { model, prompt: 'x', resolution: '480p' }),
                 '/video/generations',
             );
-            expect(res.status).toBe(400);
-            const body = (await res.json()) as { error: { message: string } };
-            expect(body.error.message).toContain('国内版'); // proMax 2026-08-08 起也无 480p,指引改为国内版
+            expect(res.status).toBe(200);
+            expect(submitVideoWithKey).toHaveBeenCalledWith(
+                expect.objectContaining({ model: long }),
+                expect.any(String),
+            );
         }
-        expect(submitVideoWithKey).not.toHaveBeenCalled();
     });
 
     it('非 volc 提交仍剥 asset:// 前缀(resolveAssetRefs 收到裸 id)', async () => {
@@ -786,17 +910,18 @@ describe('归一短名(2026-07-20)', () => {
             expect.objectContaining({ model: 'seedance2.0-promax-4k' }),
             'Bearer sk-upstream-u1',
         );
-        // promax(pro)480p → 400(上游 artsdance intl 不支持,2026-08-08),不打上游
+        // promax(pro)480p → 400 带指引(2026-10-23 换回 artsmcp intl,无 480p),不打上游
         submitVideoWithKey.mockClear();
         res = await handleEnterpriseV1(
             req('POST', '/v1/video/generations', { model: 'seedance-2-0-promax', prompt: 'x', resolution: '480p' }),
             '/video/generations',
         );
         expect(res.status).toBe(400);
+        expect(((await res.json()) as { error: { message: string } }).error.message).toContain('无 480p 档');
         expect(submitVideoWithKey).not.toHaveBeenCalled();
     });
 
-    it('proMax 2.5(2026-08-08):720p/1080p → seedance2.5-promax-{res};480p/4k → 400', async () => {
+    it('proMax 2.5:720p/1080p → seedance2.5-promax-{res};480p(10-23 关闭)/ 4k → 400', async () => {
         resolveEnterpriseAuth.mockResolvedValue({ ok: true, customer: { ...CUSTOMER, region: 'promax' } });
         submitVideoWithKey.mockImplementation(() =>
             Promise.resolve(NextResponse.json({ id: 'cgt-p25', task_id: 'cgt-p25', status: 'queued' })),
@@ -964,7 +1089,7 @@ describe('轮询', () => {
         const res = await handleEnterpriseV1(req('GET', '/v1/video/generations/cgt-e1'), '/video/generations/cgt-e1');
         expect(res.status).toBe(200);
         expect(pollVideoWithKey).toHaveBeenCalledWith('cgt-e1', 'Bearer sk-upstream-u1', 'cn');
-        expect(db.seedanceVideoTask.update).toHaveBeenCalledWith(
+        expect(db.seedanceVideoTask.updateMany).toHaveBeenCalledWith(
             expect.objectContaining({ data: { tokens: BigInt(108872), status: 'completed' } }),
         );
         expect(chargeEnterpriseVideoTask).toHaveBeenCalledWith('cgt-e1');
@@ -1449,14 +1574,23 @@ describe('vendor_task_id 出口(2026-08-19)', () => {
             );
         });
 
-        it('480p → 400(海外版无 480p);4k → 400(2.5 无 4k)', async () => {
-            for (const r of ['480p', '4k']) {
-                const res = await handleEnterpriseV1(
-                    req('POST', '/v1/video/generations', { model: 'seedance-2-5-global', prompt: 'x', resolution: r }),
-                    '/video/generations',
-                );
-                expect(res.status).toBe(400);
-            }
+        it('480p → seedance2.5-global-480p(2026-10-17 开放);4k → 400(2.5 无 4k)', async () => {
+            vi.stubEnv('SEEDANCE_SVCINF_GLOBAL_KEY', 'sk-inf-v1-global-fixture');
+            let res = await handleEnterpriseV1(
+                req('POST', '/v1/video/generations', { model: 'seedance-2-5-global', prompt: 'x', resolution: '480p' }),
+                '/video/generations',
+            );
+            expect(res.status).toBe(200);
+            expect(submitVideoWithKey).toHaveBeenCalledWith(
+                expect.objectContaining({ model: 'seedance2.5-global-480p' }),
+                expect.anything(),
+            );
+            submitVideoWithKey.mockClear();
+            res = await handleEnterpriseV1(
+                req('POST', '/v1/video/generations', { model: 'seedance-2-5-global', prompt: 'x', resolution: '4k' }),
+                '/video/generations',
+            );
+            expect(res.status).toBe(400);
             expect(submitVideoWithKey).not.toHaveBeenCalled();
         });
     });
@@ -1836,6 +1970,380 @@ describe('请求日志落库(2026-09-03)', () => {
     });
 });
 
+/**
+ * 2026-09-23:火山官方「查询视频生成任务」响应新增 execution_expires_after / frames / framespersecond /
+ * generate_audio / output_format / safety_identifier / seed / service_tier / tools。
+ * 国内版此前按旧文档只出 11 个字段;safety_identifier / output_format / tools 上游(xinhankr)不回显 →
+ * 提交时落库再回显;`tools` 此前还被 ark 提交白名单 400 挡在门外。
+ */
+describe('火山官方查询响应新字段(2026-09-23)', () => {
+    const cnTask = {
+        id: 'cgt-nf1',
+        tier: 'enterprise-portal',
+        user_id: 'u1',
+        model: 'seedance-2-5',
+        resolution: '480p',
+        status: 'in_progress',
+        tokens: null,
+        created_at: new Date('2026-09-23T02:00:00Z'),
+        duration: 4,
+        ratio: '16:9',
+        seed: BigInt(7),
+        generate_audio: false,
+        fail_reason: null,
+        safety_identifier: 'end-user-99',
+        output_format: 'mov',
+        tools: [{ type: 'web_search' }],
+    };
+
+    it('ark 提交:safety_identifier / output_format / tools 落库,且 tools 不再被白名单 400', async () => {
+        submitVideoWithKey.mockResolvedValue(
+            NextResponse.json({ id: 'cgt-nf0', task_id: 'cgt-nf0', status: 'queued' }),
+        );
+        const res = await handleEnterpriseArkV3(
+            req('POST', '/api/v3/contents/generations/tasks', {
+                model: 'doubao-seedance-2-5-260628',
+                content: [{ type: 'text', text: 'x' }],
+                resolution: '480p',
+                safety_identifier: 'end-user-99',
+                output_format: 'MOV',
+                tools: [{ type: 'web_search' }],
+            }),
+            '/contents/generations/tasks',
+        );
+        expect(res.status).toBe(200);
+        expect(db.seedanceVideoTask.create).toHaveBeenCalledWith({
+            data: expect.objectContaining({
+                safety_identifier: 'end-user-99',
+                output_format: 'mov',
+                tools: [{ type: 'web_search' }],
+            }),
+        });
+        // tools 也透传到了适配器(反向白名单)
+        expect(submitVideoWithKey).toHaveBeenCalledWith(
+            expect.objectContaining({ tools: [{ type: 'web_search' }] }),
+            expect.any(String),
+        );
+    });
+
+    it('ark 提交:execution_expires_after / bitrate_mode / moderation_options 不再 400(客户 2026-09-23 实测被拒);expires 落库并在查询回显', async () => {
+        submitVideoWithKey.mockResolvedValue(
+            NextResponse.json({ id: 'cgt-nf2', task_id: 'cgt-nf2', status: 'queued' }),
+        );
+        const res = await handleEnterpriseArkV3(
+            req('POST', '/api/v3/contents/generations/tasks', {
+                model: 'seedance-2-5',
+                content: [{ type: 'text', text: '清晨城市公园' }],
+                resolution: '720p',
+                duration: 4,
+                ratio: '16:9',
+                execution_expires_after: 3600,
+                bitrate_mode: 'vbr',
+                moderation_options: { ips: ['ip-1'] },
+            }),
+            '/contents/generations/tasks',
+        );
+        expect(res.status).toBe(200);
+        expect(db.seedanceVideoTask.create).toHaveBeenCalledWith({
+            data: expect.objectContaining({ execution_expires_after: 3600 }),
+        });
+        // 透传到适配器(cn-adapter 反向白名单再转上游)
+        expect(submitVideoWithKey).toHaveBeenCalledWith(
+            expect.objectContaining({ execution_expires_after: 3600, bitrate_mode: 'vbr' }),
+            expect.any(String),
+        );
+        // 查询回显客户传的阈值,而不是官方默认 172800
+        db.seedanceVideoTask.findUnique.mockResolvedValue({ ...cnTask, id: 'cgt-nf2', execution_expires_after: 3600 });
+        pollVideoWithKey.mockResolvedValue(
+            NextResponse.json({
+                id: 'cgt-nf2',
+                task_id: 'cgt-nf2',
+                object: 'video',
+                status: 'in_progress',
+                progress: 50,
+            }),
+        );
+        const q = await handleEnterpriseArkV3(
+            req('GET', '/api/v3/contents/generations/tasks/cgt-nf2'),
+            '/contents/generations/tasks/cgt-nf2',
+        );
+        expect(((await q.json()) as Record<string, unknown>).execution_expires_after).toBe(3600);
+    });
+
+    it('ark 提交:draft(样片模式)不再 400(客户 2026-10-08 国内版 2.5 实测被拒),原样透传到适配器', async () => {
+        submitVideoWithKey.mockResolvedValue(
+            NextResponse.json({ id: 'cgt-draft1', task_id: 'cgt-draft1', status: 'queued' }),
+        );
+        const res = await handleEnterpriseArkV3(
+            req('POST', '/api/v3/contents/generations/tasks', {
+                model: 'doubao-seedance-2-5',
+                content: [{ type: 'text', text: '雏菊花田,镜头拉近到花瓣露珠特写' }],
+                resolution: '480p',
+                generate_audio: true,
+                ratio: '16:9',
+                duration: 5,
+                watermark: false,
+                draft: true,
+            }),
+            '/contents/generations/tasks',
+        );
+        expect(res.status).toBe(200);
+        expect(submitVideoWithKey).toHaveBeenCalledWith(
+            expect.objectContaining({ draft: true, watermark: false }),
+            expect.any(String),
+        );
+    });
+
+    it('ark 提交:没传这三项 → 落库 null / 省略(存量语义不变)', async () => {
+        submitVideoWithKey.mockResolvedValue(
+            NextResponse.json({ id: 'cgt-nf0', task_id: 'cgt-nf0', status: 'queued' }),
+        );
+        await handleEnterpriseArkV3(
+            req('POST', '/api/v3/contents/generations/tasks', {
+                model: 'doubao-seedance-2-5-260628',
+                content: [{ type: 'text', text: 'x' }],
+                resolution: '720p',
+            }),
+            '/contents/generations/tasks',
+        );
+        const data = (db.seedanceVideoTask.create.mock.calls[0][0] as { data: Record<string, unknown> }).data;
+        expect(data.safety_identifier).toBeNull();
+        expect(data.output_format).toBeNull();
+        expect(data.tools).toBeUndefined();
+        expect(data.execution_expires_after).toBeNull();
+    });
+
+    it('cn 查询(xinhankr 线,适配器不回显任何元数据)→ 新字段全部从落库值 / 官方默认值合成', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue(cnTask);
+        pollVideoWithKey.mockResolvedValue(
+            NextResponse.json({
+                id: 'cgt-nf1',
+                task_id: 'cgt-nf1',
+                object: 'video',
+                status: 'in_progress',
+                progress: 50,
+            }),
+        );
+        const res = await handleEnterpriseArkV3(
+            req('GET', '/api/v3/contents/generations/tasks/cgt-nf1'),
+            '/contents/generations/tasks/cgt-nf1',
+        );
+        const body = (await res.json()) as Record<string, unknown>;
+        expect(body.status).toBe('running');
+        expect(body.safety_identifier).toBe('end-user-99');
+        expect(body.output_format).toBe('mov');
+        expect(body.tools).toEqual([{ type: 'web_search' }]);
+        expect(body.service_tier).toBe('default');
+        expect(body.framespersecond).toBe(24);
+        expect(body.execution_expires_after).toBe(172800);
+        expect(body.generate_audio).toBe(false);
+        expect(body.seed).toBe(7);
+        expect(body.frames).toBe(24 * 4 + 1);
+        expect(body.draft).toBe(false); // 2026-10-08 起 cn 形也出 draft(官方 SDK 字段),非正片不出 draft_task_id
+        expect('draft_task_id' in body).toBe(false);
+        expect('upstream_id' in body).toBe(false);
+    });
+
+    it('cn 查询(2.5 480p 走 service-inference.ai,适配器带方舟元数据)→ 上游真值优先于落库值', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({ ...cnTask, status: 'completed', tokens: BigInt(38830) });
+        chargeEnterpriseVideoTask.mockResolvedValue({ outcome: 'already_billed', costCny: 0 });
+        pollVideoWithKey.mockResolvedValue(
+            NextResponse.json({
+                id: 'cgt-nf1',
+                task_id: 'cgt-nf1',
+                object: 'video',
+                status: 'completed',
+                progress: 100,
+                video_url: 'https://ark-acg-cn-beijing.tos-cn-beijing.volces.com/x.mp4',
+                usage: { completion_tokens: 38830, total_tokens: 38830 },
+                duration: 4,
+                ratio: '16:9',
+                resolution: '480p',
+                framespersecond: 24,
+                generate_audio: false,
+                execution_expires_after: 172800,
+                seed: 53041,
+                upstream_created_at: 1790091874,
+                upstream_updated_at: 1790092007,
+                last_frame_url: '',
+                output_format: 'mp4',
+                safety_identifier: 'upstream-echo',
+                service_tier: 'default',
+            }),
+        );
+        const res = await handleEnterpriseArkV3(
+            req('GET', '/api/v3/contents/generations/tasks/cgt-nf1'),
+            '/contents/generations/tasks/cgt-nf1',
+        );
+        const body = (await res.json()) as Record<string, unknown>;
+        expect(body.status).toBe('succeeded');
+        expect(body.safety_identifier).toBe('upstream-echo');
+        expect(body.output_format).toBe('mp4');
+        expect(body.seed).toBe(53041);
+        expect(body.created_at).toBe(1790091874);
+        expect(body.updated_at).toBe(1790092007);
+        expect(body.frames).toBe(97);
+        expect((body.content as Record<string, unknown>).last_frame_url).toBe('');
+        expect((body.content as Record<string, unknown>).video_url).toContain('volces.com');
+    });
+
+    it('已 failed 短路 / 降级两条路也带新字段(客户契约校验不分状态)', async () => {
+        db.seedanceVideoTask.findUnique.mockResolvedValue({ ...cnTask, status: 'failed', fail_reason: '审核未通过' });
+        const res = await handleEnterpriseArkV3(
+            req('GET', '/api/v3/contents/generations/tasks/cgt-nf1'),
+            '/contents/generations/tasks/cgt-nf1',
+        );
+        const body = (await res.json()) as Record<string, unknown>;
+        expect(body.status).toBe('failed');
+        expect(body.output_format).toBe('mov');
+        expect(body.safety_identifier).toBe('end-user-99');
+        expect(body.service_tier).toBe('default');
+    });
+});
+
+// 2026-09-29 客户测试报告(国内版 seedance 2.5):
+//  ① body 没传 duration、提示词里写 `--duration 25` → 官方出 25s,我们硬填 5s 出片;
+//  ② duration=-1 / 不传 ratio → 查询响应回显的是提交参数(-1 / 16:9),不是成片真值(10s / 9:16)。
+// 2026-10-13 智象未来 conformance 报告(国内 fast/mini + 海外 promax-fast/mini):
+//  ① service_tier=flex / priority=-1 / priority=10 被 200 受理 —— 上游异步拒(failed,不计费),客户以为受理并计费;
+//  ② 缺 model / 别名模型 / body 非对象 对海外 key 先吃 403 region_mismatch,期望 400。
+describe('提交入口同步校验(2026-10-13 conformance)', () => {
+    const submit = (body: unknown) =>
+        handleEnterpriseArkV3(req('POST', '/api/v3/contents/generations/tasks', body), '/contents/generations/tasks');
+    const text = (t: string) => [{ type: 'text', text: t }];
+    const code = async (r: Response) => ((await r.json()) as { error?: { code?: string } }).error?.code;
+
+    beforeEach(() => {
+        submitVideoWithKey.mockImplementation(() =>
+            Promise.resolve(NextResponse.json({ id: 'cgt-sv1', task_id: 'cgt-sv1', status: 'queued' })),
+        );
+    });
+
+    it('service_tier=flex → 400,不打上游', async () => {
+        const r = await submit({
+            model: 'seedance-2-0-fast',
+            content: text('x'),
+            resolution: '480p',
+            duration: 4,
+            service_tier: 'flex',
+        });
+        expect(r.status).toBe(400);
+        expect(await code(r)).toBe('invalid_request');
+        expect(submitVideoWithKey).not.toHaveBeenCalled();
+    });
+
+    it('service_tier=default → 200,且不转发给上游(上游要求为空)', async () => {
+        const r = await submit({
+            model: 'seedance-2-0-fast',
+            content: text('x'),
+            resolution: '480p',
+            duration: 4,
+            service_tier: 'default',
+        });
+        expect(r.status).toBe(200);
+        const sent = submitVideoWithKey.mock.calls[0][0] as Record<string, unknown>;
+        expect('service_tier' in sent).toBe(false);
+    });
+
+    it('priority=-1 / 10 / 非整数 → 400;0 / 9 → 200', async () => {
+        for (const bad of [-1, 10, 1.5, '3']) {
+            const r = await submit({
+                model: 'seedance-2-0-mini',
+                content: text('x'),
+                resolution: '480p',
+                duration: 4,
+                priority: bad,
+            });
+            expect(r.status, `priority=${String(bad)}`).toBe(400);
+        }
+        expect(submitVideoWithKey).not.toHaveBeenCalled();
+        for (const ok of [0, 9]) {
+            const r = await submit({
+                model: 'seedance-2-0-mini',
+                content: text('x'),
+                resolution: '480p',
+                duration: 4,
+                priority: ok,
+            });
+            expect(r.status, `priority=${ok}`).toBe(200);
+        }
+    });
+
+    it('缺 model / 未知模型名 / body 为数组 → 400,先于版本门(不触发鉴权,不再 403 region_mismatch)', async () => {
+        resolveEnterpriseAuth.mockResolvedValue({ ok: false, status: 403, code: 'region_mismatch', message: 'x' });
+        const missing = await submit({ content: text('x') });
+        expect(missing.status).toBe(400);
+        expect(await code(missing)).toBe('invalid_request');
+        const alias = await submit({ model: 'dreamina-seedance-2-0', content: text('x') });
+        expect(alias.status).toBe(400);
+        expect(await code(alias)).toBe('model_not_found');
+        const arr = await submit([{ model: 'seedance-2-0' }]);
+        expect(arr.status).toBe(400);
+        expect(resolveEnterpriseAuth).not.toHaveBeenCalled();
+    });
+});
+
+describe('duration 内联指令 + 成片真值回显(2026-09-29)', () => {
+    const submit = (body: Record<string, unknown>) =>
+        handleEnterpriseArkV3(req('POST', '/api/v3/contents/generations/tasks', body), '/contents/generations/tasks');
+    const text = (t: string) => [{ type: 'text', text: t }];
+
+    beforeEach(() => {
+        submitVideoWithKey.mockImplementation(() =>
+            Promise.resolve(NextResponse.json({ id: 'cgt-in1', task_id: 'cgt-in1', status: 'queued' })),
+        );
+    });
+
+    it('body 没传 duration + 文本 `--duration 25` → 按 25s 估价并落库', async () => {
+        const res = await submit({
+            model: 'doubao-seedance-2-5-260628',
+            resolution: '720p',
+            content: text('森林里雾气缓缓流动 --duration 25'),
+        });
+        expect(res.status).toBe(200);
+        expect(estimateEnterpriseCostCny).toHaveBeenCalledWith('u1', '720p', 25, false, '2.5', 'cn');
+        expect(db.seedanceVideoTask.create).toHaveBeenLastCalledWith({
+            data: expect.objectContaining({ duration: 25 }),
+        });
+    });
+
+    it('body 传了 duration → body 胜出(文本指令不生效)', async () => {
+        await submit({
+            model: 'doubao-seedance-2-5-260628',
+            resolution: '720p',
+            duration: 6,
+            content: text('x --duration 25'),
+        });
+        expect(db.seedanceVideoTask.create).toHaveBeenLastCalledWith({
+            data: expect.objectContaining({ duration: 6 }),
+        });
+    });
+
+    it('内联值不合法(弱校验:越界 / 2.0 系超 15s)→ 当没写,缺省 5,不 400', async () => {
+        const a = await submit({ model: 'doubao-seedance-2-5-260628', content: text('x --duration 31') });
+        expect(a.status).toBe(200);
+        expect(db.seedanceVideoTask.create).toHaveBeenLastCalledWith({
+            data: expect.objectContaining({ duration: 5 }),
+        });
+        const b = await submit({ model: 'doubao-seedance-2-0-260128', content: text('x --dur 25') });
+        expect(b.status).toBe(200);
+        expect(db.seedanceVideoTask.create).toHaveBeenLastCalledWith({
+            data: expect.objectContaining({ duration: 5 }),
+        });
+    });
+
+    it('ratio 没传 → 落库 NULL(模型自选),不再落 16:9;传了照存', async () => {
+        await submit({ model: 'doubao-seedance-2-5-260628', content: text('x') });
+        expect(db.seedanceVideoTask.create).toHaveBeenLastCalledWith({
+            data: expect.objectContaining({ ratio: null }),
+        });
+        await submit({ model: 'doubao-seedance-2-5-260628', ratio: '9:16', content: text('x') });
+        expect(db.seedanceVideoTask.create).toHaveBeenLastCalledWith({
+            data: expect.objectContaining({ ratio: '9:16' }),
+        });
+    });
+});
+
 describe('平台任务映射异常的客户 API 契约', () => {
     const recoveryId = `cgt-recovery-${Buffer.from('kz-cgt-fixture-only').toString('base64url')}`;
     const task = {
@@ -1911,6 +2419,144 @@ describe('平台任务映射异常的客户 API 契约', () => {
         const path = `/video/generations/${recoveryId}`;
         expect((await handleEnterpriseV1(req('GET', path), path)).status).toBe(404);
         expect(pollVolcVideo).not.toHaveBeenCalled();
+        expect(chargeEnterpriseVideoTask).not.toHaveBeenCalled();
+    });
+});
+
+describe('LLmRoute callback policy and submission format', () => {
+    it('callback request is explicitly rejected before submission while disabled', async () => {
+        vi.stubEnv('PORTAL_ENTERPRISE_CALLBACK_ENABLED', '');
+        const response = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', {
+                model: 'seedance-2-0',
+                prompt: 'x',
+                callback_url: 'https://hooks.example.com/event',
+            }),
+            '/video/generations',
+        );
+        expect(response.status).toBe(503);
+        expect(submitVideoWithKey).not.toHaveBeenCalled();
+        expect(db.seedanceVideoTask.create).not.toHaveBeenCalled();
+    });
+    it.each(['completed', 'failed'] as const)(
+        'uses saved ark format when a %s task is polled through v1',
+        async (status) => {
+            vi.stubEnv('PORTAL_ENTERPRISE_CALLBACK_ENABLED', 'true');
+            db.seedanceVideoTask.findUnique.mockResolvedValue({
+                id: 'cgt-callback',
+                user_id: 'u1',
+                tier: 'enterprise-portal',
+                model: 'seedance-2-0',
+                resolution: '720p',
+                duration: 5,
+                ratio: '16:9',
+                status,
+                tokens: 100n,
+                created_at: new Date(),
+                callback_url: 'https://hooks.example.com/event',
+                callback_status: 'pending',
+                callback_format: 'ark',
+            });
+            pollVideoWithKey.mockResolvedValue(
+                NextResponse.json({
+                    status,
+                    video_url: 'https://video.example.com/result.mp4',
+                    usage: { completion_tokens: 100 },
+                }),
+            );
+            chargeEnterpriseVideoTask.mockResolvedValue({ outcome: 'already_billed' });
+            const response = await handleEnterpriseV1(
+                req('GET', '/v1/video/generations/cgt-callback'),
+                '/video/generations/cgt-callback',
+            );
+            expect(response.status).toBe(200);
+            expect(fireTaskCallback).toHaveBeenCalledWith(
+                'cgt-callback',
+                expect.objectContaining({
+                    status: status === 'completed' ? 'succeeded' : 'failed',
+                    content: expect.any(Object),
+                }),
+            );
+        },
+    );
+    it('uses saved v1 format when a completed task is polled through ark', async () => {
+        vi.stubEnv('PORTAL_ENTERPRISE_CALLBACK_ENABLED', 'true');
+        db.seedanceVideoTask.findUnique.mockResolvedValue({
+            id: 'cgt-callback',
+            user_id: 'u1',
+            tier: 'enterprise-portal',
+            model: 'seedance-2-0',
+            resolution: '720p',
+            duration: 5,
+            ratio: '16:9',
+            status: 'completed',
+            tokens: 100n,
+            created_at: new Date(),
+            callback_url: 'https://hooks.example.com/event',
+            callback_status: 'pending',
+            callback_format: 'v1',
+        });
+        pollVideoWithKey.mockResolvedValue(
+            NextResponse.json({
+                status: 'completed',
+                video_url: 'https://video.example.com/result.mp4',
+                usage: { completion_tokens: 100 },
+            }),
+        );
+        chargeEnterpriseVideoTask.mockResolvedValue({ outcome: 'already_billed' });
+        const response = await handleEnterpriseArkV3(
+            req('GET', '/api/v3/contents/generations/tasks/cgt-callback'),
+            '/contents/generations/tasks/cgt-callback',
+        );
+        expect(response.status).toBe(200);
+        expect(fireTaskCallback).toHaveBeenCalledWith(
+            'cgt-callback',
+            expect.objectContaining({ status: 'completed', video_url: 'https://video.example.com/result.mp4' }),
+        );
+    });
+    it('keeps global fast 1080p available without opting into another provider', async () => {
+        vi.stubEnv('SEEDANCE_SVCINF_GLOBAL_KEY', '');
+        resolveEnterpriseAuth.mockResolvedValue({ ok: true, customer: { ...CUSTOMER, region: 'global' } });
+        submitVideoWithKey.mockResolvedValue(NextResponse.json({ id: 'cgt-legacy', status: 'queued' }));
+        const response = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', {
+                model: 'seedance-2-0-global-fast',
+                prompt: 'x',
+                resolution: '1080p',
+            }),
+            '/video/generations',
+        );
+        expect(response.status).toBe(200);
+        expect(submitVideoWithKey).toHaveBeenCalledWith(
+            expect.objectContaining({ model: 'seedance2.0-global-fast-1080p' }),
+            'Bearer sk-upstream-u1',
+        );
+    });
+});
+
+describe('accepted generation with missing main task record', () => {
+    it('provides an audit ID and an explicit do-not-resubmit result after persistence fails', async () => {
+        submitVideoWithKey.mockResolvedValue(NextResponse.json({ id: 'cgt-upstream-accepted', status: 'queued' }));
+        db.seedanceVideoTask.create.mockRejectedValueOnce(new Error('SQL temporarily unavailable'));
+        const response = await handleEnterpriseV1(
+            req('POST', '/v1/video/generations', { model: 'seedance-2-0', prompt: 'fixture' }),
+            '/video/generations',
+        );
+        expect(response.status).toBe(503);
+        const body = await response.json();
+        expect(body.error).toMatchObject({
+            code: 'task_record_unconfirmed',
+            accepted: true,
+            retryable: false,
+            task_id: 'cgt-upstream-accepted',
+        });
+        expect(body.error.message).toContain('Do not resubmit');
+        expect(body.error.message).not.toMatch(/please retry/i);
+        expect(body.error.request_id).toMatch(/^[a-f0-9-]{36}$/);
+        expect(response.headers.get('X-Request-Id')).toBe(body.error.request_id);
+        expect(response.headers.get('X-Should-Retry')).toBe('false');
+        expect(response.headers.has('Retry-After')).toBe(false);
+        expect(submitVideoWithKey).toHaveBeenCalledTimes(1);
         expect(chargeEnterpriseVideoTask).not.toHaveBeenCalled();
     });
 });

@@ -10,6 +10,7 @@
  * ⚠️ 需 portal .env 配 SEEDANCE_XHK_KEY(渠道/上游 key);代理用它调适配器,适配器再用它调上游。
  */
 import { NextRequest, NextResponse } from 'next/server';
+import { randomUUID } from 'node:crypto';
 import { prisma } from '@/lib/db';
 import { getCustomerBalance } from '@/lib/billing/customer-balance';
 import { MODEL_MAP, extractVideoUrls, maxDurationForVariant, resolveRequestedDuration } from './cn-adapter';
@@ -152,9 +153,28 @@ export async function handleSeedanceVideoSubmit(
             },
         });
     } catch (e) {
-        // 记录失败 = 无法扣费 → 拒绝(fail closed,防生成了却收不到钱)
-        console.error('[seedance-cn-proxy] task record failed, rejecting submit', e);
-        return errJson(503, 'temporarily_unavailable', 'billing record failed, please retry');
+        const requestId = randomUUID();
+        console.error('[seedance-cn-proxy] accepted task record unconfirmed', {
+            requestId,
+            taskId,
+            userId: cust.userId,
+            error: String(e),
+        });
+        return NextResponse.json(
+            {
+                error: {
+                    code: 'task_record_unconfirmed',
+                    type: 'invalid_request_error',
+                    message:
+                        'Generation was accepted but its local record could not be saved. Do not resubmit; contact support with the request ID and task ID.',
+                    request_id: requestId,
+                    task_id: taskId,
+                    accepted: true,
+                    retryable: false,
+                },
+            },
+            { status: 503, headers: { 'X-Request-Id': requestId, 'X-Should-Retry': 'false' } },
+        );
     }
     return new NextResponse(text, { status: 200, headers: { 'Content-Type': 'application/json' } });
 }

@@ -17,7 +17,7 @@
 # Postgres before the container is healthy.
 
 FROM node:22-alpine AS base
-RUN corepack enable && corepack prepare pnpm@latest --activate
+RUN corepack enable && corepack prepare pnpm@10.30.3 --activate
 
 # ── deps ───────────────────────────────────────────────────────────────
 FROM base AS deps
@@ -80,6 +80,8 @@ RUN addgroup --system --gid 1001 nodejs && adduser --system --uid 1001 nextjs
 # copy the full @prisma + .pnpm dirs because start.sh shells out to the
 # prisma CLI (it's not in standalone's traced dependency graph).
 COPY --from=builder /app/public ./public
+COPY --from=builder /app/LICENSE /app/LICENSE.sub2apipay-MIT ./
+COPY --from=builder /app/src/vendor/newapi-web/NOTICE.md ./licenses/newapi-web-NOTICE.md
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma

@@ -18,6 +18,7 @@ import { getUsageAggregate, unionSeedanceUsage, type UsageAggregateSnapshot } fr
 import { quotaToCny, type NewApiUsageLog } from '@/lib/newapi/client';
 import { queryLogsCached } from '@/lib/newapi/logs-cache';
 import { USD_TO_CNY_RATE } from '@/lib/newapi/quota-units';
+import { formatCny, formatCount, formatTokens, formatUsd, type CompactNumber } from '@/lib/format/number';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { FormError } from '@/components/ui/FormError';
 import { ModelConsumptionChartLazy } from './model-consumption-chart-lazy';
@@ -38,9 +39,26 @@ const TASKFAIL_FETCH_SIZE = 50; // type=6 视频任务失败(退款)记录,用�
 const CALLS_CAP = 200;
 const TOP_MODELS = 5;
 
-const BIG = 'm-0 text-2xl font-semibold text-navy tabular-nums';
 const SUB = 'mt-1.5 m-0 text-xs text-minor-ink tabular-nums';
 const NO_DATA = <p className="m-0 text-sm text-minor-ink">暂无数据</p>;
+
+/**
+ * 汇总卡主数字(2026-10-22 紧凑显示改版,规则见 `src/lib/format/number.ts`)。
+ * 数字本体是视觉重心;货币符号 / 单位降两档字号 + muted 色,baseline 对齐,
+ * 不和数字抢注意力。`title` 放精确值(hover 可见),副行由调用方决定放什么。
+ * 主显字符数 > 9 时降一档字号兜底 —— 压缩规则生效后几乎不会触发,防极端值撑爆卡片。
+ */
+function StatNumber({ value, prefix }: { value: CompactNumber; prefix?: string }) {
+    const size = value.display.length > 9 ? 'text-2xl' : 'text-3xl';
+    const aside = 'text-base font-medium text-muted-ink';
+    return (
+        <p className={`m-0 ${size} font-semibold leading-none text-navy tabular-nums`} title={value.exact}>
+            {prefix && <span className={`mr-0.5 ${aside}`}>{prefix}</span>}
+            {value.display}
+            {value.unit && <span className={`ml-1 ${aside}`}>{value.unit}</span>}
+        </p>
+    );
+}
 
 /** A summary stat card (label + body). Body decides its own empty state. */
 function StatCard({ label, children }: { label: string; children: ReactNode }) {
@@ -218,27 +236,35 @@ export async function BalanceStatCards({ data }: { data: Promise<BalanceData> })
     return (
         <>
             <StatCard label="当前余额">
-                {bal ? (
-                    <>
-                        <p className={BIG}>¥{bal.balanceCny.toFixed(2)}</p>
-                        <p className={SUB}>
-                            ≈ ${(bal.balanceCny / USD_TO_CNY_RATE).toFixed(2)} USD
-                            {bal.quota && <> · {bal.quota.remain.toLocaleString('en-US')} quota</>}
-                        </p>
-                    </>
-                ) : (
-                    NO_DATA
-                )}
+                {bal
+                    ? (() => {
+                          const v = formatCny(bal.balanceCny);
+                          // 副行只放一个上下文:压缩时先给精确 ¥,再给 USD 换算;raw quota 是
+                          // new-api 内部单位,客户不理解,不再展示(admin 后台仍有)。
+                          return (
+                              <>
+                                  <StatNumber value={v} prefix="¥" />
+                                  <p className={SUB}>
+                                      {v.compact && <>{v.exact} · </>}≈ {formatUsd(bal.balanceCny / USD_TO_CNY_RATE)}{' '}
+                                      USD
+                                  </p>
+                              </>
+                          );
+                      })()
+                    : NO_DATA}
             </StatCard>
             <StatCard label="历史消费">
-                {bal ? (
-                    <>
-                        <p className={BIG}>¥{bal.spentCny.toFixed(2)}</p>
-                        <p className={SUB}>累计</p>
-                    </>
-                ) : (
-                    NO_DATA
-                )}
+                {bal
+                    ? (() => {
+                          const v = formatCny(bal.spentCny);
+                          return (
+                              <>
+                                  <StatNumber value={v} prefix="¥" />
+                                  <p className={SUB}>{v.compact && <>{v.exact} · </>}累计</p>
+                              </>
+                          );
+                      })()
+                    : NO_DATA}
             </StatCard>
         </>
     );
@@ -251,37 +277,53 @@ export async function UsageStatCards({ data, periodLabel }: { data: Promise<Usag
     return (
         <>
             <StatCard label="请求次数">
-                {agg ? (
-                    <>
-                        <p className={BIG}>{agg.totalCalls.toLocaleString('en-US')}</p>
-                        <p className={SUB}>{periodLabel}</p>
-                    </>
-                ) : (
-                    NO_DATA
-                )}
+                {agg
+                    ? (() => {
+                          const v = formatCount(agg.totalCalls);
+                          return (
+                              <>
+                                  <StatNumber value={v} />
+                                  <p className={SUB}>
+                                      {v.compact && <>{v.exact} 次 · </>}
+                                      {periodLabel}
+                                  </p>
+                              </>
+                          );
+                      })()
+                    : NO_DATA}
             </StatCard>
             <StatCard label="统计 Tokens">
-                {agg ? (
-                    <>
-                        <p className={BIG}>{totalTokens.toLocaleString('en-US')}</p>
-                        <p className={SUB}>{periodLabel} · 输入+输出</p>
-                    </>
-                ) : (
-                    NO_DATA
-                )}
+                {agg
+                    ? (() => {
+                          const v = formatTokens(totalTokens);
+                          return (
+                              <>
+                                  <StatNumber value={v} />
+                                  <p className={SUB}>
+                                      {v.compact && <>{v.exact} · </>}
+                                      {periodLabel} · 输入+输出
+                                  </p>
+                              </>
+                          );
+                      })()
+                    : NO_DATA}
             </StatCard>
             <StatCard label="本期消费">
-                {agg ? (
-                    <>
-                        <p className={BIG}>¥{quotaToCny(agg.totalUsedQuota).toFixed(2)}</p>
-                        <p className={SUB}>
-                            {periodLabel}
-                            {agg.source === 'fallback' && ' · 数据稍滞后'}
-                        </p>
-                    </>
-                ) : (
-                    NO_DATA
-                )}
+                {agg
+                    ? (() => {
+                          const v = formatCny(quotaToCny(agg.totalUsedQuota));
+                          return (
+                              <>
+                                  <StatNumber value={v} prefix="¥" />
+                                  <p className={SUB}>
+                                      {v.compact && <>{v.exact} · </>}
+                                      {periodLabel}
+                                      {agg.source === 'fallback' && ' · 数据稍滞后'}
+                                  </p>
+                              </>
+                          );
+                      })()
+                    : NO_DATA}
             </StatCard>
         </>
     );

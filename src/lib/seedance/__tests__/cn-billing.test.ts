@@ -70,6 +70,9 @@ describe('computeCostCny 费率', () => {
         expect(computeCostCny(1_000_000, '480p', true, 'promax')).toBeCloseTo(34.68, 4);
         expect(computeCostCny(1_000_000, '480p', false, 'promax-fast')).toBeCloseTo(46.24, 4);
         expect(computeCostCny(1_000_000, '480p', false, 'promax-mini')).toBeCloseTo(28.9, 4);
+        // promax-2.5 480p(2026-10-15 随 svcinf dreamina 上游重开)= 720p 同费率 72.76/43.52 × 0.85
+        expect(computeCostCny(1_000_000, '480p', false, 'promax-2.5')).toBeCloseTo(72.76 * 0.85, 4);
+        expect(computeCostCny(1_000_000, '480p', true, 'promax-2.5')).toBeCloseTo(43.52 * 0.85, 4);
     });
     it('estimate:含视频加 1.5× 缓冲', () => {
         expect(estimateCostCny('720p', 5, true)).toBeGreaterThan(estimateCostCny('720p', 5, false) * 0.6);

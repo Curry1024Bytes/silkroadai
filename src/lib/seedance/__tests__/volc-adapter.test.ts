@@ -12,12 +12,12 @@ import {
     VOLC_MODELS,
     VOLC_RESOLUTIONS,
 } from '../volc-adapter';
-import { rememberVolcId, toUpstreamId } from '@/lib/enterprise/volc-id-map';
+import { rememberVolcId, toUpstreamTask } from '@/lib/enterprise/volc-id-map';
 
 // 映射表只是翻译层,单测里 stub 掉 —— 本文件验的是适配器契约,不是持久化。
 vi.mock('@/lib/enterprise/volc-id-map', () => ({
     rememberVolcId: vi.fn(async () => {}),
-    toUpstreamId: vi.fn(async (id: string) => id),
+    toUpstreamTask: vi.fn(async (id: string) => ({ upstreamId: id, apiVersion: null })),
 }));
 
 const BASE = 'http://svcinf.test';
@@ -83,7 +83,7 @@ describe('submitVolcVideo', () => {
 
     // 2026-10-08 样片出正片(draft_task):客户样片号 → mvt- → GET 上游任务 metadata.id(方舟真号)→ 替换。
     it('draft_task:先 GET 样片任务拿方舟真号再提交,content 里的 id 已换成方舟真号,没传时长/音频不注入默认值', async () => {
-        vi.mocked(toUpstreamId).mockResolvedValueOnce('mvt-draft1');
+        vi.mocked(toUpstreamTask).mockResolvedValueOnce({ upstreamId: 'mvt-draft1', apiVersion: 'v2' });
         const fetchMock = vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
             if (String(url) === `${TASKS}/mvt-draft1` && (init?.method ?? 'GET') === 'GET') {
                 return taskEnvelope({ status: 'completed', metadata: { id: 'cgt-20261008150000-arkid', draft: true } });
@@ -105,7 +105,7 @@ describe('submitVolcVideo', () => {
     });
 
     it('draft_task 样片未完成 → 400 不提交', async () => {
-        vi.mocked(toUpstreamId).mockResolvedValueOnce('mvt-draft1');
+        vi.mocked(toUpstreamTask).mockResolvedValueOnce({ upstreamId: 'mvt-draft1', apiVersion: 'v2' });
         const fetchMock = vi
             .spyOn(global, 'fetch')
             .mockImplementation(async () => taskEnvelope({ status: 'processing', metadata: {} }));
@@ -300,10 +300,12 @@ describe('submitVolcVideo', () => {
         mockSubmit('mvt-52ebaff9b448402a');
         await submitVolcVideo({ prompt: 'x' }, opts());
         expect(rememberVolcId).toHaveBeenCalledTimes(1);
-        const [clientId, upstreamId, kind] = vi.mocked(rememberVolcId).mock.calls[0];
+        const [clientId, upstreamId, kind, userId, apiVersion] = vi.mocked(rememberVolcId).mock.calls[0];
         expect(clientId).toMatch(/^cgt-\d{14}-[a-z0-9]{5}$/);
         expect(upstreamId).toBe('mvt-52ebaff9b448402a');
         expect(kind).toBe('task');
+        expect(userId).toBeUndefined();
+        expect(apiVersion).toBe('v2'); // 火山渠道恒 /v2;轮询按行上的版本打(两版任务互不可见)
     });
 
     it('每次自造号唯一(同参数两次提交不同 id)', async () => {
@@ -316,7 +318,7 @@ describe('submitVolcVideo', () => {
 
 describe('pollVolcVideo', () => {
     it('完成 → 对客号经映射换成 mvt- 打上游、回显对客号;取 metadata.content.video_url + usage', async () => {
-        vi.mocked(toUpstreamId).mockResolvedValueOnce('mvt-abc');
+        vi.mocked(toUpstreamTask).mockResolvedValueOnce({ upstreamId: 'mvt-abc', apiVersion: 'v2' });
         const fetchMock = vi.spyOn(global, 'fetch').mockResolvedValue(
             taskEnvelope({
                 status: 'completed',

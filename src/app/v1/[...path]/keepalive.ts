@@ -12,6 +12,25 @@ import { NextResponse } from 'next/server';
  * `JSON.parse('   {...}')` 正常)。afterMs/trickleMs 可注入(默认读 KEEPALIVE_AFTER_MS/KEEPALIVE_TRICKLE_MS
  * env,再退默认 85s/20s),测试用小值跑真实定时器。
  */
+/** Slow SSE has already committed 200: failures must be parseable events, never bare JSON. */
+function sseErrorFrame(body: string, status: number): string {
+    let error: unknown;
+    try {
+        const parsed: unknown = JSON.parse(body);
+        if (parsed && typeof parsed === 'object' && 'error' in parsed) error = parsed.error;
+    } catch {
+        // Do not echo an HTML upstream error page into the customer protocol.
+    }
+    if (!error || typeof error !== 'object' || Array.isArray(error)) {
+        error = {
+            message: typeof error === 'string' ? error : `image request failed with status ${status}`,
+            type: 'server_error',
+            code: 'upstream_error',
+        };
+    }
+    return `data: ${JSON.stringify({ error })}\n\ndata: [DONE]\n\n`;
+}
+
 export async function withKeepalive(
     work: Promise<NextResponse>,
     opts: { sse?: boolean; afterMs?: number; trickleMs?: number } = {},
@@ -36,23 +55,32 @@ export async function withKeepalive(
     // 慢路径:已过 afterMs,handler 还在跑 → 200 + keepalive 涓流,真实 body 稍后追加
     const enc = new TextEncoder();
     const pad = enc.encode(opts.sse ? ': keepalive\n\n' : ' ');
+    let closed = false;
+    let keep: ReturnType<typeof setInterval> | undefined;
     const stream = new ReadableStream<Uint8Array>({
         async start(controller) {
-            let done = false;
-            void (async () => {
-                while (!done) {
-                    await new Promise((r) => setTimeout(r, trickleMs));
-                    if (done) break;
-                    try {
-                        controller.enqueue(pad);
-                    } catch {
-                        break; // 流已关/客户断开
-                    }
+            const emit = (bytes: Uint8Array) => {
+                if (closed) return;
+                try {
+                    controller.enqueue(bytes);
+                } catch {
+                    closed = true;
+                    if (keep) clearInterval(keep);
                 }
-            })();
+            };
+            // Send the first byte at the timeout, not another trickle interval later.
+            emit(pad);
+            keep = setInterval(() => emit(pad), trickleMs);
             let bodyText: string;
             try {
-                bodyText = await (await work).text();
+                const response = await work;
+                bodyText = await response.text();
+                if (
+                    opts.sse &&
+                    (!response.ok || !response.headers.get('content-type')?.includes('text/event-stream'))
+                ) {
+                    bodyText = sseErrorFrame(bodyText, response.status);
+                }
             } catch (err) {
                 bodyText = JSON.stringify({
                     error: {
@@ -60,14 +88,23 @@ export async function withKeepalive(
                         type: 'proxy_error',
                     },
                 });
+                if (opts.sse) bodyText = sseErrorFrame(bodyText, 502);
             }
-            done = true;
-            try {
-                controller.enqueue(enc.encode(bodyText));
-            } catch {
-                /* 客户在 keepalive 期间断开 */
+            if (keep) clearInterval(keep);
+            emit(enc.encode(bodyText));
+            if (!closed) {
+                closed = true;
+                try {
+                    controller.close();
+                } catch {
+                    /* The customer may have disconnected. */
+                }
             }
-            controller.close();
+        },
+        cancel() {
+            // The generation continues to its terminal state; only stop writing keepalive bytes.
+            closed = true;
+            if (keep) clearInterval(keep);
         },
     });
     return new NextResponse(stream, {

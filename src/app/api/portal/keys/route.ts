@@ -33,6 +33,11 @@ import { PORTAL_INTERNAL_TOKEN_NAME } from '@/lib/newapi/system-token';
 import { listEnabledChannelGroups, restrictGroupsForUser } from '@/lib/channel-group';
 import { ChannelGroupTopologyError, topologyErrorPayload } from '@/lib/channel-group-topology';
 
+import { cnyToQuota } from '@/lib/newapi/quota-units';
+import { isoToExpiredTime } from '@/lib/newapi/token-meta';
+import { keyQuotaLimitsEnabled } from '@/lib/keys/quota-policy';
+import { QuotaCnySchema, ExpiresAtSchema } from '@/lib/keys/request-schema';
+
 export const runtime = 'nodejs';
 
 const CreateKeySchema = z.object({
@@ -55,6 +60,8 @@ const CreateKeySchema = z.object({
     // 值域不写死 enum —— 数据驱动 + 可白标扩展,handler 内
     // 按本 tenant 的 enabled 档次校验。
     tier: z.string().trim().min(1).max(50).optional(),
+    quotaCny: QuotaCnySchema.nullable().optional(),
+    expiresAt: ExpiresAtSchema.nullable().optional(),
 });
 
 export async function GET(req: NextRequest) {
@@ -131,7 +138,10 @@ export async function POST(req: NextRequest) {
             { status: 400 },
         );
     }
-    const { alias, tier: requestedTier } = parsed.data;
+    const { alias, tier: requestedTier, quotaCny = null, expiresAt = null } = parsed.data;
+    if (quotaCny !== null && !keyQuotaLimitsEnabled()) {
+        return NextResponse.json({ error: 'key_quota_limits_disabled' }, { status: 403 });
+    }
 
     // P3:resolve 档次 → new-api group(portal key 与 new-api group 解耦)。
     // 不传档次 → 唯一默认档。非法档次 → 400。任何拓扑缺失都直接 503，
@@ -190,8 +200,9 @@ export async function POST(req: NextRequest) {
             try {
                 await createTokenForCustomer(customerAuth, {
                     name: alias,
-                    unlimited_quota: true, // gotcha #12 — quota lives on user, not token
-                    expired_time: -1,
+                    unlimited_quota: quotaCny === null, // finite key budgets require the explicit operator switch
+                    ...(quotaCny === null ? {} : { remain_quota: cnyToQuota(quotaCny) }),
+                    expired_time: isoToExpiredTime(expiresAt),
                     group: newapiGroup, // P3: 当前动态档次显式下发的 new-api group
                 });
 
@@ -248,6 +259,9 @@ export async function POST(req: NextRequest) {
                 // display/wire concern.
                 key: formatTokenForDisplay(realKey),
                 created_at: row.created_at.toISOString(),
+                quota_unlimited: quotaCny === null,
+                remainCny: quotaCny,
+                expires_at: expiresAt ? new Date(expiresAt).toISOString() : null,
             });
         });
     } catch (error) {

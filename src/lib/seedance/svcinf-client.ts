@@ -1,12 +1,18 @@
 /**
  * service-inference.ai 视频线共用 client(2026-09-22 抽出)。
  *
- * 两条线共用同一套上游协议:
+ * 三条线共用同一套上游协议:
  *  - 「火山」渠道(volc-adapter.ts):`/v2/video/generate` + `/v2/video/tasks/{id}`,四档 doubao-seedance
- *  - 国内版 seedance-2-5 的 480p 单档(cn-adapter.ts):`/v1/video/generate` + `/v1/video/tasks/{id}`
- *    (operator 指定 /v1;实测 /v1 与 /v2 信封一致,/v1 直传 URL 参考图也可用,只是不经 `preparing`)
- * 两者只差 base / key / API 版本 / 模型名,提交与轮询的信封、错误拆包、失败原因脱敏完全一样 ——
+ *  - 国内版 seedance-2-5 的 480p 单档(cn-adapter.ts):同一入口,缺省 /v2(env 可切 /v1)
+ *  - 海外版 proMax 全档(cn-adapter.ts,2026-10-15 起):dreamina-seedance-*-max 四档,独立 key,缺省 /v2
+ * 三者只差 base / key / API 版本 / 模型名,提交与轮询的信封、错误拆包、失败原因脱敏完全一样 ——
  * 抽到这里,volc / cn 两个适配器各自只做「对客 body ↔ 上游 body」的翻译。
+ *
+ * ⚠️ /v1 与 /v2 的**任务互不可见**(同一把 key,/v1 建的 mvt- 用 /v2 查 404「Task not found」,反之亦然;
+ * 2026-09-27 切版本曾孤儿化一条在途任务)。所以:提交结果带回所用版本 → 调用方记进 volc_id_map.api_version;
+ * 轮询按映射行的版本打(`opts.apiVersion`),存量行(NULL)按配置版打、404 再回退另一版查一次。
+ * 两版的其它差异:/v2 直传 URL 素材经 `preparing` 由网关代传 + 支持预传句柄 `asset://mva-…`;/v1 不支持句柄,
+ * 直传 URL 直接 pending。
  *
  * 上游契约实测要点(2026-09-22,详见 volc-adapter.ts 头注):
  *  - 提交 `{ task: { id: "mvt-…", status } }`;轮询 `{ task: { …, metadata: <火山方舟原生任务体> } }`
@@ -17,6 +23,7 @@
 import 'server-only';
 import { randomBytes } from 'node:crypto';
 import { NextResponse } from 'next/server';
+import { rememberVolcId } from '@/lib/enterprise/volc-id-map';
 import { passthroughUpstreamError, sanitizeUpstreamText } from './upstream-error';
 
 export type SvcinfApiVersion = 'v1' | 'v2';
@@ -26,6 +33,21 @@ export interface SvcinfConfig {
     key: string;
     /** `/v1` 或 `/v2`(路径前缀;信封相同)。 */
     api: SvcinfApiVersion;
+}
+
+export async function persistSvcinfTaskReference(
+    clientId: string,
+    upstreamId: string,
+    api: SvcinfApiVersion,
+): Promise<string> {
+    try {
+        await rememberVolcId(clientId, upstreamId, 'task', undefined, api);
+        return clientId;
+    } catch {
+        // Return an accepted task with a pollable handle, never repeat a paid submission.
+        console.warn('[svcinf] task mapping unavailable; returning recovery handle');
+        return `cgt-svc-recovery-${api}-${Buffer.from(upstreamId).toString('base64url')}`;
+    }
 }
 
 export const SVCINF_DEFAULT_BASE = 'https://model.service-inference.ai';
@@ -149,6 +171,8 @@ export interface SvcinfSubmitResult {
     ok: true;
     /** 上游受理号(mvt-…)。 */
     taskId: string;
+    /** 本次提交打的 API 版本 —— 调用方必须记进映射行,轮询按它打(两版任务互不可见)。 */
+    api: SvcinfApiVersion;
 }
 export interface SvcinfSubmitFailure {
     ok: false;
@@ -157,7 +181,56 @@ export interface SvcinfSubmitFailure {
 }
 
 /**
+ * LLmRoute 默认不重放收费提交：500/502/503 也不能证明上游没有创建任务。
+ * 仅在 operator 已确认渠道具备提交幂等/未受理保证后，显式将
+ * SEEDANCE_SVCINF_SUBMIT_RETRY_MS 设为正数可启用上游的一次退避策略。
+ * 即使显式启用，任务 ID、504、4xx、网络/读体异常均不重放。
+ */
+const SUBMIT_RETRY_STATUSES: ReadonlySet<number> = new Set([500, 502, 503]);
+const SUBMIT_RETRY_DEFAULT_MS = 0;
+export function submitRetryDelayMs(): number {
+    const raw = process.env.SEEDANCE_SVCINF_SUBMIT_RETRY_MS?.trim();
+    if (!raw) return SUBMIT_RETRY_DEFAULT_MS;
+    const n = Number(raw);
+    return Number.isFinite(n) && n >= 0 ? Math.floor(n) : SUBMIT_RETRY_DEFAULT_MS;
+}
+
+const ACCEPTED_SUBMIT_TASK_STATES = new Set(['preparing', 'pending', 'processing', 'completed', 'failed']);
+
+/** An HTTP error can still contain the actual accepted task. Only a structured task
+ * with a valid mvt identifier and known task state is evidence of acceptance;
+ * request/error IDs (or an id without a task state) are never treated as tasks.
+ * Non-2xx requires the provider's explicit `task` envelope. */
+function acceptedSubmitTaskId(text: string, httpStatus: number): string | null {
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(text);
+    } catch {
+        return null;
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    const envelope = parsed as Record<string, unknown>;
+    const nested = envelope.task;
+    const task =
+        nested && typeof nested === 'object' && !Array.isArray(nested)
+            ? (nested as Record<string, unknown>)
+            : httpStatus >= 200 && httpStatus < 300 && !envelope.error
+              ? envelope
+              : null;
+    if (
+        !task ||
+        typeof task.id !== 'string' ||
+        !/^mvt-[A-Za-z0-9_-]+$/.test(task.id) ||
+        typeof task.status !== 'string' ||
+        !ACCEPTED_SUBMIT_TASK_STATES.has(task.status)
+    )
+        return null;
+    return task.id;
+}
+
+/**
  * 提交(上游 body 已由调用方翻译好)。上游原始报错体只落日志;对客透传方舟原文(仅剥身份标记,#271)。
+ * 仅显式启用时对无任务ID的500/502/503退避一次；缺省、其余状态及网络/读体错误均不重发。
  * @param tag  日志前缀 + 错误 type(如 'volc-adapter' / 'seedance-cn-adapter')
  */
 export async function submitSvcinfTask(
@@ -169,38 +242,137 @@ export async function submitSvcinfTask(
         ok: false,
         res: errJson(tag.errType, status, code, message, category),
     });
-    let upstream: Response;
-    try {
-        upstream = await fetch(`${cfg.base}/${cfg.api}/video/generate`, {
-            method: 'POST',
-            headers: { Authorization: `Bearer ${cfg.key}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify(upstreamBody),
-            signal: AbortSignal.timeout(30000),
-        });
-    } catch (e) {
-        console.warn(`[${tag.log}] submit unreachable`, { err: String(e) });
-        return fail(502, 'upstream_unreachable', 'upstream temporarily unavailable, please retry');
+    const body = JSON.stringify(upstreamBody);
+    const retryDelay = submitRetryDelayMs();
+    const maxAttempts = retryDelay > 0 ? 2 : 1;
+    let upstream: Response | undefined;
+    let text = '';
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+            upstream = await fetch(`${cfg.base}/${cfg.api}/video/generate`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${cfg.key}`, 'Content-Type': 'application/json' },
+                body,
+                signal: AbortSignal.timeout(30000),
+            });
+        } catch (e) {
+            // 连接层失败不重试:30s 超时也可能是对端已受理,重发有双任务风险。
+            console.warn(`[${tag.log}] submit unreachable`, { err: String(e), attempt });
+            return fail(502, 'upstream_unreachable', 'upstream temporarily unavailable, please retry');
+        }
+        try {
+            text = await upstream.text();
+        } catch {
+            // Headers may arrive before the connection fails; acceptance is still unknown.
+            return fail(
+                502,
+                'upstream_unreachable',
+                'upstream response could not be read; submission result is unknown',
+            );
+        }
+        const acceptedId = acceptedSubmitTaskId(text, upstream.status);
+        if (acceptedId) return { ok: true, taskId: acceptedId, api: cfg.api };
+        let acceptedTaskId = false;
+        try {
+            const accepted = JSON.parse(text) as { task?: { id?: unknown }; id?: unknown };
+            acceptedTaskId =
+                typeof (accepted.task?.id ?? accepted.id) === 'string' && !!(accepted.task?.id ?? accepted.id);
+        } catch {
+            /* A gateway body without a task is handled by the configured policy below. */
+        }
+        if (attempt < maxAttempts && SUBMIT_RETRY_STATUSES.has(upstream.status) && !acceptedTaskId) {
+            console.warn(`[${tag.log}] submit ${upstream.status}, retrying once`, {
+                model: tag.model,
+                upstream_model: upstreamBody.model,
+                delay_ms: retryDelay,
+                body: text.slice(0, 500),
+            });
+            await new Promise((r) => setTimeout(r, retryDelay));
+            continue;
+        }
+        break;
     }
-    const text = await upstream.text();
-    let j: { task?: { id?: string }; id?: string } | null;
+    // 循环至少跑一轮,upstream/text 必已赋值
+    const res = upstream as Response;
+    const cls = passthroughUpstreamError(unwrapUpstreamError(text), res.status);
+    console.warn(`[${tag.log}] submit failed`, {
+        model: tag.model,
+        upstream_model: upstreamBody.model,
+        status: res.status,
+        category: cls.category,
+        attempts: maxAttempts > 1 && SUBMIT_RETRY_STATUSES.has(res.status) ? 2 : 1,
+        body: text.slice(0, 2000),
+    });
+    return fail(res.status >= 400 ? res.status : 502, 'upstream_error', cls.message, cls.category);
+}
+
+/** 轮询 / 查任务时的版本选择:映射行记了版本就按它;NULL(存量行)按配置版。 */
+export interface SvcinfTaskLookupOptions {
+    /** 该任务创建时用的 API 版本(volc_id_map.api_version);null / 缺省 = 不知道,按 cfg.api。 */
+    apiVersion?: SvcinfApiVersion | null;
+}
+
+function otherApi(api: SvcinfApiVersion): SvcinfApiVersion {
+    return api === 'v1' ? 'v2' : 'v1';
+}
+
+interface FetchedTask {
+    http: number;
+    text: string;
+    /** 解析出的任务体(带 status 才算);解析不出 / 无 status → null。 */
+    task: UpstreamTask | null;
+    /** 实际命中的 API 版本。 */
+    api: SvcinfApiVersion;
+}
+
+function parseTaskBody(text: string): UpstreamTask | null {
+    let j: Record<string, unknown> | null;
     try {
-        j = JSON.parse(text) as { task?: { id?: string }; id?: string };
+        j = JSON.parse(text) as Record<string, unknown>;
     } catch {
-        j = null;
+        return null;
     }
-    const taskId = j?.task?.id ?? j?.id;
-    if (!upstream.ok || !taskId) {
-        const cls = passthroughUpstreamError(unwrapUpstreamError(text), upstream.status);
-        console.warn(`[${tag.log}] submit failed`, {
-            model: tag.model,
-            upstream_model: upstreamBody.model,
-            status: upstream.status,
-            category: cls.category,
-            body: text.slice(0, 2000),
+    // 信封:正常是 {task:{…}};防御性也认裸任务体。
+    const task = ((j?.task && typeof j.task === 'object' ? j.task : j) ?? null) as UpstreamTask | null;
+    return task && typeof task.status === 'string' && task.status ? task : null;
+}
+
+/**
+ * GET 上游任务(按版本)。`opts.apiVersion` 已知 → 只打那一版;未知(存量行)→ 先打 cfg.api,
+ * 404 且 body 不是任务体(= 「Task not found」)→ 回退另一版再查一次(命中则 warn 落日志,便于事后
+ * 把映射行补上版本)。任何一版的网络错直接抛给调用方(与此前语义一致:unreachable → 502)。
+ */
+async function fetchSvcinfTask(
+    cfg: SvcinfConfig,
+    upstreamId: string,
+    opts: SvcinfTaskLookupOptions | undefined,
+    log: string,
+): Promise<FetchedTask> {
+    const known = opts?.apiVersion ?? null;
+    const first: SvcinfApiVersion = known ?? cfg.api;
+    const get = async (api: SvcinfApiVersion): Promise<FetchedTask> => {
+        const upstream = await fetch(`${cfg.base}/${api}/video/tasks/${encodeURIComponent(upstreamId)}`, {
+            headers: { Authorization: `Bearer ${cfg.key}`, Accept: 'application/json' },
+            signal: AbortSignal.timeout(20000),
         });
-        return fail(upstream.status >= 400 ? upstream.status : 502, 'upstream_error', cls.message, cls.category);
+        const text = await upstream.text();
+        return { http: upstream.status, text, task: parseTaskBody(text), api };
+    };
+    const r = await get(first);
+    if (known || r.http !== 404 || r.task) return r;
+    // 存量行(不知道版本)+ 配置版 404:可能建在另一版下(2026-09-27 切版本留下的在途任务)。
+    const alt = otherApi(first);
+    const r2 = await get(alt);
+    if (r2.task) {
+        console.warn(`[${log}] task found under other api version`, { upstreamId, configured: first, found: alt });
+        return r2;
     }
-    return { ok: true, taskId };
+    // A second-version outage/auth/rate-limit response is not proof of absence.
+    // Even an unstructured 404 page cannot confirm that a task is absent.
+    if (r2.http !== 404) return r2;
+    const firstMissing = passthroughUpstreamError(unwrapUpstreamError(r.text), r.http).category === 'task_gone';
+    const secondMissing = passthroughUpstreamError(unwrapUpstreamError(r2.text), r2.http).category === 'task_gone';
+    return firstMissing && !secondMissing ? r2 : r;
 }
 
 /**
@@ -211,26 +383,18 @@ export async function fetchSvcinfArkTaskId(
     cfg: SvcinfConfig,
     upstreamId: string,
     log: string,
+    opts?: SvcinfTaskLookupOptions,
 ): Promise<{ ok: true; status: string; arkId: string | null } | { ok: false }> {
-    let upstream: Response;
+    let fetched: FetchedTask;
     try {
-        upstream = await fetch(`${cfg.base}/${cfg.api}/video/tasks/${encodeURIComponent(upstreamId)}`, {
-            headers: { Authorization: `Bearer ${cfg.key}`, Accept: 'application/json' },
-            signal: AbortSignal.timeout(20000),
-        });
+        fetched = await fetchSvcinfTask(cfg, upstreamId, opts, log);
     } catch (e) {
         console.warn(`[${log}] draft task lookup unreachable`, { upstreamId, err: String(e) });
         return { ok: false };
     }
-    let j: Record<string, unknown> | null;
-    try {
-        j = JSON.parse(await upstream.text()) as Record<string, unknown>;
-    } catch {
-        j = null;
-    }
-    const task = ((j?.task && typeof j.task === 'object' ? j.task : j) ?? null) as UpstreamTask | null;
-    if (!upstream.ok || !task || typeof task.status !== 'string') {
-        console.warn(`[${log}] draft task lookup failed`, { upstreamId, http: upstream.status });
+    const task = fetched.task;
+    if (fetched.http >= 400 || !task) {
+        console.warn(`[${log}] draft task lookup failed`, { upstreamId, http: fetched.http, api: fetched.api });
         return { ok: false };
     }
     const meta = (task.metadata && typeof task.metadata === 'object' ? task.metadata : {}) as Record<string, unknown>;
@@ -259,50 +423,42 @@ export async function pollSvcinfTask(
     clientId: string,
     upstreamId: string,
     tag: { log: string; errType: string },
+    opts?: SvcinfTaskLookupOptions,
 ): Promise<NextResponse> {
     const err = (status: number, code: string, message: string, category?: string) =>
         errJson(tag.errType, status, code, message, category);
-    let upstream: Response;
+    let fetched: FetchedTask;
     try {
-        upstream = await fetch(`${cfg.base}/${cfg.api}/video/tasks/${encodeURIComponent(upstreamId)}`, {
-            headers: { Authorization: `Bearer ${cfg.key}`, Accept: 'application/json' },
-            signal: AbortSignal.timeout(20000),
-        });
+        fetched = await fetchSvcinfTask(cfg, upstreamId, opts, tag.log);
     } catch (e) {
         console.warn(`[${tag.log}] poll unreachable`, { id: clientId, err: String(e) });
         return err(502, 'upstream_unreachable', 'upstream temporarily unavailable, please retry');
     }
-    const text = await upstream.text();
-    let j: Record<string, unknown> | null;
-    try {
-        j = JSON.parse(text) as Record<string, unknown>;
-    } catch {
-        j = null;
-    }
-    // 信封:正常是 {task:{…}};防御性也认裸任务体。
-    const task = ((j?.task && typeof j.task === 'object' ? j.task : j) ?? null) as UpstreamTask | null;
+    const { http, text, task } = fetched;
+    const httpOk = http >= 200 && http < 300;
     // 带 status 的任务体 = 真·任务态(即使 HTTP 非 2xx 也按任务态处理,不当不透明错误一直挂着);
     // 只有【没有可用 status 的纯错误体】(任务不存在 / 限流 / 5xx 无 body)才走报错分支。
-    const bodyStatus = task && typeof task.status === 'string' && task.status ? task.status : '';
-    if (!upstream.ok && !bodyStatus) {
-        const cls = passthroughUpstreamError(unwrapUpstreamError(text), upstream.status);
+    const bodyStatus = task ? String(task.status) : '';
+    if (!httpOk && !bodyStatus) {
+        const cls = passthroughUpstreamError(unwrapUpstreamError(text), http);
         console.warn(`[${tag.log}] poll failed`, {
             id: clientId,
-            status: upstream.status,
+            status: http,
+            api: fetched.api,
             category: cls.category,
             body: text.slice(0, 2000),
         });
-        return err(upstream.status >= 400 ? upstream.status : 502, 'upstream_error', cls.message, cls.category);
+        return err(http >= 400 ? http : 502, 'upstream_error', cls.message, cls.category);
     }
     if (!task || !bodyStatus) {
         // 2xx 但 body 解析不出 / 没有 status(不该发生)—— 当上游暂不可用,交上层降级/重试,别当成功。
         console.warn(`[${tag.log}] poll 2xx 但 body 非任务体`, { id: clientId, body: text.slice(0, 500) });
         return err(502, 'upstream_unreachable', 'upstream temporarily unavailable, please retry');
     }
-    if (!upstream.ok) {
+    if (!httpOk) {
         console.warn(`[${tag.log}] poll 非2xx 但 body 带 status,按任务态处理`, {
             id: clientId,
-            http: upstream.status,
+            http,
             taskStatus: bodyStatus,
         });
     }
