@@ -1,0 +1,218 @@
+name: Build verified Portal image (native amd64)
+
+# The repository default branch remains upstream-only main. A narrowly scoped
+# dev push registers/runs this independent workflow without changing main.
+on:
+    push:
+        branches: [dev]
+        paths:
+            - '.github/workflows/build-native-amd64.yml'
+    workflow_dispatch:
+        inputs:
+            source_sha:
+                description: 'Exact already-verified application commit; this recovery workflow only accepts the pinned SHA below'
+                required: true
+                default: '5a0e613e0017fd4b35bc178c0b171f59510c1b55'
+                type: string
+
+permissions:
+    contents: read
+
+concurrency:
+    group: llmroute-native-amd64-image
+    cancel-in-progress: false
+
+jobs:
+    image:
+        if: github.repository == 'Curry1024Bytes/silkroadai' && github.ref == 'refs/heads/dev'
+        runs-on: ubuntu-24.04
+        timeout-minutes: 60
+        defaults:
+            run:
+                shell: bash
+        env:
+            VERIFIED_SOURCE_SHA: '5a0e613e0017fd4b35bc178c0b171f59510c1b55'
+            DOCKER_BUILDKIT: '1'
+
+        steps:
+            - name: Select the verified application commit
+              id: source
+              env:
+                  REQUESTED_SOURCE_SHA: ${{ inputs.source_sha }}
+                  EVENT_NAME: ${{ github.event_name }}
+              run: |
+                  set -euo pipefail
+                  source_sha="$VERIFIED_SOURCE_SHA"
+                  if [[ "$EVENT_NAME" == 'workflow_dispatch' ]]; then
+                    source_sha="$REQUESTED_SOURCE_SHA"
+                  fi
+                  if [[ ! "$source_sha" =~ ^[0-9a-f]{40}$ ]] || [[ "$source_sha" != "$VERIFIED_SOURCE_SHA" ]]; then
+                    echo 'Only the pinned, already-verified 40-character application SHA is permitted.' >&2
+                    exit 1
+                  fi
+                  printf 'sha=%s\n' "$source_sha" >> "$GITHUB_OUTPUT"
+                  printf 'image=llmroute-portal:%s\n' "$source_sha" >> "$GITHUB_OUTPUT"
+
+            # actions/checkout v7.0.1, pinned to the official release commit.
+            # Sparse checkout avoids materializing the tracked .env in the worktree.
+            # The build context is generated separately from Git objects, not this tree.
+            - name: Fetch the pinned source history
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+              with:
+                  ref: ${{ steps.source.outputs.sha }}
+                  path: source
+                  fetch-depth: 0
+                  persist-credentials: false
+                  submodules: false
+                  sparse-checkout-cone-mode: false
+                  sparse-checkout: |
+                      /.github/workflows/
+
+            - name: Verify native runner and prod ancestry
+              env:
+                  SOURCE_SHA: ${{ steps.source.outputs.sha }}
+              run: |
+                  set -euo pipefail
+                  [[ "$(uname -s)" == 'Linux' && "$(uname -m)" == 'x86_64' ]]
+                  [[ "$(docker info --format '{{.OSType}}')" == 'linux' ]]
+                  case "$(docker info --format '{{.Architecture}}')" in
+                    x86_64|amd64) ;;
+                    *) echo 'A native amd64 Docker daemon is required; no QEMU fallback.' >&2; exit 1 ;;
+                  esac
+                  [[ "$(git -C source rev-parse HEAD)" == "$SOURCE_SHA" ]]
+                  git -C source show-ref --verify --quiet refs/remotes/origin/prod
+                  git -C source merge-base --is-ancestor "$SOURCE_SHA" refs/remotes/origin/prod
+                  printf 'Application source: %s\n' "$SOURCE_SHA"
+                  docker version --format 'Docker server: {{.Server.Os}}/{{.Server.Arch}} {{.Server.Version}}'
+                  df -h "$RUNNER_TEMP"
+
+            - name: Create and verify an env-free Git archive context
+              env:
+                  SOURCE_SHA: ${{ steps.source.outputs.sha }}
+              run: |
+                  set -euo pipefail
+                  source_archive="$RUNNER_TEMP/llmroute-source.tar"
+                  build_context="$RUNNER_TEMP/llmroute-build-context"
+                  mkdir -p "$build_context"
+                  # Both root and nested .env* paths are excluded before the tar exists.
+                  # Never replace this with a workspace COPY: .env is tracked in this repo.
+                  git -C source archive --format=tar "$SOURCE_SHA" -- . \
+                    ':(exclude,glob).env*' ':(exclude,glob)**/.env*' > "$source_archive"
+                  python3 - <<'PY'
+                  import os, pathlib, tarfile
+                  archive = pathlib.Path(os.environ['RUNNER_TEMP']) / 'llmroute-source.tar'
+                  context = pathlib.Path(os.environ['RUNNER_TEMP']) / 'llmroute-build-context'
+                  with tarfile.open(archive) as source:
+                      for member in source.getmembers():
+                          path = pathlib.PurePosixPath(member.name)
+                          if path.is_absolute() or '..' in path.parts or any(part.startswith('.env') for part in path.parts):
+                              raise SystemExit('Unsafe path in source archive; refusing to build')
+                      source.extractall(context, filter='data')
+                  if any(path.name.startswith('.env') for path in context.rglob('*')):
+                      raise SystemExit('An env file escaped the archive filter')
+                  if '.env*' not in (context / '.dockerignore').read_text().splitlines():
+                      raise SystemExit('The committed Docker ignore env exclusion is missing')
+                  print('Committed source archive verified; no .env* paths, local dependencies or local Next output.')
+                  PY
+                  rm -f "$source_archive"
+
+            - name: Build linux amd64 using the committed Dockerfile
+              env:
+                  SOURCE_SHA: ${{ steps.source.outputs.sha }}
+                  BUILD_IMAGE: ${{ steps.source.outputs.image }}
+              run: |
+                  set -euo pipefail
+                  # No production credentials, SSH connection, QEMU setup or registry login.
+                  # Public build arguments were checked against the production values;
+                  # all match this commit's Dockerfile defaults, including optional fallback.
+                  docker build --pull --platform linux/amd64 --progress=plain \
+                    --label "org.opencontainers.image.revision=$SOURCE_SHA" \
+                    --label 'org.opencontainers.image.source=https://github.com/Curry1024Bytes/silkroadai' \
+                    --tag "$BUILD_IMAGE" "$RUNNER_TEMP/llmroute-build-context"
+
+            - name: Verify image architecture and native runtime dependencies offline
+              env:
+                  SOURCE_SHA: ${{ steps.source.outputs.sha }}
+                  BUILD_IMAGE: ${{ steps.source.outputs.image }}
+              run: |
+                  set -euo pipefail
+                  [[ "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$BUILD_IMAGE")" == 'linux/amd64' ]]
+                  [[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$BUILD_IMAGE")" == "$SOURCE_SHA" ]]
+                  # Override start.sh: these checks must never run migrations or schedulers.
+                  docker run --rm --platform linux/amd64 --network none --read-only \
+                    --tmpfs /tmp:rw,nosuid,size=64m --entrypoint node "$BUILD_IMAGE" -e '
+                    (async () => {
+                      if (process.platform !== "linux" || process.arch !== "x64") throw new Error("Wrong Node target");
+                      const sharp = require("sharp");
+                      const image = await sharp({create: {width: 16, height: 16, channels: 4, background: "#000000"}}).png().toBuffer();
+                      const result = await sharp(image).metadata();
+                      if (result.width !== 16 || result.height !== 16 || result.format !== "png") throw new Error("sharp smoke failed");
+                      console.log("Native linux/x64 sharp smoke passed");
+                    })().catch(error => { console.error(error.message); process.exit(1); });'
+                  docker run --rm --platform linux/amd64 --network none --read-only \
+                    --tmpfs /tmp:rw,nosuid,size=64m \
+                    -e DATABASE_URL=postgresql://build:unused@127.0.0.1:1/build_check \
+                    --entrypoint node "$BUILD_IMAGE" node_modules/prisma/build/index.js --version --config prisma.config.ts
+
+            - name: Export and scan image layers before producing checksums
+              env:
+                  SOURCE_SHA: ${{ steps.source.outputs.sha }}
+                  BUILD_IMAGE: ${{ steps.source.outputs.image }}
+              run: |
+                  set -euo pipefail
+                  artifact_dir="$RUNNER_TEMP/llmroute-image-artifact"
+                  mkdir -p "$artifact_dir"
+                  docker image save --output "$artifact_dir/llmroute-portal-linux-amd64.tar" "$BUILD_IMAGE"
+                  # Scan every saved layer, not only the final filesystem: deleting a
+                  # secret in a later layer would otherwise leave it recoverable.
+                  python3 - <<'PY'
+                  import json, os, pathlib, re, tarfile
+                  image = pathlib.Path(os.environ['RUNNER_TEMP']) / 'llmroute-image-artifact/llmroute-portal-linux-amd64.tar'
+                  with tarfile.open(image) as saved:
+                      manifests = json.load(saved.extractfile('manifest.json'))
+                      if len(manifests) != 1:
+                          raise SystemExit('Expected exactly one image in the artifact')
+                      manifest = manifests[0]
+                      config = json.load(saved.extractfile(manifest['Config']))
+                      if config.get('os') != 'linux' or config.get('architecture') != 'amd64':
+                          raise SystemExit('Saved image target differs from linux/amd64')
+                      for item in config.get('config', {}).get('Env', []):
+                          key = item.split('=', 1)[0]
+                          if key == 'DATABASE_URL' or re.search(r'(SECRET|PASSWORD|TOKEN|PRIVATE_KEY)', key):
+                              raise SystemExit('Unexpected credential-shaped environment in image config')
+                      for layer in manifest['Layers']:
+                          with tarfile.open(fileobj=saved.extractfile(layer), mode='r|*') as contents:
+                              for member in contents:
+                                  if any(part.startswith('.env') for part in pathlib.PurePosixPath(member.name).parts):
+                                      raise SystemExit('An image layer contains an env file; artifact upload refused')
+                  print('All saved image layers passed env-file and embedded-credential-key checks.')
+                  PY
+                  printf '%s\n' "$SOURCE_SHA" > "$artifact_dir/SOURCE_SHA.txt"
+                  docker image inspect --format '{{.Id}}' "$BUILD_IMAGE" > "$artifact_dir/IMAGE_ID.txt"
+                  (
+                    cd "$artifact_dir"
+                    sha256sum llmroute-portal-linux-amd64.tar SOURCE_SHA.txt IMAGE_ID.txt > SHA256SUMS
+                  )
+                  printf 'Verified application source: `%s`\n\nImage target: `linux/amd64`. No registry publication or deployment.\n' "$SOURCE_SHA" >> "$GITHUB_STEP_SUMMARY"
+
+            # actions/upload-artifact v7.0.2, pinned to the official release commit.
+            - name: Upload the verified Docker archive only
+              uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+              with:
+                  name: llmroute-linux-amd64-${{ steps.source.outputs.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+                  path: |
+                      ${{ runner.temp }}/llmroute-image-artifact/llmroute-portal-linux-amd64.tar
+                      ${{ runner.temp }}/llmroute-image-artifact/SOURCE_SHA.txt
+                      ${{ runner.temp }}/llmroute-image-artifact/IMAGE_ID.txt
+                      ${{ runner.temp }}/llmroute-image-artifact/SHA256SUMS
+                  if-no-files-found: error
+                  retention-days: 1
+                  compression-level: 0
+                  include-hidden-files: false
+                  overwrite: false
+
+            - name: Remove temporary source context
+              if: always()
+              run: |
+                  rm -rf -- "$RUNNER_TEMP/llmroute-build-context"
+                  rm -f -- "$RUNNER_TEMP/llmroute-source.tar"
