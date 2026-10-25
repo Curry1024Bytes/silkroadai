@@ -20,20 +20,25 @@ export function PlazaPriceSummary({
     const perToken = summary?.unit === '元 / 百万 token';
     const divisor = perToken && tokenUnit === 'K' ? 1000 : 1;
     return (
-        <div className="col-span-full min-w-0 space-y-2" aria-label={`${quote?.tier?.label ?? '当前分组'}价格摘要`}>
+        <div
+            className="col-span-full flex min-w-0 flex-col gap-2"
+            aria-label={`${quote?.tier?.label ?? '当前分组'}价格摘要`}
+        >
             {summary ? (
                 <>
-                    <dl className="m-0 grid grid-cols-2 gap-x-3 gap-y-1">
+                    <dl
+                        className={`m-0 grid gap-x-4 gap-y-1 ${summary.rates.length === 1 ? 'grid-cols-1' : 'grid-cols-2'}`}
+                    >
                         {summary.rates.map((rate) => (
-                            <div key={rate.label}>
-                                <dt className="text-muted-foreground text-xs">{rate.label}</dt>
-                                <dd className="m-0 break-words font-mono text-base font-semibold tabular-nums">
+                            <div key={rate.label} className="row-span-2 grid min-w-0 grid-rows-subgrid gap-y-1">
+                                <dt className="text-muted-foreground text-xs leading-5">{rate.label}</dt>
+                                <dd className="m-0 min-w-0 font-mono text-base leading-6 font-semibold tabular-nums [overflow-wrap:anywhere]">
                                     {`¥${perToken ? formatPlazaTokenAmount(rate.amount, tokenUnit) : formatTieredPrice(rate.amount)}`}
                                 </dd>
                             </div>
                         ))}
                     </dl>
-                    <p className="text-muted-foreground m-0 text-xs">
+                    <p className="text-muted-foreground m-0 text-xs leading-5">
                         {divisor === 1000 ? '元 / 千 token' : summary.unit}
                     </p>
                     {summary.condition && (
@@ -46,7 +51,7 @@ export function PlazaPriceSummary({
             ) : (
                 <p className="text-muted-foreground m-0 text-sm">未定价</p>
             )}
-            {quote?.tier && <p className="m-0 text-xs font-medium">{quote.tier.label}</p>}
+            {quote?.tier && <p className="m-0 text-xs leading-5 font-medium break-words">{quote.tier.label}</p>}
         </div>
     );
 }

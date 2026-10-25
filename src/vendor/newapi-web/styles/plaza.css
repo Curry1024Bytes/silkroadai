@@ -157,6 +157,28 @@ floating layers (Sheet / Popover / Select) in that class.
   }
 }
 
+/* Share content rows so names, descriptions and billing conditions can vary
+   without shifting a neighbouring card's prices. Flex remains the fallback. */
+@supports (grid-template-rows: subgrid) {
+  .newapi-plaza .plaza-model-card {
+    display: grid;
+    grid-row: span 5;
+    grid-template-rows: subgrid;
+  }
+  .newapi-plaza .plaza-model-card-content {
+    display: contents;
+  }
+  .newapi-plaza .plaza-model-card-content > div {
+    padding-inline: 1rem;
+  }
+  .newapi-plaza .plaza-model-card-content > dl {
+    margin-inline: 1rem;
+  }
+  .newapi-plaza .plaza-model-card > [data-slot='card-footer'] {
+    grid-row: 5;
+  }
+}
+
 /* ---- shadcn/tailwind.css (variants + keyframes), inlined verbatim ---- */
 @theme inline {
   @keyframes accordion-down {

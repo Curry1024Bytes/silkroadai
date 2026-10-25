@@ -270,7 +270,7 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
   }
 
   return (
-    <Card className='hover:ring-foreground/20 h-full min-w-0 gap-3 transition-colors'>
+    <Card className='plaza-model-card hover:ring-foreground/20 h-full min-w-0 gap-3 transition-colors'>
       <CardHeader className='flex flex-row items-start gap-3'>
         <div
           aria-hidden
@@ -305,7 +305,7 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
           iconClassName='size-3.5'
         />
       </CardHeader>
-      <CardContent className='flex flex-1 flex-col gap-3'>
+      <CardContent className='plaza-model-card-content flex flex-1 flex-col gap-3'>
         <div className='flex min-w-0 flex-col gap-1.5'>
           <p className='text-muted-foreground line-clamp-2 text-[13px] leading-5 break-words'>
             {props.model.description || t('No description available.')}
@@ -331,7 +331,7 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
         <div
           role='group'
           aria-label={t('Pricing')}
-          className='mt-auto flex min-w-0 flex-col gap-1.5'
+          className='flex min-w-0 flex-col gap-2'
         >
           <ModelBillingModeBadge model={props.model} appearance='caption' />
           {dynamicSummary?.providerCount && (
@@ -349,17 +349,14 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
         </div>
         {(groups.length > 0 || endpoints.length > 0) && (
           <dl
-            className={cn(
-              'grid min-w-0 grid-cols-2 gap-3 text-xs',
-              (groups.length === 0 || endpoints.length === 0) && 'grid-cols-1'
-            )}
+            className='mt-auto grid min-w-0 gap-2 text-xs'
           >
             {groups.length > 0 && (
               <div className='flex min-w-0 items-baseline gap-1.5'>
                 <dt className='text-muted-foreground shrink-0'>
                   {t('Groups')}
                 </dt>
-                <dd className='flex min-w-0 items-baseline gap-1'>
+                <dd className='flex min-w-0 flex-1 items-baseline gap-1'>
                   <span className='truncate' title={groups.join(', ')}>
                     {groups[0]}
                   </span>
@@ -379,8 +376,8 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
                 <dt className='text-muted-foreground shrink-0'>
                   {t('Endpoints')}
                 </dt>
-                <dd className='flex min-w-0 items-baseline gap-1'>
-                  <span className='truncate' title={endpoints.join(', ')}>
+                <dd className='flex min-w-0 flex-1 items-baseline gap-1'>
+                  <span className='min-w-0 break-words [overflow-wrap:anywhere]' title={endpoints.join(', ')}>
                     {endpoints.slice(0, 2).join(', ')}
                   </span>
                   {endpoints.length > 2 && (
@@ -406,6 +403,7 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
           <Button
             variant='ghost'
             size='sm'
+            className='ml-auto shrink-0'
             onClick={() => props.onClick(props.model.model_name || '')}
           >
             {t('Details')}

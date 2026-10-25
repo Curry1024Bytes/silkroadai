@@ -80,11 +80,11 @@ export const ModelPerfBadge = memo(function ModelPerfBadge(
     <div
       aria-label={t('Performance metrics for the last 24 hours')}
       className={cn(
-        'flex w-full min-w-0 items-center justify-between gap-3',
+        'flex w-full min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-2',
         props.className
       )}
     >
-      <dl className='flex min-w-0 items-start gap-5 text-xs tabular-nums'>
+      <dl className='flex min-w-0 max-w-full flex-wrap items-start gap-x-4 gap-y-2 text-xs tabular-nums'>
         <div className='w-24 shrink-0'>
           <dt
             title={t(
