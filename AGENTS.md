@@ -1026,7 +1026,6 @@ LiteLLM 时代的 `LITELLM_*` 变量保留作 fallback,W3 D1 关停后可删。
 - 完整测试 313 files / 4307 passed / 1 既有 skipped（含真实只读 smoke），typecheck/构建通过，lint 0 error / 93 既有 warnings。隔离 PostgreSQL 16 的 14 项真实迁移/API/并发/回滚验证通过；53 张既有表行列摘要不变。浅色/深色浏览器验证成本保存刷新、文字/图片/视频试算及缺少持久化核验时拒绝预览。
 - 本轮未登录 VPS、未部署或改变生产价格；用户既有 `.env`、`.idea/vcs.xml` 和未跟踪需求文档保持。回滚旧 worker 前必须处理完成 v2 发布意图与不确定写入；新增成本历史保留。详情见 [成本工作台报告](docs/COST-PRICING-WORKFLOW-2026-09-15.md)。
 
-
 ## 成本定价工作台生产发布（2026-09-15，14:06 已上线）
 
 - operator 明确「做好并测试通过后直接上线」，持续授权已补入分支规则；上节未发布状态为开发阶段历史。`dev@b39681d` fast-forward 至 prod 并部署，镜像 `sha256:69896fe3eacebec7c3acc8b81ad65dc5fe1ef8c1e8dd967722f4399b58a37382`；后续文档提交不重建镜像。
@@ -1048,7 +1047,6 @@ LiteLLM 时代的 `LITELLM_*` 变量保留作 fallback,W3 D1 关停后可删。
 - 生产新入口仅执行预览：匿名401、管理员200；「GPT-特惠反代」当前影响7模型/下架1，15 Key/14 active，canApply=true、无阻止项、来源present。没有生产 apply，没有实际删分组、改价或收费。
 - 本次审计发现prepare的MySQL CLI默认latin1，JSON备份中文有损，导致6项raw hash与UTF-8驱动不一致。现场SQL二进制SHA与驱动raw一致，未发现价格差异；有损历史备份不可作为恢复源、未用于覆盖。四主价格字典已通过切换前候选无损canonical摘要与发布后API/数据库前后比较，附加中文配置仅能声称同CLI前后等价，不能泛称所有new-api选项逐字节不变。详情见 [功能与上线报告](docs/CHANNEL-GROUP-RETIREMENT-2026-09-15.md)。
 
-
 ## 分组删除同时撤销客户 Key（2026-09-16，09:29 已上线）
 
 - 按持续授权发布 `prod@fd595f4`；镜像 `sha256:acd88e3dd1799f7c483c0dc4792e3385bf941ee3af0c9bbe13d1057ef300e858`，后续纯文档提交不重建。分组删除现在先持久化任务、逐把核对客户/token/group并撤销，管理记录缺失且旧凭据拒绝才确认；全部确认后才清理本档模型关联。其他分组/租户、余额及历史保留。
@@ -1065,7 +1063,6 @@ LiteLLM 时代的 `LITELLM_*` 变量保留作 fallback,W3 D1 关停后可删。
 - 首轮生产克隆捕获平台固定UUID被RFC版本校验拒绝，增加平台常量精确兼容和三项红→绿回归；首轮未切换。最终320 files / 4639 passed / 1既有skipped，类型/Prisma/构建/格式通过，lint0 error/93既有warnings；实PG合成HTTP7场景、最终克隆23项通过。
 - 最终备份 `/opt/backups/silkroadai-portal/releases/orphan-auto-20260916-031652/`，环境备份 `.env.bak.orphan-auto-20260916-031652`，回滚标签 `rollback-orphan-auto-20260916-031652` 对应旧运行fd595f4。11:24:06–11:24:21仅切换Portal，13/25失败样本跨度8.424秒，restart0/日志error0，依赖未重启。
 - 50/50网络、13/13持久授权、两类UA模型列表200/4模型、价格双读通过。九表/环境/白名单及11项计费选项UTF-8原始字节保持；29模型35价格5分组21Key不变。真实自动预览200：`gpt特惠分组 → GPT-特惠反代`，15Key=14ready+1already_absent，canApply=true，来源current_keys（不冒称历史原名证明）。任务表仍0，未实际清理这批Key，14活动遗留Key仍保留。详见 `docs/ORPHAN-KEY-AUTO-DISCOVERY-2026-09-16.md`。
-
 
 ## 上游集成 2026-10-25（开发候选，发布结果另记）
 

@@ -740,3 +740,12 @@ feat(gemini-adapter): 官方表补 gemini-3.1-flash-lite-image(1K 1120 单档) (
 - 生产BILLING_SOURCE未设置（默认newapi）、NEWAPI_GROUP_SYNC_MODE=mirror、quota技术单位500000且人民币转换1；Batch/Image2.5为false，新增可选开关未设置（默认false）。
 - 发布使用prod确定提交的独立源码仓库/归档，保留原运行配置、网络、密钥与请求日志卷；仅切换Portal，不重启new-api/PostgreSQL/Redis/视频维护程序。旧镜像先打回滚标签、备份配置和数据库，并在生产备份克隆中验证两迁移后才切换。
 - 当前段记录的是发布前核对，不是上线成功声明；上线结果将单独追加。
+
+### 构建中断及原站恢复
+
+- 生产主机在候选镜像构建期间失联，未执行增量 migration、Nginx补丁或新应用切换。
+  经operator分别授权软重启和一次硬重启，原`release-2445fe88`已恢复。
+- 两套数据库完成恢复、全量导出与逐表/字段比较；原用户、余额、Key、目录、价格、渠道、充值、
+  订单、账本及计费配置均保持。新增错误日志quota为0，旧记录未丢失；任务/权限差异已单独核清。
+- 详细经过、证据及边界见[生产恢复记录](PRODUCTION-RECOVERY-2026-10-25.md)。后续改用独立原生
+  amd64构建环境，VPS只加载已验证镜像；当前仍不得将候选提交`5a0e613e`写成已上线。

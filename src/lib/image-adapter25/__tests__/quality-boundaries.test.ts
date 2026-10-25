@@ -21,7 +21,12 @@ function request(mode: ImageMode, format: 'json' | 'multipart') {
             mode === 'edits'
                 ? {
                       ...fields,
-                      images: [{ image_url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' }],
+                      images: [
+                          {
+                              image_url:
+                                  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+                          },
+                      ],
                   }
                 : fields;
         return new NextRequest(url, {

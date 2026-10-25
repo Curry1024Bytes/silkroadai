@@ -247,7 +247,6 @@ silkroadai/
 
 - [x] PR #468 — `auto` 时 **prompt 写明画幅优先于输入图比例** ✅(2026-09-16,#466 后续)— 客户反馈「昨天同样请求体出的是 16:9」:同一测试图 09-14 `auto` 落 ch186 出 2560×1440 4 次 / 1024² 6 次(ch186 对 `auto` 让模型自己定画布,模型约 4 成听 prompt「改为16：9」),#466 钉成输入图比例后这 4 成归零。现 `resolveGptImageEditsAutoSize` 优先级:`promptAspectRatio(prompt)`(认 `16:9` / 全角 `16：9` / `16比9`,数字前后不挨数字或小数点,两数 1-32、长短比 ≤ 2.5 排掉 `10:30` 时间与 3:1 以上)→ `aspectToPixelSize` 补尺寸;没写才跟随输入图。响应头 `auto->WxH;from=prompt`。显式 size / generations 仍不动。客户请求体不改即 100% 出 16:9。+8 测试,全套 3507 PASS。
 
-
 ### 企业门户「火山」渠道换上游 → 筷子开放平台(2026-08-17 上线)
 
 - [x] PR #386 merge `7cbb77f` + 部署 + 生产真机 smoke ✅ — volc region 上游从 new-api 形 provider(`ENTERPRISE_VOLC_VIDEO_*`)换成 **筷子 AI 开放平台** `https://aiopenapi.kuaizi.cn`。筷子对齐火山方舟官方 `contents/generations/tasks` 契约 → 对客方舟形接口近乎直通,**proxy 主干 / 计费 / 对客契约 / region 键全不变**,差异全吸收在适配器边界。
@@ -650,7 +649,6 @@ operator 随后重新安排上线，`prod@d3c60d3` 已于北京时间 2026-09-09
 ## 上游同步 2026-09-14
 
 本批 #459–#464 在 dev 集成，合并前报告见 `docs/UPSTREAM-SYNC-2026-09-14.md`。接入视频非 2xx 失败状态识别及未指定比例时不注入 16:9；we-token 三个 provider 的等待响应头超时改为 300 秒，其他 provider 默认 600 秒。Image 2.0 的 wetoken/wetokenasia 仅接受 low/medium；Image 2.5 新增两个带 quality 白名单的候选 provider，但入口继续默认关闭，Batch 也继续关闭。上游事故中的客户信息、渠道编号、server2/Caddy 与耗时测量不属于 LLmRoute 生产事实；不采用其部署叙述。本轮无 migration/env/依赖/服务器配置变化，只有 operator 安排本批上线后才部署 VPS。测试及最终分支状态以同步报告为准。
-
 
 ## 2026-10-25 上游集成边界
 

@@ -79,4 +79,5 @@ typecheck 通过、lint 0 error（100 个既有 warning）。
 23:59 运行一次性维护任务，`eligible=4 / applied=4`；new-api 原有 worker 随后将目标
 视频写入本地缓存。当前受影响链接已通过公网验收为 `200 video/mp4`，大小 2,714,929 字节；
 Portal、new-api、PostgreSQL、Redis 均未重启，没有执行 migration、生成请求或计费操作。
+
 - 临时测试 SSH 隧道及其本机配置已清理，用户原有隧道配置和未提交文件保留。
