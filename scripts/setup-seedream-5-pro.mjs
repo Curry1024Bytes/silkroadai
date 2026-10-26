@@ -27,7 +27,7 @@
  *   portal 容器里跑:docker exec -e SEEDREAM_INF_KEY=... silkroadai-portal-api-1 node scripts/setup-seedream-5-pro.mjs --apply)。
  *
  * === 改完必验(脚本做不了)===
- *   拿一把该组 key 真打一张 1K:log 的 other.model_ratio 应为 1、group_ratio 为 1、quota = 84150(¥0.1683)。
+ *   拿一把该组 key 真打一张 1K:log 的 other.model_ratio 应为 1、group_ratio 为 1、quota = 76500(¥0.153)。
  *   portal channel_groups 行(/keys 档位)由 UserUsableGroups 自动同步生成,已存在(2026-09-06)。
  */
 import { readFileSync } from 'node:fs';

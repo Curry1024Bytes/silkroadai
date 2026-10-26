@@ -101,13 +101,13 @@ function sentBody(call = 0): Record<string, unknown> {
 
 // ============ 定价 ============
 
-describe('seedream pricing (官方 USD × 0.55 × 6.8;500k quota = ¥1)', () => {
+describe('seedream pricing (官方 USD × 0.5 × 6.8;500k quota = ¥1)', () => {
     it('售价表逐 quota 精确', () => {
-        expect(sellQuota(0.045)).toBe(84_150); // 普通 ≤2.61MP  ¥0.1683
-        expect(sellQuota(0.09)).toBe(168_300); // 普通 >2.61MP  ¥0.3366
-        expect(sellQuota(0.0225)).toBe(42_075); // 图层 ≤2.61MP  ¥0.0842
-        expect(sellQuota(0.018)).toBe(33_660); // Flash 一口价 ¥0.06732
-        expect(sellQuota(0.003)).toBe(5_610); // 输入图第 2 张起 ¥0.01122
+        expect(sellQuota(0.045)).toBe(76_500); // 普通 ≤2.61MP  ¥0.153
+        expect(sellQuota(0.09)).toBe(153_000); // 普通 >2.61MP  ¥0.306
+        expect(sellQuota(0.0225)).toBe(38_250); // 图层 ≤2.61MP  ¥0.0765
+        expect(sellQuota(0.018)).toBe(30_600); // Flash 一口价 ¥0.0612
+        expect(sellQuota(0.003)).toBe(5_100); // 输入图第 2 张起 ¥0.0102
     });
     it('像素分档:阈值 le_261w(2,610,000),1615² 在 low 档内,1616² 即 high', () => {
         expect(pixelTier(1024, 1024)).toBe('low');
@@ -116,22 +116,22 @@ describe('seedream pricing (官方 USD × 0.55 × 6.8;500k quota = ¥1)', () => 
         expect(pixelTier(1615, 1615)).toBe('low');
         expect(pixelTier(1616, 1616)).toBe('high');
         expect(pixelTier(2048, 2048)).toBe('high');
-        expect(outputImageQuota(1536, 1536, false)).toBe(84_150);
-        expect(outputImageQuota(2048, 2048, false)).toBe(168_300);
-        expect(outputImageQuota(1020, 806, true)).toBe(42_075);
-        expect(outputImageQuota(2048, 2048, true)).toBe(84_150);
+        expect(outputImageQuota(1536, 1536, false)).toBe(76_500);
+        expect(outputImageQuota(2048, 2048, false)).toBe(153_000);
+        expect(outputImageQuota(1020, 806, true)).toBe(38_250);
+        expect(outputImageQuota(2048, 2048, true)).toBe(76_500);
     });
     it('输入图:第 1 张免费,第 2 张起按张', () => {
         expect(inputImagesQuota(0)).toBe(0);
         expect(inputImagesQuota(1)).toBe(0);
-        expect(inputImagesQuota(2)).toBe(5_610);
-        expect(inputImagesQuota(4)).toBe(16_830);
+        expect(inputImagesQuota(2)).toBe(5_100);
+        expect(inputImagesQuota(4)).toBe(15_300);
     });
     it('synthSeedreamUsage:input/output 即 quota,附 input_images / generated_images', () => {
         expect(synthSeedreamUsage({ outputs: [{ w: 1024, h: 1024 }], layer: false, inputImages: 2 })).toEqual({
-            input_tokens: 5_610,
-            output_tokens: 84_150,
-            total_tokens: 89_760,
+            input_tokens: 5_100,
+            output_tokens: 76_500,
+            total_tokens: 81_600,
             input_images: 2,
             generated_images: 1,
         });
@@ -145,14 +145,14 @@ describe('seedream pricing (官方 USD × 0.55 × 6.8;500k quota = ¥1)', () => 
             layer: true,
             inputImages: 1,
         });
-        expect(u.output_tokens).toBe(42_075 * 3);
+        expect(u.output_tokens).toBe(38_250 * 3);
         expect(u.input_tokens).toBe(0);
         expect(u.generated_images).toBe(3);
     });
-    it('Flash:一口价 33,660/张,不分尺寸 / 普通或图层,参考图不收费', () => {
-        expect(outputImageQuota(1024, 1024, false, SEEDREAM_FLASH_MODEL)).toBe(33_660);
-        expect(outputImageQuota(2496, 1664, false, SEEDREAM_FLASH_MODEL)).toBe(33_660);
-        expect(outputImageQuota(601, 1200, true, SEEDREAM_FLASH_MODEL)).toBe(33_660);
+    it('Flash:一口价 30,600/张,不分尺寸 / 普通或图层,参考图不收费', () => {
+        expect(outputImageQuota(1024, 1024, false, SEEDREAM_FLASH_MODEL)).toBe(30_600);
+        expect(outputImageQuota(2496, 1664, false, SEEDREAM_FLASH_MODEL)).toBe(30_600);
+        expect(outputImageQuota(601, 1200, true, SEEDREAM_FLASH_MODEL)).toBe(30_600);
         expect(inputImagesQuota(4, SEEDREAM_FLASH_MODEL)).toBe(0);
         expect(
             synthSeedreamUsage({
@@ -167,8 +167,8 @@ describe('seedream pricing (官方 USD × 0.55 × 6.8;500k quota = ¥1)', () => 
             }),
         ).toEqual({
             input_tokens: 0,
-            output_tokens: 33_660 * 3,
-            total_tokens: 33_660 * 3,
+            output_tokens: 30_600 * 3,
+            total_tokens: 30_600 * 3,
             input_images: 3,
             generated_images: 3,
         });
@@ -315,15 +315,15 @@ describe('handleSeedreamImage', () => {
         expect(j.data[0]).not.toHaveProperty('url');
         expect(j.usage).toEqual({
             input_tokens: 0,
-            output_tokens: 84_150,
-            total_tokens: 84_150,
+            output_tokens: 76_500,
+            total_tokens: 76_500,
             input_images: 0,
             generated_images: 1,
         });
         expect(sentBody().size).toBeUndefined(); // 缺省不传 size,上游默认 2K
     });
 
-    it('Flash:上游换 flash 模型名,model 回对客名,一口价计费(2K 也 33,660、参考图不收)', async () => {
+    it('Flash:上游换 flash 模型名,model 回对客名,一口价计费(2K 也 30,600、参考图不收)', async () => {
         upstreamOk([{ b64_json: pngB64(2496, 1664), size: '2496x1664', output_format: 'jpeg' }], {
             input_images: 3,
         });
@@ -336,8 +336,8 @@ describe('handleSeedreamImage', () => {
         expect(j.model).toBe(SEEDREAM_FLASH_MODEL);
         expect(j.usage).toEqual({
             input_tokens: 0,
-            output_tokens: 33_660,
-            total_tokens: 33_660,
+            output_tokens: 30_600,
+            total_tokens: 30_600,
             input_images: 3,
             generated_images: 1,
         });
@@ -348,16 +348,16 @@ describe('handleSeedreamImage', () => {
         const res = await handleSeedreamImage(req({ model: SEEDREAM_MODEL, prompt: 'x', size: '2K' }));
         const j = (await res.json()) as { data: Array<{ size: string }>; usage: { output_tokens: number } };
         expect(j.data[0].size).toBe('2048x2048');
-        expect(j.usage.output_tokens).toBe(168_300);
+        expect(j.usage.output_tokens).toBe(153_000);
     });
 
     it('输入图计费以上游 usage.input_images 为准(第 1 张免费)', async () => {
         upstreamOk([{ b64_json: pngB64(1024, 1024), size: '1024x1024' }], { input_images: 2 });
         const res = await handleSeedreamImage(req({ model: SEEDREAM_MODEL, prompt: 'x', image: ['a', 'b'] }));
         const j = (await res.json()) as { usage: Record<string, number> };
-        expect(j.usage.input_tokens).toBe(5_610);
+        expect(j.usage.input_tokens).toBe(5_100);
         expect(j.usage.input_images).toBe(2);
-        expect(j.usage.total_tokens).toBe(89_760);
+        expect(j.usage.total_tokens).toBe(81_600);
     });
 
     it('n>1 本层扇出(上游忽略 n):3 次上游调用、3 张、按张累计;n>10 钳到 10', async () => {
@@ -367,7 +367,7 @@ describe('handleSeedreamImage', () => {
         expect(fetchMock).toHaveBeenCalledTimes(3);
         expect(sentBody()).not.toHaveProperty('n');
         expect(j.data).toHaveLength(3);
-        expect(j.usage.output_tokens).toBe(84_150 * 3);
+        expect(j.usage.output_tokens).toBe(76_500 * 3);
         expect(j.usage.generated_images).toBe(3);
 
         fetchMock.mockClear();
@@ -389,7 +389,7 @@ describe('handleSeedreamImage', () => {
         expect(res.status).toBe(200);
         const j = (await res.json()) as { data: unknown[]; usage: Record<string, number> };
         expect(j.data).toHaveLength(1);
-        expect(j.usage.output_tokens).toBe(84_150);
+        expect(j.usage.output_tokens).toBe(76_500);
     });
 
     it('图层拆分:单次上游(n 无效)、image 单字符串、prompt 可空、扩展字段原样、按图层表计费', async () => {
@@ -430,7 +430,7 @@ describe('handleSeedreamImage', () => {
         expect(j.data[1].bounding_box).toEqual({ absolute: [1, 214, 1021, 1020], normalized: [1, 209, 996, 995] });
         expect(j.data[1].name).toBe('桌面与背景');
         expect(j.data[2].z_index).toBe(2);
-        expect(j.usage.output_tokens).toBe(42_075 + 42_075 + 84_150);
+        expect(j.usage.output_tokens).toBe(38_250 + 38_250 + 76_500);
         expect(j.usage.generated_images).toBe(3);
         expect(j.usage.input_tokens).toBe(0);
     });

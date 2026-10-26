@@ -142,7 +142,7 @@ const AGENTS: AgentSection[] = [
     {
         id: 'seedream-image',
         label: 'Seedream 5.0 Pro / Flash 生图 · 图层拆分',
-        blurb: '字节 Seedream 5.0 Pro / Flash — 文生 / 图生(≤10 参考图)/ 图层拆分(底图 + 透明 PNG 图层带坐标)/ 透明背景;OpenAI Images 兼容,按张计费,Flash ¥0.0673/张、Pro ¥0.17 起,需「seedream 5 pro」档 key。',
+        blurb: '字节 Seedream 5.0 Pro / Flash — 文生 / 图生(≤10 参考图)/ 图层拆分(底图 + 透明 PNG 图层带坐标)/ 透明背景;OpenAI Images 兼容 + 火山方舟原生 /api/v3 路径,按张计费,Flash ¥0.0612/张、Pro ¥0.15 起,需「seedream 5 pro」档 key。',
     },
 ];
 
@@ -4818,20 +4818,20 @@ curl "${OPENAI_BASE}/files/file-yyyy/content" \\
                             <tbody>
                                 <tr className="border-b border-brand-border">
                                     <td className="px-4 py-3 text-ink align-top">普通生图(文生 / 图生),每张</td>
-                                    <td className="px-4 py-3 text-navy font-medium align-top">¥0.1683</td>
-                                    <td className="px-4 py-3 text-navy font-medium align-top">¥0.3366</td>
+                                    <td className="px-4 py-3 text-navy font-medium align-top">¥0.153</td>
+                                    <td className="px-4 py-3 text-navy font-medium align-top">¥0.306</td>
                                 </tr>
                                 <tr className="border-b border-brand-border">
                                     <td className="px-4 py-3 text-ink align-top">
                                         图层拆分,每张输出(底图 + 每个图层各算 1 张)
                                     </td>
-                                    <td className="px-4 py-3 text-navy font-medium align-top">¥0.0842</td>
-                                    <td className="px-4 py-3 text-navy font-medium align-top">¥0.1683</td>
+                                    <td className="px-4 py-3 text-navy font-medium align-top">¥0.0765</td>
+                                    <td className="px-4 py-3 text-navy font-medium align-top">¥0.153</td>
                                 </tr>
                                 <tr>
                                     <td className="px-4 py-3 text-ink align-top">输入参考图</td>
                                     <td className="px-4 py-3 text-navy font-medium align-top" colSpan={2}>
-                                        第 1 张免费,第 2 张起每张 ¥0.0112
+                                        第 1 张免费,第 2 张起每张 ¥0.0102
                                     </td>
                                 </tr>
                             </tbody>
@@ -4839,7 +4839,7 @@ curl "${OPENAI_BASE}/files/file-yyyy/content" \\
                     </div>
                     <p className="m-0 mb-2 text-sm text-ink leading-relaxed">
                         <strong className="text-navy">Flash 价格</strong>(seedream-5-0-flash):每张{' '}
-                        <strong className="text-navy">¥0.0673</strong> 一口价 —— 不分尺寸(1K–2K
+                        <strong className="text-navy">¥0.0612</strong> 一口价 —— 不分尺寸(1K–2K
                         同价),图层拆分的底图与每个图层各算 1 张,输入参考图不收费。
                     </p>
                     <p className="m-0 mb-4 text-xs text-muted-ink leading-relaxed">
@@ -4979,6 +4979,36 @@ r = client.images.edit(
 print(r.data[0].url)`}</CodeBlock>
                     </div>
 
+                    <p className="m-0 mb-2 text-sm font-medium text-navy">E. 火山方舟官方原生路径(/api/v3)</p>
+                    <p className="m-0 mb-2 text-sm text-ink leading-relaxed">
+                        已按火山方舟 / BytePlus ModelArk 官方文档或官方 SDK 接入的,只需把 base_url 从{' '}
+                        <code className="font-mono text-xs">https://ark.cn-beijing.volces.com/api/v3</code> 换成{' '}
+                        <code className="font-mono text-xs">https://ai.silkroadai.io/api/v3</code>,api_key
+                        换成本站「seedream 5 pro」档 key, 请求体保持官方格式即可:{' '}
+                        <code className="font-mono text-xs">POST /api/v3/images/generations</code>。model
+                        可直接填官方模型 ID(
+                        <code className="font-mono text-xs">doubao-seedream-5-0-pro-260628</code> /{' '}
+                        <code className="font-mono text-xs">doubao-seedream-5-0-flash-260915</code>,
+                        <code className="font-mono text-xs">dola-</code> 前缀同样可用),也可填本站名{' '}
+                        <code className="font-mono text-xs">seedream-5-0-pro</code> /{' '}
+                        <code className="font-mono text-xs">seedream-5-0-flash</code>,响应里的 model
+                        原样回显你传的名字。 参数、价格、返回结构与上面完全一致;暂不支持{' '}
+                        <code className="font-mono text-xs">stream</code>(传 true 返回 400)。
+                    </p>
+                    <div className="mb-4">
+                        <CodeBlock language="bash">{`curl https://ai.silkroadai.io/api/v3/images/generations \\
+  -H "Authorization: Bearer $SILKROAD_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "doubao-seedream-5-0-flash-260915",
+    "prompt": "一只柴犬商品主图,纯白背景",
+    "image": ["https://example.com/ref.png"],
+    "size": "2K",
+    "response_format": "url",
+    "watermark": false
+  }'`}</CodeBlock>
+                    </div>
+
                     <p className="m-0 mb-2 text-sm font-medium text-navy">返回结果(图层拆分示例)</p>
                     <div className="mb-4">
                         <CodeBlock language="json">{`{
@@ -4993,7 +5023,7 @@ print(r.data[0].url)`}</CodeBlock>
       "name": "标题文字", "description": "黄色大号衬线标题"
     }
   ],
-  "usage": { "input_tokens": 0, "output_tokens": 168300, "total_tokens": 168300, "input_images": 1, "generated_images": 2 }
+  "usage": { "input_tokens": 0, "output_tokens": 114750, "total_tokens": 114750, "input_images": 1, "generated_images": 2 }
 }`}</CodeBlock>
                     </div>
 
