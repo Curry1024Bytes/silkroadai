@@ -78,6 +78,11 @@ export function ratioScale(eff: EffectiveGroupRatios, newapiGroup: string): numb
     return r / list;
 }
 
+/** 写路径改完某客户后立即失效其缓存(60s 内也要看到新值)。 */
+export function invalidateEffectiveRatioCache(newapiUserId: number): void {
+    cache.delete(newapiUserId);
+}
+
 /** 测试用。 */
 export function _resetEffectiveRatioCache(): void {
     cache.clear();

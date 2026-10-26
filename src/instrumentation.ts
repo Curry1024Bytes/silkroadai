@@ -80,6 +80,10 @@ export async function register() {
     const { startShadowMeterScheduler } = await import('@/lib/scheduler/shadow-meter');
     startShadowMeterScheduler();
 
+    // 2026-10-25:客户专属倍率对账(portal 留痕 vs new-api GroupGroupRatio 矩阵 / 用户分组),每小时。
+    const { startRatioReconcileScheduler } = await import('@/lib/scheduler/ratio-reconcile');
+    startRatioReconcileScheduler();
+
     // OpenAI Batch API 兼容 worker:领 /v1/batches 批任务,逐行 self-fetch 重放
     // /v1/images/* 同步管线(计费在那条腿,worker 零计费逻辑)。5s cadence + 重入守卫。
     const { startBatchScheduler } = await import('@/lib/batch/worker');

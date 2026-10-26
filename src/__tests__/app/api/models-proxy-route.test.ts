@@ -145,3 +145,44 @@ describe('models proxy route — 专属倍率(登录态以客户身份转发 pri
         expect(headers.Authorization).toBeUndefined();
     });
 });
+
+describe('models proxy route — 隐藏客户自己的用户分组(2026-10-26)', () => {
+    const CUSTOMER = { newapi_user_id: 1907, newapi_access_token: 'cust-token' };
+    const UPSTREAM = {
+        success: true,
+        data: [],
+        group_ratio: { default: 1.3, 'oai image 2': 1.7 },
+        // new-api GetUserUsableGroups 把用户自己的分组补进来,描述 "User group"
+        usable_group: {
+            default: '默认分组',
+            'oai image 2': 'oai image 2',
+            auto: 'auto',
+            'vip-c-db420d6d': 'User group',
+        },
+    };
+
+    it('logged-in pricing drops usable_group entries that have no group_ratio (the auto-added vip-<username>), keeps auto', async () => {
+        fetchMock.mockImplementation(async () => new Response(JSON.stringify(UPSTREAM), { status: 200 }));
+        mockGetCurrentUser.mockResolvedValue(CUSTOMER);
+        const res = await call('pricing');
+        const body = (await res.json()) as typeof UPSTREAM;
+        expect(Object.keys(body.usable_group).sort()).toEqual(['auto', 'default', 'oai image 2']);
+        expect(body.group_ratio).toEqual(UPSTREAM.group_ratio);
+        // 缓存里存的也是过滤后的
+        const again = await call('pricing');
+        expect(again.headers.get('x-silkroadai-cache')).toBe('hit');
+        expect(Object.keys(((await again.json()) as typeof UPSTREAM).usable_group)).not.toContain('vip-c-db420d6d');
+    });
+
+    it('anonymous pricing is passed through untouched', async () => {
+        fetchMock.mockImplementation(async () => new Response(JSON.stringify(UPSTREAM), { status: 200 }));
+        const res = await call('pricing');
+        expect(await res.json()).toEqual(UPSTREAM);
+    });
+
+    it('hideOwnUserGroup is a no-op on non-JSON / unexpected shapes', async () => {
+        const { hideOwnUserGroup } = await import('@/app/api/portal/models/[...path]/route');
+        expect(hideOwnUserGroup('not json')).toBe('not json');
+        expect(hideOwnUserGroup('{"success":true}')).toBe('{"success":true}');
+    });
+});

@@ -583,6 +583,8 @@ export interface TokenBudgetPatch {
     unlimited_quota?: boolean;
     remain_quota?: number;
     expired_time?: number;
+    /** 令牌分组;'' = 跟随用户分组(专属倍率写路径会把它钉成显式值,见 customer-ratio.ts)。 */
+    group?: string;
 }
 export async function updateTokenForCustomer(
     customerAuth: { accessToken: string; userId: number },

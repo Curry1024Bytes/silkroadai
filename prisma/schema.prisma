@@ -370,6 +370,10 @@ model User {
   // 通用 admin UI 待做(目前直接 DB 设值)。
   allowed_tier_keys String[] @default([])
 
+  // 2026-10-25 客户专属倍率:new-api 侧用户分组镜像(vip-<username> / default),写路径维护;null = 未管理过。
+  newapi_user_group String?
+  ratio_overrides   CustomerRatioOverride[]
+
   // ── 邀请码(W7 D4)──
   // 用户注册时填写的邀请码(可选)。register handler 仅在 isValidInviteCode
   // 通过时写入,所以读到非空值意味着「注册当时 INVITE_CODES env 里有」。
@@ -439,6 +443,26 @@ model User {
   @@index([role])
   @@index([tenant_id])
   @@map("users")
+}
+
+/// 客户专属倍率留痕(2026-10-25,PR-2 写路径)。
+/// 事实源仍是 new-api 的 GroupGroupRatio[用户分组][令牌分组] 矩阵,这里记"portal 认为应该是什么",
+/// 供后台面板显示、对账任务比对矩阵漂移(07-24 分组倍率双入口互相覆盖事故的教训)。
+model CustomerRatioOverride {
+  id           String  @id @default(uuid()) @db.Uuid
+  user_id      String  @db.Uuid
+  user         User    @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  newapi_group String
+  ratio        Decimal @db.Decimal(8, 4)
+  note         String?
+  updated_by   String? // portal admin user id;break-glass 时为 'break-glass'
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@unique([user_id, newapi_group])
+  @@index([user_id])
+  @@map("customer_ratio_overrides")
 }
 
 enum UserStatus {
@@ -1189,44 +1213,44 @@ model ImageTask {
 /// usage.completion_tokens × 费率(分辨率×是否含视频)扣费(billed 幂等)。兼作 dashboard
 /// 用量来源(该渠道不进 new-api 日志 → usage-aggregate 里 union 它)。
 model SeedanceVideoTask {
-  id             String    @id // 上游 cgt-... 任务 id(客户轮询也用它)
-  tenant_id      String?   @db.Uuid
-  user_id        String    @db.Uuid // portal User.id
-  newapi_user_id Int? // newapi 账本扣费用(override quota)
-  tier           String    @default("pool")
-  model          String // seedance2.0-pro-720p 等
-  resolution     String // 720p | 1080p | 4k
-  has_video      Boolean   @default(false) // 输入含参考视频 → 含视频费率档
-  duration       Int       @default(5)
-  tokens         BigInt? // 完成时 usage.completion_tokens
-  fail_reason    String? // 失败原因(上游 fail_reason / 过期终态;2026-07-24 企业权责透明)
-  cost_cny       Decimal?  @db.Decimal(20, 8) // 完成时算出的对客 ¥
-  billed         Boolean   @default(false) // 幂等:已扣费
-  status         String    @default("queued") // queued | completed | failed
-  created_at     DateTime  @default(now())
-  billed_at      DateTime?
+  id                      String    @id // 上游 cgt-... 任务 id(客户轮询也用它)
+  tenant_id               String?   @db.Uuid
+  user_id                 String    @db.Uuid // portal User.id
+  newapi_user_id          Int? // newapi 账本扣费用(override quota)
+  tier                    String    @default("pool")
+  model                   String // seedance2.0-pro-720p 等
+  resolution              String // 720p | 1080p | 4k
+  has_video               Boolean   @default(false) // 输入含参考视频 → 含视频费率档
+  duration                Int       @default(5)
+  tokens                  BigInt? // 完成时 usage.completion_tokens
+  fail_reason             String? // 失败原因(上游 fail_reason / 过期终态;2026-07-24 企业权责透明)
+  cost_cny                Decimal?  @db.Decimal(20, 8) // 完成时算出的对客 ¥
+  billed                  Boolean   @default(false) // 幂等:已扣费
+  status                  String    @default("queued") // queued | completed | failed
+  created_at              DateTime  @default(now())
+  billed_at               DateTime?
   // 提交参数回显(2026-08-06,火山方舟形查询响应逐字段对齐客户样例):轮询是独立请求,
   // 要回显 ratio/seed/generate_audio 必须落库。存量行 NULL → 响应用缺省(16:9 / 0 / true)。
-  ratio          String?
-  seed           BigInt?
-  generate_audio Boolean?
+  ratio                   String?
+  seed                    BigInt?
+  generate_audio          Boolean?
   // 火山官方查询响应 2026-09 新增回显字段(2026-09-23):xinhankr 上游完成态什么都不回显,
   // 只能提交时落库再回显;service-inference.ai 上游会回显,以上游真值优先。存量行 NULL → 缺省/省略。
-  safety_identifier String? // 终端用户标识(客户传了才回显)
-  output_format     String? // mp4 | mov
-  tools             Json? // 请求里的 tools 数组(未传/空 → 响应省略,对齐官方「未使用工具时不返回」)
+  safety_identifier       String? // 终端用户标识(客户传了才回显)
+  output_format           String? // mp4 | mov
+  tools                   Json? // 请求里的 tools 数组(未传/空 → 响应省略,对齐官方「未使用工具时不返回」)
   execution_expires_after Int? // 官方创建参数(任务超时阈值秒,[3600,259200]);客户传了就回显,没传响应给官方默认 172800
   // 样片模式(2026-10-08,火山官方 draft / draft_task):draft = 创建时传的布尔(NULL=没传=false);
   // draft_task_id = 正片引用的【客户】样片任务号(方舟真号不落库不对客)。
-  draft             Boolean?
-  draft_task_id     String?
+  draft                   Boolean?
+  draft_task_id           String?
   // 回调投递(2026-10-19):提交时记客户 callback_url(绝不转发上游,#271),终态由我们 POST 查询响应体。
   // callback_format = 提交入口(v1 | ark)决定回调体形;callback_status pending → sending → sent | failed;NULL = 没要回调。
-  callback_url     String?
-  callback_format  String?
-  callback_status  String?
-  callback_sent_at DateTime?
-  callback_error   String?
+  callback_url            String?
+  callback_format         String?
+  callback_status         String?
+  callback_sent_at        DateTime?
+  callback_error          String?
 
   @@index([user_id, created_at])
   @@index([billed])

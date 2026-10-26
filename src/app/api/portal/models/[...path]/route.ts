@@ -11,6 +11,12 @@
  *   GET /api/portal/models/perf-metrics             → GET {NEWAPI}/api/perf-metrics
  *
  * 60s 进程内缓存(按完整 query 为 key),new-api 抖动时回 stale(最多 10min)。
+ *
+ * 2026-10-26:以客户身份转发的 `pricing` 响应里,`usable_group` 会被 new-api 自动补上客户**自己的
+ * 用户分组**(`service.GetUserUsableGroups`:不在 UserUsableGroups 的用户分组补一项,描述 "User group")。
+ * 专属倍率客户的用户分组是 `vip-<username>`,没有渠道也不是可选档次,出现在广场筛选里只会让客户困惑 →
+ * 这里把 `usable_group` 里不在 `group_ratio`(= GroupRatio ∩ 可用)的项滤掉(`auto` 保留)。
+ * 匿名响应不动。
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth/session';
@@ -29,6 +35,27 @@ interface CacheEntry {
     body: string;
 }
 const cache = new Map<string, CacheEntry>();
+
+/** 见文件头 2026-10-26 段。解析失败原样返回。 */
+export function hideOwnUserGroup(body: string): string {
+    try {
+        const parsed = JSON.parse(body) as {
+            usable_group?: Record<string, unknown>;
+            group_ratio?: Record<string, unknown>;
+        };
+        if (!parsed || typeof parsed !== 'object' || !parsed.usable_group || !parsed.group_ratio) return body;
+        const ratio = parsed.group_ratio;
+        let changed = false;
+        for (const g of Object.keys(parsed.usable_group)) {
+            if (g === 'auto' || g in ratio) continue;
+            delete parsed.usable_group[g];
+            changed = true;
+        }
+        return changed ? JSON.stringify(parsed) : body;
+    } catch {
+        return body;
+    }
+}
 
 export async function GET(req: NextRequest, ctx: { params: Promise<{ path: string[] }> }) {
     const { path } = await ctx.params;
@@ -70,7 +97,8 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ path: strin
             signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
             cache: 'no-store',
         });
-        const body = await res.text();
+        let body = await res.text();
+        if (res.ok && actAs && sub === 'pricing') body = hideOwnUserGroup(body);
         if (res.ok) cache.set(key, { at: now, status: res.status, body });
         return new NextResponse(body, {
             status: res.status,

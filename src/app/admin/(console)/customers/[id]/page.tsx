@@ -5,6 +5,7 @@ import { useParams, useSearchParams } from 'next/navigation';
 import { useState, useEffect, useCallback, Suspense } from 'react';
 import PayPageLayout from '@/components/PayPageLayout';
 import { resolveLocale, type Locale } from '@/lib/locale';
+import { SpecialRatioPanel } from './special-ratio-panel';
 
 // ── Types (mirror /api/admin/customers/[id]) ──
 interface CustomerDetail {
@@ -827,6 +828,17 @@ function DetailContent() {
                             )}
                         </div>
                     </div>
+
+                    {/* 2026-10-25 客户专属倍率(superadmin;GroupGroupRatio 写路径) */}
+                    {id && (
+                        <SpecialRatioPanel
+                            customerId={id}
+                            isDark={isDark}
+                            card={card}
+                            sectionTitle={sectionTitle}
+                            muted={muted}
+                        />
+                    )}
 
                     {/* Keys */}
                     <div>
