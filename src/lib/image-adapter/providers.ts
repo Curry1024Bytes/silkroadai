@@ -59,6 +59,12 @@ export interface ImageProvider {
     transport?: AsyncTaskTransport;
     /** 同步直转路径拉取上游返图 url 时附加的请求头(如图床要求浏览器 UA,否则 403;suduma 的 img.911339.xyz)。 */
     imageFetchHeaders?: Readonly<Record<string, string>>;
+    /** true = 同步直转时【不发】`response_format`,让上游按缺省返图 url,适配器自己 `fetchImageAsB64` 拉图转 b64
+     *  (客户侧照旧只拿 b64 / 图床,上游 url 不外泄)。缺省(false)= 显式要 `b64_json`。
+     *  给「图本在 S3/CDN、要 b64 时上游先自己下图转码再经自家 nginx 回送」的上游用:ztyunjuan 2026-10-25 实测客户
+     *  一波 3K-4K 突发时,上游记完账到我方收完 ~20MB b64 体 p50 43s / max 101s(上游后台不计这段),
+     *  而缺省 url 指向 Firefly S3 加速域,server2 直拉 1.3MB 0.2s。 */
+    upstreamUrlResponse?: boolean;
 }
 
 /** 异步任务形上游的传输描述(2026-10-15 为 suduma 引入)。提交与轮询都带 new-api 透传来的 Authorization。 */
@@ -638,6 +644,8 @@ export const IMAGE_PROVIDERS: Record<string, ImageProvider> = {
         openAllTiers: true,
         upstreamQuality: { low: 'medium', high: 'medium' },
         noTransparentBackground: true,
+        // 2026-10-26:要 b64 时上游自己从 S3 下图转码经 nginx 回送,突发时这段 p50 43s;缺省返 Firefly S3 url 直拉 0.2s
+        upstreamUrlResponse: true,
     },
     yobox: {
         baseUrl: 'https://max.yoboxai.com',
