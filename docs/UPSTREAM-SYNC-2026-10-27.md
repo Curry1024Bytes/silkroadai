@@ -146,4 +146,14 @@ operator 随后授权按建议开始实施。最终合并提交为 `968e5099`，
 - `pnpm build`：通过，Next.js 生产构建生成 116 个静态页面/路由结果。
 - 全仓 `pnpm format:check` 仍会命中仓库已有的 outputs/需求文档格式差异；本轮没有格式化或改动这些无关文件。
 
-当前本地 `dev` 为 `968e5099`，`prod` 仍为 `86c982d8`；截至本报告更新时尚未执行生产数据库迁移或 VPS 部署。后续发布只能使用本次已验证的兼容性范围，不能因为上游 `main` 已包含 #570/#573 就把它们带入 `prod`。
+当前兼容性合并提交为 `968e5099`；部署使用的 `prod` 运行基线为 `43ee9ad1`，该提交随后仅增加了原生构建白名单，没有运行时代码变化。本段发布记录之后的提交也只更新文档。
+
+## 2026-10-27 生产发布结果
+
+- 使用 GitHub Actions 原生 Linux/amd64 构建 run `40469032401`，构建源为已验证运行时提交 `8f8a5144cdf3d790eb7f71e45393d7b073f0fc3b`。镜像归档 SHA256、18 层、架构、Prisma CLI、sharp 和镜像层环境文件扫描通过；本地下载后再次校验 `SHA256SUMS`。
+- VPS 当前镜像标签为 `silkroadai-portal-portal:release-8f8a5144`，远端 image ID 为 `sha256:a619994cdc4ee87aa6fcf589c0b67404c4d6985ee049fd6f79bd7dc4972402ee`，架构 `amd64`，revision label 为 `8f8a5144cdf3d790eb7f71e45393d7b073f0fc3b`。对应旧镜像回滚标签为 `silkroadai-portal-portal:rollback-upstream-20261027-080130`，旧 image ID 为 `sha256:6e2cea14a804a9aba934421f39a4d0f1b1e8e2c29cf929bc41649b2dab0b5c28`。
+- 发布前环境备份为 `/opt/silkroadai-portal/.env.bak.upstream-20261027-20261027-080130`，数据库备份为 `/opt/backups/silkroadai-portal/portal-20261027-080130.sql.gz`；两者权限均为 0600，数据库 gzip 校验通过。发布 release 目录为 `/opt/llmroute-releases/8f8a5144/`。
+- 本轮没有新增 migration。启动日志显示 88 migrations found、No pending migrations；容器 restart 0、OOMKilled=false。Portal→new-api `/api/status` 返回 200，Portal 内部 `/login` 返回 200。
+- 北京时间约 16:52:32 完成 Portal 切换，切换命令仅使用 `--no-deps --no-build --pull never`，new-api、Portal DB、new-api PostgreSQL 和 Redis 未重启。旧临时镜像标签和上传归档已清理；没有删除业务卷或回滚镜像。
+- 公网检查通过：主站 `/login`、`/models`、`/pricing` 为 200；`api.llmroute.club/v1/models` 假 Key 为 401；API `/login` 为 404；主站 `/api/v3/images/generations` 为 404；API CORS 预检为 204。没有执行收费模型生成、支付、OAuth 登录或改价。
+- 由于现役 VPS 根分区发布后剩余约 1.6 GB，未执行全局 Docker prune；后续重型构建仍禁止在该 VPS 上进行。
