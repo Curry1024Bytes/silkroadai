@@ -12,16 +12,21 @@
  * + ¥ 价格 + 可选 badge(推荐 / 旗舰)。
  */
 import { useState, useRef, useEffect } from 'react';
-import { IMAGE_MODEL_OPTIONS, type ImageModelOption, type ImageVendor } from '@/data/image-models';
+import {
+    IMAGE_MODEL_OPTIONS,
+    imageModelBadge,
+    imageModelBlurb,
+    type ImageModelOption,
+    type ImageVendor,
+} from '@/data/image-models';
+import type { Locale } from '@/lib/i18n';
+import { useLocale, useMessages } from '@/lib/i18n/client';
+import { imageMessages } from '@/lib/i18n/messages/image';
+
+type ModelSelectorMessages = (typeof imageMessages)['zh']['modelSelector'];
 
 /** Vendor 分组顺序 — foreign 系前排,domestic 后排。 */
 const VENDOR_ORDER: ImageVendor[] = ['OpenAI', 'Google', 'SiliconFlow', 'Other'];
-const VENDOR_LABEL: Record<ImageVendor, string> = {
-    OpenAI: 'OpenAI · 国外',
-    Google: 'Google · 国外',
-    SiliconFlow: 'SiliconFlow · 国内',
-    Other: '其它',
-};
 
 interface Props {
     value: string;
@@ -30,6 +35,8 @@ interface Props {
 }
 
 export function ModelSelector({ value, onChange, disabled = false }: Props) {
+    const m = useMessages(imageMessages).modelSelector;
+    const locale = useLocale();
     const [open, setOpen] = useState(false);
     const ref = useRef<HTMLDivElement | null>(null);
     const selected = IMAGE_MODEL_OPTIONS.find((m) => m.id === value) ?? IMAGE_MODEL_OPTIONS[0];
@@ -59,7 +66,7 @@ export function ModelSelector({ value, onChange, disabled = false }: Props) {
                     disabled ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer hover:border-brand-accent',
                 ].join(' ')}
             >
-                <Row option={selected} active />
+                <Row option={selected} active m={m} locale={locale} />
                 <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-ink" aria-hidden="true">
                     ▾
                 </span>
@@ -67,7 +74,7 @@ export function ModelSelector({ value, onChange, disabled = false }: Props) {
             {open && (
                 <ul
                     role="listbox"
-                    aria-label="选择图像生成模型"
+                    aria-label={m.listboxAria}
                     className={[
                         'absolute left-0 right-0 mt-1.5 z-20',
                         'bg-surface border border-brand-border shadow-card-strong rounded-xl',
@@ -83,18 +90,18 @@ export function ModelSelector({ value, onChange, disabled = false }: Props) {
                                 aria-hidden="true"
                                 className="px-4 pt-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-ink bg-paper-muted/40 border-b border-brand-border"
                             >
-                                {VENDOR_LABEL[vendor]}
+                                {m.vendors[vendor]}
                             </li>,
-                            ...items.map((m) => {
-                                const isActive = m.id === value;
+                            ...items.map((opt) => {
+                                const isActive = opt.id === value;
                                 return (
-                                    <li key={m.id}>
+                                    <li key={opt.id}>
                                         <button
                                             type="button"
                                             role="option"
                                             aria-selected={isActive}
                                             onClick={() => {
-                                                onChange(m.id);
+                                                onChange(opt.id);
                                                 setOpen(false);
                                             }}
                                             className={[
@@ -104,7 +111,7 @@ export function ModelSelector({ value, onChange, disabled = false }: Props) {
                                                 'border-b border-brand-border last:border-b-0',
                                             ].join(' ')}
                                         >
-                                            <Row option={m} active={isActive} />
+                                            <Row option={opt} active={isActive} m={m} locale={locale} />
                                         </button>
                                     </li>
                                 );
@@ -117,24 +124,38 @@ export function ModelSelector({ value, onChange, disabled = false }: Props) {
     );
 }
 
-function Row({ option, active }: { option: ImageModelOption; active: boolean }) {
+function Row({
+    option,
+    active,
+    m,
+    locale,
+}: {
+    option: ImageModelOption;
+    active: boolean;
+    m: ModelSelectorMessages;
+    locale: Locale;
+}) {
+    const badge = imageModelBadge(option, locale);
     return (
         <span className="block">
             <span className="flex items-baseline justify-between gap-3">
                 <span className="font-medium text-navy text-sm">{option.label}</span>
                 <span className="text-xs text-muted-ink tabular-nums whitespace-nowrap">
-                    ¥{option.pricePerImageCny.toFixed(2)}/张
+                    ¥{option.pricePerImageCny.toFixed(2)}
+                    {m.perImage}
                 </span>
             </span>
-            <span className="block mt-0.5 text-xs text-minor-ink leading-relaxed">{option.blurb}</span>
-            {option.badge ? (
+            <span className="block mt-0.5 text-xs text-minor-ink leading-relaxed">
+                {imageModelBlurb(option, locale)}
+            </span>
+            {badge ? (
                 <span
                     className={[
                         'inline-block mt-1 px-1.5 py-0.5 text-[10px] rounded',
                         active ? 'bg-brand-accent text-paper' : 'bg-paper-muted text-muted-ink',
                     ].join(' ')}
                 >
-                    {option.badge}
+                    {badge}
                 </span>
             ) : null}
         </span>

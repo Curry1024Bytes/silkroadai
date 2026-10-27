@@ -18,6 +18,9 @@ import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { FormError } from '@/components/ui/FormError';
+import { useLocale, useMessages } from '@/lib/i18n/client';
+import { intlLocale, type Locale } from '@/lib/i18n';
+import { resellerMessages } from '@/lib/i18n/messages/reseller';
 
 const MAX_CODES = 10;
 const COPIED_TOAST_MS = 1_500;
@@ -44,8 +47,8 @@ function landingUrl(code: string): string {
     return `${window.location.origin}/register?invite=${encodeURIComponent(code)}`;
 }
 
-function fmtCny(v: number): string {
-    return `¥${v.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+function fmtCny(v: number, locale: Locale): string {
+    return `¥${v.toLocaleString(intlLocale(locale), { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 function fireAnalytics(eventType: string, properties: Record<string, unknown>): void {
@@ -61,6 +64,9 @@ function fireAnalytics(eventType: string, properties: Record<string, unknown>): 
 
 export function CodesClient({ initialRows }: { initialRows: CodeRow[] }) {
     const router = useRouter();
+    const locale = useLocale();
+    const all = useMessages(resellerMessages);
+    const m = all.codes;
     const [rows, setRows] = useState<CodeRow[]>(initialRows);
     const [creating, setCreating] = useState(false);
     const [newCode, setNewCode] = useState('');
@@ -90,7 +96,7 @@ export function CodesClient({ initialRows }: { initialRows: CodeRow[] }) {
             setSubmitError(null);
             const trimmed = newCode.trim();
             if (!trimmed) {
-                setSubmitError('邀请码不能为空');
+                setSubmitError(m.emptyCode);
                 return;
             }
             setSubmitting(true);
@@ -111,7 +117,7 @@ export function CodesClient({ initialRows }: { initialRows: CodeRow[] }) {
                     message?: string;
                 } = await res.json().catch(() => ({}));
                 if (!res.ok) {
-                    throw new Error(body.message || body.error || `服务端错误 (${res.status})`);
+                    throw new Error(body.message || body.error || all.common.serverError(res.status));
                 }
                 if (body.id && body.code) {
                     fireAnalytics('reseller_code_created', { code: body.code, has_label: !!newLabel.trim() });
@@ -132,17 +138,17 @@ export function CodesClient({ initialRows }: { initialRows: CodeRow[] }) {
                     setCreating(false);
                 }
             } catch (err) {
-                setSubmitError(err instanceof Error ? err.message : '创建失败,请稍后重试');
+                setSubmitError(err instanceof Error ? err.message : m.createFailed);
             } finally {
                 setSubmitting(false);
             }
         },
-        [newCode, newLabel],
+        [newCode, newLabel, m, all],
     );
 
     const handleDelete = useCallback(
         async (id: string) => {
-            if (!confirm('确认删除该邀请码?\n\n已使用该码注册的客户不受影响,只是该码不能再用于新注册。')) return;
+            if (!confirm(m.deleteConfirm)) return;
             try {
                 const res = await fetch(`/api/portal/reseller/codes/${id}`, {
                     method: 'DELETE',
@@ -150,32 +156,32 @@ export function CodesClient({ initialRows }: { initialRows: CodeRow[] }) {
                 });
                 if (!res.ok) {
                     const body: { error?: string; message?: string } = await res.json().catch(() => ({}));
-                    throw new Error(body.message || body.error || `服务端错误 (${res.status})`);
+                    throw new Error(body.message || body.error || all.common.serverError(res.status));
                 }
                 setRows((prev) => prev.map((r) => (r.id === id ? { ...r, is_active: false } : r)));
                 router.refresh();
             } catch (err) {
-                alert(err instanceof Error ? err.message : '删除失败');
+                alert(err instanceof Error ? err.message : m.deleteFailed);
             }
         },
-        [router],
+        [router, m, all],
     );
 
     return (
         <Card>
             <CardHeader>
                 <div className="flex flex-col gap-1 flex-1">
-                    <p className="text-xs uppercase tracking-wider text-muted-ink m-0">代理后台</p>
-                    <CardTitle as="h1">邀请码管理</CardTitle>
+                    <p className="text-xs uppercase tracking-wider text-muted-ink m-0">{all.common.consoleKicker}</p>
+                    <CardTitle as="h1">{m.title}</CardTitle>
                 </div>
                 <Button onClick={() => setCreating((v) => !v)} disabled={atCap} type="button">
-                    {creating ? '取消' : `+ 创建邀请码 (${activeCount}/${MAX_CODES})`}
+                    {creating ? m.cancel : m.create(activeCount, MAX_CODES)}
                 </Button>
             </CardHeader>
             <CardContent className="space-y-4">
                 {atCap && (
                     <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 m-0">
-                        已达到最大 {MAX_CODES} 个活跃邀请码上限,请先删除不用的码再创建新码。
+                        {m.capWarning(MAX_CODES)}
                     </p>
                 )}
 
@@ -186,25 +192,23 @@ export function CodesClient({ initialRows }: { initialRows: CodeRow[] }) {
                     >
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                             <label className="block text-sm">
-                                <span className="block text-muted-ink mb-1">
-                                    邀请码 (3-20 字符,大写字母 / 数字 / 中划线)
-                                </span>
+                                <span className="block text-muted-ink mb-1">{m.codeLabel}</span>
                                 <input
                                     type="text"
                                     value={newCode}
                                     onChange={(e) => setNewCode(e.target.value.toUpperCase().slice(0, 20))}
-                                    placeholder="FRANK-WX-2026"
+                                    placeholder={m.codePlaceholder}
                                     className="w-full rounded-lg border border-brand-border bg-surface px-3 py-2 text-sm font-mono"
                                     autoFocus
                                 />
                             </label>
                             <label className="block text-sm">
-                                <span className="block text-muted-ink mb-1">备注 (可选,只你能看到)</span>
+                                <span className="block text-muted-ink mb-1">{m.labelLabel}</span>
                                 <input
                                     type="text"
                                     value={newLabel}
                                     onChange={(e) => setNewLabel(e.target.value.slice(0, 64))}
-                                    placeholder="朋友圈 5/24"
+                                    placeholder={m.labelPlaceholder}
                                     className="w-full rounded-lg border border-brand-border bg-surface px-3 py-2 text-sm"
                                 />
                             </label>
@@ -219,10 +223,10 @@ export function CodesClient({ initialRows }: { initialRows: CodeRow[] }) {
                                     setSubmitError(null);
                                 }}
                             >
-                                取消
+                                {m.cancel}
                             </Button>
                             <Button type="submit" disabled={submitting}>
-                                {submitting ? '创建中...' : '确认创建'}
+                                {submitting ? m.creating : m.confirmCreate}
                             </Button>
                         </div>
                     </form>
@@ -230,11 +234,11 @@ export function CodesClient({ initialRows }: { initialRows: CodeRow[] }) {
 
                 {rows.length === 0 ? (
                     <EmptyState
-                        title="还没有邀请码"
-                        body="创建你的第一个邀请码,然后把落地链接发给朋友 / 社群,他们注册后的所有充值都有你的佣金。"
+                        title={m.emptyTitle}
+                        body={m.emptyBody}
                         action={
                             <Button onClick={() => setCreating(true)} type="button">
-                                + 创建第一个邀请码
+                                {m.createFirst}
                             </Button>
                         }
                     />
@@ -255,13 +259,15 @@ export function CodesClient({ initialRows }: { initialRows: CodeRow[] }) {
                                             {r.label && <span className="text-xs text-muted-ink">· {r.label}</span>}
                                             {!r.is_active && (
                                                 <span className="text-xs px-2 py-0.5 rounded-full bg-paper-muted text-muted-ink">
-                                                    已停用
+                                                    {m.inactive}
                                                 </span>
                                             )}
                                         </div>
                                         <p className="text-xs text-muted-ink mt-1 mb-0">
-                                            {r.attributed_user_count} 位客户 · 累计 GMV{' '}
-                                            {fmtCny(r.total_attributed_gmv_cny)}
+                                            {m.rowStats(
+                                                r.attributed_user_count,
+                                                fmtCny(r.total_attributed_gmv_cny, locale),
+                                            )}
                                         </p>
                                     </div>
                                     <div className="flex gap-2 flex-wrap">
@@ -272,7 +278,7 @@ export function CodesClient({ initialRows }: { initialRows: CodeRow[] }) {
                                                 type="button"
                                                 onClick={() => handleCopy(r.code)}
                                             >
-                                                {copied === r.code ? '✓ 已复制' : '复制落地链接'}
+                                                {copied === r.code ? m.copied : m.copy}
                                             </Button>
                                         )}
                                         {r.is_active && (
@@ -282,7 +288,7 @@ export function CodesClient({ initialRows }: { initialRows: CodeRow[] }) {
                                                 type="button"
                                                 onClick={() => handleDelete(r.id)}
                                             >
-                                                删除
+                                                {m.delete}
                                             </Button>
                                         )}
                                     </div>

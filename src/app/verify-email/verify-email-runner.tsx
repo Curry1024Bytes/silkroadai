@@ -1,6 +1,8 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { useMessages } from '@/lib/i18n/client';
+import { authMessages } from '@/lib/i18n/messages/auth';
 
 type Status =
     | { phase: 'pending' }
@@ -8,6 +10,7 @@ type Status =
     | { phase: 'failure'; reason: 'invalid_or_expired_token' | 'network' | 'unknown' };
 
 export function VerifyEmailRunner({ token }: { token: string }) {
+    const m = useMessages(authMessages).verifyRunner;
     const [status, setStatus] = useState<Status>({ phase: 'pending' });
     // React 19 / dev StrictMode mounts effects twice. Guard the network call so
     // we don't burn the token on the first invisible run.
@@ -38,16 +41,16 @@ export function VerifyEmailRunner({ token }: { token: string }) {
     }, [token]);
 
     if (status.phase === 'pending') {
-        return <p style={{ color: '#5a6478' }}>正在验证邮箱…</p>;
+        return <p style={{ color: '#5a6478' }}>{m.pending}</p>;
     }
 
     if (status.phase === 'success') {
         return (
             <div>
-                <p style={{ color: 'var(--color-status-success-text)' }}>邮箱已验证 ✓</p>
+                <p style={{ color: 'var(--color-status-success-text)' }}>{m.success}</p>
                 <p>
                     <a href="/login" style={{ color: '#0a1535' }}>
-                        前往登录
+                        {m.goLogin}
                     </a>
                 </p>
             </div>
@@ -56,15 +59,15 @@ export function VerifyEmailRunner({ token }: { token: string }) {
 
     const msg =
         status.reason === 'invalid_or_expired_token'
-            ? '链接已失效或已使用,请重新申请验证邮件。'
+            ? m.invalidToken
             : status.reason === 'network'
-              ? '网络错误,请稍后重试。'
-              : '验证失败,请稍后重试。';
+              ? m.networkError
+              : m.failed;
 
     return (
         <div>
             <p style={{ color: 'var(--color-status-error-text)' }}>{msg}</p>
-            <p style={{ fontSize: 13, color: '#5a6478' }}>登录后可在客户后台重新发送验证邮件。</p>
+            <p style={{ fontSize: 13, color: '#5a6478' }}>{m.resendHint}</p>
         </div>
     );
 }

@@ -4,6 +4,8 @@
 import { describe, expect, it } from 'vitest';
 import { renderToString } from 'react-dom/server';
 import { AgreementDisclosure, RESELLER_AGREEMENT_POINTS } from '@/components/reseller/AgreementDisclosure';
+import { LocaleProvider } from '@/lib/i18n/client';
+import { resellerMessages } from '@/lib/i18n/messages/reseller';
 
 describe('<AgreementDisclosure />', () => {
     it('default-collapsed shows the toggle but not the agreement body', () => {
@@ -33,5 +35,36 @@ describe('<AgreementDisclosure />', () => {
         expect(joined).toContain('14 天');
         expect(joined).toContain('¥100');
         expect(joined).toContain('7 个工作日');
+    });
+});
+
+describe('<AgreementDisclosure /> (en)', () => {
+    it('renders the English toggle + 7 translated points', () => {
+        const html = renderToString(
+            <LocaleProvider locale="en">
+                <AgreementDisclosure defaultOpen />
+            </LocaleProvider>,
+        );
+        expect(html).toContain('Silk Road AI Reseller Agreement');
+        expect(html).toContain('Collapse');
+        for (const p of resellerMessages.en.agreement.points) {
+            // React escapes `&` in text nodes.
+            expect(html).toContain(p.title.replace('&', '&amp;'));
+        }
+        expect(html).not.toContain('佣金计算');
+        expect(html).not.toContain('展开');
+    });
+
+    it('English points keep the same count + critical numbers as the Chinese source', () => {
+        const en = resellerMessages.en.agreement.points;
+        expect(en).toHaveLength(RESELLER_AGREEMENT_POINTS.length);
+        const joined = en.map((p) => p.body).join(' ');
+        expect(joined).toContain('Bronze 10%');
+        expect(joined).toContain('Silver 15%');
+        expect(joined).toContain('Gold 20%');
+        expect(joined).toContain('24 months');
+        expect(joined).toContain('14 days');
+        expect(joined).toContain('¥100');
+        expect(joined).toContain('7 business days');
     });
 });

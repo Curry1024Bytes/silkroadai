@@ -18,6 +18,8 @@
  * generics, matching the DailyChart pattern.
  */
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Legend, CartesianGrid } from 'recharts';
+import { useMessages } from '@/lib/i18n/client';
+import { dashboardMessages } from '@/lib/i18n/messages/dashboard';
 
 export interface ModelConsumptionChartProps {
     byDay: Array<{ date: string; values: Record<string, number> }>;
@@ -28,6 +30,8 @@ export interface ModelConsumptionChartProps {
     cnyPerQuota: number;
 }
 
+/** Stack key the aggregator uses for the "everything else" bucket (server-side
+ *  constant, locale-independent). The legend / tooltip show `m.chart.other`. */
 const OTHER_LABEL = '其他';
 
 /** Stack colors. '其他' is always the muted grey; real models cycle the
@@ -56,6 +60,8 @@ function formatCnyTick(cny: number): string {
 interface TooltipPayloadEntry {
     value: number;
     dataKey: string;
+    /** Bar `name` (localized label for the 其他 bucket); falls back to dataKey. */
+    name?: string;
     color: string;
 }
 
@@ -64,11 +70,13 @@ function ChartTooltip({
     payload,
     label,
     cnyPerQuota,
+    totalLabel,
 }: {
     active?: boolean;
     payload?: TooltipPayloadEntry[];
     label?: string;
     cnyPerQuota: number;
+    totalLabel: string;
 }) {
     if (!active || !payload?.length) return null;
     // Skip zero stacks so a busy day's tooltip stays readable.
@@ -81,13 +89,13 @@ function ChartTooltip({
                 <p key={p.dataKey} className="m-0 flex items-center justify-between gap-3 text-muted-ink">
                     <span className="flex items-center gap-1.5">
                         <span className="inline-block h-2 w-2 rounded-sm" style={{ backgroundColor: p.color }} />
-                        <span className="font-mono">{p.dataKey}</span>
+                        <span className="font-mono">{p.name ?? p.dataKey}</span>
                     </span>
                     <span className="tabular-nums text-ink">¥{(p.value * cnyPerQuota).toFixed(2)}</span>
                 </p>
             ))}
             <p className="m-0 mt-1.5 flex justify-between gap-3 border-t border-brand-border pt-1.5 font-medium text-navy">
-                <span>合计</span>
+                <span>{totalLabel}</span>
                 <span className="tabular-nums">¥{(total * cnyPerQuota).toFixed(2)}</span>
             </p>
         </div>
@@ -95,10 +103,11 @@ function ChartTooltip({
 }
 
 export function ModelConsumptionChart({ byDay, models, cnyPerQuota }: ModelConsumptionChartProps) {
+    const m = useMessages(dashboardMessages).chart;
     if (byDay.length === 0 || models.length === 0) {
         return (
             <div className="flex h-[260px] items-center justify-center rounded-xl border border-brand-border bg-surface text-sm text-minor-ink shadow-card">
-                该时间段内暂无消耗数据
+                {m.empty}
             </div>
         );
     }
@@ -107,7 +116,7 @@ export function ModelConsumptionChart({ byDay, models, cnyPerQuota }: ModelConsu
     // so stacking is gap-free.
     const data = byDay.map((d) => {
         const row: Record<string, number | string> = { date: shortDate(d.date) };
-        for (const m of models) row[m] = d.values[m] ?? 0;
+        for (const model of models) row[model] = d.values[model] ?? 0;
         return row;
     });
 
@@ -134,12 +143,19 @@ export function ModelConsumptionChart({ byDay, models, cnyPerQuota }: ModelConsu
                         width={52}
                     />
                     <Tooltip
-                        content={<ChartTooltip cnyPerQuota={cnyPerQuota} />}
+                        content={<ChartTooltip cnyPerQuota={cnyPerQuota} totalLabel={m.total} />}
                         cursor={{ fill: 'rgba(148,163,184,0.12)' }}
                     />
                     <Legend wrapperStyle={{ fontSize: 12 }} iconType="square" />
-                    {models.map((m, idx) => (
-                        <Bar key={m} dataKey={m} stackId="quota" fill={colorFor(m, idx)} maxBarSize={48} />
+                    {models.map((model, idx) => (
+                        <Bar
+                            key={model}
+                            dataKey={model}
+                            name={model === OTHER_LABEL ? m.other : model}
+                            stackId="quota"
+                            fill={colorFor(model, idx)}
+                            maxBarSize={48}
+                        />
                     ))}
                 </BarChart>
             </ResponsiveContainer>

@@ -17,6 +17,8 @@
  * the standard ¥7 / 1.5× markup math.
  */
 
+import type { Locale } from '@/lib/i18n';
+
 /** Vendor 分类 — W8 D7(2026-05-26)替代旧的 endpoint 分类。国外厂商前排展示。 */
 export type ImageVendor = 'OpenAI' | 'Google' | 'SiliconFlow' | 'Other';
 
@@ -30,10 +32,14 @@ export interface ImageModelOption {
     pricePerImageUsd: number;
     /** Per-image CNY price (preview only — billing is server-side). */
     pricePerImageCny: number;
-    /** One-line marketing tag. */
+    /** One-line marketing tag (Chinese — site default). */
     blurb: string;
+    /** English edition of `blurb` (i18n). Pick with `imageModelBlurb()`. */
+    blurbEn: string;
     /** Optional badge for the dropdown card (e.g. `推荐` / `旗舰`). */
     badge?: string;
+    /** English edition of `badge`. Pick with `imageModelBadge()`. */
+    badgeEn?: string;
     /** Vendor 厂商分类(W8 D7 加入,替代 endpoint 分类)。 */
     vendor: ImageVendor;
     /** Foreign vs. domestic — foreign brands display first per operator
@@ -72,7 +78,9 @@ export const IMAGE_MODEL_OPTIONS: ImageModelOption[] = [
         pricePerImageUsd: 0.00714, // = ¥0.05 / 7
         pricePerImageCny: cny(0.00714), // ¥0.05
         blurb: 'OpenAI · GPT-5 多模态图像生成',
+        blurbEn: 'OpenAI · GPT-5 multimodal image generation',
         badge: '推荐',
+        badgeEn: 'Recommended',
         vendor: 'OpenAI',
         foreign: true,
     },
@@ -83,6 +91,7 @@ export const IMAGE_MODEL_OPTIONS: ImageModelOption[] = [
         pricePerImageUsd: 0.00279, // 0.039 × 0.5/7
         pricePerImageCny: cny(0.00279), // ¥0.02
         blurb: 'Google 2.5 Flash Image · 入门首选',
+        blurbEn: 'Google 2.5 Flash Image · best starter pick',
         vendor: 'Google',
         foreign: true,
     },
@@ -92,6 +101,7 @@ export const IMAGE_MODEL_OPTIONS: ImageModelOption[] = [
         pricePerImageUsd: 0.00714, // 0.10 × 0.5/7
         pricePerImageCny: cny(0.00714), // ¥0.05
         blurb: 'Google · 高速 · 中等成本',
+        blurbEn: 'Google · fast · mid-range cost',
         vendor: 'Google',
         foreign: true,
     },
@@ -101,6 +111,7 @@ export const IMAGE_MODEL_OPTIONS: ImageModelOption[] = [
         pricePerImageUsd: 0.00429, // 0.06 × 0.5/7
         pricePerImageCny: cny(0.00429), // ¥0.03
         blurb: 'Google Imagen 4 · 高画质',
+        blurbEn: 'Google Imagen 4 · high fidelity',
         vendor: 'Google',
         foreign: true,
     },
@@ -110,7 +121,9 @@ export const IMAGE_MODEL_OPTIONS: ImageModelOption[] = [
         pricePerImageUsd: 0.01336, // 0.187 × 0.5/7
         pricePerImageCny: cny(0.01336), // ¥0.09
         blurb: 'Google 旗舰图像 · 最高画质',
+        blurbEn: 'Google flagship image model · top quality',
         badge: '旗舰',
+        badgeEn: 'Flagship',
         vendor: 'Google',
         foreign: true,
     },
@@ -119,9 +132,9 @@ export const IMAGE_MODEL_OPTIONS: ImageModelOption[] = [
 export const DEFAULT_IMAGE_MODEL_ID = IMAGE_MODEL_OPTIONS[0].id;
 
 export const IMAGE_SIZE_OPTIONS = [
-    { id: '1024x1024', label: '正方形', sub: '1024×1024' },
-    { id: '1024x1792', label: '竖屏', sub: '1024×1792' },
-    { id: '1792x1024', label: '横屏', sub: '1792×1024' },
+    { id: '1024x1024', label: '正方形', labelEn: 'Square', sub: '1024×1024' },
+    { id: '1024x1792', label: '竖屏', labelEn: 'Portrait', sub: '1024×1792' },
+    { id: '1792x1024', label: '横屏', labelEn: 'Landscape', sub: '1792×1024' },
 ] as const;
 
 export const IMAGE_COUNT_OPTIONS = [1, 2, 3, 4] as const;
@@ -134,3 +147,32 @@ export const SAMPLE_PROMPTS: string[] = [
     '极简主义海报:抽象几何 · 暖色调 · 留白',
     '水彩风格的江南水乡 · 薄雾 · 黎明',
 ];
+
+/** English edition of `SAMPLE_PROMPTS` (same count / order). */
+export const SAMPLE_PROMPTS_EN: string[] = [
+    'A cyberpunk Silk Road: desert, neon lights, a camel caravan',
+    'An orange cat wearing a tiny crown, sitting in front of the red walls of the Forbidden City',
+    'Minimalist poster: abstract geometry · warm palette · generous white space',
+    'A watercolor Jiangnan water town · thin mist · dawn',
+];
+
+// ── Locale pickers (i18n) ─────────────────────────────────────────────
+// The Chinese fields above are the source of truth (existing tests assert
+// them); these helpers choose the English edition when the site locale is
+// `en`. Kept here so the data file owns both editions of every string.
+
+export function imageModelBlurb(m: ImageModelOption, locale: Locale): string {
+    return locale === 'en' ? m.blurbEn : m.blurb;
+}
+
+export function imageModelBadge(m: ImageModelOption, locale: Locale): string | undefined {
+    return locale === 'en' ? m.badgeEn : m.badge;
+}
+
+export function imageSizeLabel(s: (typeof IMAGE_SIZE_OPTIONS)[number], locale: Locale): string {
+    return locale === 'en' ? s.labelEn : s.label;
+}
+
+export function samplePrompts(locale: Locale): string[] {
+    return locale === 'en' ? SAMPLE_PROMPTS_EN : SAMPLE_PROMPTS;
+}

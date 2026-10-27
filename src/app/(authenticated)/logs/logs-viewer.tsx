@@ -10,6 +10,9 @@
  * 只读、无副作用地展示;时间一律按 Asia/Shanghai 显示(gotcha #20)。
  */
 import { useCallback, useEffect, useState } from 'react';
+import { intlLocale } from '@/lib/i18n';
+import { useLocale, useMessages } from '@/lib/i18n/client';
+import { logsMessages, type LogsMessages } from '@/lib/i18n/messages/logs';
 import { formatDuration, formatTokens, formatCacheTokens, callResult } from '../dashboard/format';
 import type { LogRow } from '@/app/api/portal/logs/route';
 
@@ -58,7 +61,11 @@ const INPUT =
 const HEAD = 'text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border text-muted-ink';
 const CELL = 'px-4 py-3 text-sm text-ink border-b border-brand-border';
 
+type TableMessages = LogsMessages['table'];
+
 export function LogsViewer() {
+    const m = useMessages(logsMessages);
+    const locale = useLocale();
     const dr = defaultRange();
     const [filters, setFilters] = useState<Filters>({
         start: dr.start,
@@ -77,38 +84,42 @@ export function LogsViewer() {
     const [error, setError] = useState<string | null>(null);
     const [expanded, setExpanded] = useState<number | null>(null);
 
-    const fetchLogs = useCallback(async (f: Filters, p: number) => {
-        setLoading(true);
-        setError(null);
-        const params = buildParams(f);
-        params.set('page', String(p));
-        try {
-            const res = await fetch(`/api/portal/logs?${params.toString()}`);
-            const data = (await res.json()) as {
-                rows?: LogRow[];
-                hasMore?: boolean;
-                error?: string;
-            };
-            if (data.error === 'account_not_provisioned') {
-                setError('账号尚未开通,暂无调用日志。');
+    const { notProvisioned, loadFailed } = m.errors;
+    const fetchLogs = useCallback(
+        async (f: Filters, p: number) => {
+            setLoading(true);
+            setError(null);
+            const params = buildParams(f);
+            params.set('page', String(p));
+            try {
+                const res = await fetch(`/api/portal/logs?${params.toString()}`);
+                const data = (await res.json()) as {
+                    rows?: LogRow[];
+                    hasMore?: boolean;
+                    error?: string;
+                };
+                if (data.error === 'account_not_provisioned') {
+                    setError(notProvisioned);
+                    setRows([]);
+                    setHasMore(false);
+                } else if (data.error) {
+                    setError(loadFailed);
+                    setRows([]);
+                    setHasMore(false);
+                } else {
+                    setRows(data.rows ?? []);
+                    setHasMore(!!data.hasMore);
+                }
+            } catch {
+                setError(loadFailed);
                 setRows([]);
                 setHasMore(false);
-            } else if (data.error) {
-                setError('加载失败,请稍后重试。');
-                setRows([]);
-                setHasMore(false);
-            } else {
-                setRows(data.rows ?? []);
-                setHasMore(!!data.hasMore);
+            } finally {
+                setLoading(false);
             }
-        } catch {
-            setError('加载失败,请稍后重试。');
-            setRows([]);
-            setHasMore(false);
-        } finally {
-            setLoading(false);
-        }
-    }, []);
+        },
+        [notProvisioned, loadFailed],
+    );
 
     useEffect(() => {
         void fetchLogs(applied, page);
@@ -127,7 +138,7 @@ export function LogsViewer() {
             <div className="mb-4 rounded-xl border border-brand-border bg-surface p-4 shadow-card">
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
                     <label className="flex flex-col gap-1 text-xs text-muted-ink">
-                        起始时间
+                        {m.filters.start}
                         <input
                             type="datetime-local"
                             className={INPUT}
@@ -136,7 +147,7 @@ export function LogsViewer() {
                         />
                     </label>
                     <label className="flex flex-col gap-1 text-xs text-muted-ink">
-                        结束时间
+                        {m.filters.end}
                         <input
                             type="datetime-local"
                             className={INPUT}
@@ -145,37 +156,37 @@ export function LogsViewer() {
                         />
                     </label>
                     <label className="flex flex-col gap-1 text-xs text-muted-ink">
-                        Request ID
+                        {m.filters.requestId}
                         <input
                             className={INPUT}
-                            placeholder="精确匹配"
+                            placeholder={m.filters.requestIdPlaceholder}
                             value={filters.requestId}
                             onChange={(ev) => set('requestId', ev.target.value)}
                         />
                     </label>
                     <label className="flex flex-col gap-1 text-xs text-muted-ink">
-                        令牌名(Key)
+                        {m.filters.token}
                         <input
                             className={INPUT}
-                            placeholder="如 prod-openai"
+                            placeholder={m.filters.tokenPlaceholder}
                             value={filters.token}
                             onChange={(ev) => set('token', ev.target.value)}
                         />
                     </label>
                     <label className="flex flex-col gap-1 text-xs text-muted-ink">
-                        模型名
+                        {m.filters.model}
                         <input
                             className={INPUT}
-                            placeholder="如 gpt-image-2"
+                            placeholder={m.filters.modelPlaceholder}
                             value={filters.model}
                             onChange={(ev) => set('model', ev.target.value)}
                         />
                     </label>
                     <label className="flex flex-col gap-1 text-xs text-muted-ink">
-                        渠道 ID
+                        {m.filters.channel}
                         <input
                             className={INPUT}
-                            placeholder="数字"
+                            placeholder={m.filters.channelPlaceholder}
                             inputMode="numeric"
                             value={filters.channel}
                             onChange={(ev) => set('channel', ev.target.value)}
@@ -190,10 +201,10 @@ export function LogsViewer() {
                             // Content-Disposition 直接下载,不离开本页。
                             window.location.assign(`/api/portal/logs/export?${buildParams(filters).toString()}`);
                         }}
-                        title="按当前过滤条件导出 CSV(Excel 可直接打开)"
+                        title={m.filters.exportTitle}
                         className="inline-flex h-9 items-center rounded-lg border border-brand-border bg-surface px-4 text-sm font-medium text-navy transition-colors hover:bg-paper-muted"
                     >
-                        导出 CSV
+                        {m.filters.exportCsv}
                     </button>
                     <button
                         type="button"
@@ -201,7 +212,7 @@ export function LogsViewer() {
                         disabled={loading}
                         className="inline-flex h-9 items-center rounded-lg bg-navy px-5 text-sm font-medium text-paper transition-colors hover:bg-navy-strong disabled:opacity-50"
                     >
-                        {loading ? '查询中…' : '搜索'}
+                        {loading ? m.filters.searching : m.filters.search}
                     </button>
                 </div>
             </div>
@@ -213,21 +224,21 @@ export function LogsViewer() {
                 </div>
             ) : rows.length === 0 && !loading ? (
                 <div className="rounded-xl border border-brand-border bg-surface px-4 py-8 text-center text-sm text-minor-ink shadow-card">
-                    该时间段 / 条件下暂无调用记录
+                    {m.empty}
                 </div>
             ) : (
                 <div className="overflow-x-auto rounded-xl border border-brand-border bg-surface shadow-card">
                     <table className="w-full border-collapse">
                         <thead>
                             <tr className="bg-paper-muted">
-                                <th className={HEAD}>时间</th>
-                                <th className={HEAD}>模型</th>
-                                <th className={HEAD}>Key</th>
-                                <th className={HEAD}>Request ID</th>
-                                <th className={`${HEAD} text-right`}>时长</th>
-                                <th className={`${HEAD} text-right`}>Tokens(输入/输出)</th>
-                                <th className={`${HEAD} text-right`}>消耗</th>
-                                <th className={`${HEAD} text-center`}>结果</th>
+                                <th className={HEAD}>{m.table.colTime}</th>
+                                <th className={HEAD}>{m.table.colModel}</th>
+                                <th className={HEAD}>{m.table.colKey}</th>
+                                <th className={HEAD}>{m.table.colRequestId}</th>
+                                <th className={`${HEAD} text-right`}>{m.table.colDuration}</th>
+                                <th className={`${HEAD} text-right`}>{m.table.colTokens}</th>
+                                <th className={`${HEAD} text-right`}>{m.table.colCost}</th>
+                                <th className={`${HEAD} text-center`}>{m.table.colResult}</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -241,6 +252,8 @@ export function LogsViewer() {
                                         isError={isError}
                                         isOpen={isOpen}
                                         onToggle={() => setExpanded(isOpen ? null : row.id)}
+                                        m={m.table}
+                                        intl={intlLocale(locale)}
                                     />
                                 );
                             })}
@@ -252,7 +265,8 @@ export function LogsViewer() {
             {/* 分页(服务端)*/}
             <div className="mt-3 flex items-center justify-between gap-3 text-xs text-muted-ink">
                 <span className="tabular-nums">
-                    第 {page} 页{loading ? ' · 加载中…' : ''}
+                    {m.pager.page(page)}
+                    {loading ? m.pager.loading : ''}
                 </span>
                 <div className="flex gap-2">
                     <button
@@ -261,7 +275,7 @@ export function LogsViewer() {
                         disabled={page === 1 || loading}
                         className="rounded-lg border border-brand-border bg-surface px-3 py-1.5 text-xs text-navy transition-colors hover:bg-paper-muted disabled:cursor-not-allowed disabled:text-minor-ink disabled:hover:bg-surface"
                     >
-                        上一页
+                        {m.pager.prev}
                     </button>
                     <button
                         type="button"
@@ -269,7 +283,7 @@ export function LogsViewer() {
                         disabled={!hasMore || loading}
                         className="rounded-lg border border-brand-border bg-surface px-3 py-1.5 text-xs text-navy transition-colors hover:bg-paper-muted disabled:cursor-not-allowed disabled:text-minor-ink disabled:hover:bg-surface"
                     >
-                        下一页
+                        {m.pager.next}
                     </button>
                 </div>
             </div>
@@ -277,7 +291,7 @@ export function LogsViewer() {
     );
 }
 
-function RequestIdCell({ value }: { value: string }) {
+function RequestIdCell({ value, m }: { value: string; m: TableMessages }) {
     const [copied, setCopied] = useState(false);
     if (!value) return <span className="text-minor-ink">—</span>;
     return (
@@ -296,10 +310,10 @@ function RequestIdCell({ value }: { value: string }) {
                         /* clipboard unavailable — no-op */
                     }
                 }}
-                title="复制完整 Request ID"
+                title={m.copyFullRequestId}
                 className="shrink-0 rounded border border-brand-border bg-surface px-1.5 py-0.5 text-[10px] text-muted-ink transition-colors hover:bg-paper-muted"
             >
-                {copied ? '已复制' : '复制'}
+                {copied ? m.copied : m.copy}
             </button>
         </span>
     );
@@ -310,17 +324,23 @@ function LogRowItem({
     isError,
     isOpen,
     onToggle,
+    m,
+    intl,
 }: {
     row: LogRow;
     isError: boolean;
     isOpen: boolean;
     onToggle: () => void;
+    m: TableMessages;
+    /** `Intl` tag for the time cell (always paired with Asia/Shanghai — gotcha #20). */
+    intl: string;
 }) {
+    const locale = useLocale();
     return (
         <>
             <tr className={isOpen ? 'bg-paper-muted/40' : undefined}>
                 <td className={`${CELL} whitespace-nowrap text-muted-ink`}>
-                    {new Date(row.createdAt * 1000).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}
+                    {new Date(row.createdAt * 1000).toLocaleString(intl, { timeZone: 'Asia/Shanghai' })}
                 </td>
                 <td className={`${CELL} font-mono text-xs`}>{row.model || '<unknown>'}</td>
                 <td className={`${CELL} text-xs`}>
@@ -332,7 +352,7 @@ function LogRowItem({
                     </span>
                 </td>
                 <td className={CELL}>
-                    <RequestIdCell value={row.requestId} />
+                    <RequestIdCell value={row.requestId} m={m} />
                 </td>
                 <td className={`${CELL} text-right tabular-nums text-muted-ink`}>{formatDuration(row.useTimeMs)}</td>
                 <td className={`${CELL} text-right tabular-nums text-muted-ink`}>
@@ -343,6 +363,7 @@ function LogRowItem({
                             row.cacheReadTokens,
                             row.cacheWriteTokens,
                             row.perImageBilled,
+                            locale,
                         );
                         return cacheText ? (
                             <span className="mt-0.5 block text-[11px] leading-tight text-minor-ink">{cacheText}</span>
@@ -355,18 +376,18 @@ function LogRowItem({
                         <button
                             type="button"
                             onClick={onToggle}
-                            title={row.content || '调用失败'}
+                            title={row.content || m.callFailed}
                             aria-expanded={isOpen}
                             className="inline-flex items-center gap-1 rounded border border-status-error-border bg-status-error-bg px-2 py-0.5 text-xs font-medium text-status-error-text"
                         >
-                            失败
+                            {m.failed}
                             <span aria-hidden className="text-[10px]">
                                 {isOpen ? '▲' : '▼'}
                             </span>
                         </button>
                     ) : (
                         <span className="inline-flex items-center rounded border border-status-success-border bg-status-success-bg px-2 py-0.5 text-xs font-medium text-status-success-text">
-                            成功
+                            {m.success}
                         </span>
                     )}
                 </td>
@@ -374,9 +395,9 @@ function LogRowItem({
             {isError && isOpen && (
                 <tr className="bg-paper-muted/40">
                     <td colSpan={8} className="border-b border-brand-border px-4 py-2.5">
-                        <p className="m-0 mb-1 text-xs font-medium text-status-error-text">错误详情</p>
+                        <p className="m-0 mb-1 text-xs font-medium text-status-error-text">{m.errorDetail}</p>
                         <pre className="m-0 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-paper-muted px-3 py-2 font-mono text-xs text-ink">
-                            {row.content || '(无错误详情)'}
+                            {row.content || m.noErrorDetail}
                         </pre>
                     </td>
                 </tr>

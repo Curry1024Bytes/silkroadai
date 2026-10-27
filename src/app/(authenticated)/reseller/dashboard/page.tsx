@@ -29,9 +29,14 @@ import { tierProgress, type ResellerTierKey } from '@/lib/reseller/tier';
 import { TierBadge } from '@/components/reseller/TierBadge';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
 import { DashboardViewBeacon } from './view-beacon';
+import { getLocale } from '@/lib/i18n/server';
+import { intlLocale, pickMessages, type Locale } from '@/lib/i18n';
+import { resellerMessages } from '@/lib/i18n/messages/reseller';
 
 export const dynamic = 'force-dynamic';
-export const metadata = { title: '代理后台 — Silk Road AI' };
+export async function generateMetadata() {
+    return { title: pickMessages(resellerMessages, await getLocale()).meta.dashboardTitle };
+}
 
 async function getSessionUser() {
     const h = await headers();
@@ -52,8 +57,8 @@ function currentMonthBounds(now: Date = new Date()): { start: Date; end: Date } 
     };
 }
 
-function fmtCny(v: number): string {
-    return `¥${v.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+function fmtCny(v: number, locale: Locale): string {
+    return `¥${v.toLocaleString(intlLocale(locale), { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 export default async function ResellerDashboardPage() {
@@ -67,7 +72,7 @@ export default async function ResellerDashboardPage() {
     if (!reseller) redirect('/reseller');
 
     const { start, end } = currentMonthBounds();
-    const [monthAgg, customersCount, activeCodesCount, lastSettlement] = await Promise.all([
+    const [monthAgg, customersCount, activeCodesCount, lastSettlement, locale] = await Promise.all([
         prisma.resellerCommission.groupBy({
             by: ['status'],
             where: { reseller_id: reseller.id, created_at: { gte: start, lt: end } },
@@ -80,7 +85,10 @@ export default async function ResellerDashboardPage() {
             orderBy: { period_month: 'desc' },
             select: { period_month: true, status: true, total_commission: true, paid_at: true },
         }),
+        getLocale(),
     ]);
+    const m = pickMessages(resellerMessages, locale).dashboard;
+    const cny = (v: number) => fmtCny(v, locale);
 
     let monthGmv = 0;
     let monthPending = 0;
@@ -105,24 +113,25 @@ export default async function ResellerDashboardPage() {
                 <CardHeader>
                     <div className="flex flex-col sm:flex-row sm:items-center gap-3">
                         <div className="flex-1">
-                            <p className="text-xs uppercase tracking-wider text-muted-ink m-0">代理身份</p>
-                            <CardTitle as="h1">代理后台</CardTitle>
+                            <p className="text-xs uppercase tracking-wider text-muted-ink m-0">{m.kicker}</p>
+                            <CardTitle as="h1">{m.title}</CardTitle>
                         </div>
-                        <TierBadge tier={reseller.tier as ResellerTierKey} size="md" />
+                        <TierBadge tier={reseller.tier as ResellerTierKey} size="md" locale={locale} />
                     </div>
                 </CardHeader>
                 <CardContent className="space-y-4">
                     <div className="flex items-baseline gap-3">
-                        <p className="text-3xl font-semibold text-navy m-0">{fmtCny(cumulativeGmv)}</p>
-                        <span className="text-sm text-muted-ink">累计 GMV</span>
+                        <p className="text-3xl font-semibold text-navy m-0">{cny(cumulativeGmv)}</p>
+                        <span className="text-sm text-muted-ink">{m.cumulativeGmv}</span>
                     </div>
                     {progress ? (
                         <div className="space-y-2">
                             <div className="flex items-center justify-between text-xs text-muted-ink">
                                 <span>
-                                    距离下一档 <strong className="text-navy">{progress.next.tier.toUpperCase()}</strong>
+                                    {m.nextTierBefore}
+                                    <strong className="text-navy">{progress.next.tier.toUpperCase()}</strong>
                                 </span>
-                                <span>{fmtCny(progress.gmvNeededToNextCny)} 待累积</span>
+                                <span>{m.toAccumulate(cny(progress.gmvNeededToNextCny))}</span>
                             </div>
                             <div className="h-2 w-full bg-paper-muted rounded-full overflow-hidden">
                                 <div
@@ -146,7 +155,7 @@ export default async function ResellerDashboardPage() {
                             </div>
                         </div>
                     ) : (
-                        <p className="text-sm text-muted-ink m-0">🎉 已达最高档 Gold,享受 20% 费率</p>
+                        <p className="text-sm text-muted-ink m-0">{m.topTier}</p>
                     )}
                 </CardContent>
             </Card>
@@ -155,20 +164,20 @@ export default async function ResellerDashboardPage() {
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <Card>
                     <CardContent>
-                        <p className="text-xs uppercase tracking-wider text-muted-ink m-0">本月 GMV</p>
-                        <p className="text-2xl font-semibold text-navy mt-1 mb-0">{fmtCny(monthGmv)}</p>
+                        <p className="text-xs uppercase tracking-wider text-muted-ink m-0">{m.monthGmv}</p>
+                        <p className="text-2xl font-semibold text-navy mt-1 mb-0">{cny(monthGmv)}</p>
                     </CardContent>
                 </Card>
                 <Card>
                     <CardContent>
-                        <p className="text-xs uppercase tracking-wider text-muted-ink m-0">本月待确认佣金</p>
-                        <p className="text-2xl font-semibold text-amber-700 mt-1 mb-0">{fmtCny(monthPending)}</p>
+                        <p className="text-xs uppercase tracking-wider text-muted-ink m-0">{m.monthPending}</p>
+                        <p className="text-2xl font-semibold text-amber-700 mt-1 mb-0">{cny(monthPending)}</p>
                     </CardContent>
                 </Card>
                 <Card>
                     <CardContent>
-                        <p className="text-xs uppercase tracking-wider text-muted-ink m-0">本月可结算佣金</p>
-                        <p className="text-2xl font-semibold text-emerald-700 mt-1 mb-0">{fmtCny(monthConfirmed)}</p>
+                        <p className="text-xs uppercase tracking-wider text-muted-ink m-0">{m.monthConfirmed}</p>
+                        <p className="text-2xl font-semibold text-emerald-700 mt-1 mb-0">{cny(monthConfirmed)}</p>
                     </CardContent>
                 </Card>
             </div>
@@ -177,29 +186,29 @@ export default async function ResellerDashboardPage() {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <QuickAction
                     href="/reseller/codes"
-                    title={`邀请码 (${activeCodesCount})`}
-                    body="管理你的邀请码,复制落地链接分享"
+                    title={m.codesTitle(activeCodesCount)}
+                    body={m.codesBody}
                     emoji="🎟️"
                 />
                 <QuickAction
                     href="/reseller/customers"
-                    title={`客户列表 (${customersCount})`}
-                    body="查看通过你邀请码注册的客户"
+                    title={m.customersTitle(customersCount)}
+                    body={m.customersBody}
                     emoji="👥"
                 />
                 <QuickAction
                     href="/reseller/commissions"
-                    title="佣金明细"
-                    body="按状态 / 月份筛选,导出对账"
+                    title={m.commissionsTitle}
+                    body={m.commissionsBody}
                     emoji="💰"
                 />
                 <QuickAction
                     href="/reseller/settlement"
-                    title="结算"
+                    title={m.settlementTitle}
                     body={
                         lastSettlement
-                            ? `上一笔 ${lastSettlement.period_month} · ${lastSettlement.status}`
-                            : '尚无结算记录'
+                            ? m.lastSettlement(lastSettlement.period_month, lastSettlement.status)
+                            : m.noSettlement
                     }
                     emoji="🏦"
                 />

@@ -1,25 +1,24 @@
-import type { Metadata } from 'next';
 import { BackButton } from '@/components/BackButton';
+import { getLocale } from '@/lib/i18n/server';
+import { pickMessages } from '@/lib/i18n';
+import { toolsMessages } from '@/lib/i18n/messages/tools';
 import { SeedanceTool } from './seedance-tool';
 
-export const metadata: Metadata = {
-    title: 'Seedance 视频测试工具 · Silk Road AI',
-    description:
-        '填入你的 API Key,在线测试 Seedance 视频生成 —— 支持文生 / 图生 / 首尾帧 / 多图 / 参考音频,覆盖海外满血与逆向低价全部模型。',
-};
+export async function generateMetadata() {
+    const m = pickMessages(toolsMessages, await getLocale());
+    return { title: m.seedance.metaTitle, description: m.seedance.metaDescription };
+}
 
-export default function SeedanceToolPage() {
+export default async function SeedanceToolPage() {
+    const m = pickMessages(toolsMessages, await getLocale());
     return (
         <main className="min-h-screen bg-paper text-ink">
             <div className="mx-auto max-w-3xl px-5 py-8">
                 <BackButton className="text-sm text-brand-accent hover:underline cursor-pointer border-0 bg-transparent p-0">
-                    ← 返回
+                    {m.shared.back}
                 </BackButton>
-                <h1 className="m-0 mt-4 mb-1 text-2xl font-semibold text-navy">Seedance 视频测试工具</h1>
-                <p className="m-0 mb-6 text-sm text-muted-ink leading-relaxed">
-                    填入你的 API Key,选模型 + 玩法,直接在线生视频测试。支持文生 / 图生 / 首尾帧 / 多图 / 参考音频,
-                    覆盖你这把 key 能用的所有 Seedance 模型。Key 仅用于本次调用、不保存。
-                </p>
+                <h1 className="m-0 mt-4 mb-1 text-2xl font-semibold text-navy">{m.seedance.title}</h1>
+                <p className="m-0 mb-6 text-sm text-muted-ink leading-relaxed">{m.seedance.intro}</p>
                 <SeedanceTool />
             </div>
         </main>

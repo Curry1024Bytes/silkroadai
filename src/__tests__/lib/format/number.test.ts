@@ -92,3 +92,32 @@ describe('formatTokens', () => {
         }
     });
 });
+
+describe('English locale (K / M / B instead of 万)', () => {
+    it('formatCny keeps the same threshold but compacts with K / M', () => {
+        expect(formatCny(99_999.99, 'en').compact).toBe(false);
+        expect(formatCny(290_262.82, 'en')).toEqual({
+            display: '290.26',
+            unit: 'K',
+            exact: '¥290,262.82',
+            compact: true,
+        });
+        expect(formatCny(1_215_773.1, 'en')).toEqual({
+            display: '1.22',
+            unit: 'M',
+            exact: '¥1,215,773.10',
+            compact: true,
+        });
+    });
+
+    it('formatCount compacts with one decimal', () => {
+        expect(formatCount(9_999, 'en')).toEqual({ display: '9,999', unit: '', exact: '9,999', compact: false });
+        expect(formatCount(2_184_903, 'en')).toEqual({ display: '2.2', unit: 'M', exact: '2,184,903', compact: true });
+        expect(formatCount(12_345, 'en')).toEqual({ display: '12.3', unit: 'K', exact: '12,345', compact: true });
+    });
+
+    it('zh output is unchanged when the locale is passed explicitly', () => {
+        expect(formatCny(290_262.82, 'zh')).toEqual(formatCny(290_262.82));
+        expect(formatCount(2_184_903, 'zh')).toEqual(formatCount(2_184_903));
+    });
+});

@@ -9,11 +9,18 @@
  */
 import { BrandLogo } from '@/components/brand/BrandLogo';
 import { Card } from '@/components/ui/Card';
+import { getLocale } from '@/lib/i18n/server';
+import { pickMessages } from '@/lib/i18n';
+import { authMessages } from '@/lib/i18n/messages/auth';
 import { ForgotPasswordForm } from './forgot-password-form';
 
-export const metadata = { title: '找回密码 — Silk Road AI' };
+export async function generateMetadata() {
+    const m = pickMessages(authMessages, await getLocale());
+    return { title: m.forgot.pageTitle };
+}
 
-export default function ForgotPasswordPage() {
+export default async function ForgotPasswordPage() {
+    const m = pickMessages(authMessages, await getLocale());
     return (
         <main className="min-h-screen flex items-center justify-center bg-paper px-4 py-10">
             <Card className="w-full max-w-md p-8">
@@ -21,7 +28,7 @@ export default function ForgotPasswordPage() {
                     <BrandLogo variant="primary-flat" size={28} />
                     <p className="m-0 text-xs text-minor-ink">Connecting Global Intelligence.</p>
                 </header>
-                <h2 className="m-0 mb-4 text-base font-semibold text-navy">找回密码</h2>
+                <h2 className="m-0 mb-4 text-base font-semibold text-navy">{m.forgot.heading}</h2>
                 <ForgotPasswordForm />
             </Card>
         </main>

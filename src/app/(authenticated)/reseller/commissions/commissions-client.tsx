@@ -10,6 +10,9 @@
 import Link from 'next/link';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
+import { useLocale, useMessages } from '@/lib/i18n/client';
+import { intlLocale, type Locale } from '@/lib/i18n';
+import { resellerMessages } from '@/lib/i18n/messages/reseller';
 
 export type StatusFilter = 'all' | 'pending' | 'confirmed' | 'settled';
 
@@ -41,14 +44,14 @@ interface Props {
     pagination: { page: number; limit: number; total: number; hasMore: boolean };
 }
 
-function fmtCny(v: number): string {
-    return `¥${v.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+function fmtCny(v: number, locale: Locale): string {
+    return `¥${v.toLocaleString(intlLocale(locale), { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-function fmtDate(iso: string): string {
+function fmtDate(iso: string, locale: Locale): string {
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return '—';
-    return d.toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' });
+    return d.toLocaleDateString(intlLocale(locale), { timeZone: 'Asia/Shanghai' });
 }
 
 function buildHref(status: StatusFilter, month: string | null, page = 1): string {
@@ -61,15 +64,21 @@ function buildHref(status: StatusFilter, month: string | null, page = 1): string
 }
 
 export function CommissionsClient({ rows, summary, filters, pagination }: Props) {
+    const locale = useLocale();
+    const all = useMessages(resellerMessages);
+    const m = all.commissions;
+    const cny = (v: number) => fmtCny(v, locale);
+    const date = (iso: string) => fmtDate(iso, locale);
+
     const tabs: { key: StatusFilter; label: string; count?: number; sum?: number }[] = [
         {
             key: 'all',
-            label: '全部',
+            label: m.tabAll,
             count: summary.count_pending + summary.count_confirmed + summary.count_settled,
         },
-        { key: 'pending', label: '待确认', count: summary.count_pending, sum: summary.pending_cny },
-        { key: 'confirmed', label: '可结算', count: summary.count_confirmed, sum: summary.confirmed_cny },
-        { key: 'settled', label: '已结算', count: summary.count_settled, sum: summary.settled_cny },
+        { key: 'pending', label: m.tabPending, count: summary.count_pending, sum: summary.pending_cny },
+        { key: 'confirmed', label: m.tabConfirmed, count: summary.count_confirmed, sum: summary.confirmed_cny },
+        { key: 'settled', label: m.tabSettled, count: summary.count_settled, sum: summary.settled_cny },
     ];
 
     return (
@@ -77,17 +86,19 @@ export function CommissionsClient({ rows, summary, filters, pagination }: Props)
             <Card>
                 <CardHeader>
                     <div className="flex flex-col gap-1 flex-1">
-                        <p className="text-xs uppercase tracking-wider text-muted-ink m-0">代理后台</p>
-                        <CardTitle as="h1">佣金明细</CardTitle>
+                        <p className="text-xs uppercase tracking-wider text-muted-ink m-0">
+                            {all.common.consoleKicker}
+                        </p>
+                        <CardTitle as="h1">{m.title}</CardTitle>
                     </div>
                 </CardHeader>
                 <CardContent className="space-y-4">
                     {/* Summary strip */}
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
-                        <Summary label="累计 GMV" value={fmtCny(summary.gmv_cny)} />
-                        <Summary label="待确认" value={fmtCny(summary.pending_cny)} accent="amber" />
-                        <Summary label="可结算" value={fmtCny(summary.confirmed_cny)} accent="emerald" />
-                        <Summary label="已结算" value={fmtCny(summary.settled_cny)} accent="slate" />
+                        <Summary label={m.sumGmv} value={cny(summary.gmv_cny)} />
+                        <Summary label={m.tabPending} value={cny(summary.pending_cny)} accent="amber" />
+                        <Summary label={m.tabConfirmed} value={cny(summary.confirmed_cny)} accent="emerald" />
+                        <Summary label={m.tabSettled} value={cny(summary.settled_cny)} accent="slate" />
                     </div>
 
                     {/* Tabs */}
@@ -115,7 +126,7 @@ export function CommissionsClient({ rows, summary, filters, pagination }: Props)
                     </div>
 
                     {rows.length === 0 ? (
-                        <EmptyState title="没有佣金记录" body="客户充值后,这里会按时间倒序显示每一笔佣金。" />
+                        <EmptyState title={m.emptyTitle} body={m.emptyBody} />
                     ) : (
                         <>
                             {/* Mobile cards */}
@@ -126,21 +137,23 @@ export function CommissionsClient({ rows, summary, filters, pagination }: Props)
                                         className="rounded-xl border border-brand-border bg-surface px-4 py-3"
                                     >
                                         <div className="flex items-baseline justify-between">
-                                            <span className="text-xs text-muted-ink">{fmtDate(r.created_at)}</span>
+                                            <span className="text-xs text-muted-ink">{date(r.created_at)}</span>
                                             <CommissionStatusChip status={r.status} hold={r.hold_until} />
                                         </div>
                                         <p className="font-medium text-navy mt-1 mb-0">{r.customer_email_masked}</p>
                                         <div className="flex justify-between items-baseline mt-2">
                                             <p className="text-xs text-muted-ink m-0">
-                                                充值 {fmtCny(r.attributed_gmv_cny)} ·{' '}
-                                                {(r.commission_rate * 100).toFixed(0)}%
+                                                {m.rowRecharge(
+                                                    cny(r.attributed_gmv_cny),
+                                                    (r.commission_rate * 100).toFixed(0),
+                                                )}
                                             </p>
                                             <p className="text-base font-semibold text-emerald-700 m-0">
-                                                {fmtCny(r.commission_amount_cny)}
+                                                {cny(r.commission_amount_cny)}
                                             </p>
                                         </div>
                                         {r.admin_review_required && (
-                                            <p className="text-xs text-amber-700 mt-2 mb-0">⚠️ 单笔超阈值,需运营审核</p>
+                                            <p className="text-xs text-amber-700 mt-2 mb-0">{m.adminReview}</p>
                                         )}
                                     </li>
                                 ))}
@@ -151,14 +164,26 @@ export function CommissionsClient({ rows, summary, filters, pagination }: Props)
                                 <table className="w-full text-sm border-collapse">
                                     <thead>
                                         <tr className="text-left text-xs uppercase tracking-wider text-muted-ink">
-                                            <th className="font-medium px-3 py-2 border-b border-brand-border">时间</th>
-                                            <th className="font-medium px-3 py-2 border-b border-brand-border">客户</th>
-                                            <th className="font-medium px-3 py-2 border-b border-brand-border">充值</th>
-                                            <th className="font-medium px-3 py-2 border-b border-brand-border">费率</th>
-                                            <th className="font-medium px-3 py-2 border-b border-brand-border">佣金</th>
-                                            <th className="font-medium px-3 py-2 border-b border-brand-border">状态</th>
                                             <th className="font-medium px-3 py-2 border-b border-brand-border">
-                                                Hold 到
+                                                {m.thTime}
+                                            </th>
+                                            <th className="font-medium px-3 py-2 border-b border-brand-border">
+                                                {m.thCustomer}
+                                            </th>
+                                            <th className="font-medium px-3 py-2 border-b border-brand-border">
+                                                {m.thRecharge}
+                                            </th>
+                                            <th className="font-medium px-3 py-2 border-b border-brand-border">
+                                                {m.thRate}
+                                            </th>
+                                            <th className="font-medium px-3 py-2 border-b border-brand-border">
+                                                {m.thCommission}
+                                            </th>
+                                            <th className="font-medium px-3 py-2 border-b border-brand-border">
+                                                {m.thStatus}
+                                            </th>
+                                            <th className="font-medium px-3 py-2 border-b border-brand-border">
+                                                {m.thHoldUntil}
                                             </th>
                                         </tr>
                                     </thead>
@@ -166,19 +191,19 @@ export function CommissionsClient({ rows, summary, filters, pagination }: Props)
                                         {rows.map((r) => (
                                             <tr key={r.id} className="hover:bg-paper-muted/30">
                                                 <td className="px-3 py-2 border-b border-brand-border text-xs text-muted-ink">
-                                                    {fmtDate(r.created_at)}
+                                                    {date(r.created_at)}
                                                 </td>
                                                 <td className="px-3 py-2 border-b border-brand-border">
                                                     {r.customer_email_masked}
                                                 </td>
                                                 <td className="px-3 py-2 border-b border-brand-border">
-                                                    {fmtCny(r.attributed_gmv_cny)}
+                                                    {cny(r.attributed_gmv_cny)}
                                                 </td>
                                                 <td className="px-3 py-2 border-b border-brand-border">
                                                     {(r.commission_rate * 100).toFixed(0)}%
                                                 </td>
                                                 <td className="px-3 py-2 border-b border-brand-border font-medium text-emerald-700">
-                                                    {fmtCny(r.commission_amount_cny)}
+                                                    {cny(r.commission_amount_cny)}
                                                 </td>
                                                 <td className="px-3 py-2 border-b border-brand-border">
                                                     <CommissionStatusChip
@@ -188,7 +213,7 @@ export function CommissionsClient({ rows, summary, filters, pagination }: Props)
                                                     />
                                                 </td>
                                                 <td className="px-3 py-2 border-b border-brand-border text-xs text-muted-ink">
-                                                    {r.status === 'pending' ? fmtDate(r.hold_until) : '—'}
+                                                    {r.status === 'pending' ? date(r.hold_until) : '—'}
                                                 </td>
                                             </tr>
                                         ))}
@@ -199,7 +224,7 @@ export function CommissionsClient({ rows, summary, filters, pagination }: Props)
                             {pagination.total > pagination.limit && (
                                 <div className="flex items-center justify-between pt-3 border-t border-brand-border">
                                     <span className="text-xs text-muted-ink">
-                                        第 {pagination.page} 页 · 共 {pagination.total} 笔
+                                        {m.pageInfo(pagination.page, pagination.total)}
                                     </span>
                                     <div className="flex gap-2">
                                         {pagination.page > 1 && (
@@ -207,7 +232,7 @@ export function CommissionsClient({ rows, summary, filters, pagination }: Props)
                                                 href={buildHref(filters.status, filters.month, pagination.page - 1)}
                                                 className="px-3 py-1.5 text-sm rounded-lg border border-brand-border hover:bg-paper-muted no-underline text-navy"
                                             >
-                                                ← 上一页
+                                                {all.common.prevPage}
                                             </Link>
                                         )}
                                         {pagination.hasMore && (
@@ -215,7 +240,7 @@ export function CommissionsClient({ rows, summary, filters, pagination }: Props)
                                                 href={buildHref(filters.status, filters.month, pagination.page + 1)}
                                                 className="px-3 py-1.5 text-sm rounded-lg border border-brand-border hover:bg-paper-muted no-underline text-navy"
                                             >
-                                                下一页 →
+                                                {all.common.nextPage}
                                             </Link>
                                         )}
                                     </div>
@@ -255,14 +280,17 @@ function CommissionStatusChip({
     hold: string;
     adminReview?: boolean;
 }) {
+    const m = useMessages(resellerMessages).commissions;
     if (adminReview && status === 'pending') {
-        return <span className="text-xs px-2 py-0.5 rounded-full bg-amber-50 text-amber-800">审核中</span>;
+        return <span className="text-xs px-2 py-0.5 rounded-full bg-amber-50 text-amber-800">{m.chipUnderReview}</span>;
     }
     if (status === 'pending') {
-        return <span className="text-xs px-2 py-0.5 rounded-full bg-amber-50 text-amber-800">待确认</span>;
+        return <span className="text-xs px-2 py-0.5 rounded-full bg-amber-50 text-amber-800">{m.chipPending}</span>;
     }
     if (status === 'confirmed') {
-        return <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-800">可结算</span>;
+        return (
+            <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-800">{m.chipConfirmed}</span>
+        );
     }
-    return <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-700">已结算</span>;
+    return <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-700">{m.chipSettled}</span>;
 }

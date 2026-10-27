@@ -14,7 +14,7 @@
  * `next/font/google` is mocked because vitest runs outside the Next
  * compiler; the mock returns a stub `className` so JSX still renders.
  */
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
 import { renderToString } from 'react-dom/server';
 
 // Mock next/font/google before page module loads.
@@ -213,6 +213,86 @@ describe('landing page — permanent ¥ pricing (post W8 D1.5, 2026-05-21)', () 
         expect(html).toContain('官方仅 7.3%');
         // No line-through anywhere in pricing
         expect(html).not.toMatch(/text-decoration:\s*line-through/);
+    });
+});
+
+describe('landing page — English locale (feat/i18n-zh-en)', () => {
+    beforeEach(() => {
+        vi.doMock('@/lib/promo', () => ({
+            isPromoActive: () => false,
+            getPromoEndDate: () => new Date('2026-06-09T23:59:59.999+08:00'),
+            PROMO_START: new Date('2026-05-10T00:00:00+08:00'),
+            PROMO_END_EXCLUSIVE: new Date('2026-06-10T00:00:00+08:00'),
+        }));
+        // Force the request locale to English; the page only ever reads it via this module.
+        vi.doMock('@/lib/i18n/server', () => ({
+            getLocale: async () => 'en',
+            getMessages: async (d: { en: unknown }) => d.en,
+        }));
+    });
+
+    // doMock registrations survive resetModules — drop it so later describes render zh again.
+    afterEach(() => {
+        vi.doUnmock('@/lib/i18n/server');
+    });
+
+    it('renders English hero / sections / pricing copy with no CJK left in the page body', async () => {
+        const Page = await loadPage();
+        const tree = await Page({ searchParams: Promise.resolve({}) });
+        const html = renderToString(tree);
+        expect(html).toContain('One key, 200+ AI models');
+        expect(html).toContain('Get started →');
+        expect(html).toContain('Browse models');
+        expect(html).toContain('Open console →');
+        expect(html).toContain('Get started in three steps');
+        expect(html).toContain('Overseas models · Low-cost pool (default)');
+        expect(html).toContain('Only 2.9% of list'); // ChatGPT badge
+        expect(html).toContain('38% of list'); // Azure OpenAI 3.8 折
+        expect(html).toContain('Vertex AI / t3 pool');
+        // Prices + the structural assertions from the zh suite still hold.
+        expect(html).toContain('¥0.2');
+        expect(html).toMatch(/href="\/portal\/register"/);
+        expect(html).toContain('claude-sonnet-4-6');
+        // Nothing Chinese remains once the 中文/EN switcher (whose zh button is
+        // intentionally labelled 中文) is stripped out.
+        const stripped = html.replace(/<div role="group"[\s\S]*?<\/div>/, '');
+        expect(stripped).not.toMatch(/[一-鿿]/);
+    });
+
+    it('renders the locale switcher in the header with EN active (client island reads <LocaleProvider>)', async () => {
+        const Page = await loadPage();
+        // Same module registry as the page (both imported after resetModules) so the context matches.
+        const { LocaleProvider } = await import('@/lib/i18n/client');
+        const tree = await Page({ searchParams: Promise.resolve({}) });
+        const html = renderToString(<LocaleProvider locale="en">{tree}</LocaleProvider>);
+        expect(html).toMatch(/<div role="group"[^>]*aria-label="Language"[^>]*data-locale="en"/);
+        expect(html).toMatch(/<button[^>]*lang="en"[^>]*aria-pressed="true"/);
+    });
+
+    it('renders English oauth_error banner copy', async () => {
+        const Page = await loadPage();
+        const tree = await Page({ searchParams: Promise.resolve({ oauth_error: 'google_denied' }) });
+        const html = renderToString(tree);
+        expect(html).toContain('Google sign-in was cancelled');
+        expect(html).toContain('Back to login');
+        expect(html).not.toContain('登录被取消');
+    });
+
+    it('generateMetadata returns the English title / og copy', async () => {
+        const mod = await import('@/app/page');
+        const meta = await mod.generateMetadata();
+        expect(meta.title).toContain('One key, 200+ AI models');
+        expect(meta.openGraph?.title).toBe('Silk Road AI · One key, 200+ AI models');
+        expect(String(meta.title)).not.toMatch(/[一-鿿]/);
+    });
+});
+
+describe('landing page — default locale metadata stays Chinese', () => {
+    it('generateMetadata (no cookie / no request scope) returns the original zh title', async () => {
+        const mod = await import('@/app/page');
+        const meta = await mod.generateMetadata();
+        expect(meta.title).toBe('Silk Road AI · 一个 Key,接入 200+ AI 模型 | ChatGPT、Claude、Gemini 国内中转');
+        expect(meta.keywords).toContain('AI API 中转');
     });
 });
 

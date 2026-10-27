@@ -18,9 +18,15 @@ import { prisma } from '@/lib/db';
 import { getPublicUrl } from '@/lib/r2/client';
 import { ImageStudio } from './image-studio';
 import type { ImageGenerationItem } from '@/components/image/types';
+import { getLocale } from '@/lib/i18n/server';
+import { pickMessages } from '@/lib/i18n';
+import { imageMessages } from '@/lib/i18n/messages/image';
 
 export const dynamic = 'force-dynamic';
-export const metadata = { title: 'AI 生图 — Silk Road AI' };
+export async function generateMetadata() {
+    const m = pickMessages(imageMessages, await getLocale());
+    return { title: m.page.metaTitle };
+}
 
 async function getSessionUser() {
     const h = await headers();
@@ -33,8 +39,9 @@ async function getSessionUser() {
 }
 
 export default async function ImagePage() {
-    const user = await getSessionUser();
+    const [user, locale] = await Promise.all([getSessionUser(), getLocale()]);
     if (!user) return null; // layout's auth gate redirects; this is just TS narrowing
+    const m = pickMessages(imageMessages, locale);
 
     const latestRow = await prisma.imageGeneration.findFirst({
         where: { user_id: user.id, is_deleted: false },
@@ -58,10 +65,8 @@ export default async function ImagePage() {
 
     return (
         <section>
-            <h1 className="m-0 mb-2 text-2xl font-semibold text-navy">AI 生图</h1>
-            <p className="m-0 mb-6 text-sm text-muted-ink">
-                输入描述,选择模型与尺寸,即可生成图像。生成结果保留 30 天,收藏后永久保留。
-            </p>
+            <h1 className="m-0 mb-2 text-2xl font-semibold text-navy">{m.page.title}</h1>
+            <p className="m-0 mb-6 text-sm text-muted-ink">{m.page.intro}</p>
             <ImageStudio initialLatest={initialLatest} />
         </section>
     );

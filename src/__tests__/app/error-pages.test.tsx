@@ -18,14 +18,14 @@ import NotFound from '@/app/not-found';
 import ErrorBoundary from '@/app/error';
 
 describe('<NotFound /> SSR (W7 D4)', () => {
-    it('renders the 404 numeric badge + "页面没找到" headline', () => {
-        const html = renderToString(<NotFound />);
+    it('renders the 404 numeric badge + "页面没找到" headline', async () => {
+        const html = renderToString(await NotFound());
         expect(html).toContain('404');
         expect(html).toContain('页面没找到');
     });
 
-    it('renders both navigation CTAs (返回首页 + 查看模型清单)', () => {
-        const html = renderToString(<NotFound />);
+    it('renders both navigation CTAs (返回首页 + 查看模型清单)', async () => {
+        const html = renderToString(await NotFound());
         expect(html).toContain('返回首页');
         expect(html).toContain('查看模型清单');
         // hrefs land users somewhere useful, not nowhere
@@ -33,15 +33,15 @@ describe('<NotFound /> SSR (W7 D4)', () => {
         expect(html).toMatch(/href="\/models"/);
     });
 
-    it('exposes contact pair (微信 Global_Ads + support email)', () => {
-        const html = renderToString(<NotFound />);
+    it('exposes contact pair (微信 Global_Ads + support email)', async () => {
+        const html = renderToString(await NotFound());
         expect(html).toContain('Global_Ads');
         expect(html).toContain('support@silkroadai.io');
         expect(html).toMatch(/href="mailto:support@silkroadai\.io"/);
     });
 
-    it('uses W7 P1 design tokens (paper bg + brand-accent 404 + navy heading)', () => {
-        const html = renderToString(<NotFound />);
+    it('uses W7 P1 design tokens (paper bg + brand-accent 404 + navy heading)', async () => {
+        const html = renderToString(await NotFound());
         // Class-token spot checks (non-exhaustive — guards the design
         // system contract without coupling to every utility class).
         expect(html).toContain('bg-paper');
@@ -52,8 +52,8 @@ describe('<NotFound /> SSR (W7 D4)', () => {
         expect(html).not.toContain('#5a6478');
     });
 
-    it('renders the brand <Logo /> (primary-flat for light bg)', () => {
-        const html = renderToString(<NotFound />);
+    it('renders the brand <Logo /> (primary-flat for light bg)', async () => {
+        const html = renderToString(await NotFound());
         // PR #23's <Logo /> renders <img alt="Silk Road AI">; size=32 →
         // width=128 (4:1 aspect for full-logo variants).
         expect(html).toMatch(/<img[^>]*alt="Silk Road AI"/);
@@ -61,8 +61,8 @@ describe('<NotFound /> SSR (W7 D4)', () => {
         expect(html).toMatch(/width="128"/);
     });
 
-    it('tone is neutral — no jokes, no apologies, no pet metaphors', () => {
-        const html = renderToString(<NotFound />);
+    it('tone is neutral — no jokes, no apologies, no pet metaphors', async () => {
+        const html = renderToString(await NotFound());
         // Sanity-guard against future drift; pin the literal copy this
         // test was written against. Brief: "中性不人格化".
         expect(html).toContain('您访问的链接可能已变更或不存在');

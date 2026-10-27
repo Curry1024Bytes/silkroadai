@@ -11,9 +11,15 @@
  * second check here. (Brief Change 4: confirm not break — confirmed.)
  */
 import { redirect } from 'next/navigation';
+import { getLocale } from '@/lib/i18n/server';
+import { pickMessages } from '@/lib/i18n';
+import { authMessages } from '@/lib/i18n/messages/auth';
 
 export const dynamic = 'force-dynamic';
-export const metadata = { title: '注册 — Silk Road AI' };
+export async function generateMetadata() {
+    const m = pickMessages(authMessages, await getLocale());
+    return { title: m.register.pageTitle };
+}
 
 export default async function RegisterAliasPage({ searchParams }: { searchParams: Promise<{ invite?: string }> }) {
     const sp = await searchParams;

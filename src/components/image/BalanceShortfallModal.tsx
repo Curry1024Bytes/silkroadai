@@ -12,6 +12,8 @@
 import Link from 'next/link';
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
+import { useMessages } from '@/lib/i18n/client';
+import { imageMessages } from '@/lib/i18n/messages/image';
 
 interface Props {
     open: boolean;
@@ -24,16 +26,17 @@ interface Props {
 }
 
 export function BalanceShortfallModal({ open, onClose, requiredCny, remainCny }: Props) {
+    const m = useMessages(imageMessages).balanceModal;
     return (
         <Modal
             open={open}
             onClose={onClose}
-            title="余额不足"
+            title={m.title}
             icon="💰"
             footer={
                 <>
                     <Button type="button" variant="ghost" size="sm" onClick={onClose}>
-                        取消
+                        {m.cancel}
                     </Button>
                     <Link
                         href="/pay"
@@ -44,23 +47,26 @@ export function BalanceShortfallModal({ open, onClose, requiredCny, remainCny }:
                             'transition-colors duration-150 ease-brand',
                         ].join(' ')}
                     >
-                        立即充值 →
+                        {m.topUp}
                     </Link>
                 </>
             }
         >
-            <p className="m-0">余额不足以生成此次。</p>
+            <p className="m-0">{m.body}</p>
             <p className="m-0 mt-2 text-muted-ink">
-                本次约消耗 <strong className="text-navy">¥{requiredCny.toFixed(2)}</strong>
+                {m.costPrefix}
+                <strong className="text-navy">¥{requiredCny.toFixed(2)}</strong>
                 {typeof remainCny === 'number' ? (
                     <>
-                        ,当前余额 <strong className="text-navy">¥{remainCny.toFixed(2)}</strong>。
+                        {m.balanceMid}
+                        <strong className="text-navy">¥{remainCny.toFixed(2)}</strong>
+                        {m.end}
                     </>
                 ) : (
-                    '。'
+                    m.end
                 )}
             </p>
-            <p className="m-0 mt-2 text-muted-ink text-xs">充值后立即可用,余额永不失效。</p>
+            <p className="m-0 mt-2 text-muted-ink text-xs">{m.note}</p>
         </Modal>
     );
 }

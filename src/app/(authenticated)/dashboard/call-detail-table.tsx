@@ -22,6 +22,9 @@
  * 所有 LLM)token 就是计费依据 → 如实显示。¥ + 结果照常清晰。
  */
 import { useState } from 'react';
+import { intlLocale } from '@/lib/i18n';
+import { useLocale, useMessages } from '@/lib/i18n/client';
+import { dashboardMessages, type DashboardMessages } from '@/lib/i18n/messages/dashboard';
 import { formatDuration, formatTokens, formatCacheTokens, callResult } from './format';
 
 export interface CallRow {
@@ -63,14 +66,18 @@ const HEAD = 'text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-
 /** Table spans 8 columns; the expanded error-detail sub-row must match. */
 const COL_SPAN = 8;
 
+type TableMessages = DashboardMessages['table'];
+
 export function CallDetailTable({ rows }: { rows: CallRow[] }) {
     const [page, setPage] = useState(0);
     const [expanded, setExpanded] = useState<number | null>(null);
+    const m = useMessages(dashboardMessages).table;
+    const locale = useLocale();
 
     if (rows.length === 0) {
         return (
             <div className="rounded-xl border border-brand-border bg-surface px-4 py-8 text-center text-sm text-minor-ink shadow-card">
-                该时间段内暂无调用记录
+                {m.empty}
             </div>
         );
     }
@@ -86,14 +93,14 @@ export function CallDetailTable({ rows }: { rows: CallRow[] }) {
                 <table className="w-full border-collapse">
                     <thead>
                         <tr className="bg-paper-muted">
-                            <th className={HEAD}>时间</th>
-                            <th className={HEAD}>模型</th>
-                            <th className={HEAD}>Key</th>
-                            <th className={HEAD}>Request ID</th>
-                            <th className={`${HEAD} text-right`}>时长</th>
-                            <th className={`${HEAD} text-right`}>Tokens(输入/输出)</th>
-                            <th className={`${HEAD} text-right`}>消耗</th>
-                            <th className={`${HEAD} text-center`}>结果</th>
+                            <th className={HEAD}>{m.colTime}</th>
+                            <th className={HEAD}>{m.colModel}</th>
+                            <th className={HEAD}>{m.colKey}</th>
+                            <th className={HEAD}>{m.colRequestId}</th>
+                            <th className={`${HEAD} text-right`}>{m.colDuration}</th>
+                            <th className={`${HEAD} text-right`}>{m.colTokens}</th>
+                            <th className={`${HEAD} text-right`}>{m.colCost}</th>
+                            <th className={`${HEAD} text-center`}>{m.colResult}</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -108,6 +115,8 @@ export function CallDetailTable({ rows }: { rows: CallRow[] }) {
                                     isError={isError}
                                     isOpen={isOpen}
                                     onToggle={() => setExpanded(isOpen ? null : row.id)}
+                                    m={m}
+                                    intl={intlLocale(locale)}
                                 />
                             );
                         })}
@@ -117,7 +126,7 @@ export function CallDetailTable({ rows }: { rows: CallRow[] }) {
 
             <div className="mt-3 flex items-center justify-between gap-3 text-xs text-muted-ink">
                 <span className="tabular-nums">
-                    共 {rows.length.toLocaleString('en-US')} 条 · 第 {safePage + 1} / {totalPages} 页
+                    {m.pager(rows.length.toLocaleString('en-US'), safePage + 1, totalPages)}
                 </span>
                 <div className="flex gap-2">
                     <button
@@ -126,7 +135,7 @@ export function CallDetailTable({ rows }: { rows: CallRow[] }) {
                         disabled={safePage === 0}
                         className="rounded-lg border border-brand-border bg-surface px-3 py-1.5 text-xs text-navy transition-colors hover:bg-paper-muted disabled:cursor-not-allowed disabled:text-minor-ink disabled:hover:bg-surface"
                     >
-                        上一页
+                        {m.prev}
                     </button>
                     <button
                         type="button"
@@ -134,7 +143,7 @@ export function CallDetailTable({ rows }: { rows: CallRow[] }) {
                         disabled={safePage >= totalPages - 1}
                         className="rounded-lg border border-brand-border bg-surface px-3 py-1.5 text-xs text-navy transition-colors hover:bg-paper-muted disabled:cursor-not-allowed disabled:text-minor-ink disabled:hover:bg-surface"
                     >
-                        下一页
+                        {m.next}
                     </button>
                 </div>
             </div>
@@ -144,7 +153,7 @@ export function CallDetailTable({ rows }: { rows: CallRow[] }) {
 
 /** Request-id cell: truncated mono id + a copy button (the full 40-char id is
  *  only useful if it can be pasted into a support message). Empty id → "—". */
-function RequestIdCell({ value }: { value: string }) {
+function RequestIdCell({ value, m }: { value: string; m: TableMessages }) {
     const [copied, setCopied] = useState(false);
     if (!value) return <span className="text-minor-ink">—</span>;
     return (
@@ -163,10 +172,10 @@ function RequestIdCell({ value }: { value: string }) {
                         /* clipboard unavailable (insecure ctx / old browser) — no-op */
                     }
                 }}
-                title="复制完整 Request ID"
+                title={m.copyFullRequestId}
                 className="shrink-0 rounded border border-brand-border bg-surface px-1.5 py-0.5 text-[10px] text-muted-ink transition-colors hover:bg-paper-muted"
             >
-                {copied ? '已复制' : '复制'}
+                {copied ? m.copied : m.copy}
             </button>
         </span>
     );
@@ -174,7 +183,8 @@ function RequestIdCell({ value }: { value: string }) {
 
 /** 缓存读写副行(参照 new-api):仅当该调用真用了 prompt cache 才渲染,灰色小字不抢主信息。 */
 function CacheTokensLine({ row }: { row: CallRow }) {
-    const text = formatCacheTokens(row.cacheReadTokens, row.cacheWriteTokens, row.perImageBilled);
+    const locale = useLocale();
+    const text = formatCacheTokens(row.cacheReadTokens, row.cacheWriteTokens, row.perImageBilled, locale);
     if (!text) return null;
     return <span className="mt-0.5 block text-[11px] leading-tight text-minor-ink">{text}</span>;
 }
@@ -185,18 +195,23 @@ function CallRowItem({
     isError,
     isOpen,
     onToggle,
+    m,
+    intl,
 }: {
     row: CallRow;
     isError: boolean;
     isOpen: boolean;
     onToggle: () => void;
+    m: TableMessages;
+    /** `Intl` tag for the time cell (always paired with Asia/Shanghai — gotcha #20). */
+    intl: string;
 }) {
     const cell = 'px-4 py-3 text-sm text-ink border-b border-brand-border';
     return (
         <>
             <tr className={isOpen ? 'bg-paper-muted/40' : undefined}>
                 <td className={`${cell} whitespace-nowrap text-muted-ink`}>
-                    {new Date(row.createdAt * 1000).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}
+                    {new Date(row.createdAt * 1000).toLocaleString(intl, { timeZone: 'Asia/Shanghai' })}
                 </td>
                 <td className={`${cell} font-mono text-xs`}>{row.model || '<unknown>'}</td>
                 <td className={`${cell} text-xs`}>
@@ -208,7 +223,7 @@ function CallRowItem({
                     </span>
                 </td>
                 <td className={cell}>
-                    <RequestIdCell value={row.requestId} />
+                    <RequestIdCell value={row.requestId} m={m} />
                 </td>
                 <td className={`${cell} text-right tabular-nums text-muted-ink`}>{formatDuration(row.useTimeMs)}</td>
                 <td className={`${cell} text-right tabular-nums text-muted-ink`}>
@@ -221,18 +236,18 @@ function CallRowItem({
                         <button
                             type="button"
                             onClick={onToggle}
-                            title={row.content || '调用失败'}
+                            title={row.content || m.callFailed}
                             aria-expanded={isOpen}
                             className="inline-flex items-center gap-1 rounded border border-status-error-border bg-status-error-bg px-2 py-0.5 text-xs font-medium text-status-error-text"
                         >
-                            失败
+                            {m.failed}
                             <span aria-hidden className="text-[10px]">
                                 {isOpen ? '▲' : '▼'}
                             </span>
                         </button>
                     ) : (
                         <span className="inline-flex items-center rounded border border-status-success-border bg-status-success-bg px-2 py-0.5 text-xs font-medium text-status-success-text">
-                            成功
+                            {m.success}
                         </span>
                     )}
                 </td>
@@ -240,9 +255,9 @@ function CallRowItem({
             {isError && isOpen && (
                 <tr className="bg-paper-muted/40">
                     <td colSpan={COL_SPAN} className="border-b border-brand-border px-4 py-2.5">
-                        <p className="m-0 mb-1 text-xs font-medium text-status-error-text">错误详情</p>
+                        <p className="m-0 mb-1 text-xs font-medium text-status-error-text">{m.errorDetail}</p>
                         <pre className="m-0 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-paper-muted px-3 py-2 font-mono text-xs text-ink">
-                            {row.content || '(上游未返回错误详情)'}
+                            {row.content || m.noErrorDetail}
                         </pre>
                     </td>
                 </tr>

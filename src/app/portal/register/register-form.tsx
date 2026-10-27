@@ -6,6 +6,8 @@ import { Button } from '@/components/ui/Button';
 import { FormError } from '@/components/ui/FormError';
 import { Input } from '@/components/ui/Input';
 import { Label } from '@/components/ui/Label';
+import { useMessages } from '@/lib/i18n/client';
+import { authMessages } from '@/lib/i18n/messages/auth';
 
 /**
  * /portal/register form (W7 D4 + fix/invite-landing).
@@ -50,6 +52,7 @@ function fireAnalytics(eventType: string, properties: Record<string, unknown> = 
 }
 
 export function RegisterForm() {
+    const m = useMessages(authMessages).registerForm;
     // `useSearchParams` returns null in test envs that render this form
     // without a NextRouter context (e.g. auth-handoff-link.test.tsx
     // SSR-renders without next/navigation mocked). Defensive optional
@@ -138,19 +141,19 @@ export function RegisterForm() {
             // Targeted invite-code hint so the user can clear that field
             // and resubmit the rest as-is.
             if (code === 'invalid_invite_code') {
-                setInviteError(typeof data?.message === 'string' ? data.message : '邀请码无效。可清空后继续注册。');
+                setInviteError(typeof data?.message === 'string' ? data.message : m.inviteInvalid);
             } else if (code === 'email_already_registered') {
-                setError('该邮箱已注册,请直接登录。');
+                setError(m.emailTaken);
             } else if (code === 'validation_failed') {
-                setError('请检查邮箱格式或密码长度(至少 8 位)。');
+                setError(m.validationFailed);
             } else if (code === 'provisioning_failed') {
-                setError('账户开通失败,请稍后重试。');
+                setError(m.provisioningFailed);
             } else {
-                setError(`注册失败:${code}`);
+                setError(m.failedWithCode(code));
             }
             setSubmitting(false);
         } catch (err) {
-            setError(err instanceof Error ? err.message : '网络错误,请稍后重试');
+            setError(err instanceof Error ? err.message : m.networkError);
             setSubmitting(false);
         }
     }
@@ -160,7 +163,7 @@ export function RegisterForm() {
             <form onSubmit={handleSubmit} className="space-y-3.5">
                 <div>
                     <Label htmlFor="register-email" required>
-                        邮箱
+                        {m.email}
                     </Label>
                     <Input
                         id="register-email"
@@ -174,7 +177,7 @@ export function RegisterForm() {
                 </div>
                 <div>
                     <Label htmlFor="register-password" required>
-                        密码(至少 8 位)
+                        {m.password}
                     </Label>
                     <Input
                         id="register-password"
@@ -187,11 +190,11 @@ export function RegisterForm() {
                         onChange={(e) => setPassword(e.target.value)}
                         error={!passwordLongEnough}
                     />
-                    {!passwordLongEnough ? <FormError>密码至少 8 位。</FormError> : null}
+                    {!passwordLongEnough ? <FormError>{m.passwordTooShort}</FormError> : null}
                 </div>
                 <div>
                     <Label htmlFor="register-confirm" required>
-                        确认密码
+                        {m.confirm}
                     </Label>
                     <Input
                         id="register-confirm"
@@ -202,10 +205,10 @@ export function RegisterForm() {
                         onChange={(e) => setConfirm(e.target.value)}
                         error={!passwordsMatch}
                     />
-                    {!passwordsMatch ? <FormError>两次密码不一致。</FormError> : null}
+                    {!passwordsMatch ? <FormError>{m.passwordsMismatch}</FormError> : null}
                 </div>
                 <div>
-                    <Label htmlFor="register-invite">邀请码(可选)</Label>
+                    <Label htmlFor="register-invite">{m.invite}</Label>
                     <Input
                         id="register-invite"
                         type="text"
@@ -219,7 +222,7 @@ export function RegisterForm() {
                             if (prefilled) setPrefilled(false);
                             if (inviteError) setInviteError(null);
                         }}
-                        placeholder="有码填,无码留空"
+                        placeholder={m.invitePlaceholder}
                         error={!!inviteError}
                     />
                     {inviteError ? <FormError>{inviteError}</FormError> : null}
@@ -228,10 +231,10 @@ export function RegisterForm() {
                      *  edited it. */}
                     {prefilled && !inviteError ? (
                         <p className="m-0 mt-1 text-xs text-emerald-700" data-prefill-source="invite-link">
-                            ✓ 已自动填入推荐码,可修改或清空
+                            {m.invitePrefilled}
                         </p>
                     ) : (
-                        <p className="m-0 mt-1 text-xs text-minor-ink">有邀请码 / 推荐码可在此填写(选填)。</p>
+                        <p className="m-0 mt-1 text-xs text-minor-ink">{m.inviteHint}</p>
                     )}
                 </div>
 
@@ -244,43 +247,41 @@ export function RegisterForm() {
                         className="mt-0.5 accent-navy"
                     />
                     <span>
-                        我已阅读并同意{' '}
+                        {m.tosPrefix}{' '}
                         <a
                             href="/terms"
                             target="_blank"
                             rel="noopener"
                             className="text-navy font-medium hover:text-brand-accent"
                         >
-                            服务条款
+                            {m.tosTerms}
                         </a>{' '}
-                        与{' '}
+                        {m.tosAnd}{' '}
                         <a
                             href="/privacy"
                             target="_blank"
                             rel="noopener"
                             className="text-navy font-medium hover:text-brand-accent"
                         >
-                            隐私政策
+                            {m.tosPrivacy}
                         </a>
-                        。
+                        {m.tosSuffix}
                     </span>
                 </label>
 
                 {error ? <FormError severity="banner">{error}</FormError> : null}
 
                 <Button type="submit" block size="lg" loading={submitting} disabled={!formValid}>
-                    {submitting ? '注册中…' : '创建账户'}
+                    {submitting ? m.submitting : m.submit}
                 </Button>
 
-                <p className="m-0 mt-2 text-center text-xs text-minor-ink">
-                    注册后将向您的邮箱发送验证链接,24 小时内有效。
-                </p>
+                <p className="m-0 mt-2 text-center text-xs text-minor-ink">{m.verificationNote}</p>
             </form>
 
             <p className="m-0 mt-6 text-center text-sm text-minor-ink">
-                已有账户?{' '}
+                {m.haveAccount}{' '}
                 <a href="/login" className="text-muted-ink font-medium hover:text-brand-accent transition-colors">
-                    登录 →
+                    {m.goLogin}
                 </a>
             </p>
         </>

@@ -19,6 +19,9 @@ import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Input } from '@/components/ui/Input';
 import { Label } from '@/components/ui/Label';
+import { useMessages } from '@/lib/i18n/client';
+import { commonMessages } from '@/lib/i18n/messages/common';
+import { dashboardMessages } from '@/lib/i18n/messages/dashboard';
 
 interface Props {
     /** Current threshold from the SSR pass. null/undefined defaults to 10. */
@@ -32,6 +35,8 @@ export function BalanceAlertForm({ initialThreshold }: Props) {
     const [persisted, setPersisted] = useState<number>(initialThreshold);
     const [status, setStatus] = useState<SaveStatus>('idle');
     const [errMsg, setErrMsg] = useState<string | null>(null);
+    const m = useMessages(dashboardMessages).alert;
+    const c = useMessages(commonMessages).auth;
 
     const numValue = Number(value);
     const dirty = !Number.isNaN(numValue) && numValue !== persisted;
@@ -51,7 +56,7 @@ export function BalanceAlertForm({ initialThreshold }: Props) {
             });
             if (!r.ok) {
                 const data = await r.json().catch(() => ({}));
-                setErrMsg(typeof data?.error === 'string' ? data.error : `请求失败 (${r.status})`);
+                setErrMsg(typeof data?.error === 'string' ? data.error : c.requestFailed(r.status));
                 setStatus('error');
                 return;
             }
@@ -60,7 +65,7 @@ export function BalanceAlertForm({ initialThreshold }: Props) {
             setValue(String(data.threshold));
             setStatus('saved');
         } catch (err) {
-            setErrMsg(err instanceof Error ? err.message : '网络错误');
+            setErrMsg(err instanceof Error ? err.message : c.networkError);
             setStatus('error');
         }
     }
@@ -69,16 +74,14 @@ export function BalanceAlertForm({ initialThreshold }: Props) {
         <Card as="article" data-testid="balance-alert-form" className="mb-6">
             <CardHeader>
                 <CardTitle as="h2" className="text-base font-semibold text-navy">
-                    余额提醒设置
+                    {m.heading}
                 </CardTitle>
             </CardHeader>
             <CardContent>
-                <p className="m-0 mb-4 text-xs text-muted-ink">
-                    当余额低于阈值时,我们会向您的注册邮箱发送提醒(24 小时内最多一次)。填 0 关闭提醒。
-                </p>
+                <p className="m-0 mb-4 text-xs text-muted-ink">{m.hint}</p>
                 <div className="flex items-end gap-2.5 flex-wrap">
                     <div>
-                        <Label htmlFor="balance-alert-threshold">阈值(CNY)</Label>
+                        <Label htmlFor="balance-alert-threshold">{m.thresholdLabel}</Label>
                         <Input
                             id="balance-alert-threshold"
                             type="number"
@@ -90,7 +93,7 @@ export function BalanceAlertForm({ initialThreshold }: Props) {
                                 setValue(e.target.value);
                                 if (status !== 'idle') setStatus('idle');
                             }}
-                            aria-label="余额提醒阈值"
+                            aria-label={m.thresholdAria}
                             block={false}
                             className="w-32 tabular-nums"
                         />
@@ -103,7 +106,7 @@ export function BalanceAlertForm({ initialThreshold }: Props) {
                         loading={status === 'saving'}
                         disabled={!canSave}
                     >
-                        {status === 'saving' ? '保存中…' : '保存'}
+                        {status === 'saving' ? m.saving : m.save}
                     </Button>
                     {persisted === 0 && (
                         <span
@@ -112,15 +115,15 @@ export function BalanceAlertForm({ initialThreshold }: Props) {
                                 'bg-status-warning-bg border border-status-warning-border text-status-warning-text',
                             ].join(' ')}
                         >
-                            已关闭提醒
+                            {m.disabled}
                         </span>
                     )}
                     {status === 'saved' && persisted > 0 && (
-                        <span className="text-xs text-status-success-text">已保存 ✓ 当前阈值 ¥{persisted}</span>
+                        <span className="text-xs text-status-success-text">{m.saved(persisted)}</span>
                     )}
                     {status === 'error' && errMsg && <span className="text-xs text-status-error-text">{errMsg}</span>}
                     {status === 'idle' && !validRange && dirty && (
-                        <span className="text-xs text-status-error-text">请输入 0–1000 的整数</span>
+                        <span className="text-xs text-status-error-text">{m.invalidRange}</span>
                     )}
                 </div>
             </CardContent>

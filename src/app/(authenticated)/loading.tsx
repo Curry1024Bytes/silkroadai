@@ -13,14 +13,18 @@
  * /logs, /chat alike — per-page loading files can specialise later.
  */
 
+import { getMessages } from '@/lib/i18n/server';
+import { commonMessages } from '@/lib/i18n/messages/common';
+
 /** A pulsing placeholder block. Sized by the caller via className. */
 function Bone({ className }: { className: string }) {
     return <div aria-hidden className={`animate-pulse rounded-md bg-paper-muted ${className}`} />;
 }
 
-export default function AuthenticatedLoading() {
+export default async function AuthenticatedLoading() {
+    const m = await getMessages(commonMessages);
     return (
-        <section aria-busy="true" aria-label="页面加载中">
+        <section aria-busy="true" aria-label={m.loading.page}>
             {/* Title row (mirrors the h1 + actions strip on /dashboard) */}
             <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
                 <div>

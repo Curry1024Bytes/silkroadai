@@ -13,6 +13,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderToString } from 'react-dom/server';
 import { KeysList, QuotaExpiryFields, TierSelect, type KeyRow } from '@/app/(authenticated)/keys/keys-list';
+import { LocaleProvider } from '@/lib/i18n/client';
 
 const SAMPLE_ROWS: KeyRow[] = [
     {
@@ -426,5 +427,83 @@ describe('<TierSelect /> 专属倍率徽章(2026-10-23)', () => {
         const plain = renderToString(<TierSelect tiers={TIERS} value="pool-claude" onChange={() => {}} />);
         expect(plain).toContain('1.6x 倍率');
         expect(plain).not.toContain('专属倍率');
+    });
+});
+
+describe('<KeysList /> English locale', () => {
+    const en = (node: React.ReactNode) => renderToString(<LocaleProvider locale="en">{node}</LocaleProvider>);
+
+    it('empty state + create button in English', () => {
+        const html = en(<KeysList initialRows={[]} />);
+        expect(html).toContain('No API keys yet');
+        expect(html).toContain('+ Create key');
+        expect(html).not.toContain('还没有 API Key');
+        expect(html).not.toContain('+ 创建新 Key');
+    });
+
+    it('rows: headers, actions, usage subline, cap / expiry and relative time in English', () => {
+        const aboutADayAgo = new Date(Date.now() - 26 * 60 * 60 * 1000).toISOString();
+        const rows: KeyRow[] = [
+            { ...SAMPLE_ROWS[0], usedCny: 4.87, used_quota: 695_000, last_used_at: aboutADayAgo },
+            { ...SAMPLE_ROWS[1], quota_unlimited: false, remainCny: 0, expires_at: '2026-01-01T04:00:00.000Z' },
+        ];
+        const html = en(<KeysList initialRows={rows} />);
+        for (const s of ['Name', 'Cap / Expiry', 'Created', 'Actions']) expect(html, s).toContain(s);
+        expect((html.match(/>Reveal</g) ?? []).length).toBe(2);
+        expect((html.match(/>Copy</g) ?? []).length).toBe(2);
+        expect((html.match(/>Revoke</g) ?? []).length).toBe(2);
+        expect(html).toMatch(/Total (<!-- -->)?¥(<!-- -->)?4\.87/);
+        expect(html).toMatch(/Last used (<!-- -->)?1 d ago/);
+        expect(html).toContain('Never used');
+        expect(html).toContain('Unlimited');
+        expect(html).toContain('Never expires');
+        expect(html).toMatch(/Remaining (<!-- -->)?¥0\.00/);
+        expect(html).toContain('Used up');
+        expect(html).toContain('Expired');
+        expect(html).toContain('1/1/2026, 12:00:00'); // en-US digits, still Beijing time
+        expect(html).toContain('Rename production');
+        expect(html).toContain('Adjust cap and expiry production');
+        for (const zh of ['别名', '从未调用', '无限额度', '永不过期', '已过期', '撤销', '显示']) {
+            expect(html, zh).not.toContain(zh);
+        }
+    });
+
+    it('TierSelect placeholder + rate badges in English', () => {
+        const tiers = [
+            {
+                key: 'pool-gpt',
+                display_name: 'GPT pool',
+                description: null,
+                is_default: true,
+                newapi_group: 'pool-gpt',
+                ratio: 0.25,
+                special: true,
+            },
+            {
+                key: 'official',
+                display_name: 'Official',
+                description: null,
+                is_default: false,
+                newapi_group: 'o',
+                ratio: 3.5,
+            },
+        ];
+        expect(en(<TierSelect tiers={tiers} value={null} onChange={() => {}} />)).toContain('Choose a tier');
+        expect(en(<TierSelect tiers={tiers} value="pool-gpt" onChange={() => {}} />)).toContain('0.25x custom rate');
+        expect(en(<TierSelect tiers={tiers} value="official" onChange={() => {}} />)).toContain('3.5x rate');
+    });
+
+    it('QuotaExpiryFields labels + presets in English', () => {
+        const html = en(
+            <QuotaExpiryFields
+                idPrefix="t"
+                value={{ quotaUnlimited: false, quotaCny: '', expiryPreset: 'never', expiryCustom: '' }}
+                onChange={() => {}}
+            />,
+        );
+        expect(html).toContain('Spending cap');
+        expect(html).toContain('aria-label="Spending cap (CNY)"');
+        for (const label of ['Never', '1 hour', '1 day', '1 month', 'Custom']) expect(html, label).toContain(label);
+        expect(html).not.toContain('永不');
     });
 });

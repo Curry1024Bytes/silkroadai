@@ -10,6 +10,8 @@
  */
 import { useState } from 'react';
 import type { ImageGenerationItem } from './types';
+import { useMessages } from '@/lib/i18n/client';
+import { imageMessages } from '@/lib/i18n/messages/image';
 
 interface Props {
     item: ImageGenerationItem;
@@ -19,6 +21,7 @@ interface Props {
 }
 
 export function ResultDisplay({ item, onOpenModal, onToggleFavorite, onDelete }: Props) {
+    const m = useMessages(imageMessages).result;
     const [favPending, setFavPending] = useState(false);
     const [delPending, setDelPending] = useState(false);
     const [isFavorite, setIsFavorite] = useState(item.is_favorite);
@@ -37,7 +40,7 @@ export function ResultDisplay({ item, onOpenModal, onToggleFavorite, onDelete }:
 
     async function handleDelete() {
         if (delPending) return;
-        if (!window.confirm('删除这次生成?')) return;
+        if (!window.confirm(m.confirmDelete)) return;
         setDelPending(true);
         try {
             await onDelete(item.id);
@@ -57,7 +60,7 @@ export function ResultDisplay({ item, onOpenModal, onToggleFavorite, onDelete }:
                 : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-4';
 
     return (
-        <section aria-label="最新生成结果" className="w-full">
+        <section aria-label={m.sectionAria} className="w-full">
             <div className={`grid ${colsClass} gap-3`}>
                 {item.image_urls.map((url, i) => (
                     <Tile
@@ -65,6 +68,8 @@ export function ResultDisplay({ item, onOpenModal, onToggleFavorite, onDelete }:
                         url={url}
                         alt={`${item.prompt.slice(0, 40)}${item.prompt.length > 40 ? '…' : ''} #${i + 1}`}
                         onZoom={() => onOpenModal(item, i)}
+                        zoomAria={m.zoomAria}
+                        clickZoom={m.clickZoom}
                     />
                 ))}
             </div>
@@ -74,14 +79,14 @@ export function ResultDisplay({ item, onOpenModal, onToggleFavorite, onDelete }:
                 </p>
                 <div className="flex items-center gap-2 shrink-0">
                     <ActionButton
-                        ariaLabel={isFavorite ? '取消收藏' : '收藏'}
+                        ariaLabel={isFavorite ? m.unfavorite : m.favorite}
                         onClick={handleFav}
                         loading={favPending}
                         active={isFavorite}
                     >
                         {isFavorite ? '★' : '☆'}
                     </ActionButton>
-                    <ActionButton ariaLabel="删除" onClick={handleDelete} loading={delPending} danger>
+                    <ActionButton ariaLabel={m.delete} onClick={handleDelete} loading={delPending} danger>
                         🗑
                     </ActionButton>
                 </div>
@@ -90,12 +95,24 @@ export function ResultDisplay({ item, onOpenModal, onToggleFavorite, onDelete }:
     );
 }
 
-function Tile({ url, alt, onZoom }: { url: string; alt: string; onZoom: () => void }) {
+function Tile({
+    url,
+    alt,
+    onZoom,
+    zoomAria,
+    clickZoom,
+}: {
+    url: string;
+    alt: string;
+    onZoom: () => void;
+    zoomAria: (alt: string) => string;
+    clickZoom: string;
+}) {
     return (
         <button
             type="button"
             onClick={onZoom}
-            aria-label={`放大查看 ${alt}`}
+            aria-label={zoomAria(alt)}
             className={[
                 'group relative block w-full aspect-square overflow-hidden rounded-xl cursor-zoom-in',
                 'bg-paper-muted border border-brand-border',
@@ -113,7 +130,7 @@ function Tile({ url, alt, onZoom }: { url: string; alt: string; onZoom: () => vo
                     'transition-opacity duration-150 ease-brand',
                 ].join(' ')}
             >
-                点击放大
+                {clickZoom}
             </span>
         </button>
     );

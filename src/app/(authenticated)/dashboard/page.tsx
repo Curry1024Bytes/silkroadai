@@ -36,6 +36,10 @@ import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { fetchResellerStatus, type ResellerStatusSnap } from '@/lib/reseller/fetch-status';
 import { ResellerPromoCard } from '@/components/reseller/ResellerPromoCard';
+import { getLocale } from '@/lib/i18n/server';
+import { intlLocale, pickMessages } from '@/lib/i18n';
+import { commonMessages } from '@/lib/i18n/messages/common';
+import { dashboardMessages } from '@/lib/i18n/messages/dashboard';
 import { parsePeriod, type UsagePeriod } from './period';
 import { PeriodTabs } from './period-tabs';
 import { BalanceAlertForm } from './balance-alert-form';
@@ -51,19 +55,11 @@ import {
 } from './sections';
 
 export const dynamic = 'force-dynamic';
-export const metadata = { title: '概览 — Silk Road AI' };
+export async function generateMetadata() {
+    return { title: pickMessages(dashboardMessages, await getLocale()).pageTitle };
+}
 
 const HISTORY_LIMIT = 10;
-
-const PERIOD_LABEL: Record<UsagePeriod, string> = { '7d': '近 7 天', '30d': '近 30 天', all: '全部' };
-
-const RECHARGE_SOURCE_LABEL: Record<string, string> = {
-    payment: '在线支付',
-    manual: '管理员充值',
-    refund: '退款',
-    promo: '推广奖励',
-    adjustment: '余额调整',
-};
 
 async function getSessionUser() {
     const h = await headers();
@@ -81,9 +77,15 @@ export default async function DashboardPage({
     // Layout already gated; this is just TS narrowing.
     if (!user) return null;
 
-    const params = (await searchParams) ?? {};
-    const period = parsePeriod(params.period);
-    const periodLabel = PERIOD_LABEL[period];
+    const [params, locale] = await Promise.all([
+        searchParams ?? Promise.resolve<Record<string, string | string[] | undefined>>({}),
+        getLocale(),
+    ]);
+    const m = pickMessages(dashboardMessages, locale);
+    const c = pickMessages(commonMessages, locale);
+    const period: UsagePeriod = parsePeriod(params.period);
+    const periodLabel = m.periods[period];
+    const rechargeSources: Record<string, string> = m.rechargeSources;
 
     // Kick off 慢请求但【不 await】—— 壳只等下面的本地 DB;两个共享
     // promise 分别喂给多个 <Suspense> 区块(一次 fetch,多处消费),数据到
@@ -95,6 +97,8 @@ export default async function DashboardPage({
         newapiUserId: user.newapi_user_id,
         newapiUsername: user.newapi_username,
         period,
+        locale,
+        m,
     });
 
     // ── 快壳数据:本地 DB 一波并行(fetchResellerStatus 与 layout 同请求
@@ -123,36 +127,36 @@ export default async function DashboardPage({
             <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
                 <div>
                     <h1 className="m-0 mb-2 text-2xl font-semibold text-navy">
-                        欢迎,{user.nickname || user.email.split('@')[0]}
+                        {m.welcome(user.nickname || user.email.split('@')[0])}
                     </h1>
-                    <p className="m-0 text-sm text-muted-ink">余额、用量与每次调用明细,都在这里。</p>
+                    <p className="m-0 text-sm text-muted-ink">{m.subtitle}</p>
                 </div>
                 <div className="flex items-center gap-3">
                     <PeriodTabs active={period} />
                     <Button href="/pay" size="sm">
-                        + 充值
+                        {c.nav.topUp}
                     </Button>
                 </div>
             </div>
 
             <Suspense fallback={null}>
-                <BalanceNotices data={balanceData} />
+                <BalanceNotices data={balanceData} m={m} locale={locale} />
             </Suspense>
 
             {/* 1. Summary cards(余额 2 张 + 用量 3 张各自独立流入) */}
             {/* 5 列只在 xl(≥1280)启用;lg 下每列不足 200px,数字太挤,退 3+2 两行。 */}
             <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5">
                 <Suspense fallback={<StatCardSkeletons count={2} />}>
-                    <BalanceStatCards data={balanceData} />
+                    <BalanceStatCards data={balanceData} m={m} locale={locale} />
                 </Suspense>
                 <Suspense fallback={<StatCardSkeletons count={3} />}>
-                    <UsageStatCards data={usageData} periodLabel={periodLabel} />
+                    <UsageStatCards data={usageData} periodLabel={periodLabel} m={m} locale={locale} />
                 </Suspense>
             </div>
 
             {/* 2-4. Chart + by-model + per-call table(同一份 usageData,整块流入) */}
-            <Suspense fallback={<UsageBodySkeleton periodLabel={periodLabel} />}>
-                <UsageBody data={usageData} periodLabel={periodLabel} />
+            <Suspense fallback={<UsageBodySkeleton periodLabel={periodLabel} m={m} />}>
+                <UsageBody data={usageData} periodLabel={periodLabel} m={m} locale={locale} />
             </Suspense>
 
             {/* 5. Balance alert threshold (preserved from /balance) */}
@@ -163,14 +167,16 @@ export default async function DashboardPage({
             />
 
             {/* 6. Recharge history (preserved from /balance) */}
-            <h2 className="m-0 mb-3 text-base font-semibold text-navy">充值流水</h2>
+            <h2 className="m-0 mb-3 text-base font-semibold text-navy">{m.recharge.heading}</h2>
             {history.length === 0 ? (
                 <Card>
                     <EmptyState
-                        title="暂无充值记录"
+                        title={m.recharge.emptyTitle}
                         body={
                             <>
-                                点击右上「<code className="font-mono text-xs">+ 充值</code>」开始第一笔充值。
+                                {m.recharge.emptyBodyBefore}
+                                <code className="font-mono text-xs">{c.nav.topUp}</code>
+                                {m.recharge.emptyBodyAfter}
                             </>
                         }
                     />
@@ -181,16 +187,16 @@ export default async function DashboardPage({
                         <thead>
                             <tr className="bg-paper-muted text-muted-ink">
                                 <th className="border-b border-brand-border px-4 py-2.5 text-left text-xs font-semibold">
-                                    金额(CNY)
+                                    {m.recharge.colAmount}
                                 </th>
                                 <th className="border-b border-brand-border px-4 py-2.5 text-left text-xs font-semibold">
-                                    类型
+                                    {m.recharge.colType}
                                 </th>
                                 <th className="border-b border-brand-border px-4 py-2.5 text-left text-xs font-semibold">
-                                    订单号
+                                    {m.recharge.colOrder}
                                 </th>
                                 <th className="border-b border-brand-border px-4 py-2.5 text-left text-xs font-semibold">
-                                    时间
+                                    {m.recharge.colTime}
                                 </th>
                             </tr>
                         </thead>
@@ -203,12 +209,14 @@ export default async function DashboardPage({
                                         <td className={`${cell} font-medium tabular-nums`}>
                                             ¥{Number(row.amount).toFixed(2)}
                                         </td>
-                                        <td className={cell}>{RECHARGE_SOURCE_LABEL[row.source] ?? row.source}</td>
+                                        <td className={cell}>{rechargeSources[row.source] ?? row.source}</td>
                                         <td className={`${cell} font-mono text-xs text-muted-ink`}>
                                             {row.order_id ? row.order_id.slice(0, 8) : '—'}
                                         </td>
                                         <td className={`${cell} text-muted-ink`}>
-                                            {row.created_at.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}
+                                            {row.created_at.toLocaleString(intlLocale(locale), {
+                                                timeZone: 'Asia/Shanghai',
+                                            })}
                                         </td>
                                     </tr>
                                 );

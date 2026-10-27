@@ -4,19 +4,12 @@ import { useState } from 'react';
 import { Button } from '@/components/ui/Button';
 import { FormError } from '@/components/ui/FormError';
 import { Input } from '@/components/ui/Input';
+import { useMessages } from '@/lib/i18n/client';
+import { payMessages } from '@/lib/i18n/messages/pay';
 
 /** Default tiers (CNY). Approved values from W4-1 D2 brief — adjust by
  *  editing this constant; no DB-config knob exists yet. */
 const DEFAULT_TIERS_CNY = [10, 30, 100, 300, 1000, 5000, 10000];
-
-/** Friendly label for known payment-type strings. The registry returns codes
- *  like "alipay" / "wxpay" / "stripe" — render Chinese names for portal users. */
-const PROVIDER_LABEL: Record<string, string> = {
-    alipay: '支付宝',
-    wxpay: '微信支付',
-    stripe: 'Stripe (信用卡)',
-    easypay: '易支付',
-};
 
 interface OrderResponse {
     orderId: string;
@@ -31,6 +24,9 @@ interface OrderResponse {
 }
 
 export function PayForm({ enabledPaymentTypes }: { enabledPaymentTypes: string[] }) {
+    // Friendly labels for known payment-type codes ("alipay" / "wxpay" / …)
+    // live in the messages module; unknown codes render verbatim.
+    const m = useMessages(payMessages).form;
     const [selectedTier, setSelectedTier] = useState<number | 'custom'>(DEFAULT_TIERS_CNY[2]);
     const [customAmount, setCustomAmount] = useState<string>('');
     const [paymentType, setPaymentType] = useState<string>(enabledPaymentTypes[0] ?? '');
@@ -60,7 +56,7 @@ export function PayForm({ enabledPaymentTypes }: { enabledPaymentTypes: string[]
             });
             if (!r.ok) {
                 const data = await r.json().catch(() => ({}));
-                setError(typeof data?.error === 'string' ? data.error : `请求失败 (${r.status})`);
+                setError(typeof data?.error === 'string' ? data.error : m.requestFailed(r.status));
                 setSubmitting(false);
                 return;
             }
@@ -86,22 +82,22 @@ export function PayForm({ enabledPaymentTypes }: { enabledPaymentTypes: string[]
                 window.location.href = `/pay/${encodeURIComponent(data.orderId)}`;
                 return;
             }
-            setError('未收到支付跳转地址,请联系管理员');
+            setError(m.noRedirect);
             setSubmitting(false);
         } catch (err) {
-            setError(err instanceof Error ? err.message : '网络错误,请稍后重试');
+            setError(err instanceof Error ? err.message : m.networkError);
             setSubmitting(false);
         }
     }
 
     if (enabledPaymentTypes.length === 0) {
-        return <FormError severity="banner">当前没有可用的支付方式,请联系管理员配置 ENABLED_PAYMENT_TYPES。</FormError>;
+        return <FormError severity="banner">{m.noProviders}</FormError>;
     }
 
     return (
         <form onSubmit={handleSubmit}>
             <fieldset className="border-0 p-0 m-0 mb-5">
-                <legend className="text-sm text-muted-ink p-0 mb-2">选择金额(CNY)</legend>
+                <legend className="text-sm text-muted-ink p-0 mb-2">{m.amountLegend}</legend>
                 <div className="grid grid-cols-4 sm:grid-cols-7 gap-1.5">
                     {DEFAULT_TIERS_CNY.map((tier) => {
                         const active = selectedTier === tier;
@@ -131,7 +127,7 @@ export function PayForm({ enabledPaymentTypes }: { enabledPaymentTypes: string[]
                         onChange={() => setSelectedTier('custom')}
                         className="accent-navy"
                     />
-                    <span className="text-sm text-muted-ink">自定义金额:</span>
+                    <span className="text-sm text-muted-ink">{m.customAmount}</span>
                     <Input
                         type="number"
                         step="0.01"
@@ -148,7 +144,7 @@ export function PayForm({ enabledPaymentTypes }: { enabledPaymentTypes: string[]
             </fieldset>
 
             <fieldset className="border-0 p-0 m-0 mb-6">
-                <legend className="text-sm text-muted-ink p-0 mb-2">支付方式</legend>
+                <legend className="text-sm text-muted-ink p-0 mb-2">{m.methodLegend}</legend>
                 <div className="flex flex-col gap-1.5">
                     {enabledPaymentTypes.map((t) => (
                         <label
@@ -169,7 +165,7 @@ export function PayForm({ enabledPaymentTypes }: { enabledPaymentTypes: string[]
                                 onChange={() => setPaymentType(t)}
                                 className="accent-navy"
                             />
-                            <span className="text-sm text-ink">{PROVIDER_LABEL[t] ?? t}</span>
+                            <span className="text-sm text-ink">{m.providers[t] ?? t}</span>
                         </label>
                     ))}
                 </div>
@@ -178,7 +174,7 @@ export function PayForm({ enabledPaymentTypes }: { enabledPaymentTypes: string[]
             <FormError>{error}</FormError>
 
             <Button type="submit" block size="lg" loading={submitting} disabled={!canSubmit}>
-                {submitting ? '正在跳转支付…' : '前往支付'}
+                {submitting ? m.submitting : m.submit}
             </Button>
         </form>
     );

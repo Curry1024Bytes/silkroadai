@@ -13,7 +13,11 @@
  *   - 次数:  ≥ 1 万  → `万`,1 位小数                `218.5 万`
  *   - Tokens:≥ 1 万  → K / M / B,3 位有效数字        `42.6M` / `1.00B`
  * Tokens 用 K/M/B 而不是万/亿:行业定价口径是 `$/M tokens`,与 /pricing 和模型清单一致。
+ *
+ * i18n(2026-10-27):`formatCny` / `formatCount` 接受可选 `locale`;英文界面没有「万」,
+ * 压缩阈值不变,但单位改走 K / M / B(`¥290.26K` / `2.18M`)。省略 locale = 中文,与历史输出一致。
  */
+import type { Locale } from '@/lib/i18n';
 
 export interface CompactNumber {
     /** 主显数字本体(不含货币符号和单位),已带千分位。 */
@@ -41,13 +45,26 @@ function thousands(n: number, fractionDigits: number): string {
     });
 }
 
+/** 英文压缩:按量级选 K / M / B,固定小数位(金额 2 位、次数 1 位)。 */
+function compactEn(n: number, fractionDigits: number): { display: string; unit: string } {
+    const a = Math.abs(n);
+    const tiers: Array<[number, string]> = [
+        [1e9, 'B'],
+        [1e6, 'M'],
+        [1e3, 'K'],
+    ];
+    const tier = tiers.find(([div]) => a >= div) ?? tiers[tiers.length - 1];
+    return { display: thousands(n / tier[0], fractionDigits), unit: tier[1] };
+}
+
 /** 金额(人民币)。`¥` 符号由调用方渲染(便于单独降级字号)。 */
-export function formatCny(value: number): CompactNumber {
+export function formatCny(value: number, locale: Locale = 'zh'): CompactNumber {
     const n = safe(value);
     const exact = `¥${thousands(n, 2)}`;
     if (Math.abs(n) < CNY_COMPACT_THRESHOLD) {
         return { display: thousands(n, 2), unit: '', exact, compact: false };
     }
+    if (locale === 'en') return { ...compactEn(n, 2), exact, compact: true };
     return { display: thousands(n / 10_000, 2), unit: '万', exact, compact: true };
 }
 
@@ -57,12 +74,13 @@ export function formatUsd(value: number): string {
 }
 
 /** 计数(请求次数等整数)。 */
-export function formatCount(value: number): CompactNumber {
+export function formatCount(value: number, locale: Locale = 'zh'): CompactNumber {
     const n = Math.round(safe(value));
     const exact = thousands(n, 0);
     if (Math.abs(n) < COUNT_COMPACT_THRESHOLD) {
         return { display: exact, unit: '', exact, compact: false };
     }
+    if (locale === 'en') return { ...compactEn(n, 1), exact, compact: true };
     return { display: thousands(n / 10_000, 1), unit: '万', exact, compact: true };
 }
 

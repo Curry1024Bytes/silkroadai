@@ -16,10 +16,17 @@ import { NextRequest } from 'next/server';
 import { getCurrentUser } from '@/lib/auth/session';
 import { BrandLogo } from '@/components/brand/BrandLogo';
 import { Card } from '@/components/ui/Card';
+import { LocaleSwitcher } from '@/components/LocaleSwitcher';
+import { getLocale } from '@/lib/i18n/server';
+import { pickMessages } from '@/lib/i18n';
+import { authMessages } from '@/lib/i18n/messages/auth';
 import { RegisterForm } from './register-form';
 
 export const dynamic = 'force-dynamic';
-export const metadata = { title: '注册 — Silk Road AI' };
+export async function generateMetadata() {
+    const m = pickMessages(authMessages, await getLocale());
+    return { title: m.register.pageTitle };
+}
 
 async function getSessionUser() {
     const h = await headers();
@@ -38,21 +45,25 @@ export default async function RegisterPage() {
         redirect('/dashboard');
     }
 
+    const all = pickMessages(authMessages, await getLocale());
+    const m = all.register;
+
     return (
         <main className="min-h-screen flex items-center justify-center bg-paper px-4 py-10">
             <Card className="w-full max-w-md p-8">
                 <header className="mb-6 flex items-center gap-3">
                     <BrandLogo variant="primary-flat" size={28} />
                     <p className="m-0 text-xs text-minor-ink">Connecting Global Intelligence.</p>
+                    <LocaleSwitcher className="ml-auto" />
                 </header>
-                <h2 className="m-0 mb-1 text-base font-semibold text-navy">注册账户</h2>
+                <h2 className="m-0 mb-1 text-base font-semibold text-navy">{m.heading}</h2>
                 <p className="m-0 mb-5 text-sm text-muted-ink">
-                    邮箱注册 · 5 秒到账 · 已经有账户?{' '}
+                    {m.subtitle}{' '}
                     <a href="/login" className="text-navy font-medium hover:text-brand-accent">
-                        前往登录
+                        {m.goLogin}
                     </a>
                 </p>
-                <Suspense fallback={<p className="text-sm text-muted-ink">加载中…</p>}>
+                <Suspense fallback={<p className="text-sm text-muted-ink">{all.loading}</p>}>
                     <RegisterForm />
                 </Suspense>
             </Card>

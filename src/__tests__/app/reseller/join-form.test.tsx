@@ -14,6 +14,7 @@ vi.mock('next/navigation', () => ({
 }));
 
 import { JoinForm } from '@/app/(authenticated)/reseller/join-form';
+import { LocaleProvider } from '@/lib/i18n/client';
 
 describe('<JoinForm />', () => {
     it('renders the agreement-checkbox label + submit button', () => {
@@ -31,5 +32,20 @@ describe('<JoinForm />', () => {
         const html = renderToString(<JoinForm />);
         expect(html).toContain('立即激活代理身份');
         expect(html).toContain('系统会为你自动生成第一个邀请码');
+    });
+});
+
+describe('<JoinForm /> (en)', () => {
+    it('renders English checkbox label, hint and CTA', () => {
+        const html = renderToString(
+            <LocaleProvider locale="en">
+                <JoinForm />
+            </LocaleProvider>,
+        );
+        expect(html).toContain('I have read and agree to the Silk Road AI Reseller Agreement summary above');
+        expect(html).toContain('your first invite code is generated automatically');
+        expect(html).toContain('Join the reseller program');
+        expect(html).toMatch(/disabled/);
+        expect(html).not.toContain('我已阅读并同意');
     });
 });

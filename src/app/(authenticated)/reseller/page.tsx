@@ -15,9 +15,14 @@ import { fetchResellerStatus } from '@/lib/reseller/fetch-status';
 import { JoinForm } from './join-form';
 import { AgreementDisclosure } from '@/components/reseller/AgreementDisclosure';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
+import { getLocale } from '@/lib/i18n/server';
+import { pickMessages } from '@/lib/i18n';
+import { resellerMessages } from '@/lib/i18n/messages/reseller';
 
 export const dynamic = 'force-dynamic';
-export const metadata = { title: '加入代理 — Silk Road AI' };
+export async function generateMetadata() {
+    return { title: pickMessages(resellerMessages, await getLocale()).meta.entryTitle };
+}
 
 async function getSessionUser() {
     const h = await headers();
@@ -34,6 +39,8 @@ export default async function ResellerEntryPage() {
     if (!user) return null; // layout gates; defensive narrowing
     const { status } = await fetchResellerStatus(user.id);
     if (status === 'active') redirect('/reseller/dashboard');
+    const locale = await getLocale();
+    const m = pickMessages(resellerMessages, locale).entry;
 
     // Suspended / banned — show a status page so sidebar grey-entry clicks
     // land on something explanatory instead of the join form (which would
@@ -45,15 +52,13 @@ export default async function ResellerEntryPage() {
                 <Card>
                     <CardHeader>
                         <div className="flex flex-col gap-1">
-                            <p className="text-xs uppercase tracking-wider text-muted-ink m-0">代理状态</p>
-                            <CardTitle as="h1">{isBanned ? '账户已封禁' : '账户已暂停'}</CardTitle>
+                            <p className="text-xs uppercase tracking-wider text-muted-ink m-0">{m.statusKicker}</p>
+                            <CardTitle as="h1">{isBanned ? m.bannedTitle : m.suspendedTitle}</CardTitle>
                         </div>
                     </CardHeader>
                     <CardContent>
                         <p className="text-sm leading-relaxed text-muted-ink m-0">
-                            {isBanned
-                                ? '你的代理身份已被封禁。已发生的合规佣金按规则照付,封禁前的结算申请仍会处理。如有疑问请联系运营。'
-                                : '你的代理身份已被暂停,新的引流不再产生佣金。已确认的佣金仍可正常申请结算。请联系运营了解详情。'}
+                            {isBanned ? m.bannedBody : m.suspendedBody}
                         </p>
                     </CardContent>
                 </Card>
@@ -67,20 +72,19 @@ export default async function ResellerEntryPage() {
             <Card>
                 <CardHeader>
                     <div className="flex flex-col gap-1">
-                        <p className="text-xs uppercase tracking-wider text-muted-ink m-0">代理计划</p>
-                        <CardTitle as="h1">加入 Silk Road AI 代理</CardTitle>
+                        <p className="text-xs uppercase tracking-wider text-muted-ink m-0">{m.programKicker}</p>
+                        <CardTitle as="h1">{m.joinTitle}</CardTitle>
                     </div>
                 </CardHeader>
                 <CardContent>
                     <p className="text-sm leading-relaxed text-muted-ink mb-4">
-                        将你的邀请链接分享给朋友 / 社群 / 自媒体粉丝,他们注册后的所有充值都有你的佣金, 长达{' '}
-                        <strong className="text-navy">24 个月归因期</strong>。累计 GMV 越高,费率越高: Bronze 10% →
-                        Silver 15% → Gold 20%。
+                        {m.introBefore} <strong className="text-navy">{m.introStrong}</strong>
+                        {m.introAfter}
                     </p>
                     <ul className="text-sm text-muted-ink space-y-1.5 pl-5 list-disc">
-                        <li>开放注册,任意已登录用户可一键加入,无审核</li>
-                        <li>注册后自动生成默认邀请码,可创建最多 10 个自定义码</li>
-                        <li>客户充值后 14 天确认,每月可申请结算,单次满 ¥100 起结</li>
+                        {m.bullets.map((b) => (
+                            <li key={b}>{b}</li>
+                        ))}
                     </ul>
                 </CardContent>
             </Card>

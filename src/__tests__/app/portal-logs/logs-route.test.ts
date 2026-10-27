@@ -13,6 +13,13 @@ vi.mock('@/lib/auth/session', () => ({
     getCurrentUser: (...a: unknown[]) => mockGetCurrentUser(...a),
 }));
 
+// i18n:默认 zh(与无 cookie 的站点默认一致);英文用例把它切到 'en'。
+const mockLocale = vi.fn<() => Promise<'zh' | 'en'>>(async () => 'zh');
+vi.mock('@/lib/i18n/server', () => ({
+    getLocale: () => mockLocale(),
+    getMessages: async (d: { zh: unknown; en: unknown }) => ((await mockLocale()) === 'en' ? d.en : d.zh),
+}));
+
 const mockQueryLogs = vi.fn();
 vi.mock('@/lib/newapi/client', () => ({
     queryLogs: (...a: unknown[]) => mockQueryLogs(...a),
@@ -61,7 +68,10 @@ function makeLog(o: LogOpt = {}) {
 const req = (qs = '') => new NextRequest(`https://ai.silkroadai.io/api/portal/logs${qs}`);
 const provisioned = { id: 'u1', newapi_user_id: 100, newapi_username: 'c-x' };
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+    vi.clearAllMocks();
+    mockLocale.mockResolvedValue('zh');
+});
 
 describe('GET /api/portal/logs', () => {
     it('未登录 → 401', async () => {
@@ -138,6 +148,19 @@ describe('GET /api/portal/logs', () => {
         const d = (await (await GET(req())).json()) as { rows: Array<{ content: string }> };
         expect(d.rows[0].content.toLowerCase()).not.toContain('adobe');
         expect(d.rows[0].content).toContain('安全系统');
+    });
+
+    it('脱敏文案跟随站点语言:en → 英文友好文案', async () => {
+        mockLocale.mockResolvedValue('en');
+        mockGetCurrentUser.mockResolvedValue(provisioned);
+        mockQueryLogs.mockResolvedValue({
+            items: [makeLog({ id: 3, type: 5, request_id: 'X', content: 'adobe content rejected: image_unsafe' })],
+            total: 1,
+        });
+        const d = (await (await GET(req())).json()) as { rows: Array<{ content: string }> };
+        expect(d.rows[0].content.toLowerCase()).not.toContain('adobe');
+        expect(d.rows[0].content).toContain('safety system');
+        expect(d.rows[0].content).not.toContain('安全系统');
     });
 
     it('perImageBilled 按 other.model_price 计:gpt-image-2 按 token→false;gemini 生图按张→true', async () => {

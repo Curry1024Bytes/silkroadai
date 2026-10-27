@@ -5,17 +5,21 @@
  * result and history is also empty (or collapsed). Picks one of the
  * sample prompts on click → fills the prompt input.
  */
-import { SAMPLE_PROMPTS } from '@/data/image-models';
+import { samplePrompts } from '@/data/image-models';
+import { useLocale, useMessages } from '@/lib/i18n/client';
+import { imageMessages } from '@/lib/i18n/messages/image';
 
 interface Props {
     onPickSample: (prompt: string) => void;
 }
 
 export function ImageEmptyState({ onPickSample }: Props) {
+    const m = useMessages(imageMessages).empty;
+    const prompts = samplePrompts(useLocale());
     return (
         <div
             role="region"
-            aria-label="空状态 · 示例 prompt"
+            aria-label={m.aria}
             className={[
                 'flex flex-col items-center justify-center gap-5',
                 'min-h-[280px] sm:min-h-[420px]',
@@ -27,11 +31,11 @@ export function ImageEmptyState({ onPickSample }: Props) {
                 🎨
             </div>
             <div>
-                <h2 className="m-0 text-lg font-semibold text-navy">你的第一张图等你创造</h2>
-                <p className="m-0 mt-1.5 text-sm text-muted-ink">从下方输入 prompt,或点一个示例快速开始</p>
+                <h2 className="m-0 text-lg font-semibold text-navy">{m.headline}</h2>
+                <p className="m-0 mt-1.5 text-sm text-muted-ink">{m.sub}</p>
             </div>
             <ul className="list-none p-0 m-0 grid grid-cols-1 sm:grid-cols-2 gap-2 max-w-2xl">
-                {SAMPLE_PROMPTS.map((p) => (
+                {prompts.map((p) => (
                     <li key={p}>
                         <button
                             type="button"

@@ -1,0 +1,146 @@
+/**
+ * Top-up flow: /pay (form), /pay/qr (scan-to-pay + poll runner), /pay/result
+ * (gateway return landing).
+ */
+import { defineMessages } from '../index';
+
+export const payMessages = defineMessages(
+    {
+        pay: {
+            pageTitle: '充值 — Silk Road AI',
+            heading: '账户充值',
+            loggedInAs: '登录账户:',
+            helpBefore: '充值遇到问题?请联系微信客服 ',
+            helpWechat: 'lambda_yyh充值',
+        },
+        form: {
+            providers: {
+                alipay: '支付宝',
+                wxpay: '微信支付',
+                stripe: 'Stripe (信用卡)',
+                easypay: '易支付',
+            } as Record<string, string>,
+            requestFailed: (status: number) => `请求失败 (${status})`,
+            noRedirect: '未收到支付跳转地址,请联系管理员',
+            networkError: '网络错误,请稍后重试',
+            noProviders: '当前没有可用的支付方式,请联系管理员配置 ENABLED_PAYMENT_TYPES。',
+            amountLegend: '选择金额(CNY)',
+            customAmount: '自定义金额:',
+            methodLegend: '支付方式',
+            submit: '前往支付',
+            submitting: '正在跳转支付…',
+        },
+        qr: {
+            pageTitle: '扫码支付 — Silk Road AI',
+            providers: {
+                alipay: '支付宝',
+                wxpay: '微信支付',
+            } as Record<string, string>,
+            notFoundTitle: '订单不存在',
+            notFoundBody: '请返回重新发起支付。',
+            backToPay: '← 返回 /pay',
+            mismatchTitle: '支付方式不匹配',
+            mismatchBody: '当前订单不是扫码支付。',
+            heading: (provider: string) => `使用${provider}扫码支付`,
+            instruction: (provider: string) => `打开${provider}「扫一扫」对准下方二维码完成付款`,
+            qrAlt: '支付二维码',
+            orderNo: '订单号',
+            footer: (provider: string) => `付款后此页面会自动跳转。如果长时间未跳转,请检查${provider}是否已完成付款。`,
+        },
+        qrRunner: {
+            waiting: '等待付款…',
+            paid: '付款已收到,正在到账…',
+            recharging: '正在到账…',
+            success: '充值成功,正在跳转余额页…',
+            failed: '订单失败,正在跳转结果页…',
+            timeout: '等待超时,正在跳转结果页…',
+            reconnecting: '正在重新连接,请稍候…',
+        },
+        result: {
+            pageTitle: '支付结果 — Silk Road AI',
+            invalidTitle: '访问无效',
+            invalidBody: '缺少订单参数。',
+            backHome: '返回首页',
+            notFoundTitle: '订单异常',
+            notFoundBody: '未找到该订单。如已付款请联系客服:微信 Globe_Ads。',
+            successTitle: '付款成功',
+            processingTitle: '付款已收到,处理中',
+            abnormalTitle: '订单异常',
+            successBody: (amount: string) => `${amount} 已到账,余额刷新可能延迟最多 60 秒。`,
+            processingBody: (amount: string) => `${amount} 已确认,正在到账,通常几秒内完成。`,
+            abnormalBody: '订单状态异常,如已付款请联系客服:微信 Globe_Ads。',
+            backToBalance: '返回 /balance',
+        },
+    },
+    {
+        pay: {
+            pageTitle: 'Top up — Silk Road AI',
+            heading: 'Top up your account',
+            loggedInAs: 'Signed in as: ',
+            helpBefore: 'Trouble topping up? Contact support on WeChat: ',
+            helpWechat: 'lambda_yyh充值',
+        },
+        form: {
+            providers: {
+                alipay: 'Alipay',
+                wxpay: 'WeChat Pay',
+                stripe: 'Stripe (credit card)',
+                easypay: 'EasyPay',
+            } as Record<string, string>,
+            requestFailed: (status: number) => `Request failed (${status})`,
+            noRedirect: 'No payment redirect URL received. Please contact support.',
+            networkError: 'Network error, please try again later',
+            noProviders:
+                'No payment method is available right now. Ask the administrator to configure ENABLED_PAYMENT_TYPES.',
+            amountLegend: 'Choose an amount (CNY)',
+            customAmount: 'Custom amount:',
+            methodLegend: 'Payment method',
+            submit: 'Continue to payment',
+            submitting: 'Redirecting to payment…',
+        },
+        qr: {
+            pageTitle: 'Scan to pay — Silk Road AI',
+            providers: {
+                alipay: 'Alipay',
+                wxpay: 'WeChat Pay',
+            } as Record<string, string>,
+            notFoundTitle: 'Order not found',
+            notFoundBody: 'Please go back and start the payment again.',
+            backToPay: '← Back to /pay',
+            mismatchTitle: 'Payment method mismatch',
+            mismatchBody: 'This order is not a scan-to-pay order.',
+            heading: (provider: string) => `Scan to pay with ${provider}`,
+            instruction: (provider: string) => `Open ${provider}, tap "Scan" and point it at the QR code below to pay`,
+            qrAlt: 'Payment QR code',
+            orderNo: 'Order',
+            footer: (provider: string) =>
+                `This page redirects automatically once payment is received. If nothing happens for a while, check that the payment completed in ${provider}.`,
+        },
+        qrRunner: {
+            waiting: 'Waiting for payment…',
+            paid: 'Payment received, crediting your balance…',
+            recharging: 'Crediting your balance…',
+            success: 'Top-up successful, redirecting to your balance…',
+            failed: 'Order failed, redirecting to the result page…',
+            timeout: 'Timed out, redirecting to the result page…',
+            reconnecting: 'Reconnecting, please wait…',
+        },
+        result: {
+            pageTitle: 'Payment result — Silk Road AI',
+            invalidTitle: 'Invalid request',
+            invalidBody: 'Missing order parameter.',
+            backHome: 'Back to home',
+            notFoundTitle: 'Order problem',
+            notFoundBody: 'Order not found. If you have already paid, contact support on WeChat: Globe_Ads.',
+            successTitle: 'Payment successful',
+            processingTitle: 'Payment received, processing',
+            abnormalTitle: 'Order problem',
+            successBody: (amount: string) =>
+                `${amount} has been credited. Your balance may take up to 60 seconds to refresh.`,
+            processingBody: (amount: string) =>
+                `${amount} confirmed and being credited — this usually completes within seconds.`,
+            abnormalBody: 'Unexpected order status. If you have already paid, contact support on WeChat: Globe_Ads.',
+            backToBalance: 'Back to /balance',
+        },
+    },
+);

@@ -16,9 +16,14 @@ import { prisma } from '@/lib/db';
 import type { Prisma } from '@prisma/client';
 import { maskEmail } from '@/lib/reseller/mask';
 import { CommissionsClient, type CommissionRow, type StatusFilter } from './commissions-client';
+import { getLocale } from '@/lib/i18n/server';
+import { pickMessages } from '@/lib/i18n';
+import { resellerMessages } from '@/lib/i18n/messages/reseller';
 
 export const dynamic = 'force-dynamic';
-export const metadata = { title: '佣金明细 — 代理后台' };
+export async function generateMetadata() {
+    return { title: pickMessages(resellerMessages, await getLocale()).meta.commissionsTitle };
+}
 
 const PAGE_SIZE = 50;
 const MONTH_RX = /^\d{4}-(0[1-9]|1[0-2])$/;

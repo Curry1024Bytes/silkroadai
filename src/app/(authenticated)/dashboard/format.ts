@@ -11,6 +11,8 @@
  *   - `prompt_tokens` / `completion_tokens` → Tokens(输入/输出)
  *   - `type` (2=consume 成功, 5=error 失败) → 结果
  */
+import { pickMessages, type Locale } from '@/lib/i18n';
+import { dashboardMessages } from '@/lib/i18n/messages/dashboard';
 
 /** Result of a single call. Maps new-api `log.type` to a customer-facing
  *  success/failure verdict. Anything other than the two known consume/error
@@ -65,13 +67,19 @@ export function formatTokens(promptTokens: number, completionTokens: number, per
  * 背景:Anthropic 面 prompt_tokens 不含缓存部分 —— prompt-cache 重度用户(如 CCMAX)
  * 会看到"输入 2 却 ¥0.07",缓存行就是解释。
  */
-export function formatCacheTokens(cacheReadTokens: number, cacheWriteTokens: number, perImageBilled = false): string {
+export function formatCacheTokens(
+    cacheReadTokens: number,
+    cacheWriteTokens: number,
+    perImageBilled = false,
+    locale: Locale = 'zh',
+): string {
     if (perImageBilled) return '';
     const r = Number.isFinite(cacheReadTokens) && cacheReadTokens > 0 ? cacheReadTokens : 0;
     const w = Number.isFinite(cacheWriteTokens) && cacheWriteTokens > 0 ? cacheWriteTokens : 0;
+    const labels = pickMessages(dashboardMessages, locale).format;
     const parts: string[] = [];
-    if (r > 0) parts.push(`缓存读 ${r.toLocaleString('en-US')}`);
-    if (w > 0) parts.push(`缓存写 ${w.toLocaleString('en-US')}`);
+    if (r > 0) parts.push(`${labels.cacheRead} ${r.toLocaleString('en-US')}`);
+    if (w > 0) parts.push(`${labels.cacheWrite} ${w.toLocaleString('en-US')}`);
     return parts.join(' · ');
 }
 

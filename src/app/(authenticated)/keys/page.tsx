@@ -19,11 +19,16 @@ import { quotaToCny } from '@/lib/newapi/quota-units';
 import { formatTokenForDisplay } from '@/lib/newapi/token-format';
 import { listEnabledChannelGroups, restrictGroupsForUser } from '@/lib/channel-group';
 import { getEffectiveGroupRatios } from '@/lib/newapi/effective-group-ratios';
+import { getLocale } from '@/lib/i18n/server';
+import { pickMessages } from '@/lib/i18n';
+import { keysMessages } from '@/lib/i18n/messages/keys';
 import { KeysList, type KeyRow } from './keys-list';
 import { KeysSnippetsPanel } from './keys-snippets-panel';
 
 export const dynamic = 'force-dynamic';
-export const metadata = { title: 'API Keys — Silk Road AI' };
+export async function generateMetadata() {
+    return { title: pickMessages(keysMessages, await getLocale()).pageTitle };
+}
 
 async function getSessionUser() {
     const h = await headers();
@@ -43,9 +48,10 @@ function maskKey(value: string): string {
 }
 
 export default async function KeysPage() {
-    const user = await getSessionUser();
+    const [user, locale] = await Promise.all([getSessionUser(), getLocale()]);
     // Layout already gated; null branch only to satisfy TS narrowing.
     if (!user) return null;
+    const t = pickMessages(keysMessages, locale);
 
     const tokens = await prisma.newApiToken.findMany({
         where: { user_id: user.id, status: 'active' },
@@ -145,8 +151,8 @@ export default async function KeysPage() {
 
     return (
         <section>
-            <h1 className="m-0 mb-2 text-2xl font-semibold text-navy">API Keys</h1>
-            <p className="m-0 mb-6 text-sm text-muted-ink">管理用于调用 Silk Road AI 的访问密钥。撤销后立即失效。</p>
+            <h1 className="m-0 mb-2 text-2xl font-semibold text-navy">{t.heading}</h1>
+            <p className="m-0 mb-6 text-sm text-muted-ink">{t.subtitle}</p>
             <KeysList initialRows={rows} tiers={tiers} />
             {/* W7 D4 PR-R Item C — unified 调用示例 panel below the
              *  keys table replaces the per-row KeyHowtoPanel that PR-G

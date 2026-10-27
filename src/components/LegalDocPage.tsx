@@ -15,6 +15,9 @@
  * enables tables / strikethrough that the legal docs author may use.
  */
 import fs from 'node:fs/promises';
+import { pickMessages } from '@/lib/i18n';
+import { getLocale } from '@/lib/i18n/server';
+import { commonMessages } from '@/lib/i18n/messages/common';
 import path from 'node:path';
 import Link from 'next/link';
 import { marked } from 'marked';
@@ -27,6 +30,8 @@ interface LegalDocPageProps {
 }
 
 export async function LegalDocPage({ file }: LegalDocPageProps) {
+    const locale = await getLocale();
+    const m = pickMessages(commonMessages, locale);
     const raw = await fs.readFile(path.join(process.cwd(), 'src/content/legal', file), 'utf8');
     // marked synchronous mode — no Promise unwrap needed.
     const html = marked.parse(raw) as string;
@@ -60,8 +65,26 @@ export async function LegalDocPage({ file }: LegalDocPageProps) {
                         textDecoration: 'none',
                     }}
                 >
-                    ← 返回 Silk Road AI
+                    {`← ${m.nav.backToSite}`}
                 </Link>
+                {locale === 'en' ? (
+                    <p
+                        role="note"
+                        lang="en"
+                        style={{
+                            margin: '0 0 16px',
+                            padding: '10px 12px',
+                            fontSize: 13,
+                            lineHeight: 1.5,
+                            color: '#5a6478',
+                            background: '#f5f7fa',
+                            border: '1px solid #e5e8ee',
+                            borderRadius: 6,
+                        }}
+                    >
+                        {m.legal.languageNotice}
+                    </p>
+                ) : null}
                 {/* Style the rendered HTML in-place via a wrapper class +
                  *  scoped <style>. dangerouslySetInnerHTML is safe here —
                  *  source markdown is repo-controlled (no user input). */}

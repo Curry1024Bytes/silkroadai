@@ -4,6 +4,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderToString } from 'react-dom/server';
 import { CommissionsClient, type CommissionRow } from '@/app/(authenticated)/reseller/commissions/commissions-client';
+import { LocaleProvider } from '@/lib/i18n/client';
 
 /** React SSR splits adjacent dynamic+static JSX nodes with `<!-- -->`.
  *  Strip them so substring assertions target the user-visible string. */
@@ -120,5 +121,49 @@ describe('<CommissionsClient />', () => {
             ),
         );
         expect(html).toContain('没有佣金记录');
+    });
+});
+
+describe('<CommissionsClient /> (en)', () => {
+    it('renders English tabs, chips, row copy and pagination', () => {
+        const html = strip(
+            renderToString(
+                <LocaleProvider locale="en">
+                    <CommissionsClient
+                        rows={[{ ...baseRow, admin_review_required: true }]}
+                        summary={baseSummary}
+                        filters={{ status: 'all', month: null }}
+                        pagination={{ page: 2, limit: 50, total: 120, hasMore: true }}
+                    />
+                </LocaleProvider>,
+            ),
+        );
+        expect(html).toContain('Reseller console');
+        expect(html).toContain('Commissions');
+        expect(html).toContain('Payable');
+        expect(html).toContain('Paid out');
+        expect(html).toContain('Under review');
+        expect(html).toContain('Top-up ¥100.00 · 10%');
+        expect(html).toContain('Hold until');
+        expect(html).toContain('Page 2 · 120 records');
+        expect(html).toContain('← Previous');
+        expect(html).toContain('Next →');
+        expect(html).not.toContain('待确认');
+        expect(html).not.toContain('审核中');
+    });
+
+    it('empty rows → English empty state', () => {
+        const html = renderToString(
+            <LocaleProvider locale="en">
+                <CommissionsClient
+                    rows={[]}
+                    summary={{ ...baseSummary, count_pending: 0, pending_cny: 0 }}
+                    filters={{ status: 'all', month: null }}
+                    pagination={{ page: 1, limit: 50, total: 0, hasMore: false }}
+                />
+            </LocaleProvider>,
+        );
+        expect(html).toContain('No commission records');
+        expect(html).not.toContain('没有佣金记录');
     });
 });

@@ -17,6 +17,9 @@ import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Input } from '@/components/ui/Input';
 import { Label } from '@/components/ui/Label';
+import { intlLocale } from '@/lib/i18n';
+import { useLocale, useMessages } from '@/lib/i18n/client';
+import { storageMessages, type StorageMessages } from '@/lib/i18n/messages/storage';
 
 export interface OssConfigView {
     provider: string;
@@ -39,22 +42,29 @@ interface Props {
     defaultModeHint?: string;
 }
 
-const PROVIDERS: Array<{ value: string; label: string; endpointHint: string }> = [
-    { value: 'r2', label: 'Cloudflare R2', endpointHint: 'https://<account_id>.r2.cloudflarestorage.com' },
-    { value: 'aliyun-oss', label: '阿里云 OSS', endpointHint: 'https://oss-cn-hangzhou.aliyuncs.com' },
-    { value: 'tencent-cos', label: '腾讯云 COS', endpointHint: 'https://cos.ap-guangzhou.myqcloud.com' },
-    { value: 's3', label: 'AWS S3', endpointHint: '留空(走 AWS 默认,需填 region)' },
-    { value: 's3-custom', label: '自建 / 其他 S3 兼容', endpointHint: 'https://minio.example.com' },
-];
+interface ProviderMeta {
+    value: string;
+    label: string;
+    endpointHint: string;
+}
+
+function providers(m: StorageMessages['form']): ProviderMeta[] {
+    return [
+        { value: 'r2', label: m.providers.r2, endpointHint: 'https://<account_id>.r2.cloudflarestorage.com' },
+        { value: 'aliyun-oss', label: m.providers.aliyun, endpointHint: 'https://oss-cn-hangzhou.aliyuncs.com' },
+        { value: 'tencent-cos', label: m.providers.tencent, endpointHint: 'https://cos.ap-guangzhou.myqcloud.com' },
+        { value: 's3', label: m.providers.s3, endpointHint: m.s3EndpointHint },
+        { value: 's3-custom', label: m.providers.s3Custom, endpointHint: 'https://minio.example.com' },
+    ];
+}
 
 type TestState = { state: 'idle' | 'testing' } | { state: 'ok' } | { state: 'fail'; message: string };
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
 
-export function StorageSettingsForm({
-    initialConfig,
-    apiBase = '/api/portal/oss',
-    defaultModeHint = 'Silk Road AI 托管,无需配置,URL 为 images.silkroadai.io',
-}: Props) {
+export function StorageSettingsForm({ initialConfig, apiBase = '/api/portal/oss', defaultModeHint }: Props) {
+    const m = useMessages(storageMessages).form;
+    const locale = useLocale();
+    const PROVIDERS = providers(m);
     const [mode, setMode] = useState<'default' | 'custom'>(initialConfig ? 'custom' : 'default');
     const [provider, setProvider] = useState(initialConfig?.provider ?? 'r2');
     const [endpoint, setEndpoint] = useState(initialConfig?.endpoint ?? '');
@@ -141,7 +151,7 @@ export function StorageSettingsForm({
                     access_key_id_masked: `${accessKeyId.slice(0, 4)}****`,
                     public_url_prefix: publicUrlPrefix.trim(),
                     status: 'active',
-                    last_test_at: new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }),
+                    last_test_at: new Date().toLocaleString(intlLocale(locale), { timeZone: 'Asia/Shanghai' }),
                 });
                 setSecretAccessKey('');
                 setTest({ state: 'idle' });
@@ -178,7 +188,7 @@ export function StorageSettingsForm({
     return (
         <Card className="mt-6">
             <CardHeader>
-                <CardTitle>图片 / 视频输出存储</CardTitle>
+                <CardTitle>{m.cardTitle}</CardTitle>
             </CardHeader>
             <CardContent>
                 {/* 模式选择 */}
@@ -192,8 +202,8 @@ export function StorageSettingsForm({
                             className="mt-1"
                         />
                         <span>
-                            <span className="text-sm font-medium text-navy">默认存储(推荐)</span>
-                            <span className="block text-xs text-muted-ink">{defaultModeHint}</span>
+                            <span className="text-sm font-medium text-navy">{m.defaultMode}</span>
+                            <span className="block text-xs text-muted-ink">{defaultModeHint ?? m.defaultModeHint}</span>
                         </span>
                     </label>
                     <label className="flex items-start gap-2 cursor-pointer">
@@ -205,10 +215,8 @@ export function StorageSettingsForm({
                             className="mt-1"
                         />
                         <span>
-                            <span className="text-sm font-medium text-navy">自定义对象存储</span>
-                            <span className="block text-xs text-muted-ink">
-                                图片和视频直接上传到你自己的 bucket,URL 用你的域名,数据归属你
-                            </span>
+                            <span className="text-sm font-medium text-navy">{m.customMode}</span>
+                            <span className="block text-xs text-muted-ink">{m.customModeHint}</span>
                         </span>
                     </label>
                 </div>
@@ -217,12 +225,12 @@ export function StorageSettingsForm({
                 {savedConfig && (
                     <div className="mt-4 rounded-lg border border-brand-border bg-paper-muted px-4 py-3 text-sm">
                         <span className="font-medium text-navy">
-                            当前配置:
+                            {m.currentConfig}
                             {PROVIDERS.find((p) => p.value === savedConfig.provider)?.label ?? savedConfig.provider}
                         </span>
                         <span className="ml-2 text-muted-ink">
                             bucket <code className="font-mono text-xs">{savedConfig.bucket}</code> · AK{' '}
-                            <code className="font-mono text-xs">{savedConfig.access_key_id_masked}</code> · 前缀{' '}
+                            <code className="font-mono text-xs">{savedConfig.access_key_id_masked}</code> · {m.prefix}{' '}
                             <code className="font-mono text-xs">{savedConfig.public_url_prefix}</code>
                         </span>
                         <Button
@@ -232,7 +240,7 @@ export function StorageSettingsForm({
                             onClick={handleClear}
                             disabled={save === 'saving'}
                         >
-                            清除(回默认)
+                            {m.clear}
                         </Button>
                     </div>
                 )}
@@ -240,7 +248,7 @@ export function StorageSettingsForm({
                 {mode === 'custom' && (
                     <div className="mt-5 flex flex-col gap-4">
                         <div>
-                            <Label htmlFor="oss-provider">服务商</Label>
+                            <Label htmlFor="oss-provider">{m.provider}</Label>
                             <select
                                 id="oss-provider"
                                 value={provider}
@@ -256,7 +264,7 @@ export function StorageSettingsForm({
                         </div>
 
                         <div>
-                            <Label htmlFor="oss-endpoint">Endpoint{endpointRequired ? '' : '(可选)'}</Label>
+                            <Label htmlFor="oss-endpoint">Endpoint{endpointRequired ? '' : m.optional}</Label>
                             <Input
                                 id="oss-endpoint"
                                 value={endpoint}
@@ -276,7 +284,7 @@ export function StorageSettingsForm({
                                 />
                             </div>
                             <div>
-                                <Label htmlFor="oss-region">Region{regionRequired ? '' : '(可选)'}</Label>
+                                <Label htmlFor="oss-region">Region{regionRequired ? '' : m.optional}</Label>
                                 <Input
                                     id="oss-region"
                                     value={region}
@@ -294,7 +302,7 @@ export function StorageSettingsForm({
                                     value={accessKeyId}
                                     onChange={(e) => touch(setAccessKeyId)(e.target.value)}
                                     placeholder={
-                                        savedConfig ? `已存(${savedConfig.access_key_id_masked}),修改需重填` : ''
+                                        savedConfig ? m.akStoredPlaceholder(savedConfig.access_key_id_masked) : ''
                                     }
                                     autoComplete="off"
                                 />
@@ -306,23 +314,21 @@ export function StorageSettingsForm({
                                     type="password"
                                     value={secretAccessKey}
                                     onChange={(e) => touch(setSecretAccessKey)(e.target.value)}
-                                    placeholder={savedConfig ? '已加密存储,修改需重填' : ''}
+                                    placeholder={savedConfig ? m.skStoredPlaceholder : ''}
                                     autoComplete="new-password"
                                 />
                             </div>
                         </div>
 
                         <div>
-                            <Label htmlFor="oss-prefix">公网访问前缀</Label>
+                            <Label htmlFor="oss-prefix">{m.publicPrefix}</Label>
                             <Input
                                 id="oss-prefix"
                                 value={publicUrlPrefix}
                                 onChange={(e) => touch(setPublicUrlPrefix)(e.target.value)}
                                 placeholder="https://images.example.com"
                             />
-                            <p className="mt-1 text-xs text-minor-ink">
-                                bucket 绑定的公开访问域名 / CDN。返回给你的图片 URL = 前缀 + /gen/&lt;uuid&gt;.png
-                            </p>
+                            <p className="mt-1 text-xs text-minor-ink">{m.publicPrefixHint}</p>
                         </div>
 
                         {/* 测试 + 保存 */}
@@ -332,28 +338,33 @@ export function StorageSettingsForm({
                                 disabled={!fieldsComplete || test.state === 'testing'}
                                 variant="secondary"
                             >
-                                {test.state === 'testing' ? '测试中…' : '测试连接'}
+                                {test.state === 'testing' ? m.testing : m.testConnection}
                             </Button>
                             <Button onClick={handleSave} disabled={test.state !== 'ok' || save === 'saving'}>
-                                {save === 'saving' ? '保存中…' : '保存配置'}
+                                {save === 'saving' ? m.saving : m.saveConfig}
                             </Button>
-                            {test.state === 'ok' && (
-                                <span className="text-sm text-green-700">✅ 连接成功,可以保存</span>
-                            )}
+                            {test.state === 'ok' && <span className="text-sm text-green-700">{m.testOk}</span>}
                             {test.state === 'fail' && (
-                                <span className="text-sm text-red-600">❌ 连接失败:{test.message}</span>
+                                <span className="text-sm text-red-600">
+                                    {m.testFail}
+                                    {test.message}
+                                </span>
                             )}
-                            {save === 'saved' && <span className="text-sm text-green-700">已保存,立即生效</span>}
+                            {save === 'saved' && <span className="text-sm text-green-700">{m.saved}</span>}
                             {save === 'error' && saveErr && (
-                                <span className="text-sm text-red-600">保存失败:{saveErr}</span>
+                                <span className="text-sm text-red-600">
+                                    {m.saveFailed}
+                                    {saveErr}
+                                </span>
                             )}
                         </div>
 
                         <p className="text-xs text-minor-ink">
-                            凭证使用 AES-256-GCM 加密存储,不会回显。建议使用
-                            <strong>仅对该 bucket 有读写权限的子账号</strong>
-                            (最小权限),不要用主账号 AK。上传失败时自动回退到平台默认存储(响应头
-                            <code className="mx-1 font-mono">X-Silkroadai-Oss-Fallback</code>标记),不影响生图。
+                            {m.security1}
+                            <strong>{m.security2}</strong>
+                            {m.security3}
+                            <code className="mx-1 font-mono">X-Silkroadai-Oss-Fallback</code>
+                            {m.security4}
                         </p>
                     </div>
                 )}

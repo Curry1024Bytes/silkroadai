@@ -26,12 +26,14 @@ import Link from 'next/link';
 import { BackButton } from '@/components/BackButton';
 import { Logo } from '@/components/brand/Logo';
 import { Card } from '@/components/ui/Card';
+import { pickMessages } from '@/lib/i18n';
+import { getLocale } from '@/lib/i18n/server';
+import { commonMessages } from '@/lib/i18n/messages/common';
 
-export const metadata = {
-    title: '集成文档 — Silk Road AI',
-    description:
-        'Silk Road AI 一键集成文档:Cursor、Cline、Continue、Claude Code Desktop、OpenAI Codex(CLI / IDE 插件 / 桌面 app)、Python / Node SDK。OpenAI / Anthropic 兼容协议,5 分钟接入。',
-};
+export async function generateMetadata() {
+    const m = pickMessages(commonMessages, await getLocale());
+    return { title: m.docs.pageTitle, description: m.docs.pageDescription };
+}
 
 interface AgentSection {
     id: string;
@@ -151,7 +153,11 @@ const ANTHROPIC_BASE = 'https://ai.silkroadai.io';
 const SAMPLE_OPENAI_MODEL = 'gpt-5.4';
 const SAMPLE_ANTHROPIC_MODEL = 'claude-sonnet-4-6';
 
-export default function DocsPage() {
+export default async function DocsPage() {
+    // Docs prose is Chinese-only for now (English edition = separate PR); the
+    // chrome follows the site locale and English visitors get a notice bar.
+    const locale = await getLocale();
+    const m = pickMessages(commonMessages, locale);
     return (
         <main className="min-h-screen bg-paper">
             <header className="border-b border-brand-border bg-paper sticky top-0 z-30">
@@ -159,22 +165,31 @@ export default function DocsPage() {
                     <Logo variant="primary-flat" size={28} />
                     <nav className="flex items-center gap-3 text-sm">
                         <Link href="/models" className="text-muted-ink hover:text-navy no-underline">
-                            模型清单
+                            {m.nav.models}
                         </Link>
                         <Link href="/login" className="text-muted-ink hover:text-navy no-underline">
-                            登录
+                            {m.nav.login}
                         </Link>
                         <Link
                             href="/dashboard"
                             className="px-3 py-1.5 border border-navy rounded-lg text-navy no-underline hover:bg-paper-muted"
                         >
-                            进入控制台 →
+                            {m.nav.console} →
                         </Link>
                     </nav>
                 </div>
             </header>
 
             <div className="max-w-5xl mx-auto px-4 sm:px-6 py-10">
+                {locale === 'en' ? (
+                    <p
+                        role="note"
+                        lang="en"
+                        className="m-0 mb-6 rounded-lg border border-status-warning-border bg-status-warning-bg px-4 py-3 text-sm text-status-warning-text"
+                    >
+                        {m.docs.languageNotice}
+                    </p>
+                ) : null}
                 <section className="mb-10">
                     {/* W7 D4 PR-R Item D — back-to-landing link, sits
                      *  above the h1 so customers who deep-linked into

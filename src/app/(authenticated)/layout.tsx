@@ -28,6 +28,7 @@ import type { CSSProperties } from 'react';
 import { getCurrentUser } from '@/lib/auth/session';
 import { fetchResellerStatus } from '@/lib/reseller/fetch-status';
 import { BrandLogo } from '@/components/brand/BrandLogo';
+import { LocaleSwitcher } from '@/components/LocaleSwitcher';
 import { getCurrentTenant } from '@/lib/tenant/resolve';
 import { Sidebar } from './sidebar';
 import { LogoutButton } from './logout-button';
@@ -92,6 +93,7 @@ export default async function AuthenticatedLayout({ children }: { children: Reac
                         <p className="hidden md:block m-0 text-xs text-minor-ink">Connecting Global Intelligence.</p>
                     </div>
                     <div className="flex items-center gap-3">
+                        <LocaleSwitcher />
                         <span
                             className="hidden sm:inline text-sm text-muted-ink truncate max-w-[200px]"
                             title={user.email}

@@ -1,72 +1,41 @@
-import type { Metadata } from 'next';
 import Link from 'next/link';
 import { BackButton } from '@/components/BackButton';
+import { getLocale } from '@/lib/i18n/server';
+import { pickMessages } from '@/lib/i18n';
+import { toolsMessages } from '@/lib/i18n/messages/tools';
 
-export const metadata: Metadata = {
-    title: '工具箱 · Silk Road AI',
-    description:
-        'Silk Road AI 工具箱 —— Seedance 视频 / AI 对话 / AI 生图 在线测试工具,以及 OpenAI Codex / Claude Code 接入。',
-};
+export async function generateMetadata() {
+    const m = pickMessages(toolsMessages, await getLocale());
+    return { title: m.index.metaTitle, description: m.index.metaDescription };
+}
 
+type ToolsIndexMessages = (typeof toolsMessages)['zh']['index'];
 type Tool = { icon: string; tag: string; title: string; desc: string; href: string; cta: string };
 
-const TOOLS: Tool[] = [
-    {
-        icon: '🎬',
-        tag: '在线工具',
-        title: 'Seedance 视频测试工具',
-        desc: '填入你的 API Key,在线生成 Seedance 视频 —— 全部模型、全部玩法(文生 / 图生 / 首尾帧 / 参考音频),无需写代码。',
-        href: '/tools/seedance',
-        cta: '立即使用',
-    },
-    {
-        icon: '💬',
-        tag: '在线工具',
-        title: 'AI 对话测试工具',
-        desc: '填入你的 API Key,在线测试 AI 对话(逐字流式)—— 覆盖你这把 key 能用的全部对话模型(GPT / Claude / Gemini / DeepSeek 等)。',
-        href: '/tools/chat',
-        cta: '立即使用',
-    },
-    {
-        icon: '🎨',
-        tag: '在线工具',
-        title: 'AI 生图测试工具',
-        desc: '填入你的 API Key,在线测试文生图 / 图生图 —— 覆盖你这把 key 能用的全部生图模型(Gemini / GPT Image 等)。',
-        href: '/tools/image',
-        cta: '立即使用',
-    },
-    {
-        icon: '⌨️',
-        tag: '下载安装',
-        title: 'OpenAI Codex 接入',
-        desc: 'Codex CLI / IDE 插件 / 桌面版接入 Silk Road AI,一份配置直连 ChatGPT,人民币计费。',
-        href: '/docs#codex-cli',
-        cta: '下载 & 接入',
-    },
-    {
-        icon: '🤖',
-        tag: '下载安装',
-        title: 'Claude Code 接入',
-        desc: 'Claude Code 桌面 / CLI 接入 Silk Road AI,配好 Base URL + Key 即用 Claude,人民币计费。',
-        href: '/docs#claude-code',
-        cta: '下载 & 接入',
-    },
-];
+function buildTools(m: ToolsIndexMessages): Tool[] {
+    return [
+        { icon: '🎬', tag: m.tagOnline, ...m.seedance, href: '/tools/seedance', cta: m.useNow },
+        { icon: '💬', tag: m.tagOnline, ...m.chat, href: '/tools/chat', cta: m.useNow },
+        { icon: '🎨', tag: m.tagOnline, ...m.image, href: '/tools/image', cta: m.useNow },
+        { icon: '⌨️', tag: m.tagDownload, ...m.codex, href: '/docs#codex-cli', cta: m.downloadConnect },
+        { icon: '🤖', tag: m.tagDownload, ...m.claudeCode, href: '/docs#claude-code', cta: m.downloadConnect },
+    ];
+}
 
-export default function ToolsIndexPage() {
+export default async function ToolsIndexPage() {
+    const m = pickMessages(toolsMessages, await getLocale());
+    const tools = buildTools(m.index);
     return (
         <main className="min-h-screen bg-paper text-ink">
             <div className="mx-auto max-w-4xl px-5 py-8">
                 <BackButton className="text-sm text-brand-accent hover:underline cursor-pointer border-0 bg-transparent p-0">
-                    ← 返回
+                    {m.shared.back}
                 </BackButton>
-                <h1 className="m-0 mt-4 mb-1 text-2xl font-semibold text-navy">工具箱</h1>
-                <p className="m-0 mb-6 text-sm text-muted-ink leading-relaxed">
-                    在线测试工具与接入指引,后续会持续加入更多工具。
-                </p>
+                <h1 className="m-0 mt-4 mb-1 text-2xl font-semibold text-navy">{m.index.title}</h1>
+                <p className="m-0 mb-6 text-sm text-muted-ink leading-relaxed">{m.index.intro}</p>
 
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                    {TOOLS.map((t) => (
+                    {tools.map((t) => (
                         <Link
                             key={t.href}
                             href={t.href}

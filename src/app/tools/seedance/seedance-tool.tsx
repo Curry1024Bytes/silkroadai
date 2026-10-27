@@ -1,17 +1,13 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useMessages } from '@/lib/i18n/client';
+import { toolsMessages } from '@/lib/i18n/messages/tools';
 
 type Mode = 'text' | 'image' | 'multi' | 'frames' | 'audio';
 type Source = 'overseas' | 'reverse' | 'cn' | 'normal';
 
-const MODES: { key: Mode; label: string; hint: string }[] = [
-    { key: 'text', label: '文生视频', hint: '纯文字描述生成' },
-    { key: 'image', label: '图生视频', hint: '上传 1 张参考图' },
-    { key: 'multi', label: '多图参考', hint: '上传多张图(角色/场景)' },
-    { key: 'frames', label: '首尾帧', hint: '上传首帧 + 尾帧' },
-    { key: 'audio', label: '参考音频', hint: '上传 1 张图 + 音频' },
-];
+const MODE_KEYS: Mode[] = ['text', 'image', 'multi', 'frames', 'audio'];
 const RATIOS = ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9'];
 
 function detectSource(id: string): Source {
@@ -19,9 +15,6 @@ function detectSource(id: string): Source {
     if (/^seedance-2\.0-(720|1080)$/i.test(id)) return 'reverse';
     if (/^seedance2\.0-pro/i.test(id)) return 'cn';
     return 'normal';
-}
-function sourceLabel(s: Source): string {
-    return s === 'overseas' ? '海外满血' : s === 'reverse' ? '逆向低价' : s === 'cn' ? '国内企业级' : '普通';
 }
 function groupModels(models: string[]): { source: Source; ids: string[] }[] {
     const by: Record<Source, string[]> = { overseas: [], reverse: [], cn: [], normal: [] };
@@ -112,13 +105,16 @@ function findStatus(obj: unknown): string {
 }
 
 export function SeedanceTool() {
+    const m = useMessages(toolsMessages);
+    const t = m.seedance;
+    const sourceLabel = (s: Source): string => t.sources[s];
     const [key, setKey] = useState('');
     const [showKey, setShowKey] = useState(false);
     const [models, setModels] = useState<string[]>([]);
     const [loadingModels, setLoadingModels] = useState(false);
     const [model, setModel] = useState('');
     const [mode, setMode] = useState<Mode>('text');
-    const [prompt, setPrompt] = useState('一只橘猫在窗台上伸懒腰,慢镜头,暖色调');
+    const [prompt, setPrompt] = useState(t.defaultPrompt);
     const [seconds, setSeconds] = useState('5');
     const [ratio, setRatio] = useState('16:9');
     const [images, setImages] = useState<string[]>([]);
@@ -147,9 +143,9 @@ export function SeedanceTool() {
         try {
             const r = await fetch('/api/tools/seedance/models', { headers: { Authorization: `Bearer ${key.trim()}` } });
             const j = await r.json();
-            if (!r.ok) throw new Error(j?.error?.message || j?.error || '加载失败');
+            if (!r.ok) throw new Error(m.shared.apiError(j?.error?.message || j?.error || m.shared.loadFailed));
             const ms: string[] = j.models || [];
-            if (!ms.length) throw new Error('这把 key 下没有可用的 Seedance 视频模型(检查档位)');
+            if (!ms.length) throw new Error(t.noModels);
             setModels(ms);
             setModel(ms[0]);
         } catch (e) {
@@ -159,7 +155,7 @@ export function SeedanceTool() {
         } finally {
             setLoadingModels(false);
         }
-    }, [key]);
+    }, [key, m, t]);
 
     const onUpload = useCallback((files: FileList | null, multi: boolean) => {
         if (!files || !files.length) return;
@@ -190,7 +186,7 @@ export function SeedanceTool() {
         setVideoUrl('');
         setRaw('');
         setStatus('running');
-        setProgress('提交中…');
+        setProgress(t.submitting);
         // 未手改 JSON 时,提交用【实时表单状态】重建 —— 避免"上传图后 JSON 文本框还没同步"的竞态
         // (老实现只读文本框,上传与文本框刷新之间点生成就会漏掉图)。手改过 JSON 才用文本框内容。
         let body: Record<string, unknown>;
@@ -198,7 +194,7 @@ export function SeedanceTool() {
             try {
                 body = JSON.parse(bodyJson) as Record<string, unknown>;
             } catch {
-                setErr('请求 JSON 格式错误');
+                setErr(t.jsonInvalid);
                 setStatus('error');
                 return;
             }
@@ -222,7 +218,7 @@ export function SeedanceTool() {
                 return typeof v === 'string' ? !!v : Array.isArray(v) ? v.length > 0 : false;
             });
             if (!hasMedia) {
-                setErr('这个玩法需要参考素材 —— 请在上方重新选择参考图 / 首尾帧 / 音频后再生成');
+                setErr(t.needMedia);
                 setStatus('error');
                 return;
             }
@@ -236,9 +232,12 @@ export function SeedanceTool() {
                 body: JSON.stringify(body),
             });
             const j = await r.json();
-            if (!r.ok) throw new Error(j?.error?.message || j?.message || j?.error || `提交失败 (${r.status})`);
+            if (!r.ok)
+                throw new Error(
+                    m.shared.apiError(j?.error?.message || j?.message || j?.error || t.submitFailed(r.status)),
+                );
             taskId = j.task_id || j.id || j?.data?.task_id;
-            if (!taskId) throw new Error('未拿到 task_id:' + JSON.stringify(j).slice(0, 200));
+            if (!taskId) throw new Error(t.noTaskId(JSON.stringify(j).slice(0, 200)));
         } catch (e) {
             setErr(String(e instanceof Error ? e.message : e));
             setStatus('error');
@@ -252,17 +251,17 @@ export function SeedanceTool() {
                 const j = await r.json();
                 setRaw(JSON.stringify(j, null, 2));
                 const st = (findStatus(j) || '').toUpperCase();
-                setProgress(`生成中… ${st || 'PROCESSING'}(已等 ${Math.round(((i + 1) * 6) / 6) * 6}s)`);
+                setProgress(t.progress(st || 'PROCESSING', Math.round(((i + 1) * 6) / 6) * 6));
                 if (['SUCCESS', 'COMPLETED', 'SUCCEEDED'].includes(st)) {
                     const url = findStr(j, 'video_url') || findStr(j, 'url');
                     setVideoUrl(url || '');
                     setStatus('done');
                     setProgress('');
-                    if (!url) setErr('已完成但未找到 video_url,见下方原始响应');
+                    if (!url) setErr(t.doneNoUrl);
                     return;
                 }
                 if (['FAILED', 'FAILURE', 'ERROR'].includes(st)) {
-                    setErr('生成失败,见下方原始响应');
+                    setErr(t.failed);
                     setStatus('error');
                     return;
                 }
@@ -270,9 +269,9 @@ export function SeedanceTool() {
                 /* 单次轮询失败忽略,继续 */
             }
         }
-        setErr('超时(>15 分钟未出片),请稍后用 task_id 再查或重试');
+        setErr(t.timeout);
         setStatus('error');
-    }, [manualEdit, bodyJson, key, model, mode, prompt, seconds, ratio, images, audio]);
+    }, [manualEdit, bodyJson, key, model, mode, prompt, seconds, ratio, images, audio, m, t]);
 
     const needImages = mode !== 'text';
     const imgCount = mode === 'frames' ? 2 : mode === 'multi' ? 9 : 1;
@@ -281,39 +280,37 @@ export function SeedanceTool() {
         <div className="space-y-5">
             {/* Key */}
             <div className="rounded-lg border border-brand-border bg-surface p-4">
-                <label className="block text-sm font-medium text-navy mb-1">你的 API Key</label>
+                <label className="block text-sm font-medium text-navy mb-1">{m.shared.apiKeyLabel}</label>
                 <div className="flex gap-2">
                     <input
                         type={showKey ? 'text' : 'password'}
                         value={key}
                         onChange={(e) => setKey(e.target.value)}
-                        placeholder="sk-..."
+                        placeholder={m.shared.apiKeyPlaceholder}
                         className="flex-1 rounded border border-brand-border bg-paper px-3 py-2 text-sm font-mono"
                     />
                     <button
                         onClick={() => setShowKey((s) => !s)}
                         className="rounded border border-brand-border px-3 text-sm text-muted-ink"
                     >
-                        {showKey ? '隐藏' : '显示'}
+                        {showKey ? m.shared.hide : m.shared.show}
                     </button>
                     <button
                         onClick={loadModels}
                         disabled={!key.trim() || loadingModels}
                         className="rounded bg-brand-accent px-4 text-sm font-medium text-white disabled:opacity-50"
                     >
-                        {loadingModels ? '加载中…' : '加载模型'}
+                        {loadingModels ? m.shared.loading : m.shared.loadModels}
                     </button>
                 </div>
-                <p className="m-0 mt-2 text-xs text-minor-ink">
-                    Key 只用于本次调用、不保存。在「API 密钥」页用复制按钮取,避免手敲混淆。
-                </p>
+                <p className="m-0 mt-2 text-xs text-minor-ink">{t.keyNote}</p>
             </div>
 
             {models.length > 0 && (
                 <>
                     {/* 模型 */}
                     <div className="rounded-lg border border-brand-border bg-surface p-4">
-                        <label className="block text-sm font-medium text-navy mb-1">模型</label>
+                        <label className="block text-sm font-medium text-navy mb-1">{m.shared.model}</label>
                         <select
                             value={model}
                             onChange={(e) => setModel(e.target.value)}
@@ -331,34 +328,36 @@ export function SeedanceTool() {
                         </select>
                         {src && (
                             <p className="m-0 mt-1 text-xs text-minor-ink">
-                                档位:{sourceLabel(src)} · 时长字段{' '}
-                                {src === 'normal' || src === 'cn' ? 'duration' : 'seconds'}
-                                {src === 'reverse' ? '(建议 10/15)' : ''}
+                                {t.tierLine(
+                                    sourceLabel(src),
+                                    src === 'normal' || src === 'cn' ? 'duration' : 'seconds',
+                                )}
+                                {src === 'reverse' ? t.reverseDurationHint : ''}
                             </p>
                         )}
                     </div>
 
                     {/* 玩法 */}
                     <div className="rounded-lg border border-brand-border bg-surface p-4">
-                        <label className="block text-sm font-medium text-navy mb-2">玩法</label>
+                        <label className="block text-sm font-medium text-navy mb-2">{t.playMode}</label>
                         <div className="flex flex-wrap gap-2 mb-3">
-                            {MODES.map((m) => (
+                            {MODE_KEYS.map((k) => (
                                 <button
-                                    key={m.key}
+                                    key={k}
                                     onClick={() => {
-                                        if (m.key === mode) return; // 再点当前玩法不清空已选素材
-                                        setMode(m.key);
+                                        if (k === mode) return; // 再点当前玩法不清空已选素材
+                                        setMode(k);
                                         setImages([]);
                                     }}
-                                    className={`rounded-full px-3 py-1 text-sm border ${mode === m.key ? 'bg-brand-accent text-white border-brand-accent' : 'border-brand-border text-muted-ink'}`}
-                                    title={m.hint}
+                                    className={`rounded-full px-3 py-1 text-sm border ${mode === k ? 'bg-brand-accent text-white border-brand-accent' : 'border-brand-border text-muted-ink'}`}
+                                    title={t.modes[k].hint}
                                 >
-                                    {m.label}
+                                    {t.modes[k].label}
                                 </button>
                             ))}
                         </div>
 
-                        <label className="block text-sm font-medium text-navy mb-1">提示词</label>
+                        <label className="block text-sm font-medium text-navy mb-1">{t.prompt}</label>
                         <textarea
                             value={prompt}
                             onChange={(e) => setPrompt(e.target.value)}
@@ -366,14 +365,12 @@ export function SeedanceTool() {
                             className="w-full rounded border border-brand-border bg-paper px-3 py-2 text-sm"
                         />
                         {mode === 'multi' && src === 'reverse' && (
-                            <p className="m-0 mt-1 text-xs text-minor-ink">
-                                多图请在提示词里用 @Image1 / @Image2 指代每张图。
-                            </p>
+                            <p className="m-0 mt-1 text-xs text-minor-ink">{t.multiHint}</p>
                         )}
 
                         <div className="flex gap-4 mt-3">
                             <div>
-                                <label className="block text-xs text-muted-ink mb-1">时长(秒)</label>
+                                <label className="block text-xs text-muted-ink mb-1">{t.duration}</label>
                                 <input
                                     value={seconds}
                                     onChange={(e) => setSeconds(e.target.value)}
@@ -381,7 +378,7 @@ export function SeedanceTool() {
                                 />
                             </div>
                             <div>
-                                <label className="block text-xs text-muted-ink mb-1">画面比例</label>
+                                <label className="block text-xs text-muted-ink mb-1">{t.ratio}</label>
                                 <select
                                     value={ratio}
                                     onChange={(e) => setRatio(e.target.value)}
@@ -398,10 +395,10 @@ export function SeedanceTool() {
                             <div className="mt-3">
                                 <label className="block text-xs text-muted-ink mb-1">
                                     {mode === 'frames'
-                                        ? '首帧 + 尾帧(按顺序选 2 张)'
+                                        ? t.framesLabel
                                         : mode === 'multi'
-                                          ? '参考图(可多张,≤9)'
-                                          : '参考图(1 张)'}
+                                          ? t.multiLabel
+                                          : t.singleLabel}
                                 </label>
                                 <input
                                     type="file"
@@ -425,7 +422,7 @@ export function SeedanceTool() {
                                             onClick={() => setImages([])}
                                             className="text-xs text-minor-ink underline self-end"
                                         >
-                                            清除
+                                            {t.clear}
                                         </button>
                                     </div>
                                 )}
@@ -434,7 +431,7 @@ export function SeedanceTool() {
 
                         {mode === 'audio' && (
                             <div className="mt-3">
-                                <label className="block text-xs text-muted-ink mb-1">参考音频(上传或填直链)</label>
+                                <label className="block text-xs text-muted-ink mb-1">{t.audioLabel}</label>
                                 <input
                                     type="file"
                                     accept="audio/*"
@@ -442,9 +439,9 @@ export function SeedanceTool() {
                                     className="text-xs block mb-1"
                                 />
                                 <input
-                                    value={audio.startsWith('data:') ? '(已上传音频文件)' : audio}
+                                    value={audio.startsWith('data:') ? t.audioUploaded : audio}
                                     onChange={(e) => setAudio(e.target.value)}
-                                    placeholder="https://你的音频/song.mp3"
+                                    placeholder={t.audioPlaceholder}
                                     className="w-full rounded border border-brand-border bg-paper px-2 py-1.5 text-sm"
                                 />
                             </div>
@@ -453,9 +450,7 @@ export function SeedanceTool() {
 
                     {/* 请求 JSON(可改) */}
                     <div className="rounded-lg border border-brand-border bg-surface p-4">
-                        <label className="block text-sm font-medium text-navy mb-1">
-                            请求 JSON(自动生成,可手动改 — 高级玩法直接编辑这里)
-                        </label>
+                        <label className="block text-sm font-medium text-navy mb-1">{t.requestJson}</label>
                         <textarea
                             value={bodyJson}
                             onChange={(e) => {
@@ -471,7 +466,7 @@ export function SeedanceTool() {
                             disabled={status === 'running'}
                             className="mt-3 rounded bg-brand-accent px-5 py-2 text-sm font-medium text-white disabled:opacity-50"
                         >
-                            {status === 'running' ? '生成中…' : '生成视频'}
+                            {status === 'running' ? m.shared.generating : t.generate}
                         </button>
                         {progress && <span className="ml-3 text-sm text-muted-ink">{progress}</span>}
                     </div>
@@ -486,7 +481,7 @@ export function SeedanceTool() {
 
             {videoUrl && (
                 <div className="rounded-lg border border-brand-border bg-surface p-4">
-                    <label className="block text-sm font-medium text-navy mb-2">生成结果</label>
+                    <label className="block text-sm font-medium text-navy mb-2">{t.result}</label>
                     {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
                     <video src={videoUrl} controls className="w-full rounded border border-brand-border" />
                     <a
@@ -502,7 +497,7 @@ export function SeedanceTool() {
 
             {raw && (
                 <details className="rounded-lg border border-brand-border bg-surface p-4">
-                    <summary className="cursor-pointer text-sm font-medium text-navy">原始响应(调试)</summary>
+                    <summary className="cursor-pointer text-sm font-medium text-navy">{t.rawDebug}</summary>
                     <pre className="mt-2 overflow-auto text-xs text-muted-ink">{raw}</pre>
                 </details>
             )}

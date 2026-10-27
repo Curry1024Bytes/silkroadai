@@ -4,6 +4,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderToString } from 'react-dom/server';
 import { ResellerPromoCard } from '@/components/reseller/ResellerPromoCard';
+import { LocaleProvider } from '@/lib/i18n/client';
 
 describe('<ResellerPromoCard />', () => {
     it('renders headline + tier rates + CTA + /reseller link', () => {
@@ -24,5 +25,21 @@ describe('<ResellerPromoCard />', () => {
         const c = renderToString(<ResellerPromoCard sourceStatus="banned" />);
         expect(a).toBe(b);
         expect(b).toBe(c);
+    });
+});
+
+describe('<ResellerPromoCard /> (en)', () => {
+    it('renders English headline, rates and CTA', () => {
+        const html = renderToString(
+            <LocaleProvider locale="en">
+                <ResellerPromoCard sourceStatus="none" />
+            </LocaleProvider>,
+        );
+        expect(html).toContain('Refer friends who top up and earn commission');
+        expect(html).toContain('10% / 15% / 20%');
+        expect(html).toContain('24-month');
+        expect(html).toContain('About the reseller program');
+        expect(html).toContain('href="/reseller"');
+        expect(html).not.toContain('邀请朋友充值');
     });
 });

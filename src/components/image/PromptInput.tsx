@@ -8,6 +8,8 @@
  */
 import { useEffect, useRef } from 'react';
 import { PROMPT_MAX_CHARS } from '@/data/image-models';
+import { useMessages } from '@/lib/i18n/client';
+import { imageMessages } from '@/lib/i18n/messages/image';
 
 interface Props {
     value: string;
@@ -16,7 +18,8 @@ interface Props {
     placeholder?: string;
 }
 
-export function PromptInput({ value, onChange, disabled = false, placeholder = '描述你想要的图像...' }: Props) {
+export function PromptInput({ value, onChange, disabled = false, placeholder }: Props) {
+    const m = useMessages(imageMessages).prompt;
     const ref = useRef<HTMLTextAreaElement | null>(null);
 
     // Auto-resize: keep textarea height equal to scrollHeight up to the
@@ -35,14 +38,14 @@ export function PromptInput({ value, onChange, disabled = false, placeholder = '
     return (
         <div className="relative w-full">
             <label htmlFor="image-prompt" className="sr-only">
-                生成 prompt
+                {m.srLabel}
             </label>
             <textarea
                 ref={ref}
                 id="image-prompt"
                 value={value}
                 onChange={(e) => onChange(e.target.value)}
-                placeholder={placeholder}
+                placeholder={placeholder ?? m.placeholder}
                 disabled={disabled}
                 rows={3}
                 aria-invalid={overLimit}

@@ -12,10 +12,14 @@ import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { FormError } from '@/components/ui/FormError';
 import { Input } from '@/components/ui/Input';
+import { intlLocale, type Locale } from '@/lib/i18n';
+import { useLocale, useMessages } from '@/lib/i18n/client';
+import { commonMessages } from '@/lib/i18n/messages/common';
+import { keysMessages, type KeysMessages } from '@/lib/i18n/messages/keys';
 import {
     buildQuotaExpiryPayload,
     EXPIRY_PRESETS,
-    EXPIRY_PRESET_LABELS,
+    expiryPresetLabels,
     formatExpiry,
     isExpired,
     toDatetimeLocalValue,
@@ -78,22 +82,21 @@ function maskKey(value: string): string {
 const REVEAL_AUTOHIDE_MS = 10_000;
 const COPIED_TOAST_MS = 2_000;
 
-/** Render `last_used_at` as a friendly Chinese relative-time string.
- *  Returns null sentinel for "never used" so callers can phrase it in
- *  context (e.g. "从未调用"). */
-function formatLastUsed(iso: string | null): string {
-    if (!iso) return '从未调用';
+/** Render `last_used_at` as a friendly relative-time string in the current
+ *  locale ("从未调用" / "Never used" for the null sentinel). */
+function formatLastUsed(iso: string | null, t: KeysMessages['lastUsed']): string {
+    if (!iso) return t.never;
     const then = new Date(iso).getTime();
     if (Number.isNaN(then)) return '—';
     const now = Date.now();
     const diffSec = Math.max(0, Math.floor((now - then) / 1000));
-    if (diffSec < 60) return '刚刚';
+    if (diffSec < 60) return t.justNow;
     const diffMin = Math.floor(diffSec / 60);
-    if (diffMin < 60) return `${diffMin} 分钟前`;
+    if (diffMin < 60) return t.minutesAgo(diffMin);
     const diffHr = Math.floor(diffMin / 60);
-    if (diffHr < 24) return `${diffHr} 小时前`;
+    if (diffHr < 24) return t.hoursAgo(diffHr);
     const diffDay = Math.floor(diffHr / 24);
-    return `${diffDay} 天前`;
+    return t.daysAgo(diffDay);
 }
 
 /** State of the per-row "displayed key" — either the real sk- (showing) or
@@ -156,10 +159,12 @@ export function QuotaExpiryFields(props: {
     idPrefix: string;
 }) {
     const { value, onChange, disabled, idPrefix } = props;
+    const t = useMessages(keysMessages).fields;
+    const presetLabels = expiryPresetLabels(useLocale());
     return (
         <div className="grid gap-3 sm:grid-cols-2">
             <div>
-                <p className="m-0 mb-1 text-xs font-medium text-muted-ink">额度上限</p>
+                <p className="m-0 mb-1 text-xs font-medium text-muted-ink">{t.quotaCap}</p>
                 <label className="flex items-center gap-2 text-sm text-ink">
                     <input
                         type="checkbox"
@@ -168,7 +173,7 @@ export function QuotaExpiryFields(props: {
                         disabled={disabled}
                         onChange={(e) => onChange({ quotaUnlimited: e.target.checked })}
                     />
-                    无限额度
+                    {t.unlimited}
                 </label>
                 {!value.quotaUnlimited && (
                     <div className="mt-1.5 flex items-center gap-1.5">
@@ -176,23 +181,21 @@ export function QuotaExpiryFields(props: {
                         <Input
                             type="text"
                             inputMode="decimal"
-                            placeholder="例如 100"
+                            placeholder={t.quotaPlaceholder}
                             value={value.quotaCny}
                             disabled={disabled}
                             onChange={(e) => onChange({ quotaCny: e.target.value })}
-                            aria-label="额度上限(元)"
+                            aria-label={t.quotaAria}
                             block={false}
                             className="w-32 text-sm"
                         />
                     </div>
                 )}
-                <p className="m-0 mt-1 text-xs text-minor-ink">
-                    这把 key 一共还能花多少,独立于账户余额;用完即拒绝调用,充值不会自动补。
-                </p>
+                <p className="m-0 mt-1 text-xs text-minor-ink">{t.quotaHint}</p>
             </div>
             <div>
-                <p className="m-0 mb-1 text-xs font-medium text-muted-ink">到期时间</p>
-                <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="到期时间">
+                <p className="m-0 mb-1 text-xs font-medium text-muted-ink">{t.expiry}</p>
+                <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label={t.expiry}>
                     {EXPIRY_PRESETS.map((preset) => {
                         const active = value.expiryPreset === preset;
                         return (
@@ -211,7 +214,7 @@ export function QuotaExpiryFields(props: {
                                     'disabled:cursor-not-allowed disabled:opacity-50',
                                 ].join(' ')}
                             >
-                                {EXPIRY_PRESET_LABELS[preset]}
+                                {presetLabels[preset]}
                             </button>
                         );
                     })}
@@ -222,12 +225,12 @@ export function QuotaExpiryFields(props: {
                         value={value.expiryCustom}
                         disabled={disabled}
                         onChange={(e) => onChange({ expiryCustom: e.target.value })}
-                        aria-label="自定义到期时间"
+                        aria-label={t.customExpiryAria}
                         block={false}
                         className="mt-1.5 text-sm"
                     />
                 )}
-                <p className="m-0 mt-1 text-xs text-minor-ink">到期后立即拒绝调用,可随时续期。</p>
+                <p className="m-0 mt-1 text-xs text-minor-ink">{t.expiryHint}</p>
             </div>
         </div>
     );
@@ -235,8 +238,10 @@ export function QuotaExpiryFields(props: {
 
 /** 行内「额度 / 到期」摘要。 */
 function BudgetSummary({ row }: { row: KeyRow }) {
+    const t = useMessages(keysMessages);
+    const locale = useLocale();
     if (!row.meta_available) {
-        return <span className="text-minor-ink">额度信息暂不可用</span>;
+        return <span className="text-minor-ink">{t.budget.metaUnavailable}</span>;
     }
     const expired = isExpired(row.expires_at);
     const exhausted = row.quota_unlimited === false && (row.remainCny ?? 0) <= 0;
@@ -250,25 +255,26 @@ function BudgetSummary({ row }: { row: KeyRow }) {
             <div>
                 {row.quota_unlimited === false ? (
                     <>
-                        剩余 {formatCny(row.remainCny ?? 0).exact}
-                        {exhausted && badge('已用尽')}
+                        {t.budget.remaining}
+                        {formatCny(row.remainCny ?? 0).exact}
+                        {exhausted && badge(t.budget.exhausted)}
                     </>
                 ) : (
-                    '无限额度'
+                    t.fields.unlimited
                 )}
             </div>
             <div className="mt-0.5 text-xs text-minor-ink">
-                {formatExpiry(row.expires_at)}
-                {expired && badge('已过期')}
+                {formatExpiry(row.expires_at, locale)}
+                {expired && badge(t.budget.expired)}
             </div>
         </div>
     );
 }
 
 /** 倍率徽章文案:0.4 → "0.4x 倍率"(与 new-api 分组下拉同款)。 */
-function ratioBadgeText(ratio: number | null, special?: boolean): string | null {
+function ratioBadgeText(ratio: number | null, special: boolean | undefined, t: KeysMessages['tier']): string | null {
     if (ratio == null) return null;
-    return special ? `${ratio}x 专属倍率` : `${ratio}x 倍率`;
+    return special ? t.specialRatio(ratio) : t.ratio(ratio);
 }
 
 /**
@@ -290,6 +296,7 @@ export function TierSelect({
     const [open, setOpen] = useState(false);
     const [query, setQuery] = useState('');
     const rootRef = useRef<HTMLDivElement | null>(null);
+    const t = useMessages(keysMessages).tier;
 
     // 点外面 / Escape 关闭
     useEffect(() => {
@@ -334,14 +341,14 @@ export function TierSelect({
                 {selected ? (
                     <span className="flex min-w-0 items-center gap-2">
                         <span className="truncate text-ink">{selected.display_name}</span>
-                        {ratioBadgeText(selected.ratio, selected.special) && (
+                        {ratioBadgeText(selected.ratio, selected.special, t) && (
                             <span className="shrink-0 rounded-full border border-status-success-border bg-status-success-bg px-2 py-0.5 text-[11px] font-medium text-status-success-text">
-                                {ratioBadgeText(selected.ratio, selected.special)}
+                                {ratioBadgeText(selected.ratio, selected.special, t)}
                             </span>
                         )}
                     </span>
                 ) : (
-                    <span className="text-minor-ink">选择一个档次</span>
+                    <span className="text-minor-ink">{t.pick}</span>
                 )}
                 <span aria-hidden className="shrink-0 text-[10px] text-minor-ink">
                     {open ? '▲' : '▼'}
@@ -354,34 +361,34 @@ export function TierSelect({
                             type="text"
                             value={query}
                             onChange={(e) => setQuery(e.target.value)}
-                            placeholder="搜索…"
+                            placeholder={t.searchPlaceholder}
                             autoFocus
                             className="w-full rounded-md border border-brand-border bg-paper-muted px-2.5 py-1.5 text-sm text-ink outline-none focus:border-navy"
                         />
                     </div>
                     <ul role="listbox" className="m-0 max-h-64 list-none overflow-y-auto p-1">
-                        {filtered.length === 0 && <li className="px-3 py-2 text-sm text-minor-ink">无匹配档次</li>}
-                        {filtered.map((t) => (
-                            <li key={t.key} role="option" aria-selected={t.key === value}>
+                        {filtered.length === 0 && <li className="px-3 py-2 text-sm text-minor-ink">{t.noMatch}</li>}
+                        {filtered.map((opt) => (
+                            <li key={opt.key} role="option" aria-selected={opt.key === value}>
                                 <button
                                     type="button"
                                     onClick={() => {
-                                        onChange(t.key);
+                                        onChange(opt.key);
                                         setOpen(false);
                                     }}
                                     className={`flex w-full items-center justify-between gap-3 rounded-md px-3 py-2 text-left transition-colors hover:bg-paper-muted ${
-                                        t.key === value ? 'bg-paper-muted' : ''
+                                        opt.key === value ? 'bg-paper-muted' : ''
                                     }`}
                                 >
                                     <span className="min-w-0">
-                                        <span className="block truncate text-sm text-ink">{t.display_name}</span>
+                                        <span className="block truncate text-sm text-ink">{opt.display_name}</span>
                                         <span className="mt-0.5 block truncate text-xs text-minor-ink">
-                                            {[t.newapi_group, t.description].filter(Boolean).join(' · ')}
+                                            {[opt.newapi_group, opt.description].filter(Boolean).join(' · ')}
                                         </span>
                                     </span>
-                                    {ratioBadgeText(t.ratio, t.special) && (
+                                    {ratioBadgeText(opt.ratio, opt.special, t) && (
                                         <span className="shrink-0 rounded-full border border-status-success-border bg-status-success-bg px-2 py-0.5 text-[11px] font-medium text-status-success-text">
-                                            {ratioBadgeText(t.ratio, t.special)}
+                                            {ratioBadgeText(opt.ratio, opt.special, t)}
                                         </span>
                                     )}
                                 </button>
@@ -400,6 +407,10 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
     const initialTier: string | null = tiers.length > 1 ? null : (tiers[0]?.key ?? 'pool');
     const showTierChoice = tiers.length > 1;
     const tierLabel = (key: string) => tiers.find((t) => t.key === key)?.display_name ?? key;
+    const msgs = useMessages(keysMessages);
+    const t = msgs.list;
+    const c = useMessages(commonMessages).auth;
+    const locale: Locale = useLocale();
 
     const [rows, setRows] = useState<KeyRow[]>(initialRows);
     const [reveal, setReveal] = useState<RevealMap>({});
@@ -437,13 +448,13 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
             });
             if (!r.ok) {
                 const data = await r.json().catch(() => ({}));
-                setGlobalError(typeof data?.error === 'string' ? data.error : `请求失败 (${r.status})`);
+                setGlobalError(typeof data?.error === 'string' ? data.error : c.requestFailed(r.status));
                 return null;
             }
             const data = (await r.json()) as { key?: string };
             return typeof data.key === 'string' ? data.key : null;
         } catch (err) {
-            setGlobalError(err instanceof Error ? err.message : '网络错误');
+            setGlobalError(err instanceof Error ? err.message : c.networkError);
             return null;
         }
     }
@@ -477,16 +488,14 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                 });
             }, COPIED_TOAST_MS);
         } catch {
-            setGlobalError('复制失败,浏览器拒绝了 clipboard 权限');
+            setGlobalError(t.copyFailed);
         }
         setBusyId(null);
     }
 
     async function handleRevoke(id: string) {
         if (busyId) return;
-        const warning = isOnlyKey
-            ? '这是您唯一的 key,撤销后需重新创建才能调用 API。\n确认撤销?该 key 立即失效'
-            : '确认撤销?该 key 立即失效';
+        const warning = isOnlyKey ? t.revokeConfirmOnlyKey : t.revokeConfirm;
         if (!window.confirm(warning)) return;
 
         setBusyId(id);
@@ -498,7 +507,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
             });
             if (!r.ok) {
                 const data = await r.json().catch(() => ({}));
-                setGlobalError(typeof data?.error === 'string' ? data.error : `撤销失败 (${r.status})`);
+                setGlobalError(typeof data?.error === 'string' ? data.error : t.revokeFailed(r.status));
             } else {
                 setRows((prev) => prev.filter((row) => row.id !== id));
                 setReveal((prev) => {
@@ -508,7 +517,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                 });
             }
         } catch (err) {
-            setGlobalError(err instanceof Error ? err.message : '网络错误');
+            setGlobalError(err instanceof Error ? err.message : c.networkError);
         }
         setBusyId(null);
     }
@@ -528,7 +537,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
         if (!edit || edit.submitting) return;
         const alias = edit.alias.trim();
         if (!alias) {
-            setEdit((prev) => (prev ? { ...prev, error: '请填写 Key 别名' } : prev));
+            setEdit((prev) => (prev ? { ...prev, error: t.aliasRequired } : prev));
             return;
         }
         const current = rows.find((r) => r.id === edit.id);
@@ -548,10 +557,10 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                 const data = await r.json().catch(() => ({}));
                 const msg =
                     r.status === 502
-                        ? '保存失败,上游暂时不可用,请稍后重试'
+                        ? t.saveFailedUpstream
                         : typeof data?.error === 'string'
                           ? data.error
-                          : `保存失败 (${r.status})`;
+                          : t.saveFailed(r.status);
                 setEdit((prev) => (prev ? { ...prev, submitting: false, error: msg } : prev));
                 return;
             }
@@ -561,7 +570,9 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
             setEdit(null);
         } catch (err) {
             setEdit((prev) =>
-                prev ? { ...prev, submitting: false, error: err instanceof Error ? err.message : '网络错误' } : prev,
+                prev
+                    ? { ...prev, submitting: false, error: err instanceof Error ? err.message : c.networkError }
+                    : prev,
             );
         }
     }
@@ -587,7 +598,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
 
     async function submitBudgetEdit() {
         if (!budgetEdit || budgetEdit.submitting) return;
-        const budget = buildQuotaExpiryPayload(budgetEdit);
+        const budget = buildQuotaExpiryPayload(budgetEdit, new Date(), locale);
         if (!budget.ok) {
             setBudgetEdit((prev) => (prev ? { ...prev, error: budget.error } : prev));
             return;
@@ -604,10 +615,10 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                 const data = await r.json().catch(() => ({}));
                 const msg =
                     r.status === 502
-                        ? '保存失败,上游暂时不可用,请稍后重试'
+                        ? t.saveFailedUpstream
                         : typeof data?.error === 'string'
                           ? data.error
-                          : `保存失败 (${r.status})`;
+                          : t.saveFailed(r.status);
                 setBudgetEdit((prev) => (prev ? { ...prev, submitting: false, error: msg } : prev));
                 return;
             }
@@ -632,7 +643,9 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
             setBudgetEdit(null);
         } catch (err) {
             setBudgetEdit((prev) =>
-                prev ? { ...prev, submitting: false, error: err instanceof Error ? err.message : '网络错误' } : prev,
+                prev
+                    ? { ...prev, submitting: false, error: err instanceof Error ? err.message : c.networkError }
+                    : prev,
             );
         }
     }
@@ -642,14 +655,14 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
         if (create.submitting) return;
         const alias = create.alias.trim();
         if (!alias) {
-            setCreate((prev) => ({ ...prev, error: '请填写 Key 别名' }));
+            setCreate((prev) => ({ ...prev, error: t.aliasRequired }));
             return;
         }
         if (showTierChoice && !create.tier) {
-            setCreate((prev) => ({ ...prev, error: '请选择档次' }));
+            setCreate((prev) => ({ ...prev, error: msgs.tier.required }));
             return;
         }
-        const budget = buildQuotaExpiryPayload(create);
+        const budget = buildQuotaExpiryPayload(create, new Date(), locale);
         if (!budget.ok) {
             setCreate((prev) => ({ ...prev, error: budget.error }));
             return;
@@ -672,7 +685,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                 setCreate((prev) => ({
                     ...prev,
                     submitting: false,
-                    error: typeof data?.error === 'string' ? data.error : `创建失败 (${r.status})`,
+                    error: typeof data?.error === 'string' ? data.error : t.createFailed(r.status),
                 }));
                 return;
             }
@@ -713,7 +726,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
             setCreate((prev) => ({
                 ...prev,
                 submitting: false,
-                error: err instanceof Error ? err.message : '网络错误',
+                error: err instanceof Error ? err.message : c.networkError,
             }));
         }
     }
@@ -722,21 +735,25 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
         () => (
             <thead>
                 <tr className="bg-paper-muted text-muted-ink">
-                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">别名</th>
                     <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
-                        API Key
+                        {t.colAlias}
                     </th>
                     <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
-                        额度 / 到期
+                        {t.colKey}
                     </th>
                     <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
-                        创建时间
+                        {t.colQuota}
                     </th>
-                    <th className="text-right px-4 py-2.5 text-xs font-semibold border-b border-brand-border">操作</th>
+                    <th className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                        {t.colCreated}
+                    </th>
+                    <th className="text-right px-4 py-2.5 text-xs font-semibold border-b border-brand-border">
+                        {t.colActions}
+                    </th>
                 </tr>
             </thead>
         ),
-        [],
+        [t],
     );
 
     return (
@@ -749,7 +766,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                     onClick={() => setCreate({ ...emptyCreate(initialTier), open: true })}
                     disabled={create.open}
                 >
-                    + 创建新 Key
+                    {t.createNew}
                 </Button>
             </div>
 
@@ -759,7 +776,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                         <div className="flex-1">
                             <Input
                                 type="text"
-                                placeholder="例如 prod-openai / test-claude / dev-mobile"
+                                placeholder={t.aliasPlaceholder}
                                 value={create.alias}
                                 onChange={(e) => setCreate((prev) => ({ ...prev, alias: e.target.value, error: null }))}
                                 maxLength={50}
@@ -768,13 +785,15 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                                 className="text-sm"
                             />
                             <p className="m-0 mt-1.5 text-xs text-minor-ink">
-                                建议格式 <code className="font-mono text-xs">env-purpose</code> —
-                                方便区分不同环境与用途。
+                                {t.aliasHintBefore}
+                                <code className="font-mono text-xs">env-purpose</code>
+                                {t.aliasHintAfter}
                             </p>
                             {showTierChoice && (
                                 <div className="mt-2.5 max-w-md">
                                     <p className="m-0 mb-1 text-xs font-medium text-muted-ink">
-                                        档次 <span className="text-status-error-text">*</span>
+                                        {msgs.tier.label}
+                                        <span className="text-status-error-text">*</span>
                                     </p>
                                     <TierSelect
                                         tiers={tiers}
@@ -782,9 +801,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                                         onChange={(key) => setCreate((prev) => ({ ...prev, tier: key, error: null }))}
                                         disabled={create.submitting}
                                     />
-                                    <p className="m-0 mt-1 text-xs text-minor-ink">
-                                        档次决定路由与倍率,建后不可改,换档请新建 key。
-                                    </p>
+                                    <p className="m-0 mt-1 text-xs text-minor-ink">{msgs.tier.hint}</p>
                                 </div>
                             )}
                             <div className="mt-3 max-w-2xl">
@@ -804,7 +821,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                             loading={create.submitting}
                             disabled={create.submitting || !create.alias.trim() || (showTierChoice && !create.tier)}
                         >
-                            {create.submitting ? '创建中…' : '创建'}
+                            {create.submitting ? t.creating : t.create}
                         </Button>
                         <Button
                             type="button"
@@ -813,7 +830,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                             onClick={() => setCreate(emptyCreate(initialTier))}
                             disabled={create.submitting}
                         >
-                            取消
+                            {t.cancel}
                         </Button>
                     </form>
                 </Card>
@@ -828,11 +845,12 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
             {rows.length === 0 ? (
                 <Card>
                     <EmptyState
-                        title="还没有 API Key"
+                        title={t.emptyTitle}
                         body={
                             <>
-                                创建第一个 key 即可调用 Silk Road AI。点击右上角{' '}
-                                <code className="font-mono text-xs">+ 创建新 Key</code> 开始。
+                                {t.emptyBodyBefore}
+                                <code className="font-mono text-xs">{t.createNew}</code>
+                                {t.emptyBodyAfter}
                             </>
                         }
                     />
@@ -892,7 +910,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                                                             autoFocus
                                                             disabled={editing.submitting}
                                                             error={!!editing.error}
-                                                            aria-label="Key 别名"
+                                                            aria-label={t.aliasAria}
                                                             block={false}
                                                             className="text-sm w-44"
                                                         />
@@ -904,7 +922,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                                                             loading={editing.submitting}
                                                             disabled={editing.submitting || !editing.alias.trim()}
                                                         >
-                                                            保存
+                                                            {t.save}
                                                         </Button>
                                                         <Button
                                                             type="button"
@@ -913,7 +931,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                                                             onClick={cancelEdit}
                                                             disabled={editing.submitting}
                                                         >
-                                                            取消
+                                                            {t.cancel}
                                                         </Button>
                                                     </div>
                                                     <FormError>{editing.error}</FormError>
@@ -928,11 +946,11 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                                                         type="button"
                                                         onClick={() => startEdit(row)}
                                                         disabled={busy || !!edit}
-                                                        title="修改别名"
-                                                        aria-label={`修改别名 ${row.key_alias}`}
+                                                        title={t.editAliasTitle}
+                                                        aria-label={t.editAliasAria(row.key_alias)}
                                                         className="cursor-pointer rounded px-1 text-xs text-minor-ink hover:text-navy hover:underline disabled:cursor-not-allowed disabled:opacity-50"
                                                     >
-                                                        编辑
+                                                        {t.edit}
                                                     </button>
                                                 </div>
                                             )}
@@ -952,12 +970,14 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                                              *  but isn't being hit. */}
                                             <div className="mt-1 text-xs text-minor-ink tabular-nums">
                                                 {row.used_quota === null ? (
-                                                    <span>用量数据暂不可用</span>
+                                                    <span>{t.usageUnavailable}</span>
                                                 ) : (
                                                     <>
-                                                        累计 {formatCny(row.usedCny ?? 0).exact}
+                                                        {t.cumulative}
+                                                        {formatCny(row.usedCny ?? 0).exact}
                                                         <span className="mx-1.5">·</span>
-                                                        最近调用 {formatLastUsed(row.last_used_at)}
+                                                        {t.lastUsed}
+                                                        {formatLastUsed(row.last_used_at, msgs.lastUsed)}
                                                     </>
                                                 )}
                                             </div>
@@ -984,7 +1004,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                                                             loading={budgetEditing.submitting}
                                                             disabled={budgetEditing.submitting}
                                                         >
-                                                            保存
+                                                            {t.save}
                                                         </Button>
                                                         <Button
                                                             type="button"
@@ -993,7 +1013,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                                                             onClick={cancelBudgetEdit}
                                                             disabled={budgetEditing.submitting}
                                                         >
-                                                            取消
+                                                            {t.cancel}
                                                         </Button>
                                                     </div>
                                                     <FormError>{budgetEditing.error}</FormError>
@@ -1006,18 +1026,18 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                                                             type="button"
                                                             onClick={() => startBudgetEdit(row)}
                                                             disabled={busy || !!budgetEdit}
-                                                            title="调整额度与到期"
-                                                            aria-label={`调整额度与到期 ${row.key_alias}`}
+                                                            title={t.adjustTitle}
+                                                            aria-label={t.adjustAria(row.key_alias)}
                                                             className="cursor-pointer rounded px-1 text-xs text-minor-ink hover:text-navy hover:underline disabled:cursor-not-allowed disabled:opacity-50"
                                                         >
-                                                            调整
+                                                            {t.adjust}
                                                         </button>
                                                     )}
                                                 </div>
                                             )}
                                         </td>
                                         <td className={`${cell} ${borderClass} text-muted-ink`}>
-                                            {new Date(row.created_at).toLocaleString('zh-CN', {
+                                            {new Date(row.created_at).toLocaleString(intlLocale(locale), {
                                                 timeZone: 'Asia/Shanghai',
                                             })}
                                         </td>
@@ -1030,7 +1050,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                                                     onClick={() => handleReveal(row.id)}
                                                     disabled={busy || !!revealed}
                                                 >
-                                                    {revealed ? '已显示' : '显示'}
+                                                    {revealed ? t.revealed : t.reveal}
                                                 </Button>
                                                 <Button
                                                     type="button"
@@ -1039,7 +1059,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                                                     onClick={() => handleCopy(row.id)}
                                                     disabled={busy}
                                                 >
-                                                    {showCopied ? '已复制 ✓' : '复制'}
+                                                    {showCopied ? t.copiedCheck : t.copy}
                                                 </Button>
                                                 <Button
                                                     type="button"
@@ -1048,7 +1068,7 @@ export function KeysList({ initialRows, tiers = [] }: { initialRows: KeyRow[]; t
                                                     onClick={() => handleRevoke(row.id)}
                                                     disabled={busy}
                                                 >
-                                                    撤销
+                                                    {t.revoke}
                                                 </Button>
                                             </span>
                                         </td>

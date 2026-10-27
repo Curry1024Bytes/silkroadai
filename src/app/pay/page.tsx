@@ -17,10 +17,17 @@ import { getCurrentUser } from '@/lib/auth/session';
 import { getEnabledPaymentTypes } from '@/lib/payment/resolve-enabled-types';
 import { Logo } from '@/components/brand/Logo';
 import { Card } from '@/components/ui/Card';
+import { getLocale } from '@/lib/i18n/server';
+import { LocaleProvider } from '@/lib/i18n/client';
+import { parseLocale, pickMessages } from '@/lib/i18n';
+import { payMessages } from '@/lib/i18n/messages/pay';
 import { PayForm } from './pay-form';
 
 export const dynamic = 'force-dynamic';
-export const metadata = { title: '充值 — Silk Road AI' };
+export async function generateMetadata() {
+    const m = pickMessages(payMessages, await getLocale());
+    return { title: m.pay.pageTitle };
+}
 
 /** Bridge: getCurrentUser expects a NextRequest, but a server component only
  *  has the request via `headers()`. Reconstruct a thin NextRequest carrying
@@ -38,10 +45,10 @@ export default async function PayPage({
 }: {
     searchParams?: Promise<Record<string, string | string[] | undefined>>;
 }) {
+    const params = (await searchParams) ?? {};
     const user = await getSessionUser();
     if (!user) {
         // Forward any error/lang query so /login can surface a banner if needed.
-        const params = (await searchParams) ?? {};
         const qs = new URLSearchParams();
         qs.set('next', '/pay');
         for (const [k, v] of Object.entries(params)) {
@@ -49,6 +56,11 @@ export default async function PayPage({
         }
         redirect(`/login?${qs.toString()}`);
     }
+
+    // Legacy W1 pay links carried `?lang=en`; honour it over the cookie for
+    // this page only so old bookmarks / gateway return paths keep working.
+    const locale = parseLocale(typeof params.lang === 'string' ? params.lang : null) ?? (await getLocale());
+    const m = pickMessages(payMessages, locale).pay;
 
     // Enabled payment providers come from the registry filtered by the DB
     // ENABLED_PAYMENT_TYPES config. May be empty if env not configured (the
@@ -67,16 +79,22 @@ export default async function PayPage({
                     <Logo variant="primary-flat" size={28} />
                     <p className="m-0 text-xs text-minor-ink">Connecting Global Intelligence.</p>
                 </header>
-                <h2 className="m-0 mb-4 text-base font-semibold text-navy">账户充值</h2>
+                <h2 className="m-0 mb-4 text-base font-semibold text-navy">{m.heading}</h2>
                 <p className="m-0 mb-5 text-sm text-muted-ink">
-                    登录账户:<strong className="text-navy">{user.email}</strong>
+                    {m.loggedInAs}
+                    <strong className="text-navy">{user.email}</strong>
                 </p>
-                <PayForm enabledPaymentTypes={enabledTypes} />
+                {/* Re-provide the locale so the client island follows the
+                 *  `?lang=` override too (root layout only knows the cookie). */}
+                <LocaleProvider locale={locale}>
+                    <PayForm enabledPaymentTypes={enabledTypes} />
+                </LocaleProvider>
                 {/* 充值失败求助入口:第三方支付网关偶发超时(易支付网关侧问题),
                  *  给客户一个人工兜底渠道。文案与微信号按 operator 提供的原样展示,
                  *  微信号 select-all 方便一键复制。 */}
                 <p className="m-0 mt-6 pt-4 border-t border-brand-border text-center text-xs text-muted-ink">
-                    充值遇到问题?请联系微信客服 <span className="font-medium text-navy select-all">lambda_yyh充值</span>
+                    {m.helpBefore}
+                    <span className="font-medium text-navy select-all">{m.helpWechat}</span>
                 </p>
             </Card>
         </main>

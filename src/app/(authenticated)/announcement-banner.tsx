@@ -1,6 +1,9 @@
 'use client';
 
 import { useState, useSyncExternalStore } from 'react';
+import { intlLocale, pickMessages } from '@/lib/i18n';
+import { useLocale } from '@/lib/i18n/client';
+import { commonMessages } from '@/lib/i18n/messages/common';
 import { type AnnouncementItem, DISMISSED_STORAGE_KEY, LEVEL_META, filterDismissed } from '@/lib/announcements/types';
 
 interface Props {
@@ -69,8 +72,10 @@ export function AnnouncementBanner({ items }: Props) {
 
 export function AnnouncementRow({ item, onDismiss }: { item: AnnouncementItem; onDismiss: () => void }) {
     const meta = LEVEL_META[item.level] ?? LEVEL_META.info;
+    const locale = useLocale();
+    const m = pickMessages(commonMessages, locale);
     // gotcha #20: 服务端 SSR 时 TZ=UTC,显式 Asia/Shanghai 才不串日期。
-    const date = new Date(item.created_at).toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' });
+    const date = new Date(item.created_at).toLocaleDateString(intlLocale(locale), { timeZone: 'Asia/Shanghai' });
     return (
         <div
             role="status"
@@ -92,14 +97,14 @@ export function AnnouncementRow({ item, onDismiss }: { item: AnnouncementItem; o
                         rel="noopener noreferrer"
                         className="mt-1 inline-block font-medium underline"
                     >
-                        {item.link_label || '查看详情'}
+                        {item.link_label || m.announcement.details}
                     </a>
                 )}
             </div>
             <button
                 type="button"
                 onClick={onDismiss}
-                aria-label="关闭公告"
+                aria-label={m.announcement.dismiss}
                 className="shrink-0 rounded p-1 leading-none opacity-50 transition-opacity hover:opacity-100"
             >
                 ✕

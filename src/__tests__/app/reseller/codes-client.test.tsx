@@ -11,6 +11,7 @@ vi.mock('next/navigation', () => ({
 }));
 
 import { CodesClient, type CodeRow } from '@/app/(authenticated)/reseller/codes/codes-client';
+import { LocaleProvider } from '@/lib/i18n/client';
 
 /** React SSR inserts `<!-- -->` between adjacent dynamic/static text
  *  nodes (e.g. `{count} 位客户` → `5<!-- --> 位客户`). Strip them so
@@ -64,5 +65,35 @@ describe('<CodesClient />', () => {
         }));
         const html = stripSSRMarkers(renderToString(<CodesClient initialRows={tenActive} />));
         expect(html).toContain('已达到最大 10 个活跃邀请码上限');
+    });
+});
+
+describe('<CodesClient /> (en)', () => {
+    it('renders English copy under <LocaleProvider locale="en">', () => {
+        const html = stripSSRMarkers(
+            renderToString(
+                <LocaleProvider locale="en">
+                    <CodesClient initialRows={[{ ...baseRow, is_active: false }]} />
+                </LocaleProvider>,
+            ),
+        );
+        expect(html).toContain('Reseller console');
+        expect(html).toContain('Invite codes');
+        expect(html).toContain('Disabled');
+        expect(html).toContain('5 customers · total GMV ¥250.00');
+        expect(html).toContain('+ New invite code (0/10)');
+        expect(html).not.toContain('已停用');
+        expect(html).not.toContain('位客户');
+    });
+
+    it('empty → English EmptyState + create CTA', () => {
+        const html = renderToString(
+            <LocaleProvider locale="en">
+                <CodesClient initialRows={[]} />
+            </LocaleProvider>,
+        );
+        expect(html).toContain('No invite codes yet');
+        expect(html).toContain('+ Create your first invite code');
+        expect(html).not.toContain('还没有邀请码');
     });
 });

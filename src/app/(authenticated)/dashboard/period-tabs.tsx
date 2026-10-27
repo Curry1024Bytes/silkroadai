@@ -10,22 +10,16 @@
  */
 import { useState, useTransition } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
+import { useMessages } from '@/lib/i18n/client';
+import { dashboardMessages } from '@/lib/i18n/messages/dashboard';
 import type { UsagePeriod } from './period';
 
-interface Tab {
-    key: UsagePeriod;
-    label: string;
-}
-
-const TABS: Tab[] = [
-    { key: '7d', label: '近 7 天' },
-    { key: '30d', label: '近 30 天' },
-    { key: 'all', label: '全部' },
-];
+const TAB_KEYS: UsagePeriod[] = ['7d', '30d', 'all'];
 
 export function PeriodTabs({ active }: { active: UsagePeriod }) {
     const pathname = usePathname();
     const router = useRouter();
+    const m = useMessages(dashboardMessages);
     const [isPending, startTransition] = useTransition();
     const [target, setTarget] = useState<UsagePeriod | null>(null);
 
@@ -43,23 +37,23 @@ export function PeriodTabs({ active }: { active: UsagePeriod }) {
     return (
         <div
             role="tablist"
-            aria-label="时间窗口"
+            aria-label={m.periodTabsAria}
             aria-busy={isPending || undefined}
             className={[
                 'inline-flex bg-surface border border-brand-border rounded-lg overflow-hidden',
                 'shadow-card',
             ].join(' ')}
         >
-            {TABS.map((tab, idx) => {
-                const isActive = tab.key === shown;
-                const isLast = idx === TABS.length - 1;
+            {TAB_KEYS.map((key, idx) => {
+                const isActive = key === shown;
+                const isLast = idx === TAB_KEYS.length - 1;
                 return (
                     <button
-                        key={tab.key}
+                        key={key}
                         type="button"
                         role="tab"
                         aria-selected={isActive}
-                        onClick={() => select(tab.key)}
+                        onClick={() => select(key)}
                         className={[
                             'cursor-pointer px-4 py-2 text-sm transition-colors duration-150 ease-brand',
                             isActive
@@ -69,7 +63,7 @@ export function PeriodTabs({ active }: { active: UsagePeriod }) {
                             isLast ? '' : 'border-r border-brand-border',
                         ].join(' ')}
                     >
-                        {tab.label}
+                        {m.periods[key]}
                     </button>
                 );
             })}

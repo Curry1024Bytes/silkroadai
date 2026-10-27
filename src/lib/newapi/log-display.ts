@@ -8,6 +8,8 @@
  * 折叠后只保留最终结果;并把错误文案脱敏(隐藏 adobe / we-token 等上游来源)成友好中文。
  * 纯函数、client-safe、无副作用 —— dashboard 页 + /logs 页 + /api/portal/logs 都复用。
  */
+import { pickMessages, type Locale } from '@/lib/i18n';
+import { logsMessages } from '@/lib/i18n/messages/logs';
 
 /**
  * 该失败行是不是 image-adapter 的内部 failover 信号(客户不该看见)。
@@ -57,20 +59,22 @@ export function collapseRetriedFailures<
 }
 
 /** 客户日志错误文案脱敏 + 友好化:隐藏上游来源(adobe / we-token / zhiyunai 等),把常见错误映射成
- *  客户能看懂、能行动的中文。仅作用于【展示】,不改计费 / 真实结果判定。服务端调用,原文不进浏览器。 */
-export function sanitizeLogContent(content: string): string {
+ *  客户能看懂、能行动的文案(`locale` 决定中 / 英,默认中文)。仅作用于【展示】,不改计费 / 真实结果判定。
+ *  服务端调用,原文不进浏览器。 */
+export function sanitizeLogContent(content: string, locale: Locale = 'zh'): string {
     if (!content) return content;
+    const t = pickMessages(logsMessages, locale).sanitized;
     const c = content.toLowerCase();
     if (/image_unsafe|content rejected|appear to be unsafe|safety system|content_policy|\badobe\b/.test(c)) {
-        return '图片内容被安全系统判定为不适宜,请调整提示词后重试';
+        return t.unsafe;
     }
     if (/size must use|invalid size|must be multiples of 16|edges must be multiples/.test(c)) {
-        return '图片尺寸参数不合规(请使用「宽x高」像素格式,如 1024x1024)';
+        return t.badSize;
     }
     if (/负载已饱和|overloaded|do request failed|temporarily unavailable|no available channel|\b429\b/.test(c)) {
-        return '服务繁忙,请稍后重试';
+        return t.busy;
     }
-    return content.replace(/\b(adobe|we-token|zhiyunai|nexaxis|amutes|vakv|midou|czeq)\b/gi, '上游');
+    return content.replace(/\b(adobe|we-token|zhiyunai|nexaxis|amutes|vakv|midou|czeq)\b/gi, t.upstream);
 }
 
 /** 名字看着像不像生图模型(粗粒度启发式)。仅当日志行缺 `other`/model_price 时,`isPerImageBilled`

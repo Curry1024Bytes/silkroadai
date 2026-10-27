@@ -18,33 +18,46 @@ import { BrandLogo } from '@/components/brand/BrandLogo';
 // W8 D1.5 (2026-05-21): 新永久定价替换 W7 promo,landing 不再走 isPromoActive()。
 // import { isPromoActive } from '@/lib/promo'; — 留作日后审计参考
 import { InviteCodeBridge } from '@/components/marketing/InviteCodeBridge';
+import { LocaleSwitcher } from '@/components/LocaleSwitcher';
+import { pickMessages } from '@/lib/i18n';
+import { getLocale } from '@/lib/i18n/server';
+import { landingMessages, type LandingMessages } from '@/lib/i18n/messages/landing';
 
 // Inter is loaded globally via `next/font/google` in `src/app/layout.tsx`
 // (W7 P3) so the @theme `--font-sans` token resolves on every page. We
 // no longer need a landing-local import.
 
-export const metadata: Metadata = {
-    title: 'Silk Road AI · 一个 Key,接入 200+ AI 模型 | ChatGPT、Claude、Gemini 国内中转',
-    description: '国内开发者的 AI API 聚合网关。海外大模型直连,人民币付费,价格透明,5 分钟接入。',
-    keywords: ['ChatGPT API', 'Claude API', 'Gemini API', 'AI API 中转', '国内调用 OpenAI', 'AI 网关'],
-    openGraph: {
-        title: 'Silk Road AI · 一个 Key,接入 200+ AI 模型',
-        description: '国内直连 ChatGPT/Claude/Gemini · 人民币付费 · 价格透明',
-        url: 'https://silkroadai.io',
-        type: 'website',
-        // SVG placeholder — designer ships final 1200×630 PNG in a follow-up;
-        // most crawlers honor SVG (Twitter / Discord), Facebook prefers PNG so
-        // a binary swap is on the W7 finish list.
-        images: [{ url: 'https://silkroadai.io/og-image.svg', width: 1200, height: 630 }],
-    },
-};
+export async function generateMetadata(): Promise<Metadata> {
+    const m = pickMessages(landingMessages, await getLocale());
+    return {
+        title: m.meta.title,
+        description: m.meta.description,
+        keywords: m.meta.keywords,
+        openGraph: {
+            title: m.meta.ogTitle,
+            description: m.meta.ogDescription,
+            url: 'https://silkroadai.io',
+            type: 'website',
+            // SVG placeholder — designer ships final 1200×630 PNG in a follow-up;
+            // most crawlers honor SVG (Twitter / Discord), Facebook prefers PNG so
+            // a binary swap is on the W7 finish list.
+            images: [{ url: 'https://silkroadai.io/og-image.svg', width: 1200, height: 630 }],
+        },
+    };
+}
 
 export default async function LandingPage({
     searchParams,
 }: {
     searchParams?: Promise<Record<string, string | string[] | undefined>>;
 }) {
-    const params = (await searchParams) ?? {};
+    const [params, locale] = await Promise.all([
+        searchParams ?? Promise.resolve<Record<string, string | string[] | undefined>>({}),
+        getLocale(),
+    ]);
+    // Only the top-level page resolves the locale; every section below is a
+    // sync component that receives `m` as a prop (see src/lib/i18n/README.md).
+    const m = pickMessages(landingMessages, locale);
     const oauthError = typeof params.oauth_error === 'string' ? params.oauth_error : null;
     // W8 D1.5 (2026-05-21): W7 50% promo 已被永久新定价替换(¥0.5/¥1.5 抵 $1)。
     // promo 横幅 / "当前促销 · 海外模型 5 折" 副标 / PriceCell strikethrough 视觉
@@ -61,19 +74,19 @@ export default async function LandingPage({
                 minHeight: '100vh',
             }}
         >
-            {oauthError ? <OAuthErrorBanner code={oauthError} /> : null}
+            {oauthError ? <OAuthErrorBanner code={oauthError} m={m} /> : null}
             {/* fix/invite-landing: capture `?invite=X` if a reseller link
              *  was shared as the old `silkroadai.io/?invite=X` form, so
              *  the register page can pick up the attribution on the
              *  customer's next navigation. No render — pure side effect. */}
             <InviteCodeBridge />
-            <Header />
-            <Hero />
-            {promoActive ? <PromoBanner /> : null}
-            <WhyUs />
-            <HowItWorks />
-            <Tools />
-            <PricingTeaser promoActive={promoActive} />
+            <Header m={m} />
+            <Hero m={m} />
+            {promoActive ? <PromoBanner m={m} /> : null}
+            <WhyUs m={m} />
+            <HowItWorks m={m} />
+            <Tools m={m} />
+            <PricingTeaser promoActive={promoActive} m={m} />
             {/* W7 D4 PR-R Item B — the in-page <Trust /> prose row
              *  duplicated the global <Footer />'s contact + legal-link
              *  block (rendered by `src/app/layout.tsx` on every page).
@@ -111,7 +124,7 @@ function Section({ children, style, id }: { children: React.ReactNode; style?: R
 /* Header                                                                */
 /* ──────────────────────────────────────────────────────────────────── */
 
-function Header() {
+function Header({ m }: { m: LandingMessages }) {
     return (
         <header
             style={{
@@ -157,7 +170,7 @@ function Header() {
                             padding: '8px 14px',
                         }}
                     >
-                        工具
+                        {m.header.tools}
                     </a>
                     <Link
                         href="/dashboard"
@@ -171,8 +184,11 @@ function Header() {
                             borderRadius: 6,
                         }}
                     >
-                        进入控制台 →
+                        {m.header.console}
                     </Link>
+                    {/* 中文 / EN toggle — client island, token classes only (works
+                     *  inside this inline-styled header). */}
+                    <LocaleSwitcher />
                 </nav>
             </div>
         </header>
@@ -183,7 +199,7 @@ function Header() {
 /* Hero                                                                 */
 /* ──────────────────────────────────────────────────────────────────── */
 
-function Hero() {
+function Hero({ m }: { m: LandingMessages }) {
     return (
         <Section style={{ padding: '64px 0 56px' }}>
             <div
@@ -206,7 +222,7 @@ function Hero() {
                             letterSpacing: -0.5,
                         }}
                     >
-                        一个 Key,接入 200+ AI 模型
+                        {m.hero.title}
                     </h1>
                     <p
                         style={{
@@ -216,7 +232,7 @@ function Hero() {
                             maxWidth: 580,
                         }}
                     >
-                        国内开发者直连 ChatGPT、Claude、Gemini 等海外大模型 · 人民币付费 · 价格透明 · 5 分钟接入
+                        {m.hero.subtitle}
                     </p>
                     <div
                         style={{
@@ -245,7 +261,7 @@ function Hero() {
                                 boxShadow: '0 1px 0 rgba(0,0,0,0.06)',
                             }}
                         >
-                            立即开始 →
+                            {m.hero.ctaStart}
                         </Link>
                         <Link
                             href="/models"
@@ -261,7 +277,7 @@ function Hero() {
                                 background: 'transparent',
                             }}
                         >
-                            查看模型清单
+                            {m.hero.ctaModels}
                         </Link>
                     </div>
                 </div>
@@ -285,7 +301,7 @@ function Hero() {
                     color: 'var(--color-minor-ink)',
                 }}
             >
-                完全 OpenAI 兼容,任何 SDK 一行替换 base URL。
+                {m.hero.compat}
             </p>
         </Section>
     );
@@ -332,12 +348,12 @@ function CodeExample() {
 /* Promo banner — rendered only when promo window is active             */
 /* ──────────────────────────────────────────────────────────────────── */
 
-function PromoBanner() {
+function PromoBanner({ m }: { m: LandingMessages }) {
     return (
         <Section style={{ marginBottom: 48 }}>
             <div
                 role="note"
-                aria-label="上线促销"
+                aria-label={m.promo.ariaLabel}
                 style={{
                     background: 'var(--color-paper-muted)',
                     borderLeft: '3px solid var(--color-brand-accent)',
@@ -351,9 +367,9 @@ function PromoBanner() {
             >
                 <GiftIcon />
                 <div>
-                    <strong style={{ color: 'var(--color-navy)' }}>上线钜惠 · 海外模型 5 折</strong> · ChatGPT / Claude
-                    / Gemini 全系列 · 限时 30 天 ·{' '}
-                    <span style={{ color: 'var(--color-navy)', fontWeight: 600 }}>6 月 9 日截止</span>
+                    <strong style={{ color: 'var(--color-navy)' }}>{m.promo.headline}</strong>
+                    {m.promo.body}
+                    <span style={{ color: 'var(--color-navy)', fontWeight: 600 }}>{m.promo.deadline}</span>
                 </div>
             </div>
         </Section>
@@ -387,7 +403,8 @@ function GiftIcon() {
 /* Why us — 3 cards                                                      */
 /* ──────────────────────────────────────────────────────────────────── */
 
-function WhyUs() {
+function WhyUs({ m }: { m: LandingMessages }) {
+    const w = m.whyUs;
     return (
         <Section style={{ padding: '40px 0' }}>
             <div
@@ -400,37 +417,40 @@ function WhyUs() {
             >
                 <Card
                     badge="①"
-                    title="国内可直连"
+                    title={w.direct.title}
                     body={[
                         <>
-                            海外节点 + 国内可访问域名,
-                            <strong>无需代理 / VPN</strong>。
+                            {w.direct.line1a}
+                            <strong>{w.direct.line1b}</strong>
+                            {w.direct.line1c}
                         </>,
-                        'ChatGPT、Claude、Gemini 直接调用,毫秒级响应。',
+                        w.direct.line2,
                     ]}
                 />
                 <Card
                     badge="②"
-                    title="200+ 主流模型聚合"
+                    title={w.models.title}
                     body={[
-                        '海外:OpenAI gpt-5 系列 / Anthropic Claude 4 系列 / Google Gemini',
-                        '国内:DeepSeek、通义千问、智谱 GLM、月之暗面 Kimi、腾讯混元',
+                        w.models.line1,
+                        w.models.line2,
                         <>
-                            <strong>统一 OpenAI 兼容接口,无需迁移代码</strong>。
+                            <strong>{w.models.line3a}</strong>
+                            {w.models.line3b}
                         </>,
                     ]}
                 />
                 <Card
                     badge="③"
-                    title="定价透明 · 人民币付费"
+                    title={w.pricing.title}
                     body={[
                         <>
-                            海外模型 = 上游官方原生满血 API · 直连
-                            <strong> ChatGPT / Claude / Gemini</strong>
+                            {w.pricing.line1a}
+                            <strong>{w.pricing.line1b}</strong>
                         </>,
-                        '1 美金 = 100 万积分 · 固定汇率 ¥7',
+                        w.pricing.line2,
                         <>
-                            <strong>余额永不失效,可申请退款</strong>。
+                            <strong>{w.pricing.line3a}</strong>
+                            {w.pricing.line3b}
                         </>,
                     ]}
                 />
@@ -508,48 +528,16 @@ function Card({ badge, title, body }: { badge: string; title: string; body: Reac
 
 type Tool = { icon: string; tag: string; title: string; desc: string; href: string; cta: string };
 
-const TOOLS: Tool[] = [
-    {
-        icon: '🎬',
-        tag: '在线工具',
-        title: 'Seedance 视频测试工具',
-        desc: '填入你的 API Key,在线生成 Seedance 视频 —— 全部模型、全部玩法(文生 / 图生 / 首尾帧 / 参考音频),无需写代码。',
-        href: '/tools/seedance',
-        cta: '立即使用',
-    },
-    {
-        icon: '💬',
-        tag: '在线工具',
-        title: 'AI 对话测试工具',
-        desc: '填入你的 API Key,在线测试 AI 对话(逐字流式)—— 覆盖你这把 key 能用的全部对话模型(GPT / Claude / Gemini / DeepSeek 等)。',
-        href: '/tools/chat',
-        cta: '立即使用',
-    },
-    {
-        icon: '🎨',
-        tag: '在线工具',
-        title: 'AI 生图测试工具',
-        desc: '填入你的 API Key,在线测试文生图 / 图生图 —— 覆盖你这把 key 能用的全部生图模型(Gemini / GPT Image 等)。',
-        href: '/tools/image',
-        cta: '立即使用',
-    },
-    {
-        icon: '⌨️',
-        tag: '下载安装',
-        title: 'OpenAI Codex 接入',
-        desc: 'Codex CLI / IDE 插件 / 桌面版接入 Silk Road AI,一份配置直连 ChatGPT,人民币计费。',
-        href: '/docs#codex-cli',
-        cta: '下载 & 接入',
-    },
-    {
-        icon: '🤖',
-        tag: '下载安装',
-        title: 'Claude Code 接入',
-        desc: 'Claude Code 桌面 / CLI 接入 Silk Road AI,配好 Base URL + Key 即用 Claude,人民币计费。',
-        href: '/docs#claude-code',
-        cta: '下载 & 接入',
-    },
-];
+/** Localized tool cards — copy lives in `landingMessages.tools`. */
+function buildTools(t: LandingMessages['tools']): Tool[] {
+    return [
+        { icon: '🎬', tag: t.tagOnline, ...t.seedance, href: '/tools/seedance', cta: t.ctaUse },
+        { icon: '💬', tag: t.tagOnline, ...t.chat, href: '/tools/chat', cta: t.ctaUse },
+        { icon: '🎨', tag: t.tagOnline, ...t.image, href: '/tools/image', cta: t.ctaUse },
+        { icon: '⌨️', tag: t.tagDownload, ...t.codex, href: '/docs#codex-cli', cta: t.ctaDownload },
+        { icon: '🤖', tag: t.tagDownload, ...t.claudeCode, href: '/docs#claude-code', cta: t.ctaDownload },
+    ];
+}
 
 function ToolCard({ icon, tag, title, desc, href, cta }: Tool) {
     return (
@@ -582,21 +570,21 @@ function ToolCard({ icon, tag, title, desc, href, cta }: Tool) {
     );
 }
 
-function Tools() {
+function Tools({ m }: { m: LandingMessages }) {
     return (
         <Section id="tools" style={{ padding: '48px 0', scrollMarginTop: 72 }}>
             <h2 style={{ margin: 0, fontSize: 28, fontWeight: 600, color: 'var(--color-navy)', textAlign: 'center' }}>
-                工具箱
+                {m.tools.title}
             </h2>
             <p style={{ margin: '8px 0 0', textAlign: 'center', fontSize: 15, color: 'var(--color-muted-ink)' }}>
-                开箱即用,更快用上 Silk Road AI · 更多工具陆续接入
+                {m.tools.subtitle}
             </p>
             <div
                 className="lp-three-col"
                 style={{ marginTop: 36, display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 24 }}
             >
-                {TOOLS.map((t) => (
-                    <ToolCard key={t.title} {...t} />
+                {buildTools(m.tools).map((t) => (
+                    <ToolCard key={t.href} {...t} />
                 ))}
             </div>
             <style
@@ -616,7 +604,8 @@ function Tools() {
 /* How it works — 3 steps                                                */
 /* ──────────────────────────────────────────────────────────────────── */
 
-function HowItWorks() {
+function HowItWorks({ m }: { m: LandingMessages }) {
+    const h = m.howItWorks;
     return (
         <Section style={{ padding: '40px 0' }}>
             <h2
@@ -628,7 +617,7 @@ function HowItWorks() {
                     textAlign: 'center',
                 }}
             >
-                三步开始使用
+                {h.title}
             </h2>
             <div
                 className="lp-three-col"
@@ -641,30 +630,34 @@ function HowItWorks() {
             >
                 <Step
                     n={1}
-                    title="注册登录"
+                    title={h.step1.title}
                     body={
                         <>
-                            邮箱验证 / Google / GitHub 一键登录,
-                            <strong>不绑定手机号</strong>
+                            {h.step1.bodyA}
+                            <strong>{h.step1.bodyStrong}</strong>
                         </>
                     }
                 />
                 <Step
                     n={2}
-                    title="充值开通"
+                    title={h.step2.title}
                     body={
                         <>
-                            支付宝 / 微信 ¥10 起,<strong>单笔最高 ¥10000</strong>
+                            {h.step2.bodyA}
+                            <strong>{h.step2.bodyStrong}</strong>
                         </>
                     }
                 />
                 <Step
                     n={3}
-                    title="接入调用"
+                    title={h.step3.title}
                     body={
                         <>
-                            复制 <code style={{ fontFamily: 'monospace' }}>sk-xxx</code>,任何 OpenAI SDK 改一行{' '}
-                            <code style={{ fontFamily: 'monospace' }}>base_url</code> 即可
+                            {h.step3.bodyA}
+                            <code style={{ fontFamily: 'monospace' }}>sk-xxx</code>
+                            {h.step3.bodyB}
+                            <code style={{ fontFamily: 'monospace' }}>base_url</code>
+                            {h.step3.bodyC}
                         </>
                     }
                 />
@@ -816,56 +809,28 @@ const PRICING_ROWS: PricingRow[] = [
 type FamilyTier = {
     name: 'ChatGPT' | 'Claude' | 'Gemini';
     family: 'chatgpt' | 'claude' | 'gemini';
-    /** Per-$1 price in CNY, e.g., '¥0.2' for the cheap pool */
-    cnyPerDollar: string;
-    /** Discount percentage label, e.g., '官方仅 2.9%' */
-    discountLabel: string;
+    /** Per-$1 price in CNY, e.g., '¥0.2' for the cheap pool. Enterprise rows use `zhe` instead. */
+    cnyPerDollar?: string;
+    /** Enterprise discount in 折 ('3.8' = 38% of the official price); rendered via `m.pricing.discount`. */
+    zhe?: string;
+    /** Percentage of the official price, e.g. '2.9%' — rendered via `m.pricing.officialOnly` / `.official`. */
+    officialPct: string;
 };
 
 const CHEAP_POOL: FamilyTier[] = [
-    {
-        name: 'ChatGPT',
-        family: 'chatgpt',
-        cnyPerDollar: '¥0.2',
-        discountLabel: '官方仅 2.9%',
-    },
-    {
-        name: 'Claude',
-        family: 'claude',
-        cnyPerDollar: '¥1.3',
-        discountLabel: '官方仅 19%',
-    },
-    {
-        name: 'Gemini',
-        family: 'gemini',
-        cnyPerDollar: '¥0.5',
-        discountLabel: '官方仅 7.3%',
-    },
+    { name: 'ChatGPT', family: 'chatgpt', cnyPerDollar: '¥0.2', officialPct: '2.9%' },
+    { name: 'Claude', family: 'claude', cnyPerDollar: '¥1.3', officialPct: '19%' },
+    { name: 'Gemini', family: 'gemini', cnyPerDollar: '¥0.5', officialPct: '7.3%' },
 ];
 
-const ENTERPRISE_TIER: Array<FamilyTier & { provider: string }> = [
-    {
-        name: 'ChatGPT',
-        family: 'chatgpt',
-        cnyPerDollar: '3.8 折',
-        discountLabel: '官方 38%',
-        provider: 'Azure OpenAI',
-    },
-    {
-        name: 'Claude',
-        family: 'claude',
-        cnyPerDollar: '5.0 折',
-        discountLabel: '官方 50%',
-        provider: 'AWS Bedrock',
-    },
-    {
-        name: 'Gemini',
-        family: 'gemini',
-        cnyPerDollar: '2.3 折',
-        discountLabel: '官方 23%',
-        provider: 'Vertex AI / t3 池',
-    },
-];
+/** Provider sublabels are mostly brand names; the Vertex one carries a localized "t3 pool" suffix. */
+function enterpriseTiers(m: LandingMessages): Array<FamilyTier & { provider: string }> {
+    return [
+        { name: 'ChatGPT', family: 'chatgpt', zhe: '3.8', officialPct: '38%', provider: 'Azure OpenAI' },
+        { name: 'Claude', family: 'claude', zhe: '5.0', officialPct: '50%', provider: 'AWS Bedrock' },
+        { name: 'Gemini', family: 'gemini', zhe: '2.3', officialPct: '23%', provider: m.pricing.providerVertex },
+    ];
+}
 
 function FamilyIcon({ family }: { family: 'chatgpt' | 'claude' | 'gemini' }) {
     const styles = {
@@ -899,11 +864,14 @@ function PricingFamilyRow({
     tier,
     rightLabel,
     rightSubLabel,
+    m,
 }: {
     tier: FamilyTier;
     rightLabel: string;
     rightSubLabel?: string;
+    m: LandingMessages;
 }) {
+    const bigLabel = tier.cnyPerDollar ?? m.pricing.discount(tier.zhe ?? '');
     return (
         <div
             className="lp-fam-row"
@@ -946,10 +914,10 @@ function PricingFamilyRow({
                         lineHeight: 1,
                     }}
                 >
-                    {tier.cnyPerDollar}
+                    {bigLabel}
                 </span>
-                {tier.cnyPerDollar.startsWith('¥') ? (
-                    <span style={{ fontSize: 14, color: 'var(--color-muted-ink)' }}>/ $1</span>
+                {tier.cnyPerDollar ? (
+                    <span style={{ fontSize: 14, color: 'var(--color-muted-ink)' }}>{m.pricing.perDollar}</span>
                 ) : null}
             </div>
             <div
@@ -990,7 +958,8 @@ function PricingFamilyRow({
     );
 }
 
-function PricingTeaser({ promoActive: _promoActive }: { promoActive: boolean }) {
+function PricingTeaser({ promoActive: _promoActive, m }: { promoActive: boolean; m: LandingMessages }) {
+    const p = m.pricing;
     return (
         <Section style={{ padding: '48px 0' }}>
             {/* 手机窄屏下行内固定宽度(图标 44 + 价格 + pill minWidth 120)超过可用宽度,
@@ -1015,7 +984,7 @@ function PricingTeaser({ promoActive: _promoActive }: { promoActive: boolean }) 
                     textAlign: 'center',
                 }}
             >
-                价格预览
+                {p.title}
             </h2>
             <p
                 style={{
@@ -1025,7 +994,7 @@ function PricingTeaser({ promoActive: _promoActive }: { promoActive: boolean }) 
                     color: 'var(--color-muted-ink)',
                 }}
             >
-                ¥ 用 $1 官方等价额度 · 海外模型骨折价
+                {p.subtitle}
             </p>
 
             {/* 卡片 1:号池低价(默认渠道,适合开发者 / 个人 / 大批量) */}
@@ -1054,12 +1023,17 @@ function PricingTeaser({ promoActive: _promoActive }: { promoActive: boolean }) 
                             color: 'var(--color-navy)',
                         }}
                     >
-                        海外模型 · 号池低价(默认渠道)
+                        {p.cheapPoolTitle}
                     </span>
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                     {CHEAP_POOL.map((tier) => (
-                        <PricingFamilyRow key={tier.name} tier={tier} rightLabel={tier.discountLabel} />
+                        <PricingFamilyRow
+                            key={tier.name}
+                            tier={tier}
+                            rightLabel={p.officialOnly(tier.officialPct)}
+                            m={m}
+                        />
                     ))}
                 </div>
             </div>
@@ -1090,7 +1064,7 @@ function PricingTeaser({ promoActive: _promoActive }: { promoActive: boolean }) 
                             color: 'var(--color-navy)',
                         }}
                     >
-                        企业 / 合规渠道 · 官方授权
+                        {p.enterpriseTitle}
                     </span>
                 </div>
                 <p
@@ -1100,15 +1074,16 @@ function PricingTeaser({ promoActive: _promoActive }: { promoActive: boolean }) 
                         color: 'var(--color-muted-ink)',
                     }}
                 >
-                    走云厂商官方原生接口,可签订商务合同 · 适合金融 / 政企 / 出海合规要求场景
+                    {p.enterpriseDesc}
                 </p>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                    {ENTERPRISE_TIER.map((tier) => (
+                    {enterpriseTiers(m).map((tier) => (
                         <PricingFamilyRow
                             key={tier.name}
                             tier={tier}
-                            rightLabel={tier.cnyPerDollar}
+                            rightLabel={p.discount(tier.zhe ?? '')}
                             rightSubLabel={tier.provider}
+                            m={m}
                         />
                     ))}
                 </div>
@@ -1122,15 +1097,15 @@ function PricingTeaser({ promoActive: _promoActive }: { promoActive: boolean }) 
                     textAlign: 'center',
                 }}
             >
-                完整 per-model 价格 →{' '}
+                {p.fullPricing}{' '}
                 <Link href="/pricing" style={{ color: 'var(--color-navy)', fontWeight: 500 }}>
                     /pricing
                 </Link>{' '}
-                · 全部 200+ 模型清单 →{' '}
+                · {p.allModels}{' '}
                 <Link href="/models" style={{ color: 'var(--color-navy)', fontWeight: 500 }}>
                     /models
                 </Link>{' '}
-                · 企业合作微信 <strong style={{ color: 'var(--color-navy)' }}>Global_Ads</strong>
+                · {p.enterpriseWechat} <strong style={{ color: 'var(--color-navy)' }}>Global_Ads</strong>
             </p>
         </Section>
     );
@@ -1143,18 +1118,13 @@ function PricingTeaser({ promoActive: _promoActive }: { promoActive: boolean }) 
 /* OAuth-error banner — preserves the W4-1 ?oauth_error= forwarding     */
 /* ──────────────────────────────────────────────────────────────────── */
 
-function OAuthErrorBanner({ code }: { code: string }) {
-    // Whitelist friendly codes; unknown values are shown as-is but truncated.
-    const friendly: Record<string, string> = {
-        google_denied: 'Google 登录被取消,请重试。',
-        github_denied: 'GitHub 登录被取消,请重试。',
-        google_invalid: 'Google 登录失败 — 请重试,或使用邮箱密码登录。',
-        github_invalid: 'GitHub 登录失败 — 请重试,或使用邮箱密码登录。',
-        oauth_state_mismatch: '登录会话已过期,请重新登录。',
-        oauth_provider_error: '第三方登录服务暂不可达,请稍后重试。',
-    };
+function OAuthErrorBanner({ code, m }: { code: string; m: LandingMessages }) {
+    // Whitelist friendly codes (landingMessages.oauth.codes); unknown values
+    // are shown as-is but truncated. `hasOwnProperty` guards against
+    // prototype keys like `constructor` leaking through the lookup.
+    const friendly = Object.prototype.hasOwnProperty.call(m.oauth.codes, code) ? m.oauth.codes[code] : undefined;
     const safe = code.length > 60 ? code.slice(0, 60) + '…' : code;
-    const message = friendly[code] ?? `登录失败:${safe}`;
+    const message = friendly ?? m.oauth.failed(safe);
     return (
         <div
             role="alert"
@@ -1177,7 +1147,7 @@ function OAuthErrorBanner({ code }: { code: string }) {
                     fontWeight: 600,
                 }}
             >
-                返回登录
+                {m.oauth.backToLogin}
             </Link>
         </div>
     );

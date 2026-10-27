@@ -17,6 +17,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { getCurrentUser } from '@/lib/auth/session';
+import { getLocale } from '@/lib/i18n/server';
+import type { Locale } from '@/lib/i18n';
 import { queryLogs, quotaToCny, type NewApiUsageLog } from '@/lib/newapi/client';
 import {
     collapseRetriedFailures,
@@ -66,7 +68,7 @@ export interface LogRow {
     content: string;
 }
 
-function toLogRow(log: NewApiUsageLog): LogRow {
+function toLogRow(log: NewApiUsageLog, locale: Locale): LogRow {
     const cache = parseCacheTokens(log.other);
     return {
         id: log.id,
@@ -83,7 +85,7 @@ function toLogRow(log: NewApiUsageLog): LogRow {
         quota: log.quota,
         costCny: quotaToCny(log.quota),
         type: log.type,
-        content: sanitizeLogContent(log.content), // 脱敏后才出参
+        content: sanitizeLogContent(log.content, locale), // 脱敏后才出参(文案随站点语言)
     };
 }
 
@@ -125,7 +127,11 @@ export async function GET(req: NextRequest) {
     const consume = mine.filter((l) => l.type === 2);
     const errors = mine.filter((l) => l.type === 5);
     const visibleErrors = collapseRetriedFailures(consume, errors);
-    const rows: LogRow[] = [...consume, ...visibleErrors].sort((a, b) => b.created_at - a.created_at).map(toLogRow);
+    // 友好化错误文案跟随站点语言(cookie / Accept-Language;测试 / 无请求上下文 → 中文)。
+    const locale = await getLocale();
+    const rows: LogRow[] = [...consume, ...visibleErrors]
+        .sort((a, b) => b.created_at - a.created_at)
+        .map((l) => toLogRow(l, locale));
 
     // 满页(拿满 100 原始行)= 大概率还有下一页。折叠后 rows 可能 <100,但翻页按 new-api 原始页走。
     return NextResponse.json({ rows, page: q.page, hasMore: items.length >= PAGE_SIZE });

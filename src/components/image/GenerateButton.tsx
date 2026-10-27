@@ -11,6 +11,8 @@
  *                                 余额不足 / etc.)
  */
 import { Button } from '@/components/ui/Button';
+import { useMessages } from '@/lib/i18n/client';
+import { imageMessages } from '@/lib/i18n/messages/image';
 
 export type GenerateButtonState = 'idle' | 'loading' | 'error';
 
@@ -26,6 +28,7 @@ interface Props {
 }
 
 export function GenerateButton({ state, disabled = false, onClick, errorMessage, slowModelHint }: Props) {
+    const m = useMessages(imageMessages).generate;
     const isLoading = state === 'loading';
     const isError = state === 'error';
 
@@ -38,10 +41,10 @@ export function GenerateButton({ state, disabled = false, onClick, errorMessage,
                 onClick={onClick}
                 loading={isLoading}
                 disabled={disabled || isLoading}
-                aria-label="生成图像"
+                aria-label={m.aria}
                 className="min-w-[140px]"
             >
-                {isLoading ? '生成中…' : isError ? '重试' : '生成 →'}
+                {isLoading ? m.generating : isError ? m.retry : m.generate}
             </Button>
             {isError && errorMessage ? (
                 <span role="alert" className="text-xs text-status-error-text max-w-[260px] text-right">

@@ -12,6 +12,9 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import type { ImageGenerationItem } from './types';
+import { intlLocale } from '@/lib/i18n';
+import { useLocale, useMessages } from '@/lib/i18n/client';
+import { imageMessages } from '@/lib/i18n/messages/image';
 
 interface Props {
     item: ImageGenerationItem | null;
@@ -22,6 +25,8 @@ interface Props {
 }
 
 export function ImageModal({ item, initialIndex, onClose, onToggleFavorite, onDelete }: Props) {
+    const m = useMessages(imageMessages).modal;
+    const locale = intlLocale(useLocale());
     const [index, setIndex] = useState(initialIndex);
     const [isFavorite, setIsFavorite] = useState(item?.is_favorite ?? false);
     const [favPending, setFavPending] = useState(false);
@@ -73,7 +78,7 @@ export function ImageModal({ item, initialIndex, onClose, onToggleFavorite, onDe
 
     async function handleDel() {
         if (delPending) return;
-        if (!window.confirm('删除这次生成?')) return;
+        if (!window.confirm(m.confirmDelete)) return;
         setDelPending(true);
         try {
             await onDelete(item!.id);
@@ -97,7 +102,7 @@ export function ImageModal({ item, initialIndex, onClose, onToggleFavorite, onDe
         <div
             role="dialog"
             aria-modal="true"
-            aria-label="图像查看"
+            aria-label={m.aria}
             ref={dialogRef}
             tabIndex={-1}
             onClick={onClose}
@@ -126,7 +131,7 @@ export function ImageModal({ item, initialIndex, onClose, onToggleFavorite, onDe
                     {total > 1 && (
                         <>
                             <NavBtn
-                                ariaLabel="上一张"
+                                ariaLabel={m.prev}
                                 onClick={() => setIndex((i) => Math.max(i - 1, 0))}
                                 disabled={index === 0}
                                 side="left"
@@ -134,7 +139,7 @@ export function ImageModal({ item, initialIndex, onClose, onToggleFavorite, onDe
                                 ‹
                             </NavBtn>
                             <NavBtn
-                                ariaLabel="下一张"
+                                ariaLabel={m.next}
                                 onClick={() => setIndex((i) => Math.min(i + 1, total - 1))}
                                 disabled={index === total - 1}
                                 side="right"
@@ -157,20 +162,20 @@ export function ImageModal({ item, initialIndex, onClose, onToggleFavorite, onDe
                         {item.prompt}
                     </p>
 
-                    <Field label="模型" value={item.model_name} />
-                    <Field label="尺寸" value={item.size} />
-                    <Field label="数量" value={String(item.count)} />
-                    <Field label="花费" value={`$${item.cost_usd.toFixed(4)}`} />
+                    <Field label={m.model} value={item.model_name} />
+                    <Field label={m.size} value={item.size} />
+                    <Field label={m.count} value={String(item.count)} />
+                    <Field label={m.cost} value={`$${item.cost_usd.toFixed(4)}`} />
                     <Field
-                        label="时间"
-                        value={new Date(item.created_at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}
+                        label={m.time}
+                        value={new Date(item.created_at).toLocaleString(locale, { timeZone: 'Asia/Shanghai' })}
                     />
                     <Field
-                        label="到期"
+                        label={m.expires}
                         value={
                             item.expires_at
-                                ? new Date(item.expires_at).toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' })
-                                : '永久(收藏)'
+                                ? new Date(item.expires_at).toLocaleDateString(locale, { timeZone: 'Asia/Shanghai' })
+                                : m.permanent
                         }
                     />
 
@@ -186,7 +191,7 @@ export function ImageModal({ item, initialIndex, onClose, onToggleFavorite, onDe
                                 'hover:bg-navy-strong transition-colors duration-150 ease-brand',
                             ].join(' ')}
                         >
-                            下载
+                            {m.download}
                         </a>
                         <button
                             type="button"
@@ -200,14 +205,14 @@ export function ImageModal({ item, initialIndex, onClose, onToggleFavorite, onDe
                                     : 'border-brand-border bg-surface text-muted-ink hover:border-brand-accent',
                             ].join(' ')}
                         >
-                            {isFavorite ? '★ 已收藏' : '☆ 收藏'}
+                            {isFavorite ? m.favorited : m.favorite}
                         </button>
                         <button
                             type="button"
                             onClick={handleCopyPrompt}
                             className="px-3.5 py-2 rounded-lg text-xs cursor-pointer border border-brand-border bg-surface text-muted-ink hover:border-brand-accent"
                         >
-                            {copyToast ? '已复制 ✓' : '复制 prompt'}
+                            {copyToast ? m.copied : m.copyPrompt}
                         </button>
                         <button
                             type="button"
@@ -215,7 +220,7 @@ export function ImageModal({ item, initialIndex, onClose, onToggleFavorite, onDe
                             disabled={delPending}
                             className="px-3.5 py-2 rounded-lg text-xs cursor-pointer border border-brand-border bg-surface text-muted-ink hover:border-status-error-border hover:text-status-error-text"
                         >
-                            删除
+                            {m.delete}
                         </button>
                     </div>
                 </aside>
@@ -224,7 +229,7 @@ export function ImageModal({ item, initialIndex, onClose, onToggleFavorite, onDe
                 <button
                     type="button"
                     onClick={onClose}
-                    aria-label="关闭"
+                    aria-label={m.close}
                     className="absolute top-2 right-2 w-10 h-10 flex items-center justify-center rounded-lg cursor-pointer bg-surface/90 text-navy hover:bg-paper-muted"
                 >
                     ✕

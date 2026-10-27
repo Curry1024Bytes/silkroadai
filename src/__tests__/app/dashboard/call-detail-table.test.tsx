@@ -11,6 +11,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderToString } from 'react-dom/server';
 import { CallDetailTable, type CallRow } from '@/app/(authenticated)/dashboard/call-detail-table';
+import { LocaleProvider } from '@/lib/i18n/client';
 
 function row(o: Partial<CallRow> = {}): CallRow {
     return {
@@ -136,3 +137,30 @@ describe('<CallDetailTable /> SSR', () => {
 function renderRow(o: Partial<CallRow>) {
     return <CallDetailTable rows={[row(o)]} />;
 }
+
+describe('<CallDetailTable /> English locale', () => {
+    const en = (rows: CallRow[]) =>
+        renderToString(
+            <LocaleProvider locale="en">
+                <CallDetailTable rows={rows} />
+            </LocaleProvider>,
+        );
+
+    it('empty state in English', () => {
+        expect(en([])).toContain('No requests in this period');
+    });
+
+    it('headers, badges, cache subline, pager and copy affordance in English', () => {
+        const rows = [row({ id: 1, cacheReadTokens: 127_885 }), row({ id: 2, type: 5, content: 'boom', quota: 0 })];
+        const html = en(rows);
+        expect(html).toContain('Latency');
+        expect(html).toContain('Tokens (prompt / completion)');
+        expect(html).toContain('>Success<');
+        expect(html).toContain('Failed');
+        expect(html).toContain('Cache read 127,885');
+        expect(html).toContain('2 rows · page 1 / 1');
+        expect(html).toContain('Previous');
+        expect(html).toContain('Copy full Request ID');
+        for (const zh of ['成功', '失败', '缓存读', '上一页', '时长']) expect(html, zh).not.toContain(zh);
+    });
+});

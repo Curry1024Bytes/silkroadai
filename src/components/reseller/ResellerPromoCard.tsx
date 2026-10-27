@@ -20,6 +20,8 @@
  */
 import Link from 'next/link';
 import { Card, CardContent } from '@/components/ui/Card';
+import { useMessages } from '@/lib/i18n/client';
+import { resellerMessages } from '@/lib/i18n/messages/reseller';
 
 function fireAnalytics(eventType: string, properties: Record<string, unknown> = {}): void {
     void fetch('/api/portal/analytics', {
@@ -39,14 +41,18 @@ interface Props {
 }
 
 export function ResellerPromoCard({ sourceStatus }: Props) {
+    const m = useMessages(resellerMessages).promo;
     return (
         <Card as="aside" className="mt-2">
             <CardContent className="flex flex-col sm:flex-row sm:items-center gap-4 py-5">
                 <div className="flex-1 min-w-0">
-                    <p className="m-0 text-base font-semibold text-navy">邀请朋友充值,你也赚佣金</p>
+                    <p className="m-0 text-base font-semibold text-navy">{m.headline}</p>
                     <p className="m-0 mt-1 text-sm text-muted-ink leading-relaxed">
-                        阶梯佣金 <strong className="text-navy">10% / 15% / 20%</strong>,归因期{' '}
-                        <strong className="text-navy">24 个月</strong>,月结打款。最低门槛,代理人人可申请。
+                        {m.bodyBefore}
+                        <strong className="text-navy">{m.rates}</strong>
+                        {m.bodyMid}
+                        <strong className="text-navy">{m.attribution}</strong>
+                        {m.bodyAfter}
                     </p>
                 </div>
                 <Link
@@ -58,7 +64,7 @@ export function ResellerPromoCard({ sourceStatus }: Props) {
                         'hover:bg-navy-strong transition-colors duration-150 ease-brand',
                     ].join(' ')}
                 >
-                    了解代理计划 <span aria-hidden="true">→</span>
+                    {m.cta} <span aria-hidden="true">→</span>
                 </Link>
             </CardContent>
         </Card>

@@ -19,8 +19,13 @@
  */
 import Link from 'next/link';
 import { Logo } from '@/components/brand/Logo';
+import { LocaleSwitcher } from '@/components/LocaleSwitcher';
+import { pickMessages, type Locale } from '@/lib/i18n';
+import { commonMessages } from '@/lib/i18n/messages/common';
 
-export function Footer() {
+/** `locale` is passed by the root layout (sync child — see i18n README rule 2). */
+export function Footer({ locale = 'zh' }: { locale?: Locale } = {}) {
+    const m = pickMessages(commonMessages, locale);
     const year = new Date().getFullYear();
     return (
         <footer
@@ -35,42 +40,42 @@ export function Footer() {
                 <span className="hidden sm:inline text-minor-ink">Connecting Global Intelligence.</span>
             </div>
 
-            <nav className="flex items-center gap-4 flex-wrap" aria-label="页脚导航">
+            <nav className="flex items-center gap-4 flex-wrap" aria-label={m.nav.footerAria}>
                 <Link
                     href="/models"
                     className="text-muted-ink hover:text-navy no-underline transition-colors duration-150 ease-brand"
                 >
-                    模型清单
+                    {m.nav.models}
                 </Link>
                 <Link
                     href="/docs"
                     className="text-muted-ink hover:text-navy no-underline transition-colors duration-150 ease-brand"
                 >
-                    文档
+                    {m.nav.docs}
                 </Link>
                 <Link
                     href="/terms"
                     className="text-muted-ink hover:text-navy no-underline transition-colors duration-150 ease-brand"
                 >
-                    服务条款
+                    {m.footer.terms}
                 </Link>
                 <Link
                     href="/privacy"
                     className="text-muted-ink hover:text-navy no-underline transition-colors duration-150 ease-brand"
                 >
-                    隐私政策
+                    {m.footer.privacy}
                 </Link>
                 <Link
                     href="/refund"
                     className="text-muted-ink hover:text-navy no-underline transition-colors duration-150 ease-brand"
                 >
-                    退款政策
+                    {m.footer.refund}
                 </Link>
             </nav>
 
             <div className="flex items-center gap-4 flex-wrap">
                 <span>
-                    客服:微信{' '}
+                    {m.footer.supportWechat}{' '}
                     <code className="font-mono text-xs bg-surface px-1.5 py-0.5 rounded border border-brand-border text-navy">
                         Global_Ads
                     </code>
@@ -82,6 +87,7 @@ export function Footer() {
                     support@silkroadai.io
                 </a>
                 <span className="text-minor-ink">© {year} Silk Road AI</span>
+                <LocaleSwitcher />
             </div>
         </footer>
     );

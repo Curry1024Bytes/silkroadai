@@ -22,6 +22,7 @@
  *     buttons.
  */
 import { useEffect, useRef } from 'react';
+import { useLocale } from '@/lib/i18n/client';
 
 interface Props {
     open: boolean;
@@ -38,6 +39,7 @@ interface Props {
 }
 
 export function Modal({ open, onClose, title, footer, dismissible = true, icon, children }: Props) {
+    const locale = useLocale();
     const dialogRef = useRef<HTMLDivElement | null>(null);
 
     useEffect(() => {
@@ -92,7 +94,7 @@ export function Modal({ open, onClose, title, footer, dismissible = true, icon, 
                         <button
                             type="button"
                             onClick={onClose}
-                            aria-label="关闭"
+                            aria-label={locale === 'en' ? 'Close' : '关闭'}
                             className="w-8 h-8 flex items-center justify-center rounded cursor-pointer text-muted-ink hover:text-navy hover:bg-paper-muted"
                         >
                             ✕

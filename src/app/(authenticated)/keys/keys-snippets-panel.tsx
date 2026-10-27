@@ -2,6 +2,8 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
+import { useMessages } from '@/lib/i18n/client';
+import { keysMessages } from '@/lib/i18n/messages/keys';
 
 /**
  * Unified bottom "调用示例" panel for /keys (W7 D4 PR-R Item C).
@@ -93,6 +95,7 @@ const TABS: TabDef[] = [
 export function KeysSnippetsPanel() {
     const [active, setActive] = useState<TabId>('curl');
     const [copied, setCopied] = useState(false);
+    const m = useMessages(keysMessages).snippets;
 
     const tab = TABS.find((t) => t.id === active) ?? TABS[0];
 
@@ -114,24 +117,31 @@ export function KeysSnippetsPanel() {
         >
             <header className="px-5 py-4 border-b border-brand-border bg-paper-muted">
                 <h2 id="keys-snippets-heading" className="m-0 text-base font-semibold text-navy">
-                    调用示例
+                    {m.heading}
                 </h2>
                 <p className="m-0 mt-1 text-xs text-muted-ink">
-                    复制代码 · 把{' '}
+                    {m.hint1}
                     <code className="font-mono text-xs bg-surface px-1 py-0.5 rounded border border-brand-border text-navy">
                         {PLACEHOLDER}
-                    </code>{' '}
-                    换成上方表格里 <strong className="text-navy">显示</strong> +{' '}
-                    <strong className="text-navy">复制</strong> 到的 sk-… 即可。
+                    </code>
+                    {m.hint2}
+                    <strong className="text-navy">{m.hintReveal}</strong>
+                    {m.hint3}
+                    <strong className="text-navy">{m.hintCopy}</strong>
+                    {m.hint4}
                 </p>
             </header>
 
             <div className="px-5 pt-4 pb-2 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <BaseUrlChip label="OpenAI 兼容 Base URL" value={OPENAI_BASE} />
-                <BaseUrlChip label="Anthropic 兼容 Base URL" value={ANTHROPIC_BASE} />
+                <BaseUrlChip label={m.openaiBase} value={OPENAI_BASE} />
+                <BaseUrlChip label={m.anthropicBase} value={ANTHROPIC_BASE} />
             </div>
 
-            <div role="tablist" aria-label="代码示例语言" className="px-5 pt-3 flex gap-1 border-b border-brand-border">
+            <div
+                role="tablist"
+                aria-label={m.tablistAria}
+                className="px-5 pt-3 flex gap-1 border-b border-brand-border"
+            >
                 {TABS.map((t) => {
                     const isActive = t.id === active;
                     return (
@@ -170,7 +180,7 @@ export function KeysSnippetsPanel() {
                 <button
                     type="button"
                     onClick={handleCopy}
-                    aria-label={`复制 ${tab.label} 示例代码`}
+                    aria-label={m.copyAria(tab.label)}
                     className={[
                         'absolute top-3 right-3 z-10 text-xs px-2.5 py-1 rounded cursor-pointer',
                         'transition-colors duration-150 ease-brand',
@@ -179,7 +189,7 @@ export function KeysSnippetsPanel() {
                             : 'bg-white/10 text-paper-muted hover:bg-brand-accent hover:text-navy-strong',
                     ].join(' ')}
                 >
-                    {copied ? '已复制 ✓' : '复制'}
+                    {copied ? m.copiedCheck : m.copy}
                 </button>
                 <pre className="m-0 px-5 py-4 bg-navy-strong overflow-x-auto text-xs leading-relaxed">
                     <code
@@ -193,13 +203,13 @@ export function KeysSnippetsPanel() {
 
             <footer className="px-5 py-3 border-t border-brand-border text-xs text-muted-ink flex flex-wrap gap-x-4 gap-y-1">
                 <span>
-                    模型示例 →{' '}
+                    {m.modelExample}{' '}
                     <Link href="/models" className="text-navy font-medium hover:text-brand-accent">
                         {SAMPLE_MODEL}
                     </Link>
                 </span>
                 <span>
-                    完整集成指南 →{' '}
+                    {m.fullGuide}{' '}
                     <Link href="/docs" className="text-navy font-medium hover:text-brand-accent">
                         /docs
                     </Link>

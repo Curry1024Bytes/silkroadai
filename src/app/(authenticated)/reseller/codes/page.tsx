@@ -12,9 +12,14 @@ import { getCurrentUser } from '@/lib/auth/session';
 import { fetchResellerStatus } from '@/lib/reseller/fetch-status';
 import { prisma } from '@/lib/db';
 import { CodesClient, type CodeRow } from './codes-client';
+import { getLocale } from '@/lib/i18n/server';
+import { pickMessages } from '@/lib/i18n';
+import { resellerMessages } from '@/lib/i18n/messages/reseller';
 
 export const dynamic = 'force-dynamic';
-export const metadata = { title: '邀请码 — 代理后台' };
+export async function generateMetadata() {
+    return { title: pickMessages(resellerMessages, await getLocale()).meta.codesTitle };
+}
 
 async function getSessionUser() {
     const h = await headers();

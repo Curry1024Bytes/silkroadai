@@ -34,7 +34,16 @@ vi.mock('@/lib/newapi/effective-group-ratios', async () => {
     return { ...actual, getEffectiveGroupRatios: (...a: unknown[]) => mockGetEffectiveGroupRatios(...a) };
 });
 
-import PricingPage, { _resetPricingSheetCache } from '@/app/pricing/page';
+// feat/i18n-zh-en: locale is resolved only through this module; default stays zh so every
+// pre-existing Chinese assertion holds, the English describe flips it per test.
+let mockLocale: 'zh' | 'en' = 'zh';
+vi.mock('@/lib/i18n/server', () => ({
+    getLocale: async () => mockLocale,
+    getMessages: async (d: { zh: unknown; en: unknown }) => d[mockLocale],
+}));
+
+import PricingPage, { _resetPricingSheetCache, generateMetadata } from '@/app/pricing/page';
+import { LocaleProvider } from '@/lib/i18n/client';
 
 const price = (tier: string, opts: { in?: number | null; out?: number | null; img?: number | null } = {}) => ({
     tier,
@@ -57,6 +66,7 @@ const GROUPS = [
 
 beforeEach(() => {
     _resetPricingSheetCache();
+    mockLocale = 'zh';
     mockCookie = '';
     mockGetCurrentUser.mockReset();
     mockGetEffectiveGroupRatios.mockReset();
@@ -179,5 +189,76 @@ describe('/pricing — 登录客户按专属倍率显示(2026-10-23)', () => {
         const html = renderToString(await PricingPage());
         expect(html).not.toContain('已按您的专属倍率');
         expect(html).toContain('¥17');
+    });
+});
+
+describe('/pricing — English locale (feat/i18n-zh-en)', () => {
+    beforeEach(() => {
+        mockLocale = 'en';
+    });
+
+    it('renders English chrome, table headers, vendor subtitles and footer; tier labels stay operator data', async () => {
+        mockFindManyCatalog.mockResolvedValue([
+            model('claude-opus-4-8', 'Claude Opus 4 8', [price('pool', { in: 6, out: 30 })]),
+            model('gemini-3.1-flash-image-preview', 'Gemini 3.1 Flash Image Preview', [
+                price('geminit3', { img: 0.1 }),
+            ]),
+        ]);
+        // The LocaleSwitcher is a client island that reads <LocaleProvider> (root layout in prod).
+        const html = renderToString(<LocaleProvider locale="en">{await PricingPage()}</LocaleProvider>);
+
+        expect(html).toContain('Model pricing');
+        expect(html).toContain('All prices are in CNY');
+        expect(html).toContain('Input ¥/1M');
+        expect(html).toContain('Image ¥/each');
+        expect(html).toContain('Claude family'); // en vendor subtitle (zh = "Claude 系列")
+        expect(html).toContain('>1 model<');
+        expect(html).toMatch(/2 priced models in total/);
+        expect(html).toMatch(/aria-label="Language"[^>]*data-locale="en"/);
+        // Prices are locale-independent.
+        expect(html).toContain('¥6');
+        expect(html).toContain('¥0.1');
+        // Tier labels come from ChannelGroup.display_name (operator data) and are the only CJK left
+        // besides the switcher's own 中文 button — strip both and nothing Chinese may remain.
+        const stripped = html
+            .replace(/<div role="group"[\s\S]*?<\/div>/, '')
+            .replace('默认(号池为主)', '')
+            .replace('geminit3', '');
+        expect(stripped).not.toMatch(/[一-鿿]/);
+    });
+
+    it('renders the English custom-rate banner + badge for a logged-in customer', async () => {
+        mockFindManyCatalog.mockResolvedValue([
+            model('claude-opus-4-8', 'Claude Opus 4 8', [
+                price('pool', { in: 6, out: 30 }),
+                price('official', { in: 17, out: 85 }),
+            ]),
+        ]);
+        mockCookie = 'session=abc';
+        mockGetCurrentUser.mockResolvedValue({ id: 'u-1', newapi_user_id: 816, newapi_access_token: 't' });
+        mockGetEffectiveGroupRatios.mockResolvedValue({
+            ratios: { default: 1.3, official: 1.75 },
+            listRatios: { default: 1.3, official: 3.5 },
+            special: new Set(['official']),
+            source: 'customer',
+        });
+        const html = renderToString(await PricingPage());
+        expect(html).toContain('Prices shown with your custom rate applied (custom tiers: Claude官方稳定)');
+        expect(html).toContain('Custom rate');
+        expect(html).not.toContain('专属价');
+        expect(html).toContain('¥8.5');
+    });
+
+    it('renders the English error banner when the DB read throws', async () => {
+        mockFindManyCatalog.mockRejectedValue(new Error('db down'));
+        const html = renderToString(await PricingPage());
+        expect(html).toContain('The price sheet is temporarily unavailable');
+        expect(html).not.toContain('当前无法获取价格表');
+    });
+
+    it('generateMetadata follows the locale (en → English title, zh → original)', async () => {
+        expect((await generateMetadata()).title).toBe('Model Pricing — Silk Road AI');
+        mockLocale = 'zh';
+        expect((await generateMetadata()).title).toBe('模型价格 — Silk Road AI');
     });
 });

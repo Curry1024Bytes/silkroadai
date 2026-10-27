@@ -16,6 +16,8 @@ import { useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/Button';
 import { FormError } from '@/components/ui/FormError';
+import { useMessages } from '@/lib/i18n/client';
+import { resellerMessages } from '@/lib/i18n/messages/reseller';
 
 function fireAnalytics(eventType: string, properties: Record<string, unknown>): void {
     void fetch('/api/portal/analytics', {
@@ -31,6 +33,8 @@ function fireAnalytics(eventType: string, properties: Record<string, unknown>): 
 
 export function JoinForm() {
     const router = useRouter();
+    const all = useMessages(resellerMessages);
+    const m = all.join;
     const [agreed, setAgreed] = useState(false);
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -39,7 +43,7 @@ export function JoinForm() {
         e.preventDefault();
         fireAnalytics('reseller_join_clicked', { agreement_checked: agreed });
         if (!agreed) {
-            setError('请先阅读并勾选同意《Silk Road AI 代理合作协议》');
+            setError(m.agreeFirst);
             return;
         }
         setError(null);
@@ -53,14 +57,14 @@ export function JoinForm() {
             });
             if (!res.ok) {
                 const j: { error?: string; message?: string } = await res.json().catch(() => ({}));
-                throw new Error(j.message || j.error || `服务端错误 (${res.status})`);
+                throw new Error(j.message || j.error || all.common.serverError(res.status));
             }
             // Refresh — server-side gate now sees isReseller=true and
             // redirects to /reseller/dashboard.
             router.refresh();
             router.push('/reseller/dashboard');
         } catch (err) {
-            setError(err instanceof Error ? err.message : '加入失败,请稍后重试');
+            setError(err instanceof Error ? err.message : m.failed);
             setSubmitting(false);
         }
     }
@@ -75,16 +79,14 @@ export function JoinForm() {
                     className="mt-1 h-4 w-4 cursor-pointer accent-brand-accent"
                     aria-describedby="agreement-hint"
                 />
-                <span className="text-sm text-ink leading-relaxed select-none">
-                    我已阅读并同意上方《Silk Road AI 代理合作协议》摘要
-                </span>
+                <span className="text-sm text-ink leading-relaxed select-none">{m.checkboxLabel}</span>
             </label>
             <p id="agreement-hint" className="text-xs text-muted-ink m-0">
-                勾选后点击下方按钮即可立即激活代理身份,系统会为你自动生成第一个邀请码。
+                {m.hint}
             </p>
             {error && <FormError>{error}</FormError>}
             <Button type="submit" disabled={submitting || !agreed} className="w-full sm:w-auto">
-                {submitting ? '加入中...' : '加入代理计划'}
+                {submitting ? m.submitting : m.submit}
             </Button>
         </form>
     );

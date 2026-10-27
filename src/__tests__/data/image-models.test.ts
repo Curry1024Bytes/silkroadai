@@ -13,6 +13,11 @@ import {
     IMAGE_SIZE_OPTIONS,
     PROMPT_MAX_CHARS,
     SAMPLE_PROMPTS,
+    SAMPLE_PROMPTS_EN,
+    imageModelBadge,
+    imageModelBlurb,
+    imageSizeLabel,
+    samplePrompts,
 } from '@/data/image-models';
 import { IMAGE_MODEL_IDS } from '@/lib/image-gen/models';
 
@@ -92,5 +97,27 @@ describe('SAMPLE_PROMPTS', () => {
             expect(s.length).toBeGreaterThan(0);
             expect(s.length).toBeLessThanOrEqual(PROMPT_MAX_CHARS);
         }
+    });
+});
+
+describe('i18n helpers (en edition)', () => {
+    it('every option has an English blurb; badges have an English twin', () => {
+        for (const m of IMAGE_MODEL_OPTIONS) {
+            expect(m.blurbEn).toBeTruthy();
+            expect(m.blurbEn).not.toMatch(/[\u4e00-\u9fff]/);
+            expect(Boolean(m.badgeEn)).toBe(Boolean(m.badge));
+            expect(imageModelBlurb(m, 'zh')).toBe(m.blurb);
+            expect(imageModelBlurb(m, 'en')).toBe(m.blurbEn);
+            expect(imageModelBadge(m, 'en')).toBe(m.badgeEn);
+        }
+    });
+
+    it('size labels + sample prompts switch by locale and keep shape', () => {
+        expect(IMAGE_SIZE_OPTIONS.map((s) => imageSizeLabel(s, 'en'))).toEqual(['Square', 'Portrait', 'Landscape']);
+        expect(IMAGE_SIZE_OPTIONS.map((s) => imageSizeLabel(s, 'zh'))).toEqual(['正方形', '竖屏', '横屏']);
+        expect(SAMPLE_PROMPTS_EN).toHaveLength(SAMPLE_PROMPTS.length);
+        expect(samplePrompts('zh')).toBe(SAMPLE_PROMPTS);
+        expect(samplePrompts('en')).toBe(SAMPLE_PROMPTS_EN);
+        for (const s of SAMPLE_PROMPTS_EN) expect(s.length).toBeLessThanOrEqual(PROMPT_MAX_CHARS);
     });
 });

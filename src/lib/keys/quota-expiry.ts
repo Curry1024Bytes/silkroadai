@@ -6,18 +6,21 @@
  *     充值不会自动补它;`null` = 无限(new-api `unlimited_quota=true`)。
  *   - 到期时间 = 绝对时间点;`null` = 永不(new-api `expired_time=-1`)。
  *   - 这里【不做】¥↔quota 换算(client island 禁止读 quota-units env),换算只在 server route。
+ *   - 用户可见文案(预设标签 / 校验错误 / 「永不过期」)来自 `messages/keys.ts`,按 `locale` 取;
+ *     省略 locale = 中文(与历史行为一致)。
  */
+import { intlLocale, pickMessages, type Locale } from '@/lib/i18n';
+import { keysMessages } from '@/lib/i18n/messages/keys';
 
 export const EXPIRY_PRESETS = ['never', '1h', '1d', '1m', 'custom'] as const;
 export type ExpiryPreset = (typeof EXPIRY_PRESETS)[number];
 
-export const EXPIRY_PRESET_LABELS: Record<ExpiryPreset, string> = {
-    never: '永不',
-    '1h': '1 小时',
-    '1d': '1 天',
-    '1m': '1 个月',
-    custom: '自定义',
-};
+/** Chinese preset labels (legacy alias). Prefer `expiryPresetLabels(locale)`. */
+export const EXPIRY_PRESET_LABELS: Record<ExpiryPreset, string> = keysMessages.zh.quotaExpiry.presets;
+
+export function expiryPresetLabels(locale: Locale = 'zh'): Record<ExpiryPreset, string> {
+    return pickMessages(keysMessages, locale).quotaExpiry.presets;
+}
 
 /** 额度上限上限值(¥),防手滑多打零。 */
 export const MAX_QUOTA_CNY = 1_000_000;
@@ -64,23 +67,25 @@ export function parseQuotaCny(raw: string): number | null {
     return Math.round(n * 100) / 100;
 }
 
-export function buildQuotaExpiryPayload(input: QuotaExpiryInput, now: Date = new Date()): QuotaExpiryPayload {
+export function buildQuotaExpiryPayload(
+    input: QuotaExpiryInput,
+    now: Date = new Date(),
+    locale: Locale = 'zh',
+): QuotaExpiryPayload {
+    const errors = pickMessages(keysMessages, locale).quotaExpiry.errors;
     let quotaCny: number | null = null;
     if (!input.quotaUnlimited) {
         quotaCny = parseQuotaCny(input.quotaCny);
         if (quotaCny === null) {
-            return {
-                ok: false,
-                error: `额度上限请填 0.01 ~ ${MAX_QUOTA_CNY.toLocaleString('en-US')} 之间的金额(最多两位小数)`,
-            };
+            return { ok: false, error: errors.invalidQuota(MAX_QUOTA_CNY.toLocaleString('en-US')) };
         }
     }
     let expiresAt: string | null = null;
     if (input.expiryPreset === 'custom') {
-        if (!input.expiryCustom.trim()) return { ok: false, error: '请选择到期时间' };
+        if (!input.expiryCustom.trim()) return { ok: false, error: errors.pickExpiry };
         expiresAt = presetToExpiresAt('custom', input.expiryCustom, now);
-        if (expiresAt === null) return { ok: false, error: '到期时间格式不正确' };
-        if (Date.parse(expiresAt) <= now.getTime()) return { ok: false, error: '到期时间必须晚于现在' };
+        if (expiresAt === null) return { ok: false, error: errors.badExpiryFormat };
+        if (Date.parse(expiresAt) <= now.getTime()) return { ok: false, error: errors.expiryMustBeFuture };
     } else {
         expiresAt = presetToExpiresAt(input.expiryPreset, '', now);
     }
@@ -93,10 +98,10 @@ export function isExpired(expiresAt: string | null, now: Date = new Date()): boo
     return !Number.isNaN(ms) && ms <= now.getTime();
 }
 
-/** 到期时间展示;全站统一北京时间(gotcha #20)。 */
-export function formatExpiry(expiresAt: string | null): string {
-    if (!expiresAt) return '永不过期';
-    return new Date(expiresAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
+/** 到期时间展示;全站统一北京时间(gotcha #20),数字格式随 locale。 */
+export function formatExpiry(expiresAt: string | null, locale: Locale = 'zh'): string {
+    if (!expiresAt) return pickMessages(keysMessages, locale).quotaExpiry.neverExpires;
+    return new Date(expiresAt).toLocaleString(intlLocale(locale), { timeZone: 'Asia/Shanghai', hour12: false });
 }
 
 /** ISO → `datetime-local` 输入框需要的本地时间串(yyyy-MM-ddTHH:mm)。 */

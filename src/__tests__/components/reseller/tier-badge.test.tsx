@@ -33,3 +33,18 @@ describe('<TierBadge />', () => {
         expect(html).not.toContain('黄金');
     });
 });
+
+describe('<TierBadge /> (en)', () => {
+    it.each([
+        ['bronze', 'Bronze'],
+        ['silver', 'Silver'],
+        ['gold', 'Gold'],
+    ] as const)('locale="en" tier=%s shows %s and drops the duplicate enum code', (tier, label) => {
+        const html = renderToString(<TierBadge tier={tier} locale="en" />);
+        expect(html).toContain(label);
+        expect(html).toContain(`data-tier="${tier}"`);
+        // The muted lowercase enum would just repeat the English label — hidden in en.
+        expect(html).not.toContain(`>${tier}<`);
+        expect(html).not.toMatch(/青铜|白银|黄金/);
+    });
+});

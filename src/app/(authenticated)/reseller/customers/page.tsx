@@ -17,9 +17,14 @@ import { fetchResellerStatus } from '@/lib/reseller/fetch-status';
 import { prisma } from '@/lib/db';
 import { maskEmail, customerSeqNo } from '@/lib/reseller/mask';
 import { CustomersClient, type CustomerRow } from './customers-client';
+import { getLocale } from '@/lib/i18n/server';
+import { pickMessages } from '@/lib/i18n';
+import { resellerMessages } from '@/lib/i18n/messages/reseller';
 
 export const dynamic = 'force-dynamic';
-export const metadata = { title: '客户列表 — 代理后台' };
+export async function generateMetadata() {
+    return { title: pickMessages(resellerMessages, await getLocale()).meta.customersTitle };
+}
 
 const PAGE_SIZE = 20;
 

@@ -12,32 +12,39 @@
  */
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useMessages } from '@/lib/i18n/client';
+import { commonMessages } from '@/lib/i18n/messages/common';
+
+type CommonMessages = (typeof commonMessages)['zh'];
 
 interface NavItem {
     href: string;
     label: string;
 }
 
-const BASE_NAV: NavItem[] = [
-    // 客户控制台三合一: 概览 now IS the merged console — 余额 + 用量 + 每次调用
-    // 明细 all live on /dashboard. Old /balance + /usage routes 307-redirect
-    // here, so the two former nav rows collapsed into this one.
-    { href: '/dashboard', label: '概览' },
-    // 全功能调用日志:按日期范围 + Request ID / 令牌 / 模型 / 渠道 搜索,分页展示(已去重复失败)。
-    { href: '/logs', label: '调用日志' },
-    { href: '/keys', label: 'API Keys' },
-    // 工具箱: 独立页 /tools(Seedance 视频 / AI 对话 / AI 生图 在线测试 + Codex / Claude Code
-    // 接入),不跳落地页。放在 API Keys 之后。控制台的 AI 对话 / AI 生图 入口已下线,统一收敛
-    // 到工具箱(/chat /image 页面仍在,只是不再挂导航)。
-    { href: '/tools', label: '工具箱' },
-    // W9 D3 PR-C: 客户自定义 OSS(生图输出存储)配置入口。
-    { href: '/settings/storage', label: '存储设置' },
-    { href: '/models', label: '模型清单' },
-    // W7 D4 PR-G: public integration docs (Cursor / Cline / Continue /
-    // Claude Code Desktop / Python + Node SDK).
-    { href: '/docs', label: '文档' },
-    // 2026-10-22: GPU 租赁(/gpu)页面已下线,入口一并移除。
-];
+/** Labels come from the common message dict (zh / en) — built per render in `Sidebar`. */
+function baseNav(m: CommonMessages): NavItem[] {
+    return [
+        // 客户控制台三合一: 概览 now IS the merged console — 余额 + 用量 + 每次调用
+        // 明细 all live on /dashboard. Old /balance + /usage routes 307-redirect
+        // here, so the two former nav rows collapsed into this one.
+        { href: '/dashboard', label: m.nav.dashboard },
+        // 全功能调用日志:按日期范围 + Request ID / 令牌 / 模型 / 渠道 搜索,分页展示(已去重复失败)。
+        { href: '/logs', label: m.nav.logs },
+        { href: '/keys', label: m.nav.keys },
+        // 工具箱: 独立页 /tools(Seedance 视频 / AI 对话 / AI 生图 在线测试 + Codex / Claude Code
+        // 接入),不跳落地页。放在 API Keys 之后。控制台的 AI 对话 / AI 生图 入口已下线,统一收敛
+        // 到工具箱(/chat /image 页面仍在,只是不再挂导航)。
+        { href: '/tools', label: m.nav.tools },
+        // W9 D3 PR-C: 客户自定义 OSS(生图输出存储)配置入口。
+        { href: '/settings/storage', label: m.nav.storage },
+        { href: '/models', label: m.nav.models },
+        // W7 D4 PR-G: public integration docs (Cursor / Cline / Continue /
+        // Claude Code Desktop / Python + Node SDK).
+        { href: '/docs', label: m.nav.docs },
+        // 2026-10-22: GPU 租赁(/gpu)页面已下线,入口一并移除。
+    ];
+}
 
 interface SidebarProps {
     /** PR-U2 + fix/reseller-entry-discovery: the reseller entry is ALWAYS
@@ -53,17 +60,18 @@ interface SidebarProps {
     resellerStatus?: 'active' | 'suspended' | 'banned' | null;
 }
 
-function resellerNavLabel(status: SidebarProps['resellerStatus']): string {
-    if (status === 'active') return '代理后台';
-    if (status === 'suspended' || status === 'banned') return '代理后台';
-    return '邀请赚佣金'; // null / undefined → never-joined CTA
+function resellerNavLabel(status: SidebarProps['resellerStatus'], m: CommonMessages): string {
+    if (status === 'active') return m.nav.resellerConsole;
+    if (status === 'suspended' || status === 'banned') return m.nav.resellerConsole;
+    return m.nav.resellerJoin; // null / undefined → never-joined CTA
 }
 
 export function Sidebar({ resellerStatus = null }: SidebarProps) {
     const pathname = usePathname();
+    const m = useMessages(commonMessages);
     // Build the final nav list — always append the reseller entry after
     // the customer-facing rows (it sits last whether they've joined or not).
-    const nav: NavItem[] = [...BASE_NAV, { href: '/reseller', label: resellerNavLabel(resellerStatus) }];
+    const nav: NavItem[] = [...baseNav(m), { href: '/reseller', label: resellerNavLabel(resellerStatus, m) }];
     // Suspended / banned resellers get a muted entry — their click still
     // routes to /reseller, which server-side renders the status page.
     const resellerMuted = resellerStatus === 'suspended' || resellerStatus === 'banned';
@@ -78,7 +86,7 @@ export function Sidebar({ resellerStatus = null }: SidebarProps) {
                 'md:flex md:flex-col md:justify-between',
                 'py-2 md:py-4',
             ].join(' ')}
-            aria-label="客户后台导航"
+            aria-label={m.nav.sidebarAria}
         >
             <ul className={['list-none p-0 m-0 flex flex-row md:flex-col gap-0.5 px-2 md:px-0'].join(' ')}>
                 {nav.map((item) => {
@@ -122,7 +130,7 @@ export function Sidebar({ resellerStatus = null }: SidebarProps) {
                         'transition-colors duration-150 ease-brand',
                     ].join(' ')}
                 >
-                    + 充值
+                    {m.nav.topUp}
                 </Link>
             </div>
         </nav>

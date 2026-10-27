@@ -31,7 +31,11 @@ import {
     type ThreadMessage,
 } from '@assistant-ui/react';
 import type { ChatModelGroup } from '@/lib/chat/models';
+import { useMessages } from '@/lib/i18n/client';
+import { chatMessages } from '@/lib/i18n/messages/chat';
 import { AssistantMarkdown } from './assistant-markdown';
+
+type ChatConsoleMessages = (typeof chatMessages)['zh'];
 
 interface ChatConsoleProps {
     groups: ChatModelGroup[];
@@ -130,6 +134,7 @@ function ChatThread({
     webSearchRef: React.RefObject<boolean>;
     canAttach: boolean;
 }) {
+    const m = useMessages(chatMessages);
     const attachmentAdapter = useMemo(() => new SimpleImageAttachmentAdapter(), []);
 
     const adapter = useMemo<ChatModelAdapter>(
@@ -154,15 +159,18 @@ function ChatThread({
                     });
                 } catch (err) {
                     if (err instanceof DOMException && err.name === 'AbortError') throw err;
-                    yield { content: [{ type: 'text' as const, text: '⚠️ 网络连接失败,请稍后重试' }] };
+                    yield { content: [{ type: 'text' as const, text: m.console.networkFailed }] };
                     return;
                 }
 
                 if (!res.ok || !res.body) {
-                    let msg = `请求失败 (${res.status})`;
+                    let msg = m.console.requestFailed(res.status);
                     try {
                         const j = await res.json();
-                        msg = j?.message || j?.detail?.error?.message || j?.error || msg;
+                        // Locale-aware code map first; the route's Chinese `message`
+                        // body stays as the fallback (upstream detail passes through).
+                        const code = typeof j?.error === 'string' ? j.error : undefined;
+                        msg = (code && m.errors[code]) || j?.message || j?.detail?.error?.message || j?.error || msg;
                     } catch {
                         /* non-JSON */
                     }
@@ -193,7 +201,7 @@ function ChatThread({
                 // (see src/lib/sse/stream-guard.ts). Tell the customer instead
                 // of silently truncating.
                 if (finishReason === 'error') {
-                    const notice = '⚠️ 连接中断,以上回复可能不完整,请重试。';
+                    const notice = m.console.interrupted;
                     yield {
                         content: [{ type: 'text' as const, text: acc.trim() ? `${acc}\n\n${notice}` : notice }],
                     };
@@ -205,14 +213,12 @@ function ChatThread({
                 // empty completion, and tell the customer it's retryable.
                 if (acc.trim() === '') {
                     const msg =
-                        finishReason === 'content_filter'
-                            ? '⚠️ 上游内容过滤导致本次无输出,请重试或更换模型。'
-                            : '⚠️ 本次无返回内容,请重试。';
+                        finishReason === 'content_filter' ? m.console.contentFilterEmpty : m.console.emptyOutput;
                     yield { content: [{ type: 'text' as const, text: msg }] };
                 }
             },
         }),
-        [modelRef, webSearchRef],
+        [modelRef, webSearchRef, m],
     );
 
     const runtime = useLocalRuntime(adapter, { adapters: { attachments: attachmentAdapter } });
@@ -223,8 +229,8 @@ function ChatThread({
                 <ThreadPrimitive.Viewport className="flex flex-1 flex-col gap-4 overflow-y-auto px-4 py-4">
                     <ThreadPrimitive.Empty>
                         <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center text-muted-ink">
-                            <p className="m-0 text-base font-medium text-navy">开始对话</p>
-                            <p className="m-0 max-w-sm text-sm">选择上方模型,输入消息即可。对话不会保存,刷新后清空。</p>
+                            <p className="m-0 text-base font-medium text-navy">{m.console.emptyTitle}</p>
+                            <p className="m-0 max-w-sm text-sm">{m.console.emptyHint}</p>
                         </div>
                     </ThreadPrimitive.Empty>
                     <ThreadPrimitive.Messages components={{ UserMessage, AssistantMessage }} />
@@ -253,6 +259,7 @@ function UserMessage() {
 }
 
 function AssistantMessage() {
+    const m = useMessages(chatMessages);
     return (
         <MessagePrimitive.Root className="group flex flex-col items-start gap-1">
             <div className="max-w-[85%] rounded-xl border border-brand-border bg-paper-muted px-3.5 py-2.5 text-sm text-ink">
@@ -264,7 +271,7 @@ function AssistantMessage() {
                 className="ml-1 flex gap-2 opacity-0 transition-opacity group-hover:opacity-100"
             >
                 <ActionBarPrimitive.Copy className="text-[11px] text-minor-ink hover:text-navy cursor-pointer">
-                    复制
+                    {m.console.copy}
                 </ActionBarPrimitive.Copy>
             </ActionBarPrimitive.Root>
         </MessagePrimitive.Root>
@@ -292,6 +299,7 @@ function MessageAttachmentChip() {
 // ── Composer ───────────────────────────────────────────────────────────
 
 function Composer({ canAttach }: { canAttach: boolean }) {
+    const m = useMessages(chatMessages);
     return (
         <div className="border-t border-brand-border bg-paper px-3 py-3">
             <ComposerPrimitive.Attachments
@@ -301,7 +309,7 @@ function Composer({ canAttach }: { canAttach: boolean }) {
                 {canAttach && (
                     <ComposerPrimitive.AddAttachment
                         className="shrink-0 rounded-lg border border-brand-border px-2.5 py-2 text-base text-muted-ink transition-colors hover:bg-paper-muted hover:text-navy cursor-pointer"
-                        aria-label="上传图片"
+                        aria-label={m.console.uploadImage}
                     >
                         🖼
                     </ComposerPrimitive.AddAttachment>
@@ -309,17 +317,17 @@ function Composer({ canAttach }: { canAttach: boolean }) {
                 <ComposerPrimitive.Input
                     autoFocus
                     rows={1}
-                    placeholder="输入消息,Enter 发送,Shift+Enter 换行"
+                    placeholder={m.console.placeholder}
                     className="max-h-40 min-h-[40px] flex-1 resize-none rounded-lg border border-brand-border bg-surface px-3 py-2 text-sm text-ink placeholder:text-minor-ink focus:border-brand-accent focus:outline-none"
                 />
                 <ThreadPrimitive.If running={false}>
                     <ComposerPrimitive.Send className="shrink-0 rounded-lg bg-navy px-4 py-2 text-sm text-paper transition-colors hover:bg-navy-strong disabled:cursor-not-allowed disabled:bg-paper-muted disabled:text-minor-ink/60 cursor-pointer">
-                        发送
+                        {m.console.send}
                     </ComposerPrimitive.Send>
                 </ThreadPrimitive.If>
                 <ThreadPrimitive.If running>
                     <ComposerPrimitive.Cancel className="shrink-0 rounded-lg border border-brand-border px-4 py-2 text-sm text-muted-ink transition-colors hover:bg-paper-muted hover:text-navy cursor-pointer">
-                        停止
+                        {m.console.stop}
                     </ComposerPrimitive.Cancel>
                 </ThreadPrimitive.If>
             </ComposerPrimitive.Root>
@@ -328,12 +336,13 @@ function Composer({ canAttach }: { canAttach: boolean }) {
 }
 
 function ComposerImageThumb() {
+    const m = useMessages(chatMessages);
     return (
         <AttachmentPrimitive.Root className="relative mb-2 mr-2 inline-block overflow-hidden rounded-lg border border-brand-border">
             <AttachmentPrimitive.unstable_Thumb className="max-h-24 max-w-[140px] object-cover" />
             <AttachmentPrimitive.Remove
                 className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-navy/70 text-[11px] text-paper hover:bg-navy cursor-pointer"
-                aria-label="移除"
+                aria-label={m.console.remove}
             >
                 ✕
             </AttachmentPrimitive.Remove>
@@ -342,10 +351,14 @@ function ComposerImageThumb() {
 }
 
 function ComposerAttachmentChip() {
+    const m = useMessages(chatMessages);
     return (
         <AttachmentPrimitive.Root className="mb-2 mr-2 inline-flex items-center gap-1 rounded border border-brand-border bg-paper-muted px-2 py-1 text-xs text-muted-ink">
             <AttachmentPrimitive.Name />
-            <AttachmentPrimitive.Remove className="text-minor-ink hover:text-navy cursor-pointer" aria-label="移除">
+            <AttachmentPrimitive.Remove
+                className="text-minor-ink hover:text-navy cursor-pointer"
+                aria-label={m.console.remove}
+            >
                 ✕
             </AttachmentPrimitive.Remove>
         </AttachmentPrimitive.Root>
@@ -355,6 +368,7 @@ function ComposerAttachmentChip() {
 // ── Outer console: toolbar (picker + web search + new chat) + thread ────
 
 export function ChatConsole({ groups, modelIds }: ChatConsoleProps) {
+    const m = useMessages(chatMessages);
     const [model, setModel] = useState(modelIds[0] ?? '');
     const [webSearch, setWebSearch] = useState(false);
     const [resetKey, setResetKey] = useState(0);
@@ -382,15 +396,15 @@ export function ChatConsole({ groups, modelIds }: ChatConsoleProps) {
             {/* Toolbar */}
             <div className="flex items-center justify-between gap-3 border-b border-brand-border bg-paper px-4 py-2.5">
                 <div className="flex items-center gap-2">
-                    <ModelPicker groups={groups} value={model} onChange={setModel} />
-                    <WebSearchToggle on={webSearch} onToggle={() => setWebSearch((v) => !v)} />
+                    <ModelPicker groups={groups} value={model} onChange={setModel} m={m} />
+                    <WebSearchToggle on={webSearch} onToggle={() => setWebSearch((v) => !v)} m={m} />
                 </div>
                 <button
                     type="button"
                     onClick={() => setResetKey((k) => k + 1)}
                     className="rounded-lg border border-brand-border px-3 py-1.5 text-sm text-muted-ink transition-colors hover:bg-paper-muted hover:text-navy cursor-pointer"
                 >
-                    新对话
+                    {m.console.newChat}
                 </button>
             </div>
 
@@ -400,12 +414,12 @@ export function ChatConsole({ groups, modelIds }: ChatConsoleProps) {
     );
 }
 
-function WebSearchToggle({ on, onToggle }: { on: boolean; onToggle: () => void }) {
+function WebSearchToggle({ on, onToggle, m }: { on: boolean; onToggle: () => void; m: ChatConsoleMessages }) {
     return (
         <button
             type="button"
             onClick={onToggle}
-            title="联网搜索:开启后会先检索网络再回答(需 operator 开通搜索服务)"
+            title={m.console.webSearchTitle}
             aria-pressed={on}
             className={[
                 'flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-sm transition-colors duration-150',
@@ -416,7 +430,7 @@ function WebSearchToggle({ on, onToggle }: { on: boolean; onToggle: () => void }
             ].join(' ')}
         >
             <span aria-hidden>🌐</span>
-            <span className="hidden sm:inline">联网</span>
+            <span className="hidden sm:inline">{m.console.webSearch}</span>
         </button>
     );
 }
@@ -431,10 +445,12 @@ function ModelPicker({
     groups,
     value,
     onChange,
+    m,
 }: {
     groups: ChatModelGroup[];
     value: string;
     onChange: (id: string) => void;
+    m: ChatConsoleMessages;
 }) {
     const [open, setOpen] = useState(false);
     const rootRef = useRef<HTMLDivElement | null>(null);
@@ -454,16 +470,16 @@ function ModelPicker({
                 onClick={() => setOpen((o) => !o)}
                 className="flex items-center gap-2 rounded-lg border border-brand-border bg-surface px-3 py-1.5 text-sm text-navy transition-colors hover:bg-paper-muted cursor-pointer"
             >
-                <span className="max-w-[220px] truncate font-mono font-medium">{value || '选择模型'}</span>
+                <span className="max-w-[220px] truncate font-mono font-medium">{value || m.console.pickModel}</span>
                 {currentModel?.vendor && (
                     <span className="hidden text-[11px] text-minor-ink sm:inline">· {currentModel.vendor}</span>
                 )}
                 {currentPremium && currentModel?.priceMultiplier != null && (
                     <span
-                        title={`官方稳定渠道,计费约为普通池的 ${formatMultiplier(currentModel.priceMultiplier)} 倍`}
+                        title={m.console.officialTitle(formatMultiplier(currentModel.priceMultiplier))}
                         className="rounded bg-amber-50 px-1 text-[10px] font-medium text-amber-700 ring-1 ring-amber-200"
                     >
-                        官方 {formatMultiplier(currentModel.priceMultiplier)}×
+                        {m.console.official(formatMultiplier(currentModel.priceMultiplier))}
                     </span>
                 )}
                 <span aria-hidden className="text-minor-ink">
@@ -474,42 +490,44 @@ function ModelPicker({
             {open && (
                 <div className="absolute left-0 top-full z-50 mt-1 max-h-[60vh] w-[320px] overflow-y-auto rounded-xl border border-brand-border bg-surface py-1 shadow-lg">
                     {groups.length === 0 ? (
-                        <p className="m-0 px-3 py-2 text-sm text-muted-ink">暂无可用模型</p>
+                        <p className="m-0 px-3 py-2 text-sm text-muted-ink">{m.console.noModels}</p>
                     ) : (
                         groups.map((g) => (
                             <div key={g.vendor}>
                                 <p className="m-0 px-3 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wide text-minor-ink">
                                     {g.vendor}
                                 </p>
-                                {g.models.map((m) => (
+                                {g.models.map((model) => (
                                     <button
-                                        key={m.id}
+                                        key={model.id}
                                         type="button"
                                         onClick={() => {
-                                            onChange(m.id);
+                                            onChange(model.id);
                                             close();
                                         }}
                                         className={[
                                             'flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left font-mono text-sm break-all',
                                             'transition-colors duration-150 cursor-pointer',
-                                            m.id === value
+                                            model.id === value
                                                 ? 'bg-paper-muted font-medium text-navy'
                                                 : 'text-muted-ink hover:bg-paper-muted/60 hover:text-navy',
                                         ].join(' ')}
                                     >
-                                        <span className="truncate">{m.id}</span>
+                                        <span className="truncate">{model.id}</span>
                                         <span className="flex shrink-0 items-center gap-1">
-                                            {m.priceMultiplier != null && m.priceMultiplier > 1.05 && (
+                                            {model.priceMultiplier != null && model.priceMultiplier > 1.05 && (
                                                 <span
-                                                    title={`官方稳定渠道,计费约为普通池的 ${formatMultiplier(m.priceMultiplier)} 倍`}
+                                                    title={m.console.officialTitle(
+                                                        formatMultiplier(model.priceMultiplier),
+                                                    )}
                                                     className="rounded bg-amber-50 px-1 text-[10px] font-medium text-amber-700 ring-1 ring-amber-200"
                                                 >
-                                                    官方 {formatMultiplier(m.priceMultiplier)}×
+                                                    {m.console.official(formatMultiplier(model.priceMultiplier))}
                                                 </span>
                                             )}
-                                            {m.vision && (
+                                            {model.vision && (
                                                 <span className="rounded bg-brand-accent/15 px-1 text-[10px] text-brand-accent">
-                                                    视觉
+                                                    {m.console.vision}
                                                 </span>
                                             )}
                                         </span>

@@ -90,6 +90,12 @@ describe('formatCacheTokens', () => {
         expect(formatCacheTokens(127_885, 178, true)).toBe('');
     });
 
+    it('English locale → "Cache read X · Cache write Y"', () => {
+        expect(formatCacheTokens(127_885, 1_304, false, 'en')).toBe('Cache read 127,885 · Cache write 1,304');
+        expect(formatCacheTokens(0, 178, false, 'en')).toBe('Cache write 178');
+        expect(formatCacheTokens(127_885, 178, true, 'en')).toBe('');
+    });
+
     it('负数 / 非有限值 → 按 0 处理', () => {
         expect(formatCacheTokens(-5, NaN)).toBe('');
         expect(formatCacheTokens(Infinity, 10)).toBe('缓存写 10');
@@ -205,5 +211,15 @@ describe('sanitizeLogContent', () => {
     it('普通 / 空内容不误伤', () => {
         expect(sanitizeLogContent('')).toBe('');
         expect(sanitizeLogContent('model not found: gpt-99')).toBe('model not found: gpt-99');
+    });
+
+    it('English locale → English friendly copy, brand names → "upstream"', () => {
+        expect(sanitizeLogContent('adobe content rejected: image_unsafe', 'en')).toContain('safety system');
+        expect(sanitizeLogContent('size must use <width>x<height>', 'en')).toContain('image size');
+        expect(sanitizeLogContent('status_code=429, 当前分组上游负载已饱和', 'en')).toBe(
+            'Service busy, please try again later',
+        );
+        expect(sanitizeLogContent('failed via zhiyunai gateway', 'en')).toBe('failed via upstream gateway');
+        expect(sanitizeLogContent('model not found: gpt-99', 'en')).toBe('model not found: gpt-99');
     });
 });

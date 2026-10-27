@@ -27,6 +27,8 @@ import { matchFailedVideoConsumes } from './failed-video-match';
 import { collapseRetriedFailures, sanitizeLogContent } from './format';
 import { isPerImageBilled, parseCacheTokens } from '@/lib/newapi/log-display';
 import { periodToRange, type UsagePeriod } from './period';
+import type { Locale } from '@/lib/i18n';
+import type { DashboardMessages } from '@/lib/i18n/messages/dashboard';
 
 /** Recent-call fetch sizes for the detail table. The full-period TOTALS come
  *  from the aggregator (up to 50k rows); these two slices are only for the
@@ -40,7 +42,14 @@ const CALLS_CAP = 200;
 const TOP_MODELS = 5;
 
 const SUB = 'mt-1.5 m-0 text-xs text-minor-ink tabular-nums';
-const NO_DATA = <p className="m-0 text-sm text-minor-ink">暂无数据</p>;
+const noData = (text: string) => <p className="m-0 text-sm text-minor-ink">{text}</p>;
+
+/** Locale props every streamed section receives from page.tsx (the only
+ *  place that calls `getLocale()` — nested async components must not). */
+interface I18nProps {
+    m: DashboardMessages;
+    locale: Locale;
+}
 
 /**
  * 汇总卡主数字(2026-10-22 紧凑显示改版,规则见 `src/lib/format/number.ts`)。
@@ -97,7 +106,7 @@ export interface UsageData {
     calls: CallRow[];
 }
 
-function toCallRow(log: NewApiUsageLog): CallRow {
+function toCallRow(log: NewApiUsageLog, locale: Locale): CallRow {
     const cache = parseCacheTokens(log.other);
     return {
         id: log.id,
@@ -121,7 +130,7 @@ function toCallRow(log: NewApiUsageLog): CallRow {
         // available — CallDetailTable is a client island and must not convert.
         costCny: quotaToCny(log.quota),
         type: log.type,
-        content: sanitizeLogContent(log.content),
+        content: sanitizeLogContent(log.content, locale),
     };
 }
 
@@ -131,8 +140,11 @@ export async function loadUsageData(args: {
     newapiUserId: number | null;
     newapiUsername: string | null;
     period: UsagePeriod;
+    /** Drives the customer-facing error copy (sanitized content / refund note). */
+    locale: Locale;
+    m: DashboardMessages;
 }): Promise<UsageData> {
-    const { portalUserId, newapiUserId, newapiUsername, period } = args;
+    const { portalUserId, newapiUserId, newapiUsername, period, locale, m } = args;
     if (newapiUserId == null || newapiUsername == null) {
         return { agg: null, usageErr: 'account_not_provisioned', calls: [] };
     }
@@ -193,11 +205,11 @@ export async function loadUsageData(args: {
         .sort((a, b) => b.created_at - a.created_at)
         .slice(0, CALLS_CAP)
         .map((l) => {
-            const row = toCallRow(l);
+            const row = toCallRow(l, locale);
             if (failedConsumeIds.has(l.id)) {
                 row.type = 6; // → callResult 判失败
                 row.costCny = 0; // 已退款,本次不计费
-                row.content = '视频任务未生成成功,已自动退还本次预扣费用(未实际扣费)。';
+                row.content = m.usage.videoRefunded;
             }
             return row;
         });
@@ -208,7 +220,7 @@ export async function loadUsageData(args: {
 // ────────────────────────── streamed sections ──────────────────────────
 
 /** 余额 stale / 失败横幅(在汇总卡上方)。无事可报时渲染 null。 */
-export async function BalanceNotices({ data }: { data: Promise<BalanceData> }) {
+export async function BalanceNotices({ data, m }: { data: Promise<BalanceData> } & I18nProps) {
     const { bal, balErr } = await data;
     if (!bal?.stale && !balErr) return null;
     return (
@@ -218,12 +230,12 @@ export async function BalanceNotices({ data }: { data: Promise<BalanceData> }) {
                     role="status"
                     className="mb-4 rounded-lg border border-status-warning-border bg-status-warning-bg px-4 py-2.5 text-xs text-status-warning-text"
                 >
-                    余额数据暂时不可更新,显示的是稍早数据。
+                    {m.notices.balanceStale}
                 </div>
             )}
             {balErr && (
                 <div className="mb-4">
-                    <FormError severity="banner">当前无法获取余额,请稍后重试。</FormError>
+                    <FormError severity="banner">{m.notices.balanceError}</FormError>
                 </div>
             )}
         </>
@@ -231,14 +243,14 @@ export async function BalanceNotices({ data }: { data: Promise<BalanceData> }) {
 }
 
 /** 汇总卡 1-2:当前余额 / 历史消费(依赖 balance)。 */
-export async function BalanceStatCards({ data }: { data: Promise<BalanceData> }) {
+export async function BalanceStatCards({ data, m, locale }: { data: Promise<BalanceData> } & I18nProps) {
     const { bal } = await data;
     return (
         <>
-            <StatCard label="当前余额">
+            <StatCard label={m.cards.balance}>
                 {bal
                     ? (() => {
-                          const v = formatCny(bal.balanceCny);
+                          const v = formatCny(bal.balanceCny, locale);
                           // 副行只放一个上下文:压缩时先给精确 ¥,再给 USD 换算;raw quota 是
                           // new-api 内部单位,客户不理解,不再展示(admin 后台仍有)。
                           return (
@@ -251,48 +263,61 @@ export async function BalanceStatCards({ data }: { data: Promise<BalanceData> })
                               </>
                           );
                       })()
-                    : NO_DATA}
+                    : noData(m.cards.noData)}
             </StatCard>
-            <StatCard label="历史消费">
+            <StatCard label={m.cards.spent}>
                 {bal
                     ? (() => {
-                          const v = formatCny(bal.spentCny);
+                          const v = formatCny(bal.spentCny, locale);
                           return (
                               <>
                                   <StatNumber value={v} prefix="¥" />
-                                  <p className={SUB}>{v.compact && <>{v.exact} · </>}累计</p>
+                                  <p className={SUB}>
+                                      {v.compact && <>{v.exact} · </>}
+                                      {m.cards.cumulative}
+                                  </p>
                               </>
                           );
                       })()
-                    : NO_DATA}
+                    : noData(m.cards.noData)}
             </StatCard>
         </>
     );
 }
 
 /** 汇总卡 3-5:请求次数 / 统计 Tokens / 本期消费(依赖用量聚合)。 */
-export async function UsageStatCards({ data, periodLabel }: { data: Promise<UsageData>; periodLabel: string }) {
+export async function UsageStatCards({
+    data,
+    periodLabel,
+    m,
+    locale,
+}: { data: Promise<UsageData>; periodLabel: string } & I18nProps) {
     const { agg } = await data;
     const totalTokens = agg ? agg.totalTokens : 0;
     return (
         <>
-            <StatCard label="请求次数">
+            <StatCard label={m.cards.requests}>
                 {agg
                     ? (() => {
-                          const v = formatCount(agg.totalCalls);
+                          const v = formatCount(agg.totalCalls, locale);
                           return (
                               <>
                                   <StatNumber value={v} />
                                   <p className={SUB}>
-                                      {v.compact && <>{v.exact} 次 · </>}
+                                      {v.compact && (
+                                          <>
+                                              {v.exact}
+                                              {m.cards.requestsSep}
+                                          </>
+                                      )}
                                       {periodLabel}
                                   </p>
                               </>
                           );
                       })()
-                    : NO_DATA}
+                    : noData(m.cards.noData)}
             </StatCard>
-            <StatCard label="统计 Tokens">
+            <StatCard label={m.cards.tokens}>
                 {agg
                     ? (() => {
                           const v = formatTokens(totalTokens);
@@ -301,36 +326,40 @@ export async function UsageStatCards({ data, periodLabel }: { data: Promise<Usag
                                   <StatNumber value={v} />
                                   <p className={SUB}>
                                       {v.compact && <>{v.exact} · </>}
-                                      {periodLabel} · 输入+输出
+                                      {periodLabel} · {m.cards.inputPlusOutput}
                                   </p>
                               </>
                           );
                       })()
-                    : NO_DATA}
+                    : noData(m.cards.noData)}
             </StatCard>
-            <StatCard label="本期消费">
+            <StatCard label={m.cards.periodSpend}>
                 {agg
                     ? (() => {
-                          const v = formatCny(quotaToCny(agg.totalUsedQuota));
+                          const v = formatCny(quotaToCny(agg.totalUsedQuota), locale);
                           return (
                               <>
                                   <StatNumber value={v} prefix="¥" />
                                   <p className={SUB}>
                                       {v.compact && <>{v.exact} · </>}
                                       {periodLabel}
-                                      {agg.source === 'fallback' && ' · 数据稍滞后'}
+                                      {agg.source === 'fallback' && m.cards.dataLagging}
                                   </p>
                               </>
                           );
                       })()
-                    : NO_DATA}
+                    : noData(m.cards.noData)}
             </StatCard>
         </>
     );
 }
 
 /** 用量主体:错误横幅 + 模型消耗分布图 + 按模型 Top N + 调用明细表。 */
-export async function UsageBody({ data, periodLabel }: { data: Promise<UsageData>; periodLabel: string }) {
+export async function UsageBody({
+    data,
+    periodLabel,
+    m,
+}: { data: Promise<UsageData>; periodLabel: string } & I18nProps) {
     const { agg, usageErr, calls } = await data;
     const byModel = agg ? agg.byModel.slice(0, TOP_MODELS) : [];
     return (
@@ -339,14 +368,14 @@ export async function UsageBody({ data, periodLabel }: { data: Promise<UsageData
                 <div className="mb-6">
                     <FormError severity="banner">
                         {usageErr === 'account_not_provisioned'
-                            ? '账户尚未关联到上游,请联系管理员。'
-                            : '当前无法获取用量数据,请稍后重试。'}
+                            ? m.notices.accountNotProvisioned
+                            : m.notices.usageFetchFailed}
                     </FormError>
                 </div>
             )}
 
             {/* 2. Model consumption chart */}
-            <h2 className="m-0 mb-3 text-base font-semibold text-navy">模型消耗分布 · {periodLabel}</h2>
+            <h2 className="m-0 mb-3 text-base font-semibold text-navy">{m.usage.chartHeading(periodLabel)}</h2>
             <div className="mb-6">
                 <ModelConsumptionChartLazy
                     byDay={agg?.byDay ?? []}
@@ -358,21 +387,24 @@ export async function UsageBody({ data, periodLabel }: { data: Promise<UsageData
             {/* 3. By-model breakdown (preserved from /usage) */}
             {byModel.length > 0 && (
                 <>
-                    <h2 className="m-0 mb-3 text-base font-semibold text-navy">按模型 Top {byModel.length}</h2>
+                    <h2 className="m-0 mb-3 text-base font-semibold text-navy">{m.usage.topModels(byModel.length)}</h2>
                     <div className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                        {byModel.map((m) => {
-                            const pct = agg && agg.totalUsedQuota ? (m.quota / agg.totalUsedQuota) * 100 : 0;
+                        {byModel.map((row) => {
+                            const pct = agg && agg.totalUsedQuota ? (row.quota / agg.totalUsedQuota) * 100 : 0;
                             return (
-                                <Card as="article" key={m.model} className="px-4 py-3">
+                                <Card as="article" key={row.model} className="px-4 py-3">
                                     <p
                                         className="m-0 mb-1 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-sm font-semibold text-navy"
-                                        title={m.model}
+                                        title={row.model}
                                     >
-                                        {m.model}
+                                        {row.model}
                                     </p>
                                     <p className="m-0 mb-2 text-xs text-muted-ink tabular-nums">
-                                        {m.calls.toLocaleString('en-US')} 次 · ¥{quotaToCny(m.quota).toFixed(2)} ·{' '}
-                                        {pct.toFixed(1)}%
+                                        {m.usage.modelLine(
+                                            row.calls.toLocaleString('en-US'),
+                                            quotaToCny(row.quota).toFixed(2),
+                                            pct.toFixed(1),
+                                        )}
                                     </p>
                                     <div className="h-1.5 overflow-hidden rounded-sm bg-paper-muted">
                                         <div
@@ -389,15 +421,12 @@ export async function UsageBody({ data, periodLabel }: { data: Promise<UsageData
 
             {/* 4. Per-call detail table (core ask) */}
             <div className="mb-3 flex items-end justify-between gap-3">
-                <h2 className="m-0 text-base font-semibold text-navy">调用明细 · {periodLabel}</h2>
+                <h2 className="m-0 text-base font-semibold text-navy">{m.usage.callsHeading(periodLabel)}</h2>
                 <a href="/logs" className="shrink-0 text-xs font-medium text-navy no-underline hover:underline">
-                    查看全部日志 →
+                    {m.usage.viewAllLogs}
                 </a>
             </div>
-            <p className="m-0 mb-3 text-xs text-muted-ink">
-                每行一次调用,含模型、时长、token 与消耗;失败的调用可展开查看错误详情。完整日志(按日期 + Request ID /
-                令牌 / 模型 / 渠道 搜索)在「调用日志」页。
-            </p>
+            <p className="m-0 mb-3 text-xs text-muted-ink">{m.usage.callsHint}</p>
             <div className="mb-8">
                 <CallDetailTable rows={calls} />
             </div>
@@ -431,15 +460,15 @@ export function StatCardSkeletons({ count }: { count: number }) {
 }
 
 /** 用量主体骨架:真实标题(不闪)+ 图表块 + 明细行。 */
-export function UsageBodySkeleton({ periodLabel }: { periodLabel: string }) {
+export function UsageBodySkeleton({ periodLabel, m }: { periodLabel: string; m: DashboardMessages }) {
     return (
         <>
-            <h2 className="m-0 mb-3 text-base font-semibold text-navy">模型消耗分布 · {periodLabel}</h2>
+            <h2 className="m-0 mb-3 text-base font-semibold text-navy">{m.usage.chartHeading(periodLabel)}</h2>
             <div className="mb-6">
                 <Bone className="h-64 w-full" />
             </div>
             <div className="mb-3 flex items-end justify-between gap-3">
-                <h2 className="m-0 text-base font-semibold text-navy">调用明细 · {periodLabel}</h2>
+                <h2 className="m-0 text-base font-semibold text-navy">{m.usage.callsHeading(periodLabel)}</h2>
             </div>
             <div className="mb-8 space-y-3">
                 {Array.from({ length: 6 }, (_, i) => (

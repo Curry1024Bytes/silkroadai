@@ -1,8 +1,11 @@
 'use client';
 
 import { useRef, useState, type FormEvent } from 'react';
+import { useMessages } from '@/lib/i18n/client';
+import { authMessages } from '@/lib/i18n/messages/auth';
 
 export function ResetPasswordForm({ token }: { token: string }) {
+    const m = useMessages(authMessages).resetForm;
     const [pw1, setPw1] = useState('');
     const [pw2, setPw2] = useState('');
     const [submitting, setSubmitting] = useState(false);
@@ -18,11 +21,11 @@ export function ResetPasswordForm({ token }: { token: string }) {
         if (fired.current) return;
         setResult(null);
         if (pw1.length < 8) {
-            setResult({ ok: false, msg: '密码至少 8 位' });
+            setResult({ ok: false, msg: m.tooShort });
             return;
         }
         if (pw1 !== pw2) {
-            setResult({ ok: false, msg: '两次输入的密码不一致' });
+            setResult({ ok: false, msg: m.mismatch });
             return;
         }
         fired.current = true;
@@ -35,12 +38,9 @@ export function ResetPasswordForm({ token }: { token: string }) {
             });
             const data = await r.json().catch(() => ({}));
             if (r.ok) {
-                setResult({ ok: true, msg: '密码已重置,请使用新密码登录。' });
+                setResult({ ok: true, msg: m.success });
             } else {
-                const msg =
-                    data?.error === 'invalid_or_expired_token'
-                        ? '链接已失效或已使用,请重新申请重置邮件。'
-                        : '重置失败,请稍后重试。';
+                const msg = data?.error === 'invalid_or_expired_token' ? m.invalidToken : m.failed;
                 setResult({ ok: false, msg });
                 // Allow user to retry on transient/server error (validation
                 // errors don't get here — they returned early above without
@@ -48,7 +48,7 @@ export function ResetPasswordForm({ token }: { token: string }) {
                 fired.current = false;
             }
         } catch {
-            setResult({ ok: false, msg: '网络错误,请稍后重试。' });
+            setResult({ ok: false, msg: m.networkError });
             fired.current = false;
         } finally {
             setSubmitting(false);
@@ -61,7 +61,7 @@ export function ResetPasswordForm({ token }: { token: string }) {
                 <p style={{ color: 'var(--color-status-success-text)' }}>{result.msg}</p>
                 <p>
                     <a href="/login" style={{ color: '#0a1535' }}>
-                        前往登录
+                        {m.goLogin}
                     </a>
                 </p>
             </div>
@@ -71,7 +71,7 @@ export function ResetPasswordForm({ token }: { token: string }) {
     return (
         <form onSubmit={onSubmit}>
             <label style={{ display: 'block', marginBottom: 12 }}>
-                <span style={{ fontSize: 13, color: '#5a6478' }}>新密码(至少 8 位)</span>
+                <span style={{ fontSize: 13, color: '#5a6478' }}>{m.newPassword}</span>
                 <input
                     type="password"
                     value={pw1}
@@ -90,7 +90,7 @@ export function ResetPasswordForm({ token }: { token: string }) {
                 />
             </label>
             <label style={{ display: 'block', marginBottom: 16 }}>
-                <span style={{ fontSize: 13, color: '#5a6478' }}>重复新密码</span>
+                <span style={{ fontSize: 13, color: '#5a6478' }}>{m.repeatPassword}</span>
                 <input
                     type="password"
                     value={pw2}
@@ -124,7 +124,7 @@ export function ResetPasswordForm({ token }: { token: string }) {
                     fontSize: 14,
                 }}
             >
-                {submitting ? '提交中…' : '提交'}
+                {submitting ? m.submitting : m.submit}
             </button>
         </form>
     );

@@ -317,6 +317,10 @@ silkroadai/
 - [x] 部署 502 风暴修复 ✅(PR #552 merge `c7112a6` + 当日两台机 Caddy/脚本补齐,server2 + server3 各 10 副本已滚完)— 近 10 分钟 image2 分析:3,649 最终失败里 3,008 条是 #550 滚动部署切断在途生图(`502 bad response status code`,部署窗口外为 0)。根因:Next standalone 收 SIGTERM 本会 `server.close()` 等在途做完,但 compose 默认 10s 后 SIGKILL;且 Node 只关【空闲】长连接,Caddy 池里活跃 keep-alive 连接响应完仍会被复用送新请求进来,排空收不住。修法三件:① compose `x-portal-api-common` 加 `stop_grace_period: 630s`;② `src/lib/server/drain.ts`(instrumentation Part 3)SIGTERM 后每个响应头带 `Connection: close`;③ server2 `deploy-image-adapter.sh` + server3 `deploy-api-node.sh`(**不在 repo,scp 安装**)在 `--force-recreate` 前先 `docker stop -t $DRAIN_TIMEOUT`(旧容器 StopTimeout 建时写死 10s,必须显式覆盖),日志打「排空 Ns」;④ 三台 Caddy 副本池加主动探测 `health_uri /favicon.ico` 1s。**实测**:新代码副本排空 117–435s 后自己退出,部署全程 80 分钟 new-api 502 仅 126 条(全部是尚跑旧代码、撞 630s 上限被 kill 的 4 台),此前每次 3,000–6,000 条;成功数 850→1,500/min 不掉。**代价**:当天调 Caddy 健康检查踩了两个坑造成 02:38–02:40 两分钟全池标坏(5,887 条 `no upstreams available`),见 gotcha #22。
 - [x] monkeycoding 审核拒归类修复 ✅ — ChatGPT 网页池审核拒是 **HTTP 400** `Content policy violation: … rejected by the moderation system`,两个适配器的 `UPSTREAM_SAFETY_RE` 全漏 → 当瞬时错 failover → 客户拿 503「temporarily unable」并重试放大(部署后 10 分钟内占 503 真因 83%;近 1h 6,476 次 failover 仅 9.8% 挽回,其中 7.7% 还是同渠道重试)。正则补 `content policy violation|moderation system`,2.0 / 2.5 各加 1 测试。代价:那 ~10% 靠重试挽回的请求现在直接 400。**上线后**:503 尝试从 ~170–300/min 降到 ~40–90/min,400 从 ~5/min 升到 ~80/min(审核拒现在如实回 400)。
 
+### i18n(站点中英切换 — 2026-10-27)
+
+- [x] 中英切换上线(分支 `feat/i18n-zh-en`)— **一套 URL、cookie `portal_locale`(zh 默认 / en)**,`<LocaleSwitcher />`(中文 / EN)挂在页脚 + 控制台 header + 登录/注册/落地/定价页头;首访无 cookie 时按 `Accept-Language` 首选 tag(`zh*`→zh,其它→en;爬虫不带该头 → 仍是中文,SEO 不变)。机制与约定见 `src/lib/i18n/README.md`:文案按页面区域放 `src/lib/i18n/messages/<area>.ts`(`defineMessages(zh, en)`,en 结构由 tsc 对齐),server 页面顶层 `getLocale()`/`pickMessages` 往下传 props、client 岛 `useMessages()`;`<html lang>` 跟随;vendored `/models` 广场 i18next 跟随站点语言。**覆盖**:公共 chrome / 落地 / 定价 / 登录注册找回验证 / 充值 / 控制台(概览·日志·Keys·存储)/ 工具箱·生图·对话 / 分销 / 404·500。**未翻**:`/docs` 正文(5100 行,英文态顶部提示条,另起 PR)、法律页 markdown(中文为准,英文态提示条)、admin / enterprise 后台。新增任何用户可见文案都必须走 messages 模块,review 时把「有没有硬编码中文」当 checklist。
+
 ---
 
 ## 关键架构决策(决策已定,不要重新讨论)
@@ -571,6 +575,7 @@ LiteLLM 同时支持 user-level 和 key-level 预算。我们只用 key-level(�
 - **错误处理** — 自定义 Error 类带 status code,别 throw 字符串
 - **API route** — 入口先 zod parse,出口 NextResponse.json
 - **数据库** — 所有 mutation 走 Prisma transaction(`$transaction`)
+- **用户可见文案** — 不硬编码中文/英文,放 `src/lib/i18n/messages/<area>.ts`,server 顶层 `getLocale()` 传 props、client 岛 `useMessages()`;时间显示 `intlLocale(locale)` + `timeZone: 'Asia/Shanghai'`(见 `src/lib/i18n/README.md`)
 - **commit message** — 用 conventional commits:
     - `feat(auth): add login endpoint`
     - `fix(litellm): handle key not found`

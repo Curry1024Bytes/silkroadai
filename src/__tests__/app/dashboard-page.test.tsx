@@ -37,6 +37,15 @@ vi.mock('@/lib/auth/session', () => ({
     getCurrentUser: (...a: unknown[]) => mockGetCurrentUser(...a),
 }));
 
+// i18n: default zh (matches the no-cookie site default); the English describe
+// flips this to 'en'. Client islands read <LocaleProvider>, so the English
+// render wraps the page in one — exactly what the root layout does in prod.
+const mockLocale = vi.fn<() => Promise<'zh' | 'en'>>(async () => 'zh');
+vi.mock('@/lib/i18n/server', () => ({
+    getLocale: () => mockLocale(),
+    getMessages: async (d: { zh: unknown; en: unknown }) => ((await mockLocale()) === 'en' ? d.en : d.zh),
+}));
+
 // P4c-3.5: balance/spend ALWAYS via getCustomerBalance (portal → Account; newapi → quota).
 const mockGetCustomerBalance = vi.fn();
 vi.mock('@/lib/billing/customer-balance', () => ({
@@ -76,7 +85,8 @@ vi.mock('@/app/(authenticated)/dashboard/model-consumption-chart-lazy', () => ({
     ),
 }));
 
-import DashboardPage from '@/app/(authenticated)/dashboard/page';
+import DashboardPage, { generateMetadata } from '@/app/(authenticated)/dashboard/page';
+import { LocaleProvider } from '@/lib/i18n/client';
 import { __resetLogsCacheForTest } from '@/lib/newapi/logs-cache';
 
 /** P1 streaming(2026-08-29):页面拆成 Suspense + async sections 后,
@@ -185,6 +195,7 @@ beforeEach(() => {
     // dashboard 的日志明细走 logs-cache 的 30s 进程内缓存(2026-08-15)。
     // 缓存是模块级的,不清就会把上个用例的结果带进下个用例。
     __resetLogsCacheForTest();
+    mockLocale.mockResolvedValue('zh');
     mockHeadersGet.mockReturnValue('silkroad_session=fake-jwt');
     mockGetCurrentUser.mockResolvedValue(SAMPLE_USER);
     mockGetCustomerBalance.mockResolvedValue(newapiBal());
@@ -445,5 +456,67 @@ describe('<DashboardPage /> compact stat numbers (2026-10-22, 头部客户量级
         expect(html).toContain('250');
         expect(html).not.toContain('万');
         expect(html).toContain('>K<');
+    });
+});
+
+describe('<DashboardPage /> English locale', () => {
+    async function renderEn(searchParams: Record<string, string> = {}) {
+        mockLocale.mockResolvedValue('en');
+        const page = await DashboardPage({ searchParams: Promise.resolve(searchParams) });
+        return renderFull(<LocaleProvider locale="en">{page}</LocaleProvider>);
+    }
+
+    it('renders the shell, cards, tabs and recharge history in English (no Chinese UI strings)', async () => {
+        mockRechargeLogFindMany.mockResolvedValue([
+            { id: 'rl-1', order_id: 'order-abcdefgh', amount: 10, source: 'payment', created_at: new Date() },
+        ]);
+        const html = await renderEn();
+        expect(html).toContain('Welcome, happy');
+        expect(html).toContain('Current balance');
+        expect(html).toContain('Total spend');
+        expect(html).toContain('Requests');
+        expect(html).toContain('Spend this period');
+        expect(html).toContain('Last 30 days'); // PeriodTabs (client island via LocaleProvider)
+        expect(html).toContain('Spend by model · Last 30 days');
+        expect(html).toContain('Request details · Last 30 days');
+        expect(html).toContain('Top-up history');
+        expect(html).toContain('Online payment');
+        expect(html).toContain('Low-balance alert');
+        expect(html).toContain('+ Top up');
+        for (const zh of ['当前余额', '历史消费', '请求次数', '本期消费', '充值流水', '近 30 天', '余额提醒设置']) {
+            expect(html, zh).not.toContain(zh);
+        }
+    });
+
+    it('per-call table + sanitized error copy follow the locale', async () => {
+        setLogs(
+            [makeLog({ id: 1 })],
+            [makeLog({ id: 3, type: 5, quota: 0, request_id: 'REQ-err', content: 'upstream 429 rate limited' })],
+        );
+        const html = await renderEn();
+        expect(html).toContain('Success');
+        expect(html).toContain('Failed');
+        expect(html).toContain('Service busy'); // sanitizeLogContent(…, 'en')
+        expect(html).not.toContain('服务繁忙');
+        expect(html).toContain('Tokens (prompt / completion)');
+    });
+
+    it('compacts big ¥ / counts with K / M instead of 万 in English', async () => {
+        mockGetCustomerBalance.mockResolvedValue(newapiBal({ balanceCny: 290_262.82, spentCny: 1_215_773.1 }));
+        mockGetUsageAggregate.mockResolvedValue(aggSnap({ totalCalls: 2_184_903 }));
+        const html = await renderEn();
+        expect(html).toContain('290.26');
+        expect(html).toContain('>K<');
+        expect(html).toContain('1.22');
+        expect(html).toContain('>M<');
+        expect(html).toMatch(/2,184,903(<!-- -->)? requests/);
+        expect(html).not.toContain('万');
+    });
+
+    it('generateMetadata follows the locale', async () => {
+        mockLocale.mockResolvedValue('en');
+        expect(await generateMetadata()).toEqual({ title: 'Overview — Silk Road AI' });
+        mockLocale.mockResolvedValue('zh');
+        expect(await generateMetadata()).toEqual({ title: '概览 — Silk Road AI' });
     });
 });

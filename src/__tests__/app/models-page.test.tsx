@@ -18,7 +18,7 @@ vi.mock('@/app/models/plaza-loader', () => ({
     ),
 }));
 
-import ModelsPage, { metadata } from '@/app/models/page';
+import ModelsPage, { generateMetadata } from '@/app/models/page';
 import { DEFAULT_PLAZA_RUNTIME } from '@newapi/lib/plaza-runtime';
 
 beforeEach(() => {
@@ -39,7 +39,8 @@ describe('/models page shell', () => {
         expect(mockLoadPlazaRuntime).toHaveBeenCalledTimes(1);
     });
 
-    it('declares 模型广场 metadata', () => {
+    it('declares 模型广场 metadata', async () => {
+        const metadata = await generateMetadata();
         expect(metadata.title).toContain('模型广场');
         expect(metadata.description).toContain('模型');
     });

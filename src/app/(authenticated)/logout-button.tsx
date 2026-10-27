@@ -2,6 +2,8 @@
 
 import { useState } from 'react';
 import { Button } from '@/components/ui/Button';
+import { useMessages } from '@/lib/i18n/client';
+import { commonMessages } from '@/lib/i18n/messages/common';
 
 /**
  * Logout button. POSTs /api/auth/logout (clears the silkroad_session cookie
@@ -14,6 +16,7 @@ import { Button } from '@/components/ui/Button';
  */
 export function LogoutButton() {
     const [loggingOut, setLoggingOut] = useState(false);
+    const m = useMessages(commonMessages);
 
     async function handleLogout() {
         if (loggingOut) return;
@@ -33,7 +36,7 @@ export function LogoutButton() {
 
     return (
         <Button type="button" variant="ghost" size="sm" onClick={handleLogout} loading={loggingOut}>
-            {loggingOut ? '退出中…' : '退出'}
+            {loggingOut ? m.auth.loggingOut : m.auth.logout}
         </Button>
     );
 }
