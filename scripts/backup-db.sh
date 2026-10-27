@@ -11,7 +11,7 @@
 #     gzip, validate, and atomically store with mode 0600
 #     under /opt/backups/silkroadai-portal/portal-YYYYMMDD-HHMMSS.sql.gz
 #   - skip if another backup process already holds the lock
-#   - prune backups older than 7 days
+#   - retain only the newest completed backup
 #   - log a status line so the cron log is parseable
 #
 # Restore reference (manual):
@@ -25,7 +25,6 @@ umask 077
 
 TS=$(date -u +%Y%m%d-%H%M%S)
 BACKUP_DIR=/opt/backups/silkroadai-portal
-RETENTION_DAYS=7
 DB_CONTAINER=silkroadai-portal-db
 DB_USER=portal
 DB_NAME=silkroadai_portal_prod
@@ -60,8 +59,19 @@ trap - EXIT
 SIZE=$(du -h "$OUT" | awk '{print $1}')
 echo "[$TS] backup complete: $OUT ($SIZE)"
 
-# Prune anything older than $RETENTION_DAYS days. -mtime +7 = strictly older.
-PRUNED=$(find "$BACKUP_DIR" -name "portal-*.sql.gz" -mtime "+$RETENTION_DAYS" -print -delete | wc -l | tr -d ' ')
+# Keep exactly one completed database backup. The newest file is retained even
+# when cron runs more often than expected; older files are removed only after
+# the new dump has passed gzip and non-empty checks above.
+PRUNED=0
+while IFS= read -r old_backup; do
+    [ -n "$old_backup" ] || continue
+    rm -f -- "$old_backup"
+    PRUNED=$((PRUNED + 1))
+done < <(
+    find "$BACKUP_DIR" -maxdepth 1 -type f -name "portal-*.sql.gz" -printf '%T@ %p\n' \
+        | sort -nr \
+        | sed '1d; s/^[^ ]* //'
+)
 if [ "$PRUNED" -gt 0 ]; then
-    echo "[$TS] pruned $PRUNED file(s) older than ${RETENTION_DAYS}d"
+    echo "[$TS] pruned $PRUNED older database backup(s); retention=1"
 fi
