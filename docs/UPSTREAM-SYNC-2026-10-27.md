@@ -115,8 +115,35 @@
 7. 实际合并后对每个冲突补 `dev@86c982d8`、`main@5778304e`、最终结果的三方语义审计，并对修复文件执行 upstream-fix 到 merge-result 的差异核对。
 8. 通过 typecheck、lint 零 error、完整测试、格式、Prisma 校验、生产构建后，才进入 prod/发布阶段。新 migration 若保留，须做 PostgreSQL 16 隔离迁移和旧数据不变验证；真实只读 smoke 与收费供应商验收分别记录。
 
-## 当前结果
+## 合并后语义审计与验证结果
 
-已完成远端范围核实、main fast-forward、逐提交静态审查和合并冲突预演。**尚未执行 main → dev 合并、完整应用测试、迁移或部署。** 本报告没有把上次 6,258 项测试、上游环境验收或隔离微型复现当作本轮发布通过证据。
+operator 随后授权按建议开始实施。最终合并提交为 `968e5099`，父提交为本地开发基线
+`58d760dc` 和上游 `5778304e`。逐文件三方取舍如下：
 
-operator 已确认仅出报告。复核本地 `dev` 与 `prod` 均保持 `86c982d8`；本轮仅新增这份报告，尚未提交或推送。
+| 冲突文件                                          | 最终采用的语义                                                                                                         | 放弃/隔离的上游内容                                                               |
+| ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `CLAUDE.md`                                       | 保留 LLmRoute 当前生产、品牌和历史事实；本报告单独记录本批范围。                                                       | 上游维护线的客户倍率写入、五折经营记录和旧域名文案未写入项目事实。                |
+| `prisma/schema.prisma`                            | 保留 dev 的定价发布协调、`UserTierMultiplier`、视频字段和已移除 `pool` 默认值。                                        | #570 的 `CustomerRatioOverride` 与 `User.newapi_user_group` 未接入。              |
+| `src/app/admin/(console)/customers/[id]/page.tsx` | 保留现有 `RateOverridesPanel` 和当前客户倍率入口。                                                                     | #570 的第二个专属倍率面板未挂载。                                                 |
+| `src/app/api/portal/models/[...path]/route.ts`    | 保留 Portal 目录生成、客户身份失败关闭、`private/no-store` 和性能数据过滤。                                            | 未采用上游内部 `hideOwnUserGroup` 透传改写，避免改变现有目录事实来源。            |
+| `src/app/docs/page.tsx`                           | 保留 LLmRoute 的共享 docs-content 入口和当前域名/价格语义。                                                            | 未套用上游旧域名、五折 Seedream 文案或独立 Ark 使用说明。                         |
+| `src/lib/newapi/client.ts`                        | 保留 dev 的 PAT/legacy、token 生命周期和严格管理接口；新增 #569 的客户 `/api/pricing` 读取 helper。                    | #570 仅为写入口服务的 token group 扩展及 `customer-ratio.ts` 依赖未进入最终代码。 |
+| `src/lib/newapi/effective-group-ratios.ts`        | 普通有效倍率读取改用 `/api/pricing`；严格 Key 页面也改用同一客户响应，同时保留身份校验、零倍率、缺价拒绝和不补全分组。 | 没有采用普通 helper 的宽松结果作为严格路径，也没有恢复公共价静默替代。            |
+| `src/lib/seedream/adapter.ts`                     | 保留 dev 的 `0.55` 售价折扣、2,360,000 默认阈值和显式配置保护。                                                        | #573 的五折计费和 2,610,000 自动阈值未采用。                                      |
+
+自动合并部分也按范围复核：保留 #571 的三个适配器文件及对应回归；删除 #570 的 migration、后台面板、API、留痕模块、scheduler 和测试；删除 #573 的 Ark 路由、实现、测试及五折测试金额。最终提交相对 `86c982d8` 只包含 8 个兼容性文件和本报告，没有数据库 migration、环境变量、依赖、Nginx 或 Cloudflare 改动。
+
+修复类差异复核已完成：#569 的最终代码在 `client.ts` 中只新增 `/api/pricing` 客户读取，并在两个倍率读取入口共用；#571 的最终代码只增加 provider URL 响应模式，不改变其他 provider 的 body、usage 或计费。上游新增的 #569/#571 回归场景保留；对本项目严格读取测试的 mock 按新数据源更新，未反向删除失败关闭断言。
+
+验证结果：
+
+- 定向倍率和图片适配测试：4 个文件，330 passed。
+- 完整非 smoke 测试：389 个文件，6,263 passed，1 skipped。
+- `pnpm typecheck`：通过。
+- `pnpm lint`：0 errors，100 个既有 warnings。
+- 本次变更文件 `prettier --check`：通过。
+- `pnpm exec prisma validate --schema prisma/schema.prisma`：通过。
+- `pnpm build`：通过，Next.js 生产构建生成 116 个静态页面/路由结果。
+- 全仓 `pnpm format:check` 仍会命中仓库已有的 outputs/需求文档格式差异；本轮没有格式化或改动这些无关文件。
+
+当前本地 `dev` 为 `968e5099`，`prod` 仍为 `86c982d8`；截至本报告更新时尚未执行生产数据库迁移或 VPS 部署。后续发布只能使用本次已验证的兼容性范围，不能因为上游 `main` 已包含 #570/#573 就把它们带入 `prod`。
