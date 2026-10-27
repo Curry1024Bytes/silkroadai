@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockGetUsableGroups = vi.fn();
 vi.mock('../client', () => ({
-    getUsableGroupsForCustomer: (...a: unknown[]) => mockGetUsableGroups(...a),
+    getPricingGroupRatiosForCustomer: (...a: unknown[]) => mockGetUsableGroups(...a),
 }));
 const mockGetGroupRatios = vi.fn();
 vi.mock('@/lib/channel-group', () => ({
@@ -32,17 +32,13 @@ describe('getEffectiveGroupRatios', () => {
     });
 
     it('customer with a GroupGroupRatio override → effective ratio differs, tier flagged special, others fall back to global', async () => {
-        mockGetUsableGroups.mockResolvedValue({
-            default: { ratio: 1.3, desc: '默认' },
-            'pool-gpt': { ratio: 0.25, desc: 'GPT 池子' }, // 专属 0.25(挂牌 0.4)
-            auto: { ratio: 'auto', desc: '自动' },
-        });
+        // /api/pricing 的 group_ratio:服务端已套矩阵(auto 不在其中)
+        mockGetUsableGroups.mockResolvedValue({ default: 1.3, 'pool-gpt': 0.25 }); // 专属 0.25(挂牌 0.4)
         const eff = await getEffectiveGroupRatios(USER);
         expect(mockGetUsableGroups).toHaveBeenCalledWith({ accessToken: 'cust-token', userId: 816 });
         expect(eff.source).toBe('customer');
         expect(eff.ratios['pool-gpt']).toBe(0.25);
         expect(eff.ratios['pool-claude']).toBe(1.6); // 客户视角缺的组 → 全局兜底
-        expect(eff.ratios.auto).toBeUndefined();
         expect([...eff.special]).toEqual(['pool-gpt']);
         expect(eff.listRatios['pool-gpt']).toBe(0.4);
         expect(ratioScale(eff, 'pool-gpt')).toBeCloseTo(0.625);
@@ -51,7 +47,7 @@ describe('getEffectiveGroupRatios', () => {
     });
 
     it('caches per newapi user for 60s', async () => {
-        mockGetUsableGroups.mockResolvedValue({ default: { ratio: 1.3, desc: '' } });
+        mockGetUsableGroups.mockResolvedValue({ default: 1.3 });
         await getEffectiveGroupRatios(USER, 1_000_000);
         await getEffectiveGroupRatios(USER, 1_000_000 + 30_000);
         expect(mockGetUsableGroups).toHaveBeenCalledTimes(1);
@@ -67,7 +63,7 @@ describe('getEffectiveGroupRatios', () => {
         expect(eff.source).toBe('global');
         expect(eff.ratios).toEqual(GLOBAL);
 
-        mockGetUsableGroups.mockResolvedValueOnce({ 'pool-gpt': { ratio: 0.25, desc: '' } });
+        mockGetUsableGroups.mockResolvedValueOnce({ 'pool-gpt': 0.25 });
         await getEffectiveGroupRatios(USER, 1_000);
         mockGetUsableGroups.mockRejectedValueOnce(new Error('503 again'));
         const stale = await getEffectiveGroupRatios(USER, 1_000 + 120_000);

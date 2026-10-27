@@ -512,7 +512,8 @@ async function callUpstreamOnce(
         f.append('prompt', parsed.prompt);
         const sendSize = parsed.upstreamSize ?? parsed.size.trim(); // auto 原样透传;缺省不发(官方缺省即 auto)
         if (sendSize) f.append('size', sendSize);
-        f.append('response_format', 'b64_json'); // 不带时 ominiapi 返自家 OSS url(上游身份泄漏),显式要 b64
+        // 不带时 ominiapi 返自家 OSS url(上游身份泄漏),显式要 b64;upstreamUrlResponse 的上游反之要 url 自己拉(下方转 b64)
+        if (!provider.upstreamUrlResponse) f.append('response_format', 'b64_json');
         if (parsed.quality) f.append('quality', upstreamQualityFor(provider, parsed.quality));
         for (const [k, v] of Object.entries(parsed.extras)) f.append(k, v);
         for (const img of parsed.images)
@@ -524,8 +525,8 @@ async function callUpstreamOnce(
         const j: Record<string, unknown> = {
             model: provider.upstreamModel ?? 'gpt-image-2',
             prompt: parsed.prompt,
-            response_format: 'b64_json', // 同上:2026-08-04 smoke 实测缺省返 url
         };
+        if (!provider.upstreamUrlResponse) j.response_format = 'b64_json'; // 同上:2026-08-04 smoke 实测缺省返 url
         const sendSize = parsed.upstreamSize ?? parsed.size.trim(); // auto 原样透传;缺省不发(官方缺省即 auto)
         if (sendSize) j.size = sendSize;
         if (parsed.quality) j.quality = upstreamQualityFor(provider, parsed.quality);

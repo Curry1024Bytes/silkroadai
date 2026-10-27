@@ -1,5 +1,5 @@
 import 'server-only';
-import { getOption, getUsableGroupsForCustomer } from './client';
+import { getOption, getPricingGroupRatiosForCustomer } from './client';
 import { getGroupRatios } from '@/lib/channel-group';
 
 /**
@@ -7,8 +7,11 @@ import { getGroupRatios } from '@/lib/channel-group';
  *
  * new-api 的 `GroupGroupRatio[用户分组][令牌分组]` 覆盖矩阵让运营可以给某个客户某几档
  * 设专属倍率;扣费已经按它走,但 portal 原来各处显示的是全局 `GroupRatio`。这里统一成
- * "以客户身份问 new-api"(`/api/user/self/groups`,与 new-api 自家前端同源),拿不到时
- * 回落全局。调用方可用 `special` 判断哪几档是专属价(与全局不同)。
+ * "以客户身份问 new-api"(`GET /api/pricing` act-as,返回已套矩阵的 `group_ratio`;与
+ * new-api 自家前端同源),拿不到时回落全局。
+ *
+ * 2026-10-25:数据源从 `/api/user/self/groups` 换成 `/api/pricing` —— 前者在 rc.41+ 要求
+ * PAT 带 `profile:read` scope,客户的访问令牌没有(线上 403 → 曾一直回落全局 1.8)。调用方可用 `special` 判断哪几档是专属价(与全局不同)。
  *
  * 60s 进程内缓存按 newapi_user_id,失败回落全局并打 warn(不抛)。
  */
@@ -46,13 +49,11 @@ export async function getEffectiveGroupRatios(
         customer = hit.ratios;
     } else {
         try {
-            const groups = await getUsableGroupsForCustomer({ accessToken: user.newapi_access_token, userId: uid });
-            customer = {};
-            for (const [g, v] of Object.entries(groups)) if (v.ratio !== 'auto') customer[g] = v.ratio;
+            customer = await getPricingGroupRatiosForCustomer({ accessToken: user.newapi_access_token, userId: uid });
             if (cache.size >= MAX_ENTRIES) cache.clear();
             cache.set(uid, { at: now, ratios: customer });
         } catch (err) {
-            console.warn(`[effective-ratios] self/groups failed for newapi user ${uid}, using global:`, err);
+            console.warn(`[effective-ratios] pricing(act-as) failed for newapi user ${uid}, using global:`, err);
             if (hit) customer = hit.ratios; // stale 胜过无
         }
     }
@@ -77,6 +78,11 @@ export function ratioScale(eff: EffectiveGroupRatios, newapiGroup: string): numb
     return r / list;
 }
 
+/** 写路径改完某客户后立即失效其缓存(60s 内也要看到新值)。 */
+export function invalidateEffectiveRatioCache(newapiUserId: number): void {
+    cache.delete(newapiUserId);
+}
+
 /** 测试用。 */
 export function _resetEffectiveRatioCache(): void {
     cache.clear();
@@ -95,9 +101,10 @@ export async function getVerifiedEffectiveGroupRatios(user: CustomerAuthLike): P
     )
         throw new Error('Customer pricing identity is unavailable');
     const [groups, raw] = await Promise.all([
-        getUsableGroupsForCustomer({ accessToken: user.newapi_access_token, userId: user.newapi_user_id }),
+        getPricingGroupRatiosForCustomer({ accessToken: user.newapi_access_token, userId: user.newapi_user_id }),
         getOption('GroupRatio', true),
     ]);
+    if (Object.keys(groups).length === 0) throw new Error('Cannot verify customer group ratios');
     const parsed: unknown = JSON.parse(raw ?? 'null');
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
         throw new Error('Cannot verify public group ratios');
@@ -109,12 +116,11 @@ export async function getVerifiedEffectiveGroupRatios(user: CustomerAuthLike): P
     }
     const ratios: Record<string, number> = {};
     const special = new Set<string>();
-    for (const [group, value] of Object.entries(groups)) {
-        if (value.ratio === 'auto') continue;
-        if (!Number.isFinite(value.ratio) || value.ratio < 0 || !Object.hasOwn(listRatios, group))
+    for (const [group, ratio] of Object.entries(groups)) {
+        if (!Number.isFinite(ratio) || ratio < 0 || !Object.hasOwn(listRatios, group))
             throw new Error('Cannot verify customer group ratio');
-        ratios[group] = value.ratio;
-        if (value.ratio !== listRatios[group]) special.add(group);
+        ratios[group] = ratio;
+        if (ratio !== listRatios[group]) special.add(group);
     }
     return { ratios, listRatios, special, source: 'customer' };
 }

@@ -2210,12 +2210,65 @@ describe('ztyunjuan provider(qimg 同后端族第二账号池,Adobe Firefly 2.0,
         expect(p.onlyQualities).toBeUndefined();
         expect(p.transport).toBeUndefined();
         expect(p.noTransparentBackground).toBe(true);
+        expect(p.upstreamUrlResponse).toBe(true);
         expect('ztyunjuan 10k pool ERR-3B62FB7EF1 Adobe firefly'.replace(p.brand, '*')).toBe('* * * * *');
         expect('https://pre-signed-firefly-prod.s3-accelerate.amazonaws.com/x'.replace(p.brand, '*')).toBe(
             'https://*/x',
         );
         expect('Bad request to openai: Transparent background'.replace(p.brand, '')).toBe('Transparent background');
         expect(p.baseUrl).not.toBe(IMAGE_PROVIDERS.qimg.baseUrl);
+    });
+
+    it('upstreamUrlResponse:generations / edits 都不发 response_format;上游返 Firefly S3 url → 适配器直拉转 b64,URL 不外泄', async () => {
+        const S3 = 'https://pre-signed-firefly-prod.s3-accelerate.amazonaws.com/images/abc?X-Amz-Signature=1';
+        const urlUpstream = () =>
+            fetchMock.mockImplementation(async (u: string) =>
+                u === S3
+                    ? new Response(Buffer.from(pngB64(1024, 1024), 'base64'), { status: 200 })
+                    : new Response(JSON.stringify({ created: 1, data: [{ url: S3 }] }), {
+                          status: 200,
+                          headers: { 'content-type': 'application/json' },
+                      }),
+            );
+        urlUpstream();
+        const res = await gen({ quality: 'medium' });
+        expect(res.status).toBe(200);
+        expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).not.toHaveProperty('response_format');
+        expect(fetchMock.mock.calls[1][0]).toBe(S3);
+        const body = await res.json();
+        expect(body.data[0].b64_json).toBe(pngB64(1024, 1024));
+        expect(JSON.stringify(body)).not.toMatch(/firefly|s3-accelerate|amazonaws/);
+
+        fetchMock.mockReset();
+        urlUpstream();
+        const r2 = await handleAdapterImage(
+            formReq(
+                'http://portal.test/image-adapter/ztyunjuan/v1/images/edits',
+                { model: 'gpt-image-2', prompt: 'watercolor', size: '1024x1024', quality: 'medium' },
+                [TINY_PNG],
+            ),
+            'edits',
+            'ztyunjuan',
+        );
+        expect(r2.status).toBe(200);
+        expect((fetchMock.mock.calls[0][1].body as FormData).has('response_format')).toBe(false);
+        expect(fetchMock.mock.calls[1][0]).toBe(S3);
+    });
+
+    it('upstreamUrlResponse:S3 拉图失败 → 503 让 new-api failover', async () => {
+        fetchMock
+            .mockResolvedValueOnce(
+                new Response(
+                    JSON.stringify({ created: 1, data: [{ url: 'https://x.s3-accelerate.amazonaws.com/y' }] }),
+                    {
+                        status: 200,
+                        headers: { 'content-type': 'application/json' },
+                    },
+                ),
+            )
+            .mockResolvedValue(new Response('denied', { status: 403 }));
+        const res = await gen({ quality: 'medium' });
+        expect(res.status).toBe(503);
     });
 
     it('三档 × 任意尺寸全放行:上游 quality 恒发 medium(JSON 与 multipart),回显与计费按客户请求档合成官方账单(上游浮动 usage 丢弃)', async () => {

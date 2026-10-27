@@ -781,6 +781,60 @@ export async function getUsableGroupsForCustomer(customerAuth: {
     return out;
 }
 
+/**
+ * Read the effective customer ratios from new-api's pricing endpoint.
+ * rc.41+ PATs may not have `profile:read`, so `/api/user/self/groups` is not
+ * a reliable source for customer-facing prices. `/api/pricing` applies the
+ * customer's GroupGroupRatio matrix and returns it at the envelope top level.
+ */
+export async function getPricingGroupRatiosForCustomer(customerAuth: {
+    accessToken: string;
+    userId: number;
+}): Promise<Record<string, number>> {
+    const url = new URL('/api/pricing', NEWAPI_BASE_URL);
+    let res: Response;
+    try {
+        res = await fetch(url, {
+            method: 'GET',
+            headers: {
+                Accept: 'application/json',
+                Authorization: customerAuth.accessToken,
+                'New-Api-User': String(customerAuth.userId),
+            },
+            cache: 'no-store',
+            redirect: 'manual',
+            signal: AbortSignal.timeout(callTimeoutMs()),
+        });
+    } catch (e) {
+        if (e instanceof Error && (e.name === 'TimeoutError' || e.name === 'AbortError')) {
+            throw new NewApiError(504, 'GET /api/pricing', null, `new-api timeout after ${callTimeoutMs()}ms`);
+        }
+        throw e;
+    }
+    const text = await res.text();
+    interface PricingEnvelope {
+        success?: boolean;
+        message?: string;
+        group_ratio?: unknown;
+    }
+    let body: PricingEnvelope | null = null;
+    try {
+        body = text ? (JSON.parse(text) as PricingEnvelope) : null;
+    } catch {
+        // The error below includes the raw response for diagnostics.
+    }
+    if (!res.ok || !body || body.success === false) {
+        throw new NewApiError(res.status, 'GET /api/pricing', null, String(body?.message ?? text ?? res.statusText));
+    }
+    const out: Record<string, number> = {};
+    if (body.group_ratio && typeof body.group_ratio === 'object' && !Array.isArray(body.group_ratio)) {
+        for (const [group, ratio] of Object.entries(body.group_ratio as Record<string, unknown>)) {
+            if (typeof ratio === 'number' && Number.isFinite(ratio)) out[group] = ratio;
+        }
+    }
+    return out;
+}
+
 export async function deleteToken(
     customerAuth: { accessToken: string; userId: number },
     tokenId: number,
