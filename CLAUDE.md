@@ -653,3 +653,7 @@ operator 随后重新安排上线，`prod@d3c60d3` 已于北京时间 2026-09-09
 ## 2026-10-25 上游集成边界
 
 本轮55提交的逐项行为、配置与风险以 `docs/UPSTREAM-SYNC-2026-10-25.md` 为准。保留LLmRoute当前生产运维、镜像分组、价格、授权、日志及视频缓存语义；上游部署/客户key/收费测试不属于本项目事实。模型广场采用上游组件并适配本项目只读目录和报价。新增有限Key额度、回调、自动补扣及Gemini适配器默认关闭，视频提交默认不重发。
+
+## 2026-10-29 火山方舟原生视频入口
+
+`/api/v3/contents/generations/tasks`（提交）与 `/{id}`（查询）由 `src/lib/seedance/ark-native.ts` 转给 new-api doubao 插件原生路由，已上线（`release-3074a2bd`）。`UPSTREAM_TO_CLIENT_MODEL` 必须与 new-api 渠道的模型重定向逐条互逆，加模型时两处一起改。提交带 `callback_url` 返回 400（#271 同一规则），查询缺 `status` 时由 Portal 补齐。API 子域 Nginx 只开这两条路径；线上 Nginx 文件有仓库模板没有的 ACME 块，改配置时按 diff 打补丁，不要用模板覆盖。new-api 渠道、定价和 Cloudflare 规则表达式尚待 operator 处理，见 `docs/视频模型兼容1.0.md` 2.8 与手册文末记录。
