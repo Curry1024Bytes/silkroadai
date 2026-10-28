@@ -7,24 +7,31 @@
  *   POST /api/v3/contents/generations/tasks
  *   GET  /api/v3/contents/generations/tasks/{task_id}
  * 内部复用 handleEnterpriseArkV3 → handleSubmit/handlePoll 核心(计费/鉴权/记账不变)。
- * 主站实例(env 未设)一律 404,不暴露此接口面。
+ *
+ * 主站实例(env 未设)只开视频任务的提交与查询两条,原样转给 new-api doubao 插件的原生路由
+ * (见 src/lib/seedance/ark-native.ts):
+ *   POST /api/v3/contents/generations/tasks
+ *   GET  /api/v3/contents/generations/tasks/{task_id}
+ * 其余 /api/v3 路径(含 /models、任务列表、取消、/images/generations)一律 404。
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { isEnterpriseFlavor, handleEnterpriseArkV3 } from '@/lib/enterprise/proxy';
+import { handleArkNativeVideo, matchArkNativeVideoPath } from '@/lib/seedance/ark-native';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 async function handle(req: NextRequest, params: Promise<{ path: string[] }>): Promise<NextResponse> {
-    if (!isEnterpriseFlavor()) {
-        return NextResponse.json(
-            { error: { code: 'not_found', message: 'not found', type: 'not_found' } },
-            { status: 404 },
-        );
-    }
     const { path: segments } = await params;
     const path = '/' + (segments ?? []).join('/');
-    return handleEnterpriseArkV3(req, path);
+    if (isEnterpriseFlavor()) return handleEnterpriseArkV3(req, path);
+
+    const route = matchArkNativeVideoPath(req.method, path);
+    if (route) return handleArkNativeVideo(req, route);
+    return NextResponse.json(
+        { error: { code: 'not_found', message: 'not found', type: 'not_found' } },
+        { status: 404 },
+    );
 }
 
 type RouteContext = { params: Promise<{ path: string[] }> };
