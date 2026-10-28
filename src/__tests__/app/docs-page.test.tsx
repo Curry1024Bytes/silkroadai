@@ -293,3 +293,32 @@ describe('/docs page — 第 13 章 gpt-image 流式返回(stream + partial_imag
         expect(html).toContain('partial_images=2');
     });
 });
+
+describe('/docs page — 第 24 章 火山方舟原生接口(Seedance 视频)', () => {
+    const html = renderToString(<DocsPage />);
+
+    it('章节与目录锚点都在,Base URL 是 /api/v3', () => {
+        expect(html).toMatch(/<section[^>]*id="ark-native-video"/);
+        expect(html).toMatch(/href="#ark-native-video"/);
+        expect(html).toContain('https://api.llmroute.club/api/v3');
+        expect(html).toContain('/contents/generations/tasks');
+    });
+
+    it('列出四个对客模型名,不出现上游模型名', () => {
+        for (const m of [
+            'doubao-seedance-2-5-260628',
+            'doubao-seedance-2-0-260128',
+            'doubao-seedance-2-0-fast-260128',
+            'doubao-seedance-2-0-mini-260615',
+        ])
+            expect(html, m).toContain(m);
+        expect(html).not.toContain('artsdance');
+    });
+
+    it('写明与官方的差异:task_ 任务号、不支持 callback_url、签名链接过期', () => {
+        expect(html).toContain('task_xxx');
+        expect(html).toContain('callback_url');
+        expect(html).toContain('24 小时后过期');
+        expect(html).toContain('volcenginesdkarkruntime');
+    });
+});

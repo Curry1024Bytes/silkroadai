@@ -26,7 +26,12 @@ import Link from 'next/link';
 import { BackButton } from '@/components/BackButton';
 import { Logo } from '@/components/brand/Logo';
 import { Card } from '@/components/ui/Card';
-import { ANTHROPIC_API_BASE_URL, OPENAI_API_BASE_URL, SUPPORT_WECHAT } from '@/lib/public-config';
+import {
+    ANTHROPIC_API_BASE_URL,
+    CUSTOMER_API_BASE_URL,
+    OPENAI_API_BASE_URL,
+    SUPPORT_WECHAT,
+} from '@/lib/public-config';
 
 export const DOCS_METADATA = {
     title: '集成文档 — LLmRoute',
@@ -145,7 +150,15 @@ const AGENTS: AgentSection[] = [
         label: 'Seedream 5.0 Pro 生图 · 图层拆分',
         blurb: '字节 Seedream 5.0 Pro — 文生 / 图生(≤10 参考图)/ 图层拆分(底图 + 透明 PNG 图层带坐标)/ 透明背景;OpenAI Images 兼容,按张计费 ¥0.17 起,需「seedream 5 pro」档 key。',
     },
+    {
+        id: 'ark-native-video',
+        label: '火山方舟原生接口 · Seedance 视频',
+        blurb: '按火山方舟官方格式调 doubao-seedance 2.5 / 2.0:Base URL 换成 /api/v3、Key 换成 sk-…,提交 → 轮询 → 取成片;按真实 token 计费。',
+    },
 ];
+
+/** 火山方舟原生接口的 Base URL(官方 SDK 的 base_url 也填这个)。 */
+const ARK_BASE = `${CUSTOMER_API_BASE_URL}/api/v3`;
 
 const OPENAI_BASE = OPENAI_API_BASE_URL;
 const ANTHROPIC_BASE = ANTHROPIC_API_BASE_URL;
@@ -4718,6 +4731,176 @@ print(r.data[0].url)`}</CodeBlock>
                             (提示词或图片触发内容安全)、
                             <code className="font-mono text-xs">502 upstream_error</code>
                             (上游临时不可用,重试即可,不扣费)。
+                        </p>
+                    </div>
+                </section>
+
+                <section id="ark-native-video" className="mt-12 mb-10 scroll-mt-20">
+                    <div className="flex items-baseline justify-between flex-wrap gap-2 mb-4 pb-3 border-b-2 border-brand-accent">
+                        <h2 className="m-0 text-2xl font-semibold text-navy">
+                            <span className="text-brand-accent font-bold mr-3 tabular-nums">24</span>
+                            火山方舟原生接口 · Seedance 视频
+                        </h2>
+                    </div>
+                    <p className="m-0 mb-3 text-sm text-ink leading-relaxed">
+                        已经按<strong className="text-navy">火山方舟官方格式</strong>接好 doubao-seedance 的代码,只需把
+                        Base URL 换成下面的地址、Key 换成你的 <code className="font-mono text-xs">sk-…</code>
+                        ,请求体不用改。
+                        <strong className="text-navy">异步</strong>:提交拿任务号,轮询到{' '}
+                        <code className="font-mono text-xs">succeeded</code> 取成片。
+                    </p>
+                    <div className="rounded-lg border border-brand-border bg-paper-muted px-4 py-3 mb-4 text-sm text-ink leading-relaxed">
+                        <p className="m-0">
+                            Base URL:<code className="font-mono text-xs break-all">{ARK_BASE}</code>(官方 SDK 的{' '}
+                            <code className="font-mono text-xs">base_url</code> 也填这个)
+                        </p>
+                        <p className="m-0 mt-1">
+                            提交:<code className="font-mono text-xs">POST /contents/generations/tasks</code>
+                            ;查询:<code className="font-mono text-xs">GET /contents/generations/tasks/{'{id}'}</code>
+                        </p>
+                        <p className="m-0 mt-1">
+                            鉴权:<code className="font-mono text-xs">Authorization: Bearer sk-…</code>。Key
+                            所在档次要包含下表的模型;不确定选哪个档次,先联系客服。
+                        </p>
+                    </div>
+                    <p className="m-0 mb-2 text-sm font-medium text-navy">模型</p>
+                    <div className="rounded-lg overflow-hidden border border-brand-border bg-surface mb-2">
+                        <table className="w-full border-collapse text-sm">
+                            <thead>
+                                <tr className="bg-paper-muted text-muted-ink">
+                                    {['model', '分辨率', '时长(秒)', '参考素材上限'].map((h) => (
+                                        <th
+                                            key={h}
+                                            className="text-left px-4 py-2.5 text-xs font-semibold border-b border-brand-border"
+                                        >
+                                            {h}
+                                        </th>
+                                    ))}
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {[
+                                    [
+                                        'doubao-seedance-2-5-260628',
+                                        '480p / 720p / 1080p',
+                                        '4–30,或 -1',
+                                        '图 30 · 视频 10 · 音频 10',
+                                    ],
+                                    [
+                                        'doubao-seedance-2-0-260128',
+                                        '480p / 720p / 1080p / 4k',
+                                        '4–15,或 -1',
+                                        '图 9 · 视频 3 · 音频 3',
+                                    ],
+                                    [
+                                        'doubao-seedance-2-0-fast-260128',
+                                        '480p / 720p',
+                                        '4–15,或 -1',
+                                        '图 9 · 视频 3 · 音频 3',
+                                    ],
+                                    [
+                                        'doubao-seedance-2-0-mini-260615',
+                                        '480p / 720p',
+                                        '4–15,或 -1',
+                                        '图 9 · 视频 3 · 音频 3',
+                                    ],
+                                ].map(([model, res, dur, refs]) => (
+                                    <tr key={model} className="border-b border-brand-border last:border-b-0">
+                                        <td className="px-4 py-2.5 font-mono text-xs text-navy">{model}</td>
+                                        <td className="px-4 py-2.5 text-ink">{res}</td>
+                                        <td className="px-4 py-2.5 text-ink">{dur}</td>
+                                        <td className="px-4 py-2.5 text-ink">{refs}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                    <p className="m-0 mb-5 text-xs text-minor-ink">
+                        <code className="font-mono text-xs">duration: -1</code> 表示由模型决定时长。比例可选{' '}
+                        <code className="font-mono text-xs">21:9 / 16:9 / 4:3 / 1:1 / 3:4 / 9:16 / adaptive</code>
+                        。2.5 做首帧、首尾帧、视频延长时要求 <code className="font-mono text-xs">ratio: adaptive</code>
+                        ,视频编辑还要求 <code className="font-mono text-xs">duration: -1</code>。2.0 不能只传音频。
+                        分辨率、时长和参考素材以上游实际支持为准:不支持的组合在提交时就返回错误,不扣费。
+                    </p>
+                    <p className="m-0 mb-2 text-sm font-medium text-navy">1) 提交任务(文生视频)</p>
+                    <CodeBlock language="bash">
+                        {`curl ${ARK_BASE}/contents/generations/tasks \\
+  -H "Authorization: Bearer 你的key" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "doubao-seedance-2-5-260628",
+    "content": [{ "type": "text", "text": "一只穿红大衣的小猫在雪地里抓雪花,写实电影质感" }],
+    "resolution": "720p",
+    "ratio": "16:9",
+    "duration": 5
+  }'
+# → { "id": "task_xxx" }`}
+                    </CodeBlock>
+
+                    <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">2) 轮询直到完成</p>
+                    <CodeBlock language="bash">
+                        {`curl ${ARK_BASE}/contents/generations/tasks/task_xxx -H "Authorization: Bearer 你的key"
+# status: queued → running → succeeded(或 failed)
+# 成片地址在 content.video_url,本次用量在 usage.completion_tokens`}
+                    </CodeBlock>
+
+                    <p className="m-0 mt-4 mb-2 text-sm font-medium text-navy">3) 参考图 + 参考视频</p>
+                    <CodeBlock language="json">
+                        {`{
+  "model": "doubao-seedance-2-0-260128",
+  "content": [
+    { "type": "text", "text": "参考图中人物的外观,按参考视频的运镜向前走" },
+    { "type": "image_url", "image_url": { "url": "https://你的图床/person.jpg" }, "role": "reference_image" },
+    { "type": "video_url", "video_url": { "url": "https://你的图床/move.mp4" }, "role": "reference_video" }
+  ],
+  "resolution": "720p",
+  "duration": 5
+}`}
+                    </CodeBlock>
+                    <p className="m-0 mt-2 mb-5 text-xs text-minor-ink">
+                        首帧、尾帧用 <code className="font-mono text-xs">role: first_frame</code> /{' '}
+                        <code className="font-mono text-xs">last_frame</code>,参考音频用{' '}
+                        <code className="font-mono text-xs">audio_url</code> 加{' '}
+                        <code className="font-mono text-xs">role: reference_audio</code>,写法与火山官方一致。
+                    </p>
+
+                    <p className="m-0 mb-2 text-sm font-medium text-navy">Python(火山方舟官方 SDK)</p>
+                    <CodeBlock language="python">
+                        {`import time
+from volcenginesdkarkruntime import Ark
+
+client = Ark(base_url="${ARK_BASE}", api_key="你的key")
+task = client.content_generation.tasks.create(
+    model="doubao-seedance-2-5-260628",
+    content=[{"type": "text", "text": "一只穿红大衣的小猫在雪地里抓雪花"}],
+)
+while True:
+    result = client.content_generation.tasks.get(task_id=task.id)
+    if result.status in ("succeeded", "failed", "expired"):
+        break
+    time.sleep(10)
+print(result.status, result.content.video_url if result.status == "succeeded" else result.error)`}
+                    </CodeBlock>
+                    <p className="m-0 mt-5 mb-2 text-sm font-medium text-navy">与火山官方的差异</p>
+                    <ul className="m-0 mb-4 pl-5 text-sm text-ink leading-relaxed space-y-1">
+                        <li>
+                            任务号形如 <code className="font-mono text-xs">task_xxx</code>,不是官方的{' '}
+                            <code className="font-mono text-xs">cgt-xxx</code>;查询时原样带回即可。
+                        </li>
+                        <li>只支持提交和查询单个任务;列出、取消、删除任务返回 404。</li>
+                        <li>
+                            不支持 <code className="font-mono text-xs">callback_url</code>,传了返回 400,请轮询查询接口。
+                        </li>
+                    </ul>
+                    <div className="rounded-lg border border-brand-border bg-paper-muted px-4 py-3 text-sm text-ink leading-relaxed space-y-1">
+                        <p className="m-0">
+                            ⚠️ <strong className="text-navy">成片地址是火山官方的签名链接,约 24 小时后过期</strong>
+                            ,完成后请尽快下载或转存到你自己的存储。
+                        </p>
+                        <p className="m-0">
+                            <strong className="text-navy">计费:</strong>按上游返回的真实 token(
+                            <code className="font-mono text-xs">usage.completion_tokens</code>)计费,单价按模型、分辨率、
+                            是否含参考视频分档;失败的任务不扣费。提交时先按估算预扣,完成后按真实用量结算;余额不够预扣时提交会被拒。
                         </p>
                     </div>
                 </section>
