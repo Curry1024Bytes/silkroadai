@@ -11,24 +11,34 @@
  *      的 100 行硬钳循环翻页,上限 MAX_EXPORT_PAGES × 100 = 10000 行,触顶时 CSV 末尾
  *      追加提示行 + `X-Export-Truncated: 1`(原行为,防把 new-api API 拖垮)。
  *
- * 行为与日志页保持一致:只导 API 调用(type=2 成功 + type=5 失败)、IDOR 按 user_id
+ * 行为与日志页保持一致:只导 API 调用(type=2 成功 + type=5 失败 + type=6 视频退款)、IDOR 按 user_id
  * 过滤、failover / 重试的中间失败折叠、错误文案脱敏(gotcha #15 + log-display)。
+ * 视频退款同日志页:结算退款单独一行、金额为负;失败退款配对预扣行(failed-video-match),配上的
+ * 预扣行导出为「失败」0、退款行不单独导出,配不上的单独一行、金额为负。回退路径在整个导出范围内
+ * 配对;主路径按批(DB_BATCH_SIZE)配对,预扣行与退款落在两批时各导一行,金额合计仍然正确。
  * 时间列一律 Asia/Shanghai(gotcha #20)。
  *
- * CSV 细节:UTF-8 BOM(Excel 中文不乱码);含逗号/引号/换行的字段加引号转义;以
- * `=`/`+`/`-`/`@` 开头的文本字段前置 `'` 防公式注入(错误详情来自上游,不可信)。
+ * CSV 细节:UTF-8 BOM(Excel 中文不乱码);含逗号/引号/换行的字段加引号转义;以 `=`/`+`/`@`
+ * 开头、或以 `-` 开头但不是纯数字的文本字段前置 `'` 防公式注入(错误详情来自上游,不可信)。
+ * 消耗(元)列一律 4 位小数、不带千分位,退款为负数。
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import type { Pool } from 'pg';
 import { getCurrentUser } from '@/lib/auth/session';
 import { queryLogs, quotaToCny, type NewApiUsageLog } from '@/lib/newapi/client';
+import { formatSignedCny } from '@/lib/format/number';
 import { getNewapiLogsPool } from '@/lib/newapi/logs-db';
+import { resolveVideoRefunds } from '@/lib/newapi/failed-video-match';
 import {
     collapseRetriedFailures,
     sanitizeLogContent,
     isPerImageBilled,
     parseCacheTokens,
+    refundKindOf,
+    settlementRefundContent,
+    unmatchedFailureRefundContent,
+    FAILED_VIDEO_REFUND_NOTE,
 } from '@/lib/newapi/log-display';
 
 export const runtime = 'nodejs';
@@ -87,7 +97,9 @@ const BEIJING_TIME = new Intl.DateTimeFormat('sv-SE', {
 /** 单元格转义:防公式注入(不可信文本)+ 标准 CSV 引号规则。 */
 function csvCell(value: string | number): string {
     let s = String(value);
-    if (/^[=+\-@]/.test(s)) s = `'${s}`;
+    // Numeric negatives are legitimate CSV numbers (settlement refunds); only
+    // non-numeric text beginning with '-' needs the formula-injection guard.
+    if (/^[=+@]/.test(s) || (/^-/.test(s) && !/^-?\d+(?:\.\d+)?$/.test(s))) s = `'${s}`;
     if (/[",\n\r]/.test(s)) s = `"${s.replace(/"/g, '""')}"`;
     return s;
 }
@@ -108,9 +120,26 @@ type CsvSourceLog = Pick<
     | 'other'
 >;
 
-function toCsvRow(log: CsvSourceLog): string {
+const cnyOfQuota = (quota: number) => formatSignedCny(quotaToCny(quota), { preciseSmall: true });
+
+/** 结果列 + 详情列(与日志页同口径)。failedConsume = 配上失败退款的预扣行。 */
+function resultAndDetail(log: CsvSourceLog, failedConsume: boolean): [string, string] {
+    const refundKind = refundKindOf(log);
+    if (refundKind === 'settlement') return ['结算退款', settlementRefundContent(log, cnyOfQuota)];
+    if (refundKind === 'failure') {
+        return ['失败退款', unmatchedFailureRefundContent(formatSignedCny(quotaToCny(log.quota)))];
+    }
+    if (failedConsume) return ['失败', FAILED_VIDEO_REFUND_NOTE];
+    return log.type === 5 ? ['失败', sanitizeLogContent(log.content)] : ['成功', ''];
+}
+
+function toCsvRow(log: CsvSourceLog, failedConsume = false): string {
     const perImage = isPerImageBilled(log.other, log.model_name);
     const cache = parseCacheTokens(log.other);
+    const cost = quotaToCny(log.quota);
+    // 退款行为负;配上失败退款的预扣行已退还,计 0
+    const costCny = refundKindOf(log) ? -cost : failedConsume ? 0 : cost;
+    const [result, detail] = resultAndDetail(log, failedConsume);
     return [
         BEIJING_TIME.format(new Date(log.created_at * 1000)),
         log.model_name || '',
@@ -123,9 +152,9 @@ function toCsvRow(log: CsvSourceLog): string {
         // 缓存读写与页面同语义:按张计费留空;0 也如实写 0(CSV 是对账口径,不藏)
         perImage ? '' : cache.read,
         perImage ? '' : cache.write,
-        quotaToCny(log.quota).toFixed(4),
-        log.type === 5 ? '失败' : '成功',
-        log.type === 5 ? sanitizeLogContent(log.content) : '',
+        costCny.toFixed(4),
+        result,
+        detail,
     ]
         .map(csvCell)
         .join(',');
@@ -187,7 +216,7 @@ function exportFromLogsDb(pool: Pool, newapiUserId: number, q: z.infer<typeof Qu
                                 use_time, prompt_tokens, completion_tokens, quota, type, content, other
                            FROM logs l
                           WHERE l.user_id = $1
-                            AND l.type IN (2, 5)
+                            AND l.type IN (2, 5, 6)
                             AND ($2::bigint IS NULL OR l.created_at >= $2)
                             AND ($3::bigint IS NULL OR l.created_at <= $3)
                             AND ($4::text   IS NULL OR l.model_name = $4)
@@ -220,22 +249,30 @@ function exportFromLogsDb(pool: Pool, newapiUserId: number, q: z.infer<typeof Qu
                         ],
                     );
                     if (rows.length === 0) break;
+                    const batch = rows.map((r) => ({
+                        id: Number(r.id),
+                        created_at: Number(r.created_at),
+                        model_name: r.model_name ?? '',
+                        token_name: r.token_name ?? '',
+                        request_id: r.request_id ?? '',
+                        use_time: Number(r.use_time),
+                        prompt_tokens: Number(r.prompt_tokens),
+                        completion_tokens: Number(r.completion_tokens),
+                        quota: Number(r.quota),
+                        type: Number(r.type) as NewApiUsageLog['type'],
+                        content: r.content ?? '',
+                        other: r.other ?? '',
+                    }));
+                    // 失败退款在本批内配对预扣行;两者落在两批时各导一行,金额合计仍然正确。
+                    const { visibleRefunds, failedConsumeIds } = resolveVideoRefunds(
+                        batch.filter((l) => l.type === 2),
+                        batch.filter((l) => l.type === 6),
+                    );
+                    const shownRefundIds = new Set(visibleRefunds.map((l) => l.id));
                     let chunk = '';
-                    for (const r of rows) {
-                        chunk +=
-                            toCsvRow({
-                                created_at: Number(r.created_at),
-                                model_name: r.model_name ?? '',
-                                token_name: r.token_name ?? '',
-                                request_id: r.request_id ?? '',
-                                use_time: Number(r.use_time),
-                                prompt_tokens: Number(r.prompt_tokens),
-                                completion_tokens: Number(r.completion_tokens),
-                                quota: Number(r.quota),
-                                type: Number(r.type) as NewApiUsageLog['type'],
-                                content: r.content ?? '',
-                                other: r.other ?? '',
-                            }) + '\r\n';
+                    for (const log of batch) {
+                        if (log.type === 6 && !shownRefundIds.has(log.id)) continue;
+                        chunk += toCsvRow(log, failedConsumeIds.has(log.id)) + '\r\n';
                     }
                     controller.enqueue(encoder.encode(chunk));
                     lastId = rows[rows.length - 1].id;
@@ -288,12 +325,18 @@ async function exportViaHttpPaging(
         return NextResponse.json({ error: 'fetch_failed' }, { status: 502 });
     }
 
-    // 与 /api/portal/logs 同一套:IDOR 二次过滤 + 只留 API 调用 + 折叠重试中间失败
-    const mine = items.filter((l) => l.user_id === newapiUserId && (l.type === 2 || l.type === 5));
+    // 与 /api/portal/logs 同一套:IDOR 二次过滤 + 只留 API 调用 + 视频退款配对 + 折叠重试中间失败
+    const mine = items.filter((l) => l.user_id === newapiUserId && (l.type === 2 || l.type === 5 || l.type === 6));
     const consume = mine.filter((l) => l.type === 2);
     const errors = mine.filter((l) => l.type === 5);
+    const { visibleRefunds, failedConsumeIds } = resolveVideoRefunds(
+        consume,
+        mine.filter((l) => l.type === 6),
+    );
     const visibleErrors = collapseRetriedFailures(consume, errors);
-    const rows = [...consume, ...visibleErrors].sort((a, b) => b.created_at - a.created_at).map(toCsvRow);
+    const rows = [...consume, ...visibleErrors, ...visibleRefunds]
+        .sort((a, b) => b.created_at - a.created_at)
+        .map((l) => toCsvRow(l, failedConsumeIds.has(l.id)));
     if (truncated) rows.push(csvCell(TRUNCATED_NOTE));
 
     // UTF-8 BOM keeps Chinese column names readable in Excel; \r\n supports Windows Excel.

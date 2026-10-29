@@ -8,6 +8,7 @@ import {
     formatTokens,
     formatCacheTokens,
     callResult,
+    refundLabel,
     collapseRetriedFailures,
     sanitizeLogContent,
 } from '@/app/(authenticated)/dashboard/format';
@@ -97,10 +98,18 @@ describe('formatCacheTokens', () => {
 });
 
 describe('callResult', () => {
-    it('type 5 → error, everything else → success', () => {
+    it('type 5/6 → error, refund rows → their refund kind, everything else → success', () => {
         expect(callResult(5)).toBe('error');
+        expect(callResult(6, 'settlement')).toBe('settlement_refund');
+        expect(callResult(6, 'failure')).toBe('failure_refund');
+        expect(callResult(6)).toBe('error'); // 配上失败退款、改标成 6 的预扣行
         expect(callResult(2)).toBe('success');
         expect(callResult(1)).toBe('success');
+    });
+
+    it('refundLabel: chip + expanded heading per refund kind', () => {
+        expect(refundLabel('settlement_refund')).toEqual({ chip: '结算退款', heading: '结算说明' });
+        expect(refundLabel('failure_refund')).toEqual({ chip: '失败退款', heading: '退款说明' });
     });
 });
 

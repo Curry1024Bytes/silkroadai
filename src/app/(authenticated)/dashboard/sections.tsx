@@ -18,14 +18,28 @@ import { getUsageAggregate, unionSeedanceUsage, type UsageAggregateSnapshot } fr
 import { quotaToCny, type NewApiUsageLog } from '@/lib/newapi/client';
 import { queryLogsCached } from '@/lib/newapi/logs-cache';
 import { USD_TO_CNY_RATE } from '@/lib/newapi/quota-units';
-import { formatCny, formatCount, formatTokens, formatUsd, type CompactNumber } from '@/lib/format/number';
+import {
+    formatCny,
+    formatSignedCny,
+    formatCount,
+    formatTokens,
+    formatUsd,
+    type CompactNumber,
+} from '@/lib/format/number';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { FormError } from '@/components/ui/FormError';
 import { ModelConsumptionChartLazy } from './model-consumption-chart-lazy';
 import { CallDetailTable, type CallRow } from './call-detail-table';
-import { matchFailedVideoConsumes } from './failed-video-match';
+import { matchFailedVideoConsumes } from '@/lib/newapi/failed-video-match';
 import { collapseRetriedFailures, sanitizeLogContent } from './format';
-import { isPerImageBilled, parseCacheTokens } from '@/lib/newapi/log-display';
+import {
+    isPerImageBilled,
+    isSettlementRefund,
+    parseCacheTokens,
+    settlementRefundContent,
+    FAILED_VIDEO_REFUND_NOTE,
+    type RefundKind,
+} from '@/lib/newapi/log-display';
 import { periodToRange, type UsagePeriod } from './period';
 
 /** Recent-call fetch sizes for the detail table. The full-period TOTALS come
@@ -97,7 +111,7 @@ export interface UsageData {
     calls: CallRow[];
 }
 
-function toCallRow(log: NewApiUsageLog): CallRow {
+function toCallRow(log: NewApiUsageLog, refundKind: RefundKind | null = null): CallRow {
     const cache = parseCacheTokens(log.other);
     return {
         id: log.id,
@@ -121,8 +135,16 @@ function toCallRow(log: NewApiUsageLog): CallRow {
         // available — CallDetailTable is a client island and must not convert.
         costCny: quotaToCny(log.quota),
         type: log.type,
+        refundKind,
         content: sanitizeLogContent(log.content),
     };
+}
+
+function settlementRefundRow(log: NewApiUsageLog): CallRow {
+    const row = toCallRow(log, 'settlement');
+    row.costCny = -quotaToCny(log.quota);
+    row.content = settlementRefundContent(log, (quota) => formatSignedCny(quotaToCny(quota), { preciseSmall: true }));
+    return row;
 }
 
 /** Usage aggregate + per-call logs (period-scoped). Never rejects. */
@@ -183,21 +205,24 @@ export async function loadUsageData(args: {
     if (errorSettled.status === 'rejected') {
         console.warn(`[dashboard] error queryLogs failed for user ${portalUserId}:`, errorSettled.reason);
     }
+    const settlementRefunds = taskFailed.filter(isSettlementRefund);
+    const failedTaskRefunds = taskFailed.filter((l) => !isSettlementRefund(l));
     // 视频异步任务失败(type=6)会退还预扣费用(净扣 0)。把对应的 type=2 消费标成失败·已退款,
     // 否则明细表会把失败任务错显示成「成功 ¥X」(客户以为没出片还被扣钱)。
-    const failedConsumeIds = matchFailedVideoConsumes(consume, taskFailed);
+    const failedConsumeIds = matchFailedVideoConsumes(consume, failedTaskRefunds);
     // 折叠"失败了但重试 / failover 成功"的中间失败行(见 collapseRetriedFailures)——
     // 否则客户日志被 429/上游饱和这类中间过程刷屏,主观以为出了大问题。真失败(内容拒绝等)照常显示。
     const visibleErrors = collapseRetriedFailures(consume, errors);
-    const calls = [...consume, ...visibleErrors]
+    const calls = [...consume, ...visibleErrors, ...settlementRefunds]
         .sort((a, b) => b.created_at - a.created_at)
         .slice(0, CALLS_CAP)
         .map((l) => {
+            if (isSettlementRefund(l)) return settlementRefundRow(l);
             const row = toCallRow(l);
             if (failedConsumeIds.has(l.id)) {
                 row.type = 6; // → callResult 判失败
                 row.costCny = 0; // 已退款,本次不计费
-                row.content = '视频任务未生成成功,已自动退还本次预扣费用(未实际扣费)。';
+                row.content = FAILED_VIDEO_REFUND_NOTE;
             }
             return row;
         });

@@ -28,6 +28,7 @@ function row(o: Partial<CallRow> = {}): CallRow {
         quota: o.quota ?? 500_000,
         costCny: o.costCny ?? 0.2,
         type: o.type ?? 2,
+        refundKind: o.refundKind ?? null,
         content: o.content ?? '',
     };
 }
@@ -76,6 +77,38 @@ describe('<CallDetailTable /> SSR', () => {
         expect(html).toContain('claude-opus-4-8');
         // content surfaced via the badge title attr (also expandable on click)
         expect(html).toContain('rate limit exceeded');
+    });
+
+    it('settlement refund row → -¥ amount + 结算退款 label + explanation', () => {
+        const html = renderToString(
+            renderRow({
+                type: 6,
+                refundKind: 'settlement',
+                costCny: -0.0498,
+                content: '按实际用量结算，退还多扣的 ¥0.0498（预扣 ¥0.9347，实际 ¥0.8849）',
+            }),
+        );
+        expect(html).toContain('结算退款');
+        expect(html).toContain('-¥0.0498');
+        expect(html).not.toContain('¥-');
+        expect(html).toContain('预扣 ¥0.9347');
+        expect(html).not.toContain('失败');
+    });
+
+    it('unmatched failure refund row → -¥ amount + 失败退款 label', () => {
+        const html = renderToString(
+            renderRow({
+                type: 6,
+                refundKind: 'failure',
+                costCny: -2,
+                content: '视频任务未生成成功，已自动退还预扣的 ¥2.00。',
+            }),
+        );
+        expect(html).toContain('失败退款');
+        expect(html).toContain('-¥2.00');
+        expect(html).toContain('bg-status-warning-bg'); // 退款 chip,不是成功/失败 chip
+        expect(html).not.toContain('bg-status-success-bg');
+        expect(html).not.toContain('bg-status-error-bg');
     });
 
     it('按张计费的生图行(perImageBilled)→ token 显示 "—"(即使上游报了噪声 token)', () => {

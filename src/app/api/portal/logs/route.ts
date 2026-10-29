@@ -6,7 +6,10 @@
  *   - 按 Request ID / 令牌名 / 模型名 / 渠道 分类搜索(new-api /api/log/ 实测均支持精确过滤)
  *   - 服务端分页(new-api /api/log/ page_size 硬钳 100,故一页 = 100 原始行)
  *
- * 只显示【API 调用】:type=2 成功 + type=5 失败(充值/管理等其它 type 过滤掉,充值在「充值流水」)。
+ * 只显示【API 调用】:type=2 成功 + type=5 失败 + type=6 视频退款(充值/管理等其它 type 过滤掉,
+ * 充值在「充值流水」)。type=6 分两种:结算退款单独一行、金额为负;失败退款在本页配对预扣行
+ * (failed-video-match,与 dashboard 同规则),配上的预扣行标「失败」¥0、退款行不单独显示,
+ * 配不上的(预扣行在别的页或日期范围外)单独一行、金额为负,本页金额照样对得上。
  * 折叠 + 脱敏复用 log-display:failover / 重试的中间失败(同 request_id 有成功、或 size-must-use +
  * 邻近成功)藏掉 —— 客户不被"重试成功的失败过程"刷屏;错误文案脱敏隐藏 adobe 等上游来源。
  *
@@ -18,11 +21,18 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { getCurrentUser } from '@/lib/auth/session';
 import { queryLogs, quotaToCny, type NewApiUsageLog } from '@/lib/newapi/client';
+import { formatSignedCny } from '@/lib/format/number';
+import { resolveVideoRefunds } from '@/lib/newapi/failed-video-match';
 import {
     collapseRetriedFailures,
     sanitizeLogContent,
     isPerImageBilled,
     parseCacheTokens,
+    refundKindOf,
+    settlementRefundContent,
+    unmatchedFailureRefundContent,
+    FAILED_VIDEO_REFUND_NOTE,
+    type RefundKind,
 } from '@/lib/newapi/log-display';
 
 export const runtime = 'nodejs';
@@ -62,12 +72,19 @@ export interface LogRow {
     perImageBilled: boolean;
     quota: number;
     costCny: number;
+    /** new-api log type;配上失败退款的预扣行改成 6(callResult 判失败)。 */
     type: number;
+    /** 单独显示的退款行:settlement = 结算退款,failure = 配不上预扣行的失败退款;其余行为 null。 */
+    refundKind: RefundKind | null;
     content: string;
 }
 
-function toLogRow(log: NewApiUsageLog): LogRow {
+const cnyOfQuota = (quota: number) => formatSignedCny(quotaToCny(quota), { preciseSmall: true });
+
+function toLogRow(log: NewApiUsageLog, failedConsume: boolean): LogRow {
     const cache = parseCacheTokens(log.other);
+    const refundKind = refundKindOf(log);
+    const cost = quotaToCny(log.quota);
     return {
         id: log.id,
         createdAt: log.created_at,
@@ -81,9 +98,18 @@ function toLogRow(log: NewApiUsageLog): LogRow {
         cacheWriteTokens: cache.write,
         perImageBilled: isPerImageBilled(log.other, log.model_name), // 按张计费才藏 token
         quota: log.quota,
-        costCny: quotaToCny(log.quota),
-        type: log.type,
-        content: sanitizeLogContent(log.content), // 脱敏后才出参
+        // 退款行为负;配上失败退款的预扣行已退还,计 0
+        costCny: refundKind ? -cost : failedConsume ? 0 : cost,
+        type: failedConsume ? 6 : log.type,
+        refundKind,
+        content:
+            refundKind === 'settlement'
+                ? settlementRefundContent(log, cnyOfQuota)
+                : refundKind === 'failure'
+                  ? unmatchedFailureRefundContent(formatSignedCny(cost))
+                  : failedConsume
+                    ? FAILED_VIDEO_REFUND_NOTE
+                    : sanitizeLogContent(log.content), // 脱敏后才出参
     };
 }
 
@@ -120,12 +146,18 @@ export async function GET(req: NextRequest) {
         return NextResponse.json({ rows: [], page: q.page, hasMore: false, error: 'fetch_failed' });
     }
 
-    // IDOR 二次过滤 + 只留 API 调用(成功 2 / 失败 5)
-    const mine = items.filter((l) => l.user_id === newapiUserId && (l.type === 2 || l.type === 5));
+    // IDOR 二次过滤 + 只留 API 调用(成功 2 / 失败 5 / 视频退款 6)
+    const mine = items.filter((l) => l.user_id === newapiUserId && (l.type === 2 || l.type === 5 || l.type === 6));
     const consume = mine.filter((l) => l.type === 2);
     const errors = mine.filter((l) => l.type === 5);
+    const { visibleRefunds, failedConsumeIds } = resolveVideoRefunds(
+        consume,
+        mine.filter((l) => l.type === 6),
+    );
     const visibleErrors = collapseRetriedFailures(consume, errors);
-    const rows: LogRow[] = [...consume, ...visibleErrors].sort((a, b) => b.created_at - a.created_at).map(toLogRow);
+    const rows: LogRow[] = [...consume, ...visibleErrors, ...visibleRefunds]
+        .sort((a, b) => b.created_at - a.created_at)
+        .map((l) => toLogRow(l, failedConsumeIds.has(l.id)));
 
     // 满页(拿满 100 原始行)= 大概率还有下一页。折叠后 rows 可能 <100,但翻页按 new-api 原始页走。
     return NextResponse.json({ rows, page: q.page, hasMore: items.length >= PAGE_SIZE });

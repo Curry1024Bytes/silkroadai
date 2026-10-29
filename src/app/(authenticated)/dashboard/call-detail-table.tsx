@@ -22,8 +22,20 @@
  * 所有 LLM)token 就是计费依据 → 如实显示。¥ + 结果照常清晰。
  */
 import { useState } from 'react';
-import { Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Copy, XCircle } from 'lucide-react';
-import { formatDuration, formatTokens, formatCacheTokens, callResult } from './format';
+import {
+    Check,
+    CheckCircle2,
+    ChevronDown,
+    ChevronLeft,
+    ChevronRight,
+    ChevronUp,
+    Copy,
+    Undo2,
+    XCircle,
+} from 'lucide-react';
+import { formatDuration, formatTokens, formatCacheTokens, callResult, refundLabel, type CallResult } from './format';
+import { formatSignedCny } from '@/lib/format/number';
+import type { RefundKind } from '@/lib/newapi/log-display';
 
 export interface CallRow {
     id: number;
@@ -51,9 +63,11 @@ export interface CallRow {
      *  NEWAPI_QUOTA_PER_USD / USD_TO_CNY_RATE are server-only env (undefined in
      *  the client bundle → stale 500k/7.2 defaults → ~2× over-display). */
     costCny: number;
-    /** new-api log type — 2=consume(成功) / 5=error(失败) / 6=视频任务失败·已退款(失败,¥0) */
+    /** new-api log type — 2=consume(成功) / 5=error(失败) / 6=退款(或配上失败退款、改标失败的预扣行) */
     type: number;
-    /** error / 失败详情(type=5 上游错误;type=6 已退款说明) */
+    /** 单独显示的退款行:settlement = 结算退款,failure = 配不上预扣行的失败退款;其余行为空。 */
+    refundKind?: RefundKind | null;
+    /** error / 退款详情 */
     content: string;
 }
 
@@ -100,14 +114,13 @@ export function CallDetailTable({ rows }: { rows: CallRow[] }) {
                     </thead>
                     <tbody>
                         {pageRows.map((row) => {
-                            const result = callResult(row.type);
-                            const isError = result === 'error';
+                            const result = callResult(row.type, row.refundKind ?? null);
                             const isOpen = expanded === row.id;
                             return (
                                 <CallRowItem
                                     key={row.id}
                                     row={row}
-                                    isError={isError}
+                                    result={result}
                                     isOpen={isOpen}
                                     onToggle={() => setExpanded(isOpen ? null : row.id)}
                                 />
@@ -188,16 +201,17 @@ function CacheTokensLine({ row }: { row: CallRow }) {
 /** A call row + its optional expanded error-detail sub-row. */
 function CallRowItem({
     row,
-    isError,
+    result,
     isOpen,
     onToggle,
 }: {
     row: CallRow;
-    isError: boolean;
+    result: CallResult;
     isOpen: boolean;
     onToggle: () => void;
 }) {
     const cell = 'px-4 py-3 text-sm text-portal-ink border-b border-portal-line';
+    const isRefund = result === 'settlement_refund' || result === 'failure_refund';
     return (
         <>
             <tr className={isOpen ? 'bg-portal-soft' : 'transition-colors hover:bg-portal-soft/70'}>
@@ -221,9 +235,29 @@ function CallRowItem({
                     {formatTokens(row.promptTokens, row.completionTokens, row.perImageBilled)}
                     <CacheTokensLine row={row} />
                 </td>
-                <td className={`${cell} text-right tabular-nums font-medium`}>¥{row.costCny.toFixed(2)}</td>
+                <td
+                    className={`${cell} text-right tabular-nums font-medium ${isRefund ? 'text-status-warning-text' : ''}`}
+                >
+                    {formatSignedCny(row.costCny, { preciseSmall: result === 'settlement_refund' })}
+                </td>
                 <td className={`${cell} text-center`}>
-                    {isError ? (
+                    {isRefund ? (
+                        <button
+                            type="button"
+                            onClick={onToggle}
+                            title={row.content || refundLabel(result).chip}
+                            aria-expanded={isOpen}
+                            className="inline-flex items-center gap-1.5 rounded bg-status-warning-bg px-2 py-1 text-xs font-medium text-status-warning-text transition-colors hover:brightness-95"
+                        >
+                            <Undo2 size={13} aria-hidden="true" />
+                            {refundLabel(result).chip}
+                            {isOpen ? (
+                                <ChevronUp size={12} aria-hidden="true" />
+                            ) : (
+                                <ChevronDown size={12} aria-hidden="true" />
+                            )}
+                        </button>
+                    ) : result === 'error' ? (
                         <button
                             type="button"
                             onClick={onToggle}
@@ -247,10 +281,14 @@ function CallRowItem({
                     )}
                 </td>
             </tr>
-            {isError && isOpen && (
+            {result !== 'success' && isOpen && (
                 <tr className="bg-portal-soft">
                     <td colSpan={COL_SPAN} className="border-b border-portal-line px-4 py-3">
-                        <p className="m-0 mb-1 text-xs font-medium text-status-error-text">错误详情</p>
+                        <p
+                            className={`m-0 mb-1 text-xs font-medium ${isRefund ? 'text-status-warning-text' : 'text-status-error-text'}`}
+                        >
+                            {isRefund ? refundLabel(result).heading : '错误详情'}
+                        </p>
                         <pre className="m-0 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-portal-active px-3 py-2 font-mono text-xs text-portal-ink">
                             {row.content || '(上游未返回错误详情)'}
                         </pre>

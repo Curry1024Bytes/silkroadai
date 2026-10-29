@@ -31,6 +31,7 @@ interface LogOpt {
     model_name?: string;
     token_name?: string;
     other?: string;
+    quota?: number;
     prompt_tokens?: number;
     completion_tokens?: number;
 }
@@ -46,7 +47,7 @@ function makeLog(o: LogOpt = {}) {
         model_name: o.model_name ?? 'gpt-image-2',
         // 默认 gpt-image-2 按 token 计费(model_price=-1);per-张 的行显式传 model_price≥0 的 other
         other: o.other ?? '{"model_price":-1,"model_ratio":0.9285714285714286,"completion_ratio":6}',
-        quota: 100000,
+        quota: o.quota ?? 100000,
         prompt_tokens: o.prompt_tokens ?? 0,
         completion_tokens: o.completion_tokens ?? 0,
         use_time: 1,
@@ -88,6 +89,57 @@ describe('GET /api/portal/logs', () => {
         const d = (await (await GET(req())).json()) as { rows: Array<{ id: number }> };
         expect(d.rows).toHaveLength(2);
         expect(d.rows[0].id).toBe(1); // 100 > 90
+    });
+
+    it('视频退款(type=6):结算退款、配不上的失败退款为负金额行;配上的失败退款并进预扣行(失败 ¥0)', async () => {
+        const video = 'doubao-seedance-2-0-mini-260615';
+        mockGetCurrentUser.mockResolvedValue(provisioned);
+        mockQueryLogs.mockResolvedValue({
+            items: [
+                makeLog({ id: 1, type: 2, created_at: 100, quota: 100000, model_name: video }), // 成功任务的预扣
+                makeLog({ id: 3, type: 2, created_at: 110, quota: 100000, model_name: video }), // 失败任务的预扣
+                makeLog({
+                    id: 4,
+                    type: 6,
+                    created_at: 140,
+                    quota: 5000,
+                    model_name: video,
+                    other: '{"task_id":"task_1","pre_consumed_quota":100000,"actual_quota":95000}',
+                    content: '任务用量表达式结算',
+                }),
+                makeLog({
+                    id: 5,
+                    type: 6,
+                    created_at: 150,
+                    quota: 100000,
+                    model_name: video,
+                    other: '{"task_id":"task_2"}',
+                }),
+                // 预扣行不在本页的失败退款
+                makeLog({
+                    id: 6,
+                    type: 6,
+                    created_at: 160,
+                    quota: 300000,
+                    model_name: video,
+                    other: '{"task_id":"task_3"}',
+                }),
+                makeLog({ id: 7, type: 1, created_at: 170, quota: 900000 }), // 充值,不进调用记录
+                makeLog({ id: 8, type: 6, user_id: 999, created_at: 180, quota: 100000, model_name: video }), // 别人的
+            ],
+            total: 7,
+        });
+        const d = (await (await GET(req())).json()) as {
+            rows: Array<{ id: number; type: number; costCny: number; refundKind: string | null; content: string }>;
+        };
+        expect(d.rows.map((r) => r.id)).toEqual([6, 4, 3, 1]); // id=5 并进了 id=3
+        expect(d.rows[0]).toMatchObject({ costCny: -3, refundKind: 'failure' });
+        expect(d.rows[0].content).toContain('已自动退还预扣的 ¥3.00');
+        expect(d.rows[1]).toMatchObject({ costCny: -0.05, refundKind: 'settlement' });
+        expect(d.rows[1].content).toContain('预扣 ¥1.00，实际 ¥0.95');
+        expect(d.rows[2]).toMatchObject({ type: 6, costCny: 0, refundKind: null });
+        expect(d.rows[2].content).toContain('视频任务未生成成功');
+        expect(d.rows[3]).toMatchObject({ type: 2, costCny: 1, refundKind: null, content: '' });
     });
 
     it('缓存读写:other 有 cache_tokens/cache_creation_tokens → row 带 cacheReadTokens/cacheWriteTokens;缺省 0/0', async () => {

@@ -81,8 +81,9 @@ const REQUIRES_GUARD = [
  *   - quota-units.ts   pure CNY/USD/quota arithmetic constants + helpers
  *   - token-format.ts  pure idempotent `sk-` prefix formatter (W7 D4 PR-H Tier A)
  *   - log-display.ts   pure 日志折叠 + 错误文案脱敏(纯字符串/数组逻辑,无 env / I/O)
+ *   - failed-video-match.ts  pure 失败视频退款 ↔ 预扣行配对(纯数组逻辑,只依赖 log-display)
  */
-const ALLOWLIST_NO_GUARD = ['quota-units.ts', 'token-format.ts', 'log-display.ts'];
+const ALLOWLIST_NO_GUARD = ['quota-units.ts', 'token-format.ts', 'log-display.ts', 'failed-video-match.ts'];
 
 function readFile(rel: string): string {
     return fs.readFileSync(path.join(NEWAPI_DIR, rel), 'utf-8');

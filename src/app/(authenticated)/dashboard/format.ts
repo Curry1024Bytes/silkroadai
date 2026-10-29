@@ -9,18 +9,28 @@
  *   - `use_time`  (new-api 单位是【秒】;page 层 `toCallRow` ×1000 转成 ms 再喂
  *      formatDuration —— 否则 56 秒的生图会显示成 "56ms")  → 时长
  *   - `prompt_tokens` / `completion_tokens` → Tokens(输入/输出)
- *   - `type` (2=consume 成功, 5=error 失败) → 结果
+ *   - `type` (2=consume 成功, 5=error 失败, 6=退款) → 结果
  */
 
-/** Result of a single call. Maps new-api `log.type` to a customer-facing
- *  success/failure verdict. Anything other than the two known consume/error
- *  types is treated as success (we only ever fetch type 2 + 5 for the table,
- *  so this is just a defensive default). */
-export type CallResult = 'success' | 'error';
+import type { RefundKind } from '@/lib/newapi/log-display';
 
-export function callResult(type: number): CallResult {
-    // 5 = new-api 同步错误;6 = 视频异步任务失败(已退款,dashboard 关联后标成此类型)。
+/** Result of a single call row. Maps new-api `log.type` (+ the server-side
+ *  refund classification) to the customer-facing verdict. Unknown types fall
+ *  back to success as a defensive default. */
+export type CallResult = 'success' | 'error' | 'settlement_refund' | 'failure_refund';
+
+export function callResult(type: number, refundKind: RefundKind | null = null): CallResult {
+    if (refundKind === 'settlement') return 'settlement_refund';
+    if (refundKind === 'failure') return 'failure_refund';
+    // 5 = new-api 同步错误;6 = 视频异步任务失败、配上了预扣行(预扣行改标成此类型,已退款)。
     return type === 5 || type === 6 ? 'error' : 'success';
+}
+
+/** 退款行的结果标签与展开说明的标题(明细表与调用记录页共用)。 */
+export function refundLabel(result: 'settlement_refund' | 'failure_refund'): { chip: string; heading: string } {
+    return result === 'settlement_refund'
+        ? { chip: '结算退款', heading: '结算说明' }
+        : { chip: '失败退款', heading: '退款说明' };
 }
 
 /**

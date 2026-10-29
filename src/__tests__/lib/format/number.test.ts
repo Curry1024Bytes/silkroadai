@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatCny, formatUsd, formatCount, formatTokens } from '@/lib/format/number';
+import { formatCny, formatCnyAmount, formatSignedCny, formatUsd, formatCount, formatTokens } from '@/lib/format/number';
 
 describe('formatCny', () => {
     it('keeps small amounts exact with thousands separators', () => {
@@ -41,6 +41,26 @@ describe('formatUsd', () => {
         expect(formatUsd(1)).toBe('$1.00');
         expect(formatUsd(40_314.2805)).toBe('$40,314.28');
         expect(formatUsd(Number.NaN)).toBe('$0.00');
+    });
+});
+
+describe('formatCnyAmount', () => {
+    it('keeps ordinary amounts at two decimals and preserves small refunds', () => {
+        expect(formatCnyAmount(0.2)).toBe('0.20');
+        expect(formatCnyAmount(-0.0498, { preciseSmall: true })).toBe('-0.0498');
+        expect(formatCnyAmount(-0.0049)).toBe('-0.0049');
+        expect(formatCnyAmount(-0)).toBe('0.00');
+    });
+});
+
+describe('formatSignedCny', () => {
+    it('puts the minus sign before ¥ and never prints a signed zero', () => {
+        expect(formatSignedCny(0.2)).toBe('¥0.20');
+        expect(formatSignedCny(-2)).toBe('-¥2.00');
+        expect(formatSignedCny(-0.0498, { preciseSmall: true })).toBe('-¥0.0498');
+        expect(formatSignedCny(-1234.5)).toBe('-¥1,234.50');
+        expect(formatSignedCny(-0)).toBe('¥0.00');
+        expect(formatSignedCny(0)).toBe('¥0.00');
     });
 });
 

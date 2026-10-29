@@ -112,6 +112,90 @@ export function parseCacheTokens(other: string | null | undefined): { read: numb
     }
 }
 
+/**
+ * type=6 同时承载两种退款：任务失败全额退款，以及出片后的实际用量结算退款。
+ * 结算退款的 other 会带预扣/实际 quota；旧版本或某些 adaptor 只把结算原因写进 content。
+ * 解析失败时必须按普通失败退款处理，不能把一条未知退款展示成客户可见的消费抵扣。
+ */
+export interface SettlementRefundLog {
+    type: number;
+    other?: string | null;
+    content?: string | null;
+}
+
+export interface SettlementRefundDetails {
+    preConsumedQuota: number | null;
+    actualQuota: number | null;
+}
+
+const SETTLEMENT_REFUND_REASONS = ['任务用量表达式结算', 'adaptor计费调整', 'token重算：tokens='];
+
+function finiteNumber(value: unknown): number | null {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string' && value.trim() !== '') {
+        const n = Number(value);
+        if (Number.isFinite(n)) return n;
+    }
+    return null;
+}
+
+/** 返回结算退款的可公开计费细节；普通失败退款和坏数据返回 null。 */
+export function parseSettlementRefundDetails(log: SettlementRefundLog): SettlementRefundDetails | null {
+    if (log.type !== 6) return null;
+
+    if (log.other) {
+        try {
+            const parsed = JSON.parse(log.other) as Record<string, unknown>;
+            const preConsumedQuota = finiteNumber(parsed.pre_consumed_quota);
+            const actualQuota = finiteNumber(parsed.actual_quota);
+            if (preConsumedQuota !== null && actualQuota !== null) {
+                return { preConsumedQuota, actualQuota };
+            }
+        } catch {
+            // 旧日志的 other 可能损坏；继续用 content 的兼容判据。
+        }
+    }
+
+    const content = log.content || '';
+    if (SETTLEMENT_REFUND_REASONS.some((reason) => content.includes(reason))) {
+        return { preConsumedQuota: null, actualQuota: null };
+    }
+    return null;
+}
+
+export function isSettlementRefund(log: SettlementRefundLog): boolean {
+    return parseSettlementRefundDetails(log) !== null;
+}
+
+/** type=6 退款的两种来源:出片后按实际用量结算退还差额,或任务失败全额退还预扣。 */
+export type RefundKind = 'settlement' | 'failure';
+
+export function refundKindOf(log: SettlementRefundLog): RefundKind | null {
+    if (log.type !== 6) return null;
+    return isSettlementRefund(log) ? 'settlement' : 'failure';
+}
+
+/** 失败退款配上预扣行时,预扣行的说明(预扣行标「失败」、金额 ¥0)。 */
+export const FAILED_VIDEO_REFUND_NOTE = '视频任务未生成成功,已自动退还本次预扣费用(未实际扣费)。';
+
+/** 失败退款找不到预扣行时(在别的页、日期范围外或导出批次外),单独退款行的说明。 */
+export function unmatchedFailureRefundContent(refund: string): string {
+    return `视频任务未生成成功，已自动退还预扣的 ${refund}。对应的预扣记录不在当前列表中（可能在其他页或所选日期范围之外）。`;
+}
+
+/** 结算退款行的客户可见说明。formatQuota 由 server 侧传入，避免在共享展示 helper 中读取环境变量。 */
+export function settlementRefundContent(
+    log: SettlementRefundLog & { quota: number },
+    formatQuota: (quota: number) => string,
+): string {
+    const refund = formatQuota(Math.abs(log.quota));
+    const details = parseSettlementRefundDetails(log);
+    if (details && details.preConsumedQuota !== null && details.actualQuota !== null) {
+        return `按实际用量结算，退还多扣的 ${refund}（预扣 ${formatQuota(details.preConsumedQuota)}，实际 ${formatQuota(details.actualQuota)}）`;
+    }
+    return `按实际用量结算，退还多扣的 ${refund}`;
+}
+
 /** 这次调用是否「按张计费」(生图 ModelPrice 定价)。
  *   - `true`  → token 数是噪声(上游回报极不一致)→ 展示层显示 "—"(如 Gemini 生图)。
  *   - `false` → 按 token 计费(ModelRatio,含 gpt-image-2 / az-gpt-image-2 / 所有 LLM)→ token 就是

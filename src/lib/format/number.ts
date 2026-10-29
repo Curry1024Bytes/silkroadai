@@ -51,6 +51,24 @@ export function formatCny(value: number): CompactNumber {
     return { display: thousands(n / 10_000, 2), unit: '万', exact, compact: true };
 }
 
+/** 调用明细中的金额格式：常规金额保留两位，小额退款保留更多位，避免显示成 ±¥0.00。 */
+export function formatCnyAmount(value: number, options: { preciseSmall?: boolean } = {}): string {
+    let n = safe(value);
+    if (Object.is(n, -0)) n = 0;
+    const abs = Math.abs(n);
+    const maxFractionDigits = n !== 0 && abs < 0.01 ? 6 : options.preciseSmall && n !== 0 && abs < 1 ? 4 : 2;
+    return n.toLocaleString('zh-CN', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: maxFractionDigits,
+    });
+}
+
+/** 带 ¥ 的明细金额,负数把负号放在 ¥ 前面(`-¥0.0498`,不是 `¥-0.0498`)。 */
+export function formatSignedCny(value: number, options: { preciseSmall?: boolean } = {}): string {
+    const text = formatCnyAmount(value, options);
+    return text.startsWith('-') ? `-¥${text.slice(1)}` : `¥${text}`;
+}
+
 /** 美元(余额卡副行的换算值)。只做千分位 + 2 位小数,不压缩。 */
 export function formatUsd(value: number): string {
     return `$${thousands(safe(value), 2)}`;

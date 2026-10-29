@@ -7,7 +7,8 @@
  * 下面分页表格,数据来自 /api/portal/logs(服务端已折叠重试中间失败 + 脱敏错误文案)。
  * 分页是【服务端】的(new-api /api/log/ 一页 100 原始行),prev/next 走 page 参数。
  *
- * 只读、无副作用地展示;时间一律按 Asia/Shanghai 显示(gotcha #20)。
+ * 只读、无副作用地展示;时间一律按 Asia/Shanghai 显示(gotcha #20)。结算退款、配不上预扣行的
+ * 失败退款作为负金额独立行展示;配上的失败视频预扣行显示「失败」¥0(服务端已配对)。
  */
 import { useCallback, useEffect, useState } from 'react';
 import {
@@ -23,8 +24,10 @@ import {
     LoaderCircle,
     Search,
     SlidersHorizontal,
+    Undo2,
 } from 'lucide-react';
-import { formatDuration, formatTokens, formatCacheTokens, callResult } from '../dashboard/format';
+import { formatDuration, formatTokens, formatCacheTokens, callResult, refundLabel } from '../dashboard/format';
+import { formatSignedCny } from '@/lib/format/number';
 import type { LogRow } from '@/app/api/portal/logs/route';
 
 interface Filters {
@@ -296,13 +299,13 @@ export function LogsViewer() {
                         </thead>
                         <tbody>
                             {rows.map((row) => {
-                                const isError = callResult(row.type) === 'error';
+                                const result = callResult(row.type, row.refundKind);
                                 const isOpen = expanded === row.id;
                                 return (
                                     <LogRowItem
                                         key={row.id}
                                         row={row}
-                                        isError={isError}
+                                        result={result}
                                         isOpen={isOpen}
                                         onToggle={() => setExpanded(isOpen ? null : row.id)}
                                     />
@@ -374,15 +377,16 @@ function RequestIdCell({ value }: { value: string }) {
 
 function LogRowItem({
     row,
-    isError,
+    result,
     isOpen,
     onToggle,
 }: {
     row: LogRow;
-    isError: boolean;
+    result: ReturnType<typeof callResult>;
     isOpen: boolean;
     onToggle: () => void;
 }) {
+    const isRefund = result === 'settlement_refund' || result === 'failure_refund';
     return (
         <>
             <tr className={isOpen ? 'bg-portal-soft' : 'transition-colors hover:bg-portal-soft/70'}>
@@ -416,9 +420,29 @@ function LogRowItem({
                         ) : null;
                     })()}
                 </td>
-                <td className={`${CELL} text-right tabular-nums font-medium`}>¥{row.costCny.toFixed(2)}</td>
+                <td
+                    className={`${CELL} text-right tabular-nums font-medium ${isRefund ? 'text-status-warning-text' : ''}`}
+                >
+                    {formatSignedCny(row.costCny, { preciseSmall: result === 'settlement_refund' })}
+                </td>
                 <td className={`${CELL} text-center`}>
-                    {isError ? (
+                    {isRefund ? (
+                        <button
+                            type="button"
+                            onClick={onToggle}
+                            title={row.content || refundLabel(result).chip}
+                            aria-expanded={isOpen}
+                            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-status-warning-border bg-status-warning-bg px-2 text-xs font-medium text-status-warning-text transition-colors hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-status-warning-text/20"
+                        >
+                            <Undo2 size={13} strokeWidth={1.9} aria-hidden="true" />
+                            {refundLabel(result).chip}
+                            {isOpen ? (
+                                <ChevronUp size={12} aria-hidden="true" />
+                            ) : (
+                                <ChevronDown size={12} aria-hidden="true" />
+                            )}
+                        </button>
+                    ) : result === 'error' ? (
                         <button
                             type="button"
                             onClick={onToggle}
@@ -442,10 +466,14 @@ function LogRowItem({
                     )}
                 </td>
             </tr>
-            {isError && isOpen && (
+            {result !== 'success' && isOpen && (
                 <tr className="bg-portal-soft">
                     <td colSpan={8} className="border-b border-portal-line px-4 py-3">
-                        <p className="m-0 mb-1 text-xs font-medium text-status-error-text">错误详情</p>
+                        <p
+                            className={`m-0 mb-1 text-xs font-medium ${isRefund ? 'text-status-warning-text' : 'text-status-error-text'}`}
+                        >
+                            {isRefund ? refundLabel(result).heading : '错误详情'}
+                        </p>
                         <pre className="m-0 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md border border-portal-line bg-portal-panel px-3 py-2 font-mono text-xs text-portal-ink">
                             {row.content || '(无错误详情)'}
                         </pre>

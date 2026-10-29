@@ -42,6 +42,7 @@ interface LogOpt {
     model_name?: string;
     token_name?: string;
     other?: string;
+    quota?: number;
     prompt_tokens?: number;
     completion_tokens?: number;
 }
@@ -56,7 +57,7 @@ function makeLog(o: LogOpt = {}) {
         token_name: o.token_name ?? 'k',
         model_name: o.model_name ?? 'gpt-image-2',
         other: o.other ?? '{"model_price":-1,"model_ratio":0.9285714285714286,"completion_ratio":6}',
-        quota: 100000,
+        quota: o.quota ?? 100000,
         prompt_tokens: o.prompt_tokens ?? 0,
         completion_tokens: o.completion_tokens ?? 0,
         use_time: 1,
@@ -123,6 +124,58 @@ describe('GET /api/portal/logs/export', () => {
         expect(lines[1]).toContain('成功');
         expect(lines[2]).toContain('失败');
         expect(lines[2]).toContain('boom');
+    });
+
+    it('视频退款:结算退款、配不上的失败退款导出为负数;配上的失败退款并进预扣行(失败 0.0000)', async () => {
+        const video = 'doubao-seedance-2-0-mini-260615';
+        mockGetCurrentUser.mockResolvedValue(provisioned);
+        mockQueryLogs.mockResolvedValue({
+            items: [
+                makeLog({ id: 1, type: 2, created_at: 100, quota: 100000, model_name: video }), // 成功任务的预扣
+                makeLog({ id: 3, type: 2, created_at: 110, quota: 100000, model_name: video }), // 失败任务的预扣
+                makeLog({
+                    id: 4,
+                    type: 6,
+                    created_at: 140,
+                    quota: 5000,
+                    model_name: video,
+                    other: '{"task_id":"task_1","pre_consumed_quota":100000,"actual_quota":95000}',
+                    content: '任务用量表达式结算',
+                }),
+                makeLog({
+                    id: 5,
+                    type: 6,
+                    created_at: 150,
+                    quota: 100000,
+                    model_name: video,
+                    other: '{"task_id":"task_2"}',
+                }),
+                makeLog({
+                    id: 6,
+                    type: 6,
+                    created_at: 160,
+                    quota: 300000,
+                    model_name: video,
+                    other: '{"task_id":"task_3"}',
+                }),
+            ],
+            total: 5,
+        });
+        const text = await (await GET(req())).text();
+        const lines = text
+            .replace(/^\ufeff/, '')
+            .trimEnd()
+            .split('\r\n');
+        expect(lines).toHaveLength(5); // 表头 + 4 行(id=5 并进了 id=3)
+        expect(lines[1]).toContain(',-3.0000,失败退款,');
+        expect(lines[1]).toContain('已自动退还预扣的 ¥3.00');
+        expect(lines[2]).toContain(',-0.0500,结算退款,');
+        expect(lines[2]).toContain('预扣 ¥1.00，实际 ¥0.95');
+        expect(lines[3]).toContain(',0.0000,失败,');
+        expect(lines[3]).toContain('视频任务未生成成功');
+        expect(lines[4]).toContain(',1.0000,成功,');
+        expect(text).not.toContain('REQ5');
+        expect(text).not.toContain("'-"); // 负数是数字,不加防公式注入前缀
     });
 
     it('时间列是北京时间(unix 0 → 1970-01-01 08:00:00)', async () => {
@@ -274,7 +327,17 @@ describe('GET /api/portal/logs/export — 日志库直连主路径(全量,无 10
     it('流式 CSV:BOM + 表头 + 行内容(含缓存读写列),不走 queryLogs,无截断头', async () => {
         mockGetCurrentUser.mockResolvedValue(provisioned);
         mockPoolQuery.mockResolvedValueOnce({
-            rows: [makeDbRow({ id: 2 }), makeDbRow({ id: 1, type: 5, content: 'boom', request_id: 'FAIL1' })],
+            rows: [
+                makeDbRow({
+                    id: 3,
+                    type: 6,
+                    content: '任务用量表达式结算',
+                    // 退款额 35000 = 预扣 70000 − 实际 35000
+                    other: '{"pre_consumed_quota":70000,"actual_quota":35000}',
+                }),
+                makeDbRow({ id: 2 }),
+                makeDbRow({ id: 1, type: 5, content: 'boom', request_id: 'FAIL1' }),
+            ],
         });
         const res = await GET(req());
         expect(res.status).toBe(200);
@@ -286,10 +349,30 @@ describe('GET /api/portal/logs/export — 日志库直连主路径(全量,无 10
         expect(text).toContain('缓存读 Tokens');
         expect(text).toContain('claude-opus-5');
         expect(text).toContain('127885'); // 缓存读列
-        expect(text).toContain('成功');
         expect(text).toContain('失败');
+        expect(text).toContain(',-0.3500,结算退款,');
+        // 结算退款与预扣行同模型同金额,也不能把预扣行当成失败任务
+        expect(text).toContain(',0.3500,成功,');
         expect(text).toContain('boom');
         expect(mockQueryLogs).not.toHaveBeenCalled(); // 不打 new-api HTTP API
+    });
+
+    it('失败退款在本批内配对预扣行:预扣行导出为失败 0.0000、退款不单独导出;配不上的导出为负数', async () => {
+        mockGetCurrentUser.mockResolvedValue(provisioned);
+        mockPoolQuery.mockResolvedValueOnce({
+            rows: [
+                makeDbRow({ id: 4, type: 6, created_at: 1300, quota: 70000, other: '{"task_id":"task_9"}' }), // 预扣行不在本批
+                makeDbRow({ id: 3, type: 6, created_at: 1200, other: '{"task_id":"task_8"}' }),
+                makeDbRow({ id: 2, created_at: 1100 }), // 失败任务的预扣(35000)
+            ],
+        });
+        const text = await (await GET(req())).text();
+        const lines = text.trimEnd().split('\r\n');
+        expect(lines).toHaveLength(3); // 表头 + id=4 + id=2
+        expect(lines[1]).toContain(',-0.7000,失败退款,');
+        expect(lines[2]).toContain(',0.0000,失败,');
+        expect(lines[2]).toContain('视频任务未生成成功');
+        expect(text).not.toContain('REQ3');
     });
 
     it('SQL 参数:user_id + 全部过滤条件按位传入(IDOR 由 WHERE user_id 兜底)', async () => {

@@ -171,11 +171,16 @@ function makeLog(o: Partial<Record<string, unknown>> = {}) {
     };
 }
 
-/** Drive the two type-keyed queryLogs calls (type=2 consume, type=5 error). */
-function setLogs(consume: ReturnType<typeof makeLog>[], errors: ReturnType<typeof makeLog>[] = []) {
+/** Drive the type-keyed queryLogs calls (type=2 consume, type=5 error, type=6 refund). */
+function setLogs(
+    consume: ReturnType<typeof makeLog>[],
+    errors: ReturnType<typeof makeLog>[] = [],
+    refunds: ReturnType<typeof makeLog>[] = [],
+) {
     mockQueryLogs.mockImplementation(async ({ type }: { type: number }) => {
         if (type === 2) return { items: consume, total: consume.length };
         if (type === 5) return { items: errors, total: errors.length };
+        if (type === 6) return { items: refunds, total: refunds.length };
         return { items: [], total: 0 };
     });
 }
@@ -291,6 +296,52 @@ describe('<DashboardPage /> merged console — happy path', () => {
         expect(html).toContain('20260705REQ-consume-0001');
     });
 
+    it('renders settlement refund as a negative 结算退款 row, separate from failed-task matching', async () => {
+        setLogs(
+            [makeLog({ id: 1, model_name: 'doubao-seedance-2-0-mini-260615', quota: 5000 })],
+            [],
+            [
+                makeLog({
+                    id: 2,
+                    type: 6,
+                    model_name: 'doubao-seedance-2-0-mini-260615',
+                    quota: 5000,
+                    created_at: 1_700_000_010,
+                    other: '{"task_id":"task_1","pre_consumed_quota":50000,"actual_quota":45000}',
+                    content: '任务用量表达式结算',
+                }),
+            ],
+        );
+        const html = await renderPage({});
+        expect(html).toContain('结算退款');
+        expect(html).toContain('-¥0.072');
+        expect(html).not.toContain('¥-');
+        expect(html).toContain('预扣 ¥0.72');
+        expect(html).not.toContain('视频任务未生成成功');
+    });
+
+    it('renders a failed video (failure refund matched to its charge) as 失败 ¥0 with the refund note', async () => {
+        setLogs(
+            [makeLog({ id: 1, model_name: 'doubao-seedance-2-0-mini-260615', quota: 5000 })],
+            [],
+            [
+                makeLog({
+                    id: 2,
+                    type: 6,
+                    model_name: 'doubao-seedance-2-0-mini-260615',
+                    quota: 5000,
+                    created_at: 1_700_000_010,
+                    other: '{"task_id":"task_2","reason":"task failed"}',
+                    content: '',
+                }),
+            ],
+        );
+        const html = await renderPage({});
+        expect(html).toContain('视频任务未生成成功,已自动退还本次预扣费用');
+        expect(html).toContain('失败');
+        expect(html).not.toContain('结算退款');
+    });
+
     it('renders preserved features: 充值流水 + 余额提醒设置', async () => {
         mockRechargeLogFindMany.mockResolvedValue([
             {
@@ -346,7 +397,7 @@ describe('<DashboardPage /> period filter (gotcha #15)', () => {
     it('passes username (NOT user_id) + type 2, 5, 6 to queryLogs', async () => {
         await DashboardPage({ searchParams: Promise.resolve({}) });
         const types = mockQueryLogs.mock.calls.map((c) => c[0].type).sort();
-        expect(types).toEqual([2, 5, 6]); // 2=consume 5=error 6=视频任务失败(退款,标失败·¥0)
+        expect(types).toEqual([2, 5, 6]); // 2=consume 5=error 6=视频退款(失败退款或结算退款)
         for (const call of mockQueryLogs.mock.calls) {
             expect(call[0].username).toBe(NEWAPI_USERNAME);
             expect(call[0].user_id).toBeUndefined();
