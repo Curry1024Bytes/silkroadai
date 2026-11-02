@@ -8,9 +8,9 @@ export const dynamic = 'force-dynamic';
 
 export const metadata = { title: 'Seedance 企业端口 · 素材库文档' };
 
-const BASE = process.env.ENTERPRISE_BASE_URL || 'http://128.241.232.23';
+const BASE = process.env.ENTERPRISE_BASE_URL || 'http://207.57.166.33';
 // 兼容入口:上域名前的裸 IP,现有客户继续可用(保留,不强制迁移)。
-const LEGACY_BASE = 'http://128.241.232.23';
+const LEGACY_BASE = 'http://207.57.166.33';
 
 function Code({ children }: { children: string }) {
     return <code className="rounded bg-gray-100 px-1 py-0.5 font-mono text-[13px]">{children}</code>;

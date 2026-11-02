@@ -61,7 +61,7 @@ x-portal-api-common: &portal-api-common
     stop_grace_period: 630s
 
 # ── seedance 企业门户数据面(2026-08-07,大客户上量前扩容)──
-# 单实例 → 3 副本(least_conn,Caddy 在 128.241.232.23 分流 3003/3004/3005),
+# 单实例 → 3 副本(least_conn,Caddy 在 207.57.166.33 分流 3003/3004/3005),
 # 去单点 + 分摊重参考素材(base64→R2)CPU + 故障转移。企业 flavor 本就不跑定时任务
 # (instrumentation 门),再显式 PORTAL_SCHEDULERS=off 兜底防副本双跑。
 x-seedance-portal-common: &seedance-portal-common
@@ -219,8 +219,8 @@ services:
     # ── seedance 大客户独立门户(P1,seedance-enterprise-portal-design.md)──
     # 同镜像同库,PORTAL_FLAVOR 切形态:/v1 只服务 seedance 视频端点,主站页面/API 404,
     # 定时任务不跑(instrumentation 门)。只绑 127.0.0.1:3003 —— 公网入口由 Caddy 在
-    # 128.241.232.23(HTTP :80 + tls internal :443)只放 /v1/* 反代进来,其余 Caddy 404。
-    # seedance 企业门户 3 副本(公网入口只有 Caddy 128.241.232.23 → least_conn 3003/3004/3005;
+    # 207.57.166.33(HTTP :80 + tls internal :443)只放 /v1/* 反代进来,其余 Caddy 404。
+    # seedance 企业门户 3 副本(公网入口只有 Caddy 207.57.166.33 → least_conn 3003/3004/3005;
     # 只绑 127.0.0.1)。共享同库,无状态(JWT cookie + 任务行都在 DB),任意副本可处理任意提交/轮询。
     seedance-portal-1:
         <<: *seedance-portal-common

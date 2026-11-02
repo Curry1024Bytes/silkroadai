@@ -1,7 +1,7 @@
 /**
  * 剪贴板复制(裸 IP HTTP 兼容)。
  *
- * 企业门户走裸 IP http://128.241.232.23,非 secure context 下浏览器不提供
+ * 企业门户走裸 IP http://207.57.166.33,非 secure context 下浏览器不提供
  * `navigator.clipboard`(undefined),裸调用会静默失败 —— 客户/运营点「复制」
  * 没任何反应(2026-07-20 operator 实测)。这里优先 Clipboard API,不可用或
  * 被权限拒时降级到隐藏 textarea + `document.execCommand('copy')`(deprecated
