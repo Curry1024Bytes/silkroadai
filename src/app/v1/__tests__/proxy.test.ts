@@ -6176,3 +6176,118 @@ describe('/v1 proxy — /images/edits 官方 JSON schema:images[{image_url|file_
         expect((await sentForm()).getAll('image')).toHaveLength(1);
     });
 });
+
+describe('/v1 proxy — gpt-image mask 校验 + background 按实际像素(2026-11-02 OAI image 大客户反馈)', () => {
+    /** 最小 PNG 头(签名 + IHDR w×h,colorType 2 = RGB)—— 够 imageDimensions 读。 */
+    function pngHeader(w: number, h: number): Buffer {
+        const buf = Buffer.alloc(26);
+        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(buf);
+        buf.write('IHDR', 12, 'latin1');
+        buf.writeUInt32BE(w, 16);
+        buf.writeUInt32BE(h, 20);
+        buf[24] = 8;
+        buf[25] = 2;
+        return buf;
+    }
+    const du = (b: Buffer) => 'data:image/png;base64,' + b.toString('base64');
+    const IMG = du(pngHeader(1024, 1024));
+    const base = { model: 'gpt-image-2.5-flare', prompt: 'x', size: '1024x1024', quality: 'low' };
+    function imgResp(b64: string): Response {
+        return new Response(JSON.stringify({ created: 1, data: [{ b64_json: b64 }] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+        });
+    }
+    async function errOf(res: Response) {
+        return ((await res.json()) as { error: { message: string; param: string; code: string } }).error;
+    }
+
+    it.each([
+        [{}, 'invalid_value'],
+        [{ file_id: 123 }, 'invalid_type'],
+        [{ image_url: '' }, 'invalid_value'],
+        [{ image_url: 42 }, 'invalid_type'],
+    ])('JSON mask %j → 400 param=mask,不打上游(此前静默丢弃 200 出图计费)', async (mask, code) => {
+        const res = await POST(
+            makeReq('/images/edits', { body: { ...base, images: [{ image_url: IMG }], mask } }),
+            ctx('images', 'edits'),
+        );
+        expect(res.status).toBe(400);
+        expect(await errOf(res)).toMatchObject({ param: 'mask', code });
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('JSON mask 尺寸与输入图不一致 → 400 param=mask,不打上游(此前上游拒 → failover → 503)', async () => {
+        const res = await POST(
+            makeReq('/images/edits', {
+                body: { ...base, images: [{ image_url: IMG }], mask: { image_url: du(pngHeader(512, 512)) } },
+            }),
+            ctx('images', 'edits'),
+        );
+        expect(res.status).toBe(400);
+        const e = await errOf(res);
+        expect(e.param).toBe('mask');
+        expect(e.message).toContain('(1024x1024), got 512x512');
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('JSON mask 尺寸一致 → 照常作为 mask 文件部件转发', async () => {
+        mockFetch.mockResolvedValueOnce(imgResp('QUJD'));
+        const res = await POST(
+            makeReq('/images/edits', { body: { ...base, images: [{ image_url: IMG }], mask: { image_url: IMG } } }),
+            ctx('images', 'edits'),
+        );
+        expect(res.status).toBe(200);
+        const fd = (mockFetch.mock.calls[0] as [string, RequestInit])[1].body as FormData;
+        expect(fd.get('mask')).toBeInstanceOf(Blob);
+    });
+
+    it('multipart mask 为文本字段 / 尺寸不一致 → 400 param=mask,不打上游', async () => {
+        const mk = (mask: string | Blob) => {
+            const form = new FormData();
+            for (const [k, v] of Object.entries(base)) form.append(k, v);
+            form.append('image', new File([new Uint8Array(pngHeader(1024, 1024))], 'a.png', { type: 'image/png' }));
+            form.append('mask', mask);
+            return new NextRequest('https://ai.silkroadai.io/v1/images/edits', { method: 'POST', body: form });
+        };
+        const text = await POST(mk('{"file_id":1}'), ctx('images', 'edits'));
+        expect(text.status).toBe(400);
+        expect((await errOf(text)).param).toBe('mask');
+        const small = await POST(
+            mk(new File([new Uint8Array(pngHeader(512, 512))], 'm.png', { type: 'image/png' })),
+            ctx('images', 'edits'),
+        );
+        expect(small.status).toBe(400);
+        expect((await errOf(small)).param).toBe('mask');
+        expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('上游返回带透明像素的图:缺省 → 回显 transparent;显式 opaque → 白底压平 + opaque', async () => {
+        const sharp = (await import('sharp')).default;
+        const raw = Buffer.alloc(32 * 32 * 4, 255);
+        for (let i = 0; i < 32 * 11; i++) raw[i * 4 + 3] = 0;
+        const transparent = (
+            await sharp(raw, { raw: { width: 32, height: 32, channels: 4 } })
+                .png()
+                .toBuffer()
+        ).toString('base64');
+
+        mockFetch.mockResolvedValueOnce(imgResp(transparent));
+        const auto = await POST(
+            makeReq('/images/edits', { body: { ...base, images: [{ image_url: IMG }] } }),
+            ctx('images', 'edits'),
+        );
+        const a = (await auto.json()) as { background: string; data: Array<{ b64_json: string }> };
+        expect(a.background).toBe('transparent');
+        expect(a.data[0].b64_json).toBe(transparent);
+
+        mockFetch.mockResolvedValueOnce(imgResp(transparent));
+        const opaque = await POST(
+            makeReq('/images/edits', { body: { ...base, background: 'opaque', images: [{ image_url: IMG }] } }),
+            ctx('images', 'edits'),
+        );
+        const o = (await opaque.json()) as { background: string; data: Array<{ b64_json: string }> };
+        expect(o.background).toBe('opaque');
+        expect((await sharp(Buffer.from(o.data[0].b64_json, 'base64')).stats()).isOpaque).toBe(true);
+    });
+});

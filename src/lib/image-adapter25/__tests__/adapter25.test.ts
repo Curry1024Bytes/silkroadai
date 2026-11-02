@@ -2677,3 +2677,100 @@ describe('monkeycoding25 全量线(Go 网关重编码剥 C2PA;xhigh/max 上游�
         expect(await r2.text()).not.toMatch(/monkey|cloudflare/i);
     });
 });
+
+describe('2.5 适配器 mask 校验 + background 按实际像素(2026-11-02 OAI image 大客户反馈)', () => {
+    const DATA_1024 = 'data:image/png;base64,' + pngB64(1024, 1024);
+    const DATA_512 = 'data:image/png;base64,' + pngB64(512, 512);
+    const base = { model: 'gpt-image-2.5-flare', prompt: 'edit', size: '1024x1024', quality: 'low' };
+
+    it.each([
+        [{}, "Invalid 'mask': provide exactly one of image_url or file_id."],
+        [{ file_id: 123 }, "Invalid type for 'mask.file_id': expected a string, but got an integer instead."],
+        [{ image_url: '' }, "Invalid 'mask.image_url': expected a non-empty string."],
+    ])('JSON mask %j → 400 param=mask,不打上游', async (mask, message) => {
+        const res = await handleAdapter25Image(
+            jsonReq(URL_EDIT, { ...base, images: [{ image_url: DATA_1024 }], mask }),
+            'edits',
+            'wetokenasia25',
+        );
+        expect(res.status).toBe(400);
+        const j = (await res.json()) as { error: { message: string; param: string } };
+        expect(j.error).toMatchObject({ message, param: 'mask' });
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('JSON / multipart 蒙版尺寸与输入图不一致 → 400 param=mask,不打上游', async () => {
+        const res = await handleAdapter25Image(
+            jsonReq(URL_EDIT, { ...base, images: [{ image_url: DATA_1024 }], mask: { image_url: DATA_512 } }),
+            'edits',
+            'wetokenasia25',
+        );
+        expect(res.status).toBe(400);
+        const j = (await res.json()) as { error: { message: string; param: string } };
+        expect(j.error.param).toBe('mask');
+        expect(j.error.message).toContain('(1024x1024), got 512x512');
+
+        const fd = new FormData();
+        for (const [k, v] of Object.entries(base)) fd.append(k, v);
+        fd.append('image', new Blob([new Uint8Array(TINY_PNG)], { type: 'image/png' }), 'a.png');
+        fd.append('mask', new Blob([Buffer.from(pngB64(512, 512), 'base64')], { type: 'image/png' }), 'm.png');
+        const mp = await handleAdapter25Image(
+            new NextRequest(URL_EDIT, { method: 'POST', headers: { authorization: 'Bearer k' }, body: fd }),
+            'edits',
+            'wetokenasia25',
+        );
+        expect(mp.status).toBe(400);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('上游蒙版 400(尺寸 / 缺 alpha)→ 终态 400 param=mask,不再 failover 成 503', async () => {
+        fetchMock.mockImplementation(
+            async () =>
+                new Response(
+                    JSON.stringify({
+                        error: { message: 'Invalid mask image format - mask image missing alpha channel' },
+                    }),
+                    { status: 400, headers: { 'content-type': 'application/json' } },
+                ),
+        );
+        const res = await handleAdapter25Image(
+            jsonReq(URL_EDIT, { ...base, images: [{ image_url: DATA_1024 }], mask: { image_url: DATA_1024 } }),
+            'edits',
+            'wetokenasia25',
+        );
+        expect(res.status).toBe(400);
+        const j = (await res.json()) as { error: { message: string; param: string } };
+        expect(j.error.param).toBe('mask');
+        expect(j.error.message).toContain('missing alpha channel');
+    });
+
+    it('上游返回带透明像素的图:缺省 → 如实回显 transparent;显式 opaque → 白底压平 + opaque', async () => {
+        const sharp = (await import('sharp')).default;
+        const raw = Buffer.alloc(32 * 32 * 4, 255);
+        for (let i = 0; i < 32 * 11; i++) raw[i * 4 + 3] = 0; // 上 1/3 透明
+        const transparent = (
+            await sharp(raw, { raw: { width: 32, height: 32, channels: 4 } })
+                .png()
+                .toBuffer()
+        ).toString('base64');
+        okUpstream([transparent]);
+        const auto = await handleAdapter25Image(
+            jsonReq(URL_EDIT, { ...base, images: [{ image_url: DATA_1024 }] }),
+            'edits',
+            'wetokenasia25',
+        );
+        const a = (await auto.json()) as { background: string; data: Array<{ b64_json: string }> };
+        expect(a.background).toBe('transparent');
+        expect(a.data[0].b64_json).toBe(transparent);
+
+        const opaque = await handleAdapter25Image(
+            jsonReq(URL_EDIT, { ...base, background: 'opaque', images: [{ image_url: DATA_1024 }] }),
+            'edits',
+            'wetokenasia25',
+        );
+        const o = (await opaque.json()) as { background: string; data: Array<{ b64_json: string }> };
+        expect(o.background).toBe('opaque');
+        const stats = await sharp(Buffer.from(o.data[0].b64_json, 'base64')).stats();
+        expect(stats.isOpaque).toBe(true);
+    });
+});

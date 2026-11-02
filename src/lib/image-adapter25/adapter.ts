@@ -32,6 +32,8 @@ import { officialImageInputTokens } from '@/lib/tokens/image-input-tokens';
 import { stripAdobeImageMetadataB64 } from '@/lib/proxy/image-metadata';
 import { encodeQuality, transcodeB64, transcodeTargetOf } from '@/lib/image/transcode';
 import { newGenerationId } from '@/lib/image/generation-id';
+import { jsonMaskShapeError, maskDimensionError, multipartMaskShapeError } from '@/lib/image/mask';
+import { resolveOutputBackground } from '@/lib/image/opacity';
 import { alignTo16, isAutoSize, officialAutoDims } from '@/lib/image-adapter/auto-size';
 import { IMAGE_PROVIDERS_25, type AsyncTaskTransport, type ImageProvider25 } from './providers';
 
@@ -249,7 +251,7 @@ export function sanitizeAdapterError25(text: string, brand: RegExp): string {
 const UPSTREAM_SAFETY_RE =
     /image_unsafe|image_safety|content_safety|content_filter|content rejected|appear to be unsafe|safety system|moderation_blocked|safety policy|content safety|content policy violation|moderation system/i;
 const UPSTREAM_BADREQ_RE =
-    /prompt is required|invalid image|bad_request|validation_error|invalid image size|total pixels must|quality for .* must be|invalid value/i;
+    /prompt is required|invalid image|bad_request|validation_error|invalid image size|total pixels must|quality for .* must be|invalid value|mask must have the same dimensions|invalid mask/i;
 const UPSTREAM_CHANNEL_RE = /no available channel|model_not_found|channel_circuit_open|no active tokens/i;
 
 type TerminalReject =
@@ -275,15 +277,17 @@ function extractBadRequestDetail(text: string, brand: RegExp): { detail: string;
     const clean = sanitizeAdapterError25(msg, brand).slice(0, 200);
     // 参数归属(官方 error.param 便于 SDK 定位):按关键词判
     const lc = clean.toLowerCase();
-    const param = /image size|\bsize\b|edges|pixels|aspect ratio/.test(lc)
-        ? 'size'
-        : /\bquality\b/.test(lc)
-          ? 'quality'
-          : /\bprompt\b/.test(lc)
-            ? 'prompt'
-            : /\bimage\b/.test(lc)
-              ? 'image'
-              : null;
+    const param = /\bmask\b/.test(lc)
+        ? 'mask'
+        : /image size|\bsize\b|edges|pixels|aspect ratio/.test(lc)
+          ? 'size'
+          : /\bquality\b/.test(lc)
+            ? 'quality'
+            : /\bprompt\b/.test(lc)
+              ? 'prompt'
+              : /\bimage\b/.test(lc)
+                ? 'image'
+                : null;
     return { detail: clean, param };
 }
 
@@ -388,6 +392,8 @@ async function parseIncoming(req: NextRequest): Promise<ParsedRequest | null> {
             if (typeof v === 'string' && v) extras[k] = v;
         }
         const maskFile = form.get('mask');
+        const maskShapeErr = multipartMaskShapeError(maskFile);
+        if (maskShapeErr) throw new MaskInputError(maskShapeErr.message);
         const mask =
             maskFile instanceof File && maskFile.size > 0
                 ? {
@@ -427,14 +433,22 @@ async function parseIncoming(req: NextRequest): Promise<ParsedRequest | null> {
             throw new InputImageError('file_id references are not supported here; pass image_url instead');
         images.push(await fetchInputImage(ref.url, 'image'));
     }
+    // mask 形态先校验:`{}` / 数字 file_id / 空串此前解不出引用 → 当没传 mask 静默整图重绘(2026-11-02 客户)
+    const maskShapeErr = jsonMaskShapeError(body.mask);
+    if (maskShapeErr) throw new MaskInputError(maskShapeErr.message);
     const maskRefs: JsonImageRef[] = [];
     collectJsonImageRefs(body.mask, maskRefs);
     let mask: ParsedRequest['mask'] = null;
     if (maskRefs.length > 0) {
         const ref = maskRefs[0];
         if ('fileId' in ref)
-            throw new InputImageError('file_id references are not supported here; pass image_url instead');
-        mask = await fetchInputImage(ref.url, 'mask');
+            throw new MaskInputError('mask: file_id references are not supported here; pass image_url instead');
+        try {
+            mask = await fetchInputImage(ref.url, 'mask');
+        } catch (e) {
+            if (e instanceof InputImageError) throw new MaskInputError(e.message);
+            throw e;
+        }
     }
     return {
         model: typeof body.model === 'string' ? body.model : '',
@@ -472,6 +486,8 @@ function collectJsonImageRefs(v: unknown, out: JsonImageRef[]): void {
 
 /** 客户给的输入图引用解不开(坏 data URL / 拉不到 / 私网地址 / 过大)→ 终态 400,不 failover。 */
 export class InputImageError extends Error {}
+/** 蒙版解不开 / 形态非法 → 400 param=mask。 */
+export class MaskInputError extends InputImageError {}
 
 /** 官方 image_url 上限(2.5 页面 maxLength 20971520 ≈ 20MB data URL);二进制按 25MB(官方每图 25MB)。 */
 const INPUT_IMAGE_MAX_BYTES = 25 * 1024 * 1024;
@@ -889,7 +905,7 @@ export async function handleAdapter25Image(
             return terminalReject({
                 terminal: 'bad_request',
                 detail: e.message,
-                param: 'image',
+                param: e instanceof MaskInputError ? 'mask' : 'image',
                 code: 'invalid_image',
             });
         }
@@ -905,6 +921,14 @@ export async function handleAdapter25Image(
             param: 'image',
             code: 'missing_required_parameter',
         });
+    }
+    // 蒙版尺寸必须与第一张输入图一致(官方约束;上游也拒,但前置拦截省一次上游往返)
+    if (parsed.mask && parsed.images.length > 0) {
+        const dimErr = maskDimensionError(imageDimensions(parsed.mask.buf), imageDimensions(parsed.images[0].buf));
+        if (dimErr) {
+            console.warn('[image-adapter25] mask dimension mismatch rejected', { provider: providerName, dimErr });
+            return terminalReject({ terminal: 'bad_request', detail: dimErr, param: 'mask', code: 'invalid_image' });
+        }
     }
 
     // ---- 模型白名单:一渠道承两模型,只透传我们认的 2.5 名;不认 = 渠道 models 配错 → 让路 ----
@@ -1109,7 +1133,16 @@ export async function handleAdapter25Image(
 
     // ---- 官方枚举 echo(直连 :3000 绕过 portal 的客户也拿合规响应)----
     const outFmt = sniffOutputFormat(Buffer.from(items[0]?.b64_json ?? '', 'base64')) || (wantFormat ?? 'png');
-    const outBackground = wantsTransparent ? 'transparent' : 'opaque';
+    // background 按交付图实际像素定(2026-11-02 客户:声明 opaque、PNG 却约 1/3 像素全透明)。请求显式 opaque
+    // 而图带透明 → 白底压平兑现契约;auto / 缺省 → 如实回显 transparent;请求 transparent 上面已校验 alpha。
+    let outBackground: 'opaque' | 'transparent' = wantsTransparent ? 'transparent' : 'opaque';
+    if (!wantsTransparent) {
+        for (const it of items) {
+            const r = await resolveOutputBackground(it.b64_json, parsed.extras.background || '');
+            it.b64_json = r.b64;
+            if (r.background === 'transparent') outBackground = 'transparent';
+        }
+    }
     const respSize = `${billW}x${billH}`;
     console.log('[image-adapter25] ok', {
         provider: providerName,

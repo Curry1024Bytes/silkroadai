@@ -333,7 +333,9 @@ export function sanitizeAdapterError(text: string, brand: RegExp): string {
 // 「temporarily unable」并重试放大(部署后 10 分钟内占 503 真因 83%;近 1h 6,476 次 failover 仅 9.8% 挽回)。
 const UPSTREAM_SAFETY_RE =
     /image_unsafe|image_safety|content_safety|content_filter|content rejected|appear to be unsafe|safety policy|content safety|content policy violation|moderation system/i;
-const UPSTREAM_BADREQ_RE = /prompt is required|invalid image|bad_request|validation_error|undefined mention/i;
+// 蒙版类(尺寸不一致 / 缺 alpha)是确定性入参错,换渠道也拒 → 终态 400,不再 failover 成 503「overloaded」
+const UPSTREAM_BADREQ_RE =
+    /prompt is required|invalid image|bad_request|validation_error|undefined mention|mask must have the same dimensions|invalid mask/i;
 const UPSTREAM_CHANNEL_RE = /no available channel|model_not_found/i;
 
 type TerminalReject = { terminal: 'safety' | 'bad_request' };

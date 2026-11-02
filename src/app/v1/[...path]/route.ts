@@ -60,6 +60,8 @@ import {
     type PlaceholderSpec,
 } from '@/lib/image/stream-placeholder';
 import { newGenerationId } from '@/lib/image/generation-id';
+import { jsonMaskShapeError, maskDimensionError, multipartMaskShapeError } from '@/lib/image/mask';
+import { resolveOutputBackground } from '@/lib/image/opacity';
 import { randomUUID } from 'node:crypto';
 import { prisma } from '@/lib/db';
 import { getCustomerBalance, type CustomerBalance } from '@/lib/billing/customer-balance';
@@ -549,6 +551,8 @@ async function forwardToNewApi(
 
 /** image_url 解析失败 → 客户侧 400(OpenAI invalid_request_error 形) */
 class ImageUrlError extends Error {}
+/** 蒙版(`mask`)解析 / 尺寸校验失败 → 400 param=mask(其余 ImageUrlError 归 param=image)。 */
+class MaskImageError extends ImageUrlError {}
 
 /** SSRF 基础守门:只放 http(s) + 拒 localhost / 私网 IPv4 字面量 / IPv6 字面量。
  *  DNS 解析到私网的域名(rebinding)不在本层防护范围 — Phase 3 hardening。 */
@@ -1372,8 +1376,17 @@ async function gptImageUpstream(
     search: string,
 ): Promise<Response> {
     if (form) {
-        const hasImage = formImageFiles(form).length > 0;
-        if (hasImage) {
+        const imageFiles = formImageFiles(form);
+        if (imageFiles.length > 0) {
+            // 蒙版尺寸必须与第一张输入图一致:上游会拒,但文案不在适配器终态白名单 → failover → 客户 503
+            const maskFile = form.get('mask');
+            if (maskFile instanceof Blob && maskFile.size > 0) {
+                const dimErr = maskDimensionError(
+                    imageDimensions(Buffer.from(await maskFile.arrayBuffer())),
+                    imageDimensions(Buffer.from(await imageFiles[0].arrayBuffer())),
+                );
+                if (dimErr) throw new MaskImageError(dimErr);
+            }
             // auto 一律交给适配器按官方语义定尺寸并计费(2.0 第 4 批 #477;2.5 官方实测后 2026-09-19 同样下沉:
             // generations 缺省 1254²、edits 跟输入图)。代理层不再改写 size。
             return fetchUpstreamMultipart(req, form, '/images/edits', search);
@@ -1405,14 +1418,21 @@ async function gptImageUpstream(
     const maskRefs: JsonImageRef[] = [];
     collectJsonImageRefs(b.mask, maskRefs);
     if (maskRefs.length > 0) {
-        const mask = await resolveJsonImageRef(maskRefs[0], req);
-        if (mask) {
-            f.append(
-                'mask',
-                new Blob([Buffer.from(mask.data, 'base64')], { type: mask.mimeType || 'image/png' }),
-                'mask.png',
-            );
+        let mask: { mimeType: string; data: string } | null;
+        try {
+            mask = await resolveJsonImageRef(maskRefs[0], req);
+        } catch (e) {
+            if (e instanceof ImageUrlError) throw new MaskImageError(`mask: ${e.message}`);
+            throw e;
         }
+        if (!mask) throw new MaskImageError('mask: could not be resolved to an image');
+        const maskBuf = Buffer.from(mask.data, 'base64');
+        const dimErr = maskDimensionError(
+            imageDimensions(maskBuf),
+            imageDimensions(Buffer.from(imgs[0].data, 'base64')),
+        );
+        if (dimErr) throw new MaskImageError(dimErr);
+        f.append('mask', new Blob([maskBuf], { type: mask.mimeType || 'image/png' }), 'mask.png');
     }
     return fetchUpstreamMultipart(req, f, '/images/edits', search);
 }
@@ -2179,6 +2199,19 @@ async function reshapeOpenAiImageResponse(
         }
     }
 
+    // background 按【交付图实际像素】定(放在转码之后:jpeg 天然不透明)。2026-11-02 客户:声明 opaque、
+    // PNG 却约 1/3 像素全透明 —— 此前只按请求值回显。请求显式 opaque 而图带透明 → 白底压平兑现契约;
+    // auto / 缺省 → 如实回显 transparent。请求 transparent 不动。url 形态(无字节)退回请求侧归一。
+    let actualBackground: string | null = null;
+    if (echo?.gptDefaults) {
+        for (const item of data) {
+            if (typeof item.b64_json !== 'string' || !item.b64_json) continue;
+            const r = await resolveOutputBackground(item.b64_json, echo.background);
+            item.b64_json = r.b64;
+            if (r.background === 'transparent' || !actualBackground) actualBackground = r.background;
+        }
+    }
+
     // 回显 quality / background / output_format(官方 gpt-image 响应顶层字段)。链路上没有一层会带:
     // 适配器只合成 {created,data,usage},new-api 重组体只加 request_id/size —— 客户官方兼容测试校验
     // 回显(2026-08-11 反馈缺失)。⚠️ 回显值必须是【官方枚举】,不是鹦鹉学舌请求原值:
@@ -2193,7 +2226,7 @@ async function reshapeOpenAiImageResponse(
         const q = normalizeEchoQuality(echo.quality, echo.gptDefaults, echo.tier5 === true);
         if (q) out.quality = q;
         const bg = normalizeEchoBackground(echo.background, echo.gptDefaults);
-        if (bg) out.background = bg;
+        if (bg) out.background = actualBackground ?? bg;
         const of = sniffed || normalizeEchoOutputFormat(echo.outputFormat, echo.gptDefaults);
         if (of) out.output_format = of;
     }
@@ -2335,6 +2368,9 @@ async function handleImagesDalle(
                         return imageError('stream supports n=1 only', 400, cap, { code: 'invalid_value', param: 'n' });
                     // /images/edits 必须带输入图(官方 400 missing_required_parameter)
                     if (isImagesEditsPath(path) && formImageFiles(form).length === 0) return missingImageError(cap);
+                    // mask 必须是非空文件(文本字段 / 空文件此前被静默丢弃 → 整图重绘照常计费)
+                    const maskErr = multipartMaskShapeError(form.get('mask'));
+                    if (maskErr) return imageError(maskErr.message, 400, cap, { code: maskErr.code, param: 'mask' });
                     // 严格 / 非严格都做:请求 jpeg/webp → 服务端转码交付(上游恒返 png、无视 output_format)
                     transcodeTo = gptImageTranscodeTarget(String(form.get('output_format') ?? ''));
                     const c = Number(form.get('output_compression'));
@@ -2382,7 +2418,10 @@ async function handleImagesDalle(
                         );
                     } catch (e) {
                         if (e instanceof ImageUrlError)
-                            return imageError(e.message, 400, cap, { code: 'invalid_image', param: 'image' });
+                            return imageError(e.message, 400, cap, {
+                                code: 'invalid_image',
+                                param: e instanceof MaskImageError ? 'mask' : 'image',
+                            });
                         // 连不上 new-api 等网络异常:透出真实原因(不被外层 catch 兜底成笼统 400)
                         return imageError(
                             `upstream request failed: ${e instanceof Error ? e.message : String(e)}`,
@@ -2496,6 +2535,10 @@ async function handleImagesDalle(
                         return imageError('stream supports n=1 only', 400, cap, { code: 'invalid_value', param: 'n' });
                     // /images/edits 必须带输入图(JSON 形:官方 images[{image_url|file_id}],或自家 image / image_url)
                     if (isImagesEditsPath(path) && jsonImageRefs(body).length === 0) return missingImageError(cap);
+                    // mask 形态(官方 { image_url | file_id } 恰好一个非空字符串):`{}` / 数字 file_id / 空串此前
+                    // 解不出引用就被当成没传 mask 静默丢弃、200 出图计费(2026-11-02 客户官方兼容测试)。
+                    const maskErr = jsonMaskShapeError(body.mask);
+                    if (maskErr) return imageError(maskErr.message, 400, cap, { code: maskErr.code, param: 'mask' });
                     // 严格 / 非严格都做:请求 jpeg/webp → 服务端转码交付(上游恒返 png、无视 output_format)
                     transcodeTo = gptImageTranscodeTarget(
                         typeof body.output_format === 'string' ? body.output_format : '',
@@ -2536,7 +2579,10 @@ async function handleImagesDalle(
                         );
                     } catch (e) {
                         if (e instanceof ImageUrlError)
-                            return imageError(e.message, 400, cap, { code: 'invalid_image', param: 'image' });
+                            return imageError(e.message, 400, cap, {
+                                code: 'invalid_image',
+                                param: e instanceof MaskImageError ? 'mask' : 'image',
+                            });
                         return imageError(
                             `upstream request failed: ${e instanceof Error ? e.message : String(e)}`,
                             500,
